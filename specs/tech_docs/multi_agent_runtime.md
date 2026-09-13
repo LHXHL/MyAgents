@@ -122,6 +122,21 @@ IM/Agent Channel 需要 native-card `AskUserQuestion` 时，启动策略必须�
 
 Codex 使用 JSON-RPC 2.0 app-server，一个进程在 Product Session 生命周期内持久存在。adapter 拥有 initialize、thread start/resume/read/fork、turn start/steer/interrupt、权限请求与订阅关联。
 
+权限 UI 与 native 参数按 runtime source 分流，保留历史持久化 ID：
+
+| Source / UI | 内部值 | approvalPolicy | sandbox | approvalsReviewer |
+|---|---|---|---|---|
+| managed 规划 | suggest | untrusted | read-only | user |
+| managed 行动 | auto-edit | on-request | workspace-write | auto_review |
+| managed 自主行动 | no-restrictions | never | danger-full-access | user |
+| system Ask for approval | auto-edit | on-request | workspace-write | user |
+| system Approve for me | full-auto | on-request | workspace-write | auto_review |
+| system Full Access | no-restrictions | never | danger-full-access | user |
+
+system 菜单只提供上述三项；历史 suggest 仍按只读恢复，并保留真实只读显示。auto_review 是原生审批 reviewer，不等于 never 或直接开放网络。start/resume 与每轮 turn/start 均显式传 reviewer，避免切回人工审批时沿用旧 reviewer；原生响应未启用请求的 auto_review 时明确报不支持，不能静默降级。
+
+现有 Process 保存该 generation 的 workspace sandbox：从原生 config/read 读取 network/额外 writable roots/tmp exclusions，再以 thread/start/resume 返回的 workspaceWrite 有效策略校准；从 Full Access 切回时仍使用该配置。只读规划保持旧网络限制。不得用 thread/resume 配置尚无 rollout 的预热 thread，也不得逐轮硬编码 networkAccess=false 覆盖原生配置。未获批 command/exec 代理探针受网络限制只表示需要审批，不能据此显示整个 Codex 不可用。MyAgents Host Tool 自有审批仍属于客户端 dispatcher，不因原生 auto_review 绕过。
+
 一个 Session Sidecar 最终只绑定一个 root thread。RPC response 和 notification 可乱序到达，turn owner 必须按 thread、turn 与 caller message identity 关联，不能仅凭“收到 completed”提交错误 turn。
 
 Codex Rewind/Fork 只在 runtime capability 和精确 root-turn anchor 同时可用时开放：
@@ -130,12 +145,16 @@ Codex Rewind/Fork 只在 runtime capability 和精确 root-turn anchor 同时可
 - 成功 terminal 后持久化 native turn anchor；
 - Rewind 保留 Product Session id，截断 MyAgents transcript并切换 native branch；
 - Fork 创建新 Product Session 并复制截止边界的产品 transcript；
-- native branch 创建成功后解除 source app-server 的临时订阅；
+- native branch 创建成功后，adapter 必须通过既有 stop 流程确认 source app-server 进程退出，才返回 replacement identity；`thread/unsubscribe` 仅解除事件订阅，不能证明 native writer 已释放（Runtime 可能延迟卸载）。源 Product Session 与 native identity 保留，下一轮沿既有 resume 路径启动；
 - process termination 不确定时不提交产品 mutation。
 
 不得用 experimental rollback、Renderer mirror 或猜测的 previous-turn id 替代 native history。产品 transcript 仍由 SessionStore 拥有，不从 Codex rollout 反向重建。
 
 Codex Server → Client request 使用显式 allowlist。升级 app-server 时以当前 binary 生成的 schema 核对请求和 notification；未知 request fail closed。approval 与 structured question 可并发，后端按 request id 持有多个 pending，Renderer 以 FIFO queue 投影，不能使用单槽位覆盖。
+
+非阻塞问题来自 root `agentMessage` 的 `delivery: "async"` / `questions`，不是 permission RPC。Adapter 在 item 完成时校验结构，使用 thread/item identity，随 `text_stop` 写入既有 text block 的 `asyncQuestions`；文字仍用于纯文本消费者，旧历史不按 Markdown 猜测结构。已关闭文本块不能继续接后续 delta，聊天与 Companion 共用该边界。
+
+回答走普通 `sendDesktopMessage`，仅附加 `asyncQuestionReply` 关联。定义属于 Session transcript，待发状态属于现有 operation queue，已回答以真正受理的 user message 为准；HTTP queued 或 Codex steer RPC ack 都不代表已回答。普通 turn/start 回答在原生 send 成功后才进入 transcript，提前到达的 terminal 复用每个消息操作（直接发送及排队共有）的 dispatchAcceptance 保持 user → assistant 写入顺序；realtime 回答必须收到 native user echo，回合结束时只有 RPC ack 的回答释放为可重试。取消恢复输入同时恢复问题关联。Ingress 和排队后的 dispatch gate 校验同一 Session 的来源与重复回答；取消/失败释放队列项，历史与 reconnect snapshot 保留定义、关联和队列投影。子 Agent 事件保持嵌套 trace，不升级为主会话问题卡片。
 
 工具与子 Agent item 在 adapter 内映射为标准 tool/content blocks：command、file change、MCP、dynamic tool、web search、image view/generation 与 collab-agent 都走同一 transcript/attachment pipeline。raw protocol payload 不越过 adapter，也不写日志。
 
@@ -158,7 +177,7 @@ Gemini 模型与权限在 turn boundary 通过 native session RPC 应用；reaso
 | `turn-lifecycle.ts` | promotion、running、terminal 与 finalization gate |
 | `runtime-config.ts` | desired/effective config 与 source filtering |
 | `transcript-persistence.ts` | user append、assistant commit、retry/rewind mutations |
-| `content-blocks.ts` | UnifiedEvent 到持久内容块 |
+| `content-blocks.ts` | V1 内容块与共用展示 policy；V2 内容由 SessionStore projection 持有 |
 | `interactive.ts` | permissions、questions、IM/Inbox/watch association |
 | `extensions.ts` | Managed Codex extension projection |
 
@@ -170,13 +189,13 @@ facade 负责组装 owner，不重新保存同一份 mutable state。Route 和 S
 
 1. 等待正在进行的 start/pre-warm；
 2. 在持久进程中序列化 active turn；
-3. 等待上一 turn 的 transcript finalization settlement；
+3. 等待上一 turn 的真实执行结算；V1 仍保留原 transcript finalization 等待，V2 不等待产品 IO；
 4. 对 Task/Goal 等执行 exact domain dispatch claim；
 5. 在 transport 前再次验证 process generation 与 cancellation token。
 
 guard accepted 之前不展示伪 user bubble、不写 transcript、不启动 watchdog。transport write 开始后的 error 只表示 acknowledgement 不确定；必须尝试 exact stop，未确认终止时保留 process、queue binding 和 domain owner，不能自动重放。
 
-user message 在 transport 接纳后尽快 append；assistant content 在成功 terminal、附件保存与 finalization gate 内一次提交。下一 turn 和同步 caller 只有在 gate settle 后才能读取 latest assistant result。
+V1 保留 user append、成功 terminal/附件/finalization gate 内提交 assistant 的原行为。V2 在接纳和 native 内容事件中更新 canonical projection，后台持续保存；下一 turn 和同步 caller 只依赖执行结算，最新结果读 live projection。完整帧、retraction 和 Codex nativeText 按原产品目标确认；细节见 [`session_transcript_v2.md`](session_transcript_v2.md)。
 
 ### 6.2 realtime 与 turn-boundary queue
 

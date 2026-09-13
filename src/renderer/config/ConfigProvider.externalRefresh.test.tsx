@@ -206,6 +206,16 @@ describe('ConfigProvider external config invalidation', () => {
     expect(mocks.providers[0]?.models[0]?.contextLength).toBe(262_144);
   });
 
+  it('does not merge discovery from an old connection into a Provider edited on disk', async () => {
+    render(<ConfigProvider><Probe /></ConfigProvider>);
+    await waitFor(() => expect(screen.getByTestId('snapshot')).toHaveTextContent('old-provider'));
+    const current = mocks.providers[0]!;
+    mocks.providers = [{ ...current, config: { ...current.config, baseUrl: 'https://new-offering.invalid' } }];
+    fireEvent.click(screen.getByRole('button', { name: 'Merge discovered capability' }));
+    await waitFor(() => expect(mocks.atomicModifyCustomProvider).toHaveBeenCalledTimes(1));
+    expect(mocks.providers[0]?.models[0]?.contextLength).toBeUndefined();
+  });
+
   it('keeps the readable disk snapshot available when startup maintenance is lock-busy', async () => {
     mocks.withAgentConfigIntentLock.mockRejectedValueOnce(Object.assign(
       new Error('Agent config intent busy; retry'),

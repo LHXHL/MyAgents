@@ -100,6 +100,8 @@ export const SSE_EVENT_PRIORITIES: Readonly<Record<string, SseEventPriority>> = 
   'chat:system-status': 'critical',
   'chat:status': 'critical',
   'chat:init': 'critical',
+  'chat:transcript-operation': 'critical',
+  'chat:transcript-save-status': 'critical',
   'chat:api-retry': 'critical',
   'chat:attachments-filtered': 'critical',
   'chat:attachments-fallback': 'critical',
@@ -318,6 +320,14 @@ const SILENT_EVENTS = new Set([
   'chat:tool-input-delta', 'chat:tool-result-delta',
   'chat:subagent-tool-input-delta', 'chat:subagent-tool-result-delta',
   'chat:content-block-stop', 'chat:message-sdk-uuid', 'chat:log',
+  // V2 wraps text/thinking/tool deltas in transcript operations. Their
+  // critical DELIVERY priority does not make them useful per-packet logs.
+  // Save progress is equally frequent; TranscriptWriter owns failure logs.
+  'chat:transcript-operation', 'chat:transcript-save-status',
+  // Repeated UI snapshots are transport projections. Runtime owners retain
+  // semantic diagnostics, and turn owners retain final output/usage summaries.
+  'chat:mcp-effective-snapshot', 'chat:runtime-tool-catalog',
+  'chat:context-usage', 'chat:agent-plan-update', 'chat:runtime-diagnostics',
 ]);
 
 // Time-window coalescing for high-frequency streaming deltas.

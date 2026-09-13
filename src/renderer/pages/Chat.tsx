@@ -1,3 +1,6 @@
+import { AsyncQuestionContext, type AsyncQuestionActions } from '@/context/AsyncQuestionContext';
+import { AsyncQuestionComposerTarget } from '@/components/AsyncQuestionCard';
+import { restoreAsyncQuestionAnswerDraft, sameAsyncQuestionReply, type AsyncQuestionReply } from '../../shared/asyncUserQuestions';
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import type { FilePreviewHandle } from '@/components/FilePreviewModal';
 import { AlertTriangle, Bot, Globe, History, Loader2, MessageSquarePlus, PanelRight, RotateCcw, TerminalSquare, X } from 'lucide-react';
@@ -928,6 +931,11 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
 
   const handleSplitFilePreview = useCallback(async (file: SplitPreviewFile, options?: { initialEditMode?: boolean }) => {
     const request = ++filePreviewRequestRef.current;
+    if (fullscreenPreviewFile) {
+      if (fullscreenFilePreviewRef.current && !await fullscreenFilePreviewRef.current.prepareTransition(file.path)) return;
+      if (request === filePreviewRequestRef.current) setFullscreenPreviewFile({ ...file, initialEditMode: options?.initialEditMode });
+      return;
+    }
     if (splitFilePreviewRef.current && !await splitFilePreviewRef.current.prepareTransition(file.path)) return;
     if (request !== filePreviewRequestRef.current) return;
     const ext = file.name.toLowerCase().split('.').pop();
@@ -948,7 +956,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
       setSplitActiveView('file');
     }
     // Keep workspace open — user can dismiss it manually
-  }, [isSplitViewEnabled, agentDir, startBrowserSplitTransitionIfNeeded]);
+  }, [isSplitViewEnabled, agentDir, startBrowserSplitTransitionIfNeeded, fullscreenPreviewFile]);
 
   useEffect(() => {
     if (!pendingFilePreview) return;
@@ -2715,7 +2723,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
       setSessionMeta(result.metadata);
       return;
     }
-    const updated = await patchSessionMetadata(sessionId, patch);
+    const updated = await patchSessionMetadata(sessionId, patch, { type: 'tab', id: tabId });
     if (!updated) {
       throw new Error(`Session ${sessionId} not found.`);
     }
@@ -3813,10 +3821,17 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
     images: ImageAttachment[];
   } | null>(null);
 
+  const [questionDraft, setQuestionDraft] = useState<{ sessionId: string | null; reply: AsyncQuestionReply; title: string } | null>(null);
+  const questionTarget = questionDraft?.sessionId === sessionId ? questionDraft : null;
+  const questionTargetRef = useRef(questionTarget);
+  questionTargetRef.current = questionTarget;
+
   // PERFORMANCE: text is now passed from SimpleChatInput (which manages its own state)
   // This avoids re-rendering Chat on every keystroke.
   // Returns false to signal SimpleChatInput NOT to clear the input (e.g., on rejection).
-  const handleSendMessage = useCallback(async (text: string, images?: ImageAttachment[]): Promise<boolean | void> => {
+  const handleSendMessage = useCallback(async (text: string, images?: ImageAttachment[], _permissionMode?: PermissionMode, explicitReply?: AsyncQuestionReply): Promise<boolean | void> => {
+    const draft = explicitReply ? null : questionTargetRef.current;
+    const reply = explicitReply ?? draft?.reply;
     // Must have content and not be in stopping state
     if (isSessionLoading || (!text && (!images || images.length === 0)) || sessionState === 'stopping') {
       return false;
@@ -3883,11 +3898,11 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
 
       // If cron mode is enabled and task hasn't started yet, start the task
       const cron = cronStateRef.current;
-      if (goalDraftConfigRef.current) {
+      if (!reply && goalDraftConfigRef.current) {
         const startedKind = await startScheduledTask(text);
         if (startedKind !== 'goal') return;
         if (!isAiBusy) setIsLoading(true);
-      } else if (cron.isEnabled && !cron.task && cron.config) {
+      } else if (!reply && cron.isEnabled && !cron.task && cron.config) {
         setStoppedCronRecovery(null);
         if (cron.config.taskKind === 'cron' && cron.config.executionTarget === 'new_task') {
           // ── New standalone task: create independently, show card in chat ──
@@ -3944,10 +3959,13 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
       // sendMessage is fire-and-forget (returns true immediately for optimistic UI).
       // Error handling is done inside sendMessage's .then()/.catch() in TabProvider.
       // Use effective model/permission (runtime-aware) — not the builtin values
-      await sendMessage(text, images, effectivePermissionMode, effectiveModel, isExternalRuntime ? undefined : providerEnv, undefined,
+      const admitted = await sendMessage(draft?.title ? `${draft.title}\n\n${text}` : text, images, effectivePermissionMode, effectiveModel, isExternalRuntime ? undefined : providerEnv, undefined,
         // #324 — builtin only: external runtimes apply effort via /api/reasoning-effort/set
         isExternalRuntime ? undefined : reasoningEffort,
-        isExternalRuntime ? undefined : providerRoute);
+        isExternalRuntime ? undefined : providerRoute, undefined, reply);
+      if (admitted && reply) setQuestionDraft(current => current && sameAsyncQuestionReply(current.reply, reply) ? null : current);
+      if (!admitted && !isAiBusy) setIsLoading(false);
+      return admitted;
     } catch (error) {
       const errorMessage = {
         id: `error-${crypto.randomUUID()}`,
@@ -3961,6 +3979,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
         setIsLoading(false);
         setSessionState('idle');
       }
+      return false;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- toastRef/currentProviderRef/apiKeysRef/cronStateRef are refs (stable); scrollToBottom/setMessages/setIsLoading/setSessionState are stable
   }, [sessionState, isSessionLoading, isLoading, queuedMessages.length, startScheduledTask, sendMessage, effectivePermissionMode, effectiveModel, reasoningEffort, isExternalRuntime, isCrossRuntimeSession, scrollToBottom, pinnedProviderUnavailable, builtinSnapshotProviderSelectionIncomplete, showPinnedProviderUnavailableToast, showSnapshotProviderIncompleteToast, t]);
@@ -3968,6 +3987,18 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
   // Ref-stabilize handleSendMessage for handleRetry (avoids frequent re-creation)
   const handleSendMessageRef = useRef(handleSendMessage);
   handleSendMessageRef.current = handleSendMessage;
+
+  const questionActions = useMemo<AsyncQuestionActions>(() => ({
+    answered: [...historyMessages, ...messages].flatMap(message => message.role === 'user' && message.asyncQuestionReply ? [message.asyncQuestionReply] : []),
+    queued: queuedMessages.flatMap(message => message.asyncQuestionReply ? [message.asyncQuestionReply] : []),
+    disabled: isSessionLoading || !isConnected || sessionState === 'stopping',
+    onReply: async (reply, text) => (await handleSendMessageRef.current(text, undefined, undefined, reply)) === true,
+    onCompose: (reply, title) => {
+      setQuestionDraft({ sessionId, reply, title });
+      inputRef.current?.focus();
+    },
+  }), [historyMessages, messages, queuedMessages, isSessionLoading, isConnected, sessionState, sessionId]);
+
 
   // Triggered from the SystemPromptsPanel empty state ("智能生成" card). Closes the
   // workspace settings overlay and dispatches `/init` to the current Tab so the user
@@ -3982,9 +4013,16 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
   const handleCancelQueued = useCallback(async (queueId: string) => {
     // Snapshot the queued message info before it's removed (for image restore)
     const queuedMsg = queuedMessages.find(q => q.queueId === queueId);
+    const cancelledSessionId = sessionId;
+    const sourceContents = [...historyMessages, ...messages, ...(streamingMessage ? [streamingMessage] : [])]
+      .filter(message => message.role === 'assistant').map(message => message.content);
     const cancelledText = await cancelQueuedMessage(queueId);
-    if (cancelledText) {
-      chatInputRef.current?.setValue(cancelledText);
+    if (cancelledText && sessionIdRef.current === cancelledSessionId) {
+      const restored = queuedMsg?.asyncQuestionReply
+        ? restoreAsyncQuestionAnswerDraft(queuedMsg.asyncQuestionReply, cancelledText, sourceContents)
+        : null;
+      setQuestionDraft(restored ? { sessionId: cancelledSessionId, reply: restored.reply, title: restored.title } : null);
+      chatInputRef.current?.setValue(restored?.text ?? cancelledText);
       // Restore images if the queued message had them
       // Note: We only have preview data URLs (not File blobs) to avoid memory leaks,
       // so we reconstruct ImageAttachment with a minimal placeholder File.
@@ -4002,7 +4040,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
         chatInputRef.current?.setImages(restoredImages);
       }
     }
-  }, [cancelQueuedMessage, queuedMessages]);
+  }, [cancelQueuedMessage, queuedMessages, sessionId, historyMessages, messages, streamingMessage]);
 
   // Force-execute a queued message (interrupt current AI response)
   const handleForceExecuteQueued = useCallback(async (queueId: string) => {
@@ -5187,6 +5225,27 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
   }, [onNewSession, resetSession, surfaces.channel, sessionId, newSessionKeepingBinding]);
 
   return (
+          <BrowserPanelContext.Provider value={browserPanelCtx}>
+          {/*
+            FileActionProvider.refreshTrigger intentionally excludes
+            toolCompleteCount. toolCompleteCount bumps when AI file-modifying
+            tools complete, and tying every completion to a full cache wipe
+            caused requery storms. The ref-counted workspace watcher is the
+            filesystem mutation authority; FileActionProvider invalidates the
+            old affordance and mounted consumers lazily re-request in batches.
+            Explicit UI refreshes remain a second controlled source.
+          */}
+          <AsyncQuestionContext.Provider value={questionActions}>
+          <FileActionProvider
+            previewHandleRef={actionFilePreviewRef}
+            workspacePath={agentDir}
+            onInsertReference={handleInsertReference}
+            refreshTrigger={workspaceRefreshTrigger + workspaceChangeSignal}
+            onFilePreviewExternal={isSplitViewEnabled && !isNarrowLayout ? handleSplitFilePreview : undefined}
+            onQuoteFile={handleQuoteFile}
+            onQuoteSelection={handleQuoteFileSelection}
+            onRevealInTree={handleRevealInTree}
+          >
     <div className="relative flex h-full flex-row overflow-hidden overscroll-none bg-[var(--paper-elevated)] text-[var(--ink)]">
       {/* Left side: chat area (+ side workspace when wide) */}
       <div
@@ -5464,26 +5523,6 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
           />
 
           {/* Message list with max-width */}
-          <BrowserPanelContext.Provider value={browserPanelCtx}>
-          {/*
-            FileActionProvider.refreshTrigger intentionally excludes
-            toolCompleteCount. toolCompleteCount bumps when AI file-modifying
-            tools complete, and tying every completion to a full cache wipe
-            caused requery storms. The ref-counted workspace watcher is the
-            filesystem mutation authority; FileActionProvider invalidates the
-            old affordance and mounted consumers lazily re-request in batches.
-            Explicit UI refreshes remain a second controlled source.
-          */}
-          <FileActionProvider
-            previewHandleRef={actionFilePreviewRef}
-            workspacePath={agentDir}
-            onInsertReference={handleInsertReference}
-            refreshTrigger={workspaceRefreshTrigger + workspaceChangeSignal}
-            onFilePreviewExternal={isSplitViewEnabled && !isNarrowLayout ? handleSplitFilePreview : undefined}
-            onQuoteFile={handleQuoteFile}
-            onQuoteSelection={handleQuoteFileSelection}
-            onRevealInTree={handleRevealInTree}
-          >
             <MessageList
               messages={chatScrollModel.data}
               streamingMessage={streamingMessage}
@@ -5562,8 +5601,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
                 />
               </div>
             )}
-          </FileActionProvider>
-          </BrowserPanelContext.Provider>
+
 
           {/* Text selection floating menu for quoting AI text */}
           <SelectionCommentMenu
@@ -5581,6 +5619,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
               undefined，避免它们若未来 emit 出 `tool.name === 'Task'` 的归一化
               事件意外触发面板（PRD D15）。onJumpToTool 由 Chat 实现是因为
               具体滚动由 ChatScrollController 统一处理。 */}
+          {questionTarget && <AsyncQuestionComposerTarget title={questionTarget.title} onCancel={() => setQuestionDraft(null)} />}
           <SimpleChatInput
             ref={chatInputRef}
             onSend={handleSendMessage}
@@ -6292,5 +6331,8 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
         />
       )}
     </div>
+          </FileActionProvider>
+          </AsyncQuestionContext.Provider>
+          </BrowserPanelContext.Provider>
   );
 }

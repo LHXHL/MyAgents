@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { useEffect, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import * as largeValueRefs from '@/api/largeValueRef';
 import type { SseEventMetadata } from '@/api/SseConnection';
 import {
   createSessionResourceTransitionState,
@@ -144,6 +145,7 @@ function Probe() {
     cancelQueuedMessage,
     forceExecuteQueuedMessage,
   } = useTabState();
+  const [answerReceipt, setAnswerReceipt] = useState<boolean | null>(null);
   const [retryRestoreTargetPresent, setRetryRestoreTargetPresent] = useState<boolean | null>(null);
   return (
     <>
@@ -167,6 +169,10 @@ function Probe() {
         id: message.id,
         runtimeTurnAnchor: message.runtimeTurnAnchor ?? null,
       })))}</output>
+      <output data-testid="answer-receipt">{JSON.stringify(answerReceipt)}</output>
+      <output data-testid="question-replies">{JSON.stringify(historyMessages.flatMap(message => message.asyncQuestionReply ? [message.asyncQuestionReply] : []))}</output>
+      <output data-testid="question-queue">{JSON.stringify(queuedMessages)}</output>
+      <button type="button" onClick={() => { void sendMessage('看海', undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, { questionId: 'q', questionIndex: 0 }).then(setAnswerReceipt); }}>send async answer</button>
       <output data-testid="queue-ids">{JSON.stringify(queuedMessages.map(item => item.queueId))}</output>
       <output data-testid="agent-error">{agentError ?? ''}</output>
       <output data-testid="retry-restore-target-present">{JSON.stringify(retryRestoreTargetPresent)}</output>
@@ -395,6 +401,268 @@ describe('TabProvider session activity ownership', () => {
     tauriHarness.proxyFetch.mockRejectedValue(new Error('Unexpected proxyFetch call'));
     tauriHarness.isTauri = false;
     tauriHarness.listeners.clear();
+  });
+
+  it.each(['echo-first', 'canonical-first', 'late-format'] as const)(
+    'uses canonical user content exactly once with %s admission', async order => {
+      const sessionId = 'pending-v2-user-admission';
+      render(<TabProvider tabId="v2-user-admission" agentDir="/tmp/workspace" sessionId={sessionId} claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+      await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+      if (order !== 'late-format') emit('chat:init', { sessionId, transcriptFormat: 2 });
+      const message = { id: 'user-admission', role: 'user', content: 'first part; second part', timestamp: new Date(0).toISOString(), asyncQuestionReply: { questionId: 'q', questionIndex: 0 } };
+      const echo = () => emit('chat:message-replay', { sessionId, replayKind: 'live-user-echo', message });
+      const operation = (value: unknown) => emit('chat:transcript-operation', { sessionId, operation: value });
+      if (order !== 'canonical-first') echo();
+      if (order === 'echo-first') expect(readActivity().historyCount).toBe(0);
+      operation({ kind: 'message-create', message: { ...message, content: '', turnId: 'turn', transcriptState: 'complete' } });
+      operation({ kind: 'text-append', messageId: message.id, field: 'text', offset: 0, text: 'first part; ' });
+      operation({ kind: 'text-append', messageId: message.id, field: 'text', offset: 12, text: 'second part' });
+      if (order === 'canonical-first') echo();
+      expect(readActivity().historyCount).toBe(1);
+      expect(JSON.parse(screen.getByTestId('history-content').textContent!)).toEqual([message.content]);
+      expect(JSON.parse(screen.getByTestId('question-replies').textContent!)).toEqual([message.asyncQuestionReply]);
+    },
+  );
+
+  it.each(['no-echo', 'echo-only', 'created-without-text'] as const)(
+    'recovers a missed V2 user admission on SSE-native reconnect (%s)', async received => {
+      const sessionId = 'pending-v2-reconnect';
+      render(<TabProvider tabId="v2-reconnect" agentDir="/tmp/workspace" sessionId={sessionId} claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+      await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+      emit('chat:init', { sessionId, transcriptFormat: 2 });
+      const message = { id: 'reconnect-user', role: 'user', content: 'admitted while disconnected', timestamp: new Date(0).toISOString(), turnId: 'turn', transcriptState: 'complete' };
+      // Keep an earlier visible row: reconnect init must preserve this Tab.
+      emit('chat:transcript-operation', { sessionId, operation: { kind: 'message-create', message: { ...message, id: 'earlier', content: 'earlier' } } });
+      if (received !== 'no-echo') emit('chat:message-replay', { sessionId, replayKind: 'live-user-echo', message });
+      if (received === 'created-without-text') emit('chat:transcript-operation', { sessionId, operation: { kind: 'message-create', message: { ...message, content: '' } } });
+      act(() => {
+        sseHarness.state.statusHandler?.('disconnected');
+        sseHarness.state.generation += 1;
+        sseHarness.state.statusHandler?.('connected');
+      });
+      emit('chat:init', { sessionId, transcriptFormat: 2, sessionState: 'idle' });
+      emit('chat:message-replay', { sessionId, replayKind: 'cold-history', message });
+      expect(JSON.parse(screen.getByTestId('history-content').textContent!)).toEqual(['earlier', message.content]);
+      expect(tauriHarness.proxyFetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['echo-first', 'canonical-first'] as const)('keeps local attachment previews with %s V2 admission', async order => {
+    const sessionId = 'pending-v2-preview';
+    let tab!: ReturnType<typeof useTabState>;
+    function PreviewProbe() {
+      const value = useTabState();
+      useEffect(() => { tab = value; }, [value]);
+      return <Probe />;
+    }
+    tauriHarness.proxyFetch.mockImplementation(async () => new Response(JSON.stringify({ success: true })));
+    render(<TabProvider tabId="v2-preview" agentDir="/tmp/workspace" sessionId={sessionId} claimSessionOpeningTransition={allowSessionOpening}><PreviewProbe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:init', { sessionId, transcriptFormat: 2 });
+    await act(async () => {
+      await tab.sendMessage('image', [{ id: 'image-1', name: 'test.png', file: new File(['image'], 'test.png', { type: 'image/png' }), preview: 'data:image/png;base64,aW1hZ2U=' }]);
+    });
+    const message = { id: 'image-user', role: 'user', content: 'image', timestamp: new Date(0).toISOString(), attachments: [{ id: 'image-1', name: 'test.png', mimeType: 'image/png', relativePath: 'attachments/test.png', size: 5 }] };
+    const echo = () => emit('chat:message-replay', { sessionId, replayKind: 'live-user-echo', message });
+    if (order === 'echo-first') echo();
+    emit('chat:transcript-operation', { sessionId, operation: { kind: 'message-create', message: { ...message, content: '', turnId: 'turn', transcriptState: 'complete' } } });
+    emit('chat:transcript-operation', { sessionId, operation: { kind: 'text-append', messageId: message.id, field: 'text', offset: 0, text: 'image' } });
+    if (order === 'canonical-first') echo();
+    expect(tab.historyMessages).toHaveLength(1);
+    expect(tab.historyMessages[0]).toMatchObject({ content: 'image', attachments: [{ id: 'image-1', relativePath: 'attachments/test.png', previewUrl: 'data:image/png;base64,aW1hZ2U=' }] });
+  });
+
+  it('keeps pending image previews on their own message when full cold history replays older users first', async () => {
+    const sessionId = 'pending-v2-preview-reconnect';
+    let tab!: ReturnType<typeof useTabState>;
+    function PreviewProbe() {
+      const value = useTabState();
+      useEffect(() => { tab = value; }, [value]);
+      return <Probe />;
+    }
+    tauriHarness.proxyFetch.mockImplementation(async () => new Response(JSON.stringify({ success: true })));
+    render(<TabProvider tabId="preview-reconnect" agentDir="/tmp/workspace" sessionId={sessionId} claimSessionOpeningTransition={allowSessionOpening}><PreviewProbe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:init', { sessionId, transcriptFormat: 2 });
+    const base = { role: 'user', timestamp: new Date(0).toISOString(), turnId: 'turn', transcriptState: 'complete' };
+    const earlier = { ...base, id: 'older-user', content: 'earlier text only' };
+    const sameNameImage = { ...base, id: 'older-image', content: 'older image', attachments: [{ id: 'old-image', name: 'test.png', mimeType: 'image/png', relativePath: 'attachments/old.png', size: 5 }] };
+    emit('chat:transcript-operation', { sessionId, operation: { kind: 'message-create', message: earlier } });
+    await act(async () => {
+      await tab.sendMessage('new image', [{ id: 'new-image', name: 'test.png', file: new File(['image'], 'test.png', { type: 'image/png' }), preview: 'data:image/png;base64,aW1hZ2U=' }]);
+    });
+    const newest = { ...base, id: 'new-user', content: 'new image', attachments: [{ id: 'new-image', name: 'test.png', mimeType: 'image/png', relativePath: 'attachments/new.png', size: 5 }] };
+    emit('chat:message-replay', { sessionId, replayKind: 'live-user-echo', message: newest });
+    emit('chat:init', { sessionId, transcriptFormat: 2, sessionState: 'idle' });
+    for (const message of [earlier, sameNameImage, newest]) emit('chat:message-replay', { sessionId, replayKind: 'cold-history', message });
+    expect(tab.historyMessages[0].attachments).toBeUndefined();
+    expect(tab.historyMessages[1].attachments?.[0].previewUrl).not.toBe('data:image/png;base64,aW1hZ2U=');
+    expect(tab.historyMessages[2]).toMatchObject({ content: 'new image', attachments: [{ id: 'new-image', previewUrl: 'data:image/png;base64,aW1hZ2U=' }] });
+    emit('chat:transcript-operation', { sessionId, operation: { kind: 'message-create', message: { ...base, id: 'later-text', content: 'next plain text' } } });
+    expect(tab.historyMessages[3].attachments).toBeUndefined();
+  });
+
+  it('keeps V2 interleaved segments and late original-tool results without duplicate legacy chunks', async () => {
+    render(<TabProvider tabId="v2-stream" agentDir="/tmp/workspace" sessionId="pending-v2-stream" claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    const sessionId = 'pending-v2-stream';
+    emit('chat:init', { sessionId, transcriptFormat: 2 });
+    const operation = (value: unknown) => emit('chat:transcript-operation', { sessionId, generation: 'g', instanceId: 'i', operation: value });
+    const create = (id: string, role: 'user' | 'assistant', content: string | unknown[]) => operation({ kind: 'message-create', message: { id, role, content, timestamp: new Date(0).toISOString(), turnId: 'turn', transcriptState: role === 'assistant' ? 'streaming' : 'complete' } });
+    act(() => {
+      create('u1', 'user', 'first');
+      create('a1', 'assistant', []);
+      operation({ kind: 'block-upsert', messageId: 'a1', block: { id: 't1', type: 'text', text: '' } });
+      operation({ kind: 'text-append', messageId: 'a1', blockId: 't1', field: 'text', offset: 0, text: 'before steer' });
+      emit('chat:message-chunk', 'before steer');
+      operation({ kind: 'block-upsert', messageId: 'a1', block: { id: 'tool-block', type: 'tool_use', tool: { id: 'late-tool', name: 'Read', isLoading: true } } });
+      emit('chat:tool-use-start', { id: 'late-tool', name: 'Read', input: { file_path: 'first' } });
+      create('u2', 'user', 'steer');
+      emit('queue:started', { sessionId, queueId: 'q', midTurnBreak: true, userMessage: { id: 'u2', role: 'user', content: 'steer', timestamp: new Date(0).toISOString() } });
+      create('a2', 'assistant', []);
+      operation({ kind: 'block-upsert', messageId: 'a2', block: { id: 't2', type: 'text', text: '' } });
+      operation({ kind: 'text-append', messageId: 'a2', blockId: 't2', field: 'text', offset: 0, text: 'partial' });
+      operation({ kind: 'block-upsert', messageId: 'a2', block: { id: 't2', type: 'text', text: 'complete correction', isComplete: true } });
+      operation({ kind: 'block-update', messageId: 'a1', blockId: 'tool-block', target: 'tool', details: { isLoading: false } });
+      emit('chat:tool-result-complete', { toolUseId: 'late-tool', content: 'late result' });
+      emit('chat:message-complete', { assistant_message_id: 'legacy-wrong-id' });
+    });
+    const identities = JSON.parse(screen.getByTestId('history-identities').textContent!);
+    expect(identities.map((message: { id: string }) => message.id)).toEqual(['u1', 'a1', 'u2', 'a2']);
+    const content = JSON.parse(screen.getByTestId('history-content').textContent!);
+    expect(content[1]).toEqual([
+      expect.objectContaining({ id: 't1', text: 'before steer' }),
+      expect.objectContaining({ id: 'tool-block', tool: expect.objectContaining({ result: 'late result', input: { file_path: 'first' }, isLoading: false }) }),
+    ]);
+    expect(content[3]).toEqual([expect.objectContaining({ text: 'complete correction' })]);
+    expect(readStreamingContent()).toBeNull();
+  });
+
+  it.each(['root', 'nested'])('preserves %s final input when its reference resolves before an older page', async kind => {
+    const sessionId = 'session-v2-ref-page';
+    let tab!: ReturnType<typeof useTabState>;
+    function PagingProbe() {
+      const value = useTabState();
+      useEffect(() => { tab = value; }, [value]);
+      return <Probe />;
+    }
+    const input = { content: 'resolved before page' };
+    const fetchRef = vi.spyOn(largeValueRefs, 'fetchJsonLargeValueRef').mockResolvedValue(input);
+    const message = (id: string, role: 'user' | 'assistant', content: unknown) => ({ id, role, content, timestamp: new Date(0).toISOString() });
+    const snapshot = (messages: unknown[], hasMoreBefore: boolean) => new Response(JSON.stringify({ success: true, session: {
+      id: sessionId, transcriptFormat: 2, runtime: 'builtin', title: 'History', agentDir: '/tmp/workspace',
+      messages, snapshotRevision: 10, hasMoreBefore, liveSessionState: 'idle',
+    } }));
+    let resolvePage!: (response: Response) => void;
+    tauriHarness.proxyFetch.mockImplementation(async (url: string) => url.includes('&before=')
+      ? new Promise<Response>(resolve => { resolvePage = resolve; })
+      : snapshot([message('u2', 'user', 'latest')], true));
+    render(<TabProvider tabId="ref-page" agentDir="/tmp/workspace" sessionId={sessionId} claimSessionOpeningTransition={allowSessionOpening}><PagingProbe /></TabProvider>);
+    await waitFor(() => expect(screen.getByTestId('session-loading')).toHaveTextContent('false'));
+    let loading!: Promise<void>;
+    act(() => { loading = tab.loadOlderMessages(); });
+    await waitFor(() => expect(resolvePage).toBeDefined());
+    emit(kind === 'root' ? 'chat:content-block-stop' : 'chat:subagent-tool-use', kind === 'root'
+      ? { type: 'tool_use', toolId: 'parent', inputRef: { id: 'ref' } }
+      : { parentToolUseId: 'parent', tool: { id: 'child', name: 'Read' }, inputRef: { id: 'ref' }, finalInput: true },
+    { sessionId, liveRevision: 11 });
+    await waitFor(() => expect(fetchRef).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      resolvePage(snapshot([message('u1', 'user', 'old'), message('a1', 'assistant', [{ id: 'block', type: 'tool_use', tool: {
+        id: 'parent', name: 'Task', input: {}, subagentCalls: [{ id: 'child', name: 'Read', input: {} }],
+      } }])], false));
+      await loading;
+    });
+    const rows = JSON.parse(screen.getByTestId('history-content').textContent!);
+    expect(rows[1][0].tool).toMatchObject(kind === 'root' ? { input } : { subagentCalls: [{ input }] });
+    fetchRef.mockRestore();
+  });
+
+  it('updates a page that arrives after an old tool changed and refreshes the retained prefix on a SSE gap', async () => {
+    const sessionId = 'session-v2-paging';
+    let tab!: ReturnType<typeof useTabState>;
+    function PagingProbe() {
+      const value = useTabState();
+      useEffect(() => { tab = value; }, [value]);
+      return <Probe />;
+    }
+    const message = (id: string, role: 'user' | 'assistant', content: unknown) => ({ id, role, content, timestamp: new Date(0).toISOString() });
+    const oldTool = (result: string) => message('a1', 'assistant', [{ id: 'old-block', type: 'tool_use', tool: { id: 'old-tool', name: 'Read', input: {}, result, isLoading: false } }]);
+    const snapshot = (messages: unknown[], snapshotRevision: number, hasMoreBefore: boolean) => new Response(JSON.stringify({ success: true, session: {
+      id: sessionId, transcriptFormat: 2, runtime: 'builtin', title: 'History', agentDir: '/tmp/workspace',
+      messages, snapshotRevision, hasMoreBefore, liveSessionState: 'running',
+      liveStreamingMessage: message('a2', 'assistant', [{ id: 'live-text', type: 'text', text: 'still running' }]),
+    } }));
+    let resolvePage!: (response: Response) => void;
+    const requests: string[] = [];
+    tauriHarness.proxyFetch.mockImplementation(async (url: string) => {
+      requests.push(url);
+      if (url.includes('&before=')) return new Promise<Response>(resolve => { resolvePage = resolve; });
+      if (url.includes('&from=u1')) return snapshot([message('u1', 'user', 'first'), oldTool('after gap'), message('u2', 'user', 'steer')], 14, false);
+      return snapshot([message('u2', 'user', 'steer')], 10, true);
+    });
+    render(<TabProvider tabId="v2-paging" agentDir="/tmp/workspace" sessionId={sessionId} claimSessionOpeningTransition={allowSessionOpening}><PagingProbe /></TabProvider>);
+    await waitFor(() => expect(screen.getByTestId('session-loading')).toHaveTextContent('false'));
+    let loading!: Promise<void>;
+    act(() => { loading = tab.loadOlderMessages(); });
+    await waitFor(() => expect(resolvePage).toBeDefined());
+    emit('chat:transcript-operation', { sessionId, operation: { kind: 'block-update', messageId: 'a1', blockId: 'old-block', target: 'tool', details: { isLoading: false } } }, { sessionId, liveRevision: 11 });
+    emit('chat:tool-result-complete', { toolUseId: 'old-tool', content: 'late final' }, { sessionId, liveRevision: 12 });
+    await act(async () => {
+      resolvePage(snapshot([message('u1', 'user', 'first'), oldTool('stale')], 10, false));
+      await loading;
+    });
+    expect(screen.getByTestId('history-content')).toHaveTextContent('late final');
+    expect(screen.getByTestId('history-content')).not.toHaveTextContent('stale');
+    emit('chat:tool-result-complete', { toolUseId: 'old-tool', content: 'after gap' }, { sessionId, liveRevision: 14 });
+    await waitFor(() => expect(requests.some(url => url.includes('&from=u1'))).toBe(true));
+    await waitFor(() => expect(screen.getByTestId('history-content')).toHaveTextContent('after gap'));
+    expect(readStreamingContent()).toEqual([expect.objectContaining({ text: 'still running' })]);
+  });
+
+  it('closes an async question-only text item before subsequent commentary', async () => {
+    tauriHarness.proxyFetch.mockResolvedValue(new Response(JSON.stringify({ success: true })));
+    render(<TabProvider tabId="async-boundary" agentDir="/tmp/workspace" sessionId="pending-async-boundary" claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    fireEvent.click(screen.getByText('send message'));
+    const asyncQuestions = { id: 'q', questions: [{ title: '去哪？', options: ['看海'] }] };
+    emit('chat:content-block-stop', { type: 'text', asyncQuestions });
+    emit('chat:message-chunk', '随后继续说明');
+    emit('chat:content-block-stop', { type: 'text' });
+    expect(readStreamingContent()).toEqual([
+      { type: 'text', text: '', isComplete: true, asyncQuestions },
+      { type: 'text', text: '随后继续说明', isComplete: true },
+    ]);
+  });
+
+  it('awaits async-answer admission and allows retry after a rejected send', async () => {
+    let respond!: (response: Response) => void;
+    tauriHarness.proxyFetch.mockImplementation(() => new Promise<Response>(resolve => { respond = resolve; }));
+    render(<TabProvider tabId="async-receipt" agentDir="/tmp/workspace" sessionId="pending-async-receipt" claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    fireEvent.click(screen.getByText('send async answer'));
+    await waitFor(() => expect(respond).toBeDefined());
+    expect(screen.getByTestId('answer-receipt')).toHaveTextContent('null');
+    expect(JSON.parse(screen.getByTestId('question-queue').textContent!)[0].asyncQuestionReply).toEqual({ questionId: 'q', questionIndex: 0 });
+    await act(async () => { respond(new Response(JSON.stringify({ success: false, error: 'rejected' }))); });
+    expect(screen.getByTestId('answer-receipt')).toHaveTextContent('false');
+    expect(readQueueIds()).toEqual([]);
+    expect(screen.getByTestId('question-replies')).toHaveTextContent('[]');
+  });
+
+  it('does not resurrect an async queue item cancelled before the HTTP receipt', async () => {
+    let respond!: (response: Response) => void;
+    tauriHarness.proxyFetch.mockImplementation(() => new Promise<Response>(resolve => { respond = resolve; }));
+    render(<TabProvider tabId="async-cancel" agentDir="/tmp/workspace" sessionId="pending-async-cancel" claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    fireEvent.click(screen.getByText('send async answer'));
+    await waitFor(() => expect(respond).toBeDefined());
+    emit('queue:added', { queueId: 'real-q', messageText: '看海', asyncQuestionReply: { questionId: 'q', questionIndex: 0 } });
+    expect(readQueueIds()).toEqual(['real-q']);
+    emit('queue:cancelled', { queueId: 'real-q' });
+    await act(async () => { respond(new Response(JSON.stringify({ success: true, queued: true, queueId: 'real-q' }))); });
+    expect(readQueueIds()).toEqual([]);
+    expect(screen.getByTestId('question-replies')).toHaveTextContent('[]');
   });
 
   it('marks the live connection down across a Rust-owned Sidecar replacement', async () => {

@@ -1,3 +1,4 @@
+import { createLegacySession } from './fixtures/session-store';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -52,7 +53,7 @@ function transcript(): SessionMessage[] {
 }
 
 async function createCodexSession(): Promise<SessionMetadata> {
-  return store.createSession('/tmp/codex-workspace', {
+  return createLegacySession(store, '/tmp/codex-workspace', {
     runtime: 'codex',
     runtimeSource: 'system-cli',
     runtimeSessionId: 'source-thread',
@@ -96,7 +97,7 @@ describe('Codex conversation rewind SessionStore transaction', () => {
     });
 
     expect(result.success).toBe(true);
-    const persisted = store.getSessionData(session.id);
+    const persisted = (await store.getSessionData(session.id));
     expect(persisted).toMatchObject({
       runtimeSessionId: 'replacement-thread',
       messages: source.slice(0, 2),

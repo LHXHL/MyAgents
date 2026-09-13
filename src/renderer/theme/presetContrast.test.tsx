@@ -59,6 +59,15 @@ function resolvedColorToken(tokens: Map<string, string>, tokenName: string): str
 }
 
 describe('production Theme contrast', () => {
+  it('maps user bubbles and their fade endpoints to the sidebar in every production scheme', () => {
+    for (const definition of themeRegistry.getAcceptedDefinitions()) {
+      for (const scheme of ['light', 'dark'] as const) {
+        const tokens = tokensFor(definition.stylesheetText, definition.id, scheme);
+        expect(tokens.get('--message-user-bg')).toBe('var(--global-sidebar-bg)');
+        expect(tokens.get('--message-user-bg-a0')).toBe('var(--global-sidebar-bg-a0)');
+      }
+    }
+  });
   it('keeps the global sidebar subtly deeper than page paper in every scheme', () => {
     for (const definition of themeRegistry.getAcceptedDefinitions()) {
       for (const scheme of ['light', 'dark'] as const) {

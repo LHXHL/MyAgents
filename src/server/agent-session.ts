@@ -1,3 +1,4 @@
+import { configureBuiltinTranscriptBinding } from './builtin-session/transcript';
 import { randomUUID } from 'crypto';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join, resolve } from 'path';
@@ -51,6 +52,7 @@ import {
 } from './session-core/resume-error-recovery';
 import { diagnoseSdkSubprocessFailure } from './utils/sdk-subprocess-diagnostics';
 import { createGuardedSdkQuery } from './utils/sdk-child-launch-guard';
+import { assertManagedProviderPrepared, getPreparedModelPolicy, ManagedProxyError, prepareProviderBinding, type PreparedProvider } from './utils/managed-proxy-binding';
 import { InactivityWatchdog } from './utils/inactivity-watchdog';
 import {
   SESSION_PLANS_GITIGNORE_PATTERN,
@@ -138,7 +140,9 @@ import {
   type SystemSkillAdmissionRequirement,
 } from '../shared/systemSkills';
 import type { OfficialToolId } from '../shared/official-tools';
-import { claimPreparedSessionForTurnAdmission, commitPreparedSessionForFirstUserTurn, migratePendingSessionIdentity, resolvePendingConversationMutation, saveSessionMetadata, updateSessionTitleFromMessage, updateSessionMetadata, getSessionMetadata, getSessionData, loadSessionTranscript } from './SessionStore';
+import { activateSessionTranscript, claimPreparedSessionForTurnAdmission, commitPreparedSessionForFirstUserTurn, migratePendingSessionIdentity, resolvePendingConversationMutation, saveSessionMetadata, publishForkSession, assertCompleteSessionForkSource, updateSessionTitleFromMessage, updateSessionMetadata, updateSessionMetadataForBinding, getSessionMetadata, getSessionData, loadSessionTranscript } from './SessionStore';
+import { TranscriptPresentation } from './session-transcript/presentation';
+import { projectTranscriptToolInput, type TranscriptObject } from '../shared/sessionTranscript';
 import { firePostTurnTitleHook } from './turn-hooks';
 import { createSessionMetadata, type SessionMetadata, type SessionMessage, type MessageAttachment, type SessionSource, type TurnAnalyticsSource } from './types/session';
 import { originFromTurnAttribution } from '../shared/session-origin';
@@ -165,6 +169,8 @@ import {
 import { classifyMcpFailure, type McpRetryResult } from '../shared/mcpFailure';
 import { broadcast as broadcastSse, broadcastLive, flushPendingLiveEvents } from './sse';
 import { participatesInLiveRestore } from '../shared/liveRevision';
+import { toClientTranscriptOperation } from './session-transcript/client';
+import { prepareToolPresentationEvent } from './session-transcript/tool-transport';
 import {
   getEnabledPluginSdkConfigs,
   getDefaultEnabledPluginIdsForWorkspace,
@@ -190,6 +196,7 @@ import {
   currentProductSessionId as sessionId,
   freezeCurrentProductSessionMetadata,
   getCurrentProductSessionId,
+  getCurrentProductSessionMetadata,
   getPendingProductSessionMaterialization as getPendingDesktopMaterialization,
   isLazySessionMaterializationAllowed,
   preparePendingProductSession,
@@ -377,6 +384,7 @@ import {
 } from './builtin-session/queue';
 import {
   accumulateCurrentTurnUsage,
+  updateCurrentTurnModelUsage,
   appendCurrentTurnTextBlock,
   clearCurrentTurnTextBlocks,
   clearPendingOutputOwners as turnClearPendingOutputOwners,
@@ -459,6 +467,10 @@ import {
   deleteCurrentSessionUuid,
   deleteLiveSessionUuid,
   getLastAssistantMessageId,
+  getBuiltinProductContent,
+  getMessages as getBuiltinMessages,
+  getMessageCount,
+  getMessageIdentities,
   setMessageSequence,
   setPendingReloadAnchor,
   truncateMessages,
@@ -470,7 +482,6 @@ import {
   loadTranscriptFromSessionMessages,
   messageWireToSessionMessage,
   resetTranscriptPersistenceForSession,
-  saveForkTranscript,
   scheduleTranscriptPersist,
   sessionMessageToMessageWire,
   truncateTranscriptPersistenceForRewind,
@@ -806,7 +817,7 @@ function scheduleDeferredRestart(reason: RestartReason): void {
  */
 function isCurrentSessionSnapshotted(): boolean {
   if (!sessionId) return false;
-  const meta = getSessionMetadata(sessionId);
+  const meta = getCurrentProductSessionMetadata();
   return Boolean(meta?.configSnapshotAt);
 }
 
@@ -1068,7 +1079,7 @@ async function surfaceBuiltinUserMessage(
   const activityMerged = await persistMessagesToStorageAndCommitPreparedFirstUserTurn(
     messageText,
     surface.sessionBirthOrigin,
-    transcriptState.messages.length,
+    getMessageCount(),
     phase,
     lastActiveAt,
   );
@@ -1109,7 +1120,14 @@ async function surfaceInFlightQueueItem(
   meta: InFlightMetadata | null,
   options: SurfaceInFlightOptions,
 ): Promise<void> {
-  await prepareSessionPlansForUserTurn({ clearStale: false });
+  const product = getBuiltinProductContent();
+  const authority = getCurrentQueryAuthority();
+  // This path only advances an in-memory plan timestamp. V2 must surface
+  // the acknowledged user before the first native assistant block is created.
+  if (product) setCurrentPlanFileMinMtimeMs(Date.now());
+  else await prepareSessionPlansForUserTurn({ clearStale: false });
+  if (product && (!isCurrentQueryAuthority(authority) || getBuiltinProductContent() !== product
+    || getInFlightQueueId() !== queueId)) return;
 
   const userMessage: MessageWire = {
     id: allocateMessageId(),
@@ -1196,7 +1214,7 @@ function preserveInFlightAfterTerminalBoundary(reason: string): void {
 }
 
 /** Stage one completed top-level assistant text block on the current yield. */
-function stageSessionBoundAssistantBlock(text: string): void {
+function stageSessionBoundAssistantBlock(text: string | (() => string | undefined)): void {
   stageCurrentOutputOwnerAssistantChannelBlock(text);
 }
 
@@ -1244,7 +1262,7 @@ async function retractTransientProviderTextOutput(resultText: string): Promise<v
     pendingTextBlockTexts.clear();
     return;
   }
-  const tail = transcriptState.messages[transcriptState.messages.length - 1];
+  const tail = getBuiltinMessages().at(-1);
   if (!tail || tail.role !== 'assistant') {
     clearCurrentOutputOwnerAssistantChannelBlocks();
     pendingTextBlockTexts.clear();
@@ -1410,7 +1428,11 @@ function completeOutputOwnerAfterPersistence(
     // Reserve each block on the session-wide transport tail at the SDK result
     // boundary. The work waits for durability without leaving this owner at
     // the FIFO head where a later realtime yield could inherit it.
-    for (const text of owner.assistantChannelTextBlocks) {
+    for (const block of owner.assistantChannelTextBlocks) {
+      // Resolve V2 content at the successful native boundary, after any full
+      // correction/retraction. The channel owner retains only its block target.
+      const text = typeof block === 'function' ? block() : block;
+      if (!text) continue;
       appendChannelDelivery('assistant', async () => {
         if (!await durableSuccess) return;
         await mirrorIfChannelBound({
@@ -1455,15 +1477,60 @@ let currentGroupToolsDeny: string[] = [];
 const imTextBlockIndices = new Set<number>();
 
 const childToolToParent: Map<string, string> = new Map();
-function setCurrentSessionId(next: string): void {
+async function setCurrentSessionId(next: string): Promise<void> {
   if (getCurrentProductSessionId() !== next) {
     flushPendingLiveEvents();
     resetBuiltinLiveRevision();
   }
-  setCurrentProductSessionId(next);
+  await setCurrentProductSessionId(next);
+}
+
+configureBuiltinTranscriptBinding(getCurrentProductSessionId);
+
+let builtinTranscriptPresentation: TranscriptPresentation | undefined;
+
+function getBuiltinTranscriptPresentation(): TranscriptPresentation | undefined {
+  const product = getBuiltinProductContent();
+  if (!product) return undefined;
+  if (builtinTranscriptPresentation?.content !== product) {
+    builtinTranscriptPresentation = new TranscriptPresentation(product, operation => {
+      const projected = toClientTranscriptOperation(operation);
+      if (projected) broadcast('chat:transcript-operation', {
+        sessionId: product.writer.status.sessionId, generation: product.writer.status.generation,
+        instanceId: product.writer.status.instanceId, operation: projected,
+      });
+    }, target => {
+      stageSessionBoundAssistantBlock(() => {
+        const text = product.readBlock(target)?.text;
+        return typeof text === 'string' ? text : undefined;
+      });
+    });
+  }
+  return builtinTranscriptPresentation;
 }
 
 function broadcast(event: string, data: unknown): void {
+  // The native tool mutator already confirmed the full result. A preview or
+  // later attachment-only update must not replace that canonical body.
+  if (!/^chat:(?:subagent-)?tool-result-(?:start|complete)$/.test(event)) getBuiltinTranscriptPresentation()?.record(event, data);
+  publishBuiltinUiEvent(event, data);
+}
+
+function publishBuiltinUiEvent(event: string, data: unknown): void {
+  const product = getBuiltinProductContent();
+  if (product && data && typeof data === 'object') {
+    const prepared = prepareToolPresentationEvent(event, data as Record<string, unknown>, product.writer.status.sessionId);
+    for (const item of prepared.immediate) broadcastBuiltinUiTransport(item.event, item.data);
+    void prepared.deferred?.then(events => {
+      if (getBuiltinProductContent()?.writer !== product.writer) return;
+      for (const item of events) broadcastBuiltinUiTransport(item.event, item.data);
+    });
+    return;
+  }
+  broadcastBuiltinUiTransport(event, data);
+}
+
+function broadcastBuiltinUiTransport(event: string, data: unknown): void {
   if (sessionId && participatesInLiveRestore(event, data)) {
     broadcastLive(event, data, {
       sessionId,
@@ -1472,6 +1539,11 @@ function broadcast(event: string, data: unknown): void {
     return;
   }
   broadcastSse(event, data);
+}
+
+export function publishBuiltinTranscriptSaveStatus(status: import('../shared/sessionTranscript').TranscriptSaveStatus): void {
+  const active = getBuiltinProductContent();
+  if (active?.writer.status.instanceId === status.instanceId) broadcast('chat:transcript-save-status', status);
 }
 
 
@@ -1817,6 +1889,8 @@ export function isTurnInFlight(): boolean {
 /** 当前正在流式传输的 assistant 消息 ID（未在流式传输时返回 null） */
 export function getStreamingAssistantId(): string | null {
   if (!isStreamingMessage || !isAssistantMessagePresent()) return null;
+  const product = getBuiltinProductContent();
+  if (product) return product.currentAssistantId;
   return getLastAssistantMessageId();
 }
 
@@ -2112,12 +2186,15 @@ function maybeSurfaceInFlightAtAssistantTurnStart(reason: string): void {
 }
 
 /** 中止持久 session：唤醒所有被阻塞的 Promise */
+let managedQueryController: AbortController | undefined;
+
 function abortPersistentSession(options: { notifyPendingRequests?: boolean } = {}): void {
   const notifyPendingRequests = options.notifyPendingRequests ?? true;
   clearTransientProviderRetryTimer('abort');
   // This is the only abort-request write path. The lifecycle owner flips the
   // flag; this facade performs the cross-owner cleanup chain below.
   requestAbort();
+  managedQueryController?.abort();
   clearBuiltinQueryMcpOwner(lifecycleState.query ?? undefined);
   // Unconfirmed in-flight items belong to the SDK subprocess that is about
   // to die. Do not silently clear them (leaves UI pills behind) and do not
@@ -3162,7 +3239,7 @@ export function setMcpServers(servers: McpServerDefinition[]): void {
   // canonical projection before comparing fingerprints so an incoming
   // workspace-default list cannot replace the snapshot, and a global disable
   // or same-ID definition change cannot be rejected as one opaque delta.
-  const meta = sessionId ? getSessionMetadata(sessionId) : null;
+  const meta = sessionId ? getCurrentProductSessionMetadata() : null;
   const effectiveServers = meta?.configSnapshotAt
     ? resolveWorkspaceConfig(agentDir ?? '', meta, { includeMcp: true }).mcpServers
     : servers;
@@ -3470,6 +3547,19 @@ export async function setSessionModel(model: string, opts?: { imConfigSync?: boo
     return;
   }
 
+  // A proxy lease admits one model and bakes its aliases into this Query.
+  // A live setModel would bypass the new model's Rust admission decision.
+  if (configState.currentProviderEnv?.endpointSource) {
+    if (lifecycleState.query) {
+      scheduleDeferredRestart('provider');
+      applyDeferredRestartIfNeeded();
+    } else if (managedQueryController) {
+      managedQueryController.abort();
+      schedulePreWarm();
+    }
+    return;
+  }
+
   // Apply model change to SDK subprocess immediately (including during pre-warm).
   // Without this, changing model during pre-warm creates a desync:
   //   configState.currentModel is updated but SDK subprocess keeps the old model,
@@ -3579,11 +3669,11 @@ export function getSessionProviderId(): string | null {
 async function resetForProviderHistoryBoundary(): Promise<void> {
   return runSerializedSessionMutation(async () => {
     const productSessionId = sessionId;
-    const metadata = getSessionMetadata(productSessionId);
+    const metadata = getCurrentProductSessionMetadata();
     if (metadata) {
       const sourceSdkSessionId = resolveBuiltinSdkSessionId(metadata);
       const replacementSdkSessionId = randomUUID();
-      const updated = await updateSessionMetadata(productSessionId, {
+      const updated = await updateSessionMetadataForBinding(productSessionId, {
         sdkSessionId: replacementSdkSessionId,
         unifiedSession: false,
         forkFrom: undefined,
@@ -3597,7 +3687,7 @@ async function resetForProviderHistoryBoundary(): Promise<void> {
       if (!updated) {
         throw new Error(`[agent] provider history boundary reset lost Session authority for ${productSessionId}`);
       }
-    } else if (transcriptState.messages.length > 0) {
+    } else if (getMessageCount() > 0) {
       throw new Error(`[agent] provider history boundary reset refused unindexed Session ${productSessionId}`);
     }
 
@@ -5160,7 +5250,7 @@ export function getPendingInteractiveRequests(): Array<{
 }
 
 async function persistMessagesToStorage(
-  targetMessageCount = transcriptState.messages.length,
+  targetMessageCount = getMessageCount(),
   lastActiveAt?: string,
   metadataDisposition: 'update' | 'skip' = 'update',
 ): Promise<void> {
@@ -5179,7 +5269,7 @@ async function commitPreparedSessionAfterUserMessagePersist(
   lastActiveAt?: string,
   lastMessagePreview?: string,
 ): Promise<void> {
-  const meta = getSessionMetadata(sessionId);
+  const meta = getCurrentProductSessionMetadata();
   if (meta?.materializationState !== 'prepared') return;
   const title = deriveSessionTitle(messageText, 40) || (messageText ? 'New Chat' : '图片消息');
   const updated = await commitPreparedSessionForFirstUserTurn(sessionId, {
@@ -5237,11 +5327,11 @@ export async function claimPreparedMaterializationForTurnAdmission(
 async function persistMessagesToStorageAndCommitPreparedFirstUserTurn(
   messageText: string,
   origin?: SessionOrigin,
-  targetMessageCount = transcriptState.messages.length,
+  targetMessageCount = getMessageCount(),
   phase: 'pre-admission' | 'admission' = 'pre-admission',
   lastActiveAt?: string,
 ): Promise<boolean> {
-  const isPrepared = getSessionMetadata(sessionId)?.materializationState === 'prepared';
+  const isPrepared = getCurrentProductSessionMetadata()?.materializationState === 'prepared';
   await persistMessagesToStorage(
     targetMessageCount,
     isPrepared ? undefined : lastActiveAt,
@@ -5302,7 +5392,7 @@ async function persistSessionMetadataForAdmittedMessage(
 ): Promise<void> {
   if (!hasInitialPrompt) {
     hasInitialPrompt = true;
-    const existingMeta = getSessionMetadata(sessionId);
+    const existingMeta = getCurrentProductSessionMetadata();
     if (existingMeta) {
       const title = deriveSessionTitle(messageText, 40) || (messageText ? 'New Chat' : '图片消息');
       if (existingMeta.materializationState !== 'prepared') {
@@ -5346,7 +5436,7 @@ async function persistSessionMetadataForAdmittedMessage(
     return;
   }
 
-  if (messageText && transcriptState.messages.length === 0) {
+  if (messageText && getMessageCount() === 0) {
     await updateSessionTitleFromMessage(sessionId, messageText);
   }
 }
@@ -5376,8 +5466,8 @@ export async function ensureSessionMetadataForSdkSystemInit(
   const shouldMigratePendingIdentity = previousSessionId === authority.productSessionId
     && isPendingSessionId(previousSessionId);
   const targetSessionId = shouldMigratePendingIdentity ? sdkSessionId : previousSessionId;
-  const previousMeta = getSessionMetadata(previousSessionId);
-  const targetMeta = getSessionMetadata(targetSessionId);
+  const previousMeta = getCurrentProductSessionMetadata();
+  const targetMeta = targetSessionId === previousSessionId ? previousMeta : getSessionMetadata(targetSessionId);
 
   if (shouldMigratePendingIdentity) {
     const migration = await migratePendingSessionIdentity(previousSessionId, targetSessionId, {
@@ -5393,7 +5483,7 @@ export async function ensureSessionMetadataForSdkSystemInit(
     loadTranscriptFromSessionMessages(migration.transcript.messages, migration.transcript.cursor);
     console.log(`[agent] session ${targetSessionId} persisted to SessionStore (atomic pending identity migration, from=${previousSessionId}, scenario=${currentScenario.type})`);
   } else if (targetMeta) {
-    const updated = await updateSessionMetadata(targetSessionId, {
+    const updated = await updateSessionMetadataForBinding(targetSessionId, {
       sdkSessionId,
       unifiedSession: sdkSessionId === targetSessionId,
     }, (current) => {
@@ -5440,7 +5530,7 @@ export async function ensureSessionMetadataForSdkSystemInit(
   }
 
   if (targetSessionId !== previousSessionId) {
-    setCurrentSessionId(targetSessionId);
+    await setCurrentSessionId(targetSessionId);
     initLogger(targetSessionId);
     console.log(`[agent] SDK system_init migrated session identity ${previousSessionId} -> ${targetSessionId}`);
   }
@@ -5450,7 +5540,7 @@ export async function ensureSessionMetadataForSdkSystemInit(
 }
 
 async function materializeInitialPromptSessionMetadata(initialPromptText: string): Promise<void> {
-  const existing = getSessionMetadata(sessionId);
+  const existing = getCurrentProductSessionMetadata();
   if (existing) {
     setLazySessionMaterializationAllowed(false);
     return;
@@ -5462,7 +5552,7 @@ async function materializeInitialPromptSessionMetadata(initialPromptText: string
     currentScenario.type,
   );
   await saveSessionMetadata(meta);
-  if (!getSessionMetadata(sessionId)) {
+  if (!getCurrentProductSessionMetadata()) {
     throw new Error(`[agent] failed to materialize session metadata for initial prompt session ${sessionId}`);
   }
   setLazySessionMaterializationAllowed(false);
@@ -5503,7 +5593,9 @@ async function repairOwnedProviderRouteIfNeeded(
     providerEnvJson: observedMeta.providerEnvJson,
     configSnapshotAt: observedMeta.configSnapshotAt,
   };
-  await updateSessionMetadata(
+  // The resolved route already owns execution. Repair only its persisted
+  // representation, retaining the fresh-disk CAS without delaying AI startup.
+  const repair = updateSessionMetadata(
     observedMeta.id,
     {
       providerRoute,
@@ -5520,6 +5612,11 @@ async function repairOwnedProviderRouteIfNeeded(
       && current.providerEnvJson === observed.providerEnvJson
       && current.configSnapshotAt === observed.configSnapshotAt,
   );
+  if (observedMeta.transcriptFormat === 2) {
+    void repair.catch(error => console.warn('[agent] provider route metadata repair failed:', error));
+  } else {
+    await repair;
+  }
 }
 
 function buildOwnedFreezeSnapshotPatch(overrides?: OwnedFreezeSnapshotPatch): OwnedFreezeSnapshotPatch & Pick<SessionMetadata, 'configSnapshotAt'> {
@@ -5565,7 +5662,7 @@ export async function freezeCurrentSessionMetadataForImDetach(
   overrides?: OwnedFreezeSnapshotPatch,
   options?: { allowMissingMetadata?: boolean },
 ): Promise<{ success: boolean; sessionId?: string; metadata?: SessionMetadata; error?: string }> {
-  const existing = getSessionMetadata(sessionId);
+  const existing = getCurrentProductSessionMetadata();
   const result = await freezeCurrentProductSessionMetadata({
     workspacePath: agentDir,
     snapshotPatch: buildOwnedFreezeSnapshotPatch(overrides),
@@ -5589,6 +5686,7 @@ export async function materializePendingDesktopSession(
       [K in keyof ProductSessionSnapshotPatch]: ProductSessionSnapshotPatch[K] | null;
     }>;
     origin?: SessionOrigin;
+    birthSnapshot?: Partial<SessionMetadata>;
   } = {},
 ): Promise<{ success: boolean; sessionId?: string; metadata?: SessionMetadata; error?: string; status?: number }> {
   const phase = request.phase ?? 'commit';
@@ -5602,10 +5700,10 @@ export async function materializePendingDesktopSession(
         origin: request.origin,
       },
       {
-        hasActiveWork: transcriptState.messages.length > 0 || queueHasQueuedOrInFlightWork(),
+        hasActiveWork: getMessageCount() > 0 || queueHasQueuedOrInFlightWork(),
         createPreparedMetadata(priorSessionId) {
           const liveSdkSessionId = lifecycleState.systemInitInfo?.session_id;
-          const targetSessionId = liveSdkSessionId && !isPendingSessionId(liveSdkSessionId)
+          const targetSessionId = !request.birthSnapshot && liveSdkSessionId && !isPendingSessionId(liveSdkSessionId)
             ? liveSdkSessionId
             : randomUUID();
           const reusingNativeSession = liveSdkSessionId === targetSessionId;
@@ -5615,6 +5713,7 @@ export async function materializePendingDesktopSession(
             'desktop',
             request.origin,
           );
+          Object.assign(meta, request.birthSnapshot);
           console.log(`[agent] prepared pending desktop materialization ${priorSessionId} → ${targetSessionId} (snapshot=${snapshotKind}, reusedLiveSdk=${reusingNativeSession})`);
           return {
             targetSessionId,
@@ -5646,8 +5745,11 @@ export async function materializePendingDesktopSession(
         await awaitSessionTermination(10_000, 'materializePendingDesktopSession/commit');
         setQuerySession(null);
       }
+      if (getCurrentProductSessionId() !== prepared.targetSessionId) {
+        flushPendingLiveEvents();
+        resetBuiltinLiveRevision();
+      }
     },
-    bindSession: setCurrentSessionId,
     async afterBind(prepared, metadata) {
       hasInitialPrompt = false;
       sessionRegistered = prepared.reusingNativeSession;
@@ -6053,6 +6155,20 @@ export function buildClaudeSessionEnv(
   // "host owns auth", which blocks fallback to the local Claude Code
   // subscription store. Anthropic-sub must leave this unset so CC owns OAuth.
   const effectiveProviderEnv = providerEnv ?? configState.currentProviderEnv;
+  assertManagedProviderPrepared(effectiveProviderEnv);
+  const boundModelPolicy = getPreparedModelPolicy(effectiveProviderEnv);
+  if (boundModelPolicy && modelOverride && modelOverride !== boundModelPolicy.id) {
+    throw new ManagedProxyError('binding_model_mismatch', '执行模型与本次订阅连接不匹配');
+  }
+  if (boundModelPolicy) {
+    // This Query uses only its local binding. Preserve native subscriptions'
+    // inherited login behavior elsewhere, while sealing every alternate auth
+    // input here against the SDK's parent-environment overlay.
+    for (const key of CC_AUTH_ENV_VARS_TO_SEAL) env[key] = '';
+    env.CLAUDE_CODE_USE_BEDROCK = '';
+    env.CLAUDE_CODE_USE_VERTEX = '';
+    env.CLAUDE_CODE_USE_FOUNDRY = '';
+  }
   const effectiveProviderId = opts?.providerId
     ?? effectiveProviderEnv?.providerId
     ?? (providerEnv === undefined
@@ -6162,7 +6278,7 @@ export function buildClaudeSessionEnv(
   const resolvedModel = modelOverride ?? configState.currentModel;
   const aliases = resolveSessionModelAliases(effectiveProviderEnv?.modelAliases, resolvedModel);
   const resolveContextLength = (model: string | undefined): number | undefined => (
-    opts?.contextWindowSnapshot
+    boundModelPolicy && model === boundModelPolicy.id ? boundModelPolicy.contextLength ?? undefined : opts?.contextWindowSnapshot
       ? lookupSnapshotModelContextLength(opts.contextWindowSnapshot, model)
       : lookupProviderModelContextLength(model, effectiveProviderId)
   );
@@ -6225,6 +6341,10 @@ export function buildClaudeSessionEnv(
   // case (primary model hits its own 128K ceiling) is what this fixes;
   // sub-agents on a smaller window would be further over-capped, not
   // under-capped.
+  if (boundModelPolicy) {
+    if (boundModelPolicy.maxOutputTokens) env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(boundModelPolicy.maxOutputTokens);
+    else env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = '';
+  }
   const modelContextLength = resolveContextLength(resolvedModel);
   if (modelContextLength && modelContextLength > 0) {
     env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(modelContextLength);
@@ -6234,7 +6354,8 @@ export function buildClaudeSessionEnv(
     // SDK's built-in default (MODEL_CONTEXT_WINDOW_DEFAULT=200K) applies,
     // exactly per product requirement #4. Logging only when a model is
     // actually set — empty configState.currentModel at pre-warm is a normal startup state.
-    delete env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+    if (boundModelPolicy) env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '';
+    else delete env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
     if (resolvedModel) {
       console.log(`[env] No contextLength found for model=${resolvedModel} — SDK default 200K applies`);
     }
@@ -6547,6 +6668,11 @@ function ensureAssistantMessage(): MessageWire {
   // that assistant so UI ordering stays honest.
   maybeSurfaceInFlightAtAssistantTurnStart('assistant turn started after SDK boundary drain');
   setAssistantMessagePresent(true);
+  const product = getBuiltinTranscriptPresentation()?.content;
+  if (product) {
+    isStreamingMessage = true;
+    return product.assistant(product.currentAssistantId ?? allocateMessageId()) as unknown as MessageWire;
+  }
   const lastMessage = transcriptState.messages[transcriptState.messages.length - 1];
   if (lastMessage && lastMessage.role === 'assistant' && isStreamingMessage) {
     return lastMessage;
@@ -6578,8 +6704,20 @@ function ensureAssistantMessage(): MessageWire {
  * streaming bubble is evicted, isStreamingMessage resets so the retry starts a
  * fresh bubble instead of concatenating refused + replacement content.
  */
-async function applyMessageRetraction(retractedUuids: readonly string[] | undefined, source: string): Promise<void> {
+async function applyMessageRetraction(retractedUuids: readonly string[] | undefined, source: string, scope?: 'local' | 'session', parentToolUseId?: string): Promise<void> {
   if (!retractedUuids || retractedUuids.length === 0) return;
+  const presentation = getBuiltinTranscriptPresentation();
+  if (presentation) {
+    const priorAssistantId = presentation.content.currentAssistantId;
+    const removed = presentation.retractNativeContent(retractedUuids, parentToolUseId ? true : scope !== 'local' && isStreamingMessage, parentToolUseId);
+    if (priorAssistantId && removed.includes(priorAssistantId)) isStreamingMessage = false;
+    if (removed.length) broadcast('chat:messages-retracted', { messageIds: removed, retractedStreamingTail: false });
+    for (const uuid of retractedUuids) {
+      deleteCurrentSessionUuid(uuid);
+      deleteLiveSessionUuid(uuid);
+    }
+    return;
+  }
   // fallbackToStreamingTail: a refusal cuts the stream possibly BEFORE any
   // final assistant frame — the refused bubble then has no (or a stale)
   // sdkUuid and uuid matching alone misses it. The open stream at retraction
@@ -6587,11 +6725,12 @@ async function applyMessageRetraction(retractedUuids: readonly string[] | undefi
   // live flag also keeps the double-channel replay idempotent: the first
   // channel resets isStreamingMessage, so the second sees fallback=false and
   // already-evicted uuids → empty plan → no second broadcast.
-  const plan = planRetraction(transcriptState.messages, retractedUuids, { fallbackToStreamingTail: isStreamingMessage });
+  const messageIdentities = getMessageIdentities();
+  const plan = planRetraction(messageIdentities, retractedUuids, { fallbackToStreamingTail: isStreamingMessage });
   if (plan.removedMessageIds.length > 0) {
     const removed = new Set(plan.removedMessageIds);
     const streamingTailMessageId = plan.removedStreamingTail
-      ? transcriptState.messages[transcriptState.messages.length - 1]?.id
+      ? messageIdentities.at(-1)?.id
       : undefined;
     await applyTranscriptRetractionToPersistence(sessionId, removed, {
       kind: 'sdk-retraction',
@@ -6695,6 +6834,7 @@ function appendTextChunk(chunk: string): boolean {
   appendCurrentTurnTextBlock(chunk);
 
   const message = ensureAssistantMessage();
+  if (getBuiltinProductContent()) return true;
   if (typeof message.content === 'string') {
     message.content += chunk;
     return true;
@@ -6714,6 +6854,7 @@ function handleThinkingStart(index: number): void {
   // transcriptState.messages haven't been sent to SDK yet, so a thinking block starting now
   // is the prior turn's content — not a response to a queued message.
   const message = ensureAssistantMessage();
+  if (getBuiltinProductContent()) return;
   const contentArray = ensureContentArray(message);
   contentArray.push({
     type: 'thinking',
@@ -6725,6 +6866,7 @@ function handleThinkingStart(index: number): void {
 
 function handleThinkingChunk(index: number, delta: string): void {
   const message = ensureAssistantMessage();
+  if (getBuiltinProductContent()) return;
   const contentArray = ensureContentArray(message);
   const thinkingBlock = contentArray.find(
     (block) => block.type === 'thinking' && block.thinkingStreamIndex === index && !block.isComplete
@@ -6744,6 +6886,10 @@ function handleToolUseStart(tool: {
   emitBuiltinToolStartTrace(tool.id, tool.name);
   // No mid-turn flush: see handleThinkingStart for rationale.
   const message = ensureAssistantMessage();
+  if (getBuiltinProductContent()) {
+    incrementCurrentTurnToolCount();
+    return;
+  }
   const contentArray = ensureContentArray(message);
   contentArray.push({
     type: 'tool_use',
@@ -6771,6 +6917,10 @@ function handleServerToolUseStart(tool: {
   emitBuiltinToolStartTrace(tool.id, tool.name);
   // No mid-turn flush: see handleThinkingStart for rationale.
   const message = ensureAssistantMessage();
+  if (getBuiltinProductContent()) {
+    incrementCurrentTurnToolCount();
+    return;
+  }
   const contentArray = ensureContentArray(message);
   contentArray.push({
     type: 'server_tool_use',
@@ -6795,6 +6945,10 @@ function handleSubagentToolUseStart(
   }
 ): void {
   emitBuiltinToolStartTrace(tool.id, tool.name, true);
+  if (getBuiltinProductContent()) {
+    childToolToParent.set(tool.id, parentToolUseId);
+    return;
+  }
   const parentTool = findToolBlockById(parentToolUseId);
   if (!parentTool) {
     return;
@@ -6821,6 +6975,12 @@ function handleSubagentToolUseStart(
 }
 
 function ensureSubagentToolPlaceholder(parentToolUseId: string, toolUseId: string): void {
+  const product = getBuiltinProductContent();
+  if (product) {
+    product.startTool(toolUseId, 'Tool', {}, parentToolUseId);
+    childToolToParent.set(toolUseId, parentToolUseId);
+    return;
+  }
   const parentTool = findToolBlockById(parentToolUseId);
   if (!parentTool) {
     return;
@@ -6857,6 +7017,7 @@ const lastParsedBytesBySubagentToolId = new Map<string, number>();
 
 function handleToolInputDelta(_index: number, toolId: string, delta: string): void {
   const message = ensureAssistantMessage();
+  if (getBuiltinProductContent()) return;
   const contentArray = ensureContentArray(message);
   const toolBlock = contentArray.find(
     (block) => block.type === 'tool_use' && block.tool?.id === toolId
@@ -6883,6 +7044,7 @@ function handleSubagentToolInputDelta(
   toolId: string,
   delta: string
 ): void {
+  if (getBuiltinProductContent()) return;
   const parentTool = findToolBlockById(parentToolUseId);
   if (!parentTool?.tool.subagentCalls) {
     return;
@@ -6905,6 +7067,7 @@ function handleSubagentToolInputDelta(
 }
 
 function finalizeSubagentToolInput(parentToolUseId: string, toolId: string): void {
+  if (getBuiltinProductContent()) return;
   const parentTool = findToolBlockById(parentToolUseId);
   if (!parentTool?.tool.subagentCalls) {
     return;
@@ -6926,6 +7089,20 @@ function finalizeSubagentToolInput(parentToolUseId: string, toolId: string): voi
 }
 
 function handleContentBlockStop(index: number, toolId?: string): void {
+  const product = getBuiltinProductContent();
+  if (product) {
+    const target = toolId ? product.tool(toolId) : undefined;
+    const tool = target ? product.readTool(target) : undefined;
+    if (target && typeof tool?.inputJson === 'string') {
+      try {
+        const input = JSON.parse(tool.inputJson) as TranscriptObject;
+        product.confirmInput(target, input);
+        const display = buildFilePatchDisplayDescriptor(projectTranscriptToolInput(product.readTool(target)!) as unknown as ToolUseState);
+        if (display) product.updateTool(target, { display: display as unknown as TranscriptObject });
+      } catch { /* Incomplete provider input is retained verbatim for display. */ }
+    }
+    return;
+  }
   const message = ensureAssistantMessage();
   const contentArray = ensureContentArray(message);
   const thinkingBlock = contentArray.find(
@@ -6963,6 +7140,15 @@ function handleContentBlockStop(index: number, toolId?: string): void {
 }
 
 function handleToolResultStart(toolUseId: string, content: string, isError: boolean): void {
+  const product = getBuiltinProductContent();
+  if (product) {
+    const target = product.tool(toolUseId);
+    if (target) {
+      setToolResult(toolUseId, content, isError);
+      product.updateTool(target, { isLoading: true });
+    }
+    return;
+  }
   if (handleSubagentToolResultStart(toolUseId, content, isError)) {
     return;
   }
@@ -6971,6 +7157,15 @@ function handleToolResultStart(toolUseId: string, content: string, isError: bool
 
 function handleToolResultComplete(toolUseId: string, content: string, isError?: boolean): void {
   emitBuiltinToolEndTrace(toolUseId, isError);
+  const product = getBuiltinProductContent();
+  if (product) {
+    const target = product.tool(toolUseId);
+    if (target) {
+      setToolResult(toolUseId, content, isError);
+      product.updateTool(target, { isLoading: false }, true);
+    }
+    return;
+  }
   if (handleSubagentToolResultComplete(toolUseId, content, isError)) {
     return;
   }
@@ -7050,14 +7245,14 @@ function handleMessageError(error: string, localizedError?: string): SessionComp
 
 function probeForkPersistenceIfReady(resultMessage: BuiltinSdkResultMessage): void {
   if (resultMessage.is_error) return;
-  const meta = getSessionMetadata(sessionId);
+  const meta = getCurrentProductSessionMetadata();
   const sdkSid = meta?.sdkSessionId;
   const probeDir = agentDir;
   if (!meta?.forkFrom || !sdkSid) return;
   sdkGetSessionMessages(sdkSid, { dir: probeDir, limit: 1 })
     .then(found => {
       if (found.length === 0) return;
-      const fresh = getSessionMetadata(sessionId);
+      const fresh = getCurrentProductSessionMetadata();
       if (!fresh?.forkFrom) return;
       console.log(`[agent] fork session ${sessionId} persisted in SDK store — clearing forkFrom`);
       delete fresh.forkFrom;
@@ -7096,7 +7291,7 @@ function recoverInvalidResumeAnchorError(rawError: string): boolean {
     recoveredAnchors.push('reload');
   }
 
-  const failedForkMeta = getSessionMetadata(sessionId);
+  const failedForkMeta = getCurrentProductSessionMetadata();
   if (failedForkMeta?.forkFrom?.messageUuid && (!rejectedUuid || failedForkMeta.forkFrom.messageUuid === rejectedUuid)) {
     const rejectedForkUuid = failedForkMeta.forkFrom.messageUuid;
     console.warn(`[agent] SDK result rejected fork anchor ${rejectedForkUuid} — clearing persisted fork anchor`);
@@ -7156,6 +7351,12 @@ function applyDeferredRestartIfNeeded(): void {
 }
 
 function findToolBlockById(toolUseId: string): { tool: ToolUseState } | null {
+  const product = getBuiltinProductContent();
+  if (product) {
+    const target = product.tool(toolUseId);
+    const tool = target ? product.readTool(target) : undefined;
+    return tool ? { tool: projectTranscriptToolInput(tool) as unknown as ToolUseState } : null;
+  }
   for (let i = transcriptState.messages.length - 1; i >= 0; i -= 1) {
     const message = transcriptState.messages[i];
     if (message.role !== 'assistant') {
@@ -7183,6 +7384,7 @@ function isPlaywrightTool(toolUseId: string): boolean {
 }
 
 function appendToolResultDelta(toolUseId: string, delta: string): void {
+  if (getBuiltinProductContent()) return; // The product event applies this delta once.
   if (appendSubagentToolResultDelta(toolUseId, delta)) {
     return;
   }
@@ -7260,6 +7462,13 @@ function appendSubagentToolResultDelta(toolUseId: string, delta: string): boolea
 }
 
 function finalizeSubagentToolResult(toolUseId: string): boolean {
+  const product = getBuiltinProductContent();
+  if (product) {
+    const target = product.tool(toolUseId);
+    if (!target?.subagentToolId) return false;
+    product.updateTool(target, { isLoading: false }, true);
+    return true;
+  }
   const parentToolUseId = childToolToParent.get(toolUseId);
   if (!parentToolUseId) {
     return false;
@@ -7277,6 +7486,12 @@ function finalizeSubagentToolResult(toolUseId: string): boolean {
 }
 
 function getSubagentToolResult(toolUseId: string): string | undefined {
+  const product = getBuiltinProductContent();
+  if (product) {
+    const target = product.tool(toolUseId);
+    const result = target ? product.readTool(target)?.result : undefined;
+    return typeof result === 'string' ? result : undefined;
+  }
   const parentToolUseId = childToolToParent.get(toolUseId);
   if (!parentToolUseId) {
     return undefined;
@@ -7289,6 +7504,17 @@ function getSubagentToolResult(toolUseId: string): string | undefined {
 }
 
 function setToolResult(toolUseId: string, content: string, isError?: boolean): void {
+  const product = getBuiltinProductContent();
+  if (product) {
+    const target = product.tool(toolUseId);
+    if (!target) return;
+    product.confirmText(target, 'result', isPlaywrightTool(toolUseId) ? PLAYWRIGHT_RESULT_SENTINEL : content);
+    if (typeof isError === 'boolean') product.updateTool(target, { isError });
+    const tool = findToolBlockById(toolUseId)?.tool;
+    const display = tool && buildFilePatchDisplayDescriptor(tool);
+    if (display) product.updateTool(target, { display: display as unknown as TranscriptObject });
+    return;
+  }
   const toolBlock = findToolBlockById(toolUseId);
   if (!toolBlock) {
     return;
@@ -7334,15 +7560,16 @@ function appendToolResultContent(toolUseId: string, content: string, isError?: b
  * if the block already carries attachments (e.g. the result surfaced via a
  * second delivery path), the existing set is reused without re-saving.
  *
- * Synchronous save is fine here: base64 round-trips and small file copies are
- * ms-level; non-media tools stay on the zero-cost path (both extractors
- * return [] without touching disk).
+ * V2 callers schedule this independently of SDK iteration. The captured
+ * product writer owns its late update; V1 retains its original timing.
  */
 async function attachBuiltinMediaIfAny(
   toolUseId: string,
   contentStr: string,
   extracted?: ExtractedToolResultAttachment[],
 ): Promise<ToolAttachment[] | undefined> {
+  const product = getBuiltinProductContent();
+  const target = product?.tool(toolUseId);
   const toolBlock = findToolBlockById(toolUseId);
   if (!toolBlock) return undefined;
   if (toolBlock.tool.attachments && toolBlock.tool.attachments.length > 0) {
@@ -7361,7 +7588,10 @@ async function attachBuiltinMediaIfAny(
     const stamped = presentation === 'process'
       ? attachments.map((a) => ({ ...a, presentation }))
       : attachments; // artifact = omitted field (renderer default; old data stays valid)
-    toolBlock.tool.attachments = stamped;
+    if (product && target) {
+      if (getBuiltinProductContent()?.writer !== product.writer) return undefined;
+      product.confirmAttachments(target, stamped as unknown as TranscriptObject[]);
+    } else toolBlock.tool.attachments = stamped;
     return stamped;
   } catch (err) {
     console.warn('[agent] builtin media attachment failed:', err instanceof Error ? err.message : String(err));
@@ -7472,6 +7702,18 @@ export function getAgentState(): {
 }
 
 export function getLastBuiltinAssistantText(): string {
+  const product = getBuiltinProductContent();
+  if (product) {
+    const turnId = product.currentTurn?.id;
+    let text = '';
+    for (const message of product.writer.projection.messages.values()) {
+      if (message.role !== 'assistant' || (turnId && message.turnId !== turnId)) continue;
+      const content = typeof message.content === 'string' ? extractAssistantTextFromStoredContent(message.content)
+        : message.content.filter(block => block.type === 'text').map(block => typeof block.text === 'string' ? block.text : '').join('');
+      text = turnId ? text + content : content;
+    }
+    return text.trim();
+  }
   for (let i = transcriptState.messages.length - 1; i >= 0; i -= 1) {
     const msg = transcriptState.messages[i];
     if (msg?.role !== 'assistant') continue;
@@ -7525,7 +7767,7 @@ export function getLogLines(): string[] {
 }
 
 export function getMessages(): MessageWire[] {
-  return transcriptState.messages;
+  return getBuiltinMessages();
 }
 
 export function getBuiltinLiveSessionSnapshot(targetSessionId: string): {
@@ -7538,7 +7780,7 @@ export function getBuiltinLiveSessionSnapshot(targetSessionId: string): {
   if (targetSessionId !== sessionId) return null;
   flushPendingLiveEvents();
   const streamingAssistantId = getStreamingAssistantId();
-  const messages = transcriptState.messages.map(messageWireToSessionMessage);
+  const messages = getBuiltinMessages().map(messageWireToSessionMessage);
   const liveStreamingMessage = streamingAssistantId
     ? messages.find(message => message.id === streamingAssistantId) ?? null
     : null;
@@ -7764,7 +8006,7 @@ export async function resetSession(options?: { sessionId?: string }): Promise<vo
   // 3. Bind the caller-proven target identity, or mint one for ordinary
   // desktop reset. Surface migration passes its Rust-generated target so
   // Router, SidecarManager, Runtime, and renderer adopt one exact identity.
-  setCurrentSessionId(options?.sessionId ?? randomUUID());
+  await setCurrentSessionId(options?.sessionId ?? randomUUID());
   hasInitialPrompt = false; // Reset so first message creates a new session in SessionStore
   resetSessionMaterializationState({ allowLazySessionMaterialization: true });
 
@@ -7919,7 +8161,8 @@ export async function initializeAgent(
 
   if (initialSessionId) {
     // Use caller-specified session_id (IM / Tab opening existing session / CronTask)
-    setCurrentSessionId(initialSessionId);
+    await setCurrentSessionId(initialSessionId);
+    await activateSessionTranscript(initialSessionId);
 
     // Metadata alone is not enough to resume the Claude Agent SDK. POST /sessions
     // creates MyAgents metadata before the SDK has ever persisted a transcript,
@@ -7957,7 +8200,7 @@ export async function initializeAgent(
     }
   } else {
     // No specified ID → auto-generate (standard Tab new conversation flow)
-    setCurrentSessionId(randomUUID());
+    await setCurrentSessionId(randomUUID());
     sessionRegistered = false; // Fresh session, no SDK data to resume
   }
 
@@ -8087,7 +8330,7 @@ export async function initializeAgent(
 
   if (hasInitialPrompt) {
     const trimmedInitialPrompt = initialPrompt!.trim();
-    if (!isLazySessionMaterializationAllowed() && !getSessionMetadata(sessionId)) {
+    if (!isLazySessionMaterializationAllowed() && !getCurrentProductSessionMetadata()) {
       throw new Error(`[agent] refusing initial prompt for unindexed existing session ${sessionId}; session metadata must exist before starting a sidecar with --session-id`);
     }
     await materializeInitialPromptSessionMetadata(trimmedInitialPrompt);
@@ -8211,8 +8454,10 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
   if (lifecycleState.preWarmTimer) { clearTimeout(lifecycleState.preWarmTimer); setPreWarmTimer(null); }
 
   // Preserve target sessionId so new transcriptState.messages are saved to the same session
-  setCurrentSessionId(targetSessionId);
+  await setCurrentSessionId(targetSessionId);
   resetSessionMaterializationState({ allowLazySessionMaterialization: false });
+
+  await activateSessionTranscript(targetSessionId);
 
   // Load existing transcriptState.messages from storage into memory
   // This is critical for cursor-based incremental append
@@ -8482,7 +8727,7 @@ async function consumePendingContinueAfterAbort(
   trigger: 'next-enqueue' | 'watchdog-auto',
   allowMissingPendingFlag = false,
 ): Promise<boolean> {
-  const meta = getSessionMetadata(sessionIdSnapshot);
+  const meta = sessionIdSnapshot === sessionId ? getCurrentProductSessionMetadata() : getSessionMetadata(sessionIdSnapshot);
   const hasPendingContinue = Boolean(meta?.pendingContinueAfterAbort || allowMissingPendingFlag);
   const alreadyConsuming = consumingPendingContinueSessions.has(sessionIdSnapshot);
   const alreadyAutoResumed = autoResumeInjectedSessions.has(sessionIdSnapshot);
@@ -8621,7 +8866,7 @@ function scheduleWatchdogAutoResumeAfterAbort(
 /** Recover or reject the exact persisted builtin rewind intent before Runtime use. */
 async function resolvePendingBuiltinConversationMutationForActiveSession(): Promise<void> {
   const productSessionId = sessionId;
-  const metadata = getSessionMetadata(productSessionId);
+  const metadata = getCurrentProductSessionMetadata();
   const intent = metadata?.pendingConversationMutation;
   if (!intent) return;
   if (intent.kind !== 'builtin-rewind') {
@@ -8824,7 +9069,7 @@ export async function enqueueUserMessage(
   if (admissionTicket?.canceled) {
     return { queued: false, error: 'Queue item was cancelled before dispatch' };
   }
-  if (!hasInitialPrompt && !canLazyMaterializeForThisMessage() && !getSessionMetadata(sessionId)) {
+  if (!hasInitialPrompt && !canLazyMaterializeForThisMessage() && !getCurrentProductSessionMetadata()) {
     throw new Error(`[agent] refusing first message for unindexed existing session ${sessionId}; session metadata disappeared before first user turn`);
   }
 
@@ -10314,10 +10559,15 @@ export async function rewindSession(userMessageId: string): Promise<{
 }> {
   const doRewind = async () => {
     const productSessionId = sessionId;
+    const history = getBuiltinMessages();
     // 1. 找到目标 user message
-    const targetIndex = transcriptState.messages.findIndex(m => m.id === userMessageId && m.role === 'user');
+    const targetIndex = history.findIndex(m => m.id === userMessageId && m.role === 'user');
     if (targetIndex < 0) return { success: false as const, error: 'Message not found' };
-    const targetMessage = transcriptState.messages[targetIndex];
+    const targetMessage = history[targetIndex];
+    const precedingAssistant = history.slice(0, targetIndex).findLast(message => message.role === 'assistant');
+    if (getBuiltinProductContent() && precedingAssistant && !precedingAssistant.sdkUuid) {
+      return { success: false as const, error: 'This display segment has no exact native rewind boundary' };
+    }
 
     // 2. 两个 UUID 分离：
     //    - lastAssistantUuid → 用于 resumeSessionAt（截断 SDK 会话历史到目标前的 assistant）
@@ -10325,8 +10575,8 @@ export async function rewindSession(userMessageId: string): Promise<{
     //    SDK 文档：rewindFiles(userMessageUuid) — 检查点关联用户消息，非 assistant 消息
     let lastAssistantUuid: string | undefined;
     for (let i = targetIndex - 1; i >= 0; i--) {
-      if (transcriptState.messages[i].role === 'assistant' && transcriptState.messages[i].sdkUuid) {
-        lastAssistantUuid = transcriptState.messages[i].sdkUuid;
+      if (history[i].role === 'assistant' && history[i].sdkUuid) {
+        lastAssistantUuid = history[i].sdkUuid;
         break;
       }
     }
@@ -10578,18 +10828,17 @@ export async function forkSession(assistantMessageId: string): Promise<{
   title?: string;
   error?: string;
 }> {
-  // 1. Find target assistant message in memory first, then fall back to persistent storage.
-  // The in-memory `transcriptState.messages[]` may be empty after session switch/reset (clearMessageState),
-  // while the frontend still shows the fork button because it has the message from loaded state.
-  console.log(`[agent] forkSession: looking for assistantMessageId=${assistantMessageId}, in-memory transcriptState.messages.length=${transcriptState.messages.length}, sessionId=${sessionId}`);
-  console.log(`[agent] forkSession: in-memory message IDs (last 20): ${transcriptState.messages.slice(-20).map(m => `${m.role}:${m.id}`).join(', ')}`);
-  let targetIndex = transcriptState.messages.findIndex(m => m.id === assistantMessageId && m.role === 'assistant');
-  let messageSource = transcriptState.messages;
+  try { await assertCompleteSessionForkSource(sessionId); }
+  catch (error) { return { success: false, error: error instanceof Error ? error.message : 'Fork source is unavailable' }; }
+  const liveMessages = getBuiltinMessages();
+  let targetIndex = liveMessages.findIndex(m => m.id === assistantMessageId && m.role === 'assistant');
+  let messageSource = liveMessages;
+  let isFromStorage = false;
 
   if (targetIndex < 0) {
     // Fallback: load from persistent storage — covers race between clearMessageState
     // and loadMessagesFromStorage during session switch/pre-warm.
-	    const stored = getSessionData(sessionId);
+	    const stored = (await getSessionData(sessionId));
 	    if (stored?.messages) {
 	      const storedIdx = stored.messages.findIndex(m => m.id === assistantMessageId && m.role === 'assistant');
 	      if (storedIdx >= 0) {
@@ -10597,23 +10846,20 @@ export async function forkSession(assistantMessageId: string): Promise<{
         // Use stored transcriptState.messages directly for fork (they already have sdkUuid persisted)
         targetIndex = storedIdx;
 	        messageSource = stored.messages.map(sessionMessageToMessageWire);
+        isFromStorage = true;
       }
     }
   }
 
   if (targetIndex < 0) {
-    console.error(`[agent] forkSession: Assistant message NOT FOUND. assistantMessageId=${assistantMessageId}, in-memory count=${transcriptState.messages.length}, sessionId=${sessionId}`);
+    console.error(`[agent] forkSession: Assistant message NOT FOUND. assistantMessageId=${assistantMessageId}, in-memory count=${liveMessages.length}, sessionId=${sessionId}`);
     return { success: false, error: 'Assistant message not found' };
   }
   const targetMsg = messageSource[targetIndex];
   if (!targetMsg.sdkUuid) return { success: false, error: 'Message has no SDK UUID (cannot fork)' };
 
-  // UUID validity check: only enforce for STORAGE-loaded transcriptState.messages (messageSource !== transcriptState.messages).
-  // In-memory transcriptState.messages are trusted — their UUIDs were assigned during this process's lifetime.
-  // After rewind, transcriptState.currentSessionUuids is cleared (new SDK session), but pre-rewind transcriptState.messages
-  // remain in memory with valid UUIDs (SDK's resumeSessionAt preserves earlier history).
-  // Storage-loaded transcriptState.messages may come from a different SDK session, so enforce UUID freshness.
-  const isFromStorage = messageSource !== transcriptState.messages;
+  // Preserve the read origin explicitly; a canonical read is a value projection,
+  // so array object identity cannot establish native UUID provenance.
   if (isFromStorage && transcriptState.currentSessionUuids.size > 0 && !transcriptState.currentSessionUuids.has(targetMsg.sdkUuid)) {
     return { success: false, error: 'SDK UUID 已过期（当前 SDK session 不包含此消息），请重新发送后再 fork' };
   }
@@ -10672,12 +10918,13 @@ export async function forkSession(assistantMessageId: string): Promise<{
         newSession.titleSource = 'auto';
         newSession.origin = { kind: 'desktop', surface: 'session_fork' };
         try {
-          await saveSessionMetadata(newSession);
-          await saveForkTranscript(newSession.id, eager.remapped);
+          await publishForkSession(newSession, eager.remapped, sourceSessionId);
         } catch (persistErr) {
           // Persist threw AFTER the SDK fork file was created — clean up the orphan SDK
           // transcript so we don't leak it, then let the outer catch surface the failure.
-          try { await sdkDeleteSession(eager.newSid, { dir: currentAgentDir }); } catch { /* best-effort */ }
+          if (!getSessionMetadata(newSession.id)) {
+            try { await sdkDeleteSession(eager.newSid, { dir: currentAgentDir }); } catch { /* best-effort */ }
+          }
           throw persistErr;
         }
         console.log(`[agent] forked session (EAGER) ${sourceSessionId} → ${newSession.id} at ${assistantMessageId}, ${eager.remapped.length} transcriptState.messages, sdkUuids remapped`);
@@ -10693,11 +10940,10 @@ export async function forkSession(assistantMessageId: string): Promise<{
     newSession.titleSource = 'auto';
     newSession.origin = { kind: 'desktop', surface: 'session_fork' };
     newSession.forkFrom = {
-      sourceSessionId,
+      sourceSessionId: sourceMeta?.sdkSessionId ?? sourceSessionId,
       messageUuid: targetMsg.sdkUuid,
     };
-    await saveSessionMetadata(newSession);
-    await saveForkTranscript(newSession.id, forkedMessages);
+    await publishForkSession(newSession, forkedMessages, sourceSessionId);
 
     console.log(`[agent] forked session ${sourceSessionId} → ${newSession.id} at message ${assistantMessageId} (sdkUuid: ${targetMsg.sdkUuid}), ${forkedMessages.length} transcriptState.messages copied`);
 
@@ -10850,31 +11096,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     ...Object.values(configState.currentProviderEnv?.modelAliases ?? {}),
     ...Object.values(launchAgentDefinitionsSource ?? {}).map(agent => agent.model),
   ], launchProviderId);
-  const env = buildClaudeSessionEnv(undefined, undefined, {
-    bridgeToken: activeSessionBridgeToken ?? undefined,
-    providerId: launchProviderId,
-    contextWindowSnapshot: launchContextWindowSnapshot,
-  });
-  const launchModel = applyContextWindowSuffixForContextLength(
-    configState.currentModel,
-    lookupSnapshotModelContextLength(launchContextWindowSnapshot, configState.currentModel),
-  );
-  const launchAgentDefinitions = launchAgentDefinitionsSource
-    ? Object.fromEntries(
-        Object.entries(launchAgentDefinitionsSource).map(([name, agent]) => [
-          name,
-          agent.model
-            ? {
-                ...agent,
-                model: applyContextWindowSuffixForContextLength(
-                  agent.model,
-                  lookupSnapshotModelContextLength(launchContextWindowSnapshot, agent.model),
-                ),
-              }
-            : agent,
-        ]),
-      )
-    : null;
   console.log(`[agent] ${preWarm ? 'pre-warm' : 'start'} session cwd=${agentDir}`);
   resetAbortFlag();
   resetAbortFlag();
@@ -10938,8 +11159,48 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   let activeQuery: Query | null = null;
   let activeQueryAuthority: BuiltinQueryAuthority | null = null;
   const queryProductSessionId = sessionId;
+  const bindingController = new AbortController();
+  let preparedProvider: PreparedProvider | undefined;
 
   try {
+    if (configState.currentProviderEnv?.endpointSource) managedQueryController = bindingController;
+    preparedProvider = await prepareProviderBinding({
+      providerEnv: configState.currentProviderEnv,
+      model: configState.currentModel ?? '',
+      controller: bindingController,
+      onDrain: () => {
+        scheduleDeferredRestart('provider');
+        applyDeferredRestartIfNeeded();
+      },
+    });
+    if (lifecycleState.abortRequested) bindingController.abort();
+    bindingController.signal.throwIfAborted();
+    const boundModelPolicy = getPreparedModelPolicy(preparedProvider.providerEnv);
+    const env = buildClaudeSessionEnv(preparedProvider.providerEnv, undefined, {
+      bridgeToken: activeSessionBridgeToken ?? undefined,
+      providerId: launchProviderId,
+      contextWindowSnapshot: launchContextWindowSnapshot,
+    });
+    const launchModel = applyContextWindowSuffixForContextLength(
+      configState.currentModel,
+      lookupSnapshotModelContextLength(launchContextWindowSnapshot, configState.currentModel),
+    );
+    const launchAgentDefinitions = launchAgentDefinitionsSource
+      ? Object.fromEntries(
+          Object.entries(launchAgentDefinitionsSource).map(([name, agent]) => [
+            name,
+            agent.model
+              ? {
+                  ...agent,
+                  model: applyContextWindowSuffixForContextLength(
+                    agent.model,
+                    lookupSnapshotModelContextLength(launchContextWindowSnapshot, agent.model),
+                  ),
+                }
+              : agent,
+          ]),
+        )
+      : null;
     const sdkPermissionMode = mapToEffectiveSdkPermissionMode(
       configState.currentPermissionMode,
       currentScenario,
@@ -10954,7 +11215,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
 
     if (sessionRegistered) {
       // Prefer sdkSessionId from metadata (the actual ID the SDK knows)
-      const meta = getSessionMetadata(sessionId);
+      const meta = getCurrentProductSessionMetadata();
       const sdkSid = meta?.sdkSessionId;
 
       if (sdkSid && UUID_RE.test(sdkSid)) {
@@ -10974,7 +11235,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // A fresh launch may still have an explicitly persisted SDK identity
       // (for example, builtin Rewind replaced only the execution identity).
       // Create that exact candidate; do not mint a third identity.
-      const meta = getSessionMetadata(sessionId);
+      const meta = getCurrentProductSessionMetadata();
       const sdkSid = meta && (meta.runtime ?? 'builtin') === 'builtin'
         ? resolveBuiltinSdkSessionId(meta)
         : undefined;
@@ -11021,7 +11282,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // reload per pre-flush restart. Acceptable vs. silent context loss.
     let forkMode = false;
     let forkResumeAt: string | undefined;
-    const forkMeta = getSessionMetadata(sessionId);
+    const forkMeta = getCurrentProductSessionMetadata();
     if (forkMeta?.forkFrom) {
       // PRD #134/#135 sync guard — before re-engaging fork mode, probe the
       // SDK's own store for `sessionId`. If the JSONL already exists with
@@ -11115,7 +11376,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     );
     console.log(`[agent] starting query with model: ${configState.currentModel ?? 'default'}, permissionMode: ${configState.currentPermissionMode} -> SDK: ${sdkPermissionMode}, MCP: ${mcpStatus}, cleanupPeriodDays: ${claudeTranscriptCleanupPeriodDays}, ${resumeFrom ? `resume: ${resumeFrom}` : `sessionId: ${effectiveSdkSessionId}`}${effectiveResumeAt ? `, resumeSessionAt: ${effectiveResumeAt}` : ''}${forkMode ? `, FORK mode (forkPoint: ${forkResumeAt}${rewindResumeAt && rewindResumeAt !== forkResumeAt ? `, rewind→${rewindResumeAt}` : ''})` : ''}`);
 
-    const promptGen = messageGenerator();
+    const promptGen = messageGenerator(preparedProvider);
 
     // Set session cron context so the im-cron tool can create tasks for non-IM sessions
     // IM sessions set imCronContext separately (in the IM message handler in index.ts)
@@ -11157,11 +11418,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     const isClaudeModel = modelLower.includes('sonnet-4') || modelLower.includes('sonnet-5')
       || modelLower.includes('opus-4') || modelLower.includes('opus-5')
       || modelLower.includes('fable-5') || modelLower.includes('mythos-5');
-    const isOfficialAnthropicApi = !configState.currentProviderEnv?.baseUrl || (() => {
+    const isOfficialAnthropicApi = !configState.currentProviderEnv?.endpointSource && (!configState.currentProviderEnv?.baseUrl || (() => {
       try { return new URL(configState.currentProviderEnv.baseUrl!).host === 'api.anthropic.com'; }
       catch { return false; }
-    })();
-    const thinkingConfig = (isOfficialAnthropicApi || isClaudeModel)
+    })());
+    const thinkingConfig = (boundModelPolicy?.thinking ?? (isOfficialAnthropicApi || isClaudeModel))
       ? { type: 'adaptive' as const }
       : { type: 'disabled' as const };
 
@@ -11191,7 +11452,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       : ('high' as const);
     const enabledOfficialToolIds = getEffectiveOfficialToolIdsForSession(
       agentDir,
-      getSessionMetadata(sessionId),
+      getCurrentProductSessionMetadata(),
       configState.currentEnabledOfficialToolIds,
     );
     const claudeCodeExecutable = resolveClaudeCodeCli();
@@ -11216,6 +11477,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     }
 
     const commonQueryOptions = {
+      ...(configState.currentProviderEnv?.endpointSource ? { abortController: bindingController } : {}),
       enableFileCheckpointing: true,
       thinking: thinkingConfig,
       effort: sdkEffort,
@@ -11955,7 +12217,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       const localQuery = activeQuery;
       const initStartT = Date.now();
       void localQuery.initializationResult().then((initResult) => {
-        if (lifecycleState.query !== localQuery) {
+        if (!isCurrentQueryAuthority(activeQueryAuthority)) {
           // Stale: a session swap happened while initialize was in flight.
           // The new pre-warm will fire its own initializationResult().
           return;
@@ -12005,7 +12267,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     let startupTimeoutExtended = false;
 
     const fireStartupTimeout = (timeoutMs: number) => {
-      if (systemInitReceived || lifecycleState.abortRequested) return;
+      if (systemInitReceived || !isCurrentQueryAuthority(activeQueryAuthority)) return;
       console.error(`[agent] Startup timeout: no system_init in ${timeoutMs / 1000}s`);
       abortedByTimeout = true;
       broadcast('chat:agent-error', {
@@ -12263,6 +12525,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             thinkingTokensMaxEstimate = est;
           }
         }
+        if (!isCurrentQueryAuthority(activeQueryAuthority)) return;
       } else {
         try {
           const line = `${localTimestamp()} ${logStringify(summarizeSensitiveSdkMessage(sdkMessage))}`;
@@ -12572,10 +12835,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             fallback_model?: string;
             api_refusal_category?: string | null;
             retracted_message_uuids?: string[];
+            scope?: 'local' | 'session';
           };
           console.warn(`[agent] model refusal fallback: ${rf.original_model} → ${rf.fallback_model}` +
             (rf.api_refusal_category ? ` (category=${rf.api_refusal_category})` : ''));
-          await applyMessageRetraction(rf.retracted_message_uuids, 'model_refusal_fallback');
+          await applyMessageRetraction(rf.retracted_message_uuids, 'model_refusal_fallback', rf.scope);
         }
 
         if (retryMsg.subtype === 'model_refusal_no_fallback') {
@@ -12636,6 +12900,63 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           broadcast('chat:api-retry', null);
         }
         const streamEvent = sdkMessage.event;
+        const childPresentation = sdkMessage.parent_tool_use_id ? getBuiltinTranscriptPresentation() : undefined;
+        if (childPresentation && sdkMessage.parent_tool_use_id) {
+          const parentToolUseId = sdkMessage.parent_tool_use_id;
+          if (streamEvent.type === 'message_start') {
+            childPresentation.beginNativeMessage(streamEvent.message.id, parentToolUseId);
+            continue;
+          }
+          if (streamEvent.type === 'content_block_start') {
+            childPresentation.beginNativeBlock(streamEvent.index, streamEvent.content_block as unknown as TranscriptObject, parentToolUseId);
+            const entry = childPresentation.childNativeBlock(parentToolUseId, streamEvent.index);
+            const tool = entry && childPresentation.content.readTool(entry.target);
+            if (tool && typeof tool.id === 'string' && typeof tool.name === 'string') {
+              handleSubagentToolUseStart(parentToolUseId, { id: tool.id, name: tool.name, input: {} });
+              publishBuiltinUiEvent('chat:subagent-tool-use', { parentToolUseId, tool: { id: tool.id, name: tool.name, input: {}, streamIndex: streamEvent.index } });
+            }
+            continue;
+          }
+          if (streamEvent.type === 'content_block_delta') {
+            const delta = streamEvent.delta;
+            if (delta.type === 'text_delta' || delta.type === 'thinking_delta') {
+              const text = delta.type === 'text_delta' ? delta.text : delta.thinking;
+              const target = childPresentation.appendChildNativeText(parentToolUseId, streamEvent.index, text);
+              if (target) publishBuiltinUiEvent('chat:subagent-tool-result-delta', { parentToolUseId, toolUseId: target.subagentToolId, delta: text });
+            } else if (delta.type === 'input_json_delta') {
+              const target = childPresentation.childNativeBlock(parentToolUseId, streamEvent.index)?.target;
+              if (target && !childPresentation.content.readTool(target)?.inputComplete) {
+                childPresentation.content.append(target, 'inputJson', delta.partial_json);
+                publishBuiltinUiEvent('chat:subagent-tool-input-delta', { parentToolUseId, toolId: target.subagentToolId, delta: delta.partial_json });
+              }
+            }
+            continue;
+          }
+          if (streamEvent.type === 'content_block_stop') {
+            const entry = childPresentation.childNativeBlock(parentToolUseId, streamEvent.index);
+            childPresentation.endNativeBlock(streamEvent.index, parentToolUseId);
+            if (entry?.type === 'text' || entry?.type === 'thinking') {
+              publishBuiltinUiEvent('chat:subagent-tool-result-complete', { parentToolUseId, toolUseId: entry.target.subagentToolId, content: childPresentation.content.readTool(entry.target)?.result ?? '' });
+            } else if (entry) handleContentBlockStop(streamEvent.index, entry.target.subagentToolId);
+            continue;
+          }
+        }
+        if (!sdkMessage.parent_tool_use_id) {
+          const presentation = getBuiltinTranscriptPresentation();
+          if (streamEvent.type === 'message_start') presentation?.beginNativeMessage(streamEvent.message.id);
+        if (streamEvent.type === 'content_block_start' && presentation) {
+            ensureAssistantMessage();
+            presentation.beginNativeBlock(streamEvent.index, streamEvent.content_block as unknown as TranscriptObject);
+          }
+          if (presentation && streamEvent.type === 'message_delta' && presentation.currentNativeMessageId) {
+            updateCurrentTurnModelUsage(presentation.currentNativeMessageId, {
+              outputTokens: streamEvent.usage.output_tokens,
+              ...(typeof streamEvent.usage.input_tokens === 'number' ? { inputTokens: streamEvent.usage.input_tokens } : {}),
+              ...(typeof streamEvent.usage.cache_read_input_tokens === 'number' ? { cacheReadTokens: streamEvent.usage.cache_read_input_tokens } : {}),
+              ...(typeof streamEvent.usage.cache_creation_input_tokens === 'number' ? { cacheCreationTokens: streamEvent.usage.cache_creation_input_tokens } : {}),
+            });
+          }
+        }
         if (streamEvent.type === 'content_block_delta') {
           if (streamEvent.delta.type === 'text_delta') {
             if (sdkMessage.parent_tool_use_id) {
@@ -12920,8 +13241,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             const mirroredBlockText = pendingTextBlockTexts.get(streamEvent.index);
             if (mirroredBlockText !== undefined) {
               pendingTextBlockTexts.delete(streamEvent.index);
-              stageSessionBoundAssistantBlock(mirroredBlockText);
+              if (!getBuiltinProductContent()) stageSessionBoundAssistantBlock(mirroredBlockText);
             }
+            getBuiltinTranscriptPresentation()?.endNativeBlock(streamEvent.index);
           }
         }
       } else if (sdkMessage.type === 'user') {
@@ -13083,11 +13405,13 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 // PRD 0.2.30 + #293 — unified media entry: file-path media (edge-tts /
                 // gemini-image) AND extracted image blocks (Playwright screenshots,
                 // generic MCP ImageContent) → first-class disk-backed attachments.
-                const attachments = await attachBuiltinMediaIfAny(
-                  toolResultBlock.tool_use_id,
-                  contentStr,
-                  renderParts.attachments,
-                );
+                const product = getBuiltinProductContent();
+                const media = attachBuiltinMediaIfAny(toolResultBlock.tool_use_id, contentStr, renderParts.attachments);
+                const attachments = product ? undefined : await media;
+                if (product) void media.then(attachments => {
+                  if (attachments && getBuiltinProductContent()?.writer === product.writer) publishBuiltinUiEvent('chat:tool-result-complete', { toolUseId: toolResultBlock.tool_use_id, attachments });
+                });
+                if (!isCurrentQueryAuthority(activeQueryAuthority)) continue;
                 handleToolResultComplete(toolResultBlock.tool_use_id, contentStr);
                 broadcast('chat:tool-result-complete', {
                   toolUseId: toolResultBlock.tool_use_id,
@@ -13110,13 +13434,15 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         // model_refusal_fallback notice that usually precedes this message.
         const supersedes = (sdkMessage as { supersedes?: string[] }).supersedes;
         if (supersedes && supersedes.length > 0) {
-          await applyMessageRetraction(supersedes, 'assistant.supersedes');
+          await applyMessageRetraction(supersedes, 'assistant.supersedes', sdkMessage.parent_tool_use_id ? 'local' : 'session', sdkMessage.parent_tool_use_id ?? undefined);
+          if (!isCurrentQueryAuthority(activeQueryAuthority)) continue;
         }
+        const productPresentation = getBuiltinTranscriptPresentation();
         // Track SDK assistant UUID for resumeSessionAt / rewindFiles
-        const currentAssistant = ensureAssistantMessage();
+        const currentAssistant = productPresentation ? undefined : ensureAssistantMessage();
         // 始终更新为最新的 UUID — SDK 一个回合可能输出多条 assistant 消息
         // （thinking → text），resumeSessionAt 需要最后一条的 UUID 才能保留完整回答
-        if (sdkMessage.uuid) {
+        if (sdkMessage.uuid && currentAssistant) {
           addCurrentSessionUuid(sdkMessage.uuid);
           addLiveSessionUuid(sdkMessage.uuid);
           const boundMessageId = bindSdkUuidToMessage(currentAssistant, sdkMessage.uuid);
@@ -13125,6 +13451,51 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           broadcast('chat:message-sdk-uuid', { messageId: boundMessageId, sdkUuid: sdkMessage.uuid });
         }
         const assistantMessage = sdkMessage.message;
+        let belongsToCurrentProductTurn = true;
+        if (productPresentation && sdkMessage.parent_tool_use_id) {
+          const parent = productPresentation.content.tool(sdkMessage.parent_tool_use_id);
+          belongsToCurrentProductTurn = !!parent && productPresentation.content.writer.projection.messages.get(parent.messageId)?.turnId
+            === productPresentation.content.currentTurn?.id;
+        }
+        if (productPresentation && !sdkMessage.parent_tool_use_id && !sdkMessage.error) {
+          const visibleBlocks = assistantMessage.content.filter(block =>
+            block.type !== 'text' || !checkDecorativeToolText(block.text).filtered) as unknown as TranscriptObject[];
+          const unseenTools = new Set(visibleBlocks.filter(block => typeof block.id === 'string' && !productPresentation.content.tool(block.id)).map(block => block.id));
+          for (const block of visibleBlocks) {
+            if ((block.type === 'tool_use' || block.type === 'server_tool_use') && typeof block.id === 'string'
+              && !productPresentation.content.tool(block.id)) {
+              incrementCurrentTurnToolCount();
+              if (block.type === 'tool_use') inFlightToolCount++;
+            }
+          }
+          const changes = productPresentation.confirmNativeBlocks(assistantMessage.id, sdkMessage.uuid, visibleBlocks);
+          for (const block of visibleBlocks) {
+            if ((block.type !== 'tool_use' && block.type !== 'server_tool_use') || typeof block.id !== 'string') continue;
+            if (unseenTools.has(block.id)) publishBuiltinUiEvent(block.type === 'server_tool_use' ? 'chat:server-tool-use-start' : 'chat:tool-use-start', {
+              id: block.id, name: block.name, input: {}, streamIndex: 0,
+            });
+            if (block.input) publishBuiltinUiEvent('chat:content-block-stop', { toolId: block.id, type: block.type, input: block.input });
+          }
+          belongsToCurrentProductTurn = changes.length === 0 || changes.some(({ target }) =>
+            productPresentation.content.writer.projection.messages.get(target.messageId)?.turnId === productPresentation.content.currentTurn?.id);
+          for (const messageId of new Set(changes.map(({ target }) => target.messageId))) {
+            if (productPresentation.sdkBoundary(messageId) !== sdkMessage.uuid) continue;
+            productPresentation.content.writer.observe({ kind: 'message-update', messageId, details: { sdkUuid: sdkMessage.uuid } });
+            addCurrentSessionUuid(sdkMessage.uuid);
+            addLiveSessionUuid(sdkMessage.uuid);
+            broadcast('chat:message-sdk-uuid', { messageId, sdkUuid: sdkMessage.uuid });
+          }
+          if (belongsToCurrentProductTurn && productPresentation.content.currentTurn?.status === 'running') {
+            setAssistantMessagePresent(true);
+            isStreamingMessage = true;
+            for (const { textDelta } of changes) if (textDelta) {
+              appendCurrentTurnTextBlock(textDelta);
+              markCurrentTurnHasOutput();
+              emitImEvent('delta', textDelta);
+              // V2 stages its stable block through TranscriptPresentation.
+            }
+          }
+        }
         // The result message remains the canonical turn total. Accumulate assistant
         // frames as a best-available fallback for hard stop/error paths where no
         // result arrives; include subagent frames because their usage is part of the turn.
@@ -13144,7 +13515,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           cacheReadTokens: rawUsage.cache_read_input_tokens ?? 0,
           cacheCreationTokens: rawUsage.cache_creation_input_tokens ?? 0,
         } : undefined;
-        if (assistantUsage) accumulateCurrentTurnUsage(assistantUsage);
+        if (assistantUsage) {
+          if (!productPresentation) accumulateCurrentTurnUsage(assistantUsage);
+          else if (belongsToCurrentProductTurn && productPresentation.content.currentTurn?.status === 'running') updateCurrentTurnModelUsage(assistantMessage.id, assistantUsage);
+        }
         const subagentUsage = assistantUsage ? {
           input_tokens: assistantUsage.inputTokens,
           output_tokens: assistantUsage.outputTokens,
@@ -13153,11 +13527,24 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         // PRD 0.2.32 — context 占用：记录最近一条**主轮**（非子 Agent）assistant message 的 usage。
         // 每次重发整段上下文，所以「最近一条的 input+cache」即「此刻窗口装了多少」。子 Agent
         // 消息（parent_tool_use_id 存在）有独立上下文，不能算进主会话占用。
-        if (!sdkMessage.parent_tool_use_id && assistantUsage) {
+        if (!sdkMessage.parent_tool_use_id && assistantUsage && belongsToCurrentProductTurn) {
           setLatestMainAssistantUsage(assistantUsage);
         }
 
-        if (sdkMessage.parent_tool_use_id && assistantMessage.content) {
+        if (productPresentation && sdkMessage.parent_tool_use_id && !sdkMessage.error) {
+          const parentToolUseId = sdkMessage.parent_tool_use_id;
+          const changes = productPresentation.confirmNativeBlocks(assistantMessage.id, sdkMessage.uuid, assistantMessage.content as unknown as TranscriptObject[], parentToolUseId);
+          for (const { target } of changes) {
+            const tool = productPresentation.content.readTool(target);
+            if (!tool || typeof tool.id !== 'string' || typeof tool.name !== 'string') continue;
+            handleSubagentToolUseStart(parentToolUseId, { id: tool.id, name: tool.name, input: {} });
+            let input: unknown = {};
+            if (tool.inputComplete && typeof tool.inputJson === 'string') input = JSON.parse(tool.inputJson);
+            publishBuiltinUiEvent('chat:subagent-tool-use', { parentToolUseId, tool: { id: tool.id, name: tool.name, input, streamIndex: 0 }, finalInput: true, usage: subagentUsage });
+            if (typeof tool.result === 'string') publishBuiltinUiEvent('chat:subagent-tool-result-complete', { parentToolUseId, toolUseId: tool.id, content: tool.result });
+          }
+        }
+        if (!productPresentation && sdkMessage.parent_tool_use_id && assistantMessage.content) {
           for (const block of assistantMessage.content) {
             if (
               typeof block === 'object' &&
@@ -13181,12 +13568,13 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               broadcast('chat:subagent-tool-use', {
                 parentToolUseId: sdkMessage.parent_tool_use_id,
                 tool: payload,
+                finalInput: true,
                 usage: subagentUsage
               });
             }
           }
         }
-        if (sdkMessage.parent_tool_use_id) {
+        if (!productPresentation && sdkMessage.parent_tool_use_id) {
           const text = formatAssistantContent(assistantMessage.content);
           if (text) {
             const next = appendToolResultContent(sdkMessage.parent_tool_use_id, text);
@@ -13227,6 +13615,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 if (!childToolToParent.has(toolResultBlock.tool_use_id)) {
                   ensureSubagentToolPlaceholder(parentToolUseId, toolResultBlock.tool_use_id);
                 }
+                if (!isCurrentQueryAuthority(activeQueryAuthority)) continue;
                 handleToolResultComplete(
                   toolResultBlock.tool_use_id,
                   contentStr,
@@ -13245,9 +13634,14 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 // PRD 0.2.30 + #293 — unified media entry (file-path media + extracted
                 // image blocks). Idempotent with Site A; only one delivery path fires
                 // per tool result.
-                const attachments = toolResultBlock.is_error
-                  ? undefined
-                  : await attachBuiltinMediaIfAny(toolResultBlock.tool_use_id, contentStr, renderParts.attachments);
+                const product = getBuiltinProductContent();
+                const media = toolResultBlock.is_error ? Promise.resolve(undefined)
+                  : attachBuiltinMediaIfAny(toolResultBlock.tool_use_id, contentStr, renderParts.attachments);
+                const attachments = product ? undefined : await media;
+                if (product) void media.then(attachments => {
+                  if (attachments && getBuiltinProductContent()?.writer === product.writer) publishBuiltinUiEvent('chat:tool-result-complete', { toolUseId: toolResultBlock.tool_use_id, attachments });
+                });
+                if (!isCurrentQueryAuthority(activeQueryAuthority)) continue;
                 handleToolResultComplete(
                   toolResultBlock.tool_use_id,
                   contentStr,
@@ -13273,7 +13667,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         // Skip error-wrapped transcriptState.messages (SDK sets "error" field on synthetic error responses)
         // — these should be surfaced via the result handler's agent-error banner instead.
         const isErrorWrapped = !!(sdkMessage as Record<string, unknown>).error;
-        if (!sdkMessage.parent_tool_use_id && !turnState.currentTurnHasOutput && !isErrorWrapped && assistantMessage.content) {
+        if (!productPresentation && !sdkMessage.parent_tool_use_id && !turnState.currentTurnHasOutput && !isErrorWrapped && assistantMessage.content) {
           const nonStreamedParts: string[] = [];
           for (const block of assistantMessage.content) {
             if (
@@ -13301,6 +13695,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           }
         }
       } else if (sdkMessage.type === 'result') {
+        await preparedProvider?.reportTerminal(sdkMessage.subtype === 'success');
         await builtinTurnLifecycle.handleSdkResult(sdkMessage as BuiltinSdkResultMessage);
       } else if (!KNOWN_MESSAGE_TYPES.has(sdkMessage.type) && !warnedUnknownMessageTypes.has(sdkMessage.type)) {
         // Top-level half of the unknown-message sentinel (the system-subtype
@@ -13312,6 +13707,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       }
     }
   } catch (error) {
+    await preparedProvider?.reportTerminal(false);
     const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
     // (issue #174) Pre-launch abort sentinel — clean exit, not a real error.
     // Skip the loud session-error log + the all-recovery branches below;
@@ -13428,7 +13824,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // degradation philosophy as the rewind branch's "resume with full history". Better
     // than a fail-loop or losing the fork entirely.
     if (isSdkMissingResumeMessageError(errorMessage) && !rewindAnchorWasSent) {
-      const failedForkMeta = getSessionMetadata(sessionId);
+      const failedForkMeta = getCurrentProductSessionMetadata();
       if (failedForkMeta?.forkFrom?.messageUuid) {
         const rejectedForkUuid = failedForkMeta.forkFrom.messageUuid;
         console.warn(`[agent] forkSession anchor UUID ${rejectedForkUuid} rejected by SDK (source store no longer contains it) — clearing anchor; retry will fork at source tail`);
@@ -13517,6 +13913,13 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     clearTimeout(startupTimeoutId);
     clearInterval(apiWatchdogId);
     const wasPreWarming = lifecycleState.preWarming;
+    if (!wasPreWarming && isCurrentQueryAuthority(activeQueryAuthority)
+      && getBuiltinProductContent()?.currentTurn?.status === 'running'
+      && !lifecycleState.abortRequested && !isInterruptingResponse) {
+      const error = 'AI runtime ended before completing this turn';
+      const terminal = handleMessageError(error);
+      broadcast('chat:message-error', withSessionCompletionTerminal(error, terminal));
+    }
     setPreWarmInProgress(false);
     setSessionProcessing(false);
     clearTransientProviderRetryTimer('session-finally');
@@ -13584,6 +13987,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     releaseBuiltinMcpAdmissionOwner();
     configState.currentCapabilitySnapshot = null;
     try { session?.close(); } catch { /* subprocess 可能已退出 */ }
+    if (managedQueryController === bindingController) managedQueryController = undefined;
+    await preparedProvider?.release().catch(() => {
+      console.warn('[cliproxy] Query binding release was not confirmed');
+    });
 
     // PRD #124: unregister the bridge token now that the SDK subprocess
     // has exited. If the session restarts, `startStreamingSession` mints
@@ -13689,8 +14096,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     const turnBoundaryQueueLength = getTurnBoundaryQueue().length;
     if ((messageQueueLength > 0 || turnBoundaryQueueLength > 0) && !lifecycleState.processing && lifecycleState.query === null) {
       const hasOnlyTurnBoundaryQueue = messageQueueLength === 0 && turnBoundaryQueueLength > 0;
-      if (lifecycleState.preWarmDisabled) {
-        console.warn(`[agent] Safety net: ${messageQueueLength + turnBoundaryQueueLength} orphaned message(s), pre-warm disabled → draining`);
+      if (lifecycleState.preWarmDisabled || lifecycleState.preWarmFailCount >= PRE_WARM_MAX_RETRIES) {
+        // A queued item cannot grant itself another startup retry budget. Once
+        // preparation is exhausted, settle unsent input; a user/config action
+        // can explicitly start a new recovery context.
+        console.warn(`[agent] Safety net: ${messageQueueLength + turnBoundaryQueueLength} orphaned message(s), pre-warm unavailable → draining`);
         drainQueueWithCancellation();
       } else if (hasOnlyTurnBoundaryQueue) {
         if (lifecycleState.preWarmTimer) {
@@ -13748,7 +14158,7 @@ async function rejectPromotedMessageBeforeDispatch(
   schedulePostTerminalQueueDrain('recovery');
 }
 
-async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
+async function* messageGenerator(preparedProvider: PreparedProvider): AsyncGenerator<SDKUserMessage> {
   // (v0.2.12) Mid-turn injection restored.
   //
   // Yield queued transcriptState.messages immediately so the CLI subprocess receives them
@@ -13782,6 +14192,26 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
       return; // generator return → SDK endInput() → stdin EOF → subprocess 退出
     }
     beginPromotedItem(item);
+    try {
+      await preparedProvider.beforeTurn();
+    } catch (error) {
+      if (error instanceof ManagedProxyError && error.code === 'draining') {
+        // Admission has not reached the SDK. Keep the existing queue item for
+        // the replacement Query; its cancellation and delivery IDs stay intact.
+        requeuePromotedItemBeforeSdkDispatch(item);
+        scheduleDeferredRestart('provider');
+        applyDeferredRestartIfNeeded();
+        return;
+      }
+      await rejectPromotedMessageBeforeDispatch(item, {
+        accepted: false,
+        error: error instanceof Error ? error.message : '托管订阅连接不可用',
+        rollbackBeforeReject: Promise.resolve(item.beforeDispatch?.cancel?.()),
+      });
+      scheduleDeferredRestart('provider');
+      applyDeferredRestartIfNeeded();
+      return;
+    }
     const promotedQuery = lifecycleState.query;
     let desiredCapabilities: EffectiveProjectCapabilitySnapshot;
     try {
@@ -14145,7 +14575,7 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
     const activityFacts: SessionActivityTurnFacts = {
       origin: turnOrigin,
       inputText: item.messageText,
-      systemMaintenanceKind: getSessionMetadata(sessionId)?.systemMaintenanceKind,
+      systemMaintenanceKind: getCurrentProductSessionMetadata()?.systemMaintenanceKind,
     };
     item.activityFacts = activityFacts;
     const admissionActivityAt = shouldRecordAdmissionActivity(activityFacts)
@@ -14192,7 +14622,7 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
         continue;
       }
       item.deferredUserSurface = undefined;
-    } else if (getSessionMetadata(sessionId)?.materializationState === 'prepared') {
+    } else if (getCurrentProductSessionMetadata()?.materializationState === 'prepared') {
       const visibleText = resolveVisibleUserTurnText(item.messageText)?.trim();
       try {
         await commitPreparedSessionAfterUserMessagePersist(
@@ -14208,7 +14638,7 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
     }
     if (admissionActivityAt && !admissionActivityMerged) {
       try {
-        await persistMessagesToStorage(transcriptState.messages.length, admissionActivityAt);
+        await persistMessagesToStorage(getMessageCount(), admissionActivityAt);
       } catch (error) {
         console.error('[agent] admission activity metadata update failed:', error);
       }

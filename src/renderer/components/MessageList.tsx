@@ -560,7 +560,7 @@ const MessageList = memo(function MessageList({
     // `flow-root` (not `overflow-hidden`) establishes a BFC so child Markdown
     // margins don't leak past the wrapper — that's what e6de7173 originally
     // wanted. `overflow-hidden` did the same job but added a hard clip side
-    // effect: when Virtuoso's height estimate (`defaultItemHeight=480`) was
+    // effect: when Virtuoso's initial height estimate was
     // far from actual short-item height (~80px), the post-mount measurement
     // correction shifted scroll anchors enough that short user bubbles got
     // visually clipped instead of merely positioned slightly off — they
@@ -665,7 +665,7 @@ const MessageList = memo(function MessageList({
     <MessageListPresentationContext.Provider value={canLayoutVirtualList}>
     <div
       ref={viewportRootRef}
-      className="relative flex-1"
+      className="relative flex-1 markdown-wide-surface"
       data-streaming={isStreaming || undefined}
       data-viewport-phase={isViewportRecoveryFenced ? 'recovering' : (canLayoutVirtualList ? 'renderable' : 'suspended')}
       style={isViewportRecoveryFenced && windowPresentation.surfaceAvailable
@@ -683,15 +683,12 @@ const MessageList = memo(function MessageList({
         single pre-paint call. Heights are recomputed lazily as items come into
         view, not up front.
 
-        defaultItemHeight=480 is an empirical average across tool-use / text /
-        thinking blocks; too low (200) causes Virtuoso to over-render initially,
-        too high leaves holes at the bottom. 480 stays close to long-content
-        reality but does produce sizeable post-mount corrections on short user
-        bubbles (~80-150px). The previous wrapper used `overflow-hidden`, which
-        amplified those corrections into hard clips: short bubbles vanished
-        while neighbours merged. The wrapper is now `flow-root` (above), so any
-        residual correction shows up as a small scroll bounce rather than a
-        disappearing message.
+        heightEstimates seeds the initial size tree with each message's content
+        estimate; real measurements replace those estimates as rows mount.
+        Do not also provide defaultItemHeight: in Virtuoso 4.18.3 it initializes
+        the tree first and prevents the per-row seed from being used, even if
+        the list starts empty before history loads. Callers without a seed use
+        Virtuoso's normal first-row probe.
 
         The extra top viewport and item-count overscan bias reverse scrolling
         toward pre-measuring tall Markdown/code rows before they enter view.
@@ -718,7 +715,6 @@ const MessageList = memo(function MessageList({
         itemsRendered={handleItemsRendered}
         atBottomThreshold={50}
         itemSize={measureVisibleItemSize}
-        defaultItemHeight={480}
         increaseViewportBy={{ top: 1600, bottom: 800 }}
         minOverscanItemCount={{ top: 3, bottom: 1 }}
         skipAnimationFrameInResizeObserver={!canLayoutVirtualList || !isLargeRowShrinking}

@@ -99,7 +99,7 @@ Task 执行统一经过 `task_execution.rs` -> Rust Sidecar bridge -> Node `Sess
 - 新建执行 Session，或首次 materialize 专属 single-session Session：Task 配置只用于初始化一次。
 - 从当前 Chat 创建 single-session Task 时，Renderer 先通过既有 Session materialization transaction 得到真实 Session identity，再提交 Task；新 Task 与显式改绑的持久化边界在同一 Session lifecycle guard 内拒绝空值、`pending-*` 和不存在的 Session metadata。materialize 失败、取消、Session 并发删除或 Tab 已卸载都不会留下半绑定 Task。升级前已存在且未改绑的 legacy 缺失 binding 仍可编辑；new-session 的 scheduler reservation 不变。
 - 新 Task Session 的 metadata 创建权由 scheduler 根据 `SessionStore` 决定，**与 Sidecar `EnsureSidecarResult.isNew` 无关**。guard、shared lease 与停止确认的完整事务见[第 6 节](#6-数据完整性)。
-- single-session 的持久 binding 若已没有 Session metadata，执行前换成新 UUID 并原子重绑，绝不复活被用户删除的 Session id；`task:session-rebound` 提示 UI。`AttachedSession` 终态不能 generic rerun，后续工作必须重新 claim/reopen 并创建新的 Attached Task。
+- single-session 的持久 binding 若既没有逻辑 Sidecar owner，也没有 Session metadata，执行前换成新 UUID 并原子重绑，绝不复活被用户删除的 Session id；`task:session-rebound` 提示 UI。`AttachedSession` 终态不能 generic rerun，后续工作必须重新 claim/reopen 并创建新的 Attached Task。
 - permission 是本轮执行策略，可由 Task 指定；空值解析为对应 runtime 最大权限。
 - durable Task 只保存 provider identity (`providerId + model`)，不保存 credential/env。
 - 执行期间使用 `SidecarOwner::Task(taskId)`；terminal/stop/delete 对称释放。
@@ -110,7 +110,7 @@ Task ↔ Session relation 只在 Runtime adapter 已接纳首轮 query 后，由
 
 ### 本地评论与全局通知
 
-`comments.jsonl` 是 Comment 语义 authority；记录 author、时间、可选 reply 关系、冻结的 `conversationSessionId` 与最小 admission receipt。用户 Comment 先持久化，再选择至多一个目标：直接评论取最近一次已接纳 Session；回复有 Session 的历史 Comment 固定回该 Session；没有 Session 时保留 `pending_session`，之后不得自动改投另一个 Session。投送复用 Inbox/SessionEngine FIFO，不增加本地 Delivery、poll 或 ACK。冻结的 Session ID 只拥有 exact routing，不拥有 Session birth；投送必须在既有 Session lifecycle fence 内重新核对 durable metadata，已删除目标记为失败，不能用 Task workspace 复活同一 ID。
+`comments.jsonl` 是 Comment 语义 authority；记录 author、时间、可选 reply 关系、冻结的 `conversationSessionId` 与最小 admission receipt。用户 Comment 先持久化，再选择至多一个目标：直接评论取最近一次已接纳 Session；回复有 Session 的历史 Comment 固定回该 Session；没有 Session 时保留 `pending_session`，之后不得自动改投另一个 Session。投送复用 Inbox/SessionEngine FIFO，不增加本地 Delivery、poll 或 ACK。冻结的 Session ID 只拥有 exact routing，不拥有 Session birth；投送必须在既有 Session lifecycle fence 内重新核对逻辑 Sidecar owner 或 durable metadata，已删除目标记为失败，不能用 Task workspace 复活同一 ID。
 
 Agent 只能从已绑定 Session 显式调用 `myagents task comment` 写回；普通 assistant 输出不自动形成 Comment。Task 首轮可以从运行上下文安全解析当前 Task ID，用户 Comment 注入的后续轮必须使用 `TASK_COMMENT` reminder 中的显式 ID。Attached Task 使用同一本地时间线，但 Cloud IssueDelivery 与本地 Comment 各自保留自己的 reminder/CLI 回复通道，不镜像或双写。
 
@@ -182,9 +182,9 @@ Task 对 Session identity 的保护同时覆盖 durable 与 transient 两层：R
 
 startup legacy migration 也是 durable writer：`create_migrated_with_id` 与 `import_legacy_execution_state` 必须走同一 lifecycle policy，不能以“仅启动期”为由裸拿 TaskStore lock。`create_attached` 在取得 lifecycle 后还要复核 Session metadata；若删除先赢，拒绝创建本地 Attached Task。
 
-首次 materialize 的 Task Session 会把 lifecycle guard 保留到权威 `SessionStore` 记录出现。Session 创建方与 Sidecar ensure 通过 shared lease 表示同一次 guard 获取，ensure 不能再次获取相同 key。metadata 创建后，observer 立即从精确的 execution generation 清除 lease，另一个共享同一 id 的 Task 才能 adopt。guard 不能持有到整个 turn 结束，否则该 turn 内访问同一 Session 的工具会等待自己并造成死锁。
+首次 materialize 的 Task Session 持有 lifecycle guard，直到精确 Runtime admission 确认内存 Session 已建立，或 observer 先观察到 metadata 发布。创建方与 Sidecar ensure 通过 shared lease 表示同一次 guard 获取，ensure 不能再次获取相同 key。`confirm_turn_admitted` 必须先清除该 execution generation 的 birth lease，再提交 Task relation 和投送 Comment，避免二次获取同一 lifecycle 导致死锁。产品写盘失败不会延迟这个交接，也不影响已有逻辑 owner 的继续执行。Running single-session Task 的后续请求即使未被接纳，也保留 reservation 已确认的既有 Session；不得仅凭本轮 admission 或 metadata 缺失释放它。
 
-如果该 turn 在 metadata 创建前被**确认**失败，创建方必须释放 guard 与 Task owner，让下一次 reservation 重新取得 metadata 创建权。如果 POST 可能已经到达 Node，只是响应丢失，lease 必须留在精确的 `ActiveTaskExecution`，worker 或 observer 异常都不能释放它。
+如果新 Session 在内存建立和 metadata 发布前被**确认**失败，创建方必须释放 guard 与 Task owner，让下一次 reservation 重新取得创建权。如果 POST 可能已经到达 Node，只是响应丢失，lease 必须留在精确的 `ActiveTaskExecution`，worker 或 observer 异常都不能释放它。
 
 `/task/stop` 返回 `not_found`，只有在 Node 的 metadata 创建前 admission 已取消，或 materialize 已经结束时，才表示停止已确认；Rust 随后删除精确 generation 并释放 lease。不能把“Runtime queue 尚未登记”误判为创建方已经退出，也不能在状态不确定时绑定第二个 Session identity。Sidecar 是否被其它 owner 保活不影响这一判断。
 

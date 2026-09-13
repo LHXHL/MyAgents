@@ -1,3 +1,4 @@
+import { isRuntimeBackedProvider } from '../../../shared/providerExecution';
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
   AlertCircle,
@@ -253,10 +254,16 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     : PERMISSION_MODES.map(m => ({
       ...m,
       label: t(`input.permissionModes.${m.value}.label`, { defaultValue: m.label }),
-      description: t(`input.permissionModes.${m.value}.description`, { defaultValue: m.description }),
+      description: t(`input.permissionModes.${m.value === 'auto' && isRuntimeBackedProvider(provider) ? 'full-auto' : m.value}.description`, { defaultValue: m.description }),
     }));
   const currentModeDisplay = displayPermissionModes.find(m => m.value === permissionMode)
-    ?? displayPermissionModes[0];
+    // Historical Codex read-only sessions remain read-only, but are no longer
+    // offered as a new native preset. Never display a writable fallback for them.
+    ?? (runtime === 'codex' && String(permissionMode) === 'suggest' ? {
+      value: permissionMode,
+      label: t('input.permissionModes.suggest.label'),
+      icon: '🔍',
+    } : displayPermissionModes[0]);
 
   useEffect(() => {
     if (isLauncherMode || !onOverlayHeightChange) return;

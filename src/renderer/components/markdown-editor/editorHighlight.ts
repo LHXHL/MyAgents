@@ -6,10 +6,10 @@ import type { SyntaxStyle } from '@/theme/types';
  * palette/setting for Markdown or fixed light-only CodeMirror token colors. */
 export function editorHighlight(prism: SyntaxStyle) {
   return HighlightStyle.define([
-    { tag: tags.heading, fontWeight: '650' },
+    { tag: tags.heading, fontWeight: 'var(--font-weight-emphasis)' },
     { tag: tags.link, color: 'var(--accent)', textDecoration: 'underline' },
     { tag: tags.emphasis, fontStyle: 'italic' },
-    { tag: tags.strong, fontWeight: '650' },
+    { tag: tags.strong, fontWeight: 'var(--font-weight-emphasis)' },
     { tag: tags.strikethrough, textDecoration: 'line-through' },
     { tag: tags.meta, color: 'var(--ink-muted)' },
     { tag: tags.keyword, ...prism.keyword },

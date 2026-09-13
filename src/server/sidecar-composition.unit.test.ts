@@ -24,6 +24,7 @@ describe('Sidecar production composition', () => {
     ['GET', '/health', 'common'],
     ['GET', '/refs/12345678', 'common'],
     ['POST', '/api/provider/verify', 'global'],
+    ['POST', '/api/cliproxy/control', 'common'],
     ['POST', '/api/process/graceful-shutdown', 'global'],
     ['POST', '/api/browser/session/retire', 'global'],
     ['POST', '/api/mcp/oauth/discover', 'global'],
@@ -32,11 +33,13 @@ describe('Sidecar production composition', () => {
     ['GET', '/api/runtime/permission-modes?type=codex', 'common'],
     ['GET', '/api/runtime/type', 'session'],
     ['GET', '/sessions', 'global'],
+    ['POST', '/sessions', 'global'],
+    ['POST', '/api/session/birth', 'session'],
     ['GET', '/api/session-tags', 'global'],
     ['POST', '/api/session-tags/assign', 'global'],
     ['POST', '/api/session-tags/manage', 'global'],
     ['GET', '/sessions/session-1', 'common'],
-    ['PATCH', '/sessions/session-1', 'global'],
+    ['PATCH', '/sessions/session-1', 'common'],
     ['POST', '/chat/send', 'session'],
     ['POST', '/cron/execute-sync', 'session'],
     ['POST', '/goal/execute-sync', 'session'],
@@ -65,6 +68,30 @@ describe('Sidecar production composition', () => {
     expect(classifySidecarRequest(request('/api/future-owner', 'POST'))).toBeNull();
   });
 
+  describe.each(['global', 'session', 'development-union'] as const)(
+    '%s Record CLI admission',
+    (role) => {
+      it.each([
+        ['record', 'list'],
+        ['record', 'create'],
+        ['thought', 'list'],
+        ['thought', 'create'],
+      ] as const)('dispatches %s/%s through the common management surface', async (group, action) => {
+        const realHandler = vi.fn(async () => Response.json({ success: true }));
+        const composition = role === 'development-union'
+          ? resolveSidecarComposition(null, true)
+          : resolveSidecarComposition(role, false);
+        const cliRequest = request(`/api/admin/${group}/${action}`, 'POST');
+
+        const response = await composeSidecarRequestHandler(composition, realHandler)(cliRequest);
+
+        expect(response.status).toBe(200);
+        expect(classifySidecarRequest(cliRequest)).toBe('common');
+        expect(realHandler).toHaveBeenCalledExactlyOnceWith(cliRequest);
+      });
+    },
+  );
+
   it('routes one-shot Grok verification through the Global provider owner', async () => {
     const grokVerification = request('/api/grok/verify', 'POST');
     expect(classifySidecarRequest(grokVerification)).toBe('global');
@@ -88,15 +115,18 @@ describe('Sidecar production composition', () => {
 
   it.each([
     ['global', 'POST', '/chat/send'],
+    ['global', 'POST', '/api/session/birth'],
+    ['session', 'POST', '/sessions'],
     ['global', 'POST', '/cron/execute-sync'],
     ['global', 'POST', '/goal/execute-sync'],
     ['global', 'POST', '/api/im/enqueue'],
     ['global', 'POST', '/api/inbox/drain'],
     ['session', 'POST', '/api/provider/verify'],
+    ['session', 'POST', '/api/cliproxy/verify'],
     ['session', 'POST', '/api/mcp/oauth/start'],
     ['session', 'POST', '/mcp/playwright'],
     ['session', 'POST', '/api/browser/session/retire'],
-    ['session', 'PATCH', '/sessions/session-1'],
+    ['session', 'DELETE', '/sessions/session-1'],
   ] as const)('%s rejects wrong-role %s %s before the real handler', async (role, method, path) => {
     const realHandler = vi.fn(async () => new Response('handled'));
     const handler = composeSidecarRequestHandler(
@@ -112,10 +142,15 @@ describe('Sidecar production composition', () => {
 
   it.each([
     ['global', 'POST', '/api/provider/verify'],
+    ['global', 'POST', '/api/cliproxy/control'],
+    ['session', 'POST', '/api/cliproxy/control'],
     ['global', 'POST', '/api/mcp/oauth/start'],
     ['global', 'POST', '/mcp/playwright'],
     ['global', 'POST', '/api/browser/session/retire'],
     ['session', 'POST', '/chat/send'],
+    ['session', 'POST', '/api/session/birth'],
+    ['session', 'PATCH', '/sessions/session-1'],
+    ['global', 'PATCH', '/sessions/session-1'],
     ['session', 'POST', '/cron/execute-sync'],
     ['session', 'POST', '/goal/execute-sync'],
     ['session', 'POST', '/api/im/enqueue'],

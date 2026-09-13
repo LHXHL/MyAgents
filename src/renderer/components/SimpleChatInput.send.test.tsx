@@ -4,7 +4,7 @@ import { createRef } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ImagePreviewProvider } from '@/context/ImagePreviewContext';
-import type { Provider } from '@/config/types';
+import type { PermissionMode, Provider } from '@/config/types';
 import { i18n } from '@/i18n';
 import { CUSTOM_EVENTS } from '../../shared/constants';
 import { MANAGED_BROWSER_MCP_ID } from '../../shared/browserTools';
@@ -146,7 +146,7 @@ describe('SimpleChatInput send paths', () => {
       name: 'Codex',
       runtime: 'codex' as const,
       modes: CODEX_PERMISSION_MODES,
-      expectedIcons: ['shield-question-mark', 'file-pen-line', 'shield-check', 'lock-open'],
+      expectedIcons: ['file-pen-line', 'shield-check', 'lock-open'],
     },
   ])('maps $name permission boundaries to the shared line icon vocabulary', async ({ runtime, modes, expectedIcons }) => {
     await i18n.changeLanguage('zh-CN');
@@ -158,6 +158,30 @@ describe('SimpleChatInput send paths', () => {
     for (const iconName of expectedIcons) {
       expect(document.querySelector(`.lucide-${iconName}`)).toBeInTheDocument();
     }
+  });
+
+  it('describes managed Codex action as automatic review without changing the product mode names', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    renderInput({ runtime: 'builtin', provider: { id: 'codex-sub', name: 'Codex' } as Provider, permissionMode: 'auto' });
+    await user.click(screen.getByTitle('切换执行模式'));
+    expect(screen.getByText('由 Codex 自动审查审批请求，仅潜在不安全操作需确认')).toBeInTheDocument();
+    expect(screen.getByText('规划')).toBeInTheDocument();
+    expect(screen.getByText('自主行动')).toBeInTheDocument();
+  });
+
+  it('offers native Codex three choices and keeps the legacy read-only caption truthful', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    const onPermissionModeChange = vi.fn();
+    renderInput({ runtime: 'codex', runtimePermissionModes: CODEX_PERMISSION_MODES, permissionMode: 'suggest' as PermissionMode, onPermissionModeChange });
+    expect(screen.getByTitle('切换执行模式')).toHaveTextContent('Suggest');
+    await user.click(screen.getByTitle('切换执行模式'));
+    expect(screen.getByText('Ask for approval')).toBeInTheDocument();
+    expect(screen.getByText('Full Access')).toBeInTheDocument();
+    expect(screen.getAllByText('Suggest')).toHaveLength(1);
+    await user.click(screen.getByText('Approve for me'));
+    expect(onPermissionModeChange).toHaveBeenCalledWith('full-auto');
   });
 
   it.each(['chat', 'launcher'] as const)('keeps the scheduled-task action inside the animated plus menu in %s mode', async (mode) => {

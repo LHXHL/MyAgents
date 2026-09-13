@@ -1,4 +1,17 @@
 {
+  "transcriptSave": {
+    "warning": "对话记录暂时无法保存，不影响继续使用；未保存内容可能在关闭后丢失。",
+    "recovered": "对话记录保存已恢复。"
+  },
+  "asyncQuestion": {
+    "compose": "自由回答",
+    "answered": "已回答",
+    "queued": "等待发送",
+    "sending": "正在提交…",
+    "failed": "发送失败，可以重试",
+    "replyingTo": "回答：{{title}}",
+    "cancel": "取消回答"
+  },
   "input": {
     "launcherPlaceholder": "今天，想干点啥？",
     "placeholder": "输入消息，使用 @ 引用文件，/ 使用技能...",
@@ -135,19 +148,19 @@
       },
       "suggest": {
         "label": "Suggest",
-        "description": "仅信任的命令自动执行，其他需确认"
+        "description": "只读模式；仅信任的命令自动执行，其他需确认"
       },
       "auto-edit": {
-        "label": "Auto-Edit",
-        "description": "自动编辑文件，沙箱内执行命令"
+        "label": "Ask for approval",
+        "description": "工作区内自动执行；联网或修改外部文件时请求批准"
       },
       "full-auto": {
-        "label": "Full Auto",
-        "description": "沙箱内自主执行，按需询问"
+        "label": "Approve for me",
+        "description": "由 Codex 自动审查审批请求，仅潜在不安全操作需确认"
       },
       "no-restrictions": {
-        "label": "No Restrictions",
-        "description": "跳过所有审批和沙箱限制"
+        "label": "Full Access",
+        "description": "无需审批即可访问文件和网络"
       }
     },
     "slashCommands": {

@@ -1,3 +1,4 @@
+import type { AsyncQuestionReply } from '../../shared/asyncUserQuestions';
 import type { BackgroundAgentPermissionMode, ProxySettings } from '../../shared/config-types';
 import type { RuntimeConfig, RuntimeSource } from '../../shared/types/runtime';
 import type { RuntimeType } from '../../shared/types/runtime';
@@ -5,7 +6,7 @@ import type { McpServerDefinition } from '../../shared/config-types';
 import type { ProviderEnv } from '../provider-types';
 import type { InteractionScenario } from '../system-prompt';
 import type { SessionSource, TurnAnalyticsSource } from '../types/session';
-import type { SessionMessage } from '../types/session';
+import type { SessionMessage, SessionMetadata } from '../types/session';
 import type { ImagePayload } from '../runtimes/types';
 import type { InboxTurnMeta } from '../inbox/types';
 import type { ProviderRoute } from '../../shared/providerRoute';
@@ -32,6 +33,7 @@ export type SessionEngineKind = 'builtin' | 'external';
 export type { PermissionMode } from '../agent-session';
 
 export type DesktopMessageRequest = {
+  asyncQuestionReply?: AsyncQuestionReply;
   text: string;
   images?: ImagePayload[];
   /** Product mode for builtin sessions; runtime-native mode for external sessions. */
@@ -233,7 +235,7 @@ export type ScheduledTurnPreparationResult = {
   status?: number;
 };
 
-export type QueueStatusItem = { id: string; messagePreview: string };
+export type QueueStatusItem = { id: string; messagePreview: string; asyncQuestionReply?: AsyncQuestionReply; canCancel?: boolean; canForceExecute?: boolean };
 
 export type SessionEngineRuntimeIdentity = {
   kind: SessionEngineKind;
@@ -342,6 +344,7 @@ export type SessionEngineLiveOverlay = {
   runtime?: RuntimeType;
   snapshotRevision?: number;
   liveStreamingMessage?: SessionMessage | null;
+  queuedMessages?: QueueStatusItem[];
   liveSessionState?: string;
   inMemoryMessages?: SessionMessage[];
   pendingInteractiveRequests?: SessionEnginePendingInteractiveRequest[];
@@ -378,11 +381,12 @@ export type ConversationOperationErrorCode =
   | 'restore_failed';
 
 export interface SessionEngine {
+  publishTranscriptSaveStatus(status: import('../../shared/sessionTranscript').TranscriptSaveStatus): void;
   kind: SessionEngineKind;
   isBusy(): boolean;
   getRuntimeIdentity(): SessionEngineRuntimeIdentity;
   getLiveSessionState(): SessionEngineLiveState;
-  getLatestAssistantResult(): SessionEngineLatestResult;
+  getLatestAssistantResult(): Promise<SessionEngineLatestResult>;
   getStreamReplaySnapshot(): SessionEngineStreamReplaySnapshot;
   getSessionConfigSnapshot(): SessionEngineConfigSnapshot;
   getCurrentSessionContext(): SessionEngineCurrentContext;
@@ -424,6 +428,8 @@ export interface SessionEngine {
     preparedSessionId?: string;
     snapshotPatch?: SessionEngineSnapshotMaterializePatch;
     origin?: SessionOrigin;
+    /** Server-validated creation snapshot; never accepted by the materialize HTTP route. */
+    birthSnapshot?: Partial<SessionMetadata>;
   }): Promise<SessionEngineMaterializePendingResult>;
   freezeCurrentSessionForImDetach(options?: {
     metadataBirthPending?: boolean;

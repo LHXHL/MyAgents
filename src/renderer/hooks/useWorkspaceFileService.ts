@@ -166,6 +166,9 @@ interface SlashCommandsResponse {
 interface PathInfo {
   exists: boolean;
   type: 'file' | 'dir';
+  /** Canonical local target when a reference crosses the workspace read boundary. */
+  resolvedPath?: string;
+  error?: string;
 }
 
 interface CheckPathsResult {

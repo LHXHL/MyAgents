@@ -90,6 +90,8 @@ Builtin Anthropic subscription 的 ID 是 `anthropic-sub`。代理 owner 只决�
 
 OpenAI-protocol Provider 的 SDK subprocess 只访问 Sidecar loopback。`buildClaudeSessionEnv()` 必须从该子进程 env 剥离所有 proxy vars，避免 SDK 把 `127.0.0.1` 送入代理；Bridge handler 再根据 bridge token 找到 `providerId`，以 Provider-aware helper 访问真实 upstream。Bridge 不能用 general `process.env` 代替 Provider decision。
 
+CLIProxy 的 Google 请求由 Rust `apply_to_subprocess_for_provider(..., "antigravity-sub")` 选择 Provider scope；资源下载走 general scope。Go 环境仅在没有对应 HTTP/HTTPS 配置时投影 inherited ALL_PROXY，保留 NO_PROXY。SDK → CLIProxy 和 Rust 管理 HTTP 都是 loopback，继续服从本地直连；SDK 原生 bypass 行为须对实际安装版本验证。CLIProxy 不接收 Sidecar 的 general overlay 或其他 Provider 凭据。
+
 ## SOCKS5 bridge
 
 多数 SDK/子进程只稳定支持 HTTP proxy。应用配置为 SOCKS5 时，Sidecar 建立稳定的本地 HTTP-to-SOCKS5 bridge：

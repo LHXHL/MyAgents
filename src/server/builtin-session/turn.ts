@@ -26,6 +26,7 @@ function emptyUsage(): BuiltinTurnUsage {
 }
 
 let currentTurnUsage = emptyUsage();
+const currentModelUsage = new Map<string, import('../types/session').MessageUsage>();
 let latestMainAssistantUsage: import('../types/session').MessageUsage | null = null;
 let currentTurnStartTime: number | null = null;
 let currentPlanFileMinMtimeMs: number | null = null;
@@ -47,7 +48,7 @@ export type PendingOutputOwner = {
   requestId: string | null;
   assistantChannelDelivery: AssistantChannelDelivery;
   channelSessionId: string;
-  assistantChannelTextBlocks: string[];
+  assistantChannelTextBlocks: Array<string | (() => string | undefined)>;
 };
 
 // One owner per user message yielded to SDK stdin. A null requestId is
@@ -209,6 +210,7 @@ export function beginTurn(context: BuiltinTurnStartContext): void {
 
 export function resetTurnUsage(): void {
   currentTurnUsage = emptyUsage();
+  currentModelUsage.clear();
   latestMainAssistantUsage = null;
   currentTurnStartTime = null;
   currentPlanFileMinMtimeMs = null;
@@ -246,6 +248,26 @@ export function accumulateCurrentTurnUsage(next: import('../types/session').Mess
     cacheReadTokens: currentTurnUsage.cacheReadTokens + (next.cacheReadTokens ?? 0),
     cacheCreationTokens: currentTurnUsage.cacheCreationTokens + (next.cacheCreationTokens ?? 0),
   };
+}
+
+/** Model-message usage is cumulative across sibling content frames. V2 replaces
+ * that response's contribution; the final SDK result still owns the turn total.
+ */
+export function updateCurrentTurnModelUsage(id: string, next: Partial<import('../types/session').MessageUsage>): void {
+  const previous = currentModelUsage.get(id) ?? { inputTokens: 0, outputTokens: 0 };
+  const merged = { ...previous, ...next,
+    inputTokens: Math.max(previous.inputTokens, next.inputTokens ?? 0),
+    outputTokens: Math.max(previous.outputTokens, next.outputTokens ?? 0),
+    cacheReadTokens: Math.max(previous.cacheReadTokens ?? 0, next.cacheReadTokens ?? 0),
+    cacheCreationTokens: Math.max(previous.cacheCreationTokens ?? 0, next.cacheCreationTokens ?? 0),
+  };
+  currentModelUsage.set(id, merged);
+  accumulateCurrentTurnUsage({
+    inputTokens: merged.inputTokens - previous.inputTokens,
+    outputTokens: merged.outputTokens - previous.outputTokens,
+    cacheReadTokens: (merged.cacheReadTokens ?? 0) - (previous.cacheReadTokens ?? 0),
+    cacheCreationTokens: (merged.cacheCreationTokens ?? 0) - (previous.cacheCreationTokens ?? 0),
+  });
 }
 
 export function getLatestMainAssistantUsage(): import('../types/session').MessageUsage | null {
@@ -434,7 +456,7 @@ export function hasPendingOutputOwnerByQueueId(queueId: string | null | undefine
   return Boolean(queueId && pendingOutputOwners.some(owner => owner.queueId === queueId));
 }
 
-export function stageCurrentOutputOwnerAssistantChannelBlock(text: string): boolean {
+export function stageCurrentOutputOwnerAssistantChannelBlock(text: string | (() => string | undefined)): boolean {
   const owner = pendingOutputOwners[0];
   if (!owner || owner.assistantChannelDelivery !== 'session-binding' || !text) return false;
   owner.assistantChannelTextBlocks.push(text);
@@ -623,6 +645,7 @@ export function snapshotTurn() {
 
 export function resetTurnForTest(): void {
   currentTurnUsage = emptyUsage();
+  currentModelUsage.clear();
   latestMainAssistantUsage = null;
   currentTurnStartTime = null;
   currentPlanFileMinMtimeMs = null;

@@ -1,3 +1,6 @@
+import type { QueuedMessageInfo } from '@/types/queue';
+import { appendStreamingText, completeStreamingText } from '@/utils/streamingTextBlocks';
+import { sameAsyncQuestionReply, type AsyncQuestionReply, type AsyncQuestionSet } from '../../shared/asyncUserQuestions';
 /**
  * Desktop-channel session brain for the floating ball companion (PRD 0.2.35).
  *
@@ -10,10 +13,15 @@
  * It reuses the Tab send/SSE/session surfaces, plus a tiny scenario-sync
  * endpoint so sidecar pre-warm receives the floating-window prompt layer.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
-import { createSseConnection, type SseConnection } from '@/api/SseConnection';
+import { createSseConnection, type SseConnection, type SseEventHandler } from '@/api/SseConnection';
+import { useTranscriptSaveToast } from '@/context/useTranscriptSaveToast';
+import { applyTranscriptDisplayOperation } from '@/context/transcriptDisplay';
+import { applyTranscriptToolDisplayEvent, TRANSCRIPT_TOOL_DISPLAY_EVENTS, type TranscriptToolDisplayEvent } from '@/context/transcriptToolDisplay';
+import { EMPTY_LIVE_REVISION_FENCE, beginLiveRevisionRestore, completeLiveRevisionRestore, ingestLiveRevisionEvent } from '@/context/liveRevisionFence';
+import type { TranscriptOperation, TranscriptSaveStatus } from '../../shared/sessionTranscript';
 import { ensureSessionSidecar, getSessionPort, sessionSidecarFetch, releaseSessionSidecar, startBackgroundCompletion } from '@/api/tauriClient';
 import { fetchJsonLargeValueRef } from '@/api/largeValueRef';
 import { createSession } from '@/api/sessionClient';
@@ -42,7 +50,7 @@ import type { SubagentLifecycle } from '../../shared/types/subagent-lifecycle';
 import type { FbPendingKind } from './petStateMapper';
 import { resolveBoundWorkspace, type FbProject } from './workspaceBinding';
 import { SESSION_MIGRATED_EVENT, type FloatingBallSessionMigratedPayload } from './sessionBinding';
-import type { ContentBlock, ToolAttachment, ToolInput, ToolUseSimple } from '@/types/chat';
+import type { ContentBlock, Message, ToolAttachment, ToolInput, ToolUseSimple } from '@/types/chat';
 import type { ToolUse } from '@/types/stream';
 
 export interface FbAttachment {
@@ -56,6 +64,8 @@ export interface FbAttachment {
 }
 
 export interface FbUserMsg {
+    timestamp?: string;
+    asyncQuestionReply?: AsyncQuestionReply;
     id: string;
     role: 'user';
     text: string;
@@ -64,6 +74,7 @@ export interface FbUserMsg {
 }
 
 export interface FbAssistantMsg {
+    timestamp?: string;
     id: string;
     role: 'ai';
     content: ContentBlock[];
@@ -71,6 +82,19 @@ export interface FbAssistantMsg {
 }
 
 export type FbMsg = FbUserMsg | FbAssistantMsg;
+
+/** Adapt only the surface representation; all V2 content semantics are shared
+ * with Chat's reducers, including historical and nested tool updates. */
+function updateFloatingDisplay(message: FbMsg, update: (row: Message) => Message): FbMsg {
+    const row = update({
+        id: message.id, role: message.role === 'ai' ? 'assistant' : 'user',
+        content: message.role === 'ai' ? message.content : message.text,
+        timestamp: new Date(message.timestamp ?? 0),
+    });
+    return message.role === 'ai'
+        ? { ...message, content: Array.isArray(row.content) ? row.content : parseAssistantContent(row.content) }
+        : { ...message, text: stripLeadingSystemReminder(typeof row.content === 'string' ? row.content : extractMessageText(JSON.stringify(row.content))) };
+}
 
 /** Derived live activity row during a turn（思考/工具调用的单行展示）。 */
 export interface FbActivity {
@@ -90,6 +114,7 @@ export interface FbPermReq {
 }
 
 export interface FbSendOpts {
+    asyncQuestionReply?: AsyncQuestionReply;
     quote?: string | null;
     images?: Array<
         | { kind?: 'inline_base64'; id?: string; name: string; mimeType: string; data: string; sizeBytes?: number }
@@ -302,18 +327,20 @@ export function extractMessageText(content: string): string {
  * review-caught fabrication that left history backfill永远为空.
  */
 export function parseSessionHistory(payload: unknown, limit: number): FbMsg[] {
-    const session = (payload as { session?: { messages?: unknown } } | null)?.session;
+    const session = (payload as { session?: { messages?: unknown; transcriptFormat?: 2 } } | null)?.session;
     const raw = Array.isArray(session?.messages)
         ? (session.messages as Array<{ id?: string; role?: string; content?: string }>)
         : [];
     return raw
-        .filter((m) => m.role === 'user' || m.role === 'assistant')
+        .filter((m) => m && (m.role === 'user' || m.role === 'assistant'))
         .slice(-limit)
         .map<FbMsg | null>((m, i) => {
             const msg = m as {
                 id?: string;
                 role?: string;
-                content?: string;
+                timestamp?: string;
+                asyncQuestionReply?: AsyncQuestionReply;
+                content?: string | ContentBlock[];
                 attachments?: Array<{ id?: string; name?: string; mimeType?: string; path?: string; previewUrl?: string }>;
             };
             const attachments = msg.attachments?.map((att, idx) => ({
@@ -325,23 +352,29 @@ export function parseSessionHistory(payload: unknown, limit: number): FbMsg[] {
                 isImage: (att.mimeType ?? '').startsWith('image/'),
             }));
             if (msg.role === 'assistant') {
-                const content = parseAssistantContent(msg.content ?? '');
-                if (content.length === 0) return null;
+                const content = Array.isArray(msg.content) ? msg.content : parseAssistantContent(msg.content ?? '');
+                if (content.length === 0 && session?.transcriptFormat !== 2) return null;
                 return {
                     id: msg.id ?? `h-${i}`,
+                    timestamp: msg.timestamp,
                     role: 'ai',
                     content,
                 };
             }
             return {
                 id: msg.id ?? `h-${i}`,
+                timestamp: msg.timestamp,
                 role: 'user',
-                text: stripLeadingSystemReminder(extractMessageText(msg.content ?? '')),
+                asyncQuestionReply: msg.asyncQuestionReply,
+                text: stripLeadingSystemReminder(session?.transcriptFormat === 2 && typeof msg.content === 'string'
+                    ? msg.content : extractMessageText(typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content ?? ''))),
                 attachments,
             };
         })
         .filter((m): m is FbMsg => {
             if (!m) return false;
+            // V2 creates an empty target before its text/block operations arrive.
+            if (session?.transcriptFormat === 2) return true;
             if (m.role === 'ai') return m.content.length > 0;
             return m.text.trim().length > 0 || (m.attachments?.length ?? 0) > 0;
         });
@@ -475,12 +508,17 @@ async function assertRespondSucceeded(resp: Response): Promise<void> {
 }
 
 export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'peek' | 'pin'>) {
+    const showTranscriptSaveToast = useTranscriptSaveToast();
+    const transcriptFormatRef = useRef<2 | undefined>(undefined);
+    const revisionFenceRef = useRef(EMPTY_LIVE_REVISION_FENCE);
+    const restoreTranscriptRef = useRef<() => Promise<void>>(async () => undefined);
     const [ready, setReady] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [sessionId, setSessionId] = useState<string | null>(null);
     const [workspacePath, setWorkspacePath] = useState<string | null>(null);
     const [workspaceName, setWorkspaceName] = useState<string>('Mino');
     const [messages, setMessages] = useState<FbMsg[]>([]);
+    const [queuedMessages, setQueuedMessages] = useState<QueuedMessageInfo[]>([]);
     const [liveMessage, setLiveMessage] = useState<FbAssistantMsg | null>(null);
     const [busy, setBusy] = useState(false);
     const [permReqs, setPermReqs] = useState<FbPermReq[]>([]);
@@ -587,28 +625,16 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
     }, [replaceLiveMessage]);
 
     const appendTextChunk = useCallback((chunk: string) => {
-        updateLiveContent((content) => {
-            const next = closeOpenThinkingBlocks(content);
-            const last = next.at(-1);
-            if (last?.type === 'text') {
-                return {
-                    content: [
-                        ...next.slice(0, -1),
-                        { ...last, text: (last.text ?? '') + chunk },
-                    ],
-                    streamingTextActive: true,
-                };
-            }
-            return {
-                content: [...next, { type: 'text', text: chunk }],
-                streamingTextActive: true,
-            };
-        });
+        updateLiveContent(content => ({
+            content: appendStreamingText(closeOpenThinkingBlocks(content), chunk) as ContentBlock[],
+            streamingTextActive: true,
+        }));
     }, [updateLiveContent]);
 
-    const markTextStopped = useCallback(() => {
-        replaceLiveMessage((current) => current ? { ...current, streamingTextActive: false } : current);
-    }, [replaceLiveMessage]);
+    const markTextStopped = useCallback((questions?: AsyncQuestionSet) => {
+        if (!questions && !liveMessageRef.current) return;
+        updateLiveContent(content => ({ content: completeStreamingText(content, questions), streamingTextActive: false }));
+    }, [updateLiveContent]);
 
     const appendThinkingBlock = useCallback((index: number | undefined) => {
         const now = Date.now();
@@ -677,6 +703,13 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
 
     const finalizeStream = useCallback((terminal?: 'stopped' | 'failed') => {
         const current = liveMessageRef.current;
+        if (transcriptFormatRef.current === 2) {
+            // Terminal content/tool state belongs to the canonical operations.
+            // A background child may legitimately outlive the foreground turn.
+            if (current) setMessages(rows => [...rows.filter(row => row.id !== current.id), current]);
+            replaceLiveMessage(() => null);
+            return;
+        }
         if (!current || current.content.length === 0) {
             replaceLiveMessage(() => null);
             return;
@@ -716,7 +749,103 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
 
     const handleSseEvent = useCallback(
         (eventName: string, data: unknown) => {
+            const updateRows = (update: (row: Message) => Message) => {
+                setMessages(rows => rows.map(row => updateFloatingDisplay(row, update)));
+                replaceLiveMessage(row => row ? updateFloatingDisplay(row, update) as FbAssistantMsg : null);
+            };
+            if (transcriptFormatRef.current === 2 && TRANSCRIPT_TOOL_DISPLAY_EVENTS.has(eventName)) {
+                const payload = data as TranscriptToolDisplayEvent;
+                updateRows(row => applyTranscriptToolDisplayEvent(row, eventName, payload));
+                if (payload.inputRef) {
+                    const fence = revisionFenceRef.current;
+                    void sessionDataPlaneBaseUrl(fence.sessionId!).then(baseUrl => {
+                        if (!baseUrl) throw new Error('Session sidecar is unavailable');
+                        return fetchJsonLargeValueRef(baseUrl, payload.inputRef);
+                    }).then(input => {
+                        const current = revisionFenceRef.current;
+                        if (current.sessionId !== fence.sessionId || current.restoreToken !== fence.restoreToken) return;
+                        updateRows(row => applyTranscriptToolDisplayEvent(row, eventName, { ...payload, inputRef: undefined, input, finalInput: true }));
+                    }).catch(err => console.warn('[fb-session] tool input preview failed:', err));
+                }
+                return;
+            }
+            if (transcriptFormatRef.current === 2 && ['chat:message-chunk', 'chat:thinking-start', 'chat:thinking-chunk', 'chat:message-replay', 'chat:messages-retracted'].includes(eventName)) return;
             switch (eventName) {
+                case 'chat:transcript-operation': {
+                    const { sessionId: sid, operation } = data as { sessionId: string; operation: TranscriptOperation };
+                    if (!isCurrentInteractiveEvent(sid)) break;
+                    transcriptFormatRef.current = 2;
+                    if (operation.kind === 'message-create') {
+                        const message = parseSessionHistory({ session: { transcriptFormat: 2, messages: [operation.message] } }, 1)[0];
+                        if (!message || liveMessageRef.current?.id === message.id) break;
+                        finalizeStream();
+                        if (message.role === 'ai') {
+                            replaceLiveMessage(() => message);
+                            setBusy(true);
+                        } else setMessages(rows => [...rows.filter(row => row.id !== message.id), message]);
+                    } else if (operation.kind === 'messages-remove') {
+                        setMessages(rows => rows.filter(row => !operation.messageIds.includes(row.id)));
+                        replaceLiveMessage(row => row && operation.messageIds.includes(row.id) ? null : row);
+                    } else if (operation.kind !== 'turn-update') {
+                        updateRows(row => applyTranscriptDisplayOperation(row, operation));
+                    }
+                    break;
+                }
+                case 'chat:transcript-save-status': {
+                    const status = data as TranscriptSaveStatus;
+                    if (isCurrentInteractiveEvent(status.sessionId)) showTranscriptSaveToast(status);
+                    break;
+                }
+                case 'chat:init': {
+                    const payload = data as { sessionId?: string; transcriptFormat?: 2; transcriptSaveStatus?: TranscriptSaveStatus; queuedMessages?: Array<{ id: string; messagePreview: string; asyncQuestionReply?: AsyncQuestionReply }>; liveStreamingMessage?: { id: string; content: string } } | null;
+                    if (!isCurrentInteractiveEvent(payload?.sessionId)) break;
+                    transcriptFormatRef.current = payload?.transcriptFormat;
+                    if (payload?.transcriptSaveStatus) showTranscriptSaveToast(payload.transcriptSaveStatus);
+                    if (payload?.transcriptFormat === 2) break; // Revisioned REST owns the baseline.
+                    if (payload?.queuedMessages) setQueuedMessages(payload.queuedMessages.map(item => ({ queueId: item.id, text: item.messagePreview, asyncQuestionReply: item.asyncQuestionReply, timestamp: Date.now() })));
+                    if (payload?.liveStreamingMessage) {
+                        const message = payload.liveStreamingMessage;
+                        replaceLiveMessage(() => ({ id: message.id, role: 'ai', content: parseAssistantContent(message.content) }));
+                    }
+                    break;
+                }
+                case 'queue:added': {
+                    const payload = data as { queueId?: string; messageText?: string; asyncQuestionReply?: AsyncQuestionReply } | null;
+                    if (!payload?.queueId || !payload.asyncQuestionReply) break;
+                    const reply = payload.asyncQuestionReply;
+                    const entry = { queueId: payload.queueId, text: payload.messageText ?? '', asyncQuestionReply: reply, timestamp: Date.now() };
+                    setQueuedMessages(prev => [...prev.filter(item => item.queueId !== entry.queueId && !sameAsyncQuestionReply(item.asyncQuestionReply, reply)), entry]);
+                    break;
+                }
+                case 'queue:cancelled': {
+                    const payload = data as { queueId?: string } | null;
+                    setQueuedMessages(prev => prev.filter(item => item.queueId !== payload?.queueId));
+                    break;
+                }
+                case 'queue:started':
+                case 'chat:message-replay': {
+                    const payload = data as { sessionId?: string; queueId?: string; midTurnBreak?: boolean; userMessage?: unknown; message?: unknown } | null;
+                    if (!isCurrentInteractiveEvent(payload?.sessionId)) break;
+                    if (transcriptFormatRef.current === 2) {
+                        const message = parseSessionHistory({ session: { transcriptFormat: 2, messages: [payload?.userMessage ?? payload?.message] } }, 1)[0];
+                        const reply = message?.role === 'user' ? message.asyncQuestionReply : undefined;
+                        setQueuedMessages(prev => prev.filter(item => item.queueId !== payload?.queueId && (!reply || !sameAsyncQuestionReply(item.asyncQuestionReply, reply))));
+                        break;
+                    }
+                    const message = parseSessionHistory({ session: { messages: [payload?.userMessage ?? payload?.message] } }, 1)[0];
+                    if (!message || message.role !== 'user' || !message.asyncQuestionReply) break;
+                    const reply = message.asyncQuestionReply;
+                    if (payload?.midTurnBreak) finalizeStream();
+                    setMessages(prev => prev.some(item => item.id === message.id) ? prev : [...prev, message]);
+                    setQueuedMessages(prev => prev.filter(item => item.queueId !== payload?.queueId && !sameAsyncQuestionReply(item.asyncQuestionReply, reply)));
+                    break;
+                }
+                case 'chat:messages-retracted': {
+                    const payload = data as { messageIds?: string[] } | null;
+                    if (payload?.messageIds) setMessages(prev => prev.filter(item => !payload.messageIds!.includes(item.id)));
+                    break;
+                }
+
                 case 'chat:message-chunk': {
                     const chunk = typeof data === 'string' ? data : '';
                     if (!chunk) break;
@@ -777,9 +906,10 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                         type?: string;
                         input?: Record<string, unknown>;
                         inputRef?: unknown;
+                        asyncQuestions?: AsyncQuestionSet;
                     } | null;
                     if (payload?.type === 'text') {
-                        markTextStopped();
+                        markTextStopped(payload.asyncQuestions);
                         break;
                     }
                     if (payload?.type === 'thinking' || payload?.index !== undefined) {
@@ -1088,10 +1218,88 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             replaceLiveMessage,
             updateLiveContent,
             updateToolBlock,
+            showTranscriptSaveToast,
         ],
     );
     const handleSseEventRef = useRef(handleSseEvent);
-    handleSseEventRef.current = handleSseEvent;
+    useLayoutEffect(() => { handleSseEventRef.current = handleSseEvent; }, [handleSseEvent]);
+
+    const messagesRef = useRef(messages);
+    useLayoutEffect(() => { messagesRef.current = messages; }, [messages]);
+    const restoreTranscript = useCallback(async (gapRecoveryAttempted = false): Promise<void> => {
+        const pending = revisionFenceRef.current;
+        const sid = pending.sessionId;
+        if (!sid) return;
+        try {
+            const query = new URLSearchParams({ limit: String(HISTORY_LIMIT) });
+            if (transcriptFormatRef.current === 2 && messagesRef.current[0]) query.set('from', messagesRef.current[0].id);
+            const resp = await floatingProxyFetch(sid, `/sessions/${sid}?${query}`);
+            if (!resp.ok) throw new Error(`History read failed: HTTP ${resp.status}`);
+            const json = await resp.json() as { success: boolean; session?: {
+                id: string; transcriptFormat?: 2; messages: unknown[]; liveStreamingMessage?: unknown;
+                snapshotRevision?: number; liveSessionState?: string; transcriptSaveStatus?: TranscriptSaveStatus;
+                runtime?: string; providerId?: string; model?: string; permissionMode?: string;
+                pendingInteractiveRequests?: Array<{ type: string; data: unknown }>;
+                queuedMessages?: Array<{ id: string; messagePreview: string; asyncQuestionReply?: AsyncQuestionReply }>;
+            } };
+            if (sessionIdRef.current !== sid || revisionFenceRef.current.restoreToken !== pending.restoreToken) return;
+            if (!json.success || json.session?.id !== sid) throw new Error('History snapshot has no matching Session');
+            const snapshot = json.session;
+            const completed = completeLiveRevisionRestore(revisionFenceRef.current, pending.restoreToken, snapshot.snapshotRevision ?? 0);
+            if (completed.stale) return;
+            if (completed.needsResync) {
+                if (!gapRecoveryAttempted) {
+                    revisionFenceRef.current = completed.fence;
+                    return restoreTranscript(true);
+                }
+                throw new Error('History snapshot has a revision gap');
+            }
+            revisionFenceRef.current = completed.fence;
+            transcriptFormatRef.current = snapshot.transcriptFormat;
+            applySessionSnapshot(snapshot);
+            if (snapshot.transcriptSaveStatus) showTranscriptSaveToast(snapshot.transcriptSaveStatus);
+            const history = parseSessionHistory(json, snapshot.transcriptFormat === 2 ? Infinity : HISTORY_LIMIT);
+            if (snapshot.transcriptFormat === 2) {
+                setMessages(history);
+                const live = parseSessionHistory({ session: { transcriptFormat: 2, messages: [snapshot.liveStreamingMessage] } }, 1)[0];
+                replaceLiveMessage(() => live?.role === 'ai' ? live : null);
+                setBusy(snapshot.liveSessionState === 'running' || snapshot.liveSessionState === 'starting');
+                setQueuedMessages((snapshot.queuedMessages ?? []).map(item => ({ queueId: item.id, text: item.messagePreview, asyncQuestionReply: item.asyncQuestionReply, timestamp: Date.now() })));
+                setPermReqs([]); setAskReq(null); setPlanReq(null);
+                for (const request of snapshot.pendingInteractiveRequests ?? []) handleSseEventRef.current(request.type, request.data);
+            } else if (history.length) {
+                setMessages(current => [...history, ...current.filter(row => !history.some(saved => saved.id === row.id))]);
+            }
+            if (snapshot.permissionMode && snapshot.permissionMode !== 'plan') setPermissionMode(snapshot.permissionMode);
+            for (const event of completed.replay) handleSseEventRef.current(event.eventName, event.data);
+        } catch (err) {
+            if (sessionIdRef.current !== sid || revisionFenceRef.current.restoreToken !== pending.restoreToken) return;
+            revisionFenceRef.current = { ...revisionFenceRef.current, restoring: false, lastAppliedRevision: null, buffered: [] };
+            console.warn(`[fb-session] history load failed session=${sid} error=${describeError(err)}`);
+        }
+    }, [applySessionSnapshot, replaceLiveMessage, showTranscriptSaveToast]);
+    useLayoutEffect(() => { restoreTranscriptRef.current = restoreTranscript; }, [restoreTranscript]);
+
+    const receiveSseEvent = useCallback<SseEventHandler>((eventName, data, metadata) => {
+        const sid = sessionIdRef.current;
+        if (!sid || (metadata.sessionId && metadata.sessionId !== sid)) return;
+        if (eventName === 'chat:init') {
+            handleSseEventRef.current(eventName, data);
+            if (!revisionFenceRef.current.restoring || revisionFenceRef.current.connectionGeneration !== metadata.connectionGeneration) {
+                revisionFenceRef.current = beginLiveRevisionRestore(revisionFenceRef.current, sid, metadata.connectionGeneration);
+                void restoreTranscriptRef.current();
+            }
+            return;
+        }
+        if (transcriptFormatRef.current === 2 && metadata.liveRevision !== undefined) {
+            const result = ingestLiveRevisionEvent(revisionFenceRef.current, { eventName, data, sessionId: sid,
+                connectionGeneration: metadata.connectionGeneration, liveRevision: metadata.liveRevision });
+            revisionFenceRef.current = result.fence;
+            if (result.action === 'resync') void restoreTranscriptRef.current();
+            if (result.action !== 'apply') return;
+        }
+        handleSseEventRef.current(eventName, data);
+    }, []);
 
     /** Mint a fresh channel session and persist the FULL identity triple
      *  (id, workspace, date). PRD §6.2 rotation + §14 D15 全升格：不再自铸裸
@@ -1103,6 +1311,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
      *  必然 "No conversation found"。 */
     const mintSession = useCallback(async (today: string, workspace: string): Promise<string> => {
         const startedAt = Date.now();
+        let createdSessionId: string | undefined;
         console.info(`[fb-session] mint start workspace=${workspace} date=${today}`);
         // 种「最宽松权限 per runtime」由服务端在快照构造期原子完成（seedMaxPermission
         // → getMaxPermissionForRuntime），不再创建后 PATCH——避免 PATCH 失败被吞、
@@ -1111,8 +1320,10 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
         // chat:permission-mode-changed）。created.permissionMode 即服务端种好的值。
         try {
             const origin = { kind: 'desktop' as const, surface: 'floating_ball' as const };
-            const created = await createSession(workspace, undefined, { seedMaxPermission: true, origin });
+            const created = await createSession(workspace, undefined, { seedMaxPermission: true, origin },
+                { type: 'companion', id: OWNER_ID });
             const sid = created.id;
+            createdSessionId = sid;
             console.info(
                 `[fb-session] mint created session=${sid} runtime=${created.runtime ?? 'unknown'} permission=${created.permissionMode ?? 'default'} elapsed=${elapsedMs(startedAt)}`,
             );
@@ -1142,6 +1353,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             });
             return sid;
         } catch (err) {
+            if (createdSessionId) await releaseSessionSidecar(createdSessionId, 'companion', OWNER_ID).catch(() => false);
             console.error(`[fb-session] mint failed workspace=${workspace} elapsed=${elapsedMs(startedAt)} error=${describeError(err)}`);
             throw err;
         }
@@ -1168,6 +1380,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             await previousSse.disconnect();
         }
         sessionIdRef.current = sid;
+        transcriptFormatRef.current = undefined;
         setSessionId(sid);
         setAnalyticsContext({ sessionId: sid });
         let ownerEnsured = false;
@@ -1175,13 +1388,13 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             stage = 'ensure-session-sidecar';
             // Ensure = pre-warm：伴侣窗作为长寿 owner 让 sidecar 常驻（唤起即出字
             // 的体感来源，PRD §10「最高效 = 预热」）。
-            await ensureSessionSidecar(sid, workspace, 'companion', OWNER_ID);
+            const ensured = await ensureSessionSidecar(sid, workspace, 'companion', OWNER_ID);
             ownerEnsured = true;
             console.info(`[fb-session] ensure sidecar ok session=${sid} elapsed=${elapsedMs(startedAt)}`);
             stage = 'sync-config';
-            // Floating companion is a frontend owner, so it must push the same
-            // frontend-authoritative MCP/sub-agent config as Chat before turns.
-            await syncFloatingSidecarConfig(sid, workspace, configSnapshot, projectSnapshot);
+            // A shared/prewarmed Session already owns its effective config.
+            // Match Chat: only the locked ensure result can authorize adoption.
+            if (ensured.isNew) await syncFloatingSidecarConfig(sid, workspace, configSnapshot, projectSnapshot);
             console.info(`[fb-session] sync config ok session=${sid} elapsed=${elapsedMs(startedAt)}`);
             stage = 'connect-sse';
             // SSE（事件名/payload 与 Tab 完全同构，白名单已覆盖）。
@@ -1189,9 +1402,13 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 type: 'companion',
                 id: OWNER_ID,
             });
-            sse.setEventHandler((eventName, data) => handleSseEventRef.current(eventName, data));
+            // Reject callbacks from a detached connection before interpreting
+            // identity or revision, including delayed async connect/init work.
+            sse.setEventHandler((...args) => { if (sseRef.current === sse) receiveSseEvent(...args); });
             sseRef.current = sse;
+            revisionFenceRef.current = beginLiveRevisionRestore(revisionFenceRef.current, sid, sse.getConnectionGeneration());
             await sse.connect();
+            await restoreTranscriptRef.current();
             console.info(`[fb-session] sse connected session=${sid} elapsed=${elapsedMs(startedAt)}`);
         } catch (err) {
             await sseRef.current?.disconnect();
@@ -1204,7 +1421,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             );
             throw err;
         }
-    }, []);
+    }, [receiveSseEvent]);
 
     const adoptMigratedSession = useCallback(
         async (payload: FloatingBallSessionMigratedPayload) => {
@@ -1229,6 +1446,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                     workspaceRef.current = { path: workspace };
                     setWorkspacePath(workspace);
                     setMessages([]);
+                    setQueuedMessages([]);
                     replaceLiveMessage(() => null);
                     setPermReqs([]);
                     setAskReq(null);
@@ -1337,48 +1555,16 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 } else {
                     sessionDateRef.current = cfg.floatingBallSessionDate ?? today;
                 }
-                if (cancelled || !sid) return;
+                if (cancelled || !sid) {
+                    if (rotated && sid) await releaseSessionSidecar(sid, 'companion', OWNER_ID).catch(() => false);
+                    return;
+                }
 
                 setWorkspacePath(boundWs.path);
                 setWorkspaceName(boundWs.name || 'Mino');
                 stage = 'connect-session';
                 await connectSession(sid, boundWs.path, cfg, projects);
                 if (cancelled) return;
-
-                // 历史回填：REST 单一权威（同 #0608 不变量的精神——这里没有
-                // replay 竞态，因为伴侣窗只有这一条加载路径）。轮换出的新
-                // session 没历史，跳过。
-                if (!rotated) {
-                    try {
-                        const historyStartedAt = Date.now();
-                        console.info(`[fb-session] history load start session=${sid}`);
-                        const resp = await floatingProxyFetch(sid, `/sessions/${sid}`);
-                        if (resp.ok) {
-                            const json = await resp.json();
-                            const history = parseSessionHistory(json, HISTORY_LIMIT);
-                            if (!cancelled) {
-                                applySessionSnapshot((json as { session?: { runtime?: string; providerId?: string; model?: string } })?.session);
-                            }
-                            if (!cancelled && history.length > 0) {
-                                setMessages(history);
-                            }
-                            console.info(
-                                `[fb-session] history load ok session=${sid} messages=${history.length} elapsed=${elapsedMs(historyStartedAt)}`,
-                            );
-                            // D14：resume 读快照当前权限模式（用户可能在展开
-                            // Tab 改过）。SessionData 携带它（SessionMetadata.
-                            // permissionMode）。同 W2 跳过 'plan'（瞬态，不该作为
-                            // 渠道基线 send-mode；快照通常本就不会是 'plan'，防御）。
-                            const mode = (json as { session?: { permissionMode?: string } })?.session
-                                ?.permissionMode;
-                            if (!cancelled && typeof mode === 'string' && mode && mode !== 'plan') {
-                                setPermissionMode(mode);
-                            }
-                        }
-                    } catch (err) {
-                        console.warn(`[fb-session] history load failed session=${sid} error=${describeError(err)}`);
-                    }
-                }
 
                 if (!cancelled) {
                     setReady(true);
@@ -1424,6 +1610,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             setWorkspacePath(workspace.path);
             if (workspace.name) setWorkspaceName(workspace.name);
             setMessages([]);
+                    setQueuedMessages([]);
             replaceLiveMessage(() => null);
             setPermReqs([]);
             setAskReq(null);
@@ -1546,7 +1733,10 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             const parts = [reminder, text.trim()].filter(Boolean);
             const finalText = parts.join('\n\n');
 
-            setMessages((prev) => [
+            const reply = opts?.asyncQuestionReply;
+            const optimisticQueueId = reply ? `opt-${crypto.randomUUID()}` : null;
+            if (reply && optimisticQueueId) setQueuedMessages(prev => [...prev, { queueId: optimisticQueueId, text, asyncQuestionReply: reply, timestamp: Date.now() }]);
+            if (!reply && transcriptFormatRef.current !== 2) setMessages((prev) => [
                 ...prev,
                 {
                     id: `u-${Date.now()}`,
@@ -1556,7 +1746,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                     attachments: opts?.attachments,
                 },
             ]);
-            setBusy(true);
+            if (!reply) setBusy(true);
 
             // D14：带 session 当前权限模式（创建时种最宽松、之后跟随活状态）。
             // **不能省略**——/chat/send 对缺省 permissionMode 落 'auto'（index.ts），
@@ -1577,12 +1767,12 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                         images,
                         permissionMode: sendMode,
                         analyticsSource: 'floating_ball',
+                        asyncQuestionReply: reply,
                     }),
                 });
-                if (!resp.ok) {
-                    const body = (await resp.json().catch(() => ({}))) as { error?: string };
-                    throw new Error(body.error || `HTTP ${resp.status}`);
-                }
+                const body = (await resp.json().catch(() => ({}))) as { success?: boolean; error?: string; queueId?: string };
+                if (!resp.ok || body.success !== true) throw new Error(body.error || `HTTP ${resp.status}`);
+                if (optimisticQueueId && body.queueId) setQueuedMessages(prev => prev.map(item => item.queueId === optimisticQueueId ? { ...item, queueId: body.queueId! } : item));
                 // 打点放在确认入队之后（失败不计），runtime 用 gate-aware 口径。
                 track('message_send', {
                     runtime: analyticsRuntimeRef.current,
@@ -1598,7 +1788,8 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 console.info(`[fb-session] send accepted session=${sid} elapsed=${elapsedMs(sendStartedAt)}`);
                 return true;
             } catch (err) {
-                setBusy(false);
+                if (!reply) setBusy(false);
+                if (optimisticQueueId) setQueuedMessages(prev => prev.filter(item => item.queueId !== optimisticQueueId));
                 setError(err instanceof Error ? err.message : String(err));
                 console.error(`[fb-session] send failed session=${sid} elapsed=${elapsedMs(sendStartedAt)} error=${describeError(err)}`);
                 return false;
@@ -1742,6 +1933,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
         workspacePath,
         workspaceName,
         messages,
+        queuedMessages,
         liveMessage,
         streamText: null,
         busy,

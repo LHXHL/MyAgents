@@ -143,6 +143,10 @@ struct SessionMeta {
     agent_dir: Option<String>,
     #[serde(default)]
     last_active_at: Option<String>,
+    // Preserve field absence versus null/unknown versions for the shared
+    // format decision. Option<u64> would erase that distinction.
+    #[serde(flatten)]
+    other: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -948,7 +952,31 @@ fn collect_candidates(
         // it; eligibility is always decided from the last human JSONL row.
         // Missing/malformed metadata fails open. A recent JSONL mtime also
         // fails open, covering a durable append whose metadata write failed.
-        let jsonl_modified_at = session_jsonl_modified_at(&myagents_dir, &session.id);
+        let metadata = Value::Object(session.other.clone());
+        let format = match crate::session_transcript::session_format(
+            &myagents_dir,
+            &session.id,
+            Some(&metadata),
+        ) {
+            Ok(
+                format @ (crate::session_transcript::TranscriptFormat::Legacy
+                | crate::session_transcript::TranscriptFormat::V2),
+            ) => format,
+            _ => continue,
+        };
+        let jsonl_path = myagents_dir
+            .join(
+                if format == crate::session_transcript::TranscriptFormat::V2 {
+                    "sessions-v2"
+                } else {
+                    "sessions"
+                },
+            )
+            .join(format!("{}.jsonl", session.id));
+        let jsonl_modified_at = std::fs::metadata(&jsonl_path)
+            .and_then(|m| m.modified())
+            .ok()
+            .map(DateTime::<Utc>::from);
         if !should_scan_session_history(
             session.last_active_at.as_deref(),
             jsonl_modified_at,
@@ -958,7 +986,7 @@ fn collect_candidates(
             continue;
         }
 
-        let analysis = analyze_session_jsonl(&myagents_dir, &session.id);
+        let analysis = analyze_session_history(&jsonl_path, &session.id, format);
         if !is_within_active_session_lookback(&analysis, now) {
             summary.skipped_inactive += 1;
             continue;
@@ -989,26 +1017,37 @@ fn collect_candidates(
     candidates
 }
 
-fn analyze_session_jsonl(myagents_dir: &Path, session_id: &str) -> SessionJsonlAnalysis {
-    let jsonl_path = session_jsonl_path(myagents_dir, session_id);
-    let content = match std::fs::read_to_string(&jsonl_path) {
+fn analyze_session_history(
+    path: &Path,
+    session_id: &str,
+    format: crate::session_transcript::TranscriptFormat,
+) -> SessionJsonlAnalysis {
+    if format == crate::session_transcript::TranscriptFormat::V2 {
+        let transcript = match crate::session_transcript::read_file(path, session_id) {
+            Ok(transcript) => transcript,
+            Err(_) => return SessionJsonlAnalysis::default(),
+        };
+        let messages: Vec<MessageLine> = transcript
+            .projection
+            .order
+            .iter()
+            .filter_map(|id| {
+                let message = transcript.projection.messages.get(id)?;
+                // Only user rows participate; avoid copying tool bodies to analyze
+                // a human-input timestamp or a Memory marker.
+                if message["role"] != "user" {
+                    return None;
+                }
+                serde_json::from_value((**message).clone()).ok()
+            })
+            .collect();
+        return analyze_session_messages(&messages);
+    }
+    let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
         Err(_) => return SessionJsonlAnalysis::default(),
     };
     analyze_session_jsonl_content(&content)
-}
-
-fn session_jsonl_path(myagents_dir: &Path, session_id: &str) -> PathBuf {
-    myagents_dir
-        .join("sessions")
-        .join(format!("{}.jsonl", session_id))
-}
-
-fn session_jsonl_modified_at(myagents_dir: &Path, session_id: &str) -> Option<DateTime<Utc>> {
-    std::fs::metadata(session_jsonl_path(myagents_dir, session_id))
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .map(DateTime::<Utc>::from)
 }
 
 fn analyze_session_jsonl_content(content: &str) -> SessionJsonlAnalysis {
@@ -1016,6 +1055,10 @@ fn analyze_session_jsonl_content(content: &str) -> SessionJsonlAnalysis {
         .lines()
         .filter_map(|line| serde_json::from_str::<MessageLine>(line).ok())
         .collect();
+    analyze_session_messages(&lines)
+}
+
+fn analyze_session_messages(lines: &[MessageLine]) -> SessionJsonlAnalysis {
     let mut last_update_idx: Option<usize> = None;
     let mut last_memory_update_at: Option<DateTime<Utc>> = None;
     let mut last_human_user_at: Option<DateTime<Utc>> = None;
@@ -1578,6 +1621,53 @@ mod tests {
         .expect("decode memory update response");
 
         assert!(response.termination_unconfirmed);
+    }
+
+    #[test]
+    fn v2_history_uses_valid_product_prefix_for_human_input_analysis() {
+        let fixtures: Value = serde_json::from_str(include_str!(
+            "../../src/shared/fixtures/session-transcript-v2.json"
+        ))
+        .unwrap();
+        let fixture = fixtures["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == "steer-late-tool-confirm-retract-usage")
+            .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("fixture-session.jsonl");
+        std::fs::write(
+            &path,
+            format!("{}{{\"batch\":", fixture["wire"].as_str().unwrap()),
+        )
+        .unwrap();
+        let analysis = analyze_session_history(
+            &path,
+            "fixture-session",
+            crate::session_transcript::TranscriptFormat::V2,
+        );
+        assert_eq!(analysis.query_count, 2);
+        assert_eq!(
+            analysis.last_human_user_at.unwrap().to_rfc3339(),
+            "2026-09-12T00:00:00+00:00"
+        );
+        assert!(analysis.last_memory_update_at.is_none());
+        // The decoder cannot turn an invalid V2 header into legacy rows.
+        std::fs::write(
+            &path,
+            "{\"role\":\"user\",\"content\":\"not a V2 transcript\"}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            analyze_session_history(
+                &path,
+                "fixture-session",
+                crate::session_transcript::TranscriptFormat::V2
+            )
+            .query_count,
+            0
+        );
     }
 
     #[test]

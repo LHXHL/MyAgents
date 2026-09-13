@@ -1116,6 +1116,9 @@ describe('GlobalSidebar rail flyout', () => {
     expect(collapse).toBe(expand);
     expect(collapse.closest('.absolute')).toBe(toggleSlot);
     expect(collapse.querySelector('[data-global-sidebar-toggle-icon]')).toHaveClass('lucide-panel-left');
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+    fireEvent.mouseLeave(collapse.parentElement!);
+    fireEvent.mouseEnter(collapse.parentElement!);
     expect(screen.getByRole('tooltip', { name: String(i18n.t('app:globalSidebar.collapse')) }))
       .not.toHaveClass('delay-500', 'transition-opacity');
     expect(navigation).toHaveAttribute('data-global-sidebar-mode', 'expanded');

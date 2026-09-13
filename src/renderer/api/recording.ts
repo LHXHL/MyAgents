@@ -20,7 +20,7 @@ import type {
   RecordTextExportInput,
   RecordTranscriptCursor,
   RecordTranscriptDelta,
-  RecordTranscriptSnapshot,
+  RecordSpeechProjection,
   SpeechModelPackStatus,
 } from '@/../shared/types/record';
 import { isTauriEnvironment } from '@/utils/browserMock';
@@ -97,9 +97,9 @@ export function recordingStop(
   return recordingMutation('cmd_recording_stop', snapshot);
 }
 
-export function recordTranscript(
+export function recordSpeechProjection(
   id: string,
-): Promise<RecordTranscriptSnapshot | null> {
+): Promise<RecordSpeechProjection> {
   return command('cmd_record_transcript', { id });
 }
 
@@ -108,12 +108,6 @@ export function recordTranscriptDelta(
   cursor?: RecordTranscriptCursor,
 ): Promise<RecordTranscriptDelta | null> {
   return command('cmd_record_transcript_delta', { id, cursor });
-}
-
-export function recordDiarization(
-  id: string,
-): Promise<RecordDiarizationProjection | null> {
-  return command('cmd_record_diarization', { id });
 }
 
 export function recordRenameSpeaker(

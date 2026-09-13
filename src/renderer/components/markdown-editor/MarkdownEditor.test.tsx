@@ -13,7 +13,7 @@ vi.mock('@/hooks/useTauriFileDrop', () => ({ useTauriFileDrop: (options: unknown
 vi.mock('@/hooks/useWorkspaceFileService', () => ({ useWorkspaceFileService: () => ({ isAvailable: true }) }));
 vi.mock('@/context/BrowserPanelContext', () => ({ useOpenWebLink: () => vi.fn() }));
 vi.mock('@/context/fileActionState', () => ({ useFileLinkAction: () => null }));
-vi.mock('../Toast', () => ({ useToast: () => ({ error: vi.fn() }) }));
+vi.mock('../Toast', () => ({ useToast: () => ({ error: vi.fn() }), useToastOptional: () => null }));
 vi.mock('../Markdown', () => ({ default: ({ children }: { children: string }) => <span>{children}</span> }));
 vi.mock('@/theme', () => {
   const theme = { adapters: { prism: {} }, resolvedColorScheme: 'light' };

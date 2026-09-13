@@ -1,3 +1,4 @@
+import { parseAsyncQuestionSet } from '../../shared/asyncUserQuestions';
 // CodexRuntime — drives the Codex CLI as a subprocess via app-server (v0.1.60)
 //
 // Communication: JSON-RPC 2.0 over stdio (codex app-server)
@@ -198,6 +199,7 @@ function codexHostToolFailure(message: string): CodexDynamicToolCallResult {
   return { success: false, contentItems: [{ type: 'inputText', text: message }] };
 }
 type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
+type CodexApprovalsReviewer = 'user' | 'auto_review';
 type CodexApprovalPolicy =
   | 'untrusted'
   | 'on-failure'
@@ -214,6 +216,42 @@ type CodexSandboxPolicy =
     excludeTmpdirEnvVar: boolean;
     excludeSlashTmp: boolean;
   };
+type CodexWorkspacePolicy = Extract<CodexSandboxPolicy, { type: 'workspaceWrite' }>;
+interface CodexThreadPermissionResult {
+  thread: { id: string };
+  model?: string;
+  approvalsReviewer?: string;
+  sandbox?: CodexSandboxPolicy;
+}
+
+/** Native config/read already resolves user and trusted project configuration.
+ * Keep this generation's workspace policy even while Full Access is selected:
+ * a prewarmed thread cannot be resumed until it has a persisted rollout. */
+export function codexWorkspacePolicyFromConfig(result: {
+  config?: { sandbox_workspace_write?: {
+    writable_roots?: string[];
+    network_access?: boolean;
+    exclude_tmpdir_env_var?: boolean;
+    exclude_slash_tmp?: boolean;
+  } | null };
+}): CodexWorkspacePolicy {
+  const config = result.config?.sandbox_workspace_write;
+  return {
+    type: 'workspaceWrite',
+    writableRoots: config?.writable_roots ?? [],
+    networkAccess: config?.network_access ?? false,
+    excludeTmpdirEnvVar: config?.exclude_tmpdir_env_var ?? false,
+    excludeSlashTmp: config?.exclude_slash_tmp ?? false,
+  };
+}
+
+function adoptCodexThreadPermissions(proc: CodexProcess, result: CodexThreadPermissionResult): void {
+  proc.supportsApprovalsReviewer = typeof result.approvalsReviewer === 'string';
+  if (proc.approvalsReviewer === 'auto_review' && result.approvalsReviewer !== 'auto_review') {
+    throw new Error('This Codex CLI did not enable Approve for me. Update Codex or select Ask for approval / Full Access.');
+  }
+  if (result.sandbox?.type === 'workspaceWrite') proc.workspacePolicy = result.sandbox;
+}
 
 export const CODEX_INITIALIZE_CAPABILITIES = Object.freeze({
   experimentalApi: false,
@@ -1040,12 +1078,13 @@ export async function initializeCodexRpc(
 export function buildCodexSandboxPolicy(
   sandbox: CodexSandboxMode,
   workspacePath: string,
+  workspacePolicy?: CodexWorkspacePolicy,
 ): CodexSandboxPolicy {
   switch (sandbox) {
     case 'read-only':
       return { type: 'readOnly', networkAccess: false };
     case 'workspace-write':
-      return {
+      return workspacePolicy ?? {
         type: 'workspaceWrite',
         writableRoots: [workspacePath],
         networkAccess: false,
@@ -1062,7 +1101,9 @@ export function buildCodexTurnStartParams(args: {
   input: unknown[];
   cwd: string;
   approvalPolicy: CodexApprovalPolicy;
+  approvalsReviewer?: CodexApprovalsReviewer;
   sandbox: CodexSandboxMode;
+  workspacePolicy?: CodexWorkspacePolicy;
   model?: string | null;
   /** #324 — reasoning effort level; falsy = omit (Codex default applies).
    *  Schema: TurnStartParams.effort "Override the reasoning effort for this
@@ -1075,7 +1116,8 @@ export function buildCodexTurnStartParams(args: {
     input: args.input,
     cwd: args.cwd,
     approvalPolicy: args.approvalPolicy,
-    sandboxPolicy: buildCodexSandboxPolicy(args.sandbox, args.cwd),
+    approvalsReviewer: args.approvalsReviewer ?? 'user',
+    sandboxPolicy: buildCodexSandboxPolicy(args.sandbox, args.cwd, args.workspacePolicy),
     model: args.model || null,
     summary: 'concise',
     // Omit when default — an explicit null is "no override" per schema, but
@@ -2626,6 +2668,9 @@ class CodexProcess implements RuntimeProcess {
   runtimeSource: RuntimeSource = 'system-cli';
   model = '';
   approvalPolicy: CodexApprovalPolicy = 'on-request';
+  approvalsReviewer: CodexApprovalsReviewer = 'user';
+  supportsApprovalsReviewer = false;
+  workspacePolicy?: CodexWorkspacePolicy;
   sandbox: CodexSandboxMode = 'workspace-write';
   permissionMode = '';
   defaultPermissionMode = 'full-auto';
@@ -2721,18 +2766,20 @@ class CodexProcess implements RuntimeProcess {
 
 // ─── Permission mode mapping ───
 
-function mapPermissionMode(mode: string): { approval: CodexApprovalPolicy; sandbox: CodexSandboxMode } {
+function mapPermissionMode(mode: string, source: RuntimeSource): {
+  approval: CodexApprovalPolicy; sandbox: CodexSandboxMode; reviewer: CodexApprovalsReviewer;
+} {
   switch (mode) {
     case 'suggest':
-      return { approval: 'untrusted', sandbox: 'read-only' };
+      return { approval: 'untrusted', sandbox: 'read-only', reviewer: 'user' };
     case 'auto-edit':
-      return { approval: 'on-request', sandbox: 'workspace-write' };
+      return { approval: 'on-request', sandbox: 'workspace-write', reviewer: source === 'managed-provider' ? 'auto_review' : 'user' };
     case 'full-auto':
-      return { approval: 'never', sandbox: 'workspace-write' };
+      return { approval: 'on-request', sandbox: 'workspace-write', reviewer: 'auto_review' };
     case 'no-restrictions':
-      return { approval: 'never', sandbox: 'danger-full-access' };
+      return { approval: 'never', sandbox: 'danger-full-access', reviewer: 'user' };
     default:
-      return { approval: 'on-request', sandbox: 'workspace-write' };
+      return { approval: 'on-request', sandbox: 'workspace-write', reviewer: 'user' };
   }
 }
 
@@ -3076,6 +3123,30 @@ sock.on('error', (err) => {
  * diagnostics — the call site is fire-and-forget after thread/start has
  * already returned. Each RPC failure is independent and degrades gracefully.
  */
+export function codexProxyProbeIssue(
+  probe: RuntimeEffectiveEnv['codexSandbox'],
+  policy?: CodexSandboxPolicy,
+): RuntimeDiagnosticIssue | undefined {
+  const proxy = probe?.proxyProbe;
+  if (!proxy || proxy.reachable || (!probe.detected && !probe.networkDisabled)) return undefined;
+  // command/exec does not request escalation. A blocked probe under the
+  // expected network sandbox says nothing about an approved agent command.
+  const restricted = (policy && 'networkAccess' in policy && !policy.networkAccess)
+    || (!policy && probe.networkDisabled);
+  return restricted ? {
+    code: 'codex_proxy_requires_network_approval',
+    severity: 'info',
+    title: 'Codex network access requires approval',
+    message: 'The unapproved proxy probe was blocked by the network sandbox. Agent commands can request network approval.',
+  } : {
+    code: 'codex_sandbox_blocks_myagents_proxy',
+    severity: 'error',
+    title: 'Codex sandbox blocks the MyAgents proxy',
+    message: `Codex could not connect to loopback proxy ${proxy.url}: ${proxy.error ?? 'unreachable'}`,
+    hint: 'Check the proxy connection and the effective Codex network policy.',
+  };
+}
+
 async function collectCodexDiagnostics(
   rpc: JsonRpcClient,
   env: Record<string, string | undefined>,
@@ -3279,16 +3350,8 @@ async function collectCodexDiagnostics(
   const sandboxProbe = await probeCodexLoopbackProxy(rpc, env, cwd, sandboxPolicy);
   if (sandboxProbe) {
     effectiveEnv.codexSandbox = sandboxProbe;
-    const proxyProbe = sandboxProbe.proxyProbe;
-    if (proxyProbe && !proxyProbe.reachable && (sandboxProbe.detected || sandboxProbe.networkDisabled)) {
-      issues.push({
-        code: 'codex_sandbox_blocks_myagents_proxy',
-        severity: 'error',
-        title: 'Codex sandbox blocks the MyAgents proxy',
-        message: `Codex could not connect to loopback proxy ${proxyProbe.url}: ${proxyProbe.error ?? 'unreachable'}`,
-        hint: 'Use Codex no-restrictions mode, switch runtime proxy policy to terminal shell behavior, or use a proxy reachable from the Codex sandbox.',
-      });
-    }
+    const issue = codexProxyProbeIssue(sandboxProbe, sandboxPolicy);
+    if (issue) issues.push(issue);
   }
 
   return {
@@ -3494,7 +3557,8 @@ export class CodexRuntime implements AgentRuntime {
         cwd,
         null,
         envPolicy?.proxy ?? 'myagents',
-        buildCodexSandboxPolicy('workspace-write', cwd),
+        // Without a thread, let command/exec inherit the native configuration.
+        undefined,
         'system-cli',
       );
     } finally {
@@ -4047,7 +4111,11 @@ export class CodexRuntime implements AgentRuntime {
         || options.scenario.type === 'registeredAgent';
       const defaultPermissionMode = isHeadlessAutomation ? 'no-restrictions' : 'full-auto';
       const permMode = options.permissionMode || defaultPermissionMode;
-      const { approval, sandbox } = mapPermissionMode(permMode);
+      const { approval, sandbox, reviewer } = mapPermissionMode(permMode, runtimeSource);
+      codexProc.workspacePolicy = codexWorkspacePolicyFromConfig(
+        await codexProc.rpc.call('config/read', { cwd: options.workspacePath, includeLayers: false }, 10_000) as Parameters<typeof codexWorkspacePolicyFromConfig>[0],
+      );
+      codexProc.approvalsReviewer = reviewer;
       const threadModelProvider = resolveCodexThreadModelProvider(
         launchConfig.modelProvider,
         options.resumeSessionId,
@@ -4074,11 +4142,13 @@ export class CodexRuntime implements AgentRuntime {
           model: options.model || null,
           ...(threadModelProvider ? { modelProvider: threadModelProvider } : {}),
           approvalPolicy: approval,
+          approvalsReviewer: reviewer,
           sandbox,
           developerInstructions: options.systemPromptAppend || null,
         };
         console.log(`[codex] RPC thread/resume: ${JSON.stringify(summarizeCodexThreadParamsForLog(resumeParams))}`);
-        const result = await codexProc.rpc.call('thread/resume', resumeParams, 30_000) as { thread: { id: string } };
+        const result = await codexProc.rpc.call('thread/resume', resumeParams, 30_000) as CodexThreadPermissionResult;
+        adoptCodexThreadPermissions(codexProc, result);
         codexProc.threadId = result.thread.id;
 
         // Emit synthetic session_init — thread/resume doesn't trigger notifications
@@ -4099,6 +4169,7 @@ export class CodexRuntime implements AgentRuntime {
           model: options.model || null,
           ...(threadModelProvider ? { modelProvider: threadModelProvider } : {}),
           approvalPolicy: approval,
+          approvalsReviewer: reviewer,
           sandbox,
           developerInstructions: options.systemPromptAppend || null,
           ephemeral: options.ephemeral ?? false,
@@ -4108,7 +4179,8 @@ export class CodexRuntime implements AgentRuntime {
           ...(enableManagedRawEvents ? { experimentalRawEvents: true } : {}),
         };
         console.log(`[codex] RPC thread/start: ${JSON.stringify(summarizeCodexThreadParamsForLog(startParams))}`);
-        const result = await codexProc.rpc.call('thread/start', startParams, 30_000) as { thread: { id: string }; model: string };
+        const result = await codexProc.rpc.call('thread/start', startParams, 30_000) as CodexThreadPermissionResult;
+        adoptCodexThreadPermissions(codexProc, result);
         codexProc.threadId = result.thread.id;
 
         // Emit session_init so external-session.ts captures threadId
@@ -4160,7 +4232,9 @@ export class CodexRuntime implements AgentRuntime {
           input,
           cwd: options.workspacePath,
           approvalPolicy: approval,
+          approvalsReviewer: reviewer,
           sandbox,
+          workspacePolicy: codexProc.workspacePolicy,
           model: options.model || null,
           reasoningEffort: codexProc.reasoningEffort || null,
           clientUserMessageId,
@@ -4180,7 +4254,7 @@ export class CodexRuntime implements AgentRuntime {
             options.workspacePath,
             codexProc.threadId,
             options.envPolicy?.proxy ?? 'myagents',
-            buildCodexSandboxPolicy(sandbox, options.workspacePath),
+            buildCodexSandboxPolicy(sandbox, options.workspacePath, codexProc.workspacePolicy),
             runtimeSource,
           );
           // Session-life gate: tab close / runtime teardown can race against
@@ -4246,7 +4320,9 @@ export class CodexRuntime implements AgentRuntime {
         input,
         cwd: codexProc.workspacePath,
         approvalPolicy: codexProc.approvalPolicy,
+        approvalsReviewer: codexProc.approvalsReviewer,
         sandbox: codexProc.sandbox,
+        workspacePolicy: codexProc.workspacePolicy,
         model: codexProc.model || null,
         reasoningEffort: codexProc.reasoningEffort || null,
         clientUserMessageId,
@@ -4376,13 +4452,14 @@ export class CodexRuntime implements AgentRuntime {
       throw new RuntimeConversationBranchError(code, 'Codex could not create the conversation branch');
     }
 
-    try {
-      await codexProc.rpc.call('thread/unsubscribe', { threadId: replacementId }, 10_000);
-    } catch {
-      await this.stopSession(codexProc);
-      if (!codexProc.exited) {
-        throw new RuntimeConversationBranchError('unsubscribe_failed', 'Codex branch subscription could not be released');
-      }
+    // Unsubscribe only removes event delivery. Current app-server versions
+    // retain the loaded fork (and its native writer) for an inactivity grace
+    // period, so another Session process cannot resume it yet. Retire this
+    // exact process before publishing the replacement identity. The source
+    // keeps its threadId and resumes through the existing lifecycle on send.
+    await this.stopSession(codexProc);
+    if (!codexProc.exited) {
+      throw new RuntimeConversationBranchError('unsubscribe_failed', 'Codex branch writer could not be released');
     }
     return { kind: 'native-thread', runtimeSessionId: replacementId };
   }
@@ -4449,7 +4526,11 @@ export class CodexRuntime implements AgentRuntime {
     const codexProc = process as CodexProcess;
     if (codexProc.exited) throw new Error('Codex process has exited');
     const nextMode = mode || codexProc.defaultPermissionMode;
-    const { approval, sandbox } = mapPermissionMode(nextMode);
+    const { approval, sandbox, reviewer } = mapPermissionMode(nextMode, codexProc.runtimeSource);
+    if (reviewer === 'auto_review' && !codexProc.supportsApprovalsReviewer) {
+      throw new Error('This Codex CLI does not support Approve for me. Update Codex or select Ask for approval / Full Access.');
+    }
+    codexProc.approvalsReviewer = reviewer;
     codexProc.permissionMode = nextMode;
     codexProc.approvalPolicy = approval;
     codexProc.sandbox = sandbox;
@@ -5257,7 +5338,7 @@ export class CodexRuntime implements AgentRuntime {
           query?: string; action?: { type: string; url?: string; queries?: string[]; pattern?: string };
           path?: string; revisedPrompt?: string; savedPath?: string;
           contentItems?: Array<{ type: string; text?: string; imageUrl?: string; audioUrl?: string }>;
-          success?: boolean; review?: string;
+          success?: boolean; review?: string; delivery?: unknown; questions?: unknown;
           senderThreadId?: string; receiverThreadIds?: string[];
           prompt?: string; model?: string;
         } | undefined;
@@ -5597,12 +5678,17 @@ export class CodexRuntime implements AgentRuntime {
             const streamedText = codexProc.agentMessageTextById.get(item.id) || '';
             codexProc.agentMessageTextById.delete(item.id);
 
+            const asyncQuestions = item.delivery === 'async'
+              ? parseAsyncQuestionSet({ id: codexTraceId(p, item.id), questions: item.questions })
+              : undefined;
+            const stop: UnifiedEvent = { kind: 'text_stop', nativeText: finalText, traceId: codexTraceId(p, item.id), ...(asyncQuestions ? { asyncQuestions } : {}) };
+
             if (finalText) {
               if (!streamedText) {
                 console.log(`[codex] agentMessage completed without delta; backfilling ${finalText.length} chars`);
                 return [
                   { kind: 'text_delta', text: finalText, traceId: codexTraceId(p, item.id) },
-                  { kind: 'text_stop', traceId: codexTraceId(p, item.id) },
+                  stop,
                 ];
               }
 
@@ -5611,12 +5697,12 @@ export class CodexRuntime implements AgentRuntime {
                 console.log(`[codex] agentMessage completed with missing tail; backfilling ${tail.length} chars`);
                 return [
                   { kind: 'text_delta', text: tail, traceId: codexTraceId(p, item.id) },
-                  { kind: 'text_stop', traceId: codexTraceId(p, item.id) },
+                  stop,
                 ];
               }
             }
 
-            return { kind: 'text_stop', traceId: codexTraceId(p, item.id) };
+            return stop;
           }
           case 'userMessage':
           case 'contextCompaction':

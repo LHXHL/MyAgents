@@ -444,26 +444,20 @@ export const BUILTIN_PERMISSION_MODES: RuntimePermissionMode[] = [
 
 export const CODEX_PERMISSION_MODES: RuntimePermissionMode[] = [
   {
-    value: 'suggest',
-    label: 'Suggest',
-    icon: '\u{1F50D}',  // 🔍
-    description: '仅信任的命令自动执行，其他需确认',
-  },
-  {
     value: 'auto-edit',
-    label: 'Auto-Edit',
+    label: 'Ask for approval',
     icon: '\u{1F4DD}',  // 📝
-    description: '自动编辑文件，沙箱内执行命令',
+    description: '工作区内自动执行；联网或修改外部文件时请求批准',
   },
   {
     value: 'full-auto',
-    label: 'Full Auto',
+    label: 'Approve for me',
     icon: '\u26A1',      // ⚡
-    description: '沙箱内自主执行，按需询问',
+    description: '由 Codex 自动审查审批请求，仅潜在不安全操作需确认',
   },
   {
     value: 'no-restrictions',
-    label: 'No Restrictions',
+    label: 'Full Access',
     icon: '\u{1F513}',  // 🔓
     description: '跳过所有审批和沙箱限制',
   },
@@ -472,7 +466,7 @@ export const CODEX_PERMISSION_MODES: RuntimePermissionMode[] = [
 /**
  * Get permission modes for a given runtime type
  *
- * Returns the exhaustive allowlist for every runtime — including builtin —
+ * Returns the selectable modes for every runtime — including builtin —
  * so callers (UI dropdowns, `runtime describe`, validators) don't have to
  * special-case the builtin path.
  */
@@ -493,7 +487,9 @@ export function isRuntimePermissionMode(
 ): boolean {
   const trimmed = typeof mode === 'string' ? mode.trim() : '';
   return Boolean(trimmed)
-    && getRuntimePermissionModes(runtime).some(candidate => candidate.value === trimmed);
+    // Historical read-only sessions and managed planning still use suggest.
+    && ((runtime === 'codex' && trimmed === 'suggest')
+      || getRuntimePermissionModes(runtime).some(candidate => candidate.value === trimmed));
 }
 
 /** Read-only historical projection. Unknown or foreign values are invalid and
@@ -517,6 +513,9 @@ export function projectPermissionModeForRuntime(
 export function permissionModeLooksLikeRuntime(mode: string, runtime: RuntimeType): boolean {
   const trimmed = mode.trim();
   if (!trimmed) return true;
+  // Hidden historical modes still belong to their runtime; removing a menu
+  // option must not make that value an unknown, portable future extension.
+  if (trimmed === 'suggest') return runtime === 'codex';
 
   const ownModes = new Set(getRuntimePermissionModes(runtime).map((m) => m.value));
   if (ownModes.has(trimmed)) return true;

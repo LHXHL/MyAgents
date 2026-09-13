@@ -131,6 +131,7 @@ async function verifyViaSdk(
     diagnostic?: (signal: AbortSignal) => Promise<ProbeOutcome | undefined>;
     /** Managed subscription activation requires the SDK's terminal success. */
     requireTerminalResult?: boolean;
+    controller?: AbortController;
   },
 ): Promise<{
   success: boolean;
@@ -139,10 +140,10 @@ async function verifyViaSdk(
   failureKind?: SubscriptionVerifyFailureKind;
   retryable?: boolean;
 }> {
-  const TIMEOUT_MS = 30000;
+  const TIMEOUT_MS = 30_000;
   const startTime = Date.now();
   const stderrMessages: string[] = [];
-
+  const controller = opts.controller ?? new AbortController();
   // Kick off the diagnostic in parallel with the SDK. It has its own ≤15s cap
   // (withAbortSignal) so it's resolved well before the 30s timeout — the
   // timeout branch reads it without blocking. `diagController` cancels it when
@@ -245,6 +246,7 @@ async function verifyViaSdk(
       prompt: simplePrompt(),
       options: {
         maxTurns: 1,
+        abortController: controller,
         sessionId: opts.sessionId,
         cwd,
         settingSources: opts.settingSources,
@@ -261,6 +263,7 @@ async function verifyViaSdk(
         includePartialMessages: true,
         persistSession: false,
         mcpServers: {},
+        strictMcpConfig: true,
         tools: [],
         // Wrap with [1m] when this provider's contextLength >200K (#335) so SDK
         // uses the 1M path.
@@ -293,7 +296,8 @@ async function verifyViaSdk(
     // Cleanup helper: terminate SDK subprocess regardless of race outcome.
     // Without this, the losing promise's `for await` keeps the subprocess alive.
     const cleanupQuery = () => {
-      try { testQuery.return(undefined as never); } catch { /* already terminated */ }
+      controller.abort();
+      try { testQuery.close(); } catch { /* already terminated */ }
     };
 
     const verifyPromise = (async (): Promise<{
@@ -423,6 +427,9 @@ export async function verifyProviderViaSdk(
   credentialSource?: import('../shared/config-types').ManagedProviderCredential,
   managedVerification?: { expectedLineage: string },
 ): Promise<{ success: boolean; error?: string; detail?: string; retryable?: boolean }> {
+  if (providerId === 'antigravity-sub') {
+    return { success: false, error: '请通过 Antigravity 订阅账号卡片检查连接' };
+  }
   if (providerId === TOKENDANCE_PROVIDER_ID) {
     try {
       const config = loadProviderConfig();

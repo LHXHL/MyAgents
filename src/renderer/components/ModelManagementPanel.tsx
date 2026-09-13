@@ -12,6 +12,7 @@ import { useTranslation } from 'react-i18next';
 import { TOKENDANCE_PROVIDER_ID } from '../../shared/tokendance';
 
 import { useCloseLayer } from '@/hooks/useCloseLayer';
+import { useProviderModelDiscovery } from '@/hooks/useProviderModelDiscovery';
 import {
   EDITABLE_MODALITIES,
   discoveredModelWritePlan,
@@ -81,16 +82,11 @@ export default function ModelManagementPanel({
 }: ModelManagementPanelProps) {
   const { t } = useTranslation('settings');
   // ===== Discovery state =====
-  const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModel[]>([]);
-  const [discoveryLoading, setDiscoveryLoading] = useState(false);
-  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [customInput, setCustomInput] = useState('');
   // #325 — which model row has its inline settings editor expanded.
   const [editingModelId, setEditingModelId] = useState<string | null>(null);
   const [pendingCustomModel, setPendingCustomModel] = useState<ModelEntity | null>(null);
-  const isMountedRef = useRef(true);
-  const fetchIdRef = useRef(0);
   const editingAnchorRef = useRef<HTMLDivElement | null>(null);
   const pendingAnchorRef = useRef<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -111,11 +107,6 @@ export default function ModelManagementPanel({
     () => !pendingCustomModel && customInputModelIds.some(id => !activeModelIds.has(id)),
     [pendingCustomModel, customInputModelIds, activeModelIds],
   );
-
-  useEffect(() => {
-    isMountedRef.current = true;
-    return () => { isMountedRef.current = false; };
-  }, []);
 
   useEffect(() => {
     const prev = document.body.style.overflow;
@@ -150,21 +141,23 @@ export default function ModelManagementPanel({
     [bundledModelsById],
   );
 
-  const doFetch = useCallback(async () => {
-    if (!canDiscover) return;
-    setDiscoveryLoading(true);
-    setDiscoveryError(null);
-    const thisId = ++fetchIdRef.current;
-    try {
-      const result = discoveryAction
-        ? await discoveryAction()
-        : await fetchProviderModels(provider, apiKey);
-      if (!isMountedRef.current || thisId !== fetchIdRef.current) return;
+  const {
+    models: catalog,
+    loading: discoveryLoading,
+    error: discoveryError,
+    refresh: doFetch,
+  } = useProviderModelDiscovery({
+    provider,
+    apiKey,
+    enabled: canDiscover,
+    discoveryAction,
+    onDiscovered: async (result, isCurrent) => {
       if (provider.id === TOKENDANCE_PROVIDER_ID) {
         // Catalog capability is a merge intent, never a stale replacement of
         // user-authored names, primary choice, or removals.
         let changed = false;
         await atomicModifyConfig(c => {
+          if (!isCurrent()) return c;
           const entries = [...(c.presetCustomModels?.[provider.id] ?? [])];
           // Derive the current enabled set from disk while holding the lock;
           // an in-flight refresh must not resurrect a concurrently removed ID.
@@ -185,11 +178,11 @@ export default function ModelManagementPanel({
           }
           return changed ? { ...c, presetCustomModels: { ...c.presetCustomModels, [provider.id]: entries } } : c;
         });
-        if (changed) {
+        if (changed && isCurrent()) {
           await rebuildAndPersistAvailableProviders();
           await onRefresh();
         }
-        if (!isMountedRef.current || thisId !== fetchIdRef.current) return;
+        if (!isCurrent()) return;
       }
       if (!provider.isBuiltin && onUpdateCustomProvider) {
         const enrichedModels = enrichExistingModelsFromDiscovery(provider.models, result);
@@ -198,29 +191,13 @@ export default function ModelManagementPanel({
           // re-reads the Provider under its file lock before filling gaps, so
           // this stale render snapshot can never overwrite a newer manual edit.
           await onUpdateCustomProvider({ ...provider, models: enrichedModels }, result);
-          if (!isMountedRef.current || thisId !== fetchIdRef.current) return;
+          if (!isCurrent()) return;
         }
       }
-      setDiscoveredModels(provider.id === TOKENDANCE_PROVIDER_ID
-        ? result.filter(isTokenDanceConversationModel) : result);
-    } catch (e) {
-      if (!isMountedRef.current || thisId !== fetchIdRef.current) return;
-      const structuredMessage = e && typeof e === 'object' && 'message' in e
-        ? (e as { message?: unknown }).message
-        : undefined;
-      setDiscoveryError(
-        typeof structuredMessage === 'string'
-          ? structuredMessage
-          : e instanceof Error ? e.message : String(e),
-      );
-    } finally {
-      if (isMountedRef.current && thisId === fetchIdRef.current) {
-        setDiscoveryLoading(false);
-      }
-    }
-  }, [provider, apiKey, canDiscover, discoveryAction, onUpdateCustomProvider, onRefresh]);
-
-  useEffect(() => { doFetch(); }, [doFetch]);
+    },
+  });
+  const discoveredModels = useMemo(() => provider.id === TOKENDANCE_PROVIDER_ID
+    ? catalog.filter(isTokenDanceConversationModel) : catalog, [catalog, provider.id]);
 
   // ===== Actions =====
   const handleSetPrimary = useCallback(async (modelId: string) => {
@@ -611,7 +588,7 @@ export default function ModelManagementPanel({
               <h3 className="text-xs font-semibold text-[var(--ink-muted)]">
                 {t('providers.models.discoverTitle')}
               </h3>
-              {canDiscover && discoveredModels.length > 0 && (
+              {canDiscover && !discoveryError && (
                 <button
                   type="button"
                   onClick={doFetch}

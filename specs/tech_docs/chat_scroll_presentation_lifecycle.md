@@ -91,6 +91,8 @@ Virtuoso 的 Footer 必须使用模块级稳定组件类型，动态内容通过
 
 MessageList 将 `followOutput` 固定为 `false`，因为 react-virtuoso 4.18.3 的同数量尺寸增长/viewport缩小路径只检查原始prop是否为false，并不会调用function形式的策略。自动跟随由同一 `alignFollowingViewport` 处理：React layout commit、Virtuoso `totalListHeightChanged` 和 scroller resize 都读取当前scrollHeight，通过 Virtuoso `scrollTo` 的像素API对齐；不直接写scrollTop。已到底、阅读中、未admitted或恢复fence内均不发命令。逐token与terminal不再拥有独立pin逻辑。
 
+初始行高来自 `useChatScrollModel` 的逐条 `heightEstimateSeed`，MessageList 仅投影到 Virtuoso `heightEstimates`；挂载后的真实测量才是几何 authority。不可同时设置 `defaultItemHeight`：锁定的 4.18.3 会先用它初始化 size tree，导致逐条估算被忽略，初次空数据后加载历史也受影响。没有 seed 的 caller 使用 Virtuoso 原有首行 probe。Seed 只初始化空树，不负责覆盖已有实测缓存、重置 Session 或保持滚动意图。
+
 `scrollToIndex(LAST/end)` 使用缓存的行高，因此仅把命令提前到layout effect不能保证采用当前正文高度；WebKit可能将过渡位置绘制出来。行为验证必须包括真实虚拟列表与WebKit画面，不能把rAF中间读数直接等同于已绘制抖动。AssistantActions在回合结束的同次commit出现，避免loading移除后再延迟350ms插入操作栏。
 
 ## 7. 代码入口与验证

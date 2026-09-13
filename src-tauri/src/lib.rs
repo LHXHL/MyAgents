@@ -9,6 +9,7 @@ pub mod browser_identity_store;
 pub mod browser_resource;
 pub mod browser_runtime_authority;
 pub mod cli;
+pub mod cliproxy;
 mod commands;
 mod cuse_skill;
 pub mod config_io;
@@ -56,11 +57,13 @@ pub mod record;
 mod record_analytics;
 pub mod recording;
 mod resource_signature;
+mod resource_download;
 pub mod runtime_launch_guard;
 pub mod search;
 pub mod session_goal;
 pub mod session_metadata;
 pub mod session_tags;
+pub mod session_transcript;
 pub mod session_visibility;
 mod sidecar;
 pub mod space_cloud;
@@ -510,6 +513,13 @@ pub fn run() {
             grok_auth::cmd_grok_verify_account,
             grok_auth::cmd_grok_fetch_models,
             grok_auth::cmd_grok_logout,
+            cliproxy::cmd_cliproxy_status,
+            cliproxy::cmd_cliproxy_connect,
+            cliproxy::cmd_cliproxy_cancel,
+            cliproxy::cmd_cliproxy_disconnect,
+            cliproxy::cmd_cliproxy_retry_cleanup,
+            cliproxy::cmd_cliproxy_models,
+            cliproxy::cmd_cliproxy_check_update,
             tokendance::cmd_tokendance_auth_open,
             tokendance::cmd_tokendance_auth_status,
             tokendance::cmd_tokendance_auth_close,
@@ -1166,6 +1176,7 @@ pub fn run() {
             // this lock handles the "build script killed + macOS restarted" case via PID.
             let lock_state = app_dirs::acquire_lock();
             let had_prior_instance = lock_state.had_prior_instance();
+            cliproxy::initialize(app.handle().clone(), had_prior_instance);
             let spill_manager = app
                 .state::<Arc<proxy_spill::ProxySpillManager>>()
                 .inner()
@@ -1833,6 +1844,9 @@ pub fn run() {
                             false
                         }
                     };
+                    if let Err(error) = tauri::async_runtime::block_on(cliproxy::shutdown()) {
+                        ulog_error!("[cliproxy] shutdown failed code={}", error.code);
+                    }
                     if let Some(manager) = document_processing::global() {
                         if let Err(error) = manager.shutdown() {
                             ulog_error!(

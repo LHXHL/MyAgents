@@ -1,3 +1,4 @@
+import { useRecordPlayback } from '@/hooks/useRecordPlayback';
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -11,6 +12,7 @@ import {
   Pause,
   Pencil,
   Play,
+  RotateCcw,
   Square,
   Trash2,
   Volume2,
@@ -25,7 +27,6 @@ import {
   recordAddMark,
   recordAddNote,
   recordDeleteTimelineItem,
-  recordDiarization,
   recordExportAudio,
   recordExportText,
   recordMediaUrl,
@@ -37,7 +38,7 @@ import {
   recordingStop,
   recordStartTranscription,
   recordTimeline,
-  recordTranscript,
+  recordSpeechProjection,
   recordTranscriptDelta,
   recordReassignSegmentSpeaker,
   recordRenameSpeaker,
@@ -57,14 +58,13 @@ import { CUSTOM_EVENTS } from '@/../shared/constants';
 import type {
   RecordChange,
   RecordDetail as RecordDetailData,
-  RecordDiarizationProjection,
   RecordingChange,
   RecordingSnapshot,
   RecordTimelineItem,
   RecordTimelineProjection,
   RecordTranscriptCursor,
   RecordTranscriptSegment,
-  RecordTranscriptSnapshot,
+  RecordSpeechProjection,
   SpeechModelPackStatus,
 } from '@/../shared/types/record';
 import { isTauriEnvironment } from '@/utils/browserMock';
@@ -74,7 +74,7 @@ import { hashPrivateIdentity, track } from '@/analytics';
 import { copyPlainText } from '@/utils/clipboard';
 import {
   applyRecordTranscriptDelta,
-  reconcileRecordTranscriptSnapshot,
+  reconcileRecordSpeechProjection,
 } from '@/utils/recordTranscript';
 
 interface Props {
@@ -216,11 +216,8 @@ export default function RecordDetail({
       ? initialRecordingSnapshot
       : null,
   );
-  const [transcript, setTranscript] = useState<RecordTranscriptSnapshot | null>(
-    null,
-  );
-  const [diarization, setDiarization] =
-    useState<RecordDiarizationProjection | null>(null);
+  const [speechProjection, setSpeechProjection] = useState<RecordSpeechProjection>({ transcript: null, diarization: null });
+  const { transcript, diarization } = speechProjection;
   const [timeline, setTimeline] =
     useState<RecordTimelineProjection>(EMPTY_TIMELINE);
   const [modelPack, setModelPack] = useState<SpeechModelPackStatus | null>(
@@ -267,7 +264,6 @@ export default function RecordDetail({
   const tagDraftRef = useRef('');
   const titleDirtyRef = useRef(false);
   const tagDirtyRef = useRef(false);
-  const pendingSeekRef = useRef<number | null>(null);
   const playbackSessionTrackedRef = useRef(false);
   const playbackErrorShownRef = useRef(false);
   const refreshGenerationRef = useRef(0);
@@ -382,16 +378,14 @@ export default function RecordDetail({
       setRecordLoading(true);
       const [
         recordResult,
-        transcriptResult,
-        diarizationResult,
+        speechResult,
         timelineResult,
         modelResult,
       ] = await Promise.allSettled([
         recordGet(recordId),
         includeTranscript
-          ? recordTranscript(recordId)
+          ? recordSpeechProjection(recordId)
           : Promise.resolve(undefined),
-        recordDiarization(recordId),
         recordTimeline(recordId),
         speechModelPackStatus(),
       ]);
@@ -426,38 +420,16 @@ export default function RecordDetail({
 
       const projectionFailures: unknown[] = [];
       if (includeTranscript) {
-        if (transcriptResult.status === 'fulfilled') {
+        if (speechResult.status === 'fulfilled' && speechResult.value) {
           transcriptPollEpochRef.current += 1;
           transcriptCursorRef.current = undefined;
-          setTranscript((current) =>
-            reconcileRecordTranscriptSnapshot(
-              current,
-              transcriptResult.value ?? null,
-            ),
-          );
-        } else {
-          projectionFailures.push(transcriptResult.reason);
+          const next = speechResult.value;
+          setSpeechProjection((current) => reconcileRecordSpeechProjection(current, next));
+          setSpeakerNameDrafts(Object.fromEntries((next.diarization?.speakers ?? [])
+            .map((speaker) => [speaker.speakerId, speaker.customName ?? ''])));
+        } else if (speechResult.status === 'rejected') {
+          projectionFailures.push(speechResult.reason);
         }
-      }
-      if (diarizationResult.status === 'fulfilled') {
-        const nextDiarization = diarizationResult.value;
-        setDiarization((current) =>
-          current &&
-          nextDiarization &&
-          current.projectionRevision > nextDiarization.projectionRevision
-            ? current
-            : nextDiarization,
-        );
-        setSpeakerNameDrafts(
-          Object.fromEntries(
-            (nextDiarization?.speakers ?? []).map((speaker) => [
-              speaker.speakerId,
-              speaker.customName ?? '',
-            ]),
-          ),
-        );
-      } else {
-        projectionFailures.push(diarizationResult.reason);
       }
       if (timelineResult.status === 'fulfilled') {
         setTimeline((current) =>
@@ -504,9 +476,13 @@ export default function RecordDetail({
           );
           if (transcriptPollEpochRef.current !== epoch || !delta) return;
           transcriptCursorRef.current = delta.cursor;
-          setTranscript((current) =>
-            applyRecordTranscriptDelta(current, delta),
-          );
+          if (delta.state === 'recording_final' || delta.resetSnapshot?.state === 'recording_final') {
+            await refresh();
+          } else {
+            setSpeechProjection((current) => current.transcript?.state === 'recording_final' ? current : {
+              transcript: applyRecordTranscriptDelta(current.transcript, delta), diarization: null,
+            });
+          }
         } catch {
           // The 1.5 s recovery poll retries missed or failed notifications.
         }
@@ -518,7 +494,7 @@ export default function RecordDetail({
       }
     });
     return next;
-  }, [recordId]);
+  }, [recordId, refresh]);
 
   useEffect(() => {
     const next = initialRecordingSnapshot;
@@ -1101,30 +1077,33 @@ export default function RecordDetail({
       });
     });
   }, [recordId]);
+  const playbackSources = useMemo(() => {
+    const artifacts = transcript?.sourceSnapshot?.artifacts ?? record?.artifacts ?? [];
+    return [
+      { ref: audioRef, src: audioSrc, track: selectedPhysicalTracks[0] },
+      { ref: secondaryAudioRef, src: secondaryAudioSrc, track: selectedPhysicalTracks[1] },
+    ].flatMap(({ ref, src, track }) => src && track ? [{ ref, src,
+      timeline: artifacts.find((artifact) => artifact.path === `audio/${track}.opus`)?.captureTimeline,
+    }] : []);
+  }, [audioSrc, secondaryAudioSrc, selectedPhysicalTracks, transcript?.sourceSnapshot, record?.artifacts]);
+  const playback = useRecordPlayback({
+    sources: playbackSources, durationMs: record?.audio?.mediaDurationMs ?? 0,
+    onPosition: setPlaybackMs, onPlaying: setPlaying,
+    onStarted: trackPlaybackSession,
+    onFinished: () => { playbackSessionTrackedRef.current = false; },
+    onError: () => {
+      setPlaybackError(true);
+      if (!playbackErrorShownRef.current) {
+        playbackErrorShownRef.current = true;
+        toast.error(t('records.playbackFailed'));
+      }
+    },
+  });
+  const { seek: seekTo, toggle: togglePlayback, pause: pausePlayback, getPosition: playbackPosition } = playback;
   useEffect(() => {
     if (seekMediaMs === undefined || !Number.isFinite(seekMediaMs)) return;
-    const mediaMs = Math.max(0, seekMediaMs);
-    setPlaybackMs(mediaMs);
-    const audio = audioRef.current;
-    const secondaryAudio = secondaryAudioRef.current;
-    if (audio && audio.readyState >= HTMLMediaElement.HAVE_METADATA) {
-      audio.currentTime = mediaMs / 1_000;
-      if (secondaryAudio) secondaryAudio.currentTime = mediaMs / 1_000;
-      pendingSeekRef.current = null;
-    } else {
-      pendingSeekRef.current = mediaMs;
-    }
-  }, [seekMediaMs, seekNonce]);
-
-  const seekTo = useCallback((mediaMs: number) => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    audio.currentTime = mediaMs / 1_000;
-    if (secondaryAudioRef.current) {
-      secondaryAudioRef.current.currentTime = mediaMs / 1_000;
-    }
-    setPlaybackMs(mediaMs);
-  }, []);
+    seekTo(Math.max(0, seekMediaMs));
+  }, [seekMediaMs, seekNonce, seekTo]);
 
   const focusPendingVirtualItem = useCallback(
     (kind: 'transcript' | 'timeline') => {
@@ -1236,122 +1215,32 @@ export default function RecordDetail({
     return () => window.cancelAnimationFrame(frame);
   }, [highlightAndFocus, pendingTimelineFocus, timeline.items]);
 
-  const togglePlayback = useCallback(() => {
-    const audio = audioRef.current;
-    const secondaryAudio = secondaryAudioRef.current;
-    if (!audio) return;
-    if (!audio.paused) {
-      audio.pause();
-      secondaryAudio?.pause();
-      return;
-    }
-    if (secondaryAudio) secondaryAudio.currentTime = audio.currentTime;
-    const plays = [audio.play()];
-    if (secondaryAudio) plays.push(secondaryAudio.play());
-    void Promise.all(plays).catch(() => {
-      audio.pause();
-      secondaryAudio?.pause();
-      setPlaying(false);
-      setPlaybackError(true);
-      if (!playbackErrorShownRef.current) {
-        playbackErrorShownRef.current = true;
-        toast.error(t('records.playbackFailed'));
-      }
-    });
-  }, [t, toast]);
-
-  const switchPlaybackTrack = useCallback(
-    (nextTrack: typeof playbackTrack) => {
-      const audio = audioRef.current;
-      const nextPrimaryTrack =
-        nextTrack === 'mixed'
-          ? tracks.includes('mixed')
-            ? 'mixed'
-            : canMixPhysicalTracks
-              ? 'microphone'
-              : tracks[0]
-          : nextTrack;
-      const primaryWillReload = selectedPhysicalTracks[0] !== nextPrimaryTrack;
-      const primaryReady =
-        audio?.readyState !== undefined &&
-        audio.readyState >= HTMLMediaElement.HAVE_METADATA;
-      const mediaMs =
-        pendingSeekRef.current ??
-        (audio && primaryReady
-          ? Math.max(0, audio.currentTime * 1_000)
-          : playbackMs);
-      audio?.pause();
-      secondaryAudioRef.current?.pause();
-      playbackErrorShownRef.current = false;
-      setPlaybackError(false);
-      pendingSeekRef.current =
-        primaryWillReload || !primaryReady ? mediaMs : null;
-      if (!primaryWillReload && primaryReady && audio) {
-        audio.currentTime = mediaMs / 1_000;
-      }
-      setPlaying(false);
-      setPlaybackTrack(nextTrack);
-    },
-    [canMixPhysicalTracks, playbackMs, selectedPhysicalTracks, tracks],
-  );
-
-  const speakerIdFor = useCallback(
-    (segment: RecordTranscriptSegment): number => {
-      const middle =
-        segment.startSample +
-        Math.floor((segment.endSample - segment.startSample) / 2);
-      const turn = diarization?.turns.find(
-        (candidate) =>
-          candidate.startSample <= middle && candidate.endSample >= middle,
-      );
-      let speakerId =
-        diarization?.segmentSpeakerOverrides[segment.segmentId] ??
-        turn?.globalSpeaker ??
-        0;
-      const visited = new Set<number>();
-      while (!visited.has(speakerId)) {
-        visited.add(speakerId);
-        const mergedInto = diarization?.speakers.find(
-          (speaker) => speaker.speakerId === speakerId,
-        )?.mergedInto;
-        if (mergedInto === undefined) break;
-        speakerId = mergedInto;
-      }
-      return speakerId;
-    },
-    [diarization],
-  );
-
-  const speakerFor = useCallback(
-    (segment: RecordTranscriptSegment): string => {
-      const speakerId = speakerIdFor(segment);
-      const customName = diarization?.speakers.find(
-        (speaker) => speaker.speakerId === speakerId,
-      )?.customName;
-      if (customName) return customName;
-      return t('records.speakerUnknown', {
-        name: speakerLetter(speakerId),
-      });
-    },
-    [diarization?.speakers, speakerIdFor, t],
-  );
+  const switchPlaybackTrack = useCallback((nextTrack: typeof playbackTrack) => {
+    const mediaMs = playbackPosition();
+    pausePlayback();
+    seekTo(mediaMs);
+    playbackErrorShownRef.current = false;
+    setPlaybackError(false);
+    setPlaying(false);
+    setPlaybackTrack(nextTrack);
+  }, [pausePlayback, playbackPosition, seekTo]);
 
   const activeSpeakers = useMemo(
     () =>
       diarization?.speakers.filter(
-        (speaker) => speaker.mergedInto === undefined,
+        (speaker) => speaker.mergedInto == null,
       ) ?? [],
     [diarization?.speakers],
   );
 
   const speakerLabel = useCallback(
     (speakerId: number) => {
-      const customName = diarization?.speakers.find(
+      const speaker = diarization?.speakers.find(
         (speaker) => speaker.speakerId === speakerId,
-      )?.customName;
+      );
       return (
-        customName ||
-        t('records.speakerUnknown', { name: speakerLetter(speakerId) })
+        speaker?.customName ||
+        t('records.speakerUnknown', { name: speakerLetter(speaker?.displayIndex ?? speakerId) })
       );
     },
     [diarization?.speakers, t],
@@ -1387,15 +1276,14 @@ export default function RecordDetail({
         return;
       setBusyAction('speaker');
       try {
-        setDiarization(
-          await recordRenameSpeaker({
+        await recordRenameSpeaker({
             recordId,
             expectedOverrideRevision: diarization.overrideRevision,
             speakerId,
             name,
             updatedAtWallTime: Date.now(),
-          }),
-        );
+        });
+        await refresh();
       } catch (error) {
         toast.error(
           t('records.speakerCorrectionFailed', {
@@ -1421,14 +1309,14 @@ export default function RecordDetail({
         return;
       setBusyAction('speaker');
       try {
-        const next = await recordMergeSpeakers({
+        await recordMergeSpeakers({
           recordId,
           expectedOverrideRevision: diarization.overrideRevision,
           sourceSpeakerId,
           targetSpeakerId,
           updatedAtWallTime: Date.now(),
         });
-        setDiarization(next);
+        await refresh();
         setSpeakerMergeTargets((current) => ({
           ...current,
           [sourceSpeakerId]: '',
@@ -1452,15 +1340,14 @@ export default function RecordDetail({
       if (!diarization) return;
       setBusyAction('speaker');
       try {
-        setDiarization(
-          await recordReassignSegmentSpeaker({
+        await recordReassignSegmentSpeaker({
             recordId,
             expectedOverrideRevision: diarization.overrideRevision,
             segmentId,
             speakerId,
             updatedAtWallTime: Date.now(),
-          }),
-        );
+        });
+        await refresh();
       } catch (error) {
         toast.error(
           t('records.speakerCorrectionFailed', {
@@ -1497,7 +1384,11 @@ export default function RecordDetail({
   const renderTranscriptSegment = useCallback(
     (segment: RecordTranscriptSegment) => {
       if (!transcript) return null;
-      const currentSpeakerId = speakerIdFor(segment);
+      const attribution = diarization?.segmentSpeakerAttributions[segment.segmentId];
+      const currentSpeakerId = attribution?.kind === 'single' ? attribution.speakerId : undefined;
+      const speakerText = currentSpeakerId !== undefined
+        ? speakerLabel(currentSpeakerId)
+        : t(attribution?.kind === 'multiple' ? 'records.speakerMultiple' : 'records.speakerUncertain');
       const mediaMs = (segment.startSample * 1_000) / transcript.sampleRate;
       const itemKey = `transcript-${segment.segmentId}`;
       return (
@@ -1547,7 +1438,8 @@ export default function RecordDetail({
           >
             {activeSpeakers.length > 0 ? (
               <CustomSelect
-                value={String(currentSpeakerId)}
+                value={currentSpeakerId === undefined ? '' : String(currentSpeakerId)}
+                placeholder={speakerText}
                 options={speakerOptions}
                 onChange={(value) =>
                   void handleReassignSegment(segment.segmentId, Number(value))
@@ -1559,7 +1451,7 @@ export default function RecordDetail({
               />
             ) : (
               <span className="inline-flex shrink-0 rounded-[var(--radius-sm)] bg-[var(--paper-inset)] px-1.5 py-0.5 text-xs font-medium text-[var(--ink-secondary)]">
-                {speakerFor(segment)}
+                {speakerText}
               </span>
             )}
             <button
@@ -1581,8 +1473,8 @@ export default function RecordDetail({
       handleReassignSegment,
       highlightAndFocus,
       highlightedItem,
-      speakerFor,
-      speakerIdFor,
+      diarization?.segmentSpeakerAttributions,
+      speakerLabel,
       speakerOptions,
       t,
       transcript,
@@ -1716,7 +1608,7 @@ export default function RecordDetail({
   const liveTranscriptionFailed =
     ownsCaptureSlot && transcriptionStatus === 'failed';
   const completedTranscriptionFailed =
-    !ownsCaptureSlot && transcriptionStatus === 'failed';
+    !ownsCaptureSlot && (transcriptionStatus === 'failed' || record?.audio?.diarizationStatus === 'failed');
   const systemAudioDowngraded = snapshot?.warnings.some(
     (warning) => warning.code === 'RECORDING_SYSTEM_AUDIO_UNAVAILABLE',
   );
@@ -1732,7 +1624,7 @@ export default function RecordDetail({
           ? t('records.paused')
           : captureStatus === 'interrupted'
             ? t('records.interrupted')
-            : captureStatus === 'failed' || transcriptionStatus === 'failed'
+            : captureStatus === 'failed' || transcriptionStatus === 'failed' || completedTranscriptionFailed
               ? t('records.failed')
               : transcriptionStatus &&
                   [
@@ -1751,7 +1643,7 @@ export default function RecordDetail({
         ? 'bg-[var(--error)]'
         : captureStatus === 'interrupted' ||
             captureStatus === 'failed' ||
-            transcriptionStatus === 'failed'
+            transcriptionStatus === 'failed' || completedTranscriptionFailed
           ? 'bg-[var(--error)]'
           : ownsCaptureSlot
             ? 'bg-[var(--warning)]'
@@ -1780,6 +1672,20 @@ export default function RecordDetail({
             disabled: !canDiscuss,
           },
         ],
+      },
+      {
+        // Existing results remain readable while the Manager processes a new
+        // candidate. Their presence must not hide the explicit rerun entrance.
+        items: transcript && !ownsCaptureSlot && !completedTranscriptionFailed
+          ? [{
+              icon: <RotateCcw className="h-3.5 w-3.5" />,
+              label: t('records.rerunTranscription'),
+              onClick: () => void handleStartTranscription(),
+              disabled: !modelPack?.usable || transcriptionStatus !== 'ready'
+                || record?.audio?.diarizationStatus === 'queued'
+                || record?.audio?.diarizationStatus === 'running',
+            }]
+          : [],
       },
       {
         items: tracks.map((track) => ({
@@ -1833,6 +1739,11 @@ export default function RecordDetail({
     ],
     [
       canDiscuss,
+      completedTranscriptionFailed,
+      handleStartTranscription,
+      modelPack?.usable,
+      transcript,
+      transcriptionStatus,
       handleArchive,
       handleExportAudio,
       handleExportText,
@@ -2147,44 +2058,10 @@ export default function RecordDetail({
               src={audioSrc}
               data-testid="recording-primary-audio"
               preload="metadata"
-              onLoadedMetadata={(event) => {
-                const pending = pendingSeekRef.current;
-                if (pending === null) return;
-                event.currentTarget.currentTime = pending / 1_000;
-                setPlaybackMs(pending);
-                pendingSeekRef.current = null;
-              }}
-              onPlay={() => {
-                setPlaying(true);
-                trackPlaybackSession();
-              }}
-              onPause={() => setPlaying(false)}
-              onError={() => {
-                audioRef.current?.pause();
-                secondaryAudioRef.current?.pause();
-                setPlaying(false);
-                setPlaybackError(true);
-                if (!playbackErrorShownRef.current) {
-                  playbackErrorShownRef.current = true;
-                  toast.error(t('records.playbackFailed'));
-                }
-              }}
-              onEnded={() => {
-                secondaryAudioRef.current?.pause();
-                setPlaying(false);
-                playbackSessionTrackedRef.current = false;
-              }}
-              onTimeUpdate={(event) => {
-                const currentTime = event.currentTarget.currentTime;
-                const secondaryAudio = secondaryAudioRef.current;
-                if (
-                  secondaryAudio &&
-                  Math.abs(secondaryAudio.currentTime - currentTime) > 0.12
-                ) {
-                  secondaryAudio.currentTime = currentTime;
-                }
-                setPlaybackMs(currentTime * 1_000);
-              }}
+              onLoadedMetadata={playback.metadataReady}
+              onError={playback.fail}
+              onEnded={playback.timeUpdated}
+              onTimeUpdate={playback.timeUpdated}
             />
           )}
           {secondaryAudioSrc && (
@@ -2193,20 +2070,9 @@ export default function RecordDetail({
               src={secondaryAudioSrc}
               data-testid="recording-secondary-audio"
               preload="metadata"
-              onLoadedMetadata={(event) => {
-                event.currentTarget.currentTime =
-                  audioRef.current?.currentTime ?? playbackMs / 1_000;
-              }}
-              onError={() => {
-                audioRef.current?.pause();
-                secondaryAudioRef.current?.pause();
-                setPlaying(false);
-                setPlaybackError(true);
-                if (!playbackErrorShownRef.current) {
-                  playbackErrorShownRef.current = true;
-                  toast.error(t('records.playbackFailed'));
-                }
-              }}
+              onLoadedMetadata={playback.metadataReady}
+              onError={playback.fail}
+              onEnded={playback.timeUpdated}
             />
           )}
           {playbackError && (
@@ -2300,7 +2166,9 @@ export default function RecordDetail({
             >
               <div className="min-w-0">
                 <span>
-                  {t(transcriptionFailureHint(record?.transcriptionFailure?.code))}
+                  {t(record?.transcriptionFailure?.stage === 'diarizing'
+                    ? 'records.diarizationFailedHint'
+                    : transcriptionFailureHint(record?.transcriptionFailure?.code))}
                 </span>
                 {record?.transcriptionFailure && (
                   <details className="mt-1 text-xs">
@@ -2463,7 +2331,7 @@ export default function RecordDetail({
                             <div className="flex items-center gap-2">
                               <span className="w-20 shrink-0 truncate text-xs font-medium text-[var(--ink-secondary)]">
                                 {t('records.speakerUnknown', {
-                                  name: speakerLetter(speaker.speakerId),
+                                  name: speakerLetter(speaker.displayIndex),
                                 })}
                               </span>
                               <input

@@ -1,9 +1,10 @@
+import type { UnifiedEvent } from './types';
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { RuntimeType } from '../../shared/types/runtime';
+import { getDefaultRuntimePermissionMode, getMaxPermissionForRuntime, type RuntimeType } from '../../shared/types/runtime';
 import {
   REQUIRED_SYSTEM_SKILLS,
   TASK_ALIGNMENT_SKILL_REQUIREMENT,
@@ -17,6 +18,17 @@ import type {
   UnifiedEventCallback,
 } from './types';
 import { RuntimeSteerUnavailableError } from './types';
+
+const productBirthFault = vi.hoisted(() => ({ deny: false }));
+vi.mock('node:fs/promises', async original => {
+  const actual = await original<typeof import('node:fs/promises')>();
+  return { ...actual, mkdir: (...args: Parameters<typeof actual.mkdir>) => {
+    if (productBirthFault.deny && String(args[0]).endsWith(join('.myagents', 'sessions-v2'))) {
+      return Promise.reject(Object.assign(new Error('product directory denied'), { code: 'EACCES' }));
+    }
+    return actual.mkdir(...args);
+  } };
+});
 
 const broadcastEvents: Array<{ event: string; data: unknown }> = [];
 
@@ -59,7 +71,7 @@ class FakeRuntimeProcess implements RuntimeProcess {
 }
 
 class FakeRuntime implements AgentRuntime {
-  readonly type: RuntimeType = 'codex';
+  type: RuntimeType = 'codex';
   readonly sentMessages: string[] = [];
   readonly startSessionInitialMessages: Array<string | undefined> = [];
   readonly startSessionResumeIds: Array<string | undefined> = [];
@@ -86,6 +98,8 @@ class FakeRuntime implements AgentRuntime {
   private rejectDispatchAck: boolean;
   private rejectStop: boolean;
   private readonly rejectConfig: boolean;
+  private readonly rejectPermissionConfig: boolean;
+  effectivePermissionMode = '';
   private readonly emitInterruptedOnStop: boolean;
   private readonly emitSessionCompleteOnStop: boolean;
   private nextTurnNumber = 1;
@@ -103,6 +117,7 @@ class FakeRuntime implements AgentRuntime {
     rejectDispatchAck?: boolean;
     rejectStop?: boolean;
     rejectConfig?: boolean;
+    rejectPermissionConfig?: boolean;
     emitInterruptedOnStop?: boolean;
     emitSessionCompleteOnStop?: boolean;
     deferRejectedSend?: boolean;
@@ -114,6 +129,7 @@ class FakeRuntime implements AgentRuntime {
     this.rejectDispatchAck = options.rejectDispatchAck === true;
     this.rejectStop = options.rejectStop === true;
     this.rejectConfig = options.rejectConfig === true;
+    this.rejectPermissionConfig = options.rejectPermissionConfig === true;
     this.emitInterruptedOnStop = options.emitInterruptedOnStop === true;
     this.emitSessionCompleteOnStop = options.emitSessionCompleteOnStop === true;
     this.deferStopBeforeResult = options.deferStopBeforeResult === true;
@@ -230,6 +246,7 @@ class FakeRuntime implements AgentRuntime {
   }
 
   async startSession(options: SessionStartOptions, onEvent: UnifiedEventCallback): Promise<RuntimeProcess> {
+    this.effectivePermissionMode = options.permissionMode ?? '';
     this.startSessionInitialMessages.push(options.initialTurn?.message);
     this.startSessionResumeIds.push(options.resumeSessionId);
     this.startSessionHasHostDispatcher.push(Boolean(
@@ -277,6 +294,11 @@ class FakeRuntime implements AgentRuntime {
 
   async setModel(): Promise<void> {
     if (this.rejectConfig) throw new Error('fake config apply failed');
+  }
+
+  async setPermissionMode(_process: RuntimeProcess, mode: string | undefined): Promise<void> {
+    if (this.rejectPermissionConfig && mode === 'full-auto') throw new Error('Approve for me unsupported');
+    this.effectivePermissionMode = mode ?? '';
   }
 
   async respondPermission(
@@ -447,6 +469,7 @@ async function createHarness(
     unconfirmedDispatchStop?: boolean;
     unconfirmedStop?: boolean;
     rejectConfig?: boolean;
+    rejectPermissionConfig?: boolean;
     emitInterruptedOnStop?: boolean;
     emitSessionCompleteOnStop?: boolean;
     deferRejectedSend?: boolean;
@@ -457,6 +480,7 @@ async function createHarness(
     deferMessagePersist?: boolean;
     deferMessagePersistOnCall?: number;
     rejectMessagePersist?: boolean;
+    runtimeType?: RuntimeType;
     runtimeSource?: 'system-cli' | 'managed-provider';
     withManagedHostDispatcher?: boolean;
     omittedLoadedSkillNames?: readonly string[];
@@ -483,7 +507,7 @@ async function createHarness(
   previousRuntime = process.env.MYAGENTS_RUNTIME;
   process.env.HOME = home;
   process.env.USERPROFILE = home;
-  process.env.MYAGENTS_RUNTIME = 'codex';
+  process.env.MYAGENTS_RUNTIME = options.runtimeType ?? 'codex';
 
   let messagePersistStarted = false;
   let messagePersistCount = 0;
@@ -524,6 +548,7 @@ async function createHarness(
     rejectDispatchAck: options.unconfirmedDispatchStop,
     rejectStop: options.unconfirmedDispatchStop || options.unconfirmedStop,
     rejectConfig: options.rejectConfig,
+    rejectPermissionConfig: options.rejectPermissionConfig,
     emitInterruptedOnStop: options.emitInterruptedOnStop,
     emitSessionCompleteOnStop: options.emitSessionCompleteOnStop,
     deferRejectedSend: options.deferRejectedSend,
@@ -554,9 +579,10 @@ async function createHarness(
         : actual.trySyncProjectUserConfigFiles,
     };
   });
+  runtime.type = options.runtimeType ?? 'codex';
   vi.doMock('./factory', () => ({
     getCurrentRuntimeSource: () => options.runtimeSource ?? 'system-cli',
-    getCurrentRuntimeType: () => 'codex',
+    getCurrentRuntimeType: () => runtime.type,
     getExternalRuntime: () => runtime,
     isExternalRuntime: (type: RuntimeType | undefined) => Boolean(type && type !== 'builtin'),
     isRuntimeSupported: () => true,
@@ -632,10 +658,10 @@ async function createHarness(
   return activeHarness;
 }
 
-async function waitFor(predicate: () => boolean, label: string, timeoutMs = 2_000): Promise<void> {
+async function waitFor(predicate: () => boolean | Promise<boolean>, label: string, timeoutMs = 2_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (predicate()) return;
+    if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`Timed out waiting for ${label}`);
@@ -652,6 +678,7 @@ function restoreEnv(): void {
 }
 
 afterEach(async () => {
+  productBirthFault.deny = false;
   const harness = activeHarness;
   activeHarness = null;
   if (harness) {
@@ -662,6 +689,7 @@ afterEach(async () => {
       // Test cleanup should not mask the assertion failure.
     }
     harness.externalSession.__resetExternalSessionForTests();
+    await harness.sessionStore.drainSessionTranscripts();
     rmSync(harness.home, { recursive: true, force: true });
   }
   restoreEnv();
@@ -698,6 +726,388 @@ function runInjectedTurn(harness: Harness, request: TestInjectedTurnRequest) {
 }
 
 describe('external SessionEngine with fake runtime', () => {
+  const externalIdentities = [
+    { runtimeType: 'claude-code', runtimeSource: 'system-cli' },
+    { runtimeType: 'codex', runtimeSource: 'system-cli' },
+    { runtimeType: 'codex', runtimeSource: 'managed-provider' },
+    { runtimeType: 'gemini', runtimeSource: 'system-cli' },
+  ] as const;
+
+  it.each(externalIdentities)('keeps V1 format and native identity across IM, Inbox and background continuation ($runtimeType/$runtimeSource)', async identity => {
+    const harness = await createHarness(['IM', 'Inbox', 'background'].map(text => ({ kind: 'success', text })), identity);
+    const sessionId = 'legacy-cross-surface';
+    const workspacePath = join(harness.home, 'workspace');
+    const metadata = { id: sessionId, agentDir: workspacePath, title: 'legacy', createdAt: 't', lastActiveAt: 't',
+      runtime: identity.runtimeType, runtimeSource: identity.runtimeSource, runtimeSessionId: 'native-existing' };
+    await harness.sessionStore.saveSessionMetadata(metadata);
+    await expect(harness.externalSession.restoreExternalSessionState(sessionId, workspacePath, { type: 'desktop' })).resolves.toEqual({ success: true });
+    const im = await harness.engine.enqueueImMessage({ message: 'IM', requestId: 'im-existing', sessionId, workspacePath,
+      scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'group' }, metadataBirthPending: false });
+    expect(im.success).toBe(true);
+    expect(im).toMatchObject({ success: true, queued: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const inbox = await harness.engine.enqueueInboxMessage({ text: 'Inbox', sessionId, workspacePath,
+      scenario: { type: 'desktop' }, allowLazySessionMaterialization: true });
+    expect(inbox).toMatchObject({ queued: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(await runInjectedTurn(harness, { prompt: 'background', sessionId, workspacePath, scenario: { type: 'desktop' }, timeoutMs: 2_000, pollMs: 10 })).toMatchObject({ success: true });
+    expect(harness.runtime.startSessionResumeIds[0]).toBe(identity.runtimeType === 'claude-code' ? sessionId : 'native-existing');
+    expect(harness.sessionStore.getSessionMetadata(sessionId)).toMatchObject({ id: sessionId, runtime: identity.runtimeType, runtimeSource: identity.runtimeSource });
+    expect(harness.sessionStore.getSessionMetadata(sessionId)?.transcriptFormat).toBeUndefined();
+    expect(harness.sessionStore.getActiveSessionTranscript(sessionId)).toBeUndefined();
+    expect((await harness.sessionStore.getSessionData(sessionId))?.messages.filter(row => row.role === 'assistant')).toHaveLength(3);
+  });
+
+  it.each(externalIdentities)('admits IM birth and Inbox/Task/Goal/Heartbeat turns during product IO failure ($runtimeType/$runtimeSource)', async identity => {
+    const prompts = ['IM', 'Inbox', 'Task', 'Goal', 'Heartbeat'];
+    const harness = await createHarness(prompts.map(text => ({ kind: 'success', text, includeTool: true })), identity);
+    const sessionId = 'cross-surface-fault';
+    const workspacePath = join(harness.home, 'workspace');
+    productBirthFault.deny = true;
+    await expect(harness.externalSession.restoreExternalSessionState(sessionId, workspacePath, { type: 'desktop' })).resolves.toEqual({ success: true });
+    const im = await harness.engine.enqueueImMessage({ message: 'IM', requestId: 'im-birth', sessionId, workspacePath,
+      scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' }, metadataBirthPending: true, permissionMode: getMaxPermissionForRuntime(identity.runtimeType) });
+    expect(im).toMatchObject({ success: true, queued: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const inbox = await harness.engine.enqueueInboxMessage({ text: 'Inbox', sessionId, workspacePath,
+      scenario: { type: 'desktop' }, allowLazySessionMaterialization: true });
+    expect(inbox).toMatchObject({ queued: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    for (const prompt of prompts.slice(2)) {
+      const result = await runInjectedTurn(harness, { prompt, sessionId, workspacePath,
+        scenario: prompt === 'Heartbeat' ? { type: 'agent-channel', platform: 'feishu', sourceType: 'private' }
+          : { type: 'cron', taskId: prompt, intervalMinutes: 15, aiCanExit: false },
+        assistantChannelDelivery: 'caller-owned', timeoutMs: 2_000, pollMs: 10 });
+      expect(result).toMatchObject({ success: true });
+    }
+    expect(harness.runtime.sentMessages).toEqual(prompts);
+    const transcript = harness.sessionStore.getActiveSessionTranscript(sessionId)!;
+    expect(transcript.metadata.transcriptFormat).toBe(2);
+    expect(await transcript.writer.flush(50)).toBe(false);
+    const live = await harness.sessionStore.getSessionData(sessionId);
+    expect(live?.messages.filter(row => row.role === 'assistant')).toHaveLength(prompts.length);
+    expect(broadcastEvents.some(item => item.event === 'chat:agent-error')).toBe(false);
+    productBirthFault.deny = false;
+    expect(await transcript.writer.flush()).toBe(true);
+    await transcript.revoke();
+    vi.resetModules();
+    const coldStore = await import('../SessionStore');
+    expect((await coldStore.getSessionData(sessionId))?.messages).toEqual(live?.messages);
+  });
+  it.each(['system-cli', 'managed-provider'] as const)('admits the first real prewarmed turn and next turn despite product-directory EACCES before metadata birth (%s)', async runtimeSource => {
+    const harness = await createHarness([{ kind: 'success', text: 'first' }, { kind: 'success', text: 'next' }], { runtimeSource });
+    const sessionId = 'session-prewarm-birth-io';
+    const workspacePath = join(harness.home, 'workspace');
+    await expect(harness.externalSession.prewarmExternalSession({ sessionId, workspacePath, scenario: { type: 'desktop' } })).resolves.toEqual({ prewarmed: true });
+    await waitFor(() => harness.externalSession.hasExternalRuntimeProcess(), 'prewarm birth');
+    const fsUtils = await import('../utils/fs-utils');
+    const ensure = fsUtils.ensureDirSync;
+    const syncIo = vi.spyOn(fsUtils, 'ensureDirSync').mockImplementation((...args) => {
+      if (String(args[0]).endsWith(join('.myagents', 'sessions'))) throw Object.assign(new Error('product directory denied'), { code: 'EACCES' });
+      return ensure(...args);
+    });
+    productBirthFault.deny = true;
+    try {
+      for (const text of ['first query', 'next query']) {
+        const sent = await harness.engine.sendDesktopMessage({
+          ...desktopRequest(sessionId, workspacePath, text),
+          permissionMode: runtimeSource === 'managed-provider' ? 'no-restrictions' : 'full-auto',
+        });
+        expect(sent.error).toBeUndefined();
+        await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
+        await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+      }
+      const transcript = harness.sessionStore.getActiveSessionTranscript(sessionId)!;
+      expect(transcript.writer.projection.messages.size).toBe(4);
+      expect(await transcript.writer.flush(100)).toBe(false);
+      expect(transcript.writer.status.state).not.toBe('healthy');
+    } finally { syncIo.mockRestore(); productBirthFault.deny = false; }
+  });
+
+  it('retains a prewarm native identity without touching product disk before the first real turn', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'answer' }], { deferStart: true });
+    const sessionId = 'session-prewarm-native-id';
+    const workspacePath = join(harness.home, 'workspace');
+    const warming = harness.externalSession.prewarmExternalSession({ sessionId, workspacePath, scenario: { type: 'desktop' } });
+    await waitFor(() => harness.runtime.startSessionInitialMessages.length === 1, 'admitted native start');
+    const fsUtils = await import('../utils/fs-utils');
+    const ensure = fsUtils.ensureDirSync;
+    let productTouches = 0;
+    const syncIo = vi.spyOn(fsUtils, 'ensureDirSync').mockImplementation((...args) => {
+      if (String(args[0]).endsWith(join('.myagents', 'sessions'))) {
+        productTouches++;
+        throw Object.assign(new Error('product directory denied'), { code: 'EACCES' });
+      }
+      return ensure(...args);
+    });
+    try {
+      harness.runtime.releaseStart();
+      await expect(warming).resolves.toEqual({ prewarmed: true });
+      await waitFor(() => broadcastEvents.some(event => event.event === 'chat:system-init'), 'native init');
+      expect(productTouches).toBe(0);
+      expect(harness.sessionStore.getActiveSessionTranscript(sessionId)).toBeUndefined();
+      productBirthFault.deny = true;
+      const sent = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'first question'));
+      expect(sent.error).toBeUndefined();
+      await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
+      await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+      expect(harness.sessionStore.getActiveSessionTranscript(sessionId)?.metadata.runtimeSessionId).toBe('fake-thread-1');
+    } finally { syncIo.mockRestore(); productBirthFault.deny = false; }
+  });
+
+  it.each(externalIdentities.flatMap(identity =>
+    (['hang', 'reject'] as const).map(failure => ({ ...identity, failure })),
+  ))('completes current and next V2 AI turns with $runtimeType/$runtimeSource/$failure history IO', async ({ runtimeType, runtimeSource, failure }) => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'first answer' },
+      { kind: 'success', text: 'answer during storage failure' },
+      { kind: 'success', text: 'next answer still works' },
+    ], { runtimeType, runtimeSource });
+    const sessionId = `v2-storage-${failure}`;
+    const workspacePath = join(harness.home, 'workspace');
+    await expect(harness.externalSession.restoreExternalSessionState(sessionId, workspacePath, { type: 'desktop' })).resolves.toEqual({ success: true });
+    const request = (text: string): DesktopMessageRequest => ({
+      ...desktopRequest(sessionId, workspacePath, text),
+      permissionMode: runtimeSource === 'managed-provider' ? 'no-restrictions' : getDefaultRuntimePermissionMode(runtimeType),
+    });
+    const admitted = await harness.engine.sendDesktopMessage(request('first'));
+    expect(admitted.error).toBeUndefined();
+    await expect(admitted.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const transcript = harness.sessionStore.getActiveSessionTranscript(sessionId)!;
+    expect(await transcript.writer.flush()).toBe(true);
+    const original = transcript.file.append.bind(transcript.file);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let failing = true;
+    const append = vi.spyOn(transcript.file, 'append').mockImplementation(async (...args) => {
+      if (failing && failure === 'reject') throw new Error('injected ENOSPC');
+      if (failing) await gate;
+      return original(...args);
+    });
+    try {
+      const second = await harness.engine.sendDesktopMessage(request('second'));
+      await expect(second.dispatchAcceptance).resolves.toEqual({ accepted: true });
+      await waitFor(() => append.mock.calls.length > 0, 'background write attempt');
+      await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+      const third = await harness.engine.sendDesktopMessage(request('third'));
+      await expect(third.dispatchAcceptance).resolves.toEqual({ accepted: true });
+      await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+      expect(await harness.engine.getLatestAssistantResult()).toMatchObject({ latestResult: 'next answer still works' });
+      expect(harness.sessionStore.getSessionMetadata(sessionId)).toMatchObject({ stats: { messageCount: 3 }, lastMessagePreview: 'third' });
+      expect(transcript.writer.status.liveRevision).toBeGreaterThan(transcript.writer.status.durableRevision);
+      expect(broadcastEvents.some(item => item.event === 'chat:agent-error')).toBe(false);
+    } finally {
+      failing = false;
+      release();
+      await transcript.writer.flush();
+      append.mockRestore();
+    }
+  });
+
+  it('keeps async answers queued until dispatch, supports cancel/retry, and rejects answered history', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'Question follows', completeDelayMs: 60_000 },
+      { kind: 'success', text: 'Answer received' },
+    ], { config: { chatQueueResponseMode: 'turn' } });
+    const sessionId = 'session-async-question-turn';
+    const workspacePath = join(harness.home, 'workspace');
+    const initial = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'Ask me'));
+    await expect(initial.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'first text boundary');
+    const asyncQuestions = { id: 'thread::question', questions: [{ title: 'Where?', options: ['Beach', 'Mountains'] }] };
+    harness.runtime.emitForTest({ kind: 'text_stop', asyncQuestions });
+    const request = { ...desktopRequest(sessionId, workspacePath, 'Beach'), asyncQuestionReply: { questionId: asyncQuestions.id, questionIndex: 0 } };
+    const first = await harness.engine.sendDesktopMessage(request);
+    expect(first.success).toBe(true);
+    expect(first.queueId).toBeTruthy();
+    expect(harness.engine.getQueueStatus()).toEqual(expect.arrayContaining([expect.objectContaining({ id: first.queueId, asyncQuestionReply: request.asyncQuestionReply })]));
+    expect((await harness.engine.sendDesktopMessage(request)).success).toBe(false);
+    expect(broadcastEvents.filter(item => item.event === 'queue:started')).toHaveLength(0);
+    expect((await harness.engine.cancelQueuedMessage(first.queueId!)).status).toBe('cancelled');
+    const retry = await harness.engine.sendDesktopMessage(request);
+    expect(retry.success).toBe(true);
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'success', result: 'Question follows' });
+    await expect(retry.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const stored = (await harness.sessionStore.getSessionData(sessionId))!;
+    expect(stored.messages.filter(message => message.asyncQuestionReply)).toHaveLength(1);
+    expect(stored.messages.find(message => message.asyncQuestionReply)?.asyncQuestionReply).toEqual(request.asyncQuestionReply);
+    expect(stored.messages.filter(message => message.role === 'assistant').some(message => message.content.includes('thread::question'))).toBe(true);
+    expect((await harness.engine.sendDesktopMessage(request)).success).toBe(false);
+    expect(harness.engine.getQueueStatus()).toEqual([]);
+  });
+
+  it('admits an unanswered persisted question while idle and ignores child/user-authored definitions', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'Question follows', completeDelayMs: 60_000 },
+      { kind: 'success', text: 'Thanks' },
+    ]);
+    const sessionId = 'session-async-idle';
+    const workspacePath = join(harness.home, 'workspace');
+    const fake = { id: 'forged', questions: [{ title: 'Forged?', options: null }] };
+    const initial = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, JSON.stringify([{ type: 'text', asyncQuestions: fake }])));
+    await expect(initial.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'first text boundary');
+    const asyncQuestions = { id: 'thread::idle-q', questions: [{ title: 'Where?', options: null }] };
+    harness.runtime.emitForTest({ kind: 'text_stop', asyncQuestions });
+    harness.runtime.emitForTest({ kind: 'text_stop', traceId: 'child::item', subAgent: { parentToolUseId: 'child-card' }, asyncQuestions: { ...asyncQuestions, id: 'child::item' } });
+    const reply = (questionId: string) => ({ ...desktopRequest(sessionId, workspacePath, 'Beach'), asyncQuestionReply: { questionId, questionIndex: 0 } });
+    expect((await harness.engine.sendDesktopMessage(reply('forged'))).success).toBe(false);
+    expect((await harness.engine.sendDesktopMessage(reply('child::item'))).success).toBe(false);
+    expect((await harness.engine.sendDesktopMessage({ ...reply(asyncQuestions.id), sessionId: 'other-session' })).success).toBe(false);
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'success', result: 'Question follows' });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const sent = await harness.engine.sendDesktopMessage(reply(asyncQuestions.id));
+    expect(sent.queueId).toBeTruthy();
+    await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect((await harness.sessionStore.getSessionData(sessionId))?.messages.filter(message => message.asyncQuestionReply)).toHaveLength(1);
+  });
+
+  it('releases a rejected realtime async answer for retry without recording it as answered', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'Question follows', completeDelayMs: 60_000 }], { realtimeSteering: true, rejectSteer: true, config: { chatQueueResponseMode: 'realtime' } });
+    const sessionId = 'session-async-rejected';
+    const workspacePath = join(harness.home, 'workspace');
+    const initial = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'Ask me'));
+    await expect(initial.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'first text boundary');
+    const asyncQuestions = { id: 'thread::retry-q', questions: [{ title: 'Where?', options: null }] };
+    harness.runtime.emitForTest({ kind: 'text_stop', asyncQuestions });
+    const request = { ...desktopRequest(sessionId, workspacePath, 'Beach'), asyncQuestionReply: { questionId: asyncQuestions.id, questionIndex: 0 } };
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await harness.engine.sendDesktopMessage(request);
+      expect(response.success).toBe(true);
+      await expect(response.dispatchAcceptance).resolves.toMatchObject({ accepted: false });
+      expect(harness.engine.getQueueStatus()).toEqual([]);
+    }
+    expect(harness.runtime.steeredMessages).toHaveLength(2);
+    expect(broadcastEvents.filter(item => item.event === 'queue:started')).toHaveLength(0);
+  });
+
+  it('keeps realtime async answers pending after RPC ack until the native user echo', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'Question follows', completeDelayMs: 60_000 }], { realtimeSteering: true, config: { chatQueueResponseMode: 'realtime' } });
+    const sessionId = 'session-async-question-realtime';
+    const workspacePath = join(harness.home, 'workspace');
+    const initial = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'Ask me'));
+    await expect(initial.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'first text boundary');
+    const asyncQuestions = { id: 'thread::q', questions: [{ title: 'Where?', options: null }] };
+    harness.runtime.emitForTest({ kind: 'text_stop', asyncQuestions });
+    const request = { ...desktopRequest(sessionId, workspacePath, 'Beach'), asyncQuestionReply: { questionId: asyncQuestions.id, questionIndex: 0 } };
+    const response = await harness.engine.sendDesktopMessage(request);
+    await expect(response.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    expect(harness.runtime.steeredMessages).toHaveLength(1);
+    expect(harness.engine.getQueueStatus()).toEqual(expect.arrayContaining([expect.objectContaining({ asyncQuestionReply: request.asyncQuestionReply })]));
+    expect(broadcastEvents.filter(item => item.event === 'queue:started')).toHaveLength(0);
+    expect((await harness.engine.sendDesktopMessage(request)).success).toBe(false);
+    harness.runtime.emitUserMessageAccepted(harness.runtime.steeredMessages[0].clientUserMessageId);
+    await waitFor(() => broadcastEvents.some(item => item.event === 'queue:started'), 'native accepted echo');
+    expect(broadcastEvents.find(item => item.event === 'queue:started')?.data).toMatchObject({ userMessage: { asyncQuestionReply: request.asyncQuestionReply } });
+    expect(harness.engine.getQueueStatus()).toEqual([]);
+  });
+
+
+  it.each([false, true])('never accepts an ack-only async steer at terminal (ack after terminal: %s)', async (lateAck) => {
+    const harness = await createHarness([{ kind: 'success', text: 'Question follows', completeDelayMs: 60_000 }], {
+      realtimeSteering: true, deferSteerSuccess: lateAck, config: { chatQueueResponseMode: 'realtime' },
+    });
+    const sessionId = 'session-async-ack-only';
+    const workspacePath = join(harness.home, 'workspace');
+    const initial = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'Ask me'));
+    await initial.dispatchAcceptance;
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'question turn');
+    harness.runtime.emitForTest({ kind: 'text_stop', asyncQuestions: { id: 'thread::q', questions: [{ title: 'Where?', options: null }] } });
+    const request = { ...desktopRequest(sessionId, workspacePath, 'Beach'), asyncQuestionReply: { questionId: 'thread::q', questionIndex: 0 } };
+    const response = await harness.engine.sendDesktopMessage(request);
+    await waitFor(() => harness.runtime.steeredMessages.length === 1, 'steer request');
+    if (!lateAck) await response.dispatchAcceptance;
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'failed', error: 'failed before user echo' });
+    if (lateAck) harness.runtime.releaseSteerSuccess();
+    await response.dispatchAcceptance;
+    await waitFor(() => harness.engine.getQueueStatus().length === 0, 'unconfirmed reply released');
+    expect(broadcastEvents.filter(item => item.event === 'queue:started')).toHaveLength(0);
+    expect((await harness.sessionStore.getSessionData(sessionId))?.messages.filter(message => message.asyncQuestionReply) ?? []).toHaveLength(0);
+    expect((await harness.engine.sendDesktopMessage(request)).success).toBe(true);
+  });
+
+  it.each(['active', 'resume', 'error'] as const)('keeps native async turn admission pending and permits rejected retry (%s)', async (mode) => {
+    const harness = await createHarness([{ kind: 'success', text: 'Question follows', completeDelayMs: 60_000 }]);
+    const sessionId = 'session-async-native-admission';
+    const workspacePath = join(harness.home, 'workspace');
+    const initial = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'Ask me'));
+    await initial.dispatchAcceptance;
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'question turn');
+    harness.runtime.emitForTest({ kind: 'text_stop', asyncQuestions: { id: 'thread::q', questions: [{ title: 'Where?', options: null }] } });
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'success', result: 'Question follows' });
+    await harness.engine.waitIdle(2_000, 10);
+    if (mode === 'resume') await harness.externalSession.stopExternalSession();
+    if (mode === 'error') harness.runtime.emitForTest({ kind: 'status_change', state: 'error' });
+    let rejectNative!: (error: Error) => void;
+    const nativeSend = vi.spyOn(harness.runtime, 'sendMessage').mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectNative = reject; }));
+    const request = { ...desktopRequest(sessionId, workspacePath, 'Beach'), asyncQuestionReply: { questionId: 'thread::q', questionIndex: 0 } };
+    const response = await harness.engine.sendDesktopMessage(request);
+    await waitFor(() => nativeSend.mock.calls.length === 1, 'native send request');
+    expect(response.queueId).toBeTruthy();
+    expect(harness.engine.getQueueStatus()).toEqual(expect.arrayContaining([expect.objectContaining({ asyncQuestionReply: request.asyncQuestionReply })]));
+    const prematureAnswers = (await harness.sessionStore.getSessionData(sessionId))?.messages.filter(message => message.asyncQuestionReply) ?? [];
+    const prematureStarts = broadcastEvents.filter(item => item.event === 'queue:started');
+    rejectNative(new Error('native turn/start rejected'));
+    await expect(response.dispatchAcceptance).resolves.toMatchObject({ accepted: false });
+    expect(prematureAnswers).toHaveLength(0);
+    expect(prematureStarts).toHaveLength(0);
+    expect((await harness.engine.sendDesktopMessage(request)).success).toBe(true);
+  });
+
+  it.each([['success', false], ['failed', false], ['success', true], ['failed', true]] as const)('preserves an accepted async answer at early terminal %s, error retry %s', async (status, errorRetry) => {
+    const harness = await createHarness([{ kind: 'success', text: 'Question follows', completeDelayMs: 60_000 }]);
+    const sessionId = 'session-async-early-terminal';
+    const workspacePath = join(harness.home, 'workspace');
+    const initial = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'Ask me'));
+    await initial.dispatchAcceptance;
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'question turn');
+    harness.runtime.emitForTest({ kind: 'text_stop', asyncQuestions: { id: 'thread::q', questions: [{ title: 'Where?', options: null }] } });
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'success', result: 'Question follows' });
+    await harness.engine.waitIdle(2_000, 10);
+    if (errorRetry) harness.runtime.emitForTest({ kind: 'status_change', state: 'error' });
+    vi.spyOn(harness.runtime, 'sendMessage').mockImplementationOnce(async () => {
+      harness.runtime.emitForTest({ kind: 'text_delta', text: 'Answer processed' });
+      harness.runtime.emitForTest({ kind: 'text_stop' });
+      harness.runtime.emitForTest({ kind: 'turn_complete', status, result: 'Answer processed', error: status === 'failed' ? 'assistant failed' : undefined });
+    });
+    const request = { ...desktopRequest(sessionId, workspacePath, 'Beach'), asyncQuestionReply: { questionId: 'thread::q', questionIndex: 0 } };
+    const response = await harness.engine.sendDesktopMessage(request);
+    await expect(response.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const stored = (await harness.sessionStore.getSessionData(sessionId))!.messages;
+    expect(stored.filter(message => message.asyncQuestionReply)).toHaveLength(1);
+    const answerIndex = stored.findIndex(message => message.asyncQuestionReply);
+    if (status === 'success') {
+      expect(stored[answerIndex + 1]).toMatchObject({ role: 'assistant' });
+      expect(stored[answerIndex + 1].content).toContain('Answer processed');
+    }
+    expect((await harness.engine.sendDesktopMessage(request)).success).toBe(false);
+  });
+
+  it('keeps a natively echoed realtime async answer accepted after assistant failure', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'Question follows', completeDelayMs: 60_000 }], { realtimeSteering: true, config: { chatQueueResponseMode: 'realtime' } });
+    const sessionId = 'session-async-echo-failure';
+    const workspacePath = join(harness.home, 'workspace');
+    const initial = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'Ask me'));
+    await initial.dispatchAcceptance;
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'question turn');
+    harness.runtime.emitForTest({ kind: 'text_stop', asyncQuestions: { id: 'thread::q', questions: [{ title: 'Where?', options: null }] } });
+    const request = { ...desktopRequest(sessionId, workspacePath, 'Beach'), asyncQuestionReply: { questionId: 'thread::q', questionIndex: 0 } };
+    const response = await harness.engine.sendDesktopMessage(request);
+    await response.dispatchAcceptance;
+    harness.runtime.emitUserMessageAccepted(harness.runtime.steeredMessages[0].clientUserMessageId);
+    await waitFor(async () => ((await harness.sessionStore.getSessionData(sessionId))?.messages.filter(message => message.asyncQuestionReply).length ?? 0) === 1, 'accepted answer persistence');
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'failed', error: 'assistant failed after accepting answer' });
+    await harness.engine.waitIdle(2_000, 10);
+    expect((await harness.sessionStore.getSessionData(sessionId))?.messages.filter(message => message.asyncQuestionReply)).toHaveLength(1);
+    expect((await harness.engine.sendDesktopMessage(request)).success).toBe(false);
+  });
+
   it('resumes a healthy 0.146 Product Session with the current Host dispatcher', async () => {
     const harness = await createHarness([
       { kind: 'success', text: 'historical session continued' },
@@ -741,7 +1151,7 @@ describe('external SessionEngine with fake runtime', () => {
 
     expect(harness.runtime.startSessionResumeIds).toEqual(['codex-thread-created-by-0.146']);
     expect(harness.runtime.startSessionHasHostDispatcher).toEqual([true]);
-    expect(harness.sessionStore.getSessionData(sessionId)?.messages).toEqual(expect.arrayContaining([
+    expect((await harness.sessionStore.getSessionData(sessionId))?.messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: 'user', content: 'continue historical work' }),
       expect.objectContaining({
         role: 'assistant',
@@ -927,7 +1337,7 @@ describe('external SessionEngine with fake runtime', () => {
       error: expect.stringContaining('did not admit required system skill myagents-task-alignment'),
     });
     expect(harness.runtime.sentMessages).toEqual([]);
-    expect(harness.sessionStore.getSessionData(sessionId)?.messages ?? []).toEqual([]);
+    expect((await harness.sessionStore.getSessionData(sessionId))?.messages ?? []).toEqual([]);
     expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(true);
     expect(broadcastEvents.some(event => event.event === 'chat:agent-error')).toBe(false);
 
@@ -1236,7 +1646,7 @@ describe('external SessionEngine with fake runtime', () => {
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
 
     expect(harness.runtime.startSessionInitialMessages).toHaveLength(2);
-    expect(harness.engine.getLatestAssistantResult().latestResult).toBe('answer after runtime restart');
+    expect((await harness.engine.getLatestAssistantResult()).latestResult).toBe('answer after runtime restart');
   });
 
   it('does not mirror external IM-origin turns back through the desktop fan-out', async () => {
@@ -1452,6 +1862,121 @@ describe('external SessionEngine with fake runtime', () => {
     });
   });
 
+  it('uses corrected Codex completion text for history, successful reply and channel mirror', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'initial', completeDelayMs: 60_000 }]);
+    const sessionId = 'session-v2-codex-correction';
+    const started = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, join(harness.home, 'workspace'), 'start'));
+    await expect(started.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'initial text');
+    harness.runtime.emitForTest({ kind: 'text_delta', text: 'wrong', traceId: 'thread::item' });
+    harness.runtime.emitForTest({ kind: 'text_stop', traceId: 'thread::item', nativeText: 'corrected' });
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'success', result: 'native complete' });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect((await harness.engine.getLatestAssistantResult()).latestResult).toContain('corrected');
+    const text = JSON.stringify((await harness.sessionStore.getSessionData(sessionId))?.messages);
+    expect(text).toContain('corrected');
+    expect(text).not.toContain('wrong');
+    await waitFor(() => harness.mirrorCalls.some(call => call.text === 'corrected'), 'corrected mirror');
+    expect(harness.mirrorCalls.some(call => call.text === 'wrong')).toBe(false);
+  });
+
+  it('keeps a background child trace prefix after the root terminal and bounds the child stop payload', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'initial', completeDelayMs: 60_000 }]);
+    const sessionId = 'session-v2-background-child';
+    const started = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, join(harness.home, 'workspace'), 'start'));
+    await expect(started.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'initial text');
+    harness.runtime.emitForTest({ kind: 'tool_use_start', toolUseId: 'parent', toolName: 'Task', input: {} });
+    const scope = { traceId: 'background-reasoning', subAgent: { parentToolUseId: 'parent' } };
+    harness.runtime.emitForTest({ kind: 'thinking_delta', index: 0, text: 'prefix', ...scope });
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'success', result: 'native complete' });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    harness.runtime.emitForTest({ kind: 'thinking_delta', index: 0, text: 'tail', ...scope });
+    harness.runtime.emitForTest({ kind: 'thinking_stop', index: 0, ...scope });
+    const large = 'x'.repeat(300 * 1024);
+    harness.runtime.emitForTest({ kind: 'text_delta', text: large, traceId: 'background-text', subAgent: scope.subAgent });
+    harness.runtime.emitForTest({ kind: 'text_stop', traceId: 'background-text', subAgent: scope.subAgent, nativeText: large });
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:subagent-tool-result-complete'
+      && Boolean((item.data as { metadata?: { largeValueRef?: unknown } }).metadata?.largeValueRef)), 'child preview reference');
+    const rows = (await harness.sessionStore.getSessionData(sessionId))!.messages;
+    const blocks = rows.filter(row => row.role === 'assistant').flatMap(row => JSON.parse(row.content));
+    const parent = blocks.find(block => block.tool?.id === 'parent');
+    expect(parent.tool.subagentCalls.find((call: { name: string }) => call.name === 'Thinking').result).toBe('prefixtail');
+    expect(parent.tool.subagentCalls.find((call: { name: string }) => call.name === 'AgentMessage').result.length).toBe(large.length);
+    expect(broadcastEvents.filter(item => item.event === 'chat:subagent-tool-result-complete')
+      .every(item => JSON.stringify(item.data).length < 192 * 1024)).toBe(true);
+  });
+
+  it('confirms native child text without duplicating it into the root or colliding with root block indices', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'initial', completeDelayMs: 60_000 }]);
+    const sessionId = 'session-v2-native-child';
+    const started = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, join(harness.home, 'workspace'), 'start'));
+    await expect(started.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'initial text');
+    harness.runtime.emitForTest({ kind: 'tool_use_start', toolUseId: 'parent', toolName: 'Task', input: {} });
+    const nativeSource = { messageId: 'child', parentToolUseId: 'parent', blockIndex: 0 };
+    harness.runtime.emitForTest({ kind: 'raw', data: null, nativeSource: { ...nativeSource, blockStart: { type: 'text', text: '' } } });
+    harness.runtime.emitForTest({ kind: 'text_delta', text: 'wrong', nativeSource });
+    const full: UnifiedEvent = { kind: 'message_replay', nativeSource, message: { id: 'child-frame', role: 'assistant', content: [{ type: 'text', text: 'correct child' }] } };
+    harness.runtime.emitForTest(full);
+    harness.runtime.emitForTest(full);
+    harness.runtime.emitForTest({ kind: 'text_stop', nativeSource });
+    harness.runtime.emitForTest({ kind: 'raw', data: null, nativeSource: { messageId: 'root', blockIndex: 0, blockStart: { type: 'text', text: '' } } });
+    harness.runtime.emitForTest({ kind: 'text_delta', text: 'root answer', nativeSource: { messageId: 'root', blockIndex: 0 } });
+    const rows = [...harness.sessionStore.getActiveSessionTranscript(sessionId)!.writer.projection.messages.values()];
+    const content = rows.flatMap(row => typeof row.content === 'string' ? [] : row.content);
+    expect(content.filter(block => block.type === 'text').map(block => block.text)).toEqual(['initial', 'root answer']);
+    expect(content).toContainEqual(expect.objectContaining({ tool: expect.objectContaining({ id: 'parent', subagentCalls: [
+      expect.objectContaining({ name: 'AgentMessage', result: 'correct child', isLoading: false }),
+    ] }) }));
+  });
+
+  it('confirms complete native assistant blocks after partial text and preserves full-only siblings', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'initial', completeDelayMs: 60_000 }]);
+    const sessionId = 'session-v2-native-confirm';
+    const started = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, join(harness.home, 'workspace'), 'start'));
+    await expect(started.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'initial text');
+    harness.runtime.emitForTest({ kind: 'raw', data: null, nativeSource: { messageId: 'model', blockIndex: 0, blockStart: { type: 'text', text: '' } } });
+    harness.runtime.emitForTest({ kind: 'text_delta', text: 'hel', nativeSource: { messageId: 'model', blockIndex: 0 } });
+    const full: UnifiedEvent = { kind: 'message_replay', message: { id: 'first-frame', role: 'assistant', content: [{ type: 'text', text: 'hello' }] }, nativeSource: { messageId: 'model' } };
+    harness.runtime.emitForTest(full);
+    harness.runtime.emitForTest(full);
+    harness.runtime.emitForTest({ kind: 'text_stop', nativeSource: { messageId: 'model', blockIndex: 0 } });
+    harness.runtime.emitForTest({ kind: 'message_replay', message: { id: 'second-frame', role: 'assistant', content: [{ type: 'text', text: 'second' }] }, nativeSource: { messageId: 'model' } });
+    harness.runtime.emitForTest({ kind: 'message_replay', message: { id: 'tool-frame', role: 'assistant', content: [{ type: 'tool_use', id: 'full-tool', name: 'Read', input: { file_path: '/tmp/file' } }] }, nativeSource: { messageId: 'model' } });
+    const rows = [...harness.sessionStore.getActiveSessionTranscript(sessionId)!.writer.projection.messages.values()];
+    const content = rows.flatMap(row => typeof row.content === 'string' ? [] : row.content);
+    expect(content.filter(block => block.nativeMessageId === 'model' && block.type === 'text').map(block => block.text)).toEqual(['hello', 'second']);
+    expect(broadcastEvents).toContainEqual({ event: 'chat:content-block-stop', data: expect.objectContaining({ toolId: 'full-tool', input: { file_path: '/tmp/file' } }) });
+    harness.runtime.emitForTest({ kind: 'message_replay', message: { id: 'first-frame', role: 'assistant', content: [{ type: 'text', text: 'corrected' }] }, nativeSource: { messageId: 'model' } });
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'success', result: 'native complete' });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect((await harness.engine.getLatestAssistantResult()).latestResult).toContain('correctedsecond');
+    const terminal = [...broadcastEvents].reverse().find(item => item.event === 'chat:message-complete');
+    expect(terminal?.data).toMatchObject({ tool_count: 1 });
+  });
+
+  it('preserves V2 nested canonical input after the final-input reference transport resolves', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'working', completeDelayMs: 60_000 }]);
+    const sessionId = 'session-v2-nested-input';
+    const request = desktopRequest(sessionId, join(harness.home, 'workspace'), 'start');
+    const started = await harness.engine.sendDesktopMessage(request);
+    await expect(started.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    const input = { file_path: '/tmp/large.ts', content: 'x'.repeat(220 * 1024) };
+    harness.runtime.emitForTest({ kind: 'tool_use_start', toolUseId: 'parent', toolName: 'Task', input: {} });
+    harness.runtime.emitForTest({ kind: 'tool_use_start', toolUseId: 'nested', toolName: 'Write', input: {}, subAgent: { parentToolUseId: 'parent' } });
+    harness.runtime.emitForTest({ kind: 'tool_use_stop', toolUseId: 'nested', input });
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:subagent-tool-use' && (item.data as { inputRef?: unknown }).inputRef), 'V2 final input reference');
+    const messages = harness.sessionStore.getActiveSessionTranscript(sessionId)!.writer.projection.messages;
+    const text = JSON.stringify([...messages.values()]);
+    const canonical = JSON.parse(text) as Array<{ content: Array<{ tool?: { id: string; subagentCalls?: Array<{ id: string; inputJson?: string }> } }> | string }>;
+    const parent = canonical.flatMap(message => typeof message.content === 'string' ? [] : message.content).find(block => block.tool?.id === 'parent');
+    const confirmed = JSON.parse(parent?.tool?.subagentCalls?.find(call => call.id === 'nested')?.inputJson ?? '{}');
+    expect(confirmed.file_path).toBe(input.file_path);
+    expect(confirmed.content?.length).toBe(input.content.length);
+  });
+
   it('spills oversized completed tool input before top-level and nested result events', async () => {
     const harness = await createHarness([]);
     const sessionId = 'session-tool-input-spill';
@@ -1581,7 +2106,7 @@ describe('external SessionEngine with fake runtime', () => {
     });
 
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
-    const assistant = harness.sessionStore.getSessionData(sessionId)?.messages
+    const assistant = (await harness.sessionStore.getSessionData(sessionId))?.messages
       .filter(message => message.role === 'assistant').at(-1);
     expect(assistant).toBeDefined();
     const blocks = JSON.parse(String(assistant?.content)) as Array<{
@@ -1628,7 +2153,7 @@ describe('external SessionEngine with fake runtime', () => {
     });
 
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
-    const assistant = harness.sessionStore.getSessionData(sessionId)?.messages
+    const assistant = (await harness.sessionStore.getSessionData(sessionId))?.messages
       .filter(message => message.role === 'assistant').at(-1);
     const blocks = JSON.parse(String(assistant?.content)) as Array<{
       tool?: {
@@ -1640,7 +2165,7 @@ describe('external SessionEngine with fake runtime', () => {
       .toEqual({ status: 'completed', startedAt: 100, finishedAt: 300 });
   });
 
-  it('fails a missing child terminal live before discarding a failed root partial assistant', async () => {
+  it('fails a missing child terminal and retains the interrupted V2 assistant', async () => {
     const harness = await createHarness([
       { kind: 'failure', error: 'root failed', partialText: 'partial', completeDelayMs: 50 },
     ]);
@@ -1668,8 +2193,10 @@ describe('external SessionEngine with fake runtime', () => {
       (event.data as { lifecycle?: { status?: string } }).lifecycle?.status
     ));
     expect(statuses).toEqual(expect.arrayContaining(['running', 'failed']));
-    expect(harness.sessionStore.getSessionData(sessionId)?.messages
-      .some(message => message.role === 'assistant')).toBe(false);
+    expect((await harness.sessionStore.getSessionData(sessionId))?.messages
+      .find(message => message.role === 'assistant')).toMatchObject({
+      transcriptState: 'interrupted', content: expect.stringContaining('partial'),
+    });
   });
 
   it('advances durable activity at external admission and terminal finalization', async () => {
@@ -1691,6 +2218,27 @@ describe('external SessionEngine with fake runtime', () => {
     expect(new Date(terminalAt ?? 0).getTime()).toBeGreaterThanOrEqual(
       new Date(admittedAt ?? 0).getTime(),
     );
+  });
+
+  it('blocks queued dispatch when a next-turn permission change from Full Access is rejected', async () => {
+    const harness = await createHarness([], { rejectPermissionConfig: true });
+    const sessionId = 'session-next-turn-permission-reject';
+    const workspacePath = join(harness.home, 'workspace');
+    await harness.externalSession.prewarmExternalSession({
+      sessionId, workspacePath, scenario: { type: 'desktop' },
+    });
+    await harness.externalSession.setExternalPermissionMode('no-restrictions');
+    expect(harness.runtime.effectivePermissionMode).toBe('no-restrictions');
+    const request = desktopRequest(sessionId, workspacePath, 'must not run with old Full Access');
+    request.permissionMode = 'full-auto';
+    const result = await harness.engine.sendDesktopMessage(request);
+    expect(result).toMatchObject({ success: true, queued: true });
+    await expect(result.dispatchAcceptance).resolves.toEqual({
+      accepted: false, error: expect.stringContaining('Approve for me unsupported'),
+    });
+    expect(harness.runtime.sentMessages).toEqual([]);
+    expect(harness.runtime.effectivePermissionMode).toBe('no-restrictions');
+    expect((await harness.sessionStore.getSessionData(sessionId))?.messages ?? []).toEqual([]);
   });
 
   it('does not advance activity when active-runtime config rejects before transport', async () => {
@@ -1715,7 +2263,7 @@ describe('external SessionEngine with fake runtime', () => {
       error: expect.stringContaining('fake config apply failed'),
     });
     expect(harness.runtime.sentMessages).toEqual([]);
-    expect(harness.sessionStore.getSessionData(sessionId)?.messages ?? []).toEqual([]);
+    expect((await harness.sessionStore.getSessionData(sessionId))?.messages ?? []).toEqual([]);
     const replay = broadcastEvents.find((item) => (
       item.event === 'chat:message-replay'
         && (item.data as { message?: { content?: string } }).message?.content === 'must not dispatch'
@@ -1757,7 +2305,7 @@ describe('external SessionEngine with fake runtime', () => {
     expect(harness.runtime.startSessionInitialMessages).toEqual([]);
     expect(harness.runtime.sentMessages).toEqual([]);
     expect(harness.externalSession.getExternalCurrentTurnIdentity()).toBeNull();
-    expect(harness.sessionStore.getSessionData(sessionId)?.messages ?? []).toEqual([]);
+    expect((await harness.sessionStore.getSessionData(sessionId))?.messages ?? []).toEqual([]);
     const replay = broadcastEvents.find((item) => (
       item.event === 'chat:message-replay'
         && (item.data as { message?: { content?: string } }).message?.content === 'must persist before transport'
@@ -1867,7 +2415,7 @@ describe('external SessionEngine with fake runtime', () => {
       item.event === 'chat:message-replay'
         && (item.data as { message?: { content?: string } }).message?.content === prompt
     ))).toBe(false);
-    expect(harness.sessionStore.getSessionData(sessionId)?.messages ?? []).toEqual([]);
+    expect((await harness.sessionStore.getSessionData(sessionId))?.messages ?? []).toEqual([]);
     expect(harness.externalSession.getExternalSessionState()).toBe('idle');
     expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(true);
   });
@@ -2155,7 +2703,7 @@ describe('external SessionEngine with fake runtime', () => {
       () => !harness.externalSession.hasExternalRuntimeProcess(),
       'deferred official tool restart',
     );
-    expect(harness.engine.getLatestAssistantResult().latestResult).toBe('turn before config restart');
+    expect((await harness.engine.getLatestAssistantResult()).latestResult).toBe('turn before config restart');
   });
 
   it('invalidates official-tool prompt state after a failed turn before draining the queue', async () => {
@@ -2197,7 +2745,7 @@ describe('external SessionEngine with fake runtime', () => {
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
     expect(harness.runtime.startSessionInitialMessages).toHaveLength(2);
     expect(harness.runtime.sentMessages).toContain('queued second turn');
-    expect(harness.engine.getLatestAssistantResult().latestResult).toBe(
+    expect((await harness.engine.getLatestAssistantResult()).latestResult).toBe(
       'queued turn on replacement process',
     );
   });
@@ -2271,7 +2819,7 @@ describe('external SessionEngine with fake runtime', () => {
       item.event === 'chat:message-replay'
         && (item.data as { message?: { content?: string } }).message?.content === prompt
     ))).toBe(false);
-    expect(harness.sessionStore.getSessionData(sessionId)).toBeNull();
+    expect((await harness.sessionStore.getSessionData(sessionId))).toBeNull();
     expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(false);
     expect(harness.externalSession.getExternalSessionState()).toBe('idle');
   });
@@ -2305,7 +2853,7 @@ describe('external SessionEngine with fake runtime', () => {
     await expect(run).resolves.toMatchObject({ success: false, enqueued: false });
     expect(beforeDispatch).toHaveBeenCalledOnce();
     expect(harness.runtime.sentMessages).toEqual([]);
-    expect(harness.sessionStore.getSessionData(sessionId)).toBeNull();
+    expect((await harness.sessionStore.getSessionData(sessionId))).toBeNull();
     expect(harness.externalSession.getExternalSessionState()).toBe('idle');
   });
 
@@ -2379,7 +2927,7 @@ describe('external SessionEngine with fake runtime', () => {
     await expect(run).resolves.toMatchObject({ success: false, enqueued: true });
     expect(harness.runtime.sentMessages).toEqual([]);
     expect(harness.sessionStore.getSessionMetadata(sessionId)?.lastActiveAt).toBeDefined();
-    expect(harness.sessionStore.getSessionData(sessionId)?.messages.some(
+    expect((await harness.sessionStore.getSessionData(sessionId))?.messages.some(
       (message) => message.role === 'user' && message.content === 'stop while admission persistence is waiting',
     )).toBe(true);
   });
@@ -2707,7 +3255,7 @@ describe('external SessionEngine with fake runtime', () => {
     });
 
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
-    expect(harness.engine.getLatestAssistantResult()).toEqual({
+    expect((await harness.engine.getLatestAssistantResult())).toEqual({
       sessionId,
       latestResult: 'first fake answer',
     });
@@ -2720,7 +3268,7 @@ describe('external SessionEngine with fake runtime', () => {
       status: 'complete',
     });
 
-    const persisted = harness.sessionStore.getSessionData(sessionId);
+    const persisted = (await harness.sessionStore.getSessionData(sessionId));
     const persistedAssistant = persisted?.messages.find((message) => (
       message.role === 'assistant' && message.content.includes('first fake answer')
     ));
@@ -2807,7 +3355,7 @@ describe('external SessionEngine with fake runtime', () => {
       text: 'cron relay ready',
     });
     expect(harness.runtime.sentMessages).toEqual(['relay cron completion']);
-    expect(harness.sessionStore.getSessionData(sessionId)).toMatchObject({
+    expect((await harness.sessionStore.getSessionData(sessionId))).toMatchObject({
       id: sessionId,
       agentDir: workspacePath,
     });
@@ -2833,7 +3381,7 @@ describe('external SessionEngine with fake runtime', () => {
       error: expect.stringContaining('Refusing to create missing metadata'),
     });
     expect(harness.runtime.sentMessages).toEqual([]);
-    expect(harness.sessionStore.getSessionData(sessionId)).toBeNull();
+    expect((await harness.sessionStore.getSessionData(sessionId))).toBeNull();
   });
 
   it('does not report failed injected turns as successful', async () => {
@@ -2856,7 +3404,7 @@ describe('external SessionEngine with fake runtime', () => {
       enqueued: true,
     });
     expect(result.error).toContain('fake turn failed');
-    expect(harness.engine.getLatestAssistantResult().latestResult).not.toContain('fake turn failed');
+    expect((await harness.engine.getLatestAssistantResult()).latestResult).not.toContain('fake turn failed');
   });
 
   it('forwards external failure metrics to the injected-turn terminal observer', async () => {
@@ -3041,7 +3589,7 @@ describe('external SessionEngine with fake runtime', () => {
     await expect(second.dispatchAcceptance).resolves.toEqual({ accepted: true });
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
     expect(harness.runtime.sentMessages).toEqual(['first', 'second']);
-    expect(harness.engine.getLatestAssistantResult().latestResult).toBe('second queued answer');
+    expect((await harness.engine.getLatestAssistantResult()).latestResult).toBe('second queued answer');
   });
 
   it('admits consecutive IM follow-ups immediately and drains them FIFO at turn boundaries', async () => {
@@ -3184,7 +3732,7 @@ describe('external SessionEngine with fake runtime', () => {
     expect(imId).toBeDefined();
     expect(desktopId).not.toBe(imId);
 
-    const persistedUsers = harness.sessionStore.getSessionData(sessionId)?.messages.filter(
+    const persistedUsers = (await harness.sessionStore.getSessionData(sessionId))?.messages.filter(
       message => message.role === 'user',
     ) ?? [];
     expect(persistedUsers.map(message => ({ id: message.id, content: message.content }))).toEqual([
@@ -3322,7 +3870,7 @@ describe('external SessionEngine with fake runtime', () => {
       item.event === 'queue:started'
         && (item.data as { userMessage?: { content?: string } }).userMessage?.content === 'stale Goal turn'
     ))).toBe(false);
-    expect(harness.sessionStore.getSessionData(sessionId)?.messages.filter(
+    expect((await harness.sessionStore.getSessionData(sessionId))?.messages.filter(
       (message) => message.role === 'user',
     ).map((message) => message.content)).toEqual(['first']);
   });
@@ -3411,13 +3959,13 @@ describe('external SessionEngine with fake runtime', () => {
 
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
     await waitFor(() => harness.mirrorCalls.length === 3, 'realtime steer mirrors');
-    const persisted = harness.sessionStore.getSessionData(sessionId);
+    const persisted = (await harness.sessionStore.getSessionData(sessionId));
     expect(persisted?.messages.filter((message) => message.role === 'user').map((message) => message.content)).toEqual([
       'first',
       'second',
     ]);
     expect(persisted?.messages.filter((message) => message.role === 'assistant')).toHaveLength(1);
-    expect(harness.engine.getLatestAssistantResult().latestResult).toBe('single steered answer');
+    expect((await harness.engine.getLatestAssistantResult()).latestResult).toBe('single steered answer');
     expect(harness.mirrorCalls.map(({ role, text }) => ({ role, text }))).toEqual([
       { role: 'user', text: 'first' },
       { role: 'user', text: 'second' },
@@ -3611,7 +4159,7 @@ describe('external SessionEngine with fake runtime', () => {
     expect(queueEvents.some((item) => item.event === 'queue:cancelled')).toBe(false);
     expect(broadcastEvents.some((item) => item.event === 'chat:agent-error')).toBe(false);
     expect(harness.runtime.sentMessages).toEqual(['first', 'second']);
-    expect(harness.sessionStore.getSessionData(sessionId)?.messages
+    expect((await harness.sessionStore.getSessionData(sessionId))?.messages
       .filter((message) => message.role === 'user')
       .map((message) => message.content)).toEqual(['first', 'second']);
   });
@@ -3678,7 +4226,7 @@ describe('external SessionEngine with fake runtime', () => {
     await expect(third.dispatchAcceptance).resolves.toEqual({ accepted: true });
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
     expect(harness.runtime.sentMessages).toEqual(['first', 'second', 'third']);
-    const persistedMessages = harness.sessionStore.getSessionData(sessionId)?.messages;
+    const persistedMessages = (await harness.sessionStore.getSessionData(sessionId))?.messages;
     expect(persistedMessages?.map((message) => message.role)).toEqual([
       'user', 'assistant', 'user', 'assistant', 'user', 'assistant',
     ]);
@@ -3737,7 +4285,7 @@ describe('external SessionEngine with fake runtime', () => {
     );
 
     await waitFor(
-      () => harness.engine.getLatestAssistantResult().latestResult === 'first answer',
+      async () => (await harness.engine.getLatestAssistantResult()).latestResult === 'first answer',
       'first product turn finalization',
     );
     expect(harness.engine.getQueueStatus().map((item) => item.messagePreview)).toEqual(['third']);
@@ -3770,7 +4318,7 @@ describe('external SessionEngine with fake runtime', () => {
     );
     await waitFor(() => harness.runtime.steeredMessages.length === 1, 'unresolved steer admission');
     await waitFor(
-      () => harness.engine.getLatestAssistantResult().latestResult === 'first answer',
+      async () => (await harness.engine.getLatestAssistantResult()).latestResult === 'first answer',
       'first product turn finalization',
     );
     await waitFor(
@@ -3793,7 +4341,7 @@ describe('external SessionEngine with fake runtime', () => {
     await expect(third.dispatchAcceptance).resolves.toEqual({ accepted: true });
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
     expect(harness.runtime.sentMessages).toEqual(['first', 'second', 'third']);
-    const persistedMessages = harness.sessionStore.getSessionData(sessionId)?.messages;
+    const persistedMessages = (await harness.sessionStore.getSessionData(sessionId))?.messages;
     expect(persistedMessages?.map((message) => message.role)).toEqual([
       'user', 'assistant', 'user', 'assistant', 'user', 'assistant',
     ]);
@@ -3821,7 +4369,7 @@ describe('external SessionEngine with fake runtime', () => {
     );
     await waitFor(() => harness.runtime.steeredMessages.length === 1, 'late successful steer request');
     await waitFor(
-      () => harness.engine.getLatestAssistantResult().latestResult === 'first answer',
+      async () => (await harness.engine.getLatestAssistantResult()).latestResult === 'first answer',
       'first product turn finalization',
     );
     await waitFor(
@@ -3844,7 +4392,7 @@ describe('external SessionEngine with fake runtime', () => {
     await expect(third.dispatchAcceptance).resolves.toEqual({ accepted: true });
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
     expect(harness.runtime.sentMessages).toEqual(['first', 'third']);
-    expect(harness.sessionStore.getSessionData(sessionId)?.messages.filter(
+    expect((await harness.sessionStore.getSessionData(sessionId))?.messages.filter(
       (message) => message.role === 'user',
     ).map((message) => message.content)).toEqual(['first', 'second', 'third']);
   });
@@ -3962,11 +4510,11 @@ describe('external SessionEngine with fake runtime', () => {
     );
 
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
-    const persisted = harness.sessionStore.getSessionData(sessionId);
+    const persisted = (await harness.sessionStore.getSessionData(sessionId));
     expect(persisted?.messages.filter((message) => message.role === 'user').map((message) => message.content)).toEqual([
       'first',
     ]);
-    expect(harness.engine.getLatestAssistantResult().latestResult).toBe('answer after rejected steer');
+    expect((await harness.engine.getLatestAssistantResult()).latestResult).toBe('answer after rejected steer');
     expect(harness.mirrorCalls.some(({ role, text }) => role === 'user' && text === 'second')).toBe(false);
   });
 
@@ -4021,7 +4569,7 @@ describe('external SessionEngine with fake runtime', () => {
       { requestId: 'perm-ok', decision: 'allow_once', reason: undefined },
     ]);
     expect(harness.engine.getStreamReplaySnapshot().pendingInteractiveRequests).toHaveLength(0);
-    expect(harness.engine.getLatestAssistantResult().latestResult).toBe('permission approved answer');
+    expect((await harness.engine.getLatestAssistantResult()).latestResult).toBe('permission approved answer');
   });
 
   it('preserves permission pending state when runtime delivery fails', async () => {
@@ -4058,7 +4606,8 @@ describe('external SessionEngine with fake runtime', () => {
     );
     await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
-    const sourceBefore = harness.sessionStore.getSessionData(sessionId)!;
+    expect(await harness.sessionStore.getActiveSessionTranscript(sessionId)!.writer.flush()).toBe(true);
+    const sourceBefore = (await harness.sessionStore.getSessionData(sessionId))!;
     const firstUser = sourceBefore.messages.find(message => message.role === 'user')!;
     const firstAssistant = sourceBefore.messages.find(message => message.role === 'assistant')!;
     const indexedBefore = harness.sessionStore.getSessionsByAgentDir(workspacePath).length;
@@ -4078,7 +4627,12 @@ describe('external SessionEngine with fake runtime', () => {
         errorCode: 'session_busy',
       });
       expect(harness.runtime.conversationBranches).toEqual([]);
-      expect(harness.sessionStore.getSessionData(sessionId)).toEqual(sourceBefore);
+      expect((await harness.sessionStore.getSessionData(sessionId))).toEqual({
+      ...sourceBefore,
+      // Content and identity are immutable here; the background writer may
+      // independently advance the committed prefix during a native operation.
+      transcriptSaveStatus: { ...sourceBefore?.transcriptSaveStatus, durableRevision: expect.any(Number) },
+    });
       expect(harness.sessionStore.getSessionsByAgentDir(workspacePath)).toHaveLength(indexedBefore);
     } finally {
       harness.runtime.releaseStop();
@@ -4116,7 +4670,7 @@ describe('external SessionEngine with fake runtime', () => {
       await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
       await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
     }
-    const before = harness.sessionStore.getSessionData(sessionId)!;
+    const before = (await harness.sessionStore.getSessionData(sessionId))!;
     const secondUser = before.messages.find(message => message.role === 'user' && message.content === 'second question')!;
     const assistants = before.messages.filter(message => message.role === 'assistant');
     expect(assistants[1]?.runtimeTurnAnchor).toEqual({
@@ -4132,7 +4686,7 @@ describe('external SessionEngine with fake runtime', () => {
     expect(harness.runtime.conversationBranches).toEqual([
       { kind: 'before-turn', runtimeTurnId: 'fake-turn-2' },
     ]);
-    const rewound = harness.sessionStore.getSessionData(sessionId)!;
+    const rewound = (await harness.sessionStore.getSessionData(sessionId))!;
     expect(rewound.messages.map(message => message.role)).toEqual(['user', 'assistant']);
     expect(rewound.messages[0]?.content).toBe('first question');
     expect(rewound.messages[1]?.content).toContain('first answer');
@@ -4148,8 +4702,8 @@ describe('external SessionEngine with fake runtime', () => {
     );
     await expect(resent.dispatchAcceptance).resolves.toEqual({ accepted: true });
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
-    expect(harness.sessionStore.getSessionData(sessionId)?.runtimeSessionId).toBe(rewound.runtimeSessionId);
-    const resumedMessages = harness.sessionStore.getSessionData(sessionId)!.messages;
+    expect((await harness.sessionStore.getSessionData(sessionId))?.runtimeSessionId).toBe(rewound.runtimeSessionId);
+    const resumedMessages = (await harness.sessionStore.getSessionData(sessionId))!.messages;
     expect(resumedMessages.map(message => message.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
     expect(resumedMessages[2]?.content).toBe('edited second question');
     expect(resumedMessages[3]?.content).toContain('edited second answer');
@@ -4166,15 +4720,15 @@ describe('external SessionEngine with fake runtime', () => {
     const sent = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'first question'));
     await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
-    const firstUser = harness.sessionStore.getSessionData(sessionId)!.messages[0]!;
+    const firstUser = (await harness.sessionStore.getSessionData(sessionId))!.messages[0]!;
     const startsBeforeRewind = harness.runtime.startSessionInitialMessages.length;
 
     await expect(harness.engine.rewindToUserMessage(firstUser.id)).resolves.toMatchObject({ success: true });
     expect(harness.runtime.conversationBranches).toEqual([
       { kind: 'before-turn', runtimeTurnId: 'fake-turn-1' },
     ]);
-    expect(harness.sessionStore.getSessionData(sessionId)?.messages).toEqual([]);
-    expect(harness.sessionStore.getSessionData(sessionId)?.runtimeSessionId).toBeUndefined();
+    expect((await harness.sessionStore.getSessionData(sessionId))?.messages).toEqual([]);
+    expect((await harness.sessionStore.getSessionData(sessionId))?.runtimeSessionId).toBeUndefined();
     await new Promise(resolve => setTimeout(resolve, 20));
     expect(harness.runtime.startSessionInitialMessages).toHaveLength(startsBeforeRewind);
 
@@ -4183,7 +4737,7 @@ describe('external SessionEngine with fake runtime', () => {
     );
     await expect(replacement.dispatchAcceptance).resolves.toEqual({ accepted: true });
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
-    expect(harness.sessionStore.getSessionData(sessionId)?.runtimeSessionId).toBe('fake-thread-2');
+    expect((await harness.sessionStore.getSessionData(sessionId))?.runtimeSessionId).toBe('fake-thread-2');
   });
 
   it('restarts the Session Sidecar if a committed Codex rewind cannot terminate its source process', async () => {
@@ -4195,7 +4749,7 @@ describe('external SessionEngine with fake runtime', () => {
     const sent = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'first question'));
     await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
-    const firstUser = harness.sessionStore.getSessionData(sessionId)!.messages[0]!;
+    const firstUser = (await harness.sessionStore.getSessionData(sessionId))!.messages[0]!;
     const killSelf = vi.spyOn(process, 'kill').mockImplementation(() => true);
 
     try {
@@ -4205,8 +4759,8 @@ describe('external SessionEngine with fake runtime', () => {
       });
       await waitFor(() => killSelf.mock.calls.length > 0, 'Sidecar restart signal');
       expect(killSelf).toHaveBeenCalledWith(process.pid, 'SIGTERM');
-      expect(harness.sessionStore.getSessionData(sessionId)?.messages).toEqual([]);
-      expect(harness.sessionStore.getSessionData(sessionId)?.runtimeSessionId).toBeUndefined();
+      expect((await harness.sessionStore.getSessionData(sessionId))?.messages).toEqual([]);
+      expect((await harness.sessionStore.getSessionData(sessionId))?.runtimeSessionId).toBeUndefined();
     } finally {
       killSelf.mockRestore();
     }
@@ -4226,7 +4780,7 @@ describe('external SessionEngine with fake runtime', () => {
     );
     await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
-    const firstUser = harness.sessionStore.getSessionData(sessionId)!.messages[0]!;
+    const firstUser = (await harness.sessionStore.getSessionData(sessionId))!.messages[0]!;
     const killSelf = vi.spyOn(process, 'kill').mockImplementation(() => true);
 
     try {
@@ -4241,10 +4795,34 @@ describe('external SessionEngine with fake runtime', () => {
     }
   });
 
+  it('rejects a fork of an incomplete V2 live tail before native branching while AI continues', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'first answer' },
+      { kind: 'success', text: 'continued answer' },
+    ], { conversationBranching: true });
+    const sessionId = 'session-codex-incomplete-fork';
+    const workspacePath = join(harness.home, 'workspace');
+    const first = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'first'));
+    await expect(first.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const transcript = harness.sessionStore.getActiveSessionTranscript(sessionId)!;
+    transcript.writer.rejectIncompleteSource();
+    const next = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'continue'));
+    await expect(next.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const source = (await harness.sessionStore.getSessionData(sessionId))!;
+    const target = source.messages.findLast(row => row.role === 'assistant')!;
+    expect(target.runtimeTurnAnchor).toBeDefined();
+    await expect(harness.engine.forkAtAssistantMessage(target.id)).resolves.toMatchObject({ success: false, error: 'Cannot fork an incompletely restored conversation' });
+    expect(harness.runtime.conversationBranches).toEqual([]);
+    expect(await harness.engine.getLatestAssistantResult()).toMatchObject({ latestResult: 'continued answer' });
+  });
+
   it('forks a Codex assistant boundary into a separately persisted product Session', async () => {
     const harness = await createHarness([
       { kind: 'success', text: 'first answer' },
       { kind: 'success', text: 'second answer' },
+      { kind: 'success', text: 'source continues after fork' },
     ], { conversationBranching: true });
     const sessionId = 'session-codex-fork';
     const workspacePath = join(harness.home, 'workspace');
@@ -4254,16 +4832,30 @@ describe('external SessionEngine with fake runtime', () => {
       await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
       await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
     }
-    const sourceBefore = harness.sessionStore.getSessionData(sessionId)!;
+    const sourceBefore = (await harness.sessionStore.getSessionData(sessionId))!;
     const firstAssistant = sourceBefore.messages.find(message => message.role === 'assistant')!;
+    const nativeBranch = harness.runtime.branchConversation!.bind(harness.runtime);
+    harness.runtime.branchConversation = async (process, boundary) => {
+      const branch = await nativeBranch(process, boundary);
+      // Codex hands off the fork's native writer by retiring this process.
+      // The source Product Session must resume its original native identity.
+      await harness.runtime.stopSession(process);
+      harness.runtime.emitForTest({ kind: 'session_complete', subtype: 'success', result: '' });
+      return branch;
+    };
 
     const result = await harness.engine.forkAtAssistantMessage(firstAssistant.id);
     expect(result).toMatchObject({ success: true, agentDir: workspacePath });
     expect(harness.runtime.conversationBranches).toEqual([
       { kind: 'through-turn', runtimeTurnId: 'fake-turn-1' },
     ]);
-    expect(harness.sessionStore.getSessionData(sessionId)).toEqual(sourceBefore);
-    const forked = harness.sessionStore.getSessionData(result.newSessionId!);
+    expect((await harness.sessionStore.getSessionData(sessionId))).toEqual({
+      ...sourceBefore,
+      // Content and identity are immutable here; the background writer may
+      // independently advance the committed prefix during a native operation.
+      transcriptSaveStatus: { ...sourceBefore?.transcriptSaveStatus, durableRevision: expect.any(Number) },
+    });
+    const forked = (await harness.sessionStore.getSessionData(result.newSessionId!));
     expect(forked).toMatchObject({
       runtime: 'codex',
       runtimeSource: 'system-cli',
@@ -4276,5 +4868,14 @@ describe('external SessionEngine with fake runtime', () => {
     expect(forked?.messages.map(message => message.role)).toEqual(['user', 'assistant']);
     expect(forked?.messages[0]?.content).toBe('first question');
     expect(forked?.messages[1]?.content).toContain('first answer');
+    const continued = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'continue source'));
+    await expect(continued.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.runtime.startSessionResumeIds.at(-1)).toBe(sourceBefore.runtimeSessionId);
+    const sourceAfter = (await harness.sessionStore.getSessionData(sessionId))!;
+    expect(sourceAfter.runtimeSessionId).toBe(sourceBefore.runtimeSessionId);
+    expect(sourceAfter.messages).toHaveLength(6);
+    expect(sourceAfter.messages.at(-1)?.content).toContain('source continues after fork');
+    expect((await harness.sessionStore.getSessionData(result.newSessionId!))?.messages).toEqual(forked?.messages);
   });
 });

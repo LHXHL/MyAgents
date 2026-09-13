@@ -52,6 +52,9 @@ import ProxyScopeDialog from '@/components/ProxyScopeDialog';
 import WorkspaceConfigPanel from '@/components/WorkspaceConfigPanel';
 import ModelManagementPanel from '@/components/ModelManagementPanel';
 import GrokSubscriptionProvider from '@/components/GrokSubscriptionProvider';
+import CliProxySubscriptionProvider from '@/components/CliProxySubscriptionProvider';
+import { useCliProxyStatus } from '@/hooks/useCliProxyStatus';
+import { discoverCliProxyModels, shouldShowCliProxyProvider } from '@/config/services/cliproxyService';
 import SubscriptionProviderCardContent from '@/components/SubscriptionProviderCardContent';
 import { discoverGrokModels } from '@/config/services/grokSubscriptionService';
 import UsageStatsPanel from '@/components/UsageStatsPanel';
@@ -59,6 +62,7 @@ import {
   getEffectiveModelAliases,
   CODEX_SUBSCRIPTION_PROVIDER_ID,
   XAI_SUBSCRIPTION_PROVIDER_ID,
+  ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
   normalizeDisabledProviderIds,
   normalizeProviderOrder,
   splitProviderModelInput,
@@ -337,6 +341,7 @@ export default function Settings({
   onCheckForUpdate,
   onRestartAndUpdate,
 }: SettingsProps) {
+  const cliProxy = useCliProxyStatus();
   const {
     apiKeys,
     saveApiKey,
@@ -3351,7 +3356,9 @@ export default function Settings({
   };
 
   // providers from useConfig includes both preset and custom providers
-  const allProviders = providers;
+  const showCliProxy = shouldShowCliProxyProvider(cliProxy.status);
+  const allProviders = useMemo(() => providers.filter(provider =>
+    provider.id !== ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID || showCliProxy), [providers, showCliProxy]);
   const managedCodexProviderGateEnabled =
     isManagedCodexProviderGateEnabled(config);
   const managedCodexReadiness = useMemo(
@@ -3359,8 +3366,8 @@ export default function Settings({
     [config],
   );
   const visibleProviders = useMemo(
-    () => providers.filter((provider) => provider.enabled !== false),
-    [providers],
+    () => allProviders.filter((provider) => provider.enabled !== false),
+    [allProviders],
   );
   const proxyScopeProviderIds = useMemo(
     () => allProviders.map((provider) => provider.id),
@@ -5108,13 +5115,13 @@ export default function Settings({
                             </span>
                           )}
                         </div>
-                        <p className="mt-1 truncate text-xs text-[var(--ink-muted)]">
+                        {(provider.id !== ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID || provider.models.length > 0) && <p className="mt-1 truncate text-xs text-[var(--ink-muted)]">
                           {provider.models.length > 0
                             ? provider.models
                                 .map((m) => m.modelName || m.model)
                                 .join(', ')
                             : tSettings('providers.noModels')}
-                        </p>
+                        </p>}
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
                         {provider.websiteUrl && (
@@ -5168,6 +5175,8 @@ export default function Settings({
                             await refreshProviders();
                           }}
                         />
+                      ) : provider.id === ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID && cliProxy.status ? (
+                        <CliProxySubscriptionProvider provider={provider} status={cliProxy.status} refresh={cliProxy.refresh} />
                       ) : (
                         renderSubscriptionProviderContent()
                       ))}
@@ -10332,14 +10341,19 @@ export default function Settings({
             await refreshProviders();
           }}
           discoveryAction={
-            managingProvider.id === XAI_SUBSCRIPTION_PROVIDER_ID &&
+            managingProvider.id === ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID
+              ? async () => cliProxy.status?.active && cliProxy.status.policy.usable
+                ? discoverCliProxyModels(cliProxy.status.active.generation) : []
+              : managingProvider.id === XAI_SUBSCRIPTION_PROVIDER_ID &&
             providerVerifyStatus[XAI_SUBSCRIPTION_PROVIDER_ID]?.status ===
               'valid'
               ? discoverGrokModels
               : undefined
           }
           discoveryUnavailableMessage={
-            managingProvider.id === XAI_SUBSCRIPTION_PROVIDER_ID &&
+            managingProvider.id === ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID && !cliProxy.status?.active
+              ? tSettings('providers.cliproxy.loginToDiscover')
+              : managingProvider.id === XAI_SUBSCRIPTION_PROVIDER_ID &&
             providerVerifyStatus[XAI_SUBSCRIPTION_PROVIDER_ID]?.status !==
               'valid'
               ? tSettings('providers.grok.loginToDiscover')

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "packId": "local-standard-speech",
-  "packRevision": "local-standard-speech-v2",
+  "packRevision": "local-standard-speech-v3",
   "sources": [
     {
       "id": "asset:sensevoice",

@@ -180,6 +180,41 @@
     }
   },
   "providers": {
+    "cliproxy": {
+      "description": "Use your Google Antigravity subscription allowance",
+      "continueConnection": "Continue connection",
+      "moreActions": "More actions",
+      "loginTitle": "Connect Antigravity",
+      "close": "Close",
+      "preparingLogin": "Opening authorization…",
+      "account": "Saved account",
+      "disconnected": "Not connected",
+      "newAccount": "New account",
+      "connect": "Connect",
+      "reconnect": "Change account",
+      "disconnect": "Disconnect",
+      "retryCleanup": "Retry cleanup",
+      "cancel": "Cancel",
+      "refreshModels": "Refresh models",
+      "disabled": "Currently paused. You can keep or disconnect your account.",
+      "browserHint": "Complete authorization in your browser within 5 minutes.",
+      "operationFailed": "The operation did not complete. Please retry.",
+      "loginToDiscover": "Connect and verify your Antigravity account first.",
+      "accountState": {
+        "stored": "Verification needed",
+        "verified": "Verified",
+        "reauth-required": "Reconnect required"
+      },
+      "phase": {
+        "authorizing": "Waiting for browser authorization",
+        "stored": "Resume login",
+        "authorized": "Logged in, saving account",
+        "waiting-to-commit": "Logged in, switching account",
+        "cancelling": "Cancelling",
+        "failed": "Login incomplete"
+      },
+      "connected": "Logged in"
+    },
     "tokendance": {
       "partner": "Official",
       "intro": "Register once for a range of models, with discounts up to 50%",

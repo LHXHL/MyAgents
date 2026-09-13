@@ -30,6 +30,7 @@ import type { AgentRuntime, RuntimeProcess, SessionStartOptions } from './runtim
 import type { RuntimeSource, RuntimeType } from '../shared/types/runtime';
 import { ensureDirSync } from './utils/fs-utils';
 import { createGuardedSdkQuery } from './utils/sdk-child-launch-guard';
+import { getPreparedSdkSystemPrompt, prepareProviderBinding, type PreparedProvider } from './utils/managed-proxy-binding';
 
 const TITLE_MAX_LENGTH = 30;
 export const BUILTIN_TITLE_TIMEOUT_MS = 30_000;
@@ -200,9 +201,17 @@ export async function generateTitle(
   const bridge = providerEnv?.apiProtocol === 'openai'
     ? startOneShotBridge(providerEnv, model, `title-gen:${providerEnv.baseUrl ?? 'anthropic'}`)
     : null;
+  const controller = new AbortController();
+  let prepared: PreparedProvider | undefined;
   try {
-    return await generateTitleInner(rounds, model, providerEnv, bridge?.token);
+    prepared = await prepareProviderBinding({ providerEnv, model, controller });
+    await prepared.beforeTurn();
+    return await generateTitleInner(rounds, model, prepared.providerEnv, bridge?.token, controller, prepared);
+  } catch {
+    return null;
   } finally {
+    controller.abort();
+    await prepared?.release().catch(() => console.warn('[cliproxy] Title binding release was not confirmed'));
     bridge?.release();
   }
 }
@@ -212,9 +221,13 @@ async function generateTitleInner(
   model: string,
   providerEnv?: ProviderEnv,
   bridgeToken?: string,
+  controller = new AbortController(),
+  prepared?: PreparedProvider,
 ): Promise<string | null> {
   const startTime = Date.now();
   const sessionId = randomUUID();
+  let titleQuery: import('@anthropic-ai/claude-agent-sdk').Query | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
 
   try {
     const cliPath = resolveClaudeCodeCli();
@@ -242,9 +255,10 @@ async function generateTitleInner(
       };
     }
 
-    const titleQuery = await createGuardedSdkQuery(cliPath, () => query({
+    titleQuery = await createGuardedSdkQuery(cliPath, () => query({
       prompt: titlePrompt(),
       options: {
+        abortController: controller,
         maxTurns: 1,
         sessionId,
         cwd,
@@ -253,7 +267,7 @@ async function generateTitleInner(
         allowDangerouslySkipPermissions: true,
         pathToClaudeCodeExecutable: cliPath,
         env,
-        systemPrompt: SYSTEM_PROMPT,
+        systemPrompt: getPreparedSdkSystemPrompt(providerEnv, SYSTEM_PROMPT),
         // Title generation is a short text-classification task. Adaptive thinking
         // can spend the whole one-shot budget on hidden reasoning or delay first
         // text on strong reasoning models, so force the cheapest text path.
@@ -262,13 +276,14 @@ async function generateTitleInner(
         includePartialMessages: false,
         persistSession: false,
         mcpServers: {},
+        strictMcpConfig: true,
         // Security (review #2): title generation is a PURE-TEXT task whose only
         // input is (attacker-influenceable) transcript text. Running it at
         // bypassPermissions with built-in tools available means an indirect
         // prompt injection in the transcript could make the title model emit a
         // Bash/Write tool_use that then executes with NO approval. `tools: []`
-        // is the SDK-native "disable ALL built-in tools" (sdk.d.ts:1360), and
-        // `mcpServers:{}` already removes MCP tools — together there is nothing
+        // disables builtins; the empty MCP map plus strictMcpConfig excludes
+        // project/user/plugin MCP servers — together there is nothing
         // to invoke, so bypassPermissions becomes moot. The model can still
         // produce the title text (tools are orthogonal to generation).
         tools: [],
@@ -283,14 +298,20 @@ async function generateTitleInner(
 
     // Race: SDK response vs timeout
     const timeoutPromise = new Promise<null>((resolve) => {
-      setTimeout(() => resolve(null), BUILTIN_TITLE_TIMEOUT_MS);
+      timeout = setTimeout(() => { controller.abort(); resolve(null); }, BUILTIN_TITLE_TIMEOUT_MS);
     });
 
     const queryPromise = (async (): Promise<string | null> => {
-      for await (const message of titleQuery) {
+      for await (const message of titleQuery!) {
         const text = extractTitleTextFromSdkMessage(message);
-        if (text) return text;
+        if (!providerEnv?.endpointSource) { if (text) return text; continue; }
+        if (text) titleText = text;
+        if (message.type === 'result') {
+          await prepared?.reportTerminal(message.subtype === 'success');
+          return message.subtype === 'success' ? titleText : null;
+        }
       }
+      await prepared?.reportTerminal(false);
       return null;
     })();
 
@@ -310,8 +331,13 @@ async function generateTitleInner(
     console.log(`[title-generator] Generated title: "${cleaned}" (${Date.now() - startTime}ms, ${rounds.length} rounds)`);
     return cleaned.length > 0 ? cleaned : null;
   } catch (err) {
+    await prepared?.reportTerminal(false);
     console.warn('[title-generator] SDK query failed:', err);
     return null;
+  } finally {
+    clearTimeout(timeout);
+    controller.abort();
+    try { titleQuery?.close(); } catch { /* process already exited */ }
   }
 }
 

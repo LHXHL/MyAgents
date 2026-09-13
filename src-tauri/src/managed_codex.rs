@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{ErrorKind, Read, Write};
+use std::io::{ErrorKind, Read};
 use std::path::{Component, Path, PathBuf};
 use std::process::{ChildStderr, ChildStdout, Output, Stdio};
 use std::sync::{Mutex, OnceLock};
@@ -12,7 +12,6 @@ use base64::{engine::general_purpose, Engine as _};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use zip::ZipArchive;
 
 use crate::utils::file_lock::{with_file_lock_blocking, FileLockError, FileLockOptions};
@@ -714,37 +713,8 @@ async fn fetch_limited_bytes(
     label: &str,
 ) -> Result<Vec<u8>, String> {
     validate_download_url(url)?;
-    let mut response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("[managed-codex] Failed to fetch {}: {}", label, e))?
-        .error_for_status()
-        .map_err(|e| format!("[managed-codex] Failed to fetch {}: {}", label, e))?;
-    if response.content_length().unwrap_or(0) > max_bytes {
-        return Err(format!(
-            "[managed-codex] {} exceeds max size: {} bytes",
-            label,
-            response.content_length().unwrap_or(0)
-        ));
-    }
-    let mut out = Vec::new();
-    let mut total = 0u64;
-    loop {
-        let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|e| format!("[managed-codex] Failed to read {}: {}", label, e))?
-        else {
-            break;
-        };
-        total += chunk.len() as u64;
-        if total > max_bytes {
-            return Err(format!("[managed-codex] {} exceeded max size", label));
-        }
-        out.extend_from_slice(&chunk);
-    }
-    Ok(out)
+    crate::resource_download::fetch_limited_bytes(client, url, max_bytes, label)
+        .await.map_err(|error| error.to_string())
 }
 
 async fn download_to_file_with_hash(
@@ -754,52 +724,12 @@ async fn download_to_file_with_hash(
     max_bytes: u64,
     progress_total_bytes: Option<u64>,
     attempt_timeout: Duration,
-    mut on_progress: impl FnMut(u64, Option<u64>),
+    on_progress: impl FnMut(u64, Option<u64>),
 ) -> Result<(u64, String), String> {
     validate_download_url(url)?;
-    tokio::time::timeout(attempt_timeout, async {
-        let mut response = client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| format!("[managed-codex] Failed to download artifact: {}", e))?
-            .error_for_status()
-            .map_err(|e| format!("[managed-codex] Failed to download artifact: {}", e))?;
-        if response.content_length().unwrap_or(0) > max_bytes {
-            return Err(format!(
-                "[managed-codex] Artifact exceeds max size: {} bytes",
-                response.content_length().unwrap_or(0)
-            ));
-        }
-        let total_for_progress = progress_total_bytes.or_else(|| response.content_length());
-        on_progress(0, total_for_progress);
-        let mut file = File::create(path)
-            .map_err(|e| format!("[managed-codex] Failed to create artifact file: {}", e))?;
-        let mut hasher = Sha256::new();
-        let mut total = 0u64;
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|e| format!("[managed-codex] Failed to read artifact: {}", e))?
-        {
-            total += chunk.len() as u64;
-            if total > max_bytes {
-                return Err("[managed-codex] Artifact exceeded max size".to_string());
-            }
-            hasher.update(&chunk);
-            file.write_all(&chunk)
-                .map_err(|e| format!("[managed-codex] Failed to write artifact: {}", e))?;
-            on_progress(total, total_for_progress);
-        }
-        Ok((total, format!("{:x}", hasher.finalize())))
-    })
-    .await
-    .map_err(|_| {
-        format!(
-            "[managed-codex] Artifact download attempt exceeded {} seconds",
-            attempt_timeout.as_secs()
-        )
-    })?
+    crate::resource_download::download_to_file_with_hash(
+        client, url, path, max_bytes, progress_total_bytes, attempt_timeout, on_progress,
+    ).await.map_err(|error| error.to_string())
 }
 
 fn validate_downloaded_artifact_digest(
@@ -3035,6 +2965,7 @@ pub async fn cmd_managed_codex_logout() -> Result<ManagedCodexStatus, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
     use super::*;
 
     fn valid_artifact(platform: &str) -> ManagedCodexArtifact {

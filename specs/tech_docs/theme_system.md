@@ -267,7 +267,7 @@ Space 是全局 Theme 的标准 CSS host surface：组件直接消费 root seman
   逐 Token 锁定其余值等于 Claude / canonical；`verify:theme-presets` 先按 Vite production 使用的
   esbuild CSS minifier 序列化八套实际 optional stylesheet，再经 optional factory 完成精确九套 Registry
   注册并逐套 resolve light/dark；
-- structural surface contract：九套生产 Theme 的 light/dark 都必须让 `--global-sidebar-bg` 的亮度严格位于 `--paper` 与 `--paper-inset` 之间，并与 `--paper-elevated` 保持不同值；`GlobalSidebar` 是唯一宿主消费点，右侧页面、卡片和顶部 Tab 栏不随该 Token 改写；
+- structural surface contract：九套生产 Theme 的 light/dark 都必须让 `--global-sidebar-bg` 的亮度严格位于 `--paper` 与 `--paper-inset` 之间，并与 `--paper-elevated` 保持不同值；`GlobalSidebar`、`CustomTitleBar` 与 `TabBar` 是直接宿主消费点；用户消息的语义 token `--message-user-bg` / `--message-user-bg-a0` 在生产主题中分别引用侧栏及其透明端点，实现无边框同色气泡。其余页面与卡片不直接借用该 Token；
 - dark control contrast：九套 Theme 的 Primary 正常/hover 均验证 4.5:1，深色 action
   surface 锁定白色/近白前景；全部 production Theme 的 dark Switch thumb 锁定为白色/近白控制面；
 - build smoke：`build:web` 串行执行 `verify:theme-css` 与 `verify:theme-presets`；前者读取实际

@@ -106,6 +106,7 @@ pub async fn cmd_propagate_proxy(
     // older broadcast can therefore never commit after a newer config.
     let _propagation_guard = proxy_propagation_lock().lock().await;
     let payload = build_proxy_payload();
+    crate::cliproxy::reconcile_proxy();
 
     let client = crate::local_http::builder()
         .timeout(Duration::from_secs(5))

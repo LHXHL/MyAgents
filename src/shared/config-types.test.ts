@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_CLAUDE_TRANSCRIPT_CLEANUP_PERIOD_DAYS,
   DEFAULT_CONFIG,
+  ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
   CODEX_SUBSCRIPTION_PROVIDER_ID,
   MANAGED_CODEX_PROVIDER,
   MANAGED_CODEX_REQUIRED_RUNTIME,
@@ -554,11 +555,12 @@ describe('Managed Codex provider readiness', () => {
   it('inserts the provider after Anthropic subscription in the default catalogue', () => {
     const catalog = withManagedCodexProviderCatalog(PRESET_PROVIDERS, DEFAULT_CONFIG);
 
-    expect(catalog.slice(0, 5).map(provider => provider.id)).toEqual([
+    expect(catalog.slice(0, 6).map(provider => provider.id)).toEqual([
       TOKENDANCE_PROVIDER_ID,
       SUBSCRIPTION_PROVIDER_ID,
       CODEX_SUBSCRIPTION_PROVIDER_ID,
       XAI_SUBSCRIPTION_PROVIDER_ID,
+      ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
       'anthropic-api',
     ]);
   });

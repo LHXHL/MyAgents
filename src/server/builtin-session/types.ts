@@ -87,6 +87,8 @@ export type MessageWire = {
   role: 'user' | 'assistant';
   content: string | ContentBlock[];
   timestamp: string;
+  turnId?: string;
+  transcriptState?: 'streaming' | 'complete' | 'interrupted';
   sdkUuid?: string;
   attachments?: MessageWireAttachment[];
   metadata?: {

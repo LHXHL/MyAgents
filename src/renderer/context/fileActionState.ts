@@ -6,6 +6,9 @@ import type { FileActionTarget } from '@/utils/workspaceFileLinks';
 export interface PathInfo {
   exists: boolean;
   type: 'file' | 'dir';
+  /** Canonical local target when a reference crosses the workspace read boundary. */
+  resolvedPath?: string;
+  error?: string;
 }
 
 export interface FileActionMenuOptions {
@@ -27,6 +30,7 @@ export interface FileActionContextValue {
   subscribeFileTarget: (target: FileActionTarget) => () => void;
   /** Incremented each time the cache is updated, so consumers can re-render. */
   cacheVersion: number;
+  refreshFileTarget: (target: FileActionTarget) => void;
   /** Re-check a resolved target, then open its context menu only while it is
    *  still an existing, safety-approved file/directory. */
   openFileTargetMenu: (

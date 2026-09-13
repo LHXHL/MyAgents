@@ -338,6 +338,7 @@ pub async fn cmd_shutdown_for_update(
             "[sidecar] Shutdown for update requested".to_string(),
         );
         let _guard = begin_update_shutdown()?;
+        crate::cliproxy::quiesce_for_update().await.map_err(|error| error.message)?;
         shutdown_for_update_verified(&app_handle, &state)
     }
 }

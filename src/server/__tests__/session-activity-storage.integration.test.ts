@@ -1,3 +1,4 @@
+import { createPublishedSession } from './fixtures/session-store';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -30,7 +31,7 @@ afterAll(() => {
 
 describe('session activity storage invariant', () => {
   it('never rolls lastActiveAt backward while still applying sibling metadata', async () => {
-    const session = await store.createSession('/tmp/activity-workspace', {
+    const session = await createPublishedSession(store, '/tmp/activity-workspace', {
       lastActiveAt: '2026-07-14T10:00:00.000Z',
       title: 'Before',
     });
@@ -51,7 +52,7 @@ describe('session activity storage invariant', () => {
   });
 
   it('accepts a newer activity timestamp and rejects malformed replacements', async () => {
-    const session = await store.createSession('/tmp/activity-workspace', {
+    const session = await createPublishedSession(store, '/tmp/activity-workspace', {
       lastActiveAt: '2026-07-14T10:00:00.000Z',
     });
 
@@ -79,7 +80,7 @@ describe('session activity storage invariant', () => {
   });
 
   it('keeps the newest timestamp across concurrent writers', async () => {
-    const session = await store.createSession('/tmp/activity-workspace', {
+    const session = await createPublishedSession(store, '/tmp/activity-workspace', {
       lastActiveAt: '2026-07-14T10:00:00.000Z',
     });
 
@@ -102,11 +103,11 @@ describe('session activity storage invariant', () => {
   });
 
   it('allocates later pin intents above earlier pins without changing recency', async () => {
-    const first = await store.createSession('/tmp/activity-workspace', {
+    const first = await createPublishedSession(store, '/tmp/activity-workspace', {
       title: 'First pin',
       lastActiveAt: '2026-07-14T12:00:00.000Z',
     });
-    const second = await store.createSession('/tmp/activity-workspace', {
+    const second = await createPublishedSession(store, '/tmp/activity-workspace', {
       title: 'Second pin',
       lastActiveAt: '2026-07-14T11:00:00.000Z',
     });

@@ -2,6 +2,7 @@ import { createContext, useContext, useCallback, useState, useMemo } from 'react
 import { createPortal } from 'react-dom';
 import type { ReactNode } from 'react';
 import { AlertCircle, CheckCircle, Info, X, AlertTriangle } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 export type ToastType = 'success' | 'error' | 'warning' | 'info';
 
@@ -56,11 +57,15 @@ const typeConfig = {
 };
 
 function ToastItem({ toast, onClose }: { toast: Toast; onClose: () => void }) {
+    const { t } = useTranslation('common');
     const config = typeConfig[toast.type];
     const Icon = config.icon;
 
     return (
         <div
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
             className={`flex items-center gap-3 px-4 py-3 rounded-xl border shadow-lg backdrop-blur-sm animate-slide-down ${config.bg} ${config.border}`}
             style={{
                 animation: 'slideDown 0.3s ease-out',
@@ -70,6 +75,7 @@ function ToastItem({ toast, onClose }: { toast: Toast; onClose: () => void }) {
             <span className={`text-sm font-medium ${config.text}`}>{toast.message}</span>
             <button
                 type="button"
+                aria-label={t('actions.close')}
                 onClick={onClose}
                 className={`ml-2 p-0.5 rounded-md hover:bg-black/5 dark:hover:bg-white/10 transition-colors ${config.text}`}
             >

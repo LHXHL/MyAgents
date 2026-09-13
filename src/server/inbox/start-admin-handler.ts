@@ -157,7 +157,7 @@ export async function handleAdminSessionStart(
           agentId,
           workspacePath: identity.workspacePath,
           fromSessionId: callerSessionId,
-          fromLabel: deriveCallerInboxLabel(
+          fromLabel: await deriveCallerInboxLabel(
             callerSessionId,
             getSessionMetadata(callerSessionId) ?? null,
           ),

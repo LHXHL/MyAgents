@@ -34,12 +34,26 @@ export interface AudioRecordSummary {
   sizeBytes: number;
 }
 
+/** Positions are 16 kHz frames within one physical source and Record media time. */
+export interface RecordTrackTimeline {
+  spans: Array<{
+    sourceStart: number;
+    sourceEnd: number;
+    recordStart: number;
+    recordEnd: number;
+    quality: 'clock' | 'estimated' | 'gap';
+    discontinuity: boolean;
+  }>;
+}
+
 export interface RecordArtifact {
   kind: string;
   path: string;
   sizeBytes: number;
   sha256: string;
   sourceRevision?: number;
+  captureTimeline?: RecordTrackTimeline;
+  captureTimeError?: string;
 }
 
 export interface RecordSummary {
@@ -125,6 +139,7 @@ export interface RecordChange {
 }
 
 export interface RecordSpeechProvenance {
+  algorithmRevision?: string;
   provider: string;
   modelPackRevision: string;
   onnxRuntimeVersion: string;
@@ -144,10 +159,17 @@ export interface RecordTranscriptSnapshot {
   schemaVersion: number;
   recordId: string;
   projectionRevision: number;
+  processingId?: string;
+  sourceSnapshot?: { audioIdentity: string; artifacts: RecordArtifact[] };
   state: string;
   sampleRate: number;
   provenance: RecordSpeechProvenance;
   segments: RecordTranscriptSegment[];
+}
+
+export interface RecordSpeechProjection {
+  transcript: RecordTranscriptSnapshot | null;
+  diarization: RecordDiarizationProjection | null;
 }
 
 export interface RecordTranscriptCursor {
@@ -165,15 +187,17 @@ export interface RecordTranscriptDelta {
 }
 
 export interface RecordSpeakerTurn {
+  source?: RecordTranscriptSegment['track'];
   startSample: number;
   endSample: number;
-  globalSpeaker: number;
+  globalSpeaker: number | null;
 }
 
 export interface RecordDiarizationResult {
   schemaVersion: number;
   recordId: string;
   projectionRevision: number;
+  processingId?: string;
   sampleRate: number;
   provenance: RecordSpeechProvenance;
   turns: RecordSpeakerTurn[];
@@ -181,8 +205,9 @@ export interface RecordDiarizationResult {
 
 export interface RecordSpeakerProjection {
   speakerId: number;
-  customName?: string;
-  mergedInto?: number;
+  displayIndex: number;
+  customName?: string | null;
+  mergedInto?: number | null;
 }
 
 export interface RecordSpeakerOverrideConflict {
@@ -190,10 +215,13 @@ export interface RecordSpeakerOverrideConflict {
   targetId: string;
 }
 
+export type RecordSegmentSpeakerAttribution = { kind: 'unknown' } | { kind: 'single'; speakerId: number } | { kind: 'multiple' };
+
 export interface RecordDiarizationProjection extends RecordDiarizationResult {
   overrideRevision: number;
   speakers: RecordSpeakerProjection[];
   segmentSpeakerOverrides: Record<string, number>;
+  segmentSpeakerAttributions: Record<string, RecordSegmentSpeakerAttribution>;
   conflicts: RecordSpeakerOverrideConflict[];
 }
 

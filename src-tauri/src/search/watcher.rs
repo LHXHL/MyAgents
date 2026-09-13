@@ -52,6 +52,8 @@ const DEBOUNCE_WINDOW: Duration = Duration::from_secs(5);
 struct SessionSnapshot {
     title: String,
     last_active_at: String,
+    transcript_format: Option<serde_json::Value>,
+    materialization_state: Option<serde_json::Value>,
 }
 
 /// Spawn the session index filesystem watcher on a dedicated background
@@ -75,12 +77,15 @@ pub fn spawn_session_watcher(data_dir: PathBuf, session_index: Arc<SessionIndex>
 
 fn run_watcher(data_dir: PathBuf, session_index: Arc<SessionIndex>) -> Result<(), String> {
     let sessions_dir = data_dir.join("sessions");
+    let sessions_v2_dir = data_dir.join("sessions-v2");
     let sessions_file = data_dir.join("sessions.json");
 
     // Ensure the watched directories exist — notify backends return ENOENT
     // on a fresh install otherwise.
     std::fs::create_dir_all(&sessions_dir)
         .map_err(|e| format!("create sessions dir failed: {}", e))?;
+    std::fs::create_dir_all(&sessions_v2_dir)
+        .map_err(|e| format!("create sessions-v2 dir failed: {}", e))?;
 
     // Seed the baseline from sessions.json BEFORE starting the watcher so
     // the first tick's diff is against an accurate picture.
@@ -94,6 +99,9 @@ fn run_watcher(data_dir: PathBuf, session_index: Arc<SessionIndex>) -> Result<()
     debouncer
         .watch(&sessions_dir, RecursiveMode::NonRecursive)
         .map_err(|e| format!("watch sessions dir failed: {}", e))?;
+    debouncer
+        .watch(&sessions_v2_dir, RecursiveMode::NonRecursive)
+        .map_err(|e| format!("watch sessions-v2 dir failed: {}", e))?;
 
     // Watch sessions.json. Most platforms only allow watching directories,
     // so we watch the parent data_dir non-recursively and filter by path.
@@ -187,8 +195,14 @@ fn run_watcher(data_dir: PathBuf, session_index: Arc<SessionIndex>) -> Result<()
         let changed_count = changed.len() as u64;
         let mut error_count = 0u64;
         for id in deleted {
-            // If the session is in both sets the JSONL file is gone — the
-            // correct outcome is delete, so drop the stale reindex.
+            // Rename/replace may report removal of the previous inode. The
+            // final authority path wins over an intermediate remove event.
+            if sessions_dir.join(format!("{id}.jsonl")).exists()
+                || sessions_v2_dir.join(format!("{id}.jsonl")).exists()
+            {
+                changed.insert(id);
+                continue;
+            }
             changed.remove(&id);
             if let Err(e) = session_index.delete_session(&id) {
                 error_count += 1;
@@ -249,12 +263,13 @@ fn classify_path(path: &Path) -> Classified {
     // `.../sessions/<id>.jsonl` — must be directly under a directory
     // literally named `sessions`, and the id cannot be empty.
     if let Some(id) = file_name.strip_suffix(".jsonl") {
-        if !id.is_empty()
-            && path
-                .parent()
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str())
-                == Some("sessions")
+        if crate::session_transcript::is_valid_session_id(id)
+            && matches!(
+                path.parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str()),
+                Some("sessions" | "sessions-v2")
+            )
         {
             return Classified::SessionFile(id.to_string());
         }
@@ -293,8 +308,52 @@ fn read_snapshot(sessions_file: &Path) -> HashMap<String, SessionSnapshot> {
             SessionSnapshot {
                 title,
                 last_active_at,
+                transcript_format: session.get("transcriptFormat").cloned(),
+                materialization_state: session.get("materializationState").cloned(),
             },
         );
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_both_formats_but_not_candidates_or_path_escapes() {
+        for directory in ["sessions", "sessions-v2"] {
+            assert!(
+                matches!(classify_path(Path::new(&format!("/System/Volumes/Data/home/.myagents/{directory}/abc-123.jsonl"))), Classified::SessionFile(id) if id == "abc-123")
+            );
+        }
+        for path in [
+            "/data/sessions-v2/abc.jsonl.tmp",
+            "/data/sessions-v2/.candidate.jsonl",
+            "/data/sessions-v2/nested/abc.jsonl",
+            "/data/other/abc.jsonl",
+        ] {
+            assert!(
+                matches!(classify_path(Path::new(path)), Classified::Other),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn prepared_commit_and_format_changes_invalidate_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.json");
+        std::fs::write(
+            &path,
+            r#"[{"id":"s","title":"x","transcriptFormat":2,"materializationState":"prepared"}]"#,
+        )
+        .unwrap();
+        let prepared = read_snapshot(&path);
+        std::fs::write(&path, r#"[{"id":"s","title":"x","transcriptFormat":2}]"#).unwrap();
+        let committed = read_snapshot(&path);
+        assert_ne!(prepared, committed);
+        std::fs::write(&path, r#"[{"id":"s","title":"x","transcriptFormat":null}]"#).unwrap();
+        assert_ne!(committed, read_snapshot(&path));
+    }
 }

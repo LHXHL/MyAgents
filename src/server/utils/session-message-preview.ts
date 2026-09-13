@@ -318,7 +318,10 @@ function shrinkStructuredContentForClient(content: string): string | null {
   }
 
   const minimalBlocks = blocks.map((block) => {
-    const output: Record<string, unknown> = { type: block.type };
+    const output: Record<string, unknown> = {
+      type: block.type,
+      ...(typeof block.id === 'string' ? { id: block.id } : {}),
+    };
     if (typeof block.text === 'string') {
       output.text = truncateStringForHistory(block.text, 1024);
     }

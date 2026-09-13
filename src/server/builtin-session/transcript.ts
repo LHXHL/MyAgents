@@ -1,5 +1,8 @@
-import type { TranscriptWriteCursor } from '../SessionStore';
+import { getActiveSessionTranscript, type TranscriptWriteCursor } from '../SessionStore';
 import type { MessageWire } from './types';
+import { ProductTranscriptContent } from '../session-transcript/content';
+import { fromStoredTranscriptMessage, transcriptMessages } from '../../shared/sessionTranscript';
+import { messageWireToSessionMessage, sessionMessageToMessageWire } from './message-codec';
 
 const messages: MessageWire[] = [];
 let messageSequence = 0;
@@ -8,6 +11,20 @@ const persistChainBySession = new Map<string, Promise<void>>();
 const currentSessionUuids = new Set<string>();
 const liveSessionUuids = new Set<string>();
 let pendingReloadAnchor: string | undefined = undefined;
+let productContent: ProductTranscriptContent | undefined;
+let readProductSessionId: () => string = () => '';
+
+/** The facade supplies its binding authority; content never imports SessionEngine. */
+export function configureBuiltinTranscriptBinding(readSessionId: () => string): void {
+  readProductSessionId = readSessionId;
+}
+
+export function getBuiltinProductContent(): ProductTranscriptContent | undefined {
+  const active = getActiveSessionTranscript(readProductSessionId());
+  if (!active) return undefined;
+  if (productContent?.writer !== active.writer) productContent = new ProductTranscriptContent(active.writer);
+  return productContent;
+}
 
 export const transcriptState = {
   messages,
@@ -54,10 +71,27 @@ export function setMessageSequence(value: number): void {
 }
 
 export function getMessages(): MessageWire[] {
+  const product = getBuiltinProductContent();
+  if (product) return transcriptMessages(product.writer.projection).map(sessionMessageToMessageWire);
   return messages;
 }
 
+export function getMessageCount(): number {
+  return getBuiltinProductContent()?.writer.projection.messages.size ?? messages.length;
+}
+
+export function getMessageIdentities(): Pick<MessageWire, 'id' | 'role' | 'sdkUuid'>[] {
+  const product = getBuiltinProductContent();
+  return product ? [...product.writer.projection.messages.values()].map(({ id, role, sdkUuid }) => ({ id, role, sdkUuid })) : messages;
+}
+
 export function getLastAssistantMessageId(): string | null {
+  const product = getBuiltinProductContent();
+  if (product) {
+    let lastId: string | null = null;
+    for (const message of product.writer.projection.messages.values()) if (message.role === 'assistant') lastId = message.id;
+    return lastId;
+  }
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role === 'assistant') return messages[i].id;
   }
@@ -65,10 +99,34 @@ export function getLastAssistantMessageId(): string | null {
 }
 
 export function appendMessage(message: MessageWire): void {
+  const product = getBuiltinProductContent();
+  if (product) {
+    const stored = messageWireToSessionMessage(message);
+    if (message.role === 'user') product.admitUser(stored);
+    else {
+      const assistant = product.assistant(message.id);
+      const content = fromStoredTranscriptMessage(stored).content;
+      if (typeof content === 'string') {
+        const target = product.block(`local:${message.id}`, 'text', { text: '', isComplete: true });
+        product.confirmText(target, 'text', content);
+      } else for (const block of content) {
+        product.writer.observe({ kind: 'block-upsert', messageId: assistant.id, block });
+      }
+    }
+    return;
+  }
   messages.push(message);
 }
 
 export function bindSdkUuidToLatestUnboundUserMessage(sdkUuid: string): string | null {
+  const product = getBuiltinProductContent();
+  if (product) {
+    const message = [...product.writer.projection.messages.values()].reverse()
+      .find(candidate => candidate.role === 'user' && !candidate.sdkUuid);
+    if (!message) return null;
+    product.writer.observe({ kind: 'message-update', messageId: message.id, details: { sdkUuid } });
+    return message.id;
+  }
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role === 'user' && !messages[i].sdkUuid) {
       messages[i].sdkUuid = sdkUuid;
@@ -79,16 +137,30 @@ export function bindSdkUuidToLatestUnboundUserMessage(sdkUuid: string): string |
 }
 
 export function bindSdkUuidToMessage(message: MessageWire, sdkUuid: string): string {
+  const product = getBuiltinProductContent();
+  if (product) {
+    product.writer.observe({ kind: 'message-update', messageId: message.id, details: { sdkUuid } });
+    return message.id;
+  }
   message.sdkUuid = sdkUuid;
   return message.id;
 }
 
 export function removeMessageAt(index: number): MessageWire[] {
+  const product = getBuiltinProductContent();
+  if (product) {
+    const id = [...product.writer.projection.messages.keys()][index];
+    if (!id) return [];
+    const removed = getMessages().find(message => message.id === id)!;
+    product.removeMessages([id]);
+    return [removed];
+  }
   return messages.splice(index, 1);
 }
 
 export function replaceMessages(nextMessages: MessageWire[]): void {
   messages.length = 0;
+  if (getBuiltinProductContent()) return;
   messages.push(...nextMessages);
 }
 
@@ -97,6 +169,11 @@ export function clearMessages(): void {
 }
 
 export function truncateMessages(length: number): void {
+  const product = getBuiltinProductContent();
+  if (product) {
+    product.removeMessages([...product.writer.projection.messages.keys()].slice(Math.max(0, length)));
+    return;
+  }
   messages.length = Math.max(0, length);
 }
 
@@ -169,6 +246,7 @@ export function getPendingReloadAnchor(): string | undefined {
 }
 
 export function clearTranscriptState(): void {
+  productContent = undefined;
   messages.length = 0;
   messageSequence = 0;
   transcriptCursor = null;

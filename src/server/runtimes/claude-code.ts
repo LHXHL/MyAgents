@@ -266,9 +266,10 @@ export class ClaudeCodeRuntime implements AgentRuntime {
   readonly type: RuntimeType = 'claude-code';
 
   // Track content_block_index → toolUseId for associating input_json_delta with tool blocks
-  private blockIndexToToolUseId = new Map<number, string>();
+  private blockIndexToToolUseId = new Map<string, string>();
+  private nativeMessageIds = new Map<string, string>();
   // Track content_block_index → block type for correct stop events
-  private blockIndexToType = new Map<number, 'text' | 'thinking' | 'tool_use'>();
+  private blockIndexToType = new Map<string, 'text' | 'thinking' | 'tool_use'>();
   // PRD 0.2.32 — 最近一条主轮 assistant message 的 usage（context 占用源；result.usage 是
   // 整 turn 累计不能用）。每条主轮 assistant message 覆盖，turn 末（result）消费后重置。
   private lastMainAssistantUsage: { inputTokens: number; cacheReadTokens: number; cacheCreationTokens: number } | null = null;
@@ -324,6 +325,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
     onEvent: UnifiedEventCallback,
   ): Promise<RuntimeProcess> {
     // Clear stale state from previous sessions (singleton instance, maps persist)
+    this.nativeMessageIds.clear();
     this.blockIndexToToolUseId.clear();
     this.blockIndexToType.clear();
 
@@ -759,8 +761,25 @@ export class ClaudeCodeRuntime implements AgentRuntime {
     }
 
     switch (msg.type) {
-      case 'stream_event':
-        return this.parseStreamEvent(msg.event as Record<string, unknown>);
+      case 'stream_event': {
+        const event = msg.event as Record<string, unknown> | undefined;
+        if (!event) return null;
+        const parent = typeof msg.parent_tool_use_id === 'string' ? msg.parent_tool_use_id : '';
+        const nativeMessage = event.message as { id?: unknown } | undefined;
+        if (event.type === 'message_start' && typeof nativeMessage?.id === 'string') this.nativeMessageIds.set(parent, nativeMessage.id);
+        const messageId = this.nativeMessageIds.get(parent);
+        const parsed = this.parseStreamEvent(event, parent);
+        if (!messageId) return parsed;
+        return {
+          ...(parsed ?? { kind: 'raw' as const, data: null }),
+          nativeSource: {
+            messageId,
+            ...(parent ? { parentToolUseId: parent } : {}),
+            ...(typeof event.index === 'number' ? { blockIndex: event.index } : {}),
+            ...(event.type === 'content_block_start' ? { blockStart: event.content_block as Record<string, unknown> } : {}),
+          },
+        };
+      }
 
       case 'assistant': {
         // PRD 0.2.32 — context 占用：CC 的 `result.usage` 是整 turn 累计（多次工具往返求和），
@@ -781,14 +800,22 @@ export class ClaudeCodeRuntime implements AgentRuntime {
           };
         }
         // Complete assistant message (for replay / resume)
-        return {
+        const replay: UnifiedEvent = {
           kind: 'message_replay',
+          ...(typeof am?.id === 'string' ? { nativeSource: {
+            messageId: am.id,
+            ...(typeof msg.parent_tool_use_id === 'string' ? { parentToolUseId: msg.parent_tool_use_id } : {}),
+          } } : {}),
           message: {
             id: (msg.uuid as string) || '',
             role: 'assistant',
             content: am?.content,
           },
         };
+        const supersedes = Array.isArray(msg.supersedes) ? msg.supersedes.filter((id): id is string => typeof id === 'string') : [];
+        return supersedes.length ? [{ kind: 'native_retraction', messageIds: supersedes,
+          ...(typeof msg.parent_tool_use_id === 'string' ? { scope: 'local', parentToolUseId: msg.parent_tool_use_id } : {}),
+        }, replay] : replay;
       }
 
       case 'user':
@@ -832,8 +859,9 @@ export class ClaudeCodeRuntime implements AgentRuntime {
     }
   }
 
-  private parseStreamEvent(event: Record<string, unknown> | undefined): UnifiedEvent | null {
+  private parseStreamEvent(event: Record<string, unknown> | undefined, parent = ''): UnifiedEvent | null {
     if (!event) return null;
+    const key = (index: number) => `${parent}:${index}`;
 
     switch (event.type) {
       case 'content_block_start': {
@@ -842,8 +870,8 @@ export class ClaudeCodeRuntime implements AgentRuntime {
         if (block?.type === 'tool_use') {
           const toolUseId = (block.id as string) || '';
           if (index !== undefined) {
-            this.blockIndexToToolUseId.set(index, toolUseId);
-            this.blockIndexToType.set(index, 'tool_use');
+            this.blockIndexToToolUseId.set(key(index), toolUseId);
+            this.blockIndexToType.set(key(index), 'tool_use');
           }
           return {
             kind: 'tool_use_start',
@@ -854,13 +882,13 @@ export class ClaudeCodeRuntime implements AgentRuntime {
         if (block?.type === 'thinking') {
           const idx = index ?? 0;
           if (index !== undefined) {
-            this.blockIndexToType.set(index, 'thinking');
+            this.blockIndexToType.set(key(index), 'thinking');
           }
           return { kind: 'thinking_start', index: idx };
         }
         // Text block
         if (index !== undefined) {
-          this.blockIndexToType.set(index, 'text');
+          this.blockIndexToType.set(key(index), 'text');
         }
         return null;
       }
@@ -875,7 +903,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
           return { kind: 'thinking_delta', text: (delta.thinking as string) || '', index: index ?? 0 };
         }
         if (delta?.type === 'input_json_delta') {
-          const toolUseId = (index !== undefined ? this.blockIndexToToolUseId.get(index) : undefined) || '';
+          const toolUseId = (index !== undefined ? this.blockIndexToToolUseId.get(key(index)) : undefined) || '';
           return {
             kind: 'tool_input_delta',
             toolUseId,
@@ -887,9 +915,9 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 
       case 'content_block_stop': {
         const index = event.index as number | undefined;
-        const blockType = index !== undefined ? this.blockIndexToType.get(index) : undefined;
+        const blockType = index !== undefined ? this.blockIndexToType.get(key(index)) : undefined;
         if (blockType === 'tool_use') {
-          const toolUseId = (index !== undefined ? this.blockIndexToToolUseId.get(index) : undefined) || '';
+          const toolUseId = (index !== undefined ? this.blockIndexToToolUseId.get(key(index)) : undefined) || '';
           return { kind: 'tool_use_stop', toolUseId };
         }
         if (blockType === 'thinking') {
@@ -917,6 +945,11 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 
   private parseSystemMessage(msg: Record<string, unknown>): UnifiedEvent | null {
     switch (msg.subtype) {
+      case 'model_refusal_fallback':
+        return { kind: 'native_retraction', messageIds: Array.isArray(msg.retracted_message_uuids)
+          ? msg.retracted_message_uuids.filter((id): id is string => typeof id === 'string') : [],
+          scope: msg.scope === 'local' ? 'local' : 'session',
+        };
       case 'init':
         return {
           kind: 'session_init',

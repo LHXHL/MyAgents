@@ -14,14 +14,17 @@ import './Markdown.css';
 
 import { lazy, Suspense, memo, useEffect, useMemo, useState, type ComponentProps } from 'react';
 import type { Components } from 'react-markdown';
+import type { Element } from 'hast';
 import ReactMarkdown from 'react-markdown';
 import { useTranslation } from 'react-i18next';
 
 import CodeBlock from './markdown/CodeBlock';
 import InlineCode from './markdown/InlineCode';
+import ContentLink from './markdown/ContentLink';
+import { MarkdownDocumentDirectoryContext } from './markdown/linkContext';
+import MarkdownTable from './markdown/MarkdownTable';
 const MermaidDiagram = lazy(() => import('./markdown/MermaidDiagram'));
-import { useOpenWebLink } from '@/context/BrowserPanelContext';
-import { useFileAction, useFileLinkAction } from '@/context/fileActionState';
+import { useFileAction } from '@/context/fileActionState';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 import { preprocessMarkdownContent } from '@/utils/markdownPreprocess';
 import {
@@ -32,7 +35,7 @@ import {
   convertFrontmatter,
 } from '@/utils/markdownPipeline';
 import { canonicalizeLegacyMyAgentsResourceUrl } from '@/utils/myagentsProtocol';
-import { fileUrlToPath, resolveAgainstWorkspace, resolveDocumentFileLink } from '@/utils/workspaceFileLinks';
+import { fileUrlToPath, resolveAgainstWorkspace } from '@/utils/workspaceFileLinks';
 
 // ── Streaming leading-edge fade ──
 // While streaming, wrap the LAST few characters of the last text node in a
@@ -92,55 +95,9 @@ const REHYPE_PLUGINS_STREAMING: ComponentProps<typeof ReactMarkdown>['rehypePlug
 // Custom link component that opens links in embedded browser panel (if available)
 // or falls back to system browser. Supports text selection for copying.
 // Strips react-markdown's hast `node` prop so it doesn't get spread onto the DOM <a>.
-const MarkdownLink = memo(function MarkdownLink({
-  href,
-  children,
-  basePath = '',
-  node: _node,
-  ...props
-}: React.ComponentProps<'a'> & { node?: unknown; basePath?: string }) {
-  const fileLinkAction = useFileLinkAction();
-  const openWebLink = useOpenWebLink();
-
-  const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
-    e.preventDefault();
-
-    // Check if user is selecting text - don't open link if selecting
-    const selection = window.getSelection();
-    const hasSelection = selection && selection.toString().length > 0;
-
-    if (!hasSelection && href) {
-      // Cmd (macOS) / Ctrl (Win/Linux) + click bypasses the embedded browser
-      // panel and opens directly in the system default browser.
-      const forceExternal = e.metaKey || e.ctrlKey;
-      const actionHref = resolveDocumentFileLink(href, basePath);
-      if (fileLinkAction?.openFileLink(actionHref, { forceExternal })) {
-        return;
-      }
-      openWebLink(href, { forceExternal });
-    }
-  };
-
-  const handleContextMenu = (e: React.MouseEvent<HTMLAnchorElement>) => {
-    if (!href) return;
-    if (fileLinkAction?.openFileLinkMenu(e.clientX, e.clientY, resolveDocumentFileLink(href, basePath))) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
-  };
-
-  return (
-    <a
-      href={href}
-      onClick={handleClick}
-      onContextMenu={handleContextMenu}
-      className="text-[var(--accent-warm)] underline decoration-[var(--accent-warm)]/40 underline-offset-2 transition-colors hover:text-[var(--accent-warm-hover)] hover:decoration-[var(--accent-warm)]/60"
-      style={{ userSelect: 'text' }}
-      {...props}
-    >
-      {children}
-    </a>
-  );
+const MarkdownLink = memo(function MarkdownLink({ href, children, basePath = '', node, ...props }: React.ComponentProps<'a'> & { node?: Element; basePath?: string }) {
+  const originalHref = (node?.data as { originalHref?: unknown } | undefined)?.originalHref;
+  return <ContentLink reference={href ?? ''} displayReference={typeof originalHref === 'string' ? originalHref : href} basePath={basePath} {...props}>{children}</ContentLink>;
 });
 
 // Custom code component - handles both inline and block code
@@ -192,15 +149,7 @@ const PreComponent: Components['pre'] = ({ children }) => {
   return <>{children}</>;
 };
 
-// Custom table components for better styling
-const TableComponent: Components['table'] = ({ children }) => (
-  <div className="markdown-table max-w-full overflow-x-auto rounded-lg border border-[var(--line)]">
-    <table className="m-0 min-w-full divide-y divide-[var(--line)]">
-      {children}
-    </table>
-  </div>
-);
-
+// Shared table surface and per-table actions.
 const TableHeadComponent: Components['thead'] = ({ children }) => (
   <thead className="bg-[var(--paper-inset)]/40">{children}</thead>
 );
@@ -214,12 +163,12 @@ const TableRowComponent: Components['tr'] = ({ children }) => (
 // 表格 = text-sm(14px)：嵌在 16px 正文里的密集内容比正文低一档（13px 会造成
 // 肉眼可见跳变，PRD 0.2.34 P0-1 定为 14）。v2.5 起 ui 档本身就是 14px，原 dense
 // 专用档（text-md）与其 lint 白名单机制已随 Part 3 合并删除。
-const TableCellComponent: Components['td'] = ({ children }) => (
-  <td className="markdown-table-cell">{children}</td>
+const TableCellComponent: Components['td'] = ({ children, node: _node, ...props }) => (
+  <td {...props} className="markdown-table-cell">{children}</td>
 );
 
-const TableHeaderComponent: Components['th'] = ({ children }) => (
-  <th className="markdown-table-header">
+const TableHeaderComponent: Components['th'] = ({ children, node: _node, ...props }) => (
+  <th {...props} className="markdown-table-header">
     {children}
   </th>
 );
@@ -232,38 +181,38 @@ const BlockquoteComponent: Components['blockquote'] = ({ children }) => (
 );
 
 // Custom heading components - H1:22px H2:20px H3:18px H4-H6:16px
-const H1Component: Components['h1'] = ({ children }) => (
-  <h1 className="markdown-heading markdown-h1">
+const H1Component: Components['h1'] = ({ children, className, node: _node, ...props }) => (
+  <h1 {...props} className={['markdown-heading markdown-h1', className].filter(Boolean).join(' ')}>
     {children}
   </h1>
 );
 
-const H2Component: Components['h2'] = ({ children }) => (
-  <h2 className="markdown-heading markdown-h2">
+const H2Component: Components['h2'] = ({ children, className, node: _node, ...props }) => (
+  <h2 {...props} className={['markdown-heading markdown-h2', className].filter(Boolean).join(' ')}>
     {children}
   </h2>
 );
 
-const H3Component: Components['h3'] = ({ children }) => (
-  <h3 className="markdown-heading markdown-h3">
+const H3Component: Components['h3'] = ({ children, className, node: _node, ...props }) => (
+  <h3 {...props} className={['markdown-heading markdown-h3', className].filter(Boolean).join(' ')}>
     {children}
   </h3>
 );
 
-const H4Component: Components['h4'] = ({ children }) => (
-  <h4 className="markdown-heading markdown-h4">
+const H4Component: Components['h4'] = ({ children, className, node: _node, ...props }) => (
+  <h4 {...props} className={['markdown-heading markdown-h4', className].filter(Boolean).join(' ')}>
     {children}
   </h4>
 );
 
-const H5Component: Components['h5'] = ({ children }) => (
-  <h5 className="markdown-heading markdown-h5">
+const H5Component: Components['h5'] = ({ children, className, node: _node, ...props }) => (
+  <h5 {...props} className={['markdown-heading markdown-h5', className].filter(Boolean).join(' ')}>
     {children}
   </h5>
 );
 
-const H6Component: Components['h6'] = ({ children }) => (
-  <h6 className="markdown-heading markdown-h6">
+const H6Component: Components['h6'] = ({ children, className, node: _node, ...props }) => (
+  <h6 {...props} className={['markdown-heading markdown-h6', className].filter(Boolean).join(' ')}>
     {children}
   </h6>
 );
@@ -312,12 +261,19 @@ const HrComponent: Components['hr'] = () => (
   <hr className="markdown-rule border-[var(--line)]" />
 );
 
+// Display math is a native horizontal scroller, including in live preview.
+const SpanComponent: Components['span'] = ({ className, node: _node, ...props }) => (
+  <span {...props} className={className?.split(' ').includes('katex-display')
+    ? `${className} overflow-x-auto` : className} />
+);
+
 // Combine all custom components
 const markdownComponents: Components = {
   a: MarkdownLink,
+  span: SpanComponent,
   code: CodeComponent,
   pre: PreComponent,
-  table: TableComponent,
+  table: MarkdownTable,
   thead: TableHeadComponent,
   tr: TableRowComponent,
   td: TableCellComponent,
@@ -500,7 +456,7 @@ const Markdown = memo(function Markdown({ children, compact = false, preserveNew
       img: (props: React.ImgHTMLAttributes<HTMLImageElement>) => (
         <MarkdownImage src={props.src} alt={props.alt} basePath={basePath} workspacePath={workspacePath} />
       ),
-      a: (props: React.ComponentProps<'a'> & { node?: unknown }) => {
+      a: (props: React.ComponentProps<'a'> & { node?: Element }) => {
         let number: number | undefined;
         if (props.href?.startsWith('#user-content-fn-')) {
           try { number = footnoteNumbers?.get(decodeURIComponent(props.href.slice('#user-content-fn-'.length))); } catch { /* keep the source fragment's link */ }
@@ -511,6 +467,7 @@ const Markdown = memo(function Markdown({ children, compact = false, preserveNew
   }, [basePath, workspacePath, footnoteNumbers]);
 
   return (
+    <MarkdownDocumentDirectoryContext.Provider value={basePath}>
     <div className={`markdown-content min-w-0 max-w-full break-words${compact ? ' markdown-content--compact' : ''}`}>
       <ReactMarkdown
         urlTransform={MARKDOWN_URL_TRANSFORM}
@@ -521,6 +478,7 @@ const Markdown = memo(function Markdown({ children, compact = false, preserveNew
         {processedContent}
       </ReactMarkdown>
     </div>
+    </MarkdownDocumentDirectoryContext.Provider>
   );
 });
 

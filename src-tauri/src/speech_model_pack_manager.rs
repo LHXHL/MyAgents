@@ -1,4 +1,4 @@
-//! Explicit install, verification, activation, and removal of speech weights.
+//! User-initiated install and automatic maintenance of installed speech weights.
 //!
 //! Downloadable packs contain data files only. The App-owned media Worker,
 //! sherpa adapter, and ONNX Runtime stay in the signed application bundle.
@@ -7,9 +7,10 @@ use crate::local_inference::{
     ComputeWorkloadIdentity, ComputeWorkloadKind, LocalComputeCoordinator, LocalComputeLease,
 };
 use crate::speech_model_pack::{
-    inspect_installed_pack, install_plan, manifest_matches_source_lock, verify_installed_pack,
-    verify_installed_pack_with_yield, InstalledPackError, ModelPackAsset, ModelPackAssetFormat,
-    ModelPackInstallPlan, ModelPackLegalSource,
+    inspect_installed_pack, install_plan, manifest_matches_compatible_lock,
+    manifest_matches_source_lock, verify_installed_pack, verify_installed_pack_with_yield,
+    InstalledPackError, ModelPackAsset, ModelPackAssetFormat, ModelPackInstallPlan,
+    ModelPackLegalSource,
 };
 use futures_util::StreamExt;
 use myagents_media_worker_protocol::{
@@ -147,16 +148,19 @@ impl SpeechModelPackManager {
 
         let (active, active_pointer, last_error_code, verify_after_startup) =
             match read_active_pointer(&models_root) {
-                Ok(Some(pointer)) if pointer.pack_revision != plan.pack_revision => {
-                    match verify_previous_revision_pointer(&models_root, &pointer, &plan.pack_id) {
-                        Ok(()) => (None, Some(pointer), None, false),
-                        Err(code) => (None, Some(pointer), Some(code.to_string()), false),
-                    }
-                }
                 Ok(Some(pointer)) => {
-                    match inspect_pointer_and_pack(&models_root, &pointer, &plan.pack_revision) {
-                        Ok((active, pointer)) => (Some(active), Some(pointer), None, true),
-                        Err(code) => (None, Some(pointer), Some(code.to_string()), false),
+                    match verify_previous_revision_pointer(&models_root, &pointer, &plan.pack_id) {
+                        Ok(()) => match inspect_pointer_and_pack(
+                            &models_root,
+                            &pointer,
+                            &pointer.pack_revision,
+                        ) {
+                            Ok((active, pointer)) => (Some(active), Some(pointer), None, true),
+                            Err(code) => (None, Some(pointer), Some(code.to_string()), false),
+                        },
+                        // An untrusted pointer neither grants execution nor authorizes
+                        // an automatic first download. Explicit repair stays available.
+                        Err(code) => (None, None, Some(code.to_string()), false),
                     }
                 }
                 Ok(None) => (None, None, None, false),
@@ -207,7 +211,6 @@ impl SpeechModelPackManager {
             {
                 SpeechModelPackStatusKind::Error
             }
-            Operation::Idle if state.active.is_some() => SpeechModelPackStatusKind::Ready,
             Operation::Idle
                 if state
                     .active_pointer
@@ -216,6 +219,7 @@ impl SpeechModelPackManager {
             {
                 SpeechModelPackStatusKind::UpdateAvailable
             }
+            Operation::Idle if state.active.is_some() => SpeechModelPackStatusKind::Ready,
             Operation::Idle => SpeechModelPackStatusKind::NotInstalled,
         };
         let active_revision = state
@@ -252,87 +256,82 @@ impl SpeechModelPackManager {
     }
 
     pub fn resolve_revision(&self, revision: &str) -> Result<ActivatedModelPack, &'static str> {
-        let (active, pointer) = {
-            let state = self
-                .state
-                .lock()
-                .map_err(|_| "SPEECH_MANAGER_UNAVAILABLE")?;
-            state
-                .active
-                .clone()
-                .zip(state.active_pointer.clone())
-                .ok_or("SPEECH_MODEL_PACK_UNAVAILABLE")?
-        };
-        if active.revision != revision || pointer.pack_revision != revision {
-            return Err("SPEECH_MODEL_PACK_REVISION_UNAVAILABLE");
+        if let Some(active) = self.active_pack().filter(|pack| pack.revision == revision) {
+            return Ok(active);
         }
-        // Startup has already restored a signed, metadata-checked activation.
-        // The media Worker independently performs the full SHA-256 inventory
-        // check immediately before loading any model, so repeating it here
-        // would only move the same cost onto the user's action path.
-        Ok(active)
+        // Already admitted pipelines keep their model identity through update,
+        // worker replacement and App recovery. Retained packs are immutable;
+        // their activation receipts prove that they passed the installer.
+        let packs = self.models_root.join("packs");
+        for entry in fs::read_dir(&packs).map_err(|_| "SPEECH_MODEL_PACK_REVISION_UNAVAILABLE")? {
+            let Ok(entry) = entry else { continue };
+            let name = entry.file_name();
+            let Some(name) = name.to_str().filter(|name| valid_pack_directory_name(name)) else {
+                continue;
+            };
+            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let Ok(Some(pointer)) = read_pointer_file(&entry.path().join("activation.json")) else {
+                continue;
+            };
+            if pointer.directory_name == name && pointer.pack_revision == revision {
+                if let Ok((active, _)) =
+                    inspect_pointer_and_pack(&self.models_root, &pointer, revision)
+                {
+                    return Ok(active);
+                }
+            }
+        }
+        Err("SPEECH_MODEL_PACK_REVISION_UNAVAILABLE")
     }
 
     pub async fn install(self: &Arc<Self>) -> Result<SpeechModelPackStatus, String> {
-        if self
-            .state
-            .lock()
-            .map_err(|_| "SPEECH_MANAGER_UNAVAILABLE".to_string())?
-            .operation
-            != Operation::Idle
         {
-            return Err("SPEECH_RESOURCE_BUSY".into());
-        }
-        let cached_revision = self
-            .state
-            .lock()
-            .ok()
-            .and_then(|state| state.active.as_ref().map(|pack| pack.revision.clone()));
-        if let Some(revision) = cached_revision {
-            let pointer = self
-                .state
-                .lock()
-                .ok()
-                .and_then(|state| state.active_pointer.clone());
-            if pointer.as_ref().is_some_and(|pointer| {
-                pointer.pack_revision == revision
-                    && verify_pointer_and_pack(&self.models_root, pointer, &self.plan.pack_revision)
-                        .is_ok()
-            }) {
-                return Ok(self.status());
-            }
-            if let Ok(mut state) = self.state.lock() {
-                state.active = None;
-                state.last_error_code = Some("SPEECH_RESOURCE_CORRUPT".into());
-            }
-        }
-        let already_ready = {
             let mut state = self
                 .state
                 .lock()
                 .map_err(|_| "SPEECH_MANAGER_UNAVAILABLE".to_string())?;
+            self.ensure_not_cancelled().map_err(str::to_string)?;
             if state.operation != Operation::Idle {
                 return Err("SPEECH_RESOURCE_BUSY".into());
             }
-            if state
-                .active
-                .as_ref()
-                .is_some_and(|pack| pack.revision == self.plan.pack_revision)
-            {
-                true
-            } else {
-                state.operation = Operation::Checking;
-                state.downloaded_bytes = 0;
-                state.last_error_code = None;
-                self.cancelled.store(false, Ordering::Release);
-                false
-            }
-        };
-        if already_ready {
-            return Ok(self.status());
+            state.operation = Operation::Checking;
+            state.downloaded_bytes = 0;
+            state.last_error_code = None;
         }
+        self.install_claimed().await
+    }
 
-        let result = self.install_inner().await;
+    async fn install_claimed(self: &Arc<Self>) -> Result<SpeechModelPackStatus, String> {
+        // Only a current target can be an install no-op. Never validate an old
+        // healthy activation against the new download target and revoke it.
+        let current = self.state.lock().ok().and_then(|state| {
+            state
+                .active_pointer
+                .clone()
+                .filter(|pointer| pointer.pack_revision == self.plan.pack_revision)
+        });
+        let result = if let Some(pointer) = current.clone() {
+            let manager = Arc::clone(self);
+            tauri::async_runtime::spawn_blocking(move || {
+                verify_pointer_and_pack(&manager.models_root, &pointer, &pointer.pack_revision)
+            })
+            .await
+            .ok()
+            .and_then(Result::ok)
+        } else {
+            None
+        };
+        if result.is_none() && current.is_some() {
+            if let Ok(mut state) = self.state.lock() {
+                state.active = None;
+            }
+        }
+        let result = match result {
+            Some((active, pointer)) => Ok((active, pointer, None)),
+            None => self.install_inner().await,
+        };
         let mut state = self
             .state
             .lock()
@@ -354,19 +353,53 @@ impl SpeechModelPackManager {
         }
     }
 
-    pub(crate) fn start_background_verification(self: &Arc<Self>) {
+    async fn maintain_installed(self: &Arc<Self>) {
+        {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            if self.cancelled.load(Ordering::Acquire)
+                || state.operation != Operation::Idle
+                || state.active_pointer.is_none()
+                || state
+                    .active
+                    .as_ref()
+                    .is_some_and(|pack| pack.revision == self.plan.pack_revision)
+            {
+                return;
+            }
+            // Eligibility and operation admission share the remove/install lock.
+            // A user who removed resources during the startup delay stays opted out.
+            state.operation = Operation::Checking;
+            state.downloaded_bytes = 0;
+            state.last_error_code = None;
+        }
+        if let Err(code) = self.install_claimed().await {
+            crate::ulog_warn!(
+                "[speech-resource] automatic maintenance failed code={}",
+                code
+            );
+        }
+    }
+
+    pub(crate) fn start_background_maintenance(self: &Arc<Self>) {
+        let startup_pointer = self
+            .state
+            .lock()
+            .ok()
+            .filter(|state| state.operation == Operation::Checking)
+            .and_then(|state| state.active_pointer.clone());
         let manager = Arc::clone(self);
         tauri::async_runtime::spawn(async move {
             loop {
+                if manager.cancelled.load(Ordering::Acquire) {
+                    return;
+                }
                 // Keep model IO off the first-paint and Global Sidecar startup path.
                 tokio::time::sleep(Duration::from_secs(10)).await;
-                let pointer = manager
-                    .state
-                    .lock()
-                    .ok()
-                    .and_then(|state| state.active_pointer.clone());
+                let pointer = startup_pointer.clone();
                 let Some(pointer_for_validation) = pointer.clone() else {
-                    return;
+                    break;
                 };
                 let lease = manager
                     .compute_coordinator
@@ -382,8 +415,11 @@ impl SpeechModelPackManager {
                     verify_pointer_and_pack_with_yield(
                         &validation_manager.models_root,
                         &pointer_for_validation,
-                        &validation_manager.plan.pack_revision,
-                        &|| signal.should_yield(),
+                        &pointer_for_validation.pack_revision,
+                        &|| {
+                            signal.should_yield()
+                                || validation_manager.cancelled.load(Ordering::Acquire)
+                        },
                     )
                 })
                 .await;
@@ -397,7 +433,10 @@ impl SpeechModelPackManager {
                 let Ok(mut state) = manager.state.lock() else {
                     return;
                 };
-                if state.operation != Operation::Checking || state.active_pointer != pointer {
+                if manager.cancelled.load(Ordering::Acquire)
+                    || state.operation != Operation::Checking
+                    || state.active_pointer != pointer
+                {
                     return;
                 }
                 state.operation = Operation::Idle;
@@ -408,7 +447,10 @@ impl SpeechModelPackManager {
                         state.last_error_code = None;
                         crate::ulog_info!(
                             "[speech-resource] background model verification completed revision={}",
-                            manager.plan.pack_revision
+                            state
+                                .active
+                                .as_ref()
+                                .map_or("unknown", |pack| pack.revision.as_str())
                         );
                     }
                     Err(code) => {
@@ -423,6 +465,9 @@ impl SpeechModelPackManager {
                 }
                 break;
             }
+            // Like Managed Codex: one automatic target update attempt per App
+            // startup, with failure retried on the next launch, never on status reads.
+            manager.maintain_installed().await;
         });
     }
 
@@ -476,12 +521,11 @@ impl SpeechModelPackManager {
     }
 
     pub fn cancel_operation(&self) {
-        self.cancelled.store(true, Ordering::Release);
-        let running = self
-            .state
-            .lock()
-            .ok()
-            .and_then(|state| state.running_probe.clone());
+        let running = self.state.lock().ok().and_then(|state| {
+            // Serialize shutdown against the final activation publication.
+            self.cancelled.store(true, Ordering::Release);
+            state.running_probe.clone()
+        });
         if let Some(running) = running {
             let _ = crate::process_cmd::settle_tree(&running, APP_SHUTDOWN_GRACE);
         }
@@ -597,7 +641,28 @@ impl SpeechModelPackManager {
             manifest_signature: release_manifest.signature.clone(),
             activated_at: chrono::Utc::now().to_rfc3339(),
         };
-        let pointer_commit = match write_active_pointer(&self.models_root, &pointer) {
+        // Keep each installed revision's original signed activation evidence.
+        // Existing v2 installations predate receipts; copy their already trusted
+        // pointer before switching active.json so frozen jobs survive restart.
+        let publication = (|| {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "SPEECH_MANAGER_UNAVAILABLE")?;
+            self.ensure_not_cancelled()?;
+            if let Some(previous) = &state.active_pointer {
+                retain_activation_receipt(&self.models_root, previous)?;
+            }
+            retain_activation_receipt(&self.models_root, &pointer)?;
+            let commit = write_active_pointer(&self.models_root, &pointer)?;
+            state.active = Some(ActivatedModelPack {
+                revision: pointer.pack_revision.clone(),
+                manifest_path: final_root.join("manifest.json"),
+            });
+            state.active_pointer = Some(pointer.clone());
+            Ok(commit)
+        })();
+        let pointer_commit = match publication {
             Ok(commit) => commit,
             Err(code) => {
                 let _ = remove_plain_directory_tree(&final_root);
@@ -1179,8 +1244,11 @@ fn write_reader_verified(
 }
 
 fn read_active_pointer(models_root: &Path) -> Result<Option<ActivePointer>, &'static str> {
-    let path = models_root.join("active.json");
-    let metadata = match fs::symlink_metadata(&path) {
+    read_pointer_file(&models_root.join("active.json"))
+}
+
+fn read_pointer_file(path: &Path) -> Result<Option<ActivePointer>, &'static str> {
+    let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err("SPEECH_RESOURCE_CORRUPT"),
@@ -1191,15 +1259,14 @@ fn read_active_pointer(models_root: &Path) -> Result<Option<ActivePointer>, &'st
     {
         return Err("SPEECH_RESOURCE_CORRUPT");
     }
-    let bytes = fs::read(&path).map_err(|_| "SPEECH_RESOURCE_CORRUPT")?;
+    let bytes = fs::read(path).map_err(|_| "SPEECH_RESOURCE_CORRUPT")?;
     let pointer: ActivePointer =
         serde_json::from_slice(&bytes).map_err(|_| "SPEECH_RESOURCE_CORRUPT")?;
     Ok(Some(pointer))
 }
 
-/// Recognizes a previously installed first-party revision without making it
-/// executable in the current App. The current source lock remains the only
-/// authority that can produce an `ActivatedModelPack`.
+/// Authenticates an existing installation independently of the download target.
+/// Execution additionally requires an exact compatible lock and file inventory.
 fn verify_previous_revision_pointer(
     models_root: &Path,
     pointer: &ActivePointer,
@@ -1343,7 +1410,7 @@ fn validate_active_pointer(
     }
     let manifest = fs::read(&manifest_path).map_err(|_| "SPEECH_RESOURCE_CORRUPT")?;
     if pointer.manifest_sha256 != format!("{:x}", Sha256::digest(&manifest))
-        || !manifest_matches_source_lock(&manifest)
+        || !manifest_matches_compatible_lock(&manifest)
     {
         return Err("SPEECH_RESOURCE_CORRUPT");
     }
@@ -1354,6 +1421,31 @@ fn validate_active_pointer(
     )
     .map_err(|_| "SPEECH_RESOURCE_CORRUPT")?;
     Ok(manifest_path)
+}
+
+fn retain_activation_receipt(
+    models_root: &Path,
+    pointer: &ActivePointer,
+) -> Result<(), &'static str> {
+    let pack_root = models_root.join("packs").join(&pointer.directory_name);
+    ensure_plain_directory(&pack_root)?;
+    let receipt = pack_root.join("activation.json");
+    if let Some(existing) = read_pointer_file(&receipt)? {
+        if &existing != pointer {
+            return Err("SPEECH_RESOURCE_CORRUPT");
+        }
+    } else {
+        let bytes = serde_json::to_vec(pointer).map_err(|_| "SPEECH_RESOURCE_ACTIVATION_FAILED")?;
+        let temporary = pack_root.join(format!(".activation-{}.tmp", Uuid::new_v4().simple()));
+        write_new_synced_file(&temporary, &bytes)?;
+        if fs::rename(&temporary, &receipt).is_err() {
+            let _ = fs::remove_file(&temporary);
+            return Err("SPEECH_RESOURCE_ACTIVATION_FAILED");
+        }
+    }
+    // A previous attempt may have made the receipt visible but failed this
+    // durability barrier. Reusing it must retry the barrier before cutover.
+    crate::durable_fs::sync_directory(&pack_root).map_err(|_| "SPEECH_RESOURCE_ACTIVATION_FAILED")
 }
 
 fn write_active_pointer(
@@ -1497,11 +1589,11 @@ fn ensure_plain_directory(path: &Path) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn set_private_directory_permissions(path: &Path) -> Result<(), &'static str> {
+fn set_private_directory_permissions(_path: &Path) -> Result<(), &'static str> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        fs::set_permissions(_path, fs::Permissions::from_mode(0o700))
             .map_err(|_| "SPEECH_RESOURCE_STORE_WRITE_FAILED")?;
     }
     Ok(())
@@ -1634,6 +1726,262 @@ mod tests {
         assert_eq!(plan.source_download_bytes, 209_767_948);
         assert_eq!(total_download_bytes(&plan), 209_785_686);
         assert!(total_download_bytes(&plan) <= plan.download_hard_limit_bytes);
+    }
+
+    const RELEASED_V2: &str =
+        include_str!("../media-worker/compatible-model-packs/local-standard-speech-v2.json");
+    const RELEASED_V2_SIGNATURE: &str =
+        include_str!("../media-worker/compatible-model-packs/local-standard-speech-v2.json.sig");
+
+    fn fixture_manager(root: &Path) -> Arc<SpeechModelPackManager> {
+        SpeechModelPackManager::initialize(
+            root.join("models"),
+            root.join("worker"),
+            root.join("native.json"),
+            None,
+            LocalComputeCoordinator::new(),
+        )
+        .unwrap()
+    }
+
+    // The public release signature is a fixture, never a test signing bypass.
+    // Sparse files cover startup metadata checks without putting model weights
+    // or a real user directory in deterministic tests. Full hashes must reject them.
+    fn install_released_v2_fixture(root: &Path) -> ActivePointer {
+        let models = root.join("models");
+        let directory_name = "pack-0123456789abcdef0123456789abcdef";
+        let pack = models.join("packs").join(directory_name);
+        fs::create_dir_all(&pack).unwrap();
+        fs::write(pack.join("manifest.json"), RELEASED_V2).unwrap();
+        let lock: serde_json::Value = serde_json::from_str(RELEASED_V2).unwrap();
+        for item in lock["assets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|asset| asset["selectedFiles"].as_array().unwrap())
+        {
+            let path = pack.join(item["installPath"].as_str().unwrap());
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            File::create(path)
+                .unwrap()
+                .set_len(item["size"].as_u64().unwrap())
+                .unwrap();
+        }
+        for item in lock["legalArtifacts"].as_array().unwrap() {
+            let path = pack.join(item["installPath"].as_str().unwrap());
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            File::create(path)
+                .unwrap()
+                .set_len(item["source"]["size"].as_u64().unwrap())
+                .unwrap();
+        }
+        let pointer = ActivePointer {
+            schema_version: ACTIVE_POINTER_SCHEMA_VERSION,
+            pack_revision: "local-standard-speech-v2".into(),
+            directory_name: directory_name.into(),
+            manifest_sha256: format!("{:x}", Sha256::digest(RELEASED_V2.as_bytes())),
+            manifest_signature: RELEASED_V2_SIGNATURE.into(),
+            activated_at: "2026-09-01T00:00:00Z".into(),
+        };
+        crate::resource_signature::verify_minisign_bytes(
+            RELEASED_V2.as_bytes(),
+            RELEASED_V2_SIGNATURE,
+            "fixture",
+        )
+        .unwrap();
+        inspect_pointer_and_pack(&models, &pointer, &pointer.pack_revision).unwrap();
+        write_active_pointer(&models, &pointer).unwrap();
+        pointer
+    }
+
+    #[tokio::test]
+    async fn automatic_maintenance_requires_installation_and_preserves_old_active_on_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = fixture_manager(root.path());
+        manager.maintain_installed().await;
+        assert_eq!(
+            manager.status().status,
+            SpeechModelPackStatusKind::NotInstalled
+        );
+        assert!(manager.status().last_error_code.is_none());
+
+        let pointer = install_released_v2_fixture(root.path());
+        let manager = fixture_manager(root.path());
+        assert!(
+            manager.status().usable,
+            "App upgrade must restore the compatible release"
+        );
+        assert_eq!(manager.status().status, SpeechModelPackStatusKind::Checking);
+        assert_eq!(
+            manager
+                .resolve_revision(&pointer.pack_revision)
+                .unwrap()
+                .revision,
+            pointer.pack_revision
+        );
+        // The independently checked full-file boundary rejects these sparse fixtures.
+        assert!(verify_installed_pack(&manager.active_pack().unwrap().manifest_path).is_err());
+        manager.state.lock().unwrap().operation = Operation::Idle;
+        assert_eq!(
+            manager.status().status,
+            SpeechModelPackStatusKind::UpdateAvailable
+        );
+        for operation in [
+            Operation::Checking,
+            Operation::Downloading,
+            Operation::Verifying,
+            Operation::Installing,
+        ] {
+            manager.state.lock().unwrap().operation = operation;
+            assert!(manager.status().usable);
+            manager.maintain_installed().await;
+            assert_eq!(
+                manager.state.lock().unwrap().operation,
+                operation,
+                "a concurrent operation owns admission"
+            );
+        }
+        manager.state.lock().unwrap().operation = Operation::Idle;
+        manager.maintain_installed().await;
+        let failed = manager.status();
+        assert_eq!(
+            failed.last_error_code.as_deref(),
+            Some("SPEECH_NATIVE_RUNTIME_UNAVAILABLE")
+        );
+        assert!(failed.usable);
+        assert_eq!(
+            read_active_pointer(&manager.models_root).unwrap(),
+            Some(pointer)
+        );
+        assert!(manager.install().await.is_err());
+        assert!(
+            manager.status().usable,
+            "manual update must also retain the previous release"
+        );
+
+        manager.remove(false).unwrap();
+        manager.maintain_installed().await;
+        assert_eq!(
+            manager.status().status,
+            SpeechModelPackStatusKind::NotInstalled
+        );
+        assert!(manager.status().last_error_code.is_none());
+    }
+
+    #[tokio::test]
+    async fn authenticated_installation_authorizes_repair_but_not_corrupt_model_execution() {
+        let root = tempfile::tempdir().unwrap();
+        let mut pointer = install_released_v2_fixture(root.path());
+        let pack = root
+            .path()
+            .join("models/packs")
+            .join(&pointer.directory_name);
+        fs::remove_file(pack.join("models/sensevoice/tokens.txt")).unwrap();
+        let manager = fixture_manager(root.path());
+        assert_eq!(
+            manager.status().last_error_code.as_deref(),
+            Some("SPEECH_RESOURCE_CORRUPT")
+        );
+        assert!(!manager.status().usable);
+        manager.maintain_installed().await;
+        // User already completed installation. Bit rot does not revoke consent;
+        // maintenance reaches the existing installer without executing bad data.
+        assert_eq!(
+            manager.status().last_error_code.as_deref(),
+            Some("SPEECH_NATIVE_RUNTIME_UNAVAILABLE")
+        );
+        assert!(!manager.status().usable);
+        assert!(manager.resolve_revision(&pointer.pack_revision).is_err());
+
+        pointer.manifest_signature = "forged".into();
+        write_active_pointer(&manager.models_root, &pointer).unwrap();
+        let untrusted = fixture_manager(root.path());
+        untrusted.maintain_installed().await;
+        assert_eq!(
+            untrusted.status().last_error_code.as_deref(),
+            Some("SPEECH_RESOURCE_CORRUPT")
+        );
+        assert!(!untrusted.status().usable);
+        assert!(untrusted.state.lock().unwrap().active_pointer.is_none());
+    }
+
+    #[tokio::test]
+    async fn current_target_and_shutdown_do_not_start_automatic_downloads() {
+        let root = tempfile::tempdir().unwrap();
+        install_released_v2_fixture(root.path());
+        let manager = fixture_manager(root.path());
+        {
+            let mut state = manager.state.lock().unwrap();
+            state.operation = Operation::Idle;
+            state.active.as_mut().unwrap().revision = manager.plan.pack_revision.clone();
+        }
+        manager.maintain_installed().await;
+        assert!(manager.status().last_error_code.is_none());
+        manager.cancel_operation();
+        manager
+            .state
+            .lock()
+            .unwrap()
+            .active
+            .as_mut()
+            .unwrap()
+            .revision = "local-standard-speech-v2".into();
+        manager.maintain_installed().await;
+        assert!(manager.status().last_error_code.is_none());
+        assert_eq!(
+            manager.install().await.unwrap_err(),
+            "SPEECH_RESOURCE_INSTALL_INTERRUPTED"
+        );
+    }
+
+    #[test]
+    fn frozen_revision_resolves_signed_retained_pack_after_cutover_and_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let pointer = install_released_v2_fixture(root.path());
+        let manager = fixture_manager(root.path());
+        let old = manager.active_pack().unwrap();
+        retain_activation_receipt(&manager.models_root, &pointer).unwrap();
+        retain_activation_receipt(&manager.models_root, &pointer).unwrap();
+        {
+            let mut state = manager.state.lock().unwrap();
+            state.active = Some(ActivatedModelPack {
+                revision: manager.plan.pack_revision.clone(),
+                manifest_path: root.path().join("new-active-manifest.json"),
+            });
+        }
+        assert_eq!(
+            manager.active_pack().unwrap().revision,
+            "local-standard-speech-v3"
+        );
+        assert_eq!(
+            manager
+                .resolve_revision(&pointer.pack_revision)
+                .unwrap()
+                .manifest_path,
+            old.manifest_path
+        );
+        // Losing the active pointer cannot make the retained signed resource
+        // become the default or grant automatic first-install permission.
+        fs::remove_file(manager.models_root.join("active.json")).unwrap();
+        let restarted = fixture_manager(root.path());
+        assert!(!restarted.status().usable);
+        assert_eq!(
+            restarted
+                .resolve_revision(&pointer.pack_revision)
+                .unwrap()
+                .manifest_path,
+            old.manifest_path
+        );
+        assert!(restarted.resolve_revision("arbitrary-revision").is_err());
+        let mut tampered = pointer.clone();
+        tampered.manifest_signature = "forged".into();
+        fs::write(
+            old.manifest_path.parent().unwrap().join("activation.json"),
+            serde_json::to_vec(&tampered).unwrap(),
+        )
+        .unwrap();
+        assert!(restarted.resolve_revision(&pointer.pack_revision).is_err());
+        assert!(retain_activation_receipt(&manager.models_root, &pointer).is_err());
     }
 
     #[test]

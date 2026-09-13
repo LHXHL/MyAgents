@@ -650,15 +650,15 @@ test('document processing locks all release targets and publishes only verified 
 
 test('speech inference builds a signed exact native inventory around the shared ORT', () => {
   const speech = documentResourceLock.speechInference;
-  assert.equal(speech.adapterAbiVersion, 1);
+  assert.equal(speech.adapterAbiVersion, 2);
   assert.equal(speech.sherpaOnnxVersion, '1.13.6');
   assert.match(speech.sherpaOnnxCommit, /^[0-9a-f]{40}$/);
   assert.equal(speech.onnxRuntimeVersion, '1.28.0');
   assert.equal(speech.opus2Version, '0.4.0');
   assert.equal(speech.libopusSysVersion, '0.3.3');
-  assert.equal(speech.hdbscanVersion, '0.12.0');
-  assert.equal(speech.kdtreeVersion, '0.7.0');
   assert.equal(speech.numTraitsVersion, '0.2.19');
+  assert.equal(speech.sonoraVersion, '0.2.0');
+  assert.equal(speech.rubatoVersion, '0.16.2');
   assert.equal(speech.nativeIncrementHardLimitBytes, 80 * 1024 * 1024);
   assert.match(speech.source.sha256, /^[0-9a-f]{64}$/);
   assert.equal(

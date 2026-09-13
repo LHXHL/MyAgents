@@ -133,12 +133,14 @@
     "transcriptLiveFailed": "实时转写暂不可用",
     "transcriptLiveFailedHint": "实时转写遇到问题，录音仍在安全保存；停止后会自动重新处理。",
     "transcriptFailedHint": "转写未完成，可重新开始转录。",
+    "diarizationFailedHint": "说话人识别未完成，现有文稿仍可阅读。",
     "transcriptFailedProtocolHint": "转写组件通信失败。请更新应用后重试；若仍失败，请反馈错误码。",
     "transcriptFailedMediaHint": "音频解码失败。可先导出音频检查，直接重试可能仍会失败。",
     "transcriptFailedPublishHint": "转写结果保存失败。请检查磁盘空间和写入权限后重试。",
     "transcriptFailedTimeoutHint": "本地转写处理超时。请减少其他运行中的任务后重试。",
     "transcriptFailedInferenceHint": "本地语音处理失败。可重试；若持续失败，请检查语音识别工具并反馈错误码。",
     "transcriptFailureDetails": "错误详情",
+    "rerunTranscription": "重新转写",
     "retryTranscription": "重新转录",
     "transcriptPending": "音频已保存，正在处理转写",
     "transcriptEmpty": "尚无转写内容",
@@ -170,6 +172,8 @@
     "noteTimelineMarker": "笔记位置 {{time}}",
     "markTimelineMarker": "重点位置 {{time}}",
     "speakerUnknown": "Speaker {{name}}",
+    "speakerUncertain": "未确定",
+    "speakerMultiple": "多位说话人",
     "speakerCorrection": "说话人纠错",
     "speakerCorrectionHint": "可改名、合并说话人，或在左侧把单句改派给其他说话人。",
     "speakerNamePlaceholder": "输入说话人名称",
@@ -624,9 +628,9 @@
       },
       "codex": {
         "suggest": "仅信任的命令自动执行，其他需确认",
-        "auto-edit": "自动编辑文件，沙箱内执行命令",
-        "full-auto": "沙箱内自主执行，按需询问",
-        "no-restrictions": "跳过所有审批和沙箱限制"
+        "auto-edit": "工作区内自动执行；联网或修改外部文件时请求批准",
+        "full-auto": "由 Codex 自动审查审批请求，仅潜在不安全操作需确认",
+        "no-restrictions": "无需审批即可访问文件和网络"
       }
     }
   },

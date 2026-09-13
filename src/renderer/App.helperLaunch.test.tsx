@@ -388,6 +388,7 @@ vi.mock('@/pages/RecordDetail', () => ({
 }));
 
 vi.mock('@/components/Toast', () => ({
+  useToastOptional: () => mocks.toast,
   useToast: () => mocks.toast,
 }));
 
@@ -763,6 +764,7 @@ describe('App helper launch', () => {
           prepareForFirstUserMessage: true,
           materializationSourceSessionId: expect.stringMatching(/^pending-/),
         }),
+        expect.objectContaining({ type: 'tab', id: expect.any(String), pendingSessionId: expect.stringMatching(/^pending-/) }),
       );
     });
     expect(mocks.ensureSessionSidecar).toHaveBeenCalledWith(
@@ -797,6 +799,7 @@ describe('App helper launch', () => {
           permissionMode: 'auto-edit',
           prepareForFirstUserMessage: true,
         }),
+        expect.objectContaining({ type: 'tab', id: expect.any(String), pendingSessionId: expect.stringMatching(/^pending-/) }),
       );
     });
   });
@@ -828,6 +831,7 @@ describe('App helper launch', () => {
           }),
           prepareForFirstUserMessage: true,
         }),
+        expect.objectContaining({ type: 'tab', id: expect.any(String), pendingSessionId: expect.stringMatching(/^pending-/) }),
       );
     });
   });
@@ -874,6 +878,7 @@ describe('App helper launch', () => {
           prepareForFirstUserMessage: true,
           materializationSourceSessionId: expect.stringMatching(/^pending-/),
         }),
+        expect.objectContaining({ type: 'tab', id: expect.any(String), pendingSessionId: expect.stringMatching(/^pending-/) }),
       );
     });
   });
@@ -934,7 +939,8 @@ describe('App helper launch', () => {
         prepareForFirstUserMessage: true,
         materializationSourceSessionId: expect.stringMatching(/^pending-/),
       }),
-    );
+        expect.objectContaining({ type: 'tab', id: expect.any(String), pendingSessionId: expect.stringMatching(/^pending-/) }),
+      );
     const active = latestTabbarProps().tabs.find(
       (tab) => tab.id === latestTabbarProps().activeTabId,
     );

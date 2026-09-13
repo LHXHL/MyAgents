@@ -8,22 +8,22 @@
 
 use crate::diarization::{LocalSegment, LocalSpeakerObservation, WindowObservation, WindowSpec};
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::{CStr, CString, c_char, c_float, c_void};
+use std::ffi::{CStr, CString, c_char, c_double, c_float, c_void};
 use std::mem::size_of;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::ptr::NonNull;
 
-pub const ADAPTER_ABI_VERSION: u32 = 1;
+pub const ADAPTER_ABI_VERSION: u32 = 2;
 pub const SAMPLE_RATE: u32 = 16_000;
 pub const EMBEDDING_DIMENSION: u32 = 512;
 pub const MAX_PCM_CHUNK_SAMPLES: u32 = 5 * SAMPLE_RATE;
 pub const MAX_ASR_SAMPLES: u32 = 60 * SAMPLE_RATE;
 pub const MAX_TEXT_BYTES: u32 = 64 * 1024;
-pub const MAX_DIARIZATION_SAMPLES: u32 = 68 * SAMPLE_RATE;
-pub const MAX_LOCAL_SPEAKERS: u32 = 32;
+pub const MAX_DIARIZATION_SAMPLES: u32 = crate::diarization::DEFAULT_WINDOW_SAMPLES as u32;
+pub const MAX_RAW_OBSERVATIONS: u32 = 192;
 pub const MAX_LOCAL_SEGMENTS: u32 = 16_384;
-pub const MAX_CLUSTER_EMBEDDINGS: u32 = 32;
+pub const MAX_CLUSTER_NODES: u32 = 2_048;
 
 const SHERPA_ONNX_VERSION: &str = "1.13.6";
 const SHERPA_ONNX_COMMIT: &str = "1cb484af5e69d3c7803c1eb0b3b5ab8041e0e911";
@@ -124,15 +124,19 @@ pub struct NativeDiarizerConfig {
     pub embedding_model: *const c_char,
     pub num_threads: u32,
     pub segmentation_window_shift_ratio: c_float,
-    pub local_clustering_threshold: c_float,
-    pub min_duration_on_seconds: c_float,
-    pub min_duration_off_seconds: c_float,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct NativeLocalSpeaker {
     pub local_speaker: u32,
+    pub chunk_index: u32,
+    pub slot: u32,
+    pub chunk_start: u32,
+    pub chunk_end: u32,
+    pub clean_samples: u32,
+    pub embedding_status: u32,
+    pub embedding_offset: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +148,12 @@ pub struct NativeLocalSegment {
 }
 
 #[repr(C)]
+pub struct NativeSpeechInterval {
+    pub start_sample: u64,
+    pub end_sample: u64,
+}
+
+#[repr(C)]
 pub struct NativeDiarizationOutput {
     pub struct_size: u32,
     pub speakers: *mut NativeLocalSpeaker,
@@ -152,6 +162,9 @@ pub struct NativeDiarizationOutput {
     pub segments: *mut NativeLocalSegment,
     pub segment_capacity: u32,
     pub segment_count: u32,
+    pub clean_segments: *mut NativeLocalSegment,
+    pub clean_segment_capacity: u32,
+    pub clean_segment_count: u32,
     pub embeddings: *mut c_float,
     pub embedding_capacity: u32,
     pub embedding_count: u32,
@@ -203,6 +216,8 @@ type DiarizeWindow = unsafe extern "C" fn(
     *mut NativeDiarizer,
     *const c_float,
     u32,
+    *const NativeSpeechInterval,
+    u32,
     Option<EmbeddingStarted>,
     *mut c_void,
     *mut *mut NativeDiarizationResult,
@@ -212,11 +227,18 @@ type CopyDiarizationResult = unsafe extern "C" fn(
     *mut NativeDiarizationOutput,
 ) -> NativeStatusCode;
 type DestroyDiarizationResult = unsafe extern "C" fn(*mut NativeDiarizationResult);
-type ClusterEmbeddings =
-    unsafe extern "C" fn(*const c_float, u32, c_float, *mut u32, u32, *mut u32) -> NativeStatusCode;
+type ClusterDistances = unsafe extern "C" fn(
+    *const c_double,
+    u32,
+    u32,
+    c_double,
+    *mut u32,
+    u32,
+    *mut u32,
+) -> NativeStatusCode;
 
 #[repr(C)]
-pub struct NativeApiV1 {
+pub struct NativeApiV2 {
     pub struct_size: u32,
     pub abi_version: u32,
     pub get_build_info: Option<GetBuildInfo>,
@@ -234,10 +256,10 @@ pub struct NativeApiV1 {
     pub diarize_window: Option<DiarizeWindow>,
     pub copy_diarization_result: Option<CopyDiarizationResult>,
     pub destroy_diarization_result: Option<DestroyDiarizationResult>,
-    pub cluster_embeddings: Option<ClusterEmbeddings>,
+    pub cluster_distances: Option<ClusterDistances>,
 }
 
-impl NativeApiV1 {
+impl NativeApiV2 {
     pub fn validate(&self) -> Result<(), NativeAdapterError> {
         if self.struct_size != size_of::<Self>() as u32 || self.abi_version != ADAPTER_ABI_VERSION {
             return Err(NativeAdapterError::AbiMismatch);
@@ -257,7 +279,7 @@ impl NativeApiV1 {
             || self.diarize_window.is_none()
             || self.copy_diarization_result.is_none()
             || self.destroy_diarization_result.is_none()
-            || self.cluster_embeddings.is_none()
+            || self.cluster_distances.is_none()
         {
             return Err(NativeAdapterError::MissingFunction);
         }
@@ -268,7 +290,7 @@ impl NativeApiV1 {
     ///
     /// # Safety
     ///
-    /// The table must come from a loaded, verified ABI-v1 adapter and its
+    /// The table must come from a loaded, verified ABI-v2 adapter and its
     /// library must remain loaded for the duration of this call.
     pub unsafe fn build_identity(&self) -> Result<NativeBuildIdentity, NativeAdapterError> {
         self.validate()?;
@@ -282,7 +304,7 @@ impl NativeApiV1 {
             embedding_dimension: 0,
         };
         // SAFETY: The caller guarantees the validated function table belongs
-        // to a live verified adapter; `info` has the exact ABI-v1 layout.
+        // to a live verified adapter; `info` has the exact ABI-v2 layout.
         let status_code = unsafe {
             self.get_build_info
                 .ok_or(NativeAdapterError::MissingFunction)?(&mut info)
@@ -398,7 +420,7 @@ impl AsrTranscript {
 }
 
 pub struct AsrEngine<'adapter> {
-    api: &'adapter NativeApiV1,
+    api: &'adapter NativeApiV2,
     handle: NonNull<NativeAsr>,
 }
 
@@ -450,7 +472,7 @@ impl Drop for AsrEngine<'_> {
 }
 
 pub(crate) fn create_asr_engine<'adapter>(
-    api: &'adapter NativeApiV1,
+    api: &'adapter NativeApiV2,
     model: &Path,
     tokens: &Path,
 ) -> Result<AsrEngine<'adapter>, NativeAdapterError> {
@@ -491,7 +513,7 @@ impl std::fmt::Debug for VadSpeechSegment {
 }
 
 pub struct VadEngine<'adapter> {
-    api: &'adapter NativeApiV1,
+    api: &'adapter NativeApiV2,
     handle: NonNull<NativeVad>,
 }
 
@@ -589,7 +611,7 @@ impl Drop for VadEngine<'_> {
 }
 
 pub(crate) fn create_vad_engine<'adapter>(
-    api: &'adapter NativeApiV1,
+    api: &'adapter NativeApiV2,
     model: &Path,
 ) -> Result<VadEngine<'adapter>, NativeAdapterError> {
     api.validate()?;
@@ -613,7 +635,7 @@ pub(crate) fn create_vad_engine<'adapter>(
 }
 
 pub struct DiarizerEngine<'adapter> {
-    api: &'adapter NativeApiV1,
+    api: &'adapter NativeApiV2,
     handle: NonNull<NativeDiarizer>,
 }
 
@@ -642,6 +664,7 @@ impl DiarizerEngine<'_> {
         &mut self,
         window: WindowSpec,
         samples: &[f32],
+        excluded: &[LocalSegment],
         on_embedding_started: F,
     ) -> Result<WindowObservation, NativeAdapterError> {
         let expected_length = window
@@ -654,6 +677,23 @@ impl DiarizerEngine<'_> {
         {
             return Err(NativeAdapterError::InvalidOutput);
         }
+        if excluded.len() > 2048
+            || excluded
+                .iter()
+                .any(|s| s.start_sample >= s.end_sample || s.end_sample > samples.len() as u64)
+            || excluded
+                .windows(2)
+                .any(|p| p[0].end_sample > p[1].start_sample)
+        {
+            return Err(NativeAdapterError::InvalidOutput);
+        }
+        let mask = excluded
+            .iter()
+            .map(|s| NativeSpeechInterval {
+                start_sample: s.start_sample,
+                end_sample: s.end_sample,
+            })
+            .collect::<Vec<_>>();
         let mut result = std::ptr::null_mut();
         let mut progress = EmbeddingStartedContext {
             callback: Some(on_embedding_started),
@@ -670,6 +710,8 @@ impl DiarizerEngine<'_> {
                 self.handle.as_ptr(),
                 samples.as_ptr(),
                 samples.len() as u32,
+                mask.as_ptr(),
+                mask.len() as u32,
                 Some(embedding_started_trampoline::<F>),
                 std::ptr::from_mut(&mut progress).cast(),
                 &mut result,
@@ -684,7 +726,22 @@ impl DiarizerEngine<'_> {
         if !progress.invoked || progress.panicked {
             return Err(NativeAdapterError::InvalidOutput);
         }
-        copy_window_observation(self.api, guard.handle, window, samples.len())
+        let observation = copy_window_observation(self.api, guard.handle, window, samples.len())?;
+        if observation.speakers.iter().any(|speaker| {
+            speaker
+                .segments
+                .iter()
+                .chain(&speaker.clean_segments)
+                .any(|activity| {
+                    excluded.iter().any(|echo| {
+                        activity.start_sample < echo.end_sample
+                            && echo.start_sample < activity.end_sample
+                    })
+                })
+        }) {
+            return Err(NativeAdapterError::InvalidOutput);
+        }
+        Ok(observation)
     }
 }
 
@@ -698,7 +755,7 @@ impl Drop for DiarizerEngine<'_> {
 }
 
 pub(crate) fn create_diarizer_engine<'adapter>(
-    api: &'adapter NativeApiV1,
+    api: &'adapter NativeApiV2,
     segmentation_model: &Path,
     embedding_model: &Path,
 ) -> Result<DiarizerEngine<'adapter>, NativeAdapterError> {
@@ -711,9 +768,6 @@ pub(crate) fn create_diarizer_engine<'adapter>(
         embedding_model: embedding_model.as_ptr(),
         num_threads: 1,
         segmentation_window_shift_ratio: 1.0,
-        local_clustering_threshold: 0.50,
-        min_duration_on_seconds: 0.3,
-        min_duration_off_seconds: 0.5,
     };
     let mut handle = std::ptr::null_mut();
     // SAFETY: Config strings remain alive for the synchronous constructor.
@@ -726,40 +780,33 @@ pub(crate) fn create_diarizer_engine<'adapter>(
     Ok(DiarizerEngine { api, handle })
 }
 
-pub(crate) fn cluster_embeddings(
-    api: &NativeApiV1,
-    embeddings: &[Vec<f32>],
-    distance_threshold: f32,
+pub(crate) fn cluster_distances(
+    api: &NativeApiV2,
+    distances: &[f64],
+    node_count: usize,
+    distance_threshold: f64,
 ) -> Result<Vec<u32>, NativeAdapterError> {
     api.validate()?;
-    if embeddings.is_empty()
-        || embeddings.len() > MAX_CLUSTER_EMBEDDINGS as usize
+    if node_count > MAX_CLUSTER_NODES as usize
+        || distances.len() != node_count * node_count.saturating_sub(1) / 2
         || !distance_threshold.is_finite()
-        || !(0.01..=1.99).contains(&distance_threshold)
-        || embeddings.iter().any(|embedding| {
-            embedding.len() != EMBEDDING_DIMENSION as usize
-                || embedding.iter().any(|value| !value.is_finite())
-        })
+        || distance_threshold <= 0.0
+        || distance_threshold >= 2.0
+        || distances
+            .iter()
+            .any(|value| !value.is_finite() || !(0.0..=3.0).contains(value))
     {
         return Err(NativeAdapterError::InvalidOutput);
     }
-    let flat_len = embeddings
-        .len()
-        .checked_mul(EMBEDDING_DIMENSION as usize)
-        .ok_or(NativeAdapterError::InvalidOutput)?;
-    let mut flat = Vec::with_capacity(flat_len);
-    for embedding in embeddings {
-        flat.extend_from_slice(embedding);
-    }
-    let mut labels = vec![0_u32; embeddings.len()];
+    let mut labels = vec![0_u32; node_count];
     let mut speaker_count = 0_u32;
-    // SAFETY: All buffers are live for the synchronous call and their exact
-    // bounded capacities are provided to the verified adapter table.
+    // SAFETY: Exact bounded capacities match the verified ABI-v2 table.
     let code = unsafe {
-        api.cluster_embeddings
+        api.cluster_distances
             .ok_or(NativeAdapterError::MissingFunction)?(
-            flat.as_ptr(),
-            embeddings.len() as u32,
+            distances.as_ptr(),
+            distances.len() as u32,
+            node_count as u32,
             distance_threshold,
             labels.as_mut_ptr(),
             labels.len() as u32,
@@ -768,9 +815,8 @@ pub(crate) fn cluster_embeddings(
     };
     expect_status(code, NativeStatus::Ok)?;
     let distinct = labels.iter().copied().collect::<BTreeSet<_>>();
-    if speaker_count == 0
-        || speaker_count > embeddings.len() as u32
-        || labels.iter().any(|label| *label >= speaker_count)
+    if (speaker_count == 0) != (node_count == 0)
+        || speaker_count > node_count as u32
         || distinct.len() != speaker_count as usize
         || distinct.iter().copied().ne(0..speaker_count)
     {
@@ -780,7 +826,7 @@ pub(crate) fn cluster_embeddings(
 }
 
 struct NativeDiarizationGuard<'adapter> {
-    api: &'adapter NativeApiV1,
+    api: &'adapter NativeApiV2,
     handle: NonNull<NativeDiarizationResult>,
 }
 
@@ -794,7 +840,7 @@ impl Drop for NativeDiarizationGuard<'_> {
 }
 
 fn copy_window_observation(
-    api: &NativeApiV1,
+    api: &NativeApiV2,
     result: NonNull<NativeDiarizationResult>,
     window: WindowSpec,
     sample_count: usize,
@@ -803,42 +849,41 @@ fn copy_window_observation(
         .copy_diarization_result
         .ok_or(NativeAdapterError::MissingFunction)?;
     let mut query = empty_diarization_output();
-    // SAFETY: Query output is writable and the result guard keeps the native
-    // object alive for both calls.
+    // SAFETY: The result guard owns the native object through both copy calls.
     let query_code = unsafe { copy(result.as_ptr(), &mut query) };
     let query_status = native_status(query_code)?;
     if query_status != NativeStatus::Ok && query_status != NativeStatus::BufferTooSmall {
         return Err(NativeAdapterError::Native(query_status));
     }
-    if query.speaker_count > MAX_LOCAL_SPEAKERS
+    if query.speaker_count > MAX_RAW_OBSERVATIONS
         || query.segment_count > MAX_LOCAL_SEGMENTS
-        || query.embedding_count
-            != query
-                .speaker_count
-                .checked_mul(EMBEDDING_DIMENSION)
-                .ok_or(NativeAdapterError::InvalidOutput)?
+        || query.clean_segment_count > MAX_LOCAL_SEGMENTS
+        || query.embedding_count > query.speaker_count * EMBEDDING_DIMENSION
+        || !query.embedding_count.is_multiple_of(EMBEDDING_DIMENSION)
     {
         return Err(NativeAdapterError::InvalidOutput);
     }
-    if query.speaker_count == 0 {
-        if query.segment_count != 0 || query.embedding_count != 0 {
-            return Err(NativeAdapterError::InvalidOutput);
-        }
-        return Ok(WindowObservation {
-            window,
-            speakers: Vec::new(),
-        });
-    }
-    let mut speakers = vec![NativeLocalSpeaker { local_speaker: 0 }; query.speaker_count as usize];
-    let mut segments = vec![
-        NativeLocalSegment {
-            start_sample: 0,
-            end_sample: 0,
+    let mut speakers = vec![
+        NativeLocalSpeaker {
             local_speaker: 0,
+            chunk_index: 0,
+            slot: 0,
+            chunk_start: 0,
+            chunk_end: 0,
+            clean_samples: 0,
+            embedding_status: 0,
+            embedding_offset: 0,
         };
-        query.segment_count as usize
+        query.speaker_count as usize
     ];
-    let mut embeddings = vec![0.0_f32; query.embedding_count as usize];
+    let empty_segment = NativeLocalSegment {
+        start_sample: 0,
+        end_sample: 0,
+        local_speaker: 0,
+    };
+    let mut segments = vec![empty_segment; query.segment_count as usize];
+    let mut clean_segments = vec![empty_segment; query.clean_segment_count as usize];
+    let mut embeddings = zeroize::Zeroizing::new(vec![0.0_f32; query.embedding_count as usize]);
     let mut output = NativeDiarizationOutput {
         struct_size: size_of::<NativeDiarizationOutput>() as u32,
         speakers: speakers.as_mut_ptr(),
@@ -847,17 +892,20 @@ fn copy_window_observation(
         segments: segments.as_mut_ptr(),
         segment_capacity: segments.len() as u32,
         segment_count: 0,
+        clean_segments: clean_segments.as_mut_ptr(),
+        clean_segment_capacity: clean_segments.len() as u32,
+        clean_segment_count: 0,
         embeddings: embeddings.as_mut_ptr(),
         embedding_capacity: embeddings.len() as u32,
         embedding_count: 0,
     };
-    // SAFETY: All output buffers have the exact capacities from the bounded
-    // query and remain live for the call.
+    // SAFETY: Every writable allocation has the exact bounded query capacity.
     let code = unsafe { copy(result.as_ptr(), &mut output) };
     expect_status(code, NativeStatus::Ok)?;
-    if output.speaker_count != speakers.len() as u32
-        || output.segment_count != segments.len() as u32
-        || output.embedding_count != embeddings.len() as u32
+    if output.speaker_count != query.speaker_count
+        || output.segment_count != query.segment_count
+        || output.clean_segment_count != query.clean_segment_count
+        || output.embedding_count != query.embedding_count
         || embeddings.iter().any(|value| !value.is_finite())
     {
         return Err(NativeAdapterError::InvalidOutput);
@@ -869,38 +917,100 @@ fn copy_window_observation(
     if unique.len() != speakers.len() {
         return Err(NativeAdapterError::InvalidOutput);
     }
-    let mut grouped_segments = BTreeMap::<u32, Vec<LocalSegment>>::new();
-    for segment in segments {
-        if !unique.contains(&segment.local_speaker)
-            || segment.start_sample >= segment.end_sample
-            || segment.end_sample > sample_count as u64
+    let group = |segments: Vec<NativeLocalSegment>| -> Result<BTreeMap<u32, Vec<LocalSegment>>, NativeAdapterError> {
+        let mut grouped = BTreeMap::<u32, Vec<LocalSegment>>::new();
+        for segment in segments {
+            if !unique.contains(&segment.local_speaker) || segment.start_sample >= segment.end_sample
+                || segment.end_sample > sample_count as u64
+            { return Err(NativeAdapterError::InvalidOutput); }
+            grouped.entry(segment.local_speaker).or_default().push(LocalSegment {
+                start_sample: segment.start_sample, end_sample: segment.end_sample,
+            });
+        }
+        Ok(grouped)
+    };
+    let mut activity = group(segments)?;
+    let mut clean = group(clean_segments)?;
+    let mut observations = Vec::with_capacity(speakers.len());
+    let mut used_embedding_offsets = BTreeSet::new();
+    for speaker in speakers {
+        if speaker.slot >= 3
+            || speaker.chunk_index >= MAX_RAW_OBSERVATIONS
+            || speaker.chunk_start >= speaker.chunk_end
+            || speaker.chunk_end as usize > sample_count
+            || speaker.embedding_status > 3
         {
             return Err(NativeAdapterError::InvalidOutput);
         }
-        grouped_segments
-            .entry(segment.local_speaker)
-            .or_default()
-            .push(LocalSegment {
-                start_sample: segment.start_sample,
-                end_sample: segment.end_sample,
-            });
-    }
-    let speakers = speakers
-        .into_iter()
-        .enumerate()
-        .map(|(index, speaker)| {
-            let start = index * EMBEDDING_DIMENSION as usize;
-            let end = start + EMBEDDING_DIMENSION as usize;
-            LocalSpeakerObservation {
-                local_speaker: speaker.local_speaker,
-                embedding: embeddings[start..end].to_vec(),
-                segments: grouped_segments
-                    .remove(&speaker.local_speaker)
-                    .unwrap_or_default(),
+        let segments = activity.remove(&speaker.local_speaker).unwrap_or_default();
+        let clean_segments = clean.remove(&speaker.local_speaker).unwrap_or_default();
+        let valid_intervals = |values: &[LocalSegment]| {
+            values.iter().all(|s| {
+                s.start_sample >= u64::from(speaker.chunk_start)
+                    && s.end_sample <= u64::from(speaker.chunk_end)
+            }) && values
+                .windows(2)
+                .all(|pair| pair[0].end_sample <= pair[1].start_sample)
+        };
+        if segments.is_empty()
+            || !valid_intervals(&segments)
+            || !valid_intervals(&clean_segments)
+            || clean_segments
+                .iter()
+                .map(|s| s.end_sample - s.start_sample)
+                .sum::<u64>()
+                != u64::from(speaker.clean_samples)
+            || clean_segments.iter().any(|c| {
+                !segments
+                    .iter()
+                    .any(|s| s.start_sample <= c.start_sample && s.end_sample >= c.end_sample)
+            })
+        {
+            return Err(NativeAdapterError::InvalidOutput);
+        }
+        let embedding = if speaker.embedding_status == 0 {
+            let start = speaker.embedding_offset as usize;
+            if !speaker.embedding_offset.is_multiple_of(EMBEDDING_DIMENSION)
+                || !used_embedding_offsets.insert(speaker.embedding_offset)
+                || start
+                    .checked_add(EMBEDDING_DIMENSION as usize)
+                    .is_none_or(|end| end > embeddings.len())
+                || speaker.clean_samples == 0
+            {
+                return Err(NativeAdapterError::InvalidOutput);
             }
-        })
-        .collect();
-    Ok(WindowObservation { window, speakers })
+            let vector = &embeddings[start..start + EMBEDDING_DIMENSION as usize];
+            if vector.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>() <= f64::EPSILON {
+                return Err(NativeAdapterError::InvalidOutput);
+            }
+            vector.to_vec()
+        } else {
+            if speaker.embedding_offset != u32::MAX
+                || (speaker.embedding_status == 1 && speaker.clean_samples != 0)
+            {
+                return Err(NativeAdapterError::InvalidOutput);
+            }
+            Vec::new()
+        };
+        observations.push(LocalSpeakerObservation {
+            local_speaker: speaker.local_speaker,
+            chunk_index: speaker.chunk_index,
+            slot: speaker.slot,
+            chunk_start: u64::from(speaker.chunk_start),
+            chunk_end: u64::from(speaker.chunk_end),
+            embedding_status: speaker.embedding_status,
+            embedding,
+            segments,
+            clean_segments,
+        });
+    }
+    if used_embedding_offsets.len() * EMBEDDING_DIMENSION as usize != embeddings.len() {
+        return Err(NativeAdapterError::InvalidOutput);
+    }
+    Ok(WindowObservation {
+        window,
+        speakers: observations,
+    })
 }
 
 fn empty_diarization_output() -> NativeDiarizationOutput {
@@ -912,6 +1022,9 @@ fn empty_diarization_output() -> NativeDiarizationOutput {
         segments: std::ptr::null_mut(),
         segment_capacity: 0,
         segment_count: 0,
+        clean_segments: std::ptr::null_mut(),
+        clean_segment_capacity: 0,
+        clean_segment_count: 0,
         embeddings: std::ptr::null_mut(),
         embedding_capacity: 0,
         embedding_count: 0,
@@ -962,15 +1075,15 @@ fn take_optional_label(buffer: &[u8], length: u32) -> Result<Option<String>, Nat
 }
 
 /// Validate the fixed table prefix returned by
-/// `myagents_speech_adapter_get_api(1)`.
+/// `myagents_speech_adapter_get_api(2)`.
 ///
 /// # Safety
 ///
 /// `api` must either be null or point to readable memory owned by a verified
 /// adapter library that remains loaded for the returned reference's lifetime.
 pub unsafe fn validate_api<'library>(
-    api: *const NativeApiV1,
-) -> Result<&'library NativeApiV1, NativeAdapterError> {
+    api: *const NativeApiV2,
+) -> Result<&'library NativeApiV2, NativeAdapterError> {
     // SAFETY: The caller supplies the pointer provenance and library lifetime.
     let api = unsafe { api.as_ref() }.ok_or(NativeAdapterError::MissingApi)?;
     api.validate()?;
@@ -1067,6 +1180,8 @@ mod tests {
         _: *mut NativeDiarizer,
         _: *const c_float,
         _: u32,
+        _: *const NativeSpeechInterval,
+        _: u32,
         _: Option<EmbeddingStarted>,
         _: *mut c_void,
         _: *mut *mut NativeDiarizationResult,
@@ -1080,10 +1195,11 @@ mod tests {
         NativeStatus::Ok as NativeStatusCode
     }
     unsafe extern "C" fn stub_destroy_diarization(_: *mut NativeDiarizationResult) {}
-    unsafe extern "C" fn stub_cluster_embeddings(
-        _: *const c_float,
+    unsafe extern "C" fn stub_cluster_distances(
+        _: *const c_double,
         _: u32,
-        _: c_float,
+        _: u32,
+        _: c_double,
         _: *mut u32,
         _: u32,
         _: *mut u32,
@@ -1173,6 +1289,8 @@ mod tests {
         _: *mut NativeDiarizer,
         _: *const c_float,
         _: u32,
+        _: *const NativeSpeechInterval,
+        _: u32,
         embedding_started: Option<EmbeddingStarted>,
         user_data: *mut c_void,
         out: *mut *mut NativeDiarizationResult,
@@ -1190,25 +1308,46 @@ mod tests {
         _: *const NativeDiarizationResult,
         out: *mut NativeDiarizationOutput,
     ) -> NativeStatusCode {
-        // SAFETY: The wrapper passes the exact ABI output struct.
+        // SAFETY: The tested wrapper supplies the fixed ABI struct and sizes.
         let out = unsafe { &mut *out };
         out.speaker_count = 2;
         out.segment_count = 2;
-        out.embedding_count = 2 * EMBEDDING_DIMENSION;
-        if out.speakers.is_null() || out.segments.is_null() || out.embeddings.is_null() {
-            return NativeStatus::BufferTooSmall as NativeStatusCode;
-        }
-        if out.speaker_capacity < 2
+        out.clean_segment_count = 1;
+        out.embedding_count = EMBEDDING_DIMENSION;
+        if out.speakers.is_null()
+            || out.segments.is_null()
+            || out.clean_segments.is_null()
+            || out.embeddings.is_null()
+            || out.speaker_capacity < 2
             || out.segment_capacity < 2
-            || out.embedding_capacity < 2 * EMBEDDING_DIMENSION
+            || out.clean_segment_capacity < 1
+            || out.embedding_capacity < EMBEDDING_DIMENSION
         {
             return NativeStatus::BufferTooSmall as NativeStatusCode;
         }
-        // SAFETY: Capacities are checked against each fixed write.
+        // SAFETY: Every destination capacity is checked above.
         unsafe {
-            *out.speakers.add(0) = NativeLocalSpeaker { local_speaker: 3 };
-            *out.speakers.add(1) = NativeLocalSpeaker { local_speaker: 8 };
-            *out.segments.add(0) = NativeLocalSegment {
+            *out.speakers = NativeLocalSpeaker {
+                local_speaker: 3,
+                chunk_index: 0,
+                slot: 0,
+                chunk_start: 0,
+                chunk_end: 10,
+                clean_samples: 4,
+                embedding_status: 0,
+                embedding_offset: 0,
+            };
+            *out.speakers.add(1) = NativeLocalSpeaker {
+                local_speaker: 8,
+                chunk_index: 0,
+                slot: 1,
+                chunk_start: 0,
+                chunk_end: 10,
+                clean_samples: 0,
+                embedding_status: 1,
+                embedding_offset: u32::MAX,
+            };
+            *out.segments = NativeLocalSegment {
                 start_sample: 0,
                 end_sample: 4,
                 local_speaker: 3,
@@ -1218,54 +1357,38 @@ mod tests {
                 end_sample: 10,
                 local_speaker: 8,
             };
-            std::ptr::write_bytes(out.embeddings, 0, (2 * EMBEDDING_DIMENSION) as usize);
-            *out.embeddings.add(0) = 1.0;
-            *out.embeddings.add(EMBEDDING_DIMENSION as usize + 1) = 1.0;
+            *out.clean_segments = *out.segments;
+            std::ptr::write_bytes(out.embeddings, 0, EMBEDDING_DIMENSION as usize);
+            *out.embeddings = 1.0;
         }
         NativeStatus::Ok as NativeStatusCode
     }
 
-    unsafe extern "C" fn fake_cluster_embeddings(
-        embeddings: *const c_float,
-        embedding_count: u32,
-        _: c_float,
+    unsafe extern "C" fn fake_cluster_distances(
+        distances: *const c_double,
+        distance_count: u32,
+        node_count: u32,
+        threshold: c_double,
         labels: *mut u32,
         label_capacity: u32,
         speaker_count: *mut u32,
     ) -> NativeStatusCode {
-        if embeddings.is_null()
-            || labels.is_null()
-            || speaker_count.is_null()
-            || label_capacity < embedding_count
-        {
-            return NativeStatus::InvalidArgument as NativeStatusCode;
+        assert_eq!(distance_count, 3);
+        assert_eq!(node_count, 3);
+        assert_eq!(label_capacity, 3);
+        assert_eq!(threshold, 0.5);
+        // SAFETY: The tested wrapper passes exact live buffers for three nodes.
+        unsafe {
+            assert_eq!(std::slice::from_raw_parts(distances, 3), &[0.0, 1.0, 1.0]);
+            std::ptr::copy_nonoverlapping([0, 0, 1].as_ptr(), labels, 3);
+            *speaker_count = 2;
         }
-        let mut labels_by_dimension = BTreeMap::new();
-        for row in 0..embedding_count as usize {
-            let start = row * EMBEDDING_DIMENSION as usize;
-            // SAFETY: The wrapper supplies `embedding_count` complete rows.
-            let embedding = unsafe {
-                std::slice::from_raw_parts(embeddings.add(start), EMBEDDING_DIMENSION as usize)
-            };
-            let dominant = embedding
-                .iter()
-                .enumerate()
-                .max_by(|(_, left), (_, right)| left.abs().total_cmp(&right.abs()))
-                .map(|(index, _)| index)
-                .unwrap_or(0);
-            let next = labels_by_dimension.len() as u32;
-            let label = *labels_by_dimension.entry(dominant).or_insert(next);
-            // SAFETY: Capacity is checked above for every row.
-            unsafe { *labels.add(row) = label };
-        }
-        // SAFETY: Non-null output pointer is checked above.
-        unsafe { *speaker_count = labels_by_dimension.len() as u32 };
         NativeStatus::Ok as NativeStatusCode
     }
 
-    fn complete_api() -> NativeApiV1 {
-        NativeApiV1 {
-            struct_size: size_of::<NativeApiV1>() as u32,
+    fn complete_api() -> NativeApiV2 {
+        NativeApiV2 {
+            struct_size: size_of::<NativeApiV2>() as u32,
             abi_version: ADAPTER_ABI_VERSION,
             get_build_info: Some(mock_build_info),
             create_asr: Some(stub_create_asr),
@@ -1282,7 +1405,7 @@ mod tests {
             diarize_window: Some(stub_diarize_window),
             copy_diarization_result: Some(stub_copy_diarization),
             destroy_diarization_result: Some(stub_destroy_diarization),
-            cluster_embeddings: Some(stub_cluster_embeddings),
+            cluster_distances: Some(stub_cluster_distances),
         }
     }
 
@@ -1294,18 +1417,18 @@ mod tests {
         assert_eq!(size_of::<NativeAsrResult>(), 72);
         assert_eq!(size_of::<NativeVadConfig>(), 40);
         assert_eq!(size_of::<NativeVadSegment>(), 32);
-        assert_eq!(size_of::<NativeDiarizerConfig>(), 48);
-        assert_eq!(size_of::<NativeLocalSpeaker>(), 4);
+        assert_eq!(size_of::<NativeDiarizerConfig>(), 32);
+        assert_eq!(size_of::<NativeLocalSpeaker>(), 32);
         assert_eq!(size_of::<NativeLocalSegment>(), 24);
-        assert_eq!(size_of::<NativeDiarizationOutput>(), 56);
-        assert_eq!(size_of::<NativeApiV1>(), 136);
+        assert_eq!(size_of::<NativeDiarizationOutput>(), 72);
+        assert_eq!(size_of::<NativeApiV2>(), 136);
     }
 
     #[test]
     fn complete_api_reports_the_frozen_runtime_identity() {
         let api = complete_api();
         // SAFETY: The complete mocked table and static build strings outlive
-        // the call and satisfy the ABI-v1 contract.
+        // the call and satisfy the ABI-v2 contract.
         let identity = unsafe { api.build_identity() }.unwrap();
         assert_eq!(identity.sherpa_onnx_version, "1.13.6");
         assert_eq!(identity.onnx_runtime_version, "1.28.0");
@@ -1335,7 +1458,7 @@ mod tests {
         api.create_diarizer = Some(create_fake_diarizer);
         api.diarize_window = Some(fake_diarize_window);
         api.copy_diarization_result = Some(fake_copy_diarization);
-        api.cluster_embeddings = Some(fake_cluster_embeddings);
+        api.cluster_distances = Some(fake_cluster_distances);
         let root = tempfile::tempdir().unwrap();
 
         let mut asr = create_asr_engine(
@@ -1367,10 +1490,13 @@ mod tests {
             .diarize_window(
                 WindowSpec {
                     index: 2,
+                    source: crate::protocol::TrackKind::Microphone,
+                    time_reliable: true,
                     start_sample: 20,
                     end_sample: 30,
                 },
                 &[0.0; 10],
+                &[],
                 || embedding_started = true,
             )
             .unwrap();
@@ -1378,15 +1504,16 @@ mod tests {
         assert_eq!(observation.speakers.len(), 2);
         assert_eq!(observation.speakers[0].local_speaker, 3);
         assert_eq!(observation.speakers[0].segments[0].end_sample, 4);
-        assert_eq!(observation.speakers[1].embedding[1], 1.0);
+        assert_eq!(observation.speakers[0].embedding[0], 1.0);
+        assert!(observation.speakers[1].embedding.is_empty());
+        assert_eq!(observation.speakers[1].segments[0].end_sample, 10);
 
-        let mut first = vec![0.0; EMBEDDING_DIMENSION as usize];
-        first[0] = 1.0;
-        let mut second = vec![0.0; EMBEDDING_DIMENSION as usize];
-        second[1] = 1.0;
         assert_eq!(
-            cluster_embeddings(&api, &[first.clone(), first, second], 0.5,).unwrap(),
+            cluster_distances(&api, &[0.0, 1.0, 1.0], 3, 0.5).unwrap(),
             vec![0, 0, 1]
         );
+        assert!(cluster_distances(&api, &[f64::NAN], 2, 0.5).is_err());
+        assert!(cluster_distances(&api, &[], 2, 0.5).is_err());
+        assert!(cluster_distances(&api, &[f64::INFINITY], 2, 0.5).is_err());
     }
 }

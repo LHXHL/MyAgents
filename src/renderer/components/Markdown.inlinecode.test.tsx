@@ -156,7 +156,8 @@ describe('Markdown inline-code file paths', () => {
     expect(mocks.checkPaths).toHaveBeenCalledWith({ paths: [REL] });
     expect(mocks.checkPaths).not.toHaveBeenCalledWith({ paths: [ABS] });
     // The chip still shows the original absolute text.
-    expect(chip.getAttribute('title')).toBe(`文件: ${ABS}`);
+    fireEvent.mouseEnter(chip.closest('a')!.parentElement!);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(ABS);
 
     // 复制 copies the VERBATIM shown text (absolute here) — not the relative
     // action form the menu uses internally for backend calls.
@@ -203,7 +204,8 @@ describe('Markdown inline-code file paths', () => {
       expect(el).toHaveClass('cursor-pointer');
       return el;
     });
-    expect(chip).toHaveAttribute('title', `文件: ${path}`);
+    fireEvent.mouseEnter(chip.closest('a')!.parentElement!);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(path);
   });
 
   it('offers 复制 below 预览 and copies the shown text verbatim', async () => {

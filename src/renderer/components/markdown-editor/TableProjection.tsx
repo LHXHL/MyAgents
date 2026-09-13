@@ -12,6 +12,10 @@ import CustomSelect from '../CustomSelect';
 import { importImage } from './imageImport';
 import { compositionGate } from './compositionGate';
 import { editLink, wrapSelection } from './editorCommands';
+import TableActions from '../markdown/TableActions';
+import { editorTableSnapshot } from './tableExport';
+import { useTableIntrinsicSizing } from '../markdown/useTableIntrinsicSizing';
+import type { TableSnapshot } from '@/utils/tableExport';
 
 interface Props { projection: Projection; view: EditorView; workspacePath?: string | null; basePath: string; focused: boolean; presentationActive?: boolean; onActivate(): void }
 
@@ -27,6 +31,7 @@ export default function TableProjection({ projection, view, workspacePath, baseP
   const latest = useRef({ projection, active });
   useLayoutEffect(() => { latest.current = { projection, active }; });
   const model = useMemo(() => tableAt(view.state, projection.from), [view, projection]);
+  useTableIntrinsicSizing(tableElement, Boolean(model));
   const rowCount = model?.rows.length ?? 0;
   const offsets = useMemo(() => {
     const values = [0];
@@ -190,6 +195,12 @@ export default function TableProjection({ projection, view, workspacePath, baseP
   const extraTo = rowCount < 60 ? rowCount : Math.min(rowCount, rowWindow.to + 1);
   const extraCells = Array.from({ length: extraTo - extraFrom }, (_, index) => model.rows.at(extraFrom + index)).some(row => row && row.cells.length > model.columns);
   return <div className="md-table-shell">
+    <TableActions disabled={!presentationActive} getSnapshot={() => new Promise<TableSnapshot>((resolve, reject) => {
+      void view.state.facet(compositionGate).run(() => {
+        try { resolve(editorTableSnapshot(view.state, latest.current.projection.from)); }
+        catch (error) { reject(error); }
+      }).then(executed => { if (!executed) reject(new Error('Editor closed')); });
+    })} />
     <div className="md-block-actions">
       <CustomSelect ariaLabel={t('markdownEditor.table.actions')} placeholder={t('markdownEditor.table.actions')} compact popoverMinWidth={208} disabled={!presentationActive} value="" onChange={value => act(value as TableAction)}
         options={(['row-before', 'row-after', 'delete-row', 'column-before', 'column-after', 'delete-column', 'align-left', 'align-center', 'align-right'] as const)
@@ -198,7 +209,7 @@ export default function TableProjection({ projection, view, workspacePath, baseP
       <button onClick={() => { void view.state.facet(compositionGate).run(() => { view.dispatch({ effects: revealBlock.of(latest.current.projection), selection: { anchor: latest.current.projection.from } }); view.focus(); }); }}>{t('markdownEditor.editSource')}</button>
     </div>
     {extraCells && <span className="md-table-extra">{t('markdownEditor.table.extraCells')}</span>}
-    <div className="md-table-scroll"><table ref={tableElement} style={{ minWidth: model.columns * 96 }}><tbody>
+    <div className="md-table-scroll overflow-x-auto"><table ref={tableElement}><tbody>
       {(() => {
         const indices = rowCount < 60 ? Array.from({ length: rowCount }, (_, index) => index) : [0, ...Array.from({ length: Math.max(0, rowWindow.to - rowWindow.from + 1) }, (_, index) => rowWindow.from + index)];
         if (focused && active && !indices.includes(active.row)) indices.push(active.row);

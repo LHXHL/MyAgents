@@ -3,6 +3,7 @@ export type ProviderHistoryEnv = {
   baseUrl?: string;
   apiProtocol?: 'anthropic' | 'openai';
   model?: string;
+  endpointSource?: { kind: 'cliproxy'; providerId: 'antigravity-sub' };
 };
 
 export type ProviderHistoryPolicy = {
@@ -42,7 +43,9 @@ function nonEmpty(value?: string): string | undefined {
 export function getProviderHistoryIsolationCandidates(providerEnv?: ProviderHistoryEnv): string[] {
   if (!providerEnv) return [];
   const apiProtocol = providerEnv.apiProtocol ?? 'anthropic';
-  const normalizedBaseUrl = normalizeProviderBaseUrl(providerEnv.baseUrl);
+  const normalizedBaseUrl = providerEnv.endpointSource
+    ? `managed:${providerEnv.endpointSource.kind}:${providerEnv.endpointSource.providerId}`
+    : normalizeProviderBaseUrl(providerEnv.baseUrl);
   return [
     nonEmpty(providerEnv.providerId) ? `provider:${nonEmpty(providerEnv.providerId)}` : undefined,
     nonEmpty(providerEnv.model) ? `model:${nonEmpty(providerEnv.model)}` : undefined,
@@ -62,7 +65,9 @@ export function getProviderHistoryIdentity(
   providerEnv?: ProviderHistoryEnv,
   policy: ProviderHistoryPolicy = {},
 ): string {
-  const normalizedBaseUrl = normalizeProviderBaseUrl(providerEnv?.baseUrl);
+  const normalizedBaseUrl = providerEnv?.endpointSource
+    ? `managed:${providerEnv.endpointSource.kind}:${providerEnv.endpointSource.providerId}`
+    : normalizeProviderBaseUrl(providerEnv?.baseUrl);
   const isolatedKey = getProviderHistoryIsolationKey(providerEnv, policy);
   if (isolatedKey) {
     const apiProtocol = providerEnv?.apiProtocol ?? 'anthropic';

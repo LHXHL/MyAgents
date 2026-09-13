@@ -210,7 +210,7 @@ Runtime set 是按平台分片补发的：macOS 主机默认发布 `darwin-arm64
 
 ### publish_speech_model_set.sh
 
-**用途**：把当前 App/Worker 已编译锁定的标准语音模型资源与签名清单发布到 R2。当前 `local-standard-speech-v2` 将四个模型 asset 和三个 remote legal source 放在 `models/speech/assets/sha256/<sha256>/<filename>` 的 content-addressed 第一方路径；manifest 目录仍只使用 pack revision，JSON 内的 `schemaVersion: 1` 是 manifest schema，因此文件名不重复带 `-v1` / `-v2`。
+**用途**：把当前 App/Worker 已编译锁定的标准语音模型资源与签名清单发布到 R2。当前 `local-standard-speech-v3` 将四个模型 asset 和三个 remote legal source 放在 `models/speech/assets/sha256/<sha256>/<filename>` 的 content-addressed 第一方路径；manifest 目录仍只使用 pack revision，JSON 内的 `schemaVersion: 1` 是 manifest schema，因此文件名不重复带 `-v1` / `-v2`。v3 从同一 pyannote archive 选择 FP32 文件，发布新 revision 的签名清单；不能修改已发布 v2 清单。
 
 本地可用 unsigned 模式验证输出路径与逐字节 identity，但该产物不能发布，也不会被 App 接受：
 

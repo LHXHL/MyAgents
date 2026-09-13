@@ -131,6 +131,8 @@ const GLOBAL_EXACT_PATHS = new Set([
 const GLOBAL_PREFIXES = ['/api/mcp/oauth/', '/api/session-tags/'] as const;
 
 const COMMON_EXACT_PATHS = new Set([
+  // Both Global one-shots and Session Queries own managed-provider leases.
+  '/api/cliproxy/control',
   '/api/runtime/models',
   '/api/runtime/permission-modes',
   '/api/project-capabilities',
@@ -177,6 +179,7 @@ const COMMON_ADMIN_PREFIXES = [
   'model/',
   'plugin/',
   'readme/',
+  'record/',
   'runtime/',
   'skill/',
   'speech/',
@@ -199,8 +202,8 @@ function classifySessionsRoute(pathname: string, method: string): SidecarCapabil
     return method === 'GET' || method === 'POST' ? 'global' : null;
   }
   if (/^\/sessions\/[^/]+$/.test(pathname)) {
-    if (method === 'GET') return 'common';
-    if (method === 'PATCH' || method === 'DELETE') return 'global';
+    if (method === 'GET' || method === 'PATCH') return 'common';
+    if (method === 'DELETE') return 'global';
     return null;
   }
   if (/^\/sessions\/[^/]+\/(?:stats|since\/[^/]+)$/.test(pathname) && method === 'GET') {

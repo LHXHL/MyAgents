@@ -1,4 +1,17 @@
 {
+  "transcriptSave": {
+    "warning": "Chat history cannot be saved right now. You can keep chatting; unsaved content may be lost when you close the app.",
+    "recovered": "Chat history saving has resumed."
+  },
+  "asyncQuestion": {
+    "compose": "Write an answer",
+    "answered": "Answered",
+    "queued": "Waiting to send",
+    "sending": "Submitting…",
+    "failed": "Could not send. Please try again.",
+    "replyingTo": "Answering: {{title}}",
+    "cancel": "Cancel answer"
+  },
   "input": {
     "launcherPlaceholder": "What do you want to do today?",
     "placeholder": "Message MyAgents, use @ for files and / for skills...",
@@ -135,19 +148,19 @@
       },
       "suggest": {
         "label": "Suggest",
-        "description": "Auto-run trusted commands; ask for everything else"
+        "description": "Read-only; auto-run trusted commands and ask for other operations"
       },
       "auto-edit": {
-        "label": "Auto-Edit",
-        "description": "Edit files automatically and run commands in the sandbox"
+        "label": "Ask for approval",
+        "description": "Run in the workspace; ask before internet access or editing other files"
       },
       "full-auto": {
-        "label": "Full Auto",
-        "description": "Run autonomously in the sandbox and ask when needed"
+        "label": "Approve for me",
+        "description": "Codex reviews approval requests; only potentially unsafe actions need confirmation"
       },
       "no-restrictions": {
-        "label": "No Restrictions",
-        "description": "Skip all approvals and sandbox restrictions"
+        "label": "Full Access",
+        "description": "Access files and the internet without approval"
       }
     },
     "slashCommands": {

@@ -26,6 +26,14 @@ macOS 编辑菜单的 Undo / Redo 由 `macos_edit_menu` 路由：先用真正的
 
 设置页的 `onSave` 调用方保留预览 / 编辑入口，编辑底座为 CM 源码模式；不因此获得 workspace 图片、watcher 或冲突处理。外部 local 文件只读；其他代码继续 Monaco。文件操作的 context 类型 / 消费 hook 位于 `context/fileActionState.ts`，Provider 仍在 `FileActionContext.tsx`，避免 Markdown 消费者反向导入挂载自身预览的 Provider。
 
+## 文件链接与操作身份
+
+`markdown/ContentLink` 统一普通 Markdown 与反引号文件引用的目标、图标、完整原始地址提示、点击和右键；显式 anchor 的 href 拥有目标，标题内部的 inline code 只呈现格式。原生路径保留字面 `%` / `#` 等字符，URL 在引用边界解码；行/列后缀与文件名分别解析。聊天相对路径以工作区为基准，文档链接以当前文档目录为基准，不模糊搜索同名文件。href 的安全规范化与原始引用呈现分离；hover 与复制保留相对/绝对写法，绝对化/canonical target 仅用于校验和打开。
+
+Chat 的 `FileActionProvider` 覆盖消息、分屏和全屏预览；consumer 不另建文件缓存。缓存刷新只裁决结果是否可写入缓存，用户操作的取消由 workspace identity / 最新导航意图裁决。未找到与校验失败分开，已有负结果在新出现的引用或显式交互时重新检查，并复用有限缓存 lease；不引入后台扫描。
+
+Rust `check_paths` 返回文件事实与可选 `resolvedPath` / `error`。工作区符号链接指向普通外部文件时返回 canonical local target；预览和菜单沿 local 只读入口，不能由此扩大 workspace mutation 权限。用户主动打开普通本地文件支持其它卷与相邻工作区，保留 canonical credential/system exclusions 和真实 OS 可读性检查。未知格式仍提供系统打开/定位入口；不把文件存在等同于所有格式均可预览。
+
 ## 源码与投影
 
 CM 内部位置统一为 LF 坐标，`decodeSource` / `encodeSource` 是 IO / 比较 / 引用边界。不要直接用 `state.doc.toString()` 保存原文件：它会归一化混合换行。未编辑语法、空白、末尾换行和 BOM 均不得被片段渲染或 AST 序列化改写。删除使独立 CR 与 LF 新相邻时，只把该 CR 显式化为 CRLF，以免两个逻辑换行落盘后合成一个；格式变更仍随同一历史撤销。
@@ -37,6 +45,10 @@ GFM 默认 Table 是单个 leaf，编辑大表时会同步重解析整个 leaf�
 表格模型的单元格范围来自语法节点 / delimiter；空格子和缺失格子通过源范围补齐。结构修改和 TSV 粘贴组合成父文档一次事务。只有一个活跃 mini CM，无独立 history / 保存；父 CM 的 `cellEditRange` 保存当前精确输入范围，不能把 parser 去掉布局 padding 后的范围当作活跃输入真源，否则逐键空格会被吞掉。父文档操作后重新投影，结构分隔符不能被 cell 末尾反斜杠转义。大量行使用主 scroller 的行虚拟化，宽度溢出只增加局部水平滚动。
 
 Theme 经 `@/theme` 公共 API 读取；CM syntax colors 从既有 `adapters.prism` 派生，正文和控件使用语义 CSS token。切换 theme 重配 extension，不重建文档。
+
+阅读角色与共享Markdown一致：正文500、标题/强调600；CM语法高亮也消费同一字重token。mini cell使用所在th/td的字体角色，避免进入编辑时回退normal；代码、整篇/局部源码明确保持normal。mark/kbd投影直接服从共享Markdown样式。列表标记由语法祖先深度决定，widget equality包含深度以支持缩进变化；只改变装饰，不改写源码空白。标题行高消费现有Type Scale，源码空行保持原编辑语义，不把阅读段落margin施加到每一cm-line。
+
+整表复制/下载复用阅读表格的 TableActions、剪贴板及下载 transport。动作经 CompositionGate 等待已开始的输入完成，然后只读当前 CM 文档；按源位置用共享 Markdown pipeline 定位对应表格，避免虚拟 DOM 或尚未完成的增量语法树截断导出行，并保留文档级引用定义。解析仅在显式导出时发生，不进入逐键/逐帧渲染。宽表使用面板 container 的可用宽度与表格自然列宽；阅读和编辑共用局部 `useTableIntrinsicSizing`，将已挂载单元格的呈现文本映射为不可见、零高度的 CSS 宽度探针。探针自然宽度以16em封顶，只贡献最小内容宽度，不限制宽屏展开，也不进入复制/下载数据；DOM内容变化才更新，不读取几何或扫描全文。虚拟行只在挂载时参与布局，不提供离屏列宽索引；mini编辑与只读内容遵循同一规则，取消固定96px列宽；嵌套由语法祖先判定（包括列表续段），表格不越出引用/列表边界。
 
 查找仍以 CM SearchQuery / Panel 为 authority，`EditorSearchPanel` 仅把 panel 当前 query/readOnly 投影进 React portal；修改查询、前后导航、多选和替换调用原生 CM effect/command，替换进入同一父文档 history。主 CM 开启多选及原生 drawSelection，避免“选择全部匹配”被归一化为单选。快捷键使用 search-panel scope；选择工具栏不包含查找。面板占用顶部布局槽并靠右，避免覆盖正文；进阶选项/替换复用 Popover，实际 portal DOM 挂载时移动焦点，Escape 先关闭选项并返回触发按钮，再关闭查找。
 
@@ -79,4 +91,4 @@ Theme 经 `@/theme` 公共 API 读取；CM syntax colors 从既有 `adapters.pri
 
 DOM composition 事件仅证明调度和 view identity，不能代替真实输入法验收。Chrome 或独立 WKWebView 的开发态 harness 也不能证明真实 Tauri OS drop、Windows WebView2 或完整 cold 性能。具体发布证据与尚未关闭的 mandatory 检查留在对应 PRD 执行台账，不把未测项写成实现已通过。
 
-表格模型利用 CM Text 的行索引和语法树按需解析 `rows.at(index)`，仅结构性列操作才遍历全部行；投影以 immutable Text 身份失效，不在每次输入时把整表拷成字符串。定义索引包含匿名子树以复用稳定分组；可见行出现额外 GFM cell 时提示源码出口。
+表格模型利用 CM Text 的行索引和语法树按需解析 `rows.at(index)`，渲染/编辑热路径中仅结构性列操作才遍历全部行；投影以 immutable Text 身份失效，不在每次输入时把整表拷成字符串。定义索引包含匿名子树以复用稳定分组；可见行出现额外 GFM cell 时提示源码出口。

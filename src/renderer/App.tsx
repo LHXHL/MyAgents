@@ -2056,7 +2056,7 @@ export default function App() {
                 originFromDesktopSurface(pendingSurfaceForLaunch?.surface),
               prepareForFirstUserMessage: true,
               materializationSourceSessionId: effectiveSessionId,
-            });
+            }, { type: 'tab', id: targetTabId, pendingSessionId: effectiveSessionId });
             effectiveSessionId = prepared.id;
           } catch (err) {
             console.error(

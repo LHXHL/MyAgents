@@ -1,3 +1,5 @@
+import type { SessionMessage, MessageUsage, SessionSource } from '../../shared/types/session-message';
+export type { SessionMessage, MessageAttachment, MessageUsage, ModelUsageEntry, MessageSourceMetadata, SessionSource, TurnAnalyticsSource, RuntimeTurnAnchor } from '../../shared/types/session-message';
 import { randomUUID } from 'crypto';
 import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
 import type { ContextUsage } from '../../shared/types/context-usage';
@@ -24,6 +26,8 @@ export interface SessionStats {
  */
 export interface SessionMetadata {
     id: string;
+    /** Set only by the creation owner. Absence is the existing V1 contract. */
+    transcriptFormat?: 2;
     agentDir: string;
     title: string;
     createdAt: string;
@@ -156,86 +160,8 @@ export interface SessionMetadata {
  */
 export interface SessionData extends SessionMetadata {
     messages: SessionMessage[];
-}
-
-/**
- * Attachment info for messages
- */
-export interface MessageAttachment {
-    id: string;
-    name: string;
-    mimeType: string;
-    path: string; // Relative path in attachments directory
-}
-
-/**
- * Per-model usage breakdown
- */
-export interface ModelUsageEntry {
-    inputTokens: number;
-    outputTokens: number;
-    cacheReadTokens?: number;
-    cacheCreationTokens?: number;
-}
-
-/**
- * Usage information for assistant messages
- */
-export interface MessageUsage {
-    inputTokens: number;
-    outputTokens: number;
-    cacheReadTokens?: number;
-    cacheCreationTokens?: number;
-    /** Provider used for this turn. Legacy messages may omit it and fall back to session metadata. */
-    providerId?: string;
-    /** Primary model (for backwards compatibility and simple display) */
-    model?: string;
-    /** Per-model breakdown (for detailed statistics) */
-    modelUsage?: Record<string, ModelUsageEntry>;
-}
-
-/** Session source: 'desktop' for desktop, '{platform}_{private|group}' for IM/channels (supports bridge plugins with dynamic platform names) */
-export type SessionSource = 'desktop' | `${string}_private` | `${string}_group`;
-
-/** Analytics source for a completed AI turn. Kept separate from SessionSource:
- *  SessionSource drives persistence / IM mirroring, while this is per-turn
- *  attribution for product analytics. */
-export type TurnAnalyticsSource = 'desktop' | 'floating_ball' | 'cron' | 'im' | 'agent-channel' | 'registeredAgent';
-
-/**
- * Message source metadata (IM integration)
- */
-export interface MessageSourceMetadata {
-    source: SessionSource;
-    sourceId?: string;
-    senderName?: string;
-}
-
-/**
- * Simplified message format for storage
- */
-export interface SessionMessage {
-    id: string;
-    role: 'user' | 'assistant';
-    content: string;
-    timestamp: string;
-    sdkUuid?: string;  // SDK 分配的 UUID，用于 resumeSessionAt / rewindFiles
-    /** Exact runtime-native root Turn represented by this terminal assistant row. */
-    runtimeTurnAnchor?: RuntimeTurnAnchor;
-    attachments?: MessageAttachment[];
-    /** Usage info (only for assistant messages) */
-    usage?: MessageUsage;
-    /** Tool call count in this response */
-    toolCount?: number;
-    /** Response duration in milliseconds */
-    durationMs?: number;
-    /** Message source metadata (IM integration) */
-    metadata?: MessageSourceMetadata;
-}
-
-export interface RuntimeTurnAnchor {
-    turnId: string;
-    rootUserMessageId: string;
+    transcriptSaveStatus?: import('../../shared/sessionTranscript').TranscriptSaveStatus;
+    transcriptRecovery?: 'incomplete' | 'unavailable';
 }
 
 export type PendingConversationMutation =
@@ -247,6 +173,7 @@ export type PendingConversationMutation =
         replacementRuntimeSessionId: string | null;
         sourceMessageCount: number;
         targetMessageCount: number;
+        transcript?: ConversationMutationTranscript;
     }
     | {
         schemaVersion: 1;
@@ -257,7 +184,15 @@ export type PendingConversationMutation =
         replacementSdkSessionId: string;
         sourceMessageCount: number;
         targetMessageCount: number;
+        transcript?: ConversationMutationTranscript;
     };
+
+export interface ConversationMutationTranscript {
+    format: 2;
+    sourceGeneration: string;
+    targetGeneration: string;
+    targetRevision: number;
+}
 
 /**
  * Generate a unique session ID
@@ -290,12 +225,19 @@ export function generateSessionTitle(message: string): string {
  * Left unspecified, `runtime` defaults to 'builtin' (pit of success: no
  * null/undefined ambiguity on the always-present runtime field).
  */
+const sessionBirths = new WeakSet<SessionMetadata>();
+
+/** In-process birth provenance; deserialized metadata never authorizes a new file. */
+export function ownsSessionMetadataBirth(metadata: SessionMetadata): boolean {
+    return sessionBirths.has(metadata);
+}
+
 export function createSessionMetadata(
     agentDir: string,
     snapshot: Partial<SessionMetadata> = {},
 ): SessionMetadata {
     const now = new Date().toISOString();
-    return {
+    const metadata: SessionMetadata = {
         id: randomUUID(),
         agentDir,
         title: 'New Chat',
@@ -304,5 +246,8 @@ export function createSessionMetadata(
         unifiedSession: true,
         runtime: 'builtin',
         ...snapshot,
+        transcriptFormat: 2,
     };
+    sessionBirths.add(metadata);
+    return metadata;
 }

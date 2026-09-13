@@ -9,6 +9,7 @@ export interface Projection {
   /** Immutable CM document identity; a table never copies all its cells to React. */
   tableDocument?: Text;
   containerPrefix?: string;
+  nestedContainer?: boolean;
   definitions?: string;
   footnoteNumbers?: ReadonlyMap<string, number>;
 }
@@ -40,7 +41,7 @@ class RenderWidget extends WidgetType {
   constructor(readonly projection: Projection, readonly block: boolean) { super(); }
   eq(other: RenderWidget) {
     const a = this.projection, b = other.projection;
-    return a.kind === b.kind && a.from === b.from && a.to === b.to && a.source === b.source && a.tableDocument === b.tableDocument && a.renderSource === b.renderSource && a.containerPrefix === b.containerPrefix && a.definitions === b.definitions && a.footnoteNumbers === b.footnoteNumbers;
+    return a.kind === b.kind && a.from === b.from && a.to === b.to && a.source === b.source && a.tableDocument === b.tableDocument && a.renderSource === b.renderSource && a.containerPrefix === b.containerPrefix && a.nestedContainer === b.nestedContainer && a.definitions === b.definitions && a.footnoteNumbers === b.footnoteNumbers;
   }
   toDOM(view: EditorView) {
     const element = document.createElement(this.block ? 'div' : 'span');
@@ -57,6 +58,7 @@ class RenderWidget extends WidgetType {
     return true;
   }
   decorateContainer(element: HTMLElement) {
+    element.classList.toggle('md-projection-nested', this.projection.nestedContainer === true);
     const prefix = this.projection.containerPrefix ?? '';
     element.classList.toggle('md-projection-quoted', prefix.includes('>'));
     const marker = /([-+*]|\d+[.)])\s*$/.exec(prefix)?.[1];
@@ -97,8 +99,9 @@ class CheckboxWidget extends WidgetType {
   ignoreEvent() { return true; }
 }
 class BulletWidget extends WidgetType {
-  eq() { return true; }
-  toDOM() { const bullet = document.createElement('span'); bullet.textContent = '•'; bullet.className = 'md-list-bullet'; return bullet; }
+  constructor(readonly depth: number) { super(); }
+  eq(other: BulletWidget) { return this.depth === other.depth; }
+  toDOM() { const bullet = document.createElement('span'); bullet.textContent = ['•', '◦', '▪'][Math.min(this.depth, 3) - 1]; bullet.className = 'md-list-bullet'; return bullet; }
   ignoreEvent() { return false; }
 }
 
@@ -156,12 +159,16 @@ function project(state: EditorState, from: number, to: number): DecorationSet {
       // Table input lives in a cell projection. A parent cursor alone must not
       // turn the entire table into source (explicit source action does).
       const renderSource = name === 'MathBlock' ? '$$\n' + node.node.getChildren('MathText').map(part => state.sliceDoc(part.from, part.to)).join('\n') + '\n$$' : undefined;
+      let nestedContainer = false;
+      for (let parent = node.node.parent; parent; parent = parent.parent) {
+        if (parent.name === 'ListItem' || parent.name === 'Blockquote') { nestedContainer = true; break; }
+      }
       const lineStart = state.doc.lineAt(a).from, prefix = state.sliceDoc(lineStart, a);
       const blockStart = /^[\s>]*(?:(?:[-+*]|\d+[.)])\s+)?$/.test(prefix) ? lineStart : a;
       if (blockStart < a) {
         for (let index = ranges.length - 1; index >= 0; index--) if (ranges[index].from >= blockStart && ranges[index].to <= a) ranges.splice(index, 1);
       }
-      add(blockStart, b, Decoration.replace({ block: true, widget: new RenderWidget({ kind: name, from: a, to: b, source: name === 'Table' ? '' : text(), tableDocument: name === 'Table' ? state.doc : undefined, renderSource, containerPrefix: blockStart < a ? prefix : undefined, definitions: state.field(definitions).source, footnoteNumbers: state.field(definitions).footnoteNumbers }, true) }));
+      add(blockStart, b, Decoration.replace({ block: true, widget: new RenderWidget({ kind: name, from: a, to: b, source: name === 'Table' ? '' : text(), tableDocument: name === 'Table' ? state.doc : undefined, renderSource, nestedContainer, containerPrefix: blockStart < a ? prefix : undefined, definitions: state.field(definitions).source, footnoteNumbers: state.field(definitions).footnoteNumbers }, true) }));
       return false;
     }
     if ((['Image', 'InlineMath', 'FootnoteReference'].includes(name) || name === 'Link' && !node.node.getChild('URL')) && !selected(a, b) && !isRaw(a, b)) {
@@ -206,7 +213,13 @@ function project(state: EditorState, from: number, to: number): DecorationSet {
     const parentActive = parent && selected(parent.from, parent.to);
     if (name === 'ListMark' && !selected(state.doc.lineAt(a).from, state.doc.lineAt(a).to)) {
       if (/^\s+\[[ xX]\]/.test(state.sliceDoc(b, Math.min(b + 6, state.doc.length)))) hidden(a, Math.min(b + 1, state.doc.length));
-      else if (/[-+*]/.test(text())) add(a, b, Decoration.replace({ widget: new BulletWidget() }));
+      else if (/[-+*]/.test(text())) {
+        let depth = 0;
+        for (let ancestor = node.node.parent; ancestor; ancestor = ancestor.parent) {
+          if (ancestor.name === 'BulletList' || ancestor.name === 'OrderedList') depth++;
+        }
+        add(a, b, Decoration.replace({ widget: new BulletWidget(depth) }));
+      }
       else add(a, b, Decoration.mark({ class: 'md-list-marker' }));
     }
     if (['HeaderMark', 'EmphasisMark', 'StrikethroughMark', 'CodeMark', 'QuoteMark', 'LinkMark', 'CodeInfo'].includes(name) && !parentActive && !isRaw(a, b)) hidden(a, ['HeaderMark', 'QuoteMark'].includes(name) && state.sliceDoc(b, b + 1) === ' ' ? b + 1 : b);

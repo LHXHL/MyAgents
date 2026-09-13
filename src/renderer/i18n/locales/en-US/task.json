@@ -133,12 +133,14 @@
     "transcriptLiveFailed": "Live transcription is temporarily unavailable",
     "transcriptLiveFailedHint": "Live transcription hit a problem. Audio is still being saved safely and will be processed again after you stop.",
     "transcriptFailedHint": "Transcription did not finish. You can start it again.",
+    "diarizationFailedHint": "Speaker identification did not finish. Your existing transcript is still available.",
     "transcriptFailedProtocolHint": "The transcription components could not communicate. Update the app and retry; report the error code if it persists.",
     "transcriptFailedMediaHint": "The audio could not be decoded. Export it for inspection; retrying may fail again.",
     "transcriptFailedPublishHint": "The transcript could not be saved. Check disk space and write permissions, then retry.",
     "transcriptFailedTimeoutHint": "Local transcription timed out. Reduce other running tasks, then retry.",
     "transcriptFailedInferenceHint": "Local speech processing failed. Retry; if it persists, check the speech recognition tool and report the error code.",
     "transcriptFailureDetails": "Error details",
+    "rerunTranscription": "Transcribe again",
     "retryTranscription": "Retry transcription",
     "transcriptPending": "Audio is saved. Transcript processing is in progress.",
     "transcriptEmpty": "No transcript yet",
@@ -170,6 +172,8 @@
     "noteTimelineMarker": "Note at {{time}}",
     "markTimelineMarker": "Highlight at {{time}}",
     "speakerUnknown": "Speaker {{name}}",
+    "speakerUncertain": "Unknown speaker",
+    "speakerMultiple": "Multiple speakers",
     "speakerCorrection": "Speaker corrections",
     "speakerCorrectionHint": "Rename or merge speakers, or reassign an individual sentence on the left.",
     "speakerNamePlaceholder": "Enter speaker name",
@@ -624,9 +628,9 @@
       },
       "codex": {
         "suggest": "Run only trusted commands automatically; confirm the rest",
-        "auto-edit": "Edit files automatically and run commands in the sandbox",
-        "full-auto": "Act autonomously in the sandbox and ask as needed",
-        "no-restrictions": "Skip all approvals and sandbox restrictions"
+        "auto-edit": "Run in the workspace; ask before internet access or editing other files",
+        "full-auto": "Codex reviews approval requests; only potentially unsafe actions need confirmation",
+        "no-restrictions": "Access files and the internet without approval"
       }
     }
   },

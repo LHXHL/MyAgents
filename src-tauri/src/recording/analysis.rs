@@ -1,10 +1,9 @@
-//! Disk-first 16 kHz mono analysis spools for admitted live transcription.
+//! Disk-first 16 kHz source-channel analysis spools for admitted live transcription.
 //!
 //! Each physical capture source owns one raw little-endian PCM16 file. The
 //! fixed per-track files avoid inventing another media container while still
 //! giving SpeechRecognitionManager durable, independently replayable offsets.
 
-use ringbuf::traits::*;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -41,6 +40,8 @@ struct AnalysisProgress {
 #[derive(Clone)]
 pub(crate) struct AnalysisSpoolSource {
     track: AudioTrackKind,
+    channels: u8,
+    timing: RealtimeTrackSink,
     path: PathBuf,
     progress: Arc<Mutex<AnalysisProgress>>,
 }
@@ -48,6 +49,70 @@ pub(crate) struct AnalysisSpoolSource {
 impl AnalysisSpoolSource {
     pub fn track(&self) -> AudioTrackKind {
         self.track
+    }
+
+    pub fn time_span(
+        &self,
+        start: u64,
+        max_frames: usize,
+    ) -> Result<Option<myagents_media_worker_protocol::record_timeline::TrackTimeSpan>, &'static str>
+    {
+        let Some(timeline) = self
+            .timing
+            .capture_timeline()
+            .map_err(|_| "SPEECH_CAPTURE_TIME_UNAVAILABLE")?
+        else {
+            return Ok(None);
+        };
+        let Some(span) = timeline
+            .spans
+            .iter()
+            .find(|span| span.source_start <= start && start < span.source_end)
+        else {
+            return Err("SPEECH_CAPTURE_TIME_UNAVAILABLE");
+        };
+        let end = start.saturating_add(max_frames as u64).min(span.source_end);
+        let mapped = timeline
+            .map_interval(start, end)
+            .ok_or("SPEECH_CAPTURE_TIME_UNAVAILABLE")?;
+        Ok(Some(
+            myagents_media_worker_protocol::record_timeline::TrackTimeSpan {
+                source_start: start,
+                source_end: end,
+                record_start: mapped.start_sample,
+                record_end: mapped.end_sample,
+                quality: span.quality,
+                discontinuity: span.discontinuity && start == span.source_start,
+            },
+        ))
+    }
+
+    pub fn channels(&self) -> u8 {
+        self.channels
+    }
+
+    pub fn source_position_for_record(&self, record_sample: u64) -> Result<u64, &'static str> {
+        let captured = self.snapshot().committed_samples;
+        let Some(timeline) = self
+            .timing
+            .capture_timeline()
+            .map_err(|_| "SPEECH_CAPTURE_TIME_UNAVAILABLE")?
+        else {
+            return Ok(record_sample.min(captured));
+        };
+        for span in &timeline.spans {
+            if record_sample <= span.record_start {
+                return Ok(span.source_start.min(captured));
+            }
+            if record_sample < span.record_end {
+                // No reference history can be recovered from an explicit gap.
+                return Ok(timeline
+                    .source_sample(record_sample)
+                    .unwrap_or(span.source_end)
+                    .min(captured));
+            }
+        }
+        Ok(captured)
     }
 
     pub fn path(&self) -> &Path {
@@ -91,18 +156,19 @@ impl AnalysisSpoolSource {
         if sample_count == 0 {
             return Ok(Vec::new());
         }
+        let bytes_per_frame = u64::from(self.channels) * 2;
         let byte_offset = start_sample
-            .checked_mul(2)
+            .checked_mul(bytes_per_frame)
             .ok_or("SPEECH_ANALYSIS_SOURCE_INVALID")?;
         let byte_count = sample_count
-            .checked_mul(2)
+            .checked_mul(bytes_per_frame as usize)
             .ok_or("SPEECH_ANALYSIS_SOURCE_INVALID")?;
         let metadata =
             fs::symlink_metadata(&self.path).map_err(|_| "SPEECH_ANALYSIS_SOURCE_UNAVAILABLE")?;
         if metadata.file_type().is_symlink()
             || !metadata.is_file()
             || metadata.len() < byte_offset.saturating_add(byte_count as u64)
-            || metadata.len() > MAX_ANALYSIS_SAMPLES.saturating_mul(2)
+            || metadata.len() > MAX_ANALYSIS_SAMPLES.saturating_mul(bytes_per_frame)
         {
             return Err("SPEECH_ANALYSIS_SOURCE_INVALID");
         }
@@ -197,6 +263,8 @@ impl TrackAnalysisHandle {
         let progress = Arc::new(Mutex::new(AnalysisProgress::default()));
         let source = AnalysisSpoolSource {
             track,
+            channels: format.channels.min(2) as u8,
+            timing: ring.sink.clone(),
             path: path.clone(),
             progress: progress.clone(),
         };
@@ -278,17 +346,22 @@ fn run_analysis_worker(
     path: PathBuf,
     mut file: File,
     format: SourceFormat,
-    mut consumer: ringbuf::HeapCons<f32>,
+    mut consumer: super::audio::RealtimeTrackReader,
     stop: Arc<std::sync::atomic::AtomicBool>,
     overrun_samples: Arc<std::sync::atomic::AtomicU64>,
     wake_rx: mpsc::Receiver<()>,
     command_rx: mpsc::Receiver<AnalysisCommand>,
     progress: Arc<Mutex<AnalysisProgress>>,
 ) -> Result<AnalysisResult, String> {
-    let mut resampler = StreamingAudioResampler::new(format, ANALYSIS_SAMPLE_RATE, 1)?;
+    let mut resampler = StreamingAudioResampler::new(
+        format,
+        ANALYSIS_SAMPLE_RATE,
+        usize::from(format.channels.min(2)),
+    )?;
     let input_channels = format.channels as usize;
     let input_samples = (8_192 / input_channels).max(1) * input_channels;
     let mut buffers = SensitiveAnalysisBuffers {
+        output_channels: format.channels.min(2) as usize,
         input: vec![0.0_f32; input_samples],
         resampled: Vec::with_capacity(4_096),
         encoded: Vec::with_capacity(8_192),
@@ -296,8 +369,12 @@ fn run_analysis_worker(
     let mut written_samples = 0_u64;
     let mut committed_samples = 0_u64;
     let mut finish_requested = false;
+    let mut checkpoint_reply = None;
 
     loop {
+        if finish_requested || stop.load(Ordering::Acquire) || checkpoint_reply.is_some() {
+            consumer.finish_input();
+        }
         let count = consumer.pop_slice(&mut buffers.input);
         if count > 0 {
             resampler.process(&buffers.input[..count], &mut buffers.resampled)?;
@@ -316,20 +393,31 @@ fn run_analysis_worker(
             continue;
         }
 
+        if let Some(reply) = checkpoint_reply.take() {
+            let checkpoint = checkpoint_resampler(
+                &mut resampler,
+                format,
+                &mut file,
+                &mut buffers,
+                &mut written_samples,
+                &mut committed_samples,
+                &progress,
+            );
+            if let Ok(samples) = &checkpoint {
+                consumer.close_resampler_epoch(*samples);
+            }
+            consumer.resume_input();
+            let _ = mpsc::SyncSender::send(&reply, checkpoint);
+        }
         match command_rx.try_recv() {
             Ok(AnalysisCommand::Checkpoint(reply)) => {
-                let checkpoint = checkpoint_resampler(
-                    &mut resampler,
-                    format,
-                    &mut file,
-                    &mut buffers,
-                    &mut written_samples,
-                    &mut committed_samples,
-                    &progress,
-                );
-                let _ = reply.send(checkpoint);
+                checkpoint_reply = Some(reply);
+                continue;
             }
-            Ok(AnalysisCommand::Finish) => finish_requested = true,
+            Ok(AnalysisCommand::Finish) => {
+                finish_requested = true;
+                continue;
+            }
             Err(mpsc::TryRecvError::Disconnected) => finish_requested = true,
             Err(mpsc::TryRecvError::Empty) => {}
         }
@@ -343,6 +431,7 @@ fn run_analysis_worker(
                 &progress,
                 true,
             )?;
+            consumer.close_resampler_epoch(written_samples);
             break;
         }
         let _ = wake_rx.recv_timeout(Duration::from_millis(20));
@@ -375,7 +464,11 @@ fn checkpoint_resampler(
         progress,
         true,
     )?;
-    *resampler = StreamingAudioResampler::new(format, ANALYSIS_SAMPLE_RATE, 1)?;
+    *resampler = StreamingAudioResampler::new(
+        format,
+        ANALYSIS_SAMPLE_RATE,
+        usize::from(format.channels.min(2)),
+    )?;
     Ok(*committed_samples)
 }
 
@@ -388,8 +481,11 @@ fn write_resampled(
     force_sync: bool,
 ) -> Result<(), String> {
     if !buffers.resampled.is_empty() {
+        if buffers.resampled.len() % buffers.output_channels != 0 {
+            return Err("analysis output contains a partial channel frame".to_string());
+        }
         let next_samples = written_samples
-            .checked_add(buffers.resampled.len() as u64)
+            .checked_add((buffers.resampled.len() / buffers.output_channels) as u64)
             .filter(|samples| *samples <= MAX_ANALYSIS_SAMPLES)
             .ok_or_else(|| "analysis spool exceeds eight-hour limit".to_string())?;
         buffers.encoded.reserve(buffers.resampled.len() * 2);
@@ -425,6 +521,7 @@ fn set_analysis_error(progress: &Arc<Mutex<AnalysisProgress>>, code: &str) {
 }
 
 struct SensitiveAnalysisBuffers {
+    output_channels: usize,
     input: Vec<f32>,
     resampled: Vec<f32>,
     encoded: Vec<u8>,
@@ -460,6 +557,36 @@ pub(crate) fn cleanup_analysis_spool(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replay_converts_record_media_time_back_to_the_original_spool_frames() {
+        use super::super::timing::CaptureTimePoint;
+        use myagents_media_worker_protocol::record_timeline::CaptureTimeQuality;
+        let root = tempfile::tempdir().unwrap();
+        let analysis = TrackAnalysisHandle::start(
+            AudioTrackKind::Microphone,
+            root.path().join("microphone.pcm16"),
+            SourceFormat {
+                sample_rate: 16_000,
+                channels: 1,
+            },
+        )
+        .unwrap();
+        analysis.sink.push_i16_at(
+            &vec![2_000; 16_000],
+            Some(CaptureTimePoint {
+                record_sample: 48_000,
+                quality: CaptureTimeQuality::Clock,
+                epoch: 1,
+            }),
+        );
+        analysis.control().checkpoint().unwrap();
+        let source = analysis.source();
+        assert_eq!(source.source_position_for_record(32_000).unwrap(), 0);
+        assert_eq!(source.source_position_for_record(52_000).unwrap(), 4_000);
+        assert_eq!(source.source_position_for_record(64_000).unwrap(), 16_000);
+        analysis.finish().unwrap();
+    }
     use tempfile::tempdir;
 
     #[test]
@@ -483,10 +610,11 @@ mod tests {
 
         assert_eq!(result.samples_16k, 16_000);
         assert_eq!(result.overrun_samples, 0);
-        assert_eq!(path.metadata().unwrap().len(), 32_000);
+        assert_eq!(path.metadata().unwrap().len(), 64_000);
+        assert_eq!(source.channels(), 2);
         assert_eq!(source.snapshot().committed_samples, 16_000);
         let samples = source.read_samples(0, 16_000).unwrap();
-        assert_eq!(samples.len(), 16_000);
+        assert_eq!(samples.len(), 32_000);
         let settled_mean = samples[1_000..15_000]
             .iter()
             .map(|sample| i64::from(*sample))

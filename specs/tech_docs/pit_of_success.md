@@ -306,7 +306,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 
 **Problem.** WKWebView/WebView2 可能暴露 `navigator.clipboard.writeText`，却因焦点或权限状态拒绝调用；直接调用会让复制按钮静默失效，若 UI 同步翻转 `copied` 还会误报成功。
 
-**Surface.** `copyPlainText(text)`（`src/renderer/utils/clipboard.ts`）。先尝试 Async Clipboard，拒绝后使用隐藏 textarea selection + `document.execCommand('copy')`；只有任一路径实际返回成功才 resolve，两路都失败则 reject。富文本复制仍由 `markdownClipboard.tsx` 拥有，并复用此 plain-text leaf，避免普通组件加载 Markdown 依赖。
+**Surface.** `copyPlainText(text)`（`src/renderer/utils/clipboard.ts`）。先尝试 Async Clipboard，拒绝后使用隐藏 textarea selection + `document.execCommand('copy')`；只有任一路径实际返回成功才 resolve，两路都失败则 reject。整篇 Markdown 富文本复制由 `markdownClipboard.tsx` 拥有，失败时复用此 plain-text leaf。整表复制使用 `clipboard.ts` 的 `copyRichText(html, text)`：HTML 与 TSV 同条目写入，Async Clipboard 失败后回退临时 copy-event 双格式写入，不移动焦点/选区，不静默降级为纯文本；两路失败则 reject。表格内容序列化与剪贴板 transport 分离，普通组件无需加载 Markdown 依赖。
 
 **Don't.** 生产 renderer 代码不得直接调用 `navigator.clipboard.writeText()`；带 copied/toast 状态的调用方只能在 helper resolve 后显示成功，reject 时保持未复制并按 surface 反馈失败。ESLint 对直接调用设结构守卫。
 
@@ -615,6 +615,7 @@ Session snapshot 的完整 authority 与写入方向见 [`session_architecture.m
 | `reject_managed_global_skill_mutation(root, target)` | **mutation-only**：逐组件检查 canonical target、junction/symlink payload 与最近存在祖先，拒绝写入 `.claude/skills/*` 中指向 `~/.myagents/skills` 的链接叶子或后代（含目标尚不存在、断链） | `save_file`、`crud`、`delete`、`transfer` destination、`files_b64` destination |
 | `read_workspace_file_no_follow(root, rel, max)` | workspace 附件的强 no-follow 有界读：Unix 用目录 fd + `openat(O_NOFOLLOW)`；Windows 用 `NtCreateFile(ObjectAttributes.RootDirectory=parentHandle, FILE_OPEN_REPARSE_POINT)` 逐级相对打开目录与 leaf | Space CLI workspace attachments |
 | `open_regular_file_no_follow(path, label)` | 显式用户选择本地文件的统一 leaf opener，拒绝 symlink / Windows reparse leaf | Space GUI attachments、avatar、Skill package |
+| `system_open::validate_external_open_path(abs, workspace)` | 用户明确预览/打开普通本地文件：canonical 存在路径，支持任意卷和 `~/`，保留 credential/system exclusions；不授予 workspace 写权限 | local preview/download/open；`check_paths` 外部 symlink 返回 `resolvedPath` 后改走此 local lane |
 | `validate_external_read_path(abs)` | 绝对路径外部读校验：先做 lexical blacklist；路径存在时再 `fs::canonicalize` 复查，阻断中间 symlink组件逃逸；不存在时仅lexical放行。返回lexical路径以保留调用方的leaf-symlink拒绝语义 | `slash`（workspace 根）、`transfer::copy_paths`、`files_b64::read_files_b64` |
 | `validate_item_name(name)` | 文件名校验：禁止空 / 路径分隔符 / 控制符 / Windows 保留名（含 trailing dot/space）| `crud::new_file/folder/rename` |
 | `sanitize_filename(name)` | 修复型清洗：把非法字符替换为 `_`，用于"用户上传文件名带 `<`/`?`"等 | `files_b64::write_unique_file` |

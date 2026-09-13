@@ -323,7 +323,7 @@ describe('FileActionProvider verified target cache', () => {
   });
 
   it('closes an authorized file menu when the workspace identity changes', async () => {
-    mocks.checkPaths.mockImplementation((workspace: string, args: { paths: string[] }) => ({
+    mocks.checkPaths.mockImplementation(async (workspace: string, args: { paths: string[] }) => ({
       results: Object.fromEntries(args.paths.map((path) => [
         path,
         { exists: workspace === '/workspace-a', type: 'file' as const },
@@ -729,5 +729,62 @@ describe('FileActionProvider verified target cache', () => {
     expect(onRevealInTree).toHaveBeenCalledTimes(1);
     expect(onRevealInTree).toHaveBeenCalledWith('b.md');
     expect(mocks.readPreview).not.toHaveBeenCalledWith('/workspace', { path: 'a.md' });
+  });  it('keeps an explicit open alive across a same-workspace cache refresh', async () => {
+    const check = deferred<{ results: Record<string, {exists:boolean;type:string}> }>();
+    mocks.checkPaths.mockReturnValueOnce(check.promise);
+    const preview = vi.fn();
+    const tree = (generation:number) => <FileActionProvider workspacePath="/workspace" refreshTrigger={generation} onFilePreviewExternal={preview}><OpenProbe target={{scope:'workspace',path:'note.md'}} label="open note" /></FileActionProvider>;
+    const view = render(tree(0));
+    fireEvent.click(screen.getByText('open note'));
+    expect(mocks.checkPaths).toHaveBeenCalledTimes(1);
+    view.rerender(tree(1));
+    await act(async () => {check.resolve({results:{'note.md':{exists:true,type:'file'}}});});
+    await waitFor(()=>expect(preview).toHaveBeenCalledTimes(1));
+    mocks.checkPaths.mockResolvedValue({results:{'note.md':{exists:true,type:'file'}}});
+    fireEvent.click(screen.getByText('open note'));
+    await waitFor(()=>expect(preview).toHaveBeenCalledTimes(2));
   });
+  it('rechecks a failed target when a new occurrence mounts', async () => {
+    vi.useFakeTimers();
+    mocks.checkPaths.mockRejectedValueOnce(new Error('temporary IPC failure'));
+    const tree = (extra:boolean) => <FileActionProvider workspacePath="/workspace"><Probe target={{scope:'workspace',path:'note.md'}} />{extra && <Probe testId="second" target={{scope:'workspace',path:'note.md'}} />}</FileActionProvider>;
+    const view = render(tree(false));
+    await act(async()=>{await vi.advanceTimersByTimeAsync(60);});
+    mocks.checkPaths.mockResolvedValue({results:{'note.md':{exists:true,type:'file'}}});
+    view.rerender(tree(false));
+    await act(async()=>{await vi.advanceTimersByTimeAsync(1000);});
+    expect(screen.getByTestId('state')).toHaveTextContent('unavailable');
+    expect(mocks.checkPaths).toHaveBeenCalledTimes(1);
+    view.rerender(tree(true));
+    await act(async()=>{await vi.advanceTimersByTimeAsync(60);});
+    expect(screen.getByTestId('state')).toHaveTextContent('available');
+  });
+  it('rechecks a mounted target after refresh invalidates an in-flight batch', async () => {
+    vi.useFakeTimers();
+    const pending = deferred<{ results: Record<string, { exists: boolean; type: 'file' }> }>();
+    mocks.checkPaths.mockReturnValueOnce(pending.promise);
+    const tree = (refreshTrigger: number) => <FileActionProvider workspacePath="/workspace" refreshTrigger={refreshTrigger}><Probe target={{ scope: 'workspace', path: 'note.md' }} /></FileActionProvider>;
+    const view = render(tree(0));
+    await act(async () => { await vi.advanceTimersByTimeAsync(60); });
+    view.rerender(tree(1));
+    mocks.checkPaths.mockResolvedValue({ results: { 'note.md': { exists: true, type: 'file' } } });
+    await act(async () => { pending.resolve({ results: { 'note.md': { exists: false, type: 'file' } } }); await pending.promise; await vi.advanceTimersByTimeAsync(60); });
+    expect(mocks.checkPaths).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId('state')).toHaveTextContent('available');
+  });
+
+  it('does not let an older batch overwrite the facts verified by a user click', async () => {
+    vi.useFakeTimers();
+    const pending = deferred<{ results: Record<string, { exists: boolean; type: 'file' }> }>();
+    mocks.checkPaths.mockReturnValueOnce(pending.promise);
+    const target: FileActionTarget = { scope: 'workspace', path: 'note.md' };
+    render(<FileActionProvider workspacePath="/workspace" onFilePreviewExternal={vi.fn()}><Probe target={target} /><OpenProbe target={target} label="open note" /></FileActionProvider>);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60); });
+    mocks.checkPaths.mockResolvedValue({ results: { 'note.md': { exists: true, type: 'file' } } });
+    await act(async () => { fireEvent.click(screen.getByText('open note')); });
+    expect(screen.getByTestId('state')).toHaveTextContent('available');
+    await act(async () => { pending.resolve({ results: { 'note.md': { exists: false, type: 'file' } } }); await pending.promise; });
+    expect(screen.getByTestId('state')).toHaveTextContent('available');
+  });
+
 });

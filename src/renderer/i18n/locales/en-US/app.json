@@ -193,6 +193,11 @@
     "configureModel": "Configure a model first →"
   },
   "markdown": {
+    "tableActions": "Table actions",
+    "copyTable": "Copy table",
+    "downloadTable": "Download Excel",
+    "tableCopied": "Table copied",
+    "tableActionFailed": "Table action failed. Try again.",
     "copyCode": "Copy code",
     "copy": "Copy",
     "copied": "Copied",
@@ -295,6 +300,8 @@
     "expand": "Expand"
   },
   "fileActions": {
+    "checking": "Checking file",
+    "checkFailed": "Unable to check file; click to retry",
     "copy": "Copy",
     "copied": "Copied",
     "copyFailed": "Copy failed",

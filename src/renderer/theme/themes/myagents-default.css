@@ -42,11 +42,11 @@ html[data-theme-id='myagents-default'][data-color-scheme='light'] {
   --global-sidebar-bg: #f5efe5;
   --global-sidebar-bg-a0: rgb(245 239 229 / 0);
   --paper-elevated: #fffcf7;
-  --message-user-bg: #fffefa;
+  --message-user-bg: var(--global-sidebar-bg);
   --paper-inset: #e8dccf;
   --paper-a0: rgb(250 246 238 / 0);
   --paper-elevated-a0: rgb(255 252 247 / 0);
-  --message-user-bg-a0: rgb(255 254 250 / 0);
+  --message-user-bg-a0: var(--global-sidebar-bg-a0);
   --paper-inset-a0: rgb(232 220 207 / 0);
   --hover-bg: rgba(194, 109, 58, 0.07);
 
@@ -166,11 +166,11 @@ html[data-theme-id='myagents-default'][data-color-scheme='dark'] {
   --global-sidebar-bg: #181412;
   --global-sidebar-bg-a0: rgb(24 20 18 / 0);
   --paper-elevated: #242018;
-  --message-user-bg: #2a251d;
+  --message-user-bg: var(--global-sidebar-bg);
   --paper-inset: #12100e;
   --paper-a0: rgb(26 22 20 / 0);
   --paper-elevated-a0: rgb(36 32 24 / 0);
-  --message-user-bg-a0: rgb(42 37 29 / 0);
+  --message-user-bg-a0: var(--global-sidebar-bg-a0);
   --paper-inset-a0: rgb(18 16 14 / 0);
   --hover-bg: rgba(194, 109, 58, 0.12);
 

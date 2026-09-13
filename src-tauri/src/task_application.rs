@@ -449,7 +449,16 @@ impl<'a> TaskApplication<'a> {
         self.ordinary_task(task_id).await?;
         let comment = self
             .tasks
-            .create_user_comment(task_id, body, reply_to_comment_id)
+            .create_user_comment_with_session_probe(
+                task_id,
+                body,
+                reply_to_comment_id,
+                |session_id| {
+                    crate::sidecar::session_lifecycle::session_exists_for_continuation(
+                        manager, session_id,
+                    )
+                },
+            )
             .await
             .map_err(TaskApplicationError::mutation)?;
         match self

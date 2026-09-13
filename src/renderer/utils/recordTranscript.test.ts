@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest';
 import type {
   RecordTranscriptDelta,
   RecordTranscriptSnapshot,
+  RecordSpeechProjection,
 } from '@/../shared/types/record';
 import {
   applyRecordTranscriptDelta,
   reconcileRecordTranscriptSnapshot,
+  reconcileRecordSpeechProjection,
 } from './recordTranscript';
 
 const BASE: RecordTranscriptSnapshot = {
@@ -106,5 +108,35 @@ describe('applyRecordTranscriptDelta', () => {
 
     expect(reconcileRecordTranscriptSnapshot(live, finalized)).toBe(finalized);
     expect(reconcileRecordTranscriptSnapshot(finalized, live)).toBe(finalized);
+  });
+});
+
+describe('Record text and people publication', () => {
+  function result(processingId: string, textRevision: number, peopleRevision: number, overrideRevision = 0): RecordSpeechProjection {
+    return {
+      transcript: { ...BASE, schemaVersion: 2, processingId, projectionRevision: textRevision, state: 'recording_final' },
+      diarization: { schemaVersion: 3, recordId: BASE.recordId, processingId, projectionRevision: peopleRevision,
+        sampleRate: BASE.sampleRate, provenance: BASE.provenance, turns: [], overrideRevision,
+        speakers: [], segmentSpeakerOverrides: {}, segmentSpeakerAttributions: {}, conflicts: [] },
+    };
+  }
+  it('switches the whole rerun even when the old people counter was larger', () => {
+    const old = result('old', 1, 50);
+    const next = result('new', 2, 1);
+    const published = reconcileRecordSpeechProjection(old, next);
+    expect(published).toEqual(next);
+    expect(reconcileRecordSpeechProjection(published, old)).toBe(published);
+  });
+  it('rejects an incomplete cross-processing pair and keeps newer human edits', () => {
+    const current = result('current', 2, 7, 4);
+    const mismatched = { ...result('new', 3, 8), diarization: current.diarization };
+    expect(reconcileRecordSpeechProjection(current, mismatched)).toBe(current);
+    const staleEditRead = result('current', 2, 7, 3);
+    expect(reconcileRecordSpeechProjection(current, staleEditRead).diarization).toBe(current.diarization);
+  });
+  it('keeps a final pair when delayed live events or empty reads arrive', () => {
+    const current = result('final', 1, 1);
+    expect(reconcileRecordSpeechProjection(current, { transcript: { ...BASE, projectionRevision: 99 }, diarization: null })).toBe(current);
+    expect(reconcileRecordSpeechProjection(current, { transcript: null, diarization: null })).toBe(current);
   });
 });

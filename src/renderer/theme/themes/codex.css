@@ -25,11 +25,11 @@ html[data-theme-id='codex'][data-color-scheme='light'] {
   --global-sidebar-bg: #f8f8f9;
   --global-sidebar-bg-a0: rgb(248 248 249 / 0);
   --paper-elevated: #ffffff;
-  --message-user-bg: #fbfcfd;
+  --message-user-bg: var(--global-sidebar-bg);
   --paper-inset: #eaecef;
   --paper-a0: rgb(255 255 255 / 0);
   --paper-elevated-a0: rgb(255 255 255 / 0);
-  --message-user-bg-a0: rgb(251 252 253 / 0);
+  --message-user-bg-a0: var(--global-sidebar-bg-a0);
   --paper-inset-a0: rgb(234 236 239 / 0);
   --hover-bg: rgb(1 105 204 / 0.07);
   --accent: #0169cc;
@@ -142,11 +142,11 @@ html[data-theme-id='codex'][data-color-scheme='dark'] {
   --global-sidebar-bg: #0f0f0f;
   --global-sidebar-bg-a0: rgb(15 15 15 / 0);
   --paper-elevated: #1a1a1a;
-  --message-user-bg: #202020;
+  --message-user-bg: var(--global-sidebar-bg);
   --paper-inset: #090909;
   --paper-a0: rgb(17 17 17 / 0);
   --paper-elevated-a0: rgb(26 26 26 / 0);
-  --message-user-bg-a0: rgb(32 32 32 / 0);
+  --message-user-bg-a0: var(--global-sidebar-bg-a0);
   --paper-inset-a0: rgb(9 9 9 / 0);
   --hover-bg: rgb(1 105 204 / 0.12);
   --accent: #0169cc;

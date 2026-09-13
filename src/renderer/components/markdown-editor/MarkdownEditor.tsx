@@ -249,6 +249,8 @@ export default function MarkdownEditor(props: Props) {
       }),
     ] });
     const view = new EditorView({ state: buildState.current(latest.current.props.initialSource), parent: host.current });
+    // Expose the native scroller to App horizontal gesture arbitration.
+    view.scrollDOM.classList.add('overflow-auto');
     viewRef.current = view;
     imports.current = new ImageImportQueue(() => ({ view, path: latest.current.props.path, service: latest.current.service }),
       (error, completed, remaining, failures) => {
@@ -354,7 +356,7 @@ export default function MarkdownEditor(props: Props) {
       <button aria-label={t('markdownEditor.close')} onClick={() => setImportIssue(null)}>×</button>
     </div>}
     <div ref={host} className="md-editor-host" />
-    {selectionVisible && !linkDraft && !searchPanel && <div ref={toolsElement} style={toolPosition} className="md-selection-tools" role="toolbar" aria-label={t('markdownEditor.formatting')} onMouseDown={event => event.preventDefault()}>
+    {selectionVisible && !linkDraft && !searchPanel && <div ref={toolsElement} style={toolPosition} className="md-selection-tools overflow-auto" role="toolbar" aria-label={t('markdownEditor.formatting')} onMouseDown={event => event.preventDefault()}>
       {([['bold', '**'], ['italic', '*'], ['strike', '~~'], ['code', '`'], ['link', '[']] as const).map(([label, marker]) => <button key={label} onClick={() => { if (marker === '[') openLinkEditor(); else if (viewRef.current) wrapSelection(marker)(viewRef.current); }}>{t(`markdownEditor.${label}`)}</button>)}
       {props.onQuote && <><span className="md-selection-divider" role="separator" aria-orientation="vertical" /><button className="md-selection-quote" onClick={quote}><Quote size={12} aria-hidden="true" />{t('chat:workspaceFiles.common.quote')}</button></>}
     </div>}

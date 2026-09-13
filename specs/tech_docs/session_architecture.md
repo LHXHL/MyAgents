@@ -41,11 +41,11 @@ SDK 的 `sessionId` 与 `resume` 互斥。`resumeSessionAt` 只是在已选定�
 
 ### 2.2 pending materialization
 
-`pending-{tabId}` 是尚未实体化的新 Tab identity。首个被 Runtime 接纳的 turn 才把它迁移为真实 Product Session。
+`pending-{tabId}` 是尚未实体化的新 Tab identity。普通惰性出生在首个被 Runtime 接纳的 turn 时实体化；显式桌面出生可在首轮前完成 prepare → owner rekey → commit，绑定真实 Product Session。已提交的空 V2 Session 仍是有效会话，不能按 legacy 空草稿规则隐藏。
 
-迁移由 `SessionStore` 在 source/target transcript 锁与 sessions index 锁内线性化：metadata 发布、已有 transcript 的重命名以及失败回滚必须表现为一次 identity 迁移，不能产生两个可继续分叉的会话。
+identity 迁移由既有 Session binding owner 裁决，不能产生两个可继续分叉的会话。V2 的 binding CAS 修改当前内存 metadata，保存由 TranscriptWriter 后台完成；legacy 路径由 `SessionStore` 在 source/target transcript 锁与 sessions index 锁内完成 metadata 发布、已有 transcript 重命名及失败回滚。
 
-backend-created draft 使用 `materializationState: 'prepared'` 隐藏尚未被 Runtime 接纳的 metadata。turn admission 与 rollback 通过同一存储层 CAS 竞争；admission 赢后发布 Session，rollback 赢后该 turn 必须在发布 accepted 之前失败。
+backend-created draft 使用 `materializationState: 'prepared'` 隐藏尚未提交的 metadata。所属出生事务 commit 或首轮 admission 与 rollback 经同一 binding/CAS 入口裁决；commit/admission 赢后清除 prepared，rollback 赢后不得继续发布 accepted。逻辑绑定成功不等同于 V2 已写盘，保存状态独立报告。
 
 ### 2.3 删除
 
@@ -61,6 +61,8 @@ backend-created draft 使用 `materializationState: 'prepared'` 隐藏尚未被 
 ## 3. Session metadata 的语义
 
 ### 3.1 配置快照
+
+已打开 Chat 的配置快照修改通过 `sessionSidecarFetch` 携带 Tab owner 调用 `PATCH /sessions/:id`，由对应 Session Sidecar 的 `SessionStore` 同时发布磁盘 metadata 并更新活动 V2 binding。不能经 Global Sidecar 保存后仅推送 runtime config：下一轮的 Session 快照会仍读到旧 binding，覆盖刚选的新配置。生产 Session Sidecar 只接受自身 Session ID 的 PATCH；未打开会话的标题、收藏等管理修改保留 Global 入口。
 
 `configSnapshotAt` 存在表示 Session 拥有自己的执行配置快照。此后缺失字段代表产品默认或未固定，不能重新回落到 Agent/Project 当前值。Agent/Project 配置只用于：
 
@@ -92,7 +94,11 @@ session selected IDs
 
 所有 Session 操作经 `src/server/session-engine/` 选择 adapter。Route handler 不自行判断 builtin/external，也不借用另一 Runtime 的 reset、Session 创建或 identity 逻辑。
 
-Product Session 的 prepare/commit/rollback 由 `product-session-binding.ts` 管理。只有 adapter 完成自己的 Runtime 清理和准备后，新的 binding 才能发布。Global Sidecar 可以加载公共类型和工具，但不能创建 Product Session 或通过 Chat、IM、Inbox 间接建立当前 binding。
+Product Session 的 prepare/commit/rollback 由 `product-session-binding.ts` 管理。只有 adapter 完成自己的 Runtime 清理和准备后，新的 binding 才能发布。Global Sidecar 可以加载公共类型和工具，但不能建立当前 Product Session binding；Chat、IM、Inbox 也不能间接授予它此权限。
+
+桌面 Tab / Companion 的 pending 出生由当前 Session Sidecar 的 `POST /api/session/birth` 准备快照，再走既有 materialize commit/rollback。Global 的 `POST /sessions` 仅创建未打开 target；不能用 payload flag 将当前 Session 出生发往 Global 路由。生产 role gate 必须参与入口回归测试，development-union 的成功不能证明生产边界正确。
+
+版本化 Session 不参与 legacy pre-query 空草稿启发式：V2 已 commit 的空会话可读取，统计是否发布不能推翻出生。Node / Rust 的可见性判断共用 `session-history-visibility.json` 测试表；prepared 与系统维护会话继续独立隐藏。
 
 ### 4.2 builtin
 
@@ -170,9 +176,9 @@ Space Issue Delivery 复用 Inbox admission，但使用专用 `myagents-space-is
 
 ### 6.1 MyAgents transcript
 
-`SessionStore` 使用 `~/.myagents/sessions.json` 保存 metadata index，并在 `~/.myagents/sessions/` 下按 Session 保存 JSONL transcript。JSONL 支持 append、流式增量持久化、tail cursor 与损坏行隔离；路径必须先经过 canonical Session id validation，不能把用户输入直接拼进文件路径。
+`SessionStore` 用 `sessions.json` 固定格式和 metadata；旧 Session 沿用 `sessions/` 的原 JSON/JSONL 读写，新建及 fork 目标固定到 `sessions-v2/` 的内容操作日志。无迁移、双写或 V2→V1 fallback。路径先经过 canonical Session id validation。
 
-普通写入只追加尚未落盘的 tail。Rewind、retraction、reset、migration 和 delete 使用命名 mutation，在对应文件锁与 index 锁内执行；调用方不得自行改写文件。
+V2 的 live projection 与异步 writer 同属 SessionStore。约 100 ms 的持续批次保存未结束内容，插话产生稳定展示段，完整帧/工具/附件更新原目标。待写队列无容量上限，持续故障时接受积压的内存风险；保存失败或挂起只报告产品记录异常与 toast，不主动阻断 AI。显式 fork/rewind/reset/delete 仍守自身 lifecycle 和物理写权限边界。格式、恢复与接口细节见 [`session_transcript_v2.md`](session_transcript_v2.md)。
 
 ### 6.2 MyAgents 与 SDK 双重存储
 
@@ -180,7 +186,7 @@ Space Issue Delivery 复用 Inbox admission，但使用专用 `myagents-space-is
 
 | 存储 | 用途 |
 |---|---|
-| MyAgents JSONL | UI 展示、搜索、Session 列表、跨 Runtime 的产品历史 |
+| MyAgents V1/V2 产品文件 | UI 展示、搜索、Session 列表、跨 Runtime 的产品历史 |
 | Runtime 原生存储 | SDK/CLI resume、上下文连续性、Runtime 自有 cache 与 branch 语义 |
 
 不能用其中一份替代另一份。产品层恢复以 MyAgents transcript 为准，执行层 resume 以 adapter 的 native identity/history 为准；两者通过显式 identity 和 rewind boundary 对齐。
@@ -189,7 +195,7 @@ Space Issue Delivery 复用 Inbox admission，但使用专用 `myagents-space-is
 
 Rust 按 `(sidecar key, generation)` 把控制请求和 SSE 代理到当前进程。每次实际 replacement 都产生新 generation；旧 generation 的 response、terminal、activity 和 notification claim 必须丢弃。
 
-REST 是冷启动和重连后的 Session snapshot authority，SSE 只提供 snapshot 之后的增量事件。前端先读取历史与当前状态，再按 revision 接收 live event；不能把断线期间缺失的 SSE 当成历史不存在。
+已恢复历史 Tab 以 REST 读取历史和当前状态，再按 revision 接收 SSE 增量，并拒绝 cold-history replay 覆盖该 baseline。尚未采用 REST baseline 的 SSE-native 新生会话，可在重连时采用有序 cold-history snapshot 修复遗漏的正文与创建事件；详见 [V2 transcript](./session_transcript_v2.md)。不能把断线期间缺失的 SSE 当成历史不存在。
 
 SSE transport 断开不代表用户取消，也不拥有 abort 权限。turn 继续执行并持久化；只有显式 Stop、Session lifecycle 命令、Runtime terminal 或 Sidecar termination 能改变执行状态。
 
@@ -236,7 +242,7 @@ mount 期配置同步必须受 disposition 门控；用户主动修改配置可�
 | 路径 | 职责 |
 |---|---|
 | `src/server/types/session.ts` | 当前 Session metadata 与消息类型 |
-| `src/server/SessionStore.ts` | metadata、JSONL、migration 与 typed mutations |
+| `src/server/SessionStore.ts` | metadata、格式固定、V1/V2 历史与 typed mutations |
 | `src/server/session-engine/` | Product binding、Runtime selector 与统一 adapter contract |
 | `src/server/agent-session.ts` | builtin public facade |
 | `src/server/builtin-session/` | builtin lifecycle、queue、turn、config 与 transcript owners |

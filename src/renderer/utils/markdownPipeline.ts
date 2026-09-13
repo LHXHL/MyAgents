@@ -1,4 +1,6 @@
 import type { ComponentProps } from 'react';
+import type { Root, Nodes } from 'mdast';
+import type { VFile } from 'vfile';
 import { defaultUrlTransform, type UrlTransform, type default as ReactMarkdown } from 'react-markdown';
 import rehypeKatex from 'rehype-katex';
 import rehypeRaw from 'rehype-raw';
@@ -12,6 +14,9 @@ import { fileUrlToPath } from './workspaceFileLinks';
  * Normalize drive spelling before sanitize, which otherwise sees C: as a scheme.
  * Micromark URL-encodes native backslashes; raw HTML keeps them literal. */
 function normalizeMarkdownFileUrl(value: string): string | null {
+  // A bare filename with a source location is otherwise parsed as a URI
+  // scheme by sanitize (README.md:12). Make the relative path explicit.
+  if (/^[^/\\:\s]+\.[^/\\:\s]+:\d+(?::\d+)?(?:#.*)?$/.test(value)) return `./${value}`;
   let candidate = value;
   if (/^[A-Za-z]:(?:[/\\]|%5c)/i.test(candidate)) {
     candidate = `file:///${candidate.replace(/%5c/ig, '/').replace(/\\/g, '/')}`;
@@ -20,17 +25,47 @@ function normalizeMarkdownFileUrl(value: string): string | null {
   return new URL(candidate).href;
 }
 
+/** Preserve the parser's native link spelling before mdast→hast URI encoding.
+ * Metadata is local to this render's VFile; it never changes navigation policy. */
+function remarkOriginalReferences() {
+  return (tree: Root, file: VFile) => {
+    const definitions = new Map<string, string>();
+    const references = new Map<number, string>();
+    const visit = (node: Nodes, action: (node: Nodes) => void) => {
+      action(node);
+      if ('children' in node) node.children.forEach(child => visit(child, action));
+    };
+    visit(tree, node => {
+      if (node.type === 'definition' && !definitions.has(node.identifier.toUpperCase())) {
+        definitions.set(node.identifier.toUpperCase(), node.url);
+      }
+    });
+    visit(tree, node => {
+      const url = node.type === 'link' ? node.url : node.type === 'linkReference' ? definitions.get(node.identifier.toUpperCase()) : undefined;
+      const offset = node.position?.start.offset;
+      if (url !== undefined && offset !== undefined) references.set(offset, url);
+    });
+    file.data.myagentsOriginalReferences = references;
+  };
+}
+
 interface MarkdownNode {
   tagName?: string;
+  position?: { start: { offset?: number } };
+  data?: Record<string, unknown>;
   properties?: Record<string, unknown>;
   children?: MarkdownNode[];
 }
 
 function rehypeLocalFileReferences() {
-  return (tree: MarkdownNode) => {
+  return (tree: MarkdownNode, file: VFile) => {
+    const references = file.data.myagentsOriginalReferences as Map<number, string> | undefined;
     const visit = (node: MarkdownNode) => {
       const property = node.tagName === 'img' ? 'src' : node.tagName === 'a' ? 'href' : null;
       if (property && typeof node.properties?.[property] === 'string') {
+        // Presentation/copy preserve the author's reference; only the href
+        // used for navigation passes through normalization and sanitization.
+        if (property === 'href') node.data = { ...node.data, originalHref: references?.get(node.position?.start.offset ?? -1) ?? node.properties[property] };
         const normalized = normalizeMarkdownFileUrl(node.properties[property]);
         if (normalized) node.properties[property] = normalized;
       }
@@ -77,11 +112,13 @@ export const MARKDOWN_SANITIZE_SCHEMA = {
 export const MARKDOWN_REMARK_PLUGINS_DEFAULT: ComponentProps<typeof ReactMarkdown>['remarkPlugins'] = [
   remarkGfm,
   remarkMath,
+  remarkOriginalReferences,
 ];
 
 export const MARKDOWN_REMARK_PLUGINS_WITH_BREAKS: ComponentProps<typeof ReactMarkdown>['remarkPlugins'] = [
   remarkGfm,
   remarkMath,
+  remarkOriginalReferences,
   remarkBreaks,
 ];
 

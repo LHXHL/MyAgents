@@ -18,9 +18,11 @@ const mocks = vi.hoisted(() => ({
   recordAddMark: vi.fn(),
   recordAddNote: vi.fn(),
   recordGet: vi.fn(),
+  recordSpeechProjection: vi.fn(),
   recordTranscript: vi.fn(),
   recordTranscriptDelta: vi.fn(),
   recordDiarization: vi.fn(),
+  recordReassignSegmentSpeaker: vi.fn(),
   recordTimeline: vi.fn(),
   recordingSnapshot: vi.fn(),
   recordingStop: vi.fn(),
@@ -42,9 +44,9 @@ vi.mock('@/api/recording', async (importOriginal) => {
     ...actual,
     recordAddMark: mocks.recordAddMark,
     recordAddNote: mocks.recordAddNote,
-    recordTranscript: mocks.recordTranscript,
+    recordSpeechProjection: mocks.recordSpeechProjection,
     recordTranscriptDelta: mocks.recordTranscriptDelta,
-    recordDiarization: mocks.recordDiarization,
+    recordReassignSegmentSpeaker: mocks.recordReassignSegmentSpeaker,
     recordTimeline: mocks.recordTimeline,
     recordingSnapshot: mocks.recordingSnapshot,
     recordingStop: mocks.recordingStop,
@@ -177,6 +179,9 @@ describe('RecordDetail note input', () => {
     delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
     HTMLElement.prototype.scrollTo = vi.fn();
     mocks.recordGet.mockResolvedValue(RECORD);
+    mocks.recordSpeechProjection.mockImplementation(async () => ({
+      transcript: await mocks.recordTranscript(), diarization: await mocks.recordDiarization(),
+    }));
     mocks.recordTranscript.mockResolvedValue(null);
     mocks.recordTranscriptDelta.mockResolvedValue(null);
     mocks.recordDiarization.mockResolvedValue(null);
@@ -958,6 +963,7 @@ describe('RecordDetail note input', () => {
     const primaryAudio = screen.getByTestId(
       'recording-primary-audio',
     ) as HTMLAudioElement;
+    Object.defineProperty(primaryAudio, 'readyState', { configurable: true, value: HTMLMediaElement.HAVE_METADATA });
     fireEvent.loadedMetadata(primaryAudio);
 
     expect(primaryAudio.currentTime).toBe(9);
@@ -1042,7 +1048,7 @@ describe('RecordDetail note input', () => {
     );
 
     const line = await screen.findByTestId('transcript-speaker-line');
-    expect(line).toHaveTextContent(/Speaker A.*今天怎么样。/i);
+    expect(line).toHaveTextContent(/(?:未确定|Unknown speaker).*今天怎么样。/i);
     expect(line).not.toHaveTextContent('我');
     expect(line.textContent).not.toMatch(/\[Speaker A\]/i);
     expect(line).toHaveClass('flex');
@@ -1055,6 +1061,40 @@ describe('RecordDetail note input', () => {
       'self-start',
       'pt-1',
     );
+  });
+
+  it('uses authoritative unknown/multiple labels and allows manual reassignment without changing paragraphs', async () => {
+    const provenance = { provider: 'local', modelPackRevision: 'test', onnxRuntimeVersion: 'test' };
+    const texts = ['No evidence here.', 'Two voices in this paragraph.', 'A known speaker.'];
+    mocks.recordTranscript.mockResolvedValue({
+      schemaVersion: 1, recordId: RECORD.id, projectionRevision: 1, state: 'ready', sampleRate: 16_000, provenance,
+      segments: texts.map((text, index) => ({ segmentId: `segment-${index}`, track: 'microphone', startSample: index * 16_000, endSample: (index + 1) * 16_000, text, revision: 1 })),
+    });
+    const projection = {
+      schemaVersion: 1, recordId: RECORD.id, projectionRevision: 1, sampleRate: 16_000, provenance,
+      // UI must consume RecordStore's attribution, not independently infer A from these turns.
+      turns: [{ startSample: 0, endSample: 48_000, globalSpeaker: 0 }],
+      overrideRevision: 0, speakers: [{ speakerId: 0, customName: 'Alice', mergedInto: null }, { speakerId: 1, customName: 'Bob', mergedInto: null }],
+      segmentSpeakerOverrides: {}, conflicts: [],
+      segmentSpeakerAttributions: { 'segment-0': { kind: 'unknown' }, 'segment-1': { kind: 'multiple' }, 'segment-2': { kind: 'single', speakerId: 1 } },
+    };
+    mocks.recordDiarization.mockResolvedValue(projection);
+    mocks.recordReassignSegmentSpeaker.mockImplementation(async () => {
+      const next = { ...projection, overrideRevision: 1, segmentSpeakerAttributions: { ...projection.segmentSpeakerAttributions, 'segment-1': { kind: 'single', speakerId: 0 } } };
+      mocks.recordDiarization.mockResolvedValue(next);
+      return next;
+    });
+    render(<RecordDetail recordId={RECORD.id} isActive={false} initialRecordingSnapshot={SNAPSHOT} />);
+    const lines = await screen.findAllByTestId('transcript-speaker-line');
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toHaveTextContent(/未确定|Unknown speaker/);
+    expect(lines[1]).toHaveTextContent(/多位说话人|Multiple speakers/);
+    expect(lines[2]).toHaveTextContent('Bob');
+    fireEvent.click(within(lines[1]).getByRole('button', { name: /Reassign|说话人/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Alice' }));
+    await waitFor(() => expect(mocks.recordReassignSegmentSpeaker).toHaveBeenCalledWith(expect.objectContaining({ recordId: RECORD.id, segmentId: 'segment-1', speakerId: 0, expectedOverrideRevision: 0 })));
+    await waitFor(() => expect(lines[1]).toHaveTextContent('Alice'));
+    for (const text of texts) expect(screen.getByRole('button', { name: text })).toBeInTheDocument();
   });
 
   it('pulls a live transcript delta immediately after its change event', async () => {
@@ -1272,6 +1312,52 @@ describe('RecordDetail note input', () => {
       'hover:bg-[var(--paper-inset)]',
       'focus:bg-[var(--paper-inset)]',
     );
+  });
+
+  it.each([true, false])('offers explicit reprocessing of a completed final (has segments: %s) and keeps its old text', async hasSegments => {
+    mocks.recordGet.mockResolvedValue({ ...RECORD, audio: { ...RECORD.audio!, captureStatus: 'ready', transcriptionStatus: 'ready', diarizationStatus: 'ready', sizeBytes: 1024 } });
+    mocks.recordingSnapshot.mockResolvedValue(null);
+    mocks.recordTranscript.mockResolvedValue({
+      schemaVersion: 1, recordId: RECORD.id, projectionRevision: 1, state: 'recording_final', sampleRate: 16000,
+      provenance: { provider: 'sherpa-onnx', modelPackRevision: 'legacy-test', onnxRuntimeVersion: 'test' },
+      segments: hasSegments ? [{ segmentId: 'old-final', track: 'microphone', startSample: 0, endSample: 8000, text: '保留旧稿直到重跑成功', revision: 1 }] : [],
+    });
+    render(<RecordDetail recordId={RECORD.id} isActive={false} />);
+    fireEvent.click(await screen.findByTitle(/更多记录操作|More record actions/));
+    expect(mocks.recordStartTranscription).not.toHaveBeenCalled();
+    const rerun = await screen.findByRole('button', { name: /重新转写|Transcribe again/ });
+    expect(rerun).toBeEnabled();
+    mocks.recordGet.mockResolvedValue({ ...RECORD, audio: { ...RECORD.audio!, captureStatus: 'ready', transcriptionStatus: 'queued', diarizationStatus: 'queued', sizeBytes: 1024 } });
+    fireEvent.click(rerun);
+    await waitFor(() => expect(mocks.recordStartTranscription).toHaveBeenCalledExactlyOnceWith(RECORD.id));
+    if (hasSegments) expect(screen.getByText('保留旧稿直到重跑成功')).toBeInTheDocument();
+    fireEvent.click(await screen.findByTitle(/更多记录操作|More record actions/));
+    expect(await screen.findByRole('button', { name: /重新转写|Transcribe again/ })).toBeDisabled();
+  });
+
+  it.each([
+    { capture: 'ready', transcription: 'finalizing', diarization: 'running', usable: true },
+    { capture: 'ready', transcription: 'ready', diarization: 'running', usable: true },
+    { capture: 'ready', transcription: 'ready', diarization: 'ready', usable: false },
+  ])('does not admit another rerun while unavailable: %j', async state => {
+    mocks.recordGet.mockResolvedValue({ ...RECORD, audio: { ...RECORD.audio!, captureStatus: state.capture, transcriptionStatus: state.transcription, diarizationStatus: state.diarization, sizeBytes: 1024 } });
+    mocks.recordingSnapshot.mockResolvedValue(null);
+    mocks.speechModelPackStatus.mockResolvedValue({ usable: state.usable });
+    mocks.recordTranscript.mockResolvedValue({ schemaVersion: 1, recordId: RECORD.id, projectionRevision: 1, state: 'recording_final', sampleRate: 16000, provenance: { provider: 'sherpa-onnx', modelPackRevision: 'test', onnxRuntimeVersion: 'test' }, segments: [] });
+    render(<RecordDetail recordId={RECORD.id} isActive={false} />);
+    fireEvent.click(await screen.findByTitle(/更多记录操作|More record actions/));
+    const rerun = await screen.findByRole('button', { name: /重新转写|Transcribe again/ });
+    expect(rerun).toBeDisabled();
+    fireEvent.click(rerun);
+    expect(mocks.recordStartTranscription).not.toHaveBeenCalled();
+  });
+
+  it('does not offer final reprocessing while this Record still owns capture', async () => {
+    mocks.recordTranscript.mockResolvedValue({ schemaVersion: 1, recordId: RECORD.id, projectionRevision: 1, state: 'live', sampleRate: 16000, provenance: { provider: 'sherpa-onnx', modelPackRevision: 'test', onnxRuntimeVersion: 'test' }, segments: [] });
+    render(<RecordDetail recordId={RECORD.id} isActive={false} initialRecordingSnapshot={SNAPSHOT} />);
+    fireEvent.click(await screen.findByTitle(/更多记录操作|More record actions/));
+    expect(screen.queryByRole('button', { name: /重新转写|Transcribe again/ })).not.toBeInTheDocument();
+    expect(mocks.recordStartTranscription).not.toHaveBeenCalled();
   });
 
   it('shows one focused detail menu with AI discussion and Markdown export', async () => {

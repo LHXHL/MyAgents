@@ -176,7 +176,7 @@ Session 文件由 Node.js Sidecar 写入，索引在 Rust。两个显而易见�
 1. **Bun → Rust 反向调用**：Rust 只做 Bun 的 HTTP 代理，没有反向通道；为一个 cross-cutting concern 新增进程耦合得不偿失
 2. **每个写入方都记得调通知**：今天只有 Sidecar，明天是 CLI、迁移脚本、崩溃恢复 — 任何一个忘记通知就静默孤立索引
 
-**Watcher 让正确行为成为默认路径**：任何进程接触 `~/.myagents/sessions/` 都会自动流入索引，与 `local_http` / `process_cmd` 同属 pit-of-success 模式。
+**Watcher 让正确行为成为默认路径**：任何进程接触 `~/.myagents/sessions/` 或 `sessions-v2/` 都会自动流入索引，与 `local_http` / `process_cmd` 同属 pit-of-success 模式。
 
 ### 去抖策略
 
@@ -185,7 +185,7 @@ Session 文件由 Node.js Sidecar 写入，索引在 Rust。两个显而易见�
 ### 事件处理
 
 1. **路径分类（结构匹配，非绝对路径相等）**：
-   - `.../sessions/<id>.jsonl` → `SessionFile(id)`
+   - `.../sessions/<id>.jsonl` 或 `.../sessions-v2/<id>.jsonl` → `SessionFile(id)`
    - `.../sessions.json` → `SessionsJson`
    - 其他 → 忽略
    - **陷阱**：macOS 上 `notify` 可能汇报 APFS firmlink 路径（`/System/Volumes/Data/Users/...`），绝对路径相等会静默失配所有事件
@@ -195,7 +195,7 @@ Session 文件由 Node.js Sidecar 写入，索引在 Rust。两个显而易见�
 
 ### 监听范围
 
-- `sessions_dir`（非递归）— 捕获 JSONL 写入/删除
+- `sessions_dir` 与 `sessions_v2_dir`（非递归）— 捕获两种格式的写入/删除
 - `data_dir`（非递归）— 捕获 `sessions.json` 变更（大多数平台不允许监听单个文件）
 
 ### 与 Session 导航投影 watcher 的边界
@@ -357,3 +357,5 @@ snippet 构建常见 "取匹配位置前后各 N 字符" 的近似切片。裸 `
 - 前端组件：`src/renderer/components/search/`
 - 搜索导航 helper：`src/renderer/utils/workspaceSearchNavigation.ts`
 - 文件预览跳转：`src/renderer/components/FilePreviewModal.tsx`、`markdown-editor/MarkdownEditor.tsx` 与 `focusTarget.ts`、`MonacoEditor.tsx`
+
+V2 由 Rust `session_transcript.rs` 按 metadata 固定格式读取有效连续操作前缀；索引按 Session/message ID upsert，generation/末批边界游标验证替换与修复，启动重扫覆盖离线变更。派生缓存有界，详情见 [`session_transcript_v2.md`](session_transcript_v2.md)。

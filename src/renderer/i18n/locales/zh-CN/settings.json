@@ -180,6 +180,41 @@
     }
   },
   "providers": {
+    "cliproxy": {
+      "description": "使用 Google Antigravity 订阅账户额度",
+      "continueConnection": "继续连接",
+      "moreActions": "更多操作",
+      "loginTitle": "连接 Antigravity",
+      "close": "关闭",
+      "preparingLogin": "正在打开授权页面…",
+      "account": "已保存账号",
+      "disconnected": "尚未连接",
+      "newAccount": "新账号",
+      "connect": "连接账号",
+      "reconnect": "更换账号",
+      "disconnect": "断开连接",
+      "retryCleanup": "重试清理",
+      "cancel": "取消",
+      "refreshModels": "刷新模型",
+      "disabled": "当前暂停使用，可以保留账号或断开连接。",
+      "browserHint": "请在系统浏览器完成授权，授权窗口有效期为 5 分钟。",
+      "operationFailed": "操作未完成，请重试。",
+      "loginToDiscover": "请先连接并验证 Antigravity 账号。",
+      "accountState": {
+        "stored": "待验证",
+        "verified": "已验证",
+        "reauth-required": "需重新授权"
+      },
+      "phase": {
+        "authorizing": "等待浏览器授权",
+        "stored": "继续完成登录",
+        "authorized": "登录成功，正在保存",
+        "waiting-to-commit": "登录成功，正在切换账号",
+        "cancelling": "正在取消",
+        "failed": "登录未完成"
+      },
+      "connected": "已登录"
+    },
     "tokendance": {
       "partner": "官方",
       "intro": "一键注册使用各类模型，最低折扣至50%",

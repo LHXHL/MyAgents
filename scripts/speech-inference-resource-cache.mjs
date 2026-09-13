@@ -15,10 +15,6 @@ export const REQUIRED_SPEECH_DEPENDENCY_IDS = [
 ];
 
 export const REQUIRED_SPEECH_LEGAL_FILES = [
-  'HDBSCAN-LICENSE-APACHE',
-  'HDBSCAN-LICENSE-MIT',
-  'KDTREE-LICENSE-APACHE',
-  'KDTREE-LICENSE-MIT',
   'LIBOPUS-LICENSE',
   'LIBOPUS-SYS-LICENSE',
   'NUM-TRAITS-LICENSE-APACHE',
@@ -26,6 +22,14 @@ export const REQUIRED_SPEECH_LEGAL_FILES = [
   'OPUS2-LICENSE-APACHE',
   'OPUS2-LICENSE-MIT',
   'SHERPA-ONNX-LICENSE',
+  'RUBATO-LICENSE',
+  'SONORA-LICENSE',
+  'SONORA-AEC3-LICENSE',
+  'SONORA-AGC2-LICENSE',
+  'SONORA-COMMON-AUDIO-LICENSE',
+  'SONORA-FFT-LICENSE',
+  'SONORA-NS-LICENSE',
+  'SONORA-SIMD-LICENSE',
   'SPEECH_INFERENCE_NOTICES.md',
 ];
 
@@ -86,7 +90,7 @@ export function validateSpeechBuildLock(lock) {
   if (
     typeof speech?.bundleVersion !== 'string' ||
     speech.bundleVersion.length === 0 ||
-    speech.adapterAbiVersion !== 1 ||
+    speech.adapterAbiVersion !== 2 ||
     speech.sherpaOnnxVersion !== '1.13.6' ||
     !/^[0-9a-f]{40}$/.test(speech.sherpaOnnxCommit ?? '') ||
     speech.onnxRuntimeVersion !== '1.28.0' ||
@@ -94,9 +98,9 @@ export function validateSpeechBuildLock(lock) {
     speech.onnxRuntimeUpstreamRevision.length === 0 ||
     speech.opus2Version !== '0.4.0' ||
     speech.libopusSysVersion !== '0.3.3' ||
-    speech.hdbscanVersion !== '0.12.0' ||
-    speech.kdtreeVersion !== '0.7.0' ||
     speech.numTraitsVersion !== '0.2.19' ||
+    speech.sonoraVersion !== '0.2.0' ||
+    speech.rubatoVersion !== '0.16.2' ||
     !Number.isSafeInteger(speech.nativeIncrementHardLimitBytes) ||
     speech.nativeIncrementHardLimitBytes <= 0 ||
     speech.nativeIncrementHardLimitBytes > 80 * 1024 * 1024 ||
