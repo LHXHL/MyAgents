@@ -111,6 +111,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Prepare signed CLIProxy build inputs
+        run: node scripts/prepare-cliproxy-ci.mjs win32-x64
       - name: Verify selective Sherpa source extraction on Windows
         run: node --test scripts/sherpa-source-extraction.test.mjs
       - uses: dtolnay/rust-toolchain@1.92.0
@@ -147,3 +149,32 @@ jobs:
           Set-Content src-tauri/resources/vcruntime140.dll 'ci placeholder'
           Set-Content src-tauri/resources/vcruntime140_1.dll 'ci placeholder'
       - run: cargo check --manifest-path src-tauri/Cargo.toml --locked
+
+  # CLIProxy native lifecycle fixtures require a supported Unix platform.
+  # Keep Linux's broad Rust gate and execute these fixtures on macOS explicitly.
+  macos-cliproxy:
+    name: macOS CLIProxy lifecycle
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@1.92.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Prepare signed CLIProxy build inputs
+        run: node scripts/prepare-cliproxy-ci.mjs
+      - name: Prepare non-executed Tauri resource paths
+        run: |
+          mkdir -p src-tauri/resources/{claude-agent-sdk,sharp-runtime,tsx-runtime,nodejs,speech-inference,cli,document-processing}
+          mkdir -p src-tauri/resources/playwright-control/{@playwright/mcp,playwright,playwright-core}
+          for directory in claude-agent-sdk sharp-runtime tsx-runtime nodejs speech-inference cli document-processing playwright-control/@playwright/mcp playwright-control/playwright playwright-control/playwright-core; do
+            touch "src-tauri/resources/$directory/.ci-placeholder"
+          done
+          touch src-tauri/resources/server-dist.js src-tauri/resources/plugin-bridge-dist.mjs
+      - name: Test native component lifecycle without provider credentials
+        run: |
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib 'cliproxy::' --config "target.$host.runner = ['env', 'DYLD_FALLBACK_LIBRARY_PATH=/usr/lib/swift']"

@@ -1,5 +1,7 @@
-//! Signed controls are evaluated independently of component compatibility.
-//! A new SDK-only release must still be able to disable an older client.
+//! Required context: specs/tech_docs/managed_cliproxy.md.
+//! Signed global controls are independent of App-version resource selection.
+#[path = "../cliproxy_policy.rs"]
+mod policy;
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
@@ -40,12 +42,8 @@ impl Controls {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Compatibility {
-    pub app_versions: BTreeSet<String>,
-    pub sdk_version: String,
+    pub min_app_version: String,
     pub revision: u64,
-    /// Read old signed records without restoring their superseded model gate.
-    #[serde(rename = "models", default, skip_serializing)]
-    pub _legacy_models: Option<serde_json::Value>,
     /// Each listed version has passed *both directions* with this version.
     /// A downgrade never restores a historical snapshot of token contents.
     pub credential_compatible_versions: BTreeSet<String>,
@@ -78,7 +76,7 @@ pub(super) struct Component {
 pub(super) struct Manifest {
     pub schema_version: u32,
     pub controls: Controls,
-    pub component: Component,
+    pub releases: Vec<Component>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -103,6 +101,9 @@ impl SignedManifest {
         if manifest.schema_version != 1 || manifest.controls.policy_revision == 0 {
             return Err(Error::contract());
         }
+        let floors: Vec<_> = manifest.releases.iter().map(|release| release.compatibility.min_app_version.as_str()).collect();
+        policy::select_release_index("0.0.0", &floors).map_err(|_| Error::contract())?;
+        if manifest.releases.is_empty() { return Err(Error::contract()); }
         // Do not validate component compatibility here. Applicable controls
         // must first be persisted even when this component cannot run here.
         Ok(manifest)
@@ -124,22 +125,16 @@ pub(super) fn merge_controls(current: Option<&Controls>, incoming: &Controls) ->
     }
 }
 
+impl Manifest {
+    pub fn select(&self, app: &str) -> Result<Option<&Component>> {
+        let floors: Vec<_> = self.releases.iter().map(|r| r.compatibility.min_app_version.as_str()).collect();
+        let index = policy::select_release_index(app, &floors).map_err(|_| Error::contract())?;
+        Ok(index.map(|index| &self.releases[index]))
+    }
+}
+
 pub(super) fn version(value: &str) -> Result<[u64; 3]> {
-    let mut result = [0; 3];
-    let parts: Vec<_> = value.split('.').collect();
-    if parts.len() != 3 {
-        return Err(Error::contract());
-    }
-    for (i, part) in parts.iter().enumerate() {
-        if part.is_empty()
-            || (part.len() > 1 && part.starts_with('0'))
-            || !part.bytes().all(|b| b.is_ascii_digit())
-        {
-            return Err(Error::contract());
-        }
-        result[i] = part.parse().map_err(|_| Error::contract())?;
-    }
-    Ok(result)
+    policy::version(value).map_err(|_| Error::contract())
 }
 
 pub(super) fn digest_valid(value: &str) -> bool {
@@ -177,13 +172,12 @@ pub(super) fn platform() -> Option<&'static str> {
 }
 
 impl Component {
-    pub fn artifact(&self, platform: &str, app: &str, sdk: &str) -> Result<&Artifact> {
+    pub fn artifact(&self, platform: &str, app: &str) -> Result<&Artifact> {
         version(&self.version)?;
         if self.tag != format!("v{}", self.version)
             || self.commit.len() != 40
             || !self.commit.bytes().all(|c| c.is_ascii_hexdigit())
-            || !self.compatibility.app_versions.contains(app)
-            || self.compatibility.sdk_version != sdk
+            || version(app)? < version(&self.compatibility.min_app_version)?
             || self.compatibility.revision == 0
         {
             return Err(Error::new(
@@ -311,10 +305,8 @@ pub(super) mod tests {
             tag: format!("v{version}"),
             commit: "a".repeat(40),
             compatibility: Compatibility {
-                app_versions: BTreeSet::from(["0.4.16".to_owned()]),
-                sdk_version: "0.3.261".to_owned(),
+                min_app_version: "0.4.17".to_owned(),
                 revision: 1,
-                _legacy_models: None,
                 credential_compatible_versions: BTreeSet::new(),
             },
             artifacts: BTreeMap::from([(
@@ -390,9 +382,9 @@ pub(super) mod tests {
             ..old.clone()
         };
         let mut next = component("7.2.159");
-        next.compatibility.sdk_version = "99.0.0".to_owned();
+        next.compatibility.min_app_version = "99.0.0".to_owned();
         assert_eq!(merge_controls(Some(&old), &incoming).unwrap(), incoming);
-        assert!(next.artifact("darwin-arm64", "0.4.16", "0.3.261").is_err());
+        assert!(next.artifact("darwin-arm64", "0.4.16").is_err());
     }
     #[test]
     fn controls_remain_sticky_across_old_bundles_and_same_revision_conflicts() {

@@ -1,4 +1,5 @@
 //! App-owned CLIProxy component and Antigravity account lifecycle.
+//! Required reading before changes: specs/tech_docs/managed_cliproxy.md.
 mod callback;
 mod client;
 mod component;

@@ -108,7 +108,7 @@ One-shot verification 必须在完整 SDK / translator terminal success 后才�
 
 `antigravity-sub` 沿用 builtin SDK。Rust `CliProxyManager` 管理原版组件、active/candidate 目录、浏览器回调运输和 Query lease；OAuth/refresh 与协议转换归 CLIProxy。统一 `prepareProviderBinding()` 覆盖主 Query、pre-warm、标题、vision 及后台 Session。登录由原版账号摘要确认后即完整可用，无模型测试；模型从原版接口读取，不加白名单。binding 携带原生模型元数据，SDK env builder 拒绝未准备或持久化拷贝的 endpoint reference。
 
-账号清理、更新 draining、稳定 history、资源批准与原版接口合同见 [托管 CLIProxy](./managed_cliproxy.md)。Grok 继续使用自己的 Rust OAuth + Responses Bridge，不做迁移。
+客户端普通升版不改组件资源；CLIProxy 更新按最低 MyAgents 版本策略分发。账号清理、更新 draining、稳定 history、资源发布操作手册与原版接口合同见 [托管 CLIProxy](./managed_cliproxy.md)。Grok 继续使用自己的 Rust OAuth + Responses Bridge，不做迁移。
 
 ## OpenAI Bridge
 

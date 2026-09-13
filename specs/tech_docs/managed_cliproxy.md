@@ -1,6 +1,6 @@
 # 托管 CLIProxy 组件
 
-`antigravity-sub` 是 builtin SDK 的订阅 Provider，直接使用原版 CLIProxy 的 Anthropic 接口，不经过 OpenAI Bridge。组件来源固定在 `src/shared/managed-cliproxy-source.json`；组件完整性、App/SDK 兼容与模型目录分开裁决。MyAgents 不维护模型白名单，不以模型请求验证登录。
+`antigravity-sub` 是 builtin SDK 的订阅 Provider，直接使用原版 CLIProxy 的 Anthropic 接口，不经过 OpenAI Bridge。随包基线由 `src/shared/managed-cliproxy-source.json` 锁定；线上资源按最低 MyAgents 版本选择，独立于客户端发版。组件完整性、资源策略与模型目录分开裁决。MyAgents 不维护模型白名单，不以模型请求验证登录。
 
 ## Owner 与数据流
 
@@ -21,7 +21,7 @@ Rust 是账号目录注册、正式/候选指针、组件选择、进程、准�
 
 `config.json` 保存用户模型首选、启用列表、别名和 Rust 投影的账号可用性。Session snapshot 固化 Provider route；本次 Query 的端口、模型 key、instance generation 与原生模型元数据只在执行进程内存在。`providerHistory` 使用稳定 managed Provider identity，临时端口变化不构成 Provider 切换。
 
-目录刷新追加新模型，尊重用户删除和显示名；已发现行的能力字段按原生元数据刷新，清除旧审批造成的裁剪。缺少元数据不隐藏模型或阻止调用。普通 Query/辅助请求的真实 SDK terminal 可记录逐模型观察，但不影响登录和准入；取消与迟到的旧 lease 结果不能污染新账号。设置挂载只读本地状态，显式刷新读取原版目录。
+目录刷新追加新模型，尊重用户删除和显示名；已发现行的能力字段按原生元数据刷新。缺少元数据不隐藏模型或阻止调用。普通 Query/辅助请求的真实 SDK terminal 可记录逐模型观察，但不影响登录和准入；取消与迟到的旧 lease 结果不能污染新账号。设置挂载只读本地状态，显式刷新读取原版目录。
 
 每个 Query/one-shot 经同一入口取得 active 的 lease，不存在候选模型验证准入。模型 key 不进入 Renderer、Session、任务或日志；管理 key 不出 Rust/CLIProxy。同步 resolver 不启动进程或返回秘密。
 
@@ -39,13 +39,13 @@ SDK 请求使用与主 Query 一致的 `claude_code` preset + 非空任务 appen
 
 设置卡片使用“官方”标签，登录前后统一说明“使用 Google Antigravity 订阅账户额度”，已连接时显示“已登录”。登录弹窗只承载浏览器授权与账号切换进度，成功后关闭；关闭视图不取消 Rust 操作，显式取消才清理准确候选。组件版本、检查更新、更新进度与更新失败均不提供用户界面入口，只在日志记录；账号错误仍按 generation 投影。
 
-原版确认账号后，Rust 通过既有 drain/实例切换原子提交 candidate → active 与旧目录清理意图，投影 `providerVerifyStatus.valid`，与验证通过的 API key 具有相同路由可用性。提交后的清理失败不回退旧账号。旧 active 的 verifiedAt 仅兼容为连接时间；旧候选的 awaiting-verification 不可靠地证明授权，启动后进入 stored，点击“继续连接”由原版账号摘要确认并完成登录，无需模型测试或重复 OAuth。
+原版确认账号后，Rust 通过既有 drain/实例切换原子提交 candidate → active 与旧目录清理意图，投影 `providerVerifyStatus.valid`，与验证通过的 API key 具有相同路由可用性。提交后的清理失败不回退旧账号。候选授权状态不等于已保存的账号；重启后候选进入 stored，由原版账号摘要确认是否已经完成登录，无需模型测试。
 
 取消候选只清理候选；断开覆盖该 Provider 的所有已登记目录。两者先保存删除意图，后停止 writer 并删目录。`retry_cleanup` 仅重试已有目标，不能把 retired/candidate 清理扩展成断开 active。写意图失败时不返回成功，本进程保持对应准入关闭。普通停止不扫描或误杀其他 CLIProxy 安装。
 
 同一供应商内切模型复用 active CLIProxy 和账号目录。模型 key、别名与模型能力绑定到 SDK Query 的执行连接，因此会话可重建 Query/lease，但不会以切模型为由替换应用级 CLIProxy。组件只因组件升级、代理设置变化、账号替换或故障恢复而更换。
 
-Binding acquire 由 Rust manager 自己的异步任务完成，HTTP 请求只等待结果。会话切模型、materialization 或 vision 超时取消 HTTP 时，不得中断组件 birth 的健康检查、attempt 清理和 current 指针提交。取消的 operation 经现有 release 收敛；无人接收的新 lease 由 manager 立即释放。启动失败同样必须走完原有进程清理，不能留下“存活 child + 未完成 attempt”再错误回退到 previous identity。旧版本遗留的失败 attempt 继续服从既有组件选择/回退规则，不清除账号凭据。
+Binding acquire 由 Rust manager 自己的异步任务完成，HTTP 请求只等待结果。会话切模型、materialization 或 vision 超时取消 HTTP 时，不得中断组件 birth 的健康检查、attempt 清理和 current 指针提交。取消的 operation 经现有 release 收敛；无人接收的新 lease 由 manager 立即释放。启动失败同样必须走完原有进程清理，不能留下“存活 child + 未完成 attempt”再错误回退到 previous identity。失败 attempt 服从组件选择/回退规则，不清除账号凭据。
 
 会话预热连续失败达到上限后，队列恢复不能重新清零预算；尚未派发的输入经既有取消入口收敛。用户再次发送或显式配置变化才开启新的恢复上下文。
 
@@ -72,36 +72,137 @@ Binding acquire 由 Rust manager 自己的异步任务完成，HTTP 请求只等
 
 MyAgents 不传 `-local-model`，保留原版启动及每三小时更新线上 models.json 的能力。v7.2.158 的 Antigravity 注册来自 CLIProxy 上游维护目录，并非每次向 Google 查询订阅权益；目录不保证每次调用成功。统一日志只记录阶段、目录计数和有限错误码，不记录邮箱、回调 URL、响应内容或 key。
 
-## 组件与兼容记录
+## 资源策略：最低客户端版本
 
-实际执行位置统一为 `<data>/runtimes/cliproxy/<version>/<platform>/<artifact-digest>/`。随包程序也先校验复制到该目录，App 升级不会移除 previous。配置/key 只在 `<data>/providers/cliproxy/antigravity-sub/run/<instance-generation>/`；凭据在独立 accounts/<opaque-id>/auth。
+这是 MyAgents 0.4.17 首次发布的机制。最终清单格式为 `schemaVersion: 1`、`controls`、`releases[]`；没有精确 App/SDK 白名单，也没有额外的集成协议代际。
 
-签名信任根复用 `resource_signature_core.rs` 与 Tauri updater pubkey。controls 的单调 revision、平台/App/SDK 兼容、hash 与 credentialCompatibleVersions 保留。旧 manifest 的 compatibility.models 兼容读取但不参与准入，新打包记录不写模型审批。网络不可达保留本机可信组件。
+每条 release 保留 `version / tag / commit / artifacts`，以及以下 `compatibility`：
 
-App 启动后和每 15 分钟检查固定 MyAgents manifest；更高兼容版本自动准备并在 drain 后切换。同版本仅允许同一产物更高兼容 revision 更新。已失败 artifact/App/SDK/compatibility 组合不自动重复安装或启动；传输失败可重新检查，用户显式操作可重试。正常运行后的崩溃恢复有独立的次数上限，不重放任务。
-
-清单或签名下载的 HTTP 404 返回 `update_unpublished`；网络失败返回 `update_network`。日志仅保留资源类别、失败类别和 HTTP 状态，更新不可达不使本机可信组件或账号授权失效。
-
-新版的 credentialCompatibleVersions 列表证明它与所列旧版的双向凭据兼容；旧清单不需要预知未来版本。不兼容或已撤销的旧版不可作为回退。GC 仅处理组件 owner 目录，并保留 current/previous/pending。
-
-## 构建、验收与发布
-
-源代码仓库不提交二进制缓存、签名私钥或真实账号数据。先取得 source lock 指定的上游原包，再生成平台产物与组件兼容记录：
-
-```sh
-node scripts/package-cliproxy-component.mjs artifact --platform darwin-arm64 --source /path/to/upstream.tar.gz --out /path/to/records --development
-node scripts/package-cliproxy-component.mjs manifest --approval /path/to/approval.json --records /path/to/records --out /path/to/distribution
-node scripts/package-cliproxy-component.mjs stage --from /path/to/distribution --platform darwin-arm64
+```json
+{
+  "minAppVersion": "0.4.17",
+  "revision": 1,
+  "credentialCompatibleVersions": []
+}
 ```
 
-`manifest` 使用既有 TAURI_SIGNING_PRIVATE_KEY 环境；生产 macOS artifact 使用 APPLE_SIGNING_IDENTITY，去掉 --development。Windows 核对 PE x64。保留最终 ZIP、文件和原始 source 摘要，原版逻辑不修改。公开 enabled 要求完整生产平台产物和签名，不要求模型批准。
+- `minAppVersion` 是开放的最低客户端门槛。选择所有门槛不大于当前 App 的条目中，门槛最高的那条；不依赖数组顺序，不按 CLIProxy 版本大小挑选条目。同一门槛只允许一条记录。
+- `revision` 是该条目的兼容记录修订号。同一组件版本只可复用原始 immutable bytes；修改凭据兼容记录时提高修订号。换到更高组件版本可从 1 开始。
+- `credentialCompatibleVersions` 记录已经验证可双向共用账号文件的旧组件版本。它只在发布新 CLIProxy 时维护，不随 MyAgents 或 SDK 升版改变。已登录账号的升级/回退仍受这一条件约束，不能凭版本号猜测 token 文件兼容。
+- App、CLIProxy、门槛均按数值 `x.y.z` 比较，不接受预发布后缀。SDK 版本锁定与回归测试仍由客户端开发负责，SDK 版本不参与组件准入。
 
-构建脚本从 MYAGENTS_CLIPROXY_DISTRIBUTION_DIR 或 `src-tauri/resources/cliproxy-cache/distribution` 取得已签名资源。macOS/Windows 的 Tauri 平台配置内置组件；Rust build.rs 再验共享签名、source pin、目标平台、App/SDK、体积及 hash，支持目标缺资源时构建失败。现有 Linux App 构建不要求此组件，该 Provider 在未批准平台不可用。`build_dev.sh --build-only` 可构建而不停止正在运行的应用。
+例：`.17 → 7.2.158` 与 `.20 → 7.3.0` 共存时（这里 `.17` 表示 `0.4.17`），0.4.17–0.4.19 使用前者，0.4.20 及未来客户端使用后者。修改 `.17` 不影响已存在的 `.20`。没有匹配条目表示没有适用更新，保持本地可用组件；不会把其它门槛的资源当成候选。
 
-`node scripts/publish-cliproxy-component.mjs /path/to/distribution` 使用 minisign（复用同一公钥）输出待发布计划。获准发布后加 --publish，提供既有 R2 release 环境与 rclone；脚本先传不可变产物并验线上 bytes，再更新 manifest/signature。配置了 CF_ZONE_ID 与 CF_API_TOKEN 时清 CDN 缓存；与现有发布脚本一致，未配置时仍必须直接读取公开地址并核对全部字节和签名。公开启用和发布不是开发构建的默认动作。
+Rust 构建与运行时共用 `src-tauri/src/cliproxy_policy.rs` 的门槛选择；Node 打包/发布使用 `scripts/cliproxy-release-policy.mjs`，两者的版本边界测试必须同步。
 
-确定性测试不依赖用户目录、密钥或网络。`verify-cliproxy-contract.mjs` 与 Rust ignored native_process_management_contract 显式检查原版进程和接口，不完成 Google 登录。Rust ignored native_account_sdk_tool_and_history_contract 才打开系统浏览器，使用临时账号目录并调用真实 SDK 工具与历史测试；MYAGENTS_CLIPROXY_SMOKE_EXECUTABLE 必须指向已核验源码摘要的原版程序。
+## 随包、已安装与线上资源的关系
 
-`npm run verify:cliproxy:sdk-local` 显式运行已安装 SDK，以本机模拟服务和拒绝外连的代理检查 loopback 绕过、实际子 Agent 模型选择，不访问 Google，不形成能力审批。
+| 状态 | 权威与用途 |
+| --- | --- |
+| 随包基线 | 仓库 `managed-cliproxy-source.json` 固定版本、commit、三平台上游摘要。构建从签名清单中选这个 source lock 对应且适用于当前 App 的条目，不跟随线上最新版。 |
+| 线上目标 | 固定 `https://download.myagents.io/runtimes/cliproxy/manifest-v1.json` 及其 `.sig`；按当前 App 命中最高适用门槛。source lock 不限制线上更高版本。 |
+| 已安装事实 | `Installed` 保存签名原文、来源、选中的 `minAppVersion`。读取 current/previous/pending 时按保存的门槛找回原条目，不能随当前 App 版本重新选择。 |
+| 全局 controls | 签名的 providerMode、revocations 与单调 policyRevision，独立于是否有适用 release。资源不适用不能遮蔽明确停用/撤销。 |
 
-真实平台安装、OS 权限、更新/回退和 Google 账号验收分别记录；编译与无凭据 smoke 不代替真机验收。登录产品链路不执行模型工具/thinking/模态/上下文测试。
+实际执行目录为 `<data>/runtimes/cliproxy/<version>/<platform>/<artifact-digest>/`。随包资源先校验并安装到该目录；相同摘要的已有文件直接复用。配置与 key 位于 `<data>/providers/cliproxy/antigravity-sub/run/<instance-generation>/`，凭据保存在独立 `accounts/<opaque-id>/auth`。
+
+启动先准备本地可信选择，再启动在线检查；之后每 15 分钟检查一次。正常只升级更高组件版本，或采纳同一产物更高 compatibility revision，不因新的 App 安装包带了旧组件就强制降级。更新先下载与校验，等待消费者 drain 后启动新进程，健康后提交 current。失败按既有规则回退；账号文件不兼容或已撤销的旧组件不能作为回退。GC 只处理组件目录，并保留 current/previous/pending 引用的文件。
+
+签名信任根复用 `resource_signature_core.rs` 和 Tauri updater 公钥。网络失败保留本机可信组件；404 记为 `update_unpublished`，传输失败记为 `update_network`。已失败 artifact/App/SDK/revision 的自动安装或启动不会无限重复；这些字段标识失败尝试的环境，不是精确版本准入。正常进程崩溃恢复另有次数上限，不重放任务。
+
+## 普通 MyAgents 发版
+
+只按正常流程更新 App 版本与代码。**不修改 minAppVersion，不重签 CLIProxy 清单，不重打 CLIProxy ZIP，也不修改组件 source lock。**
+
+构建使用 `MYAGENTS_CLIPROXY_DISTRIBUTION_DIR`，未设置时使用 `src-tauri/resources/cliproxy-cache/distribution`。该目录持有已签名清单和随包平台 ZIP。`build_dev.sh`、macOS/Windows 正式构建脚本都会先 stage；Rust build.rs 再检查同一签名信任根、锁定的 source、平台、最低 App 版本、大小和摘要。
+
+支持目标缺少资源时构建失败。Windows 的 compile CI 和 macOS 组件测试从 `.github/cliproxy/` 的已签名快照获取 immutable 资源，不需要私钥。快照仅在随包组件或资源策略需要更新时调整，不跟随每次 App 升版。
+
+## CLIProxy 更新操作手册
+
+后续执行本任务的 AI 必须先读本节，再改脚本或发布资源。组件发布沿现有脚本进行，不手工覆盖线上 ZIP，不把开发期中间清单当成外部兼容协议。
+
+### 1. 决定发布范围并取得当前清单
+
+- 更新全部适用客户端：替换已有最低门槛的目标组件。
+- 只更新较新客户端：新增更高 `minAppVersion`，保留全部既有门槛。
+- 每个门槛的目标版本只能前进，不能通过删旧条目或写低版本实施隐式降级。线上需要紧急停止时使用既有 controls 撤销/停用机制。
+
+后续发布先把线上当前 `manifest-v1.json` 与 `.sig` 下载到一个单独的 `previous` 目录。`manifest --base` 会核验签名，再保留其它门槛。首次发布可不传 `--base`。不要把 previous 与输出目录混在一起，便于核对发布前后内容。
+
+```sh
+mkdir -p /tmp/cliproxy-update/previous
+curl --fail --output /tmp/cliproxy-update/previous/manifest-v1.json https://download.myagents.io/runtimes/cliproxy/manifest-v1.json
+curl --fail --output /tmp/cliproxy-update/previous/manifest-v1.json.sig https://download.myagents.io/runtimes/cliproxy/manifest-v1.json.sig
+```
+
+### 2. 锁定并验证新上游资源
+
+取得上游 release 的版本、tag、commit、三平台原包 URL/大小/SHA-256，写成与 `src/shared/managed-cliproxy-source.json` 同形状的 source lock。
+
+- 仅发布线上更新：使用独立的 `/tmp/cliproxy-update/source.json`，通过 `--source-lock` 传入；不修改客户端随包基线。
+- 同时升级未来安装包的基础组件：有意更新仓库 source lock。随后更新本机默认 distribution 和 CI 签名快照，保证它们包含新的随包基线。
+
+验证原版启动、管理接口、SDK 消息接口及旧账号文件兼容。macOS 生产产物需要 `APPLE_SIGNING_IDENTITY` 的 Developer ID 签名；Windows 核对 PE x64 并保留上游程序。公开 enabled 必须包含三平台生产产物，不能带 `--development` 的 ad-hoc macOS 产物。
+
+```sh
+node scripts/package-cliproxy-component.mjs artifact --source-lock /tmp/cliproxy-update/source.json --platform darwin-arm64 --source /path/to/darwin-arm64.tar.gz --out /tmp/cliproxy-update/records
+node scripts/package-cliproxy-component.mjs artifact --source-lock /tmp/cliproxy-update/source.json --platform darwin-x64 --source /path/to/darwin-x64.tar.gz --out /tmp/cliproxy-update/records
+node scripts/package-cliproxy-component.mjs artifact --source-lock /tmp/cliproxy-update/source.json --platform win32-x64 --source /path/to/windows-x64.zip --out /tmp/cliproxy-update/records
+```
+
+### 3. 设置门槛、生成签名清单
+
+新建 `/tmp/cliproxy-update/approval.json`，包含 `controls` 和 `compatibility`。controls 从核验后的当前清单保留；只有确实调整启用/撤销策略时才提升 policyRevision。compatibility 写目标 minAppVersion、revision 和已验证的 credentialCompatibleVersions。普通 App/SDK 版本不写入这里。
+
+```json
+{
+  "controls": {
+    "policyRevision": 2,
+    "providerMode": "enabled",
+    "revokedVersions": [],
+    "revokedArtifacts": []
+  },
+  "compatibility": {
+    "minAppVersion": "0.4.20",
+    "revision": 1,
+    "credentialCompatibleVersions": ["7.2.158"]
+  }
+}
+```
+
+上例是假设凭据兼容已验证的新门槛；不要直接覆盖实际 controls。环境需提供既有 `TAURI_SIGNING_PRIVATE_KEY`（以及需要时的密码），安装 `minisign`。密钥不写进源码、命令参数或日志。
+
+```sh
+node scripts/package-cliproxy-component.mjs manifest --source-lock /tmp/cliproxy-update/source.json --approval /tmp/cliproxy-update/approval.json --records /tmp/cliproxy-update/records --base /tmp/cliproxy-update/previous --out /tmp/cliproxy-update/distribution
+node scripts/publish-cliproxy-component.mjs /tmp/cliproxy-update/distribution
+```
+
+第一个命令按门槛 upsert，并签名完整 releases 清单。第二个命令只核验并展示发布计划。其它历史门槛的 ZIP 不必重新打包或下载到本地；发布器会验证它们在线上仍可读取且摘要正确。
+
+### 4. 发布并确认
+
+资源发布需要用户已授权；客户端普通构建不触发发布。使用已有 `R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`、`R2_ACCOUNT_ID` 环境与 `rclone`：
+
+```sh
+node scripts/publish-cliproxy-component.mjs /tmp/cliproxy-update/distribution --publish
+```
+
+脚本核对线上当前策略不会被回退或丢失，上传本地新增 immutable ZIP，验证全部引用的线上 bytes，再更新清单及签名。配置了 `CF_ZONE_ID` 与 `CF_API_TOKEN` 则清 CDN 缓存；最后必须确认公开清单、签名和预期内容一致。命令失败不能宣称已发布；保留输出目录与日志定位具体阶段，不直接重打同版本 ZIP。
+
+如需更新随包基线，将完整签名清单与所需 ZIP 放入本机默认 distribution，执行 stage/build，并把同一清单及签名复制到 `.github/cliproxy/`。只发布线上更新时不用改这些客户端构建输入。
+
+```sh
+node scripts/package-cliproxy-component.mjs stage --from /path/to/distribution --platform darwin-arm64
+./build_dev.sh --build-only
+```
+
+## 验证与维护
+
+- `node --test scripts/package-cliproxy-component.test.mjs`：门槛选择、同门槛替换、保留旧门槛、未来 App/SDK 升版复用资源、发布完整性与 CI 下载。
+- Rust `cliproxy::` 测试：签名原文、固定 Installed 条目、资源保存、账号及进程生命周期；无账号/公网依赖。平台相关 fixture 在受支持的 macOS 执行，Linux 保留纯策略/文件合同测试。
+- `verify-cliproxy-contract.mjs` 和 ignored `native_process_management_contract`：显式使用已核验的原版程序做真实进程/管理接口检查，不登录账号。
+- `npm run verify:cliproxy:sdk-local`：真实已安装 SDK + 本地模拟服务，检查 loopback、子 Agent 模型选择，不访问 Google。
+- ignored `native_account_sdk_tool_and_history_contract`：显式浏览器授权与真实 SDK 工具/历史检查；需要单独运行，不进入默认 CI。
+
+发布新上游版本时，真实账号文件兼容与原版接口检查不能被纯版本选择测试代替。改策略选择规则时同步 Node/Rust 边界测试；改安装/切换时重测 current/pending/previous 与运行中的任务。源码仓库不提交二进制缓存、签名私钥或真实账号数据。

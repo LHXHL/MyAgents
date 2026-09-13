@@ -1,17 +1,29 @@
 #!/usr/bin/env node
+// Required context: specs/tech_docs/managed_cliproxy.md, CLIProxy update runbook.
 // Explicit release action. By default, only validate the prepared distribution
 // and print a reviewable plan. Credentials are supplied through the existing
 // release environment; this script never reads or prints a private signing key.
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { compareVersions, validateReleases } from './cliproxy-release-policy.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const base = 'https://download.myagents.io/runtimes/cliproxy/';
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+function assertImmutableVersions(releases) {
+  const known = new Map();
+  for (const release of releases) {
+    const identity = JSON.stringify({ commit: release.commit, artifacts: release.artifacts });
+    if (known.has(release.version) && known.get(release.version) !== identity) {
+      throw new Error('A component version must keep its immutable artifacts across release policies');
+    }
+    known.set(release.version, identity);
+  }
+}
 const plain = value => JSON.stringify(value, Object.keys(value).sort());
 function run(command, args, env = process.env) {
   const result = spawnSync(command, args, { env, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' });
@@ -21,18 +33,23 @@ function run(command, args, env = process.env) {
 export function publicationPlan(manifest, readArtifact) {
   if (manifest.schemaVersion !== 1 || !Number.isSafeInteger(manifest.controls?.policyRevision)
     || manifest.controls.policyRevision < 1 || !['internal', 'disabled', 'enabled'].includes(manifest.controls.providerMode)) throw new Error('Invalid publication controls');
-  const artifacts = Object.entries(manifest.component?.artifacts ?? {});
-  if (!artifacts.length) throw new Error('No prepared artifacts');
-  const files = artifacts.map(([platform, artifact]) => {
-    if (!['darwin-arm64', 'darwin-x64', 'win32-x64'].includes(platform)) throw new Error('Unsupported artifact platform');
-    const filename = `${manifest.component.version}-${platform}-${artifact.sha256}.zip`;
-    if (!/^[0-9a-f]{64}$/.test(artifact.sha256) || artifact.url !== base + filename) throw new Error('Artifact must use its immutable digest URL');
-    const bytes = readArtifact(filename);
-    if (bytes.length !== artifact.size || sha256(bytes) !== artifact.sha256) throw new Error('Prepared artifact does not match the signed manifest');
-    return { filename, size: artifact.size, sha256: artifact.sha256 };
-  });
+  validateReleases(manifest.releases);
+  assertImmutableVersions(manifest.releases);
+  const files = new Map();
+  for (const component of manifest.releases) {
+    const artifacts = Object.entries(component.artifacts ?? {});
+    if (!artifacts.length) throw new Error('No prepared artifacts');
+    for (const [platform, artifact] of artifacts) {
+      if (!['darwin-arm64', 'darwin-x64', 'win32-x64'].includes(platform)) throw new Error('Unsupported artifact platform');
+      const filename = `${component.version}-${platform}-${artifact.sha256}.zip`;
+      if (!/^[0-9a-f]{64}$/.test(artifact.sha256) || artifact.url !== base + filename) throw new Error('Artifact must use its immutable digest URL');
+      const bytes = readArtifact(filename);
+      if (bytes && (bytes.length !== artifact.size || sha256(bytes) !== artifact.sha256)) throw new Error('Prepared artifact does not match the signed manifest');
+      files.set(filename, { filename, size: artifact.size, sha256: artifact.sha256, local: Boolean(bytes) });
+    }
+  }
   return { mode: manifest.controls.providerMode, policyRevision: manifest.controls.policyRevision,
-    version: manifest.component.version, files };
+    releases: manifest.releases.map(r => ({ minAppVersion: r.compatibility.minAppVersion, version: r.version })), files: [...files.values()] };
 }
 
 export function assertPublicationRevision(previous, incoming) {
@@ -40,12 +57,32 @@ export function assertPublicationRevision(previous, incoming) {
     || (previous.controls.policyRevision === incoming.controls.policyRevision && plain(previous.controls) !== plain(incoming.controls))) {
     throw new Error('Publication would roll back or conflict with signed controls');
   }
-  if (previous.component.version === incoming.component.version
-    && (previous.component.compatibility.revision > incoming.component.compatibility.revision
-      || (previous.component.compatibility.revision === incoming.component.compatibility.revision
-        && JSON.stringify(previous.component.compatibility) !== JSON.stringify(incoming.component.compatibility)))) {
-    throw new Error('Compatibility changes require a higher compatibility revision');
+  validateReleases(previous.releases); validateReleases(incoming.releases);
+  assertImmutableVersions([...previous.releases, ...incoming.releases]);
+  for (const old of previous.releases) {
+    const next = incoming.releases.find(r => r.compatibility.minAppVersion === old.compatibility.minAppVersion);
+    if (!next) throw new Error('Existing minimum-version policies must be retained');
+    const order = compareVersions(next.version, old.version);
+    if (order < 0) throw new Error('Release policy cannot downgrade an existing target');
+    if (order === 0) {
+      if (next.compatibility.revision < old.compatibility.revision
+        || (next.compatibility.revision === old.compatibility.revision && JSON.stringify(next.compatibility) !== JSON.stringify(old.compatibility))) {
+        throw new Error('Compatibility changes require a higher compatibility revision');
+      }
+    }
   }
+}
+
+export function verifyManifestSignature(content, wrapped) {
+  const config = JSON.parse(readFileSync(join(repo, 'src-tauri/tauri.conf.json'), 'utf8'));
+  const publicKey = Buffer.from(config.plugins.updater.pubkey, 'base64').toString('utf8').split(/\r?\n/).find(line => line.startsWith('RW'));
+  if (!publicKey) throw new Error('The existing updater trust root is missing');
+  const scratch = mkdtempSync(join(tmpdir(), 'myagents-cliproxy-verify-'));
+  try {
+    writeFileSync(join(scratch, 'manifest'), content);
+    writeFileSync(join(scratch, 'signature'), Buffer.from(wrapped.trim(), 'base64'));
+    run('minisign', ['-Vm', join(scratch, 'manifest'), '-x', join(scratch, 'signature'), '-P', publicKey]);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
 }
 
 async function fetchBytes(url, limit, allowMissing = false) {
@@ -71,17 +108,10 @@ async function main() {
   if (bytes.length > 256 * 1024 || signature.length > 16 * 1024) throw new Error('Oversized manifest/signature');
   const scratch = mkdtempSync(join(tmpdir(), 'myagents-cliproxy-publish-'));
   try {
-    const config = JSON.parse(readFileSync(join(repo, 'src-tauri/tauri.conf.json'), 'utf8'));
-    const publicKey = Buffer.from(config.plugins.updater.pubkey, 'base64').toString('utf8').split(/\r?\n/).find(line => line.startsWith('RW'));
-    if (!publicKey) throw new Error('The existing updater trust root is missing');
-    const verify = (content, wrapped) => {
-      writeFileSync(join(scratch, 'manifest'), content);
-      writeFileSync(join(scratch, 'signature'), Buffer.from(wrapped, 'base64'));
-      run('minisign', ['-Vm', join(scratch, 'manifest'), '-x', join(scratch, 'signature'), '-P', publicKey]);
-    };
+    const verify = verifyManifestSignature;
     verify(bytes, signature);
     const manifest = JSON.parse(bytes);
-    const plan = publicationPlan(manifest, name => readFileSync(join(distribution, name)));
+    const plan = publicationPlan(manifest, name => existsSync(join(distribution, name)) ? readFileSync(join(distribution, name)) : null);
     console.log(JSON.stringify({ action: args.includes('--publish') ? 'publish' : 'review-only', ...plan }, null, 2));
     if (!args.includes('--publish')) return;
     for (const key of ['R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_ACCOUNT_ID']) {
@@ -103,7 +133,7 @@ async function main() {
     const upload = (name, immutable) => run('rclone', ['copyto', join(distribution, name),
       `cliproxy:myagents-releases/runtimes/cliproxy/${name}`, '--s3-no-check-bucket', ...(immutable ? ['--immutable'] : [])], env);
     for (const file of plan.files) {
-      upload(file.filename, true);
+      if (file.local) upload(file.filename, true);
       const published = await fetchBytes(base + file.filename, file.size);
       if (published.length !== file.size || sha256(published) !== file.sha256) throw new Error('Published artifact integrity mismatch');
     }

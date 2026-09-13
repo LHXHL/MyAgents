@@ -1,3 +1,4 @@
+// Required context: specs/tech_docs/managed_cliproxy.md; policy selection precedes lifecycle activation.
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -245,11 +246,7 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
         // App upgrades may carry a newer baseline even while the update host
         // is offline. Prepare it before choosing an older on-disk executable.
         if !live {
-            if let Ok(approval) = self.components.bundled_approval() {
-                let bundled = Installed {
-                    approval,
-                    source: "bundled".to_owned(),
-                };
+            if let Ok(bundled) = self.components.bundled_installed() {
                 let current = snapshot
                     .pending
                     .as_ref()
@@ -325,14 +322,8 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
                 return Ok(candidate);
             }
         }
-        let approval = self.components.bundled_approval()?;
-        self.components
-            .ingest_controls(&approval, "bundled")
-            .await?;
-        let installed = Installed {
-            approval,
-            source: "bundled".to_owned(),
-        };
+        let installed = self.components.bundled_installed()?;
+        self.components.ingest_controls(&installed.approval, "bundled").await?;
         self.components.allowed(&installed).await?;
         if let Some(current) = &snapshot.current {
             let has_accounts = {
@@ -364,14 +355,7 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
                 .and_then(|i| i.component().ok())
                 .map(|c| c.version)
         };
-        let bundled = self
-            .components
-            .bundled_approval()
-            .ok()
-            .map(|approval| Installed {
-                approval,
-                source: "bundled".to_owned(),
-            });
+        let bundled = self.components.bundled_installed().ok();
         let bundled_version = bundled
             .as_ref()
             .and_then(|i| i.component().ok())
@@ -387,9 +371,7 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
                     let artifact = component
                         .artifact(
                             super::manifest::platform()?,
-                            &self.components.app_version,
-                            &self.components.sdk_version,
-                        )
+                            &self.components.app_version)
                         .ok()?;
                     controls
                         .as_ref()
@@ -1871,10 +1853,6 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
             self.stop_for_policy().await?;
             return Err(error);
         }
-        let installed = Installed {
-            approval: approved,
-            source: "updated".to_owned(),
-        };
         // Even incompatible artifacts must not hide applicable controls.
         let controls = self.components.controls().await?;
         let current = self.components.state.lock().await.current.clone();
@@ -1898,6 +1876,11 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
             self.emit();
             return Ok(());
         }
+        let Some(installed) = Installed::select(approved, "updated", &self.components.app_version)? else {
+            self.components.set_update("idle", None, None);
+            self.project_config().await?;
+            return Ok(());
+        };
         let component = self.components.allowed(&installed).await?;
         let current_component = current.as_ref().map(Installed::component).transpose()?;
         let should_prepare = super::manifest::should_prepare_update(
@@ -2265,7 +2248,9 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
     }
 }
 
-#[cfg(all(test, unix))]
+// These fixtures exercise approved native components and Unix process fences.
+// Linux is Unix but is not a supported CLIProxy platform. CI runs them on macOS.
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::super::manifest::SignedManifest;
     use super::*;
@@ -2452,18 +2437,12 @@ mod tests {
                 json: include_str!("fixtures/internal-manifest.json").to_owned(),
                 signature: include_str!("fixtures/internal-manifest.json.sig").to_owned(),
             };
-            let component = approval.verify().unwrap().component;
+            let component = approval.verify().unwrap().releases[0].clone();
             let components = ComponentStore::new(
                 directory.path(),
                 directory.path().join("bundled"),
-                component
-                    .compatibility
-                    .app_versions
-                    .iter()
-                    .next()
-                    .unwrap()
-                    .clone(),
-                component.compatibility.sdk_version,
+                component.compatibility.min_app_version.clone(),
+                "0.3.261".to_owned(),
             )
             .unwrap();
             components
@@ -2471,6 +2450,7 @@ mod tests {
                 .await
                 .unwrap();
             let installed = Installed {
+                min_app_version: "0.4.17".to_owned(),
                 approval,
                 source: "updated".to_owned(),
             };
@@ -2829,6 +2809,7 @@ mod tests {
             // Any pending compatibility/signature failure is irrelevant to a
             // network-only replacement of the already approved current build.
             components.pending = Some(Installed {
+                min_app_version: "0.4.17".to_owned(),
                 approval: SignedManifest {
                     json: "{}".to_owned(),
                     signature: "invalid".to_owned(),

@@ -1,9 +1,10 @@
+// Required context: specs/tech_docs/managed_cliproxy.md (bundled baseline versus online policy).
 //! Build inputs have a stricter source pin than runtime updates. Reuse the
 //! resource signature trust root; verify the exact bundled target and bytes.
 use sha2::{Digest, Sha256};
 use std::{env, fs, path::Path};
 
-pub fn verify_bundle(app_version: &str, sdk_version: &str) {
+pub fn verify_bundle(app_version: &str) {
     let platform = match (
         env::var("CARGO_CFG_TARGET_OS").as_deref(),
         env::var("CARGO_CFG_TARGET_ARCH").as_deref(),
@@ -50,20 +51,16 @@ pub fn verify_bundle(app_version: &str, sdk_version: &str) {
         serde_json::from_slice(&fs::read(source_path).expect("CLIProxy source pin"))
             .expect("source pin JSON");
     assert_eq!(manifest["schemaVersion"], 1, "CLIProxy manifest schema");
-    let component = &manifest["component"];
+    let releases = manifest["releases"].as_array().expect("CLIProxy releases");
+    let minimums: Vec<_> = releases.iter().map(|r| r["compatibility"]["minAppVersion"].as_str().expect("minimum App version")).collect();
+    crate::cliproxy_policy::select_release_index(app_version, &minimums).expect("unique version thresholds");
+    let pinned: Vec<_> = releases.iter().filter(|r| r["version"] == source["version"] && r["commit"] == source["commit"]).collect();
+    let minimums: Vec<_> = pinned.iter().map(|r| r["compatibility"]["minAppVersion"].as_str().unwrap()).collect();
+    let selected = crate::cliproxy_policy::select_release_index(app_version, &minimums).expect("valid App policy").expect("compatible bundled baseline");
+    let component = pinned[selected];
     for key in ["version", "tag", "commit"] {
         assert_eq!(component[key], source[key], "CLIProxy source pin {key}");
     }
-    assert_eq!(
-        component["compatibility"]["sdkVersion"], sdk_version,
-        "CLIProxy SDK compatibility"
-    );
-    assert!(
-        component["compatibility"]["appVersions"]
-            .as_array()
-            .is_some_and(|versions| versions.iter().any(|v| v == app_version)),
-        "CLIProxy App compatibility"
-    );
     let artifact = &component["artifacts"][platform];
     assert_eq!(
         artifact["sourceSha256"], source["platforms"][platform]["sha256"],

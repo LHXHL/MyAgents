@@ -6,6 +6,8 @@ use std::{
 #[path = "src/resource_signature_core.rs"]
 mod resource_signature;
 mod build_cliproxy;
+#[path = "src/cliproxy_policy.rs"]
+mod cliproxy_policy;
 
 const SPACE_BUILD_ENV_KEYS: &[&str] = &[
     "MYAGENTS_SPACE_ENABLED",
@@ -23,7 +25,7 @@ fn main() {
     let package: serde_json::Value = serde_json::from_str(&fs::read_to_string(package_path).expect("package.json")).expect("package.json JSON");
     let sdk = package["dependencies"]["@anthropic-ai/claude-agent-sdk"].as_str().expect("pinned Claude SDK version");
     println!("cargo:rustc-env=MYAGENTS_CLAUDE_SDK_VERSION={sdk}");
-    build_cliproxy::verify_bundle(package["version"].as_str().expect("App version"), sdk);
+    build_cliproxy::verify_bundle(package["version"].as_str().expect("App version"));
     expose_managed_codex_runtime_lock();
     expose_managed_browser_runtime_lock();
     expose_space_build_env();

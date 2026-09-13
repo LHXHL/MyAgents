@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// Required context: specs/tech_docs/managed_cliproxy.md, CLIProxy update runbook.
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -6,6 +7,8 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import AdmZip from 'adm-zip';
+import { mergeReleases, selectBundledRelease, validateReleases } from './cliproxy-release-policy.mjs';
+import { assertPublicationRevision, verifyManifestSignature } from './publish-cliproxy-component.mjs';
 import { resolveSpawnInvocation, formatCommandFailure } from './package-managed-codex-spawn.js';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -25,16 +28,15 @@ function run(command, args, options = {}) {
 export function checkArchive(bytes, pin) {
   if (bytes.length !== pin.size || hash(bytes) !== pin.sha256) throw new Error('Upstream artifact differs from the pinned source');
 }
-export function validateApproval(approval, platformRecords) {
+export function validateApproval(approval, platformRecords, sourcePin = source) {
+  const source = sourcePin;
   const { controls } = approval;
   const compatibility = { ...approval.compatibility };
-  delete compatibility.models; // Legacy approval records do not govern model availability.
   if (!controls || !Number.isSafeInteger(controls.policyRevision) || controls.policyRevision <= 0
     || !['internal', 'disabled', 'enabled'].includes(controls.providerMode)
     || !Array.isArray(controls.revokedVersions) || !Array.isArray(controls.revokedArtifacts)
     || controls.revokedArtifacts.some(value => !digest.test(value))) throw new Error('Invalid controls');
-  if (!compatibility || compatibility.sdkVersion !== pkg.dependencies['@anthropic-ai/claude-agent-sdk']
-    || !Array.isArray(compatibility.appVersions) || !compatibility.appVersions.includes(pkg.version)
+  if (!compatibility || typeof compatibility.minAppVersion !== 'string'
     || !Number.isSafeInteger(compatibility.revision) || compatibility.revision <= 0
     || !Array.isArray(compatibility.credentialCompatibleVersions)) throw new Error('Invalid compatibility record');
   const seenPlatforms = new Set();
@@ -45,8 +47,10 @@ export function validateApproval(approval, platformRecords) {
   }
   if (controls.providerMode === 'enabled' && (platforms.some(platform => !platformRecords.some(r => r.platform === platform))
     || platformRecords.some(r => r.platformSigning === 'ad-hoc'))) throw new Error('Public enabled requires all production platform artifacts');
-  return { schemaVersion: 1, controls, component: { version: source.version, tag: source.tag, commit: source.commit,
-    compatibility, artifacts: Object.fromEntries(platformRecords.map(record => [record.platform, record.artifact])) } };
+  const component = { version: source.version, tag: source.tag, commit: source.commit,
+    compatibility, artifacts: Object.fromEntries(platformRecords.map(record => [record.platform, record.artifact])) };
+  validateReleases([component]);
+  return { schemaVersion: 1, controls, releases: [component] };
 }
 
 function assertArchitecture(path, platform) {
@@ -62,7 +66,12 @@ function assertArchitecture(path, platform) {
   }
 }
 
+function sourceFor(args) {
+  return args['source-lock'] ? JSON.parse(readFileSync(resolve(args['source-lock']), 'utf8')) : source;
+}
+
 function packageArtifact(args) {
+  const source = sourceFor(args);
   const platform = args.platform;
   const pin = source.platforms[platform];
   if (!pin || !args.source || !args.out) throw new Error('artifact requires --platform, --source <pinned archive>, --out');
@@ -133,7 +142,14 @@ function packageManifest(args) {
   if (!args.approval || !args.records || !args.out) throw new Error('manifest requires --approval, --records, --out');
   const records = readdirSync(args.records).filter(name => name.endsWith('.record.json'))
     .map(name => JSON.parse(readFileSync(join(args.records, name), 'utf8')));
-  const manifest = validateApproval(JSON.parse(readFileSync(args.approval, 'utf8')), records);
+  const manifest = validateApproval(JSON.parse(readFileSync(args.approval, 'utf8')), records, sourceFor(args));
+  if (args.base) {
+    const bytes = readFileSync(join(args.base, 'manifest-v1.json'));
+    verifyManifestSignature(bytes, readFileSync(join(args.base, 'manifest-v1.json.sig'), 'utf8'));
+    const previous = JSON.parse(bytes);
+    manifest.releases = mergeReleases(previous.releases, manifest.releases);
+    assertPublicationRevision(previous, manifest);
+  }
   for (const record of records) {
     const artifact = join(args.records, basename(new URL(record.artifact.url).pathname));
     if (statSync(artifact).size !== record.artifact.size || hash(readFileSync(artifact)) !== record.artifact.sha256) throw new Error('Prepared artifact no longer matches its record');
@@ -157,10 +173,9 @@ function stageBundle(args) {
   const manifestBytes = readFileSync(join(from, 'manifest-v1.json'));
   if (manifestBytes.length > 256 * 1024) throw new Error('Manifest too large');
   const manifest = JSON.parse(manifestBytes);
-  const artifact = manifest.component?.artifacts?.[args.platform];
-  if (manifest.component?.version !== source.version || manifest.component?.commit !== source.commit || !artifact) throw new Error('Bundled source/platform mismatch');
-  const compatibility = manifest.component.compatibility;
-  if (!compatibility.appVersions.includes(pkg.version) || compatibility.sdkVersion !== pkg.dependencies['@anthropic-ai/claude-agent-sdk']) throw new Error('Bundled SDK/App compatibility mismatch');
+  const component = selectBundledRelease(manifest.releases, pkg.version, source);
+  const artifact = component.artifacts?.[args.platform];
+  if (!artifact) throw new Error('Bundled platform mismatch');
   const filename = basename(new URL(artifact.url).pathname);
   const archive = readFileSync(join(from, filename));
   if (archive.length !== artifact.size || hash(archive) !== artifact.sha256) throw new Error('Bundled artifact integrity mismatch');
@@ -181,7 +196,7 @@ function main() {
   const args = {};
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--development') { args.development = true; continue; }
-    if (!/^--(platform|source|out|approval|records|from)$/.test(argv[i]) || !argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error('Invalid packaging argument');
+    if (!/^--(platform|source|source-lock|out|approval|records|from|base)$/.test(argv[i]) || !argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error('Invalid packaging argument');
     args[argv[i].slice(2)] = argv[++i];
   }
   if (command === 'artifact') packageArtifact(args);

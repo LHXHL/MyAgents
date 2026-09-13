@@ -1,5 +1,6 @@
 //! Component installation facts. Activation is called by the account owner only
 //! after it drains leases and successfully starts the replacement process.
+//! Required context: specs/tech_docs/managed_cliproxy.md, especially installed selection.
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -22,11 +23,22 @@ use super::types::{Error, Result};
 pub(super) struct Installed {
     pub approval: SignedManifest,
     pub source: String,
+    pub min_app_version: String,
 }
 
 impl Installed {
     pub fn component(&self) -> Result<Component> {
-        Ok(self.approval.verify()?.component)
+        self.approval.verify()?.releases.into_iter()
+            .find(|release| release.compatibility.min_app_version == self.min_app_version)
+            .ok_or_else(Error::contract)
+    }
+    pub fn select(approval: SignedManifest, source: &str, app: &str) -> Result<Option<Self>> {
+        let manifest = approval.verify()?;
+        Ok(manifest.select(app)?.map(|release| Self {
+            min_app_version: release.compatibility.min_app_version.clone(),
+            approval,
+            source: source.to_owned(),
+        }))
     }
     pub fn identity(&self, app: &str, sdk: &str) -> Result<String> {
         let component = self.component()?;
@@ -93,6 +105,18 @@ impl Drop for StagingDirectory {
 }
 
 impl ComponentStore {
+    pub fn bundled_installed(&self) -> Result<Installed> {
+        let approval = self.bundled_approval()?;
+        let mut manifest = approval.verify()?;
+        let source: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../src/shared/managed-cliproxy-source.json"
+        )).map_err(|_| Error::contract())?;
+        // The source lock owns the bundled baseline, not the online update target.
+        manifest.releases.retain(|r| source["version"] == r.version && source["commit"] == r.commit);
+        let release = manifest.select(&self.app_version)?.ok_or_else(Error::contract)?;
+        Ok(Installed { min_app_version: release.compatibility.min_app_version.clone(),
+            approval, source: "bundled".to_owned() })
+    }
     pub fn new(
         data: &Path,
         bundled: PathBuf,
@@ -192,9 +216,7 @@ impl ComponentStore {
         let component = installed.component()?;
         let artifact = component.artifact(
             manifest::platform().ok_or_else(Error::contract)?,
-            &self.app_version,
-            &self.sdk_version,
-        )?;
+            &self.app_version)?;
         if controls.revoked(&component.version, &artifact.sha256) {
             return Err(Error::new("component_revoked", "需要更新模型组件后使用"));
         }
@@ -203,7 +225,7 @@ impl ComponentStore {
     pub fn directory(&self, installed: &Installed) -> Result<PathBuf> {
         let component = installed.component()?;
         let platform = manifest::platform().ok_or_else(Error::contract)?;
-        let artifact = component.artifact(platform, &self.app_version, &self.sdk_version)?;
+        let artifact = component.artifact(platform, &self.app_version)?;
         Ok(self
             .root
             .join(&component.version)
@@ -214,9 +236,7 @@ impl ComponentStore {
         let component = installed.component()?;
         let artifact = component.artifact(
             manifest::platform().ok_or_else(Error::contract)?,
-            &self.app_version,
-            &self.sdk_version,
-        )?;
+            &self.app_version)?;
         let directory = self.directory(installed)?;
         validate_installed(&directory, artifact)?;
         Ok(directory.join(&artifact.executable))
@@ -261,7 +281,7 @@ impl ComponentStore {
             .transpose()?;
         for retained in next.pending.iter().chain(next.current.iter()) {
             let component = retained.component()?;
-            if let Ok(artifact) = component.artifact(platform, &self.app_version, &self.sdk_version)
+            if let Ok(artifact) = component.artifact(platform, &self.app_version)
             {
                 let revoked = controls
                     .as_ref()
@@ -434,9 +454,7 @@ impl ComponentStore {
         let component = installed.component()?;
         let artifact = component.artifact(
             manifest::platform().ok_or_else(Error::contract)?,
-            &self.app_version,
-            &self.sdk_version,
-        )?;
+            &self.app_version)?;
         let destination = self.directory(installed)?;
         if self.executable(installed).is_ok() {
             if !manual && self.failed_attempt(installed).await? {
@@ -682,8 +700,13 @@ mod tests {
         }
     }
     #[test]
-    fn retained_identity_survives_an_app_or_sdk_compatibility_boundary() {
+    #[cfg(any(
+        all(target_os = "macos", any(target_arch = "aarch64", target_arch = "x86_64")),
+        all(target_os = "windows", target_arch = "x86_64")
+    ))]
+    fn installed_selection_remains_fixed_across_app_and_sdk_changes() {
         let installed = Installed {
+            min_app_version: "0.4.17".to_owned(),
             approval: signed_fixture(),
             source: "bundled".to_owned(),
         };
@@ -691,8 +714,14 @@ mod tests {
         assert!(installed
             .component()
             .unwrap()
-            .artifact(manifest::platform().unwrap(), "99.0.0", "99.0.0")
-            .is_err());
+            .artifact(manifest::platform().unwrap(), "99.0.0")
+            .is_ok());
+        assert_eq!(installed.component().unwrap().compatibility.min_app_version, "0.4.17");
+        let updated = Installed::select(signed_fixture(), "updated", "0.4.20").unwrap().unwrap();
+        assert_eq!(updated.min_app_version, "0.4.20");
+        assert_eq!(updated.component().unwrap().compatibility.revision, 2);
+        assert_eq!(installed.component().unwrap().compatibility.revision, 1);
+        assert!(Installed::select(signed_fixture(), "updated", "0.4.16").unwrap().is_none());
         let mut modified = signed_fixture();
         modified.json.push(' ');
         assert!(modified.verify().is_err());
@@ -703,7 +732,7 @@ mod tests {
         let store = ComponentStore::new(
             temp.path(),
             temp.path().join("bundle"),
-            "0.4.16".to_owned(),
+            "0.4.17".to_owned(),
             "0.3.261".to_owned(),
         )
         .unwrap();
@@ -723,16 +752,21 @@ mod tests {
             .is_some());
     }
     #[tokio::test]
+    #[cfg(any(
+        all(target_os = "macos", any(target_arch = "aarch64", target_arch = "x86_64")),
+        all(target_os = "windows", target_arch = "x86_64")
+    ))]
     async fn immutable_pointer_reuse_does_not_create_a_duplicate_update_and_gc_keeps_current() {
         let temp = tempfile::tempdir().unwrap();
         let store = ComponentStore::new(
             temp.path(),
             temp.path().join("bundle"),
-            "0.4.16".to_owned(),
+            "0.4.17".to_owned(),
             "0.3.261".to_owned(),
         )
         .unwrap();
         let installed = Installed {
+            min_app_version: "0.4.17".to_owned(),
             approval: signed_fixture(),
             source: "bundled".to_owned(),
         };
