@@ -536,6 +536,9 @@ impl ComponentStore {
 }
 
 fn external_client(timeout: Duration) -> Result<reqwest::Client> {
+    // External signed-resource CDN only: retain configured/system proxies.
+    // This is the per-call-site external-host exception defined in clippy.toml.
+    #[allow(clippy::disallowed_methods)]
     crate::proxy_config::build_client_with_proxy(
         reqwest::Client::builder()
             .timeout(timeout)

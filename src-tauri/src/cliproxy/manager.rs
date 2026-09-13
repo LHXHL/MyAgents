@@ -2679,7 +2679,7 @@ mod tests {
         fixture.manager.state.lock().await.active = Some(Arc::clone(&instance));
         let fence = fixture.manager.active_start.lock().await;
         let manager = Arc::clone(&fixture.manager);
-        let stop = tokio::spawn(async move { manager.stop_for_policy().await });
+        let stop = tauri::async_runtime::spawn(async move { manager.stop_for_policy().await });
         tokio::time::timeout(Duration::from_secs(2), async {
             while instance.alive() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -2687,7 +2687,7 @@ mod tests {
         })
         .await
         .unwrap();
-        assert!(!stop.is_finished());
+        assert!(!stop.inner().is_finished());
         drop(fence);
         stop.await.unwrap().unwrap();
     }

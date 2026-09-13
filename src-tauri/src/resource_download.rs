@@ -141,10 +141,10 @@ mod tests {
     async fn bounded_fetch_retains_http_status_for_resource_owner_diagnostics() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
+        let server = tauri::async_runtime::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0; 4096];
-            stream.read(&mut request).await.unwrap();
+            assert!(stream.read(&mut request).await.unwrap() > 0);
             stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
         });
         let result = fetch_limited_bytes(&crate::local_http::json_client(Duration::from_secs(2)),
