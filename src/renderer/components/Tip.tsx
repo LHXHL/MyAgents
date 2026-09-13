@@ -43,6 +43,10 @@ export default function Tip({
   const [hovered, setHovered] = useState(false);
   const [focusedWithin, setFocusedWithin] = useState(false);
   const visible = (hovered || focusedWithin) && !disabled;
+  const dismiss = () => {
+    setHovered(false);
+    setFocusedWithin(false);
+  };
 
   return (
     <span
@@ -50,6 +54,9 @@ export default function Tip({
       className={`relative inline-flex ${className}`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      // Activation consumes the hint, even if the child stops bubbling or
+      // hides/reparents its surface. Keep native focus for keyboard users.
+      onClickCapture={dismiss}
       onFocusCapture={() => setFocusedWithin(true)}
       onBlurCapture={(event) => {
         const nextTarget = event.relatedTarget;
@@ -62,10 +69,7 @@ export default function Tip({
       {visible && (
         <Popover
           open
-          onClose={() => {
-            setHovered(false);
-            setFocusedWithin(false);
-          }}
+          onClose={dismiss}
           anchorRef={anchorRef}
           placement={tipPlacement(position, align)}
           offset={position === 'right' ? 12 : 6}

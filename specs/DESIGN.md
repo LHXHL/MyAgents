@@ -203,6 +203,8 @@ Tag 用于类型、来源或紧凑元信息，通常使用 12px。状态 Tag 只
 
 菜单按高频到低频排列，危险动作尾置并用分隔表达。Popover/Dropdown 必须逃逸滚动裁切、留在 viewport 内，并由统一 close-layer 处理外部点击与 Escape。
 
+Tip 在悬停或聚焦时显示；触发动作后立即关闭，保留按钮焦点，直到新的悬停或聚焦事件再显示。关闭由共享 Tip 在点击捕获阶段处理，避免业务按钮停止冒泡、隐藏或移动面板后残留提示。
+
 `OverlayBackdrop` 是模态遮罩 owner。业务面板不重复实现 backdrop click 判断；嵌套 Overlay 只关闭顶层，背景滚动和点击必须被隔离。大内容区在面板内部滚动，不能让页面和面板竞争同一主滚动。
 
 ### 5.6 Toggle、Section Header 与 Heartbeat
