@@ -91,6 +91,8 @@ Virtuoso 的 Footer 必须使用模块级稳定组件类型，动态内容通过
 
 MessageList 将 `followOutput` 固定为 `false`，因为 react-virtuoso 4.18.3 的同数量尺寸增长/viewport缩小路径只检查原始prop是否为false，并不会调用function形式的策略。自动跟随由同一 `alignFollowingViewport` 处理：React layout commit、Virtuoso `totalListHeightChanged` 和 scroller resize 都读取当前scrollHeight，通过 Virtuoso `scrollTo` 的像素API对齐；不直接写scrollTop。已到底、阅读中、未admitted或恢复fence内均不发命令。逐token与terminal不再拥有独立pin逻辑。
 
+输入浮层中的 `AgentStatusPanel` 可见性归面板自身拥有，Footer 只投影 `SimpleChatInput` 实测高度。非空的已完成 TodoWrite / Task / runtime plan 数据不代表新活动；冷历史不展示完成提示，实时回合通过现有 `armedSessionId` 允许一次 terminal-first 展示，淡出后消费该资格。真正的新活动可以取消淡出并恢复显示。不得以 `!mounted && hasDisplayContent` 重新触发展示，否则永久保留的完成记录会让面板按 linger/fade 周期反复挂卸，改变输入浮层与 Footer 高度并造成静止会话回弹。入场与退出 effect 分开，`mounted` 仅驱动退出计时，不能作为重新入场的依据或取消入场第二帧。
+
 初始行高来自 `useChatScrollModel` 的逐条 `heightEstimateSeed`，MessageList 仅投影到 Virtuoso `heightEstimates`；挂载后的真实测量才是几何 authority。不可同时设置 `defaultItemHeight`：锁定的 4.18.3 会先用它初始化 size tree，导致逐条估算被忽略，初次空数据后加载历史也受影响。没有 seed 的 caller 使用 Virtuoso 原有首行 probe。Seed 只初始化空树，不负责覆盖已有实测缓存、重置 Session 或保持滚动意图。
 
 `scrollToIndex(LAST/end)` 使用缓存的行高，因此仅把命令提前到layout effect不能保证采用当前正文高度；WebKit可能将过渡位置绘制出来。行为验证必须包括真实虚拟列表与WebKit画面，不能把rAF中间读数直接等同于已绘制抖动。AssistantActions在回合结束的同次commit出现，避免loading移除后再延迟350ms插入操作栏。
@@ -104,5 +106,7 @@ MessageList 将 `followOutput` 固定为 `false`，因为 react-virtuoso 4.18.3 
 - continuity transaction：`src/renderer/hooks/useChatScrollController.ts`
 
 回归测试至少覆盖：visible blur 零恢复命令、latest-wins native sampling、generation reducer、inactive/最小化 frozen input、首次在恢复 generation mount、follow/anchor 两种恢复、unmounted anchor event-driven settlement、Session switch、旧 generation callback、显式用户导航抢占和 inactive Tab memo 隔离。Windows WebView2 与 macOS WKWebView 真机还要验证事件时线和无首句/顶部/底部闪跳；源码审计不能代替真机门禁。
+
+停止后稳定性回归：`node scripts/verify-agent-status-scroll.mjs webkit`（或 `chrome`）使用真实状态卡、输入浮层、消息与滚动控制器，覆盖完成历史、实时结束、跨三个旧淡出周期的零高度/位置变化，以及长尾滚轮可达性。
 
 连续输出回归：`npm run verify:chat-scroll -- webkit` 和 `npm run verify:chat-scroll -- chrome` 使用真实 Message/Markdown/controller/Virtuoso、合成对话及离线本地 Vite；测试会输出临时录像与几何快照目录。Node 补丁测试覆盖两个模块格式、幂等与版本/字节不匹配。
