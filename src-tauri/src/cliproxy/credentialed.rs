@@ -59,21 +59,14 @@ async fn native_account_sdk_tool_and_history_contract() {
     .await
     .unwrap();
     let result = async {
-        let authorization = instance.client.auth_url().await?;
+        let authorization = instance.client.auth_url().await.outcome?;
         callback::validate_authorization_url(&authorization.url, &authorization.state)?;
         crate::browser::open_external(&authorization.url).map_err(|_| super::types::Error::new("browser", "Browser could not open"))?;
         eprintln!("CLIProxy account smoke: finish Google authorization in your browser (5 minutes).");
-        let returned = callback.receive(&authorization.state, cancelled).await?;
-        let _ = instance.client.callback(&authorization.state, returned.code.as_deref(), returned.error.as_deref()).await;
-        tokio::time::timeout(Duration::from_secs(60), async {
-            loop {
-                match instance.client.auth_status(&authorization.state).await?.as_str() {
-                    "ok" => return Ok(()),
-                    "error" => return Err(super::types::Error::new("oauth", "Authorization failed")),
-                    _ => tokio::time::sleep(Duration::from_millis(500)).await,
-                }
-            }
-        }).await.map_err(|_| super::types::Error::new("oauth_timeout", "Authorization did not settle"))??;
+        let returned = callback.receive(&authorization.state, cancelled.clone()).await?;
+        super::manager::finish_oauth(&instance.client, &authorization.state, returned, std::time::Instant::now(),
+            std::time::Instant::now() + Duration::from_secs(60),
+            cancelled.clone(), "credentialed-smoke").await?;
         let account = instance.client.account().await?.ok_or_else(super::types::Error::contract)?;
         let registered = instance.client.registered_models(&account.name).await?;
         let routed = instance.client.routed_models().await?;

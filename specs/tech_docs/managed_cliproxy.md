@@ -72,6 +72,12 @@ Manager 构造结果包含成功或具体错误；构造失败不得退化成永
 
 原版管理 key 经 bcrypt 处理，输入不能超过 72 字节；目前生成 64 字节 base64url，随机强度为 366 bit。模型 key 独立生成。callback 固定 localhost:51121，先占用成功再打开浏览器；不使用原版 CLI/webui callback listener。URL 响应丢失不得重试创建，callback 响应丢失只按已知 state 查询，不重放 code。
 
+OAuth HTTP 与业务结果分开保留。callback 明确拒绝及时结束；响应丢失、无法解析、服务端故障及 409 冲突只按同一 state 查询。状态轮询仅对暂时传输失败、408/429/5xx 等待恢复，鉴权、协议错误与原生终态失败及时反馈；总截止时间与取消覆盖提交、读取响应和轮询等待。不能把 callback 请求直接改成“任意错误立即销毁候选”，因为原版可能已接受授权码。
+
+`get-auth-status.error` 按锁定版本的完整已知值映射固定错误码和中文提示：授权拒绝、state 失效/不匹配、缺少授权码、token 交换、userinfo、凭据保存；未知文本返回通用失败，不透传 `error` / `message` / `error_code` 或其截断内容。原版通常只提供失败阶段，不能据此断言底层网络/TLS/Google 拒绝的具体原因。
+
+统一日志以现有非秘密 attempt ID 关联 `starting`、`auth_url`、`browser_callback`、`callback_submit`、`auth_status`、`authorization`、`account_summary`、`account_commit`，各阶段记录固定 outcome。授权阶段另记 HTTP 状态（未收到响应或无 HTTP 请求为 none）与自登录开始的耗时；账号摘要确认和提交完成记录对应事件。轮询只记录 HTTP/outcome 变化，完成或失败另记终态；不记录邮箱、OAuth state、授权码、token、URL、原版响应或进程原始输出。最终 candidate 为空可能是失败清理结果，不能据此判断从未创建账号。
+
 目录探测不带 Anthropic-Version、claude-cli UA 或 client_version，读取普通 OpenAI 形状 data[].id。账号注册与路由模型合并去重，原版定义只补充元数据，不取审批交集。两个目录均读取失败时保留上次列表并标记过期；执行准入不依赖目录缓存，也不发路由预检。权限/额度失败不触发 MyAgents 刷新 token 或换模型。
 
 MyAgents 不传 `-local-model`，保留原版启动及每三小时更新线上 models.json 的能力。v7.2.158 的 Antigravity 注册来自 CLIProxy 上游维护目录，并非每次向 Google 查询订阅权益；目录不保证每次调用成功。统一日志只记录阶段、目录计数和有限错误码，不记录邮箱、回调 URL、响应内容或 key。
@@ -207,6 +213,7 @@ MYAGENTS_CLIPROXY_DISTRIBUTION_DIR=/path/to/distribution ./build_dev.sh --build-
 开发版与正式版共用 `~/.myagents`。0.4.17 发布前使用 `component/appVersions` 的实验组件状态不是公开兼容契约；若本机残留该格式，应在退出 App 后备份并移走 `providers/cliproxy/component-state.json`，由正式包的签名资源重建组件记录。保留 `antigravity-sub/account-state.json` 与所有 `accounts/*/auth`，不删除登录信息，也不把任意正式状态损坏都当成可自动重置的缓存。
 
 - `node --test scripts/package-cliproxy-component.test.mjs scripts/prepare-cliproxy.test.mjs`：门槛选择、同门槛替换、保留旧门槛、未来 App/SDK 升版复用资源、发布完整性与 CI 下载。
+- Rust `cliproxy::oauth_tests` 用离线本地 HTTP 覆盖原生失败分类、回调响应丢失后成功、单次 code 提交、轮询恢复、确定性拒绝、取消/截止时间及敏感响应隔离；不需要真实 Google 登录。
 - Rust `cliproxy::` 测试：签名原文、固定 Installed 条目、资源保存、账号及进程生命周期；无账号/公网依赖。平台相关 fixture 在受支持的 macOS 执行，Linux 保留纯策略/文件合同测试。
 - `verify-cliproxy-contract.mjs` 和 ignored `native_process_management_contract`：显式使用已核验的原版程序做真实进程/管理接口检查，不登录账号。
 - `npm run verify:cliproxy:sdk-local`：真实已安装 SDK + 本地模拟服务，检查 loopback、子 Agent 模型选择，不访问 Google。

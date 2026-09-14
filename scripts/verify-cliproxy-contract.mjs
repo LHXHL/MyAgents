@@ -79,11 +79,27 @@ try {
     const stateQuery = `?state=${encodeURIComponent(authorization.state)}`;
     assert.equal((await (await request(`/v0/management/get-auth-status${stateQuery}`, managementKey)).json()).status, 'wait');
     assert((await request(`/v0/management/oauth-session${stateQuery}`, managementKey, 'DELETE')).ok);
-    const late = await request('/v0/management/oauth-callback', undefined, 'POST', {
+    const late = await request('/v0/management/oauth-callback', managementKey, 'POST', {
       provider: 'antigravity', state: authorization.state, code: 'synthetic-late-code',
     });
     assert(!late.ok, 'cancelled authorization must reject a late callback');
     checks.push('oauth-url-without-forwarder', 'exact-state-status-and-cancellation', 'late-callback-rejected');
+    // A callback HTTP 200 acknowledges delivery, not a completed authorization.
+    // Synthetic denial exercises the pinned native failure envelope offline.
+    const denied = await (await request('/v0/management/antigravity-auth-url', managementKey)).json();
+    const delivered = await request('/v0/management/oauth-callback', managementKey, 'POST', {
+      provider: 'antigravity', state: denied.state, code: '', error: 'access_denied',
+    });
+    assert.equal(delivered.status, 200);
+    let terminal;
+    for (let i = 0; i < 30; i++) {
+      terminal = await (await request(`/v0/management/get-auth-status?state=${encodeURIComponent(denied.state)}`, managementKey)).json();
+      if (terminal.status !== 'wait') break;
+      await delay(100);
+    }
+    assert.deepEqual(terminal, { status: 'error', error: 'Authentication failed' });
+    assert.deepEqual((await (await request('/v0/management/auth-files', managementKey)).json()).files, []);
+    checks.push('callback-accepted-before-native-failure', 'native-oauth-error-category');
   } finally { await new Promise(resolve => callback.close(resolve)); }
   await request('/v1/messages', modelKey, 'POST', { model: 'synthetic-unavailable', max_tokens: 1,
     messages: [{ role: 'user', content: 'synthetic-body-must-not-be-logged' }] });
