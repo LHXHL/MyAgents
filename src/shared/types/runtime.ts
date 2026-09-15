@@ -252,7 +252,7 @@ export interface RuntimeConfig {
   model?: string;            // Runtime-specific model selection
   permissionMode?: string;   // Runtime-specific permission mode
   /** #324 — reasoning effort setting ('default' | level). Vocabulary is
-   *  per-runtime (CC: low..max, Codex: minimal..xhigh — see
+   *  per-runtime (CC: low..max, Codex: model-catalog-defined — see
    *  shared/reasoningEffort.ts), hence NOT portable across runtimes. */
   reasoningEffort?: string;
   additionalArgs?: string[]; // Extra CLI arguments

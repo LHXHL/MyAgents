@@ -62,19 +62,20 @@ describe('snapshotForOwnedSession — reasoning effort capture (#324)', () => {
     expect(snap.configSnapshotAt).toBeTruthy();
   });
 
-  it('external: drops obviously foreign runtimeConfig fields before writing a snapshot', () => {
+  it.each(['max', 'future-effort'])('external: preserves Codex effort %s while dropping foreign model and permission fields', (effort) => {
     const snap = snapshotForOwnedSession(makeAgent({
       runtime: 'codex',
       runtimeConfig: {
         model: 'claude-opus-4-7',
-        reasoningEffort: 'max',
+        reasoningEffort: effort,
         permissionMode: 'fullAgency',
       },
     }));
 
     expect(snap.runtime).toBe('codex');
     expect(snap.model).toBeUndefined();
-    expect(snap.reasoningEffort).toBeUndefined();
+    // The model catalog validates execution; snapshot creation preserves intent.
+    expect(snap.reasoningEffort).toBe(effort);
     expect(snap.permissionMode).toBeUndefined();
   });
 
