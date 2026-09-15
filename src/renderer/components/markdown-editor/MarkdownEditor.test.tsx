@@ -3,6 +3,7 @@ import { createRef, useState } from 'react';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { EditorView, runScopeHandlers } from '@codemirror/view';
 import { undo, redo } from '@codemirror/commands';
+import * as markdownClipboard from '@/utils/markdownClipboard';
 import MarkdownEditor, { type MarkdownEditorHandle } from './MarkdownEditor';
 
 const mocks = vi.hoisted(() => ({ dropOptions: vi.fn() }));
@@ -29,6 +30,17 @@ const props = { path: 'notes.md', workspacePath: '/workspace', sourceMode: false
 const editorView = () => EditorView.findFromDOM(document.querySelector('.md-editor-host .cm-editor') as HTMLElement)!;
 
 describe('Markdown document state and projections', () => {
+  it('copies the current complete code body even when the header only projects the first line', async () => {
+    const copy = vi.spyOn(markdownClipboard, 'copyPlainText').mockResolvedValue();
+    try {
+      render(<MarkdownEditor {...props} initialSource={'```ts\nconst value = 1;\nsecond line\n```'} />);
+      const view = editorView();
+      act(() => view.dispatch({ changes: { from: 20, to: 21, insert: '2' } }));
+      fireEvent.click(await screen.findByRole('button', { name: '复制代码' }));
+      expect(copy).toHaveBeenCalledWith('const value = 2;\nsecond line');
+    } finally { copy.mockRestore(); }
+  });
+
   it.each(['search', 'table'])('hides inactive %s menus and disables drops while preserving the CM history', async menu => {
     const source = 'text\n\n| A | B |\n| --- | --- |\n| old | two |';
     const ref = createRef<MarkdownEditorHandle>();

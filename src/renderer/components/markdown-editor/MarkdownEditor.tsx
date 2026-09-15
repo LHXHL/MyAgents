@@ -373,7 +373,7 @@ export default function MarkdownEditor(props: Props) {
     </form>}
     {slots.map(slot => createPortal(<Suspense fallback={<span className="md-render-loading">{t('markdownEditor.rendering')}</span>}>
       <ProjectionFrame element={slot.element} view={slot.view}>{slot.projection.kind === 'CodeHeader' ? <div className="md-code-header"><span>{/^\s*(?:`{3,}|~{3,})(\S*)/.exec(slot.projection.source)?.[1] ?? t('markdownEditor.code')}</span><button onClick={() => {
-        const source = slot.projection.source;
+        const source = slot.view.state.sliceDoc(slot.projection.from, slot.projection.to);
         const code = /^\s*(?:`{3,}|~{3,})/.test(source) ? source.replace(/^[^\n]*\n/, '').replace(/\n[ \t]*(?:`{3,}|~{3,})\s*$/, '') : source;
         void copyPlainText(code).catch(() => latest.current.toast.error(t('markdownEditor.copyFailed')));
       }}>{t('markdownEditor.copyCode')}</button></div> : slot.projection.kind === 'Table' ? <TableProjection projection={slot.projection} view={slot.view} workspacePath={props.workspacePath} basePath={basePath}

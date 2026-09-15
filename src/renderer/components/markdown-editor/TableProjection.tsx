@@ -15,6 +15,7 @@ import { editLink, wrapSelection } from './editorCommands';
 import TableActions from '../markdown/TableActions';
 import { editorTableSnapshot } from './tableExport';
 import { useTableIntrinsicSizing } from '../markdown/useTableIntrinsicSizing';
+import { tableGeometry } from './tableGeometry';
 import type { TableSnapshot } from '@/utils/tableExport';
 
 interface Props { projection: Projection; view: EditorView; workspacePath?: string | null; basePath: string; focused: boolean; presentationActive?: boolean; onActivate(): void }
@@ -33,11 +34,7 @@ export default function TableProjection({ projection, view, workspacePath, baseP
   const model = useMemo(() => tableAt(view.state, projection.from), [view, projection]);
   useTableIntrinsicSizing(tableElement, Boolean(model));
   const rowCount = model?.rows.length ?? 0;
-  const offsets = useMemo(() => {
-    const values = [0];
-    for (let index = 0; index < rowCount; index++) values.push(values[index] + (rowHeights.get(index) ?? 35));
-    return values;
-  }, [rowCount, rowHeights]);
+  const geometry = useMemo(() => tableGeometry(rowCount, rowHeights), [rowCount, rowHeights]);
   useLayoutEffect(() => {
     const table = tableElement.current;
     if (!table || rowCount < 60) return;
@@ -46,19 +43,14 @@ export default function TableProjection({ projection, view, workspacePath, baseP
       frame = 0;
       const tableTop = table.getBoundingClientRect().top, scroller = view.scrollDOM.getBoundingClientRect();
       const top = Math.max(0, scroller.top - tableTop), bottom = top + scroller.height;
-      const rowAt = (position: number) => {
-        let low = 0, high = rowCount;
-        while (low < high) { const mid = (low + high) >>> 1; if (offsets[mid] < position) low = mid + 1; else high = mid; }
-        return low;
-      };
-      const from = Math.max(1, rowAt(top) - 5), to = Math.min(rowCount - 1, rowAt(bottom) + 5);
+      const from = Math.max(1, geometry.rowAt(top) - 5), to = Math.min(rowCount - 1, geometry.rowAt(bottom) + 5);
       setRowWindow(previous => previous.from === from && previous.to === to ? previous : { from, to });
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(update); };
     view.scrollDOM.addEventListener('scroll', schedule, { passive: true });
     const resize = new ResizeObserver(schedule); resize.observe(view.scrollDOM); schedule();
     return () => { cancelAnimationFrame(frame); resize.disconnect(); view.scrollDOM.removeEventListener('scroll', schedule); };
-  }, [view, rowCount, offsets]);
+  }, [view, rowCount, geometry]);
   useLayoutEffect(() => {
     const table = tableElement.current;
     if (!table || rowCount < 60) return;
@@ -216,7 +208,7 @@ export default function TableProjection({ projection, view, workspacePath, baseP
         indices.sort((a, b) => a - b);
         const elements = [];
         let previous = -1;
-        const spacer = (from: number, to: number) => <tr key={`gap-${from}`} aria-hidden="true"><td colSpan={model.columns} style={{ padding: 0, border: 0, height: offsets[to] - offsets[from] }} /></tr>;
+        const spacer = (from: number, to: number) => <tr key={`gap-${from}`} aria-hidden="true"><td colSpan={model.columns} style={{ padding: 0, border: 0, height: geometry.offset(to) - geometry.offset(from) }} /></tr>;
         for (const rowIndex of indices) {
           const row = model.rows.at(rowIndex); if (!row) continue;
           if (rowIndex > previous + 1) elements.push(spacer(previous + 1, rowIndex));

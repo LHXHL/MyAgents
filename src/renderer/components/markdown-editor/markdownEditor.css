@@ -46,7 +46,16 @@
 .md-selection-divider { align-self:center; flex:none; width:1px; height:16px; margin:0 4px; background:var(--line-strong); }
 .md-selection-quote { display:inline-flex; align-items:center; gap:4px; }
 .md-projection { max-width:100%; }
-span.md-projection, span.md-projection .md-rendered-block, span.md-projection .markdown-content { display:inline; }
+/* Keep descendant margins inside the measured block; CM block coordinates
+   cannot account for margins collapsing out of a portal container. */
+div.md-projection { display:flow-root; }
+/* Media/math projections are atomic boxes so block children cannot
+   introduce unreported line breaks inside CM text lines. */
+span.md-projection { display:inline-block; vertical-align:baseline; }
+/* HTML text keeps its inline flow; parsed hard breaks are declared to CM. */
+span.md-projection-InlineHTML { display:inline; }
+span.md-projection-InlineHTML img { display:inline-block; margin:0; vertical-align:middle; }
+span.md-projection .md-rendered-block, span.md-projection .markdown-content { display:inline; }
 span.md-projection p { display:inline; }
 .md-rendered-block, .md-table-shell { position:relative; min-height:32px; }
 .md-render-source, .md-block-actions { position:absolute; right:0; top:0; z-index:2; opacity:0; transition:opacity .12s; background:var(--paper-elevated); border:1px solid var(--line); border-radius:6px; }
