@@ -577,7 +577,7 @@ describe('Managed Codex provider readiness', () => {
 
   it('derives Codex subscription models from the managed runtime model list', () => {
     const provider = withManagedCodexRuntimeModels(MANAGED_CODEX_PROVIDER, [
-      { value: 'gpt-5.1', displayName: 'GPT-5.1' },
+      { value: 'gpt-5.1', displayName: 'GPT-5.1', defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'future-tier', description: 'Native description' }] },
       { value: 'gpt-5', displayName: 'GPT-5', isDefault: true },
       { value: '', displayName: '默认', isDefault: true },
       { value: 'gpt-5', displayName: 'duplicate' },
@@ -588,6 +588,8 @@ describe('Managed Codex provider readiness', () => {
     expect(provider.models.map(model => model.model)).toEqual(['gpt-5.1', 'gpt-5']);
     expect(provider.models[0]).toMatchObject({
       modelName: 'GPT-5.1',
+      defaultReasoningEffort: 'low',
+      supportedReasoningEfforts: [{ reasoningEffort: 'future-tier', description: 'Native description' }],
       modelSeries: 'codex',
       source: 'discovered',
     });

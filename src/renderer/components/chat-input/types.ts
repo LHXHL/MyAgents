@@ -143,6 +143,8 @@ export interface SimpleChatInputProps {
   runtimeDetections?: RuntimeDetections;
   onRuntimeChange?: (runtime: RuntimeType) => void;
   runtimeModels?: RuntimeModelInfo[];
+  /** Session-scoped capability; null means still unknown (do not use Global catalog). */
+  managedReasoningModel?: Pick<RuntimeModelInfo, 'supportedReasoningEfforts' | 'defaultReasoningEffort'> | null;
   runtimePermissionModes?: RuntimePermissionMode[];
   queuedMessages?: QueuedMessageInfo[];
   onCancelQueued?: (queueId: string) => void;

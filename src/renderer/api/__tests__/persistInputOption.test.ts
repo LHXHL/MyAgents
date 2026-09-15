@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { reasoningEffortAfterModelChange } from '../../../shared/reasoningEffort';
 import { persistInputOptionChange } from '../persistInputOption';
 
 function makeMocks() {
@@ -675,6 +676,30 @@ describe('persistInputOptionChange — disk write fanout', () => {
 });
 
 describe('persistInputOptionChange — reasoning effort routing (#324)', () => {
+  it('pushes model and default together for A/ultra → B/default → A/default', async () => {
+    const m = makeMocks();
+    let effort = 'ultra';
+    const targets = [
+      { value: 'model-b', supportedReasoningEfforts: [{ reasoningEffort: 'medium' }] },
+      { value: 'model-a', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'ultra' }] },
+    ];
+    for (const target of targets) {
+      effort = reasoningEffortAfterModelChange(effort, target);
+      await persistInputOptionChange({
+        workspaceId: 'ws', agentId: 'agent', isExternalRuntime: true,
+        fields: { runtimeBackedProviderSelection: { kind: 'runtime-backed-provider', providerId: 'codex-sub', runtime: 'codex', runtimeSource: 'managed-provider', model: target.value }, reasoningEffort: effort },
+        patchProject: m.patchProject, patchAgentConfig: m.patchAgentConfig, patchAgentProjectConfig: m.patchAgentProjectConfig,
+        patchSnapshot: m.patchSnapshot, pushRuntimeConfigToSidecar: m.pushRuntimeConfigToSidecar,
+      });
+    }
+    expect(m.pushRuntimeConfigToSidecar.mock.calls.map(([patch]) => patch)).toEqual([
+      { model: 'model-b', reasoningEffort: 'default' },
+      { model: 'model-a', reasoningEffort: 'default' },
+    ]);
+    expect(m.patchSnapshot.mock.calls.map(([patch]) => patch.reasoningEffort)).toEqual(['default', 'default']);
+    expect(m.patchAgentConfig).toHaveBeenLastCalledWith('agent', expect.objectContaining({ runtimeConfig: { reasoningEffort: 'default' } }));
+  });
+
   it('builtin: writes agent.reasoningEffort + snapshot.reasoningEffort, never the project', async () => {
     const m = makeMocks();
     await persistInputOptionChange({
@@ -693,23 +718,23 @@ describe('persistInputOptionChange — reasoning effort routing (#324)', () => {
     expect(m.patchProject).not.toHaveBeenCalled();
   });
 
-  it('external: routes to agent.runtimeConfig.reasoningEffort, preserving sibling keys', async () => {
+  it.each(['xhigh', 'ultra', 'future-tier'])('external: persists %s in agent and Session without an enum gate', async (effort) => {
     const m = makeMocks();
     await persistInputOptionChange({
       workspaceId: 'ws-1',
       agentId: 'agent-1',
       isExternalRuntime: true,
       currentRuntimeConfig: { model: 'gpt-5.2-codex', permissionMode: 'full-auto' },
-      fields: { reasoningEffort: 'xhigh' },
+      fields: { reasoningEffort: effort },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
       patchAgentProjectConfig: m.patchAgentProjectConfig,
       patchSnapshot: m.patchSnapshot,
     });
     expect(m.patchAgentConfig).toHaveBeenCalledWith('agent-1', {
-      runtimeConfig: { model: 'gpt-5.2-codex', permissionMode: 'full-auto', reasoningEffort: 'xhigh' },
+      runtimeConfig: { model: 'gpt-5.2-codex', permissionMode: 'full-auto', reasoningEffort: effort },
     });
-    expect(m.patchSnapshot).toHaveBeenCalledWith({ reasoningEffort: 'xhigh' });
+    expect(m.patchSnapshot).toHaveBeenCalledWith({ reasoningEffort: effort });
   });
 
   it("persists the literal 'default' (a session can pin back to default over a non-default agent value)", async () => {

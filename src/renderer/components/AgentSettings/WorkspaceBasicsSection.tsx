@@ -16,7 +16,7 @@ import { CUSTOM_EVENTS } from '@/../shared/constants';
 import { applyBuiltinBrowserExecutionToolToggle } from '@/../shared/browserTools';
 import { PERMISSION_MODES, type Project, type McpServerDefinition } from '@/config/types';
 import type { AgentConfig } from '../../../shared/types/agent';
-import { reasoningEffortChoices, REASONING_EFFORT_DESCRIPTIONS } from '@/../shared/reasoningEffort';
+import { reasoningEffortChoices, reasoningEffortAfterModelChange, REASONING_EFFORT_DESCRIPTIONS } from '@/../shared/reasoningEffort';
 import { ALL_WORKSPACE_ICON_IDS, DEFAULT_WORKSPACE_ICON } from '@/assets/workspace-icons';
 import WorkspaceIcon from '../launcher/WorkspaceIcon';
 import RuntimeSelector from '../RuntimeSelector';
@@ -196,9 +196,12 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
     if (!provider) return;
     const intent = toProviderExecutionIntent(provider, model);
     if (intent.kind === 'runtime-backed-provider') {
+      const effort = reasoningEffortAfterModelChange(agent?.runtimeConfig?.reasoningEffort as string | undefined, provider.models?.find(item => item.model === model));
+      if (effort === 'default' && agent?.runtimeConfig?.reasoningEffort && agent.runtimeConfig.reasoningEffort !== 'default') toast.info(tChat('input.reasoningModelReset'));
       void saveAgentConfig(agentDefaultsForRuntimeBackedProvider(
         intent,
         agent?.runtimeConfig as RuntimeConfig | undefined,
+        { reasoningEffort: effort },
       ));
     } else {
       void saveAgentConfig({
@@ -210,7 +213,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
       });
     }
     setOpenPopup(null);
-  }, [agent?.runtimeConfig, usesManagedCodexProvider, availableProviders, providers, saveAgentConfig]);
+  }, [agent?.runtimeConfig, usesManagedCodexProvider, availableProviders, providers, saveAgentConfig, toast, tChat]);
 
   const handlePermissionSelect = useCallback((mode: string) => {
     const provider = usesManagedCodexProvider
@@ -228,9 +231,11 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
   // #324 — agent-level 推理强度 default ('default' | level). Builtin only here
   // (external runtimes configure it via the chat toolbar → runtimeConfig).
   const handleEffortSelect = useCallback((effort: string) => {
-    void saveAgentConfig({ reasoningEffort: effort });
+    void saveAgentConfig(usesManagedCodexProvider
+      ? { runtimeConfig: { ...agentRuntimeConfig, reasoningEffort: effort } }
+      : { reasoningEffort: effort });
     setOpenPopup(null);
-  }, [saveAgentConfig]);
+  }, [saveAgentConfig, usesManagedCodexProvider, agentRuntimeConfig]);
 
   const handleMcpToggle = useCallback((serverId: string) => {
     const current = agent?.mcpEnabledServers || [];
@@ -307,8 +312,14 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
 
   // #324 — agent-level 推理强度 default (builtin; no project fallback — the
   // agent is the only storage for this field).
-  const effectiveReasoningEffort = agent?.reasoningEffort ?? 'default';
-  const effectiveReasoningEffortChoices = reasoningEffortChoices(
+  const effectiveReasoningEffort = (usesManagedCodexProvider ? agentRuntimeConfig?.reasoningEffort : agent?.reasoningEffort) ?? 'default';
+  const effortModel = selectedProvider?.models?.find(model => model.model === (effectiveModel ?? selectedProvider.primaryModel));
+  const defaultEffortLabel = usesManagedCodexProvider && effortModel?.defaultReasoningEffort
+    ? `${t('agentSettings.basics.defaultValue')} (${effortModel.defaultReasoningEffort})`
+    : t('agentSettings.basics.defaultValue');
+  const effectiveReasoningEffortChoices = usesManagedCodexProvider
+    ? effortModel?.supportedReasoningEfforts?.map(option => option.reasoningEffort) ?? []
+    : reasoningEffortChoices(
     'builtin',
     selectedProvider?.apiProtocol,
     selectedProvider?.id,
@@ -605,7 +616,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
           className="flex flex-1 items-center justify-between rounded-lg border border-[var(--line)] px-3 py-1.5 text-left text-sm text-[var(--ink)] transition-colors hover:border-[var(--line-strong)]"
           onClick={() => setOpenPopup(openPopup === 'effort' ? null : 'effort')}
         >
-          <span>{effectiveReasoningEffort === 'default' ? t('agentSettings.basics.defaultValue') : effectiveReasoningEffort}</span>
+          <span>{effectiveReasoningEffort === 'default' ? defaultEffortLabel : effectiveReasoningEffort}</span>
           <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--ink-subtle)]" />
         </button>
 
@@ -623,9 +634,9 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
                   }`}
                   onClick={() => handleEffortSelect(level)}
                 >
-                  <span className="text-sm font-medium">{level === 'default' ? t('agentSettings.basics.defaultValue') : level}</span>
-                  <span className="text-xs text-[var(--ink-muted)]">
-                    {t(`agentSettings.reasoning.descriptions.${level}`, {
+                  <span className="shrink-0 text-sm font-medium">{level === 'default' ? defaultEffortLabel : level}</span>
+                  <span title={usesManagedCodexProvider ? effortModel?.supportedReasoningEfforts?.find(option => option.reasoningEffort === level)?.description : undefined} className="ml-3 min-w-0 truncate text-xs text-[var(--ink-muted)]">
+                    {usesManagedCodexProvider ? effortModel?.supportedReasoningEfforts?.find(option => option.reasoningEffort === level)?.description ?? '' : t(`agentSettings.reasoning.descriptions.${level}`, {
                       defaultValue: REASONING_EFFORT_DESCRIPTIONS[level] ?? '',
                     })}
                   </span>

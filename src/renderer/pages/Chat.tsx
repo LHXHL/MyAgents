@@ -121,7 +121,7 @@ import { isSupportedLocale } from '../../shared/i18n';
 import { workspacePathsEqual } from '../../shared/workspacePath';
 import type { MainWindowPresentation } from '@/utils/mainWindowPresentation';
 import { supportsCodexConversationBranch } from '../../shared/codex-conversation-capability';
-import { coerceReasoningEffortForRuntime, reasoningEffortChoices } from '../../shared/reasoningEffort';
+import { coerceReasoningEffortForRuntime, reasoningEffortChoices, reasoningEffortAfterModelChange } from '../../shared/reasoningEffort';
 import type { ProviderHistoryEnv } from '../../shared/providerHistory';
 import { createConcreteProviderRoute, hasProviderRouteCredential, isConcreteProviderRoute } from '../../shared/providerRoute';
 import type { ProviderRoute } from '../../shared/providerRoute';
@@ -1212,7 +1212,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
   // session snapshot, live-pushed to the sidecar via /api/reasoning-effort/set.
   const [reasoningEffort, setReasoningEffort] = useState<string>(() => {
     const rc = currentAgent?.runtimeConfig as { reasoningEffort?: string } | undefined;
-    const fromAgent = currentAgent?.runtime && currentAgent.runtime !== 'builtin'
+    const fromAgent = managedProviderRuntimeActive || (currentAgent?.runtime && currentAgent.runtime !== 'builtin')
       ? rc?.reasoningEffort
       : currentAgent?.reasoningEffort;
     return fromAgent ?? 'default';
@@ -1571,7 +1571,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
   const [codexModels, setCodexModels] = useState<typeof CC_MODELS>([]);
   const [geminiModels, setGeminiModels] = useState<typeof CC_MODELS>([]);
   useEffect(() => {
-    if (!multiAgentRuntimeEnabled || managedProviderRuntimeActive || currentRuntime !== 'codex') return;
+    if ((!multiAgentRuntimeEnabled && !managedProviderRuntimeActive) || currentRuntime !== 'codex' || !isConnected) return;
     let cancelled = false;
     // AbortController so a tab-close (effect cleanup) silences the
     // proxyFetch "Sidecar gone" warning that would otherwise fire when
@@ -1580,12 +1580,12 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
     // post-hoc filter in proxyFetch turns the rejection into a silent
     // AbortError instead of a noisy lifecycle log line.
     const controller = new AbortController();
-    apiGet(runtimeModelCatalogPath('codex', 'system-cli'), { signal: controller.signal }).then((res: unknown) => {
+    apiGet(runtimeModelCatalogPath('codex', managedProviderRuntimeActive ? 'managed-provider' : 'system-cli'), { signal: controller.signal }).then((res: unknown) => {
       const data = res as { models?: typeof CC_MODELS } | undefined;
       if (!cancelled && data?.models?.length) setCodexModels(data.models);
     }).catch(() => {});
     return () => { cancelled = true; controller.abort(); };
-  }, [multiAgentRuntimeEnabled, managedProviderRuntimeActive, currentRuntime, apiGet]);
+  }, [multiAgentRuntimeEnabled, managedProviderRuntimeActive, currentRuntime, apiGet, isConnected, configPending, workspaceRefreshTrigger]);
   useEffect(() => {
     if (!multiAgentRuntimeEnabled || currentRuntime !== 'gemini') return;
     let cancelled = false;
@@ -1659,6 +1659,12 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
       // clear the ref to allow a retry when conditions change (e.g., sessionRuntime
       // populates later and matches currentRuntime).
       const data = res as { prewarmed?: boolean } | undefined;
+      if (managedProviderRuntimeActive && !controller.signal.aborted) {
+        void apiGet(runtimeModelCatalogPath('codex', 'managed-provider'), { signal: controller.signal }).then((result: unknown) => {
+          const models = (result as { models?: typeof CC_MODELS })?.models;
+          if (!controller.signal.aborted && models?.length) setCodexModels(models);
+        }).catch(() => {});
+      }
       if (data && data.prewarmed === false) {
         prewarmedKeyRef.current = null;
       }
@@ -2761,6 +2767,12 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
     enabledOfficialToolIds?: OfficialToolId[];
   }) => {
     if (!currentProject) return false;
+    const nextManagedModel = patch.runtimeBackedProviderSelection?.model;
+    const nextEffort = nextManagedModel
+      ? reasoningEffortAfterModelChange(patch.reasoningEffort ?? reasoningEffort, codexModels.find(model => model.value === nextManagedModel))
+      : undefined;
+    const effortReset = nextEffort === 'default' && reasoningEffort !== 'default';
+    if (nextEffort !== undefined) patch = { ...patch, reasoningEffort: nextEffort };
     const handleExtensionUpdateResponse = (response: ExtensionUpdateResponse): void => {
       const status = response.extensionStatus;
       if (response.success === false || status?.state === 'failed') {
@@ -2845,9 +2857,13 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
       console.error('[chat] tab config dual-write failed:', result.errors);
       toastRef.current.warning(t('shell.toasts.configPartiallySaved'));
     }
+    if (!result.snapshotWriteFailed && nextEffort !== undefined) {
+      setReasoningEffort(nextEffort);
+      if (effortReset) toastRef.current.info(t('input.reasoningModelReset'));
+    }
     return !result.snapshotWriteFailed;
   // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; persistInputOptionChange is a pure import, runtimeConfig accessed via currentAgent ref, apiPost is stable from TabContext
-  }, [skipSnapshotWrite, currentProject?.id, currentProject?.agentId, isExternalRuntime, currentRuntime, currentAgent?.runtimeConfig, patchSnapshot, patchProject, t]);
+  }, [reasoningEffort, codexModels, skipSnapshotWrite, currentProject?.id, currentProject?.agentId, isExternalRuntime, currentRuntime, currentAgent?.runtimeConfig, patchSnapshot, patchProject, t]);
 
   const handleMcpRetry = useCallback((serverId: string) => (
     apiPost<import('../../shared/mcpFailure').McpRetryResult>('/api/mcp/retry', { serverId })
@@ -4272,6 +4288,10 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
       return;
     }
 
+    // A new Session uses the target installed catalog, not this old Session's process.
+    const targetEffort = targetIntent.kind === 'runtime-backed-provider'
+      ? reasoningEffortAfterModelChange(reasoningEffort, newProvider.models?.find(model => model.model === targetModel))
+      : reasoningEffort;
     try {
       const sessionTitle = `${newProvider.name} 会话`;
       let openedSessionId: string;
@@ -4286,7 +4306,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
             // LaunchSessionBirthHint carries product-facing values. App is the
             // sole birth owner and converts them to runtime vocabulary once.
             permissionMode: inputChromePermissionMode,
-            reasoningEffort,
+            reasoningEffort: targetEffort,
             mcpEnabledServers: workspaceMcpEnabled,
             enabledPluginIds: workspaceEnabledPlugins,
             enabledOfficialToolIds: workspaceOfficialToolEnabled,
@@ -4326,6 +4346,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
         openedSessionId = session.id;
       }
       forkTabOpened = true;
+      if (targetEffort !== reasoningEffort) toastRef.current.info(t('input.reasoningModelReset'));
       if (currentProject) {
         const defaultWriteResult = await persistInputOptionChange({
           workspaceId: currentProject.id,
@@ -4335,7 +4356,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
           currentProviderId: currentAgent?.providerId ?? currentProject.providerId,
           fields: {
             ...(targetIntent.kind === 'runtime-backed-provider'
-              ? { runtimeBackedProviderSelection: targetIntent }
+              ? { runtimeBackedProviderSelection: targetIntent, reasoningEffort: targetEffort }
               : { builtinSelection: { providerId: pending.providerId, model: targetModel } }),
             permissionMode: inputChromePermissionMode,
           },
@@ -5673,7 +5694,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
             globallyVisiblePlugins={globallyVisiblePlugins}
             workspaceEnabledPlugins={workspaceEnabledPlugins}
             onWorkspacePluginToggle={handleWorkspacePluginToggle}
-            onRefreshProviders={refreshProviderData}
+            onRefreshProviders={async () => { await refreshProviderData(); setWorkspaceRefreshTrigger(value => value + 1); }}
             onOpenAgentSettings={handleOpenAgentSettings}
             onWorkspaceRefresh={triggerWorkspaceRefresh}
             // Cron task props - the non-blocking status bar is rendered inside SimpleChatInput.
@@ -5703,6 +5724,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
             runtime={inputChromeRuntime}
             runtimeDetections={showLegacyRuntimeSelector ? runtimeDetections : undefined}
             onRuntimeChange={showLegacyRuntimeSelector ? handleRuntimeChange : undefined}
+            managedReasoningModel={managedProviderRuntimeActive ? codexModels.find(model => model.value === selectedModel) ?? null : undefined}
             runtimeModels={inputUsesExternalRuntimeControls ? runtimeModels : undefined}
             runtimePermissionModes={inputUsesExternalRuntimeControls ? runtimePermissionModes : undefined}
             queuedMessages={queuedMessages}

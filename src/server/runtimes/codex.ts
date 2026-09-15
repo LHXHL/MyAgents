@@ -8,6 +8,7 @@ import { parseAsyncQuestionSet } from '../../shared/asyncUserQuestions';
 // Session: thread/start (new) / thread/resume (continuing)
 
 import { randomUUID } from 'node:crypto';
+import { readCodexModels, resolveManagedCodexEffort } from './codex-models';
 import { tmpdir } from 'node:os';
 import { spawn, type Subprocess, type SubprocessStdin } from '../utils/subprocess';
 import { writeFileSync, existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, statSync } from 'fs';
@@ -2678,6 +2679,7 @@ class CodexProcess implements RuntimeProcess {
    *  turn/start (its `effort` overrides "this turn and subsequent turns"),
    *  which is also what makes setReasoningEffort an in-place update. */
   reasoningEffort = '';
+  models: RuntimeModelInfo[] = [];
 
   /** MyAgents sessionId (from SessionStartOptions). Used as the attachment scope key
    *  so refPath /api/attachment/tool/<sessionId>/<turnId>/<file> stays consistent
@@ -3396,8 +3398,20 @@ export class CodexRuntime implements AgentRuntime {
     return { installed: false };
   }
 
-  async queryModels(options: { runtimeSource?: RuntimeSource } = {}): Promise<RuntimeModelInfo[]> {
+  async queryModels(options: { runtimeSource?: RuntimeSource; process?: RuntimeProcess } = {}): Promise<RuntimeModelInfo[]> {
     const runtimeSource = options.runtimeSource ?? 'system-cli';
+    if (options.process && !options.process.exited) {
+      const process = options.process as CodexProcess;
+      try {
+        const models = await readCodexModels(process.rpc);
+        if (process.exited) throw new Error('Codex process exited during model discovery');
+        process.models = models;
+        return models;
+      } catch (error) {
+        if (!process.exited && process.models.length) return process.models;
+        throw error;
+      }
+    }
     let context: CodexCommandContext;
     try {
       context = resolveCodexCommandContext({ source: runtimeSource });
@@ -3453,25 +3467,7 @@ export class CodexRuntime implements AgentRuntime {
     try {
       await initializeCodexRpc(rpc, 10_000);
 
-      // Query model list
-      const result = await rpc.call('model/list', {}, 10_000) as {
-        data: Array<{
-          id: string;
-          displayName: string;
-          description: string;
-          hidden: boolean;
-          isDefault: boolean;
-        }>;
-      };
-
-      return result.data
-        .filter(m => !m.hidden)
-        .map(m => ({
-          value: m.id,
-          displayName: m.displayName || m.id,
-          description: m.description,
-          isDefault: m.isDefault,
-        }));
+      return await readCodexModels(rpc);
     } finally {
       rpc.destroy();
       try { proc.kill(); } catch { /* ignore */ }
@@ -4102,6 +4098,10 @@ export class CodexRuntime implements AgentRuntime {
         CODEX_SKILL_LIST_TIMEOUT_MS,
       );
       codexProc.loadedSkillNames = skillProjection.loadedSkillNames;
+      if (runtimeSource === 'managed-provider') {
+        try { codexProc.models = await readCodexModels(codexProc.rpc); }
+        catch (error) { console.warn('[codex] Model capabilities unavailable:', summarizeCodexErrorForLog(error)); }
+      }
 
       // 2. Determine permission mode
       const isHeadlessAutomation =
@@ -4150,6 +4150,7 @@ export class CodexRuntime implements AgentRuntime {
         const result = await codexProc.rpc.call('thread/resume', resumeParams, 30_000) as CodexThreadPermissionResult;
         adoptCodexThreadPermissions(codexProc, result);
         codexProc.threadId = result.thread.id;
+        if (!codexProc.model && result.model) codexProc.model = result.model;
 
         // Emit synthetic session_init — thread/resume doesn't trigger notifications
         // but external-session needs it for session ID sync and frontend needs
@@ -4182,6 +4183,7 @@ export class CodexRuntime implements AgentRuntime {
         const result = await codexProc.rpc.call('thread/start', startParams, 30_000) as CodexThreadPermissionResult;
         adoptCodexThreadPermissions(codexProc, result);
         codexProc.threadId = result.thread.id;
+        if (!codexProc.model && result.model) codexProc.model = result.model;
 
         // Emit session_init so external-session.ts captures threadId
         onEvent({
@@ -4236,7 +4238,9 @@ export class CodexRuntime implements AgentRuntime {
           sandbox,
           workspacePolicy: codexProc.workspacePolicy,
           model: options.model || null,
-          reasoningEffort: codexProc.reasoningEffort || null,
+          reasoningEffort: codexProc.runtimeSource === 'managed-provider'
+            ? resolveManagedCodexEffort(codexProc.models, codexProc.model, codexProc.reasoningEffort)
+            : codexProc.reasoningEffort || null,
           clientUserMessageId,
         }), 15_000) as { turn: { id: string } };
         this.completeRootTurnAdmission(codexProc, turnResult.turn.id, wrappedOnEvent);
@@ -4324,7 +4328,9 @@ export class CodexRuntime implements AgentRuntime {
         sandbox: codexProc.sandbox,
         workspacePolicy: codexProc.workspacePolicy,
         model: codexProc.model || null,
-        reasoningEffort: codexProc.reasoningEffort || null,
+        reasoningEffort: codexProc.runtimeSource === 'managed-provider'
+            ? resolveManagedCodexEffort(codexProc.models, codexProc.model, codexProc.reasoningEffort)
+            : codexProc.reasoningEffort || null,
         clientUserMessageId,
       }), 15_000) as { turn: { id: string } };
       this.completeRootTurnAdmission(codexProc, turnResult.turn.id, (event) => {

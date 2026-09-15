@@ -193,6 +193,9 @@ export interface RuntimeModelInfo {
   displayName: string;  // UI display name (e.g., "Sonnet 4.6")
   description?: string; // Optional description
   isDefault?: boolean;  // Mark as default selection
+  /** Runtime-owned model capabilities. Values are intentionally open-ended. */
+  supportedReasoningEfforts?: { reasoningEffort: string; description?: string }[];
+  defaultReasoningEffort?: string;
 }
 
 /**

@@ -79,7 +79,7 @@ export const PERMISSION_MODES: {
 /**
  * Model entity representing a single model configuration
  */
-export interface ModelEntity {
+export interface ModelEntity extends Pick<RuntimeModelInfo, 'supportedReasoningEfforts' | 'defaultReasoningEffort'> {
   // === 核心字段（必填）===
   model: string; // API 代码，如 "claude-sonnet-4-6"
   modelName: string; // 显示名称，如 "Claude Sonnet 4.6"
@@ -1262,6 +1262,8 @@ export function managedCodexModelsFromRuntime(
       inputModalities: ['text', 'image'],
       outputModalities: ['text'],
       source: 'discovered',
+      supportedReasoningEfforts: runtimeModel.supportedReasoningEfforts,
+      defaultReasoningEffort: runtimeModel.defaultReasoningEffort,
     });
   }
   return models;

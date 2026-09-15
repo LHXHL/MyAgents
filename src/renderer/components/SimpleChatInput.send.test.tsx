@@ -94,6 +94,33 @@ describe('SimpleChatInput send paths', () => {
     workspaceMocks.service.listSlashCommands.mockResolvedValue([]);
   });
 
+  it('shows native managed model efforts and default, including future values', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const onReasoningEffortChange = vi.fn();
+    const provider = { id: 'codex-sub', name: 'Codex', primaryModel: 'sol', models: [{ model: 'sol', modelName: 'Sol', defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'future-tier', description: 'Native future tier' }] }] } as Provider;
+    renderInput({ runtime: 'builtin', provider, providers: [provider], selectedModel: 'sol', onReasoningEffortChange });
+    fireEvent.click(screen.getByTitle('切换模型'));
+    fireEvent.mouseEnter(screen.getByText('推理强度').parentElement!);
+    expect(screen.getAllByText('默认 (low)').length).toBeGreaterThan(0);
+    expect(screen.queryByText('minimal')).not.toBeInTheDocument();
+    expect(screen.queryByText('max')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('future-tier'));
+    expect(onReasoningEffortChange).toHaveBeenCalledWith('future-tier');
+  });
+
+  it('does not borrow Global capabilities when a Session catalog is unknown', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const onReasoningEffortChange = vi.fn();
+    const provider = { id: 'codex-sub', name: 'Codex', primaryModel: 'sol', models: [{ model: 'sol', modelName: 'Sol', defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'new-only-tier' }] }] } as Provider;
+    renderInput({ runtime: 'builtin', provider, providers: [provider], selectedModel: 'sol', reasoningEffort: 'high', managedReasoningModel: null, onReasoningEffortChange });
+    fireEvent.click(screen.getByTitle('切换模型'));
+    fireEvent.mouseEnter(screen.getByText('推理强度').parentElement!);
+    expect(screen.queryByText('new-only-tier')).not.toBeInTheDocument();
+    expect(screen.queryByText('默认 (low)')).not.toBeInTheDocument();
+    expect(screen.getByText('high')).toBeInTheDocument();
+    expect(onReasoningEffortChange).not.toHaveBeenCalled();
+  });
+
   it('keeps keyboard and button send disabled while Session restore owns admission', async () => {
     const onSend = renderInput({ sendBlocked: true, providerAvailable: true });
     const textbox = screen.getByRole('textbox');
