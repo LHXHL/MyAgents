@@ -8,14 +8,17 @@ setup / build 分工、业务构建去重与缓存失效规则见 [构建资源�
 
 ## 概览
 
-MyAgents 支持 **macOS** 和 **Windows** 平台：
+MyAgents 提供以下平台构建入口；Ubuntu 的交付范围与验收要求见对应指南：
 
 | 平台 | 架构 | 构建脚本 | 发布脚本 |
 |------|------|---------|---------|
 | macOS | ARM64 (M1/M2), x86_64 (Intel) | `build_macos.sh` | `publish_release.sh` |
 | Windows | x86_64 | `build_windows.ps1` | `publish_windows.ps1` |
+| Ubuntu 24.04 | x86_64 | `build_linux.sh` | 暂无自动发布脚本；手动分发 deb |
 
 > **Windows 用户**：请参阅 [Windows 构建与测试指南](./windows_build_guide.md)
+>
+> **Ubuntu 用户**：请参阅 [Ubuntu 24.04 x64 构建与验收](./linux_build_guide.md)，其中列明当前功能边界与真实桌面验收要求。
 
 本文档主要描述 **macOS** 版本的构建流程。macOS 支持 Apple Silicon (ARM64) 和 Intel (x86_64) 两种架构。
 
@@ -72,7 +75,7 @@ myagents-releases/
 2. 检查依赖（Rust 通过 `rustup` 使用仓库 `rust-toolchain.toml` 固定版本、Node.js、codesign；任一 macOS 架构的原生推理资源冷构建额外检查 Git、Python ≥ 3.10、CMake ≥ 3.28 与 Apple Clang）
 3. 配置生产环境 CSP
 4. TypeScript 类型检查
-5. 构建前端和服务端代码
+5. 通过 `build:assets` 一次构建前端、Sidecar、Bridge 与 CLI，双架构共用该结果；后续 Tauri 调用关闭本次业务构建钩子
 6. 签名 Vendor 二进制文件 (ripgrep 等)
 7. 构建 Tauri 应用 (Release + 签名 + 公证)
 8. 恢复开发配置
