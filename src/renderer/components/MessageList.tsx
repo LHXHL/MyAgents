@@ -15,6 +15,7 @@ import type { SessionState, SystemNotice } from '@/context/TabContext';
 import { ChatRowLayoutProvider, type RowLayoutChangeReason } from '@/context/ChatRowLayoutContext';
 import type { RowLayoutContract } from '@/utils/chatRowLayout';
 import { useChatScrollDebugProbe } from '@/hooks/useChatScrollDebugProbe';
+import { useChatFollowMotion } from '@/hooks/useChatFollowMotion';
 import { resolveChatBottomSpacerPx } from '@/utils/chatBottomSpacer';
 import type { MainWindowPresentation } from '@/utils/mainWindowPresentation';
 
@@ -429,26 +430,15 @@ const MessageList = memo(function MessageList({
   }, [canLayoutVirtualList, handleAtBottomChange]);
 
   const [debugScroller, setDebugScroller] = useState<HTMLElement | null>(null);
-  // One alignment path for text, footer/prompts, late media, and viewport resizing.
-  // scrollToIndex reads Virtuoso's cached item heights, which may still describe
-  // the previous commit. Its pixel scroll API clamps against current DOM geometry.
-  const alignFollowingViewport = useCallback(() => {
-    if (!canLayoutVirtualList || isViewportRecoveryFenced || !followEnabledRef.current) return;
-    if (!debugScroller || debugScroller.clientHeight <= 0) return;
-    const bottom = debugScroller.scrollHeight - debugScroller.clientHeight;
-    if (Math.abs(bottom - debugScroller.scrollTop) > 1) {
-      virtuosoRef.current?.scrollTo({ top: bottom, behavior: 'auto' });
-    }
-  }, [canLayoutVirtualList, isViewportRecoveryFenced, followEnabledRef, debugScroller, virtuosoRef]);
-  // React commits can precede ResizeObserver delivery. Align the current layout
-  // before painting, then let measured size changes use the same path below.
-  useLayoutEffect(alignFollowingViewport);
-  useLayoutEffect(() => {
-    if (!debugScroller || !canLayoutVirtualList || typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(alignFollowingViewport);
-    observer.observe(debugScroller);
-    return () => observer.disconnect();
-  }, [debugScroller, canLayoutVirtualList, alignFollowingViewport]);
+  const alignFollowingViewport = useChatFollowMotion({
+    scroller: debugScroller,
+    virtuosoRef,
+    followEnabledRef,
+    admitted: canLayoutVirtualList,
+    recoveryFenced: isViewportRecoveryFenced,
+    sessionId,
+    presentationGeneration: windowPresentation.generation,
+  });
 
   // ── Refs for stable callbacks — avoid recreating itemContent/Footer on every render ──
   const streamingMessageRef = useRef(streamingMessage);

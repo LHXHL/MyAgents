@@ -120,7 +120,7 @@ describe('useVirtuosoScroll user intent projection', () => {
     expect(onUserScrollIntent).toHaveBeenCalledTimes(4);
   });
 
-  it('lets immediate upward input escape force while downward wheel keeps following', () => {
+  it('lets immediate upward input escape force while downward wheel at bottom keeps following', () => {
     const { result, unmount } = renderHook(() => useVirtuosoScroll());
     const scroller = document.createElement('div');
     act(() => result.current.attachScroller(scroller));
@@ -129,7 +129,7 @@ describe('useVirtuosoScroll user intent projection', () => {
     expect(result.current.followEnabledRef.current).toBe('force');
 
     scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: 10 }));
-    expect(result.current.followEnabledRef.current).toBe('force');
+    expect(result.current.followEnabledRef.current).toBe(true);
 
     scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -10 }));
     expect(result.current.followEnabledRef.current).toBe(false);
@@ -141,5 +141,20 @@ describe('useVirtuosoScroll user intent projection', () => {
     }
 
     unmount();
+  });
+
+  it('lets downward input and scrollbar grabs take control while follow is still catching up', () => {
+    const { result } = renderHook(() => useVirtuosoScroll());
+    const scroller = document.createElement('div');
+    Object.defineProperties(scroller, { scrollHeight: { value: 1000 }, clientHeight: { value: 500 } });
+    scroller.scrollTop = 450;
+    act(() => result.current.attachScroller(scroller));
+    scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: 10 }));
+    expect(result.current.followEnabledRef.current).toBe(false);
+    scroller.scrollTop = 500;
+    scroller.dispatchEvent(new Event('scroll'));
+    expect(result.current.followEnabledRef.current).toBe(true);
+    scroller.dispatchEvent(new PointerEvent('pointerdown'));
+    expect(result.current.followEnabledRef.current).toBe(false);
   });
 });

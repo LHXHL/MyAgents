@@ -157,6 +157,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -740,6 +741,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
   });
 
   it('aligns actual geometry for streaming, footer growth and terminal layout through one path', () => {
+    vi.useFakeTimers();
     let height = 1000;
     const scroller = document.createElement('div');
     Object.defineProperties(scroller, {
@@ -765,9 +767,11 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     // The new DOM height is authoritative even while Virtuoso's estimate lags.
     height = 1124;
     act(() => lastData().totalListHeightChanged?.(1000));
+    act(() => vi.advanceTimersByTime(350));
     expect(scrollTo).toHaveBeenLastCalledWith({ top: 624, behavior: 'auto' });
     height = 1130;
     rerender(<MessageList {...props} isLoading={false} streamingMessage={null} />);
+    act(() => vi.advanceTimersByTime(350));
     expect(scrollTo).toHaveBeenLastCalledWith({ top: 630, behavior: 'auto' });
     expect(scrollToIndex).not.toHaveBeenCalled();
     expect(lastData().followOutput).toBe(false);
