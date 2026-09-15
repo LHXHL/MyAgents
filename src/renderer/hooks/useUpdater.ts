@@ -17,6 +17,7 @@ import { track } from '@/analytics';
 import { i18n } from '@/i18n';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import { isDebugMode } from '@/utils/debug';
+import { isLinuxDesktop } from '@/utils/desktopPlatform';
 import { compareVersions } from '../../shared/utils';
 
 export interface UpdateReadyInfo {
@@ -97,6 +98,7 @@ export function useUpdater(): UseUpdaterResult {
     // Manual update check: test connectivity → compare version → download if needed
     // Returns a result string so the caller can show appropriate toast feedback.
     const checkForUpdate = useCallback(async (): Promise<CheckUpdateResult> => {
+        if (isLinuxDesktop()) return 'error'; // deb upgrades are installed manually.
         if (!isTauriEnvironment()) {
             console.warn('[useUpdater] Manual check not available outside Tauri');
             return 'error';
@@ -183,6 +185,7 @@ export function useUpdater(): UseUpdaterResult {
     // root cause of the "click does nothing" reports — the user was left in
     // a broken state with the install never actually starting.
     const restartAndUpdate = useCallback(async (): Promise<RestartUpdateResult> => {
+        if (isLinuxDesktop()) return 'blocked';
         if (!isTauriEnvironment()) return 'error';
         if (installingRef.current) return 'ok';  // already in flight
 
@@ -239,7 +242,8 @@ export function useUpdater(): UseUpdaterResult {
             }
         }
 
-        // Linux: relaunch picks up the AppImage replaced during background install.
+        // Legacy non-deferred packages relaunch after installation. Ubuntu deb
+        // is rejected above and must never enter this path.
         try {
             await invoke('cmd_shutdown_for_update');
         } catch (err) {
@@ -264,7 +268,7 @@ export function useUpdater(): UseUpdaterResult {
 
     // Listen for update ready event from Rust
     useEffect(() => {
-        if (!isTauriEnvironment()) {
+        if (!isTauriEnvironment() || isLinuxDesktop()) {
             if (isDebugMode()) {
                 console.log('[useUpdater] Not in Tauri environment, skipping event listener setup');
             }
@@ -310,7 +314,7 @@ export function useUpdater(): UseUpdaterResult {
     // Windows/macOS: check for a pending update on disk at startup
     // If found, show a dialog prompting the user to install it
     useEffect(() => {
-        if (!isTauriEnvironment() || !usesDeferredInstall) return;
+        if (!isTauriEnvironment() || isLinuxDesktop() || !usesDeferredInstall) return;
 
         const checkPending = async () => {
             try {
@@ -334,7 +338,7 @@ export function useUpdater(): UseUpdaterResult {
     // Periodic background check (silent - just triggers Rust to check and download)
     // Uses ref to avoid recreating interval when updateReady changes
     useEffect(() => {
-        if (!isTauriEnvironment()) return;
+        if (!isTauriEnvironment() || isLinuxDesktop()) return;
 
         const doCheck = async () => {
             // Always check — even if an update is already ready.

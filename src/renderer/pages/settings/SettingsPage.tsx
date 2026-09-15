@@ -1,3 +1,4 @@
+import { getPlatformHiddenProviderIds, isLinuxDesktop } from '@/utils/desktopPlatform';
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
   Check,
@@ -341,6 +342,7 @@ export default function Settings({
   onCheckForUpdate,
   onRestartAndUpdate,
 }: SettingsProps) {
+  const linuxDesktop = isLinuxDesktop();
   const cliProxy = useCliProxyStatus();
   const {
     apiKeys,
@@ -511,7 +513,7 @@ export default function Settings({
     initialSection:
       mode === 'capabilities' ? (initialSection ?? 'skills') : initialSection,
     navigationNonce,
-    floatingBallDevGate: config.floatingBallDevGate,
+    floatingBallDevGate: linuxDesktop ? false : config.floatingBallDevGate,
     onSectionChange,
   });
   useEffect(() => {
@@ -3360,7 +3362,7 @@ export default function Settings({
   const allProviders = useMemo(() => providers.filter(provider =>
     provider.id !== ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID || showCliProxy), [providers, showCliProxy]);
   const managedCodexProviderGateEnabled =
-    isManagedCodexProviderGateEnabled(config);
+    !linuxDesktop && isManagedCodexProviderGateEnabled(config);
   const managedCodexReadiness = useMemo(
     () => getManagedCodexProviderReadiness(config),
     [config],
@@ -3370,7 +3372,9 @@ export default function Settings({
     [allProviders],
   );
   const proxyScopeProviderIds = useMemo(
-    () => allProviders.map((provider) => provider.id),
+    // Hidden built-ins still exist. Do not let display filtering trigger the
+    // invalid-ID cleanup effect or turn a partial selection into "all".
+    () => [...new Set([...allProviders.map((provider) => provider.id), ...getPlatformHiddenProviderIds()])],
     [allProviders],
   );
   const proxyScope = useMemo(
@@ -4943,7 +4947,7 @@ export default function Settings({
           activeSection={activeSection}
           setActiveSection={setActiveSection}
           showDevTools={config.showDevTools}
-          floatingBallDevGate={config.floatingBallDevGate}
+          floatingBallDevGate={linuxDesktop ? false : config.floatingBallDevGate}
           onShowLogs={() => setShowLogs(true)}
         />
       )}
@@ -5041,7 +5045,7 @@ export default function Settings({
         )}
 
         {activeSection === 'desktop-pet' &&
-          config.floatingBallDevGate !== false && <FloatingBallPetSettings />}
+          !linuxDesktop && config.floatingBallDevGate !== false && <FloatingBallPetSettings />}
 
         {/* Providers section uses wider layout */}
         {activeSection === 'providers' && (
@@ -6194,7 +6198,7 @@ export default function Settings({
                     <p className="text-sm font-medium text-[var(--ink-muted)]">
                       Version {appVersion || '...'}
                     </p>
-                    {!propUpdateReady && !updateDownloading && (
+                    {!linuxDesktop && !propUpdateReady && !updateDownloading && (
                       <button
                         type="button"
                         onClick={async () => {
@@ -6234,7 +6238,12 @@ export default function Settings({
                   <p className="mt-3 text-base text-[var(--ink-secondary)]">
                     {tSettings('about.slogan')}
                   </p>
-                  {updateDownloading && propUpdateVersion && (
+                  {linuxDesktop && (
+                    <p className="mt-3 text-sm text-[var(--ink-muted)]">
+                      {tSettings('about.manualLinuxUpdate')}
+                    </p>
+                  )}
+                  {!linuxDesktop && updateDownloading && propUpdateVersion && (
                     <div className="mt-3 space-y-2">
                       <div className="flex items-center gap-2 text-sm text-[var(--ink-secondary)]">
                         <Loader2 className="h-4 w-4 animate-spin text-[var(--accent)]" />
@@ -6261,7 +6270,7 @@ export default function Settings({
                   {/* Hidden during silent replacement (updatePreparing) for the
                                         same reason CustomTitleBar hides its button: pending bytes
                                         are mid-replacement, click would hit inconsistent state. */}
-                  {propUpdateReady && propUpdateVersion && !updatePreparing && (
+                  {!linuxDesktop && propUpdateReady && propUpdateVersion && !updatePreparing && (
                     <div className="mt-3 flex items-center gap-2">
                       <span className="text-sm text-[var(--success)]">
                         {tSettings('about.updateReady', {
@@ -6643,7 +6652,7 @@ export default function Settings({
                     </div>
 
                     {/* Desktop Pet Gate */}
-                    <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
+                    {!linuxDesktop && (<div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
                       <div className="flex items-center justify-between">
                         <div className="flex-1 pr-4">
                           <h3 className="text-sm font-medium text-[var(--ink)]">
@@ -6672,10 +6681,10 @@ export default function Settings({
                           />
                         </button>
                       </div>
-                    </div>
+                    </div>)}
 
                     {/* Managed Codex Provider Gate */}
-                    <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
+                    {!linuxDesktop && (<div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
                       <div className="flex items-center justify-between">
                         <div className="flex-1 pr-4">
                           <h3 className="text-sm font-medium text-[var(--ink)]">
@@ -6714,7 +6723,7 @@ export default function Settings({
                           />
                         </button>
                       </div>
-                    </div>
+                    </div>)}
 
                     {spaceBuildCapability.available &&
                       availableSpaceEnvironments.has('dev') && (

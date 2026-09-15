@@ -4,9 +4,23 @@ import type { CliProxyStatus } from '../../shared/cliproxy';
 import { useCliProxyStatus } from './useCliProxyStatus';
 
 const native = vi.hoisted(() => ({ status: vi.fn(), listen: vi.fn() }));
+const platform = vi.hoisted(() => ({ value: 'darwin-aarch64' }));
+vi.mock('@/identity/deviceIdentity', () => ({ getPlatform: () => platform.value }));
 vi.mock('@/config/services/cliproxyService', () => ({ getCliProxyStatus: native.status }));
 vi.mock('@/utils/tauriListen', () => ({ listenWithCleanup: native.listen }));
-afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
+afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); platform.value = 'darwin-aarch64'; });
+
+it('does not poll or subscribe to CLIProxy on Linux', async () => {
+  platform.value = 'linux-x86_64';
+  vi.useFakeTimers();
+  const { result, unmount } = renderHook(() => useCliProxyStatus());
+  await act(async () => { await result.current.refresh(); vi.advanceTimersByTime(60_000); });
+  expect(result.current.status).toBeNull();
+  expect(native.status).not.toHaveBeenCalled();
+  expect(native.listen).not.toHaveBeenCalled();
+  expect(vi.getTimerCount()).toBe(0);
+  unmount();
+});
 
 it('ignores a late status response and unmounts without cancelling Rust account work', async () => {
   vi.useFakeTimers();

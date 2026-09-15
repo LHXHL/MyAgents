@@ -2130,6 +2130,7 @@
     }
   },
   "about": {
+    "manualLinuxUpdate": "On Ubuntu, download the latest installer from the release page and install it over the existing version to update.",
     "desktopOnly": "This feature is only available in the desktop app",
     "upToDate": "You are already on the latest version",
     "foundDownloading": "New version found. Downloading...",

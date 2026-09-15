@@ -2130,6 +2130,7 @@
     }
   },
   "about": {
+    "manualLinuxUpdate": "Ubuntu 版本请从发布页面下载新版安装包，覆盖安装以更新。",
     "desktopOnly": "此功能仅在桌面应用中可用",
     "upToDate": "当前已是最新版本",
     "foundDownloading": "发现新版本，正在下载...",
