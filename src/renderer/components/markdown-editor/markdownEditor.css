@@ -157,3 +157,24 @@ span.md-projection p { display:inline; }
 .md-search-replace label { display:block; color:var(--ink-secondary); }
 .md-search-replace input { display:block; width:100%; margin:6px 0; padding:6px 8px; border:1px solid var(--line-strong); border-radius:var(--radius-sm); background:var(--paper); color:var(--ink); font:inherit; }
 .md-search-replace > div { display:flex; justify-content:flex-end; gap:4px; }
+
+/* Outline is anchored to the shell; it never changes the document's width.
+   Keep the hit area inside the existing left content padding. */
+.md-editor-shell .md-outline-trigger { position:absolute; z-index:3; left:0; top:50%; transform:translateY(-50%); display:flex; flex-direction:column; justify-content:center; align-items:flex-start; gap:8px; width:24px; max-height:60%; padding:12px 5px; overflow:hidden; border:0; background:transparent; color:var(--ink); }
+.md-editor-shell .md-outline-trigger:hover, .md-editor-shell .md-outline-trigger:focus-visible { background:transparent; color:var(--ink); }
+.md-outline-tick { display:block; flex:0 1 2px; min-height:1px; width:calc(16px - var(--outline-level) * 2px); border-radius:1px; background:currentColor; opacity:.28; }
+.md-outline-tick[data-active="true"] { opacity:.85; }
+.md-outline-trigger[aria-expanded="true"] .md-outline-tick { opacity:.4; }
+.md-outline-trigger[aria-expanded="true"] .md-outline-tick[data-active="true"] { opacity:1; }
+.md-outline-popover { width:270px; max-width:calc(100vw - 48px); color:var(--ink); font:var(--text-sm)/1.5 var(--font-body); }
+.md-outline-header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 16px 10px; font-size:var(--text-xs); }
+.md-outline-header > :last-child { color:var(--ink-muted); }
+.md-outline-popover ol { position:relative; list-style:none; margin:0; padding:0 7px 8px; max-height:min(440px, calc(100dvh - 100px)); overflow-y:auto; overscroll-behavior:contain; }
+.md-outline-popover li { margin:0; padding:0; }
+.md-outline-popover li button { display:flex; align-items:center; gap:8px; width:100%; min-height:32px; padding:6px 10px 6px calc(10px + (var(--outline-level) - 1) * 13px); background:transparent; border:0; border-radius:var(--radius-sm); color:var(--ink-secondary); font:inherit; text-align:left; cursor:pointer; }
+.md-outline-popover li button:hover { color:var(--ink); background:var(--hover-bg); }
+.md-outline-popover li button[aria-current="location"] { color:var(--ink); background:var(--paper-inset); font-weight:var(--font-weight-prose); }
+.md-outline-popover li button[aria-current="location"]::after { content:''; width:4px; height:4px; flex:0 0 4px; border-radius:50%; background:currentColor; margin-left:auto; }
+.md-outline-popover li button span { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.md-outline-popover li button:focus-visible, .md-editor-shell .md-outline-trigger:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+@media (pointer:coarse) { .md-outline-popover li button { min-height:44px; } }

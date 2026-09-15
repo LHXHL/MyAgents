@@ -1113,6 +1113,14 @@
     "deleteMessage": "Delete \"{{title}}\"? This cannot be undone."
   },
   "markdownEditor": {
+    "outline": {
+      "browse": "Browse document outline",
+      "title": "Contents",
+      "count_one": "{{count}} heading",
+      "count_other": "{{count}} headings",
+      "indexing": "Indexing…",
+      "untitled": "Untitled"
+    },
     "document": "Markdown document",
     "source": "Source mode",
     "exitSource": "Exit source mode",

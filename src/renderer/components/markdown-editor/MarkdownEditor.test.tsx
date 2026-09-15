@@ -30,6 +30,44 @@ const props = { path: 'notes.md', workspacePath: '/workspace', sourceMode: false
 const editorView = () => EditorView.findFromDOM(document.querySelector('.md-editor-host .cm-editor') as HTMLElement)!;
 
 describe('Markdown document state and projections', () => {
+  it('rejects stale outline positions before the next measurement and navigates after refresh', async () => {
+    const source = '# First\n\n' + 'body '.repeat(20) + '\n\n## Last';
+    render(<MarkdownEditor {...props} initialSource={source} />);
+    fireEvent.click(await screen.findByRole('button', { name: '浏览文档目录' }));
+    const stale = await screen.findByRole('button', { name: 'Last' });
+    const view = editorView();
+    act(() => {
+      view.dispatch({ changes: { from: 0, to: 9 } });
+      fireEvent.click(stale);
+    });
+    expect(view.state.selection.main.head).toBe(0);
+    expect(view.state.doc.toString()).toBe(source.slice(9));
+    await waitFor(() => expect(document.querySelectorAll('.md-outline-tick')).toHaveLength(1));
+    fireEvent.click(screen.getByRole('button', { name: '浏览文档目录' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Last' }));
+    expect(view.state.selection.main.head).toBe(source.slice(9).indexOf('## Last'));
+  });
+  it('refreshes the outline after external reload and releases it on source/hidden modes', async () => {
+    const ref = createRef<MarkdownEditorHandle>();
+    const candidate = { ...props, ref, initialSource: '# Before\n\nbody\n\n## Second' };
+    const rendered = render(<MarkdownEditor {...candidate} />);
+    fireEvent.click(await screen.findByRole('button', { name: '浏览文档目录' }));
+    expect(await screen.findByRole('button', { name: 'Before' })).toBeInTheDocument();
+    act(() => ref.current!.replaceSource('# Reloaded\n\n## New section', true));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Before' })).not.toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: '浏览文档目录' }));
+    expect(await screen.findByRole('button', { name: 'Reloaded' })).toBeInTheDocument();
+    const view = editorView();
+    rendered.rerender(<MarkdownEditor {...candidate} active={false} />);
+    expect(screen.queryByRole('navigation', { name: '目录' })).toBeNull();
+    rendered.rerender(<MarkdownEditor {...candidate} sourceMode />);
+    expect(screen.queryByRole('button', { name: '浏览文档目录' })).toBeNull();
+    rendered.rerender(<MarkdownEditor {...candidate} />);
+    expect(await screen.findByRole('button', { name: '浏览文档目录' })).toBeInTheDocument();
+    expect(editorView()).toBe(view);
+    act(() => ref.current!.replaceSource('No headings', true));
+    await waitFor(() => expect(screen.queryByRole('button', { name: '浏览文档目录' })).toBeNull());
+  });
   it('copies the current complete code body even when the header only projects the first line', async () => {
     const copy = vi.spyOn(markdownClipboard, 'copyPlainText').mockResolvedValue();
     try {

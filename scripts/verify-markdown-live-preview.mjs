@@ -39,12 +39,14 @@ import React from 'react';import {createRoot} from 'react-dom/client';import {fl
 import {EditorView} from '@codemirror/view';import {forceParsing} from '@codemirror/language';
 import MarkdownEditor from './src/renderer/components/markdown-editor/MarkdownEditor';
 window.view?.destroy();
-const root=createRoot(document.querySelector('.md-editor-shell').parentElement); let key=0;
-window.mount=doc=>{flushSync(()=>root.render(<MarkdownEditor key={++key} initialSource={doc} path="README.md" sourceMode={false} allowImages={false} onChange={()=>{}} onSave={()=>{}} />));window.view=EditorView.findFromDOM(document.querySelector('.md-editor-host .cm-editor'));forceParsing(window.view,doc.length,5000)};
+const root=createRoot(document.querySelector('.md-editor-shell').parentElement); let key=0, source='', options={};
+const render=()=>{flushSync(()=>root.render(<MarkdownEditor key={key} initialSource={source} path="README.md" sourceMode={false} allowImages={false} onChange={()=>{}} onSave={()=>{}} {...options} />));window.view=EditorView.findFromDOM(document.querySelector('.md-editor-host .cm-editor'));};
+window.mount=(doc,parse=true)=>{source=doc;options={};key++;render();if(parse)forceParsing(window.view,doc.length,5000)};
+window.setOptions=value=>{options=value;render()};
 `},bundle:true,write:false,format:'iife',platform:'browser',loader:{'.css':'empty','.svg':'dataurl'},plugins:[{name:'host-stubs',setup(b){b.onResolve({filter:/.*/},args=>{const key=Object.keys(stubs).find(k=>args.path===k||args.path.endsWith('/'+k));if(key)return {path:key,namespace:'stub'}});b.onLoad({filter:/.*/,namespace:'stub'},args=>({contents:stubs[args.path],loader:'js'}));}}]});
 
 const compiler=await compile(await readFile(resolve(root,'src/renderer/index.css'),'utf8'),{base:resolve(root,'src/renderer'),onDependency(){}});
-const appCss=compiler.build(['overflow-x-auto','max-w-full','min-w-0','break-words','text-xs','italic']);
+const appCss=compiler.build(['overflow-x-auto','max-w-full','min-w-0','break-words','text-xs','italic','overflow-hidden','rounded-lg','border','border-[var(--line)]','bg-[var(--paper-elevated)]','shadow-xl']);
 const themeCss=await readFile(resolve(root,'src/renderer/theme/themes/myagents-default.css'),'utf8');
 let mathCss=await readFile(resolve(root,'node_modules/katex/dist/katex.min.css'),'utf8');
 for(const font of new Set([...mathCss.matchAll(/url\((fonts\/[^)]+)\)/g)].map(match=>match[1]))) {
@@ -76,6 +78,7 @@ try {
  assert.deepEqual(errors,[]);
  console.log('Live preview long table geometry passed.');
  await page.addStyleTag({content:appCss+'\n'+themeCss+'\n'+markdownCss+'\n'+mathCss});
+ await page.evaluate(()=>document.documentElement.dataset.colorScheme='light');
  await page.evaluate(()=>window.imageFixtures={});
  await page.addScriptTag({content:reactBundle.outputFiles[0].text});
  // Offline image bytes still complete asynchronously through the real renderer.
@@ -105,7 +108,7 @@ try {
   await page.waitForFunction(()=>document.querySelector('.md-projection-InlineHTML br'));
   const lines=await page.evaluate(()=>{
    const walker=document.createTreeWalker(window.view.contentDOM,NodeFilter.SHOW_TEXT); const tops={};let node;
-   while(node=walker.nextNode())for(const word of ['before','after']) {
+   while((node=walker.nextNode()))for(const word of ['before','after']) {
     const at=node.textContent.indexOf(word);if(at<0)continue;
     const range=document.createRange();range.setStart(node,at);range.setEnd(node,at+word.length);tops[word]=range.getBoundingClientRect().top;
    }return tops;
@@ -130,7 +133,7 @@ try {
     const b=v.scrollDOM.getBoundingClientRect();
     return [...v.contentDOM.querySelectorAll('.cm-line')].flatMap(line=>{
      const walker=document.createTreeWalker(line,NodeFilter.SHOW_TEXT);
-     let text; while(text=walker.nextNode()) {
+     let text; while((text=walker.nextNode())) {
       if(text.parentElement.closest('.md-projection') || text.textContent.trim().length<8)continue;
       const r=document.createRange();r.setStart(text,2);r.setEnd(text,3); const rect=r.getBoundingClientRect();
       if(rect.top<b.top+10 || rect.bottom>b.bottom-10 || rect.width<1)continue;
@@ -181,6 +184,53 @@ try {
   assert.ok(geometry.top!==undefined&&geometry.y>=geometry.top-52&&geometry.y<=geometry.bottom+52,'Resize left a visible coordinate gap');
  }
  console.log('Dense inline math stays bounded across three resize/scroll states.');
+ // Exercise the production outline without eagerly completing its parse.
+ const outlineDoc='# Start\n\n'+Array.from({length:180},(_,i)=>'## Section '+i+'\n\n'+('Reading content '+i+'. ').repeat(35)+'\n\n').join('')+'## Same\n\nFirst duplicate\n\n## Same\n\nLast duplicate';
+ await page.evaluate(doc=>window.mount(doc,false),outlineDoc);
+ const trigger=page.getByRole('button',{name:'浏览文档目录'});
+ await trigger.waitFor();
+ await trigger.hover();
+ await page.getByRole('navigation',{name:'目录'}).waitFor();
+ await page.waitForFunction(()=>document.querySelectorAll('.md-outline-popover li').length===183);
+ assert.ok(await page.locator('.md-outline-tick').count()<=24,'Long outline must keep its rail bounded');
+ const beforeHover=await page.evaluate(()=>({doc:window.view.state.doc.toString(),height:window.view.contentHeight,scroll:window.view.scrollDOM.scrollTop}));
+ await page.locator('.md-outline-popover').hover();await page.waitForTimeout(220);
+ assert.equal(await trigger.getAttribute('aria-expanded'),'true','Hover bridge closed the outline');
+ await page.mouse.move(850,690);await page.waitForTimeout(250);
+ assert.equal(await trigger.getAttribute('aria-expanded'),'false');
+ assert.deepEqual(await page.evaluate(()=>({doc:window.view.state.doc.toString(),height:window.view.contentHeight,scroll:window.view.scrollDOM.scrollTop})),beforeHover,'Hover changed the document layout');
+ await trigger.hover();await page.getByRole('button',{name:'Section 120',exact:true}).click();
+ await page.waitForFunction(()=>window.view.state.doc.lineAt(window.view.state.selection.main.head).text==='## Section 120');
+ await page.waitForTimeout(250);
+ assert.ok(await page.evaluate(()=>{const v=window.view,r=v.coordsAtPos(v.state.selection.main.head),s=v.scrollDOM.getBoundingClientRect();return r&&r.top>=s.top&&r.top<s.top+65}),'Heading jump must align near the visible top');
+ assert.equal(await page.evaluate(()=>window.view.state.doc.toString()),outlineDoc,'Outline navigation edited source');
+ await trigger.press('ArrowDown');
+ await page.waitForFunction(()=>document.activeElement?.textContent==='Section 120');
+ await page.keyboard.press('End');await page.keyboard.press('Enter');
+ await page.waitForFunction(()=>window.view.state.selection.main.head===window.view.state.doc.toString().lastIndexOf('## Same'));
+ await trigger.press('ArrowDown');await page.getByRole('navigation',{name:'目录'}).waitFor();
+ await page.keyboard.press('Escape');assert.equal(await trigger.getAttribute('aria-expanded'),'false');
+ await trigger.hover();await page.getByRole('navigation',{name:'目录'}).waitFor();
+ await page.evaluate(()=>window.setOptions({active:false}));assert.equal(await page.locator('.md-outline-popover').count(),0);
+ await page.evaluate(()=>window.setOptions({sourceMode:true}));assert.equal(await page.locator('.md-outline-trigger').count(),0);
+ await page.evaluate(()=>window.setOptions({}));await trigger.waitFor();
+ await page.setViewportSize({width:320,height:700});
+ await page.evaluate(()=>document.querySelector('.md-editor-shell').style.width='300px');
+ await trigger.click();await page.getByRole('navigation',{name:'目录'}).waitFor();await page.waitForTimeout(150);
+ assert.ok(await page.locator('.md-outline-popover').evaluate(el=>{const b=el.getBoundingClientRect();return b.left>=0&&b.right<=innerWidth&&b.top>=0&&b.bottom<=innerHeight}),'Outline overflowed narrow viewport');
+ await page.screenshot({path:'/tmp/myagents-markdown-outline-'+(process.argv[2]??'chromium')+'.png'});
+ await page.setViewportSize({width:900,height:700});
+ const prefixed='# Top\n\n'+('body\n\n'.repeat(25))+'  ## Indented\n\n'+('body\n\n'.repeat(25))+'> Quoted\n> ===\n\n'+('body\n\n'.repeat(30));
+ await page.evaluate(doc=>window.mount(doc),prefixed);
+ for(const title of ['Indented','Quoted']) {
+  await trigger.click();await page.getByRole('button',{name:title,exact:true}).click();
+  await page.waitForTimeout(200);
+  await trigger.press('ArrowDown');
+  await page.waitForFunction(title=>document.querySelector('.md-outline-popover [aria-current]')?.textContent===title,title);
+  await page.keyboard.press('Escape');
+ }
+ console.log('Prefixed headings: quoted Setext labels and current-section highlighting passed.');
+ console.log('Outline: full background index, hover stability, jump, duplicate headings, keyboard, hidden/source lifetime and narrow viewport passed.');
  assert.ok(clicks>=8); assert.deepEqual(errors,[]);
  console.log('Mixed HTML/images and full repository README: '+clicks+' click/source-line checks, typing and undo passed.');
 } finally {await browser.close()}

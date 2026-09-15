@@ -1113,6 +1113,13 @@
     "deleteMessage": "确定要删除「{{title}}」吗？此操作不可撤销。"
   },
   "markdownEditor": {
+    "outline": {
+      "browse": "浏览文档目录",
+      "title": "目录",
+      "count": "{{count}} 个标题",
+      "indexing": "正在索引…",
+      "untitled": "无标题"
+    },
     "document": "Markdown 文档",
     "source": "源码模式",
     "exitSource": "退出源码模式",
