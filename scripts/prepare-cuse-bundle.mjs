@@ -118,6 +118,7 @@ export async function prepareCuseBundle({ target, destination = join(ROOT, 'bund
     log('Cuse: unsupported on Linux; omitted from bundled skills');
     return { platform, updated: false };
   }
+  log(`[resource:cuse ${platform}] CHECK: fetching current release metadata`);
   const pointer = JSON.parse((await fetchBytes(`${FEED}/latest.json`, 64 * 1024)).toString('utf8'));
   requireValue(pointer?.schema_version === 1 && stableVersion(pointer.version), 'invalid latest pointer');
   const version = pointer.version;
@@ -133,9 +134,10 @@ export async function prepareCuseBundle({ target, destination = join(ROOT, 'bund
   const commit = manifest.source_commit;
   try {
     validateInstalledBundle(destination, platform, version, commit);
-    log(`Cuse ${version} ${platform}: verified local bundle (ZIP SHA256 ${artifact.sha256})`);
+    log(`[resource:cuse ${platform}] HIT: Cuse ${version} ${platform}: verified local bundle (ZIP SHA256 ${artifact.sha256})`);
     return { version, platform, updated: false };
   } catch { /* A stale/incomplete local projection must be replaced from the verified archive. */ }
+  log(`[resource:cuse ${platform}] MISS: local bundle differs from current verified release`);
   const bytes = await fetchBytes(artifact.url, artifact.size);
   checkBytes(bytes, artifact);
   mkdirSync(dirname(destination), { recursive: true });

@@ -1,5 +1,7 @@
 # Ubuntu 24.04 x64 构建与验收
 
+setup / build 分工、业务构建去重与缓存失效规则见 [构建资源准备与复用](../tech_docs/build_resource_preparation.md)。
+
 当前 Linux 构建目标限定为 **Ubuntu 24.04 x64（amd64 / x86_64-unknown-linux-gnu）**。脚本包含环境初始化、开发版与 `.deb` 安装包构建；真实 Linux 构建、桌面启动和录音验收通过后才能声明该版本可发布。Ubuntu 22.04、arm64、其它发行版与 AppImage 不在当前交付承诺中。
 
 需要 Linux 环境，不要求独立实体机器。可使用 Ubuntu 主机、虚拟机或 GitHub Actions 的标准 `ubuntu-24.04` runner。macOS 不能直接运行 Linux 构建入口；Apple Silicon 上的 Ubuntu arm64 也不等于 x64 构建环境。

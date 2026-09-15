@@ -107,15 +107,9 @@ mkdir -p "${PROJECT_DIR}/src-tauri/resources/claude-agent-sdk"
 cp "$SDK_SOURCE" "${PROJECT_DIR}/src-tauri/resources/claude-agent-sdk/claude"
 chmod +x "${PROJECT_DIR}/src-tauri/resources/claude-agent-sdk/claude"
 
-SHARP_DIR="${PROJECT_DIR}/src-tauri/resources/sharp-runtime"
-rm -rf "$SHARP_DIR"
-mkdir -p "$SHARP_DIR"
-cat > "$SHARP_DIR/package.json" <<'SHARP_PACKAGE'
-{"name":"sharp-runtime","private":true,"version":"1.0.0","dependencies":{"sharp":"0.34.5","@img/sharp-linux-x64":"0.34.5","@img/sharp-libvips-linux-x64":"1.2.4"}}
-SHARP_PACKAGE
-(cd "$SHARP_DIR" && npm install --no-audit --no-fund --ignore-scripts)
-# File existence alone cannot detect an addon built against an incompatible libc.
-"${PROJECT_DIR}/src-tauri/resources/nodejs/bin/node" -e 'require(process.argv[1])' "$SHARP_DIR/node_modules/sharp"
+npm run build:sharp-runtime -- linux x64
+# Keep the installed application's bundled-Node load check as well.
+"${PROJECT_DIR}/src-tauri/resources/nodejs/bin/node" -e 'require(process.argv[1])' "${PROJECT_DIR}/src-tauri/resources/sharp-runtime/node_modules/sharp"
 
 node "${PROJECT_DIR}/scripts/prepare-native-inference.mjs" "$TARGET"
 node "${PROJECT_DIR}/scripts/prepare-cuse-bundle.mjs" "$TARGET"

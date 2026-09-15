@@ -173,11 +173,11 @@ fi
 echo -e "${GREEN}✓ TypeScript 检查通过${NC}"
 echo ""
 
-# 构建前端
+# 构建本次全部业务产物（Tauri 钩子不重复执行）
 echo -e "${BLUE}[2/3] 构建前端...${NC}"
 export VITE_DEBUG_MODE=true
 echo -e "${YELLOW}  VITE_DEBUG_MODE=${VITE_DEBUG_MODE}${NC}"
-npm run build:web
+npm run build:assets
 echo -e "${GREEN}✓ 前端构建完成${NC}"
 echo ""
 
@@ -232,11 +232,7 @@ if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
 fi
 echo -e "  ${GREEN}✓ claude (${SDK_TRIPLE}) 已就绪${NC}"
 
-# myagents CLI 的打包不在这里——`npm run tauri:build` 的 beforeBuildCommand
-# (tauri.conf.json) 已包含 `npm run build:cli`。该 target 会清理 CLI staging
-# 并只生成 bundle authority `myagents.cjs`；dev 脚本只需保证目录存在，避免
-# Tauri bundle 阶段的 resource 校验报错。
-mkdir -p "${PROJECT_DIR}/src-tauri/resources/cli"
+# CLI staging is produced by the single build:assets call above.
 
 # Debug 模式签名 (optional — build_macos.sh per-TARGET loop 已处理 Node + Claude)
 # build_dev.sh 只构建 host arch 单个，本段处理该情况下的 Node + Claude 签名。
@@ -254,7 +250,7 @@ echo -e "${YELLOW}这可能需要几分钟...${NC}"
 # Dev App 不发布 updater artifact，也不应要求把发布私钥放进开发环境。
 # 用 Tauri 的 config merge 覆盖 release 默认值，保留普通 macOS App 签名，
 # 同时让真正的编译/打包失败保持非零退出，禁止 `|| true` 制造假成功。
-DEV_TAURI_CONFIG='{"bundle":{"createUpdaterArtifacts":false}}'
+DEV_TAURI_CONFIG='{"build":{"beforeBuildCommand":null},"bundle":{"createUpdaterArtifacts":false}}'
 npm run tauri:build -- --debug --bundles app --config "${DEV_TAURI_CONFIG}"
 
 # 查找输出

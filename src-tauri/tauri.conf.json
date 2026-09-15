@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm run dev:web",
-    "beforeBuildCommand": "npm run build:web && npm run build:server && npm run build:bridge && npm run build:cli"
+    "beforeBuildCommand": "npm run build:assets"
   },
   "app": {
     "macOSPrivateApi": true,

@@ -451,21 +451,12 @@ try {
     # ========================================
     Write-Host "[5/7] 构建前端和服务端..." -ForegroundColor Blue
 
-    # Sidecar / Bridge / CLI 三件套统一通过 npm scripts，由
-    # `scripts/esbuild-bundle.mjs` 单一入口驱动。Driver 自带 target 生命周期职责：
-    #   - cli: 构建前清理 staging，随后只产出 bundle authority myagents.cjs
-    #   - server: 构建后校验产物不含硬编码 __dirname 路径
-    # 实际上 tauri:build 的 beforeBuildCommand (tauri.conf.json) 也会
-    # 跑同一组 npm 脚本——这里显式提前一步是为了 build 阶段提早暴露
-    # 错误（避免等到 cargo 链接成功才发现 server-dist.js 有问题）。
-    Write-Host "  打包 Sidecar / Bridge / CLI..." -ForegroundColor Cyan
-    & npm run build:server
-    if ($LASTEXITCODE -ne 0) { throw "服务端打包失败" }
-    & npm run build:bridge
-    if ($LASTEXITCODE -ne 0) { throw "Plugin Bridge 打包失败" }
-    & npm run build:cli
-    if ($LASTEXITCODE -ne 0) { throw "myagents CLI 打包失败" }
-    Write-Host "    OK - Sidecar / Bridge / CLI 打包完成" -ForegroundColor Green
+    # Build assets once; disable only this invocation's Tauri hook.
+    $env:NODE_OPTIONS = "--max-old-space-size=4096"
+    & npm run build:assets
+    if ($LASTEXITCODE -ne 0) { throw "前端和运行时资源构建失败" }
+    $buildAssetsConfig = Join-Path ([System.IO.Path]::GetTempPath()) "myagents-assets-$PID.json"
+    Set-Content -Path $buildAssetsConfig -Value '{"build":{"beforeBuildCommand":null}}' -Encoding utf8
 
     # 填充 tsx-runtime（Plugin Bridge 走绝对路径 --import）—— Windows 当前
     # 仅 x64 构建；将来加 arm64 时把 --cpu 参数化。
@@ -496,55 +487,8 @@ try {
     Copy-Item $claudeSrc (Join-Path $sdkDest "claude.exe") -Force
     Write-Host "    OK - Claude native binary 就绪 ($sdkTriple)" -ForegroundColor Green
 
-    # 预装 sharp 图像处理（替代 jimp，libvips 原生）
-    Write-Host "  预装 sharp 图像处理（libvips 原生）..." -ForegroundColor Cyan
-    $sharpDir = Join-Path $ProjectDir "src-tauri\resources\sharp-runtime"
-    if (Test-Path $sharpDir) {
-        Remove-Item -Recurse -Force $sharpDir
-    }
-    New-Item -ItemType Directory -Path $sharpDir -Force | Out-Null
-    $sharpPkgJson = @"
-{
-  "name": "sharp-runtime",
-  "private": true,
-  "version": "1.0.0",
-  "dependencies": { "sharp": "0.34.5" }
-}
-"@
-    Set-Content -Path (Join-Path $sharpDir "package.json") -Value $sharpPkgJson -Encoding utf8
-    Push-Location $sharpDir
-    & npm install --no-audit --no-fund --no-save --ignore-scripts
-    Pop-Location
-    if ($LASTEXITCODE -ne 0) {
-        throw "sharp 主包预装失败"
-    }
-    # Windows 只装 x64 变体（arm64 Windows 用户少且 sharp 0.34 也支持，可按需扩展）
-    $sharpWinArch = if ($Target -match "aarch64") { "arm64" } else { "x64" }
-    Push-Location $sharpDir
-    & npm install --no-save --force --no-audit --no-fund --ignore-scripts `
-        "@img/sharp-win32-$sharpWinArch@0.34.5"
-    Pop-Location
-    if ($LASTEXITCODE -ne 0) {
-        throw "sharp Windows 平台包安装失败"
-    }
-    $sharpNode = Join-Path $sharpDir "node_modules\@img\sharp-win32-$sharpWinArch\lib\sharp-win32-$sharpWinArch.node"
-    if (-not (Test-Path $sharpNode)) {
-        throw "sharp-win32-$sharpWinArch.node 缺失"
-    }
-    # 删除非 win32 变体（节省 NSIS 安装包大小）
-    $imgDir = Join-Path $sharpDir "node_modules\@img"
-    Get-ChildItem -Path $imgDir -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -like "sharp-darwin*" -or $_.Name -like "sharp-linux*" -or $_.Name -like "sharp-libvips-darwin*" -or $_.Name -like "sharp-libvips-linux*" -or $_.Name -eq "sharp-wasm32" } |
-        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-    Write-Host "    OK - sharp 预装完成 (win32-$sharpWinArch)" -ForegroundColor Green
-
-    # 构建前端 (增加内存限制避免 OOM)
-    Write-Host "  构建前端..." -ForegroundColor Cyan
-    $env:NODE_OPTIONS = "--max-old-space-size=4096"
-    & npm run build:web
-    if ($LASTEXITCODE -ne 0) {
-        throw "前端构建失败"
-    }
+    & npm run build:sharp-runtime -- win32 x64
+    if ($LASTEXITCODE -ne 0) { throw "sharp Windows 资源准备失败" }
 
     Write-Host "  OK - 前端和服务端构建完成" -ForegroundColor Green
     Write-Host ""
@@ -561,7 +505,7 @@ try {
     & node "$ProjectDir\scripts\prepare-native-inference.mjs" "x86_64-pc-windows-msvc"
     if ($LASTEXITCODE -ne 0) { throw "原生推理资源准备失败" }
 
-    & npm run tauri:build -- --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json
+    & npm run tauri:build -- --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config $buildAssetsConfig
     if ($LASTEXITCODE -ne 0) {
         throw "Tauri 构建失败"
     }
@@ -706,6 +650,8 @@ try {
         Move-Item "$TauriConfPath.bak" $TauriConfPath -Force
         Write-Host "已恢复 tauri.conf.json" -ForegroundColor Yellow
     }
+} finally {
+    if ($buildAssetsConfig -and (Test-Path $buildAssetsConfig)) { Remove-Item $buildAssetsConfig -Force }
 }
 
 Write-Host ""

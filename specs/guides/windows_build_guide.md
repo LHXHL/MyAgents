@@ -1,5 +1,7 @@
 # MyAgents Windows 构建与测试指南
 
+setup / build 分工、业务构建去重与缓存失效规则见 [构建资源准备与复用](../tech_docs/build_resource_preparation.md)。
+
 本文档描述 MyAgents Windows 版本的构建流程、发布流程以及测试注意事项。
 
 ---

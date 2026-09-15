@@ -341,8 +341,7 @@ test('macOS release prepares and validates Sharp inside each target build', () =
   );
   const prepareFunction = buildMacos.slice(prepareFunctionAt, nextFunctionAt);
 
-  assert.match(prepareFunction, /rm -rf "\$SHARP_DIR"/);
-  assert.match(prepareFunction, /--os=darwin --cpu="\$ARCH"/);
+  assert.match(prepareFunction, /npm run build:sharp-runtime -- darwin "\$ARCH"/);
   assert.match(prepareFunction, /validate_macho_binary/);
   assert.match(
     prepareFunction,

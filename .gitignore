@@ -73,6 +73,8 @@ src-tauri/resources/speech-inference/*
 !src-tauri/resources/speech-inference/.gitkeep
 src-tauri/resources/document-processing-cache/
 src-tauri/resources/tsx-runtime
+src-tauri/resources/npm-runtime-cache/
+src-tauri/resources/.npm-runtime-stage-*/
 src-tauri/resources/playwright-control
 src-tauri/resources/nodejs/*
 !src-tauri/resources/nodejs/.gitkeep

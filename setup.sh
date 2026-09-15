@@ -113,7 +113,7 @@ echo -e "${GREEN}✓ Rust 依赖准备完成${NC}"
 echo ""
 
 # 准备 host target 的离线文档与语音推理资源。setup 完成后用户可直接运行
-# `npm run tauri:dev`；prepare owner 自带 fingerprint，重复 setup 为 no-op。
+# `npm run tauri:dev`；prepare owner 校验 fingerprint，命中时复用构建结果并重新投影资源。
 echo -e "${BLUE}[6/6] 准备离线文档与语音推理资源${NC}"
 if [[ "$(uname -s)" == "Linux" ]]; then
     "${PROJECT_DIR}/build_linux.sh" --prepare

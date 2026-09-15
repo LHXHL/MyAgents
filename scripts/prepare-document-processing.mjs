@@ -491,7 +491,7 @@ export async function prepareDocumentProcessing(options) {
   if (cached) {
     publishPreparedBundle(preparedRoot);
     console.log(
-      `Restored cached document-processing resources for ${target} (fingerprint ${buildFingerprint.slice(0, 12)})`,
+      `[resource:document ${target}] HIT/STAGED: Restored cached document-processing resources for ${target} (fingerprint ${buildFingerprint.slice(0, 12)})`,
     );
     return cached;
   }
@@ -500,6 +500,8 @@ export async function prepareDocumentProcessing(options) {
       `Offline prepared document bundle cache miss for ${target} (${preparedRoot}); run the prepare command online once`,
     );
   }
+
+  console.log(`[resource:document ${target}] MISS: target/version/source/signing fingerprint unavailable or invalid; preparing resources`);
 
   // This is deliberately after prepared-cache validation but before any
   // download/source mutation: a warm cache remains fully reusable without
