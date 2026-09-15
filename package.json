@@ -60,6 +60,7 @@
     "test:watch": "vitest --project unit --project dom --project integration",
     "verify:chat-scroll": "node scripts/verify-chat-scroll.mjs",
     "verify:markdown-resize": "node scripts/verify-codemirror-resize.mjs",
+    "verify:markdown-table-actions": "node scripts/verify-markdown-table-actions.mjs",
     "verify:theme-css": "node scripts/verify-theme-css.mjs",
     "verify:theme-presets": "vitest run --project unit src/renderer/theme/themes/preset-theme.test.ts --project dom src/renderer/theme/themes/preset-theme.registry.test.tsx",
     "verify:license": "node --test scripts/verify-license-contract-utils.test.mjs && node scripts/verify-license-contract.mjs",
