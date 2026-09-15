@@ -1,11 +1,11 @@
 import { act, renderHook } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { builtinTabModules, builtinTabWorkspacePolicy } from './builtinComposition';
 import { useTabWorkspaceController } from './useTabWorkspaceController';
 import type { ChatTab, Tab } from '@/types/tab';
 
-function setup(maxTabs = 12) {
+function setup(maxTabs = 12, onCapacityRejected = vi.fn()) {
   let nextId = 0;
   const launcher: Tab = {
     id: 'launcher-1',
@@ -18,6 +18,7 @@ function setup(maxTabs = 12) {
       initialTabs: [launcher],
       initialActiveTabId: launcher.id,
       maxTabs,
+      onCapacityRejected,
       createId: () => `generated-${++nextId}`,
       isLastTabProtected: builtinTabWorkspacePolicy.isLastTabProtected,
     }),
@@ -66,6 +67,24 @@ describe('useTabWorkspaceController', () => {
     });
     expect(outcome).toBe('rejected');
     expect(hook.result.current.controller.getSnapshot()).toBe(before);
+  });
+
+  it('reports each denied append once, but not focus or explicit overflow', () => {
+    const onCapacityRejected = vi.fn();
+    const hook = setup(1, onCapacityRejected);
+    const before = hook.result.current.controller.getSnapshot();
+    const tab: Tab = { id: 'extra', view: 'launcher', title: 'Extra' };
+    act(() => {
+      expect(hook.result.current.controller.append(tab)).toEqual({ kind: 'rejected', reason: 'capacity' });
+    });
+    expect(onCapacityRejected).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.controller.getSnapshot()).toBe(before);
+    act(() => {
+      hook.result.current.controller.append(before.tabs[0]!);
+      hook.result.current.controller.open('record', { recordId: 'active', title: 'Recording' }, { allowOverCapacity: true });
+    });
+    expect(onCapacityRejected).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.state.tabs).toHaveLength(2);
   });
 
   it('supports the bounded active-recording over-capacity exception explicitly', () => {
