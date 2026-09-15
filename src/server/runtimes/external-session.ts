@@ -6226,11 +6226,23 @@ export async function queryRuntimeModels(
 ): Promise<unknown[]> {
   if (runtimeType === 'builtin') return [];
   const runtimeSource = runtimeType === 'codex' ? options.runtimeSource : undefined;
+  const managedCodex = runtimeType === 'codex' && runtimeSource === 'managed-provider';
   try {
-    return await queryRuntimeModelsSingleFlight(runtimeType, async (ownerSignal) => {
-      const runtime = getExternalRuntime(runtimeType);
-      return await runtime.queryModels({ runtimeSource, signal: ownerSignal });
-    }, runtimeSource, options.signal);
+    if (managedCodex) await awaitExternalLifecycleStarting();
+    const process = managedCodex ? getExternalActiveProcess() : null;
+    const runtime = managedCodex ? getExternalActiveRuntime() : null;
+    const models = runtime?.type === runtimeType && runtimeSource === getCurrentRuntimeSource()
+      && process && !process.exited
+      ? await runtime.queryModels({ runtimeSource, process, signal: options.signal })
+      : await queryRuntimeModelsSingleFlight(runtimeType, async (ownerSignal) => {
+        return await getExternalRuntime(runtimeType).queryModels({ runtimeSource, signal: ownerSignal });
+      }, runtimeSource, options.signal);
+    // The lifecycle owner arbitrates late discovery, including a temporary
+    // query begun just before prewarm published the Session's actual process.
+    if (managedCodex && getExternalActiveProcess() !== process) {
+      throw new Error('Codex Session changed during model discovery');
+    }
+    return models;
   } catch (err) {
     console.error(`[external-session] Failed to query models for ${runtimeType}:`, err);
     if (options.throwOnError) throw err;

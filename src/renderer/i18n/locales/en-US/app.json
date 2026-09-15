@@ -75,8 +75,7 @@
     "updateInstallBlocked": "Background services are still exiting. The update is saved; try again shortly or after restarting Windows.",
     "updateInstallFailed": "Update installation failed. Try again or check manually in Settings.",
     "backgroundCompletion": "AI will continue in the background",
-    "maxTabsReached": "Maximum tab count reached. Close another tab and try again.",
-    "maxTabsReachedWithCount": "Maximum tab count reached ({{count}}). Close one tab before starting an AI discussion.",
+    "maxTabsReached": "Tab limit reached. Please close some tabs and try again.",
     "codexSessionCreateFailed": "Failed to create Codex session",
     "launchFailed": "Launch failed: {{message}}",
     "recordingStartFailed": "Could not start recording: {{message}}",
@@ -86,7 +85,6 @@
     "recordCloseStatusFailed": "Recording status could not be verified, so the Record stayed open.",
     "recordStopFailed": "Recording has not stopped safely, so the Record stayed open.",
     "recordRestoreMissing": "This Record no longer exists. The Records list was opened instead.",
-    "tabLimitReached": "Tab limit reached. Close one tab and try again.",
     "noWorkspaceForDiscussion": "No workspaces yet. Cannot start AI discussion.",
     "noModelProviderForDiscussion": "No available model provider configured. Cannot start AI discussion.",
     "taskDiscussionContentRequired": "Describe the task goal and requirements",
@@ -1115,6 +1113,14 @@
     "deleteMessage": "Delete \"{{title}}\"? This cannot be undone."
   },
   "markdownEditor": {
+    "outline": {
+      "browse": "Browse document outline",
+      "title": "Contents",
+      "count_one": "{{count}} heading",
+      "count_other": "{{count}} headings",
+      "indexing": "Indexing…",
+      "untitled": "Untitled"
+    },
     "document": "Markdown document",
     "source": "Source mode",
     "exitSource": "Exit source mode",

@@ -73,7 +73,7 @@ export async function prepareCliproxy({
     const cache = join(repoRoot, 'src-tauri/resources/cliproxy-cache/artifacts', `${artifact.sha256}.zip`);
     bytes = existsSync(cache) ? readFileSync(cache) : null;
     if (!bytes || !validArtifact(bytes, artifact)) {
-      console.log(`Downloading pinned ${platform} CLIProxy ${artifact.sha256.slice(0, 12)}…`);
+      console.log(`[resource:cliproxy ${platform}] MISS: downloading pinned CLIProxy ${artifact.sha256.slice(0, 12)}…`);
       bytes = await fetchArtifact(artifact, fetchImpl);
       mkdirSync(dirname(cache), { recursive: true });
       const temporary = `${cache}.${randomUUID()}.tmp`;
@@ -81,6 +81,8 @@ export async function prepareCliproxy({
         writeFileSync(temporary, bytes, { flag: 'wx' });
         renameSync(temporary, cache);
       } finally { rmSync(temporary, { force: true }); }
+    } else {
+      console.log(`[resource:cliproxy ${platform}] HIT: verified artifact hash`);
     }
   }
   const out = join(repoRoot, 'src-tauri/resources/cliproxy');

@@ -193,6 +193,9 @@ export interface RuntimeModelInfo {
   displayName: string;  // UI display name (e.g., "Sonnet 4.6")
   description?: string; // Optional description
   isDefault?: boolean;  // Mark as default selection
+  /** Runtime-owned model capabilities. Values are intentionally open-ended. */
+  supportedReasoningEfforts?: { reasoningEffort: string; description?: string }[];
+  defaultReasoningEffort?: string;
 }
 
 /**
@@ -249,7 +252,7 @@ export interface RuntimeConfig {
   model?: string;            // Runtime-specific model selection
   permissionMode?: string;   // Runtime-specific permission mode
   /** #324 — reasoning effort setting ('default' | level). Vocabulary is
-   *  per-runtime (CC: low..max, Codex: minimal..xhigh — see
+   *  per-runtime (CC: low..max, Codex: model-catalog-defined — see
    *  shared/reasoningEffort.ts), hence NOT portable across runtimes. */
   reasoningEffort?: string;
   additionalArgs?: string[]; // Extra CLI arguments

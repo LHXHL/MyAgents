@@ -16,7 +16,24 @@
 // able to express "this session explicitly reverted to default" even when the
 // agent-level value is non-default. Absent/undefined also means default.
 
+import type { RuntimeModelInfo } from './types/runtime';
+
 export const REASONING_EFFORT_DEFAULT = 'default';
+
+export type ModelReasoningCapabilities = Pick<RuntimeModelInfo, 'supportedReasoningEfforts' | 'defaultReasoningEffort'>;
+
+/** Catalog absence means unknown, never permission to erase a saved choice. */
+export function reasoningEffortAfterModelChange(
+  value: string | null | undefined,
+  model: ModelReasoningCapabilities | undefined,
+): string {
+  const effort = normalizeReasoningEffort(value);
+  if (!effort) return REASONING_EFFORT_DEFAULT;
+  return model?.supportedReasoningEfforts !== undefined
+    && !model.supportedReasoningEfforts.some(option => option.reasoningEffort === effort)
+    ? REASONING_EFFORT_DEFAULT
+    : effort;
+}
 
 /** Claude Agent SDK `EffortLevel` — also exactly the Claude Code CLI
  *  `--effort` vocabulary (verified against `claude --help`, CC 2.x). */
@@ -31,8 +48,8 @@ export type SdkEffortLevel = (typeof SDK_EFFORT_LEVELS)[number];
  *  given value is the provider's contract (hence the UI hint 需服务商支持). */
 export const OPENAI_EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 
-/** Codex app-server `turn/start.effort` — model-advertised values; gpt-5.x
- *  family supports minimal..xhigh (no 'max' tier as of codex 0.136). */
+/** Legacy system-CLI menu only. Managed Codex reads its model catalog;
+ *  this list must never validate Codex persistence or execution. */
 export const CODEX_EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const;
 const GROK_46_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh'] as const;
 const GROK_45_EFFORT_LEVELS = ['low', 'medium', 'high'] as const;
@@ -109,6 +126,9 @@ export function coerceReasoningEffortForRuntime(
 ): string | undefined {
   const normalized = normalizeReasoningEffort(value);
   if (!normalized) return undefined;
+  // Persist intent before a process/catalog exists. Codex owns model-specific
+  // validation at execution; a closed vocabulary here destroys future values.
+  if (runtime === 'codex') return normalized;
   const choices = reasoningEffortChoices(runtime, apiProtocol);
   if (!choices) return undefined;
   return choices.includes(normalized) ? normalized : undefined;
@@ -128,6 +148,7 @@ export function coerceReasoningEffortSettingForRuntime(
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
   if (trimmed === REASONING_EFFORT_DEFAULT) return REASONING_EFFORT_DEFAULT;
+  if (runtime === 'codex') return trimmed;
   const choices = reasoningEffortChoices(runtime, apiProtocol);
   if (!choices) return undefined;
   return choices.includes(trimmed) ? trimmed : undefined;

@@ -426,6 +426,8 @@ export interface AgentRuntime {
 
   /** Query available models from the CLI (may spawn a temporary process) */
   queryModels(options?: {
+    /** An existing Session process is authoritative over an installed upgrade. */
+    process?: RuntimeProcess;
     runtimeSource?: RuntimeSource;
     envPolicy?: RuntimeEnvPolicy;
     signal?: AbortSignal;

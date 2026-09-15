@@ -1,166 +1,108 @@
-# Linux 平台构建与运行指南
+# Ubuntu 24.04 x64 构建与验收
 
-MyAgents 在 Linux 上通过 AppImage（便携）+ deb（apt 源）分发。
+setup / build 分工、业务构建去重与缓存失效规则见 [构建资源准备与复用](../tech_docs/build_resource_preparation.md)。
 
-## 支持矩阵
+当前 Linux 构建目标限定为 **Ubuntu 24.04 x64（amd64 / x86_64-unknown-linux-gnu）**。脚本包含环境初始化、开发版与 `.deb` 安装包构建；真实 Linux 构建、桌面启动和录音验收通过后才能声明该版本可发布。Ubuntu 22.04、arm64、其它发行版与 AppImage 不在当前交付承诺中。
 
-| 发行版 | 架构 | libc | 支持级别 |
-|--------|------|------|---------|
-| Ubuntu 22.04+ LTS | x64, arm64 | glibc | 一等（官方测试 baseline） |
-| Debian 12+ | x64, arm64 | glibc | 一等 |
-| Fedora 40+, openSUSE | x64 | glibc | 二等（应该工作，未严格测试） |
-| Arch / Manjaro | x64 | glibc | 二等 |
-| Alpine | x64, arm64 | **musl** | 三等（需用户手动替换 SDK native binary 和 Node.js） |
+需要 Linux 环境，不要求独立实体机器。可使用 Ubuntu 主机、虚拟机或 GitHub Actions 的标准 `ubuntu-24.04` runner。macOS 不能直接运行 Linux 构建入口；Apple Silicon 上的 Ubuntu arm64 也不等于 x64 构建环境。
 
-**架构说明**：MyAgents Linux 默认构建 `x86_64-unknown-linux-gnu`，对应 glibc 发行版。arm64（`aarch64-unknown-linux-gnu`）需在对应 Linux arm64 主机上构建 —— Tauri 不支持从 macOS 交叉编译 Linux。
+## 一组入口
 
-## 构建环境准备
+| 入口 | 职责 | 输出 |
+| --- | --- | --- |
+| `./setup.sh` | Linux 系统依赖、项目依赖、固定 Rust 工具链与完整开发资源 | 可以继续 dev/release 构建 |
+| `./build_dev_linux.sh` | 复用 Linux 资源准备，构建 debug app；有桌面会话时启动 | checkout 内的开发版可执行文件 |
+| `./build_dev_linux.sh --build-only` | 相同 dev 构建，不启动 | 用于 CI 或暂不启动应用 |
+| `./build_linux.sh` | 复用资源准备，构建 release `.deb` | Ubuntu 安装包 |
+| `npm run tauri:dev` | setup 完成后的 Tauri/Vite 热更新开发 | 交互开发会话 |
 
-### 系统依赖（Ubuntu 22.04+ / Debian 12+）
+`build_linux.sh` 是三条入口共用的 Linux 资源准备 owner：`--prepare` 只准备资源；`--install-deps` 安装系统构建依赖；`--check-system-deps` 只检查系统依赖。`build_dev_linux.sh` 只选择 debug/启动行为，不复制另一套 native/SDK/Node 打包逻辑。
 
-```bash
-sudo apt-get update
-sudo apt-get install -y \
-    build-essential \
-    cmake \
-    curl \
-    wget \
-    file \
-    libssl-dev \
-    libgtk-3-dev \
-    libayatana-appindicator3-dev \
-    librsvg2-dev \
-    libwebkit2gtk-4.1-dev \
-    patchelf \
-    pkg-config
-```
+## 首次准备
 
-**说明**：
-- `cmake` — speech native adapter 要求 3.28+；若发行版仓库版本较旧，需从 CMake 官方渠道安装满足要求的版本
-- `libwebkit2gtk-4.1-dev` — Tauri WebView 后端（Linux 用 WebKit2GTK；不像 macOS 的 WKWebView 或 Windows 的 WebView2）
-- `libayatana-appindicator3-dev` — 系统托盘图标库
-- `patchelf` — AppImage 打包要求的 RPATH 补丁工具
-
-### 开发者环境（非构建用）
+先安装 Node.js **24**（含 npm）和 rustup。Rust 精确版本、rustfmt/clippy 由根目录 `rust-toolchain.toml` 与既有 `ensure_rust_toolchain.sh` 管理，不依赖浮动 stable。
 
 ```bash
-./setup.sh  # 已自动检测 Linux 并调用 download_nodejs.sh 下载 Linux Node.js
+./setup.sh
 ```
 
-`setup.sh` 在 Linux 上的行为：
-- 检查 Node.js / npm / Rust / Cargo / rustup，并按 `rust-toolchain.toml` 准备固定 toolchain 与 `rustfmt` / `clippy`
-- 根据当前 target 和 exact prepared cache 提前检查 CMake 3.28+/C++ 等原生推理构建工具；缺失时在下载或安装项目依赖前给出修复命令，不自动安装原生构建工具
-- `scripts/download_nodejs.sh` 下载 Node.js v24 Linux x64/arm64 tarball（按 `uname -m` 自动选择）
-- `npm install` 拉取依赖（包括 SDK platform optional dep `@anthropic-ai/claude-agent-sdk-linux-<arch>`）
-- Rust `cargo fetch`
-- 准备当前架构的离线文档 Worker、media Worker、OCR、speech native、ONNX Runtime 与 PDFium；资源缓存跨 `npm run clean` 复用
+Linux setup 会通过 apt 安装构建依赖，普通用户需要 sudo 权限。系统包清单由 `build_linux.sh` 的 `SYSTEM_PACKAGES` 维护，包含 GTK/WebKitGTK、托盘、OpenSSL、PipeWire、ALSA、xdo、CMake、Clang/libclang 等，不在文档和 CI 复制另一份易漂移的清单。
 
-Mino 默认工作区模板已提交在 `bundled-workspaces/mino/`，setup 和构建不再下载外部模板仓库。
+CMake 必须满足 native prepare owner 的 **3.28+** 要求。setup 在下载大资源和 npm 安装前检查原生工具。完成后资源包括 Node/npm、Claude SDK native binary、sharp、tsx、Sidecar/Bridge/CLI/Playwright 控制代码、Document/Media Worker、OCR/ORT/PDFium 和语音 native adapter。项目 native resource cache 按 target/fingerprint 复用。
 
-## 构建
+## 开发版
 
 ```bash
-./build_linux.sh                    # 按 uname -m 默认 target
-./build_linux.sh aarch64-unknown-linux-gnu  # 明确 target
+./build_dev_linux.sh
+# 或只构建
+./build_dev_linux.sh --build-only
 ```
 
-产物路径：
-- AppImage：`src-tauri/target/<target>/release/bundle/appimage/MyAgents_<ver>_<arch>.AppImage`
-- deb：`src-tauri/target/<target>/release/bundle/deb/MyAgents_<ver>_<arch>.deb`
+可执行文件：
 
-### AppImage 用法
+```text
+src-tauri/target/x86_64-unknown-linux-gnu/debug/myagents
+```
+
+开发版启用 debug 行为（包括禁止真实自动更新），使用本 checkout 的开发代码和资源；保留整个 checkout，不能把单独一个 debug 可执行文件当成可分发安装包。有桌面会话时脚本启动应用；无 `DISPLAY`/`WAYLAND_DISPLAY` 时仅打印启动路径，不把无桌面误判为编译失败。
+
+脚本不会杀死已有 MyAgents 或其它开发会话。若已运行安装版，先正常退出，再启动开发版；应用现有 single-instance owner 负责实例准入。开发版仍使用应用正常用户数据目录，重要数据先自行备份。
+
+## `.deb` 安装包
 
 ```bash
-chmod +x MyAgents_0.2.0_amd64.AppImage
-./MyAgents_0.2.0_amd64.AppImage
+./build_linux.sh
+# 可显式传递同一个 target；其它 target 会在资源写入前失败
+./build_linux.sh x86_64-unknown-linux-gnu
 ```
 
-AppImage 是**便携格式**：自带所有依赖，不需要 root，直接双击运行。桌面快捷方式可用 [AppImageLauncher](https://github.com/TheAssassin/AppImageLauncher) 自动集成。
+输出：
 
-### deb 用法
+```text
+src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*_<version>_amd64.deb
+```
+
+Linux 的 Tauri 平台配置只生成 deb，关闭 updater artifacts，因此普通构建不需要生产 updater 私钥。它仍复用主配置的资源映射，显式补充音频、OpenSSL、媒体播放、git/xdg 等系统运行依赖。原生资源 staging 的 manifest/model 最终需要所有普通用户可读，才能供 root 安装后的应用使用；native cache 仍保持私有权限。
 
 ```bash
-sudo dpkg -i MyAgents_0.2.0_amd64.deb
-sudo apt-get install -f  # 补齐缺失的系统依赖（正常情况下 deb 元数据已声明）
+sudo apt install ./MyAgents_<version>_amd64.deb
 ```
 
-安装后启动：
-```bash
-myagents  # deb 把可执行文件链接到 /usr/bin/
-# 或从桌面菜单启动（Applications > Development > MyAgents）
-```
+文件名以实际输出为准。通过桌面菜单启动 MyAgents，或运行 `/usr/bin/myagents`。应用随包携带 Node/npm，用户无需安装系统 Node。若已投影 `~/.myagents/bin/myagents` CLI，裸 `myagents` 可能指向 CLI；不要把 CLI 与桌面可执行文件混为一谈。
 
-## 运行时依赖
+升级当前测试包采用同样的 `apt install ./新版.deb` 覆盖安装。尚未发布 Linux 更新清单，也未建立 APT 源；Rust 和 Renderer 均禁用 Linux 应用内更新检查、下载与安装，设置页提供发布页链接及手动升级说明。关闭 updater artifacts 本身不会禁用运行期更新。卸载用 `sudo apt remove myagents`，用户工作区与 `~/.myagents` 数据由用户保留/管理。
 
-AppImage 和 deb 内部都包含：
+## 自动验证
 
-| 组件 | 路径（app 内） |
-|------|--------------|
-| Sidecar / Bridge / CLI | `resources/server-dist.js` / `resources/plugin-bridge-dist.mjs` / `resources/cli/myagents.cjs` |
-| Node.js v24（含 npm/npx） | `resources/nodejs/bin/node`（+ `lib/node_modules/npm`） |
-| Claude Agent SDK native binary | `resources/claude-agent-sdk/claude`（~210 MB，SDK team 静态链接） |
-| 本地文档/语音推理 | `resources/document-processing/v1/` + `resources/speech-inference/v1/`；两者共享同 target ONNX Runtime identity |
-| mino 默认工作区模板 | `resources/bundled-workspaces/mino/` |
-| bundled skills / agents / workspaces | `resources/bundled-skills/` / `resources/bundled-agents/` / `resources/bundled-workspaces/` |
+`.github/workflows/linux-package.yml` 使用标准 `ubuntu-24.04` runner 验证同一组本地入口：
 
-`resources/bundled-workspaces/mino/` 只承载默认工作区的文件内容。Mino project 的 Agent 默认开启、heartbeat、memory 自动更新等产品策略仍由应用内 `src/shared/config-types.ts::PRESET_TEMPLATES[].agentDefaults` 声明，Launcher / Config migration 在创建 `AgentConfig` 时复制这些默认值。安装包模板只创建新实例，不覆盖用户已有工作区。
+1. 执行 `setup.sh`。
+2. 执行构建脚本契约测试与 `build_dev_linux.sh --build-only`。
+3. 在临时用户数据目录、D-Bus/Xvfb 会话中检查开发版启动及 Sidecar readiness。
+4. 执行 `build_linux.sh`，上传 deb（保存 7 天）。
+5. 在独立 `ubuntu:24.04` 容器通过 apt 安装 deb，以非 root 用户验证，再卸载。
 
-**不内置**：
-- `git` — 大多数发行版默认安装；缺失时 Claude Code 工具会降级
-- `bash` / 核心 POSIX 工具 — 系统自带
-- 「浏览器」的 Chromium / Headless Shell / FFmpeg — 只在用户首次点击“安装资源”后由 Rust owner 下载 signed runtime set；普通 AppImage/deb build 不下载也不打包
+安装检查由 `scripts/linux-package-smoke.py` 执行：native manifest/hash、x64 ELF、动态库依赖、随包 Node/npm/SDK 启动、JS bundles 语法、sharp/tsx/浏览器控制包、ORT/PDFium/语音共享库加载、真实 Document Worker 协议和桌面进程 Sidecar readiness。运行目录不使用源码目录，不依赖系统 Node；检查用的版本锁和 smoke harness 从 checkout 读取。
 
-Linux 录音使用 `cpal` 的 PipeWire host：microphone 来自默认 input，system audio 只接受 PipeWire `default_sink` monitor input。monitor 不可用时允许以明确 warning 继续 microphone-only；PipeWire host 不可用或没有任何来源时录音 admission 失败。安装包不得通过捆绑 ffmpeg/PulseAudio bridge 或脚本 fallback 改变这一契约。x86_64/aarch64 发布都要在真实 PipeWire 环境验证 microphone；system audio 支持只在 monitor 可用的发行版/桌面组合声明。
+工作流可手动触发，相关 Linux 构建文件 push 时也会执行。它没有发布权限、不会创建 Release、不读取生产 secrets。首次推送/执行必须有维护者授权。新增工作流的静态检查不能代替它实际运行成功。
 
-## 常见问题
+## 发布前的真实桌面验收
 
-### `libwebkit2gtk` 版本不对（WebView 打不开）
+以下是 mandatory，Xvfb 或单个库 load 不能替代：
 
-**现象**：AppImage 启动后白屏或"failed to connect to dbus"
+- 在干净 Ubuntu 24.04 x64 桌面完成 setup → dev build → 启动；中文输入、窗口、文件选择与附件预览正常。
+- 在另一套没有系统 Node 的桌面安装 deb，完成 Agent 对话/工具调用、退出和恢复。
+- PDF/OCR 实际处理及语音模型安装/转录成功；验证 Native Worker 在安装路径加载。
+- 麦克风录音与回放正常。Linux capture 明确使用 PipeWire host；系统声音只接受可用 default sink monitor。无 monitor 时允许明确提示后 microphone-only，不能把安装了音频库当成已验证系统声音。
+- 在 Wayland/X11 的实际目标桌面检查快捷键、托盘、协议链接和媒体播放。
+- 覆盖安装新版后会话/配置/工作区保留，卸载无残留运行进程。
 
-**排查**：
-```bash
-apt list --installed | grep webkit2gtk
-```
+## 当前功能边界
 
-Ubuntu 22.04 默认是 `libwebkit2gtk-4.1-0`，这是正确的。如果你是从 Ubuntu 20.04 升级来的，可能卡在 4.0 导致兼容性问题。
+Linux 的托管 Codex 安装、CLIProxy/Antigravity 组件、悬浮球/桌宠、Cuse 桌面控制尚未实现与 macOS/Windows 的功能齐平。Cuse 在 Linux staging 中主动省略。这些功能的适配是独立工作；构建成功不代表它们可用。
 
-### SDK native binary 执行失败（musl / Alpine）
+Linux 的 Provider 列表过滤托管 Codex 与 CLIProxy/Antigravity，禁止托管 Codex 自动更新和模型查询，不创建 CLIProxy 状态轮询。桌宠的导航、页面与实验开关隐藏，旧桌宠路由转到关于页。平台限制只影响当前显示和执行，不改写或清除用户原有配置；普通 API Provider 和用户自装 CLI Runtime 保持现有行为。录音、OCR 等已有 Linux 实现保留，等待真机验证。
 
-`@anthropic-ai/claude-agent-sdk-linux-<arch>-musl` 包提供 musl 变体。若构建 Alpine 发行版，在 `build_linux.sh` 中把 `SDK_TRIPLE` 改为 `linux-x64-musl` 或 `linux-arm64-musl`。
+隐藏的内置 Provider 仍是合法配置项，不能被 Settings 的无效 ID 清理删除。保存代理范围或启用/排序时，ConfigProvider 在既有配置锁内从磁盘最新状态保留隐藏项；可见列表不承担完整持久化配置的权威。
 
-### deb 安装失败提示依赖缺失
-
-```bash
-sudo apt-get install -f
-```
-
-或显式安装声明的依赖：
-
-```bash
-sudo apt-get install -y libwebkit2gtk-4.1-0 libayatana-appindicator3-1 librsvg2-2
-```
-
-### FUSE 未安装（AppImage 启动错误）
-
-某些最小化发行版（如某些 Docker 镜像、裁剪过的服务器镜像）默认不装 FUSE。
-
-```bash
-sudo apt-get install -y fuse libfuse2
-```
-
-或用 `--appimage-extract-and-run` 跳过 FUSE：
-
-```bash
-./MyAgents_0.2.0_amd64.AppImage --appimage-extract-and-run
-```
-
-## 发布 / CI
-
-[`publish_linux.sh`]（待建 —— 当前手动上传）：产物上传到 R2 的 `https://releases.myagents.io/linux/` 路径；Tauri updater manifest 自动包含 Linux 条目。
-
----
-
-**为什么 Linux 到 v0.2.0 才一等支持**：v0.1.x 的 Bun-based Sidecar 理论能跑 Linux，但双 runtime 策略（Bun + Node.js）导致 Linux 构建 pipeline 需要分别处理两套 binary 分发；v0.2.0 统一到 Node.js 后，Linux 只需维护单一 runtime 链路，刚好是收敛这块的最佳时机。详见 [prd_0.2.0_node_runtime_migration.md](../prd/prd_0.2.0_node_runtime_migration.md)。
-
-Cuse 目前只发布 macOS/Windows Skill+CLI；Linux 构建会清除共享构建树里的 Cuse staging，启动同步跳过该 Skill。详见 [Cuse bundle](../tech_docs/cuse_bundle.md)。
+浏览器 Chromium/Headless Shell/FFmpeg 通过既有 Rust resource owner 按需下载，不随普通安装包预装。Mino 与其它 bundled workspaces 只初始化新工作区，不覆盖用户已有副本。

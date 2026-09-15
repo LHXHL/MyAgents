@@ -222,6 +222,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   runtimeDetections,
   onRuntimeChange,
   runtimeModels,
+  managedReasoningModel,
   runtimePermissionModes,
   queuedMessages = [],
   onCancelQueued,
@@ -451,8 +452,17 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   const effortRowWrapRef = useRef<HTMLDivElement | null>(null);
   const effortCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // null = this surface has no reasoning-effort knob (Gemini / unknown) → row hidden.
+  const managedEffort = isRuntimeBackedProvider(provider);
+  const effortModel = managedReasoningModel !== undefined
+    ? managedReasoningModel
+    : provider?.models?.find(model => model.model === (selectedModel ?? provider.primaryModel));
+  const defaultEffortLabel = managedEffort && effortModel?.defaultReasoningEffort
+    ? `${t('input.reasoningDefault')} (${effortModel.defaultReasoningEffort})`
+    : t('input.reasoningDefault');
   const effortChoices = onReasoningEffortChange
-    ? reasoningEffortChoices(
+    ? managedEffort
+      ? (effortModel?.supportedReasoningEfforts?.map(option => option.reasoningEffort) ?? [])
+      : reasoningEffortChoices(
         isExternalRuntime ? (runtime ?? 'builtin') : 'builtin',
         provider?.apiProtocol,
         provider?.id,
@@ -2419,7 +2429,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                           ? 'font-medium text-[var(--accent)]'
                           : 'text-[var(--ink-muted)]'
                       }`}>
-                        {reasoningEffort === REASONING_EFFORT_DEFAULT ? t('input.reasoningDefault') : reasoningEffort}
+                        {reasoningEffort === REASONING_EFFORT_DEFAULT ? defaultEffortLabel : reasoningEffort}
                       </span>
                       <ChevronRight className="h-3 w-3 shrink-0 text-[var(--ink-muted)]" />
                     </button>
@@ -2435,6 +2445,9 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                         >
                           {[REASONING_EFFORT_DEFAULT, ...effortChoices].map(level => {
                             const isSelected = reasoningEffort === level;
+                            const description = managedEffort
+                              ? effortModel?.supportedReasoningEfforts?.find(option => option.reasoningEffort === level)?.description ?? ''
+                              : REASONING_EFFORT_DESCRIPTIONS[level] ?? '';
                             return (
                               <button
                                 key={level}
@@ -2451,14 +2464,14 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                                     : 'text-[var(--ink)] hover:bg-[var(--hover-bg)]'
                                 }`}
                               >
-                                <span>{level === REASONING_EFFORT_DEFAULT ? t('input.reasoningDefault') : level}</span>
-                                <span className={`text-xs font-normal ${isSelected ? 'text-[var(--accent)]/70' : 'text-[var(--ink-muted)]'}`}>
-                                  {REASONING_EFFORT_DESCRIPTIONS[level] ?? ''}
+                                <span className="shrink-0">{level === REASONING_EFFORT_DEFAULT ? defaultEffortLabel : level}</span>
+                                <span title={description} className={`ml-3 min-w-0 truncate text-xs font-normal ${isSelected ? 'text-[var(--accent)]/70' : 'text-[var(--ink-muted)]'}`}>
+                                  {description}
                                 </span>
                               </button>
                             );
                           })}
-                          <div className="mt-1 whitespace-nowrap border-t border-[var(--line)] px-3 pb-1 pt-1.5 text-xs text-[var(--ink-muted)]/60">
+                          <div hidden={managedEffort} className="mt-1 whitespace-nowrap border-t border-[var(--line)] px-3 pb-1 pt-1.5 text-xs text-[var(--ink-muted)]/60">
                             {t('input.reasoningRequirement')}
                           </div>
                         </div>

@@ -6,6 +6,8 @@ import { definitions } from './definitions';
 export interface Projection {
   kind: string; from: number; to: number; source: string;
   renderSource?: string;
+  /** Hard breaks in flowing inline HTML, counted from parsed tags/text. */
+  lineBreaks?: number;
   /** Immutable CM document identity; a table never copies all its cells to React. */
   tableDocument?: Text;
   containerPrefix?: string;
@@ -41,7 +43,7 @@ class RenderWidget extends WidgetType {
   constructor(readonly projection: Projection, readonly block: boolean) { super(); }
   eq(other: RenderWidget) {
     const a = this.projection, b = other.projection;
-    return a.kind === b.kind && a.from === b.from && a.to === b.to && a.source === b.source && a.tableDocument === b.tableDocument && a.renderSource === b.renderSource && a.containerPrefix === b.containerPrefix && a.nestedContainer === b.nestedContainer && a.definitions === b.definitions && a.footnoteNumbers === b.footnoteNumbers;
+    return a.kind === b.kind && a.lineBreaks === b.lineBreaks && a.from === b.from && a.to === b.to && a.source === b.source && a.tableDocument === b.tableDocument && a.renderSource === b.renderSource && a.containerPrefix === b.containerPrefix && a.nestedContainer === b.nestedContainer && a.definitions === b.definitions && a.footnoteNumbers === b.footnoteNumbers;
   }
   toDOM(view: EditorView) {
     const element = document.createElement(this.block ? 'div' : 'span');
@@ -57,6 +59,7 @@ class RenderWidget extends WidgetType {
     view.state.facet(projectionHost).mount(element, this.projection, view);
     return true;
   }
+  get lineBreaks() { return this.projection.lineBreaks ?? 0; }
   decorateContainer(element: HTMLElement) {
     element.classList.toggle('md-projection-nested', this.projection.nestedContainer === true);
     const prefix = this.projection.containerPrefix ?? '';
@@ -68,10 +71,15 @@ class RenderWidget extends WidgetType {
   destroy(element: HTMLElement) { widgetHosts.get(element)?.unmount(element); widgetHosts.delete(element); }
   ignoreEvent() { return true; }
   get estimatedHeight() {
-    if (!this.block) return -1;
+    // Atomic inline boxes may contain tall images/math/HTML. Mark them as
+    // height-relevant so CM invalidates the line's measured geometry.
+    if (!this.block) return 26;
     if (this.projection.kind === 'CodeHeader') return 28;
     if (this.projection.kind === 'Image') return 180;
-    if (this.projection.kind === 'Table') return 360;
+    if (this.projection.kind === 'Table' && this.projection.tableDocument) {
+      const doc = this.projection.tableDocument;
+      return (doc.lineAt(this.projection.to).number - doc.lineAt(this.projection.from).number) * 35 + 18;
+    }
     let lines = 1, at = -1;
     while (lines < 14 && (at = this.projection.source.indexOf('\n', at + 1)) >= 0) lines++;
     return Math.min(360, Math.max(52, lines * 26));
@@ -105,7 +113,7 @@ class BulletWidget extends WidgetType {
   ignoreEvent() { return false; }
 }
 
-function project(state: EditorState, from: number, to: number): DecorationSet {
+function project(state: EditorState, from: number, to: number, layout = false): DecorationSet {
   const ranges: { from: number; to: number; value: Decoration }[] = [];
   const active = state.selection.ranges;
   const raw = state.field(sourceBlock);
@@ -119,7 +127,7 @@ function project(state: EditorState, from: number, to: number): DecorationSet {
     const start = state.doc.lineAt(position).from, key = `${start}:${className}`;
     if (!lines.has(key)) { lines.add(key); add(start, start, Decoration.line({ class: className })); }
   };
-  if (raw && raw.from <= to && raw.to >= from) {
+  if (!layout && raw && raw.from <= to && raw.to >= from) {
     const end = Math.min(raw.to, to);
     for (let line = state.doc.lineAt(Math.max(raw.from, from)); line.from <= end;) {
       lineStyle(line.from, 'md-local-source-line');
@@ -129,33 +137,47 @@ function project(state: EditorState, from: number, to: number): DecorationSet {
   }
   syntaxTree(state).iterate({ from, to, enter(node) {
     const { from: a, to: b } = node;
-    if (inlineHTML.some(range => a >= range.from && b <= range.to)) return false;
+    let low = 0, high = inlineHTML.length;
+    while (low < high) { const mid = (low + high) >>> 1; if (inlineHTML[mid].from <= a) low = mid + 1; else high = mid; }
+    if (low > 0 && b <= inlineHTML[low - 1].to) return false;
     const name = node.name === 'LiveTable' ? 'Table' : node.name;
     const text = () => state.sliceDoc(a, b);
     if (name === 'Paragraph') {
-      const stack: { tag: string; from: number }[] = [];
-      for (const tagNode of node.node.getChildren('HTMLTag')) {
+      const stack: { tag: string; from: number; index: number }[] = [];
+      const tags = node.node.getChildren('HTMLTag');
+      const tagBreaks = [0];
+      for (const part of tags) tagBreaks.push(tagBreaks[tagBreaks.length - 1] +
+        (/^<br(?=[\s/>])/i.test(state.sliceDoc(part.from, part.to)) ? 1 : 0) -
+        (state.doc.lineAt(part.to).number - state.doc.lineAt(part.from).number));
+      for (const [tagIndex, tagNode] of tags.entries()) {
+        let firstTag = tagIndex;
         const tag = /^<(\/?)([a-z][\w-]*)\b/i.exec(state.sliceDoc(tagNode.from, tagNode.to));
         if (!tag) continue;
         const tagName = tag[2].toLowerCase();
         let range: { from: number; to: number } | undefined;
         if (tag[1]) {
           if (stack.at(-1)?.tag !== tagName) continue;
-          const opening = stack.pop()!;
+          const opening = stack.pop()!; firstTag = opening.index;
           if (!stack.length) range = { from: opening.from, to: tagNode.to };
         } else if (/^(?:br|img|input|hr|wbr)$/.test(tagName) || /\/>$/.test(state.sliceDoc(tagNode.from, tagNode.to))) {
           if (!stack.length) range = { from: tagNode.from, to: tagNode.to };
-        } else stack.push({ tag: tagName, from: tagNode.from });
+        } else stack.push({ tag: tagName, from: tagNode.from, index: tagIndex });
         if (range && !selected(range.from, range.to) && !isRaw(range.from, range.to)) {
           inlineHTML.push(range);
-          add(range.from, range.to, Decoration.replace({ widget: new RenderWidget({ kind: 'InlineHTML', ...range, source: state.sliceDoc(range.from, range.to), definitions: state.field(definitions).source }, false) }));
+          // HTML attributes can contain text resembling <br>, so count parsed
+          // tags, not matches in raw markup. preserveNewlines renders the text
+          // line breaks too, but newlines inside tag attributes stay invisible.
+          const lineBreaks = state.doc.lineAt(range.to).number - state.doc.lineAt(range.from).number +
+            tagBreaks[tagIndex + 1] - tagBreaks[firstTag];
+          if (layout) add(range.from, range.to, Decoration.replace({ widget: new RenderWidget({ kind: 'InlineHTML', ...range, lineBreaks, source: state.sliceDoc(range.from, range.to), definitions: state.field(definitions).source }, false) }));
         }
       }
     }
     const standaloneImage = name === 'Image' && node.node.parent?.name === 'Paragraph' && node.node.parent.from === a && node.node.parent.to === b;
-    const block = standaloneImage || ['Table', 'Frontmatter', 'MathBlock', 'HTMLBlock', 'FootnoteDefinition', 'LinkReference', 'HorizontalRule'].includes(name) || name === 'FencedCode' && /^`{3,}mermaid\b|^~{3,}mermaid\b/.test(text());
+    const block = standaloneImage || ['Table', 'Frontmatter', 'MathBlock', 'HTMLBlock', 'FootnoteDefinition', 'LinkReference', 'HorizontalRule'].includes(name) || name === 'FencedCode' && /^`{3,}mermaid\b|^~{3,}mermaid\b/.test(state.sliceDoc(a, state.doc.lineAt(a).to));
     const complete = name === 'MathBlock' ? node.node.getChildren('MathMark').length === 2 : name !== 'Frontmatter' || /\n(?:---|\.\.\.)\s*$/.test(text());
     if (block && complete && !isRaw(a, b) && (name === 'Table' || !selected(a, b))) {
+      if (!layout) return false;
       // Table input lives in a cell projection. A parent cursor alone must not
       // turn the entire table into source (explicit source action does).
       const renderSource = name === 'MathBlock' ? '$$\n' + node.node.getChildren('MathText').map(part => state.sliceDoc(part.from, part.to)).join('\n') + '\n$$' : undefined;
@@ -171,21 +193,27 @@ function project(state: EditorState, from: number, to: number): DecorationSet {
       add(blockStart, b, Decoration.replace({ block: true, widget: new RenderWidget({ kind: name, from: a, to: b, source: name === 'Table' ? '' : text(), tableDocument: name === 'Table' ? state.doc : undefined, renderSource, nestedContainer, containerPrefix: blockStart < a ? prefix : undefined, definitions: state.field(definitions).source, footnoteNumbers: state.field(definitions).footnoteNumbers }, true) }));
       return false;
     }
-    if ((['Image', 'InlineMath', 'FootnoteReference'].includes(name) || name === 'Link' && !node.node.getChild('URL')) && !selected(a, b) && !isRaw(a, b)) {
+    // Layout walks skip inline subtrees entirely (including huge table rows
+    // and paragraphs). Only their viewport projection needs inline syntax.
+    if (layout && !['Document', 'BulletList', 'OrderedList', 'ListItem', 'Blockquote', 'Paragraph', 'FencedCode', 'CodeBlock', 'Image', 'Link', 'InlineMath', 'StrongEmphasis', 'Emphasis', 'Strikethrough'].includes(name) && !/^(ATX|Setext)Heading/.test(name)) return false;
+    const persistentInline = name === 'Image' || name === 'Link' && !node.node.getChild('URL') ||
+      name === 'InlineMath' && state.doc.lineAt(a).number !== state.doc.lineAt(b).number;
+    if ((persistentInline || ['InlineMath', 'FootnoteReference'].includes(name)) && !selected(a, b) && !isRaw(a, b)) {
+      if (layout !== persistentInline) return false;
       add(a, b, Decoration.replace({ widget: new RenderWidget({ kind: name, from: a, to: b, source: text(), definitions: state.field(definitions).source, footnoteNumbers: state.field(definitions).footnoteNumbers }, false) }));
       return false;
     }
-    if (/^(ATX|Setext)Heading/.test(name)) {
+    if (layout && /^(ATX|Setext)Heading/.test(name)) {
       const level = Number(name.at(-1)); lineStyle(a, `md-heading md-h${level}`);
     }
-    if (name === 'QuoteMark') lineStyle(a, 'md-quote');
+    if (!layout && name === 'QuoteMark') lineStyle(a, 'md-quote');
     let quoted = false;
     if (name === 'Paragraph' || name === 'FencedCode' || name === 'CodeBlock') {
       for (let parent = node.node.parent; parent; parent = parent.parent) if (parent.name === 'Blockquote') { quoted = true; break; }
     }
     // Style visible text leaves, not every physical line of a composite
     // quote. A single projected table can span hundreds of thousands of lines.
-    if (quoted && name === 'Paragraph') {
+    if (!layout && quoted && name === 'Paragraph') {
       for (let line = state.doc.lineAt(Math.max(a, from)); line.from <= Math.min(b, to);) {
         lineStyle(line.from, 'md-quote');
         if (line.number === state.doc.lines) break;
@@ -193,17 +221,23 @@ function project(state: EditorState, from: number, to: number): DecorationSet {
       }
     }
     if (name === 'FencedCode' || name === 'CodeBlock') {
-      if (!isRaw(a, b)) add(a, a, Decoration.widget({ block: true, side: -1, widget: new RenderWidget({ kind: 'CodeHeader', from: a, to: b, source: text() }, true) }));
+      if (layout && !isRaw(a, b)) add(a, a, Decoration.widget({ block: true, side: -1, widget: new RenderWidget({ kind: 'CodeHeader', from: a, to: b, source: state.sliceDoc(a, state.doc.lineAt(a).to) }, true) }));
+      if (layout) {
+        if (name === 'FencedCode' && !selected(a, b) && !isRaw(a, b)) {
+          for (const mark of node.node.getChildren('CodeMark')) lineStyle(mark.from, mark.to === b ? 'md-code-fence md-code-end' : 'md-code-fence');
+        }
+        return false;
+      }
       for (let line = state.doc.lineAt(Math.max(a, from)); line.from <= Math.min(b, to);) {
         lineStyle(line.from, 'md-code-line');
         if (line.to >= b) lineStyle(line.from, 'md-code-last');
-        if (name === 'FencedCode' && !selected(a, b) && !isRaw(a, b) && node.node.getChildren('CodeMark').some(mark => mark.from >= line.from && mark.from <= line.to)) lineStyle(line.from, line.from === state.doc.lineAt(b).from ? 'md-code-fence md-code-end' : 'md-code-fence');
         if (quoted) lineStyle(line.from, 'md-quote');
         if (line.number === state.doc.lines) break;
         line = state.doc.line(line.number + 1);
       }
       return true;
     }
+    if (layout) return true;
     const inlineClass: Record<string, string> = { StrongEmphasis: 'md-strong', Emphasis: 'md-emphasis', Strikethrough: 'md-strike', InlineCode: 'md-inline-code', Link: 'md-link', Autolink: 'md-link' };
     if (inlineClass[name]) add(a, b, Decoration.mark({ class: inlineClass[name] }));
     if (name === 'TaskMarker' && !isRaw(a, b)) {
@@ -232,18 +266,26 @@ function project(state: EditorState, from: number, to: number): DecorationSet {
   return builder.finish();
 }
 
-const projectionField = StateField.define<{ from: number; to: number; composing: boolean; decorations: DecorationSet }>({
-  create(state) { const to = Math.min(state.doc.length, 4000); return { from: 0, to, composing: false, decorations: project(state, 0, to) }; },
+// Block topology must precede viewport calculation and never depend on that
+// viewport. CM virtualizes widget DOM itself; removing offscreen replacements
+// turns projected blocks back into source lines and invalidates scroll anchors.
+const projectionField = StateField.define<{ from: number; to: number; composing: boolean; layout: DecorationSet; decorations: DecorationSet }>({
+  create(state) { const to = Math.min(state.doc.length, 4000); return { from: 0, to, composing: false, layout: project(state, 0, state.doc.length, true), decorations: project(state, 0, to) }; },
   update(value, tr) {
     let from = tr.changes.mapPos(value.from), to = tr.changes.mapPos(value.to, 1), inComposition = value.composing;
     for (const effect of tr.effects) {
       if (effect.is(visibleRegion)) { from = effect.value.from; to = effect.value.to; }
       if (effect.is(composing)) inComposition = effect.value;
     }
-    const relevant = tr.docChanged || tr.selection || tr.effects.length || syntaxTree(tr.state) !== syntaxTree(tr.startState);
-    return { from, to, composing: inComposition, decorations: inComposition ? value.decorations.map(tr.changes) : relevant ? project(tr.state, from, to) : value.decorations };
+    const semantic = tr.docChanged || tr.selection || tr.effects.some(effect =>
+      effect.is(revealBlock) || effect.is(editorFocused) || effect.is(composing)) ||
+      syntaxTree(tr.state) !== syntaxTree(tr.startState);
+    const relevant = semantic || tr.effects.some(effect => effect.is(visibleRegion));
+    return { from, to, composing: inComposition,
+      layout: inComposition ? value.layout.map(tr.changes) : semantic ? project(tr.state, 0, tr.state.doc.length, true) : value.layout,
+      decorations: inComposition ? value.decorations.map(tr.changes) : relevant ? project(tr.state, from, to) : value.decorations };
   },
-  provide: field => EditorView.decorations.from(field, value => value.decorations),
+  provide: field => [EditorView.decorations.from(field, value => value.layout), EditorView.decorations.from(field, value => value.decorations)],
 });
 
 export function livePreview(): Extension {

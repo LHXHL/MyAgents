@@ -75,8 +75,7 @@
     "updateInstallBlocked": "后台服务仍在退出，更新包已保留，请稍后重试或重启电脑后安装",
     "updateInstallFailed": "安装更新失败，请重试或前往设置页手动重新检查",
     "backgroundCompletion": "AI 继续在后台完成任务",
-    "maxTabsReached": "已达到最大标签页数量，请关闭其他标签页后重试",
-    "maxTabsReachedWithCount": "已达标签页上限（{{count}} 个），请先关闭一个再开始 AI 讨论",
+    "maxTabsReached": "已达到窗口上限，请关闭一些窗口哦",
     "codexSessionCreateFailed": "创建 Codex 会话失败",
     "launchFailed": "启动失败：{{message}}",
     "recordingStartFailed": "无法开始录音：{{message}}",
@@ -86,7 +85,6 @@
     "recordCloseStatusFailed": "暂时无法确认录音状态，记录页没有关闭。",
     "recordStopFailed": "录音尚未安全停止，记录页没有关闭。",
     "recordRestoreMissing": "记录已不存在，已返回记录列表。",
-    "tabLimitReached": "标签页已达上限，请关闭一个后重试",
     "noWorkspaceForDiscussion": "还没有工作区，无法开始 AI 讨论",
     "noModelProviderForDiscussion": "未配置可用模型供应商，无法开始 AI 讨论",
     "taskDiscussionContentRequired": "请输入任务目标与需求",
@@ -1115,6 +1113,13 @@
     "deleteMessage": "确定要删除「{{title}}」吗？此操作不可撤销。"
   },
   "markdownEditor": {
+    "outline": {
+      "browse": "浏览文档目录",
+      "title": "目录",
+      "count": "{{count}} 个标题",
+      "indexing": "正在索引…",
+      "untitled": "无标题"
+    },
     "document": "Markdown 文档",
     "source": "源码模式",
     "exitSource": "退出源码模式",

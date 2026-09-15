@@ -546,7 +546,7 @@ export async function prepareSpeechInference(options, documentResult) {
   if (!force && validatePreparedSpeechBundle(preparedRoot, expectedBundle)) {
     publishPreparedBundle(preparedRoot, expectedBundle);
     console.log(
-      `Restored cached speech-inference resources for ${target} (fingerprint ${buildFingerprint.slice(0, 12)})`,
+      `[resource:speech ${target}] HIT/STAGED: Restored cached speech-inference resources for ${target} (fingerprint ${buildFingerprint.slice(0, 12)})`,
     );
     return Object.freeze({ target, needsBuild: false });
   }
@@ -557,6 +557,8 @@ export async function prepareSpeechInference(options, documentResult) {
   }
   assertPrerequisites();
   const runtime = sharedRuntime;
+  console.log(`[resource:speech ${target}] MISS: target/version/source/signing fingerprint unavailable or invalid; preparing resources`);
+
   if (existsSync(preparedRoot)) {
     rmSync(preparedRoot, { recursive: true, force: true });
   }

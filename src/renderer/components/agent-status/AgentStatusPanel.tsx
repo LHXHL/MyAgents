@@ -1,10 +1,10 @@
 // PRD 0.2.17 — Agent Status Panel
 //
 // Top-level 容器：组合 useAgentStatusState 派生 + 收起态长条 + 展开态 sections。
-// 自带可见性生命周期（首次淡入、归零延迟 1.5s 淡出，再触发立即淡入）。
+// 可见性由真实活动 / 当前 live turn 驱动；完成后只淡出一次。
 
 import { CheckCircle2, ChevronDown, ChevronUp, OctagonX, StopCircle } from 'lucide-react';
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type { Message } from '@/types/chat';
@@ -72,71 +72,45 @@ const AgentStatusPanel = memo(function AgentStatusPanel({ containerRef, onJumpTo
   const hasActiveContent = todosActive || state.summary.subagentRunning > 0;
   const hasDisplayContent = state.todos.length > 0 || state.subagents.length > 0;
 
-  // 可见性状态机：内容出现 → 立即 setMounted(true) + setOpacity(1)
-  // 内容归零 → 立即 setOpacity(0)，1.5s 后 setMounted(false)（卸载 DOM 释放内存）
-  // 归零 1.5s 内若内容再次出现 → 取消淡出，setOpacity(1)
+  // Completed transcript data is not a new presentation event. Only activity
+  // or the existing live-turn arm may show the panel; fading consumes that arm.
+  // Otherwise completed todos survive unmount and restart this cycle every 2s,
+  // changing the input overlay and chat footer height even in an idle session.
+  const terminalPresentationArmed = armedSessionId !== null
+    && armedSessionId === (tab?.sessionId ?? null);
   const [mounted, setMounted] = useState(false);
   const [opaque, setOpaque] = useState(false);
-  const fadeTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  // 跨 rAF 边界跟踪第二层 rAF id，避免 toggle 过快时 stale setOpaque 漏过 cleanup（Codex Adv 1）。
-  const raf2Ref = useRef<number | undefined>(undefined);
-
-  // 第二段定时器，用于「lingerTimer = 500ms 全可见驻留 → 然后才开始 fade」（I1）
-  const lingerTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
-    if (hasActiveContent || (hasDisplayContent && !mounted)) {
-      // 取消任何待执行的 fade-out + linger 计时器
-      if (fadeTimerRef.current) {
-        clearTimeout(fadeTimerRef.current);
-        fadeTimerRef.current = undefined;
-      }
-      if (lingerTimerRef.current) {
-        clearTimeout(lingerTimerRef.current);
-        lingerTimerRef.current = undefined;
-      }
-      // 用 rAF 包装 setState，规避 react-hooks/set-state-in-effect lint。
-      // 第一帧 mount（opacity 仍是 0），第二帧设 opaque=true 触发 200ms 淡入。
-      const raf1 = requestAnimationFrame(() => {
-        setMounted(true);
-        raf2Ref.current = requestAnimationFrame(() => {
-          setOpaque(true);
-          raf2Ref.current = undefined;
-        });
-      });
-      return () => {
-        cancelAnimationFrame(raf1);
-        if (raf2Ref.current !== undefined) {
-          cancelAnimationFrame(raf2Ref.current);
-          raf2Ref.current = undefined;
-        }
-      };
-    }
-    // hasContent just turned false。如果当前还没 mounted，无需安排任何动作
-    // （避免 Codex Adv 3：首次渲染就 hasContent=false 时仍调度无意义 1.5s 定时器）
-    if (!mounted) return;
-    // I1: 先 linger 500ms 让用户看到「全完成」瞬间（opacity 仍是 1），
-    //     再触发 opacity 0 过渡 + 1.5s 后从 DOM 卸载。
-    lingerTimerRef.current = setTimeout(() => {
-      lingerTimerRef.current = undefined;
+    if (!hasActiveContent && !(hasDisplayContent && terminalPresentationArmed)) return;
+    let raf2: number | undefined;
+    const raf1 = requestAnimationFrame(() => {
+      setMounted(true);
+      raf2 = requestAnimationFrame(() => setOpaque(true));
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      if (raf2 !== undefined) cancelAnimationFrame(raf2);
+    };
+    // Mount is an output, not a reason to replay the entrance or cancel its
+    // second frame. Completion timing is owned by the effect below.
+  }, [hasActiveContent, hasDisplayContent, terminalPresentationArmed]);
+
+  useEffect(() => {
+    if (hasActiveContent || !mounted) return;
+    let fadeTimer: ReturnType<typeof setTimeout> | undefined;
+    const lingerTimer = setTimeout(() => {
       setOpaque(false);
-      fadeTimerRef.current = setTimeout(() => {
+      fadeTimer = setTimeout(() => {
         setArmedSessionId(null);
         setMounted(false);
-        fadeTimerRef.current = undefined;
       }, FADE_OUT_DELAY_MS);
     }, FADE_LINGER_MS);
     return () => {
-      if (lingerTimerRef.current) {
-        clearTimeout(lingerTimerRef.current);
-        lingerTimerRef.current = undefined;
-      }
-      if (fadeTimerRef.current) {
-        clearTimeout(fadeTimerRef.current);
-        fadeTimerRef.current = undefined;
-      }
+      clearTimeout(lingerTimer);
+      if (fadeTimer !== undefined) clearTimeout(fadeTimer);
     };
-  }, [hasActiveContent, hasDisplayContent, mounted]);
+  }, [hasActiveContent, mounted]);
 
   // 展开/收起状态（Tab 生命周期内保持；不持久化）
   const [expanded, setExpanded] = useState(false);

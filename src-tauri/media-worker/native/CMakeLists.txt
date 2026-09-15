@@ -6,7 +6,10 @@ if(BUILD_TESTING)
   add_executable(speech-vad-bound-test bounded_vad_test.cc)
   add_executable(speech-raw-evidence-test raw_evidence_test.cc)
   add_executable(speech-adapter-contract-test adapter_contract_test.cc)
-  target_link_libraries(speech-adapter-contract-test PRIVATE myagents-speech-adapter)
+  # The adapter retains its relocatable install RPATH in the build tree, where
+  # Sherpa is still in a separate directory. Declare the test's full link closure
+  # here; ctest's loader environment only applies after this executable links.
+  target_link_libraries(speech-adapter-contract-test PRIVATE myagents-speech-adapter "${MYAGENTS_SHERPA_LIBRARY}")
   foreach(test_target IN ITEMS speech-vad-bound-test speech-raw-evidence-test speech-adapter-contract-test)
     target_compile_features(${test_target} PRIVATE cxx_std_20)
     # Assertions are the regression checks, including in Release test builds.

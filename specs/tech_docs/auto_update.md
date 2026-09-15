@@ -26,9 +26,9 @@ Rust `src-tauri/src/updater.rs` 拥有检查、下载、pending package、安装
 | --- | --- | --- |
 | macOS | 先原子替换 package 文件，再写版本元数据 | 从 pending bytes 安装，成功后立即受管重启 |
 | Windows | 以相同顺序持久化 pending NSIS installer 与元数据 | 进入 update-quiesce，完成 verified-clean handoff 后启动 installer |
-| Linux | Updater 原地替换 AppImage | 关闭 owner 后 relaunch |
+| Linux（当前 Ubuntu deb） | 不自动检查或下载 | 从发布页下载 deb，手动覆盖安装 |
 
-macOS 和 Windows 的 pending package 是跨进程重启的 durable truth。应用下次启动仍会检测它并提供安装入口。Linux 没有同样的 pending-install 阶段。
+macOS 和 Windows 的 pending package 是跨进程重启的 durable truth。应用下次启动仍会检测它并提供安装入口。当前 Linux 只交付 deb，不能套用 AppImage 原地替换流程：Rust updater 的统一准入在网络请求与安装前拒绝 Linux，Renderer 不订阅更新事件、不创建周期检查、不提供应用内更新动作；设置保留发布页链接并说明手动升级。`createUpdaterArtifacts: false` 仅控制构建产物，不能替代运行期禁用。
 
 ## Pending package 与内存状态
 

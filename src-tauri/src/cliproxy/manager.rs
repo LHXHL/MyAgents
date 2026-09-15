@@ -9,6 +9,7 @@ use tokio::sync::{watch, Mutex, Notify};
 use uuid::Uuid;
 
 use super::callback::{validate_authorization_url, Receiver};
+use super::client::{AuthStatus, CallbackOutcome, Client};
 use super::component::{ComponentStore, Installed};
 use super::process::Instance;
 use super::store::{AccountRef, Accounts, Store};
@@ -496,6 +497,11 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
                 manager.login(&account, cancelled.clone()).await
             };
             if let Err(error) = result {
+                crate::ulog_warn!(
+                    "[cliproxy] login failed attempt={} code={}",
+                    account.attempt_id,
+                    error.code
+                );
                 // OAuth outcome is unknown until native account load succeeds.
                 // Stop the sole writer before any candidate directory deletion.
                 let authorized = manager
@@ -553,7 +559,9 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
         account: &AccountRef,
         cancelled: watch::Receiver<bool>,
     ) -> Result<()> {
-        let deadline = Instant::now() + Duration::from_secs(5 * 60);
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(5 * 60);
+        log_oauth_step("starting", &account.attempt_id, started, None, "started");
         let receiver = Receiver::bind().await?;
         let start = self.active_start.lock().await;
         let installed = self.selected(true).await?;
@@ -564,7 +572,19 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
             .await?;
         self.components.activate(&installed).await?;
         drop(start);
-        let auth_url = instance.client.auth_url().await?;
+        let reply = instance.client.auth_url().await;
+        log_oauth_step(
+            "auth_url",
+            &account.attempt_id,
+            started,
+            reply.http_status,
+            reply
+                .outcome
+                .as_ref()
+                .err()
+                .map_or("created", |e| e.code.as_str()),
+        );
+        let auth_url = reply.outcome?;
         validate_authorization_url(&auth_url.url, &auth_url.state)?;
         if *cancelled.borrow() {
             return Err(Error::cancelled());
@@ -584,35 +604,23 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
                 return Err(error);
             }
         };
-        // A lost response must not replay a code. Poll only this known state.
-        let _ = instance
-            .client
-            .callback(
-                &auth_url.state,
-                callback.code.as_deref(),
-                callback.error.as_deref(),
-            )
-            .await;
-        let mut cancelled = cancelled;
-        loop {
-            if *cancelled.borrow() {
-                return Err(Error::cancelled());
-            }
-            if Instant::now() >= deadline {
-                return Err(Error::new("login_timeout", "无法确认授权结果，请重新连接"));
-            }
-            let result = tokio::select! {
-                _ = cancelled.changed() => return Err(Error::cancelled()),
-                result = instance.client.auth_status(&auth_url.state) => result,
-            };
-            match result.as_deref() {
-                Ok("ok") => break,
-                Ok("error") => {
-                    return Err(Error::new("authorization_failed", "授权未完成，请重新连接"))
-                }
-                _ => tokio::time::sleep(Duration::from_millis(700)).await,
-            }
-        }
+        log_oauth_step(
+            "browser_callback",
+            &account.attempt_id,
+            started,
+            None,
+            "received",
+        );
+        finish_oauth(
+            &instance.client,
+            &auth_url.state,
+            callback,
+            started,
+            deadline,
+            cancelled.clone(),
+            &account.attempt_id,
+        )
+        .await?;
         self.complete_authorization(account, &installed, &instance, cancelled)
             .await
     }
@@ -655,11 +663,19 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
             .account()
             .await?
             .ok_or_else(|| Error::new("account_not_saved", "账号授权未保存，请重新连接"))?;
+        crate::ulog_info!(
+            "[cliproxy] oauth phase=account_summary attempt={} outcome=confirmed",
+            account.attempt_id
+        );
         self.record_authorization(account, summary, &cancelled)
             .await?;
         self.commit(account, installed, instance, cancelled).await?;
         self.project_config().await?;
         self.emit();
+        crate::ulog_info!(
+            "[cliproxy] oauth phase=account_commit attempt={} outcome=connected",
+            account.attempt_id
+        );
         crate::ulog_info!("[cliproxy] account connected; refreshing native model catalog");
         // Model discovery is independent of the durable login commit.
         let formal = self
@@ -2275,6 +2291,92 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
         let _ = self.app.emit("agent:config-changed", json!({}));
         Ok(())
     }
+}
+
+// Only locally generated attempt identities and finite client error codes reach
+// this logger. Never log native state, callback fields, URLs or response bodies.
+fn log_oauth_step(phase: &str, attempt: &str, started: Instant, http: Option<u16>, code: &str) {
+    crate::ulog_info!(
+        "[cliproxy] oauth phase={} attempt={} http_status={} elapsed_ms={} outcome={}",
+        phase,
+        attempt,
+        http.map_or_else(|| "none".to_owned(), |s| s.to_string()),
+        started.elapsed().as_millis(),
+        code
+    );
+}
+
+/// The login owner submits once, then resolves only the exact native state.
+/// Kept outside the app shell so loss/cancellation/deadline paths use real local
+/// HTTP in deterministic tests without a browser or an account.
+pub(super) async fn finish_oauth(
+    client: &Client,
+    state: &str,
+    callback: super::callback::Callback,
+    started: Instant,
+    deadline: Instant,
+    mut cancelled: watch::Receiver<bool>,
+    attempt: &str,
+) -> Result<()> {
+    let work = async {
+        let reply = client
+            .callback(state, callback.code.as_deref(), callback.error.as_deref())
+            .await;
+        let code = match &reply.outcome {
+            Ok(CallbackOutcome::Accepted) => "accepted",
+            Ok(CallbackOutcome::Unconfirmed(error)) | Err(error) => &error.code,
+        };
+        log_oauth_step("callback_submit", attempt, started, reply.http_status, code);
+        reply.outcome?;
+        let mut last_poll = None;
+        loop {
+            let reply = client.auth_status(state).await;
+            let code = match &reply.outcome {
+                Ok(AuthStatus::Waiting) => "waiting",
+                Ok(AuthStatus::Complete) => "complete",
+                Err(error) => &error.code,
+            };
+            let current = (reply.http_status, code.to_owned());
+            if last_poll.as_ref() != Some(&current) {
+                log_oauth_step("auth_status", attempt, started, reply.http_status, code);
+                last_poll = Some(current);
+            }
+            match reply.outcome {
+                Ok(AuthStatus::Complete) => return Ok(()),
+                Ok(AuthStatus::Waiting) => {}
+                Err(error)
+                    if matches!(
+                        error.code.as_str(),
+                        "transport_outcome_unknown" | "oauth_status_unavailable"
+                    ) => {}
+                Err(error) => return Err(error),
+            }
+            tokio::time::sleep(Duration::from_millis(700)).await;
+        }
+    };
+    if *cancelled.borrow() {
+        return Err(Error::cancelled());
+    }
+    if Instant::now() >= deadline {
+        return Err(Error::new("login_timeout", "组件授权已超时，请重新连接"));
+    }
+    let result = tokio::select! {
+        biased;
+        _ = cancelled.changed() => Err(Error::cancelled()),
+        result = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), work) =>
+            result.unwrap_or_else(|_| Err(Error::new("login_timeout", "无法在时限内确认组件授权结果，请重新连接"))),
+    };
+    log_oauth_step(
+        "authorization",
+        attempt,
+        started,
+        None,
+        result
+            .as_ref()
+            .err()
+            .map_or("complete", |e| e.code.as_str()),
+    );
+    result
 }
 
 // These fixtures exercise approved native components and Unix process fences.

@@ -429,6 +429,11 @@
   background:var(--paper-elevated); box-shadow:var(--shadow-xs);
   opacity:0; pointer-events:none; transition:opacity .12s;
 }
+/* Keep the visual gap inside the toolbar's hit area when it sits outside the
+   table shell. Inherit pointer-events so hidden actions cannot intercept input. */
+.markdown-table-actions::before {
+  content:""; position:absolute; top:-1px; bottom:-1px; right:100%; width:6px;
+}
 .markdown-table:hover > .markdown-table-actions,
 .markdown-table:focus-within > .markdown-table-actions,
 .md-table-shell:hover > .markdown-table-actions,

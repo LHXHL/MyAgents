@@ -244,17 +244,10 @@ ensure_host_esbuild() {
 echo -e "${BLUE}[5/7] 构建前端和服务端...${NC}"
 ensure_host_esbuild
 
-# Sidecar / Bridge / CLI 三件套都走 `npm run build:*` —— 后台是
-# `node scripts/esbuild-bundle.mjs <target>`。单一配置入口（entry /
-# banner / format / external / target），不再让 shell 引号介入。
-# Driver 内部完整接管 target 生命周期：cli 构建前清理 staging inventory、只产出
-# bundle authority myagents.cjs；server 构建后校验无硬编码 __dirname 路径。
-echo -e "  ${CYAN}打包服务端代码...${NC}"
-npm run build:server
-echo -e "  ${CYAN}打包 Plugin Bridge...${NC}"
-npm run build:bridge
-echo -e "  ${CYAN}打包 myagents CLI...${NC}"
-npm run build:cli
+# Architecture-independent assets are built once, before the target loop.
+echo -e "  ${CYAN}构建前端 / Sidecar / Bridge / CLI（本次只执行一次）...${NC}"
+npm run build:assets
+BUILD_ASSETS_CONFIG='{"build":{"beforeBuildCommand":null}}'
 
 # SDK native binary 按架构在 per-target loop 里拷贝（见下方 Tauri 构建循环）。
 # SDK 0.2.113+ 不再 ship cli.js/sdk.mjs/vendor，改为 per-platform native binary。
@@ -263,9 +256,6 @@ SDK_DEST="src-tauri/resources/claude-agent-sdk"
 rm -rf "${SDK_DEST}"
 mkdir -p "${SDK_DEST}"
 
-# 构建前端
-echo -e "  ${CYAN}构建前端...${NC}"
-npm run build:web
 echo -e "${GREEN}✓ 前端和服务端构建完成${NC}"
 echo ""
 
@@ -318,12 +308,6 @@ echo -e "${YELLOW}这可能需要 5-10 分钟 (包含公证等待时间)...${NC}
 SDK_VERSION=$(grep '"@anthropic-ai/claude-agent-sdk-darwin-arm64"' "${PROJECT_DIR}/package.json" | sed 's/.*: "\([0-9][0-9.]*\)".*/\1/')
 if [ -z "$SDK_VERSION" ]; then
     echo -e "${RED}✗ 无法从 package.json 解析 Claude SDK 版本号${NC}"
-    exit 1
-fi
-
-SHARP_VERSION=$(node -p "require('./package.json').dependencies.sharp" 2>/dev/null || true)
-if [[ ! "$SHARP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo -e "${RED}✗ package.json 中的 sharp 必须使用精确版本，当前值: ${SHARP_VERSION:-missing}${NC}"
     exit 1
 fi
 
@@ -383,26 +367,7 @@ prepare_sharp_runtime() {
         exit 1
     fi
 
-    echo -e "  ${CYAN}填充 sharp-runtime (darwin-${ARCH})...${NC}"
-    rm -rf "$SHARP_DIR"
-    mkdir -p "$SHARP_DIR"
-    cat > "${SHARP_DIR}/package.json" <<SHARP_PKG
-{
-  "name": "sharp-runtime",
-  "private": true,
-  "version": "1.0.0",
-  "dependencies": { "sharp": "${SHARP_VERSION}" }
-}
-SHARP_PKG
-
-    # staging 每个 target 都从空目录开始。sharp 自己的 optionalDependencies
-    # 是平台包版本的唯一 authority；--os/--cpu 只选择当前 target，避免在两个
-    # thin app 中各塞一份用不到的另一架构 libvips。
-    if ! (cd "$SHARP_DIR" && npm install --no-save --package-lock=false --force \
-        --no-audit --no-fund --ignore-scripts --os=darwin --cpu="$ARCH"); then
-        echo -e "${RED}✗ sharp darwin-${ARCH} 预装失败${NC}"
-        exit 1
-    fi
+    npm run build:sharp-runtime -- darwin "$ARCH"
 
     if [ ! -f "$SHARP_NODE" ]; then
         echo -e "${RED}✗ sharp-darwin-${ARCH}.node 缺失${NC}"
@@ -546,7 +511,7 @@ for TARGET in "${BUILD_TARGETS[@]}"; do
 
     # ---- 重新填充 tsx-runtime 资源以匹配目标架构 ----
     # `setup-tsx-runtime.mjs` 用 npm 的 --os/--cpu 选择对应平台的
-    # `@esbuild/<triple>` 二进制；跨架构 Mac DMG 必须按 TARGET 重灌。
+    # `@esbuild/<triple>` 二进制；跨架构 Mac DMG 按 TARGET 从独立缓存复制。
     echo -e "  ${CYAN}填充 tsx-runtime (darwin-${NODE_TARGET_ARCH})...${NC}"
     npm run build:tsx-runtime -- darwin "$NODE_TARGET_ARCH"
 
@@ -638,7 +603,7 @@ for TARGET in "${BUILD_TARGETS[@]}"; do
     node "${PROJECT_DIR}/scripts/prepare-cuse-bundle.mjs" "$TARGET"
     codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "${PROJECT_DIR}/bundled-skills/cuse/scripts/cuse"
 
-    npm run tauri:build -- --target "$TARGET"
+    npm run tauri:build -- --target "$TARGET" --config "$BUILD_ASSETS_CONFIG"
 
     echo -e "${GREEN}✓ $TARGET 构建完成${NC}"
 done

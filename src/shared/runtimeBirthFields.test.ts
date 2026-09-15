@@ -9,7 +9,7 @@ describe('runtime birth field coercion', () => {
   it('normalizes foreign permission and reasoning values to target runtime defaults', () => {
     expect(coerceRuntimeBirthPermissionMode('auto', 'codex')).toBe('full-auto');
     expect(coerceRuntimeBirthPermissionMode('fullAgency', 'codex')).toBe('full-auto');
-    expect(coerceRuntimeBirthReasoningEffort('max', 'codex')).toBe('default');
+    expect(coerceRuntimeBirthReasoningEffort('max', 'codex')).toBe('max');
   });
 
   it('preserves target-runtime permission and reasoning values', () => {

@@ -33,6 +33,7 @@ import kotlinUrl from "./assets/symbols/files/kotlin.svg";
 import licenseUrl from "./assets/symbols/files/license.svg";
 import linkUrl from "./assets/symbols/files/link.svg";
 import lockUrl from "./assets/symbols/files/lock.svg";
+import markdownInlineUrl from "./assets/symbols/files/markdown-inline.svg";
 import markdownUrl from "./assets/symbols/files/markdown.svg";
 import mongoUrl from "./assets/symbols/files/mongo.svg";
 import nextUrl from "./assets/symbols/files/next.svg";
@@ -76,8 +77,8 @@ export const SYMBOLS_UPSTREAM = {
   license: "MIT",
 } as const;
 
-function symbolsAsset(src: string, upstreamPath: string) {
-  return { src, upstreamPath } as const;
+function symbolsAsset(src: string, upstreamPath: string, inlineSrc?: string) {
+  return { src, upstreamPath, inlineSrc } as const;
 }
 
 /**
@@ -92,7 +93,7 @@ export const FILE_ICON_ASSETS = {
   ),
   "file-generic": symbolsAsset(documentUrl, "src/icons/files/document.svg"),
   text: symbolsAsset(textUrl, "src/icons/files/text.svg"),
-  markdown: symbolsAsset(markdownUrl, "src/icons/files/markdown.svg"),
+  markdown: symbolsAsset(markdownUrl, "src/icons/files/markdown.svg", markdownInlineUrl),
   pdf: symbolsAsset(pdfUrl, "src/icons/files/pdf.svg"),
   word: symbolsAsset(notebookUrl, "src/icons/files/notebook.svg"),
   spreadsheet: symbolsAsset(csvUrl, "src/icons/files/csv.svg"),

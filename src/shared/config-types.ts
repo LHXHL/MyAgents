@@ -79,7 +79,7 @@ export const PERMISSION_MODES: {
 /**
  * Model entity representing a single model configuration
  */
-export interface ModelEntity {
+export interface ModelEntity extends Pick<RuntimeModelInfo, 'supportedReasoningEfforts' | 'defaultReasoningEffort'> {
   // === 核心字段（必填）===
   model: string; // API 代码，如 "claude-sonnet-4-6"
   modelName: string; // 显示名称，如 "Claude Sonnet 4.6"
@@ -1262,6 +1262,8 @@ export function managedCodexModelsFromRuntime(
       inputModalities: ['text', 'image'],
       outputModalities: ['text'],
       source: 'discovered',
+      supportedReasoningEfforts: runtimeModel.supportedReasoningEfforts,
+      defaultReasoningEffort: runtimeModel.defaultReasoningEffort,
     });
   }
   return models;
@@ -1641,7 +1643,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     vendor: 'DeepSeek',
     cloudProvider: '模型官方',
     type: 'api',
-    primaryModel: 'deepseek-v4-pro',
+    primaryModel: 'deepseek-flash',
     isBuiltin: true,
     authType: 'auth_token',
     websiteUrl: 'https://platform.deepseek.com',
@@ -1652,13 +1654,21 @@ export const PRESET_PROVIDERS: Provider[] = [
       disableNonessential: true,
     },
     modelAliases: {
-      sonnet: 'deepseek-v4-pro',
+      sonnet: 'deepseek-flash',
       opus: 'deepseek-v4-pro',
-      haiku: 'deepseek-v4-flash',
+      haiku: 'deepseek-flash',
     },
     models: [
-      // V4 Pro / Flash 为纯文本；Vision Exp 支持图像输入及 Anthropic API。
-      // deepseek-chat / deepseek-reasoner 已退化为 v4-flash 的别名且 2026-07-24 硬下线，故移除。
+      // V4.1 Flash 原生支持图像；旧 V4 Flash / Vision Exp 已退役，不再列出兼容别名。
+      // https://api-docs.deepseek.com/quick_start/pricing/ (2026-09-16)
+      {
+        model: 'deepseek-flash',
+        modelName: 'DeepSeek V4.1 Flash',
+        modelSeries: 'deepseek',
+        contextLength: 1_000_000,
+        maxOutputTokens: 384_000,
+        inputModalities: ['text', 'image'],
+      },
       {
         model: 'deepseek-v4-pro',
         modelName: 'DeepSeek V4 Pro',
@@ -1666,23 +1676,6 @@ export const PRESET_PROVIDERS: Provider[] = [
         contextLength: 1_000_000,
         maxOutputTokens: 384_000,
         inputModalities: ['text'],
-      },
-      {
-        model: 'deepseek-v4-flash',
-        modelName: 'DeepSeek V4 Flash',
-        modelSeries: 'deepseek',
-        contextLength: 1_000_000,
-        maxOutputTokens: 384_000,
-        inputModalities: ['text'],
-      },
-      // https://api-docs.deepseek.com/zh-cn/quick_start/pricing/ (2026-09-05)
-      {
-        model: 'deepseek-v4-flash-vision-exp',
-        modelName: 'DeepSeek V4 Flash Vision Exp',
-        modelSeries: 'deepseek',
-        contextLength: 1_000_000,
-        maxOutputTokens: 384_000,
-        inputModalities: ['text', 'image'],
       },
     ],
   },

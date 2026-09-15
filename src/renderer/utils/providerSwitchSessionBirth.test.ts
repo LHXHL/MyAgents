@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { reasoningEffortAfterModelChange } from '../../shared/reasoningEffort';
+import { persistInputOptionChange } from '../api/persistInputOption';
 
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '@/config/types';
 import { createConcreteProviderRoute } from '../../shared/providerRoute';
@@ -35,11 +37,22 @@ describe('buildProviderSwitchSessionBirth', () => {
         providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
         model: 'gpt-5.5-codex',
         permissionMode: 'auto-edit',
-        reasoningEffort: 'default',
+        reasoningEffort: 'max',
         mcpEnabledServers: ['filesystem'],
         enabledPluginIds: ['plugin-a'],
       },
     });
+  });
+
+  it('shares the normalized target effort between a confirmed managed birth and Agent defaults', async () => {
+    const identity = { kind: 'runtime-backed-provider' as const, providerId: 'codex-sub' as const, runtime: 'codex' as const, runtimeSource: 'managed-provider' as const, model: 'target' };
+    const effort = reasoningEffortAfterModelChange('max', { defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] });
+    const birth = buildRuntimeBackedInitialSessionBirth({ identity, reasoningEffort: effort });
+    const patchAgentConfig = vi.fn().mockResolvedValue(undefined);
+    await persistInputOptionChange({ workspaceId: 'ws', agentId: 'agent', isExternalRuntime: false, fields: { runtimeBackedProviderSelection: identity, reasoningEffort: effort }, patchProject: vi.fn(), patchAgentConfig, patchAgentProjectConfig: async (id, patch) => { await patchAgentConfig(id, patch); } });
+    expect(effort).toBe('default');
+    expect(birth.opts.reasoningEffort).toBe('default');
+    expect(patchAgentConfig).toHaveBeenCalledWith('agent', expect.objectContaining({ runtimeConfig: { reasoningEffort: 'default' } }));
   });
 
   it('creates builtin provider sessions without requiring a workspace template write', () => {

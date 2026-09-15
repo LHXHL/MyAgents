@@ -21,7 +21,9 @@ import { composing, editorFocused, focusedField, livePreview, projectionHost, re
 import { applyLink, editLink, linkEditAtSelection, selectionLines, wrapSelection, type LinkEdit } from './editorCommands';
 import { imageAnchors, ImageImportQueue, importImage, type ImageInput, type ImageInsertionRange, type ImageImportFailure } from './imageImport';
 import { cellEditRange, cellImageRange, encodeCell, tableAt } from './tableSource';
-import { definitions } from './definitions';
+import { definitions, type DocumentHeading } from './definitions';
+import { documentOutline, type OutlineProjection } from './outlineProjection';
+import DocumentOutline from './DocumentOutline';
 import { documentHref } from './documentLinks';
 import { useResolvedTheme } from '@/theme';
 import { editorHighlight } from './editorHighlight';
@@ -84,6 +86,11 @@ export default function MarkdownEditor(props: Props) {
   const linkInput = useRef<HTMLInputElement>(null);
   const [localSource, setLocalSource] = useState(false);
   const [searchPanel, setSearchPanel] = useState<SearchPanelProjection | null>(null);
+  const [outline, setOutline] = useState<OutlineProjection | null>(null);
+  const outlineCompartment = useRef(new Compartment());
+  const publishOutline = useCallback((value: OutlineProjection | null, view: EditorView) => {
+    setOutline(previous => value ?? (previous?.view === view ? null : previous));
+  }, []);
   const [importing, setImporting] = useState(false);
   const [importIssue, setImportIssue] = useState<{ error: string; completed: string[]; remaining?: ImageInput[]; failures?: ImageImportFailure[] } | null>(null);
   const [activeTable, setActiveTable] = useState<number | null>(null);
@@ -192,7 +199,7 @@ export default function MarkdownEditor(props: Props) {
     buildState.current = raw => EditorState.create({ doc: decodeSource(raw).text, extensions: [
       sourceFormatExtensions(raw), history(), EditorState.allowMultipleSelections.of(true), drawSelection(), cellEditRange, editLink.of(openLinkEditor), focusDecorations, revealSearch, compositionGate.of(documentGate),
       editingCompartment.current.of([EditorState.readOnly.of(!!latest.current.props.paused), EditorView.editable.of(!latest.current.props.paused)]), markdownSyntax(), definitions, sourceBlock, focusedField, imageAnchors, importImage.of(importImages), projectionHost.of(registry),
-      compartment.current.of(mode()), highlightCompartment.current.of(latest.current.highlighting), EditorView.lineWrapping, bracketMatching(), search({ createPanel: view => createEditorSearchPanel(view, (value, dom) => {
+      compartment.current.of(mode()), outlineCompartment.current.of(latest.current.props.sourceMode || latest.current.props.active === false || latest.current.props.paused ? [] : documentOutline(publishOutline)), highlightCompartment.current.of(latest.current.highlighting), EditorView.lineWrapping, bracketMatching(), search({ createPanel: view => createEditorSearchPanel(view, (value, dom) => {
         if (alive) setSearchPanel(previous => value ?? (previous?.dom === dom ? null : previous));
       }) }),
       EditorView.focusChangeEffect.of((_state, focused) => editorFocused.of(focused)),
@@ -267,8 +274,12 @@ export default function MarkdownEditor(props: Props) {
       latest.current.props.onDetach?.(getSource(), latest.current.props.path);
       alive = false; documentGate.dispose(); gate.current = null; imports.current?.invalidate(); imports.current = null; view.destroy(); viewRef.current = null; mounted.clear();
     };
-  }, [importImages, dropRange, getSource, openDocumentLink, openLinkEditor]);
+  }, [importImages, dropRange, getSource, openDocumentLink, openLinkEditor, publishOutline]);
   useEffect(() => { viewRef.current?.dispatch({ effects: highlightCompartment.current.reconfigure(highlighting) }); }, [highlighting]);
+  useEffect(() => {
+    const view = viewRef.current;
+    if (view) view.dispatch({ effects: outlineCompartment.current.reconfigure(props.sourceMode || props.active === false || props.paused ? [] : documentOutline(publishOutline)) });
+  }, [props.sourceMode, props.active, props.paused, publishOutline]);
 
   useEffect(() => {
     const view = viewRef.current;
@@ -292,6 +303,18 @@ export default function MarkdownEditor(props: Props) {
   }, [props.focusTarget, props.initialLineNumber]);
 
   const basePath = props.path.includes('/') ? props.path.slice(0, props.path.lastIndexOf('/')) : '';
+  const navigateHeading = (heading: DocumentHeading) => {
+    const view = viewRef.current;
+    // React may still show the preceding measurement's outline immediately
+    // after a CM edit. Only the current document index can authorize offsets.
+    if (!view || !view.state.field(definitions).outline.includes(heading)) return;
+    const doc = view.state.doc;
+    void gate.current?.run(() => {
+      // A queued IME action must never apply offsets from an older document.
+      if (viewRef.current !== view || view.state.doc !== doc) return;
+      view.dispatch({ selection: { anchor: heading.from }, effects: [revealBlock.of(null), EditorView.scrollIntoView(heading.from, { y: 'start', yMargin: 28 })] });
+    });
+  };
   const openFootnote = (label: string) => {
     const view = viewRef.current; if (!view) return;
     const target = view.state.field(definitions).footnotes.get(label.trim().replace(/\s+/g, ' ').toLowerCase());
@@ -356,6 +379,7 @@ export default function MarkdownEditor(props: Props) {
       <button aria-label={t('markdownEditor.close')} onClick={() => setImportIssue(null)}>×</button>
     </div>}
     <div ref={host} className="md-editor-host" />
+    {outline && outline.headings.length > 0 && !props.sourceMode && props.active !== false && !props.paused && <DocumentOutline {...outline} onNavigate={navigateHeading} />}
     {selectionVisible && !linkDraft && !searchPanel && <div ref={toolsElement} style={toolPosition} className="md-selection-tools overflow-auto" role="toolbar" aria-label={t('markdownEditor.formatting')} onMouseDown={event => event.preventDefault()}>
       {([['bold', '**'], ['italic', '*'], ['strike', '~~'], ['code', '`'], ['link', '[']] as const).map(([label, marker]) => <button key={label} onClick={() => { if (marker === '[') openLinkEditor(); else if (viewRef.current) wrapSelection(marker)(viewRef.current); }}>{t(`markdownEditor.${label}`)}</button>)}
       {props.onQuote && <><span className="md-selection-divider" role="separator" aria-orientation="vertical" /><button className="md-selection-quote" onClick={quote}><Quote size={12} aria-hidden="true" />{t('chat:workspaceFiles.common.quote')}</button></>}
@@ -373,7 +397,7 @@ export default function MarkdownEditor(props: Props) {
     </form>}
     {slots.map(slot => createPortal(<Suspense fallback={<span className="md-render-loading">{t('markdownEditor.rendering')}</span>}>
       <ProjectionFrame element={slot.element} view={slot.view}>{slot.projection.kind === 'CodeHeader' ? <div className="md-code-header"><span>{/^\s*(?:`{3,}|~{3,})(\S*)/.exec(slot.projection.source)?.[1] ?? t('markdownEditor.code')}</span><button onClick={() => {
-        const source = slot.projection.source;
+        const source = slot.view.state.sliceDoc(slot.projection.from, slot.projection.to);
         const code = /^\s*(?:`{3,}|~{3,})/.test(source) ? source.replace(/^[^\n]*\n/, '').replace(/\n[ \t]*(?:`{3,}|~{3,})\s*$/, '') : source;
         void copyPlainText(code).catch(() => latest.current.toast.error(t('markdownEditor.copyFailed')));
       }}>{t('markdownEditor.copyCode')}</button></div> : slot.projection.kind === 'Table' ? <TableProjection projection={slot.projection} view={slot.view} workspacePath={props.workspacePath} basePath={basePath}

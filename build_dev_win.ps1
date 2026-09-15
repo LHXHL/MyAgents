@@ -232,24 +232,9 @@ $env:NODE_OPTIONS = if ([string]::IsNullOrWhiteSpace($nodeOptionsWithoutHeap)) {
     "$nodeOptionsWithoutHeap --max-old-space-size=4096"
 }
 Write-ColorOutput "  NODE_OPTIONS=$env:NODE_OPTIONS" "Yellow"
-& npm run build:web
+& npm run build:assets
 if ($LASTEXITCODE -ne 0) {
-    Write-ColorOutput "✗ 前端构建失败" "Red"
-    exit 1
-}
-& npm run build:server
-if ($LASTEXITCODE -ne 0) {
-    Write-ColorOutput "✗ Sidecar 打包失败" "Red"
-    exit 1
-}
-& npm run build:bridge
-if ($LASTEXITCODE -ne 0) {
-    Write-ColorOutput "✗ Plugin Bridge 打包失败" "Red"
-    exit 1
-}
-& npm run build:cli
-if ($LASTEXITCODE -ne 0) {
-    Write-ColorOutput "✗ myagents CLI 打包失败" "Red"
+    Write-ColorOutput "✗ 前端和运行时资源构建失败" "Red"
     exit 1
 }
 Write-ColorOutput "✓ 前端和运行时资源构建完成" "Green"

@@ -38,11 +38,11 @@ Rust `check_paths` 返回文件事实与可选 `resolvedPath` / `error`。工作
 
 CM 内部位置统一为 LF 坐标，`decodeSource` / `encodeSource` 是 IO / 比较 / 引用边界。不要直接用 `state.doc.toString()` 保存原文件：它会归一化混合换行。未编辑语法、空白、末尾换行和 BOM 均不得被片段渲染或 AST 序列化改写。删除使独立 CR 与 LF 新相邻时，只把该 CR 显式化为 CRLF，以免两个逻辑换行落盘后合成一个；格式变更仍随同一历史撤销。
 
-`livePreview` 的直接装饰 StateField 负责改变块布局；viewport plugin 只更新可见范围；软折行的长物理行通过实际屏幕坐标收窄投影范围，不能因整个物理行属于 viewport 就挂载数千个离屏公式。几何读取归 CM `requestMeasure.read`，保持请求 pending 直到 write 后提交事务；不能在递归 microtask 中调用 `posAtCoords` 强制测量，否则 inline 投影宽度与折行会形成反馈循环。测量结果只适用于同一个 immutable Text，销毁后丢弃。React portal 复用 CM widget 容器，`destroy` 释放对应投影；未知、不完整语法保持源码。公式、Mermaid、HTML、图片沿用共享 `Markdown` 的 remark / rehype / sanitize / 资源组件。文档级引用与脚注索引取自语法树，按不可变 subtree 缓存相对位置，解析进度变化也刷新索引；不能把代码 / 表格中的相似字符串当成定义。
+`livePreview` 的直接装饰 StateField 将文档布局与视口内的轻量语法装饰分开：已解析的块、图片、HTML、跨行公式、引用链接、标题与围栏几何不随滚动撤销，CM 自己虚拟化离屏 DOM。不能由 `posAtCoords` 反推块是否存在（大表内部的坐标只会映射到块首/尾），否则会把前文投影恢复成源码并破坏滚动锚点。viewport plugin 只更新局部行内装饰范围；软折行的长物理行通过实际屏幕坐标收窄投影范围，不能因整个物理行属于 viewport 就挂载数千个离屏公式。几何读取归 CM `requestMeasure.read`，保持请求 pending 直到 write 后提交事务；不能在递归 microtask 中调用 `posAtCoords` 强制测量，否则 inline 投影宽度与折行会形成反馈循环。测量结果只适用于同一个 immutable Text，销毁后丢弃。React portal 复用 CM widget 容器，`destroy` 释放对应投影；块容器用 flow-root 包住后代 margin，行内图片/公式用可测量的 inline-block，HTML 保留原生 inline 流，按解析标签/文本声明 lineBreaks（属性中的伪标签不计数）；所有行内 widget 提供有效高度估计，异步内容提交/尺寸变化仍由 ProjectionFrame 请求 CM 测量；未知、不完整语法保持源码。代码标题只保存首行，复制时从当前 CM 文档按范围读取完整代码；避免全局布局扫描重复物化离屏代码正文。公式、Mermaid、HTML、图片沿用共享 `Markdown` 的 remark / rehype / sanitize / 资源组件。文档级引用与脚注索引取自语法树，按不可变 subtree 缓存相对位置，解析进度变化也刷新索引；不能把代码 / 表格中的相似字符串当成定义。
 
 GFM 默认 Table 是单个 leaf，编辑大表时会同步重解析整个 leaf。`incrementalTables` 使用公开 composite extension 建立可复用 row tree；逐节点坐标测试与上游 GFM 对齐，包括引用 / 列表。composite 回调记录外层容器是否接受了下一行；缺少前缀的 lazy continuation 通过公开 PartialParse wrapper 每次 advance 消费有上限的一组行（128 行 / 16 KiB），再交还 CM 的解析预算；避免外层 quote/list 被提前结束，也避免单次 eager 消费超长链。Language base 先配置行调度，markdown() 的代码/HTML mixed parser 再包在外侧。正文行包在 LiveTableRowGroup block 中，让 FragmentCursor 直接复用整组，避免匿名 balance 节点被展开后逐行重建树；组节点不承载产品状态。块中断规则保留同级列表语义；不读写 parser 私有字段，不改写 AST。
 
-表格模型的单元格范围来自语法节点 / delimiter；空格子和缺失格子通过源范围补齐。结构修改和 TSV 粘贴组合成父文档一次事务。只有一个活跃 mini CM，无独立 history / 保存；父 CM 的 `cellEditRange` 保存当前精确输入范围，不能把 parser 去掉布局 padding 后的范围当作活跃输入真源，否则逐键空格会被吞掉。父文档操作后重新投影，结构分隔符不能被 cell 末尾反斜杠转义。大量行使用主 scroller 的行虚拟化，宽度溢出只增加局部水平滚动。
+表格模型的单元格范围来自语法节点 / delimiter；空格子和缺失格子通过源范围补齐。结构修改和 TSV 粘贴组合成父文档一次事务。只有一个活跃 mini CM，无独立 history / 保存；父 CM 的 `cellEditRange` 保存当前精确输入范围，不能把 parser 去掉布局 padding 后的范围当作活跃输入真源，否则逐键空格会被吞掉。父文档操作后重新投影，结构分隔符不能被 cell 末尾反斜杠转义。大量行使用主 scroller 的行虚拟化，初始块高度按源码行数估计。`tableGeometry` 只索引已测行相对默认行高的修正量，通过二分查找计算偏移与可见行；不因几十个可见行的测量而分配/重建整表行高数组。宽度溢出只增加局部水平滚动。
 
 Theme 经 `@/theme` 公共 API 读取；CM syntax colors 从既有 `adapters.prism` 派生，正文和控件使用语义 CSS token。切换 theme 重配 extension，不重建文档。
 
@@ -53,6 +53,14 @@ Theme 经 `@/theme` 公共 API 读取；CM syntax colors 从既有 `adapters.pri
 查找仍以 CM SearchQuery / Panel 为 authority，`EditorSearchPanel` 仅把 panel 当前 query/readOnly 投影进 React portal；修改查询、前后导航、多选和替换调用原生 CM effect/command，替换进入同一父文档 history。主 CM 开启多选及原生 drawSelection，避免“选择全部匹配”被归一化为单选。快捷键使用 search-panel scope；选择工具栏不包含查找。面板占用顶部布局槽并靠右，避免覆盖正文；进阶选项/替换复用 Popover，实际 portal DOM 挂载时移动焦点，Escape 先关闭选项并返回触发按钮，再关闭查找。
 
 全局/局部源码的退出控件由编辑器统一作为顶部居中的独立浮层显示，覆盖正文而不占文档流、不增加标题栏或正文顶部留白；只有按钮接收指针事件，外围区域可穿透到正文，层级低于查找/链接浮层。退出后焦点回到同一个文档。圆角、面板和搜索高亮引用既有主题 token；表格圆角在水平滚动容器外框裁切，虚拟占位行不增加边框/间距；代码首部与末行分别应用相同圆角，不改写源码或增加每行垂直间距。
+
+## 文档目录速览
+
+Live Preview 左缘的短横线入口不占正文布局，悬停展开共享 `Popover`，点击标题先校验当前 CM 索引中的项身份，再在同一个 CM 文档中导航；源码模式、隐藏或暂停时卸载目录呈现和全局解析任务。目录浮层复用 viewport 定位、外部点击/Escape 与 close-layer，支持按钮/键盘入口。无标题不显示；仅展开时构建完整目录列表；长目录内部滚动，边缘标记最多24条并按标题区间指示当前章节。
+
+`definitions.outline` 与现有 anchor 索引共用语法树和 subtree 缓存，保存当前源码的标题范围、级别、纯文本标签，覆盖 ATX H1–H6、Setext 与容器内标题；代码、HTML块和frontmatter不产生伪标题。标题范围独立于 slug，重复标题可分别导航；与标题无关的变更复用相同数组引用。React 不重新解析全文。
+
+`outlineProjection` 的 ViewPlugin 按15ms预算、80ms间隔推进同一个CM parser，补全默认后台解析可能止步于视口之外的目录；输入时重新安排，销毁时取消。滚动只在 `requestMeasure.read` 读取CM行块位置并按物理行末位置二分查找当前标题（包含引用/列表前缀后的标题），标题/当前章节/解析完成状态变化才向React发布。导航通过 `CompositionGate` 和 `EditorView.scrollIntoView`，清除局部源码展开，不写正文或历史；等待输入法期间文档已改变则丢弃旧坐标，避免错位跳转。
 
 ## 保存与比较
 
@@ -84,6 +92,7 @@ Theme 经 `@/theme` 公共 API 读取；CM syntax colors 从既有 `adapters.pri
 
 升级 / 删除补丁前运行 `npm run verify:markdown-resize -- chrome`（或省略 channel 使用已安装 Playwright browser）：24,000 字符单行，390→250→600px resize / scroll 后 50 个可见坐标往返不能落进空洞。再验实际 Markdown 的密集公式、普通输入、表格及全屏；上游版本包含修复并通过相同回归后，删除脚本、安装/校验 hook、start_dev.sh 校验入口和版本 pin。本地补丁是发布阻塞缺陷的临时依赖维护，没有新的运行时 owner、重试或 viewport 恢复机制。
 
+- `node scripts/verify-markdown-live-preview.mjs chrome` / `webkit`：真实 parser/CM 布局回归及 React + Markdown + TableProjection + 生产 CSS 的离线浏览器验证，覆盖多长表滚动、虚拟行数量、混合 HTML/图片和仓库 README 的点击源码坐标；系统文件/链接操作使用 fixture，不能代替 Tauri 文件 IO 验收。
 - `markdown-editor/*.test.*`：格式保真 / undo、GFM 坐标与树复用、表格结构事务、行组合、图片锚点与预算、引用语义、真实 CM 模式 / cell / search。
 - `FilePreviewModal.liveReload.test.tsx`：保存失败、移动 / 关闭 / 全屏、冲突重试和未知回执、编辑面卸载交接。
 - `useTauriFileDrop.test.tsx`：DPR、可用性、嵌套 surface / overlay / inert 与 listener cleanup。

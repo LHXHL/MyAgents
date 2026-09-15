@@ -7,6 +7,12 @@ set -e
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 
+# Linux system dependency installation is shared with both build entry points.
+# Node 24/npm and rustup are developer prerequisites, as on the other platforms.
+if [[ "$(uname -s)" == "Linux" ]]; then
+    "${PROJECT_DIR}/build_linux.sh" --install-deps
+fi
+
 # 颜色输出
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -41,7 +47,7 @@ check_install() {
 echo -e "${BLUE}[1/6] 检查依赖${NC}"
 MISSING=0
 
-check_install "Node.js" "node --version" "https://nodejs.org (≥ v20)" || MISSING=1
+check_install "Node.js" "node --version" "https://nodejs.org (v24)" || MISSING=1
 check_install "npm" "npm --version" "随 Node.js 安装" || MISSING=1
 check_install "Rust" "rustc --version" "https://rustup.rs" || MISSING=1
 check_install "Cargo" "cargo --version" "随 Rust 安装" || MISSING=1
@@ -51,6 +57,9 @@ echo ""
 if [ $MISSING -eq 1 ]; then
     echo -e "${RED}请先安装上述缺失的依赖，然后重新运行此脚本${NC}"
     exit 1
+fi
+if [[ "$(uname -s)" == "Linux" ]]; then
+    node -e 'if (Number(process.versions.node.split(".")[0]) !== 24) throw new Error("Ubuntu development requires Node.js 24")'
 fi
 
 # 固定 Rust toolchain/components，避免 rustfmt/clippy 或 IDE 使用系统 Rust 漂移。
@@ -91,17 +100,27 @@ echo ""
 
 # 安装 Rust 依赖
 echo -e "${BLUE}[5/6] 检查 Rust 依赖${NC}"
-cd src-tauri
-cargo check --quiet 2>/dev/null || cargo fetch
-cd ..
+if [[ "$(uname -s)" == "Linux" ]]; then
+    # Bundle resources do not exist until preparation below. Fetch explicitly;
+    # a failed cargo check is not evidence of a successfully compiled app.
+    cargo fetch --manifest-path src-tauri/Cargo.toml --locked
+else
+    cd src-tauri
+    cargo check --quiet 2>/dev/null || cargo fetch
+    cd ..
+fi
 echo -e "${GREEN}✓ Rust 依赖准备完成${NC}"
 echo ""
 
 # 准备 host target 的离线文档与语音推理资源。setup 完成后用户可直接运行
-# `npm run tauri:dev`；prepare owner 自带 fingerprint，重复 setup 为 no-op。
+# `npm run tauri:dev`；prepare owner 校验 fingerprint，命中时复用构建结果并重新投影资源。
 echo -e "${BLUE}[6/6] 准备离线文档与语音推理资源${NC}"
-node "${PROJECT_DIR}/scripts/prepare-cliproxy.mjs"
-node "${PROJECT_DIR}/scripts/prepare-native-inference.mjs"
+if [[ "$(uname -s)" == "Linux" ]]; then
+    "${PROJECT_DIR}/build_linux.sh" --prepare
+else
+    node "${PROJECT_DIR}/scripts/prepare-cliproxy.mjs"
+    node "${PROJECT_DIR}/scripts/prepare-native-inference.mjs"
+fi
 echo -e "${GREEN}✓ 原生推理资源 ready${NC}"
 echo ""
 
@@ -120,6 +139,12 @@ echo ""
 echo "  ${BLUE}运行 Tauri 应用:${NC}"
 echo "    npm run tauri:dev"
 echo ""
-echo "  ${BLUE}构建 macOS 安装包:${NC}"
-echo "    ./build_macos.sh"
+if [[ "$(uname -s)" == "Linux" ]]; then
+    echo "  Ubuntu 开发版（构建并启动）: ./build_dev_linux.sh"
+    echo "  Ubuntu 开发版（仅构建）: ./build_dev_linux.sh --build-only"
+    echo "  Ubuntu 安装包: ./build_linux.sh"
+else
+    echo "  ${BLUE}构建 macOS 安装包:${NC}"
+    echo "    ./build_macos.sh"
+fi
 echo ""

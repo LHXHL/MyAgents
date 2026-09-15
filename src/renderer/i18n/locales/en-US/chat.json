@@ -28,6 +28,7 @@
     "setupModelProvider": "Set up a model provider →",
     "providerWarning": "Verification failed. Some models may be unavailable.",
     "reasoningEffort": "Reasoning effort",
+    "reasoningModelReset": "The previous reasoning effort is unavailable for this model. Using the model default.",
     "reasoningDefault": "Default",
     "reasoningRequirement": "Requires provider support; actual behavior depends on the provider.",
     "customModelService": "Manage custom model services",

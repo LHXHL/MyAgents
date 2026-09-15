@@ -27,7 +27,7 @@ describe('Markdown table actions', () => {
     await user.keyboard('{Enter}');
     await waitFor(() => expect(copyRichText).toHaveBeenCalledOnce());
     expect(editorKey).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: '复制表格' })).toHaveFocus();
+    expect(screen.getByRole('button', { name: '已复制表格' })).toHaveFocus();
   });
   it('shows failure and permits retry without pretending the copy succeeded', async () => {
     vi.mocked(copyRichText).mockRejectedValueOnce(new Error('denied'));

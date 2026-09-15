@@ -28,6 +28,7 @@
     "setupModelProvider": "请先设置模型服务 →",
     "providerWarning": "验证未通过，部分模型可能不可用",
     "reasoningEffort": "推理强度",
+    "reasoningModelReset": "原推理档位不适用于此模型，已切换为模型默认。",
     "reasoningDefault": "默认",
     "reasoningRequirement": "需服务商支持该参数，以实际生效为准",
     "customModelService": "管理自定义模型服务",

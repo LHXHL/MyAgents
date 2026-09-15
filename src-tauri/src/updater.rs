@@ -31,8 +31,15 @@ use crate::sidecar::ManagedSidecar;
 /// Global flag to prevent concurrent update checks/downloads
 static UPDATE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
-fn update_mutation_allowed(is_debug_build: bool) -> bool {
-    !is_debug_build
+// Linux is distributed as deb; the AppImage updater cannot install it.
+fn update_disabled_reason(is_debug_build: bool, platform: &str) -> Option<&'static str> {
+    if platform == "linux" {
+        Some("UPDATER_MANUAL_INSTALL_REQUIRED")
+    } else if is_debug_build {
+        Some("UPDATER_DISABLED_IN_DEVELOPMENT")
+    } else {
+        None
+    }
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -452,10 +459,10 @@ fn build_updater_with_proxy(app: &AppHandle) -> Result<tauri_plugin_updater::Upd
 /// Check for updates on startup and silently download if available
 /// This is the main entry point called from setup hook
 pub async fn check_update_on_startup(app: AppHandle) {
-    if !update_mutation_allowed(cfg!(debug_assertions)) {
+    if let Some(reason) = update_disabled_reason(cfg!(debug_assertions), std::env::consts::OS) {
         logger::info(
             &app,
-            "[Updater] Automatic update mutation is disabled in development builds",
+            format!("[Updater] Automatic updates disabled: {reason}"),
         );
         return;
     }
@@ -813,8 +820,8 @@ fn emit_update_ready(app: &AppHandle, version: &str) {
 pub async fn check_and_download_update(app: AppHandle) -> Result<bool, String> {
     logger::info(&app, "[Updater] Manual update check requested");
 
-    if !update_mutation_allowed(cfg!(debug_assertions)) {
-        return Err("UPDATER_DISABLED_IN_DEVELOPMENT".to_string());
+    if let Some(reason) = update_disabled_reason(cfg!(debug_assertions), std::env::consts::OS) {
+        return Err(reason.to_string());
     }
 
     match check_and_download_silently(&app).await {
@@ -845,10 +852,10 @@ pub fn restart_app(app: AppHandle) {
 /// Returns the version string if a pending update is ready AND newer than current, None otherwise
 #[tauri::command]
 pub fn check_pending_update(app: AppHandle) -> Option<String> {
-    if !update_mutation_allowed(cfg!(debug_assertions)) {
+    if let Some(reason) = update_disabled_reason(cfg!(debug_assertions), std::env::consts::OS) {
         logger::info(
             &app,
-            "[Updater] Pending update install is disabled in development builds",
+            format!("[Updater] Pending update install disabled: {reason}"),
         );
         return None;
     }
@@ -929,8 +936,8 @@ pub async fn install_pending_update(
     terminal_state: State<'_, std::sync::Arc<crate::terminal::TerminalManager>>,
     browser_state: State<'_, std::sync::Arc<crate::browser::BrowserManager>>,
 ) -> Result<(), String> {
-    if !update_mutation_allowed(cfg!(debug_assertions)) {
-        return Err("UPDATER_DISABLED_IN_DEVELOPMENT".to_string());
+    if let Some(reason) = update_disabled_reason(cfg!(debug_assertions), std::env::consts::OS) {
+        return Err(reason.to_string());
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -1053,7 +1060,9 @@ pub async fn install_pending_update(
                 ));
             }
             crate::browser::close_all_browsers(browser_state.inner(), &app).await;
-            crate::cliproxy::quiesce_for_update().await.map_err(|error| error.message)?;
+            crate::cliproxy::quiesce_for_update()
+                .await
+                .map_err(|error| error.message)?;
             crate::sidecar::shutdown_for_update_verified(&app, &state)?;
 
             // Step 5: Install — spawns NSIS installer and calls exit(0).
@@ -1190,6 +1199,10 @@ fn get_update_target() -> &'static str {
 /// This bypasses tauri-plugin-updater to test raw HTTP connectivity
 #[tauri::command]
 pub async fn test_update_connectivity(app: AppHandle) -> Result<String, String> {
+    // Keep read-only diagnostics available in macOS/Windows debug builds.
+    if let Some(reason) = update_disabled_reason(false, std::env::consts::OS) {
+        return Err(reason.to_string());
+    }
     // Detect architecture
     let target = get_update_target();
 
@@ -1283,9 +1296,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn update_mutation_is_disabled_only_for_development_builds() {
-        assert!(!update_mutation_allowed(true));
-        assert!(update_mutation_allowed(false));
+    fn updates_require_a_supported_release_package() {
+        for is_debug in [false, true] {
+            assert_eq!(
+                update_disabled_reason(is_debug, "linux"),
+                Some("UPDATER_MANUAL_INSTALL_REQUIRED")
+            );
+        }
+        for platform in ["macos", "windows"] {
+            assert_eq!(
+                update_disabled_reason(true, platform),
+                Some("UPDATER_DISABLED_IN_DEVELOPMENT")
+            );
+            assert_eq!(update_disabled_reason(false, platform), None);
+        }
     }
 
     #[test]

@@ -9,6 +9,8 @@ mod manager;
 mod manifest;
 mod models;
 mod operations;
+#[cfg(test)]
+mod oauth_tests;
 mod process;
 mod store;
 pub mod types;

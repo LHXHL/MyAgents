@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { getDefaultRuntimePermissionMode, getMaxPermissionForRuntime, type RuntimeType } from '../../shared/types/runtime';
+import { getDefaultRuntimePermissionMode, getMaxPermissionForRuntime, type RuntimeModelInfo, type RuntimeType } from '../../shared/types/runtime';
 import {
   REQUIRED_SYSTEM_SKILLS,
   TASK_ALIGNMENT_SKILL_REQUIREMENT,
@@ -232,7 +232,7 @@ class FakeRuntime implements AgentRuntime {
     return { installed: true, version: 'fake-runtime' };
   }
 
-  async queryModels() {
+  async queryModels(): Promise<RuntimeModelInfo[]> {
     return [];
   }
 
@@ -822,6 +822,33 @@ describe('external SessionEngine with fake runtime', () => {
       expect(await transcript.writer.flush(100)).toBe(false);
       expect(transcript.writer.status.state).not.toBe('healthy');
     } finally { syncIo.mockRestore(); productBirthFault.deny = false; }
+  });
+
+  it('discards installed model discovery when prewarm publishes the managed Session process', async () => {
+    const harness = await createHarness([], { runtimeSource: 'managed-provider' });
+    let completeDiscovery!: (models: RuntimeModelInfo[]) => void;
+    const discovery = vi.spyOn(harness.runtime, 'queryModels').mockImplementationOnce(
+      () => new Promise(resolve => { completeDiscovery = resolve; }),
+    );
+    const pending = harness.externalSession.queryRuntimeModels('codex', {
+      runtimeSource: 'managed-provider', throwOnError: true,
+    });
+    const rejected = expect(pending).rejects.toThrow('Session changed during model discovery');
+    await waitFor(() => discovery.mock.calls.length === 1, 'installed model discovery');
+    await harness.externalSession.prewarmExternalSession({
+      sessionId: 'model-discovery-prewarm-race', workspacePath: join(harness.home, 'workspace'),
+      scenario: { type: 'desktop' },
+    });
+    expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(true);
+    completeDiscovery([{ value: 'installed-model', displayName: 'Installed model' }]);
+    await rejected;
+    discovery.mockResolvedValueOnce([{ value: 'session-model', displayName: 'Session model' }]);
+    await expect(harness.externalSession.queryRuntimeModels('codex', {
+      runtimeSource: 'managed-provider', throwOnError: true,
+    })).resolves.toEqual([{ value: 'session-model', displayName: 'Session model' }]);
+    expect(discovery).toHaveBeenLastCalledWith(expect.objectContaining({
+      runtimeSource: 'managed-provider', process: expect.any(FakeRuntimeProcess),
+    }));
   });
 
   it('retains a prewarm native identity without touching product disk before the first real turn', async () => {

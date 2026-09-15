@@ -136,7 +136,7 @@ describe('permission mode runtime family coercion', () => {
 
 describe('reasoning effort runtime coercion', () => {
   test('drops levels that the target runtime does not expose', () => {
-    expect(coerceReasoningEffortForRuntime('max', 'codex')).toBeUndefined();
+    expect(coerceReasoningEffortForRuntime('max', 'codex')).toBe('max');
     expect(coerceReasoningEffortForRuntime('minimal', 'claude-code')).toBeUndefined();
     expect(coerceReasoningEffortForRuntime('xhigh', 'gemini')).toBeUndefined();
   });

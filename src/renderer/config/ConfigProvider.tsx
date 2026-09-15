@@ -68,6 +68,8 @@ import {
 } from './services/agentConfigService';
 import { isLockBusyError, withAgentConfigIntentLock, withProjectsLock } from './services/configStore';
 import { isTauriEnvironment } from '@/utils/browserMock';
+import { getPlatformHiddenProviderIds, isLinuxDesktop } from '@/utils/desktopPlatform';
+import { preserveHiddenProviderSettings } from './platformProviderSettings';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import { workspacePathsEqual } from '../../shared/workspacePath';
 import { resolveAgentWorkspaceProjections } from '../../shared/agentWorkspaceIdentity';
@@ -296,7 +298,9 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
     // Derived: merge preset custom models + apply user primary model overrides
     const providers = useMemo(() => {
-        const catalog = withManagedCodexProviderCatalog(rawProviders, config, managedCodexRuntimeModels);
+        // Platform availability is a read-only projection, never a config migration.
+        const catalog = withManagedCodexProviderCatalog(rawProviders, config, managedCodexRuntimeModels)
+            .filter(provider => !getPlatformHiddenProviderIds().includes(provider.id));
         const merged = mergePresetCustomModels(catalog, config.presetCustomModels, config.presetRemovedModels);
         const providerOrderSettings = {
             providerOrder: config.providerOrder,
@@ -329,7 +333,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         () => getManagedCodexProviderReadiness(config),
         [config],
     );
-    const managedCodexShouldAutoUpdate = shouldAutoUpdateManagedCodexRuntime(config);
+    const managedCodexShouldAutoUpdate = !isLinuxDesktop() && shouldAutoUpdateManagedCodexRuntime(config);
     const managedCodexModelListKey = useMemo(
         () => [
             managedCodexReadiness.reason,
@@ -634,7 +638,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     }, [load]);
 
     useEffect(() => {
-        if (managedCodexReadiness.reason !== 'ready' && managedCodexReadiness.reason !== 'provider-disabled') {
+        if (isLinuxDesktop() || (managedCodexReadiness.reason !== 'ready' && managedCodexReadiness.reason !== 'provider-disabled')) {
             setManagedCodexRuntimeModels([]);
             return;
         }
@@ -791,7 +795,10 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
             if (Object.keys(rest).length === 0) return;
             updates = rest;
         }
-        const newConfig = await atomicModifyConfig(c => ({ ...c, ...updates }));
+        const newConfig = await atomicModifyConfig(c => ({
+            ...c,
+            ...preserveHiddenProviderSettings(c, updates, getPlatformHiddenProviderIds()),
+        }));
         if (acceptLocalDiskWrite()) setConfig(newConfig);
         // No more CONFIG_CHANGED event — all consumers share this Context
     }, [acceptLocalDiskWrite]);
@@ -809,12 +816,12 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     const patchProxySettings = useCallback(async (partial: Partial<ProxySettings>) => {
         const newConfig = await atomicModifyConfig(c => ({
             ...c,
-            proxySettings: {
+            ...preserveHiddenProviderSettings(c, { proxySettings: {
                 enabled: false,
                 ...PROXY_DEFAULTS,
                 ...c.proxySettings,
                 ...partial,
-            },
+            } }, getPlatformHiddenProviderIds()),
         }));
         if (acceptLocalDiskWrite()) setConfig(newConfig);
     }, [acceptLocalDiskWrite]);
@@ -856,6 +863,9 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     const requestManagedCodexRuntimeUpdateInternal = useCallback((
         hydrateBeforeDownload: boolean,
     ): Promise<void> => {
+        if (isLinuxDesktop()) {
+            return Promise.reject(new Error('Managed Codex is unavailable on Linux'));
+        }
         if (!isTauriEnvironment()) {
             return Promise.reject(new Error('Managed Codex runtime updates require the desktop app'));
         }
@@ -904,6 +914,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         if (!isTauriEnvironment()) return;
         if (isLoading) return;
         if (error) return;
+        if (isLinuxDesktop()) return;
         if (managedCodexStartupUpdateEvaluated) return;
         // This is a startup decision, not a subscription to later config
         // changes. The shared request action below is the single in-process

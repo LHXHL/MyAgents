@@ -101,7 +101,9 @@ export function useVirtuosoScroll({ onUserScrollIntent }: UseVirtuosoScrollOptio
     const moveTowardBottom = useCallback(() => {
         // Downward input also supersedes an outstanding search/index jump while
         // reading; it resumes following only once the user actually reaches bottom.
-        if (followEnabledRef.current === false) pauseAutoScroll();
+        // While smooth follow is catching up, downward input must also take
+        // control. Resume immediately only when it reaches the actual bottom.
+        pauseAutoScroll();
         towardBottomRef.current = true;
         resumeAtBottom();
     }, [pauseAutoScroll, resumeAtBottom]);
@@ -144,6 +146,7 @@ export function useVirtuosoScroll({ onUserScrollIntent }: UseVirtuosoScrollOptio
         const el = scrollerRef.current;
         // Native scrollbar events target the scroller itself, not its message rows.
         scrollbarDragRef.current = event.target === el;
+        if (scrollbarDragRef.current) pauseAutoScroll();
         lastScrollTopRef.current = el?.scrollTop ?? 0;
     }, [notifyUserScrollIntent, pauseAutoScroll]);
     const onPointerUp = useCallback(() => { scrollbarDragRef.current = false; }, []);

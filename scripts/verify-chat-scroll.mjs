@@ -1,5 +1,6 @@
 // Offline regression using real Message/Markdown, controller, CSS and Virtuoso.
 // Usage: npm run verify:chat-scroll -- webkit (or chrome / chromium).
+// --follow-only runs motion/reading checks independently of the history seed audit.
 // Videos and geometry evidence are retained in the printed temporary directory.
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile } from 'node:fs/promises';
@@ -13,6 +14,7 @@ const repo = resolve(import.meta.dirname, '..');
 patchReactVirtuoso(resolve(repo, 'node_modules/react-virtuoso'), true);
 const output = await mkdtemp(resolve(tmpdir(), 'myagents-scroll-verification-'));
 const engine = process.argv[2] ?? 'webkit';
+const followOnly = process.argv.includes('--follow-only');
 assert.ok(['webkit', 'chrome', 'chromium'].includes(engine), 'Choose webkit, chrome or chromium');
 const entryId = repo + '/src/renderer/__scroll_audit.tsx';
 const entry=`import React,{useState,useRef,useLayoutEffect} from 'react';
@@ -90,20 +92,21 @@ const server = await createServer({
   }],
 });
 let browser;
+let page;
 const deadline = setTimeout(() => void browser?.close(), 120000);
 try {
   await server.listen();
   browser = await (engine === 'webkit' ? webkit : chromium).launch({
     headless: true, ignoreDefaultArgs: ['--hide-scrollbars'], ...(engine === 'chrome' ? { channel: 'chrome' } : {}),
   });
-  const page = await browser.newPage({ viewport: { width: 1000, height: 800 },
+  page = await browser.newPage({ viewport: { width: 1000, height: 800 },
     recordVideo: { dir: output, size: { width: 1000, height: 800 } } });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   const address = server.httpServer.address();
   const fixtureUrl = `http://127.0.0.1:${address.port}/__scroll_audit`;
   const seedEvidence = {};
-  for (const mode of ['immediate', 'deferred']) {
+  for (const mode of followOnly ? [] : ['immediate', 'deferred']) {
     await page.goto(`${fixtureUrl}?seed=${mode}`);
     await page.waitForFunction(() => window.audit?.ctrl.scrollerRef.current);
     if (mode === 'deferred') {
@@ -133,7 +136,7 @@ try {
   const evidence = {};
   const bottom = async label => {
     const state = evidence[label] = await snapshot();
-    assert.ok(Math.abs(state.gap) <= 1, `${label}: bottom gap ${state.gap}`);
+    assert.ok(Math.abs(state.gap) <= 1, `${label}: ${JSON.stringify(state)}`);
     assert.notEqual(state.follow, false, `${label}: follow was disabled`);
     return state;
   };
@@ -166,6 +169,60 @@ try {
   const streamed = await bottom('streamed');
   assert.equal(streamed.statusY, initial.statusY);
   assert.ok(await status.evaluate(el => el === document.querySelector('[data-chat-status-row]')));
+
+  // One bounded burst must move through several painted frames, not jump by a line.
+  await page.evaluate(() => { window.phase = 'smooth-burst'; });
+  const motion = evidence.motion = await page.evaluate(async () => {
+    const before = window.audit.snapshot();
+    window.audit.append('\n\n' + Array(7).fill('Smooth follow probe line.').join('\n'));
+    const frames = [];
+    const start = performance.now();
+    while (performance.now() - start < 450) {
+      await new Promise(requestAnimationFrame);
+      frames.push(window.audit.snapshot());
+    }
+    return { before, frames };
+  });
+  const end = await bottom('burstSettled');
+  const intermediates = motion.frames.filter(s => s.top > motion.before.top + 1 && s.top < end.top - 1);
+  assert.ok(new Set(intermediates.map(s => s.top)).size >= 4, 'burst did not animate through intermediate positions');
+  let previousTop = motion.before.top;
+  for (const frame of motion.frames) {
+    assert.ok(frame.top >= previousTop - 1, 'follow bounced backwards');
+    assert.ok(frame.top - previousTop < (end.top - motion.before.top) * 0.65, 'follow jumped most of the growth in one frame');
+    previousTop = frame.top;
+  }
+  await page.screenshot({ path: resolve(output, 'smooth-follow.png') });
+
+  await page.evaluate(async () => {
+    window.phase = 'rapid';
+    for (let i = 0; i < 50; i++) {
+      window.audit.append('\nRapid continuous output line ' + i + '.');
+      await new Promise(requestAnimationFrame);
+    }
+  });
+  await page.waitForTimeout(350);
+  await bottom('rapidSettled');
+  const rapid = await page.evaluate(() => window.samples.filter(s => s.phase === 'rapid'));
+  assert.ok(rapid.every(s => s.gap < s.viewport), 'rapid output left latest content a screen behind');
+
+  // User input cancels an actively running custom follow, not just a settled pin.
+  await append('\n\n' + Array(7).fill('Cancel active follow line.').join('\n'));
+  await page.waitForFunction(() => window.audit.snapshot().gap > 10);
+  await page.mouse.move(360, 260);
+  await page.mouse.wheel(0, -60);
+  await page.waitForTimeout(100);
+  const interrupted = await snapshot();
+  await page.waitForTimeout(350);
+  sameAnchor(interrupted, evidence.motionCancelled = await snapshot(), 'cancelled active follow');
+
+  await page.evaluate(() => window.audit.ctrl.scrollToBottom('auto'));
+  await page.waitForTimeout(1600);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await append('\n\n' + Array(7).fill('Reduced motion line.').join('\n'));
+  await page.waitForTimeout(80);
+  await bottom('reducedMotion');
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
 
   await page.evaluate(() => { window.phase = 'reading'; });
   await page.mouse.move(360, 260);
@@ -281,9 +338,16 @@ try {
   await page.evaluate(() => { window.record = false; });
   await writeFile(resolve(output, 'samples.json'), JSON.stringify(await page.evaluate(() => window.samples)));
   await writeFile(resolve(output, 'results.json'), JSON.stringify(evidence, null, 2));
-  console.log(`Chat scroll ${engine}: immediate/deferred height seeds, streaming, reading, footer/viewport growth, navigation cancellation and terminal checks passed. Evidence: ${output}`);
+  console.log(`Chat scroll ${engine}: smooth/rapid follow, active cancellation, reduced motion, ${followOnly ? 'height seeds skipped (--follow-only), ' : 'height seeds, '}reading, footer/viewport growth, navigation and terminal checks passed. Evidence: ${output}`);
 } finally {
   clearTimeout(deadline);
+  if (page && !page.isClosed()) {
+    await writeFile(resolve(output, 'last-frame.json'), JSON.stringify(await page.evaluate(() => ({
+      samples: window.samples, state: window.audit?.snapshot(),
+    })), null, 2));
+    await page.screenshot({ path: resolve(output, 'last-frame.png') });
+    console.log(`Scroll evidence: ${output}`);
+  }
   if (browser) await browser.close();
   await server.close();
 }

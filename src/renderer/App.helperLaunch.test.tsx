@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 import { CUSTOM_EVENTS } from '../shared/constants';
 import type { SessionMetadata } from '@/api/sessionClient';
+import { ensureSelfAwarenessWorkspace } from '@/config/configService';
 import { SessionDeletionContext } from '@/context/SessionDeletionContext';
 import { useTabStateOptional } from '@/context/TabContext';
 
@@ -2071,6 +2072,125 @@ describe('App helper launch', () => {
     }));
   });
 
+  it.each(['onOpenSettings', 'onOpenCapabilities', 'onOpenTaskCenter', 'onOpenSpace'] as const)(
+    'shows one capacity toast for %s without changing the active tab', async (action) => {
+      render(<App />);
+      for (let index = 1; index < 12; index += 1) {
+        act(() => latestTabbarProps().onNewTab());
+      }
+      const before = latestTabbarProps();
+      await act(async () => latestSidebarProps()[action]());
+      expect(mocks.toast.info).toHaveBeenCalledExactlyOnceWith('已达到窗口上限，请关闭一些窗口哦');
+      expect(latestTabbarProps().tabs).toEqual(before.tabs);
+      expect(latestTabbarProps().activeTabId).toBe(before.activeTabId);
+    },
+  );
+
+  it('focuses existing settings at capacity without a toast', async () => {
+    render(<App />);
+    await act(async () => latestSidebarProps().onOpenSettings());
+    const settings = latestTabbarProps().tabs.find(tab => tab.view === 'settings')!;
+    for (let index = 2; index < 12; index += 1) {
+      act(() => latestTabbarProps().onNewTab());
+    }
+    await act(async () => latestSidebarProps().onOpenSettings());
+    expect(latestTabbarProps().activeTabId).toBe(settings.id);
+    expect(mocks.toast.info).not.toHaveBeenCalled();
+  });
+
+  it('reports capacity when a new-tab action or ordinary support launch is denied', async () => {
+    render(<App />);
+    for (let index = 1; index < 12; index += 1) {
+      act(() => latestTabbarProps().onNewTab());
+    }
+    act(() => latestTabbarProps().onNewTab());
+    expect(mocks.toast.info).toHaveBeenCalledExactlyOnceWith('已达到窗口上限，请关闭一些窗口哦');
+    mocks.toast.info.mockClear();
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, {
+        detail: { description: 'Help', images: [] },
+      }));
+    });
+    expect(mocks.toast.info).toHaveBeenCalledExactlyOnceWith('已达到窗口上限，请关闭一些窗口哦');
+    expect(mocks.ensureSessionSidecar).not.toHaveBeenCalled();
+  });
+
+  it('stops helper launch if another action takes the last slot during preparation', async () => {
+    let resolveWorkspace!: () => void;
+    const original = vi.mocked(ensureSelfAwarenessWorkspace).getMockImplementation()!;
+    vi.mocked(ensureSelfAwarenessWorkspace).mockImplementationOnce(async (...args) => {
+      await new Promise<void>(resolve => { resolveWorkspace = resolve; });
+      return original(...args);
+    });
+    render(<App />);
+    for (let index = 1; index < 11; index += 1) {
+      act(() => latestTabbarProps().onNewTab());
+    }
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, {
+        detail: { description: 'Help', images: [] },
+      }));
+    });
+    act(() => latestTabbarProps().onNewTab());
+    const before = latestTabbarProps();
+    await act(async () => resolveWorkspace());
+    expect(mocks.toast.info).toHaveBeenCalledExactlyOnceWith('已达到窗口上限，请关闭一些窗口哦');
+    expect(latestTabbarProps().tabs).toEqual(before.tabs);
+    expect(latestTabbarProps().activeTabId).toBe(before.activeTabId);
+    expect(mocks.ensureSessionSidecar).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('stops discussion launch on late capacity denial (managed provider: %s)', async (managed) => {
+    mocks.tauriEnvironment = true;
+    if (managed) mocks.resolveBuiltinSelection.mockReturnValue({ provider: managedCodexProvider(), model: 'gpt-5.5' });
+    let resolvePreparation!: (value: unknown) => void;
+    tauriCoreMocks.invoke.mockImplementation(async command => {
+      if (command === 'cmd_task_prepare_discussion') {
+        return new Promise(resolve => { resolvePreparation = resolve; });
+      }
+      return undefined;
+    });
+    render(<App />);
+    for (let index = 1; index < 11; index += 1) {
+      act(() => latestTabbarProps().onNewTab());
+    }
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_AI_DISCUSSION, {
+        detail: { content: 'Discuss this', workspaceId: mocks.project.id, tags: [] },
+      }));
+    });
+    await waitFor(() => expect(resolvePreparation).toBeDefined());
+    act(() => latestTabbarProps().onNewTab());
+    const before = latestTabbarProps();
+    await act(async () => resolvePreparation({ candidatesDir: '/tmp/discussion/candidates' }));
+    expect(mocks.toast.info).toHaveBeenCalledExactlyOnceWith('已达到窗口上限，请关闭一些窗口哦');
+    expect(latestTabbarProps().tabs).toEqual(before.tabs);
+    expect(mocks.ensureSessionSidecar).not.toHaveBeenCalled();
+    expect(mocks.createSession).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('reports a restore denied entirely by capacity (missing record: %s)', async (missingRecord) => {
+    mocks.lastExitWasClean = false;
+    if (missingRecord) mocks.recordGet.mockResolvedValue(null);
+    mocks.durableTabs = {
+      version: 1,
+      tabs: missingRecord
+        ? [{ view: 'record', id: 'restore-capacity', recordId: 'missing-record', title: 'Record' }]
+        : [{ view: 'chat', id: 'restore-capacity', agentDir: mocks.project.path,
+          sessionId: '11111111-2222-4333-8444-555555555551', title: 'History' }],
+      activeTabId: 'restore-capacity',
+    };
+    render(<App />);
+    const restoreButton = await screen.findByTestId('restore-session');
+    for (let index = 1; index < 12; index += 1) {
+      act(() => latestTabbarProps().onNewTab());
+    }
+    await act(async () => fireEvent.click(restoreButton));
+    expect(mocks.toast.info).toHaveBeenCalledExactlyOnceWith('已达到窗口上限，请关闭一些窗口哦');
+    expect(latestTabbarProps().tabs).toHaveLength(12);
+    expect(mocks.ensureSessionSidecar).not.toHaveBeenCalled();
+  });
+
   it('keeps Settings and Capabilities as one tab each', async () => {
     render(<App />);
 
@@ -2472,8 +2592,8 @@ describe('App helper launch', () => {
         result: 'failure',
       }),
     ));
-    expect(mocks.toast.error).toHaveBeenCalledWith(
-      '已达到最大标签页数量，请关闭其他标签页后重试',
+    expect(mocks.toast.info).toHaveBeenCalledWith(
+      '已达到窗口上限，请关闭一些窗口哦',
     );
   });
 

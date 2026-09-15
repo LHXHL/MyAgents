@@ -2,7 +2,7 @@
   "name": "myagents",
   "description": "MyAgents - Desktop Claude Code for everyone. AI-powered productivity, not just for developers.",
   "type": "module",
-  "version": "0.4.17",
+  "version": "0.4.18",
   "license": "AGPL-3.0-only",
   "packageManager": "npm@11.13.0",
   "engines": {
@@ -51,7 +51,8 @@
     "lint:deps": "depcruise --config .dependency-cruiser.cjs src",
     "test": "npm run test:classification && npm run test:build-scripts && npm run test:unit && npm run test:dom && npm run test:integration",
     "test:classification": "node scripts/check-test-classification.mjs",
-    "test:build-scripts": "node --test scripts/package-cliproxy-component.test.mjs scripts/prepare-cliproxy.test.mjs scripts/patch-react-virtuoso.test.mjs scripts/patch-codemirror-view.test.mjs scripts/prepare-cuse-bundle.test.mjs scripts/node-runtime.test.mjs scripts/browser-runtime-packaging.test.mjs scripts/build-resource-staging.test.mjs scripts/cli-bundle-contract.test.mjs scripts/document-processing-build-tools.test.mjs scripts/document-processing-resource-cache.test.mjs scripts/package-speech-model-set.test.mjs scripts/prepare-native-inference.test.mjs scripts/prepare-speech-model-mirror.test.mjs scripts/server-bundle-browser-host.test.mjs scripts/sherpa-source-extraction.test.mjs scripts/speech-inference-resource-cache.test.mjs scripts/speech-quality-benchmark.test.mjs",
+    "test:linux-package": "node --test scripts/linux-package.test.mjs",
+    "test:build-scripts": "node --test scripts/npm-runtime-cache.test.mjs scripts/build-assets.test.mjs scripts/package-cliproxy-component.test.mjs scripts/prepare-cliproxy.test.mjs scripts/patch-react-virtuoso.test.mjs scripts/patch-codemirror-view.test.mjs scripts/prepare-cuse-bundle.test.mjs scripts/node-runtime.test.mjs scripts/browser-runtime-packaging.test.mjs scripts/build-resource-staging.test.mjs scripts/cli-bundle-contract.test.mjs scripts/document-processing-build-tools.test.mjs scripts/document-processing-resource-cache.test.mjs scripts/package-speech-model-set.test.mjs scripts/prepare-native-inference.test.mjs scripts/prepare-speech-model-mirror.test.mjs scripts/server-bundle-browser-host.test.mjs scripts/sherpa-source-extraction.test.mjs scripts/speech-inference-resource-cache.test.mjs scripts/speech-quality-benchmark.test.mjs",
     "test:unit": "vitest run --project unit",
     "test:dom": "vitest run --project dom",
     "test:integration": "vitest run --project integration",
@@ -60,6 +61,7 @@
     "test:watch": "vitest --project unit --project dom --project integration",
     "verify:chat-scroll": "node scripts/verify-chat-scroll.mjs",
     "verify:markdown-resize": "node scripts/verify-codemirror-resize.mjs",
+    "verify:markdown-table-actions": "node scripts/verify-markdown-table-actions.mjs",
     "verify:theme-css": "node scripts/verify-theme-css.mjs",
     "verify:theme-presets": "vitest run --project unit src/renderer/theme/themes/preset-theme.test.ts --project dom src/renderer/theme/themes/preset-theme.registry.test.tsx",
     "verify:license": "node --test scripts/verify-license-contract-utils.test.mjs && node scripts/verify-license-contract.mjs",
@@ -77,7 +79,9 @@
     "publish:managed-codex:win": "powershell -ExecutionPolicy Bypass -File ./publish_managed_codex_runtime.ps1",
     "publish:speech-model-set": "./publish_speech_model_set.sh",
     "clean": "rm -rf node_modules dist .turbo .eslintcache *.tsbuildinfo src-tauri/target",
-    "version": "node scripts/sync-version.js && git add src-tauri/tauri.conf.json src-tauri/Cargo.toml"
+    "version": "node scripts/sync-version.js && git add src-tauri/tauri.conf.json src-tauri/Cargo.toml",
+    "build:assets": "npm run build:web && npm run build:server && npm run build:bridge && npm run build:cli",
+    "build:sharp-runtime": "node scripts/prepare-sharp-runtime.mjs"
   },
   "dependencies": {
     "@aiden0z/pptx-renderer": "^1.0.2",
