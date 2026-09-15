@@ -69,7 +69,7 @@ export default function ContentLink({ reference, displayReference = reference, n
           fileAction.openFileTargetMenu(event.clientX, event.clientY, target, { displayPath: displayReference });
         }}
       >
-        {target ? <FileIcon name={fileName} nodeKind={info?.type === 'dir' ? 'directory' : 'file'} size="dense" className="!my-0 mr-[0.25em] !inline-block !size-[1em] align-[-0.125em]" />
+        {target ? <FileIcon name={fileName} nodeKind={info?.type === 'dir' ? 'directory' : 'file'} size="inline" className="!my-0 mr-[0.25em] !inline-block" />
           : web ? <Globe aria-hidden className="mr-[0.25em] inline size-[1em] align-[-0.125em]" /> : <LinkIcon aria-hidden className="mr-[0.25em] inline size-[1em] align-[-0.125em]" />}
         <MarkdownLinkLabelContext.Provider value>{label}</MarkdownLinkLabelContext.Provider>
       </a>

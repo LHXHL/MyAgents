@@ -7,6 +7,7 @@ import {
 } from "./fileIconRegistry";
 
 export const FILE_ICON_SIZES = {
+  inline: "1.2em",
   dense: 16,
   regular: 20,
   display: 24,
@@ -35,18 +36,25 @@ export const FileIcon = memo(function FileIcon({
 }: FileIconProps) {
   const descriptor = resolveFileIconDescriptor({ name, nodeKind, expanded });
   const asset = FILE_ICON_ASSETS[descriptor.iconId];
-  const pixels = FILE_ICON_SIZES[size];
+  const dimension = FILE_ICON_SIZES[size];
+  const pixels = typeof dimension === "number" ? dimension : undefined;
+  const inline = size === "inline";
 
   return (
     <img
-      src={asset.src}
+      src={inline ? (asset.inlineSrc ?? asset.src) : asset.src}
       width={pixels}
       height={pixels}
       alt={label ?? ""}
       aria-hidden={label ? undefined : true}
       draggable={false}
       className={`inline-block shrink-0 select-none object-contain${className ? ` ${className}` : ""}`}
-      style={{ width: pixels, height: pixels }}
+      style={{
+        width: dimension,
+        height: dimension,
+        // Keep the visual center at 0.375em above the text baseline.
+        ...(inline ? { verticalAlign: "-0.225em" } : {}),
+      }}
       data-file-icon-id={descriptor.iconId}
       data-file-icon-category={descriptor.category}
       data-file-icon-matched-by={descriptor.matchedBy}

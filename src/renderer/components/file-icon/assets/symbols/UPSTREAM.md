@@ -19,3 +19,10 @@ the geometry is unchanged and the purple resource color is replaced with the
 Symbols amber used by presentation-oriented resources. It fills the only
 common Office-family gap in the upstream set while preserving one visual
 language. The derivative remains under the same MIT terms.
+
+`files/markdown-inline.svg` is a MyAgents derivative of upstream
+`files/markdown.svg`: the original mark and blue are retained, the mark is
+scaled uniformly to 80%, and a rounded outline is added. The frame compensates
+for the wide mark's low visual height beside prose. Only the inline size uses
+this derivative; fixed-size icons retain the original. The derivative remains
+under the same MIT terms and is included in the checksum snapshot.
