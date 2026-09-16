@@ -38,8 +38,11 @@ export function recordPlaybackPosition(
   if (!Number.isFinite(recordMs) || recordMs < 0
     || (timeline && !validRecordPlaybackTimeline(timeline))) throw new Error('Invalid Record playback timeline');
   if (!timeline) {
+    const audible = recordMs / 1_000 < sourceDurationSeconds;
+    // An ended legacy source has no future boundary, just like an exhausted
+    // mapped timeline. Its old endpoint must not trap another track's clock.
     return { sourceSeconds: Math.min(recordMs / 1_000, sourceDurationSeconds), playbackRate: 1,
-      audible: recordMs / 1_000 < sourceDurationSeconds, boundaryMs: sourceDurationSeconds * 1_000, spanIndex: 0 };
+      audible, boundaryMs: audible ? sourceDurationSeconds * 1_000 : Infinity, spanIndex: 0 };
   }
   const frame = recordMs * SAMPLE_RATE / 1_000;
   const index = timeline.spans.findIndex((span) => frame < span.recordEnd);

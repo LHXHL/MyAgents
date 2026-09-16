@@ -61,6 +61,11 @@ html[data-theme-id='raycast'][data-color-scheme='light'] {
   --button-primary-bg: #c83f45;
   --button-primary-bg-hover: #bb363c;
   --button-primary-text: #ffffff;
+  --media-control-bg: #030303;
+  --media-control-text: #ffffff;
+  --media-control-accent: #ff6363;
+  --media-stop-bg: #c53030;
+  --media-stop-text: #ffffff;
   --button-dark-bg: #030303;
   --button-dark-bg-hover: #242424;
   --button-dark-text: #ffffff;
@@ -178,6 +183,11 @@ html[data-theme-id='raycast'][data-color-scheme='dark'] {
   --button-primary-bg: #c83f45;
   --button-primary-bg-hover: #bb363c;
   --button-primary-text: #ffffff;
+  --media-control-bg: #090909;
+  --media-control-text: #fefefe;
+  --media-control-accent: #ff6363;
+  --media-stop-bg: #c53030;
+  --media-stop-text: #ffffff;
   --button-dark-bg: #fefefe;
   --button-dark-bg-hover: #dedede;
   --button-dark-text: #101010;

@@ -107,7 +107,8 @@ Builtin SDK 与 Claude Code / Codex / Gemini 等外部 Runtime 的 session 操�
 | 工作区路径、Windows 进程 / CSP / WebView | `specs/tech_docs/windows_platform.md`；按问题追加 `specs/tech_docs/windows_ai_review_traps.md` 或 `specs/tech_docs/windows_cross_platform_review.md` |
 | 内置 Node / 三方 Provider / 代理 | `specs/tech_docs/bundled_node.md`、`specs/tech_docs/third_party_providers.md`、`specs/tech_docs/proxy_config.md` 中命中的文档 |
 | 搜索 / i18n / 埋点 / 日志 | 对应 `specs/tech_docs/search_architecture.md`、`specs/tech_docs/i18n_architecture.md`、`specs/tech_docs/analytics_design.md`、`specs/tech_docs/unified_logging.md` |
-| 自动更新、构建、发布 | `specs/tech_docs/auto_update.md` 与 `specs/guides/` 下对应平台文档 |
+| setup / build / 资源准备脚本（新增或修改） | `specs/tech_docs/build_resource_preparation.md`；按资源追加所属模块文档 |
+| 自动更新、发布 | `specs/tech_docs/auto_update.md` 与 `specs/guides/` 下对应平台文档 |
 
 ## 验证与维护
 

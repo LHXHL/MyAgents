@@ -224,6 +224,26 @@ describe('RecordDetail note input', () => {
     });
   });
 
+  it.each(['recording', 'paused', 'ready'] as const)(
+    'uses media surface roles throughout %s controls', async (captureStatus) => {
+      mocks.recordGet.mockResolvedValue({ ...RECORD, audio: { ...RECORD.audio!, captureStatus } });
+      mocks.recordingSnapshot.mockResolvedValue(captureStatus === 'ready' ? null : { ...SNAPSHOT, captureStatus });
+      render(<RecordDetail recordId={RECORD.id} isActive />);
+      const content = await screen.findByTestId(captureStatus === 'ready'
+        ? 'recording-playback-timeline' : 'recording-media-duration');
+      const controls = content.closest('section')!;
+      expect(controls).toHaveClass('bg-[var(--media-control-bg)]', 'text-[var(--media-control-text)]');
+      const classes = Array.from(controls.querySelectorAll('[class]'))
+        .map(element => element.getAttribute('class')).join(' ');
+      expect(classes).not.toMatch(/var\(--(?:paper|ink)(?:\)|-)/);
+      if (captureStatus !== 'ready') {
+        const stop = screen.getByRole('button', { name: /停止并保存|Stop and save/i });
+        expect(stop).toHaveClass('bg-[var(--media-stop-bg)]', 'text-[var(--media-stop-text)]');
+        expect(stop.querySelector('svg')).toHaveClass('fill-current');
+      }
+    },
+  );
+
   it('does not submit IME composition or Shift+Enter, then submits plain Enter', async () => {
     render(
       <RecordDetail
@@ -829,7 +849,11 @@ describe('RecordDetail note input', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('keeps transcript seeking on its text without drawing playback markers', async () => {
+  it.each([
+    { rowCount: 1, isActive: true },
+    { rowCount: 100, isActive: true },
+    { rowCount: 1, isActive: false },
+  ])('hands seeks to playback only in the active tab ($rowCount rows, active=$isActive)', async ({ rowCount, isActive }) => {
     mocks.recordGet.mockResolvedValue({
       ...RECORD,
       audio: {
@@ -872,19 +896,17 @@ describe('RecordDetail note input', () => {
         modelPackRevision: 'test',
         onnxRuntimeVersion: 'test',
       },
-      segments: [
-        {
-          segmentId: 'focus-target',
-          track: 'microphone',
-          startSample: 16_000,
-          endSample: 24_000,
-          text: '需要定位的内容',
-          revision: 1,
-        },
-      ],
+      segments: Array.from({ length: rowCount }, (_, index) => ({
+        segmentId: `focus-target-${index}`,
+        track: 'microphone',
+        startSample: 16_000,
+        endSample: 24_000,
+        text: index === 0 ? '需要定位的内容' : `其它内容 ${index}`,
+        revision: 1,
+      })),
     });
 
-    render(<RecordDetail recordId={RECORD.id} isActive />);
+    render(<RecordDetail recordId={RECORD.id} isActive={isActive} />);
 
     const transcriptText = await screen.findByRole('button', {
       name: '需要定位的内容',
@@ -900,8 +922,20 @@ describe('RecordDetail note input', () => {
       }),
     ).not.toBeInTheDocument();
 
+    const previousFocus = document.activeElement;
     fireEvent.click(transcriptText);
-    expect(transcriptText.closest('article')).toHaveFocus();
+    const play = screen.getByRole('button', { name: /^(播放|Play)$/ });
+    expect(document.activeElement).toBe(isActive ? play : previousFocus);
+    expect(transcriptText.closest('article')).not.toHaveFocus();
+    fireEvent.click(within(transcriptText.closest('article')!).getByRole('button', { name: '00:01' }));
+    expect(document.activeElement).toBe(isActive ? play : previousFocus);
+    for (const key of ['note-timeline-note', 'mark-timeline-mark']) {
+      const row = screen.getByTestId(`recording-timeline-${key}`);
+      fireEvent.click(within(row).getByRole('button', { name: /跳转|Seek/i }));
+      expect(document.activeElement).toBe(isActive ? play : previousFocus);
+    }
+    fireEvent.click(screen.getByRole('button', { name: '时间轴笔记' }));
+    expect(document.activeElement).toBe(isActive ? play : previousFocus);
   });
 
   it('defaults dual physical tracks to real mixed playback with single-track choices', async () => {
@@ -1312,6 +1346,21 @@ describe('RecordDetail note input', () => {
       'hover:bg-[var(--paper-inset)]',
       'focus:bg-[var(--paper-inset)]',
     );
+  });
+
+  it.each([
+    { transcription: 'queued', diarization: 'queued', label: /等待本地转写|Waiting for local transcription/ },
+    { transcription: 'finalizing', diarization: 'queued', label: /正在整理完整文稿|Refining the full transcript/ },
+    { transcription: 'finalizing', diarization: 'running', label: /正在识别说话人|Identifying speakers/ },
+    { transcription: 'ready', diarization: 'running', label: /正在识别说话人|Identifying speakers/ },
+  ])('explains saved-record processing without claiming completion: %j', async state => {
+    mocks.recordGet.mockResolvedValue({ ...RECORD, audio: { ...RECORD.audio!, captureStatus: 'ready', transcriptionStatus: state.transcription, diarizationStatus: state.diarization, sizeBytes: 1024 } });
+    mocks.recordingSnapshot.mockResolvedValue(null);
+    render(<RecordDetail recordId={RECORD.id} isActive={false} />);
+    expect(await screen.findByText(state.label)).toBeInTheDocument();
+    expect(screen.getByTestId('record-title-status')).toHaveTextContent(/处理中|Processing/);
+    expect(screen.getByText(/音频已保存，可先回放或继续其他工作|Audio is saved/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /开始转录|Start transcription/ })).not.toBeInTheDocument();
   });
 
   it.each([true, false])('offers explicit reprocessing of a completed final (has segments: %s) and keeps its old text', async hasSegments => {

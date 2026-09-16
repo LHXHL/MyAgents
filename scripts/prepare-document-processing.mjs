@@ -54,6 +54,7 @@ const resourceRoot = join(
   'resources',
   'document-processing',
 );
+const downloadHelperPath = join(projectRoot, 'scripts', 'build-resource-download.mjs');
 const publishRoot = join(resourceRoot, 'v1');
 const helperPath = join(
   projectRoot,
@@ -363,6 +364,7 @@ function configurePreparation(options) {
     inputs: [
       preparePath,
       helperPath,
+      downloadHelperPath,
       join(projectRoot, 'rust-toolchain.toml'),
       join(workerRoot, 'Cargo.toml'),
       join(workerRoot, 'Cargo.lock'),

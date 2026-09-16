@@ -61,6 +61,11 @@ html[data-theme-id='sage'][data-color-scheme='light'] {
   --button-primary-bg: #47754f;
   --button-primary-bg-hover: #3f6c47;
   --button-primary-text: #ffffff;
+  --media-control-bg: #17221b;
+  --media-control-text: #f3f7ef;
+  --media-control-accent: #7fb184;
+  --media-stop-bg: #c53030;
+  --media-stop-text: #ffffff;
   --button-dark-bg: #17221b;
   --button-dark-bg-hover: #27352b;
   --button-dark-text: #f3f7ef;
@@ -178,6 +183,11 @@ html[data-theme-id='sage'][data-color-scheme='dark'] {
   --button-primary-bg: #47754f;
   --button-primary-bg-hover: #3f6c47;
   --button-primary-text: #ffffff;
+  --media-control-bg: #0d120d;
+  --media-control-text: #dce8d7;
+  --media-control-accent: #7fb184;
+  --media-stop-bg: #c53030;
+  --media-stop-text: #ffffff;
   --button-dark-bg: #dce8d7;
   --button-dark-bg-hover: #c6d3c2;
   --button-dark-text: #121912;

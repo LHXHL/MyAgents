@@ -67,6 +67,8 @@ Record 的整次处理以发起 backfill job ID 为 `processingId`，ASR 和 dia
 
 App-global compute admission 固定为 `RecordLive > RecordBackfill > RecordDiarization > AgentAttachment/DocumentOcr/SpeechModelValidation > BackgroundResourceValidation`，同优先级按 coordinator ticket FIFO。Speech 自己的 durable queue 在申请 lease 前也按同一 kind priority 选下一项，因此较晚到达的 backfill 不会被已经等待 lease 的 attachment 隐藏。只有 `RecordLive` waiter 会要求已运行 workload cooperative yield；其它优先级只裁决下一次 admission。speech batch/live 收到 yield signal 后立即向 exact generation 发 `Yield`，从信号时刻计 15 秒后 force-stop，job ID 保持不变并以新 generation 重排。
 
+Capture admission 与 live 推理收尾不是同一生命周期：已经收到 finish 或 cancel 的旧 Record registration 不占用下一段录音的 admission；仍在录制或暂停的 registration 继续互斥，同一 Record 不得重复注册。旧 generation 完成收尾前仍持有原 compute lease，后继 live workload 经同一 coordinator 排队，不并行加载第二份 live 模型。暂停 flush 的 exact acknowledged boundary 保存在该次 LiveControl 内；Stop 边界已获确认时直接结束 journal，无论是否恰好处于模型卸载的前后，都不为结束动作新建 generation。仅收到 PCM ACK 或 replay checkpoint 不算 flush 确认，恢复后新增尾音仍需处理。
+
 Worker settlement 统一有界：合法 `Completed/Failed` 后最多给 30 秒自然退出；`Yielded`、本地 protocol/cancel 路径先给 15 秒 cooperative settlement；App shutdown 给 10 秒；任何路径进入 force-stop 后最多再等 10 秒确认 exact process tree 已无法执行。Manager 在 settlement 完成前不释放 generation/publish authority。
 
 Worker 结果只有同时满足 exact `(jobId, generation)`、协议 shape、业务数量/时间轴上限且当前 generation 仍持有 publish authority 时才能提交。Record ASR 成功后由同一 Manager 排队 diarization；stale generation、cancelled generation 和失败 probe 都不能发布内容。
@@ -76,6 +78,8 @@ Worker 结果只有同时满足 exact `(jobId, generation)`、协议 shape、业
 Record 最终 transcript 与 diarization 结果先以唯一 UUID 文件名写入对应目录并同步，再由 `record.json` 原子接纳其 artifact；当前已引用文件不提前覆盖。提交失败仅在磁盘清单证实未引用时删除该次文件，提交成功后清理上一份已拥有的结果。读取兼容旧 `transcript/snapshot.json`、`diarization/result.json`；旧版半提交造成的失配引用在加载时降级为待重试的 failed projection，同步失效引用这些结果的讨论文档，原始音频保持严格校验且不被派生结果故障隐藏。未入清单的旧结果不自动接纳，显式重转直接生成新的结果。
 
 失败 job 保留最后确认的处理 stage；失败收尾不再一律将 stage 改成 `publishing`。Record 详情通过现有 `cmd_record_get` 从 SpeechRecognitionManager 的最新 backfill job 投影结构化失败原因，Record manifest 不持久化第二份 job error。协议读帧拒绝只记录固定原因枚举、job/generation 与 IO kind，不记录响应正文或原始 stderr。
+
+正常收尾也记录 `[speech]` 元数据日志：live finish request / settlement，以及 Record job queued / started / worker-ready / stage-change / worker-completed / terminal。仅含 Record/job/generation、枚举、样本与结果计数、排队/总耗时和 Worker 耗时；不输出音频、正文、人物名、模型或文件路径。排查等待时间时按这些阶段区分 live 追赶、资源排队、全文整理、人物处理与发布，不能把端到端等待等同于模型推理耗时。
 
 正文与人物的 UUID 候选由 Store 在同一锁内原子接纳为兼容的 artifact 对，并重读最新人工事实后裁决继承。重跑期间旧 final（包括 ASR-only final）继续可读；失败或取消保留旧稿。只有从未有 final 且 ASR 已成功时，人物计算失败可以发布 unknown 正文并保留真实错误；提交失败不适用该例外。取消、删除与恢复按整次 processing 收敛，私有候选不取得展示权。 Publishing metadata 写失败须进入既有失败结算。终态写盘失败不能让已退出的执行者继续显示 Running：Manager 仍更新当前终态、结算子任务并清理私有候选；重启以 Store 已提交 processing 结果或既有失败/缺失候选事实收敛。失败意图未持久化时不发布首次 partial final，错误记固定日志，不新增重试队列。
 
@@ -105,9 +109,13 @@ Pause 先关闭 Manager 媒体 epoch 并等待 callback 的 archive/analysis fan
 
 live revision 写入 `transcript/revisions.jsonl`，复用 `DurableRecordJournal`。Worker-local ID 不成为产品 identity；RecordStore 按 `track + start + end` 生成稳定 segment ID，同边界重算只递增 revision。generation 失败时按 Record 推理安全前沿映射回原轨，并回读有界 DSP 历史，重建 AEC/VAD 和未成句语音；已发布区间不重发。source frame ACK 仅证明传输接纳，不代表 Record 时间或推理完成。
 
+Capture timeline 的增长可能细化已观测区间的时钟斜率；不同 snapshot 映射出的相邻 transport frame 起点因此可以略有差异。LiveSource 以连续 source sample 和 capture 提供的 discontinuity / Gap 判定声音是否连续，把新映射接到已接纳的 Record frontier，再以现有 resampler 校正尚未处理的区间；校正区间标为 estimated，不能因时间估计变化 flush/reset VAD。真实 source 缺口、pause 与 capture discontinuity 仍保留边界；final 使用冻结后的完整 timeline。
+
 Stop 先停止并落盘 capture/archive/analysis，再提交永久 Ogg artifact；archive 结束时必须编码足以覆盖 source media 与 Opus pre-skip 的最小尾包，异常恢复把最后 checkpoint 收敛到其真实可解码的 EOS granule，不能把尚待后续 packet drain 的 lookahead 发布成媒体时长。只有本次录音在开始时已接纳 live workload，才会用最终 analysis boundary 收敛 live Worker，并自动为永久 Ogg 接纳 recording-final backfill。最终 backfill 与 live 共用来源/时间/AEC 预处理；原轨分别 VAD/ASR，共享一份 ASR 模型；复用与 live 相同的每来源 stateful VAD 实现，每个 workload/generation 独立创建实例（含 Silero 模型），按媒体时间稳定汇集原段落，保留短应答、真实重叠和重复发言，不凭文字相似去重。stop 命令返回的终态 snapshot 只是 operation receipt，不再拥有 RecordingManager slot；Renderer 释放该 owner 后由 RecordStore 的 final-transcript `upsert` 重新读取并替换 live projection。analysis 失败不把可用音频判坏。异常退出恢复只清理 Record 内两个固定 spool 文件；只对 manifest 表明此前已经接纳 live transcription 的 interrupted Record 恢复 backfill，普通历史录音保持手动“开始转录”。
 
 ## 原轨时间与声学处理
+
+CPAL 的时钟转换按 device stream 校准一次，再使用该 stream 的 capture timestamp 差值推进；回调到达时间只用于首次跨时钟定位，不能逐次重新作为采集时间，否则调度抖动会被误标为真实 clock gap。暂停期间保留同一 stream 的校准，设备重开创建新校准；原生时钟中的真实间隔仍交由既有 capture epoch / timeline 处理。
 
 原始 Ogg 是回放和重算权威。RecordingManager 将 CPAL capture timestamp / SCK PTS 映射到自身单调媒体时钟，持久保存有界的原样本到 Record 样本 spans，区分 clock、estimated、gap 与 discontinuity。暂停冻结媒体时间，来源开关与归档 overrun 保留有位置的缺口；Opus pre-skip/EOS 和 resampler/DSP 延迟都回到该坐标。没有可靠时钟的旧区间不能取得跨来源高置信 authority。
 

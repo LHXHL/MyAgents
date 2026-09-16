@@ -303,7 +303,7 @@ download_macos() {
     trap "rm -rf '$tmp_dir'" RETURN
 
     # Download
-    curl -fsSL "$url" -o "${tmp_dir}/${tarball}"
+    curl -fsSL --connect-timeout 300 --max-time 300 --retry 2 --retry-delay 1 --retry-connrefused "$url" -o "${tmp_dir}/${tarball}"
 
     # Extract — strip the top-level directory
     log_info "Extracting..."
@@ -361,7 +361,7 @@ download_linux() {
     tmp_dir=$(mktemp -d)
     trap "rm -rf '$tmp_dir'" RETURN
 
-    curl -fsSL "$url" -o "${tmp_dir}/${tarball}"
+    curl -fsSL --connect-timeout 300 --max-time 300 --retry 2 --retry-delay 1 --retry-connrefused "$url" -o "${tmp_dir}/${tarball}"
 
     log_info "Extracting..."
     tar xf "${tmp_dir}/${tarball}" -C "$tmp_dir"
@@ -403,7 +403,7 @@ download_windows() {
     tmp_dir=$(mktemp -d)
     trap "rm -rf '$tmp_dir'" RETURN
 
-    curl -fsSL "$url" -o "${tmp_dir}/${zipfile}"
+    curl -fsSL --connect-timeout 300 --max-time 300 --retry 2 --retry-delay 1 --retry-connrefused "$url" -o "${tmp_dir}/${zipfile}"
 
     log_info "Extracting..."
     unzip -q "${tmp_dir}/${zipfile}" -d "$tmp_dir"

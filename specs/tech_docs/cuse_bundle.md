@@ -12,7 +12,7 @@ Mac 和 Windows 的正式/开发构建脚本调用 `scripts/prepare-cuse-bundle.
 | x86_64-pc-windows-msvc | windows-x64 Skill ZIP |
 | Linux | 不携带 Cuse；清理该构建树残留的其它平台 Cuse staging |
 
-准备过程每次读取 `https://download.myagents.io/cuse/bundles/latest.json`，校验其指向的版本 manifest 的 SHA256/长度，选择 `packages.skill`。已安装的本地 staging 必须满足 metadata 的版本、source commit、平台、入口、完整文件清单、逐文件哈希与 Mac 执行权限；缺失或不匹配才下载 ZIP。ZIP 校验通过、所有成员为安全普通文件、解包完整性通过后才替换 `bundled-skills/cuse/`。网络或校验失败终止构建，保留已有包，不以旧包冒充最新包。
+准备过程每次读取 `https://download.myagents.io/cuse/bundles/latest.json`，校验其指向的版本 manifest 的 SHA256/长度，选择 `packages.skill`。已安装的本地 staging 必须满足 metadata 的版本、source commit、平台、入口、完整文件清单、逐文件哈希与 Mac 执行权限；缺失或不匹配时，先复用 `src-tauri/resources/cuse-cache/downloads/` 中按 SHA256 寻址的原始 ZIP；缓存不存在或校验失败才下载。ZIP 校验通过、所有成员为安全普通文件、解包完整性通过后才替换 `bundled-skills/cuse/`。网络或校验失败终止构建，保留已有包，不以旧包冒充最新包。
 
 `bundled-skills/cuse/` 是 ignored 的构建输入，由既有 Tauri `bundled-skills` resources 映射携带。不要手工提交二进制、从 MCP 包拼装 Skill 或修改上游 SKILL.md。整个目录包含 `SKILL.md`、`package.json`、`LICENSE`、`references/` 和 `scripts/cuse[.exe]`、Python 辅助脚本。Python 只用于可选编排，CLI 本身不依赖 Python/Node。
 
@@ -22,7 +22,7 @@ Mac 和 Windows 的正式/开发构建脚本调用 `scripts/prepare-cuse-bundle.
 
 Cuse 上游包采用 ad-hoc 签名。MyAgents Mac 发布构建在下载验证后，用 `APPLE_SIGNING_IDENTITY` 对资源中的 Cuse CLI 执行 Developer ID / hardened runtime / timestamp 签名，再由 Tauri 封装 App。开发构建配置同一身份时也签名。Tauri 不自动签任意 Resources 下的可执行文件，这个显式步骤与 Node/Claude 的现有签名路径一致。
 
-`package.json` 保留上游交付 metadata；签名改变 CLI 字节，所以上游二进制哈希只用于**签名前构建下载验证**。下次构建会将签名后的 staging 判为需要恢复，再从上游重新准备。启动时以**当前 App bundle 中实际文件**为权威比较、复制，不能拿上游 hash 拒绝正确签名的 App。
+`package.json` 保留上游交付 metadata；签名改变 CLI 字节，所以上游二进制哈希只用于**签名前构建下载验证**。下次构建会将签名后的 staging 判为需要恢复，从已验证的原始 ZIP 重新解包；双架构共用 universal ZIP，签名不会污染缓存。历史 checkout 第一次补齐 ZIP 缓存需要下载一次。启动时以**当前 App bundle 中实际文件**为权威比较、复制，不能拿上游 hash 拒绝正确签名的 App。
 
 Rust `cmd_sync_system_skills` 在原有同步锁内管理安装到 `~/.myagents/skills/cuse/`。Cuse 除系统 Skill 版本戳外还比较 App source 与已安装目录的完整 metadata/文件字节，并检查必需文件、普通路径与 Mac 可执行位。因此仅 Cuse 版本改变、不手工 bump 系统 Skill 版本也能更新；文件缺失、内容损坏或执行权限丢失会重新同步。源不完整时先保留旧副本，不先删除。Linux 跳过 Cuse 同步，不因此阻断其它系统 Skills。
 
@@ -43,6 +43,6 @@ Mac 提供 Cuse 的后台窗口定向输入；前台输入仍共享用户鼠标/
 - `project-user-config-sync.unit.test.ts` 与 `codex-app-server-protocol.unit.test.ts`：全局关闭/重新启用与相对资源投影。
 - 对真实 staging CLI 执行 `--version`、`--help`、`readme`；Windows ZIP 可在 Mac 校验，但 Windows 原生执行需要 Windows。
 
-构建报下载错误时修复网络后重跑原平台脚本。用户端文件不完整时由下次启动从 App bundle 补全；若 App 自身缺包则需修复客户端构建，不能让 Agent 自行下载另一份 CLI。
+构建下载每次允许 5 分钟，临时网络错误、408/429/500/502/503/504 最多尝试三次，间隔 1 秒、2 秒。元数据仍每次联网核对最新版本；不缓存 latest 作为离线 authority。下载日志包含 URL、尝试次数和超时，永久 HTTP 错误与完整性失败直接报错；最后失败保留旧 staging，修复网络后重跑原平台脚本。用户端文件不完整时由下次启动从 App bundle 补全；若 App 自身缺包则需修复客户端构建，不能让 Agent 自行下载另一份 CLI。
 
 可选原生验收：准备并签名 Cuse 后，将 `MYAGENTS_CUSE_SMOKE_SOURCE` 指向完整 `cuse/` 目录，显式运行 ignored Rust 测试 `cuse_prepared_bundle_native_smoke`。它通过真实系统 Skill 同步 helper 安装到临时目录，再执行同包 CLI 的 version/help/readme，不触碰用户 Skill 或桌面输入。
