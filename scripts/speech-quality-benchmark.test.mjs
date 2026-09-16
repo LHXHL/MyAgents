@@ -133,7 +133,7 @@ test("speech quality source lock pins licensed, bounded corpus bytes", () => {
     trailingSilenceSeconds: 3,
     vadParameters: {
       threshold: 0.25,
-      minSilenceSeconds: 0.5,
+      minSilenceSeconds: 1.0,
       minSpeechSeconds: 0.25,
       maxSpeechSeconds: 30,
       windowSamples: 512,
@@ -335,16 +335,17 @@ test("live latency lock matches the production VAD configuration", () => {
     "utf8",
   );
   const vad = sourceLock.liveLatencyBenchmark.vadParameters;
-  assert.ok(rustSource.includes(`threshold: ${vad.threshold},`));
-  assert.ok(
-    rustSource.includes(`min_silence_seconds: ${vad.minSilenceSeconds},`),
-  );
-  assert.ok(
-    rustSource.includes(`min_speech_seconds: ${vad.minSpeechSeconds},`),
-  );
-  assert.ok(
-    rustSource.includes(`max_speech_seconds: ${vad.maxSpeechSeconds}.0,`),
-  );
+  for (const [field, expected] of [
+    ["threshold", vad.threshold],
+    ["min_silence_seconds", vad.minSilenceSeconds],
+    ["min_speech_seconds", vad.minSpeechSeconds],
+    ["max_speech_seconds", vad.maxSpeechSeconds],
+  ]) {
+    // Compare numbers: JSON's 1 and Rust's 1.0 describe the same parameter.
+    const actual = rustSource.match(new RegExp(`\\b${field}:\\s*([\\d.]+),`));
+    assert.ok(actual, `missing production VAD parameter: ${field}`);
+    assert.equal(Number(actual[1]), expected, field);
+  }
   assert.ok(
     nativeSource.includes(
       `constexpr uint32_t kVadWindowSamples = ${vad.windowSamples};`,
