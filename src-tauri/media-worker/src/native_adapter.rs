@@ -621,7 +621,7 @@ pub(crate) fn create_vad_engine<'adapter>(
         silero_model: model.as_ptr(),
         num_threads: 1,
         threshold: 0.25,
-        min_silence_seconds: 0.5,
+        min_silence_seconds: 1.5,
         min_speech_seconds: 0.25,
         max_speech_seconds: 30.0,
     };
