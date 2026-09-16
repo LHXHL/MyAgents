@@ -25,8 +25,15 @@ export const recordGet=async()=>({id:'fixture',kind:'audio',title:'录音播放�
  captureStatus:window.captureMode,transcriptionStatus:window.captureMode==='ready'?'ready':'live',
  diarizationStatus:'not_applicable',tracks:['microphone','system'],sizeBytes:0}});
 export const recordingSnapshot=async()=>snapshot();
-export const recordSpeechProjection=async()=>({transcript:null,diarization:null});
-export const recordTimeline=async()=>({recordId:'fixture',revision:0,items:[]});
+export const recordSpeechProjection=async()=>({diarization:null,transcript:window.focusFixtureCount?{
+ schemaVersion:1,recordId:'fixture',projectionRevision:1,state:'recording_final',sampleRate:16000,
+ provenance:{provider:'sherpa-onnx',modelPackRevision:'test',onnxRuntimeVersion:'test'},
+ segments:Array.from({length:window.focusFixtureCount},(_,i)=>({segmentId:'focus-'+i,track:'microphone',
+ startSample:(4+i/2)*16000,endSample:(4.4+i/2)*16000,text:'转写定位 '+i,revision:1}))}:null});
+export const recordTimeline=async()=>({recordId:'fixture',revision:1,items:window.focusFixtureCount?[
+ {type:'mark',markId:'focus-mark',mediaMs:2000,wallTime:1700000002000},
+ ...Array.from({length:window.focusFixtureCount},(_,i)=>({type:'note',seq:i+1,noteId:'focus-note-'+i,
+ anchorMediaMs:(3+i/2)*1000,startedAtWallTime:1700000000000,submittedAtWallTime:1700000003000,text:'笔记定位 '+i}))]:[]});
 export const speechModelPackStatus=async()=>({usable:true});
 export const recordMediaUrl=(_id,track)=>'/__record_tone.wav?track='+track;
 export const recordingPause=async()=>{window.captureMode='paused';return snapshot()};
@@ -383,6 +390,79 @@ try {
   await page.screenshot({ path: resolve(output, "dark-playing.png") });
   await page.getByRole("button", { name: "暂停播放", exact: true }).click();
   await page.evaluate(() => window.mediaAudit.context.close());
+  // Real native keyboard activation, including virtualized list focus after mounting.
+  for (const count of [1, 120]) {
+    await page.evaluate((size) => {
+      window.focusFixtureCount = size;
+      window.mediaTimelines = false;
+      window.audit.set("myagents-light", "dark", "ready");
+    }, count);
+    const text = page.getByRole("button", { name: "转写定位 0", exact: true });
+    await text.waitFor();
+    const assertTransportFocus = async () => {
+      // Let delayed list layout/focus callbacks settle as well.
+      await page.evaluate(() => new Promise(resolve =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await page.getByTestId("record-media-controls")
+        .getByRole("button", { name: /^(播放|暂停播放)$/ })
+        .evaluate(e => e === document.activeElement), true);
+    };
+    const waitPlaying = (playing) => page.waitForFunction(expected =>
+      [...document.querySelectorAll("audio")].every(a => a.paused !== expected), playing);
+    await text.click();
+    await assertTransportFocus();
+    await waitPlaying(false); // Seek preserves paused intent.
+    await page.keyboard.press("Space");
+    await waitPlaying(true);
+    await page.keyboard.press("Space");
+    await waitPlaying(false);
+    const timestamp = text.locator("xpath=ancestor::article").getByRole("button", { name: "00:04", exact: true });
+    await timestamp.focus();
+    await page.keyboard.press("Enter");
+    await assertTransportFocus();
+    await waitPlaying(false);
+    await page.keyboard.press("Enter");
+    await waitPlaying(true);
+    await page.keyboard.press("Enter");
+    await waitPlaying(false);
+    await page.keyboard.press("Space");
+    await waitPlaying(true);
+    await text.click(); // Seek also preserves playing intent.
+    await assertTransportFocus();
+    await waitPlaying(true);
+    await page.keyboard.press("Space");
+    await waitPlaying(false);
+    for (const key of ["mark-focus-mark", "note-focus-note-0"]) {
+      const row = page.getByTestId(`recording-timeline-${key}`);
+      await row.getByRole("button", { name: /跳转/ }).click();
+      await assertTransportFocus();
+    }
+    await page.getByRole("button", { name: "笔记定位 0", exact: true }).click();
+    await assertTransportFocus();
+    const seek = page.getByTestId("recording-playback-progress").locator("input");
+    await seek.focus();
+    const before = Number(await seek.inputValue());
+    await page.keyboard.press("ArrowRight");
+    assert.ok(Number(await seek.inputValue()) > before);
+    await page.keyboard.press("Space");
+    await waitPlaying(true);
+    await page.keyboard.press("Space");
+    await waitPlaying(false);
+    const note = page.getByTestId("recording-timeline-note-focus-note-0");
+    await note.hover();
+    await note.getByRole("button", { name: /更多/ }).click();
+    await page.getByRole("button", { name: "编辑笔记", exact: true }).click();
+    const composer = page.getByRole("textbox", { name: "编辑笔记", exact: true });
+    await composer.fill("笔记");
+    await page.keyboard.press("Space");
+    assert.equal(await composer.inputValue(), "笔记 ");
+    await waitPlaying(false);
+    await page.getByRole("button", { name: "音轨", exact: true }).focus();
+    await page.keyboard.press("Space");
+    await page.getByRole("button", { name: "麦克风", exact: true }).waitFor();
+    await waitPlaying(false);
+    await page.keyboard.press("Escape");
+  }
   assert.deepEqual(errors, []);
   await writeFile(
     resolve(output, "results.json"),
@@ -392,7 +472,7 @@ try {
     JSON.stringify({
       engine,
       states: results.length,
-      playback: "mixed, seek, pause, track, volume, ended, replay",
+      playback: "mixed, seek, pause, track, volume, ended, replay, native keyboard, virtualized seek focus",
       output,
     }),
   );

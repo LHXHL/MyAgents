@@ -849,7 +849,11 @@ describe('RecordDetail note input', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('keeps transcript seeking on its text without drawing playback markers', async () => {
+  it.each([
+    { rowCount: 1, isActive: true },
+    { rowCount: 100, isActive: true },
+    { rowCount: 1, isActive: false },
+  ])('hands seeks to playback only in the active tab ($rowCount rows, active=$isActive)', async ({ rowCount, isActive }) => {
     mocks.recordGet.mockResolvedValue({
       ...RECORD,
       audio: {
@@ -892,19 +896,17 @@ describe('RecordDetail note input', () => {
         modelPackRevision: 'test',
         onnxRuntimeVersion: 'test',
       },
-      segments: [
-        {
-          segmentId: 'focus-target',
-          track: 'microphone',
-          startSample: 16_000,
-          endSample: 24_000,
-          text: '需要定位的内容',
-          revision: 1,
-        },
-      ],
+      segments: Array.from({ length: rowCount }, (_, index) => ({
+        segmentId: `focus-target-${index}`,
+        track: 'microphone',
+        startSample: 16_000,
+        endSample: 24_000,
+        text: index === 0 ? '需要定位的内容' : `其它内容 ${index}`,
+        revision: 1,
+      })),
     });
 
-    render(<RecordDetail recordId={RECORD.id} isActive />);
+    render(<RecordDetail recordId={RECORD.id} isActive={isActive} />);
 
     const transcriptText = await screen.findByRole('button', {
       name: '需要定位的内容',
@@ -920,8 +922,20 @@ describe('RecordDetail note input', () => {
       }),
     ).not.toBeInTheDocument();
 
+    const previousFocus = document.activeElement;
     fireEvent.click(transcriptText);
-    expect(transcriptText.closest('article')).toHaveFocus();
+    const play = screen.getByRole('button', { name: /^(播放|Play)$/ });
+    expect(document.activeElement).toBe(isActive ? play : previousFocus);
+    expect(transcriptText.closest('article')).not.toHaveFocus();
+    fireEvent.click(within(transcriptText.closest('article')!).getByRole('button', { name: '00:01' }));
+    expect(document.activeElement).toBe(isActive ? play : previousFocus);
+    for (const key of ['note-timeline-note', 'mark-timeline-mark']) {
+      const row = screen.getByTestId(`recording-timeline-${key}`);
+      fireEvent.click(within(row).getByRole('button', { name: /跳转|Seek/i }));
+      expect(document.activeElement).toBe(isActive ? play : previousFocus);
+    }
+    fireEvent.click(screen.getByRole('button', { name: '时间轴笔记' }));
+    expect(document.activeElement).toBe(isActive ? play : previousFocus);
   });
 
   it('defaults dual physical tracks to real mixed playback with single-track choices', async () => {

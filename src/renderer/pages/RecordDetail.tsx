@@ -255,6 +255,7 @@ export default function RecordDetail({
   const [playbackError, setPlaybackError] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
   const secondaryAudioRef = useRef<HTMLAudioElement>(null);
+  const playbackButtonRef = useRef<HTMLButtonElement>(null);
   const snapshotRef = useRef(snapshot);
   const noteAnchorRef = useRef<number | null>(null);
   const noteStartedWallRef = useRef<number | null>(null);
@@ -1116,18 +1117,30 @@ export default function RecordDetail({
           kind === 'transcript' ? transcriptItemRefs : timelineItemRefs;
         const itemKey = pendingRef.current;
         if (!itemKey) return;
+        // A delayed list reveal must never reclaim focus from saved-audio controls.
+        if (!isActive || playbackMediaReady) {
+          pendingRef.current = null;
+          return;
+        }
         const element = itemRefs.current.get(itemKey);
         if (!element) return;
         element.focus({ preventScroll: true });
         pendingRef.current = null;
       });
     },
-    [],
+    [isActive, playbackMediaReady],
   );
 
   const highlightAndFocus = useCallback(
     (itemKey: string, mediaMs: number) => {
       seekTo(mediaMs);
+      // Content highlights explain where we sought; the native transport button
+      // owns the next Space/Enter action. Do not scroll the page to the player.
+      pendingTranscriptFocusRef.current = null;
+      pendingTimelineVirtualFocusRef.current = null;
+      if (isActive && playbackMediaReady && !playbackButtonRef.current?.disabled) {
+        playbackButtonRef.current?.focus({ preventScroll: true });
+      }
       setHighlightedItem(itemKey);
       if (highlightTimerRef.current !== undefined) {
         window.clearTimeout(highlightTimerRef.current);
@@ -1146,7 +1159,7 @@ export default function RecordDetail({
           segmentIndex >= 0 &&
           (transcript?.segments.length ?? 0) >= TRANSCRIPT_VIRTUALIZE_THRESHOLD
         ) {
-          pendingTranscriptFocusRef.current = itemKey;
+          pendingTranscriptFocusRef.current = playbackMediaReady ? null : itemKey;
           transcriptVirtuosoRef.current?.scrollToIndex({
             index: segmentIndex,
             align: 'center',
@@ -1160,7 +1173,7 @@ export default function RecordDetail({
           container.scrollTo({
             top: Math.max(0, element.offsetTop - container.clientHeight / 3),
           });
-          element.focus({ preventScroll: true });
+          if (isActive && !playbackMediaReady) element.focus({ preventScroll: true });
         }
         return;
       }
@@ -1174,7 +1187,7 @@ export default function RecordDetail({
         timelineIndex >= 0 &&
         timeline.items.length >= TIMELINE_VIRTUALIZE_THRESHOLD
       ) {
-        pendingTimelineVirtualFocusRef.current = itemKey;
+        pendingTimelineVirtualFocusRef.current = playbackMediaReady ? null : itemKey;
         timelineVirtuosoRef.current?.scrollToIndex({
           index: timelineIndex,
           align: 'center',
@@ -1189,10 +1202,10 @@ export default function RecordDetail({
         container.scrollTo({
           top: Math.max(0, element.offsetTop - 12),
         });
-        element.focus({ preventScroll: true });
+        if (isActive && !playbackMediaReady) element.focus({ preventScroll: true });
       }
     },
-    [focusPendingVirtualItem, seekTo, timeline.items, transcript?.segments],
+    [focusPendingVirtualItem, isActive, playbackMediaReady, seekTo, timeline.items, transcript?.segments],
   );
 
   useEffect(() => {
@@ -1951,11 +1964,12 @@ export default function RecordDetail({
             <div className="grid min-w-0 flex-1 grid-cols-[36px_minmax(140px,1fr)_116px] items-center gap-4 max-lg:col-span-2">
               <button
                 type="button"
+                ref={playbackButtonRef}
                 disabled={!audioSrc}
                 onClick={() => {
                   togglePlayback();
                 }}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--media-control-text)] text-[var(--media-control-bg)] disabled:opacity-40"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--media-control-text)] text-[var(--media-control-bg)] focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[var(--media-control-text)] disabled:opacity-40"
                 aria-label={
                   playing ? t('records.pausePlayback') : t('records.play')
                 }
@@ -1991,6 +2005,12 @@ export default function RecordDetail({
                     max={Math.max(1, playbackDurationMs)}
                     value={Math.min(playbackMs, playbackDurationMs)}
                     onChange={(event) => seekTo(Number(event.target.value))}
+                    onKeyDown={(event) => {
+                      if (event.key !== ' ' || isImeComposingEvent(event)
+                        || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+                      event.preventDefault();
+                      if (!event.repeat && isActive && audioSrc) togglePlayback();
+                    }}
                     className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"
                     aria-label={t('records.duration')}
                   />
