@@ -200,3 +200,10 @@ cpal = { version = "=0.18.2", features = ["pipewire"] }
 [dev-dependencies]
 tauri = { version = "2.11.2", features = ["test"] }
 tempfile = "3.10"
+
+# Daily development needs actionable backtraces, not full variable/type DWARF.
+# Tests inherit this profile. Opt into full debugger data when needed with
+# CARGO_PROFILE_DEV_DEBUG=2 (or CARGO_PROFILE_TEST_DEBUG=2 for cargo test).
+[profile.dev]
+debug = "line-tables-only"
+incremental = true

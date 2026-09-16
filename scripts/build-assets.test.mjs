@@ -62,3 +62,19 @@ test('Unix entry points retain valid shell syntax', () => {
     assert.equal(result.status, 0, result.stderr);
   }
 });
+
+test('development builds preserve Cargo source freshness and executable reuse', () => {
+  for (const file of ['build_dev.sh', 'build_dev_win.ps1', 'build_dev_linux.sh', 'build_linux.sh']) {
+    const source = read(file).replace(/^\s*#.*$/gm, '');
+    assert.doesNotMatch(source, /\btouch\b[^\n]*\.rs|\.LastWriteTime\s*=/, file);
+    assert.doesNotMatch(source, /rm\s+-f[^\n]*\/debug\/(?:app|myagents)["\s]|\$oldExe/, file);
+  }
+});
+
+test('Rust cleanup is explicit, scoped to local target, and supports Cargo dry-run', () => {
+  assert.equal(scripts['clean:rust:app'], 'cargo clean --manifest-path src-tauri/Cargo.toml --target-dir src-tauri/target --profile dev -p myagents');
+  assert.equal(scripts['clean:rust'], 'cargo clean --manifest-path src-tauri/Cargo.toml --target-dir src-tauri/target');
+  for (const file of ['build_dev.sh', 'build_dev_win.ps1', 'build_dev_linux.sh', 'build_linux.sh']) {
+    assert.doesNotMatch(read(file), /cargo clean|npm run clean:rust/);
+  }
+});

@@ -181,14 +181,9 @@ npm run build:assets
 echo -e "${GREEN}✓ 前端构建完成${NC}"
 echo ""
 
-# 强制触发 Rust 重新编译 (确保 sidecar.rs 的逻辑修改生效)
-touch "${PROJECT_DIR}/src-tauri/src/sidecar.rs"
-touch "${PROJECT_DIR}/src-tauri/src/main.rs"
-
-# 构建 Tauri 应用
+# Cargo tracks Rust sources and build-script inputs; keep its incremental cache.
+# Bundle/resources staging above is independent of Rust source freshness.
 echo -e "${BLUE}[3/3] 构建 Tauri 应用 (Debug 模式, 仅 App)...${NC}"
-# 强制移除旧的可执行文件，防止 cargo 偷懒不重新链接
-rm -f "${PROJECT_DIR}/src-tauri/target/debug/app"
 
 # 保留签名但禁用公证 (签名是必需的，否则 TCC 权限无法持久化)
 # 参考: https://developer.apple.com/forums/thread/698337

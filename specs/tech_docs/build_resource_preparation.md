@@ -57,6 +57,24 @@ Linux 的 setup 通过 `build_linux.sh --install-deps` 和 `--prepare` 复用资
 
 热缓存仍要读文件校验并复制，不能承诺零 IO 或整个 build 离线。前端与 Node 业务产物每次重建一次；Rust 保留自身增量编译机制。完整安装包、签名及真实 OS 运行仍按对应平台发布指南验收。
 
+## Rust 编译缓存与磁盘维护
+
+主应用的 `src-tauri/Cargo.toml` 统一设置 dev profile：保留增量编译，调试信息使用 `line-tables-only`，保留 backtrace 的文件名与行号；test 继承 dev。macOS、Windows、Linux 和直接 Cargo 构建共用此配置，release 与独立 Worker 的 profile 不变。需要变量/类型级调试时临时设置 `CARGO_PROFILE_DEV_DEBUG=2`（测试使用 `CARGO_PROFILE_TEST_DEBUG=2`）；切换 profile 配置本身会生成另一组缓存。
+
+Rust 源码变化由 Cargo dep-info 跟踪，资源/config 由现有 build.rs 与 tauri-build 的 `rerun-if-changed` 跟踪。开发入口不得通过 touch 源文件、修改 LastWriteTime 或删除可执行文件强制重编译；若发现漏跟踪，应修正对应输入声明。打包前清理 bundle/staging 的职责保持独立。
+
+缓存不等于下载资源：`target/debug/{deps,incremental}` 保存编译对象，`resources/*-cache` 保存可复用构建输入。前者包含不同依赖、feature、编译参数与历史构建的产物；保留增量编译并不提供磁盘硬上限，也不意味着每次构建完整追加一份。
+
+仓库根目录提供三个显式命令（均不在 build 中自动执行）：
+
+| 命令 | 用途 |
+|------|------|
+| `npm run cache:rust` | 只读统计本仓库 target，显示文件总大小及 hardlink 去重大小；不跟随 symlink。并发变化下为近似快照，不代表 APFS 实际可回收空间。 |
+| `npm run clean:rust:app -- --dry-run` | 预览 Cargo 按包清理主应用开发产物；保留三方依赖与打包 bundle。移除 `--dry-run` 执行。指定 target 的开发产物可追加 `--target <triple>`。 |
+| `npm run clean:rust -- --dry-run` | 预览清理整个本仓库 target，包含各架构、release 和应用包。移除 `--dry-run` 执行前先退出从 target 启动的 App。 |
+
+清理由 Cargo 持有构建目录锁并选择产物，不维护另一套按文件年龄删除/自动淘汰算法。两个清理入口显式固定仓库 target，避免继承 `CARGO_TARGET_DIR` 后误清其它项目。源码、用户数据和 `resources` 下的下载缓存不在清理范围。清理后下次编译较慢；修改 profile 不会自动删除旧缓存，历史大目录可先执行主应用清理，再按需做全量清理。`npm run clean` 还会删除 node_modules 等，不应用于日常 Rust 缓存维护。
+
 ## 下载时限、重试与原始缓存
 
 构建资源的 HTTP 字节获取共用 `build-resource-download.mjs`，版本选择、SHA/签名校验、缓存提交仍由原资源 owner 负责。Cuse、CLIProxy 每次请求（含响应体）至少 300 秒；默认三次尝试，仅临时网络故障和 408/429/500/502/503/504 退避重试。永久 HTTP、超限或校验失败不以重复请求掩盖。错误包括请求 URL、已尝试次数与单次时限。
