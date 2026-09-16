@@ -78,16 +78,23 @@ impl LiveSource {
         );
         let mut connected = false;
         if let Some(mut previous) = self.pending.take() {
-            // A live slope estimate may be refined by subsequent timestamps.
-            // Already emitted time cannot rewind. Mark a causal correction as
-            // estimated; final uses the frozen original-source map instead.
-            if span.record_start < previous.span.record_end {
+            // Capture owns source discontinuities. A growing clock map may
+            // refine either side of an already admitted transport boundary;
+            // that does not interrupt continuous PCM. Join at our committed
+            // frontier and apply the new endpoint only to unprocessed audio.
+            let source_continuous = !span.discontinuity
+                && previous.span.source_end == span.source_start
+                && previous.span.quality != CaptureTimeQuality::Gap
+                && span.quality != CaptureTimeQuality::Gap;
+            if (source_continuous && span.record_start != previous.span.record_end)
+                || span.record_start < previous.span.record_end
+            {
                 span.record_start = previous.span.record_end;
                 if span.record_end <= span.record_start {
                     span.record_end = span.record_start + frame.frames() as u64;
                 }
                 span.quality = CaptureTimeQuality::Estimated;
-                span.discontinuity = true;
+                span.discontinuity |= !source_continuous;
             }
             connected = !span.discontinuity
                 && previous.span.record_end == span.record_start
@@ -326,6 +333,98 @@ impl LiveRecordAudio {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clock_refinements_do_not_break_continuous_source_audio() {
+        for channels in [1, 2] {
+            for direction in [-1_i64, 1] {
+                let mut stream = streams()[0].clone();
+                stream.channels = channels;
+                let mut live = LiveRecordAudio::new(&[stream]).unwrap();
+                let mut output = VecDeque::new();
+                for index in 0..4 {
+                    let mut frame = pcm(
+                        TrackKind::Microphone,
+                        index * 16_000,
+                        16_000,
+                        4_000,
+                        CaptureTimeQuality::Clock,
+                    );
+                    frame.channels = channels;
+                    frame.samples.resize(16_000 * usize::from(channels), 4_000);
+                    let span = frame.time_span.as_mut().unwrap();
+                    let adjustment = direction * (index % 2) as i64;
+                    span.record_start = (100 + span.source_start)
+                        .checked_add_signed(adjustment)
+                        .unwrap();
+                    span.record_end = (100 + span.source_end)
+                        .checked_add_signed(adjustment)
+                        .unwrap();
+                    live.accept(&frame, &mut output).unwrap();
+                }
+                live.flush(&mut output).unwrap();
+                let mut end = 100;
+                for chunk in output {
+                    assert_eq!(chunk.start_sample, end, "clock refinement fabricated a gap");
+                    assert!(
+                        !chunk.discontinuity,
+                        "clock refinement fabricated an endpoint"
+                    );
+                    assert_eq!(chunk.channels, usize::from(channels));
+                    end = chunk.end_sample();
+                }
+                assert_eq!(end, (64_100_u64).checked_add_signed(direction).unwrap());
+            }
+        }
+    }
+
+    #[test]
+    fn physical_boundaries_survive_clock_reconciliation() {
+        for (discontinuity, quality, source_hole) in [
+            (true, CaptureTimeQuality::Clock, 0),
+            (false, CaptureTimeQuality::Gap, 0),
+            (false, CaptureTimeQuality::Clock, 160),
+        ] {
+            let mut live = LiveRecordAudio::new(&streams()[..1]).unwrap();
+            let mut output = VecDeque::new();
+            live.accept(
+                &pcm(
+                    TrackKind::Microphone,
+                    0,
+                    1_600,
+                    4_000,
+                    CaptureTimeQuality::Clock,
+                ),
+                &mut output,
+            )
+            .unwrap();
+            let mut next = pcm(
+                TrackKind::Microphone,
+                1_600 + source_hole,
+                1_600,
+                4_000,
+                quality,
+            );
+            let span = next.time_span.as_mut().unwrap();
+            span.record_start = 1_760;
+            span.record_end = 3_360;
+            span.discontinuity = discontinuity;
+            live.accept(&next, &mut output).unwrap();
+            live.flush(&mut output).unwrap();
+            let boundary = output
+                .iter()
+                .find(|chunk| chunk.start_sample >= 1_760)
+                .unwrap();
+            assert_eq!(boundary.start_sample, 1_760);
+            assert_eq!(boundary.discontinuity, discontinuity);
+            assert_eq!(boundary.quality, quality);
+            assert!(
+                !output
+                    .iter()
+                    .any(|chunk| chunk.start_sample >= 1_600 && chunk.start_sample < 1_760)
+            );
+        }
+    }
     use crate::protocol::PROTOCOL_VERSION;
 
     fn streams() -> Vec<PcmStreamStart> {

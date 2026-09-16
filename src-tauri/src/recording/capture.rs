@@ -961,28 +961,37 @@ fn open_cpal_stream(
         };
         let _ = error_events.send(event);
     };
+    let mut capture_clock = CpalCaptureClock::default();
     match endpoint.config.sample_format() {
         SampleFormat::F32 => device.build_input_stream(
             config,
-            move |data: &[f32], info| sink.push_f32_captured(data, cpal_capture_time(info)),
+            move |data: &[f32], info| {
+                sink.push_f32_captured(data, capture_clock.map(info.timestamp(), Instant::now()))
+            },
             error_callback,
             None,
         ),
         SampleFormat::I16 => device.build_input_stream(
             config,
-            move |data: &[i16], info| sink.push_i16_captured(data, cpal_capture_time(info)),
+            move |data: &[i16], info| {
+                sink.push_i16_captured(data, capture_clock.map(info.timestamp(), Instant::now()))
+            },
             error_callback,
             None,
         ),
         SampleFormat::I32 => device.build_input_stream(
             config,
-            move |data: &[i32], info| sink.push_i32_captured(data, cpal_capture_time(info)),
+            move |data: &[i32], info| {
+                sink.push_i32_captured(data, capture_clock.map(info.timestamp(), Instant::now()))
+            },
             error_callback,
             None,
         ),
         SampleFormat::I8 => device.build_input_stream(
             config,
-            move |data: &[i8], info| sink.push_i8_captured(data, cpal_capture_time(info)),
+            move |data: &[i8], info| {
+                sink.push_i8_captured(data, capture_clock.map(info.timestamp(), Instant::now()))
+            },
             error_callback,
             None,
         ),
@@ -1175,16 +1184,82 @@ mod tests {
     }
 }
 
-/// Translate between clocks using their simultaneous readings. Callback
-/// arrival is used only to bridge clock domains, never as the capture instant.
-fn cpal_capture_time(info: &cpal::InputCallbackInfo) -> Option<Instant> {
-    let now = Instant::now();
-    let timestamp = info.timestamp();
-    let latency = timestamp
-        .callback
-        .checked_duration_since(timestamp.capture)?;
-    (latency <= Duration::from_secs(10)).then_some(())?;
-    now.checked_sub(latency)
+/// One calibration per device stream; timestamps within a stream share a
+/// monotonic clock. Callback arrival is only an initial cross-clock anchor.
+#[derive(Default)]
+struct CpalCaptureClock {
+    anchor: Option<(cpal::StreamInstant, Instant)>,
+}
+
+impl CpalCaptureClock {
+    fn map(&mut self, timestamp: cpal::InputStreamTimestamp, now: Instant) -> Option<Instant> {
+        let latency = timestamp
+            .callback
+            .checked_duration_since(timestamp.capture)?;
+        (latency <= Duration::from_secs(10)).then_some(())?;
+        let (source, local) = match self.anchor {
+            Some(anchor) => anchor,
+            None => {
+                let anchor = (timestamp.capture, now.checked_sub(latency)?);
+                self.anchor = Some(anchor);
+                anchor
+            }
+        };
+        if let Some(elapsed) = timestamp.capture.checked_duration_since(source) {
+            local.checked_add(elapsed)
+        } else {
+            local.checked_sub(source.checked_duration_since(timestamp.capture)?)
+        }
+    }
+}
+
+#[cfg(test)]
+mod capture_clock_tests {
+    use super::*;
+
+    fn timestamp(capture_ms: u64) -> cpal::InputStreamTimestamp {
+        cpal::InputStreamTimestamp {
+            capture: cpal::StreamInstant::from_millis(capture_ms),
+            callback: cpal::StreamInstant::from_millis(capture_ms + 10),
+        }
+    }
+
+    #[test]
+    fn device_clock_ignores_callback_jitter_but_keeps_real_gaps_and_pause_time() {
+        let mut clock = CpalCaptureClock::default();
+        let now = Instant::now();
+        let first = clock.map(timestamp(100), now).unwrap();
+        for (source_ms, arrival_ms) in [(110, 25), (120, 26), (150, 80), (60_150, 60_100)] {
+            let mapped = clock
+                .map(
+                    timestamp(source_ms),
+                    now + Duration::from_millis(arrival_ms),
+                )
+                .unwrap();
+            assert_eq!(
+                mapped.duration_since(first),
+                Duration::from_millis(source_ms - 100)
+            );
+        }
+    }
+
+    #[test]
+    fn clock_anchors_belong_to_one_stream_and_invalid_readings_do_not_replace_them() {
+        let now = Instant::now();
+        let mut left = CpalCaptureClock::default();
+        let mut right = CpalCaptureClock::default();
+        let first = left.map(timestamp(100), now).unwrap();
+        assert_eq!(right.map(timestamp(5_000), now), Some(first));
+        let invalid = cpal::InputStreamTimestamp {
+            callback: cpal::StreamInstant::ZERO,
+            capture: cpal::StreamInstant::from_millis(1),
+        };
+        assert!(left.map(invalid, now + Duration::from_secs(1)).is_none());
+        assert_eq!(
+            left.map(timestamp(110), now + Duration::from_millis(90)),
+            Some(first + Duration::from_millis(10))
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]

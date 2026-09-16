@@ -105,9 +105,13 @@ Pause 先关闭 Manager 媒体 epoch 并等待 callback 的 archive/analysis fan
 
 live revision 写入 `transcript/revisions.jsonl`，复用 `DurableRecordJournal`。Worker-local ID 不成为产品 identity；RecordStore 按 `track + start + end` 生成稳定 segment ID，同边界重算只递增 revision。generation 失败时按 Record 推理安全前沿映射回原轨，并回读有界 DSP 历史，重建 AEC/VAD 和未成句语音；已发布区间不重发。source frame ACK 仅证明传输接纳，不代表 Record 时间或推理完成。
 
+Capture timeline 的增长可能细化已观测区间的时钟斜率；不同 snapshot 映射出的相邻 transport frame 起点因此可以略有差异。LiveSource 以连续 source sample 和 capture 提供的 discontinuity / Gap 判定声音是否连续，把新映射接到已接纳的 Record frontier，再以现有 resampler 校正尚未处理的区间；校正区间标为 estimated，不能因时间估计变化 flush/reset VAD。真实 source 缺口、pause 与 capture discontinuity 仍保留边界；final 使用冻结后的完整 timeline。
+
 Stop 先停止并落盘 capture/archive/analysis，再提交永久 Ogg artifact；archive 结束时必须编码足以覆盖 source media 与 Opus pre-skip 的最小尾包，异常恢复把最后 checkpoint 收敛到其真实可解码的 EOS granule，不能把尚待后续 packet drain 的 lookahead 发布成媒体时长。只有本次录音在开始时已接纳 live workload，才会用最终 analysis boundary 收敛 live Worker，并自动为永久 Ogg 接纳 recording-final backfill。最终 backfill 与 live 共用来源/时间/AEC 预处理；原轨分别 VAD/ASR，共享一份 ASR 模型；复用与 live 相同的每来源 stateful VAD 实现，每个 workload/generation 独立创建实例（含 Silero 模型），按媒体时间稳定汇集原段落，保留短应答、真实重叠和重复发言，不凭文字相似去重。stop 命令返回的终态 snapshot 只是 operation receipt，不再拥有 RecordingManager slot；Renderer 释放该 owner 后由 RecordStore 的 final-transcript `upsert` 重新读取并替换 live projection。analysis 失败不把可用音频判坏。异常退出恢复只清理 Record 内两个固定 spool 文件；只对 manifest 表明此前已经接纳 live transcription 的 interrupted Record 恢复 backfill，普通历史录音保持手动“开始转录”。
 
 ## 原轨时间与声学处理
+
+CPAL 的时钟转换按 device stream 校准一次，再使用该 stream 的 capture timestamp 差值推进；回调到达时间只用于首次跨时钟定位，不能逐次重新作为采集时间，否则调度抖动会被误标为真实 clock gap。暂停期间保留同一 stream 的校准，设备重开创建新校准；原生时钟中的真实间隔仍交由既有 capture epoch / timeline 处理。
 
 原始 Ogg 是回放和重算权威。RecordingManager 将 CPAL capture timestamp / SCK PTS 映射到自身单调媒体时钟，持久保存有界的原样本到 Record 样本 spans，区分 clock、estimated、gap 与 discontinuity。暂停冻结媒体时间，来源开关与归档 overrun 保留有位置的缺口；Opus pre-skip/EOS 和 resampler/DSP 延迟都回到该坐标。没有可靠时钟的旧区间不能取得跨来源高置信 authority。
 
