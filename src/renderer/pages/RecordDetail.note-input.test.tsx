@@ -1314,6 +1314,21 @@ describe('RecordDetail note input', () => {
     );
   });
 
+  it.each([
+    { transcription: 'queued', diarization: 'queued', label: /等待本地转写|Waiting for local transcription/ },
+    { transcription: 'finalizing', diarization: 'queued', label: /正在整理完整文稿|Refining the full transcript/ },
+    { transcription: 'finalizing', diarization: 'running', label: /正在识别说话人|Identifying speakers/ },
+    { transcription: 'ready', diarization: 'running', label: /正在识别说话人|Identifying speakers/ },
+  ])('explains saved-record processing without claiming completion: %j', async state => {
+    mocks.recordGet.mockResolvedValue({ ...RECORD, audio: { ...RECORD.audio!, captureStatus: 'ready', transcriptionStatus: state.transcription, diarizationStatus: state.diarization, sizeBytes: 1024 } });
+    mocks.recordingSnapshot.mockResolvedValue(null);
+    render(<RecordDetail recordId={RECORD.id} isActive={false} />);
+    expect(await screen.findByText(state.label)).toBeInTheDocument();
+    expect(screen.getByTestId('record-title-status')).toHaveTextContent(/处理中|Processing/);
+    expect(screen.getByText(/音频已保存，可先回放或继续其他工作|Audio is saved/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /开始转录|Start transcription/ })).not.toBeInTheDocument();
+  });
+
   it.each([true, false])('offers explicit reprocessing of a completed final (has segments: %s) and keeps its old text', async hasSegments => {
     mocks.recordGet.mockResolvedValue({ ...RECORD, audio: { ...RECORD.audio!, captureStatus: 'ready', transcriptionStatus: 'ready', diarizationStatus: 'ready', sizeBytes: 1024 } });
     mocks.recordingSnapshot.mockResolvedValue(null);

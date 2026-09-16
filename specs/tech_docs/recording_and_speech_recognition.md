@@ -67,6 +67,8 @@ Record 的整次处理以发起 backfill job ID 为 `processingId`，ASR 和 dia
 
 App-global compute admission 固定为 `RecordLive > RecordBackfill > RecordDiarization > AgentAttachment/DocumentOcr/SpeechModelValidation > BackgroundResourceValidation`，同优先级按 coordinator ticket FIFO。Speech 自己的 durable queue 在申请 lease 前也按同一 kind priority 选下一项，因此较晚到达的 backfill 不会被已经等待 lease 的 attachment 隐藏。只有 `RecordLive` waiter 会要求已运行 workload cooperative yield；其它优先级只裁决下一次 admission。speech batch/live 收到 yield signal 后立即向 exact generation 发 `Yield`，从信号时刻计 15 秒后 force-stop，job ID 保持不变并以新 generation 重排。
 
+Capture admission 与 live 推理收尾不是同一生命周期：已经收到 finish 或 cancel 的旧 Record registration 不占用下一段录音的 admission；仍在录制或暂停的 registration 继续互斥，同一 Record 不得重复注册。旧 generation 完成收尾前仍持有原 compute lease，后继 live workload 经同一 coordinator 排队，不并行加载第二份 live 模型。暂停 flush 的 exact acknowledged boundary 保存在该次 LiveControl 内；Stop 边界已获确认时直接结束 journal，无论是否恰好处于模型卸载的前后，都不为结束动作新建 generation。仅收到 PCM ACK 或 replay checkpoint 不算 flush 确认，恢复后新增尾音仍需处理。
+
 Worker settlement 统一有界：合法 `Completed/Failed` 后最多给 30 秒自然退出；`Yielded`、本地 protocol/cancel 路径先给 15 秒 cooperative settlement；App shutdown 给 10 秒；任何路径进入 force-stop 后最多再等 10 秒确认 exact process tree 已无法执行。Manager 在 settlement 完成前不释放 generation/publish authority。
 
 Worker 结果只有同时满足 exact `(jobId, generation)`、协议 shape、业务数量/时间轴上限且当前 generation 仍持有 publish authority 时才能提交。Record ASR 成功后由同一 Manager 排队 diarization；stale generation、cancelled generation 和失败 probe 都不能发布内容。
@@ -76,6 +78,8 @@ Worker 结果只有同时满足 exact `(jobId, generation)`、协议 shape、业
 Record 最终 transcript 与 diarization 结果先以唯一 UUID 文件名写入对应目录并同步，再由 `record.json` 原子接纳其 artifact；当前已引用文件不提前覆盖。提交失败仅在磁盘清单证实未引用时删除该次文件，提交成功后清理上一份已拥有的结果。读取兼容旧 `transcript/snapshot.json`、`diarization/result.json`；旧版半提交造成的失配引用在加载时降级为待重试的 failed projection，同步失效引用这些结果的讨论文档，原始音频保持严格校验且不被派生结果故障隐藏。未入清单的旧结果不自动接纳，显式重转直接生成新的结果。
 
 失败 job 保留最后确认的处理 stage；失败收尾不再一律将 stage 改成 `publishing`。Record 详情通过现有 `cmd_record_get` 从 SpeechRecognitionManager 的最新 backfill job 投影结构化失败原因，Record manifest 不持久化第二份 job error。协议读帧拒绝只记录固定原因枚举、job/generation 与 IO kind，不记录响应正文或原始 stderr。
+
+正常收尾也记录 `[speech]` 元数据日志：live finish request / settlement，以及 Record job queued / started / worker-ready / stage-change / worker-completed / terminal。仅含 Record/job/generation、枚举、样本与结果计数、排队/总耗时和 Worker 耗时；不输出音频、正文、人物名、模型或文件路径。排查等待时间时按这些阶段区分 live 追赶、资源排队、全文整理、人物处理与发布，不能把端到端等待等同于模型推理耗时。
 
 正文与人物的 UUID 候选由 Store 在同一锁内原子接纳为兼容的 artifact 对，并重读最新人工事实后裁决继承。重跑期间旧 final（包括 ASR-only final）继续可读；失败或取消保留旧稿。只有从未有 final 且 ASR 已成功时，人物计算失败可以发布 unknown 正文并保留真实错误；提交失败不适用该例外。取消、删除与恢复按整次 processing 收敛，私有候选不取得展示权。 Publishing metadata 写失败须进入既有失败结算。终态写盘失败不能让已退出的执行者继续显示 Running：Manager 仍更新当前终态、结算子任务并清理私有候选；重启以 Store 已提交 processing 结果或既有失败/缺失候选事实收敛。失败意图未持久化时不发布首次 partial final，错误记固定日志，不新增重试队列。
 

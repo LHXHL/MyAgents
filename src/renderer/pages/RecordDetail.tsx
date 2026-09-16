@@ -1609,6 +1609,18 @@ export default function RecordDetail({
     ownsCaptureSlot && transcriptionStatus === 'failed';
   const completedTranscriptionFailed =
     !ownsCaptureSlot && (transcriptionStatus === 'failed' || record?.audio?.diarizationStatus === 'failed');
+  const diarizationStatus = record?.audio?.diarizationStatus;
+  const processingSavedAudio = !ownsCaptureSlot && !completedTranscriptionFailed
+    && (captureStatus === 'ready' || captureStatus === 'interrupted')
+    && (['queued', 'live', 'lagging', 'recovering', 'finalizing'].includes(transcriptionStatus ?? '')
+      || diarizationStatus === 'queued' || diarizationStatus === 'running');
+  const savedProcessingLabel = processingSavedAudio
+    ? diarizationStatus === 'running'
+      ? t('records.transcriptSpeakers')
+      : transcriptionStatus === 'queued' || transcriptionStatus === 'ready'
+        ? t('records.transcriptQueued')
+        : t('records.transcriptRefining')
+    : null;
   const systemAudioDowngraded = snapshot?.warnings.some(
     (warning) => warning.code === 'RECORDING_SYSTEM_AUDIO_UNAVAILABLE',
   );
@@ -1626,7 +1638,7 @@ export default function RecordDetail({
             ? t('records.interrupted')
             : captureStatus === 'failed' || transcriptionStatus === 'failed' || completedTranscriptionFailed
               ? t('records.failed')
-              : transcriptionStatus &&
+              : processingSavedAudio || transcriptionStatus &&
                   [
                     'queued',
                     'live',
@@ -1645,7 +1657,7 @@ export default function RecordDetail({
             captureStatus === 'failed' ||
             transcriptionStatus === 'failed' || completedTranscriptionFailed
           ? 'bg-[var(--error)]'
-          : ownsCaptureSlot
+          : ownsCaptureSlot || processingSavedAudio
             ? 'bg-[var(--warning)]'
             : 'bg-[var(--success)]';
   const playbackDurationMs = record?.audio?.mediaDurationMs ?? 0;
@@ -1656,6 +1668,7 @@ export default function RecordDetail({
   const showManualTranscription =
     !transcript &&
     !ownsCaptureSlot &&
+    !processingSavedAudio &&
     (transcriptionStatus === 'not_started' || modelPack?.usable === true);
   const canDiscuss =
     !ownsCaptureSlot &&
@@ -2095,7 +2108,7 @@ export default function RecordDetail({
               >
                 {liveTranscriptionFailed
                   ? t('records.transcriptLiveFailed')
-                  : transcriptionStatus === 'lagging' ||
+                  : savedProcessingLabel ?? (transcriptionStatus === 'lagging' ||
                       transcript?.state === 'lagging'
                     ? t('records.transcriptLagging')
                     : transcriptionStatus === 'recovering' ||
@@ -2112,7 +2125,7 @@ export default function RecordDetail({
                               'finalizing',
                             ].includes(transcriptionStatus)
                           ? t('records.transcriptPending')
-                          : null}
+                          : null)}
               </span>
               <span ref={recordActionsAnchorRef} className="flex shrink-0">
                 <DropdownMenu
@@ -2132,6 +2145,11 @@ export default function RecordDetail({
               />
             </div>
           </div>
+          {processingSavedAudio && (
+            <p className="mb-3 text-xs text-[var(--ink-muted)]">
+              {t('records.transcriptSavedHint')}
+            </p>
+          )}
           {(loadError || projectionError) && (
             <div
               role="alert"

@@ -433,6 +433,9 @@ struct LiveBoundary {
 #[derive(Default)]
 struct LiveControlState {
     flushes: VecDeque<LiveBoundary>,
+    /// Exact boundary acknowledged after VAD flush, not a transport ACK or
+    /// replay checkpoint. Survives unloading this live Worker's models.
+    flushed: Option<LiveBoundary>,
     finish: Option<LiveBoundary>,
     cancelled: bool,
     paused: bool,
@@ -521,6 +524,9 @@ impl LiveControl {
             cancelled: state.cancelled,
             paused: state.paused,
             suspend_requested: state.suspend_requested,
+            finish_is_flushed: state.finish.is_some()
+                && state.finish == state.flushed
+                && state.flushes.is_empty(),
         })
     }
 
@@ -528,6 +534,7 @@ impl LiveControl {
         if let Ok(mut state) = self.state.lock() {
             if state.flushes.front() == Some(boundary) {
                 state.flushes.pop_front();
+                state.flushed = Some(boundary.clone());
             }
         }
     }
@@ -563,6 +570,22 @@ struct LiveControlStateSnapshot {
     cancelled: bool,
     paused: bool,
     suspend_requested: bool,
+    finish_is_flushed: bool,
+}
+
+fn validate_live_admission(state: &ManagerState, record_id: &str) -> Result<(), &'static str> {
+    if state.live_sessions.contains_key(record_id) {
+        return Err("SPEECH_RECORD_LIVE_ALREADY_ACTIVE");
+    }
+    // Capture admission and inference settlement have different lifetimes.
+    // Finished recordings may still drain under the shared compute lease.
+    for session in state.live_sessions.values() {
+        let control = session.control.snapshot()?;
+        if control.finish.is_none() && !control.cancelled {
+            return Err("SPEECH_RECORD_LIVE_ALREADY_ACTIVE");
+        }
+    }
+    Ok(())
 }
 
 struct RunningWorker {
@@ -1354,6 +1377,7 @@ impl SpeechRecognitionManager {
         }
         state.queue.push_back(job.job_id.clone());
         state.jobs.insert(job.job_id.clone(), job.clone());
+        log_record_job(&job, "queued");
         Ok(job)
     }
 
@@ -1392,9 +1416,7 @@ impl SpeechRecognitionManager {
             if !state.accepting {
                 return Err("SPEECH_MANAGER_SHUTTING_DOWN".to_string());
             }
-            if state.live_sessions.contains_key(record_id) || !state.live_sessions.is_empty() {
-                return Err("SPEECH_RECORD_LIVE_ALREADY_ACTIVE".to_string());
-            }
+            validate_live_admission(&state, record_id).map_err(str::to_string)?;
             let resources = self.execution_resources().map_err(str::to_string)?;
             state.live_sessions.insert(
                 record_id.to_string(),
@@ -1654,6 +1676,11 @@ impl SpeechRecognitionManager {
         control.suspend_requested = false;
         control.pause_epoch = control.pause_epoch.saturating_add(1).max(1);
         control.finish = Some(boundary);
+        crate::ulog_info!(
+            "[speech] live finish requested recordId={} flushed={}",
+            record_id,
+            control.finish == control.flushed && control.flushes.is_empty()
+        );
         Ok(())
     }
 
@@ -1681,6 +1708,10 @@ impl SpeechRecognitionManager {
                 cancelled = true;
                 break;
             }
+            if control_snapshot.finish_is_flushed {
+                finished = true;
+                break;
+            }
             if control_snapshot.paused && control_snapshot.suspend_requested {
                 loop {
                     let snapshot = match control.snapshot() {
@@ -1694,7 +1725,7 @@ impl SpeechRecognitionManager {
                         cancelled = true;
                         break;
                     }
-                    if snapshot.finish.is_some() {
+                    if snapshot.finish_is_flushed {
                         finished = true;
                         break;
                     }
@@ -1725,6 +1756,11 @@ impl SpeechRecognitionManager {
             match control.snapshot() {
                 Ok(snapshot) if snapshot.cancelled => {
                     cancelled = true;
+                    drop(lease);
+                    break;
+                }
+                Ok(snapshot) if snapshot.finish_is_flushed => {
+                    finished = true;
                     drop(lease);
                     break;
                 }
@@ -1807,6 +1843,14 @@ impl SpeechRecognitionManager {
             }
         }
 
+        crate::ulog_info!(
+            "[speech] live settled recordId={} finished={} cancelled={} attempts={} failed={}",
+            record_id,
+            finished,
+            cancelled,
+            attempts,
+            terminal_error.is_some()
+        );
         self.clear_live_running(&record_id);
         self.remove_live_session(&record_id);
         for source in &sources {
@@ -2839,6 +2883,7 @@ impl SpeechRecognitionManager {
         state.queue.remove(queue_index);
         state.jobs.insert(job_id.clone(), job.clone());
         state.active_job = Some((job_id, generation));
+        log_record_job(&job, "started");
         state.next_generation = state.next_generation.saturating_add(1).max(1);
         Ok(Some((job, generation)))
     }
@@ -3749,7 +3794,10 @@ impl SpeechRecognitionManager {
             }
 
             match response {
-                WorkerResponse::Ready { .. } if !ready => ready = true,
+                WorkerResponse::Ready { .. } if !ready => {
+                    ready = true;
+                    log_record_job(job, "worker_ready");
+                }
                 WorkerResponse::Ready { .. } => {
                     return failed_outcome("SPEECH_WORKER_PROTOCOL_ERROR", true);
                 }
@@ -3985,6 +4033,7 @@ impl SpeechRecognitionManager {
             None
         };
         if let Some(snapshot) = snapshot {
+            log_record_job(&snapshot, "stage_changed");
             let _ = persist_job(&self.root, &snapshot);
         }
     }
@@ -4020,6 +4069,9 @@ impl SpeechRecognitionManager {
                 return;
             }
         };
+        crate::ulog_info!("[speech] worker completed recordId={} jobId={} generation={} kind={:?} workerElapsedMs={} sourceSamples={} segments={} speakers={}",
+            record_id, source_job.job_id, generation, source_job.kind, metrics.elapsed_ms,
+            metrics.source_samples, metrics.segments, metrics.speakers);
         let job_metrics = SpeechJobMetrics {
             source_samples: metrics.source_samples,
             segments: metrics.segments,
@@ -4067,6 +4119,7 @@ impl SpeechRecognitionManager {
                 return;
             }
             state.jobs.insert(waiting.job_id.clone(), waiting.clone());
+            log_record_job(&waiting, "waiting_for_speakers");
             if let Err(code) = enqueue_diarization_locked(&self.root, &mut state, &waiting) {
                 self.fail_record_processing_locked(&mut state, &waiting, code, false);
             } else {
@@ -5243,7 +5296,23 @@ fn emit_attachment_job(
     });
 }
 
+// Operational metadata only: never format source paths, model paths, user
+// text or Worker payloads. Wall time includes queueing; worker metrics do not.
+fn log_record_job(job: &SpeechJob, event: &'static str) {
+    let SpeechJobOrigin::Record { record_id } = &job.origin else {
+        return;
+    };
+    let at = job.finished_at.unwrap_or_else(Utc::now);
+    let wall_ms = (at - job.created_at).num_milliseconds().max(0);
+    let queue_ms = (job.started_at.unwrap_or(at) - job.created_at)
+        .num_milliseconds()
+        .max(0);
+    crate::ulog_info!("[speech] {} recordId={} jobId={} generation={:?} kind={:?} state={:?} stage={:?} wallMs={} queueMs={}",
+        event, record_id, job.job_id, job.worker_generation, job.kind, job.state, job.stage, wall_ms, queue_ms);
+}
+
 fn emit_speech_terminal(job: &SpeechJob) {
+    log_record_job(job, "terminal");
     let Some(outcome) = analytics_outcome(job.state) else {
         return;
     };
@@ -5418,6 +5487,7 @@ fn enqueue_diarization_locked(
     };
     persist_job_resolving_unknown(root, &job).map_err(|_| "SPEECH_JOB_STORE_WRITE_FAILED")?;
     state.queue.push_back(job.job_id.clone());
+    log_record_job(&job, "queued");
     state.jobs.insert(job.job_id.clone(), job);
     Ok(())
 }
@@ -8667,6 +8737,144 @@ mod tests {
         assert_eq!(
             persisted.audio.unwrap().transcription_status,
             TranscriptionStatus::Queued
+        );
+    }
+
+    #[test]
+    fn finished_live_registration_does_not_occupy_next_capture_admission() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = manager(&root);
+        let control = Arc::new(LiveControl::default());
+        let mut state = manager.state.lock().unwrap();
+        state.live_sessions.insert(
+            "previous-record".into(),
+            LiveSessionRegistration {
+                control: control.clone(),
+                tracks: vec![AudioTrackKind::Microphone],
+            },
+        );
+        assert!(validate_live_admission(&state, "next-record").is_err());
+        control.state.lock().unwrap().paused = true;
+        assert!(validate_live_admission(&state, "next-record").is_err());
+        control.state.lock().unwrap().finish = Some(LiveBoundary { offsets: vec![] });
+        assert_eq!(validate_live_admission(&state, "next-record"), Ok(()));
+        assert!(validate_live_admission(&state, "previous-record").is_err());
+        let next = Arc::new(LiveControl::default());
+        state.live_sessions.insert(
+            "next-record".into(),
+            LiveSessionRegistration {
+                control: next.clone(),
+                tracks: vec![AudioTrackKind::Microphone],
+            },
+        );
+        assert!(validate_live_admission(&state, "third-record").is_err());
+        next.state.lock().unwrap().cancelled = true;
+        assert_eq!(validate_live_admission(&state, "third-record"), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn stop_after_acknowledged_pause_flush_never_allocates_another_worker() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = manager(&root);
+        let record = manager
+            .record_store
+            .create_audio(AudioRecordCreateInput {
+                title: "Paused recording".into(),
+                tracks: vec![AudioTrackKind::Microphone],
+                transcription_status: TranscriptionStatus::Live,
+            })
+            .await
+            .unwrap();
+        let control = Arc::new(LiveControl::default());
+        let offsets = vec![RecordTranscriptTrackOffset {
+            track: AudioTrackKind::Microphone,
+            sample: 16_000,
+        }];
+        let boundary = LiveBoundary {
+            offsets: offsets.clone(),
+        };
+        {
+            let mut state = control.state.lock().unwrap();
+            state.paused = true;
+            state.suspend_requested = true;
+            state.flushes.push_back(boundary.clone());
+        }
+        control.complete_flush(&boundary);
+        manager.state.lock().unwrap().live_sessions.insert(
+            record.id.clone(),
+            LiveSessionRegistration {
+                control: control.clone(),
+                tracks: vec![AudioTrackKind::Microphone],
+            },
+        );
+        manager.finish_record_live(&record.id, offsets).unwrap();
+        let resources = SpeechExecutionResources {
+            worker_path: root.path().join("must-not-start-worker"),
+            native_manifest_path: root.path().join("unused-native"),
+            onnx_runtime_path: root.path().join("unused-runtime"),
+            model_pack_manifest_path: root.path().join("unused-model"),
+            provenance: RecordSpeechProvenance {
+                algorithm_revision: None,
+                provider: "local".into(),
+                model_pack_revision: "test".into(),
+                onnx_runtime_version: "test".into(),
+            },
+        };
+        let journal = manager
+            .record_store
+            .begin_live_transcript(&record.id, resources.provenance.clone())
+            .await
+            .unwrap();
+        let generation = manager.state.lock().unwrap().next_generation;
+        let runner = manager.clone();
+        let id = record.id.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            runner.run_live_session(id, vec![], resources, control, journal)
+        })
+        .await
+        .unwrap();
+        let state = manager.state.lock().unwrap();
+        assert_eq!(
+            state.next_generation, generation,
+            "already-flushed stop restarted inference"
+        );
+        assert!(!state.live_sessions.contains_key(&record.id));
+        assert!(state.live_running.is_none());
+    }
+
+    #[test]
+    fn only_exact_acknowledged_flush_can_finish_without_inference() {
+        let control = LiveControl::default();
+        let boundary = LiveBoundary {
+            offsets: vec![RecordTranscriptTrackOffset {
+                track: AudioTrackKind::Microphone,
+                sample: 16_000,
+            }],
+        };
+        {
+            let mut state = control.state.lock().unwrap();
+            state.flushes.push_back(boundary.clone());
+            state.finish = Some(boundary.clone());
+        }
+        assert!(!control.snapshot().unwrap().finish_is_flushed);
+        let mut stale = boundary.clone();
+        stale.offsets[0].sample = 8_000;
+        control.complete_flush(&stale);
+        assert!(!control.snapshot().unwrap().finish_is_flushed);
+        control.complete_flush(&boundary);
+        assert!(control.snapshot().unwrap().finish_is_flushed);
+        control
+            .state
+            .lock()
+            .unwrap()
+            .finish
+            .as_mut()
+            .unwrap()
+            .offsets[0]
+            .sample += 160;
+        assert!(
+            !control.snapshot().unwrap().finish_is_flushed,
+            "resume tail still needs inference"
         );
     }
 
