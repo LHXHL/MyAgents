@@ -1,4 +1,4 @@
-import type { ManagedProviderCredential, ModelAliases } from '../shared/config-types';
+import type { ManagedProviderCredential, ManagedProviderEndpoint, ModelAliases } from '../shared/config-types';
 
 /**
  * Runtime-neutral provider environment consumed across the Server provider domain.
@@ -20,4 +20,6 @@ export type ProviderEnv = {
   modelAliases?: ModelAliases;
   /** Non-secret owner reference. Bearers are resolved by the Bridge per request. */
   credentialSource?: ManagedProviderCredential;
+  /** Resolved only for the lifetime of an SDK Query; never persisted. */
+  endpointSource?: ManagedProviderEndpoint;
 };

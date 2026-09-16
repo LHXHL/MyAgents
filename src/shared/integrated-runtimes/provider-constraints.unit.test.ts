@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
   CODEX_SUBSCRIPTION_PROVIDER_ID,
   MANAGED_CODEX_PROVIDER,
   PRESET_PROVIDERS,
@@ -41,6 +42,16 @@ describe("Provider execution constraints", () => {
       runtimeId: "claude-agent-sdk",
       providerId: XAI_SUBSCRIPTION_PROVIDER_ID,
     });
+  });
+
+  it("keeps Antigravity on the SDK owner when DSH is available", () => {
+    const provider = preset(ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID);
+    expect(getProviderExecutionConstraint(provider)).toEqual({
+      kind: "requires-integrated-runtime",
+      runtimeId: "claude-agent-sdk",
+      providerId: ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
+    });
+    expect(isDshApiProviderEligible(provider)).toBe(false);
   });
 
   it("derives ordinary API families only from explicit protocol fields", () => {
@@ -93,7 +104,7 @@ describe("Provider execution constraints", () => {
     const deepseek = preset("deepseek");
     expect(isDshApiProviderEligible(deepseek)).toBe(true);
     expect(isDshApiModelSelectable(deepseek, "deepseek-v4-pro")).toBe(true);
-    expect(isDshApiModelSelectable(deepseek, "deepseek-v4-flash")).toBe(true);
+    expect(isDshApiModelSelectable(deepseek, "deepseek-flash")).toBe(true);
     expect(isDshApiModelSelectable(deepseek, "not-configured")).toBe(false);
     expect(isDshApiProviderEligible(preset("anthropic-sub"))).toBe(false);
   });

@@ -53,6 +53,10 @@ npm-debug.log*
 src-tauri/target/
 src-tauri/document-worker/target/
 src-tauri/media-worker/target/
+# Standalone tests of the shared library generate their own cache/lock.
+# Application and Worker lockfiles remain committed.
+src-tauri/media-worker-protocol/target/
+src-tauri/media-worker-protocol/Cargo.lock
 src-tauri/binaries/
 src-tauri/resources/server-dist.js
 src-tauri/resources/server-dist.js.map
@@ -69,12 +73,17 @@ src-tauri/resources/speech-inference/*
 !src-tauri/resources/speech-inference/.gitkeep
 src-tauri/resources/document-processing-cache/
 src-tauri/resources/tsx-runtime
+src-tauri/resources/npm-runtime-cache/
+src-tauri/resources/.npm-runtime-stage-*/
 src-tauri/resources/playwright-control
 src-tauri/resources/nodejs/*
 !src-tauri/resources/nodejs/.gitkeep
 src-tauri/resources/nodejs-cache/
 src-tauri/resources/integrated-runtimes/*
 !src-tauri/resources/integrated-runtimes/.gitkeep
+src-tauri/resources/cliproxy/
+src-tauri/resources/cliproxy-cache/
+src-tauri/resources/cuse-cache/
 src-tauri/resources/vcruntime140.dll
 src-tauri/resources/vcruntime140_1.dll
 src-tauri/nsis/Git-Installer.exe

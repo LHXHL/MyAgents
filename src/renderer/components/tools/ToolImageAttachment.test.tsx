@@ -7,6 +7,8 @@ import ToolImageAttachment from './ToolImageAttachment';
 
 vi.mock('@/context/TabContext', () => ({
   useTabStateOptional: () => ({ sessionId: 'session-a' }),
+  useTabApiOptional: () => null,
+  useTabActive: () => true,
 }));
 
 vi.mock('@/utils/toolAttachment', () => ({

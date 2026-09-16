@@ -3,6 +3,8 @@
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $false
 
+. (Join-Path $PSScriptRoot "download-build-file.ps1")
+
 $ProjectDir = Split-Path -Parent $PSScriptRoot
 $Runtime = Get-Content (Join-Path $PSScriptRoot "node-runtime.json") -Raw | ConvertFrom-Json
 $NodeVersion = $Runtime.node
@@ -52,7 +54,7 @@ try {
     $TempZip = Join-Path $TempDir $ZipName
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     Write-Host "Downloading Node.js $NodeVersion / npm $NpmVersion (win-x64)..." -ForegroundColor Cyan
-    Invoke-WebRequest -Uri "https://nodejs.org/dist/v$NodeVersion/$ZipName" -OutFile $TempZip -UseBasicParsing -TimeoutSec 300
+    Get-BuildDownload -Uri "https://nodejs.org/dist/v$NodeVersion/$ZipName" -OutFile $TempZip
     Expand-Archive -LiteralPath $TempZip -DestinationPath $TempDir -Force
     $ExtractedDir = Join-Path $TempDir "node-v$NodeVersion-win-x64"
     if (-not (Test-BundledNode $ExtractedDir)) { throw "Downloaded runtime does not match Node $NodeVersion / npm $NpmVersion (win-x64)" }

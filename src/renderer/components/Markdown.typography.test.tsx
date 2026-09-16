@@ -15,6 +15,15 @@ const codeBlockSource = readFileSync(
 );
 
 describe("Markdown typography contract", () => {
+  it("contributes content widths for short IDs, line breaks and long Chinese cells", () => {
+    const { container } = render(<Markdown raw>{"| 编号 | 成员 | 描述 |\n| --- | --- | --- |\n| 01 | 张明<br>产品经理 | 完成需求分析并整理用户反馈和功能优先级 |"}</Markdown>);
+    const cells = container.querySelectorAll("tbody td");
+    expect([...cells].map(cell => cell.getAttribute("data-table-sizing"))).toEqual([
+      "01", "张明\n产品经理", "完成需求分析并整理用户反馈和功能优先级",
+    ]);
+    expect(cells[0].textContent).toBe("01");
+    expect(cells[1].querySelectorAll("br")).toHaveLength(1);
+  });
   it("uses one default rhythm for normal chat and document rendering", () => {
     const { container } = render(
       <Markdown raw>
@@ -54,7 +63,7 @@ describe("Markdown typography contract", () => {
     expect(root?.querySelector("blockquote")).toHaveClass(
       "markdown-blockquote",
     );
-    expect(root?.querySelector("table")?.parentElement).toHaveClass(
+    expect(root?.querySelector("table")?.closest(".markdown-table")).toHaveClass(
       "markdown-table",
       "max-w-full",
     );
@@ -102,17 +111,47 @@ describe("Markdown typography contract", () => {
       /\.markdown-content\s*\{[\s\S]*?--markdown-list-block-gap:\s*var\(--space-2\)/,
     );
     expect(markdownStyles).toMatch(
-      /\.markdown-content\s*\{[\s\S]*?--markdown-list-item-gap:\s*var\(--space-1-5\)/,
+      /\.markdown-content\s*\{[\s\S]*?--markdown-list-item-gap:\s*var\(--space-1\)/,
     );
     expect(markdownStyles).toMatch(
-      /\.markdown-content\s*\{[\s\S]*?--markdown-list-indent:\s*var\(--space-8\)/,
+      /\.markdown-content\s*\{[\s\S]*?--markdown-list-indent:\s*var\(--space-6\)/,
     );
     expect(markdownStyles).toMatch(
       /\.markdown-list\s*\{[\s\S]*?margin-inline-start:\s*var\(--markdown-list-indent\)/,
     );
     expect(markdownStyles).toMatch(
-      /\.markdown-strong\s*\{[\s\S]*?font-weight:\s*600/,
+      /\.markdown-strong\s*\{[\s\S]*?font-weight:\s*var\(--font-weight-emphasis\)/,
     );
+  });
+
+  it("preserves GFM column alignment on both headers and cells", () => {
+    const { container } = render(<Markdown raw>{"| Name | State | Value |\n| :--- | :---: | ---: |\n| OpenAI | Ready | 100 |"}</Markdown>);
+    for (const tag of ["th", "td"]) {
+      const cells = container.querySelectorAll(tag);
+      expect(cells[0]).toHaveStyle({ textAlign: "left" });
+      expect(cells[1]).toHaveStyle({ textAlign: "center" });
+      expect(cells[2]).toHaveStyle({ textAlign: "right" });
+    }
+  });
+
+  it("preserves sanitized footnote headings and safe content-extension semantics", () => {
+    const { container } = render(<Markdown raw>{[
+      "Text with a footnote[^one].", "", "[^one]: Readable footnote.", "",
+      '<details open><summary>More information</summary><p><mark>Highlight</mark> <kbd>Ctrl</kbd></p></details>',
+      '', '<mark style="position:fixed" onclick="alert(1)">Safe highlight</mark>',
+    ].join("\n")}</Markdown>);
+    const footnotes = container.querySelector("[data-footnotes]");
+    const label = footnotes?.querySelector("h2");
+    expect(label).toHaveClass("sr-only");
+    expect(label?.id).toBe("user-content-footnote-label");
+    expect(container.querySelector("[data-footnote-ref]")).toHaveAttribute("aria-describedby", label?.id);
+    expect(container.querySelector("details")).toHaveAttribute("open");
+    expect(container.querySelector("summary")).toHaveTextContent("More information");
+    expect(container.querySelector("kbd")).toHaveTextContent("Ctrl");
+    for (const mark of container.querySelectorAll("mark")) {
+      expect(mark).not.toHaveAttribute("style");
+      expect(mark).not.toHaveAttribute("onclick");
+    }
   });
 
   it("preserves GFM task-list classes so checkboxes replace list markers", () => {

@@ -9,6 +9,20 @@ import {
 } from './providerHistory';
 
 describe('provider resume boundary', () => {
+  it('keeps managed history stable before binding and across proxy restarts', () => {
+    const reference = { providerId: 'antigravity-sub', model: 'tested-model', apiProtocol: 'anthropic' as const,
+      endpointSource: { kind: 'cliproxy' as const, providerId: 'antigravity-sub' as const } };
+    const first = { ...reference, baseUrl: 'http://127.0.0.1:14001', apiKey: 'old-local-key' };
+    const restarted = { ...reference, baseUrl: 'http://127.0.0.1:14002', apiKey: 'new-local-key' };
+    expect(getProviderHistoryIdentity(reference)).toBe('third-party');
+    expect(canResumeAcrossProviderBoundary(reference, first)).toBe(true);
+    expect(canResumeAcrossProviderBoundary(first, restarted)).toBe(true);
+    expect(canResumeAcrossProviderBoundary(reference, undefined)).toBe(false);
+    expect(getProviderHistoryIsolationCandidates(reference)).toEqual(getProviderHistoryIsolationCandidates(restarted));
+    const policy = { isolatedKeys: new Set(['provider:antigravity-sub']) };
+    expect(getProviderHistoryIdentity(reference, policy)).toBe(getProviderHistoryIdentity(restarted, policy));
+    expect(canResumeAcrossProviderBoundary(first, { ...restarted, model: 'another-model' }, policy)).toBe(false);
+  });
   it('treats Anthropic subscription and official API as one signed-history family', () => {
     expect(getProviderHistoryIdentity(undefined)).toBe('anthropic');
     expect(getProviderHistoryIdentity({ baseUrl: 'https://api.anthropic.com/' })).toBe('anthropic');

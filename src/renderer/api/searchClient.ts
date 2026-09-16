@@ -8,16 +8,21 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import type { SessionMetadata } from './sessionClient';
 
 // ── Types ──────────────────────────────────────────────────────────
 
 export interface SessionSearchResult {
+    queryId: string;
+    nextCursor: number | null;
+    removedSessionIds: string[];
     hits: SessionSearchHit[];
     totalCount: number;
     queryTimeMs: number;
 }
 
 export interface SessionSearchHit {
+    session: SessionMetadata;
     sessionId: string;
     title: string;
     agentDir: string;
@@ -84,15 +89,29 @@ export interface FileMatchLine {
  * Search session history (title + content).
  * Global scope — searches across all workspaces.
  */
-export async function searchSessions(
-    query: string,
-    limit = 50,
-    tag?: string | null,
-): Promise<SessionSearchResult> {
-    if (!query.trim()) {
-        return { hits: [], totalCount: 0, queryTimeMs: 0 };
-    }
-    return invoke<SessionSearchResult>('cmd_search_sessions', { query, limit, tag: tag ?? null });
+export interface SessionSearchRequest {
+    consumerId: string;
+    generation: number;
+    query: string;
+    tag: string | null;
+    workspaces: string[];
+}
+
+export function searchSessions(request: SessionSearchRequest): Promise<SessionSearchResult> {
+    return invoke<SessionSearchResult>('cmd_search_sessions', { request });
+}
+
+export function searchSessionPage(request: {
+    consumerId: string;
+    generation: number;
+    queryId: string;
+    cursor: number;
+}): Promise<SessionSearchResult> {
+    return invoke<SessionSearchResult>('cmd_search_session_page', { request });
+}
+
+export function closeSessionSearch(consumerId: string, generation: number): Promise<void> {
+    return invoke('cmd_close_session_search', { consumerId, generation });
 }
 
 /** Search canonical Records from the Rust-owned derived index. */

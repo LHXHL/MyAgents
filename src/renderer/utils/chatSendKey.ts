@@ -29,7 +29,7 @@ export interface EnterKeyModifiers {
  * - `'enter'` (default): a bare Enter sends; Shift+Enter and ⌘/Ctrl+Enter newline.
  * - `'modEnter'`        : ⌘/Ctrl+Enter sends; bare Enter and Shift+Enter newline.
  *
- * Callers MUST first rule out IME composition (see {@link isImeComposingEvent})
+ * Callers MUST first rule out IME composition (`imeKeyboard.isImeComposingEvent`)
  * — a CJK candidate-commit arrives as Enter and must never send (cf. #123).
  */
 export function resolveEnterKeyAction(
@@ -43,18 +43,6 @@ export function resolveEnterKeyAction(
   }
   // 'enter': only a truly bare Enter sends.
   return !mods.shiftKey && !modHeld ? 'send' : 'newline';
-}
-
-/**
- * True when a keydown is part of an IME composition (CJK candidate selection),
- * which surfaces as Enter (keyCode 229 on legacy WebKit/Android) and must never
- * trigger a send. Structural arg keeps it unit-testable without a real event.
- */
-export function isImeComposingEvent(e: {
-  nativeEvent: { isComposing?: boolean };
-  keyCode?: number;
-}): boolean {
-  return Boolean(e.nativeEvent?.isComposing) || e.keyCode === 229;
 }
 
 /**

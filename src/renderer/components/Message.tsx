@@ -1,3 +1,4 @@
+import AsyncQuestionCard from '@/components/AsyncQuestionCard';
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, Copy, Check, Undo2, RotateCcw, GitBranch, Download } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -209,7 +210,7 @@ function AssistantActions({ message, onRetry, onFork, className = '' }: {
   };
 
   return (
-    <div className={`group/actions flex min-h-7 w-full items-center gap-2 -ml-1 pt-1 ${className}`}>
+    <div className={`group/actions flex min-h-8 w-full items-center gap-1 -ml-2 pt-1 ${className}`}>
       <Tip label={copied ? t('message.actions.copied') : t('message.actions.copy')}>
         <button type="button"
           aria-label={t('message.actions.copy')}
@@ -225,7 +226,7 @@ function AssistantActions({ message, onRetry, onFork, className = '' }: {
               toast?.error(t('fileActions.copyFailed'));
             }
           }}
-          className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
+          className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
           {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
         </button>
       </Tip>
@@ -233,7 +234,7 @@ function AssistantActions({ message, onRetry, onFork, className = '' }: {
         <button type="button"
           aria-label={t('message.actions.exportMarkdown')}
           onClick={handleExport}
-          className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
+          className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
           <Download className="size-3.5" />
         </button>
       </Tip>
@@ -242,7 +243,7 @@ function AssistantActions({ message, onRetry, onFork, className = '' }: {
           <button type="button"
             aria-label={t('message.actions.retry')}
             onClick={() => onRetry(message.id)}
-            className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
+            className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
             <RotateCcw className="size-3.5" />
           </button>
         </Tip>
@@ -252,7 +253,7 @@ function AssistantActions({ message, onRetry, onFork, className = '' }: {
           <button type="button"
             aria-label={t('message.actions.fork')}
             onClick={() => onFork(message.id)}
-            className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
+            className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
             <GitBranch className="size-3.5" />
           </button>
         </Tip>
@@ -322,20 +323,8 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
   const userContentRef = useRef<HTMLDivElement>(null);
   const [userOverflows, setUserOverflows] = useState(() => initialUserCollapsed);
 
-  // Delay AssistantActions rendering on the STREAMING message only.
-  // Uses isLoading (not isStreaming) so that HISTORY messages (isLoading=false always)
-  // keep their actions visible at all times. This prevents a massive layout shift
-  // when streaming ends: previously all N history messages toggled actions simultaneously
-  // (~30px × N ≈ 1500+px in long sessions), overwhelming scroll anchoring.
-  const [actionsReady, setActionsReady] = useState(!isLoading);
-  useEffect(() => {
-    if (!isLoading) {
-      const timer = setTimeout(() => setActionsReady(true), 350);
-      return () => clearTimeout(timer);
-    }
-    setActionsReady(false); // eslint-disable-line react-hooks/set-state-in-effect -- synchronous reset is intentional: streaming just started, actions must hide immediately
-  }, [isLoading]);
-
+  // Actions join the terminal commit. Delaying their mount introduces a second
+  // height change after the loading footer has already disappeared.
   useEffect(() => {
     return () => {
       if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
@@ -450,7 +439,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
           {/* 用户与 AI 正文都由 Markdown 默认变体承载 16px/1.625；article 的
               text-base 只负责气泡内非 Markdown prose fallback。 */}
           <div className="group/user-actions flex w-fit max-w-[85%] flex-col items-end">
-            <article className="relative w-fit max-w-full rounded-2xl border border-[var(--line)] bg-[var(--message-user-bg)] p-4 text-base text-[var(--ink)] select-text">
+            <article className="relative w-fit max-w-full rounded-2xl bg-[var(--message-user-bg)] p-4 text-base text-[var(--ink)] select-text">
               {/* System injection tag badge */}
               {systemTag && (
                 <div className="mb-2 -mt-0.5">
@@ -507,7 +496,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
                     <button type="button"
                       aria-label={t('message.actions.rewind')}
                       onClick={() => onRewind(message.id)}
-                      className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
+                      className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
                       <Undo2 className="size-3.5" />
                     </button>
                   </Tip>
@@ -527,7 +516,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
                       toast?.error(t('fileActions.copyFailed'));
                     }
                   }}
-                  className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
+                  className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
                   {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
                 </button>
               </Tip>
@@ -559,7 +548,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
               <Markdown streaming={isLoading && !!message.streamingTextActive}>{message.content}</Markdown>
             </div>
           )}
-          {actionsReady && !isLoading && <AssistantActions message={message} onRetry={onRetry} onFork={onFork} />}
+          {!isLoading && <AssistantActions message={message} onRetry={onRetry} onFork={onFork} />}
         </div>
       </div>
     );
@@ -612,6 +601,12 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
             {groupedBlocks.map((item, index) => {
               // Single text block — may contain <widget> tags for inline rendering
               if (!Array.isArray(item)) {
+                if (item.type === 'text' && item.asyncQuestions) {
+                  return <div key={index} className="w-full px-1">
+                    {item.text && <Markdown>{item.text}</Markdown>}
+                    <AsyncQuestionCard questions={item.asyncQuestions} />
+                  </div>;
+                }
                 if (item.type === 'text' && item.text) {
                   // Check for <widget> tags in the text
                   if (hasWidgetTags(item.text)) {
@@ -679,7 +674,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
             })}
           </div>
         </article>
-        {actionsReady && !isLoading && <AssistantActions className="px-4" message={message} onRetry={onRetry} onFork={onFork} />}
+        {!isLoading && <AssistantActions className="px-4" message={message} onRetry={onRetry} onFork={onFork} />}
       </div>
     </div>
   );

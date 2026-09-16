@@ -1,3 +1,4 @@
+import { createLegacySession } from './fixtures/session-store';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -49,7 +50,7 @@ afterAll(() => {
 
 describe('Session transcript partial append convergence', () => {
   it('truncates a provable operation prefix back to the old EOF and returns a usable cursor', async () => {
-    const session = await store.createSession('/tmp/partial-append');
+    const session = await createLegacySession(store, '/tmp/partial-append');
     const snapshot = await store.loadSessionTranscript(session.id);
     appendFault.failNext = true;
 

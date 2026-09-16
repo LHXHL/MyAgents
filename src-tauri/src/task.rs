@@ -1924,6 +1924,22 @@ impl TaskStore {
         body: &str,
         reply_to_comment_id: Option<&str>,
     ) -> Result<TaskComment, String> {
+        self.create_user_comment_with_session_probe(
+            task_id,
+            body,
+            reply_to_comment_id,
+            session_metadata_exists,
+        )
+        .await
+    }
+
+    pub(crate) async fn create_user_comment_with_session_probe(
+        &self,
+        task_id: &str,
+        body: &str,
+        reply_to_comment_id: Option<&str>,
+        session_exists: impl Fn(&str) -> bool,
+    ) -> Result<TaskComment, String> {
         self.ensure_writable()?;
         let body = Self::validate_comment_body(body)?;
         let guard = self.inner.write().await;
@@ -1941,12 +1957,12 @@ impl TaskStore {
             task.session_ids
                 .iter()
                 .rev()
-                .find(|session_id| session_metadata_exists(session_id))
+                .find(|session_id| session_exists(session_id))
                 .cloned()
                 .or_else(|| {
                     task.preselected_session_id
                         .as_ref()
-                        .filter(|session_id| session_metadata_exists(session_id))
+                        .filter(|session_id| session_exists(session_id))
                         .cloned()
                 })
         };

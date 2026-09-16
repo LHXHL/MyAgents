@@ -9,6 +9,7 @@ use crate::utils::bom::strip_bom;
 const CODEX_SUBSCRIPTION_PROVIDER_ID: &str = "codex-sub";
 const ANTHROPIC_SUBSCRIPTION_PROVIDER_ID: &str = "anthropic-sub";
 const XAI_SUBSCRIPTION_PROVIDER_ID: &str = "xai-sub";
+const ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID: &str = "antigravity-sub";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeIdentity {
@@ -356,7 +357,11 @@ fn resolve_agent_runtime_identity_by_id_with_policy(
     }
     if matches!(
         provider_id,
-        Some(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID | XAI_SUBSCRIPTION_PROVIDER_ID)
+        Some(
+            ANTHROPIC_SUBSCRIPTION_PROVIDER_ID
+                | XAI_SUBSCRIPTION_PROVIDER_ID
+                | ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID
+        )
     ) {
         return Some(admit_runtime_identity_for(
             RuntimeIdentity::new(Some("builtin"), None),
@@ -988,6 +993,11 @@ mod tests {
                     "runtimePreference": { "family": "integrated", "id": "dsh" }
                 },
                 {
+                    "id": "antigravity",
+                    "providerId": ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
+                    "runtimePreference": { "family": "integrated", "id": "dsh" }
+                },
+                {
                     "id": "managed",
                     "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID,
                     "runtimePreference": { "family": "integrated", "id": "dsh" }
@@ -1009,6 +1019,12 @@ mod tests {
         assert_eq!(
             resolve_agent_runtime_identity_by_id_from_value(&config, "anthropic-sub")
                 .expect("Claude constraint")
+                .runtime,
+            "builtin"
+        );
+        assert_eq!(
+            resolve_agent_runtime_identity_by_id_from_value(&config, "antigravity")
+                .expect("Antigravity constraint")
                 .runtime,
             "builtin"
         );
@@ -1051,6 +1067,10 @@ mod tests {
                     "providerId": ANTHROPIC_SUBSCRIPTION_PROVIDER_ID
                 },
                 {
+                    "id": "antigravity-subscription",
+                    "providerId": ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID
+                },
+                {
                     "id": "managed-codex",
                     "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID
                 }
@@ -1063,7 +1083,11 @@ mod tests {
         assert_eq!(ordinary.runtime, "dsh");
         assert_eq!(ordinary.runtime_source.as_deref(), Some("integrated"));
 
-        for agent_id in ["claude-subscription", "managed-codex"] {
+        for agent_id in [
+            "claude-subscription",
+            "antigravity-subscription",
+            "managed-codex",
+        ] {
             let identity =
                 resolve_agent_runtime_identity_by_id_with_policy(&config, agent_id, &policy)
                     .expect("incompatible Provider identity");

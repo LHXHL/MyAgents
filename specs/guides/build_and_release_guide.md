@@ -1,19 +1,24 @@
 # MyAgents 构建与发布指南
 
+setup / build 分工、业务构建去重与缓存失效规则见 [构建资源准备与复用](../tech_docs/build_resource_preparation.md)。
+
 本文档描述 MyAgents 的构建流程、发布流程以及分发渠道的完整信息。
 
 ---
 
 ## 概览
 
-MyAgents 支持 **macOS** 和 **Windows** 平台：
+MyAgents 提供以下平台构建入口；Ubuntu 的交付范围与验收要求见对应指南：
 
 | 平台 | 架构 | 构建脚本 | 发布脚本 |
 |------|------|---------|---------|
 | macOS | ARM64 (M1/M2), x86_64 (Intel) | `build_macos.sh` | `publish_release.sh` |
 | Windows | x86_64 | `build_windows.ps1` | `publish_windows.ps1` |
+| Ubuntu 24.04 | x86_64 | `build_linux.sh` | 暂无自动发布脚本；手动分发 deb |
 
 > **Windows 用户**：请参阅 [Windows 构建与测试指南](./windows_build_guide.md)
+>
+> **Ubuntu 用户**：请参阅 [Ubuntu 24.04 x64 构建与验收](./linux_build_guide.md)，其中列明当前功能边界与真实桌面验收要求。
 
 本文档主要描述 **macOS** 版本的构建流程。macOS 支持 Apple Silicon (ARM64) 和 Intel (x86_64) 两种架构。
 
@@ -70,7 +75,7 @@ myagents-releases/
 2. 检查依赖（Rust 通过 `rustup` 使用仓库 `rust-toolchain.toml` 固定版本、Node.js、codesign；任一 macOS 架构的原生推理资源冷构建额外检查 Git、Python ≥ 3.10、CMake ≥ 3.28 与 Apple Clang）
 3. 配置生产环境 CSP
 4. TypeScript 类型检查
-5. 构建前端和服务端代码
+5. 通过 `build:assets` 一次构建前端、Sidecar、Bridge 与 CLI，双架构共用该结果；后续 Tauri 调用关闭本次业务构建钩子
 6. 签名 Vendor 二进制文件 (ripgrep 等)
 7. 构建 Tauri 应用 (Release + 签名 + 公证)
 8. 恢复开发配置
@@ -210,7 +215,7 @@ Runtime set 是按平台分片补发的：macOS 主机默认发布 `darwin-arm64
 
 ### publish_speech_model_set.sh
 
-**用途**：把当前 App/Worker 已编译锁定的标准语音模型资源与签名清单发布到 R2。当前 `local-standard-speech-v2` 将四个模型 asset 和三个 remote legal source 放在 `models/speech/assets/sha256/<sha256>/<filename>` 的 content-addressed 第一方路径；manifest 目录仍只使用 pack revision，JSON 内的 `schemaVersion: 1` 是 manifest schema，因此文件名不重复带 `-v1` / `-v2`。
+**用途**：把当前 App/Worker 已编译锁定的标准语音模型资源与签名清单发布到 R2。当前 `local-standard-speech-v3` 将四个模型 asset 和三个 remote legal source 放在 `models/speech/assets/sha256/<sha256>/<filename>` 的 content-addressed 第一方路径；manifest 目录仍只使用 pack revision，JSON 内的 `schemaVersion: 1` 是 manifest schema，因此文件名不重复带 `-v1` / `-v2`。v3 从同一 pyannote archive 选择 FP32 文件，发布新 revision 的签名清单；不能修改已发布 v2 清单。
 
 本地可用 unsigned 模式验证输出路径与逐字节 identity，但该产物不能发布，也不会被 App 接受：
 
@@ -467,3 +472,10 @@ npx tauri signer generate -w ~/.tauri/myagents.key
 ### Cuse 桌面操作 Skill
 
 Mac 正式/开发构建会按目标拉取并校验 Cuse 完整 Skill+CLI，再对 CLI 使用客户端身份签名。Windows 构建使用独立 Windows 包。资源随 App 更新，全局关闭状态保留；协议、低层构建准备命令和校验规则见 [Cuse bundle](../tech_docs/cuse_bundle.md)。
+
+
+### 原生资源的构建与测试架构
+
+CLIProxy 的 setup、开发/发布构建和 CI 共用 `scripts/prepare-cliproxy.mjs`，默认消费仓库签名快照并自动下载锁定资源，完整摘要缓存可离线使用；不要求开发者生成发布清单或持有组件签名密钥。组件更新及显式本地 distribution 用法见 [CLIProxy 操作手册](../tech_docs/managed_cliproxy.md)。
+
+Speech 的 adapter 按目标架构编译。本机 target 冷构建启用 `BUILD_TESTING=ON` 并执行 CTest，任一测试失败即中止；跨架构构建使用 `BUILD_TESTING=OFF`，输出 `NOT RUN` 及目标/宿主，不尝试执行目标二进制，不要求 Rosetta 或模拟器。比如 Apple Silicon 上 Both 的 Intel 阶段只做目标编译/链接/资源校验，其运行测试应在 Intel 环境完成；跨编译成功不等于 Intel 运行验证通过。命中完整 prepared cache 时沿既有规则直接复用产物，并不重复声明测试通过。

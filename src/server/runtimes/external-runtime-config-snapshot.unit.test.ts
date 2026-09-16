@@ -6,6 +6,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../SessionStore', () => ({
+  activateSessionTranscript: vi.fn(async () => undefined),
+  getActiveSessionTranscript: vi.fn(() => undefined),
   getSessionMetadata: vi.fn(() => mocks.metadata),
   getSessionData: vi.fn(() => mocks.data),
   resolvePendingConversationMutation: vi.fn(async () => ({

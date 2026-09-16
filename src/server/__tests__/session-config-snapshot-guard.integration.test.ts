@@ -32,7 +32,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // other SessionStore exports real so agent-session's import graph is intact.
 vi.mock('../SessionStore', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../SessionStore')>();
-  return { ...actual, getSessionMetadata: vi.fn(), updateSessionMetadata: vi.fn() };
+  return { ...actual, getSessionMetadata: vi.fn(), updateSessionMetadata: vi.fn(),
+    updateSessionMetadataForBinding: (...args: unknown[]) => vi.mocked(updateSessionMetadata)(...args as Parameters<typeof updateSessionMetadata>),
+  };
 });
 
 import { getSessionMetadata, updateSessionMetadata } from '../SessionStore';
@@ -59,11 +61,11 @@ import { resetProductSessionBinding } from '../session-engine/product-session-bi
 const getMeta = vi.mocked(getSessionMetadata);
 const updateMeta = vi.mocked(updateSessionMetadata);
 
-beforeEach(() => {
+beforeEach(async () => {
   // This fixture exercises Session-sidecar setters directly, outside the real
   // bootstrap that normally establishes the product Session binding. Importing
   // shared server modules no longer mints that identity on Global's behalf.
-  resetProductSessionBinding({ sessionId: 'snapshot-guard-session' });
+  await resetProductSessionBinding({ sessionId: 'snapshot-guard-session' });
   resetConfigForTest();
   updateMeta.mockResolvedValue(null);
 });

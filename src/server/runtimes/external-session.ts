@@ -1,5 +1,12 @@
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 import type { RuntimeAgentWorkControl } from '../../shared/types/subagent-lifecycle';
+import {
+  asyncQuestionSetsInContent,
+  sameAsyncQuestionReply,
+  type AsyncQuestionSet,
+  type AsyncQuestionReply,
+} from '../../shared/asyncUserQuestions';
+import { getExternalPendingMessageOperations } from './external-session/operation-queue';
 // External Runtime Session Handler (v0.1.59)
 //
 // Manages the lifecycle of an external CLI runtime session (Claude Code, Codex).
@@ -15,6 +22,8 @@ import {
   flushPendingLiveEvents,
 } from '../sse';
 import { participatesInLiveRestore } from '../../shared/liveRevision';
+import { prepareToolPresentationEvent } from '../session-transcript/tool-transport';
+import { toClientTranscriptOperation } from '../session-transcript/client';
 import { killWithEscalation } from './utils/kill-with-escalation';
 import { InactivityWatchdog } from '../utils/inactivity-watchdog';
 import {
@@ -63,7 +72,10 @@ import type {
   AskUserQuestionInput,
   AskUserQuestion,
 } from '../../shared/types/askUserQuestion';
-import { withQuestionTextAnswerKeys, questionAnswersAsText } from '../../shared/types/askUserQuestion';
+import {
+  withQuestionTextAnswerKeys,
+  questionAnswersAsText,
+} from '../../shared/types/askUserQuestion';
 import {
   getExternalRuntime,
   getCurrentRuntimeSource,
@@ -114,7 +126,6 @@ import {
   beginDshRewindMutation,
   commitDshForkProduct,
   commitDshRewindProduct,
-  deleteSession,
   recordPreparedDshFork,
   recordPreparedDshRewind,
   requestDshForkAbort,
@@ -123,10 +134,13 @@ import {
   settleDshRootOperation,
   settleDshInput,
   stageDshForkProduct,
+  publishForkSession,
   updateSessionMetadata,
   getSessionMetadata,
   getSessionData,
   loadSessionTranscript,
+  activateSessionTranscript,
+  getActiveSessionTranscript,
 } from '../SessionStore';
 import { firePostTurnTitleHook } from '../turn-hooks';
 import {
@@ -159,6 +173,7 @@ import {
 import { trySyncProjectUserConfigFiles } from '../utils/project-user-config-sync';
 import type {
   MessageUsage,
+  SessionMetadata,
   SessionMessage,
   TurnAnalyticsSource,
 } from '../types/session';
@@ -168,7 +183,10 @@ import {
   replayDshProductInput,
 } from '../session-engine/dsh-root-operation';
 import type { SystemInitInfo } from '../../shared/types/system';
-import type { SubagentLifecycle } from '../../shared/types/subagent-lifecycle';
+import {
+  finalizeResidualSubagentCall,
+  type SubagentLifecycle,
+} from '../../shared/types/subagent-lifecycle';
 import { trackServer } from '../analytics';
 import {
   addUsageTotals,
@@ -332,6 +350,7 @@ import {
   getExternalSystemInitPayloadSnapshot,
   getExternalUserRequestedStop,
   getExternalLiveRevision,
+  getExternalRuntimeGeneration,
   isExternalLifecycleRunning,
   isExternalLifecycleStarting,
   markExternalUserRequestedStop,
@@ -347,11 +366,14 @@ import {
   setExternalLifecycleState,
   setExternalPrewarmingSession,
   setExternalMcpEffectiveSnapshot,
+  getExternalMcpEffectiveSnapshot,
+  invalidateExternalMcpEffectiveSnapshot,
   setExternalRuntimeSessionId,
   setExternalSystemInitPayload,
   updateExternalLifecycleStartingSessionId,
 } from './external-session/lifecycle';
 export { getExternalMcpEffectiveSnapshot } from './external-session/lifecycle';
+import type { McpRetryResult } from '../../shared/mcpFailure';
 import {
   originAnalyticsFields,
   originFromTurnAttribution,
@@ -433,6 +455,7 @@ import {
   applyExternalProviderToolResult,
   applyExternalReplayedToolResultToContent,
   applyExternalSubagentLifecycle,
+  mergeSubagentLifecycle,
   applyExternalSubagentAttachmentUpdate,
   applyExternalSubagentToolResult as applyExternalSubagentToolResultToContent,
   applyExternalToolAttachmentUpdate,
@@ -475,8 +498,8 @@ import {
   getExternalSessionMessageCount,
   getExternalSessionMessagesSnapshot,
   getExternalTranscriptSessionId,
+  getExternalProductContent,
   getLastPersistedRuntimeUsageTotals,
-  persistExternalForkTranscript,
   persistExternalUserMessageAppend,
   pushExternalSessionMessage,
   removeAndPersistExternalSessionMessage,
@@ -485,6 +508,11 @@ import {
   setLastPersistedRuntimeUsageTotals,
   truncateExternalTranscriptForRetry,
 } from './external-session/transcript-persistence';
+import { TranscriptPresentation } from '../session-transcript/presentation';
+import {
+  toStoredTranscriptMessage,
+  type TranscriptObject,
+} from '../../shared/sessionTranscript';
 import {
   addExternalTurnAttachmentHint,
   clearExternalInboxMetaOnRejection,
@@ -658,6 +686,11 @@ function pendingExternalProcessConfigRestartReasons(): string[] {
   ];
 }
 
+function invalidateExternalMcpProjection(): void {
+  const snapshot = invalidateExternalMcpEffectiveSnapshot();
+  if (snapshot) broadcast('chat:mcp-effective-snapshot', snapshot);
+}
+
 function applyPendingExternalProcessConfigInvalidation(
   preservePromotion?: ExternalTurnPromotionToken | null,
 ): Promise<void> {
@@ -680,6 +713,7 @@ function applyPendingExternalProcessConfigInvalidation(
       if (desired) setExternalLifecycleScenario(desired.scenario);
     };
     if (!hasExternalRuntimeProcess()) {
+      invalidateExternalMcpProjection();
       promoteManagedCodexScenario();
       console.log(
         `[external-session] External runtime config invalidation already satisfied by process exit: ${reasons.join(',')}`,
@@ -701,9 +735,11 @@ function applyPendingExternalProcessConfigInvalidation(
           `External runtime process did not stop for config change: ${reasons.join(',')}`,
         );
       }
+      invalidateExternalMcpProjection();
       promoteManagedCodexScenario();
     } catch (error) {
       if (!hasExternalRuntimeProcess()) {
+        invalidateExternalMcpProjection();
         promoteManagedCodexScenario();
         return;
       }
@@ -958,6 +994,37 @@ function notifyExternalMessageDispatchAccepted(
   onDispatchAccepted?.();
 }
 
+async function admitExternalAsyncQuestionReply(
+  operation: ExternalMessageOperation,
+  generation: number,
+  onDispatchAccepted: (() => void) | undefined,
+  persist: () => Promise<void>,
+): Promise<void> {
+  if (
+    !isCurrentExternalOperationGeneration(generation) ||
+    operation.context.sessionId !== getExternalLifecycleSessionId() ||
+    operation.userProjection.retracted
+  )
+    return;
+  pushExternalSessionMessage(operation.userProjection.message);
+  markExternalUserMessageInTranscript(operation);
+  notifyExternalMessageDispatchAccepted(
+    operation,
+    operation.context.sessionId,
+    onDispatchAccepted,
+  );
+  try {
+    await persist();
+  } catch (error) {
+    // Native admission already succeeded. Keep the accepted live projection;
+    // the existing transcript append path can persist its tail at turn end.
+    console.error(
+      '[external-session] Failed to persist accepted async question answer:',
+      error,
+    );
+  }
+}
+
 async function retractRejectedExternalUserMessage(
   operation: ExternalMessageOperation,
 ): Promise<void> {
@@ -1164,6 +1231,7 @@ function surfaceRealtimeSteeredUserMessage(
       content: entry.text,
       timestamp: userMsg.timestamp,
       attachments: userMsg.attachments,
+      asyncQuestionReply: userMsg.asyncQuestionReply,
     },
   });
   return persistence;
@@ -1177,6 +1245,23 @@ function surfaceAcceptedRealtimeSteeredUserMessage(
   return surfaceRealtimeSteeredUserMessage(entry);
 }
 
+function finalizeUnconfirmedRealtimeSteeredUserMessage(
+  entry: PendingRealtimeSteeredUserMessage,
+): Promise<boolean> {
+  if (entry.operation.context.asyncQuestionReply) {
+    // A steer RPC ack says transport succeeded, not that this answer was consumed.
+    markExternalUserMessageRetracted(entry.operation);
+    broadcast('queue:cancelled', { queueId: entry.queueId });
+    broadcast('chat:agent-error', {
+      message: 'The runtime did not confirm the answer. Please try again.',
+    });
+    return Promise.resolve(false);
+  } else {
+    // Preserve the existing compatibility fallback for ordinary messages.
+    return surfaceRealtimeSteeredUserMessage(entry);
+  }
+}
+
 function surfaceAcknowledgedPendingRealtimeSteeredUserMessages(): void {
   for (let index = 0; index < pendingRealtimeSteeredUserMessages.length; ) {
     const entry = pendingRealtimeSteeredUserMessages[index];
@@ -1185,7 +1270,7 @@ function surfaceAcknowledgedPendingRealtimeSteeredUserMessages(): void {
       continue;
     }
     pendingRealtimeSteeredUserMessages.splice(index, 1);
-    void surfaceRealtimeSteeredUserMessage(entry);
+    void finalizeUnconfirmedRealtimeSteeredUserMessage(entry);
   }
 }
 
@@ -1251,7 +1336,59 @@ function bindExternalSessionContext(
   bindExternalLifecycleSessionContext(input);
 }
 
+let transcriptPresentation: TranscriptPresentation | undefined;
+
+function getTranscriptPresentation(): TranscriptPresentation | undefined {
+  const content = getExternalProductContent();
+  if (!content) return undefined;
+  if (transcriptPresentation?.content !== content) {
+    transcriptPresentation = new TranscriptPresentation(
+      content,
+      (operation) => {
+        const projected = toClientTranscriptOperation(operation);
+        if (projected)
+          broadcast('chat:transcript-operation', {
+            sessionId: content.writer.status.sessionId,
+            generation: content.writer.status.generation,
+            instanceId: content.writer.status.instanceId,
+            operation: projected,
+          });
+      },
+      (target) => {
+        const sessionId = content.writer.status.sessionId;
+        // Eligibility belongs to the channel owner at this block's completion.
+        // Resolve its text only when the terminal owner releases delivery, so
+        // complete-frame corrections/retractions cannot send the stale partial.
+        stageExternalAssistantChannelDelivery(async () => {
+          const text = content.readBlock(target)?.text;
+          if (typeof text === 'string' && text)
+            await mirrorIfChannelBound({ sessionId, role: 'assistant', text });
+        });
+      },
+    );
+  }
+  return transcriptPresentation;
+}
+
 function broadcast(event: string, data: unknown): void {
+  // Results are recorded from the full native content before asynchronous spill;
+  // the SSE preview must never replace that canonical value.
+  if (!/^chat:(?:subagent-)?tool-result-(?:start|complete)$/.test(event)) {
+    getTranscriptPresentation()?.record(event, data);
+  }
+  if (
+    getExternalProductContent() &&
+    /^chat:(?:(?:subagent-)?tool-|server-tool-|content-block-stop)/.test(
+      event,
+    ) &&
+    data &&
+    typeof data === 'object'
+  ) {
+    publishExternalToolPresentation(event, data as Record<string, unknown>);
+  } else publishExternalUiEvent(event, data);
+}
+
+function publishExternalUiEvent(event: string, data: unknown): void {
   const payloadSessionId =
     data &&
     typeof data === 'object' &&
@@ -1267,6 +1404,33 @@ function broadcast(event: string, data: unknown): void {
     return;
   }
   broadcastSse(event, data);
+}
+
+function publishExternalToolPresentation(
+  event: string,
+  data: Record<string, unknown>,
+): void {
+  const product = getExternalProductContent();
+  const session = getExternalLifecycleSessionId();
+  const events = prepareToolPresentationEvent(event, data, session);
+  const deliver = (items: typeof events.immediate) => {
+    if (
+      product &&
+      getActiveSessionTranscript(session)?.writer !== product.writer
+    )
+      return;
+    for (const item of items) publishExternalUiEvent(item.event, item.data);
+  };
+  deliver(events.immediate);
+  void events.deferred?.then(deliver);
+}
+
+export function publishExternalTranscriptSaveStatus(
+  status: import('../../shared/sessionTranscript').TranscriptSaveStatus,
+): void {
+  const active = getExternalProductContent();
+  if (active?.writer.status.instanceId === status.instanceId)
+    broadcast('chat:transcript-save-status', status);
 }
 
 function emitRuntimeDiagnosticLogEntry(entry: RuntimeDiagnosticLogEntry): void {
@@ -1517,6 +1681,7 @@ function handleSubagentToolUseStart(
   parentToolUseId: string,
   event: Extract<UnifiedEvent, { kind: 'tool_use_start' }>,
 ): void {
+  if (!getExternalProductContent())
   startExternalSubagentToolUse({
     parentToolUseId,
     toolUseId: event.toolUseId,
@@ -1590,6 +1755,45 @@ function finalizeExternalSubagentLifecycleProjection(
       update.lifecycle,
     );
   }
+  const product = getExternalProductContent();
+  if (!product?.currentTurn) return;
+  for (const message of product.writer.projection.messages.values()) {
+    if (
+      message.turnId !== product.currentTurn.id ||
+      !Array.isArray(message.content)
+    )
+      continue;
+    for (const block of message.content) {
+      const tool = block.tool as TranscriptObject | undefined;
+      if (!tool?.subagentLifecycle) continue;
+      const lifecycle = tool.subagentLifecycle as unknown as SubagentLifecycle;
+      if (lifecycle.status === 'running' && typeof tool.id === 'string')
+        broadcastExternalSubagentLifecycle(
+          tool.id,
+          mergeSubagentLifecycle(lifecycle, status, observedAt),
+        );
+      if (!Array.isArray(tool.subagentCalls)) continue;
+      for (const value of tool.subagentCalls) {
+        if (!value || typeof value !== 'object' || Array.isArray(value))
+          continue;
+        if (typeof value.id !== 'string' || value.isLoading !== true) continue;
+        const target = product.tool(value.id);
+        if (target)
+          product.updateTool(
+            target,
+            finalizeResidualSubagentCall(
+              {
+                isLoading: true,
+                ...(typeof value.result === 'string'
+                  ? { result: value.result }
+                  : {}),
+              },
+              status,
+            ),
+          );
+      }
+    }
+  }
 }
 
 type SubagentTraceName = 'AgentMessage' | 'Thinking';
@@ -1607,8 +1811,11 @@ function ensureSubagentTraceCall(
   toolUseId: string,
   name: SubagentTraceName,
 ): void {
+  const product = getExternalProductContent();
   if (
-    !startExternalSubagentTraceTool({
+    product
+      ? Boolean(product.tool(toolUseId))
+      : !startExternalSubagentTraceTool({
       parentToolUseId,
       toolUseId,
       toolName: name,
@@ -1639,6 +1846,7 @@ function appendSubagentTraceDelta(
     name,
   );
   ensureSubagentTraceCall(parentToolUseId, toolUseId, name);
+  if (!getExternalProductContent())
   appendExternalSubagentTraceDeltaToContent({
     parentToolUseId,
     toolUseId,
@@ -1680,12 +1888,31 @@ function completeSubagentTrace(
     event.traceId,
     name,
   );
-  const completed = completeExternalSubagentTraceContent({
-    parentToolUseId,
-    toolUseId,
-  });
+  const product = getExternalProductContent();
+  const target = product?.tool(toolUseId);
+  const tool = target ? product!.readTool(target) : undefined;
+  const completed = product
+    ? tool
+      ? {
+          latchedParentToolUseId: parentToolUseId,
+          content: typeof tool.result === 'string' ? tool.result : '',
+        }
+      : null
+    : completeExternalSubagentTraceContent({ parentToolUseId, toolUseId });
   if (!completed) return true; // scoped stop with no emitted content; swallow it
 
+  if (target) {
+    product!.updateTool(target, { isLoading: false }, true);
+  }
+
+  if (product) {
+    publishExternalToolPresentation('chat:subagent-tool-result-complete', {
+      parentToolUseId,
+      toolUseId,
+      content: completed.content,
+    });
+    return true;
+  }
   applySubagentToolResult(completed.latchedParentToolUseId, {
     kind: 'tool_result',
     toolUseId,
@@ -1736,10 +1963,22 @@ type ExternalTextMirrorDisposition =
 
 /** Flush accumulated text into a text content block. Only completed blocks
  * enter the turn owner's ordered mirror delivery tail. */
-function flushPendingText(disposition: ExternalTextMirrorDisposition): void {
+function flushPendingText(
+  disposition: ExternalTextMirrorDisposition,
+  asyncQuestions?: AsyncQuestionSet,
+): void {
+  const presentation = getTranscriptPresentation();
+  if (presentation) {
+    presentation.closeText(
+      asyncQuestions
+        ? { asyncQuestions: asyncQuestions as unknown as TranscriptObject }
+        : {},
+    );
+    return;
+  }
   const completedText = getExternalPendingTextBuffer();
-  if (!flushExternalPendingTextBlock()) return;
-  if (disposition === 'skip-incomplete-block') return;
+  if (!flushExternalPendingTextBlock(asyncQuestions)) return;
+  if (disposition === 'skip-incomplete-block' || !completedText) return;
   const sessionId = getExternalLifecycleSessionId();
   stageExternalAssistantChannelDelivery(() =>
     mirrorIfChannelBound({
@@ -1784,13 +2023,23 @@ function pendingBirthForSession(
     : null;
 }
 
+/** The pre-warm owner has already confirmed a missing product birth. Ordinary
+ * resume and generic allow-missing requests still require their cold identity. */
+function getExternalSessionMetadata(sessionId: string): SessionMetadata | null {
+  const active = getActiveSessionTranscript(sessionId);
+  if (active) return active.metadata;
+  return pendingBirthForSession(sessionId)
+    ? null
+    : getSessionMetadata(sessionId);
+}
+
 function clearPendingExternalSessionBirth(sessionId: string): void {
   if (pendingExternalSessionBirth?.sessionId === sessionId) {
     pendingExternalSessionBirth = null;
   }
 }
 
-async function persistUserMessageBeforeRuntimeDispatch(params: {
+async function persistExternalUserMessageAdmission(params: {
   sessionId: string;
   workspacePath: string;
   messageText: string;
@@ -2055,7 +2304,7 @@ async function ensureExternalSessionMetadataForRealUserTurn(params: {
   }
 
   const pendingBirth = pendingBirthForSession(sessionId);
-  const existing = getSessionMetadata(sessionId);
+  const existing = getExternalSessionMetadata(sessionId);
   if (existing) {
     const runtimeSessionId = pendingBirth?.runtimeSessionId;
     if (existing.materializationState === 'prepared') {
@@ -2149,7 +2398,11 @@ async function ensureExternalSessionMetadataForRealUserTurn(params: {
 }
 
 function flushPendingThinking(forceComplete: boolean): void {
-  flushExternalPendingThinkingBlock(forceComplete);
+  const presentation = getTranscriptPresentation();
+  if (presentation) {
+    presentation.closeThinking();
+    resetExternalPendingThinking();
+  } else flushExternalPendingThinkingBlock(forceComplete);
 }
 
 function closePendingThinkingProjection(): void {
@@ -2173,6 +2426,7 @@ function flushAllPending(
 ): void {
   flushPendingText(textMirrorDisposition);
   closePendingThinkingProjection();
+  if (getExternalProductContent()) return;
   for (const interrupted of flushExternalPendingToolInputsForTurn()) {
     applySubagentToolResult(interrupted.parentToolUseId, {
       kind: 'tool_result',
@@ -2533,13 +2787,15 @@ function consumeExternalTurnUsage(): MessageUsage | undefined {
 }
 
 function currentExternalTurnTextSnapshot(): string {
+  if (getExternalProductContent())
+    return getLastExternalAssistantTextFromTranscript();
   const blockText = getExternalContentBlockText();
   return blockText || getExternalAssistantText().trim();
 }
 
 function consumeExternalTurnMetrics(): {
   durationMs?: number;
-  usage?: { inputTokens: number; outputTokens: number };
+  usage?: MessageUsage;
 } {
   const turnStartTime = getExternalTurnStartTime();
   const durationMs = turnStartTime
@@ -2548,14 +2804,7 @@ function consumeExternalTurnMetrics(): {
   const usage = consumeExternalTurnUsage();
   return {
     ...(durationMs !== undefined ? { durationMs } : {}),
-    ...(usage
-      ? {
-          usage: {
-            inputTokens: usage.inputTokens,
-            outputTokens: usage.outputTokens,
-          },
-        }
-      : {}),
+    ...(usage ? { usage } : {}),
   };
 }
 
@@ -2574,6 +2823,13 @@ function notifyFailedExternalTurn(
   text: string,
   error: string,
 ): SessionCompletionTerminal | null {
+  const metrics = consumeExternalTurnMetrics();
+  const product = getExternalProductContent();
+  if (product) {
+    getTranscriptPresentation()?.closeText();
+    getTranscriptPresentation()?.closeThinking();
+    product.finishTurn('error', { ...metrics, completionState: 'partial', terminalStatus: 'error', runtimeTurnAnchor: getExternalRuntimeTurnAnchor() ?? undefined });
+  }
   const completionTerminal = recordExternalCompletionTerminal('error');
   const activityFacts = getExternalTurnActivityFacts();
   const finalization = persistExternalTerminalActivity(
@@ -2587,7 +2843,15 @@ function notifyFailedExternalTurn(
       success: false,
       text,
       error,
-      ...consumeExternalTurnMetrics(),
+      durationMs: metrics.durationMs,
+      ...(metrics.usage
+        ? {
+            usage: {
+              inputTokens: metrics.usage.inputTokens,
+              outputTokens: metrics.usage.outputTokens,
+            },
+          }
+        : {}),
     },
     finalization,
   );
@@ -2635,6 +2899,12 @@ function finalizeStoppedExternalTurn(
   metrics: ReturnType<typeof consumeExternalTurnMetrics>,
   publishCompletion = true,
 ): SessionCompletionTerminal | null {
+  const product = getExternalProductContent();
+  if (product) {
+    getTranscriptPresentation()?.closeText();
+    getTranscriptPresentation()?.closeThinking();
+    product.finishTurn('stopped', { ...metrics, completionState: 'partial', terminalStatus: 'stopped', runtimeTurnAnchor: getExternalRuntimeTurnAnchor() ?? undefined });
+  }
   const completionTerminal = publishCompletion
     ? recordExternalCompletionTerminal('stopped')
     : null;
@@ -2644,7 +2914,21 @@ function finalizeStoppedExternalTurn(
     text,
   ).finally(() => clearExternalTurnActivityFacts(activityFacts));
   trackExternalTurnFinalization(finalization);
-  notifyExternalTurnStopped(text, metrics, finalization);
+  notifyExternalTurnStopped(
+    text,
+    {
+      durationMs: metrics.durationMs,
+      ...(metrics.usage
+        ? {
+            usage: {
+              inputTokens: metrics.usage.inputTokens,
+              outputTokens: metrics.usage.outputTokens,
+            },
+          }
+        : {}),
+    },
+    finalization,
+  );
   return completionTerminal;
 }
 
@@ -2718,6 +3002,7 @@ export async function restoreExternalSessionState(
   // 2. CC session (no runtimeSessionId, but has runtime + messages) → sessionId (CC uses our ID)
   // 3. Brand new session (no messages, or no metadata) → empty string → sendExternalMessage hits Case 1 (fresh start)
   const meta = getSessionMetadata(sessionId);
+  await activateSessionTranscript(sessionId);
   const transcript = await loadSessionTranscript(sessionId);
   const hasExistingMessages = transcript.messages.length > 0;
   const currentRuntimeType = getCurrentRuntimeType();
@@ -2910,10 +3195,9 @@ async function applyRuntimeConfigFieldAtBoundary(
     console.warn(
       `[external-session] external-config ${mode} failed: field=${key} runtime=${active.runtime.type ?? getCurrentRuntimeType()} sessionId=${getExternalLifecycleSessionId() || '(none)'} error=${message}`,
     );
-    if (
-      mode === 'live_session_rpc' &&
-      (key === 'model' || key === 'permissionMode')
-    ) {
+    // Both native RPC and next-turn setters can reject unsupported policy.
+    // Never dispatch under the previous (possibly broader) permissions.
+    if (key === 'model' || key === 'permissionMode') {
       return `${key} ${mode} failed: ${message}`;
     }
     warnings.push(`${key} ${mode} failed: ${message}`);
@@ -3183,10 +3467,13 @@ export function getExternalNativeSessionId(): string {
   return getExternalRuntimeSessionId();
 }
 
-export function isExternalSessionStateRestoredFor(sessionId: string): boolean {
+export async function isExternalSessionStateRestoredFor(
+  sessionId: string,
+): Promise<boolean> {
   if (getExternalLifecycleSessionId() !== sessionId) return false;
   if (getExternalTranscriptSessionId() !== sessionId) return false;
-  const diskMessages = getSessionData(sessionId)?.messages ?? [];
+  if (getActiveSessionTranscript(sessionId)) return true;
+  const diskMessages = (await getSessionData(sessionId))?.messages ?? [];
   const memoryMessages = getExternalSessionMessagesSnapshot();
   if (memoryMessages.length < diskMessages.length) return false;
   const diskMatchesMemoryPrefix = diskMessages.every(
@@ -3232,6 +3519,15 @@ export function getExternalLiveAssistantMessage(): SessionMessage | null {
   if (!lifecycleSessionId || getExternalLifecycleState() !== 'running') {
     return null;
   }
+  const product = getExternalProductContent();
+  if (product) {
+    const message = product.currentAssistantId
+      ? product.writer.projection.messages.get(product.currentAssistantId)
+      : undefined;
+    return message?.transcriptState === 'streaming'
+      ? toStoredTranscriptMessage(message)
+      : null;
+  }
   const content = buildCurrentAssistantSnapshotContent();
   if (!content) {
     return null;
@@ -3249,7 +3545,7 @@ function persistExternalPartialAssistantProjection(
   terminalStatus: 'stopped' | 'error',
 ): Promise<void> {
   const content = buildCurrentAssistantSnapshotContent();
-  if (!content) return Promise.resolve();
+  if (!content && !getExternalProductContent()) return Promise.resolve();
   const turnStartTime = getExternalTurnStartTime();
   const persistence = appendAndPersistExternalAssistantTurn({
     sessionId: getExternalLifecycleSessionId(),
@@ -3283,14 +3579,21 @@ export function getExternalLiveSessionSnapshot(targetSessionId: string): {
   inMemoryMessages: SessionMessage[];
   liveStreamingMessage: SessionMessage | null;
   liveSessionState: ExternalSessionState;
+  queuedMessages: ReturnType<typeof getExternalQueueStatus>;
   pendingInteractiveRequests: ExternalPendingInteractiveRequest[];
 } | null {
   if (targetSessionId !== getCurrentExternalBoundSessionId()) return null;
   flushPendingLiveEvents();
-  const inMemoryMessages =
+  const liveStreamingMessage = getExternalLiveAssistantMessage();
+  let inMemoryMessages =
     getExternalTranscriptSessionId() === targetSessionId
       ? getExternalSessionMessagesSnapshot()
       : [];
+  if (getActiveSessionTranscript(targetSessionId) && liveStreamingMessage) {
+    inMemoryMessages = inMemoryMessages.filter(
+      (message) => message.id !== liveStreamingMessage.id,
+    );
+  }
   for (const pending of getExternalPendingUserMessageProjections(
     targetSessionId,
   )) {
@@ -3301,8 +3604,9 @@ export function getExternalLiveSessionSnapshot(targetSessionId: string): {
   return structuredClone({
     snapshotRevision: getExternalLiveRevision(),
     inMemoryMessages,
-    liveStreamingMessage: getExternalLiveAssistantMessage(),
+    liveStreamingMessage,
     liveSessionState: getExternalLifecycleState(),
+    queuedMessages: getExternalQueueStatus(),
     pendingInteractiveRequests: getExternalInteractiveRequestsSnapshot(),
   });
 }
@@ -3402,7 +3706,7 @@ function buildCurrentManagedCodexExtensionSnapshot(input?: {
     throw new Error('Product extension configuration has no workspace owner');
   }
   const sessionId = getExternalLifecycleSessionId();
-  const metadata = sessionId ? getSessionMetadata(sessionId) : null;
+  const metadata = sessionId ? getExternalSessionMetadata(sessionId) : null;
   const sessionMcpServers = input?.mcpServers
     ? [...input.mcpServers]
     : getProductExtensionSessionMcpServers();
@@ -3713,7 +4017,9 @@ export async function handleExternalMcpServersChange(
     };
   }
   try {
-    const metadata = sessionId ? getSessionMetadata(sessionId) : null;
+    if (!workspacePath)
+      throw new Error('Managed Codex MCP configuration has no workspace owner');
+    const metadata = sessionId ? getExternalSessionMetadata(sessionId) : null;
     const authoritative = resolveWorkspaceConfig(workspacePath, metadata, {
       includeMcp: true,
     }).mcpServers;
@@ -3905,10 +4211,9 @@ export async function handleExternalProxyConfigChange(input: {
   const usesProcessProxyEnv =
     // Integrated DSH Shell always consumes the general owner. The terminal
     // envPolicy belongs only to external CLI runtimes.
-    runtimeType === 'dsh' || (
-      runtimeSource !== 'managed-provider' &&
-      (activeExternalEnvPolicy?.proxy ?? 'myagents') === 'myagents'
-    );
+    runtimeType === 'dsh' ||
+    (runtimeSource !== 'managed-provider' &&
+      (activeExternalEnvPolicy?.proxy ?? 'myagents') === 'myagents');
   const oldKey = usesManagedProviderProxy
     ? input.oldManagedProviderKey
     : input.oldProcessEnvKey;
@@ -3986,7 +4291,7 @@ export async function handleExternalOfficialToolIdsChange(
   const workspacePath = getExternalLifecycleWorkspacePath();
   const requestedIds = getEffectiveOfficialToolIdsForSession(
     workspacePath,
-    sessionId ? getSessionMetadata(sessionId) : null,
+    sessionId ? getExternalSessionMetadata(sessionId) : null,
     ids,
   );
   const appliedIds = getExternalActiveOfficialToolIds() ?? [];
@@ -4219,7 +4524,7 @@ async function _doStartExternalSession(options: {
   //
   // Generative-UI widget guidance is universal (no MCP equivalent) and is
   // injected unconditionally for desktop scenarios via buildWidgetSection().
-  const existingMetadataAtStart = getSessionMetadata(options.sessionId);
+  const existingMetadataAtStart = getExternalSessionMetadata(options.sessionId);
   const enabledOfficialToolIds = getEffectiveOfficialToolIdsForSession(
     options.workspacePath,
     existingMetadataAtStart,
@@ -4425,6 +4730,8 @@ async function _doStartExternalSession(options: {
   }
 
   let turnAdmissionActivated = false;
+  const initialOperationGeneration = getExternalOperationGeneration();
+  let persistInitialQuestionReply: (() => Promise<void>) | undefined;
   const admitInitialMessage = async (): Promise<string | undefined> => {
     if (!options.initialMessage || turnAdmissionActivated) return;
     const messageOperation = options.messageOperation;
@@ -4455,7 +4762,7 @@ async function _doStartExternalSession(options: {
     const activityFacts = options.activityFacts ?? {
       origin: turnAnalyticsOrigin,
       inputText: options.initialMessage,
-      systemMaintenanceKind: getSessionMetadata(options.sessionId)
+      systemMaintenanceKind: getExternalSessionMetadata(options.sessionId)
         ?.systemMaintenanceKind,
     };
     setExternalTurnActivityFacts(activityFacts);
@@ -4463,8 +4770,10 @@ async function _doStartExternalSession(options: {
       ? new Date().toISOString()
       : undefined;
     const userMsg = messageOperation.userProjection.message;
+    if (!messageOperation.context.asyncQuestionReply) {
     pushExternalSessionMessage(userMsg);
     markExternalUserMessageInTranscript(messageOperation);
+    }
     resetTurnAccumulators();
     seedTurnWatchdogEstimate();
     resetWatchdog();
@@ -4477,11 +4786,13 @@ async function _doStartExternalSession(options: {
         options.turnBinding.onTerminal,
       );
     }
+    if (!messageOperation.context.asyncQuestionReply) {
     notifyExternalMessageDispatchAccepted(
       messageOperation,
       options.sessionId,
       options.onDispatchAccepted,
     );
+    }
     turnAdmissionActivated = true;
     currentTurnAnalyticsSource = turnAnalyticsSource;
     currentTurnAnalyticsOrigin = turnAnalyticsOrigin;
@@ -4492,10 +4803,11 @@ async function _doStartExternalSession(options: {
     // SessionStore enforces the index⟺data invariant (issue #336): a JSONL is
     // never CREATED for a session without a sessions.json entry — persisting
     // first would get the write refused and drop the user's first message.
-    await persistUserMessageBeforeRuntimeDispatch({
+    const persistInitialMessage = () =>
+      persistExternalUserMessageAdmission({
       sessionId: options.sessionId,
       workspacePath: options.workspacePath,
-      messageText: options.initialMessage,
+        messageText: messageOperation.text,
       origin: 'initial message',
       scenario: options.scenario,
       turnPath: options.resumeSessionId ? 'resume-start' : 'fresh-start',
@@ -4509,6 +4821,11 @@ async function _doStartExternalSession(options: {
       userChannelProjection,
       runtimeImages: options.initialImages,
     });
+    if (messageOperation.context.asyncQuestionReply) {
+      persistInitialQuestionReply = persistInitialMessage;
+    } else {
+      await persistInitialMessage();
+    }
     assertExternalTurnPromotionCurrent(options.dispatchPromotion ?? null);
     return messageOperation.userProjection.message.id;
   };
@@ -4617,8 +4934,32 @@ async function _doStartExternalSession(options: {
         dshProductQueuedBytes -= eventBytes;
       });
   };
-  const startOnce = (resumeId: string | undefined): Promise<RuntimeProcess> =>
-    runtime.startSession(
+  let currentEventReceiver: ((event: UnifiedEvent) => void) | undefined;
+  const nativeGeneration = getExternalRuntimeGeneration();
+  const startOnce = (resumeId: string | undefined): Promise<RuntimeProcess> => {
+    let writer = getActiveSessionTranscript(options.sessionId)?.writer;
+    const receive = (event: UnifiedEvent): void => {
+      writer ??= getActiveSessionTranscript(options.sessionId)?.writer;
+      if (getExternalLifecycleSessionId() !== options.sessionId) return;
+      if (
+        writer &&
+        getActiveSessionTranscript(options.sessionId)?.writer !== writer
+      )
+        return;
+      // An accepted attachment job can finish after the native process exits.
+      // Its captured product owner still authorizes an update to that old tool.
+      const productAttachment =
+        event.kind === 'tool_attachment_update' && writer;
+      if (
+        !productAttachment &&
+        (currentEventReceiver !== receive ||
+          getExternalRuntimeGeneration() !== nativeGeneration)
+      )
+        return;
+      receiveRuntimeEvent(event);
+    };
+    currentEventReceiver = receive;
+    return runtime.startSession(
       {
         sessionId: options.sessionId,
         workspacePath: options.workspacePath,
@@ -4642,8 +4983,9 @@ async function _doStartExternalSession(options: {
         managedCodexExtensions: managedCodexExtensionSnapshot,
         dshExtensions: dshExtensionSnapshot,
       },
-      receiveRuntimeEvent,
+      receive,
     );
+  };
 
   let startedProcess: RuntimeProcess | null = null;
   let terminalSettledByStop = false;
@@ -4868,6 +5210,14 @@ async function _doStartExternalSession(options: {
           clientOperationId: options.messageOperation?.dshClientOperationId,
         },
       );
+      if (options.messageOperation && persistInitialQuestionReply) {
+        await admitExternalAsyncQuestionReply(
+          options.messageOperation,
+          initialOperationGeneration,
+          options.onDispatchAccepted,
+          persistInitialQuestionReply,
+        );
+      }
     }
     console.log(
       `[external-session] ${runtimeType} process started, pid=${process.pid}`,
@@ -5136,7 +5486,19 @@ async function runExternalMessageOperation(
       await retractRejectedExternalUserMessage(operation);
       throw error;
     }
+  }).then(
+    (result) => {
+      settleExternalMessageOperation(operation, result);
+      return result;
+    },
+    (error) => {
+      settleExternalMessageOperation(operation, {
+        queued: false,
+        error: error instanceof Error ? error.message : String(error),
   });
+      throw error;
+    },
+  );
 }
 
 export async function sendExternalMessage(
@@ -5496,7 +5858,7 @@ async function dispatchExternalMessageOperation(
     origin: turnAnalyticsOrigin,
     inputText: text,
     systemMaintenanceKind:
-      getSessionMetadata(activitySessionId)?.systemMaintenanceKind,
+      getExternalSessionMetadata(activitySessionId)?.systemMaintenanceKind,
   };
 
   // PRD 0.2.18 Session Inbox — bind per-turn inbox meta + reset attachment hints
@@ -5588,7 +5950,11 @@ async function dispatchExternalMessageOperation(
         skillAdmission,
         requiredSystemSkill: context.requiredSystemSkill,
       });
-      return { queued: true };
+      return {
+        queued:
+          !operation.context.asyncQuestionReply ||
+          operation.userProjection.surfaced,
+      };
     } catch (err) {
       if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
       if (err instanceof ExternalTurnPromotionCanceledError)
@@ -5671,7 +6037,11 @@ async function dispatchExternalMessageOperation(
         skillAdmission,
         requiredSystemSkill: context?.requiredSystemSkill,
       });
-      return { queued: true };
+      return {
+        queued:
+          !operation.context.asyncQuestionReply ||
+          operation.userProjection.surfaced,
+      };
     } catch (err) {
       if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
       if (err instanceof ExternalTurnPromotionCanceledError)
@@ -5708,6 +6078,7 @@ async function dispatchExternalMessageOperation(
   }
   let runtimeDispatchStarted = false;
   let turnAdmissionActivated = false;
+  const operationGeneration = getExternalOperationGeneration();
   try {
     assertExternalTurnPromotionCurrent(dispatchPromotion);
     const applyResult = await applyExternalRuntimeConfigToActiveProcess(
@@ -5742,8 +6113,10 @@ async function dispatchExternalMessageOperation(
     const admissionActivityAt = shouldRecordAdmissionActivity(activityFacts)
       ? new Date().toISOString()
       : undefined;
+    if (!operation.context.asyncQuestionReply) {
     pushExternalSessionMessage(userMsg);
     markExternalUserMessageInTranscript(operation);
+    }
     setExternalTurnCompleted(false);
     setExternalLastTurnSucceeded(false); // Reset for this turn (prevents stale text on failure)
     resetTurnAccumulators();
@@ -5770,11 +6143,13 @@ async function dispatchExternalMessageOperation(
     if (dispatchPromotion) {
       finishExternalTurnPromotion(dispatchPromotion, { status: 'dispatched' });
     }
+    if (!operation.context.asyncQuestionReply) {
     notifyExternalMessageDispatchAccepted(
       operation,
       getExternalLifecycleSessionId(),
       onDispatchAccepted,
     );
+    }
     turnAdmissionActivated = true;
     setExternalSessionState('running');
 
@@ -5787,8 +6162,9 @@ async function dispatchExternalMessageOperation(
     // Normally this happens inside startExternalSession's initialMessage block,
     // but pre-warm calls startExternalSession WITHOUT an initialMessage, so we
     // have to register here when the first actual message arrives via Case 3.
-    await persistUserMessageBeforeRuntimeDispatch({
-      sessionId: getExternalLifecycleSessionId(),
+    const persistUserMessage = () =>
+      persistExternalUserMessageAdmission({
+        sessionId: operation.context.sessionId,
       workspacePath: getExternalLifecycleWorkspacePath(),
       messageText: text,
       origin: 'first message after pre-warm',
@@ -5804,8 +6180,9 @@ async function dispatchExternalMessageOperation(
       userChannelProjection,
       runtimeImages: resolvedImages,
     });
+    if (!operation.context.asyncQuestionReply) await persistUserMessage();
     if (activeProcess.exited || getExternalActiveProcess() !== activeProcess) {
-      return { queued: true };
+      return { queued: !operation.context.asyncQuestionReply };
     }
     runtimeDispatchStarted = true;
     await activeRuntime.sendMessage(
@@ -5817,7 +6194,19 @@ async function dispatchExternalMessageOperation(
         clientOperationId: operation.dshClientOperationId,
       },
     );
-    return { queued: true };
+    if (operation.context.asyncQuestionReply) {
+      await admitExternalAsyncQuestionReply(
+        operation,
+        operationGeneration,
+        onDispatchAccepted,
+        persistUserMessage,
+      );
+    }
+    return {
+      queued:
+        !operation.context.asyncQuestionReply ||
+        operation.userProjection.surfaced,
+    };
   } catch (err) {
     if (
       !runtimeDispatchStarted &&
@@ -5825,7 +6214,11 @@ async function dispatchExternalMessageOperation(
       (getExternalUserRequestedStop() ||
         getExternalActiveProcess() !== activeProcess)
     ) {
-      return { queued: true };
+      return {
+        queued:
+          !operation.context.asyncQuestionReply ||
+          operation.userProjection.surfaced,
+      };
     }
     if (err instanceof ExternalTurnPromotionCanceledError) {
       if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
@@ -5934,10 +6327,12 @@ async function steerExternalMessageForDesktop(input: {
       input.context.sessionId,
     )?.runtimeSessionId;
     if (!owner || !runtimeSessionId)
-      return { result: {
-        queued: false,
-        error: 'DSH realtime input lost its native operation owner',
-      } };
+      return {
+        result: {
+          queued: false,
+          error: 'DSH realtime input lost its native operation owner',
+        },
+      };
     userMsg.runtimeOperationAnchor = {
       runtime: 'dsh',
       runtimeSessionId,
@@ -6014,7 +6409,9 @@ async function steerExternalMessageForDesktop(input: {
       isExternalTurnCompleted()
     ) {
       await waitExternalTurnFinalization(60_000);
-      await surfaceAcceptedRealtimeSteeredUserMessage(userMsg.id);
+      const unconfirmed = takePendingRealtimeSteeredUserMessage(userMsg.id);
+      if (unconfirmed)
+        await finalizeUnconfirmedRealtimeSteeredUserMessage(unconfirmed);
     }
     return { result: { queued: true } };
   } catch (err) {
@@ -6057,6 +6454,7 @@ function deferRealtimeOperationToTurnBoundary(input: {
   broadcast('queue:added', {
     queueId: input.queueId,
     messageText: input.text.slice(0, 100),
+    asyncQuestionReply: input.operation.context.asyncQuestionReply,
     isInFlight: false,
     deliveryMode: 'turn',
     canCancel: true,
@@ -6133,7 +6531,11 @@ function enqueueExternalTurnBoundaryOperation(
       },
     },
   );
-  const userMessage = createExternalUserMessage(text, images, context.sessionId);
+  const userMessage = createExternalUserMessage(
+    text,
+    images,
+    context.sessionId,
+  );
   const queued = enqueueExternalMessageOperation({
     text,
     images,
@@ -6159,6 +6561,7 @@ function enqueueExternalTurnBoundaryOperation(
   broadcast('queue:added', {
     queueId: queued.queueId,
     messageText: text.slice(0, 100),
+    asyncQuestionReply: context.asyncQuestionReply,
     isInFlight: false,
     deliveryMode: 'turn',
     canCancel: true,
@@ -6247,6 +6650,58 @@ function ensureQueuedDshRootRecovery(): Promise<void> {
   return recovery;
 }
 
+/** Validate at ingress and again at the existing dispatch gate after queue waits. */
+export async function validateExternalAsyncQuestionReply(
+  sessionId: string,
+  reply: AsyncQuestionReply,
+  ownQueueId?: string,
+): Promise<string | undefined> {
+  const generation = getExternalOperationGeneration();
+  const persisted = await loadSessionTranscript(sessionId);
+  if (generation !== getExternalOperationGeneration())
+    return 'The question session has changed.';
+  const live = getExternalLiveSessionSnapshot(sessionId);
+  const messages = [...persisted.messages, ...(live?.inMemoryMessages ?? [])];
+  const contents = [
+    ...messages
+      .filter((message) => message.role === 'assistant')
+      .map((message) => message.content),
+    live?.liveStreamingMessage?.content,
+  ];
+  const question = contents
+    .flatMap(asyncQuestionSetsInContent)
+    .find((set) => set.id === reply.questionId)?.questions[reply.questionIndex];
+  if (!question) return 'This question is no longer available in this session.';
+  if (
+    messages.some(
+      (message) =>
+        message.role === 'user' &&
+        sameAsyncQuestionReply(message.asyncQuestionReply, reply),
+    )
+  ) {
+    return 'This question has already been answered.';
+  }
+  const pending = [
+    ...getExternalPendingMessageOperations(),
+    ...pendingRealtimeSteeredUserMessages.map((entry) => entry.operation),
+  ];
+  const ownOrder = pending.find(
+    (operation) => operation.queueId === ownQueueId,
+  )?.admissionOrder;
+  if (
+    pending.some(
+      (operation) =>
+        (ownOrder === undefined || operation.admissionOrder < ownOrder) &&
+        operation.queueId !== ownQueueId &&
+        operation.context.sessionId === sessionId &&
+        !operation.userProjection.retracted &&
+        sameAsyncQuestionReply(operation.context.asyncQuestionReply, reply),
+    )
+  ) {
+    return 'An answer to this question is already waiting to be sent.';
+  }
+}
+
 export function enqueueExternalSendForDesktop(
   text: string,
   images: ImagePayload[] | undefined,
@@ -6263,6 +6718,28 @@ export function enqueueExternalSendForDesktop(
   userMessageId: string;
   dispatch: Promise<ExternalSendResult>;
 } {
+  if (context.asyncQuestionReply) {
+    const reply = context.asyncQuestionReply;
+    const sessionId = context.sessionId;
+    const queueId = context.queueId ?? nextExternalQueueId();
+    const preceding = context.beforeDispatch;
+    const guard = Object.assign(
+      async () => {
+        const prior = preceding
+          ? await preceding()
+          : { accepted: true as const };
+        if (!prior.accepted) return prior;
+        const error = await validateExternalAsyncQuestionReply(
+          sessionId,
+          reply,
+          queueId,
+        );
+        return error ? { accepted: false, error } : { accepted: true as const };
+      },
+      { cancel: () => preceding?.cancel?.() },
+    );
+    context = { ...context, queueId, beforeDispatch: guard };
+  }
   const queueResponseMode = context.turnBoundaryOnly
     ? 'turn'
     : resolveChatQueueResponseMode(
@@ -6286,6 +6763,7 @@ export function enqueueExternalSendForDesktop(
     externalSessionMutationInFlight ||
     hasPendingDshMutation() ||
     pendingDshRootBlocksAdmission ||
+    (context.asyncQuestionReply && lifecycleState === 'idle') ||
     (lifecycleState === 'idle' && hasExternalSendInFlight()) ||
     shouldQueueExternalOperation(lifecycleState, {
       responseMode: queueResponseMode,
@@ -6300,6 +6778,7 @@ export function enqueueExternalSendForDesktop(
       context,
     );
     if (!queued.queued || !queued.queueId) return queued;
+    scheduleExternalQueueDrainAfterDirectAdmission();
     return {
       queued: true,
       queueId: queued.queueId,
@@ -6334,13 +6813,15 @@ export function enqueueExternalSendForDesktop(
     broadcast('queue:added', {
       queueId,
       messageText: text.slice(0, 100),
+      asyncQuestionReply: context.asyncQuestionReply,
       isInFlight: true,
       deliveryMode: 'realtime',
       canCancel: false,
       canForceExecute: false,
     });
     const generation = getExternalOperationGeneration();
-    const dispatch = chainExternalSend(
+    const dispatch = withExternalMessageOperation(operation, () =>
+      chainExternalSend(
       () =>
         steerExternalMessageForDesktop({
           queueId,
@@ -6351,6 +6832,7 @@ export function enqueueExternalSendForDesktop(
           generation,
         }),
       generation,
+      ),
     )
       .then(
         ({ result, deferredDispatchAcceptance }) => {
@@ -6398,7 +6880,19 @@ export function enqueueExternalSendForDesktop(
     context: sendContext,
     runtimeConfig,
     userMessage: createExternalUserMessage(text, images, context.sessionId),
+    surfaceMode: context.asyncQuestionReply ? 'queue-started' : 'chat-replay',
   });
+  if (context.asyncQuestionReply) {
+    broadcast('queue:added', {
+      queueId: operation.queueId,
+      messageText: text.slice(0, 100),
+      asyncQuestionReply: context.asyncQuestionReply,
+      isInFlight: true,
+      deliveryMode: 'turn',
+      canCancel: false,
+      canForceExecute: false,
+    });
+  }
   const generation = getExternalOperationGeneration();
   const dispatch = runExternalMessageOperation(
     text,
@@ -6407,10 +6901,24 @@ export function enqueueExternalSendForDesktop(
     runtimeConfig.model,
     sendContext,
     operation,
-    undefined,
+    context.asyncQuestionReply
+      ? () =>
+          broadcast('queue:started', {
+            queueId: operation.queueId,
+            sessionId: context.sessionId,
+            userMessage: operation.userProjection.message,
+          })
+      : undefined,
     generation,
   )
+    .then((result) => {
+      if (!result.queued && context.asyncQuestionReply)
+        broadcast('queue:cancelled', { queueId: operation.queueId });
+      return result;
+    })
     .catch((err) => {
+      if (context.asyncQuestionReply)
+        broadcast('queue:cancelled', { queueId: operation.queueId });
       if (isExternalQueueGenerationStaleError(err)) {
         return { queued: false };
       }
@@ -6424,6 +6932,15 @@ export function enqueueExternalSendForDesktop(
     queued: true,
     userMessageId: operation.userProjection.message.id,
     dispatch,
+    ...(context.asyncQuestionReply
+      ? {
+          queueId: operation.queueId,
+          isInFlight: true,
+          deliveryMode: 'turn' as const,
+          canCancel: false,
+          canForceExecute: false,
+        }
+      : {}),
   };
 }
 
@@ -6586,6 +7103,7 @@ async function drainExternalOperationsAfterTurn(): Promise<void> {
               content: item.text,
               timestamp: userMsg.timestamp,
               attachments: userMsg.attachments,
+              asyncQuestionReply: userMsg.asyncQuestionReply,
             },
           });
         },
@@ -6721,7 +7239,7 @@ export async function cancelExternalQueueItem(
             'DSH input cancellation is still waiting for Runtime recovery',
           );
         }
-        return getSessionData(sessionId)?.messages.some(
+        return (await getSessionData(sessionId))?.messages.some(
           (message) => message.id === saved.clientUserMessageId,
         )
           ? null
@@ -6821,8 +7339,31 @@ export function hasExternalQueuedTurnByOwner(
 export function getExternalQueueStatus(): Array<{
   id: string;
   messagePreview: string;
+  asyncQuestionReply?: AsyncQuestionReply;
+  canCancel?: boolean;
+  canForceExecute?: boolean;
 }> {
   const queued = getExternalQueueStatusSnapshot();
+  const waiting = [
+    ...getExternalPendingMessageOperations(),
+    ...pendingRealtimeSteeredUserMessages.map((entry) => entry.operation),
+  ];
+  for (const operation of waiting) {
+    if (
+      !operation.context.asyncQuestionReply ||
+      operation.userProjection.surfaced ||
+      operation.userProjection.retracted
+    )
+      continue;
+    if (queued.some((item) => item.id === operation.queueId)) continue;
+    queued.push({
+      id: operation.queueId,
+      messagePreview: operation.text.slice(0, 100),
+      asyncQuestionReply: operation.context.asyncQuestionReply,
+      canCancel: false,
+      canForceExecute: false,
+    });
+  }
   if (getCurrentRuntimeType() !== 'dsh') return queued;
   const ids = new Set(queued.map((item) => item.id));
   const result = [
@@ -6934,7 +7475,12 @@ function getExternalPermissionRulePair() {
 
 export async function inspectExternalRuntime(runtime: RuntimeType) {
   const active = getExternalActivePair();
-  if (!active || active.runtime.type !== runtime || !active.runtime.inspectRuntime) return null;
+  if (
+    !active ||
+    active.runtime.type !== runtime ||
+    !active.runtime.inspectRuntime
+  )
+    return null;
   return active.runtime.inspectRuntime(active.process);
 }
 
@@ -7039,7 +7585,11 @@ export async function respondExternalAskUserQuestion(
 
   try {
     if (active.runtime.respondAskUserQuestion) {
-      await active.runtime.respondAskUserQuestion(active.process, requestId, answers);
+      await active.runtime.respondAskUserQuestion(
+        active.process,
+        requestId,
+        answers,
+      );
     } else if (answers === null) {
       console.log(
         `[external-session] AskUserQuestion cancelled for requestId=${requestId}`,
@@ -7070,7 +7620,10 @@ export async function respondExternalAskUserQuestion(
         .questions;
       const updatedInput = {
         ...pending.input,
-        answers: withQuestionTextAnswerKeys(askQuestions, questionAnswersAsText(answers)),
+        answers: withQuestionTextAnswerKeys(
+          askQuestions,
+          questionAnswersAsText(answers),
+        ),
       };
       await active.runtime.respondPermission(
         active.process,
@@ -7407,6 +7960,55 @@ export function isExternalSessionBusy(): boolean {
     hasExternalQueuedOperations() ||
     isExternalOperationDrainInFlight()
   );
+}
+
+/** Retry through the Session's existing idle replacement and startup admission. */
+export async function retryExternalMcpServer(
+  serverId: string,
+): Promise<McpRetryResult> {
+  if (!isManagedCodexProductRuntime()) {
+    return { success: false, status: 400, errorCode: 'unsupported_runtime' };
+  }
+  if (
+    isExternalSessionBusy() ||
+    isExternalLifecycleStarting() ||
+    externalProcessConfigInvalidationInFlight
+  ) {
+    return { success: false, status: 409, errorCode: 'session_busy' };
+  }
+  const failed = getExternalMcpEffectiveSnapshot()?.servers.find(
+    (server) => server.id === serverId,
+  );
+  const desired = getManagedCodexDesiredSnapshot();
+  if (
+    !failed?.desired ||
+    failed.state !== 'failed' ||
+    !desired?.mcpServers.some((server) => server.id === serverId)
+  ) {
+    return { success: false, status: 409, errorCode: 'server_not_failed' };
+  }
+  const sessionId = getExternalLifecycleSessionId();
+  const workspacePath = getExternalLifecycleWorkspacePath();
+  const scenario = getExternalLifecycleScenario();
+  const lease = tryAcquireExternalSessionMutationLease();
+  if (!lease) return { success: false, status: 409, errorCode: 'session_busy' };
+  try {
+    pendingExternalCapabilityRestart = true;
+    await applyPendingExternalProcessConfigInvalidation();
+    const result = await prewarmExternalSession({
+      sessionId,
+      workspacePath,
+      scenario,
+    });
+    return result.prewarmed
+      ? { success: true }
+      : { success: false, status: 502, errorCode: 'retry_failed' };
+  } catch {
+    return { success: false, status: 502, errorCode: 'retry_failed' };
+  } finally {
+    lease.release();
+    scheduleExternalQueueDrainAfterTurnBoundary();
+  }
 }
 
 /**
@@ -8083,7 +8685,7 @@ export async function rewindExternalConversation(
   const result = await withExternalConversationMutation(async () => {
     const sessionId = getExternalLifecycleSessionId();
     const metadata = sessionId ? getSessionMetadata(sessionId) : null;
-    const data = sessionId ? getSessionData(sessionId) : null;
+    const data = sessionId ? await getSessionData(sessionId) : null;
     if (!metadata || !data || !metadata.runtimeSessionId) {
       return {
         success: false,
@@ -8250,7 +8852,15 @@ export async function forkExternalConversation(
   }
   return withExternalConversationMutation(async () => {
     const sessionId = getExternalLifecycleSessionId();
-    const source = sessionId ? getSessionData(sessionId) : null;
+    const source = sessionId ? await getSessionData(sessionId) : null;
+    if (source?.transcriptRecovery) {
+      return {
+        success: false,
+        status: 409,
+        errorCode: 'anchor_unavailable',
+        error: 'Cannot fork an incompletely restored conversation',
+      };
+    }
     if (!source?.runtimeSessionId) {
       return {
         success: false,
@@ -8343,10 +8953,8 @@ export async function forkExternalConversation(
     forked.origin = { kind: 'desktop', surface: 'session_fork' };
     const forkedMessages = source.messages.slice(0, targetIndex + 1);
     try {
-      await saveSessionMetadata(forked);
-      await persistExternalForkTranscript(forked.id, forkedMessages);
+      await publishForkSession(forked, forkedMessages, sessionId!);
     } catch (error) {
-      await deleteSession(forked.id, { kind: 'user-delete' });
       logCodexConversationOrphan(
         sessionId,
         branch.runtimeSessionId,
@@ -8561,7 +9169,7 @@ export async function prewarmExternalSession(options: {
   // frontend's sessionRuntime is populated async via loadSession, so the
   // effect may fire before that state settles. Backend check uses the
   // authoritative source (SessionStore) and closes the race-window hole.
-  const meta = getSessionMetadata(options.sessionId);
+  const meta = getExternalSessionMetadata(options.sessionId);
   const persistedRuntimeType = meta?.runtimeBinding
     ? runtimeTypeForBinding(meta.runtimeBinding)
     : meta?.runtime;
@@ -8610,7 +9218,7 @@ export async function prewarmExternalSession(options: {
 
   const activeProcess = getExternalActiveProcess();
   if (activeProcess && !activeProcess.exited) {
-    if (isExternalSessionStateRestoredFor(options.sessionId)) {
+    if (await isExternalSessionStateRestoredFor(options.sessionId)) {
       emitPerfTrace({
         trace: 'runtime',
         phase: 'prewarm_skipped',
@@ -8715,12 +9323,26 @@ export async function queryRuntimeModels(
   if (runtimeType === 'builtin') return [];
   const runtimeSource =
     runtimeType === 'codex' ? options.runtimeSource : undefined;
+  const managedCodex =
+    runtimeType === 'codex' && runtimeSource === 'managed-provider';
   try {
-    return await queryRuntimeModelsSingleFlight(
+    if (managedCodex) await awaitExternalLifecycleStarting();
+    const process = managedCodex ? getExternalActiveProcess() : null;
+    const runtime = managedCodex ? getExternalActiveRuntime() : null;
+    const models =
+      runtime?.type === runtimeType &&
+      runtimeSource === getCurrentRuntimeSource() &&
+      process &&
+      !process.exited
+        ? await runtime.queryModels({
+            runtimeSource,
+            process,
+            signal: options.signal,
+          })
+        : await queryRuntimeModelsSingleFlight(
       runtimeType,
       async (ownerSignal) => {
-        const runtime = getExternalRuntime(runtimeType);
-        return await runtime.queryModels({
+              return await getExternalRuntime(runtimeType).queryModels({
           runtimeSource,
           signal: ownerSignal,
         });
@@ -8728,6 +9350,12 @@ export async function queryRuntimeModels(
       runtimeSource,
       options.signal,
     );
+    // The lifecycle owner arbitrates late discovery, including a temporary
+    // query begun just before prewarm published the Session's actual process.
+    if (managedCodex && getExternalActiveProcess() !== process) {
+      throw new Error('Codex Session changed during model discovery');
+    }
+    return models;
   } catch (err) {
     console.error(
       `[external-session] Failed to query models for ${runtimeType}:`,
@@ -8857,18 +9485,43 @@ async function persistTurnResult(
     // the snapshot survives it, while in-place attachment patches during
     // awaitInFlightSaves() still land in the captured blocks.
     const turnContentSnapshot = captureExternalTurnContentSnapshot();
-    capturedReplyText = getExternalTurnContentSnapshotText(turnContentSnapshot);
+    const productTranscript = getExternalProductContent();
+    capturedReplyText = productTranscript
+      ? getLastExternalAssistantTextFromTranscript()
+      : getExternalTurnContentSnapshotText(turnContentSnapshot);
 
     // PRD 0.2.15 Review A4 fix — drain in-flight attachment saves so the
     // placeholder attachments embedded in the turn's content blocks get patched
     // BEFORE we snapshot to disk. Without this await, large/slow saves land
     // their `tool_attachment_update` after `currentContentBlocks = []` reset
     // and the disk JSON keeps the "生成中" placeholder forever.
-    await awaitInFlightSaves();
+    if (!productTranscript) await awaitInFlightSaves();
+    else {
+      getTranscriptPresentation()?.closeText();
+      getTranscriptPresentation()?.closeThinking();
+    }
 
     const usageData = settledTurnUsage;
-    const turnToolCount =
-      getExternalTurnContentSnapshotToolCount(turnContentSnapshot);
+    const turnToolCount = productTranscript
+      ? [...productTranscript.writer.projection.messages.values()]
+          .filter(
+            (message) =>
+              message.role === 'assistant' &&
+              message.turnId === productTranscript.currentTurn?.id,
+          )
+          .reduce(
+            (count, message) =>
+              count +
+              (Array.isArray(message.content)
+                ? message.content.filter(
+                    (block) =>
+                      block.type === 'tool_use' ||
+                      block.type === 'server_tool_use',
+                  ).length
+                : 0),
+            0,
+          )
+      : getExternalTurnContentSnapshotToolCount(turnContentSnapshot);
     const runtimeType = getCurrentRuntimeType();
     const runtimeSource = getCurrentRuntimeSource();
     // turnContextUsage was snapshotted at the synchronous function entry (above) to
@@ -8885,8 +9538,9 @@ async function persistTurnResult(
         resetTurnAccumulators();
     };
 
-    const persistedContent =
-      getExternalTurnContentSnapshotPersistedContent(turnContentSnapshot);
+    const persistedContent = productTranscript
+      ? null
+      : getExternalTurnContentSnapshotPersistedContent(turnContentSnapshot);
     const lifecycleSessionId = getExternalLifecycleSessionId();
     activityOwnedByTranscriptPersist = true;
     const persistResult = await appendAndPersistExternalAssistantTurn({
@@ -8903,6 +9557,7 @@ async function persistTurnResult(
         getCurrentRuntimeType() === 'codex' || getCurrentRuntimeType() === 'dsh'
           ? (runtimeTurnAnchor ?? undefined)
           : undefined,
+      terminalStatus: turnSucceededAtTerminal ? 'complete' : 'error',
     });
     if (persistResult.appendedAssistant) {
       resetIfStillOurs();
@@ -9193,10 +9848,11 @@ async function persistTurnResult(
 
 async function normalizeExternalToolResultForSse(
   event: Extract<UnifiedEvent, { kind: 'tool_result' }>,
+  sessionId = getExternalLifecycleSessionId(),
 ): Promise<Extract<UnifiedEvent, { kind: 'tool_result' }>> {
   const spilled = await maybeSpill(event.content, {
     mimetype: 'text/plain; charset=utf-8',
-    sessionId: getExternalLifecycleSessionId() || undefined,
+    sessionId: sessionId || undefined,
   });
   if ('inline' in spilled) {
     return event;
@@ -9219,12 +9875,22 @@ function broadcastExternalToolUseStop(
   parentToolUseId: string | undefined,
   toolName: string | null,
 ): void {
+  const product = getExternalProductContent();
+  const sourceSessionId = getExternalLifecycleSessionId();
   const broadcastStop = (payload: {
     input?: Record<string, unknown>;
     inputRef?: unknown;
   }): void => {
+    if (
+      product &&
+      getActiveSessionTranscript(sourceSessionId)?.writer !== product.writer
+    )
+      return;
+    if (getExternalLifecycleSessionId() !== sourceSessionId) return;
     if (parentToolUseId && toolName) {
-      broadcast('chat:subagent-tool-use', {
+      (product ? publishExternalToolPresentation : broadcast)(
+        'chat:subagent-tool-use',
+        {
         parentToolUseId,
         tool: {
           id: event.toolUseId,
@@ -9234,17 +9900,28 @@ function broadcastExternalToolUseStop(
         },
         ...(payload.inputRef ? { inputRef: payload.inputRef } : {}),
         finalInput: true,
-      });
+        },
+      );
       return;
     }
     if (!parentToolUseId) {
-      broadcast('chat:content-block-stop', {
+      (product ? publishExternalToolPresentation : broadcast)(
+        'chat:content-block-stop',
+        {
         type: 'tool_use',
         toolId: event.toolUseId,
         ...payload,
-      });
+        },
+      );
     }
   };
+
+  if (product) {
+    // V2 uses the common immediate preview/ref transport; product IO cannot
+    // delay either the input stop or the following result presentation.
+    broadcastStop({ input: event.input });
+    return;
+  }
 
   if (!event.input) {
     broadcastStop({});
@@ -9337,15 +10014,56 @@ function applyExternalToolResult(
 
 function dispatchExternalToolResult(
   event: Extract<UnifiedEvent, { kind: 'tool_result' }>,
+  after?: Promise<void>,
 ): Promise<void> {
   emitExternalToolEndTrace(event.toolUseId, event.isError);
-  return normalizeExternalToolResultForSse(event)
-    .then((normalized) => {
+  const product = getExternalProductContent();
+  const target = product?.tool(event.toolUseId);
+  const sourceSessionId = getExternalLifecycleSessionId();
+  const deliver = (
+    normalized: Extract<UnifiedEvent, { kind: 'tool_result' }>,
+  ) => {
+    if (product) {
+      if (
+        !target ||
+        getActiveSessionTranscript(sourceSessionId)?.writer !== product.writer
+      )
+        return;
+      const parentId = target.subagentToolId
+        ? (product.readBlock(target)?.tool as TranscriptObject | undefined)?.id
+        : undefined;
+      const tool = product.readTool(target);
+      if (!tool) return;
+      const payload = {
+        sessionId: sourceSessionId,
+        ...(parentId ? { parentToolUseId: parentId } : {}),
+        toolUseId: normalized.toolUseId,
+        content: normalized.content,
+        isError: normalized.isError ?? false,
+        metadata: normalized.metadata,
+        attachments: tool.attachments,
+      };
+      if (!parentId) broadcast('chat:tool-result-start', payload);
+      broadcast(
+        parentId
+          ? 'chat:subagent-tool-result-complete'
+          : 'chat:tool-result-complete',
+        payload,
+      );
+      return;
+    }
       const subParent = getExternalChildToolParent(normalized.toolUseId);
       if (subParent) applySubagentToolResult(subParent, normalized);
       else applyExternalToolResult(normalized);
-    })
-    .catch((err) => {
+  };
+  if (product) {
+    deliver(event);
+    return Promise.resolve();
+  }
+  const normalized = normalizeExternalToolResultForSse(
+    event,
+    sourceSessionId,
+  ).catch((err) => {
       console.error('[external-session] tool_result spill failed:', err);
       const fallback: Extract<UnifiedEvent, { kind: 'tool_result' }> = {
         ...event,
@@ -9355,10 +10073,9 @@ function dispatchExternalToolResult(
           status: event.metadata?.status ?? 'large-result-spill-failed',
         },
       };
-      const subParent = getExternalChildToolParent(fallback.toolUseId);
-      if (subParent) applySubagentToolResult(subParent, fallback);
-      else applyExternalToolResult(fallback);
+    return fallback;
     });
+  return Promise.all([normalized, after]).then(([result]) => deliver(result));
 }
 
 function autoDenyNonInteractiveRequest(
@@ -9442,9 +10159,201 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
   ) {
     recordRuntimeActivity();
   }
+  const isV2Content =
+    Boolean(getExternalProductContent()) &&
+    (Boolean(event.nativeSource) ||
+      [
+        'text_delta',
+        'text_stop',
+        'thinking_start',
+        'thinking_delta',
+        'thinking_stop',
+        'tool_use_start',
+        'tool_input_delta',
+        'tool_use_stop',
+        'tool_result_delta',
+        'tool_result',
+        'subagent_lifecycle',
+        'tool_attachment_update',
+        'message_replay',
+        'native_retraction',
+      ].includes(event.kind));
+  if (
+    isV2Content ||
+    event.kind === 'turn_complete' ||
+    event.kind === 'session_complete'
+  ) {
+    // Native terminal notifications can precede the turn/start response. Keep
+    // accepted user -> assistant content ordered using the queue owner's native
+    // admission promise. This never waits for product persistence. Early native
+    // output cannot be assigned to the preceding user while the answer's actual
+    // admission is still being resolved.
+    const pending = getExternalPendingMessageOperations().find((operation) =>
+      Boolean(
+        operation.context.asyncQuestionReply &&
+          isExternalTurnCurrent(operation.queueId) &&
+          !operation.userProjection.retracted,
+      ),
+    );
+    if (pending) {
+      const generation = getExternalOperationGeneration();
+      void pending.dispatchAcceptance.then((result) => {
+        if (
+          result.queued &&
+          pending.userProjection.surfaced &&
+          isCurrentExternalOperationGeneration(generation) &&
+          isExternalTurnCurrent(pending.queueId)
+        )
+          applyUnifiedEvent(event);
+      });
+      return;
+    }
+  }
+  applyUnifiedEvent(event);
+}
 
+function applyUnifiedEvent(event: UnifiedEvent): void {
+  const presentation = getTranscriptPresentation();
+  const source =
+    event.nativeSource ??
+    (presentation &&
+    (event.kind === 'text_delta' || event.kind === 'text_stop') &&
+    event.traceId
+      ? {
+          messageId: event.traceId,
+          blockIndex: 0,
+          parentToolUseId: event.subAgent?.parentToolUseId,
+          ...(!presentation.hasNativeBlock(event.traceId, 0)
+            ? { blockStart: { type: 'text', text: '' } }
+            : {}),
+        }
+      : undefined);
+  if (presentation && event.kind === 'native_retraction') {
+    presentation.retractNativeContent(
+      event.messageIds,
+      event.parentToolUseId ? true : event.scope !== 'local',
+      event.parentToolUseId,
+    );
+    return;
+  }
+
+  if (
+    source &&
+    presentation &&
+    source.parentToolUseId &&
+    event.kind !== 'message_replay'
+  ) {
+    const parentToolUseId = source.parentToolUseId;
+    presentation.beginNativeMessage(source.messageId, parentToolUseId);
+    if (source.blockStart && source.blockIndex !== undefined) {
+      presentation.beginNativeBlock(
+        source.blockIndex,
+        source.blockStart as TranscriptObject,
+        parentToolUseId,
+      );
+      const entry = presentation.childNativeBlock(
+        parentToolUseId,
+        source.blockIndex,
+      );
+      const tool = entry && presentation.content.readTool(entry.target);
+      if (tool && (entry.type === 'text' || entry.type === 'thinking'))
+        publishExternalUiEvent('chat:subagent-tool-use', {
+          parentToolUseId,
+          tool: {
+            id: tool.id,
+            name: tool.name,
+            input: {},
+            streamIndex: source.blockIndex,
+          },
+        });
+    }
+    if (
+      (event.kind === 'text_delta' || event.kind === 'thinking_delta') &&
+      source.blockIndex !== undefined
+    ) {
+      const target = presentation.appendChildNativeText(
+        parentToolUseId,
+        source.blockIndex,
+        event.text,
+      );
+      if (target)
+        publishExternalToolPresentation('chat:subagent-tool-result-delta', {
+          parentToolUseId,
+          toolUseId: target.subagentToolId,
+          delta: event.text,
+        });
+      return;
+    }
+    if (
+      (event.kind === 'text_stop' || event.kind === 'thinking_stop') &&
+      source.blockIndex !== undefined
+    ) {
+      if (event.kind === 'text_stop' && event.nativeText !== undefined)
+        presentation.confirmNativeBlocks(
+          source.messageId,
+          source.messageId,
+          [{ type: 'text', text: event.nativeText }],
+          parentToolUseId,
+          'native',
+        );
+      const entry = presentation.childNativeBlock(
+        parentToolUseId,
+        source.blockIndex,
+      );
+      presentation.endNativeBlock(source.blockIndex, parentToolUseId);
+      if (entry)
+        publishExternalToolPresentation('chat:subagent-tool-result-complete', {
+          parentToolUseId,
+          toolUseId: entry.target.subagentToolId,
+          content: presentation.content.readTool(entry.target)?.result ?? '',
+        });
+      return;
+    }
+    if (
+      event.kind === 'tool_use_start' ||
+      event.kind === 'tool_input_delta' ||
+      event.kind === 'tool_use_stop'
+    )
+      event = { ...event, subAgent: { parentToolUseId } };
+    else if (
+      event.kind === 'raw' ||
+      event.kind === 'status_change' ||
+      event.kind === 'thinking_start'
+    )
+      return;
+  }
+  if (
+    source &&
+    presentation &&
+    !source.parentToolUseId &&
+    event.kind !== 'message_replay'
+  ) {
+    if (presentation.currentNativeMessageId !== source.messageId)
+      presentation.beginNativeMessage(source.messageId);
+    if (source.blockStart && source.blockIndex !== undefined)
+      presentation.beginNativeBlock(
+        source.blockIndex,
+        source.blockStart as TranscriptObject,
+      );
+    if (event.kind === 'text_stop' && event.nativeText !== undefined)
+      presentation.confirmNativeBlocks(
+        source.messageId,
+        source.messageId,
+        [{ type: 'text', text: event.nativeText }],
+        undefined,
+        'native',
+      );
+    if (
+      (event.kind === 'text_stop' ||
+        event.kind === 'thinking_stop' ||
+        event.kind === 'tool_use_stop') &&
+      source.blockIndex !== undefined
+    )
+      presentation.endNativeBlock(source.blockIndex);
+  }
   switch (event.kind) {
     case 'root_turn_admitted':
+      getExternalProductContent()?.adoptRuntimeTurn(event.runtimeTurnId, event.clientUserMessageId);
       if (
         getCurrentRuntimeType() === 'codex' ||
         getCurrentRuntimeType() === 'dsh'
@@ -9494,8 +10403,10 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       }
       closePendingThinkingProjection();
       emitExternalDeltaTrace('text', event.text);
+      if (!presentation) {
       appendExternalAssistantText(event.text);
       appendExternalPendingText(event.text);
+      }
       broadcast('chat:message-chunk', event.text);
       fireExternalImCallback('delta', event.text);
       break;
@@ -9508,11 +10419,17 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       console.log(
         `[external-session] text_stop: accumulated ${getExternalAssistantText().length} chars`,
       );
-      flushPendingText('mirror-completed-block');
+      flushPendingText('mirror-completed-block', event.asyncQuestions);
       // Mirror builtin: tell the renderer the trailing text block closed so it clears
       // `streamingTextActive` and the tail-fade stops (same bug class, sibling runtime
       // path). type:'text' is the discriminator; index is unused for the text case.
-      broadcast('chat:content-block-stop', { index: -1, type: 'text' });
+      broadcast('chat:content-block-stop', {
+        index: -1,
+        type: 'text',
+        ...(event.asyncQuestions
+          ? { asyncQuestions: event.asyncQuestions }
+          : {}),
+      });
       fireExternalImCallback('block-end', '');
       break;
 
@@ -9537,7 +10454,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         openPendingThinkingProjection(event.index);
       }
       emitExternalDeltaTrace('thinking', event.text);
-      appendExternalPendingThinkingText(event.text);
+      if (!presentation) appendExternalPendingThinkingText(event.text);
       // Frontend expects { index, delta } — match builtin SSE shape
       broadcast('chat:thinking-chunk', {
         index: event.index,
@@ -9568,6 +10485,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       }
       closePendingThinkingProjection();
       flushPendingText('mirror-completed-block'); // Close any open text block before tool use
+      if (!presentation)
       startExternalToolUseInput({
         toolUseId: event.toolUseId,
         toolName: event.toolName,
@@ -9584,10 +10502,15 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
     case 'tool_input_delta': {
       // Route by the LATCHED map (set when the start nested), not by event.subAgent,
       // so all events for one tool stay on the same rendering path.
-      const { parentToolUseId: parentForInput } = appendExternalToolInputDelta(
-        event.toolUseId,
-        event.delta,
-      );
+      const product = presentation?.content;
+      const target = product?.tool(event.toolUseId);
+      const parentForInput = product
+        ? target?.subagentToolId
+          ? ((product.readBlock(target)?.tool as TranscriptObject | undefined)
+              ?.id as string | undefined)
+          : undefined
+        : appendExternalToolInputDelta(event.toolUseId, event.delta)
+            .parentToolUseId;
       if (parentForInput) {
         broadcast('chat:subagent-tool-input-delta', {
           parentToolUseId: parentForInput,
@@ -9606,6 +10529,37 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
     }
 
     case 'tool_use_stop': {
+      if (presentation) {
+        const product = presentation.content;
+        const target = product.tool(event.toolUseId);
+        if (!target) break;
+        let input = event.input;
+        const tool = product.readTool(target)!;
+        if (!input && typeof tool.inputJson === 'string') {
+          try {
+            input = JSON.parse(tool.inputJson) as Record<string, unknown>;
+          } catch {
+            /* Preserve incomplete native input. */
+          }
+        }
+        if (input) product.confirmInput(target, input as TranscriptObject);
+        const parentId = target.subagentToolId
+          ? ((product.readBlock(target)?.tool as TranscriptObject | undefined)
+              ?.id as string | undefined)
+          : undefined;
+        broadcastExternalToolUseStop(
+          { ...event, input },
+          parentId,
+          typeof tool.name === 'string' ? tool.name : null,
+        );
+        break;
+      }
+      if (event.input) {
+        const product = getExternalProductContent();
+        const target = product?.tool(event.toolUseId);
+        if (target)
+          product!.confirmInput(target, event.input as TranscriptObject);
+      }
       const finalToolName = event.input
         ? replaceExternalToolUseInput(event.toolUseId, event.input)
         : null;
@@ -9624,7 +10578,15 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
     }
 
     case 'tool_result_delta': {
-      const parentForResultDelta = getExternalChildToolParent(event.toolUseId);
+      const product = presentation?.content;
+      const target = product?.tool(event.toolUseId);
+      const parentForResultDelta = product
+        ? target?.subagentToolId
+          ? ((product.readBlock(target)?.tool as TranscriptObject | undefined)
+              ?.id as string | undefined)
+          : undefined
+        : getExternalChildToolParent(event.toolUseId);
+      if (!product)
       appendExternalToolResultDeltaToContent(event.toolUseId, event.delta);
       if (parentForResultDelta) {
         broadcast('chat:subagent-tool-result-delta', {
@@ -9644,12 +10606,35 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
     }
 
     case 'tool_result': {
+      const product = getExternalProductContent();
+      const target = product?.tool(event.toolUseId);
+      if (target) {
+        product!.confirmText(target, 'result', event.content);
+        product!.updateTool(
+          target,
+          {
+            isLoading: false,
+            isError: event.isError ?? false,
+            ...(event.metadata
+              ? { resultMeta: event.metadata as TranscriptObject }
+              : {}),
+          },
+          true,
+        );
+        if (event.attachments)
+          product!.confirmAttachments(
+            target,
+            event.attachments as unknown as TranscriptObject[],
+          );
+      }
       // Keep the stop→result order when a completion-owned tool input had to
       // spill before crossing SSE.
       const pendingInput = pendingExternalToolInputTransports.get(
         event.toolUseId,
       );
-      const dispatched = pendingInput
+      const dispatched = product
+        ? dispatchExternalToolResult(event, pendingInput)
+        : pendingInput
         ? pendingInput.then(() => dispatchExternalToolResult(event))
         : dispatchExternalToolResult(event);
       trackInFlightSave(dispatched);
@@ -9707,16 +10692,54 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
     }
 
     case 'subagent_lifecycle': {
-      const lifecycle = applyExternalSubagentLifecycle(event);
-      broadcast('chat:subagent-status', {
-        parentToolUseId: event.parentToolUseId,
-        lifecycle,
-      });
+      const product = presentation?.content;
+      const target = product?.tool(event.parentToolUseId);
+      const lifecycle = product
+        ? mergeSubagentLifecycle(
+            target
+              ? (product.readTool(target)?.subagentLifecycle as unknown as
+                  | SubagentLifecycle
+                  | undefined)
+              : undefined,
+            event.status,
+            event.observedAt,
+          )
+        : applyExternalSubagentLifecycle(event);
+      broadcastExternalSubagentLifecycle(event.parentToolUseId, lifecycle);
       if (event.affectsRootActivity !== false) recordRuntimeActivity();
       break;
     }
 
     case 'tool_attachment_update': {
+      const product = getExternalProductContent();
+      if (product) {
+        const target = product.tool(event.toolUseId);
+        if (target) {
+          const applied = product.updateAttachment(
+            target,
+            event.pendingId,
+            event.attachment as unknown as TranscriptObject,
+          );
+          if (!applied) break;
+          const parentId = target.subagentToolId
+            ? (product.readBlock(target)?.tool as TranscriptObject | undefined)
+                ?.id
+            : undefined;
+          broadcast(
+            parentId
+              ? 'chat:subagent-tool-attachment-update'
+              : 'chat:tool-attachment-update',
+            {
+              sessionId: product.writer.status.sessionId,
+              ...(parentId ? { parentToolUseId: parentId } : {}),
+              toolUseId: event.toolUseId,
+              pendingId: event.pendingId,
+              attachment: event.attachment,
+            },
+          );
+        }
+        break;
+      }
       // Async fulfillment of a placeholder attachment (PRD 0.2.15 §4.7.1).
       // Cross-review (#0.2.29) — a sub-agent tool's attachment lives on a nested
       // SubagentToolCall, not a top-level block, so the scan below can't see it.
@@ -9905,17 +10928,10 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       if (event.sessionId) {
         setExternalRuntimeSessionId(event.sessionId);
         // Persist to SessionMetadata for cross-restart resume.
-        // During pre-warm, metadata may not exist yet. Attempt update; if
-        // metadata doesn't exist yet, store the ID in the pending birth record
-        // so the first real user turn can materialize metadata with the
-        // runtime thread id attached.
+        // Before product birth, retain the ID in the admitted pre-warm record.
+        // The first real user turn freezes metadata with this native identity.
         const lifecycleSessionId = getExternalLifecycleSessionId();
         if (lifecycleSessionId && event.sessionId !== lifecycleSessionId) {
-          // Eagerly schedule the patch with session affinity. If
-          // updateSessionMetadata succeeds, clear the pending birth because
-          // metadata already exists.
-          // handleUnifiedEvent is a sync stream callback — fire-and-forget the
-          // async lock-protected write.
           const targetSessionId = lifecycleSessionId;
           const targetRuntimeId = event.sessionId;
           if (pendingExternalSessionBirth?.sessionId === targetSessionId) {
@@ -9924,6 +10940,10 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
               runtimeSessionId: targetRuntimeId,
             };
           }
+          if (
+            !pendingBirthForSession(targetSessionId) ||
+            getActiveSessionTranscript(targetSessionId)
+          ) {
           void updateSessionMetadata(targetSessionId, {
             runtime: getCurrentRuntimeType(),
             runtimeSource: getCurrentRuntimeSource(),
@@ -9933,9 +10953,9 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
               if (
                 updated &&
                 pendingExternalSessionBirth?.sessionId === targetSessionId &&
-                pendingExternalSessionBirth.runtimeSessionId === targetRuntimeId
+                  pendingExternalSessionBirth.runtimeSessionId ===
+                    targetRuntimeId
               ) {
-                // Metadata existed — persist succeeded; birth is no longer pending.
                 pendingExternalSessionBirth = null;
               }
             })
@@ -9946,6 +10966,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
               ),
             );
         }
+      }
       }
       const info: SystemInitInfo = {
         timestamp: new Date().toISOString(),
@@ -10118,7 +11139,8 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       // RPC-acknowledged pill at the turn boundary. An unresolved RPC is not
       // acceptance: it may still return the exact no-active rejection and must
       // remain available for turn-boundary demotion without transcript writes.
-      if (getCurrentRuntimeType() !== 'dsh') surfaceAcknowledgedPendingRealtimeSteeredUserMessages();
+      if (getCurrentRuntimeType() !== 'dsh')
+        surfaceAcknowledgedPendingRealtimeSteeredUserMessages();
       finalizeExternalSubagentLifecycleProjection(
         getExternalUserRequestedStop() ? 'interrupted' : 'failed',
       );
@@ -10638,14 +11660,38 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
                   : block.content != null
                     ? JSON.stringify(block.content)
                     : '';
-            broadcast('chat:tool-result-complete', {
+            const product = getExternalProductContent();
+            const target = product?.tool(String(block.tool_use_id));
+            if (target) {
+              product!.confirmText(target, 'result', resultText);
+              product!.updateTool(
+                target,
+                { isLoading: false, isError: block.is_error === true },
+                true,
+              );
+            }
+            const parentToolUseId = target?.subagentToolId
+              ? (
+                  product?.readBlock(target)?.tool as
+                    | TranscriptObject
+                    | undefined
+                )?.id
+              : undefined;
+            broadcast(
+              parentToolUseId
+                ? 'chat:subagent-tool-result-complete'
+                : 'chat:tool-result-complete',
+              {
+                ...(parentToolUseId ? { parentToolUseId } : {}),
               toolUseId: block.tool_use_id,
               content: resultText.slice(0, 2000), // Truncate for SSE
               isError: block.is_error === true,
-            });
+              },
+            );
             // Update the already-persisted tool_use block with its result.
             // tool_use_stop already consumed pendingToolInputs and pushed to currentContentBlocks,
             // so we find the existing block and add the result (same pattern as tool_result handler).
+            if (!product)
             applyExternalReplayedToolResultToContent({
               toolUseId: String(block.tool_use_id),
               content: resultText,
@@ -10682,6 +11728,79 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       // Assistant replay: normally dropped because stream_event deltas already delivered
       // the content. But if stream deltas were missing (short response, rate limiting,
       // API truncation), the replay is the only source of truth. Use it as fallback.
+      if (replayRole === 'assistant' && presentation && source) {
+        const blocks =
+          typeof replayContent === 'string'
+            ? [{ type: 'text', text: replayContent }]
+            : Array.isArray(replayContent)
+              ? (replayContent as TranscriptObject[])
+              : [];
+        const unseenTools = new Set(
+          blocks
+            .filter(
+              (block) =>
+                typeof block.id === 'string' &&
+                !presentation.content.tool(block.id),
+            )
+            .map((block) => block.id),
+        );
+        const changes = presentation.confirmNativeBlocks(
+          source.messageId,
+          event.message.id,
+          blocks,
+          source.parentToolUseId,
+        );
+        for (const { textDelta } of changes)
+          if (textDelta && !source.parentToolUseId) {
+            fireExternalImCallback('delta', textDelta);
+          }
+        const product = presentation.content;
+        const publish = publishExternalToolPresentation;
+        if (source.parentToolUseId) {
+          for (const { target } of changes) {
+            const tool = product.readTool(target);
+            if (!tool) continue;
+            const input =
+              tool.inputComplete && typeof tool.inputJson === 'string'
+                ? JSON.parse(tool.inputJson)
+                : {};
+            publish('chat:subagent-tool-use', {
+              parentToolUseId: source.parentToolUseId,
+              tool: { id: tool.id, name: tool.name, input, streamIndex: 0 },
+              finalInput: true,
+            });
+            if (typeof tool.result === 'string')
+              publish('chat:subagent-tool-result-complete', {
+                parentToolUseId: source.parentToolUseId,
+                toolUseId: tool.id,
+                content: tool.result,
+              });
+          }
+          break;
+        }
+        for (const block of blocks) {
+          if (
+            (block.type !== 'tool_use' && block.type !== 'server_tool_use') ||
+            typeof block.id !== 'string'
+          )
+            continue;
+          if (unseenTools.has(block.id))
+            publish('chat:tool-use-start', {
+              id: block.id,
+              name: block.name,
+              input: {},
+              streamIndex: 0,
+            });
+          if (block.input)
+            publish('chat:content-block-stop', {
+              toolId: block.id,
+              type: block.type,
+              input: block.input,
+            });
+        }
+        recordRuntimeActivity();
+        break;
+      }
       if (replayRole === 'assistant' && !getExternalAssistantText().trim()) {
         const content = replayContent;
         let text = '';
@@ -10706,6 +11825,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       break;
     }
 
+    case 'native_retraction': // V1 keeps its existing replay behavior.
     case 'raw':
       // Unrecognized event — ignore
       break;

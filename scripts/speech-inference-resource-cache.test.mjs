@@ -49,7 +49,7 @@ async function speechFixture() {
     writeFileSync(join(root, 'legal', filename), `${filename}\n`);
   }
   const expected = {
-    adapterAbiVersion: 1,
+    adapterAbiVersion: 2,
     platform: process.platform === 'win32' ? 'windows' : 'linux',
     architecture: 'x64',
     buildFingerprint: 'f'.repeat(64),
@@ -86,7 +86,7 @@ async function speechFixture() {
   const manifest = {
     schemaVersion: 1,
     capability: 'speech-inference',
-    adapterAbiVersion: 1,
+    adapterAbiVersion: 2,
     platform: expected.platform,
     architecture: expected.architecture,
     buildFingerprint: expected.buildFingerprint,

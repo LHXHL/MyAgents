@@ -1,4 +1,5 @@
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { MessageCircleQuestion, ChevronLeft, ChevronRight, X, Check, Eye } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -219,6 +220,7 @@ export function AskUserQuestionPrompt({ request, onSubmit, onCancel }: AskUserQu
 
     // Handle Enter key in custom input to advance
     const handleCustomInputKeyDown = useCallback((e: React.KeyboardEvent) => {
+        if (isImeComposingEvent(e)) return;
         if (e.key === 'Enter' && hasCurrentAnswer) {
             e.preventDefault();
             if (isLastQuestion) {

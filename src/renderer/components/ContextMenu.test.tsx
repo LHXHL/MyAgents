@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
 import ContextMenu, { type ContextMenuItem } from './ContextMenu';
+import { TabApiContext, TabActiveContext, type TabApiContextValue } from '@/context/TabContext';
 
 describe('ContextMenu', () => {
   it('renders item labels and fires onClick + onClose on an enabled item', async () => {
@@ -38,4 +39,22 @@ describe('ContextMenu', () => {
     render(<ContextMenu x={0} y={0} items={items} onClose={vi.fn()} />);
     expect(screen.getAllByRole('button')).toHaveLength(2); // separator is not a button
   });
+  it('portals outside a clipped host above document previews', () => {
+    const view = render(<div data-testid="clipping-host" style={{ overflow: 'hidden', transform: 'translateX(0)' }}><ContextMenu x={20} y={20} items={[{ label: 'Preview', onClick: vi.fn() }]} onClose={vi.fn()} /></div>);
+    const menu = screen.getByRole('button', { name: 'Preview' }).parentElement!;
+    expect(menu.parentElement).toBe(document.body);
+    expect(view.container).not.toContainElement(menu);
+    expect(menu).toHaveStyle({ zIndex: 320 });
+  });
+  it('dismisses its portal when the owning tab becomes hidden', () => {
+    const onClose = vi.fn();
+    const api: TabApiContextValue = { tabId: 'test', agentDir: '/workspace', apiGet: vi.fn(), apiPost: vi.fn(), apiPut: vi.fn(), apiDelete: vi.fn() };
+    const tree = (active: boolean) => <TabApiContext.Provider value={api}><TabActiveContext.Provider value={active}><ContextMenu x={0} y={0} items={[{ label: 'Preview', onClick: vi.fn() }]} onClose={onClose} /></TabActiveContext.Provider></TabApiContext.Provider>;
+    const view = render(tree(true));
+    expect(screen.getByRole('button', { name: 'Preview' })).toBeVisible();
+    view.rerender(tree(false));
+    expect(screen.queryByRole('button', { name: 'Preview' })).toBeNull();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
 });

@@ -12,7 +12,7 @@
  * the mouse is over by using element position and Tauri's drop position.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import { track } from '@/analytics';
 import { isTauriEnvironment } from '@/utils/browserMock';
@@ -69,7 +69,7 @@ interface UseTauriFileDropResult {
   /** The active drop zone ID based on last known position */
   activeZoneId: string | null;
   /** Register a drop zone element */
-  registerZone: (id: string, element: HTMLElement | null, onDrop: (paths: string[]) => void) => void;
+  registerZone: (id: string, element: HTMLElement | null, onDrop: (paths: string[], position?: DragDropPosition) => void) => void;
   /** Unregister a drop zone */
   unregisterZone: (id: string) => void;
 }
@@ -89,6 +89,7 @@ function toCssPosition(position: DragDropPosition): DragDropPosition {
 }
 
 export function useTauriFileDrop(options: UseTauriFileDropOptions = {}): UseTauriFileDropResult {
+  const ownerId = useId();
   const { onDragEnter, onDragLeave, onDrop, enabled = true } = options;
   const [isDragging, setIsDragging] = useState(false);
   const [activeZoneId, setActiveZoneId] = useState<string | null>(null);
@@ -132,21 +133,32 @@ export function useTauriFileDrop(options: UseTauriFileDropOptions = {}): UseTaur
    * Find which drop zone contains the given position
    */
   const findZoneAtPosition = useCallback((x: number, y: number): string | null => {
+    const hit = document.elementFromPoint?.(x, y);
+    if (typeof document.elementFromPoint === 'function' && (!hit || hit.closest('[inert]'))) return null;
+    const topZone = hit?.closest('[data-workspace-drop-zone]');
     for (const [id, zone] of zonesRef.current) {
       if (zone.element && isPointInElement(x, y, zone.element)) {
+        // Native events are broadcast. Only the nearest visible registered
+        // surface owns a drop; nested editors and overlays exclude chat/tree.
+        if (hit && (!zone.element.contains(hit) || topZone !== zone.element || topZone.getAttribute('data-workspace-drop-zone') !== `${ownerId}/${id}`)) continue;
         return id;
       }
     }
     return null;
-  }, []);
+  }, [ownerId]);
 
-  const registerZone = useCallback((id: string, element: HTMLElement | null, onDrop: (paths: string[]) => void) => {
+  const registerZone = useCallback((id: string, element: HTMLElement | null, onDrop: DropZone['onDrop']) => {
+    const previous = zonesRef.current.get(id)?.element;
+    if (previous !== element && previous?.getAttribute('data-workspace-drop-zone') === `${ownerId}/${id}`) previous.removeAttribute('data-workspace-drop-zone');
+    element?.setAttribute('data-workspace-drop-zone', `${ownerId}/${id}`);
     zonesRef.current.set(id, { id, element, onDrop });
-  }, []);
+  }, [ownerId]);
 
   const unregisterZone = useCallback((id: string) => {
+    const element = zonesRef.current.get(id)?.element;
+    if (element?.getAttribute('data-workspace-drop-zone') === `${ownerId}/${id}`) element.removeAttribute('data-workspace-drop-zone');
     zonesRef.current.delete(id);
-  }, []);
+  }, [ownerId]);
 
   useEffect(() => {
     if (!isTauriEnvironment()) {
@@ -213,7 +225,7 @@ export function useTauriFileDrop(options: UseTauriFileDropOptions = {}): UseTaur
         console.log('[useTauriFileDrop] Drop on zone:', zoneId, 'paths:', paths);
       }
 
-      track('file_drop', { file_count: paths.length });
+      if (zoneId) track('file_drop', { file_count: paths.length });
 
       if (zoneId) {
         const zone = zonesRef.current.get(zoneId);

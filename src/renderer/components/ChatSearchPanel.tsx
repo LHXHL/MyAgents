@@ -10,6 +10,7 @@
  *   • Cmd/Ctrl+F inside the input re-selects the text
  */
 
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { ChevronDown, ChevronUp, Search, X } from 'lucide-react';
 import { useEffect, useRef, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -34,6 +35,7 @@ export default function ChatSearchPanel({ controller, onClose }: ChatSearchPanel
   }, []);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (isImeComposingEvent(event)) return;
     if (event.key === 'Escape') {
       event.preventDefault();
       onClose();

@@ -166,6 +166,7 @@ struct ActiveRecording {
     source_sinks: Vec<(AudioTrackKind, CaptureTrackSink)>,
     warnings: Vec<RecordingWarning>,
     journal: LifecycleJournal,
+    time_journal_cursors: Vec<(AudioTrackKind, usize)>,
     session: Option<Arc<StdMutex<Box<dyn CaptureSession>>>>,
     archives: Vec<TrackArchiveHandle>,
     analyses: Vec<TrackAnalysisHandle>,
@@ -175,6 +176,43 @@ struct ActiveRecording {
 }
 
 impl ActiveRecording {
+    fn checkpoint_capture_times(&mut self) -> Result<(), String> {
+        for (track, sink) in &self.source_sinks {
+            let Some(timeline) = sink.timeline()? else {
+                continue;
+            };
+            let cursor = self
+                .time_journal_cursors
+                .iter()
+                .find(|(kind, _)| kind == track)
+                .map_or(0, |(_, cursor)| *cursor);
+            let from_index = cursor.saturating_sub(1);
+            if from_index >= timeline.spans.len() {
+                return Err("RECORDING_CAPTURE_TIME_INVALID".to_string());
+            }
+            self.journal.append(
+                now_ms(),
+                self.media_duration_ms(),
+                LifecycleEvent::CaptureTrackTime {
+                    track: *track,
+                    from_index,
+                    spans: timeline.spans[from_index..].to_vec(),
+                },
+            )?;
+            if let Some((_, cursor)) = self
+                .time_journal_cursors
+                .iter_mut()
+                .find(|(kind, _)| kind == track)
+            {
+                *cursor = timeline.spans.len();
+            } else {
+                self.time_journal_cursors
+                    .push((*track, timeline.spans.len()));
+            }
+        }
+        Ok(())
+    }
+
     fn media_duration_ms(&self) -> u64 {
         self.media_before_segment_ms.saturating_add(
             self.segment_started
@@ -334,6 +372,7 @@ impl RecordingManager {
         .await
         .map_err(|error| format!("recording recovery worker panicked: {error}"))?;
 
+        let timing_entries = LifecycleJournal::read_entries(&workspace, &record.id);
         let mut artifacts = Vec::new();
         let mut repaired_tracks = Vec::new();
         let mut unrecoverable_tracks = 0_usize;
@@ -341,7 +380,23 @@ impl RecordingManager {
         for (track, result) in repair_results {
             match result {
                 Ok(Some(recovered)) => {
+                    let timing = timing_entries
+                        .as_ref()
+                        .map_err(|_| "capture journal unavailable".to_string())
+                        .and_then(|entries| {
+                            LifecycleJournal::recover_track_time(
+                                entries,
+                                track,
+                                recovered.media_samples_48k / 3,
+                            )
+                        });
+                    let (timeline, capture_time_error) = match timing {
+                        Ok(timeline) => (timeline, None),
+                        Err(_) => (None, Some("RECORDING_CAPTURE_TIME_UNAVAILABLE".to_string())),
+                    };
                     artifacts.push(AudioTrackArtifactInput {
+                        timeline,
+                        capture_time_error,
                         track,
                         relative_path: audio_track_relative_path(track),
                     });
@@ -777,6 +832,7 @@ impl RecordingManager {
             source_sinks: Vec::new(),
             warnings,
             journal,
+            time_journal_cursors: Vec::new(),
             session: None,
             archives,
             analyses,
@@ -803,6 +859,13 @@ impl RecordingManager {
                 return Err("recording admission was superseded".to_string());
             };
             let (sinks, source_sinks) = capture_sinks(&active.archives, &active.analyses);
+            // Device callbacks can run before open() returns. The owner must
+            // publish their media epoch before allowing that first callback.
+            let started = Instant::now();
+            active.segment_started = Some(started);
+            for (_, sink) in &source_sinks {
+                sink.set_media_epoch(Some(started), 0);
+            }
             active.source_sinks = source_sinks;
             sinks
         };
@@ -834,7 +897,6 @@ impl RecordingManager {
             if active.generation != generation {
                 return Err("recording generation changed during admission".to_string());
             }
-            active.segment_started = Some(Instant::now());
             active.session = Some(session);
         }
         let mut updated = match self
@@ -1012,6 +1074,16 @@ impl RecordingManager {
             if active.capture_status != expected {
                 return Err("RECORDING_TRANSITION_NOT_ALLOWED".to_string());
             }
+            let media_ms = active.media_duration_ms();
+            let transition_started = Instant::now();
+            active.media_before_segment_ms = media_ms;
+            active.segment_started = (!pause).then_some(transition_started);
+            if pause {
+                active.pause_started = Some(transition_started);
+            }
+            for (_, sink) in &active.source_sinks {
+                sink.set_media_epoch(active.segment_started, media_ms);
+            }
             for archive in &active.archives {
                 archive.sink.set_accepting(!pause);
             }
@@ -1030,7 +1102,7 @@ impl RecordingManager {
                     .cloned()
                     .ok_or_else(|| "capture session missing".to_string())?,
                 active.generation,
-                active.media_duration_ms(),
+                media_ms,
                 active.pause_started,
                 analysis_controls,
                 active.live_analysis_enabled,
@@ -1161,7 +1233,6 @@ impl RecordingManager {
             let journal_result = if pause {
                 active.media_before_segment_ms = media_ms;
                 active.segment_started = None;
-                active.pause_started = Some(Instant::now());
                 let result = active.journal.append(
                     now_ms(),
                     media_ms,
@@ -1175,11 +1246,15 @@ impl RecordingManager {
                 result
             } else {
                 let paused_wall_ms = paused_started_at
-                    .map(|started| duration_ms(started.elapsed()))
+                    .and_then(|started| {
+                        active
+                            .segment_started
+                            .and_then(|resumed| resumed.checked_duration_since(started))
+                    })
+                    .map(duration_ms)
                     .unwrap_or(0);
                 active.paused_wall_ms = active.paused_wall_ms.saturating_add(paused_wall_ms);
                 active.pause_started = None;
-                active.segment_started = Some(Instant::now());
                 active.journal.append(
                     now_ms(),
                     media_ms,
@@ -1395,6 +1470,9 @@ impl RecordingManager {
         active.capture_status = CaptureStatus::Stopping;
         active.media_before_segment_ms = media_ms;
         active.segment_started = None;
+        for (_, sink) in &active.source_sinks {
+            sink.set_media_epoch(None, media_ms);
+        }
         for archive in &active.archives {
             archive.sink.set_accepting(false);
         }
@@ -1476,6 +1554,13 @@ impl RecordingManager {
             .map(|archive| archive.overrun_samples)
             .sum::<u64>();
         let mut terminal = desired_terminal;
+        if let Err(error) = active.checkpoint_capture_times() {
+            ulog_warn!(
+                "[recording] final capture time checkpoint failed: {}",
+                error
+            );
+            terminal = CaptureStatus::Interrupted;
+        }
         if !settled.archive_errors.is_empty() || overrun_samples > 0 {
             terminal = CaptureStatus::Interrupted;
         }
@@ -1501,11 +1586,36 @@ impl RecordingManager {
         let final_media_ms = media_ms.max(archive_media_ms);
         let artifacts: Vec<AudioTrackArtifactInput> = usable_archives
             .iter()
-            .map(|archive| AudioTrackArtifactInput {
-                track: archive.track,
-                relative_path: audio_track_relative_path(archive.track),
+            .map(|archive| {
+                let timing = active
+                    .source_sinks
+                    .iter()
+                    .find(|(track, _)| *track == archive.track)
+                    .map(|(_, sink)| sink.timeline())
+                    .transpose()
+                    .map(|timeline| timeline.flatten());
+                let (timeline, capture_time_error) = match timing {
+                    Ok(Some(timeline)) => match timeline.prefix(archive.media_samples_48k / 3) {
+                        Some(timeline) => (Some(timeline), None),
+                        None => (None, Some("RECORDING_CAPTURE_TIME_INVALID".to_string())),
+                    },
+                    Ok(None) => (None, None),
+                    Err(_) => (None, Some("RECORDING_CAPTURE_TIME_UNAVAILABLE".to_string())),
+                };
+                AudioTrackArtifactInput {
+                    track: archive.track,
+                    relative_path: audio_track_relative_path(archive.track),
+                    timeline,
+                    capture_time_error,
+                }
             })
             .collect();
+        if artifacts
+            .iter()
+            .any(|artifact| artifact.capture_time_error.is_some())
+        {
+            terminal = CaptureStatus::Interrupted;
+        }
         let has_usable_archives = !artifacts.is_empty();
         let terminal_record_result = if artifacts.is_empty() {
             self.record_store
@@ -1721,6 +1831,9 @@ impl RecordingManager {
 
             let prior_status = active.capture_status;
             let media_ms = active.media_duration_ms();
+            for (_, sink) in &active.source_sinks {
+                sink.set_media_epoch(None, media_ms);
+            }
             for archive in &active.archives {
                 archive.sink.set_accepting(false);
             }
@@ -1736,21 +1849,18 @@ impl RecordingManager {
                 active.media_before_segment_ms = media_ms;
                 active.segment_started = None;
             }
-            let enabled_sources = active
-                .source_sinks
-                .iter()
-                .map(|(track, sink)| (*track, sink.enabled()))
-                .collect::<Vec<_>>();
-            let (sinks, source_sinks) = capture_sinks(&active.archives, &active.analyses);
-            for (track, sink) in &source_sinks {
-                if let Some((_, enabled)) = enabled_sources
+            let sinks = CaptureSinks {
+                microphone: active
+                    .source_sinks
                     .iter()
-                    .find(|(enabled_track, _)| enabled_track == track)
-                {
-                    sink.set_enabled(*enabled);
-                }
-            }
-            active.source_sinks = source_sinks;
+                    .find(|(track, _)| *track == AudioTrackKind::Microphone)
+                    .map(|(_, sink)| sink.clone()),
+                system: active
+                    .source_sinks
+                    .iter()
+                    .find(|(track, _)| *track == AudioTrackKind::System)
+                    .map(|(_, sink)| sink.clone()),
+            };
             let repaired_tracks = active
                 .capture_plan
                 .sources
@@ -1966,6 +2076,9 @@ impl RecordingManager {
                             active.live_analysis_enabled &= resume_live_analysis;
                             if prior_status == CaptureStatus::Recording {
                                 active.segment_started = Some(Instant::now());
+                                for (_, sink) in &active.source_sinks {
+                                    sink.set_media_epoch(active.segment_started, media_ms);
+                                }
                                 for archive in &active.archives {
                                     archive.sink.set_accepting(true);
                                 }
@@ -2063,6 +2176,19 @@ impl RecordingManager {
                     _ = interval.tick() => {
                         let Some(manager) = manager.upgrade() else { break; };
                         if !manager.is_generation_active(generation).await { break; }
+                        let timing = {
+                            let mut state = manager.state.lock().await;
+                            match state.slot.as_mut() {
+                                Some(RecordingSlot::Live(active)) if active.generation == generation => active.checkpoint_capture_times(),
+                                _ => break,
+                            }
+                        };
+                        if let Err(error) = timing {
+                            ulog_warn!("[recording] capture time checkpoint failed: {}", error);
+                            let _ = manager.settle_generation(generation, CaptureStatus::Interrupted,
+                                RecordingFinishReason::RecordingJournalCommitFailed, None).await;
+                            break;
+                        }
                         if let Err(error) = ensure_disk_budget(manager.record_store.root_dir()) {
                             ulog_warn!("[recording] low disk safe stop: {}", error);
                             let _ = manager
@@ -3533,6 +3659,7 @@ mod tests {
                 .begin_live_transcript(
                     &accepted.id,
                     crate::record::RecordSpeechProvenance {
+                        algorithm_revision: None,
                         provider: "local".into(),
                         model_pack_revision: "fixture-pack".into(),
                         onnx_runtime_version: "1.28.0".into(),

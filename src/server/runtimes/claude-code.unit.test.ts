@@ -4,6 +4,33 @@ import type { UnifiedEvent } from './types';
 import { ClaudeCodeRuntime } from './claude-code';
 
 describe('Claude Code NDJSON log ownership', () => {
+  it('preserves local retraction and child supersedes before replacement content', () => {
+    const runtime = new ClaudeCodeRuntime() as unknown as { parseLine(line: string): UnifiedEvent | UnifiedEvent[] | null };
+    const parse = (frame: unknown) => runtime.parseLine(JSON.stringify(frame));
+    expect(parse({ type: 'system', subtype: 'model_refusal_fallback', scope: 'local', retracted_message_uuids: ['refused'] }))
+      .toEqual({ kind: 'native_retraction', scope: 'local', messageIds: ['refused'] });
+    const replacement = parse({ type: 'assistant', uuid: 'replacement', parent_tool_use_id: 'parent', supersedes: ['refused'],
+      message: { id: 'model', content: [{ type: 'text', text: 'answer' }] },
+    });
+    expect(replacement).toMatchObject([
+      { kind: 'native_retraction', messageIds: ['refused'], scope: 'local', parentToolUseId: 'parent' },
+      { kind: 'message_replay', message: { id: 'replacement' }, nativeSource: { parentToolUseId: 'parent' } },
+    ]);
+  });
+
+  it('retains model-message/block provenance and isolates child stream indexes', () => {
+    const runtime = new ClaudeCodeRuntime() as unknown as { parseLine(line: string): UnifiedEvent | null };
+    const parse = (frame: unknown) => runtime.parseLine(JSON.stringify(frame));
+    const stream = (event: unknown, parent_tool_use_id?: string) => parse({ type: 'stream_event', parent_tool_use_id, event });
+    stream({ type: 'message_start', message: { id: 'main-message' } });
+    stream({ type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'main-tool', name: 'Read' } });
+    stream({ type: 'message_start', message: { id: 'child-message' } }, 'parent');
+    stream({ type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'child-tool', name: 'Read' } }, 'parent');
+    expect(stream({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{}' } })).toMatchObject({ kind: 'tool_input_delta', toolUseId: 'main-tool', nativeSource: { messageId: 'main-message', blockIndex: 0 } });
+    expect(stream({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{}' } }, 'parent')).toMatchObject({ kind: 'tool_input_delta', toolUseId: 'child-tool', nativeSource: { messageId: 'child-message', parentToolUseId: 'parent', blockIndex: 0 } });
+    expect(parse({ type: 'assistant', uuid: 'delivery', parent_tool_use_id: 'parent', message: { id: 'child-message', content: [{ type: 'text', text: 'full' }] } })).toMatchObject({ kind: 'message_replay', message: { id: 'delivery' }, nativeSource: { messageId: 'child-message', parentToolUseId: 'parent' } });
+  });
+
   it('delivers all delta kinds without first-N or every-N payload logging', async () => {
     const frames = [
       JSON.stringify({

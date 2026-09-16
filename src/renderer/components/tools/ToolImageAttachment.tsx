@@ -256,15 +256,14 @@ export default function ToolImageAttachment({ attachment }: Props) {
           )
         : null}
       {contextMenu
-        ? createPortal(
+        ? (
             <ContextMenu
               x={contextMenu.x}
               y={contextMenu.y}
               items={contextMenuItems}
               onClose={closeContextMenu}
               zIndex={220}
-            />,
-            document.body,
+            />
           )
         : null}
     </>

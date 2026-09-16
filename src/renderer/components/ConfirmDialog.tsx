@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Loader2 } from 'lucide-react';
@@ -53,6 +54,7 @@ export default function ConfirmDialog({
 
     // Keyboard: Enter to confirm (unless disabled), Escape to cancel
     const handleKeyDown = useCallback((e: KeyboardEvent) => {
+        if (isImeComposingEvent(e)) return;
         if (loading) return;
         if (e.key === 'Enter' && !disableEnterShortcut) {
             e.preventDefault();

@@ -1,3 +1,4 @@
+import type { AsyncQuestionSet, AsyncQuestionReply } from '../../shared/asyncUserQuestions';
 // Import tool input types from Claude Agent SDK for end-to-end type safety
 import type {
   AgentInput,
@@ -145,6 +146,9 @@ export interface ProviderToolUsePayload extends ToolUse {
 }
 
 export interface ContentBlock {
+  /** Present on V2 blocks; supplied by the product transcript owner. */
+  id?: string;
+  asyncQuestions?: AsyncQuestionSet;
   type: 'text' | 'tool_use' | 'thinking' | 'server_tool_use';
   text?: string;
   providerRouteId?: string;
@@ -156,7 +160,7 @@ export interface ContentBlock {
   thinkingDurationMs?: number;
   // Stream index for thinking blocks (to track separate thinking streams)
   thinkingStreamIndex?: number;
-  // Whether this thinking block is complete (received content_block_stop)
+  // Closed text/thinking boundary; subsequent deltas must start a new block.
   isComplete?: boolean;
   // Whether this block was stopped by user (interrupted)
   isStopped?: boolean;
@@ -201,6 +205,9 @@ export interface MessageUsage {
 }
 
 export interface Message {
+  turnId?: string;
+  transcriptState?: import('../../shared/types/session-message').SessionMessage['transcriptState'];
+  asyncQuestionReply?: AsyncQuestionReply;
   id: string;
   role: 'user' | 'assistant';
   content: string | ContentBlock[];

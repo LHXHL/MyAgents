@@ -145,7 +145,7 @@ ReplySlot只服务产生它的Channel user request。一个request结束后，De
 | Heartbeat / Task relay / Agent Channel Goal | none | caller-owned |
 | Memory或明确静默turn | none | none |
 
-builtin/external各自在真实turn owner中capture完整text block，成功terminal且transcript持久化后才交给`im-mirror.ts`transport。失败、停止、被重试撤回、空文本、thinking/tool/subagent和`NO_REPLY`不投递。`SessionOrigin`与`InteractionScenario`只描述归因/prompt，不能推导delivery owner。
+builtin/external各自在真实turn owner中capture完整text block，成功terminal后交给`im-mirror.ts`transport。V1保留原有保存完成后的投递顺序；V2在SessionStore内存接纳、排队保存后即可投递，产品写盘失败不改变AI成功结果或阻止投递。失败、停止、被重试撤回、空文本、thinking/tool/subagent和`NO_REPLY`不投递。`SessionOrigin`与`InteractionScenario`只描述归因/prompt，不能推导delivery owner。
 
 ## 6. 权限与结构化提问
 

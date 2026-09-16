@@ -1,3 +1,4 @@
+import type { AsyncQuestionReply } from '../../shared/asyncUserQuestions';
 /** Lightweight image info for queued messages (no File blob to avoid memory leaks) */
 export interface QueuedImageInfo {
   id: string;
@@ -10,6 +11,7 @@ export interface QueuedImageInfo {
 }
 
 export interface QueuedMessageInfo {
+  asyncQuestionReply?: AsyncQuestionReply;
   queueId: string;
   text: string;                // Original text, for cancel → restore to input
   images?: QueuedImageInfo[];  // Lightweight image info for display and restore

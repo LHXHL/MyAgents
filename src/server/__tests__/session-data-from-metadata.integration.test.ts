@@ -1,3 +1,4 @@
+import { createLegacySession } from './fixtures/session-store';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -30,7 +31,7 @@ afterAll(() => {
 
 describe('SessionStore bulk-read path', () => {
   it('assembles SessionData from caller-owned metadata without rereading the index', async () => {
-    const metadata = await store.createSession('/tmp/usage-stats-workspace');
+    const metadata = await createLegacySession(store, '/tmp/usage-stats-workspace');
     const message = {
       id: 'message-1',
       role: 'user' as const,
@@ -44,8 +45,8 @@ describe('SessionStore bulk-read path', () => {
     const persistedIndex = readFileSync(sessionsPath, 'utf-8');
     writeFileSync(sessionsPath, '[]', 'utf-8');
 
-    expect(store.getSessionData(metadata.id)).toBeNull();
-    expect(store.getSessionDataFromMetadata(metadata)).toMatchObject({
+    expect((await store.getSessionData(metadata.id))).toBeNull();
+    expect((await store.getSessionDataFromMetadata(metadata))).toMatchObject({
       id: metadata.id,
       messages: [message],
     });

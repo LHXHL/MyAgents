@@ -96,16 +96,32 @@ export async function materializePendingSessionConfig(params: {
     } catch (error) {
         if (!committed) {
             if (rustUpgraded) {
-                await postForSession(preparedSessionId, {
+                const rollback = await postForSession(preparedSessionId, {
                     workspacePath: params.workspacePath,
                     phase: 'rollback',
                     preparedSessionId,
                 }).catch((rollbackError) => {
                     console.warn('[sessionMaterialize] rollback on target sidecar failed:', rollbackError);
+                    return null;
                 });
-                await upgradeSessionId(preparedSessionId, params.pendingSessionId, params.tabId).catch((rollbackError) => {
-                    console.warn('[sessionMaterialize] Rust session id rollback failed:', rollbackError);
-                });
+                if (rollback?.success) {
+                    await upgradeSessionId(preparedSessionId, params.pendingSessionId, params.tabId).catch((rollbackError) => {
+                        console.warn('[sessionMaterialize] Rust session id rollback failed:', rollbackError);
+                    });
+                } else {
+                    // The binding may already have committed before its HTTP
+                    // acknowledgement was lost. Ask the same owner to confirm;
+                    // neither a failed rollback nor an uncertain ACK authorizes
+                    // moving the live Rust identity back to the pending key.
+                    const confirmed = await postForSession(preparedSessionId, {
+                        workspacePath: params.workspacePath,
+                        phase: 'commit',
+                        preparedSessionId,
+                    }).catch(() => null);
+                    if (confirmed?.success && confirmed.sessionId && confirmed.metadata) {
+                        return { sessionId: confirmed.sessionId, metadata: confirmed.metadata };
+                    }
+                }
             } else {
                 await postCurrent({
                     workspacePath: params.workspacePath,

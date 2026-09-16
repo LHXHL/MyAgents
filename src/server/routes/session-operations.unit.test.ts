@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   engine: {
     resetForNewDesktopSession: vi.fn(async () => ({ success: true, sessionId: 'new-desktop' })),
     compactContext: vi.fn(async () => ({ success: true })),
+    retryMcpServer: vi.fn<(serverId: string) => Promise<Record<string, unknown>>>(async () => ({ success: true })),
     rewindToUserMessage: vi.fn<(userMessageId: string) => Promise<Record<string, unknown>>>(
       async () => ({ success: true, content: 'removed' }),
     ),
@@ -36,6 +37,7 @@ describe('handleSessionOperationRoute', () => {
     vi.clearAllMocks();
     mocks.engine.resetForNewDesktopSession.mockResolvedValue({ success: true, sessionId: 'new-desktop' });
     mocks.engine.compactContext.mockResolvedValue({ success: true });
+    mocks.engine.retryMcpServer.mockResolvedValue({ success: true });
     mocks.engine.rewindToUserMessage.mockResolvedValue({ success: true, content: 'removed' });
     mocks.retryLastExternalUserMessageAtSelector.mockResolvedValue({ success: true, content: 'retry text' });
     mocks.engine.forkAtAssistantMessage.mockResolvedValue({ success: true, newSessionId: 'forked' });
@@ -43,6 +45,34 @@ describe('handleSessionOperationRoute', () => {
       success: true,
       sessionId: options.targetSessionId,
     }));
+  });
+
+  it('retries a selected MCP through the facade and preserves busy responses', async () => {
+    const request = () => new Request('http://local/api/mcp/retry', {
+      method: 'POST', body: JSON.stringify({ serverId: 'playwright' }),
+    });
+    const accepted = await handleSessionOperationRoute('/api/mcp/retry', request(), { workspacePath: '/workspace' });
+    expect(accepted?.status).toBe(200);
+    expect(mocks.engine.retryMcpServer).toHaveBeenCalledWith('playwright');
+    mocks.engine.retryMcpServer.mockResolvedValueOnce({ success: false, status: 409, errorCode: 'session_busy' });
+    const busy = await handleSessionOperationRoute('/api/mcp/retry', request(), { workspacePath: '/workspace' });
+    expect(busy?.status).toBe(409);
+    expect(await busy?.json()).toEqual({ success: false, errorCode: 'session_busy' });
+  });
+
+  it('rejects malformed retry input and never returns raw Runtime errors', async () => {
+    for (const body of ['bad json', '{}', '{"serverId":42}']) {
+      const result = await handleSessionOperationRoute('/api/mcp/retry', new Request('http://local/api/mcp/retry', {
+        method: 'POST', body,
+      }), { workspacePath: '/workspace' });
+      expect(result?.status).toBe(400);
+    }
+    expect(mocks.engine.retryMcpServer).not.toHaveBeenCalled();
+    mocks.engine.retryMcpServer.mockRejectedValueOnce(new Error('Bearer SECRET /private/path'));
+    const result = await handleSessionOperationRoute('/api/mcp/retry', new Request('http://local/api/mcp/retry', {
+      method: 'POST', body: '{"serverId":"playwright"}',
+    }), { workspacePath: '/workspace' });
+    expect(await result?.json()).toEqual({ success: false, errorCode: 'retry_failed' });
   });
 
   it('resets desktop sessions through the active engine', async () => {

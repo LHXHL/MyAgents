@@ -22,6 +22,8 @@ import {
   sep,
 } from "node:path";
 
+import { downloadBuildResource } from "./build-resource-download.mjs";
+
 const PREPARE_LOCK_NAME = ".prepare.lock";
 const DEFAULT_LOCK_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const MALFORMED_LOCK_GRACE_MS = 60 * 1000;
@@ -79,12 +81,12 @@ export async function acquireLockedResource({
   entry,
   cacheName,
   offline = false,
-  downloadTimeoutMs,
+  downloadTimeoutMs = 30 * 60 * 1000,
+  fetchBytes,
   stats,
 }) {
   if (
-    downloadTimeoutMs !== undefined &&
-    (!Number.isSafeInteger(downloadTimeoutMs) || downloadTimeoutMs <= 0)
+    !Number.isSafeInteger(downloadTimeoutMs) || downloadTimeoutMs <= 0
   ) {
     throw new Error("Locked resource download timeout must be positive");
   }
@@ -116,35 +118,21 @@ export async function acquireLockedResource({
     `  [download] ${cacheName} (${(entry.size / 1024 / 1024).toFixed(1)} MiB)`,
   );
   let lastError;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try {
-      const response = await fetch(entry.url, {
-        redirect: "follow",
-        signal:
-          downloadTimeoutMs === undefined
-            ? undefined
-            : AbortSignal.timeout(downloadTimeoutMs),
-      });
-      if (!response.ok || !response.body) {
-        throw new Error(`Download failed (${response.status}): ${entry.url}`);
-      }
-      const bytes = Buffer.from(await response.arrayBuffer());
-      writeFileSync(temporary, bytes, { mode: 0o600 });
-      if (!validateLockedFile(temporary, entry)) {
-        throw new Error(`Locked size/digest mismatch: ${entry.url}`);
-      }
-      renameSync(temporary, destination);
-      lastError = undefined;
-      break;
-    } catch (error) {
-      lastError = error;
-      rmSync(temporary, { force: true });
-      if (attempt < 3) {
-        await new Promise((resolveDelay) =>
-          setTimeout(resolveDelay, attempt * 500),
-        );
-      }
+  try {
+    const bytes = await (fetchBytes ?? ((url, maxBytes) => downloadBuildResource(url, {
+      maxBytes, timeoutMs: downloadTimeoutMs, redirect: "follow",
+    })))(entry.url, entry.size);
+    writeFileSync(temporary, bytes, { mode: 0o600 });
+    if (!validateLockedFile(temporary, entry)) {
+      throw new Error(`Locked size/digest mismatch: ${entry.url}`);
     }
+    renameSync(temporary, destination);
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    // curl is the existing native-resource proxy fallback, not an escape from
+    // invalid content. Injected transports own their own fallback policy.
+    if (fetchBytes || error.retryable !== true) throw error;
+    lastError = error;
   }
   if (lastError) {
     console.warn(
@@ -152,10 +140,7 @@ export async function acquireLockedResource({
     );
     let curlError;
     try {
-      const curlTimeoutArgs =
-        downloadTimeoutMs === undefined
-          ? []
-          : ["--max-time", String(Math.ceil(downloadTimeoutMs / 1000))];
+      const curlTimeoutArgs = ["--max-time", String(Math.ceil(downloadTimeoutMs / 1000))];
       execFileSync(
         "curl",
         [
@@ -172,10 +157,8 @@ export async function acquireLockedResource({
         ],
         {
           stdio: "inherit",
-          timeout:
-            downloadTimeoutMs === undefined
-              ? undefined
-              : downloadTimeoutMs + 5_000,
+          // curl --retry 3 permits four transfers, each with its own deadline.
+          timeout: downloadTimeoutMs * 4 + 3_000 + 5_000,
           killSignal: "SIGKILL",
         },
       );

@@ -19,7 +19,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { Message } from '@/types/chat';
-import type { ScrollToMessageOptions } from '@/hooks/useChatScrollController';
+import type { ChatScrollController } from '@/hooks/useChatScrollController';
 
 // ── CSS Custom Highlight API types (not yet in lib.dom for all TS versions) ──
 //
@@ -299,7 +299,9 @@ export interface UseChatSearchOptions {
   /** Full message list (history + streaming combined) — drives the count. */
   messages: readonly Message[];
   /** Controller-owned message navigation. */
-  scrollToMessage: (messageId: string, options?: ScrollToMessageOptions) => void;
+  scrollToMessage: ChatScrollController['scrollToMessage'];
+  /** Mounted ranges still need to enter controller-owned reading mode. */
+  pauseAutoScroll: ChatScrollController['pauseAutoScroll'];
   /** When true, the hook is active: scan + paint highlights. */
   active: boolean;
 }
@@ -320,6 +322,7 @@ export function useChatSearch({
   scrollerRef,
   messages,
   scrollToMessage,
+  pauseAutoScroll,
   active,
 }: UseChatSearchOptions): ChatSearchController {
   const [query, setQueryState] = useState('');
@@ -342,6 +345,9 @@ export function useChatSearch({
   const scrollToMessageRef = useRef(scrollToMessage);
   // eslint-disable-next-line react-hooks/refs
   scrollToMessageRef.current = scrollToMessage;
+  const pauseAutoScrollRef = useRef(pauseAutoScroll);
+  // eslint-disable-next-line react-hooks/refs
+  pauseAutoScrollRef.current = pauseAutoScroll;
   const summariesRef = useRef<MessageMatchSummary[]>([]);
   const focusRequestIdRef = useRef(0);
   // Timestamp of the user's most recent next/prev click. `reconcile()` runs on
@@ -626,17 +632,17 @@ export function useChatSearch({
       return true;
     };
 
+    pauseAutoScrollRef.current();
     if (tryPaintAndScroll()) return;
 
     // Off-screen: ask the scroll controller to mount the row, then retry.
-    scrollToMessageRef.current(pos.messageId, {
+    const isCurrentNavigation = scrollToMessageRef.current(pos.messageId, {
       behavior: 'auto',
       align: 'center',
-      pauseMs: 2000,
     });
     const startedAt = Date.now();
     const retry = () => {
-      if (focusRequestIdRef.current !== focusRequestId) return;
+      if (focusRequestIdRef.current !== focusRequestId || !isCurrentNavigation?.()) return;
       if (tryPaintAndScroll()) return;
       if (Date.now() - startedAt >= PAINT_RETRY_TIMEOUT_MS) {
         // Give up the precise paint; the pulse + scroll already landed the

@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import visibilityFixture from '../../shared/fixtures/session-history-visibility.json';
+
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
 
 type SessionStoreModule = typeof import('../SessionStore');
@@ -59,6 +61,11 @@ afterAll(() => {
 });
 
 describe('pre-query session draft visibility', () => {
+    it.each(visibilityFixture.cases)('matches Rust visibility for $name', ({ patch, visible }) => {
+        const metadata = { ...visibilityFixture.base, ...patch } as SessionMetadata;
+        expect(store.isHistoryVisibleSession(metadata)).toBe(visible);
+    });
+
     it('commits a prepared session on the first real user turn without losing runtime identity', async () => {
         const id = '11111111-1111-4111-8111-111111111111';
         await store.saveSessionMetadata(managedCodexMeta(id, {

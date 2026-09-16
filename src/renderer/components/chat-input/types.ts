@@ -84,6 +84,7 @@ export interface SimpleChatInputProps {
   /** Runtime-owned MCP readiness; desired selection remains controlled separately. */
   mcpEffectiveSnapshot?: McpEffectiveSnapshot | null;
   onWorkspaceMcpToggle?: (serverId: string, enabled: boolean) => void;
+  onMcpRetry?: (serverId: string) => Promise<import('../../../shared/mcpFailure').McpRetryResult>;
   officialTools?: readonly OfficialToolDefinition[];
   workspaceOfficialToolEnabled?: OfficialToolId[];
   globalOfficialToolEnabled?: OfficialToolId[];
@@ -146,6 +147,8 @@ export interface SimpleChatInputProps {
   runtimeDetections?: RuntimeDetections;
   onRuntimeChange?: (runtime: RuntimeType) => void;
   runtimeModels?: RuntimeModelInfo[];
+  /** Session-scoped capability; null means still unknown (do not use Global catalog). */
+  managedReasoningModel?: Pick<RuntimeModelInfo, 'supportedReasoningEfforts' | 'defaultReasoningEffort'> | null;
   runtimePermissionModes?: RuntimePermissionMode[];
   queuedMessages?: QueuedMessageInfo[];
   onCancelQueued?: (queueId: string) => void;

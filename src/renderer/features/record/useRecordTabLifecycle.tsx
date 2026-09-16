@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import ConfirmDialog from '@/components/ConfirmDialog';
 import type { RecordTab } from '@/features/record/tabContract';
@@ -35,12 +35,13 @@ export function useRecordTabLifecycle(dependencies: RecordLifecycleDependencies)
   dialog: ReactNode;
 } {
   const dependenciesRef = useRef(dependencies);
-  useEffect(() => {
+  useLayoutEffect(() => {
     dependenciesRef.current = dependencies;
   }, [dependencies]);
   const [confirmation, setConfirmation] = useState<ConfirmationState | null>(null);
   const confirmationRef = useRef(confirmation);
-  useEffect(() => {
+  // A committed dialog can receive input before passive effects run.
+  useLayoutEffect(() => {
     confirmationRef.current = confirmation;
   }, [confirmation]);
 

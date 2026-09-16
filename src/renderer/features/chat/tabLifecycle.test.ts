@@ -14,6 +14,15 @@ const tab = (overrides: Partial<ChatTab> = {}): ChatTab => ({
 });
 
 describe('Chat tab close lifecycle', () => {
+  it('requires pending file edits to settle before Tab detachment', async () => {
+    const flush = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const lifecycle = createChatTabLifecycle({ flushFileEdits: flush,
+      startBackgroundCompletion: vi.fn(), stopSseProxy: vi.fn(), releaseTabSession: vi.fn(),
+      stopLegacyTabSidecar: vi.fn(), notifyBackgroundContinuation: vi.fn(), log: vi.fn() });
+    expect(await lifecycle.prepareClose?.(tab(), 'user')).toBe('blocked');
+    expect(await lifecycle.prepareClose?.(tab(), 'user')).toBe('allow');
+    expect(flush).toHaveBeenCalledWith('tab-1');
+  });
   it('runs background handoff, SSE stop and exact owner release in order', async () => {
     const calls: string[] = [];
     const lifecycle = createChatTabLifecycle({

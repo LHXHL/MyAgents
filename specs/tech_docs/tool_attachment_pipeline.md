@@ -92,11 +92,11 @@ Codex 的大载荷保存不阻塞原始 Runtime notification：
 2. `tool_result` 先进入 streaming content 和 Renderer；
 3. 保存完成后发出 attachment update，以 `pendingId` 精确替换；
 4. root 或 nested sub-agent content owner 同步更新自己的 attachment；
-5. Turn 持久化前 `awaitInFlightSaves()`，保证 placeholder 不跨过 terminal 写盘。
+5. V1 保留 Turn 持久化前的 `awaitInFlightSaves()`；V2 不等待归档或产品写盘，pending 引用可被持续保存，归档完成后按原 writer/工具目标更新。
 
 顶层更新使用 `chat:tool-attachment-update`；nested sub-agent 更新使用 `chat:subagent-tool-attachment-update`。两者都必须在 SSE JSON 白名单，并按当前 Session scope 处理。
 
-Builtin 的结构化媒体在 tool result commit 路径完成保存后再写入 tool block，不建立第二套 placeholder owner。
+Builtin V1 保留原同步归档边界；V2 将归档留在 SDK 消费循环之外，完成回调按 captured writer 与原工具更新，不阻断当前或下一轮。Fork V2 目标独立复制源附件，必要附件未完成或缺失时明确失败；不删除源资源。
 
 `mergeAttachmentsByPendingId()` 在重复的 tool-result event 与 attachment update 之间保持单调：已 resolved entry 不能被迟到 placeholder 覆盖。
 
@@ -126,6 +126,14 @@ Renderer 通过 `resolveTauriToolAttachmentUrl()` 把相对 `refPath` 映射为�
 - placeholder 显示 loading；`error://<code>` 只显示固定错误类别，不暴露 raw error。
 
 特殊工具组件可以显示自己的文字 metadata，但不得再次渲染同一媒体或从结果文本正则恢复第二份附件。
+
+### 音频播放资源生命周期
+
+附件音频的播放 owner 是 Renderer `audioPlayer.ts` 单例；消息行只订阅状态，因此虚拟列表回收行不停止用户主动播放的音频。暂停保留 element、URL 和 position，结束、错误、首次播放的 `play()` 拒绝、显式停止则统一经过 `stopAudio()`：先摘除 listener，再 pause、移除 `src`、`load()` 重置媒体资源，最后撤销 blob URL 并清空状态。恢复暂停播放时的 Promise 拒绝保留现有资源，等待媒体事件同步状态。只清除 UI 的 path 或撤销 blob URL 不会卸载已加载的媒体元素。
+
+Settings TTS 试听由设置弹窗自身持有，`useTtsPreview` 只是其局部 lifecycle 实现，不复用附件单例。一次试听的 synthesis request、blob URL、media element 和 `play()` Promise 属于同一 operation。关闭、卸载或修改试听配置时立即使 operation 失效并释放媒体；旧请求完成、旧媒体事件、旧 `play()` Promise 均不得创建播放器、修改新试听状态或显示过期错误。现有 `apiPostJson` transport 不支持取消请求，因此在异步边界撤销后续播放资格；不增加通信模式，也不把后端合成完成等同于仍有播放许可。
+
+回归测试见 `audioPlayer.test.tsx` 与 `useTtsPreview.test.tsx`；覆盖终态资源释放、暂停/恢复保留位置、关闭期间异步返回、重新打开后的旧回调，以及 StrictMode setup/cleanup。
 
 ## 安全不变量
 

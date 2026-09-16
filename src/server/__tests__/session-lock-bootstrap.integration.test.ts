@@ -1,3 +1,4 @@
+import { createLegacySession } from './fixtures/session-store';
 /**
  * Issue #522 — compose the real SessionStore transcript lock with the single
  * deferred-init terminal owner. The HOME redirect must happen before the
@@ -39,7 +40,7 @@ function transcriptLockPath(sessionId: string): string {
 }
 
 async function createSeededSession(): Promise<{ id: string; transcript: string }> {
-  const session = await store.createSession(join(testHome, 'workspace'));
+  const session = await createLegacySession(store, join(testHome, 'workspace'));
   const snapshot = await store.loadSessionTranscript(session.id);
   const message: SessionMessage = {
     id: 'issue-522-user-message',

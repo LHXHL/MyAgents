@@ -10,6 +10,7 @@
  * both navigation and panel control.
  */
 
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
@@ -432,6 +433,7 @@ export default function BrowserPanel({
   }, [urlDraft, currentUrl, tabId]);
 
   const handleUrlKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (isImeComposingEvent(e)) return;
     if (e.key === 'Enter') {
       e.preventDefault();
       handleUrlSubmit();

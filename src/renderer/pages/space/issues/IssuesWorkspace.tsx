@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -205,6 +206,7 @@ export function IssuesWorkspace({
                 value={issueQ}
                 onChange={(event) => onQueryChange(event.target.value)}
                 onKeyDown={(event) => {
+                  if (isImeComposingEvent(event)) return;
                   if (event.key !== "Escape") return;
                   if (issueQ.trim()) {
                     onQueryChange("");

@@ -1,6 +1,7 @@
 import { questionAnswersAsText } from '../../shared/types/askUserQuestion';
 import { randomUUID } from 'node:crypto';
 import {
+  publishBuiltinTranscriptSaveStatus,
   cancelQueueItem,
   cancelQueuedTurnsByOwner,
   cancelImRequest as cancelBuiltinImRequest,
@@ -49,6 +50,7 @@ import {
   setBackgroundAgentPermissionMode,
   setInteractionScenario,
   setMcpServers,
+  retryBuiltinMcpServer,
   setSessionModel,
   setSessionPermissionMode,
   setSessionEnabledOfficialToolIds,
@@ -95,6 +97,7 @@ import {
   ensureRegisteredAgentSessionOrigin,
   getPersistedSessionOrigin,
   getSessionData,
+  getActiveSessionTranscript,
   getSessionMetadata,
 } from '../SessionStore';
 import type { SessionMessage } from '../types/session';
@@ -183,7 +186,7 @@ function providerEnvForRouteRequest(request: {
     if (authKind === 'sdk-native') {
       return { providerEnv: 'subscription', model: request.providerRoute.model };
     }
-    if (authKind !== 'host-managed-oauth') {
+    if (authKind !== 'host-managed-oauth' && authKind !== 'proxy-managed') {
       return {
         providerEnv: undefined,
         error: `Subscription provider '${request.providerRoute.providerId}' cannot execute in builtin runtime`,
@@ -203,10 +206,11 @@ function providerEnvForRouteRequest(request: {
   return { providerEnv, model: request.providerRoute.model };
 }
 
-function getLatestBuiltinResult(): string {
+async function getLatestBuiltinResult(): Promise<string> {
   let latestResult = getLastBuiltinAssistantText();
+  if (getActiveSessionTranscript(getSessionId())) return latestResult.trim() || NO_TEXT_RESPONSE;
   if (!latestResult.trim()) {
-    const data = getSessionData(getSessionId());
+    const data = (await getSessionData(getSessionId()));
     latestResult = data
       ? getLatestAssistantResultFromMessages(data.messages)
       : NO_TEXT_RESPONSE;
@@ -262,6 +266,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
       };
     },
 
+    publishTranscriptSaveStatus(status) { publishBuiltinTranscriptSaveStatus(status); },
     getLiveSessionState() {
       return {
         sessionState: getAgentState().sessionState,
@@ -269,10 +274,10 @@ export function createBuiltinSessionEngine(): SessionEngine {
       };
     },
 
-    getLatestAssistantResult() {
+    async getLatestAssistantResult() {
       return {
         sessionId: getSessionId(),
-        latestResult: getLatestBuiltinResult(),
+        latestResult: await getLatestBuiltinResult(),
       };
     },
 
@@ -286,7 +291,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
       const systemInitInfo = getSystemInitInfo();
       return {
         sessionId,
-        initState: getAgentState(),
+        initState: { ...getAgentState(), queuedMessages: getQueueStatus() },
         replayMessages,
         liveStreamingMessage: liveSnapshot?.liveStreamingMessage
           ? messageWireToReplayMessage(liveSnapshot.liveStreamingMessage)
@@ -303,7 +308,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
       const mcpServers = getMcpServers();
       const agents = getAgents();
       const sessionId = getSessionId();
-      const session = getSessionData(sessionId);
+      const session = getSessionMetadata(sessionId);
       const workspacePath = getBuiltinWorkspacePath();
       const enabledOfficialToolIds = workspacePath
         ? getEffectiveOfficialToolIdsForSession(
@@ -332,7 +337,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         runtime: 'builtin',
         sessionId: sessionId || null,
         workspacePath: getBuiltinWorkspacePath(),
-        sessionMeta: sessionId ? getSessionData(sessionId) : null,
+        sessionMeta: sessionId ? getSessionMetadata(sessionId) : null,
       };
     },
 
@@ -362,6 +367,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         isActive: true,
         runtime: 'builtin',
         ...snapshot,
+        queuedMessages: getQueueStatus(),
       };
     },
 
@@ -382,6 +388,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
     },
 
     async sendDesktopMessage(request: DesktopMessageRequest): Promise<DesktopAdmissionResult> {
+      if (request.asyncQuestionReply) return { success: false, status: 400, error: 'This session has no asynchronous runtime question.' };
       const permissionMode = asBuiltinPermissionMode(request.permissionMode);
       if (request.permissionMode !== undefined && permissionMode === undefined) {
         return { success: false, error: `Invalid builtin permission mode: ${request.permissionMode}`, status: 400 };
@@ -566,7 +573,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
           if (getMcpServers() === null) {
             const resolved = resolveWorkspaceConfig(
               request.workspacePath,
-              getSessionData(request.sessionId),
+              (await getSessionData(request.sessionId)),
               { includeMcp: true },
             );
             await applyMcpOverrideAndAwaitReady(resolved.mcpServers);
@@ -892,6 +899,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         preparedSessionId: request.preparedSessionId,
         snapshotPatch: request.snapshotPatch,
         origin: request.origin,
+        birthSnapshot: request.birthSnapshot,
       });
     },
 
@@ -929,6 +937,10 @@ export function createBuiltinSessionEngine(): SessionEngine {
     async updateMcpServers(servers) {
       setMcpServers(servers);
       return { success: true, servers: servers.map(s => s.id) };
+    },
+
+    async retryMcpServer(serverId) {
+      return retryBuiltinMcpServer(serverId);
     },
 
     async updateAgents(agents) {

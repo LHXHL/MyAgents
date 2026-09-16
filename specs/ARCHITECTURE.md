@@ -17,7 +17,7 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端。React Renderer 提供
 | 内置 Node.js v24 | Global/Session Sidecar、Plugin Bridge、MCP Server、CLI 与随 App 运行的 Node 工具 |
 | Claude Agent SDK / 外部 CLI Runtime | 具体模型会话和工具执行；只能经 SessionEngine 进入产品 Session |
 
-正常安装中的 MyAgents 自有 Node 服务使用随 App 发布的 Node.js v24，无需用户安装系统 Node。核心服务的资源缺失回退、CLI 的严格资源定位，以及用户工具的 PATH 优先级分别由对应启动入口决定，见 [Bundled Node](./tech_docs/bundled_node.md)。SDK native binary、Codex、Claude Code、Gemini、Document Worker 和 Media Worker 都是独立进程，不共享 Node 进程内状态。
+正常安装中的 MyAgents 自有 Node 服务使用随 App 发布的 Node.js v24，无需用户安装系统 Node。核心服务的资源缺失回退、CLI 的严格资源定位，以及用户工具的 PATH 优先级分别由对应启动入口决定，见 [Bundled Node](./tech_docs/bundled_node.md)。SDK native binary、Codex、Claude Code、Gemini、CLIProxy、Document Worker 和 Media Worker 都是独立进程，不共享 Node 进程内状态。
 
 ## 全景架构
 
@@ -118,7 +118,7 @@ Tab API / Global API
 
 WebView 只有已登记的大载荷端点可以原生读取数据面，当前为 `/refs/:id` 与 `/attachment/*`。这些端点必须同时满足 CORS、CSP、大小限制和路径安全约束；不得把例外扩展到普通 API。
 
-Rust SSE supervisor 绑定稳定的 `connectionKey + SidecarOwner`，每次连接前重新解析当前 process generation。REST snapshot 是持久历史与 live baseline 的权威；SSE 只按连续 revision 增量推进。新 JSON 事件必须加入 Renderer 白名单，Session-scoped 事件必须携带并校验 `sessionId`。
+Rust SSE supervisor 绑定稳定的 `connectionKey + SidecarOwner`，每次连接前重新解析当前 process generation。已恢复历史 Tab 以 REST snapshot 为 baseline，SSE 按连续 revision 增量推进；尚未采用 REST baseline 的 SSE-native 新生会话可在重连时采用有序 cold-history snapshot，详见 [V2 transcript](./tech_docs/session_transcript_v2.md)。新 JSON 事件必须加入 Renderer 白名单，Session-scoped 事件必须携带并校验 `sessionId`。
 
 Node → Rust 的反向调用只经过 localhost Management API。应用级资源由 Rust owner 管理，不能交给某个 Session Sidecar 的内存计数。
 
@@ -127,12 +127,12 @@ Node → Rust 的反向调用只经过 localhost Management API。应用级资�
 | 事实 | 唯一写入权威 |
 |------|--------------|
 | App 配置 | `config.json`；写前锁内重读并合并，写后刷新 projection |
-| Product Session metadata/transcript | SessionStore |
+| Product Session metadata/transcript | SessionStore；旧格式保持原读写，新建/fork 固定 V2，产品保存与 AI 执行独立（[详述](./tech_docs/session_transcript_v2.md)） |
 | Custom MCP OAuth credential | Node `mcp-oauth` state store；Global Sidecar 独占 proactive refresh scheduler，revision CAS 裁决 refresh/revoke |
 | 新定时自动化 | Rust TaskStore；Cron 只是兼容 surface |
 | Session Goal | SessionGoalManager |
 | Record、录音与转录结果 | RecordStore / RecordingManager / SpeechRecognitionManager |
-| 工作区文件 | Tauri `cmd_workspace_*` 与 `useWorkspaceFileService()` |
+| 工作区文件 | Tauri `cmd_workspace_*` 与 `useWorkspaceFileService()`；[Markdown 编辑器与文件生命周期](tech_docs/workspace_markdown_editor.md) |
 | Cloud 登录与 Registered Agent 本地状态 | Rust Space connector |
 
 兼容旧格式的读取或迁移不构成第二个 writer。具体数据格式、锁序与恢复协议由各模块技术文档维护。
@@ -175,6 +175,8 @@ Task、Goal 与 Agent Channel 都复用 Product Session 和同一 Runtime queue�
 
 DocumentProcessingManager 和 SpeechRecognitionManager 分别拥有全局队列、Worker generation、取消与结果发布；Document/Media Worker 只执行单次计算，不拥有队列、持久化或公开 artifact。共享 ONNX Runtime 与本地计算优先级由 Rust 应用级 owner 协调。
 
+Record 的物理音轨与媒体时钟由 RecordingManager 持有；Media Worker 按来源处理回声、转录和人物证据。SpeechRecognitionManager 将 ASR、人物与后台标注匹配绑定为同一次处理，RecordStore 在锁内裁决最新人工事实并一次发布正文和人物。稳定人物属于当前 Record；模型编号、物理来源与真实身份不能互相替代，也不建立跨 Record 声纹库。
+
 详见 [Pit-of-Success](./tech_docs/pit_of_success.md)、[Tool Attachment](./tech_docs/tool_attachment_pipeline.md)、[文档转换](./tech_docs/document_processing.md) 和 [录音与语音识别](./tech_docs/recording_and_speech_recognition.md)。
 
 ## 模块地图
@@ -189,6 +191,7 @@ DocumentProcessingManager 和 SpeechRecognitionManager 分别拥有全局队列�
 | Integrated DSH | Session Sidecar 中的 DSH adapter；原生 Runtime 生命周期、生成协议与不可变交付验证；保留有效结果、可选统计和 Shell 输出诊断；问答保留选项/自定义文字并按真实回执结算；任务树入口暂不开放；协作设置保留在隐藏开发者区域 | [DSH 集成、会话任务树与输出交付](./tech_docs/myagents_dsh_integrated_runtime.md) |
 | External Runtime | Node；Claude Code/Codex/Gemini adapter、进程与 normalized event | [Multi-Agent Runtime](./tech_docs/multi_agent_runtime.md) |
 | Provider / OpenAI Bridge | Node + Rust credential owner；Provider route materialization 与协议转换 | [第三方 Provider](./tech_docs/third_party_providers.md) |
+| 托管 CLIProxy | Rust 拥有组件/账号目录/进程与执行 lease；原版 CLIProxy 拥有 OAuth/refresh/协议转换，SDK 仍属 builtin | [CLIProxy](./tech_docs/managed_cliproxy.md) |
 | Custom MCP OAuth | Node state store；Global scheduler 主动刷新，Session Sidecar 观察 credential revision | [冷启动](./tech_docs/sidecar_cold_start.md) |
 | CLI / Admin API | App-owned CLI bundle；Node 解析命令与帮助、退出状态，Management API 进入 Rust owner | [CLI](./tech_docs/cli_architecture.md) |
 | 内置小助理 | `bundled-agents/myagents_helper/` 模板 + Global Sidecar Admin API；不建立第二套业务 authority | [CLI](./tech_docs/cli_architecture.md) |
@@ -203,7 +206,8 @@ DocumentProcessingManager 和 SpeechRecognitionManager 分别拥有全局队列�
 | Document Processing | Rust manager + 独立 Document Worker | [文档转换](./tech_docs/document_processing.md) |
 | Record / Speech | Rust RecordStore、RecordingManager、SpeechRecognitionManager + Media Worker | [录音与语音识别](./tech_docs/recording_and_speech_recognition.md) |
 | Search | Rust SearchEngine；Session、Record 与工作区文件索引 | [搜索](./tech_docs/search_architecture.md) |
-| Terminal / Browser | Rust native resource manager；绑定 exact Tab/resource generation | [DESIGN](./DESIGN.md)、[Pit-of-Success](./tech_docs/pit_of_success.md) |
+| Terminal / BrowserPanel | Rust native resource manager；绑定 exact Tab/resource generation | [DESIGN](./DESIGN.md)、[Pit-of-Success](./tech_docs/pit_of_success.md) |
+| 托管浏览器工具 | Rust 持有 Chromium 资源、Session capability 与身份持久化；Global Sidecar Registry 持有浏览器/Context，MCP backend 借用 | [托管浏览器](./tech_docs/managed_browser.md) |
 | Floating Companion | Rust 独立窗口 + Renderer 轻量 WebView；以 `Companion` owner 复用 Product Session | [Session](./tech_docs/session_architecture.md) |
 | Cloud Space | Rust connector；登录、Cloud IO、Registered Agent 与 delivery | [Cloud Space](./tech_docs/space_cloud.md)、[Delivery protocol](./tech_docs/space_issue_delivery_protocol.md) |
 | Theme | Renderer app-global Theme owner；Appearance 只是明暗偏好 | [Theme](./tech_docs/theme_system.md) |

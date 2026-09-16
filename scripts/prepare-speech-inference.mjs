@@ -16,11 +16,12 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { availableParallelism } from 'node:os';
-import { basename, dirname, join, relative, resolve } from 'node:path';
+import { basename, delimiter, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   acquireLockedResource,
   computeBuildFingerprint,
+  hostDocumentTarget,
   sha256File,
 } from './document-processing-resource-cache.mjs';
 import {
@@ -30,6 +31,8 @@ import {
 } from './speech-inference-resource-cache.mjs';
 import {
   extractSherpaBuildSource,
+  patchHclustWindowsFenvPragma,
+  patchSherpaRawEvidence,
   patchSherpaWindowsOnnxRuntimeImport,
 } from './sherpa-source-extraction.mjs';
 
@@ -69,6 +72,7 @@ const resourceRoot = join(
   'resources',
   'speech-inference',
 );
+const downloadHelperPath = join(projectRoot, 'scripts', 'build-resource-download.mjs');
 const publishRoot = join(resourceRoot, 'v1');
 const cacheStats = { hits: 0, migrated: 0, downloaded: 0 };
 const preparePath = fileURLToPath(import.meta.url);
@@ -296,12 +300,15 @@ function configurePreparation(options) {
     inputs: [
       preparePath,
       helperPath,
+      downloadHelperPath,
       sharedHelperPath,
       extractionHelperPath,
       lockPath,
       join(projectRoot, 'rust-toolchain.toml'),
       join(mediaWorkerRoot, 'Cargo.toml'),
       join(mediaWorkerRoot, 'Cargo.lock'),
+      join(mediaWorkerRoot, 'model-pack-source-lock.json'),
+      join(mediaWorkerRoot, 'compatible-model-packs'),
       join(mediaWorkerRoot, 'SPEECH_INFERENCE_NOTICES.md'),
       join(mediaWorkerRoot, 'native'),
       join(mediaWorkerRoot, 'src'),
@@ -388,6 +395,24 @@ function publishPreparedBundle(source, expectedBundle) {
     rmSync(projectionBackup, { recursive: true, force: true });
   }
   return true;
+}
+
+// Build and execution hosts are different facts. Cross packaging must not
+// require Rosetta/emulators; target-native CI owns execution of those tests.
+// Required context: specs/guides/build_and_release_guide.md (native resources).
+export function speechNativeTestPlan(target, hostTarget = hostDocumentTarget()) {
+  return { buildTesting: target === hostTarget ? 'ON' : 'OFF' };
+}
+
+export function runSpeechNativeTests({ target, buildDir, env, hostTarget = hostDocumentTarget() }, execute = execFileSync) {
+  if (speechNativeTestPlan(target, hostTarget).buildTesting === 'OFF') {
+    console.log(`Speech native tests NOT RUN: cross-compiling ${target} on ${hostTarget}; run tests on the target architecture.`);
+    return 'not-run-cross-target';
+  }
+  execute('ctest', ['--test-dir', buildDir, '--build-config', 'Release', '--output-on-failure'], {
+    stdio: 'inherit', env,
+  });
+  return 'passed';
 }
 
 function configurePlatformArgs() {
@@ -523,7 +548,7 @@ export async function prepareSpeechInference(options, documentResult) {
   if (!force && validatePreparedSpeechBundle(preparedRoot, expectedBundle)) {
     publishPreparedBundle(preparedRoot, expectedBundle);
     console.log(
-      `Restored cached speech-inference resources for ${target} (fingerprint ${buildFingerprint.slice(0, 12)})`,
+      `[resource:speech ${target}] HIT/STAGED: Restored cached speech-inference resources for ${target} (fingerprint ${buildFingerprint.slice(0, 12)})`,
     );
     return Object.freeze({ target, needsBuild: false });
   }
@@ -534,6 +559,8 @@ export async function prepareSpeechInference(options, documentResult) {
   }
   assertPrerequisites();
   const runtime = sharedRuntime;
+  console.log(`[resource:speech ${target}] MISS: target/version/source/signing fingerprint unavailable or invalid; preparing resources`);
+
   if (existsSync(preparedRoot)) {
     rmSync(preparedRoot, { recursive: true, force: true });
   }
@@ -563,6 +590,7 @@ export async function prepareSpeechInference(options, documentResult) {
       destination: sourceExtract,
       archiveRoot: speechLock.source.archiveRoot,
     });
+    patchSherpaRawEvidence(sherpaSource);
     if (targetLock.platform === 'windows') {
       patchSherpaWindowsOnnxRuntimeImport(sherpaSource);
     }
@@ -581,6 +609,14 @@ export async function prepareSpeechInference(options, documentResult) {
           ? 'libonnxruntime.dylib'
           : 'libonnxruntime.so';
     copyFileSync(runtime.path, join(ortLibraryRoot, runtimeBuildName));
+    // Linkers use the unversioned name; the loader follows ORT's embedded
+    // install name / SONAME. Keep both aliases in this temporary build tree.
+    // The app still ships and verifies exactly one shared ORT runtime.
+    if (targetLock.platform !== 'windows') {
+      const runtimeLoaderName = targetLock.platform === 'macos'
+        ? 'libonnxruntime.1.dylib' : 'libonnxruntime.so.1';
+      copyFileSync(runtime.path, join(ortLibraryRoot, runtimeLoaderName));
+    }
 
     let ortIncludeRoot;
     if (targetLock.onnxRuntime.sourceBuild) {
@@ -636,7 +672,9 @@ export async function prepareSpeechInference(options, documentResult) {
         '-B',
         sherpaBuild,
         '-DCMAKE_BUILD_TYPE=Release',
-        '-DCMAKE_CXX_FLAGS=-DSHERPA_ONNX_DISABLE_COREML=1',
+        // Initialize extra flags without replacing CMake's platform defaults
+        // (notably MSVC /EHsc, required by Sherpa and its C++ dependencies).
+        '-DCMAKE_CXX_FLAGS_INIT=-DSHERPA_ONNX_DISABLE_COREML=1',
         '-DBUILD_SHARED_LIBS=ON',
         '-DSHERPA_ONNX_BUILD_C_API_EXAMPLES=OFF',
         '-DSHERPA_ONNX_ENABLE_C_API=ON',
@@ -660,6 +698,12 @@ export async function prepareSpeechInference(options, documentResult) {
         stdio: 'inherit',
       },
     );
+    // FetchContent has materialized hclust during configuration. Patch before
+    // compiling Sherpa; the adapter later consumes this same dependency tree.
+    const hclustIncludeRoot = join(sherpaBuild, '_deps', 'hclust_cpp-src');
+    if (targetLock.platform === 'windows') {
+      patchHclustWindowsFenvPragma(hclustIncludeRoot);
+    }
     execFileSync(
       'cmake',
       [
@@ -697,7 +741,6 @@ export async function prepareSpeechInference(options, documentResult) {
         : sherpaLibrary;
 
     const adapterBuild = join(buildRoot, 'a');
-    const hclustIncludeRoot = join(sherpaBuild, '_deps', 'hclust_cpp-src');
     if (!existsSync(join(hclustIncludeRoot, 'fastcluster-all-in-one.h'))) {
       throw new Error(
         `Locked hclust-cpp headers are unavailable: ${hclustIncludeRoot}`,
@@ -711,6 +754,7 @@ export async function prepareSpeechInference(options, documentResult) {
         '-B',
         adapterBuild,
         '-DCMAKE_BUILD_TYPE=Release',
+        `-DBUILD_TESTING=${speechNativeTestPlan(target).buildTesting}`,
         `-DMYAGENTS_SHERPA_INCLUDE_DIR=${sherpaSource}`,
         `-DMYAGENTS_SHERPA_LIBRARY=${sherpaLinkLibrary}`,
         `-DMYAGENTS_HCLUST_INCLUDE_DIR=${hclustIncludeRoot}`,
@@ -723,6 +767,15 @@ export async function prepareSpeechInference(options, documentResult) {
       ['--build', adapterBuild, '--config', 'Release', '--parallel', buildJobs],
       { stdio: 'inherit' },
     );
+    const nativeTestLibraryVariable = targetLock.platform === 'windows' ? 'PATH'
+      : targetLock.platform === 'macos' ? 'DYLD_LIBRARY_PATH' : 'LD_LIBRARY_PATH';
+    runSpeechNativeTests({ target, buildDir: adapterBuild,
+      env: {
+        ...process.env,
+        [nativeTestLibraryVariable]: [adapterBuild, dirname(sherpaLibrary), ortLibraryRoot,
+          process.env[nativeTestLibraryVariable]].filter(Boolean).join(delimiter),
+      },
+    });
     const adapterLibrary = findOne(
       adapterBuild,
       (path) =>
@@ -833,8 +886,6 @@ export async function prepareSpeechInference(options, documentResult) {
       join(legalRoot, 'LIBOPUS-SYS-LICENSE'),
     );
     for (const [packageName, version, prefix] of [
-      ['hdbscan', speechLock.hdbscanVersion, 'HDBSCAN'],
-      ['kdtree', speechLock.kdtreeVersion, 'KDTREE'],
       ['num-traits', speechLock.numTraitsVersion, 'NUM-TRAITS'],
     ]) {
       const packageRoot = cargoPackageRoot(packageName, version);
@@ -847,6 +898,18 @@ export async function prepareSpeechInference(options, documentResult) {
         join(legalRoot, `${prefix}-LICENSE-MIT`),
       );
     }
+
+    const sonoraRoot = cargoPackageRoot('sonora', speechLock.sonoraVersion);
+    for (const packageName of ['sonora', 'sonora-aec3', 'sonora-agc2',
+      'sonora-common-audio', 'sonora-fft', 'sonora-ns', 'sonora-simd']) {
+      const packageRoot = cargoPackageRoot(packageName, speechLock.sonoraVersion);
+      // sonora-aec3's crate omits the repository-wide license file. It shares
+      // the exact repository/version and BSD notice shipped in the root crate.
+      const licenseRoot = packageName === 'sonora-aec3' ? sonoraRoot : packageRoot;
+      copyFileSync(join(licenseRoot, 'LICENSE'), join(legalRoot, `${packageName.toUpperCase()}-LICENSE`));
+    }
+    copyFileSync(join(cargoPackageRoot('rubato', speechLock.rubatoVersion), 'LICENSE.txt'),
+      join(legalRoot, 'RUBATO-LICENSE'));
 
     function integrityFile(path) {
       return {

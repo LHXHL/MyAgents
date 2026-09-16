@@ -745,6 +745,7 @@ impl SidecarManager {
         if let Some(instance) = &removed {
             DispatchGate::close(&instance.dispatch_gate);
             self.sidecar_generations.remove(tab_id);
+            tauri::async_runtime::spawn(crate::cliproxy::reconcile_sidecar_deaths());
         }
         removed
     }
@@ -873,6 +874,7 @@ impl SidecarManager {
             .into_values()
             .collect::<Vec<_>>();
         self.sidecar_generations.clear();
+        tauri::async_runtime::spawn(crate::cliproxy::reconcile_sidecar_deaths());
         SidecarRetirement { sessions, globals }
     }
 
@@ -1075,6 +1077,21 @@ impl SidecarManager {
         })
     }
 
+    /// App-owned resources address the exact process holding their execution
+    /// lease, including one-shots hosted by the Global Sidecar.
+    pub(crate) fn acquire_process_dispatch(&mut self, management_id: &str, generation: u64) -> Result<SidecarHttpDispatch, String> {
+        if management_id == GLOBAL_SIDECAR_ID {
+            if !self.is_live_process(management_id, generation) { return Err("Sidecar generation is no longer current".to_owned()); }
+            return self.acquire_global_dispatch();
+        }
+        let generations = &self.sidecar_generations;
+        let sidecar = self.sidecars.iter_mut().find(|(id, sidecar)| sidecar.management_id == management_id
+            && generations.get(*id).copied() == Some(generation)).map(|(_, sidecar)| sidecar)
+            .ok_or_else(|| "Sidecar generation is no longer current".to_owned())?;
+        let lease = DispatchGate::try_acquire(&sidecar.dispatch_gate).ok_or_else(|| "Sidecar generation is draining".to_owned())?;
+        Ok(SidecarHttpDispatch { base_url: format!("http://127.0.0.1:{}", sidecar.port), _lease: lease })
+    }
+
     fn claim_session_completion_if_current(
         &mut self,
         session_id: &str,
@@ -1223,6 +1240,7 @@ impl SidecarManager {
         let removed = self.sidecars.remove(session_id);
         if let Some(ref sidecar) = removed {
             DispatchGate::close(&sidecar.dispatch_gate);
+            tauri::async_runtime::spawn(crate::cliproxy::reconcile_sidecar_deaths());
             let event_policy = sidecar_removal_event_policy(&sidecar.owners);
             let retained_recovery_has_owners = self
                 .recovering_sidecars
@@ -2032,7 +2050,19 @@ impl SidecarManager {
         tab_id: &str,
     ) -> bool {
         let owner = SidecarOwner::Tab(tab_id.to_string());
-        let expected = [owner];
+        self.upgrade_session_id_for_desktop_owner(old_session_id, new_session_id, &owner)
+    }
+
+    pub fn upgrade_session_id_for_desktop_owner(
+        &mut self,
+        old_session_id: &str,
+        new_session_id: &str,
+        owner: &SidecarOwner,
+    ) -> bool {
+        if !matches!(owner, SidecarOwner::Tab(_) | SidecarOwner::Companion(_)) {
+            return false;
+        }
+        let expected = [owner.clone()];
         let old_recovering = self.recovering_sidecars.contains_key(old_session_id);
         let old_exists = self.sidecars.contains_key(old_session_id) || old_recovering;
         let new_exists = self.sidecars.contains_key(new_session_id)
@@ -2059,6 +2089,22 @@ impl SidecarManager {
         new_session_id: &str,
         tab_id: &str,
     ) -> bool {
+        self.session_id_upgrade_is_already_applied_for_desktop_owner(
+            old_session_id,
+            new_session_id,
+            &SidecarOwner::Tab(tab_id.to_string()),
+        )
+    }
+
+    pub fn session_id_upgrade_is_already_applied_for_desktop_owner(
+        &self,
+        old_session_id: &str,
+        new_session_id: &str,
+        owner: &SidecarOwner,
+    ) -> bool {
+        if !matches!(owner, SidecarOwner::Tab(_) | SidecarOwner::Companion(_)) {
+            return false;
+        }
         let old_exists = self.sidecars.contains_key(old_session_id)
             || self.recovering_sidecars.contains_key(old_session_id);
         let new_exists = self.sidecars.contains_key(new_session_id)
@@ -2067,7 +2113,7 @@ impl SidecarManager {
             && new_exists
             && self.active_session_has_exact_owners(
                 new_session_id,
-                &[SidecarOwner::Tab(tab_id.to_string())],
+                &[owner.clone()],
             )
     }
 

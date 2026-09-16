@@ -37,6 +37,9 @@ if [ -z "$NODE" ]; then
     exit 1
 fi
 
+# Fail before stopping existing services if dependencies lack the reviewed repair.
+"$NODE" "${PROJECT_DIR}/scripts/patch-codemirror-view.mjs" --check
+
 # 清理上一轮的开发进程
 cleanup() {
     echo ""

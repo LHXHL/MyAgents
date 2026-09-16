@@ -121,7 +121,7 @@ async function recoverFork(
   }
 
   const source = getSessionMetadata(productSessionId);
-  const sourceData = getSessionData(productSessionId);
+  const sourceData = await getSessionData(productSessionId);
   if (!source || !sourceData || sourceData.messages.length !== intent.sourceMessageCount) {
     throw new Error('The Product fork source changed before recovery');
   }

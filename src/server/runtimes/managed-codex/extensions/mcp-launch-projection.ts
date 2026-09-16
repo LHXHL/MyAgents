@@ -1,10 +1,7 @@
 import type { McpServerDefinition } from '../../../../shared/config-types';
 import { isRetiredBundledMcpServer } from '../../../../shared/mcpConfig';
 import { resolveMcpTemplateValue } from '../../../session-core/mcp-template-resolution';
-import {
-  NpxMcpResolutionError,
-  resolveNpxMcpInvocation,
-} from '../../../utils/mcp-command';
+import { NpxMcpResolutionError, buildMcpStdioLaunchConfig } from '../../../utils/mcp-command';
 
 const CODEX_MCP_NO_PROXY_VAL =
   'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1';
@@ -184,21 +181,11 @@ export function resolveStdioMcpLaunch(
   server: McpServerDefinition,
 ): ResolvedStdioMcpLaunch {
   if (server.type !== 'stdio') reject('server is not stdio');
-  let command = server.command;
-  if (command === '__builtin__')
-    reject('in-process MCP has no subprocess launch');
-  if (command === '__browser_host__')
-    reject('Browser Host marker has no subprocess launch');
+  if (server.command === '__builtin__') reject('in-process MCP has no subprocess launch');
+  if (server.command === '__browser_host__') reject('Browser Host marker has no subprocess launch');
   if (isRetiredBundledMcpServer(server)) reject('retired bundled MCP server');
-  if (!command) reject('missing stdio command');
-  let args = Array.isArray(server.args) ? [...server.args] : [];
-  if (command === 'npx') {
-    const invocation = resolveNpxMcpInvocation(args, {
-      pinPresetPackages: server.isBuiltin === true,
-    });
-    command = invocation.command;
-    args = invocation.args;
-  }
+  if (!server.command) reject('missing stdio command');
+  const { command, args } = buildMcpStdioLaunchConfig(server);
   const commandReason = unsafeCodexMcpStdioValueReason(command);
   if (commandReason) reject(`stdio command ${commandReason}`);
   const argsReason = unsafeCodexMcpStdioArgsReason(args);
@@ -290,8 +277,13 @@ export function projectManagedCodexMcpLaunchConfig(
           acceptedServerIds.push(server.id);
           continue;
         }
-        const { command: projectedCommand, args: stdioArgs } =
-          resolveStdioMcpLaunch(server);
+        if (!server.command) reject('missing stdio command');
+        const launch = buildMcpStdioLaunchConfig(server, { parentEnv });
+        const { command: projectedCommand, args: stdioArgs } = launch;
+        const commandReason = unsafeCodexMcpStdioValueReason(projectedCommand);
+        if (commandReason) reject(`stdio command ${commandReason}`);
+        const argsReason = unsafeCodexMcpStdioArgsReason(stdioArgs);
+        if (argsReason) reject(`stdio args unsafe for Codex argv (${argsReason})`);
 
         const serverEnv = Object.entries(server.env ?? {});
         const unsafeEnvKeys = serverEnv
@@ -318,16 +310,14 @@ export function projectManagedCodexMcpLaunchConfig(
           serverEnvPatch[key] = value;
         }
 
-        pushCodexConfigArg(
-          serverArgs,
-          `mcp_servers.${serverName}.command`,
-          tomlString(projectedCommand),
-        );
-        pushCodexConfigArg(
-          serverArgs,
-          `mcp_servers.${serverName}.args`,
-          tomlArray(stdioArgs),
-        );
+        pushCodexConfigArg(serverArgs, `mcp_servers.${serverName}.command`, tomlString(projectedCommand));
+        pushCodexConfigArg(serverArgs, `mcp_servers.${serverName}.args`, tomlArray(stdioArgs));
+        // PATH belongs to this MCP child, never the Codex parent (and its AI
+        // shell). Only the non-secret computed PATH enters argv; user values
+        // keep the existing validated env_vars/parent projection below.
+        pushCodexConfigArg(serverArgs, `mcp_servers.${serverName}.env`, tomlInlineStringMap({
+          PATH: launch.env.PATH,
+        }));
         const envVars = new Set<string>();
         for (const key of CODEX_MCP_PROXY_ENV_KEYS) {
           if (parentEnv[key]) envVars.add(key);

@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "packId": "local-standard-speech",
-  "packRevision": "local-standard-speech-v2",
+  "packRevision": "local-standard-speech-v3",
   "sourceDownloadBytes": 209767948,
-  "installedModelBytes": 280896862,
+  "installedModelBytes": 285349269,
   "downloadHardLimitBytes": 314572800,
   "signaturePolicy": {
     "algorithm": "minisign-ed25519",
@@ -70,10 +70,10 @@
       "license": "MIT",
       "selectedFiles": [
         {
-          "sourcePath": "sherpa-onnx-pyannote-segmentation-3-0/model.int8.onnx",
-          "installPath": "models/diarization/pyannote-segmentation-3.0.int8.onnx",
-          "sha256": "d582f4b4c6b48205de7e0643c57df0df5615a3c176189be3fc461e9d18827b5d",
-          "size": 1540506,
+          "sourcePath": "sherpa-onnx-pyannote-segmentation-3-0/model.onnx",
+          "installPath": "models/diarization/pyannote-segmentation-3.0.onnx",
+          "sha256": "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079",
+          "size": 5992913,
           "kind": "model"
         }
       ]

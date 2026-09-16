@@ -69,7 +69,7 @@
 // (callers gate themselves on `isTauriEnvironment()`), so the lazy
 // `await import()` pattern that earlier callsites used isn't load-bearing
 // here.
-import { listen } from '@tauri-apps/api/event';
+import { listen, type Options } from '@tauri-apps/api/event';
 
 /** Result of a single registration. Caller usually ignores it; the helper
  *  hooks `signal.abort` to call `unlisten()` automatically. Returned for
@@ -88,6 +88,7 @@ export async function listenWithCleanup<T>(
     event: string,
     handler: (event: { payload: T }) => void,
     signal: AbortSignal,
+    options?: Options,
 ): Promise<ListenWithCleanupResult> {
     let unlisten: (() => void) | null = null;
     let registered = false;
@@ -137,7 +138,7 @@ export async function listenWithCleanup<T>(
             // The check is cheap; redundant cases are a no-op.
             if (signal.aborted || disposed) return;
             handler(e);
-        });
+        }, options);
 
         if (signal.aborted) {
             // Lost the race — listener IS installed but caller has unmounted.

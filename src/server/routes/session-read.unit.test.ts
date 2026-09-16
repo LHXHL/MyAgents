@@ -191,6 +191,22 @@ describe('handleSessionReadRoute', () => {
     });
   });
 
+  it('reads the V2 retained range at the same revision as the live overlay without stale pre-await rows', async () => {
+    mocks.getSessionData.mockResolvedValue({ id: 'sid', transcriptFormat: 2, messages: [{ id: 'old', content: 'stale before await' }] });
+    mocks.engine.getLiveSessionOverlay.mockReturnValue({
+      isActive: true, snapshotRevision: 9, liveSessionState: 'running',
+      inMemoryMessages: [{ id: 'u1', content: 'first' }, { id: 'a1', content: 'corrected' }, { id: 'u2', content: 'steer' }],
+      liveStreamingMessage: { id: 'a2', content: 'live' },
+    });
+    const url = new URL('http://local/sessions/sid?limit=1&from=a1');
+    const response = await handleSessionReadRoute('/sessions/sid', new Request(url), url);
+    expect((await readJson(response!)).session).toMatchObject({
+      transcriptFormat: 2, snapshotRevision: 9, totalCount: 3, hasMoreBefore: true,
+      messages: [{ id: 'a1', content: 'corrected' }, { id: 'u2', content: 'steer' }],
+      liveStreamingMessage: { id: 'a2', content: 'live' },
+    });
+  });
+
   it('returns not found for hidden system maintenance sessions', async () => {
     mocks.getSessionData.mockReturnValue({
       id: 'sid',

@@ -1,3 +1,4 @@
+import { reasoningEffortAfterModelChange } from '../../shared/reasoningEffort';
 /**
  * Launcher - Main entry page for MyAgents
  * Lightweight new-work page. Global navigation and workspace/session history
@@ -685,7 +686,7 @@ export default function Launcher({
       setLauncherSelectedModel(
         selectedAgent?.model ?? selectedWorkspace.model ?? undefined,
       );
-      setLauncherReasoningEffort(selectedAgent?.reasoningEffort ?? 'default');
+      setLauncherReasoningEffort((selectedAgentUsesManagedCodexProvider ? agentRuntimeReasoningEffort : selectedAgent?.reasoningEffort) ?? 'default');
     }
     setLauncherProviderId(
       selectedAgent?.providerId ?? selectedWorkspace.providerId ?? undefined,
@@ -717,6 +718,7 @@ export default function Launcher({
     agentRuntimeModel,
     agentRuntimePermMode,
     agentRuntimeReasoningEffort,
+    selectedAgentUsesManagedCodexProvider,
     selectedWorkspace?.permissionMode,
     selectedWorkspace?.model,
     selectedWorkspace?.providerId,
@@ -771,6 +773,11 @@ export default function Launcher({
   const handleLauncherModelChange = useCallback(
     (model: string | undefined) => {
       setLauncherSelectedModel(model);
+      const nextEffort = selectedAgentUsesManagedCodexProvider
+        ? reasoningEffortAfterModelChange(launcherReasoningEffort, launcherProvider?.models?.find(item => item.model === model))
+        : launcherReasoningEffort;
+      setLauncherReasoningEffort(nextEffort);
+      if (nextEffort !== launcherReasoningEffort) toastRef.current.info(t('chat:input.reasoningModelReset'));
       if (selectedWorkspace) {
         const providerExecutionIntent =
           !isExternalRuntime && launcherProvider && model
@@ -787,7 +794,7 @@ export default function Launcher({
           fields: isExternalRuntime
             ? { runtimeModel: model ?? null }
             : providerExecutionIntent?.kind === 'runtime-backed-provider'
-              ? { runtimeBackedProviderSelection: providerExecutionIntent }
+              ? { runtimeBackedProviderSelection: providerExecutionIntent, reasoningEffort: nextEffort }
               : { builtinModel: model ?? null },
           patchProject,
           patchAgentConfig,
@@ -801,6 +808,9 @@ export default function Launcher({
       patchProject,
       isExternalRuntime,
       launcherProvider,
+      launcherReasoningEffort,
+      selectedAgentUsesManagedCodexProvider,
+      t,
     ],
   );
 
@@ -810,6 +820,9 @@ export default function Launcher({
   const handleLauncherReasoningEffortChange = useCallback(
     (effort: string) => {
       setLauncherReasoningEffort(effort);
+      const model = launcherSelectedModel ?? launcherProvider?.primaryModel;
+      const intent = selectedAgentUsesManagedCodexProvider && launcherProvider && model
+        ? toProviderExecutionIntent(launcherProvider, model) : undefined;
       if (selectedWorkspace) {
         void persistInputOptionChange({
           workspaceId: selectedWorkspace.id,
@@ -819,7 +832,7 @@ export default function Launcher({
           currentRuntimePreference: runtimePreferenceRef.current,
           currentProviderId:
             selectedAgent?.providerId ?? selectedWorkspace.providerId,
-          fields: { reasoningEffort: effort },
+          fields: { reasoningEffort: effort, ...(intent?.kind === 'runtime-backed-provider' ? { runtimeBackedProviderSelection: intent } : {}) },
           patchProject,
           patchAgentConfig,
           patchAgentProjectConfig,
@@ -831,6 +844,7 @@ export default function Launcher({
       selectedAgent?.providerId,
       patchProject,
       isExternalRuntime,
+      launcherSelectedModel, launcherProvider, selectedAgentUsesManagedCodexProvider,
     ],
   );
 
@@ -870,6 +884,11 @@ export default function Launcher({
       if (model) {
         setLauncherSelectedModel(model);
       }
+      const nextEffort = newProvider && isRuntimeBackedProvider(newProvider)
+        ? reasoningEffortAfterModelChange(launcherReasoningEffort, newProvider.models?.find(item => item.model === model))
+        : launcherReasoningEffort;
+      setLauncherReasoningEffort(nextEffort);
+      if (nextEffort !== launcherReasoningEffort) toastRef.current.info(t('chat:input.reasoningModelReset'));
       if (selectedWorkspace) {
         const providerExecutionIntent =
           newProvider && model
@@ -885,7 +904,7 @@ export default function Launcher({
             selectedAgent?.providerId ?? selectedWorkspace.providerId,
           fields: {
             ...(providerExecutionIntent?.kind === 'runtime-backed-provider'
-              ? { runtimeBackedProviderSelection: providerExecutionIntent }
+              ? { runtimeBackedProviderSelection: providerExecutionIntent, reasoningEffort: nextEffort }
               : {
                   providerId: providerId ?? undefined,
                   builtinModel: model ?? undefined,
@@ -902,6 +921,8 @@ export default function Launcher({
       selectedAgent?.providerId,
       patchProject,
       providers,
+      launcherReasoningEffort,
+      t,
       isExternalRuntime,
     ],
   );

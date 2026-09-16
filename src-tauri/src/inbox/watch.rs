@@ -124,11 +124,15 @@ pub async fn register_session_watch(
 ) -> SessionWatchResult {
     let Some((port, observed_sidecar_state)) = lookup_live_port(&manager, &req.target_session_id)
     else {
+        let exists = crate::sidecar::session_lifecycle::session_exists_for_continuation(
+            &manager,
+            &req.target_session_id,
+        );
         return SessionWatchResult {
             watch_id: req.watch_id,
             target_session_id: req.target_session_id,
             target_state_at_registration: "idle".to_string(),
-            delivery: "already_idle".to_string(),
+            delivery: if exists { "already_idle" } else { "not_found" }.to_string(),
             final_state: None,
             terminal_reason: None,
             latest_result: None,

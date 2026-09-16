@@ -192,6 +192,8 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 Write-ColorOutput "✓ Node.js 项目依赖已就绪" "Green"
+& node "$PROJECT_DIR\scripts\prepare-cliproxy.mjs" win32-x64
+if ($LASTEXITCODE -ne 0) { throw "Approved CLIProxy bundle staging failed" }
 Write-Host ""
 
 # Prepare the same target-locked document Worker/OCR/PDFium projection used by
@@ -230,24 +232,9 @@ $env:NODE_OPTIONS = if ([string]::IsNullOrWhiteSpace($nodeOptionsWithoutHeap)) {
     "$nodeOptionsWithoutHeap --max-old-space-size=4096"
 }
 Write-ColorOutput "  NODE_OPTIONS=$env:NODE_OPTIONS" "Yellow"
-& npm run build:web
+& npm run build:assets
 if ($LASTEXITCODE -ne 0) {
-    Write-ColorOutput "✗ 前端构建失败" "Red"
-    exit 1
-}
-& npm run build:server
-if ($LASTEXITCODE -ne 0) {
-    Write-ColorOutput "✗ Sidecar 打包失败" "Red"
-    exit 1
-}
-& npm run build:bridge
-if ($LASTEXITCODE -ne 0) {
-    Write-ColorOutput "✗ Plugin Bridge 打包失败" "Red"
-    exit 1
-}
-& npm run build:cli
-if ($LASTEXITCODE -ne 0) {
-    Write-ColorOutput "✗ myagents CLI 打包失败" "Red"
+    Write-ColorOutput "✗ 前端和运行时资源构建失败" "Red"
     exit 1
 }
 Write-ColorOutput "✓ 前端和运行时资源构建完成" "Green"
@@ -256,24 +243,8 @@ Write-Host ""
 # 下面会用临时 Tauri config 把 beforeBuildCommand 置空，避免 Tauri build
 # 再重复执行 build:web/server/bridge/cli。dev 脚本自己已经完成这些步骤。
 
-# 强制触发 Rust 重新编译 (确保 sidecar.rs 的逻辑修改生效)
-# build_dev.sh 用 `touch` 只更新 mtime；旧版本这里写的是
-# `(Get-Date) | Out-File -Append`，把时间戳直接 *append 到源码文件内容*，
-# 每次 dev build 都给 sidecar.rs / main.rs 屁股加一行垃圾，污染 git 工作区。
-# PS 没有 touch，但等价做法是改 LastWriteTime 属性。
-$sidecarFile = Join-Path $PROJECT_DIR "src-tauri/src/sidecar.rs"
-$mainFile = Join-Path $PROJECT_DIR "src-tauri/src/main.rs"
-(Get-Item $sidecarFile).LastWriteTime = Get-Date
-(Get-Item $mainFile).LastWriteTime = Get-Date
-
-# 构建 Tauri 应用
+# Cargo tracks Rust sources and build-script inputs; keep its incremental cache.
 Write-ColorOutput "[3/3] 构建 Tauri 应用 ($BUILD_MODE_LABEL)..." "Blue"
-
-# 强制移除旧的可执行文件，防止 cargo 偷懒不重新链接
-$oldExe = Join-Path $PROJECT_DIR "src-tauri/target/x86_64-pc-windows-msvc/debug/myagents.exe"
-if (Test-Path $oldExe) {
-    Remove-Item $oldExe -Force
-}
 
 Write-ColorOutput "这可能需要几分钟..." "Yellow"
 

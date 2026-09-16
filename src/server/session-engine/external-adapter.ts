@@ -2,11 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { broadcast } from '../sse';
 import {
   addExternalPermissionRule,
+  publishExternalTranscriptSaveStatus,
   cancelExternalQueueItem,
   cancelExternalQueuedTurnsByOwner,
   cancelExternalImRequest,
   clearExternalTurnBinding,
   compactExternalContext,
+  retryExternalMcpServer,
   awaitExternalSessionStarting,
   enqueueExternalSendForDesktop,
   enqueueExternalSendForIm,
@@ -16,6 +18,7 @@ import {
   getActiveExternalImBridgeTurnContext,
   getCurrentBoundSessionId,
   getExternalLiveSessionSnapshot,
+  validateExternalAsyncQuestionReply,
   getExternalNativeSessionId,
   getExternalSessionCompletionTerminal,
   getExternalPendingInteractiveRequests,
@@ -191,11 +194,14 @@ function getRuntimeWorkspacePath(): string {
   return getExternalSessionWorkspacePath() || getCurrentProductSessionContext().workspacePath;
 }
 
-function getLatestExternalResult(): string {
+async function getLatestExternalResult(): Promise<string> {
   const runtimeSessionId = getRuntimeSessionId();
   let latestResult = getLastExternalAssistantText();
+  if (runtimeSessionId && getSessionMetadata(runtimeSessionId)?.transcriptFormat === 2) {
+    return latestResult.trim() || NO_TEXT_RESPONSE;
+  }
   if (!latestResult.trim()) {
-    const data = runtimeSessionId ? getSessionData(runtimeSessionId) : null;
+    const data = runtimeSessionId ? (await getSessionData(runtimeSessionId)) : null;
     latestResult = data
       ? getLatestAssistantResultFromMessages(data.messages)
       : NO_TEXT_RESPONSE;
@@ -282,6 +288,7 @@ export function createExternalSessionEngine(): SessionEngine {
       };
     },
 
+    publishTranscriptSaveStatus(status) { publishExternalTranscriptSaveStatus(status); },
     getLiveSessionState() {
       return {
         sessionState: getExternalSessionState(),
@@ -289,10 +296,10 @@ export function createExternalSessionEngine(): SessionEngine {
       };
     },
 
-    getLatestAssistantResult() {
+    async getLatestAssistantResult() {
       return {
         sessionId: getRuntimeSessionId(),
-        latestResult: getLatestExternalResult(),
+        latestResult: await getLatestExternalResult(),
       };
     },
 
@@ -310,6 +317,7 @@ export function createExternalSessionEngine(): SessionEngine {
           agentDir: productContext.workspacePath,
           sessionState: getExternalSessionState(),
           hasInitialPrompt: productContext.hasInitialPrompt,
+          queuedMessages: liveSnapshot?.queuedMessages ?? [],
         },
         replayMessages: liveSnapshot?.inMemoryMessages.map(sessionMessageToReplayMessage) ?? [],
         liveStreamingMessage: liveSnapshot?.liveStreamingMessage
@@ -326,7 +334,7 @@ export function createExternalSessionEngine(): SessionEngine {
 
     getSessionConfigSnapshot() {
       const runtimeSessionId = getRuntimeSessionId();
-      const session = runtimeSessionId ? getSessionData(runtimeSessionId) : null;
+      const session = runtimeSessionId ? getSessionMetadata(runtimeSessionId) : null;
       const workspacePath = getRuntimeWorkspacePath();
       const extensions = getProductExtensionConfigSnapshot();
       return {
@@ -356,7 +364,7 @@ export function createExternalSessionEngine(): SessionEngine {
         runtime: getActiveRuntimeType(),
         sessionId: sessionId || null,
         workspacePath: getRuntimeWorkspacePath() || null,
-        sessionMeta: sessionId ? getSessionData(sessionId) : null,
+        sessionMeta: sessionId ? getSessionMetadata(sessionId) : null,
       };
     },
 
@@ -416,6 +424,10 @@ export function createExternalSessionEngine(): SessionEngine {
           error: `Invalid permissionMode '${request.permissionMode}' for ${getActiveRuntimeSource() ?? getActiveRuntimeType()}`,
         };
       }
+      if (request.asyncQuestionReply) {
+        const error = await validateExternalAsyncQuestionReply(request.sessionId, request.asyncQuestionReply);
+        if (error) return { success: false, status: 409, error };
+      }
       const sent = enqueueExternalSendForDesktop(
         request.text,
         request.images,
@@ -423,6 +435,7 @@ export function createExternalSessionEngine(): SessionEngine {
         request.model,
         {
           sessionId: request.sessionId,
+          asyncQuestionReply: request.asyncQuestionReply,
           workspacePath: request.workspacePath,
           scenario: request.scenario,
           analyticsSource: request.analyticsSource,
@@ -605,7 +618,7 @@ export function createExternalSessionEngine(): SessionEngine {
             error: 'External runtime process did not stop',
           };
         }
-        resetProductSessionBinding({
+        await resetProductSessionBinding({
           sessionId: request.sessionId,
           workspacePath: request.workspacePath,
           hasInitialPrompt: true,
@@ -615,7 +628,7 @@ export function createExternalSessionEngine(): SessionEngine {
         // Runtime lifecycle and product identity are separate owners. Repair
         // the product binding without restarting an already-correct native
         // Session when only the former projection is stale.
-        resetProductSessionBinding({
+        await resetProductSessionBinding({
           sessionId: request.sessionId,
           workspacePath: request.workspacePath,
           hasInitialPrompt: true,
@@ -627,7 +640,7 @@ export function createExternalSessionEngine(): SessionEngine {
       // restoring here would replace that turn's unpersisted in-memory tail.
       // The runtime owner already exposes the exact restored-state predicate,
       // so only stale/new bindings need disk rehydration.
-      if (!isExternalSessionStateRestoredFor(request.sessionId)) {
+      if (!await isExternalSessionStateRestoredFor(request.sessionId)) {
         const restored = await restoreExternalSessionState(request.sessionId, request.workspacePath, request.scenario);
         if (!restored.success) {
           return { success: false, code: 'session_bind_failed', status: 500, error: restored.error };
@@ -938,6 +951,7 @@ export function createExternalSessionEngine(): SessionEngine {
                 'desktop',
                 request.origin,
               );
+              Object.assign(created.metadata, request.birthSnapshot);
               return {
                 targetSessionId,
                 reusingNativeSession: false,
@@ -1015,6 +1029,10 @@ export function createExternalSessionEngine(): SessionEngine {
       return handleExternalMcpServersChange(servers);
     },
 
+    retryMcpServer(serverId) {
+      return retryExternalMcpServer(serverId);
+    },
+
     async updateAgents() {
       return handleExternalAgentsChange();
     },
@@ -1038,7 +1056,7 @@ export function createExternalSessionEngine(): SessionEngine {
         if (hasExternalRuntimeProcess()) {
           await stopExternalSession();
         }
-        const newSessionId = resetProductSessionBinding({ workspacePath, hasInitialPrompt: false });
+        const newSessionId = await resetProductSessionBinding({ workspacePath, hasInitialPrompt: false });
         broadcast('chat:init', { agentDir: workspacePath, sessionState: 'idle', hasInitialPrompt: false });
         const restored = await restoreExternalSessionState(newSessionId, workspacePath, { type: 'desktop' });
         if (!restored.success) return { success: false, error: restored.error };
@@ -1069,10 +1087,11 @@ export function createExternalSessionEngine(): SessionEngine {
             return { success: false, error: 'External runtime process did not stop' };
           }
         }
-        resetProductSessionBinding({
+        await resetProductSessionBinding({
           sessionId: options.targetSessionId,
           workspacePath,
           hasInitialPrompt: false,
+          allowLazySessionMaterialization: true,
         });
 
         // The target binding is committed above. Metadata publication and

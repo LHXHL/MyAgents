@@ -21,14 +21,18 @@ mod watcher;
 
 use serde::Serialize;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU8, Ordering},
+    Arc,
+};
 use tauri::Emitter;
 
 use crate::workspace_files::path_safety::validate_workspace_root;
 use crate::{ulog_error, ulog_info, ulog_warn};
 
 pub use searcher::{
-    FileMatchLine, FileSearchHit, FileSearchResult, SessionSearchHit, SessionSearchResult,
+    FileMatchLine, FileSearchHit, FileSearchResult, SessionSearchHit, SessionSearchPageRequest,
+    SessionSearchRequest, SessionSearchResult,
 };
 
 /// The main search engine singleton.
@@ -45,6 +49,7 @@ pub use searcher::{
 /// blocking worker, so a cold index in one workspace does not block searches in
 /// another workspace or pin an async runtime thread.
 pub struct SearchEngine {
+    session_readiness: Arc<AtomicU8>,
     data_dir: PathBuf,
     session_index: Arc<session_indexer::SessionIndex>,
     record_index: Arc<record_indexer::RecordIndex>,
@@ -67,6 +72,7 @@ impl SearchEngine {
         let file_manager = file_indexer::FileIndexManager::new(index_dir.join("workspaces"));
 
         Ok(Self {
+            session_readiness: Arc::new(AtomicU8::new(0)),
             data_dir,
             session_index: Arc::new(session_index),
             record_index: Arc::new(record_index),
@@ -85,6 +91,7 @@ impl SearchEngine {
     pub fn start_background_indexing(&self, app_handle: tauri::AppHandle) {
         let data_dir = self.data_dir.clone();
         let session_index = self.session_index.clone();
+        let readiness = self.session_readiness.clone();
 
         if let Some(store) = crate::record::get_record_store().cloned() {
             let mut changes = store.subscribe_changes();
@@ -170,6 +177,7 @@ impl SearchEngine {
 
                 match result {
                     Ok(Ok(count)) => {
+                        readiness.store(1, Ordering::Release);
                         ulog_info!(
                             "[search] Background indexing complete: {} sessions indexed in {:.1}s",
                             count,
@@ -177,13 +185,16 @@ impl SearchEngine {
                         );
                     }
                     Ok(Err(e)) => {
+                        readiness.store(2, Ordering::Release);
                         ulog_error!("[search] Background indexing failed: {}", e);
                     }
                     Err(e) => {
+                        readiness.store(2, Ordering::Release);
                         ulog_error!("[search] Background indexing task panicked: {}", e);
                     }
                 }
             } else {
+                readiness.store(1, Ordering::Release);
                 ulog_info!("[search] No sessions.json found, skipping initial indexing");
             }
 
@@ -197,21 +208,21 @@ impl SearchEngine {
         });
     }
 
-    /// Search session history (title + content). Normal reads remain concurrent
-    /// with background indexing; only corruption recovery takes exclusive ownership.
     pub async fn search_sessions(
         &self,
-        query: &str,
-        limit: usize,
-        tag: Option<String>,
+        window: &str,
+        request: SessionSearchRequest,
     ) -> Result<SessionSearchResult, String> {
-        let session_index = Arc::clone(&self.session_index);
-        let query = query.to_string();
-        tauri::async_runtime::spawn_blocking(move || {
-            session_index.search_with_tag(&query, limit, tag.as_deref())
-        })
-        .await
-        .map_err(|error| format!("Session search task failed: {}", error))?
+        match self.session_readiness.load(Ordering::Acquire) {
+            0 => return Err("[search-indexing] Session index is being prepared".to_string()),
+            2 => return Err("Session index preparation failed; restart to retry".to_string()),
+            _ => {}
+        }
+        self.session_index.start_search(window, request).await
+    }
+
+    pub fn close_window_searches(&self, window: &str) {
+        self.session_index.close_window_searches(window);
     }
 
     pub async fn search_records(
@@ -532,23 +543,39 @@ pub struct IndexStatus {
 
 // ── Tauri IPC Commands ──────────────────────────────────────────────
 
-/// Search session history.
+/// A query and its pages share a window-scoped, short-lived snapshot.
 #[tauri::command]
 pub async fn cmd_search_sessions(
     state: tauri::State<'_, Arc<SearchEngine>>,
-    query: String,
-    limit: Option<usize>,
-    tag: Option<String>,
+    window: tauri::Window,
+    request: SessionSearchRequest,
 ) -> Result<SessionSearchResult, String> {
-    let query = query.trim();
-    if query.is_empty() {
-        return Ok(SessionSearchResult {
-            hits: vec![],
-            total_count: 0,
-            query_time_ms: 0.0,
-        });
-    }
-    state.search_sessions(query, limit.unwrap_or(50), tag).await
+    state.search_sessions(window.label(), request).await
+}
+
+#[tauri::command]
+pub async fn cmd_search_session_page(
+    state: tauri::State<'_, Arc<SearchEngine>>,
+    window: tauri::Window,
+    request: SessionSearchPageRequest,
+) -> Result<SessionSearchResult, String> {
+    state
+        .session_index
+        .next_search_page(window.label(), request)
+        .await
+}
+
+#[tauri::command]
+pub async fn cmd_close_session_search(
+    state: tauri::State<'_, Arc<SearchEngine>>,
+    window: tauri::Window,
+    consumer_id: String,
+    generation: u64,
+) -> Result<(), String> {
+    state
+        .session_index
+        .close_search(window.label(), &consumer_id, generation);
+    Ok(())
 }
 
 #[tauri::command]

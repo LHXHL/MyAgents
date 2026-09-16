@@ -11,7 +11,7 @@ use crate::local_inference::{
 use crate::process_cmd;
 use crate::record::{
     AudioTrackKind, DiarizationStatus, ManagedRecordStore, RecordKind, RecordLiveTranscriptJournal,
-    RecordSpeakerTurn, RecordSpeechProvenance, RecordTranscriptSegment,
+    RecordSpeakerTurn, RecordSpeechBaseline, RecordSpeechProvenance, RecordTranscriptSegment,
     RecordTranscriptTrackOffset, TranscriptionStatus,
 };
 use crate::record_analytics::{
@@ -25,6 +25,7 @@ use crate::workspace_files::path_safety::{
     validate_workspace_root,
 };
 use chrono::{DateTime, Duration, Utc};
+use myagents_media_worker_protocol::record_identity::{PersonMatchEvidence, MAX_IDENTITY_PEOPLE};
 use myagents_media_worker_protocol::{
     read_worker_response, write_control_frame, write_pcm_frame, Checkpoint, PcmFrame, PcmStreamEnd,
     PcmStreamStart, RecordArtifactInput, SpeakerTurn, StartRequest, TrackKind, WorkerCommand,
@@ -44,6 +45,9 @@ use std::time::{Duration as StdDuration, Instant};
 use tokio::sync::Notify;
 use uuid::Uuid;
 use zeroize::Zeroize;
+
+mod record_processing;
+use record_processing::{RecordAsrCandidate, RecordProcessingInput};
 
 const JOB_SCHEMA_VERSION: u32 = 1;
 const MAX_JOB_METADATA_BYTES: u64 = 1024 * 1024;
@@ -256,6 +260,15 @@ pub struct SpeechPipelineSnapshot {
     pub provider: String,
     pub model_pack_revision: String,
     pub onnx_runtime_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub algorithm_revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SpeechCandidateReference {
+    pub sha256: String,
+    pub size_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -270,6 +283,12 @@ pub struct SpeechJob {
     pub source: SpeechJobSource,
     pub output: SpeechJobOutput,
     pub pipeline: SpeechPipelineSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processing_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_baseline: Option<SpeechCandidateReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_asr_candidate: Option<SpeechCandidateReference>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -284,6 +303,16 @@ pub struct SpeechJob {
     pub error: Option<SpeechJobError>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metrics: Option<SpeechJobMetrics>,
+}
+
+/// Read-only Record detail projection; the durable speech job remains the
+/// authority, so Record manifests do not acquire a second copy of job errors.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordTranscriptionFailure {
+    pub code: String,
+    pub retryable: bool,
+    pub stage: SpeechJobStage,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -404,12 +433,18 @@ struct LiveBoundary {
 #[derive(Default)]
 struct LiveControlState {
     flushes: VecDeque<LiveBoundary>,
+    /// Exact boundary acknowledged after VAD flush, not a transport ACK or
+    /// replay checkpoint. Survives unloading this live Worker's models.
+    flushed: Option<LiveBoundary>,
     finish: Option<LiveBoundary>,
     cancelled: bool,
     paused: bool,
     pause_epoch: u64,
     pause_timer: Option<tauri::async_runtime::JoinHandle<()>>,
     suspend_requested: bool,
+    /// Accepted Worker replay frontiers in Record media coordinates. These
+    /// survive Worker attempts, not the capture lifecycle or an App restart.
+    replay_floors: Vec<RecordTranscriptTrackOffset>,
 }
 
 #[derive(Default)]
@@ -418,6 +453,66 @@ struct LiveControl {
 }
 
 impl LiveControl {
+    fn publication_offsets(
+        &self,
+        mut committed: Vec<RecordTranscriptTrackOffset>,
+    ) -> Result<Vec<RecordTranscriptTrackOffset>, &'static str> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| "SPEECH_MANAGER_UNAVAILABLE")?;
+        for offset in &mut committed {
+            if let Some(floor) = state
+                .replay_floors
+                .iter()
+                .find(|floor| floor.track == offset.track)
+            {
+                offset.sample = offset.sample.max(floor.sample);
+            }
+        }
+        Ok(committed)
+    }
+
+    fn observe_replay_checkpoint(
+        &self,
+        checkpoint: &Checkpoint,
+        allowed: &[RecordTranscriptTrackOffset],
+    ) -> Result<(), &'static str> {
+        if checkpoint.streams.len() != allowed.len() {
+            return Err("SPEECH_WORKER_PROTOCOL_ERROR");
+        }
+        let mut offsets = Vec::with_capacity(allowed.len());
+        for expected in allowed {
+            let track = protocol_track(expected.track)?;
+            let sample = checkpoint
+                .streams
+                .iter()
+                .find(|stream| stream.track == track)
+                .and_then(|stream| stream.replay_record_sample)
+                .ok_or("SPEECH_WORKER_PROTOCOL_ERROR")?;
+            offsets.push(RecordTranscriptTrackOffset {
+                track: expected.track,
+                sample,
+            });
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "SPEECH_MANAGER_UNAVAILABLE")?;
+        for offset in offsets {
+            if let Some(current) = state
+                .replay_floors
+                .iter_mut()
+                .find(|current| current.track == offset.track)
+            {
+                current.sample = current.sample.max(offset.sample);
+            } else {
+                state.replay_floors.push(offset);
+            }
+        }
+        Ok(())
+    }
+
     fn snapshot(&self) -> Result<LiveControlStateSnapshot, &'static str> {
         let state = self
             .state
@@ -429,6 +524,9 @@ impl LiveControl {
             cancelled: state.cancelled,
             paused: state.paused,
             suspend_requested: state.suspend_requested,
+            finish_is_flushed: state.finish.is_some()
+                && state.finish == state.flushed
+                && state.flushes.is_empty(),
         })
     }
 
@@ -436,6 +534,7 @@ impl LiveControl {
         if let Ok(mut state) = self.state.lock() {
             if state.flushes.front() == Some(boundary) {
                 state.flushes.pop_front();
+                state.flushed = Some(boundary.clone());
             }
         }
     }
@@ -471,6 +570,22 @@ struct LiveControlStateSnapshot {
     cancelled: bool,
     paused: bool,
     suspend_requested: bool,
+    finish_is_flushed: bool,
+}
+
+fn validate_live_admission(state: &ManagerState, record_id: &str) -> Result<(), &'static str> {
+    if state.live_sessions.contains_key(record_id) {
+        return Err("SPEECH_RECORD_LIVE_ALREADY_ACTIVE");
+    }
+    // Capture admission and inference settlement have different lifetimes.
+    // Finished recordings may still drain under the shared compute lease.
+    for session in state.live_sessions.values() {
+        let control = session.control.snapshot()?;
+        if control.finish.is_none() && !control.cancelled {
+            return Err("SPEECH_RECORD_LIVE_ALREADY_ACTIVE");
+        }
+    }
+    Ok(())
 }
 
 struct RunningWorker {
@@ -509,12 +624,15 @@ impl Drop for SensitiveTranscriptSegments {
     }
 }
 
+struct SpeechWorkerCompletion {
+    transcripts: SensitiveTranscriptSegments,
+    turns: Vec<RecordSpeakerTurn>,
+    identity_evidence: Vec<PersonMatchEvidence>,
+    metrics: WorkerMetrics,
+}
+
 enum SpeechWorkerOutcome {
-    Completed {
-        transcripts: SensitiveTranscriptSegments,
-        turns: Vec<RecordSpeakerTurn>,
-        metrics: WorkerMetrics,
-    },
+    Completed(SpeechWorkerCompletion),
     Yielded,
     Failed {
         code: String,
@@ -526,7 +644,7 @@ enum SpeechWorkerOutcome {
 impl SpeechWorkerOutcome {
     fn settlement_grace(&self) -> StdDuration {
         match self {
-            Self::Completed { .. }
+            Self::Completed(_)
             | Self::Failed {
                 terminal_received: true,
                 ..
@@ -586,6 +704,8 @@ struct LiveTrackCursor {
     position: u64,
     next_sequence: u64,
     last_sequence: Option<u64>,
+    replay_record_start: u64,
+    publish_from_record_sample: u64,
 }
 
 pub struct SpeechRecognitionManager {
@@ -601,6 +721,38 @@ pub struct SpeechRecognitionManager {
 }
 
 impl SpeechRecognitionManager {
+    pub fn record_transcription_failure(
+        &self,
+        record_id: &str,
+    ) -> Option<RecordTranscriptionFailure> {
+        let state = self.state.lock().ok()?;
+        let latest = state.jobs.values()
+            .filter(|job| job.kind == SpeechJobKind::RecordBackfillAsr
+                && matches!(&job.origin, SpeechJobOrigin::Record { record_id: id } if id == record_id))
+            .max_by(|a, b| (a.created_at, &a.job_id).cmp(&(b.created_at, &b.job_id)))?;
+        if !matches!(
+            latest.state,
+            SpeechJobState::Failed | SpeechJobState::Interrupted
+        ) {
+            return None;
+        }
+        let error = latest.error.as_ref()?;
+        if !error.code.starts_with("SPEECH_")
+            || error.code.len() > 128
+            || !error
+                .code
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            return None;
+        }
+        Some(RecordTranscriptionFailure {
+            code: error.code.clone(),
+            retryable: error.retryable,
+            stage: latest.stage,
+        })
+    }
+
     pub fn initialize(
         data_root: PathBuf,
         resource_root: PathBuf,
@@ -695,7 +847,7 @@ impl SpeechRecognitionManager {
     }
 
     pub(crate) fn start_background_resource_validation(self: &Arc<Self>) {
-        self.model_pack.start_background_verification();
+        self.model_pack.start_background_maintenance();
     }
 
     pub fn capability_snapshot(&self) -> SpeechCapabilitySnapshot {
@@ -744,6 +896,7 @@ impl SpeechRecognitionManager {
             onnx_runtime_path: runtime.path().to_path_buf(),
             model_pack_manifest_path: active.manifest_path,
             provenance: RecordSpeechProvenance {
+                algorithm_revision: Some(native_algorithm_revision(&self.native_manifest_path)?),
                 provider: "local".into(),
                 model_pack_revision: active.revision,
                 onnx_runtime_version: runtime.version().to_string(),
@@ -765,6 +918,14 @@ impl SpeechRecognitionManager {
         if pipeline.provider != "local" || pipeline.onnx_runtime_version != runtime.version() {
             return Err("SPEECH_PIPELINE_REVISION_UNAVAILABLE");
         }
+        let algorithm_revision = native_algorithm_revision(&self.native_manifest_path)?;
+        if pipeline
+            .algorithm_revision
+            .as_ref()
+            .is_some_and(|revision| revision != &algorithm_revision)
+        {
+            return Err("SPEECH_PIPELINE_REVISION_UNAVAILABLE");
+        }
         let model_pack = self
             .model_pack
             .resolve_revision(&pipeline.model_pack_revision)?;
@@ -774,6 +935,7 @@ impl SpeechRecognitionManager {
             onnx_runtime_path: runtime.path().to_path_buf(),
             model_pack_manifest_path: model_pack.manifest_path,
             provenance: RecordSpeechProvenance {
+                algorithm_revision: Some(algorithm_revision),
                 provider: "local".into(),
                 model_pack_revision: pipeline.model_pack_revision.clone(),
                 onnx_runtime_version: runtime.version().to_string(),
@@ -1021,6 +1183,9 @@ impl SpeechRecognitionManager {
 
         let now = Utc::now();
         let job = SpeechJob {
+            processing_id: None,
+            record_baseline: None,
+            record_asr_candidate: None,
             schema_version: JOB_SCHEMA_VERSION,
             job_id: job_id.clone(),
             kind: SpeechJobKind::AgentAttachmentAsr,
@@ -1097,103 +1262,122 @@ impl SpeechRecognitionManager {
         record_id: &str,
     ) -> Result<SpeechJob, String> {
         validate_job_id(record_id).map_err(str::to_string)?;
-        let record = self
-            .record_store
-            .get(record_id)
-            .await
-            .ok_or_else(|| "SPEECH_RECORD_NOT_FOUND".to_string())?;
-        if record.kind != RecordKind::Audio
-            || record
-                .audio
-                .as_ref()
-                .map_or(true, |audio| audio.tracks.is_empty())
-        {
-            return Err("SPEECH_RECORD_AUDIO_UNAVAILABLE".to_string());
-        }
-
-        let source_size = record
-            .artifacts
-            .iter()
-            .filter(|artifact| artifact.kind == "audio/ogg-opus")
-            .try_fold(0_u64, |total, artifact| {
-                total.checked_add(artifact.size_bytes)
-            })
-            .ok_or_else(|| "SPEECH_MEDIA_LIMIT_EXCEEDED".to_string())?;
-        if source_size == 0 {
-            return Err("SPEECH_RECORD_AUDIO_UNAVAILABLE".to_string());
-        }
-
-        let job = {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| "SPEECH_MANAGER_UNAVAILABLE".to_string())?;
-            if !state.accepting {
-                return Err("SPEECH_MANAGER_SHUTTING_DOWN".to_string());
-            }
-            if let Some(existing) = state.jobs.values().find(|job| {
-                job.kind == SpeechJobKind::RecordBackfillAsr
-                    && !job.state.is_terminal()
-                    && matches!(
-                        &job.origin,
-                        SpeechJobOrigin::Record { record_id: existing } if existing == record_id
-                    )
-            }) {
-                return Ok(existing.clone());
-            }
-            if state.queue.len() + state.agent_admission_reservations >= MAX_PENDING_JOBS {
-                return Err("SPEECH_QUEUE_FULL".to_string());
-            }
-            // Keep resource selection inside the same manager lock that makes
-            // the queued job visible. Model removal takes this lock first, so
-            // it can neither invalidate the snapshot before admission nor
-            // pass the in-use check after the job is admitted.
-            let resources = self.execution_resources().map_err(str::to_string)?;
-            let now = Utc::now();
-            let job = SpeechJob {
-                schema_version: JOB_SCHEMA_VERSION,
-                job_id: new_job_id(),
-                kind: SpeechJobKind::RecordBackfillAsr,
-                state: SpeechJobState::Queued,
-                stage: SpeechJobStage::Validating,
-                origin: SpeechJobOrigin::Record {
-                    record_id: record_id.to_string(),
-                },
-                source: SpeechJobSource {
-                    path: format!("record:{record_id}"),
-                    size_bytes: source_size,
-                    sha256: None,
-                    media_kind: Some("record/ogg-opus".into()),
-                    codec: None,
-                    duration_ms: None,
-                    used_default_track: None,
-                },
-                output: empty_output(),
-                pipeline: pipeline_from_provenance(&resources.provenance),
-                created_at: now,
-                updated_at: now,
-                started_at: None,
-                finished_at: None,
-                worker_generation: None,
-                worker_attempts: 0,
-                error: None,
-                metrics: None,
-            };
-            persist_job(&self.root, &job)?;
-            state.queue.push_back(job.job_id.clone());
-            state.jobs.insert(job.job_id.clone(), job.clone());
-            job
-        };
-
-        if let Err(error) = self
-            .record_store
-            .update_audio_processing_status(record_id, Some(TranscriptionStatus::Queued), None)
-            .await
-        {
-            self.fail_admission(&job.job_id, "SPEECH_RECORD_UPDATE_FAILED");
-            return Err(format!("SPEECH_RECORD_UPDATE_FAILED: {error}"));
-        }
+        let manager = Arc::clone(self);
+        let record_id = record_id.to_owned();
+        // Admission takes the same Manager -> Store lock order as publication.
+        // Disk snapshots run off the async UI executor, inside that boundary.
+        let job = tauri::async_runtime::spawn_blocking(move || {
+            manager.admit_record_processing(&record_id)
+        })
+        .await
+        .map_err(|_| "SPEECH_MANAGER_UNAVAILABLE".to_string())??;
         self.wake.notify_one();
+        Ok(job)
+    }
+
+    fn admit_record_processing(&self, record_id: &str) -> Result<SpeechJob, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "SPEECH_MANAGER_UNAVAILABLE".to_string())?;
+        if !state.accepting {
+            return Err("SPEECH_MANAGER_SHUTTING_DOWN".into());
+        }
+        if let Some(existing) = state.jobs.values().find(|job| {
+            job.kind == SpeechJobKind::RecordBackfillAsr && !job.state.is_terminal()
+                && matches!(&job.origin, SpeechJobOrigin::Record { record_id: existing } if existing == record_id)
+        }) { return Ok(existing.clone()); }
+        if state.queue.len() + state.agent_admission_reservations >= MAX_PENDING_JOBS {
+            return Err("SPEECH_QUEUE_FULL".into());
+        }
+        let resources = self.execution_resources().map_err(str::to_string)?;
+        let baseline =
+            tauri::async_runtime::block_on(self.record_store.prepare_speech_processing(record_id))
+                .map_err(|_| "SPEECH_RECORD_AUDIO_UNAVAILABLE".to_string())?;
+        let source_size = baseline
+            .audio_artifacts
+            .iter()
+            .try_fold(0_u64, |sum, artifact| sum.checked_add(artifact.size_bytes))
+            .filter(|size| *size > 0)
+            .ok_or("SPEECH_RECORD_AUDIO_UNAVAILABLE")?;
+        let runtime = self
+            .runtime_registry
+            .identity(InferenceRuntimeKind::OnnxCpu)
+            .map_err(|_| "SPEECH_NATIVE_RUNTIME_UNAVAILABLE")?;
+        let processing_id = new_job_id();
+        let pipeline = pipeline_from_provenance(&resources.provenance);
+        let source_identity = baseline.audio_identity.clone();
+        let input = RecordProcessingInput {
+            processing_id: processing_id.clone(),
+            baseline,
+            pipeline: pipeline.clone(),
+            runtime_sha256: runtime.sha256().into(),
+            model_manifest_sha256: record_processing::small_file_sha256(
+                &resources.model_pack_manifest_path,
+            )
+            .map_err(str::to_string)?,
+        };
+        let reference = record_processing::write_candidate(
+            &self.root,
+            &processing_id,
+            record_processing::BASELINE_FILE,
+            &input,
+        )
+        .map_err(str::to_string)?;
+        let now = Utc::now();
+        let mut job = SpeechJob {
+            processing_id: Some(processing_id.clone()),
+            record_baseline: Some(reference),
+            record_asr_candidate: None,
+            schema_version: JOB_SCHEMA_VERSION,
+            job_id: processing_id,
+            kind: SpeechJobKind::RecordBackfillAsr,
+            state: SpeechJobState::Queued,
+            stage: SpeechJobStage::Validating,
+            origin: SpeechJobOrigin::Record {
+                record_id: record_id.into(),
+            },
+            source: SpeechJobSource {
+                path: format!("record:{record_id}"),
+                size_bytes: source_size,
+                sha256: Some(source_identity),
+                media_kind: Some("record/ogg-opus".into()),
+                codec: None,
+                duration_ms: None,
+                used_default_track: None,
+            },
+            output: empty_output(),
+            pipeline,
+            created_at: now,
+            updated_at: now,
+            started_at: None,
+            finished_at: None,
+            worker_generation: None,
+            worker_attempts: 0,
+            error: None,
+            metrics: None,
+        };
+        persist_job(&self.root, &job)?;
+        if tauri::async_runtime::block_on(self.record_store.update_audio_processing_status(
+            record_id,
+            Some(TranscriptionStatus::Queued),
+            Some(DiarizationStatus::Queued),
+        ))
+        .is_err()
+        {
+            job.state = SpeechJobState::Failed;
+            job.finished_at = Some(Utc::now());
+            job.error = Some(SpeechJobError {
+                code: "SPEECH_RECORD_UPDATE_FAILED".into(),
+                retryable: true,
+            });
+            persist_job(&self.root, &job)?;
+            state.jobs.insert(job.job_id.clone(), job);
+            return Err("SPEECH_RECORD_UPDATE_FAILED".into());
+        }
+        state.queue.push_back(job.job_id.clone());
+        state.jobs.insert(job.job_id.clone(), job.clone());
+        log_record_job(&job, "queued");
         Ok(job)
     }
 
@@ -1232,9 +1416,7 @@ impl SpeechRecognitionManager {
             if !state.accepting {
                 return Err("SPEECH_MANAGER_SHUTTING_DOWN".to_string());
             }
-            if state.live_sessions.contains_key(record_id) || !state.live_sessions.is_empty() {
-                return Err("SPEECH_RECORD_LIVE_ALREADY_ACTIVE".to_string());
-            }
+            validate_live_admission(&state, record_id).map_err(str::to_string)?;
             let resources = self.execution_resources().map_err(str::to_string)?;
             state.live_sessions.insert(
                 record_id.to_string(),
@@ -1494,6 +1676,11 @@ impl SpeechRecognitionManager {
         control.suspend_requested = false;
         control.pause_epoch = control.pause_epoch.saturating_add(1).max(1);
         control.finish = Some(boundary);
+        crate::ulog_info!(
+            "[speech] live finish requested recordId={} flushed={}",
+            record_id,
+            control.finish == control.flushed && control.flushes.is_empty()
+        );
         Ok(())
     }
 
@@ -1521,6 +1708,10 @@ impl SpeechRecognitionManager {
                 cancelled = true;
                 break;
             }
+            if control_snapshot.finish_is_flushed {
+                finished = true;
+                break;
+            }
             if control_snapshot.paused && control_snapshot.suspend_requested {
                 loop {
                     let snapshot = match control.snapshot() {
@@ -1534,7 +1725,7 @@ impl SpeechRecognitionManager {
                         cancelled = true;
                         break;
                     }
-                    if snapshot.finish.is_some() {
+                    if snapshot.finish_is_flushed {
                         finished = true;
                         break;
                     }
@@ -1555,17 +1746,6 @@ impl SpeechRecognitionManager {
                     break;
                 }
             };
-            let replay_from = journal.replay_offsets();
-            if let Err(error) = journal.append_generation_started(generation, replay_from.clone()) {
-                crate::ulog_error!(
-                    "[speech] live journal generation start failed recordId={} generation={} error={}",
-                    record_id,
-                    generation,
-                    error
-                );
-                terminal_error = Some("SPEECH_JOB_STORE_WRITE_FAILED".to_string());
-                break;
-            }
             attempts = attempts.saturating_add(1);
             let compute = ComputeWorkloadIdentity {
                 kind: ComputeWorkloadKind::RecordLive,
@@ -1576,6 +1756,11 @@ impl SpeechRecognitionManager {
             match control.snapshot() {
                 Ok(snapshot) if snapshot.cancelled => {
                     cancelled = true;
+                    drop(lease);
+                    break;
+                }
+                Ok(snapshot) if snapshot.finish_is_flushed => {
+                    finished = true;
                     drop(lease);
                     break;
                 }
@@ -1658,6 +1843,14 @@ impl SpeechRecognitionManager {
             }
         }
 
+        crate::ulog_info!(
+            "[speech] live settled recordId={} finished={} cancelled={} attempts={} failed={}",
+            record_id,
+            finished,
+            cancelled,
+            attempts,
+            terminal_error.is_some()
+        );
         self.clear_live_running(&record_id);
         self.remove_live_session(&record_id);
         for source in &sources {
@@ -1695,11 +1888,27 @@ impl SpeechRecognitionManager {
         control: &Arc<LiveControl>,
         journal: &mut RecordLiveTranscriptJournal,
     ) -> LiveAttemptOutcome {
-        let replay_from = journal.replay_offsets();
+        let replay_from = match control.publication_offsets(journal.replay_offsets()) {
+            Ok(offsets) => offsets,
+            Err(code) => return live_failed(code, false),
+        };
         let mut cursors = match live_cursors(sources, &replay_from) {
             Ok(cursors) => cursors,
             Err(code) => return live_failed(code, false),
         };
+        let replay_metadata = cursors
+            .iter()
+            .map(|cursor| RecordTranscriptTrackOffset {
+                track: cursor.source.track(),
+                sample: cursor.replay_record_start,
+            })
+            .collect();
+        if journal
+            .append_generation_started(generation, replay_metadata)
+            .is_err()
+        {
+            return live_failed("SPEECH_JOB_STORE_WRITE_FAILED", false);
+        }
         let lifecycle_spawn_permit = match crate::sidecar::begin_lifecycle_spawn_permit() {
             Ok(permit) => permit,
             Err(_) => return LiveAttemptOutcome::Cancelled,
@@ -1723,9 +1932,11 @@ impl SpeechRecognitionManager {
                 streams: cursors
                     .iter()
                     .map(|cursor| PcmStreamStart {
+                        channels: cursor.source.channels(),
                         track: cursor.track,
                         first_sequence: cursor.next_sequence,
                         first_sample: cursor.position,
+                        publish_from_record_sample: cursor.publish_from_record_sample,
                     })
                     .collect(),
             },
@@ -1897,6 +2108,17 @@ impl SpeechRecognitionManager {
                         .min(MAX_PCM_SAMPLES_PER_FRAME as u64),
                 )
                 .unwrap_or(MAX_PCM_SAMPLES_PER_FRAME);
+                let time_span = match cursor.source.time_span(cursor.position, sample_count) {
+                    Ok(span) => span,
+                    Err(code) => {
+                        return settle_live_spawn_failure(
+                            self, record_id, generation, &child, code, false,
+                        )
+                    }
+                };
+                let sample_count = time_span.as_ref().map_or(sample_count, |span| {
+                    (span.source_end - span.source_start) as usize
+                });
                 let samples = match cursor.source.read_samples(cursor.position, sample_count) {
                     Ok(samples) if !samples.is_empty() => samples,
                     Ok(_) => continue,
@@ -1906,8 +2128,12 @@ impl SpeechRecognitionManager {
                         )
                     }
                 };
-                let end_sample = cursor.position.saturating_add(samples.len() as u64);
+                let end_sample = cursor
+                    .position
+                    .saturating_add((samples.len() / usize::from(cursor.source.channels())) as u64);
                 let mut frame = PcmFrame {
+                    channels: cursor.source.channels(),
+                    time_span,
                     protocol_version: PROTOCOL_VERSION,
                     worker_generation: generation,
                     track: cursor.track,
@@ -1931,6 +2157,7 @@ impl SpeechRecognitionManager {
                     &responses,
                     &identity,
                     journal,
+                    control,
                     &mut next_worker_revision,
                     Some((cursor.track, cursor.next_sequence, end_sample)),
                     None,
@@ -1984,6 +2211,7 @@ impl SpeechRecognitionManager {
                         &responses,
                         &identity,
                         journal,
+                        control,
                         &mut next_worker_revision,
                         None,
                         None,
@@ -2060,6 +2288,7 @@ impl SpeechRecognitionManager {
                         &responses,
                         &identity,
                         journal,
+                        control,
                         &mut next_worker_revision,
                         None,
                         Some(expected_source_samples),
@@ -2188,28 +2417,6 @@ impl SpeechRecognitionManager {
             None,
         ))?;
         Ok(true)
-    }
-
-    fn fail_admission(&self, job_id: &str, code: &str) {
-        let snapshot = if let Ok(mut state) = self.state.lock() {
-            state.queue.retain(|queued| queued != job_id);
-            state.jobs.get_mut(job_id).map(|job| {
-                let now = Utc::now();
-                job.state = SpeechJobState::Failed;
-                job.updated_at = now;
-                job.finished_at = Some(now);
-                job.error = Some(SpeechJobError {
-                    code: code.into(),
-                    retryable: true,
-                });
-                job.clone()
-            })
-        } else {
-            None
-        };
-        if let Some(snapshot) = snapshot {
-            let _ = persist_job(&self.root, &snapshot);
-        }
     }
 
     pub fn get_agent_job(&self, session_id: &str, job_id: &str) -> Result<SpeechJob, &'static str> {
@@ -2484,6 +2691,15 @@ impl SpeechRecognitionManager {
     }
 
     async fn run_queue(self: Arc<Self>) {
+        let recovering = Arc::clone(&self);
+        let recovered =
+            tauri::async_runtime::spawn_blocking(move || recovering.recover_record_processing())
+                .await;
+        if !matches!(recovered, Ok(Ok(()))) {
+            crate::ulog_error!("[speech] Record processing recovery failed");
+            return;
+        }
+        self.wake.notify_one();
         loop {
             self.wake.notified().await;
             loop {
@@ -2667,6 +2883,7 @@ impl SpeechRecognitionManager {
         state.queue.remove(queue_index);
         state.jobs.insert(job_id.clone(), job.clone());
         state.active_job = Some((job_id, generation));
+        log_record_job(&job, "started");
         state.next_generation = state.next_generation.saturating_add(1).max(1);
         Ok(Some((job, generation)))
     }
@@ -2682,6 +2899,37 @@ impl SpeechRecognitionManager {
             self.execute_agent_job(job, generation, resources, lease);
             return;
         }
+        let adopted = match self.bind_legacy_record_processing(job, generation, &resources) {
+            Ok(job) => job,
+            Err(code) => {
+                self.finish_failed(job, generation, code, false);
+                return;
+            }
+        };
+        let job = &adopted;
+        let frozen = match record_processing::read_input(&self.root, job) {
+            Ok(input) => input,
+            Err(code) => {
+                self.finish_failed(job, generation, code, false);
+                return;
+            }
+        };
+        let runtime = self
+            .runtime_registry
+            .identity(InferenceRuntimeKind::OnnxCpu);
+        if !runtime.is_ok_and(|runtime| frozen.runtime_sha256 == runtime.sha256())
+            || frozen.pipeline != pipeline_from_provenance(&resources.provenance)
+            || record_processing::small_file_sha256(&resources.model_pack_manifest_path).as_ref()
+                != Ok(&frozen.model_manifest_sha256)
+        {
+            self.finish_failed(
+                job,
+                generation,
+                "SPEECH_PIPELINE_REVISION_UNAVAILABLE",
+                false,
+            );
+            return;
+        }
         if let Err(code) = self.update_record_running_status(job, generation) {
             self.finish_failed(job, generation, code, true);
             return;
@@ -2693,8 +2941,11 @@ impl SpeechRecognitionManager {
                 return;
             }
         };
-        let expected_record_transcript_track = if job.kind == SpeechJobKind::RecordBackfillAsr {
-            match expected_record_backfill_track(&input) {
+        let expected_record_transcript_track = if matches!(
+            job.kind,
+            SpeechJobKind::RecordBackfillAsr | SpeechJobKind::RecordDiarization
+        ) {
+            match expected_record_backfill_tracks(&input) {
                 Ok(track) => Some(track),
                 Err(code) => {
                     self.finish_failed(job, generation, code, false);
@@ -2794,18 +3045,9 @@ impl SpeechRecognitionManager {
             return;
         }
         match outcome {
-            SpeechWorkerOutcome::Completed {
-                transcripts,
-                turns,
-                metrics,
-            } => self.publish_record_success(
-                job,
-                generation,
-                &resources.provenance,
-                transcripts,
-                turns,
-                metrics,
-            ),
+            SpeechWorkerOutcome::Completed(completion) => {
+                self.publish_record_success(job, generation, &resources.provenance, completion)
+            }
             SpeechWorkerOutcome::Yielded => self.requeue_yielded(job, generation),
             SpeechWorkerOutcome::Failed {
                 code, retryable, ..
@@ -2955,11 +3197,12 @@ impl SpeechRecognitionManager {
             return;
         }
         match outcome {
-            SpeechWorkerOutcome::Completed {
+            SpeechWorkerOutcome::Completed(SpeechWorkerCompletion {
                 transcripts,
                 turns,
+                identity_evidence,
                 metrics,
-            } if turns.is_empty() => {
+            }) if turns.is_empty() && identity_evidence.is_empty() => {
                 let published = self.publish_agent_success(
                     job,
                     generation,
@@ -2974,7 +3217,7 @@ impl SpeechRecognitionManager {
                     cleanup_pending_agent(&pending);
                 }
             }
-            SpeechWorkerOutcome::Completed { .. } => {
+            SpeechWorkerOutcome::Completed(_) => {
                 self.finish_agent_failure(
                     job,
                     generation,
@@ -3339,6 +3582,14 @@ impl SpeechRecognitionManager {
         let SpeechJobOrigin::Record { record_id } = &job.origin else {
             return Err("SPEECH_WORKLOAD_NOT_READY");
         };
+        if job.processing_id.is_some() {
+            let frozen = record_processing::read_input(&self.root, job)?;
+            tauri::async_runtime::block_on(
+                self.record_store
+                    .validate_speech_processing_input(&frozen.baseline),
+            )
+            .map_err(|_| "SPEECH_SOURCE_CHANGED")?;
+        }
         let record = tauri::async_runtime::block_on(self.record_store.get(record_id))
             .ok_or("SPEECH_RECORD_NOT_FOUND")?;
         let audio = record
@@ -3346,21 +3597,16 @@ impl SpeechRecognitionManager {
             .as_ref()
             .filter(|_| record.kind == RecordKind::Audio)
             .ok_or("SPEECH_RECORD_AUDIO_UNAVAILABLE")?;
-        let selected = match job.kind {
-            SpeechJobKind::RecordBackfillAsr => {
-                [AudioTrackKind::Microphone, AudioTrackKind::System]
-                    .into_iter()
-                    .filter(|track| audio.tracks.contains(track))
-                    .collect::<Vec<_>>()
-            }
-            SpeechJobKind::RecordDiarization => {
-                [AudioTrackKind::Microphone, AudioTrackKind::System]
-                    .into_iter()
-                    .filter(|track| audio.tracks.contains(track))
-                    .collect::<Vec<_>>()
-            }
-            SpeechJobKind::AgentAttachmentAsr => return Err("SPEECH_WORKLOAD_NOT_READY"),
-        };
+        if job.kind == SpeechJobKind::AgentAttachmentAsr {
+            return Err("SPEECH_WORKLOAD_NOT_READY");
+        }
+        let mut selected = [AudioTrackKind::Microphone, AudioTrackKind::System]
+            .into_iter()
+            .filter(|track| audio.tracks.contains(track))
+            .collect::<Vec<_>>();
+        if selected.is_empty() && audio.tracks.contains(&AudioTrackKind::Mixed) {
+            selected.push(AudioTrackKind::Mixed);
+        }
         if selected.is_empty() {
             return Err("SPEECH_NO_AUDIO_TRACK");
         }
@@ -3371,11 +3617,18 @@ impl SpeechRecognitionManager {
                 self.record_store
                     .resolve_record_media_for_processing(record_id, track),
             )
-            .map_err(|_| "SPEECH_SOURCE_UNSAFE")?;
+            .map_err(|code| {
+                if code == "SPEECH_CAPTURE_TIME_UNAVAILABLE" {
+                    "SPEECH_CAPTURE_TIME_UNAVAILABLE"
+                } else {
+                    "SPEECH_SOURCE_UNSAFE"
+                }
+            })?;
             total_size = total_size
                 .checked_add(media.size_bytes)
                 .ok_or("SPEECH_MEDIA_LIMIT_EXCEEDED")?;
             inputs.push(RecordArtifactInput {
+                timeline: media.timeline,
                 input_path: path_for_protocol(&media.path)?,
                 track: protocol_track(track)?,
             });
@@ -3383,7 +3636,15 @@ impl SpeechRecognitionManager {
         if total_size == 0 || total_size > job.source.size_bytes {
             return Err("SPEECH_SOURCE_CHANGED");
         }
-        Ok(WorkloadInput::RecordArtifacts { inputs })
+        let identity_anchors = if job.kind == SpeechJobKind::RecordDiarization {
+            Some(record_processing::worker_anchors(&self.root, job)?)
+        } else {
+            None
+        };
+        Ok(WorkloadInput::RecordArtifacts {
+            inputs,
+            identity_anchors,
+        })
     }
 
     fn spawn_registered_worker(
@@ -3450,14 +3711,14 @@ impl SpeechRecognitionManager {
         job: &SpeechJob,
         generation: u64,
         identity: &WorkloadIdentity,
-        expected_record_transcript_track: Option<AudioTrackKind>,
+        expected_record_transcript_track: Option<Vec<AudioTrackKind>>,
         stdout: ChildStdout,
         stdin: &Arc<Mutex<std::process::ChildStdin>>,
         child: &Arc<Mutex<process_cmd::ChildTree>>,
         lease: &LocalComputeLease,
         yield_state: &BatchYieldState,
     ) -> SpeechWorkerOutcome {
-        let responses = start_batch_response_reader(stdout);
+        let responses = start_batch_response_reader(stdout, identity.clone());
         let started_at = Instant::now();
         let mut overall_deadline = MAX_AGENT_DEADLINE;
         let mut ready = false;
@@ -3473,12 +3734,28 @@ impl SpeechRecognitionManager {
             );
         }
         let mut transcripts = SensitiveTranscriptSegments::default();
-        let mut turns = Vec::new();
+        let mut turns = Vec::<RecordSpeakerTurn>::new();
         let mut transcript_characters = 0_usize;
         let mut next_transcript_revision = 1_u64;
         let mut speaker_revision = None;
         let mut next_speaker_batch = 0_u32;
         let mut speaker_last_seen = false;
+        let mut identity_evidence = Vec::<PersonMatchEvidence>::new();
+        let mut identity_last_seen = false;
+        let mut next_identity_batch = 0_u32;
+        let expected_people = if job.kind == SpeechJobKind::RecordDiarization {
+            match record_processing::read_input(&self.root, job) {
+                Ok(input) => input
+                    .baseline
+                    .person_anchors
+                    .keys()
+                    .copied()
+                    .collect::<Vec<_>>(),
+                Err(code) => return failed_outcome(code, false),
+            }
+        } else {
+            Vec::new()
+        };
 
         loop {
             let elapsed = started_at.elapsed();
@@ -3517,7 +3794,10 @@ impl SpeechRecognitionManager {
             }
 
             match response {
-                WorkerResponse::Ready { .. } if !ready => ready = true,
+                WorkerResponse::Ready { .. } if !ready => {
+                    ready = true;
+                    log_record_job(job, "worker_ready");
+                }
                 WorkerResponse::Ready { .. } => {
                     return failed_outcome("SPEECH_WORKER_PROTOCOL_ERROR", true);
                 }
@@ -3590,7 +3870,10 @@ impl SpeechRecognitionManager {
                             AudioTrackKind::Mixed
                         }
                         (SpeechJobKind::RecordBackfillAsr, track) => {
-                            match record_backfill_track(track, expected_record_transcript_track) {
+                            match record_backfill_track(
+                                track,
+                                expected_record_transcript_track.as_deref(),
+                            ) {
                                 Ok(track) => track,
                                 Err(code) => return failed_outcome(code, false),
                             }
@@ -3633,7 +3916,52 @@ impl SpeechRecognitionManager {
                     }
                     next_speaker_batch = next_batch;
                     speaker_last_seen = is_last;
-                    turns.extend(batch.into_iter().map(record_speaker_turn));
+                    let converted = batch
+                        .into_iter()
+                        .map(|turn| {
+                            record_speaker_turn(turn, expected_record_transcript_track.as_deref())
+                        })
+                        .collect::<Result<Vec<_>, _>>();
+                    let batch = match converted {
+                        Ok(batch) => batch,
+                        Err(code) => return failed_outcome(code, false),
+                    };
+                    if let (Some(previous), Some(next)) = (turns.last(), batch.first()) {
+                        if (
+                            previous.start_sample,
+                            previous.end_sample,
+                            previous.source,
+                            previous.global_speaker,
+                        ) > (
+                            next.start_sample,
+                            next.end_sample,
+                            next.source,
+                            next.global_speaker,
+                        ) {
+                            return failed_outcome("SPEECH_WORKER_PROTOCOL_ERROR", true);
+                        }
+                    }
+                    turns.extend(batch);
+                }
+                WorkerResponse::IdentityEvidenceBatch {
+                    batch_index,
+                    is_last,
+                    evidence,
+                    ..
+                } if ready && speaker_last_seen && job.kind == SpeechJobKind::RecordDiarization => {
+                    if identity_last_seen
+                        || batch_index != next_identity_batch
+                        || identity_evidence.len() + evidence.len() > MAX_IDENTITY_PEOPLE
+                        || evidence.iter().enumerate().any(|(index, row)| {
+                            expected_people.get(identity_evidence.len() + index)
+                                != Some(&row.person_id)
+                        })
+                    {
+                        return failed_outcome("SPEECH_WORKER_PROTOCOL_ERROR", true);
+                    }
+                    next_identity_batch += 1;
+                    identity_last_seen = is_last;
+                    identity_evidence.extend(evidence);
                 }
                 WorkerResponse::Pong { .. } if ready => {}
                 WorkerResponse::Yielded { .. }
@@ -3644,13 +3972,17 @@ impl SpeechRecognitionManager {
                 WorkerResponse::Completed { metrics, .. }
                     if ready && (!job.kind.is_agent() || media_probed) =>
                 {
-                    if !completed_shape_matches(
-                        job.kind,
-                        &transcripts.0,
-                        &turns,
-                        speaker_last_seen,
-                        &metrics,
-                    ) {
+                    if (job.kind == SpeechJobKind::RecordDiarization
+                        && (!identity_last_seen
+                            || identity_evidence.len() != expected_people.len()))
+                        || !completed_shape_matches(
+                            job.kind,
+                            &transcripts.0,
+                            &turns,
+                            speaker_last_seen,
+                            &metrics,
+                        )
+                    {
                         return failed_outcome("SPEECH_WORKER_PROTOCOL_ERROR", true);
                     }
                     transcripts.0.sort_by(|left, right| {
@@ -3660,11 +3992,12 @@ impl SpeechRecognitionManager {
                             right.segment_id.as_str(),
                         ))
                     });
-                    return SpeechWorkerOutcome::Completed {
+                    return SpeechWorkerOutcome::Completed(SpeechWorkerCompletion {
                         transcripts,
                         turns,
+                        identity_evidence,
                         metrics,
-                    };
+                    });
                 }
                 WorkerResponse::Failed { code, .. } => {
                     let retryable = worker_code_retryable(&code);
@@ -3700,6 +4033,7 @@ impl SpeechRecognitionManager {
             None
         };
         if let Some(snapshot) = snapshot {
+            log_record_job(&snapshot, "stage_changed");
             let _ = persist_job(&self.root, &snapshot);
         }
     }
@@ -3709,12 +4043,15 @@ impl SpeechRecognitionManager {
         source_job: &SpeechJob,
         generation: u64,
         provenance: &RecordSpeechProvenance,
-        mut transcripts: SensitiveTranscriptSegments,
-        turns: Vec<RecordSpeakerTurn>,
-        metrics: WorkerMetrics,
+        completion: SpeechWorkerCompletion,
     ) {
+        let SpeechWorkerCompletion {
+            mut transcripts,
+            turns,
+            identity_evidence,
+            metrics,
+        } = completion;
         let SpeechJobOrigin::Record { record_id } = &source_job.origin else {
-            self.finish_failed(source_job, generation, "SPEECH_WORKLOAD_NOT_READY", false);
             return;
         };
         let mut state = match self.state.lock() {
@@ -3724,45 +4061,17 @@ impl SpeechRecognitionManager {
         if !exact_running_generation(&state, &source_job.job_id, generation) {
             return;
         }
-        if let Some(job) = state.jobs.get_mut(&source_job.job_id) {
-            job.stage = SpeechJobStage::Publishing;
-            job.updated_at = Utc::now();
-            let _ = persist_job(&self.root, job);
-        }
-
-        let commit = match source_job.kind {
-            SpeechJobKind::RecordBackfillAsr => {
-                tauri::async_runtime::block_on(self.record_store.commit_recording_final_transcript(
-                    record_id,
-                    std::mem::take(&mut transcripts.0),
-                    provenance.clone(),
-                ))
-                .map(|_| ())
+        let frozen = match record_processing::read_input(&self.root, source_job) {
+            Ok(frozen) => frozen,
+            Err(code) => {
+                drop(state);
+                self.finish_failed(source_job, generation, code, false);
+                return;
             }
-            SpeechJobKind::RecordDiarization => tauri::async_runtime::block_on(
-                self.record_store
-                    .commit_diarization_result(record_id, turns, provenance.clone()),
-            )
-            .map(|_| ()),
-            SpeechJobKind::AgentAttachmentAsr => Err("Agent publication is not ready".into()),
         };
-        if commit.is_err() {
-            finish_job_locked(
-                &self.root,
-                &mut state,
-                &source_job.job_id,
-                generation,
-                SpeechJobState::Failed,
-                Some(SpeechJobError {
-                    code: "SPEECH_PUBLISH_FAILED".into(),
-                    retryable: true,
-                }),
-                None,
-            );
-            update_record_terminal_status(&self.record_store, source_job.kind, record_id, false);
-            return;
-        }
-
+        crate::ulog_info!("[speech] worker completed recordId={} jobId={} generation={} kind={:?} workerElapsedMs={} sourceSamples={} segments={} speakers={}",
+            record_id, source_job.job_id, generation, source_job.kind, metrics.elapsed_ms,
+            metrics.source_samples, metrics.segments, metrics.speakers);
         let job_metrics = SpeechJobMetrics {
             source_samples: metrics.source_samples,
             segments: metrics.segments,
@@ -3770,6 +4079,103 @@ impl SpeechRecognitionManager {
             elapsed_ms: metrics.elapsed_ms,
             peak_working_bytes: metrics.peak_working_bytes,
         };
+        if source_job.kind == SpeechJobKind::RecordBackfillAsr {
+            let candidate = RecordAsrCandidate {
+                processing_id: source_job.job_id.clone(),
+                worker_generation: generation,
+                pipeline: source_job.pipeline.clone(),
+                segments: std::mem::take(&mut transcripts.0),
+            };
+            let reference = match record_processing::write_candidate(
+                &self.root,
+                &source_job.job_id,
+                record_processing::ASR_FILE,
+                &candidate,
+            ) {
+                Ok(reference) => reference,
+                Err(code) => {
+                    drop(state);
+                    self.finish_failed(source_job, generation, code, false);
+                    return;
+                }
+            };
+            let mut waiting = source_job.clone();
+            waiting.record_asr_candidate = Some(reference);
+            waiting.worker_generation = None;
+            waiting.stage = SpeechJobStage::Diarizing;
+            waiting.updated_at = Utc::now();
+            waiting.metrics = Some(job_metrics);
+            // Root stays nonterminal while its separately queued speaker stage
+            // runs. Its durable candidate reference also repairs a crash in the
+            // following enqueue, without rerunning accepted ASR output.
+            if persist_job_resolving_unknown(&self.root, &waiting).is_err() {
+                drop(state);
+                self.finish_failed(
+                    source_job,
+                    generation,
+                    "SPEECH_JOB_STORE_WRITE_FAILED",
+                    false,
+                );
+                return;
+            }
+            state.jobs.insert(waiting.job_id.clone(), waiting.clone());
+            log_record_job(&waiting, "waiting_for_speakers");
+            if let Err(code) = enqueue_diarization_locked(&self.root, &mut state, &waiting) {
+                self.fail_record_processing_locked(&mut state, &waiting, code, false);
+            } else {
+                update_record_queued_status(
+                    &self.record_store,
+                    SpeechJobKind::RecordDiarization,
+                    record_id,
+                );
+                self.wake.notify_one();
+            }
+            return;
+        }
+        if source_job.kind != SpeechJobKind::RecordDiarization {
+            return;
+        }
+        let Some(root_job) = source_job
+            .processing_id
+            .as_ref()
+            .and_then(|id| state.jobs.get(id))
+            .cloned()
+        else {
+            return;
+        };
+        let mut candidate = match record_processing::read_asr(&self.root, &root_job) {
+            Ok(candidate) => candidate,
+            Err(code) => {
+                drop(state);
+                self.finish_failed(source_job, generation, code, false);
+                return;
+            }
+        };
+        for id in [&source_job.job_id, &root_job.job_id] {
+            if let Some(mut job) = state.jobs.get(id).cloned() {
+                job.stage = SpeechJobStage::Publishing;
+                job.updated_at = Utc::now();
+                if persist_job_resolving_unknown(&self.root, &job).is_err() {
+                    drop(state);
+                    self.finish_failed(source_job, generation, "SPEECH_PUBLISH_FAILED", false);
+                    return;
+                }
+                state.jobs.insert(id.clone(), job);
+            }
+        }
+        let commit = tauri::async_runtime::block_on(self.record_store.commit_speech_processing(
+            &frozen.baseline,
+            &root_job.job_id,
+            std::mem::take(&mut candidate.segments),
+            Some(turns),
+            identity_evidence,
+            provenance.clone(),
+        ));
+        if commit.is_err() {
+            drop(state);
+            self.finish_failed(source_job, generation, "SPEECH_PUBLISH_FAILED", false);
+            return;
+        }
         finish_job_locked(
             &self.root,
             &mut state,
@@ -3779,34 +4185,99 @@ impl SpeechRecognitionManager {
             None,
             Some(job_metrics),
         );
-        if source_job.kind == SpeechJobKind::RecordBackfillAsr {
-            if enqueue_diarization_locked(
-                &self.root,
-                &mut state,
-                record_id,
-                source_job.source.size_bytes,
-                provenance,
+        finish_processing_root_locked(
+            &self.root,
+            &mut state,
+            &root_job.job_id,
+            SpeechJobState::Succeeded,
+            None,
+        );
+    }
+
+    fn fail_record_processing_locked(
+        &self,
+        state: &mut ManagerState,
+        root_job: &SpeechJob,
+        code: &str,
+        retryable: bool,
+    ) {
+        let SpeechJobOrigin::Record { record_id } = &root_job.origin else {
+            return;
+        };
+        let cancelled = matches!(code, "SPEECH_CANCELLED" | "SPEECH_INTERRUPTED");
+        let mut failure_intent = root_job.clone();
+        failure_intent.error = Some(SpeechJobError {
+            code: code.into(),
+            retryable,
+        });
+        failure_intent.updated_at = Utc::now();
+        let failure_recorded = persist_job_resolving_unknown(&self.root, &failure_intent).is_ok();
+        if !failure_recorded {
+            crate::ulog_error!(
+                "[speech] Record processing failure metadata could not be persisted"
+            );
+        }
+        state.jobs.insert(root_job.job_id.clone(), failure_intent);
+        // A failed failure-intent write cannot authorize a partial publication,
+        // but must still revoke the completed execution and settle its jobs.
+        if failure_recorded
+            && !cancelled
+            && root_job.stage == SpeechJobStage::Diarizing
+            && !matches!(
+                code,
+                "SPEECH_PUBLISH_FAILED"
+                    | "SPEECH_PIPELINE_REVISION_UNAVAILABLE"
+                    | "SPEECH_SOURCE_CHANGED"
             )
-            .is_err()
-            {
-                if let Some(job) = state.jobs.get_mut(&source_job.job_id) {
-                    job.state = SpeechJobState::SucceededWithWarnings;
-                    job.error = Some(SpeechJobError {
-                        code: "SPEECH_DIARIZATION_QUEUE_FAILED".into(),
-                        retryable: true,
-                    });
-                    let _ = persist_job(&self.root, job);
+            && root_job.record_asr_candidate.is_some()
+        {
+            if let (Ok(frozen), Ok(mut candidate)) = (
+                record_processing::read_input(&self.root, root_job),
+                record_processing::read_asr(&self.root, root_job),
+            ) {
+                if frozen.baseline.transcript_artifact.is_none() {
+                    let provenance = RecordSpeechProvenance {
+                        provider: root_job.pipeline.provider.clone(),
+                        model_pack_revision: root_job.pipeline.model_pack_revision.clone(),
+                        onnx_runtime_version: root_job.pipeline.onnx_runtime_version.clone(),
+                        algorithm_revision: root_job.pipeline.algorithm_revision.clone(),
+                    };
+                    let _ =
+                        tauri::async_runtime::block_on(self.record_store.commit_speech_processing(
+                            &frozen.baseline,
+                            &root_job.job_id,
+                            std::mem::take(&mut candidate.segments),
+                            None,
+                            Vec::new(),
+                            provenance,
+                        ));
                 }
-                update_record_terminal_status(
-                    &self.record_store,
-                    SpeechJobKind::RecordDiarization,
-                    record_id,
-                    false,
-                );
-            } else {
-                self.wake.notify_one();
             }
         }
+        finish_processing_root_locked(
+            &self.root,
+            state,
+            &root_job.job_id,
+            if code == "SPEECH_CANCELLED" {
+                SpeechJobState::Cancelled
+            } else {
+                SpeechJobState::Failed
+            },
+            Some(SpeechJobError {
+                code: code.into(),
+                retryable,
+            }),
+        );
+        update_record_terminal_status(
+            &self.record_store,
+            if root_job.record_asr_candidate.is_some() {
+                SpeechJobKind::RecordDiarization
+            } else {
+                SpeechJobKind::RecordBackfillAsr
+            },
+            record_id,
+            false,
+        );
     }
 
     fn requeue_yielded(&self, source_job: &SpeechJob, generation: u64) {
@@ -3887,12 +4358,28 @@ impl SpeechRecognitionManager {
             if queued {
                 update_record_queued_status(&self.record_store, source_job.kind, record_id);
             } else {
+                if source_job.kind == SpeechJobKind::RecordDiarization {
+                    if let Some(root_job) = source_job
+                        .processing_id
+                        .as_ref()
+                        .and_then(|id| state.jobs.get(id))
+                        .cloned()
+                    {
+                        self.fail_record_processing_locked(&mut state, &root_job, code, retryable);
+                        return;
+                    }
+                }
                 update_record_terminal_status(
                     &self.record_store,
                     source_job.kind,
                     record_id,
                     false,
                 );
+                if source_job.kind == SpeechJobKind::RecordBackfillAsr
+                    && source_job.processing_id.is_some()
+                {
+                    record_processing::cleanup_record_private(&self.root, &source_job.job_id);
+                }
             }
         }
         if queued {
@@ -4064,14 +4551,23 @@ fn live_cursors(
     sources: &[AnalysisSpoolSource],
     replay_from: &[RecordTranscriptTrackOffset],
 ) -> Result<Vec<LiveTrackCursor>, &'static str> {
+    // Rebuild both references at one media position, including bounded AEC
+    // history. Publication starts separately at each source's safe frontier.
+    let replay_record_start = replay_from
+        .iter()
+        .map(|offset| offset.sample)
+        .min()
+        .ok_or("SPEECH_ANALYSIS_SOURCE_INVALID")?
+        .saturating_sub(2 * 16_000);
     sources
         .iter()
         .map(|source| {
-            let position = replay_from
+            let publish_from_record_sample = replay_from
                 .iter()
                 .find(|offset| offset.track == source.track())
                 .ok_or("SPEECH_ANALYSIS_SOURCE_INVALID")?
                 .sample;
+            let position = source.source_position_for_record(replay_record_start)?;
             let snapshot = source.snapshot();
             if position > snapshot.committed_samples {
                 return Err("SPEECH_ANALYSIS_SOURCE_INVALID");
@@ -4083,6 +4579,8 @@ fn live_cursors(
                 position,
                 next_sequence: 0,
                 last_sequence: None,
+                replay_record_start,
+                publish_from_record_sample,
             })
         })
         .collect()
@@ -4163,6 +4661,7 @@ fn read_live_frame_settlement(
     responses: &std_mpsc::Receiver<Result<WorkerResponse, &'static str>>,
     identity: &WorkloadIdentity,
     journal: &mut RecordLiveTranscriptJournal,
+    control: &LiveControl,
     next_worker_revision: &mut u64,
     expected_ack: Option<(TrackKind, u64, u64)>,
     expected_completed_samples: Option<u64>,
@@ -4242,6 +4741,9 @@ fn read_live_frame_settlement(
                         return Err(("SPEECH_WORKER_PROTOCOL_ERROR".to_string(), true));
                     }
                 }
+                control
+                    .observe_replay_checkpoint(&checkpoint, &journal.replay_offsets())
+                    .map_err(|code| (code.to_string(), false))?;
                 return Ok(transcript_changed);
             }
             WorkerResponse::Heartbeat { .. } if expected_completed_samples.is_some() && acked => {}
@@ -4323,7 +4825,25 @@ fn exact_running_generation(state: &ManagerState, job_id: &str, generation: u64)
             active_id == job_id && *active_generation == generation
         })
         && state.jobs.get(job_id).is_some_and(|job| {
-            job.state == SpeechJobState::Running && job.worker_generation == Some(generation)
+            job.state == SpeechJobState::Running
+                && job.worker_generation == Some(generation)
+                && job.processing_id.as_ref().map_or(true, |processing_id| {
+                    if job.kind == SpeechJobKind::RecordBackfillAsr {
+                        processing_id == job_id
+                    } else {
+                        state.jobs.get(processing_id).is_some_and(|root| {
+                            root.kind == SpeechJobKind::RecordBackfillAsr
+                                && root.state == SpeechJobState::Running
+                                && matches!(
+                                    root.stage,
+                                    SpeechJobStage::Diarizing | SpeechJobStage::Publishing
+                                )
+                                && root.record_asr_candidate.is_some()
+                                && root.pipeline == job.pipeline
+                                && root.record_baseline == job.record_baseline
+                        })
+                    }
+                })
         })
 }
 
@@ -4347,19 +4867,30 @@ fn protocol_track(track: AudioTrackKind) -> Result<TrackKind, &'static str> {
     match track {
         AudioTrackKind::Microphone => Ok(TrackKind::Microphone),
         AudioTrackKind::System => Ok(TrackKind::System),
-        AudioTrackKind::Mixed => Err("SPEECH_NO_AUDIO_TRACK"),
+        AudioTrackKind::Mixed => Ok(TrackKind::Mixed),
     }
 }
 
-fn expected_record_backfill_track(input: &WorkloadInput) -> Result<AudioTrackKind, &'static str> {
-    let WorkloadInput::RecordArtifacts { inputs } = input else {
+fn expected_record_backfill_tracks(
+    input: &WorkloadInput,
+) -> Result<Vec<AudioTrackKind>, &'static str> {
+    let WorkloadInput::RecordArtifacts { inputs, .. } = input else {
         return Err("SPEECH_WORKER_PROTOCOL_ERROR");
     };
-    match inputs.as_slice() {
-        [input] => record_source_track(input.track),
-        [_, _] => Ok(AudioTrackKind::Mixed),
-        _ => Err("SPEECH_WORKER_PROTOCOL_ERROR"),
+    if !(1..=2).contains(&inputs.len()) || (inputs.len() == 2 && inputs[0].track == inputs[1].track)
+    {
+        return Err("SPEECH_WORKER_PROTOCOL_ERROR");
     }
+    inputs
+        .iter()
+        .map(|input| {
+            if input.track == TrackKind::Mixed && inputs.len() == 1 {
+                Ok(AudioTrackKind::Mixed)
+            } else {
+                record_source_track(input.track)
+            }
+        })
+        .collect()
 }
 
 fn record_source_track(track: TrackKind) -> Result<AudioTrackKind, &'static str> {
@@ -4372,7 +4903,7 @@ fn record_source_track(track: TrackKind) -> Result<AudioTrackKind, &'static str>
 
 fn record_backfill_track(
     track: TrackKind,
-    expected: Option<AudioTrackKind>,
+    expected: Option<&[AudioTrackKind]>,
 ) -> Result<AudioTrackKind, &'static str> {
     let actual = match track {
         TrackKind::Microphone => Ok(AudioTrackKind::Microphone),
@@ -4380,17 +4911,22 @@ fn record_backfill_track(
         TrackKind::Mixed => Ok(AudioTrackKind::Mixed),
         TrackKind::Attachment => Err("SPEECH_WORKER_PROTOCOL_ERROR"),
     }?;
-    (Some(actual) == expected)
+    expected
+        .is_some_and(|tracks| tracks.contains(&actual))
         .then_some(actual)
         .ok_or("SPEECH_WORKER_PROTOCOL_ERROR")
 }
 
-fn record_speaker_turn(turn: SpeakerTurn) -> RecordSpeakerTurn {
-    RecordSpeakerTurn {
+fn record_speaker_turn(
+    turn: SpeakerTurn,
+    expected: Option<&[AudioTrackKind]>,
+) -> Result<RecordSpeakerTurn, &'static str> {
+    Ok(RecordSpeakerTurn {
+        source: Some(record_backfill_track(turn.source, expected)?),
         start_sample: turn.start_sample,
         end_sample: turn.end_sample,
         global_speaker: turn.global_speaker,
-    }
+    })
 }
 
 fn speech_stage(stage: WorkerStage) -> SpeechJobStage {
@@ -4428,7 +4964,7 @@ fn completed_shape_matches(
             }
             let speakers = turns
                 .iter()
-                .map(|turn| turn.global_speaker)
+                .filter_map(|turn| turn.global_speaker)
                 .collect::<std::collections::HashSet<_>>();
             metrics.speakers as usize == speakers.len()
                 && speakers
@@ -4563,6 +5099,7 @@ fn drain_worker_stderr(mut stderr: ChildStderr, job_id: String, generation: u64)
 
 fn start_batch_response_reader(
     stdout: ChildStdout,
+    identity: WorkloadIdentity,
 ) -> std_mpsc::Receiver<Result<Option<WorkerResponse>, &'static str>> {
     let (sender, receiver) = std_mpsc::sync_channel(16);
     let _ = std::thread::Builder::new()
@@ -4573,7 +5110,23 @@ fn start_batch_response_reader(
                 let (response, terminal) = match read_worker_response(&mut reader) {
                     Ok(Some(response)) => (Ok(Some(response)), false),
                     Ok(None) => (Ok(None), true),
-                    Err(_) => (Err("SPEECH_WORKER_PROTOCOL_ERROR"), true),
+                    Err(error) => {
+                        // Protocol errors use fixed local messages. Match an
+                        // allowlist so neither wire content nor OS/raw paths
+                        // can enter diagnostic output.
+                        let reason = match error.to_string().as_str() {
+                            "invalid worker response shape" => "invalid_response_shape",
+                            "invalid worker response JSON" => "invalid_response_json",
+                            "unexpected media worker response frame kind" => "unexpected_frame_kind",
+                            "media worker frame exceeds fixed limit" => "frame_size_limit",
+                            _ => "incomplete_or_unreadable_frame",
+                        };
+                        crate::ulog_warn!(
+                            "[speech] Worker response rejected jobId={} generation={} reason={} ioKind={:?}",
+                            identity.workload_id, identity.worker_generation, reason, error.kind()
+                        );
+                        (Err("SPEECH_WORKER_PROTOCOL_ERROR"), true)
+                    },
                 };
                 if sender.send(response).is_err() || terminal {
                     break;
@@ -4588,7 +5141,7 @@ fn collect_agent_probe(
     stdout: ChildStdout,
     deadline: Instant,
 ) -> Result<AgentMediaProbe, &'static str> {
-    let responses = start_batch_response_reader(stdout);
+    let responses = start_batch_response_reader(stdout, identity.clone());
     let mut ready = false;
     let mut probe = None;
     loop {
@@ -4743,7 +5296,23 @@ fn emit_attachment_job(
     });
 }
 
+// Operational metadata only: never format source paths, model paths, user
+// text or Worker payloads. Wall time includes queueing; worker metrics do not.
+fn log_record_job(job: &SpeechJob, event: &'static str) {
+    let SpeechJobOrigin::Record { record_id } = &job.origin else {
+        return;
+    };
+    let at = job.finished_at.unwrap_or_else(Utc::now);
+    let wall_ms = (at - job.created_at).num_milliseconds().max(0);
+    let queue_ms = (job.started_at.unwrap_or(at) - job.created_at)
+        .num_milliseconds()
+        .max(0);
+    crate::ulog_info!("[speech] {} recordId={} jobId={} generation={:?} kind={:?} state={:?} stage={:?} wallMs={} queueMs={}",
+        event, record_id, job.job_id, job.worker_generation, job.kind, job.state, job.stage, wall_ms, queue_ms);
+}
+
 fn emit_speech_terminal(job: &SpeechJob) {
+    log_record_job(job, "terminal");
     let Some(outcome) = analytics_outcome(job.state) else {
         return;
     };
@@ -4849,7 +5418,12 @@ fn finish_job_locked(
     if let Some(job) = state.jobs.get_mut(job_id) {
         let now = Utc::now();
         job.state = terminal;
-        job.stage = SpeechJobStage::Publishing;
+        if matches!(
+            terminal,
+            SpeechJobState::Succeeded | SpeechJobState::SucceededWithWarnings
+        ) {
+            job.stage = SpeechJobStage::Publishing;
+        }
         job.updated_at = now;
         job.finished_at = Some(now);
         job.error = error;
@@ -4867,22 +5441,23 @@ fn finish_job_locked(
 fn enqueue_diarization_locked(
     root: &Path,
     state: &mut ManagerState,
-    record_id: &str,
-    source_size: u64,
-    provenance: &RecordSpeechProvenance,
+    root_job: &SpeechJob,
 ) -> Result<(), &'static str> {
-    if state.jobs.values().any(|job| {
-        job.kind == SpeechJobKind::RecordDiarization
-            && !matches!(
-                job.state,
-                SpeechJobState::Failed | SpeechJobState::Cancelled | SpeechJobState::Interrupted
-            )
-            && matches!(
-                &job.origin,
-                SpeechJobOrigin::Record { record_id: existing } if existing == record_id
-            )
-    }) {
-        return Ok(());
+    if root_job.kind != SpeechJobKind::RecordBackfillAsr
+        || root_job.processing_id.as_deref() != Some(&root_job.job_id)
+        || root_job.record_asr_candidate.is_none()
+        || root_job.state.is_terminal()
+    {
+        return Err("SPEECH_RECORD_CANDIDATE_INVALID");
+    }
+    let job_id = format!("{}_diarization", root_job.job_id);
+    if let Some(existing) = state.jobs.get(&job_id) {
+        return if existing.processing_id == root_job.processing_id && !existing.state.is_terminal()
+        {
+            Ok(())
+        } else {
+            Err("SPEECH_RECORD_CANDIDATE_INVALID")
+        };
     }
     if state.queue.len() + state.agent_admission_reservations >= MAX_PENDING_JOBS {
         return Err("SPEECH_QUEUE_FULL");
@@ -4890,24 +5465,17 @@ fn enqueue_diarization_locked(
     let now = Utc::now();
     let job = SpeechJob {
         schema_version: JOB_SCHEMA_VERSION,
-        job_id: new_job_id(),
+        job_id,
         kind: SpeechJobKind::RecordDiarization,
         state: SpeechJobState::Queued,
         stage: SpeechJobStage::Validating,
-        origin: SpeechJobOrigin::Record {
-            record_id: record_id.into(),
-        },
-        source: SpeechJobSource {
-            path: format!("record:{record_id}"),
-            size_bytes: source_size,
-            sha256: None,
-            media_kind: Some("record/ogg-opus".into()),
-            codec: None,
-            duration_ms: None,
-            used_default_track: None,
-        },
+        processing_id: root_job.processing_id.clone(),
+        record_baseline: root_job.record_baseline.clone(),
+        record_asr_candidate: None,
+        origin: root_job.origin.clone(),
+        source: root_job.source.clone(),
         output: empty_output(),
-        pipeline: pipeline_from_provenance(provenance),
+        pipeline: root_job.pipeline.clone(),
         created_at: now,
         updated_at: now,
         started_at: None,
@@ -4917,10 +5485,73 @@ fn enqueue_diarization_locked(
         error: None,
         metrics: None,
     };
-    persist_job(root, &job).map_err(|_| "SPEECH_JOB_STORE_WRITE_FAILED")?;
+    persist_job_resolving_unknown(root, &job).map_err(|_| "SPEECH_JOB_STORE_WRITE_FAILED")?;
     state.queue.push_back(job.job_id.clone());
+    log_record_job(&job, "queued");
     state.jobs.insert(job.job_id.clone(), job);
     Ok(())
+}
+
+fn finish_processing_root_locked(
+    root: &Path,
+    state: &mut ManagerState,
+    processing_id: &str,
+    terminal: SpeechJobState,
+    error: Option<SpeechJobError>,
+) {
+    let Some(mut job) = state.jobs.get(processing_id).cloned() else {
+        return;
+    };
+    if job.kind != SpeechJobKind::RecordBackfillAsr || job.state.is_terminal() {
+        return;
+    }
+    let now = Utc::now();
+    job.state = terminal;
+    job.updated_at = now;
+    job.finished_at = Some(now);
+    job.worker_generation = None;
+    job.error = error;
+    job.output.artifact_available = terminal == SpeechJobState::Succeeded;
+    if terminal == SpeechJobState::Succeeded {
+        job.stage = SpeechJobStage::Publishing;
+    }
+    if persist_job_resolving_unknown(root, &job).is_ok() {
+        emit_speech_terminal(&job);
+    } else {
+        crate::ulog_error!("[speech] Record processing terminal metadata could not be persisted");
+    }
+    // As with finish_job_locked, a known execution outcome is terminal in this
+    // Manager even if bookkeeping fails. Store remains publication authority;
+    // removing candidates prevents stale durable Running jobs publishing later.
+    let children = state
+        .jobs
+        .values()
+        .filter(|child| {
+            child.job_id != processing_id
+                && child.processing_id.as_deref() == Some(processing_id)
+                && !child.state.is_terminal()
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for mut child in children {
+        child.state = terminal;
+        child.error = job.error.clone();
+        child.updated_at = now;
+        child.finished_at = Some(now);
+        child.worker_generation = None;
+        child.output.artifact_available = terminal == SpeechJobState::Succeeded;
+        if terminal == SpeechJobState::Succeeded {
+            child.stage = SpeechJobStage::Publishing;
+        }
+        // Recovery repeats this projection from the terminal root or Store if
+        // the child write is interrupted.
+        let _ = persist_job_resolving_unknown(root, &child);
+        state.queue.retain(|id| id != &child.job_id);
+        state.jobs.insert(child.job_id.clone(), child);
+    }
+    state.queue.retain(|id| id != processing_id);
+    state.jobs.insert(processing_id.into(), job);
+    record_processing::cleanup_record_private(root, processing_id);
 }
 
 fn update_record_queued_status(store: &ManagedRecordStore, kind: SpeechJobKind, record_id: &str) {
@@ -4978,6 +5609,31 @@ fn new_job_id() -> String {
     format!("speech_{}", Uuid::new_v4().simple())
 }
 
+fn native_algorithm_revision(path: &Path) -> Result<String, &'static str> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| "SPEECH_NATIVE_RUNTIME_UNAVAILABLE")?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 256 * 1024 {
+        return Err("SPEECH_NATIVE_RUNTIME_UNAVAILABLE");
+    }
+    let bytes = fs::read(path).map_err(|_| "SPEECH_NATIVE_RUNTIME_UNAVAILABLE")?;
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|_| "SPEECH_NATIVE_RUNTIME_UNAVAILABLE")?;
+    let native = manifest
+        .get("buildFingerprint")
+        .and_then(|value| value.as_str())
+        .filter(|fingerprint| {
+            fingerprint.len() == 64 && fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+        .ok_or("SPEECH_NATIVE_RUNTIME_UNAVAILABLE")?;
+    // Worker/native/protocol are content-addressed by prepare. Store publication
+    // and human-operation semantics are an App algorithm too; changing them
+    // must invalidate an old queued candidate even when the model is unchanged.
+    const RECORD_PROCESSING_POLICY: &str = "record-source-processing-v1";
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(format!("{RECORD_PROCESSING_POLICY}:{native}").as_bytes())
+    ))
+}
+
 fn empty_output() -> SpeechJobOutput {
     SpeechJobOutput {
         root_directory: None,
@@ -4990,6 +5646,7 @@ fn empty_output() -> SpeechJobOutput {
 
 fn pipeline_from_provenance(provenance: &RecordSpeechProvenance) -> SpeechPipelineSnapshot {
     SpeechPipelineSnapshot {
+        algorithm_revision: provenance.algorithm_revision.clone(),
         provider: provenance.provider.clone(),
         model_pack_revision: provenance.model_pack_revision.clone(),
         onnx_runtime_version: provenance.onnx_runtime_version.clone(),
@@ -5007,6 +5664,10 @@ fn settle_for_process_boundary(job: &mut SpeechJob, now: DateTime<Utc>) {
             code: "SPEECH_INTERRUPTED".into(),
             retryable: true,
         });
+    } else if job.kind == SpeechJobKind::RecordBackfillAsr && job.record_asr_candidate.is_some() {
+        job.state = SpeechJobState::Running;
+        job.stage = SpeechJobStage::Diarizing;
+        job.finished_at = None;
     } else {
         job.state = SpeechJobState::Queued;
         job.stage = SpeechJobStage::Validating;
@@ -5215,6 +5876,56 @@ fn load_jobs(root: &Path) -> Result<HashMap<String, SpeechJob>, String> {
 }
 
 fn valid_job_shape(job: &SpeechJob) -> bool {
+    let valid_reference = |reference: &SpeechCandidateReference, limit| {
+        reference.size_bytes > 0
+            && reference.size_bytes <= limit
+            && reference.sha256.len() == 64
+            && reference
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+    };
+    if job
+        .pipeline
+        .algorithm_revision
+        .as_ref()
+        .is_some_and(|revision| {
+            revision.len() != 64 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+    {
+        return false;
+    }
+    match job.processing_id.as_deref() {
+        Some(processing_id) => {
+            if job.kind.is_agent()
+                || validate_job_id(processing_id).is_err()
+                || !job
+                    .record_baseline
+                    .as_ref()
+                    .is_some_and(|reference| valid_reference(reference, 8 * 1024 * 1024))
+                || job
+                    .record_asr_candidate
+                    .as_ref()
+                    .is_some_and(|reference| !valid_reference(reference, 64 * 1024 * 1024))
+            {
+                return false;
+            }
+            match job.kind {
+                SpeechJobKind::RecordBackfillAsr if processing_id != job.job_id => return false,
+                SpeechJobKind::RecordDiarization
+                    if job.job_id != format!("{processing_id}_diarization")
+                        || job.record_asr_candidate.is_some() =>
+                {
+                    return false
+                }
+                _ => {}
+            }
+        }
+        None if job.record_baseline.is_some() || job.record_asr_candidate.is_some() => {
+            return false
+        }
+        None => {}
+    }
     match (&job.kind, &job.origin) {
         (
             SpeechJobKind::AgentAttachmentAsr,
@@ -5740,6 +6451,9 @@ mod tests {
         created_at: DateTime<Utc>,
     ) -> SpeechJob {
         SpeechJob {
+            processing_id: None,
+            record_baseline: None,
+            record_asr_candidate: None,
             schema_version: JOB_SCHEMA_VERSION,
             job_id: job_id.into(),
             kind,
@@ -5763,6 +6477,7 @@ mod tests {
                 artifact_available: false,
             },
             pipeline: SpeechPipelineSnapshot {
+                algorithm_revision: None,
                 provider: "local".into(),
                 model_pack_revision: "revision-1".into(),
                 onnx_runtime_version: "1.28.0".into(),
@@ -5782,6 +6497,23 @@ mod tests {
         let data = root.path().join("data");
         let resources = root.path().join("resources");
         fs::create_dir_all(&resources).unwrap();
+        let bundle = resources.join("document-processing/v1");
+        fs::create_dir_all(bundle.join("native")).unwrap();
+        fs::write(bundle.join("native/runtime.fixture"), b"fixture").unwrap();
+        let manifest = serde_json::json!({
+            "schemaVersion": 1,
+            "platform": std::env::consts::OS,
+            "architecture": if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" },
+            "files": { "onnxRuntime": { "path": "native/runtime.fixture", "size": 7,
+                "sha256": format!("{:x}", Sha256::digest(b"fixture")), "license": "MIT",
+                "upstreamRevision": "v1.28.0@test", "artifactSource": "synthetic test",
+                "signing": { "kind": "sha256-manifest", "identity": "test" } } },
+        });
+        fs::write(
+            bundle.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
         let runtime = LocalInferenceRuntimeRegistry::initialize(&resources);
         let records = Arc::new(RecordStore::new(data.join("records"), None));
         SpeechRecognitionManager::initialize_inner(
@@ -5796,34 +6528,903 @@ mod tests {
     }
 
     #[test]
-    fn record_backfill_accepts_mixed_output_without_widening_live_tracks() {
+    fn record_backfill_accepts_only_the_selected_physical_or_real_legacy_sources() {
         let dual_input = WorkloadInput::RecordArtifacts {
+            identity_anchors: None,
             inputs: vec![
                 RecordArtifactInput {
+                    timeline: None,
                     input_path: "/record/microphone.opus".into(),
                     track: TrackKind::Microphone,
                 },
                 RecordArtifactInput {
+                    timeline: None,
                     input_path: "/record/system.opus".into(),
                     track: TrackKind::System,
                 },
             ],
         };
         assert_eq!(
-            expected_record_backfill_track(&dual_input),
+            expected_record_backfill_tracks(&dual_input),
+            Ok(vec![AudioTrackKind::Microphone, AudioTrackKind::System])
+        );
+        assert_eq!(
+            record_backfill_track(
+                TrackKind::Microphone,
+                Some(&[AudioTrackKind::Microphone, AudioTrackKind::System])
+            ),
+            Ok(AudioTrackKind::Microphone)
+        );
+        assert_eq!(
+            record_backfill_track(
+                TrackKind::Mixed,
+                Some(&[AudioTrackKind::Microphone, AudioTrackKind::System])
+            ),
+            Err("SPEECH_WORKER_PROTOCOL_ERROR")
+        );
+        assert_eq!(
+            record_backfill_track(TrackKind::Mixed, Some(&[AudioTrackKind::Mixed])),
             Ok(AudioTrackKind::Mixed)
         );
         assert_eq!(
-            record_backfill_track(TrackKind::Mixed, Some(AudioTrackKind::Mixed)),
-            Ok(AudioTrackKind::Mixed)
-        );
-        assert_eq!(
-            record_backfill_track(TrackKind::Microphone, Some(AudioTrackKind::Mixed)),
+            record_backfill_track(TrackKind::Microphone, Some(&[AudioTrackKind::Mixed])),
             Err("SPEECH_WORKER_PROTOCOL_ERROR")
         );
         assert_eq!(
             record_source_track(TrackKind::Mixed),
             Err("SPEECH_WORKER_PROTOCOL_ERROR")
+        );
+    }
+
+    async fn staged_record_fixture(
+        manager: &ManagedSpeechRecognition,
+        record_id: Option<&str>,
+        processing_id: &str,
+        text: &str,
+    ) -> (String, SpeechJob) {
+        let record_id = if let Some(id) = record_id {
+            id.to_owned()
+        } else {
+            let record = manager
+                .record_store
+                .create_audio(AudioRecordCreateInput {
+                    title: "Synthetic staged record".into(),
+                    tracks: vec![AudioTrackKind::Microphone],
+                    transcription_status: TranscriptionStatus::Queued,
+                })
+                .await
+                .unwrap();
+            let directory = manager
+                .record_store
+                .audio_workspace_path(&record.id)
+                .await
+                .unwrap();
+            fs::write(directory.join("audio/microphone.opus"), b"synthetic audio").unwrap();
+            manager
+                .record_store
+                .finalize_audio_capture(
+                    &record.id,
+                    CaptureStatus::Ready,
+                    1_000,
+                    vec![AudioTrackArtifactInput {
+                        track: AudioTrackKind::Microphone,
+                        relative_path: "audio/microphone.opus".into(),
+                        timeline: None,
+                        capture_time_error: None,
+                    }],
+                )
+                .await
+                .unwrap();
+            record.id
+        };
+        let baseline = manager
+            .record_store
+            .prepare_speech_processing(&record_id)
+            .await
+            .unwrap();
+        let mut job = fixture_job(
+            processing_id,
+            SpeechJobKind::RecordBackfillAsr,
+            SpeechJobOrigin::Record {
+                record_id: record_id.clone(),
+            },
+            SpeechJobState::Running,
+            Utc::now(),
+        );
+        job.processing_id = Some(processing_id.into());
+        job.stage = SpeechJobStage::Diarizing;
+        job.worker_generation = None;
+        let input = RecordProcessingInput {
+            processing_id: processing_id.into(),
+            baseline,
+            pipeline: job.pipeline.clone(),
+            runtime_sha256: manager
+                .runtime_registry
+                .identity(InferenceRuntimeKind::OnnxCpu)
+                .unwrap()
+                .sha256()
+                .into(),
+            model_manifest_sha256: "a".repeat(64),
+        };
+        job.record_baseline = Some(
+            record_processing::write_candidate(
+                &manager.root,
+                processing_id,
+                record_processing::BASELINE_FILE,
+                &input,
+            )
+            .unwrap(),
+        );
+        let candidate = RecordAsrCandidate {
+            processing_id: processing_id.into(),
+            worker_generation: 7,
+            pipeline: job.pipeline.clone(),
+            segments: vec![RecordTranscriptSegment {
+                segment_id: "same-segment-id".into(),
+                track: AudioTrackKind::Microphone,
+                start_sample: 0,
+                end_sample: 16_000,
+                text: text.into(),
+                language: None,
+                revision: 1,
+            }],
+        };
+        job.record_asr_candidate = Some(
+            record_processing::write_candidate(
+                &manager.root,
+                processing_id,
+                record_processing::ASR_FILE,
+                &candidate,
+            )
+            .unwrap(),
+        );
+        persist_job(&manager.root, &job).unwrap();
+        let mut state = manager.state.lock().unwrap();
+        state.jobs.insert(job.job_id.clone(), job.clone());
+        enqueue_diarization_locked(&manager.root, &mut state, &job).unwrap();
+        (record_id, job)
+    }
+
+    #[tokio::test]
+    async fn processing_recovery_repairs_stage_enqueue_and_committed_manifest_then_cancel_releases_candidates(
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let manager = manager(&root);
+        let (record_id, job) =
+            staged_record_fixture(&manager, None, "speech_recover", "kept words").await;
+        let child_id = "speech_recover_diarization";
+        {
+            let mut state = manager.state.lock().unwrap();
+            state.jobs.remove(child_id);
+            state.queue.clear();
+        }
+        fs::remove_dir_all(manager.root.join("jobs").join(child_id)).unwrap();
+        let recovering = Arc::clone(&manager);
+        tauri::async_runtime::spawn_blocking(move || recovering.recover_record_processing())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(manager.queue_snapshot().unwrap(), vec![child_id]);
+        assert_eq!(
+            manager.state.lock().unwrap().jobs[&job.job_id].record_asr_candidate,
+            job.record_asr_candidate
+        );
+        let input = record_processing::read_input(&manager.root, &job).unwrap();
+        let mut candidate = record_processing::read_asr(&manager.root, &job).unwrap();
+        let provenance = RecordSpeechProvenance {
+            provider: job.pipeline.provider.clone(),
+            model_pack_revision: job.pipeline.model_pack_revision.clone(),
+            onnx_runtime_version: job.pipeline.onnx_runtime_version.clone(),
+            algorithm_revision: None,
+        };
+        manager
+            .record_store
+            .commit_speech_processing(
+                &input.baseline,
+                &job.job_id,
+                std::mem::take(&mut candidate.segments),
+                Some(vec![RecordSpeakerTurn {
+                    source: Some(AudioTrackKind::Microphone),
+                    start_sample: 0,
+                    end_sample: 16_000,
+                    global_speaker: None,
+                }]),
+                vec![],
+                provenance,
+            )
+            .await
+            .unwrap();
+        // Simulate committed Record / unfinished job metadata without another
+        // inference. Reconciliation must read Store authority, then settle jobs.
+        let recovering = Arc::clone(&manager);
+        tauri::async_runtime::spawn_blocking(move || recovering.recover_record_processing())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(manager.queue_snapshot().unwrap().is_empty());
+        assert_eq!(
+            manager.state.lock().unwrap().jobs[&job.job_id].state,
+            SpeechJobState::Succeeded
+        );
+        assert_eq!(
+            manager.state.lock().unwrap().jobs[child_id].state,
+            SpeechJobState::Succeeded
+        );
+        assert!(!manager.root.join("private").join(&job.job_id).exists());
+        let (_, cancelled) = staged_record_fixture(
+            &manager,
+            Some(&record_id),
+            "speech_cancel",
+            "must stay private",
+        )
+        .await;
+        manager.cancel_record_processing(&record_id).await.unwrap();
+        assert!(manager.queue_snapshot().unwrap().is_empty());
+        assert_eq!(
+            manager.state.lock().unwrap().jobs[&cancelled.job_id].state,
+            SpeechJobState::Cancelled
+        );
+        assert_eq!(
+            manager.state.lock().unwrap().jobs["speech_cancel_diarization"].state,
+            SpeechJobState::Cancelled
+        );
+        assert!(!manager
+            .root
+            .join("private")
+            .join(&cancelled.job_id)
+            .exists());
+        assert_eq!(
+            manager
+                .record_store
+                .read_recording_final_transcript(&record_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .segments[0]
+                .text,
+            "kept words"
+        );
+    }
+
+    #[tokio::test]
+    async fn record_processing_metadata_write_failures_settle_and_recover_without_dead_running_jobs(
+    ) {
+        for scenario in [
+            "publish-first",
+            "publish-rerun",
+            "failure-intent",
+            "terminal",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let speech = manager(&root);
+            let prior_record = if scenario == "publish-rerun" {
+                let (id, prior) =
+                    staged_record_fixture(&speech, None, "speech_prior", "kept original").await;
+                let runner = Arc::clone(&speech);
+                tauri::async_runtime::spawn_blocking(move || {
+                    let mut state = runner.state.lock().unwrap();
+                    runner.fail_record_processing_locked(
+                        &mut state,
+                        &prior,
+                        "SPEECH_INFERENCE_FAILED",
+                        false,
+                    );
+                })
+                .await
+                .unwrap();
+                Some(id)
+            } else {
+                None
+            };
+            let (record_id, processing) = staged_record_fixture(
+                &speech,
+                prior_record.as_deref(),
+                "speech_write_failure",
+                "candidate words",
+            )
+            .await;
+            let (selected, next_generation) = speech.peek_next_job().unwrap().unwrap();
+            let (job, generation) = speech
+                .claim_next_job(&selected.job_id, next_generation)
+                .unwrap()
+                .unwrap();
+            let provenance = RecordSpeechProvenance {
+                provider: processing.pipeline.provider.clone(),
+                model_pack_revision: processing.pipeline.model_pack_revision.clone(),
+                onnx_runtime_version: processing.pipeline.onnx_runtime_version.clone(),
+                algorithm_revision: processing.pipeline.algorithm_revision.clone(),
+            };
+            let turns = vec![RecordSpeakerTurn {
+                source: Some(AudioTrackKind::Microphone),
+                start_sample: 0,
+                end_sample: 16_000,
+                global_speaker: None,
+            }];
+            if scenario == "terminal" {
+                let input = record_processing::read_input(&speech.root, &processing).unwrap();
+                let mut candidate = record_processing::read_asr(&speech.root, &processing).unwrap();
+                speech
+                    .record_store
+                    .commit_speech_processing(
+                        &input.baseline,
+                        &processing.job_id,
+                        std::mem::take(&mut candidate.segments),
+                        Some(turns.clone()),
+                        vec![],
+                        provenance.clone(),
+                    )
+                    .await
+                    .unwrap();
+            }
+            // A real atomic-write failure, confined to one metadata path. No
+            // global failpoint or timing-dependent permission toggles are needed.
+            let blocked_id = if scenario.starts_with("publish-") {
+                &job.job_id
+            } else {
+                &processing.job_id
+            };
+            let path = speech.root.join("jobs").join(blocked_id).join("job.json");
+            let backup = path.with_extension("saved");
+            fs::rename(&path, &backup).unwrap();
+            fs::create_dir(&path).unwrap();
+            let runner = Arc::clone(&speech);
+            let source = job.clone();
+            let processing_id = processing.job_id.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                if scenario.starts_with("publish-") {
+                    runner.publish_record_success(
+                        &source,
+                        generation,
+                        &provenance,
+                        SpeechWorkerCompletion {
+                            transcripts: SensitiveTranscriptSegments::default(),
+                            turns,
+                            identity_evidence: vec![],
+                            metrics: WorkerMetrics {
+                                source_samples: 16_000,
+                                segments: 1,
+                                speakers: 0,
+                                elapsed_ms: 5,
+                                peak_working_bytes: None,
+                            },
+                        },
+                    );
+                } else {
+                    let mut state = runner.state.lock().unwrap();
+                    if scenario == "failure-intent" {
+                        let processing = state.jobs[&processing_id].clone();
+                        runner.fail_record_processing_locked(
+                            &mut state,
+                            &processing,
+                            "SPEECH_INFERENCE_FAILED",
+                            false,
+                        );
+                    } else {
+                        finish_processing_root_locked(
+                            &runner.root,
+                            &mut state,
+                            &processing_id,
+                            SpeechJobState::Succeeded,
+                            None,
+                        );
+                    }
+                }
+                runner.clear_active(&source.job_id, generation);
+            })
+            .await
+            .unwrap();
+            let terminal = if scenario == "terminal" {
+                SpeechJobState::Succeeded
+            } else {
+                SpeechJobState::Failed
+            };
+            {
+                let state = speech.state.lock().unwrap();
+                assert_eq!(state.jobs[&processing.job_id].state, terminal, "{scenario}");
+                assert_eq!(state.jobs[&job.job_id].state, terminal, "{scenario}");
+                assert!(state.active_job.is_none());
+                assert!(state.queue.is_empty());
+            }
+            assert!(!speech
+                .root
+                .join("private")
+                .join(&processing.job_id)
+                .exists());
+            let visible = speech
+                .record_store
+                .read_recording_final_transcript(&record_id)
+                .await
+                .unwrap();
+            assert_eq!(
+                visible.as_ref().map(|t| t.segments[0].text.as_str()),
+                match scenario {
+                    "publish-rerun" => Some("kept original"),
+                    "terminal" => Some("candidate words"),
+                    _ => None,
+                }
+            );
+            // Restore stale metadata, then recover from the real disk state.
+            // Store commits or settled child/candidate facts must win over it.
+            fs::remove_dir(&path).unwrap();
+            fs::rename(&backup, &path).unwrap();
+            let restarted = manager(&root);
+            let recovering = Arc::clone(&restarted);
+            tauri::async_runtime::spawn_blocking(move || recovering.recover_record_processing())
+                .await
+                .unwrap()
+                .unwrap();
+            let state = restarted.state.lock().unwrap();
+            assert_eq!(
+                state.jobs[&processing.job_id].state, terminal,
+                "restart {scenario}"
+            );
+            assert_eq!(
+                state.jobs[&job.job_id].state, terminal,
+                "restart {scenario}"
+            );
+            assert!(state.queue.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn waiting_processing_is_deduplicated_and_legacy_speaker_jobs_cannot_reenter_it() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = manager(&root);
+        let (record_id, processing) =
+            staged_record_fixture(&manager, None, "speech_current", "private words").await;
+        // ASR has already staged its candidate; repeated admission must return
+        // the whole processing even though its Worker generation has ended.
+        let duplicate = manager.submit_record_backfill(&record_id).await.unwrap();
+        assert_eq!(duplicate.job_id, processing.job_id);
+        let legacy = fixture_job(
+            "speech_legacy_speakers",
+            SpeechJobKind::RecordDiarization,
+            SpeechJobOrigin::Record {
+                record_id: record_id.clone(),
+            },
+            SpeechJobState::Queued,
+            Utc::now(),
+        );
+        persist_job(&manager.root, &legacy).unwrap();
+        {
+            let mut state = manager.state.lock().unwrap();
+            state.queue.push_front(legacy.job_id.clone());
+            state.jobs.insert(legacy.job_id.clone(), legacy);
+        }
+        let before = manager.record_store.get(&record_id).await.unwrap();
+        let recovering = Arc::clone(&manager);
+        tauri::async_runtime::spawn_blocking(move || recovering.recover_record_processing())
+            .await
+            .unwrap()
+            .unwrap();
+        {
+            let state = manager.state.lock().unwrap();
+            assert_eq!(
+                state.jobs["speech_legacy_speakers"].state,
+                SpeechJobState::Failed
+            );
+            assert_eq!(
+                state.jobs["speech_legacy_speakers"]
+                    .error
+                    .as_ref()
+                    .unwrap()
+                    .code,
+                "SPEECH_PIPELINE_REVISION_UNAVAILABLE"
+            );
+            assert_eq!(state.jobs["speech_current"].state, SpeechJobState::Running);
+            assert_eq!(
+                state.queue.iter().collect::<Vec<_>>(),
+                vec!["speech_current_diarization"]
+            );
+        }
+        assert_eq!(manager.record_store.get(&record_id).await.unwrap(), before);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancellation_fences_late_matching_completion_and_releases_the_worker() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for scenario in ["cancel", "delete", "superseded"] {
+            let root = tempfile::tempdir().unwrap();
+            let manager = manager(&root);
+            let (record_id, first) =
+                staged_record_fixture(&manager, None, "speech_original", "readable original").await;
+            let runner = Arc::clone(&manager);
+            tauri::async_runtime::spawn_blocking(move || {
+                let mut state = runner.state.lock().unwrap();
+                runner.fail_record_processing_locked(
+                    &mut state,
+                    &first,
+                    "SPEECH_INFERENCE_FAILED",
+                    false,
+                );
+            })
+            .await
+            .unwrap();
+            let (_, processing) = staged_record_fixture(
+                &manager,
+                Some(&record_id),
+                "speech_matching",
+                "private replacement",
+            )
+            .await;
+            let (selected, next_generation) = manager.peek_next_job().unwrap().unwrap();
+            let (job, generation) = manager
+                .claim_next_job(&selected.job_id, next_generation)
+                .unwrap()
+                .unwrap();
+            let identity = WorkloadIdentity {
+                workload_id: job.job_id.clone(),
+                worker_generation: generation,
+            };
+            let octal_frames = |responses: &[WorkerResponse]| {
+                let mut bytes = Vec::new();
+                for response in responses {
+                    write_control_frame(&mut bytes, response).unwrap();
+                }
+                bytes
+                    .iter()
+                    .map(|byte| format!("\\{:03o}", byte))
+                    .collect::<String>()
+            };
+            let before_matching = octal_frames(&[
+                WorkerResponse::Ready {
+                    protocol_version: PROTOCOL_VERSION,
+                    identity: identity.clone(),
+                },
+                WorkerResponse::SpeakerTurnBatch {
+                    protocol_version: PROTOCOL_VERSION,
+                    identity: identity.clone(),
+                    revision: 1,
+                    batch_index: 0,
+                    is_last: true,
+                    turns: vec![SpeakerTurn {
+                        source: TrackKind::Microphone,
+                        start_sample: 0,
+                        end_sample: 16_000,
+                        global_speaker: None,
+                    }],
+                },
+                WorkerResponse::Heartbeat {
+                    protocol_version: PROTOCOL_VERSION,
+                    identity: identity.clone(),
+                    stage: WorkerStage::ReconcilingSpeakers,
+                    checkpoint: Checkpoint {
+                        streams: vec![PcmStreamCheckpoint {
+                            track: TrackKind::Microphone,
+                            last_ack_sequence: None,
+                            analysis_sample: 16_000,
+                            replay_record_sample: None,
+                        }],
+                        analysis_sample: 16_000,
+                    },
+                },
+            ]);
+            let after_cancel = octal_frames(&[
+                WorkerResponse::IdentityEvidenceBatch {
+                    protocol_version: PROTOCOL_VERSION,
+                    identity: identity.clone(),
+                    revision: 1,
+                    batch_index: 0,
+                    is_last: true,
+                    evidence: vec![],
+                },
+                WorkerResponse::Completed {
+                    protocol_version: PROTOCOL_VERSION,
+                    identity: identity.clone(),
+                    metrics: WorkerMetrics {
+                        source_samples: 16_000,
+                        segments: 1,
+                        speakers: 0,
+                        elapsed_ms: 5,
+                        peak_working_bytes: None,
+                    },
+                },
+            ]);
+            let mut cancel = Vec::new();
+            write_control_frame(
+                &mut cancel,
+                &WorkerCommand::Cancel {
+                    protocol_version: PROTOCOL_VERSION,
+                    identity: identity.clone(),
+                },
+            )
+            .unwrap();
+            let worker = root.path().join("matching-worker");
+            // The fixture waits for the exact cancellation frame, then emits a
+            // valid late completion. No timer decides the cancellation race.
+            fs::write(&worker, format!(
+                "#!/bin/sh\n/usr/bin/printf '{before_matching}'\n/bin/dd bs=1 count={} of=/dev/null 2>/dev/null\n/usr/bin/printf '{after_cancel}'\n",
+                cancel.len(),
+            )).unwrap();
+            fs::set_permissions(&worker, fs::Permissions::from_mode(0o700)).unwrap();
+            let resources = SpeechExecutionResources {
+                worker_path: worker.clone(),
+                native_manifest_path: worker.clone(),
+                onnx_runtime_path: worker.clone(),
+                model_pack_manifest_path: worker,
+                provenance: RecordSpeechProvenance {
+                    provider: job.pipeline.provider.clone(),
+                    model_pack_revision: job.pipeline.model_pack_revision.clone(),
+                    onnx_runtime_version: job.pipeline.onnx_runtime_version.clone(),
+                    algorithm_revision: None,
+                },
+            };
+            let (child, stdin, stdout) = manager
+                .spawn_registered_worker(&job, generation, &resources)
+                .unwrap();
+            let lease = manager
+                .compute_coordinator
+                .acquire(ComputeWorkloadIdentity {
+                    kind: ComputeWorkloadKind::RecordDiarization,
+                    id: job.job_id.clone(),
+                    generation,
+                })
+                .await;
+            let runner = Arc::clone(&manager);
+            let execution = tauri::async_runtime::spawn_blocking(move || {
+                let yield_state = BatchYieldState::new();
+                let outcome = runner.collect_worker_result(
+                    &job,
+                    generation,
+                    &identity,
+                    Some(vec![AudioTrackKind::Microphone]),
+                    stdout,
+                    &stdin,
+                    &child,
+                    &lease,
+                    &yield_state,
+                );
+                yield_state.mark_settled();
+                let _ = process_cmd::settle_tree(&child, StdDuration::from_secs(1));
+                runner.clear_running(&job.job_id, generation);
+                match outcome {
+                    SpeechWorkerOutcome::Completed(completion) => runner.publish_record_success(
+                        &job,
+                        generation,
+                        &resources.provenance,
+                        completion,
+                    ),
+                    SpeechWorkerOutcome::Failed { code, .. } => {
+                        panic!("late completion failed: {code}")
+                    }
+                    SpeechWorkerOutcome::Yielded => panic!("unexpected cooperative yield"),
+                }
+                runner.clear_active(&job.job_id, generation);
+            });
+            tokio::time::timeout(StdDuration::from_secs(5), async {
+                while manager.state.lock().unwrap().jobs["speech_matching_diarization"].stage
+                    != SpeechJobStage::Diarizing
+                {
+                    tokio::time::sleep(StdDuration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(manager.compute_coordinator.active_identity().is_some());
+            manager.cancel_record_processing(&record_id).await.unwrap();
+            if scenario == "delete" {
+                manager.record_store.delete(&record_id).await.unwrap();
+            }
+            if scenario == "superseded" {
+                staged_record_fixture(
+                    &manager,
+                    Some(&record_id),
+                    "speech_replacement",
+                    "next candidate",
+                )
+                .await;
+            }
+            execution.await.unwrap();
+            assert!(manager.compute_coordinator.active_identity().is_none());
+            assert!(manager.state.lock().unwrap().running.is_none());
+            assert!(!manager
+                .root
+                .join("private")
+                .join(&processing.job_id)
+                .exists());
+            assert!(!manager
+                .root
+                .join("private/speech_matching_diarization")
+                .exists());
+            let recovering = Arc::clone(&manager);
+            tauri::async_runtime::spawn_blocking(move || recovering.recover_record_processing())
+                .await
+                .unwrap()
+                .unwrap();
+            for id in ["speech_matching", "speech_matching_diarization"] {
+                assert_eq!(
+                    manager.state.lock().unwrap().jobs[id].state,
+                    SpeechJobState::Cancelled
+                );
+            }
+            assert_eq!(
+                manager.queue_snapshot().unwrap(),
+                if scenario == "superseded" {
+                    vec!["speech_replacement_diarization".to_owned()]
+                } else {
+                    vec![]
+                }
+            );
+            if scenario == "delete" {
+                assert!(manager.record_store.get(&record_id).await.is_none());
+            } else {
+                assert_eq!(
+                    manager
+                        .record_store
+                        .read_recording_final_transcript(&record_id)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .segments[0]
+                        .text,
+                    "readable original"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn processing_diarization_failure_publishes_only_the_first_partial_final() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = manager(&root);
+        let (record_id, first) =
+            staged_record_fixture(&manager, None, "speech_partial", "original readable text").await;
+        let runner = Arc::clone(&manager);
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut state = runner.state.lock().unwrap();
+            runner.fail_record_processing_locked(
+                &mut state,
+                &first,
+                "SPEECH_INFERENCE_FAILED",
+                false,
+            );
+        })
+        .await
+        .unwrap();
+        let (_, next) = staged_record_fixture(
+            &manager,
+            Some(&record_id),
+            "speech_failed_rerun",
+            "incomplete replacement",
+        )
+        .await;
+        let runner = Arc::clone(&manager);
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut state = runner.state.lock().unwrap();
+            runner.fail_record_processing_locked(
+                &mut state,
+                &next,
+                "SPEECH_INFERENCE_FAILED",
+                false,
+            );
+        })
+        .await
+        .unwrap();
+        let transcript = manager
+            .record_store
+            .read_recording_final_transcript(&record_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(transcript.processing_id.as_deref(), Some("speech_partial"));
+        assert_eq!(transcript.segments[0].text, "original readable text");
+        assert!(manager
+            .record_store
+            .read_diarization_projection(&record_id)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            manager
+                .record_transcription_failure(&record_id)
+                .unwrap()
+                .stage,
+            SpeechJobStage::Diarizing
+        );
+        assert!(!manager.root.join("private/speech_failed_rerun").exists());
+    }
+
+    #[test]
+    fn live_replay_uses_inference_frontiers_and_never_treats_source_ack_as_record_time() {
+        let control = LiveControl::default();
+        let committed = vec![RecordTranscriptTrackOffset {
+            track: AudioTrackKind::Microphone,
+            sample: 50_000,
+        }];
+        let mut checkpoint = Checkpoint {
+            analysis_sample: 2_000_000,
+            streams: vec![PcmStreamCheckpoint {
+                track: TrackKind::Microphone,
+                last_ack_sequence: Some(3),
+                analysis_sample: 2_000_000,
+                replay_record_sample: None,
+            }],
+        };
+        assert_eq!(
+            control.observe_replay_checkpoint(&checkpoint, &committed),
+            Err("SPEECH_WORKER_PROTOCOL_ERROR")
+        );
+        assert_eq!(
+            control.publication_offsets(committed.clone()).unwrap(),
+            committed
+        );
+        checkpoint.streams[0].replay_record_sample = Some(1_000_000);
+        control
+            .observe_replay_checkpoint(&checkpoint, &committed)
+            .unwrap();
+        assert_eq!(
+            control.publication_offsets(committed.clone()).unwrap()[0].sample,
+            1_000_000
+        );
+        // A replacement Worker replays old audio; it cannot lower the retained frontier.
+        checkpoint.streams[0].replay_record_sample = Some(900_000);
+        control
+            .observe_replay_checkpoint(&checkpoint, &committed)
+            .unwrap();
+        assert_eq!(
+            control.publication_offsets(committed).unwrap()[0].sample,
+            1_000_000
+        );
+    }
+
+    #[test]
+    fn record_failure_projection_follows_latest_job_and_preserves_failure_stage() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = manager(&root);
+        let now = Utc::now();
+        let mut job = fixture_job(
+            "speech_failed",
+            SpeechJobKind::RecordBackfillAsr,
+            SpeechJobOrigin::Record {
+                record_id: "record-a".into(),
+            },
+            SpeechJobState::Running,
+            now,
+        );
+        job.worker_generation = Some(7);
+        {
+            let mut state = manager.state.lock().unwrap();
+            state.active_job = Some((job.job_id.clone(), 7));
+            state.jobs.insert(job.job_id.clone(), job.clone());
+            finish_job_locked(
+                &manager.root,
+                &mut state,
+                &job.job_id,
+                7,
+                SpeechJobState::Failed,
+                Some(SpeechJobError {
+                    code: "SPEECH_WORKER_PROTOCOL_ERROR".into(),
+                    retryable: true,
+                }),
+                None,
+            );
+            assert_eq!(state.jobs[&job.job_id].stage, SpeechJobStage::Transcribing);
+        }
+        assert_eq!(
+            manager.record_transcription_failure("record-a"),
+            Some(RecordTranscriptionFailure {
+                code: "SPEECH_WORKER_PROTOCOL_ERROR".into(),
+                retryable: true,
+                stage: SpeechJobStage::Transcribing,
+            })
+        );
+        assert!(manager
+            .record_transcription_failure("record-other")
+            .is_none());
+        job.job_id = "speech_retry".into();
+        job.created_at = now + Duration::seconds(1);
+        job.state = SpeechJobState::Queued;
+        manager
+            .state
+            .lock()
+            .unwrap()
+            .jobs
+            .insert(job.job_id.clone(), job);
+        assert!(
+            manager.record_transcription_failure("record-a").is_none(),
+            "new retry inherited an old failure"
         );
     }
 
@@ -5949,10 +7550,14 @@ mod tests {
                 1_000,
                 vec![
                     AudioTrackArtifactInput {
+                        timeline: None,
+                        capture_time_error: None,
                         track: AudioTrackKind::Microphone,
                         relative_path: "audio/microphone.opus".into(),
                     },
                     AudioTrackArtifactInput {
+                        timeline: None,
+                        capture_time_error: None,
                         track: AudioTrackKind::System,
                         relative_path: "audio/system.opus".into(),
                     },
@@ -5960,24 +7565,26 @@ mod tests {
             ))
             .unwrap();
 
-        let mut job = fixture_job(
+        tauri::async_runtime::block_on(staged_record_fixture(
+            &manager,
+            Some(&record.id),
             "speech_diarization_tracks",
-            SpeechJobKind::RecordDiarization,
-            SpeechJobOrigin::Record {
-                record_id: record.id.clone(),
-            },
-            SpeechJobState::Running,
-            Utc::now(),
-        );
+            "synthetic stage",
+        ));
+        let (selected, generation) = manager.peek_next_job().unwrap().unwrap();
+        let (mut job, generation) = manager
+            .claim_next_job(&selected.job_id, generation)
+            .unwrap()
+            .unwrap();
         job.source.size_bytes = finalized.audio.unwrap().size_bytes;
-        let generation = job.worker_generation.unwrap();
-        {
-            let mut state = manager.state.lock().unwrap();
-            state.active_job = Some((job.job_id.clone(), generation));
-            state.jobs.insert(job.job_id.clone(), job.clone());
-        }
+        manager
+            .state
+            .lock()
+            .unwrap()
+            .jobs
+            .insert(job.job_id.clone(), job.clone());
 
-        let WorkloadInput::RecordArtifacts { inputs } = manager
+        let WorkloadInput::RecordArtifacts { inputs, .. } = manager
             .resolve_record_worker_input(&job, generation)
             .unwrap()
         else {
@@ -6183,6 +7790,7 @@ mod tests {
             revision: 1,
         }]);
         let provenance = RecordSpeechProvenance {
+            algorithm_revision: None,
             provider: "local".into(),
             model_pack_revision: "revision-1".into(),
             onnx_runtime_version: "1.28.0".into(),
@@ -6450,161 +8058,452 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn exact_generation_worker_result_commits_record_and_queues_diarization() {
-        let root = tempfile::tempdir().unwrap();
-        let manager = manager(&root);
-        let record = manager
-            .record_store
-            .create_audio(AudioRecordCreateInput {
-                title: "Meeting".into(),
-                tracks: vec![AudioTrackKind::Microphone],
-                transcription_status: TranscriptionStatus::Queued,
-            })
-            .await
-            .unwrap();
-        let record_path = manager
-            .record_store
-            .audio_workspace_path(&record.id)
-            .await
-            .unwrap();
-        fs::write(record_path.join("audio/microphone.opus"), b"owned-audio").unwrap();
-        let finalized = manager
-            .record_store
-            .finalize_audio_capture(
-                &record.id,
-                CaptureStatus::Ready,
-                1_000,
-                vec![AudioTrackArtifactInput {
-                    track: AudioTrackKind::Microphone,
-                    relative_path: "audio/microphone.opus".into(),
-                }],
+    async fn identity_stream_requires_complete_ordered_evidence_for_the_frozen_generation() {
+        for variant in [
+            "valid",
+            "missing",
+            "truncated",
+            "reordered",
+            "duplicate",
+            "early",
+            "wrong-generation",
+            "wrong-person",
+            "malformed",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let manager = manager(&root);
+            let (_, mut root_job) = staged_record_fixture(
+                &manager,
+                None,
+                "speech_identity_stream",
+                "private candidate",
             )
-            .await
-            .unwrap();
-
-        let mut job = fixture_job(
-            "speech_record_execute",
-            SpeechJobKind::RecordBackfillAsr,
-            SpeechJobOrigin::Record {
-                record_id: record.id.clone(),
-            },
-            SpeechJobState::Queued,
-            Utc::now(),
-        );
-        job.started_at = None;
-        job.worker_generation = None;
-        job.worker_attempts = 0;
-        job.source.size_bytes = finalized.audio.unwrap().size_bytes;
-        {
-            let mut state = manager.state.lock().unwrap();
-            state.queue.push_back(job.job_id.clone());
-            state.jobs.insert(job.job_id.clone(), job);
-        }
-        let (candidate, generation_hint) = manager.peek_next_job().unwrap().unwrap();
-        let (job, generation) = manager
-            .claim_next_job(&candidate.job_id, generation_hint)
-            .unwrap()
-            .unwrap();
-        let identity = WorkloadIdentity {
-            workload_id: job.job_id.clone(),
-            worker_generation: generation,
-        };
-        let worker = root.path().join("fake-media-worker");
-        write_fake_worker(
-            &worker,
-            &[
+            .await;
+            let mut input = record_processing::read_input(&manager.root, &root_job).unwrap();
+            let anchors = (0..17).map(|person| (person.to_string(), serde_json::json!({
+                "audioIdentity": input.baseline.audio_identity,
+                "identityScopes": [[{ "source": "microphone", "startSample": 0, "endSample": 16_000 }]],
+                "hasUnresolvedActivity": false,
+            }))).collect::<serde_json::Map<_, _>>();
+            input.baseline.person_anchors =
+                serde_json::from_value(serde_json::Value::Object(anchors)).unwrap();
+            root_job.record_baseline = Some(
+                record_processing::write_candidate(
+                    &manager.root,
+                    &root_job.job_id,
+                    record_processing::BASELINE_FILE,
+                    &input,
+                )
+                .unwrap(),
+            );
+            let mut job =
+                manager.state.lock().unwrap().jobs["speech_identity_stream_diarization"].clone();
+            job.record_baseline = root_job.record_baseline.clone();
+            let identity = WorkloadIdentity {
+                workload_id: job.job_id.clone(),
+                worker_generation: 8,
+            };
+            let evidence = (0..17)
+                .map(|person_id| PersonMatchEvidence {
+                    person_id,
+                    model_labels: vec![],
+                    reference_samples: 16_000,
+                    reference_covered_samples: 0,
+                    candidate_samples: 0,
+                    candidate_covered_samples: 0,
+                    independent_clean_spans: 0,
+                    maximum_voice_distance: 2_000_000,
+                    nearest_alternative_distance: 2_000_000,
+                    activity_conflict: false,
+                    has_unresolved_activity: true,
+                })
+                .collect::<Vec<_>>();
+            let batch = |index, last, rows| WorkerResponse::IdentityEvidenceBatch {
+                protocol_version: PROTOCOL_VERSION,
+                identity: identity.clone(),
+                revision: 1,
+                batch_index: index,
+                is_last: last,
+                evidence: rows,
+            };
+            let mut responses = vec![
                 WorkerResponse::Ready {
                     protocol_version: PROTOCOL_VERSION,
                     identity: identity.clone(),
                 },
-                WorkerResponse::TranscriptSegment {
+                WorkerResponse::SpeakerTurnBatch {
                     protocol_version: PROTOCOL_VERSION,
                     identity: identity.clone(),
-                    segment_id: "segment-1".into(),
-                    track: TrackKind::Microphone,
-                    start_sample: 0,
-                    end_sample: 8_000,
-                    text: "private transcript".into(),
-                    language: Some("en".into()),
                     revision: 1,
+                    batch_index: 0,
+                    is_last: true,
+                    turns: vec![SpeakerTurn {
+                        source: TrackKind::Microphone,
+                        start_sample: 0,
+                        end_sample: 16_000,
+                        global_speaker: None,
+                    }],
                 },
+                batch(0, false, evidence[..16].to_vec()),
+                batch(1, true, evidence[16..].to_vec()),
                 WorkerResponse::Completed {
                     protocol_version: PROTOCOL_VERSION,
-                    identity,
+                    identity: identity.clone(),
                     metrics: WorkerMetrics {
                         source_samples: 16_000,
                         segments: 1,
                         speakers: 0,
                         elapsed_ms: 5,
-                        peak_working_bytes: Some(1024),
+                        peak_working_bytes: None,
                     },
                 },
-            ],
-        );
-        let native_manifest = root.path().join("native-manifest.json");
-        let runtime = root.path().join("libonnxruntime.dylib");
-        let model_manifest = root.path().join("model-manifest.json");
-        for path in [&native_manifest, &runtime, &model_manifest] {
-            fs::write(path, b"fixture").unwrap();
-        }
-        let resources = SpeechExecutionResources {
-            worker_path: worker,
-            native_manifest_path: native_manifest,
-            onnx_runtime_path: runtime,
-            model_pack_manifest_path: model_manifest,
-            provenance: RecordSpeechProvenance {
-                provider: "local".into(),
-                model_pack_revision: "revision-1".into(),
-                onnx_runtime_version: "1.28.0".into(),
-            },
-        };
-        let lease = manager
-            .compute_coordinator
-            .acquire(ComputeWorkloadIdentity {
-                kind: ComputeWorkloadKind::RecordBackfill,
-                id: job.job_id.clone(),
-                generation,
+            ];
+            match variant {
+                "missing" => {
+                    responses.drain(2..4);
+                }
+                "truncated" => {
+                    responses.remove(3);
+                }
+                "reordered" => responses.swap(2, 3),
+                "duplicate" => {
+                    responses.insert(3, batch(0, false, evidence[..16].to_vec()));
+                }
+                "early" => responses.swap(1, 2),
+                "wrong-generation" => {
+                    if let WorkerResponse::IdentityEvidenceBatch { identity, .. } =
+                        &mut responses[3]
+                    {
+                        identity.worker_generation -= 1;
+                    }
+                }
+                "wrong-person" => {
+                    if let WorkerResponse::IdentityEvidenceBatch { evidence, .. } =
+                        &mut responses[3]
+                    {
+                        evidence[0].person_id = 99;
+                    }
+                }
+                "malformed" => {
+                    if let WorkerResponse::IdentityEvidenceBatch { evidence, .. } =
+                        &mut responses[3]
+                    {
+                        evidence[0].maximum_voice_distance = u32::MAX;
+                    }
+                }
+                _ => {}
+            }
+            let worker = root.path().join("identity-worker");
+            write_fake_worker(&worker, &responses);
+            let mut command = process_cmd::new(&worker);
+            command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+            let mut process = process_cmd::spawn_tree(&mut command).unwrap();
+            let stdout = process.stdout.take().unwrap();
+            let stdin = Arc::new(Mutex::new(process.stdin.take().unwrap()));
+            let child = Arc::new(Mutex::new(process));
+            let lease = manager
+                .compute_coordinator
+                .acquire(ComputeWorkloadIdentity {
+                    kind: ComputeWorkloadKind::RecordDiarization,
+                    id: job.job_id.clone(),
+                    generation: 8,
+                })
+                .await;
+            let runner = Arc::clone(&manager);
+            let outcome = tauri::async_runtime::spawn_blocking(move || {
+                let yield_state = BatchYieldState::new();
+                let outcome = runner.collect_worker_result(
+                    &job,
+                    8,
+                    &identity,
+                    Some(vec![AudioTrackKind::Microphone]),
+                    stdout,
+                    &stdin,
+                    &child,
+                    &lease,
+                    &yield_state,
+                );
+                yield_state.mark_settled();
+                let _ = child.lock().unwrap().kill_and_wait();
+                outcome
             })
-            .await;
-        let runner = Arc::clone(&manager);
-        tauri::async_runtime::spawn_blocking(move || {
-            runner.execute_record_job(&job, generation, resources, lease)
-        })
-        .await
-        .unwrap();
-        manager.clear_active("speech_record_execute", generation);
-
-        let snapshot = manager
-            .record_store
-            .read_recording_final_transcript(&record.id)
             .await
-            .unwrap()
             .unwrap();
-        assert_eq!(snapshot.segments.len(), 1);
-        assert_eq!(snapshot.segments[0].text, "private transcript");
-        let state = manager.state.lock().unwrap();
-        assert_eq!(
-            state.jobs.get("speech_record_execute").unwrap().state,
-            SpeechJobState::Succeeded
-        );
-        assert_eq!(
-            state
-                .jobs
-                .get("speech_record_execute")
+            if variant == "valid" {
+                let SpeechWorkerOutcome::Completed(SpeechWorkerCompletion {
+                    identity_evidence,
+                    ..
+                }) = outcome
+                else {
+                    panic!("valid bounded abstention evidence must finish normally");
+                };
+                assert_eq!(identity_evidence, evidence);
+            } else {
+                let SpeechWorkerOutcome::Failed { code, .. } = outcome else {
+                    panic!("invalid stream was accepted: {variant}");
+                };
+                assert_eq!(code, "SPEECH_WORKER_PROTOCOL_ERROR", "{variant}");
+            }
+            assert!(manager
+                .root
+                .join("private/speech_identity_stream/record-asr.json")
+                .is_file());
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exact_generations_stage_asr_then_publish_one_record_processing() {
+        for dual in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let manager = manager(&root);
+            let record = manager
+                .record_store
+                .create_audio(AudioRecordCreateInput {
+                    title: "Meeting".into(),
+                    tracks: if dual {
+                        vec![AudioTrackKind::Microphone, AudioTrackKind::System]
+                    } else {
+                        vec![AudioTrackKind::Microphone]
+                    },
+                    transcription_status: TranscriptionStatus::Queued,
+                })
+                .await
+                .unwrap();
+            let record_path = manager
+                .record_store
+                .audio_workspace_path(&record.id)
+                .await
+                .unwrap();
+            fs::write(record_path.join("audio/microphone.opus"), b"owned-audio").unwrap();
+            let mut artifacts = vec![AudioTrackArtifactInput {
+                timeline: None,
+                capture_time_error: None,
+                track: AudioTrackKind::Microphone,
+                relative_path: "audio/microphone.opus".into(),
+            }];
+            if dual {
+                fs::write(record_path.join("audio/system.opus"), b"owned-system-audio").unwrap();
+                artifacts.push(AudioTrackArtifactInput {
+                    timeline: None,
+                    capture_time_error: None,
+                    track: AudioTrackKind::System,
+                    relative_path: "audio/system.opus".into(),
+                });
+            }
+            let finalized = manager
+                .record_store
+                .finalize_audio_capture(&record.id, CaptureStatus::Ready, 1_000, artifacts)
+                .await
+                .unwrap();
+
+            let mut job = fixture_job(
+                "speech_record_execute",
+                SpeechJobKind::RecordBackfillAsr,
+                SpeechJobOrigin::Record {
+                    record_id: record.id.clone(),
+                },
+                SpeechJobState::Queued,
+                Utc::now(),
+            );
+            job.started_at = None;
+            job.worker_generation = None;
+            job.worker_attempts = 0;
+            job.source.size_bytes = finalized.audio.unwrap().size_bytes;
+            {
+                let mut state = manager.state.lock().unwrap();
+                state.queue.push_back(job.job_id.clone());
+                state.jobs.insert(job.job_id.clone(), job);
+            }
+            let (candidate, generation_hint) = manager.peek_next_job().unwrap().unwrap();
+            let (job, generation) = manager
+                .claim_next_job(&candidate.job_id, generation_hint)
                 .unwrap()
-                .pipeline
-                .model_pack_revision,
-            "revision-1",
-            "a running generation keeps its admission-time model revision"
-        );
-        assert!(state.jobs.values().any(|job| {
-            job.kind == SpeechJobKind::RecordDiarization
-                && job.state == SpeechJobState::Queued
-                && matches!(
-                    &job.origin,
-                    SpeechJobOrigin::Record { record_id } if record_id == &record.id
-                )
-        }));
+                .unwrap();
+            let identity = WorkloadIdentity {
+                workload_id: job.job_id.clone(),
+                worker_generation: generation,
+            };
+            let worker = root.path().join("fake-media-worker");
+            let mut responses = vec![WorkerResponse::Ready {
+                protocol_version: PROTOCOL_VERSION,
+                identity: identity.clone(),
+            }];
+            for (index, track) in [TrackKind::Microphone, TrackKind::System]
+                .into_iter()
+                .take(if dual { 2 } else { 1 })
+                .enumerate()
+            {
+                responses.push(WorkerResponse::TranscriptSegment {
+                    protocol_version: PROTOCOL_VERSION,
+                    identity: identity.clone(),
+                    segment_id: format!("segment-{}", index + 1),
+                    track,
+                    start_sample: index as u64 * 4_000,
+                    end_sample: 8_000 + index as u64 * 4_000,
+                    text: "private transcript".into(),
+                    language: Some("en".into()),
+                    revision: index as u64 + 1,
+                });
+            }
+            responses.push(WorkerResponse::Completed {
+                protocol_version: PROTOCOL_VERSION,
+                identity,
+                metrics: WorkerMetrics {
+                    source_samples: 16_000,
+                    segments: if dual { 2 } else { 1 },
+                    speakers: 0,
+                    elapsed_ms: 5,
+                    peak_working_bytes: Some(1024),
+                },
+            });
+            write_fake_worker(&worker, &responses);
+            let native_manifest = root.path().join("native-manifest.json");
+            let runtime = root.path().join("libonnxruntime.dylib");
+            let model_manifest = root.path().join("model-manifest.json");
+            for path in [&native_manifest, &runtime, &model_manifest] {
+                fs::write(path, b"fixture").unwrap();
+            }
+            let resources = SpeechExecutionResources {
+                worker_path: worker,
+                native_manifest_path: native_manifest,
+                onnx_runtime_path: runtime,
+                model_pack_manifest_path: model_manifest,
+                provenance: RecordSpeechProvenance {
+                    algorithm_revision: None,
+                    provider: "local".into(),
+                    model_pack_revision: "revision-1".into(),
+                    onnx_runtime_version: "1.28.0".into(),
+                },
+            };
+            let lease = manager
+                .compute_coordinator
+                .acquire(ComputeWorkloadIdentity {
+                    kind: ComputeWorkloadKind::RecordBackfill,
+                    id: job.job_id.clone(),
+                    generation,
+                })
+                .await;
+            let runner = Arc::clone(&manager);
+            let diarization_resources = resources.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                runner.execute_record_job(&job, generation, resources, lease)
+            })
+            .await
+            .unwrap();
+            manager.clear_active("speech_record_execute", generation);
+
+            assert!(manager
+                .record_store
+                .read_recording_final_transcript(&record.id)
+                .await
+                .unwrap()
+                .is_none());
+            let root_job = manager.state.lock().unwrap().jobs["speech_record_execute"].clone();
+            let candidate = record_processing::read_asr(&manager.root, &root_job).unwrap();
+            assert_eq!(candidate.segments.len(), if dual { 2 } else { 1 });
+            assert_eq!(candidate.segments[0].track, AudioTrackKind::Microphone);
+            if dual {
+                assert_eq!(candidate.segments[1].track, AudioTrackKind::System);
+                assert!(candidate.segments[1].start_sample < candidate.segments[0].end_sample);
+            }
+            assert_eq!(candidate.segments[0].text, "private transcript");
+            assert_eq!(root_job.state, SpeechJobState::Running);
+            assert_eq!(root_job.stage, SpeechJobStage::Diarizing);
+            assert_eq!(root_job.pipeline.model_pack_revision, "revision-1");
+            let (selected, next_generation) = manager.peek_next_job().unwrap().unwrap();
+            assert_eq!(selected.kind, SpeechJobKind::RecordDiarization);
+            assert_eq!(
+                selected.processing_id.as_deref(),
+                Some("speech_record_execute")
+            );
+            let (child, generation) = manager
+                .claim_next_job(&selected.job_id, next_generation)
+                .unwrap()
+                .unwrap();
+            let identity = WorkloadIdentity {
+                workload_id: child.job_id.clone(),
+                worker_generation: generation,
+            };
+            let turns = [TrackKind::Microphone, TrackKind::System]
+                .into_iter()
+                .take(if dual { 2 } else { 1 })
+                .map(|source| SpeakerTurn {
+                    source,
+                    start_sample: 0,
+                    end_sample: 16_000,
+                    global_speaker: Some(0),
+                })
+                .collect();
+            write_fake_worker(
+                &diarization_resources.worker_path,
+                &[
+                    WorkerResponse::Ready {
+                        protocol_version: PROTOCOL_VERSION,
+                        identity: identity.clone(),
+                    },
+                    WorkerResponse::SpeakerTurnBatch {
+                        protocol_version: PROTOCOL_VERSION,
+                        identity: identity.clone(),
+                        revision: 1,
+                        batch_index: 0,
+                        is_last: true,
+                        turns,
+                    },
+                    WorkerResponse::IdentityEvidenceBatch {
+                        protocol_version: PROTOCOL_VERSION,
+                        identity: identity.clone(),
+                        revision: 1,
+                        batch_index: 0,
+                        is_last: true,
+                        evidence: vec![],
+                    },
+                    WorkerResponse::Completed {
+                        protocol_version: PROTOCOL_VERSION,
+                        identity,
+                        metrics: WorkerMetrics {
+                            source_samples: 16_000,
+                            segments: if dual { 2 } else { 1 },
+                            speakers: 1,
+                            elapsed_ms: 5,
+                            peak_working_bytes: None,
+                        },
+                    },
+                ],
+            );
+            let lease = manager
+                .compute_coordinator
+                .acquire(ComputeWorkloadIdentity {
+                    kind: ComputeWorkloadKind::RecordDiarization,
+                    id: child.job_id.clone(),
+                    generation,
+                })
+                .await;
+            let runner = Arc::clone(&manager);
+            tauri::async_runtime::spawn_blocking(move || {
+                runner.execute_record_job(&child, generation, diarization_resources, lease)
+            })
+            .await
+            .unwrap();
+            let snapshot = manager
+                .record_store
+                .read_recording_final_transcript(&record.id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                snapshot.processing_id.as_deref(),
+                Some("speech_record_execute")
+            );
+            assert_eq!(snapshot.segments.len(), if dual { 2 } else { 1 });
+            assert_eq!(
+                manager.state.lock().unwrap().jobs["speech_record_execute"].state,
+                SpeechJobState::Succeeded
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -6688,6 +8587,7 @@ mod tests {
                     stage: WorkerStage::Vad,
                     checkpoint: Checkpoint {
                         streams: vec![PcmStreamCheckpoint {
+                            replay_record_sample: Some(0),
                             track: TrackKind::Microphone,
                             last_ack_sequence: Some(0),
                             analysis_sample: 16_000,
@@ -6712,6 +8612,7 @@ mod tests {
                     stage: WorkerStage::Vad,
                     checkpoint: Checkpoint {
                         streams: vec![PcmStreamCheckpoint {
+                            replay_record_sample: Some(0),
                             track: TrackKind::Microphone,
                             last_ack_sequence: Some(0),
                             analysis_sample: 16_000,
@@ -6744,6 +8645,7 @@ mod tests {
             onnx_runtime_path: runtime,
             model_pack_manifest_path: model_manifest,
             provenance: RecordSpeechProvenance {
+                algorithm_revision: None,
                 provider: "local".into(),
                 model_pack_revision: "revision-1".into(),
                 onnx_runtime_version: "1.28.0".into(),
@@ -6838,6 +8740,144 @@ mod tests {
         );
     }
 
+    #[test]
+    fn finished_live_registration_does_not_occupy_next_capture_admission() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = manager(&root);
+        let control = Arc::new(LiveControl::default());
+        let mut state = manager.state.lock().unwrap();
+        state.live_sessions.insert(
+            "previous-record".into(),
+            LiveSessionRegistration {
+                control: control.clone(),
+                tracks: vec![AudioTrackKind::Microphone],
+            },
+        );
+        assert!(validate_live_admission(&state, "next-record").is_err());
+        control.state.lock().unwrap().paused = true;
+        assert!(validate_live_admission(&state, "next-record").is_err());
+        control.state.lock().unwrap().finish = Some(LiveBoundary { offsets: vec![] });
+        assert_eq!(validate_live_admission(&state, "next-record"), Ok(()));
+        assert!(validate_live_admission(&state, "previous-record").is_err());
+        let next = Arc::new(LiveControl::default());
+        state.live_sessions.insert(
+            "next-record".into(),
+            LiveSessionRegistration {
+                control: next.clone(),
+                tracks: vec![AudioTrackKind::Microphone],
+            },
+        );
+        assert!(validate_live_admission(&state, "third-record").is_err());
+        next.state.lock().unwrap().cancelled = true;
+        assert_eq!(validate_live_admission(&state, "third-record"), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn stop_after_acknowledged_pause_flush_never_allocates_another_worker() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = manager(&root);
+        let record = manager
+            .record_store
+            .create_audio(AudioRecordCreateInput {
+                title: "Paused recording".into(),
+                tracks: vec![AudioTrackKind::Microphone],
+                transcription_status: TranscriptionStatus::Live,
+            })
+            .await
+            .unwrap();
+        let control = Arc::new(LiveControl::default());
+        let offsets = vec![RecordTranscriptTrackOffset {
+            track: AudioTrackKind::Microphone,
+            sample: 16_000,
+        }];
+        let boundary = LiveBoundary {
+            offsets: offsets.clone(),
+        };
+        {
+            let mut state = control.state.lock().unwrap();
+            state.paused = true;
+            state.suspend_requested = true;
+            state.flushes.push_back(boundary.clone());
+        }
+        control.complete_flush(&boundary);
+        manager.state.lock().unwrap().live_sessions.insert(
+            record.id.clone(),
+            LiveSessionRegistration {
+                control: control.clone(),
+                tracks: vec![AudioTrackKind::Microphone],
+            },
+        );
+        manager.finish_record_live(&record.id, offsets).unwrap();
+        let resources = SpeechExecutionResources {
+            worker_path: root.path().join("must-not-start-worker"),
+            native_manifest_path: root.path().join("unused-native"),
+            onnx_runtime_path: root.path().join("unused-runtime"),
+            model_pack_manifest_path: root.path().join("unused-model"),
+            provenance: RecordSpeechProvenance {
+                algorithm_revision: None,
+                provider: "local".into(),
+                model_pack_revision: "test".into(),
+                onnx_runtime_version: "test".into(),
+            },
+        };
+        let journal = manager
+            .record_store
+            .begin_live_transcript(&record.id, resources.provenance.clone())
+            .await
+            .unwrap();
+        let generation = manager.state.lock().unwrap().next_generation;
+        let runner = manager.clone();
+        let id = record.id.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            runner.run_live_session(id, vec![], resources, control, journal)
+        })
+        .await
+        .unwrap();
+        let state = manager.state.lock().unwrap();
+        assert_eq!(
+            state.next_generation, generation,
+            "already-flushed stop restarted inference"
+        );
+        assert!(!state.live_sessions.contains_key(&record.id));
+        assert!(state.live_running.is_none());
+    }
+
+    #[test]
+    fn only_exact_acknowledged_flush_can_finish_without_inference() {
+        let control = LiveControl::default();
+        let boundary = LiveBoundary {
+            offsets: vec![RecordTranscriptTrackOffset {
+                track: AudioTrackKind::Microphone,
+                sample: 16_000,
+            }],
+        };
+        {
+            let mut state = control.state.lock().unwrap();
+            state.flushes.push_back(boundary.clone());
+            state.finish = Some(boundary.clone());
+        }
+        assert!(!control.snapshot().unwrap().finish_is_flushed);
+        let mut stale = boundary.clone();
+        stale.offsets[0].sample = 8_000;
+        control.complete_flush(&stale);
+        assert!(!control.snapshot().unwrap().finish_is_flushed);
+        control.complete_flush(&boundary);
+        assert!(control.snapshot().unwrap().finish_is_flushed);
+        control
+            .state
+            .lock()
+            .unwrap()
+            .finish
+            .as_mut()
+            .unwrap()
+            .offsets[0]
+            .sample += 160;
+        assert!(
+            !control.snapshot().unwrap().finish_is_flushed,
+            "resume tail still needs inference"
+        );
+    }
+
     #[tokio::test]
     async fn live_pause_grace_is_epoch_fenced_and_resume_cancels_unload() {
         let root = tempfile::tempdir().unwrap();
@@ -6900,6 +8940,8 @@ mod tests {
                 CaptureStatus::Ready,
                 1_000,
                 vec![AudioTrackArtifactInput {
+                    timeline: None,
+                    capture_time_error: None,
                     track: AudioTrackKind::Microphone,
                     relative_path: "audio/microphone.opus".into(),
                 }],
@@ -6925,26 +8967,30 @@ mod tests {
             &job,
             1,
             &RecordSpeechProvenance {
+                algorithm_revision: None,
                 provider: "local".into(),
                 model_pack_revision: "fixture-pack".into(),
                 onnx_runtime_version: "1.28.0".into(),
             },
-            SensitiveTranscriptSegments(vec![RecordTranscriptSegment {
-                segment_id: "segment-1".into(),
-                track: AudioTrackKind::Microphone,
-                start_sample: 0,
-                end_sample: 8_000,
-                text: "must not publish".into(),
-                language: Some("en".into()),
-                revision: 1,
-            }]),
-            Vec::new(),
-            WorkerMetrics {
-                source_samples: 16_000,
-                segments: 1,
-                speakers: 0,
-                elapsed_ms: 5,
-                peak_working_bytes: None,
+            SpeechWorkerCompletion {
+                transcripts: SensitiveTranscriptSegments(vec![RecordTranscriptSegment {
+                    segment_id: "segment-1".into(),
+                    track: AudioTrackKind::Microphone,
+                    start_sample: 0,
+                    end_sample: 8_000,
+                    text: "must not publish".into(),
+                    language: Some("en".into()),
+                    revision: 1,
+                }]),
+                turns: Vec::new(),
+                identity_evidence: Vec::new(),
+                metrics: WorkerMetrics {
+                    source_samples: 16_000,
+                    segments: 1,
+                    speakers: 0,
+                    elapsed_ms: 5,
+                    peak_working_bytes: None,
+                },
             },
         );
         assert!(manager

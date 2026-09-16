@@ -117,6 +117,8 @@ interface UseTabWorkspaceOptions<TTab extends TabBase<string>, TModules extends 
   initialTabs: readonly TTab[];
   initialActiveTabId: string;
   maxTabs: number;
+  /** Report admission denial after the transition; presentation stays with the caller. */
+  onCapacityRejected?: () => void;
   createId: () => string;
   isLastTabProtected: (tab: TTab) => boolean;
 }
@@ -134,6 +136,7 @@ export function useTabWorkspaceController<TTab extends TabBase<string>, const TM
   initialTabs,
   initialActiveTabId,
   maxTabs,
+  onCapacityRejected,
   createId,
   isLastTabProtected,
 }: UseTabWorkspaceOptions<TTab, TModules>): {
@@ -231,9 +234,10 @@ export function useTabWorkspaceController<TTab extends TabBase<string>, const TM
           deferredMountTabIds,
         };
       });
+      if (result.kind === 'rejected' && result.reason === 'capacity') onCapacityRejected?.();
       return result;
     },
-    [commit, maxTabs],
+    [commit, maxTabs, onCapacityRejected],
   );
 
   const open = useCallback(
@@ -291,9 +295,10 @@ export function useTabWorkspaceController<TTab extends TabBase<string>, const TM
           deferredMountTabIds,
         };
       });
+      if (result.kind === 'rejected' && result.reason === 'capacity') onCapacityRejected?.();
       return result;
     },
-    [commit, createId, maxTabs, modules],
+    [commit, createId, maxTabs, modules, onCapacityRejected],
   );
 
   const update = useCallback(

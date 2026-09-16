@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { X, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
 import {
     useCallback,
@@ -67,6 +68,7 @@ export default function ImagePreview({ src, name, onClose }: ImagePreviewProps) 
     // Close on Escape key
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
+            if (isImeComposingEvent(e)) return;
             if (e.key === 'Escape') {
                 onClose();
             }

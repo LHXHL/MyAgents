@@ -74,6 +74,10 @@ Claude Agent SDK 有**两个**完全不同含义的"准备好"信号，老代码
 
 SDK 0.3 的 MCP 连接是非阻塞的：`initializationResult()` 已 resolve 或 streamed `system_init` 已列出某个 server 时，该 server 仍可能是 `pending`、`failed`、`needs-auth` 或 `disabled`。因此二者都不能作为 MCP ready 判据。Query / MCP map generation 建立一份 10 秒 absolute dispatch grace；所有 Desktop、IM 与 injected queue item 在公共 `messageGenerator()` dispatch seam 只消费剩余预算。deadline 后首次观察仍至少读取一次真实 status，随后基础 turn 可继续；Query generation 的低频 live observer 继续投影 ready / failed / needs-auth 与真实 tool catalog。连续 turn 不重算 grace，但也不会把 timeout 缓存成永久无能力。
 
+MCP live observer 在每次异步读取、异常和 Browser Host capability 返回后，都必须重新核对原 Query / map revision；旧结果不能借当前 owner 的 generation 发布。清理连接时用同 Session、递增 catalog/revision 的空能力快照失效化 UI 与 replay，不能只停 observer 而留下旧 ready/failed。状态读取失败只标记 `observationStale`，不推断连接失败。
+
+失败原因由 Runtime 在原始 SDK / Codex 错误仍可见的位置通过 `classifyMcpFailure()` 映射为有限产品码；UI 和新增日志不携带原始错误、命令、路径或凭据。Chat 的 `/api/mcp/retry` 通过 SessionEngine 路由，只接受当前选择且失败的工具，活动 turn、排队/晋升及后台任务保持原 owner；Builtin 使用既有 resume/rebuild + prewarm，Managed Codex 使用 Session mutation lease + idle process replacement/prewarm。一次操作重连当前会话工具，不写配置或 transcript，也不绕过 stdio startup admission。返回 success 表示已接受/执行重连尝试，是否 ready 仍以新 generation 的真实状态为准。
+
 **UI 状态机对应**：
 - `sessionState === 'starting'` → "AI 启动中（首次启动可能较慢）" hint —— **subprocess 还没 ready 才该显示这个**
 - `sessionState === 'running'` → 普通"思考中…" loading —— subprocess ready 后 turn 执行期间显示

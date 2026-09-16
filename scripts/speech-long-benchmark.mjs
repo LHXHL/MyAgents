@@ -301,27 +301,29 @@ function validateTimeline(items, expectedSamples, includeSpeaker) {
     const key = [
       item.startSample,
       item.endSample,
-      includeSpeaker ? item.globalSpeaker : 0,
+      includeSpeaker ? ['microphone', 'system', 'mixed'].indexOf(item.source) : 0,
+      includeSpeaker ? (item.globalSpeaker ?? -1) : 0,
     ];
     if (
       !Number.isSafeInteger(item.startSample) ||
       !Number.isSafeInteger(item.endSample) ||
       item.endSample <= item.startSample ||
       item.endSample > expectedSamples ||
-      (includeSpeaker &&
-        (!Number.isSafeInteger(item.globalSpeaker) ||
-          item.globalSpeaker < 0)) ||
+      (includeSpeaker && (key[2] < 0 || (item.globalSpeaker !== null &&
+        (!Number.isSafeInteger(item.globalSpeaker) || item.globalSpeaker < 0)))) ||
       (previousKey &&
         (key[0] < previousKey[0] ||
           (key[0] === previousKey[0] && key[1] < previousKey[1]) ||
           (key[0] === previousKey[0] &&
             key[1] === previousKey[1] &&
-            key[2] < previousKey[2])))
+            key[2] < previousKey[2]) ||
+          (key[0] === previousKey[0] && key[1] === previousKey[1] && key[2] === previousKey[2]
+            && key[3] < previousKey[3])))
     ) {
       throw new Error("Speech long benchmark received an invalid timeline");
     }
     previousKey = key;
-    if (includeSpeaker) speakers.add(item.globalSpeaker);
+    if (includeSpeaker && item.globalSpeaker !== null) speakers.add(item.globalSpeaker);
   }
   const speakerLabels = [...speakers].sort((left, right) => left - right);
   if (speakerLabels.some((label, index) => label !== index)) {

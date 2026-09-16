@@ -145,9 +145,8 @@ pub struct TaskExecutionProjection {
 struct ReservedExecutionSession {
     session_id: String,
     initialize_session: bool,
-    // Session metadata birth must finish before a second Task sharing this
-    // identity can enter the adopt path. The guard is released as soon as the
-    // authoritative SessionStore row appears, not held for the whole AI turn.
+    // Hold birth authority until exact Runtime admission or metadata publication
+    // lets another owner adopt this identity; never wait for a healthy disk.
     birth_lifecycle: Arc<crate::sidecar::SessionLifecycleGuard>,
 }
 
@@ -689,6 +688,7 @@ impl TaskSchedulerController {
             store,
             &task,
             &queue_id,
+            session_sidecars(&self.app_handle).await.as_ref(),
         )
         .await
         {
@@ -1165,6 +1165,10 @@ impl TaskSchedulerController {
         }
         let store = crate::task::get_task_store()
             .ok_or_else(|| "task store not initialized".to_string())?;
+        // The exact Runtime admission confirms in-memory SessionStore birth.
+        // Release before TaskStore/Inbox acquire this same lifecycle. Active
+        // execution ownership continues to protect the Session from deletion.
+        clear_pending_session_birth(&self.executions, task_id, queue_id, session_id).await;
         let (_, claimed_comments) = store
             .append_session_and_claim_pending_comments(task_id, session_id)
             .await?;
@@ -1399,11 +1403,23 @@ async fn execution_is_authorized(
         .is_some_and(|active| active.queue_id == queue_id && !active.canceled)
 }
 
+async fn session_sidecars(
+    app_handle: &RwLock<Option<AppHandle>>,
+) -> Option<crate::sidecar::ManagedSidecarManager> {
+    app_handle
+        .read()
+        .await
+        .as_ref()?
+        .try_state::<crate::sidecar::ManagedSidecarManager>()
+        .map(|manager| manager.inner().clone())
+}
+
 async fn reserve_claimed_execution_session(
     executions: &ActiveExecutions,
     store: &crate::task::TaskStore,
     task: &Task,
     queue_id: &str,
+    manager: Option<&crate::sidecar::ManagedSidecarManager>,
 ) -> Result<Option<ReservedExecutionSession>, String> {
     if !crate::task_execution::uses_session_engine(task) {
         return Ok(None);
@@ -1415,7 +1431,14 @@ async fn reserve_claimed_execution_session(
     // birth. `execute_task_with_reservation` releases it at that exact point.
     let selected_lifecycle =
         crate::sidecar::acquire_session_lifecycle(&[&selected_session_id]).await;
-    let selected_materialized = session_metadata_exists(&selected_session_id).await;
+    let selected_materialized = if let Some(manager) = manager {
+        crate::sidecar::session_lifecycle::session_exists_for_continuation(
+            manager,
+            &selected_session_id,
+        )
+    } else {
+        session_metadata_exists(&selected_session_id).await
+    };
     let selected_was_bound = crate::task::task_bound_session_ids(task)
         .iter()
         .any(|session_id| session_id == &selected_session_id);
@@ -1600,22 +1623,42 @@ async fn execute_task_with_reservation(
     result
 }
 
-/// Apply the post-attempt Session-owner policy without giving cleanup any
-/// authority over Task outcome. Ambiguous termination keeps the exact owner;
-/// a materialized single-session Task keeps it only while still Running.
+/// Cleanup uses the reservation's existing identity decision, not the health of
+/// the product index or the acceptance of only the most recent request.
+fn should_retain_task_owner_after_attempt(
+    task: &Task,
+    session_id: Option<&str>,
+    termination_unconfirmed: bool,
+    turn_dispatched: bool,
+    session_was_continuation: bool,
+) -> bool {
+    if termination_unconfirmed {
+        return true;
+    }
+    let session_materialized = session_id.is_some_and(|value| {
+        session_was_continuation
+            || turn_dispatched
+            || crate::sidecar::runtime_identity::resolve_session_runtime_identity_full(value)
+                .is_some()
+    });
+    crate::task_execution::retain_owner_between_runs(task, session_materialized)
+}
+
 async fn release_task_owner_after_attempt(
     handle: &AppHandle,
     task: &Task,
     session_id: Option<&str>,
     termination_unconfirmed: bool,
+    turn_dispatched: bool,
+    session_was_continuation: bool,
 ) {
-    if termination_unconfirmed {
-        return;
-    }
-    let session_materialized = session_id.is_some_and(|value| {
-        crate::sidecar::runtime_identity::resolve_session_runtime_identity_full(value).is_some()
-    });
-    if !crate::task_execution::retain_owner_between_runs(task, session_materialized) {
+    if !should_retain_task_owner_after_attempt(
+        task,
+        session_id,
+        termination_unconfirmed,
+        turn_dispatched,
+        session_was_continuation,
+    ) {
         crate::task_execution::release_task_sessions(handle, task, session_id).await;
     }
 }
@@ -2137,14 +2180,21 @@ async fn run_one(
             return Ok(RunDisposition::Continue);
         }
     };
-    let reserved_session =
-        match reserve_claimed_execution_session(executions, store, &task, &queue_id).await {
-            Ok(reservation) => reservation,
-            Err(error) => {
-                release_execution(executions, task_id, &queue_id).await;
-                return Err(error);
-            }
-        };
+    let reserved_session = match reserve_claimed_execution_session(
+        executions,
+        store,
+        &task,
+        &queue_id,
+        session_sidecars(app_handle).await.as_ref(),
+    )
+    .await
+    {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            release_execution(executions, task_id, &queue_id).await;
+            return Err(error);
+        }
+    };
     emit_execution_state_event(executions, app_handle, task_id).await;
     drop(control);
 
@@ -2341,24 +2391,29 @@ async fn run_command_check_claimed(
                         .bind_pending_activation_queue(task_id, &pending.event.id, queue_id)
                         .await?;
                     promote_detector_to_execution(executions, task_id, queue_id).await?;
-                    let reserved_session =
-                        match reserve_claimed_execution_session(executions, store, &task, queue_id)
-                            .await
-                        {
-                            Ok(reservation) => reservation,
-                            Err(error) => {
-                                if cause == DetectorInvocationCause::Scheduled {
-                                    let _ = block_task_with_control_held(
-                                        store,
-                                        &task,
-                                        format!("Activation dispatch reservation failed: {error}"),
-                                        &task_control,
-                                    )
-                                    .await;
-                                }
-                                return Err(error);
+                    let reserved_session = match reserve_claimed_execution_session(
+                        executions,
+                        store,
+                        &task,
+                        queue_id,
+                        session_sidecars(app_handle).await.as_ref(),
+                    )
+                    .await
+                    {
+                        Ok(reservation) => reservation,
+                        Err(error) => {
+                            if cause == DetectorInvocationCause::Scheduled {
+                                let _ = block_task_with_control_held(
+                                    store,
+                                    &task,
+                                    format!("Activation dispatch reservation failed: {error}"),
+                                    &task_control,
+                                )
+                                .await;
                             }
-                        };
+                            return Err(error);
+                        }
+                    };
                     emit_execution_state_event(executions, app_handle, task_id).await;
                     drop(task_control);
                     let execution_trigger = if cause == DetectorInvocationCause::Scheduled {
@@ -2573,6 +2628,7 @@ async fn dispatch_pending_activation(
         store,
         &current_task,
         &queue_id,
+        session_sidecars(app_handle).await.as_ref(),
     )
     .await
     {
@@ -2653,6 +2709,11 @@ async fn run_one_claimed(
         }),
     )
     .await;
+    // This reservation already resolved creation vs continuation under the
+    // Session lifecycle. A later rejected request cannot undo that identity.
+    let session_was_continuation = reserved_session
+        .as_ref()
+        .is_some_and(|reservation| !reservation.initialize_session);
     let execution = match handle.as_ref() {
         Ok(handle) => {
             execute_task_with_reservation(
@@ -2805,6 +2866,8 @@ async fn run_one_claimed(
                     outcome
                         .as_ref()
                         .is_some_and(|value| value.termination_unconfirmed),
+                    outcome.as_ref().is_some_and(|value| value.turn_dispatched),
+                    session_was_continuation,
                 )
                 .await;
             }
@@ -2870,8 +2933,15 @@ async fn run_one_claimed(
         let termination_unconfirmed = outcome
             .as_ref()
             .is_some_and(|value| value.termination_unconfirmed);
-        release_task_owner_after_attempt(handle, &updated, session_id, termination_unconfirmed)
-            .await;
+        release_task_owner_after_attempt(
+            handle,
+            &updated,
+            session_id,
+            termination_unconfirmed,
+            outcome.as_ref().is_some_and(|value| value.turn_dispatched),
+            session_was_continuation,
+        )
+        .await;
     }
 
     if updated.status == TaskStatus::Running {
@@ -3278,6 +3348,146 @@ mod tests {
         .unwrap();
         let store = crate::task::TaskStore::new(data_dir);
         (dir, store)
+    }
+
+    #[tokio::test]
+    async fn admitted_single_session_continues_and_accepts_comments_without_product_publication() {
+        let mut task = matrix_task(TaskExecutionMode::Recurring);
+        task.id = format!("unpublished-task-{}", uuid::Uuid::new_v4());
+        task.run_mode = Some(crate::task::TaskRunMode::SingleSession);
+        let session_id = format!("unpublished-session-{}", uuid::Uuid::new_v4());
+        task.session_ids = vec![session_id.clone()];
+        let (_dir, store) = store_with_task(&task);
+        let manager = Arc::new(std::sync::Mutex::new(crate::sidecar::SidecarManager::new()));
+        manager.lock().unwrap().insert_test_ready_frontend_sidecar(
+            &session_id,
+            1234,
+            crate::sidecar::SidecarOwner::Task(task.id.clone()),
+        );
+        assert!(!session_metadata_exists(&session_id).await);
+        let executions: ActiveExecutions = Arc::new(RwLock::new(HashMap::new()));
+        let queue_id = claim_execution(&executions, &task.id).await.unwrap();
+        let reservation = reserve_claimed_execution_session(
+            &executions,
+            &store,
+            &task,
+            &queue_id,
+            Some(&manager),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(reservation.session_id, session_id);
+        assert!(
+            !reservation.initialize_session,
+            "accepted identity must not be born twice"
+        );
+        drop(reservation);
+        let comment = store
+            .create_user_comment_with_session_probe(&task.id, "Continue here", None, |sid| {
+                crate::sidecar::session_lifecycle::session_exists_for_continuation(&manager, sid)
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            comment.conversation_session_id.as_deref(),
+            Some(session_id.as_str())
+        );
+        assert_eq!(
+            store.get(&task.id).await.unwrap().session_ids,
+            vec![session_id]
+        );
+        release_execution(&executions, &task.id, &queue_id).await;
+    }
+
+    #[tokio::test]
+    async fn rejected_continuation_preserves_previously_admitted_unpublished_session() {
+        let mut task = matrix_task(TaskExecutionMode::Recurring);
+        task.id = format!("unpublished-retry-{}", uuid::Uuid::new_v4());
+        task.run_mode = Some(crate::task::TaskRunMode::SingleSession);
+        let (_dir, store) = store_with_task(&task);
+        let manager = Arc::new(std::sync::Mutex::new(crate::sidecar::SidecarManager::new()));
+        let executions: ActiveExecutions = Arc::new(RwLock::new(HashMap::new()));
+        let first_queue = claim_execution(&executions, &task.id).await.unwrap();
+        let first = reserve_claimed_execution_session(
+            &executions,
+            &store,
+            &task,
+            &first_queue,
+            Some(&manager),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let session_id = first.session_id.clone();
+        assert!(first.initialize_session);
+        assert!(
+            !should_retain_task_owner_after_attempt(
+                &task,
+                Some(&session_id),
+                false,
+                false,
+                !first.initialize_session,
+            ),
+            "a genuinely unadmitted birth still releases its owner"
+        );
+        manager.lock().unwrap().insert_test_ready_frontend_sidecar(
+            &session_id,
+            1234,
+            crate::sidecar::SidecarOwner::Task(task.id.clone()),
+        );
+        drop(first);
+        assert!(
+            clear_pending_session_birth(&executions, &task.id, &first_queue, &session_id).await
+        );
+        // The exact admission path persists the relation independently of the product index.
+        store
+            .append_session_and_claim_pending_comments(&task.id, &session_id)
+            .await
+            .unwrap();
+        assert!(should_retain_task_owner_after_attempt(
+            &task,
+            Some(&session_id),
+            false,
+            true,
+            false,
+        ));
+        release_execution(&executions, &task.id, &first_queue).await;
+
+        task = store.get(&task.id).await.unwrap();
+        for _ in 0..2 {
+            let queue_id = claim_execution(&executions, &task.id).await.unwrap();
+            let continuation = reserve_claimed_execution_session(
+                &executions,
+                &store,
+                &task,
+                &queue_id,
+                Some(&manager),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(continuation.session_id, session_id);
+            assert!(!continuation.initialize_session);
+            assert!(!session_metadata_exists(&session_id).await);
+            assert!(
+                should_retain_task_owner_after_attempt(
+                    &task,
+                    Some(&session_id),
+                    false,
+                    false,
+                    !continuation.initialize_session,
+                ),
+                "a rejected later attempt cannot retire an established Session"
+            );
+            drop(continuation);
+            release_execution(&executions, &task.id, &queue_id).await;
+        }
+        task.status = TaskStatus::Stopped;
+        assert!(
+            !should_retain_task_owner_after_attempt(&task, Some(&session_id), false, false, true,),
+            "terminal Task lifecycle still retires its owner"
+        );
     }
 
     #[tokio::test]
@@ -3795,7 +4005,7 @@ mod tests {
         let queue_id = claim_execution(&executions, &task.id).await.unwrap();
 
         let returned_session =
-            reserve_claimed_execution_session(&executions, &store, &task, &queue_id)
+            reserve_claimed_execution_session(&executions, &store, &task, &queue_id, None)
                 .await
                 .unwrap()
                 .expect("ordinary Task execution must reserve a Session");
@@ -3847,10 +4057,11 @@ mod tests {
         let task = store.get(&task.id).await.unwrap();
         let executions: ActiveExecutions = Arc::new(RwLock::new(HashMap::new()));
         let queue_id = claim_execution(&executions, &task.id).await.unwrap();
-        let reservation = reserve_claimed_execution_session(&executions, &store, &task, &queue_id)
-            .await
-            .unwrap()
-            .expect("ordinary Task execution must reserve a Session");
+        let reservation =
+            reserve_claimed_execution_session(&executions, &store, &task, &queue_id, None)
+                .await
+                .unwrap()
+                .expect("ordinary Task execution must reserve a Session");
         assert_ne!(reservation.session_id, session_id);
         assert!(reservation.initialize_session);
         let rebound = store.get(&task.id).await.unwrap();
@@ -4004,9 +4215,10 @@ mod tests {
         let executions: ActiveExecutions = Arc::new(RwLock::new(HashMap::new()));
         let queue_id = claim_execution(&executions, &task.id).await.unwrap();
 
-        let reserved = reserve_claimed_execution_session(&executions, &store, &task, &queue_id)
-            .await
-            .unwrap();
+        let reserved =
+            reserve_claimed_execution_session(&executions, &store, &task, &queue_id, None)
+                .await
+                .unwrap();
 
         let bound_session = executions
             .read()

@@ -1,3 +1,4 @@
+import type { AsyncQuestionSet, AsyncQuestionReply } from '../../../shared/asyncUserQuestions';
 import type { InteractionScenario } from '../../system-prompt';
 import type { ImagePayload } from '../types';
 import type { ToolAttachment } from '../../../shared/types/tool-attachment';
@@ -28,6 +29,7 @@ export interface PersistToolResultMeta {
 }
 
 export interface PersistContentBlock {
+  asyncQuestions?: AsyncQuestionSet;
   type: 'text' | 'tool_use' | 'thinking' | 'server_tool_use';
   text?: string;
   providerRouteId?: string;
@@ -153,13 +155,14 @@ export interface ExternalMessageOperation {
   deferredDispatchAccepted?: () => void;
   /** Stable Product-minted identity reused by DSH admission and crash recovery. */
   dshClientOperationId?: string;
+  /** Dispatch settlement belongs to every operation, including direct error retries. */
+  dispatchAcceptance: Promise<ExternalSendResult>;
+  settleDispatchAcceptance: (result: ExternalSendResult) => void;
 }
 
 export interface ExternalQueuedMessageOperation extends ExternalMessageOperation {
   /** Explicit user force-ahead overrides ordinary first-admission FIFO. */
   forcePriority?: true;
-  dispatchAcceptance: Promise<ExternalSendResult>;
-  settleDispatchAcceptance: (result: ExternalSendResult) => void;
 }
 
 export interface ExternalQueuedConfigOperation {
@@ -195,6 +198,7 @@ export interface ExternalAssistantSnapshotState {
 }
 
 export interface ExternalSendContext {
+  asyncQuestionReply?: AsyncQuestionReply;
   sessionId: string;
   workspacePath: string;
   scenario: InteractionScenario;

@@ -43,9 +43,9 @@ export interface AdminInboxResponse {
 
 /// First user message extractor for unnamed desktop sessions in derive-label.
 /// Empty string when not derivable (will fall back to "桌面对话").
-function getFirstUserMessageText(sessionId: string): string {
+async function getFirstUserMessageText(sessionId: string): Promise<string> {
   try {
-    const data = getSessionData(sessionId);
+    const data = (await getSessionData(sessionId));
     if (!data) return '';
     for (const msg of data.messages) {
       if (msg.role === 'user') {
@@ -60,27 +60,27 @@ function getFirstUserMessageText(sessionId: string): string {
   return '';
 }
 
-export function deriveCallerInboxLabel(
+export async function deriveCallerInboxLabel(
   callerSessionId: string,
   callerMeta: SessionMetadata | null = getSessionMetadata(callerSessionId) ?? null,
-): string {
+): Promise<string> {
   const rawLabel = deriveSessionLabel(
     callerMeta,
-    callerMeta ? getFirstUserMessageText(callerSessionId) : undefined,
+    callerMeta ? await getFirstUserMessageText(callerSessionId) : undefined,
   );
   return sanitizeInboxLabel(rawLabel);
 }
 
 /// Build the PendingInboxMessage envelope (kind=Request) from admin API input.
-function buildRequestMessage(
+async function buildRequestMessage(
   callerSessionId: string,
   callerMeta: SessionMetadata | null,
   toSessionId: string,
   prompt: string,
   replyBack: boolean,
-): PendingInboxMessage {
+): Promise<PendingInboxMessage> {
   // sanitize at construction; recipients will receive only sanitized form
-  const fromLabel = deriveCallerInboxLabel(callerSessionId, callerMeta);
+  const fromLabel = await deriveCallerInboxLabel(callerSessionId, callerMeta);
 
   const messageId = randomUUID();
   const createdAt = new Date().toISOString();
@@ -169,7 +169,7 @@ export async function handleAdminInbox(
   const callerMeta = getSessionMetadata(callerSessionId) ?? null;
 
   // Build envelope
-  const message = buildRequestMessage(
+  const message = await buildRequestMessage(
     callerSessionId,
     callerMeta,
     body.toSessionId,

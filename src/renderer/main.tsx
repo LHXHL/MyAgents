@@ -16,6 +16,8 @@ import {
 import { initFrontendLogger, setLogServerReady, setRendererLogLabel } from './utils/frontendLogger';
 import { installMacFunctionKeyGuard } from './utils/macFunctionKeyGuard';
 import { installTextCorrectionPolicy } from './utils/textCorrectionPolicy';
+import { dispatchNativeHistoryCommand, type NativeHistoryCommand } from './utils/nativeHistoryCommands';
+import { listenWithCleanup } from './utils/tauriListen';
 
 import './i18n';
 import './index.css';
@@ -68,6 +70,21 @@ try {
 // document-level capture handler is attached when the first input fires.
 installMacFunctionKeyGuard();
 installTextCorrectionPolicy();
+
+// Window-lifetime native menu bridge, shared by main and companion editors.
+// Rust sends only to the focused window; each editor still owns its history.
+if (tauriWindowLabel && navigator.platform.toLowerCase().includes('mac')) {
+  const historyEvents = new AbortController();
+  void listenWithCleanup<NativeHistoryCommand>('window:history-command', event => {
+    dispatchNativeHistoryCommand(event.payload);
+  }, historyEvents.signal, { target: { kind: 'Webview', label: tauriWindowLabel } });
+  const cleanupHistoryEvents = () => {
+    historyEvents.abort();
+    window.removeEventListener('pagehide', cleanupHistoryEvents);
+  };
+  window.addEventListener('pagehide', cleanupHistoryEvents, { once: true });
+  import.meta.hot?.dispose(cleanupHistoryEvents);
+}
 
 // Block native "Reload / Inspect Element" context menu in production.
 // Keep native menu for: input fields, text selection, contenteditable, links, images, media.

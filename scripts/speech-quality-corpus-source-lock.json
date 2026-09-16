@@ -18,7 +18,7 @@
     "trailingSilenceSeconds": 3,
     "vadParameters": {
       "threshold": 0.25,
-      "minSilenceSeconds": 0.5,
+      "minSilenceSeconds": 1.0,
       "minSpeechSeconds": 0.25,
       "maxSpeechSeconds": 30,
       "windowSamples": 512

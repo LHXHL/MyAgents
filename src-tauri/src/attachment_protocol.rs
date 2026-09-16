@@ -536,6 +536,8 @@ mod tests {
 
     fn test_media(path: PathBuf, size_bytes: u64) -> ResolvedRecordMedia {
         ResolvedRecordMedia {
+            timeline: None,
+            capture_time_error: None,
             record_id: "record-1".to_string(),
             revision: 3,
             track: AudioTrackKind::Microphone,

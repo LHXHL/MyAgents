@@ -79,7 +79,7 @@ export const PERMISSION_MODES: {
 /**
  * Model entity representing a single model configuration
  */
-export interface ModelEntity {
+export interface ModelEntity extends Pick<RuntimeModelInfo, 'supportedReasoningEfforts' | 'defaultReasoningEffort'> {
   // === 核心字段（必填）===
   model: string; // API 代码，如 "claude-sonnet-4-6"
   modelName: string; // 显示名称，如 "Claude Sonnet 4.6"
@@ -218,17 +218,23 @@ export const CODEX_SUBSCRIPTION_PROVIDER_ID = 'codex-sub';
 /** Host-managed Grok subscription provider ID. */
 export const XAI_SUBSCRIPTION_PROVIDER_ID = 'xai-sub';
 export const XAI_SUBSCRIPTION_API_BASE_URL = 'https://api.x.ai/v1';
+export const XAI_SUBSCRIPTION_PRIMARY_MODEL = 'grok-4.6';
+
+/** OAuth and protocol translation are owned by the managed CLIProxy process. */
+export const ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID = 'antigravity-sub';
 
 export type BuiltinSubscriptionProviderId =
   | typeof SUBSCRIPTION_PROVIDER_ID
-  | typeof XAI_SUBSCRIPTION_PROVIDER_ID;
+  | typeof XAI_SUBSCRIPTION_PROVIDER_ID
+  | typeof ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID;
 
 export function isBuiltinSubscriptionProviderId(
   providerId: string | null | undefined,
 ): providerId is BuiltinSubscriptionProviderId {
   return (
     providerId === SUBSCRIPTION_PROVIDER_ID ||
-    providerId === XAI_SUBSCRIPTION_PROVIDER_ID
+    providerId === XAI_SUBSCRIPTION_PROVIDER_ID ||
+    providerId === ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID
   );
 }
 
@@ -240,6 +246,7 @@ type ProviderOrderable = {
 const MISSING_PROVIDER_INSERT_AFTER: Record<string, string> = {
   [CODEX_SUBSCRIPTION_PROVIDER_ID]: SUBSCRIPTION_PROVIDER_ID,
   [XAI_SUBSCRIPTION_PROVIDER_ID]: CODEX_SUBSCRIPTION_PROVIDER_ID,
+  [ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID]: XAI_SUBSCRIPTION_PROVIDER_ID,
 };
 
 export function normalizeProviderOrder(
@@ -413,7 +420,14 @@ export type ProviderExecution =
 export type SubscriptionAuthPolicy =
   | { kind: 'sdk-native' }
   | { kind: 'host-managed-oauth' }
+  | { kind: 'proxy-managed'; proxy: 'cliproxy' }
   | { kind: 'runtime-managed' };
+
+/** Persistent routing may refer to this owner, never to its port or local key. */
+export type ManagedProviderEndpoint = {
+  kind: 'cliproxy';
+  providerId: typeof ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID;
+};
 
 /** Non-secret reference carried by builtin ProviderEnv for host-owned OAuth. */
 export type ManagedProviderCredential = {
@@ -1265,6 +1279,8 @@ export function managedCodexModelsFromRuntime(
       inputModalities: ['text', 'image'],
       outputModalities: ['text'],
       source: 'discovered',
+      supportedReasoningEfforts: runtimeModel.supportedReasoningEfforts,
+      defaultReasoningEffort: runtimeModel.defaultReasoningEffort,
     });
   }
   return models;
@@ -1564,7 +1580,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     type: 'subscription',
     subscriptionAuth: { kind: 'host-managed-oauth' },
     execution: { kind: 'builtin' },
-    primaryModel: 'grok-4.5',
+    primaryModel: XAI_SUBSCRIPTION_PRIMARY_MODEL,
     isBuiltin: true,
     apiProtocol: 'openai',
     upstreamFormat: 'responses',
@@ -1573,12 +1589,21 @@ export const PRESET_PROVIDERS: Provider[] = [
       baseUrl: XAI_SUBSCRIPTION_API_BASE_URL,
     },
     modelAliases: {
-      fable: 'grok-4.5',
-      sonnet: 'grok-4.5',
-      opus: 'grok-4.5',
+      fable: XAI_SUBSCRIPTION_PRIMARY_MODEL,
+      sonnet: XAI_SUBSCRIPTION_PRIMARY_MODEL,
+      opus: XAI_SUBSCRIPTION_PRIMARY_MODEL,
       haiku: 'grok-composer-2.5-fast',
     },
     models: [
+      {
+        model: XAI_SUBSCRIPTION_PRIMARY_MODEL,
+        modelName: 'Grok 4.6',
+        modelSeries: 'grok',
+        contextLength: 500_000,
+        inputModalities: ['text', 'image'],
+        outputModalities: ['text'],
+        source: 'preset',
+      },
       {
         model: 'grok-4.5',
         modelName: 'Grok 4.5',
@@ -1598,6 +1623,21 @@ export const PRESET_PROVIDERS: Provider[] = [
         source: 'preset',
       },
     ],
+  },
+  {
+    id: ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
+    name: 'Antigravity（订阅）',
+    subtitle: '使用 Google Antigravity 订阅账户额度',
+    vendor: 'Google',
+    cloudProvider: '官方',
+    type: 'subscription',
+    subscriptionAuth: { kind: 'proxy-managed', proxy: 'cliproxy' },
+    execution: { kind: 'builtin' },
+    primaryModel: '',
+    isBuiltin: true,
+    apiProtocol: 'anthropic',
+    config: {},
+    models: [],
   },
   {
     id: 'anthropic-api',
@@ -1620,7 +1660,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     vendor: 'DeepSeek',
     cloudProvider: '模型官方',
     type: 'api',
-    primaryModel: 'deepseek-v4-pro',
+    primaryModel: 'deepseek-flash',
     isBuiltin: true,
     authType: 'auth_token',
     websiteUrl: 'https://platform.deepseek.com',
@@ -1631,13 +1671,21 @@ export const PRESET_PROVIDERS: Provider[] = [
       disableNonessential: true,
     },
     modelAliases: {
-      sonnet: 'deepseek-v4-pro',
+      sonnet: 'deepseek-flash',
       opus: 'deepseek-v4-pro',
-      haiku: 'deepseek-v4-flash',
+      haiku: 'deepseek-flash',
     },
     models: [
-      // V4 Pro / Flash 为纯文本；Vision Exp 支持图像输入及 Anthropic API。
-      // deepseek-chat / deepseek-reasoner 已退化为 v4-flash 的别名且 2026-07-24 硬下线，故移除。
+      // V4.1 Flash 原生支持图像；旧 V4 Flash / Vision Exp 已退役，不再列出兼容别名。
+      // https://api-docs.deepseek.com/quick_start/pricing/ (2026-09-16)
+      {
+        model: 'deepseek-flash',
+        modelName: 'DeepSeek V4.1 Flash',
+        modelSeries: 'deepseek',
+        contextLength: 1_000_000,
+        maxOutputTokens: 384_000,
+        inputModalities: ['text', 'image'],
+      },
       {
         model: 'deepseek-v4-pro',
         modelName: 'DeepSeek V4 Pro',
@@ -1645,23 +1693,6 @@ export const PRESET_PROVIDERS: Provider[] = [
         contextLength: 1_000_000,
         maxOutputTokens: 384_000,
         inputModalities: ['text'],
-      },
-      {
-        model: 'deepseek-v4-flash',
-        modelName: 'DeepSeek V4 Flash',
-        modelSeries: 'deepseek',
-        contextLength: 1_000_000,
-        maxOutputTokens: 384_000,
-        inputModalities: ['text'],
-      },
-      // https://api-docs.deepseek.com/zh-cn/quick_start/pricing/ (2026-09-05)
-      {
-        model: 'deepseek-v4-flash-vision-exp',
-        modelName: 'DeepSeek V4 Flash Vision Exp',
-        modelSeries: 'deepseek',
-        contextLength: 1_000_000,
-        maxOutputTokens: 384_000,
-        inputModalities: ['text', 'image'],
       },
     ],
   },

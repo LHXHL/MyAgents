@@ -81,7 +81,11 @@ export function buildReplyMarkdown(text: string, now: Date = new Date()): string
  * when Tauri can resolve it, otherwise a generic "saved to Downloads" line.
  */
 export async function downloadMarkdown(fileName: string, content: string): Promise<string> {
-    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+    return downloadBlob(fileName, new Blob([content], { type: 'text/markdown;charset=utf-8' }));
+}
+
+/** Shared browser/Tauri download transport for generated documents. */
+export async function downloadBlob(fileName: string, blob: Blob): Promise<string> {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;

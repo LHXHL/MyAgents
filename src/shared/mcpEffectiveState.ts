@@ -46,6 +46,20 @@ export interface McpEffectiveSnapshot {
   observationStale?: boolean;
 }
 
+/** Invalidate capabilities with an ordered envelope so SSE replay cannot resurrect them. */
+export function invalidateMcpEffectiveSnapshot(snapshot: McpEffectiveSnapshot): McpEffectiveSnapshot {
+  return {
+    ...snapshot,
+    catalogGeneration: snapshot.catalogGeneration + 1,
+    revision: snapshot.revision + 1,
+    observedAt: Date.now(),
+    servers: [],
+    tools: [],
+    dispatch: { state: 'released', releaseReason: 'cancelled' },
+    observationStale: true,
+  };
+}
+
 function compareGeneration(
   left: Pick<McpEffectiveSnapshot, 'runtimeGeneration' | 'configGeneration' | 'catalogGeneration' | 'revision'>,
   right: Pick<McpEffectiveSnapshot, 'runtimeGeneration' | 'configGeneration' | 'catalogGeneration' | 'revision'>,

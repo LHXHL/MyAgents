@@ -1090,7 +1090,8 @@ export async function ensureSessionSidecar(
     sessionId: string,
     workspacePath: string,
     ownerType: 'tab' | 'companion',
-    ownerId: string
+    ownerId: string,
+    birth?: { runtime: string; runtimeSource?: string },
 ): Promise<EnsureSidecarResult> {
     if (!isTauri()) {
         return { port: 3000, isNew: false };
@@ -1102,6 +1103,7 @@ export async function ensureSessionSidecar(
             workspacePath,
             ownerType,
             ownerId,
+            ...(birth ? { birthRuntime: birth.runtime, birthRuntimeSource: birth.runtimeSource } : {}),
         });
         console.debug(`[tauriClient] ensureSessionSidecar: session=${sessionId}, owner=${ownerType}:${ownerId}, port=${result.port}, isNew=${result.isNew}`);
         return result;
@@ -1236,6 +1238,7 @@ export async function upgradeSessionId(
     oldSessionId: string,
     newSessionId: string,
     tabId: string,
+    ownerType: 'tab' | 'companion' = 'tab',
 ): Promise<boolean> {
     if (!isTauri()) {
         return true;
@@ -1246,6 +1249,7 @@ export async function upgradeSessionId(
             oldSessionId,
             newSessionId,
             tabId,
+            ownerType,
         });
         console.debug(`[tauriClient] upgradeSessionId: ${oldSessionId} -> ${newSessionId}, success=${upgraded}`);
         return upgraded;

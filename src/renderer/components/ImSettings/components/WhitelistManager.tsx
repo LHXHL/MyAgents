@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import React, { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus, X } from 'lucide-react';
@@ -79,7 +80,7 @@ export default function WhitelistManager({
                     type="text"
                     value={newUser}
                     onChange={(e) => setNewUser(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
+                    onKeyDown={(e) => !isImeComposingEvent(e) && (e.key === 'Enter' && handleAdd())}
                     placeholder={placeholderText}
                     className="flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm text-[var(--ink)] placeholder-[var(--ink-muted)] focus:border-[var(--focus-border)] focus:outline-none"
                 />

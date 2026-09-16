@@ -54,7 +54,9 @@ export function SpeechModelResourceControls({
       status.lastErrorCode ?? '',
     );
 
-  if (!status || (status.status === 'ready' && !hasActivationWarning)) {
+  // Background maintenance does not turn a working capability into a setup
+  // task. Keep explicit removal failures and durability warnings actionable.
+  if (!status || (status.usable && !removeError && !hasActivationWarning && status.status !== 'removing')) {
     return null;
   }
 

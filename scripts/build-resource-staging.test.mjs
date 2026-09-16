@@ -341,8 +341,7 @@ test('macOS release prepares and validates Sharp inside each target build', () =
   );
   const prepareFunction = buildMacos.slice(prepareFunctionAt, nextFunctionAt);
 
-  assert.match(prepareFunction, /rm -rf "\$SHARP_DIR"/);
-  assert.match(prepareFunction, /--os=darwin --cpu="\$ARCH"/);
+  assert.match(prepareFunction, /npm run build:sharp-runtime -- darwin "\$ARCH"/);
   assert.match(prepareFunction, /validate_macho_binary/);
   assert.match(
     prepareFunction,
@@ -547,7 +546,7 @@ test('every setup, dev, and release entry point delegates native resources to on
   );
   assert.match(
     packageJson.scripts['tauri:dev'],
-    /^npm run prepare:native-inference && npm run verify:dsh-runtime && npm run verify:dsh-runtime:fresh && tauri dev$/,
+    /^node scripts\/prepare-cliproxy\.mjs && npm run prepare:native-inference && npm run verify:dsh-runtime && npm run verify:dsh-runtime:fresh && tauri dev$/,
   );
   assert.match(nativeResourceScript, /prepare-document-processing\.mjs/);
   assert.match(nativeResourceScript, /prepare-speech-inference\.mjs/);
@@ -650,15 +649,15 @@ test('document processing locks all release targets and publishes only verified 
 
 test('speech inference builds a signed exact native inventory around the shared ORT', () => {
   const speech = documentResourceLock.speechInference;
-  assert.equal(speech.adapterAbiVersion, 1);
+  assert.equal(speech.adapterAbiVersion, 2);
   assert.equal(speech.sherpaOnnxVersion, '1.13.6');
   assert.match(speech.sherpaOnnxCommit, /^[0-9a-f]{40}$/);
   assert.equal(speech.onnxRuntimeVersion, '1.28.0');
   assert.equal(speech.opus2Version, '0.4.0');
   assert.equal(speech.libopusSysVersion, '0.3.3');
-  assert.equal(speech.hdbscanVersion, '0.12.0');
-  assert.equal(speech.kdtreeVersion, '0.7.0');
   assert.equal(speech.numTraitsVersion, '0.2.19');
+  assert.equal(speech.sonoraVersion, '0.2.0');
+  assert.equal(speech.rubatoVersion, '0.16.2');
   assert.equal(speech.nativeIncrementHardLimitBytes, 80 * 1024 * 1024);
   assert.match(speech.source.sha256, /^[0-9a-f]{64}$/);
   assert.equal(
@@ -691,7 +690,16 @@ test('speech inference builds a signed exact native inventory around the shared 
   assert.match(speechResourceScript, /SHERPA_ONNX_BUILD_C_API_EXAMPLES=OFF/);
   assert.match(
     speechResourceScript,
-    /CMAKE_CXX_FLAGS=-DSHERPA_ONNX_DISABLE_COREML=1/,
+    /CMAKE_CXX_FLAGS_INIT=-DSHERPA_ONNX_DISABLE_COREML=1/,
+  );
+  assert.doesNotMatch(speechResourceScript, /-DCMAKE_CXX_FLAGS=/);
+  assert.match(
+    speechResourceScript,
+    /if \(targetLock\.platform === 'windows'\) \{\s+patchHclustWindowsFenvPragma\(hclustIncludeRoot\);/,
+  );
+  assert.ok(
+    speechResourceScript.indexOf('patchHclustWindowsFenvPragma(hclustIncludeRoot)') <
+      speechResourceScript.indexOf("'--build'"),
   );
   assert.match(speechResourceScript, /--target[\s\S]*sherpa-onnx-c-api/);
   assert.match(speechResourceScript, /signNativeFiles/);
@@ -729,4 +737,15 @@ test('all native build entrypoints prepare Cuse for the explicit target', () => 
     assert.match(source, /codesign --force --options runtime --timestamp --sign "\$APPLE_SIGNING_IDENTITY" "\$\{PROJECT_DIR\}\/bundled-skills\/cuse\/scripts\/cuse"/);
   }
   assert.equal(tauriConfig.bundle.resources['../bundled-skills'], 'bundled-skills');
+});
+
+
+test('setup, local builds and CI share signed CLIProxy preparation without a publication cache', () => {
+  for (const name of ['setup.sh', 'setup_windows.ps1', 'build_dev.sh', 'build_dev_win.ps1', 'build_macos.sh', 'build_windows.ps1', '.github/workflows/test.yml']) {
+    const text = readFileSync(resolve(repoRoot, name), 'utf8');
+    assert.match(text, /scripts[\\/]prepare-cliproxy\.mjs/, name);
+    assert.doesNotMatch(text, /package-cliproxy-component\.mjs["']? stage|cliproxy-cache[\\/]distribution/, name);
+  }
+  assert.match(speechResourceScript, /-DBUILD_TESTING=\$\{speechNativeTestPlan\(target\)\.buildTesting\}/);
+  assert.match(speechResourceScript, /runSpeechNativeTests\(\{ target, buildDir: adapterBuild/);
 });

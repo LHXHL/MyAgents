@@ -31,6 +31,9 @@ interface CopiedFile {
   renamed: boolean;
 }
 
+export type MarkdownImageSource = { kind: 'path'; path: string } | { kind: 'base64'; name: string; base64: string };
+export interface MarkdownImportedFile { path: string; name: string; size: number; mimeType: string }
+
 // Phase D additions — DirectoryPanel calls these for tree / preview / CRUD.
 // Shapes mirror the sidecar JSON these commands replace, so the React tree
 // model and preview modal don't need parallel branches.
@@ -163,6 +166,9 @@ interface SlashCommandsResponse {
 interface PathInfo {
   exists: boolean;
   type: 'file' | 'dir';
+  /** Canonical local target when a reference crosses the workspace read boundary. */
+  resolvedPath?: string;
+  error?: string;
 }
 
 interface CheckPathsResult {
@@ -220,6 +226,8 @@ interface GitignoreResult {
  * are safe to call when the hook was instantiated with `null`.
  */
 export interface WorkspaceFileService {
+  importMarkdownImage(args: { documentPath: string; remainingBytes: number; source: MarkdownImageSource }): Promise<MarkdownImportedFile>;
+  saveMarkdownCopy(args: { documentPath: string; content: string }): Promise<MarkdownImportedFile>;
   /** [requires workspace] Import base64-encoded files into `<workspace>/<targetDir>/`. */
   importBase64Files(args: {
     files: { name: string; content: string }[];
@@ -378,6 +386,15 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
         targetDir,
       });
     },
+    [requireWorkspace, invokeIfTauri],
+  );
+
+  const importMarkdownImage: WorkspaceFileService['importMarkdownImage'] = useCallback(
+    async (args) => invokeIfTauri<MarkdownImportedFile>('cmd_workspace_import_markdown_image', { workspace: requireWorkspace(), ...args }),
+    [requireWorkspace, invokeIfTauri],
+  );
+  const saveMarkdownCopy: WorkspaceFileService['saveMarkdownCopy'] = useCallback(
+    async (args) => invokeIfTauri<MarkdownImportedFile>('cmd_workspace_save_markdown_copy', { workspace: requireWorkspace(), ...args }),
     [requireWorkspace, invokeIfTauri],
   );
 
@@ -770,6 +787,8 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
   const isAvailable = tauri && workspacePath != null;
   return useMemo(
     () => ({
+      importMarkdownImage,
+      saveMarkdownCopy,
       importBase64Files,
       copyPaths,
       copyInternal,
@@ -810,6 +829,8 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
       workspacePath,
     }),
     [
+      importMarkdownImage,
+      saveMarkdownCopy,
       importBase64Files,
       copyPaths,
       copyInternal,

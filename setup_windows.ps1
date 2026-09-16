@@ -11,6 +11,7 @@ $PSNativeCommandUseErrorActionPreference = $false
 try {
     $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     Set-Location $ProjectDir
+    . (Join-Path $ProjectDir "scripts\download-build-file.ps1")
 
     Write-Host "`n=========================================" -ForegroundColor Blue
     Write-Host "  MyAgents Windows 开发环境初始化" -ForegroundColor Green
@@ -100,7 +101,7 @@ try {
         $cargoBin = Get-CargoBinPath
         try {
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            Invoke-WebRequest -Uri "https://win.rustup.rs/x86_64" -OutFile $installer -UseBasicParsing -TimeoutSec 300
+            Get-BuildDownload -Uri "https://win.rustup.rs/x86_64" -OutFile $installer
             & $installer -y --default-toolchain none
             if ($LASTEXITCODE -ne 0) {
                 throw "rustup-init exited with $LASTEXITCODE"
@@ -165,11 +166,13 @@ try {
 
         Write-Host "下载 Git for Windows (v$GitVersion)..." -ForegroundColor Blue
 
-        if (-not (Test-Path $GitFile)) {
+        # Existence alone accepted partial downloads from older setup runs.
+        $ValidInstaller = { param($Path) (Get-AuthenticodeSignature -LiteralPath $Path).Status -eq 'Valid' }
+        if (-not (Test-Path -LiteralPath $GitFile -PathType Leaf) -or -not (& $ValidInstaller $GitFile)) {
             Write-Host "  下载 Git 安装包..." -ForegroundColor Cyan
             try {
                 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-                Invoke-WebRequest -Uri $GitUrl -OutFile $GitFile -UseBasicParsing -TimeoutSec 300
+                Get-BuildDownload -Uri $GitUrl -OutFile $GitFile -Validate $ValidInstaller
                 Write-Host "  OK - Git installer downloaded" -ForegroundColor Green
             } catch {
                 Write-Host "  下载失败: $_" -ForegroundColor Red
@@ -333,6 +336,9 @@ try {
     }
     Pop-Location
     Write-Host "OK - Rust 依赖下载完成" -ForegroundColor Green
+
+    & node "$ProjectDir\scripts\prepare-cliproxy.mjs" win32-x64
+    if ($LASTEXITCODE -ne 0) { throw "CLIProxy 内置资源准备失败" }
 
     Write-Host "`nStep 7.5/8: 准备离线文档与语音推理资源" -ForegroundColor Blue
     & node "$ProjectDir\scripts\prepare-native-inference.mjs" "x86_64-pc-windows-msvc"

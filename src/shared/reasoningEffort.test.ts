@@ -6,6 +6,7 @@ import {
   normalizeReasoningEffort,
   isSdkEffortLevel,
   reasoningEffortChoices,
+  reasoningEffortAfterModelChange,
   SDK_EFFORT_LEVELS,
   OPENAI_EFFORT_LEVELS,
   CODEX_EFFORT_LEVELS,
@@ -48,6 +49,8 @@ describe('reasoningEffortChoices — per-surface vocabularies', () => {
     expect(reasoningEffortChoices('builtin', 'openai')).toEqual(OPENAI_EFFORT_LEVELS);
   });
   it('uses model-specific Grok vocabularies and hides unverified model knobs', () => {
+    expect(reasoningEffortChoices('builtin', 'openai', 'xai-sub', 'grok-4.6'))
+      .toEqual(['low', 'medium', 'high', 'xhigh']);
     expect(reasoningEffortChoices('builtin', 'openai', 'xai-sub', 'grok-4.5'))
       .toEqual(['low', 'medium', 'high']);
     expect(reasoningEffortChoices('builtin', 'openai', 'xai-sub', 'grok-4.3'))
@@ -90,6 +93,25 @@ describe('reasoning effort coercion', () => {
   it('setting coercion preserves default so snapshots can override inherited values', () => {
     expect(coerceReasoningEffortSettingForRuntime(REASONING_EFFORT_DEFAULT, 'codex')).toBe(REASONING_EFFORT_DEFAULT);
     expect(coerceReasoningEffortSettingForRuntime('xhigh', 'codex')).toBe('xhigh');
-    expect(coerceReasoningEffortSettingForRuntime('max', 'codex')).toBeUndefined();
+    expect(coerceReasoningEffortSettingForRuntime('max', 'codex')).toBe('max');
+  });
+});
+
+
+describe('model-advertised reasoning choices', () => {
+  const model = { defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'future-tier' }] };
+  it('preserves future values through birth and restore before discovery exists', () => {
+    for (const value of ['ultra', 'future-tier']) {
+      expect(coerceReasoningEffortSettingForRuntime(value, 'codex')).toBe(value);
+      expect(coerceReasoningEffortForRuntime(value, 'codex')).toBe(value);
+      expect(reasoningEffortAfterModelChange(value, undefined)).toBe(value);
+      expect(reasoningEffortAfterModelChange(value, {})).toBe(value);
+    }
+  });
+  it('resets only a known unsupported choice on explicit model selection', () => {
+    expect(reasoningEffortAfterModelChange('future-tier', model)).toBe('future-tier');
+    expect(reasoningEffortAfterModelChange('ultra', model)).toBe('default');
+    expect(reasoningEffortAfterModelChange('default', model)).toBe('default');
+    expect(reasoningEffortAfterModelChange('high', { supportedReasoningEfforts: [] })).toBe('default');
   });
 });

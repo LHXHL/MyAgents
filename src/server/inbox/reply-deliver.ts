@@ -51,9 +51,9 @@ export function buildReplyBody(payload: ReplyPayload): string {
   return lines.join('\n');
 }
 
-function getFirstUserMessageText(sessionId: string): string {
+async function getFirstUserMessageText(sessionId: string): Promise<string> {
   try {
-    const data = getSessionData(sessionId);
+    const data = (await getSessionData(sessionId));
     if (!data) return '';
     for (const msg of data.messages) {
       if (msg.role === 'user') {
@@ -84,7 +84,7 @@ export async function deliverInboxReply(
   const myMeta = getSessionMetadata(currentSessionId) ?? null;
   const rawLabel = deriveSessionLabel(
     myMeta,
-    myMeta ? getFirstUserMessageText(currentSessionId) : undefined,
+    myMeta ? await getFirstUserMessageText(currentSessionId) : undefined,
   );
   const fromLabel = sanitizeInboxLabel(rawLabel);
 

@@ -25,16 +25,9 @@ import { stripBom } from '../../shared/utils';
 import { resolveProviderForModel } from '../../shared/tokendance';
 import { workspacePathsEqual } from '../../shared/workspacePath';
 import { promoteAgentMcpJsonToGlobal } from '../../shared/mcpConfig';
-import type {
-  AppConfig,
-  ManagedProviderCredential,
-  McpServerDefinition,
-  PermissionMode,
-  Provider,
-  ProviderVerifyStatus,
-  SubscriptionAuthPolicy,
-} from '../../shared/config-types';
+import type { AppConfig, ManagedProviderCredential, ManagedProviderEndpoint, McpServerDefinition, PermissionMode, Provider, ProviderVerifyStatus, SubscriptionAuthPolicy } from '../../shared/config-types';
 import {
+  ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
   applyManagedCodexProviderReadiness,
   applyProviderEnablementAndOrder,
   CODEX_SUBSCRIPTION_PROVIDER_ID,
@@ -1210,6 +1203,7 @@ export interface ResolvedProviderEnv {
     haiku?: string;
   };
   credentialSource?: ManagedProviderCredential;
+  endpointSource?: ManagedProviderEndpoint;
 }
 
 export function resolveSubscriptionAuthKind(
@@ -1225,7 +1219,8 @@ export function resolveSubscriptionAuthKind(
  * Resolve provider environment from providerId by looking up the real provider definition
  * (preset or custom) and API key from config. Handles ALL providers including custom ones.
  *
- * Returns undefined for subscription providers or if provider/key not found.
+ * SDK-native and external subscriptions have no builtin transport environment.
+ * Managed subscriptions return non-secret references for async execution setup.
  */
 export function resolveProviderEnv(
   providerId: string,
@@ -1254,6 +1249,26 @@ export function resolveProviderEnv(
   const subscriptionAuthKind =
     provider.type === 'subscription' ? subscriptionAuth?.kind : undefined;
   const isManagedOauth = subscriptionAuthKind === 'host-managed-oauth';
+  // Resolve persisted alias choices before choosing the credential transport.
+  const presetAliases = (provider as Record<string, unknown>).modelAliases as Record<string, string> | undefined;
+  const aliasOverrides = c.providerModelAliases as Record<string, Record<string, string>> | undefined;
+  const userOverrides = aliasOverrides?.[providerId];
+  const mergedAliases = presetAliases || userOverrides
+    ? { ...presetAliases, ...userOverrides }
+    : undefined;
+  if (subscriptionAuthKind === 'proxy-managed') {
+    if (providerId !== ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID
+        || subscriptionAuth?.kind !== 'proxy-managed'
+        || subscriptionAuth.proxy !== 'cliproxy') return undefined;
+    return {
+      providerId,
+      providerName: typeof provider.name === 'string' ? provider.name : providerId,
+      apiProtocol: 'anthropic',
+      authType: 'api_key',
+      endpointSource: { kind: 'cliproxy', providerId },
+      modelAliases: completeModelAliases(mergedAliases, model),
+    };
+  }
   if (provider.type === 'subscription' && !isManagedOauth) return undefined;
   if (isManagedOauth && providerId !== XAI_SUBSCRIPTION_PROVIDER_ID)
     return undefined;
@@ -1299,18 +1314,6 @@ export function resolveProviderEnv(
     result.upstreamFormat =
       provider.upstreamFormat as ResolvedProviderEnv['upstreamFormat'];
 
-  // Model aliases: merge preset defaults with user overrides (from config.providerModelAliases)
-  const presetAliases = (provider as Record<string, unknown>).modelAliases as
-    | Record<string, string>
-    | undefined;
-  const aliasOverrides = c.providerModelAliases as
-    | Record<string, Record<string, string>>
-    | undefined;
-  const userOverrides = aliasOverrides?.[providerId];
-  const mergedAliases =
-    presetAliases || userOverrides
-      ? { ...presetAliases, ...userOverrides }
-      : undefined;
   const completedAliases = completeModelAliases(mergedAliases);
   if (completedAliases) {
     result.modelAliases = completedAliases;
@@ -1335,12 +1338,10 @@ export function materializeProviderRouteEnv(
   config?: AdminAppConfig,
 ): ResolvedProviderEnv | undefined {
   if (!isConcreteProviderRoute(route)) return undefined;
-  if (
-    route.kind === 'subscription' &&
-    resolveSubscriptionAuthKind(route.providerId, config) !==
-      'host-managed-oauth'
-  )
-    return undefined;
+  if (route.kind === 'subscription') {
+    const kind = resolveSubscriptionAuthKind(route.providerId, config);
+    if (kind !== 'host-managed-oauth' && kind !== 'proxy-managed') return undefined;
+  }
   return resolveProviderEnv(route.providerId, config, route.model);
 }
 
@@ -1349,6 +1350,20 @@ export function canonicalizeManagedProviderEnv(
   providerEnv: ResolvedProviderEnv,
 ): ResolvedProviderEnv {
   const source = providerEnv.credentialSource;
+  if (providerEnv.endpointSource || providerEnv.providerId === ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID) {
+    if (source || providerEnv.providerId !== ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID
+      || providerEnv.endpointSource?.kind !== 'cliproxy'
+      || providerEnv.endpointSource.providerId !== ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID) {
+      throw new Error('Unsupported managed proxy provider identity');
+    }
+    return {
+      providerId: ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
+      providerName: providerEnv.providerName,
+      authType: 'api_key', apiProtocol: 'anthropic',
+      modelAliases: providerEnv.modelAliases,
+      endpointSource: { kind: 'cliproxy', providerId: ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID },
+    };
+  }
   if (!source) return providerEnv;
   if (
     source.kind !== 'managed-oauth' ||

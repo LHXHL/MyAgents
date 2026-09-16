@@ -1,4 +1,5 @@
 import {
+  ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
   CODEX_SUBSCRIPTION_PROVIDER_ID,
   SUBSCRIPTION_PROVIDER_ID,
   XAI_SUBSCRIPTION_PROVIDER_ID,
@@ -22,7 +23,8 @@ export type ProviderExecutionConstraint =
       runtimeId: "claude-agent-sdk";
       providerId:
         | typeof SUBSCRIPTION_PROVIDER_ID
-        | typeof XAI_SUBSCRIPTION_PROVIDER_ID;
+        | typeof XAI_SUBSCRIPTION_PROVIDER_ID
+        | typeof ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID;
     }
   | {
       kind: "requires-managed-runtime";
@@ -58,11 +60,11 @@ export function getProviderExecutionConstraint(
       providerId: SUBSCRIPTION_PROVIDER_ID,
     };
   }
-  if (provider.id === XAI_SUBSCRIPTION_PROVIDER_ID) {
+  if (provider.id === XAI_SUBSCRIPTION_PROVIDER_ID || provider.id === ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID) {
     return {
       kind: "requires-integrated-runtime",
       runtimeId: "claude-agent-sdk",
-      providerId: XAI_SUBSCRIPTION_PROVIDER_ID,
+      providerId: provider.id,
     };
   }
   if (provider.type === "subscription") {

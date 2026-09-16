@@ -149,7 +149,7 @@ export interface PersistInputOptionParams {
   /** Live sidecar push for external runtime model / permission-mode changes.
    *  Chat-tab only. Launcher has no active Sidecar; the next session reads disk. */
   pushRuntimeConfigToSidecar?: (
-    runtimeConfig: Pick<RuntimeConfig, 'model' | 'permissionMode'>,
+    runtimeConfig: Pick<RuntimeConfig, 'model' | 'permissionMode' | 'reasoningEffort'>,
   ) => Promise<unknown>;
 }
 
@@ -304,7 +304,7 @@ export async function persistInputOptionChange(
     )
   ) {
     try {
-      const runtimeConfig: Pick<RuntimeConfig, 'model' | 'permissionMode'> = {};
+      const runtimeConfig: Pick<RuntimeConfig, 'model' | 'permissionMode' | 'reasoningEffort'> = {};
       if (params.fields.runtimeBackedProviderSelection) {
         runtimeConfig.model = params.fields.runtimeBackedProviderSelection.model;
       } else if (params.usesProductConfiguration) {
@@ -323,6 +323,11 @@ export async function persistInputOptionChange(
             params.fields.permissionMode,
           )
           : params.fields.permissionMode;
+      }
+      // Model and its effort reset are one user intent. Forward both so a
+      // later switch back cannot revive the process's previous override.
+      if (params.fields.reasoningEffort !== undefined) {
+        runtimeConfig.reasoningEffort = params.fields.reasoningEffort;
       }
       await params.pushRuntimeConfigToSidecar(runtimeConfig);
     } catch (e) {

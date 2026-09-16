@@ -16,7 +16,7 @@ MyAgents 把“用户选择哪个 Provider / model”与“执行时如何取得
 - `baseUrl`、`apiKey`、`authType`；
 - `apiProtocol`、OpenAI upstream format / token limit；
 - model aliases；
-- host-managed credential 的非 secret reference。
+- host-managed credential 或 proxy-managed endpoint 的非 secret reference。
 
 它只供 Sidecar 当前执行、probe、title/vision one-shot 或 Bridge 使用。新 Session 不能把 materialized API key 写回 session metadata；legacy `providerEnvJson` 只在兼容读取边界使用并在外部 projection 中 redacted / 移除。Agent / IM Channel 配置仍可能维护供后台自启动的兼容 projection，但 `config.json` 的 Provider/API-key 配置仍是 credential authority，projection 不能成为第二份可编辑真相。
 
@@ -41,8 +41,9 @@ Agent / Channel defaults 保留 Provider choice，不把 managed runtime project
 | 普通 API Provider | `config.json` / Provider API key store | 按 Provider definition 生成 `ProviderEnv` |
 | `xai-sub` | Rust `GrokAuthManager` | `ProviderEnv` 只携带 managed credential reference，Bridge 每请求取 bearer |
 | `codex-sub` | Managed Codex Runtime | 不进入 builtin ProviderEnv |
+| `antigravity-sub` | 原版 CLIProxy；Rust 只拥有组件、账号目录和准入 | endpointSource → 异步 binding → SDK 直连 Anthropic 接口 |
 
-Subscription 是产品/计费类型，不决定 auth owner。新增 subscription 必须显式选择 `sdk-native`、`host-managed-oauth` 或 `runtime-managed`，不能把所有 subscription 当成“空 ProviderEnv”。
+Subscription 是产品/计费类型，不决定 auth owner。新增 subscription 必须显式选择 `sdk-native`、`host-managed-oauth`、`proxy-managed` 或 `runtime-managed`，不能把所有 subscription 当成“空 ProviderEnv”。
 
 ## API Provider env
 
@@ -102,6 +103,12 @@ MyAgents 仍拥有 Session、permission、proxy scope 和 tool surface，但不�
 6. completion 只上报 status 与 generation，不记录 bearer。
 
 One-shot verification 必须在完整 SDK / translator terminal success 后才提交 verified state。收到 2xx headers 不等于 turn 成功；旧 generation 的 late failure 不能污染新登录 lineage。
+
+## CLIProxy subscription
+
+`antigravity-sub` 沿用 builtin SDK。Rust `CliProxyManager` 管理原版组件、active/candidate 目录、浏览器回调运输和 Query lease；OAuth/refresh 与协议转换归 CLIProxy。统一 `prepareProviderBinding()` 覆盖主 Query、pre-warm、标题、vision 及后台 Session。登录由原版账号摘要确认后即完整可用，无模型测试；模型从原版接口读取，不加白名单。binding 携带原生模型元数据，SDK env builder 拒绝未准备或持久化拷贝的 endpoint reference。
+
+客户端普通升版不改组件资源；CLIProxy 更新按最低 MyAgents 版本策略分发。账号清理、更新 draining、稳定 history、资源发布操作手册与原版接口合同见 [托管 CLIProxy](./managed_cliproxy.md)。Grok 继续使用自己的 Rust OAuth + Responses Bridge，不做迁移。
 
 ## OpenAI Bridge
 
@@ -163,6 +170,16 @@ Provider / model 是 Session config。用户在已有 Session 修改它时：
 这是一条 protocol compatibility boundary，不应写进某个 Provider UI component。
 
 ## 自定义 Provider
+
+### 模型目录发现生命周期
+
+Renderer 的 `useProviderModelDiscovery` 由当前面板拥有，仅在打开、连接身份（Provider ID、Base URL、modelListUrl、有效凭据 / managed 模式）或发现资格变化时重新订阅；显式刷新 / 重试由按钮触发。模型名称、启用列表、首选、配置 projection 与回调引用都不是请求身份。尤其不能让日志驱动的 Settings 重渲染触发外部请求，否则请求自身的 Rust 日志会形成并发反馈循环。
+
+普通模型面板与 Token Dance 详情复用该生命周期；Token Dance 公开目录不依赖账户 Key。仅复用当前组件尚未完成的请求以承受 effect replay，不建立全局结果缓存或自动重试。切换、关闭或失去资格后，旧结果不能进入当前展示或发起能力补全；已提交的 native 单次 HTTP 没有取消接口，仍由 Rust 现有 15 秒 timeout 收敛。
+
+发现服务仅在有效 `data[]` 目录为空、或过滤已停用模型后无可用项时显示空态；上游错误、未知 envelope 或没有有效模型 ID 的非空响应进入可重试错误态，不能伪装为空列表。兼容原有 OpenAI / Anthropic `data[]` 格式、URL 推断与认证规则，不通过尝试多个端点或认证方式猜测自定义供应商协议。能力补全仍由 ConfigProvider 在 Provider 文件锁内重读后补缺；磁盘上的连接已变更时丢弃旧连接的补全意图。
+
+### 接入规则
 
 Custom Provider 复用相同 route/env/bridge 架构。新增或修改时：
 

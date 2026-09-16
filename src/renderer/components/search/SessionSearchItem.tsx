@@ -13,6 +13,7 @@ import WorkspaceIcon from '@/components/launcher/WorkspaceIcon';
 import SearchHighlight from './SearchHighlight';
 import { getFolderName, formatTime } from '@/utils/taskCenterUtils';
 import UserTagPills from '@/components/session-tags/UserTagPills';
+import Tip from '@/components/Tip';
 
 interface SessionSearchItemProps {
     hit: SessionSearchHit;
@@ -37,10 +38,18 @@ export default memo(function SessionSearchItem({
     onDelete,
     onTagClick,
 }: SessionSearchItemProps) {
-    const { t } = useTranslation('app');
+    const { t, i18n } = useTranslation('app');
     // If we don't have project info, fallback to showing just the agentDir
     const projectName = project ? getFolderName(project.path) : getFolderName(hit.agentDir);
-    const displayLastActiveAt = session?.lastActiveAt ?? hit.lastActiveAt;
+    // The query snapshot owns the sort date. A live metadata update may update
+    // the title, but must not make the visible dates contradict the frozen order.
+    const date = new Date(hit.lastActiveAt);
+    const validDate = Number.isFinite(date.getTime());
+    const displayTime = !validDate ? t('historyOverlay.unknownTime')
+        : date.getFullYear() !== new Date().getFullYear()
+            ? date.toLocaleDateString(i18n.language, { year: 'numeric', month: '2-digit', day: '2-digit' })
+            : formatTime(hit.lastActiveAt);
+    const exactTime = validDate ? t('historyOverlay.lastActivityTime', { time: date.toLocaleString(i18n.language) }) : t('historyOverlay.unknownTime');
     const displayTitle = session?.title ?? hit.title;
     const titleHighlights = displayTitle === hit.title ? hit.titleHighlights : [];
     const turnCountStr = hit.turnCount !== null && hit.turnCount > 0
@@ -59,9 +68,9 @@ export default memo(function SessionSearchItem({
             data-history-search-session-row
         >
             {/* Left column: Time — fixed width so content column is consistently left-aligned */}
-            <div className="mt-1 flex w-16 shrink-0 items-center gap-1 whitespace-nowrap text-xs text-[var(--ink-muted)]/50">
+            <div className="mt-1 flex w-20 shrink-0 items-center gap-1 whitespace-nowrap text-xs text-[var(--ink-muted)]/50">
                 <Clock className="h-2.5 w-2.5" />
-                <span>{formatTime(displayLastActiveAt)}</span>
+                <Tip label={exactTime}><time dateTime={validDate ? date.toISOString() : undefined} aria-label={exactTime}>{displayTime}</time></Tip>
             </div>
 
             {/* Middle column: Title + Snippet */}

@@ -6,7 +6,10 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { createDshBinding } from '../../shared/integrated-runtimes/identity';
-import { createSessionMetadata, type SessionMessage } from '../types/session';
+import { createSessionMetadata as createV2Metadata, type SessionMessage } from '../types/session';
+
+// Existing users keep their legacy transcript format across the 0.4.18 upgrade.
+const createSessionMetadata: typeof createV2Metadata = (...args) => ({ ...createV2Metadata(...args), transcriptFormat: undefined });
 import { snapshotForForkedSession } from '../utils/session-snapshot';
 
 type SessionStoreModule = typeof import('../SessionStore');
@@ -215,7 +218,7 @@ describe('DSH Product mutation journal', () => {
     })).resolves.toEqual({ transcriptChanged: true, reconciledOperations: 1, settledTurnIds: ['product-turn-crash-window'] });
     expect(readHistory).toHaveBeenCalledTimes(1);
     expect(getTurn).toHaveBeenCalledWith('operation-crash-window', undefined);
-    expect(store.getSessionData(sessionId)?.messages).toEqual([
+    expect((await store.getSessionData(sessionId))?.messages).toEqual([
       expect.objectContaining({ id: 'user-crash-window' }),
       expect.objectContaining({
         role: 'assistant',
@@ -225,7 +228,7 @@ describe('DSH Product mutation journal', () => {
         },
       }),
     ]);
-    const assistant = store.getSessionData(sessionId)?.messages[1];
+    const assistant = (await store.getSessionData(sessionId))?.messages[1];
     expect(assistant?.content).toContain('durable recovered answer');
     if (!usageAvailable) expect(assistant?.usage).toBeUndefined();
     await expect(turnReconciliation.reconcileDshTurnsAtStartup({
@@ -233,7 +236,7 @@ describe('DSH Product mutation journal', () => {
       runtimeSessionId,
       controller: { readHistory, getTurn } as never,
     })).resolves.toEqual({ transcriptChanged: false, reconciledOperations: 1, settledTurnIds: ['product-turn-crash-window'] });
-    expect(store.getSessionData(sessionId)?.messages).toHaveLength(2);
+    expect((await store.getSessionData(sessionId))?.messages).toHaveLength(2);
   });
 
   it('preserves the exact Product owner while a resumed DSH turn remains active', async () => {
@@ -309,7 +312,7 @@ describe('DSH Product mutation journal', () => {
       },
     });
     expect(getTurn).toHaveBeenCalledWith('operation-active-owner', undefined);
-    expect(store.getSessionData(sessionId)?.messages).toEqual([
+    expect((await store.getSessionData(sessionId))?.messages).toEqual([
       expect.objectContaining({ id: 'user-active-owner', role: 'user' }),
     ]);
     expect(store.getSessionMetadata(sessionId)).toMatchObject({
@@ -586,7 +589,7 @@ describe('DSH Product mutation journal', () => {
       value: { transcriptChanged: false, cursor },
     });
 
-    expect(store.getSessionData(sessionId)?.messages).toEqual([
+    expect((await store.getSessionData(sessionId))?.messages).toEqual([
       expect.objectContaining({ id: 'user-recovered' }),
       expect.objectContaining({
         id: 'assistant-dsh-stable',
@@ -672,7 +675,7 @@ describe('DSH Product mutation journal', () => {
       value: { transcriptChanged: true, cursor },
     });
 
-    expect(store.getSessionData(sessionId)?.messages[1]).toEqual(expect.objectContaining({
+    expect((await store.getSessionData(sessionId))?.messages[1]).toEqual(expect.objectContaining({
       id: 'assistant-live-id',
       content: repairedContent,
       durationMs: 3_000,
@@ -740,7 +743,7 @@ describe('DSH Product mutation journal', () => {
       success: true,
       value: { transcriptChanged: false, cursor },
     });
-    expect(store.getSessionData(sessionId)?.messages[1]).toEqual(expect.objectContaining({
+    expect((await store.getSessionData(sessionId))?.messages[1]).toEqual(expect.objectContaining({
       id: 'assistant-partial-terminal',
       content,
       completionState: 'partial',
@@ -798,7 +801,7 @@ describe('DSH Product mutation journal', () => {
     })).resolves.toMatchObject({ success: true });
     expect(store.getSessionMetadata(sourceId)?.pendingDshMutation).toBeUndefined();
     expect(store.isHistoryVisibleSession(store.getSessionMetadata(targetId)!)).toBe(true);
-    expect(store.getSessionData(targetId)?.messages.map(message => message.id)).toEqual(['user-1', 'assistant-1']);
+    expect((await store.getSessionData(targetId))?.messages.map(message => message.id)).toEqual(['user-1', 'assistant-1']);
   });
 
   it('finishes Product rewind after a crash between JSONL replacement and index publication', async () => {
@@ -839,7 +842,7 @@ describe('DSH Product mutation journal', () => {
       token: 'rewind-token-1',
     })).resolves.toMatchObject({ success: true });
     expect(store.getSessionMetadata(sessionId)?.pendingDshMutation).toBeUndefined();
-    expect(store.getSessionData(sessionId)?.messages.map(message => message.id)).toEqual(['user-1', 'assistant-1']);
+    expect((await store.getSessionData(sessionId))?.messages.map(message => message.id)).toEqual(['user-1', 'assistant-1']);
   });
 
   it('records the first Product user rewind against Runtime genesis', async () => {

@@ -1,3 +1,4 @@
+import { createPublishedSession } from './fixtures/session-store';
 import {
   existsSync,
   mkdirSync,
@@ -49,11 +50,11 @@ afterAll(() => {
 
 describe('SessionStore user Tag authority', () => {
   it('reuses the first global display name and never changes Session recency', async () => {
-    const first = await store.createSession('/tmp/tag-workspace-a', {
+    const first = await createPublishedSession(store, '/tmp/tag-workspace-a', {
       title: 'First',
       lastActiveAt: '2026-09-01T10:00:00.000Z',
     });
-    const second = await store.createSession('/tmp/tag-workspace-b', {
+    const second = await createPublishedSession(store, '/tmp/tag-workspace-b', {
       title: 'Second',
       lastActiveAt: '2026-09-01T11:00:00.000Z',
     });
@@ -68,7 +69,7 @@ describe('SessionStore user Tag authority', () => {
   });
 
   it('serializes concurrent assignment intents and enforces the fifth Tag in the lock', async () => {
-    const session = await store.createSession('/tmp/tag-concurrency');
+    const session = await createPublishedSession(store, '/tmp/tag-concurrency');
     for (const name of ['One', 'Two', 'Three', 'Four']) {
       expect(await store.mutateSessionUserTag(session.id, { kind: 'add', name })).toMatchObject({ ok: true });
     }
@@ -91,7 +92,7 @@ describe('SessionStore user Tag authority', () => {
   });
 
   it('repairs malformed metadata on the next target Session mutation', async () => {
-    const session = await store.createSession('/tmp/tag-malformed');
+    const session = await createPublishedSession(store, '/tmp/tag-malformed');
     const sessions = readSessions();
     const target = sessions.find((candidate) => candidate.id === session.id)!;
     target.userTags = [' Alpha ', 'alpha', 42, '', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Sixth'];
@@ -107,8 +108,8 @@ describe('SessionStore user Tag authority', () => {
   });
 
   it('renames, confirms same-name merge, and deletes across Sessions in one commit', async () => {
-    const first = await store.createSession('/tmp/tag-global-a');
-    const second = await store.createSession('/tmp/tag-global-b');
+    const first = await createPublishedSession(store, '/tmp/tag-global-a');
+    const second = await createPublishedSession(store, '/tmp/tag-global-b');
     await store.mutateSessionUserTag(first.id, { kind: 'add', name: 'Source' });
     await store.mutateSessionUserTag(first.id, { kind: 'add', name: 'Target' });
     await store.mutateSessionUserTag(second.id, { kind: 'add', name: 'Source' });
@@ -139,7 +140,7 @@ describe('SessionStore user Tag authority', () => {
   });
 
   it('rejects a stale merge confirmation when its target disappeared', async () => {
-    const session = await store.createSession('/tmp/tag-stale-merge');
+    const session = await createPublishedSession(store, '/tmp/tag-stale-merge');
     await store.mutateSessionUserTag(session.id, { kind: 'add', name: 'Source' });
     await store.mutateSessionUserTag(session.id, { kind: 'add', name: 'Target' });
 
@@ -156,7 +157,7 @@ describe('SessionStore user Tag authority', () => {
   });
 
   it('rejects unpaired surrogates without changing the durable index', async () => {
-    const session = await store.createSession('/tmp/tag-invalid-unicode');
+    const session = await createPublishedSession(store, '/tmp/tag-invalid-unicode');
     const before = readFileSync(sessionsPath(), 'utf-8');
     const result = await store.mutateSessionUserTag(session.id, {
       kind: 'add',
@@ -167,7 +168,7 @@ describe('SessionStore user Tag authority', () => {
   });
 
   it('preserves Tags during pending identity migration but does not inherit them into a new Session', async () => {
-    const pending = await store.createSession('/tmp/tag-lifecycle', { id: 'pending-tag-lifecycle' });
+    const pending = await createPublishedSession(store, '/tmp/tag-lifecycle', { id: 'pending-tag-lifecycle' });
     await store.mutateSessionUserTag(pending.id, { kind: 'add', name: 'Pinned context' });
 
     const migrated = await store.migratePendingSessionIdentity(
@@ -180,12 +181,12 @@ describe('SessionStore user Tag authority', () => {
       metadata: { id: 'real-tag-lifecycle', userTags: ['Pinned context'] },
     });
 
-    const fresh = await store.createSession('/tmp/tag-lifecycle');
+    const fresh = await createPublishedSession(store, '/tmp/tag-lifecycle');
     expect(fresh.userTags).toBeUndefined();
   });
 
   it('does not overwrite sibling metadata mutations', async () => {
-    const session = await store.createSession('/tmp/tag-sibling', { title: 'Before' });
+    const session = await createPublishedSession(store, '/tmp/tag-sibling', { title: 'Before' });
     await Promise.all([
       store.mutateSessionUserTag(session.id, { kind: 'add', name: 'Keep me' }),
       store.updateSessionMetadata(session.id, { title: 'After', favorite: true }),
@@ -198,7 +199,7 @@ describe('SessionStore user Tag authority', () => {
   });
 
   it('rejects protected Sessions and leaves the durable file unchanged after a batch write failure', async () => {
-    const protectedSession = await store.createSession('/tmp/tag-protected');
+    const protectedSession = await createPublishedSession(store, '/tmp/tag-protected');
     const sessions = readSessions();
     const protectedRow = sessions.find((candidate) => candidate.id === protectedSession.id)!;
     protectedRow.systemMaintenanceKind = 'memory_gardener';
@@ -206,7 +207,7 @@ describe('SessionStore user Tag authority', () => {
     expect(await store.mutateSessionUserTag(protectedSession.id, { kind: 'add', name: 'Nope' }))
       .toMatchObject({ ok: false, reason: 'protected-session' });
 
-    const writable = await store.createSession('/tmp/tag-io');
+    const writable = await createPublishedSession(store, '/tmp/tag-io');
     await store.mutateSessionUserTag(writable.id, { kind: 'add', name: 'Durable' });
     const before = readFileSync(sessionsPath(), 'utf-8');
     const tmpPath = join(scratchHome, '.myagents', 'sessions.json.tmp');

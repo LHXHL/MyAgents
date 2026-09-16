@@ -6,6 +6,13 @@
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CLIPROXY_BUILD_ONLY=false
+if [ "${1:-}" = "--build-only" ]; then
+    CLIPROXY_BUILD_ONLY=true
+elif [ "$#" -gt 0 ]; then
+    echo "Usage: ./build_dev.sh [--build-only]"
+    exit 1
+fi
 
 # 加载 .env 文件（如果存在）
 if [ -f "${PROJECT_DIR}/.env" ]; then
@@ -66,10 +73,14 @@ echo -e "${BLUE}[准备] 检查原生推理构建依赖 (${DEV_NATIVE_TARGET})..
 node "${PROJECT_DIR}/scripts/prepare-native-inference.mjs" "$DEV_NATIVE_TARGET" --check-prerequisites
 echo -e "${GREEN}✓ 原生推理构建依赖检查完成${NC}"
 echo ""
+CLIPROXY_HOST_PLATFORM="darwin-x64"
+if [[ "$DEV_NATIVE_TARGET" == "aarch64-apple-darwin" ]]; then CLIPROXY_HOST_PLATFORM="darwin-arm64"; fi
+node "${PROJECT_DIR}/scripts/prepare-cliproxy.mjs" "$CLIPROXY_HOST_PLATFORM"
 
 # 杀死残留 MyAgents 实例（避免生产版和 debug 版同时运行互相打架）
 # 优先使用 PID lock file 精确杀——只杀 MyAgents 主进程，不误杀其他 node 进程。
 # SIGKILL(-9) 防止 macOS Automatic Termination 自动重启被杀的 .app。
+if [ "$CLIPROXY_BUILD_ONLY" != true ]; then
 echo -e "${BLUE}[准备] 杀死残留进程...${NC}"
 LOCK_FILE="$HOME/.myagents/app.lock"
 if [ -f "$LOCK_FILE" ]; then
@@ -88,6 +99,7 @@ pkill -9 -f "node.*server-dist.js" 2>/dev/null || true
 sleep 1  # 等待进程完全退出
 echo -e "${GREEN}✓ 进程已清理${NC}"
 echo ""
+fi
 
 # 清理旧构建（包括 Rust 缓存的 resources）
 echo -e "${BLUE}[准备] 清理旧构建...${NC}"
@@ -161,22 +173,17 @@ fi
 echo -e "${GREEN}✓ TypeScript 检查通过${NC}"
 echo ""
 
-# 构建前端
+# 构建本次全部业务产物（Tauri 钩子不重复执行）
 echo -e "${BLUE}[2/3] 构建前端...${NC}"
 export VITE_DEBUG_MODE=true
 echo -e "${YELLOW}  VITE_DEBUG_MODE=${VITE_DEBUG_MODE}${NC}"
-npm run build:web
+npm run build:assets
 echo -e "${GREEN}✓ 前端构建完成${NC}"
 echo ""
 
-# 强制触发 Rust 重新编译 (确保 sidecar.rs 的逻辑修改生效)
-touch "${PROJECT_DIR}/src-tauri/src/sidecar.rs"
-touch "${PROJECT_DIR}/src-tauri/src/main.rs"
-
-# 构建 Tauri 应用
+# Cargo tracks Rust sources and build-script inputs; keep its incremental cache.
+# Bundle/resources staging above is independent of Rust source freshness.
 echo -e "${BLUE}[3/3] 构建 Tauri 应用 (Debug 模式, 仅 App)...${NC}"
-# 强制移除旧的可执行文件，防止 cargo 偷懒不重新链接
-rm -f "${PROJECT_DIR}/src-tauri/target/debug/app"
 
 # 保留签名但禁用公证 (签名是必需的，否则 TCC 权限无法持久化)
 # 参考: https://developer.apple.com/forums/thread/698337
@@ -220,11 +227,7 @@ if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
 fi
 echo -e "  ${GREEN}✓ claude (${SDK_TRIPLE}) 已就绪${NC}"
 
-# myagents CLI 的打包不在这里——`npm run tauri:build` 的 beforeBuildCommand
-# (tauri.conf.json) 已包含 `npm run build:cli`。该 target 会清理 CLI staging
-# 并只生成 bundle authority `myagents.cjs`；dev 脚本只需保证目录存在，避免
-# Tauri bundle 阶段的 resource 校验报错。
-mkdir -p "${PROJECT_DIR}/src-tauri/resources/cli"
+# CLI staging is produced by the single build:assets call above.
 
 # Debug 模式签名 (optional — build_macos.sh per-TARGET loop 已处理 Node + Claude)
 # build_dev.sh 只构建 host arch 单个，本段处理该情况下的 Node + Claude 签名。
@@ -242,7 +245,7 @@ echo -e "${YELLOW}这可能需要几分钟...${NC}"
 # Dev App 不发布 updater artifact，也不应要求把发布私钥放进开发环境。
 # 用 Tauri 的 config merge 覆盖 release 默认值，保留普通 macOS App 签名，
 # 同时让真正的编译/打包失败保持非零退出，禁止 `|| true` 制造假成功。
-DEV_TAURI_CONFIG='{"bundle":{"createUpdaterArtifacts":false}}'
+DEV_TAURI_CONFIG='{"build":{"beforeBuildCommand":null},"bundle":{"createUpdaterArtifacts":false}}'
 npm run tauri:build -- --debug --bundles app --config "${DEV_TAURI_CONFIG}"
 
 # 查找输出

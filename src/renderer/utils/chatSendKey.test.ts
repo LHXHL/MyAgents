@@ -1,8 +1,8 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { i18n } from '@/i18n';
 import {
-  isImeComposingEvent,
   resolveEnterKeyAction,
   sendHintLabel,
   sendKeyHint,

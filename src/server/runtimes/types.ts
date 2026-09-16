@@ -1,5 +1,6 @@
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 import type { RuntimeAgentWorkControl, RuntimeAgentWorkTree } from '../../shared/types/subagent-lifecycle';
+import type { AsyncQuestionSet } from '../../shared/asyncUserQuestions';
 // AgentRuntime abstraction types (v0.1.59)
 // Defines the interface that all runtime implementations must satisfy
 
@@ -232,10 +233,17 @@ export interface AgentPlanTodo {
  * Unified event emitted by any runtime, consumed by the session layer.
  * The session layer maps these to SSE broadcast calls.
  */
-export type UnifiedEvent =
+export interface NativeContentSource {
+  messageId: string;
+  blockIndex?: number;
+  parentToolUseId?: string;
+  blockStart?: Record<string, unknown>;
+}
+
+export type UnifiedEvent = (
   // === Text streaming ===
   | { kind: 'text_delta'; text: string; traceId?: string; subAgent?: SubAgentScope }
-  | { kind: 'text_stop'; traceId?: string; subAgent?: SubAgentScope }
+  | { kind: 'text_stop'; nativeText?: string; traceId?: string; subAgent?: SubAgentScope; asyncQuestions?: AsyncQuestionSet }
 
   // === Thinking/reasoning streaming ===
   | { kind: 'thinking_start'; index: number; traceId?: string; subAgent?: SubAgentScope }
@@ -456,7 +464,8 @@ export type UnifiedEvent =
   | { kind: 'user_message_cancelled'; clientUserMessageId: string }
 
   // === Passthrough for unrecognized events ===
-  | { kind: 'raw'; data: unknown };
+  | { kind: 'native_retraction'; messageIds: string[]; scope?: 'local' | 'session'; parentToolUseId?: string }
+  | { kind: 'raw'; data: unknown }) & { nativeSource?: NativeContentSource };
 
 /**
  * Callback for unified events from the runtime
@@ -504,6 +513,8 @@ export interface AgentRuntime {
 
   /** Query available models from the CLI (may spawn a temporary process) */
   queryModels(options?: {
+    /** An existing Session process is authoritative over an installed upgrade. */
+    process?: RuntimeProcess;
     runtimeSource?: RuntimeSource;
     envPolicy?: RuntimeEnvPolicy;
     signal?: AbortSignal;

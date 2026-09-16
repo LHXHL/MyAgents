@@ -13,6 +13,7 @@
 // icon-button toggle (which was the PR1 pattern — it required a click
 // just to reveal the input).
 
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useRef, useState } from 'react';
 import { Search, X } from 'lucide-react';
 import type { CSSProperties, RefObject } from 'react';
@@ -130,6 +131,7 @@ export function SearchPill({
           onBlur?.();
         }}
         onKeyDown={(e) => {
+          if (isImeComposingEvent(e)) return;
           if (e.key === 'Escape' && value && onClear) {
             e.preventDefault();
             onClear();

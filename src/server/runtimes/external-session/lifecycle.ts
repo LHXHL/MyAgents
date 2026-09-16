@@ -4,7 +4,7 @@ import type { RuntimeType } from '../../../shared/types/runtime';
 import type { SystemInitInfo } from '../../../shared/types/system';
 import type { SessionOrigin } from '../../../shared/session-origin';
 import type { OfficialToolId } from '../../../shared/official-tools';
-import type { McpEffectiveSnapshot } from '../../../shared/mcpEffectiveState';
+import { invalidateMcpEffectiveSnapshot, type McpEffectiveSnapshot } from '../../../shared/mcpEffectiveState';
 import type { AgentRuntime, RuntimeProcess } from '../types';
 import type { ExternalSessionState, ExternalSystemInitPayload } from './types';
 
@@ -47,7 +47,7 @@ export function resetExternalLifecycleState(): void {
   externalSystemInitPayload = null;
   externalMcpEffectiveSnapshot = null;
   externalMcpEffectiveRevision = 0;
-  externalRuntimeGeneration = 0;
+  externalRuntimeGeneration += 1;
   externalSessionState = 'idle';
   isPrewarmingSession = false;
   liveRevision = 0;
@@ -60,6 +60,11 @@ export function nextExternalLiveRevision(): number {
 
 export function getExternalLiveRevision(): number {
   return liveRevision;
+}
+
+/** Native callback authority survives turn boundaries, but not a process reset. */
+export function getExternalRuntimeGeneration(): number {
+  return externalRuntimeGeneration;
 }
 
 export async function awaitExternalLifecycleStarting(): Promise<void> {
@@ -258,6 +263,13 @@ export function getExternalMcpEffectiveSnapshot(): McpEffectiveSnapshot | null {
         tools: [...externalMcpEffectiveSnapshot.tools],
       }
     : null;
+}
+
+export function invalidateExternalMcpEffectiveSnapshot(): McpEffectiveSnapshot | null {
+  if (!externalMcpEffectiveSnapshot) return null;
+  externalMcpEffectiveSnapshot = invalidateMcpEffectiveSnapshot(externalMcpEffectiveSnapshot);
+  externalMcpEffectiveRevision = externalMcpEffectiveSnapshot.revision;
+  return getExternalMcpEffectiveSnapshot();
 }
 
 export function setExternalPrewarmingSession(value: boolean): void {

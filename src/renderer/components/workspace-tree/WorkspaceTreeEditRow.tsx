@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { FilePlus, FolderPlus } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { TFunction } from "i18next";
@@ -121,7 +122,7 @@ export const WorkspaceTreeEditRow = memo(function WorkspaceTreeEditRow({
           e.stopPropagation();
           // IME composition (中文输入选候选词) also presses Enter — committing
           // there would create/rename with a half-composed name.
-          if (e.nativeEvent.isComposing) return;
+          if (isImeComposingEvent(e)) return;
           if (e.key === "Enter") {
             e.preventDefault();
             settle("commit");

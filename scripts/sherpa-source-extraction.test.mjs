@@ -13,6 +13,8 @@ import test from 'node:test';
 
 import {
   extractSherpaBuildSource,
+  patchHclustWindowsFenvPragma,
+  patchSherpaRawEvidence,
   patchSherpaWindowsOnnxRuntimeImport,
 } from './sherpa-source-extraction.mjs';
 
@@ -121,6 +123,60 @@ test('rejects Sherpa CMake drift instead of applying an ambiguous patch', () => 
       readFileSync(cmakePath, 'utf8'),
       'unexpected upstream content\n',
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('guards only the unsupported hclust pragma on MSVC and is idempotent', () => {
+  const root = mkdtempSync(join(tmpdir(), 'myagents-hclust-pragma-'));
+  const sourcePath = join(root, 'fastcluster_dm.cpp');
+  const source = 'before\n#pragma STDC FENV_ACCESS on\n#include <fenv.h>\nafter\n';
+  writeFileSync(sourcePath, source);
+  try {
+    assert.equal(patchHclustWindowsFenvPragma(root), true);
+    const expected =
+      'before\n#ifndef _MSC_VER\n#pragma STDC FENV_ACCESS on\n#endif\n#include <fenv.h>\nafter\n';
+    assert.equal(readFileSync(sourcePath, 'utf8'), expected);
+    assert.equal(patchHclustWindowsFenvPragma(root), false);
+    assert.equal(readFileSync(sourcePath, 'utf8'), expected);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects missing or ambiguous hclust pragmas without changing the source', () => {
+  const root = mkdtempSync(join(tmpdir(), 'myagents-hclust-drift-'));
+  const sourcePath = join(root, 'fastcluster_dm.cpp');
+  try {
+    for (const source of [
+      'unexpected upstream content\n',
+      '#pragma STDC FENV_ACCESS on\n#pragma STDC FENV_ACCESS on\n',
+    ]) {
+      writeFileSync(sourcePath, source);
+      assert.throws(
+        () => patchHclustWindowsFenvPragma(root),
+        /no longer matches the expected FENV_ACCESS pragma/,
+      );
+      assert.equal(readFileSync(sourcePath, 'utf8'), source);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test('raw speaker extension rejects an unverified upstream before writing files', () => {
+  const root = mkdtempSync(join(tmpdir(), 'myagents-sherpa-raw-drift-'));
+  try {
+    const core = join(root, 'sherpa-onnx/csrc');
+    mkdirSync(core, { recursive: true });
+    const header = join(core, 'offline-speaker-diarization.h');
+    const unknown = '#include <string>\nclass OfflineSpeakerDiarization {};\n';
+    writeFileSync(header, unknown);
+    assert.throws(() => patchSherpaRawEvidence(root), /does not match/);
+    assert.equal(readFileSync(header, 'utf8'), unknown);
+    assert.equal(existsSync(join(core, 'myagents-raw-evidence.h')), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

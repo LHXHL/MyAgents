@@ -346,3 +346,47 @@ test("prepare lock serializes concurrent callers in one repository cache", async
   await Promise.all([first, second]);
   assert.deepEqual(events, ["first:start", "first:end", "second:start"]);
 });
+
+test('locked resource transport is bounded by default and validates before publishing cache', async t => {
+  const root = scratch();
+  const bytes = Buffer.from('locked resource');
+  const fixture = join(root, 'source'); writeFileSync(fixture, bytes);
+  const entry = { size: bytes.length, sha256: sha256File(fixture), url: 'https://example.invalid/resource' };
+  const timeouts = [];
+  t.mock.method(AbortSignal, 'timeout', ms => { timeouts.push(ms); return new AbortController().signal; });
+  t.mock.method(globalThis, 'fetch', async () => new Response(bytes));
+  const options = { cacheRoot: root, entry, cacheName: 'test.bin' };
+  const cached = await acquireLockedResource(options);
+  assert.deepEqual(timeouts, [30 * 60 * 1000]);
+  assert.deepEqual(readFileSync(cached), bytes);
+  t.mock.method(globalThis, 'fetch', async () => { throw new Error('cache must be offline'); });
+  assert.equal(await acquireLockedResource({ ...options, offline: true }), cached);
+  writeFileSync(cached, 'corrupt');
+  await assert.rejects(acquireLockedResource({ ...options, fetchBytes: async () => Buffer.from('bad') }), /digest mismatch/);
+  assert.equal(validateLockedFile(cached, entry), false);
+});
+
+test('curl fallback receives enough process time for every bounded retry', async t => {
+  const { default: childProcess } = await import('node:child_process');
+  const { syncBuiltinESMExports } = await import('node:module');
+  const root = scratch(); const bytes = Buffer.from('curl resource');
+  const fixture = join(root, 'source'); writeFileSync(fixture, bytes);
+  const entry = { size: bytes.length, sha256: sha256File(fixture), url: 'https://example.invalid/resource' };
+  t.mock.method(globalThis, 'fetch', async () => { throw new TypeError('fetch failed'); });
+  t.mock.method(globalThis, 'setTimeout', callback => { callback(); return 0; });
+  let calls = 0;
+  const stub = t.mock.method(childProcess, 'execFileSync', (binary, args, options) => {
+    calls++;
+    assert.equal(binary, 'curl');
+    assert.equal(args[args.indexOf('--max-time') + 1], '300');
+    assert.equal(args[args.indexOf('--retry') + 1], '3');
+    assert.ok(options.timeout >= 4 * 300_000 + 3000);
+    writeFileSync(args[args.indexOf('--output') + 1], bytes);
+  });
+  syncBuiltinESMExports();
+  try {
+    const path = await acquireLockedResource({ cacheRoot: root, entry, cacheName: 'test.bin', downloadTimeoutMs: 300_000 });
+    assert.deepEqual(readFileSync(path), bytes);
+    assert.equal(calls, 1);
+  } finally { stub.mock.restore(); syncBuiltinESMExports(); }
+});

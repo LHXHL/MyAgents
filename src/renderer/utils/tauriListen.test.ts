@@ -11,7 +11,7 @@ const mockUnlistenSpies: Array<ReturnType<typeof vi.fn>> = [];
 const mockHandlers: Map<string, Handler> = new Map();
 
 vi.mock('@tauri-apps/api/event', () => ({
-    listen: (event: string, handler: Handler) => mockListen(event, handler),
+    listen: (...args: unknown[]) => mockListen(...args),
 }));
 
 const setupMockListen = (delayMs = 0): void => {
@@ -42,6 +42,22 @@ afterEach(() => {
 });
 
 describe('listenWithCleanup', () => {
+    it('preserves a Webview target through registration and abort cleanup', async () => {
+        setupMockListen();
+        const ac = new AbortController();
+        const handler = vi.fn();
+        const options = { target: { kind: 'Webview' as const, label: 'main' } };
+        const result = await listenWithCleanup('window:history-command', handler, ac.signal, options);
+        expect(mockListen).toHaveBeenCalledExactlyOnceWith('window:history-command', expect.any(Function), options);
+        fireEvent('window:history-command', 'undo');
+        expect(handler).toHaveBeenCalledExactlyOnceWith({ payload: 'undo' });
+        ac.abort();
+        fireEvent('window:history-command', 'redo');
+        expect(handler).toHaveBeenCalledTimes(1);
+        expect(mockUnlistenSpies[0]).toHaveBeenCalledTimes(1);
+        expect(result.isRegistered()).toBe(false);
+    });
+
     describe('happy path', () => {
         it('registers a listener and forwards events to the handler', async () => {
             setupMockListen();
@@ -51,7 +67,7 @@ describe('listenWithCleanup', () => {
             const result = await listenWithCleanup<string>('test:event', handler, ac.signal);
 
             expect(result.isRegistered()).toBe(true);
-            expect(mockListen).toHaveBeenCalledExactlyOnceWith('test:event', expect.any(Function));
+            expect(mockListen).toHaveBeenCalledExactlyOnceWith('test:event', expect.any(Function), undefined);
 
             fireEvent('test:event', 'hello');
             expect(handler).toHaveBeenCalledExactlyOnceWith({ payload: 'hello' });

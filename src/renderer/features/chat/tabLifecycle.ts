@@ -2,6 +2,7 @@ import type { ChatTab } from '@/features/chat/tabContract';
 import type { TabLifecycleAdapter } from '@/tab-workspace/useTabCloseController';
 
 interface ChatLifecycleDependencies {
+  flushFileEdits?: (tabId: string) => Promise<boolean>;
   startBackgroundCompletion: (sessionId: string) => Promise<{ started: boolean }>;
   stopSseProxy: (tabId: string) => Promise<unknown>;
   releaseTabSession: (sessionId: string, tabId: string) => Promise<unknown>;
@@ -11,6 +12,7 @@ interface ChatLifecycleDependencies {
 }
 
 export function createChatTabLifecycle({
+  flushFileEdits,
   startBackgroundCompletion,
   stopSseProxy,
   releaseTabSession,
@@ -19,6 +21,7 @@ export function createChatTabLifecycle({
   log,
 }: ChatLifecycleDependencies): TabLifecycleAdapter<ChatTab> {
   return {
+    prepareClose: tab => flushFileEdits ? flushFileEdits(tab.id).then(saved => saved ? 'allow' : 'blocked') : 'allow',
     afterDetach: async (tab) => {
       try {
         if (tab.sessionId) {

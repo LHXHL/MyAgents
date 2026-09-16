@@ -27,6 +27,28 @@ function makeTransport() {
 }
 
 describe('materializePendingSessionConfig', () => {
+  it('confirms an already committed binding after a lost acknowledgement without reverting Rust', async () => {
+    const transport = makeTransport();
+    transport.postForSession.mockRejectedValueOnce(new Error('ack lost'));
+    transport.postForSession.mockResolvedValueOnce({ success: false, error: 'already committed' });
+    const result = await materializePendingSessionConfig({
+      pendingSessionId: 'pending-tab-1', tabId: 'tab-1', workspacePath: '/tmp/workspace',
+      snapshotPatch: {}, transport,
+    });
+    expect(result).toEqual({ sessionId: 'real-session', metadata });
+    expect(transport.upgradeSessionId).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains the Rust target identity when both rollback and commit confirmation are uncertain', async () => {
+    const transport = makeTransport();
+    transport.postForSession.mockRejectedValue(new Error('transport unavailable'));
+    await expect(materializePendingSessionConfig({
+      pendingSessionId: 'pending-tab-1', tabId: 'tab-1', workspacePath: '/tmp/workspace',
+      snapshotPatch: {}, transport,
+    })).rejects.toThrow('transport unavailable');
+    expect(transport.upgradeSessionId).toHaveBeenCalledTimes(1);
+  });
+
   it('prepares, upgrades Rust, commits through the prepared session id, and returns metadata', async () => {
     const transport = makeTransport();
 

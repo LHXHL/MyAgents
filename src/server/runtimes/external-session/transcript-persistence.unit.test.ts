@@ -13,7 +13,6 @@ import {
   clearExternalSessionMessages,
   getExternalSessionMessagesSnapshot,
   getExternalTranscriptSessionId,
-  persistExternalForkTranscript,
   persistExternalUserMessageAppend,
   pushExternalSessionMessage,
   removeAndPersistExternalSessionMessage,
@@ -23,6 +22,7 @@ import {
 } from './transcript-persistence';
 
 vi.mock('../../SessionStore', () => ({
+  getActiveSessionTranscript: vi.fn(),
   appendSessionMessages: vi.fn(),
   loadSessionTranscript: vi.fn(),
   mutateSessionTranscript: vi.fn(),
@@ -92,17 +92,7 @@ describe('external transcript persistence owner', () => {
     });
   });
 
-  it('refuses to mix external fork rows into a non-empty target transcript', async () => {
-    vi.mocked(loadSessionTranscript).mockResolvedValueOnce({
-      messages: [message('conflict')],
-      cursor: cursor(1),
-      hasMalformedRows: false,
-    });
 
-    await expect(persistExternalForkTranscript('fork-session', [message('fork-1')]))
-      .rejects.toThrow('non-empty target');
-    expect(appendSessionMessages).not.toHaveBeenCalled();
-  });
 
   it('rehydrates a short projection before append instead of shrinking disk', async () => {
     const durable = [message('0'), message('1', 'assistant'), message('2')];

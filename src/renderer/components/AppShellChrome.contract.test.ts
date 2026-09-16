@@ -66,7 +66,7 @@ describe('App Shell chrome contract', () => {
     expect(chat).not.toContain(
       "isSessionLoading && sessionRestoreMode === 'live-recovery'",
     );
-    expect(chat).toContain('if (isSessionLoading || (!text');
+    expect(chat).toMatch(/if\s*\(\s*isSessionLoading\s*\|\|\s*\(!text/);
     expect(chat).toContain('sendBlocked={isSessionLoading}');
     expect(
       tabProvider.match(/isRestoreActionBlocked/g)?.length ?? 0,
@@ -100,7 +100,7 @@ describe('App Shell chrome contract', () => {
       rightActions.indexOf('workspaceFiles.directory.collapseWorkspace'),
     );
     expect(rightActions).toContain(
-      'className="flex h-7 w-7 items-center justify-center rounded-lg',
+      'className="compact-action ',
     );
     expect(chat).toContain(
       'className="flex h-7 w-7 items-center justify-center rounded-lg',
@@ -273,13 +273,9 @@ describe('App Shell chrome contract', () => {
       workspaceStylesEnd,
     );
 
-    expect(chat).toContain(
-      'const [workspacePanelDisclosure, dispatchWorkspacePanelDisclosure] = useReducer(',
-    );
+    expect(chat).toMatch(/const \[workspacePanelDisclosure, dispatchWorkspacePanelDisclosure\]\s*=\s*useReducer\(/);
     expect(chat).toContain('reduceWorkspacePanelDisclosure,');
-    expect(chat).toContain(
-      '() => createWorkspacePanelDisclosureState(shouldShowWorkspaceByDefault()),',
-    );
+    expect(chat).toMatch(/\(\) =>\s*createWorkspacePanelDisclosureState\(shouldShowWorkspaceByDefault\(\)\),/);
     expect(chat).toContain("dispatchWorkspacePanelDisclosure({ type: 'open' });");
     expect(chat).toContain("dispatchWorkspacePanelDisclosure({ type: 'close' });");
     expect(chat).toContain("dispatchWorkspacePanelDisclosure({ type: 'settle-close' });");
@@ -288,9 +284,7 @@ describe('App Shell chrome contract', () => {
     expect(chat).toContain('{workspacePanelMounted && (');
     expect(chat).toContain('data-chat-workspace-motion=');
     expect(chat).toContain('data-chat-conversation');
-    expect(chat).toContain(
-      'data-chat-workspace-panel-motion={workspacePanelMotion ?? undefined}',
-    );
+    expect(chat).toMatch(/data-chat-workspace-panel-motion=\{\s*workspacePanelMotion \?\? undefined\s*\}/);
     expect(chat).toContain('data-chat-workspace-divider');
     expect(chat).toContain('absolute bottom-4 left-0 top-4 z-20 w-px');
     expect(chat).not.toContain('flex-col border-l border-[var(--line-subtle)]');

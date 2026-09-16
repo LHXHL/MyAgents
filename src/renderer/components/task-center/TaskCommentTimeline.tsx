@@ -72,6 +72,7 @@ export function TaskCommentTimeline({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef(new Map<string, HTMLDivElement>());
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isComposingRef = useRef(false);
@@ -82,6 +83,32 @@ export function TaskCommentTimeline({
   useEffect(() => {
     onTargetReadyRef.current = onTargetReady;
   }, [onTargetReady]);
+
+  const scrollToComment = useCallback((
+    commentId: string,
+    block: "center" | "nearest",
+    behavior: ScrollBehavior = "smooth",
+  ) => {
+    const viewport = scrollRef.current;
+    const target = itemRefs.current.get(commentId);
+    if (!viewport || !target) return;
+    const bounds = target.getBoundingClientRect();
+    const top = bounds.top - viewport.getBoundingClientRect().top - viewport.clientTop;
+    const bottom = top + bounds.height;
+    const height = viewport.clientHeight;
+    let delta = top + (bounds.height - height) / 2;
+    if (block === "nearest") {
+      // Visible rows, including a tall row spanning the viewport, stay put.
+      if (top < 0 && bottom > height) delta = 0;
+      else if (top < 0) delta = bounds.height <= height ? top : bottom - height;
+      else if (bottom > height) delta = bounds.height <= height ? bottom - height : top;
+      else delta = 0;
+    }
+    // Reading navigation owns only this viewport. Element.scrollIntoView also
+    // scrolls ancestors (even overflow:hidden), which can displace drawer chrome.
+    // Issue even a zero delta so the newest navigation cancels an older animation.
+    viewport.scrollTo({ top: viewport.scrollTop + delta, behavior });
+  }, []);
 
   const resizeTextarea = useCallback(() => {
     const textarea = textareaRef.current;
@@ -119,12 +146,12 @@ export function TaskCommentTimeline({
     if (loading || !targetCommentId) return;
     if (notifiedTargetRef.current === targetCommentId) return;
     const target = itemRefs.current.get(targetCommentId);
-    target?.scrollIntoView({ block: "center", behavior: "smooth" });
+    scrollToComment(targetCommentId, "center");
     target?.focus({ preventScroll: true });
     if (!target) return;
     notifiedTargetRef.current = targetCommentId;
     onTargetReadyRef.current?.(true);
-  }, [loading, targetCommentId, comments]);
+  }, [loading, targetCommentId, comments, scrollToComment]);
 
   useEffect(() => {
     if (!targetCommentId) notifiedTargetRef.current = null;
@@ -211,14 +238,14 @@ export function TaskCommentTimeline({
       );
       requestAnimationFrame(() => {
         if (!anchor) return;
-        itemRefs.current.get(anchor)?.scrollIntoView({ block: "nearest" });
+        scrollToComment(anchor, "nearest", "auto");
       });
     } catch (loadError) {
       setError(extractErrorMessage(loadError));
     } finally {
       setLoadingEarlier(false);
     }
-  }, [comments, loadingEarlier, nextBefore, task.id]);
+  }, [comments, loadingEarlier, nextBefore, task.id, scrollToComment]);
 
   const loadNewer = useCallback(async () => {
     if (!nextAfter || loadingNewer) return;
@@ -263,9 +290,7 @@ export function TaskCommentTimeline({
       setBody("");
       setReplyTo(null);
       requestAnimationFrame(() => {
-        itemRefs.current
-          .get(comment.id)
-          ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        scrollToComment(comment.id, "nearest");
       });
     } catch (submitError) {
       // Persistence failures retain the draft. A persisted-but-rejected
@@ -274,7 +299,7 @@ export function TaskCommentTimeline({
     } finally {
       setSending(false);
     }
-  }, [body, replyTo?.id, sending, task.id]);
+  }, [body, replyTo?.id, sending, task.id, scrollToComment]);
 
   const retry = useCallback(
     async (comment: TaskComment) => {
@@ -309,7 +334,7 @@ export function TaskCommentTimeline({
 
   return (
     <div ref={timelineRef} className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto px-8 pb-8 pt-4 max-sm:px-5">
+      <div ref={scrollRef} className="min-h-0 min-w-0 flex-1 overflow-y-auto px-8 pb-8 pt-4 max-sm:px-5">
         <div className="mx-auto w-full min-w-0 max-w-[860px]">
           {children}
           <section
@@ -441,12 +466,7 @@ export function TaskCommentTimeline({
                           disabled={!parent}
                           onClick={() =>
                             parent &&
-                            itemRefs.current
-                              .get(parent.id)
-                              ?.scrollIntoView({
-                                block: "center",
-                                behavior: "smooth",
-                              })
+                            scrollToComment(parent.id, "center")
                           }
                           aria-label={t("comments.replyQuote", {
                             author: parentAuthor,

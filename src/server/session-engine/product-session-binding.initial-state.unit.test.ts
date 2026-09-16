@@ -6,11 +6,11 @@ import {
 } from './product-session-binding';
 
 describe('product Session binding birth', () => {
-  it('stays unbound until Session bootstrap or an adapter explicitly selects an identity', () => {
+  it('stays unbound until Session bootstrap or an adapter explicitly selects an identity', async () => {
     expect(currentProductSessionId).toBe('');
     expect(process.env.MYAGENTS_SESSION_ID).toBeUndefined();
 
-    const sessionId = resetProductSessionBinding({ workspacePath: '/workspace' });
+    const sessionId = await resetProductSessionBinding({ workspacePath: '/workspace' });
 
     expect(sessionId).not.toBe('');
     expect(currentProductSessionId).toBe(sessionId);

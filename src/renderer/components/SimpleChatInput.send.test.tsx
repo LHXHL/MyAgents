@@ -4,7 +4,7 @@ import { createRef } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ImagePreviewProvider } from '@/context/ImagePreviewContext';
-import type { Provider } from '@/config/types';
+import type { PermissionMode, Provider } from '@/config/types';
 import { i18n } from '@/i18n';
 import { CUSTOM_EVENTS } from '../../shared/constants';
 import { MANAGED_BROWSER_MCP_ID } from '../../shared/browserTools';
@@ -94,6 +94,33 @@ describe('SimpleChatInput send paths', () => {
     workspaceMocks.service.listSlashCommands.mockResolvedValue([]);
   });
 
+  it('shows native managed model efforts and default, including future values', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const onReasoningEffortChange = vi.fn();
+    const provider = { id: 'codex-sub', name: 'Codex', primaryModel: 'sol', models: [{ model: 'sol', modelName: 'Sol', defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'future-tier', description: 'Native future tier' }] }] } as Provider;
+    renderInput({ runtime: 'builtin', provider, providers: [provider], selectedModel: 'sol', onReasoningEffortChange });
+    fireEvent.click(screen.getByTitle('切换模型'));
+    fireEvent.mouseEnter(screen.getByText('推理强度').parentElement!);
+    expect(screen.getAllByText('默认 (low)').length).toBeGreaterThan(0);
+    expect(screen.queryByText('minimal')).not.toBeInTheDocument();
+    expect(screen.queryByText('max')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('future-tier'));
+    expect(onReasoningEffortChange).toHaveBeenCalledWith('future-tier');
+  });
+
+  it('does not borrow Global capabilities when a Session catalog is unknown', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const onReasoningEffortChange = vi.fn();
+    const provider = { id: 'codex-sub', name: 'Codex', primaryModel: 'sol', models: [{ model: 'sol', modelName: 'Sol', defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'new-only-tier' }] }] } as Provider;
+    renderInput({ runtime: 'builtin', provider, providers: [provider], selectedModel: 'sol', reasoningEffort: 'high', managedReasoningModel: null, onReasoningEffortChange });
+    fireEvent.click(screen.getByTitle('切换模型'));
+    fireEvent.mouseEnter(screen.getByText('推理强度').parentElement!);
+    expect(screen.queryByText('new-only-tier')).not.toBeInTheDocument();
+    expect(screen.queryByText('默认 (low)')).not.toBeInTheDocument();
+    expect(screen.getByText('high')).toBeInTheDocument();
+    expect(onReasoningEffortChange).not.toHaveBeenCalled();
+  });
+
   it('keeps keyboard and button send disabled while Session restore owns admission', async () => {
     const onSend = renderInput({ sendBlocked: true, providerAvailable: true });
     const textbox = screen.getByRole('textbox');
@@ -146,7 +173,7 @@ describe('SimpleChatInput send paths', () => {
       name: 'Codex',
       runtime: 'codex' as const,
       modes: CODEX_PERMISSION_MODES,
-      expectedIcons: ['shield-question-mark', 'file-pen-line', 'shield-check', 'lock-open'],
+      expectedIcons: ['file-pen-line', 'shield-check', 'lock-open'],
     },
   ])('maps $name permission boundaries to the shared line icon vocabulary', async ({ runtime, modes, expectedIcons }) => {
     await i18n.changeLanguage('zh-CN');
@@ -158,6 +185,30 @@ describe('SimpleChatInput send paths', () => {
     for (const iconName of expectedIcons) {
       expect(document.querySelector(`.lucide-${iconName}`)).toBeInTheDocument();
     }
+  });
+
+  it('describes managed Codex action as automatic review without changing the product mode names', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    renderInput({ runtime: 'builtin', provider: { id: 'codex-sub', name: 'Codex' } as Provider, permissionMode: 'auto' });
+    await user.click(screen.getByTitle('切换执行模式'));
+    expect(screen.getByText('由 Codex 自动审查审批请求，仅潜在不安全操作需确认')).toBeInTheDocument();
+    expect(screen.getByText('规划')).toBeInTheDocument();
+    expect(screen.getByText('自主行动')).toBeInTheDocument();
+  });
+
+  it('offers native Codex three choices and keeps the legacy read-only caption truthful', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    const onPermissionModeChange = vi.fn();
+    renderInput({ runtime: 'codex', runtimePermissionModes: CODEX_PERMISSION_MODES, permissionMode: 'suggest' as PermissionMode, onPermissionModeChange });
+    expect(screen.getByTitle('切换执行模式')).toHaveTextContent('Suggest');
+    await user.click(screen.getByTitle('切换执行模式'));
+    expect(screen.getByText('Ask for approval')).toBeInTheDocument();
+    expect(screen.getByText('Full Access')).toBeInTheDocument();
+    expect(screen.getAllByText('Suggest')).toHaveLength(1);
+    await user.click(screen.getByText('Approve for me'));
+    expect(onPermissionModeChange).toHaveBeenCalledWith('full-auto');
   });
 
   it.each(['chat', 'launcher'] as const)('keeps the scheduled-task action inside the animated plus menu in %s mode', async (mode) => {

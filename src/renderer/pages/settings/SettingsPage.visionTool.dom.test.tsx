@@ -7,6 +7,8 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
+import { REACT_LOG_EVENT } from "@/utils/frontendLogger";
 
 import { ToastProvider } from "@/components/Toast";
 import { DEFAULT_CONFIG, type AppConfig, type Provider } from "@/config/types";
@@ -18,6 +20,7 @@ const settingsMocks = vi.hoisted(() => ({
   atomicModifyConfig: vi.fn(),
   refreshConfig: vi.fn(),
   apiPostJson: vi.fn(),
+  invoke: vi.fn(),
 }));
 
 const visionProvider = {
@@ -44,8 +47,9 @@ const stableApiKeys = { "vision-provider": "configured-key" };
 const stableVerifyStatus = {};
 const configNoop = vi.fn();
 
-vi.mock("@/components/ModelManagementPanel", () => ({ default: () => null }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: settingsMocks.invoke }));
 vi.mock("@/components/MonacoEditor", () => ({ default: () => null }));
+vi.mock("@/components/SettingsHelperInbox", () => ({ default: () => null }));
 vi.mock("@/components/UnifiedLogsPanel", () => ({
   UnifiedLogsPanel: () => null,
 }));
@@ -176,6 +180,32 @@ describe("Settings image-understanding enable flow", () => {
       }
       return { success: true, data: {} };
     });
+  });
+
+  it("keeps a real provider model panel stable when Settings receives request logs (#582)", async () => {
+    await i18n.changeLanguage('en-US');
+    let resolveModels!: (value: unknown) => void;
+    settingsMocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'cmd_fetch_provider_models') {
+        return new Promise(resolve => { resolveModels = resolve; });
+      }
+      return undefined;
+    });
+    const user = userEvent.setup();
+    render(<ToastProvider><Settings mode="settings" initialSection="providers" isActive /></ToastProvider>);
+    await user.click(screen.getByTitle('Manage'));
+    await user.click(screen.getByRole('button', { name: 'Manage models' }));
+    const calls = () => settingsMocks.invoke.mock.calls.filter(([command]) => command === 'cmd_fetch_provider_models');
+    expect(calls()).toHaveLength(1);
+    for (let index = 0; index < 5; index++) {
+      act(() => window.dispatchEvent(new CustomEvent(REACT_LOG_EVENT, { detail: {
+        source: 'rust', level: 'info', message: '[model-discovery] Fetching models', timestamp: '2026-09-11 12:00:00',
+      } })));
+    }
+    expect(calls()).toHaveLength(1);
+    await act(async () => resolveModels({ data: [{ id: 'settings-discovered-model' }] }));
+    expect(screen.getByText('settings-discovered-model')).toBeInTheDocument();
+    expect(calls()).toHaveLength(1);
   });
 
   it("keeps the switch off on cancel, then locks dismissal until confirmed save enables it", async () => {

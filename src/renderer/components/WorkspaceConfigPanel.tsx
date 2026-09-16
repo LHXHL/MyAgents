@@ -2,6 +2,7 @@
  * WorkspaceConfigPanel - Full-screen configuration overlay for workspace
  * Two tabs: 「系统提示词」(CLAUDE.md + rules) and 「技能 Skills」(skills + commands + agents)
  */
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { X, SlidersHorizontal, ChevronLeft } from 'lucide-react';
 import { useCallback, useEffect, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
@@ -151,6 +152,7 @@ export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: ex
     // Close on Escape key
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
+            if (isImeComposingEvent(e)) return;
             if (e.key === 'Escape') {
                 if (detailView.type !== 'none') {
                     handleBackFromDetail();

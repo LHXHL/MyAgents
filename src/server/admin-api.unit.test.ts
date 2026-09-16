@@ -3072,7 +3072,7 @@ describe('admin-api MCP connectivity test', () => {
     const result = await handleMcpTest({ id: 'merged-stdio' });
 
     expect(result.success).toBe(true);
-    expect(result.hint).toContain('MCP initialize succeeded');
+    expect(result.hint).toContain('MCP configuration initialize succeeded');
     expect(result.data).toEqual(expect.objectContaining({
       id: 'merged-stdio',
       type: 'stdio',
@@ -3178,7 +3178,7 @@ describe('admin-api MCP connectivity test', () => {
       const { handleMcpTest } = await import('./admin-api');
       const result = await handleMcpTest({ id: 'resolved-http' });
       expect(result.success).toBe(true);
-      expect(result.hint).toContain('MCP initialize succeeded');
+      expect(result.hint).toContain('MCP configuration initialize succeeded');
       expect(result.data).toEqual(expect.objectContaining({
         serverName: 'issue-504-http-fixture',
         serverVersion: '2.0.0',

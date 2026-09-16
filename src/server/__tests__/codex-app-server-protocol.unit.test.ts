@@ -772,7 +772,7 @@ describe('Codex app-server protocol helpers', () => {
   });
 
   it('reports the safe Windows npx distribution error at the Managed Codex projection boundary', () => {
-    const resolver = vi.spyOn(mcpCommand, 'resolveNpxMcpInvocation');
+    const resolver = vi.spyOn(mcpCommand, 'buildMcpStdioLaunchConfig');
     resolver.mockImplementationOnce(() => {
       throw new mcpCommand.NpxMcpResolutionError();
     });
@@ -1444,6 +1444,7 @@ describe('Codex app-server protocol helpers', () => {
       input: [{ type: 'text', text: 'hi' }],
       cwd: '/tmp/ws',
       approvalPolicy: 'never',
+      approvalsReviewer: 'user',
       sandboxPolicy: { type: 'dangerFullAccess' },
       model: 'gpt-5.2-codex',
       summary: 'concise',
@@ -1492,7 +1493,7 @@ describe('Codex app-server protocol helpers', () => {
     ).toThrow(/full turn history/i);
   });
 
-  it('branches only through the stable v2 read/fork/unsubscribe RPCs', async () => {
+  it('releases the native writer before returning a branch from the stable read/fork RPCs', async () => {
     const runtime = new CodexRuntime();
     const rpc = {
       call: vi.fn(async (method: string) => {
@@ -1519,6 +1520,9 @@ describe('Codex app-server protocol helpers', () => {
       threadId: 'source-thread',
       rpc,
     } as unknown as import('../runtimes/types').RuntimeProcess;
+    const stop = vi.spyOn(runtime, 'stopSession').mockImplementation(async (target) => {
+      target.exited = true;
+    });
 
     await expect(
       runtime.branchConversation(process, {
@@ -1530,18 +1534,12 @@ describe('Codex app-server protocol helpers', () => {
       runtimeSessionId: 'fork-thread',
     });
     expect(rpc.call.mock.calls).toEqual([
-      [
-        'thread/read',
-        { threadId: 'source-thread', includeTurns: true },
-        15_000,
-      ],
-      [
-        'thread/fork',
-        { threadId: 'source-thread', lastTurnId: 'turn-1' },
-        15_000,
-      ],
-      ['thread/unsubscribe', { threadId: 'fork-thread' }, 10_000],
+      ['thread/read', { threadId: 'source-thread', includeTurns: true }, 15_000],
+      ['thread/fork', { threadId: 'source-thread', lastTurnId: 'turn-1' }, 15_000],
     ]);
+    expect(stop).toHaveBeenCalledWith(process);
+    expect(process.exited).toBe(true);
+    expect((process as unknown as { threadId: string }).threadId).toBe('source-thread');
   });
 
   it('represents the boundary before the first Codex turn without creating an empty thread', async () => {
@@ -1671,13 +1669,12 @@ describe('Codex app-server protocol helpers', () => {
     ).rejects.toMatchObject({ code: 'anchor_unavailable' });
   });
 
-  it('terminates the source connection when the fork subscription cannot be released', async () => {
+  it('terminates the source process even when unsubscribe would acknowledge without releasing its writer', async () => {
     const runtime = new CodexRuntime();
     const rpc = {
       call: vi.fn(async (method: string) => {
         if (method === 'thread/fork') return { thread: { id: 'fork-thread' } };
-        if (method === 'thread/unsubscribe')
-          throw new Error('unsubscribe unavailable');
+        if (method === 'thread/unsubscribe') return { status: 'unsubscribed' };
         throw new Error(`unexpected RPC ${method}`);
       }),
     };
@@ -1704,6 +1701,33 @@ describe('Codex app-server protocol helpers', () => {
       runtimeSessionId: 'fork-thread',
     });
     expect(stop).toHaveBeenCalledWith(process);
+  });
+
+  it('does not publish a native branch while source process termination is unconfirmed', async () => {
+    const runtime = new CodexRuntime();
+    const process = {
+      exited: false,
+      runtimeSource: 'managed-provider',
+      version: '0.153.4',
+      threadId: 'source-thread',
+      rpc: { call: vi.fn(async (method: string) => method === 'thread/fork'
+        ? { thread: { id: 'fork-thread' } }
+        : { status: 'unsubscribed' }) },
+    } as unknown as import('../runtimes/types').RuntimeProcess;
+    let releaseStop!: () => void;
+    const stop = vi.spyOn(runtime, 'stopSession').mockImplementation(() => new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    }));
+    const branch = runtime.branchConversation(process, { kind: 'through-turn', runtimeTurnId: 'turn-1' });
+    let settled = false;
+    const result = branch.then(
+      value => { settled = true; return { value }; },
+      error => { settled = true; return { error }; },
+    );
+    await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    releaseStop();
+    await expect(result).resolves.toMatchObject({ error: { code: 'unsubscribe_failed' } });
   });
 
   // #324 — turn/start.effort: included only when the user picked a non-default
@@ -1767,6 +1791,7 @@ describe('Codex app-server protocol helpers', () => {
     ).toMatchObject({
       model: 'gpt-5.2-codex',
       approvalPolicy: 'never',
+      approvalsReviewer: 'user',
       sandboxPolicy: { type: 'dangerFullAccess' },
       effort: 'xhigh',
     });

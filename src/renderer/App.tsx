@@ -438,6 +438,15 @@ export default function App() {
     }
   }, []);
 
+  // Toast (ref-stabilized per CLAUDE.md rules)
+  const toast = useToast();
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
+
+  const handleTabCapacityRejected = useCallback(() => {
+    toastRef.current.info(t('appChrome.maxTabsReached'));
+  }, [t]);
+
   // Multi-tab state.
   //
   // Startup behaviour (Issue #309): boot is ALWAYS a clean new launcher — we no
@@ -461,6 +470,7 @@ export default function App() {
       initialTabs: initialWorkspace.tabs,
       initialActiveTabId: initialWorkspace.activeTabId,
       maxTabs: MAX_TABS,
+      onCapacityRejected: handleTabCapacityRejected,
       createId: generateTabId,
       isLastTabProtected: builtinTabWorkspacePolicy.isLastTabProtected,
     });
@@ -657,9 +667,12 @@ export default function App() {
   // produces `view=undefined` and can let the new Chat auto-send while hidden.
   const openLaunchTabNow = useCallback(
     (newTab: Tab) => {
+      let accepted = false;
       flushSync(() => {
-        tabWorkspaceController.append(newTab, { mount: 'immediate' });
+        accepted =
+          tabWorkspaceController.append(newTab, { mount: 'immediate' }).kind !== 'rejected';
       });
+      return accepted;
     },
     [tabWorkspaceController],
   );
@@ -819,11 +832,6 @@ export default function App() {
     [configProjects, resolveSessionOriginFieldsForAnalytics],
   );
 
-  // Toast (ref-stabilized per CLAUDE.md rules)
-  const toast = useToast();
-  const toastRef = useRef(toast);
-  toastRef.current = toast;
-
   // Update install handler — toasts on failure so the user sees their click
   // had an effect. Silent failure here was the root cause of "重启更新 button
   // does nothing" reports on Windows: a flaky network would kill the install
@@ -907,9 +915,17 @@ export default function App() {
     [],
   );
 
+  // Same admission boundary as Record notes: only callbacks live here. The
+  // mounted preview retains the draft and owns its IO/transition decision.
+  const fileEditSubmittersRef = useRef(new Map<string, () => Promise<boolean>>());
+  const registerFileEditSubmitter = useCallback((tabId: string, submit: () => Promise<boolean>) => {
+    fileEditSubmittersRef.current.set(tabId, submit);
+    return () => { if (fileEditSubmittersRef.current.get(tabId) === submit) fileEditSubmittersRef.current.delete(tabId); };
+  }, []);
   const chatTabLifecycle = useMemo(
     () =>
       createChatTabLifecycle({
+        flushFileEdits: async tabId => fileEditSubmittersRef.current.get(tabId)?.() ?? true,
         startBackgroundCompletion,
         stopSseProxy,
         releaseTabSession,
@@ -1923,10 +1939,7 @@ export default function App() {
         );
         if (currentSessionHasPersistentOwners) {
           if (tabWorkspaceController.getSnapshot().tabs.length >= MAX_TABS) {
-            setTabErrors((prev) => ({
-              ...prev,
-              [activeTabId]: t('appChrome.maxTabsReached'),
-            }));
+            toastRef.current.info(t('appChrome.maxTabsReached'));
             return false;
           }
           const newTab = createNewTab();
@@ -2086,7 +2099,7 @@ export default function App() {
                 originFromDesktopSurface(pendingSurfaceForLaunch?.surface),
               prepareForFirstUserMessage: true,
               materializationSourceSessionId: effectiveSessionId,
-            });
+            }, { type: 'tab', id: targetTabId, pendingSessionId: effectiveSessionId });
             effectiveSessionId = prepared.id;
           } catch (err) {
             console.error(
@@ -2260,12 +2273,12 @@ export default function App() {
       title: string,
     ): Promise<string | null> => {
       if (tabWorkspaceController.getSnapshot().tabs.length >= MAX_TABS) {
-        toastRef.current.error(t('appChrome.tabLimitReached'));
+        toastRef.current.info(t('appChrome.maxTabsReached'));
         return null;
       }
 
       const launchTab = createNewTab();
-      openLaunchTabNow(launchTab);
+      if (!openLaunchTabNow(launchTab)) return null;
       try {
         const opened = await handleLaunchProject(
           project,
@@ -2422,7 +2435,7 @@ export default function App() {
     ) => {
       // Check tab limit
       if (tabWorkspaceController.getSnapshot().tabs.length >= MAX_TABS) {
-        toastRef.current.error(t('appChrome.tabLimitReached'));
+        toastRef.current.info(t('appChrome.maxTabsReached'));
         return false;
       }
       const releaseTransition = tryClaimSessionResourceTransition(
@@ -2624,7 +2637,7 @@ export default function App() {
       opts?: { pendingFilePreview?: FilePreviewIntent },
     ): Promise<boolean> => {
       if (tabWorkspaceController.getSnapshot().tabs.length >= MAX_TABS) {
-        toastRef.current.error(t('appChrome.tabLimitReached'));
+        toastRef.current.info(t('appChrome.maxTabsReached'));
         return false;
       }
       const newTab: ChatTab = {
@@ -2868,9 +2881,6 @@ export default function App() {
     ).filter((target): target is ValidatedRestoreTarget => target !== null);
 
     if (validated.length === 0) return;
-    if (validated.some((target) => target.kind === 'record-fallback')) {
-      toastRef.current.info(t('appChrome.recordRestoreMissing'));
-    }
     const validTabs = validated.map(({ tab }) => tab);
     const validActiveTabId = validTabs.some(
       (tab) => tab.id === candidate.activeTabId,
@@ -2880,16 +2890,26 @@ export default function App() {
     let restoreResult:
       | ReturnType<typeof tabWorkspaceController.restoreWithPolicy>
       | undefined;
+    let restoreBlockedByCapacity = false;
     flushSync(() => {
       restoreResult = tabWorkspaceController.restoreWithPolicy(
         { tabs: validTabs, activeTabId: validActiveTabId },
-        (currentTabs, restoreCandidate) =>
-          planRestoreTabs(currentTabs, restoreCandidate),
+        (currentTabs, restoreCandidate) => {
+          const plan = planRestoreTabs(currentTabs, restoreCandidate);
+          restoreBlockedByCapacity =
+            plan === null &&
+            currentTabs.length >= MAX_TABS &&
+            planRestoreTabs(currentTabs, restoreCandidate, Infinity) !== null;
+          return plan;
+        },
       );
     });
     const committedRestore = restoreResult;
     if (!committedRestore || committedRestore.kind === 'no-op') {
       validated.forEach(({ releaseTransition }) => releaseTransition?.());
+      if (restoreBlockedByCapacity) {
+        toastRef.current.info(t('appChrome.maxTabsReached'));
+      }
       return;
     }
 
@@ -2900,6 +2920,9 @@ export default function App() {
       if (!addedTabIds.has(tab.id)) releaseTransition?.();
     });
     if (addedTargets.length === 0) return;
+    if (addedTargets.some((target) => target.kind === 'record-fallback')) {
+      toastRef.current.info(t('appChrome.recordRestoreMissing'));
+    }
 
     track('restore_last_session', { count: addedTargets.length });
 
@@ -3125,7 +3148,6 @@ export default function App() {
       reuseExisting: false,
     });
     if (result.kind === 'rejected') {
-      console.warn(`[App] Max tabs (${MAX_TABS}) reached`);
       return;
     }
     perfMark(RENDERER_PERF_PHASE.newTabReveal, { tabId: result.tab.id });
@@ -3151,12 +3173,12 @@ export default function App() {
       entryIntent: 'open_workspace' | 'workspace_init' = 'open_workspace',
     ): Promise<boolean> => {
       if (tabWorkspaceController.getSnapshot().tabs.length >= MAX_TABS) {
-        toastRef.current.error(t('appChrome.tabLimitReached'));
+        toastRef.current.info(t('appChrome.maxTabsReached'));
         return false;
       }
 
       const launchTab = createNewTab();
-      openLaunchTabNow(launchTab);
+      if (!openLaunchTabNow(launchTab)) return false;
       try {
         await handleLaunchProject(project, initialMessage, {
           surface: 'global_sidebar',
@@ -3198,16 +3220,13 @@ export default function App() {
     async (initialSection?: string) => {
       // Track settings_open event
       track('settings_open', { section: initialSection ?? null });
-      const result = tabWorkspaceController.open('settings', {
+      tabWorkspaceController.open('settings', {
         title: t('tabs.settings'),
         navigationIntent: {
           generation: tabWorkspaceController.nextIntentGeneration(),
           section: initialSection,
         },
       });
-      if (result.kind === 'rejected') {
-        console.warn(`[App] Max tabs (${MAX_TABS}) reached`);
-      }
     },
     [t, tabWorkspaceController],
   );
@@ -3228,7 +3247,7 @@ export default function App() {
       const hasNavigation = Boolean(
         initialSection || mcpServerId || initialSelect || officialToolId,
       );
-      const result = tabWorkspaceController.open('capabilities', {
+      tabWorkspaceController.open('capabilities', {
         title: t('tabs.capabilities'),
         ...(hasNavigation
           ? {
@@ -3242,9 +3261,6 @@ export default function App() {
             }
           : {}),
       });
-      if (result.kind === 'rejected') {
-        console.warn(`[App] Max tabs (${MAX_TABS}) reached`);
-      }
     },
     [t, tabWorkspaceController],
   );
@@ -3383,9 +3399,7 @@ export default function App() {
       } else {
         if (currentTabs.length >= MAX_TABS) {
           if (!options.activeRecording) {
-            toastRef.current.error(
-              t('appChrome.maxTabsReachedWithCount', { count: MAX_TABS }),
-            );
+            toastRef.current.info(t('appChrome.maxTabsReached'));
             return false;
           }
           // The active capture must always keep a stop/save surface. When a
@@ -3619,7 +3633,6 @@ export default function App() {
         currentSessionId,
       });
       if (result.kind === 'rejected') {
-        console.warn(`[App] Max tabs (${MAX_TABS}) reached`);
         return false;
       }
       acknowledgeNotificationTarget({ type: 'task-center' });
@@ -3690,9 +3703,6 @@ export default function App() {
         navigationIntent: pending,
       });
       if (result.kind === 'rejected') {
-        toastRef.current.error(
-          t('appChrome.maxTabsReachedWithCount', { count: MAX_TABS }),
-        );
         if (pendingSpaceRouteRef.current?.generation === pending.generation) {
           pendingSpaceRouteRef.current = null;
         }
@@ -3725,9 +3735,7 @@ export default function App() {
         const currentTabs = tabWorkspaceController.getSnapshot().tabs;
         const existing = currentTabs.find((tab) => tab.view === 'taskcenter');
         if (!existing && currentTabs.length >= MAX_TABS) {
-          toastRef.current.error(
-            t('appChrome.maxTabsReachedWithCount', { count: MAX_TABS }),
-          );
+          toastRef.current.info(t('appChrome.maxTabsReached'));
           return false;
         }
         if (nativeGeneration !== undefined) {
@@ -3741,12 +3749,7 @@ export default function App() {
             route,
           },
         });
-        if (!opened) {
-          toastRef.current.error(
-            t('appChrome.maxTabsReachedWithCount', { count: MAX_TABS }),
-          );
-          return false;
-        }
+        if (!opened) return false;
         return true;
       }
       if (!spaceBuildCapability.isLoading && !spaceBuildCapability.available) {
@@ -3762,9 +3765,7 @@ export default function App() {
         !existing &&
         tabWorkspaceController.getSnapshot().tabs.length >= MAX_TABS
       ) {
-        toastRef.current.error(
-          t('appChrome.maxTabsReachedWithCount', { count: MAX_TABS }),
-        );
+        toastRef.current.info(t('appChrome.maxTabsReached'));
         return false;
       }
       if (nativeGeneration !== undefined) {
@@ -3876,12 +3877,9 @@ export default function App() {
       toastRef.current.info(t('titlebar.teamUnavailable'));
       return;
     }
-    const result = tabWorkspaceController.open('space', {
+    tabWorkspaceController.open('space', {
       title: t('tabs.team'),
     });
-    if (result.kind === 'rejected') {
-      console.warn(`[App] Max tabs (${MAX_TABS}) reached`);
-    }
   }, [
     spaceBuildCapability.isLoading,
     spaceBuildCapability.available,
@@ -3924,9 +3922,7 @@ export default function App() {
       try {
         const currentTabs = tabWorkspaceController.getSnapshot().tabs;
         if (currentTabs.length >= MAX_TABS) {
-          toastRef.current?.error(
-            t('appChrome.maxTabsReachedWithCount', { count: MAX_TABS }),
-          );
+          toastRef.current.info(t('appChrome.maxTabsReached'));
           return false;
         }
 
@@ -4060,7 +4056,7 @@ export default function App() {
         // view/agentDir/sessionId.
         const newTab = createNewTab();
         if (initialMessage.providerExecutionIdentity) {
-          openLaunchTabNow(newTab);
+          if (!openLaunchTabNow(newTab)) return false;
         } else {
           const seeded: ChatTab = {
             id: newTab.id,
@@ -4071,7 +4067,8 @@ export default function App() {
             initialMessage,
             sidecarConfigDisposition: 'pending',
           };
-          tabWorkspaceController.append(seeded, { mount: 'immediate' });
+          const opened = tabWorkspaceController.append(seeded, { mount: 'immediate' });
+          if (opened.kind === 'rejected') return false;
         }
 
         const launched = await handleLaunchProject(workspace, initialMessage, {
@@ -4261,8 +4258,8 @@ export default function App() {
               ),
               error: new Error('Maximum tab count reached'),
             });
-            toastRef.current?.error(t('appChrome.maxTabsReached'));
           }
+          toastRef.current.info(t('appChrome.maxTabsReached'));
           return;
         }
 
@@ -4398,7 +4395,7 @@ export default function App() {
         };
 
         const newTab = createNewTab();
-        openLaunchTabNow(newTab);
+        if (!openLaunchTabNow(newTab)) return;
 
         try {
           const launched = await handleLaunchProject(
@@ -4730,6 +4727,7 @@ export default function App() {
   );
   const chatBinding = useMemo<BuiltinTabBindings['chat']>(
     () => ({
+      registerFileEditSubmitter,
       windowPresentation,
       onOpenHistorySession: handleOpenChatHistorySession,
       onOpenHistoryTag: handleOpenHistoryTag,
@@ -4749,6 +4747,7 @@ export default function App() {
       sessionNotificationBadgeCounts,
     }),
     [
+      registerFileEditSubmitter,
       claimSessionOpeningTransition,
       clearInitialMessage,
       handleFilePreviewIntentConsumed,

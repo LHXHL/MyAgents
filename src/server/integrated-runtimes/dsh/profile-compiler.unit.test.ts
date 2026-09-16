@@ -29,7 +29,7 @@ describe("DSH ModelExecutionProfile compiler", () => {
   });
 
   it("compiles every configured model on the official DeepSeek native route", () => {
-    for (const modelId of ["deepseek-v4-pro", "deepseek-v4-flash"]) {
+    for (const modelId of ["deepseek-v4-pro", "deepseek-flash"]) {
       const profile = compileDshModelExecutionProfile({
         provider: preset("deepseek"),
         modelId,
@@ -43,20 +43,21 @@ describe("DSH ModelExecutionProfile compiler", () => {
         credentialRef: "MYAGENTS_PROVIDER_DEEPSEEK_API_KEY",
         contextWindow: 1_000_000,
         maxTokens: 384_000,
-        inputModalities: ["text"],
+        inputModalities: modelId === "deepseek-flash" ? ["text", "image"] : ["text"],
         reasoning: true,
         effort: "high",
       });
       expect(profile.revision).toMatch(/^myagents-dsh-profile-v1:[a-f0-9]{64}$/);
       expect(profile).not.toHaveProperty("compatibility");
-      expect(profile).not.toHaveProperty("systemPromptUpdate");
+      if (modelId === "deepseek-flash") expect(profile.systemPromptUpdate).toBe("in-history");
+      else expect(profile).not.toHaveProperty("systemPromptUpdate");
       expect(Object.isFrozen(profile)).toBe(true);
     }
   });
 
   it("declares in-history only for an explicitly selected official deepseek-flash model", () => {
     const provider = preset("deepseek");
-    provider.models.push({ model: "deepseek-flash", modelName: "Flash", modelSeries: "deepseek", inputModalities: ["text"] });
+    provider.models = [{ model: "deepseek-flash", modelName: "Flash", modelSeries: "deepseek", inputModalities: ["text"] }];
     const before = JSON.stringify(provider);
     expect(compileDshModelExecutionProfile({ provider, modelId: "deepseek-flash" }))
       .toMatchObject({ modelId: "deepseek-flash", systemPromptUpdate: "in-history", inputModalities: ["text"] });

@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useMemo, useRef, useState } from 'react';
 import { Check, ChevronDown, Search, Tags } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -68,6 +69,7 @@ export default function UserTagFilter({ tags, value, onChange }: UserTagFilterPr
                             value={query}
                             onChange={(event) => setQuery(event.target.value)}
                             onKeyDown={(event) => {
+                                if (isImeComposingEvent(event)) return;
                                 if (event.key === 'Escape') {
                                     event.stopPropagation();
                                     close();

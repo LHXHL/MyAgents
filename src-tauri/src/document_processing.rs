@@ -2748,7 +2748,8 @@ fn validate_resource_surface(
     if expected_worker != worker {
         return Err(resource_error("DOCUMENT_RESOURCE_MANIFEST_INVALID"));
     }
-    let worker_metadata = verify_resource_file(root, &parsed.worker, verify_digests, should_yield)?;
+    let _worker_metadata =
+        verify_resource_file(root, &parsed.worker, verify_digests, should_yield)?;
     for file in [
         &parsed.files.pdfium,
         &parsed.files.detector_model,
@@ -2760,7 +2761,7 @@ fn validate_resource_surface(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if worker_metadata.permissions().mode() & 0o111 == 0 {
+        if _worker_metadata.permissions().mode() & 0o111 == 0 {
             return Err(resource_error("DOCUMENT_RESOURCE_INVALID"));
         }
     }
@@ -3304,11 +3305,11 @@ fn artifact_is_available(job: &DocumentJob) -> bool {
         .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
 }
 
-fn set_private_permissions(path: &Path) -> std::io::Result<()> {
+fn set_private_permissions(_path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        fs::set_permissions(_path, fs::Permissions::from_mode(0o700))?;
     }
     Ok(())
 }

@@ -11,6 +11,7 @@ import {
   subscribeFrontendLogs,
 } from '@/utils/frontendLogger';
 import { useTabSwipeGesture } from './useTabSwipeGesture';
+import Markdown from '../components/Markdown';
 
 const tabs: Tab[] = [
   {
@@ -522,6 +523,39 @@ describe('useTabSwipeGesture Phase 0 trace', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it.each([0, 100, 200])('lets the rendered Markdown table own horizontal wheels at scrollLeft %s', (scrollLeft) => {
+    const onSwitchTab = vi.fn();
+    render(<Harness onSwitchTab={onSwitchTab}><Markdown raw>{'| Header |\n| --- |\n| wide cell |'}</Markdown></Harness>);
+    const content = screen.getByTestId('tab-content');
+    const scroller = content.querySelector<HTMLElement>('.markdown-table-scroll')!;
+    setContainerWidth(content, 1000);
+    setHorizontalScrollMetrics(scroller, { clientWidth: 100, scrollWidth: 300, scrollLeft });
+    for (const deltaX of [-96, 96, 40]) {
+      expect(dispatchWheel(screen.getByText('wide cell'), { deltaX }).defaultPrevented).toBe(false);
+    }
+    expect(phases()).not.toContain('tab_swipe_begin');
+    expect(onSwitchTab).not.toHaveBeenCalled();
+  });
+
+  it('also leaves overflowing rendered display math to its native scroller', () => {
+    render(<Harness><Markdown raw>{'$$\nx^2 + y^2\n$$'}</Markdown></Harness>);
+    const content = screen.getByTestId('tab-content');
+    const math = content.querySelector<HTMLElement>('.katex-display')!;
+    setContainerWidth(content, 1000);
+    setHorizontalScrollMetrics(math, { clientWidth: 100, scrollWidth: 300, scrollLeft: 200 });
+    expect(dispatchWheel(math, { deltaX: 96 }).defaultPrevented).toBe(false);
+    expect(phases()).not.toContain('tab_swipe_begin');
+  });
+
+  it('keeps tab swiping available over a table that fits its container', () => {
+    render(<Harness><Markdown raw>{'| Header |\n| --- |\n| short |'}</Markdown></Harness>);
+    const content = screen.getByTestId('tab-content');
+    setContainerWidth(content, 1000);
+    setHorizontalScrollMetrics(content.querySelector<HTMLElement>('.markdown-table-scroll')!, { clientWidth: 300, scrollWidth: 300, scrollLeft: 0 });
+    expect(dispatchWheel(screen.getByText('short'), { deltaX: 96 }).defaultPrevented).toBe(true);
+    expect(phases()).toContain('tab_swipe_begin');
   });
 
   it('recognizes overflow shorthand horizontal scrollers as inner gesture owners', () => {

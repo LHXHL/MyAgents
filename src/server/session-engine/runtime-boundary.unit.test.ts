@@ -259,7 +259,7 @@ describe('SessionEngine runtime boundary', () => {
 
     expect(facade).toContain('builtinTurnLifecycle.handleSdkResult');
     expect(forbiddenFacadePatterns.filter(pattern => pattern.test(facade)).map(String)).toEqual([]);
-    expect(facade).toContain('saveForkTranscript');
+    expect(facade).toContain('publishForkSession');
 
     expect(turnLifecycle).toContain('extractTurnUsageFromSdkResult');
     expect(turnLifecycle).toContain('isEmptySuccessfulSdkResult');
@@ -267,7 +267,7 @@ describe('SessionEngine runtime boundary', () => {
     expect(turnLifecycle).toContain('stampTurnUsageOnPendingAssistant');
     expect(transcriptPersistence).toContain('appendSessionMessages');
     expect(transcriptPersistence).toContain('mutateSessionTranscript');
-    expect(transcriptPersistence).toContain('saveForkTranscript');
+    expect(transcriptPersistence).not.toContain('saveForkTranscript');
     expect(transcriptPersistence).toContain('scheduleTranscriptPersist');
     expect(transcriptPersistence).toContain('loadTranscriptFromSessionMessages');
   });

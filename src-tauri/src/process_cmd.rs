@@ -34,6 +34,7 @@ use std::time::Duration;
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const FORCE_TREE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(unix)]
 const GRACEFUL_TREE_TERMINATION_TIMEOUT: Duration = Duration::from_secs(10);
 const CHILD_SETTLEMENT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
@@ -139,10 +140,10 @@ impl ChildTree {
         }
     }
 
-    fn try_wait_tree(&mut self, pid: u32) -> std::io::Result<bool> {
+    fn try_wait_tree(&mut self, _pid: u32) -> std::io::Result<bool> {
         let root_exited = self.child.try_wait()?.is_some();
         #[cfg(unix)]
-        let tree_exited = !unix_group_exists(-(pid as i32));
+        let tree_exited = !unix_group_exists(-(_pid as i32));
         #[cfg(not(unix))]
         let tree_exited = root_exited;
         Ok(root_exited && tree_exited)

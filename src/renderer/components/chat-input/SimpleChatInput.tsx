@@ -1,3 +1,5 @@
+import { isRuntimeBackedProvider } from '../../../shared/providerExecution';
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
   AlertCircle,
   AtSign,
@@ -70,6 +72,7 @@ import {
 import { imageAttachmentName } from './attachmentNames';
 import { MentionTabButton } from './components/MentionTabButton';
 import { ThoughtPickerRow } from './components/ThoughtPickerRow';
+import { McpStatusNotice } from './components/McpStatusNotice';
 import { useAttachmentHandling } from './hooks/useAttachmentHandling';
 import { PermissionModeIcon, PermissionModeMenuContent } from '../PermissionModeMenu';
 
@@ -178,6 +181,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   runtimeMcpTools = [],
   mcpEffectiveSnapshot = null,
   onWorkspaceMcpToggle,
+  onMcpRetry,
   onRefreshProviders,
   onOpenAgentSettings,
   onManagePermissionRules,
@@ -220,6 +224,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   runtimeDetections,
   onRuntimeChange,
   runtimeModels,
+  managedReasoningModel,
   runtimePermissionModes,
   queuedMessages = [],
   onCancelQueued,
@@ -252,10 +257,16 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     : PERMISSION_MODES.map(m => ({
       ...m,
       label: t(`input.permissionModes.${m.value}.label`, { defaultValue: m.label }),
-      description: t(`input.permissionModes.${m.value}.description`, { defaultValue: m.description }),
+      description: t(`input.permissionModes.${m.value === 'auto' && isRuntimeBackedProvider(provider) ? 'full-auto' : m.value}.description`, { defaultValue: m.description }),
     }));
   const currentModeDisplay = displayPermissionModes.find(m => m.value === permissionMode)
-    ?? displayPermissionModes[0];
+    // Historical Codex read-only sessions remain read-only, but are no longer
+    // offered as a new native preset. Never display a writable fallback for them.
+    ?? (runtime === 'codex' && String(permissionMode) === 'suggest' ? {
+      value: permissionMode,
+      label: t('input.permissionModes.suggest.label'),
+      icon: '🔍',
+    } : displayPermissionModes[0]);
 
   useEffect(() => {
     if (isLauncherMode || !onOverlayHeightChange) return;
@@ -443,8 +454,17 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   const effortRowWrapRef = useRef<HTMLDivElement | null>(null);
   const effortCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // null = this surface has no reasoning-effort knob (Gemini / unknown) → row hidden.
+  const managedEffort = isRuntimeBackedProvider(provider);
+  const effortModel = managedReasoningModel !== undefined
+    ? managedReasoningModel
+    : provider?.models?.find(model => model.model === (selectedModel ?? provider.primaryModel));
+  const defaultEffortLabel = managedEffort && effortModel?.defaultReasoningEffort
+    ? `${t('input.reasoningDefault')} (${effortModel.defaultReasoningEffort})`
+    : t('input.reasoningDefault');
   const effortChoices = onReasoningEffortChange
-    ? reasoningEffortChoices(
+    ? managedEffort
+      ? (effortModel?.supportedReasoningEfforts?.map(option => option.reasoningEffort) ?? [])
+      : reasoningEffortChoices(
         runtime === 'dsh' ? 'dsh' : isExternalRuntime ? (runtime ?? 'builtin') : 'builtin',
         provider?.apiProtocol,
         provider?.id,
@@ -1035,6 +1055,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   useEffect(() => {
     if (!active) return;
     const handleShiftTab = (e: KeyboardEvent) => {
+      if (isComposingRef.current || isImeComposingEvent(e)) return;
       if (e.key === 'Tab' && e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
@@ -1156,6 +1177,9 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   }, [slashPosition, inputValue, slashSearchQuery, handleSkillSelect, onSlashAction, enabledClientActionCommands, showConfigLockedReason]);
 
   const handleKeyDown = useCallback(async (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Candidate confirmation/navigation belongs to IME before slash/@ menus,
+    // permission shortcuts, or message sending can interpret the same key.
+    if (isComposingRef.current || isImeComposingEvent(event)) return;
     // Shift+Tab to cycle permission mode
     if (event.key === 'Tab' && event.shiftKey) {
       event.preventDefault();
@@ -1324,16 +1348,10 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
       }
     }
 
-    // Normal send - but NOT during IME composition (e.g., Chinese input)
-    // Check both event.nativeEvent.isComposing (standard) and event.keyCode === 229 (legacy)
-    //
     // Chat-mode keyboard contract is now user-configurable via the
     // chatSendShortcut preference (resolveEnterKeyAction, shared with AI 小助理 /
     // 问题反馈). 'enter' → bare Enter sends; 'modEnter' → ⌘/Ctrl+Enter sends.
-    // The triple IME guard (#123) is preserved: a composition commit arrives as
-    // Enter and must never send. (Thought mode has its own ThoughtInput editor
-    // and does not pass through here.)
-    if (event.key === 'Enter' && !isComposingRef.current && !event.nativeEvent.isComposing && event.keyCode !== 229) {
+    if (event.key === 'Enter') {
       if (resolveEnterKeyAction(event, sendShortcutRef.current) === 'send') {
         event.preventDefault();
         if ((inputValue.trim() || images.length > 0) && canSendMessageRef.current) {
@@ -2059,14 +2077,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                             const effective = mcpServerState(mcpEffectiveSnapshot, server.id);
                             if (!effective || !isMcpErrorState(effective.state)) return null;
                             return (
-                              <div className="mt-0.5 flex items-center gap-1 text-xs text-[var(--ink-muted)]">
-                                <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-                                <span>
-                                  {effective.state === 'needs_auth'
-                                    ? t('input.mcpStatus.needsAuth')
-                                    : t('input.mcpStatus.unavailable')}
-                                </span>
-                              </div>
+                              <McpStatusNotice server={effective} stale={mcpEffectiveSnapshot.observationStale} busy={isLoading} onRetry={onMcpRetry} />
                             );
                           })()}
                         </div>
@@ -2091,14 +2102,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                                   </div>
                                 )}
                                 {isEnabled && effective && isMcpErrorState(effective.state) && (
-                                  <div className="mt-0.5 flex items-center gap-1 text-xs text-[var(--ink-muted)]">
-                                    <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-                                    <span>
-                                      {effective.state === 'needs_auth'
-                                        ? t('input.mcpStatus.needsAuth')
-                                        : t('input.mcpStatus.unavailable')}
-                                    </span>
-                                  </div>
+                                  <McpStatusNotice server={effective} stale={mcpEffectiveSnapshot?.observationStale} busy={isLoading} onRetry={onMcpRetry} />
                                 )}
                               </div>
                               {hasUserEditableMcpSettings(server.id) && (
@@ -2435,7 +2439,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                           ? 'font-medium text-[var(--accent)]'
                           : 'text-[var(--ink-muted)]'
                       }`}>
-                        {reasoningEffort === REASONING_EFFORT_DEFAULT ? t('input.reasoningDefault') : reasoningEffort}
+                        {reasoningEffort === REASONING_EFFORT_DEFAULT ? defaultEffortLabel : reasoningEffort}
                       </span>
                       <ChevronRight className="h-3 w-3 shrink-0 text-[var(--ink-muted)]" />
                     </button>
@@ -2451,6 +2455,9 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                         >
                           {[REASONING_EFFORT_DEFAULT, ...effortChoices].map(level => {
                             const isSelected = reasoningEffort === level;
+                            const description = managedEffort
+                              ? effortModel?.supportedReasoningEfforts?.find(option => option.reasoningEffort === level)?.description ?? ''
+                              : REASONING_EFFORT_DESCRIPTIONS[level] ?? '';
                             return (
                               <button
                                 key={level}
@@ -2467,14 +2474,14 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                                     : 'text-[var(--ink)] hover:bg-[var(--hover-bg)]'
                                 }`}
                               >
-                                <span>{level === REASONING_EFFORT_DEFAULT ? t('input.reasoningDefault') : level}</span>
-                                <span className={`text-xs font-normal ${isSelected ? 'text-[var(--accent)]/70' : 'text-[var(--ink-muted)]'}`}>
-                                  {REASONING_EFFORT_DESCRIPTIONS[level] ?? ''}
+                                <span className="shrink-0">{level === REASONING_EFFORT_DEFAULT ? defaultEffortLabel : level}</span>
+                                <span title={description} className={`ml-3 min-w-0 truncate text-xs font-normal ${isSelected ? 'text-[var(--accent)]/70' : 'text-[var(--ink-muted)]'}`}>
+                                  {description}
                                 </span>
                               </button>
                             );
                           })}
-                          <div className="mt-1 whitespace-nowrap border-t border-[var(--line)] px-3 pb-1 pt-1.5 text-xs text-[var(--ink-muted)]/60">
+                          <div hidden={managedEffort} className="mt-1 whitespace-nowrap border-t border-[var(--line)] px-3 pb-1 pt-1.5 text-xs text-[var(--ink-muted)]/60">
                             {t('input.reasoningRequirement')}
                           </div>
                         </div>

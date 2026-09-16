@@ -17,6 +17,9 @@ use super::tokenizer::TOKENIZER_NAME;
 /// Schema version marker. Bump whenever the field list or tokenizer changes
 /// so existing indices are nuked and rebuilt on startup.
 pub const SCHEMA_VERSION: u32 = 3;
+// Session grouping uses raw string fast fields; workspace file indices keep
+// their existing schema so a history-search upgrade does not rebuild them.
+pub const SESSION_SCHEMA_VERSION: u32 = 4;
 pub const RECORD_SCHEMA_VERSION: u32 = 2;
 
 fn chinese_text_options() -> TextOptions {
@@ -33,7 +36,7 @@ pub fn session_schema() -> (Schema, SessionFields) {
 
     let text_opts = chinese_text_options();
 
-    let session_id = builder.add_text_field("session_id", STRING | STORED);
+    let session_id = builder.add_text_field("session_id", (STRING | STORED).set_fast(None));
     let message_id = builder.add_text_field("message_id", STRING | STORED);
     let agent_dir = builder.add_text_field("agent_dir", STRING | STORED);
     let role = builder.add_text_field("role", STRING | STORED);

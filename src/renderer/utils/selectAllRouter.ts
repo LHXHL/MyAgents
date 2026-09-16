@@ -7,8 +7,8 @@
  * registered ⌘A as the AppKit `selectAll:` key-equivalent. Because the renderer is a
  * Wry child WebView whose `performKeyEquivalent:` returns NO (so the app menu can own
  * shortcuts), macOS dispatched ⌘A to `selectAll:` *before* any DOM `keydown` reached
- * the WebView. Unlike `copy:`/`cut:`/`paste:`/`undo:` (which WebKit translates into DOM
- * clipboard / `beforeinput` events that Monaco listens to), `selectAll:` has no
+ * the WebView. Unlike `copy:`/`cut:`/`paste:` (which WebKit translates into DOM
+ * clipboard events), `selectAll:` has no
  * DOM-event translation — so Monaco's built-in ⌘A keybinding, the workspace tree's
  * `resolveTreeKeyAction`, and every other custom WebView editor never saw the event.
  * Net effect: ⌘A silently did nothing in Monaco/tree while "working" only in plain

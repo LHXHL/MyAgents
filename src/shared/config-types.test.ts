@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_CLAUDE_TRANSCRIPT_CLEANUP_PERIOD_DAYS,
   DEFAULT_CONFIG,
+  ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
   CODEX_SUBSCRIPTION_PROVIDER_ID,
   MANAGED_CODEX_PROVIDER,
   MANAGED_CODEX_REQUIRED_RUNTIME,
@@ -148,13 +149,27 @@ describe('normalizeProviderOrder', () => {
 });
 
 describe('Grok subscription preset', () => {
-  it('bundles only the two core models and leaves the remaining catalog to discovery', () => {
+  it('defaults to Grok 4.6 while keeping the previous core models available', () => {
     const grok = PRESET_PROVIDERS.find(provider => provider.id === XAI_SUBSCRIPTION_PROVIDER_ID);
-    expect(grok?.primaryModel).toBe('grok-4.5');
+    expect(grok?.primaryModel).toBe('grok-4.6');
     expect(grok?.models.map(model => model.model)).toEqual([
+      'grok-4.6',
       'grok-4.5',
       'grok-composer-2.5-fast',
     ]);
+    expect(grok?.modelAliases).toEqual({
+      fable: 'grok-4.6',
+      sonnet: 'grok-4.6',
+      opus: 'grok-4.6',
+      haiku: 'grok-composer-2.5-fast',
+    });
+    expect(grok?.models[0]).toMatchObject({
+      modelName: 'Grok 4.6',
+      contextLength: 500_000,
+      inputModalities: ['text', 'image'],
+      outputModalities: ['text'],
+      source: 'preset',
+    });
   });
 });
 
@@ -540,11 +555,12 @@ describe('Managed Codex provider readiness', () => {
   it('inserts the provider after Anthropic subscription in the default catalogue', () => {
     const catalog = withManagedCodexProviderCatalog(PRESET_PROVIDERS, DEFAULT_CONFIG);
 
-    expect(catalog.slice(0, 5).map(provider => provider.id)).toEqual([
+    expect(catalog.slice(0, 6).map(provider => provider.id)).toEqual([
       TOKENDANCE_PROVIDER_ID,
       SUBSCRIPTION_PROVIDER_ID,
       CODEX_SUBSCRIPTION_PROVIDER_ID,
       XAI_SUBSCRIPTION_PROVIDER_ID,
+      ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
       'anthropic-api',
     ]);
   });
@@ -561,7 +577,7 @@ describe('Managed Codex provider readiness', () => {
 
   it('derives Codex subscription models from the managed runtime model list', () => {
     const provider = withManagedCodexRuntimeModels(MANAGED_CODEX_PROVIDER, [
-      { value: 'gpt-5.1', displayName: 'GPT-5.1' },
+      { value: 'gpt-5.1', displayName: 'GPT-5.1', defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'future-tier', description: 'Native description' }] },
       { value: 'gpt-5', displayName: 'GPT-5', isDefault: true },
       { value: '', displayName: '默认', isDefault: true },
       { value: 'gpt-5', displayName: 'duplicate' },
@@ -572,6 +588,8 @@ describe('Managed Codex provider readiness', () => {
     expect(provider.models.map(model => model.model)).toEqual(['gpt-5.1', 'gpt-5']);
     expect(provider.models[0]).toMatchObject({
       modelName: 'GPT-5.1',
+      defaultReasoningEffort: 'low',
+      supportedReasoningEfforts: [{ reasoningEffort: 'future-tier', description: 'Native description' }],
       modelSeries: 'codex',
       source: 'discovered',
     });

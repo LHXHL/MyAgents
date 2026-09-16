@@ -1,3 +1,4 @@
+import { createLegacySession } from './fixtures/session-store';
 /**
  * Issue #336 — deleteSession vs live-sidecar persist race.
  *
@@ -80,7 +81,7 @@ afterAll(() => {
 
 describe('issue #336 — delete vs persist resurrection', () => {
     it('sandbox guard: SessionStore is bound to the temp HOME', async () => {
-        const meta = await store.createSession('/tmp/workspace-a');
+        const meta = await createLegacySession(store, '/tmp/workspace-a');
         // The entry must land in the sandbox sessions.json — if this fails the
         // module bound to the real home dir and NOTHING below may run.
         expect(existsSync(sessionsJson())).toBe(true);
@@ -91,7 +92,7 @@ describe('issue #336 — delete vs persist resurrection', () => {
     it('backs up a corrupt sessions.json before creating metadata for a new session', async () => {
         writeFileSync(sessionsJson(), '{"truncated"', 'utf-8');
 
-        const meta = await store.createSession('/tmp/workspace-corrupt');
+        const meta = await createLegacySession(store, '/tmp/workspace-corrupt');
         const recovered = store.getSessionMetadata(meta.id);
         expect(recovered?.id).toBe(meta.id);
 
@@ -106,7 +107,7 @@ describe('issue #336 — delete vs persist resurrection', () => {
     });
 
     it('treats a durable transcript append as success when only derived stats fail', async () => {
-        const meta = await store.createSession('/tmp/workspace-stats-failure');
+        const meta = await createLegacySession(store, '/tmp/workspace-stats-failure');
         mkdirSync(sessionsTmpJson());
 
         try {
@@ -130,7 +131,7 @@ describe('issue #336 — delete vs persist resurrection', () => {
         writeFileSync(sessionsJson(), JSON.stringify([preserved, null], null, 2), 'utf-8');
         expect(store.getSessionMetadata(preserved.id)?.id).toBe(preserved.id);
 
-        const meta = await store.createSession('/tmp/workspace-malformed');
+        const meta = await createLegacySession(store, '/tmp/workspace-malformed');
         expect(store.getSessionMetadata(meta.id)?.id).toBe(meta.id);
         expect(store.getSessionMetadata(preserved.id)?.id).toBe(preserved.id);
 
@@ -154,7 +155,7 @@ describe('issue #336 — delete vs persist resurrection', () => {
         writeFileSync(sessionsJson(), corruptContent, 'utf-8');
         expect(store.getSessionMetadata(preserved.id)?.id).toBe(preserved.id);
 
-        const meta = await store.createSession('/tmp/workspace-truncated');
+        const meta = await createLegacySession(store, '/tmp/workspace-truncated');
         expect(store.getSessionMetadata(meta.id)?.id).toBe(meta.id);
         expect(store.getSessionMetadata(preserved.id)?.id).toBe(preserved.id);
 
@@ -200,7 +201,7 @@ describe('issue #336 — delete vs persist resurrection', () => {
         utimesSync(sessionsTmpJson(), oldDate, oldDate);
         utimesSync(sessionsJson(), newerDate, newerDate);
 
-        const meta = await store.createSession('/tmp/workspace-ignore-stale-tmp');
+        const meta = await createLegacySession(store, '/tmp/workspace-ignore-stale-tmp');
 
         expect(store.getSessionMetadata(meta.id)?.id).toBe(meta.id);
         expect(store.getSessionMetadata(stale.id)).toBeNull();
@@ -218,7 +219,7 @@ describe('issue #336 — delete vs persist resurrection', () => {
         utimesSync(sessionsJson(), olderDate, olderDate);
         utimesSync(sessionsTmpJson(), newerDate, newerDate);
 
-        const meta = await store.createSession('/tmp/workspace-prefer-newer-tmp');
+        const meta = await createLegacySession(store, '/tmp/workspace-prefer-newer-tmp');
 
         expect(store.getSessionMetadata(meta.id)?.id).toBe(meta.id);
         expect(store.getSessionMetadata(tmpOnly.id)?.id).toBe(tmpOnly.id);
@@ -229,7 +230,7 @@ describe('issue #336 — delete vs persist resurrection', () => {
     });
 
     it('a post-delete persist must NOT resurrect the JSONL (the #336 race)', async () => {
-        const meta = await store.createSession('/tmp/workspace-a');
+        const meta = await createLegacySession(store, '/tmp/workspace-a');
         const history = [msg(0), msg(1)];
         const initialSave = await appendAll(meta.id, history);
         expect(initialSave.ok).toBe(true);
@@ -277,7 +278,7 @@ describe('issue #336 — delete vs persist resurrection', () => {
     });
 
     it('only a named destructive mutation may replace durable rows', async () => {
-        const meta = await store.createSession('/tmp/workspace-explicit-mutation');
+        const meta = await createLegacySession(store, '/tmp/workspace-explicit-mutation');
         const original = [msg(0), msg(1)];
         expect((await appendAll(meta.id, original)).ok).toBe(true);
         const snapshot = await store.loadSessionTranscript(meta.id);

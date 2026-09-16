@@ -1,4 +1,13 @@
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
+import {
+  appendStreamingText,
+  completeStreamingText,
+} from '@/utils/streamingTextBlocks';
+import {
+  sameAsyncQuestionReply,
+  type AsyncQuestionSet,
+  type AsyncQuestionReply,
+} from '../../shared/asyncUserQuestions';
 /**
  * TabProvider - Provides isolated state for each Tab
  *
@@ -144,6 +153,17 @@ import {
   removePermissionRequest,
 } from '@/utils/permissionQueue';
 import { i18n } from '@/i18n';
+import { useTranscriptSaveToast } from './useTranscriptSaveToast';
+import { TranscriptPage } from './transcriptPage';
+import { applyTranscriptDisplayOperation } from './transcriptDisplay';
+import {
+  applyTranscriptToolDisplayEvent,
+  TRANSCRIPT_TOOL_DISPLAY_EVENTS,
+} from './transcriptToolDisplay';
+import type {
+  TranscriptOperation,
+  TranscriptSaveStatus,
+} from '../../shared/sessionTranscript';
 import { subscribeFrontendLogs, setCurrentTabId } from '@/utils/frontendLogger';
 import {
   getTabServerUrl,
@@ -277,6 +297,9 @@ type WireMessageAttachment = {
 type WireMessageUsage = NonNullable<Message['usage']>;
 
 type WireSessionMessage = {
+  turnId?: string;
+  transcriptState?: Message['transcriptState'];
+  asyncQuestionReply?: AsyncQuestionReply;
   id: string;
   role: 'user' | 'assistant';
   content: string | ContentBlock[];
@@ -435,6 +458,8 @@ function wireAssistantToStreamingMessage(
     timestamp: new Date(message.timestamp),
     sdkUuid: message.sdkUuid,
     runtimeTurnAnchor: message.runtimeTurnAnchor,
+    turnId: message.turnId,
+    transcriptState: message.transcriptState,
     ...getAssistantTurnMetrics(message),
   };
 }
@@ -467,8 +492,11 @@ function wireSessionMessageToMessage(message: WireSessionMessage): Message {
     timestamp: new Date(message.timestamp),
     sdkUuid: message.sdkUuid,
     runtimeTurnAnchor: message.runtimeTurnAnchor,
+    turnId: message.turnId,
+    transcriptState: message.transcriptState,
     attachments: normalizeWireAttachments(message.attachments),
     metadata: message.metadata,
+    asyncQuestionReply: message.asyncQuestionReply,
     ...getAssistantTurnMetrics(message),
   };
 }
@@ -980,34 +1008,57 @@ export default function TabProvider({
   );
 
   // ── Split message state: history (stable during streaming) + streaming (updates on every SSE event)
-  const [historyMessages, setHistoryMessages] = useState<Message[]>([]);
-  // Mirror of historyMessages for async listeners (cron incremental sync) that
-  // need to read "what's on screen right now" without retriggering effects.
-  // Eventual-consistency is fine — Tauri event handlers run in microtasks,
-  // after the latest render commit. NOTE: because this mirror lags by a commit,
-  // it must NOT be the sole basis for a synchronous "is history already loaded?"
-  // decision — the chat:init clear guard additionally consults the synchronous
-  // persisted restore lifecycle so a late chat:init can't wipe a just-restored
-  // page before this ref catches up (#0608).
+  const [historyMessages, rawSetHistoryMessages] = useState<Message[]>([]);
+  // Publish each event's projection before React batches its rendering. A
+  // second SSE event/RAF callback in the same batch must see the first one.
+  const transcriptSessionIdRef = useRef<string | null>(null);
+  const transcriptPageRef = useRef<TranscriptPage | null>(null);
   const historyMessagesRef = useRef<Message[]>(historyMessages);
-  useEffect(() => {
-    historyMessagesRef.current = historyMessages;
-  }, [historyMessages]);
+  const setHistoryMessages = useCallback(
+    (action: React.SetStateAction<Message[]>) => {
+      const next =
+        typeof action === 'function'
+          ? action(historyMessagesRef.current)
+          : action;
+      historyMessagesRef.current = next;
+      rawSetHistoryMessages(next);
+    },
+    [],
+  );
   const [streamingMessage, rawSetStreamingMessage] = useState<Message | null>(
     null,
   );
   const streamingMessageRef = useRef<Message | null>(null);
 
-  // Wrapper setter that keeps ref in sync (functional updates read latest via ref)
+  // State and ref share one update entry, including terminal and steer drains.
   const setStreamingMessage = useCallback(
     (action: React.SetStateAction<Message | null>) => {
-      rawSetStreamingMessage((prev) => {
-        const next = typeof action === 'function' ? action(prev) : action;
+      const next =
+        typeof action === 'function'
+          ? action(streamingMessageRef.current)
+          : action;
         streamingMessageRef.current = next;
-        return next;
-      });
+      rawSetStreamingMessage(next);
     },
     [],
+  );
+
+  const updateDisplayedMessages = useCallback(
+    (update: (message: Message) => Message) => {
+      setStreamingMessage((previous) =>
+        previous ? update(previous) : previous,
+      );
+      setHistoryMessages((previous) => {
+        let changed = false;
+        const next = previous.map((message) => {
+          const updated = update(message);
+          changed ||= updated !== message;
+          return updated;
+        });
+        return changed ? next : previous;
+      });
+    },
+    [setStreamingMessage, setHistoryMessages],
   );
 
   // Mid-turn injection: user messages yielded to SDK during active streaming.
@@ -1024,7 +1075,8 @@ export default function TabProvider({
   // Note: The functional-update path has side effects (clearing streamingMessage) inside
   // setHistoryMessages updater — technically impure, but safe because: (1) StrictMode is off,
   // (2) callers (rewind, error) only invoke this when NOT streaming (streamingMessage is already null).
-  const setMessages = useCallback((action: React.SetStateAction<Message[]>) => {
+  const setMessages = useCallback(
+    (action: React.SetStateAction<Message[]>) => {
     if (typeof action === 'function') {
       setHistoryMessages((prevHistory) => {
         const combined = streamingMessageRef.current
@@ -1040,7 +1092,9 @@ export default function TabProvider({
       rawSetStreamingMessage(null);
       setHistoryMessages(action);
     }
-  }, []);
+    },
+    [setHistoryMessages],
+  );
 
   const [isLoading, setIsLoading] = useState(false);
   // Persisted history owns the first visible frame. Seed the shell during
@@ -1470,7 +1524,7 @@ export default function TabProvider({
   // render, not during setState call — so reading a local variable set inside an
   // updater is unreliable). This ref is always synchronously up-to-date.
   const toolNameMapRef = useRef<Map<string, string>>(new Map());
-  // Pending attachments to merge with next user message from SSE replay
+  // Pending local previews transfer to the next admitted user message (V2 create or V1 replay).
   const pendingAttachmentsRef = useRef<
     | {
         id: string;
@@ -1566,6 +1620,11 @@ export default function TabProvider({
     toolNameMapRef.current.clear();
     // Pattern 3 §3.2.2 — reset delta buffers; stale fragments from a prior
     // session must not leak into a fresh tool block keyed on a recycled id.
+    pendingTranscriptToolEventsRef.current = [];
+    if (transcriptToolRafRef.current !== null)
+      cancelAnimationFrame(transcriptToolRafRef.current);
+    transcriptToolRafRef.current = null;
+    pendingTextTargetRef.current = null;
     pendingToolResultDeltasRef.current.clear();
     pendingToolInputDeltasRef.current.clear();
     pendingSubagentToolResultDeltasRef.current.clear();
@@ -1715,6 +1774,7 @@ export default function TabProvider({
     resetPaginationState,
     abortActiveRestoreRequest,
     publishPersistedRestoreLifecycle,
+    setHistoryMessages,
   ]);
 
   /**
@@ -1773,6 +1833,11 @@ export default function TabProvider({
       });
       clearSessionActive();
       toolNameMapRef.current.clear();
+      pendingTranscriptToolEventsRef.current = [];
+      if (transcriptToolRafRef.current !== null)
+        cancelAnimationFrame(transcriptToolRafRef.current);
+      transcriptToolRafRef.current = null;
+      pendingTextTargetRef.current = null;
       pendingToolResultDeltasRef.current.clear();
       pendingToolInputDeltasRef.current.clear();
       pendingSubagentToolResultDeltasRef.current.clear();
@@ -1867,6 +1932,7 @@ export default function TabProvider({
       resetPaginationState,
       abortActiveRestoreRequest,
       publishPersistedRestoreLifecycle,
+      setHistoryMessages,
     ],
   );
 
@@ -2034,6 +2100,10 @@ export default function TabProvider({
   // synchronously by a same-batch handler — an id guard can't discard a prefix that was
   // already cut from the buffer (the id stays valid until the finalize updater runs last).
   const pendingTextRef = useRef<string>('');
+  const pendingTextTargetRef = useRef<{
+    messageId: string;
+    blockId: string;
+  } | null>(null);
   const revealAccRef = useRef(0); // fractional char accumulator (sub-char pacing)
   const revealLastRef = useRef(0); // last commit timestamp (continuous across flushes)
   const revealRafRef = useRef<number | null>(null);
@@ -2084,27 +2154,32 @@ export default function TabProvider({
   const commitText = useCallback(
     (text: string, expectedId: string | null) => {
       if (!text) return;
+      const target = pendingTextTargetRef.current;
+      if (target) {
+        updateDisplayedMessages((message) =>
+          message.id === target.messageId
+            ? applyTranscriptDisplayOperation(message, {
+                kind: 'text-append',
+                ...target,
+                field: 'text',
+                offset: 0,
+                text,
+              })
+            : message,
+        );
+        return;
+      }
       setStreamingMessage((prev) => {
         if (!prev || prev.role !== 'assistant') return prev;
         if (expectedId !== null && prev.id !== expectedId) return prev;
-        if (typeof prev.content === 'string') {
-          return { ...prev, content: prev.content + text };
-        }
-        const contentArray = closeOpenThinkingBlocks(prev.content);
-        const lastBlock = contentArray[contentArray.length - 1];
-        if (lastBlock?.type === 'text') {
-          return {
-            ...prev,
-            content: [
-              ...contentArray.slice(0, -1),
-              { type: 'text', text: (lastBlock.text || '') + text },
-            ],
-          };
-        }
-        return { ...prev, content: [...contentArray, { type: 'text', text }] };
+        const content =
+          typeof prev.content === 'string'
+            ? prev.content
+            : closeOpenThinkingBlocks(prev.content);
+        return { ...prev, content: appendStreamingText(content, text) };
       });
     },
-    [setStreamingMessage],
+    [setStreamingMessage, updateDisplayedMessages],
   );
 
   const stopRevealLoop = useCallback(() => {
@@ -2184,6 +2259,7 @@ export default function TabProvider({
     const all = pendingTextRef.current;
     pendingTextRef.current = '';
     if (all) commitText(all, null);
+    pendingTextTargetRef.current = null;
   }, [stopRevealLoop, commitText]);
 
   // ── Pattern 3 §3.2.2 — flush helpers for tool-result / tool-input deltas ──
@@ -2374,6 +2450,8 @@ export default function TabProvider({
     return () => {
       if (revealRafRef.current != null)
         cancelAnimationFrame(revealRafRef.current);
+      if (transcriptToolRafRef.current !== null)
+        cancelAnimationFrame(transcriptToolRafRef.current);
     };
   }, []);
 
@@ -2399,39 +2477,40 @@ export default function TabProvider({
       // begins (initSession path).
       flushAllPendingToolDeltas();
 
-      // CRITICAL: Use rawSetStreamingMessage updater to read the LATEST streaming message.
-      // Reading streamingMessageRef.current directly would race with pending setStreamingMessage
-      // updates (React 18 batching delays updater execution), causing the last few text chunks
-      // to be lost when chat:message-chunk and chat:message-complete arrive in the same batch.
-      // The updater's `prev` parameter is guaranteed by React to include all pending updates.
-      rawSetStreamingMessage((prev) => {
+      // The synchronous projection setter observes both drains above even
+      // when React has not rendered their changes yet.
+      setStreamingMessage((prev) => {
         if (!prev) {
           clearSessionActive();
           streamingMessageRef.current = null;
           return null;
         }
 
-        let finalMsg = finalizeAssistantForHistory(prev, status);
-
+        const isV2 =
+          prev.turnId !== undefined ||
+          transcriptSessionIdRef.current === currentSessionIdRef.current;
+        let finalMsg = isV2 ? prev : finalizeAssistantForHistory(prev, status);
+        if (!isV2) {
         finalMsg = finalizeMessageSubagentProjection(finalMsg, status);
-
         finalMsg = applyAssistantCompletionPatch(finalMsg, completionPatch);
+        }
 
-        // Side effect inside updater — technically impure, but safe because:
-        // (1) StrictMode is off (no double invocation), (2) same pattern as setMessages (line 243).
         setHistoryMessages((prevHistory) => {
           seenIdsRef.current.add(finalMsg.id);
           return upsertMessageById(prevHistory, finalMsg);
         });
-        // Set isStreamingRef inside the updater so pending message-chunk updaters
-        // (which check isStreamingRef.current) still see true and correctly append
-        // rather than creating a new message. Must NOT be set before this updater runs.
         clearSessionActive();
         streamingMessageRef.current = null;
         return null;
       });
     },
-    [flushPendingTextNow, flushAllPendingToolDeltas, clearSessionActive],
+    [
+      flushPendingTextNow,
+      flushAllPendingToolDeltas,
+      clearSessionActive,
+      setStreamingMessage,
+      setHistoryMessages,
+    ],
   );
 
   // Called at the START of every event that can begin a NEW assistant message
@@ -2490,15 +2569,180 @@ export default function TabProvider({
     [],
   );
 
+  const showTranscriptSaveToast = useTranscriptSaveToast();
+  const consumeTranscriptSaveStatus = useCallback(
+    (status?: TranscriptSaveStatus) => {
+      if (!status || !shouldAcceptInteractiveEvent(status.sessionId)) return;
+      showTranscriptSaveToast(
+        status,
+        isActiveRef.current
+          ? undefined
+          : currentSessionTitleRef.current || appText('globalSidebar.newChat'),
+      );
+    },
+    [showTranscriptSaveToast, shouldAcceptInteractiveEvent],
+  );
+
+  const pendingTranscriptToolEventsRef = useRef<
+    Array<{ eventName: string; data: unknown }>
+  >([]);
+  const transcriptToolRafRef = useRef<number | null>(null);
+  const flushTranscriptToolEvents = useCallback(() => {
+    if (transcriptToolRafRef.current !== null)
+      cancelAnimationFrame(transcriptToolRafRef.current);
+    transcriptToolRafRef.current = null;
+    const events = pendingTranscriptToolEventsRef.current;
+    pendingTranscriptToolEventsRef.current = [];
+    if (!events.length) return;
+    updateDisplayedMessages((message) =>
+      events.reduce(
+        (row, event) =>
+          applyTranscriptToolDisplayEvent(row, event.eventName, event.data),
+        message,
+      ),
+    );
+  }, [updateDisplayedMessages]);
+
   // Handle SSE events
   const applySseEvent = useCallback(
     (eventName: string, data: unknown) => {
+      const isV2 =
+        transcriptSessionIdRef.current !== null &&
+        shouldAcceptInteractiveEvent(transcriptSessionIdRef.current);
+      if (isV2 && TRANSCRIPT_TOOL_DISPLAY_EVENTS.has(eventName)) {
+        pendingTranscriptToolEventsRef.current.push({ eventName, data });
+        if (
+          eventName.endsWith('-delta') &&
+          pendingTranscriptToolEventsRef.current.length < 64
+        ) {
+          if (transcriptToolRafRef.current === null) {
+            const pending = pendingTranscriptToolEventsRef.current;
+            transcriptToolRafRef.current = requestAnimationFrame(() => {
+              if (pendingTranscriptToolEventsRef.current === pending)
+                flushTranscriptToolEvents();
+            });
+          }
+        } else flushTranscriptToolEvents();
+      }
       switch (eventName) {
+        case 'chat:transcript-operation': {
+          const payload = data as {
+            sessionId: string;
+            operation: TranscriptOperation;
+          };
+          if (!shouldAcceptInteractiveEvent(payload.sessionId)) break;
+          transcriptSessionIdRef.current = payload.sessionId;
+          isNewSessionRef.current = false;
+          const operation = payload.operation;
+          if (
+            operation.kind === 'text-append' &&
+            operation.field === 'text' &&
+            operation.blockId &&
+            streamingMessageRef.current?.id === operation.messageId &&
+            !adoptedStreamRef.current
+          ) {
+            const target = pendingTextTargetRef.current;
+            if (
+              target?.messageId !== operation.messageId ||
+              target?.blockId !== operation.blockId
+            )
+              flushPendingTextNow();
+            pendingTextTargetRef.current = {
+              messageId: operation.messageId,
+              blockId: operation.blockId,
+            };
+            pendingTextRef.current += operation.text;
+            setStreamingMessage((previous) =>
+              previous && !previous.streamingTextActive
+                ? { ...previous, streamingTextActive: true }
+                : previous,
+            );
+            startRevealLoop();
+            break;
+          }
+          flushPendingTextNow();
+          flushTranscriptToolEvents();
+          if (operation.kind === 'message-create') {
+            const message = wireSessionMessageToMessage(
+              operation.message as WireSessionMessage,
+            );
+            const existing = historyMessagesRef.current.find(
+              (row) => row.id === message.id,
+            );
+            if (
+              (existing && message.role !== 'user') ||
+              streamingMessageRef.current?.id === message.id
+            )
+              break;
+            // A pre-init legacy echo may have projected this user ID before
+            // V2 was known. Canonical creation owns the content baseline;
+            // only local image previews survive its adoption.
+            if (message.role === 'user') {
+              message.attachments = mergeAttachmentPreviews(
+                message.attachments,
+                pendingAttachmentsRef.current ?? existing?.attachments,
+              );
+              pendingAttachmentsRef.current = null;
+            }
+            if (streamingMessageRef.current) {
+              const previous = streamingMessageRef.current;
+              setHistoryMessages((rows) => upsertMessageById(rows, previous));
+              setStreamingMessage(null);
+            }
+            seenIdsRef.current.add(message.id);
+            if (message.role === 'assistant') {
+              setStreamingMessage(message);
+              isStreamingRef.current = true;
+              setIsLoading(true);
+              adoptedStreamRef.current = false;
+            } else {
+              setHistoryMessages((rows) => upsertMessageById(rows, message));
+              isStreamingRef.current = false;
+            }
+          } else if (operation.kind === 'messages-remove') {
+            const removed = new Set(operation.messageIds);
+            setHistoryMessages((rows) =>
+              rows.filter((row) => !removed.has(row.id)),
+            );
+            if (
+              streamingMessageRef.current &&
+              removed.has(streamingMessageRef.current.id)
+            )
+              setStreamingMessage(null);
+            for (const id of removed) seenIdsRef.current.delete(id);
+          } else if (operation.kind !== 'turn-update') {
+            updateDisplayedMessages((message) =>
+              applyTranscriptDisplayOperation(message, operation),
+            );
+            if (
+              operation.kind === 'block-update' ||
+              operation.kind === 'content-confirm'
+            ) {
+              setStreamingMessage((message) =>
+                message ? { ...message, streamingTextActive: false } : message,
+              );
+            }
+          }
+          break;
+        }
+        case 'chat:transcript-save-status': {
+          consumeTranscriptSaveStatus(data as TranscriptSaveStatus);
+          break;
+        }
         case 'chat:init': {
           const initPayload = data as {
+            transcriptFormat?: 2;
+            transcriptSaveStatus?: TranscriptSaveStatus;
             sessionId?: string | null;
             sessionState?: SessionState;
             liveStreamingMessage?: WireSessionMessage | null;
+            queuedMessages?: Array<{
+              id: string;
+              messagePreview: string;
+              asyncQuestionReply?: AsyncQuestionReply;
+              canCancel?: boolean;
+              canForceExecute?: boolean;
+            }>;
           } | null;
           const payloadSessionId = initPayload?.sessionId ?? null;
           if (
@@ -2518,6 +2762,9 @@ export default function TabProvider({
             break;
           }
           // chat:init is sent on SSE connect/reconnect
+          if (initPayload?.transcriptFormat === 2 && initPayload.sessionId)
+            transcriptSessionIdRef.current = initPayload.sessionId;
+          consumeTranscriptSaveStatus(initPayload?.transcriptSaveStatus);
           // A reset already cleared its local projection, so preserve that
           // boundary while still adopting the scoped live snapshot below.
           const shouldPreserveResetProjection = isNewSessionRef.current;
@@ -2586,6 +2833,15 @@ export default function TabProvider({
             }
           }
 
+          if (initPayload?.queuedMessages)
+            setQueuedMessages(
+              initPayload.queuedMessages.map((q) => ({
+                ...q,
+                queueId: q.id,
+                text: q.messagePreview,
+                timestamp: Date.now(),
+              })),
+            );
           if (
             initPayload &&
             Object.hasOwn(initPayload, 'liveStreamingMessage')
@@ -2632,8 +2888,9 @@ export default function TabProvider({
           // loadSession is in flight (both guard the cold-history race); ADDITIONALLY
           // skip COLD-HISTORY for a REST-restored session (REST owns the ordered,
           // paginated history — older pages come via ?before=). A LIVE echo must
-          // ALWAYS render, else a new user message vanishes after a restore (#0608
-          // Codex review).
+          // retain admission side effects after restore; V2 body text comes
+          // from canonical operations, while SSE-native reconnect still
+          // adopts the coherent cold snapshot below.
           const isColdHistoryReplay =
             payload.replayKind === COLD_HISTORY_REPLAY_KIND;
           const currentIdForReplay = currentSessionIdRef.current;
@@ -2685,8 +2942,12 @@ export default function TabProvider({
             // ordered boundary between stale pre-reset events and B.
             isNewSessionRef.current = false;
           }
-          if (seenIdsRef.current.has(msg.id)) break;
-          seenIdsRef.current.add(msg.id);
+          const alreadyDisplayed = seenIdsRef.current.has(msg.id);
+          if (
+            alreadyDisplayed &&
+            !(isV2 && (isExplicitLiveEcho || isColdHistoryReplay))
+          )
+            break;
 
           if (isExplicitLiveEcho && msg.role === 'user') {
             // This is the authoritative admission signal for an IM turn.
@@ -2699,19 +2960,60 @@ export default function TabProvider({
             });
           }
 
+          if (isV2 && isExplicitLiveEcho) {
+            // Admission echoes can precede canonical creation. They do not
+            // own V2 body text; otherwise its subsequent append repeats it.
+            // Before creation, keep pending previews for that admission.
+            if (msg.role === 'user' && alreadyDisplayed) {
+              setHistoryMessages((rows) =>
+                rows.map((row) =>
+                  row.id === msg.id
+                    ? {
+                        ...row,
+                        attachments: mergeAttachmentPreviews(
+                          normalizeWireAttachments(msg.attachments),
+                          row.attachments,
+                        ),
+                      }
+                    : row,
+                ),
+              );
+            }
+            break;
+          }
+
+          seenIdsRef.current.add(msg.id);
           let attachments = normalizeWireAttachments(msg.attachments);
           if (msg.role === 'user' && pendingAttachmentsRef.current) {
+            // A cold snapshot starts with older users, not necessarily
+            // the pending send. V2 preserves attachment IDs on ingress;
+            // only its matching new row can claim these local previews.
+            const canClaimPendingPreviews =
+              !isV2 ||
+              !isColdHistoryReplay ||
+              (!alreadyDisplayed &&
+                attachments?.some((attachment) =>
+                  pendingAttachmentsRef.current?.some(
+                    (preview) => preview.id === attachment.id,
+                  ),
+                ));
+            if (canClaimPendingPreviews) {
             attachments = mergeAttachmentPreviews(
               attachments,
               pendingAttachmentsRef.current,
             );
             pendingAttachmentsRef.current = null;
           }
+          }
 
           // Replayed assistant messages are completed — mark thinking blocks as isComplete
           // so the UI doesn't show a spinner on them.
           let replayContent = normalizeSessionMessageContent(msg.content);
-          if (msg.role === 'assistant' && Array.isArray(replayContent)) {
+          if (
+            !isV2 &&
+            msg.role === 'assistant' &&
+            Array.isArray(replayContent)
+          ) {
             const needsPatch = replayContent.some(
               (b) => b.type === 'thinking' && !b.isComplete,
             );
@@ -2733,8 +3035,29 @@ export default function TabProvider({
             runtimeTurnAnchor: msg.runtimeTurnAnchor,
             attachments,
             metadata: msg.metadata,
+            asyncQuestionReply: msg.asyncQuestionReply,
             ...getAssistantTurnMetrics(msg),
           };
+          if (isV2 && isColdHistoryReplay) {
+            // SSE-native births have no REST baseline yet. Reconnect's
+            // coherent snapshot repairs missed creation/text events;
+            // REST-restored Tabs rejected this replay above.
+            setHistoryMessages((rows) =>
+              upsertMessageById(rows, {
+                ...wireSessionMessageToMessage(msg),
+                attachments: mergeAttachmentPreviews(
+                  attachments,
+                  rows.find((row) => row.id === msg.id)?.attachments,
+                ),
+              }),
+            );
+          } else if (alreadyDisplayed) {
+            setHistoryMessages((rows) =>
+              rows.map((row) =>
+                row.id === msg.id ? { ...row, attachments } : row,
+              ),
+            );
+          } else
           setHistoryMessages((prev) =>
             appendUniqueMessageById(prev, replayMessage),
           );
@@ -2804,7 +3127,7 @@ export default function TabProvider({
                 : prev,
             );
           }
-          if (payload?.retractedStreamingTail) {
+          if (!isV2 && payload?.retractedStreamingTail) {
             setStreamingMessage(null);
             isStreamingRef.current = false;
             // Un-revealed refused text must not leak into the
@@ -2918,6 +3241,7 @@ export default function TabProvider({
         }
 
         case 'chat:message-chunk': {
+          if (isV2) break;
           // Skip stale chunks if user started a new session
           // (old stream may still be sending events before fully disconnecting)
           if (isNewSessionRef.current) {
@@ -2984,6 +3308,7 @@ export default function TabProvider({
         }
 
         case 'chat:thinking-start': {
+          if (isV2) break;
           // Skip stale events if user started a new session
           if (isNewSessionRef.current) {
             console.log(
@@ -3057,6 +3382,7 @@ export default function TabProvider({
         }
 
         case 'chat:thinking-chunk': {
+          if (isV2) break;
           const { index, delta } = data as { index: number; delta: string };
           setStreamingMessage((prev) => {
             if (
@@ -3086,6 +3412,12 @@ export default function TabProvider({
         }
 
         case 'chat:tool-use-start': {
+          if (isV2) {
+            const tool = data as ToolUse;
+            trackTabEvent('tool_use', { tool: tool.name });
+            toolNameMapRef.current.set(tool.id, tool.name);
+            break;
+          }
           // Skip stale events if user started a new session
           if (isNewSessionRef.current) {
             console.log(
@@ -3177,6 +3509,12 @@ export default function TabProvider({
         }
 
         case 'chat:server-tool-use-start': {
+          if (isV2) {
+            const tool = data as ToolUse;
+            trackTabEvent('tool_use', { tool: tool.name });
+            toolNameMapRef.current.set(tool.id, tool.name);
+            break;
+          }
           // Server-side tool use (e.g., 智谱 GLM-4.7's webReader, analyze_image)
           // These are executed by the API provider, not locally
           if (isNewSessionRef.current) {
@@ -3242,6 +3580,7 @@ export default function TabProvider({
         }
 
         case 'chat:tool-input-delta': {
+          if (isV2) break;
           // Note: Only handle tool_use, NOT server_tool_use
           // server_tool_use comes with complete input, no streaming delta needed
           // Pattern 3 §3.2.2 — RAF-batched. Don't parsePartialJson on every event;
@@ -3271,13 +3610,35 @@ export default function TabProvider({
             type: blockType,
             input: finalInput,
             inputRef,
+            asyncQuestions,
           } = data as {
             index: number;
             toolId?: string;
             type?: string;
             input?: Record<string, unknown>;
             inputRef?: unknown;
+            asyncQuestions?: AsyncQuestionSet;
           };
+          if (isV2 && !toolId) break;
+          if (blockType === 'text') {
+            if (
+              asyncQuestions &&
+              !isStreamingRef.current &&
+              !isNewSessionRef.current
+            ) {
+              beginFreshStreamIfNeeded();
+              setIsLoading(true);
+              setStreamingMessage({
+                id: Date.now().toString(),
+                role: 'assistant',
+                content: [],
+                timestamp: new Date(),
+              });
+              isStreamingRef.current = true;
+            }
+            // Close only after all paced deltas for this item have landed.
+            flushPendingTextNow();
+          }
           // Pattern 3 §3.2.2 — drain RAF-batched tool-input deltas for this
           // tool block before applying the final JSON.parse on the
           // accumulated inputJson; otherwise the terminal parse races
@@ -3288,10 +3649,19 @@ export default function TabProvider({
           }
           if (toolId && inputRef) {
             const targetSessionId = currentSessionIdRef.current;
+            const targetRestoreToken =
+              liveRevisionFenceRef.current.restoreToken;
+            const targetConnection = sseRef.current?.getConnectionGeneration();
             void getDataPlaneBaseUrl(tabId, targetSessionId)
               .then((baseUrl) => fetchJsonLargeValueRef(baseUrl, inputRef))
               .then((resolvedInput) => {
-                if (currentSessionIdRef.current !== targetSessionId) return;
+                if (
+                  currentSessionIdRef.current !== targetSessionId ||
+                  liveRevisionFenceRef.current.restoreToken !==
+                    targetRestoreToken ||
+                  sseRef.current?.getConnectionGeneration() !== targetConnection
+                )
+                  return;
                 setStreamingMessage((prev) =>
                   prev
                     ? replaceFinalToolInput(prev, toolId, resolvedInput)
@@ -3310,6 +3680,7 @@ export default function TabProvider({
                 ),
               );
           }
+          if (isV2) break;
           setStreamingMessage((prev) => {
             if (!prev || prev.role !== 'assistant') return prev;
             // Trailing text closed → it's no longer the streaming edge: clear the
@@ -3318,9 +3689,11 @@ export default function TabProvider({
             // deltas (see chat:message-chunk), never in the reveal loop — so a
             // post-stop reveal drain can't wrongly re-activate the fade.
             if (blockType === 'text') {
-              return prev.streamingTextActive
-                ? { ...prev, streamingTextActive: false }
-                : prev;
+              return {
+                ...prev,
+                content: completeStreamingText(prev.content, asyncQuestions),
+                streamingTextActive: false,
+              };
             }
             if (typeof prev.content === 'string') return prev;
             const contentArray = prev.content;
@@ -3387,6 +3760,7 @@ export default function TabProvider({
         }
 
         case 'chat:tool-result-delta': {
+          if (isV2) break;
           // Pattern 3 §3.2.2 — RAF-batched. Accumulate fragments per tool id
           // and flush once per animation frame instead of one setState per delta.
           const payload = data as { toolUseId: string; delta?: string };
@@ -3406,6 +3780,7 @@ export default function TabProvider({
         }
 
         case 'chat:tool-attachment-update': {
+          if (isV2) break;
           // PRD 0.2.15 §4.7.1 — placeholder attachment fulfillment.
           // Replace the matching pendingId entry inside the target tool's attachments array.
           const payload = data as {
@@ -3463,6 +3838,7 @@ export default function TabProvider({
             pendingToolResultDeltasRef.current.delete(payload.toolUseId);
           }
 
+          if (!isV2)
           setStreamingMessage((prev) => {
             if (
               !prev ||
@@ -3612,7 +3988,7 @@ export default function TabProvider({
             // Transient recoveries use chat:api-retry, not chat:agent-error.
             // Banner is cleared on: new send, session load, api-retry resolved, reset.
           });
-          if (completionPatch?.realId) {
+          if (!isV2 && completionPatch?.realId) {
             const realId = completionPatch.realId;
             setHistoryMessages((prev) => {
               const next = updateMessageById(prev, realId, (message) =>
@@ -4119,12 +4495,21 @@ export default function TabProvider({
           };
           if (payload.inputRef) {
             const targetSessionId = currentSessionIdRef.current;
+            const targetRestoreToken =
+              liveRevisionFenceRef.current.restoreToken;
+            const targetConnection = sseRef.current?.getConnectionGeneration();
             void getDataPlaneBaseUrl(tabId, targetSessionId)
               .then((baseUrl) =>
                 fetchJsonLargeValueRef(baseUrl, payload.inputRef),
               )
               .then((resolvedInput) => {
-                if (currentSessionIdRef.current !== targetSessionId) return;
+                if (
+                  currentSessionIdRef.current !== targetSessionId ||
+                  liveRevisionFenceRef.current.restoreToken !==
+                    targetRestoreToken ||
+                  sseRef.current?.getConnectionGeneration() !== targetConnection
+                )
+                  return;
                 setStreamingMessage((prev) =>
                   prev
                     ? replaceFinalSubagentToolInput(
@@ -4154,6 +4539,7 @@ export default function TabProvider({
               );
             break;
           }
+          if (isV2) break;
           setStreamingMessage((prev) => {
             if (!prev) return prev;
             return (
@@ -4219,6 +4605,7 @@ export default function TabProvider({
         }
 
         case 'chat:subagent-tool-input-delta': {
+          if (isV2) break;
           // Pattern 3 §3.2.2 — RAF-batched per (parent, tool) key.
           const payload = data as {
             parentToolUseId: string;
@@ -4244,6 +4631,7 @@ export default function TabProvider({
         }
 
         case 'chat:subagent-tool-result-start': {
+          if (isV2) break;
           const payload = data as {
             parentToolUseId: string;
             toolUseId: string;
@@ -4276,6 +4664,7 @@ export default function TabProvider({
         }
 
         case 'chat:subagent-tool-result-delta': {
+          if (isV2) break;
           // Pattern 3 §3.2.2 — RAF-batched per (parent, tool) key.
           const payload = data as {
             parentToolUseId: string;
@@ -4301,6 +4690,7 @@ export default function TabProvider({
         }
 
         case 'chat:subagent-tool-result-complete': {
+          if (isV2) break;
           const payload = data as {
             parentToolUseId: string;
             toolUseId: string;
@@ -4374,6 +4764,7 @@ export default function TabProvider({
         }
 
         case 'chat:subagent-tool-attachment-update': {
+          if (isV2) break;
           // Cross-review (#0.2.29) — async fulfillment of a nested sub-agent
           // tool's placeholder attachment (mirrors chat:tool-attachment-update
           // for top-level tools). Replace the matching pendingId in-place.
@@ -4732,6 +5123,7 @@ export default function TabProvider({
           const payload = data as {
             queueId: string;
             messageText: string;
+            asyncQuestionReply?: AsyncQuestionReply;
             isInFlight?: boolean;
             deliveryMode?: 'realtime' | 'turn';
             canCancel?: boolean;
@@ -4743,6 +5135,29 @@ export default function TabProvider({
               `[TabProvider] queue:added queueId=${payload.queueId} isInFlight=${!!payload.isInFlight}`,
             );
             setQueuedMessages((prev) => {
+              // Correlate async replies before HTTP settles, so a following
+              // cancellation/acceptance removes the real entry immediately.
+              const reply = payload.asyncQuestionReply;
+              const optimisticReplyIndex = reply
+                ? prev.findIndex(
+                    (q) =>
+                      q.queueId.startsWith('opt-') &&
+                      sameAsyncQuestionReply(q.asyncQuestionReply, reply),
+                  )
+                : -1;
+              if (optimisticReplyIndex !== -1)
+                return prev.map((q, index) =>
+                  index === optimisticReplyIndex
+                    ? {
+                        ...q,
+                        queueId: payload.queueId,
+                        isInFlight: !!payload.isInFlight,
+                        deliveryMode: payload.deliveryMode,
+                        canCancel: payload.canCancel,
+                        canForceExecute: payload.canForceExecute,
+                      }
+                    : q,
+                );
               // Exact queueId match — already added by .then(); update isInFlight if it changed.
               const existingIdx = prev.findIndex(
                 (q) => q.queueId === payload.queueId,
@@ -4758,13 +5173,19 @@ export default function TabProvider({
                   prev[existingIdx].isInFlight === !!payload.isInFlight &&
                   prev[existingIdx].deliveryMode === nextDeliveryMode &&
                   prev[existingIdx].canCancel === nextCanCancel &&
-                  prev[existingIdx].canForceExecute === nextCanForceExecute
+                  prev[existingIdx].canForceExecute === nextCanForceExecute &&
+                  (!reply ||
+                    sameAsyncQuestionReply(
+                      prev[existingIdx].asyncQuestionReply,
+                      reply,
+                    ))
                 )
                   return prev;
                 const next = [...prev];
                 next[existingIdx] = {
                   ...prev[existingIdx],
                   text: visibleMessageText,
+                  asyncQuestionReply: payload.asyncQuestionReply,
                   isInFlight: !!payload.isInFlight,
                   deliveryMode: nextDeliveryMode,
                   canCancel: nextCanCancel,
@@ -4779,6 +5200,7 @@ export default function TabProvider({
                 {
                   queueId: payload.queueId,
                   text: visibleMessageText,
+                  asyncQuestionReply: payload.asyncQuestionReply,
                   timestamp: Date.now(),
                   isInFlight: !!payload.isInFlight,
                   deliveryMode: payload.deliveryMode,
@@ -4804,6 +5226,7 @@ export default function TabProvider({
             userMessage?: {
               id: string;
               role: 'user';
+              asyncQuestionReply?: AsyncQuestionReply;
               content: string;
               timestamp: string;
               attachments?: WireMessageAttachment[];
@@ -4846,7 +5269,7 @@ export default function TabProvider({
             // Build the user message
             if (payload.userMessage) {
               const msgId = payload.userMessage.id;
-              if (!seenIdsRef.current.has(msgId)) {
+              if (isV2 || !seenIdsRef.current.has(msgId)) {
                 seenIdsRef.current.add(msgId);
 
                 projectAcceptedFirstUserTitle({
@@ -4898,6 +5321,7 @@ export default function TabProvider({
                   id: msgId,
                   role: 'user' as const,
                   content: payload.userMessage!.content,
+                  asyncQuestionReply: payload.userMessage!.asyncQuestionReply,
                   timestamp: new Date(payload.userMessage!.timestamp),
                   attachments:
                     attachments && attachments.length > 0
@@ -4905,7 +5329,19 @@ export default function TabProvider({
                       : undefined,
                 };
 
-                if (payload.midTurnBreak && isStreamingRef.current) {
+                if (isV2) {
+                  setHistoryMessages((rows) =>
+                    rows.map((row) =>
+                      row.id === msgId
+                        ? { ...row, attachments: userMsg.attachments }
+                        : row,
+                    ),
+                  );
+                  if (payload.midTurnBreak) {
+                    setSystemStatus(null);
+                    clearRuntimePlanTodos();
+                  }
+                } else if (payload.midTurnBreak && isStreamingRef.current) {
                   // Mid-turn break: AI consumed the injected message and started new content.
                   // Split the streaming: snapshot current streaming → history, insert user message.
                   // New streaming events will create a fresh streaming message automatically.
@@ -4915,7 +5351,7 @@ export default function TabProvider({
                   // the full text — otherwise the un-revealed tail is lost or bleeds into the next
                   // assistant segment.
                   flushPendingTextNow();
-                  rawSetStreamingMessage((prev) => {
+                  setStreamingMessage((prev) => {
                     if (prev) {
                       const finalizedPrev = finalizeAssistantForHistory(
                         prev,
@@ -5088,6 +5524,10 @@ export default function TabProvider({
       isPersistedRestoreInFlight,
       restoredPersistedSessionId,
       projectAcceptedFirstUserTitle,
+      consumeTranscriptSaveStatus,
+      setHistoryMessages,
+      updateDisplayedMessages,
+      flushTranscriptToolEvents,
     ],
   );
 
@@ -5095,6 +5535,15 @@ export default function TabProvider({
     (eventName: string, data: unknown, metadata: SseEventMetadata) => {
       const eventSessionId = metadata.sessionId;
       const liveRevision = metadata.liveRevision;
+      if (eventSessionId && liveRevision !== undefined) {
+        transcriptPageRef.current?.observe({
+          eventName,
+          data,
+          sessionId: eventSessionId,
+          liveRevision,
+          connectionGeneration: metadata.connectionGeneration,
+        });
+      }
       const restore = persistedRestoreLifecycleRef.current;
       if (restore.phase === 'failed') {
         const isGlobalControlEvent =
@@ -5484,6 +5933,7 @@ export default function TabProvider({
       reasoningEffort?: string,
       providerRoute?: ProviderRoute,
       requiredSystemSkill?: ProductSystemSkillRequirement,
+      asyncQuestionReply?: AsyncQuestionReply,
     ): Promise<boolean> => {
       const trimmed = text.trim();
       if (!trimmed && (!images || images.length === 0)) return false;
@@ -5545,7 +5995,8 @@ export default function TabProvider({
       // Optimistic queue: immediately show badge when AI is streaming.
       // We don't know the real queueId yet (backend assigns it), so use a local ID.
       // .then() will reconcile: replace opt- with real queueId, or clean up if already started.
-      const localQueueId = isStreamingRef.current
+      const localQueueId =
+        isStreamingRef.current || asyncQuestionReply
         ? `opt-${crypto.randomUUID()}`
         : null;
       if (localQueueId) {
@@ -5554,6 +6005,7 @@ export default function TabProvider({
           {
             queueId: localQueueId,
             text: visibleQueueText,
+            asyncQuestionReply,
             images: images?.map(queuedImageInfo),
             timestamp: Date.now(),
             canCancel: false,
@@ -5584,13 +6036,14 @@ export default function TabProvider({
         reasoningEffort,
         providerRoute,
         requiredSystemSkill,
+        asyncQuestionReply,
         ...(birthOrigin ? { birthOrigin } : {}),
         ...(providerRoute
           ? {}
           : { providerEnv: providerEnv ?? 'subscription' }),
       };
 
-      void postJson<{
+      const admission = postJson<{
         success: boolean;
         error?: string;
         queued?: boolean;
@@ -5709,6 +6162,7 @@ export default function TabProvider({
               setIsLoading(false);
             }
           }
+          return response.success;
         })
         .catch((error) => {
           console.error(`[TabProvider ${tabId}] Send message failed:`, error);
@@ -5730,13 +6184,15 @@ export default function TabProvider({
           if (!isSessionActiveRef.current && !isStreamingRef.current) {
             setIsLoading(false);
           }
+          return false;
         })
         .finally(() => {
           releaseSendTransition?.();
         });
 
-      // Return true immediately — input clears without waiting for HTTP response
-      return true;
+      // A question reply keeps the composer/card retryable if admission fails.
+      // Only the accepted user-message replay, never this HTTP receipt, answers it.
+      return asyncQuestionReply ? admission : true;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- postJson is stable
     [tabId, sessionId, claimSessionOpeningTransition],
@@ -5892,22 +6348,39 @@ export default function TabProvider({
       };
 
       try {
+        const retainedAnchor =
+          restoreMode === 'live-recovery' &&
+          transcriptSessionIdRef.current === targetSessionId
+            ? historyMessagesRef.current[0]?.id
+            : undefined;
+        const fromQuery = retainedAnchor
+          ? `&from=${encodeURIComponent(retainedAnchor)}`
+          : '';
         console.log(
           `[TabProvider ${tabId}] Restoring persisted session: ${targetSessionId}`,
         );
         const response = await apiGetJson<{
           success: boolean;
           session?: SessionMetadata & {
+            transcriptSaveStatus?: TranscriptSaveStatus;
+            transcriptRecovery?: 'incomplete' | 'unavailable';
             snapshotRevision?: number;
             liveSessionState?: SessionState;
             liveStreamingMessage?: WireSessionMessage | null;
+            queuedMessages?: Array<{
+              id: string;
+              messagePreview: string;
+              asyncQuestionReply?: AsyncQuestionReply;
+              canCancel?: boolean;
+              canForceExecute?: boolean;
+            }>;
             pendingInteractiveRequests?: Array<{ type: string; data: unknown }>;
             messages: WireSessionMessage[];
             totalCount?: number;
             hasMoreBefore?: boolean;
           };
         }>(
-          `/sessions/${encodeURIComponent(targetSessionId)}?limit=${INITIAL_PAGE_SIZE}`,
+          `/sessions/${encodeURIComponent(targetSessionId)}?limit=${INITIAL_PAGE_SIZE}${fromQuery}`,
           { signal: controller.signal },
         );
 
@@ -5946,16 +6419,34 @@ export default function TabProvider({
           return false;
         }
 
+        transcriptSessionIdRef.current =
+          response.session.transcriptFormat === 2 ? targetSessionId : null;
+        pendingTranscriptToolEventsRef.current = [];
+        if (transcriptToolRafRef.current !== null)
+          cancelAnimationFrame(transcriptToolRafRef.current);
+        transcriptToolRafRef.current = null;
+        pendingTextTargetRef.current = null;
         const loadedMessages = response.session.messages.map(
           wireSessionMessageToMessage,
         );
+        consumeTranscriptSaveStatus(response.session.transcriptSaveStatus);
         const isLiveRecovery = restoreMode === 'live-recovery';
         const liveStreamingMessage = wireAssistantToStreamingMessage(
           response.session.liveStreamingMessage,
         );
 
         let projectedMessages = loadedMessages;
-        if (isLiveRecovery) {
+        if (isLiveRecovery && response.session.transcriptFormat === 2) {
+          // V2 can update any old block. The snapshot covers the entire
+          // retained range, so no unverified prefix survives a SSE gap.
+          const previousFirst = historyMessagesRef.current[0]?.id;
+          if (previousFirst !== loadedMessages[0]?.id)
+            setFirstItemIndex(PAGINATION_START_INDEX);
+          const hasMoreBefore = response.session.hasMoreBefore ?? false;
+          setHasMoreBefore(hasMoreBefore);
+          hasMoreBeforeRef.current = hasMoreBefore;
+          loadingOlderRef.current = false;
+        } else if (isLiveRecovery) {
           const reconciled = reconcileLiveRecoveryHistory(
             historyMessagesRef.current,
             loadedMessages,
@@ -6066,6 +6557,14 @@ export default function TabProvider({
         }
 
         setIsLoading(isLiveActive);
+        setQueuedMessages(
+          (response.session.queuedMessages ?? []).map((q) => ({
+            ...q,
+            queueId: q.id,
+            text: q.messagePreview,
+            timestamp: Date.now(),
+          })),
+        );
         setSessionState(liveSessionState);
 
         clearInteractiveState();
@@ -6118,6 +6617,7 @@ export default function TabProvider({
       abortActiveRestoreRequest,
       beginPersistedRestore,
       publishPersistedRestoreLifecycle,
+      consumeTranscriptSaveStatus,
     ],
   );
   // Fetch the page of messages immediately older than the one currently at
@@ -6134,11 +6634,20 @@ export default function TabProvider({
       if (!oldest) return;
 
       loadingOlderRef.current = true;
+      const restoreToken = liveRevisionFenceRef.current.restoreToken;
+      const connectionGeneration =
+        sseRef.current?.getConnectionGeneration() ?? 0;
+      const page =
+        transcriptSessionIdRef.current === sid
+          ? new TranscriptPage(sid, restoreToken, connectionGeneration)
+          : null;
+      transcriptPageRef.current = page;
       try {
         const resp = await apiGetJson<{
           success: boolean;
           session?: {
             messages: WireSessionMessage[];
+            snapshotRevision?: number;
             hasMoreBefore?: boolean;
           };
         }>(
@@ -6146,10 +6655,36 @@ export default function TabProvider({
         );
 
         // Session may have switched while the request was in flight.
-        if (currentSessionIdRef.current !== sid) return;
+        if (
+          currentSessionIdRef.current !== sid ||
+          liveRevisionFenceRef.current.restoreToken !== restoreToken ||
+          (sseRef.current?.getConnectionGeneration() ?? 0) !==
+            connectionGeneration
+        )
+          return;
         if (!resp.success || !resp.session) return;
 
-        const older = resp.session.messages.map(wireSessionMessageToMessage);
+        const snapshotRows = resp.session.messages.map(
+          wireSessionMessageToMessage,
+        );
+        const older = page
+          ? await page.complete(
+              snapshotRows,
+              resp.session.snapshotRevision ?? 0,
+              async (ref) => {
+                const baseUrl = await getDataPlaneBaseUrl(tabId, sid);
+                return fetchJsonLargeValueRef(baseUrl, ref);
+              },
+            )
+          : snapshotRows;
+        if (
+          !older ||
+          currentSessionIdRef.current !== sid ||
+          liveRevisionFenceRef.current.restoreToken !== restoreToken ||
+          (sseRef.current?.getConnectionGeneration() ?? 0) !==
+            connectionGeneration
+        )
+          return;
 
         if (older.length === 0) {
           setHasMoreBefore(false);
@@ -6192,6 +6727,12 @@ export default function TabProvider({
       } catch (err) {
         console.warn(`[TabProvider ${tabId}] loadOlderMessages failed:`, err);
       } finally {
+        if (transcriptPageRef.current === page)
+          transcriptPageRef.current = null;
+        if (
+          liveRevisionFenceRef.current.restoreToken === restoreToken &&
+          currentSessionIdRef.current === sid
+        )
         loadingOlderRef.current = false;
       }
     },

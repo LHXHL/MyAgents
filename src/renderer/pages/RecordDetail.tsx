@@ -1,3 +1,5 @@
+import { useRecordPlayback } from '@/hooks/useRecordPlayback';
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Archive,
@@ -10,6 +12,7 @@ import {
   Pause,
   Pencil,
   Play,
+  RotateCcw,
   Square,
   Trash2,
   Volume2,
@@ -24,7 +27,6 @@ import {
   recordAddMark,
   recordAddNote,
   recordDeleteTimelineItem,
-  recordDiarization,
   recordExportAudio,
   recordExportText,
   recordMediaUrl,
@@ -36,7 +38,7 @@ import {
   recordingStop,
   recordStartTranscription,
   recordTimeline,
-  recordTranscript,
+  recordSpeechProjection,
   recordTranscriptDelta,
   recordReassignSegmentSpeaker,
   recordRenameSpeaker,
@@ -56,14 +58,13 @@ import { CUSTOM_EVENTS } from '@/../shared/constants';
 import type {
   RecordChange,
   RecordDetail as RecordDetailData,
-  RecordDiarizationProjection,
   RecordingChange,
   RecordingSnapshot,
   RecordTimelineItem,
   RecordTimelineProjection,
   RecordTranscriptCursor,
   RecordTranscriptSegment,
-  RecordTranscriptSnapshot,
+  RecordSpeechProjection,
   SpeechModelPackStatus,
 } from '@/../shared/types/record';
 import { isTauriEnvironment } from '@/utils/browserMock';
@@ -73,7 +74,7 @@ import { hashPrivateIdentity, track } from '@/analytics';
 import { copyPlainText } from '@/utils/clipboard';
 import {
   applyRecordTranscriptDelta,
-  reconcileRecordTranscriptSnapshot,
+  reconcileRecordSpeechProjection,
 } from '@/utils/recordTranscript';
 
 interface Props {
@@ -137,6 +138,26 @@ function formatBytes(value: number): string {
   return `${(value / 1_024 / 1_024 / 1_024).toFixed(1)} GB`;
 }
 
+function transcriptionFailureHint(code?: string): string {
+  switch (code) {
+    case 'SPEECH_WORKER_PROTOCOL_ERROR':
+      return 'records.transcriptFailedProtocolHint';
+    case 'SPEECH_CORRUPT_MEDIA':
+    case 'SPEECH_UNSUPPORTED_CODEC':
+      return 'records.transcriptFailedMediaHint';
+    case 'SPEECH_PUBLISH_FAILED':
+      return 'records.transcriptFailedPublishHint';
+    case 'SPEECH_WORKER_TIMEOUT':
+    case 'SPEECH_DEADLINE_EXCEEDED':
+      return 'records.transcriptFailedTimeoutHint';
+    case 'SPEECH_INFERENCE_FAILED':
+    case 'SPEECH_MODEL_LOAD_FAILED':
+      return 'records.transcriptFailedInferenceHint';
+    default:
+      return 'records.transcriptFailedHint';
+  }
+}
+
 function speakerLetter(index: number): string {
   let value = Math.max(0, index);
   let label = '';
@@ -195,11 +216,8 @@ export default function RecordDetail({
       ? initialRecordingSnapshot
       : null,
   );
-  const [transcript, setTranscript] = useState<RecordTranscriptSnapshot | null>(
-    null,
-  );
-  const [diarization, setDiarization] =
-    useState<RecordDiarizationProjection | null>(null);
+  const [speechProjection, setSpeechProjection] = useState<RecordSpeechProjection>({ transcript: null, diarization: null });
+  const { transcript, diarization } = speechProjection;
   const [timeline, setTimeline] =
     useState<RecordTimelineProjection>(EMPTY_TIMELINE);
   const [modelPack, setModelPack] = useState<SpeechModelPackStatus | null>(
@@ -237,6 +255,7 @@ export default function RecordDetail({
   const [playbackError, setPlaybackError] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
   const secondaryAudioRef = useRef<HTMLAudioElement>(null);
+  const playbackButtonRef = useRef<HTMLButtonElement>(null);
   const snapshotRef = useRef(snapshot);
   const noteAnchorRef = useRef<number | null>(null);
   const noteStartedWallRef = useRef<number | null>(null);
@@ -246,7 +265,6 @@ export default function RecordDetail({
   const tagDraftRef = useRef('');
   const titleDirtyRef = useRef(false);
   const tagDirtyRef = useRef(false);
-  const pendingSeekRef = useRef<number | null>(null);
   const playbackSessionTrackedRef = useRef(false);
   const playbackErrorShownRef = useRef(false);
   const refreshGenerationRef = useRef(0);
@@ -361,16 +379,14 @@ export default function RecordDetail({
       setRecordLoading(true);
       const [
         recordResult,
-        transcriptResult,
-        diarizationResult,
+        speechResult,
         timelineResult,
         modelResult,
       ] = await Promise.allSettled([
         recordGet(recordId),
         includeTranscript
-          ? recordTranscript(recordId)
+          ? recordSpeechProjection(recordId)
           : Promise.resolve(undefined),
-        recordDiarization(recordId),
         recordTimeline(recordId),
         speechModelPackStatus(),
       ]);
@@ -405,38 +421,16 @@ export default function RecordDetail({
 
       const projectionFailures: unknown[] = [];
       if (includeTranscript) {
-        if (transcriptResult.status === 'fulfilled') {
+        if (speechResult.status === 'fulfilled' && speechResult.value) {
           transcriptPollEpochRef.current += 1;
           transcriptCursorRef.current = undefined;
-          setTranscript((current) =>
-            reconcileRecordTranscriptSnapshot(
-              current,
-              transcriptResult.value ?? null,
-            ),
-          );
-        } else {
-          projectionFailures.push(transcriptResult.reason);
+          const next = speechResult.value;
+          setSpeechProjection((current) => reconcileRecordSpeechProjection(current, next));
+          setSpeakerNameDrafts(Object.fromEntries((next.diarization?.speakers ?? [])
+            .map((speaker) => [speaker.speakerId, speaker.customName ?? ''])));
+        } else if (speechResult.status === 'rejected') {
+          projectionFailures.push(speechResult.reason);
         }
-      }
-      if (diarizationResult.status === 'fulfilled') {
-        const nextDiarization = diarizationResult.value;
-        setDiarization((current) =>
-          current &&
-          nextDiarization &&
-          current.projectionRevision > nextDiarization.projectionRevision
-            ? current
-            : nextDiarization,
-        );
-        setSpeakerNameDrafts(
-          Object.fromEntries(
-            (nextDiarization?.speakers ?? []).map((speaker) => [
-              speaker.speakerId,
-              speaker.customName ?? '',
-            ]),
-          ),
-        );
-      } else {
-        projectionFailures.push(diarizationResult.reason);
       }
       if (timelineResult.status === 'fulfilled') {
         setTimeline((current) =>
@@ -483,9 +477,13 @@ export default function RecordDetail({
           );
           if (transcriptPollEpochRef.current !== epoch || !delta) return;
           transcriptCursorRef.current = delta.cursor;
-          setTranscript((current) =>
-            applyRecordTranscriptDelta(current, delta),
-          );
+          if (delta.state === 'recording_final' || delta.resetSnapshot?.state === 'recording_final') {
+            await refresh();
+          } else {
+            setSpeechProjection((current) => current.transcript?.state === 'recording_final' ? current : {
+              transcript: applyRecordTranscriptDelta(current.transcript, delta), diarization: null,
+            });
+          }
         } catch {
           // The 1.5 s recovery poll retries missed or failed notifications.
         }
@@ -497,7 +495,7 @@ export default function RecordDetail({
       }
     });
     return next;
-  }, [recordId]);
+  }, [recordId, refresh]);
 
   useEffect(() => {
     const next = initialRecordingSnapshot;
@@ -1080,30 +1078,33 @@ export default function RecordDetail({
       });
     });
   }, [recordId]);
+  const playbackSources = useMemo(() => {
+    const artifacts = transcript?.sourceSnapshot?.artifacts ?? record?.artifacts ?? [];
+    return [
+      { ref: audioRef, src: audioSrc, track: selectedPhysicalTracks[0] },
+      { ref: secondaryAudioRef, src: secondaryAudioSrc, track: selectedPhysicalTracks[1] },
+    ].flatMap(({ ref, src, track }) => src && track ? [{ ref, src,
+      timeline: artifacts.find((artifact) => artifact.path === `audio/${track}.opus`)?.captureTimeline,
+    }] : []);
+  }, [audioSrc, secondaryAudioSrc, selectedPhysicalTracks, transcript?.sourceSnapshot, record?.artifacts]);
+  const playback = useRecordPlayback({
+    sources: playbackSources, durationMs: record?.audio?.mediaDurationMs ?? 0,
+    onPosition: setPlaybackMs, onPlaying: setPlaying,
+    onStarted: trackPlaybackSession,
+    onFinished: () => { playbackSessionTrackedRef.current = false; },
+    onError: () => {
+      setPlaybackError(true);
+      if (!playbackErrorShownRef.current) {
+        playbackErrorShownRef.current = true;
+        toast.error(t('records.playbackFailed'));
+      }
+    },
+  });
+  const { seek: seekTo, toggle: togglePlayback, pause: pausePlayback, getPosition: playbackPosition } = playback;
   useEffect(() => {
     if (seekMediaMs === undefined || !Number.isFinite(seekMediaMs)) return;
-    const mediaMs = Math.max(0, seekMediaMs);
-    setPlaybackMs(mediaMs);
-    const audio = audioRef.current;
-    const secondaryAudio = secondaryAudioRef.current;
-    if (audio && audio.readyState >= HTMLMediaElement.HAVE_METADATA) {
-      audio.currentTime = mediaMs / 1_000;
-      if (secondaryAudio) secondaryAudio.currentTime = mediaMs / 1_000;
-      pendingSeekRef.current = null;
-    } else {
-      pendingSeekRef.current = mediaMs;
-    }
-  }, [seekMediaMs, seekNonce]);
-
-  const seekTo = useCallback((mediaMs: number) => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    audio.currentTime = mediaMs / 1_000;
-    if (secondaryAudioRef.current) {
-      secondaryAudioRef.current.currentTime = mediaMs / 1_000;
-    }
-    setPlaybackMs(mediaMs);
-  }, []);
+    seekTo(Math.max(0, seekMediaMs));
+  }, [seekMediaMs, seekNonce, seekTo]);
 
   const focusPendingVirtualItem = useCallback(
     (kind: 'transcript' | 'timeline') => {
@@ -1116,18 +1117,30 @@ export default function RecordDetail({
           kind === 'transcript' ? transcriptItemRefs : timelineItemRefs;
         const itemKey = pendingRef.current;
         if (!itemKey) return;
+        // A delayed list reveal must never reclaim focus from saved-audio controls.
+        if (!isActive || playbackMediaReady) {
+          pendingRef.current = null;
+          return;
+        }
         const element = itemRefs.current.get(itemKey);
         if (!element) return;
         element.focus({ preventScroll: true });
         pendingRef.current = null;
       });
     },
-    [],
+    [isActive, playbackMediaReady],
   );
 
   const highlightAndFocus = useCallback(
     (itemKey: string, mediaMs: number) => {
       seekTo(mediaMs);
+      // Content highlights explain where we sought; the native transport button
+      // owns the next Space/Enter action. Do not scroll the page to the player.
+      pendingTranscriptFocusRef.current = null;
+      pendingTimelineVirtualFocusRef.current = null;
+      if (isActive && playbackMediaReady && !playbackButtonRef.current?.disabled) {
+        playbackButtonRef.current?.focus({ preventScroll: true });
+      }
       setHighlightedItem(itemKey);
       if (highlightTimerRef.current !== undefined) {
         window.clearTimeout(highlightTimerRef.current);
@@ -1146,7 +1159,7 @@ export default function RecordDetail({
           segmentIndex >= 0 &&
           (transcript?.segments.length ?? 0) >= TRANSCRIPT_VIRTUALIZE_THRESHOLD
         ) {
-          pendingTranscriptFocusRef.current = itemKey;
+          pendingTranscriptFocusRef.current = playbackMediaReady ? null : itemKey;
           transcriptVirtuosoRef.current?.scrollToIndex({
             index: segmentIndex,
             align: 'center',
@@ -1160,7 +1173,7 @@ export default function RecordDetail({
           container.scrollTo({
             top: Math.max(0, element.offsetTop - container.clientHeight / 3),
           });
-          element.focus({ preventScroll: true });
+          if (isActive && !playbackMediaReady) element.focus({ preventScroll: true });
         }
         return;
       }
@@ -1174,7 +1187,7 @@ export default function RecordDetail({
         timelineIndex >= 0 &&
         timeline.items.length >= TIMELINE_VIRTUALIZE_THRESHOLD
       ) {
-        pendingTimelineVirtualFocusRef.current = itemKey;
+        pendingTimelineVirtualFocusRef.current = playbackMediaReady ? null : itemKey;
         timelineVirtuosoRef.current?.scrollToIndex({
           index: timelineIndex,
           align: 'center',
@@ -1189,10 +1202,10 @@ export default function RecordDetail({
         container.scrollTo({
           top: Math.max(0, element.offsetTop - 12),
         });
-        element.focus({ preventScroll: true });
+        if (isActive && !playbackMediaReady) element.focus({ preventScroll: true });
       }
     },
-    [focusPendingVirtualItem, seekTo, timeline.items, transcript?.segments],
+    [focusPendingVirtualItem, isActive, playbackMediaReady, seekTo, timeline.items, transcript?.segments],
   );
 
   useEffect(() => {
@@ -1215,122 +1228,32 @@ export default function RecordDetail({
     return () => window.cancelAnimationFrame(frame);
   }, [highlightAndFocus, pendingTimelineFocus, timeline.items]);
 
-  const togglePlayback = useCallback(() => {
-    const audio = audioRef.current;
-    const secondaryAudio = secondaryAudioRef.current;
-    if (!audio) return;
-    if (!audio.paused) {
-      audio.pause();
-      secondaryAudio?.pause();
-      return;
-    }
-    if (secondaryAudio) secondaryAudio.currentTime = audio.currentTime;
-    const plays = [audio.play()];
-    if (secondaryAudio) plays.push(secondaryAudio.play());
-    void Promise.all(plays).catch(() => {
-      audio.pause();
-      secondaryAudio?.pause();
-      setPlaying(false);
-      setPlaybackError(true);
-      if (!playbackErrorShownRef.current) {
-        playbackErrorShownRef.current = true;
-        toast.error(t('records.playbackFailed'));
-      }
-    });
-  }, [t, toast]);
-
-  const switchPlaybackTrack = useCallback(
-    (nextTrack: typeof playbackTrack) => {
-      const audio = audioRef.current;
-      const nextPrimaryTrack =
-        nextTrack === 'mixed'
-          ? tracks.includes('mixed')
-            ? 'mixed'
-            : canMixPhysicalTracks
-              ? 'microphone'
-              : tracks[0]
-          : nextTrack;
-      const primaryWillReload = selectedPhysicalTracks[0] !== nextPrimaryTrack;
-      const primaryReady =
-        audio?.readyState !== undefined &&
-        audio.readyState >= HTMLMediaElement.HAVE_METADATA;
-      const mediaMs =
-        pendingSeekRef.current ??
-        (audio && primaryReady
-          ? Math.max(0, audio.currentTime * 1_000)
-          : playbackMs);
-      audio?.pause();
-      secondaryAudioRef.current?.pause();
-      playbackErrorShownRef.current = false;
-      setPlaybackError(false);
-      pendingSeekRef.current =
-        primaryWillReload || !primaryReady ? mediaMs : null;
-      if (!primaryWillReload && primaryReady && audio) {
-        audio.currentTime = mediaMs / 1_000;
-      }
-      setPlaying(false);
-      setPlaybackTrack(nextTrack);
-    },
-    [canMixPhysicalTracks, playbackMs, selectedPhysicalTracks, tracks],
-  );
-
-  const speakerIdFor = useCallback(
-    (segment: RecordTranscriptSegment): number => {
-      const middle =
-        segment.startSample +
-        Math.floor((segment.endSample - segment.startSample) / 2);
-      const turn = diarization?.turns.find(
-        (candidate) =>
-          candidate.startSample <= middle && candidate.endSample >= middle,
-      );
-      let speakerId =
-        diarization?.segmentSpeakerOverrides[segment.segmentId] ??
-        turn?.globalSpeaker ??
-        0;
-      const visited = new Set<number>();
-      while (!visited.has(speakerId)) {
-        visited.add(speakerId);
-        const mergedInto = diarization?.speakers.find(
-          (speaker) => speaker.speakerId === speakerId,
-        )?.mergedInto;
-        if (mergedInto === undefined) break;
-        speakerId = mergedInto;
-      }
-      return speakerId;
-    },
-    [diarization],
-  );
-
-  const speakerFor = useCallback(
-    (segment: RecordTranscriptSegment): string => {
-      const speakerId = speakerIdFor(segment);
-      const customName = diarization?.speakers.find(
-        (speaker) => speaker.speakerId === speakerId,
-      )?.customName;
-      if (customName) return customName;
-      return t('records.speakerUnknown', {
-        name: speakerLetter(speakerId),
-      });
-    },
-    [diarization?.speakers, speakerIdFor, t],
-  );
+  const switchPlaybackTrack = useCallback((nextTrack: typeof playbackTrack) => {
+    const mediaMs = playbackPosition();
+    pausePlayback();
+    seekTo(mediaMs);
+    playbackErrorShownRef.current = false;
+    setPlaybackError(false);
+    setPlaying(false);
+    setPlaybackTrack(nextTrack);
+  }, [pausePlayback, playbackPosition, seekTo]);
 
   const activeSpeakers = useMemo(
     () =>
       diarization?.speakers.filter(
-        (speaker) => speaker.mergedInto === undefined,
+        (speaker) => speaker.mergedInto == null,
       ) ?? [],
     [diarization?.speakers],
   );
 
   const speakerLabel = useCallback(
     (speakerId: number) => {
-      const customName = diarization?.speakers.find(
+      const speaker = diarization?.speakers.find(
         (speaker) => speaker.speakerId === speakerId,
-      )?.customName;
+      );
       return (
-        customName ||
-        t('records.speakerUnknown', { name: speakerLetter(speakerId) })
+        speaker?.customName ||
+        t('records.speakerUnknown', { name: speakerLetter(speaker?.displayIndex ?? speakerId) })
       );
     },
     [diarization?.speakers, t],
@@ -1366,15 +1289,14 @@ export default function RecordDetail({
         return;
       setBusyAction('speaker');
       try {
-        setDiarization(
-          await recordRenameSpeaker({
+        await recordRenameSpeaker({
             recordId,
             expectedOverrideRevision: diarization.overrideRevision,
             speakerId,
             name,
             updatedAtWallTime: Date.now(),
-          }),
-        );
+        });
+        await refresh();
       } catch (error) {
         toast.error(
           t('records.speakerCorrectionFailed', {
@@ -1400,14 +1322,14 @@ export default function RecordDetail({
         return;
       setBusyAction('speaker');
       try {
-        const next = await recordMergeSpeakers({
+        await recordMergeSpeakers({
           recordId,
           expectedOverrideRevision: diarization.overrideRevision,
           sourceSpeakerId,
           targetSpeakerId,
           updatedAtWallTime: Date.now(),
         });
-        setDiarization(next);
+        await refresh();
         setSpeakerMergeTargets((current) => ({
           ...current,
           [sourceSpeakerId]: '',
@@ -1431,15 +1353,14 @@ export default function RecordDetail({
       if (!diarization) return;
       setBusyAction('speaker');
       try {
-        setDiarization(
-          await recordReassignSegmentSpeaker({
+        await recordReassignSegmentSpeaker({
             recordId,
             expectedOverrideRevision: diarization.overrideRevision,
             segmentId,
             speakerId,
             updatedAtWallTime: Date.now(),
-          }),
-        );
+        });
+        await refresh();
       } catch (error) {
         toast.error(
           t('records.speakerCorrectionFailed', {
@@ -1476,7 +1397,11 @@ export default function RecordDetail({
   const renderTranscriptSegment = useCallback(
     (segment: RecordTranscriptSegment) => {
       if (!transcript) return null;
-      const currentSpeakerId = speakerIdFor(segment);
+      const attribution = diarization?.segmentSpeakerAttributions[segment.segmentId];
+      const currentSpeakerId = attribution?.kind === 'single' ? attribution.speakerId : undefined;
+      const speakerText = currentSpeakerId !== undefined
+        ? speakerLabel(currentSpeakerId)
+        : t(attribution?.kind === 'multiple' ? 'records.speakerMultiple' : 'records.speakerUncertain');
       const mediaMs = (segment.startSample * 1_000) / transcript.sampleRate;
       const itemKey = `transcript-${segment.segmentId}`;
       return (
@@ -1526,7 +1451,8 @@ export default function RecordDetail({
           >
             {activeSpeakers.length > 0 ? (
               <CustomSelect
-                value={String(currentSpeakerId)}
+                value={currentSpeakerId === undefined ? '' : String(currentSpeakerId)}
+                placeholder={speakerText}
                 options={speakerOptions}
                 onChange={(value) =>
                   void handleReassignSegment(segment.segmentId, Number(value))
@@ -1538,7 +1464,7 @@ export default function RecordDetail({
               />
             ) : (
               <span className="inline-flex shrink-0 rounded-[var(--radius-sm)] bg-[var(--paper-inset)] px-1.5 py-0.5 text-xs font-medium text-[var(--ink-secondary)]">
-                {speakerFor(segment)}
+                {speakerText}
               </span>
             )}
             <button
@@ -1560,8 +1486,8 @@ export default function RecordDetail({
       handleReassignSegment,
       highlightAndFocus,
       highlightedItem,
-      speakerFor,
-      speakerIdFor,
+      diarization?.segmentSpeakerAttributions,
+      speakerLabel,
       speakerOptions,
       t,
       transcript,
@@ -1695,7 +1621,19 @@ export default function RecordDetail({
   const liveTranscriptionFailed =
     ownsCaptureSlot && transcriptionStatus === 'failed';
   const completedTranscriptionFailed =
-    !ownsCaptureSlot && transcriptionStatus === 'failed';
+    !ownsCaptureSlot && (transcriptionStatus === 'failed' || record?.audio?.diarizationStatus === 'failed');
+  const diarizationStatus = record?.audio?.diarizationStatus;
+  const processingSavedAudio = !ownsCaptureSlot && !completedTranscriptionFailed
+    && (captureStatus === 'ready' || captureStatus === 'interrupted')
+    && (['queued', 'live', 'lagging', 'recovering', 'finalizing'].includes(transcriptionStatus ?? '')
+      || diarizationStatus === 'queued' || diarizationStatus === 'running');
+  const savedProcessingLabel = processingSavedAudio
+    ? diarizationStatus === 'running'
+      ? t('records.transcriptSpeakers')
+      : transcriptionStatus === 'queued' || transcriptionStatus === 'ready'
+        ? t('records.transcriptQueued')
+        : t('records.transcriptRefining')
+    : null;
   const systemAudioDowngraded = snapshot?.warnings.some(
     (warning) => warning.code === 'RECORDING_SYSTEM_AUDIO_UNAVAILABLE',
   );
@@ -1711,9 +1649,9 @@ export default function RecordDetail({
           ? t('records.paused')
           : captureStatus === 'interrupted'
             ? t('records.interrupted')
-            : captureStatus === 'failed' || transcriptionStatus === 'failed'
+            : captureStatus === 'failed' || transcriptionStatus === 'failed' || completedTranscriptionFailed
               ? t('records.failed')
-              : transcriptionStatus &&
+              : processingSavedAudio || transcriptionStatus &&
                   [
                     'queued',
                     'live',
@@ -1730,9 +1668,9 @@ export default function RecordDetail({
         ? 'bg-[var(--error)]'
         : captureStatus === 'interrupted' ||
             captureStatus === 'failed' ||
-            transcriptionStatus === 'failed'
+            transcriptionStatus === 'failed' || completedTranscriptionFailed
           ? 'bg-[var(--error)]'
-          : ownsCaptureSlot
+          : ownsCaptureSlot || processingSavedAudio
             ? 'bg-[var(--warning)]'
             : 'bg-[var(--success)]';
   const playbackDurationMs = record?.audio?.mediaDurationMs ?? 0;
@@ -1743,6 +1681,7 @@ export default function RecordDetail({
   const showManualTranscription =
     !transcript &&
     !ownsCaptureSlot &&
+    !processingSavedAudio &&
     (transcriptionStatus === 'not_started' || modelPack?.usable === true);
   const canDiscuss =
     !ownsCaptureSlot &&
@@ -1759,6 +1698,20 @@ export default function RecordDetail({
             disabled: !canDiscuss,
           },
         ],
+      },
+      {
+        // Existing results remain readable while the Manager processes a new
+        // candidate. Their presence must not hide the explicit rerun entrance.
+        items: transcript && !ownsCaptureSlot && !completedTranscriptionFailed
+          ? [{
+              icon: <RotateCcw className="h-3.5 w-3.5" />,
+              label: t('records.rerunTranscription'),
+              onClick: () => void handleStartTranscription(),
+              disabled: !modelPack?.usable || transcriptionStatus !== 'ready'
+                || record?.audio?.diarizationStatus === 'queued'
+                || record?.audio?.diarizationStatus === 'running',
+            }]
+          : [],
       },
       {
         items: tracks.map((track) => ({
@@ -1812,6 +1765,11 @@ export default function RecordDetail({
     ],
     [
       canDiscuss,
+      completedTranscriptionFailed,
+      handleStartTranscription,
+      modelPack?.usable,
+      transcript,
+      transcriptionStatus,
       handleArchive,
       handleExportAudio,
       handleExportText,
@@ -1856,6 +1814,7 @@ export default function RecordDetail({
                 queueMetadataSave(titleDraft, parseTagDraft(tagDraft))
               }
               onKeyDown={(event) => {
+                if (isImeComposingEvent(event)) return;
                 if (event.key === 'Enter') event.currentTarget.blur();
               }}
               aria-label={t('records.titleLabel')}
@@ -1876,7 +1835,7 @@ export default function RecordDetail({
           </div>
         </header>
 
-        <section className="col-start-1 row-start-2 flex h-[84px] items-center gap-5 overflow-hidden rounded-[var(--radius-lg)] bg-[var(--ink)] px-5 text-[var(--paper)] shadow-sm max-lg:grid max-lg:h-auto max-lg:min-h-[132px] max-lg:grid-cols-[92px_minmax(0,1fr)] max-lg:grid-rows-[auto_auto] max-lg:gap-x-4 max-lg:gap-y-2 max-lg:overflow-visible max-lg:py-3">
+        <section data-testid="record-media-controls" className="[&_button]:focus-visible:outline-2 [&_button]:focus-visible:outline-offset-2 [&_button]:focus-visible:outline-[var(--media-control-text)] col-start-1 row-start-2 flex h-[84px] items-center gap-5 overflow-hidden rounded-[var(--radius-lg)] bg-[var(--media-control-bg)] px-5 text-[var(--media-control-text)] shadow-sm max-lg:grid max-lg:h-auto max-lg:min-h-[132px] max-lg:grid-cols-[92px_minmax(0,1fr)] max-lg:grid-rows-[auto_auto] max-lg:gap-x-4 max-lg:gap-y-2 max-lg:overflow-visible max-lg:py-3">
           {ownsCaptureSlot ? (
             <>
               <div className="min-w-[92px] max-lg:col-start-1 max-lg:row-start-1">
@@ -1886,7 +1845,7 @@ export default function RecordDetail({
                 >
                   {formatDuration(mediaDurationMs)}
                 </div>
-                <div className="mt-1 text-xs opacity-65">
+                <div className="mt-1 text-xs opacity-75">
                   {isPaused ? t('records.paused') : statusLabel}
                 </div>
               </div>
@@ -1934,16 +1893,16 @@ export default function RecordDetail({
                           void runSourceControl(source.track, !enabled);
                         }
                       }}
-                      className={`grid min-w-0 grid-cols-[72px_minmax(48px,1fr)_16px] items-center gap-2 rounded-[var(--radius-sm)] px-1 py-0.5 text-left text-xs transition-colors hover:bg-[var(--paper)]/10 disabled:cursor-default ${enabled ? '' : 'opacity-45'}`}
+                      className={`grid min-w-0 grid-cols-[72px_minmax(48px,1fr)_16px] items-center gap-2 rounded-[var(--radius-sm)] px-1 py-0.5 text-left text-xs transition-colors hover:bg-[var(--media-control-text)]/10 disabled:cursor-default ${enabled ? '' : 'opacity-45'}`}
                     >
                       <span
                         className={`truncate ${enabled ? 'opacity-80' : 'line-through'}`}
                       >
                         {sourceLabel}
                       </span>
-                      <span className="h-1.5 min-w-0 overflow-hidden rounded-full bg-[var(--paper)]/20">
+                      <span className="h-1.5 min-w-0 overflow-hidden rounded-full bg-[var(--media-control-text)]/20">
                         <span
-                          className="block h-full origin-left rounded-full bg-[var(--success)] transition-transform duration-300 ease-out"
+                          className="block h-full origin-left rounded-full bg-[var(--media-control-accent)] transition-transform duration-300 ease-out"
                           style={{ transform: `scaleX(${level / 100})` }}
                         />
                       </span>
@@ -1957,14 +1916,14 @@ export default function RecordDetail({
                   );
                 })}
                 {systemAudioDowngraded && (
-                  <span className="truncate text-xs text-[var(--warning)]">
+                  <span className="truncate rounded-[var(--radius-sm)] bg-[var(--warning)] px-1.5 py-0.5 text-xs text-[var(--on-warning)]">
                     {t('records.systemAudioDowngraded')}
                   </span>
                 )}
                 {wakeLockUnavailable && (
                   <span
                     role="status"
-                    className="truncate text-xs text-[var(--warning)]"
+                    className="truncate rounded-[var(--radius-sm)] bg-[var(--warning)] px-1.5 py-0.5 text-xs text-[var(--on-warning)]"
                     title={t('records.wakeLockUnavailable')}
                   >
                     {t('records.wakeLockUnavailable')}
@@ -1981,7 +1940,7 @@ export default function RecordDetail({
                       snapshot?.captureStatus ?? '',
                     )
                   }
-                  className="inline-flex h-9 items-center gap-1.5 rounded-[var(--radius-md)] bg-[var(--paper)]/12 px-3 text-sm font-medium transition-colors hover:bg-[var(--paper)]/20 disabled:opacity-40"
+                  className="inline-flex h-9 items-center gap-1.5 rounded-[var(--radius-md)] bg-[var(--media-control-text)]/12 px-3 text-sm font-medium transition-colors hover:bg-[var(--media-control-text)]/20 disabled:opacity-40"
                 >
                   {isPaused ? (
                     <Play className="h-4 w-4" />
@@ -1994,7 +1953,7 @@ export default function RecordDetail({
                   type="button"
                   onClick={() => void handleStop()}
                   disabled={busyAction !== null || !snapshot}
-                  className="inline-flex h-9 items-center gap-1.5 rounded-[var(--radius-md)] bg-[var(--error)] px-3 text-sm font-semibold text-[var(--on-error)] transition-opacity hover:opacity-90 disabled:opacity-40"
+                  className="inline-flex h-9 items-center gap-1.5 rounded-[var(--radius-md)] bg-[var(--media-stop-bg)] px-3 text-sm font-semibold text-[var(--media-stop-text)] transition-opacity hover:opacity-90 disabled:opacity-40"
                 >
                   <Square className="h-3.5 w-3.5 fill-current" />
                   {t('records.stop')}
@@ -2005,11 +1964,12 @@ export default function RecordDetail({
             <div className="grid min-w-0 flex-1 grid-cols-[36px_minmax(140px,1fr)_116px] items-center gap-4 max-lg:col-span-2">
               <button
                 type="button"
+                ref={playbackButtonRef}
                 disabled={!audioSrc}
                 onClick={() => {
                   togglePlayback();
                 }}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--paper)] text-[var(--ink)] disabled:opacity-40"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--media-control-text)] text-[var(--media-control-bg)] focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[var(--media-control-text)] disabled:opacity-40"
                 aria-label={
                   playing ? t('records.pausePlayback') : t('records.play')
                 }
@@ -2025,18 +1985,18 @@ export default function RecordDetail({
                 data-testid="recording-playback-timeline"
               >
                 <div
-                  className="relative h-5 min-w-[120px]"
+                  className="relative h-5 min-w-[120px] rounded focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--media-control-text)]"
                   data-testid="recording-playback-progress"
                 >
-                  <div className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full bg-[var(--paper)]/20">
+                  <div className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full bg-[var(--media-control-text)]/20">
                     <span
-                      className="block h-full rounded-full bg-[var(--accent-warm)]"
+                      className="block h-full rounded-full bg-[var(--media-control-accent)]"
                       style={{ width: `${playbackPercent}%` }}
                     />
                   </div>
                   <span
                     aria-hidden="true"
-                    className="pointer-events-none absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--paper)] shadow-sm"
+                    className="pointer-events-none absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--media-control-text)] shadow-sm"
                     style={{ left: `${playbackPercent}%` }}
                   />
                   <input
@@ -2045,11 +2005,17 @@ export default function RecordDetail({
                     max={Math.max(1, playbackDurationMs)}
                     value={Math.min(playbackMs, playbackDurationMs)}
                     onChange={(event) => seekTo(Number(event.target.value))}
+                    onKeyDown={(event) => {
+                      if (event.key !== ' ' || isImeComposingEvent(event)
+                        || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+                      event.preventDefault();
+                      if (!event.repeat && isActive && audioSrc) togglePlayback();
+                    }}
                     className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"
                     aria-label={t('records.duration')}
                   />
                 </div>
-                <span className="text-center font-mono text-xs tabular-nums text-[var(--paper)]/70">
+                <span className="text-center font-mono text-xs tabular-nums text-[var(--media-control-text)]/75">
                   {formatDuration(playbackMs)} /{' '}
                   {formatDuration(playbackDurationMs)}
                 </span>
@@ -2066,7 +2032,7 @@ export default function RecordDetail({
                       switchPlaybackTrack(value as typeof playbackTrack)
                     }
                     compact
-                    className="w-full [&>button]:border-[var(--paper)]/20 [&>button]:bg-[var(--paper)] [&>button]:text-[var(--ink)] [&>button>span]:text-[var(--ink)] [&>button>svg]:text-[var(--ink-muted)]"
+                    className="w-full [&>button]:border-[var(--media-control-text)]/20 [&>button]:bg-[var(--media-control-text)] [&>button]:text-[var(--media-control-bg)] [&>button>span]:text-[var(--media-control-bg)] [&>button>svg]:text-[var(--media-control-bg)]/75"
                     popoverMinWidth={120}
                     ariaLabel={t('records.tracks')}
                   />
@@ -2077,7 +2043,7 @@ export default function RecordDetail({
                     onClick={() =>
                       setPlaybackVolume((current) => (current > 0 ? 0 : 1))
                     }
-                    className="shrink-0 text-[var(--paper)]/75 transition-colors hover:text-[var(--paper)]"
+                    className="shrink-0 text-[var(--media-control-text)]/75 transition-colors hover:text-[var(--media-control-text)]"
                     aria-label={
                       playbackVolume > 0
                         ? t('records.mutePlayback')
@@ -2090,16 +2056,16 @@ export default function RecordDetail({
                       <VolumeX className="h-4 w-4" />
                     )}
                   </button>
-                  <div className="relative h-5 min-w-0 flex-1">
-                    <div className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full bg-[var(--paper)]/20">
+                  <div className="relative h-5 min-w-0 flex-1 rounded focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--media-control-text)]">
+                    <div className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full bg-[var(--media-control-text)]/20">
                       <span
-                        className="block h-full rounded-full bg-[var(--paper)]/75"
+                        className="block h-full rounded-full bg-[var(--media-control-text)]/75"
                         style={{ width: `${playbackVolume * 100}%` }}
                       />
                     </div>
                     <span
                       aria-hidden="true"
-                      className="pointer-events-none absolute top-1/2 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--paper)]"
+                      className="pointer-events-none absolute top-1/2 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--media-control-text)]"
                       style={{ left: `${playbackVolume * 100}%` }}
                     />
                     <input
@@ -2125,44 +2091,10 @@ export default function RecordDetail({
               src={audioSrc}
               data-testid="recording-primary-audio"
               preload="metadata"
-              onLoadedMetadata={(event) => {
-                const pending = pendingSeekRef.current;
-                if (pending === null) return;
-                event.currentTarget.currentTime = pending / 1_000;
-                setPlaybackMs(pending);
-                pendingSeekRef.current = null;
-              }}
-              onPlay={() => {
-                setPlaying(true);
-                trackPlaybackSession();
-              }}
-              onPause={() => setPlaying(false)}
-              onError={() => {
-                audioRef.current?.pause();
-                secondaryAudioRef.current?.pause();
-                setPlaying(false);
-                setPlaybackError(true);
-                if (!playbackErrorShownRef.current) {
-                  playbackErrorShownRef.current = true;
-                  toast.error(t('records.playbackFailed'));
-                }
-              }}
-              onEnded={() => {
-                secondaryAudioRef.current?.pause();
-                setPlaying(false);
-                playbackSessionTrackedRef.current = false;
-              }}
-              onTimeUpdate={(event) => {
-                const currentTime = event.currentTarget.currentTime;
-                const secondaryAudio = secondaryAudioRef.current;
-                if (
-                  secondaryAudio &&
-                  Math.abs(secondaryAudio.currentTime - currentTime) > 0.12
-                ) {
-                  secondaryAudio.currentTime = currentTime;
-                }
-                setPlaybackMs(currentTime * 1_000);
-              }}
+              onLoadedMetadata={playback.metadataReady}
+              onError={playback.fail}
+              onEnded={playback.timeUpdated}
+              onTimeUpdate={playback.timeUpdated}
             />
           )}
           {secondaryAudioSrc && (
@@ -2171,20 +2103,9 @@ export default function RecordDetail({
               src={secondaryAudioSrc}
               data-testid="recording-secondary-audio"
               preload="metadata"
-              onLoadedMetadata={(event) => {
-                event.currentTarget.currentTime =
-                  audioRef.current?.currentTime ?? playbackMs / 1_000;
-              }}
-              onError={() => {
-                audioRef.current?.pause();
-                secondaryAudioRef.current?.pause();
-                setPlaying(false);
-                setPlaybackError(true);
-                if (!playbackErrorShownRef.current) {
-                  playbackErrorShownRef.current = true;
-                  toast.error(t('records.playbackFailed'));
-                }
-              }}
+              onLoadedMetadata={playback.metadataReady}
+              onError={playback.fail}
+              onEnded={playback.timeUpdated}
             />
           )}
           {playbackError && (
@@ -2207,7 +2128,7 @@ export default function RecordDetail({
               >
                 {liveTranscriptionFailed
                   ? t('records.transcriptLiveFailed')
-                  : transcriptionStatus === 'lagging' ||
+                  : savedProcessingLabel ?? (transcriptionStatus === 'lagging' ||
                       transcript?.state === 'lagging'
                     ? t('records.transcriptLagging')
                     : transcriptionStatus === 'recovering' ||
@@ -2224,7 +2145,7 @@ export default function RecordDetail({
                               'finalizing',
                             ].includes(transcriptionStatus)
                           ? t('records.transcriptPending')
-                          : null}
+                          : null)}
               </span>
               <span ref={recordActionsAnchorRef} className="flex shrink-0">
                 <DropdownMenu
@@ -2244,6 +2165,11 @@ export default function RecordDetail({
               />
             </div>
           </div>
+          {processingSavedAudio && (
+            <p className="mb-3 text-xs text-[var(--ink-muted)]">
+              {t('records.transcriptSavedHint')}
+            </p>
+          )}
           {(loadError || projectionError) && (
             <div
               role="alert"
@@ -2276,7 +2202,23 @@ export default function RecordDetail({
               role="status"
               className="mb-3 flex items-center justify-between gap-3 rounded-[var(--radius-md)] bg-[var(--warning)]/10 px-3 py-2 text-sm text-[var(--ink-secondary)]"
             >
-              <span>{t('records.transcriptFailedHint')}</span>
+              <div className="min-w-0">
+                <span>
+                  {t(record?.transcriptionFailure?.stage === 'diarizing'
+                    ? 'records.diarizationFailedHint'
+                    : transcriptionFailureHint(record?.transcriptionFailure?.code))}
+                </span>
+                {record?.transcriptionFailure && (
+                  <details className="mt-1 text-xs">
+                    <summary className="cursor-pointer">
+                      {t('records.transcriptFailureDetails')}
+                    </summary>
+                    <code className="break-all">
+                      {record.transcriptionFailure.code}
+                    </code>
+                  </details>
+                )}
+              </div>
               <button
                 type="button"
                 onClick={() => {
@@ -2427,7 +2369,7 @@ export default function RecordDetail({
                             <div className="flex items-center gap-2">
                               <span className="w-20 shrink-0 truncate text-xs font-medium text-[var(--ink-secondary)]">
                                 {t('records.speakerUnknown', {
-                                  name: speakerLetter(speaker.speakerId),
+                                  name: speakerLetter(speaker.displayIndex),
                                 })}
                               </span>
                               <input
@@ -2444,6 +2386,7 @@ export default function RecordDetail({
                                   void handleRenameSpeaker(speaker.speakerId)
                                 }
                                 onKeyDown={(event) => {
+                                  if (isImeComposingEvent(event)) return;
                                   if (event.key === 'Enter') {
                                     event.currentTarget.blur();
                                   }
@@ -2539,6 +2482,7 @@ export default function RecordDetail({
                                 )
                               }
                               onKeyDown={(event) => {
+                                if (isImeComposingEvent(event)) return;
                                 if (event.key === 'Enter') {
                                   event.currentTarget.blur();
                                 }

@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronLeft, ChevronRight, Copy, Download, FileText, Loader2, Paperclip, Pencil, Save, Send, UploadCloud, X } from 'lucide-react';
@@ -270,7 +271,7 @@ export function IssueDetailDrawer({
     if (
       event.key !== 'Enter'
       || (!event.metaKey && !event.ctrlKey)
-      || event.nativeEvent.isComposing
+      || isImeComposingEvent(event)
     ) {
       return;
     }
@@ -476,6 +477,7 @@ export function IssueDetailDrawer({
             role="menu"
             aria-label={t('space.detail.downloadToAgentWorkspace')}
             onKeyDown={(event) => {
+              if (isImeComposingEvent(event)) return;
               if (event.key !== 'Escape') return;
               event.preventDefault();
               event.stopPropagation();
@@ -609,6 +611,7 @@ export function IssueDetailDrawer({
                       value={draftBody}
                       onChange={(event) => setDraftBody(event.target.value)}
                       onKeyDown={(event) => {
+                        if (isImeComposingEvent(event)) return;
                         if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
                           event.preventDefault();
                           void saveIssueEdit();

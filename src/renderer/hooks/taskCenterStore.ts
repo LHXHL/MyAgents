@@ -881,6 +881,10 @@ export const refresh = (scope: TaskCenterRefreshScope = 'all', options: TaskCent
     }
 };
 
+/** Search pages may carry metadata before a sidebar slice loads. Absence from
+ * that slice is not deletion; consult the existing deletion authority. */
+export const isSessionDeleted = (sessionId: string): boolean => deletedSessionIds.has(sessionId);
+
 export const actions: TaskCenterActions = {
     deleteSession: async (sessionId: string, releasableTabIds = []) => {
         const result = await deleteSessionApi(sessionId, releasableTabIds);

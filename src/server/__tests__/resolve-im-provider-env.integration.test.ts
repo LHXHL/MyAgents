@@ -81,9 +81,9 @@ describe('resolveImProviderEnv (#237)', () => {
     // SDK sub-agent aliases by completeModelAliases().
     expect(env!.modelAliases).toEqual({
       fable: 'deepseek-v4-pro',
-      sonnet: 'deepseek-v4-pro',
+      sonnet: 'deepseek-flash',
       opus: 'deepseek-v4-pro',
-      haiku: 'deepseek-v4-flash',
+      haiku: 'deepseek-flash',
     });
   });
 

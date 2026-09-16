@@ -2,6 +2,7 @@
  * UnifiedLogsPanel - Fullscreen modal displaying aggregated logs from all sources
  */
 
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Trans, useTranslation } from 'react-i18next';
@@ -226,6 +227,7 @@ export function UnifiedLogsPanel({ sseLogs, isVisible, onClose, onClearAll }: Un
     useEffect(() => {
         if (!isVisible) return;
         const handleKeyDown = (e: KeyboardEvent) => {
+            if (isImeComposingEvent(e)) return;
             if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
                 e.preventDefault();
                 searchInputRef.current?.focus();
@@ -297,6 +299,7 @@ export function UnifiedLogsPanel({ sseLogs, isVisible, onClose, onClearAll }: Un
                                 value={searchQuery}
                                 onChange={e => { setSearchQuery(e.target.value); setActiveMatchIndex(0); }}
                                 onKeyDown={e => {
+                                    if (isImeComposingEvent(e)) return;
                                     if (e.key === 'Enter') {
                                         e.preventDefault();
                                         navigateMatch(e.shiftKey ? 'prev' : 'next');

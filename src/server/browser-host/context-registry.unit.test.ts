@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import type { Browser, BrowserContext, BrowserType, Page } from 'playwright';
 
 import type { VerifiedBrowserCapability } from './capability-client';
@@ -18,14 +19,11 @@ function binding(session: string): VerifiedBrowserCapability {
 }
 
 function fakeContext(): BrowserContext {
-  const closeListeners: Array<() => void> = [];
-  return {
-    once: vi.fn((event: string, listener: () => void) => {
-      if (event === 'close') closeListeners.push(listener);
-      return undefined;
-    }),
+  const events = new EventEmitter();
+  return Object.assign(events, {
+    once: vi.fn(events.once.bind(events)),
     close: vi.fn(async () => {
-      for (const listener of closeListeners.splice(0)) listener();
+      events.emit('close');
     }),
     pages: vi.fn(() => []),
     newPage: vi.fn(),
@@ -34,7 +32,7 @@ function fakeContext(): BrowserContext {
     addCookies: vi.fn(async () => {}),
     cookies: vi.fn(async () => []),
     storageState: vi.fn(async () => EMPTY_STATE),
-  } as unknown as BrowserContext;
+  }) as unknown as BrowserContext;
 }
 
 function harness(
@@ -80,6 +78,124 @@ function fakePage(name: string): Page {
 }
 
 describe('BrowserContextRegistry', () => {
+  it.each(['checkpoint', 'close'] as const)('captures a %s requested exactly at commit settlement', async action => {
+    const context = fakeContext();
+    let value = 'before';
+    vi.mocked(context.cookies).mockImplementation(async () => [{ name: 'sid', value, domain: 'example.test', path: '/' }] as never);
+    const commit = Promise.withResolvers<Awaited<ReturnType<BrowserContextRegistryDependencies['checkpointIdentity']>>>();
+    const snapshots: string[] = [];
+    let firstResult!: Awaited<ReturnType<BrowserContextRegistryDependencies['checkpointIdentity']>>;
+    const checkpointIdentity = vi.fn<BrowserContextRegistryDependencies['checkpointIdentity']>((_id, _base, _observed, state) => {
+      snapshots.push(String(state.cookies[0].value));
+      const result = { revision: snapshots.length + 1, state, conflictCount: 0 };
+      if (snapshots.length !== 1) return Promise.resolve(result);
+      firstResult = result;
+      return commit.promise;
+    });
+    const { registry } = harness([context], { checkpointIdentity });
+    await registry.getContext(binding('a'));
+    const saving = registry.checkpoint('a');
+    await vi.waitFor(() => expect(checkpointIdentity).toHaveBeenCalledOnce());
+    // Registered after the Registry's await: runs between its continuation
+    // completing and any external promise.finally bookkeeping.
+    const following = commit.promise.then(() => {
+      value = 'after';
+      return action === 'close' ? registry.closeSessionContext('a') : registry.checkpoint('a');
+    });
+    commit.resolve(firstResult);
+    await Promise.all([saving, following]);
+    expect(snapshots).toEqual(['before', 'after']);
+    await registry.shutdown();
+  });
+
+  it('releases the selected Page when it closes between MCP borrows', async () => {
+    const selected = Object.assign(new EventEmitter(), { url: () => 'selected' });
+    const live = Object.assign(new EventEmitter(), { url: () => 'live' });
+    let pages = [selected, live];
+    const context = fakeContext();
+    vi.mocked(context.pages).mockImplementation(() => pages as unknown as Page[]);
+    const { registry } = harness([context]);
+    const first = await registry.getContext(binding('a'));
+    first.pages();
+    registry.reconcileTabAction('a', 'select', 0);
+    await first.close();
+    pages = [live];
+    selected.emit('close');
+    await Promise.resolve();
+    const entry = (registry as unknown as { entries: Map<string, { selection: { page: unknown }; backendPageOrder: unknown[] }> }).entries.get('a')!;
+    // Visible pages alone would pass even while this closed object stayed rooted.
+    expect(entry.selection.page).toBe(live);
+    expect(entry.backendPageOrder).not.toContain(selected);
+    expect((await registry.getContext(binding('a'))).pages().map(page => page.url())).toEqual(['live']);
+    await registry.shutdown();
+  });
+
+  it.each(['checkpoint', 'close', 'shutdown'] as const)('captures a fresh snapshot requested during an older commit on %s', async action => {
+    const context = fakeContext();
+    let value = 'before-login';
+    vi.mocked(context.cookies).mockImplementation(async () => [{ name: 'sid', value, domain: 'example.test', path: '/' }] as never);
+    const commit = Promise.withResolvers<void>();
+    const snapshots: string[] = [];
+    const checkpointIdentity = vi.fn(async (_id, _base, _observed, state) => {
+      snapshots.push(state.cookies[0].value);
+      if (snapshots.length === 1) await commit.promise;
+      return { revision: snapshots.length + 1, state, conflictCount: 0 };
+    });
+    const { registry } = harness([context], { checkpointIdentity });
+    await registry.getContext(binding('a'));
+    const initial = registry.checkpoint('a');
+    await vi.waitFor(() => expect(snapshots).toEqual(['before-login']));
+    value = 'after-login';
+    const final = action === 'checkpoint' ? registry.checkpoint('a')
+      : action === 'close' ? registry.closeSessionContext('a') : registry.shutdown();
+    commit.resolve();
+    await Promise.all([initial, final]);
+    expect(snapshots).toEqual(['before-login', 'after-login']);
+    await registry.shutdown();
+  });
+
+  it('keeps a queued checkpoint attached to its adopted owner', async () => {
+    vi.useFakeTimers();
+    try {
+      const { registry, checkpointIdentity } = harness([fakeContext()]);
+      registry.retainConnection('pending-a');
+      await registry.getContext(binding('pending-a'));
+      registry.scheduleCheckpoint('pending-a');
+      expect(registry.rekeyProductSession('pending-a', 'real-a')).toBe(true);
+      await vi.advanceTimersByTimeAsync(750);
+      expect(checkpointIdentity).toHaveBeenCalledWith('real-a', expect.anything(), expect.anything(), EMPTY_STATE);
+      await registry.shutdown();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('releases closed-page listeners and selection while another page stays live', async () => {
+    const page = Object.assign(new EventEmitter(), { url: () => 'closed' });
+    const live = Object.assign(new EventEmitter(), { url: () => 'live' });
+    let pages = [page, live];
+    const context = fakeContext();
+    vi.mocked(context.pages).mockImplementation(() => pages as unknown as Page[]);
+    const { registry } = harness([context]);
+    const borrowed = await registry.getContext(binding('a'));
+    const [wrapped] = borrowed.pages();
+    registry.reconcileTabAction('a', 'select', 0);
+    const closed = vi.fn();
+    const once = vi.fn();
+    wrapped.on('close', closed);
+    wrapped.on('console', vi.fn());
+    wrapped.once('load', once);
+    page.emit('load');
+    page.emit('load');
+    expect(once).toHaveBeenCalledOnce();
+    pages = [live];
+    page.emit('close');
+    await Promise.resolve();
+    expect(closed).toHaveBeenCalledOnce();
+    expect(page.eventNames()).toEqual([]);
+    expect((await registry.getContext(binding('a'))).pages().map(p => p.url())).toEqual(['live']);
+    await borrowed.close();
+    await registry.shutdown();
+  });
+
   it('shares one managed Chromium process and isolates one Context per Product Session', async () => {
     const { registry, browser, launch } = harness([
       fakeContext(),
@@ -101,6 +217,8 @@ describe('BrowserContextRegistry', () => {
     expect(launch).toHaveBeenCalledOnce();
     expect(launch).toHaveBeenCalledWith(expect.objectContaining({
       headless: false,
+      handleSIGINT: false,
+      handleSIGTERM: false,
       executablePath: '/managed/chromium',
     }));
     expect(browser.newContext).toHaveBeenCalledTimes(3);

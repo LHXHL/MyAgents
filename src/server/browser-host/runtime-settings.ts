@@ -65,7 +65,13 @@ export function compileBrowserRuntimeSettings(
   productSessionId: string,
   workspacePath: string,
 ): CompiledBrowserRuntimeSettings {
-  const launchOptions: LaunchOptions = { headless: false };
+  const launchOptions: LaunchOptions = {
+    headless: false,
+    // Global Sidecar drains tools and checkpoints live Contexts before closing
+    // Chromium. Playwright's parallel signal handlers would preempt that owner.
+    handleSIGINT: false,
+    handleSIGTERM: false,
+  };
   const contextOptions: BrowserContextOptions = {};
   const connectionConfig: PlaywrightConnectionConfig = {
     capabilities: ["storage"],

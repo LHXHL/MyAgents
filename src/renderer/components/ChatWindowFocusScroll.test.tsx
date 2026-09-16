@@ -1,12 +1,15 @@
-import { act, render } from '@testing-library/react';
+import { act, fireEvent, render } from '@testing-library/react';
 import React, { useMemo } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Message as MessageType } from '@/types/chat';
 
 const virtuoso = vi.hoisted(() => ({
   scrollToIndex: vi.fn(),
+  scrollTo: vi.fn(),
   scrollBy: vi.fn(),
+  scroller: null as HTMLElement | null,
+  height: 1000,
   atBottomStateChange: undefined as ((atBottom: boolean) => void) | undefined,
 }));
 
@@ -14,15 +17,29 @@ vi.mock('react-virtuoso', async () => {
   const ReactModule = await import('react');
   return {
     Virtuoso: ReactModule.forwardRef(function MockVirtuoso(
-      props: { atBottomStateChange?: (atBottom: boolean) => void },
+      props: {
+        atBottomStateChange?: (atBottom: boolean) => void;
+        scrollerRef?: (el: HTMLElement | null) => void;
+      },
       ref,
     ) {
       virtuoso.atBottomStateChange = props.atBottomStateChange;
       ReactModule.useImperativeHandle(ref, () => ({
         scrollToIndex: virtuoso.scrollToIndex,
+        scrollTo: virtuoso.scrollTo,
         scrollBy: virtuoso.scrollBy,
       }), []);
-      return <div data-testid="virtuoso" />;
+      const attachScroller = ReactModule.useCallback((el: HTMLDivElement | null) => {
+        if (el) {
+          Object.defineProperties(el, {
+            scrollHeight: { configurable: true, get: () => virtuoso.height },
+            clientHeight: { configurable: true, value: 500 },
+          });
+        }
+        virtuoso.scroller = el;
+        props.scrollerRef?.(el);
+      }, [props.scrollerRef]);
+      return <div ref={attachScroller} data-testid="virtuoso" />;
     }),
   };
 });
@@ -52,7 +69,9 @@ function Harness({
   renderNonce: number;
   windowPresentation?: { surfaceAvailable: boolean; generation: number };
 }) {
+  // A new native sample may rerender the list without changing its generation.
   void renderNonce;
+  const presentation = { ...windowPresentation };
   const streamingMessage = useMemo(() => msg('stream', streamingContent), [streamingContent]);
   const messages = useMemo(
     () => [msg('user', 'query', 'user'), streamingMessage],
@@ -61,7 +80,7 @@ function Harness({
   const controller = useChatScrollController({
     messages,
     isActive: true,
-    windowPresentation,
+    windowPresentation: presentation,
     sessionId: 's1',
   });
   return (
@@ -71,7 +90,7 @@ function Harness({
       isLoading
       sessionId="s1"
       isActive
-      windowPresentation={windowPresentation}
+      windowPresentation={presentation}
       onViewportAdmissionChanged={controller.onViewportAdmissionChanged}
       onItemsRendered={controller.onItemsRendered}
       isViewportRecoveryFenced={controller.isViewportRecoveryFenced}
@@ -87,42 +106,71 @@ function Harness({
 }
 
 describe('Chat window focus scroll composition', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    virtuoso.height = 1000;
+    virtuoso.scroller = null;
+    virtuoso.scrollTo.mockImplementation(({ top }: { top: number }) => {
+      if (virtuoso.scroller) virtuoso.scroller.scrollTop = top;
+    });
+    virtuoso.scrollToIndex.mockImplementation(() => {
+      if (virtuoso.scroller) virtuoso.scroller.scrollTop = virtuoso.height - 500;
+    });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
   it('keeps a visible followed stream live while blurred without issuing a focus restore', () => {
     const view = render(<Harness streamingContent="a" renderNonce={0} />);
     virtuoso.scrollToIndex.mockClear();
+    virtuoso.scrollTo.mockClear();
 
+    // Geometry moving away from bottom does not express an intent to stop following.
+    act(() => virtuoso.atBottomStateChange?.(false));
+    virtuoso.height = 1200;
     view.rerender(<Harness streamingContent="background output" renderNonce={1} />);
-    expect(virtuoso.scrollToIndex).toHaveBeenCalledTimes(1);
-    expect(virtuoso.scrollToIndex).toHaveBeenLastCalledWith({
-      index: 'LAST',
-      align: 'end',
+    expect(virtuoso.scrollToIndex).not.toHaveBeenCalled();
+    expect(virtuoso.scrollTo).toHaveBeenCalledTimes(1);
+    expect(virtuoso.scrollTo).toHaveBeenLastCalledWith({
+      top: 700,
       behavior: 'auto',
     });
-
-    // Visible unfocused viewport input remains admitted and updates follow.
-    act(() => virtuoso.atBottomStateChange?.(false));
-    virtuoso.scrollToIndex.mockClear();
+    virtuoso.scrollTo.mockClear();
+    virtuoso.scrollBy.mockClear();
 
     // App no longer projects native focus into Chat. A focus sample that keeps
     // the same presentation therefore cannot manufacture a restore command.
     view.rerender(<Harness streamingContent="background output" renderNonce={2} />);
 
     expect(virtuoso.scrollToIndex).not.toHaveBeenCalled();
+    expect(virtuoso.scrollTo).not.toHaveBeenCalled();
+    expect(virtuoso.scrollBy).not.toHaveBeenCalled();
+
+    // Actual upward input in the visible unfocused viewport enters reading mode.
+    fireEvent.wheel(virtuoso.scroller!, { deltaY: -100 });
+    virtuoso.scroller!.scrollTop = 600;
+    virtuoso.height = 1400;
+    view.rerender(<Harness streamingContent="more background output" renderNonce={3} />);
+    expect(virtuoso.scrollToIndex).not.toHaveBeenCalled();
+    expect(virtuoso.scrollTo).not.toHaveBeenCalled();
   });
 
   it('issues only the controller recovery pin when a followed stream becomes renderable', () => {
-    let resizeCallback: ResizeObserverCallback | null = null;
+    const resizeCallbacks = new Set<ResizeObserverCallback>();
     class TestResizeObserver implements ResizeObserver {
+      private callback: ResizeObserverCallback;
       constructor(callback: ResizeObserverCallback) {
-        resizeCallback = callback;
+        this.callback = callback;
+        resizeCallbacks.add(callback);
       }
       observe = vi.fn();
       unobserve = vi.fn();
-      disconnect = vi.fn();
+      disconnect = () => { resizeCallbacks.delete(this.callback); };
     }
     vi.stubGlobal('ResizeObserver', TestResizeObserver);
     const view = render(<Harness streamingContent="a" renderNonce={0} />);
 
+    virtuoso.height = 1200;
     view.rerender(
       <Harness
         streamingContent="output while minimized"
@@ -131,6 +179,8 @@ describe('Chat window focus scroll composition', () => {
       />,
     );
     virtuoso.scrollToIndex.mockClear();
+    virtuoso.scrollTo.mockClear();
+    virtuoso.scrollBy.mockClear();
     view.rerender(
       <Harness
         streamingContent="output while minimized"
@@ -139,9 +189,13 @@ describe('Chat window focus scroll composition', () => {
       />,
     );
 
-    act(() => resizeCallback?.([
-      { contentRect: { width: 800, height: 600 } as DOMRectReadOnly } as ResizeObserverEntry,
-    ], {} as ResizeObserver));
+    act(() => {
+      for (const callback of [...resizeCallbacks]) {
+        callback([
+          { contentRect: { width: 800, height: 600 } as DOMRectReadOnly } as ResizeObserverEntry,
+        ], {} as ResizeObserver);
+      }
+    });
 
     expect(virtuoso.scrollToIndex).toHaveBeenCalledTimes(1);
     expect(virtuoso.scrollToIndex).toHaveBeenCalledWith({
@@ -149,6 +203,7 @@ describe('Chat window focus scroll composition', () => {
       align: 'end',
       behavior: 'auto',
     });
-    vi.unstubAllGlobals();
+    expect(virtuoso.scrollTo).not.toHaveBeenCalled();
+    expect(virtuoso.scrollBy).not.toHaveBeenCalled();
   });
 });

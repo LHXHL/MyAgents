@@ -83,7 +83,7 @@ Windows smoke反复开关/拖拽 split、resize窗口、切 Tab、显示 overlay
 - WebView2 因 focus/permission拒绝时，在同一用户动作内回退 hidden textarea selection；
 - 两条路径都失败则 reject，调用方不能显示成功。
 
-富文本/Markdown helper最终也复用该 plain-text边界。测试覆盖 primary reject + fallback success以及双失败不误报。
+整篇 Markdown helper 的纯文本降级复用该边界；整表复制则使用 `copyRichText`，同时写入 HTML 与 TSV，失败时回退临时 copy-event 双格式写入，保留焦点和选区，不降级丢失表格格式。测试覆盖主路径拒绝、fallback 成功及双失败不误报；目标应用的富文本/表格粘贴兼容性仍需真机验证。
 
 ## DPR 与渲染环境
 

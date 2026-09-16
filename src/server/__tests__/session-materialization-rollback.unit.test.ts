@@ -26,6 +26,7 @@ vi.mock('../SessionStore', async (importOriginal) => {
     getSessionMetadata: vi.fn(),
     saveSessionMetadata: vi.fn(async () => undefined),
     updateSessionMetadata: vi.fn(),
+    updateSessionMetadataForBinding: (...args: unknown[]) => vi.mocked(updateSessionMetadata)(...args as Parameters<typeof updateSessionMetadata>),
   };
 });
 

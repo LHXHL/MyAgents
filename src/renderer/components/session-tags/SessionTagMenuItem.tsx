@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronRight, Loader2, Pencil, Search, Tags, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -97,6 +98,7 @@ function SessionTagManager({ open, tags, focusSessionId, onMutationStart, onClos
             (preferred ?? dialogRef.current)?.focus();
         });
         const handleKeyDown = (event: KeyboardEvent) => {
+            if (isImeComposingEvent(event)) return;
             if (event.key === 'Escape') {
                 if (closeBlockedRef.current) return;
                 event.preventDefault();
@@ -319,7 +321,13 @@ function SessionTagManager({ open, tags, focusSessionId, onMutationStart, onClos
 }
 
 /** Shared parent-menu row and checkbox submenu for Session user Tags. */
-export default function SessionTagMenuItem({
+export default function SessionTagMenuItem(props: SessionTagMenuItemProps) {
+    // Selection, drafts and in-flight UI belong to one Session. Retargeting a
+    // reusable context menu must not carry any of them into the next Session.
+    return <SessionTagMenuContent key={props.session.id} {...props} />;
+}
+
+function SessionTagMenuContent({
     session,
     onMutationStart,
     onSessionUpdated,
@@ -338,6 +346,8 @@ export default function SessionTagMenuItem({
     const [mutating, setMutating] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [activeIndex, setActiveIndex] = useState(0);
+    const catalogReadGeneration = useRef(0);
+    const tagLayerOpen = open || managerOpen;
 
     const closePicker = useCallback(() => {
         setOpen(false);
@@ -345,27 +355,36 @@ export default function SessionTagMenuItem({
     }, []);
 
     useEffect(() => setSelected(sanitizeSessionUserTags(session.userTags)), [session.userTags]);
-    useEffect(() => onSubmenuOpenChange?.(open || managerOpen), [managerOpen, onSubmenuOpenChange, open]);
+    useEffect(() => onSubmenuOpenChange?.(tagLayerOpen), [onSubmenuOpenChange, tagLayerOpen]);
 
-    const loadTags = useCallback(async (clearError = true) => {
+    const loadTags = useCallback(async () => {
+        const generation = ++catalogReadGeneration.current;
         setLoading(true);
-        if (clearError) setError(null);
+        setError(null);
         try {
-            setTags(await getSessionUserTags());
+            const nextTags = await getSessionUserTags();
+            if (generation === catalogReadGeneration.current) setTags(nextTags);
         } catch {
-            if (clearError) setError(t('sessionTags.errors.loadFailed'));
+            if (generation === catalogReadGeneration.current) setError(t('sessionTags.errors.loadFailed'));
         } finally {
-            setLoading(false);
+            if (generation === catalogReadGeneration.current) setLoading(false);
         }
     }, [t]);
+
+    // The picker and manager share this catalogue. Switching between them
+    // must preserve a pending read while either surface still needs its result.
+    useEffect(() => {
+        if (!tagLayerOpen) return;
+        void loadTags();
+        return () => { catalogReadGeneration.current += 1; };
+    }, [loadTags, tagLayerOpen]);
 
     useEffect(() => {
         if (!open) return;
         setQuery('');
         setActiveIndex(0);
-        void loadTags();
         queueMicrotask(() => inputRef.current?.focus());
-    }, [loadTags, open]);
+    }, [open]);
 
     const selectedIdentity = useMemo(() => new Set(selected.map((name) => name.toLowerCase())), [selected]);
     const normalizedQuery = normalizeSessionUserTag(query);
@@ -396,6 +415,8 @@ export default function SessionTagMenuItem({
         const isSelected = selectedIdentity.has(name.toLowerCase());
         if (!isSelected && atLimit) return;
         const mutationSequence = onMutationStart(session.id);
+        catalogReadGeneration.current += 1;
+        setLoading(false);
         setMutating(name);
         setError(null);
         try {
@@ -405,33 +426,41 @@ export default function SessionTagMenuItem({
             });
             if (result.session) {
                 const accepted = onSessionUpdated(result.session, mutationSequence);
-                if (accepted) setSelected(sanitizeSessionUserTags(result.session.userTags));
+                if (!accepted) return;
+                setSelected(sanitizeSessionUserTags(result.session.userTags));
             }
+            catalogReadGeneration.current += 1;
+            setLoading(false);
             setTags(result.tags);
             if (forceAdd) setQuery('');
         } catch (requestError) {
             const mutationError = t(mutationErrorKey(requestError));
-            setError(mutationError);
-            await Promise.all([
-                loadTags(false),
-                getSessions().then((sessions) => {
-                    const fresh = sessions.find((candidate) => candidate.id === session.id);
-                    if (fresh && onSessionUpdated(fresh, mutationSequence)) {
-                        setSelected(sanitizeSessionUserTags(fresh.userTags));
-                    }
-                }).catch(() => undefined),
-            ]);
+            try {
+                const [freshTags, sessions] = await Promise.all([getSessionUserTags(), getSessions()]);
+                const fresh = sessions.find((candidate) => candidate.id === session.id);
+                if (fresh) {
+                    if (!onSessionUpdated(fresh, mutationSequence)) return;
+                    setSelected(sanitizeSessionUserTags(fresh.userTags));
+                }
+                catalogReadGeneration.current += 1;
+                setLoading(false);
+                setTags(freshTags);
+            } catch {
+                // Preserve the original mutation error when reconciliation fails.
+            }
             setError(mutationError);
         } finally {
             setMutating(null);
         }
-    }, [atLimit, loadTags, mutating, onMutationStart, onSessionUpdated, selectedIdentity, session.id, t]);
+    }, [atLimit, mutating, onMutationStart, onSessionUpdated, selectedIdentity, session.id, t]);
 
     const handleGlobalChanged = useCallback((nextTags: SessionUserTagSummary[], updatedSession: SessionMetadata | undefined, change: GlobalUserTagChange | null, mutationSequence: number) => {
-        setTags(nextTags);
-        if (updatedSession) {
-            const accepted = onSessionUpdated(updatedSession, mutationSequence);
-            if (accepted) setSelected(sanitizeSessionUserTags(updatedSession.userTags));
+        const accepted = !updatedSession || onSessionUpdated(updatedSession, mutationSequence);
+        if (accepted) {
+            catalogReadGeneration.current += 1;
+            setLoading(false);
+            setTags(nextTags);
+            if (updatedSession) setSelected(sanitizeSessionUserTags(updatedSession.userTags));
         }
         if (change) onGlobalTagChange?.(change);
     }, [onGlobalTagChange, onSessionUpdated]);
@@ -471,6 +500,7 @@ export default function SessionTagMenuItem({
                             value={query}
                             onChange={(event) => { setQuery(event.target.value); setActiveIndex(0); }}
                             onKeyDown={(event) => {
+                                if (isImeComposingEvent(event)) return;
                                 if (event.key === 'ArrowDown') {
                                     event.preventDefault();
                                     setActiveIndex((index) => Math.min(actionCount - 1, index + 1));

@@ -22,6 +22,19 @@ export async function handleSessionOperationRoute(
   request: Request,
   deps: { workspacePath: string },
 ): Promise<Response | null> {
+  if (pathname === '/api/mcp/retry' && request.method === 'POST') {
+    const body = await parseJsonObject(request);
+    if (typeof body.serverId !== 'string' || !body.serverId.trim() || body.serverId.length > 256) {
+      return jsonResponse({ success: false, errorCode: 'server_not_failed' }, 400);
+    }
+    try {
+      const { status, ...result } = await getSessionEngine().retryMcpServer(body.serverId);
+      return jsonResponse(result, result.success ? 200 : status ?? 409);
+    } catch {
+      return jsonResponse({ success: false, errorCode: 'retry_failed' }, 500);
+    }
+  }
+
   if (pathname === '/chat/reset' && request.method === 'POST') {
     try {
       const result = await getSessionEngine().resetForNewDesktopSession(deps.workspacePath);

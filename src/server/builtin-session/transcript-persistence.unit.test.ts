@@ -21,7 +21,6 @@ import {
   loadTranscriptFromSessionMessages,
   messageWireToSessionMessage,
   persistTranscriptNow,
-  saveForkTranscript,
   stampTurnUsageOnPendingAssistant,
   stripPlaywrightResults,
   truncateTranscriptPersistenceForRewind,
@@ -29,6 +28,7 @@ import {
 import type { MessageWire } from './types';
 
 vi.mock('../SessionStore', () => ({
+  getActiveSessionTranscript: vi.fn(),
   appendSessionMessages: vi.fn(),
   commitBuiltinConversationRewind: vi.fn(),
   loadSessionTranscript: vi.fn(),
@@ -236,27 +236,7 @@ describe('builtin transcript persistence owner', () => {
     });
   });
 
-  it('creates fork transcript from the fork Session cursor without touching parent state', async () => {
-    const parentCursor = cursor(3);
-    transcriptState.transcriptCursor = parentCursor;
-    await saveForkTranscript('fork-session', [stored('fork-1')]);
-    expect(appendSessionMessages).toHaveBeenCalledWith(
-      'fork-session',
-      expect.objectContaining({ persistedMessageCount: 0 }),
-      [expect.objectContaining({ id: 'fork-1' })],
-    );
-    expect(transcriptState.transcriptCursor).toBe(parentCursor);
-  });
 
-  it('refuses to mix fork rows into a non-empty target transcript', async () => {
-    vi.mocked(loadSessionTranscript).mockResolvedValueOnce({
-      messages: [stored('conflict')],
-      cursor: cursor(1),
-      hasMalformedRows: false,
-    });
 
-    await expect(saveForkTranscript('fork-session', [stored('fork-1')]))
-      .rejects.toThrow('non-empty target');
-    expect(appendSessionMessages).not.toHaveBeenCalled();
-  });
+
 });

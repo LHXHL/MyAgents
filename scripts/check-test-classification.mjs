@@ -13,6 +13,9 @@ const ALLOWED_SUFFIXES = [
   '.credentialed.test.ts',
 ];
 const CHILD_PROCESS_ALLOWLIST = new Set([
+  // Kills an IPC-only synthetic transcript writer at real file publication
+  // boundaries. The child receives only a temporary directory and stage name.
+  'src/server/session-transcript/process.integration.test.ts',
   // This regression intentionally verifies config lock serialization across
   // separate Node processes. Keep the exception narrow so future integration
   // tests cannot spawn arbitrary network-capable subprocesses unnoticed.

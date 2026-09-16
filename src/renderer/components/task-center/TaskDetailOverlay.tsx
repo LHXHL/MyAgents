@@ -1,6 +1,7 @@
 // TaskDetailOverlay — modal covering Task Center with full details of one Task.
 // PRD §7.3. Uses the shared OverlayBackdrop + closeLayer Cmd+W integration.
 
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -67,6 +68,7 @@ function useOverlayEsc(active: boolean, onEsc: () => void) {
   useEffect(() => {
     if (!active) return;
     const handler = (e: KeyboardEvent) => {
+      if (isImeComposingEvent(e)) return;
       if (e.key !== "Escape") return;
       onEsc();
     };

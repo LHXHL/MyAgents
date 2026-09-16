@@ -30,7 +30,9 @@ Context Provider 的 value 应按语义拆分并稳定化：
 
 ```ts
 const valueRef = useRef(value);
-valueRef.current = value;
+useLayoutEffect(() => {
+  valueRef.current = value;
+}, [value]);
 
 const stableHandler = useCallback(() => {
   consume(valueRef.current);
@@ -39,7 +41,7 @@ const stableHandler = useCallback(() => {
 
 约束：
 
-1. ref 必须在每次 render 同步，不能只在 effect 中延迟更新；
+1. 对外 callback 只消费已 commit 的值；在 layout effect 同步 ref，避免 render 中写入尚未提交或被放弃的状态，也避免 passive effect 延后更新留下旧值窗口；
 2. stable callback 只能依赖 ref 或其它稳定 owner；
 3. 若 callback 本身是对外 observable prop，自定义 memo comparator 跳过它之前必须证明其 identity 稳定；
 4. ref 解决 stale closure，不改变 state owner，也不能用来绕过正常重渲染。

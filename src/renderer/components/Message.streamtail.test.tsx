@@ -48,6 +48,14 @@ function arrayMsgWithStableContent(streamingTextActive: boolean): MessageType {
 const hasFade = (c: HTMLElement) => c.querySelector('.md-stream-tail') !== null;
 
 describe('Message — streaming tail-fade gating (.md-stream-tail)', () => {
+  it.each([arrayMsg, stringMsg])('mounts actions in the terminal commit without a delayed second layout', (makeMessage) => {
+    const message = makeMessage(true);
+    const { container, rerender } = render(<Message message={message} isLoading />);
+    expect(container.querySelector('.group\\/actions')).toBeNull();
+    rerender(<Message message={message} isLoading={false} />);
+    expect(container.querySelector('.group\\/actions')).not.toBeNull();
+  });
+
   it('block-array: fades while actively streaming (loading + streamingTextActive)', () => {
     const { container } = render(<Message message={arrayMsg(true)} isLoading />);
     expect(hasFade(container)).toBe(true);

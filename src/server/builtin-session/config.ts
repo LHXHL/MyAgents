@@ -280,6 +280,7 @@ export function toProviderHistoryEnv(providerEnv: ProviderEnv | undefined, model
     providerId: providerEnv.providerId,
     baseUrl: providerEnv.baseUrl,
     apiProtocol: providerEnv.apiProtocol,
+    endpointSource: providerEnv.endpointSource,
     model,
   };
 }
@@ -406,6 +407,8 @@ export function providerEnvEqual(a: ProviderEnv | undefined, b: ProviderEnv | un
     && a.upstreamFormat === b.upstreamFormat
     && a.credentialSource?.kind === b.credentialSource?.kind
     && a.credentialSource?.providerId === b.credentialSource?.providerId
+    && a.endpointSource?.kind === b.endpointSource?.kind
+    && a.endpointSource?.providerId === b.endpointSource?.providerId
     && a.modelAliases?.fable === b.modelAliases?.fable
     && a.modelAliases?.sonnet === b.modelAliases?.sonnet
     && a.modelAliases?.opus === b.modelAliases?.opus

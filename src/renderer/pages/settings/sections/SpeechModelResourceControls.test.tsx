@@ -70,7 +70,7 @@ describe('SpeechModelResourceControls', () => {
     expect(screen.getByRole('button', { name: '安装中' })).toBeDisabled();
   });
 
-  it('offers the available revision without treating the old pack as usable', async () => {
+  it('offers an explicit update when the installed pack cannot be used', async () => {
     const user = userEvent.setup();
     const onInstall = vi.fn();
     render(
@@ -88,6 +88,20 @@ describe('SpeechModelResourceControls', () => {
     await user.click(screen.getByRole('button', { name: '更新模型' }));
     expect(onInstall).toHaveBeenCalledOnce();
   });
+
+  it.each(['checking', 'update_available', 'downloading', 'verifying', 'installing', 'error'] as const)(
+    'keeps usable resources quiet during background %s', (status) => {
+      const { container } = render(
+        <SpeechModelResourceControls status={modelStatus({
+          status,
+          usable: true,
+          activeRevision: 'speech-pack-0',
+          lastErrorCode: status === 'error' ? 'SPEECH_RESOURCE_NETWORK' : undefined,
+        })} />,
+      );
+      expect(container).toBeEmptyDOMElement();
+    },
+  );
 
   it('shows the structured install error and retries explicitly', async () => {
     const user = userEvent.setup();

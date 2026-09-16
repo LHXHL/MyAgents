@@ -1,4 +1,15 @@
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
+import {
+  AsyncQuestionContext,
+  type AsyncQuestionActions,
+} from '@/context/AsyncQuestionContext';
+import { AsyncQuestionComposerTarget } from '@/components/AsyncQuestionCard';
+import {
+  restoreAsyncQuestionAnswerDraft,
+  sameAsyncQuestionReply,
+  type AsyncQuestionReply,
+} from '../../shared/asyncUserQuestions';
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import type { FilePreviewHandle } from '@/components/FilePreviewModal';
 import {
   AlertTriangle,
@@ -187,6 +198,7 @@ import { supportsCodexConversationBranch } from '../../shared/codex-conversation
 import {
   coerceReasoningEffortForRuntime,
   reasoningEffortChoices,
+  reasoningEffortAfterModelChange,
 } from '../../shared/reasoningEffort';
 import type { ProviderHistoryEnv } from '../../shared/providerHistory';
 import {
@@ -621,6 +633,7 @@ const SessionTitleEditor = forwardRef<
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commit}
           onKeyDown={(e) => {
+            if (isImeComposingEvent(e)) return;
             if (e.key === 'Enter') inputRef.current?.blur();
             if (e.key === 'Escape') {
               setDraft(title);
@@ -642,6 +655,10 @@ const SessionTitleEditor = forwardRef<
 });
 
 interface ChatProps {
+  registerFileEditSubmitter?: (
+    tabId: string,
+    submit: () => Promise<boolean>,
+  ) => () => void;
   /** Native shown/not-minimized lifecycle; focus is intentionally independent. */
   windowPresentation: MainWindowPresentation;
   /** Called when user starts a new session. Returns true if handled externally (background completion started). */
@@ -699,6 +716,7 @@ function isCurrentSessionGoal(
 }
 
 export default function Chat({
+  registerFileEditSubmitter,
   windowPresentation,
   onNewSession,
   onOpenSession,
@@ -1002,11 +1020,10 @@ export default function Chat({
     workspaceLayoutMetrics.contentMinWidthPx;
   // If workspace would render as an overlay at startup, keep it hidden so it
   // does not block the chat before the user explicitly opens it.
-  const [workspacePanelDisclosure, dispatchWorkspacePanelDisclosure] = useReducer(
-    reduceWorkspacePanelDisclosure,
-    undefined,
-    () => createWorkspacePanelDisclosureState(shouldShowWorkspaceByDefault()),
-  );
+  const [workspacePanelDisclosure, dispatchWorkspacePanelDisclosure] =
+    useReducer(reduceWorkspacePanelDisclosure, undefined, () =>
+      createWorkspacePanelDisclosureState(shouldShowWorkspaceByDefault()),
+    );
   const {
     visible: showWorkspace,
     mounted: workspacePanelMounted,
@@ -1076,13 +1093,26 @@ export default function Chat({
   // `initialEditMode` is set when a fresh `note-…md` is created via 「新建笔记」 —
   // FilePreviewModal opens directly in the editable Monaco view instead of the
   // markdown rendered preview.
-  const isSplitViewEnabled = config.experimentalSplitView ?? true;
+  const splitViewRequested = config.experimentalSplitView ?? true;
   const [splitFile, setSplitFile] = useState<SplitPreviewFile | null>(null);
+  const isSplitViewEnabled = splitViewRequested || !!splitFile;
   const splitFilePreviewRef = useRef<FilePreviewHandle>(null);
+  const fullscreenFilePreviewRef = useRef<FilePreviewHandle>(null);
+  const actionFilePreviewRef = useRef<FilePreviewHandle>(null);
+  const filePreviewRequestRef = useRef(0);
   // Clear split panel when feature is turned off (prevents stale split state)
   useEffect(() => {
-    if (!isSplitViewEnabled) setSplitFile(null);
-  }, [isSplitViewEnabled]);
+    if (splitViewRequested || !splitFile) return;
+    let cancelled = false;
+    void (
+      splitFilePreviewRef.current?.prepareTransition() ?? Promise.resolve(true)
+    ).then((saved) => {
+      if (saved && !cancelled) setSplitFile(null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [splitViewRequested, splitFile]);
   const [splitRatio, setSplitRatio] = useState(0.5); // 0-1, left panel fraction
   const [isDraggingSplit, setIsDraggingSplit] = useState(false);
   const [isSplitWidthTransitioning, setIsSplitWidthTransitioning] =
@@ -1242,7 +1272,27 @@ export default function Chat({
     useState<SplitPreviewFile | null>(null);
 
   const handleSplitFilePreview = useCallback(
-    (file: SplitPreviewFile, options?: { initialEditMode?: boolean }) => {
+    async (file: SplitPreviewFile, options?: { initialEditMode?: boolean }) => {
+      const request = ++filePreviewRequestRef.current;
+      if (fullscreenPreviewFile) {
+        if (
+          fullscreenFilePreviewRef.current &&
+          !(await fullscreenFilePreviewRef.current.prepareTransition(file.path))
+        )
+          return;
+        if (request === filePreviewRequestRef.current)
+          setFullscreenPreviewFile({
+            ...file,
+            initialEditMode: options?.initialEditMode,
+          });
+        return;
+      }
+      if (
+        splitFilePreviewRef.current &&
+        !(await splitFilePreviewRef.current.prepareTransition(file.path))
+      )
+        return;
+      if (request !== filePreviewRequestRef.current) return;
       const ext = file.name.toLowerCase().split('.').pop();
       const isLocalFile = file.sourceScope === 'local';
       if (
@@ -1270,7 +1320,12 @@ export default function Chat({
       }
       // Keep workspace open — user can dismiss it manually
     },
-    [isSplitViewEnabled, agentDir, startBrowserSplitTransitionIfNeeded],
+    [
+      isSplitViewEnabled,
+      agentDir,
+      startBrowserSplitTransitionIfNeeded,
+      fullscreenPreviewFile,
+    ],
   );
 
   useEffect(() => {
@@ -1317,8 +1372,16 @@ export default function Chat({
 
         if (cancelled || !file) return;
         if (isSplitViewEnabled && !isNarrowLayout) {
-          handleSplitFilePreview(file);
+          await handleSplitFilePreview(file);
         } else {
+          if (
+            fullscreenFilePreviewRef.current &&
+            !(await fullscreenFilePreviewRef.current.prepareTransition(
+              file.path,
+            ))
+          )
+            return;
+          if (cancelled) return;
           setFullscreenPreviewFile(file);
         }
       } catch (err) {
@@ -1391,6 +1454,13 @@ export default function Chat({
       const fresh = await invoke<string | null>('cmd_read_workspace_file', {
         path: absPath,
       });
+      if (
+        splitFilePreviewRef.current &&
+        !(await splitFilePreviewRef.current.prepareTransition(
+          browserSourceFile.path,
+        ))
+      )
+        return;
       if (fresh !== null) {
         const updated = {
           ...browserSourceFile,
@@ -1403,6 +1473,13 @@ export default function Chat({
         setSplitFile(browserSourceFile);
       }
     } catch {
+      if (
+        splitFilePreviewRef.current &&
+        !(await splitFilePreviewRef.current.prepareTransition(
+          browserSourceFile.path,
+        ))
+      )
+        return;
       setSplitFile(browserSourceFile); // fallback: use cached version
     }
   }, [browserSourceFile, agentDir]);
@@ -1558,7 +1635,8 @@ export default function Chat({
       | { reasoningEffort?: string }
       | undefined;
     const fromAgent =
-      currentAgent?.runtime && currentAgent.runtime !== 'builtin'
+      managedProviderRuntimeActive ||
+      (currentAgent?.runtime && currentAgent.runtime !== 'builtin')
         ? rc?.reasoningEffort
         : currentAgent?.reasoningEffort;
     return fromAgent ?? 'default';
@@ -1641,6 +1719,20 @@ export default function Chat({
 
   // Ref for DirectoryPanel to trigger refresh
   const directoryPanelRef = useRef<DirectoryPanelHandle>(null);
+  useEffect(
+    () =>
+      registerFileEditSubmitter?.(tabId, async () => {
+        for (const preview of [
+          splitFilePreviewRef.current,
+          fullscreenFilePreviewRef.current,
+          actionFilePreviewRef.current,
+        ]) {
+          if (preview && !(await preview.prepareTransition())) return false;
+        }
+        return directoryPanelRef.current?.preparePreviewTransition() ?? true;
+      }),
+    [registerFileEditSubmitter, tabId],
+  );
 
   // "在文件目录中展示" from the chat path context menu. Opening the workspace
   // panel (if collapsed) mounts DirectoryPanel; the declarative request prop is
@@ -2008,7 +2100,7 @@ export default function Chat({
   const [codexModels, setCodexModels] = useState<typeof CC_MODELS>([]);
   const [geminiModels, setGeminiModels] = useState<typeof CC_MODELS>([]);
   useEffect(() => {
-    if (managedProviderRuntimeActive || currentRuntime !== 'codex') return;
+    if (currentRuntime !== 'codex' || !isConnected) return;
     let cancelled = false;
     // AbortController so a tab-close (effect cleanup) silences the
     // proxyFetch "Sidecar gone" warning that would otherwise fire when
@@ -2017,9 +2109,13 @@ export default function Chat({
     // post-hoc filter in proxyFetch turns the rejection into a silent
     // AbortError instead of a noisy lifecycle log line.
     const controller = new AbortController();
-    apiGet(runtimeModelCatalogPath('codex', 'system-cli'), {
-      signal: controller.signal,
-    })
+    apiGet(
+      runtimeModelCatalogPath(
+        'codex',
+        managedProviderRuntimeActive ? 'managed-provider' : 'system-cli',
+      ),
+      { signal: controller.signal },
+    )
       .then((res: unknown) => {
         const data = res as { models?: typeof CC_MODELS } | undefined;
         if (!cancelled && data?.models?.length) setCodexModels(data.models);
@@ -2029,7 +2125,14 @@ export default function Chat({
       cancelled = true;
       controller.abort();
     };
-  }, [managedProviderRuntimeActive, currentRuntime, apiGet]);
+  }, [
+    managedProviderRuntimeActive,
+    currentRuntime,
+    apiGet,
+    isConnected,
+    configPending,
+    workspaceRefreshTrigger,
+  ]);
   useEffect(() => {
     if (currentRuntime !== 'gemini') return;
     let cancelled = false;
@@ -2115,6 +2218,17 @@ export default function Chat({
         // clear the ref to allow a retry when conditions change (e.g., sessionRuntime
         // populates later and matches currentRuntime).
         const data = res as { prewarmed?: boolean } | undefined;
+        if (managedProviderRuntimeActive && !controller.signal.aborted) {
+          void apiGet(runtimeModelCatalogPath('codex', 'managed-provider'), {
+            signal: controller.signal,
+          })
+            .then((result: unknown) => {
+              const models = (result as { models?: typeof CC_MODELS })?.models;
+              if (!controller.signal.aborted && models?.length)
+                setCodexModels(models);
+            })
+            .catch(() => {});
+        }
         if (data && data.prewarmed === false) {
           prewarmedKeyRef.current = null;
         }
@@ -2942,9 +3056,6 @@ export default function Chat({
         void handleTauriChatDropRef.current(paths);
       } else if (zoneId === 'directory-panel') {
         void handleTauriDirectoryDropRef.current(paths, position);
-      } else {
-        // Default: drop to chat area
-        void handleTauriChatDropRef.current(paths);
       }
     },
   });
@@ -3449,7 +3560,10 @@ export default function Chat({
         setSessionMeta(result.metadata);
         return;
       }
-      const updated = await patchSessionMetadata(sessionId, patch);
+      const updated = await patchSessionMetadata(sessionId, patch, {
+        type: 'tab',
+        id: tabId,
+      });
       if (!updated) {
         throw new Error(`Session ${sessionId} not found.`);
       }
@@ -3490,6 +3604,17 @@ export default function Chat({
       enabledOfficialToolIds?: OfficialToolId[];
     }) => {
       if (!currentProject) return false;
+      const nextManagedModel = patch.runtimeBackedProviderSelection?.model;
+      const nextEffort = nextManagedModel
+        ? reasoningEffortAfterModelChange(
+            patch.reasoningEffort ?? reasoningEffort,
+            codexModels.find((model) => model.value === nextManagedModel),
+          )
+        : undefined;
+      const effortReset =
+        nextEffort === 'default' && reasoningEffort !== 'default';
+      if (nextEffort !== undefined)
+        patch = { ...patch, reasoningEffort: nextEffort };
       const handleExtensionUpdateResponse = (
         response: ExtensionUpdateResponse,
       ): void => {
@@ -3584,10 +3709,16 @@ export default function Chat({
         console.error('[chat] tab config dual-write failed:', result.errors);
         toastRef.current.warning(t('shell.toasts.configPartiallySaved'));
       }
+      if (!result.snapshotWriteFailed && nextEffort !== undefined) {
+        setReasoningEffort(nextEffort);
+        if (effortReset) toastRef.current.info(t('input.reasoningModelReset'));
+      }
       return !result.snapshotWriteFailed;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; persistInputOptionChange is a pure import, runtimeConfig accessed via currentAgent ref, apiPost is stable from TabContext
     [
+      reasoningEffort,
+      codexModels,
       skipSnapshotWrite,
       currentProject?.id,
       currentProject?.agentId,
@@ -3598,6 +3729,15 @@ export default function Chat({
       patchProject,
       t,
     ],
+  );
+
+  const handleMcpRetry = useCallback(
+    (serverId: string) =>
+      apiPost<import('../../shared/mcpFailure').McpRetryResult>(
+        '/api/mcp/retry',
+        { serverId },
+      ),
+    [apiPost],
   );
 
   // Handle workspace MCP toggle — Tab UI edits dual-write:
@@ -4277,6 +4417,7 @@ export default function Chat({
     scrollerRef: scrollerRef as React.RefObject<HTMLElement | null>,
     messages: chatScrollModel.data,
     scrollToMessage,
+    pauseAutoScroll,
     active: chatSearchOpen,
   });
 
@@ -4788,6 +4929,16 @@ export default function Chat({
     images: ImageAttachment[];
   } | null>(null);
 
+  const [questionDraft, setQuestionDraft] = useState<{
+    sessionId: string | null;
+    reply: AsyncQuestionReply;
+    title: string;
+  } | null>(null);
+  const questionTarget =
+    questionDraft?.sessionId === sessionId ? questionDraft : null;
+  const questionTargetRef = useRef(questionTarget);
+  questionTargetRef.current = questionTarget;
+
   // PERFORMANCE: text is now passed from SimpleChatInput (which manages its own state)
   // This avoids re-rendering Chat on every keystroke.
   // Returns false to signal SimpleChatInput NOT to clear the input (e.g., on rejection).
@@ -4795,9 +4946,17 @@ export default function Chat({
     async (
       text: string,
       images?: ImageAttachment[],
+      _permissionMode?: PermissionMode,
+      explicitReply?: AsyncQuestionReply,
     ): Promise<boolean | void> => {
+      const draft = explicitReply ? null : questionTargetRef.current;
+      const reply = explicitReply ?? draft?.reply;
       // Must have content and not be in stopping state
-      if (isSessionLoading || (!text && (!images || images.length === 0)) || sessionState === 'stopping') {
+      if (
+        isSessionLoading ||
+        (!text && (!images || images.length === 0)) ||
+        sessionState === 'stopping'
+      ) {
         return false;
       }
 
@@ -4882,11 +5041,11 @@ export default function Chat({
 
         // If cron mode is enabled and task hasn't started yet, start the task
         const cron = cronStateRef.current;
-        if (goalDraftConfigRef.current) {
+        if (!reply && goalDraftConfigRef.current) {
           const startedKind = await startScheduledTask(text);
           if (startedKind !== 'goal') return;
           if (!isAiBusy) setIsLoading(true);
-        } else if (cron.isEnabled && !cron.task && cron.config) {
+        } else if (!reply && cron.isEnabled && !cron.task && cron.config) {
           setStoppedCronRecovery(null);
           if (
             cron.config.taskKind === 'cron' &&
@@ -4950,8 +5109,8 @@ export default function Chat({
         // sendMessage is fire-and-forget (returns true immediately for optimistic UI).
         // Error handling is done inside sendMessage's .then()/.catch() in TabProvider.
         // Use effective model/permission (runtime-aware) — not the builtin values
-        await sendMessage(
-          text,
+        const admitted = await sendMessage(
+          draft?.title ? `${draft.title}\n\n${text}` : text,
           images,
           effectivePermissionMode,
           effectiveModel,
@@ -4960,7 +5119,17 @@ export default function Chat({
           // Product-configured runtimes carry provider effort through the Host path.
           inputUsesExternalRuntimeControls ? undefined : reasoningEffort,
           inputUsesExternalRuntimeControls ? undefined : providerRoute,
+          undefined,
+          reply,
         );
+        if (admitted && reply)
+          setQuestionDraft((current) =>
+            current && sameAsyncQuestionReply(current.reply, reply)
+              ? null
+              : current,
+          );
+        if (!admitted && !isAiBusy) setIsLoading(false);
+        return admitted;
       } catch (error) {
         const errorMessage = {
           id: `error-${crypto.randomUUID()}`,
@@ -4974,6 +5143,7 @@ export default function Chat({
           setIsLoading(false);
           setSessionState('idle');
         }
+        return false;
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- toastRef/currentProviderRef/apiKeysRef/cronStateRef are refs (stable); scrollToBottom/setMessages/setIsLoading/setSessionState are stable
@@ -5004,6 +5174,40 @@ export default function Chat({
   const handleSendMessageRef = useRef(handleSendMessage);
   handleSendMessageRef.current = handleSendMessage;
 
+  const questionActions = useMemo<AsyncQuestionActions>(
+    () => ({
+      answered: [...historyMessages, ...messages].flatMap((message) =>
+        message.role === 'user' && message.asyncQuestionReply
+          ? [message.asyncQuestionReply]
+          : [],
+      ),
+      queued: queuedMessages.flatMap((message) =>
+        message.asyncQuestionReply ? [message.asyncQuestionReply] : [],
+      ),
+      disabled: isSessionLoading || !isConnected || sessionState === 'stopping',
+      onReply: async (reply, text) =>
+        (await handleSendMessageRef.current(
+          text,
+          undefined,
+          undefined,
+          reply,
+        )) === true,
+      onCompose: (reply, title) => {
+        setQuestionDraft({ sessionId, reply, title });
+        inputRef.current?.focus();
+      },
+    }),
+    [
+      historyMessages,
+      messages,
+      queuedMessages,
+      isSessionLoading,
+      isConnected,
+      sessionState,
+      sessionId,
+    ],
+  );
+
   // Triggered from the SystemPromptsPanel empty state ("智能生成" card). Closes the
   // workspace settings overlay and dispatches `/init` to the current Tab so the user
   // sees the Claude Code SDK builtin slash command run in the chat surface.
@@ -5018,9 +5222,33 @@ export default function Chat({
     async (queueId: string) => {
       // Snapshot the queued message info before it's removed (for image restore)
       const queuedMsg = queuedMessages.find((q) => q.queueId === queueId);
+      const cancelledSessionId = sessionId;
+      const sourceContents = [
+        ...historyMessages,
+        ...messages,
+        ...(streamingMessage ? [streamingMessage] : []),
+      ]
+        .filter((message) => message.role === 'assistant')
+        .map((message) => message.content);
       const cancelledText = await cancelQueuedMessage(queueId);
-      if (cancelledText) {
-        chatInputRef.current?.setValue(cancelledText);
+      if (cancelledText && sessionIdRef.current === cancelledSessionId) {
+        const restored = queuedMsg?.asyncQuestionReply
+          ? restoreAsyncQuestionAnswerDraft(
+              queuedMsg.asyncQuestionReply,
+              cancelledText,
+              sourceContents,
+            )
+          : null;
+        setQuestionDraft(
+          restored
+            ? {
+                sessionId: cancelledSessionId,
+                reply: restored.reply,
+                title: restored.title,
+              }
+            : null,
+        );
+        chatInputRef.current?.setValue(restored?.text ?? cancelledText);
         // Restore images if the queued message had them
         // Note: We only have preview data URLs (not File blobs) to avoid memory leaks,
         // so we reconstruct ImageAttachment with a minimal placeholder File.
@@ -5043,7 +5271,14 @@ export default function Chat({
         }
       }
     },
-    [cancelQueuedMessage, queuedMessages],
+    [
+      cancelQueuedMessage,
+      queuedMessages,
+      sessionId,
+      historyMessages,
+      messages,
+      streamingMessage,
+    ],
   );
 
   // Force-execute a queued message (interrupt current AI response)
@@ -5356,6 +5591,14 @@ export default function Chat({
       return;
     }
 
+    // A new Session uses the target installed catalog, not this old Session's process.
+    const targetEffort =
+      targetIntent.kind === 'runtime-backed-provider'
+        ? reasoningEffortAfterModelChange(
+            reasoningEffort,
+            newProvider.models?.find((model) => model.model === targetModel),
+          )
+        : reasoningEffort;
     try {
       const sessionTitle = `${newProvider.name} 会话`;
       let openedSessionId: string;
@@ -5372,7 +5615,7 @@ export default function Chat({
             // LaunchSessionBirthHint carries product-facing values. App is the
             // sole birth owner and converts them to runtime vocabulary once.
             permissionMode: inputChromePermissionMode,
-            reasoningEffort,
+            reasoningEffort: targetEffort,
             mcpEnabledServers: workspaceMcpEnabled,
             enabledPluginIds: workspaceEnabledPlugins,
             enabledOfficialToolIds: workspaceOfficialToolEnabled,
@@ -5419,6 +5662,8 @@ export default function Chat({
         openedSessionId = session.id;
       }
       forkTabOpened = true;
+      if (targetEffort !== reasoningEffort)
+        toastRef.current.info(t('input.reasoningModelReset'));
       if (currentProject) {
         const defaultWriteResult = await persistInputOptionChange({
           workspaceId: currentProject.id,
@@ -5432,7 +5677,10 @@ export default function Chat({
             currentAgent?.providerId ?? currentProject.providerId,
           fields: {
             ...(targetIntent.kind === 'runtime-backed-provider'
-              ? { runtimeBackedProviderSelection: targetIntent }
+              ? {
+                  runtimeBackedProviderSelection: targetIntent,
+                  reasoningEffort: targetEffort,
+                }
               : {
                   builtinSelection: {
                     providerId: pending.providerId,
@@ -5870,11 +6118,7 @@ export default function Chat({
   // ChatScrollController owns virtualized message navigation.
   const handleNavigateToQuery = useCallback(
     (messageId: string) => {
-      scrollToMessage(messageId, {
-        behavior: 'smooth',
-        align: 'start',
-        pauseMs: 2000,
-      });
+      scrollToMessage(messageId, { behavior: 'smooth', align: 'start' });
     },
     [scrollToMessage],
   );
@@ -6066,7 +6310,7 @@ export default function Chat({
     // Pause auto-scroll to prevent animated scrolling during rewind's DOM changes.
     // Without this, the smooth scroll animation fights with the browser's natural
     // scroll clamping (messages removed → scrollHeight shrinks → scrollTop adjusts).
-    pauseAutoScroll(500);
+    pauseAutoScroll();
     setRewindTarget(null);
     setMessages((prev) => {
       const idx = prev.findIndex((m) => m.id === messageId);
@@ -6223,7 +6467,7 @@ export default function Chat({
       // Commit the authoritative rewind before mutating the visible transcript.
       let resendFired = false;
       const resendOriginal = () => {
-        pauseAutoScroll(500);
+        pauseAutoScroll();
         setMessages((prev) => {
           const idx = prev.findIndex((m) => m.id === userMessageId);
           return idx >= 0 ? prev.slice(0, idx) : prev;
@@ -6657,6 +6901,31 @@ export default function Chat({
   ]);
 
   return (
+    <BrowserPanelContext.Provider value={browserPanelCtx}>
+      {/*
+            FileActionProvider.refreshTrigger intentionally excludes
+            toolCompleteCount. toolCompleteCount bumps when AI file-modifying
+            tools complete, and tying every completion to a full cache wipe
+            caused requery storms. The ref-counted workspace watcher is the
+            filesystem mutation authority; FileActionProvider invalidates the
+            old affordance and mounted consumers lazily re-request in batches.
+            Explicit UI refreshes remain a second controlled source.
+          */}
+      <AsyncQuestionContext.Provider value={questionActions}>
+        <FileActionProvider
+          previewHandleRef={actionFilePreviewRef}
+          workspacePath={agentDir}
+          onInsertReference={handleInsertReference}
+          refreshTrigger={workspaceRefreshTrigger + workspaceChangeSignal}
+          onFilePreviewExternal={
+            isSplitViewEnabled && !isNarrowLayout
+              ? handleSplitFilePreview
+              : undefined
+          }
+          onQuoteFile={handleQuoteFile}
+          onQuoteSelection={handleQuoteFileSelection}
+          onRevealInTree={handleRevealInTree}
+        >
     <div className="relative flex h-full flex-row overflow-hidden overscroll-none bg-[var(--paper-elevated)] text-[var(--ink)]">
       {/* Left side: chat area (+ side workspace when wide) */}
       <div
@@ -6720,7 +6989,9 @@ export default function Chat({
               {sessionId && agentDir && (
                 <SessionMenuButton
                   sessionId={sessionId}
-                  sessionTitle={sessionTitle ?? t('shell.currentChatFallback')}
+                        sessionTitle={
+                          sessionTitle ?? t('shell.currentChatFallback')
+                        }
                   workspacePath={agentDir}
                   boundChannel={surfaces.channel}
                   availableChannels={availableHandoverChannels}
@@ -6746,22 +7017,30 @@ export default function Chat({
                           void handleSendMessageRef.current('/context');
                         }
                   }
-                  onOpenRename={() => titleEditorRef.current?.openRename()}
+                        onOpenRename={() =>
+                          titleEditorRef.current?.openRename()
+                        }
                   onFavoriteChanged={(_, updated) => {
                     if (updated) setSessionMeta(updated);
                   }}
                   onSessionMetadataMutationStart={
                     taskCenterActions.beginSessionMetadataMutation
                   }
-                  onSessionMetadataChanged={(updated, mutationSequence) => {
-                    const accepted = taskCenterActions.applySessionMetadata(
+                        onSessionMetadataChanged={(
+                          updated,
+                          mutationSequence,
+                        ) => {
+                          const accepted =
+                            taskCenterActions.applySessionMetadata(
                       updated,
                       mutationSequence,
                     );
                     if (accepted) setSessionMeta(updated);
                     return accepted;
                   }}
-                  onGlobalTagChange={() => taskCenterActions.refreshSessions()}
+                        onGlobalTagChange={() =>
+                          taskCenterActions.refreshSessions()
+                        }
                 />
               )}
             </div>
@@ -6774,7 +7053,9 @@ export default function Chat({
                 title={t('shell.header.newChat')}
               >
                 <MessageSquarePlus className="h-3.5 w-3.5 flex-shrink-0" />
-                {!splitFile && <span>{t('shell.header.newChatShort')}</span>}
+                      {!splitFile && (
+                        <span>{t('shell.header.newChatShort')}</span>
+                      )}
               </button>
               {/* Developer setting keeps this legacy entry reversible while it is phased out. */}
               {isChatHistoryEntryVisible && (
@@ -6792,7 +7073,9 @@ export default function Chat({
                     }`}
                   >
                     <History className="h-3.5 w-3.5 flex-shrink-0" />
-                    {!splitFile && <span>{t('shell.header.history')}</span>}
+                          {!splitFile && (
+                            <span>{t('shell.header.history')}</span>
+                          )}
                   </button>
                   <SessionHistoryDropdown
                     agentDir={agentDir}
@@ -6955,7 +7238,9 @@ export default function Chat({
                           ) && (
                             <div className="mt-1">
                               <span className="text-[var(--ink-muted)]">
-                                {t('shell.agentError.imageTooLargePrefix')}
+                                      {t(
+                                        'shell.agentError.imageTooLargePrefix',
+                                      )}
                               </span>
                               <button
                                 type="button"
@@ -6973,7 +7258,9 @@ export default function Chat({
                       <div className="flex flex-shrink-0 items-center gap-1.5">
                         <button
                           type="button"
-                          onClick={() => handleDiagnoseAgentError(agentError)}
+                                onClick={() =>
+                                  handleDiagnoseAgentError(agentError)
+                                }
                           className="rounded p-0.5 text-[var(--ink-subtle)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--accent)]"
                           title={t('shell.diagnostics.askHelper')}
                           aria-label={t('shell.diagnostics.askHelper')}
@@ -7022,29 +7309,6 @@ export default function Chat({
             />
 
             {/* Message list with max-width */}
-            <BrowserPanelContext.Provider value={browserPanelCtx}>
-              {/*
-            FileActionProvider.refreshTrigger intentionally excludes
-            toolCompleteCount. toolCompleteCount bumps when AI file-modifying
-            tools complete, and tying every completion to a full cache wipe
-            caused requery storms. The ref-counted workspace watcher is the
-            filesystem mutation authority; FileActionProvider invalidates the
-            old affordance and mounted consumers lazily re-request in batches.
-            Explicit UI refreshes remain a second controlled source.
-          */}
-              <FileActionProvider
-                workspacePath={agentDir}
-                onInsertReference={handleInsertReference}
-                refreshTrigger={workspaceRefreshTrigger + workspaceChangeSignal}
-                onFilePreviewExternal={
-                  isSplitViewEnabled && !isNarrowLayout
-                    ? handleSplitFilePreview
-                    : undefined
-                }
-                onQuoteFile={handleQuoteFile}
-                onQuoteSelection={handleQuoteFileSelection}
-                onRevealInTree={handleRevealInTree}
-              >
                 <MessageList
                   messages={chatScrollModel.data}
                   streamingMessage={streamingMessage}
@@ -7142,8 +7406,6 @@ export default function Chat({
                     />
                   </div>
                 )}
-              </FileActionProvider>
-            </BrowserPanelContext.Provider>
 
             {/* Text selection floating menu for quoting AI text */}
             <SelectionCommentMenu
@@ -7161,6 +7423,12 @@ export default function Chat({
               undefined，避免它们若未来 emit 出 `tool.name === 'Task'` 的归一化
               事件意外触发面板（PRD D15）。onJumpToTool 由 Chat 实现是因为
               具体滚动由 ChatScrollController 统一处理。 */}
+                  {questionTarget && (
+                    <AsyncQuestionComposerTarget
+                      title={questionTarget.title}
+                      onCancel={() => setQuestionDraft(null)}
+                    />
+                  )}
             <SimpleChatInput
               ref={chatInputRef}
               onSend={handleSendMessage}
@@ -7198,7 +7466,9 @@ export default function Chat({
               }
               onProviderChange={handleProviderChange}
               selectedModel={
-                inputUsesExternalRuntimeControls ? runtimeModel : selectedModel
+                      inputUsesExternalRuntimeControls
+                        ? runtimeModel
+                        : selectedModel
               }
               onBuiltinModelSelect={
                 inputUsesExternalRuntimeControls
@@ -7224,18 +7494,28 @@ export default function Chat({
               runtimeMcpTools={runtimeMcpTools}
               mcpEffectiveSnapshot={mcpEffectiveSnapshot}
               onWorkspaceMcpToggle={handleWorkspaceMcpToggle}
+                    onMcpRetry={
+                      !isExternalRuntime || managedProviderRuntimeActive
+                        ? handleMcpRetry
+                        : undefined
+                    }
               officialTools={OFFICIAL_TOOLS}
               workspaceOfficialToolEnabled={workspaceOfficialToolEnabled}
               globalOfficialToolEnabled={globalOfficialToolEnabled}
               officialToolNeedsConfig={officialToolNeedsConfig}
-              onWorkspaceOfficialToolToggle={handleWorkspaceOfficialToolToggle}
+                    onWorkspaceOfficialToolToggle={
+                      handleWorkspaceOfficialToolToggle
+                    }
               // PRD 0.2.17 — Claude plugins. globallyVisiblePlugins is the
               // Layer 1 (Settings 开关 ON) candidate list; workspaceEnabledPlugins
               // is the Layer 2 actually-enabled subset for this workspace.
               globallyVisiblePlugins={globallyVisiblePlugins}
               workspaceEnabledPlugins={workspaceEnabledPlugins}
               onWorkspacePluginToggle={handleWorkspacePluginToggle}
-              onRefreshProviders={refreshProviderData}
+                    onRefreshProviders={async () => {
+                      await refreshProviderData();
+                      setWorkspaceRefreshTrigger((value) => value + 1);
+                    }}
               onOpenAgentSettings={handleOpenAgentSettings}
               onManagePermissionRules={
                 currentRuntime === 'dsh' &&
@@ -7276,10 +7556,21 @@ export default function Chat({
                 showLegacyRuntimeSelector ? runtimeDetections : undefined
               }
               onRuntimeChange={
-                showLegacyRuntimeSelector ? handleRuntimeChange : undefined
+                      showLegacyRuntimeSelector
+                        ? handleRuntimeChange
+                        : undefined
+                    }
+                    managedReasoningModel={
+                      managedProviderRuntimeActive
+                        ? (codexModels.find(
+                            (model) => model.value === selectedModel,
+                          ) ?? null)
+                        : undefined
               }
               runtimeModels={
-                inputUsesExternalRuntimeControls ? runtimeModels : undefined
+                      inputUsesExternalRuntimeControls
+                        ? runtimeModels
+                        : undefined
               }
               runtimePermissionModes={
                 currentRuntime === 'dsh' || inputUsesExternalRuntimeControls
@@ -7319,7 +7610,9 @@ export default function Chat({
               aria-hidden={!showWorkspace}
               inert={!showWorkspace}
               data-chat-workspace-panel
-              data-chat-workspace-panel-motion={workspacePanelMotion ?? undefined}
+              data-chat-workspace-panel-motion={
+                workspacePanelMotion ?? undefined
+              }
             >
               <span
                 aria-hidden="true"
@@ -7340,7 +7633,9 @@ export default function Chat({
                 onProviderChange={handleProviderChange}
                 onCollapse={handleCollapseWorkspace}
                 onOpenConfig={handleOpenAgentSettings}
-                refreshTrigger={toolCompleteCount + workspaceRefreshTrigger}
+                      refreshTrigger={
+                        toolCompleteCount + workspaceRefreshTrigger
+                      }
                 persistedTreeStateRef={workspaceTreeStateRef}
                 isTauriDragActive={
                   isTauriDragging && activeZoneId === 'directory-panel'
@@ -7496,7 +7791,8 @@ export default function Chat({
                             // Prefer the live URL surfaced from BrowserPanel — the
                             // `browserUrl` prop is the seed only and stays at
                             // BROWSER_BLANK_URL even after the user navigates.
-                            const liveUrl = browserCurrentUrl || browserUrl;
+                                  const liveUrl =
+                                    browserCurrentUrl || browserUrl;
                             try {
                               return (
                                 new URL(liveUrl).hostname ||
@@ -7629,7 +7925,9 @@ export default function Chat({
                         {t('shell.split.terminal')}
                       </span>
                       <span className="text-xs text-[var(--ink-muted)]">
-                        {agentDir ? `~/${agentDir.split(/[/\\]/).pop()}` : ''}
+                              {agentDir
+                                ? `~/${agentDir.split(/[/\\]/).pop()}`
+                                : ''}
                       </span>
                     </div>
                     <Tip
@@ -7731,6 +8029,7 @@ export default function Chat({
       {fullscreenPreviewFile && (
         <Suspense fallback={null}>
           <FilePreviewModal
+                  ref={fullscreenFilePreviewRef}
             name={fullscreenPreviewFile.name}
             content={fullscreenPreviewFile.content}
             size={fullscreenPreviewFile.size}
@@ -7738,7 +8037,9 @@ export default function Chat({
             localPath={fullscreenPreviewFile.localPath}
             richDocKind={fullscreenPreviewFile.richDocKind}
             workspacePath={
-              fullscreenPreviewFile.sourceScope === 'local' ? null : agentDir
+                    fullscreenPreviewFile.sourceScope === 'local'
+                      ? null
+                      : agentDir
             }
             initialEditMode={fullscreenPreviewFile.initialEditMode}
             initialLineNumber={fullscreenPreviewFile.initialLineNumber}
@@ -8065,7 +8366,9 @@ export default function Chat({
           task={cronDetailTask}
           onClose={() => setCronDetailTask(null)}
           onDelete={async (taskId) => {
-            const { deleteCronTask } = await import('@/api/cronTaskClient');
+                  const { deleteCronTask } = await import(
+                    '@/api/cronTaskClient'
+                  );
             await deleteCronTask(taskId);
             setCronDetailTask(null);
             toastRef.current?.success(t('shell.toasts.taskDeleted'));
@@ -8091,5 +8394,8 @@ export default function Chat({
         />
       )}
     </div>
+        </FileActionProvider>
+      </AsyncQuestionContext.Provider>
+    </BrowserPanelContext.Provider>
   );
 }

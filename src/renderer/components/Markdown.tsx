@@ -12,25 +12,30 @@
 import 'katex/dist/katex.min.css';
 import './Markdown.css';
 
-import { memo, useEffect, useMemo, useState, type ComponentProps } from 'react';
+import { lazy, Suspense, memo, useEffect, useMemo, useState, type ComponentProps } from 'react';
 import type { Components } from 'react-markdown';
+import type { Element } from 'hast';
 import ReactMarkdown from 'react-markdown';
 import { useTranslation } from 'react-i18next';
 
 import CodeBlock from './markdown/CodeBlock';
 import InlineCode from './markdown/InlineCode';
-import MermaidDiagram from './markdown/MermaidDiagram';
-import { useOpenWebLink } from '@/context/BrowserPanelContext';
-import { useFileLinkAction } from '@/context/FileActionContext';
+import ContentLink from './markdown/ContentLink';
+import { MarkdownDocumentDirectoryContext } from './markdown/linkContext';
+import MarkdownTable from './markdown/MarkdownTable';
+const MermaidDiagram = lazy(() => import('./markdown/MermaidDiagram'));
+import { useFileAction } from '@/context/fileActionState';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 import { preprocessMarkdownContent } from '@/utils/markdownPreprocess';
 import {
   MARKDOWN_REHYPE_PLUGINS,
   MARKDOWN_REMARK_PLUGINS_DEFAULT,
   MARKDOWN_REMARK_PLUGINS_WITH_BREAKS,
+  MARKDOWN_URL_TRANSFORM,
   convertFrontmatter,
 } from '@/utils/markdownPipeline';
 import { canonicalizeLegacyMyAgentsResourceUrl } from '@/utils/myagentsProtocol';
+import { fileUrlToPath, resolveAgainstWorkspace } from '@/utils/workspaceFileLinks';
 
 // ── Streaming leading-edge fade ──
 // While streaming, wrap the LAST few characters of the last text node in a
@@ -90,53 +95,9 @@ const REHYPE_PLUGINS_STREAMING: ComponentProps<typeof ReactMarkdown>['rehypePlug
 // Custom link component that opens links in embedded browser panel (if available)
 // or falls back to system browser. Supports text selection for copying.
 // Strips react-markdown's hast `node` prop so it doesn't get spread onto the DOM <a>.
-const MarkdownLink = memo(function MarkdownLink({
-  href,
-  children,
-  node: _node,
-  ...props
-}: React.ComponentProps<'a'> & { node?: unknown }) {
-  const fileLinkAction = useFileLinkAction();
-  const openWebLink = useOpenWebLink();
-
-  const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
-    e.preventDefault();
-
-    // Check if user is selecting text - don't open link if selecting
-    const selection = window.getSelection();
-    const hasSelection = selection && selection.toString().length > 0;
-
-    if (!hasSelection && href) {
-      // Cmd (macOS) / Ctrl (Win/Linux) + click bypasses the embedded browser
-      // panel and opens directly in the system default browser.
-      const forceExternal = e.metaKey || e.ctrlKey;
-      if (fileLinkAction?.openFileLink(href, { forceExternal })) {
-        return;
-      }
-      openWebLink(href, { forceExternal });
-    }
-  };
-
-  const handleContextMenu = (e: React.MouseEvent<HTMLAnchorElement>) => {
-    if (!href) return;
-    if (fileLinkAction?.openFileLinkMenu(e.clientX, e.clientY, href)) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
-  };
-
-  return (
-    <a
-      href={href}
-      onClick={handleClick}
-      onContextMenu={handleContextMenu}
-      className="text-[var(--accent-warm)] underline decoration-[var(--accent-warm)]/40 underline-offset-2 transition-colors hover:text-[var(--accent-warm-hover)] hover:decoration-[var(--accent-warm)]/60"
-      style={{ userSelect: 'text' }}
-      {...props}
-    >
-      {children}
-    </a>
-  );
+const MarkdownLink = memo(function MarkdownLink({ href, children, basePath = '', node, ...props }: React.ComponentProps<'a'> & { node?: Element; basePath?: string }) {
+  const originalHref = (node?.data as { originalHref?: unknown } | undefined)?.originalHref;
+  return <ContentLink reference={href ?? ''} displayReference={typeof originalHref === 'string' ? originalHref : href} basePath={basePath} {...props}>{children}</ContentLink>;
 });
 
 // Custom code component - handles both inline and block code
@@ -168,7 +129,7 @@ const CodeComponent: Components['code'] = ({ className, children, node: _node, .
   if (isBlock) {
     // Special handling for Mermaid diagrams
     if (language === 'mermaid') {
-      return <MermaidDiagram>{codeString}</MermaidDiagram>;
+      return <Suspense fallback={<pre className="overflow-auto rounded-lg bg-[var(--paper-inset)] p-4">{codeString}</pre>}><MermaidDiagram>{codeString}</MermaidDiagram></Suspense>;
     }
 
     return (
@@ -188,15 +149,7 @@ const PreComponent: Components['pre'] = ({ children }) => {
   return <>{children}</>;
 };
 
-// Custom table components for better styling
-const TableComponent: Components['table'] = ({ children }) => (
-  <div className="markdown-table max-w-full overflow-x-auto rounded-lg border border-[var(--line)]">
-    <table className="m-0 min-w-full divide-y divide-[var(--line)]">
-      {children}
-    </table>
-  </div>
-);
-
+// Shared table surface and per-table actions.
 const TableHeadComponent: Components['thead'] = ({ children }) => (
   <thead className="bg-[var(--paper-inset)]/40">{children}</thead>
 );
@@ -210,12 +163,12 @@ const TableRowComponent: Components['tr'] = ({ children }) => (
 // 表格 = text-sm(14px)：嵌在 16px 正文里的密集内容比正文低一档（13px 会造成
 // 肉眼可见跳变，PRD 0.2.34 P0-1 定为 14）。v2.5 起 ui 档本身就是 14px，原 dense
 // 专用档（text-md）与其 lint 白名单机制已随 Part 3 合并删除。
-const TableCellComponent: Components['td'] = ({ children }) => (
-  <td className="markdown-table-cell">{children}</td>
+const TableCellComponent: Components['td'] = ({ children, node: _node, ...props }) => (
+  <td {...props} className="markdown-table-cell">{children}</td>
 );
 
-const TableHeaderComponent: Components['th'] = ({ children }) => (
-  <th className="markdown-table-header">
+const TableHeaderComponent: Components['th'] = ({ children, node: _node, ...props }) => (
+  <th {...props} className="markdown-table-header">
     {children}
   </th>
 );
@@ -228,38 +181,38 @@ const BlockquoteComponent: Components['blockquote'] = ({ children }) => (
 );
 
 // Custom heading components - H1:22px H2:20px H3:18px H4-H6:16px
-const H1Component: Components['h1'] = ({ children }) => (
-  <h1 className="markdown-heading markdown-h1">
+const H1Component: Components['h1'] = ({ children, className, node: _node, ...props }) => (
+  <h1 {...props} className={['markdown-heading markdown-h1', className].filter(Boolean).join(' ')}>
     {children}
   </h1>
 );
 
-const H2Component: Components['h2'] = ({ children }) => (
-  <h2 className="markdown-heading markdown-h2">
+const H2Component: Components['h2'] = ({ children, className, node: _node, ...props }) => (
+  <h2 {...props} className={['markdown-heading markdown-h2', className].filter(Boolean).join(' ')}>
     {children}
   </h2>
 );
 
-const H3Component: Components['h3'] = ({ children }) => (
-  <h3 className="markdown-heading markdown-h3">
+const H3Component: Components['h3'] = ({ children, className, node: _node, ...props }) => (
+  <h3 {...props} className={['markdown-heading markdown-h3', className].filter(Boolean).join(' ')}>
     {children}
   </h3>
 );
 
-const H4Component: Components['h4'] = ({ children }) => (
-  <h4 className="markdown-heading markdown-h4">
+const H4Component: Components['h4'] = ({ children, className, node: _node, ...props }) => (
+  <h4 {...props} className={['markdown-heading markdown-h4', className].filter(Boolean).join(' ')}>
     {children}
   </h4>
 );
 
-const H5Component: Components['h5'] = ({ children }) => (
-  <h5 className="markdown-heading markdown-h5">
+const H5Component: Components['h5'] = ({ children, className, node: _node, ...props }) => (
+  <h5 {...props} className={['markdown-heading markdown-h5', className].filter(Boolean).join(' ')}>
     {children}
   </h5>
 );
 
-const H6Component: Components['h6'] = ({ children }) => (
-  <h6 className="markdown-heading markdown-h6">
+const H6Component: Components['h6'] = ({ children, className, node: _node, ...props }) => (
+  <h6 {...props} className={['markdown-heading markdown-h6', className].filter(Boolean).join(' ')}>
     {children}
   </h6>
 );
@@ -308,12 +261,19 @@ const HrComponent: Components['hr'] = () => (
   <hr className="markdown-rule border-[var(--line)]" />
 );
 
+// Display math is a native horizontal scroller, including in live preview.
+const SpanComponent: Components['span'] = ({ className, node: _node, ...props }) => (
+  <span {...props} className={className?.split(' ').includes('katex-display')
+    ? `${className} overflow-x-auto` : className} />
+);
+
 // Combine all custom components
 const markdownComponents: Components = {
   a: MarkdownLink,
+  span: SpanComponent,
   code: CodeComponent,
   pre: PreComponent,
-  table: TableComponent,
+  table: MarkdownTable,
   thead: TableHeadComponent,
   tr: TableRowComponent,
   td: TableCellComponent,
@@ -335,6 +295,8 @@ const markdownComponents: Components = {
 
 interface MarkdownProps {
   children: string;
+  /** Document-level numbering for an editor rendering isolated fragments. */
+  footnoteNumbers?: ReadonlyMap<string, number>;
   /** Use compact styling for smaller spaces like thinking blocks */
   compact?: boolean;
   /** Preserve single newlines as line breaks (useful for user messages in chat) */
@@ -345,41 +307,20 @@ interface MarkdownProps {
    *  on the last paragraph. Only the currently-growing assistant text block sets
    *  this (see Message.tsx); it is removed the instant the turn ends → crisp final. */
   streaming?: boolean;
-  /** Document base directory path **relative to workspace root** — used to
-   *  resolve `<img src="../foo.png">` against the doc's own location. */
+  /** Native document directory: workspace-relative for workspace documents,
+   *  absolute for external documents. Used for relative images and links. */
   basePath?: string;
   /** **Absolute** workspace root path — fed to `useWorkspaceFileService` so
    *  the relative-image fetch goes through `cmd_workspace_download_file`.
-   *  Required when `basePath` is set; the two are independent because
-   *  `basePath` is the doc's directory inside the workspace, not the
-   *  workspace itself. */
+   *  Defaults to the enclosing FileActionProvider's workspace in chat.
+   *  Explicit null means there is no workspace. An absolute `basePath` still
+   *  resolves external document references through the existing local-file API. */
   workspacePath?: string | null;
 }
 
-/**
- * Resolve a relative path against a base directory.
- * Handles ./ and ../ prefixes, normalizes the result.
- */
-function resolveRelativePath(baseDir: string, src: string): string {
-  // Strip leading ./
-  const cleaned = src.replace(/^\.\//, '');
-  // Combine base dir and relative path
-  const parts = (baseDir ? baseDir + '/' + cleaned : cleaned).split('/').filter(Boolean);
-  // Resolve .. by walking the parts
-  const stack: string[] = [];
-  for (const part of parts) {
-    if (part === '..') {
-      stack.pop();
-    } else if (part !== '.') {
-      stack.push(part);
-    }
-  }
-  return stack.join('/');
-}
-
-/** Whether a URL is absolute (http/https/data/blob) */
+/** Browser URLs, including protocol-relative CDN addresses. */
 function isAbsoluteUrl(src: string): boolean {
-  return /^(https?:|data:|blob:)/i.test(src);
+  return /^(https?:|data:|blob:|\/\/)/i.test(src);
 }
 
 /** Safely decode URI component, returning original on malformed input */
@@ -388,54 +329,46 @@ function safeDecodeURIComponent(str: string): string {
 }
 
 /**
- * Image component that resolves relative paths via the Rust workspace_files
- * download command. Only used when basePath is provided (file preview mode).
- *
- * Phase D.5: switched from sidecar `/agent/download` HTTP fetch to
- * `useWorkspaceFileService.readFileAsBlobUrl` invoke. The blob-URL handle
- * is the source of truth for cleanup — calling `handle.revoke()` on unmount
- * frees the object URL.
- *
- * State model:
- * - empty / absolute src → handled purely in render, no state or effect needed
- * - relative src → useEffect fetches via fileService, stores blob URL handle
+ * Local image loading is shared by chat and document previews. Browser URLs
+ * remain URLs; absolute OS paths use the local-file API; relative paths use
+ * the document directory within the explicit or enclosing chat workspace.
+ * Rust owns path normalization, containment and read authorization. This
+ * component owns the returned blob handle, including late async completion.
  */
 function MarkdownImageInner({ src, alt, basePath, workspacePath }: {
   src?: string;
   alt?: string;
   basePath: string;
-  workspacePath: string | null;
+  workspacePath?: string | null;
 }) {
   const { t } = useTranslation('app');
-  // Classify src type on every render (derived, not state)
-  const srcType: 'empty' | 'absolute' | 'relative' =
-    !src ? 'empty' : isAbsoluteUrl(src) ? 'absolute' : 'relative';
+  const fileAction = useFileAction();
+  const workspace = workspacePath === undefined ? fileAction?.workspacePath ?? null : workspacePath;
+  const fileService = useWorkspaceFileService(workspace);
+  const { isAvailable, readFileAsBlobUrl, readLocalFileAsBlobUrl } = fileService;
+  const srcType = !src ? 'empty' : isAbsoluteUrl(src) ? 'url' : 'local';
+  // Markdown encodes filenames as URLs. Decode once at the filesystem boundary.
+  const decoded = srcType === 'local' ? fileUrlToPath(src!) ?? safeDecodeURIComponent(src!) : '';
+  // Do not collapse `..` here: Rust must see and reject workspace escapes.
+  const relativePath = basePath ? `${basePath}/${decoded}` : decoded;
+  const absolutePath = resolveAgainstWorkspace(decoded, null) ?? resolveAgainstWorkspace(relativePath, null);
+  // isAvailable includes a workspace requirement; absolute local reads do not.
+  const unavailable = srcType === 'local' && !absolutePath && !isAvailable;
 
-  // CRITICAL: `basePath` is the doc's dir RELATIVE to the workspace; it MUST
-  // NOT be passed as the workspace root to the hook (Rust `validate_workspace_root`
-  // requires an absolute path and would reject). Pre-Phase-D.5 the sidecar
-  // resolved relative paths against its ambient `currentAgentDir`; in
-  // Phase D.5 the renderer threads `workspacePath` explicitly.
-  const fileService = useWorkspaceFileService(workspacePath);
-
-  // State only needed for async-loaded relative paths
+  // State only needed for async-loaded local files.
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    // Only relative paths need async loading
-    if (srcType !== 'relative') return;
-    if (!fileService.isAvailable) return;
-
-    // Decode first to prevent double-encoding (e.g. "some%20image.png")
-    const decoded = safeDecodeURIComponent(src!);
-    const resolvedPath = resolveRelativePath(basePath, decoded);
+    if (srcType !== 'local' || unavailable) return;
     let cancelled = false;
     let handle: { blobUrl: string; revoke: () => void } | null = null;
 
     (async () => {
       try {
-        handle = await fileService.readFileAsBlobUrl({ path: resolvedPath });
+        handle = absolutePath
+          ? await readLocalFileAsBlobUrl({ fullPath: absolutePath, workspace })
+          : await readFileAsBlobUrl({ path: relativePath });
         if (cancelled) {
           handle.revoke();
           return;
@@ -454,15 +387,15 @@ function MarkdownImageInner({ src, alt, basePath, workspacePath }: {
       setBlobUrl(null);
       setError(null);
     };
-  }, [src, srcType, basePath, fileService, t]);
+  }, [src, srcType, absolutePath, relativePath, workspace, unavailable, readLocalFileAsBlobUrl, readFileAsBlobUrl, t]);
 
   // Empty src: static error (no state needed)
   if (srcType === 'empty') {
-    return <span className="text-xs text-[var(--ink-muted)] italic">[{t('markdown.emptyImagePath')}]</span>;
+    return <span className="md-image-error text-xs text-[var(--ink-muted)] italic">[{t('markdown.emptyImagePath')}]</span>;
   }
 
-  // Absolute URL: render directly (no state needed, always fresh from props)
-  if (srcType === 'absolute') {
+  // Browser URL: render directly, after the existing Markdown sanitizer.
+  if (srcType === 'url') {
     return (
       <img
         src={canonicalizeLegacyMyAgentsResourceUrl(src!)}
@@ -472,16 +405,16 @@ function MarkdownImageInner({ src, alt, basePath, workspacePath }: {
     );
   }
 
-  // Relative path: loading / error / loaded
-  if (error) {
-    return <span className="text-xs text-[var(--ink-muted)] italic">[{error}]</span>;
+  // Local file: loading / error / loaded.
+  if (error || unavailable) {
+    return <span className="md-image-error text-xs text-[var(--ink-muted)] italic">[{error ?? t('markdown.imageLoadFailed', { src })}]</span>;
   }
 
   if (!blobUrl) {
     return <span className="inline-block h-4 w-16 animate-pulse rounded bg-[var(--paper-inset)]" />;
   }
 
-  return <img src={blobUrl} alt={alt ?? ''} className="max-w-full" />;
+  return <img src={blobUrl} alt={alt ?? ''} className="max-w-full" onError={() => setError(t('markdown.imageLoadFailed', { src }))} />;
 }
 
 /**
@@ -498,7 +431,7 @@ const MarkdownImage = memo(MarkdownImageInner, (prev, next) =>
   && prev.alt === next.alt,
 );
 
-const Markdown = memo(function Markdown({ children, compact = false, preserveNewlines = false, raw = false, basePath, workspacePath = null, streaming = false }: MarkdownProps) {
+const Markdown = memo(function Markdown({ children, compact = false, preserveNewlines = false, raw = false, basePath = '', workspacePath, streaming = false, footnoteNumbers }: MarkdownProps) {
   // Skip preprocessing for raw mode (file preview) - preprocessing is for streaming chat messages.
   // In raw mode, convert YAML frontmatter to a fenced code block for proper rendering.
   //
@@ -512,27 +445,32 @@ const Markdown = memo(function Markdown({ children, compact = false, preserveNew
     [children, raw],
   );
 
-  // Phase D.5: image loading goes through Rust workspace_files. Renderer threads
-  // `workspacePath` (absolute) and `basePath` (workspace-relative dir of the
-  // doc) separately — the hook needs the absolute path to call the Rust cmd,
-  // while basePath is only used to resolve relative `<img src>` against the
-  // doc's own location.
+  // The document directory resolves relative references; it never becomes a
+  // workspace grant. Rust separately validates the resulting local/workspace read.
 
-  // Merge img handler when basePath is provided (for resolving relative image paths)
-  // Use == null to allow empty string basePath (root-level files)
+  // All Markdown surfaces share filesystem-aware images. Keep the component
+  // identity stable while chat text streams so unchanged images retain handles.
   const components = useMemo(() => {
-    if (basePath == null) return markdownComponents;
     return {
       ...markdownComponents,
       img: (props: React.ImgHTMLAttributes<HTMLImageElement>) => (
         <MarkdownImage src={props.src} alt={props.alt} basePath={basePath} workspacePath={workspacePath} />
       ),
+      a: (props: React.ComponentProps<'a'> & { node?: Element }) => {
+        let number: number | undefined;
+        if (props.href?.startsWith('#user-content-fn-')) {
+          try { number = footnoteNumbers?.get(decodeURIComponent(props.href.slice('#user-content-fn-'.length))); } catch { /* keep the source fragment's link */ }
+        }
+        return <MarkdownLink {...props} basePath={basePath}>{number ?? props.children}</MarkdownLink>;
+      },
     };
-  }, [basePath, workspacePath]);
+  }, [basePath, workspacePath, footnoteNumbers]);
 
   return (
+    <MarkdownDocumentDirectoryContext.Provider value={basePath}>
     <div className={`markdown-content min-w-0 max-w-full break-words${compact ? ' markdown-content--compact' : ''}`}>
       <ReactMarkdown
+        urlTransform={MARKDOWN_URL_TRANSFORM}
         remarkPlugins={preserveNewlines ? MARKDOWN_REMARK_PLUGINS_WITH_BREAKS : MARKDOWN_REMARK_PLUGINS_DEFAULT}
         rehypePlugins={streaming && !raw ? REHYPE_PLUGINS_STREAMING : MARKDOWN_REHYPE_PLUGINS}
         components={components}
@@ -540,6 +478,7 @@ const Markdown = memo(function Markdown({ children, compact = false, preserveNew
         {processedContent}
       </ReactMarkdown>
     </div>
+    </MarkdownDocumentDirectoryContext.Provider>
   );
 });
 

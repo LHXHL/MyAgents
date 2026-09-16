@@ -1,6 +1,7 @@
 import { getSessionEngine } from '../session-engine';
 import { createColdHistoryMessageReplay } from '../../shared/chatMessageReplay';
 import { summarizeSsePayload } from '../sse';
+import { getActiveSessionTranscript } from '../SessionStore';
 
 type SseClient = {
   send(event: string, data: unknown): void;
@@ -24,12 +25,14 @@ export async function handleChatStreamRoute(
   // client. Both operations are synchronous, so no event-loop gap exists; a
   // buffered live chunk cannot reach this client before chat:init clears it.
   const snapshot = getSessionEngine().getStreamReplaySnapshot();
+  const transcript = getActiveSessionTranscript(snapshot.sessionId);
   // No onClose turn-interrupt: SSE disconnect is not a cancellation authority.
   const { client, response } = deps.createSseClient(() => {});
   client.send('chat:init', {
     ...snapshot.initState,
     sessionId: snapshot.sessionId,
     liveStreamingMessage: snapshot.liveStreamingMessage ?? null,
+    ...(transcript ? { transcriptFormat: 2, transcriptSaveStatus: transcript.writer.status } : {}),
   });
 
   for (const message of snapshot.replayMessages) {

@@ -21,6 +21,7 @@
  * not the Tab-scoped ones — plugin config is global, not per-Tab.
  */
 
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
   Plus,
   Loader2,
@@ -969,6 +970,7 @@ function InputView({
             className="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm text-[var(--ink)] focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40 disabled:opacity-60"
             autoFocus
             onKeyDown={(e) => {
+              if (isImeComposingEvent(e)) return;
               if (e.key === 'Enter' && !submitting && sourceUrl.trim()) {
                 e.preventDefault();
                 onSubmit();

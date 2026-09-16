@@ -1,11 +1,14 @@
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 import { AlertCircle, CheckCircle, Loader2, X } from 'lucide-react';
 import React, {
+  createContext,
   memo,
   useCallback,
+  useContext,
+  useEffect,
   useMemo,
   useState,
-  useEffect,
+  useSyncExternalStore,
   useLayoutEffect,
   useRef,
 } from 'react';
@@ -33,6 +36,7 @@ import {
 } from '@/context/ChatRowLayoutContext';
 import type { RowLayoutContract } from '@/utils/chatRowLayout';
 import { useChatScrollDebugProbe } from '@/hooks/useChatScrollDebugProbe';
+import { useChatFollowMotion } from '@/hooks/useChatFollowMotion';
 import { resolveChatBottomSpacerPx } from '@/utils/chatBottomSpacer';
 import type { MainWindowPresentation } from '@/utils/mainWindowPresentation';
 
@@ -125,7 +129,6 @@ interface MessageListProps {
   bottomSpacerPx?: number;
 }
 
-
 interface MessageActionContext {
   conversationOperations: 'builtin' | 'codex';
   rewindableUserMessageIds: ReadonlySet<string>;
@@ -151,6 +154,10 @@ const noopViewportAdmissionChanged = (
   _presentationGeneration: number,
 ) => {};
 const noopItemsRendered = () => {};
+
+// Presentation admission remains owned by MessageList. Its projection must
+// reach the sampler even while Virtuoso's data/context are deliberately frozen.
+const MessageListPresentationContext = createContext(true);
 
 function isLargeRowShrink(reason: RowLayoutChangeReason): boolean {
   return (
@@ -195,13 +202,18 @@ const StatusTimer = memo(function StatusTimer({
   getElapsedSeconds: () => number;
 }) {
   const { t } = useTranslation('chat');
-  const [elapsedSeconds, setElapsedSeconds] = useState(() =>
-    getElapsedSeconds(),
-  );
-  useEffect(() => {
-    const id = setInterval(() => setElapsedSeconds(getElapsedSeconds()), 1000);
+  const canPresent = useContext(MessageListPresentationContext);
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => {
+      if (!canPresent) return () => {};
+      const id = setInterval(onStoreChange, 1000);
     return () => clearInterval(id);
-  }, [getElapsedSeconds]);
+    },
+    [canPresent],
+  );
+  // The Tab clock keeps advancing without a timer. Re-subscription samples its
+  // current value on restore; hidden snapshots never keep a polling loop alive.
+  const elapsedSeconds = useSyncExternalStore(subscribe, getElapsedSeconds);
   const elapsedText =
     elapsedSeconds > 0 ? formatElapsedTime(elapsedSeconds, t) : null;
   const displayText = elapsedText ? `${message} (${elapsedText})` : message;
@@ -212,7 +224,12 @@ const StatusTimer = memo(function StatusTimer({
       style={{ height: STATUS_ROW_HEIGHT_PX }}
       title={displayText}
     >
-      <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+      {/* Retire the animated node, preserving its slot. Chromium can defer a
+          class/style removal inside content-visibility:hidden, retaining the
+          old CSS animation until the subtree becomes renderable again. */}
+      <span className="h-3 w-3 shrink-0" aria-hidden="true">
+        {canPresent && <Loader2 className="h-full w-full animate-spin" />}
+      </span>
       <span className="min-w-0 truncate">{displayText}</span>
     </div>
   );
@@ -346,11 +363,15 @@ const VirtuosoFooter = memo(function VirtuosoFooter({
             />
           </div>
         )}
-      {showStatus && (waitingForInteraction ? (
-        <InteractionWaitingStatus message={statusMessage} />
-      ) : (
-        <StatusTimer message={statusMessage} getElapsedSeconds={getQueryElapsedSeconds} />
-      ))}
+      {showStatus &&
+        (waitingForInteraction ? (
+          <InteractionWaitingStatus message={statusMessage} />
+        ) : (
+          <StatusTimer
+            message={statusMessage}
+            getElapsedSeconds={getQueryElapsedSeconds}
+          />
+        ))}
       {!showStatus && systemNotice && (
         <SystemNoticeRow
           notice={systemNotice}
@@ -559,76 +580,16 @@ const MessageList = memo(function MessageList({
     [canLayoutVirtualList, handleAtBottomChange],
   );
 
-  // ── Auto-scroll during streaming — keep the view pinned to the bottom as the
-  // streaming item grows taller. `followOutput` only fires on item-COUNT change,
-  // so the last item growing (text / thinking streaming in) needs an explicit nudge.
-  //
-  // This must stay inside Virtuoso's own scroll model — never write `el.scrollTop`
-  // directly. The important detail is timing: `autoscrollToBottom()` is designed
-  // for late size changes such as image loads; in react-virtuoso 4.18.3 it waits
-  // for an atBottomState update and clears the observer after 100ms. Used for
-  // per-token text streaming from a passive effect + rAF, it lets the browser
-  // paint one frame where the growing row/footer push the status down, then snaps
-  // back on Virtuoso's delayed correction. A layout-effect `scrollToIndex` lands
-  // the LAST/end alignment before paint while still going through Virtuoso.
-  //
-  // Gated on `isLoading` (actual streaming), not merely `!!streamingMessage`: a
-  // stale streaming message from the loadSession-REST / live-SSE mid-turn race
-  // must NOT keep auto-scroll alive once the turn has completed.
-  const wasViewportRecoveryFencedRef = useRef(isViewportRecoveryFenced);
-  useLayoutEffect(() => {
-    const justFinishedRecovery =
-      wasViewportRecoveryFencedRef.current && !isViewportRecoveryFenced;
-    wasViewportRecoveryFencedRef.current = isViewportRecoveryFenced;
-    if (!streamingMessage || !isLoading || !followEnabledRef.current) return;
-    // Skip while the internal Tab is hidden — scrolling against a
-    // content-visibility:hidden scroller
-    // can compute against stale geometry. The re-pin layout effect above restores
-    // position on re-activation.
-    if (!canLayoutVirtualList || isViewportRecoveryFenced) return;
-    // The controller already issued the one authoritative recovery command.
-    // Fence settlement alone is not new streaming output and must not replay it.
-    if (justFinishedRecovery) return;
-    virtuosoRef.current?.scrollToIndex({
-      index: 'LAST',
-      align: 'end',
-      behavior: 'auto',
-    });
-  }, [
-    streamingMessage,
-    isLoading,
-    canLayoutVirtualList,
-    isViewportRecoveryFenced,
-    followEnabledRef,
+  const [debugScroller, setDebugScroller] = useState<HTMLElement | null>(null);
+  const alignFollowingViewport = useChatFollowMotion({
+    scroller: debugScroller,
     virtuosoRef,
-  ]);
-
-  // ── Terminal pin — pin to bottom once when a turn ends ──
-  // At turn end the data-layer reveal drains the remaining text and the message moves to
-  // history in a single React batch; the streaming-driven autoscroll effect above gates on
-  // `isLoading`, so it won't fire for that final height growth. Without this, the last
-  // revealed line(s) can land just below the fold. If we were still following (true/'force'),
-  // re-pin once. Routes through scrollToBottom so the hook's grace/degrade state stays consistent.
-  const prevIsLoadingRef = useRef(isLoading);
-  useLayoutEffect(() => {
-    const was = prevIsLoadingRef.current;
-    prevIsLoadingRef.current = isLoading;
-    if (
-      was &&
-      !isLoading &&
-      canLayoutVirtualList &&
-      !isViewportRecoveryFenced &&
-      followEnabledRef.current
-    ) {
-      scrollToBottom('auto');
-    }
-  }, [
-    isLoading,
-    canLayoutVirtualList,
-    isViewportRecoveryFenced,
     followEnabledRef,
-    scrollToBottom,
-  ]);
+    admitted: canLayoutVirtualList,
+    recoveryFenced: isViewportRecoveryFenced,
+    sessionId,
+    presentationGeneration: windowPresentation.generation,
+  });
 
   // ── Refs for stable callbacks — avoid recreating itemContent/Footer on every render ──
   const streamingMessageRef = useRef(streamingMessage);
@@ -714,24 +675,6 @@ const MessageList = memo(function MessageList({
     setIsLargeRowShrinking(false);
   }, [cancelPendingLargeRowShrink, canLayoutVirtualList]);
   useEffect(() => cancelPendingLargeRowShrink, [cancelPendingLargeRowShrink]);
-  // Capture the committed admission state directly (not via a ref). Under React
-  // 19's child-before-parent layout-effect ordering, a ref updated in our parent
-  // layout effect could still be stale when Virtuoso's child effects fire during
-  // an admitted→suspended commit. These callbacks are not row identities, so
-  // recreating them at a rare lifecycle edge cannot remount message rows.
-  const handleFollowOutput = useMemo(
-    () => (isAtBottom: boolean) => {
-      // Hidden tab (content-visibility:hidden): never drive follow-scroll against
-      // skipped/stale geometry (same cache-poisoning class as the data freeze below).
-      if (!canLayoutVirtualList || isViewportRecoveryFenced) return false;
-      const mode = followEnabledRef.current;
-      if (!mode) return false;
-      if (mode === 'force') return 'smooth' as const;
-      return isAtBottom ? ('smooth' as const) : false;
-    },
-    [followEnabledRef, canLayoutVirtualList, isViewportRecoveryFenced],
-  );
-
   // Pagination guard: don't load an older page off stale range math while hidden —
   // Virtuoso can fire startReached from corrupted offsets when our subtree's layout
   // was skipped (content-visibility:hidden), and a prepend in that state compounds the desync.
@@ -740,7 +683,6 @@ const MessageList = memo(function MessageList({
     onLoadOlder?.();
   }, [onLoadOlder, canLayoutVirtualList, isViewportRecoveryFenced]);
 
-  const [debugScroller, setDebugScroller] = useState<HTMLElement | null>(null);
   const handleScrollerRef = useCallback(
     (el: HTMLElement | Window | null) => {
       const next = el instanceof HTMLElement ? el : null;
@@ -780,7 +722,7 @@ const MessageList = memo(function MessageList({
         // `flow-root` (not `overflow-hidden`) establishes a BFC so child Markdown
         // margins don't leak past the wrapper — that's what e6de7173 originally
         // wanted. `overflow-hidden` did the same job but added a hard clip side
-        // effect: when Virtuoso's height estimate (`defaultItemHeight=480`) was
+        // effect: when Virtuoso's initial height estimate was
         // far from actual short-item height (~80px), the post-mount measurement
         // correction shifted scroll anchors enough that short user bubbles got
         // visually clipped instead of merely positioned slightly off — they
@@ -938,24 +880,25 @@ const MessageList = memo(function MessageList({
   );
 
   return (
-      <div
-        ref={viewportRootRef}
-        className="relative flex-1"
-        data-streaming={isStreaming || undefined}
-        data-viewport-phase={
-          isViewportRecoveryFenced
-            ? 'recovering'
-            : canLayoutVirtualList
-              ? 'renderable'
-              : 'suspended'
-        }
-        style={
-          isViewportRecoveryFenced && windowPresentation.surfaceAvailable
-            ? { visibility: 'hidden' }
-            : undefined
-        }
-      >
-        {/*
+    <MessageListPresentationContext.Provider value={canLayoutVirtualList}>
+    <div
+      ref={viewportRootRef}
+        className="relative flex-1 markdown-wide-surface"
+      data-streaming={isStreaming || undefined}
+      data-viewport-phase={
+        isViewportRecoveryFenced
+          ? 'recovering'
+          : canLayoutVirtualList
+            ? 'renderable'
+            : 'suspended'
+      }
+      style={
+        isViewportRecoveryFenced && windowPresentation.surfaceAvailable
+          ? { visibility: 'hidden' }
+          : undefined
+      }
+    >
+      {/*
         Virtuoso stays mounted across session switches. Previously `key={sessionId}`
         forced a full remount, which dropped every cached item height, rebuilt
         every ResizeObserver, and kicked off a measure→reflow→remeasure storm on
@@ -966,15 +909,12 @@ const MessageList = memo(function MessageList({
         single pre-paint call. Heights are recomputed lazily as items come into
         view, not up front.
 
-        defaultItemHeight=480 is an empirical average across tool-use / text /
-        thinking blocks; too low (200) causes Virtuoso to over-render initially,
-        too high leaves holes at the bottom. 480 stays close to long-content
-        reality but does produce sizeable post-mount corrections on short user
-        bubbles (~80-150px). The previous wrapper used `overflow-hidden`, which
-        amplified those corrections into hard clips: short bubbles vanished
-        while neighbours merged. The wrapper is now `flow-root` (above), so any
-        residual correction shows up as a small scroll bounce rather than a
-        disappearing message.
+        heightEstimates seeds the initial size tree with each message's content
+        estimate; real measurements replace those estimates as rows mount.
+        Do not also provide defaultItemHeight: in Virtuoso 4.18.3 it initializes
+        the tree first and prevents the per-row seed from being used, even if
+        the list starts empty before history loads. Callers without a seed use
+        Virtuoso's normal first-row probe.
 
         The extra top viewport and item-count overscan bias reverse scrolling
         toward pre-measuring tall Markdown/code rows before they enter view.
@@ -992,13 +932,15 @@ const MessageList = memo(function MessageList({
         firstItemIndex={virtuosoFirstItemIndex}
         heightEstimates={virtuosoHeightEstimateSeed}
         startReached={onLoadOlder ? guardedLoadOlder : undefined}
-        followOutput={handleFollowOutput}
+          // The built-in size/viewport paths bypass function-valued followOutput.
+          // Literal false leaves all following to the existing chat intent owner.
+          followOutput={false}
+          totalListHeightChanged={alignFollowingViewport}
         atBottomStateChange={guardedAtBottomChange}
         rangeChanged={debugProbe?.handleRangeChanged}
         itemsRendered={handleItemsRendered}
         atBottomThreshold={50}
         itemSize={measureVisibleItemSize}
-        defaultItemHeight={480}
         increaseViewportBy={{ top: 1600, bottom: 800 }}
         minOverscanItemCount={{ top: 3, bottom: 1 }}
         skipAnimationFrameInResizeObserver={
@@ -1014,6 +956,7 @@ const MessageList = memo(function MessageList({
         itemContent={renderItem}
       />
     </div>
+    </MessageListPresentationContext.Provider>
   );
 });
 

@@ -120,7 +120,8 @@ Token 组：
 - 字体：body/display/code 运行时角色；
 - Ink/Paper、全局 App Shell 侧栏结构面 `--global-sidebar-bg`，以及同色 0-alpha 渐变端点；侧栏值由每套 Theme 的 light/dark 独立设计在 `paper → paper-inset` 之间，页面与卡片不得借此翻转通用 Paper 层级；
 - Accent、Heartbeat、Success/Error/Warning/Info；所有实色 action/status surface 都有独立配对 foreground（`--on-*`），不能跨语义借用；
-- Button（primary / 固定深色 surface 各自有配对 foreground）、Border、Focus、Toggle；
+- Button（primary / dark action 各自有配对 foreground；dark action 可随主题切换明暗）、Border、Focus、Toggle；
+- Media control（`--media-control-bg` / `--media-control-text` / `--media-control-accent`）：录音控制与播放器在两种 scheme 下都保持深色背景，前景和强调色由主题成套提供，不能倒用 `ink/paper` 或借用 button 的配色；录音停止操作使用 `--media-stop-bg` / `--media-stop-text` 配对红底白字，并验证正常与 hover 对比度，不借用错误状态前景色；
 - `--theme-radius-*`、`--theme-shadow-*`、工具/动作局部 shadow；
 - Code、Animation；
 - body background/texture/blend；
@@ -223,6 +224,7 @@ default + system，不能阻断窗口创建。
 | Launcher / About / GlobalSidebar 品牌 | `ResolvedTheme.hero` + Theme 产品字标/Hero CSS selector | 产品字标字体、字距和渐变同源；Hero 与紧凑侧栏只分离尺寸/字重角色，不复制品牌配色；背景不改变布局 |
 | CSS host / Space / Floating Ball | root semantic Token | `.dark` 不是状态源；Space 不建立局部 Theme scope |
 | xterm | `adapters.xterm` | 原位改 options；字体 family/size/lineHeight 变化后复用唯一 fit-and-resize owner 重算 cols/rows 并同步现有 PTY；split 首次展示/变宽以 ResizeObserver 的 geometry quiet window 判稳后再创建或 resize PTY，不复制 Theme-owned transition duration；不重建 Terminal/PTY/buffer |
+| Markdown CM6 | `adapters.prism` 派生语法高亮 + host semantic Token | Compartment 原位重配；不换文档、选区、history 或活跃输入 view |
 | Monaco | `adapters.monaco` | define 冲突安全名称并 `setTheme`；不换 model/editor |
 | Mermaid | `adapters.mermaid` | Theme key 变化重渲染；保留 strict/timeout/last-valid |
 | Prism | `adapters.prism` | CodeBlock、Mermaid code、Bash/FilePatch 派生同一 palette |
@@ -266,7 +268,7 @@ Space 是全局 Theme 的标准 CSS host surface：组件直接消费 root seman
   逐 Token 锁定其余值等于 Claude / canonical；`verify:theme-presets` 先按 Vite production 使用的
   esbuild CSS minifier 序列化八套实际 optional stylesheet，再经 optional factory 完成精确九套 Registry
   注册并逐套 resolve light/dark；
-- structural surface contract：九套生产 Theme 的 light/dark 都必须让 `--global-sidebar-bg` 的亮度严格位于 `--paper` 与 `--paper-inset` 之间，并与 `--paper-elevated` 保持不同值；`GlobalSidebar` 是唯一宿主消费点，右侧页面、卡片和顶部 Tab 栏不随该 Token 改写；
+- structural surface contract：九套生产 Theme 的 light/dark 都必须让 `--global-sidebar-bg` 的亮度严格位于 `--paper` 与 `--paper-inset` 之间，并与 `--paper-elevated` 保持不同值；`GlobalSidebar`、`CustomTitleBar` 与 `TabBar` 是直接宿主消费点；用户消息的语义 token `--message-user-bg` / `--message-user-bg-a0` 在生产主题中分别引用侧栏及其透明端点，实现无边框同色气泡。其余页面与卡片不直接借用该 Token；
 - dark control contrast：九套 Theme 的 Primary 正常/hover 均验证 4.5:1，深色 action
   surface 锁定白色/近白前景；全部 production Theme 的 dark Switch thumb 锁定为白色/近白控制面；
 - build smoke：`build:web` 串行执行 `verify:theme-css` 与 `verify:theme-presets`；前者读取实际
@@ -274,3 +276,5 @@ Space 是全局 Theme 的标准 CSS host surface：组件直接消费 root seman
   不存在未编译 raw `@theme`，后者防止 production `?inline` 序列化导致 preset catalog 启动时被拒绝。
 
 发布前仍必须完成视觉截图矩阵、browser dev 和 macOS/Windows 实机验证；自动化不能替代真实渲染验证。
+
+Record media 回归：`presetContrast.test.tsx` 检查九套主题两种 scheme 的媒体前景、次要文字和强调色对比；`node scripts/verify-record-media-theme.mjs webkit`（或 `chrome`）在真实浏览器验证录音、暂停、播放准备态与音轨菜单。使用合成数据，不读取用户录音。

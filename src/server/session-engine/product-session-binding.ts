@@ -4,11 +4,14 @@ import { isPendingSessionId } from '../../shared/constants';
 import { originFromMaterializationScenario, type SessionOrigin } from '../../shared/session-origin';
 import {
   deleteSession,
+  releaseSessionTranscriptForBinding,
   getSessionMetadata,
+  getActiveSessionTranscript,
   saveSessionMetadata,
   updateSessionMetadata,
+  updateSessionMetadataForBinding,
 } from '../SessionStore';
-import { createSessionMetadata, type SessionMetadata } from '../types/session';
+import { createSessionMetadata, ownsSessionMetadataBirth, type SessionMetadata } from '../types/session';
 
 export type ProductSessionSnapshotPatch = Pick<
   SessionMetadata,
@@ -56,20 +59,31 @@ export function getCurrentProductSessionId(): string {
   return currentProductSessionId;
 }
 
-export function setCurrentProductSessionId(nextSessionId: string): void {
+/** Read facts of the identity this lifecycle owns. A locally issued birth has
+ * no cold metadata yet; allowing a request to fill missing metadata (Inbox)
+ * does not grant this lifecycle birth authority. Restore callers still read
+ * SessionStore directly before adopting an existing identity. */
+export function getCurrentProductSessionMetadata(): SessionMetadata | null {
+  const active = getActiveSessionTranscript(currentProductSessionId);
+  if (active) return active.metadata;
+  return allowLazySessionMaterialization ? null : getSessionMetadata(currentProductSessionId);
+}
+
+export async function setCurrentProductSessionId(nextSessionId: string): Promise<void> {
+  if (currentProductSessionId && currentProductSessionId !== nextSessionId) await releaseSessionTranscriptForBinding(currentProductSessionId);
   currentProductSessionId = nextSessionId;
   publishCurrentProductSessionEnv();
 }
 
-export function resetProductSessionBinding(options?: {
+export async function resetProductSessionBinding(options?: {
   sessionId?: string;
   workspacePath?: string;
   hasInitialPrompt?: boolean;
   allowLazySessionMaterialization?: boolean;
-}): string {
+}): Promise<string> {
   const nextSessionId = options?.sessionId ?? randomUUID();
-  setCurrentProductSessionId(nextSessionId);
-  allowLazySessionMaterialization = options?.allowLazySessionMaterialization ?? true;
+  await setCurrentProductSessionId(nextSessionId);
+  allowLazySessionMaterialization = options?.allowLazySessionMaterialization ?? (options?.sessionId === undefined);
   pendingDesktopMaterialization = null;
   currentProductSessionContext = {
     workspacePath: options?.workspacePath ?? currentProductSessionContext.workspacePath,
@@ -246,7 +260,7 @@ export async function preparePendingProductSession(
       if (Object.keys(preparedPatch).length === 0) {
         return { success: true, sessionId: pending.targetSessionId, metadata };
       }
-      const updated = await updateSessionMetadata(
+      const updated = await updateSessionMetadataForBinding(
         pending.targetSessionId,
         preparedPatch,
         current => preparedMaterializationOwnsMetadata(pending, current),
@@ -273,7 +287,7 @@ export async function preparePendingProductSession(
   }
 
   if (!isPendingSessionId(currentProductSessionId)) {
-    const metadata = getSessionMetadata(currentProductSessionId);
+    const metadata = getCurrentProductSessionMetadata();
     if (metadata) return { success: true, sessionId: currentProductSessionId, metadata };
     if (!allowLazySessionMaterialization) {
       return { success: false, error: 'Active session is not pending and has no metadata.', status: 404 };
@@ -281,7 +295,8 @@ export async function preparePendingProductSession(
   }
 
   const prepared = options.createPreparedMetadata(currentProductSessionId);
-  if (getSessionMetadata(prepared.targetSessionId)) {
+  if (getActiveSessionTranscript(prepared.targetSessionId)
+    || (!ownsSessionMetadataBirth(prepared.metadata) && getSessionMetadata(prepared.targetSessionId))) {
     return { success: false, error: `Session ${prepared.targetSessionId} already exists.`, status: 409 };
   }
   applyProductSessionSnapshotPatch(prepared.metadata, request.snapshotPatch);
@@ -311,7 +326,6 @@ export async function commitPendingProductSession(options: {
     prepared: PendingProductSessionMaterialization,
     metadata: SessionMetadata,
   ) => Promise<void> | void;
-  bindSession?: (sessionId: string) => void;
 } = {}): Promise<ProductSessionMaterializationResult> {
   if (!currentProductSessionId) {
     return { success: false, error: 'No active session.', status: 400 };
@@ -365,7 +379,17 @@ export async function commitPendingProductSession(options: {
   }
 
   await options.beforeBind?.(prepared, metadata);
-  const committedMetadata = await updateSessionMetadata(
+  // Retirement is the fallible part of changing identity. Complete it before
+  // claiming the target so a failure leaves the existing prepare/rollback
+  // transaction intact. The subsequent ID adoption has no old writer to drain.
+  if (prepared.priorSessionId && prepared.priorSessionId !== prepared.targetSessionId) {
+    await releaseSessionTranscriptForBinding(prepared.priorSessionId);
+  }
+  if (pendingDesktopMaterialization !== prepared
+    || (currentProductSessionId !== prepared.priorSessionId && currentProductSessionId !== prepared.targetSessionId)) {
+    return { success: false, error: 'Session materialization changed while retiring its previous writer.', status: 409 };
+  }
+  const committedMetadata = await updateSessionMetadataForBinding(
     prepared.targetSessionId,
     {
       materializationState: undefined,
@@ -392,10 +416,12 @@ export async function commitPendingProductSession(options: {
     };
   }
 
-  (options.bindSession ?? setCurrentProductSessionId)(prepared.targetSessionId);
+  await setCurrentProductSessionId(prepared.targetSessionId);
   allowLazySessionMaterialization = false;
-  await options.afterBind?.(prepared, committedMetadata);
+  // Logical admission is final before downstream restoration. A failed or lost
+  // afterBind acknowledgement cannot leave a rollback-capable prepared token.
   pendingDesktopMaterialization = null;
+  await options.afterBind?.(prepared, committedMetadata);
   return {
     success: true,
     sessionId: prepared.targetSessionId,
@@ -514,7 +540,7 @@ export async function publishCurrentProductSessionMetadata(
   createMetadata: (sessionId: string) => { metadata: SessionMetadata; snapshotKind: string },
 ): Promise<{ sessionId: string; metadata: SessionMetadata; snapshotKind: string }> {
   const targetSessionId = currentProductSessionId;
-  const existing = getSessionMetadata(targetSessionId);
+  const existing = getCurrentProductSessionMetadata();
   if (existing) {
     allowLazySessionMaterialization = false;
     return { sessionId: targetSessionId, metadata: existing, snapshotKind: 'existing' };

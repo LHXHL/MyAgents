@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDshBinding } from '../../../shared/integrated-runtimes/identity';
-import { createSessionMetadata } from '../../types/session';
+import { createSessionMetadata as createV2Metadata } from '../../types/session';
+// The development reset explicitly targets pre-upgrade, legacy-format Sessions.
+const createSessionMetadata: typeof createV2Metadata = (...args) => ({ ...createV2Metadata(...args), transcriptFormat: undefined });
 import { applyDshDevelopmentReset, isDshDevelopmentWriterCommand, planDshDevelopmentReset } from './development-reset';
 import { dshSessionOwnedPaths } from './owned-paths';
 

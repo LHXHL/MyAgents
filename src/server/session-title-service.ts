@@ -127,7 +127,7 @@ export async function maybeGenerateTitleAfterTurn(
     })) return;
 
     // Expensive step, now justified: read the transcript and reconstruct rounds.
-    const data = getSessionData(sessionId);
+    const data = (await getSessionData(sessionId));
     if (!data) return;
     const rounds = buildTitleRoundsFromMessages(data.messages, {
       isUserTitleable: index => isHumanUserMessage(data.messages[index], meta.origin),

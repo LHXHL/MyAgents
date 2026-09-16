@@ -9,7 +9,7 @@ export const MEDIA_WORKER_BATCH_MODES = Object.freeze([
   "attachment",
 ]);
 
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 const MAX_CONTROL_BYTES = 256 * 1024;
 
 function controlFrame(value) {
@@ -35,6 +35,8 @@ export async function runMediaWorkerBatch({
   onnxRuntimePath,
   modelManifestPath,
   sourcePath,
+  recordInputs,
+  identityAnchors,
   mode = "complete",
   timeoutMs = 45_000,
   terminationGraceMs = 2_000,
@@ -48,7 +50,8 @@ export async function runMediaWorkerBatch({
     !nativeManifestPath ||
     !onnxRuntimePath ||
     !modelManifestPath ||
-    !sourcePath ||
+    (mode === "attachment" ? !sourcePath : (!sourcePath && !Array.isArray(recordInputs))) ||
+    (identityAnchors !== undefined && mode !== "diarization") ||
     !MEDIA_WORKER_BATCH_MODES.includes(mode) ||
     !Number.isSafeInteger(timeoutMs) ||
     timeoutMs <= 0 ||
@@ -233,7 +236,8 @@ export async function runMediaWorkerBatch({
           ? { type: "attachment", inputPath: sourcePath }
           : {
               type: "record_artifacts",
-              inputs: [{ track: "microphone", inputPath: sourcePath }],
+              inputs: recordInputs ?? [{ track: "microphone", inputPath: sourcePath }],
+              identityAnchors: identityAnchors ?? null,
             },
       nativeManifestPath,
       onnxRuntimePath,
@@ -327,6 +331,17 @@ export function summarizeMediaWorkerBatch(mode, result) {
   };
 }
 
+// Unknown activity remains in Worker output but is missing identity in DER;
+// it must never become a fabricated person named "speaker_null".
+export function collectKnownSpeakerTurns(responses) {
+  return responses.filter((response) => response.type === 'speaker_turn_batch')
+    .sort((left, right) => left.batchIndex - right.batchIndex)
+    .flatMap((response) => response.turns)
+    .filter((turn) => turn.globalSpeaker !== null)
+    .map((turn) => ({ speaker: `speaker_${turn.globalSpeaker}`,
+      startSeconds: turn.startSample / 16000, endSeconds: turn.endSample / 16000 }));
+}
+
 export function assertExpectedMediaWorkerBatch(mode, result) {
   const summary = summarizeMediaWorkerBatch(mode, result);
   const { counts, yielded } = summary;
@@ -336,8 +351,19 @@ export function assertExpectedMediaWorkerBatch(mode, result) {
   const validSpeakerTurnBatches = speakerTurnBatches.every(
     (response, index) =>
       response.batchIndex === index &&
-      response.isLast === (index + 1 === speakerTurnBatches.length),
+      response.isLast === (index + 1 === speakerTurnBatches.length) &&
+      response.turns.every((turn) => ['microphone', 'system', 'mixed'].includes(turn.source)
+        && (turn.globalSpeaker === null || (Number.isSafeInteger(turn.globalSpeaker) && turn.globalSpeaker >= 0))),
   );
+  const identityBatches = result.responses.filter((response) => response.type === "identity_evidence_batch");
+  const identityRows = identityBatches.flatMap((batch) => batch.evidence ?? []);
+  const validIdentityBatches = identityBatches.length > 0 && identityRows.length <= 2048
+    && identityBatches.every((batch, index) => batch.revision === 1 && batch.batchIndex === index
+      && batch.isLast === (index + 1 === identityBatches.length) && Array.isArray(batch.evidence)
+      && batch.evidence.length <= 16 && (batch.isLast || batch.evidence.length === 16))
+    && identityRows.every((row, index) => Number.isSafeInteger(row.personId) && row.personId >= 0
+      && (index === 0 || identityRows[index - 1].personId < row.personId)
+      && Array.isArray(row.modelLabels) && row.modelLabels.length <= 64);
   const invalidComplete =
     ["complete", "attachment"].includes(mode) &&
     (!counts.transcript_segment ||
@@ -369,6 +395,7 @@ export function assertExpectedMediaWorkerBatch(mode, result) {
       counts.pong !== 1 ||
       !counts.speaker_turn_batch ||
       !validSpeakerTurnBatches ||
+      !validIdentityBatches ||
       counts.transcript_segment ||
       counts.yielded ||
       counts.failed);

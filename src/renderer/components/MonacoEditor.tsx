@@ -696,22 +696,14 @@ export default function MonacoEditor({
                     </button>
                 </div>
             )}
-            {/* Portaled to <body> so the host's `overflow-hidden` (and any transformed
-                modal ancestor) can never clip the floating menu — same reason
-                FilePreviewModal portals itself. x/y are viewport coords, which is what
-                <ContextMenu>'s fixed positioning + viewport clamping expect. */}
-            {ctxMenu && createPortal(
+            {ctxMenu && (
                 <ContextMenu
                     x={ctxMenu.x}
                     y={ctxMenu.y}
                     items={buildContextMenuItems()}
                     onClose={() => setCtxMenu(null)}
-                    // Above FilePreviewModal (z-[210]) and the quote menu (z-[300]) —
-                    // the editor is most often mounted inside that modal, where the
-                    // default z-50 would render the menu behind the backdrop.
                     zIndex={320}
-                />,
-                document.body,
+                />
             )}
             {findTooltip && createPortal(
                 <div

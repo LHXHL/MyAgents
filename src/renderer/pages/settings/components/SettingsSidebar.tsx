@@ -46,7 +46,7 @@ export function SettingsSidebar({
         )}
       </div>
 
-      <nav className="settings-nav space-y-1">
+      <nav className="settings-nav overflow-x-auto space-y-1">
         {NAV_ITEMS.map((item) => {
           if (item.section === 'desktop-pet' && floatingBallDevGate === false) return null;
           const isActive = item.section === activeSection;

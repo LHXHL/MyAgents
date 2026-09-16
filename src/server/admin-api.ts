@@ -91,7 +91,6 @@ import {
   ADMIN_LOOPBACK_TIMEOUT_MS,
   managementApi,
 } from './utils/management-api-client';
-import { buildSessionExecutablePath } from './utils/session-executable-path';
 import { getSessionEngine, inspectRuntime } from './session-engine';
 import { getSessionsByAgentDir, isHistoryVisibleSession } from './SessionStore';
 import {
@@ -850,11 +849,9 @@ export async function handleMcpTest(payload: {
       if (remainingMs <= 0) {
         throw new McpConnectionTestError('Connection timed out (15s)');
       }
-      const executablePath = buildSessionExecutablePath();
       return await testMcpServerConnection(probeServer, {
         fetch: (url, init) => fetchWithGeneralProxy(String(url), init),
         timeoutMs: remainingMs,
-        executionEnv: { [executablePath.key]: executablePath.value },
         cwd: getCurrentWorkspacePath(),
       });
     };
@@ -877,7 +874,7 @@ export async function handleMcpTest(payload: {
         serverVersion: result.serverVersion,
         resolvedCommand: result.resolvedCommand,
       },
-      hint: `MCP initialize succeeded${identity ? ` (${identity})` : ''}.`,
+      hint: `MCP configuration initialize succeeded${identity ? ` (${identity})` : ''}. Runtime compatibility is reported by the session.`,
     };
   } catch (err) {
     const probeError = err as { message?: unknown; statusCode?: unknown };

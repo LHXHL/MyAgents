@@ -3,6 +3,7 @@
 // box is collapsed by default and matches the "最近历史" / "工作区文件管理"
 // interaction pattern.
 
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { NotebookPen, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -300,6 +301,7 @@ export function ThoughtPanel({
   useEffect(() => {
     if (!selectMode) return;
     const handler = (e: KeyboardEvent) => {
+      if (isImeComposingEvent(e)) return;
       if (e.key === 'Escape' && !confirmDeleteOpen) {
         e.stopPropagation();
         exitSelectMode();

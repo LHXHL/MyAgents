@@ -1,6 +1,34 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { broadcast, summarizeSsePayload } from './sse';
+import { broadcast, broadcastLive, summarizeSsePayload } from './sse';
+
+describe('SSE streaming projection log policy', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([
+    'chat:transcript-operation',
+    'chat:transcript-save-status',
+    'chat:mcp-effective-snapshot',
+    'chat:runtime-tool-catalog',
+    'chat:context-usage',
+    'chat:agent-plan-update',
+    'chat:runtime-diagnostics',
+  ])('keeps repeated %s silent with and without a live revision envelope', event => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    let revision = 0;
+    const scope = { sessionId: 'synthetic-session', nextRevision: () => ++revision };
+    for (let i = 0; i < 100; i++) {
+      const data = { operation: { kind: 'text-append', text: 'private stream', offset: i }, state: 'healthy' };
+      broadcast(event, data);
+      broadcastLive(event, data, scope);
+    }
+    expect(log).not.toHaveBeenCalled();
+
+    broadcast('chat:message-complete', { output_tokens: 100 });
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log.mock.calls[0][0]).toContain('[sse] chat:message-complete ->');
+  });
+});
 
 describe('SSE replay diagnostics', () => {
   afterEach(() => {

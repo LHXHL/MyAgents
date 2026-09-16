@@ -34,6 +34,7 @@ export interface ChatOpenIntent {
 }
 
 export interface ChatRenderBinding {
+  registerFileEditSubmitter?: (tabId: string, submit: () => Promise<boolean>) => () => void;
   windowPresentation: MainWindowPresentation;
   onOpenHistorySession: (
     tabId: string,
@@ -98,6 +99,7 @@ const ChatTabRenderer = memo(function ChatTabRenderer({
       ) : (
         <Suspense fallback={<ChatBootOverlay />}>
           <Chat
+            registerFileEditSubmitter={binding.registerFileEditSubmitter}
             windowPresentation={binding.windowPresentation}
             onOpenSession={(sessionId, title, source) => binding.onOpenHistorySession(tab.id, sessionId, title, source)}
             onOpenSessionInNewTab={(sessionId, title) =>

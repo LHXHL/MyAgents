@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
+  copyFileSync,
   mkdirSync,
   mkdtempSync,
   renameSync,
@@ -19,7 +20,56 @@ import {
 import {
   MINIMUM_SPEECH_CMAKE_VERSION,
   speechBuildPrerequisiteFailures,
+  speechNativeTestPlan,
+  runSpeechNativeTests,
 } from './prepare-speech-inference.mjs';
+
+test('Linux contract executable resolves Sherpa outside the relocatable adapter build directory', {
+  skip: process.platform !== 'linux',
+}, t => {
+  const root = mkdtempSync(join(tmpdir(), 'speech link regression '));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const dependency = join(root, 'sherpa source');
+  const source = join(root, 'adapter source');
+  const sherpaBuild = join(root, 'sherpa build');
+  const adapterBuild = join(root, 'adapter build');
+  mkdirSync(dependency);
+  mkdirSync(source);
+  // Use the production target graph with tiny offline sources. The regression
+  // is ELF dependency resolution, independent of Sherpa's inference algorithms.
+  writeFileSync(join(dependency, 'CMakeLists.txt'), `
+cmake_minimum_required(VERSION 3.28)
+project(sherpa_link_fixture LANGUAGES CXX)
+add_library(sherpa-onnx-c-api SHARED sherpa.cc)
+`);
+  writeFileSync(join(dependency, 'sherpa.cc'), 'extern "C" int sherpa_value() { return 42; }\n');
+  copyFileSync(new URL('../src-tauri/media-worker/native/CMakeLists.txt', import.meta.url), join(source, 'CMakeLists.txt'));
+  writeFileSync(join(source, 'myagents_speech_adapter.cc'), `
+extern "C" int sherpa_value();
+extern "C" __attribute__((visibility("default"))) int adapter_value() { return sherpa_value(); }
+`);
+  writeFileSync(join(source, 'adapter_contract_test.cc'), 'extern "C" int adapter_value(); int main() { return adapter_value() == 42 ? 0 : 1; }\n');
+  for (const file of ['bounded_vad_test.cc', 'raw_evidence_test.cc']) {
+    writeFileSync(join(source, file), 'int main() { return 0; }\n');
+  }
+  const env = { ...process.env };
+  delete env.LD_LIBRARY_PATH;
+  delete env.LIBRARY_PATH;
+  const run = (command, args) => execFileSync(command, args, { env, encoding: 'utf8', stdio: 'pipe' });
+  run('cmake', ['-S', dependency, '-B', sherpaBuild]);
+  run('cmake', ['--build', sherpaBuild]);
+  run('cmake', ['-S', source, '-B', adapterBuild, '-DBUILD_TESTING=ON',
+    `-DMYAGENTS_SHERPA_LIBRARY=${join(sherpaBuild, 'libsherpa-onnx-c-api.so')}`,
+    `-DMYAGENTS_SHERPA_INCLUDE_DIR=${dependency}`, `-DMYAGENTS_HCLUST_INCLUDE_DIR=${dependency}`]);
+  run('cmake', ['--build', adapterBuild]);
+  // Match production's execution environment, without leaking it into linking.
+  execFileSync('ctest', ['--test-dir', adapterBuild, '--output-on-failure'], {
+    env: { ...env, LD_LIBRARY_PATH: `${adapterBuild}:${sherpaBuild}` }, stdio: 'pipe',
+  });
+  const dynamic = run('readelf', ['-d', join(adapterBuild, 'libmyagents-speech-adapter.so')]);
+  assert.match(dynamic, /\$ORIGIN/);
+  assert.ok(!dynamic.includes(sherpaBuild), 'packaged adapter must not capture the build directory');
+});
 
 function git(cwd, args) {
   return execFileSync('git', args, {
@@ -176,3 +226,28 @@ test('managed ORT source cache recovers interrupted Git states without refetchin
   assert.equal(git(cache, ['rev-parse', '--verify', 'HEAD']), lockedCommit);
   assert.equal(git(cache, ['remote', 'get-url', 'origin']), upstreamBare);
 });
+
+// A target that can be compiled need not be executable on the build host.
+for (const [host, target, runs] of [
+  ['aarch64-apple-darwin', 'aarch64-apple-darwin', true],
+  ['aarch64-apple-darwin', 'x86_64-apple-darwin', false],
+  ['x86_64-apple-darwin', 'aarch64-apple-darwin', false],
+  ['x86_64-pc-windows-msvc', 'x86_64-pc-windows-msvc', true],
+  ['x86_64-unknown-linux-gnu', 'x86_64-unknown-linux-gnu', true],
+]) {
+  test(`speech native test execution ${host} -> ${target}`, () => {
+    const plan = speechNativeTestPlan(target, host);
+    assert.equal(plan.buildTesting, runs ? 'ON' : 'OFF');
+    const calls = [];
+    const result = runSpeechNativeTests({ target, hostTarget: host, buildDir: 'build with spaces', env: {} },
+      (...args) => calls.push(args));
+    assert.equal(result, runs ? 'passed' : 'not-run-cross-target');
+    assert.equal(calls.length, runs ? 1 : 0);
+    if (runs) {
+      assert.equal(calls[0][0], 'ctest');
+      assert.equal(calls[0][1][1], 'build with spaces');
+      assert.throws(() => runSpeechNativeTests({ target, hostTarget: host, buildDir: 'b', env: {} },
+        () => { throw new Error('test assertion failed'); }), /test assertion failed/);
+    }
+  });
+}

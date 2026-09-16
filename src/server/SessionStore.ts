@@ -14,13 +14,22 @@
  * - Concurrent safety: append is atomic on most filesystems
  */
 
-import { existsSync, linkSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, appendFileSync, statSync, renameSync, truncateSync, openSync, readSync, closeSync } from 'fs';
+import { existsSync, linkSync, readFileSync, writeFileSync, unlinkSync, appendFileSync, statSync, renameSync, truncateSync, openSync, readSync, closeSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import * as asyncFs from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 
 import type { DshProjectionCursor, MessageUsage, PendingConversationMutation, PendingDshMutation, PendingDshRootOperation, SessionMetadata, SessionData, SessionMessage, SessionStats } from './types/session';
 import type { PendingDshInput } from './types/session';
-import { createSessionMetadata, generateSessionTitle } from './types/session';
+import { createSessionMetadata, generateSessionTitle, ownsSessionMetadataBirth } from './types/session';
+import { isValidProductSessionId, resolveTranscriptFormat } from '../shared/transcriptFormat';
+import { createTranscriptProjection, fromStoredTranscriptMessage, transcriptMessages, type TranscriptProjection, type TranscriptSaveStatus, type TranscriptObject } from '../shared/sessionTranscript';
+import { copyForkAttachments, discardForkAttachments } from './session-transcript/fork-attachments';
+import { SessionTranscript } from './session-transcript/session';
+import { TranscriptFile, readTranscriptFile, syncTranscriptDirectory } from './session-transcript/file';
+import { TranscriptStorageError, type TranscriptCommitTarget } from './session-transcript/writer';
+import type { DecodedTranscript } from './session-transcript/codec';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 import { isPendingSessionId } from '../shared/constants';
 import { isCliProductSessionId } from '../shared/cli-session-scope';
@@ -45,6 +54,7 @@ import { workspacePathsEqual } from '../shared/workspacePath';
 import { ensureDirSync } from './utils/fs-utils';
 import { withFileLock } from './utils/file-lock';
 import { elapsedMs, emitPerfTrace, nowMs } from './utils/perf-trace';
+import { reconcileDshV2Assistant } from './session-engine/dsh-product-projection';
 import { assertDshProductInputMatches, fingerprintDshProductInput } from './session-engine/dsh-root-operation';
 import { normalizeSessionRuntimeIdentity, resolveBuiltinSdkSessionId } from './utils/session-runtime-identity';
 import { resolveLastVisibleTurnPreview } from './utils/session-message-preview';
@@ -52,12 +62,247 @@ import { resolveLastVisibleTurnPreview } from './utils/session-message-preview';
 const MYAGENTS_DIR = join(homedir(), '.myagents');
 const SESSIONS_FILE = join(MYAGENTS_DIR, 'sessions.json');
 const SESSIONS_DIR = join(MYAGENTS_DIR, 'sessions');
+const SESSIONS_V2_DIR = join(MYAGENTS_DIR, 'sessions-v2');
 const ATTACHMENTS_DIR = join(MYAGENTS_DIR, 'attachments');
 const SESSIONS_TMP_FILE = join(MYAGENTS_DIR, 'sessions.json.tmp');
 const SESSIONS_LOCK_FILE = join(MYAGENTS_DIR, 'sessions.lock');
 const SESSIONS_LOCK_DIR = join(MYAGENTS_DIR, 'session-locks');
 const LOCK_TIMEOUT_MS = 5000;
 const LOCK_STALE_MS = 30000;
+
+// Active instances belong to this Session Sidecar, never to a mounted Tab.
+const activeTranscripts = new Map<string, SessionTranscript>();
+const transcriptBindings = new Map<string, Promise<SessionTranscript>>();
+const transcriptStatusListeners = new Set<(status: TranscriptSaveStatus) => void>();
+
+export function getActiveSessionTranscript(sessionId: string): SessionTranscript | undefined {
+    const active = activeTranscripts.get(sessionId);
+    return active?.isRevoked ? undefined : active;
+}
+
+export function subscribeTranscriptSaveStatus(listener: (status: TranscriptSaveStatus) => void): () => void {
+    transcriptStatusListeners.add(listener);
+    return () => transcriptStatusListeners.delete(listener);
+}
+
+function getV2SessionFilePath(sessionId: string): string {
+    if (!isValidProductSessionId(sessionId)) throw new Error('Invalid product Session ID');
+    return join(SESSIONS_V2_DIR, `${sessionId}.jsonl`);
+}
+
+async function pathExists(path: string): Promise<boolean> {
+    try { await asyncFs.stat(path); return true; } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+        throw error;
+    }
+}
+
+async function sessionTranscriptFormat(metadata: SessionMetadata | null, sessionId: string): Promise<'legacy' | 'v2'> {
+    const [legacyJsonl, legacyJson, v2] = await Promise.all([
+        pathExists(getSessionFilePath(sessionId)), pathExists(getLegacySessionFilePath(sessionId)),
+        pathExists(getV2SessionFilePath(sessionId)),
+    ]);
+    const format = resolveTranscriptFormat({
+        metadataExists: metadata !== null, transcriptFormat: metadata?.transcriptFormat,
+        legacyFileExists: legacyJsonl || legacyJson, v2FileExists: v2,
+    });
+    if (format === 'legacy' || format === 'v2') return format;
+    throw new TranscriptStorageError('invalid-history', `Session transcript format: ${format}`);
+}
+
+async function publishV2Metadata(
+    metadata: SessionMetadata, patch: Partial<SessionMetadata>, birth: boolean, committed?: TranscriptCommitTarget,
+): Promise<SessionMetadata> {
+    return withSessionsLock(async () => {
+        let all: SessionMetadata[];
+        try { all = parseSessionsIndex(await asyncFs.readFile(SESSIONS_FILE, 'utf8')); } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+            all = [];
+        }
+        const index = all.findIndex(row => row.id === metadata.id);
+        const existing = all[index];
+        if ((!existing && !birth) || (existing && (existing.transcriptFormat !== 2
+            || existing.createdAt !== metadata.createdAt || existing.agentDir !== metadata.agentDir))) {
+            throw new TranscriptStorageError('invalid-history', 'Session birth publication conflicts with metadata');
+        }
+        if (committed && sessionUsesDsh(metadata)) {
+            const active = getActiveSessionTranscript(metadata.id);
+            // The callback runs inside the index lock. Only a commit covering
+            // the current projection may retire execution recovery records.
+            const caughtUp = active && committed.revision >= active.writer.status.liveRevision;
+            const safePatch = { ...patch };
+            for (const key of DSH_EXECUTION_METADATA_KEYS) delete safePatch[key];
+            patch = caughtUp ? { ...safePatch,
+                ...Object.fromEntries(DSH_EXECUTION_METADATA_KEYS.map(key => [key, active.metadata[key]])),
+                pendingDshRootInputs: active.metadata.pendingDshRootInputs?.filter(root => !active.writer.projection.messages.has(root.clientUserMessageId)).length
+                    ? active.metadata.pendingDshRootInputs?.filter(root => !active.writer.projection.messages.has(root.clientUserMessageId)) : undefined,
+            } : safePatch;
+        }
+        // V2 never writes a cached full row over another owner's unrelated fields.
+        const updated = existing ? { ...existing, ...patch } : metadata;
+        if (index < 0) all.push(updated); else all[index] = updated;
+        await asyncFs.mkdir(MYAGENTS_DIR, { recursive: true });
+        const file = await asyncFs.open(SESSIONS_TMP_FILE, 'w');
+        try { await file.writeFile(JSON.stringify(all, null, 2), 'utf8'); await file.sync(); }
+        finally { await file.close(); }
+        await asyncFs.rename(SESSIONS_TMP_FILE, SESSIONS_FILE);
+        await syncTranscriptDirectory(MYAGENTS_DIR);
+        return updated;
+    });
+}
+
+function createActiveTranscript(metadata: SessionMetadata, birth: boolean, decoded?: DecodedTranscript, incompleteSource = false): SessionTranscript {
+    const transcript = new SessionTranscript({
+        metadata, birth, filePath: getV2SessionFilePath(metadata.id),
+        generation: decoded?.header.generation ?? randomUUID(), revision: decoded?.revision ?? 0,
+        projection: decoded?.projection ?? createTranscriptProjection(),
+        recoverIncompleteTail: decoded?.tail === 'incomplete',
+        incompleteSource: incompleteSource || decoded?.tail === 'invalid',
+        deriveMetadata: projection => {
+            // Counts/usage are scalar message fields; tool bodies need no
+            // serialization to derive list metadata. Preview remains the last
+            // visible USER query, matching the established legacy behavior.
+            const messages = [...projection.messages.values()];
+            return {
+                stats: calculateSessionStats(messages),
+                lastMessagePreview: resolveLastVisibleTurnPreview(messages.filter(message => message.role === 'user')
+                    .map(message => ({ role: message.role, content: typeof message.content === 'string'
+                        ? message.content : JSON.stringify(message.content) }))).preview,
+            };
+        },
+        withLock: run => withSessionFileLock(metadata.id, run), publishMetadata: publishV2Metadata,
+        contentBoundMetadataKeys: sessionUsesDsh(metadata) ? DSH_EXECUTION_METADATA_KEYS : undefined,
+        prepareReplacement: sessionUsesDsh(metadata) ? async (source, target) => {
+            await withSessionsLock(async () => {
+                const rows = readSessionsIndexForWrite();
+                const index = rows.findIndex(row => row.id === metadata.id);
+                const row = rows[index];
+                const intent = row?.pendingDshMutation;
+                if (intent?.kind !== 'dsh-rewind') return;
+                rows[index] = { ...row, pendingDshMutation: { ...intent, transcript: {
+                    format: 2, sourceGeneration: source.generation,
+                    targetGeneration: target.generation, targetRevision: target.revision,
+                } } };
+                atomicWriteSessionsFile(JSON.stringify(rows, null, 2));
+            });
+        } : undefined,
+        publishMutationIntent: async (source, intent) => {
+            await publishV2Metadata(source, { pendingConversationMutation: intent }, false);
+        },
+        onStatus: status => {
+            for (const listener of transcriptStatusListeners) {
+                try { listener(status); } catch (error) { console.warn('[SessionStore] Save status listener failed:', error); }
+            }
+        },
+    });
+    activeTranscripts.set(metadata.id, transcript);
+    return transcript;
+}
+
+/** Called by the existing runtime binding owner before it consumes native events. */
+export async function activateSessionTranscript(sessionId: string): Promise<SessionTranscript | undefined> {
+    const active = activeTranscripts.get(sessionId);
+    if (active) {
+        if (active.isRevoked) throw new Error('Session binding has been revoked');
+        return active;
+    }
+    const metadata = getSessionMetadata(sessionId);
+    if (!metadata || metadata.transcriptFormat === undefined) return undefined;
+    const binding = transcriptBindings.get(sessionId);
+    if (binding) return binding;
+    const reading = withSessionFileLock(sessionId, async () => {
+        let decoded: DecodedTranscript | undefined;
+        let incomplete = false;
+        let recoverBirth = false;
+        try {
+            await sessionTranscriptFormat(metadata, sessionId);
+            decoded = await readTranscriptFile(getV2SessionFilePath(sessionId), sessionId);
+        } catch (error) {
+            recoverBirth = sessionUsesDsh(metadata) && metadata.pendingDshRootInputs?.some(root => root.transcriptBirth) === true
+                && !(await pathExists(getV2SessionFilePath(sessionId)))
+                && !(await pathExists(getSessionFilePath(sessionId))) && !(await pathExists(getLegacySessionFilePath(sessionId)));
+            incomplete = !recoverBirth;
+            if (incomplete) console.warn(`[SessionStore] Cannot fully restore V2 history for ${sessionId}:`, error);
+        }
+        return { decoded, incomplete, recoverBirth };
+    });
+    // A cold history read is optional to an already validated runtime binding.
+    // Timeout does not release its physical lock or start a competing repair.
+    const task = (async () => {
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const result = await Promise.race([
+            reading.catch(() => ({ decoded: undefined, incomplete: true })),
+            new Promise<{ decoded: undefined; incomplete: boolean }>(resolve => {
+                timeout = setTimeout(() => resolve({ decoded: undefined, incomplete: true }), 2000);
+            }),
+        ]).finally(() => { if (timeout) clearTimeout(timeout); });
+        let effective = metadata;
+        if (metadata.pendingConversationMutation) {
+            const intent = metadata.pendingConversationMutation;
+            const stamp = intent.transcript;
+            const decoded = result.decoded;
+            if (!stamp || stamp.format !== 2 || !decoded || decoded.tail === 'invalid') {
+                throw new TranscriptStorageError('invalid-history', 'Pending conversation mutation has no confirmed native binding');
+            }
+            if (decoded.header.generation === stamp.targetGeneration && decoded.revision >= stamp.targetRevision) {
+                const messages = transcriptMessages(decoded.projection);
+                effective = intent.kind === 'codex-rewind'
+                    ? finalizeCodexRewindMetadata(metadata, intent, messages)
+                    : finalizeBuiltinRewindMetadata(metadata, intent, messages);
+            } else if (decoded.header.generation === stamp.sourceGeneration) {
+                effective = { ...metadata, pendingConversationMutation: undefined };
+            } else {
+                throw new TranscriptStorageError('invalid-history', 'Pending conversation mutation generation is ambiguous');
+            }
+        }
+        const transcript = createActiveTranscript(effective, 'recoverBirth' in result && result.recoverBirth === true, result.decoded, result.incomplete);
+        if (sessionUsesDsh(metadata)) {
+            for (const root of metadata.pendingDshRootInputs ?? []) if (root.userMessage && !transcript.writer.projection.messages.has(root.clientUserMessageId)) {
+                assertDshProductInputMatches(root, root.userMessage);
+                transcript.writer.observe({ kind: 'message-create', message: fromStoredTranscriptMessage(root.userMessage) });
+            }
+        }
+        if (effective !== metadata) transcript.patchMetadata(effective);
+        for (const message of transcript.writer.projection.messages.values()) {
+            if (message.transcriptState === 'streaming') transcript.writer.observe({
+                kind: 'message-update', messageId: message.id, details: { transcriptState: 'interrupted' },
+            });
+        }
+        // This is cold lifecycle adoption: the previous execution owner is gone.
+        // Preserve observed output, but never leave an orphaned tool spinning or
+        // imply it completed successfully. No native work is replayed here.
+        for (const message of transcript.writer.projection.messages.values()) {
+            if (!Array.isArray(message.content)) continue;
+            for (const block of message.content) {
+                const target = { messageId: message.id, blockId: block.id };
+                if ((block.type === 'text' || block.type === 'thinking') && !block.isComplete) {
+                    transcript.writer.observe({ kind: 'block-update', ...target, target: 'block', details: { isComplete: true } });
+                }
+                const tool = block.tool as TranscriptObject | undefined;
+                if (!tool || typeof tool !== 'object') continue;
+                const interruptTool = (value: TranscriptObject, subagentToolId?: string) => {
+                    const details: TranscriptObject = {};
+                    if (value.isLoading) Object.assign(details, { isLoading: false, isError: true,
+                        resultMeta: { ...(value.resultMeta as TranscriptObject ?? {}), status: 'interrupted' } });
+                    const lifecycle = value.subagentLifecycle as TranscriptObject | undefined;
+                    if (lifecycle?.status === 'running') details.subagentLifecycle = { ...lifecycle, status: 'interrupted', finishedAt: Date.now() };
+                    if (Object.keys(details).length) transcript.writer.observe({ kind: 'block-update', ...target, target: 'tool', ...(subagentToolId ? { subagentToolId } : {}), details });
+                };
+                interruptTool(tool);
+                if (Array.isArray(tool.subagentCalls)) for (const value of tool.subagentCalls) {
+                    const call = value as TranscriptObject;
+                    if (typeof call?.id === 'string') interruptTool(call, call.id);
+                }
+            }
+        }
+        for (const turn of transcript.writer.projection.turns.values()) {
+            if (turn.status === 'running') transcript.writer.observe({ kind: 'turn-update', turn: { ...turn, status: 'interrupted' } });
+        }
+        return transcript;
+    })();
+    transcriptBindings.set(sessionId, task);
+    try { return await task; } finally { transcriptBindings.delete(sessionId); }
+}
 
 type TranscriptFileIdentity = Readonly<{
     exists: boolean;
@@ -81,6 +326,7 @@ export type TranscriptWriteCursor = Readonly<{
     [transcriptCursorState]: Readonly<{
         sessionId: string;
         file: TranscriptFileIdentity;
+        v2?: Readonly<{ generation: string; revision: number; instanceId?: string; liveRevision?: number }>;
     }>;
 }>;
 
@@ -149,9 +395,7 @@ async function withSessionsLock<T>(fn: () => Promise<T>): Promise<T> {
  */
 async function withSessionFileLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
     const safeId = sessionId.replace(/[^a-zA-Z0-9-]/g, '_');
-    if (!existsSync(SESSIONS_LOCK_DIR)) {
-        try { mkdirSync(SESSIONS_LOCK_DIR, { recursive: true }); } catch { /* ignore — withFileLock will surface acquire failures */ }
-    }
+    await asyncFs.mkdir(SESSIONS_LOCK_DIR, { recursive: true });
     const lockPath = join(SESSIONS_LOCK_DIR, `${safeId}.jsonl.lock`);
     return withFileLock(
         { lockPath, timeoutMs: LOCK_TIMEOUT_MS, staleMs: LOCK_STALE_MS },
@@ -618,6 +862,10 @@ function isDesktopOrUnknownOrigin(session: SessionMetadata): boolean {
 }
 
 export function isLegacyPreQueryManagedCodexDraft(session: SessionMetadata): boolean {
+    // Versioned births have an explicit lifecycle. Empty or lagging transcript
+    // statistics cannot turn a committed V2 Session into a legacy draft.
+    // Keep this boundary aligned with Rust via session-history-visibility.json.
+    if (session.transcriptFormat !== undefined) return false;
     if (session.materializationState === 'prepared') return false;
     if (!isManagedCodexRuntimeBackedBirth(session)) return false;
     if (!isDesktopOrUnknownOrigin(session)) return false;
@@ -689,8 +937,6 @@ function migrateToJsonl(sessionId: string): SessionMessage[] {
  * Read all session metadata
  */
 export function getAllSessionMetadata(): SessionMetadata[] {
-    ensureStorageDir();
-
     try {
         return readSessionsIndexStrict();
     } catch (error) {
@@ -951,6 +1197,8 @@ export function getSessionsByAgentDir(agentDir: string): SessionMetadata[] {
  * Get session metadata by ID
  */
 export function getSessionMetadata(sessionId: string): SessionMetadata | null {
+    const active = activeTranscripts.get(sessionId);
+    if (active) return active.isRevoked ? null : active.metadata;
     const all = getAllSessionMetadata();
     return all.find(s => s.id === sessionId) ?? null;
 }
@@ -971,55 +1219,44 @@ export type EnsureRegisteredAgentSessionOriginResult =
  * rejected. Missing metadata is safe: the caller must pass the same exact
  * origin as the birth origin when it materializes the Session.
  */
+function checkRegisteredAgentSessionOrigin(current: SessionMetadata | undefined, expected: RegisteredAgentSessionOrigin): EnsureRegisteredAgentSessionOriginResult {
+    if (!current) return { success: true, metadataExists: false };
+    const normalized = normalizeSessionOrigin(current.origin);
+    if (normalized?.kind === 'registered-agent' && normalized.surface === 'space_issue_delivery'
+        && normalized.context.spaceId === expected.context.spaceId
+        && normalized.context.registeredAgentId === expected.context.registeredAgentId) {
+        return { success: true, metadataExists: true };
+    }
+    const raw = current.origin as { kind?: unknown; surface?: unknown; context?: unknown } | undefined;
+    if (raw?.kind === 'registered-agent' && raw.surface === 'space_issue_delivery'
+        && !Object.prototype.hasOwnProperty.call(raw, 'context')) {
+        return { success: true, metadataExists: true, adoptedLegacyOrigin: true };
+    }
+    return { success: false, error: 'SESSION_ORIGIN_CONFLICT: This Session is already bound to a different origin.' };
+}
+
 export async function ensureRegisteredAgentSessionOrigin(
     sessionId: string,
     expected: RegisteredAgentSessionOrigin,
 ): Promise<EnsureRegisteredAgentSessionOriginResult> {
+    const active = activeTranscripts.get(sessionId);
+    if (active && !active.isRevoked) {
+        // The legitimate birth/claim already exists even if its index write is
+        // pending. An absent disk row cannot relax this exact origin check.
+        const result = checkRegisteredAgentSessionOrigin(active.metadata, expected);
+        if (result.success && result.adoptedLegacyOrigin) active.patchMetadata({ origin: expected });
+        return result;
+    }
     ensureStorageDir();
     return withSessionsLock(async () => {
         const all = readSessionsIndexForWrite();
         const index = all.findIndex(session => session.id === sessionId);
-        if (index < 0) {
-            return { success: true, metadataExists: false };
-        }
-
-        const current = all[index];
-        const normalized = normalizeSessionOrigin(current.origin);
-        if (normalized) {
-            const matches = normalized.kind === 'registered-agent'
-                && normalized.surface === 'space_issue_delivery'
-                && normalized.context.spaceId === expected.context.spaceId
-                && normalized.context.registeredAgentId === expected.context.registeredAgentId;
-            return matches
-                ? { success: true, metadataExists: true }
-                : {
-                    success: false,
-                    error: 'SESSION_ORIGIN_CONFLICT: This Session is already bound to a different origin.',
-                };
-        }
-
-        const raw = current.origin as {
-            kind?: unknown;
-            surface?: unknown;
-            context?: unknown;
-        } | undefined;
-        const isLegacyContextFreeRegisteredOrigin = raw?.kind === 'registered-agent'
-            && raw.surface === 'space_issue_delivery'
-            && !Object.prototype.hasOwnProperty.call(raw, 'context');
-        if (isLegacyContextFreeRegisteredOrigin) {
-            all[index] = { ...current, origin: expected };
+        const result = checkRegisteredAgentSessionOrigin(all[index], expected);
+        if (result.success && result.adoptedLegacyOrigin) {
+            all[index] = { ...all[index], origin: expected };
             atomicWriteSessionsFile(JSON.stringify(all, null, 2));
-            return {
-                success: true,
-                metadataExists: true,
-                ...(isLegacyContextFreeRegisteredOrigin ? { adoptedLegacyOrigin: true } : {}),
-            };
         }
-
-        return {
-            success: false,
-            error: 'SESSION_ORIGIN_CONFLICT: This Session is already bound to a different origin.',
-        };
+        return result;
     });
 }
 
@@ -1027,12 +1264,49 @@ export async function ensureRegisteredAgentSessionOrigin(
  * Save session metadata (create or update)
  */
 export async function saveSessionMetadata(session: SessionMetadata): Promise<void> {
+    if (session.transcriptFormat === 2) {
+        let active = activeTranscripts.get(session.id);
+        if (!active) {
+            // The creation owner already issued this identity. Disk validation
+            // belongs to asynchronous publication, never first AI admission.
+            if (ownsSessionMetadataBirth(session)) {
+                createActiveTranscript(session, true);
+                return;
+            }
+            const existing = getSessionMetadata(session.id);
+            if (existing?.transcriptFormat !== 2) {
+                throw new TranscriptStorageError('invalid-history', 'V2 creation requires a new Session birth');
+            }
+            active = await activateSessionTranscript(session.id);
+        }
+        if (!active) throw new TranscriptStorageError('invalid-history', 'Missing V2 Session binding');
+        // Whole-row compatibility callers may hold a pre-admission snapshot.
+        // Creation identity and prepared admission belong to their explicit CAS
+        // entrypoints, never to a subsequent snapshot save.
+        const current = active.metadata;
+        if (changesPendingDshAuthority(current, session)) {
+            throw new Error('Pending DSH execution prevents changing Runtime Session authority');
+        }
+        const {
+            pendingDshRootOperation: _root, pendingDshRootInputs: _roots, pendingDshInputs: _inputs,
+            pendingDshMutation: _mutation, dshProjectionCursor: _cursor,
+            id: _id, transcriptFormat: _format, createdAt: _createdAt, agentDir: _agentDir,
+            materializationState: _prepared, materializationSourceSessionId: _source,
+            ...patch
+        } = session;
+        active.patchMetadata(patch);
+        return;
+    }
     ensureStorageDir();
 
     await withSessionsLock(async () => {
         const all = readSessionsIndexForWrite();
 
         const index = all.findIndex(s => s.id === session.id);
+
+        if (index >= 0 && all[index].transcriptFormat !== session.transcriptFormat) {
+            throw new TranscriptStorageError('invalid-history', 'Session transcript format is immutable');
+        }
 
         if (index >= 0) {
             const current = all[index]!;
@@ -1150,6 +1424,56 @@ async function deleteSessionOwned(
     intent: SessionDeleteIntent | DevelopmentDshResetIntent,
     removeOwnedData?: () => Promise<void>,
 ): Promise<SessionDeleteResult> {
+    const active = activeTranscripts.get(sessionId);
+    const metadata = active?.metadata ?? getSessionMetadata(sessionId);
+    if (metadata?.transcriptFormat !== undefined) {
+        // The one-time protocol-5 reset only owns pre-upgrade legacy Sessions.
+        if (intent.kind === 'development-dsh-upg15-reset') return { deleted: false, reason: 'precondition-failed' };
+        if (intent.kind === 'prepared-materialization-rollback' && (
+            metadata.materializationState !== 'prepared'
+            || metadata.materializationSourceSessionId !== intent.sourceSessionId
+            || (active && active.writer.projection.messages.size > 0)
+        )) return { deleted: false, reason: 'precondition-failed' };
+        if (intent.kind === 'user-delete' && isSystemMaintenanceSession(metadata)) return { deleted: false, reason: 'protected-session' };
+        // Rollback and admission decide synchronously on this same instance.
+        // Revocation survives a cleanup timeout; no producer can resurrect it.
+        const outstanding = active?.revoke() ?? Promise.resolve();
+        const deletion = outstanding.then(() => withSessionFileLock(sessionId, () => withSessionsLock(async (): Promise<SessionDeleteResult> => {
+            let all: SessionMetadata[];
+            try { all = parseSessionsIndex(await asyncFs.readFile(SESSIONS_FILE, 'utf8')); } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+                all = [];
+            }
+            const disk = all.find(row => row.id === sessionId);
+            if (disk && (disk.transcriptFormat !== 2 || disk.createdAt !== metadata.createdAt)) return { deleted: false, reason: 'precondition-failed' };
+            if (intent.kind === 'prepared-materialization-rollback' && disk && (
+                disk.materializationState !== 'prepared' || disk.materializationSourceSessionId !== intent.sourceSessionId
+            )) return { deleted: false, reason: 'precondition-failed' };
+            try {
+                await asyncFs.unlink(getV2SessionFilePath(sessionId));
+                await syncTranscriptDirectory(SESSIONS_V2_DIR);
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+            }
+            if (disk) {
+                const file = await asyncFs.open(SESSIONS_TMP_FILE, 'w');
+                try { await file.writeFile(JSON.stringify(all.filter(row => row.id !== sessionId), null, 2)); await file.sync(); }
+                finally { await file.close(); }
+                await asyncFs.rename(SESSIONS_TMP_FILE, SESSIONS_FILE);
+                await syncTranscriptDirectory(MYAGENTS_DIR);
+            }
+            // Retain the revoked in-process identity until this Sidecar exits.
+            return { deleted: true };
+        }))).catch((error): SessionDeleteResult => {
+            console.warn(`[SessionStore] V2 delete failed for ${sessionId}:`, error);
+            return { deleted: false, reason: 'io-error' };
+        });
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        return Promise.race([
+            deletion,
+            new Promise<SessionDeleteResult>(resolve => { timer = setTimeout(() => resolve({ deleted: false, reason: 'io-error' }), 2000); }),
+        ]).finally(() => { if (timer) clearTimeout(timer); });
+    }
     ensureStorageDir();
 
     // Lock order matches transcript append/mutation: per-session file lock OUTER,
@@ -1476,7 +1800,7 @@ export async function migratePendingSessionIdentity(
 /**
  * Get full session data including messages
  */
-export function getSessionData(sessionId: string): SessionData | null {
+export async function getSessionData(sessionId: string): Promise<SessionData | null> {
     const metadata = getSessionMetadata(sessionId);
     if (!metadata) {
         return null;
@@ -1490,8 +1814,38 @@ export function getSessionData(sessionId: string): SessionData | null {
  * metadata row. Bulk readers must use this path instead of looking the same
  * row up in sessions.json again for every session.
  */
-export function getSessionDataFromMetadata(metadata: SessionMetadata): SessionData {
+export async function getSessionDataFromMetadata(metadata: SessionMetadata): Promise<SessionData> {
     const sessionId = metadata.id;
+
+    const active = activeTranscripts.get(sessionId);
+    if (active) return {
+        ...active.metadata, messages: transcriptMessages(active.writer.projection),
+        transcriptSaveStatus: active.writer.status,
+        ...(active.writer.status.reason === 'invalid-history' ? { transcriptRecovery: 'unavailable' as const } : {}),
+    };
+    let format: Awaited<ReturnType<typeof sessionTranscriptFormat>>;
+    try {
+        format = await sessionTranscriptFormat(metadata, sessionId);
+    } catch (error) {
+        // Format/file conflicts concern product history, not an already valid
+        // native binding. Expose an unavailable history without falling back
+        // to a legacy file or making the REST shell disable conversation.
+        console.warn(`[SessionStore] History format unavailable for ${sessionId}:`, error);
+        return { ...metadata, messages: [], transcriptRecovery: 'unavailable' };
+    }
+    if (format === 'v2') {
+        try {
+            const decoded = await readTranscriptFile(getV2SessionFilePath(sessionId), sessionId);
+            // A file reader cannot infer whether another Sidecar still owns execution.
+            const messages = transcriptMessages(decoded.projection);
+            return { ...metadata, messages,
+                ...(decoded.tail === 'invalid' ? { transcriptRecovery: 'incomplete' as const } : {}),
+            };
+        } catch (error) {
+            console.warn(`[SessionStore] V2 history unavailable for ${sessionId}:`, error);
+            return { ...metadata, messages: [], transcriptRecovery: 'unavailable' };
+        }
+    }
 
     const jsonlPath = getSessionFilePath(sessionId);
     const legacyPath = getLegacySessionFilePath(sessionId);
@@ -1519,8 +1873,47 @@ export function getSessionDataFromMetadata(metadata: SessionMetadata): SessionDa
  * per-Session writer lock used by every transcript mutation.
  */
 export async function loadSessionTranscript(sessionId: string): Promise<SessionTranscriptSnapshot> {
-    ensureStorageDir();
+    const active = activeTranscripts.get(sessionId);
+    if (active) return snapshotActiveTranscript(active);
+    const metadata = getSessionMetadata(sessionId);
+    if (metadata?.transcriptFormat === 2) {
+        return withSessionFileLock(sessionId, async () => {
+            await sessionTranscriptFormat(metadata, sessionId);
+            const decoded = await readTranscriptFile(getV2SessionFilePath(sessionId), sessionId);
+            const messages = transcriptMessages(decoded.projection);
+            return { messages, cursor: issueV2Cursor(sessionId, messages.length, decoded.header.generation, decoded.revision), hasMalformedRows: decoded.tail === 'invalid' };
+        });
+    }
+    if (await pathExists(getV2SessionFilePath(sessionId)) || metadata?.transcriptFormat !== undefined) {
+        throw new TranscriptStorageError('invalid-history', 'Conflicting or unsupported transcript format');
+    }
+    // An unmaterialized identity has nothing to read or migrate. Cold lookup
+    // must not require a writable product directory before AI admission.
+    // The returned absent-file cursor still fences a later legacy append.
+    if (!existsSync(getSessionFilePath(sessionId)) && !existsSync(getLegacySessionFilePath(sessionId))) {
+        return loadSessionTranscriptLocked(sessionId);
+    }
     return withSessionFileLock(sessionId, async () => loadSessionTranscriptLocked(sessionId));
+}
+
+function issueV2Cursor(sessionId: string, count: number, generation: string, revision: number, live?: TranscriptSaveStatus): TranscriptWriteCursor {
+    return Object.freeze({
+        persistedMessageCount: count,
+        [transcriptCursorState]: Object.freeze({
+            sessionId,
+            file: { exists: true, dev: 0, ino: 0, size: 0, mtimeMs: 0, ctimeMs: 0, endsWithNewline: true },
+            v2: Object.freeze({ generation, revision, ...(live ? { instanceId: live.instanceId, liveRevision: live.liveRevision } : {}) }),
+        }),
+    });
+}
+
+function snapshotActiveTranscript(active: SessionTranscript): SessionTranscriptSnapshot {
+    const messages = transcriptMessages(active.writer.projection);
+    const status = active.writer.status;
+    return {
+        messages, cursor: issueV2Cursor(status.sessionId, messages.length, status.generation, status.durableRevision, status),
+        hasMalformedRows: status.reason === 'invalid-history',
+    };
 }
 
 export type ConversationMutationResult =
@@ -1565,6 +1958,13 @@ function sessionUsesDsh(metadata: SessionMetadata): boolean {
         && runtimeTypeForBinding(metadata.runtimeBinding) === 'dsh';
 }
 
+function changesPendingDshAuthority(current: SessionMetadata, patch: Partial<SessionMetadata>): boolean {
+    if (!current.pendingDshRootOperation && !current.pendingDshMutation && !current.pendingDshInputs?.length) return false;
+    const updated = { ...current, ...patch };
+    return updated.runtimeSessionId !== current.runtimeSessionId
+        || JSON.stringify(updated.runtimeBinding) !== JSON.stringify(current.runtimeBinding);
+}
+
 function validDshOperationIdentifier(value: string): boolean {
     return value.length > 0
         && value.length <= 256
@@ -1572,6 +1972,113 @@ function validDshOperationIdentifier(value: string): boolean {
             const code = character.charCodeAt(0);
             return code < 0x20 || code === 0x7f;
         });
+}
+
+// DSH execution journals share SessionStore's lifecycle, while V2 content keeps
+// the ordinary writer's non-blocking IO. These fields are execution-owned; an
+// active overlay must never replace another owner's config or product edits.
+const DSH_EXECUTION_METADATA_KEYS = [
+    'runtimeBinding', 'runtime', 'runtimeSource', 'runtimeSessionId',
+    'pendingDshMutation', 'pendingDshRootOperation', 'pendingDshRootInputs', 'pendingDshInputs',
+    'dshProjectionCursor', 'runtimeUsageTotals', 'lastContextUsage',
+] as const satisfies readonly (keyof SessionMetadata)[];
+
+function readDshSessionsIndexForWrite(sessionId: string): SessionMetadata[] {
+    const rows = readSessionsIndexForWrite();
+    const active = getActiveSessionTranscript(sessionId);
+    if (!active) return rows;
+    const metadata = active.metadata;
+    const index = rows.findIndex(row => row.id === sessionId);
+    if (index < 0) rows.push(metadata);
+    else {
+        const execution = Object.fromEntries(DSH_EXECUTION_METADATA_KEYS.map(key => [key, metadata[key]]));
+        rows[index] = { ...rows[index], ...execution };
+    }
+    return rows;
+}
+
+/** Caller holds the existing index lock. Retirement is saved after the V2
+ * content it describes, so a crash cannot forget the only recoverable input. */
+function writeDshSessionsIndex(rows: SessionMetadata[], sessionId: string, afterContent = false): void {
+    const active = getActiveSessionTranscript(sessionId);
+    const row = rows.find(item => item.id === sessionId);
+    if (active && row && afterContent) {
+        active.patchMetadata(Object.fromEntries(DSH_EXECUTION_METADATA_KEYS.map(key => [key, row[key]])));
+        return;
+    }
+    const prior = readSessionsIndexForWrite().find(item => item.id === sessionId);
+    const output = rows.map(item => {
+        if (!active || item.id !== sessionId) return item;
+        // An immediate execution write must not prematurely retire inputs
+        // whose body is still queued. The live overlay may already be settled.
+        const roots = new Map((prior?.pendingDshRootInputs ?? []).map(root => [root.clientOperationId, root]));
+        for (const root of item.pendingDshRootInputs ?? []) roots.set(root.clientOperationId, root);
+        const inputs = new Map((prior?.pendingDshInputs ?? []).map(input => [input.clientUserMessageId, input]));
+        for (const input of item.pendingDshInputs ?? []) inputs.set(input.clientUserMessageId, input);
+        return { ...item, pendingDshRootInputs: roots.size ? [...roots.values()] : undefined,
+            pendingDshInputs: inputs.size ? [...inputs.values()] : undefined,
+            // New admission may follow a native rewind while its Product
+            // replacement is still saving. Preserve that durable generation proof.
+            pendingDshMutation: item.pendingDshMutation ?? (prior?.pendingDshMutation?.kind === 'dsh-rewind' ? prior.pendingDshMutation : undefined),
+        };
+    });
+    atomicWriteSessionsFile(JSON.stringify(output, null, 2));
+    if (active && row) active.adoptExecutionMetadata(row, DSH_EXECUTION_METADATA_KEYS);
+}
+
+/** Live V2 content belongs to the active writer; execution must not wait for its
+ * physical body IO. Legacy/cold operations still serialize their file access. */
+function withDshProjection<T>(sessionId: string, run: () => Promise<T>): Promise<T> {
+    return getActiveSessionTranscript(sessionId) ? run() : withSessionFileLock(sessionId, run);
+}
+
+/** Cold callers own the file lock and never create a writer in a foreign Sidecar. */
+async function readDshMessagesForMutation(sessionId: string, options: { allowIncompleteLive?: boolean } = {}): Promise<SessionMessage[]> {
+    const active = getActiveSessionTranscript(sessionId);
+    if (active) {
+        if (active.writer.status.reason === 'invalid-history' && !options.allowIncompleteLive) throw new MalformedSessionTranscriptError(sessionId);
+        return transcriptMessages(active.writer.projection);
+    }
+    if (getSessionMetadata(sessionId)?.transcriptFormat === 2) {
+        const decoded = await readTranscriptFile(getV2SessionFilePath(sessionId), sessionId);
+        if (decoded.tail === 'invalid') throw new MalformedSessionTranscriptError(sessionId);
+        return transcriptMessages(decoded.projection);
+    }
+    return readSessionMessagesForMutation(sessionId);
+}
+
+function rewriteDshMessages(sessionId: string, messages: SessionMessage[]): void {
+    const active = getActiveSessionTranscript(sessionId);
+    if (active) {
+        const projection = createTranscriptProjection();
+        for (const message of messages) projection.messages.set(message.id, fromStoredTranscriptMessage(message));
+        const ids = new Set(messages.map(message => message.id));
+        for (const [id, turn] of active.writer.projection.turns) {
+            if ((turn.rootUserMessageId ? ids.has(turn.rootUserMessageId) : messages.some(message => message.turnId === id))) projection.turns.set(id, turn);
+        }
+        for (const message of projection.messages.values()) {
+            const anchor = message.runtimeTurnAnchor;
+            if (message.role !== 'assistant' || !anchor) continue;
+            const turnId = message.turnId ?? anchor.rootUserMessageId ?? anchor.turnId;
+            message.turnId = turnId;
+            const root = anchor.rootUserMessageId ? projection.messages.get(anchor.rootUserMessageId) : undefined;
+            if (root) root.turnId = turnId;
+            projection.turns.set(turnId, {
+                id: turnId,
+                ...(anchor.origin === 'collaboration' ? { origin: 'collaboration' as const } : { rootUserMessageId: anchor.rootUserMessageId }),
+                startedAt: root?.timestamp ?? message.timestamp,
+                status: message.completionState === 'partial' ? message.terminalStatus ?? 'interrupted' : 'complete',
+                ...(message.usage ? { usage: message.usage } : {}),
+                ...(message.durationMs !== undefined ? { durationMs: message.durationMs } : {}),
+            });
+        }
+        active.writer.replaceProjection(projection);
+        // A named baseline replacement does not emit individual content ops.
+        active.patchMetadata({ stats: calculateSessionStats(messages), lastMessagePreview: resolveLastVisibleTurnPreview(messages).preview });
+        return;
+    }
+    if (getSessionMetadata(sessionId)?.transcriptFormat !== undefined) throw new Error('DSH V2 mutation requires the active Session owner');
+    atomicRewriteSessionMessages(sessionId, messages);
 }
 
 /**
@@ -1589,9 +2096,15 @@ export async function beginDshRootOperation(input: {
 }): Promise<DshMutationStoreResult<PendingDshRootOperation>> {
     ensureStorageDir();
     try {
-        return await withSessionFileLock(input.sessionId, async () => {
+        return await withDshProjection(input.sessionId, async () => {
             const currentFile = getTranscriptFileIdentity(getSessionFilePath(input.sessionId));
-            if (!cursorMatches(input.sessionId, input.cursor, currentFile)) {
+            const active = getActiveSessionTranscript(input.sessionId);
+            const cursorState = input.cursor[transcriptCursorState];
+            const matches = active ? cursorState.sessionId === input.sessionId
+                && cursorState.v2?.instanceId === active.writer.status.instanceId
+                && cursorState.v2.liveRevision === active.writer.status.liveRevision
+                : cursorMatches(input.sessionId, input.cursor, currentFile);
+            if (!matches) {
                 return dshMutationFailure('precondition_failed', 'The Product transcript changed before DSH admission');
             }
             if (
@@ -1601,15 +2114,18 @@ export async function beginDshRootOperation(input: {
             ) {
                 return dshMutationFailure('precondition_failed', 'The DSH root operation identity is invalid');
             }
-            const transcript = readJsonlSnapshot(getSessionFilePath(input.sessionId));
+            const transcript = { messages: await readDshMessagesForMutation(input.sessionId, { allowIncompleteLive: true }), hasMalformedRows: false };
             if (transcript.hasMalformedRows) {
                 return dshMutationFailure('storage_consistency_error', 'The Product transcript is malformed');
             }
-            if (transcript.messages.some(message => message.id === input.userMessage.id)) {
+            if (!active && transcript.messages.some(message => message.id === input.userMessage.id)) {
                 return dshMutationFailure('precondition_failed', 'The DSH root user identity is already persisted');
             }
             const operation: PendingDshRootOperation = {
                 schemaVersion: 1,
+                ...(active ? { userMessage: structuredClone(input.userMessage),
+                    ...(active.isUnpublishedBirth && transcript.messages.length === 1 ? { transcriptBirth: true as const } : {}),
+                } : {}),
                 clientOperationId: input.clientOperationId,
                 clientUserMessageId: input.userMessage.id,
                 sourceRuntimeSessionId: input.runtimeSessionId,
@@ -1621,11 +2137,13 @@ export async function beginDshRootOperation(input: {
                 ),
             };
             return withSessionsLock(async () => {
-                const all = readSessionsIndexForWrite();
+                const all = readDshSessionsIndexForWrite(input.sessionId);
                 const index = all.findIndex(session => session.id === input.sessionId);
                 const current = index >= 0 ? all[index] : undefined;
                 if (
                     !current
+                    || (active && (getActiveSessionTranscript(input.sessionId) !== active
+                        || active.writer.status.liveRevision !== cursorState.v2?.liveRevision))
                     || !sessionUsesDsh(current)
                     || current.runtimeSessionId !== input.runtimeSessionId
                     || current.pendingDshMutation
@@ -1635,13 +2153,15 @@ export async function beginDshRootOperation(input: {
                 }
                 const existing = current.pendingDshRootOperation;
                 if (existing) {
-                    if (JSON.stringify(existing) !== JSON.stringify(operation)) {
+                    if (JSON.stringify({ ...existing, transcriptBirth: undefined }) !== JSON.stringify({ ...operation, transcriptBirth: undefined })) {
                         return dshMutationFailure('precondition_failed', 'Another DSH root operation owns Product admission');
                     }
                     return { success: true, value: structuredClone(existing) };
                 }
-                all[index] = { ...current, pendingDshRootOperation: operation };
-                atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                all[index] = { ...current, pendingDshRootOperation: operation,
+                    ...(active ? { pendingDshRootInputs: [...(current.pendingDshRootInputs ?? []), operation] } : {}),
+                };
+                writeDshSessionsIndex(all, input.sessionId);
                 return { success: true, value: structuredClone(operation) };
             });
         });
@@ -1675,8 +2195,8 @@ export async function beginDshInput(input: {
             || input.userMessage.runtimeOperationAnchor.runtimeSessionId !== input.runtimeSessionId) {
             return dshMutationFailure('precondition_failed', 'The DSH input intent identity is invalid');
         }
-        return await withSessionFileLock(input.sessionId, () => withSessionsLock(async () => {
-            const all = readSessionsIndexForWrite();
+        return await withDshProjection(input.sessionId, () => withSessionsLock(async () => {
+            const all = readDshSessionsIndexForWrite(input.sessionId);
             const index = all.findIndex(session => session.id === input.sessionId);
             const current = all[index];
             if (!current || !sessionUsesDsh(current) || current.runtimeSessionId !== input.runtimeSessionId || current.pendingDshMutation) {
@@ -1692,11 +2212,11 @@ export async function beginDshInput(input: {
                 || Buffer.byteLength(JSON.stringify([...inputs, pending])) > 8 * 1024 * 1024) {
                 return dshMutationFailure('precondition_failed', 'The DSH pending input journal is full or its queue identity is reused');
             }
-            if (readSessionMessagesForMutation(input.sessionId).some(message => message.id === pending.clientUserMessageId)) {
+            if ((await readDshMessagesForMutation(input.sessionId, { allowIncompleteLive: true })).some(message => message.id === pending.clientUserMessageId)) {
                 return dshMutationFailure('precondition_failed', 'The DSH input identity is already in Product history');
             }
             all[index] = { ...current, pendingDshInputs: [...inputs, pending] };
-            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            writeDshSessionsIndex(all, input.sessionId);
             return { success: true, value: structuredClone(pending) };
         }));
     } catch (error) { return dshMutationFailure('write_error', error instanceof Error ? error.message : String(error)); }
@@ -1709,8 +2229,8 @@ export async function settleDshInput(input: {
 }): Promise<DshMutationStoreResult<{ settled: boolean }>> {
     ensureStorageDir();
     try {
-        return await withSessionFileLock(input.sessionId, () => withSessionsLock(async () => {
-            const all = readSessionsIndexForWrite();
+        return await withDshProjection(input.sessionId, () => withSessionsLock(async () => {
+            const all = readDshSessionsIndexForWrite(input.sessionId);
             const index = all.findIndex(session => session.id === input.sessionId);
             const current = all[index];
             const inputs = current?.pendingDshInputs ?? [];
@@ -1718,7 +2238,7 @@ export async function settleDshInput(input: {
             if (!current || !pending) return { success: true, value: { settled: false } };
             if (!sessionUsesDsh(current) || current.runtimeSessionId !== pending.sourceRuntimeSessionId || current.pendingDshMutation
                 || pending.clientOperationId !== input.clientOperationId) return dshMutationFailure('precondition_failed', 'The DSH input settlement changed its owner');
-            const users = readSessionMessagesForMutation(input.sessionId).filter(message => message.id === input.clientUserMessageId);
+            const users = (await readDshMessagesForMutation(input.sessionId, { allowIncompleteLive: true })).filter(message => message.id === input.clientUserMessageId);
             if (input.state === 'projected') {
                 if (users.length !== 1) return dshMutationFailure('storage_consistency_error', 'A consumed DSH input has no exact durable Product projection');
                 assertDshProductInputMatches(pending, users[0]!);
@@ -1728,7 +2248,7 @@ export async function settleDshInput(input: {
             const next = input.state === 'cancel_requested' ? inputs.map(item => item === pending ? { ...item, state: 'cancel_requested' as const } : item)
                 : inputs.filter(item => item !== pending);
             all[index] = { ...current, pendingDshInputs: next.length ? next : undefined };
-            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            writeDshSessionsIndex(all, input.sessionId, input.state !== 'cancel_requested');
             return { success: true, value: { settled: input.state !== 'cancel_requested' } };
         }));
     } catch (error) { return dshMutationFailure('write_error', error instanceof Error ? error.message : String(error)); }
@@ -1742,8 +2262,8 @@ export async function discardUnpersistedDshRootOperation(input: {
 }): Promise<DshMutationStoreResult<{ discarded: boolean }>> {
     ensureStorageDir();
     try {
-        return await withSessionFileLock(input.sessionId, async () => {
-            const transcript = readJsonlSnapshot(getSessionFilePath(input.sessionId));
+        return await withDshProjection(input.sessionId, async () => {
+            const transcript = { messages: await readDshMessagesForMutation(input.sessionId), hasMalformedRows: false };
             if (transcript.hasMalformedRows) {
                 return dshMutationFailure('storage_consistency_error', 'The Product transcript is malformed');
             }
@@ -1751,7 +2271,7 @@ export async function discardUnpersistedDshRootOperation(input: {
                 return { success: true, value: { discarded: false } };
             }
             return withSessionsLock(async () => {
-                const all = readSessionsIndexForWrite();
+                const all = readDshSessionsIndexForWrite(input.sessionId);
                 const index = all.findIndex(session => session.id === input.sessionId);
                 const current = index >= 0 ? all[index] : undefined;
                 const pending = current?.pendingDshRootOperation;
@@ -1762,8 +2282,10 @@ export async function discardUnpersistedDshRootOperation(input: {
                 ) {
                     return dshMutationFailure('storage_consistency_error', 'The DSH root operation owner changed before discard');
                 }
-                all[index] = { ...current, pendingDshRootOperation: undefined };
-                atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                all[index] = { ...current, pendingDshRootOperation: undefined,
+                    pendingDshRootInputs: current.pendingDshRootInputs?.filter(root => root.clientOperationId !== input.clientOperationId),
+                };
+                writeDshSessionsIndex(all, input.sessionId, true);
                 return { success: true, value: { discarded: true } };
             });
         });
@@ -1780,7 +2302,7 @@ export async function settleDshRootOperation(input: {
     ensureStorageDir();
     try {
         return await withSessionsLock(async () => {
-            const all = readSessionsIndexForWrite();
+            const all = readDshSessionsIndexForWrite(input.sessionId);
             const index = all.findIndex(session => session.id === input.sessionId);
             const current = index >= 0 ? all[index] : undefined;
             const pending = current?.pendingDshRootOperation;
@@ -1789,7 +2311,7 @@ export async function settleDshRootOperation(input: {
                 return dshMutationFailure('storage_consistency_error', 'The DSH terminal changed its Product operation owner');
             }
             all[index] = { ...current, pendingDshRootOperation: undefined };
-            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            writeDshSessionsIndex(all, input.sessionId, true);
             return { success: true, value: { settled: true } };
         });
     } catch (error) {
@@ -1830,10 +2352,10 @@ export async function reconcileDshTurnProjections(input: {
 }): Promise<DshMutationStoreResult<{ transcriptChanged: boolean; cursor: DshProjectionCursor }>> {
     ensureStorageDir();
     try {
-        return await withSessionFileLock(input.sessionId, async () => {
-            const messages = readSessionMessagesForMutation(input.sessionId);
+        return await withDshProjection(input.sessionId, async () => {
             return withSessionsLock(async () => {
-                const all = readSessionsIndexForWrite();
+                const messages = await readDshMessagesForMutation(input.sessionId, { allowIncompleteLive: true });
+                const all = readDshSessionsIndexForWrite(input.sessionId);
                 const index = all.findIndex(session => session.id === input.sessionId);
                 const current = index >= 0 ? all[index] : undefined;
                 if (
@@ -1887,11 +2409,47 @@ export async function reconcileDshTurnProjections(input: {
                     return dshMutationFailure('storage_consistency_error', 'A DSH continuation cannot borrow a root user');
                 }
 
+                const active = getActiveSessionTranscript(input.sessionId);
+                if (active?.writer.status.reason === 'invalid-history') {
+                    // Native execution remains authoritative when Product history
+                    // cannot be repaired. Keep that prefix read-only, settle only
+                    // exact execution identities in the live overlay, and leave
+                    // durable recovery journals intact until a valid content commit.
+                    const pending = current.pendingDshRootOperation;
+                    const native = pending ? nativeRoots.get(pending.clientOperationId) : undefined;
+                    if (pending && native && (pending.sourceRuntimeSessionId !== input.runtimeSessionId
+                        || native.clientUserMessageId !== pending.clientUserMessageId)) {
+                        return dshMutationFailure('storage_consistency_error', 'DSH recovery changed the admitted input identity');
+                    }
+                    const receipts = new Map((input.nativeInputReceipts ?? []).map(receipt => [receipt.clientUserMessageId, receipt]));
+                    const pendingInputs = (current.pendingDshInputs ?? []).filter(item => {
+                        const receipt = receipts.get(item.clientUserMessageId);
+                        if (!receipt) return true;
+                        if (receipt.clientOperationId !== item.clientOperationId || receipt.inputFingerprint !== item.runtimeInputFingerprint) {
+                            throw new Error('DSH recovery changed its durable follow-up input');
+                        }
+                        return receipt.state === 'pending';
+                    });
+                    active.patchMetadata({
+                        pendingDshRootOperation: native?.terminal ? undefined : pending,
+                        pendingDshInputs: pendingInputs.length ? pendingInputs : undefined,
+                    });
+                    return { success: true, value: { transcriptChanged: false, cursor: structuredClone(input.cursor) } };
+                }
+
                 const projectedIds = new Set<string>();
                 const projectedTurns = new Set<string>();
                 const projectedRoots = new Set<string>();
                 const target = [...messages];
                 let transcriptChanged = false;
+                if (current.transcriptFormat === 2) for (const root of current.pendingDshRootInputs ?? (current.pendingDshRootOperation ? [current.pendingDshRootOperation] : [])) {
+                    if (!root.userMessage) continue;
+                    assertDshProductInputMatches(root, root.userMessage);
+                    const existing = target.filter(message => message.id === root.clientUserMessageId);
+                    if (existing.length > 1) return dshMutationFailure('storage_consistency_error', 'Duplicate DSH recovery input');
+                    if (existing[0]) assertDshProductInputMatches(root, existing[0]);
+                    else { target.push(structuredClone(root.userMessage)); transcriptChanged = true; }
+                }
                 const retainedInputs = [...(current.pendingDshInputs ?? [])];
                 const receiptIds = new Set<string>();
                 for (const receipt of input.nativeInputReceipts ?? []) {
@@ -1928,6 +2486,10 @@ export async function reconcileDshTurnProjections(input: {
                                 const indexes = target.flatMap((message, index) => message.role === 'user' && message.id === predecessor ? [index] : []);
                                 if (indexes.length !== 1) return dshMutationFailure('storage_consistency_error', 'The recovered DSH input lost its preceding Product input');
                                 insertion = indexes[0]! + 1;
+                                if (current.transcriptFormat === 2) {
+                                    const turnId = target[indexes[0]!]!.turnId ?? native.clientUserMessageId;
+                                    while (target[insertion]?.role === 'assistant' && target[insertion]?.turnId === turnId) insertion += 1;
+                                }
                             } else {
                                 const order = input.nativeRootOperations.indexOf(native);
                                 const index = target.findIndex(message => {
@@ -1948,7 +2510,7 @@ export async function reconcileDshTurnProjections(input: {
                     for (const userId of native.consumedUserMessageIds ?? []) {
                         const matches = target.flatMap((message, index) => message.role === 'user' && message.id === userId ? [index] : []);
                         const index = matches[0];
-                        if (matches.length !== 1 || index === undefined || (previous !== undefined && index !== previous + 1)) {
+                        if (matches.length !== 1 || index === undefined || (previous !== undefined && (index <= previous || target.slice(previous + 1, index).some(message => message.role !== 'assistant' || (current.transcriptFormat !== 2 || message.turnId !== target[previous!]?.turnId))))) {
                             throw new Error('The DSH consumed input is missing, duplicated or out of order in Product history');
                         }
                         const anchor = target[index]!.runtimeOperationAnchor;
@@ -1970,6 +2532,10 @@ export async function reconcileDshTurnProjections(input: {
                         }
                         projectedIds.add(assistant.id); projectedTurns.add(anchor.turnId);
                         const lastInputIndex = lastConsumedUserIndex(native);
+                        if (current.transcriptFormat === 2) {
+                            const changed = reconcileDshV2Assistant(target, assistant, native);
+                            if (changed !== undefined) { transcriptChanged ||= changed; continue; }
+                        }
                         const matches = target.flatMap((message, index) => message.role === 'assistant'
                             && message.runtimeTurnAnchor?.turnId === anchor.turnId ? [{ message, index }] : []);
                         if (matches.length > 1 || (matches[0] && (matches[0].message.runtimeTurnAnchor?.origin !== 'collaboration'
@@ -2028,6 +2594,10 @@ export async function reconcileDshTurnProjections(input: {
                         return dshMutationFailure('storage_consistency_error', 'The DSH root user projection is missing or duplicated');
                     }
                     const insertionIndex = lastConsumedUserIndex(native, userIndexes[0]!)! + 1;
+                    if (current.transcriptFormat === 2) {
+                        const changed = reconcileDshV2Assistant(target, assistant, native);
+                        if (changed !== undefined) { transcriptChanged ||= changed; continue; }
+                    }
                     const matchingAssistants = target.flatMap((message, messageIndex) => {
                         if (message.role !== 'assistant' || !message.runtimeTurnAnchor) return [];
                         const candidate = message.runtimeTurnAnchor;
@@ -2164,7 +2734,7 @@ export async function reconcileDshTurnProjections(input: {
                     }
                 }
 
-                if (transcriptChanged) atomicRewriteSessionMessages(input.sessionId, target);
+                if (transcriptChanged) rewriteDshMessages(input.sessionId, target);
                 const { preview } = resolveLastVisibleTurnPreview(target);
                 all[index] = {
                     ...current,
@@ -2179,7 +2749,7 @@ export async function reconcileDshTurnProjections(input: {
                         ? structuredClone(input.runtimeUsageTotals)
                         : undefined,
                 };
-                atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                writeDshSessionsIndex(all, input.sessionId, true);
                 return {
                     success: true,
                     value: { transcriptChanged, cursor: structuredClone(input.cursor) },
@@ -2202,9 +2772,9 @@ export async function beginDshDeleteMutation(input: {
     ensureStorageDir();
     try {
         return await withSessionFileLock(input.sessionId, async () => {
-            const messages = readSessionMessagesForMutation(input.sessionId);
+            const messages = await readDshMessagesForMutation(input.sessionId);
             return withSessionsLock(async () => {
-                const all = readSessionsIndexForWrite();
+                const all = readDshSessionsIndexForWrite(input.sessionId);
                 const index = all.findIndex(session => session.id === input.sessionId);
                 const current = index >= 0 ? all[index] : undefined;
                 if (!current) return dshMutationFailure('precondition_failed', 'The DSH Session is unavailable');
@@ -2228,7 +2798,7 @@ export async function beginDshDeleteMutation(input: {
                     sourceMessageCount: messages.length,
                 };
                 all[index] = { ...current, pendingDshMutation: intent };
-                atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                writeDshSessionsIndex(all, input.sessionId);
                 return { success: true, value: intent };
             });
         });
@@ -2248,7 +2818,7 @@ export async function recordPreparedDshDelete(input: {
     ensureStorageDir();
     try {
         return await withSessionFileLock(input.sessionId, async () => withSessionsLock(async () => {
-            const all = readSessionsIndexForWrite();
+            const all = readDshSessionsIndexForWrite(input.sessionId);
             const index = all.findIndex(session => session.id === input.sessionId);
             const current = index >= 0 ? all[index] : undefined;
             const pending = current && exactPendingDshMutation(current, input.clientMutationId);
@@ -2260,7 +2830,7 @@ export async function recordPreparedDshDelete(input: {
             }
             const updatedIntent: PendingDshDelete = { ...pending, token: input.token };
             all[index] = { ...current, pendingDshMutation: updatedIntent };
-            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            writeDshSessionsIndex(all, input.sessionId);
             return { success: true, value: updatedIntent };
         }));
     } catch (error) {
@@ -2276,7 +2846,7 @@ export async function recordCommittedDshDelete(input: {
     ensureStorageDir();
     try {
         return await withSessionFileLock(input.sessionId, async () => withSessionsLock(async () => {
-            const all = readSessionsIndexForWrite();
+            const all = readDshSessionsIndexForWrite(input.sessionId);
             const index = all.findIndex(session => session.id === input.sessionId);
             const current = index >= 0 ? all[index] : undefined;
             const pending = current && exactPendingDshMutation(current, input.clientMutationId);
@@ -2293,7 +2863,7 @@ export async function recordCommittedDshDelete(input: {
                 runtimeCommitted: true,
             };
             all[index] = { ...current, pendingDshMutation: updatedIntent };
-            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            writeDshSessionsIndex(all, input.sessionId);
             return { success: true, value: updatedIntent };
         }));
     } catch (error) {
@@ -2309,8 +2879,14 @@ export async function deleteCommittedDshProduct(input: {
 }): Promise<DshMutationStoreResult<{ deleted: true }>> {
     ensureStorageDir();
     try {
+        const owner = getSessionMetadata(input.sessionId);
+        const intent = owner && exactPendingDshMutation(owner, input.clientMutationId);
+        if (intent?.kind !== 'dsh-delete' || intent.token !== input.token || intent.runtimeCommitted !== true) {
+            return dshMutationFailure('precondition_failed', 'The Product delete journal is not purge-ready');
+        }
+        await getActiveSessionTranscript(input.sessionId)?.revoke();
         return await withSessionFileLock(input.sessionId, async () => withSessionsLock(async () => {
-            const all = readSessionsIndexForWrite();
+            const all = readDshSessionsIndexForWrite(input.sessionId);
             const index = all.findIndex(session => session.id === input.sessionId);
             const current = index >= 0 ? all[index] : undefined;
             const pending = current && exactPendingDshMutation(current, input.clientMutationId);
@@ -2326,8 +2902,12 @@ export async function deleteCommittedDshProduct(input: {
             const legacyFile = getLegacySessionFilePath(input.sessionId);
             if (existsSync(jsonlFile)) unlinkSync(jsonlFile);
             if (existsSync(legacyFile)) unlinkSync(legacyFile);
+            const v2File = getV2SessionFilePath(input.sessionId);
+            if (existsSync(v2File)) unlinkSync(v2File);
+            await discardForkAttachments(input.sessionId);
+            activeTranscripts.delete(input.sessionId);
             all.splice(index, 1);
-            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            writeDshSessionsIndex(all, input.sessionId);
             return { success: true, value: { deleted: true } };
         }));
     } catch (error) {
@@ -2352,10 +2932,14 @@ export async function beginDshForkMutation(input: {
 }>> {
     ensureStorageDir();
     try {
+        const activeSource = getActiveSessionTranscript(input.sourceSessionId);
+        if (activeSource && !(await activeSource.writer.flush())) {
+            return dshMutationFailure('write_error', 'Save the complete DSH conversation before this explicit mutation');
+        }
         return await withSessionFileLocks(
             [input.sourceSessionId, input.targetProductSessionId],
             async () => {
-                const messages = readSessionMessagesForMutation(input.sourceSessionId);
+                const messages = await readDshMessagesForMutation(input.sourceSessionId);
                 const targetIndex = messages.findIndex(message => (
                     message.id === input.sourceAssistantMessageId && message.role === 'assistant'
                 ));
@@ -2366,7 +2950,7 @@ export async function beginDshForkMutation(input: {
                 const sourceRuntimeTurnId = target.runtimeTurnAnchor.turnId;
                 const targetMessages = messages.slice(0, targetIndex + 1);
                 return withSessionsLock(async () => {
-                    const all = readSessionsIndexForWrite();
+                    const all = readDshSessionsIndexForWrite(input.sourceSessionId);
                     const sourceIndex = all.findIndex(session => session.id === input.sourceSessionId);
                     if (sourceIndex < 0) {
                         return dshMutationFailure('precondition_failed', 'The source Session is unavailable');
@@ -2407,7 +2991,7 @@ export async function beginDshForkMutation(input: {
                     };
                     const updated = { ...source, pendingDshMutation: intent };
                     all[sourceIndex] = updated;
-                    atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                    writeDshSessionsIndex(all, input.sourceSessionId);
                     return {
                         success: true,
                         value: { intent, source: updated, targetMessages },
@@ -2433,7 +3017,7 @@ export async function recordPreparedDshFork(input: {
     ensureStorageDir();
     try {
         return await withSessionFileLock(input.sourceSessionId, async () => withSessionsLock(async () => {
-            const all = readSessionsIndexForWrite();
+            const all = readDshSessionsIndexForWrite(input.sourceSessionId);
             const index = all.findIndex(session => session.id === input.sourceSessionId);
             const current = index >= 0 ? all[index] : undefined;
             const pending = current && exactPendingDshMutation(current, input.clientMutationId);
@@ -2452,7 +3036,7 @@ export async function recordPreparedDshFork(input: {
                 sourceStableBoundaryId: input.sourceStableBoundaryId,
             };
             all[index] = { ...current, pendingDshMutation: updatedIntent };
-            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            writeDshSessionsIndex(all, input.sourceSessionId);
             return { success: true, value: updatedIntent };
         }));
     } catch (error) {
@@ -2469,7 +3053,7 @@ export async function requestDshForkAbort(input: {
     ensureStorageDir();
     try {
         return await withSessionFileLock(input.sourceSessionId, async () => withSessionsLock(async () => {
-            const all = readSessionsIndexForWrite();
+            const all = readDshSessionsIndexForWrite(input.sourceSessionId);
             const index = all.findIndex(session => session.id === input.sourceSessionId);
             const current = index >= 0 ? all[index] : undefined;
             const pending = current && exactPendingDshMutation(current, input.clientMutationId);
@@ -2478,7 +3062,7 @@ export async function requestDshForkAbort(input: {
             }
             const updatedIntent: PendingDshFork = { ...pending, settlement: 'abort' };
             all[index] = { ...current, pendingDshMutation: updatedIntent };
-            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            writeDshSessionsIndex(all, input.sourceSessionId);
             return { success: true, value: updatedIntent };
         }));
     } catch (error) {
@@ -2497,27 +3081,15 @@ export async function stageDshForkProduct(input: {
     const targetSessionId = input.targetMetadata.id;
     try {
         return await withSessionFileLocks([input.sourceSessionId, targetSessionId], async () => {
-            const sourceMessages = readSessionMessagesForMutation(input.sourceSessionId);
+            const sourceMessages = await readDshMessagesForMutation(input.sourceSessionId);
             if (
                 sourceMessages.length < input.targetMessages.length
                 || input.targetMessages.some((message, index) => message.id !== sourceMessages[index]?.id)
             ) {
                 return dshMutationFailure('precondition_failed', 'The DSH fork transcript prefix changed');
             }
-            const targetPath = getSessionFilePath(targetSessionId);
-            if (existsSync(targetPath)) {
-                const existingMessages = readSessionMessagesForMutation(targetSessionId);
-                if (
-                    existingMessages.length !== input.targetMessages.length
-                    || existingMessages.some((message, index) => message.id !== input.targetMessages[index]?.id)
-                ) {
-                    return dshMutationFailure('storage_consistency_error', 'The staged DSH fork transcript conflicts');
-                }
-            } else {
-                atomicRewriteSessionMessages(targetSessionId, input.targetMessages);
-            }
-            return withSessionsLock(async () => {
-                const all = readSessionsIndexForWrite();
+            const staged = await withSessionsLock<DshMutationStoreResult<SessionMetadata>>(async () => {
+                const all = readDshSessionsIndexForWrite(input.sourceSessionId);
                 const source = all.find(session => session.id === input.sourceSessionId);
                 const pending = source && exactPendingDshMutation(source, input.clientMutationId);
                 if (
@@ -2541,9 +3113,33 @@ export async function stageDshForkProduct(input: {
                     return { success: true, value: existing };
                 }
                 all.push(input.targetMetadata);
-                atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                writeDshSessionsIndex(all, input.sourceSessionId);
                 return { success: true, value: input.targetMetadata };
             });
+            if (!staged.success) return staged;
+            const targetPath = staged.value.transcriptFormat === 2 ? getV2SessionFilePath(targetSessionId) : getSessionFilePath(targetSessionId);
+            if (existsSync(targetPath)) {
+                const existingMessages = await readDshMessagesForMutation(targetSessionId);
+                if (existingMessages.length !== input.targetMessages.length
+                    || existingMessages.some((message, index) => message.id !== input.targetMessages[index]?.id)) {
+                    return dshMutationFailure('storage_consistency_error', 'The staged DSH fork transcript conflicts');
+                }
+            } else if (staged.value.transcriptFormat === 2) {
+                const copied = await copyForkAttachments(input.targetMessages, targetSessionId);
+                const projection = createTranscriptProjection();
+                for (const message of copied) projection.messages.set(message.id, fromStoredTranscriptMessage(message));
+                const generation = randomUUID();
+                const candidate = new TranscriptFile({
+                    sessionId: targetSessionId, filePath: targetPath, generation, allowCreate: true,
+                    // Both source and target file locks already belong to this mutation.
+                    withLock: run => run(),
+                });
+                try { await candidate.replace({ generation, revision: 0 }, projection, 0); }
+                catch (error) { await candidate.discardCandidate(); throw error; }
+            } else {
+                atomicRewriteSessionMessages(targetSessionId, input.targetMessages);
+            }
+            return staged;
         });
     } catch (error) {
         return dshMutationFailure(
@@ -2569,7 +3165,7 @@ export async function commitDshForkProduct(input: {
         return await withSessionFileLocks(
             [input.sourceSessionId, pending.targetProductSessionId],
             async () => withSessionsLock(async () => {
-                const all = readSessionsIndexForWrite();
+                const all = readDshSessionsIndexForWrite(input.sourceSessionId);
                 const sourceIndex = all.findIndex(session => session.id === input.sourceSessionId);
                 const targetIndex = all.findIndex(session => session.id === pending.targetProductSessionId);
                 const currentSource = sourceIndex >= 0 ? all[sourceIndex] : undefined;
@@ -2586,7 +3182,7 @@ export async function commitDshForkProduct(input: {
                 ) {
                     return dshMutationFailure('precondition_failed', 'The staged DSH fork changed before commit');
                 }
-                const targetMessages = readSessionMessagesForMutation(target.id);
+                const targetMessages = await readDshMessagesForMutation(target.id);
                 if (targetMessages.length !== currentPending.targetMessageCount) {
                     return dshMutationFailure('storage_consistency_error', 'The staged DSH fork transcript is incomplete');
                 }
@@ -2597,7 +3193,7 @@ export async function commitDshForkProduct(input: {
                 };
                 all[sourceIndex] = { ...currentSource, pendingDshMutation: undefined };
                 all[targetIndex] = committedTarget;
-                atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                writeDshSessionsIndex(all, input.sourceSessionId);
                 return { success: true, value: committedTarget };
             }),
         );
@@ -2624,7 +3220,7 @@ export async function abortDshForkProduct(input: {
         return await withSessionFileLocks(
             [input.sourceSessionId, pending.targetProductSessionId],
             async () => withSessionsLock(async () => {
-                const all = readSessionsIndexForWrite();
+                const all = readDshSessionsIndexForWrite(input.sourceSessionId);
                 const sourceIndex = all.findIndex(session => session.id === input.sourceSessionId);
                 const currentSource = sourceIndex >= 0 ? all[sourceIndex] : undefined;
                 const currentPending = currentSource
@@ -2645,11 +3241,14 @@ export async function abortDshForkProduct(input: {
                     const targetLegacy = getLegacySessionFilePath(target.id);
                     if (existsSync(targetJsonl)) unlinkSync(targetJsonl);
                     if (existsSync(targetLegacy)) unlinkSync(targetLegacy);
+                    const targetV2 = getV2SessionFilePath(target.id);
+                    if (existsSync(targetV2)) unlinkSync(targetV2);
+                    await discardForkAttachments(target.id);
                 }
                 const updatedSource = { ...currentSource, pendingDshMutation: undefined };
                 all[sourceIndex] = updatedSource;
                 if (target) all.splice(targetIndex, 1);
-                atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                writeDshSessionsIndex(all, input.sourceSessionId);
                 return { success: true, value: updatedSource };
             }),
         );
@@ -2670,8 +3269,12 @@ export async function beginDshRewindMutation(input: {
 }>> {
     ensureStorageDir();
     try {
+        const activeSource = getActiveSessionTranscript(input.sessionId);
+        if (activeSource && !(await activeSource.writer.flush())) {
+            return dshMutationFailure('write_error', 'Save the complete DSH conversation before this explicit mutation');
+        }
         return await withSessionFileLock(input.sessionId, async () => {
-            const messages = readSessionMessagesForMutation(input.sessionId);
+            const messages = await readDshMessagesForMutation(input.sessionId);
             const targetUserIndex = messages.findIndex(message => (
                 message.id === input.targetUserMessageId && message.role === 'user'
             ));
@@ -2688,7 +3291,7 @@ export async function beginDshRewindMutation(input: {
             const targetRuntimeTurnId = priorAssistant?.runtimeTurnAnchor?.turnId ?? null;
             const targetMessages = messages.slice(0, targetUserIndex);
             return withSessionsLock(async () => {
-                const all = readSessionsIndexForWrite();
+                const all = readDshSessionsIndexForWrite(input.sessionId);
                 const index = all.findIndex(session => session.id === input.sessionId);
                 const current = index >= 0 ? all[index] : undefined;
                 if (!current) return dshMutationFailure('precondition_failed', 'The DSH Session is unavailable');
@@ -2719,7 +3322,7 @@ export async function beginDshRewindMutation(input: {
                     targetMessageCount: targetMessages.length,
                 };
                 all[index] = { ...current, pendingDshMutation: intent };
-                atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                writeDshSessionsIndex(all, input.sessionId);
                 return {
                     success: true,
                     value: { intent, targetUserMessage, targetMessages },
@@ -2745,7 +3348,7 @@ export async function recordPreparedDshRewind(input: {
     ensureStorageDir();
     try {
         return await withSessionFileLock(input.sessionId, async () => withSessionsLock(async () => {
-            const all = readSessionsIndexForWrite();
+            const all = readDshSessionsIndexForWrite(input.sessionId);
             const index = all.findIndex(session => session.id === input.sessionId);
             const current = index >= 0 ? all[index] : undefined;
             const pending = current && exactPendingDshMutation(current, input.clientMutationId);
@@ -2770,7 +3373,7 @@ export async function recordPreparedDshRewind(input: {
                 targetTranscriptPostcondition: input.targetTranscriptPostcondition,
             };
             all[index] = { ...current, pendingDshMutation: updatedIntent };
-            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            writeDshSessionsIndex(all, input.sessionId);
             return { success: true, value: updatedIntent };
         }));
     } catch (error) {
@@ -2787,24 +3390,42 @@ export async function commitDshRewindProduct(input: {
     ensureStorageDir();
     try {
         return await withSessionFileLock(input.sessionId, async () => {
-            let messages = readSessionMessagesForMutation(input.sessionId);
+            let messages = await readDshMessagesForMutation(input.sessionId);
             return withSessionsLock(async () => {
-                const all = readSessionsIndexForWrite();
+                const all = readDshSessionsIndexForWrite(input.sessionId);
                 const index = all.findIndex(session => session.id === input.sessionId);
                 const current = index >= 0 ? all[index] : undefined;
                 const pending = current && exactPendingDshMutation(current, input.clientMutationId);
                 if (!current || pending?.kind !== 'dsh-rewind' || pending.token !== input.token) {
                     return dshMutationFailure('precondition_failed', 'The DSH rewind journal changed before commit');
                 }
-                if (messages.length === pending.sourceMessageCount) {
+                const stamp = pending.transcript;
+                const active = getActiveSessionTranscript(input.sessionId);
+                const committedTarget = stamp && active?.writer.status.generation === stamp.targetGeneration
+                    && active.writer.status.durableRevision >= stamp.targetRevision;
+                if (stamp && !committedTarget && active?.writer.status.generation !== stamp.sourceGeneration) {
+                    return dshMutationFailure('storage_consistency_error', 'The DSH rewind transcript generation is ambiguous');
+                }
+                if (committedTarget) {
+                    // The named replacement already landed; later admitted rows
+                    // belong to that generation and must survive journal recovery.
+                } else if (messages.length >= pending.sourceMessageCount) {
+                    const recoveredTail = messages.slice(pending.sourceMessageCount);
+                    const inputs = [...(current.pendingDshRootInputs ?? []), ...(current.pendingDshInputs ?? []),
+                        ...(current.pendingDshRootOperation ? [current.pendingDshRootOperation] : [])];
+                    for (const message of recoveredTail) {
+                        const journal = inputs.find(item => item.clientUserMessageId === message.id);
+                        if (!journal || message.role !== 'user') return dshMutationFailure('storage_consistency_error', 'The DSH rewind has an unowned trailing message');
+                        assertDshProductInputMatches(journal, message);
+                    }
                     const targetIndex = messages.findIndex(message => (
                         message.id === pending.targetUserMessageId && message.role === 'user'
                     ));
                     if (targetIndex !== pending.targetMessageCount) {
                         return dshMutationFailure('storage_consistency_error', 'The DSH rewind target changed');
                     }
-                    messages = messages.slice(0, pending.targetMessageCount);
-                    atomicRewriteSessionMessages(input.sessionId, messages);
+                    messages = [...messages.slice(0, pending.targetMessageCount), ...recoveredTail];
+                    rewriteDshMessages(input.sessionId, messages);
                 } else if (messages.length !== pending.targetMessageCount) {
                     return dshMutationFailure('storage_consistency_error', 'The DSH rewind transcript has an unknown length');
                 }
@@ -2818,7 +3439,7 @@ export async function commitDshRewindProduct(input: {
                     lastMessagePreview: preview,
                 };
                 all[index] = updated;
-                atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                writeDshSessionsIndex(all, input.sessionId, true);
                 return { success: true, value: { metadata: updated, messages } };
             });
         });
@@ -2838,7 +3459,7 @@ export async function clearPendingDshMutation(input: {
     ensureStorageDir();
     try {
         return await withSessionFileLock(input.sessionId, async () => withSessionsLock(async () => {
-            const all = readSessionsIndexForWrite();
+            const all = readDshSessionsIndexForWrite(input.sessionId);
             const index = all.findIndex(session => session.id === input.sessionId);
             const current = index >= 0 ? all[index] : undefined;
             if (!current || !exactPendingDshMutation(current, input.clientMutationId)) {
@@ -2847,6 +3468,7 @@ export async function clearPendingDshMutation(input: {
             const updated = { ...current, pendingDshMutation: undefined };
             all[index] = updated;
             atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            getActiveSessionTranscript(input.sessionId)?.adoptExecutionMetadata(updated, DSH_EXECUTION_METADATA_KEYS);
             return { success: true, value: updated };
         }));
     } catch (error) {
@@ -2866,7 +3488,7 @@ function conversationMutationSuccess(
         success: true,
         metadata,
         messages,
-        cursor: issueTranscriptCursor(
+        cursor: activeTranscripts.has(sessionId) ? snapshotActiveTranscript(activeTranscripts.get(sessionId)!).cursor : issueTranscriptCursor(
             sessionId,
             messages.length,
             getTranscriptFileIdentity(getSessionFilePath(sessionId)),
@@ -2964,6 +3586,15 @@ async function resolvePendingConversationMutationLocked(
 export async function resolvePendingConversationMutation(
     sessionId: string,
 ): Promise<ConversationMutationResult> {
+    if (getSessionMetadata(sessionId)?.transcriptFormat !== undefined) {
+        try {
+            const active = await activateSessionTranscript(sessionId);
+            if (!active) return { success: false, reason: 'precondition_failed', error: 'Session metadata is missing' };
+            return conversationMutationSuccess(sessionId, active.metadata, transcriptMessages(active.writer.projection));
+        } catch (error) {
+            return { success: false, reason: 'storage_consistency_error', error: error instanceof Error ? error.message : String(error) };
+        }
+    }
     ensureStorageDir();
     try {
         return await withSessionFileLock(sessionId, () => resolvePendingConversationMutationLocked(sessionId));
@@ -2986,6 +3617,13 @@ export async function commitCodexConversationRewind(input: {
     sourceMessages: SessionMessage[];
     targetMessages: SessionMessage[];
 }): Promise<ConversationMutationResult> {
+    if (getSessionMetadata(input.sessionId)?.transcriptFormat !== undefined) {
+        return commitV2ConversationMutation(input.sessionId, {
+            schemaVersion: 1, kind: 'codex-rewind', sourceRuntimeSessionId: input.sourceRuntimeSessionId,
+            replacementRuntimeSessionId: input.replacementRuntimeSessionId,
+            sourceMessageCount: input.sourceMessages.length, targetMessageCount: input.targetMessages.length,
+        }, input.targetMessages.map(message => message.id), input.sourceMessages.map(message => message.id));
+    }
     ensureStorageDir();
     if (
         input.targetMessages.length >= input.sourceMessages.length
@@ -3071,6 +3709,18 @@ export async function commitBuiltinConversationRewind(input: {
     targetMessageId: string;
     targetMessageCount: number;
 }): Promise<ConversationMutationResult> {
+    if (input.cursor[transcriptCursorState].v2) {
+        const active = activeTranscripts.get(input.sessionId);
+        if (!active || !v2CursorMatches(active, input.cursor)) return { success: false, reason: 'precondition_failed', error: 'Stale V2 rewind cursor' };
+        const source = transcriptMessages(active.writer.projection);
+        const derived = deriveTranscriptMutationTarget(source, { kind: 'builtin-rewind', targetMessageId: input.targetMessageId, targetMessageCount: input.targetMessageCount });
+        if (!derived.ok || !derived.target) return { success: false, reason: 'precondition_failed', error: derived.ok ? 'Empty rewind target' : derived.error };
+        return commitV2ConversationMutation(input.sessionId, {
+            schemaVersion: 1, kind: 'builtin-rewind', sourceSdkSessionId: input.sourceSdkSessionId,
+            replacementSdkSessionId: input.replacementSdkSessionId,
+            sourceMessageCount: source.length, targetMessageCount: derived.target.length,
+        }, derived.target.map(message => message.id), source.map(message => message.id));
+    }
     ensureStorageDir();
     if (input.sourceSdkSessionId === input.replacementSdkSessionId) {
         return { success: false, reason: 'precondition_failed', error: 'Replacement SDK identity must be fresh' };
@@ -3170,7 +3820,7 @@ export async function commitBuiltinConversationRewind(input: {
 /**
  * Calculate session statistics from messages
  */
-export function calculateSessionStats(messages: SessionMessage[]): SessionStats {
+export function calculateSessionStats(messages: readonly Pick<SessionMessage, 'role' | 'usage'>[]): SessionStats {
     let messageCount = 0;
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
@@ -3295,6 +3945,28 @@ export async function appendSessionMessages(
     cursor: TranscriptWriteCursor,
     messages: readonly SessionMessage[],
 ): Promise<AppendSessionMessagesResult> {
+    const v2 = cursor[transcriptCursorState].v2;
+    if (v2) {
+        const active = activeTranscripts.get(sessionId) ?? await activateSessionTranscript(sessionId);
+        if (!active || cursor[transcriptCursorState].sessionId !== sessionId
+            || (v2.instanceId && (v2.instanceId !== active.writer.status.instanceId || v2.liveRevision !== active.writer.status.liveRevision))
+            || v2.generation !== active.writer.status.generation) {
+            return { ok: false, reason: 'stale-cursor', error: 'V2 transcript changed before explicit append' };
+        }
+        for (const message of messages) {
+            active.writer.observe({ kind: 'message-create', message: fromStoredTranscriptMessage(message) });
+        }
+        if (messages.length) {
+            const projection = transcriptMessages(active.writer.projection);
+            active.patchMetadata({ stats: calculateSessionStats(projection), lastMessagePreview: resolveLastVisibleTurnPreview(projection).preview });
+        }
+        if (!await active.writer.flush()) return { ok: false, reason: 'write-error', error: 'V2 append could not confirm saving', cursor };
+        const snapshot = snapshotActiveTranscript(active);
+        return { ok: true, action: messages.length ? 'appended' : 'noop', count: messages.length, totalCount: snapshot.messages.length, cursor: snapshot.cursor };
+    }
+    if (getSessionMetadata(sessionId)?.transcriptFormat !== undefined || await pathExists(getV2SessionFilePath(sessionId))) {
+        return { ok: false, reason: 'storage-consistency-error', error: 'Legacy cursor cannot write a versioned transcript' };
+    }
     ensureStorageDir();
     const filePath = getSessionFilePath(sessionId);
     try {
@@ -3415,12 +4087,86 @@ function deriveTranscriptMutationTarget(
     return { ok: true, target: target.length === messages.length ? null : target };
 }
 
-/** Commit a named destructive transcript operation from a proven durable source. */
+function v2CursorMatches(active: SessionTranscript, cursor: TranscriptWriteCursor): boolean {
+    const stamp = cursor[transcriptCursorState];
+    const current = active.writer.status;
+    return stamp.sessionId === current.sessionId && stamp.v2?.generation === current.generation
+        && (stamp.v2.instanceId
+            ? stamp.v2.instanceId === current.instanceId && stamp.v2.liveRevision === current.liveRevision
+            : stamp.v2.revision === current.durableRevision && current.liveRevision === current.durableRevision);
+}
+
+function selectV2Messages(source: TranscriptProjection, ids: readonly string[]): TranscriptProjection {
+    const target = createTranscriptProjection();
+    const selected = new Set(ids);
+    const changedTurns = new Set<string>();
+    for (const message of source.messages.values()) {
+        if (selected.has(message.id)) target.messages.set(message.id, message);
+        else if (message.turnId) changedTurns.add(message.turnId);
+    }
+    for (const [id, turn] of source.turns) {
+        if (turn.rootUserMessageId ? !selected.has(turn.rootUserMessageId) : ![...target.messages.values()].some(message => message.turnId === id)) continue;
+        target.turns.set(id, changedTurns.has(id)
+            ? { ...turn, status: 'interrupted', usage: undefined, durationMs: undefined } : turn);
+    }
+    return target;
+}
+
+async function commitV2ConversationMutation(
+    sessionId: string, intent: PendingConversationMutation, targetIds: string[], sourceIds: string[],
+): Promise<ConversationMutationResult> {
+    const active = activeTranscripts.get(sessionId);
+    if (!active || active.hasPendingMutation || targetIds.length >= sourceIds.length
+        || targetIds.some((id, index) => id !== sourceIds[index])) {
+        return { success: false, reason: 'precondition_failed', error: 'V2 rewind requires a current, complete source prefix' };
+    }
+    const current = active.metadata;
+    const sourceMatches = intent.kind === 'codex-rewind'
+        ? current.runtime === 'codex' && current.runtimeSessionId === intent.sourceRuntimeSessionId
+        : (current.runtime ?? 'builtin') === 'builtin'
+            && (resolveBuiltinSdkSessionId(current) ?? null) === intent.sourceSdkSessionId
+            && intent.replacementSdkSessionId !== intent.sourceSdkSessionId;
+    if (!sourceMatches) return { success: false, reason: 'precondition_failed', error: 'Native rewind source binding changed' };
+    const revision = active.writer.status.liveRevision;
+    if (!await active.writer.flush()) return { success: false, reason: 'write_error', error: 'Rewind could not confirm its source within the save deadline' };
+    const source = [...active.writer.projection.messages.keys()];
+    if (revision !== active.writer.status.liveRevision || source.length !== sourceIds.length || source.some((id, i) => id !== sourceIds[i])) {
+        return { success: false, reason: 'precondition_failed', error: 'V2 rewind source changed while preparing' };
+    }
+    const target = selectV2Messages(active.writer.projection, targetIds);
+    const messages = transcriptMessages(target);
+    const updated = intent.kind === 'codex-rewind'
+        ? finalizeCodexRewindMetadata(current, intent, messages)
+        : finalizeBuiltinRewindMetadata(current, intent, messages);
+    // This is the logical commit. Native binding and live history now describe
+    // the same target; file publication is asynchronous and cannot undo it.
+    active.beginConversationMutation(intent, updated, target);
+    return conversationMutationSuccess(sessionId, active.metadata, messages);
+}
+
+/** Commit a named destructive transcript operation from the owner's proven source. */
 export async function mutateSessionTranscript(
     sessionId: string,
     cursor: TranscriptWriteCursor,
     intent: TranscriptMutationIntent,
 ): Promise<MutateSessionTranscriptResult> {
+    if (cursor[transcriptCursorState].v2) {
+        const active = activeTranscripts.get(sessionId);
+        if (!active || !v2CursorMatches(active, cursor)) return { ok: false, reason: 'stale-cursor', error: 'V2 mutation source changed' };
+        const derived = deriveTranscriptMutationTarget(transcriptMessages(active.writer.projection), intent);
+        if (!derived.ok) return { ok: false, reason: 'precondition-failed', error: derived.error };
+        if (!derived.target) return { ok: true, action: 'noop', cursor };
+        if (active.hasPendingMutation || active.writer.status.reason === 'invalid-history') {
+            return { ok: false, reason: 'malformed-transcript', error: 'V2 mutation requires a complete, settled source' };
+        }
+        const target = selectV2Messages(active.writer.projection, derived.target.map(message => message.id));
+        active.writer.replaceProjection(target);
+        active.patchMetadata({ stats: calculateSessionStats(derived.target), lastMessagePreview: resolveLastVisibleTurnPreview(derived.target).preview });
+        return { ok: true, action: 'replaced', cursor: snapshotActiveTranscript(active).cursor };
+    }
+    if (getSessionMetadata(sessionId)?.transcriptFormat !== undefined || await pathExists(getV2SessionFilePath(sessionId))) {
+        return { ok: false, reason: 'precondition-failed', error: 'Legacy mutation cannot change versioned history' };
+    }
     ensureStorageDir();
     const filePath = getSessionFilePath(sessionId);
     try {
@@ -3535,6 +4281,18 @@ export async function updateSessionMetadata(
      */
     precondition?: (current: SessionMetadata) => boolean,
 ): Promise<SessionMetadata | null> {
+    const active = activeTranscripts.get(sessionId);
+    if (active && updates.pinned === undefined && !precondition) {
+        if (active.isRevoked) return null;
+        const current = active.metadata;
+        if (changesPendingDshAuthority(current, updates)) return null;
+        const { pinned: _pinned, ...patch } = updates;
+        if (patch.lastActiveAt !== undefined) patch.lastActiveAt = monotonicLastActiveAt(current.lastActiveAt, patch.lastActiveAt);
+        return active.patchMetadata(patch);
+    }
+    // Explicit CAS edits wait only for their own bounded publication. Ordinary
+    // AI/birth lifecycle uses the active binding entrypoint below.
+    if (active && !(await active.writer.flush())) return null;
     // Race-safe read-modify-write — must happen entirely under
     // `withSessionsLock` so a concurrent updater (e.g. periodic stats /
     // title patch / runtime-change freeze) doesn't get its just-applied
@@ -3579,8 +4337,7 @@ export async function updateSessionMetadata(
             patch.lastActiveAt = monotonicLastActiveAt(current.lastActiveAt, patch.lastActiveAt);
         }
         const updated: SessionMetadata = { ...current, ...patch };
-        if (current.pendingDshInputs?.length && (updated.runtimeSessionId !== current.runtimeSessionId
-            || JSON.stringify(updated.runtimeBinding) !== JSON.stringify(current.runtimeBinding))) return;
+        if (changesPendingDshAuthority(current, updated)) return;
         all[idx] = updated;
         try {
             atomicWriteSessionsFile(JSON.stringify(all, null, 2));
@@ -3589,7 +4346,22 @@ export async function updateSessionMetadata(
             console.error('[SessionStore] updateSessionMetadata write failed:', error);
         }
     });
+    if (result && active) active.adoptPublishedMetadata(result);
     return result;
+}
+
+/** Admission CAS is adjudicated by the current binding, even before its disk
+ * birth exists. It must never inherit a product-edit durability dependency. */
+export async function updateSessionMetadataForBinding(
+    sessionId: string,
+    updates: Parameters<typeof updateSessionMetadata>[1],
+    precondition: (current: SessionMetadata) => boolean,
+): Promise<SessionMetadata | null> {
+    const active = getActiveSessionTranscript(sessionId);
+    if (!active) return updateSessionMetadata(sessionId, updates, precondition);
+    if (!precondition(active.metadata) || changesPendingDshAuthority(active.metadata, updates)) return null;
+    const { pinned: _pinned, ...patch } = updates;
+    return active.patchMetadata(patch);
 }
 
 export async function commitPreparedSessionForFirstUserTurn(
@@ -3603,6 +4375,22 @@ export async function commitPreparedSessionForFirstUserTurn(
         lastMessagePreview?: string;
     },
 ): Promise<SessionMetadata | null> {
+    const active = activeTranscripts.get(sessionId);
+    if (active) {
+        if (active.isRevoked) return null;
+        const current = active.metadata;
+        const title = params.title ?? generateSessionTitle(params.messageText ?? '');
+        return active.patchMetadata({
+            ...(current.title === 'New Chat' && current.titleSource !== 'user' && title ? { title, titleSource: 'default' } : {}),
+            ...(!current.origin && params.origin ? { origin: params.origin } : {}),
+            ...(params.runtimeSessionId ? { runtimeSessionId: params.runtimeSessionId } : {}),
+            ...(current.materializationState === 'prepared' ? {
+                materializationState: undefined, materializationSourceSessionId: undefined,
+                lastMessagePreview: params.lastMessagePreview,
+                ...(params.lastActiveAt ? { lastActiveAt: monotonicLastActiveAt(current.lastActiveAt, params.lastActiveAt) } : {}),
+            } : {}),
+        });
+    }
     ensureStorageDir();
     const title = params.title ?? generateSessionTitle(params.messageText ?? '');
     let result: SessionMetadata | null = null;
@@ -3676,6 +4464,23 @@ export async function claimPreparedSessionForTurnAdmission(
         lastMessagePreview?: string;
     },
 ): Promise<PreparedSessionAdmissionClaimResult> {
+    const active = activeTranscripts.get(sessionId);
+    if (active) {
+        if (active.isRevoked) return { status: 'not-found' };
+        const current = active.metadata;
+        if (current.materializationState !== 'prepared') return { status: 'already-committed', metadata: current };
+        if (expectedSourceSessionId !== undefined && current.materializationSourceSessionId !== expectedSourceSessionId) return { status: 'source-mismatch' };
+        // No await between the ownership check and claim. Rollback uses this
+        // same instance, so a stale prepared disk row cannot revoke admission.
+        const title = params.title ?? generateSessionTitle(params.messageText ?? '');
+        const metadata = active.patchMetadata({
+            materializationState: undefined, materializationSourceSessionId: undefined,
+            lastMessagePreview: params.lastMessagePreview,
+            ...(current.title === 'New Chat' && current.titleSource !== 'user' && title ? { title, titleSource: 'default' } : {}),
+            ...(!current.origin && params.origin ? { origin: params.origin } : {}),
+        });
+        return { status: 'claimed', metadata };
+    }
     ensureStorageDir();
     const title = params.title ?? generateSessionTitle(params.messageText ?? '');
 
@@ -3759,6 +4564,117 @@ export async function createSession(agentDir: string, snapshot?: Partial<Session
     await saveSessionMetadata(session);
     console.log(`[SessionStore] Created session ${session.id} for ${agentDir} runtime=${session.runtime} configSnapshot=${session.configSnapshotAt ? 'yes' : 'no'}`);
     return session;
+}
+
+/** Fork must import a complete product source, including any history predating
+ * a resumed native turn. An incomplete live tail is still usable for AI. */
+export async function assertCompleteSessionForkSource(sessionId: string): Promise<void> {
+    const active = getActiveSessionTranscript(sessionId);
+    if (active) {
+        if (active.writer.status.reason === 'invalid-history') {
+            throw new TranscriptStorageError('invalid-history', 'Cannot fork an incompletely restored conversation');
+        }
+        return;
+    }
+    const source = await getSessionData(sessionId);
+    if (!source || source.transcriptRecovery) {
+        throw new TranscriptStorageError('invalid-history', 'Cannot fork an incompletely restored conversation');
+    }
+}
+
+/** Publish an unopened fork as one validated V2 baseline. This explicit
+ * transaction never installs a target writer in the source Session Sidecar.
+ * The prepared row stays hidden until the complete candidate is durable.
+ */
+export async function publishForkSession(
+    metadata: SessionMetadata, messages: readonly SessionMessage[], sourceSessionId: string,
+    timeoutMs = 2000,
+): Promise<void> {
+    if (!ownsSessionMetadataBirth(metadata) || metadata.transcriptFormat !== 2 || getSessionMetadata(metadata.id)) {
+        throw new Error('Fork target must be a fresh V2 Session birth');
+    }
+    await assertCompleteSessionForkSource(sourceSessionId);
+    const prepared: SessionMetadata = { ...metadata, materializationState: 'prepared', materializationSourceSessionId: sourceSessionId };
+    let cancelled = false;
+    let candidate: TranscriptFile | undefined;
+    const task = (async () => {
+        await publishV2Metadata(prepared, {}, true);
+        if (cancelled) throw new Error('Fork publication expired');
+        const copied = await copyForkAttachments(messages, metadata.id);
+        if (cancelled) throw new Error('Fork publication expired');
+        const projection = createTranscriptProjection();
+        for (const message of copied) {
+            if (projection.messages.has(message.id)) throw new Error('Duplicate fork message identity');
+            projection.messages.set(message.id, fromStoredTranscriptMessage(message));
+        }
+        const generation = randomUUID();
+        const file = candidate = new TranscriptFile({
+            sessionId: metadata.id, filePath: getV2SessionFilePath(metadata.id), generation,
+            allowCreate: true, withLock: run => withSessionFileLock(metadata.id, run),
+            publishBirth: async () => {
+                if (cancelled) throw new Error('Fork publication expired');
+                await publishV2Metadata(prepared, {
+                    materializationState: undefined, materializationSourceSessionId: undefined,
+                    lastMessagePreview: resolveLastVisibleTurnPreview([...messages]).preview,
+                    stats: calculateSessionStats(messages),
+                }, false);
+            },
+        });
+        await file.replace({ generation, revision: 0 }, projection, 0);
+    })();
+    // Cancellation ends only the caller's wait. Cleanup follows the actual IO,
+    // under the same file/metadata locks; it cannot race a late rename/commit.
+    const cleanup = task.catch(async error => {
+        await candidate?.discardCandidate();
+        const cleanup = await deleteSession(metadata.id, { kind: 'prepared-materialization-rollback', sourceSessionId });
+        if (cleanup.deleted) await discardForkAttachments(metadata.id);
+        throw error;
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        await Promise.race([cleanup, new Promise<never>((_, reject) => {
+            timer = setTimeout(() => { cancelled = true; reject(new Error('Fork history could not be saved in time')); }, timeoutMs);
+        })]);
+    } finally { if (timer) clearTimeout(timer); }
+}
+
+/** Explicit unopened/fork targets hand off only after a committed publication.
+ * Ordinary births run inside their Session Sidecar and never use this barrier.
+ */
+export async function publishSessionForHandoff(sessionId: string): Promise<boolean> {
+    const active = getActiveSessionTranscript(sessionId);
+    if (!active || !(await active.writer.flush())) return false;
+    await active.writer.close();
+    if (activeTranscripts.get(sessionId) === active) activeTranscripts.delete(sessionId);
+    return true;
+}
+
+/** Existing binding owner calls this before changing the Session ID of its
+ * process. Unlike shutdown, a failed retirement retains the usable binding. */
+export async function releaseSessionTranscriptForBinding(sessionId: string, timeoutMs = 2000): Promise<void> {
+    const active = activeTranscripts.get(sessionId);
+    if (!active) return;
+    if (!await active.retire(timeoutMs)) throw new Error('Session history IO is still finishing; retry the session change');
+    if (activeTranscripts.get(sessionId) === active) activeTranscripts.delete(sessionId);
+}
+
+/** Last-owner/process shutdown has a finite product-history drain. A timeout
+ * revokes producers but does not pretend to cancel an outstanding filesystem
+ * operation; Rust still waits for this process to exit before replacement.
+ */
+export async function drainSessionTranscripts(timeoutMs = 1500): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    const transcripts = [...activeTranscripts.values()];
+    await Promise.all(transcripts.map(transcript => transcript.writer.flush(timeoutMs)));
+    const closing = Promise.all(transcripts.map(transcript => transcript.revoke()));
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        await Promise.race([closing, new Promise<void>(resolve => { timer = setTimeout(resolve, remaining); })]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
 }
 
 /**

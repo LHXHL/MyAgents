@@ -19,7 +19,7 @@ fn sessions_path() -> Result<std::path::PathBuf, String> {
         .ok_or_else(|| "无法定位 MyAgents 数据目录".to_string())
 }
 
-fn redact_session_metadata(mut session: Value) -> Option<Value> {
+pub(crate) fn redact_session_metadata(mut session: Value) -> Option<Value> {
     let obj = session.as_object_mut()?;
     if obj
         .get("materializationState")
