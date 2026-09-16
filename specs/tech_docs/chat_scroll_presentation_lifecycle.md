@@ -89,6 +89,8 @@ Virtuoso 的 Footer 必须使用模块级稳定组件类型，动态内容通过
 
 搜索、工具/Query 定位与 rewind/retry 调用 `pauseAutoScroll()` 后保持阅读模式，直到用户回到底部；不以固定500/2000ms定时器恢复过去的跟随决定。新的阅读输入还通过 Virtuoso 的 `scrollBy({top:0, behavior:'auto'})` 取消进行中的原生平滑滚动。react-virtuoso 4.18.3 原版的 index 定位会在动画停止后继续响应尺寸变化并重试旧目标；`scripts/patch-react-virtuoso.mjs` 在库的 scrollToIndex owner 内让新的 scrollBy 清除旧的测量/动画订阅及超时，两个模块格式一起校验并修复。版本固定为4.18.3，安装时应用，开发/构建/typecheck前验证；升级时必须重跑真实浏览器取消定位回归并评估移除补丁。
 
+同一补丁还修正 element viewport 的垂直滚动范围投影。React 替换可见行时会先移除旧行、再更新 list padding；WebKit 可按中间状态缩小的 scrollHeight 钳制位置，即使最终总高度没有变化。Viewport 中一个绝对定位、无交互且对辅助技术隐藏的节点直接投影库已有的 `totalListHeight + deviation`，在提交期间维持模型声明的滚动范围。它位于测量列表之外，不持有高度缓存，不参与行/header/footer 测量，不改变 viewport 自身尺寸；自然内容可以超出它，行缩短也仍触发列表 ResizeObserver 并更新模型。禁止给测量列表设置固定高度或 min-height，否则可能屏蔽缩小通知、留下空白。Window/custom scroll parent 已有库级模型高度投影，horizontal 路径保持原行为。不能用原生 scroll 事件无限追底补偿中间状态回退，那会使可见范围在两段历史间持续震荡。
+
 MessageList 将 `followOutput` 固定为 `false`，因为 react-virtuoso 4.18.3 的同数量尺寸增长/viewport缩小路径只检查原始prop是否为false，并不会调用function形式的策略。自动跟随由 MessageList 的 `useChatFollowMotion` / `alignFollowingViewport` 统一处理：React layout commit、Virtuoso `totalListHeightChanged` 和 scroller resize 都更新同一运动循环；每帧读取当前 scrollHeight，通过 Virtuoso `scrollTo({top, behavior:"auto"})` 的像素 API 移动，不直接写 scrollTop，也不为每次更新重新启动原生 smooth。
 
 该 hook 只持有当前 viewport 生命周期内的帧句柄、位置和速度，不持有第二份 follow / reading 意图。连续增长采用按实际帧间隔计算的临界阻尼（无回弹），重复尺寸通知只更新目标，保留当前速度。尺寸通知可能早于虚拟列表 padding / Footer 的 DOM 提交，因此通知即使暂时读到离底为零，也合并为下一帧的一次几何结算；已结算后不空转轮询。小于等于 1px 的尾差直接结算，停止后不再调度帧。初次可布局、Session / presentation generation 改变、恢复 fence 解除、显式 force 定位、内容收缩和 reduced-motion 使用即时对齐；离底超过 max(480px, viewport height) 的突增也立即追上，避免长距离动画积压。缩放或卡顿后的单帧积分最多使用 50ms。
@@ -114,4 +116,4 @@ MessageList 将 `followOutput` 固定为 `false`，因为 react-virtuoso 4.18.3 
 
 停止后稳定性回归：`node scripts/verify-agent-status-scroll.mjs webkit`（或 `chrome`）使用真实状态卡、输入浮层、消息与滚动控制器，覆盖完成历史、实时结束、跨三个旧淡出周期的零高度/位置变化，以及长尾滚轮可达性。
 
-连续输出回归：`npm run verify:chat-scroll -- webkit` 和 `npm run verify:chat-scroll -- chrome` 使用真实 Message/Markdown/controller/Virtuoso、合成对话及离线本地 Vite；覆盖多帧中间位置、快速输出的有界落后、进行中动画的输入取消、reduced-motion，以及阅读、搜索、footer 与 viewport 变化；测试会输出临时录像、截图与几何快照目录。Node 补丁测试覆盖两个模块格式、幂等与版本/字节不匹配。
+连续输出回归：`npm run verify:chat-scroll -- webkit` 和 `npm run verify:chat-scroll -- chrome` 使用真实 Message/Markdown/controller/Virtuoso、合成对话及离线本地 Vite；覆盖立即/延迟历史加载后的稳定到底、多帧中间位置、快速输出的有界落后、进行中动画的输入取消、reduced-motion，以及阅读、搜索、footer 与 viewport 变化、长尾缩短后的高度回收与零多余空白；测试会输出临时录像、截图与几何快照目录。Node 补丁测试覆盖两个模块格式、幂等、从旧补丁升级与版本/字节不匹配。

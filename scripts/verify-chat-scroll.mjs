@@ -116,6 +116,18 @@ try {
     }
     await page.waitForFunction(() => document.querySelector('[data-message-id="stream"]'));
     await page.waitForTimeout(300);
+    // Mounting the tail once is insufficient: a range replacement can clamp
+    // WebKit's scrollTop and unmount it again without changing final list height.
+    const settled = await page.evaluate(async () => {
+      const frames = [];
+      for (let i = 0; i < 20; i++) {
+        await new Promise(requestAnimationFrame);
+        frames.push(window.audit.snapshot());
+      }
+      return frames;
+    });
+    assert.ok(settled.every(s => Math.abs(s.gap) <= 1), `${mode}: initial range did not settle at bottom`);
+    assert.ok(settled.every(s => s.height === settled[0].height), `${mode}: idle range kept oscillating`);
     const seeded = await page.evaluate(async () => ({
       state: await window.audit.readState(), seed: window.audit.seed,
       mounted: [...document.querySelectorAll('[data-index]')].map(el => Number(el.dataset.index)),
@@ -126,7 +138,7 @@ try {
       const range = seeded.state.ranges.find(r => r.startIndex <= unmeasuredIndex && r.endIndex >= unmeasuredIndex);
       assert.equal(range?.size, seeded.seed[unmeasuredIndex], `${mode}: per-row seed was ignored`);
     }
-    seedEvidence[mode] = seeded;
+    seedEvidence[mode] = { ...seeded, settled };
   }
   await writeFile(resolve(output, 'height-seeds.json'), JSON.stringify(seedEvidence, null, 2));
   await page.goto(fixtureUrl);
@@ -135,6 +147,9 @@ try {
   const snapshot = () => page.evaluate(() => window.audit.snapshot());
   const evidence = {};
   const bottom = async label => {
+    // Disclosure/permission transitions may finish near the end of a fixed
+    // delay; await actual bounded convergence before taking settled evidence.
+    await page.waitForFunction(() => Math.abs(window.audit.snapshot().gap) <= 1, null, { timeout: 2000 });
     const state = evidence[label] = await snapshot();
     assert.ok(Math.abs(state.gap) <= 1, `${label}: ${JSON.stringify(state)}`);
     assert.notEqual(state.follow, false, `${label}: follow was disabled`);
@@ -333,6 +348,29 @@ try {
   await page.waitForTimeout(350);
   assert.ok(Math.abs((await header.boundingBox()).y - headerY) <= 1, 'new output moved the disclosure reader');
   evidence.disclosure = await snapshot();
+
+  // The virtual scroll extent must not constrain the measured list. Otherwise
+  // shrinking content stops triggering ResizeObserver and leaves a blank tail.
+  await page.evaluate(() => {
+    window.audit.setLoading(false);
+    window.audit.ctrl.scrollToBottom('auto');
+    window.audit.replace(Array(250).fill('Tall tail before shrink.').join('\n\n'));
+  });
+  await page.waitForTimeout(500);
+  const grownTail = await bottom('grownTail');
+  await page.evaluate(() => window.audit.replace('Short tail after shrink.'));
+  await page.waitForTimeout(500);
+  const shrunkTail = await bottom('shrunkTail');
+  assert.ok(grownTail.height - shrunkTail.height > 4000,
+    `real row shrink was hidden from measurement: ${grownTail.height} → ${shrunkTail.height}`);
+  const blankTail = await page.evaluate(() => {
+    const list = document.querySelector('[data-testid="virtuoso-item-list"]');
+    const footer = list.nextElementSibling;
+    const viewport = list.parentElement;
+    return window.audit.ctrl.scrollerRef.current.scrollHeight
+      - (footer.getBoundingClientRect().bottom - viewport.getBoundingClientRect().top);
+  });
+  assert.ok(Math.abs(blankTail) <= 1, `scroll extent left ${blankTail}px beyond natural footer`);
 
   assert.deepEqual(errors, []);
   await page.evaluate(() => { window.record = false; });
