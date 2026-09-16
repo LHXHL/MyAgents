@@ -3,6 +3,8 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import AdmZip from 'adm-zip';
+import { downloadBuildResource } from './build-resource-download.mjs';
+import { acquireLockedResource } from './document-processing-resource-cache.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const FEED = 'https://download.myagents.io/cuse/bundles';
@@ -29,21 +31,6 @@ function checkBytes(data, descriptor) {
   requireValue(data.length === descriptor.size && hash(data) === descriptor.sha256, 'artifact size/SHA256 mismatch');
 }
 
-async function download(url, limit) {
-  const response = await fetch(url, {
-    headers: { 'User-Agent': 'myagents-cuse-builder', 'Cache-Control': 'no-cache' },
-    redirect: 'error', signal: AbortSignal.timeout(120_000),
-  });
-  requireValue(response.ok, `download failed: HTTP ${response.status} (${url})`);
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of response.body) {
-    size += chunk.length;
-    requireValue(size <= limit, 'download exceeds expected size limit');
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks);
-}
 
 function checkMetadata(meta, platform, version, commit) {
   const entrypoint = platform === 'macos-universal' ? 'scripts/cuse' : 'scripts/cuse.exe';
@@ -110,7 +97,7 @@ export function extractBundle(bytes, staging, platform, version, commit) {
   return root;
 }
 
-export async function prepareCuseBundle({ target, destination = join(ROOT, 'bundled-skills', 'cuse'), fetchBytes = download, log = console.log }) {
+export async function prepareCuseBundle({ target, destination = join(ROOT, 'bundled-skills', 'cuse'), cacheRoot = join(ROOT, 'src-tauri/resources/cuse-cache'), fetchBytes, log = console.log }) {
   const platform = cusePlatform(target);
   if (!platform) {
     // Shared build trees must not leak a previous Mac/Windows binary into Linux.
@@ -118,6 +105,9 @@ export async function prepareCuseBundle({ target, destination = join(ROOT, 'bund
     log('Cuse: unsupported on Linux; omitted from bundled skills');
     return { platform, updated: false };
   }
+  fetchBytes ??= (url, maxBytes) => downloadBuildResource(url, {
+    maxBytes, log, headers: { 'User-Agent': 'myagents-cuse-builder', 'Cache-Control': 'no-cache' },
+  });
   log(`[resource:cuse ${platform}] CHECK: fetching current release metadata`);
   const pointer = JSON.parse((await fetchBytes(`${FEED}/latest.json`, 64 * 1024)).toString('utf8'));
   requireValue(pointer?.schema_version === 1 && stableVersion(pointer.version), 'invalid latest pointer');
@@ -136,10 +126,16 @@ export async function prepareCuseBundle({ target, destination = join(ROOT, 'bund
     validateInstalledBundle(destination, platform, version, commit);
     log(`[resource:cuse ${platform}] HIT: Cuse ${version} ${platform}: verified local bundle (ZIP SHA256 ${artifact.sha256})`);
     return { version, platform, updated: false };
-  } catch { /* A stale/incomplete local projection must be replaced from the verified archive. */ }
-  log(`[resource:cuse ${platform}] MISS: local bundle differs from current verified release`);
-  const bytes = await fetchBytes(artifact.url, artifact.size);
+  } catch (error) {
+    log(`[resource:cuse ${platform}] MISS: ${error.message}; restoring verified upstream bytes`);
+  }
+  const stats = { hits: 0, downloaded: 0 };
+  const archive = await acquireLockedResource({
+    cacheRoot, entry: artifact, cacheName: `cuse-${platform}.zip`, fetchBytes, stats,
+  });
+  const bytes = readFileSync(archive);
   checkBytes(bytes, artifact);
+  log(`[resource:cuse ${platform}] ${stats.hits ? 'HIT' : 'DOWNLOADED'}: verified ZIP ${artifact.sha256}`);
   mkdirSync(dirname(destination), { recursive: true });
   const staging = mkdtempSync(join(dirname(destination), '.cuse-prepare-'));
   const backup = join(staging, 'previous');

@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 import AdmZip from 'adm-zip';
-import { cusePlatform, FEED, prepareCuseBundle } from './prepare-cuse-bundle.mjs';
+import { cusePlatform, FEED, prepareCuseBundle as prepareCuseBundleImpl } from './prepare-cuse-bundle.mjs';
+
+const prepareCuseBundle = options => prepareCuseBundleImpl({ ...options, cacheRoot: join(dirname(options.destination), 'cache') });
 
 const digest = bytes => ({ size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });
 function release(platform, version = '0.3.0', mutate = () => {}) {
@@ -43,6 +45,7 @@ for (const [target, platform] of [['aarch64-apple-darwin', 'macos-universal'], [
     assert.equal((await prepareCuseBundle(options)).updated, true);
     writeFileSync(join(destination, 'SKILL.md'), 'corrupt');
     assert.equal((await prepareCuseBundle(options)).updated, true);
+    assert.equal(source.requests.filter(url => url.endsWith('.zip')).length, 1, 'repairs must reuse the pristine archive');
     const next = release(platform, '0.3.1');
     assert.equal((await prepareCuseBundle({ ...options, fetchBytes: next.fetchBytes })).version, '0.3.1');
     assert.equal(JSON.parse(readFileSync(join(destination, 'package.json'))).version, '0.3.1');
@@ -88,7 +91,7 @@ test('rejects artifact hash corruption before extraction', async t => {
   const zipUrl = [...source.resources.keys()].find(url => url.endsWith('.zip'));
   source.resources.set(zipUrl, Buffer.from('corrupted download'));
   const destination = context(t);
-  await assert.rejects(prepareCuseBundle({ target: 'aarch64-apple-darwin', destination, fetchBytes: source.fetchBytes }), /SHA256/);
+  await assert.rejects(prepareCuseBundle({ target: 'aarch64-apple-darwin', destination, fetchBytes: source.fetchBytes }), /digest mismatch/);
   assert.equal(existsSync(destination), false);
 });
 
@@ -99,4 +102,35 @@ test('target is explicit; Linux removes previous native bundle without network',
   mkdirSync(destination); writeFileSync(join(destination, 'old-mac-binary'), 'x');
   await prepareCuseBundle({ target: 'x86_64-unknown-linux-gnu', destination, fetchBytes: () => { throw new Error('must not download'); }, log() {} });
   assert.equal(existsSync(destination), false);
+});
+
+test('signed Mac projection restores from verified archive without another ZIP request', async t => {
+  const destination = context(t);
+  const source = release('macos-universal');
+  const options = { target: 'aarch64-apple-darwin', destination, fetchBytes: source.fetchBytes, log() {} };
+  await prepareCuseBundle(options);
+  writeFileSync(join(destination, 'scripts/cuse'), 'changed by Developer ID signature');
+  await prepareCuseBundle({ ...options, target: 'x86_64-apple-darwin' });
+  assert.equal(source.requests.filter(url => url.endsWith('.zip')).length, 1);
+  assert.equal(readFileSync(join(destination, 'scripts/cuse'), 'utf8'), 'binary 0.3.0');
+  assert.equal(source.requests.filter(url => url.endsWith('/latest.json')).length, 2);
+});
+
+test('corrupt archive is reacquired; failed download preserves the signed projection', async t => {
+  const destination = context(t);
+  const source = release('macos-universal');
+  const options = { target: 'aarch64-apple-darwin', destination, fetchBytes: source.fetchBytes, log() {} };
+  await prepareCuseBundle(options);
+  const [zipUrl, zipBytes] = [...source.resources].find(([url]) => url.endsWith('.zip'));
+  const cache = join(dirname(destination), 'cache/downloads', `${digest(zipBytes).sha256}-cuse-macos-universal.zip`);
+  writeFileSync(cache, 'corrupt');
+  writeFileSync(join(destination, 'scripts/cuse'), 'signed');
+  await assert.rejects(prepareCuseBundle({ ...options, fetchBytes: async url => {
+    if (url === zipUrl) throw new Error('offline');
+    return source.fetchBytes(url);
+  } }), /offline/);
+  assert.equal(readFileSync(join(destination, 'scripts/cuse'), 'utf8'), 'signed');
+  await prepareCuseBundle(options);
+  assert.equal(source.requests.filter(url => url === zipUrl).length, 2);
+  assert.deepEqual(readFileSync(cache), zipBytes);
 });

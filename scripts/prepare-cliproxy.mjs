@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, rmSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { downloadBuildResource } from './build-resource-download.mjs';
 import { selectBundledRelease } from './cliproxy-release-policy.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -26,16 +27,8 @@ export function bundledArtifact(manifest, source, pkg, platform) {
 }
 
 export async function fetchArtifact(artifact, fetchImpl = fetch) {
-  const response = await fetchImpl(artifact.url, { redirect: 'error', signal: AbortSignal.timeout(120_000) });
-  if (!response.ok) throw new Error(`CLIProxy artifact download failed (${response.status})`);
-  const chunks = []; let size = 0;
-  for await (const chunk of response.body) {
-    size += chunk.length;
-    if (size > artifact.size) throw new Error('CLIProxy artifact exceeds its signed size');
-    chunks.push(chunk);
-  }
-  const bytes = Buffer.concat(chunks);
-  if (size !== artifact.size || createHash('sha256').update(bytes).digest('hex') !== artifact.sha256) {
+  const bytes = await downloadBuildResource(artifact.url, { maxBytes: artifact.size, fetchImpl });
+  if (bytes.length !== artifact.size || createHash('sha256').update(bytes).digest('hex') !== artifact.sha256) {
     throw new Error('CLIProxy artifact integrity mismatch');
   }
   return bytes;

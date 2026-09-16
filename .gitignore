@@ -81,6 +81,7 @@ src-tauri/resources/nodejs/*
 src-tauri/resources/nodejs-cache/
 src-tauri/resources/cliproxy/
 src-tauri/resources/cliproxy-cache/
+src-tauri/resources/cuse-cache/
 src-tauri/resources/vcruntime140.dll
 src-tauri/resources/vcruntime140_1.dll
 src-tauri/nsis/Git-Installer.exe

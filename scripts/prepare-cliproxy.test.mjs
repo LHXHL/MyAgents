@@ -62,3 +62,15 @@ test('explicit distribution is offline and never silently falls back to network'
   writeFileSync(join(distributionDir, name), 'bad');
   await assert.rejects(prepareCliproxy(options), /integrity/);
 });
+
+test('one invocation recovers from a transient response and caches only the successful payload', async t => {
+  const repoRoot = fixture(t);
+  let calls = 0;
+  await prepareCliproxy({ repoRoot, platform: 'win32-x64', fetchImpl: async () => {
+    calls++;
+    return calls === 1 ? new Response('busy', { status: 503 }) : new Response(bytes);
+  } });
+  assert.equal(calls, 2);
+  await prepareCliproxy({ repoRoot, platform: 'win32-x64', fetchImpl: async () => { throw new Error('must use cache'); } });
+  assert.deepEqual(readFileSync(join(repoRoot, 'src-tauri/resources/cliproxy/artifact.zip')), bytes);
+});

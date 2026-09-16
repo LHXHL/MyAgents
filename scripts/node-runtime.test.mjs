@@ -18,7 +18,7 @@ function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'myagents-node-runtime-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, 'scripts'));
-  for (const name of ['node-runtime.json', 'download_nodejs.sh', 'download_nodejs.ps1']) {
+  for (const name of ['node-runtime.json', 'download_nodejs.sh', 'download_nodejs.ps1', 'download-build-file.ps1']) {
     copyFileSync(join(repo, 'scripts', name), join(root, 'scripts', name));
   }
   return root;
@@ -80,6 +80,7 @@ for (const scenario of ['empty', 'valid-cache', 'wrong-npm', 'missing-npx', 'old
     assert.equal(existsSync(join(staging, 'lib/node_modules/npm/bin/npx-cli.js')), true);
     assert.equal(existsSync(join(root, 'downloads')), scenario !== 'valid-cache');
     if (scenario !== 'valid-cache') {
+      assert.match(readFileSync(join(root, 'downloads'), 'utf8'), /--max-time 300 --retry 2 --retry-delay 1 --retry-connrefused/);
       assert.match(readFileSync(join(root, 'downloads'), 'utf8'), new RegExp(`https://nodejs.org/dist/v${versions.node}/node-v${versions.node}-darwin-arm64.tar.xz`));
     }
   });
@@ -143,5 +144,42 @@ if (-not $Failed -and $global:LASTEXITCODE -ne 0) { throw 'Successful preparatio
       assert.equal(JSON.parse(readFileSync(join(staging, 'node_modules/npm/package.json'))).version, versions.npm);
       assert.equal(existsSync(join(staging, 'node_modules/npm/bin/npx-cli.js')), true);
     }
+  });
+}
+
+for (const scenario of ['transient', 'timeout', 'permanent', 'invalid-payload', 'exhausted']) {
+  test(`Windows bootstrap download keeps final files intact: ${scenario}`, { skip: !hasPowershell }, t => {
+    const root = fixture(t); const output = join(root, 'installer.exe');
+    put(output, 'previous');
+    const harness = join(root, 'download-test.ps1');
+    put(harness, `
+$ErrorActionPreference = 'Stop'
+. ${psQuote(join(root, 'scripts/download-build-file.ps1'))}
+$global:Calls = 0
+function Start-Sleep { param($Seconds) }
+function Invoke-WebRequest {
+  param($Uri, $OutFile, [switch]$UseBasicParsing, $TimeoutSec)
+  if ($TimeoutSec -lt 300) { throw 'short timeout' }
+  if (-not $OutFile.EndsWith('.partial')) { throw 'must isolate partial files' }
+  $global:Calls++
+  Set-Content -LiteralPath $OutFile 'partial'
+  if ('${scenario}' -eq 'permanent') { throw 'permanent failure' }
+  if ('${scenario}' -eq 'exhausted' -or ($global:Calls -eq 1 -and '${scenario}' -in @('transient', 'timeout'))) {
+    throw [System.Net.WebException]::new('connection timed out', [System.Net.WebExceptionStatus]::Timeout)
+  }
+  Set-Content -LiteralPath $OutFile 'complete'
+}
+$Failed = $false
+try {
+  Get-BuildDownload -Uri 'https://example.invalid/installer' -OutFile ${psQuote(output)} -Validate { param($Path) '${scenario}' -ne 'invalid-payload' }
+} catch { $Failed = $true }
+if ($Failed -ne $${['permanent', 'invalid-payload', 'exhausted'].includes(scenario)}) { throw 'unexpected result' }
+if ($global:Calls -ne ${scenario === 'exhausted' ? 3 : ['transient', 'timeout'].includes(scenario) ? 2 : 1}) { throw 'unexpected attempt count' }
+$Expected = '${['permanent', 'invalid-payload', 'exhausted'].includes(scenario) ? 'previous' : 'complete'}'
+if ((Get-Content -Raw ${psQuote(output)}).Trim() -ne $Expected) { throw 'wrong published bytes' }
+if (Get-ChildItem ${psQuote(root)} -Filter '*.partial') { throw 'partial file leaked' }
+`);
+    const result = spawnSync(powershell, ['-NoProfile', '-File', harness], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
   });
 }

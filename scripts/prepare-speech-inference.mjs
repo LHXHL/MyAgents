@@ -72,6 +72,7 @@ const resourceRoot = join(
   'resources',
   'speech-inference',
 );
+const downloadHelperPath = join(projectRoot, 'scripts', 'build-resource-download.mjs');
 const publishRoot = join(resourceRoot, 'v1');
 const cacheStats = { hits: 0, migrated: 0, downloaded: 0 };
 const preparePath = fileURLToPath(import.meta.url);
@@ -299,6 +300,7 @@ function configurePreparation(options) {
     inputs: [
       preparePath,
       helperPath,
+      downloadHelperPath,
       sharedHelperPath,
       extractionHelperPath,
       lockPath,
