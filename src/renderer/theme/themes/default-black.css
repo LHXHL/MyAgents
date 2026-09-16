@@ -75,6 +75,9 @@ html[data-theme-id='default-black'][data-color-scheme='light'] {
   --button-primary-bg: #111111;
   --button-primary-bg-hover: #2b2b2b;
   --button-primary-text: var(--on-accent);
+  --media-control-bg: #1c1612;
+  --media-control-text: #faf6ee;
+  --media-control-accent: #d4803f;
   --button-dark-bg: #1c1612;
   --button-dark-bg-hover: #3a3532;
   --button-dark-text: #ffffff;
@@ -198,6 +201,9 @@ html[data-theme-id='default-black'][data-color-scheme='dark'] {
   --button-primary-bg: #b05e2d;
   --button-primary-bg-hover: #9c5027;
   --button-primary-text: var(--on-accent);
+  --media-control-bg: #12100e;
+  --media-control-text: #e4dcd4;
+  --media-control-accent: #d4803f;
   --button-dark-bg: #443e36;
   --button-dark-bg-hover: #564e44;
   --button-dark-text: #e4dcd4;

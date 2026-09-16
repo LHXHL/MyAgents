@@ -50,7 +50,8 @@ describe('Record playback source and media clocks', () => {
   });
   it('plays original legacy samples without inventing a capture clock', () => {
     expect(recordPlaybackPosition(undefined, 1_250, 2)).toMatchObject({ sourceSeconds: 1.25, playbackRate: 1, audible: true });
-    expect(recordPlaybackPosition(undefined, 2_500, 2)).toMatchObject({ sourceSeconds: 2, audible: false });
+    expect(recordPlaybackPosition(undefined, 2_000, 2)).toMatchObject({ sourceSeconds: 2, audible: false, boundaryMs: Infinity });
+    expect(recordPlaybackPosition(undefined, 2_500, 2)).toMatchObject({ sourceSeconds: 2, audible: false, boundaryMs: Infinity });
     expect(sourcePlaybackRecordMs(undefined, 1.25)).toBe(1_250);
   });
   it('does not use an invalid map or silently compress missing source samples', () => {

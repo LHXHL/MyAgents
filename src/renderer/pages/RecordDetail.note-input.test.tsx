@@ -224,6 +224,21 @@ describe('RecordDetail note input', () => {
     });
   });
 
+  it.each(['recording', 'paused', 'ready'] as const)(
+    'uses media surface roles throughout %s controls', async (captureStatus) => {
+      mocks.recordGet.mockResolvedValue({ ...RECORD, audio: { ...RECORD.audio!, captureStatus } });
+      mocks.recordingSnapshot.mockResolvedValue(captureStatus === 'ready' ? null : { ...SNAPSHOT, captureStatus });
+      render(<RecordDetail recordId={RECORD.id} isActive />);
+      const content = await screen.findByTestId(captureStatus === 'ready'
+        ? 'recording-playback-timeline' : 'recording-media-duration');
+      const controls = content.closest('section')!;
+      expect(controls).toHaveClass('bg-[var(--media-control-bg)]', 'text-[var(--media-control-text)]');
+      const classes = Array.from(controls.querySelectorAll('[class]'))
+        .map(element => element.getAttribute('class')).join(' ');
+      expect(classes).not.toMatch(/var\(--(?:paper|ink)(?:\)|-)/);
+    },
+  );
+
   it('does not submit IME composition or Shift+Enter, then submits plain Enter', async () => {
     render(
       <RecordDetail

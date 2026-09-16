@@ -61,6 +61,9 @@ html[data-theme-id='absolutely'][data-color-scheme='light'] {
   --button-primary-bg: #aa563b;
   --button-primary-bg-hover: #9d4e35;
   --button-primary-text: #ffffff;
+  --media-control-bg: #2d2d2b;
+  --media-control-text: #f9f9f7;
+  --media-control-accent: #cc7d5e;
   --button-dark-bg: #2d2d2b;
   --button-dark-bg-hover: #46453f;
   --button-dark-text: #f9f9f7;
@@ -178,6 +181,9 @@ html[data-theme-id='absolutely'][data-color-scheme='dark'] {
   --button-primary-bg: #aa563b;
   --button-primary-bg-hover: #9d4e35;
   --button-primary-text: #ffffff;
+  --media-control-bg: #242321;
+  --media-control-text: #f9f9f7;
+  --media-control-accent: #cc7d5e;
   --button-dark-bg: #f9f9f7;
   --button-dark-bg-hover: #dedcd7;
   --button-dark-text: #2d2d2b;

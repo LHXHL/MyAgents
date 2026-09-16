@@ -59,6 +59,28 @@ function resolvedColorToken(tokens: Map<string, string>, tokenName: string): str
 }
 
 describe('production Theme contrast', () => {
+  it('keeps media controls dark with readable foreground and activity in every scheme', () => {
+    for (const definition of themeRegistry.getAcceptedDefinitions()) {
+      for (const scheme of ['light', 'dark'] as const) {
+        const tokens = tokensFor(definition.stylesheetText, definition.id, scheme);
+        const background = tokens.get('--media-control-bg')!;
+        const foreground = tokens.get('--media-control-text')!;
+        const accent = tokens.get('--media-control-accent')!;
+        const label = `${definition.id}.${scheme} media`;
+        for (const color of [background, foreground, accent]) {
+          expect(color, label).toMatch(/^#[a-f\d]{6}$/i);
+        }
+        expect(luminance(background), label).toBeLessThan(0.1);
+        expect(contrast(foreground, background), label).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(accent, background), `${label} activity`).toBeGreaterThanOrEqual(3);
+        const muted = `#${[1, 3, 5].map(offset => Math.round(
+          Number.parseInt(foreground.slice(offset, offset + 2), 16) * 0.75
+          + Number.parseInt(background.slice(offset, offset + 2), 16) * 0.25,
+        ).toString(16).padStart(2, '0')).join('')}`;
+        expect(contrast(muted, background), `${label} secondary text`).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
   it('maps user bubbles and their fade endpoints to the sidebar in every production scheme', () => {
     for (const definition of themeRegistry.getAcceptedDefinitions()) {
       for (const scheme of ['light', 'dark'] as const) {

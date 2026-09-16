@@ -9,6 +9,7 @@ export const REQUIRED_THEME_CSS_TOKENS = [
   '--heartbeat', '--heartbeat-bg', '--heartbeat-border',
   '--success', '--success-bg', '--on-success', '--error', '--error-bg', '--error-hover', '--error-subtle', '--on-error',
   '--warning', '--warning-bg', '--on-warning', '--info', '--info-bg', '--on-info',
+  '--media-control-bg', '--media-control-text', '--media-control-accent',
   '--button-primary-bg', '--button-primary-bg-hover', '--button-primary-text',
   '--button-dark-bg', '--button-dark-bg-hover', '--button-dark-text', '--button-secondary-bg',
   '--button-secondary-bg-hover', '--button-secondary-text',
