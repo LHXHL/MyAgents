@@ -64,6 +64,8 @@ html[data-theme-id='myagents-light'][data-color-scheme='light'] {
   --media-control-bg: #2d2d2b;
   --media-control-text: #f9f9f7;
   --media-control-accent: #cc7d5e;
+  --media-stop-bg: #c53030;
+  --media-stop-text: #ffffff;
   --button-dark-bg: #2d2d2b;
   --button-dark-bg-hover: #46453f;
   --button-dark-text: #f9f9f7;
@@ -184,6 +186,8 @@ html[data-theme-id='myagents-light'][data-color-scheme='dark'] {
   --media-control-bg: #242321;
   --media-control-text: #f9f9f7;
   --media-control-accent: #cc7d5e;
+  --media-stop-bg: #c53030;
+  --media-stop-text: #ffffff;
   --button-dark-bg: #f9f9f7;
   --button-dark-bg-hover: #dedcd7;
   --button-dark-text: #2d2d2b;

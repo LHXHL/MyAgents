@@ -64,6 +64,8 @@ html[data-theme-id='linear'][data-color-scheme='light'] {
   --media-control-bg: #1b1b1b;
   --media-control-text: #fcfcfd;
   --media-control-accent: #606acc;
+  --media-stop-bg: #c53030;
+  --media-stop-text: #ffffff;
   --button-dark-bg: #1b1b1b;
   --button-dark-bg-hover: #333337;
   --button-dark-text: #fcfcfd;
@@ -184,6 +186,8 @@ html[data-theme-id='linear'][data-color-scheme='dark'] {
   --media-control-bg: #09090b;
   --media-control-text: #e3e4e6;
   --media-control-accent: #606acc;
+  --media-stop-bg: #c53030;
+  --media-stop-text: #ffffff;
   --button-dark-bg: #e3e4e6;
   --button-dark-bg-hover: #c9cad0;
   --button-dark-text: #0f0f11;

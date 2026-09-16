@@ -81,6 +81,23 @@ describe('production Theme contrast', () => {
       }
     }
   });
+  it('keeps recording stop labels white and readable in every theme and scheme', () => {
+    for (const definition of themeRegistry.getAcceptedDefinitions()) {
+      for (const scheme of ['light', 'dark'] as const) {
+        const tokens = tokensFor(definition.stylesheetText, definition.id, scheme);
+        const foreground = tokens.get('--media-stop-text')!;
+        const background = tokens.get('--media-stop-bg')!;
+        const surface = tokens.get('--media-control-bg')!;
+        expect(foreground).toBe('#ffffff');
+        expect(contrast(foreground, background)).toBeGreaterThanOrEqual(4.5);
+        const hover = (color: string) => `#${[1, 3, 5].map(offset => Math.round(
+          Number.parseInt(color.slice(offset, offset + 2), 16) * 0.9
+          + Number.parseInt(surface.slice(offset, offset + 2), 16) * 0.1,
+        ).toString(16).padStart(2, '0')).join('')}`;
+        expect(contrast(hover(foreground), hover(background))).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
   it('maps user bubbles and their fade endpoints to the sidebar in every production scheme', () => {
     for (const definition of themeRegistry.getAcceptedDefinitions()) {
       for (const scheme of ['light', 'dark'] as const) {

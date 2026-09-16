@@ -51,6 +51,8 @@ html[data-theme-id='synthetic-test-theme'] {
   --media-control-bg: #21002f;
   --media-control-text: #fff0ff;
   --media-control-accent: #dd00dd;
+  --media-stop-bg: #c53030;
+  --media-stop-text: #ffffff;
   --button-dark-bg: #21002f;
   --button-dark-bg-hover: #3b1648;
   --button-dark-text: #fff0ff;

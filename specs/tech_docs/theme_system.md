@@ -121,7 +121,7 @@ Token 组：
 - Ink/Paper、全局 App Shell 侧栏结构面 `--global-sidebar-bg`，以及同色 0-alpha 渐变端点；侧栏值由每套 Theme 的 light/dark 独立设计在 `paper → paper-inset` 之间，页面与卡片不得借此翻转通用 Paper 层级；
 - Accent、Heartbeat、Success/Error/Warning/Info；所有实色 action/status surface 都有独立配对 foreground（`--on-*`），不能跨语义借用；
 - Button（primary / dark action 各自有配对 foreground；dark action 可随主题切换明暗）、Border、Focus、Toggle；
-- Media control（`--media-control-bg` / `--media-control-text` / `--media-control-accent`）：录音控制与播放器在两种 scheme 下都保持深色背景，前景和强调色由主题成套提供，不能倒用 `ink/paper` 或借用 button 的配色；
+- Media control（`--media-control-bg` / `--media-control-text` / `--media-control-accent`）：录音控制与播放器在两种 scheme 下都保持深色背景，前景和强调色由主题成套提供，不能倒用 `ink/paper` 或借用 button 的配色；录音停止操作使用 `--media-stop-bg` / `--media-stop-text` 配对红底白字，并验证正常与 hover 对比度，不借用错误状态前景色；
 - `--theme-radius-*`、`--theme-shadow-*`、工具/动作局部 shadow；
 - Code、Animation；
 - body background/texture/blend；

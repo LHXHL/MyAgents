@@ -64,6 +64,8 @@ html[data-theme-id='codex'][data-color-scheme='light'] {
   --media-control-bg: #0d0d0d;
   --media-control-text: #ffffff;
   --media-control-accent: #0169cc;
+  --media-stop-bg: #c53030;
+  --media-stop-text: #ffffff;
   --button-dark-bg: #0d0d0d;
   --button-dark-bg-hover: #292929;
   --button-dark-text: #ffffff;
@@ -184,6 +186,8 @@ html[data-theme-id='codex'][data-color-scheme='dark'] {
   --media-control-bg: #090909;
   --media-control-text: #fcfcfc;
   --media-control-accent: #0169cc;
+  --media-stop-bg: #c53030;
+  --media-stop-text: #ffffff;
   --button-dark-bg: #fcfcfc;
   --button-dark-bg-hover: #dddddd;
   --button-dark-text: #111111;

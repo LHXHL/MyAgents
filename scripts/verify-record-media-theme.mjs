@@ -210,6 +210,11 @@ try {
           result.scrollWidth <= result.width + 1,
           "media controls overflow",
         );
+        if (mode !== "ready") {
+          const stop = page.getByRole("button", { name: "停止并保存", exact: true });
+          assert.equal(await stop.evaluate(e => getComputedStyle(e).color), "rgb(255, 255, 255)");
+          assert.equal(await stop.locator("svg").evaluate(e => getComputedStyle(e).fill), "rgb(255, 255, 255)");
+        }
         if (mode === "ready") {
           const slider = page.getByRole("slider", { name: "音量" });
           await slider.focus();

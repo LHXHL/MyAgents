@@ -236,6 +236,11 @@ describe('RecordDetail note input', () => {
       const classes = Array.from(controls.querySelectorAll('[class]'))
         .map(element => element.getAttribute('class')).join(' ');
       expect(classes).not.toMatch(/var\(--(?:paper|ink)(?:\)|-)/);
+      if (captureStatus !== 'ready') {
+        const stop = screen.getByRole('button', { name: /停止并保存|Stop and save/i });
+        expect(stop).toHaveClass('bg-[var(--media-stop-bg)]', 'text-[var(--media-stop-text)]');
+        expect(stop.querySelector('svg')).toHaveClass('fill-current');
+      }
     },
   );
 

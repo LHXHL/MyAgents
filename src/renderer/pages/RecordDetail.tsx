@@ -1940,7 +1940,7 @@ export default function RecordDetail({
                   type="button"
                   onClick={() => void handleStop()}
                   disabled={busyAction !== null || !snapshot}
-                  className="inline-flex h-9 items-center gap-1.5 rounded-[var(--radius-md)] bg-[var(--error)] px-3 text-sm font-semibold text-[var(--on-error)] transition-opacity hover:opacity-90 disabled:opacity-40"
+                  className="inline-flex h-9 items-center gap-1.5 rounded-[var(--radius-md)] bg-[var(--media-stop-bg)] px-3 text-sm font-semibold text-[var(--media-stop-text)] transition-opacity hover:opacity-90 disabled:opacity-40"
                 >
                   <Square className="h-3.5 w-3.5 fill-current" />
                   {t('records.stop')}
