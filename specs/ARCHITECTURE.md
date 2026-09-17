@@ -90,6 +90,8 @@ Product Session 拥有产品 transcript、metadata、配置、事件 scope 和 S
 
 Builtin 与 external Runtime 的 session 操作统一经过 `src/server/session-engine/`。Route handler 只负责校验和响应映射，不直接 import Runtime 实现，也不自行分支 builtin/external。terminal 必须读取 adapter 的真实成功状态；idle 只表示没有活跃工作。
 
+Rewind、Fork、Retry 由 SessionEngine adapter 编排 native history 与产品历史的联合操作；SessionStore 裁决产品提交，Renderer 投影结果。Retry 的回溯与重发接纳共用既有 mutation owner，不能拆成前端两次请求。操作边界与失败语义见 [Session 架构 §4.4](./tech_docs/session_architecture.md#44-rewindforkretry-与-reload-anchor)。
+
 详细协议见 [Multi-Agent Runtime](./tech_docs/multi_agent_runtime.md)。
 
 ### 4. App Shell 与 Tab authority

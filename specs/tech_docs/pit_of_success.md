@@ -566,13 +566,15 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 
 **Problem.** Tab/Cron/Background 与 IM/Agent Channel 对 config 变更的感知策略不同——前者要冻结快照（Agent 配置变更不影响已开 session），后者要 live follow（每条消息都按当前配置 resolve）。如果用一个 snapshot helper + 布尔参数，调用方容易忘记某个分支。
 
-**Surface.** 两个**独立命名函数**：
-- `snapshotForOwnedSession(agent, { runtimeOverride?, runtimeSourceOverride? })` —— 冻结 `model / permissionMode / mcpEnabledServers / providerId / providerEnvJson / runtime identity`
-- `snapshotForImSession(agent, { runtimeOverride?, runtimeSourceOverride? })` —— 只记录 `runtime identity`（runtime drift 触发 session fork），其它 config 每次消息 live resolve
+**Surface.** `src/server/utils/session-snapshot.ts` 按配置来源提供独立命名入口：
+
+- `snapshotForOwnedSession(agent, options)`：从 Agent 模板冻结执行配置，字段集以 `OwnedSessionSnapshot` 为准。
+- `snapshotForImSession(agent, options)`：只固定 Runtime identity，其它配置逐条消息 live resolve。
+- `snapshotForForkedSession(source, legacyFallback?)`：继承 source Session 的完整执行快照；已有 `configSnapshotAt` 时不借当前 Agent 配置补缺项，旧的未冻结 source 才使用调用方提供的兼容快照。Builtin 与 external fork 共用此入口。
 
 `runtime identity` = `runtime` + `runtimeSource`。`codex/system-cli` 与 `codex/managed-provider` 是两个不同身份；只传 `runtimeOverride:'codex'` 而不传 `runtimeSourceOverride:'managed-provider'` 的路径会被当作 system CLI。`runtimeOverride` / `runtimeSourceOverride` 只用于“会话出生时目标 runtime 已由 sidecar/用户动作决定，但 AgentConfig 还没落盘”的 materialization 路径。它必须在 helper 内构造目标 runtime identity 下的 agent view，并复用 `buildRuntimeChangePatch` 清掉非 portable `runtimeConfig` 字段；禁止先按旧 agent snapshot 再在 route 层 post-hoc 覆盖 `snapshot.runtime`。
 
-**Invariants enforced.** 任何新增字段都必须在两处显式处理，无法"忘记"。读侧用 `resolveSessionConfig(sessionMeta, ownerKind)` (`src/server/utils/resolve-session-config.ts`) 统一消费——owned session 走 meta 冻结值，IM session 走 live agent；meta 缺失时 fallback 到 agent config，向后兼容老 session。
+**Invariants.** 新增快照字段需同步维护 owned、live-follow 与 fork 的语义，并更新 `session-snapshot.unit.test.ts` 的继承测试；调用方不自行拼装字段。读侧用 `resolveSessionConfig(sessionMeta, ownerKind)` (`src/server/utils/resolve-session-config.ts`) 统一消费——owned session 走 meta 冻结值，IM session 走 live agent；meta 缺失时 fallback 到 agent config，向后兼容老 session。
 
 **Don't.** 用一个布尔参数分派两种语义。
 
