@@ -246,6 +246,8 @@
 - 协议：lock → re-read → mutate → tmp write → fsync → rename → fsync parent dir → release
 - Stale recovery 跨运行时——renderer 信任自己的 mtime（1× threshold），node/rust owner 用 4× threshold（renderer 无法 probe pid liveness）
 - Node/Rust owner sentinel 是 `<runtime>:<pid>:<startMs>`；renderer 无可探测的独立 PID owner，使用 `renderer:<createdMs>:<uuid>`。三端 release 都必须逐字校验自己取得的完整 token，防止"暂停过 staleMs 后误删继任者"
+- Agent 单字段编辑传 `AgentConfigMutation`：`runtimeConfigPatch` 只描述改变的字段，`resolveAgentConfigMutation` 在 writer 锁内基于最新 Agent 合并。显式 `runtimeConfig` 仍表示完整替换。Runtime/provider 选择与权限/effort 编辑分开；旧 Session 的执行 context 不能变成重新选择 workspace model 的指令。
+- UI 导航失败不能回滚已提交的 Agent 默认值或删除已发布 Session。
 
 **Don't.**
 - 任何 `config.json` 写入用裸 `tmp + rename`（绕过锁）

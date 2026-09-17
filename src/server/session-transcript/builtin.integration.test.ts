@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NO_CHANNEL_DELIVERY } from '../session-core/channel-delivery';
 import type { TurnTerminalOutcome } from '../session-core/turn-queue';
 
-const state = vi.hoisted(() => ({ home: '', failProductIo: false, query: vi.fn(), sdkRead: vi.fn(), sdkFork: vi.fn(), sdkDelete: vi.fn(), rewindFiles: vi.fn(), beforeResult: vi.fn(), events: [] as [string, unknown][], queuedFollowup: false, exitWithoutResult: false, toolFrames: false, childFrames: false, media: vi.fn() }));
+const state = vi.hoisted(() => ({ home: '', failProductIo: false, publicationGate: null as Promise<void> | null, publicationBlocked: false, query: vi.fn(), sdkRead: vi.fn(), sdkFork: vi.fn(), sdkDelete: vi.fn(), rewindFiles: vi.fn(), beforeResult: vi.fn(), events: [] as [string, unknown][], queuedFollowup: false, exitWithoutResult: false, toolFrames: false, childFrames: false, media: vi.fn() }));
 vi.mock('os', async original => ({ ...await original<typeof import('os')>(), homedir: () => state.home }));
 vi.mock('../utils/fs-utils', async original => {
   const actual = await original<typeof import('../utils/fs-utils')>();
@@ -19,7 +19,11 @@ vi.mock('../utils/fs-utils', async original => {
 });
 vi.mock('node:fs/promises', async original => {
   const actual = await original<typeof import('node:fs/promises')>();
-  return { ...actual, mkdir: (...args: Parameters<typeof actual.mkdir>) => {
+  return { ...actual, mkdir: async (...args: Parameters<typeof actual.mkdir>) => {
+    if (state.publicationGate && String(args[0]).endsWith(join('.myagents', 'sessions-v2'))) {
+      state.publicationBlocked = true;
+      await state.publicationGate;
+    }
     if (state.failProductIo && String(args[0]).endsWith(join('.myagents', 'sessions-v2'))) {
       return Promise.reject(Object.assign(new Error('product directory denied'), { code: 'EACCES' }));
     }
@@ -130,6 +134,8 @@ beforeEach(async () => {
   state.home = await mkdtemp(join(tmpdir(), 'myagents-builtin-v2-'));
   state.events.length = 0;
   state.failProductIo = false;
+  state.publicationGate = null;
+  state.publicationBlocked = false;
   state.queuedFollowup = false;
   state.exitWithoutResult = false;
   state.toolFrames = false;
@@ -157,6 +163,33 @@ afterEach(async () => {
 });
 
 describe('builtin V2 execution independent of product storage', () => {
+  it.each(['normal', 'delayed', 'failed'] as const)('desktop reset waits for %s disk publication before exposing success', async mode => {
+    const workspace = join(state.home, 'workspace');
+    await mkdir(workspace, { recursive: true });
+    await agent.initializeAgent(workspace, null, undefined, { preWarmDisabled: true });
+    agent.setSessionModel('configured-model');
+    agent.setSessionProviderEnv({ providerId: 'configured-provider', baseUrl: 'http://127.0.0.1:1', apiKey: 'synthetic-not-a-secret' });
+    const { createBuiltinSessionEngine } = await import('../session-engine/builtin-adapter');
+    if (mode === 'failed') state.failProductIo = true;
+    if (mode === 'delayed') state.publicationGate = new Promise<void>(resolve => { releaseWrite = resolve; });
+    let settled = false;
+    const reset = createBuiltinSessionEngine().resetForNewDesktopSession(workspace).finally(() => { settled = true; });
+    if (mode === 'failed') {
+      await expect(reset).rejects.toThrow('could not be published');
+      return;
+    }
+    if (mode === 'delayed') {
+      await vi.waitFor(() => expect(state.publicationBlocked).toBe(true));
+      expect(settled).toBe(false);
+      releaseWrite!();
+    }
+    const result = await reset;
+    expect(result.success).toBe(true);
+    const disk = JSON.parse(await readFile(join(state.home, '.myagents', 'sessions.json'), 'utf8'));
+    expect(disk).toContainEqual(expect.objectContaining({ id: result.sessionId, agentDir: workspace, model: 'configured-model', providerId: 'configured-provider', configSnapshotAt: expect.any(String) }));
+    expect(agent.getMessages()).toHaveLength(0);
+  });
+
   it.each(['v1', 'v2'] as const)('keeps %s identity across real builtin IM, Inbox and injected-turn adapters', async format => {
     const workspace = join(state.home, 'workspace');
     await mkdir(workspace);

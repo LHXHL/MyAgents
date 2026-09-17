@@ -2,7 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  createCronTask,
+  createAndStartCronTask,
   deleteCronTask,
   getCronTask,
   startCronTask,
@@ -12,7 +12,7 @@ import type { CronTask } from '@/types/cronTask';
 import { useCronTask } from './useCronTask';
 
 vi.mock('@/api/cronTaskClient', () => ({
-  createCronTask: vi.fn(),
+  createAndStartCronTask: vi.fn(),
   startCronTask: vi.fn(),
   stopCronTask: vi.fn(),
   deleteCronTask: vi.fn(),
@@ -40,11 +40,40 @@ function task(overrides: Partial<CronTask> = {}): CronTask {
 describe('useCronTask surface ownership', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(createCronTask).mockResolvedValue(task({ status: 'stopped' }));
+    vi.mocked(createAndStartCronTask).mockResolvedValue({ task: task() });
     vi.mocked(startCronTask).mockResolvedValue(task());
     vi.mocked(stopCronTask).mockResolvedValue(task({ status: 'stopped' }));
     vi.mocked(deleteCronTask).mockResolvedValue();
     vi.mocked(getCronTask).mockResolvedValue(task());
+  });
+
+  it('retains the backend Task when startup failed instead of deleting it', async () => {
+    vi.mocked(createAndStartCronTask).mockResolvedValue({ task: task({ status: 'stopped', exitReason: 'scheduler failure' }), error: 'scheduler failure' });
+    const { result } = renderHook(() => useCronTask({ workspacePath: '/tmp/workspace', sessionId: 'session-1', materializeOwner: async () => ({ workspacePath: '/tmp/workspace', sessionId: 'session-1' }) }));
+    act(() => result.current.enableCronMode({ taskKind: 'cron', prompt: 'work', intervalMinutes: 5, endConditions: { aiCanExit: true }, runMode: 'single_session', notifyEnabled: false }));
+    await act(async () => {
+      await expect(result.current.startTask()).rejects.toThrow('scheduler failure');
+    });
+    expect(result.current.state.task?.id).toBe('task-1');
+    expect(deleteCronTask).not.toHaveBeenCalled();
+    expect(startCronTask).not.toHaveBeenCalled();
+  });
+
+  it('stops a canceled accepted Task without deleting it or replacing a newer draft', async () => {
+    let finish!: (value: { task: CronTask }) => void;
+    vi.mocked(createAndStartCronTask).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const { result } = renderHook(() => useCronTask({ workspacePath: '/tmp/workspace', sessionId: 'session-1', materializeOwner: async () => ({ workspacePath: '/tmp/workspace', sessionId: 'session-1' }) }));
+    const draft = { taskKind: 'cron' as const, prompt: 'old', intervalMinutes: 5, endConditions: { aiCanExit: true }, runMode: 'single_session' as const, notifyEnabled: false };
+    act(() => result.current.enableCronMode(draft));
+    let started!: Promise<void>;
+    act(() => { started = result.current.startTask(); });
+    await waitFor(() => expect(createAndStartCronTask).toHaveBeenCalledTimes(1));
+    act(() => { result.current.disableCronMode(); result.current.enableCronMode({ ...draft, prompt: 'new' }); });
+    await act(async () => { finish({ task: task() }); await started; });
+    expect(stopCronTask).toHaveBeenCalledWith('task-1');
+    expect(deleteCronTask).not.toHaveBeenCalled();
+    expect(result.current.state.config?.prompt).toBe('new');
+    expect(result.current.state.task).toBeNull();
   });
 
   it('restores an ordinary time-based Cron', () => {
@@ -103,7 +132,7 @@ describe('useCronTask surface ownership', () => {
     });
 
     expect(materializeOwner).toHaveBeenCalledTimes(1);
-    expect(createCronTask).toHaveBeenCalledWith(expect.objectContaining({
+    expect(createAndStartCronTask).toHaveBeenCalledWith(expect.objectContaining({
       workspacePath: '/tmp/workspace',
       sessionId: 'session-real',
       runMode: 'single_session',
@@ -130,7 +159,7 @@ describe('useCronTask surface ownership', () => {
       await expect(result.current.startTask()).rejects.toThrow('materialize failed');
     });
 
-    expect(createCronTask).not.toHaveBeenCalled();
+    expect(createAndStartCronTask).not.toHaveBeenCalled();
     expect(result.current.state.task).toBeNull();
   });
 
@@ -162,7 +191,7 @@ describe('useCronTask surface ownership', () => {
       await startPromise;
     });
 
-    expect(createCronTask).not.toHaveBeenCalled();
+    expect(createAndStartCronTask).not.toHaveBeenCalled();
     expect(result.current.state.isEnabled).toBe(false);
   });
 
@@ -192,6 +221,6 @@ describe('useCronTask surface ownership', () => {
     resolveOwner({ workspacePath: '/tmp/workspace', sessionId: 'session-real' });
     await startPromise;
 
-    expect(createCronTask).not.toHaveBeenCalled();
+    expect(createAndStartCronTask).not.toHaveBeenCalled();
   });
 });

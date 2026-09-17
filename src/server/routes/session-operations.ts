@@ -74,7 +74,16 @@ export async function handleSessionOperationRoute(
     if (!userMessageId) {
       return jsonResponse({ success: false, error: 'Missing userMessageId' }, 400);
     }
-    const result = await getSessionEngine().retryUserMessage(userMessageId);
+    // These are the same per-send choices as /chat/send. The engine still
+    // owns input recovery, Session identity, permissions, rewind and admission.
+    if ((body.model !== undefined && typeof body.model !== 'string')
+      || (body.reasoningEffort !== undefined && typeof body.reasoningEffort !== 'string')) {
+      return jsonResponse({ success: false, error: 'Retry model and reasoningEffort must be strings.' }, 400);
+    }
+    const result = await getSessionEngine().retryUserMessage(userMessageId, {
+      model: body.model as string | undefined,
+      reasoningEffort: body.reasoningEffort as string | undefined,
+    });
     return operationResponse(result);
   }
 

@@ -19,6 +19,8 @@
 
 `TaskApplication` 是 create/link、status、delete/unlink、run/rerun 的应用层 owner。它复用 Task control 与 Store 的现有事务来编排规则，不保存第二份状态。Management API 与 Tauri command 只负责 DTO、调用方身份和响应映射；Cron 兼容入口与 Memory managed job 直接调用同一个应用入口，不能反向依赖 transport handler。
 
+桌面「创建并启动」调用 `cmd_create_and_start_cron_task` → `TaskApplication::create_and_start_scheduled`，由后端完成创建、状态裁决与 scheduler 启动。返回提交后的 Task 与可选启动错误；失败记录保留供查看/重试，前端不得用 delete 补偿。用户明确取消已接纳的草稿时可以发送 stop；关闭 Tab 本身不删除或停止已接纳 Task。兼容 DTO 不构成第二份持久状态。
+
 Task 的核心职责：
 
 - 用户可见身份、文档、状态机与审计链。

@@ -5753,13 +5753,14 @@ export async function materializePendingDesktopSession(
   });
 }
 
-export async function materializeCurrentSessionMetadataForPublishedReset(): Promise<void> {
+export async function materializeCurrentSessionMetadataForPublishedReset(scenario: SessionMaterializationScenario = 'agent-channel'): Promise<void> {
   const result = await publishCurrentProductSessionMetadata((targetSessionId) => {
     const { meta, snapshotKind } = createMetadataForSessionId(
       targetSessionId,
       'New Chat',
-      'agent-channel',
+      scenario,
     );
+    if (!isLiveFollowScenario(scenario)) Object.assign(meta, buildOwnedFreezeSnapshotPatch());
     return { metadata: meta, snapshotKind };
   });
   console.log(`[agent] session ${result.sessionId} persisted to SessionStore (published reset, snapshot=${result.snapshotKind})`);

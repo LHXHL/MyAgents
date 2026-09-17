@@ -74,7 +74,7 @@ import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 import { useWorkspaceChangeSignal } from '@/hooks/useWorkspaceChangeSignal';
 import { isIntroductionAbsentError, shouldShowIntroductionOverlay, useIntroductionContent } from '@/hooks/useIntroductionContent';
 import { resolveAdoptedBuiltinProviderId } from '@/utils/sessionConfigAdoption';
-import { getSessionCronTask, isTaskExecuting, createCronTask, startCronTask as startCronTaskIpc } from '@/api/cronTaskClient';
+import { getSessionCronTask, isTaskExecuting, createAndStartCronTask, startCronTask as startCronTaskIpc } from '@/api/cronTaskClient';
 import { updateSession as patchSessionMetadata } from '@/api/sessionClient';
 import { releaseTabSession, sessionHasPersistentOwners } from '@/api/tauriClient';
 import { persistInputOptionChange, type BuiltinModelSelection, type BuiltinProviderEnvPolicy } from '@/api/persistInputOption';
@@ -139,7 +139,6 @@ import {
 import type { SessionOrigin } from '../../shared/session-origin';
 import type { CapabilityInitialSelect } from '../../shared/skillsTypes';
 import {
-  buildRuntimeChangePatch,
   CC_MODELS,
   CC_PERMISSION_MODES,
   CODEX_PERMISSION_MODES,
@@ -1954,8 +1953,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
           }
         }
 
-        // 5. Send message (fire-and-forget — resolves before backend turn actually starts)
-        setIsLoading(true);
+        // TabProvider owns execution loading when a message is actually sent.
         scrollToBottom();
 
         // 5a. Cron handoff (PRD 0.2.7): if launcher staged a cron config, switch
@@ -2754,6 +2752,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
     builtinSelection?: BuiltinModelSelection;
     builtinProviderEnvPolicy?: BuiltinProviderEnvPolicy;
     runtimeBackedProviderSelection?: RuntimeBackedProviderIdentity;
+    runtimeBackedProviderContext?: RuntimeBackedProviderIdentity;
     providerId?: string;
     /** Builtin model. Use `runtimeModel` instead for external runtimes. */
     model?: string | null;
@@ -2797,6 +2796,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
         builtinSelection: patch.builtinSelection,
         builtinProviderEnvPolicy: patch.builtinProviderEnvPolicy,
         runtimeBackedProviderSelection: patch.runtimeBackedProviderSelection,
+        runtimeBackedProviderContext: patch.runtimeBackedProviderContext,
         providerId: patch.providerId,
         builtinModel: patch.model,
         runtimeModel: patch.runtimeModel,
@@ -3798,7 +3798,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
       mode,
     ) ?? 'auto-edit';
     const persisted = await persistTabConfigChange({
-      runtimeBackedProviderSelection: currentProviderExecutionIntent,
+      runtimeBackedProviderContext: currentProviderExecutionIntent,
       permissionMode: mode,
     });
     if (!persisted) return;
@@ -3894,16 +3894,8 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
     // This also re-enables auto-scroll if user had scrolled up
     scrollToBottom();
 
-    const pendingGoalStart = goalDraftConfigRef.current !== null
-      || (cronStateRef.current.isEnabled
-        && !cronStateRef.current.task
-        && cronStateRef.current.config?.taskKind === 'goal');
-
-    // Goal creation is a fast state mutation, not an AI turn. Keep the global
-    // loading surface idle until the original query is sent through /chat/send.
-    if (!isAiBusy && !pendingGoalStart) {
-      setIsLoading(true);
-    }
+    // Scheduling a future Task does not start an AI turn. TabProvider owns
+    // loading for ordinary sends and actual scheduled execution events.
 
     // Note: User message is added by SSE replay from backend
     // TabProvider.sendMessage passes attachments which will be merged with the replay message
@@ -3919,7 +3911,6 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
       if (!reply && goalDraftConfigRef.current) {
         const startedKind = await startScheduledTask(text);
         if (startedKind !== 'goal') return;
-        if (!isAiBusy) setIsLoading(true);
       } else if (!reply && cron.isEnabled && !cron.task && cron.config) {
         setStoppedCronRecovery(null);
         if (cron.config.taskKind === 'cron' && cron.config.executionTarget === 'new_task') {
@@ -3937,7 +3928,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
               cron.config.permissionMode,
               cronExecution.runtime ?? currentRuntime,
             );
-            const task = await createCronTask({
+            const created = await createAndStartCronTask({
               workspacePath: agentDir,
               sessionId,
               prompt: text,
@@ -3953,11 +3944,11 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
               schedule: cron.config.schedule,
               delivery: cron.config.delivery,
             });
-            await startCronTaskIpc(task.id);
-            setCronCardTask(task);
+            setCronCardTask(created.task);
             disableCronMode();
             setIsLoading(false);
-            toastRef.current?.success(t('shell.toasts.cronTaskCreated'));
+            if (created.error) toastRef.current?.error(created.error);
+            else toastRef.current?.success(t('shell.toasts.cronTaskCreated'));
           } catch (err) {
             disableCronMode();
             setIsLoading(false);
@@ -3968,7 +3959,6 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
         // ── Current session: legacy cron behavior ──
         const startedKind = await startScheduledTask(text);
         if (startedKind !== 'goal') return;
-        if (!isAiBusy) setIsLoading(true);
         // A Goal is Session state. Its first user query still follows the
         // ordinary chat path so the visible tail produces the normal bubble
         // and all streaming blocks arrive live.
@@ -3988,7 +3978,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
       const errorMessage = {
         id: `error-${crypto.randomUUID()}`,
         role: 'assistant' as const,
-        content: `Error: ${error instanceof Error ? error.message : 'Unknown error occurred'}`,
+        content: `Error: ${error instanceof Error ? error.message : String(error)}`,
         timestamp: new Date()
       };
       setMessages((prev) => [...prev, errorMessage]);
@@ -4151,119 +4141,45 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
     }
   }, [agentDir, t]);
 
-  const deleteUnopenedForkSession = useCallback(async (targetSessionId: string): Promise<boolean> => {
-    try {
-      const { deleteSession } = await import('@/api/sessionClient');
-      const result = await deleteSession(targetSessionId);
-      return result.deleted || result.reason === 'not-found';
-    } catch (err) {
-      console.warn('[chat] Failed to delete unopened fork session:', err);
-      return false;
-    }
-  }, []);
-
   const confirmRuntimeChange = useCallback(async () => {
-    if (guardCronConfigMutation()) {
-      setPendingRuntimeChange(null);
-      return;
-    }
+    if (guardCronConfigMutation()) { setPendingRuntimeChange(null); return; }
     const runtime = pendingRuntimeChange;
     setPendingRuntimeChange(null);
-    if (!runtime || !currentAgent) return;
-    // Unified Tab-UI dual-write policy (matches handleModelChange /
-    // handlePermissionModeChange / etc., PRD v0.1.69 §4.3 rule 2 extended to
-    // runtime): fork a new Tab pinned to the chosen runtime AND update the
-    // workspace template. The confirm dialog's copy explicitly tells the user
-    // both halves will happen, so mutating agent.runtime is no longer a
-    // surprise-leak — it's the advertised behavior.
-    //
-    // Why this is safe despite the older "deliberately do NOT" comment:
-    //   - Existing Tabs with non-empty sessions hydrate currentRuntime from
-    //     SessionMetadata.runtime (session-self-contained, D1). Changing
-    //     agent.runtime doesn't flip their displayed runtime because their
-    //     session snapshot is authoritative.
-    //   - Empty Tabs and new Sidecars (Bot / Cron / new Tab) read agent.runtime
-    //     as the template — which is EXACTLY the semantic we want.
-    //   - The fork-new-tab step is still required because switching the current
-    //     session's runtime in-place is an incompatibility hard-guard (D6).
-    //
-    // Ordering (cross-review Codex Warning): create the fork FIRST — if that
-    // fails we leave the workspace default untouched. Only after the session
-    // is confirmed created do we persist the agent patch. This prevents the
-    // "future Tabs silently inherit new runtime even though user's fork
-    // failed" leak.
-    if (!onForkSession || !agentDir) return;
+    if (!runtime || !currentAgent || !onForkSession || !agentDir) return;
     const boundChannel = channelSurfaceRef.current;
-    let session: { id: string } | undefined;
+    let session: { id: string };
     try {
       const { createSession } = await import('@/api/sessionClient');
       session = await createSession(agentDir, runtime, { origin: DESKTOP_SESSION_FORK_ORIGIN });
-    } catch (err) {
-      console.error('[chat] Failed to create session for runtime fork:', err);
+    } catch (error) {
+      console.error('[chat] Runtime session creation failed:', error);
       toastRef.current.error(t('shell.toasts.runtimeSwitchCreateFailed'));
       return;
     }
-    // Fork metadata succeeded — now persist workspace default before opening
-    // the tab. For ordinary desktop forks an agent patch failure is non-fatal:
-    // the new session snapshot is still usable. For channel-bound forks, the
-    // binding migration depends on the live Agent template being updated, so
-    // the failure stays blocking and the hidden target session is deleted.
-    //
-    // buildRuntimeChangePatch centralizes the "drop non-portable
-    // runtimeConfig fields (model / permissionMode / additionalArgs), keep
-    // envPolicy" policy — see its doc comment for the bug-class rationale.
-    // All 4 runtime-change callsites (here / Settings / Launcher / agent
-    // set CLI) MUST go through this helper.
-    let agentTemplateUpdated = false;
-    if (currentAgent.id) {
-      try {
-        await patchAgentConfig(currentAgent.id, buildRuntimeChangePatch(currentAgent.runtimeConfig, runtime));
-        agentTemplateUpdated = true;
-      } catch (err) {
-        console.warn('[chat] Runtime fork succeeded but agent template update failed:', err);
-        if (boundChannel) {
-          await deleteUnopenedForkSession(session.id);
-          toastRef.current.error(t('shell.toasts.runtimeSwitchDefaultUpdateFailed'));
-          return;
-        }
-        toastRef.current.warning(t('shell.toasts.runtimeSwitchDefaultUpdateWarning'));
-      }
+    let defaultSaved = false;
+    try {
+      await patchAgentConfig(currentAgent.id, { runtime });
+      defaultSaved = true;
+    } catch (error) {
+      console.warn('[chat] Session created; workspace default update failed:', error);
+      toastRef.current.warning(t('shell.toasts.runtimeSwitchDefaultUpdateWarning'));
     }
-    const runtimeLabel = getRuntimeDisplayLabel(runtime);
-    const opened = await onForkSession(session.id, agentDir, `${runtimeLabel} Session`);
+    // Published Session and saved defaults outlive UI navigation. A failed
+    // open/transfer must not delete them or overwrite subsequent user edits.
+    const opened = await onForkSession(session.id, agentDir, `${getRuntimeDisplayLabel(runtime)} Session`);
     if (!opened) {
-      await deleteUnopenedForkSession(session.id);
-      if (agentTemplateUpdated) {
-        try {
-          await patchAgentConfig(currentAgent.id, {
-            runtime: currentAgent.runtime ?? 'builtin',
-            runtimeConfig: currentAgent.runtimeConfig,
-          });
-        } catch (rollbackErr) {
-          console.warn('[chat] Runtime rollback after fork tab open failure also failed:', rollbackErr);
-        }
-      }
       toastRef.current.error(t('shell.toasts.runtimeSwitchTabOpenFailed'));
       return;
     }
-    if (boundChannel && session) {
+    if (boundChannel && defaultSaved) {
       try {
         await transferBindingToForkedSession(boundChannel, session.id);
-      } catch (err) {
-        console.error('[chat] Runtime fork channel binding transfer failed:', err);
-        try {
-          await patchAgentConfig(currentAgent.id, {
-            runtime: currentAgent.runtime ?? 'builtin',
-            runtimeConfig: currentAgent.runtimeConfig,
-          });
-        } catch (rollbackErr) {
-          console.warn('[chat] Runtime rollback after failed channel transfer also failed:', rollbackErr);
-        }
+      } catch (error) {
+        console.error('[chat] Session opened; channel transfer failed:', error);
         toastRef.current.error(t('shell.toasts.runtimeSwitchChannelTransferFailed'));
-        return;
       }
     }
-  }, [pendingRuntimeChange, currentAgent, onForkSession, agentDir, transferBindingToForkedSession, deleteUnopenedForkSession, guardCronConfigMutation, t]);
+  }, [pendingRuntimeChange, currentAgent, onForkSession, agentDir, transferBindingToForkedSession, guardCronConfigMutation, t]);
 
   // Provider/model history-boundary confirm: create a fresh session in a new
   // tab so the old transcript is not reused across incompatible provider
@@ -4342,7 +4258,6 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
         );
         const opened = await onForkSession(session.id, agentDir, sessionTitle);
         if (!opened) {
-          await deleteUnopenedForkSession(session.id);
           throw new Error('Fork tab failed to open');
         }
         openedSessionId = session.id;
@@ -4388,7 +4303,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
           : t('shell.toasts.createNewSessionFailed'),
       );
     }
-  }, [pendingProviderSwitch, agentDir, onForkSession, onLaunchRuntimeBackedProviderSession, providers, transferBindingToForkedSession, deleteUnopenedForkSession, inputChromePermissionMode, reasoningEffort, workspaceMcpEnabled, workspaceEnabledPlugins, workspaceOfficialToolEnabled, currentProject, currentAgent, patchProject, refreshConfig, guardCronConfigMutation, t]);
+  }, [pendingProviderSwitch, agentDir, onForkSession, onLaunchRuntimeBackedProviderSession, providers, transferBindingToForkedSession, inputChromePermissionMode, reasoningEffort, workspaceMcpEnabled, workspaceEnabledPlugins, workspaceOfficialToolEnabled, currentProject, currentAgent, patchProject, refreshConfig, guardCronConfigMutation, t]);
 
   // Cross-runtime confirm: create new session in new tab and send the pending message
   const confirmCrossRuntimeSend = useCallback(async () => {
@@ -4406,14 +4321,14 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
       }
       const opened = await onForkSession(session.id, agentDir, pending.text.slice(0, 40) || t('shell.toasts.newSession'), pending.text);
       if (!opened) {
-        await deleteUnopenedForkSession(session.id);
+        toastRef.current.error(t('shell.toasts.runtimeSwitchTabOpenFailed'));
       }
     } catch (err) {
       setPendingCrossRuntimeMessage(null);  // Clear on error too (dialog dismissed)
       console.error('[chat] Failed to create cross-runtime session:', err);
       toastRef.current.error(t('shell.toasts.createNewSessionFailed'));
     }
-  }, [pendingCrossRuntimeMessage, agentDir, onForkSession, currentRuntime, deleteUnopenedForkSession, t]);
+  }, [pendingCrossRuntimeMessage, agentDir, onForkSession, currentRuntime, t]);
 
   // Issue #231: snapshot the current input value at the moment the user opens
   // the cron-settings modal, instead of keeping `cronPrompt` continuously in
@@ -4963,7 +4878,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
     setIsLoading(true);
     setRewindStatus('rewinding');
     let queued = false;
-    apiPost('/chat/retry', { userMessageId: userMsg.id })
+    apiPost('/chat/retry', { userMessageId: userMsg.id, model: effectiveModel, reasoningEffort })
       .then(async res => {
         if (sessionIdRef.current !== retrySessionId) return;
         const result = res as RewindResponse & { retryQueued?: boolean; conversationCommitted?: boolean };
@@ -4994,7 +4909,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
           if (!queued) setIsLoading(false);
         }
       });
-  }, [apiPost, setIsLoading, pauseAutoScroll, t, warnRewindFileOutcome, retryCurrentSessionRestore]);
+  }, [apiPost, setIsLoading, pauseAutoScroll, t, warnRewindFileOutcome, retryCurrentSessionRestore, effectiveModel, reasoningEffort]);
 
   // Uses refs for messagesRef/toastRef/handleSendMessageRef — deps are all stable → reference stable
   const handleRetry = useCallback((assistantMessageId: string) => {
@@ -5180,11 +5095,11 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
     }
 
     if (onNewSession) {
-      const handled = await onNewSession();
-      if (handled) {
-        // App.tsx started background completion and created new Sidecar
-        // TabProvider will detect sessionId change and reconnect
-        return true;
+      try {
+        if (await onNewSession()) return true;
+      } catch (error) {
+        toastRef.current.error(error instanceof Error ? error.message : String(error));
+        return false;
       }
     }
 

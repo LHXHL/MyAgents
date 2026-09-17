@@ -73,6 +73,10 @@ class FakeRuntimeProcess implements RuntimeProcess {
 class FakeRuntime implements AgentRuntime {
   type: RuntimeType = 'codex';
   readonly sentMessages: string[] = [];
+  readonly sentModels: string[] = [];
+  effectiveModel = '';
+  readonly sentEfforts: string[] = [];
+  effectiveEffort = '';
   readonly startSessionInitialMessages: Array<string | undefined> = [];
   readonly startSessionResumeIds: Array<string | undefined> = [];
   readonly startSessionHasHostDispatcher: boolean[] = [];
@@ -247,6 +251,8 @@ class FakeRuntime implements AgentRuntime {
 
   async startSession(options: SessionStartOptions, onEvent: UnifiedEventCallback): Promise<RuntimeProcess> {
     this.effectivePermissionMode = options.permissionMode ?? '';
+    this.effectiveModel = options.model ?? '';
+    this.effectiveEffort = options.reasoningEffort ?? '';
     this.startSessionInitialMessages.push(options.initialTurn?.message);
     this.startSessionResumeIds.push(options.resumeSessionId);
     this.startSessionHasHostDispatcher.push(Boolean(
@@ -292,8 +298,13 @@ class FakeRuntime implements AgentRuntime {
     this.compactCalls += 1;
   }
 
-  async setModel(): Promise<void> {
+  async setModel(_process: RuntimeProcess, model: string | undefined): Promise<void> {
     if (this.rejectConfig) throw new Error('fake config apply failed');
+    this.effectiveModel = model ?? '';
+  }
+
+  async setReasoningEffort(_process: RuntimeProcess, effort: string | undefined): Promise<void> {
+    this.effectiveEffort = effort ?? '';
   }
 
   async setPermissionMode(_process: RuntimeProcess, mode: string | undefined): Promise<void> {
@@ -351,6 +362,8 @@ class FakeRuntime implements AgentRuntime {
 
   private playTurn(message: string): void {
     this.sentMessages.push(message);
+    this.sentModels.push(this.effectiveModel);
+    this.sentEfforts.push(this.effectiveEffort);
     const script = this.scripts.shift() ?? { kind: 'success', text: `echo:${message}` };
     this.defer(() => {
       if (script.kind === 'success') {
@@ -4693,6 +4706,8 @@ describe('external SessionEngine with fake runtime', () => {
     const workspacePath = join(harness.home, 'workspace');
     if (format === 'v1') await harness.sessionStore.saveSessionMetadata({ id: sessionId, agentDir: workspacePath,
       title: 'legacy', createdAt: 't', lastActiveAt: 't', runtime: 'codex', runtimeSource: 'system-cli' });
+    // Desktop prewarm may legitimately start with no selected model.
+    await harness.externalSession.prewarmExternalSession({ sessionId, workspacePath, scenario: { type: 'desktop' } });
     for (const text of ['first question', 'second question']) {
       const sent = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, text));
       await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
@@ -4700,7 +4715,7 @@ describe('external SessionEngine with fake runtime', () => {
     }
     const original = (await harness.sessionStore.getSessionData(sessionId))!.messages;
     const first = original[0];
-    expect(await harness.engine.retryUserMessage(first.id)).toMatchObject({ success: true, retryQueued: true, conversationCommitted: true });
+    expect(await harness.engine.retryUserMessage(first.id, { model: 'gpt-5-codex', reasoningEffort: 'medium' })).toMatchObject({ success: true, retryQueued: true, conversationCommitted: true });
     if (format === 'v1') expect(broadcastEvents).toContainEqual({ event: 'chat:messages-retracted', data: {
       messageIds: original.map(message => message.id), retractedStreamingTail: true,
     } });
@@ -4711,6 +4726,8 @@ describe('external SessionEngine with fake runtime', () => {
     expect(data.messages.map(message => message.role)).toEqual(['user', 'assistant']);
     expect(data.messages[0].content).toBe('first question');
     expect(data.messages[1].content).toContain('replacement first answer');
+    expect(harness.runtime.sentModels).toEqual(['gpt-5-codex', 'gpt-5-codex', 'gpt-5-codex']);
+    expect(harness.runtime.sentEfforts).toEqual(['medium', 'medium', 'medium']);
     expect(data.runtimeSessionId).toBe('fake-thread-2');
   });
 

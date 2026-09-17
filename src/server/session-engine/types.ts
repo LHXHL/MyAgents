@@ -59,6 +59,9 @@ export type DesktopMessageRequest = {
   requiredSystemSkill?: ProductSystemSkillRequirement;
 };
 
+/** Per-send choices; Session/provider/permission authority remains with the engine. */
+export type DesktopRetryOptions = Pick<DesktopMessageRequest, 'model' | 'reasoningEffort'>;
+
 export type DesktopAdmissionResult = {
   success: boolean;
   queued?: boolean;
@@ -448,7 +451,7 @@ export interface SessionEngine {
     reason?: string,
   ): Promise<boolean>;
   respondAskUserQuestion(requestId: string, answers: Record<string, string> | null): Promise<boolean>;
-  retryUserMessage(userMessageId: string): Promise<CapabilityOperationResult>;
+  retryUserMessage(userMessageId: string, options?: DesktopRetryOptions): Promise<CapabilityOperationResult>;
   rewindToUserMessage(userMessageId: string): Promise<CapabilityOperationResult>;
   forkAtAssistantMessage(messageId: string, targetSessionId?: string): Promise<CapabilityOperationResult>;
   updateProviderEnv(providerEnv: ProviderEnv | undefined): Promise<{ success: boolean; skipped?: string; error?: string }>;

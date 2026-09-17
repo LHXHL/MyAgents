@@ -1,3 +1,4 @@
+use super::manager::{task_input_from_cron_config, task_to_cron};
 use super::*;
 
 const MANAGED_CRON_TASK_ERROR: &str =
@@ -42,6 +43,38 @@ pub async fn cmd_create_cron_task(config: CronTaskConfig) -> Result<CronTask, St
     }
     let manager = get_cron_task_manager();
     manager.create_task(config).await
+}
+
+/// Desktop create-and-start, preserving the committed Task on startup failure.
+#[tauri::command]
+pub async fn cmd_create_and_start_cron_task(
+    app_handle: tauri::AppHandle,
+    config: CronTaskConfig,
+) -> Result<serde_json::Value, String> {
+    if config
+        .managed_kind
+        .as_deref()
+        .is_some_and(|kind| !kind.trim().is_empty())
+    {
+        return Err(MANAGED_CRON_TASK_ERROR.to_string());
+    }
+    if matches!(&config.schedule, Some(CronSchedule::Loop)) {
+        return Err(LOOP_CRON_TASK_ERROR.to_string());
+    }
+    let input = task_input_from_cron_config(config)?;
+    let application = crate::task_application::TaskApplication::from_globals()
+        .map_err(|error| error.to_string())?;
+    let (task, error) = application
+        .create_and_start_scheduled(input)
+        .await
+        .map_err(|error| error.to_string())?;
+    let event = if error.is_some() {
+        "cron:task-updated"
+    } else {
+        "cron:task-started"
+    };
+    let _ = app_handle.emit(event, serde_json::json!({"taskId": task.id}));
+    Ok(serde_json::json!({"task": task_to_cron(&task), "error": error}))
 }
 
 /// Start a scheduled Task and arm its scheduler as one backend use case.

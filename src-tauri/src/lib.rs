@@ -543,6 +543,7 @@ pub fn run() {
             memory_evolution::cmd_get_memory_evolution_status,
             memory_auto_update::cmd_configure_memory_auto_update_task,
             // Cron task commands
+            cron_task::commands::cmd_create_and_start_cron_task,
             cron_task::commands::cmd_create_cron_task,
             cron_task::commands::cmd_start_cron_task,
             cron_task::commands::cmd_stop_cron_task,
@@ -644,6 +645,7 @@ pub fn run() {
             im::credential_provisioning::cmd_channel_credential_qr_start,
             im::credential_provisioning::cmd_channel_credential_qr_poll,
             // Agent commands (v0.1.41)
+            im::commands::cmd_set_agent_channel_enabled,
             im::commands::cmd_start_agent_channel,
             im::commands::cmd_stop_agent_channel,
             im::commands::cmd_agent_channel_status,

@@ -140,6 +140,7 @@ function Probe() {
     isConnected,
     adoptMigratedSession,
     resetSession,
+    stopResponse,
     retryCurrentSessionRestore,
     sendMessage,
     cancelQueuedMessage,
@@ -178,6 +179,7 @@ function Probe() {
       <output data-testid="retry-restore-target-present">{JSON.stringify(retryRestoreTargetPresent)}</output>
       <button type="button" onClick={() => void sendMessage('hello')}>send message</button>
       <button type="button" onClick={() => void resetSession()}>reset session</button>
+      <button type="button" onClick={() => void stopResponse()}>stop response</button>
       <button type="button" onClick={() => {
         void retryCurrentSessionRestore('m2').then(result => {
           if (result.restored) setRetryRestoreTargetPresent(result.targetMessagePresent);
@@ -1050,6 +1052,65 @@ describe('TabProvider session activity ownership', () => {
     });
     expect(sseHarness.connection.disconnect).not.toHaveBeenCalled();
     expect(tauriHarness.proxyFetch).not.toHaveBeenCalled();
+  });
+
+  it('keeps history and identity when reset is rejected', async () => {
+    tauriHarness.proxyFetch.mockImplementation(async (url: string) => new Response(JSON.stringify(
+      url.endsWith('/api/session-state') ? { sessionId: 'pending-reset-rejected', sessionState: 'idle', isBusy: false } : { success: false, error: 'reset rejected' }
+    ), { status: 200 }));
+    render(<TabProvider tabId="reset-rejected" agentDir="/tmp/workspace" sessionId="pending-reset-rejected" claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:message-replay', { replayKind: 'live-user-echo', sessionId: 'pending-reset-rejected', message: { id: 'retained-user', role: 'user', content: 'retain this', timestamp: new Date(0).toISOString() } });
+    expect(readActivity().historyCount).toBe(1);
+    fireEvent.click(screen.getByRole('button', { name: 'reset session' }));
+    await waitFor(() => expect(screen.getByTestId('agent-error')).toHaveTextContent('reset rejected'));
+    expect(readActivity().historyCount).toBe(1);
+    expect(readActivity().sessionId).toBe('pending-reset-rejected');
+  });
+
+  it('does not declare idle when a stop fails and the backend is still running', async () => {
+    tauriHarness.proxyFetch.mockImplementation(async (url: string) => new Response(JSON.stringify(
+      url.endsWith('/api/session-state') ? { sessionId: 'pending-stop-rejected', sessionState: 'running', isBusy: true } : { success: false, error: 'termination unconfirmed' }
+    ), { status: 200 }));
+    render(<TabProvider tabId="stop-rejected" agentDir="/tmp/workspace" sessionId="pending-stop-rejected" claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:status', { sessionState: 'running' });
+    fireEvent.click(screen.getByRole('button', { name: 'stop response' }));
+    await waitFor(() => expect(screen.getByTestId('agent-error')).toHaveTextContent('termination unconfirmed'));
+    expect(readActivity().sessionState).toBe('running');
+    expect(readActivity().isLoading).toBe(true);
+  });
+
+  it.each([
+    { observed: 'running', busy: true, newer: 'idle', newerBusy: false },
+    { observed: 'idle', busy: false, newer: 'running', newerBusy: true },
+  ])('ignores delayed stop recovery $observed after newer $newer SSE', async ({ observed, busy, newer, newerBusy }) => {
+    let finish!: (response: Response) => void;
+    const read = new Promise<Response>(resolve => { finish = resolve; });
+    tauriHarness.proxyFetch.mockImplementation(async (url: string) => url.endsWith('/api/session-state')
+      ? read : new Response(JSON.stringify({ success: true, alreadyStopped: true }), { status: 200 }));
+    render(<TabProvider tabId="stop-late" agentDir="/tmp/workspace" sessionId="pending-stop-late" claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:status', { sessionState: 'running' });
+    fireEvent.click(screen.getByRole('button', { name: 'stop response' }));
+    await waitFor(() => expect(tauriHarness.proxyFetch.mock.calls.some(([url]) => url.endsWith('/api/session-state'))).toBe(true));
+    emit('chat:status', { sessionState: newer });
+    await act(async () => finish(new Response(JSON.stringify({ sessionId: 'pending-stop-late', sessionState: observed, isBusy: busy, completionTerminal: busy ? null : { status: 'stopped' } }), { status: 200 })));
+    expect(readActivity()).toMatchObject({ sessionState: newer, isLoading: newerBusy });
+  });
+
+  it('adopts the authoritative binding after a lost reset response', async () => {
+    tauriHarness.proxyFetch.mockImplementation(async (url: string) => {
+      if (url.endsWith('/chat/reset')) throw new Error('response lost');
+      return new Response(JSON.stringify({ sessionId: 'session-reset-committed', sessionState: 'idle', isBusy: false }), { status: 200 });
+    });
+    const onSessionIdChange = vi.fn().mockResolvedValue(true);
+    render(<TabProvider tabId="reset-lost" agentDir="/tmp/workspace" sessionId="pending-reset-lost" onSessionIdChange={onSessionIdChange} claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: 'reset session' }));
+    await waitFor(() => expect(readActivity().sessionId).toBe('session-reset-committed'));
+    expect(onSessionIdChange).toHaveBeenCalledWith('session-reset-committed');
+    expect(tauriHarness.proxyFetch.mock.calls.filter(([url]) => url.endsWith('/chat/reset'))).toHaveLength(1);
   });
 
   it('keeps the live SSE owner when reset upgrades a real session on the same sidecar', async () => {

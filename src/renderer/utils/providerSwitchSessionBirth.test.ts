@@ -52,7 +52,7 @@ describe('buildProviderSwitchSessionBirth', () => {
     await persistInputOptionChange({ workspaceId: 'ws', agentId: 'agent', isExternalRuntime: false, fields: { runtimeBackedProviderSelection: identity, reasoningEffort: effort }, patchProject: vi.fn(), patchAgentConfig, patchAgentProjectConfig: async (id, patch) => { await patchAgentConfig(id, patch); } });
     expect(effort).toBe('default');
     expect(birth.opts.reasoningEffort).toBe('default');
-    expect(patchAgentConfig).toHaveBeenCalledWith('agent', expect.objectContaining({ runtimeConfig: { reasoningEffort: 'default' } }));
+    expect(patchAgentConfig).toHaveBeenCalledWith('agent', expect.objectContaining({ reasoningEffort: 'default' }));
   });
 
   it('creates builtin provider sessions without requiring a workspace template write', () => {

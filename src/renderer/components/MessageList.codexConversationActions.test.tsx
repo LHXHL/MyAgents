@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -43,16 +43,20 @@ vi.mock('@/components/Message', () => ({
     message,
     onRewind,
     onFork,
+    onRetry,
   }: {
     message: MessageType;
     onRewind?: (id: string) => void;
     onFork?: (id: string) => void;
+    onRetry?: (id: string) => void;
   }) => (
     <div
       data-testid={`message-${message.id}`}
       data-rewind={Boolean(onRewind)}
       data-fork={Boolean(onFork)}
-    />
+    >
+      {onRetry && <button onClick={() => onRetry(message.id)}>retry-{message.id}</button>}
+    </div>
   ),
 }));
 vi.mock('@/components/PermissionPrompt', () => ({ PermissionPrompt: () => null }));
@@ -150,4 +154,63 @@ describe('MessageList — Codex conversation actions', () => {
     );
     expect(screen.getByTestId(`message-${user.id}`)).toHaveAttribute('data-rewind', 'false');
   });
+});
+
+
+it('retries with the latest send choices even when the virtual history row does not render again', () => {
+  const firstRetry = vi.fn();
+  const latestRetry = vi.fn();
+  const props = {
+    messages: [message('stable-assistant', 'assistant', 'unchanged history')],
+    streamingMessage: null,
+    isLoading: false,
+    sessionId: 'session-stable',
+    isActive: true,
+    firstItemIndex: 1_000_000,
+    virtuosoRef: { current: null },
+    followEnabledRef: { current: true },
+    scrollToBottom: vi.fn(),
+    handleAtBottomChange: vi.fn(),
+  };
+  const { rerender } = render(<MessageList {...props} onRetry={firstRetry} />);
+  rerender(<MessageList {...props} onRetry={latestRetry} />);
+  fireEvent.click(screen.getByRole('button', { name: 'retry-stable-assistant' }));
+  expect(firstRetry).not.toHaveBeenCalled();
+  expect(latestRetry).toHaveBeenCalledWith('stable-assistant');
+});
+
+
+it('keeps committed retry choices while a replacement render is suspended', async () => {
+  const committedRetry = vi.fn();
+  const pendingRetry = vi.fn();
+  let ready = false;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const messages = [message('committed-assistant', 'assistant', 'visible history')];
+  function Suspend({ pending }: { pending: boolean }) {
+    if (pending && !ready) throw gate;
+    return null;
+  }
+  function Harness() {
+    const [pending, setPending] = React.useState(false);
+    return <>
+      <button onClick={() => React.startTransition(() => setPending(true))}>change choices</button>
+      <React.Suspense fallback={<span>pending render</span>}>
+        <MessageList messages={messages} streamingMessage={null} isLoading={false}
+          sessionId="committed-session" isActive firstItemIndex={1_000_000}
+          virtuosoRef={{ current: null }} followEnabledRef={{ current: true }}
+          scrollToBottom={vi.fn()} handleAtBottomChange={vi.fn()}
+          onRetry={pending ? pendingRetry : committedRetry} />
+        <Suspend pending={pending} />
+      </React.Suspense>
+    </>;
+  }
+  render(<Harness />);
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'change choices' })));
+  fireEvent.click(screen.getByRole('button', { name: 'retry-committed-assistant' }));
+  expect(committedRetry).toHaveBeenCalledWith('committed-assistant');
+  expect(pendingRetry).not.toHaveBeenCalled();
+  await act(async () => { ready = true; release(); });
+  fireEvent.click(screen.getByRole('button', { name: 'retry-committed-assistant' }));
+  expect(pendingRetry).toHaveBeenCalledWith('committed-assistant');
 });

@@ -8,6 +8,7 @@ import { Plus, X, Loader2 } from 'lucide-react';
 import type { AgentConfig, ChannelConfig, ChannelType } from '../../../../shared/types/agent';
 import type { AgentStatusData, ChannelStatusData } from '@/hooks/useAgentStatuses';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
+import { useToast } from '@/components/Toast';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { dismissTopmost } from '@/utils/closeLayer';
 import { startAndEnableAgentChannel, stopAndDisableAgentChannel } from '@/config/services/agentConfigService';
@@ -119,6 +120,7 @@ export default function AgentChannelsSection({
   onInitialAddPlatformConsumed,
 }: AgentChannelsSectionProps) {
   const { t } = useTranslation('settings');
+  const toast = useToast();
   const [loading, setLoading] = useState<string | null>(null);
   const [overlay, setOverlay] = useState<OverlayState>(() => (
     initialAddPlatform ? { view: 'add', platform: initialAddPlatform } : null
@@ -143,13 +145,16 @@ export default function AgentChannelsSection({
       // could only be re-launched runtime-wise but would still be skipped by
       // auto_start_all_enabled_agent_channels on next restart.
       await startAndEnableAgentChannel(agent.id, channel.id);
-      onAgentChanged();
     } catch (e) {
       console.error('[AgentChannels] Start failed:', e);
+      toast.error(t('agentSettings.channelDetail.operationFailed', { message: String(e) }));
     } finally {
-      if (isMountedRef.current) setLoading(null);
+      if (isMountedRef.current) {
+        setLoading(null);
+        onAgentChanged();
+      }
     }
-  }, [agent.id, onAgentChanged]);
+  }, [agent.id, onAgentChanged, t, toast]);
 
   const handleStopChannel = useCallback(async (channelId: string) => {
     setLoading(channelId);
@@ -159,13 +164,16 @@ export default function AgentChannelsSection({
       // instance; auto_start_all_enabled_agent_channels would re-launch it
       // next launch because channel.enabled is still true on disk.
       await stopAndDisableAgentChannel(agent.id, channelId);
-      onAgentChanged();
     } catch (e) {
       console.error('[AgentChannels] Stop failed:', e);
+      toast.error(t('agentSettings.channelDetail.operationFailed', { message: String(e) }));
     } finally {
-      if (isMountedRef.current) setLoading(null);
+      if (isMountedRef.current) {
+        setLoading(null);
+        onAgentChanged();
+      }
     }
-  }, [agent.id, onAgentChanged]);
+  }, [agent.id, onAgentChanged, t, toast]);
 
   // Close overlay and refresh
   const closeOverlay = useCallback(() => {
@@ -262,6 +270,11 @@ export default function AgentChannelsSection({
           {(agent.channels ?? []).map(channel => {
             const chStatus = getChannelStatus(status, channel.id);
             const isRunning = chStatus?.status === 'online' || chStatus?.status === 'connecting';
+            const shouldStop = channel.enabled || isRunning;
+            const statusText = chStatus?.status === 'online' ? t('agentSettings.channelDetail.statusRunning')
+              : chStatus?.status === 'connecting' ? t('agentSettings.channelDetail.statusConnecting')
+              : chStatus?.status === 'error' ? t('agentSettings.channelDetail.statusError')
+              : t('agentSettings.channelDetail.statusStopped');
             const isLoading = loading === channel.id;
 
             const displayName = resolveChannelDisplayName(
@@ -288,29 +301,27 @@ export default function AgentChannelsSection({
                     <span className={`text-xs ${
                       isRunning ? 'text-[var(--success)]' : 'text-[var(--ink-muted)]'
                     }`}>
-                      {isRunning ? t('agentSettings.channels.running') : t('agentSettings.channels.stopped')}
+                      {statusText}
                     </span>
                   </div>
                 </div>
                 <button
                   className={`flex-shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
-                    isRunning
+                    shouldStop
                       ? 'border border-[var(--error)]/40 text-[var(--error)] hover:bg-[var(--error)]/10'
                       : 'bg-[var(--button-primary-bg)] text-[var(--button-primary-text)] hover:bg-[var(--button-primary-bg-hover)]'
                   }`}
                   onClick={e => {
                     e.stopPropagation();
-                    if (isRunning) { handleStopChannel(channel.id); } else { handleStartChannel(channel); }
+                    if (shouldStop) { handleStopChannel(channel.id); } else { handleStartChannel(channel); }
                   }}
-                  // issue #219 v2: removed `!channel.enabled` gate. handleStartChannel
-                  // now flips enabled=true via startAndEnableAgentChannel, so the user
-                  // can fully restart a disabled channel from list-view (previously
-                  // forced them to navigate to detail view to re-enable).
+                  // Enabled intent can outlive a failed connection. Stop must
+                  // remain available to cancel automatic reconnects.
                   disabled={isLoading}
                 >
                   {isLoading ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : isRunning ? t('agentSettings.channels.stop') : t('agentSettings.channels.start')}
+                  ) : shouldStop ? t('agentSettings.channels.stop') : t('agentSettings.channels.start')}
                 </button>
               </div>
             );

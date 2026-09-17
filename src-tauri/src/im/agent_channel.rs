@@ -211,6 +211,24 @@ pub(crate) async fn stop_agent_channel_runtime(
     let lifecycle_lock = agent_channel_lifecycle_lock(agent_id, channel_id);
     let _lifecycle_guard = lifecycle_lock.lock().await;
 
+    stop_agent_channel_with_lock_held(
+        app_handle,
+        agent_state,
+        sidecar_manager,
+        agent_id,
+        channel_id,
+    )
+    .await
+}
+
+/// Caller holds the exact Channel lifecycle lock, including durable intent.
+pub(super) async fn stop_agent_channel_with_lock_held(
+    app_handle: &AppHandle,
+    agent_state: &ManagedAgents,
+    sidecar_manager: &ManagedSidecarManager,
+    agent_id: &str,
+    channel_id: &str,
+) -> Result<bool, String> {
     let (bot_instance, heartbeat_handle) = {
         let mut agents_guard = agent_state.lock().await;
         if let Some(agent) = agents_guard.get_mut(agent_id) {

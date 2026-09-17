@@ -249,13 +249,8 @@ describe('persistInputOptionChange — disk write fanout', () => {
       model: 'gpt-5.4-codex',
     });
     expect(m.patchAgentConfig).toHaveBeenCalledWith('agent-1', {
-      providerId: 'codex-sub',
-      model: 'gpt-5.4-codex',
-      runtime: 'builtin',
+      runtimeBackedProviderSelection: identity,
       permissionMode: 'fullAgency',
-      runtimeConfig: {
-        envPolicy: { proxy: 'terminal' },
-      },
     });
     expect(m.patchSnapshot).toHaveBeenCalledWith({
       providerId: 'codex-sub',
@@ -297,13 +292,8 @@ describe('persistInputOptionChange — disk write fanout', () => {
     });
 
     expect(m.patchAgentConfig).toHaveBeenCalledWith('agent-1', {
-      providerId: 'codex-sub',
-      model: 'gpt-5.4-codex',
-      runtime: 'builtin',
+      runtimeBackedProviderSelection: identity,
       permissionMode: 'plan',
-      runtimeConfig: {
-        envPolicy: { proxy: 'myagents' },
-      },
     });
     expect(m.patchSnapshot).toHaveBeenCalledWith(expect.objectContaining({
       permissionMode: 'suggest',
@@ -336,10 +326,6 @@ describe('persistInputOptionChange — disk write fanout', () => {
     expect(m.patchAgentConfig).toHaveBeenCalledWith('agent-1', {
       providerId: 'openrouter',
       model: 'anthropic/claude-sonnet-4.6',
-      runtime: 'builtin',
-      runtimeConfig: {
-        envPolicy: { proxy: 'terminal' },
-      },
     });
   });
 
@@ -370,8 +356,6 @@ describe('persistInputOptionChange — disk write fanout', () => {
       providerId: 'openrouter',
       model: 'anthropic/claude-sonnet-4.6',
       permissionMode: 'full-auto',
-      runtime: 'builtin',
-      runtimeConfig: undefined,
     });
   });
 
@@ -428,10 +412,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
     expect(m.patchProject).not.toHaveBeenCalled();
     // Agent gets it nested in runtimeConfig, with existing keys preserved.
     expect(m.patchAgentConfig).toHaveBeenCalledWith('agent-1', {
-      runtimeConfig: {
-        customSetting: 'preserve',
-        permissionMode: 'plan',
-      },
+      runtimeConfigPatch: { permissionMode: 'plan' },
     });
   });
 
@@ -465,7 +446,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
     // Project doesn't track runtimeModel — only the agent does.
     expect(m.patchProject).not.toHaveBeenCalled();
     expect(m.patchAgentConfig).toHaveBeenCalledWith('agent-1', {
-      runtimeConfig: { model: 'sonnet' },
+      runtimeConfigPatch: { model: 'sonnet' },
     });
   });
 
@@ -697,7 +678,7 @@ describe('persistInputOptionChange — reasoning effort routing (#324)', () => {
       { model: 'model-a', reasoningEffort: 'default' },
     ]);
     expect(m.patchSnapshot.mock.calls.map(([patch]) => patch.reasoningEffort)).toEqual(['default', 'default']);
-    expect(m.patchAgentConfig).toHaveBeenLastCalledWith('agent', expect.objectContaining({ runtimeConfig: { reasoningEffort: 'default' } }));
+    expect(m.patchAgentConfig).toHaveBeenLastCalledWith('agent', expect.objectContaining({ reasoningEffort: 'default' }));
   });
 
   it('builtin: writes agent.reasoningEffort + snapshot.reasoningEffort, never the project', async () => {
@@ -732,7 +713,7 @@ describe('persistInputOptionChange — reasoning effort routing (#324)', () => {
       patchSnapshot: m.patchSnapshot,
     });
     expect(m.patchAgentConfig).toHaveBeenCalledWith('agent-1', {
-      runtimeConfig: { model: 'gpt-5.2-codex', permissionMode: 'full-auto', reasoningEffort: effort },
+      runtimeConfigPatch: { reasoningEffort: effort },
     });
     expect(m.patchSnapshot).toHaveBeenCalledWith({ reasoningEffort: effort });
   });
