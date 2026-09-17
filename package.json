@@ -65,7 +65,7 @@
     "verify:theme-css": "node scripts/verify-theme-css.mjs",
     "verify:theme-presets": "vitest run --project unit src/renderer/theme/themes/preset-theme.test.ts --project dom src/renderer/theme/themes/preset-theme.registry.test.tsx",
     "verify:license": "node --test scripts/verify-license-contract-utils.test.mjs && node scripts/verify-license-contract.mjs",
-    "verify:agent-docs": "node scripts/verify-agent-docs.mjs",
+    "verify:agent-docs": "node --test scripts/doc-links.test.mjs && node scripts/verify-agent-docs.mjs",
     "coverage": "vitest run --coverage --project unit --project dom --project integration",
     "format": "prettier --experimental-cli --write .",
     "format:check": "prettier --experimental-cli --check --log-level warn .",

@@ -25,6 +25,8 @@ runtime_handoff:
 
 # Batch 3 Technical RFC — MyAgents integration of MyAgents-dsh
 
+> **Proposal, not current architecture.** This RFC is ready for implementation; current Runtime ownership and supported adapters are documented in [Multi-Agent Runtime](multi_agent_runtime.md).
+
 ## 1. Decision summary
 
 MyAgents will add DSH as a first-party **Integrated Runtime**, not as an External CLI and not as a Managed Provider Runtime.

@@ -641,6 +641,8 @@ Session snapshot 的完整 authority 与写入方向见 [`session_architecture.m
 
 应用内 rename/move 提交成功后，由 Rust mutation owner 在既有 `workspace:files-changed:<eventKey>` 通道立即发出 `{moves: [{oldPath, newPath}]}`，多项 move 只包含成功项。`useWorkspaceChangeSignal` 先交付映射再触发重读，打开的预览按路径组件映射文件及目录后代；同文档搬迁保留编辑缓冲与已保存基线，普通文件切换仍重置。保存、rename、move 通过 `acquire_edit_mutation` 复用按 canonical workspace identity 的 `KeyedLifecycleRegistry`，使已有文件校验与原子保存不会跨越应用内搬迁、重建旧路径。预览关闭及视图转换复用同一个保存流程，失败不卸载草稿。OS watcher 仍只发粗粒度刷新；外部路径失效显示提示，不推测新路径、不承诺外部进程事务或强制退出时的草稿恢复。
 
+编辑缓冲、保存失败与预览转换的完整生命周期见 [工作区 Markdown 编辑器](workspace_markdown_editor.md)。
+
 Sidecar HTTP workspace IO endpoint 已全部下线，Renderer 唯一入口是 `useWorkspaceFileService(workspacePath)`。eslint `no-restricted-syntax` 规则封禁已删除 endpoint 的字符串字面量。
 
 ---

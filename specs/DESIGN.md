@@ -145,6 +145,8 @@ Toast 用于跨区域、短暂且无法从当前表面直接确认的结果。�
 - 需要保留当前输入焦点的鼠标动作使用共享 `retainFocusOnMouseDown`，不在 click 后强行抢焦点。
 - 状态颜色必须伴随文字、形状或图标；内容和主动作需满足当前 Theme 的对比度测试。
 
+macOS 输入出现不可见控制字符时，遵循 [WKWebView 输入防护](tech_docs/macos_arrow_key_leak_investigation.md) 的共享策略，不在单个输入组件复制过滤逻辑。
+
 ### 4.3 减少运动与稳定几何
 
 - `prefers-reduced-motion` 下取消非必要动画，功能和信息不能依赖动画完成。
@@ -261,6 +263,8 @@ App Shell 使用“全局侧栏 + 顶部 Tab”的双层注意力模型，完整
 - Permission Prompt 必须突出请求动作、风险边界和允许/拒绝选择，不能与普通工具输出混在一起。
 
 ### 8.3 Markdown、代码与表格
+
+工作区可编辑文档的源码、保存与预览生命周期见 [Markdown 编辑器](tech_docs/workspace_markdown_editor.md)；以下规则负责通用视觉呈现。
 
 - Markdown H1/H2/H3/H4–H6 使用统一 Type Scale 和主文字色 `ink`；正文、列表、引用与表格正文使用阅读角色 `--font-weight-prose`（500），标题、`strong` 与表头使用 `--font-weight-emphasis`（600）。这些角色只作用于 Markdown，不改变外围 UI 字重。
 - 标题与内容间距为 8px，连续标题同样收紧；普通紧凑列表项间距为 4px，带段落的松散列表为 8px，嵌套列表以缩进和标记区分层级。compact 按自身密度统一缩小。
