@@ -50,7 +50,8 @@ type FileActionScope = FileActionTarget['scope'];
 interface PathCacheEntry {
   info: PathInfo;
   scope: FileActionScope;
-  verifiedAt: number;
+  /** null requests revalidation while retaining the last display result. */
+  verifiedAt: number | null;
 }
 
 interface FileMenuState {
@@ -121,6 +122,13 @@ interface FileActionProviderProps {
 const BATCH_DELAY_MS = 50;
 const MAX_PATHS_PER_BATCH = 200;
 const LOCAL_PATH_LEASE_MS = 30_000;
+
+function isPathCacheEntryFresh(entry: PathCacheEntry): boolean {
+  return entry.verifiedAt !== null && (
+    (entry.scope === 'workspace' && entry.info.exists)
+    || entry.verifiedAt + LOCAL_PATH_LEASE_MS > Date.now()
+  );
+}
 
 function targetCacheKey(target: FileActionTarget, contextIdentity: string): string {
   return `${contextIdentity}\0${target.scope}:${target.path}`;
@@ -210,7 +218,7 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
 
     let earliestExpiry = Number.POSITIVE_INFINITY;
     for (const entry of pathCacheRef.current.values()) {
-      if (entry.scope === 'local' || !entry.info.exists) {
+      if (entry.verifiedAt !== null && (entry.scope === 'local' || !entry.info.exists)) {
         earliestExpiry = Math.min(earliestExpiry, entry.verifiedAt + LOCAL_PATH_LEASE_MS);
       }
     }
@@ -221,16 +229,13 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
       if (!isMountedRef.current) return;
 
       const now = Date.now();
-      let invalidated = false;
       const expiredKeys: string[] = [];
       for (const [key, entry] of pathCacheRef.current) {
-        if ((entry.scope === 'local' || !entry.info.exists) && entry.verifiedAt + LOCAL_PATH_LEASE_MS <= now) {
-          pathCacheRef.current.delete(key);
+        if (entry.verifiedAt !== null && (entry.scope === 'local' || !entry.info.exists) && entry.verifiedAt + LOCAL_PATH_LEASE_MS <= now) {
+          entry.verifiedAt = null;
           expiredKeys.push(key);
-          invalidated = true;
         }
       }
-      if (invalidated) setCacheVersion((version) => version + 1);
       for (const key of expiredKeys) {
         const mounted = mountedTargetsRef.current.get(key);
         if (mounted?.count) enqueueTargetRef.current(key, mounted.target);
@@ -240,7 +245,8 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
   }, []);
   scheduleLocalLeaseExpiryRef.current = scheduleLocalLeaseExpiry;
 
-  // Clear cache when refreshTrigger changes
+  // Same-workspace refreshes invalidate freshness, not the displayed file
+  // identity. Only a workspace change discards the previous display results.
   useEffect(() => {
     // There is no prior context to invalidate on the initial mount. Child
     // consumers may already have subscribed and scheduled the first batch by
@@ -252,11 +258,13 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
     }
 
     cacheGenerationRef.current += 1;
-    pathCacheRef.current.clear();
     if (previousWorkspaceRef.current !== workspaceIdentity) {
+      pathCacheRef.current.clear();
       previousWorkspaceRef.current = workspaceIdentity;
       previewRequestIdRef.current += 1;
       closeMenu();
+    } else {
+      for (const entry of pathCacheRef.current.values()) entry.verifiedAt = null;
     }
     const currentPrefix = `${cacheContextIdentity}\0`;
     for (const key of pendingTargetsRef.current.keys()) {
@@ -352,13 +360,14 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
           ) return false;
 
           let committed = false;
-          for (const [path, info] of Object.entries(results)) {
-            if (!requestedPaths.has(path)) continue;
+          for (const path of requestedPaths) {
+            const info = results[path];
             const target: FileActionTarget = { scope, path };
             const key = targetCacheKey(target, requestContextIdentity);
             if (requestVersions.get(key) !== targetRequestVersionRef.current.get(key)) continue;
             if (!mountedTargetsRef.current.get(key)?.count) continue;
-            pathCacheRef.current.set(key, { info, scope, verifiedAt });
+            if (info) pathCacheRef.current.set(key, { info, scope, verifiedAt });
+            else pathCacheRef.current.delete(key);
             committed = true;
           }
           if (committed) {
@@ -428,16 +437,14 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
 
   const checkFileTarget = useCallback((target: FileActionTarget): PathInfo | null => {
     const key = targetCacheKey(target, cacheContextIdentityRef.current);
-    const cached = pathCacheRef.current.get(key);
-    if (!cached) return null;
-    if ((cached.scope === 'local' || !cached.info.exists) && cached.verifiedAt + LOCAL_PATH_LEASE_MS <= Date.now()) {
-      return null;
-    }
-    return cached.info;
+    // Presentation reads the last result while a replacement is in flight.
+    // Opening and context menus always validate through revalidateTarget.
+    return pathCacheRef.current.get(key)?.info ?? null;
   }, []);
 
   const enqueueTarget = useCallback((key: string, target: FileActionTarget) => {
-    if (pathCacheRef.current.has(key)) return;
+    const cached = pathCacheRef.current.get(key);
+    if (cached && isPathCacheEntryFresh(cached)) return;
     if (inFlightTargetKeysRef.current.has(key)) return;
     if (!pendingTargetsRef.current.has(key)) {
       pendingTargetsRef.current.set(key, target);
@@ -461,7 +468,8 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
     }
     // A newly mounted occurrence is a fresh opportunity to validate a former
     // miss/error (e.g. the model has just created the file).
-    if (pathCacheRef.current.get(key)?.info.exists === false) pathCacheRef.current.delete(key);
+    const cached = pathCacheRef.current.get(key);
+    if (cached?.info.exists === false) cached.verifiedAt = null;
     enqueueTarget(key, target);
 
     return () => {
@@ -572,10 +580,12 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
   }, []);
 
   const invalidateTarget = useCallback((target: FileActionTarget) => {
-    cachePathInfo(target, null);
     const key = targetCacheKey(target, cacheContextIdentityRef.current);
+    const cached = pathCacheRef.current.get(key);
+    if (cached) cached.verifiedAt = null;
     if (mountedTargetsRef.current.get(key)?.count) enqueueTargetRef.current(key, target);
-  }, [cachePathInfo]);
+    scheduleLocalLeaseExpiryRef.current();
+  }, []);
 
   const handlePreview = useCallback((path: string, options?: { initialLineNumber?: number; scope?: FileActionScope }): boolean => {
     const scope = options?.scope ?? 'workspace';

@@ -5252,8 +5252,8 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
             toolCompleteCount. toolCompleteCount bumps when AI file-modifying
             tools complete, and tying every completion to a full cache wipe
             caused requery storms. The ref-counted workspace watcher is the
-            filesystem mutation authority; FileActionProvider invalidates the
-            old affordance and mounted consumers lazily re-request in batches.
+            filesystem mutation authority; FileActionProvider revalidates
+            mounted targets in batches while retaining their display results.
             Explicit UI refreshes remain a second controlled source.
           */}
           <AsyncQuestionContext.Provider value={questionActions}>
