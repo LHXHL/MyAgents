@@ -15,8 +15,9 @@ import ConfirmDialog from '@/components/ConfirmDialog';
 import WorkspaceIcon from '@/components/launcher/WorkspaceIcon';
 import { useToast } from '@/components/Toast';
 import {
-  classifyCodexRewindTransportOutcome,
-  projectCodexRewindRecovery,
+  classifyRewindTransportOutcome,
+  getConversationRejectionMessage,
+  projectRewindRecovery,
   type RewindResponse,
   warnRewindFileOutcome as showRewindFileOutcomeWarning,
 } from '@/utils/rewindFileOutcome';
@@ -1264,6 +1265,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
   // Fork state
   const [forkTarget, setForkTarget] = useState<string | null>(null); // assistant message ID
   const [forkPending, setForkPending] = useState(false);
+  const forkRequestRef = useRef<{ sourceId: string | null; messageId: string; targetSessionId: string } | null>(null);
   const conversationOperationPendingRef = useRef(false);
 
   const messagesRef = useRef(messages);
@@ -4886,6 +4888,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
           result: r?.errorCode ?? (r?.success === false ? 'failed' : 'success'),
         });
         if (r && !r.success) {
+          warnRewindFileOutcome(r);
           // 后端明确返回失败 → 回滚 UI
           setMessages(snapshot);
           chatInputRef.current?.setValue(composerSnapshot.value);
@@ -4919,16 +4922,12 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
           result: errorCode ?? (typeof structured?.status === 'number' ? 'failed' : 'transport_error'),
         });
 
-        // A structured HTTP rejection proves the server did not commit. A
-        // transport failure is ambiguous, so Codex reloads SessionStore
-        // authority instead of restoring a possibly stale pre-rewind tail.
-        const reconciliation = isCodexRewind
-          && typeof structured?.status !== 'number'
-          ? await retryCurrentSessionRestore(messageId)
-          : null;
+        // Re-read authority after a lost response; an old UI snapshot cannot
+        // establish whether the backend committed the rewind.
+        const reconciliation = await retryCurrentSessionRestore(messageId);
         if (sessionIdRef.current !== rewindSessionId) return;
-        const transportOutcome = classifyCodexRewindTransportOutcome(reconciliation);
-        const recovery = projectCodexRewindRecovery(transportOutcome);
+        const transportOutcome = classifyRewindTransportOutcome(reconciliation);
+        const recovery = projectRewindRecovery(transportOutcome);
         if (recovery.restoreMessageSnapshot) {
           setMessages(snapshot);
         }
@@ -4955,74 +4954,47 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
       });
   }, [rewindTarget, apiPost, setMessages, setIsLoading, pauseAutoScroll, t, warnRewindFileOutcome, currentRuntime, currentRuntimeSource, retryCurrentSessionRestore]);
 
-  // Retry = rewind to before user message + auto-resend
-  // Rewind to before the given user message and re-send its content.
-  // Shared by per-assistant retry (handleRetry) and banner-level retry
-  // (handleRetryLastUserMessage). Uses refs throughout so deps stay stable.
-  //
-  // Retry remains a separate operation from Codex historical Rewind. Every
-  // external runtime uses /chat/external-retry here: it removes only the
-  // failed tail user turn from allSessionMessages, persists that truncation,
-  // and lets the auto-resend below become the replacement user turn.
+  // SessionEngine owns rewind + replay admission as one operation.
   const performRetryFromUserMessage = useCallback((userMsg: typeof messagesRef.current[number]) => {
-    const content = typeof userMsg.content === 'string' ? userMsg.content : '';
-    const attachments = userMsg.attachments;
-    const userMessageId = userMsg.id;
-    const retryEndpoint = isExternalRuntime ? '/chat/external-retry' : '/chat/rewind';
-
-    // 快照：后端失败时回滚（与 handleRewindConfirm 一致）
-    const snapshot = messagesRef.current.slice();
-
-    // 1. Optimistic UI: truncate to before user message
+    if (conversationOperationPendingRef.current) return;
+    conversationOperationPendingRef.current = true;
+    const retrySessionId = sessionIdRef.current;
     pauseAutoScroll();
-    setMessages(prev => {
-      const idx = prev.findIndex(m => m.id === userMessageId);
-      return idx >= 0 ? prev.slice(0, idx) : prev;
-    });
-
-    // 2. Rewind + auto-resend
-    let resendFired = false;
     setIsLoading(true);
     setRewindStatus('rewinding');
-    apiPost(retryEndpoint, { userMessageId })
-      .then(res => {
-        const r = res as RewindResponse | undefined;
-        if (r && !r.success) {
-          setMessages(snapshot);
-          toastRef.current.error(t('shell.toasts.retryFailedWithError', { error: r.error || t('shell.toasts.unknownError') }));
+    let queued = false;
+    apiPost('/chat/retry', { userMessageId: userMsg.id })
+      .then(async res => {
+        if (sessionIdRef.current !== retrySessionId) return;
+        const result = res as RewindResponse & { retryQueued?: boolean; conversationCommitted?: boolean };
+        warnRewindFileOutcome(result);
+        queued = result.retryQueued === true;
+        if (!result.success) {
+          if (result.conversationCommitted) await retryCurrentSessionRestore(userMsg.id);
+          toastRef.current.error(t('shell.toasts.retryFailedWithError', { error: result.error || t('shell.toasts.unknownError') }));
+        } else {
+          track('message_retry', {});
+        }
+      })
+      .catch(async error => {
+        if (sessionIdRef.current !== retrySessionId) return;
+        const rejection = getConversationRejectionMessage(error, t);
+        if (rejection) {
+          toastRef.current.error(t('shell.toasts.retryFailedWithError', { error: rejection }));
           return;
         }
-        warnRewindFileOutcome(r);
-        // Rewind succeeded → auto-resend the original message
-        track('message_retry', {});
-        resendFired = true;
-        const imageAttachments = attachments?.filter(a =>
-          a.isImage || a.mimeType?.startsWith('image/')
-        ).map(a => ({
-          id: a.id,
-          file: new File([], a.name, { type: a.mimeType }),
-          preview: a.previewUrl || '',
-          source: a.relativePath || a.savedPath ? 'attachment_ref' as const : undefined,
-          name: a.name,
-          mimeType: a.mimeType,
-          sizeBytes: a.size,
-          relativePath: a.relativePath || a.savedPath,
-        }));
-        handleSendMessageRef.current(content, imageAttachments?.length ? imageAttachments : undefined);
-      })
-      .catch(err => {
-        console.error('[Chat] Retry failed:', err);
-        setMessages(snapshot);
-        toastRef.current.error(t('shell.toasts.retryFailed'));
+        console.error('[Chat] Retry response unavailable:', error);
+        await retryCurrentSessionRestore(userMsg.id);
+        if (sessionIdRef.current === retrySessionId) toastRef.current.warning(t('shell.toasts.conversationResultUnknown'));
       })
       .finally(() => {
-        setRewindStatus(null);
-        // Only clear loading on error — successful resend manages its own loading state
-        if (!resendFired) {
-          setIsLoading(false);
+        conversationOperationPendingRef.current = false;
+        if (sessionIdRef.current === retrySessionId) {
+          setRewindStatus(null);
+          if (!queued) setIsLoading(false);
         }
       });
-  }, [apiPost, setMessages, setIsLoading, pauseAutoScroll, isExternalRuntime, t, warnRewindFileOutcome]); // all stable — refs handle the rest
+  }, [apiPost, setIsLoading, pauseAutoScroll, t, warnRewindFileOutcome, retryCurrentSessionRestore]);
 
   // Uses refs for messagesRef/toastRef/handleSendMessageRef — deps are all stable → reference stable
   const handleRetry = useCallback((assistantMessageId: string) => {
@@ -5062,70 +5034,52 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
     if (!forkTarget || forkPending || conversationOperationPendingRef.current) return;
     conversationOperationPendingRef.current = true;
     const messageId = forkTarget;
+    const sourceId = sessionIdRef.current;
+    if (forkRequestRef.current?.sourceId !== sourceId || forkRequestRef.current?.messageId !== messageId) {
+      forkRequestRef.current = { sourceId, messageId, targetSessionId: crypto.randomUUID() };
+    }
+    const { targetSessionId } = forkRequestRef.current;
     setForkTarget(null);
     setForkPending(true);
-
-    apiPost('/sessions/fork', { messageId })
+    type ForkResult = { success?: boolean; newSessionId?: string; agentDir?: string; title?: string; error?: string; errorCode?: string };
+    const openFork = async (result: ForkResult) => {
+      if (!result.success || !result.newSessionId || !result.agentDir) return false;
+      forkRequestRef.current = null;
+      try {
+        const opened = await onForkSession?.(result.newSessionId, result.agentDir, result.title || 'Fork');
+        if (!opened) toastRef.current.warning(t('shell.toasts.forkOpenFailed'));
+      } catch {
+        toastRef.current.warning(t('shell.toasts.forkOpenFailed'));
+      }
+      return true;
+    };
+    apiPost('/sessions/fork', { messageId, targetSessionId })
       .then(async res => {
-        const r = res as { success?: boolean; newSessionId?: string; agentDir?: string; title?: string; error?: string; errorCode?: string } | undefined;
-        track('session_fork', {
-          runtime: currentRuntime,
-          runtime_source: currentRuntime === 'builtin' ? null : (currentRuntimeSource ?? 'system-cli'),
-          result: r?.errorCode ?? (r?.success ? 'success' : 'failed'),
-        });
-        if (r?.success && r.newSessionId && r.agentDir) {
-          const forkSessionId = r.newSessionId;
-          const discardUnopenedFork = async () => {
-            const removed = await deleteUnopenedForkSession(forkSessionId);
-            if (removed && currentRuntime === 'codex') {
-              console.error(
-                `[chat] Codex conversation branch orphan sessionId=${forkSessionId}`
-                  + ` runtimeSource=${currentRuntimeSource ?? 'system-cli'}`
-                  + ' reason=fork_tab_open_failed orphan=true',
-              );
-            }
-          };
-          if (!onForkSession) {
-            await discardUnopenedFork();
-            toastRef.current.error(t('shell.toasts.forkOpenFailed'));
-            return;
-          }
-          const opened = await onForkSession(forkSessionId, r.agentDir, r.title || 'Fork');
-          if (!opened) {
-            await discardUnopenedFork();
-            toastRef.current.error(t('shell.toasts.forkOpenFailed'));
-          }
-        } else {
-          const error = r?.errorCode
-            ? t(`shell.toasts.conversationError.${r.errorCode}`)
-            : r?.error || t('shell.toasts.unknownError');
-          toastRef.current.error(t('shell.toasts.forkFailedWithError', { error }));
-        }
+        const result = res as ForkResult;
+        track('session_fork', { runtime: currentRuntime, result: result.success ? 'success' : 'failed' });
+        if (await openFork(result)) return;
+        const error = result.errorCode ? t(`shell.toasts.conversationError.${result.errorCode}`)
+          : result.error || t('shell.toasts.unknownError');
+        toastRef.current.error(t('shell.toasts.forkFailedWithError', { error }));
       })
-      .catch(err => {
-        console.error('[Chat] Fork failed:', err);
-        const errorCode = err && typeof err === 'object' && 'errorCode' in err
-          && typeof err.errorCode === 'string'
-          ? err.errorCode
-          : undefined;
-        track('session_fork', {
-          runtime: currentRuntime,
-          runtime_source: currentRuntime === 'builtin' ? null : (currentRuntimeSource ?? 'system-cli'),
-          result: errorCode ?? 'transport_error',
-        });
-        if (errorCode) {
-          toastRef.current.error(t('shell.toasts.forkFailedWithError', {
-            error: t(`shell.toasts.conversationError.${errorCode}`),
-          }));
-        } else {
-          toastRef.current.error(t('shell.toasts.forkFailed'));
+      .catch(async error => {
+        const rejection = getConversationRejectionMessage(error, t);
+        if (rejection) {
+          toastRef.current.error(t('shell.toasts.forkFailedWithError', { error: rejection }));
+          return;
         }
+        console.error('[Chat] Fork response unavailable:', error);
+        try {
+          const result = await apiGet(`/sessions/fork?targetSessionId=${encodeURIComponent(targetSessionId)}`) as ForkResult;
+          if (await openFork(result)) return;
+        } catch { /* Retain this exact target identity for the user's next attempt. */ }
+        toastRef.current.warning(t('shell.toasts.conversationResultUnknown'));
       })
       .finally(() => {
         conversationOperationPendingRef.current = false;
         setForkPending(false);
       });
-  }, [forkTarget, forkPending, apiPost, onForkSession, deleteUnopenedForkSession, t, currentRuntime, currentRuntimeSource]);
+  }, [forkTarget, forkPending, apiPost, apiGet, onForkSession, t, currentRuntime]);
 
   const handleSelectSession = useCallback((
     id: string,

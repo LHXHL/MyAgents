@@ -37,7 +37,7 @@ builtin 启动先解析持久化的 SDK candidate，再确认对应 SDK transcri
 2. probe 成功但 transcript 不存在时，以同一个 candidate fresh create；
 3. probe 出错时拒绝启动，不回退到 Product Session id 或随机新身份。
 
-SDK 的 `sessionId` 与 `resume` 互斥。`resumeSessionAt` 只是在已选定的 SDK history 中指定 Rewind 锚点，不证明该历史存在；锚点失效时可清除锚点并降级为普通 resume，但不能改变 Product Session identity。
+SDK 的 `sessionId` 与 `resume` 互斥。`resumeSessionAt` 只是在已选定的 SDK history 中指定 Rewind 锚点，不证明该历史存在；回溯边界通过现有 mutation intent 与 metadata 的 `sdkResumeSessionAt` 一起提交，取完整保留前缀末条消息的 native chain UUID（包括 user），在新一轮成功后、terminal 配置重启前解除；锚点失效必须保留边界并报告错误，不能恢复更长的历史或改变 Product Session identity。
 
 ### 2.2 pending materialization
 

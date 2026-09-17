@@ -18,7 +18,6 @@ import {
   removeAndPersistExternalSessionMessage,
   resetExternalTranscriptState,
   setExternalSessionMessages,
-  truncateExternalTranscriptForRetry,
 } from './transcript-persistence';
 
 vi.mock('../../SessionStore', () => ({
@@ -122,31 +121,6 @@ describe('external transcript persistence owner', () => {
       'rejected',
       'rollback failed user',
     )).resolves.toBe(true);
-    expect(getExternalSessionMessagesSnapshot().map(item => item.id)).toEqual(['old']);
-  });
-
-  it('commits retry truncation before exposing the removed user content', async () => {
-    setExternalSessionMessages(
-      'session-a',
-      [message('old'), message('failed-user'), message('partial-assistant', 'assistant')],
-      cursor(3),
-    );
-    vi.mocked(mutateSessionTranscript).mockResolvedValueOnce({
-      ok: true,
-      action: 'replaced',
-      cursor: cursor(1),
-    });
-
-    await expect(truncateExternalTranscriptForRetry('session-a', 'failed-user')).resolves.toEqual({
-      success: true,
-      content: 'failed-user',
-      attachments: undefined,
-    });
-    expect(mutateSessionTranscript).toHaveBeenCalledWith(
-      'session-a',
-      expect.objectContaining({ persistedMessageCount: 3 }),
-      { kind: 'external-retry', userMessageId: 'failed-user', targetMessageCount: 1 },
-    );
     expect(getExternalSessionMessagesSnapshot().map(item => item.id)).toEqual(['old']);
   });
 

@@ -290,7 +290,24 @@ export class TranscriptWriter {
     this.inFlight = task;
   }
 
-  /** For explicit mutations/close only. Timeout never cancels the physical IO. */
+  /** Explicit edits wait for physical IO, not a wall-clock guess. A real IO
+   * failure returns control; the existing background writer retains its retry. */
+  async flushForMutation(): Promise<boolean> {
+    const target = this.liveRevision;
+    while (this.durableRevision < target) {
+      if (this.closed || this.blocked || this.retiring) return false;
+      if (this.timer) clearTimeout(this.timer);
+      this.timer = null;
+      this.startWrite();
+      const writing = this.inFlight;
+      if (!writing) return false;
+      await writing;
+      if (this.retryAttempt > 0) return false;
+    }
+    return !this.closed && !this.blocked;
+  }
+
+  /** Bounded flush for lifecycle callers. Timeout never cancels the physical IO. */
   async flush(timeoutMs = 2000): Promise<boolean> {
     const target = this.liveRevision;
     if (this.closed || this.blocked) return false;

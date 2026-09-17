@@ -44,8 +44,9 @@ Rust 在 metadata 尚未发布的窗口，沿 active 或 recovering SessionSidec
 
 `setCurrentProductSessionId` 在同进程变更真实 binding 前调用 `releaseSessionTranscriptForBinding`。writer retirement 暂停新批次并等待既有 IO；截止失败恢复原 writer 调度并保留旧 binding，成功后取消未提交尾部、移除 active 实例。pending materialization 在 claim 目标 metadata 前完成旧 writer 退役，并在等待后复核原事务归属；失败仍可沿既有入口 retry/rollback。目标身份生效后才执行 `afterBind`。异步 candidate 清理只处理该实例独占的未发布文件。普通保存失败不阻止同一 binding 上继续 AI。
 
-- Rewind 先由 SessionStore 检查来源并等待已有 pending publication，再做 native/file 副作用；忙碌/写盘未完成不是历史损坏，最终 commit 仍核对 cursor 和 binding。复用命名 mutation 和 pending intent；target live/native binding 已裁决后，普通对话继续使用 target，磁盘发布后台补齐，不能回退 native 或重复执行。
-- Fork 通过 `publishForkSession` 先登记隐藏的 prepared 目标，再从可信快照生成、校验并发布完整 V2 baseline，最后解除 prepared 状态进入持久列表。不完整恢复后的 live tail 拒绝用作 fork 来源；源 V1 不强刷、不改写；目标没有滞留在源 Sidecar 的 writer。用户与工具附件独立复制，必要附件尚未保存或缺失时显式 fork 失败。失败仅清理目标自己的未发布资源；metadata 已提交后确认丢失不删除目标。
+- Rewind 先由 SessionStore 检查来源；已有未落盘 mutation 时先通过 writer 的 `flushForMutation` 等待，再做 native/file 副作用；本次 commit 同样等待实际 IO 并核对 cursor 和 binding。正常慢写无业务 deadline，真实 IO 失败仍由既有 writer 后台重试；忙碌/写盘未完成不是历史损坏。复用命名 mutation 和 pending intent；target live/native binding 已裁决后，普通对话继续使用 target，磁盘发布后台补齐，不能回退 native 或重复执行。
+- 新 Fork 先由 adapter 建立精确 native 分支、映射锚点并复用 `snapshotForForkedSession` 继承完整配置，不再写入新的 lazy fork。旧 lazy 来源仅由 builtin 绑定解析入口兼容。调用方提交稳定目标产品 ID，metadata 的 `forkOrigin` 将其关联到源 Session/消息，重复请求和断连查询只确认该目标。Fork 通过 `publishForkSession` 先登记隐藏的 prepared 目标，再从可信快照生成、校验并发布完整 V2 baseline，最后解除 prepared 状态进入持久列表。不完整恢复后的 live tail 拒绝用作 fork 来源；源 V1 不强刷、不改写；目标没有滞留在源 Sidecar 的 writer。用户与工具附件独立复制，必要附件尚未保存或缺失时显式 fork 失败。失败仅清理目标自己的未发布资源；metadata 已提交后确认丢失不删除目标；正常慢写等待真实发布结果，不用固定 2 秒取消。打开 Tab 失败也不删除已发布分支。
+- Retry 经 SessionEngine 在既有 mutation owner 内执行精确回溯与普通 desktop admission，前端不再负责第二次发送。外部 mutation 停止进程时保留期间新入队的消息，持有 lease 时将自身 replay 排在队首，再释放执行。V1 在提交截断后通过既有 `chat:messages-retracted` 同步删除，V2 由 writer 发布删除操作，均先删除再接纳 replay。外部 Runtime 不允许通过只截断产品记录伪装 native rewind。文件恢复结果独立返回；响应丢失统一回读权威历史，不恢复旧前端消息快照。
 - Delete 先做原 owner/busy 检查，并确认对应 Node 进程退出后才调用 Global 删除。进程退役期间保留 owner identity，失败不删文件。不能仅凭超时假设旧 IO 已取消。
 - SIGINT/SIGTERM 使用有截止时间的 `drainSessionTranscripts`；强杀只恢复已提交前缀，允许丢失最后的未提交尾部。
 

@@ -75,7 +75,7 @@ it('settles an accepted native-binding mutation before the next history edit', a
   expect(active.writer.projection.messages.size).toBe(0);
 });
 
-it.each(['builtin', 'builtin-new-sdk', 'external-retry'] as const)('can send, save, reopen and rewind after %s truncation', async mode => {
+it.each(['builtin', 'builtin-new-sdk', 'codex-rewind'] as const)('can send, save, reopen and rewind after %s truncation', async mode => {
   const active = store.getActiveSessionTranscript(id)!;
   const { createTranscriptProjection } = await import('../../shared/sessionTranscript');
   active.writer.replaceProjection(createTranscriptProjection());
@@ -85,15 +85,19 @@ it.each(['builtin', 'builtin-new-sdk', 'external-retry'] as const)('can send, sa
   builtin.configureBuiltinTranscriptBinding(() => id);
   const initial = await store.loadSessionTranscript(id);
   external.setExternalSessionMessages(id, initial.messages, initial.cursor);
-  const content = mode === 'external-retry' ? external.getExternalProductContent()! : builtin.getBuiltinProductContent()!;
+  const content = mode === 'codex-rewind' ? external.getExternalProductContent()! : builtin.getBuiltinProductContent()!;
   for (const n of [1, 2]) {
     content.admitUser({ id: `u${n}`, role: 'user', content: 'synthetic', timestamp: 't' });
     content.assistant(`a${n}`);
     content.finishTurn('complete');
   }
   expect(await active.writer.flush()).toBe(true);
-  if (mode === 'external-retry') {
-    expect(await external.truncateExternalTranscriptForRetry(id, 'u2')).toMatchObject({ success: true });
+  if (mode === 'codex-rewind') {
+    active.patchMetadata({ runtime: 'codex', runtimeSessionId: 'native-source' });
+    const source = await store.loadSessionTranscript(id);
+    expect(await store.commitCodexConversationRewind({ sessionId: id, sourceRuntimeSessionId: 'native-source',
+      replacementRuntimeSessionId: 'native-target', sourceMessages: source.messages, targetMessages: source.messages.slice(0, 2),
+    })).toMatchObject({ success: true });
   } else {
     await persistence.truncateTranscriptPersistenceForRewind(id, 'u2', 2, mode === 'builtin-new-sdk'
       ? { sourceSdkSessionId: id, replacementSdkSessionId: 'replacement-sdk' } : undefined);

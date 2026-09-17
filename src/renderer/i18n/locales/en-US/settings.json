@@ -2202,8 +2202,6 @@
       "backgroundAgentPermissionFullAgency": "Full auto",
       "liteLlmRefreshTitle": "Model Data Auto-Update (LiteLLM)",
       "liteLlmRefreshDescription": "Periodically fetch the LiteLLM model registry from GitHub as fallback data for model context lengths, with a startup check and daily incremental updates.",
-      "eagerForkTitle": "Eager Fork (Experimental)",
-      "eagerForkDescription": "Use the SDK's separate forkSession() path when forking sessions, creating the fork immediately with UUID remapping. Disable to use the stable legacy path.",
       "claudeTranscriptRetentionTitle": "Claude Transcript Retention Days",
       "claudeTranscriptRetentionDescription": "Writes cleanupPeriodDays to the Claude Agent SDK to control local transcript auto-cleanup.",
       "daysUnit": "days",

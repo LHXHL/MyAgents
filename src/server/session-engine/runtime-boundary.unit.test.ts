@@ -199,7 +199,7 @@ describe('SessionEngine runtime boundary', () => {
     expect(violations).toEqual([]);
     expect(source).toContain('appendAndPersistExternalAssistantTurn');
     expect(source).toContain('persistExternalUserMessageAppend');
-    expect(source).toContain('truncateExternalTranscriptForRetry');
+    expect(source).not.toContain('truncateExternalTranscriptForRetry');
     expect(source).toContain('markExternalTurnComplete');
     expect(source).toContain('markExternalSessionComplete');
     expect(source).toContain('fireExternalImCallback');
@@ -276,7 +276,7 @@ describe('SessionEngine runtime boundary', () => {
     expect(store).toContain('appendSessionMessages');
     expect(store).toContain('mutateSessionTranscript');
     expect(store).toContain("kind: 'builtin-rewind'");
-    expect(store).toContain("kind: 'external-retry'");
+    expect(store).not.toContain("kind: 'external-retry'");
   });
 
   it('keeps session-core pure and side-effect free', () => {

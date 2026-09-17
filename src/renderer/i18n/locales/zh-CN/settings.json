@@ -2202,8 +2202,6 @@
       "backgroundAgentPermissionFullAgency": "全自动",
       "liteLlmRefreshTitle": "模型数据自动更新（LiteLLM）",
       "liteLlmRefreshDescription": "定期从 GitHub 拉取 LiteLLM 模型库，作为模型上下文长度的兜底数据源（启动检查 + 每日增量，未改动几乎不耗流量）。",
-      "eagerForkTitle": "急切 Fork（实验性）",
-      "eagerForkDescription": "Fork 会话时用 SDK 独立 forkSession() 急切分叉（点击即创建 + UUID 重映射），消除旧的懒分叉状态机。关掉则回退稳定的旧路径。",
       "claudeTranscriptRetentionTitle": "Claude 会话保留天数",
       "claudeTranscriptRetentionDescription": "写入 Claude Agent SDK 的 cleanupPeriodDays，用于控制本地 transcript 自动清理周期。",
       "daysUnit": "天",

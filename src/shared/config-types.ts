@@ -966,10 +966,6 @@ export interface AppConfig {
    *  作为模型 contextLength/maxOutputTokens 的最低优先级兜底数据源。缺省视同 true。
    *  抓取在 Rust 侧（启动条件检查 + 24h interval，ETag/If-None-Match 增量）。 */
   liteLLMModelDataRefresh?: boolean;
-  /** 开发者：fork 走 SDK 独立 `forkSession()` 急切分叉（SDK↔SDK uuid 重映射），
-   *  而非旧的 forkFrom 懒分叉状态机。缺省视同 true（默认开）；关掉则回退旧路径。
-   *  详见 specs/prd/prd_0.2.27_fork_standalone_migration.md。 */
-  eagerFork?: boolean;
   /** 开发者：传给 Claude Agent SDK `settings.cleanupPeriodDays` 的本地 transcript 保留天数。
    *  缺省视同 365，最小 1。 */
   claudeTranscriptCleanupPeriodDays?: number;

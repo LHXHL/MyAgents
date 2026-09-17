@@ -1,3 +1,4 @@
+import { retryDesktopRequest } from './retry';
 import { randomUUID } from 'node:crypto';
 import { broadcast } from '../sse';
 import {
@@ -975,8 +976,24 @@ export function createExternalSessionEngine(): SessionEngine {
       return rewindExternalConversation(userMessageId);
     },
 
-    forkAtAssistantMessage(messageId) {
-      return forkExternalConversation(messageId);
+    async retryUserMessage(userMessageId) {
+      const context = this.getCurrentSessionContext();
+      return rewindExternalConversation(userMessageId, async rewound => {
+        if (rewound.errorCode === 'restore_failed') return { ...rewound, success: false, conversationCommitted: true, retryQueued: false };
+        try {
+          const sent = await this.sendDesktopMessage(retryDesktopRequest(context, rewound));
+          // The lease still blocks dispatch. Its replay precedes arrivals queued
+          // while native history was being rewound.
+          if (sent.success && sent.queueId) await forceExecuteExternalQueueItem(sent.queueId);
+          return { ...rewound, success: sent.success, conversationCommitted: true, retryQueued: sent.success, error: sent.error };
+        } catch (error) {
+          return { ...rewound, success: false, conversationCommitted: true, retryQueued: false, error: String(error) };
+        }
+      });
+    },
+
+    forkAtAssistantMessage(messageId, targetSessionId) {
+      return forkExternalConversation(messageId, targetSessionId);
     },
 
     async updateProviderEnv() {

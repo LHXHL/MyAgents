@@ -1,4 +1,5 @@
-import { getSessionEngine, retryLastExternalUserMessageAtSelector } from '../session-engine';
+import { getSessionMetadata } from '../SessionStore';
+import { getSessionEngine } from '../session-engine';
 import type { CapabilityOperationResult } from '../session-engine/types';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -67,14 +68,23 @@ export async function handleSessionOperationRoute(
     return operationResponse(result);
   }
 
-  if (pathname === '/chat/external-retry' && request.method === 'POST') {
+  if ((pathname === '/chat/retry' || pathname === '/chat/external-retry') && request.method === 'POST') {
     const body = await parseJsonObject(request);
     const userMessageId = typeof body.userMessageId === 'string' ? body.userMessageId : '';
     if (!userMessageId) {
       return jsonResponse({ success: false, error: 'Missing userMessageId' }, 400);
     }
-    const result = await retryLastExternalUserMessageAtSelector(userMessageId);
+    const result = await getSessionEngine().retryUserMessage(userMessageId);
     return operationResponse(result);
+  }
+
+  if (pathname === '/sessions/fork' && request.method === 'GET') {
+    const targetId = new URL(request.url).searchParams.get('targetSessionId') ?? '';
+    const target = getSessionMetadata(targetId);
+    const sourceId = getSessionEngine().getCurrentSessionContext().sessionId;
+    if (!target || target.forkOrigin?.sessionId !== sourceId) return jsonResponse({ success: false, pending: true });
+    if (target.materializationState) return jsonResponse({ success: false, pending: true });
+    return jsonResponse({ success: true, newSessionId: target.id, agentDir: target.agentDir, title: target.title });
   }
 
   if (pathname === '/sessions/fork' && request.method === 'POST') {
@@ -83,7 +93,12 @@ export async function handleSessionOperationRoute(
     if (!messageId) {
       return jsonResponse({ success: false, error: 'Missing messageId' }, 400);
     }
-    const result = await getSessionEngine().forkAtAssistantMessage(messageId);
+    const targetSessionId = body.targetSessionId;
+    if (targetSessionId !== undefined && (typeof targetSessionId !== 'string'
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(targetSessionId))) {
+      return jsonResponse({ success: false, error: 'Invalid fork target identity' }, 400);
+    }
+    const result = await getSessionEngine().forkAtAssistantMessage(messageId, targetSessionId as string | undefined);
     return operationResponse(result);
   }
 

@@ -4683,6 +4683,68 @@ describe('external SessionEngine with fake runtime', () => {
     }
   });
 
+  it.each(['v1', 'v2'])('retries a historical %s Codex answer with a native rewind before backend replay', async format => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'first answer' },
+      { kind: 'success', text: 'second answer' },
+      { kind: 'success', text: 'replacement first answer' },
+    ], { conversationBranching: true });
+    const sessionId = 'session-codex-retry';
+    const workspacePath = join(harness.home, 'workspace');
+    if (format === 'v1') await harness.sessionStore.saveSessionMetadata({ id: sessionId, agentDir: workspacePath,
+      title: 'legacy', createdAt: 't', lastActiveAt: 't', runtime: 'codex', runtimeSource: 'system-cli' });
+    for (const text of ['first question', 'second question']) {
+      const sent = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, text));
+      await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
+      await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    }
+    const original = (await harness.sessionStore.getSessionData(sessionId))!.messages;
+    const first = original[0];
+    expect(await harness.engine.retryUserMessage(first.id)).toMatchObject({ success: true, retryQueued: true, conversationCommitted: true });
+    if (format === 'v1') expect(broadcastEvents).toContainEqual({ event: 'chat:messages-retracted', data: {
+      messageIds: original.map(message => message.id), retractedStreamingTail: true,
+    } });
+    await waitFor(() => harness.runtime.startSessionInitialMessages.length === 2, 'retry replacement thread');
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.runtime.conversationBranches).toEqual([{ kind: 'before-turn', runtimeTurnId: 'fake-turn-1' }]);
+    const data = (await harness.sessionStore.getSessionData(sessionId))!;
+    expect(data.messages.map(message => message.role)).toEqual(['user', 'assistant']);
+    expect(data.messages[0].content).toBe('first question');
+    expect(data.messages[1].content).toContain('replacement first answer');
+    expect(data.runtimeSessionId).toBe('fake-thread-2');
+  });
+
+  it('keeps a send arriving during Codex retry behind its owned replay', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'original answer' },
+      { kind: 'success', text: 'retried answer' },
+      { kind: 'success', text: 'competing answer' },
+    ], { conversationBranching: true });
+    const sessionId = 'session-codex-retry-race';
+    const workspacePath = join(harness.home, 'workspace');
+    const sent = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'original'));
+    await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const first = (await harness.sessionStore.getSessionData(sessionId))!.messages[0];
+    const nativeBranch = harness.runtime.branchConversation!.bind(harness.runtime);
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    harness.runtime.branchConversation = async (process, boundary) => {
+      entered(); await gate; return nativeBranch(process, boundary);
+    };
+    const retry = harness.engine.retryUserMessage(first.id);
+    await started;
+    const competitor = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'competitor'));
+    release();
+    expect(await retry).toMatchObject({ success: true, retryQueued: true });
+    await expect(competitor.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect((await harness.sessionStore.getSessionData(sessionId))!.messages.filter(message => message.role === 'user').map(message => message.content))
+      .toEqual(['original', 'competitor']);
+  });
+
   it('rewinds a Codex conversation and prewarms the replacement native thread', async () => {
     const harness = await createHarness([
       { kind: 'success', text: 'first answer' },

@@ -6857,40 +6857,6 @@ export default function Settings({
                       </div>
                     </div>
 
-                    {/* Eager Fork Toggle (PRD 0.2.27) */}
-                    <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <h3 className="text-sm font-medium text-[var(--ink)]">
-                            {tSettings('about.developer.eagerForkTitle')}
-                          </h3>
-                          <p className="mt-1 text-xs text-[var(--ink-muted)]">
-                            {tSettings('about.developer.eagerForkDescription')}
-                          </p>
-                        </div>
-                        <button
-                          onClick={() =>
-                            updateConfig({
-                              eagerFork: !(config.eagerFork ?? true),
-                            })
-                          }
-                          className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors ${
-                            (config.eagerFork ?? true)
-                              ? 'bg-[var(--accent)]'
-                              : 'bg-[var(--line-strong)]'
-                          }`}
-                        >
-                          <span
-                            className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${
-                              (config.eagerFork ?? true)
-                                ? 'translate-x-5'
-                                : 'translate-x-0'
-                            }`}
-                          />
-                        </button>
-                      </div>
-                    </div>
-
                     {/* Claude transcript retention */}
                     <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
                       <div className="flex items-start justify-between gap-4">

@@ -1,3 +1,4 @@
+import { retryDesktopRequest } from './retry';
 import { randomUUID } from 'node:crypto';
 import {
   publishBuiltinTranscriptSaveStatus,
@@ -44,6 +45,7 @@ import {
   resetInteractionScenario,
   requireCurrentBuiltinSkill,
   rewindSession,
+  retryBuiltinUserMessage,
   setAgents,
   setBackgroundAgentPermissionMode,
   setInteractionScenario,
@@ -919,8 +921,20 @@ export function createBuiltinSessionEngine(): SessionEngine {
       return rewindSession(userMessageId);
     },
 
-    forkAtAssistantMessage(messageId) {
-      return forkSession(messageId);
+    async retryUserMessage(userMessageId) {
+      return retryBuiltinUserMessage(userMessageId, async rewound => {
+        const context = this.getCurrentSessionContext();
+        try {
+          const sent = await this.sendDesktopMessage(retryDesktopRequest(context, rewound));
+          return { ...rewound, success: sent.success, conversationCommitted: true, retryQueued: sent.success, error: sent.error };
+        } catch (error) {
+          return { ...rewound, success: false, conversationCommitted: true, retryQueued: false, error: String(error) };
+        }
+      });
+    },
+
+    forkAtAssistantMessage(messageId, targetSessionId) {
+      return forkSession(messageId, targetSessionId);
     },
 
     async updateProviderEnv(providerEnv) {

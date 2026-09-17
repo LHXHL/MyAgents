@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { SseEventMetadata } from '@/api/SseConnection';
 import { useTabState } from './TabContext';
-import TabProvider from './TabProvider';
+import TabProvider, { handleApiResponse } from './TabProvider';
+import { getConversationRejectionMessage } from '@/utils/rewindFileOutcome';
 
 type EventHandler = (
   eventName: string,
@@ -92,6 +93,11 @@ vi.mock('@/api/tauriClient', () => ({
   setFocusedCorrelationTabId: vi.fn(),
 }));
 
+function HistoryProbe() {
+  const { messages } = useTabState();
+  return <output data-testid="history-ids">{messages.map(message => message.id).join(',')}</output>;
+}
+
 function ResetControl() {
   const { resetSession } = useTabState();
   return <button type="button" onClick={() => void resetSession()}>reset</button>;
@@ -112,6 +118,7 @@ function TitleHarness({ initialTitle = 'New Chat' }: { initialTitle?: string }) 
         claimSessionOpeningTransition={() => () => undefined}
       >
         <ResetControl />
+        <HistoryProbe />
       </TabProvider>
     </>
   );
@@ -356,5 +363,25 @@ describe('TabProvider session title projection', () => {
       },
     });
     expect(screen.getByTestId('session-title').textContent).toBe('已有标题');
+  });
+});
+
+describe('legacy retry projection and rejection', () => {
+  it('removes the committed old tail before appending the backend replay', async () => {
+    render(<TitleHarness />);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    const replay = (id: string, role: 'user' | 'assistant') => emit('chat:message-replay', {
+      replayKind: 'live-user-echo', sessionId: 'pending-title',
+      message: { id, role, content: id, timestamp: '2026-09-18T00:00:00Z' },
+    });
+    replay('u1', 'user'); replay('a1', 'assistant'); replay('u2', 'user'); replay('a2', 'assistant');
+    expect(screen.getByTestId('history-ids')).toHaveTextContent('u1,a1,u2,a2');
+    emit('chat:messages-retracted', { messageIds: ['u1', 'a1', 'u2', 'a2'], retractedStreamingTail: true });
+    replay('retry-user', 'user'); replay('retry-answer', 'assistant');
+    expect(screen.getByTestId('history-ids').textContent).toBe('retry-user,retry-answer');
+  });
+  it('preserves an explicit HTTP capability rejection through the actual response parser', async () => {
+    const error = await handleApiResponse(new Response(JSON.stringify({ error: 'Cannot branch', errorCode: 'unsupported_runtime' }), { status: 400 })).catch(value => value);
+    expect(getConversationRejectionMessage(error, key => key)).toBe('shell.toasts.conversationError.unsupported_runtime');
   });
 });

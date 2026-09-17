@@ -246,56 +246,6 @@ export async function removeAndPersistExternalSessionMessage(
   return true;
 }
 
-export async function truncateExternalTranscriptForRetry(
-  sessionId: string,
-  userMessageId: string,
-): Promise<{
-  success: boolean;
-  error?: string;
-  content?: string;
-  attachments?: SessionMessage['attachments'];
-}> {
-  const messages = getExternalSessionMessagesSnapshot();
-  const targetIndex = messages.findIndex(
-    m => m.id === userMessageId && m.role === 'user',
-  );
-  if (targetIndex < 0) {
-    return { success: false, error: 'Message not found' };
-  }
-  const target = messages[targetIndex];
-  if (!target) {
-    return { success: false, error: 'Message not found' };
-  }
-  const content = typeof target.content === 'string' ? target.content : '';
-  const attachments = target.attachments;
-
-  try {
-    const cursor = await ensureExternalTranscriptCursor(sessionId);
-    const result = await mutateSessionTranscript(sessionId, cursor, {
-      kind: 'external-retry',
-      userMessageId,
-      targetMessageCount: targetIndex,
-    });
-    if (!result.ok) {
-      if (result.reason === 'stale-cursor') await reloadExternalTranscript(sessionId);
-      const userFacingError = result.reason === 'stale-cursor'
-        ? 'Conversation history changed while retrying; reopen the session before trying again.'
-        : result.reason === 'malformed-transcript'
-          ? 'Conversation history contains data that cannot be safely modified.'
-          : `Failed to persist truncation: ${result.error}`;
-      throw new Error(userFacingError);
-    }
-    transcriptCursor = result.cursor;
-    if (!getExternalProductContent()) allSessionMessages.length = targetIndex;
-  } catch (err) {
-    console.error('[external-session] popLastUserMessageForRetry: failed to persist truncation:', err);
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'Failed to persist truncation',
-    };
-  }
-  return { success: true, content, attachments };
-}
 
 export interface ExternalAssistantTurnPersistInput {
   sessionId: string | null;

@@ -1822,8 +1822,9 @@ function finalizeBuiltinRewindMetadata(
     return {
         ...current,
         sdkSessionId: intent.replacementSdkSessionId,
+        sdkResumeSessionAt: intent.resumeSessionAt,
         unifiedSession: false,
-        forkFrom: undefined,
+        forkFrom: intent.resumeSessionAt ? current.forkFrom : undefined,
         pendingConversationMutation: undefined,
         runtimeUsageTotals: undefined,
         lastContextUsage: undefined,
@@ -2006,6 +2007,7 @@ export async function commitBuiltinConversationRewind(input: {
     cursor: TranscriptWriteCursor;
     sourceSdkSessionId: string | null;
     replacementSdkSessionId: string;
+    resumeSessionAt?: string;
     targetMessageId: string;
     targetMessageCount: number;
 }): Promise<ConversationMutationResult> {
@@ -2017,12 +2019,12 @@ export async function commitBuiltinConversationRewind(input: {
         if (!derived.ok || !derived.target) return { success: false, reason: 'precondition_failed', error: derived.ok ? 'Empty rewind target' : derived.error };
         return commitV2ConversationMutation(input.sessionId, {
             schemaVersion: 1, kind: 'builtin-rewind', sourceSdkSessionId: input.sourceSdkSessionId,
-            replacementSdkSessionId: input.replacementSdkSessionId,
+            replacementSdkSessionId: input.replacementSdkSessionId, resumeSessionAt: input.resumeSessionAt,
             sourceMessageCount: source.length, targetMessageCount: derived.target.length,
         }, derived.target.map(message => message.id), source.map(message => message.id));
     }
     ensureStorageDir();
-    if (input.sourceSdkSessionId === input.replacementSdkSessionId) {
+    if (input.sourceSdkSessionId === input.replacementSdkSessionId && !input.resumeSessionAt) {
         return { success: false, reason: 'precondition_failed', error: 'Replacement SDK identity must be fresh' };
     }
 
@@ -2030,7 +2032,7 @@ export async function commitBuiltinConversationRewind(input: {
         schemaVersion: 1,
         kind: 'builtin-rewind',
         sourceSdkSessionId: input.sourceSdkSessionId,
-        replacementSdkSessionId: input.replacementSdkSessionId,
+        replacementSdkSessionId: input.replacementSdkSessionId, resumeSessionAt: input.resumeSessionAt,
         sourceMessageCount: input.cursor.persistedMessageCount,
         targetMessageCount: input.targetMessageCount,
     };
@@ -2157,8 +2159,7 @@ export type TranscriptMutationIntent =
     | { kind: 'sdk-retraction'; sdkUuids: readonly string[]; streamingTailMessageId?: string }
     | { kind: 'builtin-admission-rollback'; messageId: string }
     | { kind: 'builtin-transient-retry'; messageId: string }
-    | { kind: 'external-rejected-message'; messageId: string }
-    | { kind: 'external-retry'; userMessageId: string; targetMessageCount: number };
+    | { kind: 'external-rejected-message'; messageId: string };
 
 export type MutateSessionTranscriptResult =
     | { ok: true; action: 'replaced' | 'noop'; cursor: TranscriptWriteCursor }
@@ -2362,8 +2363,8 @@ function deriveTranscriptMutationTarget(
     messages: SessionMessage[],
     intent: TranscriptMutationIntent,
 ): { ok: true; target: SessionMessage[] | null } | { ok: false; error: string } {
-    if (intent.kind === 'builtin-rewind' || intent.kind === 'external-retry') {
-        const targetId = intent.kind === 'builtin-rewind' ? intent.targetMessageId : intent.userMessageId;
+    if (intent.kind === 'builtin-rewind') {
+        const targetId = intent.targetMessageId;
         const targetIndex = messages.findIndex(message => message.id === targetId && message.role === 'user');
         if (targetIndex < 0) {
             return intent.targetMessageCount >= messages.length
@@ -2430,10 +2431,10 @@ async function commitV2ConversationMutation(
         ? current.runtime === 'codex' && current.runtimeSessionId === intent.sourceRuntimeSessionId
         : (current.runtime ?? 'builtin') === 'builtin'
             && (resolveBuiltinSdkSessionId(current) ?? null) === intent.sourceSdkSessionId
-            && intent.replacementSdkSessionId !== intent.sourceSdkSessionId;
+            && (intent.replacementSdkSessionId !== intent.sourceSdkSessionId || Boolean(intent.resumeSessionAt));
     if (!sourceMatches) return { success: false, reason: 'precondition_failed', error: 'Native rewind source binding changed' };
     const revision = active.writer.status.liveRevision;
-    if (!await active.writer.flush()) return { success: false, reason: 'write_error', error: 'Rewind could not confirm its source within the save deadline' };
+    if (!await active.writer.flushForMutation()) return { success: false, reason: 'write_error', error: 'Rewind could not save its source history' };
     const source = [...active.writer.projection.messages.keys()];
     if (revision !== active.writer.status.liveRevision || source.length !== sourceIds.length || source.some((id, i) => id !== sourceIds[i])) {
         return { success: false, reason: 'precondition_failed', error: 'V2 rewind source changed while preparing' };
@@ -2458,7 +2459,7 @@ export async function prepareSessionTranscriptMutation(
         if (active.writer.status.reason === 'invalid-history') {
             return { ok: false, reason: 'malformed-transcript', error: 'History has no complete mutation source' };
         }
-        if (active.hasPendingMutation && !await active.writer.flush()) {
+        if (active.hasPendingMutation && !await active.writer.flushForMutation()) {
             return { ok: false, reason: 'write-error', error: 'The previous conversation edit is still waiting to be saved; try again once saving completes' };
         }
         return;
@@ -2589,6 +2590,7 @@ export async function updateSessionMetadata(
         | 'configSnapshotAt'
         | 'materializationState'
         | 'materializationSourceSessionId'
+        | 'sdkResumeSessionAt'
         | 'pendingContinueAfterAbort'
     >> & {
         /** Pin intent. SessionStore owns the canonical ordering timestamp. */
@@ -2910,20 +2912,16 @@ export async function assertCompleteSessionForkSource(sessionId: string): Promis
  */
 export async function publishForkSession(
     metadata: SessionMetadata, messages: readonly SessionMessage[], sourceSessionId: string,
-    timeoutMs = 2000,
 ): Promise<void> {
     if (!ownsSessionMetadataBirth(metadata) || metadata.transcriptFormat !== 2 || getSessionMetadata(metadata.id)) {
         throw new Error('Fork target must be a fresh V2 Session birth');
     }
     await assertCompleteSessionForkSource(sourceSessionId);
     const prepared: SessionMetadata = { ...metadata, materializationState: 'prepared', materializationSourceSessionId: sourceSessionId };
-    let cancelled = false;
     let candidate: TranscriptFile | undefined;
-    const task = (async () => {
+    try {
         await publishV2Metadata(prepared, {}, true);
-        if (cancelled) throw new Error('Fork publication expired');
         const copied = await copyForkAttachments(messages, metadata.id);
-        if (cancelled) throw new Error('Fork publication expired');
         const projection = createTranscriptProjection();
         for (const message of copied) {
             if (projection.messages.has(message.id)) throw new Error('Duplicate fork message identity');
@@ -2934,7 +2932,6 @@ export async function publishForkSession(
             sessionId: metadata.id, filePath: getV2SessionFilePath(metadata.id), generation,
             allowCreate: true, withLock: run => withSessionFileLock(metadata.id, run),
             publishBirth: async () => {
-                if (cancelled) throw new Error('Fork publication expired');
                 await publishV2Metadata(prepared, {
                     materializationState: undefined, materializationSourceSessionId: undefined,
                     lastMessagePreview: resolveLastVisibleTurnPreview([...messages]).preview,
@@ -2943,21 +2940,12 @@ export async function publishForkSession(
             },
         });
         await file.replace({ generation, revision: 0 }, projection, 0);
-    })();
-    // Cancellation ends only the caller's wait. Cleanup follows the actual IO,
-    // under the same file/metadata locks; it cannot race a late rename/commit.
-    const cleanup = task.catch(async error => {
+    } catch (error) {
         await candidate?.discardCandidate();
         const cleanup = await deleteSession(metadata.id, { kind: 'prepared-materialization-rollback', sourceSessionId });
         if (cleanup.deleted) await discardForkAttachments(metadata.id);
         throw error;
-    });
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-        await Promise.race([cleanup, new Promise<never>((_, reject) => {
-            timer = setTimeout(() => { cancelled = true; reject(new Error('Fork history could not be saved in time')); }, timeoutMs);
-        })]);
-    } finally { if (timer) clearTimeout(timer); }
+    }
 }
 
 /** Explicit unopened/fork targets hand off only after a committed publication.

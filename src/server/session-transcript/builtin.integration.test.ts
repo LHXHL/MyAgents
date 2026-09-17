@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NO_CHANNEL_DELIVERY } from '../session-core/channel-delivery';
 import type { TurnTerminalOutcome } from '../session-core/turn-queue';
 
-const state = vi.hoisted(() => ({ home: '', failProductIo: false, query: vi.fn(), sdkRead: vi.fn(), sdkFork: vi.fn(), sdkDelete: vi.fn(), rewindFiles: vi.fn(), events: [] as [string, unknown][], queuedFollowup: false, exitWithoutResult: false, toolFrames: false, childFrames: false, media: vi.fn() }));
+const state = vi.hoisted(() => ({ home: '', failProductIo: false, query: vi.fn(), sdkRead: vi.fn(), sdkFork: vi.fn(), sdkDelete: vi.fn(), rewindFiles: vi.fn(), beforeResult: vi.fn(), events: [] as [string, unknown][], queuedFollowup: false, exitWithoutResult: false, toolFrames: false, childFrames: false, media: vi.fn() }));
 vi.mock('os', async original => ({ ...await original<typeof import('os')>(), homedir: () => state.home }));
 vi.mock('../utils/fs-utils', async original => {
   const actual = await original<typeof import('../utils/fs-utils')>();
@@ -53,7 +53,11 @@ function fakeQuery(args: { prompt: AsyncIterable<unknown>; options: { sessionId?
   if (!sessionId) throw new Error('SDK test transport requires a new or resumed Session identity');
   const iterator = {
     async next(): Promise<IteratorResult<unknown>> {
-      if (pending.length) return { done: false, value: pending.shift() };
+      if (pending.length) {
+        const value = pending.shift();
+        if ((value as { type?: string })?.type === 'result') state.beforeResult();
+        return { done: false, value };
+      }
       if (state.exitWithoutResult && turn > 0) return { done: true, value: undefined };
       const followup = state.queuedFollowup && turn === 1;
       if (followup) {
@@ -130,6 +134,7 @@ beforeEach(async () => {
   state.exitWithoutResult = false;
   state.toolFrames = false;
   state.childFrames = false;
+  state.beforeResult.mockReset();
   state.media.mockReset().mockResolvedValue([]);
   state.query.mockReset().mockImplementation(fakeQuery);
   state.sdkRead.mockReset().mockResolvedValue([]);
@@ -275,7 +280,7 @@ describe('builtin V2 execution independent of product storage', () => {
     } finally { clearTimeout(timeout); }
   });
 
-  it.each([false, true])('preserves acknowledged queue order and exact fork/rewind boundaries (eager=%s)', async eager => {
+  it('preserves acknowledged queue order and exact materialized fork/rewind boundaries', async () => {
     state.queuedFollowup = true;
     const workspace = join(state.home, 'workspace');
     await mkdir(workspace);
@@ -294,27 +299,25 @@ describe('builtin V2 execution independent of product storage', () => {
     expect(await active.writer.flush()).toBe(true);
     expect((await active.file.read()).projection.messages.get(rows[1].id)?.sdkUuid).toBe('tail-frame-1');
     await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
-    const config = await import('../utils/admin-config');
-    const currentConfig = config.loadConfig();
-    vi.spyOn(config, 'loadConfig').mockReturnValue({ ...currentConfig, eagerFork: eager });
     const newSid = randomUUID();
     const sdkRows = rows.filter(row => row.sdkUuid).map(row => ({ type: row.role, uuid: row.sdkUuid! }));
     const sourcePrefix = sdkRows.slice(0, sdkRows.findIndex(row => row.uuid === 'tail-frame-1') + 1);
     state.sdkRead.mockImplementation(async (id: string) => id === newSid
       ? sourcePrefix.map(row => ({ ...row, uuid: `fork-${row.uuid}` })) : sdkRows);
     state.sdkFork.mockResolvedValue({ sessionId: newSid });
-    const forked = await agent.forkSession(rows[1].id);
+    active.patchMetadata({ configSnapshotAt: 'frozen', reasoningEffort: 'high', enabledPluginIds: ['synthetic-plugin'], enabledOfficialToolIds: ['image-understanding'] });
+    const targetId = randomUUID();
+    const forked = await agent.forkSession(rows[1].id, targetId);
+    expect(forked.newSessionId).toBe(targetId);
+    expect(await agent.forkSession(rows[1].id, targetId)).toMatchObject({ success: true, newSessionId: targetId });
+    expect(state.sdkFork).toHaveBeenCalledOnce();
     expect(forked.success).toBe(true);
     const target = (await store.getSessionData(forked.newSessionId!))!;
     expect(target.messages.map(row => row.role)).toEqual(['user', 'assistant']);
-    if (eager) {
-      expect(state.sdkFork).toHaveBeenCalledWith(metadata.id, expect.objectContaining({ upToMessageId: 'tail-frame-1' }));
-      expect(target.messages[1].sdkUuid).toBe('fork-tail-frame-1');
-      expect(target.forkFrom).toBeUndefined();
-    } else {
-      expect(state.sdkFork).not.toHaveBeenCalled();
-      expect(target.forkFrom?.messageUuid).toBe('tail-frame-1');
-    }
+    expect(state.sdkFork).toHaveBeenCalledWith(metadata.id, expect.objectContaining({ upToMessageId: 'tail-frame-1' }));
+    expect(target.messages[1].sdkUuid).toBe('fork-tail-frame-1');
+    expect(target.forkFrom).toBeUndefined();
+    expect(target).toMatchObject({ reasoningEffort: 'high', enabledPluginIds: ['synthetic-plugin'], enabledOfficialToolIds: ['image-understanding'] });
     state.queuedFollowup = false;
     expect(await agent.rewindSession(rows[2].id)).toMatchObject({ success: true });
     expect(agent.getMessages().map(row => row.id)).toEqual(rows.slice(0, 2).map(row => row.id));
@@ -423,4 +426,179 @@ describe('builtin V2 execution independent of product storage', () => {
     expect([...active.writer.projection.turns.values()].map(turn => turn.status)).toEqual(['complete', 'complete']);
     expect(state.events.some(([event]) => event === 'chat:agent-error')).toBe(false);
   });
+});
+
+  it('materializes a fork of an unstarted legacy lazy branch from its real source', async () => {
+    const workspace = join(state.home, 'workspace');
+    await mkdir(workspace);
+    const source = await store.createSession(workspace, { runtime: 'builtin' });
+    const { createSessionMetadata } = await import('../types/session');
+    await mkdir(join(state.home, '.myagents'), { recursive: true });
+    const branch = createSessionMetadata(workspace, { runtime: 'builtin', forkFrom: { sourceSessionId: source.id, messageUuid: 'native-a' } });
+    await store.publishForkSession(branch, [
+      { id: 'u', role: 'user', content: 'question', timestamp: 't', sdkUuid: 'native-u' },
+      { id: 'a', role: 'assistant', content: 'answer', timestamp: 't', sdkUuid: 'native-a' },
+    ], source.id);
+    await agent.initializeAgent(workspace, null, branch.id, { preWarmDisabled: true });
+    const newNative = randomUUID();
+    state.sdkFork.mockResolvedValue({ sessionId: newNative });
+    state.sdkRead.mockImplementation(async (id: string) => id === branch.id ? [] : [
+      { type: 'user', uuid: id === newNative ? 'copy-u' : 'native-u' },
+      { type: 'assistant', uuid: id === newNative ? 'copy-a' : 'native-a' },
+    ]);
+    const forked = await agent.forkSession('a');
+    expect(forked.success).toBe(true);
+    const target = store.getSessionMetadata(forked.newSessionId!)!;
+    expect(target.forkFrom).toBeUndefined();
+    expect(target.sdkSessionId).toBe(newNative);
+    expect(state.sdkFork).toHaveBeenCalledWith(source.id, expect.objectContaining({ upToMessageId: 'native-a' }));
+  });
+
+it('preserves completed file restoration when later transcript persistence fails', async () => {
+  const workspace = join(state.home, 'workspace');
+  await mkdir(workspace);
+  const metadata = await store.createSession(workspace, { runtime: 'builtin' });
+  await agent.initializeAgent(workspace, null, metadata.id, { preWarmDisabled: true });
+  await agent.enqueueUserMessage('question', [], undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
+  await vi.waitFor(() => expect(agent.getLastBuiltinAssistantText()).toBe('answer 1 full-only tail'));
+  await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
+  const transcript = await import('../builtin-session/transcript');
+  const user = agent.getMessages()[0];
+  transcript.bindSdkUuidToMessage(user, 'native-user');
+  transcript.addCurrentSessionUuid('native-user');
+  expect(await store.getActiveSessionTranscript(metadata.id)!.writer.flush()).toBe(true);
+  const persistence = await import('../builtin-session/transcript-persistence');
+  vi.spyOn(persistence, 'truncateTranscriptPersistenceForRewind').mockRejectedValue(new Error('injected persistence failure'));
+  state.rewindFiles.mockResolvedValue({ canRewind: true, filesChanged: ['synthetic-file'] });
+  const response = await agent.rewindSession(user.id);
+  expect(state.rewindFiles).toHaveBeenCalledWith('native-user');
+  expect(response.success).toBe(false);
+  expect(response.fileRewindStatus).toBe('complete');
+  expect(response.error).toContain('injected persistence failure');
+});
+
+it.each(['v1', 'v2'])('retries %s through the backend mutation owner and ordinary send admission', async format => {
+  const workspace = join(state.home, 'workspace');
+  await mkdir(workspace);
+  const meta = format === 'v2' ? await store.createSession(workspace, { runtime: 'builtin' })
+    : { id: randomUUID(), agentDir: workspace, title: 'legacy', createdAt: 't', lastActiveAt: 't', runtime: 'builtin' as const };
+  if (format === 'v1') await store.saveSessionMetadata(meta);
+  await agent.initializeAgent(workspace, null, meta.id, { preWarmDisabled: true });
+  const engine = (await import('../session-engine/builtin-adapter')).createBuiltinSessionEngine();
+  const sent = await engine.sendDesktopMessage({ sessionId: meta.id, workspacePath: workspace, scenario: { type: 'desktop' }, text: 'original question' });
+  expect(sent.success).toBe(true);
+  await vi.waitFor(() => expect(agent.getLastBuiltinAssistantText()).toContain('answer 1'));
+  await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
+  const original = agent.getMessages().slice();
+  const user = original[0];
+  expect(await engine.retryUserMessage(user.id)).toMatchObject({ success: true, retryQueued: true, conversationCommitted: true });
+  if (format === 'v1') expect(state.events).toContainEqual(['chat:messages-retracted', {
+    messageIds: original.map(message => message.id), retractedStreamingTail: true,
+  }]);
+  await vi.waitFor(() => {
+    expect(agent.getMessages()).toHaveLength(2);
+    expect(agent.getMessages()[0].id).not.toBe(user.id);
+    expect(agent.getMessages()[0].content).toBe('original question');
+    expect(agent.isSessionBusy()).toBe(false);
+  });
+});
+
+it('retains an exact rewind boundary across rejection and cold reopen', async () => {
+  const workspace = join(state.home, 'workspace');
+  await mkdir(workspace);
+  const meta = await store.createSession(workspace, { runtime: 'builtin' });
+  state.queuedFollowup = true;
+  await agent.initializeAgent(workspace, null, meta.id, { preWarmDisabled: true });
+  await agent.enqueueUserMessage('original', [], undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
+  await vi.waitFor(() => expect(agent.getLastBuiltinAssistantText()).toBe('answer 2 full-only tail'));
+  await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
+  const target = agent.getMessages()[2].id;
+  state.queuedFollowup = false;
+  expect(await agent.rewindSession(target)).toMatchObject({ success: true });
+  expect(await store.getActiveSessionTranscript(meta.id)!.writer.flushForMutation()).toBe(true);
+  expect(store.getSessionMetadata(meta.id)?.sdkResumeSessionAt).toBe('tail-frame-1');
+  await agent.resetSession();
+  await agent.initializeAgent(workspace, null, meta.id, { preWarmDisabled: true });
+  state.query.mockImplementation(() => { throw new Error('No message found with message.uuid of: tail-frame-1'); });
+  await agent.enqueueUserMessage('after reopen', [], undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
+  await vi.waitFor(() => expect(state.query.mock.calls.at(-1)?.[0].options.resumeSessionAt).toBe('tail-frame-1'));
+  await vi.waitFor(() => expect(state.events.some(([name]) => name === 'chat:message-error')).toBe(true));
+  expect(store.getSessionMetadata(meta.id)?.sdkResumeSessionAt).toBe('tail-frame-1');
+  expect(state.query.mock.calls.at(-1)?.[0].options.resume).toBe(meta.id);
+});
+
+it('admits the replay before a desktop send arriving during rewind', async () => {
+  const workspace = join(state.home, 'workspace');
+  await mkdir(workspace);
+  const meta = await store.createSession(workspace, { runtime: 'builtin' });
+  await agent.initializeAgent(workspace, null, meta.id, { preWarmDisabled: true });
+  const engine = (await import('../session-engine/builtin-adapter')).createBuiltinSessionEngine();
+  const request = (text: string) => ({ sessionId: meta.id, workspacePath: workspace, scenario: { type: 'desktop' as const }, text, turnBoundaryOnly: true });
+  await engine.sendDesktopMessage(request('original'));
+  await vi.waitFor(() => expect(agent.getLastBuiltinAssistantText()).toBe('answer 1 full-only tail'));
+  await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
+  const transcript = await import('../builtin-session/transcript');
+  const user = agent.getMessages()[0];
+  transcript.bindSdkUuidToMessage(user, 'native-user');
+  transcript.addCurrentSessionUuid('native-user');
+  let release!: () => void;
+  let entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  state.rewindFiles.mockImplementation(async () => { entered(); await gate; return { canRewind: true }; });
+  const retry = engine.retryUserMessage(user.id);
+  await started;
+  const competitor = engine.sendDesktopMessage(request('competing send'));
+  release();
+  expect(await retry).toMatchObject({ success: true, retryQueued: true });
+  expect(await competitor).toMatchObject({ success: true });
+  await vi.waitFor(() => expect(agent.getMessages().filter(message => message.role === 'user').map(message => message.content)).toEqual(['original', 'competing send']));
+});
+
+it('settles the rewind boundary before a successful turn triggers a deferred restart', async () => {
+  const workspace = join(state.home, 'workspace');
+  await mkdir(workspace);
+  const meta = await store.createSession(workspace, { runtime: 'builtin' });
+  state.queuedFollowup = true;
+  await agent.initializeAgent(workspace, null, meta.id, { preWarmDisabled: false });
+  const send = (text: string) => agent.enqueueUserMessage(text, [], undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
+  await send('original');
+  await vi.waitFor(() => expect(agent.getLastBuiltinAssistantText()).toBe('answer 2 full-only tail'));
+  await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
+  state.queuedFollowup = false;
+  expect(await agent.rewindSession(agent.getMessages()[2].id)).toMatchObject({ success: true });
+  state.beforeResult.mockImplementationOnce(() => agent.setSessionReasoningEffort('high'));
+  await send('replacement');
+  await vi.waitFor(() => expect(state.beforeResult).toHaveBeenCalledTimes(3));
+  await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
+  expect(store.getSessionMetadata(meta.id)?.sdkResumeSessionAt).toBeUndefined();
+  await vi.waitFor(() => expect(state.query).toHaveBeenCalledTimes(3));
+  expect(state.query.mock.calls[2][0].options.resumeSessionAt).toBeUndefined();
+  await vi.waitFor(() => expect(agent.getMessages().filter(message => message.role === 'user').map(message => message.content))
+    .toEqual(['original', 'replacement']));
+});
+
+it.each([false, true])('keeps the immediate native user boundary with an earlier assistant=%s', async earlierAssistant => {
+  const workspace = join(state.home, 'workspace');
+  await mkdir(workspace);
+  const meta = await store.createSession(workspace, { runtime: 'builtin' });
+  const prefix = earlierAssistant ? [
+    { id: 'u1', role: 'user' as const, content: 'one', timestamp: 't', sdkUuid: 'native-u1' },
+    { id: 'a1', role: 'assistant' as const, content: 'one answer', timestamp: 't', sdkUuid: 'native-a1' },
+  ] : [];
+  const rows = [...prefix,
+    { id: 'u2', role: 'user' as const, content: 'unanswered retained user', timestamp: 't', sdkUuid: 'native-u2' },
+    { id: 'u3', role: 'user' as const, content: 'discard', timestamp: 't', sdkUuid: 'native-u3' },
+    { id: 'a3', role: 'assistant' as const, content: 'discard answer', timestamp: 't', sdkUuid: 'native-a3' },
+  ];
+  const snapshot = await store.loadSessionTranscript(meta.id);
+  expect(await store.appendSessionMessages(meta.id, snapshot.cursor, rows)).toMatchObject({ ok: true });
+  await agent.initializeAgent(workspace, null, meta.id, { preWarmDisabled: true });
+  expect(await agent.rewindSession('u3')).toMatchObject({ success: true });
+  expect(agent.getMessages().map(row => row.id)).toEqual([...prefix.map(row => row.id), 'u2']);
+  expect(store.getSessionMetadata(meta.id)).toMatchObject({ sdkSessionId: meta.id, sdkResumeSessionAt: 'native-u2' });
 });

@@ -107,7 +107,7 @@ describe('Session transcript mutation authority', () => {
     expect(readFileSync(transcriptPath(session.id), 'utf-8')).toBe(before);
   });
 
-  it('commits an explicit retry truncation and advances the cursor to the target prefix', async () => {
+  it('commits an explicit rewind truncation and advances the cursor to the target prefix', async () => {
     const session = await createLegacySession(store, '/tmp/transcript-retry');
     const snapshot = await store.loadSessionTranscript(session.id);
     const rows = [message('old'), message('failed'), message('partial', 'assistant')];
@@ -116,8 +116,8 @@ describe('Session transcript mutation authority', () => {
     if (!appended.ok) return;
 
     const mutation = await store.mutateSessionTranscript(session.id, appended.cursor, {
-      kind: 'external-retry',
-      userMessageId: 'failed',
+      kind: 'builtin-rewind',
+      targetMessageId: 'failed',
       targetMessageCount: 1,
     });
 
