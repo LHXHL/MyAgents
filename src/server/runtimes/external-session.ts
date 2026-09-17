@@ -71,6 +71,7 @@ import {
 import {
   commitPreparedSessionForFirstUserTurn,
   commitCodexConversationRewind,
+  prepareSessionTranscriptMutation,
   resolvePendingConversationMutation,
   saveSessionMetadata,
   publishForkSession,
@@ -5825,6 +5826,9 @@ export async function rewindExternalConversation(
     if (data.messages.indexOf(targetAssistant) <= targetUserIndex || !targetAssistant.runtimeTurnAnchor) {
       return { success: false, status: 409, errorCode: 'anchor_unavailable', error: 'The Codex turn anchor does not match this user message' };
     }
+
+    const sourceFailure = await prepareSessionTranscriptMutation(sessionId);
+    if (sourceFailure) return { success: false, status: 409, errorCode: 'persistence_failed', error: sourceFailure.error };
 
     const active = await getCodexConversationBranchPair();
     if (!active?.runtime.branchConversation) {

@@ -105,9 +105,7 @@ export class TranscriptWriter {
     try {
       applyTranscriptOperation(this.projection, operation);
       this.liveRevision += 1;
-      for (const observer of this.observers) {
-        try { observer(operation); } catch { /* A disconnected surface does not own recording or execution. */ }
-      }
+      this.publishOperation(operation);
       const detached = structuredClone(operation);
       const bytes = Buffer.byteLength(JSON.stringify(detached));
       // Retain every pending operation during slow/failed IO. The queue has no
@@ -151,6 +149,7 @@ export class TranscriptWriter {
   /** SessionStore has already checked a named mutation's lifecycle and source cursor. */
   replaceProjection(projection: TranscriptProjection): void {
     if (this.closed || this.blocked || !this.recordingComplete) throw new TranscriptStorageError('invalid-history', 'Transcript is not a complete mutation source');
+    const removedIds = [...this.projection.messages.keys()].filter(id => !projection.messages.has(id));
     this.projection.messages.clear();
     this.projection.turns.clear();
     for (const [id, message] of projection.messages) this.projection.messages.set(id, message);
@@ -159,8 +158,17 @@ export class TranscriptWriter {
     this.queue = [];
     this.queuedBytes = 0;
     this.needsBaseline = true;
+    // The same membership event updates adapter identities and live surfaces.
+    // It belongs to this replacement revision, not a second persisted edit.
+    if (removedIds.length) this.publishOperation({ kind: 'messages-remove', messageIds: removedIds });
     this.watchHealth();
     this.schedule(0);
+  }
+
+  private publishOperation(operation: TranscriptOperation): void {
+    for (const observer of this.observers) {
+      try { observer(operation); } catch { /* A disconnected surface does not own recording or execution. */ }
+    }
   }
 
   /** A damaged cold source may be displayed, but cannot become a new baseline. */

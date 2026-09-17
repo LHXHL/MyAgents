@@ -161,8 +161,10 @@ policy，并在 `agent-config-intent.lock` 内按 Project-first 顺序提交：�
 `Project.agentId`，再以同一 ID 幂等补建不含 `workspacePath` 的 Agent。有效 ID 不按
 旧 path 重新选择；缺失/失效 ID 才由 legacy adapter 按持久化数组顺序取第一个
 canonical path match。历史 extra/orphan Agent 仍可用 exact ID discovery/config/start，
-但只有 exact Project claim 能做 Project lifecycle mutation。重复 Project path/Agent ID
-仍是硬冲突；多 Project claim 同一 Agent 只隔离相关目标，不拖垮健康 discovery。
+但只有 exact Project claim 能做 Project lifecycle mutation。缺失/重复 Agent ID、无效/重复
+Project identity、重复 workspace 和多 Project claim 均返回局部 diagnostics；原始行保留，
+冲突目标不可被任意选中或重建，健康 discovery 继续可用。可读配置的 identity maintenance
+失败不覆盖为整个侧栏加载错误。
 
 ### Goal Mode 命令
 

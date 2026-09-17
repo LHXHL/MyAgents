@@ -28,6 +28,9 @@ export class ProductTranscriptContent {
   private readonly pendingAttachments = new Map<string, Map<string, TranscriptObject>>();
 
   constructor(readonly writer: TranscriptWriter) {
+    writer.subscribeOperations(operation => {
+      if (operation.kind === 'messages-remove') this.forgetMessages(operation.messageIds);
+    });
     for (const message of writer.projection.messages.values()) {
       if (typeof message.content === 'string') continue;
       for (const block of message.content) {
@@ -222,7 +225,11 @@ export class ProductTranscriptContent {
   }
 
   removeMessages(messageIds: string[]): void {
-    this.writer.observe({ kind: 'messages-remove', messageIds }, true);
+    if (messageIds.length) this.writer.observe({ kind: 'messages-remove', messageIds }, true);
+  }
+
+  private forgetMessages(messageIds: string[]): void {
+    if (this.turnId && !this.writer.projection.turns.has(this.turnId)) this.turnId = null;
     if (this.assistantId && messageIds.includes(this.assistantId)) this.assistantId = null;
     for (const [key, target] of this.blocks) if (messageIds.includes(target.messageId)) this.blocks.delete(key);
     for (const [key, target] of this.tools) if (messageIds.includes(target.messageId)) this.tools.delete(key);

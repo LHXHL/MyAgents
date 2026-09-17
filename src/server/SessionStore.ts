@@ -184,21 +184,15 @@ export async function activateSessionTranscript(sessionId: string): Promise<Sess
             await sessionTranscriptFormat(metadata, sessionId);
             decoded = await readTranscriptFile(getV2SessionFilePath(sessionId), sessionId);
         } catch (error) {
+            if (!(error instanceof TranscriptStorageError) || error.reason !== 'invalid-history') throw error;
             incomplete = true;
             console.warn(`[SessionStore] Cannot fully restore V2 history for ${sessionId}:`, error);
         }
         return { decoded, incomplete };
     });
-    // A cold history read is optional to an already validated runtime binding.
-    // Timeout does not release its physical lock or start a competing repair.
+    // Adopt the actual read; a slow or temporarily inaccessible file is not corrupt.
     const task = (async () => {
-        let timeout: ReturnType<typeof setTimeout> | undefined;
-        const result = await Promise.race([
-            reading.catch(() => ({ decoded: undefined, incomplete: true })),
-            new Promise<{ decoded: undefined; incomplete: boolean }>(resolve => {
-                timeout = setTimeout(() => resolve({ decoded: undefined, incomplete: true }), 2000);
-            }),
-        ]).finally(() => { if (timeout) clearTimeout(timeout); });
+        const result = await reading;
         let effective = metadata;
         if (metadata.pendingConversationMutation) {
             const intent = metadata.pendingConversationMutation;
@@ -2396,10 +2390,13 @@ function deriveTranscriptMutationTarget(
 function v2CursorMatches(active: SessionTranscript, cursor: TranscriptWriteCursor): boolean {
     const stamp = cursor[transcriptCursorState];
     const current = active.writer.status;
-    return stamp.sessionId === current.sessionId && stamp.v2?.generation === current.generation
-        && (stamp.v2.instanceId
-            ? stamp.v2.instanceId === current.instanceId && stamp.v2.liveRevision === current.liveRevision
-            : stamp.v2.revision === current.durableRevision && current.liveRevision === current.durableRevision);
+    const source = stamp.v2;
+    if (!source || stamp.sessionId !== current.sessionId) return false;
+    // Publishing a baseline changes disk generation, not the live snapshot.
+    return source.instanceId
+        ? source.instanceId === current.instanceId && source.liveRevision === current.liveRevision
+        : source.generation === current.generation && source.revision === current.durableRevision
+            && current.liveRevision === current.durableRevision;
 }
 
 function selectV2Messages(source: TranscriptProjection, ids: readonly string[]): TranscriptProjection {
@@ -2422,7 +2419,9 @@ async function commitV2ConversationMutation(
     sessionId: string, intent: PendingConversationMutation, targetIds: string[], sourceIds: string[],
 ): Promise<ConversationMutationResult> {
     const active = activeTranscripts.get(sessionId);
-    if (!active || active.hasPendingMutation || targetIds.length >= sourceIds.length
+    const sourceFailure = await prepareSessionTranscriptMutation(sessionId);
+    if (sourceFailure) return { success: false, reason: sourceFailure.reason === 'write-error' ? 'write_error' : 'precondition_failed', error: sourceFailure.error };
+    if (!active || targetIds.length >= sourceIds.length
         || targetIds.some((id, index) => id !== sourceIds[index])) {
         return { success: false, reason: 'precondition_failed', error: 'V2 rewind requires a current, complete source prefix' };
     }
@@ -2450,6 +2449,28 @@ async function commitV2ConversationMutation(
     return conversationMutationSuccess(sessionId, active.metadata, messages);
 }
 
+/** Check the source before native/file side effects; publication uses the existing writer queue. */
+export async function prepareSessionTranscriptMutation(
+    sessionId: string,
+): Promise<Extract<MutateSessionTranscriptResult, { ok: false }> | undefined> {
+    const active = activeTranscripts.get(sessionId);
+    if (active) {
+        if (active.writer.status.reason === 'invalid-history') {
+            return { ok: false, reason: 'malformed-transcript', error: 'History has no complete mutation source' };
+        }
+        if (active.hasPendingMutation && !await active.writer.flush()) {
+            return { ok: false, reason: 'write-error', error: 'The previous conversation edit is still waiting to be saved; try again once saving completes' };
+        }
+        return;
+    }
+    return withSessionFileLock(sessionId, async () => {
+        if (await sessionTranscriptFormat(getSessionMetadata(sessionId), sessionId) === 'legacy'
+            && readJsonlSnapshot(getSessionFilePath(sessionId)).hasMalformedRows) {
+            return { ok: false, reason: 'malformed-transcript', error: 'History contains unreadable rows' };
+        }
+    });
+}
+
 /** Commit a named destructive transcript operation from the owner's proven source. */
 export async function mutateSessionTranscript(
     sessionId: string,
@@ -2457,14 +2478,13 @@ export async function mutateSessionTranscript(
     intent: TranscriptMutationIntent,
 ): Promise<MutateSessionTranscriptResult> {
     if (cursor[transcriptCursorState].v2) {
+        const sourceFailure = await prepareSessionTranscriptMutation(sessionId);
+        if (sourceFailure) return sourceFailure;
         const active = activeTranscripts.get(sessionId);
         if (!active || !v2CursorMatches(active, cursor)) return { ok: false, reason: 'stale-cursor', error: 'V2 mutation source changed' };
         const derived = deriveTranscriptMutationTarget(transcriptMessages(active.writer.projection), intent);
         if (!derived.ok) return { ok: false, reason: 'precondition-failed', error: derived.error };
         if (!derived.target) return { ok: true, action: 'noop', cursor };
-        if (active.hasPendingMutation || active.writer.status.reason === 'invalid-history') {
-            return { ok: false, reason: 'malformed-transcript', error: 'V2 mutation requires a complete, settled source' };
-        }
         const target = selectV2Messages(active.writer.projection, derived.target.map(message => message.id));
         active.writer.replaceProjection(target);
         active.patchMetadata({ stats: calculateSessionStats(derived.target), lastMessagePreview: resolveLastVisibleTurnPreview(derived.target).preview });

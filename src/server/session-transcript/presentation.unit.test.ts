@@ -23,6 +23,30 @@ function setup() {
 }
 
 describe('native blocks and product presentation', () => {
+  it('continues streaming through the same presentation after canonical truncation', async () => {
+    const { writer, content, presentation } = setup();
+    presentation.beginNativeMessage('before');
+    presentation.beginNativeBlock(0, { type: 'text', text: '' });
+    presentation.record('chat:message-chunk', 'removed');
+    const oldTool = content.startTool('removed-tool', 'Read')!;
+    content.updateAttachment(oldTool, 'pending', { path: 'old' });
+    writer.replaceProjection(createTranscriptProjection());
+    expect(content.currentAssistantId).toBeNull();
+    expect(content.currentTurn).toBeUndefined();
+    expect(content.tool('removed-tool')).toBeUndefined();
+    content.admitUser({ id: 'next', role: 'user', content: 'new question', timestamp: 't' });
+    presentation.beginNativeMessage('after');
+    presentation.beginNativeBlock(0, { type: 'text', text: '' });
+    presentation.record('chat:message-chunk', 'retained');
+    content.updateTool(oldTool, { result: 'late old result' });
+    const rows = transcriptMessages(writer.projection);
+    expect(rows).toHaveLength(2);
+    expect(rows[1].content).toContain('retained');
+    expect(JSON.stringify(rows)).not.toContain('removed');
+    expect(writer.status.reason).toBeUndefined();
+    await writer.close();
+  });
+
   it('confirms a single native block spanning three user admissions without moving or duplicating text', async () => {
     const { writer, content, presentation } = setup();
     presentation.beginNativeMessage('response');

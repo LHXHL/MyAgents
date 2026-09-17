@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NO_CHANNEL_DELIVERY } from '../session-core/channel-delivery';
 import type { TurnTerminalOutcome } from '../session-core/turn-queue';
 
-const state = vi.hoisted(() => ({ home: '', failProductIo: false, query: vi.fn(), sdkRead: vi.fn(), sdkFork: vi.fn(), sdkDelete: vi.fn(), events: [] as [string, unknown][], queuedFollowup: false, exitWithoutResult: false, toolFrames: false, childFrames: false, media: vi.fn() }));
+const state = vi.hoisted(() => ({ home: '', failProductIo: false, query: vi.fn(), sdkRead: vi.fn(), sdkFork: vi.fn(), sdkDelete: vi.fn(), rewindFiles: vi.fn(), events: [] as [string, unknown][], queuedFollowup: false, exitWithoutResult: false, toolFrames: false, childFrames: false, media: vi.fn() }));
 vi.mock('os', async original => ({ ...await original<typeof import('os')>(), homedir: () => state.home }));
 vi.mock('../utils/fs-utils', async original => {
   const actual = await original<typeof import('../utils/fs-utils')>();
@@ -113,6 +113,7 @@ function fakeQuery(args: { prompt: AsyncIterable<unknown>; options: { sessionId?
     initializationResult: async () => ({ commands: [] }),
     interrupt: async () => undefined,
     close,
+    rewindFiles: state.rewindFiles,
     mcpServerStatus: async () => [],
     setModel: async () => undefined,
     setPermissionMode: async () => undefined,
@@ -133,6 +134,7 @@ beforeEach(async () => {
   state.query.mockReset().mockImplementation(fakeQuery);
   state.sdkRead.mockReset().mockResolvedValue([]);
   state.sdkFork.mockReset();
+  state.rewindFiles.mockReset().mockResolvedValue({ canRewind: true });
   state.sdkDelete.mockReset().mockResolvedValue(undefined);
   releaseWrite = undefined;
   vi.resetModules();
@@ -200,6 +202,22 @@ describe('builtin V2 execution independent of product storage', () => {
     expect(store.getSessionMetadata(id)?.transcriptFormat).toBeUndefined();
     expect(store.getActiveSessionTranscript(id)).toBeUndefined();
     expect((await store.getSessionData(id))?.messages.map(row => row.role)).toEqual(['user', 'assistant']);
+  });
+
+  it('refuses a known invalid history before touching SDK file checkpoints', async () => {
+    const workspace = join(state.home, 'workspace');
+    await mkdir(workspace);
+    const metadata = await store.createSession(workspace, { runtime: 'builtin' });
+    await agent.initializeAgent(workspace, null, metadata.id, { preWarmDisabled: true });
+    await agent.enqueueUserMessage('question', [], undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
+    await vi.waitFor(() => expect(agent.getLastBuiltinAssistantText()).toBe('answer 1 full-only tail'));
+    await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
+    const rows = agent.getMessages();
+    store.getActiveSessionTranscript(metadata.id)!.writer.rejectIncompleteSource();
+    expect(await agent.rewindSession(rows[0].id)).toMatchObject({ success: false, error: 'Conversation history contains data that cannot be safely rewound.' });
+    expect(state.rewindFiles).not.toHaveBeenCalled();
+    expect(agent.getMessages().map(row => row.id)).toEqual(rows.map(row => row.id));
   });
 
   it.each([false, true])('executes first/next query with product EACCES before birth (provider boundary=%s)', async providerBoundary => {
@@ -308,6 +326,8 @@ describe('builtin V2 execution independent of product storage', () => {
     });
     expect(state.query).toHaveBeenCalledTimes(2);
     expect(state.query.mock.calls[1][0].options.resumeSessionAt).toBe('tail-frame-1');
+    expect(await active.writer.flush()).toBe(true);
+    expect([...((await active.file.read()).projection.messages.keys())]).toEqual(agent.getMessages().map(row => row.id));
   });
 
   it('keeps partial/full child content under its parent while the root reuses the same stream index', async () => {

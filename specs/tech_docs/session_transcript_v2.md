@@ -36,11 +36,15 @@ Rust 在 metadata 尚未发布的窗口，沿 active 或 recovering SessionSidec
 
 ## 生命周期与显式操作
 
+冷恢复等待同一文件锁下的实际读取结果，不用超时生成空基线。临时 IO 失败保留原错误、释放未完成的 activation，后续沿原入口重新恢复；只有已验证的格式/内容错误才标记 incomplete source。append 重读同样区分 IO 与解码错误，前者复用既有 writer 重试。
+
+显式截断由 writer 在替换 projection 的同一 revision 发布 `messages-remove`，content/presentation 订阅既有操作同步清理被删目标的身份引用；不能从截断后的结果反推删除集合。活跃 cursor 以 instance/liveRevision 判断新鲜度，磁盘 baseline publication 改变 generation 不使未变的 live snapshot 失效；冷 cursor 仍核对 generation/durableRevision。
+
 冷恢复仅在旧 execution owner 已失效后派生并提交 interrupted 状态。未结束工具保留已观察结果，停止展示 loading，不自动重跑；不能把仍活跃的后台子任务因父 turn terminal 关掉。
 
 `setCurrentProductSessionId` 在同进程变更真实 binding 前调用 `releaseSessionTranscriptForBinding`。writer retirement 暂停新批次并等待既有 IO；截止失败恢复原 writer 调度并保留旧 binding，成功后取消未提交尾部、移除 active 实例。pending materialization 在 claim 目标 metadata 前完成旧 writer 退役，并在等待后复核原事务归属；失败仍可沿既有入口 retry/rollback。目标身份生效后才执行 `afterBind`。异步 candidate 清理只处理该实例独占的未发布文件。普通保存失败不阻止同一 binding 上继续 AI。
 
-- Rewind 复用命名 mutation 和 pending intent；target live/native binding 已裁决后，普通对话继续使用 target，磁盘发布后台补齐，不能回退 native 或重复执行。
+- Rewind 先由 SessionStore 检查来源并等待已有 pending publication，再做 native/file 副作用；忙碌/写盘未完成不是历史损坏，最终 commit 仍核对 cursor 和 binding。复用命名 mutation 和 pending intent；target live/native binding 已裁决后，普通对话继续使用 target，磁盘发布后台补齐，不能回退 native 或重复执行。
 - Fork 通过 `publishForkSession` 先登记隐藏的 prepared 目标，再从可信快照生成、校验并发布完整 V2 baseline，最后解除 prepared 状态进入持久列表。不完整恢复后的 live tail 拒绝用作 fork 来源；源 V1 不强刷、不改写；目标没有滞留在源 Sidecar 的 writer。用户与工具附件独立复制，必要附件尚未保存或缺失时显式 fork 失败。失败仅清理目标自己的未发布资源；metadata 已提交后确认丢失不删除目标。
 - Delete 先做原 owner/busy 检查，并确认对应 Node 进程退出后才调用 Global 删除。进程退役期间保留 owner identity，失败不删文件。不能仅凭超时假设旧 IO 已取消。
 - SIGINT/SIGTERM 使用有截止时间的 `drainSessionTranscripts`；强杀只恢复已提交前缀，允许丢失最后的未提交尾部。

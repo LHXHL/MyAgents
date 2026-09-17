@@ -194,12 +194,12 @@ describe('SessionStore V2 ownership and compatibility', () => {
     expect(active.writer.status.state).not.toBe('healthy');
   });
 
-  it('rejects incomplete live fork sources before publishing a target, while content keeps advancing', async () => {
+  it('rejects corrupt live fork sources before publishing a target, while content keeps advancing', async () => {
     const { metadata, active } = await create();
     expect(await active.writer.flush()).toBe(true);
     await store.releaseSessionTranscriptForBinding(metadata.id);
     const path = join(testState.home, '.myagents', 'sessions-v2', `${metadata.id}.jsonl`);
-    await rm(path);
+    await writeFile(path, 'invalid transcript header\n');
     const resumed = (await store.activateSessionTranscript(metadata.id))!;
     const { ProductTranscriptContent } = await import('./content');
     const content = new ProductTranscriptContent(resumed.writer);

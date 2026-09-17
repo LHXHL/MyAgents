@@ -140,7 +140,7 @@ import {
   type SystemSkillAdmissionRequirement,
 } from '../shared/systemSkills';
 import type { OfficialToolId } from '../shared/official-tools';
-import { activateSessionTranscript, claimPreparedSessionForTurnAdmission, commitPreparedSessionForFirstUserTurn, migratePendingSessionIdentity, resolvePendingConversationMutation, saveSessionMetadata, publishForkSession, assertCompleteSessionForkSource, updateSessionTitleFromMessage, updateSessionMetadata, updateSessionMetadataForBinding, getSessionMetadata, getSessionData, loadSessionTranscript } from './SessionStore';
+import { prepareSessionTranscriptMutation, activateSessionTranscript, claimPreparedSessionForTurnAdmission, commitPreparedSessionForFirstUserTurn, migratePendingSessionIdentity, resolvePendingConversationMutation, saveSessionMetadata, publishForkSession, assertCompleteSessionForkSource, updateSessionTitleFromMessage, updateSessionMetadata, updateSessionMetadataForBinding, getSessionMetadata, getSessionData, loadSessionTranscript } from './SessionStore';
 import { TranscriptPresentation } from './session-transcript/presentation';
 import { projectTranscriptToolInput, type TranscriptObject } from '../shared/sessionTranscript';
 import { firePostTurnTitleHook } from './turn-hooks';
@@ -10580,6 +10580,9 @@ export async function rewindSession(userMessageId: string): Promise<{
         break;
       }
     }
+
+    const sourceFailure = await prepareSessionTranscriptMutation(productSessionId);
+    if (sourceFailure) throw new Error(`${sourceFailure.reason}: ${sourceFailure.error}`);
 
     // 3. 在活跃 session 上执行 rewindFiles（文件检查点关联 user message UUID）
     //    跳过已被 force-abort 的 session：subprocess 正在死亡，发 IPC 会阻塞到超时（~100s）。

@@ -4734,6 +4734,9 @@ describe('external SessionEngine with fake runtime', () => {
     expect(resumedMessages.map(message => message.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
     expect(resumedMessages[2]?.content).toBe('edited second question');
     expect(resumedMessages[3]?.content).toContain('edited second answer');
+    const transcriptOwner = harness.sessionStore.getActiveSessionTranscript(sessionId)!;
+    expect(await transcriptOwner.writer.flush()).toBe(true);
+    expect([...(await transcriptOwner.file.read()).projection.messages.keys()]).toEqual(resumedMessages.map(message => message.id));
   });
 
   it('rewinds before the first Codex turn without persisting an empty native thread', async () => {
