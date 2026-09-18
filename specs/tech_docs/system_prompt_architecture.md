@@ -175,12 +175,14 @@ External Runtime 的兼容读取拒绝 symlink，并限制递归深度、文件�
 `src/server/agent-session.ts` 在 Query 创建时使用：
 
 ```text
-systemPrompt = { type: preset, preset: claude_code, append: MyAgentsPrompt }
+systemPrompt = { type: preset, preset: claude_code, append: MyAgentsPrompt, snapshot: false }
 ```
 
 因此 Claude preset 仍拥有底层工具约定，MyAgents 只追加产品身份、场景与能力提示。
 `currentScenario` 必须在 Query birth 前设置正确；persistent Query 创建后，普通状态变量
 变化不会原地重写其 system prompt。
+
+SDK 默认会记录并跨 resume 复用 system prompt；Builtin 显式关闭该快照，保证同一 native Session 的 Query replacement 仍采用本次 assembler 生成的产品 append，而不是等到下一次 compaction 才生效。此处保留产品配置生效契约；不能为了缓存命中率直接移除 `snapshot: false`。
 
 ### External Runtime
 

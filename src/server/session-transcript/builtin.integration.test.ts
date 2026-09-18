@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NO_CHANNEL_DELIVERY } from '../session-core/channel-delivery';
 import type { TurnTerminalOutcome } from '../session-core/turn-queue';
+import type { Options } from '@anthropic-ai/claude-agent-sdk';
 
 const state = vi.hoisted(() => ({ home: '', failProductIo: false, publicationGate: null as Promise<void> | null, publicationBlocked: false, query: vi.fn(), sdkRead: vi.fn(), sdkFork: vi.fn(), sdkDelete: vi.fn(), rewindFiles: vi.fn(), beforeResult: vi.fn(), events: [] as [string, unknown][], queuedFollowup: false, exitWithoutResult: false, toolFrames: false, childFrames: false, media: vi.fn() }));
 vi.mock('os', async original => ({ ...await original<typeof import('os')>(), homedir: () => state.home }));
@@ -46,6 +47,7 @@ vi.mock('../sse', async original => ({
 let agent: typeof import('../agent-session');
 let store: typeof import('../SessionStore');
 let releaseWrite: (() => void) | undefined;
+let notificationReceipts = false;
 
 function fakeQuery(args: { prompt: AsyncIterable<unknown>; options: { sessionId?: string; resume?: string } }) {
   const prompt = args.prompt[Symbol.asyncIterator]();
@@ -115,6 +117,15 @@ function fakeQuery(args: { prompt: AsyncIterable<unknown>; options: { sessionId?
         );
       }
       if (state.exitWithoutResult) pending.pop();
+      if (notificationReceipts) {
+        // Receipts can precede output, or arrive after output but before its
+        // real result. Neither may settle the product turn or clear usage.
+        const receipt = () => ({ type: 'result', subtype: 'success', is_error: false,
+          origin: { kind: 'task-notification' }, num_turns: 0, result: '',
+          session_id: sessionId, uuid: randomUUID(), usage: { output_tokens: 0 }, modelUsage: {} });
+        pending.unshift(receipt());
+        pending.splice(pending.length - 1, 0, receipt());
+      }
       return { done: false, value: pending.shift() };
     },
     [Symbol.asyncIterator]() { return this; },
@@ -131,6 +142,7 @@ function fakeQuery(args: { prompt: AsyncIterable<unknown>; options: { sessionId?
 }
 
 beforeEach(async () => {
+  notificationReceipts = false;
   state.home = await mkdtemp(join(tmpdir(), 'myagents-builtin-v2-'));
   state.events.length = 0;
   state.failProductIo = false;
@@ -634,4 +646,144 @@ it.each([false, true])('keeps the immediate native user boundary with an earlier
   expect(await agent.rewindSession('u3')).toMatchObject({ success: true });
   expect(agent.getMessages().map(row => row.id)).toEqual([...prefix.map(row => row.id), 'u2']);
   expect(store.getSessionMetadata(meta.id)).toMatchObject({ sdkSessionId: meta.id, sdkResumeSessionAt: 'native-u2' });
+});
+
+async function startSdkContractSession(): Promise<Options> {
+  const workspace = join(state.home, 'sdk-contract');
+  await mkdir(workspace);
+  const metadata = await store.createSession(workspace, { runtime: 'builtin' });
+  await agent.initializeAgent(workspace, null, metadata.id, { preWarmDisabled: true });
+  await agent.enqueueUserMessage('contract question', [], undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
+  await vi.waitFor(() => expect(agent.getLastBuiltinAssistantText()).toBe('answer 1 full-only tail'));
+  await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
+  return state.query.mock.calls.findLast(([call]) => call.options.cwd === workspace)![0].options as Options;
+}
+
+it('keeps product append fresh and coalesced notification receipts outside product terminal handling', async () => {
+  notificationReceipts = true;
+  const options = await startSdkContractSession();
+  expect(options.systemPrompt).toMatchObject({ type: 'preset', snapshot: false, append: expect.any(String) });
+  expect(state.events.filter(([event]) => event === 'chat:message-error')).toEqual([]);
+  expect(state.events.filter(([event]) => event === 'chat:message-complete')).toHaveLength(1);
+  expect(agent.getMessages().map(message => message.role)).toEqual(['user', 'assistant']);
+  expect(agent.getLastBuiltinAssistantText()).toBe('answer 1 full-only tail');
+});
+
+it('keeps constrained permissions per request through replay, approval, cascade and abort', async () => {
+  const options = await startSdkContractSession();
+  (await import('../builtin-session/config')).configState.currentPermissionMode = 'custom';
+  const ask = options.canUseTool!;
+  const controller = new AbortController();
+  const hints = { defaultToNo: true, suppressAlwaysAllowRule: true };
+  const first = ask('WebFetch', { url: 'https://example.invalid/first' }, { signal: controller.signal, toolUseID: 'first', requestId: 'first', ...hints });
+  const second = ask('WebFetch', { url: 'https://example.invalid/second' }, { signal: controller.signal, toolUseID: 'second', requestId: 'second', ...hints });
+  const plain = ask('WebFetch', {}, { signal: controller.signal, toolUseID: 'plain', requestId: 'plain' });
+  const pending = () => agent.getPendingInteractiveRequests().filter(row => row.type === 'permission:request')
+    .map(row => row.data as { requestId: string; defaultToNo?: boolean; suppressAlwaysAllowRule?: boolean });
+  expect(pending()).toHaveLength(3);
+  const [p1, p2, p3] = pending();
+  expect(p1).toMatchObject(hints);
+  expect(state.events.find(([event]) => event === 'permission:request')?.[1]).toMatchObject(hints);
+  expect(agent.handlePermissionResponse(p1.requestId, 'always_allow')).toBe(false);
+  expect(pending()).toHaveLength(3);
+  expect(agent.handlePermissionResponse(p3.requestId, 'always_allow')).toBe(true);
+  await expect(plain).resolves.toMatchObject({ behavior: 'allow' });
+  expect(pending()).toHaveLength(2); // ordinary grant cannot cascade onto restricted calls
+  expect(agent.handlePermissionResponse(p1.requestId, 'allow_once')).toBe(true);
+  await expect(first).resolves.toMatchObject({ behavior: 'allow' });
+  expect(pending().map(row => row.requestId)).toEqual([p2.requestId]);
+  const rejected = expect(second).rejects.toMatchObject({ name: 'AbortError' });
+  controller.abort();
+  await rejected;
+  expect(pending()).toHaveLength(0);
+  expect(agent.handlePermissionResponse(p2.requestId, 'allow_once')).toBe(false);
+  const againController = new AbortController();
+  const again = ask('WebFetch', {}, { signal: againController.signal, toolUseID: 'again', requestId: 'again', ...hints });
+  expect(pending()).toHaveLength(1); // an existing broad session grant cannot swallow the hints
+  const aborted = expect(again).rejects.toMatchObject({ name: 'AbortError' });
+  againController.abort();
+  await aborted;
+});
+
+it('checks context MCP provenance in foreground, bypass hooks and background grants', async () => {
+  const options = await startSdkContractSession();
+  const { configState } = await import('../builtin-session/config');
+  configState.frozenSdkMcpFingerprint = 'im-bridge-tools|';
+  configState.currentPermissionMode = 'custom';
+  const toolName = 'mcp__im-bridge-tools__send';
+  const ask = (source?: string) => options.canUseTool!(toolName, {}, {
+    signal: new AbortController().signal, toolUseID: 'mcp-call', requestId: 'mcp-call',
+    ...(source ? { mcpServer: { name: 'im-bridge-tools', source } } : {}),
+  });
+  await expect(ask('sdk')).resolves.toMatchObject({ behavior: 'allow' });
+  for (const source of ['plugin', 'project', 'dynamic', 'unknown', undefined]) {
+    await expect(ask(source)).resolves.toMatchObject({ behavior: 'deny' });
+  }
+  const pre = options.hooks!.PreToolUse![0].hooks[0];
+  const base = { hook_event_name: 'PreToolUse' as const, session_id: agent.getSessionId(), transcript_path: '', cwd: '',
+    tool_name: toolName, tool_input: {}, tool_use_id: 'mcp-call', permission_mode: 'bypassPermissions' };
+  expect(await pre({ ...base, mcp_server: { name: 'im-bridge-tools', source: 'plugin' } }, undefined,
+    { signal: new AbortController().signal })).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } });
+  configState.frozenSdkMcpFingerprint = '';
+  await expect(ask('sdk')).resolves.toMatchObject({ behavior: 'deny' });
+
+  const { recordQueryBackgroundTask } = await import('../builtin-session/lifecycle');
+  recordQueryBackgroundTask(state.query.mock.results[state.query.mock.calls.findIndex(([call]) => call.options === options)]!.value, 'background-agent', {});
+  configState.currentMcpServers = null;
+  const userTool = 'mcp__example__write';
+  const grant = options.canUseTool!(userTool, {}, { signal: new AbortController().signal,
+    toolUseID: 'grant', requestId: 'grant', mcpServer: { name: 'example', source: 'dynamic' } });
+  const request = agent.getPendingInteractiveRequests().find(row => row.type === 'permission:request')!.data as { requestId: string };
+  expect(agent.handlePermissionResponse(request.requestId, 'always_allow')).toBe(true);
+  await expect(grant).resolves.toMatchObject({ behavior: 'allow' });
+  const background = options.hooks!.PermissionRequest![0].hooks[0];
+  const checkBackground = (source: string) => background({ hook_event_name: 'PermissionRequest',
+    session_id: agent.getSessionId(), transcript_path: '', cwd: '', agent_id: 'background-agent',
+    tool_name: userTool, tool_input: {}, mcp_server: { name: 'example', source } }, undefined,
+  { signal: new AbortController().signal });
+  await expect(checkBackground('dynamic')).resolves.toMatchObject({ hookSpecificOutput: { decision: { behavior: 'allow' } } });
+  await expect(checkBackground('plugin')).resolves.toMatchObject({ hookSpecificOutput: { decision: { behavior: 'deny' } } });
+  configState.currentMcpServers = [];
+  await expect(checkBackground('dynamic')).resolves.toMatchObject({ hookSpecificOutput: { decision: { behavior: 'deny' } } });
+});
+
+
+it.each(['defaultToNo', 'suppressAlwaysAllowRule'] as const)('honors %s on product CLI calls without removing ordinary auto-approval', async hint => {
+  const options = await startSdkContractSession();
+  (await import('../builtin-session/config')).configState.currentPermissionMode = 'custom';
+  const input = { command: "myagents record create 'note'" };
+  const base = { signal: new AbortController().signal, toolUseID: 'record', requestId: 'record' };
+  await expect(options.canUseTool!('Bash', input, base)).resolves.toMatchObject({ behavior: 'allow' });
+  const restricted = options.canUseTool!('Bash', input, { ...base, [hint]: true });
+  const pending = agent.getPendingInteractiveRequests().find(row => row.type === 'permission:request')!;
+  expect(pending.data).toMatchObject({ [hint]: true });
+  expect(agent.handlePermissionResponse((pending.data as { requestId: string }).requestId, 'deny')).toBe(true);
+  await expect(restricted).resolves.toMatchObject({ behavior: 'deny' });
+});
+
+it('keeps plugin MCP enablement separate from user MCP selection without granting builtin trust', async () => {
+  const options = await startSdkContractSession();
+  const { configState } = await import('../builtin-session/config');
+  configState.currentMcpServers = [];
+  configState.currentPermissionMode = 'fullAgency';
+  const toolName = 'mcp__plugin_example__write';
+  const mcpServer = { name: 'plugin_example', source: 'plugin' };
+  const signal = new AbortController().signal;
+  const pre = options.hooks!.PreToolUse![0].hooks[0];
+  const base = { hook_event_name: 'PreToolUse' as const, session_id: agent.getSessionId(), transcript_path: '', cwd: '',
+    tool_name: toolName, tool_input: {}, tool_use_id: 'plugin-call', permission_mode: 'bypassPermissions' };
+  expect(await pre({ ...base, mcp_server: mcpServer }, undefined, { signal })).toEqual({});
+  const args = { signal, toolUseID: 'plugin-call', requestId: 'plugin-call', mcpServer };
+  await expect(options.canUseTool!(toolName, {}, args)).resolves.toMatchObject({ behavior: 'allow' });
+  expect(await pre({ ...base, mcp_server: { ...mcpServer, source: 'dynamic' } }, undefined, { signal }))
+    .toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } });
+  configState.currentPermissionMode = 'custom';
+  const restricted = options.canUseTool!(toolName, {}, args);
+  const pending = agent.getPendingInteractiveRequests().find(row => row.type === 'permission:request')!;
+  expect(pending).toBeDefined();
+  agent.handlePermissionResponse((pending.data as { requestId: string }).requestId, 'deny');
+  await expect(restricted).resolves.toMatchObject({ behavior: 'deny' });
+  expect(await pre({ ...base, permission_mode: 'plan', mcp_server: mcpServer }, undefined, { signal }))
+    .toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } });
 });

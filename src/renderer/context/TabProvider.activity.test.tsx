@@ -260,7 +260,8 @@ describe('Tab-owned query clock integration', () => {
     now = 4000;
     expect(tab!.getQueryElapsedSeconds()).toBe(4);
 
-    emit('permission:request', { sessionId, requestId: 'p1', toolName: 'Bash', input: '{}' });
+    emit('permission:request', { sessionId, requestId: 'p1', toolName: 'Bash', input: '{}', defaultToNo: true, suppressAlwaysAllowRule: true });
+    expect(tab!.pendingPermission).toMatchObject({ defaultToNo: true, suppressAlwaysAllowRule: true });
     emit('permission:request', { sessionId, requestId: 'p2', toolName: 'Write', input: '{}' });
     now = 14000;
     expect(tab!.getQueryElapsedSeconds()).toBe(4);

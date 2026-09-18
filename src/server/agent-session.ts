@@ -6,6 +6,10 @@ import { createRequire } from 'module';
 import { query, getSessionMessages as sdkGetSessionMessages, forkSession as sdkForkSession, deleteSession as sdkDeleteSession, type Query, type SDKUserMessage, type AgentDefinition, type HookInput, type HookJSONOutput, type PreToolUseHookInput, type PostToolUseHookInput, type PermissionRequestHookInput, type SlashCommand as SdkSlashCommand } from '@anthropic-ai/claude-agent-sdk';
 import { isRetiredBundledMcpServer } from '../shared/mcpConfig';
 import { SDK_BUILTIN_TOOLS } from './sdk-builtin-tools';
+import type { CanUseTool, McpServerProvenance } from '@anthropic-ai/claude-agent-sdk';
+import type { ToolPermissionHints } from '../shared/types/toolPermission';
+import { isContextInjectedSdkTool, toolPermissionGrantKey } from './utils/sdk-tool-permission';
+import { isCoalescedTaskNotificationReceipt } from './utils/sdk-turn-outcome';
 import {
   decideBackgroundAgentPermission,
   isBackgroundAgentToolRequest,
@@ -3941,7 +3945,7 @@ function getActiveContextInjectedBuiltinIds(): Set<string> {
  *
  * @returns 'allow' if tool is permitted, 'deny' with reason otherwise
  */
-function checkMcpToolPermission(toolName: string): { allowed: true } | { allowed: false; reason: string } {
+function checkMcpToolPermission(toolName: string, server?: McpServerProvenance): { allowed: true } | { allowed: false; reason: string } {
   // Not an MCP tool - let other permission logic handle it
   if (!toolName.startsWith('mcp__')) {
     return { allowed: true };
@@ -3952,14 +3956,14 @@ function checkMcpToolPermission(toolName: string): { allowed: true } | { allowed
   if (parts.length < 3) {
     return { allowed: false, reason: '无效的 MCP 工具名称' };
   }
-  const serverId = parts[1];
+  const serverId = server?.name ?? parts[1];
 
   // Context-injected builtin MCPs (currently only `im-bridge-tools`) are not
   // in `configState.currentMcpServers` — they're injected by sidecar context, not user
   // toggles. Allow them when the corresponding context is active. Mirrors
   // buildSdkMcpServers() Pattern 1.
   const activeBuiltins = getActiveContextInjectedBuiltinIds();
-  if (activeBuiltins.has(serverId)) {
+  if (isContextInjectedSdkTool(server, activeBuiltins)) {
     return { allowed: true };
   }
   // For ids in MYAGENTS_CONTEXT_INJECTED_MCP_IDS but NOT currently active,
@@ -3969,9 +3973,15 @@ function checkMcpToolPermission(toolName: string): { allowed: true } | { allowed
   // fall through to the regular user-MCP check below — they were dropped
   // from the reserved list in v0.2.11, so user MCPs may now legitimately
   // claim those names.
-  if (serverId === 'im-bridge-tools') {
-    return { allowed: false, reason: 'IM Bridge 工具仅在 IM Bridge 插件会话中可用' };
+  if ((MYAGENTS_CONTEXT_INJECTED_MCP_IDS as readonly string[]).includes(serverId)
+    || (MYAGENTS_CONTEXT_INJECTED_MCP_IDS as readonly string[]).includes(parts[1])) {
+    return { allowed: false, reason: 'IM Bridge 工具仅允许当前会话由应用注册的 SDK 服务使用' };
   }
+
+  // Plugin MCPs belong to the enabled Options.plugins projection, not the
+  // independently selected user MCP list. This admits the tool to ordinary
+  // permission/plan checks; it does not grant SDK-builtin trust.
+  if (server?.source === 'plugin') return { allowed: true };
 
   // Case 1: MCP not set (null) - allow all (backward compatible)
   if (configState.currentMcpServers === null) {
@@ -3989,7 +3999,7 @@ function checkMcpToolPermission(toolName: string): { allowed: true } | { allowed
   // Example: config id "my.server" → SDK tool prefix uses "my_server".
   const sanitize = (name: string) => name.replace(/[^a-zA-Z0-9_-]/g, '_');
   const sanitizedServerId = sanitize(serverId);
-  const isEnabled = configState.currentMcpServers.some(s => sanitize(s.id) === sanitizedServerId);
+  const isEnabled = configState.currentMcpServers.some(s => server ? s.id === server.name : sanitize(s.id) === sanitizedServerId);
   if (isEnabled) {
     return { allowed: true };
   }
@@ -4580,6 +4590,8 @@ const pendingPermissions = new Map<string, {
   resolve: (decision: 'allow' | 'deny') => void;
   toolName: string;
   input: unknown;
+  grantKey: string;
+  hints: ToolPermissionHints;
 }>();
 
 // AskUserQuestion types - import from shared
@@ -4982,18 +4994,22 @@ async function checkToolPermission(
   toolName: string,
   input: unknown,
   mode: PermissionMode,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  hints: ToolPermissionHints = {},
+  server?: McpServerProvenance,
 ): Promise<'allow' | 'deny'> {
   const rules = getPermissionRules(mode);
+  const grantKey = toolPermissionGrantKey(toolName, server);
+  const requiresExplicitApproval = hints.defaultToNo || hints.suppressAlwaysAllowRule;
 
   // 1. Check if tool is always allowed for this mode
-  if (isToolInList(toolName, rules.allowedTools)) {
+  if (!requiresExplicitApproval && isToolInList(toolName, rules.allowedTools)) {
     console.debug(`[permission] ${toolName}: auto-allowed by mode rules`);
     return 'allow';
   }
 
   // 1.5. Auto-allow Task tool when sub-agents are configured (needed for delegation)
-  if (toolName === 'Task' && configState.currentAgentDefinitions && Object.keys(configState.currentAgentDefinitions).length > 0) {
+  if (!requiresExplicitApproval && toolName === 'Task' && configState.currentAgentDefinitions && Object.keys(configState.currentAgentDefinitions).length > 0) {
     console.debug(`[permission] ${toolName}: auto-allowed for sub-agent delegation`);
     return 'allow';
   }
@@ -5005,7 +5021,7 @@ async function checkToolPermission(
   }
 
   // 3. Check if user already granted "always allow" in this session
-  if (sessionAlwaysAllowed.has(toolName)) {
+  if (!requiresExplicitApproval && sessionAlwaysAllowed.has(grantKey)) {
     console.debug(`[permission] ${toolName}: allowed by session grant`);
     return 'allow';
   }
@@ -5046,15 +5062,16 @@ async function checkToolPermission(
     // Listen for SDK abort signal
     signal?.addEventListener('abort', onAbort);
 
-    pendingPermissions.set(requestId, { resolve, toolName, input });
+    pendingPermissions.set(requestId, { resolve, toolName, input, grantKey, hints });
   });
   broadcast('permission:request', {
     ...interactiveEventScope(),
     requestId,
     toolName,
     input: inputPreview,
+    ...hints,
   });
-  emitImEvent('permission-request', JSON.stringify({ requestId, toolName, input: inputPreview }));
+  emitImEvent('permission-request', JSON.stringify({ requestId, toolName, input: inputPreview, ...hints }));
   return response;
 }
 
@@ -5073,6 +5090,9 @@ export function handlePermissionResponse(
     return false;
   }
 
+  // Enforce the request's constraint at the owner too, including stale clients.
+  if (decision === 'always_allow' && pending.hints.suppressAlwaysAllowRule) return false;
+
   pendingPermissions.delete(requestId);
   try { broadcast('permission:expired', { ...interactiveEventScope(), requestId, reason: 'resolved' }); } catch { /* swallow — response path must not fail on SSE */ }
 
@@ -5082,7 +5102,7 @@ export function handlePermissionResponse(
   } else if (decision === 'allow_once' || decision === 'always_allow') {
     if (decision === 'always_allow') {
       console.log(`[permission] ${pending.toolName}: user granted session permission`);
-      sessionAlwaysAllowed.add(pending.toolName);
+      sessionAlwaysAllowed.add(pending.grantKey);
     } else {
       console.log(`[permission] ${pending.toolName}: user allowed once`);
     }
@@ -5094,7 +5114,9 @@ export function handlePermissionResponse(
     // are invisible to the user and would be stuck until the 10-minute timeout.
     // Since the user already approved this tool (once or always), approve them all.
     for (const [otherId, otherPending] of pendingPermissions) {
-      if (otherPending.toolName === pending.toolName) {
+      if (otherPending.grantKey === pending.grantKey
+        && !pending.hints.defaultToNo && !pending.hints.suppressAlwaysAllowRule
+        && !otherPending.hints.defaultToNo && !otherPending.hints.suppressAlwaysAllowRule) {
         console.log(`[permission] ${otherPending.toolName}: cascade auto-approved (requestId=${otherId})`);
         pendingPermissions.delete(otherId);
         try { broadcast('permission:expired', { ...interactiveEventScope(), requestId: otherId, reason: 'resolved' }); } catch { /* swallow — cascade must not fail on SSE */ }
@@ -5198,6 +5220,7 @@ export function getPendingInteractiveRequests(): Array<{
         requestId,
         toolName: p.toolName,
         input: typeof p.input === 'object' ? JSON.stringify(p.input).slice(0, 500) : String(p.input).slice(0, 500),
+        ...p.hints,
       },
     });
   }
@@ -11319,6 +11342,8 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       systemPrompt: {
         type: 'preset' as const,
         preset: 'claude_code' as const,
+        // Product append changes take effect at Query replacement, including resume.
+        snapshot: false,
         append: buildSystemPromptAppend(currentScenario, {
           // agent-session.ts is the builtin Claude Agent SDK path by definition.
           runtime: 'builtin',
@@ -11394,8 +11419,18 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       ...(disallowedToolsList.length > 0 ? { disallowedTools: disallowedToolsList } : {}),
       // Custom permission handling - check rules and prompt user for unknown tools
       // Effective when permissionMode is 'default' or 'acceptEdits' (not 'bypassPermissions')
-      canUseTool: async (toolName: string, input: unknown, options: { signal: AbortSignal }) => {
+      canUseTool: async (toolName: string, input: unknown, options: Parameters<CanUseTool>[2]) => {
         console.debug(`[permission] canUseTool checking: ${toolName}, mode=${configState.currentPermissionMode}`);
+
+        // First check MCP tool permission based on user's enabled MCP servers
+        const mcpCheck = checkMcpToolPermission(toolName, options.mcpServer);
+        if (!mcpCheck.allowed) {
+          if (isDebugMode) console.log(`[permission] MCP tool blocked: ${toolName} - ${mcpCheck.reason}`);
+          return {
+            behavior: 'deny' as const,
+            message: mcpCheck.reason
+          };
+        }
 
         // SAFETY NET: fullAgency mode MUST auto-approve everything except user-interaction
         // tools that require explicit human review (AskUserQuestion, EnterPlanMode, ExitPlanMode).
@@ -11412,17 +11447,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           };
         }
 
-        // First check MCP tool permission based on user's enabled MCP servers
-        const mcpCheck = checkMcpToolPermission(toolName);
-        if (!mcpCheck.allowed) {
-          if (isDebugMode) console.log(`[permission] MCP tool blocked: ${toolName} - ${mcpCheck.reason}`);
-          return {
-            behavior: 'deny' as const,
-            message: mcpCheck.reason
-          };
-        }
-
-        // Trust prefix for context-injected builtin MCPs: skip user confirmation
+        // Trust SDK provenance for active context-injected MCPs: skip user confirmation
         // entirely. These MCPs are injected by sidecar context (cron task / IM
         // bot / bridge plugin) and are MyAgents-managed, not third-party. In IM
         // sessions there is no UI to confirm against anyway, so blocking on
@@ -11430,11 +11455,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         // MYAGENTS_CONTEXT_INJECTED_MCP_IDS guarantees no user MCP can take
         // the same name (filtered out in buildSdkMcpServers), so this auto-allow
         // can't be hijacked.
-        const parts = toolName.split('__');
-        if (
-          parts.length >= 3 &&
-          (MYAGENTS_CONTEXT_INJECTED_MCP_IDS as readonly string[]).includes(parts[1])
-        ) {
+        if (isContextInjectedSdkTool(options.mcpServer, getActiveContextInjectedBuiltinIds())) {
           console.log(`[permission] built-in tool auto-allowed: ${toolName}`);
           return {
             behavior: 'allow' as const,
@@ -11459,7 +11480,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         // to fit the trailing token shape). Non-whitespace shell metachars
         // (`;`, `|`, `&&`, `>`, `$(`, backticks, …) already fail the strict
         // character classes used inside the patterns.
-        if (toolName === 'Bash') {
+        if (toolName === 'Bash' && !options.defaultToNo && !options.suppressAlwaysAllowRule) {
           const cmd = ((input as Record<string, unknown>)?.command as string | undefined)?.trim() ?? '';
 
           // 1. Widget design contract: `myagents widget [readme|list|<module>] [<module>...]`
@@ -11681,7 +11702,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           toolName,
           input,
           configState.currentPermissionMode,
-          options.signal
+          options.signal,
+          { defaultToNo: options.defaultToNo, suppressAlwaysAllowRule: options.suppressAlwaysAllowRule },
+          options.mcpServer,
         );
         console.debug(`[permission] canUseTool result for ${toolName}: ${decision}`);
         if (decision === 'allow') {
@@ -11701,26 +11724,18 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // Claude API rejects images exceeding 8000px per dimension; MCP tools (e.g. browser screenshots)
       // can produce arbitrarily large images that bypass our user-upload resize pipeline.
       hooks: {
-        // PreToolUse hook (#295): hard-enforce plan mode's read-only guarantee.
-        // We always pass `allowDangerouslySkipPermissions: true` (so fullAgency's
-        // bypassPermissions can be switched to mid-session), which sets the native
-        // CLI's `isBypassPermissionsModeAvailable=true`. The CLI's resolver then
-        // returns "allow" for EVERY tool in plan mode and never emits a
-        // can_use_tool control request — so our plan-mode rules in canUseTool are
-        // silently skipped and writes (Bash rm -rf, Edit, …) execute unchecked.
-        // PreToolUse hooks run BEFORE that resolver and a `deny` is honored
-        // regardless, so this is the only place that can restore the guarantee
-        // while keeping the flag. It fails closed on EITHER the SDK's own
-        // per-call `permission_mode` (authoritative for this tool call) OR the
-        // live module-global `configState.currentPermissionMode` mirror — trusting only the
-        // async-updated mirror leaves a desync window where a freshly-entered
-        // plan mode (AI EnterPlanMode mid-turn) isn't reflected yet and a write
-        // tool slips through. This covers every plan-entry path (agent config /
-        // UI toggle / AI EnterPlanMode). See isPlanModeInEffect + plan-mode-gate.ts.
+        // Product plan/read-only and MCP boundaries apply in every SDK mode.
+        // SDK 0.3.269 fixed the old plan+bypass callback omission; the hook still
+        // owns our stricter policy and the live/SDK permission-mode race fence.
         PreToolUse: [{
           hooks: [
             async (input: HookInput): Promise<HookJSONOutput> => {
               const pre = input as PreToolUseHookInput;
+              const mcpCheck = checkMcpToolPermission(pre.tool_name, pre.mcp_server);
+              if (!mcpCheck.allowed) return {
+                hookSpecificOutput: { hookEventName: 'PreToolUse' as const,
+                  permissionDecision: 'deny' as const, permissionDecisionReason: mcpCheck.reason },
+              };
               if (shouldHardDenyChannelInteractionTool(pre.tool_name, currentScenario)) {
                 const reason = pre.tool_name === 'AskUserQuestion'
                   ? channelInteractionDenyReason(currentScenario)
@@ -11805,7 +11820,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               // let a background sub-agent reach a now-disabled MCP server. Only applies
               // to confirmed background agents; foreground keeps its own canUseTool check.
               if (isBackgroundAgent) {
-                const mcpCheck = checkMcpToolPermission(toolName);
+                const mcpCheck = checkMcpToolPermission(toolName, permInput.mcp_server);
                 if (!mcpCheck.allowed) {
                   console.log(`[permission] background-agent ${toolName} denied (MCP disabled: ${mcpCheck.reason}, agentId=${agentId})`);
                   return {
@@ -11819,7 +11834,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               const decision = decideBackgroundAgentPermission({
                 isBackgroundAgent,
                 toolName,
-                sessionAllowsTool: sessionAlwaysAllowed.has(toolName),
+                sessionAllowsTool: sessionAlwaysAllowed.has(toolPermissionGrantKey(toolName, permInput.mcp_server)),
                 policy: configState.currentBackgroundAgentPermissionMode,
               });
               if (decision === 'passthrough') return {};
@@ -12208,6 +12223,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       }
       messageCount++;
       watchdog.markActivity();
+      // These acknowledge coalesced native notifications, not a product turn.
+      // Route before provider settlement, queue/usage mutation or rewind cleanup.
+      if (sdkMessage.type === 'result' && isCoalescedTaskNotificationReceipt(sdkMessage)) continue;
       // Flip turn-scoped substantive-activity flag on first non-init frame.
       // `system/init` is the boilerplate startup frame and must not count
       // as "this turn produced output" for the watchdog auto-resume decision.

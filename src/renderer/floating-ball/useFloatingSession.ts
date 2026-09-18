@@ -1,4 +1,5 @@
 import type { QueuedMessageInfo } from '@/types/queue';
+import type { ToolPermissionHints } from '../../shared/types/toolPermission';
 import { appendStreamingText, completeStreamingText } from '@/utils/streamingTextBlocks';
 import { sameAsyncQuestionReply, type AsyncQuestionReply, type AsyncQuestionSet } from '../../shared/asyncUserQuestions';
 /**
@@ -106,7 +107,7 @@ export interface FbActivity {
     tool?: ToolUseSimple;
 }
 
-export interface FbPermReq {
+export interface FbPermReq extends ToolPermissionHints {
     requestId: string;
     sessionId?: string | null;
     toolName: string;
@@ -1098,6 +1099,8 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                             sessionId: payload.sessionId,
                             toolName: payload.toolName,
                             input: payload.input || '',
+                            defaultToNo: payload.defaultToNo,
+                            suppressAlwaysAllowRule: payload.suppressAlwaysAllowRule,
                         }));
                     }
                     break;
