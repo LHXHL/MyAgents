@@ -120,5 +120,3 @@ URL 语法完全兼容 — 用户从 skills.sh / Claude Code README 复制的任
 - 不支持 GitLab / 私有仓库 / git SSH URL
 - 不支持 `.tar.gz` / `.tgz`
 - 不记录来源 URL/commit，装完就是装完（后续可能加"来源溯源"字段到 SKILL.md frontmatter）
-
-详见调研报告 [`specs/research/research_skill_marketplace_integration.md`](../research/research_skill_marketplace_integration.md)。

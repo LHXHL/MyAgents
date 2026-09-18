@@ -29,6 +29,10 @@
  * is invisible. A weaker third-party model ignores the reminder and calls
  * `Bash rm -rf …` / `Edit` directly — and they execute unchecked (#295).
  *
+ * SDK 0.3.269 fixed the native plan+bypass short-circuit. We retain this
+ * product-owned gate for the stricter read-only catalog and the live/native
+ * mode transition fence below; the old native behavior explains its origin.
+ *
  * THE FIX
  * -------
  * PreToolUse hooks run BEFORE the native permission resolver, and a hook

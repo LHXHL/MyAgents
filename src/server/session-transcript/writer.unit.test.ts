@@ -120,3 +120,21 @@ describe('V2 background persistence', () => {
     await writer.close();
   });
 });
+
+it('waits for physical mutation IO beyond health/flush deadlines and reports real IO failure', async () => {
+  vi.useFakeTimers();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const { writer } = setup({ append: async () => { await gate; } });
+  let done = false;
+  const waiting = writer.flushForMutation().then(result => { done = true; return result; });
+  await vi.advanceTimersByTimeAsync(11_000);
+  expect(done).toBe(false);
+  release();
+  expect(await waiting).toBe(true);
+  await writer.close();
+  const failed = setup({ append: async () => { throw new Error('disk unavailable'); } });
+  expect(await failed.writer.flushForMutation()).toBe(false);
+  expect(failed.writer.status.reason).toBe('io');
+  await failed.writer.close();
+});

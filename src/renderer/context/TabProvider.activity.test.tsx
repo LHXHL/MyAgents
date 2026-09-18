@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { useEffect, useState } from 'react';
+import { StrictMode, useEffect, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as largeValueRefs from '@/api/largeValueRef';
@@ -140,6 +140,7 @@ function Probe() {
     isConnected,
     adoptMigratedSession,
     resetSession,
+    stopResponse,
     retryCurrentSessionRestore,
     sendMessage,
     cancelQueuedMessage,
@@ -178,6 +179,7 @@ function Probe() {
       <output data-testid="retry-restore-target-present">{JSON.stringify(retryRestoreTargetPresent)}</output>
       <button type="button" onClick={() => void sendMessage('hello')}>send message</button>
       <button type="button" onClick={() => void resetSession()}>reset session</button>
+      <button type="button" onClick={() => void stopResponse()}>stop response</button>
       <button type="button" onClick={() => {
         void retryCurrentSessionRestore('m2').then(result => {
           if (result.restored) setRetryRestoreTargetPresent(result.targetMessagePresent);
@@ -258,7 +260,8 @@ describe('Tab-owned query clock integration', () => {
     now = 4000;
     expect(tab!.getQueryElapsedSeconds()).toBe(4);
 
-    emit('permission:request', { sessionId, requestId: 'p1', toolName: 'Bash', input: '{}' });
+    emit('permission:request', { sessionId, requestId: 'p1', toolName: 'Bash', input: '{}', defaultToNo: true, suppressAlwaysAllowRule: true });
+    expect(tab!.pendingPermission).toMatchObject({ defaultToNo: true, suppressAlwaysAllowRule: true });
     emit('permission:request', { sessionId, requestId: 'p2', toolName: 'Write', input: '{}' });
     now = 14000;
     expect(tab!.getQueryElapsedSeconds()).toBe(4);
@@ -1050,6 +1053,65 @@ describe('TabProvider session activity ownership', () => {
     });
     expect(sseHarness.connection.disconnect).not.toHaveBeenCalled();
     expect(tauriHarness.proxyFetch).not.toHaveBeenCalled();
+  });
+
+  it('keeps history and identity when reset is rejected', async () => {
+    tauriHarness.proxyFetch.mockImplementation(async (url: string) => new Response(JSON.stringify(
+      url.endsWith('/api/session-state') ? { sessionId: 'pending-reset-rejected', sessionState: 'idle', isBusy: false } : { success: false, error: 'reset rejected' }
+    ), { status: 200 }));
+    render(<TabProvider tabId="reset-rejected" agentDir="/tmp/workspace" sessionId="pending-reset-rejected" claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:message-replay', { replayKind: 'live-user-echo', sessionId: 'pending-reset-rejected', message: { id: 'retained-user', role: 'user', content: 'retain this', timestamp: new Date(0).toISOString() } });
+    expect(readActivity().historyCount).toBe(1);
+    fireEvent.click(screen.getByRole('button', { name: 'reset session' }));
+    await waitFor(() => expect(screen.getByTestId('agent-error')).toHaveTextContent('reset rejected'));
+    expect(readActivity().historyCount).toBe(1);
+    expect(readActivity().sessionId).toBe('pending-reset-rejected');
+  });
+
+  it('does not declare idle when a stop fails and the backend is still running', async () => {
+    tauriHarness.proxyFetch.mockImplementation(async (url: string) => new Response(JSON.stringify(
+      url.endsWith('/api/session-state') ? { sessionId: 'pending-stop-rejected', sessionState: 'running', isBusy: true } : { success: false, error: 'termination unconfirmed' }
+    ), { status: 200 }));
+    render(<TabProvider tabId="stop-rejected" agentDir="/tmp/workspace" sessionId="pending-stop-rejected" claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:status', { sessionState: 'running' });
+    fireEvent.click(screen.getByRole('button', { name: 'stop response' }));
+    await waitFor(() => expect(screen.getByTestId('agent-error')).toHaveTextContent('termination unconfirmed'));
+    expect(readActivity().sessionState).toBe('running');
+    expect(readActivity().isLoading).toBe(true);
+  });
+
+  it.each([
+    { observed: 'running', busy: true, newer: 'idle', newerBusy: false },
+    { observed: 'idle', busy: false, newer: 'running', newerBusy: true },
+  ])('ignores delayed stop recovery $observed after newer $newer SSE', async ({ observed, busy, newer, newerBusy }) => {
+    let finish!: (response: Response) => void;
+    const read = new Promise<Response>(resolve => { finish = resolve; });
+    tauriHarness.proxyFetch.mockImplementation(async (url: string) => url.endsWith('/api/session-state')
+      ? read : new Response(JSON.stringify({ success: true, alreadyStopped: true }), { status: 200 }));
+    render(<TabProvider tabId="stop-late" agentDir="/tmp/workspace" sessionId="pending-stop-late" claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:status', { sessionState: 'running' });
+    fireEvent.click(screen.getByRole('button', { name: 'stop response' }));
+    await waitFor(() => expect(tauriHarness.proxyFetch.mock.calls.some(([url]) => url.endsWith('/api/session-state'))).toBe(true));
+    emit('chat:status', { sessionState: newer });
+    await act(async () => finish(new Response(JSON.stringify({ sessionId: 'pending-stop-late', sessionState: observed, isBusy: busy, completionTerminal: busy ? null : { status: 'stopped' } }), { status: 200 })));
+    expect(readActivity()).toMatchObject({ sessionState: newer, isLoading: newerBusy });
+  });
+
+  it('adopts the authoritative binding after a lost reset response', async () => {
+    tauriHarness.proxyFetch.mockImplementation(async (url: string) => {
+      if (url.endsWith('/chat/reset')) throw new Error('response lost');
+      return new Response(JSON.stringify({ sessionId: 'session-reset-committed', sessionState: 'idle', isBusy: false }), { status: 200 });
+    });
+    const onSessionIdChange = vi.fn().mockResolvedValue(true);
+    render(<TabProvider tabId="reset-lost" agentDir="/tmp/workspace" sessionId="pending-reset-lost" onSessionIdChange={onSessionIdChange} claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: 'reset session' }));
+    await waitFor(() => expect(readActivity().sessionId).toBe('session-reset-committed'));
+    expect(onSessionIdChange).toHaveBeenCalledWith('session-reset-committed');
+    expect(tauriHarness.proxyFetch.mock.calls.filter(([url]) => url.endsWith('/chat/reset'))).toHaveLength(1);
   });
 
   it('keeps the live SSE owner when reset upgrades a real session on the same sidecar', async () => {
@@ -2192,4 +2254,257 @@ describe('TabProvider session activity ownership', () => {
       await waitFor(() => expect(readQueueIds()).not.toContain(queueId));
     },
   );
+});
+
+describe('TabProvider question receipts and Task history ownership', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sseHarness.state.connected = false;
+    sseHarness.state.generation = 1;
+    sseHarness.state.eventHandler = null;
+    sseHarness.state.statusHandler = null;
+    tauriHarness.listeners.clear();
+    tauriHarness.isTauri = true;
+    tauriHarness.proxyFetch.mockRejectedValue(new Error('submission unavailable'));
+  });
+  function capture(strict = false) {
+    let value: ReturnType<typeof useTabState>;
+    function Capture() {
+      const v = useTabState();
+      useEffect(() => {
+        value = v;
+      }, [v]);
+      return null;
+    }
+    const tree = (
+      <TabProvider
+        tabId="receipt-test"
+        agentDir="/tmp/workspace"
+        sessionId="pending-receipt"
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Capture />
+      </TabProvider>
+    );
+    const view = render(strict ? <StrictMode>{tree}</StrictMode> : tree);
+    return { get: () => value!, ...view };
+  }
+  const question = (requestId: string) => ({
+    sessionId: 'pending-receipt',
+    requestId,
+    questions: [
+      {
+        question: 'Continue?',
+        header: 'Choice',
+        options: [{ label: 'Yes', description: 'Continue' }],
+        multiSelect: false,
+      },
+    ],
+  });
+  it.each(['reject', 'false'] as const)('keeps the same question retryable on %s', async (mode) => {
+    const { get } = capture();
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('ask-user-question:request', question('q1'));
+    if (mode === 'false')
+      tauriHarness.proxyFetch.mockResolvedValue(new Response(JSON.stringify({ success: false })));
+    await act(async () => {
+      await expect(get().respondAskUserQuestion('q1', { '0': 'Yes' })).rejects.toThrow();
+    });
+    expect(get().pendingAskUserQuestion?.requestId).toBe('q1');
+    tauriHarness.proxyFetch.mockResolvedValue(new Response(JSON.stringify({ success: true })));
+    await act(async () => {
+      await get().respondAskUserQuestion('q1', { '0': 'Yes' });
+    });
+    expect(get().pendingAskUserQuestion).toBeNull();
+    const payload = JSON.parse(tauriHarness.proxyFetch.mock.calls.at(-1)![1].body as string);
+    expect(payload).toEqual({ requestId: 'q1', answers: { '0': 'Yes' } });
+  });
+  it('does not dismiss a new question with an old successful receipt', async () => {
+    const { get } = capture();
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('ask-user-question:request', question('old'));
+    let resolve!: (r: Response) => void;
+    tauriHarness.proxyFetch.mockImplementation(
+      () =>
+        new Promise<Response>((r) => {
+          resolve = r;
+        }),
+    );
+    let response!: Promise<void>;
+    act(() => {
+      response = get().respondAskUserQuestion('old', null);
+    });
+    await waitFor(() => expect(resolve).toBeDefined());
+    emit('ask-user-question:request', question('new'));
+    await act(async () => {
+      resolve(new Response(JSON.stringify({ success: true })));
+      await response;
+    });
+    expect(get().pendingAskUserQuestion?.requestId).toBe('new');
+  });
+  it.each(['success', 'reject', 'missing-baseline'] as const)(
+    'ignores old Task history after identity adoption (%s)',
+    async (outcome) => {
+      const { get } = capture();
+      await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+      await act(async () => {
+        await get().adoptMigratedSession('session-old', { sidecarAlreadyMigrated: true });
+        get().setMessages([{ id: 'old-user', role: 'user', content: 'old', timestamp: new Date(0) }]);
+      });
+      let resolve!: (r: Response) => void;
+      let reject!: (e: Error) => void;
+      tauriHarness.proxyFetch.mockImplementation(
+        () =>
+          new Promise<Response>((r, j) => {
+            resolve = r;
+            reject = j;
+          }),
+      );
+      act(() => {
+        tauriHarness.listeners.get('cron:execution-complete')!({
+          payload: { internalSessionId: 'session-old', taskId: 't', success: true, executionCount: 1 },
+        });
+      });
+      await waitFor(() => expect(resolve).toBeDefined());
+      await act(async () => {
+        await get().adoptMigratedSession('session-new', { sidecarAlreadyMigrated: true });
+      });
+      const calls = tauriHarness.proxyFetch.mock.calls.length;
+      await act(async () => {
+        if (outcome === 'reject') reject(new Error('late failure'));
+        else
+          resolve(
+            new Response(
+              JSON.stringify({
+                success: true,
+                fromIndex: outcome === 'missing-baseline' ? -1 : 0,
+                messages: [
+                  {
+                    id: 'old-result',
+                    role: 'assistant',
+                    content: 'STALE',
+                    timestamp: new Date(0).toISOString(),
+                  },
+                ],
+                session: {
+                  id: 'session-old',
+                  messages: [
+                    {
+                      id: 'old-result',
+                      role: 'assistant',
+                      content: 'STALE',
+                      timestamp: new Date(0).toISOString(),
+                    },
+                  ],
+                },
+              }),
+            ),
+          );
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(get().sessionId).toBe('session-new');
+      expect(get().historyMessages).toHaveLength(0);
+      expect(tauriHarness.proxyFetch.mock.calls.length).toBe(calls);
+      expect(get().sessionRestoreError).toBeNull();
+    },
+  );
+  it.each(['normal', 'rewind', 'replacement'] as const)(
+    'routes Task refresh through the restore owner (%s)',
+    async (scenario) => {
+      const { get } = capture();
+      await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+      await act(async () => {
+        await get().adoptMigratedSession('session-cron', { sidecarAlreadyMigrated: true });
+        get().setMessages([{ id: 'prefix', role: 'user', content: 'keep', timestamp: new Date(0) }]);
+      });
+      emit('chat:init', { sessionId: 'session-cron', transcriptFormat: 2, sessionState: 'idle' });
+      const responses: Array<(value: Response) => void> = [];
+      tauriHarness.proxyFetch.mockImplementation(
+        () => new Promise<Response>((resolve) => responses.push(resolve)),
+      );
+      act(() => {
+        tauriHarness.listeners.get('cron:execution-complete')!({
+          payload: { internalSessionId: 'session-cron', taskId: 'task', success: true, executionCount: 1 },
+        });
+      });
+      await waitFor(() => expect(responses).toHaveLength(1));
+      const row = (id: string) => ({
+        id,
+        role: 'user',
+        content: id,
+        timestamp: new Date(0).toISOString(),
+        transcriptState: 'complete',
+        turnId: id,
+      });
+      const snapshot = (ids: string[], revision: number) =>
+        new Response(
+          JSON.stringify({
+            success: true,
+            session: {
+              id: 'session-cron',
+              transcriptFormat: 2,
+              messages: ids.map(row),
+              snapshotRevision: revision,
+              liveSessionState: 'idle',
+              hasMoreBefore: false,
+            },
+          }),
+        );
+      if (scenario === 'rewind') {
+        emit(
+          'chat:transcript-operation',
+          { sessionId: 'session-cron', operation: { kind: 'messages-remove', messageIds: ['tail'] } },
+          { sessionId: 'session-cron', connectionGeneration: 1, liveRevision: 2 },
+        );
+      }
+      if (scenario === 'replacement') {
+        act(() => {
+          sseHarness.state.generation = 2;
+          sseHarness.state.statusHandler?.('connected');
+        });
+        await waitFor(() => expect(responses).toHaveLength(2));
+      }
+      await act(async () => {
+        responses[0](snapshot(['prefix', 'tail'], 1));
+      });
+      if (scenario === 'replacement') {
+        expect(get().historyMessages.map((message) => message.id)).toEqual(['prefix']);
+        await act(async () => {
+          responses[1](snapshot(['prefix', 'current'], 2));
+        });
+      }
+      await waitFor(() => expect(get().isSessionLoading).toBe(false));
+      expect(get().historyMessages.map((message) => message.id)).toEqual(
+        scenario === 'rewind'
+          ? ['prefix']
+          : scenario === 'replacement'
+            ? ['prefix', 'current']
+            : ['prefix', 'tail'],
+      );
+      expect(tauriHarness.proxyFetch.mock.calls.every(([url]) => !url.includes('/since/'))).toBe(true);
+    },
+  );
+  it('releases an SSE connection whose attachment finishes after unmount', async () => {
+    let finish!: () => void;
+    sseHarness.connection.connect.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      sseHarness.state.connected = true;
+    });
+    const { unmount } = capture();
+    await waitFor(() => expect(finish).toBeDefined());
+    unmount();
+    await act(async () => {
+      finish();
+    });
+    expect(sseHarness.state.connected).toBe(false);
+  });
+  it('connects after StrictMode effect replay and releases on real unmount', async () => {
+    const { unmount } = capture(true);
+    await waitFor(() => expect(sseHarness.state.connected).toBe(true));
+    unmount();
+    await waitFor(() => expect(sseHarness.state.connected).toBe(false));
+  });
 });

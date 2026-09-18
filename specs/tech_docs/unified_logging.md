@@ -7,7 +7,7 @@ MyAgents 使用统一日志系统聚合来自三个来源的日志：
 - **NODE** - Node.js Sidecar 后端日志
 - **Rust** - Tauri 原生层日志
 
-所有日志通过 TabProvider 统一管理，显示在 UnifiedLogsPanel，并持久化到文件。
+TabProvider 聚合日志的 UI 投影，UnifiedLogsPanel 负责展示。Node 与 Rust 各自拥有日志持久化；React 日志经批量 API 交给 Node 写入。
 
 ## 架构
 
@@ -328,6 +328,8 @@ SDK user message 摘要通过 `contentKind`、`textLength`、`isEmptyContent` �
 
 ## 故障排查
 
+先确认报告的机器、版本与时间窗口，并优先读取用户提供的日志或日志包。未指定来源时，读取本机 `~/.myagents/logs/unified-{YYYY-MM-DD}.log`，日期按故障发生地的本地时间选择；跨日问题读取相邻日期。不要用本机当天日志推断另一台机器或旧版本的行为。按 Session / Record / job 等关联字段缩小范围，避免整份日志无差别输出。
+
 ### 日志不显示
 
 1. 检查 `initFrontendLogger()` 是否在 `main.tsx` 中调用
@@ -336,9 +338,9 @@ SDK user message 摘要通过 `contentKind`、`textLength`、`isEmptyContent` �
 
 ### 日志不持久化
 
-1. 检查 `serverUrl` 是否已设置（SSE 连接后设置）
-2. 检查 `/api/unified-log` 端点是否正常
-3. 检查 `~/.myagents/logs/` 目录权限
+1. React：检查发送 buffer、`logServerReady` 与 Global Sidecar 的 `/api/unified-log`；此路径不负责 Node/Rust 的落盘。
+2. Node / Rust：分别检查 `UnifiedLogger.ts` / `logger.rs` 的队列、flush 与 drop 诊断。
+3. 检查报告机器上日志目录的权限和磁盘空间。
 
 ### Rust 日志不显示
 

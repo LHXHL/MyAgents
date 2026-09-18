@@ -4,6 +4,8 @@
 
 MyAgents 内置了一个自配置 CLI 工具（`myagents`），让 AI 和用户都能通过命令行管理应用配置。CLI 的参数解析、文件输入和输出格式位于随当前安装包发布的 `cli/myagents.cjs`；状态 authority 与业务 mutation 仍在 Sidecar Admin / Rust Management API。安装包内 bundle 是 CLI 业务代码的唯一运行时副本，用户目录只保存薄启动器。
 
+按任务定位：命令解析与端口查“CLI 脚本设计”，安装包/薄启动器查“Bundle authority 与 launcher 收敛”，业务写入查“Admin API”，Task 创建查“Task 创建链路”，运行失败查“排查指南”。
+
 ## 设计动机
 
 GUI 能做的配置操作（MCP 管理、Provider 配置、Agent Channel 管理、定时任务等），AI 也应该能做。传统方式是让 AI 输出操作步骤让用户去 GUI 点击，但这违背了 Agent 产品的自主性原则。CLI 让 AI 通过 Bash 工具**直接执行**管理操作，能力与 GUI 对等（部分命令如 `agent show` / `runtime describe` 甚至只在 CLI 存在，服务于 AI 的发现链路）。
@@ -159,8 +161,10 @@ policy，并在 `agent-config-intent.lock` 内按 Project-first 顺序提交：�
 `Project.agentId`，再以同一 ID 幂等补建不含 `workspacePath` 的 Agent。有效 ID 不按
 旧 path 重新选择；缺失/失效 ID 才由 legacy adapter 按持久化数组顺序取第一个
 canonical path match。历史 extra/orphan Agent 仍可用 exact ID discovery/config/start，
-但只有 exact Project claim 能做 Project lifecycle mutation。重复 Project path/Agent ID
-仍是硬冲突；多 Project claim 同一 Agent 只隔离相关目标，不拖垮健康 discovery。
+但只有 exact Project claim 能做 Project lifecycle mutation。缺失/重复 Agent ID、无效/重复
+Project identity、重复 workspace 和多 Project claim 均返回局部 diagnostics；原始行保留，
+冲突目标不可被任意选中或重建，健康 discovery 继续可用。可读配置的 identity maintenance
+失败不覆盖为整个侧栏加载错误。
 
 ### Goal Mode 命令
 

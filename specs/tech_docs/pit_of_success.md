@@ -246,6 +246,8 @@
 - 协议：lock → re-read → mutate → tmp write → fsync → rename → fsync parent dir → release
 - Stale recovery 跨运行时——renderer 信任自己的 mtime（1× threshold），node/rust owner 用 4× threshold（renderer 无法 probe pid liveness）
 - Node/Rust owner sentinel 是 `<runtime>:<pid>:<startMs>`；renderer 无可探测的独立 PID owner，使用 `renderer:<createdMs>:<uuid>`。三端 release 都必须逐字校验自己取得的完整 token，防止"暂停过 staleMs 后误删继任者"
+- Agent 单字段编辑传 `AgentConfigMutation`：`runtimeConfigPatch` 只描述改变的字段，`resolveAgentConfigMutation` 在 writer 锁内基于最新 Agent 合并。显式 `runtimeConfig` 仍表示完整替换。Runtime/provider 选择与权限/effort 编辑分开；旧 Session 的执行 context 不能变成重新选择 workspace model 的指令。
+- UI 导航失败不能回滚已提交的 Agent 默认值或删除已发布 Session。
 
 **Don't.**
 - 任何 `config.json` 写入用裸 `tmp + rename`（绕过锁）
@@ -566,13 +568,15 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 
 **Problem.** Tab/Cron/Background 与 IM/Agent Channel 对 config 变更的感知策略不同——前者要冻结快照（Agent 配置变更不影响已开 session），后者要 live follow（每条消息都按当前配置 resolve）。如果用一个 snapshot helper + 布尔参数，调用方容易忘记某个分支。
 
-**Surface.** 两个**独立命名函数**：
-- `snapshotForOwnedSession(agent, { runtimeOverride?, runtimeSourceOverride? })` —— 冻结 `model / permissionMode / mcpEnabledServers / providerId / providerEnvJson / runtime identity`
-- `snapshotForImSession(agent, { runtimeOverride?, runtimeSourceOverride? })` —— 只记录 `runtime identity`（runtime drift 触发 session fork），其它 config 每次消息 live resolve
+**Surface.** `src/server/utils/session-snapshot.ts` 按配置来源提供独立命名入口：
+
+- `snapshotForOwnedSession(agent, options)`：从 Agent 模板冻结执行配置，字段集以 `OwnedSessionSnapshot` 为准。
+- `snapshotForImSession(agent, options)`：只固定 Runtime identity，其它配置逐条消息 live resolve。
+- `snapshotForForkedSession(source, legacyFallback?)`：继承 source Session 的完整执行快照；已有 `configSnapshotAt` 时不借当前 Agent 配置补缺项，旧的未冻结 source 才使用调用方提供的兼容快照。Builtin 与 external fork 共用此入口。
 
 `runtime identity` = `runtime` + `runtimeSource`。`codex/system-cli` 与 `codex/managed-provider` 是两个不同身份；只传 `runtimeOverride:'codex'` 而不传 `runtimeSourceOverride:'managed-provider'` 的路径会被当作 system CLI。`runtimeOverride` / `runtimeSourceOverride` 只用于“会话出生时目标 runtime 已由 sidecar/用户动作决定，但 AgentConfig 还没落盘”的 materialization 路径。它必须在 helper 内构造目标 runtime identity 下的 agent view，并复用 `buildRuntimeChangePatch` 清掉非 portable `runtimeConfig` 字段；禁止先按旧 agent snapshot 再在 route 层 post-hoc 覆盖 `snapshot.runtime`。
 
-**Invariants enforced.** 任何新增字段都必须在两处显式处理，无法"忘记"。读侧用 `resolveSessionConfig(sessionMeta, ownerKind)` (`src/server/utils/resolve-session-config.ts`) 统一消费——owned session 走 meta 冻结值，IM session 走 live agent；meta 缺失时 fallback 到 agent config，向后兼容老 session。
+**Invariants.** 新增快照字段需同步维护 owned、live-follow 与 fork 的语义，并更新 `session-snapshot.unit.test.ts` 的继承测试；调用方不自行拼装字段。读侧用 `resolveSessionConfig(sessionMeta, ownerKind)` (`src/server/utils/resolve-session-config.ts`) 统一消费——owned session 走 meta 冻结值，IM session 走 live agent；meta 缺失时 fallback 到 agent config，向后兼容老 session。
 
 **Don't.** 用一个布尔参数分派两种语义。
 
@@ -640,6 +644,8 @@ Session snapshot 的完整 authority 与写入方向见 [`session_architecture.m
 - watcher 用 path-derived key 做 stop 索引——重命名/删除/symlink swap 后 stop 失效。MUST 用 `watch_start` 返回的 opaque token；`watch_stop({token})` 索引；进程 nonce 防跨重启 token 碰撞。
 
 应用内 rename/move 提交成功后，由 Rust mutation owner 在既有 `workspace:files-changed:<eventKey>` 通道立即发出 `{moves: [{oldPath, newPath}]}`，多项 move 只包含成功项。`useWorkspaceChangeSignal` 先交付映射再触发重读，打开的预览按路径组件映射文件及目录后代；同文档搬迁保留编辑缓冲与已保存基线，普通文件切换仍重置。保存、rename、move 通过 `acquire_edit_mutation` 复用按 canonical workspace identity 的 `KeyedLifecycleRegistry`，使已有文件校验与原子保存不会跨越应用内搬迁、重建旧路径。预览关闭及视图转换复用同一个保存流程，失败不卸载草稿。OS watcher 仍只发粗粒度刷新；外部路径失效显示提示，不推测新路径、不承诺外部进程事务或强制退出时的草稿恢复。
+
+编辑缓冲、保存失败与预览转换的完整生命周期见 [工作区 Markdown 编辑器](workspace_markdown_editor.md)。
 
 Sidecar HTTP workspace IO endpoint 已全部下线，Renderer 唯一入口是 `useWorkspaceFileService(workspacePath)`。eslint `no-restricted-syntax` 规则封禁已删除 endpoint 的字符串字面量。
 

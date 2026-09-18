@@ -38,20 +38,25 @@ function sanitizePreviewHtml(html: string): string {
 
 interface AskUserQuestionPromptProps {
     request: AskUserQuestionRequest;
-    onSubmit: (requestId: string, answers: Record<string, string>) => void;
-    onCancel: (requestId: string) => void;
+    onSubmit: (requestId: string, answers: Record<string, string>) => Promise<void>;
+    onCancel: (requestId: string) => Promise<void>;
 }
 
 /**
  * AskUserQuestion prompt component - wizard-style multi-question form
  * Shows one question at a time with navigation between questions
  */
-export function AskUserQuestionPrompt({ request, onSubmit, onCancel }: AskUserQuestionPromptProps) {
+export function AskUserQuestionPrompt(props: AskUserQuestionPromptProps) {
+    return <AskUserQuestionForm key={props.request.requestId} {...props} />;
+}
+
+function AskUserQuestionForm({ request, onSubmit, onCancel }: AskUserQuestionPromptProps) {
     const { t } = useTranslation('chat');
     const [currentIndex, setCurrentIndex] = useState(0);
     const [answers, setAnswers] = useState<Record<number, string[]>>({});
     const [customInputs, setCustomInputs] = useState<Record<number, string>>({});
     const [isSubmitting, setIsSubmitting] = useState(false);
+    const [submitFailed, setSubmitFailed] = useState(false);
     const customInputRef = useRef<HTMLInputElement>(null);
     const autoAdvanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -167,9 +172,10 @@ export function AskUserQuestionPrompt({ request, onSubmit, onCancel }: AskUserQu
         }
     }, [hasCurrentAnswer, isLastQuestion]);
 
-    const handleSubmit = useCallback(() => {
+    const handleSubmit = useCallback(async () => {
         if (!allAnswered || isSubmitting) return;
         setIsSubmitting(true);
+        setSubmitFailed(false);
 
         // Convert answers to the runtime format. Builtin/CC questions omit
         // `id` and keep the historical numeric keys; Codex app-server requires
@@ -185,13 +191,24 @@ export function AskUserQuestionPrompt({ request, onSubmit, onCancel }: AskUserQu
             formattedAnswers[question.id ?? String(idx)] = finalOptions.join(',');
         });
 
-        onSubmit(request.requestId, formattedAnswers);
+        try {
+            await onSubmit(request.requestId, formattedAnswers);
+        } catch {
+            setSubmitFailed(true);
+            setIsSubmitting(false);
+        }
     }, [allAnswered, isSubmitting, answers, customInputs, request, onSubmit]);
 
-    const handleCancel = useCallback(() => {
+    const handleCancel = useCallback(async () => {
         if (isSubmitting) return;
         setIsSubmitting(true);
-        onCancel(request.requestId);
+        setSubmitFailed(false);
+        try {
+            await onCancel(request.requestId);
+        } catch {
+            setSubmitFailed(true);
+            setIsSubmitting(false);
+        }
     }, [isSubmitting, request.requestId, onCancel]);
 
     // Navigate to specific question by clicking indicator
@@ -415,6 +432,12 @@ export function AskUserQuestionPrompt({ request, onSubmit, onCancel }: AskUserQu
                             );
                         })}
                     </div>
+                )}
+
+                {submitFailed && (
+                    <p role="alert" className="mt-3 text-xs text-[var(--error)]">
+                        {t('shell.toasts.submitFailedRetry')}
+                    </p>
                 )}
 
                 {/* Action buttons */}

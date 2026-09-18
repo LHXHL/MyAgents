@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   engine: {
+    getCurrentSessionContext: vi.fn(() => ({ sessionId: 'source' })),
     resetForNewDesktopSession: vi.fn(async () => ({ success: true, sessionId: 'new-desktop' })),
+    retryUserMessage: vi.fn(async () => ({ success: true, content: 'retry text' })),
     compactContext: vi.fn(async () => ({ success: true })),
     retryMcpServer: vi.fn<(serverId: string) => Promise<Record<string, unknown>>>(async () => ({ success: true })),
     rewindToUserMessage: vi.fn<(userMessageId: string) => Promise<Record<string, unknown>>>(
@@ -21,11 +23,14 @@ const mocks = vi.hoisted(() => ({
   ),
 }));
 
+vi.mock('../SessionStore', () => ({ getSessionMetadata: vi.fn() }));
+
 vi.mock('../session-engine', () => ({
   getSessionEngine: () => mocks.engine,
   retryLastExternalUserMessageAtSelector: mocks.retryLastExternalUserMessageAtSelector,
 }));
 
+import { getSessionMetadata } from '../SessionStore';
 import { handleSessionOperationRoute } from './session-operations';
 
 async function readJson(response: Response): Promise<Record<string, unknown>> {
@@ -152,8 +157,8 @@ describe('handleSessionOperationRoute', () => {
     expect(await readJson(retry as Response)).toEqual({ success: true, content: 'retry text' });
     expect(await readJson(fork as Response)).toEqual({ success: true, newSessionId: 'forked' });
     expect(mocks.engine.rewindToUserMessage).toHaveBeenCalledWith('user-1');
-    expect(mocks.retryLastExternalUserMessageAtSelector).toHaveBeenCalledWith('user-2');
-    expect(mocks.engine.forkAtAssistantMessage).toHaveBeenCalledWith('assistant-1');
+    expect(mocks.engine.retryUserMessage).toHaveBeenCalledWith('user-2', { model: undefined, reasoningEffort: undefined });
+    expect(mocks.engine.forkAtAssistantMessage).toHaveBeenCalledWith('assistant-1', undefined);
   });
 
   it('preserves legacy HTTP 200 for domain operation failures without explicit status', async () => {
@@ -266,4 +271,31 @@ describe('handleSessionOperationRoute', () => {
     expect(response?.status).toBe(400);
     expect(mocks.engine.migrateBoundSurfaceSession).not.toHaveBeenCalled();
   });
+});
+
+it('passes a stable fork target and reconciles only its matching published source', async () => {
+  const targetSessionId = 'e94d808a-f990-43a0-9e31-e01199a267f7';
+  await handleSessionOperationRoute('/sessions/fork', new Request('http://local/sessions/fork', {
+    method: 'POST', body: JSON.stringify({ messageId: 'a', targetSessionId }),
+  }), { workspacePath: '/workspace' });
+  expect(mocks.engine.forkAtAssistantMessage).toHaveBeenCalledWith('a', targetSessionId);
+  vi.mocked(getSessionMetadata).mockReturnValue({ id: targetSessionId, agentDir: '/workspace', title: 'fork',
+    createdAt: 't', lastActiveAt: 't', forkOrigin: { sessionId: 'source', messageId: 'a' } });
+  const query = () => handleSessionOperationRoute('/sessions/fork', new Request(`http://local/sessions/fork?targetSessionId=${targetSessionId}`), { workspacePath: '/workspace' });
+  expect(await (await query())?.json()).toMatchObject({ success: true, newSessionId: targetSessionId });
+  vi.mocked(getSessionMetadata).mockReturnValue({ ...getSessionMetadata(targetSessionId)!, materializationState: 'prepared' });
+  expect(await (await query())?.json()).toEqual({ success: false, pending: true });
+});
+
+
+it('forwards retry send choices and rejects malformed choices before history mutation', async () => {
+  mocks.engine.retryUserMessage.mockClear();
+  const send = (body: unknown) => handleSessionOperationRoute('/chat/retry', new Request('http://local/chat/retry', {
+    method: 'POST', body: JSON.stringify(body),
+  }), { workspacePath: '/workspace' });
+  expect((await send({ userMessageId: 'u', model: 42 }))?.status).toBe(400);
+  expect((await send({ userMessageId: 'u', reasoningEffort: {} }))?.status).toBe(400);
+  expect(mocks.engine.retryUserMessage).not.toHaveBeenCalled();
+  expect((await send({ userMessageId: 'u', model: 'selected-model', reasoningEffort: 'high' }))?.status).toBe(200);
+  expect(mocks.engine.retryUserMessage).toHaveBeenCalledWith('u', { model: 'selected-model', reasoningEffort: 'high' });
 });

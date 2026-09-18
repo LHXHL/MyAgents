@@ -52,17 +52,6 @@ function formatTimestamp(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
-function areMessageUsagesEqual(a: MessageType['usage'], b: MessageType['usage']): boolean {
-  if (a === b) return true;
-  if (!a || !b) return false;
-  return a.inputTokens === b.inputTokens
-    && a.outputTokens === b.outputTokens
-    && a.cacheReadTokens === b.cacheReadTokens
-    && a.cacheCreationTokens === b.cacheCreationTokens
-    && a.providerId === b.providerId
-    && a.model === b.model;
-}
-
 function getTurnMetaLabel(message: MessageType, t: (key: string, options?: Record<string, unknown>) => string): string | null {
   const parts: string[] = [];
   if (typeof message.durationMs === 'number' && Number.isFinite(message.durationMs) && message.durationMs > 0) {
@@ -81,8 +70,7 @@ function getTurnMetaLabel(message: MessageType, t: (key: string, options?: Recor
 }
 
 /**
- * Deep compare message content for memo optimization.
- * Returns true if content is equal (skip re-render), false otherwise.
+ * Compare immutable row identity and the optional render slots/actions.
  */
 function areMessagesEqual(prev: MessageProps, next: MessageProps): boolean {
   // Different loading state -> must re-render
@@ -102,38 +90,9 @@ function areMessagesEqual(prev: MessageProps, next: MessageProps): boolean {
   if (Boolean(prev.onFork) !== Boolean(next.onFork)) return false;
   // onRetry is always present and stable, so its identity remains intentionally ignored.
 
-  const prevMsg = prev.message;
-  const nextMsg = next.message;
-
-  // Same reference -> definitely equal (fast path for history messages)
-  if (prevMsg === nextMsg) return true;
-
-  // Different ID -> different message
-  if (prevMsg.id !== nextMsg.id) return false;
-
-  // Metadata change -> must re-render
-  if (prevMsg.metadata?.source !== nextMsg.metadata?.source) return false;
-
-  // Runtime anchor changes control Codex conversation actions.
-  if (prevMsg.sdkUuid !== nextMsg.sdkUuid) return false;
-  if (prevMsg.runtimeTurnAnchor?.turnId !== nextMsg.runtimeTurnAnchor?.turnId) return false;
-  if (prevMsg.runtimeTurnAnchor?.rootUserMessageId !== nextMsg.runtimeTurnAnchor?.rootUserMessageId) return false;
-
-  // Tail-fade gating depends on this flag even when content/id are unchanged.
-  if (prevMsg.streamingTextActive !== nextMsg.streamingTextActive) return false;
-
-  if (prevMsg.durationMs !== nextMsg.durationMs) return false;
-  if (prevMsg.toolCount !== nextMsg.toolCount) return false;
-  if (!areMessageUsagesEqual(prevMsg.usage, nextMsg.usage)) return false;
-
-  // For streaming messages, check content changes
-  if (typeof prevMsg.content === 'string' && typeof nextMsg.content === 'string') {
-    return prevMsg.content === nextMsg.content;
-  }
-
-  // ContentBlock array - compare by reference (streaming updates create new arrays)
-  // This allows streaming message to re-render while history messages stay stable
-  return prevMsg.content === nextMsg.content;
+  // Message updates are immutable. Comparing the complete row identity covers
+  // attachments and other visible metadata while unchanged history stays cheap.
+  return prev.message === next.message;
 }
 
 /**

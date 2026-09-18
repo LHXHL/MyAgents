@@ -59,6 +59,9 @@ export type DesktopMessageRequest = {
   requiredSystemSkill?: ProductSystemSkillRequirement;
 };
 
+/** Per-send choices; Session/provider/permission authority remains with the engine. */
+export type DesktopRetryOptions = Pick<DesktopMessageRequest, 'model' | 'reasoningEffort'>;
+
 export type DesktopAdmissionResult = {
   success: boolean;
   queued?: boolean;
@@ -351,6 +354,8 @@ export type SessionEngineLiveOverlay = {
 };
 
 export type CapabilityOperationResult = {
+  conversationCommitted?: boolean;
+  retryQueued?: boolean;
   success: boolean;
   error?: string;
   status?: number;
@@ -446,8 +451,9 @@ export interface SessionEngine {
     reason?: string,
   ): Promise<boolean>;
   respondAskUserQuestion(requestId: string, answers: Record<string, string> | null): Promise<boolean>;
+  retryUserMessage(userMessageId: string, options?: DesktopRetryOptions): Promise<CapabilityOperationResult>;
   rewindToUserMessage(userMessageId: string): Promise<CapabilityOperationResult>;
-  forkAtAssistantMessage(messageId: string): Promise<CapabilityOperationResult>;
+  forkAtAssistantMessage(messageId: string, targetSessionId?: string): Promise<CapabilityOperationResult>;
   updateProviderEnv(providerEnv: ProviderEnv | undefined): Promise<{ success: boolean; skipped?: string; error?: string }>;
   updateMcpServers(servers: McpServerDefinition[]): Promise<{ success: boolean; servers?: string[]; skipped?: string; error?: string }>;
   updateAgents(agents: Record<string, unknown>): Promise<{ success: boolean; skipped?: string; error?: string }>;

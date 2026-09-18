@@ -131,7 +131,6 @@ function makeDeps(overrides: Partial<BuiltinTurnLifecycleDeps> = {}) {
       provider_api_protocol: null,
     }),
     probeForkPersistenceIfReady: vi.fn(),
-    recoverInvalidResumeAnchorError: vi.fn(() => false),
     handleTerminalRecovery: vi.fn(),
     applyDeferredRestartIfNeeded: vi.fn(),
     ...overrides,
@@ -475,54 +474,18 @@ describe('turn-lifecycle owner', () => {
     });
   });
 
-  it('recovers SDK missing resume anchor result errors without surfacing a user error', () => {
-    const { deps, broadcasts } = makeDeps({
-      recoverInvalidResumeAnchorError: vi.fn(() => true),
-    });
+  it('surfaces missing native anchors instead of silently replaying with full history', async () => {
+    const { deps, broadcasts } = makeDeps();
     const lifecycle = createBuiltinTurnLifecycle(deps);
-
-    lifecycle.handleSdkResult(makeResult({
-      subtype: 'error_during_execution',
-      is_error: true,
-      result: 'Claude Code returned an error result: No message found with message.uuid of: 75c9051f-a071-4243-bc25-92cfc396e2db',
-      terminal_reason: 'error',
+    await lifecycle.handleSdkResult(makeResult({
+      subtype: 'error_during_execution', is_error: true,
+      result: 'No message found with message.uuid of: rejected-anchor',
+      errors: ['No message found with message.uuid of: rejected-anchor'], terminal_reason: 'error',
     }));
-
-    expect(deps.recoverInvalidResumeAnchorError).toHaveBeenCalledWith(
-      'Claude Code returned an error result: No message found with message.uuid of: 75c9051f-a071-4243-bc25-92cfc396e2db',
-    );
-    expect(broadcasts.map(item => item.event)).not.toContain('chat:agent-error');
-    expect(broadcasts.map(item => item.event)).not.toContain('chat:message-error');
-    expect(broadcasts.map(item => item.event)).not.toContain('chat:message-complete');
-    expect(deps.persistTranscript).not.toHaveBeenCalled();
-    expect(deps.abortTurnAbort).toHaveBeenCalledWith('session-1', 'error');
+    expect(broadcasts.map(item => item.event)).toContain('chat:agent-error');
+    expect(deps.handleTerminalRecovery).toHaveBeenCalledWith(undefined);
   });
 
-  it('does not notify the queue turn for recoverable resume anchor errors', () => {
-    const { deps } = makeDeps({
-      recoverInvalidResumeAnchorError: vi.fn(() => true),
-    });
-    const lifecycle = createBuiltinTurnLifecycle(deps);
-    const onTerminal = vi.fn();
-    setCurrentTurnSourceItem({
-      id: 'queue-replay',
-      message: { role: 'user', content: 'retry' },
-      messageText: 'retry',
-      wasQueued: false,
-      resolve: vi.fn(),
-      onTerminal,
-      channelDelivery: NO_CHANNEL_DELIVERY,
-    });
-
-    lifecycle.handleSdkResult(makeResult({
-      subtype: 'error_during_execution',
-      is_error: true,
-      result: 'No message found with message.uuid of: 75c9051f-a071-4243-bc25-92cfc396e2db',
-      terminal_reason: 'error',
-    }));
-
-    expect(onTerminal).not.toHaveBeenCalled();
-  });
 
   it('does not title a completed turn when turn-end persistence fails', async () => {
     const { deps, broadcasts } = makeDeps({

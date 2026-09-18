@@ -1,3 +1,4 @@
+import type { AgentConfigMutation } from '../../../shared/agentConfigMutation';
 // WorkspaceBasicsSection — workspace name, icon, model, permission, MCP tools
 // AI config (model/provider/permission/mcp) reads from AgentConfig (source of truth).
 // Metadata (name/icon) writes to both Project and AgentConfig.
@@ -23,8 +24,7 @@ import RuntimeSelector from '../RuntimeSelector';
 import { PermissionModeIcon, PermissionModeMenuContent, type PermissionModeMenuItem } from '../PermissionModeMenu';
 import { Popover } from '../ui/Popover';
 import type { RuntimeType, RuntimeDetections, RuntimeConfig } from '../../../shared/types/runtime';
-import { buildRuntimeChangePatch } from '../../../shared/types/runtime';
-import { agentDefaultsForRuntimeBackedProvider, agentUsesManagedCodexProvider, toProviderExecutionIntent } from '../../../shared/providerExecution';
+import { agentUsesManagedCodexProvider, toProviderExecutionIntent } from '../../../shared/providerExecution';
 import { invoke } from '@tauri-apps/api/core';
 import { useToast } from '@/components/Toast';
 import { useBrowserResourceReady } from '@/hooks/useBrowserResourceReady';
@@ -116,7 +116,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
       // (model / permissionMode / additionalArgs) — see its doc in
       // shared/types/runtime.ts. Keep all 4 runtime-change callsites
       // funneling through this single helper.
-      await patchAgentConfig(agent.id, buildRuntimeChangePatch(agent.runtimeConfig, runtime));
+      await patchAgentConfig(agent.id, { runtime });
       refreshConfig();
       const label = runtime === 'claude-code' ? 'Claude Code'
         : runtime === 'codex' ? 'Codex'
@@ -160,7 +160,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
 
   // Save AI config (model, provider, permission, mcp, plugins).
   // AgentConfig is the single source of truth when available; fallback to Project for non-agent workspaces.
-  const saveAgentConfig = useCallback(async (updates: Partial<Omit<AgentConfig, 'id'>>) => {
+  const saveAgentConfig = useCallback(async (updates: AgentConfigMutation) => {
     const projectSync: Partial<Omit<Project, 'id'>> = {};
     if (updates.providerId !== undefined) projectSync.providerId = updates.providerId;
     if (updates.model !== undefined) projectSync.model = updates.model;
@@ -198,44 +198,26 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
     if (intent.kind === 'runtime-backed-provider') {
       const effort = reasoningEffortAfterModelChange(agent?.runtimeConfig?.reasoningEffort as string | undefined, provider.models?.find(item => item.model === model));
       if (effort === 'default' && agent?.runtimeConfig?.reasoningEffort && agent.runtimeConfig.reasoningEffort !== 'default') toast.info(tChat('input.reasoningModelReset'));
-      void saveAgentConfig(agentDefaultsForRuntimeBackedProvider(
-        intent,
-        agent?.runtimeConfig as RuntimeConfig | undefined,
-        { reasoningEffort: effort },
-      ));
+      void saveAgentConfig({ runtimeBackedProviderSelection: intent, reasoningEffort: effort });
     } else {
-      void saveAgentConfig({
-        providerId,
-        model,
-        ...(usesManagedCodexProvider
-          ? buildRuntimeChangePatch(agent?.runtimeConfig as RuntimeConfig | undefined, 'builtin')
-          : {}),
-      });
+      void saveAgentConfig({ providerId, model });
     }
     setOpenPopup(null);
-  }, [agent?.runtimeConfig, usesManagedCodexProvider, availableProviders, providers, saveAgentConfig, toast, tChat]);
+  }, [agent?.runtimeConfig, availableProviders, providers, saveAgentConfig, toast, tChat]);
 
   const handlePermissionSelect = useCallback((mode: string) => {
-    const provider = usesManagedCodexProvider
-      ? (availableProviders.find(p => p.id === agent?.providerId) ?? providers.find(p => p.id === agent?.providerId))
-      : undefined;
-    const intent = provider && agent?.model
-      ? toProviderExecutionIntent(provider, agent.model)
-      : undefined;
-    void saveAgentConfig(intent?.kind === 'runtime-backed-provider'
-      ? agentDefaultsForRuntimeBackedProvider(intent, agentRuntimeConfig, { permissionMode: mode })
-      : { permissionMode: mode });
+    void saveAgentConfig({ permissionMode: mode as AgentConfig['permissionMode'] });
     setOpenPopup(null);
-  }, [agent?.model, agent?.providerId, agentRuntimeConfig, availableProviders, providers, saveAgentConfig, usesManagedCodexProvider]);
+  }, [saveAgentConfig]);
 
   // #324 — agent-level 推理强度 default ('default' | level). Builtin only here
   // (external runtimes configure it via the chat toolbar → runtimeConfig).
   const handleEffortSelect = useCallback((effort: string) => {
     void saveAgentConfig(usesManagedCodexProvider
-      ? { runtimeConfig: { ...agentRuntimeConfig, reasoningEffort: effort } }
+      ? { runtimeConfigPatch: { reasoningEffort: effort } }
       : { reasoningEffort: effort });
     setOpenPopup(null);
-  }, [saveAgentConfig, usesManagedCodexProvider, agentRuntimeConfig]);
+  }, [saveAgentConfig, usesManagedCodexProvider]);
 
   const handleMcpToggle = useCallback((serverId: string) => {
     const current = agent?.mcpEnabledServers || [];
@@ -455,12 +437,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
               rawPolicy === 'terminal' ? 'terminal' : 'myagents';
 
             const onSelect = (next: 'myagents' | 'terminal') => {
-              const prevEnvPolicy = (rc.envPolicy as Record<string, unknown> | undefined) ?? {};
-              const nextRc = {
-                ...rc,
-                envPolicy: { ...prevEnvPolicy, proxy: next },
-              };
-              void patchAgentConfig(agent.id, { runtimeConfig: nextRc } as Partial<Omit<AgentConfig, 'id'>>);
+              void patchAgentConfig(agent.id, { runtimeConfigPatch: { envPolicy: { proxy: next } } });
             };
 
             const radio = (

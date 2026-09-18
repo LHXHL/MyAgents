@@ -2,11 +2,31 @@ import { describe, expect, it } from 'vitest';
 
 import {
   isEmptySuccessfulSdkResult,
+  isCoalescedTaskNotificationReceipt,
   isSuccessfulCompactControlTurn,
   isRecoveredAssistantMessageError,
   findTurnUsageStampIndex,
   extractTurnUsageFromSdkResult,
 } from './sdk-turn-outcome';
+import type { SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
+
+describe('coalesced task notification receipt', () => {
+  const receipt = { subtype: 'success', is_error: false, origin: { kind: 'task-notification' },
+    num_turns: 0, result: '' };
+
+  it('recognizes only an explicitly attributed zero-work notification receipt', () => {
+    expect(isCoalescedTaskNotificationReceipt(receipt as SDKResultMessage)).toBe(true);
+    expect(isCoalescedTaskNotificationReceipt({ ...receipt, terminal_reason: 'completed' } as SDKResultMessage)).toBe(true);
+  });
+
+  it.each([
+    { origin: undefined }, { origin: { kind: 'human' } }, { origin: { kind: 'peer' } },
+    { num_turns: 1 }, { result: 'finished' }, { is_error: true },
+    { subtype: 'error_during_execution' }, { terminal_reason: 'aborted_tools' },
+  ])('retains normal terminal handling for %j', patch => {
+    expect(isCoalescedTaskNotificationReceipt({ ...receipt, ...patch } as SDKResultMessage)).toBe(false);
+  });
+});
 
 describe('isEmptySuccessfulSdkResult', () => {
   it('detects a completed SDK result with no visible output, tools, result text, or output tokens', () => {

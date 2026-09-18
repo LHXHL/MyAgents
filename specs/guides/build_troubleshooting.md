@@ -438,4 +438,4 @@ let client = reqwest::Client::builder()
 
 - [Windows 构建指南](../guides/windows_build_guide.md)
 - [代理配置](../tech_docs/proxy_config.md)
-- [Windows 平台指南](./windows.md)
+- [Windows 平台架构](../tech_docs/windows_platform.md)

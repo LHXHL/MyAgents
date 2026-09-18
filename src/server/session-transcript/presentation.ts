@@ -20,6 +20,18 @@ export class TranscriptPresentation {
   private readonly retractedNativeMessages = new Set<string>();
 
   constructor(readonly content: ProductTranscriptContent, publish?: (operation: TranscriptOperation) => void, private readonly onTextComplete?: (target: ProductBlockTarget) => void) {
+    content.writer.subscribeOperations(operation => {
+      if (operation.kind !== 'messages-remove') return;
+      const removed = new Set(operation.messageIds);
+      if (this.text && removed.has(this.text.messageId)) this.text = undefined;
+      if (this.thinking && removed.has(this.thinking.messageId)) this.thinking = undefined;
+      for (const [index, block] of this.nativeStreams) {
+        if (removed.has(block.target.messageId)) this.nativeStreams.delete(index);
+      }
+      for (const [id, message] of this.nativeMessages) {
+        if (message.blocks.every(block => removed.has(block.target.messageId))) this.nativeMessages.delete(id);
+      }
+    });
     if (publish) content.writer.subscribeOperations(publish);
   }
 

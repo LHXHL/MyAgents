@@ -1172,9 +1172,27 @@ pub async fn cmd_start_agent_channel(
     let lifecycle_lock = agent_channel_lifecycle_lock(&agentId, &channelId);
     let _lifecycle_guard = lifecycle_lock.lock().await;
 
-    // These objects remain in the command payload for wire compatibility, but
-    // disk-first config is authoritative after the lifecycle wait.
     let _ = (&agentConfig, &channelConfig);
+    start_agent_channel_with_lock_held(
+        &app_handle,
+        agentState.inner(),
+        sidecarManager.inner(),
+        agentId,
+        channelId,
+        Some(workspacePath),
+    )
+    .await
+}
+
+#[allow(non_snake_case)]
+async fn start_agent_channel_with_lock_held(
+    app_handle: &AppHandle,
+    agentState: &ManagedAgents,
+    sidecarManager: &ManagedSidecarManager,
+    agentId: String,
+    channelId: String,
+    workspacePath: Option<String>,
+) -> Result<ChannelStatus, String> {
     let Some((agentConfig, channelConfig, mut im_config)) =
         config_store::current_agent_channel_start_config(&agentId, &channelId)
     else {
@@ -1183,10 +1201,11 @@ pub async fn cmd_start_agent_channel(
             channelId
         ));
     };
-    if crate::workspace_path::normalize_workspace_path_identity(
-        &agentConfig.resolved_workspace_path,
-    ) != crate::workspace_path::normalize_workspace_path_identity(&workspacePath)
-    {
+    if workspacePath.as_ref().is_some_and(|path| {
+        crate::workspace_path::normalize_workspace_path_identity(
+            &agentConfig.resolved_workspace_path,
+        ) != crate::workspace_path::normalize_workspace_path_identity(path)
+    }) {
         return Err(format!(
             "Agent '{}' workspace changed before channel start; refresh and retry",
             agentId
@@ -1424,6 +1443,42 @@ pub async fn cmd_start_agent_channel(
     );
 
     Ok(channel_status)
+}
+
+/// User intent and runtime settlement share the existing Channel lifecycle.
+#[tauri::command]
+pub async fn cmd_set_agent_channel_enabled(
+    app_handle: AppHandle,
+    agent_state: tauri::State<'_, ManagedAgents>,
+    sidecar_manager: tauri::State<'_, ManagedSidecarManager>,
+    agent_id: String,
+    channel_id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    let lifecycle_lock = agent_channel_lifecycle_lock(&agent_id, &channel_id);
+    let _guard = lifecycle_lock.lock().await;
+    config_store::persist_agent_channel_enabled(&agent_id, &channel_id, enabled)?;
+    if enabled {
+        start_agent_channel_with_lock_held(
+            &app_handle,
+            agent_state.inner(),
+            sidecar_manager.inner(),
+            agent_id,
+            channel_id,
+            None,
+        )
+        .await?;
+    } else {
+        agent_channel::stop_agent_channel_with_lock_held(
+            &app_handle,
+            agent_state.inner(),
+            sidecar_manager.inner(),
+            &agent_id,
+            &channel_id,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Stop a single channel within an agent.

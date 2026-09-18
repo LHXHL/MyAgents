@@ -430,17 +430,14 @@ export default function ChannelDetailView({
         try {
             const isRunning = botStatusRef.current?.status === 'online' || botStatusRef.current?.status === 'connecting';
 
-            if (isRunning) {
-                // issue #219 v2: helper persists enabled=false against the freshest
-                // on-disk config (avoids stale-array overwrite of concurrent edits),
-                // then best-effort stops runtime. Single source of truth shared with
-                // the list-view stop button.
+            if (channelRef.current.enabled || isRunning) {
+                // Disable desired intent even after connection failure so the
+                // backend monitor cannot restart a channel the user stopped.
                 await stopAndDisableAgentChannel(agent.id, channelId);
                 if (isMountedRef.current) {
                     track('agent_channel_toggle', { platform: channelRef.current.type, enabled: false });
                     toastRef.current.success(t('agentSettings.channelDetail.stopped'));
                     setBotStatus(null);
-                    onChanged();
                 }
             } else {
                 const ch = channelRef.current;
@@ -459,7 +456,6 @@ export default function ChannelDetailView({
                 if (isMountedRef.current) {
                     track('agent_channel_toggle', { platform: channelRef.current.type, enabled: true });
                     toastRef.current.success(t('agentSettings.channelDetail.started'));
-                    onChanged();
                 }
             }
         } catch (err) {
@@ -467,7 +463,10 @@ export default function ChannelDetailView({
                 toastRef.current.error(t('agentSettings.channelDetail.operationFailed', { message: String(err) }));
             }
         } finally {
-            if (isMountedRef.current) setToggling(false);
+            if (isMountedRef.current) {
+                setToggling(false);
+                onChanged();
+            }
         }
     }, [agent.id, channelId, onChanged, t]);
 
@@ -565,6 +564,7 @@ export default function ChannelDetailView({
 
     // Derived values that depend on channel (safe with optional chaining before early return)
     const isRunning = botStatus?.status === 'online' || botStatus?.status === 'connecting';
+    const shouldStop = Boolean(channel?.enabled) || isRunning;
     const isOpenClaw = channel ? isOpenClawPlatform(channel.type) : false;
     const promoted = isOpenClaw && channel ? findPromotedByPlatform(channel.type) : undefined;
     const openclawSchemaProperties = useMemo(
@@ -812,21 +812,21 @@ export default function ChannelDetailView({
                 </div>
                 <button
                     onClick={toggleChannel}
-                    disabled={toggling || pluginMissing || (!hasCredentials && !isRunning)}
+                    disabled={toggling || (!shouldStop && (pluginMissing || !hasCredentials))}
                     className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
-                        isRunning
+                        shouldStop
                             ? 'bg-[var(--error-bg)] text-[var(--error)] hover:brightness-95'
                             : 'bg-[var(--button-primary-bg)] text-[var(--button-primary-text)] hover:bg-[var(--button-primary-bg-hover)]'
                     } disabled:opacity-50`}
                 >
                     {toggling ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : isRunning ? (
+                    ) : shouldStop ? (
                         <PowerOff className="h-4 w-4" />
                     ) : (
                         <Power className="h-4 w-4" />
                     )}
-                    {isRunning ? t('agentSettings.channelDetail.stop') : t('agentSettings.channelDetail.start')}
+                    {shouldStop ? t('agentSettings.channelDetail.stop') : t('agentSettings.channelDetail.start')}
                 </button>
             </div>
 

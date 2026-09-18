@@ -73,6 +73,10 @@ class FakeRuntimeProcess implements RuntimeProcess {
 class FakeRuntime implements AgentRuntime {
   type: RuntimeType = 'codex';
   readonly sentMessages: string[] = [];
+  readonly sentModels: string[] = [];
+  effectiveModel = '';
+  readonly sentEfforts: string[] = [];
+  effectiveEffort = '';
   readonly startSessionInitialMessages: Array<string | undefined> = [];
   readonly startSessionResumeIds: Array<string | undefined> = [];
   readonly startSessionHasHostDispatcher: boolean[] = [];
@@ -247,6 +251,8 @@ class FakeRuntime implements AgentRuntime {
 
   async startSession(options: SessionStartOptions, onEvent: UnifiedEventCallback): Promise<RuntimeProcess> {
     this.effectivePermissionMode = options.permissionMode ?? '';
+    this.effectiveModel = options.model ?? '';
+    this.effectiveEffort = options.reasoningEffort ?? '';
     this.startSessionInitialMessages.push(options.initialTurn?.message);
     this.startSessionResumeIds.push(options.resumeSessionId);
     this.startSessionHasHostDispatcher.push(Boolean(
@@ -292,8 +298,13 @@ class FakeRuntime implements AgentRuntime {
     this.compactCalls += 1;
   }
 
-  async setModel(): Promise<void> {
+  async setModel(_process: RuntimeProcess, model: string | undefined): Promise<void> {
     if (this.rejectConfig) throw new Error('fake config apply failed');
+    this.effectiveModel = model ?? '';
+  }
+
+  async setReasoningEffort(_process: RuntimeProcess, effort: string | undefined): Promise<void> {
+    this.effectiveEffort = effort ?? '';
   }
 
   async setPermissionMode(_process: RuntimeProcess, mode: string | undefined): Promise<void> {
@@ -351,6 +362,8 @@ class FakeRuntime implements AgentRuntime {
 
   private playTurn(message: string): void {
     this.sentMessages.push(message);
+    this.sentModels.push(this.effectiveModel);
+    this.sentEfforts.push(this.effectiveEffort);
     const script = this.scripts.shift() ?? { kind: 'success', text: `echo:${message}` };
     this.defer(() => {
       if (script.kind === 'success') {
@@ -4683,6 +4696,72 @@ describe('external SessionEngine with fake runtime', () => {
     }
   });
 
+  it.each(['v1', 'v2'])('retries a historical %s Codex answer with a native rewind before backend replay', async format => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'first answer' },
+      { kind: 'success', text: 'second answer' },
+      { kind: 'success', text: 'replacement first answer' },
+    ], { conversationBranching: true });
+    const sessionId = 'session-codex-retry';
+    const workspacePath = join(harness.home, 'workspace');
+    if (format === 'v1') await harness.sessionStore.saveSessionMetadata({ id: sessionId, agentDir: workspacePath,
+      title: 'legacy', createdAt: 't', lastActiveAt: 't', runtime: 'codex', runtimeSource: 'system-cli' });
+    // Desktop prewarm may legitimately start with no selected model.
+    await harness.externalSession.prewarmExternalSession({ sessionId, workspacePath, scenario: { type: 'desktop' } });
+    for (const text of ['first question', 'second question']) {
+      const sent = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, text));
+      await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
+      await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    }
+    const original = (await harness.sessionStore.getSessionData(sessionId))!.messages;
+    const first = original[0];
+    expect(await harness.engine.retryUserMessage(first.id, { model: 'gpt-5-codex', reasoningEffort: 'medium' })).toMatchObject({ success: true, retryQueued: true, conversationCommitted: true });
+    if (format === 'v1') expect(broadcastEvents).toContainEqual({ event: 'chat:messages-retracted', data: {
+      messageIds: original.map(message => message.id), retractedStreamingTail: true,
+    } });
+    await waitFor(() => harness.runtime.startSessionInitialMessages.length === 2, 'retry replacement thread');
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.runtime.conversationBranches).toEqual([{ kind: 'before-turn', runtimeTurnId: 'fake-turn-1' }]);
+    const data = (await harness.sessionStore.getSessionData(sessionId))!;
+    expect(data.messages.map(message => message.role)).toEqual(['user', 'assistant']);
+    expect(data.messages[0].content).toBe('first question');
+    expect(data.messages[1].content).toContain('replacement first answer');
+    expect(harness.runtime.sentModels).toEqual(['gpt-5-codex', 'gpt-5-codex', 'gpt-5-codex']);
+    expect(harness.runtime.sentEfforts).toEqual(['medium', 'medium', 'medium']);
+    expect(data.runtimeSessionId).toBe('fake-thread-2');
+  });
+
+  it('keeps a send arriving during Codex retry behind its owned replay', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'original answer' },
+      { kind: 'success', text: 'retried answer' },
+      { kind: 'success', text: 'competing answer' },
+    ], { conversationBranching: true });
+    const sessionId = 'session-codex-retry-race';
+    const workspacePath = join(harness.home, 'workspace');
+    const sent = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'original'));
+    await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const first = (await harness.sessionStore.getSessionData(sessionId))!.messages[0];
+    const nativeBranch = harness.runtime.branchConversation!.bind(harness.runtime);
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    harness.runtime.branchConversation = async (process, boundary) => {
+      entered(); await gate; return nativeBranch(process, boundary);
+    };
+    const retry = harness.engine.retryUserMessage(first.id);
+    await started;
+    const competitor = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'competitor'));
+    release();
+    expect(await retry).toMatchObject({ success: true, retryQueued: true });
+    await expect(competitor.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect((await harness.sessionStore.getSessionData(sessionId))!.messages.filter(message => message.role === 'user').map(message => message.content))
+      .toEqual(['original', 'competitor']);
+  });
+
   it('rewinds a Codex conversation and prewarms the replacement native thread', async () => {
     const harness = await createHarness([
       { kind: 'success', text: 'first answer' },
@@ -4734,6 +4813,9 @@ describe('external SessionEngine with fake runtime', () => {
     expect(resumedMessages.map(message => message.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
     expect(resumedMessages[2]?.content).toBe('edited second question');
     expect(resumedMessages[3]?.content).toContain('edited second answer');
+    const transcriptOwner = harness.sessionStore.getActiveSessionTranscript(sessionId)!;
+    expect(await transcriptOwner.writer.flush()).toBe(true);
+    expect([...(await transcriptOwner.file.read()).projection.messages.keys()]).toEqual(resumedMessages.map(message => message.id));
   });
 
   it('rewinds before the first Codex turn without persisting an empty native thread', async () => {

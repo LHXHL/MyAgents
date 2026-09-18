@@ -184,21 +184,15 @@ export async function activateSessionTranscript(sessionId: string): Promise<Sess
             await sessionTranscriptFormat(metadata, sessionId);
             decoded = await readTranscriptFile(getV2SessionFilePath(sessionId), sessionId);
         } catch (error) {
+            if (!(error instanceof TranscriptStorageError) || error.reason !== 'invalid-history') throw error;
             incomplete = true;
             console.warn(`[SessionStore] Cannot fully restore V2 history for ${sessionId}:`, error);
         }
         return { decoded, incomplete };
     });
-    // A cold history read is optional to an already validated runtime binding.
-    // Timeout does not release its physical lock or start a competing repair.
+    // Adopt the actual read; a slow or temporarily inaccessible file is not corrupt.
     const task = (async () => {
-        let timeout: ReturnType<typeof setTimeout> | undefined;
-        const result = await Promise.race([
-            reading.catch(() => ({ decoded: undefined, incomplete: true })),
-            new Promise<{ decoded: undefined; incomplete: boolean }>(resolve => {
-                timeout = setTimeout(() => resolve({ decoded: undefined, incomplete: true }), 2000);
-            }),
-        ]).finally(() => { if (timeout) clearTimeout(timeout); });
+        const result = await reading;
         let effective = metadata;
         if (metadata.pendingConversationMutation) {
             const intent = metadata.pendingConversationMutation;
@@ -1828,8 +1822,9 @@ function finalizeBuiltinRewindMetadata(
     return {
         ...current,
         sdkSessionId: intent.replacementSdkSessionId,
+        sdkResumeSessionAt: intent.resumeSessionAt,
         unifiedSession: false,
-        forkFrom: undefined,
+        forkFrom: intent.resumeSessionAt ? current.forkFrom : undefined,
         pendingConversationMutation: undefined,
         runtimeUsageTotals: undefined,
         lastContextUsage: undefined,
@@ -2012,6 +2007,7 @@ export async function commitBuiltinConversationRewind(input: {
     cursor: TranscriptWriteCursor;
     sourceSdkSessionId: string | null;
     replacementSdkSessionId: string;
+    resumeSessionAt?: string;
     targetMessageId: string;
     targetMessageCount: number;
 }): Promise<ConversationMutationResult> {
@@ -2023,12 +2019,12 @@ export async function commitBuiltinConversationRewind(input: {
         if (!derived.ok || !derived.target) return { success: false, reason: 'precondition_failed', error: derived.ok ? 'Empty rewind target' : derived.error };
         return commitV2ConversationMutation(input.sessionId, {
             schemaVersion: 1, kind: 'builtin-rewind', sourceSdkSessionId: input.sourceSdkSessionId,
-            replacementSdkSessionId: input.replacementSdkSessionId,
+            replacementSdkSessionId: input.replacementSdkSessionId, resumeSessionAt: input.resumeSessionAt,
             sourceMessageCount: source.length, targetMessageCount: derived.target.length,
         }, derived.target.map(message => message.id), source.map(message => message.id));
     }
     ensureStorageDir();
-    if (input.sourceSdkSessionId === input.replacementSdkSessionId) {
+    if (input.sourceSdkSessionId === input.replacementSdkSessionId && !input.resumeSessionAt) {
         return { success: false, reason: 'precondition_failed', error: 'Replacement SDK identity must be fresh' };
     }
 
@@ -2036,7 +2032,7 @@ export async function commitBuiltinConversationRewind(input: {
         schemaVersion: 1,
         kind: 'builtin-rewind',
         sourceSdkSessionId: input.sourceSdkSessionId,
-        replacementSdkSessionId: input.replacementSdkSessionId,
+        replacementSdkSessionId: input.replacementSdkSessionId, resumeSessionAt: input.resumeSessionAt,
         sourceMessageCount: input.cursor.persistedMessageCount,
         targetMessageCount: input.targetMessageCount,
     };
@@ -2163,8 +2159,7 @@ export type TranscriptMutationIntent =
     | { kind: 'sdk-retraction'; sdkUuids: readonly string[]; streamingTailMessageId?: string }
     | { kind: 'builtin-admission-rollback'; messageId: string }
     | { kind: 'builtin-transient-retry'; messageId: string }
-    | { kind: 'external-rejected-message'; messageId: string }
-    | { kind: 'external-retry'; userMessageId: string; targetMessageCount: number };
+    | { kind: 'external-rejected-message'; messageId: string };
 
 export type MutateSessionTranscriptResult =
     | { ok: true; action: 'replaced' | 'noop'; cursor: TranscriptWriteCursor }
@@ -2368,8 +2363,8 @@ function deriveTranscriptMutationTarget(
     messages: SessionMessage[],
     intent: TranscriptMutationIntent,
 ): { ok: true; target: SessionMessage[] | null } | { ok: false; error: string } {
-    if (intent.kind === 'builtin-rewind' || intent.kind === 'external-retry') {
-        const targetId = intent.kind === 'builtin-rewind' ? intent.targetMessageId : intent.userMessageId;
+    if (intent.kind === 'builtin-rewind') {
+        const targetId = intent.targetMessageId;
         const targetIndex = messages.findIndex(message => message.id === targetId && message.role === 'user');
         if (targetIndex < 0) {
             return intent.targetMessageCount >= messages.length
@@ -2396,10 +2391,13 @@ function deriveTranscriptMutationTarget(
 function v2CursorMatches(active: SessionTranscript, cursor: TranscriptWriteCursor): boolean {
     const stamp = cursor[transcriptCursorState];
     const current = active.writer.status;
-    return stamp.sessionId === current.sessionId && stamp.v2?.generation === current.generation
-        && (stamp.v2.instanceId
-            ? stamp.v2.instanceId === current.instanceId && stamp.v2.liveRevision === current.liveRevision
-            : stamp.v2.revision === current.durableRevision && current.liveRevision === current.durableRevision);
+    const source = stamp.v2;
+    if (!source || stamp.sessionId !== current.sessionId) return false;
+    // Publishing a baseline changes disk generation, not the live snapshot.
+    return source.instanceId
+        ? source.instanceId === current.instanceId && source.liveRevision === current.liveRevision
+        : source.generation === current.generation && source.revision === current.durableRevision
+            && current.liveRevision === current.durableRevision;
 }
 
 function selectV2Messages(source: TranscriptProjection, ids: readonly string[]): TranscriptProjection {
@@ -2422,7 +2420,9 @@ async function commitV2ConversationMutation(
     sessionId: string, intent: PendingConversationMutation, targetIds: string[], sourceIds: string[],
 ): Promise<ConversationMutationResult> {
     const active = activeTranscripts.get(sessionId);
-    if (!active || active.hasPendingMutation || targetIds.length >= sourceIds.length
+    const sourceFailure = await prepareSessionTranscriptMutation(sessionId);
+    if (sourceFailure) return { success: false, reason: sourceFailure.reason === 'write-error' ? 'write_error' : 'precondition_failed', error: sourceFailure.error };
+    if (!active || targetIds.length >= sourceIds.length
         || targetIds.some((id, index) => id !== sourceIds[index])) {
         return { success: false, reason: 'precondition_failed', error: 'V2 rewind requires a current, complete source prefix' };
     }
@@ -2431,10 +2431,10 @@ async function commitV2ConversationMutation(
         ? current.runtime === 'codex' && current.runtimeSessionId === intent.sourceRuntimeSessionId
         : (current.runtime ?? 'builtin') === 'builtin'
             && (resolveBuiltinSdkSessionId(current) ?? null) === intent.sourceSdkSessionId
-            && intent.replacementSdkSessionId !== intent.sourceSdkSessionId;
+            && (intent.replacementSdkSessionId !== intent.sourceSdkSessionId || Boolean(intent.resumeSessionAt));
     if (!sourceMatches) return { success: false, reason: 'precondition_failed', error: 'Native rewind source binding changed' };
     const revision = active.writer.status.liveRevision;
-    if (!await active.writer.flush()) return { success: false, reason: 'write_error', error: 'Rewind could not confirm its source within the save deadline' };
+    if (!await active.writer.flushForMutation()) return { success: false, reason: 'write_error', error: 'Rewind could not save its source history' };
     const source = [...active.writer.projection.messages.keys()];
     if (revision !== active.writer.status.liveRevision || source.length !== sourceIds.length || source.some((id, i) => id !== sourceIds[i])) {
         return { success: false, reason: 'precondition_failed', error: 'V2 rewind source changed while preparing' };
@@ -2450,6 +2450,28 @@ async function commitV2ConversationMutation(
     return conversationMutationSuccess(sessionId, active.metadata, messages);
 }
 
+/** Check the source before native/file side effects; publication uses the existing writer queue. */
+export async function prepareSessionTranscriptMutation(
+    sessionId: string,
+): Promise<Extract<MutateSessionTranscriptResult, { ok: false }> | undefined> {
+    const active = activeTranscripts.get(sessionId);
+    if (active) {
+        if (active.writer.status.reason === 'invalid-history') {
+            return { ok: false, reason: 'malformed-transcript', error: 'History has no complete mutation source' };
+        }
+        if (active.hasPendingMutation && !await active.writer.flushForMutation()) {
+            return { ok: false, reason: 'write-error', error: 'The previous conversation edit is still waiting to be saved; try again once saving completes' };
+        }
+        return;
+    }
+    return withSessionFileLock(sessionId, async () => {
+        if (await sessionTranscriptFormat(getSessionMetadata(sessionId), sessionId) === 'legacy'
+            && readJsonlSnapshot(getSessionFilePath(sessionId)).hasMalformedRows) {
+            return { ok: false, reason: 'malformed-transcript', error: 'History contains unreadable rows' };
+        }
+    });
+}
+
 /** Commit a named destructive transcript operation from the owner's proven source. */
 export async function mutateSessionTranscript(
     sessionId: string,
@@ -2457,14 +2479,13 @@ export async function mutateSessionTranscript(
     intent: TranscriptMutationIntent,
 ): Promise<MutateSessionTranscriptResult> {
     if (cursor[transcriptCursorState].v2) {
+        const sourceFailure = await prepareSessionTranscriptMutation(sessionId);
+        if (sourceFailure) return sourceFailure;
         const active = activeTranscripts.get(sessionId);
         if (!active || !v2CursorMatches(active, cursor)) return { ok: false, reason: 'stale-cursor', error: 'V2 mutation source changed' };
         const derived = deriveTranscriptMutationTarget(transcriptMessages(active.writer.projection), intent);
         if (!derived.ok) return { ok: false, reason: 'precondition-failed', error: derived.error };
         if (!derived.target) return { ok: true, action: 'noop', cursor };
-        if (active.hasPendingMutation || active.writer.status.reason === 'invalid-history') {
-            return { ok: false, reason: 'malformed-transcript', error: 'V2 mutation requires a complete, settled source' };
-        }
         const target = selectV2Messages(active.writer.projection, derived.target.map(message => message.id));
         active.writer.replaceProjection(target);
         active.patchMetadata({ stats: calculateSessionStats(derived.target), lastMessagePreview: resolveLastVisibleTurnPreview(derived.target).preview });
@@ -2569,6 +2590,7 @@ export async function updateSessionMetadata(
         | 'configSnapshotAt'
         | 'materializationState'
         | 'materializationSourceSessionId'
+        | 'sdkResumeSessionAt'
         | 'pendingContinueAfterAbort'
     >> & {
         /** Pin intent. SessionStore owns the canonical ordering timestamp. */
@@ -2890,20 +2912,16 @@ export async function assertCompleteSessionForkSource(sessionId: string): Promis
  */
 export async function publishForkSession(
     metadata: SessionMetadata, messages: readonly SessionMessage[], sourceSessionId: string,
-    timeoutMs = 2000,
 ): Promise<void> {
     if (!ownsSessionMetadataBirth(metadata) || metadata.transcriptFormat !== 2 || getSessionMetadata(metadata.id)) {
         throw new Error('Fork target must be a fresh V2 Session birth');
     }
     await assertCompleteSessionForkSource(sourceSessionId);
     const prepared: SessionMetadata = { ...metadata, materializationState: 'prepared', materializationSourceSessionId: sourceSessionId };
-    let cancelled = false;
     let candidate: TranscriptFile | undefined;
-    const task = (async () => {
+    try {
         await publishV2Metadata(prepared, {}, true);
-        if (cancelled) throw new Error('Fork publication expired');
         const copied = await copyForkAttachments(messages, metadata.id);
-        if (cancelled) throw new Error('Fork publication expired');
         const projection = createTranscriptProjection();
         for (const message of copied) {
             if (projection.messages.has(message.id)) throw new Error('Duplicate fork message identity');
@@ -2914,7 +2932,6 @@ export async function publishForkSession(
             sessionId: metadata.id, filePath: getV2SessionFilePath(metadata.id), generation,
             allowCreate: true, withLock: run => withSessionFileLock(metadata.id, run),
             publishBirth: async () => {
-                if (cancelled) throw new Error('Fork publication expired');
                 await publishV2Metadata(prepared, {
                     materializationState: undefined, materializationSourceSessionId: undefined,
                     lastMessagePreview: resolveLastVisibleTurnPreview([...messages]).preview,
@@ -2923,21 +2940,12 @@ export async function publishForkSession(
             },
         });
         await file.replace({ generation, revision: 0 }, projection, 0);
-    })();
-    // Cancellation ends only the caller's wait. Cleanup follows the actual IO,
-    // under the same file/metadata locks; it cannot race a late rename/commit.
-    const cleanup = task.catch(async error => {
+    } catch (error) {
         await candidate?.discardCandidate();
         const cleanup = await deleteSession(metadata.id, { kind: 'prepared-materialization-rollback', sourceSessionId });
         if (cleanup.deleted) await discardForkAttachments(metadata.id);
         throw error;
-    });
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-        await Promise.race([cleanup, new Promise<never>((_, reject) => {
-            timer = setTimeout(() => { cancelled = true; reject(new Error('Fork history could not be saved in time')); }, timeoutMs);
-        })]);
-    } finally { if (timer) clearTimeout(timer); }
+    }
 }
 
 /** Explicit unopened/fork targets hand off only after a committed publication.

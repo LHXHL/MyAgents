@@ -2629,6 +2629,29 @@ describe('session-engine selector and adapters', () => {
     expect(mocks.clearExternalTurnBinding).not.toHaveBeenCalled();
   });
 
+  it('publishes builtin desktop reset metadata before reporting success', async () => {
+    await expect(getSessionEngine().resetForNewDesktopSession('/workspace')).resolves.toEqual({ success: true, sessionId: 'builtin-session' });
+    expect(mocks.materializeCurrentSessionMetadataForPublishedReset).toHaveBeenCalledWith('desktop');
+    expect(mocks.resetSession.mock.invocationCallOrder[0]).toBeLessThan(mocks.materializeCurrentSessionMetadataForPublishedReset.mock.invocationCallOrder[0]);
+  });
+
+  it.each([true, false])('external reset awaits shared durable publication (success=%s)', async succeeds => {
+    mocks.state.useExternal = true;
+    let release!: (value: boolean) => void;
+    const flushForMutation = vi.fn(() => new Promise<boolean>(resolve => { release = resolve; }));
+    const storage = await import('../SessionStore');
+    const active = vi.spyOn(storage, 'getActiveSessionTranscript').mockReturnValue({ writer: { flushForMutation } } as unknown as ReturnType<typeof storage.getActiveSessionTranscript>);
+    try {
+      let settled = false;
+      const reset = getSessionEngine().resetForNewDesktopSession('/workspace').finally(() => { settled = true; });
+      await vi.waitFor(() => expect(flushForMutation).toHaveBeenCalledOnce());
+      expect(settled).toBe(false);
+      release(succeeds);
+      if (succeeds) await expect(reset).resolves.toMatchObject({ success: true });
+      else await expect(reset).rejects.toThrow('could not be published');
+    } finally { active.mockRestore(); }
+  });
+
   it('serializes external desktop reset against an in-flight runtime start', async () => {
     mocks.state.useExternal = true;
     mocks.state.externalActive = true;
@@ -2636,6 +2659,7 @@ describe('session-engine selector and adapters', () => {
     const result = await getSessionEngine().resetForNewDesktopSession('/workspace');
 
     expect(result).toMatchObject({ success: true, sessionId: expect.any(String) });
+    expect(mocks.state.sessionMetadata.get(result.sessionId!)).toMatchObject({ id: result.sessionId, configSnapshotAt: expect.any(String), model: mocks.getExternalSessionModel() });
     expect(mocks.awaitExternalSessionStarting).toHaveBeenCalledTimes(1);
     expect(mocks.stopExternalSession).toHaveBeenCalledTimes(1);
     expect(mocks.resetSession).not.toHaveBeenCalled();

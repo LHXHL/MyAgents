@@ -90,6 +90,8 @@ Product Session 拥有产品 transcript、metadata、配置、事件 scope 和 S
 
 Builtin 与 external Runtime 的 session 操作统一经过 `src/server/session-engine/`。Route handler 只负责校验和响应映射，不直接 import Runtime 实现，也不自行分支 builtin/external。terminal 必须读取 adapter 的真实成功状态；idle 只表示没有活跃工作。
 
+Rewind、Fork、Retry 由 SessionEngine adapter 编排 native history 与产品历史的联合操作；SessionStore 裁决产品提交，Renderer 投影结果。Retry 的回溯与重发接纳共用既有 mutation owner，不能拆成前端两次请求。操作边界与失败语义见 [Session 架构 §4.4](./tech_docs/session_architecture.md#44-rewindforkretry-与-reload-anchor)。
+
 详细协议见 [Multi-Agent Runtime](./tech_docs/multi_agent_runtime.md)。
 
 ### 4. App Shell 与 Tab authority
@@ -197,7 +199,7 @@ Record 的物理音轨与媒体时钟由 RecordingManager 持有；Media Worker 
 | Agent / IM | Rust Agent/Channel lifecycle；Node Session 执行 | [IM 集成](./tech_docs/im_integration_architecture.md) |
 | Plugin Bridge | 独立 Node 进程；OpenClaw plugin 与 SDK shim | [Plugin Bridge](./tech_docs/plugin_bridge_architecture.md) |
 | Claude Plugin | Node；Claude Plugin 安装、选择与 SDK projection | [Plugin 加载](./tech_docs/plugin_loading.md) |
-| Workspace IO | Rust；路径安全、文件 CRUD、watcher 与系统打开 | [Pit-of-Success](./tech_docs/pit_of_success.md) |
+| Workspace IO | Rust；路径安全、文件 CRUD、watcher 与系统打开 | [Pit-of-Success](./tech_docs/pit_of_success.md)、[Markdown 编辑与预览](./tech_docs/workspace_markdown_editor.md) |
 | Skill 安装 | Node；受限 source snapshot、staging 与原子发布 | [Skill Marketplace](./guides/skill_marketplace.md) |
 | Tool Attachment | Node/Rust 数据面；统一 attachment wire、持久引用与安全读取 | [Tool Attachment](./tech_docs/tool_attachment_pipeline.md) |
 | Document Processing | Rust manager + 独立 Document Worker | [文档转换](./tech_docs/document_processing.md) |
@@ -236,7 +238,7 @@ Record 的物理音轨与媒体时钟由 RecordingManager 持有；Media Worker 
 
 ### 日志与诊断
 
-Renderer、Node 和 Rust 日志汇入本地统一日志；高频 transport delta 不重复持久化，terminal 只记录有界摘要，secret-bearing 边界只投影结构化错误。用户报告运行问题时先按本地日期读取 `~/.myagents/logs/unified-{YYYY-MM-DD}.log`。详见 [统一日志](./tech_docs/unified_logging.md)。
+Renderer、Node 和 Rust 日志汇入本地统一日志；高频 transport delta 不重复持久化，terminal 只记录有界摘要，secret-bearing 边界只投影结构化错误。排障先确认报告的机器、版本与时间窗口；证据选择和字段见 [统一日志](./tech_docs/unified_logging.md)。
 
 ## Pit-of-Success 路由
 
@@ -258,7 +260,7 @@ Renderer、Node 和 Rust 日志汇入本地统一日志；高频 transport delta
 ## 文档维护原则
 
 - 本文只在 Owner、进程边界、权威数据源或主数据流变化时更新。
-- `tech_docs/` 描述一个子系统现在如何工作；保留仍执行的兼容行为，不记录发布过程。
+- `tech_docs/` 的现行规范描述子系统现在如何工作；保留仍执行的兼容行为，不记录发布过程。标记为提案的 PRD / RFC 不构成当前 authority，不能作为已实现模块接入导航。
 - 精确版本、命令清单、字段枚举和平台产物以代码、类型、测试、`package.json` 与构建脚本为准。
 - PRD、issue、commit 和 CHANGELOG 解释历史动机，不能覆盖现行实现。
 - 文档与代码冲突时先核对实现、测试和 git 历史，再同时修正文档图中受影响的节点。

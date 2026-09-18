@@ -2867,6 +2867,69 @@ pub(crate) fn read_agent_configs_from_disk() -> Vec<AgentConfigRust> {
     Vec::new()
 }
 
+pub(super) fn persist_agent_channel_enabled(
+    agent_id: &str,
+    channel_id: &str,
+    enabled: bool,
+) -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("Home dir not found")?;
+    let config_path = home.join(".myagents/config.json");
+    persist_agent_channel_enabled_at_path(
+        &config_path,
+        &read_archived_agent_workspaces_from_disk(),
+        agent_id,
+        channel_id,
+        enabled,
+    )
+}
+
+fn persist_agent_channel_enabled_at_path(
+    config_path: &std::path::Path,
+    archived: &ArchivedAgentWorkspaces,
+    agent_id: &str,
+    channel_id: &str,
+    enabled: bool,
+) -> Result<(), String> {
+    with_config_lock(config_path, true, |config| {
+        let agent = config
+            .get_mut("agents")
+            .and_then(|v| v.as_array_mut())
+            .and_then(|agents| {
+                agents
+                    .iter_mut()
+                    .find(|agent| agent["id"].as_str() == Some(agent_id))
+            })
+            .ok_or_else(|| format!("Agent {agent_id} not found"))?;
+        if enabled {
+            let parsed: types::AgentConfigRust =
+                serde_json::from_value(agent.clone()).map_err(|e| e.to_string())?;
+            let channel = parsed
+                .channels
+                .iter()
+                .find(|channel| channel.id == channel_id)
+                .ok_or_else(|| format!("Channel {channel_id} not found"))?;
+            if is_agent_workspace_archived_with(&parsed, archived) {
+                return Err("Agent workspace is archived".into());
+            }
+            if !agent_channel_has_start_credentials(&parsed, channel) {
+                return Err("Channel is missing required credentials".into());
+            }
+        }
+        let channel = agent
+            .get_mut("channels")
+            .and_then(|v| v.as_array_mut())
+            .and_then(|channels| {
+                channels
+                    .iter_mut()
+                    .find(|channel| channel["id"].as_str() == Some(channel_id))
+            })
+            .ok_or_else(|| format!("Channel {channel_id} not found"))?;
+        channel["enabled"] = serde_json::json!(enabled);
+        Ok(())
+    })?;
+    Ok(())
+}
+
 /// Persist a partial patch to a single agent's entry in `~/.myagents/config.json`.
 #[allow(dead_code)] // Kept for potential future use; disk persistence now done by TypeScript service
 pub(super) fn persist_agent_config_patch(
@@ -4004,5 +4067,35 @@ pub async fn monitor_agent_channels(
             .collect();
         failure_counts.retain(|k, _| tracked.contains(k));
         next_retry.retain(|k, _| tracked.contains(k));
+    }
+}
+
+#[cfg(test)]
+mod enabled_intent_tests {
+    use super::*;
+
+    #[test]
+    fn channel_intent_preserves_latest_config_and_rejects_invalid_enable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let config = serde_json::json!({"themeId":"latest-theme", "appearanceMode":"system", "themeSelectionExplicit":true, "agents":[{
+            "id":"a", "name":"Latest name", "enabled":true, "model":"latest-model",
+            "channels":[{"id":"c", "type":"telegram", "enabled":true}]
+        }]});
+        std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let archived = ArchivedAgentWorkspaces::default();
+        persist_agent_channel_enabled_at_path(&path, &archived, "a", "c", false).unwrap();
+        let actual: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mut expected = config;
+        expected["agents"][0]["channels"][0]["enabled"] = false.into();
+        assert_eq!(actual, expected);
+        assert!(persist_agent_channel_enabled_at_path(&path, &archived, "a", "c", true).is_err());
+        assert!(
+            persist_agent_channel_enabled_at_path(&path, &archived, "a", "missing", false).is_err()
+        );
+        let actual: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(actual, expected);
     }
 }

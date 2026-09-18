@@ -48,6 +48,69 @@ function reconcile(projects: TestProject[], agents: TestAgent[]) {
 }
 
 describe('reconcileAgentWorkspaceIdentities', () => {
+  it('retains workspace conflict evidence from an unselectable Project', () => {
+    const projects = [project('', '/same', 'bad'), project('ambiguous', '/same', 'affected'), project('healthy', '/healthy', 'good')];
+    const agents = [agent('bad'), agent('affected'), agent('good')];
+    for (const result of [reconcile(projects, agents), resolveAgentWorkspaceProjections(projects, agents)]) {
+      expect(result.agentProjections.map(item => item.agentId)).toEqual(['good']);
+      expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: 'DUPLICATE_PROJECT_WORKSPACE', projectIds: ['', 'ambiguous'] }));
+    }
+    expect(reconcile(projects, agents).projects).toEqual(projects);
+    expect(reconcile(projects, agents).agents).toEqual(agents);
+  });
+
+  it('isolates a missing Agent id without changing the row or hiding healthy identities', () => {
+    const bad = { name: 'historical row', enabled: false } as TestAgent;
+    const result = reconcile([project('healthy', '/healthy', 'good')], [agent('good'), bad]);
+    expect(result.identities.map(item => item.agentId)).toEqual(['good']);
+    expect(result.agents).toContain(bad);
+    expect(result.changed).toBe(false);
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: 'INVALID_AGENT_IDENTITY' }));
+  });
+
+  it('isolates duplicate IDs in both read-only and repairing projections without choosing a winner', () => {
+    const projects = [project('bad-project', '/bad', 'duplicate'), project('healthy', '/healthy', 'good')];
+    const agents = [agent('duplicate'), agent('duplicate'), agent('good')];
+    for (const result of [reconcile(projects, agents), resolveAgentWorkspaceProjections(projects, agents)]) {
+      expect(result.agentProjections.map(item => item.agentId)).toEqual(['good']);
+      expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: 'DUPLICATE_AGENT_ID', agentIds: ['duplicate'], projectIds: ['bad-project'] }));
+    }
+    expect(reconcile(projects, agents).createdAgentIds).toEqual([]);
+  });
+
+  it('does not let unrelated legacy evidence override a healthy explicit Project claim', () => {
+    const bad = { name: 'old row', workspacePath: '/healthy' } as unknown as TestAgent;
+    const result = reconcile([project('healthy', '/healthy', 'good')], [agent('good'), bad]);
+    expect(result.identities.map(item => item.agentId)).toEqual(['good']);
+    expect(result.changed).toBe(false);
+  });
+
+  it('does not recreate an Agent claimed by both an invalid and a valid Project', () => {
+    const result = reconcile([project('bad', '', 'shared'), project('other', '/other', 'shared'), project('healthy', '/healthy', 'good')], [agent('shared'), agent('good')]);
+    expect(result.identities.map(item => item.agentId)).toEqual(['good']);
+    expect(result.createdAgentIds).toEqual([]);
+  });
+
+  it('preserves a missing-id legacy row and its associated project without inventing a replacement', () => {
+    const bad = { name: 'historical row', enabled: true, workspacePath: '/bad' } as unknown as TestAgent;
+    const result = reconcile([project('bad-project', '/bad'), project('healthy', '/healthy', 'good')], [bad, agent('good')]);
+    expect(result.identities.map(item => item.agentId)).toEqual(['good']);
+    expect(result.createdAgentIds).toEqual([]);
+    expect(result.projects[0].agentId).toBeUndefined();
+    expect(result.agents[0]).toBe(bad);
+  });
+
+  it.each(['missing-id', 'missing-path', 'duplicate-id'])('isolates %s Projects while retaining their source rows', kind => {
+    const invalid = project(kind === 'missing-id' ? '' : 'bad', kind === 'missing-path' ? '' : '/bad', 'bad-agent');
+    const projects = [invalid, ...(kind === 'duplicate-id' ? [project('bad', '/other', 'other-agent')] : []), project('healthy', '/healthy', 'good')];
+    const agents = [agent('bad-agent'), agent('other-agent'), agent('good')];
+    const result = reconcile(projects, agents);
+    expect(result.identities.map(item => item.agentId)).toEqual(['good']);
+    expect(result.projects).toEqual(projects);
+    expect(result.agents).toEqual(agents);
+    expect(result.createdAgentIds).toEqual([]);
+  });
+
   it('matches the shared TS/Rust compatibility projection fixture', () => {
     const result = resolveAgentWorkspaceProjections(
       compatibilityFixture.projects,

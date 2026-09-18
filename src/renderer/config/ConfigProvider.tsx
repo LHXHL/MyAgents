@@ -418,8 +418,11 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
             identity = await reconcilePersistedAgentWorkspaceIdentities();
         } catch (error) {
             const healthySnapshot = await loadConfigDiskSnapshot();
-            publishConfigDiskSnapshot(healthySnapshot, snapshotRevision);
-            throw error;
+            const published = publishConfigDiskSnapshot(healthySnapshot, snapshotRevision);
+            // Maintenance failure does not invalidate a successfully read directory.
+            if (isLockBusyError(error)) throw error;
+            console.warn('[ConfigProvider] Identity maintenance deferred:', error);
+            return published;
         }
         const snapshot = await loadConfigDiskSnapshot();
         if (identity.repairDeferred) {

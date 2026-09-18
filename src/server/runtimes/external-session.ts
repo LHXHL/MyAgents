@@ -71,6 +71,7 @@ import {
 import {
   commitPreparedSessionForFirstUserTurn,
   commitCodexConversationRewind,
+  prepareSessionTranscriptMutation,
   resolvePendingConversationMutation,
   saveSessionMetadata,
   publishForkSession,
@@ -417,7 +418,6 @@ import {
   resetExternalTranscriptState,
   setExternalSessionMessages,
   setLastPersistedRuntimeUsageTotals,
-  truncateExternalTranscriptForRetry,
 } from './external-session/transcript-persistence';
 import { TranscriptPresentation } from '../session-transcript/presentation';
 import { toStoredTranscriptMessage, type TranscriptObject } from '../../shared/sessionTranscript';
@@ -5675,6 +5675,8 @@ export function hasExternalRuntimeProcess(): boolean {
 }
 
 export type ExternalConversationOperationResult = {
+  conversationCommitted?: boolean;
+  retryQueued?: boolean;
   success: boolean;
   status?: number;
   error?: string;
@@ -5726,6 +5728,7 @@ function logCodexConversationOrphan(
 
 async function withExternalConversationMutation(
   operation: () => Promise<ExternalConversationOperationResult>,
+  afterCommit?: (result: ExternalConversationOperationResult) => Promise<ExternalConversationOperationResult>,
 ): Promise<ExternalConversationOperationResult> {
   await awaitExternalLifecycleStarting();
   if (isExternalSessionBusy()) {
@@ -5746,7 +5749,8 @@ async function withExternalConversationMutation(
     };
   }
   try {
-    return await operation();
+    const result = await operation();
+    return result.success && afterCommit ? await afterCommit(result) : result;
   } finally {
     lease.release();
     setTimeout(drainExternalQueueAfterTurn, 0);
@@ -5800,6 +5804,7 @@ function startCodexReplacementPrewarm(options: {
 
 export async function rewindExternalConversation(
   userMessageId: string,
+  afterCommit?: (result: ExternalConversationOperationResult) => Promise<ExternalConversationOperationResult>,
 ): Promise<ExternalConversationOperationResult> {
   if (getCurrentRuntimeType() !== 'codex') {
     return { success: false, status: 400, errorCode: 'unsupported_runtime', error: 'Conversation rewind is only supported by Codex' };
@@ -5817,14 +5822,17 @@ export async function rewindExternalConversation(
       message.role === 'assistant'
       && message.runtimeTurnAnchor?.rootUserMessageId === userMessageId
     ));
-    if (targetUserIndex < 0 || anchoredAssistants.length !== 1) {
+    if (targetUserIndex < 0 || anchoredAssistants.length > 1) {
       return { success: false, status: 409, errorCode: 'anchor_unavailable', error: 'This message has no exact Codex turn anchor' };
     }
     const targetUser = data.messages[targetUserIndex]!;
     const targetAssistant = anchoredAssistants[0]!;
-    if (data.messages.indexOf(targetAssistant) <= targetUserIndex || !targetAssistant.runtimeTurnAnchor) {
+    if (targetAssistant && (data.messages.indexOf(targetAssistant) <= targetUserIndex || !targetAssistant.runtimeTurnAnchor)) {
       return { success: false, status: 409, errorCode: 'anchor_unavailable', error: 'The Codex turn anchor does not match this user message' };
     }
+
+    const sourceFailure = await prepareSessionTranscriptMutation(sessionId);
+    if (sourceFailure) return { success: false, status: 409, errorCode: 'persistence_failed', error: sourceFailure.error };
 
     const active = await getCodexConversationBranchPair();
     if (!active?.runtime.branchConversation) {
@@ -5832,10 +5840,22 @@ export async function rewindExternalConversation(
     }
     let branch;
     try {
-      branch = await active.runtime.branchConversation(active.process, {
-        kind: 'before-turn',
-        runtimeTurnId: targetAssistant.runtimeTurnAnchor.turnId,
-      });
+      if (targetAssistant?.runtimeTurnAnchor) {
+        branch = await active.runtime.branchConversation(active.process, {
+          kind: 'before-turn', runtimeTurnId: targetAssistant.runtimeTurnAnchor.turnId,
+        });
+      } else if (targetUserIndex === 0) {
+        // A failed first turn has no retained context, regardless of native partial output.
+        branch = { kind: 'fresh-thread' as const };
+      } else {
+        const preceding = data.messages[targetUserIndex - 1];
+        if (preceding?.role !== 'assistant' || !preceding.runtimeTurnAnchor) {
+          return { success: false, status: 409, errorCode: 'anchor_unavailable', error: 'The retained prefix has no exact Codex boundary' };
+        }
+        branch = await active.runtime.branchConversation(active.process, {
+          kind: 'through-turn', runtimeTurnId: preceding.runtimeTurnAnchor.turnId,
+        });
+      }
     } catch (error) {
       return externalConversationBranchFailure(error);
     }
@@ -5869,46 +5889,57 @@ export async function rewindExternalConversation(
       };
     }
 
-    const transcript = await loadSessionTranscript(sessionId);
-    setExternalSessionMessages(sessionId, transcript.messages, transcript.cursor);
-    const stopped = !hasExternalRuntimeProcess()
-      || await stopExternalSession({ reason: 'conversation-mutation' });
-    if (!stopped) {
-      restartSidecarForConversationMutation('source-stop-unconfirmed');
+    if (!getActiveSessionTranscript(sessionId)) {
+      broadcast('chat:messages-retracted', {
+        messageIds: data.messages.slice(targetUserIndex).map(message => message.id),
+        retractedStreamingTail: true,
+      });
+    }
+    try {
+      const transcript = await loadSessionTranscript(sessionId);
+      setExternalSessionMessages(sessionId, transcript.messages, transcript.cursor);
+      const stopped = !hasExternalRuntimeProcess()
+        || await stopExternalSession({ reason: 'conversation-mutation', preserveQueue: true });
+      if (!stopped) {
+        restartSidecarForConversationMutation('source-stop-unconfirmed');
+        return {
+          success: true,
+          content: targetUser.content,
+          attachments: targetUser.attachments,
+          rewindScope: 'conversation-only',
+          errorCode: 'restore_failed',
+          error: 'The conversation was rewound and the Codex Sidecar is restarting',
+        };
+      }
+      const restoreScenario = getExternalLifecycleScenario();
+      const restored = await restoreExternalSessionState(
+        sessionId,
+        metadata.agentDir,
+        restoreScenario,
+      );
+      if (restored.success && branch.kind === 'native-thread') {
+        replacementPrewarm = {
+          sessionId,
+          workspacePath: metadata.agentDir,
+          scenario: restoreScenario,
+          replacementRuntimeSessionId: branch.runtimeSessionId,
+        };
+      }
       return {
         success: true,
         content: targetUser.content,
         attachments: targetUser.attachments,
         rewindScope: 'conversation-only',
-        errorCode: 'restore_failed',
-        error: 'The conversation was rewound and the Codex Sidecar is restarting',
+        ...(!restored.success ? {
+          errorCode: 'restore_failed' as const,
+          error: restored.error ?? 'The conversation was rewound, but Codex must be restarted',
+        } : {}),
       };
+    } catch (error) {
+      return { success: true, conversationCommitted: true, content: targetUser.content, attachments: targetUser.attachments,
+        rewindScope: 'conversation-only', errorCode: 'restore_failed', error: String(error) };
     }
-    const restoreScenario = getExternalLifecycleScenario();
-    const restored = await restoreExternalSessionState(
-      sessionId,
-      metadata.agentDir,
-      restoreScenario,
-    );
-    if (restored.success && branch.kind === 'native-thread') {
-      replacementPrewarm = {
-        sessionId,
-        workspacePath: metadata.agentDir,
-        scenario: restoreScenario,
-        replacementRuntimeSessionId: branch.runtimeSessionId,
-      };
-    }
-    return {
-      success: true,
-      content: targetUser.content,
-      attachments: targetUser.attachments,
-      rewindScope: 'conversation-only',
-      ...(!restored.success ? {
-        errorCode: 'restore_failed' as const,
-        error: restored.error ?? 'The conversation was rewound, but Codex must be restarted',
-      } : {}),
-    };
-  });
+  }, afterCommit);
   // withExternalConversationMutation has released the mutation lease here.
   // Prewarm is best-effort and owns runtime start through the existing path.
   if (replacementPrewarm) startCodexReplacementPrewarm(replacementPrewarm);
@@ -5916,13 +5947,23 @@ export async function rewindExternalConversation(
 }
 
 export async function forkExternalConversation(
-  assistantMessageId: string,
+  assistantMessageId: string, targetSessionId?: string,
 ): Promise<ExternalConversationOperationResult> {
   if (getCurrentRuntimeType() !== 'codex') {
     return { success: false, status: 400, errorCode: 'unsupported_runtime', error: 'Conversation fork is only supported by Codex' };
   }
   return withExternalConversationMutation(async () => {
     const sessionId = getExternalLifecycleSessionId();
+    if (targetSessionId) {
+      const prior = getSessionMetadata(targetSessionId);
+      if (prior) {
+        if (prior.forkOrigin?.sessionId !== sessionId || prior.forkOrigin.messageId !== assistantMessageId) {
+          return { success: false, error: 'Fork target belongs to another operation' };
+        }
+        if (prior.materializationState) return { success: false, error: 'Fork publication is still in progress' };
+        return { success: true, newSessionId: prior.id, agentDir: prior.agentDir, title: prior.title };
+      }
+    }
     const source = sessionId ? (await getSessionData(sessionId)) : null;
     if (source?.transcriptRecovery) {
       return { success: false, status: 409, errorCode: 'anchor_unavailable', error: 'Cannot fork an incompletely restored conversation' };
@@ -5973,6 +6014,8 @@ export async function forkExternalConversation(
       source.agentDir,
       snapshotForForkedSession(source, legacyFallback),
     );
+    if (targetSessionId) forked.id = targetSessionId;
+    forked.forkOrigin = { sessionId: sessionId!, messageId: assistantMessageId };
     forked.runtimeSessionId = branch.runtimeSessionId;
     forked.title = `🌿 ${source.title || 'Chat'}`;
     forked.titleSource = 'auto';
@@ -5998,39 +6041,9 @@ export async function forkExternalConversation(
   });
 }
 
-/**
- * Truncate `allSessionMessages` at the given user message id and persist the
- * truncation. Returns the popped user message's content + attachments so the
- * caller can re-send.
- *
- * External-runtime equivalent of builtin `rewindSession()`. Used by the
- * retry button when the previous turn failed (e.g. model capacity). This
- * remains separate from Codex conversation rewind: a failed tail has no
- * successful native Turn anchor to branch from. A "drop the failed user turn
- * + resend" semantic is still sound because the failed turn never produced an assistant
- * message (persistTurnResult only fires on subtype=success), so the local
- * history just has a dangling user message at the tail.
- *
- * Caller is responsible for invoking sendExternalMessage with the returned
- * content. We don't do the resend here so the existing send path's
- * MCP/agents/model wiring stays the single source of truth.
- *
- * Refuses if a turn is currently in flight — the user must abort first.
- */
-export async function popLastUserMessageForRetry(userMessageId: string): Promise<{
-  success: boolean;
-  error?: string;
-  content?: string;
-  attachments?: SessionMessage['attachments'];
-}> {
-  const lifecycleSessionId = getExternalLifecycleSessionId();
-  if (!lifecycleSessionId) {
-    return { success: false, error: 'No active external session' };
-  }
-  if (isExternalSessionActive()) {
-    return { success: false, error: 'Cannot retry while a turn is in progress' };
-  }
-  return truncateExternalTranscriptForRetry(lifecycleSessionId, userMessageId);
+/** Compatibility entry point; native and product history always rewind together. */
+export async function popLastUserMessageForRetry(userMessageId: string): Promise<ExternalConversationOperationResult> {
+  return rewindExternalConversation(userMessageId);
 }
 
 /**

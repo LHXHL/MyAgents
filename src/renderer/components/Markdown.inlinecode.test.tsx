@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   checkPaths: vi.fn(),
@@ -102,6 +102,8 @@ function renderFloatingMarkdown(markdown: string) {
 }
 
 describe('Markdown inline-code file paths', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
@@ -120,6 +122,48 @@ describe('Markdown inline-code file paths', () => {
       configurable: true,
     });
   });
+
+  it.each(['~/.claude/skills', '.claude/skills'])(
+    'keeps inferred and explicit directory links stable while streaming and rechecking %s',
+    async (path) => {
+      vi.useFakeTimers();
+      const check = path.startsWith('~') ? mocks.checkLocalPaths : mocks.checkPaths;
+      const available = { results: { [path]: { exists: true, type: 'dir' as const } } };
+      check.mockResolvedValue(available);
+      const tree = (refreshTrigger: number, tail: string, streaming = true) => (
+        <FileActionProvider workspacePath={WORKSPACE} refreshTrigger={refreshTrigger}>
+          <Markdown streaming={streaming}>{`见 \`${path}\`，也可以打开 [目录](${path})。\n\n${tail}`}</Markdown>
+        </FileActionProvider>
+      );
+      const view = render(tree(0, '这是后续正在流式输出的正文内容。'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(60); });
+      const inferred = screen.getByRole('link', { name: path });
+      const explicit = screen.getByRole('link', { name: '目录' });
+      const inferredMarkup = inferred.outerHTML;
+      const explicitMarkup = explicit.outerHTML;
+
+      const pending = deferred<typeof available>();
+      check.mockReturnValueOnce(pending.promise);
+      view.rerender(tree(1, '这是后续正在流式输出的正文内容。更多内容继续到达。'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+      expect(check).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole('link', { name: path })).toBe(inferred);
+      expect(inferred.outerHTML).toBe(inferredMarkup);
+      expect(explicit.outerHTML).toBe(explicitMarkup);
+
+      await act(async () => { pending.resolve(available); await pending.promise; });
+      view.rerender(tree(1, '这是后续正在流式输出的正文内容。更多内容继续到达。', false));
+      expect(screen.getByRole('link', { name: path })).toBe(inferred);
+      expect(inferred.outerHTML).toBe(inferredMarkup);
+      expect(explicit.outerHTML).toBe(explicitMarkup);
+
+      check.mockResolvedValue({ results: { [path]: { exists: false, type: 'file' } } });
+      view.rerender(tree(2, '文件已经删除。', false));
+      expect(screen.getByRole('link', { name: path })).toBe(inferred);
+      await act(async () => { await vi.advanceTimersByTimeAsync(60); });
+      expect(screen.queryByRole('link', { name: path })).not.toBeInTheDocument();
+    },
+  );
 
   it('makes a workspace-relative path in backticks a direct internal-preview action', async () => {
     mocks.checkPaths.mockResolvedValue({ results: { [REL]: { exists: true, type: 'file' } } });

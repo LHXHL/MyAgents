@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { ShieldAlert, X, Check, CheckCheck } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import type { ToolPermissionHints } from '../../shared/types/toolPermission';
 
-export interface PermissionRequest {
+export interface PermissionRequest extends ToolPermissionHints {
     requestId: string;
     sessionId?: string | null;
     toolName: string;
@@ -25,6 +26,11 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
     const [isResponding, setIsResponding] = useState(false);
     const [responded, setResponded] = useState(false);
     const mountedRef = useRef(true);
+    const denyRef = useRef<HTMLButtonElement>(null);
+
+    useEffect(() => {
+        if (request.defaultToNo) denyRef.current?.focus();
+    }, [request.requestId, request.defaultToNo]);
 
     useEffect(() => {
         return () => {
@@ -33,7 +39,7 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
     }, []);
 
     const handleDecision = async (decision: 'deny' | 'allow_once' | 'always_allow') => {
-        if (isResponding) return;
+        if (isResponding || (decision === 'always_allow' && request.suppressAlwaysAllowRule)) return;
         const requestId = request.requestId;
         setIsResponding(true);
         try {
@@ -135,6 +141,8 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
                 {/* Actions — 主操作（允许）实心琥珀靠右 */}
                 <div className="mt-3 flex items-center gap-2">
                     <button
+                        ref={denyRef}
+                        type="button"
                         onClick={() => handleDecision('deny')}
                         disabled={isResponding}
                         className="flex items-center gap-1.5 rounded-lg border border-[var(--line)] px-3 py-1.5 text-xs font-medium
@@ -147,7 +155,8 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
 
                     <div className="flex-1" />
 
-                    <button
+                    {!request.suppressAlwaysAllowRule && <button
+                        type="button"
                         onClick={() => handleDecision('always_allow')}
                         disabled={isResponding}
                         className="flex items-center gap-1.5 rounded-lg border border-[var(--warning)]/20 bg-[var(--warning)]/10 px-3 py-1.5 text-xs font-medium
@@ -155,9 +164,10 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
                     >
                         <CheckCheck className="size-3.5" />
                         <span>{t('shell.permissionPrompt.alwaysAllow')}</span>
-                    </button>
+                    </button>}
 
                     <button
+                        type="button"
                         onClick={() => handleDecision('allow_once')}
                         disabled={isResponding}
                         className="flex items-center gap-1.5 rounded-lg bg-[var(--warning)] px-3 py-1.5 text-xs font-medium

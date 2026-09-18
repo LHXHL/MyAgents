@@ -7,27 +7,27 @@ export type RewindResponse = {
   errorCode?: string;
 };
 
-export type CodexRewindTransportOutcome = 'committed' | 'unchanged' | 'target-unknown' | 'unresolved';
+export type RewindTransportOutcome = 'committed' | 'unchanged' | 'target-unknown' | 'unresolved';
 
-export type CodexRewindRecoveryProjection = {
+export type RewindRecoveryProjection = {
   restoreMessageSnapshot: boolean;
   restoreComposerSnapshot: boolean;
 };
 
-export function classifyCodexRewindTransportOutcome(
+export function classifyRewindTransportOutcome(
   result: { restored: boolean; targetMessagePresent: boolean | null } | null,
-): CodexRewindTransportOutcome {
+): RewindTransportOutcome {
   if (!result?.restored) return 'unresolved';
   if (result.targetMessagePresent === null) return 'target-unknown';
   return result.targetMessagePresent ? 'unchanged' : 'committed';
 }
 
-export function projectCodexRewindRecovery(
-  outcome: CodexRewindTransportOutcome,
-): CodexRewindRecoveryProjection {
+export function projectRewindRecovery(
+  outcome: RewindTransportOutcome,
+): RewindRecoveryProjection {
   return {
-    restoreMessageSnapshot: outcome === 'unresolved',
-    restoreComposerSnapshot: outcome !== 'committed',
+    restoreMessageSnapshot: false,
+    restoreComposerSnapshot: outcome === 'unchanged',
   };
 }
 
@@ -39,11 +39,23 @@ export function warnRewindFileOutcome(
   warning: (message: string) => void,
   translate: Translate,
 ): void {
-  if (result?.fileRewindStatus === 'failed') {
+  if (result?.success === false && result.fileRewindStatus === 'complete') {
+    warning(translate('shell.toasts.rewindFilesAlreadyRestored'));
+  } else if (result?.fileRewindStatus === 'failed') {
     warning(translate('shell.toasts.rewindFilesFailed'));
   } else if (result?.fileRewindStatus === 'not_attempted') {
     warning(translate('shell.toasts.rewindFilesNotAttempted'));
   } else if (result?.fileRewindStatus === 'partial' || (result?.skippedLinks ?? 0) > 0) {
     warning(translate('shell.toasts.rewindPartialLinks', { count: result?.skippedLinks ?? 0 }));
   }
+}
+
+/** A validation/capability rejection is known; IO/transport failures remain ambiguous. */
+export function getConversationRejectionMessage(error: unknown, translate: Translate): string | null {
+  if (!error || typeof error !== 'object' || !('status' in error)
+    || (error.status !== 400 && error.status !== 409)) return null;
+  if ('errorCode' in error && typeof error.errorCode === 'string') {
+    return translate(`shell.toasts.conversationError.${error.errorCode}`);
+  }
+  return error instanceof Error ? error.message : translate('shell.toasts.unknownError');
 }

@@ -52,7 +52,7 @@ MyAgents 的允许路径必须带 `updatedInput`。AskUserQuestion 等会改变�
 
 ### Plan mode
 
-SDK 在某些 `allowDangerouslySkipPermissions` / plan 组合下可能自行 resolve 调用，不产生普通 `canUseTool` request。`PreToolUse` 因此使用 `src/server/utils/plan-mode-gate.ts` 的共享 read-only policy。
+旧 SDK 在 `allowDangerouslySkipPermissions` / plan 组合下可能自行 resolve 调用，不产生普通 `canUseTool` request；上游已修复该短路，但产品更严格的只读保证与切换竞态仍由 `PreToolUse` 使用 `src/server/utils/plan-mode-gate.ts` 的共享 policy 裁决，不能因升级移除。
 
 有效 mode 同时观察 hook 的 `permission_mode` 与 Sidecar 的 live mirror；任一表示 plan 都按 plan 处理，以关闭切换期间的异步窗口。非只读工具 fail closed。`canUseTool` 与 hook 共用同一 policy，不能各维护一份名单。
 
@@ -71,6 +71,12 @@ AskUserQuestion、EnterPlanMode、ExitPlanMode 等需要原生 UI 的工具，�
 无法确认 background identity 时 passthrough，让 SDK 保持默认拒绝方向；不能猜测为前台或自动放行。
 
 ## 用户确认 lifecycle
+
+SDK `canUseTool.mcpServer` 与 hook `mcp_server` 是工具服务来源的事实。只有 `source: sdk` 且处于当前 Query 已安装集合的 context-injected MCP 才能走应用内置信任入口；同名 plugin/project/dynamic 或缺失来源不能继承。MCP Session grant 按工具名、server 原名和 source 隔离；enablement 仍由原 MCP policy 裁决。PreToolUse 在 bypass 下同样阻止禁用服务和冒用保留名。
+
+插件 MCP 的启用由当前 Query 的 `Options.plugins` 管理，不套用独立的用户 MCP 选择列表；仍需经过普通审批和 plan gate，也不能凭同名获得内置信任。桌面的产品 CLI 自动放行只适用于未携带以下单次约束的调用。
+
+`defaultToNo` / `suppressAlwaysAllowRule` 是单次审批约束，保存在 `pendingPermissions` 并通过 SSE、REST replay 投影到 Chat/Companion。受约束请求不复用普通 Session grant 或同名请求级联批准；禁止持久放行时 UI 隐藏该选项，server 也拒绝 `always_allow`（保留请求供重新作答）。`defaultToNo` 把初始焦点落在拒绝按钮，不增加单键允许快捷方式。显式 fullAgency/headless 产品策略保持既有语义。
 
 `pendingPermissions`、`pendingAskUserQuestions` 与 plan interaction map 表示 Query 正在等待用户。它们没有 wall-clock timeout：
 

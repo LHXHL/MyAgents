@@ -153,4 +153,4 @@ Custom MCP credential 的持久化 authority 是 `src/server/mcp-oauth/state-sto
 - 启动期 readiness 状态机 → `pit_of_success.md` 的 DeferredInitState 节
 - Builtin MCP 懒加载完整规范 → `pit_of_success.md` 的对应节
 - 内置 Node.js 路径与 PATH 注入 → `bundled_node.md`
-- 整体启动时序在系统中的位置 → `ARCHITECTURE.md` 的 Sidecar Manager 与通信模式节
+- 整体启动时序 → [ARCHITECTURE](../ARCHITECTURE.md) 的“Session、Sidecar 与 Owner”和“控制面与大载荷数据面”章节

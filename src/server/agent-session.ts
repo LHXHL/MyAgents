@@ -6,6 +6,10 @@ import { createRequire } from 'module';
 import { query, getSessionMessages as sdkGetSessionMessages, forkSession as sdkForkSession, deleteSession as sdkDeleteSession, type Query, type SDKUserMessage, type AgentDefinition, type HookInput, type HookJSONOutput, type PreToolUseHookInput, type PostToolUseHookInput, type PermissionRequestHookInput, type SlashCommand as SdkSlashCommand } from '@anthropic-ai/claude-agent-sdk';
 import { isRetiredBundledMcpServer } from '../shared/mcpConfig';
 import { SDK_BUILTIN_TOOLS } from './sdk-builtin-tools';
+import type { CanUseTool, McpServerProvenance } from '@anthropic-ai/claude-agent-sdk';
+import type { ToolPermissionHints } from '../shared/types/toolPermission';
+import { isContextInjectedSdkTool, toolPermissionGrantKey } from './utils/sdk-tool-permission';
+import { isCoalescedTaskNotificationReceipt } from './utils/sdk-turn-outcome';
 import {
   decideBackgroundAgentPermission,
   isBackgroundAgentToolRequest,
@@ -43,13 +47,6 @@ import {
 import { shouldBlockToolInPlanMode, planModeDenyMessage, isPlanModeInEffect, PLAN_MODE_READONLY_TOOLS, PLAN_MODE_HOST_INTERACTION_TOOLS, applyPermissionModeSelection, computePlanExitState, computeRestoredPlanState } from './utils/plan-mode-gate';
 import { planRetraction } from './utils/message-retraction';
 import type { TransientProviderTextRetryDecision } from './session-core/turn-result-policy';
-import {
-  buildResumeAnchorReplayItem,
-  extractSdkMissingResumeMessageUuid,
-  isSdkMissingResumeMessageError,
-  shouldSuppressRecoveredResumeAnchorError,
-  type InvalidResumeAnchorKind,
-} from './session-core/resume-error-recovery';
 import { diagnoseSdkSubprocessFailure } from './utils/sdk-subprocess-diagnostics';
 import { createGuardedSdkQuery } from './utils/sdk-child-launch-guard';
 import { assertManagedProviderPrepared, getPreparedModelPolicy, ManagedProxyError, prepareProviderBinding, type PreparedProvider } from './utils/managed-proxy-binding';
@@ -140,7 +137,7 @@ import {
   type SystemSkillAdmissionRequirement,
 } from '../shared/systemSkills';
 import type { OfficialToolId } from '../shared/official-tools';
-import { activateSessionTranscript, claimPreparedSessionForTurnAdmission, commitPreparedSessionForFirstUserTurn, migratePendingSessionIdentity, resolvePendingConversationMutation, saveSessionMetadata, publishForkSession, assertCompleteSessionForkSource, updateSessionTitleFromMessage, updateSessionMetadata, updateSessionMetadataForBinding, getSessionMetadata, getSessionData, loadSessionTranscript } from './SessionStore';
+import { prepareSessionTranscriptMutation, activateSessionTranscript, claimPreparedSessionForTurnAdmission, commitPreparedSessionForFirstUserTurn, migratePendingSessionIdentity, resolvePendingConversationMutation, saveSessionMetadata, publishForkSession, assertCompleteSessionForkSource, updateSessionTitleFromMessage, updateSessionMetadata, updateSessionMetadataForBinding, getSessionMetadata, loadSessionTranscript } from './SessionStore';
 import { TranscriptPresentation } from './session-transcript/presentation';
 import { projectTranscriptToolInput, type TranscriptObject } from '../shared/sessionTranscript';
 import { firePostTurnTitleHook } from './turn-hooks';
@@ -190,6 +187,7 @@ import { localTimestamp } from '../shared/logTime';
 import { trackServer } from './analytics';
 import { getCurrentRuntimeType, isExternalRuntime } from './runtimes/factory';
 import { decideBuiltinSessionResume } from './utils/builtin-session-resume';
+import { snapshotForForkedSession } from './utils/session-snapshot';
 import { resolveBuiltinSdkSessionId } from './utils/session-runtime-identity';
 import {
   commitPendingProductSession,
@@ -483,7 +481,6 @@ import {
   messageWireToSessionMessage,
   resetTranscriptPersistenceForSession,
   scheduleTranscriptPersist,
-  sessionMessageToMessageWire,
   truncateTranscriptPersistenceForRewind,
 } from './builtin-session/transcript-persistence';
 import { createBuiltinTurnLifecycle, type BuiltinSdkResultMessage } from './builtin-session/turn-lifecycle';
@@ -1843,27 +1840,8 @@ export function startOneShotBridge(
 // Pre-warm 永不修改此标志 — 从结构上消除超时/重试导致的状态错误。
 let sessionRegistered = false;
 
-// 时间回溯：对话截断后，下次 query 需携带 resumeSessionAt 截断 SDK 对话历史
-let pendingResumeSessionAt: string | undefined;
-// PRD 0.2.27 — cold-reload window-B anchor. Captured at LOAD time (loadMessagesFromStorage)
-// from the DURABLE persisted tail, NOT re-derived at query time: a direct-send pushes the
-// new user row into transcriptState.messages[] (agent-session.ts ~6866) before startStreamingSession runs,
-// which would flip the tail to a user message and defeat the tail-is-assistant gate exactly
-// in the "rewind → reopen → ask" flow. Capturing at load freezes the truncated tail before
-// any new send. Lifecycle mirrors pendingResumeSessionAt: set on load, consumed on
-// system_init, cleared on reject / session switch / reset.
-// 时间回溯进行中 — 阻止 enqueueUserMessage 并发写入
-let rewindPromise: Promise<unknown> | null = null;
-
-// 当前 SDK session 的 UUID 集合（包含磁盘加载 + 运行时 SDK 输出）。
-// 用途：rewindFiles 前置校验 + resumeSessionAt 有效性判断（与 transcriptState.liveSessionUuids OR 联合）。
-// 过期防护（两层）：
-//   1. session 重建（!sessionRegistered）时在 startSession 清空
-//   2. SDK 拒绝 UUID（"No message found"）时逐条驱逐（见 error recovery）
-// 仅由当前 SDK subprocess stdout 事件填充的 UUID 集合。
-// 注意：resume 场景下 SDK 不重新输出旧历史 UUID，因此此集合是运行时子集而非完整集合。
-// resumeSessionAt 校验采用 OR 逻辑（transcriptState.liveSessionUuids || transcriptState.currentSessionUuids），
-// 不以任一集合为排他权威。
+// Explicit rewind boundaries live in Session metadata. Native UUID sets remain
+// file-checkpoint observations; they never authorize dropping a history boundary.
 // ===== 持久 Session 门控 =====
 // 消息交付：事件驱动替代轮询，generator 阻塞在 waitForMessage 直到新消息到达
 
@@ -2064,7 +2042,7 @@ function startNextTurnQueuedItem(
     reason,
     hasQuerySession: lifecycleState.query !== null,
     hasResetInProgress: getSessionMutationBarrier() !== null,
-    hasRewindInProgress: Boolean(rewindPromise),
+    hasRewindInProgress: getSessionMutationBarrier() !== null,
   })) {
     return false;
   }
@@ -3695,7 +3673,6 @@ async function resetForProviderHistoryBoundary(): Promise<void> {
     sessionRegistered = false;
     clearCurrentSessionUuids();
     clearLiveSessionUuids();
-    pendingResumeSessionAt = undefined;
     setPendingReloadAnchor(undefined);
     setSystemInitInfo(null);
     setSdkControlReady(false);
@@ -3968,7 +3945,7 @@ function getActiveContextInjectedBuiltinIds(): Set<string> {
  *
  * @returns 'allow' if tool is permitted, 'deny' with reason otherwise
  */
-function checkMcpToolPermission(toolName: string): { allowed: true } | { allowed: false; reason: string } {
+function checkMcpToolPermission(toolName: string, server?: McpServerProvenance): { allowed: true } | { allowed: false; reason: string } {
   // Not an MCP tool - let other permission logic handle it
   if (!toolName.startsWith('mcp__')) {
     return { allowed: true };
@@ -3979,14 +3956,14 @@ function checkMcpToolPermission(toolName: string): { allowed: true } | { allowed
   if (parts.length < 3) {
     return { allowed: false, reason: '无效的 MCP 工具名称' };
   }
-  const serverId = parts[1];
+  const serverId = server?.name ?? parts[1];
 
   // Context-injected builtin MCPs (currently only `im-bridge-tools`) are not
   // in `configState.currentMcpServers` — they're injected by sidecar context, not user
   // toggles. Allow them when the corresponding context is active. Mirrors
   // buildSdkMcpServers() Pattern 1.
   const activeBuiltins = getActiveContextInjectedBuiltinIds();
-  if (activeBuiltins.has(serverId)) {
+  if (isContextInjectedSdkTool(server, activeBuiltins)) {
     return { allowed: true };
   }
   // For ids in MYAGENTS_CONTEXT_INJECTED_MCP_IDS but NOT currently active,
@@ -3996,9 +3973,15 @@ function checkMcpToolPermission(toolName: string): { allowed: true } | { allowed
   // fall through to the regular user-MCP check below — they were dropped
   // from the reserved list in v0.2.11, so user MCPs may now legitimately
   // claim those names.
-  if (serverId === 'im-bridge-tools') {
-    return { allowed: false, reason: 'IM Bridge 工具仅在 IM Bridge 插件会话中可用' };
+  if ((MYAGENTS_CONTEXT_INJECTED_MCP_IDS as readonly string[]).includes(serverId)
+    || (MYAGENTS_CONTEXT_INJECTED_MCP_IDS as readonly string[]).includes(parts[1])) {
+    return { allowed: false, reason: 'IM Bridge 工具仅允许当前会话由应用注册的 SDK 服务使用' };
   }
+
+  // Plugin MCPs belong to the enabled Options.plugins projection, not the
+  // independently selected user MCP list. This admits the tool to ordinary
+  // permission/plan checks; it does not grant SDK-builtin trust.
+  if (server?.source === 'plugin') return { allowed: true };
 
   // Case 1: MCP not set (null) - allow all (backward compatible)
   if (configState.currentMcpServers === null) {
@@ -4016,7 +3999,7 @@ function checkMcpToolPermission(toolName: string): { allowed: true } | { allowed
   // Example: config id "my.server" → SDK tool prefix uses "my_server".
   const sanitize = (name: string) => name.replace(/[^a-zA-Z0-9_-]/g, '_');
   const sanitizedServerId = sanitize(serverId);
-  const isEnabled = configState.currentMcpServers.some(s => sanitize(s.id) === sanitizedServerId);
+  const isEnabled = configState.currentMcpServers.some(s => server ? s.id === server.name : sanitize(s.id) === sanitizedServerId);
   if (isEnabled) {
     return { allowed: true };
   }
@@ -4607,6 +4590,8 @@ const pendingPermissions = new Map<string, {
   resolve: (decision: 'allow' | 'deny') => void;
   toolName: string;
   input: unknown;
+  grantKey: string;
+  hints: ToolPermissionHints;
 }>();
 
 // AskUserQuestion types - import from shared
@@ -5009,18 +4994,22 @@ async function checkToolPermission(
   toolName: string,
   input: unknown,
   mode: PermissionMode,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  hints: ToolPermissionHints = {},
+  server?: McpServerProvenance,
 ): Promise<'allow' | 'deny'> {
   const rules = getPermissionRules(mode);
+  const grantKey = toolPermissionGrantKey(toolName, server);
+  const requiresExplicitApproval = hints.defaultToNo || hints.suppressAlwaysAllowRule;
 
   // 1. Check if tool is always allowed for this mode
-  if (isToolInList(toolName, rules.allowedTools)) {
+  if (!requiresExplicitApproval && isToolInList(toolName, rules.allowedTools)) {
     console.debug(`[permission] ${toolName}: auto-allowed by mode rules`);
     return 'allow';
   }
 
   // 1.5. Auto-allow Task tool when sub-agents are configured (needed for delegation)
-  if (toolName === 'Task' && configState.currentAgentDefinitions && Object.keys(configState.currentAgentDefinitions).length > 0) {
+  if (!requiresExplicitApproval && toolName === 'Task' && configState.currentAgentDefinitions && Object.keys(configState.currentAgentDefinitions).length > 0) {
     console.debug(`[permission] ${toolName}: auto-allowed for sub-agent delegation`);
     return 'allow';
   }
@@ -5032,7 +5021,7 @@ async function checkToolPermission(
   }
 
   // 3. Check if user already granted "always allow" in this session
-  if (sessionAlwaysAllowed.has(toolName)) {
+  if (!requiresExplicitApproval && sessionAlwaysAllowed.has(grantKey)) {
     console.debug(`[permission] ${toolName}: allowed by session grant`);
     return 'allow';
   }
@@ -5073,15 +5062,16 @@ async function checkToolPermission(
     // Listen for SDK abort signal
     signal?.addEventListener('abort', onAbort);
 
-    pendingPermissions.set(requestId, { resolve, toolName, input });
+    pendingPermissions.set(requestId, { resolve, toolName, input, grantKey, hints });
   });
   broadcast('permission:request', {
     ...interactiveEventScope(),
     requestId,
     toolName,
     input: inputPreview,
+    ...hints,
   });
-  emitImEvent('permission-request', JSON.stringify({ requestId, toolName, input: inputPreview }));
+  emitImEvent('permission-request', JSON.stringify({ requestId, toolName, input: inputPreview, ...hints }));
   return response;
 }
 
@@ -5100,6 +5090,9 @@ export function handlePermissionResponse(
     return false;
   }
 
+  // Enforce the request's constraint at the owner too, including stale clients.
+  if (decision === 'always_allow' && pending.hints.suppressAlwaysAllowRule) return false;
+
   pendingPermissions.delete(requestId);
   try { broadcast('permission:expired', { ...interactiveEventScope(), requestId, reason: 'resolved' }); } catch { /* swallow — response path must not fail on SSE */ }
 
@@ -5109,7 +5102,7 @@ export function handlePermissionResponse(
   } else if (decision === 'allow_once' || decision === 'always_allow') {
     if (decision === 'always_allow') {
       console.log(`[permission] ${pending.toolName}: user granted session permission`);
-      sessionAlwaysAllowed.add(pending.toolName);
+      sessionAlwaysAllowed.add(pending.grantKey);
     } else {
       console.log(`[permission] ${pending.toolName}: user allowed once`);
     }
@@ -5121,7 +5114,9 @@ export function handlePermissionResponse(
     // are invisible to the user and would be stuck until the 10-minute timeout.
     // Since the user already approved this tool (once or always), approve them all.
     for (const [otherId, otherPending] of pendingPermissions) {
-      if (otherPending.toolName === pending.toolName) {
+      if (otherPending.grantKey === pending.grantKey
+        && !pending.hints.defaultToNo && !pending.hints.suppressAlwaysAllowRule
+        && !otherPending.hints.defaultToNo && !otherPending.hints.suppressAlwaysAllowRule) {
         console.log(`[permission] ${otherPending.toolName}: cascade auto-approved (requestId=${otherId})`);
         pendingPermissions.delete(otherId);
         try { broadcast('permission:expired', { ...interactiveEventScope(), requestId: otherId, reason: 'resolved' }); } catch { /* swallow — cascade must not fail on SSE */ }
@@ -5225,6 +5220,7 @@ export function getPendingInteractiveRequests(): Array<{
         requestId,
         toolName: p.toolName,
         input: typeof p.input === 'object' ? JSON.stringify(p.input).slice(0, 500) : String(p.input).slice(0, 500),
+        ...p.hints,
       },
     });
   }
@@ -5753,7 +5749,6 @@ export async function materializePendingDesktopSession(
     async afterBind(prepared, metadata) {
       hasInitialPrompt = false;
       sessionRegistered = prepared.reusingNativeSession;
-      pendingResumeSessionAt = undefined;
       setPendingReloadAnchor(undefined);
       if (!prepared.reusingNativeSession) {
         setSystemInitInfo(null);
@@ -5781,13 +5776,14 @@ export async function materializePendingDesktopSession(
   });
 }
 
-export async function materializeCurrentSessionMetadataForPublishedReset(): Promise<void> {
+export async function materializeCurrentSessionMetadataForPublishedReset(scenario: SessionMaterializationScenario = 'agent-channel'): Promise<void> {
   const result = await publishCurrentProductSessionMetadata((targetSessionId) => {
     const { meta, snapshotKind } = createMetadataForSessionId(
       targetSessionId,
       'New Chat',
-      'agent-channel',
+      scenario,
     );
+    if (!isLiveFollowScenario(scenario)) Object.assign(meta, buildOwnedFreezeSnapshotPatch());
     return { metadata: meta, snapshotKind };
   });
   console.log(`[agent] session ${result.sessionId} persisted to SessionStore (published reset, snapshot=${result.snapshotKind})`);
@@ -7230,7 +7226,6 @@ const builtinTurnLifecycle = createBuiltinTurnLifecycle({
   setLastAgentError: (error) => { lastAgentError = error; },
   buildTurnProviderAnalytics,
   probeForkPersistenceIfReady,
-  recoverInvalidResumeAnchorError,
   handleTerminalRecovery,
   applyDeferredRestartIfNeeded,
 });
@@ -7265,63 +7260,9 @@ function probeForkPersistenceIfReady(resultMessage: BuiltinSdkResultMessage): vo
     });
 }
 
-function recoverInvalidResumeAnchorError(rawError: string): boolean {
-  if (!isSdkMissingResumeMessageError(rawError)) return false;
-
-  const rejectedUuid = extractSdkMissingResumeMessageUuid(rawError);
-  const recoveredAnchors: InvalidResumeAnchorKind[] = [];
-
-  if (pendingResumeSessionAt && (!rejectedUuid || pendingResumeSessionAt === rejectedUuid)) {
-    console.warn(`[agent] SDK result rejected rewind resumeSessionAt ${pendingResumeSessionAt} — clearing anchor`);
-    deleteCurrentSessionUuid(pendingResumeSessionAt);
-    pendingResumeSessionAt = undefined;
-    recoveredAnchors.push('rewind');
-  }
-
-  if (transcriptState.pendingReloadAnchor && (!rejectedUuid || transcriptState.pendingReloadAnchor === rejectedUuid)) {
-    console.warn(`[agent] SDK result rejected reloadAnchor ${transcriptState.pendingReloadAnchor} — clearing anchor`);
-    deleteCurrentSessionUuid(transcriptState.pendingReloadAnchor);
-    setPendingReloadAnchor(undefined);
-    recoveredAnchors.push('reload');
-  } else if (rejectedUuid && transcriptState.currentSessionUuids.has(rejectedUuid)) {
-    // Result-shaped SDK errors can arrive after system_init already consumed
-    // pendingReloadAnchor. The rejected UUID is still unsafe as a future anchor.
-    console.warn(`[agent] SDK result rejected known session uuid ${rejectedUuid} — evicting from resume anchor cache`);
-    deleteCurrentSessionUuid(rejectedUuid);
-    recoveredAnchors.push('reload');
-  }
-
-  const failedForkMeta = getCurrentProductSessionMetadata();
-  if (failedForkMeta?.forkFrom?.messageUuid && (!rejectedUuid || failedForkMeta.forkFrom.messageUuid === rejectedUuid)) {
-    const rejectedForkUuid = failedForkMeta.forkFrom.messageUuid;
-    console.warn(`[agent] SDK result rejected fork anchor ${rejectedForkUuid} — clearing persisted fork anchor`);
-    delete failedForkMeta.forkFrom.messageUuid;
-    saveSessionMetadata(failedForkMeta).catch(e =>
-      console.warn('[agent] forkFrom.messageUuid clear failed after SDK result error:', e),
-    );
-    deleteCurrentSessionUuid(rejectedForkUuid);
-    recoveredAnchors.push('fork');
-  }
-
-  if (!shouldSuppressRecoveredResumeAnchorError({ errorMessage: rawError, recoveredAnchors })) {
-    return false;
-  }
-
-  const replayItem = buildResumeAnchorReplayItem(getCurrentTurnSourceItem());
-  abortPersistentSession({ notifyPendingRequests: false });
-  if (replayItem) {
-    unshiftMessage(replayItem);
-    console.log(`[agent] Requeued current turn ${replayItem.id} after SDK resumeSessionAt result recovery`);
-  } else {
-    console.warn('[agent] SDK resumeSessionAt result recovery had no current turn source to requeue');
-  }
-  schedulePreWarm();
-  console.log(`[agent] Recovering from SDK resumeSessionAt result error after clearing ${recoveredAnchors.join(',')} anchor(s)`);
-  return true;
-}
-
 function handleTerminalRecovery(reason: 'image' | 'stale' | undefined): void {
   if (!reason) return;
+  if (reason === 'stale' && (getCurrentProductSessionMetadata()?.sdkResumeSessionAt || getCurrentProductSessionMetadata()?.forkFrom)) return;
   const isDesktop = currentScenario.type === 'desktop';
   if (isDesktop && reason === 'image') {
     console.warn('[agent] Desktop image error — skipping auto-reset, frontend will offer rewind');
@@ -8017,7 +7958,6 @@ export async function resetSession(options?: { sessionId?: string }): Promise<vo
 
   // 4. Clear SDK resume state - CRITICAL: prevents SDK from resuming old context!
   sessionRegistered = false;
-  pendingResumeSessionAt = undefined; // Prevent leaking rewind state to new session
   setPendingReloadAnchor(undefined);   // PRD 0.2.27 — symmetric reset (don't leak reload anchor across sessions)
   clearGeneratorResolver();
   setSystemInitInfo(null); // Clear old system info so new session gets fresh init
@@ -8102,7 +8042,6 @@ async function recoverFromStaleSession(): Promise<void> {
     //    sessionId (see startStreamingSession UUID path), so the session
     //    identity is preserved end-to-end.
     sessionRegistered = false;
-    pendingResumeSessionAt = undefined;
     setPendingReloadAnchor(undefined); // PRD 0.2.27 — symmetric reset
 
     // 3. Reset SDK ready signal + pre-warm bookkeeping (mirrors resetSession
@@ -8437,7 +8376,6 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
   resetAbortFlag();
   setSessionProcessing(false);
   sessionRegistered = false; // Will re-set from sessionMeta below
-  pendingResumeSessionAt = undefined; // Prevent leaking rewind state to different session
   setPendingReloadAnchor(undefined);   // PRD 0.2.27 — symmetric reset
   clearGeneratorResolver();
   setSessionState('idle');
@@ -8890,7 +8828,6 @@ async function resolvePendingBuiltinConversationMutationForActiveSession(): Prom
   loadTranscriptFromSessionMessages(resolved.messages, resolved.cursor);
   if (resolved.metadata.sdkSessionId === intent.replacementSdkSessionId) {
     sessionRegistered = false;
-    pendingResumeSessionAt = undefined;
     setPendingReloadAnchor(undefined);
   }
 }
@@ -9013,7 +8950,7 @@ export async function enqueueUserMessage(
   let reservedAdmissionAction: QueueAdmissionAction | null = null;
   let admissionTicket: import('./builtin-session/types').TurnAdmissionTicket | null = null;
   const infrastructureTransitionReservation = options?.beforeUserPersistence
-    && (getSessionMutationBarrier() !== null || rewindPromise !== null)
+    && getSessionMutationBarrier() !== null
     && getTurnAdmissionTicket() === null;
   if (
     queueResponseMode === 'turn'
@@ -9062,9 +8999,6 @@ export async function enqueueUserMessage(
     console.log('[agent] enqueueUserMessage: session reset completed, proceeding');
   }
 
-  if (rewindPromise) {
-    await rewindPromise;
-  }
   await resolvePendingBuiltinConversationMutationForActiveSession();
   if (admissionTicket?.canceled) {
     return { queued: false, error: 'Queue item was cancelled before dispatch' };
@@ -10545,10 +10479,18 @@ export function getQueueStatus(): Array<{ id: string; messagePreview: string }> 
   return queueGetQueueStatus();
 }
 
-/**
- * 时间回溯：截断对话历史 + 即时回退文件状态。
- * 持久 session 下 subprocess 存活，可直接调用 rewindFiles（无需临时 session）。
- */
+/** Keep replay admission inside the same mutation that selected its history. */
+export function retryBuiltinUserMessage(
+  userMessageId: string,
+  replay: (result: Awaited<ReturnType<typeof rewindSession>>) => Promise<import('./session-engine/types').CapabilityOperationResult>,
+): Promise<import('./session-engine/types').CapabilityOperationResult> {
+  return runSerializedSessionMutation(async () => {
+    const result = await rewindSession(userMessageId);
+    return result.success ? replay(result) : result;
+  });
+}
+
+/** Rewind native history and product history while retaining workspace checkpoints. */
 export async function rewindSession(userMessageId: string): Promise<{
   success: boolean;
   error?: string;
@@ -10557,6 +10499,7 @@ export async function rewindSession(userMessageId: string): Promise<{
   skippedLinks?: number;
   fileRewindStatus?: FileRewindStatus;
 }> {
+  let fileOutcome: { fileRewindStatus?: FileRewindStatus; skippedLinks?: number } = {};
   const doRewind = async () => {
     const productSessionId = sessionId;
     const history = getBuiltinMessages();
@@ -10564,22 +10507,17 @@ export async function rewindSession(userMessageId: string): Promise<{
     const targetIndex = history.findIndex(m => m.id === userMessageId && m.role === 'user');
     if (targetIndex < 0) return { success: false as const, error: 'Message not found' };
     const targetMessage = history[targetIndex];
-    const precedingAssistant = history.slice(0, targetIndex).findLast(message => message.role === 'assistant');
-    if (getBuiltinProductContent() && precedingAssistant && !precedingAssistant.sdkUuid) {
-      return { success: false as const, error: 'This display segment has no exact native rewind boundary' };
+    // SDK 0.3.261 accepts any native chain entry, including user messages.
+    // The retained tail owns the boundary; looking backward for an assistant
+    // would silently discard consecutive user messages from native context.
+    const retainedTail = history[targetIndex - 1];
+    const resumeSessionAt = retainedTail?.sdkUuid;
+    if (retainedTail && !resumeSessionAt) {
+      return { success: false as const, error: 'The retained history has no exact native rewind boundary' };
     }
 
-    // 2. 两个 UUID 分离：
-    //    - lastAssistantUuid → 用于 resumeSessionAt（截断 SDK 会话历史到目标前的 assistant）
-    //    - targetMessage.sdkUuid → 用于 rewindFiles（文件检查点按 user message 打点）
-    //    SDK 文档：rewindFiles(userMessageUuid) — 检查点关联用户消息，非 assistant 消息
-    let lastAssistantUuid: string | undefined;
-    for (let i = targetIndex - 1; i >= 0; i--) {
-      if (history[i].role === 'assistant' && history[i].sdkUuid) {
-        lastAssistantUuid = history[i].sdkUuid;
-        break;
-      }
-    }
+    const sourceFailure = await prepareSessionTranscriptMutation(productSessionId);
+    if (sourceFailure) throw new Error(`${sourceFailure.reason}: ${sourceFailure.error}`);
 
     // 3. 在活跃 session 上执行 rewindFiles（文件检查点关联 user message UUID）
     //    跳过已被 force-abort 的 session：subprocess 正在死亡，发 IPC 会阻塞到超时（~100s）。
@@ -10593,6 +10531,7 @@ export async function rewindSession(userMessageId: string): Promise<{
       isCurrentSessionUuid: Boolean(targetUserUuid && transcriptState.currentSessionUuids.has(targetUserUuid)),
     });
     const { skippedLinks, fileRewindStatus } = fileRewind;
+    fileOutcome = { skippedLinks, fileRewindStatus };
     if (fileRewind.diagnostics) {
       console.log(
         '[agent] rewindFiles result:'
@@ -10622,82 +10561,30 @@ export async function rewindSession(userMessageId: string): Promise<{
     const removedContent = typeof targetMessage.content === 'string' ? targetMessage.content : '';
     const removedAttachments = targetMessage.attachments;
 
-    // 6. Decide whether the existing SDK transcript can remain the execution
-    // identity. This decision is made before persistence so a fresh branch can
-    // commit the transcript truncation and SDK binding replacement together.
-    //    UUID 有效性校验（OR 逻辑）：
-    //    - transcriptState.liveSessionUuids: SDK subprocess stdout 确认过的 UUID（权威但不完整 — resume 后
-    //      SDK 不会重新输出旧历史的 UUID）
-    //    - transcriptState.currentSessionUuids: 包含磁盘种子 + 运行时 UUID（覆盖 resume 前的历史）
-    //
-    //    分支：
-    //      A. uuidIsLive=true        → 设 anchor，传给 SDK 截断
-    //      B. 锚点 stale 但 session 仍活跃 → 仅清 anchor，**保留 session id** (#189 修复)
-    //      C. 没有锚点 / session 未注册 → Product Session 不变，仅换 fresh SDK identity
-    //
-    //    **注意**：这两个集合只是 MyAgents 自己的视角，**不是 SDK 持久化状态的权威 proxy**。
-    //    MyAgents 的 JSONL 与 SDK 的 JSONL (~/.claude/projects/.../*.jsonl) 是双份存储、
-    //    异步独立写入（CLAUDE.md「双重存储」节）。SDK subprocess 在 flush 完成前被
-    //    interrupt，会留下 MyAgents 有 / SDK 没有 的 UUID。所以"UUID 不在本地集合"
-    //    **不能**推出"SDK session 已被重建"。
-    //
-    //    issue #189 修复（v0.2.15）：anchor stale 时走分支 B —— 保留 session id，仅清掉
-    //    截断锚点。下次 pre-warm 走 `resume: sessionId` 加载 SDK 全量历史。Trade-off：
-    //    AI 看到的历史可能比 UI 截断后更多（短期分歧），但绝对优于上下文全失忆。
-    //    这一行为与 catch-block 的 "No message found" recovery (~line 9219) 对齐 —
-    //    SDK 真正拒绝 anchor 时也走同样语义。
-    const uuidIsLive = sessionRegistered && lastAssistantUuid
-      && (transcriptState.liveSessionUuids.has(lastAssistantUuid) || transcriptState.currentSessionUuids.has(lastAssistantUuid));
-    const requiresFreshSdkIdentity = !uuidIsLive && !(lastAssistantUuid && sessionRegistered);
-    let freshSdkIdentity: {
-      sourceSdkSessionId: string | null;
-      replacementSdkSessionId: string;
-    } | undefined;
-    if (requiresFreshSdkIdentity) {
-      const metadata = getSessionMetadata(productSessionId);
-      freshSdkIdentity = {
-        sourceSdkSessionId: metadata ? (resolveBuiltinSdkSessionId(metadata) ?? null) : null,
-        replacementSdkSessionId: randomUUID(),
-      };
-    }
-
-    // SessionStore validates and commits the durable truncation before the
-    // live/UI projection changes. When SDK history cannot be reused, the same
-    // bounded intent also replaces only A's SDK binding (S1 -> S2).
-    await truncateTranscriptPersistenceForRewind(
-      productSessionId,
-      targetMessage.id,
-      targetIndex,
-      freshSdkIdentity,
-    );
+    const sourceMeta = getSessionMetadata(productSessionId);
+    const sourceSdkSessionId = sourceMeta ? resolveBuiltinSdkSessionId(sourceMeta) ?? null : null;
+    // A retained prefix requires its exact anchor. Local UUID caches are not
+    // native authority and must never authorize a full-history fallback.
+    const replacementSdkSessionId = resumeSessionAt
+      ? (sourceMeta ? resolveBuiltinSdkSessionId(sourceMeta) ?? sourceMeta.id : null)
+      : randomUUID();
+    if (!replacementSdkSessionId) throw new Error('Native rewind source is unavailable');
+    await truncateTranscriptPersistenceForRewind(productSessionId, targetMessage.id, targetIndex, {
+      sourceSdkSessionId, replacementSdkSessionId, resumeSessionAt,
+    });
+    const removedMessageIds = history.slice(targetIndex).map(message => message.id);
     truncateMessages(targetIndex);
-
-    // 7. 设置下次 query 的对话截断点 — 三分支决策树
-    if (uuidIsLive) {
-      pendingResumeSessionAt = lastAssistantUuid;
-    } else if (lastAssistantUuid && sessionRegistered) {
-      // Anchor 不在本地集合，但 session 仍然有效（SDK 已注册过此 session）。
-      // 不要重建 session — 仅放弃 resumeSessionAt 截断。
-      console.warn(`[agent] rewind: skipping resumeSessionAt — UUID ${lastAssistantUuid} not in live(${transcriptState.liveSessionUuids.size}) or current(${transcriptState.currentSessionUuids.size}) session (stale/rebuilt). Preserving session id (#189); SDK will resume with full history.`);
-      pendingResumeSessionAt = undefined;
-      // Symmetric eviction with catch-block recovery (line ~9227): drop the stale
-      // UUID so subsequent rewinds don't pass the uuidIsLive OR-check and re-enter
-      // a path that would just be rejected by the SDK again. (No-op if absent.)
-      deleteCurrentSessionUuid(lastAssistantUuid);
-      // 关键：**不**修改 sessionId / sessionRegistered / hasInitialPrompt。
-      // 下次 startStreamingSession 会用 resume: sessionId 加载 SDK 全量历史。
-    } else {
-      // 两种合法的"fresh SDK start"场景：
-      //   (a) lastAssistantUuid 为 undefined：rewind 到第一条 user message 之前 / 无 SDK
-      //       tracked assistant —— 没有 SDK 上下文可保留
-      //   (b) sessionRegistered=false：SDK 从未注册过这个 session（首次 pre-warm 失败等）
-      pendingResumeSessionAt = undefined;
-      sessionRegistered = false;
-      setPendingReloadAnchor(undefined);
+    if (!getBuiltinProductContent()) {
+      broadcast('chat:messages-retracted', {
+        messageIds: removedMessageIds,
+        retractedStreamingTail: true,
+      });
+    }
+    sessionRegistered = Boolean(resumeSessionAt);
+    setPendingReloadAnchor(undefined);
+    if (!resumeSessionAt) {
       clearCurrentSessionUuids();
       clearLiveSessionUuids();
-      // Product Session A, its transcript cursor, title, config and Sidecar
-      // ownership remain unchanged. Only the persisted SDK identity is fresh.
     }
 
     // 8. 预热下次 session
@@ -10713,39 +10600,22 @@ export async function rewindSession(userMessageId: string): Promise<{
   };
 
   const promise = runSerializedSessionMutation(doRewind);
-  rewindPromise = promise;
   try {
     return await promise;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     if (detail.includes('stale-cursor')) {
-      return { success: false, error: 'Conversation history changed during rewind; reopen the session before trying again.' };
+      return { success: false, ...fileOutcome, error: 'Conversation history changed during rewind; reopen the session before trying again.' };
     }
     if (detail.includes('malformed-transcript')) {
-      return { success: false, error: 'Conversation history contains data that cannot be safely rewound.' };
+      return { success: false, ...fileOutcome, error: 'Conversation history contains data that cannot be safely rewound.' };
     }
-    return { success: false, error: `Failed to persist rewind: ${detail}` };
-  } finally {
-    rewindPromise = null;
+    return { success: false, ...fileOutcome, error: `Failed to persist rewind: ${detail}` };
   }
 }
 
-/**
- * Fork session: create a new independent session branching from a specific assistant message.
- * Non-destructive — the current session remains untouched.
- * The new session uses SDK's forkSession option on first startup.
- */
-/**
- * PRD 0.2.27 — eager fork via the standalone SDK `forkSession()` function (gated by
- * AppConfig.eagerFork, a developer toggle in Settings→About, DEFAULT ON; off → lazy forkFrom
- * path). Creates the fork's SDK transcript up front, rebuilds the old→new sdkUuid map at SDK granularity,
- * and re-stamps our copied rows so the forked session resumes as a plain session (no forkFrom
- * state machine, no fork-at-tail degradation). Returns `ok:false` — caller falls back to the
- * lazy path — on a turn-in-flight / not-yet-flushed anchor / SDK error / ANY structural
- * mismatch, and cleans up the orphan SDK session on a post-fork failure. See
- * specs/prd/prd_0.2.27_fork_standalone_migration.md.
- */
-async function tryEagerFork(opts: {
+/** Create an independent native prefix and remap product anchors before publication. */
+async function materializeBuiltinFork(opts: {
   sourceSdkSid: string;
   anchorUuid: string;
   dir: string;
@@ -10754,11 +10624,7 @@ async function tryEagerFork(opts: {
   const { sourceSdkSid, anchorUuid, dir, forkedMessages } = opts;
   const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-  // Flush gate ①: never eager-fork while the source session is BUSY (turn in flight /
-  // streaming / queued / mid-turn buffered) — its tail may be mid-write. Use isSessionBusy()
-  // (the single source of truth for "safe to mutate"), NOT lifecycleState.processing: lifecycleState.processing is true
-  // for an alive persistent subprocess even when idle, so gating on it would make the eager
-  // path unreachable in the normal (idle) fork flow — it would always fall back to lazy.
+  // The mutation owner excludes new admission; already running turns must finish first.
   if (isSessionBusy()) return { ok: false, reason: 'source session is busy' };
 
   // Flush gate ②: the anchor must already be flushed into the source SDK transcript; reuse
@@ -10773,13 +10639,6 @@ async function tryEagerFork(opts: {
   if (anchorIdx < 0) return { ok: false, reason: 'anchor not yet flushed to source SDK transcript' };
   const srcSliced = srcSdk.slice(0, anchorIdx + 1);
 
-  // Re-check right before the SDK fork: a turn may have started during the getSessionMessages
-  // await (gate ① is not an atomic admission lock). This narrows the window; a concurrent
-  // append AFTER the anchor is additionally self-defending — the slice/remap is over the
-  // immutable up-to-anchor prefix, so any structural change makes buildForkUuidRemap return
-  // ok:false → clean fallback. (A full fork-admission lock is a pre-default-ON follow-up.)
-  if (isSessionBusy()) return { ok: false, reason: 'source became busy during fork prep' };
-
   // Eager SDK fork (copies + remaps uuids into a new session file under `dir`).
   let newSid: string;
   try {
@@ -10789,8 +10648,7 @@ async function tryEagerFork(opts: {
     return { ok: false, reason: `sdkForkSession failed: ${errMsg(e)}` };
   }
 
-  // From here the SDK fork file exists — clean it up on any failure before falling back.
-  // Guard `newSid !== sourceSdkSid` so cleanup can NEVER touch the source (defensive).
+  // A failed remap owns only the newly created native file.
   const fail = async (reason: string): Promise<{ ok: false; reason: string }> => {
     if (newSid !== sourceSdkSid) {
       try { await sdkDeleteSession(newSid, { dir }); } catch { /* orphan cleanup is best-effort */ }
@@ -10798,10 +10656,9 @@ async function tryEagerFork(opts: {
     return { ok: false, reason };
   };
 
-  // Defensive: the SDK returns a fresh UUID, but never adopt an id that already names a
-  // MyAgents session (corrupt sessions.json / hypothetical SDK reuse) — clean up + fall back.
-  if (getSessionMetadata(newSid)) {
-    return fail(`fork id collides with an existing MyAgents session: ${newSid}`);
+  // Never claim or delete a native identity that already belongs to a Session.
+  if (newSid === sourceSdkSid || getSessionMetadata(newSid)) {
+    return { ok: false, reason: 'SDK fork did not return a fresh native identity' };
   }
 
   let forkSdk: Awaited<ReturnType<typeof sdkGetSessionMessages>>;
@@ -10821,142 +10678,67 @@ async function tryEagerFork(opts: {
   return { ok: true, newSid, remapped };
 }
 
-export async function forkSession(assistantMessageId: string): Promise<{
-  success: boolean;
-  newSessionId?: string;
-  agentDir?: string;
-  title?: string;
-  error?: string;
+export async function forkSession(assistantMessageId: string, targetSessionId?: string): Promise<{
+  success: boolean; newSessionId?: string; agentDir?: string; title?: string; error?: string;
 }> {
-  try { await assertCompleteSessionForkSource(sessionId); }
-  catch (error) { return { success: false, error: error instanceof Error ? error.message : 'Fork source is unavailable' }; }
-  const liveMessages = getBuiltinMessages();
-  let targetIndex = liveMessages.findIndex(m => m.id === assistantMessageId && m.role === 'assistant');
-  let messageSource = liveMessages;
-  let isFromStorage = false;
-
-  if (targetIndex < 0) {
-    // Fallback: load from persistent storage — covers race between clearMessageState
-    // and loadMessagesFromStorage during session switch/pre-warm.
-	    const stored = (await getSessionData(sessionId));
-	    if (stored?.messages) {
-	      const storedIdx = stored.messages.findIndex(m => m.id === assistantMessageId && m.role === 'assistant');
-	      if (storedIdx >= 0) {
-        console.log(`[agent] forkSession: message ${assistantMessageId} not in memory, found in storage`);
-        // Use stored transcriptState.messages directly for fork (they already have sdkUuid persisted)
-        targetIndex = storedIdx;
-	        messageSource = stored.messages.map(sessionMessageToMessageWire);
-        isFromStorage = true;
-      }
-    }
-  }
-
-  if (targetIndex < 0) {
-    console.error(`[agent] forkSession: Assistant message NOT FOUND. assistantMessageId=${assistantMessageId}, in-memory count=${liveMessages.length}, sessionId=${sessionId}`);
-    return { success: false, error: 'Assistant message not found' };
-  }
-  const targetMsg = messageSource[targetIndex];
-  if (!targetMsg.sdkUuid) return { success: false, error: 'Message has no SDK UUID (cannot fork)' };
-
-  // Preserve the read origin explicitly; a canonical read is a value projection,
-  // so array object identity cannot establish native UUID provenance.
-  if (isFromStorage && transcriptState.currentSessionUuids.size > 0 && !transcriptState.currentSessionUuids.has(targetMsg.sdkUuid)) {
-    return { success: false, error: 'SDK UUID 已过期（当前 SDK session 不包含此消息），请重新发送后再 fork' };
-  }
-
-  // 2. Get current session info for the fork source
-  const sourceSessionId = sessionId; // unifiedSession: id === SDK session ID
-  const currentAgentDir = agentDir;
-  const sourceMeta = getSessionMetadata(sourceSessionId);
-  const sourceTitle = sourceMeta?.title || 'Chat';
-
-  try {
-    // Common: inherited config snapshot + the copied message slice (both fork paths use them).
-    // v0.1.69: Inherit the source session's snapshot (model/permission/mcp/provider/runtime).
-    // Forking from a "locked" Desktop session yields a locked clone with the same config —
-    // Branching off a conversation should not silently change AI behavior. The user can
-    // still PATCH the forked session afterward to detach it.
-    const inheritedSnapshot: Partial<typeof sourceMeta> = sourceMeta ? {
-      runtime: sourceMeta.runtime,
-      model: sourceMeta.model,
-      permissionMode: sourceMeta.permissionMode,
-      mcpEnabledServers: sourceMeta.mcpEnabledServers ? [...sourceMeta.mcpEnabledServers] : undefined,
-      providerId: sourceMeta.providerId,
-      providerEnvJson: sourceMeta.providerEnvJson,
-      configSnapshotAt: sourceMeta.configSnapshotAt,
-    } : {};
-
-    // Copy transcriptState.messages up to and including the fork point (sdkUuid preserved here; the EAGER
-    // path re-stamps them to the fork's new uuids before persisting).
-    const forkedMessages: SessionMessage[] = messageSource
-      .slice(0, targetIndex + 1)
-      .map(messageWireToSessionMessage);
-
-    // PRD 0.2.27 — EAGER fork (AppConfig.eagerFork, developer toggle in Settings→About, DEFAULT
-    // ON; flip off → lazy path). Create the SDK fork up front + re-stamp our rows' sdkUuids, so
-    // the fork resumes as a plain session with NO forkFrom state machine (#134/#135) and NO
-    // fork-at-tail degradation (#220). Any decline (source busy / anchor not flushed / structural
-    // mismatch) cleanly falls back below. Read disk-first (config.json is authoritative; fork is
-    // a rare user action so a sync read is fine). Missing field ⇒ on.
-    if (loadAdminConfig().eagerFork !== false) {
-      const eager = await tryEagerFork({
-        sourceSdkSid: sourceMeta?.sdkSessionId ?? sourceSessionId,
-        anchorUuid: targetMsg.sdkUuid,
-        dir: currentAgentDir,
-        forkedMessages,
-      });
-      if (eager.ok) {
-        // Unified session: use the SDK's returned fork id as OUR session id AND sdkSessionId,
-        // so switchToSession (`sessionMeta.sdkSessionId` → sessionRegistered=true) resumes the
-        // already-created SDK fork file on first start instead of trying to create it (which
-        // would collide). No forkFrom. (Codex review #5.)
-        const newSession = createSessionMetadata(currentAgentDir, inheritedSnapshot);
-        newSession.id = eager.newSid;
-        newSession.sdkSessionId = eager.newSid;
-        newSession.unifiedSession = true;
-        newSession.title = `🌿 ${sourceTitle}`;
-        newSession.titleSource = 'auto';
-        newSession.origin = { kind: 'desktop', surface: 'session_fork' };
-        try {
-          await publishForkSession(newSession, eager.remapped, sourceSessionId);
-        } catch (persistErr) {
-          // Persist threw AFTER the SDK fork file was created — clean up the orphan SDK
-          // transcript so we don't leak it, then let the outer catch surface the failure.
-          if (!getSessionMetadata(newSession.id)) {
-            try { await sdkDeleteSession(eager.newSid, { dir: currentAgentDir }); } catch { /* best-effort */ }
+  return runSerializedSessionMutation(async () => {
+    try {
+      const sourceId = sessionId;
+      const source = getSessionMetadata(sourceId);
+      if (!source) throw new Error('Fork source is unavailable');
+      if (targetSessionId) {
+        const prior = getSessionMetadata(targetSessionId);
+        if (prior) {
+          if (prior.forkOrigin?.sessionId !== sourceId || prior.forkOrigin.messageId !== assistantMessageId) {
+            throw new Error('Fork target belongs to another operation');
           }
-          throw persistErr;
+          if (prior.materializationState) throw new Error('Fork publication is still in progress');
+          return { success: true, newSessionId: prior.id, agentDir: prior.agentDir, title: prior.title };
         }
-        console.log(`[agent] forked session (EAGER) ${sourceSessionId} → ${newSession.id} at ${assistantMessageId}, ${eager.remapped.length} transcriptState.messages, sdkUuids remapped`);
-        return { success: true, newSessionId: newSession.id, agentDir: currentAgentDir, title: newSession.title };
       }
-      console.warn(`[agent] eager fork declined (${eager.reason}) — falling back to lazy forkFrom path`);
+      await assertCompleteSessionForkSource(sourceId);
+      const messages = getBuiltinMessages();
+      const index = messages.findIndex(message => message.id === assistantMessageId && message.role === 'assistant');
+      if (index < 0) throw new Error('Assistant message not found');
+      const anchor = messages[index].sdkUuid;
+      if (!anchor) throw new Error('This message has no exact native fork boundary');
+      const nativeSource = await resolveBuiltinForkSource(source);
+      const forkedMessages = messages.slice(0, index + 1).map(messageWireToSessionMessage);
+      const native = await materializeBuiltinFork({ sourceSdkSid: nativeSource, anchorUuid: anchor, dir: source.agentDir, forkedMessages });
+      if (!native.ok) throw new Error(native.reason);
+      const target = createSessionMetadata(source.agentDir, snapshotForForkedSession(source, buildOwnedFreezeSnapshotPatch()));
+      target.id = targetSessionId ?? native.newSid;
+      target.sdkSessionId = native.newSid;
+      target.unifiedSession = target.id === native.newSid;
+      target.forkOrigin = { sessionId: sourceId, messageId: assistantMessageId };
+      target.title = `🌿 ${source.title || 'Chat'}`;
+      target.titleSource = 'auto';
+      target.origin = { kind: 'desktop', surface: 'session_fork' };
+      try {
+        await publishForkSession(target, native.remapped, sourceId);
+      } catch (error) {
+        if (!getSessionMetadata(target.id)) {
+          try { await sdkDeleteSession(native.newSid, { dir: source.agentDir }); } catch { /* Unpublished native orphan only. */ }
+        }
+        throw error;
+      }
+      return { success: true, newSessionId: target.id, agentDir: target.agentDir, title: target.title };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Fork failed' };
     }
+  });
+}
 
-    // Default: lazy fork — write forkFrom + copied rows (old uuids); the SDK fork is
-    // materialized at the forked session's first startup via query({ forkSession: true }).
-    const newSession = createSessionMetadata(currentAgentDir, inheritedSnapshot);
-    newSession.title = `🌿 ${sourceTitle}`;
-    newSession.titleSource = 'auto';
-    newSession.origin = { kind: 'desktop', surface: 'session_fork' };
-    newSession.forkFrom = {
-      sourceSessionId: sourceMeta?.sdkSessionId ?? sourceSessionId,
-      messageUuid: targetMsg.sdkUuid,
-    };
-    await publishForkSession(newSession, forkedMessages, sourceSessionId);
-
-    console.log(`[agent] forked session ${sourceSessionId} → ${newSession.id} at message ${assistantMessageId} (sdkUuid: ${targetMsg.sdkUuid}), ${forkedMessages.length} transcriptState.messages copied`);
-
-    return {
-      success: true,
-      newSessionId: newSession.id,
-      agentDir: currentAgentDir,
-      title: newSession.title,
-    };
-  } catch (err) {
-    console.error('[agent] forkSession failed:', err);
-    return { success: false, error: err instanceof Error ? err.message : 'Fork failed' };
-  }
+/** Legacy lazy branches may have product history before a native file exists.
+ * Probe the binding, then follow only the recorded source; never guess a tail. */
+async function resolveBuiltinForkSource(source: SessionMetadata, visited = new Set<string>()): Promise<string> {
+  if (visited.has(source.id)) throw new Error('Fork source cycle');
+  visited.add(source.id);
+  const candidate = resolveBuiltinSdkSessionId(source) ?? source.id;
+  if (!source.forkFrom) return candidate;
+  if ((await sdkGetSessionMessages(candidate, { dir: source.agentDir, limit: 1 })).length) return candidate;
+  const parent = getSessionMetadata(source.forkFrom.sourceSessionId);
+  return parent ? resolveBuiltinForkSource(parent, visited) : source.forkFrom.sourceSessionId;
 }
 
 /**
@@ -11139,7 +10921,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   // PRD 0.2.27 — query-scoped copy of the reloadAnchor this start actually sent. Local
   // (not module) so a late catch from THIS invocation evicts the right uuid even if a
   // newer session has since re-armed the module-level transcriptState.pendingReloadAnchor.
-  let sentReloadAnchor: string | undefined;
 
   // The exact SDK Query owns background-task liveness in lifecycle.ts so
   // deferred restart policy can see it. Whatever remains when this Query tears
@@ -11213,7 +10994,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     let resumeFrom: string | undefined;
     let effectiveSdkSessionId: string;
 
-    if (sessionRegistered) {
+    if (sessionRegistered || getCurrentProductSessionMetadata()?.sdkResumeSessionAt) {
       // Prefer sdkSessionId from metadata (the actual ID the SDK knows)
       const meta = getCurrentProductSessionMetadata();
       const sdkSid = meta?.sdkSessionId;
@@ -11247,12 +11028,12 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     }
     // sessionRegistered 不在此处修改 — 等待 system_init 确认
 
-    // 读取 rewind 设置的对话截断点（不立即消费 — 等 system_init 确认后再清除）
+    // Durable rewind boundary survives startup and is cleared after a successful turn.
     // 持久 session 模式下，pre-warm 即最终 session（用户消息通过 wakeGenerator 投递），
     // 必须在 pre-warm 时就传 resumeSessionAt，否则 SDK 会加载完整历史不截断
     // 延迟消费原因：如果 query 因 UUID 无效而启动失败，重试时仍需要 anchor；
-    // catch block 的 "No message found" 恢复会主动清除无效 anchor 防止无限重试。
-    const rewindResumeAt = pendingResumeSessionAt;
+    // Invalid boundaries remain explicit failures; never clear them to resume a longer history.
+    const rewindResumeAt = getCurrentProductSessionMetadata()?.sdkResumeSessionAt;
 
     // Fork detection: if this session was created via fork, override resume/sessionId
     // to use SDK's forkSession option (load source history + branch to new session).
@@ -11318,12 +11099,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         // Fall through: normal resume path picks up sdkSessionId via the
         // sessionRegistered branch above.
       } else {
-        const { sourceSessionId, messageUuid } = forkMeta.forkFrom;
-        // messageUuid may be undefined if the catch-block recovery (~line 9737) cleared
-        // it after a "No message found" rejection. Without an anchor, SDK forks at the
-        // source's tail rather than the user-clicked midpoint — see issue #220.
-        const anchorDesc = messageUuid ? `fork at ${messageUuid}` : 'no anchor (degraded: SDK will fork at source tail)';
-        console.log(`[agent] fork mode: resuming from ${sourceSessionId}, ${anchorDesc}, new session ${sessionId}`);
+        const sourceSessionId = await resolveBuiltinForkSource(forkMeta);
+        const messageUuid = forkMeta.forkFrom.messageUuid
+          ?? getBuiltinMessages().findLast(message => message.role === 'assistant')?.sdkUuid;
+        if (!messageUuid) throw new Error('Legacy fork has no exact native boundary');
+        console.log(`[agent] legacy fork: source=${sourceSessionId}, boundary=${messageUuid}, target=${sessionId}`);
         resumeFrom = sourceSessionId;
         effectiveSdkSessionId = sessionId;
         forkMode = true;
@@ -11366,7 +11146,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     const reloadAnchor = (!forkMode && !rewindResumeAt && resumeFrom) ? transcriptState.pendingReloadAnchor : undefined;
     // Capture into a query-scoped local so a LATE catch from a previous (aborted) start
     // can't mis-attribute the eviction against a newer session's anchor (module state races).
-    sentReloadAnchor = reloadAnchor;
 
     const effectiveResumeAt = resolveEffectiveResumeAt({ forkMode, rewindResumeAt, forkResumeAt, reloadAnchor });
 
@@ -11563,6 +11342,8 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       systemPrompt: {
         type: 'preset' as const,
         preset: 'claude_code' as const,
+        // Product append changes take effect at Query replacement, including resume.
+        snapshot: false,
         append: buildSystemPromptAppend(currentScenario, {
           // agent-session.ts is the builtin Claude Agent SDK path by definition.
           runtime: 'builtin',
@@ -11638,8 +11419,18 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       ...(disallowedToolsList.length > 0 ? { disallowedTools: disallowedToolsList } : {}),
       // Custom permission handling - check rules and prompt user for unknown tools
       // Effective when permissionMode is 'default' or 'acceptEdits' (not 'bypassPermissions')
-      canUseTool: async (toolName: string, input: unknown, options: { signal: AbortSignal }) => {
+      canUseTool: async (toolName: string, input: unknown, options: Parameters<CanUseTool>[2]) => {
         console.debug(`[permission] canUseTool checking: ${toolName}, mode=${configState.currentPermissionMode}`);
+
+        // First check MCP tool permission based on user's enabled MCP servers
+        const mcpCheck = checkMcpToolPermission(toolName, options.mcpServer);
+        if (!mcpCheck.allowed) {
+          if (isDebugMode) console.log(`[permission] MCP tool blocked: ${toolName} - ${mcpCheck.reason}`);
+          return {
+            behavior: 'deny' as const,
+            message: mcpCheck.reason
+          };
+        }
 
         // SAFETY NET: fullAgency mode MUST auto-approve everything except user-interaction
         // tools that require explicit human review (AskUserQuestion, EnterPlanMode, ExitPlanMode).
@@ -11656,17 +11447,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           };
         }
 
-        // First check MCP tool permission based on user's enabled MCP servers
-        const mcpCheck = checkMcpToolPermission(toolName);
-        if (!mcpCheck.allowed) {
-          if (isDebugMode) console.log(`[permission] MCP tool blocked: ${toolName} - ${mcpCheck.reason}`);
-          return {
-            behavior: 'deny' as const,
-            message: mcpCheck.reason
-          };
-        }
-
-        // Trust prefix for context-injected builtin MCPs: skip user confirmation
+        // Trust SDK provenance for active context-injected MCPs: skip user confirmation
         // entirely. These MCPs are injected by sidecar context (cron task / IM
         // bot / bridge plugin) and are MyAgents-managed, not third-party. In IM
         // sessions there is no UI to confirm against anyway, so blocking on
@@ -11674,11 +11455,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         // MYAGENTS_CONTEXT_INJECTED_MCP_IDS guarantees no user MCP can take
         // the same name (filtered out in buildSdkMcpServers), so this auto-allow
         // can't be hijacked.
-        const parts = toolName.split('__');
-        if (
-          parts.length >= 3 &&
-          (MYAGENTS_CONTEXT_INJECTED_MCP_IDS as readonly string[]).includes(parts[1])
-        ) {
+        if (isContextInjectedSdkTool(options.mcpServer, getActiveContextInjectedBuiltinIds())) {
           console.log(`[permission] built-in tool auto-allowed: ${toolName}`);
           return {
             behavior: 'allow' as const,
@@ -11703,7 +11480,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         // to fit the trailing token shape). Non-whitespace shell metachars
         // (`;`, `|`, `&&`, `>`, `$(`, backticks, …) already fail the strict
         // character classes used inside the patterns.
-        if (toolName === 'Bash') {
+        if (toolName === 'Bash' && !options.defaultToNo && !options.suppressAlwaysAllowRule) {
           const cmd = ((input as Record<string, unknown>)?.command as string | undefined)?.trim() ?? '';
 
           // 1. Widget design contract: `myagents widget [readme|list|<module>] [<module>...]`
@@ -11925,7 +11702,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           toolName,
           input,
           configState.currentPermissionMode,
-          options.signal
+          options.signal,
+          { defaultToNo: options.defaultToNo, suppressAlwaysAllowRule: options.suppressAlwaysAllowRule },
+          options.mcpServer,
         );
         console.debug(`[permission] canUseTool result for ${toolName}: ${decision}`);
         if (decision === 'allow') {
@@ -11945,26 +11724,18 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // Claude API rejects images exceeding 8000px per dimension; MCP tools (e.g. browser screenshots)
       // can produce arbitrarily large images that bypass our user-upload resize pipeline.
       hooks: {
-        // PreToolUse hook (#295): hard-enforce plan mode's read-only guarantee.
-        // We always pass `allowDangerouslySkipPermissions: true` (so fullAgency's
-        // bypassPermissions can be switched to mid-session), which sets the native
-        // CLI's `isBypassPermissionsModeAvailable=true`. The CLI's resolver then
-        // returns "allow" for EVERY tool in plan mode and never emits a
-        // can_use_tool control request — so our plan-mode rules in canUseTool are
-        // silently skipped and writes (Bash rm -rf, Edit, …) execute unchecked.
-        // PreToolUse hooks run BEFORE that resolver and a `deny` is honored
-        // regardless, so this is the only place that can restore the guarantee
-        // while keeping the flag. It fails closed on EITHER the SDK's own
-        // per-call `permission_mode` (authoritative for this tool call) OR the
-        // live module-global `configState.currentPermissionMode` mirror — trusting only the
-        // async-updated mirror leaves a desync window where a freshly-entered
-        // plan mode (AI EnterPlanMode mid-turn) isn't reflected yet and a write
-        // tool slips through. This covers every plan-entry path (agent config /
-        // UI toggle / AI EnterPlanMode). See isPlanModeInEffect + plan-mode-gate.ts.
+        // Product plan/read-only and MCP boundaries apply in every SDK mode.
+        // SDK 0.3.269 fixed the old plan+bypass callback omission; the hook still
+        // owns our stricter policy and the live/SDK permission-mode race fence.
         PreToolUse: [{
           hooks: [
             async (input: HookInput): Promise<HookJSONOutput> => {
               const pre = input as PreToolUseHookInput;
+              const mcpCheck = checkMcpToolPermission(pre.tool_name, pre.mcp_server);
+              if (!mcpCheck.allowed) return {
+                hookSpecificOutput: { hookEventName: 'PreToolUse' as const,
+                  permissionDecision: 'deny' as const, permissionDecisionReason: mcpCheck.reason },
+              };
               if (shouldHardDenyChannelInteractionTool(pre.tool_name, currentScenario)) {
                 const reason = pre.tool_name === 'AskUserQuestion'
                   ? channelInteractionDenyReason(currentScenario)
@@ -12049,7 +11820,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               // let a background sub-agent reach a now-disabled MCP server. Only applies
               // to confirmed background agents; foreground keeps its own canUseTool check.
               if (isBackgroundAgent) {
-                const mcpCheck = checkMcpToolPermission(toolName);
+                const mcpCheck = checkMcpToolPermission(toolName, permInput.mcp_server);
                 if (!mcpCheck.allowed) {
                   console.log(`[permission] background-agent ${toolName} denied (MCP disabled: ${mcpCheck.reason}, agentId=${agentId})`);
                   return {
@@ -12063,7 +11834,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               const decision = decideBackgroundAgentPermission({
                 isBackgroundAgent,
                 toolName,
-                sessionAllowsTool: sessionAlwaysAllowed.has(toolName),
+                sessionAllowsTool: sessionAlwaysAllowed.has(toolPermissionGrantKey(toolName, permInput.mcp_server)),
                 policy: configState.currentBackgroundAgentPermissionMode,
               });
               if (decision === 'passthrough') return {};
@@ -12452,6 +12223,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       }
       messageCount++;
       watchdog.markActivity();
+      // These acknowledge coalesced native notifications, not a product turn.
+      // Route before provider settlement, queue/usage mutation or rewind cleanup.
+      if (sdkMessage.type === 'result' && isCoalescedTaskNotificationReceipt(sdkMessage)) continue;
       // Flip turn-scoped substantive-activity flag on first non-init frame.
       // `system/init` is the boilerplate startup frame and must not count
       // as "this turn produced output" for the watchdog auto-resume decision.
@@ -12578,13 +12352,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           console.log('[agent] pre-warm: system_init buffered (will replay on first message)');
         }
 
-        // system_init confirms SDK session started — consume the rewind anchor.
-        // This is the success signal: the UUID was accepted (or wasn't needed).
-        // If the UUID had been invalid, the SDK would have exited with error BEFORE system_init.
-        if (pendingResumeSessionAt) {
-          console.log(`[agent] system_init received — rewind anchor consumed: ${pendingResumeSessionAt}`);
-          pendingResumeSessionAt = undefined;
-        }
         // PRD 0.2.27 — system_init means the load-captured reloadAnchor (if any) was
         // accepted by the SDK and the session is now truncated correctly; consume it so a
         // later restart/turn doesn't re-apply a now-stale truncation point.
@@ -13696,6 +13463,14 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         }
       } else if (sdkMessage.type === 'result') {
         await preparedProvider?.reportTerminal(sdkMessage.subtype === 'success');
+        // Settle the boundary before terminal handling can restart/revoke this Query.
+        if (sdkMessage.subtype === 'success' && !sdkMessage.is_error && isCurrentQueryAuthority(activeQueryAuthority)) {
+          const meta = getCurrentProductSessionMetadata();
+          if (meta?.sdkResumeSessionAt) {
+            await updateSessionMetadataForBinding(meta.id, { sdkResumeSessionAt: undefined },
+              current => current.sdkResumeSessionAt === meta.sdkResumeSessionAt);
+          }
+        }
         await builtinTurnLifecycle.handleSdkResult(sdkMessage as BuiltinSdkResultMessage);
       } else if (!KNOWN_MESSAGE_TYPES.has(sdkMessage.type) && !warnedUnknownMessageTypes.has(sdkMessage.type)) {
         // Top-level half of the unknown-message sentinel (the system-subtype
@@ -13723,7 +13498,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     const errorStack = error instanceof Error ? error.stack : String(error);
     console.error('[agent] session error:', errorMessage);
     console.error('[agent] session error stack:', errorStack);
-    const recoveredInvalidResumeAnchors: InvalidResumeAnchorKind[] = [];
 
     // "Session ID already in use" recovery: SDK session dir exists on disk but our
     // in-memory metadata was lost (fresh Bun process after crash/restart).
@@ -13739,120 +13513,16 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       return; // Skip error broadcast, let finally handle cleanup + pre-warm retry
     }
 
-    // "No message found with message.uuid" recovery: resumeSessionAt pointed to a UUID
-    // that doesn't exist in the SDK's session JSONL. This happens when:
-    //   - Session was rebuilt (No conversation found → new session, old UUIDs stale)
-    //   - SDK's async JSONL save didn't flush before subprocess was interrupted
-    //   - transcriptState.currentSessionUuids (seeded from disk) included UUIDs from a previous SDK session
-    // Fix: clear the invalid rewind anchor so retry resumes with full history intact.
-    // Keep sessionRegistered=true — the session itself exists, only the UUID is wrong.
-    // The retry will use `resume: sessionId` without resumeSessionAt, loading all transcriptState.messages.
-    // Two durable anchors can be the rejected UUID:
-    //   1. pendingResumeSessionAt (in-memory) — set by rewindSession()
-    //   2. SessionMetadata.forkFrom.messageUuid (disk-persisted) — set by forkSession()
-    // effectiveResumeAt prefers rewindResumeAt ?? forkResumeAt (see line ~7776), so
-    // when both are set the rewind UUID is the one actually sent to the SDK. Capture
-    // that here so the fork branch below can avoid clearing an innocent fork anchor.
-    const rewindAnchorWasSent = isSdkMissingResumeMessageError(errorMessage)
-      && pendingResumeSessionAt !== undefined;
-
-    // Rewind-mode "No message found" recovery (issue #189). Fires when the session
-    // is registered, OR whenever there is a stale in-memory rewind anchor to clear —
-    // even on an unregistered (fresh) fork. A fresh fork can carry a rewind anchor:
-    // rewindSession() sets pendingResumeSessionAt for any UUID in transcriptState.currentSessionUuids
-    // (disk-seeded from the copied transcriptState.messages), regardless of sessionRegistered. If that
-    // anchor is then rejected by the SDK while sessionRegistered=false, gating purely on
-    // sessionRegistered would skip this branch AND the fork branch below (rewindAnchorWasSent
-    // is true) — neither anchor clears and every retry resends the same UUID (the #220
-    // loop class, fresh-fork sub-case). Clearing an in-memory anchor is safe in any
-    // registration state, so allow it whenever pendingResumeSessionAt is set.
-    if (isSdkMissingResumeMessageError(errorMessage)
-      && (sessionRegistered || pendingResumeSessionAt !== undefined)) {
-      const rejectedUuid = pendingResumeSessionAt;
-      pendingResumeSessionAt = undefined;
-      // Evict the rejected UUID from transcriptState.currentSessionUuids so subsequent rewinds don't
-      // re-accept it via the OR logic. Without this, the stale UUID stays in the cache
-      // and a future rewind to the same point would re-trigger the same SDK error.
-      // Only log/evict when there was an ACTUAL rewind anchor: on a reloadAnchor rejection
-      // this branch still enters (sessionRegistered=true) with rejectedUuid===undefined —
-      // the reloadAnchor branch below owns + logs that case, so stay quiet here (no
-      // misleading "clearing rewind anchor" line on the high-stakes cold-reload path).
-      if (rejectedUuid) {
-        console.warn(`[agent] resumeSessionAt UUID rejected by SDK — clearing rewind anchor, retry will resume with full history`);
-        deleteCurrentSessionUuid(rejectedUuid);
-        recoveredInvalidResumeAnchors.push('rewind');
-      }
-      // Don't modify sessionRegistered — session exists, just the UUID is invalid.
-      // Don't return — let pre-warm retry (finally block) handle recovery.
-      // For non-pre-warm (user message triggered): fall through to error broadcast.
-    }
-
-    // PRD 0.2.27 reloadAnchor "No message found" recovery (decision 6). The cold-reload
-    // anchor (transcriptState.pendingReloadAnchor, captured at LOAD) can be stale if compact/snip removed
-    // that uuid from the SDK transcript. The pre-warm retry does NOT reload, so it would
-    // reuse the same transcriptState.pendingReloadAnchor → SDK rejects again. Break the loop like the rewind
-    // branch: evict the uuid from transcriptState.currentSessionUuids (so a future re-load's
-    // deriveReloadResumeAnchor `.has()` gate also fails) AND clear the captured anchor
-    // (generation-guarded — only if a newer start hasn't replaced it). Uses the query-scoped
-    // `sentReloadAnchor`, not the module var, so a late catch from an aborted start can't
-    // evict against a newer session. Retry resumes with full history (window-B reconcile
-    // skipped this round; self-heals once the user continues and a newer leaf is written).
-    if (isSdkMissingResumeMessageError(errorMessage) && sentReloadAnchor) {
-      console.warn(`[agent] reloadAnchor UUID ${sentReloadAnchor} rejected by SDK — evicting from transcriptState.currentSessionUuids so retry resumes with full history (no re-derive loop)`);
-      deleteCurrentSessionUuid(sentReloadAnchor);
-      // Clear the load-captured anchor only if it's still THIS query's — a newer load/start
-      // may have already replaced it; don't wipe a newer session's pending anchor.
-      if (transcriptState.pendingReloadAnchor === sentReloadAnchor) setPendingReloadAnchor(undefined);
-      recoveredInvalidResumeAnchors.push('reload');
-    }
-
-    // Fork-mode "No message found" recovery (issue #220). The durable anchor here lives
-    // in `SessionMetadata.forkFrom.messageUuid` (disk-persisted), not in-memory, so we
-    // must mutate + persist the metadata or every retry rereads the stale UUID.
-    //
-    // NOT gated on `sessionRegistered`: a fresh fork session has sessionRegistered=false
-    // until SDK's first non-error result lands, but that's exactly when this error fires.
-    //
-    // Skip when the rewind branch above was the actual culprit — clearing both anchors
-    // on every "No message found" would over-degrade a still-good fork anchor. If the
-    // fork anchor is also stale, the next retry's effectiveResumeAt will fall through to
-    // it, SDK will reject again, and this branch will fire on that pass.
-    //
-    // Trade-off: dropping the fork anchor degrades semantics — SDK forks at source's
-    // *tail*, not the user-clicked midpoint. AI then sees more source context than the
-    // UI shows (UI has the N copied transcriptState.messages; SDK has all source transcriptState.messages). Same
-    // degradation philosophy as the rewind branch's "resume with full history". Better
-    // than a fail-loop or losing the fork entirely.
-    if (isSdkMissingResumeMessageError(errorMessage) && !rewindAnchorWasSent) {
-      const failedForkMeta = getCurrentProductSessionMetadata();
-      if (failedForkMeta?.forkFrom?.messageUuid) {
-        const rejectedForkUuid = failedForkMeta.forkFrom.messageUuid;
-        console.warn(`[agent] forkSession anchor UUID ${rejectedForkUuid} rejected by SDK (source store no longer contains it) — clearing anchor; retry will fork at source tail`);
-        delete failedForkMeta.forkFrom.messageUuid;
-        try {
-          await saveSessionMetadata(failedForkMeta);
-        } catch (saveErr) {
-          // Persist failure → disk still has the stale UUID. The next retry reads
-          // it back and SDK rejects again → this branch fires again → save retries.
-          // Eventually converges or the underlying I/O issue surfaces. Don't bail.
-          console.warn(`[agent] forkFrom.messageUuid clear: disk persist failed (next retry will re-read stale UUID and re-enter this recovery): ${(saveErr as Error)?.message ?? saveErr}`);
-        }
-        deleteCurrentSessionUuid(rejectedForkUuid);
-        recoveredInvalidResumeAnchors.push('fork');
-      }
-    }
-    const suppressRecoveredResumeAnchorError = shouldSuppressRecoveredResumeAnchorError({
-      errorMessage,
-      recoveredAnchors: recoveredInvalidResumeAnchors,
-    });
-
+    // An invalid exact boundary is a real operation failure. Keep the boundary
+    // for retry/reopen; dropping it would silently restore discarded context.
     // "No conversation found" recovery: our metadata has sessionRegistered=true but
     // the SDK session directory is gone (e.g., IM Bot restart after previous Sidecar
     // failed to start — proxy leak, network error — so the session was persisted to
     // im_state.json but the SDK conversation was never actually created).
     // Fix: switch to create mode. Don't return — let the error flow through to notify
     // IM/Desktop user. Pre-warm (scheduled here or in finally) will create a fresh session.
-    if (errorMessage.includes('No conversation found') && sessionRegistered) {
+    if (errorMessage.includes('No conversation found') && sessionRegistered
+      && !getCurrentProductSessionMetadata()?.sdkResumeSessionAt && !getCurrentProductSessionMetadata()?.forkFrom) {
       console.warn(`[agent] Session ${sessionId} not found by SDK, resetting sessionRegistered for fresh start`);
       sessionRegistered = false;
       if (!lifecycleState.preWarming) {
@@ -13897,9 +13567,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // during an active abort is by definition our doing, not a provider/infra
     // issue to surface. Error is still logged above (line 6611–6612) for
     // debugging, just not broadcast.
-    if (suppressRecoveredResumeAnchorError) {
-      console.log(`[agent] Suppressing recoverable SDK resumeSessionAt error after clearing ${recoveredInvalidResumeAnchors.join(',')} anchor(s); recovery pre-warm will retry with bare resume`);
-    } else if (!lifecycleState.preWarming && !lifecycleState.abortRequested) {
+    if (!lifecycleState.preWarming && !lifecycleState.abortRequested) {
       const completionTerminal = handleMessageError(errorMessage, sdkSubprocessDiagnostic?.imMessage);
       setSessionState('error');
       broadcast(

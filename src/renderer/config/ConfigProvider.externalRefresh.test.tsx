@@ -292,6 +292,17 @@ describe('ConfigProvider external config invalidation', () => {
     expect(JSON.parse(screen.getByTestId('snapshot').textContent ?? '{}')).toMatchObject({ error: null });
   });
 
+  it('keeps healthy projects visible when external identity maintenance fails', async () => {
+    render(<ConfigProvider><Probe /></ConfigProvider>);
+    await waitFor(() => expect(mocks.listeners.has('app:config-changed')).toBe(true));
+    await waitFor(() => expect(mocks.reconcileIdentities).toHaveBeenCalledTimes(1));
+    mocks.reconcileIdentities.mockRejectedValueOnce(new Error('Agent identity maintenance failed'));
+    mocks.projects = [project('still-readable', 'healthy', '/healthy')];
+    await act(async () => { mocks.listeners.get('app:config-changed')?.(); });
+    await waitFor(() => expect(screen.getByTestId('snapshot')).toHaveTextContent('still-readable'));
+    expect(JSON.parse(screen.getByTestId('snapshot').textContent ?? '{}')).toMatchObject({ error: null });
+  });
+
   it('reloads config, projects, providers, keys, and verify state from one app event', async () => {
     render(<ConfigProvider><Probe /></ConfigProvider>);
 

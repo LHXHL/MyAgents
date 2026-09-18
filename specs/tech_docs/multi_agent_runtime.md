@@ -32,9 +32,9 @@ Session identity、恢复与配置 snapshot 见 [`session_architecture.md`](sess
 - desktop、IM、Inbox 与 scheduled turn 的 admission；
 - stop by exact domain owner and queue id；
 - live state、stream replay、latest result、completion terminal 与 config snapshot 读取；
-- Rewind、Fork、desktop reset 与已证明的 surface migration；
+- Rewind、Fork、Retry、desktop reset 与已证明的 surface migration；
 - model、permission、reasoning、MCP、Agent、Plugin 与 interaction scenario 配置入口；
-- external-only 的 pre-warm、diagnostics、native compact 与 retry 能力检查。
+- external-only 的 pre-warm、diagnostics 与 native compact 能力检查。
 
 `product-session-binding.ts` 是 Product Session prepare/commit/rollback 的事务入口。adapter 只能在完成自身 Runtime 清理和绑定后提交产品 identity；SDK UUID、Codex thread id 等 native identity 不进入这里。
 
@@ -143,14 +143,15 @@ system 菜单只提供上述三项；历史 suggest 仍按只读恢复，并保�
 
 一个 Session Sidecar 最终只绑定一个 root thread。RPC response 和 notification 可乱序到达，turn owner 必须按 thread、turn 与 caller message identity 关联，不能仅凭“收到 completed”提交错误 turn。
 
-Codex Rewind/Fork 只在 runtime capability 和精确 root-turn anchor 同时可用时开放：
+Codex Rewind/Fork/Retry 由 external owner 在 mutation lease 内编排，依赖现有 native binding 与 Runtime branching 能力：
 
-- root `turn/start` 关联 Product user message id；
-- 成功 terminal 后持久化 native turn anchor；
-- Rewind 保留 Product Session id，截断 MyAgents transcript并切换 native branch；
-- Fork 创建新 Product Session 并复制截止边界的产品 transcript；
-- native branch 创建成功后，adapter 必须通过既有 stop 流程确认 source app-server 进程退出，才返回 replacement identity；`thread/unsubscribe` 仅解除事件订阅，不能证明 native writer 已释放（Runtime 可能延迟卸载）。源 Product Session 与 native identity 保留，下一轮沿既有 resume 路径启动；
-- process termination 不确定时不提交产品 mutation。
+- root `turn/start` 关联 Product user message id；成功 terminal 后持久化 native turn anchor；
+- Rewind 有目标 turn anchor 时请求 `before-turn`；目标失败而没有 anchor 时，空保留前缀使用 fresh thread，非空前缀必须以紧邻目标的 assistant anchor 请求 `through-turn`。没有精确边界就返回失败，不能因 turn 失败而假设它没有 native 输出或工具副作用；
+- Rewind 保留 Product Session id，提交产品截断和 replacement native binding；Fork 用 `through-turn` 建立新 Product Session；
+- 创建非空 native branch 后，Runtime adapter 必须确认 source app-server 退出才交出 replacement identity；`thread/unsubscribe` 只解除订阅，不能证明 native writer 已释放。Fork 的源 Session 保留原 native identity，下一轮仍可 resume；
+- fresh-thread 不需要先创建空 native 分支。若产品 Rewind 已提交，随后 source 停止或 Runtime restore 失败，返回已提交并需恢复的结果，不能伪报未执行；source 停止无法确认时由现有 Sidecar restart 路径接管。
+
+Retry 在同一 lease 内完成上述回溯与普通 desktop admission，不再只截断产品记录。停止 source 时保留期间新入队的请求；自身 replay 通过现有队列排序进入队首后才释放 lease。公共操作与响应契约见 [Session §4.4](session_architecture.md#44-rewindforkretry-与-reload-anchor)。
 
 不得用 experimental rollback、Renderer mirror 或猜测的 previous-turn id 替代 native history。产品 transcript 仍由 SessionStore 拥有，不从 Codex rollout 反向重建。
 
@@ -180,7 +181,7 @@ Gemini 模型与权限在 turn boundary 通过 native session RPC 应用；reaso
 | `operation-queue.ts` | message 与 config operation 的 FIFO、steer fallback |
 | `turn-lifecycle.ts` | promotion、running、terminal 与 finalization gate |
 | `runtime-config.ts` | desired/effective config 与 source filtering |
-| `transcript-persistence.ts` | user append、assistant commit、retry/rewind mutations |
+| `transcript-persistence.ts` | user append、assistant commit、cursor 与产品内容投影；联合历史 mutation 由 facade 调用 SessionStore |
 | `content-blocks.ts` | V1 内容块与共用展示 policy；V2 内容由 SessionStore projection 持有 |
 | `interactive.ts` | permissions、questions、IM/Inbox/watch association |
 | `extensions.ts` | Managed Codex extension projection |

@@ -113,6 +113,11 @@ function OpenProbe({ target, label }: { target: FileActionTarget; label: string 
   );
 }
 
+function RefreshProbe({ target }: { target: FileActionTarget }) {
+  const fileAction = useFileAction();
+  return <button onClick={() => fileAction?.refreshFileTarget(target)}>refresh target</button>;
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((done) => { resolve = done; });
@@ -182,7 +187,7 @@ describe('FileActionProvider verified target cache', () => {
     expect(screen.getByTestId('state')).toHaveTextContent('available');
 
     await act(async () => { await vi.advanceTimersByTimeAsync(29_990); });
-    expect(screen.getByTestId('state')).toHaveTextContent('pending');
+    expect(screen.getByTestId('state')).toHaveTextContent('available');
     await act(async () => { await vi.advanceTimersByTimeAsync(60); });
     expect(screen.getByTestId('state')).toHaveTextContent('unavailable');
     expect(mocks.checkLocalPaths).toHaveBeenCalledTimes(2);
@@ -204,6 +209,68 @@ describe('FileActionProvider verified target cache', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(60); });
     expect(mocks.checkPaths).toHaveBeenCalledTimes(2);
     expect(mocks.checkPaths.mock.calls.map(([, args]) => args.paths.length)).toEqual([200, 1]);
+  });
+
+  it('retains local display results through slow lease revalidation without repeated checks', async () => {
+    vi.useFakeTimers();
+    const path = '~/.claude/skills';
+    const available = { results: { [path]: { exists: true, type: 'dir' as const } } };
+    const pending = deferred<typeof available>();
+    mocks.checkLocalPaths.mockResolvedValueOnce(available).mockReturnValueOnce(pending.promise);
+    const tree = (tick: number) => (
+      <FileActionProvider workspacePath="/workspace">
+        <Probe target={{ scope: 'local', path }} /><span>{tick}</span>
+      </FileActionProvider>
+    );
+    const view = render(tree(0));
+    await act(async () => { await vi.advanceTimersByTimeAsync(60); });
+    expect(screen.getByTestId('state')).toHaveTextContent('available');
+    await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+    view.rerender(tree(1));
+    expect(screen.getByTestId('state')).toHaveTextContent('available');
+    expect(mocks.checkLocalPaths).toHaveBeenCalledTimes(2);
+    await act(async () => { pending.resolve(available); await pending.promise; });
+    expect(screen.getByTestId('state')).toHaveTextContent('available');
+    view.unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(mocks.checkLocalPaths).toHaveBeenCalledTimes(2);
+  });
+
+  it('retains the display during target refresh but rejects a deleted target on click', async () => {
+    vi.useFakeTimers();
+    const target: FileActionTarget = { scope: 'workspace', path: 'note.md' };
+    const available = { results: { 'note.md': { exists: true, type: 'file' as const } } };
+    const pending = deferred<typeof available>();
+    mocks.checkPaths.mockResolvedValueOnce(available).mockReturnValueOnce(pending.promise);
+    const preview = vi.fn();
+    render(
+      <FileActionProvider workspacePath="/workspace" onFilePreviewExternal={preview}>
+        <Probe target={target} /><RefreshProbe target={target} /><OpenProbe target={target} label="open note" />
+      </FileActionProvider>,
+    );
+    await act(async () => { await vi.advanceTimersByTimeAsync(60); });
+    fireEvent.click(screen.getByText('refresh target'));
+    await act(async () => { await vi.advanceTimersByTimeAsync(60); });
+    expect(screen.getByTestId('state')).toHaveTextContent('available');
+    mocks.checkPaths.mockResolvedValue({ results: { 'note.md': { exists: false, type: 'file' } } });
+    await act(async () => { fireEvent.click(screen.getByText('open note')); });
+    expect(screen.getByTestId('state')).toHaveTextContent('unavailable');
+    expect(preview).not.toHaveBeenCalled();
+    await act(async () => { pending.resolve(available); await pending.promise; });
+    expect(screen.getByTestId('state')).toHaveTextContent('unavailable');
+  });
+
+  it('does not retain a stale result when the completed refresh omits the target', async () => {
+    vi.useFakeTimers();
+    const target: FileActionTarget = { scope: 'workspace', path: 'note.md' };
+    mocks.checkPaths.mockResolvedValueOnce({ results: { 'note.md': { exists: true, type: 'file' } } })
+      .mockResolvedValueOnce({ results: {} });
+    render(<FileActionProvider workspacePath="/workspace"><Probe target={target} /><RefreshProbe target={target} /></FileActionProvider>);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60); });
+    fireEvent.click(screen.getByText('refresh target'));
+    expect(screen.getByTestId('state')).toHaveTextContent('available');
+    await act(async () => { await vi.advanceTimersByTimeAsync(60); });
+    expect(screen.getByTestId('state')).toHaveTextContent('pending');
   });
 
   it('ignores response keys that were not requested by the active batch', async () => {
@@ -317,7 +384,7 @@ describe('FileActionProvider verified target cache', () => {
         <Probe target={{ scope: 'workspace', path: 'docs/a.md' }} />
       </FileActionProvider>,
     );
-    expect(screen.getByTestId('state')).toHaveTextContent('pending');
+    expect(screen.getByTestId('state')).toHaveTextContent('available');
     await act(async () => { await vi.advanceTimersByTimeAsync(60); });
     expect(screen.getByTestId('state')).toHaveTextContent('unavailable');
   });

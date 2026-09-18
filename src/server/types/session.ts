@@ -69,11 +69,13 @@ export interface SessionMetadata {
     forkFrom?: {
         sourceSessionId: string;  // Source session's SDK session ID (for resume)
         // Fork point: assistant message's sdkUuid (for resumeSessionAt).
-        // Optional because the catch-block recovery at agent-session.ts:9737 clears it when
-        // the SDK rejects the anchor as stale ("No message found with message.uuid"), so the
-        // retry can degrade to "fork at source tail" instead of looping forever. See issue #220.
+        // Optional only for legacy records. New forks materialize native history before publication.
         messageUuid?: string;
     };
+    /** Product identity of the exact fork request; retained for response reconciliation. */
+    forkOrigin?: { sessionId: string; messageId: string };
+    /** Exact builtin continuation boundary until the next successful turn. */
+    sdkResumeSessionAt?: string;
     /** Which runtime created this session. Absent = 'builtin' (backward compatible) */
     runtime?: RuntimeType;
     /** Runtime source. Missing external Codex history is treated as 'system-cli'. */
@@ -180,8 +182,9 @@ export type PendingConversationMutation =
         kind: 'builtin-rewind';
         /** Effective Claude SDK binding before the rewind. Null means none was materialized. */
         sourceSdkSessionId: string | null;
-        /** Exact fresh Claude SDK identity that must be created or resumed after the rewind. */
+        /** Claude SDK identity to create or resume at the persisted boundary. */
         replacementSdkSessionId: string;
+        resumeSessionAt?: string;
         sourceMessageCount: number;
         targetMessageCount: number;
         transcript?: ConversationMutationTranscript;

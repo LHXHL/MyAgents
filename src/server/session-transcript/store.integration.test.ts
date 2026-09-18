@@ -194,12 +194,12 @@ describe('SessionStore V2 ownership and compatibility', () => {
     expect(active.writer.status.state).not.toBe('healthy');
   });
 
-  it('rejects incomplete live fork sources before publishing a target, while content keeps advancing', async () => {
+  it('rejects corrupt live fork sources before publishing a target, while content keeps advancing', async () => {
     const { metadata, active } = await create();
     expect(await active.writer.flush()).toBe(true);
     await store.releaseSessionTranscriptForBinding(metadata.id);
     const path = join(testState.home, '.myagents', 'sessions-v2', `${metadata.id}.jsonl`);
-    await rm(path);
+    await writeFile(path, 'invalid transcript header\n');
     const resumed = (await store.activateSessionTranscript(metadata.id))!;
     const { ProductTranscriptContent } = await import('./content');
     const content = new ProductTranscriptContent(resumed.writer);
@@ -277,23 +277,27 @@ describe('SessionStore V2 ownership and compatibility', () => {
     await expect(store.publishForkSession(target, rows, legacy.id)).rejects.toThrow('fresh V2');
   });
 
-  it('keeps timed-out fork IO hidden and cleans only its target after the physical operation settles', async () => {
+  it('waits for healthy slow fork IO and publishes the same target', async () => {
     await store.saveSessionMetadata({ id: 'source', agentDir: '/workspace', title: 'source', createdAt: 't', lastActiveAt: 't' });
     const { createSessionMetadata } = await import('../types/session');
     const target = createSessionMetadata('/workspace');
     let release!: () => void;
     let entered!: () => void;
     const started = new Promise<void>(resolve => { entered = resolve; });
-    testState.beforeTranscriptPublish = async () => { entered(); await new Promise<void>(resolve => { release = resolve; }); };
-    const publishing = store.publishForkSession(target, [{ id: 'u', role: 'user', content: 'question', timestamp: 't' }], 'source', 80);
-    const failed = expect(publishing).rejects.toThrow('in time');
-    await started;
-    await failed;
-    expect(store.isHistoryVisibleSession(store.getSessionMetadata(target.id)!)).toBe(false);
-    release();
-    await vi.waitFor(() => expect(store.getSessionMetadata(target.id)).toBeNull());
-    const files = await readdir(join(testState.home, '.myagents', 'sessions-v2'));
-    expect(files.some(file => file.includes(target.id))).toBe(false);
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    testState.beforeTranscriptPublish = async () => { entered(); await gate; };
+    let settled = false;
+    const publishing = store.publishForkSession(target, [{ id: 'u', role: 'user', content: 'question', timestamp: 't' }], 'source')
+      .finally(() => { settled = true; });
+    try {
+      await started;
+      await new Promise(resolve => setTimeout(resolve, 2100));
+      expect(settled).toBe(false);
+      expect(store.isHistoryVisibleSession(store.getSessionMetadata(target.id)!)).toBe(false);
+    } finally { release(); }
+    await publishing;
+    expect(store.isHistoryVisibleSession(store.getSessionMetadata(target.id)!)).toBe(true);
+    expect((await store.getSessionData(target.id))?.messages[0].content).toBe('question');
   });
 
   it('gives fork user and nested tool attachments independent target copies', async () => {

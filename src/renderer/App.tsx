@@ -3024,7 +3024,7 @@ export default function App() {
         return true;
       } catch (error) {
         console.error('[App] handleNewSession failed:', error);
-        return false;
+        throw error;
       }
     },
     [tabWorkspaceController],

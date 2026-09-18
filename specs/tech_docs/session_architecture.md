@@ -37,7 +37,7 @@ builtin 启动先解析持久化的 SDK candidate，再确认对应 SDK transcri
 2. probe 成功但 transcript 不存在时，以同一个 candidate fresh create；
 3. probe 出错时拒绝启动，不回退到 Product Session id 或随机新身份。
 
-SDK 的 `sessionId` 与 `resume` 互斥。`resumeSessionAt` 只是在已选定的 SDK history 中指定 Rewind 锚点，不证明该历史存在；锚点失效时可清除锚点并降级为普通 resume，但不能改变 Product Session identity。
+普通创建/恢复路径中，`sessionId` 与 `resume` 互斥；旧 lazy fork 兼容路径使用 `forkSession: true`，允许同时指定来源 `resume` 与目标 `sessionId`。`resumeSessionAt` 只指定已选定 SDK history 中的边界，不证明该历史存在。显式回溯与旧 lazy fork 按 [§4.4](#44-rewindforkretry-与-reload-anchor) 保留其来源和边界，不因启动失败改成 fresh create 或完整历史。
 
 ### 2.2 pending materialization
 
@@ -102,6 +102,8 @@ Product Session 的 prepare/commit/rollback 由 `product-session-binding.ts` 管
 
 ### 4.2 builtin
 
+SDK 合并后台 task-notification 时，前置通知可产生 `origin.kind=task-notification`、成功且 `num_turns=0` 的空 result 回执（0.3.276 实测不携带 `terminal_reason`）；它只确认通知被合并，不拥有产品 turn 的 terminal、usage、队列晋级或 rewind boundary。SDK iterator 在这些副作用前过滤该精确形态，其余真人、错误、取消和实际模型结果仍走原 turn owner。不能仅按空文本或零轮数忽略 result。
+
 `src/server/agent-session.ts` 是 builtin 的 public facade。可变状态按 owner 分布在 `src/server/builtin-session/`：
 
 | Owner | 职责 |
@@ -113,6 +115,8 @@ Product Session 的 prepare/commit/rollback 由 `product-session-binding.ts` 管
 | `transcript.ts` / `transcript-persistence.ts` | live transcript、cursor、SDK UUID tracking 与 durable mutations |
 
 `session-core/` 只放 pure policy。`session-engine/` 与 routes 只调用 public facade，不直接 import builtin owners。`abortPersistentSession()` 是语义化 abort 入口；terminal 成功必须由真实 SDK result policy 判定，不能把 idle 或未知 reason 当成功。
+
+Builtin 的 `messageGenerator()` 是常驻 generator。配置需要重建 Query 时，经既有 abort / restart 路径处理，并沿用 metadata 中的 SDK identity 与 resume 决策。Pre-warm 创建的真实 SDK session 会被后续复用，初始化不能只放在非 pre-warm 分支。
 
 每次 SDK Query launch 都有只属于该 Query object 的 identity authority。`system_init` 只有在 authority 未撤销、Product binding 未改变且 SDK Session id 与启动期望相同时，才可更新 metadata。旧 Query、旧 generation 或未知 identity 的迟到事件一律丢弃。
 
@@ -130,16 +134,27 @@ MCP pre-warm 是 soft readiness observation，不是 AI turn 的 admission autho
 
 外部 Runtime 的“进程 idle”不等于 turn 成功。Task、Goal、通知和 UI terminal 都必须读取 adapter 提供的真实 result classification。
 
-### 4.4 Rewind、Fork 与 reload anchor
+### 4.4 Rewind、Fork、Retry 与 reload anchor
 
-Rewind 是 transcript 与 Runtime history 的联合 mutation：
+三种操作统一进入 SessionEngine，adapter 拥有 native history 操作与执行顺序，SessionStore 拥有产品 transcript、metadata 和提交裁决。Renderer 不自行选择 Runtime 路径或补做重发。
 
-- Product Session identity 保持不变；
-- builtin 更新 SDK execution identity/anchor，并用命名的 transcript mutation 截断 MyAgents history；
-- Codex 使用已持久化的 root-turn anchor 与 thread identity 恢复可继续的历史；
-- 冷加载时的 `reloadAnchor` 只用于把 UI 恢复边界与 Runtime history 对齐，不成为新的 Session identity。
+| 操作 | Product Session | 执行语义 |
+|---|---|---|
+| Rewind | 保持原 identity | 产品历史截断到目标 user message 之前，native continuation 对齐同一边界 |
+| Fork | 创建新 identity | 先建立精确 native 分支，再发布完整产品历史与独立附件 |
+| Retry | 保持原 identity | 同一 mutation 内先 Rewind，再通过普通 desktop admission 接纳原输入；接纳成功不等于 turn 成功 |
 
-Fork 创建新的 Product Session，因此不继承 source 的 Agent origin、Goal、置顶或 Tag。Runtime-specific history clone/fork 由对应 adapter 负责。
+Builtin Rewind 以完整保留前缀末条消息的 native chain UUID 为边界，包括 user；非空前缀缺少锚点时在文件副作用前失败，只有空前缀才分配新的 SDK execution identity。边界通过既有 mutation intent 与 `sdkResumeSessionAt` metadata 一起提交，在新一轮成功后、terminal 配置重启前解除。锚点被拒绝时保留边界并报告失败，不能清除锚点、恢复更长历史或自动重放。文件恢复仍使用现有 Query 的 `rewindFiles`；standalone SDK fork 不携带 undo 历史，不能用它替换 builtin Rewind。旧记录的 `reloadAnchor` 只在加载时推导，优先级低于显式回溯边界；它不是另一份持久化状态或 Session identity。
+
+新 Fork 统一先实体化 native history，builtin 同时映射 SDK UUID；完整执行配置复用 `snapshotForForkedSession`，不手工挑字段。Fork 不继承 source 的 Agent origin、Goal、置顶或 Tag。旧 lazy fork 通过记录的 binding/source 解析真实 native 来源，允许尚未启动的旧分支继续 fork；新请求不再生成 lazy fork 或通过设置切回旧路径。prepared 发布、附件复制和清理见 [V2 transcript](session_transcript_v2.md#生命周期与显式操作)。
+
+Retry 经 `POST /chat/retry` 进入 adapter，`/chat/external-retry` 仅保留同一语义的路由别名。Builtin 使用现有串行 mutation scope：内部重发可以重入，外部接纳等待该 scope 结束。External 的 mutation lease 覆盖重发接纳；期间新入队的消息保留，自身 replay 排到队首后才释放 dispatch。V1 复用既有删除事件、V2 由 writer 发布删除操作，先同步移除旧消息再接收 replay。不支持精确 native history 操作的 Runtime 返回明确能力错误，不以只截断产品记录代替。Codex 的边界选择见 [Runtime 文档](multi_agent_runtime.md#53-codex)。
+
+Retry 的 `model` / `reasoningEffort` 是与普通发送一致的可选发送意图：UI 传当前选项，adapter 在同一 mutation scope 内将其带入重新入队。不能只传消息 ID 后依赖预热进程默认模型，也不能把 Runtime 展示用的 reported model 反写成配置 authority。未传选项的旧调用仍采用既有后端默认语义。
+
+响应必须区分会话提交、重发接纳和文件恢复结果：文件已恢复而记录修改失败不能说文件未变；会话已提交而 Runtime restore 失败不能说完全没执行。传输失败时前端回读权威历史，不用旧消息快照覆盖、不自动重发；明确的校验/能力拒绝直接展示原因。Fork 调用方用稳定的 `targetSessionId`，metadata 的 `forkOrigin` 关联来源；丢失响应后查询同一目标或重试同一身份，已发布目标返回已有结果。查询尚未确认目标只表示待确认，不证明此前失败；打开 Tab 失败也不删除已发布分支。这不承诺跨进程崩溃的 exactly-once 执行。
+
+Stop/Reset 的结果也由 SessionEngine 决定。Stop 的回执或超时不代表 turn 已结束；前端等待执行事件，缺失时读取 `/api/session-state`，并丢弃已被更新执行事件、恢复或连接代际取代的读结果。Reset 成功返回前由 adapter 通过既有 publisher 发布新 identity 的 desktop 元数据和当前执行配置快照，并等待 writer 的 `flushForMutation` 确认磁盘可见；保证尚未发送首条消息也能绑定 Task/Goal、重启后仍能恢复模型配置。前端只有在后端确认新 identity 后才采用新空会话；拒绝时保留历史，丢响应时回读真实 binding。App 打开新 Tab 失败须与「可在当前空会话 reset」区分，不能用失败触发破坏性的 fallback。
 
 ## 5. Goal 与跨 Session 协作
 
@@ -202,6 +217,8 @@ SSE transport 断开不代表用户取消，也不拥有 abort 权限。turn 继
 会改变当前 Session snapshot、队列边界或阻塞式交互 UI 的事件必须携带 `sessionId`，并通过 `sessionScopedEventGuards.ts` 与当前 Tab identity 比较。pending→real 等已被 lifecycle authority 确认的 identity upgrade 可以沿用 transport；普通 real→real 历史导航必须 new/jump/revive 到目标 Tab，不能把旧连接标签当业务 authority。
 
 Renderer 的 activity state 由 `TabProvider` 对当前 Session 的 REST snapshot 与合法 SSE terminal 投影。所有 complete/stopped/error、reset、connection replacement 和 unmount 路径都必须收敛 activity 与 pending UI；不要通过增加另一个 `isGenerating` truth source 修补遗漏。
+
+消息缺失、持久化与重放查 [V2 transcript](session_transcript_v2.md)；历史内容正确但滚动位置、窗口恢复或首帧呈现异常时，查 [Chat 滚动与窗口呈现](chat_scroll_presentation_lifecycle.md)。两者分别由历史与呈现 owner 裁决。
 
 ### 6.4 完成通知
 

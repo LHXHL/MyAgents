@@ -218,6 +218,7 @@ export async function truncateTranscriptPersistenceForRewind(
   replacement?: {
     sourceSdkSessionId: string | null;
     replacementSdkSessionId: string;
+    resumeSessionAt?: string;
   },
 ): Promise<void> {
   if (replacement) {

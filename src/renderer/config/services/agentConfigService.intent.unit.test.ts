@@ -68,6 +68,8 @@ import {
   patchAgentProjectConfig,
   setProactiveAgentEnabled,
   stopAgentChannelsForLifecycle,
+  startAndEnableAgentChannel,
+  stopAndDisableAgentChannel,
 } from './agentConfigService';
 
 function initialConfig(): AppConfig {
@@ -108,6 +110,20 @@ describe('Agent/Project configuration intent ownership', () => {
     state.concurrentAgentName = undefined;
     state.events = [];
     invokeMock.mockClear();
+  });
+
+  it('keeps a newer model when a stale toolbar edits only effort', async () => {
+    const { persistInputOptionChange } = await import('../../api/persistInputOption');
+    const stale = { model: 'model-a', permissionMode: 'full-auto' };
+    state.config.agents![0].runtimeConfig = { ...stale };
+    await patchAgentConfig('agent-1', { runtimeConfigPatch: { model: 'model-b' } });
+    await persistInputOptionChange({
+      workspaceId: 'project-1', agentId: 'agent-1', isExternalRuntime: true,
+      currentRuntimeConfig: stale, fields: { reasoningEffort: 'high' },
+      patchAgentConfig, patchAgentProjectConfig, patchProject: async () => {},
+    });
+    expect(state.config.agents![0].runtimeConfig).toEqual({ model: 'model-b', permissionMode: 'full-auto', reasoningEffort: 'high' });
+    expect(state.config.agents![0]).not.toHaveProperty('runtimeConfigPatch');
   });
 
   it('makes direct mirrored-field writers commit both authorities before live projection', async () => {
@@ -269,6 +285,24 @@ describe('Agent/Project configuration intent ownership', () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
+  it.each(['permission', 'effort'])('managed %s edit preserves latest model and provider defaults', async field => {
+    const { persistInputOptionChange } = await import('@/api/persistInputOption');
+    state.config.agents![0] = { ...state.config.agents![0]!, providerId: 'codex-sub', runtime: 'builtin', model: 'model-b', runtimeConfig: { reasoningEffort: 'medium', envPolicy: { proxy: 'terminal' } } };
+    const context = { kind: 'runtime-backed-provider' as const, providerId: 'codex-sub' as const, model: 'stale-model-a', runtime: 'codex' as const, runtimeSource: 'managed-provider' as const };
+    const writeSnapshot = vi.fn();
+    const result = await persistInputOptionChange({ workspaceId: 'project-1', agentId: 'agent-1', isExternalRuntime: true,
+      fields: { runtimeBackedProviderContext: context, ...(field === 'permission' ? { permissionMode: 'fullAgency' } : { reasoningEffort: 'high' }) },
+      patchProject: vi.fn(), patchAgentConfig, patchAgentProjectConfig, patchSnapshot: writeSnapshot,
+    });
+    expect(result.ok).toBe(true);
+    expect(writeSnapshot).toHaveBeenCalledWith(field === 'permission' ? { permissionMode: 'no-restrictions' } : { reasoningEffort: 'high' });
+    expect(state.config.agents![0]).toMatchObject({ providerId: 'codex-sub', runtime: 'builtin', model: 'model-b' });
+    expect(state.config.agents![0]!.runtimeConfig).not.toHaveProperty('model');
+    expect(state.config.agents![0]!.runtimeConfig).not.toHaveProperty('permissionMode');
+    if (field === 'permission') expect(state.config.agents![0]!.permissionMode).toBe('fullAgency');
+    else expect(state.config.agents![0]!.runtimeConfig?.reasoningEffort).toBe('high');
+  });
+
   it('restores only committed fields and preserves an unrelated concurrent Agent update', async () => {
     state.failProject = true;
     state.concurrentAgentName = 'Renamed elsewhere';
@@ -284,5 +318,17 @@ describe('Agent/Project configuration intent ownership', () => {
       name: 'Renamed elsewhere',
       model: 'claude-sonnet-4-6',
     });
+  });
+});
+
+describe('Channel lifecycle intent', () => {
+  it('sends one backend command and propagates failure while refreshing durable intent', async () => {
+    invokeMock.mockRejectedValueOnce(new Error('connection failed'));
+    await expect(startAndEnableAgentChannel('agent-1', 'channel-1')).rejects.toThrow('connection failed');
+    expect(invokeMock).toHaveBeenLastCalledWith('cmd_set_agent_channel_enabled', { agentId: 'agent-1', channelId: 'channel-1', enabled: true });
+    expect(state.events.at(-1)).toBe('config-notify');
+    invokeMock.mockRejectedValueOnce(new Error('stop failed'));
+    await expect(stopAndDisableAgentChannel('agent-1', 'channel-1')).rejects.toThrow('stop failed');
+    expect(invokeMock).toHaveBeenLastCalledWith('cmd_set_agent_channel_enabled', { agentId: 'agent-1', channelId: 'channel-1', enabled: false });
   });
 });
