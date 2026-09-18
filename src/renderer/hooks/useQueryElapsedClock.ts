@@ -29,8 +29,17 @@ export function useQueryElapsedClock(active: boolean, waitingForUser: boolean, s
 
   // No per-second TabProvider/Chat/list renders. The small status row owns its
   // sampling interval; the clock continues through hidden/unmounted views.
-  return useCallback(() => {
+  const getElapsedSeconds = useCallback(() => {
     const { elapsedMs, runningSince } = clock.current;
     return Math.floor(Math.max(0, elapsedMs + (runningSince === null ? 0 : performance.now() - runningSince)) / 1000);
   }, []);
+
+  // Queue promotion can begin a new query without an inactive Session edge.
+  // Reset only this clock, preserving its running/paused state and ownership.
+  const reset = useCallback(() => {
+    clock.current.elapsedMs = 0;
+    if (clock.current.runningSince !== null) clock.current.runningSince = performance.now();
+  }, []);
+
+  return { getElapsedSeconds, reset };
 }

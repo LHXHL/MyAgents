@@ -216,7 +216,7 @@ SSE transport 断开不代表用户取消，也不拥有 abort 权限。turn 继
 
 会改变当前 Session snapshot、队列边界或阻塞式交互 UI 的事件必须携带 `sessionId`，并通过 `sessionScopedEventGuards.ts` 与当前 Tab identity 比较。pending→real 等已被 lifecycle authority 确认的 identity upgrade 可以沿用 transport；普通 real→real 历史导航必须 new/jump/revive 到目标 Tab，不能把旧连接标签当业务 authority。
 
-Renderer 的 activity state 由 `TabProvider` 对当前 Session 的 REST snapshot 与合法 SSE terminal 投影。所有 complete/stopped/error、reset、connection replacement 和 unmount 路径都必须收敛 activity 与 pending UI；不要通过增加另一个 `isGenerating` truth source 修补遗漏。
+Renderer 的 execution activity 由 `TabProvider` / Companion 对当前 Session 的 REST snapshot 与 `chat:status` 投影。`chat:message-complete/stopped/error` 只结束一轮的消息展示，不能把整个 Session 改为空闲：Builtin 有排队工作时持续 running，不会重复广播相同状态。消息归档只清 streaming 引用；backend idle/error、Session reset 或 replacement 才清 execution activity。不要通过增加另一个 `isGenerating` truth source 或延时隐藏状态错位。
 
 消息缺失、持久化与重放查 [V2 transcript](session_transcript_v2.md)；历史内容正确但滚动位置、窗口恢复或首帧呈现异常时，查 [Chat 滚动与窗口呈现](chat_scroll_presentation_lifecycle.md)。两者分别由历史与呈现 owner 裁决。
 

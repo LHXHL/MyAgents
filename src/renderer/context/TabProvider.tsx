@@ -923,7 +923,7 @@ export default function TabProvider({
     const [pendingAskUserQuestion, setPendingAskUserQuestion] = useState<AskUserQuestionRequest | null>(null);
     const [pendingExitPlanMode, setPendingExitPlanMode] = useState<ExitPlanModeRequest | null>(null);
     const [pendingEnterPlanMode, setPendingEnterPlanMode] = useState<EnterPlanModeRequest | null>(null);
-    const getQueryElapsedSeconds = useQueryElapsedClock(
+    const { getElapsedSeconds: getQueryElapsedSeconds, reset: resetQueryElapsedClock } = useQueryElapsedClock(
         isLoading || classifySessionActivity(sessionState) === 'active',
         Boolean(pendingPermission || pendingAskUserQuestion || (pendingExitPlanMode && !pendingExitPlanMode.resolved)),
         currentSessionId,
@@ -1091,23 +1091,21 @@ export default function TabProvider({
     // Used to prevent loadSession from running during pending→real session ID upgrade.
     const isSessionActiveRef = useRef(false);
 
-    /**
-     * Clear all session-active state. Called when the session finishes, errors, or resets.
-     *
-     * WHY THIS EXISTS (pit-of-success):
-     * isStreamingRef ("streaming message exists in React") and isSessionActiveRef ("backend is
-     * processing") have identical clear-time but different set-time. isStreamingRef is set by the
-     * first message-chunk (via flushSync), while isSessionActiveRef is set by chat:status or the
-     * REST live-session snapshot (before any chunks). They MUST be cleared together — if one is
-     * forgotten, either loadSession runs during active sessions (disrupts streaming) or loadSession
-     * is permanently blocked (stale ref).
-     * A single clearSessionActive() makes it impossible to forget.
-     *
-     * If you add a new "session active" ref in the future, add its cleanup HERE.
-     */
+    // Only a backend idle/error snapshot or Session reset ends execution activity.
+    // Finishing one displayed message must not clear it: queued work can keep
+    // the Session running without another chat:status transition.
     const clearSessionActive = useCallback(() => {
         isStreamingRef.current = false;
         isSessionActiveRef.current = false;
+    }, []);
+
+    // A turn receipt acknowledges the local stop request, but queued work may
+    // keep execution running. Restore an actionable Stop instead of leaving the
+    // optimistic "stopping" UI latched until a deduplicated status arrives.
+    const settleTurnActivity = useCallback(() => {
+        const active = isSessionActiveRef.current;
+        setIsLoading(active);
+        setSessionState(previous => previous === 'stopping' ? (active ? 'running' : 'idle') : previous);
     }, []);
 
     // Ref for stop timeout cleanup
@@ -1793,7 +1791,7 @@ export default function TabProvider({
         // when React has not rendered their changes yet.
         setStreamingMessage(prev => {
             if (!prev) {
-                clearSessionActive();
+                isStreamingRef.current = false;
                 streamingMessageRef.current = null;
                 return null;
             }
@@ -1809,11 +1807,11 @@ export default function TabProvider({
                 seenIdsRef.current.add(finalMsg.id);
                 return upsertMessageById(prevHistory, finalMsg);
             });
-            clearSessionActive();
+            isStreamingRef.current = false;
             streamingMessageRef.current = null;
             return null;
         });
-    }, [flushPendingTextNow, flushAllPendingToolDeltas, clearSessionActive, setStreamingMessage, setHistoryMessages]);
+    }, [flushPendingTextNow, flushAllPendingToolDeltas, setStreamingMessage, setHistoryMessages]);
 
     // Called at the START of every event that can begin a NEW assistant message
     // (message-chunk / thinking-start / tool-use-start / server-tool-use-start) when no
@@ -2380,7 +2378,7 @@ export default function TabProvider({
                         });
                     });
                     // Set AFTER flushSync: if beginFreshStreamIfNeeded finalized a residual message,
-                    // its finalize updater calls clearSessionActive() (→ isStreamingRef=false) and is
+                    // its finalize updater clears isStreamingRef and is
                     // flushed synchronously inside the flushSync — setting the flag before would be
                     // clobbered back to false, making the next chunk spawn a second message.
                     isStreamingRef.current = true;
@@ -2922,10 +2920,10 @@ export default function TabProvider({
                     // (queued by React batching) to see false and create a new message instead
                     // of appending, losing the accumulated content.
                     moveStreamingToHistory('completed', completionPatch);
-                    // Finalize the message in the same synchronous commit as the loading-state
-                    // cleanup so ultra-short one-chunk responses do not disappear between batches.
-                    setIsLoading(false);
-                    setSessionState('idle');  // Reset session state to idle
+                    // A turn terminal is not a Session terminal. Builtin keeps running
+                    // across queued work and deduplicates unchanged chat:status events.
+                    // Clear only optimistic loading when backend activity has ended.
+                    settleTurnActivity();
                     setSystemStatus(null);  // Clear system status (e.g., 'compacting') when message completes
                     clearRuntimePlanTodos();
                     // Do NOT clear agentError here — chat:agent-error is only emitted for terminal,
@@ -3068,8 +3066,7 @@ export default function TabProvider({
                 flushSync(() => {
                     // isStreamingRef.current set inside moveStreamingToHistory's updater
                     moveStreamingToHistory('stopped');
-                    setIsLoading(false);
-                    setSessionState('idle');  // Reset session state to idle
+                    settleTurnActivity();
                     setSystemStatus(null);  // Clear system status when user stops response
                     clearRuntimePlanTodos();
                 });
@@ -3097,8 +3094,7 @@ export default function TabProvider({
                     if (errorMessage) {
                         setAgentError(errorMessage);
                     }
-                    setIsLoading(false);
-                    setSessionState('idle');  // Reset session state to idle on error
+                    settleTurnActivity();
                     setSystemStatus(null);  // Clear system status on error
                     clearRuntimePlanTodos();
                 });
@@ -3857,6 +3853,12 @@ export default function TabProvider({
                     if (isNewSessionRef.current && isCurrentSessionQueueStart) {
                         isNewSessionRef.current = false;
                     }
+                    // A normal queue promotion starts a new query while Session
+                    // activity can remain continuously running. Realtime steering
+                    // stays inside the current query and keeps its elapsed time.
+                    if (!payload.midTurnBreak && !startedQueueIdsRef.current.has(payload.queueId)) {
+                        resetQueryElapsedClock();
+                    }
                     // Track started IDs to prevent sendMessage .then() from re-adding
                     startedQueueIdsRef.current.add(payload.queueId);
                     console.log(`[TabProvider] queue:started queueId=${payload.queueId} midTurnBreak=${!!payload.midTurnBreak} streaming=${isStreamingRef.current}`);
@@ -4044,7 +4046,7 @@ export default function TabProvider({
                 }
             }
         }
-    }, [appendLog, appendUnifiedLog, tabId, moveStreamingToHistory, beginFreshStreamIfNeeded, setStreamingMessage, postJson, clearInteractiveState, flushPendingTextNow, startRevealLoop, flushAllPendingToolDeltas, flushPendingToolInputDelta, flushPendingToolResultDelta, flushPendingSubagentToolInputDelta, flushPendingSubagentToolResultDelta, clearSessionActive, clearRuntimePlanTodos, resetPaginationState, trackTabEvent, trackSessionNewForBirth, shouldAcceptInteractiveEvent, isPersistedRestoreInFlight, restoredPersistedSessionId, projectAcceptedFirstUserTitle, consumeTranscriptSaveStatus, setHistoryMessages, updateDisplayedMessages, flushTranscriptToolEvents]);
+    }, [settleTurnActivity, resetQueryElapsedClock, appendLog, appendUnifiedLog, tabId, moveStreamingToHistory, beginFreshStreamIfNeeded, setStreamingMessage, postJson, clearInteractiveState, flushPendingTextNow, startRevealLoop, flushAllPendingToolDeltas, flushPendingToolInputDelta, flushPendingToolResultDelta, flushPendingSubagentToolInputDelta, flushPendingSubagentToolResultDelta, clearSessionActive, clearRuntimePlanTodos, resetPaginationState, trackTabEvent, trackSessionNewForBirth, shouldAcceptInteractiveEvent, isPersistedRestoreInFlight, restoredPersistedSessionId, projectAcceptedFirstUserTitle, consumeTranscriptSaveStatus, setHistoryMessages, updateDisplayedMessages, flushTranscriptToolEvents]);
 
     const handleSseEvent = useCallback((
         eventName: string,
@@ -4608,6 +4610,7 @@ export default function TabProvider({
                 }>('/api/session-state');
                 if (!isCurrent() || state.sessionId !== targetId) return;
                 setSessionState(state.sessionState);
+                isSessionActiveRef.current = state.isBusy;
                 setIsLoading(state.isBusy);
                 if (!state.isBusy && state.completionTerminal) {
                     const status = state.completionTerminal.status;
