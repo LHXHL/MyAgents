@@ -122,6 +122,8 @@ Builtin 的 `messageGenerator()` 是常驻 generator。配置需要重建 Query 
 
 desktop 连续发送支持 realtime 与 turn-boundary 两种策略，但两者仍共享同一个 Runtime queue owner。Stop 中止当前 turn，不凭空取消 SDK 已接纳但尚未消费的项；queue receipt、replay 或 assistant-start 才能确认后续项的真实状态。
 
+Builtin 中断请求由 `builtin-session/interrupt.ts` 在既有 Session 内按请求和 Query 归属管理。同一目标尚未 terminal 时复用其停止操作；目标 terminal 一旦被 turn owner 接管，就同步释放中断状态，不等待控制回执。迟到回执只可核对原请求、原 Query 的精确排队项，不能关闭后续 Query、清掉新请求或把后续 turn 当作取消。真实 SDK 错误仍按错误结算；只有尚未 terminal 的目标才适用 5 秒回执超时与 ACK 后 3 秒强制关闭。
+
 SDK background Agent/Bash 与父 turn 共用同一个 Query 和 Sidecar。自动 deferred restart 必须等待该 Query 的 background-task registry 清空；显式 Stop、Reset、Session switch、应用退出和真实 Query crash 仍可终止。
 
 MCP pre-warm 是 soft readiness observation，不是 AI turn 的 admission authority。未 connected、读取失败或观察超时不能拒绝业务 turn；真正的 MCP surface replacement 则是 Query-generation correctness fence，必须在 turn boundary 串行应用。

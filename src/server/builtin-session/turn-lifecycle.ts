@@ -374,9 +374,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     }
     void lastTurnEndPersist.catch(() => undefined);
     notifyCurrentTurnTerminalOutcome(terminalOutcome, lastTurnEndPersist);
-    if (terminalKind === 'cancelled') {
-      deps.claimPostInterruptResultTerminal();
-    }
+    deps.claimPostInterruptResultTerminal();
     return confirmedQueueTurnKeepStreaming;
   };
 
@@ -467,6 +465,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     }
     setCurrentTurnImTerminalEmitted(false);
     deps.clearTrace(errorTrace);
+    deps.claimPostInterruptResultTerminal();
     return completionTerminal;
   };
 
@@ -489,7 +488,9 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       isError: resultMessage.is_error,
       terminalReason: resultMessage.terminal_reason,
     });
-    const isAbortResult = terminalDisposition === 'stopped' || deps.getIsInterruptingResponse();
+    // An explicit SDK failure remains a failure even when Stop raced it.
+    const isAbortResult = terminalDisposition === 'stopped'
+      || (deps.getIsInterruptingResponse() && terminalDisposition !== 'error');
     const isTerminalFailure = terminalDisposition === 'error' && !isAbortResult;
     let terminalRecoveryReason: 'image' | 'stale' | undefined;
 
@@ -731,7 +732,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
           scenarioType: scenario.type,
           desktopSurface: scenario.type === 'desktop' ? scenario.surface : undefined,
         });
-      if (terminalDisposition === 'complete' && !deps.getIsInterruptingResponse()) {
+      if (terminalDisposition === 'complete' && !isAbortResult) {
         track('ai_turn_complete', {
           source: turnAnalyticsSource,
           ...originAnalyticsFields(turnOrigin),
@@ -796,7 +797,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
         isAbortResult ? 'cancelled' : 'complete',
       );
 
-      if (terminalDisposition === 'complete' && !deps.getIsInterruptingResponse()
+      if (terminalDisposition === 'complete' && !isAbortResult
         && shouldTitleCompletedTurn(resultMessage.is_error === true, resultMessage.terminal_reason)) {
         const titleSid = deps.getSessionId();
         const titleModel = deps.getCurrentModel();

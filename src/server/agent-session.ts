@@ -1,3 +1,4 @@
+import { createBuiltinInterruptController } from './builtin-session/interrupt';
 import { configureBuiltinTranscriptBinding } from './builtin-session/transcript';
 import { randomUUID } from 'crypto';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
@@ -40,7 +41,6 @@ import { summarizeSensitiveSdkMessage } from './utils/sdk-log-summary';
 import { buildForkUuidRemap, remapStoredSdkUuids } from './utils/fork-remap';
 import {
   decideInFlightCancelSettlement,
-  reconcileInterruptReceipt,
   terminalEventMatchesInFlight,
   type InFlightAsyncCancelResult,
 } from './utils/inflight-terminal';
@@ -345,7 +345,6 @@ import {
   getCommittingTurnAdmissionQueueId,
   getInFlightMetadata,
   getInFlightQueueId,
-  getInterruptingInFlightQueueId,
   isPromotedItemCanceled,
   getMessageQueue,
   getPendingMidTurnQueue,
@@ -848,7 +847,6 @@ async function awaitSessionTermination(timeoutMs = 10_000, label = ''): Promise<
   });
 }
 
-let isInterruptingResponse = false;
 let isStreamingMessage = false;
 // Every `system` subtype defined in SDK 0.3.261 (sdk.d.ts) — handled here or
 // deliberately untouched. A subtype outside this set means a NEWER SDK started
@@ -876,30 +874,35 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'conversation_reset',
 ]);
 const warnedUnknownMessageTypes = new Set<string>();
-type PostInterruptTurnEndOutcome = 'result-claimed' | 'session-ended';
-// Durable one-shot handoff between the SDK result owner and the interrupt
-// caller. The outcome is stored even when result arrives before interrupt()
-// installs its waiter, closing the former resolve-before-listen race.
-let postInterruptTurnEndOutcome: PostInterruptTurnEndOutcome | null = null;
-let postInterruptTurnEndResolve: ((outcome: PostInterruptTurnEndOutcome) => void) | null = null;
-// Public SDK interrupt receipt for the current cooperative interrupt only.
-// `null` means the CLI did not advertise/return a receipt. Queue ids are the
-// same UUIDs stamped by messageGenerator, so no parallel identity map exists.
-let interruptSurvivingQueueIds: ReadonlySet<string> | null = null;
-
-function settlePostInterruptTurnEnd(outcome: PostInterruptTurnEndOutcome): void {
-  if (!isInterruptingResponse) return;
-  const settled = postInterruptTurnEndOutcome ?? outcome;
-  postInterruptTurnEndOutcome = settled;
-  if (postInterruptTurnEndResolve) {
-    const resolve = postInterruptTurnEndResolve;
-    postInterruptTurnEndResolve = null;
-    resolve(settled);
-  }
-}
+const builtinInterrupt = createBuiltinInterruptController({
+  getQuery: () => lifecycleState.query,
+  getInFlightQueueId,
+  setInterruptingQueueId: setInterruptingInFlightQueueId,
+  dropCancelledInFlight: () => dropInFlightQueueItem(
+    'late interrupt receipt confirms queued item was cancelled', 'cancelled',
+  ),
+  scheduleDrain: () => schedulePostTerminalQueueDrain('stopped'),
+  forceClose: (query, phase) => {
+    if (lifecycleState.query !== query) return;
+    const detail = phase === 'receipt' ? 'interrupt unresponsive'
+      : inFlightToolCount > 0
+        ? `hung MCP tool likely (${inFlightToolCount} tool_use awaiting result)`
+        : 'model still generating (no tool in flight)';
+    console.warn(`[agent] Force-closing SDK session: ${detail}`);
+    // Rescue before close: SDK stdin dies with the exact captured subprocess.
+    rescuePendingToQueue();
+    const session = lifecycleState.query;
+    setQuerySession(null);
+    try { session.close(); } catch { /* already dead */ }
+  },
+  finishStopped: () => {
+    const terminal = handleMessageStopped();
+    broadcast('chat:message-stopped', withSessionCompletionTerminal(null, terminal));
+  },
+});
 
 function didInFlightSurviveInterrupt(queueId: string): boolean | null {
-  return interruptSurvivingQueueIds?.has(queueId) ?? null;
+  return builtinInterrupt.didInFlightSurvive(queueId);
 }
 // Count of MCP tool_use blocks emitted by the model in the current turn that
 // haven't seen their matching tool_result yet. Read by the post-interrupt
@@ -934,7 +937,7 @@ let watchdogFired = false;
 // Issue #289 — when set to the in-flight queueId, a force-send ("立即发送") is in progress
 // for that item: it interrupts the current turn precisely so the SDK drains + processes the
 // queued command, so the graceful-interrupt `result` MUST SURFACE the item (queue:started)
-// instead of dropping it (queue:cancelled). Distinct from `isInterruptingResponse` (which is
+// instead of dropping it (queue:cancelled). Distinct from `builtinInterrupt.isInterrupting()` (which is
 // also true for a plain stop). Cleared whenever the in-flight slot is cleared.
 // Natural `result` is not a consumption ack. When it leaves an in-flight
 // queue item waiting, only the next assistant-start for that exact queueId may
@@ -1174,7 +1177,7 @@ async function surfaceInFlightQueueItem(
 function terminalEventAppliesToCurrentInFlight(): boolean {
   return terminalEventMatchesInFlight({
     currentQueueId: getInFlightQueueId(),
-    isInterrupting: isInterruptingResponse,
+    isInterrupting: builtinInterrupt.isInterrupting(),
     interruptTargetQueueId: queueState.interruptingInFlightQueueId,
   });
 }
@@ -7174,12 +7177,12 @@ const builtinTurnLifecycle = createBuiltinTurnLifecycle({
   getCurrentScenario: () => currentScenario,
   getProviderEnv: () => configState.currentProviderEnv,
   getCurrentModel: () => configState.currentModel,
-  getIsInterruptingResponse: () => isInterruptingResponse,
+  getIsInterruptingResponse: () => builtinInterrupt.isInterrupting(),
   didInFlightSurviveInterrupt,
   setStreamingMessage: (value) => { isStreamingMessage = value; },
   resetInFlightToolCount: () => { inFlightToolCount = 0; },
   resetWatchdogFired: () => { watchdogFired = false; },
-  claimPostInterruptResultTerminal: () => settlePostInterruptTurnEnd('result-claimed'),
+  claimPostInterruptResultTerminal: () => builtinInterrupt.settleTerminal(lifecycleState.query, 'result-claimed'),
   terminalEventAppliesToCurrentInFlight,
   dropInFlightQueueItem,
   preserveInFlightAfterTerminalBoundary,
@@ -8941,7 +8944,7 @@ export async function enqueueUserMessage(
   const MAX_QUEUE_SIZE = 10;
   const initialAdmissionBusy = isTurnInFlight()
     || lifecycleState.abortRequested
-    || isInterruptingResponse
+    || builtinInterrupt.isInterrupting()
     || providerRetryPending
     || hasQueuedOrInFlightWork()
     || queueState.promotedItemInFlight;
@@ -9080,7 +9083,7 @@ export async function enqueueUserMessage(
   // the first admitted direct turn as busy even before generator yield.
   const isSessionBusy = isTurnInFlight()
     || lifecycleState.abortRequested
-    || isInterruptingResponse
+    || builtinInterrupt.isInterrupting()
     || providerRetryPending
     || hasQueuedOrInFlightWork(queueId)
     || queueState.promotedItemInFlight;
@@ -9975,8 +9978,8 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
     return false;
   }
 
-  if (isInterruptingResponse) {
-    return true;
+  if (builtinInterrupt.isInterrupting()) {
+    return builtinInterrupt.interrupt();
   }
 
   // Pattern 1 follow-up: abort the turn-scoped controller FIRST so any
@@ -9993,124 +9996,7 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
     return true;
   }
 
-  setInterruptingInFlightQueueId(getInFlightQueueId());
-  const interruptTargetQueueId = getInterruptingInFlightQueueId();
-  isInterruptingResponse = true;
-  interruptSurvivingQueueIds = null;
-  postInterruptTurnEndOutcome = null;
-  postInterruptTurnEndResolve = null;
-  try {
-    // Step 1: Try graceful interrupt (5 seconds).
-    // interrupt() is cooperative — the SDK subprocess must be responsive to process it.
-    // If a MCP tool is hung (e.g., Playwright screenshot on heavy page), the subprocess
-    // may be blocked on I/O and unable to handle the interrupt signal.
-    const interruptQuery = lifecycleState.query;
-    const interruptPromise = reconcileInterruptReceipt({
-      requestReceipt: () => interruptQuery.interrupt(),
-      // A timed-out request can still resolve after this interrupt owner has
-      // finished or the Query has been replaced. Ignore that stale receipt.
-      isCurrentOwner: () => isInterruptingResponse && lifecycleState.query === interruptQuery,
-      getPostInterruptOutcome: () => postInterruptTurnEndOutcome,
-      interruptTargetQueueId,
-      getCurrentQueueId: getInFlightQueueId,
-      onReceipt: (stillQueued) => {
-        interruptSurvivingQueueIds = stillQueued;
-        console.log(`[agent] Interrupt receipt: stillQueued=${stillQueued.size}`);
-      },
-      onUnavailable: () => {
-        console.log('[agent] Interrupt receipt unavailable (older CLI capability)');
-      },
-      dropExactInFlight: () => {
-        dropInFlightQueueItem(
-          'late interrupt receipt confirms queued item was cancelled',
-          'cancelled',
-        );
-      },
-      scheduleDrain: () => schedulePostTerminalQueueDrain('stopped'),
-    });
-    const timeoutPromise = new Promise<void>((_, reject) => {
-      setTimeout(() => reject(new Error('Interrupt timeout')), 5000);
-    });
-
-    let interrupted = false;
-    try {
-      await Promise.race([interruptPromise, timeoutPromise]);
-      interrupted = true;
-    } catch (error) {
-      console.error('[agent] Interrupt failed or timed out (5s):', error);
-    }
-
-    // Step 2: If interrupt failed, force-close immediately.
-    // close() is the SDK's nuclear option: kills subprocess + MCP transports synchronously.
-    // Session history is preserved (JSONL persisted), next message triggers fresh subprocess
-    // with resumeSessionId (no data loss, no amnesia). (#60)
-    if (!interrupted && lifecycleState.query) {
-      console.warn('[agent] Force-closing SDK session (interrupt unresponsive)');
-      // Rescue pending items BEFORE close: SDK stdin buffer dies with the subprocess.
-      // Must run before close() so the recovery session re-delivers them.
-      rescuePendingToQueue();
-      const session = lifecycleState.query;
-      setQuerySession(null);
-      try { session.close(); } catch { /* already dead */ }
-    }
-
-    // Step 3: If interrupt "succeeded" (SDK ACKed), verify the turn actually completed.
-    // interrupt() resolving only means the SDK received the signal — it does NOT guarantee
-    // the subprocess stopped processing. If an MCP tool is hung (e.g., reading a large
-    // screenshot), the SDK subprocess remains blocked on client.callTool() with a ~28-hour
-    // timeout. The for-await loop gets no more events, stdin transcriptState.messages are swallowed, and
-    // the user sees "no response" until the 10-minute watchdog fires.
-    //
-    // Fix: wait up to 3 seconds for the for-await loop to receive a `result` message
-    // (turn completion). If it doesn't arrive, force-close. The diagnostic message
-    // distinguishes two phases the model could be in when the user pressed Stop:
-    //   - inFlightToolCount > 0  → an MCP tool_use is awaiting tool_result, very
-    //     likely the SDK subprocess is blocked on client.callTool() (hung tool).
-    //   - inFlightToolCount === 0 → no tool in flight; the model is mid-generation
-    //     (thinking / text streaming) and 3s wasn't enough for the SDK to wind
-    //     down. NOT a hung tool — calling it one in the log misleads anyone
-    //     grepping for tool issues. This was the misdiagnosis observed on
-    //     2026-05-07 when stop was pressed during a thinking block.
-    if (interrupted && lifecycleState.query && !postInterruptTurnEndOutcome) {
-      const turnEnded = new Promise<PostInterruptTurnEndOutcome>(resolve => {
-        postInterruptTurnEndResolve = resolve;
-      });
-      const postInterruptTimeout = new Promise<PostInterruptTurnEndOutcome>((_, reject) =>
-        setTimeout(() => reject(new Error('Post-interrupt turn completion timeout')), 3000)
-      );
-      try {
-        postInterruptTurnEndOutcome = await Promise.race([turnEnded, postInterruptTimeout]);
-      } catch {
-        postInterruptTurnEndResolve = null;
-        if (lifecycleState.query) {
-          const phase = inFlightToolCount > 0
-            ? `hung MCP tool likely (${inFlightToolCount} tool_use awaiting result)`
-            : 'model still generating (no tool in flight)';
-          console.warn(`[agent] Force-closing: turn did not complete 3s after interrupt — ${phase}`);
-          // Rescue pending items BEFORE close: see rescuePendingToQueue() doc.
-          rescuePendingToQueue();
-          const session = lifecycleState.query;
-          setQuerySession(null);
-          try { session.close(); } catch { /* already dead */ }
-        }
-      }
-    }
-
-    // A graceful SDK result synchronously claims and consumes the current
-    // output owner. Only the no-result/session-ended path may claim stopped
-    // here; calling both terminalizers would pop the following IM request.
-    if (postInterruptTurnEndOutcome !== 'result-claimed') {
-      const completionTerminal = handleMessageStopped();
-      broadcast('chat:message-stopped', withSessionCompletionTerminal(null, completionTerminal));
-    }
-    return true;
-  } finally {
-    isInterruptingResponse = false;
-    interruptSurvivingQueueIds = null;
-    setInterruptingInFlightQueueId(null);
-    postInterruptTurnEndResolve = null;
-    postInterruptTurnEndOutcome = null;
-  }
+  return builtinInterrupt.interrupt();
 }
 
 /**
@@ -13583,7 +13469,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     const wasPreWarming = lifecycleState.preWarming;
     if (!wasPreWarming && isCurrentQueryAuthority(activeQueryAuthority)
       && getBuiltinProductContent()?.currentTurn?.status === 'running'
-      && !lifecycleState.abortRequested && !isInterruptingResponse) {
+      && !lifecycleState.abortRequested && !builtinInterrupt.isInterrupting()) {
       const error = 'AI runtime ended before completing this turn';
       const terminal = handleMessageError(error);
       broadcast('chat:message-error', withSessionCompletionTerminal(error, terminal));
@@ -13594,7 +13480,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
 
     // Resolve any pending post-interrupt wait (session ended without a result,
     // so the interrupt caller remains the terminal claimant).
-    settlePostInterruptTurnEnd('session-ended');
+    builtinInterrupt.settleTerminal(activeQuery, 'session-ended');
 
     // 确保 generator 退出（防止 streamInput 永远阻塞）
     if (lifecycleState.messageResolver) {
@@ -14232,7 +14118,7 @@ async function* messageGenerator(preparedProvider: PreparedProvider): AsyncGener
     }
     if (
       lifecycleState.abortRequested
-      || isInterruptingResponse
+      || builtinInterrupt.isInterrupting()
       || !isStreamingMessage
       || getCurrentTurnSourceItem() !== item
     ) {
@@ -14263,7 +14149,7 @@ async function* messageGenerator(preparedProvider: PreparedProvider): AsyncGener
         await rollbackFailedBuiltinUserSurface(failedSurface.message.id);
         if (
           lifecycleState.abortRequested
-          || isInterruptingResponse
+          || builtinInterrupt.isInterrupting()
           || !isStreamingMessage
           || getCurrentTurnSourceItem() !== item
         ) {
@@ -14313,7 +14199,7 @@ async function* messageGenerator(preparedProvider: PreparedProvider): AsyncGener
     }
     if (
       lifecycleState.abortRequested
-      || isInterruptingResponse
+      || builtinInterrupt.isInterrupting()
       || !isStreamingMessage
       || getCurrentTurnSourceItem() !== item
     ) {
