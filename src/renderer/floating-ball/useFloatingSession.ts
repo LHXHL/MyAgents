@@ -1047,8 +1047,9 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                     break;
                 }
                 case 'chat:message-complete': {
+                    // Turn presentation can finish while queued Session work is
+                    // still running. chat:status / REST owns the busy projection.
                     finalizeStream();
-                    setBusy(false);
                     // 终态清掉一切 pending 表单（backstop：正常路径下用户回应后已清，
                     // 这里兜住中止 / 异常路径，防陈旧卡片）。
                     setPermReqs([]);
@@ -1067,7 +1068,6 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                                 ? String((data as { message?: unknown }).message ?? '')
                                 : fbText('replyFailed');
                     finalizeStream('failed');
-                    setBusy(false);
                     setPermReqs([]);
                     setAskReq(null);
                     setPlanReq(null);
@@ -1076,7 +1076,6 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 }
                 case 'chat:message-stopped': {
                     finalizeStream('stopped');
-                    setBusy(false);
                     setPermReqs([]);
                     setAskReq(null);
                     setPlanReq(null);
@@ -1084,7 +1083,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 }
                 case 'chat:status': {
                     const payload = data as { sessionState?: string } | null;
-                    if (payload?.sessionState === 'idle') {
+                    if (payload?.sessionState === 'idle' || payload?.sessionState === 'error') {
                         setBusy(false);
                     } else if (payload?.sessionState === 'running' || payload?.sessionState === 'starting') {
                         setBusy(true);
@@ -1118,7 +1117,6 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                     // 球退回 idle（review W2）。
                     const msg = typeof data === 'string' ? data : fbText('agentErrorOpenMainWindow');
                     finalizeStream('failed');
-                    setBusy(false);
                     // 会话失效自愈：SDK 在当前工作区找不到这条对话（典型：persisted
                     // sid 的 SDK 数据被清理）。直接轮换新 session，别让用户卡死在
                     // 一条永远发不出去的会话里。

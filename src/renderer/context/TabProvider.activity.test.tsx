@@ -292,12 +292,14 @@ describe('Tab-owned query clock integration', () => {
     now = 92000;
     expect(tab!.getQueryElapsedSeconds()).toBe(12);
 
+    emit('chat:status', { sessionState: 'idle' });
     emit('chat:message-complete', {});
     expect(tab!.getQueryElapsedSeconds()).toBe(0);
     now = 100000;
     emit('chat:status', { sessionState: 'running' });
     now = 103000;
     expect(tab!.getQueryElapsedSeconds()).toBe(3);
+    emit('chat:status', { sessionState: 'error' });
     emit('chat:message-error', { message: 'test terminal' });
     expect(tab!.getQueryElapsedSeconds()).toBe(0);
   });
@@ -404,6 +406,132 @@ describe('TabProvider session activity ownership', () => {
     tauriHarness.proxyFetch.mockRejectedValue(new Error('Unexpected proxyFetch call'));
     tauriHarness.isTauri = false;
     tauriHarness.listeners.clear();
+  });
+
+  it.each(['chat:message-complete', 'chat:message-stopped', 'chat:message-error'])(
+    'keeps queued execution active across %s until backend idle', async terminal => {
+      const sessionId = 'pending-queued-activity';
+      render(<TabProvider tabId="queued-activity" agentDir="/tmp/workspace" sessionId={sessionId} claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+      await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+      emit('chat:status', { sessionState: 'running' });
+      emit('chat:message-chunk', 'first reply');
+      emit('queue:added', { sessionId, queueId: 'next', messageText: 'next query' });
+      emit(terminal, { message: 'first turn ended' });
+      expect(readActivity()).toMatchObject({ isLoading: true, sessionState: 'running' });
+      emit('queue:started', { sessionId, queueId: 'next', userMessage: {
+        id: 'next-user', role: 'user', content: 'next query', timestamp: new Date(0).toISOString(),
+      } });
+      expect(screen.getByTestId('history-content').textContent).toContain('next query');
+      expect(readQueueIds()).toEqual([]);
+      // No repeated running status and no assistant output: Stop must stay available.
+      expect(readActivity()).toMatchObject({ isLoading: true, sessionState: 'running' });
+      emit('chat:message-chunk', 'next reply');
+      emit('chat:status', { sessionState: 'idle' });
+      emit('chat:message-complete', {});
+      expect(readActivity()).toMatchObject({ isLoading: false, sessionState: 'idle' });
+    },
+  );
+
+  it.each([false, true])('keeps V2 queued execution active when the previous terminal is delayed (mid-turn: %s)', async midTurnBreak => {
+    const sessionId = 'pending-delayed-terminal';
+    render(<TabProvider tabId="delayed-terminal" agentDir="/tmp/workspace" sessionId={sessionId} claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:init', { sessionId, transcriptFormat: 2, sessionState: 'running' });
+    const userMessage = { id: 'next-user', role: 'user', content: 'next query', turnId: 'next-turn', transcriptState: 'complete', timestamp: new Date(0).toISOString() };
+    emit('chat:transcript-operation', { sessionId, operation: { kind: 'message-create', message: userMessage } });
+    emit('queue:started', { sessionId, queueId: 'next', midTurnBreak, userMessage });
+    emit('chat:message-complete', { completionTerminal: { sessionId, turnId: 'previous-turn', status: 'complete' } });
+    expect(readActivity()).toMatchObject({ isLoading: true, sessionState: 'running' });
+    expect(screen.getByTestId('history-content').textContent).toContain('next query');
+    emit('chat:status', { sessionState: 'idle' });
+    expect(readActivity()).toMatchObject({ isLoading: false, sessionState: 'idle' });
+  });
+
+  it('uses stop recovery activity even when the terminal SSE arrives later', async () => {
+    const sessionId = 'pending-stop-recovery-activity';
+    tauriHarness.proxyFetch.mockImplementation(async (url: string) => new Response(JSON.stringify(
+      url.endsWith('/api/session-state')
+        ? { sessionId, sessionState: 'idle', isBusy: false, completionTerminal: { status: 'stopped' } }
+        : { success: true, alreadyStopped: true },
+    )));
+    render(<TabProvider tabId="stop-recovery-activity" agentDir="/tmp/workspace" sessionId={sessionId} claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:status', { sessionState: 'running' });
+    fireEvent.click(screen.getByRole('button', { name: 'stop response' }));
+    await waitFor(() => expect(readActivity()).toMatchObject({ isLoading: false, sessionState: 'idle' }));
+    emit('chat:message-stopped', {});
+    expect(readActivity()).toMatchObject({ isLoading: false, sessionState: 'idle' });
+  });
+
+  it('follows external runtime idle then running transitions before a queued user appears', async () => {
+    const sessionId = 'pending-external-queued-activity';
+    render(<TabProvider tabId="external-queued-activity" agentDir="/tmp/workspace" sessionId={sessionId} claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:status', { sessionState: 'running' });
+    emit('chat:message-complete', {});
+    emit('chat:status', { sessionState: 'idle' });
+    expect(readActivity()).toMatchObject({ isLoading: false, sessionState: 'idle' });
+    emit('chat:status', { sessionState: 'running' });
+    emit('queue:started', { sessionId, queueId: 'next', userMessage: {
+      id: 'next-user', role: 'user', content: 'next query', timestamp: new Date(0).toISOString(),
+    } });
+    expect(readActivity()).toMatchObject({ isLoading: true, sessionState: 'running' });
+    emit('chat:status', { sessionState: 'error' });
+    emit('chat:message-error', { message: 'terminal failure' });
+    expect(readActivity()).toMatchObject({ isLoading: false, sessionState: 'error' });
+  });
+
+  it.each(['receipt-first', 'terminal-first'] as const)('unlocks Stop for queued continuation after %s stop acknowledgement', async order => {
+    const sessionId = 'pending-stop-queued-continuation';
+    let finish!: (response: Response) => void;
+    tauriHarness.proxyFetch.mockImplementation(() => new Promise<Response>(resolve => { finish = resolve; }));
+    render(<TabProvider tabId="stop-queued-continuation" agentDir="/tmp/workspace" sessionId={sessionId} claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:status', { sessionState: 'running' });
+    fireEvent.click(screen.getByRole('button', { name: 'stop response' }));
+    await waitFor(() => expect(finish).toBeTypeOf('function'));
+    expect(readActivity().sessionState).toBe('stopping');
+    if (order === 'receipt-first') await act(async () => finish(new Response('{"success":true}')));
+    emit('chat:message-stopped', {});
+    emit('queue:started', { sessionId, queueId: 'survivor', userMessage: {
+      id: 'survivor-user', role: 'user', content: 'surviving input', timestamp: new Date(0).toISOString(),
+    } });
+    expect(readActivity()).toMatchObject({ isLoading: true, sessionState: 'running' });
+    if (order === 'terminal-first') await act(async () => finish(new Response('{"success":true}')));
+    expect(readActivity()).toMatchObject({ isLoading: true, sessionState: 'running' });
+    emit('chat:status', { sessionState: 'idle' });
+    emit('chat:message-complete', {});
+  });
+
+  it('resets query time at queue promotion without resetting execution activity', async () => {
+    let now = 0;
+    const time = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    let tab!: ReturnType<typeof useTabState>;
+    function ClockProbe() {
+      const value = useTabState();
+      useEffect(() => { tab = value; }, [value]);
+      return <Probe />;
+    }
+    try {
+      const sessionId = 'pending-queued-clock';
+      render(<TabProvider tabId="queued-clock" agentDir="/tmp/workspace" sessionId={sessionId} claimSessionOpeningTransition={allowSessionOpening}><ClockProbe /></TabProvider>);
+      await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+      emit('chat:status', { sessionState: 'running' });
+      now = 30000;
+      expect(tab.getQueryElapsedSeconds()).toBe(30);
+      emit('chat:message-complete', {});
+      emit('queue:started', { sessionId, queueId: 'next' });
+      expect(tab.getQueryElapsedSeconds()).toBe(0);
+      expect(readActivity()).toMatchObject({ isLoading: true, sessionState: 'running' });
+      now = 32000;
+      expect(tab.getQueryElapsedSeconds()).toBe(2);
+      // A delayed old terminal and a realtime steer must not restart this query.
+      emit('chat:message-complete', {});
+      emit('queue:started', { sessionId, queueId: 'steer', midTurnBreak: true });
+      expect(tab.getQueryElapsedSeconds()).toBe(2);
+      emit('chat:status', { sessionState: 'idle' });
+      expect(tab.getQueryElapsedSeconds()).toBe(0);
+    } finally { time.mockRestore(); }
   });
 
   it.each(['echo-first', 'canonical-first', 'late-format'] as const)(

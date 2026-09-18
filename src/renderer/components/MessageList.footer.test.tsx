@@ -64,7 +64,7 @@ function ClockOwner({
   mounted?: boolean;
   waiting?: boolean;
 }) {
-  const getQueryElapsedSeconds = useQueryElapsedClock(props.isLoading, waiting, props.sessionId ?? null);
+  const { getElapsedSeconds: getQueryElapsedSeconds } = useQueryElapsedClock(props.isLoading, waiting, props.sessionId ?? null);
   return mounted ? <MessageList {...props} getQueryElapsedSeconds={getQueryElapsedSeconds} /> : null;
 }
 

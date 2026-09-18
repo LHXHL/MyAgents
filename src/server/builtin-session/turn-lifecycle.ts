@@ -193,7 +193,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     deps.clearCronTaskContext();
   };
 
-  const finishTerminalCleanup = (terminal: 'complete' | 'stopped' | 'error'): void => {
+  const finishTerminalCleanup = (terminal: 'complete' | 'stopped' | 'error', continuingTurn = false): void => {
     deps.schedulePostTerminalQueueDrain(terminal);
     const sid = deps.getSessionId();
     if (sid) {
@@ -204,14 +204,14 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       }
       deps.clearAmbientTurnId(sid);
     }
-    if (!deps.hasQueuedOrInFlightWork()) {
+    if (!continuingTurn && !deps.hasQueuedOrInFlightWork()) {
       deps.setSessionState('idle');
     }
   };
 
-  const commonTerminalCleanup = (terminal: 'complete' | 'stopped' | 'error'): void => {
+  const commonTerminalCleanup = (terminal: 'complete' | 'stopped' | 'error', continuingTurn = false): void => {
     clearTerminalStreamState();
-    finishTerminalCleanup(terminal);
+    finishTerminalCleanup(terminal, continuingTurn);
   };
 
   const terminalActivityAt = (outcome: ReturnType<typeof snapshotCurrentTurnTerminalOutcome>): string | undefined => {
@@ -267,6 +267,12 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
         if (inFlightAction === 'drop') {
           deps.dropInFlightQueueItem('graceful interrupt result before SDK consumption confirmation', 'cancelled');
         } else if (inFlightAction === 'surface' && meta) {
+          // Surfacing transfers the last queue slot into accepted execution.
+          // V2 does this synchronously (including deferred-restart checks), so
+          // retain activity BEFORE the slot disappears. The old turn's cleanup
+          // must not publish idle merely because no queued work remains.
+          confirmedQueueTurnKeepStreaming = true;
+          deps.setStreamingMessage(true);
           void deps.surfaceInFlightQueueItem(stale, meta, {
             sdkUuid: stale,
             midTurnBreak: true,
@@ -275,7 +281,6 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
           }).catch((error) => {
             console.error(`[agent] Failed to surface in-flight queue item ${stale} at result boundary:`, error);
           });
-          confirmedQueueTurnKeepStreaming = true;
         } else if (inFlightAction === 'await-replay') {
           deps.preserveInFlightAfterTerminalBoundary(
             deps.getIsInterruptingResponse()
@@ -325,11 +330,9 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     // message that the persistent SDK has already started behind this turn.
     commonTerminalCleanup(
       terminalKind === 'cancelled' ? 'stopped' : (terminalError ? 'error' : 'complete'),
+      confirmedQueueTurnKeepStreaming,
     );
     setCurrentTurnImTerminalEmitted(false);
-    if (confirmedQueueTurnKeepStreaming) {
-      deps.setStreamingMessage(true);
-    }
 
     const persistTrace = deps.snapshotTrace();
     const persistTraceStarted = deps.nowMs();
@@ -371,9 +374,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     }
     void lastTurnEndPersist.catch(() => undefined);
     notifyCurrentTurnTerminalOutcome(terminalOutcome, lastTurnEndPersist);
-    if (terminalKind === 'cancelled') {
-      deps.claimPostInterruptResultTerminal();
-    }
+    deps.claimPostInterruptResultTerminal();
     return confirmedQueueTurnKeepStreaming;
   };
 
@@ -464,6 +465,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     }
     setCurrentTurnImTerminalEmitted(false);
     deps.clearTrace(errorTrace);
+    deps.claimPostInterruptResultTerminal();
     return completionTerminal;
   };
 
@@ -486,7 +488,9 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       isError: resultMessage.is_error,
       terminalReason: resultMessage.terminal_reason,
     });
-    const isAbortResult = terminalDisposition === 'stopped' || deps.getIsInterruptingResponse();
+    // An explicit SDK failure remains a failure even when Stop raced it.
+    const isAbortResult = terminalDisposition === 'stopped'
+      || (deps.getIsInterruptingResponse() && terminalDisposition !== 'error');
     const isTerminalFailure = terminalDisposition === 'error' && !isAbortResult;
     let terminalRecoveryReason: 'image' | 'stale' | undefined;
 
@@ -728,7 +732,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
           scenarioType: scenario.type,
           desktopSurface: scenario.type === 'desktop' ? scenario.surface : undefined,
         });
-      if (terminalDisposition === 'complete' && !deps.getIsInterruptingResponse()) {
+      if (terminalDisposition === 'complete' && !isAbortResult) {
         track('ai_turn_complete', {
           source: turnAnalyticsSource,
           ...originAnalyticsFields(turnOrigin),
@@ -793,7 +797,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
         isAbortResult ? 'cancelled' : 'complete',
       );
 
-      if (terminalDisposition === 'complete' && !deps.getIsInterruptingResponse()
+      if (terminalDisposition === 'complete' && !isAbortResult
         && shouldTitleCompletedTurn(resultMessage.is_error === true, resultMessage.terminal_reason)) {
         const titleSid = deps.getSessionId();
         const titleModel = deps.getCurrentModel();

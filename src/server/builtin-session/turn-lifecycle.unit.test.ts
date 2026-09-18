@@ -19,6 +19,8 @@ import {
   waitForCurrentTurnTerminalObserver,
 } from './turn';
 import {
+  clearInFlightSlot,
+  hasQueuedOrInFlightWork,
   resetQueueForTest,
   setForceSurfaceInFlightId,
   setInFlightQueueItem,
@@ -922,6 +924,54 @@ describe('turn-lifecycle owner', () => {
       expect.anything(),
     );
   });
+
+  it.each(['sync-v2', 'deferred-v1'] as const)(
+    'keeps accepted force execution active after its queue slot is cleared (%s)', async surfaceTiming => {
+      let interrupting = true;
+      let streaming = true;
+      let streamingAtSurface = false;
+      const surfaceReady = deferred();
+      const surface = vi.fn(async () => {
+        if (surfaceTiming === 'deferred-v1') await surfaceReady.promise;
+        // Real surface clears the last queue slot, then checks whether a
+        // deferred config restart is safe. The accepted turn must own activity
+        // already, before either operation can observe an empty queue.
+        streamingAtSurface = streaming;
+        clearInFlightSlot();
+      });
+      const { deps } = makeDeps({
+        getIsInterruptingResponse: () => interrupting,
+        hasQueuedOrInFlightWork,
+        setStreamingMessage: vi.fn(value => { streaming = value; }),
+        surfaceInFlightQueueItem: surface,
+      });
+      const lifecycle = createBuiltinTurnLifecycle(deps);
+      setInFlightQueueItem('forced-last-item', {
+        messageText: 'run now', channelDelivery: NO_CHANNEL_DELIVERY,
+      });
+      setForceSurfaceInFlightId('forced-last-item');
+      setInterruptingInFlightQueueId('forced-last-item');
+      appendMessage({ id: '1', role: 'assistant', content: 'partial', timestamp: 't1' });
+      markCurrentTurnHasOutput();
+
+      lifecycle.handleSdkResult(makeResult({ terminal_reason: 'aborted_streaming' }));
+      surfaceReady.resolve();
+      await surface.mock.results[0].value;
+      await lifecycle.getLastTurnEndPersist();
+      expect(hasQueuedOrInFlightWork()).toBe(false);
+      expect(streaming).toBe(true);
+      expect(deps.setSessionState).not.toHaveBeenCalledWith('idle');
+      expect(streamingAtSurface).toBe(true);
+      expect(deps.broadcast).not.toHaveBeenCalledWith('chat:message-stopped', expect.anything());
+
+      // No sticky busy state: the accepted turn's own terminal releases it.
+      interrupting = false;
+      lifecycle.handleSdkResult(makeResult({ result: 'next turn done' }));
+      await lifecycle.getLastTurnEndPersist();
+      expect(streaming).toBe(false);
+      expect(deps.setSessionState).toHaveBeenLastCalledWith('idle');
+    },
+  );
 
   it('still broadcasts message-stopped on a plain stop without force-surface', async () => {
     const { deps } = makeDeps({

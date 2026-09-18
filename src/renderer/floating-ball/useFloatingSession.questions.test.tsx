@@ -67,6 +67,28 @@ describe('Companion question receipts', () => {
       throw new Error(`Unexpected route: ${path}`);
     });
   });
+  it.each(['chat:message-complete', 'chat:message-stopped', 'chat:message-error', 'chat:agent-error'])(
+    'keeps accepted queued replies busy across %s until backend idle', async terminal => {
+      const { result } = renderHook(() => useFloatingSession({ current: 'pin' }));
+      await waitFor(() => expect(result.current.ready).toBe(true));
+      const event = (name: string, data: unknown) => act(() => harness.handler!(name, data, {
+        sessionId: 'companion-test', connectionGeneration: 1,
+      }));
+      event('chat:status', { sessionState: 'running' });
+      event('chat:message-chunk', 'first reply');
+      event(terminal, { message: 'first turn ended' });
+      expect(result.current.busy).toBe(true);
+      event('queue:started', { sessionId: 'companion-test', queueId: 'next', userMessage: {
+        id: 'reply', role: 'user', content: 'yes', timestamp: new Date(0).toISOString(),
+        asyncQuestionReply: { questionId: 'q1', questionIndex: 0 },
+      } });
+      expect(result.current.messages.some(message => message.id === 'reply')).toBe(true);
+      expect(result.current.busy).toBe(true);
+      event('chat:status', { sessionState: 'idle' });
+      expect(result.current.busy).toBe(false);
+    },
+  );
+
   it.each(['reject', 'false'] as const)('propagates %s and retains the question for retry', async (mode) => {
     const modeRef = { current: 'pin' as const };
     const { result } = renderHook(() => useFloatingSession(modeRef));

@@ -787,3 +787,94 @@ it('keeps plugin MCP enablement separate from user MCP selection without grantin
   expect(await pre({ ...base, permission_mode: 'plan', mcp_server: mcpServer }, undefined, { signal }))
     .toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } });
 });
+
+it.each(['stop', 'success', 'error'] as const)('keeps successor %s independent of a delayed force-send receipt through the real SDK loop', async nextOutcome => {
+  const frames: unknown[] = [];
+  let wake: (() => void) | undefined;
+  let closed = false;
+  let resolveClosed!: () => void;
+  const closedPromise = new Promise<void>(resolve => { resolveClosed = resolve; });
+  const received: unknown[] = [];
+  let releaseReceipt!: (receipt: { still_queued: string[] }) => void;
+  const delayedReceipt = new Promise<{ still_queued: string[] }>(resolve => { releaseReceipt = resolve; });
+  const interrupt = vi.fn(() => delayedReceipt);
+  const close = vi.fn(() => { closed = true; resolveClosed(); wake?.(); });
+  releaseWrite = () => { releaseReceipt({ still_queued: [] }); close(); };
+  const emit = (...messages: unknown[]) => { frames.push(...messages); wake?.(); };
+  state.query.mockImplementation((args: { prompt: AsyncIterable<unknown>; options: { sessionId: string } }) => {
+    const prompt = args.prompt[Symbol.asyncIterator]();
+    // Transport consumes input independently of delivering result/control frames,
+    // like the SDK streaming protocol. No external provider or credentials.
+    void (async () => {
+      while (!closed) {
+        const next = await Promise.race([prompt.next(), closedPromise.then(() => ({ done: true as const, value: undefined }))]);
+        if (next.done) break;
+        received.push(next.value);
+      }
+    })();
+    emit({ type: 'system', subtype: 'init', session_id: args.options.sessionId, uuid: randomUUID(),
+      model: 'test-model', tools: [], mcp_servers: [] });
+    return {
+      async next() {
+        while (!closed && !frames.length) await new Promise<void>(resolve => { wake = resolve; });
+        return closed ? { done: true, value: undefined } : { done: false, value: frames.shift() };
+      },
+      [Symbol.asyncIterator]() { return this; },
+      initializationResult: async () => ({ commands: [] }), interrupt, close,
+      mcpServerStatus: async () => [], setModel: async () => undefined,
+      setPermissionMode: async () => undefined, setMcpServers: async () => undefined,
+    };
+  });
+  const workspace = join(state.home, 'workspace');
+  await mkdir(workspace);
+  const metadata = await store.createSession(workspace, { runtime: 'builtin' });
+  await agent.initializeAgent(workspace, null, metadata.id, { preWarmDisabled: true });
+  const send = (text: string) => agent.enqueueUserMessage(text, [], undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined,
+    { channelDelivery: NO_CHANNEL_DELIVERY, queueResponseModeOverride: 'realtime' });
+  const assistant = (text: string) => ({ type: 'assistant', session_id: metadata.id,
+    parent_tool_use_id: null, uuid: randomUUID(), message: { id: randomUUID(), role: 'assistant', model: 'test-model',
+      content: [{ type: 'text', text }], usage: { input_tokens: 1, output_tokens: 1 } } });
+  const result = (reason: string, error = false) => ({ type: 'result', session_id: metadata.id, uuid: randomUUID(),
+    subtype: error ? 'error_during_execution' : 'success', is_error: error, terminal_reason: reason,
+    ...(error ? { errors: ['synthetic provider failure'] } : { result: 'answer' }),
+    duration_ms: 1, duration_api_ms: 1, num_turns: 1, total_cost_usd: 0,
+    usage: { input_tokens: 1, output_tokens: 1 }, permission_denials: [] });
+  await send('A');
+  await vi.waitFor(() => expect(received).toHaveLength(1));
+  emit(assistant('A partial'));
+  await vi.waitFor(() => expect(agent.getLastBuiltinAssistantText()).toBe('A partial'));
+  const b = await send('B');
+  await vi.waitFor(() => expect(received).toHaveLength(2));
+  const force = agent.forceExecuteQueueItem(b.queueId!);
+  expect(interrupt).toHaveBeenCalledTimes(1);
+  emit(result('aborted_streaming'));
+  await vi.waitFor(() => expect(state.events.some(([event, data]) => event === 'queue:started'
+    && (data as { queueId?: string }).queueId === b.queueId)).toBe(true));
+  await force;
+  expect(agent.isSessionBusy()).toBe(true);
+  const eventsAfterA = state.events.length;
+  emit(assistant('B answer'));
+  await vi.waitFor(() => expect(agent.getLastBuiltinAssistantText()).toBe('B answer'));
+  if (nextOutcome === 'stop') {
+    const stop = agent.interruptCurrentResponse();
+    expect(interrupt).toHaveBeenCalledTimes(2);
+    emit(result('aborted_streaming'));
+    await stop;
+  } else {
+    emit(result(nextOutcome === 'error' ? 'error_during_execution' : 'completed', nextOutcome === 'error'));
+  }
+  await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
+  await store.drainSessionTranscripts();
+  const bEvents = state.events.slice(eventsAfterA);
+  if (nextOutcome === 'error') {
+    expect(bEvents.some(([event]) => event === 'chat:agent-error')).toBe(true);
+  }
+  if (nextOutcome !== 'stop') {
+    expect(bEvents.some(([event]) => event === 'chat:message-stopped')).toBe(false);
+  }
+  expect(agent.getBuiltinSessionCompletionTerminal()?.status).toBe(nextOutcome === 'stop' ? 'stopped' : nextOutcome === 'error' ? 'error' : 'complete');
+  releaseReceipt({ still_queued: [] });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(close).not.toHaveBeenCalled();
+});
