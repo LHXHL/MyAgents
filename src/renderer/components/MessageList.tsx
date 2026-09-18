@@ -69,8 +69,8 @@ interface MessageListProps {
   pendingPermission?: PermissionRequest | null;
   onPermissionDecision?: (requestId: string, decision: 'deny' | 'allow_once' | 'always_allow') => void | Promise<void>;
   pendingAskUserQuestion?: AskUserQuestionRequest | null;
-  onAskUserQuestionSubmit?: (requestId: string, answers: Record<string, string>) => void;
-  onAskUserQuestionCancel?: (requestId: string) => void;
+  onAskUserQuestionSubmit?: (requestId: string, answers: Record<string, string>) => Promise<void>;
+  onAskUserQuestionCancel?: (requestId: string) => Promise<void>;
   pendingExitPlanMode?: ExitPlanModeRequest | null;
   onExitPlanModeApprove?: () => void;
   onExitPlanModeReject?: (feedback?: string) => void;
@@ -221,8 +221,8 @@ type FooterProps = {
   pendingPermission?: PermissionRequest | null;
   onPermissionDecision?: (requestId: string, decision: 'deny' | 'allow_once' | 'always_allow') => void | Promise<void>;
   pendingAskUserQuestion?: AskUserQuestionRequest | null;
-  onAskUserQuestionSubmit?: (requestId: string, answers: Record<string, string>) => void;
-  onAskUserQuestionCancel?: (requestId: string) => void;
+  onAskUserQuestionSubmit?: (requestId: string, answers: Record<string, string>) => Promise<void>;
+  onAskUserQuestionCancel?: (requestId: string) => Promise<void>;
   showStatus: boolean;
   statusMessage: string;
   getQueryElapsedSeconds: () => number;

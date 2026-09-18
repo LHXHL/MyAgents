@@ -332,6 +332,15 @@ export function useCronTask(options: UseCronTaskOptions) {
     }
   }, [workspacePath, sessionId, setState, stateRef]);
 
+  // A late read belongs to the captured Task and Session, not whichever UI is current.
+  const ownsTaskSnapshot = useCallback((task: CronTask, ownerSessionId: string) => (
+    mountedRef.current
+    && optionsRef.current.sessionId === ownerSessionId
+    // Match Rust get_active_task_for_session: IM history can use the internal ID.
+    && (task.sessionId === ownerSessionId || task.internalSessionId === ownerSessionId)
+    && stateRef.current.task?.id === task.id
+  ), [stateRef]);
+
   // Helper to calculate task duration in minutes
   const getTaskDurationMinutes = (task: CronTask): number => {
     if (!task.createdAt) return 0;
@@ -354,6 +363,7 @@ export function useCronTask(options: UseCronTaskOptions) {
   // Returns the original prompt so it can be restored to the input field
   const stop = useCallback(async (): Promise<CronTaskStopResult | null> => {
     const currentTask = stateRef.current.task;
+    const ownerSessionId = optionsRef.current.sessionId;
     const currentConfig = stateRef.current.config;
     if (!currentTask) return null;
 
@@ -368,8 +378,9 @@ export function useCronTask(options: UseCronTaskOptions) {
         execution_count: stoppedTask.executionCount ?? currentTask.executionCount ?? 0,
         duration_minutes: getTaskDurationMinutes(currentTask),
       });
-      // Rust scheduler will detect status change and stop
-      setState(initialState);
+      // An earlier terminal event may already have cleared this projection.
+      // Preserve the successful receipt; only its UI mutation needs ownership.
+      if (ownsTaskSnapshot(currentTask, ownerSessionId)) setState(initialState);
       console.log('[useCronTask] Task stopped:', stoppedTask.id);
       return {
         task: stoppedTask,
@@ -379,15 +390,17 @@ export function useCronTask(options: UseCronTaskOptions) {
       console.error('[useCronTask] Failed to stop task:', error);
       return null;
     }
-  }, [setState, stateRef]);
+  }, [setState, stateRef, ownsTaskSnapshot]);
 
   // Refresh task state from server
   const refresh = useCallback(async () => {
     const currentTask = stateRef.current.task;
+    const ownerSessionId = optionsRef.current.sessionId;
     if (!currentTask) return;
 
     try {
       const task = await getCronTask(currentTask.id);
+      if (!ownsTaskSnapshot(currentTask, ownerSessionId)) return;
       setState(prev => stateWithTaskSnapshot(prev, task));
 
       // Check if task is stopped (end conditions met or AI exit)
@@ -400,12 +413,13 @@ export function useCronTask(options: UseCronTaskOptions) {
     } catch (error) {
       console.error('[useCronTask] Failed to refresh task:', error);
     }
-  }, [setState, stateRef]);
+  }, [setState, stateRef, ownsTaskSnapshot]);
 
   // Handle Rust scheduler execution complete event
   // This is emitted after Rust directly executes via Sidecar (not via frontend)
   const handleExecutionComplete = useCallback(async (payload: { taskId: string; success: boolean; executionCount: number }) => {
     const currentTask = stateRef.current.task;
+    const ownerSessionId = optionsRef.current.sessionId;
 
     // Debug logging (only in debug mode to avoid production noise)
     if (isDebugMode()) {
@@ -437,7 +451,7 @@ export function useCronTask(options: UseCronTaskOptions) {
     try {
       const task = await getCronTask(currentTask.id);
       // Check if component is still mounted before updating state
-      if (!mountedRef.current) return;
+      if (!ownsTaskSnapshot(currentTask, ownerSessionId)) return;
       setState(prev => stateWithTaskSnapshot(prev, task, {
         isExecuting: false,
         executionNumber: undefined,
@@ -464,31 +478,32 @@ export function useCronTask(options: UseCronTaskOptions) {
       }
     } catch (error) {
       console.error('[useCronTask] Failed to refresh task after execution:', error);
-      if (!mountedRef.current) return;
+      if (!ownsTaskSnapshot(currentTask, ownerSessionId)) return;
       setState(prev => (
         prev.task?.id === payload.taskId
           ? { ...prev, isExecuting: false, executionNumber: undefined }
           : prev
       ));
     }
-  }, [setState, stateRef]);
+  }, [setState, stateRef, ownsTaskSnapshot]);
 
   // Handle Rust scheduler execution error event
   const handleExecutionError = useCallback((payload: { taskId: string; error: string }) => {
     const currentTask = stateRef.current.task;
+    const ownerSessionId = optionsRef.current.sessionId;
     if (!currentTask || currentTask.id !== payload.taskId) return;
 
     console.error('[useCronTask] Execution error from Rust scheduler:', payload);
     // Task will continue to next interval, just log the error
     // Optionally refresh to get updated lastError
     getCronTask(currentTask.id).then(task => {
-      if (!mountedRef.current) return;
+      if (!ownsTaskSnapshot(currentTask, ownerSessionId)) return;
       setState(prev => stateWithTaskSnapshot(prev, task, {
         isExecuting: false,
         executionNumber: undefined,
       }));
     }).catch(() => {
-      if (!mountedRef.current) return;
+      if (!ownsTaskSnapshot(currentTask, ownerSessionId)) return;
       setState(prev => (
         prev.task?.id === payload.taskId
           ? { ...prev, isExecuting: false, executionNumber: undefined }
@@ -496,29 +511,30 @@ export function useCronTask(options: UseCronTaskOptions) {
       ));
       // Ignore refresh errors
     });
-  }, [setState, stateRef]);
+  }, [setState, stateRef, ownsTaskSnapshot]);
 
   const handleTaskStopped = useCallback(async (payload: { taskId: string; exitReason?: string | null }) => {
     const currentTask = stateRef.current.task;
+    const ownerSessionId = optionsRef.current.sessionId;
     if (!currentTask || currentTask.id !== payload.taskId) return;
 
     try {
       const task = await getCronTask(currentTask.id);
-      if (!mountedRef.current) return;
+      if (!ownsTaskSnapshot(currentTask, ownerSessionId)) return;
       if (optionsRef.current.onComplete) {
         optionsRef.current.onComplete(task, payload.exitReason ?? task.exitReason ?? undefined);
       }
       setState(initialState);
     } catch (error) {
       console.error('[useCronTask] Failed to refresh stopped task:', error);
-      if (!mountedRef.current) return;
+      if (!ownsTaskSnapshot(currentTask, ownerSessionId)) return;
       setState(prev => (
         prev.task?.id === payload.taskId
           ? { ...prev, isExecuting: false, executionNumber: undefined }
           : prev
       ));
     }
-  }, [setState, stateRef]);
+  }, [setState, stateRef, ownsTaskSnapshot]);
 
   // Handle scheduler started event (for debugging visibility)
   const handleSchedulerStarted = useCallback((payload: { taskId: string; intervalMinutes: number; executionCount: number }) => {

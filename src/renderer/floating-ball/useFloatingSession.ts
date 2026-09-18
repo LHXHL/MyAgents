@@ -1833,22 +1833,18 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
     /** 回答 ask-user-question（D13）。answers=null 表示用户取消（SDK deny+interrupt）。
      *  与 permission 同纪律：成功后才清卡片（W4，乐观清除会卡死后端 pending）。 */
     const respondAskUserQuestion = useCallback(
-        async (answers: Record<string, string> | null) => {
+        async (requestId: string, answers: Record<string, string> | null) => {
             const sid = sessionIdRef.current;
-            const req = askReq;
-            if (!sid || !req) return;
-            try {
-                const resp = await floatingProxyFetch(sid, '/api/ask-user-question/respond', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ requestId: req.requestId, answers }),
-                });
-                await assertRespondSucceeded(resp);
-                setAskReq(null);
-            } catch (err) {
-                console.error('[fb] ask-user-question respond failed:', err);
-                setError(fbText('answerSendFailed'));
+            if (!sid || askReq?.requestId !== requestId) {
+                throw new Error('Question is no longer available for this session');
             }
+            const resp = await floatingProxyFetch(sid, '/api/ask-user-question/respond', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ requestId, answers }),
+            });
+            await assertRespondSucceeded(resp);
+            setAskReq(prev => prev?.requestId === requestId ? null : prev);
         },
         [askReq],
     );

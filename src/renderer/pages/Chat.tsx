@@ -1,3 +1,4 @@
+import { useSessionCronRestore } from '@/hooks/useSessionCronRestore';
 import { AsyncQuestionContext, type AsyncQuestionActions } from '@/context/AsyncQuestionContext';
 import { AsyncQuestionComposerTarget } from '@/components/AsyncQuestionCard';
 import { restoreAsyncQuestionAnswerDraft, sameAsyncQuestionReply, type AsyncQuestionReply } from '../../shared/asyncUserQuestions';
@@ -74,7 +75,7 @@ import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 import { useWorkspaceChangeSignal } from '@/hooks/useWorkspaceChangeSignal';
 import { isIntroductionAbsentError, shouldShowIntroductionOverlay, useIntroductionContent } from '@/hooks/useIntroductionContent';
 import { resolveAdoptedBuiltinProviderId } from '@/utils/sessionConfigAdoption';
-import { getSessionCronTask, isTaskExecuting, createAndStartCronTask, startCronTask as startCronTaskIpc } from '@/api/cronTaskClient';
+import { createAndStartCronTask, startCronTask as startCronTaskIpc } from '@/api/cronTaskClient';
 import { updateSession as patchSessionMetadata } from '@/api/sessionClient';
 import { releaseTabSession, sessionHasPersistentOwners } from '@/api/tauriClient';
 import { persistInputOptionChange, type BuiltinModelSelection, type BuiltinProviderEnvPolicy } from '@/api/persistInputOption';
@@ -2382,9 +2383,6 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
     [imageUnderstandingConfiguredForInput],
   );
 
-  // Track which session's cron task state has been loaded
-  const cronLoadedSessionRef = useRef<string | null>(null);
-
   // Track if we need to set loading state after TabProvider's loadSession completes
   // This is used when restoring a cron task that is currently executing
   const pendingCronLoadingRef = useRef(false);
@@ -2394,73 +2392,22 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
   // message count stays the same after loadSession
   const prevMessagesRef = useRef(messages);
 
-  // Restore or clear cron task state when session changes
-  // 方案 A: Rust 统一恢复 - Scheduler 由 Rust 层 initialize_cron_manager 自动恢复
-  // 前端只负责同步 UI 状态
-  //
-  // This handles:
-  // 1. App restart recovery - restore cron task UI for running/paused tasks
-  //    (Scheduler already started by Rust layer)
-  // 2. Tab re-open - reconnect to existing cron task
-  // 3. Session switch - clear cron state if switching to a session without cron task
-  useEffect(() => {
-    if (!sessionId || !tabId || !isTauriEnvironment()) return;
+  const restoreSessionCronProjection = useCallback((task: CronTask, executing: boolean) => {
+    restoreCronTask(task);
+    setStoppedCronRecovery(null);
+    if (executing) {
+      pendingCronLoadingRef.current = true;
+      setCronExecutionState(task.id, true, (task.executionCount ?? 0) + 1);
+    }
+  }, [restoreCronTask, setCronExecutionState]);
 
-    // Skip if already loaded for this session
-    if (cronLoadedSessionRef.current === sessionId) return;
-
-    const loadCronTaskState = async () => {
-      try {
-        const task = await getSessionCronTask(sessionId);
-
-        if (task && task.status === 'running') {
-          console.log('[Chat] Restoring cron task UI for session:', sessionId, task.id, 'to tab:', tabId);
-
-          // Restore UI state only. The Rust Task scheduler owns recovery.
-          restoreCronTask(task);
-          setStoppedCronRecovery(null);
-
-          // Check if task is currently executing (e.g., execution started before app restart)
-          // If executing, mark it so we can set loading state after TabProvider's loadSession completes
-          // NOTE: Do NOT call loadSession here - TabProvider already handles session loading
-          // Calling it here causes infinite loop with TabProvider's session loading effect
-          const executing = await isTaskExecuting(task.id);
-          if (executing) {
-            if (sessionIdRef.current !== sessionId) return;
-            console.log('[Chat] Cron task is currently executing, marking for loading state');
-            pendingCronLoadingRef.current = true;
-            setCronExecutionState(task.id, true, (task.executionCount ?? 0) + 1);
-          }
-        } else if (cronState.task && cronState.task.sessionId && cronState.task.sessionId !== sessionId) {
-          // Current cron state is for a different session - clear FRONTEND state only
-          // This happens when user switches from a cron-task session to a regular session
-          // Note: Only clear if cronState.task.sessionId is NOT empty (empty means task was just created)
-          //
-          // IMPORTANT: We do NOT call stopCronTask() here because:
-          // 1. The task should continue running for its original session
-          // 2. The Rust scheduler executes on session-specific Sidecar
-          // 3. When user goes back to the original session, state will be restored (above code)
-          // 4. Per PRD: "暂停后允许手动对话" - task continues while user interacts with other sessions
-          //
-          // EXCEPTION: Don't clear if this is a pending -> real session ID upgrade (same cron task!)
-          // This happens when SDK creates the real session after first message
-          const isSessionUpgrade = isPendingSessionId(cronState.task.sessionId) && !isPendingSessionId(sessionId);
-          if (isSessionUpgrade) {
-            console.log('[Chat] Session ID upgraded from pending to real, keeping cron state:', cronState.task.sessionId, '->', sessionId);
-          } else {
-            console.log('[Chat] Clearing frontend cron state (session changed from', cronState.task.sessionId, 'to', sessionId, ')');
-            disableCronMode();
-          }
-        }
-
-        cronLoadedSessionRef.current = sessionId;
-      } catch (error) {
-        console.error('[Chat] Failed to load cron task state:', error);
-      }
-    };
-
-    void loadCronTaskState();
-  }, [sessionId, tabId, restoreCronTask, disableCronMode, cronState.task, setIsLoading, setCronExecutionState]);
+  useSessionCronRestore({
+    sessionId,
+    tabId,
+    task: cronState.task,
+    onRestore: restoreSessionCronProjection,
+    onClear: disableCronMode,
+  });
 
   // Set loading state after TabProvider's loadSession completes (for cron task executing scenario)
   // This effect watches for messages reference changes, which indicates loadSession has completed
@@ -4457,6 +4404,9 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
     const stopSessionId = sessionIdRef.current;
     const result = await stopCronTask();
     if (!result || sessionIdRef.current !== stopSessionId) return;
+    const currentCron = cronStateRef.current;
+    // Terminal cleanup is valid; a newly selected Task or draft owns its own UI.
+    if (currentCron.task ? currentCron.task.id !== result.task.id : currentCron.isEnabled) return;
     const promptToRecover = result.prompt;
     if (promptToRecover) {
       setStoppedCronRecovery({
@@ -4669,12 +4619,12 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
     return respondPermission(decision, requestId);
   }, [respondPermission]);
 
-  const handleAskUserQuestionSubmit = useCallback((_requestId: string, answers: Record<string, string>) => {
-    void respondAskUserQuestion(answers);
+  const handleAskUserQuestionSubmit = useCallback((requestId: string, answers: Record<string, string>) => {
+    return respondAskUserQuestion(requestId, answers);
   }, [respondAskUserQuestion]);
 
-  const handleAskUserQuestionCancel = useCallback(() => {
-    void respondAskUserQuestion(null);
+  const handleAskUserQuestionCancel = useCallback((requestId: string) => {
+    return respondAskUserQuestion(requestId, null);
   }, [respondAskUserQuestion]);
 
   const handleExitPlanModeApprove = useCallback(async () => {

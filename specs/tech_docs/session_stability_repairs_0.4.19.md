@@ -78,3 +78,25 @@ Requirements / adversarial 的两个有效阻塞项均已修复：
 | Channel 故障与停用 | 合成无效 Telegram 凭据实际返回 Token unauthorized；列表显示错误 toast，异常状态仍可停止；列表和详情停止后均显示已停止，磁盘 enabled=false。 |
 
 故障注入、迟到响应、并发写、损坏历史身份与 native 链边界由隔离回归验证，未通过破坏用户真实数据制造故障。有效 IM 账号的成功收发、全部外部 Runtime / Provider 组合及 Windows 不属于本机实测通过结论。桌面 smoke 与确定性测试互补，不能把模拟 runtime 通过写成所有实际平台通过。
+
+## 后续前端调研：低风险组修复（F2 / F3 / F6 / F8）
+
+范围来自前端全链路调研。发送接纳与草稿清理（F1）、关闭 Tab 后后台接管（F4）、执行 loading 归位（F5）、虚拟列表全量计算优化（F7）以及未确认候选项继续暂缓；本节不宣称这些问题已解决。
+
+| 问题 | 最终处理与边界 |
+|---|---|
+| AskUserQuestion 失败丢卡片 / 卡在提交中 | Chat、MessageList 与 Companion 透传 requestId 和 Promise。后端明确返回 success=true 才清除对应问题；失败由表单保留答案、显示错误并恢复操作。表单以 requestId 管理本地生命周期，旧回执不清新问题。不增加自动重试或后端幂等承诺。 |
+| Cron 迟到历史污染当前会话 | 删除独立 `/since` 查询和 append/fallback 链路。完成事件作为失效通知，复用 TabProvider 的 live-recovery，沿用 Session、restore token、connection generation 与 revision replay。恢复中的回溯事件按 revision 重放，旧连接快照不能覆盖新连接。 |
+| Task UI 的迟到查询写入另一会话 / Task | Chat 的既有恢复 effect 提取为 `useSessionCronRestore`，清理时取消结果应用；两次读取结束后提交当前投影。useCronTask 的 Task 快照回执和回调只作用于原 Task / Session。TaskStore / scheduler 的生命周期和 Chat 既有 loading 规则未重构。 |
+| 附件变化未触发消息刷新 | Message memo 使用完整的不可变 message 对象身份；删除不完整的字段比较。不变的消息对象仍跳过渲染，附件及其他可见字段的新对象正常更新。不引入深比较或新缓存。 |
+| effect replay 后 SSE 不再连接 | TabProvider 每次 setup 恢复 mounted 状态，cleanup 释放连接和恢复请求；异步断开后不为已卸载页面新建订阅。保留现有连接串行和取消机制，不全局启用 StrictMode。 |
+
+这些修复不改变正常操作入口、问答格式、存储格式或 Runtime 协议。网络失败时问答保留、Task 迟到结果丢弃、附件及时显示是预期纠错；必要的身份和恢复边界仍然保留。
+
+验证包括主窗口与 Companion 的真实 hook/组件回归、HTTP reject / 200 false、旧成功回执遇到新问题、跨 Session Task 查询、Task 被替换、同 Session 回溯与连接 replacement、StrictMode replay / 未完成连接时卸载，以及消息行渲染次数。浏览器通过临时页面运行当前源码中的真实问答与消息组件，实际点击验证失败保留→成功重试、新问题隔离、附件添加/更新/移除；页面只用合成数据，验收后删除。
+
+本轮为 renderer 修复，构建采用 `build:web`。浏览器组件验收与隔离的 IPC/SSE 回归不等于全部真实 Provider 或 OS 故障场景验收；前节原生 App 实测属于前一轮，不重复计作本轮证据。
+
+本轮最终验证为 **255 项 / 20 文件**（163 项组件测试、92 项未受后续修正影响的单元测试），typecheck、lint、build:web 通过；依赖检查仅保留既有 12 个 orphan 警告。为排除共享工作区其他会话的 SDK/权限修改影响，将本轮 patch 单独应用于基线的隔离副本后，重跑了类型、lint、构建和完整相关组件测试。三路独立审查及针对性复核全部通过。
+
+审查中删除了一处过严的停止回执限制：后端先发终态事件清空 UI，再返回停止成功，仍应保留成功的 Task 与 prompt 回执。只有“是否更新当前 Task 投影 / 展示恢复入口”检查归属，不能把正常终态清理误判为停止失败。另补了“切换后才收到旧 Task 事件”和历史 IM internalSessionId 的归属回归。没有以空对象、状态已清理或事件先后顺序为由阻断正常功能。

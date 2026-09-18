@@ -4135,9 +4135,12 @@ export default function TabProvider({
     const connectSseTailRef = useRef<Promise<void> | null>(null);
     // Unmount guard for async attachment work.
     const isMountedRef = useRef(true);
-    useEffect(() => () => {
-        isMountedRef.current = false;
-        abortActiveRestoreRequest();
+    useEffect(() => {
+        isMountedRef.current = true;
+        return () => {
+            isMountedRef.current = false;
+            abortActiveRestoreRequest();
+        };
     }, [abortActiveRestoreRequest]);
 
     // Install one SSE subscription for the current Session. In Tauri mode
@@ -4166,6 +4169,7 @@ export default function TabProvider({
             }
         }
 
+        if (!isMountedRef.current) return;
         const sse = createSseConnection(tabId, currentSessionIdRef);
         sse.setEventHandler(handleSseEvent);
         sse.setStatusHandler((status) => {
@@ -5092,58 +5096,15 @@ export default function TabProvider({
                     return;
                 }
 
-                const last = historyMessagesRef.current.at(-1);
-                if (!last) {
-                    // Empty tab view — fall through to a full load (first-time open).
-                    console.log(`[TabProvider ${tabId}] Cron complete on empty view, full load`);
-                    restorePersistedSessionRef.current(internalSessionId, { mode: 'live-recovery' });
-                    return;
-                }
-
-                try {
-                    const resp = await apiGetJson<{
-                        success: boolean;
-                        fromIndex: number;
-                        messages: WireSessionMessage[];
-                    }>(`/sessions/${encodeURIComponent(internalSessionId)}/since/${encodeURIComponent(last.id)}`);
-
-                    if (!resp.success) return;
-
-                    // Server couldn't locate our baseline (rewind / compaction /
-                    // JSONL rewrite). Fall back to a full reload — still better
-                    // than stale data.
-                    if (resp.fromIndex === -1) {
-                        console.log(`[TabProvider ${tabId}] Cron complete, baseline lost, full reload`);
-                        restorePersistedSessionRef.current(internalSessionId, { mode: 'live-recovery' });
-                        return;
-                    }
-
-                    if (resp.messages.length === 0) return;
-
-                    const appended = resp.messages.map(wireSessionMessageToMessage);
-
-                        // Dedupe against any IDs already in history — guards against
-                        // the rare race where SSE delivered the same message moments
-                        // before cron:execution-complete fired.
-                        setHistoryMessages(prev => {
-                            const known = new Set(prev.map(m => m.id));
-                            const fresh = appended.filter(m => !known.has(m.id));
-                            if (fresh.length === 0) return prev;
-                            // Mark seen so any subsequent SSE replay skips them.
-                            for (const m of fresh) seenIdsRef.current.add(m.id);
-                            return [...prev, ...fresh];
-                        });
-                        console.log(`[TabProvider ${tabId}] Cron incremental sync appended ${appended.length} message(s)`);
-                } catch (err) {
-                    console.warn(`[TabProvider ${tabId}] Incremental sync failed, falling back to full reload:`, err);
-                    restorePersistedSessionRef.current(internalSessionId, { mode: 'live-recovery' });
-                }
+                // A Task completion invalidates persisted history. Use the same
+                // revision/restore owner as reconnect and SSE gap recovery so a
+                // late snapshot cannot append into a replaced Session or rewind.
+                void restorePersistedSessionRef.current(internalSessionId, { mode: 'live-recovery' });
             },
             ac.signal,
         );
         return () => ac.abort();
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- apiGetJson is stable via useMemo
-    }, [tabId]);
+    }, [tabId, isPersistedRestoreInFlight]);
 
     // Track the previous prop identity so pending/reset births stay on their
     // SSE-native path while persisted targets enter the REST restore lifecycle.
@@ -5380,23 +5341,19 @@ export default function TabProvider({
         }
     }, [pendingPermission, pendingPermissions, postJson, trackTabEvent]);
 
-    // Respond to AskUserQuestion request
-    const respondAskUserQuestion = useCallback(async (answers: Record<string, string> | null) => {
-        if (isRestoreActionBlocked(persistedRestoreLifecycleRef.current.phase)) return;
-        if (!pendingAskUserQuestion) return;
-
-        const requestId = pendingAskUserQuestion.requestId;
-        console.log(`[TabProvider] AskUserQuestion response: ${answers ? 'submitted' : 'cancelled'}`);
-
-        // Clear pending question immediately for UI responsiveness
-        setPendingAskUserQuestion(null);
-
-        // Send response to backend
-        try {
-            await postJson('/api/ask-user-question/respond', { requestId, answers });
-        } catch (error) {
-            console.error('[TabProvider] Failed to send AskUserQuestion response:', error);
+    // The backend receipt resolves the question; a submission attempt does not.
+    const respondAskUserQuestion = useCallback(async (requestId: string, answers: Record<string, string> | null) => {
+        if (isRestoreActionBlocked(persistedRestoreLifecycleRef.current.phase)
+            || pendingAskUserQuestion?.requestId !== requestId) {
+            throw new Error('Question is no longer available for this session');
         }
+        const response = await postJson<{ success?: boolean; error?: string }>(
+            '/api/ask-user-question/respond', { requestId, answers },
+        );
+        if (response.success !== true) {
+            throw new Error(response.error || 'Question response was not accepted by backend');
+        }
+        setPendingAskUserQuestion(prev => prev?.requestId === requestId ? null : prev);
     }, [pendingAskUserQuestion, postJson]);
 
     // Respond to ExitPlanMode request (keep card visible with resolved status).
