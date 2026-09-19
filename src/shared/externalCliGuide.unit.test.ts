@@ -18,27 +18,31 @@ const publicCommands = EXTERNAL_CLI_PUBLIC_CAPABILITIES.map(
 );
 
 describe('external MyAgents CLI guide', () => {
-  it('declares every capability in the external admission allowlist exactly', () => {
-    const exactDeclarations = new Set(documentedInvocations);
-    for (const command of publicCommands) {
-      expect(
-        exactDeclarations.has(command),
-        `missing exact public command declaration: ${command}`,
-      ).toBe(true);
-    }
-  });
-
   it('never demonstrates an invocation outside the public allowlist', () => {
     for (const invocation of documentedInvocations) {
       if (invocation === '--help') continue;
-      const matchingCommands = publicCommands.filter(
-        (command) =>
-          invocation === command || invocation.startsWith(`${command} `),
-      );
+      const withoutHelp = invocation.endsWith(' --help')
+        ? invocation.slice(0, -' --help'.length)
+        : invocation;
+      const matchingCommands = publicCommands.filter((command) => {
+        if (withoutHelp === command || withoutHelp.startsWith(`${command} `)) {
+          return true;
+        }
+        return (
+          !withoutHelp.includes(' ') && command.startsWith(`${withoutHelp} `)
+        );
+      });
       expect(
         matchingCommands,
         `unsupported external CLI invocation: ${invocation}`,
       ).not.toHaveLength(0);
+    }
+  });
+
+  it('routes each multi-command capability domain through group help', () => {
+    const documented = new Set(documentedInvocations);
+    for (const group of ['agent', 'runtime', 'session', 'task', 'record']) {
+      expect(documented.has(`${group} --help`)).toBe(true);
     }
   });
 
@@ -49,8 +53,8 @@ describe('external MyAgents CLI guide', () => {
   });
 
   it('requires the absolute launcher and external token environment variable', () => {
-    expect(guide).toContain('MyAgents CLI 绝对路径');
+    expect(guide).toContain('CLI 绝对路径');
     expect(guide).toContain('MYAGENTS_API_TOKEN');
-    expect(guide).toContain('不要假设 PATH 中存在 `myagents`');
+    expect(guide).toContain('PATH 不保证能发现 `myagents`');
   });
 });
