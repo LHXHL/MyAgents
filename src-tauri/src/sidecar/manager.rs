@@ -913,6 +913,27 @@ impl SidecarManager {
         })
     }
 
+    /// Resolve one exact live Session owner for a bounded internal HTTP call.
+    /// The dispatch lease prevents replacement while the response is read.
+    pub(crate) fn acquire_session_dispatch(
+        &mut self,
+        session_id: &str,
+    ) -> Result<Option<SidecarHttpDispatch>, String> {
+        let Some(port) = self.get_session_port(session_id) else {
+            return Ok(None);
+        };
+        let sidecar = self
+            .sidecars
+            .get_mut(session_id)
+            .ok_or_else(|| "Resolved Session Sidecar is no longer current".to_string())?;
+        let lease = DispatchGate::try_acquire(&sidecar.dispatch_gate)
+            .ok_or_else(|| "Resolved Session Sidecar generation is draining".to_string())?;
+        Ok(Some(SidecarHttpDispatch {
+            base_url: format!("http://127.0.0.1:{port}"),
+            _lease: lease,
+        }))
+    }
+
     /// Resolve the current ready Sidecar process for a renderer-owned
     /// long-lived subscription. The Session hint gives an exact match during normal
     /// operation; the stable owner is the fallback after pending -> real key

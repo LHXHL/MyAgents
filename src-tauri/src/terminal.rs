@@ -505,6 +505,7 @@ fn inject_terminal_env(cmd: &mut CommandBuilder, app: &AppHandle, sidecar_port: 
     if let Some(port) = sidecar_port {
         cmd.env("MYAGENTS_PORT", port.to_string());
     }
+    crate::external_cli::inject_internal_token_builder(cmd);
 
     // 4. Suppress zsh PROMPT_EOL_MARK (%) — the partial-line indicator that appears
     //    when zsh thinks the cursor is not at column 0 on startup. Previous fixes

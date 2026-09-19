@@ -1,5 +1,6 @@
 import { isProjectArchived, isProjectVisibleToUser } from '../../shared/config-types';
 import { cancellableFetch } from '../utils/cancellation';
+import { managementRequestHeaders } from '../utils/management-api-client';
 import {
   agentWorkspaceIdentityFailure,
   resolvePersistedAgentWorkspaceRegistry,
@@ -49,10 +50,11 @@ const FORBIDDEN_OVERRIDE_FIELDS = [
 export async function handleAdminSessionStart(
   callerSessionId: string,
   body: AdminSessionStartRequest,
+  sourceKind: 'internal-session' | 'external-cli' = 'internal-session',
 ): Promise<{ status: number; response: AdminSessionStartResponse }> {
   const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
   const prompt = typeof body.prompt === 'string' ? body.prompt : '';
-  if (!callerSessionId) {
+  if (sourceKind === 'internal-session' && !callerSessionId) {
     return {
       status: 400,
       response: {
@@ -145,22 +147,28 @@ export async function handleAdminSessionStart(
     };
   }
 
-  const replyBack = body.replyBack !== false;
+  const replyBack =
+    sourceKind === 'external-cli' ? false : body.replyBack !== false;
   let response: Response;
   try {
     response = await cancellableFetch(
       `http://127.0.0.1:${managementPort}/api/inbox/start-session`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: managementRequestHeaders(),
         body: JSON.stringify({
           agentId,
           workspacePath: identity.workspacePath,
-          fromSessionId: callerSessionId,
-          fromLabel: await deriveCallerInboxLabel(
-            callerSessionId,
-            getSessionMetadata(callerSessionId) ?? null,
-          ),
+          sourceKind,
+          ...(sourceKind === 'internal-session'
+            ? {
+                fromSessionId: callerSessionId,
+                fromLabel: await deriveCallerInboxLabel(
+                  callerSessionId,
+                  getSessionMetadata(callerSessionId) ?? null,
+                ),
+              }
+            : { fromLabel: 'External CLI' }),
           prompt,
           replyBack,
         }),

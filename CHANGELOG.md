@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.21] - 2026-09-19
+
+> MyAgents 0.4.21 新增受控的本机外部 CLI Host，可把既有目录注册为 Agent 工作区，并从外部程序安全地创建、继续和读取 Session。
+
+### Added
+
+- **外部 CLI 调用**：设置页可显式开启本机外部调用、显示/复制或重置 token；普通终端通过 `MYAGENTS_API_TOKEN` 使用固定公开清单，默认关闭且不开放内部管理命令。
+- **从目录创建 Workspace Agent**：`myagents agent create --workspacePath <绝对目录>` 幂等注册既有目录，复用 Project/Agent identity authority；冲突、归档、系统或不安全路径明确拒绝。
+- **只读 Session 正文**：`myagents session get` 支持过滤后的稳定分页和 live overlay，只输出可见 user/assistant 文本，不泄漏工具、思考或隐藏协议内容。
+- **外部 Session 协作**：认证后的外部程序可 list/start/send Session，并继续使用公开的 Task、Record 与 Runtime 查询能力；外部消息有独立来源类型，不伪造内部 Session 或结果回投。
+
+### Changed
+
+- **CLI Admin API 统一准入**：App 内 CLI 使用生命周期内部 capability，外部调用使用 Rust 管理的开关/token 与静态路由白名单；旧脚本升级后需先在设置中开启并设置 `MYAGENTS_API_TOKEN`。
+
+---
+
 ## [0.4.20] - 2026-09-19
 
 > MyAgents 0.4.20 修复排队消息开始执行时的按钮状态，提升连续对话中停止操作与错误提示的可靠性。

@@ -20,9 +20,43 @@
       "usageStats": "Usage",
       "general": "General",
       "proxy": "Network Proxy",
+      "externalCli": "External Calls",
       "shortcuts": "Shortcuts",
       "about": "About"
     }
+  },
+  "externalCli": {
+    "title": "External Calls",
+    "description": "Let local programs call MyAgents through the myagents CLI bundled with the app. The app must remain running.",
+    "enableTitle": "MyAgents CLI external access",
+    "enableDescription": "Off by default. When enabled, only commands in the public list with the current token are accepted.",
+    "enabledToast": "CLI external access enabled",
+    "disabledToast": "CLI external access disabled",
+    "loadFailed": "Failed to load external access settings: {{message}}",
+    "saveFailed": "Failed to save external access settings: {{message}}",
+    "tokenLabel": "Access token",
+    "showToken": "Show token",
+    "hideToken": "Hide token",
+    "copyToken": "Copy token",
+    "tokenCopied": "Token copied",
+    "createdAt": "Created: {{value}}",
+    "resetToken": "Reset token",
+    "resetToast": "Token reset; the previous token is no longer valid",
+    "usageTitle": "Local usage",
+    "usageDescription": "Set MYAGENTS_API_TOKEN in a normal terminal. Help is available without the Host; business commands discover the running app automatically.",
+    "launcherPath": "CLI path",
+    "pathCopied": "CLI path copied",
+    "example": "Example",
+    "copyExample": "Copy example",
+    "exampleCopied": "Example copied",
+    "publicCommands": "Public commands",
+    "commonErrors": "Common errors",
+    "errorAppUnavailable": "Cannot connect: start MyAgents and retry; the CLI does not launch the app.",
+    "errorAccessDenied": "Disabled or invalid token: enable access here and export the current token again.",
+    "errorCapabilityClosed": "Capability not open: use the public command list; a token does not unlock internal commands.",
+    "securityWarning": "A local program holding this token can register any eligible directory accessible to the current OS user and MyAgents as a Workspace Agent, then let that Agent read or modify the workspace. Protect the token like a password.",
+    "receiptWarning": "A successful Session start/send receipt means the request was accepted or delivered; it does not mean the AI succeeded. Use session get to read the current text history.",
+    "copyFailed": "Copy failed"
   },
   "general": {
     "title": "General",
@@ -313,7 +347,11 @@
         "authorization_inactive": "This authorization has ended. Please reconnect."
       },
       "payment": {
-        "recovery": {"reauthorize_api_key":"Login expired. Close this panel and reconnect your account.","api_key_quota":"The current key quota is exhausted. Manage authorization on the website.","top_up_balance":"Insufficient balance. Check your account on the website and retry."},
+        "recovery": {
+          "reauthorize_api_key": "Login expired. Close this panel and reconnect your account.",
+          "api_key_quota": "The current key quota is exhausted. Manage authorization on the website.",
+          "top_up_balance": "Insufficient balance. Check your account on the website and retry."
+        },
         "action": "Top up",
         "title": "Top up account",
         "subtitle": "Top up the currently linked Token Dance account.",

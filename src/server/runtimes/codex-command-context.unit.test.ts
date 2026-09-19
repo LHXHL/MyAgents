@@ -70,6 +70,7 @@ describe('codex command context', () => {
     vi.stubEnv('MYAGENTS_PORT', '31415');
     vi.stubEnv('MYAGENTS_MANAGEMENT_PORT', '27182');
     vi.stubEnv('MYAGENTS_VERSION', '9.9.9-test');
+    vi.stubEnv('MYAGENTS_INTERNAL_CLI_TOKEN', 'internal-sidecar-capability');
 
     const installDir = join(
       tempHome,
@@ -99,6 +100,7 @@ describe('codex command context', () => {
     expect(context.env.MYAGENTS_PORT).toBe('31415');
     expect(context.env.MYAGENTS_MANAGEMENT_PORT).toBe('27182');
     expect(context.env.MYAGENTS_VERSION).toBe('9.9.9-test');
+    expect(context.env.MYAGENTS_INTERNAL_CLI_TOKEN).toBe('internal-sidecar-capability');
     const rules = readFileSync(join(getManagedCodexHome(), 'rules', 'myagents.rules'), 'utf-8');
     expect(rules).toContain('prefix_rule(pattern=["myagents"], decision="allow")');
     expect(rules).toContain(JSON.stringify(join(tempHome, '.myagents', 'bin', process.platform === 'win32' ? 'myagents.cmd' : 'myagents')));

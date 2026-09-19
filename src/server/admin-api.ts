@@ -93,6 +93,7 @@ import { getSessionEngine } from './session-engine';
 import { getSessionsByAgentDir, isHistoryVisibleSession } from './SessionStore';
 import {
   agentWorkspaceIdentityFailure,
+  registerWorkspaceAgent,
   resolvePersistedAgentWorkspaceRegistry,
   type PersistedAgentWorkspaceProjection,
 } from './utils/agent-workspace-identity';
@@ -1555,6 +1556,27 @@ export async function handleModelRemove(payload: {
 // Agent Handlers
 // ---------------------------------------------------------------------------
 
+export async function handleAgentCreate(payload: {
+  workspacePath?: string;
+}): Promise<AdminResponse> {
+  const workspacePath = typeof payload.workspacePath === 'string'
+    ? payload.workspacePath.trim()
+    : '';
+  if (!workspacePath) {
+    return {
+      success: false,
+      code: 'WORKSPACE_PATH_REQUIRED',
+      error: 'agent create requires --workspacePath <absolute-path>.',
+    };
+  }
+  try {
+    const result = await registerWorkspaceAgent(workspacePath);
+    return { success: true, data: result };
+  } catch (error) {
+    return agentWorkspaceIdentityFailure(error);
+  }
+}
+
 function findProjectForAgent(
   projects: ProjectSlim[],
   agent: AgentConfigSlim,
@@ -2426,6 +2448,12 @@ export async function handleAgentChannelRemove(payload: {
 export function handleConfigGet(payload: { key: string }): AdminResponse {
   const { key } = payload;
   if (!key) return { success: false, error: 'Missing required field: key' };
+  if (key.split('.')[0] === 'externalCliAccess') {
+    return {
+      success: false,
+      error: "'externalCliAccess' is private App-owned state. Use Settings → External Calls.",
+    };
+  }
 
   const config = loadConfig();
   const value = getNestedValue(config, key);
@@ -2470,6 +2498,7 @@ export async function handleConfigSet(payload: {
     'mcpServerArgs',
     'imBotConfigs',
     'cliToolEnv',
+    'externalCliAccess',
   ];
   const rootKey = key.split('.')[0];
   if (protectedKeys.includes(rootKey)) {
@@ -7790,6 +7819,34 @@ export async function handleSessionList(payload: {
     workspacePath: identity.workspacePath,
     limit,
   };
+}
+
+export async function handleSessionGet(payload: {
+  sessionId?: unknown;
+  limit?: unknown;
+  before?: unknown;
+}): Promise<AdminResponse> {
+  const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId.trim() : '';
+  if (!sessionId) {
+    return { success: false, code: 'SESSION_ID_REQUIRED', error: 'session get requires <sessionId>.' };
+  }
+  try {
+    const { readSessionTextPage } = await import('./session-text-projection');
+    return await readSessionTextPage({
+      sessionId,
+      ...(payload.limit === undefined ? {} : { limit: Number(payload.limit) }),
+      ...(typeof payload.before === 'string' && payload.before.trim()
+        ? { before: payload.before.trim() }
+        : {}),
+    }) as AdminResponse;
+  } catch (error) {
+    const projectionError = error as { code?: string; message?: string };
+    return {
+      success: false,
+      code: projectionError.code ?? 'SESSION_READ_FAILED',
+      error: projectionError.message ?? String(error),
+    };
+  }
 }
 
 /** Type guard for `runtime` string coming from CLI payloads. */

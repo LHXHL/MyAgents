@@ -94,6 +94,28 @@ describe('handleFreshSessionStart', () => {
     expect(mocks.deleteSession).not.toHaveBeenCalled();
   });
 
+  it('accepts an external fresh start without inventing reply metadata', async () => {
+    const externalMessage: PendingInboxMessage = {
+      ...message,
+      sourceKind: 'external-cli',
+      fromSessionId: undefined,
+      fromLabel: 'External CLI',
+      replyBack: false,
+    };
+    const inject = vi.fn<FreshSessionInjector>(async (_text, options) => ({
+      queued: true,
+      queueId: options.queueId,
+      dispatchAcceptance: Promise.resolve(await options.beforeDispatch()),
+    }));
+
+    await expect(handleFreshSessionStart(externalMessage, context, inject))
+      .resolves.toEqual({ accepted: true });
+    expect(inject).toHaveBeenCalledWith(
+      expect.stringContaining('source_kind="external-cli"'),
+      expect.objectContaining({ inboxMeta: undefined }),
+    );
+  });
+
   it('rolls back prepared metadata on an explicit Runtime dispatch rejection', async () => {
     mocks.claimPreparedSessionForTurnAdmission.mockResolvedValue({
       status: 'conflict',

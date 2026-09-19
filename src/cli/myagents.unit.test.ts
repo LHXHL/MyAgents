@@ -26,6 +26,11 @@ import {
   resolveCliPort,
   validateCliCommand,
 } from './myagents';
+import {
+  EXTERNAL_CLI_PUBLIC_CAPABILITIES,
+  EXTERNAL_CLI_PUBLIC_COMMANDS,
+  isExternalCliPublicRoute,
+} from '../shared/externalCliCapabilities';
 
 const inheritedMyAgentsSessionId = process.env.MYAGENTS_SESSION_ID;
 
@@ -43,6 +48,18 @@ describe('myagents CLI port authority', () => {
     expect(resolveCliPort('32003', '32002')).toBe('32003');
     expect(resolveCliPort(undefined, '32002')).toBe('32002');
     expect(resolveCliPort(undefined, '')).toBe('');
+  });
+});
+
+describe('public external CLI declaration', () => {
+  it('maps every advertised command to an admitted canonical route', () => {
+    expect(new Set(EXTERNAL_CLI_PUBLIC_COMMANDS).size).toBe(EXTERNAL_CLI_PUBLIC_COMMANDS.length);
+    for (const { command, route: declaredRoute } of EXTERNAL_CLI_PUBLIC_CAPABILITIES) {
+      const [group, action, ...rest] = command.split(' ');
+      const route = action ? buildRoute(group, action, rest) : group;
+      expect(route, command).toBe(declaredRoute);
+      expect(isExternalCliPublicRoute(route), command).toBe(true);
+    }
   });
 });
 
@@ -1608,6 +1625,9 @@ describe('myagents CLI Agent / Session collaboration contracts', () => {
   });
 
   it('builds explicit Agent discovery and Session list requests', () => {
+    expect(buildRequestBody('agent', 'create', [], { workspacePath: '/repo/new-agent' })).toEqual({
+      workspacePath: '/repo/new-agent',
+    });
     expect(buildRequestBody('agent', 'list', [], {})).toEqual({ lifecycle: 'active' });
     expect(buildRequestBody('agent', 'list', [], { archived: true })).toEqual({ lifecycle: 'archived' });
     expect(buildRequestBody('agent', 'current', [], {})).toEqual({});
@@ -1619,6 +1639,18 @@ describe('myagents CLI Agent / Session collaboration contracts', () => {
     expect(buildRequestBody('session', 'list', [], { agentId: 'agent-1', limit: '10' })).toEqual({
       agentId: 'agent-1',
       limit: 10,
+    });
+    expect(buildRequestBody('session', 'get', ['session-1'], {})).toEqual({
+      sessionId: 'session-1',
+      limit: 5,
+    });
+    expect(buildRequestBody('session', 'get', ['session-1'], {
+      limit: '50',
+      before: 'message-9',
+    })).toEqual({
+      sessionId: 'session-1',
+      limit: 50,
+      before: 'message-9',
     });
   });
 
@@ -1670,6 +1702,12 @@ describe('myagents CLI Agent / Session collaboration contracts', () => {
         agent: 'agent-1',
         promptFile: '/definitely/missing/myagents-prompt.txt',
       })).toThrow('process.exit(3)');
+      expect(() => buildRequestBody('agent', 'create', [], {})).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('session', 'get', [], {})).toThrow('process.exit(1)');
+      expect(() => buildRequestBody('session', 'get', ['session-1'], { limit: 0 }))
+        .toThrow('process.exit(2)');
+      expect(() => buildRequestBody('session', 'get', ['session-1'], { limit: 501 }))
+        .toThrow('process.exit(2)');
     } finally {
       exit.mockRestore();
       error.mockRestore();

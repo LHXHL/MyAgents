@@ -11,10 +11,15 @@
 
 import { randomUUID } from 'crypto';
 import { cancellableFetch } from '../utils/cancellation';
+import { managementRequestHeaders } from '../utils/management-api-client';
 import { sanitizeInboxLabel } from './sanitize-label';
 import { deriveSessionLabel } from './derive-label';
 import { getSessionMetadata, getSessionData } from '../SessionStore';
-import type { PendingInboxMessage, DeliverOutcome } from './types';
+import type {
+  PendingInboxMessage,
+  DeliverOutcome,
+  InboxSourceKind,
+} from './types';
 import type { SessionMetadata } from '../types/session';
 
 /// Request body shape — matches CLI surface (`-p` / `--no-reply`)
@@ -78,16 +83,23 @@ async function buildRequestMessage(
   toSessionId: string,
   prompt: string,
   replyBack: boolean,
+  sourceKind: InboxSourceKind,
 ): Promise<PendingInboxMessage> {
   // sanitize at construction; recipients will receive only sanitized form
-  const fromLabel = await deriveCallerInboxLabel(callerSessionId, callerMeta);
+  const fromLabel =
+    sourceKind === 'external-cli'
+      ? 'External CLI'
+      : await deriveCallerInboxLabel(callerSessionId, callerMeta);
 
   const messageId = randomUUID();
   const createdAt = new Date().toISOString();
 
   return {
     messageId,
-    fromSessionId: callerSessionId,
+    sourceKind,
+    ...(sourceKind === 'internal-session'
+      ? { fromSessionId: callerSessionId }
+      : {}),
     fromLabel,
     toSessionId,
     text: prompt,
@@ -99,7 +111,10 @@ async function buildRequestMessage(
       version: 1,
       type: 'send.request',
       eventId: messageId,
-      sourceSessionId: callerSessionId,
+      sourceKind,
+      ...(sourceKind === 'internal-session'
+        ? { sourceSessionId: callerSessionId }
+        : {}),
       sourceLabel: fromLabel,
       targetSessionId: toSessionId,
       sourceNotification: replyBack ? 'auto' : 'none',
@@ -123,6 +138,7 @@ function resolveResumeWorkspacePath(toSessionId: string): string | undefined {
 export async function handleAdminInbox(
   callerSessionId: string,
   body: AdminInboxRequest,
+  sourceKind: InboxSourceKind = 'internal-session',
 ): Promise<{ status: number; response: AdminInboxResponse }> {
   // Validation
   if (!body.toSessionId || typeof body.toSessionId !== 'string') {
@@ -146,7 +162,7 @@ export async function handleAdminInbox(
   // Require callerSessionId to be present — without it, "send to self" check
   // is meaningless (empty === empty would slip through). PRD 0.2.18 cross-
   // review CC: empty-empty match was a soft hole.
-  if (!callerSessionId) {
+  if (sourceKind === 'internal-session' && !callerSessionId) {
     return {
       status: 500,
       response: {
@@ -155,7 +171,10 @@ export async function handleAdminInbox(
       },
     };
   }
-  if (body.toSessionId === callerSessionId) {
+  if (
+    sourceKind === 'internal-session' &&
+    body.toSessionId === callerSessionId
+  ) {
     return {
       status: 400,
       response: {
@@ -166,7 +185,10 @@ export async function handleAdminInbox(
   }
 
   // Derive caller label from this sidecar's metadata
-  const callerMeta = getSessionMetadata(callerSessionId) ?? null;
+  const callerMeta =
+    sourceKind === 'internal-session'
+      ? (getSessionMetadata(callerSessionId) ?? null)
+      : null;
 
   // Build envelope
   const message = await buildRequestMessage(
@@ -174,7 +196,8 @@ export async function handleAdminInbox(
     callerMeta,
     body.toSessionId,
     body.prompt,
-    body.replyBack !== false, // default true
+    sourceKind === 'external-cli' ? false : body.replyBack !== false,
+    sourceKind,
   );
 
   // Resolve target workspace_path for dead-session resume
@@ -198,7 +221,7 @@ export async function handleAdminInbox(
       `http://127.0.0.1:${managementPort}/api/inbox/deliver`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: managementRequestHeaders(),
         body: JSON.stringify({
           message,
           resumeWorkspacePath,

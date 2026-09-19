@@ -22,6 +22,7 @@ interface SessionEventBase {
   eventId: string;
   createdAt: string;
   sourceSessionId?: string;
+  sourceKind?: 'internal-session' | 'external-cli';
   sourceLabel?: string;
   targetSessionId?: string;
   targetLabel?: string;
@@ -29,7 +30,7 @@ interface SessionEventBase {
 
 export interface SendRequestEvent extends SessionEventBase {
   type: 'send.request';
-  sourceSessionId: string;
+  sourceSessionId?: string;
   targetSessionId: string;
   sourceNotification: SourceNotification;
   payload: string;
@@ -163,6 +164,7 @@ function renderOpenTag(event: RenderableSessionEvent): string {
     attr('type', event.type),
     attr('event_id', event.eventId),
     attr('source_session_id', event.sourceSessionId),
+    attr('source_kind', event.sourceKind),
     attr('source_label', event.sourceLabel),
     attr('target_session_id', event.targetSessionId),
     attr('target_label', event.targetLabel),
@@ -186,6 +188,9 @@ function renderOpenTag(event: RenderableSessionEvent): string {
 function summaryForEvent(event: RenderableSessionEvent): string {
   switch (event.type) {
     case 'send.request':
+      if (event.sourceKind === 'external-cli') {
+        return 'An authenticated local program sent this session a one-way request through MyAgents. There is no source Session and no automatic result delivery.';
+      }
       return event.sourceNotification === 'none'
         ? "Another MyAgents session sent this session a one-way request or notification. The source session will not automatically receive this turn's final result."
         : "Another MyAgents session sent this session a request. Work on it normally in this session. When this turn finishes, MyAgents will automatically deliver this turn's final result back to the source session.";

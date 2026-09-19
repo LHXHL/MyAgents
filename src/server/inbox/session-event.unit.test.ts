@@ -29,6 +29,25 @@ describe('Session Event Protocol v1 renderer', () => {
     expect(prompt).toContain('please verify this');
   });
 
+  it('describes an external CLI request without inventing a source Session', () => {
+    const prompt = renderSessionEventPrompt({
+      version: 1,
+      type: 'send.request',
+      eventId: 'evt-external',
+      sourceKind: 'external-cli',
+      sourceLabel: 'External CLI',
+      targetSessionId: 'session-b',
+      sourceNotification: 'none',
+      createdAt: '2026-09-19T12:00:00.000Z',
+      payload: 'review this',
+    });
+
+    expect(prompt).toContain('source_kind="external-cli"');
+    expect(prompt).toContain('authenticated local program');
+    expect(prompt).toContain('no source Session');
+    expect(prompt).not.toContain('Another MyAgents session');
+  });
+
   it('neutralizes structural protocol tags inside payload', () => {
     const prompt = renderSessionEventPrompt({
       version: 1,

@@ -8,6 +8,7 @@
  * Environment:
  *   MYAGENTS_PORT — Sidecar port (injected by buildClaudeSessionEnv)
  *   MYAGENTS_SESSION_ID — current MyAgents session id for attached-session tasks
+ *   MYAGENTS_API_TOKEN — token for public calls from an ordinary local process
  *
  * No shebang here. `npm run build:cli` (esbuild) injects `#!/usr/bin/env node`
  * through `--banner:js` so the *built* `myagents.cjs` artifact is what carries
@@ -16,6 +17,11 @@
  * bun parses the first line as shebang, the second line `#!/usr/bin/env node`
  * is then read as JS and rejected as a syntax error. Same outcome under node.
  */
+
+import {
+  EXTERNAL_CLI_PUBLIC_COMMANDS,
+  isExternalCliPublicRoute,
+} from '../shared/externalCliCapabilities';
 
 // ---------------------------------------------------------------------------
 // Port discovery
@@ -37,9 +43,12 @@ export function resolveCliPort(portFlag: unknown, inheritedPort: string): string
 
 const rawArgs = process.argv.slice(2);
 
-function isSpaceJsonInvocation(): boolean {
-  return (rawArgs[0] === 'space' || rawArgs[0] === 'issue')
-    && rawArgs.some(arg => arg === '--json' || arg.startsWith('--json='));
+function isJsonInvocation(): boolean {
+  return rawArgs.some((arg) => arg === '--json' || arg.startsWith('--json='));
+}
+
+function isSpaceInvocation(): boolean {
+  return rawArgs[0] === 'space' || rawArgs[0] === 'issue';
 }
 
 /** Parse CLI arguments into structured flags and positional args */
@@ -201,22 +210,37 @@ export function parseArgs(args: string[]): { positional: string[]; flags: Record
  */
 function assertStringFlag(value: unknown, flagName: string): asserts value is string | undefined {
   if (value === true) {
-    console.error(`Error: --${flagName} requires a value (e.g. --${flagName} foo or --${flagName}=foo)`);
-    process.exit(2);
+    exitAgentCliError(
+      {},
+      {
+        code: 'FLAG_VALUE_REQUIRED',
+        error: `--${flagName} requires a value (e.g. --${flagName} foo or --${flagName}=foo)`,
+      },
+    );
   }
 }
 
 function parseZonedInstantFlag(raw: unknown, flagName: string): string | undefined {
   if (raw === undefined) return undefined;
   if (typeof raw !== 'string' || !raw.trim()) {
-    console.error(`Error: --${flagName} requires an ISO-8601 timestamp with an explicit timezone offset or Z.`);
-    process.exit(2);
+    exitAgentCliError(
+      {},
+      {
+        code: 'TIMESTAMP_REQUIRED',
+        error: `--${flagName} requires an ISO-8601 timestamp with an explicit timezone offset or Z.`,
+      },
+    );
   }
   const value = raw.trim();
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?([zZ]|[+-](\d{2}):(\d{2}))$/.exec(value);
   if (!match) {
-    console.error(`Error: --${flagName} "${raw}" must include an explicit timezone offset or Z (e.g. 2026-07-22T09:00:00+08:00).`);
-    process.exit(2);
+    exitAgentCliError(
+      {},
+      {
+        code: 'TIMESTAMP_TIMEZONE_REQUIRED',
+        error: `--${flagName} "${raw}" must include an explicit timezone offset or Z (e.g. 2026-07-22T09:00:00+08:00).`,
+      },
+    );
   }
   const [, yearText, monthText, dayText, hourText, minuteText, secondText, , offset, offsetHourText, offsetMinuteText] = match;
   const year = Number(yearText);
@@ -239,8 +263,13 @@ function parseZonedInstantFlag(raw: unknown, flagName: string): string | undefin
     && (offset.toLowerCase() === 'z' || (offsetHour <= 23 && offsetMinute <= 59));
   const timestamp = Date.parse(value);
   if (!calendarIsValid || Number.isNaN(timestamp)) {
-    console.error(`Error: --${flagName} "${raw}" is not a valid ISO-8601 timestamp.`);
-    process.exit(2);
+    exitAgentCliError(
+      {},
+      {
+        code: 'TIMESTAMP_INVALID',
+        error: `--${flagName} "${raw}" is not a valid ISO-8601 timestamp.`,
+      },
+    );
   }
   return new Date(timestamp).toISOString();
 }
@@ -258,14 +287,21 @@ function taskCliCaller(): { actor: 'agent' | 'user'; source: 'cli' } {
 
 function parseGoalMaxExecutionsFlag(raw: unknown): number | undefined {
   if (raw === undefined) return undefined;
-  const value = typeof raw === 'number'
-    ? raw
-    : typeof raw === 'string' && /^\d+$/.test(raw.trim())
-      ? Number(raw.trim())
-      : Number.NaN;
-  if (!Number.isSafeInteger(value) || value < 1 || value > 0xFFFF_FFFF) {
-    console.error('Error: --max-executions must be a positive integer between 1 and 4294967295.');
-    process.exit(2);
+  const value =
+    typeof raw === 'number'
+      ? raw
+      : typeof raw === 'string' && /^\d+$/.test(raw.trim())
+        ? Number(raw.trim())
+        : Number.NaN;
+  if (!Number.isSafeInteger(value) || value < 1 || value > 0xffff_ffff) {
+    exitAgentCliError(
+      {},
+      {
+        code: 'MAX_EXECUTIONS_INVALID',
+        error:
+          '--max-executions must be a positive integer between 1 and 4294967295.',
+      },
+    );
   }
   return value;
 }
@@ -277,8 +313,13 @@ function parseGoalAiCanExitFlag(raw: unknown): boolean | undefined {
     if (value === 'true') return true;
     if (value === 'false') return false;
   }
-  console.error('Error: --ai-can-exit must be true or false.');
-  process.exit(2);
+  return exitAgentCliError(
+    {},
+    {
+      code: 'BOOLEAN_VALUE_INVALID',
+      error: '--ai-can-exit must be true or false.',
+    },
+  );
 }
 
 function parseInlineBooleanFlag(key: string, inlineValue: string | undefined): boolean {
@@ -286,8 +327,13 @@ function parseInlineBooleanFlag(key: string, inlineValue: string | undefined): b
   const normalized = inlineValue.trim().toLowerCase();
   if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
   if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
-  console.error(`Error: --${key} expects a boolean value when using --${key}=...`);
-  process.exit(2);
+  return exitAgentCliError(
+    {},
+    {
+      code: 'BOOLEAN_VALUE_INVALID',
+      error: `--${key} expects a boolean value when using --${key}=...`,
+    },
+  );
 }
 
 function camelCase(s: string): string {
@@ -317,9 +363,15 @@ function requirePositional(
 ): string {
   const v = (value ?? '').trim();
   if (v) return v;
-  console.error(`Error: ${command} requires <${argName}>.`);
-  console.error(`  Usage: myagents ${command} <${argName}>${flagAlternative ? ` (or --${flagAlternative} <${argName}>)` : ''}`);
-  process.exit(1);
+  return exitAgentCliError(
+    {},
+    {
+      code: 'ARGUMENT_REQUIRED',
+      error: `${command} requires <${argName}>.`,
+      suggestedCommand: `myagents ${command} <${argName}>${flagAlternative ? ` --${flagAlternative} <${argName}>` : ''}`,
+    },
+    1,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -392,10 +444,12 @@ Examples:
   myagents runtime diagnose codex             # auth / features / MCP / apps / env snapshot (issue #194)
   myagents diagnose runtime codex             # alias for runtime diagnose
   myagents agent list --archived              # archived Agent workspaces
+  myagents agent create --workspacePath /absolute/path --json
   myagents agent current --json               # compact current context diagnostic
   myagents agent show <agentId>                # identity + effective defaults
   myagents session list --agent <agentId>      # recent reusable contexts
   myagents session start --agent <agentId> -p "review this" # fresh context
+  myagents session get <sessionId> --limit 5 --json
   myagents agent archive <agent-id>
   myagents agent unarchive <agent-id>
   myagents task list --query "review" --limit 20
@@ -455,16 +509,102 @@ Examples:
 
 Run 'myagents <command> --help' for details on a specific command.`;
 
+function publicCliHelp(positional: string[]): string | undefined {
+  const group = positional[0];
+  if (!group) {
+    return `myagents — MyAgents local external CLI\n\nUsage: myagents <public-command> [options]\n\nPublic commands:\n${EXTERNAL_CLI_PUBLIC_COMMANDS.map((command) => `  myagents ${command}`).join('\n')}\n\nExternal use requires the MyAgents app to be running, External Calls enabled in Settings, and MYAGENTS_API_TOKEN set.`;
+  }
+  const publicGroups = new Set([
+    'status',
+    'version',
+    'agent',
+    'runtime',
+    'session',
+    'task',
+    'record',
+  ]);
+  if (!publicGroups.has(group)) return undefined;
+  if (positional.length === 1) {
+    const matching = EXTERNAL_CLI_PUBLIC_COMMANDS.filter(
+      (command) => command === group || command.startsWith(`${group} `),
+    );
+    return `${group} — public external CLI commands\n\n${matching.map((command) => `  myagents ${command}`).join('\n')}\n\nExternal use requires the MyAgents app to be running, External Calls enabled in Settings, and MYAGENTS_API_TOKEN set.`;
+  }
+  const action = positional[1] || 'list';
+  const route = buildRoute(group, action, positional.slice(2));
+  if (!isExternalCliPublicRoute(route)) return undefined;
+  const usage: Record<string, string> = {
+    'agent/create':
+      'myagents agent create --workspacePath <absolute-existing-directory> [--json]',
+    'agent/list': 'myagents agent list [--json]',
+    'agent/show': 'myagents agent show <agentId> [--json]',
+    'runtime/list': 'myagents runtime list [--json]',
+    'runtime/describe': 'myagents runtime describe <runtime> [--json]',
+    'session/list':
+      'myagents session list --agent <agentId> [--limit N] [--json]',
+    'session/start':
+      'myagents session start --agent <agentId> (--prompt <text> | --prompt-file <path>) [--json]',
+    'session/send':
+      'myagents session send <sessionId> (--prompt <text> | --prompt-file <path>) [--json]',
+    'session/get':
+      'myagents session get <sessionId> [--limit 1..500] [--before <messageId>] [--json]',
+    'record/list': 'myagents record list [--json]',
+    'record/create': 'myagents record create --content-file <path> [--json]',
+  };
+  return `${usage[route] ?? `myagents ${positional.join(' ')} [options]`}\n\nThis command is available to local external programs. Set MYAGENTS_API_TOKEN; credentials are never accepted as positional arguments. Use --json for one machine-readable response.`;
+}
+
+async function canShowInternalTopHelp(
+  portFlag: unknown,
+): Promise<boolean> {
+  const token = process.env.MYAGENTS_INTERNAL_CLI_TOKEN?.trim();
+  const port = resolveCliPort(portFlag, PORT);
+  if (!token || !port) return false;
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/admin/status`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-MyAgents-Internal-Cli-Token': token,
+      },
+      body: '{}',
+      signal: AbortSignal.timeout(3_000),
+    });
+    if (!response.ok) return false;
+    const result = await response.json() as Record<string, unknown>;
+    return result.success === true;
+  } catch {
+    // Help must remain available when the Host is down, but only the fixed
+    // public catalogue is safe without a successful Host authentication.
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // HTTP client
 // ---------------------------------------------------------------------------
 
-async function callApi(route: string, body: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+async function callApi(
+  route: string,
+  body: Record<string, unknown> = {},
+): Promise<Record<string, unknown>> {
+  const internalToken = process.env.MYAGENTS_INTERNAL_CLI_TOKEN?.trim();
+  const externalToken = process.env.MYAGENTS_API_TOKEN?.trim();
   try {
+    // A business request is sent exactly once. Retrying after a transport
+    // failure could duplicate mutations whose response was lost after commit.
     const resp = await fetch(`${BASE}/${route}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(internalToken
+          ? { 'X-MyAgents-Internal-Cli-Token': internalToken }
+          : externalToken
+            ? { Authorization: `Bearer ${externalToken}` }
+            : {}),
+      },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(10_000),
     });
     // Non-JSON error bodies (e.g. axum 4xx returns plain text like
     // "Failed to deserialize query string: missing field `doc`") would
@@ -482,24 +622,39 @@ async function callApi(route: string, body: Record<string, unknown> = {}): Promi
     return await resp.json() as Record<string, unknown>;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes('ECONNREFUSED') || msg.includes('fetch failed')) {
-      if (isSpaceJsonInvocation()) {
-        console.log(JSON.stringify({
-          success: false,
-          code: 'MYAGENTS_UNAVAILABLE',
-          error: 'Cannot connect to the MyAgents app.',
-          suggestion: 'Start MyAgents and retry the same Space command.',
-        }, null, 2));
-        process.exit(3);
-      }
-      console.error('Error: Cannot connect to MyAgents. Is the app running?');
-      if (process.env.CODEX_SANDBOX || process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1') {
-        console.error('  This command appears to be running inside the Codex sandbox.');
-        console.error('  If MyAgents is running on localhost, switch Codex to no-restrictions or run the command from your normal terminal.');
-      }
-      process.exit(sessionTransportExitCode(route));
+    const unavailable =
+      (err instanceof DOMException && err.name === 'TimeoutError') ||
+      msg.includes('ECONNREFUSED') ||
+      msg.includes('fetch failed');
+    if (!unavailable) throw err;
+    if (isJsonInvocation()) {
+      console.log(
+        JSON.stringify(
+          {
+            success: false,
+            code: 'MYAGENTS_UNAVAILABLE',
+            error: 'Cannot connect to the MyAgents app.',
+            suggestion: 'Start MyAgents and retry the same command.',
+          },
+          null,
+          2,
+        ),
+      );
+      process.exit(3);
     }
-    throw err;
+    console.error('Error: Cannot connect to MyAgents. Is the app running?');
+    if (
+      process.env.CODEX_SANDBOX ||
+      process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1'
+    ) {
+      console.error(
+        '  This command appears to be running inside the Codex sandbox.',
+      );
+      console.error(
+        '  If MyAgents is running on localhost, switch Codex to no-restrictions or run the command from your normal terminal.',
+      );
+    }
+    process.exit(sessionTransportExitCode(route));
   }
 }
 
@@ -680,6 +835,19 @@ export function printResult(
   }
   if (group === 'agent' && action === 'list') {
     printAgentList(result.data as Array<Record<string, unknown>>);
+    return;
+  }
+  if (group === 'agent' && action === 'create') {
+    const data = (result.data as Record<string, unknown>) ?? {};
+    console.log(
+      data.created
+        ? '✓ Workspace Agent created'
+        : '✓ Workspace Agent already exists',
+    );
+    console.log(`  agent:     ${String(data.agentId ?? '')}`);
+    console.log(`  project:   ${String(data.projectId ?? '')}`);
+    console.log(`  workspace: ${String(data.workspacePath ?? '')}`);
+    console.log(`  enabled:   ${String(data.enabled ?? false)}`);
     return;
   }
   if (group === 'cron' && action === 'list') {
@@ -866,6 +1034,22 @@ export function printResult(
   }
   if (group === 'session' && action === 'list') {
     printSessionList(result.data as Array<Record<string, unknown>>, result);
+    return;
+  }
+  if (group === 'session' && action === 'get') {
+    const session = (result.session as Record<string, unknown>) ?? {};
+    const messages = (session.messages as Array<Record<string, unknown>>) ?? [];
+    for (const message of messages) {
+      console.log(`${String(message.role)}  ${String(message.id)}`);
+      console.log(String(message.content ?? ''));
+      console.log('');
+    }
+    if (messages.length === 0) console.log('(no readable text messages)');
+    if (session.hasMoreBefore === true && messages[0]?.id) {
+      console.log(
+        `Earlier: myagents session get ${String(session.id)} --before ${String(messages[0].id)}`,
+      );
+    }
     return;
   }
   if (group === 'session' && action === 'start') {
@@ -2661,7 +2845,11 @@ async function main(): Promise<void> {
 
   // Top-level help (no args, or bare --help)
   if (positional.length === 0) {
-    console.log(TOP_HELP);
+    console.log(
+      await canShowInternalTopHelp(flags.port)
+        ? TOP_HELP
+        : (publicCliHelp([]) ?? TOP_HELP),
+    );
     return;
   }
 
@@ -2670,15 +2858,28 @@ async function main(): Promise<void> {
   const commandError = validateCliCommand(positional, !!flags.help);
   if (commandError) return exitAgentCliError(flags, commandError);
 
+  if (flags.help) {
+    const help = publicCliHelp(positional);
+    if (help) {
+      console.log(help);
+      return;
+    }
+  }
+
   // Resolve port: --port flag overrides env
   PORT = resolveCliPort(flags.port, PORT);
   if (!PORT) {
-    if (groupIsSpaceCommand(positional[0]) && jsonMode) {
-      return exitAgentCliError(flags, {
-        code: 'MYAGENTS_PORT_REQUIRED',
-        error: 'The MyAgents local API port is unavailable.',
-        suggestion: 'Run this command from an active MyAgents Session or start the app and retry.',
-      }, 3);
+    if (jsonMode) {
+      return exitAgentCliError(
+        flags,
+        {
+          code: 'MYAGENTS_PORT_REQUIRED',
+          error: 'The MyAgents local API port is unavailable.',
+          suggestion:
+            'Start MyAgents and retry. Installed launchers discover the current Host automatically.',
+        },
+        3,
+      );
     }
     console.error('Error: MYAGENTS_PORT not set. This CLI runs within the MyAgents app.');
     process.exit(3);
@@ -2773,10 +2974,6 @@ async function main(): Promise<void> {
     const exitCode = commandResultExitCode(result);
     if (exitCode !== 0) process.exit(exitCode);
   }
-}
-
-function groupIsSpaceCommand(group: string | undefined): boolean {
-  return group === 'space' || group === 'issue';
 }
 
 export function rejectUnsupportedSpaceDryRun(
@@ -2919,34 +3116,146 @@ export function buildRoute(group: string, action: string, rest: string[]): strin
 }
 
 const PUBLISHED_ADMIN_ROUTES = new Set([
-  'anydoc/convert', 'anydoc/status', 'anydoc/cancel', 'anydoc/list',
-  'speech/transcribe', 'speech/status', 'speech/cancel', 'speech/list',
-  'mcp/list', 'mcp/show', 'mcp/add', 'mcp/remove', 'mcp/enable', 'mcp/disable', 'mcp/env', 'mcp/test',
-  'mcp/oauth/discover', 'mcp/oauth/start', 'mcp/oauth/status', 'mcp/oauth/revoke',
-  'tool/list', 'tool/info', 'tool/add', 'tool/remove', 'tool/enable', 'tool/disable', 'tool/readme', 'tool/env',
-  'vision/readme', 'vision/models', 'vision/analyze',
-  'model/list', 'model/add', 'model/remove', 'model/set-key', 'model/set-default', 'model/verify',
-  'agent/list', 'agent/current', 'agent/show', 'agent/enable', 'agent/disable', 'agent/archive', 'agent/unarchive',
-  'agent/set', 'agent/channel/list', 'agent/channel/add', 'agent/channel/remove', 'agent/runtime-status',
-  'runtime/list', 'runtime/describe', 'runtime/diagnose', 'diagnose/runtime',
-  'cron/list', 'cron/add', 'cron/start', 'cron/run-now', 'cron/stop', 'cron/remove', 'cron/update', 'cron/runs',
-  'cron/status', 'cron/exit',
-  'goal/get', 'goal/create', 'goal/update',
-  'im/send-media', 'im/wake', 'im/channels',
-  'readme/task', 'readme/cron', 'readme/im', 'readme/widget', 'readme/thought',
-  'plugin/list', 'plugin/install', 'plugin/remove',
-  'cc-plugin/list', 'cc-plugin/show', 'cc-plugin/install', 'cc-plugin/uninstall', 'cc-plugin/enable', 'cc-plugin/disable',
-  'skill/list', 'skill/info', 'skill/add', 'skill/remove', 'skill/enable', 'skill/disable', 'skill/sync',
-  'config/get', 'config/set',
-  'task/list', 'task/get', 'task/comments', 'task/comment', 'task/create-direct', 'task/create-attached', 'task/run',
-  'task/run-now', 'task/rerun', 'task/trigger/validate', 'task/trigger/test', 'task/check-now',
-  'task/reset-checkpoint', 'task/update', 'task/update-status', 'task/append-session', 'task/archive', 'task/delete',
-  'thought/list', 'thought/create', 'record/list', 'record/create',
-  'space/list', 'space/whoami', 'space/assignee-list', 'space/goal-list', 'space/issue-create', 'space/issue-update',
-  'space/issue-list', 'space/issue-get', 'space/issue-comment', 'space/issue-comments', 'space/issue-comment-get',
-  'space/issue-status', 'space/issue-claim', 'space/issue-close', 'space/issue-complete', 'space/issue-cancel-claim',
-  'space/claim-local-task', 'space/attachment-download', 'space/attachment-add', 'space/attachment-inspect',
-  'session/list', 'session/start', 'session/send', 'session/watch',
+  'anydoc/convert',
+  'anydoc/status',
+  'anydoc/cancel',
+  'anydoc/list',
+  'speech/transcribe',
+  'speech/status',
+  'speech/cancel',
+  'speech/list',
+  'mcp/list',
+  'mcp/show',
+  'mcp/add',
+  'mcp/remove',
+  'mcp/enable',
+  'mcp/disable',
+  'mcp/env',
+  'mcp/test',
+  'mcp/oauth/discover',
+  'mcp/oauth/start',
+  'mcp/oauth/status',
+  'mcp/oauth/revoke',
+  'tool/list',
+  'tool/info',
+  'tool/add',
+  'tool/remove',
+  'tool/enable',
+  'tool/disable',
+  'tool/readme',
+  'tool/env',
+  'vision/readme',
+  'vision/models',
+  'vision/analyze',
+  'model/list',
+  'model/add',
+  'model/remove',
+  'model/set-key',
+  'model/set-default',
+  'model/verify',
+  'agent/create',
+  'agent/list',
+  'agent/current',
+  'agent/show',
+  'agent/enable',
+  'agent/disable',
+  'agent/archive',
+  'agent/unarchive',
+  'agent/set',
+  'agent/channel/list',
+  'agent/channel/add',
+  'agent/channel/remove',
+  'agent/runtime-status',
+  'runtime/list',
+  'runtime/describe',
+  'runtime/diagnose',
+  'diagnose/runtime',
+  'cron/list',
+  'cron/add',
+  'cron/start',
+  'cron/run-now',
+  'cron/stop',
+  'cron/remove',
+  'cron/update',
+  'cron/runs',
+  'cron/status',
+  'cron/exit',
+  'goal/get',
+  'goal/create',
+  'goal/update',
+  'im/send-media',
+  'im/wake',
+  'im/channels',
+  'readme/task',
+  'readme/cron',
+  'readme/im',
+  'readme/widget',
+  'readme/thought',
+  'plugin/list',
+  'plugin/install',
+  'plugin/remove',
+  'cc-plugin/list',
+  'cc-plugin/show',
+  'cc-plugin/install',
+  'cc-plugin/uninstall',
+  'cc-plugin/enable',
+  'cc-plugin/disable',
+  'skill/list',
+  'skill/info',
+  'skill/add',
+  'skill/remove',
+  'skill/enable',
+  'skill/disable',
+  'skill/sync',
+  'config/get',
+  'config/set',
+  'task/list',
+  'task/get',
+  'task/comments',
+  'task/comment',
+  'task/create-direct',
+  'task/create-attached',
+  'task/run',
+  'task/run-now',
+  'task/rerun',
+  'task/trigger/validate',
+  'task/trigger/test',
+  'task/check-now',
+  'task/reset-checkpoint',
+  'task/update',
+  'task/update-status',
+  'task/append-session',
+  'task/archive',
+  'task/delete',
+  'thought/list',
+  'thought/create',
+  'record/list',
+  'record/create',
+  'space/list',
+  'space/whoami',
+  'space/assignee-list',
+  'space/goal-list',
+  'space/issue-create',
+  'space/issue-update',
+  'space/issue-list',
+  'space/issue-get',
+  'space/issue-comment',
+  'space/issue-comments',
+  'space/issue-comment-get',
+  'space/issue-status',
+  'space/issue-claim',
+  'space/issue-close',
+  'space/issue-complete',
+  'space/issue-cancel-claim',
+  'space/claim-local-task',
+  'space/attachment-download',
+  'space/attachment-add',
+  'space/attachment-inspect',
+  'session/list',
+  'session/start',
+  'session/send',
+  'session/get',
+  'session/watch',
 ]);
 
 const PUBLISHED_COMMAND_GROUPS = new Set([
@@ -3014,7 +3323,7 @@ function exitAgentCliError(
   error: AgentCliError,
   exitCode = 2,
 ): never {
-  if (flags.json) {
+  if (flags.json || isJsonInvocation()) {
     console.log(JSON.stringify({ success: false, ...error }, null, 2));
   } else {
     console.error(`Error: ${error.error}`);
@@ -3266,8 +3575,14 @@ function readTextFileFlag(path: string, flagName: string, exitCode = 1): string 
   try {
     return readLocalTextFile(path);
   } catch (err) {
-    console.error(`Error: failed to read --${flagName} "${path}": ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(exitCode);
+    return exitAgentCliError(
+      {},
+      {
+        code: 'FILE_READ_FAILED',
+        error: `Failed to read --${flagName} "${path}": ${err instanceof Error ? err.message : String(err)}`,
+      },
+      exitCode,
+    );
   }
 }
 
@@ -3386,8 +3701,13 @@ function requireNonEmptyStringFlag(
 ): string {
   assertStringFlag(value, flagName);
   if (typeof value === 'string' && value.trim()) return value.trim();
-  console.error(`Error: ${command} requires --${flagName} <value>.`);
-  process.exit(2);
+  return exitAgentCliError(
+    {},
+    {
+      code: 'FLAG_VALUE_REQUIRED',
+      error: `${command} requires --${flagName} <value>.`,
+    },
+  );
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {
@@ -3900,12 +4220,21 @@ function resolveSessionPromptText(
   action: 'send' | 'start',
 ): string {
   if (flags.prompt !== undefined && typeof flags.prompt !== 'string') {
-    console.error('Error: -p / --prompt requires a value');
-    process.exit(3);
+    return exitAgentCliError(
+      flags,
+      { code: 'PROMPT_REQUIRED', error: '-p / --prompt requires a value' },
+      3,
+    );
   }
   if (flags.promptFile !== undefined && typeof flags.promptFile !== 'string') {
-    console.error('Error: --prompt-file requires a file path value');
-    process.exit(3);
+    return exitAgentCliError(
+      flags,
+      {
+        code: 'PROMPT_FILE_REQUIRED',
+        error: '--prompt-file requires a file path value',
+      },
+      3,
+    );
   }
   let promptText = flags.prompt as string | undefined;
   const promptFile = typeof flags.promptFile === 'string' ? flags.promptFile : undefined;
@@ -3913,35 +4242,60 @@ function resolveSessionPromptText(
 
   if (promptFile) {
     if (promptText !== undefined) {
-      console.error('Error: --prompt-file and -p/--prompt are mutually exclusive');
-      process.exit(3);
+      return exitAgentCliError(
+        flags,
+        {
+          code: 'PROMPT_INPUT_CONFLICT',
+          error: '--prompt-file and -p/--prompt are mutually exclusive',
+        },
+        3,
+      );
     }
     promptText = readTextFileFlag(promptFile, 'prompt-file', 3);
   }
 
   if (!promptText || promptText.length === 0) {
-    console.error(`Error: session ${action} requires --prompt "<text>" or --prompt-file <path>`);
-    console.error(`  → Tip: see \`myagents session ${action} --help\` for usage examples`);
-    process.exit(3);
+    return exitAgentCliError(
+      flags,
+      {
+        code: 'PROMPT_REQUIRED',
+        error: `session ${action} requires --prompt "<text>" or --prompt-file <path>`,
+        suggestedCommand: `myagents session ${action} --help`,
+      },
+      3,
+    );
   }
 
   if (!promptFile) {
     if (promptText.includes('\n')) {
-      console.error('Error: -p / --prompt content contains newlines (\\n) — Windows cmd.exe truncates flags after \\n,');
-      console.error('       which would drop subsequent flags. Write the content to a file and use --prompt-file instead:');
-      console.error(action === 'send'
-        ? '         myagents session send <sessionId> --prompt-file <path>'
-        : '         myagents session start --agent <agentId> --prompt-file <path>');
-      process.exit(3);
+      return exitAgentCliError(
+        flags,
+        {
+          code: 'PROMPT_MULTILINE_UNSAFE',
+          error:
+            '-p / --prompt content contains newlines; use --prompt-file so shells preserve the complete request.',
+          suggestedCommand:
+            action === 'send'
+              ? 'myagents session send <sessionId> --prompt-file <path>'
+              : 'myagents session start --agent <agentId> --prompt-file <path>',
+        },
+        3,
+      );
     }
     const promptBytes = Buffer.byteLength(promptText, 'utf8');
     if (promptBytes > MAX_PROMPT_BYTES) {
-      console.error(`Error: -p / --prompt content is ${promptBytes} bytes, exceeds ${MAX_PROMPT_BYTES} (4 KB) limit.`);
-      console.error('       Write the content to a file and use --prompt-file instead:');
-      console.error(action === 'send'
-        ? '         myagents session send <sessionId> --prompt-file <path>'
-        : '         myagents session start --agent <agentId> --prompt-file <path>');
-      process.exit(3);
+      return exitAgentCliError(
+        flags,
+        {
+          code: 'PROMPT_TOO_LARGE',
+          error: `-p / --prompt content is ${promptBytes} bytes, exceeds ${MAX_PROMPT_BYTES} (4 KB) limit.`,
+          suggestedCommand:
+            action === 'send'
+              ? 'myagents session send <sessionId> --prompt-file <path>'
+              : 'myagents session start --agent <agentId> --prompt-file <path>',
+        },
+        3,
+      );
     }
   }
 
@@ -4888,6 +5242,21 @@ export function buildRequestBody(
 
   // Agent commands
   if (group === 'agent') {
+    if (action === 'create') {
+      const workspacePath =
+        typeof flags.workspacePath === 'string'
+          ? flags.workspacePath.trim()
+          : '';
+      if (!workspacePath) {
+        return exitAgentCliError(flags, {
+          code: 'WORKSPACE_PATH_REQUIRED',
+          error: 'agent create requires --workspacePath <absolute-path>.',
+          suggestedCommand:
+            'myagents agent create --workspacePath /absolute/path --json',
+        });
+      }
+      return { workspacePath };
+    }
     if (action === 'list') {
       if (flags.archived && flags.active) {
         throw new Error('agent list accepts only one lifecycle filter: use --active or --archived, not both.');
@@ -5108,9 +5477,14 @@ export function buildRequestBody(
       assertStringFlag(flags.query, 'query');
       assertStringFlag(flags.limit, 'limit');
       const limit = flags.limit === undefined ? undefined : Number(flags.limit);
-      if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 200)) {
-        console.error('Error: task list --limit must be an integer from 1 to 200.');
-        process.exit(2);
+      if (
+        limit !== undefined &&
+        (!Number.isSafeInteger(limit) || limit < 1 || limit > 200)
+      ) {
+        return exitAgentCliError(flags, {
+          code: 'TASK_LIMIT_INVALID',
+          error: 'task list --limit must be an integer from 1 to 200.',
+        });
       }
       return {
         workspaceId: flags.workspaceId,
@@ -5124,9 +5498,14 @@ export function buildRequestBody(
     if (action === 'get') return { id: requirePositional(rest[0] ?? (flags.id as string | undefined), 'task-id', 'task get', 'id') };
     if (action === 'comments') {
       const limit = flags.limit === undefined ? undefined : Number(flags.limit);
-      if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)) {
-        console.error('Error: task comments --limit must be an integer from 1 to 100.');
-        process.exit(2);
+      if (
+        limit !== undefined &&
+        (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+      ) {
+        return exitAgentCliError(flags, {
+          code: 'TASK_LIMIT_INVALID',
+          error: 'task comments --limit must be an integer from 1 to 100.',
+        });
       }
       return {
         id: requirePositional(
@@ -5192,8 +5571,10 @@ export function buildRequestBody(
       assertStringFlag(flags.limit, 'limit');
       const limit = flags.limit === undefined ? undefined : Number(flags.limit);
       if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
-        console.error('Error: task runs --limit must be a positive integer.');
-        process.exit(2);
+        return exitAgentCliError(flags, {
+          code: 'TASK_LIMIT_INVALID',
+          error: 'task runs --limit must be a positive integer.',
+        });
       }
       return {
         taskId: requirePositional(
@@ -5223,8 +5604,11 @@ export function buildRequestBody(
         const taskId = rest[1] ?? (flags.id as string | undefined);
         const hasSpec = flags.specFile !== undefined;
         if (!!taskId === hasSpec) {
-          console.error('Error: task trigger test requires exactly one of <taskId> or --spec-file.');
-          process.exit(2);
+          return exitAgentCliError(flags, {
+            code: 'TASK_TRIGGER_INPUT_INVALID',
+            error:
+              'task trigger test requires exactly one of <taskId> or --spec-file.',
+          });
         }
         const body: Record<string, unknown> = hasSpec
           ? {
@@ -5241,8 +5625,10 @@ export function buildRequestBody(
           && flags.expect !== 'quiet'
           && flags.expect !== 'activate'
         ) {
-          console.error('Error: --expect must be quiet or activate.');
-          process.exit(2);
+          return exitAgentCliError(flags, {
+            code: 'TASK_EXPECT_INVALID',
+            error: '--expect must be quiet or activate.',
+          });
         }
         if (flags.checkpointFile !== undefined) {
           body.checkpoint = resolveTaskCheckpointFile(flags.checkpointFile);
@@ -5250,8 +5636,10 @@ export function buildRequestBody(
         if (flags.expect !== undefined) body.expect = flags.expect;
         return body;
       }
-      console.error('Error: task trigger supports validate or test.');
-      process.exit(2);
+      return exitAgentCliError(flags, {
+        code: 'TASK_TRIGGER_ACTION_INVALID',
+        error: 'task trigger supports validate or test.',
+      });
     }
     if (action === 'check-now' || action === 'reset-checkpoint') {
       return {
@@ -5260,6 +5648,18 @@ export function buildRequestBody(
     }
     if (action === 'create-direct') {
       assertStringFlag(flags.name, 'name');
+      if (
+        process.env.MYAGENTS_API_TOKEN?.trim() &&
+        flags.preselectedSessionId === 'current'
+      ) {
+        return exitAgentCliError(flags, {
+          code: 'CURRENT_SESSION_UNAVAILABLE',
+          error:
+            'External task creation cannot use --preselectedSessionId current.',
+          suggestion:
+            'Pass an explicit Session id from `myagents session list --agent <agentId> --json`.',
+        });
+      }
       // Resolve task.md body: `--taskMdFile` (industry-standard for long
       // text — avoids shell-escape hell for multi-line / backtick / quoted
       // markdown) takes precedence over `--taskMdContent` when both are
@@ -5449,9 +5849,20 @@ export function buildRequestBody(
         process.exit(1);
       }
       const kind = typeof flags.kind === 'string' ? flags.kind : undefined;
-      if (group === 'record' && kind !== undefined && kind !== 'text' && kind !== 'audio') {
-        console.error('Error: record list --kind must be text or audio.');
-        process.exit(1);
+      if (
+        group === 'record' &&
+        kind !== undefined &&
+        kind !== 'text' &&
+        kind !== 'audio'
+      ) {
+        return exitAgentCliError(
+          flags,
+          {
+            code: 'RECORD_KIND_INVALID',
+            error: 'record list --kind must be text or audio.',
+          },
+          1,
+        );
       }
       return {
         kind: group === 'record' ? kind : undefined,
@@ -5483,25 +5894,50 @@ export function buildRequestBody(
           const MAX_BYTES = 1024 * 1024; // 1 MB — pathological for a text Record
           const stat = fs.statSync(flags.contentFile);
           if (stat.size > MAX_BYTES) {
-            console.error(`Error: --content-file "${flags.contentFile}" is ${stat.size} bytes, exceeds ${MAX_BYTES} (1 MB) limit`);
-            process.exit(1);
+            return exitAgentCliError(
+              flags,
+              {
+                code: 'RECORD_CONTENT_TOO_LARGE',
+                error: `--content-file "${flags.contentFile}" is ${stat.size} bytes, exceeds ${MAX_BYTES} (1 MB) limit`,
+              },
+              1,
+            );
           }
           const raw = fs.readFileSync(flags.contentFile, 'utf-8');
           if (raw.includes('\0')) {
-            console.error(`Error: --content-file "${flags.contentFile}" contains NUL bytes (is this a binary file?)`);
-            process.exit(1);
+            return exitAgentCliError(
+              flags,
+              {
+                code: 'RECORD_CONTENT_INVALID',
+                error: `--content-file "${flags.contentFile}" contains NUL bytes (is this a binary file?)`,
+              },
+              1,
+            );
           }
           contentText = raw;
         } catch (err) {
-          console.error(`Error: failed to read --content-file "${flags.contentFile}": ${err instanceof Error ? err.message : String(err)}`);
-          process.exit(1);
+          return exitAgentCliError(
+            flags,
+            {
+              code: 'FILE_READ_FAILED',
+              error: `Failed to read --content-file "${flags.contentFile}": ${err instanceof Error ? err.message : String(err)}`,
+            },
+            1,
+          );
         }
       }
       const trimmed = contentText?.trim() ?? '';
       if (!trimmed) {
-        console.error(`Error: ${group} create requires non-empty content. Pass it as a positional arg, --content "<text>", or --content-file <path>.`);
-        console.error('  → Tip: shells with quirky quoting (Windows / pwsh) drop quoted args sometimes — write the text to a file and pass --content-file.');
-        process.exit(1);
+        return exitAgentCliError(
+          flags,
+          {
+            code: 'RECORD_CONTENT_REQUIRED',
+            error: `${group} create requires non-empty content. Pass it as a positional arg, --content "<text>", or --content-file <path>.`,
+            suggestion:
+              'For multiline content, write the text to a file and pass --content-file.',
+          },
+          1,
+        );
       }
       return { content: trimmed };
     }
@@ -5518,18 +5954,37 @@ export function buildRequestBody(
           ? flags.agentId.trim()
           : '';
       if (!agentId) {
-        console.error('Error: session list requires --agent <agentId>.');
-        console.error('  → Run: myagents agent list');
-        process.exit(3);
+        return exitAgentCliError(
+          flags,
+          {
+            code: 'AGENT_REQUIRED',
+            error: 'session list requires --agent <agentId>.',
+            suggestedCommand: 'myagents agent list --json',
+          },
+          3,
+        );
       }
       const limit = flags.limit === undefined ? 5 : Number(flags.limit);
       if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
-        console.error('Error: session list --limit must be an integer from 1 to 50.');
-        process.exit(3);
+        return exitAgentCliError(
+          flags,
+          {
+            code: 'SESSION_LIMIT_INVALID',
+            error: 'session list --limit must be an integer from 1 to 50.',
+          },
+          3,
+        );
       }
       if (rest.length > 0) {
-        console.error('Error: session list accepts Agent identity only through --agent <agentId>.');
-        process.exit(3);
+        return exitAgentCliError(
+          flags,
+          {
+            code: 'ARGUMENT_INVALID',
+            error:
+              'session list accepts Agent identity only through --agent <agentId>.',
+          },
+          3,
+        );
       }
       return { agentId, limit };
     }
@@ -5540,13 +5995,26 @@ export function buildRequestBody(
           ? flags.agentId.trim()
           : '';
       if (!agentId) {
-        console.error('Error: session start requires --agent <agentId>.');
-        console.error('  → Run: myagents agent list');
-        process.exit(3);
+        return exitAgentCliError(
+          flags,
+          {
+            code: 'AGENT_REQUIRED',
+            error: 'session start requires --agent <agentId>.',
+            suggestedCommand: 'myagents agent list --json',
+          },
+          3,
+        );
       }
       if (rest.length > 0) {
-        console.error('Error: session start accepts Agent identity only through --agent <agentId>.');
-        process.exit(3);
+        return exitAgentCliError(
+          flags,
+          {
+            code: 'ARGUMENT_INVALID',
+            error:
+              'session start accepts Agent identity only through --agent <agentId>.',
+          },
+          3,
+        );
       }
       return {
         agentId,
@@ -5568,6 +6036,43 @@ export function buildRequestBody(
         toSessionId,
         prompt: resolveSessionPromptText(flags, 'send'),
         replyBack: !flags.noReply,
+      };
+    }
+    if (action === 'get') {
+      const sessionId = requirePositional(
+        rest[0] ?? (flags.sessionId as string | undefined),
+        'sessionId',
+        'session get',
+        'sessionId',
+      );
+      if (rest.length > 1) {
+        return exitAgentCliError(flags, {
+          code: 'ARGUMENT_INVALID',
+          error: 'session get accepts exactly one <sessionId> argument.',
+        });
+      }
+      const limit = flags.limit === undefined ? 5 : Number(flags.limit);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+        return exitAgentCliError(flags, {
+          code: 'SESSION_LIMIT_INVALID',
+          error: 'session get --limit must be an integer from 1 to 500.',
+        });
+      }
+      if (
+        flags.before !== undefined &&
+        (typeof flags.before !== 'string' || !flags.before.trim())
+      ) {
+        return exitAgentCliError(flags, {
+          code: 'SESSION_BEFORE_INVALID',
+          error: 'session get --before requires a transcript message id.',
+        });
+      }
+      return {
+        sessionId,
+        limit,
+        ...(typeof flags.before === 'string'
+          ? { before: flags.before.trim() }
+          : {}),
       };
     }
     if (action === 'watch') {
@@ -5763,8 +6268,13 @@ function readTaskTriggerJsonFile(
   allowNull: boolean,
 ): Record<string, unknown> | null {
   if (typeof rawPath !== 'string' || !rawPath.trim()) {
-    console.error(`Error: ${flag} requires a file path.`);
-    process.exit(2);
+    return exitAgentCliError(
+      {},
+      {
+        code: 'TASK_JSON_FILE_REQUIRED',
+        error: `${flag} requires a file path.`,
+      },
+    );
   }
   try {
     const bytes = readGuardedFileBytes(
@@ -5781,8 +6291,13 @@ function readTaskTriggerJsonFile(
     }
     return value as Record<string, unknown>;
   } catch (error) {
-    console.error(`Error: failed to read ${flag} "${rawPath}": ${error instanceof Error ? error.message : String(error)}.`);
-    process.exit(2);
+    return exitAgentCliError(
+      {},
+      {
+        code: 'TASK_JSON_FILE_INVALID',
+        error: `Failed to read ${flag} "${rawPath}": ${error instanceof Error ? error.message : String(error)}.`,
+      },
+    );
   }
 }
 
@@ -5877,9 +6392,7 @@ function resolveTaskMdContent(
 ): string | undefined {
   const fail = (error: AgentCliError, exitCode: number): never => {
     if (structuredExit) return structuredExit(error, exitCode);
-    console.error(`Error: ${error.error}`);
-    if (error.suggestion) console.error(`Suggestion: ${error.suggestion}`);
-    process.exit(exitCode);
+    return exitAgentCliError(flags, error, exitCode);
   };
   const filePath = flags.taskMdFile ?? flags.taskMdContentFile;
   if (filePath !== undefined && filePath !== '') {
@@ -5952,20 +6465,37 @@ function resolveTaskMdContent(
 function parseRuntimeConfigFlag(raw: unknown): Record<string, unknown> | undefined {
   if (raw === undefined) return undefined;
   if (typeof raw !== 'string') {
-    console.error('Error: --runtimeConfig must be a JSON object string (e.g. --runtimeConfig \'{"model":"o3"}\')');
-    process.exit(2);
+    return exitAgentCliError(
+      {},
+      {
+        code: 'RUNTIME_CONFIG_INVALID',
+        error:
+          '--runtimeConfig must be a JSON object string (e.g. --runtimeConfig \'{"model":"o3"}\')',
+      },
+    );
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`Error: --runtimeConfig is not valid JSON: ${msg}`);
-    process.exit(2);
+    return exitAgentCliError(
+      {},
+      {
+        code: 'RUNTIME_CONFIG_INVALID',
+        error: `--runtimeConfig is not valid JSON: ${msg}`,
+      },
+    );
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    console.error('Error: --runtimeConfig must be a JSON object (not array, null, or primitive)');
-    process.exit(2);
+    return exitAgentCliError(
+      {},
+      {
+        code: 'RUNTIME_CONFIG_INVALID',
+        error:
+          '--runtimeConfig must be a JSON object (not array, null, or primitive)',
+      },
+    );
   }
   return parsed as Record<string, unknown>;
 }
@@ -5973,8 +6503,14 @@ function parseRuntimeConfigFlag(raw: unknown): Record<string, unknown> | undefin
 function parseMcpEnabledServersFlag(raw: unknown): string[] | undefined {
   if (raw === undefined) return undefined;
   if (typeof raw !== 'string') {
-    console.error('Error: --mcpEnabledServers must be a comma-separated string (e.g. --mcpEnabledServers playwright,im-cron). Use --mcpEnabledServers "" for explicit no MCP.');
-    process.exit(2);
+    return exitAgentCliError(
+      {},
+      {
+        code: 'MCP_SERVERS_INVALID',
+        error:
+          '--mcpEnabledServers must be a comma-separated string (e.g. --mcpEnabledServers playwright,im-cron). Use --mcpEnabledServers "" for explicit no MCP.',
+      },
+    );
   }
   if (raw.trim() === '') return [];
   return raw
@@ -6058,29 +6594,40 @@ function buildNotificationFromFlags(
     // non-empty string so the AI / user gets a clear error instead of a
     // confused router that says "no such bot 'true'".
     if (typeof channel !== 'string' || channel.length === 0) {
-      console.error('Error: --notificationBotChannelId requires a bot id (e.g. --notificationBotChannelId feishu_main). See: myagents im channels');
-      process.exit(2);
+      return exitAgentCliError(flags, {
+        code: 'NOTIFICATION_CHANNEL_INVALID',
+        error:
+          '--notificationBotChannelId requires a bot id (e.g. --notificationBotChannelId feishu_main). See: myagents im channels',
+      });
     }
     out.botChannelId = channel;
   }
   if (thread !== undefined) {
     if (typeof thread !== 'string' || thread.length === 0) {
-      console.error('Error: --notificationBotThread requires a non-empty value');
-      process.exit(2);
+      return exitAgentCliError(flags, {
+        code: 'NOTIFICATION_THREAD_INVALID',
+        error: '--notificationBotThread requires a non-empty value',
+      });
     }
     out.botThread = thread;
   }
   if (events !== undefined) {
     if (typeof events !== 'string') {
-      console.error('Error: --notificationEvents must be a comma-separated string (e.g. done,blocked,endCondition)');
-      process.exit(2);
+      return exitAgentCliError(flags, {
+        code: 'NOTIFICATION_EVENTS_INVALID',
+        error:
+          '--notificationEvents must be a comma-separated string (e.g. done,blocked,endCondition)',
+      });
     }
     const eventsList = events.split(',').map(s => s.trim()).filter(Boolean);
     if (eventsList.length === 0) {
       // Empty list would silently mean "subscribe to nothing" — almost
       // certainly a typo (`--notificationEvents=,,,` or empty string).
-      console.error('Error: --notificationEvents resolved to an empty list. Pass at least one event (e.g. done,blocked,endCondition) or omit the flag to use the default set.');
-      process.exit(2);
+      return exitAgentCliError(flags, {
+        code: 'NOTIFICATION_EVENTS_INVALID',
+        error:
+          '--notificationEvents resolved to an empty list. Pass at least one event (e.g. done,blocked,endCondition) or omit the flag to use the default set.',
+      });
     }
     out.events = eventsList;
   }
@@ -6122,8 +6669,16 @@ function parseDispatchAtFlag(raw: unknown): number | undefined {
   try {
     return parseDispatchAtValue(raw);
   } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
-    process.exit(2);
+    return exitAgentCliError(
+      {},
+      {
+        code: 'DISPATCH_AT_INVALID',
+        error:
+          err instanceof Error
+            ? err.message.replace(/^Error:\s*/, '')
+            : String(err),
+      },
+    );
   }
 }
 
@@ -6159,15 +6714,25 @@ function parseIntervalMinutesFlag(raw: unknown): number | undefined {
   if (raw === undefined) return undefined;
   const n = typeof raw === 'number' ? raw : Number(raw);
   if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
-    console.error(`Error: --intervalMinutes must be a positive integer (got: ${JSON.stringify(raw)})`);
-    process.exit(2);
+    return exitAgentCliError(
+      {},
+      {
+        code: 'INTERVAL_INVALID',
+        error: `--intervalMinutes must be a positive integer (got: ${JSON.stringify(raw)})`,
+      },
+    );
   }
   if (n < 5) {
     // The Rust scheduler clamps to .max(5), so anything lower would silently
     // be ignored. Reject so the user knows their "every 2 min" turned into
     // "every 5 min" before they ship a misconfigured cadence.
-    console.error(`Error: --intervalMinutes minimum is 5 (got: ${n}). The scheduler enforces this floor; lower values are silently clamped.`);
-    process.exit(2);
+    return exitAgentCliError(
+      {},
+      {
+        code: 'INTERVAL_TOO_SMALL',
+        error: `--intervalMinutes minimum is 5 (got: ${n}). The scheduler enforces this floor; lower values are silently clamped.`,
+      },
+    );
   }
   return n;
 }
@@ -6179,14 +6744,26 @@ function parseIntervalMinutesFlag(raw: unknown): number | undefined {
 if (!process.env.VITEST) {
   main().catch(err => {
     const message = err instanceof Error ? err.message : String(err);
-    if (isSpaceJsonInvocation()) {
-      console.log(JSON.stringify({
-        success: false,
-        code: 'SPACE_CLI_ERROR',
-        error: message,
-        suggestion: 'Check the command leaf help and retry with explicit, non-empty flag values.',
-        suggestedCommand: `myagents ${rawArgs.slice(0, 4).filter(arg => !arg.startsWith('-')).join(' ')} --help`,
-      }, null, 2));
+    if (isJsonInvocation()) {
+      console.log(
+        JSON.stringify(
+          {
+            success: false,
+            code: isSpaceInvocation()
+              ? 'SPACE_CLI_ERROR'
+              : 'MYAGENTS_CLI_ERROR',
+            error: message,
+            suggestion:
+              'Check the command leaf help and retry with explicit, non-empty flag values.',
+            suggestedCommand: `myagents ${rawArgs
+              .slice(0, 4)
+              .filter((arg) => !arg.startsWith('-'))
+              .join(' ')} --help`,
+          },
+          null,
+          2,
+        ),
+      );
     } else {
       console.error(`Error: ${message}`);
     }

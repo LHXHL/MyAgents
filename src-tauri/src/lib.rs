@@ -19,6 +19,7 @@ pub mod device_identity;
 pub mod document_processing;
 mod durable_fs;
 mod durable_journal;
+pub mod external_cli;
 mod filesystem_capacity;
 pub mod floating_ball;
 pub mod floating_ball_pets;
@@ -488,6 +489,9 @@ pub fn run() {
             logger::cmd_record_renderer_boot_event,
             i18n::cmd_get_ui_language_state,
             i18n::cmd_sync_ui_language_from_config,
+            external_cli::cmd_get_external_cli_access,
+            external_cli::cmd_set_external_cli_enabled,
+            external_cli::cmd_reset_external_cli_token,
             i18n::cmd_set_ui_language,
             // Bundled workspace initialization
             commands::cmd_initialize_bundled_workspace,

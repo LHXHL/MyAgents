@@ -38,6 +38,18 @@ function isValidAppConfig(data: unknown): data is AppConfig {
     return data !== null && typeof data === 'object' && !Array.isArray(data);
 }
 
+// Rust owns this private credential envelope. It must never enter the ordinary
+// Renderer AppConfig projection, where unrelated settings consumers and React
+// dev tooling could observe it. Writes preserve the latest on-disk envelope
+// under the same config lock below.
+const PRIVATE_EXTERNAL_CLI_CONFIG_KEY = 'externalCliAccess';
+
+function omitPrivateConfigEnvelope(config: AppConfig): AppConfig {
+    const projected = { ...config } as AppConfig & Record<string, unknown>;
+    delete projected[PRIVATE_EXTERNAL_CLI_CONFIG_KEY];
+    return projected;
+}
+
 // ============= cronNotifications → osNotifications Migration =============
 //
 // Pre-0.2.14 the master notification toggle was named `cronNotifications`
@@ -130,9 +142,9 @@ export function migrateUiLanguageField(config: AppConfig): AppConfig {
 function normalizeLoadedConfig(config: AppConfig): AppConfig {
     normalizeStringifiedJsonFields(config);
     promoteAgentMcpJsonToGlobal(config);
-    return normalizeDeveloperSettings(
+    return omitPrivateConfigEnvelope(normalizeDeveloperSettings(
         normalizeThemeConfigRecord(config as unknown as Record<string, unknown>) as unknown as AppConfig,
-    );
+    ));
 }
 
 export async function ensureManagedCodexProviderDevGateDefault(): Promise<void> {
@@ -340,7 +352,16 @@ async function _writeAppConfigLocked(config: AppConfig): Promise<void> {
     await ensureConfigDir();
     const dir = await getConfigDir();
     const configPath = await join(dir, CONFIG_FILE);
-    await safeWriteJson(configPath, normalized);
+    const latest = await safeLoadJson<AppConfig>(configPath, isValidAppConfig);
+    const privateEnvelope = latest
+        ? (latest as AppConfig & Record<string, unknown>)[PRIVATE_EXTERNAL_CLI_CONFIG_KEY]
+        : undefined;
+    await safeWriteJson(configPath, {
+        ...normalized,
+        ...(privateEnvelope === undefined
+            ? {}
+            : { [PRIVATE_EXTERNAL_CLI_CONFIG_KEY]: privateEnvelope }),
+    });
 }
 
 // ============= Available Providers Cache =============

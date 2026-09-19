@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AdminAppConfig, ProjectSlim } from './admin-config';
 
@@ -50,7 +52,10 @@ vi.mock('./admin-config', async importOriginal => {
   };
 });
 
-import { resolvePersistedAgentWorkspaceRegistry } from './agent-workspace-identity';
+import {
+  registerWorkspaceAgent,
+  resolvePersistedAgentWorkspaceRegistry,
+} from './agent-workspace-identity';
 
 function project(overrides: Partial<ProjectSlim> = {}): ProjectSlim {
   return {
@@ -62,6 +67,8 @@ function project(overrides: Partial<ProjectSlim> = {}): ProjectSlim {
 }
 
 describe('persisted Agent workspace identity', () => {
+  let tempWorkspace: string | null = null;
+
   beforeEach(() => {
     state.config = { defaultPermissionMode: 'auto', agents: [] };
     state.projects = [project()];
@@ -70,6 +77,18 @@ describe('persisted Agent workspace identity', () => {
     state.failConfigOnce = false;
     state.lockTail = Promise.resolve();
   });
+
+  afterEach(() => {
+    if (tempWorkspace) rmSync(tempWorkspace, { recursive: true, force: true });
+    tempWorkspace = null;
+  });
+
+  function workspace(): string {
+    tempWorkspace ??= mkdtempSync(
+      join(process.cwd(), '.myagents-agent-register-'),
+    );
+    return tempWorkspace;
+  }
 
   it('commits Project.agentId before creating the pathless Agent record', async () => {
     const result = await resolvePersistedAgentWorkspaceRegistry();
@@ -176,5 +195,108 @@ describe('persisted Agent workspace identity', () => {
       workspacePath: '/repo/current',
     });
     expect(result.createdAgentIds).toEqual([]);
+  });
+
+  it('registers an existing absolute directory Project-first and is idempotent', async () => {
+    state.projects = [];
+
+    const first = await registerWorkspaceAgent(workspace());
+    const lastOpened = state.projects[0].lastOpened;
+    const second = await registerWorkspaceAgent(workspace());
+
+    expect(first).toMatchObject({
+      created: true,
+      workspacePath: workspace(),
+      archived: false,
+    });
+    expect(second).toMatchObject({
+      created: false,
+      projectId: first.projectId,
+      agentId: first.agentId,
+      workspacePath: workspace(),
+    });
+    expect(state.projects).toHaveLength(1);
+    expect(state.config.agents).toHaveLength(1);
+    expect(state.projects[0].lastOpened).toBe(lastOpened);
+  });
+
+  it('serializes concurrent registration to one Project and Agent identity', async () => {
+    state.projects = [];
+
+    const [first, second] = await Promise.all([
+      registerWorkspaceAgent(workspace()),
+      registerWorkspaceAgent(workspace()),
+    ]);
+
+    expect(first.agentId).toBe(second.agentId);
+    expect(first.projectId).toBe(second.projectId);
+    expect(state.projects).toHaveLength(1);
+    expect(state.config.agents?.map((agent) => agent.id)).toEqual([
+      first.agentId,
+    ]);
+  });
+
+  it('reuses the committed Project identity after an interrupted Agent materialization', async () => {
+    state.projects = [];
+    state.failConfigOnce = true;
+
+    await expect(registerWorkspaceAgent(workspace())).rejects.toMatchObject({
+      code: 'AGENT_MATERIALIZATION_DEFERRED',
+    });
+    const committedAgentId = state.projects[0].agentId;
+    const retried = await registerWorkspaceAgent(workspace());
+
+    expect(retried.agentId).toBe(committedAgentId);
+    expect(state.projects).toHaveLength(1);
+    expect(state.config.agents?.map((agent) => agent.id)).toEqual([
+      committedAgentId,
+    ]);
+  });
+
+  it('reuses a legacy path-backed Agent id when creating its Project selector', async () => {
+    const workspacePath = workspace();
+    state.projects = [];
+    state.config = {
+      defaultPermissionMode: 'auto',
+      agents: [
+        {
+          id: 'legacy-agent',
+          name: 'Legacy',
+          enabled: false,
+          workspacePath,
+        } as unknown as NonNullable<AdminAppConfig['agents']>[number],
+      ],
+    };
+
+    const result = await registerWorkspaceAgent(workspacePath);
+
+    expect(result.agentId).toBe('legacy-agent');
+    expect(state.projects).toEqual([
+      expect.objectContaining({ agentId: 'legacy-agent', path: workspacePath }),
+    ]);
+    expect(state.config.agents).toHaveLength(1);
+  });
+
+  it('fails closed for invalid, non-directory, and archived workspaces', async () => {
+    await expect(registerWorkspaceAgent('relative/path')).rejects.toMatchObject(
+      {
+        code: 'WORKSPACE_PATH_NOT_ABSOLUTE',
+      },
+    );
+    const file = join(workspace(), 'file.txt');
+    writeFileSync(file, 'not a directory');
+    await expect(registerWorkspaceAgent(file)).rejects.toMatchObject({
+      code: 'WORKSPACE_PATH_NOT_DIRECTORY',
+    });
+    await expect(registerWorkspaceAgent('/etc')).rejects.toMatchObject({
+      code: 'WORKSPACE_PATH_UNSAFE',
+    });
+
+    state.projects = [
+      project({ path: workspace(), archivedAt: '2026-09-19T00:00:00.000Z' }),
+    ];
+    await expect(registerWorkspaceAgent(workspace())).rejects.toMatchObject({
+      code: 'WORKSPACE_ARCHIVED',
+    });
   });
 });

@@ -4,8 +4,11 @@
 
 use axum::{
     extract::{DefaultBodyLimit, Query},
-    http::{header::CACHE_CONTROL, HeaderMap, HeaderValue},
+    http::{header::CACHE_CONTROL, HeaderMap, HeaderValue, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{get, post},
+    extract::Request,
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -72,6 +75,21 @@ fn get_sidecar_state() -> Option<&'static crate::sidecar::ManagedSidecarManager>
     SIDECAR_STATE.get()
 }
 
+async fn require_internal_cli_request(request: Request, next: Next) -> Response {
+    if crate::external_cli::internal_request_is_valid(request.headers()) {
+        return next.run(request).await;
+    }
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(serde_json::json!({
+            "ok": false,
+            "code": "internal_caller_required",
+            "error": "Internal MyAgents caller identity is required",
+        })),
+    )
+        .into_response()
+}
+
 fn request_sidecar_generation(headers: &HeaderMap) -> Result<u64, Json<serde_json::Value>> {
     let generation = headers
         .get("x-myagents-sidecar-generation")
@@ -105,6 +123,8 @@ pub async fn start_management_api() -> Result<u16, String> {
 
     let app = Router::new()
         .route("/api/app/config-changed", post(app_config_changed_handler))
+        .route("/api/external-cli/admit", post(external_cli_admit_handler))
+        .route("/api/session/text-page", post(session_text_page_handler))
         .route(
             "/api/runtime/sdk-child/admit",
             post(sdk_child_admit_handler),
@@ -301,7 +321,8 @@ pub async fn start_management_api() -> Result<u16, String> {
         .route("/api/cliproxy/binding/release", post(cliproxy_release_handler).layer(DefaultBodyLimit::max(4096)))
         // Bridge messages carry base64-encoded media attachments (images/files).
         // Default axum 2MB limit is too small — raise to 50MB for this API.
-        .layer(DefaultBodyLimit::max(50 * 1024 * 1024));
+        .layer(DefaultBodyLimit::max(50 * 1024 * 1024))
+        .layer(middleware::from_fn(require_internal_cli_request));
 
     tauri::async_runtime::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
@@ -332,6 +353,107 @@ async fn app_config_changed_handler() -> Json<serde_json::Value> {
                 "error": error.to_string(),
             }))
         }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExternalCliAdmitRequest {
+    sidecar_id: String,
+    token: String,
+}
+
+async fn external_cli_admit_handler(
+    headers: HeaderMap,
+    Json(request): Json<ExternalCliAdmitRequest>,
+) -> (HeaderMap, Json<serde_json::Value>) {
+    if let Err(error) = validate_current_sidecar_request(&headers, &request.sidecar_id) {
+        return no_store_json(error);
+    }
+    match crate::external_cli::authorize_external_token(&request.token) {
+        Ok(admission) => no_store_json(serde_json::json!({
+            "ok": true,
+            "allowed": admission.allowed,
+            "code": admission.code,
+        })),
+        Err(_) => no_store_json(serde_json::json!({
+            "ok": false,
+            "allowed": false,
+            "code": "external_cli_policy_unavailable",
+        })),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionTextPageRequest {
+    session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limit: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    before: Option<String>,
+}
+
+async fn session_text_page_handler(
+    Json(request): Json<SessionTextPageRequest>,
+) -> (HeaderMap, Json<serde_json::Value>) {
+    let Some(manager) = get_sidecar_state() else {
+        return no_store_json(serde_json::json!({
+            "ok": false,
+            "code": "session_owner_unavailable",
+            "error": "Sidecar manager is not initialized",
+        }));
+    };
+    let dispatch = match manager.lock().unwrap().acquire_session_dispatch(&request.session_id) {
+        Ok(dispatch) => dispatch,
+        Err(error) => {
+            return no_store_json(serde_json::json!({
+                "ok": false,
+                "code": "session_owner_unavailable",
+                "error": error,
+            }));
+        }
+    };
+    let Some(dispatch) = dispatch else {
+        return no_store_json(serde_json::json!({ "ok": true, "active": false }));
+    };
+    let url = match dispatch.url_for_path("/api/internal/session/text-page") {
+        Ok(url) => url,
+        Err(error) => {
+            return no_store_json(serde_json::json!({
+                "ok": false,
+                "code": "session_owner_unavailable",
+                "error": error,
+            }));
+        }
+    };
+    let response = crate::local_http::json_client(std::time::Duration::from_secs(10))
+        .post(url)
+        .header(
+            crate::external_cli::INTERNAL_TOKEN_HEADER,
+            crate::external_cli::internal_token(),
+        )
+        .json(&request)
+        .send()
+        .await;
+    match response {
+        Ok(response) => match response.json::<serde_json::Value>().await {
+            Ok(result) => no_store_json(serde_json::json!({
+                "ok": true,
+                "active": true,
+                "result": result,
+            })),
+            Err(error) => no_store_json(serde_json::json!({
+                "ok": false,
+                "code": "session_owner_invalid_response",
+                "error": error.to_string(),
+            })),
+        },
+        Err(error) => no_store_json(serde_json::json!({
+            "ok": false,
+            "code": "session_owner_unavailable",
+            "error": error.to_string(),
+        })),
     }
 }
 
@@ -5240,8 +5362,25 @@ mod tests {
             .expect("management API should start");
         let client = crate::local_http::json_client(std::time::Duration::from_secs(5));
 
+        let unauthorized = client
+            .post(format!("http://127.0.0.1:{port}/api/space/goal-list"))
+            .json(&serde_json::json!({
+                "spaceSlug": "official",
+                "includeArchived": false,
+                "workspacePath": user_workspace.path()
+            }))
+            .send()
+            .await
+            .expect("unauthenticated request")
+            .status();
+        assert_eq!(unauthorized, StatusCode::UNAUTHORIZED);
+
         let goals = client
             .post(format!("http://127.0.0.1:{port}/api/space/goal-list"))
+            .header(
+                crate::external_cli::INTERNAL_TOKEN_HEADER,
+                crate::external_cli::internal_token(),
+            )
             .json(&serde_json::json!({
                 "spaceSlug": "official",
                 "includeArchived": false,
@@ -5261,6 +5400,10 @@ mod tests {
 
         let updated = client
             .post(format!("http://127.0.0.1:{port}/api/space/issue-update"))
+            .header(
+                crate::external_cli::INTERNAL_TOKEN_HEADER,
+                crate::external_cli::internal_token(),
+            )
             .json(&serde_json::json!({
                 "spaceSlug": "official",
                 "issueId": "iss_mock_001",

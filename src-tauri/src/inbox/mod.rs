@@ -22,4 +22,4 @@ pub mod types;
 pub mod watch;
 
 pub use deliver::cmd_inbox_deliver;
-pub use types::{InboxMessageKind, PendingInboxMessage};
+pub use types::{InboxMessageKind, InboxSourceKind, PendingInboxMessage};

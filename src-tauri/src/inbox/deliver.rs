@@ -24,7 +24,7 @@ use tauri::AppHandle;
 use crate::sidecar::{ManagedSidecarManager, SidecarOwner};
 use crate::{ulog_error, ulog_info, ulog_warn};
 
-use super::types::PendingInboxMessage;
+use super::types::{InboxSourceKind, PendingInboxMessage};
 
 /// Drain handler 投递结果(对应 sidecar /api/inbox/drain 的响应)
 #[derive(Debug, Serialize, Deserialize)]
@@ -56,7 +56,10 @@ pub enum DeliverOutcome {
 pub struct FreshSessionStartRequest {
     pub agent_id: String,
     pub workspace_path: String,
-    pub from_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_session_id: Option<String>,
+    #[serde(default)]
+    pub source_kind: InboxSourceKind,
     pub from_label: String,
     pub prompt: String,
     pub reply_back: bool,
@@ -107,6 +110,10 @@ async fn http_post_drain(port: u16, message: &PendingInboxMessage) -> DeliverOut
 
     match client
         .post(&url)
+        .header(
+            crate::external_cli::INTERNAL_TOKEN_HEADER,
+            crate::external_cli::internal_token(),
+        )
         .json(&serde_json::json!({ "messages": [message] }))
         .send()
         .await
@@ -161,6 +168,10 @@ async fn http_post_fresh_start(
     let client = crate::local_http::json_client(Duration::from_secs(30));
     let response = client
         .post(&url)
+        .header(
+            crate::external_cli::INTERNAL_TOKEN_HEADER,
+            crate::external_cli::internal_token(),
+        )
         .json(&serde_json::json!({
             "agentId": agent_id,
             "message": message
@@ -190,13 +201,27 @@ pub async fn start_fresh_session(
     request: FreshSessionStartRequest,
 ) -> FreshSessionStartOutcome {
     let session_id = uuid::Uuid::new_v4().to_string();
-    let message = PendingInboxMessage::new_request(
-        request.from_session_id,
-        request.from_label,
-        session_id.clone(),
-        request.prompt,
-        request.reply_back,
-    );
+    let message = if request.source_kind == InboxSourceKind::ExternalCli {
+        PendingInboxMessage::new_external_request(session_id.clone(), request.prompt.clone())
+    } else {
+        let Some(from_session_id) = request.from_session_id.clone() else {
+            return FreshSessionStartOutcome {
+                status: "rejected".to_string(),
+                agent_id: request.agent_id,
+                session_id,
+                message_id: uuid::Uuid::new_v4().to_string(),
+                reply_back: request.reply_back,
+                reason: Some("internal fresh Session request requires a source Session".to_string()),
+            };
+        };
+        PendingInboxMessage::new_request(
+            from_session_id,
+            request.from_label.clone(),
+            session_id.clone(),
+            request.prompt.clone(),
+            request.reply_back,
+        )
+    };
     let message_id = message.message_id.clone();
     let owner_id = format!("inbox-start-{}", uuid::Uuid::new_v4());
     let transient_owner = SidecarOwner::Agent(owner_id);
@@ -382,7 +407,7 @@ where
     ulog_info!(
         "[inbox] delivering kind={:?} from={} to={} reply_back={} msg_id={} transient_owner={}",
         message.kind,
-        message.from_session_id,
+        message.from_session_id.as_deref().unwrap_or("external-cli"),
         to_sid,
         message.reply_back,
         message.message_id,
@@ -515,7 +540,8 @@ mod tests {
         let request = FreshSessionStartRequest {
             agent_id: "agent-1".to_string(),
             workspace_path: "/workspace".to_string(),
-            from_session_id: "source-session".to_string(),
+            from_session_id: Some("source-session".to_string()),
+            source_kind: InboxSourceKind::InternalSession,
             from_label: "Source Agent".to_string(),
             prompt: "Review this".to_string(),
             reply_back: true,
@@ -527,9 +553,35 @@ mod tests {
                 "agentId": "agent-1",
                 "workspacePath": "/workspace",
                 "fromSessionId": "source-session",
+                "sourceKind": "internal-session",
                 "fromLabel": "Source Agent",
                 "prompt": "Review this",
                 "replyBack": true,
+            })
+        );
+    }
+
+    #[test]
+    fn fresh_external_start_has_no_source_session_or_reply_channel() {
+        let request = FreshSessionStartRequest {
+            agent_id: "agent-1".to_string(),
+            workspace_path: "/workspace".to_string(),
+            from_session_id: None,
+            source_kind: InboxSourceKind::ExternalCli,
+            from_label: "External CLI".to_string(),
+            prompt: "Review this".to_string(),
+            reply_back: false,
+        };
+
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({
+                "agentId": "agent-1",
+                "workspacePath": "/workspace",
+                "sourceKind": "external-cli",
+                "fromLabel": "External CLI",
+                "prompt": "Review this",
+                "replyBack": false,
             })
         );
     }

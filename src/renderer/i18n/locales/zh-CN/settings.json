@@ -20,9 +20,43 @@
       "usageStats": "使用统计",
       "general": "通用设置",
       "proxy": "网络代理",
+      "externalCli": "外部调用",
       "shortcuts": "快捷键",
       "about": "关于"
     }
+  },
+  "externalCli": {
+    "title": "外部调用",
+    "description": "让本机脚本通过安装包自带的 myagents CLI 调用 MyAgents。App 必须保持运行。",
+    "enableTitle": "MyAgents CLI 外部调用",
+    "enableDescription": "默认关闭。开启后，只有携带当前 token 且属于公开清单的命令会被接受。",
+    "enabledToast": "已开启 CLI 外部调用",
+    "disabledToast": "已关闭 CLI 外部调用",
+    "loadFailed": "读取外部调用设置失败：{{message}}",
+    "saveFailed": "保存外部调用设置失败：{{message}}",
+    "tokenLabel": "访问 token",
+    "showToken": "显示 token",
+    "hideToken": "隐藏 token",
+    "copyToken": "复制 token",
+    "tokenCopied": "Token 已复制",
+    "createdAt": "创建时间：{{value}}",
+    "resetToken": "重置 token",
+    "resetToast": "Token 已重置，旧 token 已失效",
+    "usageTitle": "本机调用说明",
+    "usageDescription": "在普通终端中设置 MYAGENTS_API_TOKEN。帮助命令无需连接 Host；业务命令会自动发现运行中的 App。",
+    "launcherPath": "CLI 路径",
+    "pathCopied": "CLI 路径已复制",
+    "example": "示例",
+    "copyExample": "复制示例",
+    "exampleCopied": "示例已复制",
+    "publicCommands": "公开命令",
+    "commonErrors": "常见错误",
+    "errorAppUnavailable": "无法连接：请启动 MyAgents 后重试；CLI 不会自动拉起 App。",
+    "errorAccessDenied": "开关关闭或 token 无效：请在此开启并重新设置当前 token。",
+    "errorCapabilityClosed": "能力未开放：请使用公开命令清单；token 不会解锁内部命令。",
+    "securityWarning": "持有 token 的本机程序可以把当前 OS 用户和 MyAgents 可访问的任意合格目录注册为 Workspace Agent，并让 Agent 读取或操作该工作区。请像保管密码一样保管 token。",
+    "receiptWarning": "Session start/send 的成功回执只表示请求已被接受或投递，不代表 AI 已执行成功。使用 session get 主动读取当前文本历史。",
+    "copyFailed": "复制失败"
   },
   "general": {
     "title": "通用设置",
@@ -313,7 +347,11 @@
         "authorization_inactive": "这次授权已结束，请重新连接。"
       },
       "payment": {
-        "recovery": {"reauthorize_api_key":"登录已失效，请关闭面板后重新连接账户。","api_key_quota":"当前授权额度已用完，请前往官网管理授权。","top_up_balance":"账户余额不足，请前往官网查看账户状态后重试。"},
+        "recovery": {
+          "reauthorize_api_key": "登录已失效，请关闭面板后重新连接账户。",
+          "api_key_quota": "当前授权额度已用完，请前往官网管理授权。",
+          "top_up_balance": "账户余额不足，请前往官网查看账户状态后重试。"
+        },
         "action": "充值",
         "title": "账户充值",
         "subtitle": "充值到当前绑定的词元跳动账户。",

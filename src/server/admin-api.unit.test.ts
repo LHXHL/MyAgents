@@ -549,6 +549,29 @@ describe('admin-api help registry', () => {
   });
 });
 
+describe('external CLI private config envelope', () => {
+  it('cannot be read or mutated through generic config handlers', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      externalCliAccess: {
+        enabled: true,
+        token: 'mae_private',
+        createdAt: '2026-09-19T00:00:00.000Z',
+      },
+    });
+    const { handleConfigGet, handleConfigSet } = await import('./admin-api');
+
+    expect(handleConfigGet({ key: 'externalCliAccess' })).toMatchObject({ success: false });
+    await expect(handleConfigSet({
+      key: 'externalCliAccess.enabled',
+      value: false,
+    })).resolves.toMatchObject({ success: false });
+    expect(readConfig().externalCliAccess).toMatchObject({
+      enabled: true,
+      token: 'mae_private',
+    });
+  });
+});
+
 describe('admin-api Skill add preview contract', () => {
   it('keeps a single-Skill dry-run to one preview-only request', async () => {
     const cancellation = await import('./utils/cancellation');

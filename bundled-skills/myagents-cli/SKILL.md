@@ -161,6 +161,7 @@ myagents model verify <id> [--model <某个具体模型>]      # 实际发一条
 
 ```bash
 myagents agent list                                     # 列出所有 Agent
+myagents agent create --workspacePath /absolute/path    # 把既有目录幂等注册成 Project-backed Agent
 myagents agent current --json                          # 只看当前 Agent/workspace/Session
 myagents agent list --active                            # 只列出未归档 Agent 工作区
 myagents agent list --archived                          # 只列出已归档 Agent 工作区
@@ -181,6 +182,7 @@ myagents agent runtime-status                           # 看所有 Agent 的实
 
 **何时用：**
 - "我那个 Agent 现在啥配置" → `agent show <id>`，按 runtime 正确解析过 effective 值
+- "把这个本地目录注册成 Agent 工作区" → `agent create --workspacePath <绝对且已存在的目录>`；不创建目录，不初始化 Git/模板
 - "把 Agent X 的 model 改成 Y" → `agent set X model '"Y"'`（注意 JSON 字符串要双层引号）
 - "把 permissionMode 改成 plan" → `agent set X permissionMode '"plan"'`
 - "项目结束了，先收起来" → `agent archive <id>`；需要恢复时用 `agent unarchive <id>`
@@ -206,6 +208,17 @@ myagents diagnose runtime codex                         # 同上的 sugar 写法
 - 「@oai/artifact-tool 我从终端能调用、MyAgents 里就不行」/「Codex MCP 在 MyAgents 里看不到」/「Codex 是不是用错代理了」→ `runtime diagnose codex`。它 spawn 一个临时 codex app-server，跑 `getAuthStatus` / `experimentalFeature/list` / `mcpServerStatus/list` / `app/list` 四个 RPC，把 Codex 自己看到的状态原样吐出来，省得猜。effectiveEnv 节里能看到 MyAgents 注入的代理是不是真到了子进程，feature flag 是不是真生效。
 
 每个外部 runtime 有自己的动态 model 清单（Codex/Gemini 会 spawn CLI 查）和自己的 permissionMode 枚举（`suggest` / `auto-edit` / `full-auto` ≠ 内置的 `auto` / `plan` / `fullAgency`）——别混。
+
+### Session 协作与只读历史
+
+```bash
+myagents session list --agent <agentId>
+myagents session start --agent <agentId> --prompt-file <file>
+myagents session send <sessionId> --prompt-file <file>
+myagents session get <sessionId> [--limit 5] [--before <messageId>] [--json]
+```
+
+`session get` 只读可见 user/assistant 正文，默认最近 5 条并按旧到新返回；工具调用、思考和隐藏协议不会作为 JSON 文本泄漏。`before` 排除锚点，用当前页第一条 message id 向前翻页。外部普通终端调用 start/send 时没有来源 Session，因此是 one-way；App 内 Agent 调用仍按 leaf help 的 reply 语义执行。
 
 ### Skills（skill）
 

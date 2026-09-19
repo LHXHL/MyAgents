@@ -8,6 +8,7 @@ import {
   isCanonicalManagedCodexRuntimeVersion,
 } from '../../shared/config-types';
 import type { RuntimeEnvPolicy, RuntimeSource } from '../../shared/types/runtime';
+import { INTERNAL_CLI_TOKEN_ENV } from '../../shared/externalCliCapabilities';
 import { ensureDirSync } from '../utils/fs-utils';
 import { applyProviderProxyPolicyToEnv } from '../proxy-state';
 import { augmentedProcessEnv, resolveCommand } from './env-utils';
@@ -73,6 +74,10 @@ const MANAGED_SAFE_ENV_KEYS = [
   'MYAGENTS_PORT',
   'MYAGENTS_MANAGEMENT_PORT',
   'MYAGENTS_VERSION',
+  // App-lifecycle capability used only to distinguish MyAgents-owned CLI
+  // calls from ordinary local processes. It is intentionally separate from
+  // provider auth and the persistent external API token.
+  INTERNAL_CLI_TOKEN_ENV,
   'MYAGENTS_PROXY_INJECTED',
   ...PROXY_ENV_KEYS,
 ] as const;
@@ -319,7 +324,7 @@ function buildManagedCodexEnv(
   // but keep an explicit scrub so future safe-key additions cannot accidentally
   // leak credentials into the managed Codex process.
   for (const key of Object.keys(env)) {
-    if (looksLikeAuthEnvName(key)) delete env[key];
+    if (key !== INTERNAL_CLI_TOKEN_ENV && looksLikeAuthEnvName(key)) delete env[key];
   }
   applyProviderProxyPolicyToEnv(env, CODEX_SUBSCRIPTION_PROVIDER_ID);
 

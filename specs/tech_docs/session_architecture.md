@@ -174,7 +174,7 @@ Goal 的详细产品行为和 Task/Goal provider routing 见 [`task_center.md`](
 
 ### 5.2 Session Inbox 与事件
 
-`myagents session start/send/watch` 使用结构化 session event，不是普通文本拼接。事件经 Admin/Management API 投递到目标 Session 的既有 Inbox/SessionEngine admission，并放在隐藏的 `system-reminder` envelope 中；来自其它 Session 的正文必须 neutralize 协议标签。
+`myagents session start/send/watch` 使用结构化 session event，不是普通文本拼接。事件经 Admin/Management API 投递到目标 Session 的既有 Inbox/SessionEngine admission，并放在隐藏的 `system-reminder` envelope 中；来自其它 Session 的正文必须 neutralize 协议标签。wire protocol 以 `sourceKind` 显式区分 `internal-session` 与 `external-cli`：前者要求真实 `fromSessionId` 并可回投，后者没有来源 Session 且不注册 reply，不能用空串或用户 payload 猜来源。
 
 - `send.request` 投递工作；Renderer 只把它的可见 payload 投影为用户气泡；
 - `send.result` 在目标 turn terminal 后回传结果；
@@ -182,6 +182,8 @@ Goal 的详细产品行为和 Task/Goal provider routing 见 [`task_center.md`](
 - Task Comment 复用同一 Inbox 与 Session FIFO，但通过 task-specific event 和显式回复命令回写 Task，不自动复制普通 assistant 输出。
 
 backend-created target 只有在 Runtime dispatch claim 成功后才发布 prepared Session；ACK 不明时保留 identity，不能自动重试导致重复执行。
+
+`myagents session get` 不进入 Inbox、不唤醒 Runtime，也不创建 turn。它按 message id 合并持久 snapshot、活跃内存与 streaming overlay，先严格投影 user/assistant 的可见顶层 text，再执行 `before`/`limit` 分页；工具、思考、隐藏 reminder 和无 text 结构块不回退为 JSON。锚点只在可读文本序列内成立，失效时明确报错，避免静默重复或漏读。
 
 ### 5.3 Registered Agent origin
 

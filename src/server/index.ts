@@ -1281,9 +1281,20 @@ async function routeAdminApi(
   pathname: string,
   payload: Record<string, unknown>,
   signal?: AbortSignal,
+  caller: import('./external-cli-admission').AdminCaller = { kind: 'internal' },
 ): Promise<Record<string, unknown>> {
   // Strip the prefix for matching
   const route = pathname.replace('/api/admin/', '');
+  if (
+    caller.kind === 'external-cli' &&
+    (route.startsWith('task/') || route.startsWith('cron/'))
+  ) {
+    // Caller provenance is Host-owned. Environment variables and payload
+    // fields supplied by an ordinary process cannot impersonate an Agent.
+    payload = { ...payload, actor: 'user', source: 'cli' };
+    delete payload.currentSessionId;
+    delete payload.localSessionId;
+  }
 
   // Lazy-load admin-api (~150ms on first hit, cached thereafter)
   const api = await getAdminApi();
@@ -1334,7 +1345,14 @@ async function routeAdminApi(
   if (route === 'model/verify') return await api.handleModelVerify(payload as Parameters<typeof api.handleModelVerify>[0]);
 
   // Agent commands
-  if (route === 'agent/list') return await api.handleAgentList(payload as Parameters<typeof api.handleAgentList>[0]);
+  if (route === 'agent/create')
+    return await api.handleAgentCreate(
+      payload as Parameters<typeof api.handleAgentCreate>[0],
+    );
+  if (route === 'agent/list')
+    return await api.handleAgentList(
+      payload as Parameters<typeof api.handleAgentList>[0],
+    );
   if (route === 'agent/current') return await api.handleAgentCurrent();
   if (route === 'agent/show') return await api.handleAgentShow(payload as Parameters<typeof api.handleAgentShow>[0]);
   if (route === 'agent/enable') return api.handleAgentEnable(payload as Parameters<typeof api.handleAgentEnable>[0]);
@@ -1425,19 +1443,67 @@ async function routeAdminApi(
   if (route === 'config/set') return api.handleConfigSet(payload as Parameters<typeof api.handleConfigSet>[0]);
 
   // Task Center — thoughts + tasks (v0.1.69)
-  if (route === 'task/list') return await api.handleTaskList(payload as Parameters<typeof api.handleTaskList>[0]);
-  if (route === 'task/get') return await api.handleTaskGet(payload as Parameters<typeof api.handleTaskGet>[0]);
-  if (route === 'task/comments') return await api.handleTaskComments(payload as Parameters<typeof api.handleTaskComments>[0]);
-  if (route === 'task/comment') return await api.handleTaskComment(payload as Parameters<typeof api.handleTaskComment>[0]);
-  if (route === 'task/create-direct') return await api.handleTaskCreateDirect(payload);
-  if (route === 'task/create-attached') return await api.handleTaskCreateAttached(payload);
-  if (route === 'task/run') return await api.handleTaskRun(payload as Parameters<typeof api.handleTaskRun>[0]);
-  if (route === 'task/run-now') return await api.handleTaskRunNow(payload as Parameters<typeof api.handleTaskRunNow>[0]);
-  if (route === 'task/rerun') return await api.handleTaskRerun(payload as Parameters<typeof api.handleTaskRerun>[0]);
-  if (route === 'task/trigger/validate') return await api.handleTaskTriggerValidate(payload as Parameters<typeof api.handleTaskTriggerValidate>[0]);
-  if (route === 'task/trigger/test') return await api.handleTaskTriggerTest(payload);
-  if (route === 'task/check-now') return await api.handleTaskCheckNow(payload as Parameters<typeof api.handleTaskCheckNow>[0]);
-  if (route === 'task/reset-checkpoint') return await api.handleTaskResetCheckpoint(payload as Parameters<typeof api.handleTaskResetCheckpoint>[0]);
+  if (route === 'task/list')
+    return await api.handleTaskList(
+      payload as Parameters<typeof api.handleTaskList>[0],
+    );
+  if (route === 'task/get')
+    return await api.handleTaskGet(
+      payload as Parameters<typeof api.handleTaskGet>[0],
+    );
+  if (route === 'task/comments')
+    return await api.handleTaskComments(
+      payload as Parameters<typeof api.handleTaskComments>[0],
+    );
+  if (route === 'task/comment')
+    return await api.handleTaskComment(
+      payload as Parameters<typeof api.handleTaskComment>[0],
+    );
+  if (route === 'task/create-direct') {
+    if (
+      caller.kind === 'external-cli' &&
+      (typeof payload.workspaceId !== 'string' ||
+        !payload.workspaceId.trim() ||
+        typeof payload.workspacePath !== 'string' ||
+        !payload.workspacePath.trim())
+    ) {
+      return {
+        success: false,
+        code: 'EXTERNAL_TASK_WORKSPACE_REQUIRED',
+        error:
+          'External task create-direct requires explicit --workspaceId and --workspacePath values.',
+      };
+    }
+    return await api.handleTaskCreateDirect(payload);
+  }
+  if (route === 'task/create-attached')
+    return await api.handleTaskCreateAttached(payload);
+  if (route === 'task/run')
+    return await api.handleTaskRun(
+      payload as Parameters<typeof api.handleTaskRun>[0],
+    );
+  if (route === 'task/run-now')
+    return await api.handleTaskRunNow(
+      payload as Parameters<typeof api.handleTaskRunNow>[0],
+    );
+  if (route === 'task/rerun')
+    return await api.handleTaskRerun(
+      payload as Parameters<typeof api.handleTaskRerun>[0],
+    );
+  if (route === 'task/trigger/validate')
+    return await api.handleTaskTriggerValidate(
+      payload as Parameters<typeof api.handleTaskTriggerValidate>[0],
+    );
+  if (route === 'task/trigger/test')
+    return await api.handleTaskTriggerTest(payload);
+  if (route === 'task/check-now')
+    return await api.handleTaskCheckNow(
+      payload as Parameters<typeof api.handleTaskCheckNow>[0],
+    );
+  if (route === 'task/reset-checkpoint')
+    return await api.handleTaskResetCheckpoint(
+      payload as Parameters<typeof api.handleTaskResetCheckpoint>[0],
+    );
   if (route === 'task/update') return await api.handleTaskUpdate(payload);
   if (route === 'task/update-status') return await api.handleTaskUpdateStatus(payload);
   if (route === 'task/append-session') return await api.handleTaskAppendSession(payload as Parameters<typeof api.handleTaskAppendSession>[0]);
@@ -1476,9 +1542,20 @@ async function routeAdminApi(
   if (route === 'session/list') {
     return await api.handleSessionList(payload as Parameters<typeof api.handleSessionList>[0]);
   }
+  if (route === 'session/get') {
+    return await api.handleSessionGet(
+      payload as Parameters<typeof api.handleSessionGet>[0],
+    );
+  }
   if (route === 'session/start') {
-    const { handleAdminSessionStart } = await import('./inbox/start-admin-handler');
-    const result = await handleAdminSessionStart(getRuntimeSessionIdForRequest(), payload);
+    const { handleAdminSessionStart } = await import(
+      './inbox/start-admin-handler'
+    );
+    const result = await handleAdminSessionStart(
+      getRuntimeSessionIdForRequest(),
+      payload,
+      caller.kind === 'external-cli' ? 'external-cli' : 'internal-session',
+    );
     return result.status >= 200 && result.status < 300
       ? { success: true, ...(result.response as Record<string, unknown>) }
       : {
@@ -1493,9 +1570,14 @@ async function routeAdminApi(
     const sessionRequest = {
       toSessionId: typeof payload.toSessionId === 'string' ? payload.toSessionId : '',
       prompt: typeof payload.prompt === 'string' ? payload.prompt : '',
-      replyBack: payload.replyBack !== false,
+      replyBack:
+        caller.kind === 'external-cli' ? false : payload.replyBack !== false,
     };
-    const result = await handleAdminInbox(getRuntimeSessionIdForRequest(), sessionRequest);
+    const result = await handleAdminInbox(
+      getRuntimeSessionIdForRequest(),
+      sessionRequest,
+      caller.kind === 'external-cli' ? 'external-cli' : 'internal-session',
+    );
     // PRD 0.2.18 cross-review CC HIGH #4 — the previous shape spread
     // `result.response` AFTER `error: string`, so the nested `error: { code,
     // message }` object overwrote the string. CLI printResult then rendered
@@ -4525,11 +4607,28 @@ async function main() {
       // ============= ADMIN API (Self-Config CLI) =============
       if (pathname.startsWith('/api/admin/') && request.method === 'POST') {
         try {
-          const payload = pathname === '/api/admin/status'
-            ? {}
-            : await request.json().catch(() => ({})) as Record<string, unknown>;
+          const route = pathname.slice('/api/admin/'.length);
+          const { admitAdminRequest, isAdminAdmissionFailure } = await import(
+            './external-cli-admission'
+          );
+          const admission = await admitAdminRequest(request, route);
+          if (isAdminAdmissionFailure(admission)) {
+            return jsonResponse(admission.response, admission.status);
+          }
+          const payload =
+            pathname === '/api/admin/status'
+              ? {}
+              : ((await request.json().catch(() => ({}))) as Record<
+                  string,
+                  unknown
+                >);
 
-          const result = await routeAdminApi(pathname, payload, request.signal);
+          const result = await routeAdminApi(
+            pathname,
+            payload,
+            request.signal,
+            admission,
+          );
           return jsonResponse(result, result.success ? 200 : 400);
         } catch (error) {
           console.error(`[admin] ${pathname} error:`, error);
@@ -8666,6 +8765,57 @@ description: >
       //
       // /api/inbox/drain remains as the internal sidecar-to-sidecar endpoint
       // that Rust `cmd_inbox_deliver` POSTs to.
+
+      if (
+        (pathname === '/api/inbox/start' ||
+          pathname === '/api/inbox/drain' ||
+          pathname === '/api/internal/session/text-page') &&
+        request.method === 'POST'
+      ) {
+        const { hasValidInternalCliCredential } = await import(
+          './external-cli-admission'
+        );
+        if (!hasValidInternalCliCredential(request)) {
+          return jsonResponse(
+            {
+              success: false,
+              code: 'INTERNAL_CALLER_REQUIRED',
+              error: 'Internal MyAgents caller identity is required.',
+            },
+            401,
+          );
+        }
+      }
+
+      if (
+        pathname === '/api/internal/session/text-page' &&
+        request.method === 'POST'
+      ) {
+        try {
+          const input = (await request.json()) as {
+            sessionId: string;
+            limit?: number;
+            before?: string;
+          };
+          const { readLocalSessionTextPage } = await import(
+            './session-text-projection'
+          );
+          return jsonResponse(await readLocalSessionTextPage(input));
+        } catch (error) {
+          const code =
+            error instanceof Error && 'code' in error
+              ? String((error as Error & { code: unknown }).code)
+              : 'SESSION_GET_FAILED';
+          return jsonResponse(
+            {
+              success: false,
+              code,
+              error: error instanceof Error ? error.message : String(error),
+            },
+            400,
+          );
+        }
+      }
 
       // POST /api/inbox/start — Fresh Session admission. Unlike ordinary
       // drain, this waits only for Runtime dispatch acceptance so prepared
