@@ -161,10 +161,10 @@ export function ExternalCliSettingsSection() {
             aria-checked={state?.enabled === true}
             disabled={!state || busy}
             onClick={() => void updateEnabled(!(state?.enabled === true))}
-            className={`relative h-6 w-11 rounded-full transition-colors ${state?.enabled ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'} disabled:opacity-50`}
+            className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${state?.enabled ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'} disabled:opacity-50`}
           >
             <span
-              className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${state?.enabled ? 'translate-x-5' : 'translate-x-0.5'}`}
+              className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${state?.enabled ? 'translate-x-5' : 'translate-x-0'}`}
             />
           </button>
         </div>

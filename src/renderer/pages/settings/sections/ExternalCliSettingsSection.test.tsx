@@ -138,4 +138,17 @@ describe('ExternalCliSettingsSection', () => {
     await user.click(screen.getByLabelText('Show token'));
     expect(screen.getByText('mae_test_token')).toBeInTheDocument();
   });
+
+  it('anchors the toggle thumb inside the fixed-width settings track', async () => {
+    renderSection();
+
+    const toggle = await screen.findByRole('switch');
+    expect(toggle).toHaveClass('h-6', 'w-11', 'shrink-0');
+    expect(toggle.querySelector('span')).toHaveClass(
+      'left-0.5',
+      'top-0.5',
+      'translate-x-0',
+      'bg-[var(--toggle-thumb)]',
+    );
+  });
 });
