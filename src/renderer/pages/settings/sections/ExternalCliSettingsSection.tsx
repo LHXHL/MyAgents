@@ -14,31 +14,44 @@ import { useTranslation } from 'react-i18next';
 import { useToast } from '@/components/Toast';
 import { copyPlainText } from '@/utils/clipboard';
 import { listenWithCleanup } from '@/utils/tauriListen';
-import { EXTERNAL_CLI_PUBLIC_COMMANDS } from '../../../../shared/externalCliCapabilities';
 
 interface ExternalCliAccessState {
   enabled: boolean;
   token?: string;
   createdAt?: string;
   launcherPath: string;
+  skillPath: string;
+  skillReady: boolean;
 }
 
 export function ExternalCliSettingsSection() {
   const { t, i18n } = useTranslation('settings');
   const toast = useToast();
   const [state, setState] = useState<ExternalCliAccessState | null>(null);
+  const [refreshing, setRefreshing] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [revealed, setRevealed] = useState(false);
   const requestRevision = useRef(0);
 
   const refresh = useCallback(async () => {
     const revision = ++requestRevision.current;
+    setRefreshing(true);
+    setLoadFailed(false);
     try {
       const next = await invoke<ExternalCliAccessState>(
         'cmd_get_external_cli_access',
       );
-      if (revision === requestRevision.current) setState(next);
+      if (revision === requestRevision.current) {
+        setState(next);
+        setRefreshing(false);
+        setLoadFailed(false);
+      }
     } catch (error) {
+      if (revision === requestRevision.current) {
+        setRefreshing(false);
+        setLoadFailed(true);
+      }
       toast.error(t('externalCli.loadFailed', { message: String(error) }));
     }
   }, [t, toast]);
@@ -126,10 +139,17 @@ export function ExternalCliSettingsSection() {
     [t, toast],
   );
 
-  const launcher = state?.launcherPath ?? 'myagents';
-  const example = launcher.toLowerCase().endsWith('.cmd')
-    ? `$env:MYAGENTS_API_TOKEN = "<token>"\n& "${launcher}" agent list --json`
-    : `export MYAGENTS_API_TOKEN="<token>"\n"${launcher}" agent list --json`;
+  const tokenCommand = state?.launcherPath.toLowerCase().endsWith('.cmd')
+    ? '$env:MYAGENTS_API_TOKEN = "<token>"'
+    : 'export MYAGENTS_API_TOKEN="<token>"';
+  const promptReady = state?.skillReady === true && !refreshing && !loadFailed;
+  const handoffPrompt = promptReady
+    ? t('externalCli.handoffPrompt', {
+        skillPath: state.skillPath,
+        launcherPath: state.launcherPath,
+        tokenCommand,
+      })
+    : '';
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 px-8 py-8">
@@ -237,69 +257,43 @@ export function ExternalCliSettingsSection() {
             {t('externalCli.usageDescription')}
           </p>
         </div>
-        <div>
-          <p className="text-xs font-medium text-[var(--ink-muted)]">
-            {t('externalCli.launcherPath')}
-          </p>
-          <div className="mt-1 flex gap-2">
-            <code className="min-w-0 flex-1 overflow-hidden text-ellipsis rounded-lg bg-[var(--paper-inset)] px-3 py-2 text-xs text-[var(--ink)]">
-              {launcher}
-            </code>
-            <button
-              type="button"
-              onClick={() => void copy(launcher, 'externalCli.pathCopied')}
-              className="rounded-lg border border-[var(--line)] p-2 text-[var(--ink-muted)] hover:text-[var(--ink)]"
-            >
-              <Copy className="h-4 w-4" />
-            </button>
+        {promptReady ? (
+          <div>
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-medium text-[var(--ink-muted)]">
+                {t('externalCli.promptLabel')}
+              </p>
+              <button
+                type="button"
+                onClick={() =>
+                  void copy(handoffPrompt, 'externalCli.promptCopied')
+                }
+                className="text-xs text-[var(--accent)] hover:underline"
+              >
+                {t('externalCli.copyPrompt')}
+              </button>
+            </div>
+            <pre className="mt-1 whitespace-pre-wrap break-words rounded-lg bg-[var(--paper-inset)] p-3 text-xs leading-5 text-[var(--ink)]">
+              {handoffPrompt}
+            </pre>
           </div>
-        </div>
-        <div>
-          <div className="flex items-center justify-between">
-            <p className="text-xs font-medium text-[var(--ink-muted)]">
-              {t('externalCli.example')}
-            </p>
-            <button
-              type="button"
-              onClick={() => void copy(example, 'externalCli.exampleCopied')}
-              className="text-xs text-[var(--accent)] hover:underline"
-            >
-              {t('externalCli.copyExample')}
-            </button>
-          </div>
-          <pre className="mt-1 overflow-x-auto rounded-lg bg-[var(--paper-inset)] p-3 text-xs text-[var(--ink)]">
-            {example}
-          </pre>
-        </div>
-        <div>
-          <p className="text-xs font-medium text-[var(--ink-muted)]">
-            {t('externalCli.publicCommands')}
+        ) : (
+          <p role="status" className="text-xs text-[var(--ink-muted)]">
+            {t(
+              refreshing
+                ? 'externalCli.promptLoading'
+                : loadFailed
+                  ? 'externalCli.promptLoadFailed'
+                  : state
+                    ? 'externalCli.guideUnavailable'
+                    : 'externalCli.promptLoading',
+            )}
           </p>
-          <ul className="mt-2 grid gap-1 text-xs text-[var(--ink-secondary)] sm:grid-cols-2">
-            {EXTERNAL_CLI_PUBLIC_COMMANDS.map((command) => (
-              <li key={command}>
-                <code>myagents {command}</code>
-              </li>
-            ))}
-          </ul>
-        </div>
-        <div>
-          <p className="text-xs font-medium text-[var(--ink-muted)]">
-            {t('externalCli.commonErrors')}
-          </p>
-          <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-[var(--ink-secondary)]">
-            <li>{t('externalCli.errorAppUnavailable')}</li>
-            <li>{t('externalCli.errorAccessDenied')}</li>
-            <li>{t('externalCli.errorCapabilityClosed')}</li>
-          </ul>
-        </div>
+        )}
         <div className="flex gap-2 rounded-lg bg-[var(--warning-bg)] p-3 text-xs text-[var(--warning)]">
           <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
           <p>{t('externalCli.securityWarning')}</p>
         </div>
-        <p className="text-xs text-[var(--ink-muted)]">
-          {t('externalCli.receiptWarning')}
-        </p>
       </section>
     </div>
   );

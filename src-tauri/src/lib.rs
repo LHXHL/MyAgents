@@ -1007,10 +1007,21 @@ pub fn run() {
             // deterministic launchers pointing back to this executable. A
             // failure must not brick the Desktop; Sidecar admission retries
             // this same reconciler and fails closed before any Agent starts.
-            tauri::async_runtime::spawn_blocking(|| match cli::ensure_launcher() {
-                Ok(true) => ulog_info!("[cli] Reconciled HOME launchers"),
-                Ok(false) => ulog_info!("[cli] HOME launchers already current"),
-                Err(error) => ulog_error!("[cli] Startup launcher preflight failed: {}", error),
+            tauri::async_runtime::spawn_blocking(|| {
+                match cli::ensure_launcher() {
+                    Ok(true) => ulog_info!("[cli] Reconciled HOME launchers"),
+                    Ok(false) => ulog_info!("[cli] HOME launchers already current"),
+                    Err(error) => {
+                        ulog_error!("[cli] Startup launcher preflight failed: {}", error)
+                    }
+                }
+                match external_cli::ensure_external_cli_skill() {
+                    Ok(true) => ulog_info!("[cli] Reconciled external AI guide"),
+                    Ok(false) => ulog_info!("[cli] External AI guide already current"),
+                    Err(error) => {
+                        ulog_error!("[cli] Startup external AI guide preflight failed: {}", error)
+                    }
+                }
             });
             // Tauri is the only process guaranteed to exist for the whole app
             // lifetime, so it owns shared crash-artifact cleanup. The first

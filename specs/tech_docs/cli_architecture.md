@@ -44,6 +44,7 @@ Goal Mode 是 CLI 的特殊 current-session 控制能力：`myagents goal create
 | 层 | 文件 | 职责 |
 |----|------|------|
 | **Rust CLI / launcher owner** | `src-tauri/src/cli.rs` | CLI 分流、bundle locator、薄启动器原子收敛、端口补全、spawn 子进程 |
+| **外部 AI 指南投影** | `bundled-guides/external-myagents-cli/SKILL.md`、`src-tauri/src/external_cli.rs` | 维护公开子集说明，并将当前 App 版本原子投影到数据目录供交接 Prompt 显式读取 |
 | **CLI 脚本** | `src/cli/myagents.ts` | 参数解析、命令路由、HTTP 调用、输出格式化（含 `recoveryHint` 渲染） |
 | **启动 / admission** | `src-tauri/src/lib.rs`、`src-tauri/src/sidecar/{instances,session_lifecycle}.rs` | app 启动预检；Global / legacy 与 Session lifecycle admission 复用同一个 reconciler |
 | **Admin API** | `src/server/admin-api.ts` | 业务逻辑：验证 → 写 config → 更新内存状态 → SSE 广播；含跨 runtime 发现 handler |
@@ -58,8 +59,10 @@ src/cli/myagents.ts                        ~/.myagents/
   → esbuild                               ├── bin/
   → resources/cli/myagents.cjs            │   ├── myagents      (POSIX/Git Bash 薄启动器)
                                            │   └── myagents.cmd  (cmd/PowerShell 薄启动器)
-src-tauri/src/cli.rs                       ├── npm-global/       (AI 自装 CLI 落点)
-  → 定位 bundle Node + CLI                └── sidecar.port      (Global Sidecar 端口)
+src-tauri/src/cli.rs                       ├── external-myagents-cli/
+  → 定位 bundle Node + CLI                │   └── SKILL.md       (外部 AI 显式阅读指南)
+bundled-guides/external-myagents-cli/      ├── npm-global/       (AI 自装 CLI 落点)
+  → App 版本化指南源码                    └── sidecar.port      (Global Sidecar 端口)
   → 生成并原子安装 launcher
 ```
 
@@ -83,6 +86,8 @@ CLI 脚本只有一条执行 authority：`cli.rs` 使用当前安装包的 bundl
 App 启动时生成进程生命周期内的内部 CLI capability，并只注入 Global/Session Sidecar、集成终端和受管 Agent Runtime。普通终端不会获得该 capability：它通过薄启动器发现 Global Host 后，必须携带设置页生成的 `MYAGENTS_API_TOKEN`，并且只能进入静态公开清单。端口、`MYAGENTS_SESSION_ID`、`--port` 和 payload 中自报的来源都不是内部身份。
 
 外部访问默认关闭。Rust App owner 在 `config.json.externalCliAccess` 中锁内管理开关、单个可恢复 token 与创建时间；普通 Renderer `AppConfig` 投影和通用 `config get/set` 不暴露或修改这份私有 envelope。设置 → 外部调用是唯一明文显示、复制、重置和启停入口。关闭或重置只影响后续 admission，已经准入的业务继续按各自 owner 完成。
+
+设置页还返回当前平台的 launcher、外部指南绝对路径与瞬时 `skillReady`，并生成一个“发送给其他 AI 的 Prompt”。Prompt 只含 `<token>` 占位符，绝不拼入真实 token；只有指南同步成功并取得两条绝对路径后才允许复制。外部 AI 先读指南，再使用绝对 launcher，用户另行把 token 注入其进程环境。指南目录刻意位于 `~/.myagents/skills` 之外，因此不进入 global skill inventory、不投影到 Workspace，也不会与 App 内 Required/User Skill 混淆。Rust 在 App 启动预检及设置 owner 命令中按内置字节幂等收敛该文件；内容过期会被当前 App 版本覆盖，父目录若是 symlink / Windows reparse point 则 fail closed。指南同步失败只令 `skillReady=false`、隐藏交接 Prompt，不能阻断外部访问策略的读取、关闭或 token 重置。
 - **显式覆盖**：Node CLI parser 最后解析 `--port`，所以命令行值高于 Rust 保留或补入的环境值
 
 ### 命令体系

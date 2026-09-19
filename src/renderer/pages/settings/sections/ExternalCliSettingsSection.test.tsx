@@ -7,7 +7,7 @@ import { i18n } from '@/i18n';
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
-  copyPlainText: vi.fn(async () => undefined),
+  copyPlainText: vi.fn(async (_value: string) => undefined),
   listener: undefined as undefined | (() => void),
   listenWithCleanup: vi.fn(),
 }));
@@ -32,19 +32,20 @@ describe('ExternalCliSettingsSection', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     mocks.listener = undefined;
-    mocks.listenWithCleanup.mockImplementation(async (
-      _event: string,
-      listener: () => void,
-    ) => {
-      mocks.listener = listener;
-      return { unlisten: vi.fn(), isRegistered: () => true };
-    });
+    mocks.listenWithCleanup.mockImplementation(
+      async (_event: string, listener: () => void) => {
+        mocks.listener = listener;
+        return { unlisten: vi.fn(), isRegistered: () => true };
+      },
+    );
     await i18n.changeLanguage('en-US');
     mocks.invoke.mockImplementation(async (command: string) => {
       if (command === 'cmd_get_external_cli_access') {
         return {
           enabled: false,
           launcherPath: '/Applications/MyAgents/myagents',
+          skillPath: '/Users/test/.myagents/external-myagents-cli/SKILL.md',
+          skillReady: true,
         };
       }
       if (command === 'cmd_set_external_cli_enabled') {
@@ -53,6 +54,8 @@ describe('ExternalCliSettingsSection', () => {
           token: 'mae_test_token',
           createdAt: '2026-09-19T00:00:00.000Z',
           launcherPath: '/Applications/MyAgents/myagents',
+          skillPath: '/Users/test/.myagents/external-myagents-cli/SKILL.md',
+          skillReady: true,
         };
       }
       throw new Error(`unexpected command: ${command}`);
@@ -63,6 +66,8 @@ describe('ExternalCliSettingsSection', () => {
     mocks.invoke.mockResolvedValueOnce({
       enabled: false,
       launcherPath: '/Applications/MyAgents/myagents',
+      skillPath: '/Users/test/.myagents/external-myagents-cli/SKILL.md',
+      skillReady: true,
     });
     renderSection();
 
@@ -75,6 +80,8 @@ describe('ExternalCliSettingsSection', () => {
       token: 'mae_from_other_window',
       createdAt: '2026-09-19T00:00:00.000Z',
       launcherPath: '/Applications/MyAgents/myagents',
+      skillPath: '/Users/test/.myagents/external-myagents-cli/SKILL.md',
+      skillReady: true,
     });
     mocks.listener?.();
 
@@ -99,17 +106,23 @@ describe('ExternalCliSettingsSection', () => {
       .mockResolvedValueOnce({
         enabled: false,
         launcherPath: '/Applications/MyAgents/myagents',
+        skillPath: '/Users/test/.myagents/external-myagents-cli/SKILL.md',
+        skillReady: true,
       })
       .mockResolvedValueOnce({
         enabled: true,
         token: 'mae_missed_event',
         createdAt: '2026-09-19T00:00:00.000Z',
         launcherPath: '/Applications/MyAgents/myagents',
+        skillPath: '/Users/test/.myagents/external-myagents-cli/SKILL.md',
+        skillReady: true,
       });
 
     renderSection();
     const toggle = await screen.findByRole('switch');
-    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'));
+    await waitFor(() =>
+      expect(toggle).toHaveAttribute('aria-checked', 'false'),
+    );
 
     completeRegistration?.();
 
@@ -117,14 +130,13 @@ describe('ExternalCliSettingsSection', () => {
     expect(mocks.invoke).toHaveBeenCalledTimes(2);
   });
 
-  it('loads disabled by default, enables through the Rust owner, and exposes the fixed public surface', async () => {
+  it('loads disabled by default and enables through the Rust owner', async () => {
     const user = userEvent.setup();
     renderSection();
 
     const toggle = await screen.findByRole('switch');
     expect(toggle).toHaveAttribute('aria-checked', 'false');
-    expect(screen.getByText('myagents agent create')).toBeInTheDocument();
-    expect(screen.getByText('myagents session get')).toBeInTheDocument();
+    expect(screen.getByText('Prompt for another AI')).toBeInTheDocument();
     expect(screen.queryByText('mae_test_token')).not.toBeInTheDocument();
 
     await user.click(toggle);
@@ -137,6 +149,106 @@ describe('ExternalCliSettingsSection', () => {
 
     await user.click(screen.getByLabelText('Show token'));
     expect(screen.getByText('mae_test_token')).toBeInTheDocument();
+  });
+
+  it('copies one self-contained AI handoff prompt without the real token', async () => {
+    const user = userEvent.setup();
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'cmd_get_external_cli_access') {
+        return {
+          enabled: true,
+          token: 'mae_real_secret_must_not_leak',
+          createdAt: '2026-09-19T00:00:00.000Z',
+          launcherPath: '/Users/test/.myagents/bin/myagents',
+          skillPath: '/Users/test/.myagents/external-myagents-cli/SKILL.md',
+          skillReady: true,
+        };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    await i18n.changeLanguage('zh-CN');
+    renderSection();
+
+    await user.click(
+      await screen.findByRole('button', { name: '复制 Prompt' }),
+    );
+
+    const copied = mocks.copyPlainText.mock.calls.at(-1)?.[0] as string;
+    expect(copied).toBe(
+      '请先阅读本机文件 "/Users/test/.myagents/external-myagents-cli/SKILL.md"，并严格按照其中的公开 CLI 契约操作 MyAgents。\n\n' +
+        '本机 MyAgents CLI 完整路径是："/Users/test/.myagents/bin/myagents"\n\n' +
+        '请将上面的访问 token 注入到环境变量：`export MYAGENTS_API_TOKEN="<token>"`',
+    );
+    expect(copied).not.toContain('mae_real_secret_must_not_leak');
+  });
+
+  it('does not expose a copy action before absolute paths are loaded', () => {
+    mocks.invoke.mockImplementation(() => new Promise(() => undefined));
+
+    renderSection();
+
+    expect(screen.queryByRole('button', { name: 'Copy prompt' })).toBeNull();
+    expect(
+      screen.getByText('Reading the local guide and CLI paths…'),
+    ).toBeInTheDocument();
+  });
+
+  it('hides a previously loaded prompt while authority refresh is pending', async () => {
+    renderSection();
+    expect(
+      await screen.findByRole('button', { name: 'Copy prompt' }),
+    ).toBeInTheDocument();
+
+    mocks.invoke.mockImplementation(() => new Promise(() => undefined));
+    mocks.listener?.();
+
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Copy prompt' })).toBeNull(),
+    );
+    expect(
+      screen.getByText('Reading the local guide and CLI paths…'),
+    ).toBeInTheDocument();
+  });
+
+  it('keeps a stale prompt hidden when an authority refresh fails', async () => {
+    renderSection();
+    expect(
+      await screen.findByRole('button', { name: 'Copy prompt' }),
+    ).toBeInTheDocument();
+
+    mocks.invoke.mockRejectedValue(new Error('read failed'));
+    mocks.listener?.();
+
+    expect(
+      await screen.findByText(
+        'The local invocation paths could not be loaded. Try again shortly.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Copy prompt' })).toBeNull();
+  });
+
+  it('keeps access controls usable when the guide projection is unavailable', async () => {
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'cmd_get_external_cli_access') {
+        return {
+          enabled: true,
+          token: 'mae_existing_token',
+          createdAt: '2026-09-19T00:00:00.000Z',
+          launcherPath: '/Users/test/.myagents/bin/myagents',
+          skillPath: '/Users/test/.myagents/external-myagents-cli/SKILL.md',
+          skillReady: false,
+        };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    renderSection();
+
+    expect(await screen.findByLabelText('Show token')).toBeInTheDocument();
+    expect(
+      screen.getByText(/external CLI guide is temporarily unavailable/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Copy prompt' })).toBeNull();
   });
 
   it('anchors the toggle thumb inside the fixed-width settings track', async () => {
