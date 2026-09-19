@@ -151,7 +151,7 @@ describe('ExternalCliSettingsSection', () => {
     expect(screen.getByText('mae_test_token')).toBeInTheDocument();
   });
 
-  it('copies one self-contained AI handoff prompt without the real token', async () => {
+  it('keeps the rendered prompt redacted and injects the active token only when copied', async () => {
     const user = userEvent.setup();
     mocks.invoke.mockImplementation(async (command: string) => {
       if (command === 'cmd_get_external_cli_access') {
@@ -169,17 +169,38 @@ describe('ExternalCliSettingsSection', () => {
     await i18n.changeLanguage('zh-CN');
     renderSection();
 
+    expect(await screen.findByText('MYAGENTS_API_TOKEN')).toBeInTheDocument();
+    expect(
+      screen.getByText(/export MYAGENTS_API_TOKEN="<token>"/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/mae_real_secret_must_not_leak/),
+    ).not.toBeInTheDocument();
+
     await user.click(
-      await screen.findByRole('button', { name: '复制 Prompt' }),
+      screen.getByRole('button', { name: '复制 Prompt' }),
     );
 
     const copied = mocks.copyPlainText.mock.calls.at(-1)?.[0] as string;
     expect(copied).toBe(
       '请先阅读本机文件 "/Users/test/.myagents/external-myagents-cli/SKILL.md"，并严格按照其中的公开 CLI 契约操作 MyAgents。\n\n' +
         '本机 MyAgents CLI 完整路径是："/Users/test/.myagents/bin/myagents"\n\n' +
-        '请将上面的访问 token 注入到环境变量：`export MYAGENTS_API_TOKEN="<token>"`',
+        '请将 MYAGENTS_API_TOKEN 注入到环境变量：`export MYAGENTS_API_TOKEN="mae_real_secret_must_not_leak"`',
     );
-    expect(copied).not.toContain('mae_real_secret_must_not_leak');
+    expect(copied).not.toContain('<token>');
+  });
+
+  it('keeps the security warning in the access card', async () => {
+    renderSection();
+
+    const warning = await screen.findByText(
+      /A local program holding MYAGENTS_API_TOKEN/,
+    );
+    const accessHeading = screen.getByText('MyAgents CLI external access');
+    const promptHeading = screen.getByText('Prompt for another AI');
+
+    expect(warning.closest('section')).toBe(accessHeading.closest('section'));
+    expect(warning.closest('section')).not.toBe(promptHeading.closest('section'));
   });
 
   it('does not expose a copy action before absolute paths are loaded', () => {

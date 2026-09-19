@@ -87,7 +87,7 @@ App 启动时生成进程生命周期内的内部 CLI capability，并只注入 
 
 外部访问默认关闭。Rust App owner 在 `config.json.externalCliAccess` 中锁内管理开关、单个可恢复 token 与创建时间；普通 Renderer `AppConfig` 投影和通用 `config get/set` 不暴露或修改这份私有 envelope。设置 → 外部调用是唯一明文显示、复制、重置和启停入口。关闭或重置只影响后续 admission，已经准入的业务继续按各自 owner 完成。
 
-设置页还返回当前平台的 launcher、外部指南绝对路径与瞬时 `skillReady`，并生成一个“发送给其他 AI 的 Prompt”。Prompt 只含 `<token>` 占位符，绝不拼入真实 token；只有指南同步成功并取得两条绝对路径后才允许复制。外部 AI 先读指南，再使用绝对 launcher，用户另行把 token 注入其进程环境。指南目录刻意位于 `~/.myagents/skills` 之外，因此不进入 global skill inventory、不投影到 Workspace，也不会与 App 内 Required/User Skill 混淆。Rust 在 App 启动预检及设置 owner 命令中按内置字节幂等收敛该文件；内容过期会被当前 App 版本覆盖，父目录若是 symlink / Windows reparse point 则 fail closed。指南同步失败只令 `skillReady=false`、隐藏交接 Prompt，不能阻断外部访问策略的读取、关闭或 token 重置。
+设置页还返回当前平台的 launcher、外部指南绝对路径与瞬时 `skillReady`，并生成一个“发送给其他 AI 的 Prompt”。页面展示始终用 `<token>` 占位，只有用户主动点击复制且外部调用已开启、当前 token 可用时，复制内容才即时注入真实 `MYAGENTS_API_TOKEN`；指南或路径尚未就绪时不能复制。外部 AI 先读指南，再使用绝对 launcher，并只把 Prompt 中的 token 设置到调用进程环境，不应继续输出或持久化。指南目录刻意位于 `~/.myagents/skills` 之外，因此不进入 global skill inventory、不投影到 Workspace，也不会与 App 内 Required/User Skill 混淆。Rust 在 App 启动预检及设置 owner 命令中按内置字节幂等收敛该文件；内容过期会被当前 App 版本覆盖，父目录若是 symlink / Windows reparse point 则 fail closed。指南同步失败只令 `skillReady=false`、隐藏交接 Prompt，不能阻断外部访问策略的读取、关闭或 token 重置。
 - **显式覆盖**：Node CLI parser 最后解析 `--port`，所以命令行值高于 Rust 保留或补入的环境值
 
 ### 命令体系

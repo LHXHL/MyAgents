@@ -139,17 +139,29 @@ export function ExternalCliSettingsSection() {
     [t, toast],
   );
 
-  const tokenCommand = state?.launcherPath.toLowerCase().endsWith('.cmd')
-    ? '$env:MYAGENTS_API_TOKEN = "<token>"'
-    : 'export MYAGENTS_API_TOKEN="<token>"';
+  const buildTokenCommand = useCallback(
+    (token: string) =>
+      state?.launcherPath.toLowerCase().endsWith('.cmd')
+        ? `$env:MYAGENTS_API_TOKEN = "${token}"`
+        : `export MYAGENTS_API_TOKEN="${token}"`,
+    [state?.launcherPath],
+  );
   const promptReady = state?.skillReady === true && !refreshing && !loadFailed;
-  const handoffPrompt = promptReady
+  const visibleHandoffPrompt = promptReady
     ? t('externalCli.handoffPrompt', {
         skillPath: state.skillPath,
         launcherPath: state.launcherPath,
-        tokenCommand,
+        tokenCommand: buildTokenCommand('<token>'),
       })
     : '';
+  const copiedHandoffPrompt =
+    promptReady && state.enabled && state.token
+      ? t('externalCli.handoffPrompt', {
+          skillPath: state.skillPath,
+          launcherPath: state.launcherPath,
+          tokenCommand: buildTokenCommand(state.token),
+        })
+      : '';
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 px-8 py-8">
@@ -246,6 +258,10 @@ export function ExternalCliSettingsSection() {
             </button>
           </div>
         )}
+        <div className="mt-5 flex gap-2 rounded-lg bg-[var(--warning-bg)] p-3 text-xs text-[var(--warning)]">
+          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>{t('externalCli.securityWarning')}</p>
+        </div>
       </section>
 
       <section className="space-y-4 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
@@ -265,16 +281,17 @@ export function ExternalCliSettingsSection() {
               </p>
               <button
                 type="button"
+                disabled={!copiedHandoffPrompt}
                 onClick={() =>
-                  void copy(handoffPrompt, 'externalCli.promptCopied')
+                  void copy(copiedHandoffPrompt, 'externalCli.promptCopied')
                 }
-                className="text-xs text-[var(--accent)] hover:underline"
+                className="text-xs text-[var(--accent)] hover:underline disabled:cursor-not-allowed disabled:text-[var(--ink-faint)] disabled:no-underline"
               >
                 {t('externalCli.copyPrompt')}
               </button>
             </div>
             <pre className="mt-1 whitespace-pre-wrap break-words rounded-lg bg-[var(--paper-inset)] p-3 text-xs leading-5 text-[var(--ink)]">
-              {handoffPrompt}
+              {visibleHandoffPrompt}
             </pre>
           </div>
         ) : (
@@ -290,10 +307,6 @@ export function ExternalCliSettingsSection() {
             )}
           </p>
         )}
-        <div className="flex gap-2 rounded-lg bg-[var(--warning-bg)] p-3 text-xs text-[var(--warning)]">
-          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
-          <p>{t('externalCli.securityWarning')}</p>
-        </div>
       </section>
     </div>
   );

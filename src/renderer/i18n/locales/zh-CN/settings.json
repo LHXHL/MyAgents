@@ -34,7 +34,7 @@
     "disabledToast": "已关闭 CLI 外部调用",
     "loadFailed": "读取外部调用设置失败：{{message}}",
     "saveFailed": "保存外部调用设置失败：{{message}}",
-    "tokenLabel": "访问 token",
+    "tokenLabel": "MYAGENTS_API_TOKEN",
     "showToken": "显示 token",
     "hideToken": "隐藏 token",
     "copyToken": "复制 token",
@@ -50,8 +50,8 @@
     "promptLoading": "正在读取本机指南和 CLI 路径…",
     "promptLoadFailed": "暂时无法读取本机调用路径，请稍后重试。",
     "guideUnavailable": "外部 CLI 指南暂时不可用。请重启 MyAgents；访问开关和 token 管理仍可使用。",
-    "handoffPrompt": "请先阅读本机文件 \"{{skillPath}}\"，并严格按照其中的公开 CLI 契约操作 MyAgents。\n\n本机 MyAgents CLI 完整路径是：\"{{launcherPath}}\"\n\n请将上面的访问 token 注入到环境变量：`{{tokenCommand}}`",
-    "securityWarning": "持有 token 的本机程序可以把当前 OS 用户和 MyAgents 可访问的任意合格目录注册为 Workspace Agent，并让 Agent 读取或操作该工作区。请像保管密码一样保管 token。",
+    "handoffPrompt": "请先阅读本机文件 \"{{skillPath}}\"，并严格按照其中的公开 CLI 契约操作 MyAgents。\n\n本机 MyAgents CLI 完整路径是：\"{{launcherPath}}\"\n\n请将 MYAGENTS_API_TOKEN 注入到环境变量：`{{tokenCommand}}`",
+    "securityWarning": "持有 MYAGENTS_API_TOKEN 的本机程序可以把当前 OS 用户和 MyAgents 可访问的任意合格目录注册为 Workspace Agent，并让 Agent 读取或操作该工作区。请像保管密码一样保管它。",
     "copyFailed": "复制失败"
   },
   "general": {

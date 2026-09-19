@@ -48,7 +48,7 @@ Task 和 Record 可以在这条链路之外保存更长期的工作意图；Runt
 
 1. MyAgents App 必须保持运行。
 2. 用户在 MyAgents 的「设置 → 外部调用」中开启 **MyAgents CLI 外部调用**。
-3. 用户从同一页面复制访问 token，并把它注入启动你的进程环境。你不能通过 CLI 读取 token，也不应要求用户把真实 token 发进对话。
+3. 设置页复制的交接 Prompt 可能已经携带当前 `MYAGENTS_API_TOKEN` 设置命令。只用它配置调用进程环境；你不能通过 CLI 读取 token，也不要在后续回复、命令输出或文件中复述、记录它。
 4. 始终使用交接 Prompt 给出的 **CLI 绝对路径**。普通终端和外部 Agent 的 PATH 不保证能发现 `myagents`。
 
 POSIX shell：
@@ -191,7 +191,7 @@ $env:MYAGENTS_API_TOKEN = "<token>"
 
 ## 4. 调用边界与失败恢复
 
-- 访问 token 只从 `MYAGENTS_API_TOKEN` 读取。不要打印、记录、持久化 token，也不要把它写进参数、prompt 或 transcript。
+- 访问 token 只从 `MYAGENTS_API_TOKEN` 读取。交接 Prompt 是一次性的凭据传递入口；不要在后续 prompt、回复、命令参数、日志、文件或 transcript 中再次传播它。
 - 只使用顶层外部帮助展示的命令。token 不会解锁内部命令、内部 Session 身份或隐藏 API；不要探测端口、伪造来源或直连 localhost 管理路由。
 - ID 只能来自成功响应或公开 discovery 命令。不要猜 ID，也不要把 Workspace path、显示名称或投递 messageId 当作其它资源的 selector。
 - App 不可用时请用户启动 MyAgents；CLI 不会自动启动或聚焦 App。

@@ -34,7 +34,7 @@
     "disabledToast": "CLI external access disabled",
     "loadFailed": "Failed to load external access settings: {{message}}",
     "saveFailed": "Failed to save external access settings: {{message}}",
-    "tokenLabel": "Access token",
+    "tokenLabel": "MYAGENTS_API_TOKEN",
     "showToken": "Show token",
     "hideToken": "Hide token",
     "copyToken": "Copy token",
@@ -50,8 +50,8 @@
     "promptLoading": "Reading the local guide and CLI paths…",
     "promptLoadFailed": "The local invocation paths could not be loaded. Try again shortly.",
     "guideUnavailable": "The external CLI guide is temporarily unavailable. Restart MyAgents; access and token controls remain available.",
-    "handoffPrompt": "First read the local file \"{{skillPath}}\" and strictly follow its public CLI contract when operating MyAgents.\n\nThe absolute path to the MyAgents CLI on this computer is: \"{{launcherPath}}\"\n\nInject the access token shown above into the environment variable: `{{tokenCommand}}`",
-    "securityWarning": "A local program holding this token can register any eligible directory accessible to the current OS user and MyAgents as a Workspace Agent, then let that Agent read or modify the workspace. Protect the token like a password.",
+    "handoffPrompt": "First read the local file \"{{skillPath}}\" and strictly follow its public CLI contract when operating MyAgents.\n\nThe absolute path to the MyAgents CLI on this computer is: \"{{launcherPath}}\"\n\nInject MYAGENTS_API_TOKEN into the environment: `{{tokenCommand}}`",
+    "securityWarning": "A local program holding MYAGENTS_API_TOKEN can register any eligible directory accessible to the current OS user and MyAgents as a Workspace Agent, then let that Agent read or modify the workspace. Protect it like a password.",
     "copyFailed": "Copy failed"
   },
   "general": {
