@@ -190,8 +190,15 @@ describe('ExternalCliSettingsSection', () => {
     expect(copied).not.toContain('<token>');
   });
 
-  it('keeps the security warning in the access card', async () => {
+  it('shows the security warning in the access card only while enabled', async () => {
+    const user = userEvent.setup();
     renderSection();
+
+    expect(
+      screen.queryByText(/A local program holding MYAGENTS_API_TOKEN/),
+    ).not.toBeInTheDocument();
+
+    await user.click(await screen.findByRole('switch'));
 
     const warning = await screen.findByText(
       /A local program holding MYAGENTS_API_TOKEN/,

@@ -256,12 +256,12 @@ export function ExternalCliSettingsSection() {
               )}
               {t('externalCli.resetToken')}
             </button>
+            <div className="flex gap-2 rounded-lg bg-[var(--warning-bg)] p-3 text-xs text-[var(--warning)]">
+              <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+              <p>{t('externalCli.securityWarning')}</p>
+            </div>
           </div>
         )}
-        <div className="mt-5 flex gap-2 rounded-lg bg-[var(--warning-bg)] p-3 text-xs text-[var(--warning)]">
-          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
-          <p>{t('externalCli.securityWarning')}</p>
-        </div>
       </section>
 
       <section className="space-y-4 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
