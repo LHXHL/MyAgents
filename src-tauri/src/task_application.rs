@@ -378,6 +378,7 @@ impl<'a> TaskApplication<'a> {
                 Some("Target Session no longer exists".to_string()),
             ),
             crate::inbox::deliver::DeliverOutcome::DeliveryFailed { reason }
+            | crate::inbox::deliver::DeliverOutcome::Unconfirmed { reason }
             | crate::inbox::deliver::DeliverOutcome::Rejected { reason } => {
                 (TaskCommentAdmissionState::Failed, Some(reason))
             }

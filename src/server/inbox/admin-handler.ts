@@ -35,6 +35,7 @@ export interface AdminInboxRequest {
 /// Response shape — used by CLI for success/error display + exit code
 export interface AdminInboxResponse {
   delivered: boolean;
+  unconfirmed?: boolean;
   /** Echoed back label so CLI can show e.g. "Sent as 'Cron: ...' " */
   fromLabel?: string;
   /** UUID of the dispatched message — used by debug logs / reply correlation */
@@ -42,7 +43,8 @@ export interface AdminInboxResponse {
   /** Whether MyAgents will push the target turn result back to the caller. */
   replyBack?: boolean;
   /** Error code when delivered=false:
-   *  'session_not_found' | 'delivery_failed' | 'invalid_args' | 'rejected' */
+   *  'session_not_found' | 'delivery_failed' | 'admission_unconfirmed' |
+   *  'invalid_args' | 'rejected' */
   error?: { code: string; message: string };
 }
 
@@ -227,10 +229,8 @@ export async function handleAdminInbox(
           resumeWorkspacePath,
         }),
       },
-      // Match Rust-side timeout (local_http::json_client(Duration::from_secs(30))).
-      // Cross-review CC: TS 60s wrapping Rust 30s wasted the outer; Rust returns
-      // first so the outer never fires.
-      { timeoutMs: 30_000 },
+      // Stay above Rust's 30s target acknowledgement budget.
+      { timeoutMs: 35_000 },
     );
   } catch (err) {
     console.error('[inbox/admin] HTTP to management API failed:', err);
@@ -240,9 +240,10 @@ export async function handleAdminInbox(
         delivered: false,
         fromLabel: message.fromLabel,
         messageId: message.messageId,
+        unconfirmed: true,
         error: {
-          code: 'delivery_failed',
-          message: `management API unreachable: ${err instanceof Error ? err.message : String(err)}`,
+          code: 'admission_unconfirmed',
+          message: `delivery acknowledgement was not confirmed: ${err instanceof Error ? err.message : String(err)}`,
         },
       },
     };
@@ -257,9 +258,10 @@ export async function handleAdminInbox(
         fromLabel: message.fromLabel,
         messageId: message.messageId,
         error: {
-          code: 'delivery_failed',
-          message: `management API ${resp.status}: ${text.slice(0, 200)}`,
+          code: 'admission_unconfirmed',
+          message: `delivery acknowledgement was not confirmed (management API ${resp.status}): ${text.slice(0, 200)}`,
         },
+        unconfirmed: true,
       },
     };
   }
@@ -275,9 +277,10 @@ export async function handleAdminInbox(
         fromLabel: message.fromLabel,
         messageId: message.messageId,
         error: {
-          code: 'delivery_failed',
-          message: json?.error ?? 'management API returned ok=false',
+          code: 'admission_unconfirmed',
+          message: json?.error ?? 'management API acknowledgement was invalid',
         },
+        unconfirmed: true,
       },
     };
   }
@@ -290,13 +293,29 @@ export async function handleAdminInbox(
         delivered: false,
         fromLabel: message.fromLabel,
         messageId: message.messageId,
-        error: { code: 'delivery_failed', message: 'no outcome in management API response' },
+        unconfirmed: true,
+        error: { code: 'admission_unconfirmed', message: 'no outcome in management API response' },
       },
     };
   }
 
   switch (outcome.status) {
     case 'delivered':
+      if (typeof outcome.message_id !== 'string' || !outcome.message_id) {
+        return {
+          status: 502,
+          response: {
+            delivered: false,
+            unconfirmed: true,
+            fromLabel: message.fromLabel,
+            messageId: message.messageId,
+            error: {
+              code: 'admission_unconfirmed',
+              message: 'delivery acknowledgement omitted the admitted message id',
+            },
+          },
+        };
+      }
       return {
         status: 200,
         response: {
@@ -329,8 +348,18 @@ export async function handleAdminInbox(
           error: { code: 'rejected', message: outcome.reason },
         },
       };
+    case 'unconfirmed':
+      return {
+        status: 502,
+        response: {
+          delivered: false,
+          unconfirmed: true,
+          fromLabel: message.fromLabel,
+          messageId: message.messageId,
+          error: { code: 'admission_unconfirmed', message: outcome.reason },
+        },
+      };
     case 'delivery_failed':
-    default:
       return {
         status: 502,
         response: {
@@ -339,7 +368,21 @@ export async function handleAdminInbox(
           messageId: message.messageId,
           error: {
             code: 'delivery_failed',
-            message: outcome.status === 'delivery_failed' ? outcome.reason : 'unknown outcome',
+            message: outcome.reason,
+          },
+        },
+      };
+    default:
+      return {
+        status: 502,
+        response: {
+          delivered: false,
+          unconfirmed: true,
+          fromLabel: message.fromLabel,
+          messageId: message.messageId,
+          error: {
+            code: 'admission_unconfirmed',
+            message: 'management API returned an unknown delivery outcome',
           },
         },
       };

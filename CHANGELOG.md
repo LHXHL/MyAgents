@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **CLI Admin API 统一准入**：App 内 CLI 使用生命周期内部 capability，外部调用使用 Rust 管理的开关/token 与静态路由白名单；旧脚本升级后需先在设置中开启并设置 `MYAGENTS_API_TOKEN`。
+- **外部 CLI 命令契约收敛**：公开 route、alias、离线帮助和参数白名单改由同一份元数据维护；未知命令、额外位置参数和未知 flag 不再静默进入业务层。Task 列表/创建接受显式 workspace ID 或路径并核对 identity，精确 Task ID 的启停与历史不再受当前 workspace 影响。
+
+### Fixed
+
+- **外部 Session 回执与读取更可靠**：`session start/send` 的分层超时不再由最外层提前截断；ACK 丢失或响应不可解析时明确返回 `admission_unconfirmed`，避免误报成功和自动重发。`session get` 会在 owner 切换时有界重解析一次，并对畸形结构化 assistant 内容 fail closed，防止工具参数 JSON 泄漏到正文。
 
 ---
 

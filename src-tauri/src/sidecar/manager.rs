@@ -107,10 +107,15 @@ impl FrontendSidecarBinding {
 /// body has been consumed.
 pub(crate) struct SidecarHttpDispatch {
     base_url: String,
+    generation: u64,
     _lease: DispatchLease,
 }
 
 impl SidecarHttpDispatch {
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub(crate) fn url_for_path(&self, path: &str) -> Result<String, String> {
         if !path.starts_with('/') || path.starts_with("//") {
             return Err(format!(
@@ -922,6 +927,11 @@ impl SidecarManager {
         let Some(port) = self.get_session_port(session_id) else {
             return Ok(None);
         };
+        let generation = self
+            .sidecar_generations
+            .get(session_id)
+            .copied()
+            .ok_or_else(|| "Resolved Session Sidecar has no generation".to_string())?;
         let sidecar = self
             .sidecars
             .get_mut(session_id)
@@ -930,6 +940,7 @@ impl SidecarManager {
             .ok_or_else(|| "Resolved Session Sidecar generation is draining".to_string())?;
         Ok(Some(SidecarHttpDispatch {
             base_url: format!("http://127.0.0.1:{port}"),
+            generation,
             _lease: lease,
         }))
     }
@@ -1078,6 +1089,7 @@ impl SidecarManager {
             .ok_or_else(|| "Resolved Session Sidecar generation is draining".to_string())?;
         Ok(SidecarHttpDispatch {
             base_url: binding.base_url(),
+            generation: binding.generation,
             _lease: lease,
         })
     }
@@ -1094,6 +1106,7 @@ impl SidecarManager {
             .ok_or_else(|| "Global Sidecar generation is draining".to_string())?;
         Ok(SidecarHttpDispatch {
             base_url: format!("http://127.0.0.1:{}", instance.port),
+            generation: instance.generation,
             _lease: lease,
         })
     }
@@ -1110,7 +1123,7 @@ impl SidecarManager {
             && generations.get(*id).copied() == Some(generation)).map(|(_, sidecar)| sidecar)
             .ok_or_else(|| "Sidecar generation is no longer current".to_owned())?;
         let lease = DispatchGate::try_acquire(&sidecar.dispatch_gate).ok_or_else(|| "Sidecar generation is draining".to_owned())?;
-        Ok(SidecarHttpDispatch { base_url: format!("http://127.0.0.1:{}", sidecar.port), _lease: lease })
+        Ok(SidecarHttpDispatch { base_url: format!("http://127.0.0.1:{}", sidecar.port), generation, _lease: lease })
     }
 
     fn claim_session_completion_if_current(

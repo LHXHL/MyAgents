@@ -9,6 +9,10 @@ import { serve as honoServe } from '@hono/node-server';
 import { createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
+import {
+  externalTaskWorkspaceFailure,
+  type AdminCaller,
+} from './external-cli-admission';
 
 /**
  * Hard upper bound on a single multipart request body (aggregate of all files
@@ -1281,7 +1285,7 @@ async function routeAdminApi(
   pathname: string,
   payload: Record<string, unknown>,
   signal?: AbortSignal,
-  caller: import('./external-cli-admission').AdminCaller = { kind: 'internal' },
+  caller: AdminCaller = { kind: 'internal' },
 ): Promise<Record<string, unknown>> {
   // Strip the prefix for matching
   const route = pathname.replace('/api/admin/', '');
@@ -1443,6 +1447,8 @@ async function routeAdminApi(
   if (route === 'config/set') return api.handleConfigSet(payload as Parameters<typeof api.handleConfigSet>[0]);
 
   // Task Center — thoughts + tasks (v0.1.69)
+  const taskWorkspaceFailure = externalTaskWorkspaceFailure(caller, route, payload);
+  if (taskWorkspaceFailure) return taskWorkspaceFailure;
   if (route === 'task/list')
     return await api.handleTaskList(
       payload as Parameters<typeof api.handleTaskList>[0],
@@ -1459,23 +1465,7 @@ async function routeAdminApi(
     return await api.handleTaskComment(
       payload as Parameters<typeof api.handleTaskComment>[0],
     );
-  if (route === 'task/create-direct') {
-    if (
-      caller.kind === 'external-cli' &&
-      (typeof payload.workspaceId !== 'string' ||
-        !payload.workspaceId.trim() ||
-        typeof payload.workspacePath !== 'string' ||
-        !payload.workspacePath.trim())
-    ) {
-      return {
-        success: false,
-        code: 'EXTERNAL_TASK_WORKSPACE_REQUIRED',
-        error:
-          'External task create-direct requires explicit --workspaceId and --workspacePath values.',
-      };
-    }
-    return await api.handleTaskCreateDirect(payload);
-  }
+  if (route === 'task/create-direct') return await api.handleTaskCreateDirect(payload);
   if (route === 'task/create-attached')
     return await api.handleTaskCreateAttached(payload);
   if (route === 'task/run')
@@ -1489,6 +1479,18 @@ async function routeAdminApi(
   if (route === 'task/rerun')
     return await api.handleTaskRerun(
       payload as Parameters<typeof api.handleTaskRerun>[0],
+    );
+  if (route === 'task/start')
+    return await api.handleTaskStart(
+      payload as Parameters<typeof api.handleTaskStart>[0],
+    );
+  if (route === 'task/stop')
+    return await api.handleTaskStop(
+      payload as Parameters<typeof api.handleTaskStop>[0],
+    );
+  if (route === 'task/runs')
+    return await api.handleTaskRuns(
+      payload as Parameters<typeof api.handleTaskRuns>[0],
     );
   if (route === 'task/trigger/validate')
     return await api.handleTaskTriggerValidate(

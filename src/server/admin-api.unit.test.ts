@@ -1482,6 +1482,27 @@ describe('admin-api Task Agent experience', () => {
     return workspacePath;
   }
 
+  it('routes exact-id Task schedule operations directly to TaskStore adapters', async () => {
+    managementApiMocks.managementApi
+      .mockResolvedValueOnce({ ok: true, task: { id: 'task-remote' } })
+      .mockResolvedValueOnce({ ok: true, task: { id: 'task-remote' } })
+      .mockResolvedValueOnce({ ok: true, runs: [{ id: 'run-1' }] });
+    const { handleTaskStart, handleTaskStop, handleTaskRuns } = await import('./admin-api');
+
+    await expect(handleTaskStart({ taskId: 'task-remote' })).resolves.toMatchObject({ success: true });
+    await expect(handleTaskStop({ taskId: 'task-remote' })).resolves.toMatchObject({ success: true });
+    await expect(handleTaskRuns({ taskId: 'task-remote', limit: 5 })).resolves.toMatchObject({
+      success: true,
+      data: [{ id: 'run-1' }],
+    });
+
+    expect(managementApiMocks.managementApi.mock.calls).toEqual([
+      ['/api/cron/run', 'POST', { taskId: 'task-remote' }],
+      ['/api/cron/stop', 'POST', { taskId: 'task-remote' }],
+      ['/api/cron/runs?taskId=task-remote&limit=5'],
+    ]);
+  });
+
   it('inherits current workspace for direct creation and preserves CLI caller provenance', async () => {
     const workspacePath = configureCurrentWorkspace();
     managementApiMocks.managementApi.mockResolvedValueOnce({
@@ -1540,6 +1561,33 @@ describe('admin-api Task Agent experience', () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain('does not own workspacePath');
     expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('resolves either explicit Task workspace selector to the canonical pair', async () => {
+    const workspacePath = configureCurrentWorkspace();
+    managementApiMocks.managementApi
+      .mockResolvedValueOnce({
+        ok: true,
+        task: { id: 'task-by-id', workspaceId: 'project-current', workspacePath },
+      })
+      .mockResolvedValueOnce({ ok: true, tasks: [] });
+    const { handleTaskCreateDirect, handleTaskList } = await import('./admin-api');
+
+    await handleTaskCreateDirect({
+      name: 'By id',
+      taskMdContent: 'Do the work.',
+      workspaceId: 'project-current',
+    });
+    await handleTaskList({ workspacePath });
+
+    expect(managementApiMocks.managementApi.mock.calls[0]).toEqual([
+      '/api/task/create-direct',
+      'POST',
+      expect.objectContaining({ workspaceId: 'project-current', workspacePath }),
+    ]);
+    expect(managementApiMocks.managementApi.mock.calls[1]).toEqual([
+      '/api/task/list?workspaceId=project-current',
+    ]);
   });
 
   it('returns a compact filtered current-workspace list without expanded session identities', async () => {

@@ -61,6 +61,7 @@ export type DeliverOutcome =
   | { status: 'delivered'; message_id: string }
   | { status: 'session_not_found' }
   | { status: 'delivery_failed'; reason: string }
+  | { status: 'unconfirmed'; reason: string }
   | { status: 'rejected'; reason: string };
 
 /// Snippet for in_reply_to — limit to 40 chars, preserves user-readable hint

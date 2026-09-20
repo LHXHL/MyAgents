@@ -41,10 +41,15 @@ function structuredBlocks(content: string): Record<string, unknown>[] | null {
       (block) =>
         block &&
         typeof block === 'object' &&
-        typeof (block as { type?: unknown }).type === 'string',
+        typeof (block as { type?: unknown }).type === 'string' &&
+        ((block as { type: string }).type !== 'text' ||
+          typeof (block as { text?: unknown }).text === 'string'),
     )
   ) {
-    return null;
+    throw new SessionTextProjectionError(
+      'SESSION_CONTENT_UNREADABLE',
+      'A structured transcript message is malformed and cannot be projected safely.',
+    );
   }
   return parsed as Record<string, unknown>[];
 }
@@ -204,10 +209,16 @@ export async function readSessionTextPage(input: {
     '/api/session/text-page',
     'POST',
     input,
+    { timeoutMs: 18_000 },
   );
   if (ownerResult.ok !== true) {
+    const ownerCode = typeof ownerResult.code === 'string'
+      ? ownerResult.code.toUpperCase()
+      : 'SESSION_OWNER_UNAVAILABLE';
     throw new SessionTextProjectionError(
-      'SESSION_OWNER_UNAVAILABLE',
+      ownerCode.startsWith('SESSION_')
+        ? ownerCode
+        : 'SESSION_OWNER_UNAVAILABLE',
       typeof ownerResult.error === 'string'
         ? ownerResult.error
         : 'The target Session owner is unavailable.',

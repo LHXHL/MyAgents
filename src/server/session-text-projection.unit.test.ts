@@ -64,6 +64,15 @@ describe('session text projection', () => {
     expect(() =>
       strictAssistantText('[{"type":"text","text":"cut off"}'),
     ).toThrowError(SessionTextProjectionError);
+    expect(() =>
+      strictAssistantText(JSON.stringify([
+        { type: 'tool_use', input: { secret: 'must-not-leak' } },
+        {},
+      ])),
+    ).toThrowError(SessionTextProjectionError);
+    expect(() =>
+      strictAssistantText(JSON.stringify([{ type: 'text', text: 42 }])),
+    ).toThrowError(SessionTextProjectionError);
   });
 
   it('preserves ordinary user JSON even when it resembles assistant blocks', () => {
@@ -101,7 +110,29 @@ describe('session text projection', () => {
         sessionId: 'target-session',
         limit: 5,
       },
+      { timeoutMs: 18_000 },
     );
+  });
+
+  it('preserves precise owner error codes', async () => {
+    mocks.managementApi.mockResolvedValue({
+      ok: false,
+      code: 'session_owner_invalid_response',
+      error: 'invalid JSON',
+    });
+    await expect(readSessionTextPage({ sessionId: 'target-session' }))
+      .rejects.toMatchObject({ code: 'SESSION_OWNER_INVALID_RESPONSE' });
+  });
+
+  it('preserves a target owner content verdict without retry-layer relabeling', async () => {
+    mocks.managementApi.mockResolvedValue({
+      ok: false,
+      code: 'SESSION_CONTENT_UNREADABLE',
+      error: 'invalid assistant content blocks',
+    });
+
+    await expect(readSessionTextPage({ sessionId: 'target-session' }))
+      .rejects.toMatchObject({ code: 'SESSION_CONTENT_UNREADABLE' });
   });
 
   it('overlays in-memory and streaming messages by stable identity without duplicates', () => {

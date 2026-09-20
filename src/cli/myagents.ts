@@ -20,7 +20,7 @@
 
 import {
   EXTERNAL_CLI_PUBLIC_COMMANDS,
-  isExternalCliPublicRoute,
+  findExternalCliPublicCapability,
 } from '../shared/externalCliCapabilities';
 
 // ---------------------------------------------------------------------------
@@ -509,7 +509,7 @@ Examples:
 
 Run 'myagents <command> --help' for details on a specific command.`;
 
-function publicCliHelp(positional: string[]): string | undefined {
+export function publicCliHelp(positional: string[]): string | undefined {
   const group = positional[0];
   if (!group) {
     return `myagents — MyAgents local external CLI\n\nUsage: myagents <public-command> [options]\n\nPublic commands:\n${EXTERNAL_CLI_PUBLIC_COMMANDS.map((command) => `  myagents ${command}`).join('\n')}\n\nExternal use requires the MyAgents app to be running, External Calls enabled in Settings, and MYAGENTS_API_TOKEN set.`;
@@ -524,34 +524,25 @@ function publicCliHelp(positional: string[]): string | undefined {
     'record',
   ]);
   if (!publicGroups.has(group)) return undefined;
+  const matched = findExternalCliPublicCapability(positional);
+  if (matched && matched.commandLength === positional.length) {
+    const invokedCommand = positional.slice(0, matched.commandLength).join(' ');
+    const usage = matched.capability.usage.replace(
+      `myagents ${matched.capability.command}`,
+      `myagents ${invokedCommand}`,
+    );
+    const allowedFlags = matched.capability.flags.length > 0
+      ? matched.capability.flags.map(flag => `--${flag}`).join(', ')
+      : '(none beyond --help and --json)';
+    return `${usage}\n\n${matched.capability.help}\nAllowed flags: ${allowedFlags}\n\nThis command is available to local external programs. Set MYAGENTS_API_TOKEN; credentials are never accepted as positional arguments. Use --json for one machine-readable response.`;
+  }
   if (positional.length === 1) {
     const matching = EXTERNAL_CLI_PUBLIC_COMMANDS.filter(
       (command) => command === group || command.startsWith(`${group} `),
     );
     return `${group} — public external CLI commands\n\n${matching.map((command) => `  myagents ${command}`).join('\n')}\n\nExternal use requires the MyAgents app to be running, External Calls enabled in Settings, and MYAGENTS_API_TOKEN set.`;
   }
-  const action = positional[1] || 'list';
-  const route = buildRoute(group, action, positional.slice(2));
-  if (!isExternalCliPublicRoute(route)) return undefined;
-  const usage: Record<string, string> = {
-    'agent/create':
-      'myagents agent create --workspacePath <absolute-existing-directory> [--json]',
-    'agent/list': 'myagents agent list [--json]',
-    'agent/show': 'myagents agent show <agentId> [--json]',
-    'runtime/list': 'myagents runtime list [--json]',
-    'runtime/describe': 'myagents runtime describe <runtime> [--json]',
-    'session/list':
-      'myagents session list --agent <agentId> [--limit N] [--json]',
-    'session/start':
-      'myagents session start --agent <agentId> (--prompt <text> | --prompt-file <path>) [--json]',
-    'session/send':
-      'myagents session send <sessionId> (--prompt <text> | --prompt-file <path>) [--json]',
-    'session/get':
-      'myagents session get <sessionId> [--limit 1..500] [--before <messageId>] [--json]',
-    'record/list': 'myagents record list [--json]',
-    'record/create': 'myagents record create --content-file <path> [--json]',
-  };
-  return `${usage[route] ?? `myagents ${positional.join(' ')} [options]`}\n\nThis command is available to local external programs. Set MYAGENTS_API_TOKEN; credentials are never accepted as positional arguments. Use --json for one machine-readable response.`;
+  return undefined;
 }
 
 async function canShowInternalTopHelp(
@@ -604,7 +595,7 @@ async function callApi(
             : {}),
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(cliRequestTimeoutMs(route)),
     });
     // Non-JSON error bodies (e.g. axum 4xx returns plain text like
     // "Failed to deserialize query string: missing field `doc`") would
@@ -613,49 +604,110 @@ async function callApi(
     const contentType = resp.headers.get('content-type') ?? '';
     if (!contentType.includes('application/json')) {
       const text = await resp.text();
+      if (resp.ok && isSessionMutationRoute(route)) {
+        return sessionAdmissionUnconfirmedResult(
+          `MyAgents returned an unreadable admission acknowledgement (HTTP ${resp.status}).`,
+        );
+      }
       return adminHttpErrorResult(
         route,
         resp.status,
         text.trim() || `HTTP ${resp.status} ${resp.statusText}`,
       );
     }
-    return await resp.json() as Record<string, unknown>;
+    const result = await resp.json() as Record<string, unknown>;
+    return isSessionMutationRoute(route)
+      ? validateSessionMutationAcknowledgement(route, result)
+      : result;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    const unavailable =
+    const causeCode = (err as { cause?: { code?: unknown } } | undefined)?.cause?.code;
+    const preConnectFailure =
+      msg.includes('ECONNREFUSED') || causeCode === 'ECONNREFUSED';
+    const transportFailure =
       (err instanceof DOMException && err.name === 'TimeoutError') ||
-      msg.includes('ECONNREFUSED') ||
+      preConnectFailure ||
       msg.includes('fetch failed');
-    if (!unavailable) throw err;
-    if (isJsonInvocation()) {
-      console.log(
-        JSON.stringify(
-          {
-            success: false,
-            code: 'MYAGENTS_UNAVAILABLE',
-            error: 'Cannot connect to the MyAgents app.',
-            suggestion: 'Start MyAgents and retry the same command.',
-          },
-          null,
-          2,
-        ),
-      );
-      process.exit(3);
-    }
-    console.error('Error: Cannot connect to MyAgents. Is the app running?');
-    if (
-      process.env.CODEX_SANDBOX ||
-      process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1'
-    ) {
-      console.error(
-        '  This command appears to be running inside the Codex sandbox.',
-      );
-      console.error(
-        '  If MyAgents is running on localhost, switch Codex to no-restrictions or run the command from your normal terminal.',
+    const responseDecodeFailure = err instanceof SyntaxError;
+    if (!transportFailure && !responseDecodeFailure) throw err;
+    if (!preConnectFailure && isSessionMutationRoute(route)) {
+      return sessionAdmissionUnconfirmedResult(
+        'The request may have reached MyAgents, but its admission acknowledgement was not received.',
       );
     }
-    process.exit(sessionTransportExitCode(route));
+    return {
+      success: false,
+      code: 'MYAGENTS_UNAVAILABLE',
+      error: 'Cannot connect to the MyAgents app.',
+      suggestion: 'Start MyAgents and retry the same command.',
+    };
   }
+}
+
+function isSessionMutationRoute(route: string): boolean {
+  return route === 'session/start' || route === 'session/send';
+}
+
+function sessionAdmissionUnconfirmedResult(
+  error: string,
+  receipt: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    success: false,
+    code: 'admission_unconfirmed',
+    error,
+    unconfirmed: true,
+    ...receipt,
+    recoveryHint: {
+      message: 'Inspect the target Session state; do not automatically resend.',
+    },
+  };
+}
+
+export function validateSessionMutationAcknowledgement(
+  route: string,
+  result: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!isSessionMutationRoute(route)) return result;
+  if (result.success === false) {
+    return typeof result.code === 'string' && typeof result.error === 'string'
+      ? result
+      : sessionAdmissionUnconfirmedResult(
+        'MyAgents returned an incomplete admission failure acknowledgement.',
+        sessionMutationReceipt(result),
+      );
+  }
+  const valid = route === 'session/start'
+    ? result.success === true
+      && result.accepted === true
+      && result.asynchronous === true
+      && typeof result.agentId === 'string'
+      && typeof result.sessionId === 'string'
+      && typeof result.messageId === 'string'
+    : result.success === true
+      && result.delivered === true
+      && typeof result.messageId === 'string';
+  return valid
+    ? result
+    : sessionAdmissionUnconfirmedResult(
+      'MyAgents returned an incomplete admission success acknowledgement.',
+      sessionMutationReceipt(result),
+    );
+}
+
+function sessionMutationReceipt(result: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    ['agentId', 'sessionId', 'messageId']
+      .filter(key => typeof result[key] === 'string')
+      .map(key => [key, result[key]]),
+  );
+}
+
+export function cliRequestTimeoutMs(route: string): number {
+  if (route === 'session/start') return 195_000;
+  if (route === 'session/send') return 40_000;
+  if (route === 'session/get') return 20_000;
+  return 10_000;
 }
 
 export function adminHttpErrorResult(
@@ -678,14 +730,11 @@ export function adminHttpErrorResult(
   };
 }
 
-export function sessionTransportExitCode(route: string): 2 | 3 {
-  return route === 'session/start' || route === 'session/send' || route === 'session/watch'
-    ? 2
-    : 3;
-}
-
-export function commandResultExitCode(result: Record<string, unknown>): 0 | 1 {
-  return result.success ? 0 : 1;
+export function commandResultExitCode(result: Record<string, unknown>): 0 | 1 | 2 | 3 {
+  if (result.success) return 0;
+  if (result.code === 'admission_unconfirmed') return 2;
+  if (result.code === 'MYAGENTS_UNAVAILABLE') return 3;
+  return 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -2843,6 +2892,11 @@ async function main(): Promise<void> {
   const { positional, flags } = parseArgs(rawArgs);
   const jsonMode = !!flags.json;
 
+  if (!process.env.MYAGENTS_INTERNAL_CLI_TOKEN?.trim()) {
+    const publicCommandError = validateExternalCliInvocation(positional, flags);
+    if (publicCommandError) return exitAgentCliError(flags, publicCommandError);
+  }
+
   // Top-level help (no args, or bare --help)
   if (positional.length === 0) {
     console.log(
@@ -2966,6 +3020,7 @@ async function main(): Promise<void> {
       || code === 'caller_session_required'
       || code === 'watch_failed'
     ) process.exit(2);
+    if (code === 'MYAGENTS_UNAVAILABLE') process.exit(3);
     process.exit(1); // fallback
   }
 
@@ -3023,11 +3078,10 @@ export function buildRoute(group: string, action: string, rest: string[]): strin
     const triggerAction = rest[0] || 'validate';
     return `task/trigger/${triggerAction}`;
   }
-  // Canonical Task automation vocabulary. These are CLI aliases over the
-  // existing Cron compatibility handlers, which already mutate the one Rust
-  // TaskStore authority. Keeping the alias here avoids a second Admin/API
-  // implementation while letting Agent-facing docs stop teaching two dialects.
-  if (group === 'task' && ['start', 'stop', 'runs', 'exit'].includes(action)) {
+  // `task exit` remains the current-turn Cron compatibility operation. Exact
+  // Task-id operations use canonical task/* routes and never inherit ambient
+  // workspace guards from the legacy Cron surface.
+  if (group === 'task' && action === 'exit') {
     return `cron/${action}`;
   }
   // `diagnose runtime <type>` sugar maps to `runtime/diagnose` so handlers
@@ -3218,6 +3272,9 @@ const PUBLISHED_ADMIN_ROUTES = new Set([
   'task/run',
   'task/run-now',
   'task/rerun',
+  'task/start',
+  'task/stop',
+  'task/runs',
   'task/trigger/validate',
   'task/trigger/test',
   'task/check-now',
@@ -3300,6 +3357,72 @@ export function validateCliCommand(
     suggestion: `List the published ${group} commands and retry with one of them.`,
     suggestedCommand: `myagents ${group} --help`,
   };
+}
+
+const EXTERNAL_CLI_GLOBAL_FLAGS = new Set(['help', 'json']);
+
+export function validateExternalCliInvocation(
+  positional: string[],
+  flags: Record<string, unknown>,
+): AgentCliError | undefined {
+  const group = positional[0];
+  if (!group) {
+    const unsupported = Object.keys(flags).find(flag => !EXTERNAL_CLI_GLOBAL_FLAGS.has(flag));
+    return unsupported
+      ? {
+        code: 'UNKNOWN_FLAG',
+        error: `Unknown public CLI flag: --${unsupported}.`,
+        suggestion: 'Run myagents --help for the supported public commands.',
+      }
+      : undefined;
+  }
+  if (flags.help === true && positional.length === 1) {
+    const knownGroup = EXTERNAL_CLI_PUBLIC_COMMANDS.some(
+      command => command === group || command.startsWith(`${group} `),
+    );
+    if (knownGroup) {
+      const unsupported = Object.keys(flags).find(flag => !EXTERNAL_CLI_GLOBAL_FLAGS.has(flag));
+      return unsupported
+        ? {
+          code: 'UNKNOWN_FLAG',
+          error: `Unknown public CLI flag: --${unsupported}.`,
+          suggestion: `Run myagents ${group} --help for the supported public commands.`,
+        }
+        : undefined;
+    }
+  }
+
+  const matched = findExternalCliPublicCapability(positional);
+  if (!matched) {
+    return {
+      code: 'UNKNOWN_COMMAND',
+      error: `Unknown public command: ${positional.join(' ')}`,
+      suggestion: 'Run myagents --help for the supported public commands.',
+    };
+  }
+  const unsupported = Object.keys(flags).find(
+    flag => !EXTERNAL_CLI_GLOBAL_FLAGS.has(flag) && !matched.capability.flags.includes(flag),
+  );
+  if (unsupported) {
+    return {
+      code: 'UNKNOWN_FLAG',
+      error: `Unknown flag for '${matched.capability.command}': --${unsupported}.`,
+      suggestion: `Run myagents ${matched.capability.command} --help for the supported flags.`,
+    };
+  }
+
+  const argumentCount = positional.length - matched.commandLength;
+  if (
+    argumentCount < (matched.capability.minPositionals ?? 0) ||
+    (matched.capability.maxPositionals !== undefined && argumentCount > matched.capability.maxPositionals)
+  ) {
+    return {
+      code: 'ARGUMENT_INVALID',
+      error: `Unexpected positional arguments for '${matched.capability.command}'.`,
+      suggestion: matched.capability.usage,
+    };
+  }
+  return undefined;
 }
 
 function resolveSpaceWorkspacePath(flags: Record<string, unknown>): string {
@@ -5472,6 +5595,7 @@ export function buildRequestBody(
   if (group === 'task') {
     if (action === 'list') {
       assertStringFlag(flags.workspaceId, 'workspaceId');
+      assertStringFlag(flags.workspacePath, 'workspacePath');
       assertStringFlag(flags.status, 'status');
       assertStringFlag(flags.tag, 'tag');
       assertStringFlag(flags.query, 'query');
@@ -5488,6 +5612,7 @@ export function buildRequestBody(
       }
       return {
         workspaceId: flags.workspaceId,
+        workspacePath: flags.workspacePath,
         status: flags.status,
         tag: flags.tag,
         query: flags.query,
@@ -5784,7 +5909,9 @@ export function buildRequestBody(
       // lock). Reuse the create-side helper so size / NUL / file-not-found
       // errors stay consistent.
       const promptFromTaskMd =
-        flags.taskMdFile !== undefined || flags.taskMdContent !== undefined
+        flags.taskMdFile !== undefined
+          || flags.taskMdContentFile !== undefined
+          || flags.taskMdContent !== undefined
           ? resolveTaskMdContent(flags)
           : undefined;
       const executionMode = flags.executionMode as string | undefined;

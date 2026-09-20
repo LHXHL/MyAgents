@@ -121,6 +121,45 @@ describe('handleAdminSessionStart', () => {
     });
   });
 
+  it('treats a management transport failure as admission unconfirmed', async () => {
+    mocks.cancellableFetch.mockRejectedValue(new Error('timeout'));
+
+    const result = await handleAdminSessionStart('source-session', {
+      agentId: 'agent-1',
+      prompt: 'Review this',
+    });
+
+    expect(result).toMatchObject({
+      status: 502,
+      response: {
+        accepted: null,
+        unconfirmed: true,
+        error: { code: 'admission_unconfirmed' },
+      },
+    });
+  });
+
+  it('treats an incomplete success receipt as admission unconfirmed', async () => {
+    mocks.cancellableFetch.mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      outcome: { status: 'accepted' },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+    const result = await handleAdminSessionStart('source-session', {
+      agentId: 'agent-1',
+      prompt: 'Review this',
+    });
+
+    expect(result).toMatchObject({
+      status: 502,
+      response: {
+        accepted: null,
+        unconfirmed: true,
+        error: { code: 'admission_unconfirmed' },
+      },
+    });
+  });
+
   it('admits an external source without a Session identity and forces one-way delivery', async () => {
     mocks.cancellableFetch.mockResolvedValue(new Response(JSON.stringify({
       ok: true,

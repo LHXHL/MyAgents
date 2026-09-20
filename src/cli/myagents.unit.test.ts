@@ -12,6 +12,7 @@ import {
   buildClaimCancelBody,
   buildSpaceCompleteOperationKey,
   commandResultExitCode,
+  cliRequestTimeoutMs,
   TOP_HELP,
   normalizeScheduleFlag,
   normalizeSkillSourceForRequest,
@@ -20,11 +21,13 @@ import {
   printModelList,
   printGoalResult,
   printResult,
-  sessionTransportExitCode,
+  publicCliHelp,
   readWorkspaceTextFile,
   rejectUnsupportedSpaceDryRun,
   resolveCliPort,
   validateCliCommand,
+  validateExternalCliInvocation,
+  validateSessionMutationAcknowledgement,
 } from './myagents';
 import {
   EXTERNAL_CLI_PUBLIC_CAPABILITIES,
@@ -60,6 +63,49 @@ describe('public external CLI declaration', () => {
       expect(route, command).toBe(declaredRoute);
       expect(isExternalCliPublicRoute(route), command).toBe(true);
     }
+    expect(buildRoute('task', 'remove', ['task-1'])).toBe('task/delete');
+    expect(EXTERNAL_CLI_PUBLIC_COMMANDS).toContain('task remove');
+  });
+
+  it('rejects undeclared public flags and positional arguments before HTTP', () => {
+    expect(validateExternalCliInvocation([], { mystery: true }))
+      .toMatchObject({ code: 'UNKNOWN_FLAG' });
+    expect(validateExternalCliInvocation(
+      ['session', 'get', 'session-1'],
+      { json: true, secretOverride: 'nope' },
+    )).toMatchObject({ code: 'UNKNOWN_FLAG' });
+    expect(validateExternalCliInvocation(
+      ['task', 'start', 'task-1', 'extra'],
+      {},
+    )).toMatchObject({ code: 'ARGUMENT_INVALID' });
+    expect(validateExternalCliInvocation(
+      ['task', 'remove', 'task-1'],
+      { json: true },
+    )).toBeUndefined();
+  });
+
+  it('keeps outer Session budgets above their inner owner budgets', () => {
+    expect(cliRequestTimeoutMs('session/start')).toBeGreaterThan(180_000);
+    expect(cliRequestTimeoutMs('session/send')).toBeGreaterThan(35_000);
+    expect(cliRequestTimeoutMs('session/get')).toBeGreaterThan(18_000);
+    expect(cliRequestTimeoutMs('status')).toBe(10_000);
+  });
+
+  it('provides exact offline help for every canonical command and alias', () => {
+    for (const capability of EXTERNAL_CLI_PUBLIC_CAPABILITIES) {
+      const aliases = 'aliases' in capability ? capability.aliases : [];
+      for (const command of [capability.command, ...aliases]) {
+        const help = publicCliHelp(command.split(' '));
+        expect(help, command).toContain(`myagents ${command}`);
+        expect(help, command).toContain('Purpose:');
+        expect(help, command).toContain('Effect:');
+        expect(help, command).toContain('Result:');
+        expect(help, command).toContain('Recovery:');
+        expect(help, command).not.toContain('[options]');
+        expect(help, command).not.toContain('[fields]');
+      }
+    }
+    expect(publicCliHelp(['task', 'remove'])).not.toContain('myagents task delete');
   });
 });
 
@@ -472,6 +518,19 @@ describe('myagents CLI Task notification updates', () => {
       name: 'renamed',
     });
   });
+
+  it('projects taskMdContentFile into the Task update prompt', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'myagents-task-update-'));
+    const file = join(dir, 'task.md');
+    writeFileSync(file, '# Updated task\n');
+    try {
+      expect(buildRequestBody('task', 'update', ['task-1'], {
+        taskMdContentFile: file,
+      })).toEqual({ id: 'task-1', prompt: '# Updated task\n' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('myagents CLI Task comments', () => {
@@ -640,9 +699,9 @@ describe('myagents CLI Task Detector contracts', () => {
 
   it('keeps scheduled Task governance on canonical task aliases', () => {
     expect(buildRoute('task', 'readme', [])).toBe('readme/task');
-    expect(buildRoute('task', 'start', ['task-1'])).toBe('cron/start');
-    expect(buildRoute('task', 'stop', ['task-1'])).toBe('cron/stop');
-    expect(buildRoute('task', 'runs', ['task-1'])).toBe('cron/runs');
+    expect(buildRoute('task', 'start', ['task-1'])).toBe('task/start');
+    expect(buildRoute('task', 'stop', ['task-1'])).toBe('task/stop');
+    expect(buildRoute('task', 'runs', ['task-1'])).toBe('task/runs');
     expect(buildRoute('task', 'exit', [])).toBe('cron/exit');
     expect(buildRequestBody('task', 'start', ['task-1'], {})).toEqual({
       taskId: 'task-1',
@@ -702,6 +761,7 @@ describe('myagents CLI Task Detector contracts', () => {
   it('builds compact Task discovery filters and exposes the existing interval startAt', () => {
     expect(buildRequestBody('task', 'list', [], { query: 'release', limit: '20' })).toEqual({
       workspaceId: undefined,
+      workspacePath: undefined,
       status: undefined,
       tag: undefined,
       query: 'release',
@@ -1714,11 +1774,24 @@ describe('myagents CLI Agent / Session collaboration contracts', () => {
     }
   });
 
-  it('maps Session delivery transport failures to exit 2', () => {
-    expect(sessionTransportExitCode('session/start')).toBe(2);
-    expect(sessionTransportExitCode('session/send')).toBe(2);
-    expect(sessionTransportExitCode('session/watch')).toBe(2);
-    expect(sessionTransportExitCode('session/list')).toBe(3);
+  it('fails closed when a Session mutation acknowledgement is incomplete', () => {
+    expect(validateSessionMutationAcknowledgement('session/start', {
+      success: true,
+      sessionId: 'session-new',
+    })).toMatchObject({
+      success: false,
+      code: 'admission_unconfirmed',
+      sessionId: 'session-new',
+    });
+    expect(validateSessionMutationAcknowledgement('session/send', {})).toMatchObject({
+      success: false,
+      code: 'admission_unconfirmed',
+    });
+    expect(validateSessionMutationAcknowledgement('session/send', {
+      success: false,
+      code: 'rejected',
+      error: 'busy',
+    })).toEqual({ success: false, code: 'rejected', error: 'busy' });
   });
 
   it('prints an accepted receipt without implying completion', () => {

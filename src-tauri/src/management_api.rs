@@ -394,6 +394,8 @@ struct SessionTextPageRequest {
     before: Option<String>,
 }
 
+const SESSION_OWNER_READ_ATTEMPTS: u8 = 2;
+
 async fn session_text_page_handler(
     Json(request): Json<SessionTextPageRequest>,
 ) -> (HeaderMap, Json<serde_json::Value>) {
@@ -404,57 +406,167 @@ async fn session_text_page_handler(
             "error": "Sidecar manager is not initialized",
         }));
     };
-    let dispatch = match manager.lock().unwrap().acquire_session_dispatch(&request.session_id) {
-        Ok(dispatch) => dispatch,
-        Err(error) => {
-            return no_store_json(serde_json::json!({
-                "ok": false,
-                "code": "session_owner_unavailable",
-                "error": error,
-            }));
+    for attempt in 1..=SESSION_OWNER_READ_ATTEMPTS {
+        // Re-resolve the owner for each attempt. A failed request may have
+        // raced a generation replacement; retrying the captured URL would
+        // only pin the stale owner for longer.
+        let dispatch = match manager
+            .lock()
+            .unwrap()
+            .acquire_session_dispatch(&request.session_id)
+        {
+            Ok(dispatch) => dispatch,
+            Err(error) => {
+                return no_store_json(serde_json::json!({
+                    "ok": false,
+                    "code": "session_owner_unavailable",
+                    "error": error,
+                }));
+            }
+        };
+        let Some(dispatch) = dispatch else {
+            return no_store_json(serde_json::json!({ "ok": true, "active": false }));
+        };
+        let generation = dispatch.generation();
+        let url = match dispatch.url_for_path("/api/internal/session/text-page") {
+            Ok(url) => url,
+            Err(error) => {
+                return no_store_json(serde_json::json!({
+                    "ok": false,
+                    "code": "session_owner_unavailable",
+                    "error": error,
+                }));
+            }
+        };
+        let response = crate::local_http::json_client(std::time::Duration::from_secs(8))
+            .post(url)
+            .header(
+                crate::external_cli::INTERNAL_TOKEN_HEADER,
+                crate::external_cli::internal_token(),
+            )
+            .json(&request)
+            .send()
+            .await;
+        match response {
+            Ok(response) => {
+                let status = response.status();
+                let content_type = response
+                    .headers()
+                    .get(axum::http::header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("missing")
+                    .to_string();
+                let content_length = response.content_length();
+                let body = response.bytes().await;
+                if !status.is_success() {
+                    if let Ok(body) = &body {
+                        if let Some((code, error)) = session_owner_business_error(body) {
+                            ulog_warn!(
+                                "[session-text] owner business error session={} generation={} attempt={} status={} code={}",
+                                request.session_id,
+                                generation,
+                                attempt,
+                                status.as_u16(),
+                                code
+                            );
+                            return no_store_json(serde_json::json!({
+                                "ok": false,
+                                "code": code,
+                                "error": error,
+                            }));
+                        }
+                    }
+                    let error = format!("Session owner returned HTTP {}", status.as_u16());
+                    ulog_warn!(
+                        "[session-text] owner response failed session={} generation={} attempt={} status={} content_type={} content_length={:?}",
+                        request.session_id,
+                        generation,
+                        attempt,
+                        status.as_u16(),
+                        content_type,
+                        content_length
+                    );
+                    if attempt == 1 {
+                        continue;
+                    }
+                    return no_store_json(serde_json::json!({
+                        "ok": false,
+                        "code": "session_owner_invalid_response",
+                        "error": error,
+                    }));
+                }
+                match body
+                    .map_err(|error| error.to_string())
+                    .and_then(|body| {
+                        serde_json::from_slice::<serde_json::Value>(&body)
+                            .map_err(|error| error.to_string())
+                    })
+                {
+                    Ok(result) => {
+                        return no_store_json(serde_json::json!({
+                            "ok": true,
+                            "active": true,
+                            "result": result,
+                        }));
+                    }
+                    Err(error) => {
+                        ulog_warn!(
+                            "[session-text] owner body invalid session={} generation={} attempt={} status={} content_type={} content_length={:?}: {}",
+                            request.session_id,
+                            generation,
+                            attempt,
+                            status.as_u16(),
+                            content_type,
+                            content_length,
+                            error
+                        );
+                        if attempt == 1 {
+                            continue;
+                        }
+                        return no_store_json(serde_json::json!({
+                            "ok": false,
+                            "code": "session_owner_invalid_response",
+                            "error": error.to_string(),
+                        }));
+                    }
+                }
+            }
+            Err(error) => {
+                ulog_warn!(
+                    "[session-text] owner unavailable session={} attempt={}: {}",
+                    request.session_id,
+                    attempt,
+                    error
+                );
+                if attempt == 1 {
+                    continue;
+                }
+                return no_store_json(serde_json::json!({
+                    "ok": false,
+                    "code": "session_owner_unavailable",
+                    "error": error.to_string(),
+                }));
+            }
         }
-    };
-    let Some(dispatch) = dispatch else {
-        return no_store_json(serde_json::json!({ "ok": true, "active": false }));
-    };
-    let url = match dispatch.url_for_path("/api/internal/session/text-page") {
-        Ok(url) => url,
-        Err(error) => {
-            return no_store_json(serde_json::json!({
-                "ok": false,
-                "code": "session_owner_unavailable",
-                "error": error,
-            }));
-        }
-    };
-    let response = crate::local_http::json_client(std::time::Duration::from_secs(10))
-        .post(url)
-        .header(
-            crate::external_cli::INTERNAL_TOKEN_HEADER,
-            crate::external_cli::internal_token(),
-        )
-        .json(&request)
-        .send()
-        .await;
-    match response {
-        Ok(response) => match response.json::<serde_json::Value>().await {
-            Ok(result) => no_store_json(serde_json::json!({
-                "ok": true,
-                "active": true,
-                "result": result,
-            })),
-            Err(error) => no_store_json(serde_json::json!({
-                "ok": false,
-                "code": "session_owner_invalid_response",
-                "error": error.to_string(),
-            })),
-        },
-        Err(error) => no_store_json(serde_json::json!({
-            "ok": false,
-            "code": "session_owner_unavailable",
-            "error": error.to_string(),
-        })),
     }
+    unreachable!("session text owner retry loop always returns")
+}
+
+fn session_owner_business_error(body: &[u8]) -> Option<(String, String)> {
+    let value = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    if value.get("success")?.as_bool()? {
+        return None;
+    }
+    let code = value.get("code")?.as_str()?.to_string();
+    if !code.to_ascii_uppercase().starts_with("SESSION_") {
+        return None;
+    }
+    let error = value
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("Session owner rejected the read request")
+        .to_string();
+    Some((code, error))
 }
 
 fn no_store_json(value: serde_json::Value) -> (HeaderMap, Json<serde_json::Value>) {
@@ -5186,6 +5298,27 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("no-store")
         );
+    }
+
+    #[test]
+    fn session_owner_read_is_bounded_and_preserves_business_errors() {
+        assert_eq!(SESSION_OWNER_READ_ATTEMPTS, 2);
+        assert_eq!(
+            session_owner_business_error(
+                br#"{"success":false,"code":"SESSION_CONTENT_UNREADABLE","error":"invalid blocks"}"#,
+            ),
+            Some((
+                "SESSION_CONTENT_UNREADABLE".to_string(),
+                "invalid blocks".to_string(),
+            ))
+        );
+        assert_eq!(
+            session_owner_business_error(
+                br#"{"success":false,"code":"INTERNAL_CALLER_REQUIRED","error":"denied"}"#,
+            ),
+            None
+        );
+        assert_eq!(session_owner_business_error(b"not-json"), None);
     }
 
     #[test]

@@ -35,6 +35,18 @@ interface RustFreshStartOutcome {
   reason?: string;
 }
 
+function isFreshStartOutcome(value: unknown): value is RustFreshStartOutcome {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const outcome = value as Record<string, unknown>;
+  return (
+    ['accepted', 'rejected', 'unconfirmed', 'delivery_failed'].includes(String(outcome.status))
+    && typeof outcome.agentId === 'string'
+    && typeof outcome.sessionId === 'string'
+    && typeof outcome.messageId === 'string'
+    && typeof outcome.replyBack === 'boolean'
+  );
+}
+
 const FORBIDDEN_OVERRIDE_FIELDS = [
   'runtime',
   'runtimeSource',
@@ -182,11 +194,12 @@ export async function handleAdminSessionStart(
     return {
       status: 502,
       response: {
-        accepted: false,
+        accepted: null,
+        unconfirmed: true,
         agentId,
         error: {
-          code: 'delivery_failed',
-          message: `management API unreachable: ${error instanceof Error ? error.message : String(error)}`,
+          code: 'admission_unconfirmed',
+          message: `admission acknowledgement was not confirmed: ${error instanceof Error ? error.message : String(error)}`,
         },
       },
     };
@@ -197,15 +210,16 @@ export async function handleAdminSessionStart(
     outcome?: RustFreshStartOutcome;
     error?: string;
   } | null;
-  if (!response.ok || !json?.ok || !json.outcome) {
+  if (!response.ok || !json?.ok || !isFreshStartOutcome(json.outcome)) {
     return {
       status: 502,
       response: {
-        accepted: false,
+        accepted: null,
+        unconfirmed: true,
         agentId,
         error: {
-          code: 'delivery_failed',
-          message: json?.error ?? `management API ${response.status}`,
+          code: 'admission_unconfirmed',
+          message: json?.error ?? `admission acknowledgement was not confirmed (management API ${response.status})`,
         },
       },
     };

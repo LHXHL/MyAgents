@@ -4919,6 +4919,12 @@ export async function handleCronStop(payload: {
 }): Promise<AdminResponse> {
   const reject = await verifyCronTaskOwnership(payload.taskId);
   if (reject) return reject;
+  return handleTaskStop(payload);
+}
+
+export async function handleTaskStop(payload: {
+  taskId: string;
+}): Promise<AdminResponse> {
   const resp = await managementApi('/api/cron/stop', 'POST', payload);
   return wrapMgmtResponse(resp);
 }
@@ -4928,6 +4934,12 @@ export async function handleCronStart(payload: {
 }): Promise<AdminResponse> {
   const reject = await verifyCronTaskOwnership(payload.taskId);
   if (reject) return reject;
+  return handleTaskStart(payload);
+}
+
+export async function handleTaskStart(payload: {
+  taskId: string;
+}): Promise<AdminResponse> {
   const resp = await managementApi('/api/cron/run', 'POST', payload);
   return wrapMgmtResponse(resp);
 }
@@ -5017,6 +5029,13 @@ export async function handleCronRuns(payload: {
 }): Promise<AdminResponse> {
   const reject = await verifyCronTaskOwnership(payload.taskId);
   if (reject) return reject;
+  return handleTaskRuns(payload);
+}
+
+export async function handleTaskRuns(payload: {
+  taskId: string;
+  limit?: number;
+}): Promise<AdminResponse> {
   const qs = `?taskId=${encodeURIComponent(payload.taskId)}${payload.limit ? `&limit=${payload.limit}` : ''}`;
   const resp = await managementApi(`/api/cron/runs${qs}`);
   if (resp.ok) {
@@ -5266,7 +5285,7 @@ function resolveTaskWorkspace(
         recoveryHint: {
           recoveryCommand: 'myagents agent current --json',
           message:
-            'Pass both --workspaceId and --workspacePath only for an explicit cross-workspace operation.',
+            'Pass --workspaceId or --workspacePath from a visible Project-backed Agent workspace.',
         },
       },
     };

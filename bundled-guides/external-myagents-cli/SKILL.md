@@ -77,6 +77,7 @@ $env:MYAGENTS_API_TOKEN = "<token>"
 
 - 顶层帮助列出当前外部公开能力。
 - group help 用来选择子功能；leaf help 是 flags、输入要求和失败语义的权威。
+- 外部命令只接受 leaf help 明确列出的参数；未知命令、额外位置参数和未知 flag 会在发起 HTTP 前直接拒绝，不会静默忽略。
 - 业务调用优先加 `--json`。stdout 返回一份机器可解析 JSON，诊断信息走 stderr。
 - 退出状态 `0` 只表示该命令达到自身定义的成功边界；非零状态必须按失败处理，并优先读取 JSON 中的稳定 `code`。精确退出码以 leaf help 为准。
 
@@ -171,7 +172,8 @@ $env:MYAGENTS_API_TOKEN = "<token>"
 <CLI> task runs <taskId> --limit 5 --json
 ```
 
-- 外部进程没有“当前 MyAgents Workspace/Session”上下文。创建或查询要求 Workspace identity 时，显式使用公开结果中的 ID 和绝对路径，不要用 shell cwd 猜目标。
+- 外部进程没有“当前 MyAgents Workspace/Session”上下文。`task list` 和 `task create-direct` 至少显式提供 `--workspaceId` 或 `--workspacePath` 之一；MyAgents 会补齐并核对这对 identity。不要用 shell cwd 猜目标。
+- `task get/start/stop/runs/run/rerun/run-now/update/archive/delete` 等精确 Task ID 操作以该 ID 为 selector，不要求附带当前 workspace；`task remove` 是 `task delete` 的显式兼容别名。Cron 命令不是外部公开面。
 - `task readme` 解释 Task/自动化模型；`task --help` 列出当前公开动作；选定动作后再读该 leaf help。
 - 调度、trigger、checkpoint、运行控制、状态更新、归档和删除等细节都按需发现，不需要预先注入整张命令表。
 - 执行接纳不等于最终成功。使用 `task get` 查看权威状态，使用 `task runs` 查看执行历史。

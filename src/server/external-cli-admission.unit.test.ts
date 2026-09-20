@@ -4,7 +4,10 @@ const { managementApi } = vi.hoisted(() => ({ managementApi: vi.fn() }));
 
 vi.mock('./utils/management-api-client', () => ({ managementApi }));
 
-import { admitAdminRequest } from './external-cli-admission';
+import {
+  admitAdminRequest,
+  externalTaskWorkspaceFailure,
+} from './external-cli-admission';
 
 function request(headers: Record<string, string> = {}): Request {
   return new Request('http://127.0.0.1:31415/api/admin/status', {
@@ -36,6 +39,18 @@ describe('external CLI admission', () => {
     expect(managementApi).not.toHaveBeenCalled();
   });
 
+  it('requires either explicit workspace selector only for external Task list/create', () => {
+    const external = { kind: 'external-cli' } as const;
+    expect(externalTaskWorkspaceFailure(external, 'task/list', {}))
+      .toMatchObject({ code: 'EXTERNAL_TASK_WORKSPACE_REQUIRED' });
+    expect(externalTaskWorkspaceFailure(external, 'task/create-direct', { workspaceId: 'p1' }))
+      .toBeUndefined();
+    expect(externalTaskWorkspaceFailure(external, 'task/create-direct', { workspacePath: '/repo' }))
+      .toBeUndefined();
+    expect(externalTaskWorkspaceFailure(external, 'task/get', {})).toBeUndefined();
+    expect(externalTaskWorkspaceFailure({ kind: 'internal' }, 'task/list', {})).toBeUndefined();
+  });
+
   it('denies non-public routes even when an external bearer is present', async () => {
     const result = await admitAdminRequest(
       request({ Authorization: 'Bearer external-token' }),
@@ -48,6 +63,22 @@ describe('external CLI admission', () => {
     });
     expect(managementApi).not.toHaveBeenCalled();
   });
+
+  it.each(['cron/start', 'cron/stop', 'cron/runs'])(
+    'keeps legacy %s outside the external surface',
+    async route => {
+      const result = await admitAdminRequest(
+        request({ Authorization: 'Bearer external-token' }),
+        route,
+      );
+
+      expect(result).toMatchObject({
+        status: 403,
+        response: { code: 'EXTERNAL_CLI_CAPABILITY_NOT_OPEN' },
+      });
+      expect(managementApi).not.toHaveBeenCalled();
+    },
+  );
 
   it('requires a bearer token on public routes', async () => {
     const result = await admitAdminRequest(request(), 'session/get');

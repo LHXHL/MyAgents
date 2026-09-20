@@ -19,6 +19,27 @@ export interface AdminAdmissionFailure {
   };
 }
 
+export function externalTaskWorkspaceFailure(
+  caller: AdminCaller,
+  route: string,
+  payload: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  if (
+    caller.kind !== 'external-cli'
+    || (route !== 'task/list' && route !== 'task/create-direct')
+  ) return undefined;
+  const hasWorkspace =
+    (typeof payload.workspaceId === 'string' && Boolean(payload.workspaceId.trim()))
+    || (typeof payload.workspacePath === 'string' && Boolean(payload.workspacePath.trim()));
+  return hasWorkspace
+    ? undefined
+    : {
+        success: false,
+        code: 'EXTERNAL_TASK_WORKSPACE_REQUIRED',
+        error: `External ${route.replace('/', ' ')} requires --workspaceId or --workspacePath.`,
+      };
+}
+
 function secretsEqual(candidate: string, expected: string): boolean {
   const left = Buffer.from(candidate);
   const right = Buffer.from(expected);
