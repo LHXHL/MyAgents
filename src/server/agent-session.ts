@@ -10376,6 +10376,14 @@ export function retryBuiltinUserMessage(
   });
 }
 
+async function readBuiltinNativeChainUuids(
+  sdkSessionId: string,
+  dir: string,
+): Promise<Set<string>> {
+  const nativeMessages = await sdkGetSessionMessages(sdkSessionId, { dir });
+  return new Set(nativeMessages.map(message => message.uuid));
+}
+
 /** Rewind native history and product history while retaining workspace checkpoints. */
 export async function rewindSession(userMessageId: string): Promise<{
   success: boolean;
@@ -10402,6 +10410,34 @@ export async function rewindSession(userMessageId: string): Promise<{
       return { success: false as const, error: 'The retained history has no exact native rewind boundary' };
     }
 
+    const sourceMeta = getSessionMetadata(productSessionId);
+    const sourceSdkSessionId = sourceMeta ? resolveBuiltinSdkSessionId(sourceMeta) ?? null : null;
+    const targetUserUuid = targetMessage.sdkUuid;
+    let nativeChainUuids: ReadonlySet<string> | undefined;
+    if (sourceMeta && (resumeSessionAt || targetUserUuid)) {
+      try {
+        const sourceNativeSessionId = await resolveBuiltinForkSource(sourceMeta);
+        nativeChainUuids = await readBuiltinNativeChainUuids(
+          sourceNativeSessionId,
+          sourceMeta.agentDir,
+        );
+      } catch (error) {
+        if (resumeSessionAt) {
+          console.warn('[agent] rewind: native chain verification failed before mutation:', error);
+          return {
+            success: false as const,
+            error: 'Unable to verify the current native conversation branch; no changes were applied. Try again.',
+          };
+        }
+      }
+    }
+    if (resumeSessionAt && !nativeChainUuids?.has(resumeSessionAt)) {
+      return {
+        success: false as const,
+        error: 'The retained history is no longer on the current native conversation branch. Rewind or retry from an earlier message; no changes were applied.',
+      };
+    }
+
     const sourceFailure = await prepareSessionTranscriptMutation(productSessionId);
     if (sourceFailure) throw new Error(`${sourceFailure.reason}: ${sourceFailure.error}`);
 
@@ -10409,12 +10445,11 @@ export async function rewindSession(userMessageId: string): Promise<{
     //    跳过已被 force-abort 的 session：subprocess 正在死亡，发 IPC 会阻塞到超时（~100s）。
     //    跳过不属于当前 session 的 UUID：SDK 不认识，调用必定失败且日志噪声。
     //    跳过无 sdkUuid 的用户消息：旧存储加载或 SDK 尚未回传 UUID。
-    const targetUserUuid = targetMessage.sdkUuid;
     const fileRewind = await attemptFileRewind({
       query: lifecycleState.query,
       targetUserUuid,
       abortRequested: lifecycleState.abortRequested,
-      isCurrentSessionUuid: Boolean(targetUserUuid && transcriptState.currentSessionUuids.has(targetUserUuid)),
+      isCurrentSessionUuid: Boolean(targetUserUuid && nativeChainUuids?.has(targetUserUuid)),
     });
     const { skippedLinks, fileRewindStatus } = fileRewind;
     fileOutcome = { skippedLinks, fileRewindStatus };
@@ -10447,8 +10482,6 @@ export async function rewindSession(userMessageId: string): Promise<{
     const removedContent = typeof targetMessage.content === 'string' ? targetMessage.content : '';
     const removedAttachments = targetMessage.attachments;
 
-    const sourceMeta = getSessionMetadata(productSessionId);
-    const sourceSdkSessionId = sourceMeta ? resolveBuiltinSdkSessionId(sourceMeta) ?? null : null;
     // A retained prefix requires its exact anchor. Local UUID caches are not
     // native authority and must never authorize a full-history fallback.
     const replacementSdkSessionId = resumeSessionAt
@@ -11029,11 +11062,44 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // this runs (~6866). No-op in the normal case (tail == SDK newest leaf → slice keeps
     // all). Lowest priority — an in-process rewind anchor still wins (resolveEffectiveResumeAt),
     // so existing rewind behavior is byte-for-byte unchanged. See specs/prd/prd_0.2.27_rewind_reload_durability.md.
-    const reloadAnchor = (!forkMode && !rewindResumeAt && resumeFrom) ? transcriptState.pendingReloadAnchor : undefined;
+    const reloadAnchor = (!forkMode && !rewindResumeAt) ? transcriptState.pendingReloadAnchor : undefined;
     // Capture into a query-scoped local so a LATE catch from a previous (aborted) start
     // can't mis-attribute the eviction against a newer session's anchor (module state races).
 
     const effectiveResumeAt = resolveEffectiveResumeAt({ forkMode, rewindResumeAt, forkResumeAt, reloadAnchor });
+
+    // `resumeSessionAt` is relative to the SDK's currently selected
+    // parentUuid chain. Product transcript membership (and raw JSONL
+    // membership) cannot prove that relation when the native file branches.
+    // Validate every persisted or inferred candidate before launching a
+    // subprocess. Never drop an invalid explicit boundary: bare resume would
+    // silently restore history the user already discarded.
+    if (effectiveResumeAt) {
+      const nativeResumeSessionId = resumeFrom;
+      if (!nativeResumeSessionId) {
+        throw new Error(
+          'The saved conversation boundary has no native session identity to resume. Rewind or retry from an earlier message to recover this session.',
+        );
+      }
+      let nativeChainUuids: ReadonlySet<string>;
+      try {
+        nativeChainUuids = await readBuiltinNativeChainUuids(nativeResumeSessionId, agentDir);
+      } catch (error) {
+        throw new Error(
+          `Unable to verify the native conversation boundary before resume: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      if (!nativeChainUuids.has(effectiveResumeAt)) {
+        const recovery = rewindResumeAt
+          ? 'Rewind or retry from an earlier message to recover this session.'
+          : forkMode
+            ? 'Create the branch again from an earlier message.'
+            : 'Reopen an earlier message boundary before continuing.';
+        throw new Error(
+          `The saved conversation boundary is no longer on the current native conversation branch. ${recovery}`,
+        );
+      }
+    }
 
     const mcpStatus = configState.currentMcpServers === null ? 'auto' : configState.currentMcpServers.length === 0 ? 'disabled' : `enabled(${configState.currentMcpServers.length})`;
     const claudeTranscriptCleanupPeriodDays = normalizeClaudeTranscriptCleanupPeriodDays(

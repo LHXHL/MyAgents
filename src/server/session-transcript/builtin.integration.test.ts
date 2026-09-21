@@ -163,6 +163,12 @@ beforeEach(async () => {
   vi.resetModules();
   store = await import('../SessionStore');
   agent = await import('../agent-session');
+  // The fake Query does not write a real Claude transcript. Unless a test
+  // overrides sdkRead to model branching/missing history, mirror the Product
+  // rows as the synthetic native current chain.
+  state.sdkRead.mockImplementation(async () => agent.getMessages()
+    .filter(message => Boolean(message.sdkUuid))
+    .map(message => ({ type: message.role, uuid: message.sdkUuid })));
 });
 
 afterEach(async () => {
@@ -268,6 +274,127 @@ describe('builtin V2 execution independent of product storage', () => {
     expect(await agent.rewindSession(rows[0].id)).toMatchObject({ success: false, error: 'Conversation history contains data that cannot be safely rewound.' });
     expect(state.rewindFiles).not.toHaveBeenCalled();
     expect(agent.getMessages().map(row => row.id)).toEqual(rows.map(row => row.id));
+  });
+
+  it('refuses an off-branch native rewind anchor before changing files, transcript, or metadata', async () => {
+    const workspace = join(state.home, 'workspace');
+    await mkdir(workspace);
+    const metadata = await store.createSession(workspace, { runtime: 'builtin' });
+    const rows = [
+      { id: 'u1', role: 'user' as const, content: 'first', timestamp: 't', sdkUuid: 'native-u1' },
+      { id: 'a1', role: 'assistant' as const, content: 'orphaned answer', timestamp: 't', sdkUuid: 'native-orphan-a1' },
+      { id: 'u2', role: 'user' as const, content: 'second', timestamp: 't', sdkUuid: 'native-u2' },
+      { id: 'a2', role: 'assistant' as const, content: 'current answer', timestamp: 't', sdkUuid: 'native-current-a2' },
+    ];
+    const snapshot = await store.loadSessionTranscript(metadata.id);
+    expect(await store.appendSessionMessages(metadata.id, snapshot.cursor, rows)).toMatchObject({ ok: true });
+    state.sdkRead.mockResolvedValue([
+      { type: 'user', uuid: 'native-u1' },
+      { type: 'assistant', uuid: 'native-current-a2' },
+    ]);
+    await agent.initializeAgent(workspace, null, metadata.id, { preWarmDisabled: true });
+
+    const before = agent.getMessages().map(row => ({ ...row }));
+    const result = await agent.rewindSession('u2');
+
+    expect(result).toMatchObject({
+      success: false,
+      error: expect.stringContaining('current native conversation branch'),
+    });
+    expect(state.rewindFiles).not.toHaveBeenCalled();
+    expect(agent.getMessages()).toEqual(before);
+    expect(store.getSessionMetadata(metadata.id)?.sdkResumeSessionAt).toBeUndefined();
+  });
+
+  it('blocks a previously persisted off-branch boundary before SDK launch without dropping it', async () => {
+    const workspace = join(state.home, 'workspace');
+    await mkdir(workspace);
+    const metadata = await store.createSession(workspace, { runtime: 'builtin' });
+    const snapshot = await store.loadSessionTranscript(metadata.id);
+    expect(await store.appendSessionMessages(metadata.id, snapshot.cursor, [
+      { id: 'u1', role: 'user', content: 'first', timestamp: 't', sdkUuid: 'native-u1' },
+      { id: 'a1', role: 'assistant', content: 'orphaned answer', timestamp: 't', sdkUuid: 'native-orphan-a1' },
+    ])).toMatchObject({ ok: true });
+    await store.updateSessionMetadata(metadata.id, {
+      sdkSessionId: metadata.id,
+      sdkResumeSessionAt: 'native-orphan-a1',
+      unifiedSession: false,
+    });
+    state.sdkRead.mockResolvedValue([
+      { type: 'user', uuid: 'native-u1' },
+      { type: 'assistant', uuid: 'native-current-a2' },
+    ]);
+    await agent.initializeAgent(workspace, null, metadata.id, { preWarmDisabled: true });
+
+    await agent.enqueueUserMessage('continue', [], undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
+
+    await vi.waitFor(() => expect(state.events).toContainEqual([
+      'chat:message-error',
+      expect.stringContaining('current native conversation branch'),
+    ]));
+    expect(state.query).not.toHaveBeenCalled();
+    expect(store.getSessionMetadata(metadata.id)?.sdkResumeSessionAt).toBe('native-orphan-a1');
+  });
+
+  it('does not silently drop a persisted boundary when a legacy Product Session has no native identity', async () => {
+    const workspace = join(state.home, 'workspace');
+    await mkdir(workspace);
+    const legacySessionId = 'legacy-non-uuid-session';
+    await store.saveSessionMetadata({
+      id: legacySessionId,
+      agentDir: workspace,
+      title: 'legacy',
+      createdAt: 't',
+      lastActiveAt: 't',
+      runtime: 'builtin',
+      sdkResumeSessionAt: 'native-boundary',
+    });
+    const snapshot = await store.loadSessionTranscript(legacySessionId);
+    expect(await store.appendSessionMessages(legacySessionId, snapshot.cursor, [
+      { id: 'u1', role: 'user', content: 'first', timestamp: 't', sdkUuid: 'native-u1' },
+      { id: 'a1', role: 'assistant', content: 'answer', timestamp: 't', sdkUuid: 'native-boundary' },
+    ])).toMatchObject({ ok: true });
+    await agent.initializeAgent(workspace, null, legacySessionId, { preWarmDisabled: true });
+
+    await agent.enqueueUserMessage('continue', [], undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
+
+    await vi.waitFor(() => expect(state.events).toContainEqual([
+      'chat:message-error',
+      expect.stringContaining('no native session identity'),
+    ]));
+    expect(state.query).not.toHaveBeenCalled();
+    expect(store.getSessionMetadata(legacySessionId)?.sdkResumeSessionAt).toBe('native-boundary');
+  });
+
+  it('does not silently drop a cold-reload boundary when a legacy Product Session has no native identity', async () => {
+    const workspace = join(state.home, 'workspace');
+    await mkdir(workspace);
+    const legacySessionId = 'legacy-cold-reload-session';
+    await store.saveSessionMetadata({
+      id: legacySessionId,
+      agentDir: workspace,
+      title: 'legacy',
+      createdAt: 't',
+      lastActiveAt: 't',
+      runtime: 'builtin',
+    });
+    const snapshot = await store.loadSessionTranscript(legacySessionId);
+    expect(await store.appendSessionMessages(legacySessionId, snapshot.cursor, [
+      { id: 'u1', role: 'user', content: 'first', timestamp: 't', sdkUuid: 'native-u1' },
+      { id: 'a1', role: 'assistant', content: 'answer', timestamp: 't', sdkUuid: 'native-boundary' },
+    ])).toMatchObject({ ok: true });
+    await agent.initializeAgent(workspace, null, legacySessionId, { preWarmDisabled: true });
+
+    await agent.enqueueUserMessage('continue', [], undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
+
+    await vi.waitFor(() => expect(state.events).toContainEqual([
+      'chat:message-error',
+      expect.stringContaining('no native session identity'),
+    ]));
+    expect(state.query).not.toHaveBeenCalled();
   });
 
   it.each([false, true])('executes first/next query with product EACCES before birth (provider boundary=%s)', async providerBoundary => {
@@ -497,6 +624,36 @@ describe('builtin V2 execution independent of product storage', () => {
     expect(target.forkFrom).toBeUndefined();
     expect(target.sdkSessionId).toBe(newNative);
     expect(state.sdkFork).toHaveBeenCalledWith(source.id, expect.objectContaining({ upToMessageId: 'native-a' }));
+  });
+
+  it('rewinds an unstarted legacy lazy branch using its real native source chain', async () => {
+    const workspace = join(state.home, 'workspace');
+    await mkdir(workspace);
+    const source = await store.createSession(workspace, { runtime: 'builtin' });
+    const { createSessionMetadata } = await import('../types/session');
+    await mkdir(join(state.home, '.myagents'), { recursive: true });
+    const branch = createSessionMetadata(workspace, {
+      runtime: 'builtin',
+      forkFrom: { sourceSessionId: source.id, messageUuid: 'native-a2' },
+    });
+    await store.publishForkSession(branch, [
+      { id: 'u1', role: 'user', content: 'first', timestamp: 't', sdkUuid: 'native-u1' },
+      { id: 'a1', role: 'assistant', content: 'first answer', timestamp: 't', sdkUuid: 'native-a1' },
+      { id: 'u2', role: 'user', content: 'second', timestamp: 't', sdkUuid: 'native-u2' },
+      { id: 'a2', role: 'assistant', content: 'second answer', timestamp: 't', sdkUuid: 'native-a2' },
+    ], source.id);
+    await agent.initializeAgent(workspace, null, branch.id, { preWarmDisabled: true });
+    state.sdkRead.mockImplementation(async (id: string) => id === branch.id ? [] : [
+      { type: 'user', uuid: 'native-u1' },
+      { type: 'assistant', uuid: 'native-a1' },
+      { type: 'user', uuid: 'native-u2' },
+      { type: 'assistant', uuid: 'native-a2' },
+    ]);
+
+    expect(await agent.rewindSession('u2')).toMatchObject({ success: true });
+
+    expect(agent.getMessages().map(message => message.id)).toEqual(['u1', 'a1']);
+    expect(state.sdkRead).toHaveBeenCalledWith(source.id, expect.objectContaining({ dir: workspace }));
   });
 
 it('preserves completed file restoration when later transcript persistence fails', async () => {

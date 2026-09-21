@@ -146,7 +146,7 @@ MCP pre-warm 是 soft readiness observation，不是 AI turn 的 admission autho
 | Fork | 创建新 identity | 先建立精确 native 分支，再发布完整产品历史与独立附件 |
 | Retry | 保持原 identity | 同一 mutation 内先 Rewind，再通过普通 desktop admission 接纳原输入；接纳成功不等于 turn 成功 |
 
-Builtin Rewind 以完整保留前缀末条消息的 native chain UUID 为边界，包括 user；非空前缀缺少锚点时在文件副作用前失败，只有空前缀才分配新的 SDK execution identity。边界通过既有 mutation intent 与 `sdkResumeSessionAt` metadata 一起提交，在新一轮成功后、terminal 配置重启前解除。锚点被拒绝时保留边界并报告失败，不能清除锚点、恢复更长历史或自动重放。文件恢复仍使用现有 Query 的 `rewindFiles`；standalone SDK fork 不携带 undo 历史，不能用它替换 builtin Rewind。旧记录的 `reloadAnchor` 只在加载时推导，优先级低于显式回溯边界；它不是另一份持久化状态或 Session identity。
+Builtin Rewind 以完整保留前缀末条消息的 native chain UUID 为边界，包括 user；非空前缀缺少锚点时在文件副作用前失败，只有空前缀才分配新的 SDK execution identity。UUID 出现在 Product transcript 或原始 SDK JSONL 中不证明它位于 SDK 当前 leaf 的祖先链；回溯提交前与任何带锚点的 Query 启动前，Builtin adapter 必须用 SDK `getSessionMessages()` 重建出的当前 chain 校验锚点。边界通过既有 mutation intent 与 `sdkResumeSessionAt` metadata 一起提交，在新一轮成功后、terminal 配置重启前解除。锚点被拒绝时保留边界并报告失败，不能清除锚点、恢复更长历史或自动重放；已有坏锚点通过从更早、仍在当前 chain 上的消息重新 Rewind / Retry 覆盖恢复。文件恢复仍使用现有 Query 的 `rewindFiles`，且其目标 UUID 也必须来自同一次 native chain 校验；standalone SDK fork 不携带 undo 历史，不能用它替换 builtin Rewind。旧记录的 `reloadAnchor` 只在加载时推导，优先级低于显式回溯边界；它不是另一份持久化状态或 Session identity。
 
 新 Fork 统一先实体化 native history，builtin 同时映射 SDK UUID；完整执行配置复用 `snapshotForForkedSession`，不手工挑字段。Fork 不继承 source 的 Agent origin、Goal、置顶或 Tag。旧 lazy fork 通过记录的 binding/source 解析真实 native 来源，允许尚未启动的旧分支继续 fork；新请求不再生成 lazy fork 或通过设置切回旧路径。prepared 发布、附件复制和清理见 [V2 transcript](session_transcript_v2.md#生命周期与显式操作)。
 
