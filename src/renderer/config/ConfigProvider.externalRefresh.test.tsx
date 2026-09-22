@@ -7,6 +7,7 @@ import { DEFAULT_CONFIG, type AppConfig, type Project, type Provider } from './t
 import { useConfigData } from './useConfigData';
 import { useConfigActions } from './useConfigActions';
 import { rebuildAndPersistAvailableProviders } from './services/providerService';
+import type { atomicModifyConfig } from './services/appConfigService';
 
 const mocks = vi.hoisted(() => ({
   config: {} as AppConfig,
@@ -40,8 +41,8 @@ vi.mock('./services/configStore', () => ({
 
 vi.mock('./services/appConfigService', () => ({
   loadAppConfig: mocks.loadAppConfig,
-  atomicModifyConfig: vi.fn(async (modify: (config: AppConfig) => AppConfig) => {
-    mocks.config = modify(mocks.config);
+  atomicModifyConfig: vi.fn<typeof atomicModifyConfig>(async modify => {
+    mocks.config = await modify(mocks.config);
     return mocks.config;
   }),
   ensureBundledWorkspace: mocks.ensureBundledWorkspace,
@@ -169,6 +170,15 @@ describe('ConfigProvider external config invalidation', () => {
       agentProjections: [],
       diagnostics: [],
     });
+  });
+
+  it('keeps persisted config intact after asynchronous startup maintenance', async () => {
+    const savedConfig = mocks.config;
+
+    render(<ConfigProvider><Probe /></ConfigProvider>);
+
+    await waitFor(() => expect(rebuildAndPersistAvailableProviders).toHaveBeenCalledTimes(1));
+    expect(mocks.config).toEqual(savedConfig);
   });
 
   it('keeps the readable disk snapshot visible when identity materialization is deferred', async () => {
