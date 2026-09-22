@@ -884,6 +884,15 @@ export function printResult(
   }
   if (group === 'agent' && action === 'list') {
     printAgentList(result.data as Array<Record<string, unknown>>);
+    if (Array.isArray(result.diagnostics)) {
+      for (const diagnostic of result.diagnostics as Array<Record<string, unknown>>) {
+        console.error(`\n[${String(diagnostic.code)}] ${String(diagnostic.message)}`);
+        for (const project of (diagnostic.projects ?? []) as Array<Record<string, unknown>>) {
+          console.error(`  ${String(project.name ?? project.id)} (${String(project.id)}): ${String(project.path)}`);
+        }
+      }
+      if (result.hint) console.error(`\n${result.hint}`);
+    }
     return;
   }
   if (group === 'agent' && action === 'create') {

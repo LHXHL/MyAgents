@@ -3874,6 +3874,26 @@ describe('admin-api Agent runtime lifecycle convergence', () => {
 });
 
 describe('admin-api Agent / Session discovery', () => {
+  it('lists healthy Agents and exposes conflicted targets with paths but no credentials', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), { agents: [
+      { id: 'shared', name: 'Shared', channels: [{ id: 'secret-channel', botToken: 'do-not-expose' }] },
+      { id: 'healthy', name: 'Healthy', channels: [] },
+    ] });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [
+      { id: 'one', name: 'One', path: '/one', agentId: 'shared' },
+      { id: 'two', name: 'Two', path: '/two', agentId: 'shared', hidden: true },
+      { id: 'three', name: 'Three', path: '/three', agentId: 'healthy' },
+    ]);
+    const { handleAgentList } = await import('./admin-api');
+    const listed = await handleAgentList();
+    expect(listed.success).toBe(true);
+    expect(listed.data).toEqual([expect.objectContaining({ agentId: 'healthy' })]);
+    expect(listed.diagnostics).toEqual([expect.objectContaining({ code: 'AGENT_ASSIGNED_TO_MULTIPLE_PROJECTS',
+      projects: [{ id: 'one', name: 'One', path: '/one' }, { id: 'two', name: 'Two', path: '/two' }],
+    })]);
+    expect(JSON.stringify(listed)).not.toContain('do-not-expose');
+  });
+
   it('returns visible Project-backed and legacy orphan Agents while marking only the selected Project Agent current', async () => {
     agentSessionMocks.agentDir = '/tmp/current-workspace';
     writeJson(join(scratch, '.myagents', 'config.json'), {

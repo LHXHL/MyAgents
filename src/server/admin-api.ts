@@ -95,6 +95,7 @@ import {
   agentWorkspaceIdentityFailure,
   registerWorkspaceAgent,
   resolvePersistedAgentWorkspaceRegistry,
+  resolvePersistedAgentWorkspaceConflict,
   type PersistedAgentWorkspaceProjection,
 } from './utils/agent-workspace-identity';
 import { buildProactiveAgentTogglePatch } from '../shared/proactiveAgentPolicy';
@@ -1659,7 +1660,37 @@ export async function handleAgentList(
           })),
         };
       });
-    return { success: true, data: agents };
+    return {
+      success: true, data: agents,
+      ...(registry.diagnostics.length ? {
+        diagnostics: registry.diagnostics.map(item => ({ ...item,
+          projects: registry.projects.filter(project => item.projectIds.includes(project.id))
+            .map(({ id, name, path }) => ({ id, name, path })),
+        })),
+        hint: 'Some Agents have workspace identity conflicts. Open Settings → Chatbots to resolve them; healthy Agents remain available.',
+      } : {}),
+    };
+  } catch (error) {
+    return agentWorkspaceIdentityFailure(error);
+  }
+}
+
+export async function handleAgentResolveConflict(payload: {
+  agentId?: string; keepProjectId?: string; expectedClaims?: Array<{ id: string; path: string }>;
+}): Promise<AdminResponse> {
+  if (typeof payload.agentId !== 'string' || !payload.agentId || typeof payload.keepProjectId !== 'string' || !payload.keepProjectId || !Array.isArray(payload.expectedClaims)
+    || payload.expectedClaims.length < 2 || payload.expectedClaims.some(item => !item || typeof item.id !== 'string' || typeof item.path !== 'string')) {
+    return { success: false, error: 'Choose a workspace from the current conflict before repairing.' };
+  }
+  try {
+    await resolvePersistedAgentWorkspaceConflict({
+      agentId: payload.agentId, keepProjectId: payload.keepProjectId, expectedClaims: payload.expectedClaims,
+    }, async () => {
+      const stopped = await managementApi('/api/agent/stop-channels', 'POST', { agentId: payload.agentId },
+        { timeoutMs: AGENT_LIFECYCLE_LOOPBACK_TIMEOUT_MS });
+      if (stopped.ok !== true) throw new Error(String(stopped.error ?? 'Could not stop the Agent. No ownership changes were applied.'));
+    });
+    return { success: true, hint: 'Workspace ownership repaired. Restart MyAgents before continuing existing sessions.' };
   } catch (error) {
     return agentWorkspaceIdentityFailure(error);
   }

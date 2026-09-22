@@ -657,6 +657,20 @@
     }
   },
   "agentSettings": {
+    "identity": {
+      "title": "Agent 工作区归属冲突",
+      "description": "多个工作区关联了同一个 Agent，相关渠道暂时无法启动。请选择保留原 Agent 的工作区。",
+      "choose": "选择保留原 Agent 的工作区",
+      "consequences": "所选工作区保留原 Agent 的全部配置、渠道和凭据。其他工作区恢复独立配置，不复制这个 Agent 的渠道。文件和历史会话不会删除或迁移。",
+      "defaults": "独立配置沿用既有配置或标准模板默认值（例如 Mino 可能启用主动能力）。修复会停止相关 Agent 的运行；完成后请重启应用再继续已有会话。",
+      "hidden": "已隐藏",
+      "archived": "已归档",
+      "cancel": "取消",
+      "confirm": "确认修复",
+      "repairing": "正在修复…",
+      "success": "工作区归属已修复。请重启应用后继续已有会话。",
+      "failed": "修复未完成，请刷新后检查工作区归属。"
+    },
     "panel": {
       "title": "Agent 设置",
       "tabs": {

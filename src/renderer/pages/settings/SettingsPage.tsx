@@ -51,6 +51,7 @@ import CronTaskDebugPanel from '@/components/dev/CronTaskDebugPanel';
 import { BotPlatformRegistry } from '@/components/ImSettings';
 import ProxyScopeDialog from '@/components/ProxyScopeDialog';
 import WorkspaceConfigPanel from '@/components/WorkspaceConfigPanel';
+import AgentIdentityConflicts from '@/components/AgentSettings/AgentIdentityConflicts';
 import ModelManagementPanel from '@/components/ModelManagementPanel';
 import GrokSubscriptionProvider from '@/components/GrokSubscriptionProvider';
 import CliProxySubscriptionProvider from '@/components/CliProxySubscriptionProvider';
@@ -5030,6 +5031,7 @@ export default function Settings({
         {/* Bot Platform Registry (formerly Agent / IM Bot) */}
         {activeSection === 'agent' && (
           <div className="mx-auto max-w-4xl px-8 py-8">
+            <AgentIdentityConflicts />
             <BotPlatformRegistry
               projects={projects}
               defaultWorkspacePath={config.defaultWorkspacePath}

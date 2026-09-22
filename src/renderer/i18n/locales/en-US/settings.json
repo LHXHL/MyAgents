@@ -657,6 +657,20 @@
     }
   },
   "agentSettings": {
+    "identity": {
+      "title": "Agent workspace ownership conflict",
+      "description": "Multiple workspaces claim this Agent, so its channels cannot start. Choose which workspace keeps the original Agent.",
+      "choose": "Choose the workspace that keeps this Agent",
+      "consequences": "The selected workspace keeps the original configuration, channels and credentials. Other workspaces receive independent configurations without copying this Agent's channels. Files and session history are not deleted or moved.",
+      "defaults": "Independent configurations use existing settings or standard template defaults (Mino may enable proactive features). Repair stops the related Agent runtime. Restart the app before continuing existing sessions.",
+      "hidden": "Hidden",
+      "archived": "Archived",
+      "cancel": "Cancel",
+      "confirm": "Confirm repair",
+      "repairing": "Repairing…",
+      "success": "Workspace ownership repaired. Restart the app before continuing existing sessions.",
+      "failed": "Repair is incomplete. Refresh to check workspace ownership."
+    },
     "panel": {
       "title": "Agent Settings",
       "tabs": {

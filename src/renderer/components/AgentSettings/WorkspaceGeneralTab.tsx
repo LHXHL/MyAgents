@@ -16,6 +16,8 @@ import AgentMemoryEvolutionSection from './sections/AgentMemoryEvolutionSection'
 import AgentTasksSection from './sections/AgentTasksSection';
 import { Settings2, HeartPulse } from 'lucide-react';
 import type { ChannelType } from '../../../shared/types/agent';
+import AgentIdentityConflicts from './AgentIdentityConflicts';
+import { resolveAgentWorkspaceProjections } from '../../../shared/agentWorkspaceIdentity';
 
 interface WorkspaceGeneralTabProps {
   agentDir: string;
@@ -91,6 +93,10 @@ export default function WorkspaceGeneralTab({
   }, [project, agent, toggling, patchProject, refreshConfig, refreshStatuses, t]);
 
   const status = agent ? statuses[agent.id] : undefined;
+  const identityError = agent && resolveAgentWorkspaceProjections(projects, config.agents ?? []).diagnostics
+    .some(item => item.agentIds.includes(agent.id));
+
+  if (identityError) return <div className="overflow-auto px-8 py-6"><AgentIdentityConflicts agentId={agent.id} /></div>;
 
   if (!project) {
     return (

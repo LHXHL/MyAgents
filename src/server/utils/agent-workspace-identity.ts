@@ -3,6 +3,8 @@ import {
   buildAgentForProject,
   reconcileAgentWorkspaceIdentities,
   resolveAgentWorkspaceProjections,
+  resolveAgentWorkspaceClaimConflict,
+  type AgentWorkspaceConflictChoice,
   type AgentWorkspaceIdentityDiagnostic,
   type ResolvedAgentWorkspaceProjection,
   type ResolvedAgentWorkspaceIdentity,
@@ -401,6 +403,47 @@ export async function registerWorkspaceAgent(
       enabled: agent.enabled === true,
       archived: false,
     };
+  });
+}
+
+/** Bounded explicit repair. While claims remain ambiguous, fresh starts fail closed.
+ * Stop drains the same channel locks as startup (including not-yet-published instances).
+ * The intent + Project locks keep that ambiguity in place until stop has completed.
+ */
+export async function resolvePersistedAgentWorkspaceConflict(
+  choice: AgentWorkspaceConflictChoice,
+  stopRuntime: () => Promise<void>,
+): Promise<void> {
+  return withAgentConfigIntentLock(async () => {
+    const projectIds = new Set(choice.expectedClaims.map(item => item.id));
+    const projects = await atomicModifyProjects(async currentProjects => {
+      const initial = loadConfig();
+      // Validate before stopping anything; validate again against latest config after stop.
+      resolveAgentWorkspaceClaimConflict(currentProjects, initial.agents ?? [], choice, projectBuildOptions(initial));
+      await stopRuntime();
+      const latest = loadConfig();
+      return resolveAgentWorkspaceClaimConflict(currentProjects, latest.agents ?? [], choice, projectBuildOptions(latest)).projects;
+    });
+    try {
+      const config = await atomicModifyConfig(current => {
+        const result = reconcileAgentWorkspaceIdentities(projects, current.agents ?? [], {
+          ...projectBuildOptions(current), projectIds,
+        });
+        return result.createdAgentIds.length ? { ...current, agents: result.agents } : current;
+      });
+      const resolved = resolveAgentWorkspaceProjections(loadProjects(), config.agents ?? []);
+      if ([...projectIds].some(id => !resolved.agentProjections.some(item => item.projectId === id && item.association === 'project-linked'))) {
+        throw new Error('Not every affected workspace has a unique Agent.');
+      }
+    } catch (error) {
+      // Project-first birth is already durable; never claim success or roll back
+      // a valid user choice. Ordinary identity reconciliation can finish materialization.
+      broadcast('config:changed', { section: 'agent-identity', action: 'repair-deferred' });
+      throw new WorkspaceAgentRegistrationError('AGENT_MATERIALIZATION_DEFERRED',
+        'Workspace ownership was saved, but independent configurations are not confirmed. Refresh or restart MyAgents to finish recovery.',
+        { cause: error instanceof Error ? error.message : String(error) });
+    }
+    broadcast('config:changed', { section: 'agent-identity', action: 'resolve-conflict' });
   });
 }
 

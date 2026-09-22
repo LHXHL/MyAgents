@@ -310,13 +310,13 @@ export type ConfigChangeNotification = 'immediate' | 'deferred';
  * proportional to actual change.
  */
 export async function atomicModifyConfig(
-    modifier: (config: AppConfig) => AppConfig,
+    modifier: (config: AppConfig) => AppConfig | Promise<AppConfig>,
     options: { notification: ConfigChangeNotification } = { notification: 'immediate' },
 ): Promise<AppConfig> {
     if (isBrowserDevMode()) {
         const latest = await loadAppConfig();
         const before = JSON.stringify(latest);
-        const modified = modifier(latest);
+        const modified = await modifier(latest);
         mockSaveConfig(modified);
         if (JSON.stringify(modified) !== before && options.notification === 'immediate') {
             notifyConfigChanged('atomicModifyConfig');
@@ -326,7 +326,7 @@ export async function atomicModifyConfig(
     const result = await withConfigLock(async () => {
         const latest = await loadAppConfig();
         const before = JSON.stringify(latest);
-        const modified = modifier(latest);
+        const modified = await modifier(latest);
         if (JSON.stringify(modified) === before) {
             return { config: modified, changed: false };
         }

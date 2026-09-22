@@ -276,6 +276,8 @@ export interface ReconcileAgentWorkspaceIdentityOptions<
   A extends AgentWorkspaceAgentRecord,
 > {
   buildAgent: (project: P, requestedAgentId?: string) => A;
+  /** Limit writes, not ownership evidence: every Project still reserves its Agent. */
+  projectIds?: ReadonlySet<string>;
 }
 
 export interface ReconcileAgentWorkspaceIdentityResult<
@@ -349,6 +351,7 @@ export function reconcileAgentWorkspaceIdentities<
 
   for (let index = 0; index < nextProjects.length; index += 1) {
     let project = nextProjects[index];
+    if (options.projectIds && !options.projectIds.has(project.id)) continue;
     if (!usableProjects.has(project) || conflictedProjectIds.has(project.id)) continue;
 
     const workspaceIdentity = normalizeWorkspacePathIdentity(project.path);
@@ -433,6 +436,45 @@ export function reconcileAgentWorkspaceIdentities<
     createdAgentIds,
     relinkedProjectIds,
   };
+}
+
+export interface AgentWorkspaceConflictChoice {
+  agentId: string;
+  keepProjectId: string;
+  expectedClaims: Array<{ id: string; path: string }>;
+}
+
+/** A user choice removes ambiguity; the existing reconciler still owns all births. */
+export function resolveAgentWorkspaceClaimConflict<
+  P extends AgentWorkspaceProjectRecord,
+  A extends AgentWorkspaceAgentRecord,
+>(projects: readonly P[], agents: readonly A[], choice: AgentWorkspaceConflictChoice,
+  options: ReconcileAgentWorkspaceIdentityOptions<P, A>,
+): ReconcileAgentWorkspaceIdentityResult<P, A> {
+  const claims = projects.filter(project => project.agentId === choice.agentId);
+  const snapshot = (items: readonly { id: string; path: string }[]) => JSON.stringify(
+    items.map(({ id, path }) => [id, path]).sort(([left], [right]) => left.localeCompare(right)),
+  );
+  const diagnostics = resolveAgentWorkspaceProjections(projects, agents).diagnostics;
+  const claimIds = new Set(claims.map(project => project.id));
+  const unsupported = diagnostics.some(item => item.code !== 'AGENT_ASSIGNED_TO_MULTIPLE_PROJECTS'
+    && (item.agentIds.includes(choice.agentId) || item.projectIds.some(id => claimIds.has(id))));
+  if (claims.length < 2 || !claimIds.has(choice.keepProjectId)
+    || snapshot(claims) !== snapshot(choice.expectedClaims)
+    || agents.filter(agent => agent.id === choice.agentId).length !== 1 || unsupported) {
+    throw new AgentWorkspaceIdentityError('AGENT_ASSIGNED_TO_MULTIPLE_PROJECTS',
+      'The conflict changed or contains another identity error. Refresh before choosing a workspace.',
+      { agentId: choice.agentId, projectIds: [...claimIds] });
+  }
+  const detached = projects.map(project => claimIds.has(project.id) && project.id !== choice.keepProjectId
+    ? { ...project, agentId: undefined } : project);
+  const result = reconcileAgentWorkspaceIdentities(detached, agents, { ...options, projectIds: claimIds });
+  if (claims.some(project => !result.identities.some(item => item.projectId === project.id))) {
+    throw new AgentWorkspaceIdentityError('AGENT_ASSIGNED_TO_MULTIPLE_PROJECTS',
+      'The selected workspaces could not be resolved independently. No repair was applied.',
+      { agentId: choice.agentId, projectIds: [...claimIds] });
+  }
+  return result;
 }
 
 export interface BuildAgentForProjectOptions {

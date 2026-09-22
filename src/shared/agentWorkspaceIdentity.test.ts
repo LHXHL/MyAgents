@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   reconcileAgentWorkspaceIdentities,
   resolveAgentWorkspaceProjections,
+  resolveAgentWorkspaceClaimConflict,
   type AgentWorkspaceAgentRecord,
   type AgentWorkspaceProjectRecord,
 } from './agentWorkspaceIdentity';
@@ -46,6 +47,39 @@ function reconcile(projects: TestProject[], agents: TestAgent[]) {
     buildAgent: (_source, requestedId) => agent(requestedId ?? `created-${++nextId}`),
   });
 }
+
+describe('explicit Agent claim conflict choice', () => {
+  const projects = [project('keep', '/moved', 'shared'),
+    { ...project('split', '/old', 'shared'), hidden: true, archivedAt: '2026-01-01' },
+    project('unrelated', '/unrelated')];
+  const agents = [agent('shared', '/old', true)];
+  const choice = { agentId: 'shared', keepProjectId: 'keep', expectedClaims: projects.slice(0, 2).map(({ id, path }) => ({ id, path })) };
+  const options = { buildAgent: (_p: TestProject, id?: string) => agent(id ?? 'independent') };
+
+  it('preserves the keeper and metadata, and never repairs unrelated Projects', () => {
+    const result = resolveAgentWorkspaceClaimConflict(projects, agents, choice, options);
+    expect(result.projects.map(p => p.agentId)).toEqual(['shared', 'independent', undefined]);
+    expect(result.projects[1]).toMatchObject({ hidden: true, archivedAt: '2026-01-01' });
+    expect(result.agents[0]).toBe(agents[0]);
+    expect(result.createdAgentIds).toEqual(['independent']);
+    expect(result.diagnostics).toEqual([]);
+    expect(projects[1].agentId).toBe('shared');
+  });
+
+  it('rejects a changed selection, repeated request and unrelated corruption in the same group', () => {
+    expect(() => resolveAgentWorkspaceClaimConflict(projects, agents, { ...choice, keepProjectId: 'unrelated' }, options)).toThrow('Refresh');
+    expect(() => resolveAgentWorkspaceClaimConflict(projects.map(p => p.id === 'split' ? { ...p, path: '/changed' } : p), agents, choice, options)).toThrow('Refresh');
+    const repaired = resolveAgentWorkspaceClaimConflict(projects, agents, choice, options);
+    expect(() => resolveAgentWorkspaceClaimConflict(repaired.projects, repaired.agents, choice, options)).toThrow('Refresh');
+    expect(() => resolveAgentWorkspaceClaimConflict(projects, [...agents, agent('shared')], choice, options)).toThrow('Refresh');
+  });
+
+  it('reserves claims outside the repair group while allowing existing independent legacy identity', () => {
+    const result = resolveAgentWorkspaceClaimConflict(projects, [...agents, agent('legacy', '/old')], choice, options);
+    expect(result.projects[1].agentId).toBe('legacy');
+    expect(result.createdAgentIds).toEqual([]);
+  });
+});
 
 describe('reconcileAgentWorkspaceIdentities', () => {
   it('retains workspace conflict evidence from an unselectable Project', () => {
