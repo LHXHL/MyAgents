@@ -2,50 +2,50 @@
   "schemaVersion": 1,
   "runtime": {
     "version": "0.0.0",
-    "artifactSha256": "55ac058296091312bc8dcac8b01400ff1d680e753bc5d788192d0903b397b2ed",
+    "artifactSha256": "b2cabc54dd6e46dfb2e6804079a65c3f9fa9c0fbb26f8a333f47256c1bb1a96a",
     "entrypoint": "runtime-server-process.artifact.mjs",
     "sessionFormat": "dsh-session-events-v1",
     "profileId": "myagents-dsh-batch-1-candidate-v1",
-    "profileDigest": "26bbb4136f7be3f829ae5fae4032700e2a64e5c2b099762317a3edc4b1c6633d"
+    "profileDigest": "93013b9c9642d38a3641c428641d855e272a73cc77917bf1bb7d22052ca72d41"
   },
   "protocol": {
     "version": "5.0.0",
-    "schemaSha256": "3e32206dce9054978ec19119d00927b04ba7f980c2133e5264c39757668dc074",
-    "generatedClientSha256": "a64f284d6a42be5b455326087dea9795320435310396ee7fd3d523c4cb262417"
+    "schemaSha256": "e9f32098b73b657976c1c91170662bda41bf09097c8aad9174175cd48c7c1fa4",
+    "generatedClientSha256": "5c86a334054f2033ee98afe4647ecd5de74422f949f0ec91e67b61058ee9b57c"
   },
   "dsh": {
-    "version": "0.1.5-rc.2.myagents.fb2c4b9e698e.13b108f38d68",
-    "sourceCommit": "fb2c4b9e698e30edb738bca4cf0618587db7d203",
+    "version": "0.1.5-rc.3.myagents.a4c74a91e06b.13b108f38d68",
+    "sourceCommit": "a4c74a91e06b00fe0b0937bde982170c526cc842",
     "patchSeriesSha256": "13b108f38d68b914a7cb553192f3eb58d7630de1f75b6f293bd3bb82f2ae823e",
-    "artifactManifestSha256": "9a81103ee911d4a9cdc5dcf60bd0de5621d20b8a309f30bb6bb692166be5f4a2"
+    "artifactManifestSha256": "1b8993435731e12bab50095d8692a3aacad6dfaf71fadcca9133fa4b4051b165"
   },
   "platforms": [
     {
       "target": "darwin-arm64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "8b2e7fb3baf9864a1fabfd644d62f07e1806caf3e42d1d1feb1ee9312959ecfd"
+        "8c51e61aac684c486ecf12655acf1c6acd7250d7f1c32ae25624c4e80ff98c6b"
       ]
     },
     {
       "target": "linux-x64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "125ab49399a07cd3cf25201639ee601e8c16bfb7f6fe554dbc45f78bedfefa60"
+        "c3e7f413b3091c452c4bad7a11dd50f5164e7f4bd258e42ef8f796cae188af76"
       ]
     },
     {
       "target": "win32-x64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "2d48c53caca45d15f3d1d03e92ef2256341c1ccee55bdbcbf273ac1a4384bdad"
+        "decb9f3cb234a9acefcd9dc56d97e747cc350f7841b99c5bbae6d133103e644a"
       ]
     }
   ],
   "apiFamilies": [
     {
       "id": "anthropic-messages",
-      "adapter": "@deepseek-ai/dsh-llm-pi-ai@0.1.5-rc.2.myagents.fb2c4b9e698e.13b108f38d68",
+      "adapter": "@deepseek-ai/dsh-llm-pi-ai@0.1.5-rc.3.myagents.a4c74a91e06b.13b108f38d68",
       "piAiVersion": "0.85.1",
       "compatibilityProfileVersion": 1,
       "credentialMode": "request-scoped-api-key",
@@ -64,7 +64,7 @@
     },
     {
       "id": "openai-completions",
-      "adapter": "@deepseek-ai/dsh-llm-pi-ai@0.1.5-rc.2.myagents.fb2c4b9e698e.13b108f38d68",
+      "adapter": "@deepseek-ai/dsh-llm-pi-ai@0.1.5-rc.3.myagents.a4c74a91e06b.13b108f38d68",
       "piAiVersion": "0.85.1",
       "compatibilityProfileVersion": 1,
       "credentialMode": "request-scoped-api-key",
@@ -83,7 +83,7 @@
     },
     {
       "id": "openai-responses",
-      "adapter": "@deepseek-ai/dsh-llm-pi-ai@0.1.5-rc.2.myagents.fb2c4b9e698e.13b108f38d68",
+      "adapter": "@deepseek-ai/dsh-llm-pi-ai@0.1.5-rc.3.myagents.a4c74a91e06b.13b108f38d68",
       "piAiVersion": "0.85.1",
       "compatibilityProfileVersion": 1,
       "credentialMode": "request-scoped-api-key",
