@@ -22,9 +22,9 @@ describe('Tab query elapsed clock', () => {
   it('starts on query activity, keeps subsecond active time across multiple human waits, and resets on completion', () => {
     const { result, rerender } = setup();
     now = 5000;
-    expect(result.current()).toBe(0);
+    expect(result.current.getElapsedSeconds()).toBe(0);
     rerender({ active: true, paused: false, sessionId: 'pending-tab' });
-    const read = result.current;
+    const read = result.current.getElapsedSeconds;
     now = 6600;
     expect(read()).toBe(1);
     rerender({ active: true, paused: true, sessionId: 'pending-tab' });
@@ -38,7 +38,7 @@ describe('Tab query elapsed clock', () => {
     rerender({ active: true, paused: false, sessionId: 'pending-tab' });
     now = 68000;
     expect(read()).toBe(3);
-    expect(result.current).toBe(read);
+    expect(result.current.getElapsedSeconds).toBe(read);
     rerender({ active: false, paused: false, sessionId: 'pending-tab' });
     now = 78000;
     expect(read()).toBe(0);
@@ -55,23 +55,23 @@ describe('Tab query elapsed clock', () => {
     now = 3000;
     rerender({ active: true, paused: false, sessionId: 'real-a' });
     now = 5000;
-    expect(result.current()).toBe(5);
+    expect(result.current.getElapsedSeconds()).toBe(5);
     rerender({ active: true, paused: false, sessionId: 'real-b' });
-    expect(result.current()).toBe(0);
+    expect(result.current.getElapsedSeconds()).toBe(0);
     now = 6000;
-    expect(result.current()).toBe(1);
+    expect(result.current.getElapsedSeconds()).toBe(1);
     rerender({ active: false, paused: false, sessionId: null });
-    expect(result.current()).toBe(0);
+    expect(result.current.getElapsedSeconds()).toBe(0);
   });
 
   it('can attach while waiting and never counts time before the user responds', () => {
     const { result, rerender } = setup();
     rerender({ active: true, paused: true, sessionId: 'real-a' });
     now = 60000;
-    expect(result.current()).toBe(0);
+    expect(result.current.getElapsedSeconds()).toBe(0);
     rerender({ active: true, paused: false, sessionId: 'real-a' });
     now = 62500;
-    expect(result.current()).toBe(2);
+    expect(result.current.getElapsedSeconds()).toBe(2);
   });
 
   it('samples continuously without scheduling Tab-wide timer renders', () => {
@@ -80,6 +80,6 @@ describe('Tab query elapsed clock', () => {
     rerender({ active: true, paused: false, sessionId: 'real-a' });
     expect(schedule).not.toHaveBeenCalled();
     act(() => { now = 120000; });
-    expect(result.current()).toBe(120);
+    expect(result.current.getElapsedSeconds()).toBe(120);
   });
 });

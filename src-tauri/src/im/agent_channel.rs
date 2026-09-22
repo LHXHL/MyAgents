@@ -211,6 +211,24 @@ pub(crate) async fn stop_agent_channel_runtime(
     let lifecycle_lock = agent_channel_lifecycle_lock(agent_id, channel_id);
     let _lifecycle_guard = lifecycle_lock.lock().await;
 
+    stop_agent_channel_with_lock_held(
+        app_handle,
+        agent_state,
+        sidecar_manager,
+        agent_id,
+        channel_id,
+    )
+    .await
+}
+
+/// Caller holds the exact Channel lifecycle lock, including durable intent.
+pub(super) async fn stop_agent_channel_with_lock_held(
+    app_handle: &AppHandle,
+    agent_state: &ManagedAgents,
+    sidecar_manager: &ManagedSidecarManager,
+    agent_id: &str,
+    channel_id: &str,
+) -> Result<bool, String> {
     let (bot_instance, heartbeat_handle) = {
         let mut agents_guard = agent_state.lock().await;
         if let Some(agent) = agents_guard.get_mut(agent_id) {
@@ -264,17 +282,7 @@ pub(crate) async fn stop_agent_channels_runtime(
     sidecar_manager: &ManagedSidecarManager,
     agent_id: &str,
 ) -> Result<usize, String> {
-    let durable_ids = super::config_store::read_agent_configs_from_disk()
-        .into_iter()
-        .find(|agent| agent.id == agent_id)
-        .map(|agent| {
-            agent
-                .channels
-                .into_iter()
-                .map(|channel| channel.id)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let durable_ids = super::config_store::read_agent_channel_ids_from_disk(agent_id)?;
     let live_ids = {
         let guard = agent_state.lock().await;
         guard
@@ -589,7 +597,7 @@ pub(super) async fn restart_agent_channel_instance<R: Runtime>(
     let lifecycle_lock = agent_channel_lifecycle_lock(agent_id, channel_id);
     let _lifecycle_guard = lifecycle_lock.lock().await;
 
-    let Some((_, _, config)) =
+    let Ok((_, _, config)) =
         super::config_store::current_agent_channel_start_config(agent_id, channel_id)
     else {
         return Ok(false);

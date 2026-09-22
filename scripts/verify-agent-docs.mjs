@@ -1,9 +1,25 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { checkLocalDocLinks } from './doc-links.mjs';
 
 const root = process.cwd();
 const read = (path) => readFileSync(resolve(root, path), 'utf8');
 const failures = [];
+
+const linkedDocs = ['CLAUDE.md', 'specs/ARCHITECTURE.md', 'specs/DESIGN.md'];
+for (const directory of ['specs/tech_docs', 'specs/design', 'specs/guides']) {
+  for (const entry of readdirSync(resolve(root, directory), { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith('.md')) linkedDocs.push(join(directory, entry.name));
+  }
+}
+// Local Skills are ignored and may be absent in CI or a fresh checkout.
+if (existsSync(resolve(root, '.claude/skills'))) {
+  for (const entry of readdirSync(resolve(root, '.claude/skills'), { withFileTypes: true })) {
+    const path = join('.claude/skills', entry.name, 'SKILL.md');
+    if (entry.isDirectory() && existsSync(resolve(root, path))) linkedDocs.push(path);
+  }
+}
+for (const path of linkedDocs) failures.push(...checkLocalDocLinks(root, path, read(path)));
 
 const claude = read('CLAUDE.md');
 const lineCount = claude.split('\n').length;
@@ -84,5 +100,5 @@ if (failures.length > 0) {
 }
 
 console.log(
-  `Agent docs verified: CLAUDE.md ${lineCount} lines / ${byteCount} bytes; ${routedDocs.size} routed docs exist.`,
+  `Agent docs verified: CLAUDE.md ${lineCount} lines / ${byteCount} bytes; ${routedDocs.size} routed docs exist; local file links checked in ${linkedDocs.length} documents.`,
 );

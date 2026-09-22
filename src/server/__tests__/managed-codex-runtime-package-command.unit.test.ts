@@ -12,9 +12,37 @@ import {
   managedCodexSignerEnv,
   resolveManagedCodexPackageIdentity,
   shouldSignManagedCodexPackage,
+  macNativePathPolicy,
+  windowsNativePathPolicy,
+  validateManagedCodexNativePaths,
 } from '../../../scripts/package-managed-codex-policy.js';
 
 describe('managed Codex package command spawning', () => {
+  it.each(['darwin-arm64', 'darwin-x64'])('requires upstream signatures for the %s voice host and dylibs', (platform) => {
+    const policy = macNativePathPolicy(platform);
+    const root = policy.codexPath.replace('/bin/codex', '');
+    const paths = [...policy.openAiSignedPaths, ...policy.helperPaths];
+    expect(paths).toHaveLength(30);
+    expect(policy.openAiSignedPaths.has(`${root}/codex-resources/voice/bin/codex-voice-host`)).toBe(true);
+    expect(policy.openAiSignedPaths.has(`${root}/codex-resources/voice/lib/libglib-2.0.0.dylib`)).toBe(true);
+    expect(policy.openAiSignedPaths.has(`${root}/codex-resources/voice/plugins/libgstapp.dylib`)).toBe(true);
+    expect([...policy.helperPaths]).toEqual([`${root}/codex-path/rg`, `${root}/codex-resources/zsh/bin/zsh`]);
+    expect(() => validateManagedCodexNativePaths(platform, paths)).not.toThrow();
+    // A new library must not gain trust merely by being under voice/lib.
+    expect(() => validateManagedCodexNativePaths(platform, [...paths, `${root}/codex-resources/voice/lib/unreviewed.dylib`])).toThrow('native file set changed');
+    expect(() => validateManagedCodexNativePaths(platform, paths.filter(path => !path.endsWith('/libglib-2.0.0.dylib')))).toThrow('native file set changed');
+    expect(() => validateManagedCodexNativePaths(platform, [...paths.slice(1), paths[1]])).toThrow('native file set changed');
+  });
+
+  it('retains the Windows signed binaries and unsigned rg boundary', () => {
+    const policy = windowsNativePathPolicy();
+    const paths = [...policy.openAiSignedPaths, ...policy.unsignedHelperPaths];
+    expect(() => validateManagedCodexNativePaths('win32-x64', paths)).not.toThrow();
+    expect([...policy.unsignedHelperPaths]).toEqual(['vendor/x86_64-pc-windows-msvc/codex-path/rg.exe']);
+    expect(() => validateManagedCodexNativePaths('win32-x64', [...paths, 'vendor/x86_64-pc-windows-msvc/bin/unknown.exe'])).toThrow('native file set changed');
+    expect(() => validateManagedCodexNativePaths('darwin-unknown', paths)).toThrow('Unsupported');
+  });
+
   it('keeps signed releases pinned to the shared lock', () => {
     expect(() => resolveManagedCodexPackageIdentity({
       lockedVersion: '0.144.1',

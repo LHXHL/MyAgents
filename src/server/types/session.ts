@@ -96,6 +96,10 @@ export interface SessionMetadata {
     // retry can degrade to "fork at source tail" instead of looping forever. See issue #220.
     messageUuid?: string;
   };
+  /** Product identity of the exact fork request; retained for response reconciliation. */
+  forkOrigin?: { sessionId: string; messageId: string };
+  /** Exact builtin continuation boundary until the next successful turn. */
+  sdkResumeSessionAt?: string;
   /** Which runtime created this session. Absent = 'builtin' (backward compatible) */
   runtime?: RuntimeType;
   /** Runtime source. Missing external Codex history is treated as 'system-cli'. */
@@ -248,6 +252,7 @@ export type PendingConversationMutation =
       sourceSdkSessionId: string | null;
       /** Exact fresh Claude SDK identity that must be created or resumed after the rewind. */
       replacementSdkSessionId: string;
+      resumeSessionAt?: string;
       sourceMessageCount: number;
       targetMessageCount: number;
       transcript?: ConversationMutationTranscript;

@@ -3,6 +3,8 @@
 本文记录当前 Record 录音与本地语音识别实现中的 owner、资源生命周期和排障边界。用户可见的入口、布局、播放、转写、现场笔记和 AI 讨论以
 [`../design/records_and_recording.md`](../design/records_and_recording.md) 为当前规范；本文不复制页面规格。
 
+按任务定位：实时切句与延迟看“录制中转写 / 原轨时间与声学处理”，停止后处理看“录制中转写”的自动收尾条件及“Durable speech job”，效果回归看“质量验证”，安装失败看“用户模型包”及“排障顺序”。
+
 ## Owner 与进程边界
 
 - `RecordStore` 是 `~/.myagents/records/` 下 text/audio Record、artifact、timeline、transcript revision、diarization projection、speaker override 与 export source 的持久权威。旧 `thoughts/` 只作为幂等迁移输入；迁移完成后产品不再双写。
@@ -52,7 +54,7 @@ Renderer → Tauri 的普通命令属于控制面。Worker 使用私有 stdin/st
 
 准备入口 `scripts/prepare-speech-quality-corpus.mjs` 复用 native resource 的内容寻址下载与离线 cache，不实现第二套 downloader。Python工具链使用 PEP 723 + uv lock固定依赖与artifact hash；FFmpeg只生成确定性测试输入，不随App分发，也不改变产品解码与archive路径。工具或输出漂移必须使prepared manifest校验失败。
 
-执行入口 `scripts/speech-quality-benchmark.mjs` 复用正式 batch/live client、Worker、native manifest、共享 ORT 和模型 manifest，不建立 benchmark-only 推理路径。runner分别测量Worker ready、VAD确认、stable final、CER/WER/DER与资源指标，并拒绝依赖terminal flush才完成的样本。长跑使用已校验snapshot的私有执行副本，报告只保存hash、model-pack revision、环境、计数、耗时、错误分解和rate，不保存reference、hypothesis或transcript正文。具体测量结果属于benchmark artifact，不写入架构文档。
+执行入口 `scripts/speech-quality-benchmark.mjs` 复用正式 batch/live client、Worker、native manifest、共享 ORT 和模型 manifest，不建立 benchmark-only 推理路径。runner分别测量Worker ready、VAD确认、stable final、CER/WER/DER与资源指标，并拒绝依赖terminal flush才完成的样本。长跑使用已校验snapshot的私有执行副本，报告只保存hash、model-pack revision、环境、计数、耗时、错误分解和rate，不保存reference、hypothesis或transcript正文。参数用法与质量门槛以该 runner 的 Usage 和 threshold 定义为准；具体测量结果属于 benchmark artifact，不写入架构文档。
 
 ## Durable speech job
 
@@ -208,7 +210,7 @@ Tauri 提供 `cmd_speech_model_pack_status/install/remove`。状态为 `not_inst
 
 ## 排障顺序
 
-1. 先在 `~/.myagents/logs/unified-<本地日期>.log` 搜索 `[record]`、`[recording]`、`[speech]` 与结构化错误码；不要要求用户上传音频或 transcript。
+1. 按 [统一日志的证据选择顺序](unified_logging.md#故障排查) 定位报告机器与时间，搜索 `[record]`、`[recording]`、`[speech]` 与结构化错误码；不要要求用户上传音频或 transcript。
 2. 录音无法开始时先区分 `RECORDING_MICROPHONE_PERMISSION_REQUIRED`、`RECORDING_MICROPHONE_UNAVAILABLE`、`RECORDING_SCREEN_PERMISSION_REQUIRED`、`RECORDING_SYSTEM_AUDIO_UNAVAILABLE`、`RECORDING_PIPEWIRE_UNAVAILABLE` 与 `RECORDING_DEVICE_CHANGED`。macOS 麦克风授权依赖 `Info.plist` 用途说明与签名产物中的 `com.apple.security.device.audio-input` entitlement；缺任一项时 TCC 都可能在弹窗前拒绝。entitlement 变更后必须重新构建并启动新的 `.app`，前端热重载不会改变旧进程的签名能力。权限或设备问题由平台 capture backend 处理，不通过重装模型修复。
 3. 音频已保存但没有转录时查看 Record 的 transcription status 与模型 pack status。资源未 ready 时安装/修复资源；历史 Record 仍需用户手动点击“开始转录”。
 4. Agent 看不到 job 时必须在原发起 Session 运行 `myagents speech list`；不要通过增加 `--sessionId` 或全局 list 绕过隔离。

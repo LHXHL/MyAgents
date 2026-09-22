@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Query } from '@anthropic-ai/claude-agent-sdk';
 import type { SystemInitInfo } from '../../shared/types/system';
 import {
@@ -216,8 +217,12 @@ export function clearQuerySession(): Query | null {
   return session;
 }
 
+const mutationScope = new AsyncLocalStorage<{ active: boolean }>();
+
 /** Serialize reset/switch/recovery mutations against the shared builtin Session. */
 export function runSerializedSessionMutation<T>(operation: () => Promise<T>): Promise<T> {
+  if (mutationScope.getStore()?.active) return operation();
+  const scope = { active: true };
   const predecessor = sessionMutationBarrier ?? Promise.resolve();
   let release!: () => void;
   const operationDone = new Promise<void>((resolve) => { release = resolve; });
@@ -226,8 +231,9 @@ export function runSerializedSessionMutation<T>(operation: () => Promise<T>): Pr
 
   return predecessor
     .catch(() => undefined)
-    .then(operation)
+    .then(() => mutationScope.run(scope, operation))
     .finally(() => {
+      scope.active = false;
       release();
       if (sessionMutationBarrier === barrier) sessionMutationBarrier = null;
     });
@@ -235,7 +241,7 @@ export function runSerializedSessionMutation<T>(operation: () => Promise<T>): Pr
 
 /** Current barrier includes every session mutation queued at read time. */
 export function getSessionMutationBarrier(): Promise<void> | null {
-  return sessionMutationBarrier;
+  return mutationScope.getStore()?.active ? null : sessionMutationBarrier;
 }
 
 /** Record a task only against the exact Query that emitted task_started. */

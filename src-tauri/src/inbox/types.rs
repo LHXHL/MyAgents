@@ -24,6 +24,14 @@ pub enum InboxMessageKind {
     Event,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum InboxSourceKind {
+    #[default]
+    InternalSession,
+    ExternalCli,
+}
+
 /// 待投递的 inbox message——挂在 target sidecar 的 `pending_inbox_messages` 队列
 /// 上,Rust 端 push,sidecar drain handler 取出后用
 /// `<myagents-session-event>` 注入 enqueueUserMessage / sendExternalMessage。
@@ -39,7 +47,11 @@ pub struct PendingInboxMessage {
 
     /// Caller session ID(谁发的)。如果 caller 是 cron task,这里是 cron task session;
     /// 如果是桌面/IM Bot,这里是对应 session。
-    pub from_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_session_id: Option<String>,
+
+    #[serde(default)]
+    pub source_kind: InboxSourceKind,
 
     /// Caller 的人类可读 label,由 caller sidecar 的 `deriveSessionLabel()` 推导。
     /// 经过 `sanitizeInboxLabel()` HTML escape + 80 字符截断后注入到 target 的 prompt。
@@ -93,7 +105,8 @@ impl PendingInboxMessage {
     ) -> Self {
         Self {
             message_id: uuid::Uuid::new_v4().to_string(),
-            from_session_id,
+            from_session_id: Some(from_session_id),
+            source_kind: InboxSourceKind::InternalSession,
             from_label,
             to_session_id,
             text,
@@ -115,7 +128,8 @@ impl PendingInboxMessage {
     ) -> Self {
         Self {
             message_id: uuid::Uuid::new_v4().to_string(),
-            from_session_id,
+            from_session_id: Some(from_session_id),
+            source_kind: InboxSourceKind::InternalSession,
             from_label,
             to_session_id,
             text,
@@ -125,6 +139,22 @@ impl PendingInboxMessage {
             timestamp_ms: chrono::Utc::now().timestamp_millis(),
             kind: InboxMessageKind::Reply,
             in_reply_to: Some(in_reply_to),
+            session_event: None,
+        }
+    }
+
+    pub fn new_external_request(to_session_id: String, text: String) -> Self {
+        Self {
+            message_id: uuid::Uuid::new_v4().to_string(),
+            from_session_id: None,
+            source_kind: InboxSourceKind::ExternalCli,
+            from_label: "External CLI".to_string(),
+            to_session_id,
+            text,
+            reply_back: false,
+            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            kind: InboxMessageKind::Request,
+            in_reply_to: None,
             session_event: None,
         }
     }

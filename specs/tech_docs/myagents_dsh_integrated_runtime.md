@@ -16,6 +16,8 @@ runtime_authority: src/shared/integrated-runtimes/dsh-lock.json
 
 > Current owners and data flow follow `specs/ARCHITECTURE.md` and the implementation. The accepted Runtime identity, toolchain and platform claims are read from `src/shared/integrated-runtimes/dsh-lock.json`, generated contracts and the verified immutable handoff. Product scope remains owned by the paired PRD. Earlier design audits and delivery receipts below are historical evidence; their version numbers and worktree observations do not describe the current checkout.
 
+> **Proposal, not current architecture.** This RFC is ready for implementation; current Runtime ownership and supported adapters are documented in [Multi-Agent Runtime](multi_agent_runtime.md).
+
 ## 1. Decision summary
 
 MyAgents implements DSH as a first-party **Integrated Runtime**. Provider configuration remains Host-owned and session operations use the existing SessionEngine facade.
@@ -1564,3 +1566,14 @@ Clean-source pre-artifact report `36d082d9a55d457736677c660cc98d5ba10b760e1c90e8
 Host resource/freshness checks and the Rust bundled-resource detection test pass. The default test groups cover 4,690 unit, 1,695 DOM and 677 integration cases, plus 214 build-script checks. This was not a clean single-pass `npm test`: short build-script deadlines under simultaneous compilation passed on an unloaded rerun; the PermissionPrompt copied-state and transcript metadata-publication tests passed in isolated 11-test and 19-test reruns respectively. A Node 24.20 integration worker closed its IPC channel; the Host's supported Node 24.14 run completed, with the transcript retry noted above. These observations remain test-stability follow-ups, not evidence of new DSH behavior. The six staged native cases pass, including exact handshake, Provider policy, permissions, cold resume and a 12-generation soak (all Runtime PIDs released, descriptors 14 to 14).
 
 Final Host typecheck/lint, same-path local Debug App build, signature and App-resource-native checks are recorded after the Host source freeze in the [development receipt](../../../MyAgents-dsh-release-work/rc3-upgrade-20260923/development-receipt.json). This maintenance refresh does not complete Batch 3/H6, signed release, real-Provider/GUI acceptance, or Windows/Linux native acceptance.
+
+
+### MyAgents 0.4.21 integration (2026-09-23)
+
+The integration branch merges MyAgents main `61334079` (0.4.21) over the DSH rc.3 Host `06ffb7ff`. The official DSH rc.3 handoff, bundled Runtime identity and existing user Session format remain unchanged. Main's Claude Agent SDK 0.3.276, managed Codex 0.155.1, external CLI authorization, Session history repairs, Task activity projection and interaction receipts are retained alongside DSH's native admission and mutation journals.
+
+Conversation retry now uses the SessionEngine rewind-and-replay owner. DSH checks the native admission record before deciding between a product-only retry of an unadmitted input and a journaled native rewind. Fork attempts carry a stable target Session ID, so a lost response can recover the same committed fork. Cold V2 activation retries transient read errors; an explicitly journaled DSH birth can still recover a missing file, while an ordinary missing published history stays invalid. DSH fork and rewind preparation wait for the real writer result rather than a fixed save deadline.
+
+Chat waits for reset acknowledgment before replacing its visible Session, reloads Task history through the restore owner, and retains published Sessions if opening a new tab fails. Task scheduling no longer sets conversation loading before execution begins. External CLI tests cover both authorized public commands and the existing internal Session scope. The upgrade does not reset user Sessions or change the DSH Runtime repository.
+
+Validation: TypeScript, lint/dependency boundaries, source classification, staged DSH resources, web/server/bridge/CLI bundles and 214 build-script tests pass. The complete default Vitest groups pass 4,799 unit, 1,781 DOM and 717 integration tests, with their expected opt-in cases skipped. The Rust App library passes 1,458 tests (seven ignored). On this macOS host the Rust test executable was run directly with Xcode's Swift library directory in `DYLD_LIBRARY_PATH`; `cargo test` compiled successfully but the cargo-launched executable did not inherit the needed dynamic library path. Earlier integration runs made alongside other builds hit timing-sensitive timer and writer assertions; both passed in isolation, and the final unloaded integration run passed. No live Provider or packaged desktop acceptance is claimed here.

@@ -30,14 +30,20 @@ export async function readTranscriptFile(filePath: string, sessionId: string): P
     for (;;) {
       const end = pending.indexOf('\n', offset);
       if (end < 0) break;
-      if (!decoder.push(pending.slice(offset, end))) return decoder.finish();
+      try {
+        if (!decoder.push(pending.slice(offset, end))) return decoder.finish();
+      } catch (error) {
+        throw new TranscriptStorageError('invalid-history', error instanceof Error ? error.message : 'Invalid V2 transcript');
+      }
       offset = end + 1;
     }
     pending = pending.slice(offset);
     if (Buffer.byteLength(pending) > TRANSCRIPT_MAX_LINE_BYTES) throw new TranscriptStorageError('invalid-history', 'V2 record exceeds size limit');
     await yieldToRuntime();
   }
-  return decoder.finish(pending.length > 0);
+  try { return decoder.finish(pending.length > 0); } catch (error) {
+    throw new TranscriptStorageError('invalid-history', error instanceof Error ? error.message : 'Invalid V2 transcript');
+  }
 }
 
 export interface TranscriptFileOptions {
@@ -161,10 +167,7 @@ export class TranscriptFile implements TranscriptStorage {
           alreadyWritten = tailBytes === line.length;
           if (!alreadyWritten && tailBytes > 0) await file.truncate(offset);
         } else {
-          let decoded: DecodedTranscript;
-          try { decoded = await this.read(); } catch {
-            throw new TranscriptStorageError('invalid-history', 'Invalid V2 transcript');
-          }
+          const decoded = await this.read();
           if (decoded.header.generation !== expected.generation || decoded.tail === 'invalid') {
             throw new TranscriptStorageError('invalid-history', 'V2 transcript generation or prefix changed');
           }

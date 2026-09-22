@@ -1,3 +1,20 @@
+import type { SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
+
+/**
+ * SDK 0.3.274 coalesces queued task notifications into one model turn. Earlier
+ * notifications receive empty zero-turn receipts before the final real result.
+ * They do not own the product turn, usage, pending send or rewind boundary.
+ * Origin is required: a zero-turn human/local/error result is not this receipt.
+ */
+export function isCoalescedTaskNotificationReceipt(message: SDKResultMessage): boolean {
+  return message.subtype === 'success' && !message.is_error
+    && message.origin?.kind === 'task-notification'
+    && message.num_turns === 0 && message.result === ''
+    // Native 0.3.276 receipts omit terminal_reason (verified with queued Bash
+    // completions). Never ignore an explicitly interrupted/failed terminal.
+    && (message.terminal_reason === undefined || message.terminal_reason === 'completed');
+}
+
 export interface EmptySuccessfulSdkResultInput {
   isError?: boolean;
   result?: string | null;

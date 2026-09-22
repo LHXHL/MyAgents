@@ -1,3 +1,4 @@
+import { selectUsableAgentWorkspaceRecords } from '../../../shared/agentWorkspaceIdentity';
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
   AlertCircle,
@@ -459,7 +460,7 @@ export default memo(function GlobalSidebar({
   }, []);
 
   const sortedProjects = useMemo(
-    () => sortLauncherProjects(projects.filter(isProjectVisibleToUser)),
+    () => sortLauncherProjects(selectUsableAgentWorkspaceRecords(projects, []).projects.filter(isProjectVisibleToUser)),
     [projects],
   );
   const activeProjects = useMemo(

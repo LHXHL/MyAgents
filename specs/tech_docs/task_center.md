@@ -19,6 +19,8 @@
 
 `TaskApplication` 是 create/link、status、delete/unlink、run/rerun 的应用层 owner。它复用 Task control 与 Store 的现有事务来编排规则，不保存第二份状态。Management API 与 Tauri command 只负责 DTO、调用方身份和响应映射；Cron 兼容入口与 Memory managed job 直接调用同一个应用入口，不能反向依赖 transport handler。
 
+桌面「创建并启动」调用 `cmd_create_and_start_cron_task` → `TaskApplication::create_and_start_scheduled`，由后端完成创建、状态裁决与 scheduler 启动。返回提交后的 Task 与可选启动错误；失败记录保留供查看/重试，前端不得用 delete 补偿。用户明确取消已接纳的草稿时可以发送 stop；关闭 Tab 本身不删除或停止已接纳 Task。兼容 DTO 不构成第二份持久状态。
+
 Task 的核心职责：
 
 - 用户可见身份、文档、状态机与审计链。
@@ -204,8 +206,8 @@ Goal 是 Session 状态，不是 Task execution mode：
 
 - Rust：`src-tauri/src/task.rs`、`task_application.rs`、`task_scheduler.rs`、`task_execution.rs`
 - Legacy compatibility：`src-tauri/src/cron_task/*`、`legacy_upgrade.rs`
-- Management API：`/api/task/*`（含 comment/list/context/retry、turn admitted、trigger validate/test/check-now/reset 与 run-now）及兼容 `/api/cron/*`
-- CLI：`myagents task ...` 是 Agent-facing canonical surface，覆盖通用 `create-direct`、评论写回、创建/启停、历史、exit、Trigger test/check-now/run-now/reset；`myagents record ...` 是 Record canonical surface，`myagents thought ...` 只保留兼容；`myagents cron ...` 只保留外部兼容
+- Management API：`/api/task/*`（含 comment/list/context/retry、turn admitted、trigger validate/test/check-now/reset 与 run-now）及兼容 `/api/cron/*`。Node 的 canonical `/api/admin/task/{start,stop,runs}` 不套 ambient workspace guard，继续复用既有 Rust `/api/cron/{run,stop,runs}` TaskStore adapter；不新增第二套任务 authority。
+- CLI：`myagents task ...` 是 Agent-facing canonical surface，覆盖通用 `create-direct`、评论写回、创建/启停、历史、exit、Trigger test/check-now/run-now/reset；`myagents record ...` 是 Record canonical surface，`myagents thought ...` 只保留兼容；`myagents cron ...` 只保留 App 内兼容，不在 token-authenticated 外部公开清单中
 - Renderer：`src/renderer/components/task-center/`、`useCronTask`（兼容展示 hook）
 
 用户可见的创建、列表、详情与评论交互以

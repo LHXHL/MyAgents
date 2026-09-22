@@ -7,6 +7,7 @@ import { DEFAULT_CONFIG, type AppConfig, type Project, type Provider } from './t
 import { useConfigData } from './useConfigData';
 import { useConfigActions } from './useConfigActions';
 import { rebuildAndPersistAvailableProviders } from './services/providerService';
+import type { atomicModifyConfig } from './services/appConfigService';
 
 const mocks = vi.hoisted(() => ({
   config: {} as AppConfig,
@@ -40,8 +41,8 @@ vi.mock('./services/configStore', () => ({
 
 vi.mock('./services/appConfigService', () => ({
   loadAppConfig: mocks.loadAppConfig,
-  atomicModifyConfig: vi.fn(async (modify: (config: AppConfig) => AppConfig) => {
-    mocks.config = modify(mocks.config);
+  atomicModifyConfig: vi.fn<typeof atomicModifyConfig>(async modify => {
+    mocks.config = await modify(mocks.config);
     return mocks.config;
   }),
   ensureBundledWorkspace: mocks.ensureBundledWorkspace,
@@ -171,6 +172,15 @@ describe('ConfigProvider external config invalidation', () => {
     });
   });
 
+  it('keeps persisted config intact after asynchronous startup maintenance', async () => {
+    const savedConfig = mocks.config;
+
+    render(<ConfigProvider><Probe /></ConfigProvider>);
+
+    await waitFor(() => expect(rebuildAndPersistAvailableProviders).toHaveBeenCalledTimes(1));
+    expect(mocks.config).toEqual(savedConfig);
+  });
+
   it('keeps the readable disk snapshot visible when identity materialization is deferred', async () => {
     mocks.reconcileIdentities.mockRejectedValueOnce(new Error('config write interrupted'));
 
@@ -289,6 +299,17 @@ describe('ConfigProvider external config invalidation', () => {
 
     await waitFor(() => expect(mocks.reconcileIdentities).toHaveBeenCalledTimes(2));
     expect(screen.getByTestId('snapshot')).toHaveTextContent('old-project');
+    expect(JSON.parse(screen.getByTestId('snapshot').textContent ?? '{}')).toMatchObject({ error: null });
+  });
+
+  it('keeps healthy projects visible when external identity maintenance fails', async () => {
+    render(<ConfigProvider><Probe /></ConfigProvider>);
+    await waitFor(() => expect(mocks.listeners.has('app:config-changed')).toBe(true));
+    await waitFor(() => expect(mocks.reconcileIdentities).toHaveBeenCalledTimes(1));
+    mocks.reconcileIdentities.mockRejectedValueOnce(new Error('Agent identity maintenance failed'));
+    mocks.projects = [project('still-readable', 'healthy', '/healthy')];
+    await act(async () => { mocks.listeners.get('app:config-changed')?.(); });
+    await waitFor(() => expect(screen.getByTestId('snapshot')).toHaveTextContent('still-readable'));
     expect(JSON.parse(screen.getByTestId('snapshot').textContent ?? '{}')).toMatchObject({ error: null });
   });
 

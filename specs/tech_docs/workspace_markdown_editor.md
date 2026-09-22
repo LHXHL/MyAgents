@@ -32,6 +32,8 @@ macOS 编辑菜单的 Undo / Redo 由 `macos_edit_menu` 路由：先用真正的
 
 Chat 的 `FileActionProvider` 覆盖消息、分屏和全屏预览；consumer 不另建文件缓存。缓存刷新只裁决结果是否可写入缓存，用户操作的取消由 workspace identity / 最新导航意图裁决。未找到与校验失败分开，已有负结果在新出现的引用或显式交互时重新检查，并复用有限缓存 lease；不引入后台扫描。
 
+同一 workspace / target 的刷新与 lease 到期只失效校验时效，保留最近一次结果供展示，直到新结果返回；不能把重新校验中的已确认链接降回普通代码，否则图标、底色与正文换行会反复跳变。点击与菜单仍实时校验，不把展示结果当操作授权。切换 workspace 或最后一个 consumer 卸载时释放旧结果。
+
 Rust `check_paths` 返回文件事实与可选 `resolvedPath` / `error`。工作区符号链接指向普通外部文件时返回 canonical local target；预览和菜单沿 local 只读入口，不能由此扩大 workspace mutation 权限。用户主动打开普通本地文件支持其它卷与相邻工作区，保留 canonical credential/system exclusions 和真实 OS 可读性检查。未知格式仍提供系统打开/定位入口；不把文件存在等同于所有格式均可预览。
 
 ## 源码与投影

@@ -19,6 +19,8 @@ import {
   waitForCurrentTurnTerminalObserver,
 } from './turn';
 import {
+  clearInFlightSlot,
+  hasQueuedOrInFlightWork,
   resetQueueForTest,
   setForceSurfaceInFlightId,
   setInFlightQueueItem,
@@ -131,7 +133,6 @@ function makeDeps(overrides: Partial<BuiltinTurnLifecycleDeps> = {}) {
       provider_api_protocol: null,
     }),
     probeForkPersistenceIfReady: vi.fn(),
-    recoverInvalidResumeAnchorError: vi.fn(() => false),
     handleTerminalRecovery: vi.fn(),
     applyDeferredRestartIfNeeded: vi.fn(),
     ...overrides,
@@ -475,54 +476,18 @@ describe('turn-lifecycle owner', () => {
     });
   });
 
-  it('recovers SDK missing resume anchor result errors without surfacing a user error', () => {
-    const { deps, broadcasts } = makeDeps({
-      recoverInvalidResumeAnchorError: vi.fn(() => true),
-    });
+  it('surfaces missing native anchors instead of silently replaying with full history', async () => {
+    const { deps, broadcasts } = makeDeps();
     const lifecycle = createBuiltinTurnLifecycle(deps);
-
-    lifecycle.handleSdkResult(makeResult({
-      subtype: 'error_during_execution',
-      is_error: true,
-      result: 'Claude Code returned an error result: No message found with message.uuid of: 75c9051f-a071-4243-bc25-92cfc396e2db',
-      terminal_reason: 'error',
+    await lifecycle.handleSdkResult(makeResult({
+      subtype: 'error_during_execution', is_error: true,
+      result: 'No message found with message.uuid of: rejected-anchor',
+      errors: ['No message found with message.uuid of: rejected-anchor'], terminal_reason: 'error',
     }));
-
-    expect(deps.recoverInvalidResumeAnchorError).toHaveBeenCalledWith(
-      'Claude Code returned an error result: No message found with message.uuid of: 75c9051f-a071-4243-bc25-92cfc396e2db',
-    );
-    expect(broadcasts.map(item => item.event)).not.toContain('chat:agent-error');
-    expect(broadcasts.map(item => item.event)).not.toContain('chat:message-error');
-    expect(broadcasts.map(item => item.event)).not.toContain('chat:message-complete');
-    expect(deps.persistTranscript).not.toHaveBeenCalled();
-    expect(deps.abortTurnAbort).toHaveBeenCalledWith('session-1', 'error');
+    expect(broadcasts.map(item => item.event)).toContain('chat:agent-error');
+    expect(deps.handleTerminalRecovery).toHaveBeenCalledWith(undefined);
   });
 
-  it('does not notify the queue turn for recoverable resume anchor errors', () => {
-    const { deps } = makeDeps({
-      recoverInvalidResumeAnchorError: vi.fn(() => true),
-    });
-    const lifecycle = createBuiltinTurnLifecycle(deps);
-    const onTerminal = vi.fn();
-    setCurrentTurnSourceItem({
-      id: 'queue-replay',
-      message: { role: 'user', content: 'retry' },
-      messageText: 'retry',
-      wasQueued: false,
-      resolve: vi.fn(),
-      onTerminal,
-      channelDelivery: NO_CHANNEL_DELIVERY,
-    });
-
-    lifecycle.handleSdkResult(makeResult({
-      subtype: 'error_during_execution',
-      is_error: true,
-      result: 'No message found with message.uuid of: 75c9051f-a071-4243-bc25-92cfc396e2db',
-      terminal_reason: 'error',
-    }));
-
-    expect(onTerminal).not.toHaveBeenCalled();
-  });
 
   it('does not title a completed turn when turn-end persistence fails', async () => {
     const { deps, broadcasts } = makeDeps({
@@ -578,10 +543,12 @@ describe('turn-lifecycle owner', () => {
       scheduleTransientProviderRetry: vi.fn(() => true),
     });
     const lifecycle = createBuiltinTurnLifecycle(deps);
-
-    await lifecycle.handleSdkResult(makeResult({
+    const transientResult = makeResult({
       result: '[Error]: Concurrency limit exceeded for account, please retry later',
-    }));
+    });
+
+    expect(lifecycle.canMaterializeRewindResult(transientResult)).toBe(false);
+    await expect(lifecycle.handleSdkResult(transientResult)).resolves.toBe('retrying');
 
     expect(deps.retractTransientProviderTextOutput).toHaveBeenCalledWith(
       '[Error]: Concurrency limit exceeded for account, please retry later',
@@ -959,6 +926,54 @@ describe('turn-lifecycle owner', () => {
       expect.anything(),
     );
   });
+
+  it.each(['sync-v2', 'deferred-v1'] as const)(
+    'keeps accepted force execution active after its queue slot is cleared (%s)', async surfaceTiming => {
+      let interrupting = true;
+      let streaming = true;
+      let streamingAtSurface = false;
+      const surfaceReady = deferred();
+      const surface = vi.fn(async () => {
+        if (surfaceTiming === 'deferred-v1') await surfaceReady.promise;
+        // Real surface clears the last queue slot, then checks whether a
+        // deferred config restart is safe. The accepted turn must own activity
+        // already, before either operation can observe an empty queue.
+        streamingAtSurface = streaming;
+        clearInFlightSlot();
+      });
+      const { deps } = makeDeps({
+        getIsInterruptingResponse: () => interrupting,
+        hasQueuedOrInFlightWork,
+        setStreamingMessage: vi.fn(value => { streaming = value; }),
+        surfaceInFlightQueueItem: surface,
+      });
+      const lifecycle = createBuiltinTurnLifecycle(deps);
+      setInFlightQueueItem('forced-last-item', {
+        messageText: 'run now', channelDelivery: NO_CHANNEL_DELIVERY,
+      });
+      setForceSurfaceInFlightId('forced-last-item');
+      setInterruptingInFlightQueueId('forced-last-item');
+      appendMessage({ id: '1', role: 'assistant', content: 'partial', timestamp: 't1' });
+      markCurrentTurnHasOutput();
+
+      lifecycle.handleSdkResult(makeResult({ terminal_reason: 'aborted_streaming' }));
+      surfaceReady.resolve();
+      await surface.mock.results[0].value;
+      await lifecycle.getLastTurnEndPersist();
+      expect(hasQueuedOrInFlightWork()).toBe(false);
+      expect(streaming).toBe(true);
+      expect(deps.setSessionState).not.toHaveBeenCalledWith('idle');
+      expect(streamingAtSurface).toBe(true);
+      expect(deps.broadcast).not.toHaveBeenCalledWith('chat:message-stopped', expect.anything());
+
+      // No sticky busy state: the accepted turn's own terminal releases it.
+      interrupting = false;
+      lifecycle.handleSdkResult(makeResult({ result: 'next turn done' }));
+      await lifecycle.getLastTurnEndPersist();
+      expect(streaming).toBe(false);
+      expect(deps.setSessionState).toHaveBeenLastCalledWith('idle');
+    },
+  );
 
   it('still broadcasts message-stopped on a plain stop without force-surface', async () => {
     const { deps } = makeDeps({

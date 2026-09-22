@@ -30,6 +30,10 @@ import { serve as honoServe } from '@hono/node-server';
 import { createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
+import {
+  externalTaskWorkspaceFailure,
+  type AdminCaller,
+} from './external-cli-admission';
 
 /**
  * Hard upper bound on a single multipart request body (aggregate of all files
@@ -1480,9 +1484,20 @@ async function routeAdminApi(
   pathname: string,
   payload: Record<string, unknown>,
   signal?: AbortSignal,
+  caller: AdminCaller = { kind: 'internal' },
 ): Promise<Record<string, unknown>> {
   // Strip the prefix for matching
   const route = pathname.replace('/api/admin/', '');
+  if (
+    caller.kind === 'external-cli' &&
+    (route.startsWith('task/') || route.startsWith('cron/'))
+  ) {
+    // Caller provenance is Host-owned. Environment variables and payload
+    // fields supplied by an ordinary process cannot impersonate an Agent.
+    payload = { ...payload, actor: 'user', source: 'cli' };
+    delete payload.currentSessionId;
+    delete payload.localSessionId;
+  }
 
   // Lazy-load admin-api (~150ms on first hit, cached thereafter)
   const api = await getAdminApi();
@@ -1629,6 +1644,10 @@ async function routeAdminApi(
     return await api.handleAgentList(
       payload as Parameters<typeof api.handleAgentList>[0],
     );
+  if (route === 'agent/create')
+    return await api.handleAgentCreate(payload as Parameters<typeof api.handleAgentCreate>[0]);
+  if (route === 'agent/resolve-conflict')
+    return api.handleAgentResolveConflict(payload as Parameters<typeof api.handleAgentResolveConflict>[0]);
   if (route === 'agent/current') return await api.handleAgentCurrent();
   if (route === 'agent/show')
     return await api.handleAgentShow(
@@ -1846,6 +1865,8 @@ async function routeAdminApi(
     );
 
   // Task Center — thoughts + tasks (v0.1.69)
+  const taskWorkspaceFailure = externalTaskWorkspaceFailure(caller, route, payload);
+  if (taskWorkspaceFailure) return taskWorkspaceFailure;
   if (route === 'task/list')
     return await api.handleTaskList(
       payload as Parameters<typeof api.handleTaskList>[0],
@@ -2017,6 +2038,11 @@ async function routeAdminApi(
       payload as Parameters<typeof api.handleSessionList>[0],
     );
   }
+  if (route === 'session/get') {
+    return await api.handleSessionGet(
+      payload as Parameters<typeof api.handleSessionGet>[0],
+    );
+  }
   if (route === 'session/start') {
     const { handleAdminSessionStart } = await import(
       './inbox/start-admin-handler'
@@ -2041,7 +2067,8 @@ async function routeAdminApi(
       toSessionId:
         typeof payload.toSessionId === 'string' ? payload.toSessionId : '',
       prompt: typeof payload.prompt === 'string' ? payload.prompt : '',
-      replyBack: payload.replyBack !== false,
+      replyBack:
+        caller.kind === 'external-cli' ? false : payload.replyBack !== false,
     };
     const result = await handleAdminInbox(
       getRuntimeSessionIdForRequest(),
@@ -6146,6 +6173,12 @@ async function main() {
       // ============= ADMIN API (Self-Config CLI) =============
       if (pathname.startsWith('/api/admin/') && request.method === 'POST') {
         try {
+          const route = pathname.slice('/api/admin/'.length);
+          const { admitAdminRequest, isAdminAdmissionFailure } = await import('./external-cli-admission');
+          const admission = await admitAdminRequest(request, route);
+          if (isAdminAdmissionFailure(admission)) {
+            return jsonResponse(admission.response, admission.status);
+          }
           const scopeError = cliSessionScopeError(
             request.headers.get(CLI_SESSION_HEADER),
             getSessionEngine().getCurrentSessionContext().sessionId,
@@ -6159,7 +6192,12 @@ async function main() {
                   unknown
                 >);
 
-          const result = await routeAdminApi(pathname, payload, request.signal);
+          const result = await routeAdminApi(
+            pathname,
+            payload,
+            request.signal,
+            admission,
+          );
           return jsonResponse(result, result.success ? 200 : 400);
         } catch (error) {
           console.error(`[admin] ${pathname} error:`, error);
@@ -11792,6 +11830,57 @@ description: >
       //
       // /api/inbox/drain remains as the internal sidecar-to-sidecar endpoint
       // that Rust `cmd_inbox_deliver` POSTs to.
+
+      if (
+        (pathname === '/api/inbox/start' ||
+          pathname === '/api/inbox/drain' ||
+          pathname === '/api/internal/session/text-page') &&
+        request.method === 'POST'
+      ) {
+        const { hasValidInternalCliCredential } = await import(
+          './external-cli-admission'
+        );
+        if (!hasValidInternalCliCredential(request)) {
+          return jsonResponse(
+            {
+              success: false,
+              code: 'INTERNAL_CALLER_REQUIRED',
+              error: 'Internal MyAgents caller identity is required.',
+            },
+            401,
+          );
+        }
+      }
+
+      if (
+        pathname === '/api/internal/session/text-page' &&
+        request.method === 'POST'
+      ) {
+        try {
+          const input = (await request.json()) as {
+            sessionId: string;
+            limit?: number;
+            before?: string;
+          };
+          const { readLocalSessionTextPage } = await import(
+            './session-text-projection'
+          );
+          return jsonResponse(await readLocalSessionTextPage(input));
+        } catch (error) {
+          const code =
+            error instanceof Error && 'code' in error
+              ? String((error as Error & { code: unknown }).code)
+              : 'SESSION_GET_FAILED';
+          return jsonResponse(
+            {
+              success: false,
+              code,
+              error: error instanceof Error ? error.message : String(error),
+            },
+            400,
+          );
+        }
+      }
 
       // POST /api/inbox/start — Fresh Session admission. Unlike ordinary
       // drain, this waits only for Runtime dispatch acceptance so prepared

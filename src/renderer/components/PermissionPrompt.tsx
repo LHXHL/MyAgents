@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ShieldAlert, Terminal, X, Check, CheckCheck } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { PermissionOperationDisplay, PermissionReview } from '../../shared/types/runtime';
+import type { ToolPermissionHints } from '../../shared/types/toolPermission';
 
 import type { LargeValueRef } from '../../shared/types/large-value';
 import { getSessionPort } from '../api/tauriClient';
@@ -9,7 +10,7 @@ import { fetchJsonLargeValueRef } from '../api/largeValueRef';
 import { PermissionReviewDetails } from './PermissionReviewDetails';
 import { PermissionCommandDetails, type PermissionCommandDisplay } from './PermissionCommandDetails';
 
-export interface PermissionRequest {
+export interface PermissionRequest extends ToolPermissionHints {
     requestId: string;
     sessionId?: string | null;
     toolName: string;
@@ -76,6 +77,11 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
         return () => { cancelled = true; };
     }, [detailsKey, reviewRefId, reviewRefMime, sessionId]);
     const mountedRef = useRef(true);
+    const denyRef = useRef<HTMLButtonElement>(null);
+
+    useEffect(() => {
+        if (request.defaultToNo) denyRef.current?.focus();
+    }, [request.requestId, request.defaultToNo]);
 
     useEffect(() => {
         mountedRef.current = true;
@@ -85,7 +91,7 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
     }, []);
 
     const handleDecision = async (decision: 'deny' | 'allow_once' | 'always_allow') => {
-        if (isResponding) return;
+        if (isResponding || (decision === 'always_allow' && request.suppressAlwaysAllowRule)) return;
         const requestId = request.requestId;
         setIsResponding(true);
         setResponseError(null);
@@ -220,6 +226,8 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
                 {/* Actions — 主操作（允许）实心琥珀靠右 */}
                 <div className={`flex flex-wrap items-center gap-2 ${commandDisplay ? '-mx-4 -mb-4 mt-4 border-t border-[var(--line)] px-4 py-3' : 'mt-3'}`}>
                     <button
+                        ref={denyRef}
+                        type="button"
                         onClick={() => handleDecision('deny')}
                         disabled={isResponding}
                         className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:opacity-50 ${commandDisplay ? 'text-sm' : 'border border-[var(--line)] text-xs hover:border-[var(--line-strong)]'}`}
@@ -230,16 +238,18 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
 
                     <div className="flex-1" />
 
-                    <button
+                    {!request.suppressAlwaysAllowRule && <button
+                        type="button"
                         onClick={() => handleDecision('always_allow')}
                         disabled={isResponding || awaitingDetails}
                         className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 font-medium transition-colors disabled:opacity-50 ${commandDisplay ? 'border-[var(--line)] text-sm text-[var(--ink-secondary)] hover:bg-[var(--paper-inset)]' : 'border-[var(--warning)]/20 bg-[var(--warning)]/10 text-xs text-[var(--warning)] hover:bg-[var(--warning)]/15'}`}
                     >
                         {!commandDisplay && <CheckCheck className="size-3.5" />}
                         <span>{t('shell.permissionPrompt.alwaysAllow')}</span>
-                    </button>
+                    </button>}
 
                     <button
+                        type="button"
                         onClick={() => handleDecision('allow_once')}
                         disabled={isResponding || awaitingDetails}
                         className={`flex items-center gap-1.5 rounded-lg bg-[var(--warning)] px-3 py-1.5 font-medium text-[var(--on-warning)] transition-colors hover:brightness-110 disabled:opacity-50 ${commandDisplay ? 'text-sm' : 'text-xs'}`}

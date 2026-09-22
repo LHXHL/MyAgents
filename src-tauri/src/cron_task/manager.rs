@@ -309,7 +309,7 @@ fn task_store() -> Result<&'static Arc<crate::task::TaskStore>, String> {
     crate::task::get_task_store().ok_or_else(|| "task store not initialized".to_string())
 }
 
-fn task_input_from_cron_config(
+pub(super) fn task_input_from_cron_config(
     config: CronTaskConfig,
 ) -> Result<crate::task::TaskCreateDirectInput, String> {
     let run_mode = match config.run_mode {

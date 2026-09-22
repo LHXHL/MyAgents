@@ -221,6 +221,19 @@ impl<'a> TaskApplication<'a> {
         Ok(task)
     }
 
+    /// Create-and-start is one application operation. A committed Task remains
+    /// inspectable when startup fails; callers must not compensate with delete.
+    pub async fn create_and_start_scheduled(
+        &self,
+        input: TaskCreateDirectInput,
+    ) -> Result<(Task, Option<String>), TaskApplicationError> {
+        let task = self.create_direct(input).await?;
+        match self.start_scheduled_task(&task.id).await {
+            Ok(started) => Ok((started, None)),
+            Err(error) => Ok((self.any_task(&task.id).await?, Some(error.to_string()))),
+        }
+    }
+
     pub async fn create_system_managed_direct(
         &self,
         input: TaskCreateDirectInput,
@@ -338,7 +351,8 @@ impl<'a> TaskApplication<'a> {
         }
         let message = crate::inbox::PendingInboxMessage {
             message_id: comment.id.clone(),
-            from_session_id: format!("task:{}", comment.task_id),
+            from_session_id: Some(format!("task:{}", comment.task_id)),
+            source_kind: crate::inbox::InboxSourceKind::InternalSession,
             from_label: "Task comment".to_string(),
             to_session_id: target_session_id,
             text: comment.body.clone(),
@@ -364,6 +378,7 @@ impl<'a> TaskApplication<'a> {
                 Some("Target Session no longer exists".to_string()),
             ),
             crate::inbox::deliver::DeliverOutcome::DeliveryFailed { reason }
+            | crate::inbox::deliver::DeliverOutcome::Unconfirmed { reason }
             | crate::inbox::deliver::DeliverOutcome::Rejected { reason } => {
                 (TaskCommentAdmissionState::Failed, Some(reason))
             }
@@ -1168,6 +1183,28 @@ mod tests {
         let after = tasks.get(&task.id).await.unwrap();
         assert_eq!(after.status, TaskStatus::Done);
         assert_eq!(after.status_history.len(), before.status_history.len());
+    }
+
+    #[tokio::test]
+    async fn create_and_start_keeps_committed_task_when_scheduler_cannot_find_it() {
+        // This private store is deliberately not registered with the process
+        // scheduler. Startup must fail without launching any external runtime.
+        let temp = tempdir().unwrap();
+        let tasks = TaskStore::new(temp.path().join("task-store"));
+        let application = TaskApplication::new(&tasks, None);
+        let (task, error) = application
+            .create_and_start_scheduled(direct_input(temp.path()))
+            .await
+            .unwrap();
+        assert!(error.is_some());
+        assert_eq!(task.status, TaskStatus::Blocked);
+        let persisted = tasks.get(&task.id).await.unwrap();
+        assert!(!persisted.deleted);
+        assert_eq!(persisted.status, TaskStatus::Blocked);
+        assert!(persisted.status_history.iter().any(|entry| entry
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("scheduler start failed"))));
     }
 
     #[tokio::test]

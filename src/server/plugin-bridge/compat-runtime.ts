@@ -514,30 +514,42 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
             currentPluginId,
           );
           try {
-            const resp = await cancellableFetch(`${rustBaseUrl}/api/im-bridge/message`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                botId,
-                pluginId: currentPluginId,
-                requestId,
-                deliveryProtocol: 'openclaw-reply',
-                senderId,
-                senderName: senderName || undefined,
-                accountId,
-                text,
-                chatType: chatType === 'group' ? 'group' : 'direct',
-                chatId,
-                messageId: messageId || undefined,
-                groupId: groupId || undefined,
-                isMention,
-                groupName: groupName || undefined,
-                threadId: threadId || undefined,
-                replyToBody: replyToBody || undefined,
-                groupSystemPrompt: groupSystemPrompt || undefined,
-                attachments: mediaAttachments.length > 0 ? mediaAttachments : undefined,
-              }),
-            });
+            const resp = await cancellableFetch(
+              `${rustBaseUrl}/api/im-bridge/message`,
+              {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  ...(process.env.MYAGENTS_INTERNAL_CLI_TOKEN
+                    ? {
+                        'X-MyAgents-Internal-Cli-Token':
+                          process.env.MYAGENTS_INTERNAL_CLI_TOKEN,
+                      }
+                    : {}),
+                },
+                body: JSON.stringify({
+                  botId,
+                  pluginId: currentPluginId,
+                  requestId,
+                  deliveryProtocol: 'openclaw-reply',
+                  senderId,
+                  senderName: senderName || undefined,
+                  accountId,
+                  text,
+                  chatType: chatType === 'group' ? 'group' : 'direct',
+                  chatId,
+                  messageId: messageId || undefined,
+                  groupId: groupId || undefined,
+                  isMention,
+                  groupName: groupName || undefined,
+                  threadId: threadId || undefined,
+                  replyToBody: replyToBody || undefined,
+                  groupSystemPrompt: groupSystemPrompt || undefined,
+                  attachments:
+                    mediaAttachments.length > 0 ? mediaAttachments : undefined,
+                }),
+              },
+            );
             if (!resp.ok) {
               const body = await resp.text();
               throw new Error(`Rust returned ${resp.status}: ${body}`);
@@ -678,7 +690,15 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
               `${rustBaseUrl}/api/im-bridge/message`,
               {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                  'Content-Type': 'application/json',
+                  ...(process.env.MYAGENTS_INTERNAL_CLI_TOKEN
+                    ? {
+                        'X-MyAgents-Internal-Cli-Token':
+                          process.env.MYAGENTS_INTERNAL_CLI_TOKEN,
+                      }
+                    : {}),
+                },
                 body: JSON.stringify({
                   botId,
                   pluginId: currentPluginId,

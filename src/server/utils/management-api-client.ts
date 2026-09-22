@@ -1,10 +1,25 @@
 import { cancellableFetch } from './cancellation';
 import { readLoopbackJson } from './loopback-response';
+import {
+  INTERNAL_CLI_TOKEN_ENV,
+  INTERNAL_CLI_TOKEN_HEADER,
+} from '../../shared/externalCliCapabilities';
 
 export const ADMIN_LOOPBACK_TIMEOUT_MS = 10_000;
 
 const MGMT_PORT = process.env.MYAGENTS_MANAGEMENT_PORT;
 const SIDECAR_GENERATION = process.env.MYAGENTS_SIDECAR_GENERATION;
+
+export function managementRequestHeaders(): Record<string, string> {
+  const internalToken = process.env[INTERNAL_CLI_TOKEN_ENV]?.trim();
+  return {
+    'Content-Type': 'application/json',
+    ...(internalToken ? { [INTERNAL_CLI_TOKEN_HEADER]: internalToken } : {}),
+    ...(SIDECAR_GENERATION
+      ? { 'X-MyAgents-Sidecar-Generation': SIDECAR_GENERATION }
+      : {}),
+  };
+}
 
 export async function managementApi(
   path: string,
@@ -26,12 +41,7 @@ export async function managementApi(
   const url = `http://127.0.0.1:${MGMT_PORT}${path}`;
   const options: RequestInit = {
     method,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(SIDECAR_GENERATION
-        ? { 'X-MyAgents-Sidecar-Generation': SIDECAR_GENERATION }
-        : {}),
-    },
+    headers: managementRequestHeaders(),
   };
   if (body && method === 'POST') {
     options.body = JSON.stringify(body);

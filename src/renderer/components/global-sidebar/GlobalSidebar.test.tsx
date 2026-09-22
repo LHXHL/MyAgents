@@ -222,6 +222,23 @@ describe('GlobalSidebar rail flyout', () => {
     vi.unstubAllGlobals();
   });
 
+  it('renders healthy workspaces alongside invalid persisted Project rows without modifying them', () => {
+    mocks.forcedRail = false;
+    mocks.projects = [
+      { id: 'bad-path', name: 'Bad path', path: null },
+      { id: '', name: 'Missing identity', path: '/missing' },
+      { id: 'duplicate', name: 'Duplicate one', path: '/one' },
+      { id: 'duplicate', name: 'Duplicate two', path: '/two' },
+      { id: 'healthy', name: 'Healthy workspace', path: '/healthy' },
+    ];
+    const source = JSON.stringify(mocks.projects);
+    renderSidebar();
+    expect(screen.getByText('Healthy workspace')).toBeInTheDocument();
+    expect(screen.queryByText('Bad path')).not.toBeInTheDocument();
+    expect(screen.queryByText('Duplicate one')).not.toBeInTheDocument();
+    expect(JSON.stringify(mocks.projects)).toBe(source);
+  });
+
   it('keeps the notification bell visible, distinguishes unread, and opens one fixed panel', () => {
     mocks.notificationSnapshot.hasUnread = true;
     renderSidebar();

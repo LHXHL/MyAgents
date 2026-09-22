@@ -45,8 +45,9 @@ import ConfirmDialog from '@/components/ConfirmDialog';
 import WorkspaceIcon from '@/components/launcher/WorkspaceIcon';
 import { useToast } from '@/components/Toast';
 import {
-  classifyCodexRewindTransportOutcome,
-  projectCodexRewindRecovery,
+  classifyRewindTransportOutcome,
+  getConversationRejectionMessage,
+  projectRewindRecovery,
   type RewindResponse,
   warnRewindFileOutcome as showRewindFileOutcomeWarning,
 } from '@/utils/rewindFileOutcome';
@@ -125,9 +126,7 @@ import {
 } from '@/hooks/useIntroductionContent';
 import { resolveAdoptedBuiltinProviderId } from '@/utils/sessionConfigAdoption';
 import {
-  getSessionCronTask,
-  isTaskExecuting,
-  createCronTask,
+  createAndStartCronTask,
   startCronTask as startCronTaskIpc,
 } from '@/api/cronTaskClient';
 import { updateSession as patchSessionMetadata } from '@/api/sessionClient';
@@ -149,6 +148,7 @@ import CronTaskCard from '@/components/scheduled-tasks/CronTaskCard';
 import CronTaskDetailPanel from '@/components/CronTaskDetailPanel';
 import { projectTaskExecutionOverrides } from '@/utils/taskProviderProjection';
 import { isTauriEnvironment } from '@/utils/browserMock';
+import { useSessionCronRestore } from '@/hooks/useSessionCronRestore';
 import { isDebugMode } from '@/utils/debug';
 import { getChannelTypeLabel } from '@/utils/taskCenterUtils';
 import { appendCronPromptToDraft } from '@/utils/cronComposerRecovery';
@@ -218,10 +218,6 @@ import {
 } from '../../shared/providerExecution';
 import type { SessionOrigin } from '../../shared/session-origin';
 import type { CapabilityInitialSelect } from '../../shared/skillsTypes';
-import {
-  resolveAgentRuntimePreference,
-  runtimeTypeForAgentRuntimePreference,
-} from '../../shared/integrated-runtimes/identity';
 import {
   buildRuntimeChangePatch,
   CC_MODELS,
@@ -1691,6 +1687,7 @@ export default function Chat({
   const [forkTarget, setForkTarget] = useState<string | null>(null); // assistant message ID
   const [forkPending, setForkPending] = useState(false);
   const conversationOperationPendingRef = useRef(false);
+  const forkRequestRef = useRef<{ sourceId: string | null; messageId: string; targetSessionId: string } | null>(null);
 
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
@@ -2611,8 +2608,7 @@ export default function Chat({
           }
         }
 
-        // 5. Send message (fire-and-forget — resolves before backend turn actually starts)
-        setIsLoading(true);
+        // TabProvider marks execution active when the message is admitted.
         scrollToBottom();
 
         // 5a. Cron handoff (PRD 0.2.7): if launcher staged a cron config, switch
@@ -3133,122 +3129,25 @@ export default function Chat({
     [imageUnderstandingConfiguredForInput],
   );
 
-  // Track which session's cron task state has been loaded
-  const cronLoadedSessionRef = useRef<string | null>(null);
-
-  // Track if we need to set loading state after TabProvider's loadSession completes
-  // This is used when restoring a cron task that is currently executing
+  // A running Task is restored from Rust's scheduler snapshot for this Session.
   const pendingCronLoadingRef = useRef(false);
-
-  // Track previous messages reference to detect when loadSession completes
-  // Using reference comparison instead of length to handle edge case where
-  // message count stays the same after loadSession
   const prevMessagesRef = useRef(messages);
+  const restoreSessionCronProjection = useCallback((task: CronTask, executing: boolean) => {
+    restoreCronTask(task);
+    setStoppedCronRecovery(null);
+    if (executing) {
+      pendingCronLoadingRef.current = true;
+      setCronExecutionState(task.id, true, (task.executionCount ?? 0) + 1);
+    }
+  }, [restoreCronTask, setCronExecutionState]);
 
-  // Restore or clear cron task state when session changes
-  // 方案 A: Rust 统一恢复 - Scheduler 由 Rust 层 initialize_cron_manager 自动恢复
-  // 前端只负责同步 UI 状态
-  //
-  // This handles:
-  // 1. App restart recovery - restore cron task UI for running/paused tasks
-  //    (Scheduler already started by Rust layer)
-  // 2. Tab re-open - reconnect to existing cron task
-  // 3. Session switch - clear cron state if switching to a session without cron task
-  useEffect(() => {
-    if (!sessionId || !tabId || !isTauriEnvironment()) return;
-
-    // Skip if already loaded for this session
-    if (cronLoadedSessionRef.current === sessionId) return;
-
-    const loadCronTaskState = async () => {
-      try {
-        const task = await getSessionCronTask(sessionId);
-
-        if (task && task.status === 'running') {
-          console.log(
-            '[Chat] Restoring cron task UI for session:',
-            sessionId,
-            task.id,
-            'to tab:',
-            tabId,
-          );
-
-          // Restore UI state only. The Rust Task scheduler owns recovery.
-          restoreCronTask(task);
-          setStoppedCronRecovery(null);
-
-          // Check if task is currently executing (e.g., execution started before app restart)
-          // If executing, mark it so we can set loading state after TabProvider's loadSession completes
-          // NOTE: Do NOT call loadSession here - TabProvider already handles session loading
-          // Calling it here causes infinite loop with TabProvider's session loading effect
-          const executing = await isTaskExecuting(task.id);
-          if (executing) {
-            if (sessionIdRef.current !== sessionId) return;
-            console.log(
-              '[Chat] Cron task is currently executing, marking for loading state',
-            );
-            pendingCronLoadingRef.current = true;
-            setCronExecutionState(
-              task.id,
-              true,
-              (task.executionCount ?? 0) + 1,
-            );
-          }
-        } else if (
-          cronState.task &&
-          cronState.task.sessionId &&
-          cronState.task.sessionId !== sessionId
-        ) {
-          // Current cron state is for a different session - clear FRONTEND state only
-          // This happens when user switches from a cron-task session to a regular session
-          // Note: Only clear if cronState.task.sessionId is NOT empty (empty means task was just created)
-          //
-          // IMPORTANT: We do NOT call stopCronTask() here because:
-          // 1. The task should continue running for its original session
-          // 2. The Rust scheduler executes on session-specific Sidecar
-          // 3. When user goes back to the original session, state will be restored (above code)
-          // 4. Per PRD: "暂停后允许手动对话" - task continues while user interacts with other sessions
-          //
-          // EXCEPTION: Don't clear if this is a pending -> real session ID upgrade (same cron task!)
-          // This happens when SDK creates the real session after first message
-          const isSessionUpgrade =
-            isPendingSessionId(cronState.task.sessionId) &&
-            !isPendingSessionId(sessionId);
-          if (isSessionUpgrade) {
-            console.log(
-              '[Chat] Session ID upgraded from pending to real, keeping cron state:',
-              cronState.task.sessionId,
-              '->',
-              sessionId,
-            );
-          } else {
-            console.log(
-              '[Chat] Clearing frontend cron state (session changed from',
-              cronState.task.sessionId,
-              'to',
-              sessionId,
-              ')',
-            );
-            disableCronMode();
-          }
-        }
-
-        cronLoadedSessionRef.current = sessionId;
-      } catch (error) {
-        console.error('[Chat] Failed to load cron task state:', error);
-      }
-    };
-
-    void loadCronTaskState();
-  }, [
+  useSessionCronRestore({
     sessionId,
     tabId,
-    restoreCronTask,
-    disableCronMode,
-    cronState.task,
-    setIsLoading,
-    setCronExecutionState,
-  ]);
+    task: cronState.task,
+    onRestore: restoreSessionCronProjection,
+    onClear: disableCronMode,
+  });
 
   // Set loading state after TabProvider's loadSession completes (for cron task executing scenario)
   // This effect watches for messages reference changes, which indicates loadSession has completed
@@ -3589,6 +3488,7 @@ export default function Chat({
       builtinSelection?: BuiltinModelSelection;
       builtinProviderEnvPolicy?: BuiltinProviderEnvPolicy;
       runtimeBackedProviderSelection?: RuntimeBackedProviderIdentity;
+      runtimeBackedProviderContext?: RuntimeBackedProviderIdentity;
       providerId?: string;
       /** Builtin model. Use `runtimeModel` instead for external runtimes. */
       model?: string | null;
@@ -3644,6 +3544,7 @@ export default function Chat({
           builtinSelection: patch.builtinSelection,
           builtinProviderEnvPolicy: patch.builtinProviderEnvPolicy,
           runtimeBackedProviderSelection: patch.runtimeBackedProviderSelection,
+          runtimeBackedProviderContext: patch.runtimeBackedProviderContext,
           providerId: patch.providerId,
           builtinModel: patch.model,
           runtimeModel: patch.runtimeModel,
@@ -4896,7 +4797,7 @@ export default function Chat({
           mode,
         ) ?? 'auto-edit';
       const persisted = await persistTabConfigChange({
-        runtimeBackedProviderSelection: currentProviderExecutionIntent,
+        runtimeBackedProviderContext: currentProviderExecutionIntent,
         permissionMode: mode,
       });
       if (!persisted) return;
@@ -5013,17 +4914,8 @@ export default function Chat({
       // This also re-enables auto-scroll if user had scrolled up
       scrollToBottom();
 
-      const pendingGoalStart =
-        goalDraftConfigRef.current !== null ||
-        (cronStateRef.current.isEnabled &&
-          !cronStateRef.current.task &&
-          cronStateRef.current.config?.taskKind === 'goal');
-
-      // Goal creation is a fast state mutation, not an AI turn. Keep the global
-      // loading surface idle until the original query is sent through /chat/send.
-      if (!isAiBusy && !pendingGoalStart) {
-        setIsLoading(true);
-      }
+      // Scheduling a future Task does not start an AI turn. TabProvider owns
+      // loading for ordinary sends and actual scheduled execution events.
 
       // Note: User message is added by SSE replay from backend
       // TabProvider.sendMessage passes attachments which will be merged with the replay message
@@ -5044,7 +4936,6 @@ export default function Chat({
         if (!reply && goalDraftConfigRef.current) {
           const startedKind = await startScheduledTask(text);
           if (startedKind !== 'goal') return;
-          if (!isAiBusy) setIsLoading(true);
         } else if (!reply && cron.isEnabled && !cron.task && cron.config) {
           setStoppedCronRecovery(null);
           if (
@@ -5065,7 +4956,7 @@ export default function Chat({
                 cron.config.permissionMode,
                 cronExecution.runtime ?? currentRuntime,
               );
-              const task = await createCronTask({
+              const created = await createAndStartCronTask({
                 workspacePath: agentDir,
                 sessionId,
                 prompt: text,
@@ -5081,11 +4972,11 @@ export default function Chat({
                 schedule: cron.config.schedule,
                 delivery: cron.config.delivery,
               });
-              await startCronTaskIpc(task.id);
-              setCronCardTask(task);
+              setCronCardTask(created.task);
               disableCronMode();
               setIsLoading(false);
-              toastRef.current?.success(t('shell.toasts.cronTaskCreated'));
+              if (created.error) toastRef.current?.error(created.error);
+              else toastRef.current?.success(t('shell.toasts.cronTaskCreated'));
             } catch (err) {
               disableCronMode();
               setIsLoading(false);
@@ -5100,7 +4991,6 @@ export default function Chat({
           // ── Current session: legacy cron behavior ──
           const startedKind = await startScheduledTask(text);
           if (startedKind !== 'goal') return;
-          if (!isAiBusy) setIsLoading(true);
           // A Goal is Session state. Its first user query still follows the
           // ordinary chat path so the visible tail produces the normal bubble
           // and all streaming blocks arrive live.
@@ -5398,20 +5288,6 @@ export default function Chat({
     [agentDir, t],
   );
 
-  const deleteUnopenedForkSession = useCallback(
-    async (targetSessionId: string): Promise<boolean> => {
-      try {
-        const { deleteSession } = await import('@/api/sessionClient');
-        const result = await deleteSession(targetSessionId);
-        return result.deleted || result.reason === 'not-found';
-      } catch (err) {
-        console.warn('[chat] Failed to delete unopened fork session:', err);
-        return false;
-      }
-    },
-    [],
-  );
-
   const confirmRuntimeChange = useCallback(async () => {
     if (guardCronConfigMutation()) {
       setPendingRuntimeChange(null);
@@ -5420,15 +5296,6 @@ export default function Chat({
     const runtime = pendingRuntimeChange;
     setPendingRuntimeChange(null);
     if (!runtime || !currentAgent) return;
-    const previousPreference = resolveAgentRuntimePreference({
-      runtimePreference: currentAgent.runtimePreference,
-      runtime: currentAgent.runtime,
-      runtimeSource: currentAgent.runtimeConfig?.source,
-      providerId: currentAgent.providerId,
-    });
-    const previousAgentRuntime = previousPreference
-      ? runtimeTypeForAgentRuntimePreference(previousPreference)
-      : 'builtin';
     // Unified Tab-UI dual-write policy (matches handleModelChange /
     // handlePermissionModeChange / etc., PRD v0.1.69 §4.3 rule 2 extended to
     // runtime): fork a new Tab pinned to the chosen runtime AND update the
@@ -5464,11 +5331,9 @@ export default function Chat({
       toastRef.current.error(t('shell.toasts.runtimeSwitchCreateFailed'));
       return;
     }
-    // Fork metadata succeeded — now persist workspace default before opening
-    // the tab. For ordinary desktop forks an agent patch failure is non-fatal:
-    // the new session snapshot is still usable. For channel-bound forks, the
-    // binding migration depends on the live Agent template being updated, so
-    // the failure stays blocking and the hidden target session is deleted.
+    // Persist the workspace default after publishing the new Session. A failed
+    // config write leaves the new Session available, while channel transfer
+    // waits for a successful default update.
     //
     // buildRuntimeChangePatch centralizes the "drop non-portable
     // runtimeConfig fields (model / permissionMode / additionalArgs), keep
@@ -5488,13 +5353,6 @@ export default function Chat({
           '[chat] Runtime fork succeeded but agent template update failed:',
           err,
         );
-        if (boundChannel) {
-          await deleteUnopenedForkSession(session.id);
-          toastRef.current.error(
-            t('shell.toasts.runtimeSwitchDefaultUpdateFailed'),
-          );
-          return;
-        }
         toastRef.current.warning(
           t('shell.toasts.runtimeSwitchDefaultUpdateWarning'),
         );
@@ -5507,27 +5365,10 @@ export default function Chat({
       `${runtimeLabel} Session`,
     );
     if (!opened) {
-      await deleteUnopenedForkSession(session.id);
-      if (agentTemplateUpdated) {
-        try {
-          await patchAgentConfig(
-            currentAgent.id,
-            buildRuntimeChangePatch(
-              currentAgent.runtimeConfig,
-              previousAgentRuntime,
-            ),
-          );
-        } catch (rollbackErr) {
-          console.warn(
-            '[chat] Runtime rollback after fork tab open failure also failed:',
-            rollbackErr,
-          );
-        }
-      }
       toastRef.current.error(t('shell.toasts.runtimeSwitchTabOpenFailed'));
       return;
     }
-    if (boundChannel && session) {
+    if (boundChannel && agentTemplateUpdated) {
       try {
         await transferBindingToForkedSession(boundChannel, session.id);
       } catch (err) {
@@ -5535,20 +5376,6 @@ export default function Chat({
           '[chat] Runtime fork channel binding transfer failed:',
           err,
         );
-        try {
-          await patchAgentConfig(
-            currentAgent.id,
-            buildRuntimeChangePatch(
-              currentAgent.runtimeConfig,
-              previousAgentRuntime,
-            ),
-          );
-        } catch (rollbackErr) {
-          console.warn(
-            '[chat] Runtime rollback after failed channel transfer also failed:',
-            rollbackErr,
-          );
-        }
         toastRef.current.error(
           t('shell.toasts.runtimeSwitchChannelTransferFailed'),
         );
@@ -5561,7 +5388,6 @@ export default function Chat({
     onForkSession,
     agentDir,
     transferBindingToForkedSession,
-    deleteUnopenedForkSession,
     guardCronConfigMutation,
     t,
   ]);
@@ -5656,7 +5482,6 @@ export default function Chat({
         });
         const opened = await onForkSession(session.id, agentDir, sessionTitle);
         if (!opened) {
-          await deleteUnopenedForkSession(session.id);
           throw new Error('Fork tab failed to open');
         }
         openedSessionId = session.id;
@@ -5730,7 +5555,6 @@ export default function Chat({
     onLaunchRuntimeBackedProviderSession,
     providers,
     transferBindingToForkedSession,
-    deleteUnopenedForkSession,
     inputChromePermissionMode,
     reasoningEffort,
     workspaceMcpEnabled,
@@ -5768,7 +5592,7 @@ export default function Chat({
         pending.text,
       );
       if (!opened) {
-        await deleteUnopenedForkSession(session.id);
+        toastRef.current.error(t('shell.toasts.createNewSessionFailed'));
       }
     } catch (err) {
       setPendingCrossRuntimeMessage(null); // Clear on error too (dialog dismissed)
@@ -5780,7 +5604,6 @@ export default function Chat({
     agentDir,
     onForkSession,
     currentRuntime,
-    deleteUnopenedForkSession,
     t,
   ]);
 
@@ -6196,14 +6019,14 @@ export default function Chat({
   );
 
   const handleAskUserQuestionSubmit = useCallback(
-    (_requestId: string, answers: AskUserQuestionAnswers) => {
-      return respondAskUserQuestion(answers);
+    (requestId: string, answers: AskUserQuestionAnswers) => {
+      return respondAskUserQuestion(requestId, answers);
     },
     [respondAskUserQuestion],
   );
 
-  const handleAskUserQuestionCancel = useCallback(() => {
-    return respondAskUserQuestion(null);
+  const handleAskUserQuestionCancel = useCallback((requestId: string) => {
+    return respondAskUserQuestion(requestId, null);
   }, [respondAskUserQuestion]);
 
   const handleExitPlanModeApprove = useCallback(async () => {
@@ -6404,8 +6227,8 @@ export default function Chat({
             : null;
         if (sessionIdRef.current !== rewindSessionId) return;
         const transportOutcome =
-          classifyCodexRewindTransportOutcome(reconciliation);
-        const recovery = projectCodexRewindRecovery(transportOutcome);
+          classifyRewindTransportOutcome(reconciliation);
+        const recovery = projectRewindRecovery(transportOutcome);
         if (recovery.restoreMessageSnapshot) {
           setMessages(snapshot);
         }
@@ -6445,114 +6268,47 @@ export default function Chat({
     retryCurrentSessionRestore,
   ]);
 
-  // Retry = rewind to before user message + auto-resend
-  // Rewind to before the given user message and re-send its content.
-  // Shared by per-assistant retry (handleRetry) and banner-level retry
-  // (handleRetryLastUserMessage). Uses refs throughout so deps stay stable.
-  //
-  // DSH retry is admission-aware: an admitted native operation rewinds both
-  // histories; a never-admitted user tail may be removed Product-side only.
-  const performRetryFromUserMessage = useCallback(
-    (userMsg: (typeof messagesRef.current)[number]) => {
-      const content =
-        typeof userMsg.content === 'string' ? userMsg.content : '';
-      const attachments = userMsg.attachments;
-      const userMessageId = userMsg.id;
-      const retryEndpoint = isExternalRuntime
-        ? '/chat/external-retry'
-        : '/chat/rewind';
-      const hasRecoverableNativeRewind =
-        currentRuntime === 'codex' || currentRuntime === 'dsh';
-
-      // Commit the authoritative rewind before mutating the visible transcript.
-      let resendFired = false;
-      const resendOriginal = () => {
-        pauseAutoScroll();
-        setMessages((prev) => {
-          const idx = prev.findIndex((m) => m.id === userMessageId);
-          return idx >= 0 ? prev.slice(0, idx) : prev;
-        });
-        track('message_retry', {});
-        resendFired = true;
-        const imageAttachments = attachments
-          ?.filter((a) => a.isImage || a.mimeType?.startsWith('image/'))
-          .map((a) => ({
-            id: a.id,
-            file: new File([], a.name, { type: a.mimeType }),
-            preview: a.previewUrl || '',
-            source:
-              a.relativePath || a.savedPath
-                ? ('attachment_ref' as const)
-                : undefined,
-            name: a.name,
-            mimeType: a.mimeType,
-            sizeBytes: a.size,
-            relativePath: a.relativePath || a.savedPath,
-          }));
-        handleSendMessageRef.current(
-          content,
-          imageAttachments?.length ? imageAttachments : undefined,
-        );
-      };
-      setIsLoading(true);
-      setRewindStatus('rewinding');
-      apiPost(retryEndpoint, { userMessageId })
-        .then((res) => {
-          const r = res as RewindResponse | undefined;
-          if (r && !r.success) {
-            toastRef.current.error(
-              t('shell.toasts.retryFailedWithError', {
-                error: r.error || t('shell.toasts.unknownError'),
-              }),
-            );
-            return;
-          }
-          warnRewindFileOutcome(r);
-          resendOriginal();
-        })
-        .catch(async (err) => {
-          console.error('[Chat] Retry failed:', err);
-          const structured =
-            err && typeof err === 'object'
-              ? (err as { status?: unknown })
-              : null;
-          if (
-            hasRecoverableNativeRewind &&
-            typeof structured?.status !== 'number'
-          ) {
-            const reconciliation =
-              await retryCurrentSessionRestore(userMessageId);
-            if (
-              classifyCodexRewindTransportOutcome(reconciliation) ===
-              'committed'
-            ) {
-              toastRef.current.warning(t('shell.toasts.codexRewindReconciled'));
-              resendOriginal();
-              return;
-            }
-          }
-          toastRef.current.error(t('shell.toasts.retryFailed'));
-        })
-        .finally(() => {
+  // SessionEngine owns rewind + replay admission as one operation.
+  const performRetryFromUserMessage = useCallback((userMsg: typeof messagesRef.current[number]) => {
+    if (conversationOperationPendingRef.current) return;
+    conversationOperationPendingRef.current = true;
+    const retrySessionId = sessionIdRef.current;
+    pauseAutoScroll();
+    setIsLoading(true);
+    setRewindStatus('rewinding');
+    let queued = false;
+    apiPost('/chat/retry', { userMessageId: userMsg.id, model: effectiveModel, reasoningEffort })
+      .then(async res => {
+        if (sessionIdRef.current !== retrySessionId) return;
+        const result = res as RewindResponse & { retryQueued?: boolean; conversationCommitted?: boolean };
+        warnRewindFileOutcome(result);
+        queued = result.retryQueued === true;
+        if (!result.success) {
+          if (result.conversationCommitted) await retryCurrentSessionRestore(userMsg.id);
+          toastRef.current.error(t('shell.toasts.retryFailedWithError', { error: result.error || t('shell.toasts.unknownError') }));
+        } else {
+          track('message_retry', {});
+        }
+      })
+      .catch(async error => {
+        if (sessionIdRef.current !== retrySessionId) return;
+        const rejection = getConversationRejectionMessage(error, t);
+        if (rejection) {
+          toastRef.current.error(t('shell.toasts.retryFailedWithError', { error: rejection }));
+          return;
+        }
+        console.error('[Chat] Retry response unavailable:', error);
+        await retryCurrentSessionRestore(userMsg.id);
+        if (sessionIdRef.current === retrySessionId) toastRef.current.warning(t('shell.toasts.conversationResultUnknown'));
+      })
+      .finally(() => {
+        conversationOperationPendingRef.current = false;
+        if (sessionIdRef.current === retrySessionId) {
           setRewindStatus(null);
-          // Only clear loading on error — successful resend manages its own loading state
-          if (!resendFired) {
-            setIsLoading(false);
-          }
-        });
-    },
-    [
-      apiPost,
-      setMessages,
-      setIsLoading,
-      pauseAutoScroll,
-      isExternalRuntime,
-      currentRuntime,
-      retryCurrentSessionRestore,
-      t,
-      warnRewindFileOutcome,
-    ],
-  );
+          if (!queued) setIsLoading(false);
+        }
+      });
+  }, [apiPost, setIsLoading, pauseAutoScroll, t, warnRewindFileOutcome, retryCurrentSessionRestore, effectiveModel, reasoningEffort]);
 
   // Uses refs for messagesRef/toastRef/handleSendMessageRef — deps are all stable → reference stable
   const handleRetry = useCallback(
@@ -6611,163 +6367,55 @@ export default function Chat({
   }, []);
 
   const handleForkConfirm = useCallback(() => {
-    if (!forkTarget || forkPending || conversationOperationPendingRef.current)
-      return;
+    if (!forkTarget || forkPending || conversationOperationPendingRef.current) return;
     conversationOperationPendingRef.current = true;
     const messageId = forkTarget;
-    const recoverableTargetSessionId =
-      currentRuntime === 'codex' || currentRuntime === 'dsh'
-        ? crypto.randomUUID()
-        : undefined;
+    const sourceId = sessionIdRef.current;
+    if (forkRequestRef.current?.sourceId !== sourceId || forkRequestRef.current?.messageId !== messageId) {
+      forkRequestRef.current = { sourceId, messageId, targetSessionId: crypto.randomUUID() };
+    }
+    const { targetSessionId } = forkRequestRef.current;
     setForkTarget(null);
     setForkPending(true);
-
-    const openCommittedFork = async (
-      forkSessionId: string,
-      forkAgentDir: string,
-      title: string,
-    ) => {
-      const discardUnopenedFork = async () => {
-        const removed = await deleteUnopenedForkSession(forkSessionId);
-        if (
-          removed &&
-          (currentRuntime === 'codex' || currentRuntime === 'dsh')
-        ) {
-          console.error(
-            `[chat] Native conversation branch orphan sessionId=${forkSessionId}` +
-              ` runtime=${currentRuntime}` +
-              ` runtimeSource=${currentRuntimeSource ?? 'system-cli'}` +
-              ' reason=fork_tab_open_failed orphan=true',
-          );
-        }
-      };
-      if (!onForkSession) {
-        await discardUnopenedFork();
-        toastRef.current.error(t('shell.toasts.forkOpenFailed'));
-        return;
+    type ForkResult = { success?: boolean; newSessionId?: string; agentDir?: string; title?: string; error?: string; errorCode?: string };
+    const openFork = async (result: ForkResult) => {
+      if (!result.success || !result.newSessionId || !result.agentDir) return false;
+      forkRequestRef.current = null;
+      try {
+        const opened = await onForkSession?.(result.newSessionId, result.agentDir, result.title || 'Fork');
+        if (!opened) toastRef.current.warning(t('shell.toasts.forkOpenFailed'));
+      } catch {
+        toastRef.current.warning(t('shell.toasts.forkOpenFailed'));
       }
-      const opened = await onForkSession(
-        forkSessionId,
-        forkAgentDir,
-        title || 'Fork',
-      );
-      if (!opened) {
-        await discardUnopenedFork();
-        toastRef.current.error(t('shell.toasts.forkOpenFailed'));
-      }
+      return true;
     };
-
-    apiPost('/sessions/fork', {
-      messageId,
-      targetSessionId: recoverableTargetSessionId,
-    })
-      .then(async (res) => {
-        const r = res as
-          | {
-              success?: boolean;
-              newSessionId?: string;
-              agentDir?: string;
-              title?: string;
-              error?: string;
-              errorCode?: string;
-            }
-          | undefined;
-        track('session_fork', {
-          runtime: currentRuntime,
-          runtime_source:
-            runtimeSourceForRuntimeType(currentRuntime, currentRuntimeSource) ??
-            null,
-          result: r?.errorCode ?? (r?.success ? 'success' : 'failed'),
-        });
-        if (r?.success && r.newSessionId && r.agentDir) {
-          await openCommittedFork(
-            r.newSessionId,
-            r.agentDir,
-            r.title || 'Fork',
-          );
-        } else {
-          const error = r?.errorCode
-            ? t(`shell.toasts.conversationError.${r.errorCode}`)
-            : r?.error || t('shell.toasts.unknownError');
-          toastRef.current.error(
-            t('shell.toasts.forkFailedWithError', { error }),
-          );
-        }
+    apiPost('/sessions/fork', { messageId, targetSessionId })
+      .then(async res => {
+        const result = res as ForkResult;
+        track('session_fork', { runtime: currentRuntime, result: result.success ? 'success' : 'failed' });
+        if (await openFork(result)) return;
+        const error = result.errorCode ? t(`shell.toasts.conversationError.${result.errorCode}`)
+          : result.error || t('shell.toasts.unknownError');
+        toastRef.current.error(t('shell.toasts.forkFailedWithError', { error }));
       })
-      .catch(async (err) => {
-        console.error('[Chat] Fork failed:', err);
-        const errorCode =
-          err &&
-          typeof err === 'object' &&
-          'errorCode' in err &&
-          typeof err.errorCode === 'string'
-            ? err.errorCode
-            : undefined;
-        const hasStructuredStatus =
-          err &&
-          typeof err === 'object' &&
-          'status' in err &&
-          typeof err.status === 'number';
-        track('session_fork', {
-          runtime: currentRuntime,
-          runtime_source:
-            runtimeSourceForRuntimeType(currentRuntime, currentRuntimeSource) ??
-            null,
-          result: errorCode ?? 'transport_error',
-        });
-        if (recoverableTargetSessionId && !hasStructuredStatus) {
-          try {
-            const recovered = await apiGet<{
-              success?: boolean;
-              session?: { id?: string; agentDir?: string; title?: string };
-            }>(
-              `/sessions/${encodeURIComponent(recoverableTargetSessionId)}?limit=1`,
-            );
-            if (
-              recovered.success === true &&
-              recovered.session?.id === recoverableTargetSessionId &&
-              recovered.session.agentDir
-            ) {
-              toastRef.current.warning(t('shell.toasts.forkReconciled'));
-              await openCommittedFork(
-                recoverableTargetSessionId,
-                recovered.session.agentDir,
-                recovered.session.title || 'Fork',
-              );
-              return;
-            }
-          } catch (recoveryError) {
-            console.error(
-              '[Chat] Fork transport reconciliation failed:',
-              recoveryError,
-            );
-          }
+      .catch(async error => {
+        const rejection = getConversationRejectionMessage(error, t);
+        if (rejection) {
+          toastRef.current.error(t('shell.toasts.forkFailedWithError', { error: rejection }));
+          return;
         }
-        if (errorCode) {
-          toastRef.current.error(
-            t('shell.toasts.forkFailedWithError', {
-              error: t(`shell.toasts.conversationError.${errorCode}`),
-            }),
-          );
-        } else {
-          toastRef.current.error(t('shell.toasts.forkFailed'));
-        }
+        console.error('[Chat] Fork response unavailable:', error);
+        try {
+          const result = await apiGet(`/sessions/fork?targetSessionId=${encodeURIComponent(targetSessionId)}`) as ForkResult;
+          if (await openFork(result)) return;
+        } catch { /* Retain this exact target identity for the user's next attempt. */ }
+        toastRef.current.warning(t('shell.toasts.conversationResultUnknown'));
       })
       .finally(() => {
         conversationOperationPendingRef.current = false;
         setForkPending(false);
       });
-  }, [
-    forkTarget,
-    forkPending,
-    apiPost,
-    apiGet,
-    onForkSession,
-    deleteUnopenedForkSession,
-    t,
-    currentRuntime,
-    currentRuntimeSource,
-  ]);
+  }, [forkTarget, forkPending, apiPost, apiGet, onForkSession, t, currentRuntime]);
 
   const handleSelectSession = useCallback(
     (

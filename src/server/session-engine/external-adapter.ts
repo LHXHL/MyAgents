@@ -1,3 +1,4 @@
+import { retryDesktopRequest } from './retry';
 import { randomUUID } from 'node:crypto';
 import { broadcast } from '../sse';
 import {
@@ -57,6 +58,7 @@ import {
   revokeExternalPermissionRule,
   restoreExternalSessionState,
   rewindExternalConversation,
+  retryDshConversation,
   forkExternalConversation,
   sendExternalMessage,
   setExternalModel,
@@ -1017,6 +1019,26 @@ export function createExternalSessionEngine(): SessionEngine {
       return rewindExternalConversation(userMessageId);
     },
 
+    async retryUserMessage(userMessageId, options) {
+      const context = this.getCurrentSessionContext();
+      const replay = async (rewound: Awaited<ReturnType<typeof rewindExternalConversation>>) => {
+        if (rewound.errorCode === 'restore_failed') {
+          return { ...rewound, success: false, conversationCommitted: true, retryQueued: false };
+        }
+        try {
+          const sent = await this.sendDesktopMessage(retryDesktopRequest(context, rewound, options));
+          if (sent.success && sent.queueId) await forceExecuteExternalQueueItem(sent.queueId);
+          return { ...rewound, success: sent.success, conversationCommitted: true, retryQueued: sent.success, error: sent.error };
+        } catch (error) {
+          return { ...rewound, success: false, conversationCommitted: true, retryQueued: false, error: String(error) };
+        }
+      };
+      if (getActiveRuntimeType() === 'dsh') {
+        return retryDshConversation(userMessageId, replay);
+      }
+      return rewindExternalConversation(userMessageId, replay);
+    },
+
     forkAtAssistantMessage(messageId, options) {
       return forkExternalConversation(messageId, options?.targetSessionId);
     },
@@ -1057,6 +1079,11 @@ export function createExternalSessionEngine(): SessionEngine {
           await stopExternalSession();
         }
         const newSessionId = await resetProductSessionBinding({ workspacePath, hasInitialPrompt: false });
+        await publishCurrentProductSessionMetadata(sessionId => {
+          const created = createExternalProductSessionMetadata(sessionId, workspacePath, 'desktop');
+          Object.assign(created.metadata, buildExternalFreezeSnapshotPatch());
+          return created;
+        });
         broadcast('chat:init', { agentDir: workspacePath, sessionState: 'idle', hasInitialPrompt: false });
         const restored = await restoreExternalSessionState(newSessionId, workspacePath, { type: 'desktop' });
         if (!restored.success) return { success: false, error: restored.error };

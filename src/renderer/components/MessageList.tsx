@@ -601,7 +601,10 @@ const MessageList = memo(function MessageList({
   const exitPlanModeSlotRef = useRef(exitPlanModeSlot);
   exitPlanModeSlotRef.current = exitPlanModeSlot;
   const onRetryRef = useRef(onRetry);
-  onRetryRef.current = onRetry;
+  useLayoutEffect(() => { onRetryRef.current = onRetry; }, [onRetry]);
+  // Virtual history rows and Message are memoized. Pass a stable forwarding
+  // callback so a later model/effort selection is read at click time.
+  const handleRetry = useCallback((messageId: string) => onRetryRef.current?.(messageId), []);
   const layoutByMessageIdRef = useRef(layoutByMessageId);
   layoutByMessageIdRef.current = layoutByMessageId;
   const onRowLayoutChangedRef = useRef(
@@ -742,7 +745,7 @@ const MessageList = memo(function MessageList({
                 message={message}
                 isLoading={isStreamingMsg && isLoadingRef.current}
                 onRewind={canRewind ? actionContext.onRewind : undefined}
-                onRetry={onRetryRef.current}
+                onRetry={handleRetry}
                 onFork={canFork ? actionContext.onFork : undefined}
                 exitPlanModeSlot={
                   message.id === exitPlanModeAnchorIdRef.current
@@ -758,7 +761,7 @@ const MessageList = memo(function MessageList({
           </div>
         );
       },
-    [handleRowLayoutChanged],
+    [handleRowLayoutChanged, handleRetry],
   );
 
   // ── Stable computeItemKey ──

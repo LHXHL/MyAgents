@@ -31,6 +31,7 @@ describe('SettingsSidebar i18n', () => {
     expect(screen.getByRole('button', { name: 'Model Providers' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Desktop Pet' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Network Proxy' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'External Calls' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Skills' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Plugins' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Tools' })).not.toBeInTheDocument();
@@ -50,6 +51,7 @@ describe('SettingsSidebar i18n', () => {
       'Desktop Pet',
       'Usage',
       'Network Proxy',
+      'External Calls',
       'Shortcuts',
       'About',
     ]);

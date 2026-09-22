@@ -39,7 +39,7 @@ builtin 启动先解析持久化的 SDK candidate，再确认对应 SDK transcri
 2. probe 成功但 transcript 不存在时，以同一个 candidate fresh create；
 3. probe 出错时拒绝启动，不回退到 Product Session id 或随机新身份。
 
-SDK 的 `sessionId` 与 `resume` 互斥。`resumeSessionAt` 只是在已选定的 SDK history 中指定 Rewind 锚点，不证明该历史存在；锚点失效时可清除锚点并降级为普通 resume，但不能改变 Product Session identity。
+普通创建/恢复路径中，`sessionId` 与 `resume` 互斥；旧 lazy fork 兼容路径使用 `forkSession: true`，允许同时指定来源 `resume` 与目标 `sessionId`。`resumeSessionAt` 只指定已选定 SDK history 中的边界，不证明该历史存在。显式回溯与旧 lazy fork 按 [§4.4](#44-rewindforkretry-与-reload-anchor) 保留其来源和边界，不因启动失败改成 fresh create 或完整历史。
 
 ### 2.2 pending materialization
 
@@ -121,6 +121,8 @@ Product Session 的 prepare/commit/rollback 由 `product-session-binding.ts` 管
 
 ### 4.2 builtin
 
+SDK 合并后台 task-notification 时，前置通知可产生 `origin.kind=task-notification`、成功且 `num_turns=0` 的空 result 回执（0.3.276 实测不携带 `terminal_reason`）；它只确认通知被合并，不拥有产品 turn 的 terminal、usage、队列晋级或 rewind boundary。SDK iterator 在这些副作用前过滤该精确形态，其余真人、错误、取消和实际模型结果仍走原 turn owner。不能仅按空文本或零轮数忽略 result。
+
 `src/server/agent-session.ts` 是 builtin 的 public facade。可变状态按 owner 分布在 `src/server/builtin-session/`：
 
 | Owner | 职责 |
@@ -133,9 +135,13 @@ Product Session 的 prepare/commit/rollback 由 `product-session-binding.ts` 管
 
 `session-core/` 只放 pure policy。`session-engine/` 与 routes 只调用 public facade，不直接 import builtin owners。`abortPersistentSession()` 是语义化 abort 入口；terminal 成功必须由真实 SDK result policy 判定，不能把 idle 或未知 reason 当成功。
 
+Builtin 的 `messageGenerator()` 是常驻 generator。配置需要重建 Query 时，经既有 abort / restart 路径处理，并沿用 metadata 中的 SDK identity 与 resume 决策。Pre-warm 创建的真实 SDK session 会被后续复用，初始化不能只放在非 pre-warm 分支。
+
 每次 SDK Query launch 都有只属于该 Query object 的 identity authority。`system_init` 只有在 authority 未撤销、Product binding 未改变且 SDK Session id 与启动期望相同时，才可更新 metadata。旧 Query、旧 generation 或未知 identity 的迟到事件一律丢弃。
 
 desktop 连续发送支持 realtime 与 turn-boundary 两种策略，但两者仍共享同一个 Runtime queue owner。Stop 中止当前 turn，不凭空取消 SDK 已接纳但尚未消费的项；queue receipt、replay 或 assistant-start 才能确认后续项的真实状态。
+
+Builtin 中断请求由 `builtin-session/interrupt.ts` 在既有 Session 内按请求和 Query 归属管理。同一目标尚未 terminal 时复用其停止操作；目标 terminal 一旦被 turn owner 接管，就同步释放中断状态，不等待控制回执。迟到回执只可核对原请求、原 Query 的精确排队项，不能关闭后续 Query、清掉新请求或把后续 turn 当作取消。真实 SDK 错误仍按错误结算；只有尚未 terminal 的目标才适用 5 秒回执超时与 ACK 后 3 秒强制关闭。
 
 SDK background Agent/Bash 与父 turn 共用同一个 Query 和 Sidecar。自动 deferred restart 必须等待该 Query 的 background-task registry 清空；显式 Stop、Reset、Session switch、应用退出和真实 Query crash 仍可终止。
 
@@ -149,16 +155,27 @@ MCP pre-warm 是 soft readiness observation，不是 AI turn 的 admission autho
 
 外部 Runtime 的“进程 idle”不等于 turn 成功。Task、Goal、通知和 UI terminal 都必须读取 adapter 提供的真实 result classification。
 
-### 4.4 Rewind、Fork 与 reload anchor
+### 4.4 Rewind、Fork、Retry 与 reload anchor
 
-Rewind 是 transcript 与 Runtime history 的联合 mutation：
+三种操作统一进入 SessionEngine，adapter 拥有 native history 操作与执行顺序，SessionStore 拥有产品 transcript、metadata 和提交裁决。Renderer 不自行选择 Runtime 路径或补做重发。
 
-- Product Session identity 保持不变；
-- builtin 更新 SDK execution identity/anchor，并用命名的 transcript mutation 截断 MyAgents history；
-- Codex 使用已持久化的 root-turn anchor 与 thread identity 恢复可继续的历史；
-- 冷加载时的 `reloadAnchor` 只用于把 UI 恢复边界与 Runtime history 对齐，不成为新的 Session identity。
+| 操作 | Product Session | 执行语义 |
+|---|---|---|
+| Rewind | 保持原 identity | 产品历史截断到目标 user message 之前，native continuation 对齐同一边界 |
+| Fork | 创建新 identity | 先建立精确 native 分支，再发布完整产品历史与独立附件 |
+| Retry | 保持原 identity | 同一 mutation 内先 Rewind，再通过普通 desktop admission 接纳原输入；接纳成功不等于 turn 成功 |
 
-Fork 创建新的 Product Session，因此不继承 source 的 Agent origin、Goal、置顶或 Tag。Runtime-specific history clone/fork 由对应 adapter 负责。
+Builtin Rewind 以完整保留前缀末条消息的 native chain UUID 为边界，包括 user；非空前缀缺少锚点时在文件副作用前失败，只有空前缀才分配新的 SDK execution identity。UUID 出现在 Product transcript、原始 SDK JSONL 或 SDK `getSessionMessages()` 的单链投影中，都不能证明它位于 native runtime 当前可恢复分支；同样，缺席该投影也不能证明它无效，因为投影按物理记录选择 leaf，而 CLI resume 使用 durable selected head。Query 启动是 native resumability 的唯一裁决；拒绝时保留显式边界并报告失败，不能清除锚点、恢复更长历史或自动重放。边界通过既有 mutation intent 与 `sdkResumeSessionAt` metadata 一起提交；新一轮成功后先正常结束该 Query，让 native runtime 发布新的 selected head，再解除边界并发布 Product terminal，配置重启只能发生在此后。已有坏锚点通过从更早、仍可由 native runtime 接受的消息重新 Rewind / Retry 覆盖恢复。文件恢复仍使用现有 Query 的 `rewindFiles`；standalone SDK fork 不携带 undo 历史，不能用它替换 builtin Rewind。旧记录的 `reloadAnchor` 只在加载时推导，优先级低于显式回溯边界；它不是另一份持久化状态或 Session identity。
+
+新 Fork 统一先实体化 native history，builtin 同时映射 SDK UUID；完整执行配置复用 `snapshotForForkedSession`，不手工挑字段。Fork 不继承 source 的 Agent origin、Goal、置顶或 Tag。旧 lazy fork 通过记录的 binding/source 解析真实 native 来源，允许尚未启动的旧分支继续 fork；新请求不再生成 lazy fork 或通过设置切回旧路径。prepared 发布、附件复制和清理见 [V2 transcript](session_transcript_v2.md#生命周期与显式操作)。
+
+Retry 经 `POST /chat/retry` 进入 adapter，`/chat/external-retry` 仅保留同一语义的路由别名。Builtin 使用现有串行 mutation scope：内部重发可以重入，外部接纳等待该 scope 结束。External 的 mutation lease 覆盖重发接纳；期间新入队的消息保留，自身 replay 排到队首后才释放 dispatch。V1 复用既有删除事件、V2 由 writer 发布删除操作，先同步移除旧消息再接收 replay。不支持精确 native history 操作的 Runtime 返回明确能力错误，不以只截断产品记录代替。Codex 的边界选择见 [Runtime 文档](multi_agent_runtime.md#53-codex)。
+
+Retry 的 `model` / `reasoningEffort` 是与普通发送一致的可选发送意图：UI 传当前选项，adapter 在同一 mutation scope 内将其带入重新入队。不能只传消息 ID 后依赖预热进程默认模型，也不能把 Runtime 展示用的 reported model 反写成配置 authority。未传选项的旧调用仍采用既有后端默认语义。
+
+响应必须区分会话提交、重发接纳和文件恢复结果：文件已恢复而记录修改失败不能说文件未变；会话已提交而 Runtime restore 失败不能说完全没执行。传输失败时前端回读权威历史，不用旧消息快照覆盖、不自动重发；明确的校验/能力拒绝直接展示原因。Fork 调用方用稳定的 `targetSessionId`，metadata 的 `forkOrigin` 关联来源；丢失响应后查询同一目标或重试同一身份，已发布目标返回已有结果。查询尚未确认目标只表示待确认，不证明此前失败；打开 Tab 失败也不删除已发布分支。这不承诺跨进程崩溃的 exactly-once 执行。
+
+Stop/Reset 的结果也由 SessionEngine 决定。Stop 的回执或超时不代表 turn 已结束；前端等待执行事件，缺失时读取 `/api/session-state`，并丢弃已被更新执行事件、恢复或连接代际取代的读结果。Reset 成功返回前由 adapter 通过既有 publisher 发布新 identity 的 desktop 元数据和当前执行配置快照，并等待 writer 的 `flushForMutation` 确认磁盘可见；保证尚未发送首条消息也能绑定 Task/Goal、重启后仍能恢复模型配置。前端只有在后端确认新 identity 后才采用新空会话；拒绝时保留历史，丢响应时回读真实 binding。App 打开新 Tab 失败须与「可在当前空会话 reset」区分，不能用失败触发破坏性的 fallback。
 
 ## 5. Goal 与跨 Session 协作
 
@@ -176,14 +193,16 @@ Goal 的详细产品行为和 Task/Goal provider routing 见 [`task_center.md`](
 
 ### 5.2 Session Inbox 与事件
 
-`myagents session start/send/watch` 使用结构化 session event，不是普通文本拼接。事件经 Admin/Management API 投递到目标 Session 的既有 Inbox/SessionEngine admission，并放在隐藏的 `system-reminder` envelope 中；来自其它 Session 的正文必须 neutralize 协议标签。
+`myagents session start/send/watch` 使用结构化 session event，不是普通文本拼接。事件经 Admin/Management API 投递到目标 Session 的既有 Inbox/SessionEngine admission，并放在隐藏的 `system-reminder` envelope 中；来自其它 Session 的正文必须 neutralize 协议标签。wire protocol 以 `sourceKind` 显式区分 `internal-session` 与 `external-cli`：前者要求真实 `fromSessionId` 并可回投，后者没有来源 Session 且不注册 reply，不能用空串或用户 payload 猜来源。
 
 - `send.request` 投递工作；Renderer 只把它的可见 payload 投影为用户气泡；
 - `send.result` 在目标 turn terminal 后回传结果；
 - `watch` 根据注册时的真实 activity 返回 already-idle、completed 或 error；未确认投递成功前不能清理 pending watch；
 - Task Comment 复用同一 Inbox 与 Session FIFO，但通过 task-specific event 和显式回复命令回写 Task，不自动复制普通 assistant 输出。
 
-backend-created target 只有在 Runtime dispatch claim 成功后才发布 prepared Session；ACK 不明时保留 identity，不能自动重试导致重复执行。
+backend-created target 只有在 Runtime dispatch claim 成功后才发布 prepared Session；ACK 不明时保留 identity，不能自动重试导致重复执行。`session start/send` 的每一层外部 timeout 都大于内层 owner/ACK timeout；transport error、成功状态但不可解析的 ACK 和外层超时统一是 `admission_unconfirmed`，只有明确拒绝才是 definitive failure。
+
+`myagents session get` 不进入 Inbox、不唤醒 Runtime，也不创建 turn。它按 message id 合并持久 snapshot、活跃内存与 streaming overlay，先严格投影 user/assistant 的可见顶层 text，再执行 `before`/`limit` 分页；疑似结构化 assistant 内容只要解析或 block schema 异常就 fail closed，工具、思考、隐藏 reminder 和无 text 结构块绝不回退为原始 JSON。Rust 在 owner transport 或响应体失败时释放旧 dispatch、重新解析当前 owner 并只重试一次；最终错误保留 `SESSION_OWNER_UNAVAILABLE` 与 `SESSION_OWNER_INVALID_RESPONSE` 的区别。锚点只在可读文本序列内成立，失效时明确报错，避免静默重复或漏读。
 
 Desktop、Goal、Task、Inbox、IM、Heartbeat 和 Memory 的执行都经 SessionEngine；DSH 的 `integrated` kind 不能落入 SDK enqueue/config 路径。DSH 强制发送先 interrupt 并持久化 partial terminal，再提升目标 queue item。跨 Sidecar Inbox 只有收到可解析的 `{ accepted: true }` 才算投递成功，HTTP 2xx 的协议错误必须保留上层重试权。
 
@@ -222,7 +241,11 @@ SSE transport 断开不代表用户取消，也不拥有 abort 权限。turn 继
 
 会改变当前 Session snapshot、队列边界或阻塞式交互 UI 的事件必须携带 `sessionId`，并通过 `sessionScopedEventGuards.ts` 与当前 Tab identity 比较。pending→real 等已被 lifecycle authority 确认的 identity upgrade 可以沿用 transport；普通 real→real 历史导航必须 new/jump/revive 到目标 Tab，不能把旧连接标签当业务 authority。
 
-Renderer 的 activity state 由 `TabProvider` 对当前 Session 的 REST snapshot 与合法 SSE terminal 投影。所有 complete/stopped/error、reset、connection replacement 和 unmount 路径都必须收敛 activity 与 pending UI；不要通过增加另一个 `isGenerating` truth source 修补遗漏。
+Renderer 的 execution activity 由 `TabProvider` / Companion 对当前 Session 的 REST snapshot 与 `chat:status` 投影。`chat:message-complete/stopped/error` 只结束一轮的消息展示，不能把整个 Session 改为空闲：Builtin 有排队工作时持续 running，不会重复广播相同状态。消息归档只清 streaming 引用；backend idle/error、Session reset 或 replacement 才清 execution activity。不要通过增加另一个 `isGenerating` truth source 或延时隐藏状态错位。
+
+Builtin 手动强制发送在旧 turn result 中把 in-flight 项从队列交给执行时，必须先保留 execution activity，再清 queue slot；旧 turn cleanup 同时检查这次已接纳的 continuation，不能仅因队列为空广播 idle。这个交接事实复用 turn lifecycle 的既有判断，不由 Renderer 根据消息气泡补推。
+
+消息缺失、持久化与重放查 [V2 transcript](session_transcript_v2.md)；历史内容正确但滚动位置、窗口恢复或首帧呈现异常时，查 [Chat 滚动与窗口呈现](chat_scroll_presentation_lifecycle.md)。两者分别由历史与呈现 owner 裁决。
 
 ### 6.4 完成通知
 

@@ -38,6 +38,7 @@ export interface AgentWorkspaceAgentRecord {
 }
 
 export type AgentWorkspaceIdentityErrorCode =
+  | 'INVALID_AGENT_IDENTITY'
   | 'INVALID_PROJECT_IDENTITY'
   | 'DUPLICATE_PROJECT_ID'
   | 'DUPLICATE_PROJECT_WORKSPACE'
@@ -46,15 +47,61 @@ export type AgentWorkspaceIdentityErrorCode =
   | 'CREATED_AGENT_ID_COLLISION';
 
 export interface AgentWorkspaceIdentityDiagnostic {
-  code: 'AGENT_ASSIGNED_TO_MULTIPLE_PROJECTS' | 'DUPLICATE_PROJECT_WORKSPACE';
+  code: Exclude<AgentWorkspaceIdentityErrorCode, 'CREATED_AGENT_ID_COLLISION'>;
   message: string;
   projectIds: string[];
   agentIds: string[];
 }
 
+/** Isolate ambiguous persisted rows; the returned view never rewrites their identities. */
+export function selectUsableAgentWorkspaceRecords<P extends AgentWorkspaceProjectRecord, A extends AgentWorkspaceAgentRecord>(
+  projects: readonly P[], agents: readonly A[],
+) {
+  const diagnostics: AgentWorkspaceIdentityDiagnostic[] = [];
+  const projectCounts = new Map<string, number>();
+  const agentCounts = new Map<string, number>();
+  const hasId = (id: unknown): id is string => typeof id === 'string' && id.trim().length > 0;
+  for (const project of projects) if (hasId(project.id)) projectCounts.set(project.id, (projectCounts.get(project.id) ?? 0) + 1);
+  for (const agent of agents) if (hasId(agent.id)) agentCounts.set(agent.id, (agentCounts.get(agent.id) ?? 0) + 1);
+  const invalidProjects = new Set<P>();
+  const invalidAgents = new Set<A>();
+  for (const project of projects) {
+    const invalid = !hasId(project.id) || typeof project.path !== 'string' || !project.path.trim();
+    if (!invalid && projectCounts.get(project.id) === 1) continue;
+    invalidProjects.add(project);
+    diagnostics.push({
+      code: invalid ? 'INVALID_PROJECT_IDENTITY' : 'DUPLICATE_PROJECT_ID',
+      message: invalid ? 'Project is missing its identity or workspace path.' : `Project id '${project.id}' is duplicated.`,
+      projectIds: hasId(project.id) ? [project.id] : [], agentIds: project.agentId ? [project.agentId] : [],
+    });
+  }
+  for (const agent of agents) {
+    const invalid = !hasId(agent.id);
+    if (!invalid && agentCounts.get(agent.id) === 1) continue;
+    invalidAgents.add(agent);
+    const legacyPath = readLegacyAgentWorkspacePath(agent);
+    const linked = projects.filter(project => (hasId(agent.id) && project.agentId === agent.id)
+      || (legacyPath && (!project.agentId || agentCounts.get(project.agentId) !== 1) && typeof project.path === 'string'
+        && normalizeWorkspacePathIdentity(project.path) === normalizeWorkspacePathIdentity(legacyPath)));
+    linked.forEach(project => invalidProjects.add(project));
+    diagnostics.push({
+      code: invalid ? 'INVALID_AGENT_IDENTITY' : 'DUPLICATE_AGENT_ID',
+      message: invalid ? 'Agent is missing a valid id.' : `Agent id '${agent.id}' is duplicated.`,
+      projectIds: linked.map(project => project.id).filter(hasId), agentIds: invalid ? [] : [agent.id],
+    });
+  }
+  const blockedAgentIds = new Set([...invalidProjects].flatMap(project => project.agentId ? [project.agentId] : []));
+  return {
+    projects: projects.filter(project => !invalidProjects.has(project)),
+    agents: agents.filter(agent => !invalidAgents.has(agent) && !blockedAgentIds.has(agent.id)),
+    diagnostics,
+  };
+}
+
 function collectProjectWorkspaceConflicts<P extends AgentWorkspaceProjectRecord>(projects: readonly P[]) {
   const projectsByWorkspace = new Map<string, P[]>();
   for (const project of projects) {
+    if (typeof project.path !== 'string') continue;
     const identity = normalizeWorkspacePathIdentity(project.path);
     if (!identity) continue;
     const matches = projectsByWorkspace.get(identity) ?? [];
@@ -137,8 +184,12 @@ export function resolveAgentWorkspaceProjections<
   agentProjections: Array<ResolvedAgentWorkspaceProjection<P, A>>;
   diagnostics: AgentWorkspaceIdentityDiagnostic[];
 } {
+  const usable = selectUsableAgentWorkspaceRecords(projects, agents);
+  // Unselectable rows can still carry valid claim/path evidence.
   const conflictState = collectAgentClaimConflicts(projects);
   const workspaceConflictState = collectProjectWorkspaceConflicts(projects);
+  projects = usable.projects;
+  agents = usable.agents;
   const exactProjectByAgent = new Map<string, P>();
   for (const project of projects) {
     if (project.agentId
@@ -200,7 +251,7 @@ export function resolveAgentWorkspaceProjections<
 
   return {
     agentProjections,
-    diagnostics: [...workspaceConflictState.diagnostics, ...conflictState.diagnostics],
+    diagnostics: [...usable.diagnostics, ...workspaceConflictState.diagnostics, ...conflictState.diagnostics],
   };
 }
 
@@ -225,6 +276,8 @@ export interface ReconcileAgentWorkspaceIdentityOptions<
   A extends AgentWorkspaceAgentRecord,
 > {
   buildAgent: (project: P, requestedAgentId?: string) => A;
+  /** Limit writes, not ownership evidence: every Project still reserves its Agent. */
+  projectIds?: ReadonlySet<string>;
 }
 
 export interface ReconcileAgentWorkspaceIdentityResult<
@@ -261,38 +314,12 @@ export function reconcileAgentWorkspaceIdentities<
   const createdAgentIds: string[] = [];
   const relinkedProjectIds: string[] = [];
 
-  const projectIds = new Set<string>();
-  const projectsByWorkspace = new Map<string, P>();
-  for (const project of nextProjects) {
-    const workspaceIdentity = normalizeWorkspacePathIdentity(project.path);
-    if (!project.id || !workspaceIdentity) {
-      throw new AgentWorkspaceIdentityError(
-        'INVALID_PROJECT_IDENTITY',
-        `Project '${project.id || '(missing id)'}' has no canonical workspace path.`,
-        { projectId: project.id, workspacePath: project.path },
-      );
-    }
-    if (projectIds.has(project.id)) {
-      throw new AgentWorkspaceIdentityError(
-        'DUPLICATE_PROJECT_ID',
-        `Project id '${project.id}' is duplicated.`,
-        { projectId: project.id },
-      );
-    }
-    projectIds.add(project.id);
-    projectsByWorkspace.set(workspaceIdentity, project);
-  }
+  const usable = selectUsableAgentWorkspaceRecords(nextProjects, nextAgents);
+  const usableProjects = new Set(usable.projects);
 
   const agentsById = new Map<string, A>();
   const agentsByWorkspace = new Map<string, A[]>();
-  for (const agent of nextAgents) {
-    if (!agent.id || agentsById.has(agent.id)) {
-      throw new AgentWorkspaceIdentityError(
-        'DUPLICATE_AGENT_ID',
-        `Agent id '${agent.id || '(missing id)'}' is duplicated.`,
-        { agentId: agent.id },
-      );
-    }
+  for (const agent of usable.agents) {
     agentsById.set(agent.id, agent);
     const workspaceIdentity = normalizeWorkspacePathIdentity(readLegacyAgentWorkspacePath(agent) ?? '');
     if (!workspaceIdentity) continue;
@@ -324,7 +351,8 @@ export function reconcileAgentWorkspaceIdentities<
 
   for (let index = 0; index < nextProjects.length; index += 1) {
     let project = nextProjects[index];
-    if (conflictedProjectIds.has(project.id)) continue;
+    if (options.projectIds && !options.projectIds.has(project.id)) continue;
+    if (!usableProjects.has(project) || conflictedProjectIds.has(project.id)) continue;
 
     const workspaceIdentity = normalizeWorkspacePathIdentity(project.path);
     const matchingAgents = agentsByWorkspace.get(workspaceIdentity) ?? [];
@@ -341,7 +369,7 @@ export function reconcileAgentWorkspaceIdentities<
     if (!selectedAgent) {
       const requestedAgentId = project.agentId || undefined;
       selectedAgent = options.buildAgent(project, requestedAgentId);
-      if (!selectedAgent.id || agentsById.has(selectedAgent.id)) {
+      if (!selectedAgent.id || nextAgents.some(agent => agent.id === selectedAgent!.id)) {
         throw new AgentWorkspaceIdentityError(
           'CREATED_AGENT_ID_COLLISION',
           `Generated Agent id '${selectedAgent.id || '(missing id)'}' is not unique.`,
@@ -408,6 +436,45 @@ export function reconcileAgentWorkspaceIdentities<
     createdAgentIds,
     relinkedProjectIds,
   };
+}
+
+export interface AgentWorkspaceConflictChoice {
+  agentId: string;
+  keepProjectId: string;
+  expectedClaims: Array<{ id: string; path: string }>;
+}
+
+/** A user choice removes ambiguity; the existing reconciler still owns all births. */
+export function resolveAgentWorkspaceClaimConflict<
+  P extends AgentWorkspaceProjectRecord,
+  A extends AgentWorkspaceAgentRecord,
+>(projects: readonly P[], agents: readonly A[], choice: AgentWorkspaceConflictChoice,
+  options: ReconcileAgentWorkspaceIdentityOptions<P, A>,
+): ReconcileAgentWorkspaceIdentityResult<P, A> {
+  const claims = projects.filter(project => project.agentId === choice.agentId);
+  const snapshot = (items: readonly { id: string; path: string }[]) => JSON.stringify(
+    items.map(({ id, path }) => [id, path]).sort(([left], [right]) => left.localeCompare(right)),
+  );
+  const diagnostics = resolveAgentWorkspaceProjections(projects, agents).diagnostics;
+  const claimIds = new Set(claims.map(project => project.id));
+  const unsupported = diagnostics.some(item => item.code !== 'AGENT_ASSIGNED_TO_MULTIPLE_PROJECTS'
+    && (item.agentIds.includes(choice.agentId) || item.projectIds.some(id => claimIds.has(id))));
+  if (claims.length < 2 || !claimIds.has(choice.keepProjectId)
+    || snapshot(claims) !== snapshot(choice.expectedClaims)
+    || agents.filter(agent => agent.id === choice.agentId).length !== 1 || unsupported) {
+    throw new AgentWorkspaceIdentityError('AGENT_ASSIGNED_TO_MULTIPLE_PROJECTS',
+      'The conflict changed or contains another identity error. Refresh before choosing a workspace.',
+      { agentId: choice.agentId, projectIds: [...claimIds] });
+  }
+  const detached = projects.map(project => claimIds.has(project.id) && project.id !== choice.keepProjectId
+    ? { ...project, agentId: undefined } : project);
+  const result = reconcileAgentWorkspaceIdentities(detached, agents, { ...options, projectIds: claimIds });
+  if (claims.some(project => !result.identities.some(item => item.projectId === project.id))) {
+    throw new AgentWorkspaceIdentityError('AGENT_ASSIGNED_TO_MULTIPLE_PROJECTS',
+      'The selected workspaces could not be resolved independently. No repair was applied.',
+      { agentId: choice.agentId, projectIds: [...claimIds] });
+  }
+  return result;
 }
 
 export interface BuildAgentForProjectOptions {

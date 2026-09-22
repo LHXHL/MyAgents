@@ -1,4 +1,5 @@
-import { getSessionEngine, retryLastExternalUserMessageAtSelector } from '../session-engine';
+import { getSessionMetadata } from '../SessionStore';
+import { getSessionEngine } from '../session-engine';
 import type { CapabilityOperationResult } from '../session-engine/types';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -67,14 +68,32 @@ export async function handleSessionOperationRoute(
     return operationResponse(result);
   }
 
-  if (pathname === '/chat/external-retry' && request.method === 'POST') {
+  if ((pathname === '/chat/retry' || pathname === '/chat/external-retry') && request.method === 'POST') {
     const body = await parseJsonObject(request);
     const userMessageId = typeof body.userMessageId === 'string' ? body.userMessageId : '';
     if (!userMessageId) {
       return jsonResponse({ success: false, error: 'Missing userMessageId' }, 400);
     }
-    const result = await retryLastExternalUserMessageAtSelector(userMessageId);
+    // These are the same per-send choices as /chat/send. The engine still
+    // owns input recovery, Session identity, permissions, rewind and admission.
+    if ((body.model !== undefined && typeof body.model !== 'string')
+      || (body.reasoningEffort !== undefined && typeof body.reasoningEffort !== 'string')) {
+      return jsonResponse({ success: false, error: 'Retry model and reasoningEffort must be strings.' }, 400);
+    }
+    const result = await getSessionEngine().retryUserMessage(userMessageId, {
+      model: body.model as string | undefined,
+      reasoningEffort: body.reasoningEffort as string | undefined,
+    });
     return operationResponse(result);
+  }
+
+  if (pathname === '/sessions/fork' && request.method === 'GET') {
+    const targetId = new URL(request.url).searchParams.get('targetSessionId') ?? '';
+    const target = getSessionMetadata(targetId);
+    const sourceId = getSessionEngine().getCurrentSessionContext().sessionId;
+    if (!target || target.forkOrigin?.sessionId !== sourceId) return jsonResponse({ success: false, pending: true });
+    if (target.materializationState) return jsonResponse({ success: false, pending: true });
+    return jsonResponse({ success: true, newSessionId: target.id, agentDir: target.agentDir, title: target.title });
   }
 
   if (pathname === '/sessions/fork' && request.method === 'POST') {

@@ -29,6 +29,7 @@
 import { stripLeadingSystemReminder } from '../../shared/systemReminder';
 import type { ResolvedImagePayload } from '../runtimes/types';
 import { cancellableFetch } from './cancellation';
+import { managementRequestHeaders } from './management-api-client';
 import { isSilentAssistantChannelText } from '../session-core/channel-delivery';
 
 export interface MirrorImage {
@@ -123,7 +124,7 @@ export async function mirrorIfChannelBound(payload: MirrorPayload): Promise<void
             url,
             {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: managementRequestHeaders(),
                 body: JSON.stringify(payload),
             },
             { timeoutMs: 10_000 },

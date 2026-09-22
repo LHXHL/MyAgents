@@ -126,3 +126,40 @@ describe('Message — user bubble spacing', () => {
     expect(attachmentStrip).toHaveTextContent('notes.txt');
   });
 });
+
+it('updates attachment-only changes while skipping an unchanged message row', () => {
+  const before = userMsg('unchanged text');
+  const formatTimestamp = vi.spyOn(before.timestamp, 'getFullYear');
+  const { container, rerender } = render(<Message message={before} />);
+  const renders = formatTimestamp.mock.calls.length;
+  rerender(<Message message={before} />);
+  expect(formatTimestamp).toHaveBeenCalledTimes(renders);
+  const next = {
+    ...before,
+    attachments: [
+      {
+        id: 'new-image',
+        name: 'receipt.png',
+        size: 10,
+        mimeType: 'image/png',
+        previewUrl: 'data:image/png;base64,abc',
+        isImage: true,
+      },
+    ],
+  };
+  rerender(<Message message={next} />);
+  const image = container.querySelector('img:not([data-file-icon-id])');
+  expect(image).not.toBeNull();
+  expect(formatTimestamp.mock.calls.length).toBeGreaterThan(renders);
+  const changed = {
+    ...next,
+    attachments: [{ ...next.attachments[0], previewUrl: 'data:image/png;base64,def' }],
+  };
+  rerender(<Message message={changed} />);
+  expect(container.querySelector('img:not([data-file-icon-id])')).toHaveAttribute(
+    'src',
+    'data:image/png;base64,def',
+  );
+  rerender(<Message message={{ ...changed, attachments: [] }} />);
+  expect(container.querySelector('img:not([data-file-icon-id])')).toBeNull();
+});

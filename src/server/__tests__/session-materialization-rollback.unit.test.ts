@@ -20,6 +20,7 @@ vi.mock('../SessionStore', async (importOriginal) => {
     claimPreparedSessionForTurnAdmission: vi.fn(),
     appendSessionMessages: vi.fn(),
     commitBuiltinConversationRewind: vi.fn(),
+    prepareSessionTranscriptMutation: vi.fn(async () => undefined),
     deleteSession: vi.fn(async () => ({ deleted: true as const })),
     migratePendingSessionIdentity: vi.fn(),
     resolvePendingConversationMutation: vi.fn(),

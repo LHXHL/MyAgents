@@ -56,6 +56,10 @@ async function invokeCommandWithFallback<T>(
 export const createCronTask = (config: CronTaskConfig): Promise<CronTask> =>
   invokeCommand('cmd_create_cron_task', { config });
 
+/** The returned Task is authoritative even when startup reports an error. */
+export const createAndStartCronTask = (config: CronTaskConfig): Promise<{ task: CronTask; error?: string | null }> =>
+  invokeCommand('cmd_create_and_start_cron_task', { config });
+
 /** Start a cron task */
 export const startCronTask = (taskId: string): Promise<CronTask> =>
   invokeCommand('cmd_start_cron_task', { taskId });

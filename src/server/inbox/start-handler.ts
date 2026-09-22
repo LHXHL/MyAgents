@@ -58,7 +58,7 @@ export async function handleFreshSessionStart(
   if (
     message.kind !== 'request'
     || !message.messageId
-    || !message.fromSessionId
+    || ((message.sourceKind ?? 'internal-session') === 'internal-session' && !message.fromSessionId)
     || !message.toSessionId
     || !message.text
   ) {

@@ -248,7 +248,7 @@ export interface TabContextValue extends TabState {
     respondPermission: (decision: 'deny' | 'allow_once' | 'always_allow', requestId?: string) => Promise<void>;
 
     // AskUserQuestion handling
-    respondAskUserQuestion: (answers: AskUserQuestionAnswers | null) => Promise<void>;
+    respondAskUserQuestion: (requestId: string, answers: AskUserQuestionAnswers | null) => Promise<void>;
 
     // PlanMode handling.
     // `feedback` (issue #182): user's optional 「修改意见」 forwarded only on

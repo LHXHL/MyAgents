@@ -1,5 +1,6 @@
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 import type { QueuedMessageInfo } from '@/types/queue';
+import type { ToolPermissionHints } from '../../shared/types/toolPermission';
 import { appendStreamingText, completeStreamingText } from '@/utils/streamingTextBlocks';
 import { sameAsyncQuestionReply, type AsyncQuestionReply, type AsyncQuestionSet } from '../../shared/asyncUserQuestions';
 /**
@@ -113,7 +114,7 @@ export interface FbActivity {
     tool?: ToolUseSimple;
 }
 
-export interface FbPermReq {
+export interface FbPermReq extends ToolPermissionHints {
     requestId: string;
     sessionId?: string | null;
     toolName: string;
@@ -1062,8 +1063,9 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                     break;
                 }
                 case 'chat:message-complete': {
+                    // Turn presentation can finish while queued Session work is
+                    // still running. chat:status / REST owns the busy projection.
                     finalizeStream();
-                    setBusy(false);
                     // 终态清掉一切 pending 表单（backstop：正常路径下用户回应后已清，
                     // 这里兜住中止 / 异常路径，防陈旧卡片）。
                     setPermReqs([]);
@@ -1082,7 +1084,6 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                                 ? String((data as { message?: unknown }).message ?? '')
                                 : fbText('replyFailed');
                     finalizeStream('failed');
-                    setBusy(false);
                     setPermReqs([]);
                     setAskReq(null);
                     setPlanReq(null);
@@ -1091,7 +1092,6 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 }
                 case 'chat:message-stopped': {
                     finalizeStream('stopped');
-                    setBusy(false);
                     setPermReqs([]);
                     setAskReq(null);
                     setPlanReq(null);
@@ -1099,7 +1099,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 }
                 case 'chat:status': {
                     const payload = data as { sessionState?: string } | null;
-                    if (payload?.sessionState === 'idle') {
+                    if (payload?.sessionState === 'idle' || payload?.sessionState === 'error') {
                         setBusy(false);
                     } else if (payload?.sessionState === 'running' || payload?.sessionState === 'starting') {
                         setBusy(true);
@@ -1114,6 +1114,8 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                             sessionId: payload.sessionId,
                             toolName: payload.toolName,
                             input: payload.input || '',
+                            defaultToNo: payload.defaultToNo,
+                            suppressAlwaysAllowRule: payload.suppressAlwaysAllowRule,
                         }));
                     }
                     break;
@@ -1131,7 +1133,6 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                     // 球退回 idle（review W2）。
                     const msg = typeof data === 'string' ? data : fbText('agentErrorOpenMainWindow');
                     finalizeStream('failed');
-                    setBusy(false);
                     // 会话失效自愈：SDK 在当前工作区找不到这条对话（典型：persisted
                     // sid 的 SDK 数据被清理）。直接轮换新 session，别让用户卡死在
                     // 一条永远发不出去的会话里。
@@ -1856,18 +1857,18 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
     /** 回答 ask-user-question（D13）。answers=null 表示用户取消（SDK deny+interrupt）。
      *  与 permission 同纪律：成功后才清卡片（W4，乐观清除会卡死后端 pending）。 */
     const respondAskUserQuestion = useCallback(
-        async (answers: AskUserQuestionAnswers | null) => {
+        async (requestId: string, answers: AskUserQuestionAnswers | null) => {
             const sid = sessionIdRef.current;
             const req = askReq;
-            if (!sid || !req) throw new Error('Question is no longer pending');
+            if (!sid || req?.requestId !== requestId) throw new Error('Question is no longer pending');
             try {
                 const resp = await floatingProxyFetch(sid, '/api/ask-user-question/respond', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ requestId: req.requestId, answers }),
+                    body: JSON.stringify({ requestId, answers }),
                 });
                 await assertRespondSucceeded(resp);
-                setAskReq(null);
+                setAskReq(prev => prev?.requestId === requestId ? null : prev);
             } catch (err) {
                 console.error('[fb] ask-user-question respond failed:', err);
                 setError(fbText('answerSendFailed'));

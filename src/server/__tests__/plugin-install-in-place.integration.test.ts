@@ -68,7 +68,11 @@ describe('plugin install — register-in-place (#239)', () => {
 
     // And now it shows up in `cc-plugin list`.
     const listed = listInstalledPlugins();
-    expect(listed.some((p) => p.name === 'test-echo')).toBe(true);
+    const listedPlugin = listed.find((p) => p.name === 'test-echo');
+    expect(listedPlugin).toBeDefined();
+    expect(listedPlugin?.dataPath).toBe(
+      join(home, '.myagents', 'plugins', 'data', 'test-echo-local'),
+    );
   });
 
   it('still 409s a name collision when the source is OUTSIDE plugins/ (orphan dir)', async () => {

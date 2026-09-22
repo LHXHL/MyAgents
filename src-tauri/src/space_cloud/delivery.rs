@@ -1629,7 +1629,8 @@ async fn deliver_space_deliveries(
         build_space_issue_delivery_message(agent, context, session_id, &created_at, deliveries);
     let message = crate::inbox::PendingInboxMessage {
         message_id: message_id.clone(),
-        from_session_id: "myagents-space".to_string(),
+        from_session_id: Some("myagents-space".to_string()),
+        source_kind: crate::inbox::InboxSourceKind::InternalSession,
         from_label: "MyAgents Space".to_string(),
         to_session_id: session_id.to_string(),
         text: prompt.clone(),

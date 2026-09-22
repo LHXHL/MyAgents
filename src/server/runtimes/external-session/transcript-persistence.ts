@@ -289,7 +289,8 @@ export async function removeAndPersistExternalSessionMessage(
   return true;
 }
 
-export async function truncateExternalTranscriptForRetry(
+
+export async function retryUnadmittedDshTranscript(
   sessionId: string,
   userMessageId: string,
 ): Promise<{
@@ -315,8 +316,8 @@ export async function truncateExternalTranscriptForRetry(
   try {
     const cursor = await ensureExternalTranscriptCursor(sessionId);
     const result = await mutateSessionTranscript(sessionId, cursor, {
-      kind: 'external-retry',
-      userMessageId,
+      kind: 'dsh-unadmitted-retry',
+      targetMessageId: userMessageId,
       targetMessageCount: targetIndex,
     });
     if (!result.ok) {

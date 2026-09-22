@@ -21,9 +21,9 @@ export interface FileActionMenuOptions {
 }
 
 export interface FileActionContextValue {
-  /** Synchronous cache lookup. Returns cached result or null (pending / not yet requested). */
+  /** Last display result, retained during revalidation; null before the first result. */
   checkPath: (path: string) => PathInfo | null;
-  /** Synchronous cache lookup for a resolved workspace/local target. */
+  /** Last display result for this workspace/local target, not an action authorization. */
   checkFileTarget: (target: FileActionTarget) => PathInfo | null;
   /** Register a mounted inferred target. The first consumer schedules the
    *  batched check; the last cleanup removes work that has not started. */

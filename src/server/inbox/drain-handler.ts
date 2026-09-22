@@ -34,6 +34,7 @@ function legacySendRequestEvent(msg: PendingInboxMessage): SessionEvent {
     type: 'send.request',
     eventId: msg.messageId,
     sourceSessionId: msg.fromSessionId,
+    sourceKind: msg.sourceKind ?? 'internal-session',
     sourceLabel: msg.fromLabel,
     targetSessionId: msg.toSessionId,
     sourceNotification: msg.replyBack ? 'auto' : 'none',
@@ -43,6 +44,7 @@ function legacySendRequestEvent(msg: PendingInboxMessage): SessionEvent {
 }
 
 function legacySendResultEvent(msg: PendingInboxMessage): SessionEvent {
+  if (!msg.fromSessionId) throw new Error('legacy send.result requires a source Session');
   return {
     version: 1,
     type: 'send.result',
@@ -79,6 +81,7 @@ export function buildSessionEventPrompt(msg: PendingInboxMessage): string {
     return renderSessionEventPrompt(legacySendResultEvent(msg));
   }
   if (msg.kind === 'event') {
+    if (!msg.fromSessionId) throw new Error('legacy watch event requires a source Session');
     return renderSessionEventPrompt({
       version: 1,
       type: 'watch.error',
@@ -103,6 +106,9 @@ export function buildTurnMeta(msg: PendingInboxMessage): InboxTurnMeta | undefin
   if (msg.kind === 'reply') return undefined;
   if (msg.kind === 'event') return undefined;
   if (!msg.replyBack) return undefined;
+  if (!msg.fromSessionId) {
+    throw new Error('replyBack requires an internal source Session');
+  }
   return {
     fromSessionId: msg.fromSessionId,
     fromLabel: msg.fromLabel,

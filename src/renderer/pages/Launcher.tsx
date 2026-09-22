@@ -62,7 +62,6 @@ import {
   CODEX_PERMISSION_MODES,
   DSH_PERMISSION_MODES,
   GEMINI_PERMISSION_MODES,
-  buildRuntimeChangePatch,
   isAgentRuntimeSelectorAvailable,
   resolveEffectiveRuntime,
 } from '../../shared/types/runtime';
@@ -751,7 +750,7 @@ export default function Launcher({
             selectedAgent?.providerId ?? selectedWorkspace.providerId,
           fields:
             intent?.kind === 'runtime-backed-provider'
-              ? { runtimeBackedProviderSelection: intent, permissionMode: mode }
+              ? { runtimeBackedProviderContext: intent, permissionMode: mode }
               : { permissionMode: mode },
           patchProject,
           patchAgentConfig,
@@ -832,7 +831,7 @@ export default function Launcher({
           currentRuntimePreference: runtimePreferenceRef.current,
           currentProviderId:
             selectedAgent?.providerId ?? selectedWorkspace.providerId,
-          fields: { reasoningEffort: effort, ...(intent?.kind === 'runtime-backed-provider' ? { runtimeBackedProviderSelection: intent } : {}) },
+          fields: { reasoningEffort: effort, ...(intent?.kind === 'runtime-backed-provider' ? { runtimeBackedProviderContext: intent } : {}) },
           patchProject,
           patchAgentConfig,
           patchAgentProjectConfig,
@@ -864,14 +863,14 @@ export default function Launcher({
         // shared/types/runtime.ts.
         await patchAgentConfig(
           selectedWorkspace.agentId,
-          buildRuntimeChangePatch(selectedAgent?.runtimeConfig, runtime),
+          { runtime },
         );
       } catch (err) {
         console.error('[Launcher] runtime change failed:', err);
         toastRef.current.error(t('toasts.runtimeSwitchFailed'));
       }
     },
-    [selectedWorkspace?.agentId, selectedAgent?.runtimeConfig, t],
+    [selectedWorkspace?.agentId, t],
   );
 
   const handleLauncherProviderChange = useCallback(

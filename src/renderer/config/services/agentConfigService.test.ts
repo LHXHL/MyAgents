@@ -255,6 +255,73 @@ describe('projectMemoryEvolutionTaskRuntimeForAgent', () => {
 });
 
 describe('migrateImBotConfigsToAgents', () => {
+  it.each([
+    { runtime: 'codex' }, { mcpEnabledServers: ['different'] },
+    { heartbeat: { enabled: true, intervalMinutes: 60 } }, { providerId: 'inherited' },
+  ])('preserves legacy data that cannot inherit target settings safely: %j', targetFields => {
+    const cfg = { agents: [{ id: 'target', name: 'Target', channels: [], ...targetFields }], imBotConfigs: [{
+      id: 'bot', platform: 'telegram', botToken: 'preserve', enabled: false, defaultWorkspacePath: '/target',
+    }] } as unknown as AppConfig;
+    const projects = [project({ path: '/target', agentId: 'target' })];
+    const before = structuredClone({ cfg, projects });
+    migrateImBotConfigsToAgents(cfg, projects);
+    expect({ cfg, projects }).toEqual(before);
+  });
+
+  it.each(['other-secret', 'same-secret'])('retires same-ID legacy data only with matching owner and credentials: %s', secret => {
+    const cfg = { agents: [{ id: 'target', name: 'Target', channels: [
+      { id: 'bot', type: 'telegram', botToken: secret, enabled: false },
+    ] }], imBotConfigs: [{
+      id: 'bot', platform: 'telegram', botToken: 'same-secret', enabled: false, defaultWorkspacePath: '/target',
+    }] } as unknown as AppConfig;
+    const original = structuredClone(cfg.agents);
+    migrateImBotConfigsToAgents(cfg, [project({ path: '/target', agentId: 'target' })]);
+    expect(cfg.imBotConfigs).toHaveLength(secret === 'same-secret' ? 0 : 1);
+    expect(cfg.agents).toEqual(original);
+  });
+
+  it('compares overrides with the existing Agent and preserves explicit channel permission', () => {
+    const cfg = { agents: [{ id: 'target', name: 'Target', channels: [], providerId: 'old', model: 'old' }], imBotConfigs: [{
+      id: 'bot', platform: 'telegram', botToken: 'preserve', enabled: false, defaultWorkspacePath: '/target',
+      providerId: 'new', model: 'new', permissionMode: 'plan',
+    }] } as unknown as AppConfig;
+    migrateImBotConfigsToAgents(cfg, [project({ path: '/target', agentId: 'target' })]);
+    expect(cfg.agents![0].channels[0].overrides).toEqual({ providerId: 'new', model: 'new', permissionMode: 'plan' });
+    expect(cfg.agents![0].providerId).toBe('old');
+    expect(cfg.imBotConfigs).toEqual([]);
+  });
+
+  it.each([false, true])('never reclaims an Agent by its stale path (already migrated: %s)', alreadyMigrated => {
+    const original = {
+      ...buildAgentForProject(project(), { agentId: 'original' }),
+      workspacePath: '/old',
+      channels: alreadyMigrated ? [{ id: 'bot', type: 'telegram', enabled: false, botToken: 'secret' }] : [],
+    };
+    const cfg = { agents: [original], imBotConfigs: [{
+      id: 'bot', name: 'Bot', platform: 'telegram', botToken: 'secret', allowedUsers: [],
+      permissionMode: 'plan', enabled: false, defaultWorkspacePath: '/old',
+    }] } as unknown as AppConfig;
+    const projects = [project({ id: 'owner', path: '/moved', agentId: original.id }),
+      project({ id: 'preset', path: '/old', hidden: true })];
+    migrateImBotConfigsToAgents(cfg, projects);
+    expect(projects.filter(p => p.agentId === original.id).map(p => p.id)).toEqual(['owner']);
+    expect(cfg.agents?.find(a => a.id === original.id)).toEqual(original);
+    if (alreadyMigrated) expect(cfg.imBotConfigs).toHaveLength(1);
+  });
+
+  it('preserves Bots when the Project already has ambiguous explicit claims', () => {
+    const original = buildAgentForProject(project(), { agentId: 'shared' });
+    const cfg = { agents: [original], imBotConfigs: [{
+      id: 'bot', platform: 'telegram', botToken: 'keep', allowedUsers: [],
+      permissionMode: 'plan', enabled: false, defaultWorkspacePath: '/one',
+    }] } as unknown as AppConfig;
+    const projects = [project({ id: 'one', path: '/one', agentId: 'shared' }),
+      project({ id: 'two', path: '/two', agentId: 'shared' })];
+    const before = structuredClone({ cfg, projects });
+    migrateImBotConfigsToAgents(cfg, projects);
+    expect({ cfg, projects }).toEqual(before);
+  });
+
   it('migrates only Project-backed IM groups into a pathless Agent and preserves unmatched bots', () => {
     const winPath = 'C:\\Users\\Me\\Project';
     const cfg = {

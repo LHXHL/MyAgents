@@ -90,6 +90,8 @@ export interface PluginComponentInventory {
  * invalid directories.
  */
 export interface PluginListItem extends PluginEntry {
+  /** Absolute retained-data directory, derived by the Plugin Store owner. */
+  dataPath: string;
   enabled: boolean;
   status: 'ok' | 'missing' | 'invalid';
   warning?: string;

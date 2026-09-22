@@ -15,7 +15,6 @@ import {
   type TransientProviderTextError,
   type TransientProviderTextRetryDecision,
 } from '../session-core/turn-result-policy';
-import { isSdkMissingResumeMessageError } from '../session-core/resume-error-recovery';
 import { decideInFlightActionOnResult } from '../utils/inflight-terminal';
 import type { ProviderEnv } from '../provider-types';
 import type { InFlightMetadata, TurnProviderAnalytics } from './types';
@@ -166,13 +165,13 @@ export type BuiltinTurnLifecycleDeps = {
   setLastAgentError: (error: string) => void;
   buildTurnProviderAnalytics: (providerEnv: ProviderEnv | undefined) => TurnProviderAnalytics;
   probeForkPersistenceIfReady: (resultMessage: BuiltinSdkResultMessage) => void;
-  recoverInvalidResumeAnchorError: (rawError: string) => boolean;
   handleTerminalRecovery: (reason: 'image' | 'stale' | undefined) => void;
   applyDeferredRestartIfNeeded: () => void;
 };
 
 export type BuiltinTurnLifecycle = {
-  handleSdkResult: (resultMessage: BuiltinSdkResultMessage) => Promise<void>;
+  canMaterializeRewindResult: (resultMessage: BuiltinSdkResultMessage) => boolean;
+  handleSdkResult: (resultMessage: BuiltinSdkResultMessage) => Promise<'retrying' | 'terminal'>;
   completeTurn: (
     durationMs?: number,
     terminalError?: string,
@@ -195,7 +194,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     deps.clearCronTaskContext();
   };
 
-  const finishTerminalCleanup = (terminal: 'complete' | 'stopped' | 'error'): void => {
+  const finishTerminalCleanup = (terminal: 'complete' | 'stopped' | 'error', continuingTurn = false): void => {
     deps.schedulePostTerminalQueueDrain(terminal);
     const sid = deps.getSessionId();
     if (sid) {
@@ -206,14 +205,14 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       }
       deps.clearAmbientTurnId(sid);
     }
-    if (!deps.hasQueuedOrInFlightWork()) {
+    if (!continuingTurn && !deps.hasQueuedOrInFlightWork()) {
       deps.setSessionState('idle');
     }
   };
 
-  const commonTerminalCleanup = (terminal: 'complete' | 'stopped' | 'error'): void => {
+  const commonTerminalCleanup = (terminal: 'complete' | 'stopped' | 'error', continuingTurn = false): void => {
     clearTerminalStreamState();
-    finishTerminalCleanup(terminal);
+    finishTerminalCleanup(terminal, continuingTurn);
   };
 
   const terminalActivityAt = (outcome: ReturnType<typeof snapshotCurrentTurnTerminalOutcome>): string | undefined => {
@@ -269,6 +268,12 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
         if (inFlightAction === 'drop') {
           deps.dropInFlightQueueItem('graceful interrupt result before SDK consumption confirmation', 'cancelled');
         } else if (inFlightAction === 'surface' && meta) {
+          // Surfacing transfers the last queue slot into accepted execution.
+          // V2 does this synchronously (including deferred-restart checks), so
+          // retain activity BEFORE the slot disappears. The old turn's cleanup
+          // must not publish idle merely because no queued work remains.
+          confirmedQueueTurnKeepStreaming = true;
+          deps.setStreamingMessage(true);
           void deps.surfaceInFlightQueueItem(stale, meta, {
             sdkUuid: stale,
             midTurnBreak: true,
@@ -277,7 +282,6 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
           }).catch((error) => {
             console.error(`[agent] Failed to surface in-flight queue item ${stale} at result boundary:`, error);
           });
-          confirmedQueueTurnKeepStreaming = true;
         } else if (inFlightAction === 'await-replay') {
           deps.preserveInFlightAfterTerminalBoundary(
             deps.getIsInterruptingResponse()
@@ -327,11 +331,9 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     // message that the persistent SDK has already started behind this turn.
     commonTerminalCleanup(
       terminalKind === 'cancelled' ? 'stopped' : (terminalError ? 'error' : 'complete'),
+      confirmedQueueTurnKeepStreaming,
     );
     setCurrentTurnImTerminalEmitted(false);
-    if (confirmedQueueTurnKeepStreaming) {
-      deps.setStreamingMessage(true);
-    }
 
     const persistTrace = deps.snapshotTrace();
     const persistTraceStarted = deps.nowMs();
@@ -373,9 +375,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     }
     void lastTurnEndPersist.catch(() => undefined);
     notifyCurrentTurnTerminalOutcome(terminalOutcome, lastTurnEndPersist);
-    if (terminalKind === 'cancelled') {
-      deps.claimPostInterruptResultTerminal();
-    }
+    deps.claimPostInterruptResultTerminal();
     return confirmedQueueTurnKeepStreaming;
   };
 
@@ -466,6 +466,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     }
     setCurrentTurnImTerminalEmitted(false);
     deps.clearTrace(errorTrace);
+    deps.claimPostInterruptResultTerminal();
     return completionTerminal;
   };
 
@@ -479,7 +480,40 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     return completionTerminal;
   };
 
-  const handleSdkResult = async (resultMessage: BuiltinSdkResultMessage): Promise<void> => {
+  const canMaterializeRewindResult = (resultMessage: BuiltinSdkResultMessage): boolean => {
+    const terminalDisposition = classifyBuiltinSdkTerminalResult({
+      isError: resultMessage.is_error,
+      terminalReason: resultMessage.terminal_reason,
+    });
+    if (terminalDisposition !== 'complete' || deps.getIsInterruptingResponse()) return false;
+
+    const transientRetryDecision = decideTransientProviderTextRetry({
+      resultText: resultMessage.result || '',
+      isError: false,
+      isAbortResult: false,
+      apiErrorStatus: 'api_error_status' in resultMessage ? resultMessage.api_error_status ?? null : null,
+      toolUseCount: getCurrentTurnToolCount(),
+      currentAttempt: deps.getCurrentTransientProviderRetryAttempt(),
+    });
+    if (transientRetryDecision.error) return false;
+
+    const usage = extractTurnUsageFromSdkResult(resultMessage);
+    const emptySuccessfulResult = isEmptySuccessfulSdkResult({
+      isError: false,
+      result: resultMessage.result || '',
+      terminalReason: resultMessage.terminal_reason,
+      hasVisibleOutput: hasCurrentTurnOutput(),
+      toolCount: getCurrentTurnToolCount(),
+      outputTokens: usage.outputTokens,
+    });
+    return !emptySuccessfulResult || isSuccessfulCompactControlTurn({
+      emptySuccessfulResult,
+      compactResult: getCurrentTurnCompactResult(),
+      sawCompactBoundary: sawCompactBoundary(),
+    });
+  };
+
+  const handleSdkResult = async (resultMessage: BuiltinSdkResultMessage): Promise<'retrying' | 'terminal'> => {
     deps.resetInFlightToolCount();
     deps.resetWatchdogFired();
 
@@ -488,7 +522,9 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       isError: resultMessage.is_error,
       terminalReason: resultMessage.terminal_reason,
     });
-    const isAbortResult = terminalDisposition === 'stopped' || deps.getIsInterruptingResponse();
+    // An explicit SDK failure remains a failure even when Stop raced it.
+    const isAbortResult = terminalDisposition === 'stopped'
+      || (deps.getIsInterruptingResponse() && terminalDisposition !== 'error');
     const isTerminalFailure = terminalDisposition === 'error' && !isAbortResult;
     let terminalRecoveryReason: 'image' | 'stale' | undefined;
 
@@ -511,7 +547,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
           `auto-retry ${transientRetryDecision.attempt}/${transientRetryDecision.maxRetries} ` +
           `in ${transientRetryDecision.delayMs}ms`,
         );
-        return;
+        return 'retrying';
       }
       console.warn('[agent][transient-provider-text] retry requested but no safe current turn source was available');
       terminalTransientProviderError = transientRetryDecision.error;
@@ -541,17 +577,11 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       );
       deps.handleTerminalRecovery(undefined);
       deps.applyDeferredRestartIfNeeded();
-      return;
+      return 'terminal';
     }
 
     if (isTerminalFailure || isAbortResult) {
       const rawError = resultText || resultMessage.errors?.join('; ') || getLastAssistantMessageError() || '';
-      if (isSdkMissingResumeMessageError(rawError) && deps.recoverInvalidResumeAnchorError(rawError)) {
-        console.warn('[agent] SDK result rejected resumeSessionAt anchor; cleared stale anchor and restarting without surfacing user error');
-        deps.clearApiRetryStatus();
-        commonTerminalCleanup('error');
-        return;
-      }
       if (
         (rawError.includes('unknown variant') && rawError.includes('image')) ||
         (rawError.includes('image') && rawError.includes('exceed') && rawError.includes('max allowed size'))
@@ -736,7 +766,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
           scenarioType: scenario.type,
           desktopSurface: scenario.type === 'desktop' ? scenario.surface : undefined,
         });
-      if (terminalDisposition === 'complete' && !deps.getIsInterruptingResponse()) {
+      if (terminalDisposition === 'complete' && !isAbortResult) {
         track('ai_turn_complete', {
           source: turnAnalyticsSource,
           ...originAnalyticsFields(turnOrigin),
@@ -801,7 +831,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
         isAbortResult ? 'cancelled' : 'complete',
       );
 
-      if (terminalDisposition === 'complete' && !deps.getIsInterruptingResponse()
+      if (terminalDisposition === 'complete' && !isAbortResult
         && shouldTitleCompletedTurn(resultMessage.is_error === true, resultMessage.terminal_reason)) {
         const titleSid = deps.getSessionId();
         const titleModel = deps.getCurrentModel();
@@ -845,9 +875,11 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     deps.probeForkPersistenceIfReady(resultMessage);
     deps.handleTerminalRecovery(terminalRecoveryReason);
     deps.applyDeferredRestartIfNeeded();
+    return 'terminal';
   };
 
   return {
+    canMaterializeRewindResult,
     handleSdkResult,
     completeTurn,
     stopTurn,

@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 
 import { cancellableFetch } from '../utils/cancellation';
+import { managementRequestHeaders } from '../utils/management-api-client';
 import { buildReplyBody, type ReplyPayload } from './reply-deliver';
 import { ackPendingSessionWatch, listPendingSessionWatches } from './watch-registry';
 import type { PendingInboxMessage, DeliverOutcome } from './types';
@@ -62,7 +63,7 @@ export async function deliverSessionWatchEvents(
         `http://127.0.0.1:${managementPort}/api/inbox/deliver`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: managementRequestHeaders(),
           body: JSON.stringify({
             message,
             resumeWorkspacePath: watch.watcherResumeWorkspacePath,

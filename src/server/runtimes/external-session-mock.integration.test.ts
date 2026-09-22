@@ -112,6 +112,10 @@ class FakeRuntimeProcess implements RuntimeProcess {
 class FakeRuntime implements AgentRuntime {
   type: RuntimeType = 'codex';
   readonly sentMessages: string[] = [];
+  readonly sentModels: string[] = [];
+  effectiveModel = '';
+  readonly sentEfforts: string[] = [];
+  effectiveEffort = '';
   readonly startSessionInitialMessages: Array<string | undefined> = [];
   readonly startSessionResumeIds: Array<string | undefined> = [];
   readonly startSessionHasHostDispatcher: boolean[] = [];
@@ -365,6 +369,8 @@ class FakeRuntime implements AgentRuntime {
     onEvent: UnifiedEventCallback,
   ): Promise<RuntimeProcess> {
     this.effectivePermissionMode = options.permissionMode ?? '';
+    this.effectiveModel = options.model ?? '';
+    this.effectiveEffort = options.reasoningEffort ?? '';
     this.startSessionInitialMessages.push(options.initialTurn?.message);
     this.startSessionResumeIds.push(options.resumeSessionId);
     this.startSessionSystemContexts.push(options.systemContext);
@@ -574,8 +580,13 @@ class FakeRuntime implements AgentRuntime {
       : null;
   }
 
-  async setModel(): Promise<void> {
+  async setModel(_process: RuntimeProcess, model: string | undefined): Promise<void> {
     if (this.rejectConfig) throw new Error('fake config apply failed');
+    this.effectiveModel = model ?? '';
+  }
+
+  async setReasoningEffort(_process: RuntimeProcess, effort: string | undefined): Promise<void> {
+    this.effectiveEffort = effort ?? '';
   }
 
   async setPermissionMode(
@@ -7587,6 +7598,9 @@ describe('external SessionEngine with fake runtime', () => {
     ]);
     expect(resumedMessages[2]?.content).toBe('edited second question');
     expect(resumedMessages[3]?.content).toContain('edited second answer');
+    const transcriptOwner = harness.sessionStore.getActiveSessionTranscript(sessionId)!;
+    expect(await transcriptOwner.writer.flush()).toBe(true);
+    expect([...(await transcriptOwner.file.read()).projection.messages.keys()]).toEqual(resumedMessages.map(message => message.id));
   });
 
 
@@ -7844,7 +7858,7 @@ describe('external SessionEngine with fake runtime', () => {
       harness.engine.forkAtAssistantMessage(firstAssistant.id, {
         targetSessionId,
       }),
-    ).resolves.toMatchObject({ success: false, status: 409 });
+    ).resolves.toMatchObject({ success: true, newSessionId: targetSessionId });
     expect(harness.runtime.conversationBranches).toHaveLength(1);
     const continued = await harness.engine.sendDesktopMessage(
       desktopRequest(sessionId, workspacePath, 'continue source'),

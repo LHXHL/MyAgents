@@ -19,6 +19,7 @@ pub mod device_identity;
 pub mod document_processing;
 mod durable_fs;
 mod durable_journal;
+pub mod external_cli;
 mod filesystem_capacity;
 pub mod floating_ball;
 pub mod floating_ball_pets;
@@ -493,6 +494,9 @@ pub fn run() {
             logger::cmd_record_renderer_boot_event,
             i18n::cmd_get_ui_language_state,
             i18n::cmd_sync_ui_language_from_config,
+            external_cli::cmd_get_external_cli_access,
+            external_cli::cmd_set_external_cli_enabled,
+            external_cli::cmd_reset_external_cli_token,
             i18n::cmd_set_ui_language,
             // Bundled workspace initialization
             commands::cmd_initialize_bundled_workspace,
@@ -548,6 +552,7 @@ pub fn run() {
             memory_evolution::cmd_get_memory_evolution_status,
             memory_auto_update::cmd_configure_memory_auto_update_task,
             // Cron task commands
+            cron_task::commands::cmd_create_and_start_cron_task,
             cron_task::commands::cmd_create_cron_task,
             cron_task::commands::cmd_start_cron_task,
             cron_task::commands::cmd_stop_cron_task,
@@ -649,6 +654,7 @@ pub fn run() {
             im::credential_provisioning::cmd_channel_credential_qr_start,
             im::credential_provisioning::cmd_channel_credential_qr_poll,
             // Agent commands (v0.1.41)
+            im::commands::cmd_set_agent_channel_enabled,
             im::commands::cmd_start_agent_channel,
             im::commands::cmd_stop_agent_channel,
             im::commands::cmd_agent_channel_status,
@@ -1006,10 +1012,21 @@ pub fn run() {
             // deterministic launchers pointing back to this executable. A
             // failure must not brick the Desktop; Sidecar admission retries
             // this same reconciler and fails closed before any Agent starts.
-            tauri::async_runtime::spawn_blocking(|| match cli::ensure_launcher() {
-                Ok(true) => ulog_info!("[cli] Reconciled HOME launchers"),
-                Ok(false) => ulog_info!("[cli] HOME launchers already current"),
-                Err(error) => ulog_error!("[cli] Startup launcher preflight failed: {}", error),
+            tauri::async_runtime::spawn_blocking(|| {
+                match cli::ensure_launcher() {
+                    Ok(true) => ulog_info!("[cli] Reconciled HOME launchers"),
+                    Ok(false) => ulog_info!("[cli] HOME launchers already current"),
+                    Err(error) => {
+                        ulog_error!("[cli] Startup launcher preflight failed: {}", error)
+                    }
+                }
+                match external_cli::ensure_external_cli_skill() {
+                    Ok(true) => ulog_info!("[cli] Reconciled external AI guide"),
+                    Ok(false) => ulog_info!("[cli] External AI guide already current"),
+                    Err(error) => {
+                        ulog_error!("[cli] Startup external AI guide preflight failed: {}", error)
+                    }
+                }
             });
             // Tauri is the only process guaranteed to exist for the whole app
             // lifetime, so it owns shared crash-artifact cleanup. The first

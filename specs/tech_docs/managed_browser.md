@@ -19,6 +19,8 @@ Host 因此在公开 transport 的收发边界记录尚未响应的 request id �
 
 ## 登录保存与兼容
 
+Context 按 Product Session 隔离，但持久登录身份由当前 OS 用户共用的 Rust `browser_identity_store.rs` 保存（`~/.myagents/browser-identity-store.json`），不按 Session 或 workspace 分库。新 Context 从共享 identity snapshot 加载 Cookie；同一 Context 在重连窗口内复用其内存状态。不能把 Context 隔离解释为账号数据隔离。
+
 托管登录状态有意仅保存 Cookie：全量 `storageState()` 可能创建历史 origin 的临时页面并导致可见闪烁。Rust 的 CAS 存储是持久 authority，Context 同时保存权威 base 与实际 observed base，以避免反复提交被其他 Session 否决的旧值。
 
 750 ms 防抖的 checkpoint 正在提交时，后来请求记录一次待采样状态，合并为后续一次新快照；最终关闭同样等待这个新快照，不能把旧提交成功当成最终保存成功。循环结束与释放 in-flight 状态在同一 continuation 完成，避免外置 promise.finally 的微任务间隙漏掉新触发。保存失败仍沿既有一次重试及诊断策略关闭 Context，不承诺跨崩溃无损。

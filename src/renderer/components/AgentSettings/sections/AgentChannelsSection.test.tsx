@@ -5,6 +5,10 @@ import type { AgentConfig, ChannelType } from '../../../../shared/types/agent';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { dismissTopmost } from '@/utils/closeLayer';
 import AgentChannelsSection from './AgentChannelsSection';
+import { startAndEnableAgentChannel, stopAndDisableAgentChannel } from '@/config/services/agentConfigService';
+
+const toastError = vi.hoisted(() => vi.fn());
+vi.mock('@/components/Toast', () => ({ useToast: () => ({ error: toastError }) }));
 
 vi.mock('@/components/OverlayBackdrop', () => ({
   default: ({ children, className }: { children: ReactNode; className?: string }) => (
@@ -157,5 +161,35 @@ describe('AgentChannelsSection direct entry', () => {
 
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByTestId('parent-overlay')).not.toBeInTheDocument();
+  });
+});
+
+
+describe('AgentChannelsSection lifecycle intent', () => {
+  it('offers stop for enabled but disconnected channels and refreshes even when stop rejects', async () => {
+    const onAgentChanged = vi.fn();
+    vi.mocked(stopAndDisableAgentChannel).mockRejectedValueOnce('shutdown failed');
+    render(<AgentChannelsSection agent={{ ...agent, channels: [
+      { id: 'failed-channel', type: 'telegram', enabled: true },
+    ] }} onAgentChanged={onAgentChanged} />);
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: /停止|Stop/u })));
+    expect(stopAndDisableAgentChannel).toHaveBeenCalledWith('agent-1', 'failed-channel');
+    expect(onAgentChanged).toHaveBeenCalledTimes(1);
+    expect(toastError).toHaveBeenCalledWith(expect.stringContaining('shutdown failed'));
+  });
+
+  it('refreshes persisted intent and shows startup failure instead of silently leaving Start', async () => {
+    function Harness() {
+      const [enabled, setEnabled] = useState(false);
+      return <AgentChannelsSection agent={{ ...agent, channels: [
+        { id: 'failed-start', type: 'telegram', enabled },
+      ] }} onAgentChanged={() => setEnabled(true)} />;
+    }
+    vi.mocked(startAndEnableAgentChannel).mockRejectedValueOnce('invalid test credentials');
+    render(<Harness />);
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: /启动|Start/u })));
+    expect(startAndEnableAgentChannel).toHaveBeenCalledWith('agent-1', 'failed-start');
+    expect(toastError).toHaveBeenCalledWith(expect.stringContaining('invalid test credentials'));
+    expect(screen.getByRole('button', { name: /停止|Stop/u })).toBeEnabled();
   });
 });

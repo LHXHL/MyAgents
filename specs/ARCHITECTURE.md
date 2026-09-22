@@ -92,6 +92,8 @@ Builtin、Integrated DSH 与 external Runtime 的 session 操作统一经过 `sr
 
 Runtime 分为 Integrated（Claude Agent SDK、DSH）、Managed Provider Runtime（Managed Codex）和 External CLI。Agent/Channel 的 `runtimePreference` 表达未来执行意图，Session 的 `runtimeBinding` 固化实际执行身份；legacy `runtime/runtimeSource` 只是投影。分发 policy 与 Provider constraint 参与新 Session 的解析，已有 binding 不受选择器开关或默认值变化影响。DSH 子进程属于该 Session Sidecar，通过生成的协议 client 连接；Runtime 拥有原生会话、工具与工作树，Host 拥有产品状态、权限交互和投影。
 
+Rewind、Fork、Retry 由 SessionEngine adapter 编排 native history 与产品历史的联合操作；SessionStore 裁决产品提交，Renderer 投影结果。Retry 的回溯与重发接纳共用既有 mutation owner，不能拆成前端两次请求。操作边界与失败语义见 [Session 架构 §4.4](./tech_docs/session_architecture.md#44-rewindforkretry-与-reload-anchor)。
+
 详细协议见 [Multi-Agent Runtime](./tech_docs/multi_agent_runtime.md)。
 
 ### 4. App Shell 与 Tab authority
@@ -193,14 +195,14 @@ Record 的物理音轨与媒体时钟由 RecordingManager 持有；Media Worker 
 | Provider / OpenAI Bridge | Node + Rust credential owner；Provider route materialization 与协议转换 | [第三方 Provider](./tech_docs/third_party_providers.md) |
 | 托管 CLIProxy | Rust 拥有组件/账号目录/进程与执行 lease；原版 CLIProxy 拥有 OAuth/refresh/协议转换，SDK 仍属 builtin | [CLIProxy](./tech_docs/managed_cliproxy.md) |
 | Custom MCP OAuth | Node state store；Global scheduler 主动刷新，Session Sidecar 观察 credential revision | [冷启动](./tech_docs/sidecar_cold_start.md) |
-| CLI / Admin API | App-owned CLI bundle；Node 解析命令与帮助、退出状态，Management API 进入 Rust owner | [CLI](./tech_docs/cli_architecture.md) |
+| CLI / Admin API | App-owned CLI bundle；Node 区分带内部 capability 的 Session caller 与 token-authenticated 外部 caller，公开命令经过固定清单准入；外部策略/token 由 Rust App owner 管理，业务写入仍由对应 owner 裁决 | [CLI](./tech_docs/cli_architecture.md) |
 | 内置小助理 | `bundled-agents/myagents_helper/` 模板 + Global Sidecar Admin API；不建立第二套业务 authority | [CLI](./tech_docs/cli_architecture.md) |
 | Task Center | Rust TaskStore、TaskApplication 与 TaskScheduler | [任务中心](./tech_docs/task_center.md)、[Provider routing](./tech_docs/task_provider_routing.md) |
 | Goal | Rust SessionGoalManager + Node goal orchestrator；Session 一等状态 | [Session](./tech_docs/session_architecture.md) |
 | Agent / IM | Rust Agent/Channel lifecycle；Node Session 执行 | [IM 集成](./tech_docs/im_integration_architecture.md) |
 | Plugin Bridge | 独立 Node 进程；OpenClaw plugin 与 SDK shim | [Plugin Bridge](./tech_docs/plugin_bridge_architecture.md) |
 | Claude Plugin | Node；Claude Plugin 安装、选择与 SDK projection | [Plugin 加载](./tech_docs/plugin_loading.md) |
-| Workspace IO | Rust；路径安全、文件 CRUD、watcher 与系统打开 | [Pit-of-Success](./tech_docs/pit_of_success.md) |
+| Workspace IO | Rust；路径安全、文件 CRUD、watcher 与系统打开 | [Pit-of-Success](./tech_docs/pit_of_success.md)、[Markdown 编辑与预览](./tech_docs/workspace_markdown_editor.md) |
 | Skill 安装 | Node；受限 source snapshot、staging 与原子发布 | [Skill Marketplace](./guides/skill_marketplace.md) |
 | Tool Attachment | Node/Rust 数据面；统一 attachment wire、持久引用与安全读取 | [Tool Attachment](./tech_docs/tool_attachment_pipeline.md) |
 | Document Processing | Rust manager + 独立 Document Worker | [文档转换](./tech_docs/document_processing.md) |
@@ -239,7 +241,7 @@ Record 的物理音轨与媒体时钟由 RecordingManager 持有；Media Worker 
 
 ### 日志与诊断
 
-Renderer、Node 和 Rust 日志汇入本地统一日志；高频 transport delta 不重复持久化，terminal 只记录有界摘要，secret-bearing 边界只投影结构化错误。用户报告运行问题时先按本地日期读取 `~/.myagents/logs/unified-{YYYY-MM-DD}.log`。详见 [统一日志](./tech_docs/unified_logging.md)。
+Renderer、Node 和 Rust 日志汇入本地统一日志；高频 transport delta 不重复持久化，terminal 只记录有界摘要，secret-bearing 边界只投影结构化错误。排障先确认报告的机器、版本与时间窗口；证据选择和字段见 [统一日志](./tech_docs/unified_logging.md)。
 
 ## Pit-of-Success 路由
 
@@ -261,7 +263,7 @@ Renderer、Node 和 Rust 日志汇入本地统一日志；高频 transport delta
 ## 文档维护原则
 
 - 本文只在 Owner、进程边界、权威数据源或主数据流变化时更新。
-- `tech_docs/` 描述一个子系统现在如何工作；保留仍执行的兼容行为，不记录发布过程。
+- `tech_docs/` 的现行规范描述子系统现在如何工作；保留仍执行的兼容行为，不记录发布过程。标记为提案的 PRD / RFC 不构成当前 authority，不能作为已实现模块接入导航。
 - 精确版本、命令清单、字段枚举和平台产物以代码、类型、测试、`package.json` 与构建脚本为准。
 - PRD、issue、commit 和 CHANGELOG 解释历史动机，不能覆盖现行实现。
 - 文档与代码冲突时先核对实现、测试和 git 历史，再同时修正文档图中受影响的节点。

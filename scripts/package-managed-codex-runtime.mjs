@@ -25,6 +25,9 @@ import {
 } from './package-managed-codex-spawn.js';
 import {
   isCanonicalCodexVersion,
+  macNativePathPolicy,
+  windowsNativePathPolicy,
+  validateManagedCodexNativePaths,
   managedCodexMacHelperSigningCandidates,
   managedCodexSignerEnv,
   resolveManagedCodexPackageIdentity,
@@ -508,41 +511,6 @@ function isNativeExecutableForPlatform(path, platform) {
   ]).has(magic);
 }
 
-function macNativePathPolicy(platform) {
-  const vendorTriple = platform === 'darwin-arm64'
-    ? 'aarch64-apple-darwin'
-    : 'x86_64-apple-darwin';
-  const codexPath = `vendor/${vendorTriple}/bin/codex`;
-  return {
-    codexPath,
-    openAiSignedPaths: new Set([
-      codexPath,
-      `vendor/${vendorTriple}/bin/codex-code-mode-host`,
-    ]),
-    helperPaths: new Set([
-      `vendor/${vendorTriple}/codex-path/rg`,
-      `vendor/${vendorTriple}/codex-resources/zsh/bin/zsh`,
-    ]),
-  };
-}
-
-function windowsNativePathPolicy() {
-  const vendorTriple = 'x86_64-pc-windows-msvc';
-  const codexPath = `vendor/${vendorTriple}/bin/codex.exe`;
-  return {
-    codexPath,
-    openAiSignedPaths: new Set([
-      codexPath,
-      `vendor/${vendorTriple}/bin/codex-code-mode-host.exe`,
-      `vendor/${vendorTriple}/codex-resources/codex-command-runner.exe`,
-      `vendor/${vendorTriple}/codex-resources/codex-windows-sandbox-setup.exe`,
-    ]),
-    unsignedHelperPaths: new Set([
-      `vendor/${vendorTriple}/codex-path/rg.exe`,
-    ]),
-  };
-}
-
 function teamIdFromSigningIdentity(identity) {
   const teamId = identity.match(/\(([A-Z0-9]{10})\)\s*$/)?.[1];
   if (!teamId) {
@@ -643,30 +611,7 @@ function verifyPackageNativeSigning(
   if (nativePaths.length === 0) {
     throw new Error(`Managed Codex ${platform} package has no native executables to verify`);
   }
-  if (platform.startsWith('darwin-')) {
-    const policy = macNativePathPolicy(platform);
-    const expectedPaths = new Set([...policy.openAiSignedPaths, ...policy.helperPaths]);
-    if (
-      nativePaths.length !== expectedPaths.size
-      || nativePaths.some(relativePath => !expectedPaths.has(relativePath))
-    ) {
-      throw new Error(
-        `Managed Codex ${platform} native file set changed: ${nativePaths.join(', ')}`,
-      );
-    }
-  }
-  if (platform === 'win32-x64') {
-    const policy = windowsNativePathPolicy();
-    const expectedPaths = new Set([...policy.openAiSignedPaths, ...policy.unsignedHelperPaths]);
-    if (
-      nativePaths.length !== expectedPaths.size
-      || nativePaths.some(relativePath => !expectedPaths.has(relativePath))
-    ) {
-      throw new Error(
-        `Managed Codex ${platform} native file set changed: ${nativePaths.join(', ')}`,
-      );
-    }
-  }
+  validateManagedCodexNativePaths(platform, nativePaths);
   return nativePaths.map((relativePath) => {
     let nativeSigning = signing;
     if (platform.startsWith('darwin-')) {

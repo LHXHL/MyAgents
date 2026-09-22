@@ -541,12 +541,16 @@ export async function publishCurrentProductSessionMetadata(
 ): Promise<{ sessionId: string; metadata: SessionMetadata; snapshotKind: string }> {
   const targetSessionId = currentProductSessionId;
   const existing = getCurrentProductSessionMetadata();
-  if (existing) {
-    allowLazySessionMaterialization = false;
-    return { sessionId: targetSessionId, metadata: existing, snapshotKind: 'existing' };
+  const result = existing
+    ? { sessionId: targetSessionId, metadata: existing, snapshotKind: 'existing' }
+    : { sessionId: targetSessionId, ...createMetadata(targetSessionId) };
+  if (!existing) await saveSessionMetadata(result.metadata);
+  // saveSessionMetadata admits V2 birth to the active writer. A published
+  // identity must also be visible to Rust Task/Goal readers before success.
+  const active = getActiveSessionTranscript(targetSessionId);
+  if (active && !await active.writer.flushForMutation()) {
+    throw new Error('Session metadata could not be published');
   }
-  const created = createMetadata(targetSessionId);
-  await saveSessionMetadata(created.metadata);
   allowLazySessionMaterialization = false;
-  return { sessionId: targetSessionId, ...created };
+  return result;
 }

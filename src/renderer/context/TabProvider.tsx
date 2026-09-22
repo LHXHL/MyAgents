@@ -1241,7 +1241,7 @@ export default function TabProvider({
     useState<ExitPlanModeRequest | null>(null);
   const [pendingEnterPlanMode, setPendingEnterPlanMode] =
     useState<EnterPlanModeRequest | null>(null);
-  const getQueryElapsedSeconds = useQueryElapsedClock(
+  const { getElapsedSeconds: getQueryElapsedSeconds, reset: resetQueryElapsedClock } = useQueryElapsedClock(
     isLoading || classifySessionActivity(sessionState) === 'active',
     Boolean(
       pendingPermission ||
@@ -1427,27 +1427,21 @@ export default function TabProvider({
   // Used to prevent loadSession from running during pending→real session ID upgrade.
   const isSessionActiveRef = useRef(false);
 
-  /**
-   * Clear all session-active state. Called when the session finishes, errors, or resets.
-   *
-   * WHY THIS EXISTS (pit-of-success):
-   * isStreamingRef ("streaming message exists in React") and isSessionActiveRef ("backend is
-   * processing") have identical clear-time but different set-time. isStreamingRef is set by the
-   * first message-chunk (via flushSync), while isSessionActiveRef is set by chat:status or the
-   * REST live-session snapshot (before any chunks). They MUST be cleared together — if one is
-   * forgotten, either loadSession runs during active sessions (disrupts streaming) or loadSession
-   * is permanently blocked (stale ref).
-   * A single clearSessionActive() makes it impossible to forget.
-   *
-   * If you add a new "session active" ref in the future, add its cleanup HERE.
-   */
+  /** Only backend terminal state or Session reset ends execution activity. */
   const clearSessionActive = useCallback(() => {
     isStreamingRef.current = false;
     isSessionActiveRef.current = false;
   }, []);
 
+  const settleTurnActivity = useCallback(() => {
+    const active = isSessionActiveRef.current;
+    setIsLoading(active);
+    setSessionState((previous) => previous === 'stopping' ? (active ? 'running' : 'idle') : previous);
+  }, []);
+
   // Ref for stop timeout cleanup
   const stopTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const executionObservationRef = useRef(0);
   const seenIdsRef = useRef<Set<string>>(new Set());
   // Flag to skip message-replay after user clicks "new session"
   const isNewSessionRef = useRef(false);
@@ -1572,211 +1566,6 @@ export default function TabProvider({
     loadingOlderRef.current = false;
   }, []);
 
-  const resetSession = useCallback(async (): Promise<boolean> => {
-    console.log(`[TabProvider ${tabId}] resetSession: starting...`);
-    abortActiveRestoreRequest();
-    const titleBeforeReset = currentSessionTitleRef.current;
-    const titleProjectionBeforeReset = firstUserTitleProjectionRef.current;
-    const restoreTitleAfterRejectedReset = () => {
-      if (currentSessionTitleRef.current === 'New Chat' && titleBeforeReset) {
-        currentSessionTitleRef.current = titleBeforeReset;
-        firstUserTitleProjectionRef.current = titleProjectionBeforeReset;
-        onTitleChangeRef.current?.(titleBeforeReset);
-        return;
-      }
-      // A manual/AI title may have landed while reset was pending. Keep it
-      // authoritative instead of restoring the older projection.
-      firstUserTitleProjectionRef.current =
-        currentSessionTitleRef.current === 'New Chat'
-          ? titleProjectionBeforeReset
-          : 'established';
-    };
-
-    // 1. Clear frontend state immediately for responsive UI
-    setHistoryMessages([]);
-    resetPaginationState();
-    setStreamingMessage(null);
-    liveContextUsageSessionIdRef.current = null;
-    setContextUsage(null); // PRD 0.2.32 — 新会话无持久占用；仅清展示态（不碰后端持久数据）
-    setAgentPlanTodos(null);
-    setSdkSlashCommands([]);
-    seenIdsRef.current.clear();
-    liveRevisionFenceRef.current = {
-      ...EMPTY_LIVE_REVISION_FENCE,
-      restoreToken: liveRevisionFenceRef.current.restoreToken + 1,
-    };
-    publishPersistedRestoreLifecycle({
-      phase: 'inactive',
-      mode: 'initial',
-      sessionId: null,
-      restoreToken: liveRevisionFenceRef.current.restoreToken,
-      connectionGeneration: 0,
-      error: null,
-    });
-    isNewSessionRef.current = true;
-    resetBirthPendingRef.current = true;
-    resetBirthSessionIdRef.current = null;
-    clearSessionActive();
-    toolNameMapRef.current.clear();
-    // Pattern 3 §3.2.2 — reset delta buffers; stale fragments from a prior
-    // session must not leak into a fresh tool block keyed on a recycled id.
-    pendingTranscriptToolEventsRef.current = [];
-    if (transcriptToolRafRef.current !== null)
-      cancelAnimationFrame(transcriptToolRafRef.current);
-    transcriptToolRafRef.current = null;
-    pendingTextTargetRef.current = null;
-    pendingToolResultDeltasRef.current.clear();
-    pendingToolInputDeltasRef.current.clear();
-    pendingSubagentToolResultDeltasRef.current.clear();
-    pendingSubagentToolInputDeltasRef.current.clear();
-    // Reveal state is per-tab; a session swap/reset must not let a stale reveal loop or
-    // un-revealed pending text bleed into the next session. (Loop-stop is inlined rather
-    // than calling stopRevealLoop — these reset callbacks are declared before it, so
-    // referencing it in their dep arrays would be a TDZ error. Refs are safe in the body.
-    // Staleness of any already-enqueued commit is handled by the message-id guard.)
-    pendingTextRef.current = '';
-    if (revealRafRef.current != null) {
-      cancelAnimationFrame(revealRafRef.current);
-      revealRafRef.current = null;
-    }
-    revealAccRef.current = 0;
-    revealLastRef.current = 0;
-    adoptedStreamRef.current = false;
-    setIsLoading(false);
-    setSessionState('idle'); // Reset session state for new conversation
-    setSystemStatus(null);
-    setSystemNotice(null);
-    setAgentError(null);
-    setLastTerminalReason(null);
-    setUnifiedLogs([]);
-    setLogs([]);
-    setSessionMeta(null);
-    setSessionRuntimeSource(null);
-    setSystemInitInfo(null);
-    setMcpEffectiveSnapshot(null);
-    // Issue #194 (Codex review #6) — clear runtime diagnostics on reset so
-    // a stale Codex banner from the previous session doesn't leak into a
-    // new one (or a Tab that just switched to builtin runtime).
-    setRuntimeDiagnostics(null);
-    clearInteractiveState();
-    // NOTE: Do NOT clear currentSessionId here. The old session ID is the only way
-    // to find the ready sidecar port for the /chat/reset call. Once the backend
-    // returns its freshly-minted sessionId we adopt it immediately; chat:system-init
-    // remains the fallback confirmation path.
-
-    // Reset tab title so SortableTabItem falls back to folder name
-    currentSessionTitleRef.current = 'New Chat';
-    onTitleChangeRef.current?.('New Chat');
-
-    // 2. Tell backend to reset (this will also broadcast chat:init)
-    try {
-      const response = await postJson<{
-        success: boolean;
-        sessionId?: string;
-        error?: string;
-      }>('/chat/reset');
-      if (!response.success) {
-        isNewSessionRef.current = false;
-        resetBirthPendingRef.current = false;
-        resetBirthSessionIdRef.current = null;
-        restoreTitleAfterRejectedReset();
-        console.error(
-          `[TabProvider ${tabId}] resetSession failed:`,
-          response.error,
-        );
-        return false;
-      }
-      if (response.sessionId) {
-        resetBirthSessionIdRef.current = response.sessionId;
-        if (currentSessionIdRef.current !== response.sessionId) {
-          const previousSessionId = currentSessionIdRef.current;
-          console.log(
-            `[TabProvider ${tabId}] resetSession adopting backend sessionId: ${previousSessionId ?? 'none'} -> ${response.sessionId}`,
-          );
-          const relabeledAttachment = Boolean(
-            sseRef.current?.isActive() &&
-              attachedSseSessionIdRef.current === previousSessionId,
-          );
-          if (relabeledAttachment) {
-            attachedSseSessionIdRef.current = response.sessionId;
-          }
-          currentSessionIdRef.current = response.sessionId;
-          setCurrentSessionId(response.sessionId);
-          let changed: boolean | void;
-          try {
-            changed = await onSessionIdChangeRef.current?.(response.sessionId);
-          } catch (error) {
-            if (currentSessionIdRef.current === response.sessionId) {
-              currentSessionIdRef.current = previousSessionId;
-              setCurrentSessionId(previousSessionId);
-            }
-            if (
-              relabeledAttachment &&
-              attachedSseSessionIdRef.current === response.sessionId
-            ) {
-              attachedSseSessionIdRef.current = previousSessionId;
-            }
-            throw error;
-          }
-          if (changed === false) {
-            if (currentSessionIdRef.current === response.sessionId) {
-              currentSessionIdRef.current = previousSessionId;
-              setCurrentSessionId(previousSessionId);
-            }
-            if (
-              relabeledAttachment &&
-              attachedSseSessionIdRef.current === response.sessionId
-            ) {
-              attachedSseSessionIdRef.current = previousSessionId;
-            }
-            isNewSessionRef.current = false;
-            resetBirthPendingRef.current = false;
-            resetBirthSessionIdRef.current = null;
-            restoreTitleAfterRejectedReset();
-            console.error(
-              `[TabProvider ${tabId}] resetSession failed to upgrade parent session id to ${response.sessionId}`,
-            );
-            return false;
-          }
-        }
-      }
-      console.log(`[TabProvider ${tabId}] resetSession complete`);
-
-      // PRD 0.2.19 cross-review fix (B1): defer session_new tracking to
-      // chat:system-init. Tracking here used to pass `currentSessionIdRef.current`
-      // (intentionally still the OLD session id — see L574-580) as the new
-      // session's `session_id`, polluting analytics joins. Now we instead set
-      // a pending surface so the chat:system-init handler — which has the
-      // newly-minted id — tracks session_new with the right id.
-      //
-      // `isNewSessionRef.current` is already true (set above), which the
-      // organic-mint detector in chat:system-init uses to know that the
-      // upcoming id-change is an intentional reset (vs spurious sync).
-      firstUserTitleProjectionRef.current = null;
-      setPendingSessionBirth(tabId, birthContextForSurface('new_chat_button'));
-
-      return true;
-    } catch (error) {
-      isNewSessionRef.current = false;
-      resetBirthPendingRef.current = false;
-      resetBirthSessionIdRef.current = null;
-      restoreTitleAfterRejectedReset();
-      console.error(`[TabProvider ${tabId}] resetSession error:`, error);
-      return false;
-    }
-  }, [
-    tabId,
-    postJson,
-    setStreamingMessage,
-    setAgentError,
-    clearInteractiveState,
-    clearSessionActive,
-    resetPaginationState,
-    abortActiveRestoreRequest,
-    publishPersistedRestoreLifecycle,
-    setHistoryMessages,
-  ]);
-
   /**
    * Local-only session swap for the IM-handover "新对话保留绑定" flow.
    *
@@ -1889,7 +1678,9 @@ export default function TabProvider({
       setCurrentSessionId(newSessionId);
       let changed: boolean | void;
       try {
-        changed = await onSessionIdChangeRef.current?.(newSessionId, options);
+        changed = options
+          ? await onSessionIdChangeRef.current?.(newSessionId, options)
+          : await onSessionIdChangeRef.current?.(newSessionId);
       } catch (error) {
         resetBirthSessionIdRef.current = null;
         if (currentSessionIdRef.current === newSessionId) {
@@ -1935,6 +1726,48 @@ export default function TabProvider({
       setHistoryMessages,
     ],
   );
+
+  const resetSession = useCallback(async (): Promise<boolean> => {
+    const sourceId = currentSessionIdRef.current;
+    try {
+      const response = await postJson<{
+        success: boolean;
+        sessionId?: string;
+        error?: string;
+      }>('/chat/reset');
+      if (!response.success || !response.sessionId) {
+        throw new Error(response.error || 'Session reset failed');
+      }
+      if (
+        currentSessionIdRef.current !== sourceId &&
+        currentSessionIdRef.current !== response.sessionId
+      ) {
+        return false;
+      }
+      const adopted = await adoptMigratedSession(response.sessionId);
+      if (adopted) {
+        setPendingSessionBirth(tabId, birthContextForSurface('new_chat_button'));
+      }
+      return adopted;
+    } catch (error) {
+      console.error(`[TabProvider ${tabId}] resetSession error:`, error);
+      if (currentSessionIdRef.current !== sourceId) return false;
+      try {
+        const state = await apiGetJson<{ sessionId?: string }>('/api/session-state');
+        if (
+          state.sessionId &&
+          state.sessionId !== sourceId &&
+          currentSessionIdRef.current === sourceId
+        ) {
+          await adoptMigratedSession(state.sessionId);
+        }
+      } catch (reconcileError) {
+        console.warn(`[TabProvider ${tabId}] resetSession reconciliation failed:`, reconcileError);
+      }
+      setAgentError(error instanceof Error ? error.message : String(error));
+      return false;
+    }
+  }, [tabId, postJson, apiGetJson, adoptMigratedSession, setAgentError]);
 
   const trackSessionNewForBirth = useCallback(
     (
@@ -2481,7 +2314,7 @@ export default function TabProvider({
       // when React has not rendered their changes yet.
       setStreamingMessage((prev) => {
         if (!prev) {
-          clearSessionActive();
+          isStreamingRef.current = false;
           streamingMessageRef.current = null;
           return null;
         }
@@ -2499,7 +2332,7 @@ export default function TabProvider({
           seenIdsRef.current.add(finalMsg.id);
           return upsertMessageById(prevHistory, finalMsg);
         });
-        clearSessionActive();
+        isStreamingRef.current = false;
         streamingMessageRef.current = null;
         return null;
       });
@@ -2507,7 +2340,6 @@ export default function TabProvider({
     [
       flushPendingTextNow,
       flushAllPendingToolDeltas,
-      clearSessionActive,
       setStreamingMessage,
       setHistoryMessages,
     ],
@@ -2606,6 +2438,7 @@ export default function TabProvider({
   // Handle SSE events
   const applySseEvent = useCallback(
     (eventName: string, data: unknown) => {
+      if (eventName.startsWith('chat:') && eventName !== 'chat:log') executionObservationRef.current += 1;
       const isV2 =
         transcriptSessionIdRef.current !== null &&
         shouldAcceptInteractiveEvent(transcriptSessionIdRef.current);
@@ -3977,8 +3810,7 @@ export default function TabProvider({
             moveStreamingToHistory('completed', completionPatch);
             // Finalize the message in the same synchronous commit as the loading-state
             // cleanup so ultra-short one-chunk responses do not disappear between batches.
-            setIsLoading(false);
-            setSessionState('idle'); // Reset session state to idle
+            settleTurnActivity();
             setSystemStatus(null); // Clear system status (e.g., 'compacting') when message completes
             clearRuntimePlanTodos();
             // Do NOT clear agentError here — chat:agent-error is only emitted for terminal,
@@ -4144,8 +3976,7 @@ export default function TabProvider({
           flushSync(() => {
             // isStreamingRef.current set inside moveStreamingToHistory's updater
             moveStreamingToHistory('stopped');
-            setIsLoading(false);
-            setSessionState('idle'); // Reset session state to idle
+            settleTurnActivity();
             setSystemStatus(null); // Clear system status when user stops response
             clearRuntimePlanTodos();
           });
@@ -4174,8 +4005,7 @@ export default function TabProvider({
             if (errorMessage) {
               setAgentError(errorMessage);
             }
-            setIsLoading(false);
-            setSessionState('idle'); // Reset session state to idle on error
+            settleTurnActivity();
             setSystemStatus(null); // Clear system status on error
             clearRuntimePlanTodos();
           });
@@ -4824,6 +4654,8 @@ export default function TabProvider({
                 rootToolUseId: payload.rootToolUseId,
                 review: payload.review,
                 reviewRef: payload.reviewRef,
+                defaultToNo: payload.defaultToNo,
+                suppressAlwaysAllowRule: payload.suppressAlwaysAllowRule,
                 ...(payload.display === undefined
                   ? {}
                   : { display: payload.display }),
@@ -5260,6 +5092,9 @@ export default function TabProvider({
             if (isNewSessionRef.current && isCurrentSessionQueueStart) {
               isNewSessionRef.current = false;
             }
+            if (!payload.midTurnBreak && !startedQueueIdsRef.current.has(payload.queueId)) {
+              resetQueryElapsedClock();
+            }
             // Track started IDs to prevent sendMessage .then() from re-adding
             startedQueueIdsRef.current.add(payload.queueId);
             console.log(
@@ -5501,6 +5336,8 @@ export default function TabProvider({
       appendLog,
       appendUnifiedLog,
       tabId,
+      settleTurnActivity,
+      resetQueryElapsedClock,
       moveStreamingToHistory,
       beginFreshStreamIfNeeded,
       recoverStreamingUi,
@@ -5629,13 +5466,13 @@ export default function TabProvider({
   const connectSseTailRef = useRef<Promise<void> | null>(null);
   // Unmount guard for async attachment work.
   const isMountedRef = useRef(true);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
       isMountedRef.current = false;
       abortActiveRestoreRequest();
-    },
-    [abortActiveRestoreRequest],
-  );
+    };
+  }, [abortActiveRestoreRequest]);
 
   // Install one SSE subscription for the current Session. In Tauri mode
   // Rust owns transport lookup/retry; this layer owns only attachment and
@@ -6198,66 +6035,63 @@ export default function TabProvider({
     [tabId, sessionId, claimSessionOpeningTransition],
   );
 
-  // Stop response with timeout fallback
-  const stopResponse = useCallback(async (): Promise<{
-    success: boolean;
-    alreadyStopped: boolean;
-  }> => {
-    // Clear any existing stop timeout
-    if (stopTimeoutRef.current) {
-      clearTimeout(stopTimeoutRef.current);
-      stopTimeoutRef.current = null;
-    }
-
-    // Immediately show "stopping" state for instant user feedback
-    setSessionState('stopping');
-
-    try {
-      const response = await postJson<{
-        success: boolean;
-        alreadyStopped?: boolean;
-        error?: string;
-      }>('/chat/stop');
-      if (response.success) {
-        // Nothing was active — restore UI immediately, no need to wait for SSE.
-        // Also reset isLoading: the backend may have drained orphaned queued messages
-        // (queue:cancelled events will clean up queuedMessages), and the UI was stuck
-        // with isLoading=true because no chat:message-complete ever arrived.
-        if (response.alreadyStopped) {
-          flushSync(() => {
-            clearSessionActive();
-            setIsLoading(false);
-            setSessionState((prev) => (prev === 'stopping' ? 'idle' : prev));
-            clearRuntimePlanTodos();
-          });
-          return { success: true, alreadyStopped: true };
+    // Stop receipt/transport timing never decides the turn outcome.
+    const stopResponse = useCallback(async (): Promise<{ success: boolean; alreadyStopped: boolean }> => {
+        if (stopTimeoutRef.current) clearTimeout(stopTimeoutRef.current);
+        stopTimeoutRef.current = null;
+        const targetId = currentSessionIdRef.current;
+        const previousState = sessionState;
+        setSessionState('stopping');
+        const refreshState = async () => {
+            const observation = executionObservationRef.current;
+            const restoreToken = liveRevisionFenceRef.current.restoreToken;
+            const connection = sseRef.current?.getConnectionGeneration();
+            const isCurrent = () => currentSessionIdRef.current === targetId
+                && executionObservationRef.current === observation
+                && liveRevisionFenceRef.current.restoreToken === restoreToken
+                && sseRef.current?.getConnectionGeneration() === connection;
+            try {
+                const state = await apiGetJson<{
+                    sessionId?: string; sessionState: SessionState; isBusy: boolean;
+                    completionTerminal?: { status: 'complete' | 'stopped' | 'error' } | null;
+                }>('/api/session-state');
+                if (!isCurrent() || state.sessionId !== targetId) return;
+                setSessionState(state.sessionState);
+                isSessionActiveRef.current = state.isBusy;
+                setIsLoading(state.isBusy);
+                if (!state.isBusy && state.completionTerminal) {
+                    const status = state.completionTerminal.status;
+                    moveStreamingToHistory(status === 'complete' ? 'completed' : status === 'error' ? 'failed' : 'stopped');
+                    clearRuntimePlanTodos();
+                }
+            } catch (error) {
+                if (!isCurrent()) return;
+                // Keep the last execution projection, allow an explicit stop
+                // retry, and expose uncertainty rather than declaring idle.
+                setSessionState(prev => prev === 'stopping' ? previousState : prev);
+                setAgentError(error instanceof Error ? error.message : String(error));
+            }
+        };
+        try {
+            const response = await postJson<{ success: boolean; alreadyStopped?: boolean; error?: string }>('/chat/stop');
+            if (currentSessionIdRef.current !== targetId) return { success: false, alreadyStopped: false };
+            if (!response.success) throw new Error(response.error ?? 'Stop was not confirmed');
+            if (response.alreadyStopped) {
+                await refreshState();
+            } else {
+                stopTimeoutRef.current = setTimeout(() => {
+                    stopTimeoutRef.current = null;
+                    void refreshState();
+                }, 5000);
+            }
+            return { success: true, alreadyStopped: response.alreadyStopped === true };
+        } catch (error) {
+            console.error(`[TabProvider ${tabId}] Stop not confirmed:`, error);
+            await refreshState();
+            if (currentSessionIdRef.current === targetId) setAgentError(error instanceof Error ? error.message : String(error));
+            return { success: false, alreadyStopped: false };
         }
-        // 设置 5 秒超时，如果没有收到 SSE 事件确认则强制恢复 UI
-        stopTimeoutRef.current = setTimeout(() => {
-          if (isStreamingRef.current) {
-            console.warn(
-              `[TabProvider ${tabId}] Stop timeout - forcing UI recovery`,
-            );
-            recoverStreamingUi('stopped');
-          }
-          // Also recover from 'stopping' state if SSE confirmation never arrived
-          setSessionState((prev) => (prev === 'stopping' ? 'idle' : prev));
-          clearRuntimePlanTodos();
-          stopTimeoutRef.current = null;
-        }, 5000);
-        return { success: true, alreadyStopped: false };
-      }
-      // POST failed (success=false), recover UI
-      recoverStreamingUi('stopped');
-      return { success: false, alreadyStopped: false };
-    } catch (error) {
-      console.error(`[TabProvider ${tabId}] Stop response failed:`, error);
-      // 请求失败也强制恢复 UI
-      recoverStreamingUi('failed');
-      return { success: false, alreadyStopped: false };
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- postJson is stable
-  }, [recoverStreamingUi, tabId]);
+    }, [apiGetJson, postJson, tabId, sessionState, moveStreamingToHistory, clearRuntimePlanTodos, setAgentError]);
 
   // Read and project the current Tab's persisted Session. This internal
   // function accepts an explicit target only so fence-driven recovery can
@@ -6812,69 +6646,11 @@ export default function TabProvider({
           return;
         }
 
-        const last = historyMessagesRef.current.at(-1);
-        if (!last) {
-          // Empty tab view — fall through to a full load (first-time open).
-          console.log(
-            `[TabProvider ${tabId}] Cron complete on empty view, full load`,
-          );
-          restorePersistedSessionRef.current(internalSessionId, {
-            mode: 'live-recovery',
-          });
-          return;
-        }
-
-        try {
-          const resp = await apiGetJson<{
-            success: boolean;
-            fromIndex: number;
-            messages: WireSessionMessage[];
-          }>(
-            `/sessions/${encodeURIComponent(internalSessionId)}/since/${encodeURIComponent(last.id)}`,
-          );
-
-          if (!resp.success) return;
-
-          // Server couldn't locate our baseline (rewind / compaction /
-          // JSONL rewrite). Fall back to a full reload — still better
-          // than stale data.
-          if (resp.fromIndex === -1) {
-            console.log(
-              `[TabProvider ${tabId}] Cron complete, baseline lost, full reload`,
-            );
-            restorePersistedSessionRef.current(internalSessionId, {
-              mode: 'live-recovery',
-            });
-            return;
-          }
-
-          if (resp.messages.length === 0) return;
-
-          const appended = resp.messages.map(wireSessionMessageToMessage);
-
-          // Dedupe against any IDs already in history — guards against
-          // the rare race where SSE delivered the same message moments
-          // before cron:execution-complete fired.
-          setHistoryMessages((prev) => {
-            const known = new Set(prev.map((m) => m.id));
-            const fresh = appended.filter((m) => !known.has(m.id));
-            if (fresh.length === 0) return prev;
-            // Mark seen so any subsequent SSE replay skips them.
-            for (const m of fresh) seenIdsRef.current.add(m.id);
-            return [...prev, ...fresh];
-          });
-          console.log(
-            `[TabProvider ${tabId}] Cron incremental sync appended ${appended.length} message(s)`,
-          );
-        } catch (err) {
-          console.warn(
-            `[TabProvider ${tabId}] Incremental sync failed, falling back to full reload:`,
-            err,
-          );
-          restorePersistedSessionRef.current(internalSessionId, {
-            mode: 'live-recovery',
-          });
-        }
+        // Task completion invalidates persisted history. The restore owner
+        // fences late snapshots against Session replacement and rewind.
+        void restorePersistedSessionRef.current(internalSessionId, {
+          mode: 'live-recovery',
+        });
       },
       ac.signal,
     );
@@ -7211,16 +6987,14 @@ export default function TabProvider({
 
   // Respond to AskUserQuestion request
   const respondAskUserQuestion = useCallback(
-    async (answers: AskUserQuestionAnswers | null) => {
+    async (requestId: string, answers: AskUserQuestionAnswers | null) => {
       if (isRestoreActionBlocked(persistedRestoreLifecycleRef.current.phase)) {
         throw new Error(
           'Question response is unavailable while Session restore is unresolved',
         );
       }
-      if (!pendingAskUserQuestion)
+      if (pendingAskUserQuestion?.requestId !== requestId)
         throw new Error('Question request is no longer pending');
-
-      const requestId = pendingAskUserQuestion.requestId;
       console.log(
         `[TabProvider] AskUserQuestion response: ${answers ? 'submitted' : 'cancelled'}`,
       );

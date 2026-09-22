@@ -4,8 +4,9 @@ import { describe, expect, it } from 'vitest';
 import { ToastProvider, useToast } from '@/components/Toast';
 
 import {
-  classifyCodexRewindTransportOutcome,
-  projectCodexRewindRecovery,
+  classifyRewindTransportOutcome,
+  getConversationRejectionMessage,
+  projectRewindRecovery,
   type RewindResponse,
   warnRewindFileOutcome,
 } from './rewindFileOutcome';
@@ -40,30 +41,30 @@ describe('rewind file outcome warning', () => {
   });
 });
 
-describe('Codex rewind transport reconciliation', () => {
+describe('conversation transport reconciliation', () => {
   it('treats an absent target in restored authority as committed', () => {
-    expect(classifyCodexRewindTransportOutcome({
+    expect(classifyRewindTransportOutcome({
       restored: true,
       targetMessagePresent: false,
     })).toBe('committed');
   });
 
   it('treats a target still present in restored authority as unchanged', () => {
-    expect(classifyCodexRewindTransportOutcome({
+    expect(classifyRewindTransportOutcome({
       restored: true,
       targetMessagePresent: true,
     })).toBe('unchanged');
   });
 
   it('does not infer a result when authority could not be restored', () => {
-    expect(classifyCodexRewindTransportOutcome({
+    expect(classifyRewindTransportOutcome({
       restored: false,
       targetMessagePresent: null,
     })).toBe('unresolved');
   });
 
   it('does not infer deletion when the target presence probe is incomplete', () => {
-    expect(classifyCodexRewindTransportOutcome({
+    expect(classifyRewindTransportOutcome({
       restored: true,
       targetMessagePresent: null,
     })).toBe('target-unknown');
@@ -72,15 +73,28 @@ describe('Codex rewind transport reconciliation', () => {
   it.each([
     ['committed', false, false],
     ['unchanged', false, true],
-    ['target-unknown', false, true],
-    ['unresolved', true, true],
+    ['target-unknown', false, false],
+    ['unresolved', false, false],
   ] as const)(
     'projects %s without overwriting SessionStore authority',
     (outcome, restoreMessageSnapshot, restoreComposerSnapshot) => {
-      expect(projectCodexRewindRecovery(outcome)).toEqual({
+      expect(projectRewindRecovery(outcome)).toEqual({
         restoreMessageSnapshot,
         restoreComposerSnapshot,
       });
     },
   );
+});
+
+describe('explicit conversation rejections', () => {
+  const translate = (key: string) => key;
+  it.each(['unsupported_runtime', 'codex_update_required', 'anchor_unavailable'])('preserves %s instead of claiming an unknown outcome', errorCode => {
+    const error = Object.assign(new Error('known rejection'), { status: 400, errorCode });
+    expect(getConversationRejectionMessage(error, translate)).toBe(`shell.toasts.conversationError.${errorCode}`);
+  });
+  it('retains a concrete validation message and keeps transport/server failure ambiguous', () => {
+    expect(getConversationRejectionMessage(Object.assign(new Error('Invalid target'), { status: 400 }), translate)).toBe('Invalid target');
+    expect(getConversationRejectionMessage(new Error('Connection lost'), translate)).toBeNull();
+    expect(getConversationRejectionMessage(Object.assign(new Error('IO failed'), { status: 500 }), translate)).toBeNull();
+  });
 });

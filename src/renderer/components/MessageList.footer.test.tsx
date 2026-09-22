@@ -111,7 +111,7 @@ function ClockOwner({
   mounted?: boolean;
   waiting?: boolean;
 }) {
-  const getQueryElapsedSeconds = useQueryElapsedClock(
+  const { getElapsedSeconds: getQueryElapsedSeconds } = useQueryElapsedClock(
     props.isLoading,
     waiting,
     props.sessionId ?? null,

@@ -47,7 +47,11 @@ interface AskUserQuestionPromptProps {
  * AskUserQuestion prompt component - wizard-style multi-question form
  * Shows one question at a time with navigation between questions
  */
-export function AskUserQuestionPrompt({ request, onSubmit, onCancel }: AskUserQuestionPromptProps) {
+export function AskUserQuestionPrompt(props: AskUserQuestionPromptProps) {
+    return <AskUserQuestionForm key={props.request.requestId} {...props} />;
+}
+
+function AskUserQuestionForm({ request, onSubmit, onCancel }: AskUserQuestionPromptProps) {
     const { t } = useTranslation('chat');
     const [currentIndex, setCurrentIndex] = useState(0);
     const [answers, setAnswers] = useState<Record<number, string[]>>({});
