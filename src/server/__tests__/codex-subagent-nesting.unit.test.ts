@@ -887,6 +887,29 @@ describe('applyCodexSubAgentActivity (Codex 0.144.1 multi-agent v2)', () => {
     expect(correlation.subAgentActivitySeenBeforeTurnStart.size).toBe(0);
   });
 
+  it('ignores Codex 0.155 configuration updates without exposing raw data or changing subagent routing', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    const emit = vi.fn();
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    expect(parseNotification(correlation, 'rawResponseItem/completed', {
+      threadId: 'main',
+      turnId: 'root-turn',
+      item: { type: 'configuration_update', reasoning: { effort: 'ultra' } },
+    }, emit)).toBeNull();
+    expect(emit).not.toHaveBeenCalled();
+    expect(correlation.codexV2InteractionDeliveryByCallId.size).toBe(0);
+    expect(correlation.codexV2SubAgentActivityObserved).toBe(false);
+  });
+
   it('does not hold the root terminal for a raw-discriminated queue-only interaction', () => {
     const runtime = new CodexRuntime();
     const correlation = parserState();
