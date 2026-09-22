@@ -7,7 +7,7 @@ import { NO_CHANNEL_DELIVERY } from '../session-core/channel-delivery';
 import type { TurnTerminalOutcome } from '../session-core/turn-queue';
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
 
-const state = vi.hoisted(() => ({ home: '', failProductIo: false, publicationGate: null as Promise<void> | null, publicationBlocked: false, query: vi.fn(), sdkRead: vi.fn(), sdkFork: vi.fn(), sdkDelete: vi.fn(), rewindFiles: vi.fn(), beforeResult: vi.fn(), events: [] as [string, unknown][], queuedFollowup: false, exitWithoutResult: false, toolFrames: false, childFrames: false, media: vi.fn() }));
+const state = vi.hoisted(() => ({ home: '', failProductIo: false, publicationGate: null as Promise<void> | null, publicationBlocked: false, queryExitGate: null as Promise<void> | null, queryInputEnded: 0, backgroundTask: false, backgroundTaskGate: null as Promise<void> | null, independentInputPump: false, sdkInputs: [] as unknown[], resultMode: 'success' as 'success' | 'error', interruptCloses: false, throwAfterInputEnd: false, query: vi.fn(), sdkRead: vi.fn(), sdkFork: vi.fn(), sdkDelete: vi.fn(), rewindFiles: vi.fn(), beforeResult: vi.fn(), events: [] as [string, unknown][], queuedFollowup: false, exitWithoutResult: false, toolFrames: false, childFrames: false, media: vi.fn() }));
 vi.mock('os', async original => ({ ...await original<typeof import('os')>(), homedir: () => state.home }));
 vi.mock('../utils/fs-utils', async original => {
   const actual = await original<typeof import('../utils/fs-utils')>();
@@ -51,10 +51,16 @@ let notificationReceipts = false;
 
 function fakeQuery(args: { prompt: AsyncIterable<unknown>; options: { sessionId?: string; resume?: string } }) {
   const prompt = args.prompt[Symbol.asyncIterator]();
+  const pullInput = () => prompt.next().then(next => {
+    if (!next.done) state.sdkInputs.push(next.value);
+    return next;
+  });
+  let prefetchedInput = state.independentInputPump ? pullInput() : null;
   let close!: () => void;
   const closed = new Promise<void>(resolve => { close = resolve; });
   const pending: unknown[] = [];
   let turn = 0;
+  let backgroundTaskPending = false;
   const sessionId = args.options.sessionId ?? args.options.resume;
   if (!sessionId) throw new Error('SDK test transport requires a new or resumed Session identity');
   const iterator = {
@@ -64,6 +70,18 @@ function fakeQuery(args: { prompt: AsyncIterable<unknown>; options: { sessionId?
         if ((value as { type?: string })?.type === 'result') state.beforeResult();
         return { done: false, value };
       }
+      if (backgroundTaskPending) {
+        const outcome = await Promise.race([
+          Promise.resolve(state.backgroundTaskGate).then(() => 'complete' as const),
+          closed.then(() => 'closed' as const),
+        ]);
+        if (outcome === 'closed') return { done: true, value: undefined };
+        backgroundTaskPending = false;
+        return { done: false, value: {
+          type: 'system', subtype: 'task_notification', task_id: `background-${turn}`,
+          status: 'completed', summary: 'done', output_file: '',
+        } };
+      }
       if (state.exitWithoutResult && turn > 0) return { done: true, value: undefined };
       const followup = state.queuedFollowup && turn === 1;
       if (followup) {
@@ -72,8 +90,14 @@ function fakeQuery(args: { prompt: AsyncIterable<unknown>; options: { sessionId?
         queue.queueState.awaitingAssistantStartAckQueueId = 'queued-followup';
       }
       const next = followup ? { done: false, value: undefined }
-        : await Promise.race([prompt.next(), closed.then(() => ({ done: true as const, value: undefined }))]);
-      if (next.done) return { done: true, value: undefined };
+        : await Promise.race([prefetchedInput ?? pullInput(), closed.then(() => ({ done: true as const, value: undefined }))]);
+      if (next.done) {
+        state.queryInputEnded++;
+        await state.queryExitGate;
+        if (state.throwAfterInputEnd) throw new Error('synthetic query exit failure');
+        return { done: true, value: undefined };
+      }
+      if (state.independentInputPump) prefetchedInput = pullInput();
       turn++;
       const responseId = `response-${turn}`;
       const envelope = { session_id: sessionId, parent_tool_use_id: null };
@@ -94,6 +118,15 @@ function fakeQuery(args: { prompt: AsyncIterable<unknown>; options: { sessionId?
           total_cost_usd: 0, usage: { input_tokens: 4, output_tokens: 5 }, permission_denials: [],
         },
       );
+      if (state.resultMode === 'error') {
+        Object.assign(pending[pending.length - 1] as object, {
+          subtype: 'error_during_execution',
+          is_error: true,
+          result: 'synthetic provider failure',
+          errors: ['synthetic provider failure'],
+          terminal_reason: 'error_during_execution',
+        });
+      }
       if (state.toolFrames) {
         pending.splice(1, 0,
           assistant([{ type: 'tool_use', id: `tool-${turn}`, name: 'Read', input: { file_path: '/synthetic' } }], `tool-frame-${turn}`),
@@ -116,6 +149,13 @@ function fakeQuery(args: { prompt: AsyncIterable<unknown>; options: { sessionId?
           childStream({ type: 'content_block_stop', index: 0 }),
         );
       }
+      if (state.backgroundTask) {
+        pending.splice(pending.length - 1, 0, {
+          type: 'system', subtype: 'task_started', task_id: `background-${turn}`,
+          tool_use_id: `background-tool-${turn}`, description: 'background test task', task_type: 'agent',
+        });
+        backgroundTaskPending = true;
+      }
       if (state.exitWithoutResult) pending.pop();
       if (notificationReceipts) {
         // Receipts can precede output, or arrive after output but before its
@@ -130,7 +170,7 @@ function fakeQuery(args: { prompt: AsyncIterable<unknown>; options: { sessionId?
     },
     [Symbol.asyncIterator]() { return this; },
     initializationResult: async () => ({ commands: [] }),
-    interrupt: async () => undefined,
+    interrupt: async () => { if (state.interruptCloses) close(); },
     close,
     rewindFiles: state.rewindFiles,
     mcpServerStatus: async () => [],
@@ -148,6 +188,15 @@ beforeEach(async () => {
   state.failProductIo = false;
   state.publicationGate = null;
   state.publicationBlocked = false;
+  state.queryExitGate = null;
+  state.queryInputEnded = 0;
+  state.backgroundTask = false;
+  state.backgroundTaskGate = null;
+  state.independentInputPump = false;
+  state.sdkInputs.length = 0;
+  state.resultMode = 'success';
+  state.interruptCloses = false;
+  state.throwAfterInputEnd = false;
   state.queuedFollowup = false;
   state.exitWithoutResult = false;
   state.toolFrames = false;
@@ -276,7 +325,7 @@ describe('builtin V2 execution independent of product storage', () => {
     expect(agent.getMessages().map(row => row.id)).toEqual(rows.map(row => row.id));
   });
 
-  it('refuses an off-branch native rewind anchor before changing files, transcript, or metadata', async () => {
+  it('does not treat absence from the SDK single-chain projection as an invalid rewind boundary', async () => {
     const workspace = join(state.home, 'workspace');
     await mkdir(workspace);
     const metadata = await store.createSession(workspace, { runtime: 'builtin' });
@@ -294,19 +343,15 @@ describe('builtin V2 execution independent of product storage', () => {
     ]);
     await agent.initializeAgent(workspace, null, metadata.id, { preWarmDisabled: true });
 
-    const before = agent.getMessages().map(row => ({ ...row }));
     const result = await agent.rewindSession('u2');
 
-    expect(result).toMatchObject({
-      success: false,
-      error: expect.stringContaining('current native conversation branch'),
-    });
+    expect(result).toMatchObject({ success: true });
     expect(state.rewindFiles).not.toHaveBeenCalled();
-    expect(agent.getMessages()).toEqual(before);
-    expect(store.getSessionMetadata(metadata.id)?.sdkResumeSessionAt).toBeUndefined();
+    expect(agent.getMessages().map(row => row.id)).toEqual(['u1', 'a1']);
+    expect(store.getSessionMetadata(metadata.id)?.sdkResumeSessionAt).toBe('native-orphan-a1');
   });
 
-  it('blocks a previously persisted off-branch boundary before SDK launch without dropping it', async () => {
+  it('lets native Query adjudicate a persisted boundary absent from the SDK projection', async () => {
     const workspace = join(state.home, 'workspace');
     await mkdir(workspace);
     const metadata = await store.createSession(workspace, { runtime: 'builtin' });
@@ -329,12 +374,11 @@ describe('builtin V2 execution independent of product storage', () => {
     await agent.enqueueUserMessage('continue', [], undefined, undefined, undefined, undefined,
       undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
 
-    await vi.waitFor(() => expect(state.events).toContainEqual([
-      'chat:message-error',
-      expect.stringContaining('current native conversation branch'),
-    ]));
-    expect(state.query).not.toHaveBeenCalled();
-    expect(store.getSessionMetadata(metadata.id)?.sdkResumeSessionAt).toBe('native-orphan-a1');
+    await vi.waitFor(() => expect(state.query).toHaveBeenCalled());
+    expect(state.query.mock.calls.at(-1)?.[0].options.resumeSessionAt).toBe('native-orphan-a1');
+    await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
+    expect(store.getSessionMetadata(metadata.id)?.sdkResumeSessionAt).toBeUndefined();
+    expect(state.events.some(([name]) => name === 'chat:message-error')).toBe(false);
   });
 
   it('does not silently drop a persisted boundary when a legacy Product Session has no native identity', async () => {
@@ -653,7 +697,10 @@ describe('builtin V2 execution independent of product storage', () => {
     expect(await agent.rewindSession('u2')).toMatchObject({ success: true });
 
     expect(agent.getMessages().map(message => message.id)).toEqual(['u1', 'a1']);
-    expect(state.sdkRead).toHaveBeenCalledWith(source.id, expect.objectContaining({ dir: workspace }));
+    expect(store.getSessionMetadata(branch.id)).toMatchObject({
+      forkFrom: { sourceSessionId: source.id, messageUuid: 'native-a2' },
+      sdkResumeSessionAt: 'native-a1',
+    });
   });
 
 it('preserves completed file restoration when later transcript persistence fails', async () => {
@@ -758,6 +805,169 @@ it('admits the replay before a desktop send arriving during rewind', async () =>
   expect(await retry).toMatchObject({ success: true, retryQueued: true });
   expect(await competitor).toMatchObject({ success: true });
   await vi.waitFor(() => expect(agent.getMessages().filter(message => message.role === 'user').map(message => message.content)).toEqual(['original', 'competing send']));
+});
+
+it('publishes a rewound turn only after the native Query has materialized its selected head', async () => {
+  const workspace = join(state.home, 'workspace');
+  await mkdir(workspace);
+  const meta = await store.createSession(workspace, { runtime: 'builtin' });
+  state.queuedFollowup = true;
+  await agent.initializeAgent(workspace, null, meta.id, { preWarmDisabled: true });
+  const send = (text: string) => agent.enqueueUserMessage(text, [], undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
+  await send('original');
+  await vi.waitFor(() => expect(agent.getLastBuiltinAssistantText()).toBe('answer 2 full-only tail'));
+  await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
+  state.queuedFollowup = false;
+  expect(await agent.rewindSession(agent.getMessages()[2].id)).toMatchObject({ success: true });
+  expect(store.getSessionMetadata(meta.id)?.sdkResumeSessionAt).toBe('tail-frame-1');
+
+  state.queryInputEnded = 0;
+  state.queryExitGate = new Promise<void>(resolve => { releaseWrite = resolve; });
+  const completionsBeforeReplacement = state.events.filter(([event]) => event === 'chat:message-complete').length;
+  await send('replacement');
+  await vi.waitFor(() => expect(state.queryInputEnded).toBe(1));
+
+  // The native rows and SDK result already exist, but the Query has not yet
+  // exited and published its durable branch selector.
+  expect(store.getSessionMetadata(meta.id)?.sdkResumeSessionAt).toBe('tail-frame-1');
+  expect(state.events.filter(([event]) => event === 'chat:message-complete')).toHaveLength(completionsBeforeReplacement);
+  expect(agent.isSessionBusy()).toBe(true);
+
+  releaseWrite!();
+  releaseWrite = undefined;
+  await vi.waitFor(() => expect(store.getSessionMetadata(meta.id)?.sdkResumeSessionAt).toBeUndefined());
+  await vi.waitFor(() => expect(state.events.filter(([event]) => event === 'chat:message-complete'))
+    .toHaveLength(completionsBeforeReplacement + 1));
+  await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
+});
+
+it('waits for rewound Query background tasks before materializing the selected head', async () => {
+  const workspace = join(state.home, 'workspace');
+  await mkdir(workspace);
+  const meta = await store.createSession(workspace, { runtime: 'builtin' });
+  state.queuedFollowup = true;
+  await agent.initializeAgent(workspace, null, meta.id, { preWarmDisabled: true });
+  const send = (text: string) => agent.enqueueUserMessage(text, [], undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
+  await send('original');
+  await vi.waitFor(() => expect(agent.getLastBuiltinAssistantText()).toBe('answer 2 full-only tail'));
+  await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
+  state.queuedFollowup = false;
+  expect(await agent.rewindSession(agent.getMessages()[2].id)).toMatchObject({ success: true });
+
+  state.queryInputEnded = 0;
+  state.backgroundTask = true;
+  state.independentInputPump = true;
+  state.sdkInputs.length = 0;
+  state.backgroundTaskGate = new Promise<void>(resolve => { releaseWrite = resolve; });
+  const completionsBeforeReplacement = state.events.filter(([event]) => event === 'chat:message-complete').length;
+  const resultsBeforeReplacement = state.beforeResult.mock.calls.length;
+  await send('replacement');
+  await vi.waitFor(() => expect(state.events.some(([event]) => event === 'chat:task-started')).toBe(true));
+  await vi.waitFor(() => expect(state.beforeResult).toHaveBeenCalledTimes(resultsBeforeReplacement + 1));
+  await vi.waitFor(() => expect(state.sdkInputs).toHaveLength(1));
+
+  expect(state.queryInputEnded).toBe(0);
+  expect(store.getSessionMetadata(meta.id)?.sdkResumeSessionAt).toBe('tail-frame-1');
+  expect(state.events.filter(([event]) => event === 'chat:message-complete')).toHaveLength(completionsBeforeReplacement);
+
+  const successor = send('successor after replacement');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(state.sdkInputs).toHaveLength(1);
+
+  state.backgroundTask = false;
+  releaseWrite!();
+  releaseWrite = undefined;
+  await successor;
+  await vi.waitFor(() => expect(state.queryInputEnded).toBe(1));
+  await vi.waitFor(() => expect(store.getSessionMetadata(meta.id)?.sdkResumeSessionAt).toBeUndefined());
+  await vi.waitFor(() => expect(state.events.filter(([event]) => event === 'chat:message-complete'))
+    .toHaveLength(completionsBeforeReplacement + 1));
+});
+
+it('does not publish deferred rewind success when the Query is explicitly aborted', async () => {
+  const workspace = join(state.home, 'workspace');
+  await mkdir(workspace);
+  const meta = await store.createSession(workspace, { runtime: 'builtin' });
+  state.queuedFollowup = true;
+  await agent.initializeAgent(workspace, null, meta.id, { preWarmDisabled: true });
+  const send = (text: string) => agent.enqueueUserMessage(text, [], undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
+  await send('original');
+  await vi.waitFor(() => expect(agent.getLastBuiltinAssistantText()).toBe('answer 2 full-only tail'));
+  await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
+  state.queuedFollowup = false;
+  expect(await agent.rewindSession(agent.getMessages()[2].id)).toMatchObject({ success: true });
+
+  state.backgroundTask = true;
+  state.backgroundTaskGate = new Promise<void>(() => {});
+  state.interruptCloses = true;
+  const completionsBeforeReplacement = state.events.filter(([event]) => event === 'chat:message-complete').length;
+  const resultsBeforeReplacement = state.beforeResult.mock.calls.length;
+  await send('replacement');
+  await vi.waitFor(() => expect(state.events.some(([event]) => event === 'chat:task-started')).toBe(true));
+  await vi.waitFor(() => expect(state.beforeResult).toHaveBeenCalledTimes(resultsBeforeReplacement + 1));
+
+  await agent.resetSession();
+  expect(store.getSessionMetadata(meta.id)?.sdkResumeSessionAt).toBe('tail-frame-1');
+  expect(state.events.filter(([event]) => event === 'chat:message-complete')).toHaveLength(completionsBeforeReplacement);
+});
+
+it('retains the rewind boundary when native Query exit fails after a successful result', async () => {
+  const workspace = join(state.home, 'workspace');
+  await mkdir(workspace);
+  const meta = await store.createSession(workspace, { runtime: 'builtin' });
+  state.queuedFollowup = true;
+  await agent.initializeAgent(workspace, null, meta.id, { preWarmDisabled: true });
+  const send = (text: string) => agent.enqueueUserMessage(text, [], undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
+  await send('original');
+  await vi.waitFor(() => expect(agent.getLastBuiltinAssistantText()).toBe('answer 2 full-only tail'));
+  await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
+  state.queuedFollowup = false;
+  expect(await agent.rewindSession(agent.getMessages()[2].id)).toMatchObject({ success: true });
+
+  state.throwAfterInputEnd = true;
+  const completionsBeforeReplacement = state.events.filter(([event]) => event === 'chat:message-complete').length;
+  await send('replacement');
+  await vi.waitFor(() => expect(state.events.some(([event]) => event === 'chat:message-error')).toBe(true));
+
+  expect(store.getSessionMetadata(meta.id)?.sdkResumeSessionAt).toBe('tail-frame-1');
+  expect(state.events.filter(([event]) => event === 'chat:message-complete')).toHaveLength(completionsBeforeReplacement);
+});
+
+it('retires a rewound Query after an SDK error result and lets a new Query recover the retained boundary', async () => {
+  const workspace = join(state.home, 'workspace');
+  await mkdir(workspace);
+  const meta = await store.createSession(workspace, { runtime: 'builtin' });
+  state.queuedFollowup = true;
+  await agent.initializeAgent(workspace, null, meta.id, { preWarmDisabled: true });
+  const send = (text: string) => agent.enqueueUserMessage(text, [], undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
+  await send('original');
+  await vi.waitFor(() => expect(agent.getLastBuiltinAssistantText()).toBe('answer 2 full-only tail'));
+  await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
+  state.queuedFollowup = false;
+  expect(await agent.rewindSession(agent.getMessages()[2].id)).toMatchObject({ success: true });
+
+  state.independentInputPump = true;
+  state.sdkInputs.length = 0;
+  state.queryInputEnded = 0;
+  state.resultMode = 'error';
+  await send('replacement fails');
+
+  await vi.waitFor(() => expect(state.events.some(([event]) => event === 'chat:agent-error')).toBe(true));
+  await vi.waitFor(() => expect(state.queryInputEnded).toBe(1));
+  expect(store.getSessionMetadata(meta.id)?.sdkResumeSessionAt).toBe('tail-frame-1');
+  expect(state.sdkInputs).toHaveLength(1);
+
+  state.independentInputPump = false;
+  state.resultMode = 'success';
+  await send('replacement succeeds on a fresh Query');
+  await vi.waitFor(() => expect(state.query).toHaveBeenCalledTimes(3));
+  expect(state.query.mock.calls.at(-1)?.[0].options.resumeSessionAt).toBe('tail-frame-1');
+  await vi.waitFor(() => expect(store.getSessionMetadata(meta.id)?.sdkResumeSessionAt).toBeUndefined());
 });
 
 it('settles the rewind boundary before a successful turn triggers a deferred restart', async () => {
