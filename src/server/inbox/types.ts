@@ -9,12 +9,14 @@ import type { SessionEvent } from './session-event';
 /// Inbox message kind — request (initial dispatch), reply (turn-end pushback),
 /// or event (system-delivered watch/status event).
 export type InboxMessageKind = 'request' | 'reply' | 'event';
+export type InboxSourceKind = 'internal-session' | 'external-cli';
 
 /// Pending inbox message — body shape for POST /api/inbox/deliver +
 /// POST /api/inbox/drain. Stays in sync with Rust `PendingInboxMessage`.
 export interface PendingInboxMessage {
   messageId: string;
-  fromSessionId: string;
+  sourceKind?: InboxSourceKind;
+  fromSessionId?: string;
   fromLabel: string;
   toSessionId: string;
   /** Prompt text — naming matches Rust `text` field (transport-level neutral) */
@@ -59,6 +61,7 @@ export type DeliverOutcome =
   | { status: 'delivered'; message_id: string }
   | { status: 'session_not_found' }
   | { status: 'delivery_failed'; reason: string }
+  | { status: 'unconfirmed'; reason: string }
   | { status: 'rejected'; reason: string };
 
 /// Snippet for in_reply_to — limit to 40 chars, preserves user-readable hint

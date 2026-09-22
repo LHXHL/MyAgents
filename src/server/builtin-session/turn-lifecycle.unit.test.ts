@@ -543,10 +543,12 @@ describe('turn-lifecycle owner', () => {
       scheduleTransientProviderRetry: vi.fn(() => true),
     });
     const lifecycle = createBuiltinTurnLifecycle(deps);
-
-    await lifecycle.handleSdkResult(makeResult({
+    const transientResult = makeResult({
       result: '[Error]: Concurrency limit exceeded for account, please retry later',
-    }));
+    });
+
+    expect(lifecycle.canMaterializeRewindResult(transientResult)).toBe(false);
+    await expect(lifecycle.handleSdkResult(transientResult)).resolves.toBe('retrying');
 
     expect(deps.retractTransientProviderTextOutput).toHaveBeenCalledWith(
       '[Error]: Concurrency limit exceeded for account, please retry later',

@@ -338,7 +338,7 @@ fn path_is_inside_managed_skill_root(
         .unwrap_or(false)
 }
 
-fn metadata_is_link_like(metadata: &fs::Metadata) -> bool {
+pub(crate) fn metadata_is_link_like(metadata: &fs::Metadata) -> bool {
     if metadata.file_type().is_symlink() {
         return true;
     }

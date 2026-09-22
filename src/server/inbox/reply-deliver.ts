@@ -16,6 +16,7 @@
 
 import { randomUUID } from 'crypto';
 import { cancellableFetch } from '../utils/cancellation';
+import { managementRequestHeaders } from '../utils/management-api-client';
 import { sanitizeInboxLabel } from './sanitize-label';
 import { deriveSessionLabel } from './derive-label';
 import { getSessionMetadata, getSessionData } from '../SessionStore';
@@ -132,7 +133,7 @@ export async function deliverInboxReply(
       `http://127.0.0.1:${managementPort}/api/inbox/deliver`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: managementRequestHeaders(),
         body: JSON.stringify({
           message,
           resumeWorkspacePath,

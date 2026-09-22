@@ -93,7 +93,9 @@ import { getSessionEngine } from './session-engine';
 import { getSessionsByAgentDir, isHistoryVisibleSession } from './SessionStore';
 import {
   agentWorkspaceIdentityFailure,
+  registerWorkspaceAgent,
   resolvePersistedAgentWorkspaceRegistry,
+  resolvePersistedAgentWorkspaceConflict,
   type PersistedAgentWorkspaceProjection,
 } from './utils/agent-workspace-identity';
 import { buildProactiveAgentTogglePatch } from '../shared/proactiveAgentPolicy';
@@ -1555,6 +1557,27 @@ export async function handleModelRemove(payload: {
 // Agent Handlers
 // ---------------------------------------------------------------------------
 
+export async function handleAgentCreate(payload: {
+  workspacePath?: string;
+}): Promise<AdminResponse> {
+  const workspacePath = typeof payload.workspacePath === 'string'
+    ? payload.workspacePath.trim()
+    : '';
+  if (!workspacePath) {
+    return {
+      success: false,
+      code: 'WORKSPACE_PATH_REQUIRED',
+      error: 'agent create requires --workspacePath <absolute-path>.',
+    };
+  }
+  try {
+    const result = await registerWorkspaceAgent(workspacePath);
+    return { success: true, data: result };
+  } catch (error) {
+    return agentWorkspaceIdentityFailure(error);
+  }
+}
+
 function findProjectForAgent(
   projects: ProjectSlim[],
   agent: AgentConfigSlim,
@@ -1637,7 +1660,37 @@ export async function handleAgentList(
           })),
         };
       });
-    return { success: true, data: agents };
+    return {
+      success: true, data: agents,
+      ...(registry.diagnostics.length ? {
+        diagnostics: registry.diagnostics.map(item => ({ ...item,
+          projects: registry.projects.filter(project => item.projectIds.includes(project.id))
+            .map(({ id, name, path }) => ({ id, name, path })),
+        })),
+        hint: 'Some Agents have workspace identity conflicts. Open Settings → Chatbots to resolve them; healthy Agents remain available.',
+      } : {}),
+    };
+  } catch (error) {
+    return agentWorkspaceIdentityFailure(error);
+  }
+}
+
+export async function handleAgentResolveConflict(payload: {
+  agentId?: string; keepProjectId?: string; expectedClaims?: Array<{ id: string; path: string }>;
+}): Promise<AdminResponse> {
+  if (typeof payload.agentId !== 'string' || !payload.agentId || typeof payload.keepProjectId !== 'string' || !payload.keepProjectId || !Array.isArray(payload.expectedClaims)
+    || payload.expectedClaims.length < 2 || payload.expectedClaims.some(item => !item || typeof item.id !== 'string' || typeof item.path !== 'string')) {
+    return { success: false, error: 'Choose a workspace from the current conflict before repairing.' };
+  }
+  try {
+    await resolvePersistedAgentWorkspaceConflict({
+      agentId: payload.agentId, keepProjectId: payload.keepProjectId, expectedClaims: payload.expectedClaims,
+    }, async () => {
+      const stopped = await managementApi('/api/agent/stop-channels', 'POST', { agentId: payload.agentId },
+        { timeoutMs: AGENT_LIFECYCLE_LOOPBACK_TIMEOUT_MS });
+      if (stopped.ok !== true) throw new Error(String(stopped.error ?? 'Could not stop the Agent. No ownership changes were applied.'));
+    });
+    return { success: true, hint: 'Workspace ownership repaired. Restart MyAgents before continuing existing sessions.' };
   } catch (error) {
     return agentWorkspaceIdentityFailure(error);
   }
@@ -2426,6 +2479,12 @@ export async function handleAgentChannelRemove(payload: {
 export function handleConfigGet(payload: { key: string }): AdminResponse {
   const { key } = payload;
   if (!key) return { success: false, error: 'Missing required field: key' };
+  if (key.split('.')[0] === 'externalCliAccess') {
+    return {
+      success: false,
+      error: "'externalCliAccess' is private App-owned state. Use Settings → External Calls.",
+    };
+  }
 
   const config = loadConfig();
   const value = getNestedValue(config, key);
@@ -2470,6 +2529,7 @@ export async function handleConfigSet(payload: {
     'mcpServerArgs',
     'imBotConfigs',
     'cliToolEnv',
+    'externalCliAccess',
   ];
   const rootKey = key.split('.')[0];
   if (protectedKeys.includes(rootKey)) {
@@ -4890,6 +4950,12 @@ export async function handleCronStop(payload: {
 }): Promise<AdminResponse> {
   const reject = await verifyCronTaskOwnership(payload.taskId);
   if (reject) return reject;
+  return handleTaskStop(payload);
+}
+
+export async function handleTaskStop(payload: {
+  taskId: string;
+}): Promise<AdminResponse> {
   const resp = await managementApi('/api/cron/stop', 'POST', payload);
   return wrapMgmtResponse(resp);
 }
@@ -4899,6 +4965,12 @@ export async function handleCronStart(payload: {
 }): Promise<AdminResponse> {
   const reject = await verifyCronTaskOwnership(payload.taskId);
   if (reject) return reject;
+  return handleTaskStart(payload);
+}
+
+export async function handleTaskStart(payload: {
+  taskId: string;
+}): Promise<AdminResponse> {
   const resp = await managementApi('/api/cron/run', 'POST', payload);
   return wrapMgmtResponse(resp);
 }
@@ -4988,6 +5060,13 @@ export async function handleCronRuns(payload: {
 }): Promise<AdminResponse> {
   const reject = await verifyCronTaskOwnership(payload.taskId);
   if (reject) return reject;
+  return handleTaskRuns(payload);
+}
+
+export async function handleTaskRuns(payload: {
+  taskId: string;
+  limit?: number;
+}): Promise<AdminResponse> {
   const qs = `?taskId=${encodeURIComponent(payload.taskId)}${payload.limit ? `&limit=${payload.limit}` : ''}`;
   const resp = await managementApi(`/api/cron/runs${qs}`);
   if (resp.ok) {
@@ -5237,7 +5316,7 @@ function resolveTaskWorkspace(
         recoveryHint: {
           recoveryCommand: 'myagents agent current --json',
           message:
-            'Pass both --workspaceId and --workspacePath only for an explicit cross-workspace operation.',
+            'Pass --workspaceId or --workspacePath from a visible Project-backed Agent workspace.',
         },
       },
     };
@@ -7790,6 +7869,34 @@ export async function handleSessionList(payload: {
     workspacePath: identity.workspacePath,
     limit,
   };
+}
+
+export async function handleSessionGet(payload: {
+  sessionId?: unknown;
+  limit?: unknown;
+  before?: unknown;
+}): Promise<AdminResponse> {
+  const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId.trim() : '';
+  if (!sessionId) {
+    return { success: false, code: 'SESSION_ID_REQUIRED', error: 'session get requires <sessionId>.' };
+  }
+  try {
+    const { readSessionTextPage } = await import('./session-text-projection');
+    return await readSessionTextPage({
+      sessionId,
+      ...(payload.limit === undefined ? {} : { limit: Number(payload.limit) }),
+      ...(typeof payload.before === 'string' && payload.before.trim()
+        ? { before: payload.before.trim() }
+        : {}),
+    }) as AdminResponse;
+  } catch (error) {
+    const projectionError = error as { code?: string; message?: string };
+    return {
+      success: false,
+      code: projectionError.code ?? 'SESSION_READ_FAILED',
+      error: projectionError.message ?? String(error),
+    };
+  }
 }
 
 /** Type guard for `runtime` string coming from CLI payloads. */

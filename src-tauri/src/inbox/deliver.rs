@@ -10,7 +10,7 @@
 //      - 无 resume_workspace_path → 返回 SessionNotFound
 //   3. HTTP POST `/api/inbox/drain` (via local_http) body 携带 message
 //   4. HTTP 2xx + drain accepted → Delivered
-//   5. HTTP 非 2xx / 网络错误 → DeliveryFailed
+//   5. 显式 accepted=false → Rejected；无法确认 ACK → Unconfirmed(External CLI)
 //
 // fire-and-forget 设计:失败由 caller AI 自决重试,不做 at-least-once 重试,
 // 不在 sidecar 上保留队列(早期版本里 SessionSidecar.pending_inbox_messages
@@ -24,7 +24,7 @@ use tauri::AppHandle;
 use crate::sidecar::{ManagedSidecarManager, SidecarOwner};
 use crate::{ulog_error, ulog_info, ulog_warn};
 
-use super::types::PendingInboxMessage;
+use super::types::{InboxSourceKind, PendingInboxMessage};
 
 /// Drain handler 投递结果(对应 sidecar /api/inbox/drain 的响应)
 #[derive(Debug, Serialize, Deserialize)]
@@ -47,6 +47,8 @@ pub enum DeliverOutcome {
     SessionNotFound,
     /// HTTP 投递失败(网络/sidecar 5xx 等)
     DeliveryFailed { reason: String },
+    /// Request may have reached the target, but no valid acknowledgement was read.
+    Unconfirmed { reason: String },
     /// Target sidecar 拒绝接收(例如 external runtime busy)
     Rejected { reason: String },
 }
@@ -56,7 +58,10 @@ pub enum DeliverOutcome {
 pub struct FreshSessionStartRequest {
     pub agent_id: String,
     pub workspace_path: String,
-    pub from_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_session_id: Option<String>,
+    #[serde(default)]
+    pub source_kind: InboxSourceKind,
     pub from_label: String,
     pub prompt: String,
     pub reply_back: bool,
@@ -107,37 +112,38 @@ async fn http_post_drain(port: u16, message: &PendingInboxMessage) -> DeliverOut
 
     match client
         .post(&url)
+        .header(
+            crate::external_cli::INTERNAL_TOKEN_HEADER,
+            crate::external_cli::internal_token(),
+        )
         .json(&serde_json::json!({ "messages": [message] }))
         .send()
         .await
     {
         Ok(resp) => {
             let status = resp.status();
-            if status.is_success() {
-                match resp.json::<DrainResponse>().await {
-                    Ok(drain_resp) if !drain_resp.accepted => {
-                        let reason = drain_resp.reason.unwrap_or_else(|| "unknown".to_string());
-                        ulog_warn!(
-                            "[inbox] target accepted HTTP but rejected message {}: {}",
-                            message_id,
-                            reason
-                        );
-                        DeliverOutcome::Rejected { reason }
-                    }
-                    _ => {
-                        ulog_info!("[inbox] delivered msg_id={} (port {})", message_id, port);
-                        DeliverOutcome::Delivered { message_id }
-                    }
+            let acknowledgement = resp
+                .json::<DrainResponse>()
+                .await
+                .map_err(|error| error.to_string());
+            let outcome = drain_ack_outcome(message, status.as_u16(), acknowledgement);
+            match &outcome {
+                DeliverOutcome::Delivered { .. } => {
+                    ulog_info!("[inbox] delivered msg_id={} (port {})", message_id, port)
                 }
-            } else {
-                let reason = format!("HTTP {}", status.as_u16());
-                ulog_warn!(
-                    "[inbox] delivery failed: {} (msg_id={})",
-                    reason,
-                    message_id
-                );
-                DeliverOutcome::DeliveryFailed { reason }
+                DeliverOutcome::Rejected { reason } => ulog_warn!(
+                    "[inbox] target rejected message {} with HTTP {}: {}",
+                    message_id,
+                    status.as_u16(),
+                    reason
+                ),
+                DeliverOutcome::Unconfirmed { reason }
+                | DeliverOutcome::DeliveryFailed { reason } => {
+                    ulog_warn!("[inbox] {} (msg_id={})", reason, message_id)
+                }
+                DeliverOutcome::SessionNotFound => {}
             }
+            outcome
         }
         Err(e) => {
             let reason = format!("network error: {}", e);
@@ -147,8 +153,43 @@ async fn http_post_drain(port: u16, message: &PendingInboxMessage) -> DeliverOut
                 e,
                 message_id
             );
-            DeliverOutcome::DeliveryFailed { reason }
+            ambiguous_delivery_outcome(message, reason)
         }
+    }
+}
+
+fn ambiguous_delivery_outcome(
+    message: &PendingInboxMessage,
+    reason: String,
+) -> DeliverOutcome {
+    if message.source_kind == InboxSourceKind::ExternalCli {
+        DeliverOutcome::Unconfirmed { reason }
+    } else {
+        DeliverOutcome::DeliveryFailed { reason }
+    }
+}
+
+fn drain_ack_outcome(
+    message: &PendingInboxMessage,
+    status: u16,
+    acknowledgement: Result<DrainResponse, String>,
+) -> DeliverOutcome {
+    match acknowledgement {
+        Ok(DrainResponse {
+            accepted: false,
+            reason,
+        }) => DeliverOutcome::Rejected {
+            reason: reason.unwrap_or_else(|| "unknown".to_string()),
+        },
+        Ok(DrainResponse { accepted: true, .. }) if (200..300).contains(&status) => {
+            DeliverOutcome::Delivered {
+                message_id: message.message_id.clone(),
+            }
+        }
+        Ok(_) | Err(_) => ambiguous_delivery_outcome(
+            message,
+            format!("delivery acknowledgement was not confirmed (HTTP {status})"),
+        ),
     }
 }
 
@@ -161,6 +202,10 @@ async fn http_post_fresh_start(
     let client = crate::local_http::json_client(Duration::from_secs(30));
     let response = client
         .post(&url)
+        .header(
+            crate::external_cli::INTERNAL_TOKEN_HEADER,
+            crate::external_cli::internal_token(),
+        )
         .json(&serde_json::json!({
             "agentId": agent_id,
             "message": message
@@ -190,13 +235,27 @@ pub async fn start_fresh_session(
     request: FreshSessionStartRequest,
 ) -> FreshSessionStartOutcome {
     let session_id = uuid::Uuid::new_v4().to_string();
-    let message = PendingInboxMessage::new_request(
-        request.from_session_id,
-        request.from_label,
-        session_id.clone(),
-        request.prompt,
-        request.reply_back,
-    );
+    let message = if request.source_kind == InboxSourceKind::ExternalCli {
+        PendingInboxMessage::new_external_request(session_id.clone(), request.prompt.clone())
+    } else {
+        let Some(from_session_id) = request.from_session_id.clone() else {
+            return FreshSessionStartOutcome {
+                status: "rejected".to_string(),
+                agent_id: request.agent_id,
+                session_id,
+                message_id: uuid::Uuid::new_v4().to_string(),
+                reply_back: request.reply_back,
+                reason: Some("internal fresh Session request requires a source Session".to_string()),
+            };
+        };
+        PendingInboxMessage::new_request(
+            from_session_id,
+            request.from_label.clone(),
+            session_id.clone(),
+            request.prompt.clone(),
+            request.reply_back,
+        )
+    };
     let message_id = message.message_id.clone();
     let owner_id = format!("inbox-start-{}", uuid::Uuid::new_v4());
     let transient_owner = SidecarOwner::Agent(owner_id);
@@ -382,7 +441,7 @@ where
     ulog_info!(
         "[inbox] delivering kind={:?} from={} to={} reply_back={} msg_id={} transient_owner={}",
         message.kind,
-        message.from_session_id,
+        message.from_session_id.as_deref().unwrap_or("external-cli"),
         to_sid,
         message.reply_back,
         message.message_id,
@@ -439,21 +498,28 @@ where
     };
 
     let outcome = http_post_drain(port, &message).await;
-    start_headless_completion_if_delivered(app_handle, manager, &to_sid, &outcome);
+    start_headless_completion_if_admitted(app_handle, manager, &to_sid, &outcome);
     release_transient_owner(manager, &to_sid, &transient_owner).await;
     outcome
 }
 
-fn start_headless_completion_if_delivered(
+fn start_headless_completion_if_admitted(
     app_handle: &AppHandle,
     manager: &ManagedSidecarManager,
     session_id: &str,
     outcome: &DeliverOutcome,
 ) {
-    if !matches!(outcome, DeliverOutcome::Delivered { .. }) {
+    if !should_start_headless_completion(outcome) {
         return;
     }
     start_headless_completion(app_handle, manager, session_id);
+}
+
+fn should_start_headless_completion(outcome: &DeliverOutcome) -> bool {
+    matches!(
+        outcome,
+        DeliverOutcome::Delivered { .. } | DeliverOutcome::Unconfirmed { .. }
+    )
 }
 
 fn start_headless_completion(
@@ -515,7 +581,8 @@ mod tests {
         let request = FreshSessionStartRequest {
             agent_id: "agent-1".to_string(),
             workspace_path: "/workspace".to_string(),
-            from_session_id: "source-session".to_string(),
+            from_session_id: Some("source-session".to_string()),
+            source_kind: InboxSourceKind::InternalSession,
             from_label: "Source Agent".to_string(),
             prompt: "Review this".to_string(),
             reply_back: true,
@@ -527,9 +594,35 @@ mod tests {
                 "agentId": "agent-1",
                 "workspacePath": "/workspace",
                 "fromSessionId": "source-session",
+                "sourceKind": "internal-session",
                 "fromLabel": "Source Agent",
                 "prompt": "Review this",
                 "replyBack": true,
+            })
+        );
+    }
+
+    #[test]
+    fn fresh_external_start_has_no_source_session_or_reply_channel() {
+        let request = FreshSessionStartRequest {
+            agent_id: "agent-1".to_string(),
+            workspace_path: "/workspace".to_string(),
+            from_session_id: None,
+            source_kind: InboxSourceKind::ExternalCli,
+            from_label: "External CLI".to_string(),
+            prompt: "Review this".to_string(),
+            reply_back: false,
+        };
+
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({
+                "agentId": "agent-1",
+                "workspacePath": "/workspace",
+                "sourceKind": "external-cli",
+                "fromLabel": "External CLI",
+                "prompt": "Review this",
+                "replyBack": false,
             })
         );
     }
@@ -564,6 +657,27 @@ mod tests {
 
         assert_eq!(parsed.accepted, Some(false));
         assert_eq!(parsed.reason.as_deref(), Some("runtime rejected dispatch"));
+
+        let message = PendingInboxMessage::new_external_request(
+            "target".to_string(),
+            "work".to_string(),
+        );
+        assert!(matches!(
+            drain_ack_outcome(
+                &message,
+                409,
+                Ok(DrainResponse {
+                    accepted: false,
+                    reason: Some("runtime rejected dispatch".to_string()),
+                }),
+            ),
+            DeliverOutcome::Rejected { reason }
+                if reason == "runtime rejected dispatch"
+        ));
+        assert!(matches!(
+            drain_ack_outcome(&message, 200, Err("invalid body".to_string())),
+            DeliverOutcome::Unconfirmed { .. }
+        ));
     }
 
     #[test]
@@ -580,6 +694,40 @@ mod tests {
             parsed.reason.as_deref(),
             Some("termination could not be confirmed")
         );
+    }
+
+    #[test]
+    fn only_external_cli_delivery_ambiguity_uses_unconfirmed_outcome() {
+        let external = PendingInboxMessage::new_external_request(
+            "target".to_string(),
+            "work".to_string(),
+        );
+        assert!(matches!(
+            ambiguous_delivery_outcome(&external, "ack lost".to_string()),
+            DeliverOutcome::Unconfirmed { .. }
+        ));
+
+        let internal = PendingInboxMessage::new_request(
+            "source".to_string(),
+            "Source".to_string(),
+            "target".to_string(),
+            "work".to_string(),
+            true,
+        );
+        assert!(matches!(
+            ambiguous_delivery_outcome(&internal, "ack lost".to_string()),
+            DeliverOutcome::DeliveryFailed { .. }
+        ));
+        assert!(should_start_headless_completion(
+            &DeliverOutcome::Unconfirmed {
+                reason: "ack lost".to_string()
+            }
+        ));
+        assert!(!should_start_headless_completion(
+            &DeliverOutcome::Rejected {
+                reason: "busy".to_string()
+            }
+        ));
     }
 
     #[test]

@@ -6,10 +6,11 @@ import { DEFAULT_CONFIG, PROXY_DEFAULTS, PRESET_PROVIDERS, type AppConfig } from
 import { ConfigProvider } from './ConfigProvider';
 import { useConfigActions } from './useConfigActions';
 import { useConfigData } from './useConfigData';
+import type { atomicModifyConfig } from './services/appConfigService';
 
 const mocks = vi.hoisted(() => ({
     invoke: vi.fn(),
-    atomicModifyConfig: vi.fn(),
+    atomicModifyConfig: vi.fn<typeof atomicModifyConfig>(),
     platform: 'darwin-aarch64',
     loadAppConfig: vi.fn(),
     loadProjects: vi.fn(),
@@ -77,7 +78,7 @@ describe('ConfigProvider Managed Codex startup update lifecycle', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         mocks.platform = 'darwin-aarch64';
-        mocks.atomicModifyConfig.mockImplementation(async (modify: (config: object) => object) => modify({}));
+        mocks.atomicModifyConfig.mockImplementation(async modify => modify({ ...DEFAULT_CONFIG }));
         mocks.loadProjects.mockResolvedValue([]);
         mocks.loadAppConfig.mockImplementation(async () => ({
             ...DEFAULT_CONFIG,
@@ -157,8 +158,8 @@ describe('ConfigProvider Managed Codex startup update lifecycle', () => {
             proxySettings: { ...PROXY_DEFAULTS, enabled: true, scope: { mode: 'custom', generalRequests: false, providerIds: ['codex-sub'] } },
         };
         mocks.loadAppConfig.mockImplementation(async () => disk);
-        mocks.atomicModifyConfig.mockImplementation(async (modify: (config: AppConfig) => AppConfig) => {
-            disk = modify(disk);
+        mocks.atomicModifyConfig.mockImplementation(async modify => {
+            disk = await modify(disk);
             return disk;
         });
         function EditProbe() {

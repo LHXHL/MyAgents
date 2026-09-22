@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AdminAppConfig, ProjectSlim } from './admin-config';
 
@@ -29,13 +31,13 @@ vi.mock('./admin-config', async importOriginal => {
         release();
       }
     }),
-    atomicModifyProjects: vi.fn(async (modify: (projects: ProjectSlim[]) => ProjectSlim[]) => {
+    atomicModifyProjects: vi.fn(async (modify: (projects: ProjectSlim[]) => ProjectSlim[] | Promise<ProjectSlim[]>) => {
       state.writes.push('projects');
       if (state.failProjectOnce) {
         state.failProjectOnce = false;
         throw new Error('projects write interrupted');
       }
-      state.projects = modify(state.projects);
+      state.projects = await modify(state.projects);
       return state.projects;
     }),
     atomicModifyConfig: vi.fn(async (modify: (config: AdminAppConfig) => AdminAppConfig) => {
@@ -50,7 +52,11 @@ vi.mock('./admin-config', async importOriginal => {
   };
 });
 
-import { resolvePersistedAgentWorkspaceRegistry } from './agent-workspace-identity';
+import {
+  registerWorkspaceAgent,
+  resolvePersistedAgentWorkspaceRegistry,
+  resolvePersistedAgentWorkspaceConflict,
+} from './agent-workspace-identity';
 
 function project(overrides: Partial<ProjectSlim> = {}): ProjectSlim {
   return {
@@ -62,6 +68,8 @@ function project(overrides: Partial<ProjectSlim> = {}): ProjectSlim {
 }
 
 describe('persisted Agent workspace identity', () => {
+  let tempWorkspace: string | null = null;
+
   beforeEach(() => {
     state.config = { defaultPermissionMode: 'auto', agents: [] };
     state.projects = [project()];
@@ -69,6 +77,76 @@ describe('persisted Agent workspace identity', () => {
     state.failProjectOnce = false;
     state.failConfigOnce = false;
     state.lockTail = Promise.resolve();
+  });
+
+  afterEach(() => {
+    if (tempWorkspace) rmSync(tempWorkspace, { recursive: true, force: true });
+    tempWorkspace = null;
+  });
+
+  function workspace(): string {
+    tempWorkspace ??= mkdtempSync(
+      join(process.cwd(), '.myagents-agent-register-'),
+    );
+    return tempWorkspace;
+  }
+
+  function conflict() {
+    state.projects = [project({ agentId: 'shared' }), project({ id: 'split', path: '/other', agentId: 'shared', hidden: true }),
+      project({ id: 'unrelated', path: '/unrelated' })];
+    state.config.agents = [{ id: 'shared', name: 'Original', enabled: false, channels: [{ id: 'channel', type: 'telegram', enabled: false, botToken: 'preserve' }] }];
+    return { agentId: 'shared', keepProjectId: 'project-1', expectedClaims: state.projects.slice(0, 2).map(({ id, path }) => ({ id, path })) };
+  }
+
+  it('stops while claims are still ambiguous and commits only the chosen group using latest config', async () => {
+    const choice = conflict();
+    const stop = vi.fn(async () => {
+      expect(state.projects.filter(p => p.agentId === 'shared')).toHaveLength(2);
+      state.config.agents![0].name = 'Latest';
+    });
+    await resolvePersistedAgentWorkspaceConflict(choice, stop);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(state.writes).toEqual(['projects', 'config']);
+    expect(state.projects[0].agentId).toBe('shared');
+    expect(state.projects[1]).toMatchObject({ hidden: true });
+    expect(state.projects[1].agentId).not.toBe('shared');
+    expect(state.projects[2].agentId).toBeUndefined();
+    expect(state.config.agents![0]).toMatchObject({ name: 'Latest', channels: [{ id: 'channel', botToken: 'preserve' }] });
+  });
+
+  it('does not change claims when stopping fails or the choice is stale', async () => {
+    const choice = conflict();
+    await expect(resolvePersistedAgentWorkspaceConflict(choice, async () => { throw new Error('cannot stop'); })).rejects.toThrow('cannot stop');
+    expect(state.projects.filter(p => p.agentId === 'shared')).toHaveLength(2);
+    const stop = vi.fn();
+    state.projects[1].path = '/changed';
+    await expect(resolvePersistedAgentWorkspaceConflict(choice, stop)).rejects.toThrow('Refresh');
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it('reports incomplete materialization, then normal reconciliation reuses the saved independent ID', async () => {
+    const choice = conflict();
+    state.projects[1].templateId = 'mino';
+    state.projects[1].templateSource = 'builtin';
+    state.failConfigOnce = true;
+    await expect(resolvePersistedAgentWorkspaceConflict(choice, async () => {})).rejects.toMatchObject({ code: 'AGENT_MATERIALIZATION_DEFERRED' });
+    const independentId = state.projects[1].agentId;
+    expect(independentId).not.toBe('shared');
+    expect(state.config.agents).toHaveLength(1);
+    await resolvePersistedAgentWorkspaceRegistry();
+    expect(state.config.agents!.filter(a => a.id === independentId)).toHaveLength(1);
+    expect(state.projects[1].agentId).toBe(independentId);
+    expect(state.config.agents!.find(a => a.id === independentId)?.channels).toEqual([]);
+    expect(state.config.agents!.find(a => a.id === independentId)?.heartbeat?.enabled).toBe(true);
+  });
+
+  it('does not write Agent config when the Project write fails', async () => {
+    const choice = conflict();
+    const before = structuredClone({ config: state.config, projects: state.projects });
+    state.failProjectOnce = true;
+    await expect(resolvePersistedAgentWorkspaceConflict(choice, vi.fn())).rejects.toThrow('projects write interrupted');
+    expect({ config: state.config, projects: state.projects }).toEqual(before);
+    expect(state.writes).toEqual(['projects']);
   });
 
   it('commits Project.agentId before creating the pathless Agent record', async () => {
@@ -176,5 +254,108 @@ describe('persisted Agent workspace identity', () => {
       workspacePath: '/repo/current',
     });
     expect(result.createdAgentIds).toEqual([]);
+  });
+
+  it('registers an existing absolute directory Project-first and is idempotent', async () => {
+    state.projects = [];
+
+    const first = await registerWorkspaceAgent(workspace());
+    const lastOpened = state.projects[0].lastOpened;
+    const second = await registerWorkspaceAgent(workspace());
+
+    expect(first).toMatchObject({
+      created: true,
+      workspacePath: workspace(),
+      archived: false,
+    });
+    expect(second).toMatchObject({
+      created: false,
+      projectId: first.projectId,
+      agentId: first.agentId,
+      workspacePath: workspace(),
+    });
+    expect(state.projects).toHaveLength(1);
+    expect(state.config.agents).toHaveLength(1);
+    expect(state.projects[0].lastOpened).toBe(lastOpened);
+  });
+
+  it('serializes concurrent registration to one Project and Agent identity', async () => {
+    state.projects = [];
+
+    const [first, second] = await Promise.all([
+      registerWorkspaceAgent(workspace()),
+      registerWorkspaceAgent(workspace()),
+    ]);
+
+    expect(first.agentId).toBe(second.agentId);
+    expect(first.projectId).toBe(second.projectId);
+    expect(state.projects).toHaveLength(1);
+    expect(state.config.agents?.map((agent) => agent.id)).toEqual([
+      first.agentId,
+    ]);
+  });
+
+  it('reuses the committed Project identity after an interrupted Agent materialization', async () => {
+    state.projects = [];
+    state.failConfigOnce = true;
+
+    await expect(registerWorkspaceAgent(workspace())).rejects.toMatchObject({
+      code: 'AGENT_MATERIALIZATION_DEFERRED',
+    });
+    const committedAgentId = state.projects[0].agentId;
+    const retried = await registerWorkspaceAgent(workspace());
+
+    expect(retried.agentId).toBe(committedAgentId);
+    expect(state.projects).toHaveLength(1);
+    expect(state.config.agents?.map((agent) => agent.id)).toEqual([
+      committedAgentId,
+    ]);
+  });
+
+  it('reuses a legacy path-backed Agent id when creating its Project selector', async () => {
+    const workspacePath = workspace();
+    state.projects = [];
+    state.config = {
+      defaultPermissionMode: 'auto',
+      agents: [
+        {
+          id: 'legacy-agent',
+          name: 'Legacy',
+          enabled: false,
+          workspacePath,
+        } as unknown as NonNullable<AdminAppConfig['agents']>[number],
+      ],
+    };
+
+    const result = await registerWorkspaceAgent(workspacePath);
+
+    expect(result.agentId).toBe('legacy-agent');
+    expect(state.projects).toEqual([
+      expect.objectContaining({ agentId: 'legacy-agent', path: workspacePath }),
+    ]);
+    expect(state.config.agents).toHaveLength(1);
+  });
+
+  it('fails closed for invalid, non-directory, and archived workspaces', async () => {
+    await expect(registerWorkspaceAgent('relative/path')).rejects.toMatchObject(
+      {
+        code: 'WORKSPACE_PATH_NOT_ABSOLUTE',
+      },
+    );
+    const file = join(workspace(), 'file.txt');
+    writeFileSync(file, 'not a directory');
+    await expect(registerWorkspaceAgent(file)).rejects.toMatchObject({
+      code: 'WORKSPACE_PATH_NOT_DIRECTORY',
+    });
+    await expect(registerWorkspaceAgent('/etc')).rejects.toMatchObject({
+      code: 'WORKSPACE_PATH_UNSAFE',
+    });
+
+    state.projects = [
+      project({ path: workspace(), archivedAt: '2026-09-19T00:00:00.000Z' }),
+    ];
+    await expect(registerWorkspaceAgent(workspace())).rejects.toMatchObject({
+      code: 'WORKSPACE_ARCHIVED',
+    });
   });
 });

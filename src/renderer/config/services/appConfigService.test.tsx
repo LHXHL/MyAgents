@@ -3,6 +3,7 @@ import {
   atomicModifyConfig,
   CONFIG_CHANGED_EVENT,
   ensureManagedCodexProviderDevGateDefault,
+  loadAppConfig,
 } from './appConfigService';
 
 // Issue #303: env-only edits (e.g. user saves MINERU_API_KEY via Settings) used
@@ -55,6 +56,21 @@ describe('atomicModifyConfig — CONFIG_CHANGED_EVENT dispatch (issue #303)', ()
     expect(received.length).toBe(1);
     // Only the trigger reason — never the secret-bearing payload.
     expect(Object.keys(received[0] ?? {})).toEqual(['reason']);
+  });
+
+  it('keeps the Rust-owned external CLI token out of the ordinary AppConfig projection', async () => {
+    localStorage.setItem('myagents:config', JSON.stringify({
+      defaultPermissionMode: 'auto',
+      externalCliAccess: {
+        enabled: true,
+        token: 'must-not-enter-react-state',
+        createdAt: '2026-09-19T00:00:00.000Z',
+      },
+    }));
+
+    const loaded = await loadAppConfig();
+
+    expect(loaded).not.toHaveProperty('externalCliAccess');
   });
 
   it('does NOT dispatch when the modifier returns an unchanged config (no-op write)', async () => {

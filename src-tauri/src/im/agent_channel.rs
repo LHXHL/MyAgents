@@ -282,17 +282,7 @@ pub(crate) async fn stop_agent_channels_runtime(
     sidecar_manager: &ManagedSidecarManager,
     agent_id: &str,
 ) -> Result<usize, String> {
-    let durable_ids = super::config_store::read_agent_configs_from_disk()
-        .into_iter()
-        .find(|agent| agent.id == agent_id)
-        .map(|agent| {
-            agent
-                .channels
-                .into_iter()
-                .map(|channel| channel.id)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let durable_ids = super::config_store::read_agent_channel_ids_from_disk(agent_id)?;
     let live_ids = {
         let guard = agent_state.lock().await;
         guard
@@ -607,7 +597,7 @@ pub(super) async fn restart_agent_channel_instance<R: Runtime>(
     let lifecycle_lock = agent_channel_lifecycle_lock(agent_id, channel_id);
     let _lifecycle_guard = lifecycle_lock.lock().await;
 
-    let Some((_, _, config)) =
+    let Ok((_, _, config)) =
         super::config_store::current_agent_channel_start_config(agent_id, channel_id)
     else {
         return Ok(false);

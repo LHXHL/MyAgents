@@ -146,7 +146,7 @@ MCP pre-warm 是 soft readiness observation，不是 AI turn 的 admission autho
 | Fork | 创建新 identity | 先建立精确 native 分支，再发布完整产品历史与独立附件 |
 | Retry | 保持原 identity | 同一 mutation 内先 Rewind，再通过普通 desktop admission 接纳原输入；接纳成功不等于 turn 成功 |
 
-Builtin Rewind 以完整保留前缀末条消息的 native chain UUID 为边界，包括 user；非空前缀缺少锚点时在文件副作用前失败，只有空前缀才分配新的 SDK execution identity。边界通过既有 mutation intent 与 `sdkResumeSessionAt` metadata 一起提交，在新一轮成功后、terminal 配置重启前解除。锚点被拒绝时保留边界并报告失败，不能清除锚点、恢复更长历史或自动重放。文件恢复仍使用现有 Query 的 `rewindFiles`；standalone SDK fork 不携带 undo 历史，不能用它替换 builtin Rewind。旧记录的 `reloadAnchor` 只在加载时推导，优先级低于显式回溯边界；它不是另一份持久化状态或 Session identity。
+Builtin Rewind 以完整保留前缀末条消息的 native chain UUID 为边界，包括 user；非空前缀缺少锚点时在文件副作用前失败，只有空前缀才分配新的 SDK execution identity。UUID 出现在 Product transcript、原始 SDK JSONL 或 SDK `getSessionMessages()` 的单链投影中，都不能证明它位于 native runtime 当前可恢复分支；同样，缺席该投影也不能证明它无效，因为投影按物理记录选择 leaf，而 CLI resume 使用 durable selected head。Query 启动是 native resumability 的唯一裁决；拒绝时保留显式边界并报告失败，不能清除锚点、恢复更长历史或自动重放。边界通过既有 mutation intent 与 `sdkResumeSessionAt` metadata 一起提交；新一轮成功后先正常结束该 Query，让 native runtime 发布新的 selected head，再解除边界并发布 Product terminal，配置重启只能发生在此后。已有坏锚点通过从更早、仍可由 native runtime 接受的消息重新 Rewind / Retry 覆盖恢复。文件恢复仍使用现有 Query 的 `rewindFiles`；standalone SDK fork 不携带 undo 历史，不能用它替换 builtin Rewind。旧记录的 `reloadAnchor` 只在加载时推导，优先级低于显式回溯边界；它不是另一份持久化状态或 Session identity。
 
 新 Fork 统一先实体化 native history，builtin 同时映射 SDK UUID；完整执行配置复用 `snapshotForForkedSession`，不手工挑字段。Fork 不继承 source 的 Agent origin、Goal、置顶或 Tag。旧 lazy fork 通过记录的 binding/source 解析真实 native 来源，允许尚未启动的旧分支继续 fork；新请求不再生成 lazy fork 或通过设置切回旧路径。prepared 发布、附件复制和清理见 [V2 transcript](session_transcript_v2.md#生命周期与显式操作)。
 
@@ -174,14 +174,16 @@ Goal 的详细产品行为和 Task/Goal provider routing 见 [`task_center.md`](
 
 ### 5.2 Session Inbox 与事件
 
-`myagents session start/send/watch` 使用结构化 session event，不是普通文本拼接。事件经 Admin/Management API 投递到目标 Session 的既有 Inbox/SessionEngine admission，并放在隐藏的 `system-reminder` envelope 中；来自其它 Session 的正文必须 neutralize 协议标签。
+`myagents session start/send/watch` 使用结构化 session event，不是普通文本拼接。事件经 Admin/Management API 投递到目标 Session 的既有 Inbox/SessionEngine admission，并放在隐藏的 `system-reminder` envelope 中；来自其它 Session 的正文必须 neutralize 协议标签。wire protocol 以 `sourceKind` 显式区分 `internal-session` 与 `external-cli`：前者要求真实 `fromSessionId` 并可回投，后者没有来源 Session 且不注册 reply，不能用空串或用户 payload 猜来源。
 
 - `send.request` 投递工作；Renderer 只把它的可见 payload 投影为用户气泡；
 - `send.result` 在目标 turn terminal 后回传结果；
 - `watch` 根据注册时的真实 activity 返回 already-idle、completed 或 error；未确认投递成功前不能清理 pending watch；
 - Task Comment 复用同一 Inbox 与 Session FIFO，但通过 task-specific event 和显式回复命令回写 Task，不自动复制普通 assistant 输出。
 
-backend-created target 只有在 Runtime dispatch claim 成功后才发布 prepared Session；ACK 不明时保留 identity，不能自动重试导致重复执行。
+backend-created target 只有在 Runtime dispatch claim 成功后才发布 prepared Session；ACK 不明时保留 identity，不能自动重试导致重复执行。`session start/send` 的每一层外部 timeout 都大于内层 owner/ACK timeout；transport error、成功状态但不可解析的 ACK 和外层超时统一是 `admission_unconfirmed`，只有明确拒绝才是 definitive failure。
+
+`myagents session get` 不进入 Inbox、不唤醒 Runtime，也不创建 turn。它按 message id 合并持久 snapshot、活跃内存与 streaming overlay，先严格投影 user/assistant 的可见顶层 text，再执行 `before`/`limit` 分页；疑似结构化 assistant 内容只要解析或 block schema 异常就 fail closed，工具、思考、隐藏 reminder 和无 text 结构块绝不回退为原始 JSON。Rust 在 owner transport 或响应体失败时释放旧 dispatch、重新解析当前 owner 并只重试一次；最终错误保留 `SESSION_OWNER_UNAVAILABLE` 与 `SESSION_OWNER_INVALID_RESPONSE` 的区别。锚点只在可读文本序列内成立，失效时明确报错，避免静默重复或漏读。
 
 ### 5.3 Registered Agent origin
 

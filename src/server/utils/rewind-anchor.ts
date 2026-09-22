@@ -22,8 +22,10 @@ export interface ReloadAnchorMessage {
  *    that pending turn out of the SDK history. Explicit rewind can retain a user
  *    tail and supplies its own persisted boundary instead of this inference.
  *  - the tail has an `sdkUuid` (the native chain entry for the displayed message).
- *  - that uuid is known-valid (`currentSessionUuids`) — decision 4, so we don't send
- *    a guaranteed-stale anchor and eat a doomed resume + restart.
+ *  - that uuid was observed for this Product transcript (`currentSessionUuids`).
+ *    This is only a cheap candidate filter: the Runtime owner must still validate
+ *    the candidate against `getSessionMessages()`, because native resumability is
+ *    relative to the SDK's selected parentUuid chain.
  *
  * No-op by construction in the normal case: when the tail == the SDK's newest leaf,
  * slicing the reconstructed chain at the tail returns the whole chain.

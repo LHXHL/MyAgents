@@ -170,7 +170,8 @@ export type BuiltinTurnLifecycleDeps = {
 };
 
 export type BuiltinTurnLifecycle = {
-  handleSdkResult: (resultMessage: BuiltinSdkResultMessage) => Promise<void>;
+  canMaterializeRewindResult: (resultMessage: BuiltinSdkResultMessage) => boolean;
+  handleSdkResult: (resultMessage: BuiltinSdkResultMessage) => Promise<'retrying' | 'terminal'>;
   completeTurn: (
     durationMs?: number,
     terminalError?: string,
@@ -479,7 +480,40 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     return completionTerminal;
   };
 
-  const handleSdkResult = async (resultMessage: BuiltinSdkResultMessage): Promise<void> => {
+  const canMaterializeRewindResult = (resultMessage: BuiltinSdkResultMessage): boolean => {
+    const terminalDisposition = classifyBuiltinSdkTerminalResult({
+      isError: resultMessage.is_error,
+      terminalReason: resultMessage.terminal_reason,
+    });
+    if (terminalDisposition !== 'complete' || deps.getIsInterruptingResponse()) return false;
+
+    const transientRetryDecision = decideTransientProviderTextRetry({
+      resultText: resultMessage.result || '',
+      isError: false,
+      isAbortResult: false,
+      apiErrorStatus: 'api_error_status' in resultMessage ? resultMessage.api_error_status ?? null : null,
+      toolUseCount: getCurrentTurnToolCount(),
+      currentAttempt: deps.getCurrentTransientProviderRetryAttempt(),
+    });
+    if (transientRetryDecision.error) return false;
+
+    const usage = extractTurnUsageFromSdkResult(resultMessage);
+    const emptySuccessfulResult = isEmptySuccessfulSdkResult({
+      isError: false,
+      result: resultMessage.result || '',
+      terminalReason: resultMessage.terminal_reason,
+      hasVisibleOutput: hasCurrentTurnOutput(),
+      toolCount: getCurrentTurnToolCount(),
+      outputTokens: usage.outputTokens,
+    });
+    return !emptySuccessfulResult || isSuccessfulCompactControlTurn({
+      emptySuccessfulResult,
+      compactResult: getCurrentTurnCompactResult(),
+      sawCompactBoundary: sawCompactBoundary(),
+    });
+  };
+
+  const handleSdkResult = async (resultMessage: BuiltinSdkResultMessage): Promise<'retrying' | 'terminal'> => {
     deps.resetInFlightToolCount();
     deps.resetWatchdogFired();
 
@@ -513,7 +547,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
           `auto-retry ${transientRetryDecision.attempt}/${transientRetryDecision.maxRetries} ` +
           `in ${transientRetryDecision.delayMs}ms`,
         );
-        return;
+        return 'retrying';
       }
       console.warn('[agent][transient-provider-text] retry requested but no safe current turn source was available');
       terminalTransientProviderError = transientRetryDecision.error;
@@ -543,7 +577,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       );
       deps.handleTerminalRecovery(undefined);
       deps.applyDeferredRestartIfNeeded();
-      return;
+      return 'terminal';
     }
 
     if (isTerminalFailure || isAbortResult) {
@@ -841,9 +875,11 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     deps.probeForkPersistenceIfReady(resultMessage);
     deps.handleTerminalRecovery(terminalRecoveryReason);
     deps.applyDeferredRestartIfNeeded();
+    return 'terminal';
   };
 
   return {
+    canMaterializeRewindResult,
     handleSdkResult,
     completeTurn,
     stopTurn,

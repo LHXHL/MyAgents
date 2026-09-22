@@ -351,7 +351,8 @@ impl<'a> TaskApplication<'a> {
         }
         let message = crate::inbox::PendingInboxMessage {
             message_id: comment.id.clone(),
-            from_session_id: format!("task:{}", comment.task_id),
+            from_session_id: Some(format!("task:{}", comment.task_id)),
+            source_kind: crate::inbox::InboxSourceKind::InternalSession,
             from_label: "Task comment".to_string(),
             to_session_id: target_session_id,
             text: comment.body.clone(),
@@ -377,6 +378,7 @@ impl<'a> TaskApplication<'a> {
                 Some("Target Session no longer exists".to_string()),
             ),
             crate::inbox::deliver::DeliverOutcome::DeliveryFailed { reason }
+            | crate::inbox::deliver::DeliverOutcome::Unconfirmed { reason }
             | crate::inbox::deliver::DeliverOutcome::Rejected { reason } => {
                 (TaskCommentAdmissionState::Failed, Some(reason))
             }

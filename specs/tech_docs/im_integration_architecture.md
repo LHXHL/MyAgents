@@ -36,6 +36,16 @@ channel.enabled
 
 兼容迁移由Rust config owner在admission前、config lock内幂等执行。marker只表示迁移已提交，不得在后续读取时反复覆盖用户对Agent主动能力或Channel开关的修改。
 
+### 2.1 Project 归属冲突与旧 Bot 迁移
+
+同一 Agent 被多个 Project 显式声明时，隐藏、归档 Project 也计入冲突。运行投影拒绝该 Agent，但不影响其它健康 Agent。发现入口必须同时返回诊断，不能把“不可安全运行”伪装成“没有配置”；CLI list 保留健康条目并显示诊断，设置 → 聊天机器人与工作区通用设置展示冲突路径。
+
+旧 `imBotConfigs` 转换由 Renderer 启动维护在既有 intent → projects → config 锁内执行，归属选择只使用共享 `reconcileAgentWorkspaceIdentities`。不能按历史 `Agent.workspacePath` 直接认领已被其它 Project 占用的 Agent。不能明确映射、不能表达相同运行配置、或渠道 ID/凭据归属不明确的旧 Bot 原样保留；不得再按凭据指纹全局清理这些残留。
+
+GUI 只修复“多个其它方面有效的 Project 声明同一 Agent”这一种冲突：用户明确选保留方，提交看到的 claim id/path 快照；服务端持 intent/projects 锁重读校验，先通过 Rust 现有 stop-channels 收敛关联运行，再写 Project 归属。stop 的锁集合来自原始持久渠道 ID 与 live 实例的并集，不能依赖已经因冲突被过滤的运行投影，否则会漏掉尚未发布的启动。
+
+保留方的 Agent ID、配置和渠道不变；其余 Project 只撤销冲突声明，再走标准出生/协调路径（可复用独立 legacy Agent，不复制原渠道）。目录、Session 和隐藏/归档元数据不动；新配置遵循模板默认值，包括 Mino 主动能力，因此确认框提前说明。Project-first 写入中断沿标准协调恢复，不增加事务日志或恢复 flag；未完成不能报告成功。已有 Session 不热改身份，允许用户重启应用。重复 ID、重复路径等其它损坏只诊断，不做通用合并或重绑定。
+
 ## 3. Channel lifecycle
 
 用户启用/停用渠道走 `cmd_set_agent_channel_enabled`：在既有 Channel lifecycle lock 内，经配置锁更新磁盘最新 `enabled`，再执行对应连接启动/停止。配置意图已保存但连接处理失败时返回错误，UI 刷新配置并显示失败，不能静默声称停用完成。停止入口根据「已启用或仍在线/连接中」提供，不能因连接失败而让用户无法取消自动重连；连接状态单独展示，不替代 enabled 意图。内部临时重连与删除仍用 runtime lifecycle 入口，不改写用户的 enabled 意图。

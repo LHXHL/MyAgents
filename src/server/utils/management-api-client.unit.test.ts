@@ -19,6 +19,7 @@ describe('resolveManagedOAuthCredential', () => {
     vi.stubEnv('MYAGENTS_MANAGEMENT_PORT', '31415');
     vi.stubEnv('MYAGENTS_SIDECAR_GENERATION', '7');
     vi.stubEnv('MYAGENTS_SIDECAR_ID', '__global__');
+    vi.stubEnv('MYAGENTS_INTERNAL_CLI_TOKEN', 'internal-capability');
     vi.stubEnv('MYAGENTS_SESSION_ID', 'stale-product-session');
     mocks.cancellableFetch.mockResolvedValue(new Response(JSON.stringify({
       ok: true,
@@ -44,6 +45,7 @@ describe('resolveManagedOAuthCredential', () => {
     expect(url).toBe('http://127.0.0.1:31415/api/grok/bearer');
     expect(options.headers).toMatchObject({
       'X-MyAgents-Sidecar-Generation': '7',
+      'x-myagents-internal-cli-token': 'internal-capability',
     });
     expect(JSON.parse(String(options.body))).toEqual({
       sidecarId: '__global__',

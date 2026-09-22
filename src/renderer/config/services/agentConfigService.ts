@@ -39,7 +39,7 @@ import {
   type AgentWorkspaceIdentityDiagnostic,
   type ResolvedAgentWorkspaceProjection,
 } from '../../../shared/agentWorkspaceIdentity';
-import { readLegacyAgentWorkspacePath, readLegacyImBotWorkspacePath } from '../../../shared/legacyAgentWorkspace';
+import { readLegacyImBotWorkspacePath } from '../../../shared/legacyAgentWorkspace';
 import { buildProactiveAgentTogglePatch } from '../../../shared/proactiveAgentPolicy';
 
 export {
@@ -143,9 +143,8 @@ export function migrateImBotConfigsToAgents(config: AppConfig, projects: Project
     groups.set(key, group);
   }
 
-  const agents = [...(config.agents ?? [])];
+  let agents = [...(config.agents ?? [])];
   const remainingBots: ImBotConfig[] = [];
-  const claimedChannelIds = new Set(agents.flatMap(agent => (agent.channels ?? []).map(channel => channel.id)));
   let migratedCount = 0;
 
   for (const [workspaceKey, groupBots] of groups) {
@@ -158,15 +157,10 @@ export function migrateImBotConfigsToAgents(config: AppConfig, projects: Project
       continue;
     }
     const project = matchingProjects[0];
-    let agent = project.agentId ? agents.find(candidate => candidate.id === project.agentId) : undefined;
-    if (!agent) {
-      agent = agents.find(candidate => (
-        normalizeWorkspacePathIdentity(readLegacyAgentWorkspacePath(candidate) ?? '') === workspaceKey
-      ));
-    }
-    if (!agent) {
-      agent = {
-        id: project.agentId || crypto.randomUUID(),
+    const resolution = reconcileAgentWorkspaceIdentities(projects, agents, {
+      projectIds: new Set([project.id]),
+      buildAgent: (_source, requestedId): AgentConfig => ({
+        id: requestedId || crypto.randomUUID(),
         name: primary.name || project.displayName || project.name,
         enabled: groupBots.some(bot => bot.enabled),
         providerId: primary.providerId,
@@ -177,31 +171,59 @@ export function migrateImBotConfigsToAgents(config: AppConfig, projects: Project
         heartbeat: primary.heartbeat,
         channels: [],
         setupCompleted: primary.setupCompleted,
-      };
-      agents.push(agent);
+      }),
+    });
+    const agent = resolution.identities.find(item => item.projectId === project.id)?.agent;
+    const owners = (id: string) => agents.flatMap(candidate => (candidate.channels ?? [])
+      .filter(channel => channel.id === id).map(channel => ({ agentId: candidate.id, channel })));
+    const unsupported = !agent || new Set(groupBots.map(bot => bot.id)).size !== groupBots.length
+      || groupBots.some(bot => {
+        const existing = owners(bot.id);
+        if (existing.length) {
+          // ID alone is not proof that these credentials were migrated. Duplicate
+          // IDs or changed credentials must remain available for explicit recovery.
+          return existing.length !== 1 || existing[0].agentId !== agent.id
+            || existing[0].channel.type !== bot.platform
+            || (['botToken', 'feishuAppId', 'feishuAppSecret', 'dingtalkClientId',
+              'dingtalkClientSecret', 'openclawPluginId', 'openclawPluginConfig'] as const)
+              .some(key => JSON.stringify(existing[0].channel[key] || null) !== JSON.stringify(bot[key] || null));
+        }
+        // Legacy Bot cannot express external runtime or clear an inherited value.
+        // Keep unsupported data rather than changing its behavior during migration.
+        return (agent.runtime && agent.runtime !== 'builtin')
+          || ['providerId', 'model', 'providerEnvJson'].some(key =>
+            bot[key as keyof ImBotConfig] === undefined && agent[key as keyof AgentConfig] !== undefined)
+          || JSON.stringify(bot.mcpEnabledServers ?? []) !== JSON.stringify(agent.mcpEnabledServers ?? [])
+          || JSON.stringify(bot.heartbeat ?? null) !== JSON.stringify(agent.heartbeat ?? null);
+      });
+    if (unsupported || !agent) {
+      remainingBots.push(...groupBots);
+      console.warn(`[agentConfigService] IM migration deferred for Project '${project.id}': identity or legacy configuration needs explicit resolution`);
+      continue;
     }
-    project.agentId = agent.id;
-    if (agent.enabled) project.isAgent = true;
+    agents = resolution.agents;
+    projects.splice(0, projects.length, ...resolution.projects);
 
     // Build channels from each bot
-    const channels: ChannelConfig[] = groupBots.filter(bot => !claimedChannelIds.has(bot.id)).map(bot => {
-      // Detect overrides: if bot's AI config differs from primary, store in overrides
+    const channels: ChannelConfig[] = groupBots.filter(bot => owners(bot.id).length === 0).map(bot => {
+      // Compare against the actual target Agent, which may predate this migration.
       const overrides: ChannelOverrides = {};
       let hasOverrides = false;
 
-      if (bot.providerId !== primary.providerId && bot.providerId !== undefined) {
+      if (bot.providerId !== agent.providerId && bot.providerId !== undefined) {
         overrides.providerId = bot.providerId;
         hasOverrides = true;
       }
-      if (bot.providerEnvJson !== primary.providerEnvJson && bot.providerEnvJson !== undefined) {
+      if (bot.providerEnvJson !== agent.providerEnvJson && bot.providerEnvJson !== undefined) {
         overrides.providerEnvJson = bot.providerEnvJson;
         hasOverrides = true;
       }
-      if (bot.model !== primary.model && bot.model !== undefined) {
+      if (bot.model !== agent.model && bot.model !== undefined) {
         overrides.model = bot.model;
         hasOverrides = true;
       }
-      if (bot.permissionMode !== primary.permissionMode) {
+      // Channels otherwise use runtime maximum permission, not Agent defaults.
+      if (bot.permissionMode) {
         overrides.permissionMode = bot.permissionMode;
         hasOverrides = true;
       }
@@ -241,7 +263,6 @@ export function migrateImBotConfigsToAgents(config: AppConfig, projects: Project
         enabled: agent.enabled || groupBots.some(bot => bot.enabled),
         channels: [...(agent.channels ?? []), ...channels],
       };
-      channels.forEach(channel => claimedChannelIds.add(channel.id));
     }
     migratedCount += groupBots.length;
   }

@@ -190,7 +190,18 @@ const COMMON_ADMIN_PREFIXES = [
   'vision/',
 ] as const;
 
-const COMMON_ADMIN_ROUTES = new Set(['help', 'status', 'version']);
+const COMMON_ADMIN_ROUTES = new Set([
+  'help',
+  'status',
+  'version',
+  // Addressed Session operations resolve their explicit target through Rust;
+  // they do not require the caller process to own a Product Session. This is
+  // what lets the authenticated Global Host serve ordinary local programs.
+  'session/list',
+  'session/start',
+  'session/send',
+  'session/get',
+]);
 
 function startsWithAny(pathname: string, prefixes: readonly string[]): boolean {
   return prefixes.some(prefix => pathname.startsWith(prefix));
@@ -228,10 +239,13 @@ export function classifySidecarRequest(request: Request): SidecarCapability | nu
 
   if (pathname.startsWith('/api/admin/')) {
     const route = pathname.slice('/api/admin/'.length);
+    if (COMMON_ADMIN_ROUTES.has(route)) {
+      return 'common';
+    }
     if (SESSION_ADMIN_ROUTES.has(route) || startsWithAny(route, SESSION_ADMIN_PREFIXES)) {
       return 'session';
     }
-    if (COMMON_ADMIN_ROUTES.has(route) || startsWithAny(route, COMMON_ADMIN_PREFIXES)) {
+    if (startsWithAny(route, COMMON_ADMIN_PREFIXES)) {
       return 'common';
     }
     return null;

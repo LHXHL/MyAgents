@@ -1193,14 +1193,8 @@ async fn start_agent_channel_with_lock_held(
     channelId: String,
     workspacePath: Option<String>,
 ) -> Result<ChannelStatus, String> {
-    let Some((agentConfig, channelConfig, mut im_config)) =
-        config_store::current_agent_channel_start_config(&agentId, &channelId)
-    else {
-        return Err(format!(
-            "Agent channel '{}' is no longer enabled or startable",
-            channelId
-        ));
-    };
+    let (agentConfig, channelConfig, mut im_config) =
+        config_store::current_agent_channel_start_config(&agentId, &channelId)?;
     if workspacePath.as_ref().is_some_and(|path| {
         crate::workspace_path::normalize_workspace_path_identity(
             &agentConfig.resolved_workspace_path,

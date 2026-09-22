@@ -1046,6 +1046,7 @@ fn create_new_session_sidecar<'a, R: Runtime>(
     if mgmt_port > 0 {
         cmd.env("MYAGENTS_MANAGEMENT_PORT", mgmt_port.to_string());
     }
+    crate::external_cli::inject_internal_token(&mut cmd);
 
     // Reuse validation and process spawn consume the same identity snapshot for
     // this ensure attempt. In particular, missing Session metadata is not an

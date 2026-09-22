@@ -1584,6 +1584,7 @@ pub async fn spawn_plugin_bridge<R: tauri::Runtime>(
     );
 
     let mut cmd = plugin_node_command(&node_path)?;
+    crate::external_cli::inject_internal_token(&mut cmd);
     // Inject tsx via absolute file URL pointing at the bundled
     // `resources/tsx-runtime/` (prod) or the project's own `node_modules/tsx`
     // (dev). The loader has zero side effects on `.js` plugin loads (esbuild's

@@ -51,6 +51,7 @@ import CronTaskDebugPanel from '@/components/dev/CronTaskDebugPanel';
 import { BotPlatformRegistry } from '@/components/ImSettings';
 import ProxyScopeDialog from '@/components/ProxyScopeDialog';
 import WorkspaceConfigPanel from '@/components/WorkspaceConfigPanel';
+import AgentIdentityConflicts from '@/components/AgentSettings/AgentIdentityConflicts';
 import ModelManagementPanel from '@/components/ModelManagementPanel';
 import GrokSubscriptionProvider from '@/components/GrokSubscriptionProvider';
 import CliProxySubscriptionProvider from '@/components/CliProxySubscriptionProvider';
@@ -206,6 +207,7 @@ import { useSettingsNavigation } from './hooks/useSettingsNavigation';
 import { SettingsSidebar } from './components/SettingsSidebar';
 import { SkillsAgentsSection } from './sections/SkillsAgentsSection';
 import { ToolboxSection } from './sections/ToolboxSection';
+import { ExternalCliSettingsSection } from './sections/ExternalCliSettingsSection';
 import codexModelSelectorOnboarding from '@/assets/onboarding/codex-model-selector.png';
 
 type ManagedCodexLoginStatus =
@@ -5029,6 +5031,7 @@ export default function Settings({
         {/* Bot Platform Registry (formerly Agent / IM Bot) */}
         {activeSection === 'agent' && (
           <div className="mx-auto max-w-4xl px-8 py-8">
+            <AgentIdentityConflicts />
             <BotPlatformRegistry
               projects={projects}
               defaultWorkspacePath={config.defaultWorkspacePath}
@@ -5046,6 +5049,8 @@ export default function Settings({
 
         {activeSection === 'desktop-pet' &&
           !linuxDesktop && config.floatingBallDevGate !== false && <FloatingBallPetSettings />}
+
+        {activeSection === 'external-cli' && <ExternalCliSettingsSection />}
 
         {/* Providers section uses wider layout */}
         {activeSection === 'providers' && (
@@ -5242,7 +5247,7 @@ export default function Settings({
 
         {/* Other sections use narrower layout */}
         <div
-          className={`mx-auto max-w-xl px-8 py-8 ${['skills', 'agents', 'plugins', 'providers', 'mcp', 'desktop-pet'].includes(activeSection) ? 'hidden' : ''}`}
+          className={`mx-auto max-w-xl px-8 py-8 ${['skills', 'agents', 'plugins', 'providers', 'mcp', 'desktop-pet', 'external-cli'].includes(activeSection) ? 'hidden' : ''}`}
         >
           {activeSection === 'shortcuts' && (
             <div className="space-y-6">

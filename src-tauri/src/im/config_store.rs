@@ -71,6 +71,49 @@ pub(super) fn project_id_for_agent(agent_id: &str) -> Option<String> {
     matches.next().is_none().then_some(project_id)
 }
 
+fn agent_claim_conflict(projects: &[PartialProjectEntry], agent_id: &str) -> Option<String> {
+    let claims: Vec<_> = projects
+        .iter()
+        .filter(|project| project.agent_id.as_deref() == Some(agent_id))
+        .collect();
+    (claims.len() > 1).then(|| format!(
+        "[AGENT_ASSIGNED_TO_MULTIPLE_PROJECTS] Agent '{}' is claimed by multiple workspaces: {}. Open Settings → Chatbots to choose its workspace.",
+        agent_id,
+        claims.iter().map(|project| format!("{} ({})", project.path.as_deref().unwrap_or("?"), project.id.as_deref().unwrap_or("?"))).collect::<Vec<_>>().join(", ")
+    ))
+}
+
+/// Stopping owns durable channel identities even when workspace projection fails.
+/// Otherwise an in-flight start omitted from ManagedAgents could evade the stop locks.
+pub(super) fn read_agent_channel_ids_from_disk(agent_id: &str) -> Result<Vec<String>, String> {
+    let home = dirs::home_dir().ok_or("Home directory unavailable")?;
+    let value = crate::config_io::read_config_json(&home.join(".myagents").join("config.json"))?;
+    Ok(agent_channel_ids_from_value(&value, agent_id))
+}
+
+fn agent_channel_ids_from_value(value: &serde_json::Value, agent_id: &str) -> Vec<String> {
+    value
+        .get("agents")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|agent| agent.get("id").and_then(serde_json::Value::as_str) == Some(agent_id))
+        .flat_map(|agent| {
+            agent
+                .get("channels")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|channel| {
+            channel
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
 pub(crate) fn agent_id_for_project(project_id: &str) -> Option<String> {
     let mut matches = read_projects_for_agent_projection()
         .into_iter()
@@ -323,28 +366,46 @@ pub(crate) async fn schedule_general_proxy_channel_reconnects<R: Runtime>(
 pub(super) fn current_agent_channel_start_config(
     agent_id: &str,
     channel_id: &str,
-) -> Option<(AgentConfigRust, ChannelConfigRust, ImConfig)> {
+) -> Result<(AgentConfigRust, ChannelConfigRust, ImConfig), String> {
+    if let Some(error) = agent_claim_conflict(&read_projects_for_agent_projection(), agent_id) {
+        return Err(error);
+    }
     let agent = read_agent_configs_from_disk()
         .into_iter()
-        .find(|agent| agent.id == agent_id)?;
+        .find(|agent| agent.id == agent_id)
+        .ok_or_else(|| {
+            format!(
+                "Agent '{}' has no resolvable workspace configuration",
+                agent_id
+            )
+        })?;
     if is_agent_workspace_archived(&agent) {
-        return None;
+        return Err(format!("Agent '{}' workspace is archived", agent_id));
     }
     let channel = agent
         .channels
         .iter()
-        .find(|channel| channel.id == channel_id && channel.enabled)?
+        .find(|channel| channel.id == channel_id && channel.enabled)
+        .ok_or_else(|| format!("Agent channel '{}' is missing or disabled", channel_id))?
         .clone();
     let mut config = channel.to_im_config(&agent);
     config.heartbeat_config = Some(types::HeartbeatConfig {
         enabled: false,
         ..types::HeartbeatConfig::default()
     });
-    im_config_has_start_credentials(&config).then_some((agent, channel, config))
+    if !im_config_has_start_credentials(&config) {
+        return Err(format!(
+            "Agent channel '{}' has incomplete credentials",
+            channel_id
+        ));
+    }
+    Ok((agent, channel, config))
 }
 
 fn current_agent_channel_config(agent_id: &str, channel_id: &str) -> Option<ImConfig> {
-    current_agent_channel_start_config(agent_id, channel_id).map(|(_, _, config)| config)
+    current_agent_channel_start_config(agent_id, channel_id)
+        .ok()
+        .map(|(_, _, config)| config)
 }
 
 fn current_legacy_bot_config(bot_id: &str) -> Option<ImConfig> {
@@ -643,6 +704,28 @@ mod workspace_projection_tests {
             .collect::<Vec<_>>();
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn claim_conflict_reports_paths_and_stop_retains_unprojectable_channel_ids() {
+        let projects: Vec<PartialProjectEntry> = serde_json::from_value(serde_json::json!([
+            {"id":"one", "path":"/one", "agentId":"shared"},
+            {"id":"hidden", "path":"/hidden", "agentId":"shared", "hidden":true},
+            {"id":"healthy", "path":"/healthy", "agentId":"healthy"}
+        ]))
+        .unwrap();
+        let error = agent_claim_conflict(&projects, "shared").unwrap();
+        assert!(error.contains("AGENT_ASSIGNED_TO_MULTIPLE_PROJECTS"));
+        assert!(error.contains("/one") && error.contains("/hidden"));
+        assert!(agent_claim_conflict(&projects, "healthy").is_none());
+        let value = serde_json::json!({"agents":[
+            {"id":"shared", "channels":[{"id":"pending"}, {"id":"disabled", "enabled":false}]},
+            {"id":"healthy", "channels":[{"id":"untouched"}]}
+        ]});
+        assert_eq!(
+            agent_channel_ids_from_value(&value, "shared"),
+            vec!["pending", "disabled"]
+        );
     }
 
     #[test]
@@ -3375,7 +3458,7 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
                 let bot_id = channel.id.clone();
                 let lifecycle_lock = agent_channel_lifecycle_lock(&agent_config.id, &bot_id);
                 let _lifecycle_guard = lifecycle_lock.lock().await;
-                let Some((fresh_agent_config, fresh_channel, im_config)) =
+                let Ok((fresh_agent_config, fresh_channel, im_config)) =
                     current_agent_channel_start_config(&agent_config.id, &bot_id)
                 else {
                     continue;

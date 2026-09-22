@@ -121,6 +121,74 @@ describe('handleAdminSessionStart', () => {
     });
   });
 
+  it('treats a management transport failure as admission unconfirmed', async () => {
+    mocks.cancellableFetch.mockRejectedValue(new Error('timeout'));
+
+    const result = await handleAdminSessionStart('source-session', {
+      agentId: 'agent-1',
+      prompt: 'Review this',
+    });
+
+    expect(result).toMatchObject({
+      status: 502,
+      response: {
+        accepted: null,
+        unconfirmed: true,
+        error: { code: 'admission_unconfirmed' },
+      },
+    });
+  });
+
+  it('treats an incomplete success receipt as admission unconfirmed', async () => {
+    mocks.cancellableFetch.mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      outcome: { status: 'accepted' },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+    const result = await handleAdminSessionStart('source-session', {
+      agentId: 'agent-1',
+      prompt: 'Review this',
+    });
+
+    expect(result).toMatchObject({
+      status: 502,
+      response: {
+        accepted: null,
+        unconfirmed: true,
+        error: { code: 'admission_unconfirmed' },
+      },
+    });
+  });
+
+  it('admits an external source without a Session identity and forces one-way delivery', async () => {
+    mocks.cancellableFetch.mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      outcome: {
+        status: 'accepted',
+        agentId: 'agent-1',
+        sessionId: 'fresh-session',
+        messageId: 'message-1',
+        replyBack: false,
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+    const result = await handleAdminSessionStart('', {
+      agentId: 'agent-1',
+      prompt: 'External work',
+      replyBack: true,
+    }, 'external-cli');
+
+    expect(result.response).toMatchObject({ accepted: true, replyBack: false });
+    const request = mocks.cancellableFetch.mock.calls[0][1] as RequestInit;
+    const body = JSON.parse(String(request.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      sourceKind: 'external-cli',
+      fromLabel: 'External CLI',
+      replyBack: false,
+    });
+    expect(body).not.toHaveProperty('fromSessionId');
+  });
+
   it('rejects caller configuration overrides before delivery', async () => {
     const result = await handleAdminSessionStart('source-session', {
       agentId: 'agent-1',

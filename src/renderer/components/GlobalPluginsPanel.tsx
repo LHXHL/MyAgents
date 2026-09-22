@@ -224,18 +224,14 @@ export default function GlobalPluginsPanel({
   const [showInstall, setShowInstall] = useState(false);
 
   // ----- render ------------------------------------------------------------
-  if (viewState.type === 'detail' && detail) {
-    return (
-      <PluginDetailView
-        plugin={detail}
-        onBack={() => setViewState({ type: 'list' })}
-        onToggle={() => toggleEnabled(detail)}
-        onUninstall={() => setConfirmRemove(detail)}
-      />
-    );
-  }
-
-  return (
+  const content = viewState.type === 'detail' && detail ? (
+    <PluginDetailView
+      plugin={detail}
+      onBack={() => setViewState({ type: 'list' })}
+      onToggle={() => toggleEnabled(detail)}
+      onUninstall={() => setConfirmRemove(detail)}
+    />
+  ) : (
     <div className="space-y-4">
       {/* Header — Skills-page parity: icon + title + count chip on left, "+ 安装" on right.
        *  Explanatory blurb sits under header as a secondary line; the two ⓘ hints fold
@@ -291,7 +287,12 @@ export default function GlobalPluginsPanel({
           ))}
         </div>
       )}
+    </div>
+  );
 
+  return (
+    <>
+      {content}
       {showInstall && (
         <PluginInstallDialog
           onClose={() => setShowInstall(false)}
@@ -307,14 +308,14 @@ export default function GlobalPluginsPanel({
       {confirmRemove && (
         <ConfirmDialog
           title={t('plugins.uninstall.title', { name: confirmRemove.name })}
-          message={t('plugins.uninstall.message', { dataDir: '${CLAUDE_PLUGIN_DATA}' })}
+          message={t('plugins.uninstall.message', { dataDir: confirmRemove.dataPath })}
           confirmText={t('plugins.uninstall.confirm')}
           confirmVariant="danger"
           onConfirm={handleUninstall}
           onCancel={() => setConfirmRemove(null)}
         />
       )}
-    </div>
+    </>
   );
 }
 

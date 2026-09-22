@@ -192,7 +192,7 @@ Record 的物理音轨与媒体时钟由 RecordingManager 持有；Media Worker 
 | Provider / OpenAI Bridge | Node + Rust credential owner；Provider route materialization 与协议转换 | [第三方 Provider](./tech_docs/third_party_providers.md) |
 | 托管 CLIProxy | Rust 拥有组件/账号目录/进程与执行 lease；原版 CLIProxy 拥有 OAuth/refresh/协议转换，SDK 仍属 builtin | [CLIProxy](./tech_docs/managed_cliproxy.md) |
 | Custom MCP OAuth | Node state store；Global scheduler 主动刷新，Session Sidecar 观察 credential revision | [冷启动](./tech_docs/sidecar_cold_start.md) |
-| CLI / Admin API | App-owned CLI bundle；Node 解析命令，Management API 进入 Rust owner | [CLI](./tech_docs/cli_architecture.md) |
+| CLI / Admin API | App-owned CLI bundle；Node 统一区分 App 内部 caller 与 token-authenticated 外部 caller，固定公开清单后才进入 Admin/Management 业务 owner；外部策略/token 由 Rust App owner 管理 | [CLI](./tech_docs/cli_architecture.md) |
 | 内置小助理 | `bundled-agents/myagents_helper/` 模板 + Global Sidecar Admin API；不建立第二套业务 authority | [CLI](./tech_docs/cli_architecture.md) |
 | Task Center | Rust TaskStore、TaskApplication 与 TaskScheduler | [任务中心](./tech_docs/task_center.md)、[Provider routing](./tech_docs/task_provider_routing.md) |
 | Goal | Rust SessionGoalManager + Node goal orchestrator；Session 一等状态 | [Session](./tech_docs/session_architecture.md) |

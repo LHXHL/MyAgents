@@ -463,6 +463,7 @@ import {
   clearMessages,
   deleteCurrentSessionUuid,
   deleteLiveSessionUuid,
+  getCurrentSessionUuids,
   getLastAssistantMessageId,
   getBuiltinProductContent,
   getMessages as getBuiltinMessages,
@@ -1221,6 +1222,55 @@ function stageSessionBoundAssistantBlock(text: string | (() => string | undefine
 let isApiRetrying = false;  // Track api_retry state to clear when streaming resumes
 let transientProviderRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
+type RewoundQueryInputGate = {
+  retirement: AbortController;
+  retryItem: MessageQueueItem | null;
+  retryResolver: ((item: MessageQueueItem | null) => void) | null;
+};
+
+const rewoundQueryInputGates = new WeakMap<Query, RewoundQueryInputGate>();
+
+function createRewoundQueryInputGate(): RewoundQueryInputGate {
+  return { retirement: new AbortController(), retryItem: null, retryResolver: null };
+}
+
+function retireRewoundQueryInput(gate: RewoundQueryInputGate): void {
+  gate.retirement.abort();
+}
+
+function offerRewoundQueryRetry(gate: RewoundQueryInputGate, item: MessageQueueItem): boolean {
+  if (gate.retirement.signal.aborted || gate.retryItem) return false;
+  if (gate.retryResolver) {
+    const resolve = gate.retryResolver;
+    gate.retryResolver = null;
+    resolve(item);
+  } else {
+    gate.retryItem = item;
+  }
+  return true;
+}
+
+function waitForRewoundQueryRetryOrRetirement(
+  gate: RewoundQueryInputGate,
+): Promise<MessageQueueItem | null> {
+  if (gate.retirement.signal.aborted) return Promise.resolve(null);
+  if (gate.retryItem) {
+    const item = gate.retryItem;
+    gate.retryItem = null;
+    return Promise.resolve(item);
+  }
+  return new Promise(resolve => {
+    const settle = (item: MessageQueueItem | null): void => {
+      gate.retirement.signal.removeEventListener('abort', onRetire);
+      if (gate.retryResolver === settle) gate.retryResolver = null;
+      resolve(item);
+    };
+    const onRetire = (): void => settle(null);
+    gate.retryResolver = settle;
+    gate.retirement.signal.addEventListener('abort', onRetire, { once: true });
+  });
+}
+
 type TransientProviderTextRetry =
   Extract<TransientProviderTextRetryDecision, { retry: true }>;
 
@@ -1327,7 +1377,11 @@ function scheduleTransientProviderRetry(decision: TransientProviderTextRetry): b
       `[agent][transient-provider-text] retrying hidden user turn ` +
       `${decision.attempt}/${decision.maxRetries} root=${retryItem.transientProviderRetry?.rootQueueId}`,
     );
-    wakeGenerator(retryItem);
+    const activeQuery = lifecycleState.query;
+    const rewindGate = activeQuery ? rewoundQueryInputGates.get(activeQuery) : undefined;
+    if (!rewindGate || !offerRewoundQueryRetry(rewindGate, retryItem)) {
+      wakeGenerator(retryItem);
+    }
   }, decision.delayMs);
   broadcast('chat:api-retry', {
     attempt: decision.attempt,
@@ -2218,6 +2272,11 @@ function abortPersistentSession(options: { notifyPendingRequests?: boolean } = {
     }
   }
   clearPendingRequests();
+  const retiringQuery = lifecycleState.query;
+  if (retiringQuery) {
+    const rewindGate = rewoundQueryInputGates.get(retiringQuery);
+    if (rewindGate) retireRewoundQueryInput(rewindGate);
+  }
   // PRD 0.2.18 Session Inbox — if abort happens while an inbox-message turn is
   // in flight, push a session_aborted reply back to the caller so it doesn't
   // wait forever. Fire-and-forget. Read + clear immediately to avoid the
@@ -10402,6 +10461,9 @@ export async function rewindSession(userMessageId: string): Promise<{
       return { success: false as const, error: 'The retained history has no exact native rewind boundary' };
     }
 
+    const sourceMeta = getSessionMetadata(productSessionId);
+    const sourceSdkSessionId = sourceMeta ? resolveBuiltinSdkSessionId(sourceMeta) ?? null : null;
+    const targetUserUuid = targetMessage.sdkUuid;
     const sourceFailure = await prepareSessionTranscriptMutation(productSessionId);
     if (sourceFailure) throw new Error(`${sourceFailure.reason}: ${sourceFailure.error}`);
 
@@ -10409,12 +10471,14 @@ export async function rewindSession(userMessageId: string): Promise<{
     //    跳过已被 force-abort 的 session：subprocess 正在死亡，发 IPC 会阻塞到超时（~100s）。
     //    跳过不属于当前 session 的 UUID：SDK 不认识，调用必定失败且日志噪声。
     //    跳过无 sdkUuid 的用户消息：旧存储加载或 SDK 尚未回传 UUID。
-    const targetUserUuid = targetMessage.sdkUuid;
     const fileRewind = await attemptFileRewind({
       query: lifecycleState.query,
       targetUserUuid,
       abortRequested: lifecycleState.abortRequested,
-      isCurrentSessionUuid: Boolean(targetUserUuid && transcriptState.currentSessionUuids.has(targetUserUuid)),
+      // This set only scopes the optional live Query checkpoint call. It does
+      // not authorize the conversation boundary: native resume remains the
+      // sole judge of whether `resumeSessionAt` is on its durable head.
+      isCurrentSessionUuid: Boolean(targetUserUuid && getCurrentSessionUuids().has(targetUserUuid)),
     });
     const { skippedLinks, fileRewindStatus } = fileRewind;
     fileOutcome = { skippedLinks, fileRewindStatus };
@@ -10447,8 +10511,6 @@ export async function rewindSession(userMessageId: string): Promise<{
     const removedContent = typeof targetMessage.content === 'string' ? targetMessage.content : '';
     const removedAttachments = targetMessage.attachments;
 
-    const sourceMeta = getSessionMetadata(productSessionId);
-    const sourceSdkSessionId = sourceMeta ? resolveBuiltinSdkSessionId(sourceMeta) ?? null : null;
     // A retained prefix requires its exact anchor. Local UUID caches are not
     // native authority and must never authorize a full-history fallback.
     const replacementSdkSessionId = resumeSessionAt
@@ -10827,6 +10889,16 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   let activeQueryAuthority: BuiltinQueryAuthority | null = null;
   const queryProductSessionId = sessionId;
   const bindingController = new AbortController();
+  // A Query launched from an explicit rewind boundary creates a sibling
+  // native branch. The CLI does not publish that sibling as its durable
+  // resumable head until the streaming input closes and the Query exits.
+  // Keep the result provisional until that owner has completed its shutdown;
+  // otherwise a hard app exit can leave Product history pointing at a UUID
+  // that exists in JSONL but native resume still rejects.
+  let rewindResumeAt: string | undefined;
+  let rewindInputGate: RewoundQueryInputGate | undefined;
+  let deferredRewindResult: BuiltinSdkResultMessage | null = null;
+  let queryExitFailed = false;
   let preparedProvider: PreparedProvider | undefined;
 
   try {
@@ -10919,7 +10991,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // 必须在 pre-warm 时就传 resumeSessionAt，否则 SDK 会加载完整历史不截断
     // 延迟消费原因：如果 query 因 UUID 无效而启动失败，重试时仍需要 anchor；
     // Invalid boundaries remain explicit failures; never clear them to resume a longer history.
-    const rewindResumeAt = getCurrentProductSessionMetadata()?.sdkResumeSessionAt;
+    rewindResumeAt = getCurrentProductSessionMetadata()?.sdkResumeSessionAt;
+    rewindInputGate = rewindResumeAt
+      ? createRewoundQueryInputGate()
+      : undefined;
 
     // Fork detection: if this session was created via fork, override resume/sessionId
     // to use SDK's forkSession option (load source history + branch to new session).
@@ -11029,11 +11104,23 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // this runs (~6866). No-op in the normal case (tail == SDK newest leaf → slice keeps
     // all). Lowest priority — an in-process rewind anchor still wins (resolveEffectiveResumeAt),
     // so existing rewind behavior is byte-for-byte unchanged. See specs/prd/prd_0.2.27_rewind_reload_durability.md.
-    const reloadAnchor = (!forkMode && !rewindResumeAt && resumeFrom) ? transcriptState.pendingReloadAnchor : undefined;
+    const reloadAnchor = (!forkMode && !rewindResumeAt) ? transcriptState.pendingReloadAnchor : undefined;
     // Capture into a query-scoped local so a LATE catch from a previous (aborted) start
     // can't mis-attribute the eviction against a newer session's anchor (module state races).
 
     const effectiveResumeAt = resolveEffectiveResumeAt({ forkMode, rewindResumeAt, forkResumeAt, reloadAnchor });
+
+    // `getSessionMessages()` projects one chain chosen from physical JSONL
+    // order, while native resume follows the CLI's durable selected head. A
+    // UUID being present or absent from that projection proves neither
+    // resumability nor invalidity. Launch the Query as the single authority;
+    // on rejection the explicit boundary remains intact and no longer-history
+    // fallback is allowed.
+    if (effectiveResumeAt && !resumeFrom) {
+      throw new Error(
+        'The saved conversation boundary has no native session identity to resume. Rewind or retry from an earlier message to recover this session.',
+      );
+    }
 
     const mcpStatus = configState.currentMcpServers === null ? 'auto' : configState.currentMcpServers.length === 0 ? 'disabled' : `enabled(${configState.currentMcpServers.length})`;
     const claudeTranscriptCleanupPeriodDays = normalizeClaudeTranscriptCleanupPeriodDays(
@@ -11041,7 +11128,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     );
     console.log(`[agent] starting query with model: ${configState.currentModel ?? 'default'}, permissionMode: ${configState.currentPermissionMode} -> SDK: ${sdkPermissionMode}, MCP: ${mcpStatus}, cleanupPeriodDays: ${claudeTranscriptCleanupPeriodDays}, ${resumeFrom ? `resume: ${resumeFrom}` : `sessionId: ${effectiveSdkSessionId}`}${effectiveResumeAt ? `, resumeSessionAt: ${effectiveResumeAt}` : ''}${forkMode ? `, FORK mode (forkPoint: ${forkResumeAt}${rewindResumeAt && rewindResumeAt !== forkResumeAt ? `, rewind→${rewindResumeAt}` : ''})` : ''}`);
 
-    const promptGen = messageGenerator(preparedProvider);
+    const promptGen = messageGenerator(
+      preparedProvider,
+      rewindInputGate,
+    );
 
     // Set session cron context so the im-cron tool can create tasks for non-IM sessions
     // IM sessions set imCronContext separately (in the IM message handler in index.ts)
@@ -11811,6 +11901,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     }
 
     if (activeQuery) {
+      if (rewindInputGate) {
+        rewoundQueryInputGates.set(activeQuery, rewindInputGate);
+      }
       const initialMcpFingerprint = sdkMcpMapFingerprint(sdkMcpServersInitial);
       setFrozenSdkMcpFingerprint(initialMcpFingerprint);
       const prewarmWindow = getMcpPrewarmWindowForMap(sdkMcpServersInitial);
@@ -11983,6 +12076,15 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // and a single session is realistically bounded to << 1000 background
     // sub-agents.
     const terminalBroadcastedTaskIds = new Map<string, boolean>();
+
+    const retireRewoundQueryWhenQuiescent = (): void => {
+      if (!deferredRewindResult || !rewindInputGate) return;
+      if (hasQueryBackgroundTasks(activeQuery)) return;
+      if (!rewindInputGate.retirement.signal.aborted) {
+        console.log('[agent] rewind replacement result received; closing SDK input to publish durable native head');
+        retireRewoundQueryInput(rewindInputGate);
+      }
+    };
 
     // ── API response watchdog ──────────────────────────────────────────
     // Detects hung API connections AND hung MCP tool calls.
@@ -12405,7 +12507,8 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             // background task is the missing drain trigger.
             const completion = completeQueryBackgroundTask(activeQuery, taskMsg.task_id);
             if (completion.becameQuiescent && lifecycleState.query === activeQuery) {
-              applyDeferredRestartIfNeeded();
+              if (deferredRewindResult) retireRewoundQueryWhenQuiescent();
+              else applyDeferredRestartIfNeeded();
             }
           }
         } else if (taskMsg.subtype === 'task_updated' && taskMsg.task_id) {
@@ -12452,7 +12555,8 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               // Reached terminal — release the exact Query task owner.
               const completion = completeQueryBackgroundTask(activeQuery, taskMsg.task_id);
               if (completion.becameQuiescent && lifecycleState.query === activeQuery) {
-                applyDeferredRestartIfNeeded();
+                if (deferredRewindResult) retireRewoundQueryWhenQuiescent();
+                else applyDeferredRestartIfNeeded();
               }
             }
           }
@@ -13349,15 +13453,26 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         }
       } else if (sdkMessage.type === 'result') {
         await preparedProvider?.reportTerminal(sdkMessage.subtype === 'success');
-        // Settle the boundary before terminal handling can restart/revoke this Query.
-        if (sdkMessage.subtype === 'success' && !sdkMessage.is_error && isCurrentQueryAuthority(activeQueryAuthority)) {
-          const meta = getCurrentProductSessionMetadata();
-          if (meta?.sdkResumeSessionAt) {
-            await updateSessionMetadataForBinding(meta.id, { sdkResumeSessionAt: undefined },
-              current => current.sdkResumeSessionAt === meta.sdkResumeSessionAt);
-          }
+        const resultMessage = sdkMessage as BuiltinSdkResultMessage;
+        if (
+          rewindResumeAt
+          && isCurrentQueryAuthority(activeQueryAuthority)
+          && builtinTurnLifecycle.canMaterializeRewindResult(resultMessage)
+        ) {
+          // `getSessionMessages()` can already see the replacement rows here,
+          // but native resume still follows the previously published
+          // `last-prompt` branch until this Query's input ends. Do not expose a
+          // successful Product terminal or clear the durable rewind boundary
+          // during that gap. Background tasks are Query-owned, so allow them
+          // to settle before closing input and publishing the new head.
+          deferredRewindResult = resultMessage;
+          retireRewoundQueryWhenQuiescent();
+          continue;
         }
-        await builtinTurnLifecycle.handleSdkResult(sdkMessage as BuiltinSdkResultMessage);
+        const handling = await builtinTurnLifecycle.handleSdkResult(resultMessage);
+        if (rewindInputGate && handling !== 'retrying') {
+          retireRewoundQueryInput(rewindInputGate);
+        }
       } else if (!KNOWN_MESSAGE_TYPES.has(sdkMessage.type) && !warnedUnknownMessageTypes.has(sdkMessage.type)) {
         // Top-level half of the unknown-message sentinel (the system-subtype
         // half lives in the system block above): a type outside the 0.3.220
@@ -13368,6 +13483,8 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       }
     }
   } catch (error) {
+    queryExitFailed = true;
+    if (rewindInputGate) retireRewoundQueryInput(rewindInputGate);
     await preparedProvider?.reportTerminal(false);
     const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
     // (issue #174) Pre-launch abort sentinel — clean exit, not a real error.
@@ -13467,6 +13584,44 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     clearTimeout(startupTimeoutId);
     clearInterval(apiWatchdogId);
     const wasPreWarming = lifecycleState.preWarming;
+    if (
+      deferredRewindResult
+      && !queryExitFailed
+      && rewindInputGate?.retirement.signal.aborted
+      && rewindResumeAt
+      && !lifecycleState.abortRequested
+      && !builtinInterrupt.isInterrupting()
+      && !hasQueryBackgroundTasks(activeQuery)
+      && isCurrentQueryAuthority(activeQueryAuthority)
+    ) {
+      // The streaming input ended and the SDK iterator returned normally, so
+      // the native runtime has had the lifecycle boundary at which it writes
+      // the selected `last-prompt` head. Only now may Product history become
+      // terminal and the explicit rewind boundary be released.
+      try {
+        const updated = await updateSessionMetadataForBinding(
+          queryProductSessionId,
+          { sdkResumeSessionAt: undefined },
+          current => current.sdkResumeSessionAt === rewindResumeAt,
+        );
+        if (updated && !updated.sdkResumeSessionAt) {
+          await builtinTurnLifecycle.handleSdkResult(deferredRewindResult);
+        } else {
+          const message = 'Failed to publish the rewound conversation branch: rewind boundary changed before native head publication';
+          console.error(`[agent] ${message}`);
+          const terminal = handleMessageError(message);
+          broadcast('chat:message-error', withSessionCompletionTerminal(message, terminal));
+        }
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        const message = `Failed to publish the rewound conversation branch: ${detail}`;
+        console.error(`[agent] ${message}`);
+        const terminal = handleMessageError(message);
+        broadcast('chat:message-error', withSessionCompletionTerminal(message, terminal));
+      } finally {
+        deferredRewindResult = null;
+      }
+    }
     if (!wasPreWarming && isCurrentQueryAuthority(activeQueryAuthority)
       && getBuiltinProductContent()?.currentTurn?.status === 'running'
       && !lifecycleState.abortRequested && !builtinInterrupt.isInterrupting()) {
@@ -13537,6 +13692,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // 安全关闭 SDK session
     const session = lifecycleState.query as Query | null;
     setQuerySession(null);
+    if (activeQuery) rewoundQueryInputGates.delete(activeQuery);
     clearBuiltinQueryMcpOwner(session ?? undefined);
     releaseBuiltinMcpAdmissionOwner();
     configState.currentCapabilitySnapshot = null;
@@ -13712,7 +13868,38 @@ async function rejectPromotedMessageBeforeDispatch(
   schedulePostTerminalQueueDrain('recovery');
 }
 
-async function* messageGenerator(preparedProvider: PreparedProvider): AsyncGenerator<SDKUserMessage> {
+async function waitForTurnTerminalOrInputRetirement(
+  retirementSignal?: AbortSignal,
+): Promise<'terminal' | 'retire'> {
+  if (!retirementSignal) {
+    await waitForCurrentTurnTerminalObserver();
+    return 'terminal';
+  }
+  if (retirementSignal.aborted) return 'retire';
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (outcome: 'terminal' | 'retire'): void => {
+      if (settled) return;
+      settled = true;
+      retirementSignal.removeEventListener('abort', onAbort);
+      resolve(outcome);
+    };
+    const onAbort = (): void => finish('retire');
+    retirementSignal.addEventListener('abort', onAbort, { once: true });
+    void waitForCurrentTurnTerminalObserver().then(
+      () => finish('terminal'),
+      error => {
+        retirementSignal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function* messageGenerator(
+  preparedProvider: PreparedProvider,
+  rewindInputGate?: RewoundQueryInputGate,
+): AsyncGenerator<SDKUserMessage> {
   // (v0.2.12) Mid-turn injection restored.
   //
   // Yield queued transcriptState.messages immediately so the CLI subprocess receives them
@@ -13734,13 +13921,33 @@ async function* messageGenerator(preparedProvider: PreparedProvider): AsyncGener
   //
   // Exit signal: waitForMessage() returns null (via abortPersistentSession).
   console.log('[messageGenerator] Started (persistent mode, mid-turn injection enabled)');
+  let rewoundTurnYielded = false;
 
   while (true) {
-    // A domain-owned turn is not finished until its durable terminal observer
-    // has settled. Keep the next queue item in the queue until that boundary.
-    await waitForCurrentTurnTerminalObserver();
-    // 等待队列中的消息（事件驱动，无轮询）
-    const item = await waitForMessage();
+    let item: MessageQueueItem | null;
+    if (rewindInputGate && rewoundTurnYielded) {
+      // A Query started from an explicit rewind boundary owns exactly one
+      // replacement turn. Keep its input open while Query-owned background
+      // tasks drain, but never ask the local queue for a successor. When the
+      // result is quiescent, the Query owner aborts this signal and the
+      // generator returns, publishing EOF as the native materialization
+      // boundary. Explicit session abort uses the same exact-Query signal.
+      item = await waitForRewoundQueryRetryOrRetirement(rewindInputGate);
+      if (!item) {
+        console.log('[messageGenerator] Retiring rewound Query input to materialize native branch');
+        return;
+      }
+    } else {
+      // A domain-owned turn is not finished until its durable terminal observer
+      // has settled. Before a rewound Query's first replacement turn, explicit
+      // abort may retire the exact input owner without admitting a message.
+      if (await waitForTurnTerminalOrInputRetirement(rewindInputGate?.retirement.signal) === 'retire') {
+        console.log('[messageGenerator] Retiring rewound Query input before replacement admission');
+        return;
+      }
+      // 等待队列中的消息（事件驱动，无轮询）
+      item = await waitForMessage();
+    }
     if (!item) {
       console.log('[messageGenerator] Received null — exiting (abort or session end)');
       return; // generator return → SDK endInput() → stdin EOF → subprocess 退出
@@ -14230,6 +14437,7 @@ async function* messageGenerator(preparedProvider: PreparedProvider): AsyncGener
     const yieldedMessage = stripUnsupportedModalityBlocks(item.message, configState.currentModel);
 
     console.log(`[messageGenerator] Yielding message, wasQueued=${item.wasQueued}, queueId=${item.id}, requestId=${item.requestId ?? '-'} summary=${JSON.stringify(summarizeSensitiveSdkMessage({ type: 'user', message: yieldedMessage }))}`);
+    if (rewindInputGate) rewoundTurnYielded = true;
     yield {
       type: 'user' as const,
       message: yieldedMessage,

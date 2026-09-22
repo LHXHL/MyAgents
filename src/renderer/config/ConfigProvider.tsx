@@ -472,46 +472,41 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         let loadedConfig!: AppConfig;
         let loadedProjects!: Project[];
         await withAgentConfigIntentLock(() => withProjectsLock(async () => {
-            const rawConfig = await loadAppConfig();
             loadedProjects = await loadProjects();
-            const projectsBefore = JSON.stringify(loadedProjects);
-            const configBefore = JSON.stringify({
-                agents: rawConfig.agents ?? [],
-                imBotConfigs: rawConfig.imBotConfigs ?? [],
-            });
-            loadedConfig = migrateImBotConfigsToAgents(rawConfig, loadedProjects);
-            const migrationChanged = configBefore !== JSON.stringify({
-                agents: loadedConfig.agents ?? [],
-                imBotConfigs: loadedConfig.imBotConfigs ?? [],
-            });
-            if (!migrationChanged && projectsBefore === JSON.stringify(loadedProjects)) return;
+            loadedConfig = await atomicModifyConfig(async rawConfig => {
+                const projectsBefore = JSON.stringify(loadedProjects);
+                const configBefore = JSON.stringify({
+                    agents: rawConfig.agents ?? [],
+                    imBotConfigs: rawConfig.imBotConfigs ?? [],
+                });
+                const migrated = migrateImBotConfigsToAgents(rawConfig, loadedProjects);
+                const migrationChanged = configBefore !== JSON.stringify({
+                    agents: migrated.agents ?? [],
+                    imBotConfigs: migrated.imBotConfigs ?? [],
+                });
+                if (!migrationChanged && projectsBefore === JSON.stringify(loadedProjects)) return migrated;
 
-            // Create timestamped backup before persisting migration
-            try {
-                const { getConfigDir, CONFIG_FILE } = await import('./services/configStore');
-                const { copyFile, exists } = await import('@tauri-apps/plugin-fs');
-                const { join } = await import('@tauri-apps/api/path');
-                const dir = await getConfigDir();
-                const configPath = await join(dir, CONFIG_FILE);
-                if (await exists(configPath)) {
-                    const ts = new Date().toISOString().replace(/[:.]/g, '-');
-                    await copyFile(configPath, await join(dir, `config.json.bak.${ts}`));
+                // Create timestamped backup before persisting migration
+                try {
+                    const { getConfigDir, CONFIG_FILE } = await import('./services/configStore');
+                    const { copyFile, exists } = await import('@tauri-apps/plugin-fs');
+                    const { join } = await import('@tauri-apps/api/path');
+                    const dir = await getConfigDir();
+                    const configPath = await join(dir, CONFIG_FILE);
+                    if (await exists(configPath)) {
+                        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+                        await copyFile(configPath, await join(dir, `config.json.bak.${ts}`));
+                    }
+                } catch (e) {
+                    console.warn('[ConfigProvider] Migration backup failed:', e);
                 }
-            } catch (e) {
-                console.warn('[ConfigProvider] Migration backup failed:', e);
-            }
-            // Project.agentId is the birth authority. Commit it before the
-            // pathless Agent record; retry reuses the same id.
-            if (projectsBefore !== JSON.stringify(loadedProjects)) {
-                await saveProjects(loadedProjects);
-            }
-            if (migrationChanged) {
-                loadedConfig = await atomicModifyConfig(current => ({
-                    ...current,
-                    agents: loadedConfig.agents,
-                    imBotConfigs: loadedConfig.imBotConfigs,
-                }));
-            }
+                // Project.agentId is the birth authority. Commit it before the
+                // pathless Agent record; retry reuses the same id.
+                if (projectsBefore !== JSON.stringify(loadedProjects)) {
+                    await saveProjects(loadedProjects);
+                }
+                return migrated;
+            });
         }));
 
         const hiddenDefaultProject = loadedConfig.defaultWorkspacePath
@@ -527,38 +522,8 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
             console.log('[ConfigProvider] Cleared defaultWorkspacePath pointing at hidden workspace');
         }
 
-        // One-time cleanup: remove imBotConfigs entries whose credentials
-        // now exist in agents[].channels[] (post-migration duplicates)
-        // Re-read from disk in case migration cleared in-memory but didn't persist imBotConfigs
-        const diskImBotConfigs = (await loadAppConfig())?.imBotConfigs ?? loadedConfig.imBotConfigs ?? [];
-        if (loadedConfig.agents?.length && diskImBotConfigs.length) {
-            loadedConfig.imBotConfigs = diskImBotConfigs;
-            // Collect all credential fingerprints from agent channels
-            const agentCredentials = new Set<string>();
-            for (const agent of loadedConfig.agents) {
-                for (const ch of (agent.channels ?? [])) {
-                    if (ch.feishuAppId) agentCredentials.add(`feishu:${ch.feishuAppId}`);
-                    if (ch.botToken) agentCredentials.add(`botToken:${ch.botToken}`);
-                    if (ch.dingtalkClientId) agentCredentials.add(`dingtalk:${ch.dingtalkClientId}`);
-                    if (ch.openclawPluginConfig?.appId) agentCredentials.add(`openclaw:${ch.openclawPluginConfig.appId}`);
-                }
-            }
-
-            const remaining = loadedConfig.imBotConfigs.filter(bot => {
-                if (bot.feishuAppId && agentCredentials.has(`feishu:${bot.feishuAppId}`)) return false;
-                if (bot.botToken && agentCredentials.has(`botToken:${bot.botToken}`)) return false;
-                if (bot.dingtalkClientId && agentCredentials.has(`dingtalk:${bot.dingtalkClientId}`)) return false;
-                if (bot.openclawPluginConfig?.appId && agentCredentials.has(`openclaw:${bot.openclawPluginConfig.appId}`)) return false;
-                return true;
-            });
-
-            const removedCount = loadedConfig.imBotConfigs.length - remaining.length;
-            if (removedCount > 0) {
-                console.log(`[ConfigProvider] Cleaning up ${removedCount} legacy imBotConfigs entry(ies) already migrated to agents`);
-                loadedConfig.imBotConfigs = remaining;
-                await atomicModifyConfig(c => ({ ...c, imBotConfigs: remaining }));
-            }
-        }
+        // The identity-aware migration above alone retires legacy Bots.
+        // Credential equality is not proof that a skipped Bot was migrated.
 
         await rebuildAndPersistAvailableProviders();
 

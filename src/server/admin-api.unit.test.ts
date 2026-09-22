@@ -549,6 +549,29 @@ describe('admin-api help registry', () => {
   });
 });
 
+describe('external CLI private config envelope', () => {
+  it('cannot be read or mutated through generic config handlers', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      externalCliAccess: {
+        enabled: true,
+        token: 'mae_private',
+        createdAt: '2026-09-19T00:00:00.000Z',
+      },
+    });
+    const { handleConfigGet, handleConfigSet } = await import('./admin-api');
+
+    expect(handleConfigGet({ key: 'externalCliAccess' })).toMatchObject({ success: false });
+    await expect(handleConfigSet({
+      key: 'externalCliAccess.enabled',
+      value: false,
+    })).resolves.toMatchObject({ success: false });
+    expect(readConfig().externalCliAccess).toMatchObject({
+      enabled: true,
+      token: 'mae_private',
+    });
+  });
+});
+
 describe('admin-api Skill add preview contract', () => {
   it('keeps a single-Skill dry-run to one preview-only request', async () => {
     const cancellation = await import('./utils/cancellation');
@@ -1459,6 +1482,27 @@ describe('admin-api Task Agent experience', () => {
     return workspacePath;
   }
 
+  it('routes exact-id Task schedule operations directly to TaskStore adapters', async () => {
+    managementApiMocks.managementApi
+      .mockResolvedValueOnce({ ok: true, task: { id: 'task-remote' } })
+      .mockResolvedValueOnce({ ok: true, task: { id: 'task-remote' } })
+      .mockResolvedValueOnce({ ok: true, runs: [{ id: 'run-1' }] });
+    const { handleTaskStart, handleTaskStop, handleTaskRuns } = await import('./admin-api');
+
+    await expect(handleTaskStart({ taskId: 'task-remote' })).resolves.toMatchObject({ success: true });
+    await expect(handleTaskStop({ taskId: 'task-remote' })).resolves.toMatchObject({ success: true });
+    await expect(handleTaskRuns({ taskId: 'task-remote', limit: 5 })).resolves.toMatchObject({
+      success: true,
+      data: [{ id: 'run-1' }],
+    });
+
+    expect(managementApiMocks.managementApi.mock.calls).toEqual([
+      ['/api/cron/run', 'POST', { taskId: 'task-remote' }],
+      ['/api/cron/stop', 'POST', { taskId: 'task-remote' }],
+      ['/api/cron/runs?taskId=task-remote&limit=5'],
+    ]);
+  });
+
   it('inherits current workspace for direct creation and preserves CLI caller provenance', async () => {
     const workspacePath = configureCurrentWorkspace();
     managementApiMocks.managementApi.mockResolvedValueOnce({
@@ -1517,6 +1561,33 @@ describe('admin-api Task Agent experience', () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain('does not own workspacePath');
     expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('resolves either explicit Task workspace selector to the canonical pair', async () => {
+    const workspacePath = configureCurrentWorkspace();
+    managementApiMocks.managementApi
+      .mockResolvedValueOnce({
+        ok: true,
+        task: { id: 'task-by-id', workspaceId: 'project-current', workspacePath },
+      })
+      .mockResolvedValueOnce({ ok: true, tasks: [] });
+    const { handleTaskCreateDirect, handleTaskList } = await import('./admin-api');
+
+    await handleTaskCreateDirect({
+      name: 'By id',
+      taskMdContent: 'Do the work.',
+      workspaceId: 'project-current',
+    });
+    await handleTaskList({ workspacePath });
+
+    expect(managementApiMocks.managementApi.mock.calls[0]).toEqual([
+      '/api/task/create-direct',
+      'POST',
+      expect.objectContaining({ workspaceId: 'project-current', workspacePath }),
+    ]);
+    expect(managementApiMocks.managementApi.mock.calls[1]).toEqual([
+      '/api/task/list?workspaceId=project-current',
+    ]);
   });
 
   it('returns a compact filtered current-workspace list without expanded session identities', async () => {
@@ -3803,6 +3874,26 @@ describe('admin-api Agent runtime lifecycle convergence', () => {
 });
 
 describe('admin-api Agent / Session discovery', () => {
+  it('lists healthy Agents and exposes conflicted targets with paths but no credentials', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), { agents: [
+      { id: 'shared', name: 'Shared', channels: [{ id: 'secret-channel', botToken: 'do-not-expose' }] },
+      { id: 'healthy', name: 'Healthy', channels: [] },
+    ] });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [
+      { id: 'one', name: 'One', path: '/one', agentId: 'shared' },
+      { id: 'two', name: 'Two', path: '/two', agentId: 'shared', hidden: true },
+      { id: 'three', name: 'Three', path: '/three', agentId: 'healthy' },
+    ]);
+    const { handleAgentList } = await import('./admin-api');
+    const listed = await handleAgentList();
+    expect(listed.success).toBe(true);
+    expect(listed.data).toEqual([expect.objectContaining({ agentId: 'healthy' })]);
+    expect(listed.diagnostics).toEqual([expect.objectContaining({ code: 'AGENT_ASSIGNED_TO_MULTIPLE_PROJECTS',
+      projects: [{ id: 'one', name: 'One', path: '/one' }, { id: 'two', name: 'Two', path: '/two' }],
+    })]);
+    expect(JSON.stringify(listed)).not.toContain('do-not-expose');
+  });
+
   it('returns visible Project-backed and legacy orphan Agents while marking only the selected Project Agent current', async () => {
     agentSessionMocks.agentDir = '/tmp/current-workspace';
     writeJson(join(scratch, '.myagents', 'config.json'), {

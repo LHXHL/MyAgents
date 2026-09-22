@@ -20,9 +20,39 @@
       "usageStats": "Usage",
       "general": "General",
       "proxy": "Network Proxy",
+      "externalCli": "External Calls",
       "shortcuts": "Shortcuts",
       "about": "About"
     }
+  },
+  "externalCli": {
+    "title": "External Calls",
+    "description": "Let local programs call MyAgents through the myagents CLI bundled with the app. The app must remain running.",
+    "enableTitle": "MyAgents CLI external access",
+    "enableDescription": "Off by default. When enabled, only commands in the public list with the current token are accepted.",
+    "enabledToast": "CLI external access enabled",
+    "disabledToast": "CLI external access disabled",
+    "loadFailed": "Failed to load external access settings: {{message}}",
+    "saveFailed": "Failed to save external access settings: {{message}}",
+    "tokenLabel": "MYAGENTS_API_TOKEN",
+    "showToken": "Show token",
+    "hideToken": "Hide token",
+    "copyToken": "Copy token",
+    "tokenCopied": "Token copied",
+    "createdAt": "Created: {{value}}",
+    "resetToken": "Reset token",
+    "resetToast": "Token reset; the previous token is no longer valid",
+    "usageTitle": "Prompt for another AI",
+    "usageDescription": "Copy the complete prompt to another AI on this computer. It will read the public CLI guide for this app version before invoking the absolute CLI path.",
+    "promptLabel": "Prompt",
+    "copyPrompt": "Copy prompt",
+    "promptCopied": "Prompt copied",
+    "promptLoading": "Reading the local guide and CLI paths…",
+    "promptLoadFailed": "The local invocation paths could not be loaded. Try again shortly.",
+    "guideUnavailable": "The external CLI guide is temporarily unavailable. Restart MyAgents; access and token controls remain available.",
+    "handoffPrompt": "First read the local file \"{{skillPath}}\" and strictly follow its public CLI contract when operating MyAgents.\n\nThe absolute path to the MyAgents CLI on this computer is: \"{{launcherPath}}\"\n\nInject MYAGENTS_API_TOKEN into the environment: `{{tokenCommand}}`",
+    "securityWarning": "A local program holding MYAGENTS_API_TOKEN can register any eligible directory accessible to the current OS user and MyAgents as a Workspace Agent, then let that Agent read or modify the workspace. Protect it like a password.",
+    "copyFailed": "Copy failed"
   },
   "general": {
     "title": "General",
@@ -313,7 +343,11 @@
         "authorization_inactive": "This authorization has ended. Please reconnect."
       },
       "payment": {
-        "recovery": {"reauthorize_api_key":"Login expired. Close this panel and reconnect your account.","api_key_quota":"The current key quota is exhausted. Manage authorization on the website.","top_up_balance":"Insufficient balance. Check your account on the website and retry."},
+        "recovery": {
+          "reauthorize_api_key": "Login expired. Close this panel and reconnect your account.",
+          "api_key_quota": "The current key quota is exhausted. Manage authorization on the website.",
+          "top_up_balance": "Insufficient balance. Check your account on the website and retry."
+        },
         "action": "Top up",
         "title": "Top up account",
         "subtitle": "Top up the currently linked Token Dance account.",
@@ -623,6 +657,20 @@
     }
   },
   "agentSettings": {
+    "identity": {
+      "title": "Agent workspace ownership conflict",
+      "description": "Multiple workspaces claim this Agent, so its channels cannot start. Choose which workspace keeps the original Agent.",
+      "choose": "Choose the workspace that keeps this Agent",
+      "consequences": "The selected workspace keeps the original configuration, channels and credentials. Other workspaces receive independent configurations without copying this Agent's channels. Files and session history are not deleted or moved.",
+      "defaults": "Independent configurations use existing settings or standard template defaults (Mino may enable proactive features). Repair stops the related Agent runtime. Restart the app before continuing existing sessions.",
+      "hidden": "Hidden",
+      "archived": "Archived",
+      "cancel": "Cancel",
+      "confirm": "Confirm repair",
+      "repairing": "Repairing…",
+      "success": "Workspace ownership repaired. Restart the app before continuing existing sessions.",
+      "failed": "Repair is incomplete. Refresh to check workspace ownership."
+    },
     "panel": {
       "title": "Agent Settings",
       "tabs": {

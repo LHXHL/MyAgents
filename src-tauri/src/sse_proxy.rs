@@ -1109,6 +1109,15 @@ async fn execute_http_request(
             req_builder = req_builder.header(&key, &value);
         }
     }
+    // Renderer control-plane requests travel through this Rust owner. Stamp
+    // the process-lifetime internal credential after caller headers so a
+    // WebView cannot accidentally downgrade itself to the external policy.
+    if target_is_loopback {
+        req_builder = req_builder.header(
+            "x-myagents-internal-cli-token",
+            crate::external_cli::internal_token(),
+        );
+    }
 
     // Add body for POST/PUT/PATCH
     if let Some(ref body) = request.body {

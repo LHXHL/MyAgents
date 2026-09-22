@@ -611,6 +611,7 @@ export function listInstalledPlugins(): PluginListItem[] {
     }
     return {
       ...entry,
+      dataPath: join(getPluginsDataRoot(), sanitizePluginIdForPath(entry.id)),
       enabled: enabledMap[entry.id] === true,
       status,
       warning,

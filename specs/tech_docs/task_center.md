@@ -205,8 +205,8 @@ Goal 是 Session 状态，不是 Task execution mode：
 
 - Rust：`src-tauri/src/task.rs`、`task_application.rs`、`task_scheduler.rs`、`task_execution.rs`
 - Legacy compatibility：`src-tauri/src/cron_task/*`、`legacy_upgrade.rs`
-- Management API：`/api/task/*`（含 comment/list/context/retry、turn admitted、trigger validate/test/check-now/reset 与 run-now）及兼容 `/api/cron/*`
-- CLI：`myagents task ...` 是 Agent-facing canonical surface，覆盖通用 `create-direct`、评论写回、创建/启停、历史、exit、Trigger test/check-now/run-now/reset；`myagents record ...` 是 Record canonical surface，`myagents thought ...` 只保留兼容；`myagents cron ...` 只保留外部兼容
+- Management API：`/api/task/*`（含 comment/list/context/retry、turn admitted、trigger validate/test/check-now/reset 与 run-now）及兼容 `/api/cron/*`。Node 的 canonical `/api/admin/task/{start,stop,runs}` 不套 ambient workspace guard，继续复用既有 Rust `/api/cron/{run,stop,runs}` TaskStore adapter；不新增第二套任务 authority。
+- CLI：`myagents task ...` 是 Agent-facing canonical surface，覆盖通用 `create-direct`、评论写回、创建/启停、历史、exit、Trigger test/check-now/run-now/reset；`myagents record ...` 是 Record canonical surface，`myagents thought ...` 只保留兼容；`myagents cron ...` 只保留 App 内兼容，不在 token-authenticated 外部公开清单中
 - Renderer：`src/renderer/components/task-center/`、`useCronTask`（兼容展示 hook）
 
 用户可见的创建、列表、详情与评论交互以

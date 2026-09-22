@@ -20,9 +20,39 @@
       "usageStats": "使用统计",
       "general": "通用设置",
       "proxy": "网络代理",
+      "externalCli": "外部调用",
       "shortcuts": "快捷键",
       "about": "关于"
     }
+  },
+  "externalCli": {
+    "title": "外部调用",
+    "description": "让本机脚本通过安装包自带的 myagents CLI 调用 MyAgents。App 必须保持运行。",
+    "enableTitle": "MyAgents CLI 外部调用",
+    "enableDescription": "默认关闭。开启后，只有携带当前 token 且属于公开清单的命令会被接受。",
+    "enabledToast": "已开启 CLI 外部调用",
+    "disabledToast": "已关闭 CLI 外部调用",
+    "loadFailed": "读取外部调用设置失败：{{message}}",
+    "saveFailed": "保存外部调用设置失败：{{message}}",
+    "tokenLabel": "MYAGENTS_API_TOKEN",
+    "showToken": "显示 token",
+    "hideToken": "隐藏 token",
+    "copyToken": "复制 token",
+    "tokenCopied": "Token 已复制",
+    "createdAt": "创建时间：{{value}}",
+    "resetToken": "重置 token",
+    "resetToast": "Token 已重置，旧 token 已失效",
+    "usageTitle": "发送给其他 AI 的 Prompt",
+    "usageDescription": "复制整段 Prompt 给本机上的其他 AI。它会先阅读当前 App 版本提供的公开 CLI 指南，再使用完整路径调用。",
+    "promptLabel": "Prompt",
+    "copyPrompt": "复制 Prompt",
+    "promptCopied": "Prompt 已复制",
+    "promptLoading": "正在读取本机指南和 CLI 路径…",
+    "promptLoadFailed": "暂时无法读取本机调用路径，请稍后重试。",
+    "guideUnavailable": "外部 CLI 指南暂时不可用。请重启 MyAgents；访问开关和 token 管理仍可使用。",
+    "handoffPrompt": "请先阅读本机文件 \"{{skillPath}}\"，并严格按照其中的公开 CLI 契约操作 MyAgents。\n\n本机 MyAgents CLI 完整路径是：\"{{launcherPath}}\"\n\n请将 MYAGENTS_API_TOKEN 注入到环境变量：`{{tokenCommand}}`",
+    "securityWarning": "持有 MYAGENTS_API_TOKEN 的本机程序可以把当前 OS 用户和 MyAgents 可访问的任意合格目录注册为 Workspace Agent，并让 Agent 读取或操作该工作区。请像保管密码一样保管它。",
+    "copyFailed": "复制失败"
   },
   "general": {
     "title": "通用设置",
@@ -313,7 +343,11 @@
         "authorization_inactive": "这次授权已结束，请重新连接。"
       },
       "payment": {
-        "recovery": {"reauthorize_api_key":"登录已失效，请关闭面板后重新连接账户。","api_key_quota":"当前授权额度已用完，请前往官网管理授权。","top_up_balance":"账户余额不足，请前往官网查看账户状态后重试。"},
+        "recovery": {
+          "reauthorize_api_key": "登录已失效，请关闭面板后重新连接账户。",
+          "api_key_quota": "当前授权额度已用完，请前往官网管理授权。",
+          "top_up_balance": "账户余额不足，请前往官网查看账户状态后重试。"
+        },
         "action": "充值",
         "title": "账户充值",
         "subtitle": "充值到当前绑定的词元跳动账户。",
@@ -623,6 +657,20 @@
     }
   },
   "agentSettings": {
+    "identity": {
+      "title": "Agent 工作区归属冲突",
+      "description": "多个工作区关联了同一个 Agent，相关渠道暂时无法启动。请选择保留原 Agent 的工作区。",
+      "choose": "选择保留原 Agent 的工作区",
+      "consequences": "所选工作区保留原 Agent 的全部配置、渠道和凭据。其他工作区恢复独立配置，不复制这个 Agent 的渠道。文件和历史会话不会删除或迁移。",
+      "defaults": "独立配置沿用既有配置或标准模板默认值（例如 Mino 可能启用主动能力）。修复会停止相关 Agent 的运行；完成后请重启应用再继续已有会话。",
+      "hidden": "已隐藏",
+      "archived": "已归档",
+      "cancel": "取消",
+      "confirm": "确认修复",
+      "repairing": "正在修复…",
+      "success": "工作区归属已修复。请重启应用后继续已有会话。",
+      "failed": "修复未完成，请刷新后检查工作区归属。"
+    },
     "panel": {
       "title": "Agent 设置",
       "tabs": {

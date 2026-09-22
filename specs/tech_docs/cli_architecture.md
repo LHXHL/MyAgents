@@ -2,7 +2,7 @@
 
 ## 概述
 
-MyAgents 内置了一个自配置 CLI 工具（`myagents`），让 AI 和用户都能通过命令行管理应用配置。CLI 的参数解析、文件输入和输出格式位于随当前安装包发布的 `cli/myagents.cjs`；状态 authority 与业务 mutation 仍在 Sidecar Admin / Rust Management API。安装包内 bundle 是 CLI 业务代码的唯一运行时副本，用户目录只保存薄启动器。
+MyAgents 内置了一个 CLI 工具（`myagents`），既供 App 内 Agent 调用产品能力，也能在用户显式开启后供本机外部程序调用固定公开能力。CLI 的参数解析、文件输入和输出格式位于随当前安装包发布的 `cli/myagents.cjs`；状态 authority、外部访问策略与业务 mutation 仍在 Sidecar Admin / Rust Management API。安装包内 bundle 是 CLI 业务代码的唯一运行时副本，用户目录只保存薄启动器。
 
 按任务定位：命令解析与端口查“CLI 脚本设计”，安装包/薄启动器查“Bundle authority 与 launcher 收敛”，业务写入查“Admin API”，Task 创建查“Task 创建链路”，运行失败查“排查指南”。
 
@@ -23,19 +23,20 @@ Goal Mode 是 CLI 的特殊 current-session 控制能力：`myagents goal create
 │   → PATH 首先命中 ~/.myagents/bin/myagents 薄启动器                  │
 │   → 当前 MyAgents executable + private marker                       │
 │   → 当前 bundle Node 执行当前 bundle cli/myagents.cjs               │
-│   → fetch(127.0.0.1:${MYAGENTS_PORT}/api/admin/mcp/add)             │
+│   → 携带 App 生命周期内部 capability 请求 Admin API              │
 │   → Admin API 写 config → SSE 广播 → 前端同步                        │
 └─────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │ 场景 2：用户终端调用（次要用途）                                       │
 │                                                                     │
-│ 终端: `MyAgents mcp list` 或 `myagents mcp list`                    │
+│ 前置：App 运行、开启外部调用、设置 MYAGENTS_API_TOKEN               │
+│ 终端: `MyAgents runtime list` 或 `myagents runtime list`            │
 │   → direct app-binary group 或 launcher private marker 进入 CLI mode │
 │   → 不启动 GUI / 不杀 sidecar / 不触发单实例焦点                      │
 │   → 定位当前安装树中的 bundled Node + cli/myagents.cjs               │
 │   → 无继承 Session 端口时才读 sidecar.port 补 Global 端口            │
-│   → 注入 MYAGENTS_PORT → 转发到 Admin API                            │
+│   → 注入 MYAGENTS_PORT → 携带 Bearer token 请求公开 Admin route      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -44,6 +45,7 @@ Goal Mode 是 CLI 的特殊 current-session 控制能力：`myagents goal create
 | 层 | 文件 | 职责 |
 |----|------|------|
 | **Rust CLI / launcher owner** | `src-tauri/src/cli.rs` | CLI 分流、bundle locator、薄启动器原子收敛、端口补全、spawn 子进程 |
+| **外部 AI 指南投影** | `bundled-guides/external-myagents-cli/SKILL.md`、`src-tauri/src/external_cli.rs` | 维护公开子集说明，并将当前 App 版本原子投影到数据目录供交接 Prompt 显式读取 |
 | **CLI 脚本** | `src/cli/myagents.ts` | 参数解析、命令路由、HTTP 调用、输出格式化（含 `recoveryHint` 渲染） |
 | **启动 / admission** | `src-tauri/src/lib.rs`、`src-tauri/src/sidecar/{instances,session_lifecycle}.rs` | app 启动预检；Global / legacy 与 Session lifecycle admission 复用同一个 reconciler |
 | **Admin API** | `src/server/admin-api.ts` | 业务逻辑：验证 → 写 config → 更新内存状态 → SSE 广播；含跨 runtime 发现 handler |
@@ -58,8 +60,10 @@ src/cli/myagents.ts                        ~/.myagents/
   → esbuild                               ├── bin/
   → resources/cli/myagents.cjs            │   ├── myagents      (POSIX/Git Bash 薄启动器)
                                            │   └── myagents.cmd  (cmd/PowerShell 薄启动器)
-src-tauri/src/cli.rs                       ├── npm-global/       (AI 自装 CLI 落点)
-  → 定位 bundle Node + CLI                └── sidecar.port      (Global Sidecar 端口)
+src-tauri/src/cli.rs                       ├── external-myagents-cli/
+  → 定位 bundle Node + CLI                │   └── SKILL.md       (外部 AI 显式阅读指南)
+bundled-guides/external-myagents-cli/      ├── npm-global/       (AI 自装 CLI 落点)
+  → App 版本化指南源码                    └── sidecar.port      (Global Sidecar 端口)
   → 生成并原子安装 launcher
 ```
 
@@ -79,6 +83,12 @@ CLI 脚本只有一条执行 authority：`cli.rs` 使用当前安装包的 bundl
 
 - **AI 调用场景**：`buildClaudeSessionEnv()` 注入 `MYAGENTS_PORT` 环境变量（当前 Session Sidecar 端口）
 - **终端调用场景**：只有环境没有有效 `MYAGENTS_PORT` 时，`cli.rs` 才从 `~/.myagents/sidecar.port` 读取并校验 Global 端口
+
+App 启动时生成进程生命周期内的内部 CLI capability，并只注入 Global/Session Sidecar、集成终端和受管 Agent Runtime。普通终端不会获得该 capability：它通过薄启动器发现 Global Host 后，必须携带设置页生成的 `MYAGENTS_API_TOKEN`，并且只能进入静态公开清单。端口、`MYAGENTS_SESSION_ID`、`--port` 和 payload 中自报的来源都不是内部身份。
+
+外部访问默认关闭。Rust App owner 在 `config.json.externalCliAccess` 中锁内管理开关、单个可恢复 token 与创建时间；普通 Renderer `AppConfig` 投影和通用 `config get/set` 不暴露或修改这份私有 envelope。设置 → 外部调用是唯一明文显示、复制、重置和启停入口。关闭或重置只影响后续 admission，已经准入的业务继续按各自 owner 完成。
+
+设置页还返回当前平台的 launcher、外部指南绝对路径与瞬时 `skillReady`，并生成一个“发送给其他 AI 的 Prompt”。页面展示始终用 `<token>` 占位，只有用户主动点击复制且外部调用已开启、当前 token 可用时，复制内容才即时注入真实 `MYAGENTS_API_TOKEN`；指南或路径尚未就绪时不能复制。外部 AI 先读指南，再使用绝对 launcher，并只把 Prompt 中的 token 设置到调用进程环境，不应继续输出或持久化。指南目录刻意位于 `~/.myagents/skills` 之外，因此不进入 global skill inventory、不投影到 Workspace，也不会与 App 内 Required/User Skill 混淆。Rust 在 App 启动预检及设置 owner 命令中按内置字节幂等收敛该文件；内容过期会被当前 App 版本覆盖，父目录若是 symlink / Windows reparse point 则 fail closed。指南同步失败只令 `skillReady=false`、隐藏交接 Prompt，不能阻断外部访问策略的读取、关闭或 token 重置。
 - **显式覆盖**：Node CLI parser 最后解析 `--port`，所以命令行值高于 Rust 保留或补入的环境值
 
 ### 命令体系
@@ -97,13 +107,7 @@ Agent-facing system prompt、Required Skills 与 help 只推荐 canonical `myage
 
 ### 请求-响应模式
 
-```typescript
-// CLI 脚本的所有调用都是同一个模式
-const result = await fetch(`http://127.0.0.1:${PORT}/api/admin/${group}/${action}`, {
-  method: 'POST',
-  body: JSON.stringify(body),
-});
-```
+CLI 统一向 loopback `/api/admin/<canonical-route>` 发送 JSON POST；route 经 CLI 路由解析，不能假设用户输入的 group/action 可直接拼接。公共请求入口优先使用继承的 App 内部 capability，否则使用 `MYAGENTS_API_TOKEN` 的 Bearer header；无有效凭据的业务请求由 admission 拒绝。命令 handler 不单独构造另一套鉴权方式，具体实现以 `src/cli/myagents.ts` 的 `callApi()` 为准。
 
 Admin API 的响应格式统一：
 ```jsonc
@@ -195,7 +199,7 @@ Project identity、重复 workspace 和多 Project claim 均返回局部 diagnos
 
 `myagents cron` 保留既有用户命令名和 JSON shape，但不再创建 `CronTask`。所有 add/list/update/start/stop/remove/run-now 都由 Rust compatibility facade 直接读写 `TaskStore`，时间触发由 `TaskSchedulerController` 管理；`cron_tasks.json` 只作为启动迁移的只读历史格式。
 
-新 Agent 工作流以 `myagents task` 为 canonical surface；`task start/stop/runs/exit` 在 CLI 路由层复用对应 compatibility handler，不复制 Admin/Rust 业务逻辑。旧 `cron` 命令继续服务已发布脚本和人工习惯。
+新 Agent 工作流以 `myagents task` 为 canonical surface；`task start/stop/runs` 使用独立的 canonical Admin route，并复用同一 Rust TaskStore adapter，不继承 Cron compatibility surface 的 ambient workspace guard。`task exit` 仍是当前 Task turn 的兼容操作。旧 `cron` 命令继续服务 App 内已发布脚本和人工习惯。
 
 Cron 兼容面只提供 `list`，不发布 `cron get`；单条详情统一使用 canonical `myagents task get <taskId>`，两者都只投影 TaskStore。迁移失败的旧行不混入可操作列表，只通过桌面内部 `cmd_get_unmigrated_legacy_cron_tasks` 供只读 Legacy 面板诊断；deleted Task 保留 legacy id tombstone。
 
@@ -224,13 +228,13 @@ myagents task run-now <taskId>         # 绕过 Detector，强制执行 AI
 myagents task reset-checkpoint <taskId>
 ```
 
-`task create-direct` 与 `task list` 在 Sidecar Admin 边界复用当前 workspace 解析：正常路径省略 workspace flags，Sidecar 以当前 path 匹配 `projects.json` 并补齐 Rust 所需的 stable `workspaceId + workspacePath`；只有显式跨 workspace 时由调用方提供。`agent current --json` 只返回当前 Agent/workspace/Session 的紧凑诊断，不是创建前置步骤。`task list` 的 Agent 投影默认只在当前 workspace 内返回紧凑字段与 `sessionCount`，完整 `sessionIds`、文档和 Trigger health 仍由 `task get` 拥有。兼容 `cron add/update` 必须无损转发同一组 `runtime/runtimeConfig/providerId/model/permissionMode` override，并在 dry-run 与真实写入前复用同一 validator；mutation leaf 对未知 flag fail closed，禁止静默丢字段。未显式传 override 时仍只继承目标 Agent，不增加顶层或 project runtime fallback。
+App 内部 caller 的 `task create-direct` 与 `task list` 在 Sidecar Admin 边界复用当前 workspace 解析：正常路径省略 workspace flags，Sidecar 以当前 path 匹配 `projects.json` 并补齐 Rust 所需的 stable `workspaceId + workspacePath`；只有显式跨 workspace 时由调用方提供。外部 caller 必须显式提供 `workspaceId` 或 `workspacePath`。`agent current --json` 只返回当前 Agent/workspace/Session 的紧凑诊断，不是创建前置步骤。`task list` 的 Agent 投影默认只在当前 workspace 内返回紧凑字段与 `sessionCount`，完整 `sessionIds`、文档和 Trigger health 仍由 `task get` 拥有。兼容 `cron add/update` 必须无损转发同一组 `runtime/runtimeConfig/providerId/model/permissionMode` override，并在 dry-run 与真实写入前复用同一 validator；mutation leaf 对未知 flag fail closed，禁止静默丢字段。未显式传 override 时仍只继承目标 Agent，不增加顶层或 project runtime fallback。
 
-CLI 从自身 `MYAGENTS_SESSION_ID` 判定 `agent/cli` 或 `user/cli`，把内部 caller metadata 传到既有 Rust transition 审计；Sidecar 不用自己的 `MYAGENTS_PORT` 猜调用者。UI 继续在 Tauri command 边界权威盖章为 `user/ui`。archive 仍由状态机执行 user-only guard，delete 记录真实 CLI actor/source。
+已通过内部 capability 的 CLI caller 从自身 `MYAGENTS_SESSION_ID` 判定 `agent/cli` 或 `user/cli`，把内部 caller metadata 传到既有 Rust transition 审计；Sidecar 不用自己的 `MYAGENTS_PORT` 猜调用者。token-authenticated 外部 caller 的 Task 审计来源由 Host 固定为 `user/cli`，不信任环境或 payload 自报的 Agent/Session 身份。UI 继续在 Tauri command 边界权威盖章为 `user/ui`。archive 仍由状态机执行 user-only guard，delete 记录真实 CLI actor/source。
 
 `--preselectedSessionId current` 在 CLI 边界解析 `MYAGENTS_SESSION_ID`，持久层只接收 canonical id；新建 single-session 不允许空绑定。trigger/spec/checkpoint 文件使用有界 regular-file no-follow 读取，拒绝 NUL、无效 UTF-8、超限或非 object JSON；`trigger test --expect` 也必须在任何 Detector 调用前校验为 `quiet | activate`。test 不提交 MyAgents 状态，但命令的外部副作用仍真实发生。human/JSON failure 都保留结构化 code、suggestion、可选 suggested command，以及 Detector 的有界 stderr/stdout 诊断。pending Activation Event 未结算时，Rust authority 拒绝 `run-now`，CLI 只透传该拒绝而不建立第二条执行路径。
 
-Agent-facing CLI 统一使用 `myagents task`。`task start/stop/runs/exit` 只是在 CLI 路由层复用既有 Cron compatibility handler，后端仍进入同一个 Rust Task authority；`myagents cron` 命令为外部用户和脚本继续兼容。Task 创建还可用 `--deadline`、`--maxExecutions`、`--aiCanExit` 写入既有 `TaskEndConditions`，不新增结束状态 owner。
+Agent-facing CLI 统一使用 `myagents task`。`task start/stop/runs` 走 canonical `task/*` route，和 legacy Cron handler 只共享进入同一个 Rust Task authority 的小型 adapter；精确 Task ID 操作不读取当前 workspace。`myagents cron` 仅为 App 内旧脚本继续兼容，不属于 token-authenticated 外部公开面。Task 创建还可用 `--deadline`、`--maxExecutions`、`--aiCanExit` 写入既有 `TaskEndConditions`，不新增结束状态 owner。
 
 ### Runtime 自诊断
 
@@ -279,8 +283,9 @@ Skill frontmatter 以 Agent Skills 标准为 canonical：作者写在 `metadata.
 `cli.rs` 让 launcher 和兼容的 app-binary 直调在 Tauri 初始化前进入 CLI mode：
 
 ```bash
+# 前置：App 已运行、已开启外部调用，当前进程环境已设置 MYAGENTS_API_TOKEN
 # macOS — 直接调用 app 二进制
-/Applications/MyAgents.app/Contents/MacOS/MyAgents mcp list
+/Applications/MyAgents.app/Contents/MacOS/MyAgents runtime list
 
 # canonical 用户入口由 app 启动自动生成
 ~/.myagents/bin/myagents status
@@ -344,7 +349,7 @@ Admin API 注册在 Sidecar 的 `/api/admin/*` 路由下，提供与 GUI 对等�
 | `/api/admin/vision/*` | 官方图片理解 CLI 工具：`readme` / `analyze` |
 | `/api/admin/plugin/*` | OpenClaw 插件安装/卸载/列表 |
 | `/api/admin/im/*` | IM runtime actions（send-media） |
-| `/api/admin/session/*` | Agent Session `list/start` discovery/fresh admission，以及 `send/watch` 既有上下文通信 |
+| `/api/admin/session/*` | Agent Session `list/start` discovery/fresh admission、`send/watch` 既有上下文通信，以及只读 `get` 文本投影 |
 | `/api/admin/space/*` | Cloud Space：显式 slug、whoami/assignee/Goal discovery、Issue create/read/metadata update、comment/top attachment、claim/complete/download |
 | `/api/admin/widget/*` | Generative UI widget 资料 |
 | `/api/admin/config/*` | 通用配置读写 |
@@ -352,6 +357,8 @@ Admin API 注册在 Sidecar 的 `/api/admin/*` 路由下，提供与 GUI 对等�
 | `/api/admin/version` | 版本号 |
 | `/api/admin/reload` | 热重载配置 |
 | `/api/admin/help` | 命令帮助文本（子命令 help 来自这里） |
+
+所有 `/api/admin/*` 请求必须先经过统一 caller admission，再进入上表 handler。内部请求使用 App 生命周期 capability，保留完整既有能力；外部请求必须同时满足“功能已开启 + Bearer token 正确 + canonical route 在 `EXTERNAL_CLI_PUBLIC_ROUTES` 固定清单”。Rust Management API 与目标 Sidecar 的 Inbox/internal 端点也要求同一进程生命周期 capability，只有受管 Sidecar、Plugin Bridge 与 Rust 内部转发会携带；因此直连旧 Management 端口不能绕过 Node admission。公开命令的 canonical route、显式 alias、flags、位置参数范围和离线 leaf usage 由 `externalCliCapabilities.ts` 同一份元数据声明；外部/未认证调用在 HTTP 前拒绝未知命令和未知 flag，内部 capability 仍使用完整 CLI registry。公开面当前只包括 status/version、Agent create/list/show、Runtime list/describe、Session list/start/send/get、列明的 Task alias/动作与 Record list/create；旧直连、换端口或伪造 Session 环境不能绕过。
 
 ### Cloud Space CLI 身份与错误边界
 
@@ -374,10 +381,12 @@ session 选择、结构化事件生成与投递确认。
 
 | 子命令 | 事件 | 关键不变量 |
 |--------|------|------------|
+| `myagents agent create --workspacePath <absolute-existing-directory>` | 无 | 在跨进程 intent lock 内 Project-first 注册；同路径幂等，不创建目录；hidden/internal/system/archived 与 identity conflict fail closed |
 | `myagents agent list/show` | 无 | exact Agent ID 是 selector；Project-backed 与历史 extra/orphan 均可发现；只有 Project 选中的 Agent 可为 `isCurrent`；目标 claim conflict 局部失败 |
 | `myagents session list --agent` | 无 | 只读 `sessions.json` 的 history-visible metadata，按 `lastActiveAt` 倒序；不唤醒、不探测 live、不读 transcript |
 | `myagents session start --agent` | `send.request` / 可选 `send.result` | Rust 生成 Session/request ID，目标 Sidecar 按 Agent 当前有效配置创建 owned snapshot；Runtime dispatch acceptance 是成功点，CLI receipt 不等待 terminal |
-| `myagents session send` | `send.request` / 可选 `send.result` | 目标 session 收到 `<myagents-session-event type="send.request">`；若需要回执，目标 turn terminal 后自动把 `send.result` 推回源 session |
+| `myagents session send` | `send.request` / 可选 `send.result` | 目标 session 收到 `<myagents-session-event type="send.request">`；只有内部 Session 调用可回投，外部调用固定 one-way；ACK 解析失败或 transport 超时返回 `admission_unconfirmed`，不得假报成功或自动重发 |
+| `myagents session get` | 无 | 只读合并持久/内存/live transcript；过滤后分页，默认 5、最大 500、正序；只返回 user/assistant 顶层 text，不回退工具/思考 JSON，不创建 turn；owner transport/body 失败只重解析 owner 后重试一次 |
 | `myagents session watch` | `watch.already_idle` / `watch.completed` / `watch.error` | Rust Management API 先确认目标 live state；目标忙时在目标 Sidecar 注册 pending watch，完成事件确认送达后才 ack 清理；目标已 idle 时调用方立即收到最近结果 |
 
 `start` 不是“先建空 Session，再 best-effort send”的两步写入。source 只解析目标
@@ -393,8 +402,11 @@ ACK 丢失返回 unconfirmed receipt 并保留 ID、不自动重试。Rust 复�
 `BackgroundCompletion` handoff 后释放 transient owner；不新增 fresh-start durable token、恢复
 状态机、配置 fingerprint 或跨文件事务。
 
-调用方只能提交 `agentId + prompt + replyBack`，且必须来自有真实 sessionId 的 MyAgents
-Session。目标 Agent 是 runtime/model/permission/provider/MCP/plugin/tool birth authority；
+超时预算按调用层级严格递增：target owner 的单次 ACK 最短，Rust 的有界 owner 重解析覆盖其上，Node Admin 再覆盖 Rust，CLI 最外层最后超时。读操作只允许 `session get` 在 owner generation 可能切换时做一次立即重解析；`start/send` 不做 blind retry。
+
+调用方只能提交 `agentId + prompt + replyBack`。内部调用显式携带 `sourceKind=internal-session`
+和真实 sourceSessionId，保留默认回投；外部 Host 注入 `sourceKind=external-cli`，不接受来源伪造、
+不携带 sourceSessionId 且强制 one-way。目标 Agent 是 runtime/model/permission/provider/MCP/plugin/tool birth authority；
 Admin API 对调用方同名 override fail closed。默认 terminal 结果复用既有 `send.result` 回投，
 receipt 的 `messageId` 对应后续 `requestEventId`。
 
