@@ -23,19 +23,20 @@ Goal Mode 是 CLI 的特殊 current-session 控制能力：`myagents goal create
 │   → PATH 首先命中 ~/.myagents/bin/myagents 薄启动器                  │
 │   → 当前 MyAgents executable + private marker                       │
 │   → 当前 bundle Node 执行当前 bundle cli/myagents.cjs               │
-│   → fetch(127.0.0.1:${MYAGENTS_PORT}/api/admin/mcp/add)             │
+│   → 携带 App 生命周期内部 capability 请求 Admin API              │
 │   → Admin API 写 config → SSE 广播 → 前端同步                        │
 └─────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │ 场景 2：用户终端调用（次要用途）                                       │
 │                                                                     │
-│ 终端: `MyAgents mcp list` 或 `myagents mcp list`                    │
+│ 前置：App 运行、开启外部调用、设置 MYAGENTS_API_TOKEN               │
+│ 终端: `MyAgents runtime list` 或 `myagents runtime list`            │
 │   → direct app-binary group 或 launcher private marker 进入 CLI mode │
 │   → 不启动 GUI / 不杀 sidecar / 不触发单实例焦点                      │
 │   → 定位当前安装树中的 bundled Node + cli/myagents.cjs               │
 │   → 无继承 Session 端口时才读 sidecar.port 补 Global 端口            │
-│   → 注入 MYAGENTS_PORT → 转发到 Admin API                            │
+│   → 注入 MYAGENTS_PORT → 携带 Bearer token 请求公开 Admin route      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -106,13 +107,7 @@ Agent-facing system prompt、Required Skills 与 help 只推荐 canonical `myage
 
 ### 请求-响应模式
 
-```typescript
-// CLI 脚本的所有调用都是同一个模式
-const result = await fetch(`http://127.0.0.1:${PORT}/api/admin/${group}/${action}`, {
-  method: 'POST',
-  body: JSON.stringify(body),
-});
-```
+CLI 统一向 loopback `/api/admin/<canonical-route>` 发送 JSON POST；route 经 CLI 路由解析，不能假设用户输入的 group/action 可直接拼接。公共请求入口优先使用继承的 App 内部 capability，否则使用 `MYAGENTS_API_TOKEN` 的 Bearer header；无有效凭据的业务请求由 admission 拒绝。命令 handler 不单独构造另一套鉴权方式，具体实现以 `src/cli/myagents.ts` 的 `callApi()` 为准。
 
 Admin API 的响应格式统一：
 ```jsonc
@@ -233,9 +228,9 @@ myagents task run-now <taskId>         # 绕过 Detector，强制执行 AI
 myagents task reset-checkpoint <taskId>
 ```
 
-`task create-direct` 与 `task list` 在 Sidecar Admin 边界复用当前 workspace 解析：正常路径省略 workspace flags，Sidecar 以当前 path 匹配 `projects.json` 并补齐 Rust 所需的 stable `workspaceId + workspacePath`；只有显式跨 workspace 时由调用方提供。`agent current --json` 只返回当前 Agent/workspace/Session 的紧凑诊断，不是创建前置步骤。`task list` 的 Agent 投影默认只在当前 workspace 内返回紧凑字段与 `sessionCount`，完整 `sessionIds`、文档和 Trigger health 仍由 `task get` 拥有。兼容 `cron add/update` 必须无损转发同一组 `runtime/runtimeConfig/providerId/model/permissionMode` override，并在 dry-run 与真实写入前复用同一 validator；mutation leaf 对未知 flag fail closed，禁止静默丢字段。未显式传 override 时仍只继承目标 Agent，不增加顶层或 project runtime fallback。
+App 内部 caller 的 `task create-direct` 与 `task list` 在 Sidecar Admin 边界复用当前 workspace 解析：正常路径省略 workspace flags，Sidecar 以当前 path 匹配 `projects.json` 并补齐 Rust 所需的 stable `workspaceId + workspacePath`；只有显式跨 workspace 时由调用方提供。外部 caller 必须显式提供 `workspaceId` 或 `workspacePath`。`agent current --json` 只返回当前 Agent/workspace/Session 的紧凑诊断，不是创建前置步骤。`task list` 的 Agent 投影默认只在当前 workspace 内返回紧凑字段与 `sessionCount`，完整 `sessionIds`、文档和 Trigger health 仍由 `task get` 拥有。兼容 `cron add/update` 必须无损转发同一组 `runtime/runtimeConfig/providerId/model/permissionMode` override，并在 dry-run 与真实写入前复用同一 validator；mutation leaf 对未知 flag fail closed，禁止静默丢字段。未显式传 override 时仍只继承目标 Agent，不增加顶层或 project runtime fallback。
 
-CLI 从自身 `MYAGENTS_SESSION_ID` 判定 `agent/cli` 或 `user/cli`，把内部 caller metadata 传到既有 Rust transition 审计；Sidecar 不用自己的 `MYAGENTS_PORT` 猜调用者。UI 继续在 Tauri command 边界权威盖章为 `user/ui`。archive 仍由状态机执行 user-only guard，delete 记录真实 CLI actor/source。
+已通过内部 capability 的 CLI caller 从自身 `MYAGENTS_SESSION_ID` 判定 `agent/cli` 或 `user/cli`，把内部 caller metadata 传到既有 Rust transition 审计；Sidecar 不用自己的 `MYAGENTS_PORT` 猜调用者。token-authenticated 外部 caller 的 Task 审计来源由 Host 固定为 `user/cli`，不信任环境或 payload 自报的 Agent/Session 身份。UI 继续在 Tauri command 边界权威盖章为 `user/ui`。archive 仍由状态机执行 user-only guard，delete 记录真实 CLI actor/source。
 
 `--preselectedSessionId current` 在 CLI 边界解析 `MYAGENTS_SESSION_ID`，持久层只接收 canonical id；新建 single-session 不允许空绑定。trigger/spec/checkpoint 文件使用有界 regular-file no-follow 读取，拒绝 NUL、无效 UTF-8、超限或非 object JSON；`trigger test --expect` 也必须在任何 Detector 调用前校验为 `quiet | activate`。test 不提交 MyAgents 状态，但命令的外部副作用仍真实发生。human/JSON failure 都保留结构化 code、suggestion、可选 suggested command，以及 Detector 的有界 stderr/stdout 诊断。pending Activation Event 未结算时，Rust authority 拒绝 `run-now`，CLI 只透传该拒绝而不建立第二条执行路径。
 
@@ -288,8 +283,9 @@ Skill frontmatter 以 Agent Skills 标准为 canonical：作者写在 `metadata.
 `cli.rs` 让 launcher 和兼容的 app-binary 直调在 Tauri 初始化前进入 CLI mode：
 
 ```bash
+# 前置：App 已运行、已开启外部调用，当前进程环境已设置 MYAGENTS_API_TOKEN
 # macOS — 直接调用 app 二进制
-/Applications/MyAgents.app/Contents/MacOS/MyAgents mcp list
+/Applications/MyAgents.app/Contents/MacOS/MyAgents runtime list
 
 # canonical 用户入口由 app 启动自动生成
 ~/.myagents/bin/myagents status
