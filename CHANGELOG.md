@@ -7,25 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.4.21] - 2026-09-19
+## [0.4.21] - 2026-09-23
 
-> MyAgents 0.4.21 新增受控的本机外部 CLI Host，可把既有目录注册为 Agent 工作区，并从外部程序安全地创建、继续和读取 Session。
+> MyAgents 0.4.21 支持本机外部 AI 与 MyAgents 协作，提升会话回退、插件卸载和聊天机器人配置的可靠性，并升级托管 Codex。
 
 ### Added
 
-- **外部 CLI 调用**：设置页可显式开启本机外部调用、显示/复制或重置 token；普通终端通过 `MYAGENTS_API_TOKEN` 使用固定公开清单，默认关闭且不开放内部管理命令。
-- **从目录创建 Workspace Agent**：`myagents agent create --workspacePath <绝对目录>` 幂等注册既有目录，复用 Project/Agent identity authority；冲突、归档、系统或不安全路径明确拒绝。
-- **只读 Session 正文**：`myagents session get` 支持过滤后的稳定分页和 live overlay，只输出可见 user/assistant 文本，不泄漏工具、思考或隐藏协议内容。
-- **外部 Session 协作**：认证后的外部程序可 list/start/send Session，并继续使用公开的 Task、Record 与 Runtime 查询能力；外部消息有独立来源类型，不伪造内部 Session 或结果回投。
+- **本机外部 AI 协作**：在设置中开启“外部调用”后，可让其他 AI 或终端通过访问令牌调用指定能力；支持复制连接指引、查看和重置令牌，默认保持关闭。
+- **从既有目录创建工作区 Agent**：外部程序可注册已有目录，重复调用复用同一工作区，并查询 Agent、运行时、任务和记录。
+- **创建、继续和读取会话**：外部程序可发起或继续对话，分页读取已保存及正在生成的可见正文；不会输出工具参数、思考或隐藏指令。
 
 ### Changed
 
-- **CLI Admin API 统一准入**：App 内 CLI 使用生命周期内部 capability，外部调用使用 Rust 管理的开关/token 与静态路由白名单；旧脚本升级后需先在设置中开启并设置 `MYAGENTS_API_TOKEN`。
-- **外部 CLI 命令契约收敛**：公开 route、alias、离线帮助和参数白名单改由同一份元数据维护；未知命令、额外位置参数和未知 flag 不再静默进入业务层。Task 列表/创建接受显式 workspace ID 或路径并核对 identity，精确 Task ID 的启停与历史不再受当前 workspace 影响。
+- **托管 Codex 升级至 0.155.1**：适配新版运行时及其资源包，保留签名校验；本次不开放产品语音功能。
+- **普通终端调用需要授权**：旧的外部脚本升级后，需先在设置中开启“外部调用”并设置 `MYAGENTS_API_TOKEN`，且仅能使用公开命令；App 内 Agent 保持原有调用方式。
 
 ### Fixed
 
-- **外部 Session 回执与读取更可靠**：`session start/send` 的分层超时不再由最外层提前截断；ACK 丢失或响应不可解析时明确返回 `admission_unconfirmed`，避免误报成功和自动重发。`session get` 会在 owner 切换时有界重解析一次，并对畸形结构化 assistant 内容 fail closed，防止工具参数 JSON 泄漏到正文。
+- **会话回退与重试更可靠**：回退后继续对话、重新打开会话时保持正确的历史分支，避免已撤回内容重新进入上下文；恢复失败时保留选定边界并明确报错。
+- **插件详情页可正常卸载**：修复卸载确认框无法显示的问题，并在保留数据时展示实际目录。
+- **聊天机器人升级保留正确归属**：修复旧配置迁移造成多个工作区占用同一 Agent、机器人配置被隐藏的问题；发现归属冲突时展示涉及的工作区，由用户明确选择保留方，保留原有渠道和凭据。
 
 ---
 
