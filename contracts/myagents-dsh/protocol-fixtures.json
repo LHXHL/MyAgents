@@ -87,8 +87,8 @@
         },
         "productSessionId": "product-session-1",
         "protocol": {
-          "maxVersion": "5.0.0",
-          "minVersion": "5.0.0"
+          "maxVersion": "6.0.0",
+          "minVersion": "6.0.0"
         },
         "runtimeHome": "/fixture/runtime-home",
         "unexpected": true,
@@ -184,8 +184,8 @@
         },
         "productSessionId": "product-session-1",
         "protocol": {
-          "maxVersion": "5.0.0",
-          "minVersion": "5.0.0"
+          "maxVersion": "6.0.0",
+          "minVersion": "6.0.0"
         },
         "runtimeHome": "relative/runtime-home",
         "workspace": {
@@ -210,7 +210,7 @@
         },
         "piVersion": "0.50.3",
         "profileDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "protocolVersion": "5.0.0",
+        "protocolVersion": "6.0.0",
         "runtimeCapabilities": {
           "configuration": {
             "agents": "next-turn",
@@ -305,12 +305,12 @@
           "distribution": "myagents-dsh",
           "distributionVersion": "0.0.0",
           "name": "deepseek-harness",
-          "version": "0.1.5-rc.3.myagents.a4c74a91e06b.13b108f38d68"
+          "version": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e"
         },
         "runtimeGeneration": "generation-1",
         "runtimeVersion": "0.0.0",
-        "schemaSha256": "e9f32098b73b657976c1c91170662bda41bf09097c8aad9174175cd48c7c1fa4",
-        "sessionFormat": "dsh-session-events-v1"
+        "schemaSha256": "de5d024b22eda9d89095df3eb3474d3e76f220e44458fb08e28a1494e49b0254",
+        "sessionFormat": "dsh-session-events-v2"
       }
     },
     {
@@ -333,12 +333,12 @@
           "skills": [],
           "tools": []
         },
-        "historyFormat": "dsh-session-events-v1",
+        "historyFormat": "dsh-session-events-v2",
         "nativeLeafId": "pi-leaf-1",
         "runtimeSessionId": "runtime-session-1",
         "state": "ready",
         "toolCatalog": {
-          "contractSha256": "da5724f9de16c91344037529dad379ef9716796a10ce2cdcb02116ef102a7323",
+          "contractSha256": "dbd2a9fbcec69b55759cf726497c2857125a8d358197e10063ceb57cda2d64f8",
           "diagnostics": [
             {
               "available": true,
@@ -437,7 +437,7 @@
               "tool": "TaskUpdate"
             }
           ],
-          "digest": "18e1bee7b9fd579b16de7b5557a6757649f8f17a0bebc6a000b147b7678f66f1",
+          "digest": "9b3bd1af12d8bcb8405e843797152a9deac47b3d9086db98b6944add31854de2",
           "effectiveTools": [
             "Read",
             "Write",
@@ -505,7 +505,7 @@
         "durableHead": {
           "sequence": 1
         },
-        "historyFormat": "dsh-session-events-v1",
+        "historyFormat": "dsh-session-events-v2",
         "records": [
           {
             "chunkCount": 1,
@@ -531,7 +531,7 @@
         "durableHead": {
           "sequence": 1
         },
-        "historyFormat": "dsh-session-events-v1",
+        "historyFormat": "dsh-session-events-v2",
         "records": [
           {
             "chunkCount": 1,
@@ -1220,8 +1220,8 @@
       }
     }
   ],
-  "protocolVersion": "5.0.0",
-  "schemaSha256": "e9f32098b73b657976c1c91170662bda41bf09097c8aad9174175cd48c7c1fa4",
+  "protocolVersion": "6.0.0",
+  "schemaSha256": "de5d024b22eda9d89095df3eb3474d3e76f220e44458fb08e28a1494e49b0254",
   "valid": [
     {
       "frame": {
@@ -1308,8 +1308,8 @@
           },
           "productSessionId": "product-session-1",
           "protocol": {
-            "maxVersion": "5.0.0",
-            "minVersion": "5.0.0"
+            "maxVersion": "6.0.0",
+            "minVersion": "6.0.0"
           },
           "runtimeHome": "/fixture/runtime-home",
           "workspace": {
@@ -1337,7 +1337,7 @@
             "maxPendingRequests": 128
           },
           "profileDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-          "protocolVersion": "5.0.0",
+          "protocolVersion": "6.0.0",
           "runtimeCapabilities": {
             "configuration": {
               "agents": "next-turn",
@@ -1432,12 +1432,12 @@
             "distribution": "myagents-dsh",
             "distributionVersion": "0.0.0",
             "name": "deepseek-harness",
-            "version": "0.1.5-rc.3.myagents.a4c74a91e06b.13b108f38d68"
+            "version": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e"
           },
           "runtimeGeneration": "generation-1",
           "runtimeVersion": "0.0.0",
-          "schemaSha256": "e9f32098b73b657976c1c91170662bda41bf09097c8aad9174175cd48c7c1fa4",
-          "sessionFormat": "dsh-session-events-v1"
+          "schemaSha256": "de5d024b22eda9d89095df3eb3474d3e76f220e44458fb08e28a1494e49b0254",
+          "sessionFormat": "dsh-session-events-v2"
         }
       },
       "name": "initialize-result",
@@ -1558,7 +1558,7 @@
             "sequence": 2,
             "stableBoundaryId": "boundary-1"
           },
-          "historyFormat": "dsh-session-events-v1",
+          "historyFormat": "dsh-session-events-v2",
           "records": [
             {
               "data": {

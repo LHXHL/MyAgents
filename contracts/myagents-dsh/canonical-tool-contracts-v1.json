@@ -1171,7 +1171,7 @@
       ],
       "checkpoint": "none",
       "concurrency": "parallel",
-      "description": "Execute a bash command (`bash -c`) and return its stdout/stderr. Each call runs in a fresh shell: no state (cwd, variables, functions) persists between calls — pass `workdir` instead of using `cd`. Non-zero exits are reported as `[exit code: N]`. Current harness environment facts are exposed through managed `$DSH_*` variables; inspect them when needed. Commands may run under a file sandbox; a blocked file operation is reported as `[sandbox: file access denied under <mode> mode]` — a policy denial, not a bug in the command; do not retry another way. Long output is truncated to its tail; the full output is saved to a file whose path is reported when available. Set `run_in_background: true` for long-running commands: the call returns a job id immediately; read its output with `job_output` and stop it with `job_kill`.",
+      "description": "Execute a bash command (`bash -c`) and return its stdout/stderr. Each call runs in a fresh shell; pass `workdir` instead of using `cd`. Managed `$DSH_*` variables expose current harness environment facts. Long output is truncated to its tail; the full output is saved to a file whose path is reported when available. Commands may run under a file sandbox; a blocked file operation is reported as `[sandbox: file access denied under <mode> mode]`, a policy denial: do not retry another way.",
       "errorCodes": [
         {
           "code": "permission_denied",
@@ -1194,7 +1194,7 @@
             "type": "boolean"
           },
           "timeoutMs": {
-            "description": "Timeout in milliseconds. The executor applies its configured default and cap, and kills the command on expiry.",
+            "description": "Timeout in milliseconds. The executor applies its configured default and cap; on expiry the command moves to the background as a job instead of being killed.",
             "type": "number"
           },
           "workdir": {
@@ -1223,7 +1223,7 @@
             "type": "boolean"
           },
           "timeoutMs": {
-            "description": "Timeout in milliseconds. The executor applies its configured default and cap, and kills the command on expiry.",
+            "description": "Timeout in milliseconds. The executor applies its configured default and cap; on expiry the command moves to the background as a job instead of being killed.",
             "type": "number"
           },
           "workdir": {
@@ -1274,6 +1274,31 @@
           {
             "additionalProperties": false,
             "properties": {
+              "jobId": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "promoted",
+                "type": "string"
+              },
+              "output": {
+                "type": "string"
+              },
+              "timeoutMs": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "kind",
+              "jobId",
+              "timeoutMs",
+              "output"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
               "aborted": {
                 "type": "boolean"
               },
@@ -1361,6 +1386,9 @@
                 ],
                 "type": "object"
               },
+              "stopped": {
+                "type": "string"
+              },
               "timedOut": {
                 "type": "boolean"
               },
@@ -1400,7 +1428,7 @@
       ],
       "checkpoint": "none",
       "concurrency": "parallel",
-      "description": "Execute a PowerShell command (`pwsh -Command`) and return its stdout/stderr. Each call runs in a fresh pwsh process: no state (cwd, variables, functions) persists between calls — pass `workdir` instead of using `cd`. Paths use native Windows form (`C:\\...`); read environment variables with `$env:NAME`. Non-zero exits are reported as `[exit code: N]`. Current harness environment facts are exposed through managed `$env:DSH_*` variables; inspect them when needed. Commands may run under a file sandbox; a blocked file operation is reported as `[sandbox: file access denied under <mode> mode]` — a policy denial, not a bug in the command; do not retry another way. Long output is truncated to its tail; the full output is saved to a file whose path is reported when available. On Windows a force-killed command settles as `[exit code: 1]` without a signal marker — treat it as an interruption, not a command failure. Set `run_in_background: true` for long-running commands: the call returns a job id immediately; read its output with `job_output` and stop it with `job_kill`.",
+      "description": "Execute a PowerShell command (`pwsh -Command`) and return its stdout/stderr. Each call runs in a fresh pwsh process; pass `workdir` instead of using `cd`. Paths use native Windows form (`C:\\...`); read environment variables with `$env:NAME`. Managed `$env:DSH_*` variables expose current harness environment facts. Long output is truncated to its tail; the full output is saved to a file whose path is reported when available. On Windows a force-killed command settles as `[exit code: 1]` without a signal marker — treat it as an interruption, not a command failure. Commands may run under a file sandbox; a blocked file operation is reported as `[sandbox: file access denied under <mode> mode]`, a policy denial: do not retry another way.",
       "errorCodes": [
         {
           "code": "permission_denied",
@@ -1423,7 +1451,7 @@
             "type": "boolean"
           },
           "timeoutMs": {
-            "description": "Timeout in milliseconds. The executor applies its configured default and cap, and kills the command on expiry.",
+            "description": "Timeout in milliseconds. The executor applies its configured default and cap; on expiry the command moves to the background as a job instead of being killed.",
             "type": "number"
           },
           "workdir": {
@@ -1452,7 +1480,7 @@
             "type": "boolean"
           },
           "timeoutMs": {
-            "description": "Timeout in milliseconds. The executor applies its configured default and cap, and kills the command on expiry.",
+            "description": "Timeout in milliseconds. The executor applies its configured default and cap; on expiry the command moves to the background as a job instead of being killed.",
             "type": "number"
           },
           "workdir": {
@@ -1503,6 +1531,31 @@
           {
             "additionalProperties": false,
             "properties": {
+              "jobId": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "promoted",
+                "type": "string"
+              },
+              "output": {
+                "type": "string"
+              },
+              "timeoutMs": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "kind",
+              "jobId",
+              "timeoutMs",
+              "output"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
               "aborted": {
                 "type": "boolean"
               },
@@ -1590,6 +1643,9 @@
                 ],
                 "type": "object"
               },
+              "stopped": {
+                "type": "string"
+              },
               "timedOut": {
                 "type": "boolean"
               },
@@ -1629,7 +1685,7 @@
       ],
       "checkpoint": "none",
       "concurrency": "parallel",
-      "description": "Read a background job. Stream jobs return only output since the previous read; final-output jobs return their result after settlement. Every response ends with `[status: ...]`. Reads are non-blocking unless `wait: true`, which waits up to the configured cap.",
+      "description": "Read a background job: output since the previous read for stream jobs, or the result of a finished final-output job.",
       "errorCodes": [
         {
           "code": "permission_denied",
@@ -1644,11 +1700,11 @@
             "type": "string"
           },
           "timeout_ms": {
-            "description": "Max wait in milliseconds (only meaningful with wait: true). Defaults to the configured wait timeout; capped by the configured maximum.",
+            "description": "Max wait in milliseconds with wait: true. Defaults to and is capped by configuration.",
             "type": "number"
           },
           "wait": {
-            "description": "Block until the job reaches a terminal status or the timeout expires. A timed-out wait returns [status: running] and leaves the job alive.",
+            "description": "Block until the job finishes or the timeout expires; a timed-out wait leaves the job running. Defaults to false.",
             "type": "boolean"
           }
         },
@@ -1664,11 +1720,11 @@
             "type": "string"
           },
           "timeout_ms": {
-            "description": "Max wait in milliseconds (only meaningful with wait: true). Defaults to the configured wait timeout; capped by the configured maximum.",
+            "description": "Max wait in milliseconds with wait: true. Defaults to and is capped by configuration.",
             "type": "number"
           },
           "wait": {
-            "description": "Block until the job reaches a terminal status or the timeout expires. A timed-out wait returns [status: running] and leaves the job alive.",
+            "description": "Block until the job finishes or the timeout expires; a timed-out wait leaves the job running. Defaults to false.",
             "type": "boolean"
           }
         },
@@ -1857,7 +1913,7 @@
       ],
       "checkpoint": "none",
       "concurrency": "parallel",
-      "description": "Request cancellation of a running background job by job id. Returns immediately; the job settles as killed once its work actually stops.",
+      "description": "Request cancellation of a running background job.",
       "errorCodes": [
         {
           "code": "permission_denied",

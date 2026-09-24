@@ -125,7 +125,7 @@ function initializeResult(
     schemaSha256: dshLock.protocol.schemaSha256,
     runtimeVersion: "0.0.0",
     runtimeGeneration: "artifact-process-generation",
-    sessionFormat: "dsh-session-events-v1",
+    sessionFormat: "dsh-session-events-v2",
     profileDigest: dshLock.profile.digest,
     limits: {
       maxFrameBytes: 1_048_576,
@@ -285,7 +285,7 @@ describe("DSH RuntimeProcessHost", () => {
       productSessionId: "product-session-1",
       runtimeGeneration: "artifact-process-generation",
       protocolVersion: GENERATED_PROTOCOL_VERSION,
-      sessionFormat: "dsh-session-events-v1",
+      sessionFormat: "dsh-session-events-v2",
     });
     expect(test.host.state).toBe("protocol-ready");
     expect(test.order).toEqual([

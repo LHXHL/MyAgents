@@ -1627,6 +1627,18 @@
                     "systemPromptUpdate": {
                       "const": "in-history",
                       "type": "string"
+                    },
+                    "toolUpdate": {
+                      "anyOf": [
+                        {
+                          "const": "addition-only",
+                          "type": "string"
+                        },
+                        {
+                          "const": "in-history",
+                          "type": "string"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -2189,6 +2201,18 @@
               "systemPromptUpdate": {
                 "const": "in-history",
                 "type": "string"
+              },
+              "toolUpdate": {
+                "anyOf": [
+                  {
+                    "const": "addition-only",
+                    "type": "string"
+                  },
+                  {
+                    "const": "in-history",
+                    "type": "string"
+                  }
+                ]
               }
             },
             "required": [
@@ -7272,7 +7296,7 @@
             "type": "string"
           },
           "protocolVersion": {
-            "const": "5.0.0",
+            "const": "6.0.0",
             "type": "string"
           },
           "runtimeCapabilities": {
@@ -8171,7 +8195,7 @@
                 "type": "string"
               },
               "version": {
-                "const": "0.1.5-rc.3.myagents.a4c74a91e06b.13b108f38d68",
+                "const": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
                 "type": "string"
               }
             },
@@ -8198,7 +8222,7 @@
             "type": "string"
           },
           "sessionFormat": {
-            "const": "dsh-session-events-v1",
+            "const": "dsh-session-events-v2",
             "type": "string"
           }
         },
@@ -9990,6 +10014,18 @@
                     "systemPromptUpdate": {
                       "const": "in-history",
                       "type": "string"
+                    },
+                    "toolUpdate": {
+                      "anyOf": [
+                        {
+                          "const": "addition-only",
+                          "type": "string"
+                        },
+                        {
+                          "const": "in-history",
+                          "type": "string"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -10558,6 +10594,18 @@
               "systemPromptUpdate": {
                 "const": "in-history",
                 "type": "string"
+              },
+              "toolUpdate": {
+                "anyOf": [
+                  {
+                    "const": "addition-only",
+                    "type": "string"
+                  },
+                  {
+                    "const": "in-history",
+                    "type": "string"
+                  }
+                ]
               }
             },
             "required": [
@@ -10931,7 +10979,7 @@
                 "type": "object"
               },
               "historyFormat": {
-                "const": "dsh-session-events-v1",
+                "const": "dsh-session-events-v2",
                 "type": "string"
               },
               "runtimeSessionId": {
@@ -10948,7 +10996,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "contractSha256": {
-                    "const": "da5724f9de16c91344037529dad379ef9716796a10ce2cdcb02116ef102a7323",
+                    "const": "dbd2a9fbcec69b55759cf726497c2857125a8d358197e10063ceb57cda2d64f8",
                     "type": "string"
                   },
                   "diagnostics": {
@@ -13209,7 +13257,7 @@
             "type": "object"
           },
           "historyFormat": {
-            "const": "dsh-session-events-v1",
+            "const": "dsh-session-events-v2",
             "type": "string"
           },
           "mutationBoundaries": {
@@ -13976,6 +14024,18 @@
                     "systemPromptUpdate": {
                       "const": "in-history",
                       "type": "string"
+                    },
+                    "toolUpdate": {
+                      "anyOf": [
+                        {
+                          "const": "addition-only",
+                          "type": "string"
+                        },
+                        {
+                          "const": "in-history",
+                          "type": "string"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -14544,6 +14604,18 @@
               "systemPromptUpdate": {
                 "const": "in-history",
                 "type": "string"
+              },
+              "toolUpdate": {
+                "anyOf": [
+                  {
+                    "const": "addition-only",
+                    "type": "string"
+                  },
+                  {
+                    "const": "in-history",
+                    "type": "string"
+                  }
+                ]
               }
             },
             "required": [
@@ -14918,7 +14990,7 @@
                 "type": "object"
               },
               "historyFormat": {
-                "const": "dsh-session-events-v1",
+                "const": "dsh-session-events-v2",
                 "type": "string"
               },
               "runtimeSessionId": {
@@ -14935,7 +15007,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "contractSha256": {
-                    "const": "da5724f9de16c91344037529dad379ef9716796a10ce2cdcb02116ef102a7323",
+                    "const": "dbd2a9fbcec69b55759cf726497c2857125a8d358197e10063ceb57cda2d64f8",
                     "type": "string"
                   },
                   "diagnostics": {
@@ -22623,6 +22695,6 @@
       }
     }
   },
-  "protocolVersion": "5.0.0",
+  "protocolVersion": "6.0.0",
   "title": "MyAgents DSH native RPC"
 }

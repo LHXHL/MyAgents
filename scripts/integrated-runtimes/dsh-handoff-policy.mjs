@@ -30,7 +30,7 @@ export const CONTRACT_PATHS = Object.freeze([
   "contracts/public-contract.generated.ts",
   "contracts/myagents-dsh-compatibility-v1.json",
   "contracts/official-product-profile-v1.json",
-  "contracts/protocol-5.0.0-evidence.json",
+  "contracts/protocol-6.0.0-evidence.json",
   "contracts/protocol-fixtures.json",
   "contracts/protocol-meta.json",
   "contracts/protocol.schema.json",
@@ -397,8 +397,8 @@ export function compareOrAcceptContracts(
     );
   }
   if (acceptContracts) {
-    // Protocol 4 evidence describes the previous generated projection only.
-    rmSync(resolve(targetRoot, "protocol-4.0.0-evidence.json"), { force: true });
+    // Protocol 5 evidence describes the previous generated projection only.
+    rmSync(resolve(targetRoot, "protocol-5.0.0-evidence.json"), { force: true });
   }
 }
 

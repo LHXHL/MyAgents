@@ -167,7 +167,7 @@ class DshHistoryAssembler {
     }
     const runtimeSessionId = string(pageValue.runtimeSessionId, 'DSH history Runtime Session id');
     const historyFormat = string(pageValue.historyFormat, 'DSH history format');
-    if (historyFormat !== 'dsh-session-events-v1') throw new Error('DSH history format is incompatible');
+    if (historyFormat !== 'dsh-session-events-v2') throw new Error('DSH history format is incompatible');
     const durableHead = object(pageValue.durableHead, 'DSH durable history head');
     safeInteger(durableHead.sequence, 'DSH durable history sequence');
     if (this.runtimeSessionId === undefined) {

@@ -36,10 +36,10 @@ describe("DSH ModelExecutionProfile compiler", () => {
       });
       expect(profile).toMatchObject({
         providerRouteId: "deepseek-official",
-        api: "openai-completions",
+        api: "anthropic-messages",
         provider: "deepseek",
         modelId,
-        baseUrl: "https://api.deepseek.com",
+        baseUrl: "https://api.deepseek.com/anthropic",
         credentialRef: "MYAGENTS_PROVIDER_DEEPSEEK_API_KEY",
         contextWindow: 1_000_000,
         maxTokens: 384_000,
@@ -49,8 +49,13 @@ describe("DSH ModelExecutionProfile compiler", () => {
       });
       expect(profile.revision).toMatch(/^myagents-dsh-profile-v1:[a-f0-9]{64}$/);
       expect(profile).not.toHaveProperty("compatibility");
-      if (modelId === "deepseek-flash") expect(profile.systemPromptUpdate).toBe("in-history");
-      else expect(profile).not.toHaveProperty("systemPromptUpdate");
+      if (modelId === "deepseek-flash") {
+        expect(profile.systemPromptUpdate).toBe("in-history");
+        expect(profile.toolUpdate).toBe("addition-only");
+      } else {
+        expect(profile).not.toHaveProperty("systemPromptUpdate");
+        expect(profile).not.toHaveProperty("toolUpdate");
+      }
       expect(Object.isFrozen(profile)).toBe(true);
     }
   });

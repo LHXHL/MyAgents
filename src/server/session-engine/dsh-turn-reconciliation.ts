@@ -282,6 +282,7 @@ function projectOperationContent(
   const tools = new Map<string, Extract<ProductContentBlock, { tool: unknown }>['tool']>();
   const providerTools = new Map<string, Extract<ProductContentBlock, { tool: unknown }>['tool']>();
   const durableToolCalls = new Set<string>();
+  const durableToolResults = new Map<string, unknown>();
   let finalModel: string | undefined;
 
   for (const event of events) {
@@ -385,23 +386,29 @@ function projectOperationContent(
       continue;
     }
     const message = object(data.message, 'DSH tool-result message');
-    if (!Array.isArray(message.content) || message.content.length !== 1) {
-      throw new Error('DSH tool-result message lacks one exact result block');
+    if (message.role !== 'tool' || !Array.isArray(message.content)) {
+      throw new Error('DSH tool-result message is incompatible');
     }
-    const result = object(message.content[0], 'DSH tool-result block');
-    if (result.type !== 'tool-result' || !Array.isArray(result.content)) {
-      throw new Error('DSH tool-result block is incompatible');
-    }
-    const callId = string(result.toolCallId, 'DSH tool-result call id');
+    const callId = string(message.toolCallId, 'DSH tool-result call id');
     const tool = tools.get(callId);
-    if (!tool || tool.result !== undefined) {
+    if (!tool) {
       throw new Error('DSH tool-result does not match one unsettled assistant tool block');
     }
-    tool.result = result.content.map(candidate => {
+    const stableData = { ...data, message: { ...message, content: null } };
+    if (tool.result !== undefined) {
+      // DSH's result pruner appends a content-only surface replacement. The
+      // original result remains the product-visible completion.
+      if (canonicalJson(durableToolResults.get(callId)) !== canonicalJson(stableData)) {
+        throw new Error('DSH repeated tool-result changed its durable identity');
+      }
+      continue;
+    }
+    durableToolResults.set(callId, stableData);
+    tool.result = message.content.map(candidate => {
       const block = object(candidate, 'DSH tool result content');
       return block.type === 'text' && typeof block.text === 'string' ? block.text : canonicalJson(block);
     }).join('\n');
-    tool.isError = data.error !== undefined || result.isError === true;
+    tool.isError = data.error !== undefined || message.isError === true;
   }
   if ([...tools.entries()].some(([id, tool]) => !durableToolCalls.has(id) || tool.result === undefined)) {
     throw new Error('DSH assistant tool block lacks a settled durable call/result pair');

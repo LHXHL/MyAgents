@@ -17,7 +17,7 @@ type ResetEntry = Readonly<{
 }>;
 export type DshDevelopmentResetPlan = Readonly<{
   version: 1;
-  target: '0.1.5-rc.2';
+  target: '0.1.7-rc.2';
   dataRoot: string;
   indexSha256: string;
   sessions: readonly ResetEntry[];
@@ -105,12 +105,12 @@ export async function planDshDevelopmentReset(dataRoot: string): Promise<DshDeve
     const binding = session.runtimeBinding;
     if (binding?.family === 'integrated' && binding.id === 'dsh') {
       if (!isCliProductSessionId(session.id) || typeof binding.protocolVersion !== 'string') throw new Error('Development reset found an invalid DSH identity');
-      if (/^[234]\./u.test(binding.protocolVersion)) {
+      if (/^[2345]\./u.test(binding.protocolVersion)) {
         const parsedBinding = parseEffectiveRuntimeBinding(binding);
         if (!parsedBinding || isSystemMaintenanceSession(session)) throw new Error('Development reset found a protected or invalid DSH binding');
         selected.push({ ...session, runtimeBinding: parsedBinding });
       }
-      else if (!/^5\./u.test(binding.protocolVersion)) throw new Error('Development reset found an unknown DSH protocol');
+      else if (!/^6\./u.test(binding.protocolVersion)) throw new Error('Development reset found an unknown DSH protocol');
     } else if (session.runtime === 'dsh') throw new Error('Development reset requires an explicit authoritative DSH binding');
   }
   const selectedIds = new Set(selected.map(session => session.id));
@@ -138,7 +138,7 @@ export async function planDshDevelopmentReset(dataRoot: string): Promise<DshDeve
     for (const path of [...remove, join(dataRoot, 'sessions', `${session.id}.jsonl`), join(dataRoot, 'sessions', `${session.id}.json`), join(dataRoot, 'session-locks', `${session.id}.jsonl.lock`)]) await verifyPath(dataRoot, path);
     entries.push(Object.freeze({ id: session.id, binding: Object.freeze({ ...session.runtimeBinding! }), remove: Object.freeze(remove), preserveShared: Object.freeze(attachmentCandidates.filter(path => shared.has(path))) }));
   }
-  const content = { version: 1 as const, target: '0.1.5-rc.2' as const, dataRoot, indexSha256: digest(index ?? ''), sessions: Object.freeze(entries) };
+  const content = { version: 1 as const, target: '0.1.7-rc.2' as const, dataRoot, indexSha256: digest(index ?? ''), sessions: Object.freeze(entries) };
   return Object.freeze({ ...content, sha256: digest(JSON.stringify(content)) });
 }
 

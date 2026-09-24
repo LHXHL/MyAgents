@@ -599,7 +599,7 @@ describe.runIf(nativeSmokeEnabled)(
         expect(identity).toMatchObject({
           runtimeGeneration: "artifact-process-generation",
           protocolVersion: GENERATED_PROTOCOL_VERSION,
-          sessionFormat: "dsh-session-events-v1",
+          sessionFormat: "dsh-session-events-v2",
         });
         expect(host.state).toBe("protocol-ready");
         const skillPath = join(workspace, "SKILL.md");
@@ -942,7 +942,7 @@ describe.runIf(nativeSoakEnabled)(
           const identity = await fixture.host.start();
           expect(identity).toMatchObject({
             protocolVersion: GENERATED_PROTOCOL_VERSION,
-            sessionFormat: "dsh-session-events-v1",
+            sessionFormat: "dsh-session-events-v2",
           });
           runtimePid = fixture.host.pid;
           expect(runtimePid).toBeTypeOf("number");

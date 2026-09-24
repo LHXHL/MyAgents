@@ -261,11 +261,11 @@ test("generated contracts are accepted mechanically and then drift-gated", () =>
       writeFileSync(path, `${contractPath}\n`);
     }
 
-    const oldEvidence = resolve(contractsRoot, "myagents-dsh/protocol-4.0.0-evidence.json");
+    const oldEvidence = resolve(contractsRoot, "myagents-dsh/protocol-5.0.0-evidence.json");
     writeFixtureFile(oldEvidence, "previous protocol evidence");
     compareOrAcceptContracts(handoffRoot, contractsRoot, true);
     assert.equal(existsSync(oldEvidence), false);
-    assert.equal(existsSync(resolve(contractsRoot, "myagents-dsh/protocol-5.0.0-evidence.json")), true);
+    assert.equal(existsSync(resolve(contractsRoot, "myagents-dsh/protocol-6.0.0-evidence.json")), true);
     compareOrAcceptContracts(handoffRoot, contractsRoot, false);
 
     writeFileSync(
@@ -461,7 +461,7 @@ test("repository lock, generated contracts, resources, and toolchain authorities
   assert.equal(lock.runtime.requiredNodeVersion, "24.20.0");
   assert.equal(lock.bundledNpm.version, "11.19.0");
   assert.equal(lock.bundledNpm.authority, "myagents-product-resource");
-  assert.equal(lock.protocol.version, "5.0.0");
+  assert.equal(lock.protocol.version, "6.0.0");
   assert.equal(lock.protocol.hostMethodCount, 44);
   assert.equal(lock.protocol.reverseMethodCount, 7);
   assert.equal(lock.protocol.notificationCount, 4);

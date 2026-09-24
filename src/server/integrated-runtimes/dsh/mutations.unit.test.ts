@@ -41,7 +41,7 @@ function historyPages(): DshRpcObject[] {
   return [
     {
       runtimeSessionId: 'runtime-session-1',
-      historyFormat: 'dsh-session-events-v1',
+      historyFormat: 'dsh-session-events-v2',
       durableHead: { sequence: 4, stableBoundaryId: 'boundary-2' },
       genesisBoundary: {
         stableBoundaryId: 'genesis-1',
@@ -85,7 +85,7 @@ function historyPages(): DshRpcObject[] {
     },
     {
       runtimeSessionId: 'runtime-session-1',
-      historyFormat: 'dsh-session-events-v1',
+      historyFormat: 'dsh-session-events-v2',
       durableHead: { sequence: 4, stableBoundaryId: 'boundary-2' },
       records: [{
         kind: 'event_chunk',

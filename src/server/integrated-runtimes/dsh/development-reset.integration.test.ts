@@ -64,7 +64,7 @@ describe('one-time unreleased DSH development reset', () => {
   it('uses real SessionStore deletion, preserves other authorities and is idempotent', async () => {
     const old = await fixture();
     const other = createSessionMetadata(join(scratch.home, 'workspace'), { id: 'other-runtime' });
-    const current = createSessionMetadata(join(scratch.home, 'workspace'), { id: 'new-dsh', runtimeBinding: { ...oldBinding(), protocolVersion: '5.0.0' }, runtime: 'dsh' });
+    const current = createSessionMetadata(join(scratch.home, 'workspace'), { id: 'new-dsh', runtimeBinding: { ...oldBinding(), protocolVersion: '6.0.0' }, runtime: 'dsh' });
     await store.saveSessionMetadata(other);
     await store.saveSessionMetadata(current);
     const markers = [join(root, 'config.json'), join(root, 'credentials', 'fixture'), join(scratch.home, 'workspace', 'keep.txt'),
@@ -85,6 +85,17 @@ describe('one-time unreleased DSH development reset', () => {
     expect(store.getAllSessionMetadata().map(session => session.id).sort()).toEqual(['new-dsh', 'other-runtime']);
     const empty = await planDshDevelopmentReset(root);
     await expect(applyDshDevelopmentReset(empty, store.resetDshDevelopmentSession, stopped)).resolves.toMatchObject({ deleted: 0 });
+  });
+
+  it('includes the previous protocol 5 generation in the reviewed reset plan', async () => {
+    const previous = await fixture('previous-dsh');
+    await store.saveSessionMetadata({
+      ...previous.metadata,
+      runtimeBinding: { ...oldBinding(), protocolVersion: '5.0.0' },
+    });
+    const plan = await planDshDevelopmentReset(root);
+    expect(plan.target).toBe('0.1.7-rc.2');
+    expect(plan.sessions.map(session => session.id)).toEqual(['previous-dsh']);
   });
 
   it('preserves shared attachment references and never follows external savedPath', async () => {

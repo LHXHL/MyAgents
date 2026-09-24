@@ -62,7 +62,7 @@ type DshProfileCompilerProvider = Pick<
 >;
 
 const DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
-const OFFICIAL_DEEPSEEK_RUNTIME_BASE_URL = "https://api.deepseek.com";
+const OFFICIAL_DEEPSEEK_RUNTIME_BASE_URL = "https://api.deepseek.com/anthropic";
 
 function deepFreeze<T>(value: T): T {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
@@ -268,7 +268,7 @@ export function compileDshModelExecutionProfile(args: {
   const base: Omit<DshModelExecutionProfile, "revision"> = nativeDeepSeek
     ? {
         providerRouteId: "deepseek-official",
-        api: "openai-completions",
+        api: "anthropic-messages",
         provider: providerId,
         modelId,
         baseUrl: OFFICIAL_DEEPSEEK_RUNTIME_BASE_URL,
@@ -278,7 +278,7 @@ export function compileDshModelExecutionProfile(args: {
         inputModalities: capabilities.inputModalities,
         // Fixed DSH rc.2 official model catalog; gateways and other model IDs
         // must not inherit this wire capability from a Provider brand.
-        ...(modelId === "deepseek-flash" ? { systemPromptUpdate: "in-history" as const } : {}),
+        ...(modelId === "deepseek-flash" ? { systemPromptUpdate: "in-history" as const, toolUpdate: "addition-only" as const } : {}),
         reasoning: true,
         effort: "high",
       }

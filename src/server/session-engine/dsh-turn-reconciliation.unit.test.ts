@@ -77,12 +77,11 @@ function succeededHistory(usage: unknown = {
       step: 1,
       message: {
         id: 'native-tool-result-1',
-        role: 'user',
-        content: [{
-          type: 'tool-result',
-          toolCallId: 'call-1',
-          content: [{ type: 'text', text: 'file body' }],
-        }],
+        role: 'tool',
+        source: { kind: 'tool' },
+        toolCallId: 'call-1',
+        isError: false,
+        content: [{ type: 'text', text: 'file body' }],
       },
     }),
     event(6, 'assistant/message', {
@@ -267,6 +266,30 @@ describe('DSH ordinary turn reconciliation', () => {
       },
       { type: 'text', text: 'Done.' },
     ]);
+  });
+
+  it('keeps one Product tool completion when DSH prunes its model-visible result', () => {
+    const fixture = succeededHistory();
+    const original = fixture.history.events[5]!;
+    const replacement = structuredClone(original.data) as { message: { content: unknown[] } };
+    replacement.message.content = [{ type: 'text', text: 'Pruned result' }];
+    const events = [
+      ...fixture.history.events.slice(0, 7),
+      event(7, 'tool/result', replacement),
+      ...fixture.history.events.slice(7).map(candidate => ({ ...candidate, sequence: candidate.sequence + 1 })),
+    ];
+    const history = { ...fixture.history, durableSequence: events.length, events };
+    const snapshot = buildDshTurnProjectionSnapshot(history, fixture.lookups);
+    const content = JSON.parse(snapshot.assistantTurns[0]!.assistantMessage.content) as Array<{ tool?: { result?: string } }>;
+    expect(content.find(block => block.tool)?.tool?.result).toBe('file body');
+
+    replacement.message.content = [{ type: 'text', text: 'Pruned result' }];
+    const changedIdentity = structuredClone(replacement) as typeof replacement & { step: number };
+    changedIdentity.step = 9;
+    const invalid = { ...history, events: events.map(candidate => candidate.sequence === 7
+      ? event(7, 'tool/result', changedIdentity) : candidate) };
+    expect(() => buildDshTurnProjectionSnapshot(invalid, fixture.lookups))
+      .toThrow('DSH repeated tool-result changed its durable identity');
   });
 
   it.each([
