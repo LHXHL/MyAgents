@@ -689,6 +689,87 @@ describe('admin-api Skill add preview contract', () => {
   });
 });
 
+describe('admin-api Skill scope and sync', () => {
+  it('previews by default and submits only selected candidates with --apply', async () => {
+    const cancellation = await import('./utils/cancellation');
+    const calls: Array<{ path: string; body?: Record<string, unknown> }> = [];
+    agentSessionMocks.getSidecarPort.mockReturnValue(32123);
+    cancellation._setGeneralFetchTransportForTests(async (url, init) => {
+      const path = new URL(String(url)).pathname;
+      calls.push({ path, ...(init?.body ? { body: JSON.parse(String(init.body)) as Record<string, unknown> } : {}) });
+      const response = path.endsWith('sync-check')
+        ? { canSync: true, folders: ['alpha', 'beta'] }
+        : { success: true, synced: 1, failed: 0, syncedFolders: ['beta'] };
+      return new Response(JSON.stringify(response), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    try {
+      const { handleSkillSync } = await import('./admin-api');
+      expect(await handleSkillSync()).toMatchObject({ success: true, data: { applied: false, folders: ['alpha', 'beta'] } });
+      expect(calls).toHaveLength(1);
+      expect(await handleSkillSync({ apply: true, names: ['beta'] })).toMatchObject({ success: true, data: { applied: true, synced: ['beta'] } });
+      expect(calls[2]).toMatchObject({ path: '/api/skill/sync-from-claude', body: { expectedFolders: ['alpha', 'beta'], folders: ['beta'] } });
+    } finally {
+      cancellation._setGeneralFetchTransportForTests();
+    }
+  });
+
+  it('routes project info and enable to the workspace owner', async () => {
+    const cancellation = await import('./utils/cancellation');
+    const calls: Array<{ path: string; body?: Record<string, unknown> }> = [];
+    agentSessionMocks.getSidecarPort.mockReturnValue(32123);
+    cancellation._setGeneralFetchTransportForTests(async (url, init) => {
+      const parsed = new URL(String(url));
+      calls.push({ path: `${parsed.pathname}${parsed.search}`, ...(init?.body ? { body: JSON.parse(String(init.body)) as Record<string, unknown> } : {}) });
+      const response = parsed.pathname === '/api/skills'
+        ? { success: true, skills: [{ name: 'Alpha Display', folderName: 'alpha', scope: 'project' }] }
+        : parsed.pathname === '/api/project-capabilities'
+        ? { success: true, candidates: [{ kind: 'skill', source: 'project', sourceLocalId: 'alpha', id: 'project:skill:alpha' }] }
+        : parsed.pathname === '/api/project-capability/toggle'
+          ? { success: true, candidates: [{ id: 'project:skill:alpha', enabled: false }] }
+        : parsed.pathname === '/api/skill/alpha'
+          ? { success: true, skill: { name: 'alpha' } }
+          : { success: true };
+      return new Response(JSON.stringify(response), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    try {
+      const { handleSkillInfo, handleSkillToggle } = await import('./admin-api');
+      expect(await handleSkillInfo({ name: 'alpha', scope: 'project', workspacePath: '/workspace/one' })).toMatchObject({ success: true });
+      expect(await handleSkillToggle({ name: 'alpha', scope: 'project', workspacePath: '/workspace/one', enabled: false })).toMatchObject({ success: true });
+      expect(calls[0].path).toContain('agentDir=%2Fworkspace%2Fone');
+      expect(calls[4]).toMatchObject({ path: '/api/project-capability/toggle', body: { agentDir: '/workspace/one', capabilityId: 'project:skill:alpha', enabled: false } });
+      expect(calls.some(call => call.path === '/api/skill/toggle-enable')).toBe(false);
+    } finally {
+      cancellation._setGeneralFetchTransportForTests();
+    }
+  });
+
+  it('resolves a listed project skill and previews removal without deleting it', async () => {
+    const cancellation = await import('./utils/cancellation');
+    const calls: string[] = [];
+    agentSessionMocks.getSidecarPort.mockReturnValue(32123);
+    cancellation._setGeneralFetchTransportForTests(async (url, init) => {
+      const parsed = new URL(String(url));
+      calls.push(`${init?.method ?? 'GET'} ${parsed.pathname}${parsed.search}`);
+      const response = parsed.pathname === '/api/skills'
+        ? { success: true, skills: [{ name: 'Alpha Display', folderName: 'alpha', scope: 'project' }] }
+        : { success: true, skill: { name: 'alpha', scope: 'project' } };
+      return new Response(JSON.stringify(response), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    try {
+      const { handleSkillInfo, handleSkillRemove } = await import('./admin-api');
+      expect(await handleSkillInfo({ name: 'Alpha Display', workspacePath: '/workspace/one' })).toMatchObject({ success: true });
+      expect(await handleSkillRemove({ name: 'Alpha Display', workspacePath: '/workspace/one', dryRun: true })).toMatchObject({ success: true, data: { dryRun: true, scope: 'project', folderName: 'alpha' } });
+      expect(calls.filter(call => call.includes('/api/skill/alpha'))).toEqual([
+        expect.stringContaining('scope=project'),
+        expect.stringContaining('scope=project'),
+      ]);
+      expect(calls.some(call => call.startsWith('DELETE'))).toBe(false);
+    } finally {
+      cancellation._setGeneralFetchTransportForTests();
+    }
+  });
+});
+
 describe('admin-api AnyDoc forwarding', () => {
   it('injects the Sidecar-owned Workspace and forwards the transient password only to Rust', async () => {
     agentSessionMocks.agentDir = '/workspace/authoritative';

@@ -96,6 +96,7 @@ interface NewSkillChooserProps {
         onSync: () => Promise<void>;
         canSync: boolean;
         syncableCount: number;
+        syncableFolders: string[];
     };
 }
 
@@ -112,6 +113,7 @@ export function NewSkillChooser({
 
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [syncing, setSyncing] = useState(false);
+    const [syncPreview, setSyncPreview] = useState(false);
 
     const handleUploadClick = () => {
         fileInputRef.current?.click();
@@ -174,7 +176,7 @@ export function NewSkillChooser({
                         </svg>
                     </button>
                 </div>
-                <div className="mt-6 space-y-3">
+                <div className="mt-6 max-h-[70vh] space-y-3 overflow-y-auto">
                     {/* Write Skill Option */}
                     <button
                         type="button"
@@ -250,7 +252,7 @@ export function NewSkillChooser({
                     {syncConfig?.canSync && (
                         <button
                             type="button"
-                            onClick={handleSyncClick}
+                            onClick={() => setSyncPreview(true)}
                             disabled={syncing}
                             className="group flex w-full items-center gap-4 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-4 text-left transition-all hover:border-[var(--line-strong)] hover:shadow-sm disabled:opacity-50"
                         >
@@ -273,6 +275,18 @@ export function NewSkillChooser({
                                 <p className="mt-0.5 text-sm text-[var(--ink-muted)]">{t('agentSettings.skillDialogs.syncFromClaudeDescription')}</p>
                             </div>
                         </button>
+                    )}
+                    {syncConfig?.canSync && syncPreview && (
+                        <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-inset)] p-4">
+                            <p className="text-sm text-[var(--ink)]">{t('agentSettings.skillDialogs.syncPreviewNote')}</p>
+                            <ul className="mt-2 max-h-40 overflow-y-auto text-sm text-[var(--ink-muted)]">
+                                {syncConfig.syncableFolders.map(folder => <li key={folder}>{folder}</li>)}
+                            </ul>
+                            <button type="button" onClick={handleSyncClick} disabled={syncing}
+                                className="mt-3 rounded-lg bg-[var(--accent)] px-3 py-2 text-sm text-white disabled:opacity-50">
+                                {t('agentSettings.skillDialogs.syncApply')}
+                            </button>
+                        </div>
                     )}
 
                     {/* Hidden file input */}

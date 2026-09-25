@@ -286,6 +286,8 @@ bundle / launcher 缺失或不可写时没有系统 Node、npm 包或旧 HOME pa
 
 Skill frontmatter 以 Agent Skills 标准为 canonical：作者写在 `metadata.author`，不能新增顶层 `author`。`src/shared/slashCommands.ts` 是 UI / Sidecar 共用的归一化 owner：读取时标准 `metadata.author` 优先，并兼容旧顶层 `author` / `Author`；list/detail/CLI 投影继续提供扁平 `author` 方便消费，保存时只写回 `metadata.author`，同时保留其它标准 string metadata。这样旧 Skill 无需一次性迁移也能展示，而任何后续编辑都会自然收敛到标准格式。
 
+`myagents skill sync` 默认仅列出 `~/.claude/skills/` 中可导入的目录；只有显式 `--apply` 才复制选定项，新导入项先写为 disabled。列表与按名操作使用 `scope + folderName + workspace` 定位，同名或显示名歧义须显式指定 scope/文件夹；project Skill 的开关由 Project 选中的 AgentConfig capabilitySelection 裁决，CLI 回读同一有效快照后才报告成功。`remove --dry-run` 只读取目标信息，不发删除请求。`tool-creator` 在 CLI 工具注册表实验开关关闭时保持不可启用，不能因全局 disabled 列表变化而回报假成功。
+
 `SYSTEM_SKILLS` 是版本化安装集合，`REQUIRED_SYSTEM_SKILLS` 是其中始终可用的产品契约子集，二者不能混为一谈。canonical 名单在 `src/shared/systemSkills.ts`，Rust workspace/slash 路径在 `src-tauri/src/workspace_files/skills_config.rs` 维护必要镜像，并由 cross-language test 锁定；改名单必须同步这两处，禁止 UI、CLI、文档或其它模块再复制第三份。读取旧 `skills-config.json` 和每次写回都会移除这些名称的 stale disabled 项；Skills API 以 `required:true, enabled:true` 投影，disable 请求返回 409。其它版本化或用户 Skill 仍可正常 enable/disable。
 
 内容所有权与启停权彼此独立：user scope 的 `SYSTEM_SKILLS` 内容一律由 MyAgents 持有并保持只读，不因是否 `required` 而改变；optional system Skill 仍可按现有策略 enable/disable。project scope 中同 canonical name 的实体 Skill 仍归项目所有，可独立编辑和删除；普通用户 Skill 的 CRUD 不变。

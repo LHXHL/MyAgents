@@ -1102,15 +1102,17 @@ function readSkillsConfig(): SkillsConfig {
 
 function writeSkillsConfig(config: SkillsConfig): void {
   const configPath = getSkillsConfigPath();
+  const dir = dirname(configPath);
+  ensureDirSync(dir);
+  config.disabled = withoutRequiredSystemSkills(config.disabled);
+  // Auto-increment generation on every write — signals Tab Sidecars to re-sync symlinks
+  config.generation = (config.generation || 0) + 1;
+  const candidate = join(dir, `.skills-config-${randomUUID()}.tmp`);
   try {
-    const dir = dirname(configPath);
-    ensureDirSync(dir);
-    config.disabled = withoutRequiredSystemSkills(config.disabled);
-    // Auto-increment generation on every write — signals Tab Sidecars to re-sync symlinks
-    config.generation = (config.generation || 0) + 1;
-    writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('[skills-config] Error writing config:', err);
+    writeFileSync(candidate, JSON.stringify(config, null, 2), 'utf-8');
+    renameSync(candidate, configPath);
+  } finally {
+    if (existsSync(candidate)) rmSync(candidate, { force: true });
   }
 }
 
@@ -1827,7 +1829,7 @@ async function routeAdminApi(
     });
 
   // Skill commands
-  if (route === 'skill/list') return await api.handleSkillList();
+  if (route === 'skill/list') return await api.handleSkillList(payload as { workspacePath?: string });
   if (route === 'skill/info')
     return await api.handleSkillInfo(
       payload as Parameters<typeof api.handleSkillInfo>[0],
@@ -1844,13 +1846,18 @@ async function routeAdminApi(
     return await api.handleSkillToggle({
       name: String(payload.name ?? ''),
       enabled: true,
+      scope: payload.scope as 'user' | 'project' | undefined,
+      workspacePath: payload.workspacePath as string | undefined,
     });
   if (route === 'skill/disable')
     return await api.handleSkillToggle({
       name: String(payload.name ?? ''),
       enabled: false,
+      scope: payload.scope as 'user' | 'project' | undefined,
+      workspacePath: payload.workspacePath as string | undefined,
     });
-  if (route === 'skill/sync') return await api.handleSkillSync();
+  if (route === 'skill/sync')
+    return await api.handleSkillSync(payload as Parameters<typeof api.handleSkillSync>[0]);
 
   // Config commands
   if (route === 'config/list')
@@ -2197,6 +2204,18 @@ function isValidFolderName(name: string): boolean {
     !name.includes('\\') &&
     name.length > 0
   );
+}
+
+function listSyncableSkillFolders(claudeSkillsDir: string, userSkillsDir: string): string[] {
+  if (!existsSync(claudeSkillsDir)) return [];
+  const existing = new Set(existsSync(userSkillsDir) ? readdirSync(userSkillsDir) : []);
+  return readdirSync(claudeSkillsDir, { withFileTypes: true })
+    .filter(entry => isValidFolderName(entry.name)
+      && !isSystemSkillName(entry.name)
+      && isDirEntry(entry, join(claudeSkillsDir, entry.name))
+      && !existing.has(entry.name))
+    .map(entry => entry.name)
+    .sort();
 }
 
 async function serveStatic(pathname: string): Promise<Response | null> {
@@ -6604,11 +6623,7 @@ async function main() {
       const getProjectBaseDirs = (queryAgentDir: string | null) => {
         // If explicit agentDir provided, validate it first
         if (queryAgentDir && !isValidAgentDir(queryAgentDir).valid) {
-          // Invalid agentDir, fall back to currentAgentDir
-          console.warn(
-            `[getProjectBaseDirs] Invalid agentDir rejected: ${queryAgentDir}`,
-          );
-          queryAgentDir = null;
+          throw new Error('Invalid workspace path');
         }
         // Use validated agentDir if provided, otherwise fall back to currentAgentDir
         const effectiveAgentDir = queryAgentDir || currentAgentDir;
@@ -6766,6 +6781,15 @@ async function main() {
           const { skillsDir: effectiveSkillsDir } =
             getProjectBaseDirs(queryAgentDir);
           const skillsConfigForList = readSkillsConfig();
+          const workspacePathForList = queryAgentDir || currentAgentDir;
+          const projectCapabilityEnabled = new Map<string, boolean>();
+          if ((scope === 'all' || scope === 'project') && workspacePathForList) {
+            for (const candidate of resolveEffectiveProjectCapabilities(workspacePathForList).candidates) {
+              if (candidate.kind === 'skill' && candidate.source === 'project') {
+                projectCapabilityEnabled.set(candidate.sourceLocalId, candidate.enabled);
+              }
+            }
+          }
           const globalSkillInventory =
             scope === 'all' || scope === 'user'
               ? createGlobalSkillInventorySnapshot({
@@ -6817,10 +6841,9 @@ async function main() {
                   author,
                   systemOwned,
                   required,
-                  enabled:
-                    scopeType === 'project' ||
-                    required ||
-                    !skillsConfigForList.disabled.includes(folder.name),
+                  enabled: scopeType === 'project'
+                    ? projectCapabilityEnabled.get(folder.name) === true
+                    : required || !skillsConfigForList.disabled.includes(folder.name),
                 });
               }
             } catch (scanError) {
@@ -6910,6 +6933,12 @@ async function main() {
               409,
             );
           }
+          if (!createGlobalSkillInventorySnapshot().entries.some(entry => entry.folderName === folderName)) {
+            return jsonResponse({ success: false, error: 'User skill not found' }, 404);
+          }
+          if (enabled && folderName === 'tool-creator' && loadConfig().cliToolRegistryEnabled !== true) {
+            return jsonResponse({ success: false, error: 'tool-creator requires the CLI tool registry in Settings → About & Feedback → Lab' }, 409);
+          }
           const config = readSkillsConfig();
           if (enabled) {
             config.disabled = config.disabled.filter((n) => n !== folderName);
@@ -6945,46 +6974,7 @@ async function main() {
         try {
           const claudeSkillsDir = join(homeDir, '.claude', 'skills');
 
-          // Check if Claude Code skills directory exists
-          if (!existsSync(claudeSkillsDir)) {
-            return jsonResponse({ canSync: false, count: 0, folders: [] });
-          }
-
-          // Get folders in Claude Code skills directory (follow junctions — issue #104).
-          // Users sometimes mount their skills hub into ~/.claude/skills/ via
-          // junction too; bare `isDirectory()` would miss them asymmetrically
-          // with the myagentsFolders side.
-          const claudeFolders = readdirSync(claudeSkillsDir, {
-            withFileTypes: true,
-          })
-            .filter((entry) =>
-              isDirEntry(entry, join(claudeSkillsDir, entry.name)),
-            )
-            .map((entry) => entry.name);
-
-          if (claudeFolders.length === 0) {
-            return jsonResponse({ canSync: false, count: 0, folders: [] });
-          }
-
-          // Get existing folders in MyAgents skills directory.
-          // isDirEntry follows junctions (issue #104) so mounted skills count
-          // as existing, preventing sync-from-claude from overwriting them.
-          const myagentsFolders = new Set<string>();
-          if (existsSync(userSkillsBaseDir)) {
-            const entries = readdirSync(userSkillsBaseDir, {
-              withFileTypes: true,
-            });
-            for (const entry of entries) {
-              if (isDirEntry(entry, join(userSkillsBaseDir, entry.name))) {
-                myagentsFolders.add(entry.name);
-              }
-            }
-          }
-
-          // Find folders that can be synced (exist in Claude but not in MyAgents)
-          const syncableFolders = claudeFolders.filter(
-            (folder) => !myagentsFolders.has(folder),
-          );
+          const syncableFolders = listSyncableSkillFolders(claudeSkillsDir, userSkillsBaseDir);
 
           return jsonResponse({
             canSync: syncableFolders.length > 0,
@@ -7012,6 +7002,14 @@ async function main() {
         request.method === 'POST'
       ) {
         try {
+          const body = (await request.json()) as { expectedFolders?: unknown; folders?: unknown };
+          if (!Array.isArray(body.expectedFolders) || !Array.isArray(body.folders)
+            || body.expectedFolders.some(value => typeof value !== 'string')
+            || body.folders.some(value => typeof value !== 'string')) {
+            return jsonResponse({ success: false, error: 'Sync preview is required' }, 400);
+          }
+          const expectedFolders = body.expectedFolders as string[];
+          const requestedFolders = body.folders as string[];
           const claudeSkillsDir = join(homeDir, '.claude', 'skills');
 
           // Check if Claude Code skills directory exists
@@ -7027,45 +7025,12 @@ async function main() {
             );
           }
 
-          // Get folders in Claude Code skills directory (follow junctions — issue #104)
-          const claudeFolders = readdirSync(claudeSkillsDir, {
-            withFileTypes: true,
-          })
-            .filter((entry) =>
-              isDirEntry(entry, join(claudeSkillsDir, entry.name)),
-            )
-            .map((entry) => entry.name);
-
-          if (claudeFolders.length === 0) {
-            return jsonResponse({
-              success: true,
-              synced: 0,
-              failed: 0,
-              message: 'No skills to sync',
-            });
+          const candidates = listSyncableSkillFolders(claudeSkillsDir, userSkillsBaseDir);
+          if (JSON.stringify(candidates) !== JSON.stringify(expectedFolders)
+            || requestedFolders.some(folder => !candidates.includes(folder))) {
+            return jsonResponse({ success: false, error: 'Sync candidates changed. Preview again.' }, 409);
           }
-
-          // Ensure MyAgents skills directory exists
-          if (!existsSync(userSkillsBaseDir)) {
-            ensureDirSync(userSkillsBaseDir);
-          }
-
-          // Get existing folders in MyAgents skills directory (follow junctions — issue #104)
-          const myagentsFolders = new Set<string>();
-          const entries = readdirSync(userSkillsBaseDir, {
-            withFileTypes: true,
-          });
-          for (const entry of entries) {
-            if (isDirEntry(entry, join(userSkillsBaseDir, entry.name))) {
-              myagentsFolders.add(entry.name);
-            }
-          }
-
-          // Find folders that can be synced (filter out invalid folder names for security)
-          const syncableFolders = claudeFolders.filter(
-            (folder) =>
-              !myagentsFolders.has(folder) && isValidFolderName(folder),
-          );
+          const syncableFolders = candidates.filter(folder => requestedFolders.includes(folder));
 
           if (syncableFolders.length === 0) {
             return jsonResponse({
@@ -7076,10 +7041,13 @@ async function main() {
             });
           }
 
-          // Copy each syncable folder
+          ensureDirSync(userSkillsBaseDir);
+
+          // Copy each selected folder
           let synced = 0;
           let failed = 0;
           const errors: string[] = [];
+          const syncedFolders: string[] = [];
 
           // Async copy — yields to the event loop so the Rust health monitor's
           // /health probe (2 s timeout, 15 s interval) keeps succeeding while the
@@ -7088,28 +7056,30 @@ async function main() {
           for (const folder of syncableFolders) {
             const srcDir = join(claudeSkillsDir, folder);
             const destDir = join(userSkillsBaseDir, folder);
+            const stagingDir = join(dirname(userSkillsBaseDir), `.skill-sync-${randomUUID()}`);
 
             try {
+              if (existsSync(destDir)) throw new Error('Destination already exists');
               await copyDirRecursive(
                 srcDir,
-                destDir,
+                stagingDir,
                 '[api/skill/sync-from-claude]',
               );
 
               // Ensure SKILL.md exists — Claude Code may use different file names
-              const skillMdPath = join(destDir, 'SKILL.md');
+              const skillMdPath = join(stagingDir, 'SKILL.md');
               if (!existsSync(skillMdPath)) {
                 // Sanitize folder name for YAML frontmatter (escape quotes and backslashes)
                 const safeName = folder
                   .replace(/\\/g, '\\\\')
                   .replace(/"/g, '\\"');
                 // Look for any .md file to use as the skill definition
-                const mdFiles = readdirSync(destDir).filter(
+                const mdFiles = readdirSync(stagingDir).filter(
                   (f) => f.endsWith('.md') && f !== 'SKILL.md',
                 );
                 if (mdFiles.length > 0) {
                   // Use the first .md file as SKILL.md source
-                  const srcMd = join(destDir, mdFiles[0]);
+                  const srcMd = join(stagingDir, mdFiles[0]);
                   const mdContent = readFileSync(srcMd, 'utf-8');
                   // Check if it already has frontmatter; if not, add minimal frontmatter
                   if (mdContent.startsWith('---')) {
@@ -7131,7 +7101,16 @@ async function main() {
                 }
               }
 
+              const config = readSkillsConfig();
+              if (!config.disabled.includes(folder)) {
+                config.disabled.push(folder);
+                writeSkillsConfig(config);
+              }
+              if (existsSync(destDir)) throw new Error('Destination already exists');
+              renameSync(stagingDir, destDir);
+
               synced++;
+              syncedFolders.push(folder);
               if (process.env.DEBUG === '1') {
                 console.log(
                   `[api/skill/sync-from-claude] Synced skill "${folder}"`,
@@ -7148,20 +7127,22 @@ async function main() {
                 `[api/skill/sync-from-claude] Failed to copy "${folder}":`,
                 copyError,
               );
+            } finally {
+              if (existsSync(stagingDir)) rmSync(stagingDir, { recursive: true, force: true });
             }
           }
 
           // Imported user skills — bump generation + sync symlinks into project
           if (synced > 0) {
-            bumpSkillsGeneration();
             if (agentDir) {
               syncProjectUserConfig(agentDir);
             }
           }
           return jsonResponse({
-            success: true,
+            success: failed === 0,
             synced,
             failed,
+            syncedFolders,
             errors: errors.length > 0 ? errors : undefined,
           });
         } catch (error) {
@@ -7195,6 +7176,9 @@ async function main() {
 
           // Use explicit agentDir if provided for project scope
           const { skillsDir } = getProjectBaseDirs(queryAgentDir);
+          if (scope === 'project' && !skillsDir) {
+            return jsonResponse({ success: false, error: 'Workspace is unavailable' }, 409);
+          }
           const baseDir = scope === 'user' ? userSkillsBaseDir : skillsDir;
           const skillPath = join(baseDir, skillName, 'SKILL.md');
 
@@ -7259,6 +7243,9 @@ async function main() {
 
           // Use explicit agentDir if provided for project scope
           const { skillsDir } = getProjectBaseDirs(payload.agentDir || null);
+          if (payload.scope === 'project' && !skillsDir) {
+            return jsonResponse({ success: false, error: 'Workspace is unavailable' }, 409);
+          }
           const baseDir =
             payload.scope === 'user' ? userSkillsBaseDir : skillsDir;
           let currentFolderName = skillName;
@@ -7386,6 +7373,9 @@ async function main() {
 
           // Use explicit agentDir if provided for project scope
           const { skillsDir } = getProjectBaseDirs(queryAgentDir);
+          if (scope === 'project' && !skillsDir) {
+            return jsonResponse({ success: false, error: 'Workspace is unavailable' }, 409);
+          }
           const baseDir = scope === 'user' ? userSkillsBaseDir : skillsDir;
           const skillDir = join(baseDir, skillName);
 
@@ -7534,6 +7524,9 @@ async function main() {
           const folderName = sanitizeFolderName(payload.name);
           // Use explicit agentDir if provided for project scope
           const { skillsDir } = getProjectBaseDirs(payload.agentDir || null);
+          if (payload.scope === 'project' && !skillsDir) {
+            return jsonResponse({ success: false, error: 'Workspace is unavailable' }, 409);
+          }
           const baseDir =
             payload.scope === 'user' ? userSkillsBaseDir : skillsDir;
           const skillDir = join(baseDir, folderName);

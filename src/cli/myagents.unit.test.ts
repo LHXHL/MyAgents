@@ -172,6 +172,15 @@ describe('skill source normalization', () => {
       });
   });
 
+  it('keeps skill sync preview-only and forwards removal previews without choosing the wrong scope', () => {
+    expect(buildRequestBody('skill', 'sync', [], {})).toEqual({ apply: false, names: [] });
+    expect(buildRequestBody('skill', 'sync', ['one'], { apply: true })).toEqual({ apply: true, names: ['one'] });
+    expect(buildRequestBody('skill', 'remove', ['one'], { dryRun: true, workspace: '/workspace' }))
+      .toMatchObject({ name: 'one', scope: undefined, workspacePath: '/workspace', dryRun: true });
+    expect(buildRequestBody('skill', 'list', [], { workspace: '/workspace' }))
+      .toEqual({ workspacePath: '/workspace' });
+  });
+
   it('normalizes an explicit relative source inside a pasted npx command', () => {
     const cwd = join(tmpdir(), 'skill-caller');
     expect(normalizeSkillSourceForRequest(

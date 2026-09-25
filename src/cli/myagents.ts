@@ -137,7 +137,8 @@ export function parseArgs(args: string[]): { positional: string[]; flags: Record
         key === 'clear-goal' ||
         key === 'create-attached' ||
         key === 'wait' ||
-        key === 'rollback'
+        key === 'rollback' ||
+        key === 'apply'
       ) {
         if (key === 'wait' && inlineValue !== undefined) {
           flags.waitInvalidValue = inlineValue;
@@ -1048,6 +1049,15 @@ export function printResult(
   }
   if (group === 'skill' && action === 'info') {
     printSkillInfo(result.data as Record<string, unknown>);
+    return;
+  }
+  if (group === 'skill' && action === 'sync') {
+    const data = result.data as { folders?: string[]; synced?: string[]; failed?: string[]; applied?: boolean } | undefined;
+    const folders = data?.applied ? (data.synced ?? []) : (data?.folders ?? []);
+    console.log(data?.applied ? `Imported ${folders.length} skill(s), disabled:` : `Preview: ${folders.length} skill(s) available to import into user scope (disabled by default):`);
+    for (const folder of folders) console.log(`  - ${folder}`);
+    for (const failure of data?.failed ?? []) console.error(`  Failed: ${failure}`);
+    if (!data?.applied && folders.length > 0) console.log('Run with --apply to import these skills.');
     return;
   }
   if (group === 'skill' && action === 'add') {
@@ -5526,10 +5536,13 @@ export function buildRequestBody(
       };
     }
     if (action === 'remove' || action === 'info' || action === 'enable' || action === 'disable') {
-      return { name: rest[0] || flags.name, scope: (flags.scope as string) || 'user' };
+      return { name: rest[0] || flags.name, scope: flags.scope as string | undefined, workspacePath: flags.workspace, ...(action === 'remove' ? { dryRun: flags.dryRun === true } : {}) };
     }
-    if (action === 'list' || action === 'sync') {
-      return {};
+    if (action === 'sync') {
+      return { apply: flags.apply === true, names: rest };
+    }
+    if (action === 'list') {
+      return { workspacePath: flags.workspace };
     }
     return {};
   }

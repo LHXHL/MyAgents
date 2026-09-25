@@ -4365,20 +4365,19 @@ IM bot sessions don't render widgets.`,
   skill: `myagents skill — Manage MyAgents skills (user skills live under ~/.myagents/skills/)
 
 Commands:
-  list [--verbose]           List skills; include normal admission details with --verbose
-  info <name>                Show one skill's manifest + description
+  list [--verbose]           List skills; include normal admission details with --verbose [--workspace <path>]
+  info <name>                Show one skill's manifest + description [--scope user|project] [--workspace <path>]
   add <source>               Install from GitHub, HTTPS .zip, or a local source
                              Local: absolute path, file://, explicit ./ or ../
                              Formats: directory, .zip, .skill (not .tar.gz/.tgz)
                              [--scope user|project] [--plugin <id>] [--skill <id>]
                              [--force] [--dry-run]
-  remove <name>              Uninstall a skill   [--scope user|project]
-  enable <name>              Enable an installed skill
-  disable <name>             Disable without uninstalling
-  sync                       Import skills from Claude Code (~/.claude/skills) into
-                             MyAgents. Optional interop only — errors "directory not
-                             found" when Claude Code is not installed; your own skills
-                             always live under ~/.myagents/skills/ regardless.`,
+  remove <name>              Uninstall a skill [--scope user|project] [--workspace <path>] [--dry-run]
+  enable <name>              Enable an installed skill [--scope user|project] [--workspace <path>]
+  disable <name>             Disable without uninstalling [--scope user|project] [--workspace <path>]
+  sync [name ...]            Preview available Claude Code skills without writing
+                             [--apply] imports all previewed or selected names into
+                             ~/.myagents/skills/; new imports are disabled until enabled.`,
 
   tool: `myagents tool — CLI tool registry (user tools live under ~/.myagents/tools/)
 
@@ -7035,8 +7034,9 @@ export async function handleCcPluginToggle(payload: {
 // Skill handlers (thin wrappers over /api/skill/* self-loopback)
 // ---------------------------------------------------------------------------
 
-export async function handleSkillList(): Promise<AdminResponse> {
-  const { json } = await sidecarSelf('/api/skills?scope=all');
+export async function handleSkillList(payload: { workspacePath?: string } = {}): Promise<AdminResponse> {
+  const workspacePath = payload.workspacePath ?? getCurrentWorkspacePath();
+  const { json } = await sidecarSelf(`/api/skills?scope=all${workspacePath ? `&agentDir=${encodeURIComponent(workspacePath)}` : ''}`);
   if (json.success) {
     const config = getSessionEngine().getSessionConfigSnapshot();
     const status =
@@ -7072,14 +7072,40 @@ export async function handleSkillList(): Promise<AdminResponse> {
   };
 }
 
+async function resolveListedSkillTarget(
+  name: string,
+  workspacePath?: string,
+  requestedScope?: 'user' | 'project',
+): Promise<{ scope: 'user' | 'project'; folderName: string }> {
+  if (requestedScope === 'project' && !workspacePath) throw new Error('Project scope requires --workspace or a current workspace');
+  const { json } = await sidecarSelf(`/api/skills?scope=all${workspacePath ? `&agentDir=${encodeURIComponent(workspacePath)}` : ''}`);
+  if (!json.success || !Array.isArray(json.skills)) throw new Error(String(json.error ?? 'Failed to list skills'));
+  const skills = (json.skills as Array<Record<string, unknown>>).filter(skill =>
+    (skill.scope === 'user' || skill.scope === 'project')
+    && typeof skill.folderName === 'string'
+    && (!requestedScope || skill.scope === requestedScope));
+  const folderMatches = skills.filter(skill => skill.folderName === name);
+  const matches = folderMatches.length > 0 ? folderMatches : skills.filter(skill => skill.name === name);
+  if (matches.length === 0) throw new Error(`Skill "${name}" not found`);
+  if (matches.length > 1) throw new Error(`Skill "${name}" is ambiguous; pass --scope and its folder name`);
+  return { scope: matches[0].scope as 'user' | 'project', folderName: matches[0].folderName as string };
+}
+
 export async function handleSkillInfo(payload: {
   name: string;
   scope?: 'user' | 'project';
+  workspacePath?: string;
 }): Promise<AdminResponse> {
   if (!payload.name) return { success: false, error: 'name is required' };
-  const scope = payload.scope ?? 'user';
+  if (payload.scope !== undefined && payload.scope !== 'user' && payload.scope !== 'project') return { success: false, error: 'Invalid skill scope' };
+  const workspacePath = payload.workspacePath ?? getCurrentWorkspacePath();
+  let target: { scope: 'user' | 'project'; folderName: string };
+  try { target = await resolveListedSkillTarget(payload.name, workspacePath, payload.scope); }
+  catch (error) { return { success: false, error: error instanceof Error ? error.message : String(error) }; }
+  const { scope, folderName } = target;
+  if (scope === 'project' && !workspacePath) return { success: false, error: 'Project scope requires --workspace or a current workspace' };
   const { json } = await sidecarSelf(
-    `/api/skill/${encodeURIComponent(payload.name)}?scope=${scope}`,
+    `/api/skill/${encodeURIComponent(folderName)}?scope=${scope}${scope === 'project' ? `&agentDir=${encodeURIComponent(workspacePath!)}` : ''}`,
   );
   if (json.success) {
     return { success: true, data: json.skill ?? null };
@@ -7370,11 +7396,27 @@ export async function handleSkillAdd(payload: {
 export async function handleSkillRemove(payload: {
   name: string;
   scope?: 'user' | 'project';
+  workspacePath?: string;
+  dryRun?: boolean;
 }): Promise<AdminResponse> {
   if (!payload.name) return { success: false, error: 'name is required' };
-  const scope = payload.scope ?? 'user';
+  if (payload.scope !== undefined && payload.scope !== 'user' && payload.scope !== 'project') return { success: false, error: 'Invalid skill scope' };
+  const workspacePath = payload.workspacePath ?? getCurrentWorkspacePath();
+  let target: { scope: 'user' | 'project'; folderName: string };
+  try { target = await resolveListedSkillTarget(payload.name, workspacePath, payload.scope); }
+  catch (error) { return { success: false, error: error instanceof Error ? error.message : String(error) }; }
+  const { scope, folderName } = target;
+  if (scope === 'project' && !workspacePath) return { success: false, error: 'Project scope requires --workspace or a current workspace' };
+  if (payload.dryRun) {
+    const preview = await sidecarSelf(`/api/skill/${encodeURIComponent(folderName)}?scope=${scope}${scope === 'project' ? `&agentDir=${encodeURIComponent(workspacePath!)}` : ''}`);
+    if (!preview.json.success) return { success: false, error: String(preview.json.error ?? 'Skill not found') };
+    if ((preview.json.skill as { systemOwned?: boolean } | undefined)?.systemOwned) {
+      return { success: false, error: 'System Skill is read-only' };
+    }
+    return { success: true, data: { name: payload.name, folderName, scope, dryRun: true }, hint: `Preview only: would remove ${scope} skill "${folderName}"` };
+  }
   const { json } = await sidecarSelf(
-    `/api/skill/${encodeURIComponent(payload.name)}?scope=${scope}`,
+    `/api/skill/${encodeURIComponent(folderName)}?scope=${scope}${scope === 'project' ? `&agentDir=${encodeURIComponent(workspacePath!)}` : ''}`,
     'DELETE',
   );
   if (json.success) return { success: true, data: { name: payload.name } };
@@ -7387,33 +7429,84 @@ export async function handleSkillRemove(payload: {
 export async function handleSkillToggle(payload: {
   name: string;
   enabled: boolean;
+  scope?: 'user' | 'project';
+  workspacePath?: string;
 }): Promise<AdminResponse> {
   if (!payload.name) return { success: false, error: 'name is required' };
+  if (payload.scope !== undefined && payload.scope !== 'user' && payload.scope !== 'project') return { success: false, error: 'Invalid skill scope' };
+  const workspacePath = payload.workspacePath ?? getCurrentWorkspacePath();
+  let target: { scope: 'user' | 'project'; folderName: string };
+  try { target = await resolveListedSkillTarget(payload.name, workspacePath, payload.scope); }
+  catch (error) { return { success: false, error: error instanceof Error ? error.message : String(error) }; }
+  const { scope, folderName } = target;
+  if (scope === 'project') {
+    if (!workspacePath) return { success: false, error: 'Project scope requires --workspace or a current workspace' };
+    const snapshot = await sidecarSelf(`/api/project-capabilities?agentDir=${encodeURIComponent(workspacePath)}`);
+    if (!snapshot.json.success) return { success: false, error: String(snapshot.json.error ?? 'Project capabilities unavailable') };
+    const candidates = Array.isArray(snapshot.json.candidates) ? snapshot.json.candidates as Array<Record<string, unknown>> : [];
+    const match = candidates.find(candidate => candidate.kind === 'skill' && candidate.source === 'project' && candidate.sourceLocalId === folderName);
+    if (!match || typeof match.id !== 'string') return { success: false, error: 'Project skill not found or shadowed' };
+    const changed = await sidecarSelf('/api/project-capability/toggle', 'POST', {
+      agentDir: workspacePath,
+      capabilityId: match.id,
+      enabled: payload.enabled,
+    });
+    if (!changed.json.success) return { success: false, error: String(changed.json.error ?? 'Failed to toggle project skill') };
+    const effective = Array.isArray(changed.json.candidates)
+      ? (changed.json.candidates as Array<Record<string, unknown>>).find(candidate => candidate.id === match.id)
+      : undefined;
+    if (!effective || effective.enabled !== payload.enabled) {
+      return { success: false, error: 'Project skill state did not match the requested change' };
+    }
+    return { success: true, data: { name: payload.name, scope: 'project', enabled: payload.enabled } };
+  }
   const { json } = await sidecarSelf('/api/skill/toggle-enable', 'POST', {
-    folderName: payload.name,
+    folderName,
     enabled: payload.enabled,
   });
-  if (json.success)
-    return {
-      success: true,
-      data: { name: payload.name, enabled: payload.enabled },
-    };
+  if (json.success) {
+    const listed = await sidecarSelf('/api/skills?scope=user');
+    const entry = Array.isArray(listed.json.skills)
+      ? (listed.json.skills as Array<Record<string, unknown>>).find(skill => skill.folderName === folderName)
+      : undefined;
+    if (!listed.json.success || !entry || entry.enabled !== payload.enabled) {
+      return { success: false, error: 'User skill state did not match the requested change' };
+    }
+    return { success: true, data: { name: payload.name, scope: 'user', enabled: payload.enabled } };
+  }
   return {
     success: false,
     error: String(json.error ?? 'Failed to toggle skill'),
   };
 }
 
-export async function handleSkillSync(): Promise<AdminResponse> {
-  const { json } = await sidecarSelf('/api/skill/sync-from-claude', 'POST', {});
-  if (json.success) {
-    return {
-      success: true,
-      data: { synced: json.synced ?? 0, failed: json.failed ?? 0 },
-      hint: `Synced ${json.synced ?? 0} skill(s) from ~/.claude/skills`,
-    };
+export async function handleSkillSync(payload: { apply?: boolean; names?: string[] } = {}): Promise<AdminResponse> {
+  const preview = await sidecarSelf('/api/skill/sync-check');
+  if (preview.status >= 400 || preview.json.error) {
+    return { success: false, error: String(preview.json.error ?? 'Sync preview failed') };
   }
-  return { success: false, error: String(json.error ?? 'Sync failed') };
+  const candidates = Array.isArray(preview.json.folders)
+    ? preview.json.folders.filter((name): name is string => typeof name === 'string')
+    : [];
+  const requested = payload.names ?? [];
+  if (!Array.isArray(requested) || requested.some(name => typeof name !== 'string' || !candidates.includes(name))) {
+    return { success: false, error: 'Requested skill is unavailable. Preview again.' };
+  }
+  const folders = requested.length > 0 ? candidates.filter(name => requested.includes(name)) : candidates;
+  if (!payload.apply) {
+    return { success: true, data: { applied: false, folders, scope: 'user', enabled: false } };
+  }
+  const { json } = await sidecarSelf('/api/skill/sync-from-claude', 'POST', { expectedFolders: candidates, folders });
+  if (!json.success) return {
+    success: false,
+    error: String(json.error ?? `Imported ${json.synced ?? 0} skill(s); ${json.failed ?? 0} failed: ${(Array.isArray(json.errors) ? json.errors : []).join('; ')}`),
+    data: { applied: true, synced: json.syncedFolders ?? [], failed: json.errors ?? [] },
+  };
+  return {
+    success: Number(json.failed ?? 0) === 0,
+    data: { applied: true, synced: json.syncedFolders ?? [], failed: json.errors ?? [] },
+    ...(Number(json.failed ?? 0) > 0 ? { error: `Failed to import ${json.failed} skill(s)` } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------

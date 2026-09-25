@@ -81,6 +81,7 @@ export default function GlobalSkillsPanel({
     // Sync from Claude Code state
     const [canSyncFromClaude, setCanSyncFromClaude] = useState(false);
     const [syncableCount, setSyncableCount] = useState(0);
+    const [syncableFolders, setSyncableFolders] = useState<string[]>([]);
 
     // Track mounted state to prevent setState after unmount
     const isMountedRef = useRef(true);
@@ -142,6 +143,7 @@ export default function GlobalSkillsPanel({
             // Update sync state (with defensive checks for API errors)
             setCanSyncFromClaude(syncCheckRes?.canSync ?? false);
             setSyncableCount(syncCheckRes?.count ?? 0);
+            setSyncableFolders(syncCheckRes?.folders ?? []);
         } catch {
             if (!isMountedRef.current) return;
             toastRef.current.error(tRef.current('agentSettings.common.loadFailed'));
@@ -192,7 +194,8 @@ export default function GlobalSkillsPanel({
                 synced: number;
                 failed: number;
                 errors?: string[];
-            }>('/api/skill/sync-from-claude', {});
+                error?: string;
+            }>('/api/skill/sync-from-claude', { expectedFolders: syncableFolders, folders: syncableFolders });
 
             if (response.success) {
                 if (response.failed > 0) {
@@ -207,13 +210,18 @@ export default function GlobalSkillsPanel({
                 if (response.synced > 0) {
                     window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
                 }
+            } else if (response.synced > 0) {
+                toastRef.current.warning(tRef.current('agentSettings.skillCommandList.syncPartial', { synced: response.synced, failed: response.failed }));
+                setShowNewSkillDialog(false);
+                setRefreshKey(k => k + 1);
+                window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
             } else {
-                toastRef.current.error(tRef.current('agentSettings.skillCommandList.syncFailed'));
+                toastRef.current.error(response.error || tRef.current('agentSettings.skillCommandList.syncFailed'));
             }
         } catch {
             toastRef.current.error(tRef.current('agentSettings.skillCommandList.syncFailed'));
         }
-    }, []);
+    }, [syncableFolders]);
 
     // 上传技能文件
     const handleUploadSkill = useCallback(async (file: File) => {
@@ -511,7 +519,8 @@ export default function GlobalSkillsPanel({
                     syncConfig={canSyncFromClaude ? {
                         onSync: handleSyncFromClaude,
                         canSync: canSyncFromClaude,
-                        syncableCount: syncableCount
+                        syncableCount: syncableCount,
+                        syncableFolders
                     } : undefined}
                 />
             )}
