@@ -79,7 +79,7 @@ Node generic HTTP 必须走 `fetchWithGeneralProxy()`；需要 cancellation/dead
 
 Integrated DSH canonical Web 是另一条显式路径：`WebFetch` 使用 general 代理决策，Provider utility/WebSearch 使用 Provider scope 决策。直连时 Host 校验并 pin 全部 public DNS answer，首个地址连接失败后继续尝试其余地址；用户显式选择代理时仍执行 URL/hostname/literal-IP policy，但远端 DNS 交给该代理。这与 Claude Code/普通 CLI 的显式代理语义一致，也允许在本地 DNS 被代理软件接管或不可直达时工作。
 
-Integrated DSH 的 protocol 5.0.0 源码适配通过既有 `host/credential/resolve` 返回有界 `providerNetwork`，由 Runtime 的模型请求 scope 消费；代理认证 URL 仅在请求生命周期中存在，不写入 profile、Session 或日志。该策略与 `getProviderProxyEnvironment` 共用 immutable inherited baseline / app overlay 决策；不是从 general process.env 反推。后续请求可使用新设置，并发请求不互相切换全局 dispatcher。实际使用仍需新版官方 handoff ingestion。
+Integrated DSH 的已接纳协议通过既有 `host/credential/resolve` 返回有界 `providerNetwork`，由 Runtime 的模型请求 scope 消费；代理认证 URL 仅在请求生命周期中存在，不写入 profile、Session 或日志。该策略与 `getProviderProxyEnvironment` 共用 immutable inherited baseline / app overlay 决策；不是从 general process.env 反推。后续请求可使用新设置，并发请求不互相切换全局 dispatcher。精确协议版本和交付身份以 `src/shared/integrated-runtimes/dsh-lock.json` 为准。
 
 Integrated DSH Shell 也属于 general owner。创建 Runtime 进程时，Host 将 `getGeneralProxyEnvironment()` 的显式快照交给 `buildDshChildEnvironment()`，只准入标准大小写 HTTP/HTTPS/ALL_PROXY 与 NO_PROXY 键，并把键名纳入 Runtime 的 sealed environment。主 Agent 和子 Agent Shell 使用同一份快照；SOCKS5 使用既有 HTTP bridge，关闭或未选中 general scope 时恢复 inherited baseline。不能直接放开 `process.env` 继承，也不能使用当前模型的 Provider proxy env 代替 Shell policy。命令自身仍须支持标准代理环境变量（例如 curl）；这不会为任意程序安装透明网络代理。
 

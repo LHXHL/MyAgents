@@ -273,7 +273,7 @@ DSH UPG15 extends the existing credential request with ephemeral Provider networ
 The Host remains proxy selection authority; Runtime request scopes own concurrent model pools,
 while ordinary networking and Shell use the Host general launch snapshot. No new port, listener or
 persistent proxy owner is added. See [proxy configuration](./tech_docs/proxy_config.md) and the
-[DSH integration guide](./tech_docs/myagents_dsh_integrated_runtime.md). Protocol 5 resources are
+[DSH integration guide](./tech_docs/myagents_dsh_integrated_runtime.md). The pinned protocol resources are
 admitted through official verification and complete contract inventory checks.
 
 

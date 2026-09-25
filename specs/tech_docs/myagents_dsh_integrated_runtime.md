@@ -1,22 +1,16 @@
 ---
 type: module-technical-document
 status: implemented-native-validation-partial
-version: 0.34
-updated: 2026-09-12
+updated: 2026-09-25
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
 runtime_rfc: MyAgents-dsh/specs/prd/tech_rfc_0.3_myagents_dsh_integration.md
-main_baseline:
-  version: 0.4.15
-  commit: 7544161c
 runtime_authority: src/shared/integrated-runtimes/dsh-lock.json
 ---
 
 # MyAgents-dsh Integrated Runtime — implementation and delivery ledger
 
-> Current owners and data flow follow `specs/ARCHITECTURE.md` and the implementation. The accepted Runtime identity, toolchain and platform claims are read from `src/shared/integrated-runtimes/dsh-lock.json`, generated contracts and the verified immutable handoff. Product scope remains owned by the paired PRD. Earlier design audits and delivery receipts below are historical evidence; their version numbers and worktree observations do not describe the current checkout.
-
-> **Proposal, not current architecture.** This RFC is ready for implementation; current Runtime ownership and supported adapters are documented in [Multi-Agent Runtime](multi_agent_runtime.md).
+> Current owners and data flow follow [Architecture](../ARCHITECTURE.md), [Multi-Agent Runtime](multi_agent_runtime.md), [Product Session history V2](session_transcript_v2.md) and the implementation. The accepted Runtime identity, protocol, toolchain and platform claims come from `src/shared/integrated-runtimes/dsh-lock.json`, generated contracts and the verified immutable handoff. Sections 2–24 mix the original design with later implementation notes; the dated sections after the references are delivery history. Version numbers, pending gates and worktree observations in those sections describe their recorded moment, not the current checkout.
 
 ## 1. Decision summary
 
@@ -500,7 +494,7 @@ H4 now connects credential resolution, permission/question/Plan interaction sett
 
 `src/server/integrated-runtimes/dsh/canonical-web.ts` is the sole MyAgents executor for DSH canonical `WebFetch` and `WebSearch`. It accepts only the exact `myagents-host-canonical-web-v1` component generation, component identity, current Runtime Session and operation-frozen config revision; the outer reverse-port fence has already checked Product Session, Runtime generation and deadline. MyAgents advertises that adapter during initialize only because this executor is present. DSH still owns tool catalog/schema, visibility, permission, Hook, origin and terminal semantics.
 
-Search response normalization accepts standard server-search blocks and generic `tool_result` correlated to an observed server/MCP call, independent of the server's tool name. A bounded JSON5 data parser handles common envelopes, single-quoted strings and concatenated containers without evaluating expressions. Duplicate source URLs merge; unknown portions retain bounded service text with `unverified_search_results` and, when applicable, `unverified_domain_filter`. Empty searches remain valid, while explicit service errors remain failures. The canonical result bounds include JSON escaping and duplicated citation URLs; trimming sets `truncated`. The Renderer displays retained text alongside sources, including legacy SDK service text, without extracting citations from prose. These output additions are bound to the Runtime's new protocol `2.6.0` source candidate; the installed handoff remains authoritative until replacement ingestion and client acceptance.
+Search response normalization accepts standard server-search blocks and generic `tool_result` correlated to an observed server/MCP call, independent of the server's tool name. A bounded JSON5 data parser handles common envelopes, single-quoted strings and concatenated containers without evaluating expressions. Duplicate source URLs merge; unknown portions retain bounded service text with `unverified_search_results` and, when applicable, `unverified_domain_filter`. Empty searches remain valid, while explicit service errors remain failures. The canonical result bounds include JSON escaping and duplicated citation URLs; trimming sets `truncated`. The Renderer displays retained text alongside sources, including legacy SDK service text, without extracting citations from prose. This behavior is in the accepted Runtime handoff identified by the lock file; historical source candidates below do not govern the installed contract.
 
 The Host executor uses a composition-owned HTTP client with per-hop destination policy, bounded concurrency/queue/deadline, cancellation and compressed/decompressed byte limits. Direct requests use public-address DNS validation and connection pinning, reject IPv4-in-IPv6 aliases, revalidate redirects and try remaining validated addresses after a connect failure. When the user explicitly selects a MyAgents general/Provider proxy, lexical host and literal-IP policy still runs while remote DNS belongs to that proxy; this matches ordinary CLI proxy behavior and works on machines where direct DNS is intentionally unavailable. Each dispatch copies immutable input headers into a request-owned mutable object before passing them to ProxyAgent, which may fill in `host`. One proxy dispatcher generation is reused per normalized proxy configuration, retired after active requests drain when configuration changes, and closed by the Session/Runtime lifecycle owner; there is no implicit direct fallback. `WebFetch` converts bounded HTML to Markdown, extracts bounded PDF/text content, and makes one isolated tool-free utility call against the operation-frozen Provider, including native DeepSeek. `WebSearch` is selected by API family: every admitted `anthropic-messages` route uses the same Claude Code-compatible nested Messages request with `web_search_20250305`, including bounded `pause_turn` continuation. Zhipu's standalone Search API is an explicit optional non-Anthropic backend; Provider branding never redirects an Anthropic route to another product. The exact native `deepseek-official` binding also delegates WebSearch through this Host owner, targeting the fixed official `/anthropic/v1/messages` endpoint and the same server-search schema; the root model remains native. Search never falls back to HTML scraping. Provider credentials remain in Host memory and enter only the outbound request header. Failures return a stable code plus one bounded actionable message and safe phase/system-error classification; upstream response bytes and secret-bearing diagnostics are not exposed. Zhipu `1113`/HTTP 429 is reported as missing search resource package or balance rather than a generic invalid Provider result.
 
@@ -1640,10 +1634,8 @@ old Host projection suppressed its nested safe error code. The Host now preserve
 Provider error code and gives retry or known-URL WebFetch guidance. A separate credentialed
 search against the same configured route returned ten results, so the report's single failure
 does not establish that WebSearch is universally unavailable. No automatic provider retry or
-search fallback was introduced. CLI status now labels global fallback Provider and current
-Session MCP observation by scope; an Agent's explicit DeepSeek selection can coexist with an
-unset global fallback. New file mode `0600` and the upstream malformed-image diagnostic retain
-their documented behavior. The report's Gemini item was not rerun on this build; the local log
+search fallback was introduced. An Agent's explicit DeepSeek selection can coexist with an
+unset global fallback. The report's Gemini item was not rerun on this build; the local log
 shows only an earlier pre-build failure, while the current describe degradation unit test passes.
 Plan Mode remains outside this work by user decision.
 
@@ -1676,6 +1668,8 @@ durable merely because the earlier batch is readable again.
 The rebuilt Dev App restored that exact Session without the toast. Startup reconciliation
 advanced the native cursor from 1709 to 1799, retired all three pending root-input journals,
 and materialized their turns in Product history. A new short reply was saved through revision
-90109 and remained visible after a full App restart. In the same signed build, a live WebSearch
-returned ten results; unified logging recorded ten empty snippets and one malformed source title,
-while the visible title used the source hostname fallback.
+90109 and remained visible after a full App restart. The Node and Rust readers now consume one
+shared message-detail field table, and TypeScript checks it against all legal non-identity
+message fields at compile time; the invariant is specified in [Product Session history V2](session_transcript_v2.md#内容和读取).
+In the same signed build, a live WebSearch returned ten results; unified logging recorded ten
+empty snippets and one malformed source title, while the visible title used the hostname fallback.
