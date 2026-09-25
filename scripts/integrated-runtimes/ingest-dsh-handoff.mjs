@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 
 import {
@@ -12,6 +12,7 @@ import {
   verifyBundledToolchain,
   verifyHandoffFacts,
 } from "./dsh-handoff-policy.mjs";
+import { buildSelectionPath } from "./dsh-build-selection.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const args = parseNamedArgs(process.argv.slice(2), {
@@ -44,6 +45,10 @@ stageCompleteHandoff(handoffRoot, outputRoot, (stagedRoot) => {
   verifyHandoffFacts(stagedRoot, lock);
   compareOrAcceptContracts(stagedRoot, resolve(repoRoot, "contracts"), false);
 });
+if (args["--out"] === undefined) {
+  // Manual ingestion restores the committed authority for subsequent source builds.
+  rmSync(buildSelectionPath(repoRoot), { force: true });
+}
 
 process.stdout.write(
   `${JSON.stringify({ ...verified, outputRoot }, null, 2)}\n`,

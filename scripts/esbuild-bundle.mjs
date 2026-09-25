@@ -21,8 +21,10 @@ import { build } from 'esbuild';
 import { execFileSync } from 'node:child_process';
 import { readFile, mkdir, readdir, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { preparePlaywrightControlRuntime } from './prepare-playwright-control-runtime.mjs';
+import { dshBuildDefines } from './integrated-runtimes/dsh-build-selection.mjs';
 
 // Read package.json version once and inject as a compile-time constant.
 // This is the ONLY way `myagents version` can show the real shipped
@@ -175,6 +177,7 @@ await build({
   platform: 'node',
   target: 'node22',
   define: {
+    ...dshBuildDefines(fileURLToPath(new URL('..', import.meta.url))),
     // Compile-time version constant. Replaces `process.env.npm_package_version`
     // fallbacks across the codebase so `myagents version` reports the real
     // shipped build instead of a stale hardcoded string in production.

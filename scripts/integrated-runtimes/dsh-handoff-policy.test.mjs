@@ -99,7 +99,7 @@ function admissionFixture(root, { platform, explicitNodeRoot = false } = {}) {
   writeFixtureFile(resolve(npmRoot, "bin/npm-cli.js"), `process.stdout.write(${JSON.stringify(npmVersion)});`);
   const distributionPath = resolve(root, "scripts/node-runtime.json");
   writeFixtureFile(distributionPath, JSON.stringify({ node: process.versions.node, npm: npmVersion }));
-  for (const name of ["dsh-handoff-policy", "verify-dsh-resources", "ingest-dsh-handoff"]) {
+  for (const name of ["dsh-handoff-policy", "dsh-build-selection", "verify-dsh-resources", "ingest-dsh-handoff"]) {
     writeFixtureFile(resolve(root, `scripts/integrated-runtimes/${name}.mjs`),
       readFileSync(resolve(import.meta.dirname, `${name}.mjs`)));
   }
@@ -268,12 +268,21 @@ test("generated contracts are accepted mechanically and then drift-gated", () =>
     assert.equal(existsSync(resolve(contractsRoot, "myagents-dsh/protocol-6.0.0-evidence.json")), true);
     compareOrAcceptContracts(handoffRoot, contractsRoot, false);
 
+    writeFileSync(resolve(handoffRoot, "contracts/myagents-dsh-compatibility-v1.json"), "target-specific identity\n");
+    compareOrAcceptContracts(handoffRoot, contractsRoot, false,
+      ["contracts/myagents-dsh-compatibility-v1.json"]);
+    assert.throws(
+      () => compareOrAcceptContracts(handoffRoot, contractsRoot, false),
+      /generated contract contracts\/myagents-dsh-compatibility-v1\.json mismatch/,
+    );
+
     writeFileSync(
       resolve(contractsRoot, "myagents-dsh/protocol-meta.json"),
       "tampered\n",
     );
     assert.throws(
-      () => compareOrAcceptContracts(handoffRoot, contractsRoot, false),
+      () => compareOrAcceptContracts(handoffRoot, contractsRoot, false,
+        ["contracts/myagents-dsh-compatibility-v1.json"]),
       /generated contract contracts\/protocol-meta\.json mismatch/,
     );
   });
@@ -469,7 +478,8 @@ test("repository lock, generated contracts, resources, and toolchain authorities
     tauriConfig.bundle.resources["../src-tauri/resources/integrated-runtimes"],
     "integrated-runtimes",
   );
-  assert.match(packageJson.scripts["tauri:build"], /verify:dsh-runtime/);
+  assert.match(packageJson.scripts["tauri:build"], /build-dsh-tauri/);
+  assert.match(packageJson.scripts["tauri:build:prepared"], /verify:dsh-runtime/);
   assert.match(packageJson.scripts["tauri:dev"], /verify:dsh-runtime/);
   assert.equal(tauriConfig.build.beforeBundleCommand, undefined);
 

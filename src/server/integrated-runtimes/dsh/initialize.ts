@@ -2,7 +2,7 @@ import { GENERATED_PROTOCOL_VERSION } from '../../../../contracts/myagents-dsh/p
 import { createHash } from "node:crypto";
 import { isAbsolute, normalize } from "node:path";
 
-import dshLock from "../../../shared/integrated-runtimes/dsh-lock.json";
+import dshLock from "../../../shared/integrated-runtimes/effective-dsh-lock";
 import type {
   DshExecutionEnvironment,
   DshInitializeParams,

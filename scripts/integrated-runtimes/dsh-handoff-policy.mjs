@@ -368,10 +368,12 @@ export function compareOrAcceptContracts(
   handoffRoot,
   contractsRoot,
   acceptContracts,
+  excluded = [],
 ) {
   const targetRoot = resolve(contractsRoot, "myagents-dsh");
   // Preflight the entire new inventory before replacing any accepted contract.
   for (const contractPath of CONTRACT_PATHS) {
+    if (excluded.includes(contractPath)) continue;
     const source = resolve(handoffRoot, contractPath);
     if (!existsSync(source) || !lstatSync(source).isFile()) {
       fail(`handoff contract is missing or not a regular file: ${contractPath}`);
@@ -380,6 +382,7 @@ export function compareOrAcceptContracts(
   if (acceptContracts) mkdirSync(targetRoot, { recursive: true });
 
   for (const contractPath of CONTRACT_PATHS) {
+    if (excluded.includes(contractPath)) continue;
     const source = resolve(handoffRoot, contractPath);
     const target = resolve(targetRoot, contractPath.slice("contracts/".length));
     if (acceptContracts) {

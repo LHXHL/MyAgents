@@ -3465,13 +3465,18 @@ fn detect_cli(binary_name: &str) -> RuntimeDetectionResult {
     }
 }
 
-fn dsh_platform_target() -> Option<&'static str> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
+fn dsh_platform_target_for(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
         ("macos", "aarch64") => Some("darwin-arm64"),
+        ("macos", "x86_64") => Some("darwin-x64"),
         ("windows", "x86_64") => Some("win32-x64"),
         ("linux", "x86_64") => Some("linux-x64"),
         _ => None,
     }
+}
+
+fn dsh_platform_target() -> Option<&'static str> {
+    dsh_platform_target_for(std::env::consts::OS, std::env::consts::ARCH)
 }
 
 fn json_string_at<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a str> {
@@ -3537,9 +3542,7 @@ fn dsh_resource_identity_matches(root: &Path, lock: &serde_json::Value, target: 
 }
 
 fn detect_dsh_runtime(resource_dir: Option<&Path>) -> RuntimeDetectionResult {
-    let lock = serde_json::from_str::<serde_json::Value>(include_str!(
-        "../../src/shared/integrated-runtimes/dsh-lock.json"
-    ));
+    let lock = serde_json::from_str::<serde_json::Value>(env!("MYAGENTS_DSH_EFFECTIVE_LOCK_JSON"));
     let Ok(lock) = lock else {
         return RuntimeDetectionResult {
             installed: false,
@@ -3586,14 +3589,22 @@ fn detect_dsh_runtime(resource_dir: Option<&Path>) -> RuntimeDetectionResult {
     });
     match root {
         Some(root) if dsh_resource_identity_matches(&root, &lock, target) => {
+            let release_ready = lock.get("release").is_some()
+                && lock
+                    .get("platforms")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|platforms| {
+                        platforms.iter().any(|platform| {
+                            platform.get("target").and_then(serde_json::Value::as_str) == Some(target)
+                                && platform.get("claim").and_then(serde_json::Value::as_str)
+                                    == Some("verified")
+                        })
+                    });
             RuntimeDetectionResult {
                 installed: true,
                 version,
                 path: Some(root.to_string_lossy().to_string()),
-                // The accepted handoff records implementation-complete platform
-                // claims, not MyAgents packaged/native release validation. Labs
-                // may admit these bytes; release promotion remains an H6 gate.
-                readiness: Some("unverified-dev-runtime".to_string()),
+                readiness: Some(if release_ready { "ready" } else { "unverified-dev-runtime" }.to_string()),
                 reason: None,
             }
         }
@@ -3717,6 +3728,14 @@ mod runtime_detection_cache_tests {
         );
         assert_eq!(result.readiness.as_deref(), Some("unverified-dev-runtime"));
         assert_eq!(result.version.as_deref(), Some("0.0.0"));
+    }
+
+    #[test]
+    fn dsh_platform_target_includes_intel_macos() {
+        assert_eq!(dsh_platform_target_for("macos", "aarch64"), Some("darwin-arm64"));
+        assert_eq!(dsh_platform_target_for("macos", "x86_64"), Some("darwin-x64"));
+        assert_eq!(dsh_platform_target_for("windows", "x86_64"), Some("win32-x64"));
+        assert_eq!(dsh_platform_target_for("linux", "x86_64"), Some("linux-x64"));
     }
 
     #[test]

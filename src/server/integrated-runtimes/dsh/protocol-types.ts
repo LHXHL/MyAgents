@@ -1,6 +1,6 @@
 import candidateProfileJson from "../../../../contracts/myagents-dsh/batch-1-candidate-profile-v1.json";
 import protocolMetaJson from "../../../../contracts/myagents-dsh/protocol-meta.json";
-import dshLock from "../../../shared/integrated-runtimes/dsh-lock.json";
+import dshLock from "../../../shared/integrated-runtimes/effective-dsh-lock";
 
 export const DSH_CANONICAL_WEB_POLICY_REF = "deepseek-official-web-search-v1" as const;
 

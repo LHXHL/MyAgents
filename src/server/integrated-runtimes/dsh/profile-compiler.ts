@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import type { Provider } from "../../../shared/config-types";
 import { resolveProviderForModel } from "../../../shared/tokendance";
 import { SDK_DEFAULT_CONTEXT_WINDOW } from "../../../shared/contextUsage";
-import dshLock from "../../../shared/integrated-runtimes/dsh-lock.json";
+import dshLock from "../../../shared/integrated-runtimes/effective-dsh-lock";
 import {
   getProviderExecutionConstraint,
   OFFICIAL_DEEPSEEK_ANTHROPIC_BASE_URL,

@@ -5,6 +5,8 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET="x86_64-unknown-linux-gnu"
 MODE="release"
+DSH_SOURCE="release"
+DSH_HANDOFF=""
 case "${1:-}" in
     ""|"$TARGET") ;;
     --debug) MODE="debug" ;;
@@ -17,9 +19,19 @@ case "${1:-}" in
         exit 0 ;;
     *) echo "Unsupported target/option: $1. Only Ubuntu 24.04 x64 is supported." >&2; exit 1 ;;
 esac
-if [ "$#" -gt 1 ]; then
-    echo "Pass only one target or option; see --help." >&2
-    exit 1
+if [ "$#" -gt 0 ]; then shift; fi
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --dsh-source) DSH_SOURCE="${2:-}"; shift 2 ;;
+        --dsh-handoff) DSH_HANDOFF="${2:-}"; shift 2 ;;
+        *) echo "Unsupported DSH build option: $1" >&2; exit 1 ;;
+    esac
+done
+if [ "$DSH_SOURCE" != "release" ] && [ "$DSH_SOURCE" != "local" ]; then
+    echo "Invalid DSH source: $DSH_SOURCE" >&2; exit 1
+fi
+if [ "$DSH_SOURCE" = "local" ] && { [ "$MODE" != "debug" ] || [ -z "$DSH_HANDOFF" ]; }; then
+    echo "Local DSH handoff requires --debug --dsh-source local --dsh-handoff /absolute/path" >&2; exit 1
 fi
 
 # Reject wrong hosts before reading .env, installing tools or touching staging.
@@ -97,6 +109,14 @@ if [ "$MODE" != "prepare" ]; then npm run typecheck; fi
 # target's staging. The native preparation owner retains its verified cache.
 npm run build:tsx-runtime -- linux x64
 "${PROJECT_DIR}/scripts/download_nodejs.sh"
+if [ "$MODE" != "prepare" ]; then
+    if [ "$DSH_SOURCE" = "local" ]; then
+        node "${PROJECT_DIR}/scripts/integrated-runtimes/prepare-dsh-runtime.mjs" \
+            --source local --handoff "$DSH_HANDOFF" --target linux-x64
+    else
+        node "${PROJECT_DIR}/scripts/integrated-runtimes/prepare-dsh-runtime.mjs" --source release --target linux-x64
+    fi
+fi
 SDK_SOURCE="${PROJECT_DIR}/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude"
 if [ ! -x "$SDK_SOURCE" ]; then
     echo "Missing Linux x64 Claude SDK executable; run npm ci on this host." >&2
@@ -127,13 +147,13 @@ if [ "$MODE" = "prepare" ]; then
     exit 0
 fi
 if [ "$MODE" = "debug" ]; then
-    npm run tauri:build -- --target "$TARGET" --debug --no-bundle
+    npm run tauri:build:prepared -- --target "$TARGET" --debug --no-bundle
     APP="${PROJECT_DIR}/src-tauri/target/${TARGET}/debug/myagents"
     test -x "$APP"
     echo "Development executable (keep this checkout): $APP"
     exit 0
 fi
-npm run tauri:build -- --target "$TARGET" --bundles deb
+npm run tauri:build:prepared -- --target "$TARGET" --bundles deb
 BUNDLE_DIR="${PROJECT_DIR}/src-tauri/target/${TARGET}/release/bundle/deb"
 shopt -s nullglob
 DEB_PATHS=("$BUNDLE_DIR"/*_"${PKG_VERSION}"_amd64.deb)

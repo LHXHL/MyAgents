@@ -8,7 +8,7 @@ import { access, mkdir, realpath } from 'node:fs/promises';
 import { delimiter, dirname, isAbsolute, join, normalize } from 'node:path';
 
 import packageJson from '../../../../package.json';
-import dshLock from '../../../shared/integrated-runtimes/dsh-lock.json';
+import dshLock from '../../../shared/integrated-runtimes/effective-dsh-lock';
 import type { Provider, ProviderAuthType } from '../../../shared/config-types';
 import { getProviderExecutionConstraint } from '../../../shared/integrated-runtimes/provider-constraints';
 import {
@@ -390,9 +390,9 @@ function turnOrigin(options: SessionStartOptions): MethodParams<'turn/start'>['o
     : { kind: 'headless', scenario: options.scenario.type };
 }
 
-function platformTarget(): 'darwin-arm64' | 'win32-x64' | 'linux-x64' {
+function platformTarget(): 'darwin-arm64' | 'darwin-x64' | 'win32-x64' | 'linux-x64' {
   const target = `${process.platform}-${process.arch}`;
-  if (target === 'darwin-arm64' || target === 'win32-x64' || target === 'linux-x64') {
+  if (target === 'darwin-arm64' || target === 'darwin-x64' || target === 'win32-x64' || target === 'linux-x64') {
     return target;
   }
   throw new Error(`DSH Runtime has no accepted native target for ${target}`);

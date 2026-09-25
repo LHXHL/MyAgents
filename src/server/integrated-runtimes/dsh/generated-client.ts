@@ -4,7 +4,7 @@ import { resolve, sep } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { pathToFileURL } from "node:url";
 
-import dshLock from "../../../shared/integrated-runtimes/dsh-lock.json";
+import dshLock from "../../../shared/integrated-runtimes/effective-dsh-lock";
 import {
   DSH_CLIENT_METHOD_BY_PROTOCOL,
   DSH_CANONICAL_WEB_POLICY_REF,

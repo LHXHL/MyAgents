@@ -18,6 +18,8 @@ const SPACE_BUILD_ENV_KEYS: &[&str] = &[
 ];
 const MANAGED_CODEX_RUNTIME_LOCK_PATH: &str = "../src/shared/managed-codex-runtime.json";
 const MANAGED_BROWSER_RUNTIME_LOCK_PATH: &str = "../src/shared/managed-browser-runtime.json";
+const DSH_RELEASE_LOCK_PATH: &str = "../src/shared/integrated-runtimes/dsh-lock.json";
+const DSH_BUILD_SELECTION_PATH: &str = "resources/integrated-runtimes/dsh-build-selection-v1.json";
 
 fn main() {
     let package_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../package.json");
@@ -28,9 +30,28 @@ fn main() {
     build_cliproxy::verify_bundle(package["version"].as_str().expect("App version"));
     expose_managed_codex_runtime_lock();
     expose_managed_browser_runtime_lock();
+    expose_dsh_build_lock();
     expose_space_build_env();
     prepare_incremental_tauri_resource_output();
     tauri_build::build()
+}
+
+fn expose_dsh_build_lock() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let release_path = root.join(DSH_RELEASE_LOCK_PATH);
+    let selection_path = root.join(DSH_BUILD_SELECTION_PATH);
+    println!("cargo:rerun-if-changed={}", release_path.display());
+    println!("cargo:rerun-if-changed={}", selection_path.display());
+    let lock: serde_json::Value = if selection_path.exists() {
+        let selection: serde_json::Value = serde_json::from_slice(
+            &fs::read(&selection_path).expect("DSH build selection"),
+        ).expect("DSH build selection JSON");
+        selection.get("lock").cloned().expect("DSH build selection lock")
+    } else {
+        serde_json::from_slice(&fs::read(release_path).expect("DSH release lock"))
+            .expect("DSH release lock JSON")
+    };
+    println!("cargo:rustc-env=MYAGENTS_DSH_EFFECTIVE_LOCK_JSON={lock}");
 }
 
 /// Tauri copies bundle resources beside the binary without removing files that

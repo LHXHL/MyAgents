@@ -5,7 +5,9 @@
 # 如需验证安装器，可传入 -BundleNsis 构建 Debug NSIS 安装包。
 
 param(
-    [switch]$BundleNsis
+    [switch]$BundleNsis,
+    [ValidateSet("release", "local")][string]$DshSource = "release",
+    [string]$DshHandoff
 )
 
 $ErrorActionPreference = "Stop"
@@ -144,6 +146,13 @@ foreach ($dir in $dirsToClean) {
 
 # Prepare the same pinned Node/npm pair as setup and release builds.
 & "$PROJECT_DIR\scripts\download_nodejs.ps1"
+if ($DshSource -eq "local") {
+    if (-not $DshHandoff) { throw "-DshSource local requires -DshHandoff <absolute directory>" }
+    & node "$PROJECT_DIR\scripts\integrated-runtimes\prepare-dsh-runtime.mjs" --source local --handoff $DshHandoff --target win32-x64
+} else {
+    & node "$PROJECT_DIR\scripts\integrated-runtimes\prepare-dsh-runtime.mjs" --source release --target win32-x64
+}
+if ($LASTEXITCODE -ne 0) { throw "MyAgents-dsh 构建资源准备失败" }
 
 # 创建占位符资源目录（满足 Tauri bundle 阶段的资源校验）。
 # server-dist.js / plugin-bridge-dist.mjs / cli/myagents.cjs 在下面的
@@ -267,12 +276,12 @@ $fastConfigJson = @'
 
 try {
     if ($BundleNsis) {
-        & npm run tauri:build -- --debug --bundles nsis --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config $fastConfig
+        & npm run tauri:build:prepared -- --debug --bundles nsis --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config $fastConfig
         if ($LASTEXITCODE -ne 0) {
             throw "Tauri build failed"
         }
     } else {
-        & npm run tauri:build -- --debug --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config $fastConfig
+        & npm run tauri:build:prepared -- --debug --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config $fastConfig
         if ($LASTEXITCODE -ne 0) {
             throw "Tauri build failed"
         }

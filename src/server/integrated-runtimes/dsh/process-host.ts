@@ -7,7 +7,7 @@ import {
   type SpawnOptionsWithoutStdio,
 } from "node:child_process";
 
-import dshLock from "../../../shared/integrated-runtimes/dsh-lock.json";
+import dshLock from "../../../shared/integrated-runtimes/effective-dsh-lock";
 import type { DshChildEnvironment } from "./child-environment";
 import {
   loadDshProtocolRuntime,

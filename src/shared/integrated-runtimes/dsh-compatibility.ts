@@ -1,5 +1,10 @@
-import compatibilityJson from "../../../contracts/myagents-dsh/myagents-dsh-compatibility-v1.json";
-import dshLock from "./dsh-lock.json";
+import releaseCompatibility from "../../../contracts/myagents-dsh/myagents-dsh-compatibility-v1.json";
+import dshLock from "./effective-dsh-lock";
+
+declare const __MYAGENTS_DSH_BUILD_COMPATIBILITY__: typeof releaseCompatibility | undefined;
+const compatibilityJson = typeof __MYAGENTS_DSH_BUILD_COMPATIBILITY__ === "undefined"
+  ? releaseCompatibility
+  : __MYAGENTS_DSH_BUILD_COMPATIBILITY__;
 import type { DshApiFamily } from "./provider-constraints";
 
 const DSH_API_FAMILIES = [

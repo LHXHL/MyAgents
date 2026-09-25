@@ -244,9 +244,8 @@ ensure_host_esbuild() {
 echo -e "${BLUE}[5/7] 构建前端和服务端...${NC}"
 ensure_host_esbuild
 
-# Architecture-independent assets are built once, before the target loop.
-echo -e "  ${CYAN}构建前端 / Sidecar / Bridge / CLI（本次只执行一次）...${NC}"
-npm run build:assets
+# DSH is a native runtime. Assets are built after selecting each target's
+# exact release handoff inside the target loop below.
 BUILD_ASSETS_CONFIG='{"build":{"beforeBuildCommand":null}}'
 
 # SDK native binary 按架构在 per-target loop 里拷贝（见下方 Tauri 构建循环）。
@@ -504,6 +503,9 @@ for TARGET in "${BUILD_TARGETS[@]}"; do
 
     echo -e "  ${CYAN}确保 Node.js 匹配目标架构 (${NODE_TARGET_ARCH})...${NC}"
     "${PROJECT_DIR}/scripts/download_nodejs.sh" --target "$NODE_TARGET_ARCH"
+    node "${PROJECT_DIR}/scripts/integrated-runtimes/prepare-dsh-runtime.mjs" \
+        --source release --target "darwin-${NODE_TARGET_ARCH}"
+    npm run build:assets
     node "${PROJECT_DIR}/scripts/prepare-cliproxy.mjs" "darwin-${NODE_TARGET_ARCH}"
 
     # ---- 重新填充 sharp-runtime 资源以匹配目标架构 ----
@@ -603,7 +605,7 @@ for TARGET in "${BUILD_TARGETS[@]}"; do
     node "${PROJECT_DIR}/scripts/prepare-cuse-bundle.mjs" "$TARGET"
     codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "${PROJECT_DIR}/bundled-skills/cuse/scripts/cuse"
 
-    npm run tauri:build -- --target "$TARGET" --config "$BUILD_ASSETS_CONFIG"
+    npm run tauri:build:prepared -- --target "$TARGET" --config "$BUILD_ASSETS_CONFIG"
 
     echo -e "${GREEN}✓ $TARGET 构建完成${NC}"
 done

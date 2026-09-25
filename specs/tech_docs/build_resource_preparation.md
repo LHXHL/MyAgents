@@ -24,6 +24,14 @@
 
 ## 当前入口职责
 
+### Integrated DSH 构建来源
+
+`scripts/integrated-runtimes/prepare-dsh-runtime.mjs` 在打包前选择并验证 DSH handoff。正式入口和直接 `npm run tauri:build` 固定使用 `dsh-lock.json` 中按目标平台锁定的 GitHub Release 资产；packaged Dev 入口默认相同，可显式传入 `local` 与绝对 handoff 路径。构建准备读取已有公共下载策略，缓存的归档仍逐次核对摘要，解包后运行 handoff 公共 verifier，再原子暂存完整资源。
+
+本地 Dev 的 effective lock 和 compatibility 由 handoff 派生，写入 ignored 的 `dsh-build-selection-v1.json`；Vite、Sidecar esbuild 与 Rust build.rs 在同一次构建读取该身份。它不改动已提交的 release lock。每个目标有自己的原生 DSH 资产，因此 macOS 双目标构建在目标循环中分别准备 DSH 并重建业务 bundle。`npm run tauri:build:prepared` 只供已调用 prepare 的平台脚本使用；通用直接入口负责自己准备。当前尚未发布任何 MyAgents-dsh GitHub Release，未写入 tag/资产摘要前 release 模式明确失败，本地 Dev 应使用 `--dsh-source local --dsh-handoff /absolute/path`。
+
+首个 Release 完成后，在已提交的 `dsh-lock.json` 添加 `release.tag`、`release.sourceCommit` 与每目标 `release.assets[<target>] = { name, sha256, size, handoffSha256 }`；`name` 是 `myagents-dsh-<tag>-<target>.tar.gz`。各平台原生依赖不同，handoff/Runtime 摘要也不同：prepare 先核对归档、目标 handoff 摘要与共同源码 commit，再由该 handoff 派生本次构建的完整 effective lock；不复用顶层单份 handoff 摘要去验证其它架构。compatibility 包含目标 Runtime 摘要，允许随目标变化，其余 Host 契约仍需匹配。不会在构建时读取 `latest` 索引。未打包的 `tauri:dev` 沿用现有 staged Runtime 与 source-mode 路径；本轮 `local` 覆盖范围是 `build_dev*` 的打包构建。
+
 `setup.sh` / `setup_windows.ps1` 准备开发依赖与 host 资源；平台 build 脚本检查本次目标并准备安装包。不能把“以前运行过 setup”作为资源就绪依据。两类入口复用资源 helper，由 helper 校验版本、目标、完整性后决定复用或补齐。
 
 Linux 的 setup 通过 `build_linux.sh --install-deps` 和 `--prepare` 复用资源路径，debug/release 也走该脚本。macOS/Windows 的开发版仍可使用项目 node_modules 提供 sharp/tsx；正式包必须携带自包含资源。

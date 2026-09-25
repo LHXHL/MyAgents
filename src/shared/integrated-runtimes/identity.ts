@@ -1,7 +1,7 @@
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from "../config-types";
 import managedCodexRuntimeLock from "../managed-codex-runtime.json";
 import type { RuntimeSource, RuntimeType } from "../types/runtime";
-import dshLock from "./dsh-lock.json";
+import dshLock from "./effective-dsh-lock";
 
 export const CLAUDE_AGENT_SDK_IMPLEMENTATION_VERSION = "0.3.276";
 

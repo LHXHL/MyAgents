@@ -3,7 +3,7 @@ import { realpath, stat } from "node:fs/promises";
 import { promisify } from "node:util";
 import { isAbsolute, join, resolve, sep } from "node:path";
 
-import dshLock from "../../../shared/integrated-runtimes/dsh-lock.json";
+import dshLock from "../../../shared/integrated-runtimes/effective-dsh-lock";
 import type { DshChildEnvironment } from "./child-environment";
 import {
   DSH_GENERATED_CAPABILITY_PROFILE_DIGEST,

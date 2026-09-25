@@ -11,6 +11,7 @@ import {
   verifyBundledToolchain,
   verifyHandoffFacts,
 } from "./dsh-handoff-policy.mjs";
+import { readDshBuildSelection } from "./dsh-build-selection.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const args = parseNamedArgs(process.argv.slice(2), {
@@ -24,15 +25,18 @@ const runtimeRoot = resolveExplicitDirectory(
   ),
   "--runtime-root",
 );
-const lock = JSON.parse(
+const releaseLock = JSON.parse(
   readFileSync(
     resolve(repoRoot, "src/shared/integrated-runtimes/dsh-lock.json"),
     "utf8",
   ),
 );
+const selection = readDshBuildSelection(repoRoot);
+const lock = selection?.lock ?? releaseLock;
 const { nodeExecutable, ...toolchain } = verifyBundledToolchain(repoRoot, lock, args["--node-root"]);
 runPublicVerifier(runtimeRoot, lock.handoff.manifestSha256, nodeExecutable);
 const verified = verifyHandoffFacts(runtimeRoot, lock);
-compareOrAcceptContracts(runtimeRoot, resolve(repoRoot, "contracts"), false);
+compareOrAcceptContracts(runtimeRoot, resolve(repoRoot, "contracts"), false,
+  selection ? ["contracts/myagents-dsh-compatibility-v1.json"] : []);
 
-process.stdout.write(`${JSON.stringify({ ...verified, ...toolchain }, null, 2)}\n`);
+process.stdout.write(`${JSON.stringify({ source: selection?.source ?? "release", ...verified, ...toolchain }, null, 2)}\n`);

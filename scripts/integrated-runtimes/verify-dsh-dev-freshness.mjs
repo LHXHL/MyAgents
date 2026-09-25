@@ -9,13 +9,13 @@ import {
 } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { readDshBuildSelection } from "./dsh-build-selection.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const defaultRuntimeRoot = resolve(
   repoRoot,
   "src-tauri/resources/integrated-runtimes/dsh",
 );
-const defaultSourceRoot = resolve(repoRoot, "../MyAgents-dsh");
 
 function exactDirectory(path, name) {
   if (!isAbsolute(path)) {
@@ -37,9 +37,10 @@ function git(sourceRoot, args) {
 
 export function verifyDshDevelopmentFreshness({
   runtimeRoot = defaultRuntimeRoot,
-  sourceRoot = defaultSourceRoot,
+  sourceRoot,
   sourceRequired = false,
 } = {}) {
+  if (!sourceRoot) return Object.freeze({ checked: false, reason: "source-checkout-not-requested" });
   if (!existsSync(sourceRoot)) {
     if (sourceRequired) {
       throw new Error(
@@ -93,7 +94,7 @@ export function verifyDshDevelopmentFreshness({
     throw new Error(
       `[dsh-dev-freshness] bundled Runtime is stale: artifact source ${bundledHead}, ` +
         `current MyAgents-dsh source ${sourceHead}. Build and verify a new immutable ` +
-        "Runtime handoff, then ingest it before starting Dev.",
+        "Runtime handoff, then prepare the Dev build with that handoff.",
     );
   }
   if (git(canonicalSourceRoot, ["status", "--porcelain=v1", "--untracked-files=all"]) !== "") {
@@ -131,10 +132,11 @@ function parseArguments(argv) {
 function main() {
   const args = parseArguments(process.argv.slice(2));
   const explicitSourceRoot = args["--source-root"];
-  const sourceRoot =
-    explicitSourceRoot ??
-    process.env.MYAGENTS_DSH_SOURCE_ROOT ??
-    defaultSourceRoot;
+  const sourceRoot = explicitSourceRoot ?? process.env.MYAGENTS_DSH_SOURCE_ROOT;
+  const selection = readDshBuildSelection(repoRoot);
+  if (sourceRoot && selection?.source !== "local") {
+    throw new Error("[dsh-dev-freshness] source checkout comparison requires a local DSH build selection");
+  }
   const result = verifyDshDevelopmentFreshness({
     runtimeRoot: args["--runtime-root"] ?? defaultRuntimeRoot,
     sourceRoot,

@@ -31,7 +31,7 @@ test('direct Tauri builds retain the public asset hook', () => {
   assert.equal(config.build.beforeBuildCommand, 'npm run build:assets');
 });
 
-test('explicit platform builds prepare assets once before disabling only the invocation hook', () => {
+test('explicit platform builds prepare assets before disabling only the invocation hook', () => {
   for (const file of ['build_macos.sh', 'build_dev.sh', 'build_windows.ps1', 'build_dev_win.ps1']) {
     const source = read(file);
     assert.equal(source.match(/npm run build:assets\b/g)?.length, 1, file);
@@ -42,7 +42,7 @@ test('explicit platform builds prepare assets once before disabling only the inv
     assert.ok(build < tauri, `${file}: assets must finish before Tauri`);
     assert.match(source.slice(tauri).split('\n')[0], /--config/, file);
     if (file === 'build_macos.sh') {
-      assert.ok(build < source.indexOf('for TARGET in "${BUILD_TARGETS[@]}"; do', build));
+      assert.ok(build > source.indexOf('for TARGET in "${BUILD_TARGETS[@]}"; do', source.indexOf('REQUIRED_SDK_ARCHES=')));
     }
   }
 });
