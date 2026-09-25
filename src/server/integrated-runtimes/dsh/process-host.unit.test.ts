@@ -162,7 +162,7 @@ const notificationHandlers: DshRuntimeNotificationHandlers = {
 function harness(
   result = initializeResult(),
   proxyEnvironment?: NodeJS.ProcessEnv,
-  sessionCli?: { productSessionId: string; sidecarPort: number; internalCliToken: string },
+  sessionCli?: { productSessionId: string; sidecarPort: number },
 ) {
   const order: string[] = [];
   const child = new FakeChild();
@@ -280,20 +280,18 @@ function harness(
 }
 
 describe("DSH RuntimeProcessHost", () => {
-  it("starts a Session child with the App-owned internal CLI capability without exposing its value in diagnostics", async () => {
+  it("starts a Session child with scoped route identifiers and no CLI credential", async () => {
     const test = harness(initializeResult(), undefined, {
       productSessionId: "product-session-1",
       sidecarPort: 31417,
-      internalCliToken: "app-capability",
     });
     await test.host.start();
     expect(test.spawnedEnvironment).toMatchObject({
       MYAGENTS_PORT: "31417",
       MYAGENTS_SESSION_ID: "product-session-1",
-      MYAGENTS_INTERNAL_CLI_TOKEN: "app-capability",
     });
+    expect(test.spawnedEnvironment?.MYAGENTS_INTERNAL_CLI_TOKEN).toBeUndefined();
     expect(test.spawnedEnvironment?.MYAGENTS_API_TOKEN).toBeUndefined();
-    expect(JSON.stringify(test.host.diagnosticSnapshot)).not.toContain("app-capability");
     await test.host.stop();
   });
 

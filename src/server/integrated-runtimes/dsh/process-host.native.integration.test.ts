@@ -100,7 +100,7 @@ async function createNativeHostFixture(
     nodeExecutablePath: installation.nodeExecutablePath, commandDirectories: ["/bin"],
     inheritedEnvironment: { HOME: temporaryRoot, USERPROFILE: temporaryRoot, LANG: 'en_US.UTF-8' },
     proxyEnvironment,
-    sessionCli: route === undefined ? null : { ...route, internalCliToken: 'fixture-capability' },
+    sessionCli: route ?? null,
   });
   // A generated local test CA is trusted only by this synthetic child process.
   const childEnvironment = testCertificateAuthority === undefined ? launchEnvironment : {
@@ -546,8 +546,14 @@ describe.runIf(nativeSmokeEnabled)(
         expect(imageResult?.is_error).not.toBe(true);
         expect(JSON.stringify(imageResult?.content)).toContain('"type":"image"');
         expect(JSON.stringify(imageResult?.content)).toContain('"type":"base64"');
-        const childInput = JSON.parse(childSystemPrompt) as { messages: Array<{ content: Array<{ text?: string }> }> };
-        const childText = childInput.messages.flatMap(message => Array.isArray(message.content) ? message.content.map(block => block.text ?? '') : []).join('\n');
+        const childInput = JSON.parse(childSystemPrompt) as {
+          system?: string | Array<{ text?: string }>;
+          messages: Array<{ content: string | Array<{ text?: string }> }>;
+        };
+        const systemText = typeof childInput.system === 'string' ? childInput.system
+          : Array.isArray(childInput.system) ? childInput.system.map(block => block.text ?? '').join('\n') : '';
+        const childText = [systemText, ...childInput.messages.flatMap(message => typeof message.content === 'string'
+          ? [message.content] : message.content.map(block => block.text ?? ''))].join('\n');
         const identityText = /Your execution identity \(Runtime authority\): (\{[^\n]*\})/.exec(childText)?.[1];
         expect(identityText).toBeDefined();
         expect(JSON.parse(identityText!)).toMatchObject({ model: profile.modelId, provider: profile.providerRouteId, role: 'permission-helper', depth: 1, remainingDepth: 0, canDelegate: false });

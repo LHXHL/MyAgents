@@ -46,6 +46,11 @@
         "version": "0.1.7-rc.2"
       },
       {
+        "name": "@deepseek-ai/dsh-bash-sandbox",
+        "role": "dsh-library",
+        "version": "0.1.7-rc.2"
+      },
+      {
         "name": "@deepseek-ai/dsh-commands",
         "role": "dsh-library",
         "version": "0.1.7-rc.2"
@@ -131,12 +136,32 @@
         "version": "0.1.7-rc.2"
       },
       {
+        "name": "@deepseek-ai/dsh-pwsh-sandbox",
+        "role": "dsh-library",
+        "version": "0.1.7-rc.2"
+      },
+      {
+        "name": "@deepseek-ai/dsh-repeat-tool-reminder",
+        "role": "dsh-library",
+        "version": "0.1.7-rc.2"
+      },
+      {
         "name": "@deepseek-ai/dsh-sandbox",
         "role": "dsh-library",
         "version": "0.1.7-rc.2"
       },
       {
+        "name": "@deepseek-ai/dsh-sandbox-local",
+        "role": "dsh-library",
+        "version": "0.1.7-rc.2"
+      },
+      {
         "name": "@deepseek-ai/dsh-sandbox-policy",
+        "role": "dsh-library",
+        "version": "0.1.7-rc.2"
+      },
+      {
+        "name": "@deepseek-ai/dsh-sandbox-windows-acl",
         "role": "dsh-library",
         "version": "0.1.7-rc.2"
       },
@@ -147,6 +172,11 @@
       },
       {
         "name": "@deepseek-ai/dsh-session",
+        "role": "dsh-library",
+        "version": "0.1.7-rc.2"
+      },
+      {
+        "name": "@deepseek-ai/dsh-session-checkpoint-policy",
         "role": "dsh-library",
         "version": "0.1.7-rc.2"
       },
@@ -176,6 +206,16 @@
         "version": "0.1.7-rc.2"
       },
       {
+        "name": "@deepseek-ai/dsh-session-stats",
+        "role": "dsh-library",
+        "version": "0.1.7-rc.2"
+      },
+      {
+        "name": "@deepseek-ai/dsh-session-turn-outline",
+        "role": "dsh-library",
+        "version": "0.1.7-rc.2"
+      },
+      {
         "name": "@deepseek-ai/dsh-settings",
         "role": "dsh-library",
         "version": "0.1.7-rc.2"
@@ -192,6 +232,16 @@
       },
       {
         "name": "@deepseek-ai/dsh-skill",
+        "role": "dsh-library",
+        "version": "0.1.7-rc.2"
+      },
+      {
+        "name": "@deepseek-ai/dsh-spill-local",
+        "role": "dsh-library",
+        "version": "0.1.7-rc.2"
+      },
+      {
+        "name": "@deepseek-ai/dsh-spill-policy",
         "role": "dsh-library",
         "version": "0.1.7-rc.2"
       },
@@ -232,6 +282,11 @@
       },
       {
         "name": "@deepseek-ai/dsh-system-prompt",
+        "role": "dsh-library",
+        "version": "0.1.7-rc.2"
+      },
+      {
+        "name": "@deepseek-ai/dsh-time-context",
         "role": "dsh-library",
         "version": "0.1.7-rc.2"
       },
@@ -353,7 +408,7 @@
     ]
   },
   "dsh": {
-    "baselineSha256": "444fd4a1f3a7c328f604368365abff4bc4a9b5727354899be129f441d67bb983",
+    "baselineSha256": "4147e89a8712cc794b1909f7a5db2e9c5558bfcd49ffa62309387a67ea187eb0",
     "release": "0.1.7-rc.2"
   },
   "formatVersion": 1,

@@ -25,7 +25,6 @@ import {
   type RuntimeType,
 } from '../../../shared/types/runtime';
 import { isConcreteProviderRoute } from '../../../shared/providerRoute';
-import { INTERNAL_CLI_TOKEN_ENV } from '../../../shared/externalCliCapabilities';
 import { getSessionMetadata } from '../../SessionStore';
 import { fingerprintDshNativeInput } from './input-identity';
 import {
@@ -863,7 +862,6 @@ export class DshRuntime implements AgentRuntime {
       sessionCli: {
         productSessionId: options.sessionId,
         sidecarPort: getSidecarPort(),
-        internalCliToken: process.env[INTERNAL_CLI_TOKEN_ENV] ?? '',
       },
     });
     const environmentWithoutDigest = executionEnvironment(

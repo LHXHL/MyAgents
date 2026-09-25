@@ -89,9 +89,9 @@ CLI 脚本只有一条执行 authority：`cli.rs` 使用当前安装包的 bundl
 - **AI 调用场景**：SDK 路径由 `buildClaudeSessionEnv()` 提供端口；DSH generation 由 Host 显式注入当前 `MYAGENTS_PORT` 与 Product `MYAGENTS_SESSION_ID`，来源为 Sidecar bootstrap 和 Session binding，不继承环境中的陈旧 routing 值。
 - **终端调用场景**：只有没有 Session 身份且环境没有有效 `MYAGENTS_PORT` 时，`cli.rs` 才从 `~/.myagents/sidecar.port` 读取并校验 Global 端口。已有 Session 身份（包括格式无效的值）不能回退 Global。
 
-App 启动时生成进程生命周期内的内部 CLI capability，并只注入 Global/Session Sidecar、集成终端和受管 Agent Runtime。DSH generation 由 Host 显式注入当前 `MYAGENTS_PORT`、Product `MYAGENTS_SESSION_ID` 与内部 capability；不继承陈旧 routing 值。普通终端不会获得该 capability：它通过薄启动器发现 Global Host 后，必须携带设置页生成的 `MYAGENTS_API_TOKEN`，并且只能进入静态公开清单。端口、Session ID、`--port` 和 payload 自报来源都不是内部身份。
+App 启动时生成进程生命周期内的内部 CLI capability，并只注入 Global/Session Sidecar、集成终端和允许该 capability 的受管 Agent Runtime。DSH generation 由 Host 显式注入当前 `MYAGENTS_PORT` 与 Product `MYAGENTS_SESSION_ID`，不继承陈旧 routing 值。DSH 的进程环境准入禁止任何 token 类变量，因此 Host 不把内部或外部 CLI token 交给 DSH；DSH Shell 暂不能调用需要内部身份的 `myagents` 命令。普通终端通过薄启动器发现 Global Host 后，必须携带设置页生成的 `MYAGENTS_API_TOKEN`，并且只能进入静态公开清单。端口、Session ID、`--port` 和 payload 自报来源都不是内部身份。
 
-DSH 的 `buildDshChildEnvironment()` 要求调用方显式选择 `sessionCli`：真实 Session 必须同时提供端口、Product Session ID 和 App 内部 capability；仅安装校验、诊断等无 Session 调用传 `null`。`DshRuntimeProcessHost` 必须接收这份已构造的环境，不自行回退到无 Session 身份的环境。缺失或无效的内部 capability 在启动边界直接失败，不能退化为外部 CLI。该白名单不从 ambient env 拾取旧 CLI 身份，也不向 DSH 传外部 `MYAGENTS_API_TOKEN`。
+DSH 的 `buildDshChildEnvironment()` 要求调用方显式选择 `sessionCli`：真实 Session 提供端口和 Product Session ID；仅安装校验、诊断等无 Session 调用传 `null`。`DshRuntimeProcessHost` 接收这份已构造的环境，不自行回退到无 Session 身份的环境。该白名单不从 ambient env 拾取旧 CLI 身份，也不向 DSH 传 `MYAGENTS_INTERNAL_CLI_TOKEN` 或 `MYAGENTS_API_TOKEN`。若以后要让 DSH Shell 调用内部 CLI，须由产品 owner 设计符合 DSH 凭据隔离的明确通道，不能通过改名或放宽环境校验绕过。
 
 外部访问默认关闭。Rust App owner 在 `config.json.externalCliAccess` 中锁内管理开关、单个可恢复 token 与创建时间；普通 Renderer `AppConfig` 投影和通用 `config get/set` 不暴露或修改这份私有 envelope。设置 → 外部调用是唯一明文显示、复制、重置和启停入口。关闭或重置只影响后续准入，已经准入的业务继续按各自 owner 完成。
 

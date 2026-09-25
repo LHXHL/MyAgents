@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "runtime": {
     "version": "0.0.0",
-    "artifactSha256": "6effeb0ce79d2c2934f16cdc448d0440fe1002edbf1776ef198231541a173f59",
+    "artifactSha256": "8f3269dee75a7c8d28c80d8cb7ca339393e7bf098d2f04c2999a8c4be4a17bd8",
     "entrypoint": "runtime-server-process.artifact.mjs",
     "sessionFormat": "dsh-session-events-v2",
     "profileId": "myagents-dsh-batch-1-candidate-v1",
-    "profileDigest": "097917ba2cd55e0713963889521e5d35e38847875a390e4b9ce0e30b3033cc97"
+    "profileDigest": "782e25045e0d6ff3f5d6b7bd5253b31bf54b61fb149c36e2d27a35a5856cfa6b"
   },
   "protocol": {
     "version": "6.0.0",
@@ -17,28 +17,28 @@
     "version": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
     "sourceCommit": "477b4f420553e8a52c2fbccc464d7561b239c443",
     "patchSeriesSha256": "8d5f1cfa482ebd42be6afd7e2d6b1db271753183dce5865a4148e05570486dfb",
-    "artifactManifestSha256": "45030ac4e032def4c2988e745538a93428d7f7e2f9b46a0274571df5a79f8524"
+    "artifactManifestSha256": "21ed548a7f657f7b8fcb3cecda8c590c2988dbe47ab413f41a55e88299b23784"
   },
   "platforms": [
     {
       "target": "darwin-arm64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "faa682a81f631baac8d56e7e73aa74e5a6b015ee450d518d138054ea6be2c497"
+        "96a1870331dee219e0d3113dbc735f944a515bcbd0be9c3eaaa5a6f42ca935aa"
       ]
     },
     {
       "target": "linux-x64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "c1d89d31dcbefb88225b6d6b7340fc79f66867396668be17906dda44a3b81adc"
+        "2cd641b13b0ceb076e82ec6b3ae1eba54ddfeee4ed3c0fc3b96bd491b28d2a05"
       ]
     },
     {
       "target": "win32-x64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "b39af5a42f882a3149d34c21ad8ddf9657427f9a354aca44a1ed20b07ee3aed2"
+        "c709ea8e2c160ac253462c1e62502e65e3e9e26c9775f22ef7fe16ef509749e0"
       ]
     }
   ],
