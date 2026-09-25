@@ -405,7 +405,7 @@ export function compareOrAcceptContracts(
   }
 }
 
-export function stageCompleteHandoff(sourceRoot, outputRoot, verify) {
+export function stageCompleteHandoff(sourceRoot, outputRoot, verify, afterPublish = () => {}) {
   const outputParent = resolve(outputRoot, "..");
   assertPathInside(outputParent, outputRoot, "staged Runtime path");
   mkdirSync(outputParent, { recursive: true });
@@ -414,6 +414,7 @@ export function stageCompleteHandoff(sourceRoot, outputRoot, verify) {
   const temporaryRoot = `${outputRoot}.tmp-${suffix}`;
   const backupRoot = `${outputRoot}.backup-${suffix}`;
   let movedExisting = false;
+  let published = false;
 
   try {
     cpSync(sourceRoot, temporaryRoot, {
@@ -432,14 +433,17 @@ export function stageCompleteHandoff(sourceRoot, outputRoot, verify) {
       movedExisting = true;
     }
     renameSync(temporaryRoot, outputRoot);
-    if (movedExisting) rmSync(backupRoot, { recursive: true, force: true });
+    published = true;
+    afterPublish();
   } catch (error) {
     rmSync(temporaryRoot, { recursive: true, force: true });
-    if (movedExisting && !existsSync(outputRoot) && existsSync(backupRoot)) {
+    if (published) rmSync(outputRoot, { recursive: true, force: true });
+    if (movedExisting && existsSync(backupRoot)) {
       renameSync(backupRoot, outputRoot);
     }
     throw error;
   }
+  if (movedExisting) rmSync(backupRoot, { recursive: true, force: true });
 }
 
 function prepareResourcePermissions(path) {

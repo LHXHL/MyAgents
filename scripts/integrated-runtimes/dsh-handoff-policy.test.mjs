@@ -329,6 +329,12 @@ test("complete handoff staging replaces atomically only after verification", () 
     );
     assert.equal(readFileSync(resolve(output, "marker"), "utf8"), "new");
     assert.equal(existsSync(`${output}.backup`), false);
+
+    writeFileSync(resolve(source, "marker"), "next");
+    assert.throws(() => stageCompleteHandoff(source, output, () => {}, () => {
+      throw new Error("selection publish failed");
+    }), /selection publish failed/);
+    assert.equal(readFileSync(resolve(output, "marker"), "utf8"), "new");
   });
 });
 

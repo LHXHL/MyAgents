@@ -190,13 +190,13 @@ export async function prepareDshRuntime({
     const { nodeExecutable } = verifyBundledToolchain(repoRoot, lock, nodeRoot);
     verifySelectedHandoff(input.root, lock, repoRoot, nodeExecutable);
     const outputRoot = resolve(repoRoot, "src-tauri/resources/integrated-runtimes/dsh");
-    stageCompleteHandoff(input.root, outputRoot, (staged) =>
-      verifySelectedHandoff(staged, lock, repoRoot, nodeExecutable));
     const selectionPath = buildSelectionPath(repoRoot);
     const temporary = `${selectionPath}.tmp-${randomUUID()}`;
     try {
       writeFileSync(temporary, `${JSON.stringify({ schemaVersion: 1, source, target, lock, compatibility }, null, 2)}\n`);
-      renameSync(temporary, selectionPath);
+      stageCompleteHandoff(input.root, outputRoot, (staged) =>
+        verifySelectedHandoff(staged, lock, repoRoot, nodeExecutable),
+      () => renameSync(temporary, selectionPath));
     } finally {
       rmSync(temporary, { force: true });
     }
