@@ -47,25 +47,31 @@ describe("DSH child environment", () => {
       const environment = buildDshChildEnvironment({
         nodeExecutablePath: '/verified/node',
         inheritedEnvironment: { MYAGENTS_PORT: '1', MYAGENTS_SESSION_ID: 'old-runtime-session', MYAGENTS_INTERNAL_CLI_TOKEN: 'stale-capability', NODE_OPTIONS: 'injected' },
-        sessionCli: { productSessionId, sidecarPort },
+        sessionCli: { productSessionId, sidecarPort, internalCliToken: 'app-capability' },
       });
       expect(environment.env.MYAGENTS_PORT).toBe(String(sidecarPort));
       expect(environment.env.MYAGENTS_SESSION_ID).toBe(productSessionId);
-      expect(environment.env.MYAGENTS_INTERNAL_CLI_TOKEN).toBeUndefined();
+      expect(environment.env.MYAGENTS_INTERNAL_CLI_TOKEN).toBe('app-capability');
       expect(environment.env.MYAGENTS_API_TOKEN).toBeUndefined();
-      expect(environment.allowedKeys).toEqual(['PATH', 'MYAGENTS_PORT', 'MYAGENTS_SESSION_ID']);
+      expect(environment.allowedKeys).toEqual(['PATH', 'MYAGENTS_PORT', 'MYAGENTS_SESSION_ID', 'MYAGENTS_INTERNAL_CLI_TOKEN']);
       expect(environment.inheritedKeys).toEqual([]);
       expect(environment.env.NODE_OPTIONS).toBeUndefined();
     }
     for (const sidecarPort of [0, -1, 65_536, NaN, 1.5]) {
       expect(() => buildDshChildEnvironment({
-        nodeExecutablePath: '/verified/node', sessionCli: { productSessionId: 'product-a', sidecarPort },
+        nodeExecutablePath: '/verified/node', sessionCli: { productSessionId: 'product-a', sidecarPort, internalCliToken: 'app-capability' },
       })).toThrow(/route/);
     }
     for (const productSessionId of ['', 'with\nnewline', 'a/b', 'a'.repeat(100)]) {
       expect(() => buildDshChildEnvironment({
-        nodeExecutablePath: '/verified/node', sessionCli: { productSessionId, sidecarPort: 31417 },
+        nodeExecutablePath: '/verified/node', sessionCli: { productSessionId, sidecarPort: 31417, internalCliToken: 'app-capability' },
       })).toThrow(/route/);
+    }
+    for (const internalCliToken of ['', ' app-capability', 'app-capability\n', 'app\0capability']) {
+      expect(() => buildDshChildEnvironment({
+        nodeExecutablePath: '/verified/node',
+        sessionCli: { productSessionId: 'product-a', sidecarPort: 31417, internalCliToken },
+      })).toThrow(/internal CLI capability/);
     }
   });
 

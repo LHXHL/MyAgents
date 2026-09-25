@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { connect, type Socket } from "node:net";
 import type { Duplex } from "node:stream";
 import { DshAttachmentRegistry } from "./attachments";
+import { INTERNAL_CLI_TOKEN_HEADER } from '../../../shared/externalCliCapabilities';
 import type { PermissionReview } from "../../../shared/types/runtime";
 import { buildDshChildEnvironment } from "./child-environment";
 import type { MethodParams } from "./protocol-types";
@@ -100,7 +101,7 @@ async function createNativeHostFixture(
     nodeExecutablePath: installation.nodeExecutablePath, commandDirectories: ["/bin"],
     inheritedEnvironment: { HOME: temporaryRoot, USERPROFILE: temporaryRoot, LANG: 'en_US.UTF-8' },
     proxyEnvironment,
-    sessionCli: route ?? null,
+    sessionCli: route === undefined ? null : { ...route, internalCliToken: 'fixture-capability' },
   });
   // A generated local test CA is trusted only by this synthetic child process.
   const childEnvironment = testCertificateAuthority === undefined ? launchEnvironment : {
@@ -308,6 +309,8 @@ describe.runIf(nativeSmokeEnabled)(
 
     it.runIf(process.platform !== 'win32').each([false, true])('allows Action tools and routes child Shell approval after a shared grant (large review: %s)', async largeReview => {
       const productSessionId = randomUUID();
+      const cliBundlePath = join(resolve(nativeSmokeResourceRoot ?? 'src-tauri/resources'), 'cli/myagents.cjs');
+      const cliCommand = `node '${cliBundlePath.replaceAll("'", "'\\''")}' status --json`;
       const curl = '/usr/bin/curl -q -fsS --max-time 5';
       const command = 'printf "%s|%s" "$MYAGENTS_PORT" "$MYAGENTS_SESSION_ID"'
         + `; ${curl} http://dsh-shell-fixture.invalid/root`
@@ -316,6 +319,7 @@ describe.runIf(nativeSmokeEnabled)(
       const spillSizes = [64_000, 64_001, 81_000, 1_053_000];
       const calls = [
         { id: 'fixture-shell-call', name: 'bash', input: { command, workdir: 'child', description: 'Read the current CLI route' } },
+        { id: 'fixture-internal-cli-call', name: 'bash', input: { command: cliCommand, workdir: 'child', description: 'Call the bundled internal CLI' } },
         ...spillSizes.map(size => ({ id: `fixture-spill-${size}`, name: 'bash', input: {
           command: `node -e 'process.stdout.write("x".repeat(${size})); process.stderr.write("\\nspill-tail-marker\\n"); process.exitCode=7'`,
           workdir: 'child', description: 'Verify real foreground output retention',
@@ -344,9 +348,25 @@ describe.runIf(nativeSmokeEnabled)(
       let planSystemPrompt = '';
       let resumedRootInput = '';
       const proxyRequests: string[] = [];
+      const cliReceipts: Array<{ token: string | undefined; authorization: string | undefined; sessionId: string | undefined }> = [];
       const childResults = new Map<string, { content?: unknown; is_error?: boolean }>();
       const modelToolResults = new Map<string, { content?: unknown; is_error?: boolean }>();
       const server = createServer(async (request, response) => {
+        if (request.url === '/api/admin/status') {
+          for await (const chunk of request) void chunk;
+          const token = request.headers[INTERNAL_CLI_TOKEN_HEADER.toLowerCase()];
+          const sessionId = request.headers['x-myagents-session-id'];
+          cliReceipts.push({
+            token: typeof token === 'string' ? token : undefined,
+            authorization: request.headers.authorization,
+            sessionId: typeof sessionId === 'string' ? sessionId : undefined,
+          });
+          response.writeHead(token === 'fixture-capability' ? 200 : 403, { 'content-type': 'application/json' });
+          response.end(JSON.stringify(token === 'fixture-capability'
+            ? { success: true, data: { source: 'internal-cli-fixture' } }
+            : { success: false, error: 'internal capability required' }));
+          return;
+        }
         if (request.url?.startsWith('http://')) {
           proxyRequests.push(request.url);
           response.end('shell-proxy-ok');
@@ -508,6 +528,8 @@ describe.runIf(nativeSmokeEnabled)(
         expect(JSON.stringify(toolResult)).toContain(`${address.port}|${productSessionId}`);
         expect(JSON.stringify(toolResult)).toContain('shell-proxy-ok');
         expect(JSON.stringify(toolResult)).toContain('shell-loopback-ok');
+        expect(cliReceipts).toEqual([{ token: 'fixture-capability', authorization: undefined, sessionId: productSessionId }]);
+        expect(JSON.stringify(modelToolResults.get('fixture-internal-cli-call')?.content)).toContain('internal-cli-fixture');
         expect(proxyRequests).toEqual(['http://dsh-shell-fixture.invalid/root', 'http://dsh-shell-fixture.invalid/child']);
         expect(JSON.stringify(toolResult)).not.toContain('not sealed');
         const toolResults = events.filter(value => (value.event as Record<string, unknown>)?.kind === 'tool' && (value.event as Record<string, unknown>).phase === 'end');
