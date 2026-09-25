@@ -15,6 +15,7 @@ import {
   extractSherpaBuildSource,
   patchHclustWindowsFenvPragma,
   patchSherpaRawEvidence,
+  patchSherpaVadFlushBoundary,
   patchSherpaWindowsOnnxRuntimeImport,
 } from './sherpa-source-extraction.mjs';
 
@@ -177,6 +178,21 @@ test('raw speaker extension rejects an unverified upstream before writing files'
     assert.throws(() => patchSherpaRawEvidence(root), /does not match/);
     assert.equal(readFileSync(header, 'utf8'), unknown);
     assert.equal(existsSync(join(core, 'myagents-raw-evidence.h')), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('VAD flush-boundary fix rejects unverified Sherpa source without changing it', () => {
+  const root = mkdtempSync(join(tmpdir(), 'myagents-sherpa-vad-drift-'));
+  try {
+    const core = join(root, 'sherpa-onnx/csrc');
+    mkdirSync(core, { recursive: true });
+    const path = join(core, 'voice-activity-detector.cc');
+    const unknown = '    } else {\n      // non-speech\n\n      cur_segment_.start = -1;\n';
+    writeFileSync(path, unknown);
+    assert.throws(() => patchSherpaVadFlushBoundary(root), /no longer matches/);
+    assert.equal(readFileSync(path, 'utf8'), unknown);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
