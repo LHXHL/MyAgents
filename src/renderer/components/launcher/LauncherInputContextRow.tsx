@@ -81,7 +81,7 @@ export default memo(function LauncherInputContextRow({
             value={runtime}
             detections={runtimeDetections}
             onChange={onRuntimeChange}
-            variant="toolbar"
+            variant="launcher"
           />
         </div>
       )}

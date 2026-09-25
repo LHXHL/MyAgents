@@ -441,7 +441,9 @@
     "notInstalled": "Not installed",
     "comingSoon": "Coming soon",
     "integrated": "Integrated",
+    "integratedHelp": "Built-in Agent runtimes. You can manage all their settings in MyAgents.",
     "externalCli": "External CLI",
+    "externalCliHelp": "Other Agent runtimes installed on this computer. Manage their settings and updates in the corresponding app.",
     "experimental": "Experimental"
   },
   "shell": {

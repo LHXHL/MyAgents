@@ -2,10 +2,11 @@
 // Appears in SimpleChatInput toolbar (left of permission mode) and WorkspaceBasicsSection
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronUp, Settings } from 'lucide-react';
+import { ChevronUp, CircleHelp, Settings } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Popover } from '@/components/ui/Popover';
+import Tip from '@/components/Tip';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import type { RuntimeType, RuntimeDetections } from '../../shared/types/runtime';
 import {
@@ -57,13 +58,34 @@ function RuntimeIcon({ type, size = 14 }: { type: RuntimeType; size?: number }) 
   );
 }
 
+function RuntimeGroupHeading({ group }: { group: 'integrated' | 'external' }) {
+  const { t } = useTranslation('chat');
+  const label = t(group === 'integrated' ? 'runtime.integrated' : 'runtime.externalCli');
+  const description = t(group === 'integrated' ? 'runtime.integratedHelp' : 'runtime.externalCliHelp');
+
+  return (
+    <div className="flex items-center gap-1 px-3 pb-1 pt-2 text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]/60">
+      <span>{label}</span>
+      <Tip label={description} wrap>
+        <button
+          type="button"
+          aria-label={`${label}: ${description}`}
+          className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--accent)]"
+        >
+          <CircleHelp className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
+      </Tip>
+    </div>
+  );
+}
+
 // ─── Component ───
 
 interface RuntimeSelectorProps {
   value: RuntimeType;
   detections: RuntimeDetections;
   onChange: (runtime: RuntimeType) => void;
-  variant?: 'toolbar' | 'panel';
+  variant?: 'toolbar' | 'launcher' | 'panel';
   onOpenSettings?: () => void;
   disabled?: boolean;
   disabledReason?: string;
@@ -150,15 +172,13 @@ export default memo(function RuntimeSelector({
           placement="top-start"
           className="w-72 py-1"
         >
-          {availableOptions.map((opt) => {
+          {availableOptions.map((opt, index) => {
             const detection = detections[opt.type];
             const installed = opt.type === 'builtin' || (detection?.installed && IMPLEMENTED_RUNTIMES.has(opt.type));
             return (
               <div key={opt.type}>
-              {(opt.type === 'builtin' || opt.type === 'claude-code') && (
-                <div className="px-3 pb-1 pt-2 text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]/60">
-                  {t(opt.group === 'integrated' ? 'runtime.integrated' : 'runtime.externalCli')}
-                </div>
+              {(index === 0 || availableOptions[index - 1].group !== opt.group) && (
+                <RuntimeGroupHeading group={opt.group} />
               )}
               <button
                 type="button"
@@ -211,13 +231,13 @@ export default memo(function RuntimeSelector({
           }
           setOpen(!menuOpen);
         }}
-        className={`flex items-center gap-1 rounded-lg px-1.5 py-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] ${
+        className={`inline-flex items-center rounded-lg py-1.5 text-left text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] ${variant === 'launcher' ? 'gap-1.5 px-2' : 'gap-1 px-1.5'} ${
           disabled ? 'cursor-not-allowed opacity-50 hover:bg-transparent hover:text-[var(--ink-muted)]' : ''
         }`}
         title={disabled ? disabledReason : `Runtime: ${currentOption.name}`}
       >
         <RuntimeIcon type={value} size={16} />
-        <ChevronUp className={`h-2.5 w-2.5 transition-transform ${menuOpen ? '' : 'rotate-180'}`} />
+        <ChevronUp className={`${variant === 'launcher' ? 'h-3 w-3' : 'h-2.5 w-2.5'} shrink-0 transition-transform ${menuOpen ? '' : 'rotate-180'}`} />
       </button>
       <Popover
         open={menuOpen}
@@ -239,15 +259,13 @@ export default memo(function RuntimeSelector({
             </button>
           )}
         </div>
-        {availableOptions.map((opt) => {
+        {availableOptions.map((opt, index) => {
           const detection = detections[opt.type];
           const installed = opt.type === 'builtin' || (detection?.installed && IMPLEMENTED_RUNTIMES.has(opt.type));
           return (
             <div key={opt.type}>
-            {(opt.type === 'builtin' || opt.type === 'claude-code') && (
-              <div className="px-3 pb-1 pt-2 text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]/60">
-                {t(opt.group === 'integrated' ? 'runtime.integrated' : 'runtime.externalCli')}
-              </div>
+            {(index === 0 || availableOptions[index - 1].group !== opt.group) && (
+              <RuntimeGroupHeading group={opt.group} />
             )}
             <button
               type="button"

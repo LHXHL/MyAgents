@@ -441,7 +441,9 @@
     "notInstalled": "未安装",
     "comingSoon": "即将支持",
     "integrated": "集成运行时",
+    "integratedHelp": "内置Agent 运行环境，在 MyAgents 可完成全部设置",
     "externalCli": "外部 CLI",
+    "externalCliHelp": "本机安装的其他 Agent 环境，设置与升级均需要前往对应软件进行",
     "experimental": "实验性"
   },
   "shell": {
