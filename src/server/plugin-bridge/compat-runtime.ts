@@ -637,6 +637,7 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
           ctx: Record<string, unknown>;
           cfg?: Record<string, unknown>;
           dispatcherOptions?: Record<string, unknown>;
+          replyOptions?: Record<string, unknown>;
           accountId?: string;
         }) {
           const { ctx } = params;
@@ -680,6 +681,31 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
 
           const t0 = Date.now();
           console.log(`[compat-timing] dispatchReplyWithBufferedBlockDispatcher ENTER: sender=${senderId} chat=${chatId} len=${text.length} attachments=${mediaAttachments.length}`);
+          const deliver = params.dispatcherOptions?.deliver;
+          const replyOptions = params.replyOptions;
+          // Yuanbao passes a real deliver callback here and decides its own
+          // fallback only after this promise settles. Give it the same
+          // request-scoped terminal as the standard dispatcher path instead
+          // of returning immediately after Rust accepts the inbound message.
+          const requestId = typeof deliver === 'function' ? randomUUID() : undefined;
+          let finalCount = 0;
+          const completionPromise = requestId
+            ? registerPendingDispatch(requestId, chatId, {
+              onReplyStart: async () => {
+                await (replyOptions?.onAgentRunStart as (() => unknown) | undefined)?.();
+                await (replyOptions?.onAssistantMessageStart as (() => unknown) | undefined)?.();
+              },
+              onPartialReply: typeof replyOptions?.onPartialReply === 'function'
+                ? replyOptions.onPartialReply as PendingDispatchCallbacks['onPartialReply']
+                : undefined,
+              sendFinalReply: async payload => {
+                await (deliver as (payload: Record<string, unknown>, info: { kind: string }) => unknown)(payload, { kind: 'final' });
+                finalCount += 1;
+                return true;
+              },
+              getQueuedCounts: () => ({ final: finalCount }),
+            }, currentPluginId)
+            : undefined;
           try {
             // Pattern 1: 5s cap on the local management API call. Plugin
             // dispatch is on the inbound-message hot path — a wedged Rust
@@ -702,6 +728,7 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
                 body: JSON.stringify({
                   botId,
                   pluginId: currentPluginId,
+                  ...(requestId ? { requestId, deliveryProtocol: 'openclaw-reply' } : {}),
                   senderId,
                   senderName: senderName || undefined,
                   accountId,
@@ -733,10 +760,18 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
             const isTimeout = err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError');
             const reason = isTimeout ? 'timeout' : 'error';
             console.warn(`[compat-runtime] Rust POST FAILED (reason=${reason}, +${Date.now() - t0}ms): ${err instanceof Error ? err.message : String(err)}`);
+            if (requestId) {
+              rejectPendingDispatch(requestId, err instanceof Error ? err : new Error(String(err)));
+              return await completionPromise;
+            }
             throw err;
           }
 
           console.log(`[compat-timing] dispatchReplyWithBufferedBlockDispatcher EXIT (+${Date.now() - t0}ms)`);
+          if (completionPromise) {
+            const result = await completionPromise;
+            return { ...result, dispatcher: { waitForIdle: async () => {} } };
+          }
           return { queuedFinal: 0, counts: {}, dispatcher: { waitForIdle: async () => {} } };
         },
       },
