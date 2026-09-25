@@ -325,12 +325,14 @@ describe.runIf(nativeSmokeEnabled)(
           command: `node -e 'process.stdout.write("x".repeat(${size})); process.stderr.write("\\nspill-tail-marker\\n"); process.exitCode=7'`,
           workdir: 'child', description: 'Verify real foreground output retention',
         } })),
-        { id: 'fixture-spill-read', name: 'Read', input: { file_path: '', offset: 1, limit: 1 } },
-        { id: 'fixture-file-write', name: 'Write', input: { file_path: 'native-file-tools/note.txt', content: 'alpha\r\nbeta\r\n' } },
-        { id: 'fixture-file-read', name: 'Read', input: { file_path: 'native-file-tools/note.txt' } },
-        { id: 'fixture-file-edit', name: 'Edit', input: { file_path: 'native-file-tools/note.txt', old_string: 'alpha\nbeta', new_string: 'ALPHA\nBETA' } },
-        { id: 'fixture-large-read', name: 'Read', input: { file_path: 'native-large.txt', limit: 1 } },
-        { id: 'fixture-image-read', name: 'Read', input: { file_path: 'native-pixel.png' } },
+        { id: 'fixture-spill-read', name: 'read', input: { file_path: '', offset: 1, limit: 1 } },
+        { id: 'fixture-file-write', name: 'write', input: { file_path: 'native-file-tools/note.txt', content: 'alpha\r\nbeta\r\n' } },
+        { id: 'fixture-file-read', name: 'read', input: { file_path: 'native-file-tools/note.txt' } },
+        { id: 'fixture-file-edit', name: 'edit', input: { file_path: 'native-file-tools/note.txt', old_string: 'alpha\nbeta', new_string: 'ALPHA\nBETA' } },
+        { id: 'fixture-file-glob', name: 'glob', input: { pattern: '*.txt', path: 'native-file-tools' } },
+        { id: 'fixture-file-grep', name: 'grep', input: { pattern: 'ALPHA', path: 'native-file-tools' } },
+        { id: 'fixture-large-read', name: 'read', input: { file_path: 'native-large.txt', limit: 1 } },
+        { id: 'fixture-image-read', name: 'read_image', input: { file_path: 'native-pixel.png' } },
         { id: 'fixture-create-call', name: 'TaskCreate', input: { subject: 'Verify approval progress', description: 'Synthetic native regression' } },
         { id: 'fixture-update-call', name: 'TaskUpdate', input: { taskId: 'task-1', status: 'completed' } },
         { id: 'fixture-skill-call', name: 'Skill', input: { skill: 'permission-review' } },
@@ -340,7 +342,7 @@ describe.runIf(nativeSmokeEnabled)(
         undefined, // The foreground child completes before the root continues.
         { id: 'fixture-question-call', name: 'AskUserQuestion', input: { questions: [0, 1, 2].map(index => ({ header: `Step ${index}`, question: `Choose synthetic step ${index}`, options: [{ label: 'Continue', description: 'Complete the fixture' }, { label: 'Stop', description: 'Stop the fixture' }, { label: 'Review, then continue', description: 'Review first' }, { label: 'Later', description: 'Defer' }], multiSelect: index === 1 })) } },
         { id: 'fixture-enter-plan-call', name: 'EnterPlanMode', input: {} },
-        { id: 'fixture-plan-write-call', name: 'Write', input: { file_path: '', content: '# Synthetic plan\n\nVerify permission continuity.\n' } },
+        { id: 'fixture-plan-write-call', name: 'write', input: { file_path: '', content: '# Synthetic plan\n\nVerify permission continuity.\n' } },
         { id: 'fixture-plan-shell-call', name: 'bash', input: { command: 'printf plan-shell-research', workdir: 'child', description: 'Inspect while Plan mode is active' } },
         { id: 'fixture-exit-plan-call', name: 'ExitPlanMode', input: {} },
       ];
@@ -471,7 +473,7 @@ describe.runIf(nativeSmokeEnabled)(
         const environmentDigest = createDshInitializeParams({ productSessionId, productVersion: '0.4.11', runtimeHome: fixture.runtimeHome, workspace: { path: fixture.workspace, identity: fixture.executionEnvironment.workspace.identity }, executionEnvironment: fixture.executionEnvironment, interaction: 'deterministic-headless' }).executionEnvironment.digest;
         const configured = await host.request('config/apply', { revision: 'native-shell-review-auto', provider: profile, permissionMode: 'acceptEdits', interactionScenario: 'host-interaction-v1', systemPrompt: '', executionEnvironmentRevision: fixture.executionEnvironment.revision, executionEnvironmentDigest: environmentDigest });
         expect(configured.state).toBe('applied');
-        await host.request('turn/start', { clientOperationId: 'native-shell-review-turn', clientUserMessageId: 'native-shell-review-message', input: { parts: [{ kind: 'text', text: 'Read the current CLI route and verify file tools.' }] }, configRevision: 'native-shell-review-auto', extensionDigest: catalog.digest, executionEnvironmentRevision: fixture.executionEnvironment.revision, executionEnvironmentDigest: environmentDigest, limits: { maxTurns: 24 }, origin: { kind: 'headless', scenario: 'native-shell-review' } });
+        await host.request('turn/start', { clientOperationId: 'native-shell-review-turn', clientUserMessageId: 'native-shell-review-message', input: { parts: [{ kind: 'text', text: 'Read the current CLI route and verify file tools.' }] }, configRevision: 'native-shell-review-auto', extensionDigest: catalog.digest, executionEnvironmentRevision: fixture.executionEnvironment.revision, executionEnvironmentDigest: environmentDigest, limits: { maxTurns: 28 }, origin: { kind: 'headless', scenario: 'native-shell-review' } });
         await expect.poll(() => approvals.length, { timeout: 20_000 }).toBe(1);
         const approval = approvals[0]!;
         expect(approval.authority).toMatchObject({ callId: 'fixture-shell-call', rootCallId: 'fixture-shell-call' });
@@ -565,6 +567,8 @@ describe.runIf(nativeSmokeEnabled)(
         expect(modelToolResults.get('fixture-spill-read')?.is_error).not.toBe(true);
         expect(JSON.stringify(modelToolResults.get('fixture-spill-read')?.content)).toContain('x'.repeat(100));
         expect(await readFile(join(fixture.workspace, 'native-file-tools/note.txt'), 'utf8')).toBe('ALPHA\r\nBETA\r\n');
+        expect(JSON.stringify(modelToolResults.get('fixture-file-glob')?.content)).toContain('note.txt');
+        expect(JSON.stringify(modelToolResults.get('fixture-file-grep')?.content)).toContain('ALPHA');
         expect(JSON.stringify(modelToolResults.get('fixture-large-read')?.content)).toContain('short line');
         const imageResult = modelToolResults.get('fixture-image-read');
         expect(imageResult?.is_error).not.toBe(true);
@@ -734,7 +738,7 @@ describe.runIf(nativeSmokeEnabled)(
         expect(binding).toMatchObject({ state: "ready" });
         if (binding.state !== "ready") throw new Error("Native Session was not admitted");
         expect(binding.toolCatalog).toMatchObject({
-          effectiveTools: expect.arrayContaining(["WebFetch", "WebSearch"]),
+          effectiveTools: expect.arrayContaining(["web_fetch", "web_search"]),
         });
         const applied = await host.request("config/apply", {
           revision: "native-smoke-config-v2",

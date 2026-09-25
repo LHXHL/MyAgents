@@ -4,7 +4,7 @@
       "dsh-agent-presets-as-host-extension",
       "dsh-sdk-json-rpc-server",
       "dsh-local-credential-provider",
-      "dsh-stock-model-visible-tool-suites",
+      "dsh-unselected-stock-model-visible-tool-suites",
       "dsh-stock-mcp-live-config"
     ],
     "installedPluginAllowlist": [],
@@ -422,7 +422,7 @@
   },
   "profileId": "myagents-dsh-official-v1",
   "protocol": {
-    "schemaSha256": "54a2a4436d0f82d063d00500090164c15dea6704368dff623f04566b77566d44",
+    "schemaSha256": "ba11072548c34005ee4dad3809804b8cb24f1fe5e99b33680f012f378edcc1bd",
     "version": "6.0.0"
   },
   "runtimeActivation": "forbidden-until-patched-dsh-and-batch-1-gate",

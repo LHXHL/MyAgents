@@ -1163,7 +1163,7 @@ function resolveBestCodexModel(tool: FilePatchToolLike): FilePatchRenderModel | 
 }
 
 function renderModelFromBuiltinInput(tool: FilePatchToolLike, input: ToolInputRecord): FilePatchRenderModel | null {
-  if (tool.name === 'Edit') {
+  if (tool.name === 'Edit' || tool.name === 'edit') {
     const oldText = getInputStringProp(input, 'old_string');
     const newText = getInputStringProp(input, 'new_string');
     if (oldText === undefined || newText === undefined) return null;
@@ -1209,7 +1209,7 @@ function renderModelFromBuiltinInput(tool: FilePatchToolLike, input: ToolInputRe
     };
   }
 
-  if (tool.name === 'Write') {
+  if (tool.name === 'Write' || tool.name === 'write') {
     const content = getInputStringProp(input, 'content');
     if (content === undefined) return null;
     const projected = projectContentRows({
@@ -1452,11 +1452,11 @@ export function buildFilePatchDisplayDescriptor(tool: FilePatchToolLike): FilePa
 function findCompleteBuiltinInput(tool: FilePatchToolLike): ToolInputRecord | null {
   for (const input of resolveToolInputRecords(tool)) {
     if (
-      tool.name === 'Edit'
+      (tool.name === 'Edit' || tool.name === 'edit')
       && getInputStringProp(input, 'old_string') !== undefined
       && getInputStringProp(input, 'new_string') !== undefined
     ) return input;
-    if (tool.name === 'Write' && getInputStringProp(input, 'content') !== undefined) return input;
+    if ((tool.name === 'Write' || tool.name === 'write') && getInputStringProp(input, 'content') !== undefined) return input;
   }
   return null;
 }

@@ -731,6 +731,8 @@ Agent, Channel, Settings and Launcher changes atomically persist the authoritati
 
 DSH uses existing MessageList, composer, queue, stop, inline tool/permission/question/plan cards, attachment pipeline, history actions and status panel. Every visible control must call a real SessionEngine capability. Permission/AskUser cards settle through the reverse request exactly once and clear only after successful acknowledgement; submission failure retains the exact local draft for retry. A registered interaction replaces the cycling reasoning footer with a static waiting status while the owning root operation stays active. Switching the product to Plan uses `plan/apply`, not a decorative local state; any exact always-allow rule shown by product UI is read from Runtime and is revocable through the generated rule API.
 
+The Runtime artifact fixes `ma_first` or `dsh_first` at build time. The selected catalog and schema digest are the execution authority; Host settings never switch strategy for an existing Session. For `dsh_first`, the transcript retains native `read`/`read_image`/`write`/`edit`/`glob`/`grep`/`web_fetch`/`web_search` names and results. Renderer display maps those names to existing file, search and web cards; this presentation mapping does not rewrite the model call or permission scope. The latest installed strategy is determined by the accepted handoff and `dsh-lock.json`, not by this design text.
+
 ## 15. IM, Agent Channel and automation
 
 ### 15.1 IM/Agent Channel

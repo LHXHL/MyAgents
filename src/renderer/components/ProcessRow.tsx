@@ -76,7 +76,8 @@ const ProcessRow = memo(function ProcessRow({
     const isTaskTool = isTool && !isServerTool && !!block.tool?.name && isSubagentContainerTool(block.tool.name);
     const isFilePatchTool = isTool
         && !isServerTool
-        && (block.tool?.name === 'Edit' || block.tool?.name === 'Write');
+        && (block.tool?.name === 'Edit' || block.tool?.name === 'Write'
+            || block.tool?.name === 'edit' || block.tool?.name === 'write');
 
     // Thinking: 没有 isComplete 且正在 streaming 才是 active（避免历史消息计时器永跑）
     const isThinkingActive = isThinking && block.isComplete !== true && isStreaming;

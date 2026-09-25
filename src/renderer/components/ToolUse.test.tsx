@@ -7,6 +7,26 @@ import type { ToolUseSimple } from '@/types/chat';
 import ToolUse from './ToolUse';
 
 describe('ToolUse specialized result ownership', () => {
+  it('renders DSH file and web tool names through the existing cards without changing their result', () => {
+    const edit = render(<ToolUse tool={{
+      id: 'dsh-edit', name: 'edit', streamIndex: 0,
+      input: { file_path: '/workspace/native.txt', old_string: 'before', new_string: 'after' },
+      result: 'Successfully edited /workspace/native.txt',
+    }} />);
+    expect(edit.container).toHaveTextContent('native.txt');
+    expect(edit.container).toHaveTextContent('after');
+    edit.unmount();
+
+    const search = render(<ToolUse tool={{
+      id: 'dsh-search', name: 'web_search', streamIndex: 0,
+      input: { queries: ['latest release'] },
+      parsedInput: { queries: ['latest release'] },
+      result: 'Sources:\n- [Release](https://example.com/release)',
+    }} />);
+    expect(search.container).toHaveTextContent('Sources:');
+    search.unmount();
+  });
+
   it('passes a large Bash result intact to the terminal transcript budget', () => {
     const result = Array.from(
       { length: 5_001 },

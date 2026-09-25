@@ -484,7 +484,8 @@ const SubagentCallItem = memo(function SubagentCallItem({ call }: { call: Subage
   }, [call.inputJson, call.input]);
 
   const isCallRunning = isSubagentCallRunning(call);
-  const isFilePatchCall = call.name === 'Edit' || call.name === 'Write';
+  const isFilePatchCall = call.name === 'Edit' || call.name === 'Write'
+    || call.name === 'edit' || call.name === 'write';
 
   return (
     <div className="group flex flex-col gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper)] p-3">

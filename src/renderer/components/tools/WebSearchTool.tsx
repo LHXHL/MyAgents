@@ -72,10 +72,16 @@ export default function WebSearchTool({ tool }: WebSearchToolProps) {
     return <div className="text-sm text-[var(--ink-muted)]">{t('shell.toolChrome.webSearch.initializing')}</div>;
   }
 
-  let query = input?.query || '';
+  const nativeQueries: unknown = input && typeof input === 'object' && 'queries' in input ? input.queries : undefined;
+  let query = input?.query || (Array.isArray(nativeQueries) && typeof nativeQueries[0] === 'string' ? nativeQueries.join(', ') : '');
   if (!query && tool.inputJson) {
     try {
-      query = JSON.parse(tool.inputJson).query || '';
+      const parsed: unknown = JSON.parse(tool.inputJson);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const record = parsed as Record<string, unknown>;
+        query = typeof record.query === 'string' ? record.query
+          : Array.isArray(record.queries) ? record.queries.filter((value): value is string => typeof value === 'string').join(', ') : '';
+      }
     } catch {
       // Invalid JSON, use empty string
     }

@@ -559,8 +559,10 @@ function closeOpenThinkingBlocks(content: ContentBlock[]): ContentBlock[] {
 const FILE_MODIFYING_TOOLS = new Set([
   'Bash', // Shell commands can modify files
   'Edit', // Single file edit
+  'edit', // DSH native single file edit
   'MultiEdit', // Multiple file edits
   'Write', // Create/overwrite files
+  'write', // DSH native create/overwrite
   'NotebookEdit', // Jupyter notebook edits
 ]);
 

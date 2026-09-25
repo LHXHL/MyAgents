@@ -31,6 +31,7 @@ import {
   resolveFilePatchRenderModel,
   type FilePatchRenderModel,
 } from '../../../shared/toolDisplay/filePatch';
+import { dshToolDisplayName } from '../../../shared/toolDisplay/dshToolNames';
 import {
   isSubagentCallRunning,
   isSubagentContainerRunning,
@@ -104,6 +105,12 @@ function getStringProp(input: ToolInput | Record<string, unknown> | null | undef
   return typeof value === 'string' ? value : undefined;
 }
 
+function getFirstSearchQuery(input: ToolInput | Record<string, unknown> | null | undefined): string | undefined {
+  if (!input || !isObject(input) || !Array.isArray(input.queries)) return undefined;
+  const first: unknown = input.queries[0];
+  return typeof first === 'string' ? first : undefined;
+}
+
 // Helper to get string prop from either parsedInput or raw input
 function getSubagentStringProp(call: SubagentToolCall, key: string): string | undefined {
   // Try parsedInput first
@@ -118,7 +125,7 @@ function getSubagentStringProp(call: SubagentToolCall, key: string): string | un
 
 // Generate label for subagent tool call (used in Task tool display)
 function getSubagentCallLabel(call: SubagentToolCall, t?: ToolChromeTranslator, maxLength = 35): string {
-  const { name } = call;
+  const name = dshToolDisplayName(call.name);
   let label = name;
 
   switch (name) {
@@ -284,6 +291,8 @@ export interface ToolBadgeConfig {
 // ToolHeader (utils.tsx) rewrites this size class to `size-3` for its denser
 // header via regex, so the flat base size here does not change that view.
 export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
+  const displayName = dshToolDisplayName(toolName);
+  if (displayName !== toolName) return getToolBadgeConfig(displayName);
   switch (toolName) {
     // File operations - Green/Emerald
     case 'Read':
@@ -631,6 +640,8 @@ export function getToolMainLabel(tool: ToolUseSimple, t?: ToolChromeTranslator):
 
 // Unified label generation logic - extracts compact label from tool
 export function getToolLabel(tool: ToolUseSimple, t?: ToolChromeTranslator): string {
+  const displayName = dshToolDisplayName(tool.name);
+  if (displayName !== tool.name) return getToolLabel({ ...tool, name: displayName }, t);
   if (tool.name === 'TodoWrite') {
     return getTodoWriteLabel(tool, t);
   }
@@ -775,7 +786,7 @@ export function getToolLabel(tool: ToolUseSimple, t?: ToolChromeTranslator): str
       return tc(t, 'labels.fetch');
     }
     case 'WebSearch': {
-      const query = getStringProp(tool.parsedInput, 'query');
+      const query = getStringProp(tool.parsedInput, 'query') || getFirstSearchQuery(tool.parsedInput);
       if (query) {
         return query.length > 20 ? `${query.substring(0, 17)}...` : query;
       }
@@ -799,6 +810,8 @@ export function getToolLabel(tool: ToolUseSimple, t?: ToolChromeTranslator): str
 // Unified expanded label generation logic - for ToolHeader in expanded state
 // Returns the base semantic label (without pattern/file details) to match collapsed badge
 export function getToolExpandedLabel(tool: ToolUseSimple, t?: ToolChromeTranslator): string {
+  const displayName = dshToolDisplayName(tool.name);
+  if (displayName !== tool.name) return getToolExpandedLabel({ ...tool, name: displayName }, t);
   // External-runtime display override — see getToolMainLabel for the rationale.
   const displayNameOverride = getStringProp(tool.parsedInput, '_displayName');
   if (displayNameOverride) return displayNameOverride;
@@ -1008,6 +1021,8 @@ function renderFilePatchSummary(display: FilePatchRenderModel, t?: ToolChromeTra
  * arrived yet (streaming-safe).
  */
 export function getToolSummaryNode(tool: ToolUseSimple, t?: ToolChromeTranslator): ReactNode | null {
+  const displayName = dshToolDisplayName(tool.name);
+  if (displayName !== tool.name) return getToolSummaryNode({ ...tool, name: displayName }, t);
   switch (tool.name) {
     case 'Edit':
     case 'Write': {

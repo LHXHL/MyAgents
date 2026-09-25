@@ -22,6 +22,7 @@ import WebFetchTool from './tools/WebFetchTool';
 import WebSearchTool from './tools/WebSearchTool';
 import WriteTool from './tools/WriteTool';
 import CronTaskCard from './scheduled-tasks/CronTaskCard';
+import { dshToolDisplayName } from '../../shared/toolDisplay/dshToolNames';
 
 
 /** Parse cron tool result JSON, returning structured data for card rendering or null on failure */
@@ -71,9 +72,9 @@ export default function ToolUse({ tool: rawTool }: ToolUseProps) {
   // authoritative parser can separate streams or applied file changes.
   const ownsBoundedProjection = ['Bash', 'bash', 'pwsh'].includes(rawTool.name)
     || rawTool.name === 'PowerShell'
-    || rawTool.name === 'Edit'
+    || dshToolDisplayName(rawTool.name) === 'Edit'
     || rawTool.name === 'MultiEdit'
-    || rawTool.name === 'Write';
+    || dshToolDisplayName(rawTool.name) === 'Write';
   const tool = ownsBoundedProjection ? rawTool : clampResult(rawTool, t);
   // NOTE: tool.attachments are NOT rendered here. ToolUse lives inside
   // ProcessRow's collapsible body (BlockGroup), so rendering rich-media here
@@ -86,7 +87,7 @@ export default function ToolUse({ tool: rawTool }: ToolUseProps) {
 }
 
 function renderToolBody(tool: ToolUseSimple): React.JSX.Element {
-  switch (tool.name) {
+  switch (dshToolDisplayName(tool.name)) {
     case 'bash':
     case 'pwsh':
     case 'Bash':
