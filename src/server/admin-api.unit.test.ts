@@ -3023,14 +3023,31 @@ describe('admin-api model verify credential authority', () => {
 
 describe('admin-api config dry-run contract', () => {
   it('previews config set without writing config.json', async () => {
-    writeJson(join(scratch, '.myagents', 'config.json'), { locale: 'zh-CN' });
+    writeJson(join(scratch, '.myagents', 'config.json'), { uiLanguage: 'zh-CN' });
     const before = readFileSync(join(scratch, '.myagents', 'config.json'), 'utf-8');
     const { handleConfigSet } = await import('./admin-api');
 
-    const result = await handleConfigSet({ key: 'locale', value: 'en-US', dryRun: true });
+    const result = await handleConfigSet({ key: 'uiLanguage', value: 'en-US', dryRun: true });
 
-    expect(result).toMatchObject({ success: true, dryRun: true, preview: { key: 'locale', value: 'en-US' } });
+    expect(result).toMatchObject({ success: true, dryRun: true, preview: { key: 'uiLanguage', value: 'en-US' } });
     expect(readFileSync(join(scratch, '.myagents', 'config.json'), 'utf-8')).toBe(before);
+  });
+
+  it('rejects unknown keys in both dry-run and write, and removes an old stray key', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), { appearanceMode: 'system', notARealKey: 'x' });
+    const { handleConfigSet, handleConfigUnset } = await import('./admin-api');
+    for (const dryRun of [true, false]) {
+      await expect(handleConfigSet({ key: 'appearanceMod', value: 'dark', dryRun })).resolves.toMatchObject({
+        success: false, error: expect.stringContaining("Did you mean 'appearanceMode'?"),
+      });
+    }
+    expect(readConfig().appearanceMode).toBe('system');
+    await expect(handleConfigSet({ key: 'notARealKey', value: 'y' })).resolves.toMatchObject({ success: false });
+    await expect(handleConfigUnset({ key: 'notARealKey', dryRun: true })).resolves.toMatchObject({ success: true, dryRun: true });
+    expect(readConfig().notARealKey).toBe('x');
+    await expect(handleConfigUnset({ key: 'notARealKey' })).resolves.toMatchObject({ success: true });
+    expect(readConfig().notARealKey).toBeUndefined();
+    await expect(handleConfigUnset({ key: 'providerApiKeys.deepseek' })).resolves.toMatchObject({ success: false });
   });
 });
 
@@ -4214,6 +4231,8 @@ describe('admin-api Agent / Session discovery', () => {
       success: true,
       data: {
         effectiveDefaults: {
+          scope: 'agent-default-for-future-sessions',
+          permissionModeSource: 'agent-config',
           runtime: 'dsh',
           runtimeSource: 'integrated',
           providerId: 'deepseek',
@@ -4430,8 +4449,8 @@ describe('admin config discovery and MCP observations', () => {
     const { handleConfigList } = await import('./admin-api');
     const top = handleConfigList();
     expect(top).toMatchObject({ success: true, data: { keys: expect.arrayContaining([
-      { key: 'appearanceMode', type: 'string', sensitive: false, description: expect.any(String) },
-      { key: 'providerApiKeys', type: 'object', sensitive: true, description: expect.any(String) },
+      expect.objectContaining({ key: 'appearanceMode', type: 'string', sensitive: false, settable: true, description: expect.any(String) }),
+      expect.objectContaining({ key: 'providerApiKeys', type: 'object', sensitive: true, settable: false, description: expect.any(String) }),
     ]) } });
     expect(JSON.stringify(top)).not.toContain('synthetic-private-value');
     expect(handleConfigList({ prefix: 'custom' })).toMatchObject({ success: true, data: { keys: expect.arrayContaining([

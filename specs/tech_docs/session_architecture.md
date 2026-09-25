@@ -204,6 +204,8 @@ backend-created target 只有在 Runtime dispatch claim 成功后才发布 prepa
 
 `myagents session get` 不进入 Inbox、不唤醒 Runtime，也不创建 turn。它按 message id 合并持久 snapshot、活跃内存与 streaming overlay，先严格投影 user/assistant 的可见顶层 text，再执行 `before`/`limit` 分页；疑似结构化 assistant 内容只要解析或 block schema 异常就 fail closed，工具、思考、隐藏 reminder 和无 text 结构块绝不回退为原始 JSON。Rust 在 owner transport 或响应体失败时释放旧 dispatch、重新解析当前 owner 并只重试一次；最终错误保留 `SESSION_OWNER_UNAVAILABLE` 与 `SESSION_OWNER_INVALID_RESPONSE` 的区别。锚点只在可读文本序列内成立，失效时明确报错，避免静默重复或漏读。
 
+当前 Session 的文本分页由 Rust Management API 发往 owner Sidecar 的 `POST /api/internal/session/text-page`；该路径必须登记为 Session role 路由。否则历史 Session 可从持久化读取，当前 Session 却会在生产 role gate 返回 404。
+
 Desktop、Goal、Task、Inbox、IM、Heartbeat 和 Memory 的执行都经 SessionEngine；DSH 的 `integrated` kind 不能落入 SDK enqueue/config 路径。DSH 强制发送先 interrupt 并持久化 partial terminal，再提升目标 queue item。跨 Sidecar Inbox 只有收到可解析的 `{ accepted: true }` 才算投递成功，HTTP 2xx 的协议错误必须保留上层重试权。
 
 ### 5.3 Registered Agent origin

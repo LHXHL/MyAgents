@@ -1037,13 +1037,32 @@ export function printResult(
     printRecordList(result.data as Array<Record<string, unknown>>);
     return;
   }
+  if (group === 'record' && action === 'create') {
+    const record = ((result.data as Record<string, unknown> | undefined)?.record ?? {}) as Record<string, unknown>;
+    console.log(`✓ Record created ${String(record.id ?? '(unknown)')}`);
+    if (record.title) console.log(`  title: ${String(record.title)}`);
+    if (record.kind) console.log(`  kind:  ${String(record.kind)}`);
+    return;
+  }
+  if (group === 'space' && action === 'list') {
+    const items = (result.data as { items?: Array<Record<string, unknown>> } | undefined)?.items ?? [];
+    if (items.length === 0) {
+      console.log('(no spaces)');
+      return;
+    }
+    console.log(`Spaces (${items.length}):`);
+    for (const item of items) {
+      console.log(`  ${String(item.slug ?? '')}  ${String(item.name ?? '')}  ${String(item.role ?? '')}`.trimEnd());
+    }
+    return;
+  }
   if (group === 'skill' && action === 'list') {
     printSkillList(result.data as Array<Record<string, unknown>>, { verbose: flags.verbose === true });
     return;
   }
   if (group === 'config' && action === 'list') {
-    const data = result.data as { keys: Array<{ key: string; type: string; description: string }>; note: string };
-    for (const key of data.keys) console.log(`${key.key.padEnd(36)} ${key.type.padEnd(10)} ${key.description}`);
+    const data = result.data as { keys: Array<{ key: string; type: string; description: string; settable?: boolean }>; note: string };
+    for (const key of data.keys) console.log(`${key.key.padEnd(36)} ${key.type.padEnd(10)} ${key.settable ? '[settable] ' : ''}${key.description}`);
     console.log(data.note);
     return;
   }
@@ -1103,7 +1122,7 @@ export function printResult(
       console.log(`${key}:`);
       console.log(formatObject(value as Record<string, unknown>));
     } else {
-      console.log(`${key}: ${value === undefined ? '(unset)' : String(value)}`);
+      console.log(`${key}: ${value === undefined ? '(unset)' : String(value)}${data.scope ? `  [${String(data.scope)}]` : ''}`);
     }
     return;
   }
@@ -1543,7 +1562,7 @@ function printRuntimeDescribe(data: Record<string, unknown>): void {
   console.log(`${name}  [${runtime}]`);
   console.log(`  installed: ${installed}${version}`);
   const defaultMode = String(data.defaultPermissionMode ?? '');
-  if (defaultMode) console.log(`  default permissionMode: ${defaultMode}`);
+  if (defaultMode) console.log(`  runtime fallback permissionMode: ${defaultMode} (new Sessions without an override)`);
 
   const models = (data.models as Array<Record<string, unknown>>) ?? [];
   console.log('');
@@ -1750,7 +1769,7 @@ function printAgentShow(data: Record<string, unknown>): void {
   const channelCount = data.channelCount;
   if (typeof channelCount === 'number') console.log(`  channels:  ${channelCount}`);
   console.log('');
-  console.log('Effective defaults:');
+  console.log('Agent defaults for future Sessions (current Session may differ):');
   const defaults = (data.effectiveDefaults as Record<string, unknown>) ?? {};
   const fmt = (v: unknown): string => {
     if (v === null || v === undefined || v === '') return '(inherits default)';
@@ -1761,6 +1780,7 @@ function printAgentShow(data: Record<string, unknown>): void {
   if (defaults.runtimeSource) console.log(`  runtimeSource:  ${fmt(defaults.runtimeSource)}`);
   console.log(`  model:          ${fmt(defaults.model)}`);
   console.log(`  permissionMode: ${fmt(defaults.permissionMode)}`);
+  if (defaults.permissionModeSource) console.log(`  permission source: ${fmt(defaults.permissionModeSource)}`);
   console.log(`  providerId:     ${fmt(defaults.providerId)}`);
   if (defaults.runtimeConfig) {
     console.log(`  runtimeConfig:  ${JSON.stringify(defaults.runtimeConfig)}`);
@@ -3267,7 +3287,7 @@ const PUBLISHED_ADMIN_ROUTES = new Set([
   'plugin/list', 'plugin/install', 'plugin/remove',
   'cc-plugin/list', 'cc-plugin/show', 'cc-plugin/install', 'cc-plugin/uninstall', 'cc-plugin/enable', 'cc-plugin/disable',
   'skill/list', 'skill/info', 'skill/add', 'skill/remove', 'skill/enable', 'skill/disable', 'skill/sync',
-  'config/list', 'config/get', 'config/set',
+  'config/list', 'config/get', 'config/set', 'config/unset',
   'task/list', 'task/get', 'task/comments', 'task/comment', 'task/create-direct', 'task/create-attached', 'task/run',
   'task/run-now', 'task/rerun', 'task/trigger/validate', 'task/trigger/test', 'task/check-now',
   'task/reset-checkpoint', 'task/update', 'task/update-status', 'task/start', 'task/stop', 'task/runs', 'task/append-session', 'task/archive', 'task/delete',
@@ -5552,6 +5572,7 @@ export function buildRequestBody(
     if (action === 'list') return { prefix: rest[0] || flags.prefix };
     if (action === 'get') return { key: rest[0] || flags.key };
     if (action === 'set') return { key: rest[0] || flags.key, value: tryParseJson(rest[1] ?? String(flags.value ?? '')), dryRun: flags.dryRun };
+    if (action === 'unset') return { key: rest[0] || flags.key, dryRun: flags.dryRun };
     return {};
   }
 

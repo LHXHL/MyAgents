@@ -1185,6 +1185,23 @@ describe('myagents CLI Space issue contracts', () => {
     });
   });
 
+  it('shows Record creation identity and Space entries in human output', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      printResult('record', 'create', { success: true, data: { record: {
+        id: 'record-123', title: 'Meeting note', kind: 'text',
+      } } }, false);
+      expect(log.mock.calls.map(([line]) => String(line)).join('\n')).toContain('record-123');
+      log.mockClear();
+      printResult('space', 'list', { success: true, data: { items: [
+        { slug: 'research-hub', name: 'Research Hub', role: 'owner' },
+      ] } }, false);
+      expect(log.mock.calls.map(([line]) => String(line)).join('\n')).toContain('research-hub');
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it('rejects canonical-only Record kind filters on the legacy Thought alias', () => {
     const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
       throw new Error(`process.exit(${code})`);
@@ -2494,6 +2511,8 @@ describe('concise skill inventory', () => {
     expect(parseArgs(['skill', '--verbose', 'list']).positional).toEqual(['skill', 'list']);
     expect(buildRoute('config', 'list', ['proxySettings'])).toBe('config/list');
     expect(buildRequestBody('config', 'list', ['proxySettings'], {})).toEqual({ prefix: 'proxySettings' });
+    expect(buildRoute('config', 'unset', ['notARealKey'])).toBe('config/unset');
+    expect(buildRequestBody('config', 'unset', ['notARealKey'], { dryRun: true })).toEqual({ key: 'notARealKey', dryRun: true });
   });
   it('hides normal admission details by default while verbose retains them', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});

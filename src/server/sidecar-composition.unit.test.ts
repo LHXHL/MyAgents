@@ -35,6 +35,7 @@ describe('Sidecar production composition', () => {
     ['GET', '/sessions', 'global'],
     ['POST', '/sessions', 'global'],
     ['POST', '/api/session/birth', 'session'],
+    ['POST', '/api/internal/session/text-page', 'session'],
     ['GET', '/api/session-tags', 'global'],
     ['POST', '/api/session-tags/assign', 'global'],
     ['POST', '/api/session-tags/manage', 'global'],

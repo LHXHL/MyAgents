@@ -150,7 +150,7 @@ AI 在调用写操作前通常需要先「问清楚选项」。以下三条命�
 myagents runtime list                             # 看哪些 runtime 装了、未装的给出安装提示
 myagents runtime describe <runtime>               # 看某 runtime 的 model + permissionMode 枚举
 myagents agent list --active|--archived           # 找 stable Agent ID；human/JSON 标记当前调用方
-myagents agent show <agent-id>                    # 看 identity + effective Session birth 默认
+myagents agent show <agent-id>                    # 看 identity + Agent 对未来 Session 的默认值
 myagents session list --agent <agent-id>          # 看最近可复用的 persisted Session context
 ```
 
@@ -597,5 +597,7 @@ DSH Session 路由下，`myagents skill list` 的 JSON 保留安装字段，并�
 Cuse 是可关闭的版本化 Skill，携带独立 CLI，由构建从 Cuse 发布源下载，运行时不联网更新。它复用上述内容归属/启停分离与完整目录投影，详见 [Cuse bundle](cuse_bundle.md)。
 
 Round 6 diagnostics: `config list [prefix]` enumerates the existing config reader's normalized keys with types/descriptions and no values; credential maps remain opaque. `status` reads actual MCP states from SessionEngine's current effective snapshot, independently of global configuration and workspace selection. Missing/stale observations remain unknown. `runtime describe dsh` directs model discovery to the Provider catalog. `skill list --verbose` expands normal admission details; abnormal admissions remain visible by default. Session recovery commands require `session list --agent <agentId> --json`.
+
+`config list` 现在标明 `settable`。通用 `config set` 只接收显式登记的简单偏好键和值，`--dry-run` 也做同样校验；有独立 owner 或副作用的配置仍走专用命令或设置页。`config unset <key>` 可删除已有误写键，但拒绝敏感和受专用 owner 管理的字段。`agent show.effectiveDefaults` 保留兼容字段名，其 `scope` 明确为未来 Session 的 Agent 默认值；`runtime describe.defaultPermissionMode` 是 Runtime 目录兜底值；`config get defaultPermissionMode` 是 App 新 Session 默认值。当前 Session 的真实权限以其固化配置和当前 generation 的 runtime 诊断为准。
 
 `version` separates Rust-launcher App identity from Sidecar identity. Bundles embed version/commit/dirty/capture time during esbuild; source-mode processes capture metadata once at startup, never at diagnostic request time. A launcher that did not send App metadata is reported as unknown. `diagnose runtime dsh` goes through SessionEngine and the existing runtime adapter: it verifies installed handoff bytes, uses the lifecycle owner's process and handshake identity, and projects effective model/permissions/extensions plus names of allowed environment and general-proxy keys and proxy endpoints stripped of credentials, paths and query values. It never exposes environment values, credentials or permission rule targets, and never creates a diagnostic Session.

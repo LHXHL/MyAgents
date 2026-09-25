@@ -39,7 +39,7 @@ describe('DSH standalone inspection', () => {
     const start = vi.spyOn(runtime, 'startSession');
     expect(await runtime.inspectRuntime()).toMatchObject({ installed: false, resources: { state: 'unavailable' }, process: { state: 'not_running' }, model: null, proxy: null });
     await installFixture();
-    expect(await runtime.inspectRuntime()).toMatchObject({ installed: true, resources: { state: 'verified', installedIdentity: { sourceCommit: dshLock.handoff.sourceCommit } }, process: { state: 'not_running' }, permissions: null });
+    expect(await runtime.inspectRuntime()).toMatchObject({ installed: true, version: dshLock.dsh.version, resources: { state: 'verified', installedIdentity: { sourceCommit: dshLock.handoff.sourceCommit } }, process: { state: 'not_running' }, permissions: null });
     expect(mocks.verify).toHaveBeenCalledOnce();
     expect(start).not.toHaveBeenCalled();
   });

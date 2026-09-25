@@ -2499,6 +2499,65 @@ export async function handleAgentChannelRemove(payload: {
 // Config Handlers
 // ---------------------------------------------------------------------------
 
+// Generic CLI mutation is deliberately limited to simple preferences. Other
+// config fields have their own owner, validation, or cross-process side effect.
+const CONFIG_SETTABLE_KEYS = [
+  'appearanceMode', 'uiLanguage', 'defaultPermissionMode',
+  'chatSendShortcut', 'chatQueueResponseMode', 'minimizeToTray',
+  'osNotifications', 'notificationSound', 'notificationBadge',
+  'showDevTools', 'showChatHistoryEntry', 'experimentalSplitView',
+] as const;
+type ConfigSettableKey = typeof CONFIG_SETTABLE_KEYS[number];
+const CONFIG_SETTABLE_VALUES: Partial<Record<ConfigSettableKey, readonly unknown[]>> = {
+  appearanceMode: ['system', 'light', 'dark'],
+  uiLanguage: ['system', 'zh-CN', 'en-US'],
+  defaultPermissionMode: ['auto', 'plan', 'fullAgency'],
+  chatSendShortcut: ['enter', 'modEnter'],
+  chatQueueResponseMode: ['realtime', 'turn'],
+};
+
+function configKeyDistance(a: string, b: string): number {
+  let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j++) {
+      current[j] = Math.min(current[j - 1]! + 1, previous[j]! + 1,
+        previous[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    previous = current;
+  }
+  return previous[b.length]!;
+}
+
+function validateConfigMutationKey(key: string, action: 'set' | 'unset'): AdminResponse | null {
+  if (!key || hasDangerousKeySegment(key)) return { success: false, error: 'Invalid config key path' };
+  const root = key.split('.')[0];
+  if (root === 'cliToolRegistryEnabled') {
+    return { success: false, error: "Use Settings → About & Feedback → Lab to change 'cliToolRegistryEnabled'." };
+  }
+  if (SENSITIVE_TOP_KEYS.has(root) || SENSITIVE_KEY_PATTERNS.test(key) ||
+      ['agents', 'providers', 'providerVerifyStatus', 'defaultProviderId', 'presetCustomModels',
+        'presetRemovedModels', 'mcpServers', 'mcpEnabledServers', 'imBotConfigs', 'externalCliAccess',
+        'proxySettings', 'themeId', 'themeSelectionExplicit', 'forceWakeLock', 'cliToolRegistryEnabled',
+        'dshCollaboration', 'floatingBallSessionId', 'floatingBallSessionDate',
+        'floatingBallSessionWorkspace'].includes(root)) {
+    return { success: false, error: `Cannot ${action} '${key}' via config ${action}. Use its dedicated command or Settings.` };
+  }
+  if (action === 'unset') {
+    return getNestedValue(loadConfig(), key) === undefined
+      ? { success: false, error: `Config key '${key}' not found` } : null;
+  }
+  if ((CONFIG_SETTABLE_KEYS as readonly string[]).includes(key)) return null;
+  if (getNestedValue(loadConfig(), key) !== undefined) {
+    return { success: false, error: `Config key '${key}' cannot be changed with config set. Use its dedicated command or Settings.` };
+  }
+  const candidate = [...CONFIG_SETTABLE_KEYS].sort((a, b) =>
+    configKeyDistance(a.toLowerCase(), key.toLowerCase()) - configKeyDistance(b.toLowerCase(), key.toLowerCase()))[0];
+  const suggestion = candidate && configKeyDistance(candidate.toLowerCase(), key.toLowerCase()) <= 3
+    ? ` Did you mean '${candidate}'?` : '';
+  return { success: false, error: `Unknown config key '${key}'.${suggestion} Run 'myagents config list' for stored keys and types.` };
+}
+
 /** Discover normalized config shape without returning values or traversing secret maps. */
 export function handleConfigList(payload: { prefix?: string } = {}): AdminResponse {
   const prefix = payload.prefix ?? '';
@@ -2522,19 +2581,19 @@ export function handleConfigList(payload: { prefix?: string } = {}): AdminRespon
     proxySettings: 'Proxy settings for each traffic scope',
     themeId: 'Selected visual theme',
     appearanceMode: 'Application light/dark appearance preference',
-    locale: 'Application language preference',
+    uiLanguage: 'Application language preference',
   };
   const keys = Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([name, item]) => {
     const key = prefix ? `${prefix}.${name}` : name;
     const sensitive = SENSITIVE_TOP_KEYS.has(key.split('.')[0]) || SENSITIVE_KEY_PATTERNS.test(key);
     const type = item === null ? 'null' : Array.isArray(item) ? 'array' : typeof item;
-    return { key, type, sensitive,
+    return { key, type, sensitive, settable: (CONFIG_SETTABLE_KEYS as readonly string[]).includes(key),
       description: descriptions[key] ?? (sensitive ? 'Sensitive field; values are redacted'
         : type === 'object' ? `Nested settings; inspect with config list ${key}`
           : `Stored setting; inspect with config get ${key}`),
     };
   });
-  return { success: true, data: { prefix, keys, note: 'Current normalized configuration keys; absent optional keys are not listed. Values are omitted.' } };
+  return { success: true, data: { prefix, keys, note: 'Current normalized configuration keys; absent optional keys are not listed. Values are omitted. Only settable keys accept config set; config unset can remove a stored non-protected key.' } };
 }
 
 export function handleConfigGet(payload: { key: string }): AdminResponse {
@@ -2555,7 +2614,9 @@ export function handleConfigGet(payload: { key: string }): AdminResponse {
 
   // Redact sensitive fields recursively
   const redacted = redactSensitiveValues(key, value);
-  return { success: true, data: { key, value: redacted } };
+  return { success: true, data: { key, value: redacted,
+    ...(key === 'defaultPermissionMode' ? { scope: 'app-default-for-new-sessions' } : {}),
+  } };
 }
 
 export async function handleConfigSet(payload: {
@@ -2564,41 +2625,11 @@ export async function handleConfigSet(payload: {
   dryRun?: boolean;
 }): Promise<AdminResponse> {
   const { key, value, dryRun } = payload;
-  if (!key) return { success: false, error: 'Missing required field: key' };
-
-  // Reject dangerous key paths (prototype pollution)
-  if (hasDangerousKeySegment(key)) {
-    return { success: false, error: 'Invalid key path' };
-  }
-
-  if (key.split('.')[0] === 'cliToolRegistryEnabled') {
-    return {
-      success: false,
-      error:
-        "Cannot set 'cliToolRegistryEnabled' via config set. Enable it from Settings → About & Feedback → Lab.",
-    };
-  }
-
-  // Protect structural/sensitive keys that have dedicated commands
-  const protectedKeys = [
-    'providerApiKeys',
-    'providerVerifyStatus',
-    'agents',
-    'mcpServers',
-    'mcpEnabledServers',
-    'mcpServerEnv',
-    'mcpServerArgs',
-    'imBotConfigs',
-    'cliToolEnv',
-    'externalCliAccess',
-  ];
-  const rootKey = key.split('.')[0];
-  if (protectedKeys.includes(rootKey)) {
-    return {
-      success: false,
-      error: `Cannot set '${key}' via config set. Use dedicated commands (e.g., 'myagents mcp', 'myagents agent', 'myagents model set-key').`,
-    };
-  }
+  const keyFailure = validateConfigMutationKey(key, 'set');
+  if (keyFailure) return keyFailure;
+  const choices = CONFIG_SETTABLE_VALUES[key as ConfigSettableKey];
+  if (choices && !choices.includes(value)) return { success: false, error: `Invalid value for '${key}'. Valid: ${choices.join(', ')}.` };
+  if (!choices && typeof value !== 'boolean') return { success: false, error: `'${key}' expects a boolean value.` };
 
   if (dryRun) {
     return { success: true, dryRun: true, preview: { key, value } };
@@ -2607,6 +2638,20 @@ export async function handleConfigSet(payload: {
   await atomicModifyConfig((c) => setNestedValue(c, key, value));
   broadcast('config:changed', { section: 'config', action: 'set', key });
   return { success: true, data: { key }, hint: `Config '${key}' updated.` };
+}
+
+export async function handleConfigUnset(payload: { key: string; dryRun?: boolean }): Promise<AdminResponse> {
+  const { key, dryRun } = payload;
+  const keyFailure = validateConfigMutationKey(key, 'unset');
+  if (keyFailure) return keyFailure;
+  if (dryRun) return { success: true, dryRun: true, preview: { key, action: 'unset' } };
+  await atomicModifyConfig((config) => {
+    // Recheck against the lock's fresh disk snapshot.
+    if (getNestedValue(config, key) === undefined) return config;
+    return deleteNestedValue(config, key);
+  });
+  broadcast('config:changed', { section: 'config', action: 'unset', key });
+  return { success: true, data: { key }, hint: `Config '${key}' removed.` };
 }
 
 // ---------------------------------------------------------------------------
@@ -3110,11 +3155,11 @@ ERROR RECOVERY
   }),
   'config/list': taskLeafHelp({
     usage: 'myagents config list [prefix] [--json]',
-    when: 'Use to discover current normalized configuration keys and types.',
+    when: 'Use to discover current normalized configuration keys, types, and whether config set supports them.',
     effect: 'Enumerates one object level from the existing config reader, without values.',
     options: '  prefix                 Optional dotted object path; omit for top-level keys',
     mutation: 'Read-only. Sensitive maps remain opaque.',
-    output: 'Key, type, sensitivity and description. Absent optional keys are not listed.',
+    output: 'Key, type, sensitivity, settable flag and description. Absent optional keys are not listed.',
     example: '  myagents config list proxySettings --json',
     recovery: 'Use config get for leaf values and dedicated commands for credential fields.',
   }),
@@ -3122,15 +3167,25 @@ ERROR RECOVERY
     usage: 'myagents config set <key> <value> [--dry-run]',
     when: 'Use when changing one supported application configuration key.',
     effect:
-      'Parses and validates the value, then persists it unless --dry-run is set.',
+      'Validates the key and value against supported simple preferences, then persists unless --dry-run is set.',
     options:
       '  --dry-run              Preview the parsed value without writing config.json',
     mutation:
       '--dry-run does not write or persist config.json. Without it, this mutates application configuration.',
     output: 'The parsed key/value preview or the persisted value.',
-    example: '  myagents config set locale en-US --dry-run',
+    example: '  myagents config set uiLanguage en-US --dry-run',
     recovery:
       'Run myagents config list to discover keys, then config get <key> to inspect its value.',
+  }),
+  'config/unset': taskLeafHelp({
+    usage: 'myagents config unset <key> [--dry-run]',
+    when: 'Use to remove a stored configuration key, including an old accidental key.',
+    effect: 'Removes the exact stored key after rejecting protected and sensitive fields.',
+    options: '  --dry-run              Validate the removal without writing config.json',
+    mutation: 'Without --dry-run, this mutates application configuration.',
+    output: 'The removed key or a dry-run preview.',
+    example: '  myagents config unset notARealKey --dry-run',
+    recovery: 'Run myagents config list to inspect stored keys.',
   }),
   mcp: `myagents mcp — Manage MCP tool servers
 
@@ -7554,6 +7609,7 @@ interface RuntimeDescribeResult {
   models: RuntimeModelInfo[];
   permissionModes: RuntimePermissionMode[];
   defaultPermissionMode: string;
+  defaultPermissionModeSource: 'runtime-catalog-fallback';
 }
 
 /** Per-runtime detection timeout — a wedged `<cli> --version` binary shouldn't
@@ -7676,6 +7732,7 @@ export async function handleRuntimeDescribe(
         models: [],
         permissionModes: getRuntimePermissionModes('builtin'),
         defaultPermissionMode: getDefaultRuntimePermissionMode('builtin'),
+        defaultPermissionModeSource: 'runtime-catalog-fallback',
         note:
           'Built-in runtime uses the configured provider + model from `myagents model list`. ' +
           'It does not have a runtime-specific model catalogue — override `--model` with any ' +
@@ -7731,6 +7788,7 @@ export async function handleRuntimeDescribe(
       models,
       permissionModes,
       defaultPermissionMode,
+      defaultPermissionModeSource: 'runtime-catalog-fallback',
     } satisfies RuntimeDescribeResult,
   };
 }
@@ -7987,6 +8045,9 @@ export async function handleAgentShow(payload: {
       association: identity.association,
       isCurrent: isCurrentAgentIdentity(identity, getCurrentWorkspacePath()),
       effectiveDefaults: {
+        scope: 'agent-default-for-future-sessions',
+        permissionModeSource: usesManagedCodex ? 'managed-provider-projection'
+          : usesExternalCliConfiguration ? 'agent-runtime-config-or-runtime-fallback' : 'agent-config',
         runtime,
         ...(runtime !== 'builtin'
           ? {
@@ -9051,6 +9112,21 @@ function setNestedValue(
     ...obj,
     [first]: setNestedValue(child as AdminAppConfig, rest.join('.'), value),
   };
+}
+
+/** Remove one stored key, leaving its siblings intact. */
+function deleteNestedValue(obj: AdminAppConfig, key: string): AdminAppConfig {
+  const [first, ...rest] = key.split('.');
+  const copy: AdminAppConfig = { ...obj };
+  if (rest.length === 0) {
+    delete copy[first];
+  } else {
+    const child = obj[first];
+    if (child && typeof child === 'object' && !Array.isArray(child)) {
+      copy[first] = deleteNestedValue(child as AdminAppConfig, rest.join('.'));
+    }
+  }
+  return copy;
 }
 
 // ---------------------------------------------------------------------------

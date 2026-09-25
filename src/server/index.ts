@@ -1870,6 +1870,10 @@ async function routeAdminApi(
     return api.handleConfigSet(
       payload as Parameters<typeof api.handleConfigSet>[0],
     );
+  if (route === 'config/unset')
+    return api.handleConfigUnset(
+      payload as Parameters<typeof api.handleConfigUnset>[0],
+    );
 
   // Task Center — thoughts + tasks (v0.1.69)
   const taskWorkspaceFailure = externalTaskWorkspaceFailure(caller, route, payload);

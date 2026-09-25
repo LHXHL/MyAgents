@@ -868,7 +868,7 @@ export class DshRuntime implements AgentRuntime {
     const configuration = current?.configuration;
     const rules = current?.permissionRules;
     return {
-      runtime: this.type, installed, version: dshLock.runtime.version, resources,
+      runtime: this.type, installed, version: dshLock.dsh.version, resources,
       process: active?.host.diagnosticSnapshot.process ?? { state: 'not_running' },
       model: configuration ? { id: configuration.profile.modelId, provider: configuration.profile.provider, revision: configuration.revision } : null,
       permissions: configuration && rules ? projectDshPermissionDiagnostics(configuration.productPermissionMode, configuration.dshPermissionMode, rules) : null,

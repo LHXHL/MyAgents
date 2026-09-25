@@ -73,6 +73,7 @@ const SESSION_EXACT_PATHS = new Set([
   '/api/generate-session-title',
   '/api/goal/objective',
   '/api/image',
+  '/api/internal/session/text-page',
   '/api/audio',
   '/api/interaction-scenario/set',
   '/api/mcp/set',
