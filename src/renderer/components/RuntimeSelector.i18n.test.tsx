@@ -18,7 +18,7 @@ describe('RuntimeSelector i18n', () => {
     await i18n.changeLanguage('en-US');
   });
 
-  it('renders toolbar menu chrome in English', async () => {
+  it('renders launcher menu chrome in English', async () => {
     const user = userEvent.setup();
     render(
       <RuntimeSelector
@@ -36,7 +36,7 @@ describe('RuntimeSelector i18n', () => {
     expect(screen.getByText('Not installed')).toBeInTheDocument();
   });
 
-  it('groups DSH as Integrated and exposes its unverified development state', async () => {
+  it.each(['launcher', 'panel'] as const)('groups DeepSeek Harness in the %s menu without an experimental badge', async (variant) => {
     const user = userEvent.setup();
     const onChange = vi.fn();
     render(
@@ -47,19 +47,23 @@ describe('RuntimeSelector i18n', () => {
           dsh: { installed: true, version: '0.0.0', readiness: 'unverified-dev-runtime' },
         }}
         onChange={onChange}
+        variant={variant}
       />,
     );
 
-    await user.click(screen.getByTitle('Runtime: MyAgents (Claude Agent SDK)'));
+    await user.click(variant === 'launcher'
+      ? screen.getByTitle('Runtime: MyAgents (Claude Agent SDK)')
+      : screen.getByRole('button', { name: 'MyAgents (Claude Agent SDK)' }));
     expect(screen.getByText('Integrated')).toBeInTheDocument();
     expect(screen.getByText('External CLI')).toBeInTheDocument();
-    expect(screen.getByText('Experimental')).toBeInTheDocument();
+    expect(screen.getAllByText('MyAgents (DeepSeek Harness)').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Experimental')).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: /MyAgents \(DSH\)/ }));
+    await user.click(screen.getByRole('button', { name: /MyAgents \(DeepSeek Harness\)/ }));
     expect(onChange).toHaveBeenCalledWith('dsh');
   });
 
-  it.each(['toolbar', 'panel'] as const)('explains both runtime groups in the %s menu', async (variant) => {
+  it.each(['launcher', 'panel'] as const)('explains both runtime groups in the %s menu', async (variant) => {
     const user = userEvent.setup();
     render(
       <RuntimeSelector
@@ -70,7 +74,7 @@ describe('RuntimeSelector i18n', () => {
       />,
     );
 
-    await user.click(variant === 'toolbar'
+    await user.click(variant === 'launcher'
       ? screen.getByTitle('Runtime: MyAgents (Claude Agent SDK)')
       : screen.getByRole('button', { name: 'MyAgents (Claude Agent SDK)' }));
 
@@ -100,8 +104,8 @@ describe('RuntimeSelector i18n', () => {
       />,
     );
 
-    await user.click(screen.getByTitle('Runtime: MyAgents (DSH)'));
-    expect(screen.getAllByRole('button', { name: /MyAgents \(DSH\)/ })).toHaveLength(2);
+    await user.click(screen.getByTitle('Runtime: MyAgents (DeepSeek Harness)'));
+    expect(screen.getAllByRole('button', { name: /MyAgents \(DeepSeek Harness\)/ })).toHaveLength(2);
     expect(screen.getByText('Integrated')).toBeInTheDocument();
     expect(screen.queryByText('MyAgents (Claude Agent SDK)')).not.toBeInTheDocument();
     expect(screen.queryByText('Codex CLI')).not.toBeInTheDocument();

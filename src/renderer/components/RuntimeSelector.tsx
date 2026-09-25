@@ -1,5 +1,5 @@
 // RuntimeSelector — dropdown to switch between Agent Runtime types (v0.1.59)
-// Appears in SimpleChatInput toolbar (left of permission mode) and WorkspaceBasicsSection
+// Used by the Launcher and Agent settings; a Chat Session's Runtime is read-only.
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronUp, CircleHelp, Settings } from 'lucide-react';
@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 
 import { Popover } from '@/components/ui/Popover';
 import Tip from '@/components/Tip';
+import { RUNTIME_PRESENTATION } from '@/components/runtimePresentation';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import type { RuntimeType, RuntimeDetections } from '../../shared/types/runtime';
 import {
@@ -18,18 +19,6 @@ import {
 // Runtime types that have backend implementations (not just type definitions)
 const IMPLEMENTED_RUNTIMES = new Set<RuntimeType>(['builtin', 'dsh', 'claude-code', 'codex']);
 
-// ─── Runtime icon assets ───
-import myagentsIcon from '@/assets/runtime-icons/myagents.png';
-import claudeCodeIcon from '@/assets/runtime-icons/claude-code.png';
-import codexIcon from '@/assets/runtime-icons/codex.png';
-
-const RUNTIME_ICON_MAP: Record<RuntimeType, string> = {
-  builtin: myagentsIcon,
-  dsh: myagentsIcon,
-  'claude-code': claudeCodeIcon,
-  codex: codexIcon,
-};
-
 // ─── Runtime display metadata ───
 
 const RUNTIME_OPTIONS: {
@@ -37,16 +26,16 @@ const RUNTIME_OPTIONS: {
   name: string;
   group: 'integrated' | 'external';
 }[] = [
-    { type: 'builtin', name: 'MyAgents (Claude Agent SDK)', group: 'integrated' },
-    { type: 'dsh', name: 'MyAgents (DSH)', group: 'integrated' },
-    { type: 'claude-code', name: 'Claude Code CLI', group: 'external' },
-    { type: 'codex', name: 'Codex CLI', group: 'external' },
+    { type: 'builtin', name: RUNTIME_PRESENTATION.builtin.name, group: 'integrated' },
+    { type: 'dsh', name: RUNTIME_PRESENTATION.dsh.name, group: 'integrated' },
+    { type: 'claude-code', name: RUNTIME_PRESENTATION['claude-code'].name, group: 'external' },
+    { type: 'codex', name: RUNTIME_PRESENTATION.codex.name, group: 'external' },
   ];
 
 function RuntimeIcon({ type, size = 14 }: { type: RuntimeType; size?: number }) {
   return (
     <img
-      src={RUNTIME_ICON_MAP[type]}
+      src={RUNTIME_PRESENTATION[type].icon}
       alt=""
       className="shrink-0 rounded-[3px]"
       style={{ width: size, height: size }}
@@ -82,7 +71,7 @@ interface RuntimeSelectorProps {
   value: RuntimeType;
   detections: RuntimeDetections;
   onChange: (runtime: RuntimeType) => void;
-  variant?: 'toolbar' | 'launcher' | 'panel';
+  variant?: 'launcher' | 'panel';
   onOpenSettings?: () => void;
   disabled?: boolean;
   disabledReason?: string;
@@ -94,7 +83,7 @@ export default memo(function RuntimeSelector({
   value,
   detections,
   onChange,
-  variant = 'toolbar',
+  variant = 'launcher',
   onOpenSettings,
   disabled = false,
   disabledReason,
@@ -199,11 +188,6 @@ export default memo(function RuntimeSelector({
                       : t('runtime.notInstalled')}
                   </span>
                 )}
-                {installed && detection?.readiness === 'unverified-dev-runtime' && (
-                  <span className="ml-auto text-xs text-[var(--accent)]">
-                    {t('runtime.experimental')}
-                  </span>
-                )}
               </button>
               </div>
             );
@@ -213,7 +197,7 @@ export default memo(function RuntimeSelector({
     );
   }
 
-  // Toolbar variant: compact icon button
+  // Launcher variant: compact icon button
   return (
     <>
       <button
@@ -228,13 +212,13 @@ export default memo(function RuntimeSelector({
           }
           setOpen(!menuOpen);
         }}
-        className={`inline-flex items-center rounded-lg py-1.5 text-left text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] ${variant === 'launcher' ? 'gap-1.5 px-2' : 'gap-1 px-1.5'} ${
+        className={`inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] ${
           disabled ? 'cursor-not-allowed opacity-50 hover:bg-transparent hover:text-[var(--ink-muted)]' : ''
         }`}
         title={disabled ? disabledReason : `Runtime: ${currentOption.name}`}
       >
         <RuntimeIcon type={value} size={16} />
-        <ChevronUp className={`${variant === 'launcher' ? 'h-3 w-3' : 'h-2.5 w-2.5'} shrink-0 transition-transform ${menuOpen ? '' : 'rotate-180'}`} />
+        <ChevronUp className={`h-3 w-3 shrink-0 transition-transform ${menuOpen ? '' : 'rotate-180'}`} />
       </button>
       <Popover
         open={menuOpen}
@@ -284,11 +268,6 @@ export default memo(function RuntimeSelector({
               </span>
               {!installed && (
                 <span className="ml-auto text-[var(--ink-subtle)] text-xs">{t('runtime.notInstalled')}</span>
-              )}
-              {installed && detection?.readiness === 'unverified-dev-runtime' && (
-                <span className="ml-auto text-xs text-[var(--accent)]">
-                  {t('runtime.experimental')}
-                </span>
               )}
             </button>
             </div>

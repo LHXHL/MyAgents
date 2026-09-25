@@ -12,7 +12,6 @@ import type { SessionGoal } from '@/types/sessionGoal';
 import type { SlashCommand } from '../SlashCommandMenu';
 import type { OfficialToolDefinition, OfficialToolId } from '../../../shared/official-tools';
 import type {
-  RuntimeDetections,
   RuntimeModelInfo,
   RuntimePermissionMode,
   RuntimeType,
@@ -144,8 +143,6 @@ export interface SimpleChatInputProps {
   runtime?: RuntimeType;
   /** True only for user-managed CLI controls; Integrated DSH keeps Product provider/tool controls. */
   usesExternalRuntimeControls?: boolean;
-  runtimeDetections?: RuntimeDetections;
-  onRuntimeChange?: (runtime: RuntimeType) => void;
   runtimeModels?: RuntimeModelInfo[];
   /** Session-scoped capability; null means still unknown (do not use Global catalog). */
   managedReasoningModel?: Pick<RuntimeModelInfo, 'supportedReasoningEfforts' | 'defaultReasoningEffort'> | null;

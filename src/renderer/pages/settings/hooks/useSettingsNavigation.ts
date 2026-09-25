@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { isDeveloperSectionUnlocked } from '@/utils/developerMode';
 
 import {
   VALID_SECTIONS,
@@ -30,6 +31,9 @@ export function useSettingsNavigation({
       if (initialSection === 'desktop-pet' && floatingBallDisabled) {
         return 'about';
       }
+      if (initialSection === 'developer' && !isDeveloperSectionUnlocked()) {
+        return 'about';
+      }
       return initialSection as SettingsSection;
     }
     return 'providers';
@@ -45,6 +49,11 @@ export function useSettingsNavigation({
     if (initialSection && VALID_SECTIONS.includes(initialSection as SettingsSection)) {
       const timer = window.setTimeout(() => {
         if (initialSection === 'desktop-pet' && floatingBallDisabled) {
+          setActiveSection('about');
+          notifySectionChange();
+          return;
+        }
+        if (initialSection === 'developer' && !isDeveloperSectionUnlocked()) {
           setActiveSection('about');
           notifySectionChange();
           return;

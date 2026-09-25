@@ -11,7 +11,8 @@ export type SettingsSection =
   | 'agent'
   | 'usage-stats'
   | 'desktop-pet'
-  | 'about';
+  | 'about'
+  | 'developer';
 
 export const VALID_SECTIONS: SettingsSection[] = [
   'general',
@@ -27,6 +28,7 @@ export const VALID_SECTIONS: SettingsSection[] = [
   'usage-stats',
   'desktop-pet',
   'about',
+  'developer',
 ];
 
 export const MYAGENTS_GITHUB_URL = 'https://github.com/hAcKlyc/MyAgents';

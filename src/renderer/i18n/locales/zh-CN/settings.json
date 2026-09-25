@@ -22,7 +22,8 @@
       "proxy": "网络代理",
       "externalCli": "外部调用",
       "shortcuts": "快捷键",
-      "about": "关于"
+      "about": "关于",
+      "developer": "开发者"
     }
   },
   "externalCli": {
@@ -2203,11 +2204,11 @@
     "teamSpaceUnavailable": "当前构建未包含团队空间服务。",
     "teamSpaceUnavailableWithReason": "当前构建未包含团队空间服务。({{reason}})",
     "runtimeTitle": "更多 Agent Runtime",
-    "runtimeDescription": "允许在输入框和 Agent 设置中选择 Runtime。关闭后会保留已保存的选择，新 Session 使用默认 Integrated Runtime。",
+    "runtimeDescription": "允许在起始页和 Agent 设置中选择 Runtime。关闭后会保留已保存的选择，新 Session 使用默认 Integrated Runtime。",
     "defaultIntegratedRuntimeTitle": "默认 Integrated Runtime",
     "defaultIntegratedRuntimeDescription": "Runtime 选择不可用时，新建的普通 Provider Session 使用此项；已有 Session 保持冻结的 Runtime。",
-    "defaultIntegratedRuntimeClaudeSdk": "Claude Agent SDK",
-    "defaultIntegratedRuntimeDsh": "DeepSeek Harness（DSH）",
+    "defaultIntegratedRuntimeClaudeSdk": "MyAgents (Claude Agent SDK)",
+    "defaultIntegratedRuntimeDsh": "MyAgents (DeepSeek Harness)",
     "cliRegistryTitle": "CLI 工具注册表",
     "cliRegistryDescription": "允许 AI 创建并注册命令行小工具，并在工具箱中管理；开启后新会话可自动发现已启用工具。MCP 与 myagents 内置 CLI 能力不受影响。",
     "desktopPetTitle": "桌面宠物",

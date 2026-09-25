@@ -702,16 +702,16 @@ If fork Product staging fails, the Host persists an abort decision before asking
 
 ### 14.1 Runtime selector
 
-Reuse the current selector placement, grouped as:
+Runtime selection is available on the Launcher and in Agent settings. A Chat Session keeps its frozen Runtime: the composer has no Runtime selector, and the Session menu shows its Runtime identity read-only. The selector groups choices as:
 
-- Integrated: MyAgents (Claude Agent SDK), MyAgents (DSH);
+- Integrated: MyAgents (Claude Agent SDK), MyAgents (DeepSeek Harness);
 - External CLI: Claude Code, Codex.
 
 Managed Codex is not listed. Pi is not listed until integrated.
 
 Each item uses the readiness result from the resolver/artifact verifier: ready, setup required, update required, unavailable, incompatible or experimental.
 
-H5 keeps this taxonomy intact in the shared `RuntimeSelector`: DSH appears in the Integrated group, while Claude Code and Codex remain External CLI. The Rust detection owner resolves the installed application resource directory, reads the committed DSH lock and verifies the supported target, sealed outer handoff digest, nested Runtime manifest digest, compatibility digest, required entrypoints and platform claim before returning an installed result. The accepted Batch 3 artifact is intentionally labelled `experimental` / `unverified-dev-runtime`; missing, malformed, digest-mismatched or platform-invalid resources are unavailable and cannot admit a Chat or Launcher send. Session admission then runs the public outer verifier with its combined Runtime self-check report, which binds the complete nested inventory before spawn. The Renderer does not infer readiness from a directory or executable alone.
+H5 keeps this taxonomy intact in the shared `RuntimeSelector`: DSH appears in the Integrated group, while Claude Code and Codex remain External CLI. The Rust detection owner resolves the installed application resource directory, reads the committed DSH lock and verifies the supported target, sealed outer handoff digest, nested Runtime manifest digest, compatibility digest, required entrypoints and platform claim before returning an installed result. The accepted Batch 3 artifact has the internal `experimental` / `unverified-dev-runtime` readiness classification; the selector does not show an experimental badge. Missing, malformed, digest-mismatched or platform-invalid resources are unavailable and cannot admit a Chat or Launcher send. Session admission then runs the public outer verifier with its combined Runtime self-check report, which binds the complete nested inventory before spawn. The Renderer does not infer readiness from a directory or executable alone.
 
 Developer Settings also exposes `config.defaultIntegratedRuntime`, with options derived only from the build policy's allowed Integrated Runtimes. The override is used for new ordinary-provider Session birth when the selector is unavailable; an absent, malformed or no-longer-allowed value falls back to the build default. Changing it never rewrites an existing frozen Session. A one-runtime distribution keeps the control disabled at its sole admitted value.
 

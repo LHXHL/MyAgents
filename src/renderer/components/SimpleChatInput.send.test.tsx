@@ -93,6 +93,14 @@ describe('SimpleChatInput send paths', () => {
     workspaceMocks.service.listSlashCommands.mockResolvedValue([]);
   });
 
+  it('keeps Runtime selection out of the Chat composer', async () => {
+    await i18n.changeLanguage('zh-CN');
+    renderInput({ runtime: 'dsh', mode: 'chat' });
+
+    expect(screen.queryByTitle(/^Runtime:/)).not.toBeInTheDocument();
+    expect(screen.getByTitle('切换执行模式')).toBeInTheDocument();
+  });
+
   it('shows native managed model efforts and default, including future values', async () => {
     await i18n.changeLanguage('zh-CN');
     const onReasoningEffortChange = vi.fn();

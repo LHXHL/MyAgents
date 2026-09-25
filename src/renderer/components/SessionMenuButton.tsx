@@ -42,8 +42,10 @@ import { useSessionDeletion } from '@/context/SessionDeletionContext';
 import { exportSessionAsMarkdown } from '@/utils/sessionExport';
 import { copyPlainText } from '@/utils/clipboard';
 import type { ChannelSurface } from '@/hooks/useSessionSurfaces';
+import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
 
 import ConfirmDialog from './ConfirmDialog';
+import { sessionRuntimePresentation } from './runtimePresentation';
 import SessionStatsModal from './SessionStatsModal';
 import Tip from './Tip';
 import { useToast } from './Toast';
@@ -70,6 +72,9 @@ export interface BotChannelCandidate {
 
 export interface SessionMenuButtonProps {
     sessionId: string;
+    /** Frozen identity of this Session; null while its metadata is loading. */
+    runtime: RuntimeType | null;
+    runtimeSource?: RuntimeSource | null;
     sessionTitle: string;
     workspacePath: string;
     /** Current binding (null = pure desktop session) */
@@ -105,6 +110,8 @@ export interface SessionMenuButtonProps {
 
 export default function SessionMenuButton({
     sessionId,
+    runtime,
+    runtimeSource,
     sessionTitle,
     workspacePath,
     boundChannel,
@@ -138,6 +145,7 @@ export default function SessionMenuButton({
     const [favoriteInFlight, setFavoriteInFlight] = useState(false);
     const [handoverPendingTargetKey, setHandoverPendingTargetKey] = useState<string | null>(null);
     const [sessionIdCopied, setSessionIdCopied] = useState(false);
+    const runtimePresentation = runtime ? sessionRuntimePresentation(runtime, runtimeSource) : null;
     const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     useEffect(() => {
@@ -328,10 +336,23 @@ export default function SessionMenuButton({
                 anchorRef={triggerRef}
                 placement="bottom-start"
                 offset={6}
-                className="w-56 py-1"
+                className="w-72 py-1"
                 closeOnOutsideClick={!submenuOpen && !tagLayerOpen}
                 closeOnEscape={!submenuOpen && !tagLayerOpen}
             >
+                <div className="flex min-w-0 items-center gap-2 border-b border-[var(--line-subtle)] px-3 py-2.5">
+                    {runtimePresentation && (
+                        <img
+                            src={runtimePresentation.icon}
+                            alt=""
+                            className="h-5 w-5 shrink-0 rounded-[4px]"
+                            draggable={false}
+                        />
+                    )}
+                    <span className="min-w-0 truncate text-sm font-medium text-[var(--ink)]" title={runtimePresentation?.name}>
+                        {runtimePresentation?.name ?? t('shell.sessionMenu.runtimeLoading')}
+                    </span>
+                </div>
                 <div className="border-b border-[var(--line-subtle)] px-3 py-2">
                     <div className="flex min-w-0 items-center gap-2 text-xs">
                         <span className="shrink-0 text-[var(--ink-muted)]">SessionID:</span>

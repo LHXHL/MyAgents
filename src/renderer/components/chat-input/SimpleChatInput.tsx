@@ -54,7 +54,6 @@ import { retainFocusOnMouseDown } from '@/utils/focusRetention';
 import { detectExcessiveRepetition } from '@/utils/excessiveRepetition';
 import { isProviderAvailable } from '@/config/configService';
 import { modelSupportsModality } from '@/config/services/providerService';
-import RuntimeSelector from '@/components/RuntimeSelector';
 import { Popover } from '@/components/ui/Popover';
 import { thoughtList, taskCenterAvailable } from '@/api/taskCenter';
 import type { Thought } from '@/../shared/types/thought';
@@ -221,8 +220,6 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   active = true,
   runtime = 'builtin',
   usesExternalRuntimeControls = runtime !== 'builtin' && runtime !== 'dsh',
-  runtimeDetections,
-  onRuntimeChange,
   runtimeModels,
   managedReasoningModel,
   runtimePermissionModes,
@@ -1892,20 +1889,6 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 className="hidden"
                 onChange={handleFileChange}
               />
-
-              {/* Runtime Selector (v0.1.59) */}
-              {runtimeDetections && onRuntimeChange && !isLauncherMode && (
-                <RuntimeSelector
-                  value={runtime}
-                  detections={runtimeDetections}
-                  onChange={onRuntimeChange}
-                  variant="toolbar"
-                  onOpenSettings={onOpenAgentSettings}
-                  disabled={configControlsLocked}
-                  disabledReason={configControlLockTitle}
-                  onDisabledClick={showConfigLockedReason}
-                />
-              )}
 
               {/* Mode Dropdown */}
               <button

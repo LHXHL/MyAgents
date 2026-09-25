@@ -22,7 +22,8 @@
       "proxy": "Network Proxy",
       "externalCli": "External Calls",
       "shortcuts": "Shortcuts",
-      "about": "About"
+      "about": "About",
+      "developer": "Developer"
     }
   },
   "externalCli": {
@@ -2203,11 +2204,11 @@
     "teamSpaceUnavailable": "This build does not include the Team Space service.",
     "teamSpaceUnavailableWithReason": "This build does not include the Team Space service. ({{reason}})",
     "runtimeTitle": "More Agent Runtimes",
-    "runtimeDescription": "Allow Runtime selection in the input box and Agent settings. Turning this off preserves saved choices and uses the Default Integrated Runtime for new sessions.",
+    "runtimeDescription": "Allow Runtime selection on the launcher and in Agent settings. Turning this off preserves saved choices and uses the Default Integrated Runtime for new sessions.",
     "defaultIntegratedRuntimeTitle": "Default Integrated Runtime",
     "defaultIntegratedRuntimeDescription": "Used for new ordinary-provider sessions when Runtime selection is unavailable. Existing sessions keep their frozen Runtime.",
-    "defaultIntegratedRuntimeClaudeSdk": "Claude Agent SDK",
-    "defaultIntegratedRuntimeDsh": "DeepSeek Harness (DSH)",
+    "defaultIntegratedRuntimeClaudeSdk": "MyAgents (Claude Agent SDK)",
+    "defaultIntegratedRuntimeDsh": "MyAgents (DeepSeek Harness)",
     "cliRegistryTitle": "CLI Tool Registry",
     "cliRegistryDescription": "Allow AI to create and register command-line tools, then manage them in Tools. New sessions can discover enabled tools automatically. MCP and built-in myagents CLI capabilities are not affected.",
     "desktopPetTitle": "Desktop Pet",

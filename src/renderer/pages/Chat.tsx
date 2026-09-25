@@ -219,14 +219,13 @@ import {
 import type { SessionOrigin } from '../../shared/session-origin';
 import type { CapabilityInitialSelect } from '../../shared/skillsTypes';
 import {
-  buildRuntimeChangePatch,
   CC_MODELS,
   CC_PERMISSION_MODES,
   CODEX_PERMISSION_MODES,
   coerceModelForRuntime,
   DSH_PERMISSION_MODES,
   getDefaultRuntimePermissionMode,
-  isAgentRuntimeSelectorAvailable,
+  normalizeRuntime,
   projectPermissionModeForRuntime,
   resolveEffectiveRuntime,
   runtimeSourceForRuntimeType,
@@ -387,7 +386,7 @@ const LazyIntroductionOverlay = lazy(
 function getRuntimeDisplayLabel(runtime: RuntimeType | undefined): string {
   switch (runtime) {
     case 'dsh':
-      return 'MyAgents (DSH)';
+      return 'MyAgents (DeepSeek Harness)';
     case 'claude-code':
       return 'Claude Code';
     case 'codex':
@@ -1912,9 +1911,6 @@ export default function Chat({
   // availability in the standard distribution; hidden custom distributions use
   // their own exact default without rewriting the stored Agent preference.
   const multiAgentRuntimeEnabled = !!config.multiAgentRuntime;
-  const runtimeSelectorAvailable = isAgentRuntimeSelectorAvailable(
-    multiAgentRuntimeEnabled,
-  );
   // Agent's currently-configured runtime — used as the default for NEW sessions.
   // Managed Codex is a provider default, not the legacy user-managed Codex CLI
   // runtime, so stale `agent.runtime=codex` must not leak into Chat chrome.
@@ -1988,7 +1984,6 @@ export default function Chat({
       currentRuntime,
       managedProviderRuntimeActive,
     });
-  const showLegacyRuntimeSelector = runtimeSelectorAvailable;
   const showBuiltinSdkSlashCommands =
     shouldShowBuiltinSdkSlashCommands(currentRuntime);
   const visibleSdkSlashCommands = useMemo(
@@ -5188,10 +5183,6 @@ export default function Chat({
     model?: string;
   } | null>(null);
 
-  // Runtime change — show confirm dialog, then open new Tab (v0.1.59)
-  const [pendingRuntimeChange, setPendingRuntimeChange] =
-    useState<RuntimeType | null>(null);
-
   const providerSwitchDialogCopy = useMemo(() => {
     if (!pendingProviderSwitch) return null;
     const targetProvider = providers.find(
@@ -5220,15 +5211,6 @@ export default function Chat({
     t,
   ]);
 
-  const handleRuntimeChange = useCallback(
-    (runtime: RuntimeType) => {
-      if (guardCronConfigMutation()) return;
-      if (!currentAgent || runtime === currentRuntime) return;
-      setPendingRuntimeChange(runtime);
-    },
-    [currentAgent, currentRuntime, guardCronConfigMutation],
-  );
-
   const transferBindingToForkedSession = useCallback(
     async (channel: ChannelSurface, targetSessionId: string) => {
       if (!agentDir) {
@@ -5253,110 +5235,6 @@ export default function Chat({
     },
     [agentDir, t],
   );
-
-  const confirmRuntimeChange = useCallback(async () => {
-    if (guardCronConfigMutation()) {
-      setPendingRuntimeChange(null);
-      return;
-    }
-    const runtime = pendingRuntimeChange;
-    setPendingRuntimeChange(null);
-    if (!runtime || !currentAgent) return;
-    // Unified Tab-UI dual-write policy (matches handleModelChange /
-    // handlePermissionModeChange / etc., PRD v0.1.69 §4.3 rule 2 extended to
-    // runtime): fork a new Tab pinned to the chosen runtime AND update the
-    // workspace template. The confirm dialog's copy explicitly tells the user
-    // both halves will happen, so mutating agent.runtime is no longer a
-    // surprise-leak — it's the advertised behavior.
-    //
-    // Why this is safe despite the older "deliberately do NOT" comment:
-    //   - Existing Tabs with non-empty sessions hydrate currentRuntime from
-    //     SessionMetadata.runtime (session-self-contained, D1). Changing
-    //     agent.runtime doesn't flip their displayed runtime because their
-    //     session snapshot is authoritative.
-    //   - Empty Tabs and new Sidecars (Bot / Cron / new Tab) read agent.runtime
-    //     as the template — which is EXACTLY the semantic we want.
-    //   - The fork-new-tab step is still required because switching the current
-    //     session's runtime in-place is an incompatibility hard-guard (D6).
-    //
-    // Ordering (cross-review Codex Warning): create the fork FIRST — if that
-    // fails we leave the workspace default untouched. Only after the session
-    // is confirmed created do we persist the agent patch. This prevents the
-    // "future Tabs silently inherit new runtime even though user's fork
-    // failed" leak.
-    if (!onForkSession || !agentDir) return;
-    const boundChannel = channelSurfaceRef.current;
-    let session: { id: string } | undefined;
-    try {
-      const { createSession } = await import('@/api/sessionClient');
-      session = await createSession(agentDir, runtime, {
-        origin: DESKTOP_SESSION_FORK_ORIGIN,
-      });
-    } catch (err) {
-      console.error('[chat] Failed to create session for runtime fork:', err);
-      toastRef.current.error(t('shell.toasts.runtimeSwitchCreateFailed'));
-      return;
-    }
-    // Persist the workspace default after publishing the new Session. A failed
-    // config write leaves the new Session available, while channel transfer
-    // waits for a successful default update.
-    //
-    // buildRuntimeChangePatch centralizes the "drop non-portable
-    // runtimeConfig fields (model / permissionMode / additionalArgs), keep
-    // envPolicy" policy — see its doc comment for the bug-class rationale.
-    // All 4 runtime-change callsites (here / Settings / Launcher / agent
-    // set CLI) MUST go through this helper.
-    let agentTemplateUpdated = false;
-    if (currentAgent.id) {
-      try {
-        await patchAgentConfig(
-          currentAgent.id,
-          buildRuntimeChangePatch(currentAgent.runtimeConfig, runtime),
-        );
-        agentTemplateUpdated = true;
-      } catch (err) {
-        console.warn(
-          '[chat] Runtime fork succeeded but agent template update failed:',
-          err,
-        );
-        toastRef.current.warning(
-          t('shell.toasts.runtimeSwitchDefaultUpdateWarning'),
-        );
-      }
-    }
-    const runtimeLabel = getRuntimeDisplayLabel(runtime);
-    const opened = await onForkSession(
-      session.id,
-      agentDir,
-      `${runtimeLabel} Session`,
-    );
-    if (!opened) {
-      toastRef.current.error(t('shell.toasts.runtimeSwitchTabOpenFailed'));
-      return;
-    }
-    if (boundChannel && agentTemplateUpdated) {
-      try {
-        await transferBindingToForkedSession(boundChannel, session.id);
-      } catch (err) {
-        console.error(
-          '[chat] Runtime fork channel binding transfer failed:',
-          err,
-        );
-        toastRef.current.error(
-          t('shell.toasts.runtimeSwitchChannelTransferFailed'),
-        );
-        return;
-      }
-    }
-  }, [
-    pendingRuntimeChange,
-    currentAgent,
-    onForkSession,
-    agentDir,
-    transferBindingToForkedSession,
-    guardCronConfigMutation,
-    t,
-  ]);
 
   // Provider/model history-boundary confirm: create a fresh session in a new
   // tab so the old transcript is not reused across incompatible provider
@@ -6599,10 +6477,17 @@ export default function Chat({
                   resolveFloatingBallBoundSession(config) === sessionId
                 }
               />
-              {/* Session ⋯ menu — rename/favorite/export/stats/bot binding/delete */}
+              {/* Session ⋯ menu — frozen Runtime identity and session actions */}
               {sessionId && agentDir && (
                 <SessionMenuButton
                   sessionId={sessionId}
+                  runtime={sessionMeta?.id === sessionId ? normalizeRuntime(sessionMeta.runtime) : null}
+                  runtimeSource={
+                    sessionMeta?.id === sessionId
+                      ? (sessionMeta.runtimeSource ??
+                        (isManagedProviderSessionSnapshot(sessionMeta) ? 'managed-provider' : null))
+                      : null
+                  }
                         sessionTitle={
                           sessionTitle ?? t('shell.currentChatFallback')
                         }
@@ -7166,14 +7051,6 @@ export default function Chat({
               onSlashAction={handleSlashAction}
               runtime={inputChromeRuntime}
               usesExternalRuntimeControls={inputUsesExternalRuntimeControls}
-              runtimeDetections={
-                showLegacyRuntimeSelector ? runtimeDetections : undefined
-              }
-              onRuntimeChange={
-                      showLegacyRuntimeSelector
-                        ? handleRuntimeChange
-                        : undefined
-                    }
                     managedReasoningModel={
                       managedProviderRuntimeActive
                         ? (codexModels.find(
@@ -7737,25 +7614,6 @@ export default function Chat({
           onCancel={() => setPendingCrossRuntimeMessage(null)}
         />
       )}
-
-      {/* Runtime Switch Confirm Dialog (v0.1.59) */}
-      {pendingRuntimeChange &&
-        (() => {
-          const label = getRuntimeDisplayLabel(pendingRuntimeChange);
-          return (
-            <ConfirmDialog
-              title={t('shell.dialogs.runtimeSwitch.title')}
-              message={t('shell.dialogs.runtimeSwitch.message', {
-                currentRuntime: getRuntimeDisplayLabel(currentRuntime),
-                targetRuntime: label,
-              })}
-              confirmText={t('shell.dialogs.runtimeSwitch.confirm')}
-              cancelText={t('shell.common.cancel')}
-              onConfirm={confirmRuntimeChange}
-              onCancel={() => setPendingRuntimeChange(null)}
-            />
-          );
-        })()}
 
       {/* Provider / Model History-Boundary Confirm Dialog */}
       {pendingProviderSwitch && (

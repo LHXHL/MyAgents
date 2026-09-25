@@ -4951,6 +4951,7 @@ export default function Settings({
           activeSection={activeSection}
           setActiveSection={setActiveSection}
           showDevTools={config.showDevTools}
+          developerUnlocked={devSectionVisible}
           floatingBallDevGate={linuxDesktop ? false : config.floatingBallDevGate}
           onShowLogs={() => setShowLogs(true)}
         />
@@ -6422,46 +6423,6 @@ export default function Settings({
                   </div>
                 )}
 
-                <div className="mt-4 flex items-center justify-between gap-4 border-t border-[var(--line)] pt-4">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-[var(--ink)]">
-                      {tSettings('about.defaultIntegratedRuntimeTitle')}
-                    </p>
-                    <p className="text-xs text-[var(--ink-muted)]">
-                      {tSettings('about.defaultIntegratedRuntimeDescription')}
-                    </p>
-                  </div>
-                  <CustomSelect
-                    className="w-52 shrink-0"
-                    value={resolveDefaultIntegratedRuntime(
-                      AGENT_RUNTIME_DISTRIBUTION_POLICY,
-                      config.defaultIntegratedRuntime,
-                    )}
-                    options={AGENT_RUNTIME_DISTRIBUTION_POLICY.allowedIntegratedRuntimes.map(
-                      (runtime) => ({
-                        value: runtime,
-                        label:
-                          runtime === 'dsh'
-                            ? tSettings('about.defaultIntegratedRuntimeDsh')
-                            : tSettings(
-                                'about.defaultIntegratedRuntimeClaudeSdk',
-                              ),
-                      }),
-                    )}
-                    onChange={(runtime) =>
-                      void updateConfig({
-                        defaultIntegratedRuntime: runtime as
-                          | 'claude-agent-sdk'
-                          | 'dsh',
-                      })
-                    }
-                    disabled={
-                      AGENT_RUNTIME_DISTRIBUTION_POLICY
-                        .allowedIntegratedRuntimes.length === 1
-                    }
-                  />
-                </div>
-
                 <div className="mt-4 flex items-center justify-between border-t border-[var(--line)] pt-4">
                   <div className="flex-1 pr-4">
                     <p className="text-sm font-medium text-[var(--ink)]">
@@ -6625,14 +6586,57 @@ export default function Settings({
               <p className="text-center text-xs text-[var(--ink-muted)]">
                 {tSettings('about.licensingCopyright')}
               </p>
+            </div>
+          )}
 
-              {/* Developer Section - Hidden by default, unlocked by tapping logo 5 times */}
-              {devSectionVisible && (
-                <div>
+          {/* Developer page - unlocked by tapping the About logo 5 times */}
+          {activeSection === 'developer' && devSectionVisible && (
+            <div>
                   <h2 className="mb-4 text-base font-medium text-[var(--ink-muted)]">
                     {tSettings('about.developerSection')}
                   </h2>
                   <div className="space-y-4">
+                    {/* Default runtime for new integrated sessions */}
+                    <div className="flex items-center justify-between gap-4 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-[var(--ink)]">
+                          {tSettings('about.defaultIntegratedRuntimeTitle')}
+                        </p>
+                        <p className="text-xs text-[var(--ink-muted)]">
+                          {tSettings('about.defaultIntegratedRuntimeDescription')}
+                        </p>
+                      </div>
+                      <CustomSelect
+                        className="w-52 shrink-0"
+                        value={resolveDefaultIntegratedRuntime(
+                          AGENT_RUNTIME_DISTRIBUTION_POLICY,
+                          config.defaultIntegratedRuntime,
+                        )}
+                        options={AGENT_RUNTIME_DISTRIBUTION_POLICY.allowedIntegratedRuntimes.map(
+                          (runtime) => ({
+                            value: runtime,
+                            label:
+                              runtime === 'dsh'
+                                ? tSettings('about.defaultIntegratedRuntimeDsh')
+                                : tSettings(
+                                    'about.defaultIntegratedRuntimeClaudeSdk',
+                                  ),
+                          }),
+                        )}
+                        onChange={(runtime) =>
+                          void updateConfig({
+                            defaultIntegratedRuntime: runtime as
+                              | 'claude-agent-sdk'
+                              | 'dsh',
+                          })
+                        }
+                        disabled={
+                          AGENT_RUNTIME_DISTRIBUTION_POLICY
+                            .allowedIntegratedRuntimes.length === 1
+                        }
+                      />
+                    </div>
+
                     {/* Developer Mode Toggle */}
                     <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
                       <div className="flex items-center justify-between">
@@ -7024,8 +7028,6 @@ export default function Settings({
                       </div>
                     </div>
                   </div>
-                </div>
-              )}
 
               {/* Cron Task Debug Panel Modal */}
               <CronTaskDebugPanel

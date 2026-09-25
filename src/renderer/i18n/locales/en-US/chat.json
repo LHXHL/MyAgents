@@ -435,8 +435,7 @@
     "integrated": "Integrated",
     "integratedHelp": "Built-in Agent runtimes. You can manage all their settings in MyAgents.",
     "externalCli": "External CLI",
-    "externalCliHelp": "Other Agent runtimes installed on this computer. Manage their settings and updates in the corresponding app.",
-    "experimental": "Experimental"
+    "externalCliHelp": "Other Agent runtimes installed on this computer. Manage their settings and updates in the corresponding app."
   },
   "shell": {
     "common": {
@@ -445,6 +444,7 @@
     },
     "sessionMenu": {
       "trigger": "Chat actions",
+      "runtimeLoading": "Loading runtime…",
       "copySessionIdAria": "Copy SessionID",
       "copied": "Copied",
       "copy": "Copy",
@@ -1014,11 +1014,6 @@
         "message": "This historical chat was created by \"{{sessionRuntime}}\", but external Runtime support is currently disabled, so it cannot continue in the original session. The current chat will stay open and this message will be sent in a new \"{{currentRuntime}}\" chat.",
         "confirm": "Open new chat and send"
       },
-      "runtimeSwitch": {
-        "title": "New Runtime session required",
-        "message": "This chat is already bound to \"{{currentRuntime}}\" and cannot switch to \"{{targetRuntime}}\" in the same history. The current chat will stay open, a \"{{targetRuntime}}\" chat will open in a new tab, and the workspace default Runtime will be updated to \"{{targetRuntime}}\".",
-        "confirm": "Switch"
-      },
       "rewind": {
         "title": "Time rewind",
         "message": "Your chat history and file modification state will both rewind to before this turn.",
@@ -1057,11 +1052,6 @@
       "cronTaskCreated": "Scheduled task created.",
       "createFailedWithError": "Create failed: {{error}}",
       "channelNotificationFailed": "The new chat took over the Channel, but the IM notification failed.",
-      "runtimeSwitchCreateFailed": "Runtime switch failed: cannot create a new chat.",
-      "runtimeSwitchDefaultUpdateFailed": "Runtime switch failed: the workspace default Runtime could not be updated.",
-      "runtimeSwitchDefaultUpdateWarning": "The new chat will still open, but the workspace default Runtime could not be updated.",
-      "runtimeSwitchTabOpenFailed": "The session was created but could not be opened. You can reopen it from history.",
-      "runtimeSwitchChannelTransferFailed": "The new chat opened, but the Channel binding was not migrated. Saved workspace settings were kept.",
       "providerSwitchTargetUnavailable": "Failed to create new chat: the target Provider is unavailable.",
       "providerSwitchDefaultSaveFailed": "New chat created, but the Agent default model could not be saved.",
       "providerSwitchChannelTransferFailed": "The new chat opened, but the Channel binding was not migrated.",

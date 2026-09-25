@@ -1,7 +1,9 @@
 import {
+  fireEvent,
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { i18n } from "@/i18n";
@@ -54,6 +56,13 @@ vi.mock("@/components/WorkspaceConfigPanel", () => ({ default: () => null }));
 vi.mock("@/components/GlobalPluginsPanel", () => ({ default: () => null }));
 vi.mock("@/components/dev/CronTaskDebugPanel", () => ({ default: () => null }));
 vi.mock("@/components/ImSettings", () => ({ BotPlatformRegistry: () => null }));
+vi.mock("@/utils/debug", async () => {
+  const actual = await vi.importActual<typeof import("@/utils/debug")>("@/utils/debug");
+  return {
+    ...actual,
+    getBuildVersions: () => ({ claudeAgentSdk: "test", node: "test", tauri: "test" }),
+  };
+});
 
 vi.mock("@/hooks/useConfig", () => ({
   useConfig: () => ({
@@ -173,5 +182,36 @@ describe('Ubuntu settings availability', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: String(i18n.t('about.checkUpdates', { ns: 'settings' })) })).toBeInTheDocument());
     expect(screen.getByRole('button', { name: String(i18n.t('sidebar.nav.floatingBall', { ns: 'settings' })) })).toBeInTheDocument();
     expect(screen.queryByText(String(i18n.t('about.manualLinuxUpdate', { ns: 'settings' })))).not.toBeInTheDocument();
+  });
+
+  it('redirects a Developer deep link to About until the gesture unlocks it', async () => {
+    settingsMocks.linux = false;
+    render(<ToastProvider><Settings mode="settings" initialSection="developer" isActive /></ToastProvider>);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'MyAgents' })).toBeInTheDocument());
+    expect(within(screen.getByRole('navigation')).queryByRole('button', { name: String(i18n.t('sidebar.nav.developer', { ns: 'settings' })) })).not.toBeInTheDocument();
+    expect(screen.queryByText(String(i18n.t('about.defaultIntegratedRuntimeTitle', { ns: 'settings' })))).not.toBeInTheDocument();
+  });
+
+  it('moves the integrated runtime default into the unlocked Developer tab', async () => {
+    settingsMocks.linux = false;
+    render(<ToastProvider><Settings mode="settings" initialSection="about" isActive /></ToastProvider>);
+
+    const navigation = screen.getByRole('navigation');
+    const developerLabel = String(i18n.t('sidebar.nav.developer', { ns: 'settings' }));
+    const runtimeLabel = String(i18n.t('about.defaultIntegratedRuntimeTitle', { ns: 'settings' }));
+    expect(within(navigation).queryByRole('button', { name: developerLabel })).not.toBeInTheDocument();
+    expect(screen.queryByText(runtimeLabel)).not.toBeInTheDocument();
+
+    const wordmark = screen.getByRole('heading', { name: 'MyAgents' });
+    for (let i = 0; i < 5; i += 1) fireEvent.click(wordmark);
+
+    const developerTab = within(navigation).getByRole('button', { name: developerLabel });
+    expect(screen.queryByText(runtimeLabel)).not.toBeInTheDocument();
+    fireEvent.click(developerTab);
+
+    expect(screen.getByText(runtimeLabel)).toBeInTheDocument();
+    expect(screen.getByText(String(i18n.t('about.developer.devModeTitle', { ns: 'settings' })))).toBeInTheDocument();
+    expect(screen.getByText(String(i18n.t('about.developer.cronTaskTitle', { ns: 'settings' })))).toBeInTheDocument();
   });
 });
