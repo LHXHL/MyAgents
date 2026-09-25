@@ -1626,3 +1626,23 @@ pass against the packaged resources. DSH's source gate passes 870 tests, typeche
 its full lint still reports inherited `snapshotEvents()` deprecation diagnostics. Host focused
 tests pass 188 cases, handoff policy 38 cases, plus typecheck/lint/build. Interactive Agent
 acceptance and real DeepSeek search remain unverified in this local build.
+
+### Issue #610 round 10 triage (2026-09-25)
+
+The new Agent's report identified one more DSH listing defect: broken symbolic links were
+omitted without a notice. DSH now counts and reports those entries while retaining readable
+siblings; source `cdf31a62da33ae789657a3bcb0db295e71292fc8` seals Runtime manifest
+`1f67c25b16e91c6b453d42645c0fd1cd4cb0ca8ef52312a678b6ec7e788002ea` and handoff
+`8f83daca59b162d3c6dcc5bf875be57bb96b0265311d4e952686ca6e8e03d673`.
+
+The observed DeepSeek WebSearch failure reached the Provider server-search result stage; the
+old Host projection suppressed its nested safe error code. The Host now preserves a bounded
+Provider error code and gives retry or known-URL WebFetch guidance. A separate credentialed
+search against the same configured route returned ten results, so the report's single failure
+does not establish that WebSearch is universally unavailable. No automatic provider retry or
+search fallback was introduced. CLI status now labels global fallback Provider and current
+Session MCP observation by scope; an Agent's explicit DeepSeek selection can coexist with an
+unset global fallback. New file mode `0600` and the upstream malformed-image diagnostic retain
+their documented behavior. The report's Gemini item was not rerun on this build; the local log
+shows only an earlier pre-build failure, while the current describe degradation unit test passes.
+Plan Mode remains outside this work by user decision.

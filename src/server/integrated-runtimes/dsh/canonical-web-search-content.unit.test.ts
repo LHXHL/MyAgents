@@ -62,6 +62,7 @@ describe('compatible server-search data content', () => {
     { type: 'web_search_tool_result_error', error_code: 'unavailable' },
     [{ url: 'https://example.com' }, { type: 'error', message: 'private service error' }],
   ])('keeps explicit service errors as sanitized failures (%#)', (value) => {
-    expect(() => parseCompatibleServerSearchContent(value)).toThrow('Provider server-search tool failed');
+    expect(() => parseCompatibleServerSearchContent(value)).toThrow('Provider WebSearch failed');
+    expect(() => parseCompatibleServerSearchContent(value)).not.toThrow('synthetic private provider message');
   });
 });

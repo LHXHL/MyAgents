@@ -4394,7 +4394,11 @@ describe('admin config discovery and MCP observations', () => {
     writeJson(join(scratch, '.myagents', 'config.json'), { agents: [] });
     writeJson(join(scratch, '.myagents', 'projects.json'), []);
     const { handleStatus } = await import('./admin-api');
-    expect(await handleStatus()).toMatchObject({ data: { activeMcpInSession: null, sessionMcp: { observation: 'unavailable' } } });
+    expect(await handleStatus()).toMatchObject({ data: {
+      activeMcpInSession: null,
+      defaultProviderScope: 'global-fallback',
+      sessionMcp: { scope: 'current-session', observation: 'unavailable' },
+    } });
     const snapshot = { sessionId: 'session-1', servers: [{ id: 'ready', state: 'ready' }, { id: 'failed', state: 'failed' }] };
     sessionEngineMocks.getStreamReplaySnapshot.mockReturnValue({ sessionId: 'session-1', mcpEffectiveSnapshot: snapshot });
     expect(await handleStatus()).toMatchObject({ data: { activeMcpInSession: 1, sessionMcp: { observation: 'current' } } });

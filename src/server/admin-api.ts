@@ -2639,8 +2639,9 @@ export async function handleStatus(): Promise<AdminResponse> {
       mcpServers: { total: allServers.length, enabled: enabledIds.length },
       workspaceMcp: { selection: selected, enabled: selected?.filter(id => enabledIds.includes(id)) ?? null },
       activeMcpInSession: current ? current.servers.filter(server => server.state === 'ready').length : null,
-      sessionMcp: { sessionId: replay.sessionId || null, observation: current ? 'current' : snapshot ? 'stale' : 'unavailable', snapshot: current },
+      sessionMcp: { scope: 'current-session', sessionId: replay.sessionId || null, observation: current ? 'current' : snapshot ? 'stale' : 'unavailable', snapshot: current },
       defaultProvider: config.defaultProviderId ?? 'not set',
+      defaultProviderScope: 'global-fallback',
       agents: filterAgentIdentities(registry.agentProjections).length,
     },
   };

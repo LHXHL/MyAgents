@@ -540,7 +540,15 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
           && searchCallIds.has(block.tool_use_id);
         if (block.type !== 'web_search_tool_result' && !compatibleResult) continue;
         if (block.is_error === true) {
-          throw new DshCanonicalWebError('provider_search_failed', 'Provider server-search tool failed', { phase: 'provider_response' });
+          // Compatible Providers can carry the failure code inside content
+          // while marking the outer block as failed. Preserve that bounded
+          // code, never arbitrary Provider prose or request details.
+          parseCompatibleServerSearchContent(block.content);
+          throw new DshCanonicalWebError(
+            'provider_search_failed',
+            'Provider WebSearch failed. Retry later, or use WebFetch when you already have a source URL.',
+            { phase: 'provider_response' },
+          );
         }
         if (typeof block.tool_use_id !== 'string' || !resultIds.has(block.tool_use_id)) {
           resultBlockCount += 1;

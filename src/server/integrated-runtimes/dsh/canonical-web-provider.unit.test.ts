@@ -283,6 +283,7 @@ describe('DshCanonicalWebProvider', () => {
   it.each([
     [{ type: 'web_search_tool_result', content: { type: 'web_search_tool_result_error', error_code: 'unavailable' } }],
     [{ type: 'web_search_tool_result', content: [{ type: 'web_search_tool_result_error', error_code: 'unavailable' }] }],
+    [{ type: 'web_search_tool_result', is_error: true, content: { type: 'web_search_tool_result_error', error_code: 'unavailable' } }],
   ])('does not equate an explicit service failure with an empty search (%j)', async (...blocks) => {
     const provider = providerWith(vi.fn(async () => json({
       stop_reason: 'end_turn', content: blocks,
@@ -291,7 +292,10 @@ describe('DshCanonicalWebProvider', () => {
     await expect(provider.runSearch({
       profile: zhipuAnthropicProfile, apiKey: 'synthetic-key', authType: 'both', query: 'synthetic search',
       operationId: 'unknown-search', signal: new AbortController().signal,
-    })).rejects.toMatchObject({ code: 'provider_search_failed' });
+    })).rejects.toMatchObject({
+      code: 'provider_search_failed',
+      message: expect.stringContaining('unavailable'),
+    });
   });
 
   it.each([{ results: [] }, { results: undefined }])('distinguishes empty and missing standalone search result arrays (%j)', async ({ results }) => {

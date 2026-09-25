@@ -78,7 +78,16 @@ export function parseCompatibleServerSearchContent(value: unknown): Readonly<{
     if (item.is_error === true || item.error_code !== undefined
       || (typeof item.type === 'string' && (item.type === 'error' || item.type.endsWith('_error')))
       || (item.error !== undefined && item.error !== null && item.error !== false)) {
-      throw new DshCanonicalWebError('provider_search_failed', 'Provider server-search tool failed', { phase: 'provider_response' });
+      const errorCode = typeof item.error_code === 'string' && /^[a-z][a-z0-9_]{0,63}$/u.test(item.error_code)
+        ? item.error_code : undefined;
+      const guidance = errorCode === 'max_uses_exceeded'
+        ? 'Try a narrower query.'
+        : 'Retry later, or use WebFetch when you already have a source URL.';
+      throw new DshCanonicalWebError(
+        'provider_search_failed',
+        `Provider WebSearch failed${errorCode ? ` (${errorCode})` : ''}. ${guidance}`,
+        { phase: 'provider_response' },
+      );
     }
     const url = item.url ?? item.link;
     if (typeof url === 'string' && url) {
