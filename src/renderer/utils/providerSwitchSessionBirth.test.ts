@@ -173,15 +173,16 @@ describe('buildProviderSwitchSessionBirth', () => {
     })).toBe('dsh');
   });
 
-  it('keeps Claude-owned subscription Providers on the Claude Agent SDK', () => {
-    const targetProvider = PRESET_PROVIDERS.find(provider => provider.id === 'anthropic-sub');
-    expect(targetProvider).toBeDefined();
-
-    expect(resolveProviderSwitchIntegratedRuntime({
-      targetProvider: targetProvider!,
-      currentSessionRuntime: 'dsh',
-      agentRuntimePreference: { family: 'integrated', id: 'dsh' },
-    })).toBe('builtin');
+  it('keeps the official Claude routes on SDK and portable subscriptions on DSH', () => {
+    for (const id of ['anthropic-sub', 'anthropic-api', 'xai-sub', 'antigravity-sub']) {
+      const targetProvider = PRESET_PROVIDERS.find(provider => provider.id === id);
+      expect(targetProvider).toBeDefined();
+      expect(resolveProviderSwitchIntegratedRuntime({
+        targetProvider: targetProvider!,
+        currentSessionRuntime: 'dsh',
+        agentRuntimePreference: { family: 'integrated', id: 'dsh' },
+      })).toBe(id.startsWith('anthropic-') ? 'builtin' : 'dsh');
+    }
   });
 
   it('creates an ordinary Provider Session on DSH when DSH remains selected', () => {

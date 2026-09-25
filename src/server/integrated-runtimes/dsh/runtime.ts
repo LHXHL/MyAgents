@@ -10,6 +10,7 @@ import { delimiter, dirname, isAbsolute, join, normalize } from 'node:path';
 import packageJson from '../../../../package.json';
 import dshLock from '../../../shared/integrated-runtimes/dsh-lock.json';
 import type { Provider, ProviderAuthType } from '../../../shared/config-types';
+import { getProviderExecutionConstraint } from '../../../shared/integrated-runtimes/provider-constraints';
 import {
   DSH_PERMISSION_MODES,
   type RuntimeDiagnostics,
@@ -38,6 +39,7 @@ import { getHomeDir } from '../../utils/platform';
 import { getBundledNodePath } from '../../utils/runtime';
 import { ensureShellPath } from '../../utils/shell';
 import { getSidecarPort } from '../../session-core/sidecar-port';
+import { getPreparedModelPolicy, prepareProviderBinding, type PreparedProvider } from '../../utils/managed-proxy-binding';
 import { getGeneralProxyEnvironment, getProviderRequestProxyPolicy } from '../../proxy-state';
 import type {
   AgentRuntime,
@@ -72,6 +74,7 @@ import { createDshInitializeParams } from './initialize';
 import { resolveDshRuntimeInstallation, verifyDshHandoffInstallation } from './installation';
 import { buildDshQuestionAnswer, reconcileExpiredDshInteractionResponse } from './interaction-response';
 import { dshPermissionReview } from './permission-display';
+import { resolveDshProviderApiKey } from './provider-credential';
 import { releaseLargeValueRef } from '../../utils/large-value-store';
 import { DshMutationController } from './mutations';
 import {
@@ -118,6 +121,8 @@ type DshConfiguration = Readonly<{
   profile: DshModelExecutionProfile;
   apiKey: string;
   authType: ProviderAuthType;
+  preparedProvider?: PreparedProvider;
+  onManagedDrain?: () => void;
   productPermissionMode: ProductPermissionMode;
   dshPermissionMode: DshPermissionMode;
   reasoningEffort: DshReasoningEffortSelection;
@@ -420,7 +425,6 @@ async function installedRuntime() {
 function providerForSession(options: SessionStartOptions, requestedOverride?: string): {
   provider: Provider;
   modelId: string;
-  apiKey: string;
 } {
   const config = loadConfig();
   const metadata = getSessionMetadata(options.sessionId);
@@ -441,50 +445,95 @@ function providerForSession(options: SessionStartOptions, requestedOverride?: st
   const provider = findEffectiveProvider(providerId, config) as Provider | null;
   if (!provider) throw new Error(`DSH Provider ${providerId} is unavailable`);
   const modelId = requestedModel || provider.primaryModel;
-  const resolved = resolveProviderEnv(providerId, config, modelId);
-  if (!resolved?.apiKey) {
-    throw new Error(`DSH Provider ${providerId} has no Host-owned API credential`);
-  }
-  return { provider: resolveProviderForModel(provider, modelId), modelId, apiKey: resolved.apiKey };
+  return { provider: resolveProviderForModel(provider, modelId), modelId };
 }
 
-function compileConfiguration(
+export async function compileConfiguration(
   options: SessionStartOptions,
   overrides?: { model?: string; permissionMode?: string; reasoningEffort?: string },
-): DshConfiguration {
+  previous?: DshConfiguration,
+  onManagedDrain?: () => void,
+): Promise<DshConfiguration> {
   const selected = providerForSession(options, overrides?.model);
   const productMode = productPermissionMode(overrides?.permissionMode ?? options.permissionMode);
   const effort = reasoningSelection(overrides?.reasoningEffort ?? options.reasoningEffort);
-  const profile = compileDshModelExecutionProfile({
-    provider: selected.provider,
-    modelId: selected.modelId,
-    reasoningEffort: effort,
-  });
   const config = loadConfig();
-  const collaborative = compileDshCollaboration({ profile, apiKey: selected.apiKey, authType: selected.provider.authType ?? 'both' }, config.dshCollaboration, ref => {
-    const provider = findEffectiveProvider(ref.providerId, config) as Provider | null;
-    const credential = resolveProviderEnv(ref.providerId, config, ref.modelId);
-    if (!provider || !credential?.apiKey) throw new Error(`DSH collaboration Provider ${ref.providerId} is unavailable`);
-    return { provider: resolveProviderForModel(provider, ref.modelId), apiKey: credential.apiKey };
-  });
-  const dshMode = dshPermissionMode(productMode);
-  return Object.freeze({
-    ...collaborative,
-    profile,
-    apiKey: selected.apiKey,
-    authType: selected.provider.authType ?? 'both',
-    productPermissionMode: productMode,
-    dshPermissionMode: dshMode,
-    reasoningEffort: effort,
-    revision: `myagents-dsh-config-v1:${hash(
-      profile.revision,
-      JSON.stringify(collaborative.collaboration),
-      selected.provider.authType ?? 'both',
-      dshMode,
-      OFFICIAL_INTERACTION_REVISION,
-      systemContextFingerprint(options),
-    )}`,
-  });
+  const credential = resolveProviderEnv(selected.provider.id, config, selected.modelId);
+  if (!credential) throw new Error(`DSH Provider ${selected.provider.id} has no Host-owned credential`);
+  const constraint = getProviderExecutionConstraint(selected.provider);
+  if (constraint.kind !== 'portable') throw new Error(`DSH Provider ${selected.provider.id} belongs to another Runtime`);
+  const reusable = credential.endpointSource && previous?.profile.provider === selected.provider.id
+    && previous.profile.modelId === selected.modelId ? previous.preparedProvider : undefined;
+  const preparedProvider = credential.endpointSource
+    ? reusable ?? await prepareProviderBinding({
+        providerEnv: credential,
+        model: selected.modelId,
+        controller: new AbortController(),
+        onDrain: previous?.onManagedDrain ?? onManagedDrain,
+      })
+    : undefined;
+  try {
+    const effectiveCredential = preparedProvider?.providerEnv ?? credential;
+    const apiKey = effectiveCredential?.apiKey ?? '';
+    const authType = effectiveCredential?.authType ?? selected.provider.authType ?? 'both';
+    if (!apiKey && constraint.credentialKind !== 'host-managed-oauth') {
+      throw new Error(`DSH Provider ${selected.provider.id} has no Host-owned API credential`);
+    }
+    const boundPolicy = getPreparedModelPolicy(effectiveCredential);
+    const effectiveProvider = boundPolicy
+      ? { ...selected.provider, models: selected.provider.models.map(model => model.model === selected.modelId
+          ? { ...model,
+              ...(boundPolicy.contextLength != null ? { contextLength: boundPolicy.contextLength } : {}),
+              ...(boundPolicy.maxOutputTokens != null ? { maxOutputTokens: boundPolicy.maxOutputTokens } : {}),
+            }
+          : model) }
+      : selected.provider;
+    const profile = compileDshModelExecutionProfile({
+      provider: effectiveProvider,
+      modelId: selected.modelId,
+      reasoningEffort: effort,
+      ...(constraint.credentialKind === 'proxy-managed'
+        ? { preparedBaseUrl: effectiveCredential?.baseUrl } : {}),
+    });
+    const collaborative = compileDshCollaboration({
+      profile, apiKey, authType,
+      ...(constraint.credentialKind === 'host-managed-oauth' ? { managedOauth: true as const } : {}),
+    }, config.dshCollaboration, ref => {
+      const provider = findEffectiveProvider(ref.providerId, config) as Provider | null;
+      const refConstraint = provider ? getProviderExecutionConstraint(provider) : undefined;
+      const refCredential = resolveProviderEnv(ref.providerId, config, ref.modelId);
+      if (!provider || refConstraint?.kind !== 'portable' || refConstraint.credentialKind !== 'api-key' || !refCredential?.apiKey) {
+        throw new Error(`DSH collaboration Provider ${ref.providerId} requires a directly configured API key`);
+      }
+      return { provider: resolveProviderForModel(provider, ref.modelId), apiKey: refCredential.apiKey };
+    });
+    const dshMode = dshPermissionMode(productMode);
+    return Object.freeze({
+      ...collaborative,
+      profile,
+      apiKey,
+      authType,
+      ...(preparedProvider ? { preparedProvider } : {}),
+      ...(previous?.onManagedDrain ?? onManagedDrain
+        ? { onManagedDrain: previous?.onManagedDrain ?? onManagedDrain } : {}),
+      productPermissionMode: productMode,
+      dshPermissionMode: dshMode,
+      reasoningEffort: effort,
+      revision: `myagents-dsh-config-v1:${hash(
+        profile.revision,
+        JSON.stringify(collaborative.collaboration),
+        authType,
+        dshMode,
+        OFFICIAL_INTERACTION_REVISION,
+        systemContextFingerprint(options),
+      )}`,
+    });
+  } catch (error) {
+    if (preparedProvider && preparedProvider !== reusable) {
+      await preparedProvider.release().catch(() => console.warn('[dsh] Failed to settle rejected Provider binding'));
+    }
+    throw error;
+  }
 }
 
 async function createOwnedRoots(productSessionId: string): Promise<Readonly<{
@@ -677,6 +726,9 @@ class DshProcess implements RuntimeProcess {
   closeOwnedResources(reason: string): void {
     if (this.resourcesClosed) return;
     this.resourcesClosed = true;
+    void this.configuration.preparedProvider?.release().catch(() => {
+      console.warn('[dsh] Managed Provider binding release was not confirmed');
+    });
     for (const pending of this.pendingInteractions.values()) if (pending.reviewRefId) void releaseLargeValueRef(pending.reviewRefId);
     this.pendingInteractions.clear();
     this.attachments.close();
@@ -872,7 +924,15 @@ export class DshRuntime implements AgentRuntime {
       roots.attachmentRoot,
       childEnvironment.allowedKeys,
     );
-    const configuration = compileConfiguration(options);
+    let processValue: DshProcess | undefined;
+    let drainRequested = false;
+    const onManagedDrain = () => {
+      if (drainRequested) return;
+      drainRequested = true;
+      if (processValue) void this.stopSession(processValue).catch(() => undefined);
+    };
+    const configuration = await compileConfiguration(options, undefined, undefined, onManagedDrain);
+    try {
     const initialize = createDshInitializeParams({
       productSessionId: options.sessionId,
       productVersion: packageJson.version,
@@ -893,7 +953,6 @@ export class DshRuntime implements AgentRuntime {
         } satisfies DshCompiledExtensionPlane);
     const extension = extensionPlane.snapshot;
     const initialExtensionGenerationId = dshExtensionGenerationId(extensionPlane);
-    let processValue: DshProcess | undefined;
     let projector: DshRuntimeEventProjector | undefined;
     let projectedPlan: { mode: 'normal' | 'plan'; revision: string } | undefined;
     const pendingInteractions = new Map<string, PendingInteraction>();
@@ -925,7 +984,7 @@ export class DshRuntime implements AgentRuntime {
     };
 
     const hostHandlers: DshHostRequestHandlers = Object.freeze({
-      'host/credential/resolve': (params) => {
+      'host/credential/resolve': async (params, context) => {
         if (params.subject === 'mcp') {
           const plane = extensionPlaneForHostRequest(params);
           if (!plane) {
@@ -975,10 +1034,11 @@ export class DshRuntime implements AgentRuntime {
             authoritativeCredentialRevision: active.profile.revision,
           };
         }
+        const apiKey = await resolveDshProviderApiKey(active, context.signal);
         return {
           kind: 'material',
           authoritativeCredentialRevision: active.profile.revision,
-          material: { apiKey: active.apiKey },
+          material: { apiKey },
           providerNetwork: getProviderRequestProxyPolicy(active.profile.provider),
         };
       },
@@ -1083,6 +1143,10 @@ export class DshRuntime implements AgentRuntime {
         },
         onTurnTerminal: terminal => {
           deferProductAction(() => {
+            if (processValue?.activeOperationId === terminal.clientOperationId) {
+              void processValue.configuration.preparedProvider?.reportTerminal(terminal.terminal.kind === 'succeeded')
+                .catch(() => console.warn('[dsh] Managed Provider terminal projection failed'));
+            }
             if (processValue?.activeOperationId === terminal.clientOperationId) {
               processValue.activeOperationId = undefined;
             }
@@ -1257,6 +1321,7 @@ export class DshRuntime implements AgentRuntime {
         turnReconciliation.activeTurn,
         pendingInteractions,
       );
+      if (drainRequested) throw new Error('Managed Provider binding was drained during DSH admission');
       if (projectedPlan) {
         processValue.planMode = projectedPlan.mode;
         processValue.planRevision = projectedPlan.revision;
@@ -1319,11 +1384,18 @@ export class DshRuntime implements AgentRuntime {
       }
       return processValue;
     } catch (error) {
+      if (processValue) processValue.closeOwnedResources('session_admission_failed');
+      else await configuration.preparedProvider?.release().catch(() => undefined);
       attachments.close();
       await canonicalWeb.close().catch(() => undefined);
       extensionPlane.hostToolDispatcher?.dispose('session_admission_failed');
       await host.stop('session_admission_failed').catch(() => undefined);
       throw error;
+    }
+    } finally {
+      if (!processValue || processValue.exited) {
+        await configuration.preparedProvider?.release().catch(() => undefined);
+      }
     }
   }
 
@@ -1353,8 +1425,8 @@ export class DshRuntime implements AgentRuntime {
     if (process.activeOperationId) throw new Error('DSH already owns an active root turn');
     // Global collaboration choices become effective through the existing
     // configuration owner at the next user-turn boundary, including a warm process.
-    const desired = compileConfiguration(process.options, { model: process.configuration.profile.modelId,
-      permissionMode: process.configuration.productPermissionMode, reasoningEffort: process.configuration.reasoningEffort });
+    const desired = await compileConfiguration(process.options, { model: process.configuration.profile.modelId,
+      permissionMode: process.configuration.productPermissionMode, reasoningEffort: process.configuration.reasoningEffort }, process.configuration);
     if (desired.revision !== process.configuration.revision) await this.applyConfiguration(process, desired);
     else process.configuration = desired;
     if (process.activeOperationId) throw new Error('DSH Root acquired collaboration work during configuration admission');
@@ -1369,6 +1441,7 @@ export class DshRuntime implements AgentRuntime {
     process.realtimeSteerEligibleOperationId = undefined;
     process.operationUserMessages.set(clientOperationId, clientUserMessageId);
     try {
+      await process.configuration.preparedProvider?.beforeTurn();
       const result = await process.host.request('turn/start', {
         clientOperationId,
         clientUserMessageId,
@@ -1389,6 +1462,7 @@ export class DshRuntime implements AgentRuntime {
         process.realtimeSteerEligibleOperationId = clientOperationId;
       }
     } catch (error) {
+      await process.configuration.preparedProvider?.reportTerminal(false);
       if (process.activeOperationId === clientOperationId) process.activeOperationId = undefined;
       if (process.realtimeSteerEligibleOperationId === clientOperationId) {
         process.realtimeSteerEligibleOperationId = undefined;
@@ -1457,8 +1531,8 @@ export class DshRuntime implements AgentRuntime {
     const effective = process.configuration.collaboration;
     let desiredState: 'effective' | 'pending' | 'invalid';
     try {
-      const desired = compileConfiguration(process.options, { model: process.configuration.profile.modelId,
-        permissionMode: process.configuration.productPermissionMode, reasoningEffort: process.configuration.reasoningEffort });
+      const desired = await compileConfiguration(process.options, { model: process.configuration.profile.modelId,
+        permissionMode: process.configuration.productPermissionMode, reasoningEffort: process.configuration.reasoningEffort }, process.configuration);
       desiredState = desired.revision === process.configuration.revision ? 'effective' : 'pending';
     } catch { desiredState = 'invalid'; }
     return { items, configuration: { revision: process.configuration.revision,
@@ -1887,13 +1961,25 @@ export class DshRuntime implements AgentRuntime {
       executionEnvironmentRevision: process.executionEnvironment.revision,
       executionEnvironmentDigest: process.executionEnvironment.digest,
     });
+    } catch (error) {
+      if (configuration.preparedProvider && configuration.preparedProvider !== process.configuration.preparedProvider) {
+        await configuration.preparedProvider.release().catch(() => undefined);
+      }
+      throw error;
     } finally {
       process.pendingConfiguration = undefined;
     }
     if (result.state !== 'applied' || result.effectiveRevision !== configuration.revision) {
+      if (configuration.preparedProvider && configuration.preparedProvider !== process.configuration.preparedProvider) {
+        await configuration.preparedProvider.release().catch(() => undefined);
+      }
       throw new Error('DSH configuration did not become effective');
     }
+    const prior = process.configuration;
     process.configuration = configuration;
+    if (prior.preparedProvider && prior.preparedProvider !== configuration.preparedProvider) {
+      await prior.preparedProvider.release().catch(() => undefined);
+    }
     const permissionRules = await this.refreshPermissionRules(process, false);
     if (permissionRules.permissionMode !== configuration.dshPermissionMode) {
       throw new Error('DSH effective permission mode differs from Product configuration');
@@ -1938,20 +2024,20 @@ export class DshRuntime implements AgentRuntime {
 
   async setModel(runtimeProcess: RuntimeProcess, model: string | undefined): Promise<void> {
     const process = dshProcess(runtimeProcess);
-    await this.applyConfiguration(process, compileConfiguration(process.options, {
+    await this.applyConfiguration(process, await compileConfiguration(process.options, {
       model,
       permissionMode: process.configuration.productPermissionMode,
       reasoningEffort: process.configuration.reasoningEffort,
-    }));
+    }, process.configuration));
   }
 
   async setPermissionMode(runtimeProcess: RuntimeProcess, mode: string | undefined): Promise<void> {
     const process = dshProcess(runtimeProcess);
-    const configuration = compileConfiguration(process.options, {
+    const configuration = await compileConfiguration(process.options, {
       model: process.configuration.profile.modelId,
       permissionMode: mode,
       reasoningEffort: process.configuration.reasoningEffort,
-    });
+    }, process.configuration);
     await this.applyConfiguration(process, configuration);
     await this.applyPlanMode(
       process,
@@ -1962,10 +2048,10 @@ export class DshRuntime implements AgentRuntime {
 
   async setReasoningEffort(runtimeProcess: RuntimeProcess, effort: string | undefined): Promise<void> {
     const process = dshProcess(runtimeProcess);
-    await this.applyConfiguration(process, compileConfiguration(process.options, {
+    await this.applyConfiguration(process, await compileConfiguration(process.options, {
       model: process.configuration.profile.modelId,
       permissionMode: process.configuration.productPermissionMode,
       reasoningEffort: effort,
-    }));
+    }, process.configuration));
   }
 }

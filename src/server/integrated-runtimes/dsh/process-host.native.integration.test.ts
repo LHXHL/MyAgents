@@ -277,6 +277,7 @@ describe.runIf(nativeSmokeEnabled)(
         const catalog = await host.request('extension/catalog', {});
         const provider = structuredClone(PRESET_PROVIDERS.find(({ id }) => id === 'anthropic-api'));
         if (!provider) throw new Error('Fixture Provider is missing');
+        provider.id = 'native-anthropic-fixture';
         provider.config.baseUrl = `https://provider-route.test:${targetPort}`;
         const profile = compileDshModelExecutionProfile({ provider, modelId: 'claude-sonnet-4-6' });
         await host.request('session/create', { clientOperationId: 'tls-bind', persistenceRef: 'tls-session', provider: profile,
@@ -462,6 +463,7 @@ describe.runIf(nativeSmokeEnabled)(
         const catalog = await host.request('extension/catalog', {});
         const provider = structuredClone(PRESET_PROVIDERS.find(({ id }) => id === 'anthropic-api'));
         if (!provider) throw new Error('Fixture Provider is missing');
+        provider.id = 'native-anthropic-fixture';
         provider.config.baseUrl = `http://127.0.0.1:${address.port}`;
         const profile = compileDshModelExecutionProfile({ provider, modelId: 'claude-sonnet-4-6' });
         const binding = await host.request('session/create', { clientOperationId: 'native-shell-review-bind', persistenceRef: 'native-shell-review', provider: profile, configRevision: 'native-shell-review-config', extensionDigest: catalog.digest, systemPrompt: '', permissionMode: 'default', interactionScenario: 'host-interaction-v1' });
@@ -716,7 +718,7 @@ describe.runIf(nativeSmokeEnabled)(
         if (!provider)
           throw new Error("Anthropic API Provider fixture is unavailable");
         const profile = compileDshModelExecutionProfile({
-          provider: structuredClone(provider) as Provider,
+          provider: { ...structuredClone(provider), id: 'native-anthropic-fixture' } as Provider,
           modelId: "claude-sonnet-4-6",
         });
         const binding = await host.request("session/create", {
@@ -851,7 +853,7 @@ describe.runIf(nativeSmokeEnabled)(
       if (!provider)
         throw new Error("Anthropic API Provider fixture is unavailable");
       const profile = compileDshModelExecutionProfile({
-        provider: structuredClone(provider) as Provider,
+        provider: { ...structuredClone(provider), id: 'native-anthropic-fixture' } as Provider,
         modelId: "claude-sonnet-4-6",
       });
       const extension = compileDshProductExtensionPlane({

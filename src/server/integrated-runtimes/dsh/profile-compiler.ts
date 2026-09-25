@@ -53,6 +53,7 @@ type DshProfileCompilerProvider = Pick<
   | "type"
   | "enabled"
   | "execution"
+  | "subscriptionAuth"
   | "apiProtocol"
   | "upstreamFormat"
   | "maxOutputTokens"
@@ -217,6 +218,7 @@ export function compileDshModelExecutionProfile(args: {
   provider: DshProfileCompilerProvider;
   modelId: string;
   reasoningEffort?: DshReasoningEffortSelection | null;
+  preparedBaseUrl?: string;
 }): DshModelExecutionProfile {
   const provider = resolveProviderForModel(args.provider, args.modelId);
   const providerId = boundedIdentity(provider.id, "Provider id");
@@ -243,7 +245,7 @@ export function compileDshModelExecutionProfile(args: {
       error instanceof Error ? error.message : `Provider ${providerId} cannot execute in DSH`,
     );
   }
-  if (constraint.kind !== "portable" || provider.type !== "api") {
+  if (constraint.kind !== "portable") {
     throw new DshProfileCompilerError(
       "provider-execution-owner-unsupported",
       providerId,
@@ -254,7 +256,13 @@ export function compileDshModelExecutionProfile(args: {
 
   let baseUrl: string;
   try {
-    baseUrl = canonicalHttpUrl(provider.config.baseUrl);
+    if (constraint.credentialKind === "proxy-managed" && !args.preparedBaseUrl) {
+      throw new Error("Proxy-managed Provider requires its current Host-owned binding");
+    }
+    if (constraint.credentialKind !== "proxy-managed" && args.preparedBaseUrl) {
+      throw new Error("Only proxy-managed Providers may override their endpoint");
+    }
+    baseUrl = canonicalHttpUrl(args.preparedBaseUrl ?? provider.config.baseUrl);
   } catch (error) {
     throw new DshProfileCompilerError(
       "provider-endpoint-invalid",

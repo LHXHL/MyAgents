@@ -157,7 +157,7 @@ import {
 } from '../shared/types/runtime';
 import { getExternalRuntime, isRuntimeSupported } from './runtimes/factory';
 import { queryRuntimeModels } from './runtimes/external-session';
-import { isDshApiModelSelectable } from '../shared/integrated-runtimes/provider-constraints';
+import { isDshModelSelectable } from '../shared/integrated-runtimes/provider-constraints';
 import { isManagedCodexRuntimeInstalled } from './runtimes/codex-command-context';
 import { trackServer } from './analytics';
 
@@ -8395,7 +8395,7 @@ async function validateTaskOverrides(
       providerId,
       loadConfig(),
     ) as Provider | null;
-    if (!provider || !isDshApiModelSelectable(provider, modelOverride)) {
+    if (!provider || !isDshModelSelectable(provider, modelOverride)) {
       return {
         success: false,
         error: `Provider/model '${providerId}/${modelOverride}' is not an enabled ordinary API route configured for DSH.`,

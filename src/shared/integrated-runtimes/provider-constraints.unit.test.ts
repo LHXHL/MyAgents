@@ -11,8 +11,8 @@ import {
 } from "../config-types";
 import {
   getProviderExecutionConstraint,
-  isDshApiModelSelectable,
-  isDshApiProviderEligible,
+  isDshModelSelectable,
+  isDshProviderEligible,
 } from "./provider-constraints";
 
 function preset(id: string): Provider {
@@ -22,7 +22,7 @@ function preset(id: string): Provider {
 }
 
 describe("Provider execution constraints", () => {
-  it("keeps subscription credentials on their declared runtime owners", () => {
+  it("reserves Claude and Managed Codex for their execution owners", () => {
     expect(
       getProviderExecutionConstraint(preset(SUBSCRIPTION_PROVIDER_ID)),
     ).toEqual({
@@ -35,37 +35,35 @@ describe("Provider execution constraints", () => {
       runtimeId: "managed-codex",
       providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
     });
-    expect(
-      getProviderExecutionConstraint(preset(XAI_SUBSCRIPTION_PROVIDER_ID)),
-    ).toEqual({
+    expect(getProviderExecutionConstraint(preset("anthropic-api"))).toEqual({
       kind: "requires-integrated-runtime",
       runtimeId: "claude-agent-sdk",
-      providerId: XAI_SUBSCRIPTION_PROVIDER_ID,
+      providerId: "anthropic-api",
     });
   });
 
-  it("keeps Antigravity on the SDK owner when DSH is available", () => {
+  it("admits Host-managed API routes by their declared wire family", () => {
+    expect(getProviderExecutionConstraint(preset(XAI_SUBSCRIPTION_PROVIDER_ID))).toEqual({
+      kind: "portable", apiFamily: "openai-responses", credentialKind: "host-managed-oauth",
+    });
+    expect(isDshProviderEligible(preset(XAI_SUBSCRIPTION_PROVIDER_ID))).toBe(true);
     const provider = preset(ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID);
     expect(getProviderExecutionConstraint(provider)).toEqual({
-      kind: "requires-integrated-runtime",
-      runtimeId: "claude-agent-sdk",
-      providerId: ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
+      kind: "portable", apiFamily: "anthropic-messages", credentialKind: "proxy-managed",
     });
-    expect(isDshApiProviderEligible(provider)).toBe(false);
+    expect(isDshProviderEligible(provider)).toBe(true);
   });
 
   it("derives ordinary API families only from explicit protocol fields", () => {
-    expect(getProviderExecutionConstraint(preset("anthropic-api"))).toEqual({
-      kind: "portable",
-      apiFamily: "anthropic-messages",
-    });
     expect(getProviderExecutionConstraint(preset("zhipu"))).toEqual({
       kind: "portable",
       apiFamily: "anthropic-messages",
+      credentialKind: "api-key",
     });
     expect(getProviderExecutionConstraint(preset("zhipu-ai"))).toEqual({
       kind: "portable",
       apiFamily: "openai-completions",
+      credentialKind: "api-key",
     });
     expect(
       getProviderExecutionConstraint({
@@ -77,6 +75,7 @@ describe("Provider execution constraints", () => {
     ).toEqual({
       kind: "portable",
       apiFamily: "openai-responses",
+      credentialKind: "api-key",
     });
   });
 
@@ -98,14 +97,26 @@ describe("Provider execution constraints", () => {
         type: "subscription",
       }),
     ).toThrow(/no declared execution owner/);
+    expect(() => getProviderExecutionConstraint({
+      id: XAI_SUBSCRIPTION_PROVIDER_ID,
+      type: "api",
+      apiProtocol: "openai",
+      upstreamFormat: "responses",
+    })).toThrow(/Host-managed OAuth and OpenAI Responses/);
+    expect(() => getProviderExecutionConstraint({
+      id: ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
+      type: "subscription",
+      subscriptionAuth: { kind: "host-managed-oauth" },
+    })).toThrow(/CLIProxy and Anthropic Messages/);
   });
 
   it("admits current ordinary API models without a Provider/model allowlist", () => {
     const deepseek = preset("deepseek");
-    expect(isDshApiProviderEligible(deepseek)).toBe(true);
-    expect(isDshApiModelSelectable(deepseek, "deepseek-v4-pro")).toBe(true);
-    expect(isDshApiModelSelectable(deepseek, "deepseek-flash")).toBe(true);
-    expect(isDshApiModelSelectable(deepseek, "not-configured")).toBe(false);
-    expect(isDshApiProviderEligible(preset("anthropic-sub"))).toBe(false);
+    expect(isDshProviderEligible(deepseek)).toBe(true);
+    expect(isDshModelSelectable(deepseek, "deepseek-v4-pro")).toBe(true);
+    expect(isDshModelSelectable(deepseek, "deepseek-flash")).toBe(true);
+    expect(isDshModelSelectable(deepseek, "not-configured")).toBe(false);
+    expect(isDshProviderEligible(preset("anthropic-sub"))).toBe(false);
+    expect(isDshProviderEligible(preset("anthropic-api"))).toBe(false);
   });
 });

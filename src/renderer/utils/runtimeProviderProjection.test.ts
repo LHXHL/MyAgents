@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { MANAGED_CODEX_PROVIDER, type Provider } from '@/config/types';
+import { MANAGED_CODEX_PROVIDER, PRESET_PROVIDERS, type Provider } from '@/config/types';
 import {
   isProviderModelCompatibleWithRuntime,
   projectProvidersForRuntime,
@@ -25,6 +25,14 @@ function provider(id: string, primaryModel: string, models: string[]): Provider 
 }
 
 describe('runtime Provider projection', () => {
+  it('shows API transports in DSH while keeping both official Claude choices on the SDK', () => {
+    const ids = ['anthropic-sub', 'anthropic-api', 'xai-sub', 'antigravity-sub', 'deepseek'];
+    const presets = PRESET_PROVIDERS.filter(candidate => ids.includes(candidate.id));
+    expect(projectProvidersForRuntime(presets, 'dsh').map(candidate => candidate.id))
+      .toEqual(['xai-sub', 'antigravity-sub', 'deepseek']);
+    expect(projectProvidersForRuntime(presets, 'builtin').map(candidate => candidate.id))
+      .toEqual(presets.map(candidate => candidate.id));
+  });
   it('keeps every ordinary API Provider and all of its configured models', () => {
     const projected = projectProvidersForRuntime([
       provider('deepseek', 'deepseek-v4-pro', ['deepseek-v4-pro', 'deepseek-v4-flash']),

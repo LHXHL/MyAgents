@@ -77,13 +77,13 @@ describe("DSH ModelExecutionProfile compiler", () => {
 
   it("compiles ordinary API Providers by their declared API family", () => {
     const anthropic = compileDshModelExecutionProfile({
-      provider: preset("anthropic-api"),
-      modelId: "claude-sonnet-5",
+      provider: preset("zhipu"),
+      modelId: "glm-5.3",
     });
     expect(anthropic).toMatchObject({
       api: "anthropic-messages",
-      providerRouteId: "myagents-anthropic-api-anthropic-messages",
-      baseUrl: "https://api.anthropic.com",
+      providerRouteId: "myagents-zhipu-anthropic-messages",
+      baseUrl: "https://open.bigmodel.cn/api/anthropic",
       compatibility: { version: 1, family: "anthropic-messages" },
     });
 
@@ -149,14 +149,30 @@ describe("DSH ModelExecutionProfile compiler", () => {
     });
   });
 
+  it("compiles Grok OAuth and only a prepared Antigravity endpoint", () => {
+    expect(compileDshModelExecutionProfile({
+      provider: preset("xai-sub"), modelId: "grok-4.5",
+    })).toMatchObject({ api: "openai-responses", provider: "xai-sub" });
+    const antigravity = preset("antigravity-sub");
+    antigravity.models = [{ model: "gemini-example", modelName: "Gemini", modelSeries: "gemini" }];
+    expect(() => compileDshModelExecutionProfile({ provider: antigravity, modelId: "gemini-example" }))
+      .toThrow(/current Host-owned binding/);
+    expect(compileDshModelExecutionProfile({
+      provider: antigravity, modelId: "gemini-example", preparedBaseUrl: "http://127.0.0.1:40123",
+    })).toMatchObject({ api: "anthropic-messages", baseUrl: "http://127.0.0.1:40123" });
+    expect(() => compileDshModelExecutionProfile({
+      provider: preset("zhipu"), modelId: "glm-5.3", preparedBaseUrl: "http://127.0.0.1:40123",
+    })).toThrow(/Only proxy-managed/);
+  });
+
   it("produces stable revisions without copying credential material", () => {
-    const provider = preset("anthropic-api");
+    const provider = preset("zhipu");
     provider.apiKey = "secret-canary-do-not-copy";
-    const first = compileDshModelExecutionProfile({ provider, modelId: "claude-sonnet-5" });
-    const second = compileDshModelExecutionProfile({ provider, modelId: "claude-sonnet-5" });
+    const first = compileDshModelExecutionProfile({ provider, modelId: "glm-5.3" });
+    const second = compileDshModelExecutionProfile({ provider, modelId: "glm-5.3" });
     expect(first.revision).toBe(second.revision);
     expect(JSON.stringify(first)).not.toContain("secret-canary-do-not-copy");
-    expect(first.credentialRef).toBe(dshProviderCredentialRef("anthropic-api"));
+    expect(first.credentialRef).toBe(dshProviderCredentialRef("zhipu"));
   });
 
   it("rejects only invalid ownership, availability, endpoint, or capacity", () => {
@@ -167,8 +183,11 @@ describe("DSH ModelExecutionProfile compiler", () => {
     })).toThrowError(expect.objectContaining({
       code: "provider-execution-owner-unsupported",
     } satisfies Partial<DshProfileCompilerError>));
+    expect(() => compileDshModelExecutionProfile({
+      provider: preset("anthropic-api"), modelId: "claude-sonnet-5",
+    })).toThrowError(expect.objectContaining({ code: "provider-execution-owner-unsupported" }));
 
-    const unavailable = preset("anthropic-api");
+    const unavailable = preset("zhipu");
     expect(() => compileDshModelExecutionProfile({
       provider: unavailable,
       modelId: "not-configured",

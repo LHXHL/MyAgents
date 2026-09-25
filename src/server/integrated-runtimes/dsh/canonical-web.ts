@@ -10,6 +10,7 @@ import {
   type DshCanonicalWebProviderPort,
 } from './canonical-web-provider';
 import { DshSafeHttpClient, type DshSafeHttpConfig } from './safe-http';
+import { resolveDshProviderApiKey } from './provider-credential';
 
 const COMPONENT_GENERATION_ID = 'myagents-host-canonical-web-v1';
 const WEB_FETCH_COMPONENT_ID = 'canonical-web-fetch';
@@ -20,8 +21,9 @@ type ActiveWebConfiguration = Readonly<{
   profile: DshModelExecutionProfile;
   apiKey: string;
   authType: ProviderAuthType;
+  managedOauth?: true;
   revision: string;
-  bindings?: readonly Readonly<{ profile: DshModelExecutionProfile; apiKey: string; authType: ProviderAuthType }>[];
+  bindings?: readonly Readonly<{ profile: DshModelExecutionProfile; apiKey: string; authType: ProviderAuthType; managedOauth?: true }>[];
 }>;
 
 type CanonicalTool = 'WebFetch' | 'WebSearch';
@@ -146,7 +148,8 @@ export class DshCanonicalWebHost {
     const active = this.options.activeConfiguration();
     const input = record(params.input);
     const requestedProfile = input?.modelProfileRevision;
-    const selected = requestedProfile === undefined ? active
+    const selected = requestedProfile === undefined
+      ? (active.bindings?.find(binding => binding.profile.revision === active.profile.revision) ?? active)
       : (active.bindings ?? [active]).find(binding => binding.profile.revision === requestedProfile);
     if (!selected) return { state: 'failed', code: 'host_tool_model_unauthorized' };
     const configuration = { ...active, ...selected };
@@ -173,6 +176,14 @@ export class DshCanonicalWebHost {
         `[dsh-web] tool=${tool} code=${String(result.code)} phase=${error instanceof DshCanonicalWebError ? error.phase ?? 'unknown' : 'unknown'} system=${error instanceof DshCanonicalWebError ? error.systemErrorClass ?? 'unknown' : 'unknown'} providerError=${error instanceof DshCanonicalWebError ? error.providerErrorCode ?? 'unknown' : 'unknown'} backend=${configuration.profile.api} route=${configuration.profile.providerRouteId} operation=${String(authority?.clientOperationId ?? 'unknown')} call=${String(authority?.callId ?? 'unknown')}`,
       );
       return result;
+    }
+  }
+
+  private async modelApiKey(configuration: ActiveWebConfiguration, signal: AbortSignal): Promise<string> {
+    try {
+      return await resolveDshProviderApiKey(configuration, signal);
+    } catch {
+      throw new DshCanonicalWebError('provider_search_failed', 'Current model credential is unavailable');
     }
   }
 
@@ -211,7 +222,7 @@ export class DshCanonicalWebHost {
     finalUrl.hash = '';
     const utility = await this.provider.runUtility({
       profile: configuration.profile,
-      apiKey: configuration.apiKey,
+      apiKey: await this.modelApiKey(configuration, signal),
       authType: configuration.authType,
       source: converted.text,
       prompt,
@@ -244,7 +255,7 @@ export class DshCanonicalWebHost {
     const authority = record(params.authority) as DshRpcObject;
     return await this.provider.runSearch({
       profile: configuration.profile,
-      apiKey: configuration.apiKey,
+      apiKey: await this.modelApiKey(configuration, signal),
       authType: configuration.authType,
       query,
       allowedDomains: domainArray(input.allowed_domains, 'WebSearch allowed domains'),

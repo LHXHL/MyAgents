@@ -33,8 +33,8 @@ export type ProviderSwitchSessionBirth = {
  * Resolve the Integrated Runtime to return to when the current Session is a
  * runtime-backed Provider. A live Integrated Session wins; otherwise the
  * Agent's authoritative preference preserves the base Runtime selected before
- * entering Managed Codex. Runtime-constrained subscription Providers still
- * route to their declared Integrated owner.
+ * entering Managed Codex. Official Claude routes still go to their declared
+ * Integrated owner.
  */
 export function resolveProviderSwitchIntegratedRuntime(args: {
   targetProvider: Provider;

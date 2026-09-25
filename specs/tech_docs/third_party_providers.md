@@ -39,11 +39,11 @@ Agent / Channel defaults 保留 Provider choice，不把 managed runtime project
 | --- | --- | --- |
 | `anthropic-sub` | Claude Code native credential store | 不设置第三方 base URL/key；不设置 host-managed marker |
 | 普通 API Provider | `config.json` / Provider API key store | 按 Provider definition 生成 `ProviderEnv` |
-| `xai-sub` | Rust `GrokAuthManager` | `ProviderEnv` 只携带 managed credential reference，Bridge 每请求取 bearer |
+| `xai-sub` | Rust `GrokAuthManager` | `ProviderEnv` 只携带 managed credential reference；SDK Bridge 或 DSH Host 凭据端口每请求取 bearer |
 | `codex-sub` | Managed Codex Runtime | 不进入 builtin ProviderEnv |
-| `antigravity-sub` | 原版 CLIProxy；Rust 只拥有组件、账号目录和准入 | endpointSource → 异步 binding → SDK 直连 Anthropic 接口 |
+| `antigravity-sub` | 原版 CLIProxy；Rust 只拥有组件、账号目录和准入 | endpointSource → 异步 binding → SDK 或 DSH 直连 Anthropic 接口 |
 
-Subscription 是产品/计费类型，不决定 auth owner。新增 subscription 必须显式选择 `sdk-native`、`host-managed-oauth`、`proxy-managed` 或 `runtime-managed`，不能把所有 subscription 当成“空 ProviderEnv”。
+Subscription 是产品/计费类型，不决定执行 Runtime 或 auth owner。官方 `anthropic-sub` 和 `anthropic-api` 只在 Claude Agent SDK 执行；`codex-sub` 由 Managed Codex 执行。其余已声明通用 API family 的 Provider 可由 Claude Agent SDK 或 DSH 执行；Grok OAuth 与 Antigravity CLIProxy 仍由上述唯一 Host owner 管理。新增 subscription 必须显式选择 `sdk-native`、`host-managed-oauth`、`proxy-managed` 或 `runtime-managed`，不能把所有 subscription 当成“空 ProviderEnv”。
 
 ## API Provider env
 
@@ -93,7 +93,7 @@ MyAgents 仍拥有 Session、permission、proxy scope 和 tool surface，但不�
 
 `src-tauri/src/grok_auth/` 的单例 `GrokAuthManager` 拥有 device login、atomic credential store、refresh gate、credential version 和 quarantine。
 
-执行路径：
+Claude Agent SDK 执行路径：
 
 1. Sidecar Provider resolver生成带 `credentialSource` 的 ProviderEnv；
 2. OpenAI Bridge 每个 upstream request向 Rust management API取得 bearer + opaque credential version；
@@ -101,6 +101,8 @@ MyAgents 仍拥有 Session、permission、proxy scope 和 tool surface，但不�
 4. recovery 后仍是 401，才 quarantine 对应 credential version；
 5. 403 表示 entitlement / region / model 问题，429 表示 rate/quota，不能触发 auth refresh；
 6. completion 只上报 status 与 generation，不记录 bearer。
+
+DSH 用 OpenAI Responses profile 发起模型请求，每次经现有 Host credential port 向同一 Rust owner 取当前 bearer，不在 DSH profile、配置或环境变量中持久化 bearer。DSH 的通用 pi-ai adapter 没有 Bridge 的 upstream 401 回调，因此首次 401 的同轮强制刷新/重放仅属于 SDK Bridge 路径；DSH 目前让该轮按真实失败结算。不能把 403 或 429 推断为过期 credential，也不能声称两条路径有同轮恢复能力。
 
 One-shot verification 必须在完整 SDK / translator terminal success 后才提交 verified state。收到 2xx headers 不等于 turn 成功；旧 generation 的 late failure 不能污染新登录 lineage。
 

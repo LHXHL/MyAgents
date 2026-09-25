@@ -1,7 +1,7 @@
 import type { Provider } from '@/config/types';
 import {
-  isDshApiModelSelectable,
-  isDshApiProviderEligible,
+  isDshModelSelectable,
+  isDshProviderEligible,
 } from '../../shared/integrated-runtimes/provider-constraints';
 import { isRuntimeBackedProvider, isRuntimeBackedProviderId } from '../../shared/providerExecution';
 import type { RuntimeType } from '../../shared/types/runtime';
@@ -19,7 +19,7 @@ export function projectProvidersForRuntime(
     if (isRuntimeBackedProvider(provider)) {
       return [provider];
     }
-    return isDshApiProviderEligible(provider) ? [provider] : [];
+    return isDshProviderEligible(provider) ? [provider] : [];
   });
 }
 
@@ -30,5 +30,5 @@ export function isProviderModelCompatibleWithRuntime(
 ): boolean {
   if (runtime !== 'dsh') return true;
   if (isRuntimeBackedProviderId(provider?.id)) return !!model;
-  return !!provider && isDshApiModelSelectable(provider, model);
+  return !!provider && isDshModelSelectable(provider, model);
 }

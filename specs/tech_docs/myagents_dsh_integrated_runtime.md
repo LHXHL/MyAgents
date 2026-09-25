@@ -126,7 +126,7 @@ npm has a different boundary. The installed DSH Runtime never invokes npm; its r
 The revalidation also sharpens two existing rules:
 
 1. MyAgents ingests the immutable handoff through a deterministic build-time verifier and committed lock; it never imports from a sibling MyAgents-dsh checkout or edits files inside the Runtime directory.
-2. `apiFamilies` is the Runtime transport-compatibility boundary. MyAgents owns Provider/model availability in its Product registry and compiles each selected ordinary API route into one supported family. The native `deepseek-official` route is selected only for the official Product endpoint; individual evidence never becomes an admission table.
+2. `apiFamilies` is the Runtime transport-compatibility boundary. MyAgents owns Provider/model availability and credential preparation in its Product registry and compiles each selected portable API route into one supported family. The native `deepseek-official` route is selected only for the official Product endpoint; individual evidence never becomes an admission table.
 
 ## 3. Target product identity model
 
@@ -261,10 +261,9 @@ For a new Session:
 3. resolve Provider/model execution intent;
 4. if an explicit allowed External Runtime is selected, choose it and treat Integrated/managed Provider template fields as dormant;
 5. otherwise apply a Runtime-constrained Provider:
-   - `anthropic-sub` -> Claude Agent SDK;
-   - `xai-sub` -> Claude Agent SDK and the existing Host-managed OAuth bridge;
+   - `anthropic-sub` and `anthropic-api` -> Claude Agent SDK;
    - `codex-sub` -> managed Codex;
-6. otherwise choose the resolved Integrated Runtime;
+6. otherwise choose the resolved Integrated Runtime, including for `xai-sub` and `antigravity-sub` API transports;
 7. validate Runtime readiness and exact Provider/model compatibility;
 8. atomically persist the binding before first turn admission.
 
@@ -422,7 +421,7 @@ Development override is allowed only through an explicit developer setting and m
 
 ### 8.1 Execution profile compiler
 
-MyAgents compiles the selected ordinary Provider/model into the DSH `ModelExecutionProfile`:
+MyAgents compiles a portable Provider/model into the DSH `ModelExecutionProfile`:
 
 - stable profile revision;
 - Provider route and API family;
@@ -436,24 +435,25 @@ MyAgents compiles the selected ordinary Provider/model into the DSH `ModelExecut
 
 The compiler consumes the exact DSH compatibility manifest and binds the included Batch 1 candidate profile identity. The delivered `batch-1-candidate-profile-v1.json` is a composition/profile manifest, not a model-route payload. MyAgents compiles current Product endpoint, protocol, model and capacity facts directly; it does not infer protocol compatibility from a URL, pi-ai catalog entry or Provider name.
 
-The selected MyAgents-dsh design reuses the official DSH `dsh-llm-pi-ai` adapter for ordinary Anthropic Messages, OpenAI Chat Completions and OpenAI Responses routes, while retaining the native DSH DeepSeek adapter for `deepseek-official`. This does not weaken Host authority: MyAgents compiles the frozen profile and owns credentials; the Runtime's thin control layer translates that profile into the official adapter's public settings seam and activates the Host credential port for each model request. Every enabled ordinary API Provider is portable when its declared family is installed.
+The selected MyAgents-dsh design reuses the official DSH `dsh-llm-pi-ai` adapter for Anthropic Messages, OpenAI Chat Completions and OpenAI Responses routes, while retaining the native DSH DeepSeek adapter for `deepseek-official`. This does not weaken Host authority: MyAgents compiles the frozen profile and owns credentials; the Runtime's thin control layer translates that profile into the official adapter's public settings seam and activates the Host credential port for each model request. A Provider is portable when its declared wire family is installed and its credential owner has a DSH execution path.
 
-For an ordinary API Provider, the Product Provider record is the protocol source of truth. Anthropic configuration compiles to `anthropic-messages`; OpenAI plus `chat_completions` compiles to `openai-completions`; OpenAI plus `responses` compiles to `openai-responses`. The DSH path sends that declared family directly through pi-ai and never routes it through `openai-bridge`. The legacy OpenAI-to-Anthropic Bridge remains an implementation detail of the Claude Agent SDK execution path only.
+The Product Provider record is the protocol source of truth. Anthropic configuration compiles to `anthropic-messages`; OpenAI plus `chat_completions` compiles to `openai-completions`; OpenAI plus `responses` compiles to `openai-responses`. The DSH path sends that declared family directly through pi-ai and never routes it through `openai-bridge`. The OpenAI-to-Anthropic Bridge remains an implementation detail of the Claude Agent SDK execution path.
 
-The compatibility manifest carries family limitations: pi-ai routes do not support Host stop-sequence projection; reasoning content is available but provider reasoning-token counts are not; the bundled pi-ai catalog is advisory; AWS, Vertex, Azure and subscription/OAuth routes are not advertised. The same-release public `dsh-authorization` package is present only because `dsh-llm-pi-ai` requires it as a public peer. MyAgents does not mount its login/OAuth service or expose it as a capability.
+The compatibility manifest carries family limitations: pi-ai routes do not support Host stop-sequence projection; reasoning content is available but provider reasoning-token counts are not; the bundled pi-ai catalog is advisory. AWS, Vertex and Azure are not advertised. MyAgents does not mount DSH's login/OAuth service: Grok's existing Rust OAuth owner supplies a bearer through the Host credential port per model request; Antigravity's existing CLIProxy owner supplies a scoped endpoint/key binding before the DSH profile is compiled.
 
-H2 implements this boundary in `provider-constraints.ts` and `profile-compiler.ts`. Every current model of an eligible ordinary API Provider uses the same compiler, including presets, custom endpoints and discovered/manual model IDs. Unknown optional capacity metadata uses the Product default; supported text/image modalities are projected independently; native DeepSeek accepts both V4 Pro and V4 Flash. A profile revision hashes the Runtime profile digest and complete secret-free profile. Credentials use stable POSIX-identifier references such as `MYAGENTS_PROVIDER_ANTHROPIC_API_API_KEY`; secret material is never an input to the compiler. H3–H6 process, packaged, cross-runtime and native-platform gates still control readiness and release claims.
+H2 implements this boundary in `provider-constraints.ts` and `profile-compiler.ts`. Every current model of an eligible Provider uses the same compiler, including presets, custom endpoints and discovered/manual model IDs. Unknown optional capacity metadata uses the Product default; supported text/image modalities are projected independently; native DeepSeek accepts both V4 Pro and V4 Flash. A profile revision hashes the Runtime profile digest and complete secret-free profile. Credentials use stable POSIX-identifier references such as `MYAGENTS_PROVIDER_DEEPSEEK_API_KEY`; secret material is never an input to the compiler. H3–H6 process, packaged, cross-runtime and native-platform gates still control readiness and release claims.
 
 ### 8.2 Subscription providers
 
-- `anthropic-sub` requires the Claude Agent SDK path.
+- `anthropic-sub` and the official `anthropic-api` preset require the Claude Agent SDK path.
 - `codex-sub` requires managed Codex.
-- `xai-sub` remains on Claude Agent SDK plus the MyAgents Host-managed OAuth bridge; the DSH artifact does not advertise subscription/OAuth admission.
+- `xai-sub` is a portable OpenAI Responses API route. The SDK uses the existing Bridge; DSH resolves its Rust-owned OAuth bearer through `host/credential/resolve` per model request. Host WebSearch/WebFetch model calls use the same request-time credential owner. DSH does not acquire or store a second subscription login.
+- `antigravity-sub` is a portable Anthropic Messages API route. The SDK and DSH use the same Rust-owned CLIProxy binding lifecycle. DSH prepares the current model binding before profile admission, checks it before each root turn, reports the terminal and releases it when the Runtime Session ends. A changed model requires a new binding.
 - Settings/Launcher only save the template.
 - A live incompatible Session uses the existing confirm/new-Tab flow.
 - Explicit External Runtime selection continues to win over dormant subscription fields.
 
-No DSH request is attempted for either unsupported subscription route.
+Unknown subscription schemes fail closed. DSH collaboration's explicit additional-model catalog currently accepts directly configured API-key routes; an inherited Grok or Antigravity root route uses the primary model binding.
 
 ### 8.3 Secret ownership
 
@@ -723,7 +723,7 @@ Developer Settings also exposes `config.defaultIntegratedRuntime`, with options 
 - Cancel: no template/session mutation.
 - Failed new birth: keep old Tab intact and show actionable error.
 
-The Provider picker is the Product execution catalog. Under DSH it retains every enabled ordinary API Provider and all current models whose declared family is installed, while Managed Codex remains visible as the runtime-backed `codex-sub` choice. Selecting it always crosses the existing history boundary into a Managed Codex Session and never treats Codex as DSH-compatible. The Agent's authoritative Integrated Runtime preference remains unchanged, so leaving Managed Codex for an ordinary compatible Provider returns to the previously selected DSH or Claude Agent SDK Runtime. Claude-owned subscription Providers remain bound to their declared Integrated owner.
+The Provider picker is the Product execution catalog. Under DSH it retains enabled portable API routes and all current models whose declared family is installed, including the Host-managed Grok and Antigravity subscriptions. The official Claude subscription and API preset remain Claude Agent SDK only. Managed Codex remains visible as the runtime-backed `codex-sub` choice; selecting it crosses the existing history boundary into a Managed Codex Session. The Agent's authoritative Integrated Runtime preference remains unchanged, so leaving Managed Codex for a portable Provider returns to the previously selected DSH or Claude Agent SDK Runtime.
 
 Agent, Channel, Settings and Launcher changes atomically persist the authoritative `AgentRuntimePreference` with their legacy `runtime`/`runtimeConfig` compatibility projection. The preference wins whenever both exist; malformed authoritative preference fails closed instead of falling back to a possibly stale legacy Runtime. Product configuration remains Product configuration for DSH: Provider/model, exact permission mode, reasoning effort, MCP, Plugins and related capabilities are not moved into the External CLI configuration object. Unsupported execution owners, missing Product model membership or unsupported API families are rejected before Session birth.
 
@@ -870,12 +870,12 @@ Likely shared refactors:
 - distribution policy and resolver matrix;
 - all legal/illegal legacy identity conversions;
 - explicit External versus dormant subscription precedence;
-- `anthropic-sub` and `codex-sub` required-runtime behavior;
+- `anthropic-sub`, `anthropic-api` and `codex-sub` required-runtime behavior;
 - Settings/Launcher versus active Chat transition behavior;
 - frozen Session behavior with selector hidden and with distribution exclusion;
 - DSH handshake/artifact/schema/capability mismatch;
 - exact handoff ingestion, generated-diff, complete-inventory, bundled-Node mismatch rejection, and deterministic bundled-npm resource validation;
-- native DeepSeek V4 Pro/Flash plus representative preset and custom routes for all three API families, with subscription/OAuth owners rejected;
+- native DeepSeek V4 Pro/Flash plus representative preset and custom routes for all three API families; Grok's Host-managed credential request and Antigravity's scoped proxy binding; unsupported subscription schemes rejected;
 - generated RPC client, reverse ports and cancellation;
 - event ordering, reconnect replay and cross-generation dedupe;
 - queue/follow-up/steer/stop races;
@@ -1544,7 +1544,7 @@ The integration branch follows MyAgents 0.4.18 from `b33dfc9bef4591f5bbe196b9d8d
 
 The Host records exact admitted inputs independently of body IO and retires them only after the matching content commit. A physically blocked body writer cannot block subsequent root/input admission or receipt settlement. Cold recovery preserves displayed segments and block identities, completes late tool results, and reconstructs only explicitly journaled unpublished births; missing or damaged published history is never overwritten. Fork, rewind generation recovery and writer retirement on deletion reuse SessionStore's existing owners. Pending execution prevents metadata entrypoints from rebinding the native Session.
 
-Main's managed CLIProxy, asynchronous questions, dynamic reasoning effort, DeepSeek Flash preset and transcript UI are retained alongside DSH controls. Antigravity remains a builtin-SDK-only provider in both Node and Rust policy. The Agent tree stays hidden. The R7 Runtime handoff above is unchanged: source `b5117ed7da513199ccfb34c62a07826c7b08dfc7`, DSH `0.1.5-rc.2.myagents.fb2c4b9e698e.13b108f38d68`, protocol 5, bundled Node 24.20.0/npm 11.19.0.
+Main's managed CLIProxy, asynchronous questions, dynamic reasoning effort, DeepSeek Flash preset and transcript UI are retained alongside DSH controls. The Agent tree stays hidden. The R7 Runtime handoff above is unchanged: source `b5117ed7da513199ccfb34c62a07826c7b08dfc7`, DSH `0.1.5-rc.2.myagents.fb2c4b9e698e.13b108f38d68`, protocol 5, bundled Node 24.20.0/npm 11.19.0.
 
 Validation: the complete default test campaign passed 7,058 code tests and 214 build-script tests, with the expected opt-in cases skipped. Four subsequent recovery/authority/blocked-IO regressions also pass; the affected 157-test transcript/mutation/reset selection and final DSH V2 selection pass. TypeScript, lint/dependency boundaries, web/server/bridge/CLI bundles, staged Runtime resources and source freshness pass. The packed Runtime passes five native smoke cases and the 12-generation lifecycle soak (all processes released; file descriptors 14 to 14). Rust transcript parity and runtime-identity selections pass 20 tests; the existing benchmark stays opt-in. On this macOS host the Rust test executable requires Xcode's Swift library directory in `DYLD_LIBRARY_PATH`; no product code workaround was added. These checks use synthetic storage and local test servers. Signed desktop packaging, live Provider/UI acceptance and other-platform native validation are not claimed by this merge. No user Session reset or Runtime repository change is included.
 

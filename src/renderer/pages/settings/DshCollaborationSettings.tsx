@@ -17,7 +17,10 @@ export function DshCollaborationSettings({ value, providers, updateConfig }: {
   const [newRole, setNewRole] = useState('');
   const settings = value ?? {};
   const models = providers.filter(provider => {
-    try { return provider.enabled !== false && getProviderExecutionConstraint(provider).kind === 'portable'; }
+    try {
+      const constraint = getProviderExecutionConstraint(provider);
+      return provider.enabled !== false && constraint.kind === 'portable' && constraint.credentialKind === 'api-key';
+    }
     catch { return false; }
   }).flatMap(provider => provider.models.map(model => ({ providerId: provider.id, modelId: model.model, label: `${provider.name} · ${model.model}` })));
   const save = async (patch: Partial<Settings>) => {

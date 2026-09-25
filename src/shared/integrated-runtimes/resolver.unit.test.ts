@@ -40,6 +40,7 @@ function input(
     providerConstraint: {
       kind: "portable",
       apiFamily: "anthropic-messages",
+      credentialKind: "api-key",
     },
     readiness: readiness(),
     ...overrides,

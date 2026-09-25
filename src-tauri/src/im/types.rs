@@ -9,7 +9,6 @@ use super::{is_external_runtime_type, normalize_runtime_type, runtime_source_for
 
 const CODEX_SUBSCRIPTION_PROVIDER_ID: &str = "codex-sub";
 const ANTHROPIC_SUBSCRIPTION_PROVIDER_ID: &str = "anthropic-sub";
-const XAI_SUBSCRIPTION_PROVIDER_ID: &str = "xai-sub";
 
 /// Partial update patch for IM Bot config.
 /// Each `None` field means "no change"; `Some("")` means "clear the field".
@@ -1286,7 +1285,7 @@ pub(crate) fn project_runtime_for_provider(
         return (runtime, runtime_config);
     }
     if provider_id == Some(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID)
-        || provider_id == Some(XAI_SUBSCRIPTION_PROVIDER_ID)
+        || provider_id == Some("anthropic-api")
     {
         return (Some("builtin".to_string()), None);
     }
@@ -1964,6 +1963,14 @@ mod tests {
 
         assert_eq!(config.runtime.as_deref(), Some("builtin"));
         assert_eq!(config.runtime_identity().runtime_source, None);
+
+        agent.provider_id = Some("anthropic-api".to_string());
+        let claude_api = base_channel().to_im_config(&agent);
+        assert_eq!(claude_api.runtime.as_deref(), Some("builtin"));
+
+        agent.provider_id = Some("xai-sub".to_string());
+        let grok = base_channel().to_im_config(&agent);
+        assert_eq!(grok.runtime.as_deref(), Some("dsh"));
     }
 
     #[test]

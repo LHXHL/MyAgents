@@ -1,7 +1,7 @@
 import type { DshCollaborationModelRef, Provider, ProviderAuthType } from '../../../shared/config-types';
 import { compileDshModelExecutionProfile, type DshModelExecutionProfile } from './profile-compiler';
 
-export type DshHostModelBinding = Readonly<{ profile: DshModelExecutionProfile; apiKey: string; authType: ProviderAuthType }>;
+export type DshHostModelBinding = Readonly<{ profile: DshModelExecutionProfile; apiKey: string; authType: ProviderAuthType; managedOauth?: true }>;
 export type DshCollaborationDeclaration = Readonly<{
   version: 1; maxDepth: number; maxActiveChildren: number; maxRetainedChildren: number;
   messageDelivery: 'realtime' | 'turn';
