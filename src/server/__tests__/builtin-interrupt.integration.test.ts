@@ -32,7 +32,7 @@ vi.mock('../sse', async importOriginal => ({
 import { interruptCurrentResponse } from '../agent-session';
 import { broadcast } from '../sse';
 import { resetLifecycleForTest, setQuerySession } from '../builtin-session/lifecycle';
-import { resetQueueForTest } from '../builtin-session/queue';
+import { getTurnAdmissionTicket, resetQueueForTest, setTurnAdmissionTicket } from '../builtin-session/queue';
 import { resetTurnForTest } from '../builtin-session/turn';
 import { resetTranscriptForTest } from '../builtin-session/transcript';
 
@@ -92,5 +92,22 @@ describe('builtin interrupt facade terminal ownership', () => {
     await stop;
     expect(vi.mocked(broadcast).mock.calls.some(([event]) => event === 'chat:agent-error')).toBe(true);
     expect(vi.mocked(broadcast).mock.calls.some(([event]) => event === 'chat:message-stopped')).toBe(false);
+  });
+
+  it('cancels an admitted desktop send before turn_start', async () => {
+    const terminal = vi.fn();
+    setTurnAdmissionTicket({
+      queueId: 'desktop-startup',
+      createdAt: Date.now(),
+      messageText: 'run a tool',
+      onTerminal: terminal,
+      canceled: false,
+    });
+
+    await expect(interruptCurrentResponse()).resolves.toBe(true);
+
+    expect(getTurnAdmissionTicket()).toBeNull();
+    expect(terminal).toHaveBeenCalledWith(expect.objectContaining({ status: 'stopped' }));
+    expect(broadcast).toHaveBeenCalledWith('chat:message-stopped', null);
   });
 });
