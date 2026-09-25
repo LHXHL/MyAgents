@@ -237,18 +237,18 @@ describe('projectMemoryEvolutionTaskRuntimeForAgent', () => {
       providerId: 'codex-sub',
       model: 'gpt-5.5',
       permissionMode: 'fullAgency',
-      runtime: 'gemini',
+      runtime: 'claude-code',
       runtimeConfig: {
         source: 'managed-provider',
-        model: 'gemini-3.1-pro-preview',
-        permissionMode: 'yolo',
+        model: 'sonnet',
+        permissionMode: 'manual',
       },
     })).toEqual({
-      runtime: 'gemini',
+      runtime: 'claude-code',
       runtimeConfig: {
         source: 'managed-provider',
-        model: 'gemini-3.1-pro-preview',
-        permissionMode: 'yolo',
+        model: 'sonnet',
+        permissionMode: 'manual',
       },
     });
   });

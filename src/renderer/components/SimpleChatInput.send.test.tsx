@@ -12,7 +12,6 @@ import { OFFICIAL_TOOLS } from '../../shared/official-tools';
 import {
   CC_PERMISSION_MODES,
   CODEX_PERMISSION_MODES,
-  GEMINI_PERMISSION_MODES,
 } from '../../shared/types/runtime';
 import SimpleChatInput, { type SimpleChatInputHandle } from './SimpleChatInput';
 import { ToastProvider } from './Toast';
@@ -162,12 +161,6 @@ describe('SimpleChatInput send paths', () => {
       runtime: 'claude-code' as const,
       modes: CC_PERMISSION_MODES,
       expectedIcons: ['shield-question-mark', 'shield-check', 'eye', 'file-pen-line', 'lock-open', 'ban'],
-    },
-    {
-      name: 'Gemini',
-      runtime: 'gemini' as const,
-      modes: GEMINI_PERMISSION_MODES,
-      expectedIcons: ['shield-question-mark', 'file-pen-line', 'lock-open', 'eye'],
     },
     {
       name: 'Codex',

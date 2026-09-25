@@ -25,7 +25,6 @@ function readiness(
     external: {
       "claude-code": { state: "ready", implementationVersion: "1.0.0" },
       codex: { state: "ready", implementationVersion: "2.0.0" },
-      gemini: { state: "ready", implementationVersion: "3.0.0" },
     },
     managedCodex: { state: "ready" },
     platformTarget: "darwin-arm64",
@@ -101,7 +100,7 @@ describe("central Runtime resolver", () => {
     expect(
       resolveEffectiveRuntimeBinding(
         input({
-          agentPreference: { family: "external", id: "gemini" },
+          agentPreference: { family: "external", id: "claude-code" },
           providerConstraint: {
             kind: "requires-managed-runtime",
             runtimeId: "managed-codex",
@@ -111,7 +110,7 @@ describe("central Runtime resolver", () => {
       ),
     ).toMatchObject({
       status: "resolved",
-      binding: { family: "external", id: "gemini" },
+      binding: { family: "external", id: "claude-code" },
       decision: "explicit-external",
     });
   });

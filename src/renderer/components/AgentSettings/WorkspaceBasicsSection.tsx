@@ -80,7 +80,6 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
     'dsh': { installed: false },
     'claude-code': { installed: false },
     'codex': { installed: false },
-    'gemini': { installed: false },
   });
   // When selection is unavailable, preserve Agent intent and project the
   // configured/default Integrated Runtime for new Sessions.
@@ -142,7 +141,6 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
       const label = runtime === 'claude-code' ? 'Claude Code'
         : runtime === 'dsh' ? 'DSH'
         : runtime === 'codex' ? 'Codex'
-        : runtime === 'gemini' ? 'Gemini CLI'
         : 'MyAgents';
       toast.success(t('agentSettings.basics.runtimeChanged', { label }));
     } catch (err) {
@@ -442,7 +440,6 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
           {usesExternalCliConfiguration && (() => {
             const runtimeLabel = currentRuntime === 'claude-code' ? 'Claude Code'
               : currentRuntime === 'codex' ? 'Codex'
-              : currentRuntime === 'gemini' ? 'Gemini CLI'
               : currentRuntime;
             return (
               <p className="rounded-lg bg-[var(--accent-warm-subtle)] px-3.5 py-2.5 text-xs leading-relaxed text-[var(--ink-muted)]">
@@ -452,8 +449,8 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
           })()}
 
           {/* Issue #194 — proxy policy for external runtime subprocess.
-              Only relevant when the agent runs an external CLI (Codex / CC /
-              Gemini), so hidden for builtin. */}
+              Only relevant when the agent runs an external CLI (Codex / CC),
+              so hidden for builtin. */}
           {usesExternalCliConfiguration && agent && (() => {
             // Read current policy; default to 'myagents' for backwards compat.
             // runtimeConfig is on AgentConfig as a free-form record — keep the
@@ -709,7 +706,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
       )}
 
       {/* Plugins (PRD 0.2.17) — same shape as MCP row above. Hidden for
-       *  external CLI runtimes (CC/Codex/Gemini manage their own plugins).
+       *  external CLI runtimes (CC/Codex manage their own plugins).
        *  Renders nothing when no plugin is globally visible — avoids an
        *  empty "未启用插件" row for users who haven't installed any. */}
       {usesProductConfiguration && visiblePlugins.length > 0 && (

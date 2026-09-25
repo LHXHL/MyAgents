@@ -20,10 +20,10 @@ describe('buildRuntimeChangePatch', () => {
     const patch = buildRuntimeChangePatch(
       {
         source: 'managed-provider',
-        model: 'gemini-3.1-pro-preview',
-        permissionMode: 'autoEdit',
+        model: 'claude-sonnet-4-5',
+        permissionMode: 'bypassPermissions',
         reasoningEffort: 'xhigh',
-        additionalArgs: ['--acp'],
+        additionalArgs: ['--verbose'],
       },
       'codex',
     );
@@ -46,7 +46,7 @@ describe('buildRuntimeChangePatch', () => {
   it('preserves envPolicy across runtime switches', () => {
     const patch = buildRuntimeChangePatch(
       {
-        model: 'gemini-3.1-pro-preview',
+        model: 'claude-sonnet-4-5',
         envPolicy: { proxy: 'terminal' },
       },
       'codex',
@@ -57,7 +57,7 @@ describe('buildRuntimeChangePatch', () => {
 
   it('returns runtimeConfig: undefined when scrub leaves an empty object', () => {
     const patch = buildRuntimeChangePatch(
-      { model: 'gemini-3.1-pro-preview' },
+      { model: 'claude-sonnet-4-5' },
       'codex',
     );
     expect(patch.runtimeConfig).toBeUndefined();
@@ -65,7 +65,7 @@ describe('buildRuntimeChangePatch', () => {
 
   it('does not mutate the input runtimeConfig', () => {
     const input = {
-      model: 'gemini-3.1-pro-preview',
+      model: 'claude-sonnet-4-5',
       envPolicy: { proxy: 'terminal' as const },
     };
     const snapshot = JSON.parse(JSON.stringify(input));

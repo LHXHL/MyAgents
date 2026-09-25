@@ -1260,7 +1260,7 @@ fn runtime_from_preference(
     match (preference.family.as_str(), preference.id.as_str()) {
         ("integrated", "claude-agent-sdk") => Ok(("builtin".to_string(), None)),
         ("integrated", "dsh") => Ok(("dsh".to_string(), Some("integrated".to_string()))),
-        ("external", runtime @ ("claude-code" | "codex" | "gemini")) => {
+        ("external", runtime @ ("claude-code" | "codex")) => {
             Ok((runtime.to_string(), Some("system-cli".to_string())))
         }
         (family, id) => Err(format!("unsupported runtimePreference {family}/{id}")),
@@ -1375,7 +1375,6 @@ pub(crate) fn max_permission_for_runtime(runtime: Option<&str>) -> &'static str 
     match runtime {
         Some("claude-code") => "bypassPermissions",
         Some("codex") => "no-restrictions",
-        Some("gemini") => "yolo",
         _ => "fullAgency",
     }
 }
@@ -1384,7 +1383,6 @@ fn default_permission_for_runtime(runtime: Option<&str>) -> &'static str {
     match runtime {
         Some("claude-code") => "manual",
         Some("codex") => "full-auto",
-        Some("gemini") => "autoEdit",
         _ => "auto",
     }
 }
@@ -1399,7 +1397,6 @@ fn is_permission_for_runtime(runtime: Option<&str>, permission_mode: &str) -> bo
             permission_mode,
             "suggest" | "auto-edit" | "full-auto" | "no-restrictions"
         ),
-        Some("gemini") => matches!(permission_mode, "default" | "autoEdit" | "yolo" | "plan"),
         _ => matches!(permission_mode, "auto" | "plan" | "fullAgency" | "custom"),
     }
 }
@@ -1992,13 +1989,13 @@ mod tests {
         });
         let mut channel = base_channel();
         channel.overrides = Some(ChannelOverrides {
-            runtime: Some("gemini".to_string()),
+            runtime: Some("claude-code".to_string()),
             ..ChannelOverrides::default()
         });
 
         let config = channel.to_im_config(&agent);
 
-        assert_eq!(config.runtime.as_deref(), Some("gemini"));
+        assert_eq!(config.runtime.as_deref(), Some("claude-code"));
         assert_eq!(
             config.runtime_identity().runtime_source.as_deref(),
             Some("system-cli"),
@@ -2053,8 +2050,8 @@ mod tests {
         channel.overrides.as_mut().unwrap().permission_mode = Some("fullAgency".to_string());
         assert_eq!(channel.to_im_config(&agent).permission_mode, "full-auto");
 
-        agent.runtime = Some("gemini".to_string());
-        assert_eq!(channel.to_im_config(&agent).permission_mode, "autoEdit");
+        agent.runtime = Some("claude-code".to_string());
+        assert_eq!(channel.to_im_config(&agent).permission_mode, "manual");
     }
 
     #[test]
@@ -2323,11 +2320,11 @@ mod tests {
         let (runtime, projected) = project_runtime_for_provider(
             Some(CODEX_SUBSCRIPTION_PROVIDER_ID),
             Some("gpt-5.5-codex"),
-            Some("gemini".to_string()),
+            Some("claude-code".to_string()),
             Some(runtime_config),
         );
 
-        assert_eq!(runtime.as_deref(), Some("gemini"));
+        assert_eq!(runtime.as_deref(), Some("claude-code"));
         assert!(projected.is_none());
     }
 }

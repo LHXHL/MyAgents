@@ -6,7 +6,7 @@ const POLICY_JSON: &str =
     include_str!("../../src/shared/integrated-runtimes/distribution-policy.json");
 
 const INTEGRATED_RUNTIME_IDS: &[&str] = &["claude-agent-sdk", "dsh"];
-const EXTERNAL_RUNTIME_IDS: &[&str] = &["claude-code", "codex", "gemini"];
+const EXTERNAL_RUNTIME_IDS: &[&str] = &["claude-code", "codex"];
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -97,7 +97,7 @@ impl RuntimeDistributionPolicy {
             // carried by the Claude-SDK-capable distribution; a DSH-only
             // edition must leave incompatible Provider routes unavailable.
             ("codex", Some("managed-provider")) => self.allows_integrated("claude-agent-sdk"),
-            (runtime @ ("claude-code" | "codex" | "gemini"), _) => self.allows_external(runtime),
+            (runtime @ ("claude-code" | "codex"), _) => self.allows_external(runtime),
             _ => false,
         }
     }
@@ -184,8 +184,10 @@ mod tests {
             r#"{"schemaVersion":1,"allowedIntegratedRuntimes":[],"allowedExternalRuntimes":[],"defaultIntegratedRuntime":"dsh","selectorAvailability":"hidden"}"#,
             r#"{"schemaVersion":1,"allowedIntegratedRuntimes":["dsh"],"allowedExternalRuntimes":[],"defaultIntegratedRuntime":"claude-agent-sdk","selectorAvailability":"hidden"}"#,
             r#"{"schemaVersion":1,"allowedIntegratedRuntimes":["dsh"],"allowedExternalRuntimes":["pi"],"defaultIntegratedRuntime":"dsh","selectorAvailability":"hidden"}"#,
+            r#"{"schemaVersion":1,"allowedIntegratedRuntimes":["dsh"],"allowedExternalRuntimes":["gemini"],"defaultIntegratedRuntime":"dsh","selectorAvailability":"hidden"}"#,
         ] {
             assert!(RuntimeDistributionPolicy::parse(invalid).is_err());
         }
+        assert!(!policy().allows_runtime("gemini", Some("system-cli")));
     }
 }

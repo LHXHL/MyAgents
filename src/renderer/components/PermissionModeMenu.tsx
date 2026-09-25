@@ -24,8 +24,6 @@ const PERMISSION_MODE_ICONS: Partial<Record<string, LucideIcon>> = {
   dontAsk: Ban,
   acceptEdits: FilePenLine,
   bypassPermissions: LockOpen,
-  autoEdit: FilePenLine,
-  yolo: LockOpen,
   suggest: ShieldQuestion,
   'auto-edit': FilePenLine,
   'full-auto': ShieldCheck,

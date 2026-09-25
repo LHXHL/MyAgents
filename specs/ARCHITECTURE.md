@@ -17,7 +17,7 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端。React Renderer 提供
 | 内置 Node.js v24 | Global/Session Sidecar、Plugin Bridge、MCP Server、CLI 与随 App 运行的 Node 工具 |
 | Claude Agent SDK / 外部 CLI Runtime | 具体模型会话和工具执行；只能经 SessionEngine 进入产品 Session |
 
-正常安装中的 MyAgents 自有 Node 服务使用随 App 发布的 Node.js v24，无需用户安装系统 Node。核心服务的资源缺失回退、CLI 的严格资源定位，以及用户工具的 PATH 优先级分别由对应启动入口决定，见 [Bundled Node](./tech_docs/bundled_node.md)。SDK native binary、Codex、Claude Code、Gemini、CLIProxy、Document Worker 和 Media Worker 都是独立进程，不共享 Node 进程内状态。
+正常安装中的 MyAgents 自有 Node 服务使用随 App 发布的 Node.js v24，无需用户安装系统 Node。核心服务的资源缺失回退、CLI 的严格资源定位，以及用户工具的 PATH 优先级分别由对应启动入口决定，见 [Bundled Node](./tech_docs/bundled_node.md)。SDK native binary、Codex、Claude Code、CLIProxy、Document Worker 和 Media Worker 都是独立进程，不共享 Node 进程内状态。
 
 ## 全景架构
 
@@ -40,7 +40,7 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端。React Renderer 提供
 └──────────────┬──────────────┘  └──────────────────────┘  └──────────────────┘
                │ SessionEngine facade
 ┌──────────────▼───────────────────────────────────────────────────────────────┐
-│ builtin Claude Agent SDK · Integrated DSH · Claude Code · Codex · Gemini                    │
+│ builtin Claude Agent SDK · Integrated DSH · Claude Code · Codex                             │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -191,7 +191,7 @@ Record 的物理音轨与媒体时钟由 RecordingManager 持有；Media Worker 
 | SessionEngine | Node facade；builtin/external Runtime 的唯一 route-facing 入口 | [Multi-Agent Runtime](./tech_docs/multi_agent_runtime.md) |
 | Builtin Session | Node；Claude Agent SDK Query、queue、turn、transcript 与配置 owner 分层 | [Session](./tech_docs/session_architecture.md) |
 | Integrated DSH | Session Sidecar 中的 DSH adapter；原生 Runtime 生命周期、生成协议与不可变交付验证；保留有效结果、可选统计和 Shell 输出诊断；问答保留选项/自定义文字并按真实回执结算；任务树入口暂不开放；协作设置保留在隐藏开发者区域 | [DSH 集成、会话任务树与输出交付](./tech_docs/myagents_dsh_integrated_runtime.md) |
-| External Runtime | Node；Claude Code/Codex/Gemini adapter、进程与 normalized event | [Multi-Agent Runtime](./tech_docs/multi_agent_runtime.md) |
+| External Runtime | Node；Claude Code/Codex adapter、进程与 normalized event | [Multi-Agent Runtime](./tech_docs/multi_agent_runtime.md) |
 | Provider / OpenAI Bridge | Node + Rust credential owner；Provider route materialization 与协议转换 | [第三方 Provider](./tech_docs/third_party_providers.md) |
 | 托管 CLIProxy | Rust 拥有组件/账号目录/进程与执行 lease；原版 CLIProxy 拥有 OAuth/refresh/协议转换，SDK 仍属 builtin | [CLIProxy](./tech_docs/managed_cliproxy.md) |
 | Custom MCP OAuth | Node state store；Global scheduler 主动刷新，Session Sidecar 观察 credential revision | [冷启动](./tech_docs/sidecar_cold_start.md) |

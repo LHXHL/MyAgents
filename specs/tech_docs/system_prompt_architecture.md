@@ -3,7 +3,7 @@
 ## 文档职责
 
 本文记录 MyAgents 对话 Session 的系统上下文如何组成、由谁拥有、何时固化，以及
-Builtin Claude Agent SDK、Claude Code、Codex、Gemini、Integrated DSH 五条 Runtime 路径如何接收同一套
+Builtin Claude Agent SDK、Claude Code、Codex、Integrated DSH 四条 Runtime 路径如何接收同一套
 产品指令。
 
 本文拥有以下内容：
@@ -36,7 +36,7 @@ Runtime 原生 base/preset
         +
 MyAgents 产品级 Prompt append
         +
-Workspace 指令（CLAUDE.md / rules / AGENTS.md / GEMINI.md）
+Workspace 指令（CLAUDE.md / rules / AGENTS.md）
         +
 每轮动态 system-reminder（user message envelope，不是 system role）
 ```
@@ -45,9 +45,9 @@ Workspace 指令（CLAUDE.md / rules / AGENTS.md / GEMINI.md）
 
 | 来源                   | Owner / 权威实现                                                             | 生命周期                                              | 典型内容                                                    |
 | ---------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------- | ----------------------------------------------------------- |
-| Runtime 原生 Prompt    | Claude SDK / Claude Code / Codex / Gemini 自身及对应 adapter                 | Runtime 进程或 thread 创建时                          | 工具协议、安全规则、Runtime 自身行为约定                    |
+| Runtime 原生 Prompt    | Claude SDK / Claude Code / Codex / DSH 自身及对应 adapter                 | Runtime 进程或 thread 创建时                          | 工具协议、安全规则、Runtime 自身行为约定                    |
 | MyAgents 产品级 append | `src/server/system-prompt.ts`、`system-prompt-cli-tools.ts`                  | Session Query / external thread 创建或 replacement 时 | MyAgents 身份、入口场景、产品能力发现提示                   |
-| Workspace 指令         | Workspace 文件；加载兼容层为 `src/server/runtimes/workspace-instructions.ts` | Runtime 启动时读取，或由 Runtime 原生发现             | `CLAUDE.md`、`.claude/rules/*.md`、`AGENTS.md`、`GEMINI.md` |
+| Workspace 指令         | Workspace 文件；加载兼容层为 `src/server/runtimes/workspace-instructions.ts` | Runtime 启动时读取，或由 Runtime 原生发现             | `CLAUDE.md`、`.claude/rules/*.md`、`AGENTS.md` |
 | 动态 Reminder          | 对应业务 owner + `src/shared/systemReminder.ts`                              | 每个需要补充上下文的 Turn                             | Goal、Task、浮球、群聊、Space、Heartbeat 等动态事实         |
 
 不要把四者都叫作“System Prompt”：`system-reminder` 在传输上仍是 user message，
@@ -62,7 +62,7 @@ Workspace 指令可能由 Runtime 原生加载，Codex 的 MyAgents append 则�
 `src/server/system-prompt.ts` 是产品级 Prompt 的唯一中央 assembler。它先用
 `buildProductSessionPrompt()` 生成共同的场景/能力内容，再由两个公开出口投送：
 
-- `buildSystemPromptAppend()` 为 Builtin/Claude Code/Codex/Gemini 保留原有整串 append；
+- `buildSystemPromptAppend()` 为 Builtin/Claude Code/Codex 保留原有整串 append；
 - `buildDshSystemContext()` 为 Integrated DSH 输出有名字、顺序和 scope 的
   `SystemContextSnapshot`，避免把产品变化重新硬编码进 Runtime。
 
@@ -169,7 +169,6 @@ Prompt 中出现一个能力名称，不等于真实 Tool 已被注册或授权�
 | Builtin Claude Agent SDK | Claude Code preset + `systemPrompt.append`                  | `settingSources: ['project']` 原生读取项目配置；全局启用 Skill 先投影到项目目录                               |
 | Claude Code CLI          | 临时文件 + `--append-system-prompt-file`                    | Claude Code 原生发现 `CLAUDE.md` / rules                                                                      |
 | Codex                    | `thread/start` / `thread/resume` 的 `developerInstructions` | Codex 原生发现 `AGENTS.md`，并将 `CLAUDE.md` 配为 fallback；MyAgents 另外把 `.claude/rules/*.md` 格式化后追加 |
-| Gemini                   | 写入 per-session `GEMINI_SYSTEM_MD`                         | 有 `GEMINI.md` 时原生加载；否则注入 `CLAUDE.md + .claude/CLAUDE.md + rules`，再否则 fallback 到 `AGENTS.md`   |
 | Integrated DSH           | 协议 `2.3.0` 保留的 `systemContext.sections/contexts`        | DSH 每目录互斥加载 `CLAUDE.md` → `AGENTS.override.md` → `AGENTS.md`；Host 仅冻结 `.claude/CLAUDE.md` 与 rules companion supplement |
 
 External Runtime 的兼容读取拒绝 symlink，并限制递归深度、文件数量、单文件大小和总
@@ -207,10 +206,6 @@ SDK 默认会记录并跨 resume 复用 system prompt；Builtin 显式关闭该�
 - Claude Code：写入有界生命周期的临时文件并使用
   `--append-system-prompt-file`；保留 Claude Code 默认 preset 和 OAuth/Keychain 行为。
 - Codex：使用 `developerInstructions`，新建与 resume thread 都走同一字段。
-- Gemini：`GEMINI_SYSTEM_MD` 会整体替换内置 Prompt，因此先导出并缓存当前 Gemini
-  版本的 base prompt，再生成“MyAgents + Workspace + Gemini base”的 deterministic
-  per-session 文件。Windows `.cmd` grandchild 可能晚于父进程读取该文件，所以进程退出时
-  不立即删除；只由 age-based GC 清理 stale 文件。base 版本缓存独立保留。
 
 ### Integrated DSH
 
@@ -343,10 +338,9 @@ badge、visible tail、标题、预览、搜索和测试 Checklist。
 | `src/server/utils/cli-tools-registry.ts`           | 用户 CLI 工具注册表的 Prompt projection 与缓存                        |
 | `src/server/agent-session.ts`                      | Builtin SDK systemPrompt append、persistent Query 生命周期            |
 | `src/server/runtimes/external-session.ts`          | External Runtime 的统一组装、Workspace merge、Runtime-specific append |
-| `src/server/runtimes/workspace-instructions.ts`    | Codex/Gemini Workspace 指令兼容读取与安全上限                         |
+| `src/server/runtimes/workspace-instructions.ts`    | Codex 指令兼容读取、DSH companion 补充与安全上限                       |
 | `src/server/runtimes/claude-code.ts`               | Claude Code append-system-prompt 临时文件投送                         |
 | `src/server/runtimes/codex.ts`                     | Codex developerInstructions 投送                                      |
-| `src/server/runtimes/gemini.ts`                    | Gemini base 提取、合并文件与 `GEMINI_SYSTEM_MD` 生命周期              |
 | `src/shared/systemReminder.ts`                     | 通用 reminder 解析、escaping 与共享 builders                          |
 | `src/renderer/components/SystemPromptsPanel.tsx`   | Workspace `CLAUDE.md` / rules 的用户编辑界面                          |
 | `src/server/system-prompt.unit.test.ts`            | 场景级产品 Prompt 回归                                                |

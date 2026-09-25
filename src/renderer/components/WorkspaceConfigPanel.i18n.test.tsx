@@ -174,7 +174,6 @@ describe('WorkspaceConfigPanel i18n', () => {
       builtin: { installed: true },
       'claude-code': { installed: true },
       codex: { installed: true },
-      gemini: { installed: false },
     });
     mocks.useAgentStatuses.mockReturnValue({
       refresh: vi.fn(),

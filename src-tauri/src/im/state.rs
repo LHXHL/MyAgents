@@ -166,13 +166,12 @@ pub(super) fn normalize_runtime_type(runtime: Option<&str>) -> String {
         Some("dsh") => "dsh".to_string(),
         Some("claude-code") => "claude-code".to_string(),
         Some("codex") => "codex".to_string(),
-        Some("gemini") => "gemini".to_string(),
         _ => "builtin".to_string(),
     }
 }
 
 pub(super) fn is_external_runtime_type(runtime: &str) -> bool {
-    matches!(runtime, "claude-code" | "codex" | "gemini")
+    matches!(runtime, "claude-code" | "codex")
 }
 
 pub(super) fn runtime_source_for_runtime(
@@ -202,7 +201,6 @@ pub(super) fn runtime_display_name(runtime: &str) -> &'static str {
         "dsh" => "DSH",
         "codex" => "Codex",
         "claude-code" => "Claude Code CLI",
-        "gemini" => "Gemini CLI",
         _ => "MyAgents Builtin SDK",
     }
 }
@@ -333,28 +331,6 @@ pub(super) fn runtime_permission_choices(runtime: &str) -> Vec<RuntimePermission
                 value: "dontAsk".to_string(),
                 label: "Don't Ask".to_string(),
                 description: "不弹出权限确认，未授权操作直接拒绝".to_string(),
-            },
-        ],
-        "gemini" => vec![
-            RuntimePermissionChoice {
-                value: "default".to_string(),
-                label: "Default".to_string(),
-                description: "每次工具调用都需要确认".to_string(),
-            },
-            RuntimePermissionChoice {
-                value: "autoEdit".to_string(),
-                label: "Auto Edit".to_string(),
-                description: "自动接受文件编辑,其他需确认".to_string(),
-            },
-            RuntimePermissionChoice {
-                value: "yolo".to_string(),
-                label: "YOLO".to_string(),
-                description: "跳过所有工具确认".to_string(),
-            },
-            RuntimePermissionChoice {
-                value: "plan".to_string(),
-                label: "Plan".to_string(),
-                description: "规划模式,只读不执行".to_string(),
             },
         ],
         _ => Vec::new(),
@@ -1236,8 +1212,8 @@ mod tests {
             "http://127.0.0.1:9527/api/runtime/models?type=codex&source=system-cli",
         );
         assert_eq!(
-            runtime_models_url(9527, "gemini", Some("managed-provider")),
-            "http://127.0.0.1:9527/api/runtime/models?type=gemini",
+            runtime_models_url(9527, "claude-code", Some("managed-provider")),
+            "http://127.0.0.1:9527/api/runtime/models?type=claude-code",
         );
     }
 
@@ -1256,7 +1232,7 @@ mod tests {
             Some("managed-provider"),
         );
         assert_eq!(
-            runtime_source_for_runtime("gemini", None).as_deref(),
+            runtime_source_for_runtime("claude-code", None).as_deref(),
             Some("system-cli"),
         );
         assert_eq!(runtime_source_for_runtime("builtin", None), None);

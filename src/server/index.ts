@@ -691,7 +691,7 @@ import { cancelSubscriptionLogin, getSubscriptionLoginState, startSubscriptionLo
 import type { BridgeHandler } from './openai-bridge/handler';
 import { registerBridgeSeedFn } from './bridge-cache';
 // title-generator is dynamically imported in the /api/title-generate handler
-// below — it value-imports the Claude Agent SDK + claude-code/codex/gemini
+// below — it value-imports the Claude Agent SDK + claude-code/codex
 // runtime classes, all of which are large. Pulling that into the Tier 0
 // startup graph delayed `/health` bind on cold start (cf. v0.2.0 Tier 0
 // goals) and crashed the sidecar before it could serve a 503 if the SDK
@@ -4604,7 +4604,7 @@ async function main() {
         // SAME path the post-turn auto trigger uses — see session-title-service.ts.
         // Runtime is derived from session state; model/providerEnv from the request.
         // External runtimes ignore providerEnv (CLI-owned auth) and take agentDir
-        // as workspace so Gemini/Codex inherit project context.
+        // as workspace so Codex inherits project context.
         const activeRuntime = getActiveRuntimeType();
         const { generateAndApplyTitle } = await import(
           './session-title-service'
@@ -11592,7 +11592,7 @@ description: >
           // during a single long turn, so this check is the authoritative one.
           // Manual updates (user clicked the button) bypass — explicit user
           // intent is allowed to queue behind the active turn as expected.
-          // Busy gate is runtime-aware: external (Codex/CC/Gemini) sessions track
+          // Busy gate is runtime-aware: external (Codex/CC) sessions track
           // in-flight work via isExternalSessionActive(); builtin via isSessionBusy().
           const engine = getSessionEngine();
           if (isAuto && engine.isBusy()) {
@@ -11637,10 +11637,10 @@ description: >
           // Inject + run the <MEMORY_UPDATE> turn on the session's ACTUAL runtime.
           // Memory update is unattended, so it always runs at the runtime's max agency
           // (builtin 'fullAgency' / Codex 'no-restrictions' / CC 'bypassPermissions' /
-          // Gemini 'yolo') so Bash/file tools (git commit, file writes) don't block on
+          // Codex 'no-restrictions') so Bash/file tools (git commit, file writes) don't block on
           // approval.
           //
-          // Routing is load-bearing: an external (Codex/CC/Gemini) session driven
+          // Routing is load-bearing: an external (Codex/CC) session driven
           // through the builtin SDK path asks Claude Code to *resume* a session it never
           // created → "No conversation found with session ID" → 0 turns, no assistant
           // output, leaving an orphaned <MEMORY_UPDATE> user bubble and the memory

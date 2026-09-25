@@ -1,6 +1,6 @@
 # Multi-Agent Runtime 架构
 
-> 本文定义 builtin、Claude Code、Codex 与 Gemini 如何接入同一 Product Session。Runtime 的安装版本、完整 RPC schema 和字段枚举以锁文件、生成类型与实现为准，不在本文维护副本。
+> 本文定义 builtin、DSH、Claude Code 与 Codex 如何接入同一 Product Session。Runtime 的安装版本、完整 RPC schema 和字段枚举以锁文件、生成类型与实现为准，不在本文维护副本。
 
 ## 1. 总体边界
 
@@ -10,8 +10,7 @@ routes
       -> builtin-adapter.ts  -> agent-session.ts       -> Claude Agent SDK
       -> external-adapter.ts -> external-session.ts    -> AgentRuntime
                                                          |- Claude Code CLI
-                                                         |- Codex app-server
-                                                         `- Gemini ACP
+                                                         `- Codex app-server
 ```
 
 `SessionEngine` 是 route 面向当前 Session Runtime 的唯一 facade。Route 只做请求校验和响应映射，不自行判断 builtin/external，也不直接 import Runtime owner。
@@ -169,15 +168,7 @@ Codex Server → Client request 使用显式 allowlist。升级 app-server 时�
 
 工具与子 Agent item 在 adapter 内映射为标准 tool/content blocks：command、file change、MCP、dynamic tool、web search、image view/generation 与 collab-agent 都走同一 transcript/attachment pipeline。raw protocol payload 不越过 adapter，也不写日志。
 
-### 5.4 Gemini
-
-Gemini 使用 ACP JSON-RPC stdio，并保持一个可多轮使用的进程。adapter 负责 initialize/session new/prompt、模型与 mode RPC、权限/提问请求及 terminal 映射。
-
-系统提示词通过当前 Product Session 的 deterministic `GEMINI_SYSTEM_MD` 临时文件合并注入，不能修改用户文件或使用跨 Session 的共享文件。进程退出不删除该文件：Windows `.cmd` launcher 退出不能证明 grandchild 已完成读取，迟到的旧进程 callback 也不能删除 retry 复用的同名文件；创建新 Session 文件时只清理超过一小时的 stale `session-*.md`。
-
-Gemini 模型与权限在 turn boundary 通过 native session RPC 应用；reasoning effort 未建立等价能力时返回 unsupported，不用 prompt 或重启伪装支持。
-
-### 5.5 Integrated DSH
+### 5.4 Integrated DSH
 
 `integrated-runtimes/dsh/runtime.ts` 通过 `RuntimeProcessHost` 和生成 client 连接一个 DSH generation。Runtime 独占原生 Session/Turn、DSH 工具流水线、permission revision 与 ProductWork；Host 的 `SessionStore` 独占 Product transcript、冻结 identity 和 mutation/input journal。原生 receipt 决定输入是否被消费；legacy Session 仍等待 Product durable commit，V2 则更新 canonical projection 并保留执行恢复 journal，正文由后台 writer 提交。RPC 成功本身不能推断 DSH 输入已进入对话。
 
@@ -240,7 +231,7 @@ model、permission、reasoning 与 capability changes 都先进入 source-aware 
 
 ### 6.4 pre-warm
 
-Pre-warm 只适用于可保持 idle process 的 Codex/Gemini；Claude Code 每 turn 启动进程，不预热。
+Pre-warm 只适用于可保持 idle process 的 Codex/DSH；Claude Code 每 turn 启动进程，不预热。
 
 pre-warm 建立真实、可由后续首条消息复用的 process/thread，但不把 Session 标为 running、不启动 per-turn watchdog，也不凭空发布 Product metadata。首个真实 turn 在统一 materialization helper 中提交 metadata 和 user transcript。
 
@@ -302,7 +293,7 @@ Runtime tool catalog 是独立的可变 capability snapshot；只包含当前 na
 
 CLI 诊断命令与真实 Session 启动使用同一个 env resolver 和 adapter probe。命令入口见 [`cli_architecture.md`](cli_architecture.md)。
 
-DSH 与 Codex/Gemini 共用 `runtimeSupportsPrewarm()`，先建立 Product Session/config owner 再预热。DSH compact 使用 `session/compact`；reasoning delta 若无独立 block lifecycle，由 Host 补齐 start/stop 后投影，保持与 text/tool 的顺序。
+DSH 与 Codex 共用 `runtimeSupportsPrewarm()`，先建立 Product Session/config owner 再预热。DSH compact 使用 `session/compact`；reasoning delta 若无独立 block lifecycle，由 Host 补齐 start/stop 后投影，保持与 text/tool 的顺序。
 
 ## 10. Context 用量
 
@@ -312,7 +303,6 @@ Context 指示器展示最近一次主模型 API 调用的 input-side 占用，�
 |---|---|
 | Anthropic（builtin / Claude Code） | ordinary input + cache read + cache creation |
 | OpenAI（Codex） | Runtime 已包含 cached 的 input total，不再重复相加 |
-| Gemini | Runtime 提供的 per-request input tokens |
 
 分母优先使用 Runtime 报告的窗口，其次模型注册表，最后产品默认值。OpenAI Bridge 必须先把 total input 拆成与 Anthropic 互斥的 ordinary/read/create 分区，防止下游重复计算 cache。
 
@@ -339,7 +329,6 @@ native compact 是 capability，不是所有 Runtime 的共同功能。builtin �
 | `src/server/runtimes/factory.ts` | Runtime detection 与工厂 |
 | `src/server/runtimes/claude-code.ts` | Claude Code NDJSON adapter |
 | `src/server/runtimes/codex.ts` | Codex app-server adapter |
-| `src/server/runtimes/gemini.ts` | Gemini ACP adapter |
 | `src/server/runtimes/external-session.ts` | external public facade |
 | `src/server/runtimes/external-session/` | external lifecycle、queue、turn、config、content、interactive 与 extension owners |
 | `src/server/project-capabilities.ts` | Project/global Skill 与 Command winner snapshot |

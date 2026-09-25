@@ -16,20 +16,18 @@ import {
 } from '../../shared/integrated-runtimes/distribution-policy';
 
 // Runtime types that have backend implementations (not just type definitions)
-const IMPLEMENTED_RUNTIMES = new Set<RuntimeType>(['builtin', 'dsh', 'claude-code', 'codex', 'gemini']);
+const IMPLEMENTED_RUNTIMES = new Set<RuntimeType>(['builtin', 'dsh', 'claude-code', 'codex']);
 
 // ─── Runtime icon assets ───
 import myagentsIcon from '@/assets/runtime-icons/myagents.png';
 import claudeCodeIcon from '@/assets/runtime-icons/claude-code.png';
 import codexIcon from '@/assets/runtime-icons/codex.png';
-import geminiIcon from '@/assets/runtime-icons/gemini.png';
 
 const RUNTIME_ICON_MAP: Record<RuntimeType, string> = {
   builtin: myagentsIcon,
   dsh: myagentsIcon,
   'claude-code': claudeCodeIcon,
   codex: codexIcon,
-  gemini: geminiIcon,
 };
 
 // ─── Runtime display metadata ───
@@ -43,7 +41,6 @@ const RUNTIME_OPTIONS: {
     { type: 'dsh', name: 'MyAgents (DSH)', group: 'integrated' },
     { type: 'claude-code', name: 'Claude Code CLI', group: 'external' },
     { type: 'codex', name: 'Codex CLI', group: 'external' },
-    { type: 'gemini', name: 'Gemini CLI', group: 'external' },
   ];
 
 function RuntimeIcon({ type, size = 14 }: { type: RuntimeType; size?: number }) {

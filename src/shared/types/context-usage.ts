@@ -1,7 +1,7 @@
 /**
  * 归一化的「当前 context 窗口用量」快照（PRD 0.2.32）。
  *
- * 四个 runtime（builtin / Codex / Claude Code / Gemini）取数姿势不同，但都收敛到这
+ * 当前 runtime（builtin / DSH / Codex / Claude Code）取数姿势不同，但都收敛到这
  * 一个 shape，前端用单一 `<ContextUsageIndicator>` 消费。归一化逻辑只在
  * `src/shared/contextUsage.ts::computeContextUsage` 一处纯函数里。
  *
@@ -20,7 +20,7 @@ export interface ContextUsage {
   /** `min(100, contextTokens / contextWindow * 100)`。 */
   usedPercent: number;
   /** 产出该快照的 runtime。 */
-  source: 'builtin' | 'dsh' | 'codex' | 'claude-code' | 'gemini';
+  source: 'builtin' | 'dsh' | 'codex' | 'claude-code';
   /** 窗口来源：runtime 自报 / registry 查到 / 200K 兜底。用于卡片底部弱灰说明。 */
   windowSource: 'runtime' | 'registry' | 'default';
   /** 当前模型 id（已 strip `[1m]` 之前的原值，仅展示用）。 */

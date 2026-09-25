@@ -1162,85 +1162,6 @@ function resolveBestCodexModel(tool: FilePatchToolLike): FilePatchRenderModel | 
   return best;
 }
 
-function renderModelFromGeminiResult(tool: FilePatchToolLike, input: ToolInputRecord): FilePatchRenderModel | null {
-  const displayName = getInputStringProp(input, '_displayName');
-  const geminiKind = getInputStringProp(input, '_geminiKind');
-  if ((displayName !== 'write_file' && displayName !== 'replace') || geminiKind !== 'edit') return null;
-  if (!tool.result) return null;
-
-  const rows: DiffRow[] = [];
-  let oldPath = '';
-  let newPath = '';
-  let lineIndex = 0;
-  let oldLine = 1;
-  let newLine = 1;
-  let added = 0;
-  let removed = 0;
-  let hasHiddenRows = false;
-  let valid = true;
-  const scan = scanContentLinesBounded(
-    tool.result,
-    FILE_PATCH_MAX_CHARACTER_BUDGET,
-    FILE_PATCH_MAX_ROW_BUDGET + 2,
-    (line) => {
-    if (lineIndex === 0) {
-      oldPath = line.startsWith('--- ') ? line.slice(4) : '';
-      lineIndex += 1;
-      return;
-    }
-    if (lineIndex === 1) {
-      newPath = line.startsWith('+++ ') ? line.slice(4) : '';
-      lineIndex += 1;
-      return;
-    }
-    lineIndex += 1;
-    const key = rowKey('gemini', rows.length);
-    const push = (row: Omit<DiffRow, 'key'>): void => {
-      if (rows.length < FILE_PATCH_MAX_ROW_BUDGET) rows.push({ ...row, key });
-      else hasHiddenRows = true;
-    };
-    if (line.startsWith('+')) {
-      push({ kind: 'add', newLine, marker: '+', text: line.slice(1) });
-      added += 1;
-      newLine += 1;
-    } else if (line.startsWith('-')) {
-      push({ kind: 'remove', oldLine, marker: '-', text: line.slice(1) });
-      removed += 1;
-      oldLine += 1;
-    } else if (line.startsWith(' ')) {
-      push({ kind: 'context', oldLine, newLine, marker: '', text: line.slice(1) });
-      oldLine += 1;
-      newLine += 1;
-    } else {
-      valid = false;
-    }
-    },
-  );
-  if (!scan.complete) hasHiddenRows = true;
-  if (lineIndex < 2 || !oldPath || oldPath !== newPath || !valid) return null;
-  const isCharacterTruncated = tool.result.length > FILE_PATCH_MAX_CHARACTER_BUDGET;
-
-  const change = renderChangeFromRows({
-    kind: displayName === 'write_file' ? 'write' : 'update',
-    path: getInputStringProp(input, 'file_path') ?? newPath,
-    viewKind: 'unified-diff',
-    rows,
-    rawPatch: hasHiddenRows || isCharacterTruncated ? '' : tool.result,
-    lineNumbers: 'relative',
-    hasHiddenContent: hasHiddenRows || isCharacterTruncated,
-    stats: { added, removed },
-  });
-  return {
-    kind: 'file_patch_render',
-    source: 'external',
-    ...(displayName === 'write_file' ? { writeMode: 'unknown' as const } : {}),
-    ...(cleanStatus(resolvePatchStatus(tool)) ? { status: cleanStatus(resolvePatchStatus(tool)) } : {}),
-    ...(change.hasHiddenContent ? { hasHiddenContent: true } : {}),
-    summary: summaryFromRenderChanges([change]),
-    changes: [change],
-  };
-}
-
 function renderModelFromBuiltinInput(tool: FilePatchToolLike, input: ToolInputRecord): FilePatchRenderModel | null {
   if (tool.name === 'Edit') {
     const oldText = getInputStringProp(input, 'old_string');
@@ -1495,9 +1416,6 @@ export function resolveFilePatchRenderModel(tool: FilePatchToolLike): FilePatchR
   if (codexModel) return mergeDescriptorMetadata(codexModel, descriptor, false);
 
   for (const input of resolveToolInputRecords(tool)) {
-    const gemini = renderModelFromGeminiResult(tool, input);
-    if (gemini) return mergeDescriptorMetadata(gemini, descriptor, false);
-
     const candidate = renderModelFromBuiltinInput(tool, input);
     if (candidate) return mergeDescriptorMetadata(candidate, descriptor, false);
   }

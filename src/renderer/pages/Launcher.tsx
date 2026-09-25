@@ -61,7 +61,6 @@ import {
   CC_PERMISSION_MODES,
   CODEX_PERMISSION_MODES,
   DSH_PERMISSION_MODES,
-  GEMINI_PERMISSION_MODES,
   isAgentRuntimeSelectorAvailable,
   resolveEffectiveRuntime,
 } from '../../shared/types/runtime';
@@ -267,7 +266,6 @@ export default function Launcher({
       dsh: { installed: false },
       'claude-code': { installed: false },
       codex: { installed: false },
-      gemini: { installed: false },
     },
   );
   useEffect(() => {
@@ -362,9 +360,8 @@ export default function Launcher({
     [providers, launcherRuntime],
   );
 
-  // Codex + Gemini models are dynamic (fetched from the CLI); CC models are static
+  // Codex models are dynamic (fetched from the CLI); CC models are static
   const [codexModels, setCodexModels] = useState<RuntimeModelInfo[]>([]);
-  const [geminiModels, setGeminiModels] = useState<RuntimeModelInfo[]>([]);
   useEffect(() => {
     if (launcherRuntime !== 'codex') {
       setCodexModels([]);
@@ -382,32 +379,12 @@ export default function Launcher({
       cancelled = true;
     };
   }, [launcherRuntime]);
-  useEffect(() => {
-    if (launcherRuntime !== 'gemini') {
-      setGeminiModels([]);
-      return;
-    }
-    let cancelled = false;
-    apiGetJson<{ models?: RuntimeModelInfo[] }>(
-      runtimeModelCatalogPath('gemini'),
-    )
-      .then((res) => {
-        if (!cancelled && res?.models?.length) setGeminiModels(res.models);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [launcherRuntime]);
-
   const launcherRuntimeModels: RuntimeModelInfo[] | undefined =
     launcherRuntime === 'claude-code'
       ? CC_MODELS
       : launcherRuntime === 'codex'
         ? codexModels
-        : launcherRuntime === 'gemini'
-          ? geminiModels
-          : undefined;
+        : undefined;
   const launcherRuntimePermissionModes: RuntimePermissionMode[] | undefined =
     launcherRuntime === 'dsh'
       ? DSH_PERMISSION_MODES
@@ -415,9 +392,7 @@ export default function Launcher({
         ? CC_PERMISSION_MODES
         : launcherRuntime === 'codex'
           ? CODEX_PERMISSION_MODES
-          : launcherRuntime === 'gemini'
-            ? GEMINI_PERMISSION_MODES
-            : undefined;
+          : undefined;
 
   // Derive provider for launcher — only select providers with valid credentials
   const launcherProvider = useMemo(() => {

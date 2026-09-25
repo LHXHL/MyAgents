@@ -51,10 +51,10 @@
  *
  * Scope:
  *   - Covers the builtin Claude Agent SDK path in `agent-session.ts`. External
- *     runtimes (Claude Code CLI / Codex / Gemini — `src/server/runtimes/`)
+ *     runtimes (Claude Code CLI / Codex — `src/server/runtimes/`)
  *     spawn via their own env-build (`runtimes/env-utils.ts`) and currently
  *     do NOT receive `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. That's acceptable
- *     for V1 because Codex/Gemini manage compaction differently and the CC
+ *     for V1 because Codex manages compaction differently and the CC
  *     CLI's `-p` mode respawns per turn. See runtimes/claude-code.ts if the
  *     coverage gap needs closing.
  */

@@ -27,10 +27,10 @@ describe("Session metadata Runtime binding birth", () => {
     });
 
     const external = createSessionMetadata("/workspace", {
-      runtimeBinding: { family: "external", id: "gemini" },
+      runtimeBinding: { family: "external", id: "claude-code" },
     });
     expect(external).toMatchObject({
-      runtime: "gemini",
+      runtime: "claude-code",
       runtimeSource: "system-cli",
     });
   });

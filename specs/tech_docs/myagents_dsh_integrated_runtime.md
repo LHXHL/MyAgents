@@ -80,7 +80,7 @@ At the original audit, the MyAgents worktree contained unrelated uncommitted Rec
 
 The current model is too narrow:
 
-- `RuntimeType` is `builtin | claude-code | codex | gemini`;
+- `RuntimeType` is `builtin | dsh | claude-code | codex`;
 - `RuntimeSource` is `system-cli | managed-provider`;
 - `SessionEngineKind` is `builtin | external`;
 - `getSessionEngine()` selects only Builtin or External;
@@ -137,7 +137,7 @@ Agent configuration stores user intent, not the final engine process:
 ```ts
 type AgentRuntimePreference =
   | { family: "integrated"; id: "claude-agent-sdk" | "dsh" }
-  | { family: "external"; id: "claude-code" | "codex" | "gemini" };
+  | { family: "external"; id: "claude-code" | "codex" };
 ```
 
 The type may reserve an internal future identifier for Pi in schema evolution, but Batch 3 must not show or accept Pi as a selectable value.
@@ -193,7 +193,7 @@ type EffectiveRuntimeBinding =
     }
   | {
       family: "external";
-      id: "claude-code" | "codex" | "gemini";
+      id: "claude-code" | "codex";
       implementationVersion?: string;
     };
 ```
@@ -211,7 +211,7 @@ Legacy mapping:
 | `builtin` with no managed Provider                         | integrated / Claude Agent SDK    |
 | `builtin` + `codex-sub`                                    | managed-provider / managed Codex |
 | `codex + managed-provider`                                 | managed-provider / managed Codex |
-| `claude-code`, `codex` or `gemini` + missing/system source | matching external binding        |
+| `claude-code` or `codex` + missing/system source | matching external binding        |
 
 Unknown or illegal combinations are quarantined as read-only compatibility errors. They do not silently become Claude SDK.
 
@@ -225,7 +225,7 @@ Introduce a validated distribution policy:
 interface AgentRuntimeDistributionPolicy {
   schemaVersion: 1;
   allowedIntegratedRuntimes: Array<"claude-agent-sdk" | "dsh">;
-  allowedExternalRuntimes: Array<"claude-code" | "codex" | "gemini">;
+  allowedExternalRuntimes: Array<"claude-code" | "codex">;
   defaultIntegratedRuntime: "claude-agent-sdk" | "dsh";
   selectorAvailability: "always" | "labs" | "hidden";
 }
@@ -705,13 +705,13 @@ If fork Product staging fails, the Host persists an abort decision before asking
 Reuse the current selector placement, grouped as:
 
 - Integrated: MyAgents (Claude Agent SDK), MyAgents (DSH);
-- External CLI: Claude Code, Codex, Gemini.
+- External CLI: Claude Code, Codex.
 
 Managed Codex is not listed. Pi is not listed until integrated.
 
 Each item uses the readiness result from the resolver/artifact verifier: ready, setup required, update required, unavailable, incompatible or experimental.
 
-H5 keeps this taxonomy intact in the shared `RuntimeSelector`: DSH appears in the Integrated group, while Claude Code, Codex and Gemini remain External CLI. The Rust detection owner resolves the installed application resource directory, reads the committed DSH lock and verifies the supported target, sealed outer handoff digest, nested Runtime manifest digest, compatibility digest, required entrypoints and platform claim before returning an installed result. The accepted Batch 3 artifact is intentionally labelled `experimental` / `unverified-dev-runtime`; missing, malformed, digest-mismatched or platform-invalid resources are unavailable and cannot admit a Chat or Launcher send. Session admission then runs the public outer verifier with its combined Runtime self-check report, which binds the complete nested inventory before spawn. The Renderer does not infer readiness from a directory or executable alone.
+H5 keeps this taxonomy intact in the shared `RuntimeSelector`: DSH appears in the Integrated group, while Claude Code and Codex remain External CLI. The Rust detection owner resolves the installed application resource directory, reads the committed DSH lock and verifies the supported target, sealed outer handoff digest, nested Runtime manifest digest, compatibility digest, required entrypoints and platform claim before returning an installed result. The accepted Batch 3 artifact is intentionally labelled `experimental` / `unverified-dev-runtime`; missing, malformed, digest-mismatched or platform-invalid resources are unavailable and cannot admit a Chat or Launcher send. Session admission then runs the public outer verifier with its combined Runtime self-check report, which binds the complete nested inventory before spawn. The Renderer does not infer readiness from a directory or executable alone.
 
 Developer Settings also exposes `config.defaultIntegratedRuntime`, with options derived only from the build policy's allowed Integrated Runtimes. The override is used for new ordinary-provider Session birth when the selector is unavailable; an absent, malformed or no-longer-allowed value falls back to the build default. Changing it never rewrites an existing frozen Session. A one-runtime distribution keeps the control disabled at its sole admitted value.
 
@@ -962,7 +962,7 @@ Each step updates an implementation ledger in this document or a linked dev plan
 
 ### 21.2 Current implementation evidence
 
-DSH Bash approval receives optional ephemeral `schema.display` from the Runtime with the actual command, sealed working directory and optional description. The DSH adapter projects it as `PermissionOperationDisplay` alongside the unchanged authorization summary; live and replayed `permission:request` carry it without the legacy 500-character truncation. The shared card uses these details only when supplied and explains that Always Allow covers other Bash commands in this workspace for the current Session while its rule is valid. Claude SDK, Claude Code, Codex and Gemini continue using their existing summary rendering. Permission decisions and durable matching are unchanged; display content is not added to diagnostic logs.
+DSH Bash approval receives optional ephemeral `schema.display` from the Runtime with the actual command, sealed working directory and optional description. The DSH adapter projects it as `PermissionOperationDisplay` alongside the unchanged authorization summary; live and replayed `permission:request` carry it without the legacy 500-character truncation. The shared card uses these details only when supplied and explains that Always Allow covers other Bash commands in this workspace for the current Session while its rule is valid. Claude SDK, Claude Code and Codex continue using their existing summary rendering. Permission decisions and durable matching are unchanged; display content is not added to diagnostic logs.
 
 The permission-display closure consumes clean DSH source `23bb0dc2824a74ba92c54bdc16fc0b7ad8aaa9cf`, Runtime `5f2e9e66689d876a13e9e90db7a82007e89b3f3754f2dcfdd63e19616121ded1`, compatibility `eb9ffb1f6123762401a4c855e6c3ac51ea468ef32977d0c0e2e1de5509f101f2`, and immutable official handoff `a46db0a8888e150981ccd031138e416757126beb6d6db978cba3af3526189515`. Protocol `2.5.0` and its generated client remain unchanged. DSH typecheck/lint/build and all 649 tests pass; the packed composition checks actual Bash permission details before publication. Host typecheck/lint, complete deterministic unit/DOM/integration suites, classification/build-script gates, four production builds, staged-resource/freshness verification, and the two-scenario native start/restart-resume smoke pass. Regression coverage includes long commands, unchanged legacy card rendering, exact decision identity, live/replayed display, and display-free durable permission rules. Three-platform claims remain `implementation-complete_pending-native-validation`; this does not claim packaged manual or full cross-platform native acceptance.
 
@@ -984,7 +984,7 @@ The restart-safe permission refresh consumes handoff `ae03ee3086571513b6c50c385b
 
 The subsequent Session-surface audit treats `integrated` as a first-class non-builtin SessionEngine kind across IM, Heartbeat and Memory, and preserves `RuntimeSource:'integrated'` through Task validation, Cron transport and Sidecar birth. Inbox delivery now requires a parseable positive target acknowledgement. Native DSH/Codex fork targets use a caller-owned Product Session ID so a lost HTTP response can be reconciled without creating an unreachable branch; DSH rewind and retry use the same restore-and-classify rule already required for Codex. These are Host integration semantics and do not add a second DSH conversation owner.
 
-The DSH first-response path shares the persistent-Runtime prewarm entry with Codex and Gemini only for an existing native Session resume. A new or config-materialized Product Session with no `runtimeSessionId` remains a draft: model, permission and reasoning choices may update Product configuration, but prewarm does not call DSH `session/create`. The first admitted Product turn creates the native DSH Session under the already-stable Product identity and persists that native id for later resume. Pending Product identity materialization also never copies a provisional DSH native id across Product ids, because DSH persistence is scoped by that Product identity. A historical zero-message DSH draft with no pending root operation clears its pre-turn native binding during restore; any Session with Product history or pending work remains untouched and must resume exact durable truth. Existing DSH Sessions still prewarm their exact native resume and extension activation when the Chat surface becomes ready. The regression path covers prewarm before and after config materialization, legacy zero-message cleanup, one native birth at first send, native-id persistence, and exact existing-Session resume. Exact Node/npm `24.14.0` / `11.15.0` typecheck, lint/dependency checks, 29 build-script tests, the complete 634-file / 5,553-test deterministic suite, all four production builds, staged DSH resource verification, and the two-scenario native Runtime start/restart-resume smoke pass. DSH may emit reasoning as delta-only protocol events; the Host synthesizes the Product thinking lifecycle before projection, closes it at every content boundary, and coalesces only same-index reasoning chunks through the existing bounded SSE window. Turn telemetry records the first thinking-or-text delta as the actual first model output and also records separate first-thinking and first-text timings. These are Host lifecycle/projection rules; they do not alter DSH conversation authority or the native protocol contract.
+The DSH first-response path shares the persistent-Runtime prewarm entry with Codex only for an existing native Session resume. A new or config-materialized Product Session with no `runtimeSessionId` remains a draft: model, permission and reasoning choices may update Product configuration, but prewarm does not call DSH `session/create`. The first admitted Product turn creates the native DSH Session under the already-stable Product identity and persists that native id for later resume. Pending Product identity materialization also never copies a provisional DSH native id across Product ids, because DSH persistence is scoped by that Product identity. A historical zero-message DSH draft with no pending root operation clears its pre-turn native binding during restore; any Session with Product history or pending work remains untouched and must resume exact durable truth. Existing DSH Sessions still prewarm their exact native resume and extension activation when the Chat surface becomes ready. The regression path covers prewarm before and after config materialization, legacy zero-message cleanup, one native birth at first send, native-id persistence, and exact existing-Session resume. Exact Node/npm `24.14.0` / `11.15.0` typecheck, lint/dependency checks, 29 build-script tests, the complete 634-file / 5,553-test deterministic suite, all four production builds, staged DSH resource verification, and the two-scenario native Runtime start/restart-resume smoke pass. DSH may emit reasoning as delta-only protocol events; the Host synthesizes the Product thinking lifecycle before projection, closes it at every content boundary, and coalesces only same-index reasoning chunks through the existing bounded SSE window. Turn telemetry records the first thinking-or-text delta as the actual first model output and also records separate first-thinking and first-text timings. These are Host lifecycle/projection rules; they do not alter DSH conversation authority or the native protocol contract.
 
 The runtime-capability closure consumes source `ec2ab38b465995a6844bb71f78780fccea471041`, Runtime `2c08c37173e5f84e7296fae5ea41ae9054aff247b1656400a25c9b08db8dc270`, compatibility `c579ea3ab37616fa2497453a6015651268f8929217fe3fa3b86f257f0264254e`, and handoff `441d46bb88cc66d410d2f989e597fb66bf3afa47bb55b7a2afd8a2517c0739bd`. The shared Product Agent compiler now targets the selected kernel explicitly: Managed Codex retains its precise unsupported diagnostics, while Integrated DSH preserves per-role `tools`, `disallowedTools`, and `maxTurns` in the declarative snapshot. DSH executes root, foreground-child, and background-child tools through the common Product permission/Hook/Task/Plan plane; Explore follows the Claude Code-style read-oriented prompt with Bash available, general inherits the eligible parent catalog, and custom roles may only narrow the parent surface. Canonical Web DNS/transport behavior is compatible with bundled Node `24.14.0`, and historical DSH reasoning is projected at its durable content boundary instead of being accumulated into a synthetic trailing Think block. The source-bound pre-artifact report is `a7ef44373af894fd099d1621c6b60cfc256d6f2afd6082461560ce1daddab53b`; all three platform claims remain `implementation-complete_pending-native-validation` for these exact bytes.
 
@@ -1598,8 +1598,7 @@ The new Dev Agent verified the earlier internal CLI fix and reported independent
 The Host's DeepSeek WebSearch binding now follows the same Anthropic Messages profile and base URL
 used by DSH execution. The Admin dispatcher forwards the already implemented `task start`, `stop`
 and `runs` handlers. `runtime list/describe dsh` reports the pinned DSH release instead of the
-internal Runtime manifest's `0.0.0`; Gemini model-discovery failure leaves installation and
-permission description available. Rust task-comment errors use the existing structured error
+internal Runtime manifest's `0.0.0`. Rust task-comment errors use the existing structured error
 envelope, and inline Record tags preserve internal hyphens. CLI status labels the global default
 Provider and the observed current-Session MCP state by scope.
 
@@ -1635,9 +1634,7 @@ Provider error code and gives retry or known-URL WebFetch guidance. A separate c
 search against the same configured route returned ten results, so the report's single failure
 does not establish that WebSearch is universally unavailable. No automatic provider retry or
 search fallback was introduced. An Agent's explicit DeepSeek selection can coexist with an
-unset global fallback. The report's Gemini item was not rerun on this build; the local log
-shows only an earlier pre-build failure, while the current describe degradation unit test passes.
-Plan Mode remains outside this work by user decision.
+unset global fallback. Plan Mode remains outside this work by user decision.
 
 The packaged Dev App was then exercised through its visible DSH Agent chat with native
 `deepseek-flash`: a public TypeScript 5.9 query invoked exactly one WebSearch and returned ten

@@ -80,7 +80,7 @@ describe('reasoningEffortChoices — per-surface vocabularies', () => {
       .toBeNull();
   });
   it('gemini / unknown → null (UI hides the row entirely)', () => {
-    expect(reasoningEffortChoices('gemini')).toBeNull();
+    expect(reasoningEffortChoices('unknown-runtime')).toBeNull();
     expect(reasoningEffortChoices('some-future-runtime')).toBeNull();
   });
 });

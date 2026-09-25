@@ -194,7 +194,7 @@ myagents agent runtime-status                           # 看所有 Agent 的实
 ### Agent Runtime 发现（runtime）
 
 ```bash
-myagents runtime list                                   # builtin/dsh/claude-code/codex/gemini 的装机情况 + 版本
+myagents runtime list                                   # builtin/dsh/claude-code/codex 的装机情况 + 版本
 myagents runtime list --json                            # 机读：installed/version/path
 myagents runtime describe <runtime>                     # 某 runtime 的 model 清单 + permissionMode 枚举
 myagents runtime diagnose codex [--workspacePath PATH]  # Codex 的 auth/features/MCP/apps/effective-env 快照（issue #194）
@@ -208,7 +208,7 @@ myagents diagnose runtime dsh                           # 资源校验、当前�
 - 用户问"codex 支持什么 model" → `runtime describe codex`
 - 「@oai/artifact-tool 我从终端能调用、MyAgents 里就不行」/「Codex MCP 在 MyAgents 里看不到」/「Codex 是不是用错代理了」→ `runtime diagnose codex`。它 spawn 一个临时 codex app-server，跑 `getAuthStatus` / `experimentalFeature/list` / `mcpServerStatus/list` / `app/list` 四个 RPC，把 Codex 自己看到的状态原样吐出来，省得猜。effectiveEnv 节里能看到 MyAgents 注入的代理是不是真到了子进程，feature flag 是不是真生效。
 
-每个外部 runtime 有自己的动态 model 清单（Codex/Gemini 会 spawn CLI 查）和自己的 permissionMode 枚举（`suggest` / `auto-edit` / `full-auto` ≠ 内置的 `auto` / `plan` / `fullAgency`）——别混。
+每个外部 runtime 有自己的 model 清单和 permissionMode 枚举；Codex 的 model 清单通过 CLI 查询。不要把 Codex 的 `suggest` / `auto-edit` / `full-auto` 与内置 Runtime 的 `auto` / `plan` / `fullAgency` 混用。
 
 ### Session 协作与只读历史
 
@@ -341,7 +341,7 @@ myagents task delete <taskId>                           # 不可恢复地移出�
 
 | Flag | 语义 |
 |------|------|
-| `--runtime` | `builtin` / `claude-code` / `codex` / `gemini`，不传则继承 |
+| `--runtime` | `builtin` / `dsh` / `claude-code` / `codex`，不传则继承 |
 | `--providerId` | builtin Provider id；必须与 `--model` 成对设置，不传则继承 |
 | `--model` | 值取决于 runtime，**先 `runtime describe <runtime>` 查** |
 | `--permissionMode` | 值取决于 runtime，**同样先 `runtime describe`** |
@@ -446,7 +446,7 @@ myagents cc-plugin show <id|name>                       # 详情（含 manifest 
 - "装本地正在调的插件" → `cc-plugin install file:///path/to/plugin`
 - "禁掉 X 插件" → `cc-plugin disable X`
 
-启停 / 安装 / 卸载后会触发 SDK 柔性重启（500ms 防抖），下一次发消息时 plugin 内组件才生效。外部 Runtime（Claude Code CLI / Codex / Gemini）下不读取这里——它们各自管自己的 plugin 体系。
+启停 / 安装 / 卸载后会触发 SDK 柔性重启（500ms 防抖），下一次发消息时 plugin 内组件才生效。外部 Runtime（Claude Code CLI / Codex）下不读取这里——它们各自管自己的 plugin 体系。
 
 ### 通用配置 + 状态（config / status / version / reload）
 

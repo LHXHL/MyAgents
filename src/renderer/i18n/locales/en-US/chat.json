@@ -160,14 +160,6 @@
         "label": "Bypass Permissions",
         "description": "Skip all permission prompts"
       },
-      "autoEdit": {
-        "label": "Auto Edit",
-        "description": "Automatically accept file edits; ask for other actions"
-      },
-      "yolo": {
-        "label": "YOLO",
-        "description": "Automatically approve all tools"
-      },
       "suggest": {
         "label": "Suggest",
         "description": "Read-only; auto-run trusted commands and ask for other operations"

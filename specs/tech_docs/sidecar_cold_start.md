@@ -57,7 +57,7 @@
 
 ## External Runtime pre-warm：process ready ≠ MCP ready
 
-Codex / Gemini 的 persistent runtime 预热和 Sidecar HTTP readiness 是两层不同契约。Sidecar `/health/ready` 只说明 Node owner 可接请求；external `startSession()` 返回才说明该 runtime 能接首轮 turn。
+Codex / DSH 的 persistent runtime 预热和 Sidecar HTTP readiness 是两层不同契约。Sidecar `/health/ready` 只说明 Node owner 可接请求；external `startSession()` 返回才说明该 runtime 能接首轮 turn。
 
 Managed Codex 又多一层：`initialize` 完成后 app-server 已存活，但 MyAgents 通过进程参数注入的 MCP 仍异步启动。`CodexRuntime.startSession()` 在发起 `thread/start|resume` 的 native startup boundary 消费从应用级 demand 接受时开始的 10 秒 absolute dispatch grace；Codex 原生 `startup_timeout_sec=60` 是单次启动尝试的上界，不重置也不延长前者。grace 到期只放行基础 turn，Runtime 状态与 tool catalog 仍持续观察；late-ready 会直接更新当前 Product Session，若启动准入时尚未把本地 MCP 放入进程，则 external-session owner 在 idle boundary replacement 并自动 pre-warm。这个 owner 不包含 Codex 用户目录自有配置；只有 process exit、thread/RPC failure 仍是 Runtime startup failure。
 

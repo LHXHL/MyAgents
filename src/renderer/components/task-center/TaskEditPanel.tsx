@@ -101,7 +101,7 @@ interface Draft {
   /** PRD 0.2.9 — Per-task provider id; paired with `model`. */
   providerId: string | undefined;
   model: string | undefined;
-  /** PRD 0.2.9 — External-runtime config (model/permissionMode for codex/CC/gemini). */
+  /** PRD 0.2.9 — External-runtime config (model/permissionMode for codex/CC). */
   runtimeConfig: RuntimeConfig | undefined;
   permissionMode: string | undefined;
   mcpEnabledServers: string[] | undefined;

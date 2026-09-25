@@ -560,7 +560,7 @@ export const SDK_RESERVED_MCP_NAMES = ['claude-in-chrome', 'computer-use'];
  *
  * v0.2.11 — `cron-tools`, `im-cron`, and `im-media` were retired in favour of
  * `myagents` CLI commands + system prompt guidance (single CLI surface usable
- * across builtin / Codex / Gemini / Claude Code runtimes). Only `im-bridge-tools`
+ * across builtin / DSH / Codex / Claude Code runtimes). Only `im-bridge-tools`
  * remains a context-injected MCP because its tool surface is a runtime-dynamic
  * passthrough of OpenClaw plugin tools — no fixed schema to teach via prompt.
  */
@@ -1638,7 +1638,7 @@ const _pendingAttachments: MessageAttachment[] = [];
 /** Set the sidecar port (called once from index.ts on startup).
  *
  *  Side effect: exports `MYAGENTS_PORT` to `process.env` so every subprocess
- *  spawned later via `augmentedProcessEnv()` (external runtimes: gemini / claude-code /
+ *  spawned later via `augmentedProcessEnv()` (external runtimes: claude-code /
  *  codex) inherits it automatically — the AI's shell tool can then invoke
  *  `myagents` CLI without the CLI bailing with `MYAGENTS_PORT not set`. This is
  *  the pit-of-success alternative to editing three runtime `spawn()` call sites
@@ -4091,7 +4091,7 @@ function buildSettingSources(): ('user' | 'project')[] {
  *    Other historical context-injected MCPs (`cron-tools`, `im-cron`,
  *    `im-media`) were retired in v0.2.11 — the AI now reaches those
  *    capabilities through the `myagents` CLI + system prompt guidance,
- *    so the same surface is available across builtin / Codex / Gemini /
+ *    so the same surface is available across builtin / DSH / Codex /
  *    Claude Code runtimes.
  * 2. Builtin registry (command='__builtin__') — in-process servers, user-toggled via Settings,
  *    registered as META in `./tools/builtin-mcp-meta.ts`. Adding a new one:
@@ -8464,7 +8464,7 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
     sessionRegistered = true;
     console.log(`[agent] switchToSession: will resume session ${resumeDecision.resumeSessionId} (reason=${resumeDecision.reason})`);
   } else if (resumeDecision.reason === 'external-runtime') {
-    // External runtimes (codex/gemini/CC) don't use builtin SDK resume state.
+    // External runtimes (codex/CC) don't use builtin SDK resume state.
     // Their resume is driven by runtimeSessionId in external-session.ts.
     sessionRegistered = false;
   } else {

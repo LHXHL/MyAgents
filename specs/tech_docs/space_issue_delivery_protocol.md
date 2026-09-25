@@ -71,7 +71,7 @@ Desktop Rust owner 负责：
 
 ### 3.3 SessionEngine
 
-SessionEngine 负责让 builtin、Claude Code、Codex、Gemini 等 Runtime 走同一套：
+SessionEngine 负责让 builtin、Claude Code、Codex 等 Runtime 走同一套：
 
 - Session origin 设置与恢复；
 - hidden user message 注入；

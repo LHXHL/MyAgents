@@ -11,8 +11,8 @@ describe('Agent execution edits at the config writer', () => {
     expect(patch).not.toHaveProperty('runtimeConfigPatch');
   });
   it('scrubs runtime-specific values while retaining current environment policy', () => {
-    const patch = resolveAgentConfigMutation(agent, { runtime: 'gemini' });
-    expect(patch.runtime).toBe('gemini');
+    const patch = resolveAgentConfigMutation(agent, { runtime: 'claude-code' });
+    expect(patch.runtime).toBe('claude-code');
     expect(patch.runtimeConfig).toEqual({ envPolicy: { proxy: 'terminal' } });
   });
   it('keeps explicit full replacements distinct from field patches', () => {

@@ -111,7 +111,7 @@ CLIProxy 的 Google 请求由 Rust `apply_to_subprocess_for_provider(..., "antig
 
 ## External Runtime envPolicy
 
-Claude Code / Codex / Gemini 等 external Runtime 还可在 Agent 配置选择：
+Claude Code / Codex 等 external Runtime 还可在 Agent 配置选择：
 
 | 值 | 语义 |
 | --- | --- |

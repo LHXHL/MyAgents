@@ -34,7 +34,6 @@ describe('normalizeRuntime', () => {
     expect(normalizeRuntime('dsh')).toBe('dsh');
     expect(normalizeRuntime('claude-code')).toBe('claude-code');
     expect(normalizeRuntime('codex')).toBe('codex');
-    expect(normalizeRuntime('gemini')).toBe('gemini');
   });
 
   test('falls back to builtin for missing / unknown values', () => {
@@ -42,6 +41,7 @@ describe('normalizeRuntime', () => {
     expect(normalizeRuntime(null)).toBe('builtin');
     expect(normalizeRuntime('')).toBe('builtin');
     expect(normalizeRuntime('o3')).toBe('builtin');
+    expect(normalizeRuntime('gemini')).toBe('builtin');
   });
 });
 
@@ -56,7 +56,6 @@ describe('resolveEffectiveRuntime', () => {
     expect(resolveEffectiveRuntime('codex', false)).toBe('builtin');
     expect(resolveEffectiveRuntime('dsh', false)).toBe('builtin');
     expect(resolveEffectiveRuntime('claude-code', false)).toBe('builtin');
-    expect(resolveEffectiveRuntime('gemini', false)).toBe('builtin');
     expect(resolveEffectiveRuntime('builtin', false)).toBe('builtin');
     expect(resolveEffectiveRuntime(undefined, false)).toBe('builtin');
   });
@@ -86,7 +85,6 @@ describe('resolveEffectiveRuntime', () => {
     expect(resolveEffectiveRuntime('codex', true)).toBe('codex');
     expect(resolveEffectiveRuntime('dsh', true)).toBe('dsh');
     expect(resolveEffectiveRuntime('claude-code', true)).toBe('claude-code');
-    expect(resolveEffectiveRuntime('gemini', true)).toBe('gemini');
     expect(resolveEffectiveRuntime('builtin', true)).toBe('builtin');
   });
 
@@ -100,9 +98,9 @@ describe('resolveEffectiveRuntime', () => {
     expect(resolveEffectiveRuntime(
       'dsh',
       true,
-      { family: 'external', id: 'gemini' },
+      { family: 'external', id: 'claude-code' },
       'integrated',
-    )).toBe('gemini');
+    )).toBe('claude-code');
     expect(resolveEffectiveRuntime(
       'dsh',
       true,
@@ -166,12 +164,12 @@ describe('resolveEffectiveRuntime', () => {
     // Documents the deliberate limitation (cross-review C1/C2): this helper has
     // no sessionId input and therefore CANNOT reproduce the runtime a still-open
     // session was spawned with. Concretely — a session created under codex whose
-    // agent was later reconfigured to gemini: the server-side ai_turn_complete
+    // agent was later reconfigured to Claude Code: the server-side ai_turn_complete
     // still reports the FROZEN 'codex', but this helper (given current config)
-    // returns 'gemini'. Session-scoped analytics must therefore prefer the frozen
+    // returns 'claude-code'. Session-scoped analytics must therefore prefer the frozen
     // `sessionRuntime` and use this only as the pre-session fallback.
-    const currentAgentConfig = 'gemini';
-    expect(resolveEffectiveRuntime(currentAgentConfig, true)).toBe('gemini'); // config view
+    const currentAgentConfig = 'claude-code';
+    expect(resolveEffectiveRuntime(currentAgentConfig, true)).toBe('claude-code'); // config view
     // The authoritative value for an existing session would be the frozen
     // 'codex' — which lives in session metadata, not derivable from this fn.
   });
@@ -183,7 +181,6 @@ describe('runtimeSourceForRuntimeType', () => {
     expect(runtimeSourceForRuntimeType('dsh')).toBe('integrated');
     expect(runtimeSourceForRuntimeType('dsh', 'system-cli')).toBe('integrated');
     expect(runtimeSourceForRuntimeType('claude-code', 'managed-provider')).toBe('system-cli');
-    expect(runtimeSourceForRuntimeType('gemini', 'integrated')).toBe('system-cli');
     expect(runtimeSourceForRuntimeType('codex', 'managed-provider')).toBe('managed-provider');
     expect(runtimeSourceForRuntimeType('codex')).toBe('system-cli');
   });
@@ -193,7 +190,6 @@ describe('runtimeSupportsPrewarm', () => {
   test('keeps every persistent protocol runtime in the shared prewarm set', () => {
     expect(runtimeSupportsPrewarm('dsh')).toBe(true);
     expect(runtimeSupportsPrewarm('codex')).toBe(true);
-    expect(runtimeSupportsPrewarm('gemini')).toBe(true);
     expect(runtimeSupportsPrewarm('claude-code')).toBe(false);
     expect(runtimeSupportsPrewarm('builtin')).toBe(false);
   });
@@ -211,13 +207,10 @@ describe('model runtime family coercion', () => {
     expect(coerceModelForRuntime('gpt-5.5', 'codex')).toBe('gpt-5.5');
     expect(coerceModelForRuntime('openai/gpt-5.5', 'codex')).toBe('openai/gpt-5.5');
     expect(coerceModelForRuntime('future-lab-model', 'codex')).toBe('future-lab-model');
-    expect(coerceModelForRuntime('gemini-3.1-pro-preview', 'gemini')).toBe('gemini-3.1-pro-preview');
   });
 
   test('drops namespaced foreign model families', () => {
     expect(coerceModelForRuntime('google/gemini-2.5-pro', 'claude-code')).toBeUndefined();
-    expect(coerceModelForRuntime('anthropic/claude-sonnet-4.6', 'gemini')).toBeUndefined();
-    expect(coerceModelForRuntime('openai/gpt-5.5', 'gemini')).toBeUndefined();
   });
 
   test('trims blank values to undefined', () => {
@@ -235,14 +228,11 @@ describe('permission mode runtime family coercion', () => {
   test('keeps native and unknown permission modes', () => {
     expect(coercePermissionModeForRuntime('no-restrictions', 'codex')).toBe('no-restrictions');
     expect(coercePermissionModeForRuntime('future-mode', 'codex')).toBe('future-mode');
-    expect(coercePermissionModeForRuntime('autoEdit', 'gemini')).toBe('autoEdit');
   });
 
   test('shared labels stay valid for runtimes that own them', () => {
     expect(coercePermissionModeForRuntime('plan', 'builtin')).toBe('plan');
-    expect(coercePermissionModeForRuntime('plan', 'gemini')).toBe('plan');
     expect(coercePermissionModeForRuntime('manual', 'claude-code')).toBe('manual');
-    expect(coercePermissionModeForRuntime('default', 'gemini')).toBe('default');
   });
 
   test('write validation and historical projection use the exact runtime vocabulary', () => {
@@ -261,7 +251,6 @@ describe('reasoning effort runtime coercion', () => {
   test('drops levels that the target runtime does not expose', () => {
     expect(coerceReasoningEffortForRuntime('max', 'codex')).toBe('max');
     expect(coerceReasoningEffortForRuntime('minimal', 'claude-code')).toBeUndefined();
-    expect(coerceReasoningEffortForRuntime('xhigh', 'gemini')).toBeUndefined();
   });
 
   test('keeps target-runtime levels and default sentinel', () => {
@@ -281,7 +270,6 @@ describe('getMaxPermissionForRuntime — unattended max-agency mode per runtime'
     expect(getMaxPermissionForRuntime('builtin')).toBe('fullAgency');
     expect(getMaxPermissionForRuntime('claude-code')).toBe('bypassPermissions');
     expect(getMaxPermissionForRuntime('codex')).toBe('no-restrictions');
-    expect(getMaxPermissionForRuntime('gemini')).toBe('yolo');
   });
 
   test('returns a non-empty mode for every known runtime', () => {
@@ -300,22 +288,18 @@ describe('getMaxPermissionForRuntime — unattended max-agency mode per runtime'
 describe('resolveCronPermissionMode', () => {
   test('uses runtime max when no mode is pinned', () => {
     expect(resolveCronPermissionMode(undefined, undefined, 'codex')).toBe('no-restrictions');
-    expect(resolveCronPermissionMode('', '', 'gemini')).toBe('yolo');
   });
 
   test('respects runtime-appropriate pinned modes', () => {
     expect(resolveCronPermissionMode('full-auto', undefined, 'codex')).toBe('full-auto');
-    expect(resolveCronPermissionMode(undefined, 'autoEdit', 'gemini')).toBe('autoEdit');
   });
 
   test('treats obvious foreign stale modes as missing for unattended runs', () => {
     expect(resolveCronPermissionMode('fullAgency', undefined, 'codex')).toBe('no-restrictions');
-    expect(resolveCronPermissionMode(undefined, 'no-restrictions', 'gemini')).toBe('yolo');
   });
 
   test('skips stale payload mode before falling back to runtimeConfig mode', () => {
     expect(resolveCronPermissionMode('auto', 'full-auto', 'codex')).toBe('full-auto');
-    expect(resolveCronPermissionMode('fullAgency', 'autoEdit', 'gemini')).toBe('autoEdit');
   });
 });
 

@@ -261,7 +261,7 @@ export function snapshotForImSession(
  * `renderer/api/persistInputOption.ts::buildSnapshotPatch` already encodes
  * this dispatch. Snapshot creation must match: previously this helper
  * blindly captured `agent.model` even for external runtimes, leaking a
- * Claude/builtin model name into a Codex/Gemini session snapshot. The cron
+ * Claude/builtin model name into a Codex session snapshot. The cron
  * `followAgent` resolution path then promoted that into
  * `runtimeConfig.model`, which Codex CLI rejects (issue #224).
  */

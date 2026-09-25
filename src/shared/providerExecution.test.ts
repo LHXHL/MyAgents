@@ -134,7 +134,7 @@ describe('provider execution identity', () => {
     })).toBe(true);
     expect(agentUsesManagedCodexProvider({
       providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
-      runtime: 'gemini',
+      runtime: 'claude-code',
       runtimeConfig: { source: 'managed-provider' },
     })).toBe(false);
   });

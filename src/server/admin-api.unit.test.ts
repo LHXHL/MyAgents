@@ -197,25 +197,6 @@ afterEach(() => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
-describe('runtime description resilience', () => {
-  it('keeps Gemini installation and permission details when model discovery is unavailable', async () => {
-    const { getExternalRuntime } = await import('./runtimes/factory');
-    vi.spyOn(getExternalRuntime('gemini'), 'detect').mockResolvedValueOnce({ installed: true, version: 'fixture-gemini' });
-    runtimeModelMocks.queryRuntimeModels.mockRejectedValueOnce(new Error('This client is no longer supported'));
-    const { handleRuntimeDescribe } = await import('./admin-api');
-
-    const result = await handleRuntimeDescribe({ runtime: 'gemini' });
-    expect(result).toMatchObject({
-      success: true,
-      data: {
-        runtime: 'gemini', installed: true, version: 'fixture-gemini', models: [],
-        modelDiscovery: { state: 'unavailable' },
-      },
-    });
-    expect(JSON.stringify(result)).not.toContain('This client is no longer supported');
-  });
-});
-
 describe('Record Admin routing', () => {
   it.each(['global', 'session'] as const)('forwards %s Record list results and errors through the production gate', async role => {
     const { composeSidecarRequestHandler, resolveSidecarComposition } = await import('./sidecar-composition');
@@ -1858,9 +1839,9 @@ describe('admin-api task runtime model identity', () => {
     const { handleTaskCreateDirect } = await import('./admin-api');
 
     const result = await handleTaskCreateDirect({
-      name: 'invalid-managed-gemini-pair',
-      runtime: 'gemini',
-      runtimeConfig: { source: 'managed-provider', model: 'gemini-2.5-pro' },
+      name: 'invalid-managed-claude-code-pair',
+      runtime: 'claude-code',
+      runtimeConfig: { source: 'managed-provider', model: 'sonnet' },
     });
 
     expect(result.success).toBe(false);
@@ -1973,17 +1954,17 @@ describe('admin-api task runtime model identity', () => {
   });
 
   it('rejects inherited managed source when the workspace runtime is not Codex', async () => {
-    const workspacePath = '/tmp/myagents-gemini-task-source';
+    const workspacePath = '/tmp/myagents-claude-code-task-source';
     writeJson(join(scratch, '.myagents', 'config.json'), {
       agents: [{
-        id: 'agent-gemini-task-source',
-        name: 'Gemini Task Source',
+        id: 'agent-claude-code-task-source',
+        name: 'Claude Code Task Source',
         workspacePath,
-        runtime: 'gemini',
+        runtime: 'claude-code',
       }],
     });
     writeJson(join(scratch, '.myagents', 'projects.json'), [{
-      id: 'project-gemini-task-source', path: workspacePath, agentId: 'agent-gemini-task-source',
+      id: 'project-claude-code-task-source', path: workspacePath, agentId: 'agent-claude-code-task-source',
     }]);
     const { handleTaskCreateDirect } = await import('./admin-api');
 

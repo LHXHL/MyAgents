@@ -66,7 +66,7 @@ Owner 和 source of truth 必须针对具体事实、scope 与 lifecycle phase �
 
 ### Runtime 分流只有一个入口
 
-Builtin SDK 与 Claude Code / Codex / Gemini 等外部 Runtime 的 session 操作统一经过 `src/server/session-engine/` facade，由 selector 选择 adapter。Route handler 不得自行写 builtin / external 分支；“等待 idle”也不等于 turn 成功，terminal 必须读取对应 adapter 的真实成功状态。
+Builtin SDK 与 Claude Code / Codex 等外部 Runtime 的 session 操作统一经过 `src/server/session-engine/` facade，由 selector 选择 adapter。Route handler 不得自行写 builtin / external 分支；“等待 idle”也不等于 turn 成功，terminal 必须读取对应 adapter 的真实成功状态。
 
 ### 持久化 authority
 
@@ -90,7 +90,7 @@ Builtin SDK 与 Claude Code / Codex / Gemini 等外部 Runtime 的 session 操�
 | Sidecar 冷启动 / pre-warm 性能 | `specs/tech_docs/sidecar_cold_start.md` |
 | Session ID、状态同步、恢复、配置归置 | `specs/tech_docs/session_architecture.md` |
 | 系统提示词组装、场景 Prompt、Workspace 指令注入 | `specs/tech_docs/system_prompt_architecture.md`；逐轮隐藏消息再读 `specs/tech_docs/system_reminder_protocol.md` |
-| Claude Code / Codex / Gemini Runtime | `specs/tech_docs/multi_agent_runtime.md` |
+| Claude Code / Codex Runtime | `specs/tech_docs/multi_agent_runtime.md` |
 | Task / Thought / Goal / Cron provider routing | `specs/tech_docs/task_center.md`、`specs/tech_docs/task_provider_routing.md` |
 | Cloud Space / Space Issue / registered agent | `specs/tech_docs/space_cloud.md`；改云 API、鉴权、数据或 quota 时再读 `../MyAgents_space/specs/ARCHITECTURE.md` |
 | Space IssueDelivery / registered-agent prompt 协议 | `specs/tech_docs/space_issue_delivery_protocol.md`、`specs/tech_docs/space_cloud.md`、`specs/tech_docs/system_reminder_protocol.md` |

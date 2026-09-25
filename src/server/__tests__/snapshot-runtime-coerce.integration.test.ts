@@ -50,15 +50,15 @@ describe('snapshotForOwnedSession (issue #224)', () => {
     expect(snap.model).toBe('gpt-5.5-codex');
   });
 
-  it('captures runtimeConfig.model for gemini (NOT agent.model)', () => {
+  it('captures runtimeConfig.model for Claude Code (NOT agent.model)', () => {
     const agent = makeAgent({
-      runtime: 'gemini',
+      runtime: 'claude-code',
       model: 'claude-opus-4-6',
-      runtimeConfig: { model: 'gemini-3.1-pro-preview' },
+      runtimeConfig: { model: 'sonnet' },
     });
     const snap = snapshotForOwnedSession(agent);
-    expect(snap.runtime).toBe('gemini');
-    expect(snap.model).toBe('gemini-3.1-pro-preview');
+    expect(snap.runtime).toBe('claude-code');
+    expect(snap.model).toBe('sonnet');
   });
 
   it('snapshot.model is undefined when runtimeConfig.model is unset on external runtime', () => {
@@ -235,13 +235,13 @@ describe('resolveSessionConfig — runtime-aware coercion (issue #224)', () => {
     expect(r.permissionMode).toBe('no-restrictions');
   });
 
-  it('im full identity preserves explicit Gemini despite dormant managed fields', () => {
+  it('im full identity preserves explicit Claude Code despite dormant managed fields', () => {
     const r = resolveSessionConfig(
       undefined,
       makeAgent({
         providerId: 'codex-sub',
         model: 'gpt-5.5-codex',
-        runtime: 'gemini',
+        runtime: 'claude-code',
         runtimeConfig: { source: 'managed-provider' },
       }),
       undefined,
@@ -249,7 +249,7 @@ describe('resolveSessionConfig — runtime-aware coercion (issue #224)', () => {
       { managedCodexProviderReady: true },
     );
 
-    expect(r.runtime).toBe('gemini');
+    expect(r.runtime).toBe('claude-code');
     expect(r.runtimeSource).toBe('system-cli');
   });
 
@@ -282,11 +282,11 @@ describe('resolveSessionConfig — runtime-aware coercion (issue #224)', () => {
     expect(r.model).toBe('kimi-k2.5-preview');
   });
 
-  it('owned/gemini: gpt-* is coerced (cross-runtime drift)', () => {
+  it('owned/claude-code: gpt-* is coerced (cross-runtime drift)', () => {
     const r = resolveSessionConfig(meta({
-      runtime: 'gemini',
+      runtime: 'claude-code',
       model: 'gpt-5.5-codex',
-    }), makeAgent({ runtime: 'gemini' }), undefined, 'owned');
+    }), makeAgent({ runtime: 'claude-code' }), undefined, 'owned');
     expect(r.model).toBeUndefined();
   });
 

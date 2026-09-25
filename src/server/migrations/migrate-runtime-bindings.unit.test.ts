@@ -23,10 +23,10 @@ describe("Agent Runtime preference migration", () => {
       },
     });
     expect(
-      migrateAgentRuntimePreferenceRecord({ id: "external", runtime: "gemini" }),
+      migrateAgentRuntimePreferenceRecord({ id: "external", runtime: "claude-code" }),
     ).toMatchObject({
       status: "migrated",
-      agent: { runtimePreference: { family: "external", id: "gemini" } },
+      agent: { runtimePreference: { family: "external", id: "claude-code" } },
     });
     expect(
       migrateAgentRuntimePreferenceRecord({

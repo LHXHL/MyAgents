@@ -972,7 +972,7 @@ export function createExternalSessionEngine(): SessionEngine {
       // DSH persistence is scoped by Product Session identity. A native Session
       // created under a provisional Product id cannot be resumed after the id
       // changes, so pending materialization never carries that native id across.
-      // Codex/Gemini native stores are independent of the Product id and retain
+      // Codex native stores are independent of the Product id and retain
       // their existing handoff behavior.
       const nativeSessionId = getActiveRuntimeType() === 'dsh'
         ? undefined

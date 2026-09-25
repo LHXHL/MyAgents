@@ -81,7 +81,7 @@ same navigation surface.
 
 Events that describe session or turn execution carry:
 
-- `runtime`: execution runtime (`builtin`, `claude-code`, `codex`, `gemini`, or
+- `runtime`: execution runtime (`builtin`, `dsh`, `claude-code`, or `codex`;
   `unknown` on renderer fallback paths).
 - `runtime_source`: runtime owner source. `builtin` / `unknown` report `null`;
   external runtime turns report `system-cli` for user-installed CLIs or
@@ -299,8 +299,7 @@ duration fields, it reports the provider attribution for builtin turns:
 
 - `provider_name`: provider display name. Builtin subscription turns report
   `Anthropic (订阅)`; external runtime turns report the current
-  `RUNTIME_DISPLAY_NAMES` value such as `Claude Code CLI`, `OpenAI Codex CLI`,
-  or `Google Gemini CLI (ACP)`.
+  `RUNTIME_DISPLAY_NAMES` value such as `Claude Code CLI` or `OpenAI Codex CLI`.
 - `api_protocol`: effective provider protocol, currently `anthropic` or
   `openai`; `null` for external runtime turns.
 - `provider_base_url`: effective provider base URL. Builtin subscription turns

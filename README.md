@@ -70,7 +70,7 @@ MyAgents 不把用户锁死在单一模型或单一供应商里。你可以使�
 - **MCP**：STDIO / HTTP / SSE 三种接入方式，连接外部工具和数据源。
 - **Skills**：把稳定流程沉淀成可复用能力，支持内置技能和用户自定义技能。
 - **自定义 Agent**：为不同工作区配置不同 Prompt、模型、工具和权限。
-- **外部 Runtime（实验室）**：除内置 Claude Agent SDK 外，可选择 Claude Code CLI、OpenAI Codex CLI、Google Gemini CLI 驱动会话。
+- **外部 Runtime（实验室）**：除内置 Claude Agent SDK 外，可选择 Claude Code CLI、OpenAI Codex CLI 驱动会话。
 - **插件与 Channel**：内置 Telegram / 钉钉，更多 IM 平台可通过 OpenClaw 插件接入。
 
 ### AI 不只活在主窗口里
@@ -114,7 +114,7 @@ Agent 产品不可能预设所有人的工作流。开发者、创作者、研�
 | 多标签 Agent     | 每个 Tab 独立会话和 Sidecar，适合并行工作                            |
 | 工作区系统       | 文件树、预览、搜索、Git 分支、Skills 和命令统一入口                  |
 | 多模型供应商     | Anthropic 订阅/API、多家国内外 API、OpenRouter/ZenMux 等聚合服务     |
-| 多 Agent Runtime | 内置 Claude Agent SDK，可选 Claude Code CLI / Codex CLI / Gemini CLI |
+| 多 Agent Runtime | 内置 Claude Agent SDK，可选 Claude Code CLI / Codex CLI |
 | MCP 工具         | 支持 STDIO / HTTP / SSE，内置和外部 MCP 可并存                       |
 | Skills           | 内置技能、用户技能、工作区技能，适合沉淀固定流程                     |
 | 任务中心         | 想法、任务、周期调度、状态追踪和执行审计                             |
@@ -136,7 +136,7 @@ MyAgents 是一个桌面端 AI Agent 产品，不是单纯的前端项目。改�
 | 前端         | React 19 + TypeScript + Vite + TailwindCSS                                 |
 | 后端 Sidecar | Node.js v24 + Claude Agent SDK                                             |
 | 通信         | Rust HTTP/SSE Proxy，前端通过 Tauri invoke 代理到 Sidecar                  |
-| Runtime      | 内置 Claude Agent SDK，实验室支持 Claude Code CLI / Codex CLI / Gemini CLI |
+| Runtime      | 内置 Claude Agent SDK，实验室支持 Claude Code CLI / Codex CLI |
 | 工具生态     | MCP、Skills、OpenClaw Plugin Bridge、`myagents` CLI                        |
 | 搜索         | Tantivy + tantivy-jieba                                                    |
 | 终端         | portable-pty + xterm.js                                                    |
@@ -348,7 +348,7 @@ Beyond models, MyAgents supports:
 - **MCP**: STDIO / HTTP / SSE integrations for external tools and data sources.
 - **Skills**: reusable workflows as built-in, user-level, or workspace-level capabilities.
 - **Custom Agents**: different prompts, models, tools, and permission settings per workspace.
-- **External runtimes (Lab)**: in addition to the built-in Claude Agent SDK, sessions can be driven by Claude Code CLI, OpenAI Codex CLI, or Google Gemini CLI.
+- **External runtimes (Lab)**: in addition to the built-in Claude Agent SDK, sessions can be driven by Claude Code CLI or OpenAI Codex CLI.
 - **Plugins and Channels**: built-in Telegram / DingTalk, with more IM platforms available through OpenClaw plugins.
 
 ### AI Does Not Only Live In The Main Window
@@ -392,7 +392,7 @@ This is why MyAgents is open source and supports MCP, Skills, plugins, and multi
 | Multi-tab Agents    | Each Tab has its own session and Sidecar, suitable for parallel work                |
 | Workspace system    | File tree, preview, search, Git branch, Skills, and commands in one place           |
 | Model providers     | Anthropic subscription/API, many API providers, OpenRouter/ZenMux aggregators       |
-| Multi-Agent Runtime | Built-in Claude Agent SDK, optional Claude Code CLI / Codex CLI / Gemini CLI        |
+| Multi-Agent Runtime | Built-in Claude Agent SDK, optional Claude Code CLI / Codex CLI        |
 | MCP tools           | STDIO / HTTP / SSE support, built-in and external MCP servers can coexist           |
 | Skills              | Built-in, user-level, and workspace-level Skills for reusable workflows             |
 | Task Center         | Ideas, tasks, recurring schedules, state tracking, and execution audit              |
@@ -414,7 +414,7 @@ MyAgents is a desktop AI Agent product, not a plain frontend project. Before mak
 | Frontend        | React 19 + TypeScript + Vite + TailwindCSS                                          |
 | Backend Sidecar | Node.js v24 + Claude Agent SDK                                                      |
 | Communication   | Rust HTTP/SSE Proxy, with the frontend reaching Sidecar through Tauri invoke        |
-| Runtime         | Built-in Claude Agent SDK, Lab support for Claude Code CLI / Codex CLI / Gemini CLI |
+| Runtime         | Built-in Claude Agent SDK, Lab support for Claude Code CLI / Codex CLI |
 | Tool ecosystem  | MCP, Skills, OpenClaw Plugin Bridge, `myagents` CLI                                 |
 | Search          | Tantivy + tantivy-jieba                                                             |
 | Terminal        | portable-pty + xterm.js                                                             |

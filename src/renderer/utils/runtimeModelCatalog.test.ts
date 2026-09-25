@@ -17,8 +17,8 @@ describe('runtimeModelCatalogPath', () => {
   });
 
   it('does not add a Codex source to other runtimes', () => {
-    expect(runtimeModelCatalogPath('gemini', 'managed-provider'))
-      .toBe('/api/runtime/models?type=gemini');
+    expect(runtimeModelCatalogPath('claude-code', 'managed-provider'))
+      .toBe('/api/runtime/models?type=claude-code');
   });
 });
 

@@ -11,7 +11,6 @@ const detections: RuntimeDetections = {
   dsh: { installed: true, version: '0.0.0' },
   'claude-code': { installed: true, version: '1.0.0' },
   codex: { installed: true, version: '1.0.0' },
-  gemini: { installed: false },
 };
 
 describe('RuntimeSelector i18n', () => {
@@ -24,7 +23,7 @@ describe('RuntimeSelector i18n', () => {
     render(
       <RuntimeSelector
         value="codex"
-        detections={detections}
+        detections={{ ...detections, dsh: { installed: false } }}
         onChange={vi.fn()}
         onOpenSettings={vi.fn()}
       />,

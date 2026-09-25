@@ -1561,7 +1561,7 @@ pub async fn cmd_ensure_session_sidecar(
             || !is_canonical_session_id(&sessionId)
             || !matches!(
                 birthRuntime.as_deref(),
-                Some("builtin" | "claude-code" | "codex" | "gemini")
+                Some("builtin" | "claude-code" | "codex")
             )
             || !matches!(
                 birthRuntimeSource.as_deref(),
@@ -2063,7 +2063,7 @@ mod session_lifecycle_tests {
     fn metadata_creator_runtime_override_wins_before_metadata_birth() {
         let expected = resolve_runtime_identity_for_owner(
             &SidecarOwner::Task("task-a".to_string()),
-            Some("gemini"),
+            Some("claude-code"),
             Some("system-cli"),
             None,
             Some(RuntimeIdentity::new(
@@ -2072,7 +2072,7 @@ mod session_lifecycle_tests {
             )),
         );
 
-        assert_eq!(expected.runtime, "gemini");
+        assert_eq!(expected.runtime, "claude-code");
         assert_eq!(expected.runtime_source.as_deref(), Some("system-cli"));
     }
 

@@ -1185,7 +1185,6 @@ describe('external SessionEngine with fake runtime', () => {
     { runtimeType: 'claude-code', runtimeSource: 'system-cli' },
     { runtimeType: 'codex', runtimeSource: 'system-cli' },
     { runtimeType: 'codex', runtimeSource: 'managed-provider' },
-    { runtimeType: 'gemini', runtimeSource: 'system-cli' },
   ] as const;
 
 

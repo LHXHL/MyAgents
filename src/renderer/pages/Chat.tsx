@@ -225,7 +225,6 @@ import {
   CODEX_PERMISSION_MODES,
   coerceModelForRuntime,
   DSH_PERMISSION_MODES,
-  GEMINI_PERMISSION_MODES,
   getDefaultRuntimePermissionMode,
   isAgentRuntimeSelectorAvailable,
   projectPermissionModeForRuntime,
@@ -393,8 +392,6 @@ function getRuntimeDisplayLabel(runtime: RuntimeType | undefined): string {
       return 'Claude Code';
     case 'codex':
       return 'Codex';
-    case 'gemini':
-      return 'Gemini CLI';
     case 'builtin':
     default:
       return 'MyAgents';
@@ -1909,7 +1906,6 @@ export default function Chat({
       dsh: { installed: false },
       'claude-code': { installed: false },
       codex: { installed: false },
-      gemini: { installed: false },
     },
   );
   // Resolve the Agent template through the build policy. Labs controls selector
@@ -2038,8 +2034,7 @@ export default function Chat({
   // asynchronously. More importantly, the agent's runtimeConfig may carry a stale
   // permissionMode value from a previous runtime (e.g. 'no-restrictions' left over
   // from a Codex session, confirmed in unified-2026-04-15.log:918). Reading that
-  // value verbatim means the Gemini permission dropdown shows its fallback first
-  // item instead of the correct mapped mode.
+  // value verbatim can show an unrelated permission mode first.
   //
   // Fix: on every currentRuntime transition, validate the persisted value against
   // the current runtime's allowed mode set and only honor it if it's legal; else
@@ -2089,13 +2084,10 @@ export default function Chat({
         ? CC_PERMISSION_MODES
         : currentRuntime === 'codex'
           ? CODEX_PERMISSION_MODES
-          : currentRuntime === 'gemini'
-            ? GEMINI_PERMISSION_MODES
-            : undefined;
+          : undefined;
 
-  // Codex + Gemini models are dynamic (fetched from the CLI); CC models are static
+  // Codex models are dynamic (fetched from the CLI); CC models are static
   const [codexModels, setCodexModels] = useState<typeof CC_MODELS>([]);
-  const [geminiModels, setGeminiModels] = useState<typeof CC_MODELS>([]);
   useEffect(() => {
     if (currentRuntime !== 'codex' || !isConnected) return;
     let cancelled = false;
@@ -2130,25 +2122,9 @@ export default function Chat({
     configPending,
     workspaceRefreshTrigger,
   ]);
-  useEffect(() => {
-    if (currentRuntime !== 'gemini') return;
-    let cancelled = false;
-    const controller = new AbortController();
-    apiGet(runtimeModelCatalogPath('gemini'), { signal: controller.signal })
-      .then((res: unknown) => {
-        const data = res as { models?: typeof CC_MODELS } | undefined;
-        if (!cancelled && data?.models?.length) setGeminiModels(data.models);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-      controller.abort();
-    };
-  }, [currentRuntime, apiGet]);
-
   // ─── External runtime pre-warm (v0.1.68) ───
   //
-  // DSH, Gemini and Codex run as persistent protocol processes. On a cold
+  // DSH and Codex run as persistent protocol processes. On a cold
   // start their first message otherwise pays process spawn + initialize /
   // Session creation before the Provider request begins. DSH only uses this
   // path to resume an existing native Session; a fresh DSH Session is created
@@ -2182,16 +2158,9 @@ export default function Chat({
     // suspenders against a loading-session race where sessionRuntime is still
     // null when this effect fires.
     if (sessionRuntime !== null && sessionRuntime !== currentRuntime) return;
-    // Do NOT gate on runtime-model list readiness. /api/runtime/models itself
-    // spawns a `gemini --acp` (or codex app-server) subprocess that pays the
-    // same ~14s cold-start as pre-warm — gating pre-warm on it would serialize
-    // the two 14s costs and defeat the whole optimization (user would stare
-    // at 14s+ of empty UI after hitting send). Firing with an undefined model
-    // is safe: gemini.ts:~809 guards `options.model && options.model.length>0`
-    // and Codex treats null `model` as "use default". When the user later
-    // picks a specific model in the UI, setExternalModel() routes through
-    // the in-place `runtime.setModel()` path (Gemini: one ACP RPC; Codex/CC:
-    // fall back to stop+resume) — cheap in the common case.
+    // Do not gate on runtime-model list readiness. Codex model discovery can
+    // start its own app-server process; serializing it with pre-warm delays
+    // the first turn. An undefined model lets Codex use its default.
     const key = `${sessionId}::${currentRuntime}`;
     if (prewarmedKeyRef.current === key) return;
     prewarmedKeyRef.current = key;
@@ -2268,9 +2237,7 @@ export default function Chat({
         ? managedProviderRuntimeActive
           ? []
           : codexModels
-        : currentRuntime === 'gemini'
-          ? geminiModels
-          : undefined;
+        : undefined;
 
   // Effective model/permission based on runtime.
   // For external runtimes: if user hasn't explicitly selected a model (runtimeModel=undefined),
@@ -2693,7 +2660,7 @@ export default function Chat({
 
         // 6. Mark initialMessage consumed. DO NOT close overlay here:
         //    sendMessage() returns immediately (fire-and-forget), and on external
-        //    runtimes (gemini/codex) the backend is still in prewarm — sessionState
+        //    runtimes (Codex/DSH) the backend may still be in prewarm — sessionState
         //    stays `idle` and isLoading gets cleared by the prewarm chat:init event.
         //    Closing the overlay now produced the "stable idle" gap the user saw.
         //    Overlay closure is now driven by the dedicated effect below — it waits
@@ -3803,8 +3770,7 @@ export default function Chat({
     // Runtime-specific permission mode sync is handled by the `[currentRuntime, isExternalRuntime]`
     // effect higher up, which validates the persisted value against the current runtime's mode
     // set and falls back to the runtime default if stale. Don't override here without validation —
-    // doing so reintroduces the cross-runtime leak (e.g. Codex's 'no-restrictions' bleeding into
-    // a Gemini session, confirmed in ~/Downloads/myagents-logs-2026-04-14T17-28-53.txt:174).
+    // doing so reintroduces a cross-runtime permission-mode leak.
     // Sync provider (useState initializer runs when currentProject is still undefined).
     // Re-arm providerInitRef to suppress the deferred provider-change effect (fires next render)
     // that would otherwise override the project-stored model with provider's primaryModel.
@@ -4068,7 +4034,7 @@ export default function Chat({
   //      value per Tab; we WAIT for runtime resolution before any push instead
   //      of speculatively filling.
   //   2. External runtime + user hasn't explicitly picked a model → DON'T push.
-  //      Codex/Gemini fall back to their own default (gpt-5.5 / auto-gemini-3)
+  //      Codex falls back to its own default
   //      when /api/model/set is never called. Pushing the builtin preset here
   //      is a category error: that preset belongs to the builtin code path that
   //      this session will never take.
@@ -6656,7 +6622,7 @@ export default function Chat({
                     sessionTitle !== 'New Chat'
                   }
                   // `/context` is a builtin SDK slash command — external runtimes
-                  // (Claude Code CLI / Codex / Gemini) don't share this surface,
+                  // (Claude Code CLI / Codex) don't share this surface,
                   // so we omit the callback and let the menu hide the row entirely.
                   onShowContext={
                     isExternalRuntime

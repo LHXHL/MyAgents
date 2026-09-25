@@ -166,7 +166,7 @@ fn runtime_identity_from_binding(binding: &serde_json::Value) -> Result<RuntimeI
                 .ok_or("runtimeBinding.implementationVersion is missing")?;
             RuntimeIdentity::new(Some("codex"), Some("managed-provider"))
         }
-        ("external", runtime @ ("claude-code" | "codex" | "gemini")) => {
+        ("external", runtime @ ("claude-code" | "codex")) => {
             RuntimeIdentity::new(Some(runtime), Some("system-cli"))
         }
         _ => return Err(format!("unsupported runtimeBinding {family}/{id}")),
@@ -183,7 +183,7 @@ fn runtime_identity_from_preference(
     match (family, id) {
         ("integrated", "claude-agent-sdk") => Ok(RuntimeIdentity::new(Some("builtin"), None)),
         ("integrated", "dsh") => Ok(RuntimeIdentity::new(Some("dsh"), Some("integrated"))),
-        ("external", runtime @ ("claude-code" | "codex" | "gemini")) => {
+        ("external", runtime @ ("claude-code" | "codex")) => {
             Ok(RuntimeIdentity::new(Some(runtime), Some("system-cli")))
         }
         _ => Err(format!("unsupported runtimePreference {family}/{id}")),
@@ -214,7 +214,7 @@ fn runtime_identity_from_legacy_agent(
             // not an explicit user-managed Codex preference.
             Ok(RuntimeIdentity::new(Some("builtin"), None))
         }
-        runtime @ ("claude-code" | "codex" | "gemini") => {
+        runtime @ ("claude-code" | "codex") => {
             Ok(RuntimeIdentity::new(Some(runtime), Some("system-cli")))
         }
         "dsh" if runtime_source.is_none() || runtime_source == Some("integrated") => {
@@ -338,7 +338,7 @@ fn resolve_agent_runtime_identity_by_id_with_policy(
     if let Some(preference) = preference.as_ref().filter(|identity| {
         matches!(
             identity.runtime.as_str(),
-            "claude-code" | "codex" | "gemini"
+            "claude-code" | "codex"
         )
     }) {
         return Some(admit_runtime_identity_for(preference.clone(), policy));
@@ -532,7 +532,7 @@ fn runtime_identity_from_legacy_session(
             Some("codex"),
             Some("managed-provider"),
         )),
-        (runtime @ ("claude-code" | "codex" | "gemini"), None | Some("system-cli")) => {
+        (runtime @ ("claude-code" | "codex"), None | Some("system-cli")) => {
             Ok(RuntimeIdentity::new(Some(runtime), Some("system-cli")))
         }
         ("dsh", None | Some("integrated")) => {
@@ -541,7 +541,7 @@ fn runtime_identity_from_legacy_session(
         ("builtin", Some(source)) => Err(format!(
             "legacy builtin Session cannot use runtimeSource {source}"
         )),
-        (runtime @ ("claude-code" | "codex" | "gemini"), Some(source)) => Err(format!(
+        (runtime @ ("claude-code" | "codex"), Some(source)) => Err(format!(
             "legacy {runtime} Session cannot use runtimeSource {source}"
         )),
         ("dsh", Some(source)) => Err(format!(
@@ -794,7 +794,7 @@ mod tests {
         let config = serde_json::json!({
             "multiAgentRuntime": true,
             "agents": [
-                { "id": "extra", "workspacePath": "/repo/current", "runtime": "gemini" },
+                { "id": "extra", "workspacePath": "/repo/current", "runtime": "claude-code" },
                 { "id": "selected", "workspacePath": "/repo/old", "runtime": "codex" }
             ]
         });
@@ -815,7 +815,7 @@ mod tests {
         let config = serde_json::json!({
             "multiAgentRuntime": true,
             "agents": [
-                { "id": "project-agent", "runtime": "gemini" },
+                { "id": "project-agent", "runtime": "claude-code" },
                 { "id": "extra", "workspacePath": "/repo/current", "runtime": "codex" },
                 { "id": "orphan", "workspacePath": "/repo/orphan", "runtime": "claude-code" }
             ]
@@ -874,12 +874,12 @@ mod tests {
                 { "id": "system-codex", "runtime": "codex", "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID },
                 { "id": "claude-code", "runtime": "claude-code", "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID },
                 {
-                    "id": "gemini",
-                    "runtime": "gemini",
+                    "id": "other-external",
+                    "runtime": "claude-code",
                     "runtimeConfig": { "source": "managed-provider" },
                     "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID
                 },
-                { "id": "ordinary-provider", "runtime": "gemini", "providerId": "anthropic-api" }
+                { "id": "ordinary-provider", "runtime": "claude-code", "providerId": "anthropic-api" }
             ]
         });
 
@@ -893,8 +893,8 @@ mod tests {
         for (agent_id, expected_runtime) in [
             ("system-codex", "codex"),
             ("claude-code", "claude-code"),
-            ("gemini", "gemini"),
-            ("ordinary-provider", "gemini"),
+            ("other-external", "claude-code"),
+            ("ordinary-provider", "claude-code"),
         ] {
             let identity = resolve_agent_runtime_identity_by_id_from_value(&config, agent_id)
                 .expect("explicit external Agent identity");
@@ -916,11 +916,11 @@ mod tests {
                 "authMethod": "chatgpt"
             },
             "agents": [
-                { "id": "gemini", "runtime": "gemini", "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID }
+                { "id": "claude-code", "runtime": "claude-code", "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID }
             ]
         });
 
-        let identity = resolve_agent_runtime_identity_by_id_from_value(&config, "gemini")
+        let identity = resolve_agent_runtime_identity_by_id_from_value(&config, "claude-code")
             .expect("managed provider identity");
         assert_eq!(identity.runtime, "codex");
         assert_eq!(identity.runtime_source.as_deref(), Some("managed-provider"));
@@ -1005,7 +1005,7 @@ mod tests {
                 {
                     "id": "external-wins",
                     "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID,
-                    "runtimePreference": { "family": "external", "id": "gemini" }
+                    "runtimePreference": { "family": "external", "id": "claude-code" }
                 }
             ]
         });
@@ -1036,7 +1036,7 @@ mod tests {
             resolve_agent_runtime_identity_by_id_from_value(&config, "external-wins")
                 .expect("explicit External preference")
                 .runtime,
-            "gemini"
+            "claude-code"
         );
     }
 

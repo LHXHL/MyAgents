@@ -82,7 +82,7 @@ describe('snapshotForOwnedSession — reasoning effort capture (#324)', () => {
       model: 'claude-opus-4-7',
       reasoningEffort: 'max',
       permissionMode: 'fullAgency',
-      runtimeConfig: { model: 'gemini-3.1-pro-preview', reasoningEffort: 'xhigh', permissionMode: 'yolo' },
+      runtimeConfig: { model: 'claude-sonnet-4-5', reasoningEffort: 'xhigh', permissionMode: 'bypassPermissions' },
     }), { runtimeOverride: 'codex' });
 
     expect(snap.runtime).toBe('codex');

@@ -94,7 +94,7 @@ describe("Session Runtime binding migration", () => {
       runtimeSource: "managed-provider",
       runtimeBindingCompatibility: {
         state: "incompatible",
-        code: "illegal-legacy-runtime-source",
+        code: "unknown-legacy-runtime",
       },
     });
     expect(rows[3]).toMatchObject({

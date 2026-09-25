@@ -121,7 +121,7 @@ export interface TabState {
     /**
      * Issue #194 — external-runtime self-report (auth / features / MCP / apps /
      * effective env). Populated when an external runtime emits the
-     * `runtime_diagnostics` UnifiedEvent (Codex today; Claude Code / Gemini later).
+     * `runtime_diagnostics` UnifiedEvent (Codex today; Claude Code later).
      * Null for builtin runtime, and null until the first diagnostic snapshot
      * arrives after session start.
      */

@@ -275,7 +275,7 @@ export function shouldDegradedLoad(args: {
  *     `resolveProvider`'s first-available fallback (a sane default when the
  *     agent's configured provider was deleted). The bug is specific to a session
  *     that *froze* its own provider choice.
- *   - builtin runtime only — external runtimes (Codex/CC/Gemini) carry no
+ *   - builtin runtime only — external runtimes (Codex/CC) carry no
  *     providerId, so there is nothing to pin or fall back from.
  *   - `providersLoaded` gate — during useConfig()'s async load `providers` is
  *     empty and `resolvedProviderId` is transiently undefined; without this gate

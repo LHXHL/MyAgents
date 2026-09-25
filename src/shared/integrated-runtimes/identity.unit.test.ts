@@ -36,9 +36,9 @@ describe("Integrated Runtime identity", () => {
   });
 
   it("preserves legal Agent intent and does not reclassify managed Codex as External", () => {
-    expect(preferenceFromLegacyAgentFacts({ runtime: "gemini" })).toEqual({
+    expect(preferenceFromLegacyAgentFacts({ runtime: "claude-code" })).toEqual({
       family: "external",
-      id: "gemini",
+      id: "claude-code",
     });
     expect(
       preferenceFromLegacyAgentFacts({
@@ -49,10 +49,10 @@ describe("Integrated Runtime identity", () => {
     ).toEqual({ family: "integrated", id: "claude-agent-sdk" });
     expect(
       preferenceFromLegacyAgentFacts({
-        runtime: "gemini",
+        runtime: "claude-code",
         runtimeSource: "managed-provider",
       }),
-    ).toEqual({ family: "external", id: "gemini" });
+    ).toEqual({ family: "external", id: "claude-code" });
     expect(preferenceFromLegacyAgentFacts({ runtime: "dsh" })).toEqual({
       family: "integrated",
       id: "dsh",
@@ -113,7 +113,7 @@ describe("Integrated Runtime identity", () => {
       status: "resolved",
       binding: { family: "managed-provider", id: "managed-codex" },
     });
-    for (const runtime of ["claude-code", "codex", "gemini"] as const) {
+    for (const runtime of ["claude-code", "codex"] as const) {
       expect(resolvePersistedRuntimeBinding({ runtime })).toMatchObject({
         status: "resolved",
         binding: { family: "external", id: runtime },
@@ -136,7 +136,7 @@ describe("Integrated Runtime identity", () => {
     });
     expect(
       resolvePersistedRuntimeBinding({
-        runtime: "gemini",
+        runtime: "claude-code",
         runtimeSource: "managed-provider",
       }),
     ).toMatchObject({
@@ -145,6 +145,12 @@ describe("Integrated Runtime identity", () => {
     });
     expect(
       resolvePersistedRuntimeBinding({ runtime: "future-runtime" }),
+    ).toMatchObject({
+      status: "incompatible",
+      compatibility: { code: "unknown-legacy-runtime" },
+    });
+    expect(
+      resolvePersistedRuntimeBinding({ runtime: "gemini" }),
     ).toMatchObject({
       status: "incompatible",
       compatibility: { code: "unknown-legacy-runtime" },

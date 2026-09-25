@@ -859,7 +859,7 @@ mod lifecycle_contract_tests {
         ]);
 
         assert_eq!(
-            decide_runtime_drift_result(Some("codex"), "gemini", &owners),
+            decide_runtime_drift_result(Some("codex"), "claude-code", &owners),
             RuntimeDriftResult::DetectedKeptAlive
         );
     }
@@ -869,7 +869,7 @@ mod lifecycle_contract_tests {
         let owners = owners(vec![SidecarOwner::Agent("agent-a".to_string())]);
 
         assert_eq!(
-            decide_runtime_drift_result(Some("codex"), "gemini", &owners),
+            decide_runtime_drift_result(Some("codex"), "claude-code", &owners),
             RuntimeDriftResult::KilledAndRemoved
         );
     }
@@ -1020,11 +1020,11 @@ mod lifecycle_contract_tests {
         )]);
 
         assert_eq!(
-            decide_runtime_drift_result(Some("codex"), "gemini", &task),
+            decide_runtime_drift_result(Some("codex"), "claude-code", &task),
             RuntimeDriftResult::DetectedKeptAlive
         );
         assert_eq!(
-            decide_runtime_drift_result(Some("codex"), "gemini", &background),
+            decide_runtime_drift_result(Some("codex"), "claude-code", &background),
             RuntimeDriftResult::DetectedKeptAlive
         );
     }
@@ -1773,7 +1773,7 @@ pub struct SessionSidecar {
     pub created_at: std::time::Instant,
     /// MYAGENTS_RUNTIME env var value this Sidecar was spawned with.
     /// Used for drift detection on Agent-owner reuse: when the agent's
-    /// runtime config changes (e.g. codex → gemini), subsequent IM messages
+    /// runtime config changes (e.g. codex → claude-code), subsequent IM messages
     /// for the same peer session must not reuse a Sidecar that's still
     /// running the old runtime. None = builtin (no env var injected).
     pub runtime: Option<String>,

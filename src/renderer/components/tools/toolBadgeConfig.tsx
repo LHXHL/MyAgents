@@ -587,7 +587,7 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
 // For MCP tools: uses server display name from config (e.g., "Playwright 浏览器", "天眼查")
 // For Task tool: returns the subagent_type (e.g., "Explore", "Plan")
 // Generic override: if parsedInput has `_displayName`, use it verbatim — this lets
-// external runtimes (like Gemini) surface their real tool identifier (e.g.
+// external runtimes surface their real tool identifier (e.g.
 // "run_shell_command") in the UI while internally still routing tool.name to a
 // MyAgents-native component (BashTool/GrepTool/...) for rich body rendering.
 export { isSubagentContainerTool } from './subagentActivity';

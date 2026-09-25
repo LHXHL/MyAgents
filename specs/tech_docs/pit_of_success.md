@@ -329,7 +329,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 <a id="killwithescalation"></a>
 ## `killWithEscalation`
 
-**Problem.** 三个外部 runtime adapter（claude-code / codex / gemini）之前共用反模式：SIGTERM + 短 wait + 无界 `waitForExit()`。子进程拒收 SIGTERM 时 sidecar 永久卡死，每条 stop 路径都中招（用户停止、模型切换、权限切换、runtime 切换）。
+**Problem.** 外部 runtime adapter 曾共用反模式：SIGTERM + 短 wait + 无界 `waitForExit()`。子进程拒收 SIGTERM 时 sidecar 永久卡死，每条 stop 路径都中招（用户停止、模型切换、权限切换、runtime 切换）。
 
 **Surface.** `killWithEscalation(child, { gracefulMs, hardMs, label })` (`src/server/runtimes/utils/kill-with-escalation.ts`) — 返回 `Promise<void>`。
 

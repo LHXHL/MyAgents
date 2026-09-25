@@ -43,7 +43,7 @@ beforeAll(async () => {
               type: "feishu",
               enabled: true,
               overrides: {
-                runtime: "gemini",
+                runtime: "claude-code",
                 runtimeConfig: { source: "managed-provider" },
               },
             },
@@ -111,8 +111,8 @@ describe("Agent Runtime preference migration", () => {
     expect(channels[0]).toMatchObject({
       id: "external",
       overrides: {
-        runtime: "gemini",
-        runtimePreference: { family: "external", id: "gemini" },
+        runtime: "claude-code",
+        runtimePreference: { family: "external", id: "claude-code" },
       },
     });
     expect(channels[1]).toMatchObject({

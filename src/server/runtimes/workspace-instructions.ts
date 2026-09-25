@@ -1,7 +1,6 @@
-// Cross-Runtime Workspace Instructions (v0.1.68)
+// Cross-Runtime Workspace Instructions
 //
-// Reads Claude-protocol workspace files (CLAUDE.md, .claude/rules/*.md, AGENTS.md)
-// and formats them for injection into external runtimes (Codex, Gemini).
+// Reads Claude-protocol workspace files for Codex and DSH supplements.
 //
 // Format is replicated from Claude Code's getClaudeMds() in utils/claudemd.ts:
 //   "Contents of {absolutePath} (project instructions, checked into the codebase):\n\n{content}"
@@ -9,13 +8,10 @@
 // Design:
 //   - Codex: CLAUDE.md discovered natively via `-c project_doc_fallback_filenames=["CLAUDE.md"]`;
 //            only .claude/rules/*.md injected through developerInstructions
-//   - Gemini: chain fallback (GEMINI.md present → skip; else CLAUDE.md + rules; else AGENTS.md)
-//            injected through GEMINI_SYSTEM_MD merge
 //   - Zero external config file modification
 //
 // Security hardening (v0.1.68+):
-//   - Symlinks rejected: both root-level files (CLAUDE.md, AGENTS.md, GEMINI.md) and
-//     directory entries use lstat semantics (readdirSync withFileTypes / lstatSync).
+//   - Symlinks rejected: companion files and directory entries use lstat semantics.
 //     Prevents a repo-local symlink from exfiltrating files outside the workspace
 //     (e.g. `.claude/rules/x.md -> ~/.ssh/id_rsa`) into the model prompt.
 //   - Recursion depth bounded (MAX_DEPTH) to defuse symlink loops on directories.
@@ -75,22 +71,6 @@ function readIfExists(filePath: string): WorkspaceInstruction | null {
     return { path: filePath, content };
   } catch {
     return null;
-  }
-}
-
-/**
- * Check if a candidate root-level sentinel file exists, is a regular file, and is
- * not a symlink. Used for GEMINI.md presence check — we only treat a repo as
- * having GEMINI.md when it's a real file committed to the repo, not a dangling
- * or adversarial symlink.
- */
-function isRegularFile(filePath: string): boolean {
-  try {
-    if (!existsSync(filePath)) return false;
-    const st = lstatSync(filePath);
-    return st.isFile();
-  } catch {
-    return false;
   }
 }
 
@@ -187,39 +167,6 @@ function collectRuleFiles(
 // ─── Core read functions ───
 
 /**
- * Read CLAUDE.md + .claude/CLAUDE.md + .claude/rules/*.md from a workspace.
- * Shares a single CollectBudget so the aggregate cap spans all three sources.
- */
-function readClaudeWorkspaceInstructions(workspacePath: string): WorkspaceInstruction[] {
-  const instructions: WorkspaceInstruction[] = [];
-  const budget: CollectBudget = { totalBytes: 0, truncated: false };
-
-  const consume = (inst: WorkspaceInstruction | null): void => {
-    if (!inst) return;
-    const size = Buffer.byteLength(inst.content, 'utf-8');
-    if (budget.totalBytes + size > MAX_TOTAL_BYTES) {
-      budget.truncated = true;
-      return;
-    }
-    instructions.push(inst);
-    budget.totalBytes += size;
-  };
-
-  // CLAUDE.md at project root
-  consume(readIfExists(join(workspacePath, 'CLAUDE.md')));
-
-  // .claude/CLAUDE.md (Claude Code also checks this location)
-  consume(readIfExists(join(workspacePath, '.claude', 'CLAUDE.md')));
-
-  // .claude/rules/*.md (recursive)
-  if (!budget.truncated && instructions.length < MAX_FILES) {
-    collectRuleFiles(join(workspacePath, '.claude', 'rules'), instructions, budget);
-  }
-
-  return instructions;
-}
-
-/**
  * Read only .claude/rules/*.md (for Codex — CLAUDE.md itself is loaded natively via -c flag).
  */
 function readClaudeRulesOnly(workspacePath: string): WorkspaceInstruction[] {
@@ -227,14 +174,6 @@ function readClaudeRulesOnly(workspacePath: string): WorkspaceInstruction[] {
   const budget: CollectBudget = { totalBytes: 0, truncated: false };
   collectRuleFiles(join(workspacePath, '.claude', 'rules'), rules, budget);
   return rules;
-}
-
-/**
- * Read AGENTS.md from a workspace root.
- */
-function readAgentsMd(workspacePath: string): WorkspaceInstruction[] {
-  const agentsMd = readIfExists(join(workspacePath, 'AGENTS.md'));
-  return agentsMd ? [agentsMd] : [];
 }
 
 // ─── Formatting (replicates Claude Code getClaudeMds() output) ───
@@ -308,35 +247,4 @@ export function resolveDshWorkspaceSupplement(workspacePath: string): string {
     '',
     body,
   ].join('\n');
-}
-
-/**
- * Gemini: chain fallback for GEMINI_SYSTEM_MD injection.
- *
- * Priority:
- *   1. GEMINI.md exists (regular file, not symlink) → return '' (Gemini loads it natively)
- *   2. CLAUDE.md exists → inject CLAUDE.md + .claude/CLAUDE.md + .claude/rules/*.md
- *   3. AGENTS.md exists → inject AGENTS.md
- *   4. None found → return ''
- */
-export function resolveGeminiWorkspaceInstructions(workspacePath: string): string {
-  // 1. GEMINI.md present as a regular (non-symlink) file → Gemini native, skip
-  if (isRegularFile(join(workspacePath, 'GEMINI.md'))) {
-    return '';
-  }
-
-  // 2. CLAUDE.md present → full Claude protocol
-  const claudeInstructions = readClaudeWorkspaceInstructions(workspacePath);
-  if (claudeInstructions.length > 0) {
-    return formatInstructions(claudeInstructions);
-  }
-
-  // 3. AGENTS.md present → Codex protocol
-  const agentsInstructions = readAgentsMd(workspacePath);
-  if (agentsInstructions.length > 0) {
-    return formatInstructions(agentsInstructions);
-  }
-
-  // 4. Nothing found
-  return '';
 }

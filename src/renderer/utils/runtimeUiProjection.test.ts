@@ -46,7 +46,6 @@ describe('runtime UI projection', () => {
     expect(shouldShowBuiltinSdkSlashCommands('dsh')).toBe(false);
     expect(shouldShowBuiltinSdkSlashCommands('codex')).toBe(false);
     expect(shouldShowBuiltinSdkSlashCommands('claude-code')).toBe(false);
-    expect(shouldShowBuiltinSdkSlashCommands('gemini')).toBe(false);
   });
 
   it('only requests extension feedback when the user must wait or act', () => {

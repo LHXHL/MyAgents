@@ -91,7 +91,7 @@ export interface SessionMenuButtonProps {
      * Send the SDK `/context` slash command on behalf of the user so the
      * `/context` output (real token-window distribution) lands in the chat
      * stream. Only wired by the caller when the active runtime is `builtin`
-     * — external runtimes (Claude Code CLI / Codex / Gemini) don't share
+     * — external runtimes (Claude Code CLI / Codex) don't share
      * this command surface, so the menu item should hide entirely there.
      * The menu omits the row when this prop is undefined.
      */

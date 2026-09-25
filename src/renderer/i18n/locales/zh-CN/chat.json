@@ -160,14 +160,6 @@
         "label": "Bypass Permissions",
         "description": "跳过所有权限确认"
       },
-      "autoEdit": {
-        "label": "Auto Edit",
-        "description": "自动接受文件编辑，其他需确认"
-      },
-      "yolo": {
-        "label": "YOLO",
-        "description": "跳过所有工具确认"
-      },
       "suggest": {
         "label": "Suggest",
         "description": "只读模式；仅信任的命令自动执行，其他需确认"

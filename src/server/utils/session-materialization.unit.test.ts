@@ -112,8 +112,8 @@ describe('createMaterializedSessionMetadata', () => {
         model: 'claude-opus-4-7',
         permissionMode: 'fullAgency',
         runtimeConfig: {
-          model: 'gemini-3.1-pro-preview',
-          permissionMode: 'yolo',
+          model: 'claude-sonnet-4-5',
+          permissionMode: 'bypassPermissions',
         },
       }),
       runtimeOverride: 'codex',

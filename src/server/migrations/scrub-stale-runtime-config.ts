@@ -4,7 +4,7 @@
 // reads `runtimeConfig.model` on runtime transitions — and 8020803e (May 2,
 // shipped in v0.2.15) — which started correctly writing external-runtime
 // model to `runtimeConfig.model` — a latent bug got activated: switching
-// runtime (Gemini → Codex) leaked the previous runtime's model into the new
+// runtime (historically Gemini → Codex) leaked the previous runtime's model into the new
 // runtime's session, and Codex CLI rejects mismatched models with
 // `"The 'gemini-3.1-pro-preview' model is not supported when using Codex
 //   with a ChatGPT account"`.
@@ -107,7 +107,7 @@ export async function scrubStaleRuntimeConfig(): Promise<ScrubResult> {
         dropped.permissionMode = rc.permissionMode;
         delete nextRc.permissionMode;
       }
-      // additionalArgs is per-runtime by definition (Gemini's --acp flags
+      // additionalArgs is per-runtime by definition (CLI-specific flags
       // would be meaningless to Codex, etc). If model OR permissionMode was
       // already obviously cross-runtime, additionalArgs is almost certainly
       // stale too — drop it as well. Otherwise leave it: a user might

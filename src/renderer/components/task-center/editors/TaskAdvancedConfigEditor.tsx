@@ -79,8 +79,8 @@ interface Props {
   setProviderId: (v: string | undefined) => void;
   model?: string;
   setModel: (v: string | undefined) => void;
-  /** PRD 0.2.9 — External-runtime model override (claude-code / codex /
-   *  gemini). Stored on `runtimeConfig.model` rather than `model` because
+  /** PRD 0.2.9 — External-runtime model override (claude-code / codex).
+   *  Stored on `runtimeConfig.model` rather than `model` because
    *  external-runtime ids never collide with builtin provider model ids
    *  and the cron exec path reads them from runtimeConfig. */
   runtimeConfig?: RuntimeConfig;
@@ -201,8 +201,8 @@ export function TaskAdvancedConfigEditor(props: Props) {
   //      .additionalArgs) — same bug class as agent-level Bug B (issue #194
   //      follow-up). Earlier version of this handler only cleared
   //      `runtimeConfig.model` when switching back to builtin, leaving the
-  //      external→external case (codex → gemini) leaking `gpt-5.5` into a
-  //      Gemini task. Codex CLI then rejects with "model is not supported".
+  //      external→external case (claude-code → codex) leaking a Claude model into a
+  //      Codex task. Codex CLI then rejects with "model is not supported".
   //
   // The runtimeConfig scrub now reuses `buildRuntimeChangePatch` so it's in
   // lockstep with the agent-level confirmRuntimeChange / Settings /
@@ -333,15 +333,14 @@ export function TaskAdvancedConfigEditor(props: Props) {
     return hit?.modelName || model;
   }, [providerId, model, pickedProvider]);
 
-  // PRD 0.2.9 R5 — External runtime model list (claude-code/codex/gemini).
-  // Static for CC; dynamic for Codex/Gemini (queried from the CLI). Mirrors
+  // PRD 0.2.9 R5 — External runtime model list (claude-code/codex).
+  // Static for CC; dynamic for Codex (queried from the CLI). Mirrors
   // Chat.tsx:721-738. Empty list while the fetch is in flight is fine —
   // the picker just shows "跟随 Agent 当前模型" alone.
   const [codexCatalog, setCodexCatalog] = useState<{
     source: RuntimeSource;
     models: RuntimeModelInfo[];
   } | null>(null);
-  const [geminiModels, setGeminiModels] = useState<RuntimeModelInfo[]>([]);
   useEffect(() => {
     if (effectiveRuntime !== 'codex') return;
     let cancelled = false;
@@ -357,14 +356,6 @@ export function TaskAdvancedConfigEditor(props: Props) {
       });
     return () => { cancelled = true; };
   }, [effectiveRuntime, effectiveRuntimeSource]);
-  useEffect(() => {
-    if (effectiveRuntime !== 'gemini') return;
-    let cancelled = false;
-    apiGetJson<{ models?: RuntimeModelInfo[] }>(runtimeModelCatalogPath('gemini'))
-      .then((res) => { if (!cancelled && res?.models?.length) setGeminiModels(res.models); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [effectiveRuntime]);
   const externalRuntimeModels: RuntimeModelInfo[] = useMemo(() => {
     if (effectiveRuntime === 'claude-code') return CC_MODELS;
     if (effectiveRuntime === 'codex') {
@@ -372,9 +363,8 @@ export function TaskAdvancedConfigEditor(props: Props) {
         ? codexCatalog.models
         : [];
     }
-    if (effectiveRuntime === 'gemini') return geminiModels;
     return [];
-  }, [effectiveRuntime, effectiveRuntimeSource, codexCatalog, geminiModels]);
+  }, [effectiveRuntime, effectiveRuntimeSource, codexCatalog]);
 
   // PRD 0.2.9 — Pair-write helpers. Selecting a provider's model writes
   // BOTH `providerId` and `model` atomically; selecting "跟随 Agent" uses
@@ -441,8 +431,8 @@ export function TaskAdvancedConfigEditor(props: Props) {
   // Permission-mode options — runtime-specific. Each runtime defines its
   // own set of permission strings (builtin: auto/plan/fullAgency/custom;
   // CC: default/acceptEdits/bypassPermissions/plan/dontAsk/auto;
-  // Codex: auto-edit/full-auto/no-restrictions (managed uses product projection); Gemini:
-  // default/autoEdit/yolo/plan). Sourcing from the canonical
+  // Codex: auto-edit/full-auto/no-restrictions (managed uses product projection).
+  // Sourcing from the canonical
   // `getRuntimePermissionModes` registry means adding a new runtime's
   // perm modes only requires updating that one switch — the picker here
   // surfaces them automatically.
@@ -547,7 +537,7 @@ export function TaskAdvancedConfigEditor(props: Props) {
           )}
 
           {/* External CLI notice — Model / MCP fields are managed by the
-              runtime itself (Claude Code / Codex / Gemini); only model and
+              runtime itself (Claude Code / Codex); only model and
               permission can be overridden per-task. Mirrors
               WorkspaceBasicsSection's treatment of the same situation. */}
           {!usesProductConfiguration && (
@@ -559,7 +549,7 @@ export function TaskAdvancedConfigEditor(props: Props) {
           {/* Permission mode — visible for EVERY runtime. The option list
               pivots on the effective runtime via getRuntimePermissionModes
               (builtin: auto/plan/fullAgency/custom; CC: default/acceptEdits/…;
-              Codex: suggest/auto-edit/…; Gemini: default/autoEdit/yolo/plan).
+              Codex: suggest/auto-edit/…).
               "跟随默认（最大权限）" sentinel means: at execution time, fall
               back to the runtime's max permission (cron is unattended). */}
           <FieldRow
@@ -582,7 +572,7 @@ export function TaskAdvancedConfigEditor(props: Props) {
               Both render as a popup-grouped list to match Chat / Agent
               settings UX. The builtin variant uses `useAvailableProviders`
               (cross-provider) — issue #130 fix. The external variant
-              reads `runtimeModels` (CC_MODELS / codexModels / geminiModels)
+              reads `runtimeModels` (CC_MODELS / codexModels)
               and writes `runtimeConfig.model`. */}
           <FieldRow
             label={t('advanced.modelLabel')}
@@ -941,7 +931,7 @@ function ModelPicker(props: {
                 </button>
                 {externalRuntimeModels.length === 0 ? (
                   <div className="px-3 py-3 text-xs leading-relaxed text-[var(--ink-muted)]">
-                    {effectiveRuntime === 'codex' || effectiveRuntime === 'gemini'
+                    {effectiveRuntime === 'codex'
                       ? t('advanced.queryingModels')
                       : t('advanced.noRuntimeModels')}
                   </div>

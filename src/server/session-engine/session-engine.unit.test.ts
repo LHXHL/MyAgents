@@ -1046,11 +1046,11 @@ describe('session-engine selector and adapters', () => {
     mocks.getActiveRuntimeSource.mockReturnValue('managed-provider');
 
     await expect(updateExternalRuntimeConfigAtSelector({
-      runtime: 'gemini',
-      runtimeConfig: { model: 'gemini-2.5-pro' },
+      runtime: 'claude-code',
+      runtimeConfig: { model: 'sonnet' },
     })).resolves.toEqual({
       httpStatus: 400,
-      body: { success: false, error: 'Runtime mismatch: sidecar=codex, payload=gemini' },
+      body: { success: false, error: 'Runtime mismatch: sidecar=codex, payload=claude-code' },
     });
     await expect(updateExternalRuntimeConfigAtSelector({
       runtime: 'codex',

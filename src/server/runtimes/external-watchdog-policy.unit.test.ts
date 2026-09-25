@@ -10,7 +10,7 @@ import {
 
 describe('externalRuntimeWatchdogTimeoutMs', () => {
   it('keeps the default timeout for non-Codex runtimes', () => {
-    expect(externalRuntimeWatchdogTimeoutMs('gemini', { inputTokens: 8_000_000, outputTokens: 0 })).toBe(
+    expect(externalRuntimeWatchdogTimeoutMs('claude-code', { inputTokens: 8_000_000, outputTokens: 0 })).toBe(
       EXTERNAL_WATCHDOG_DEFAULT_TIMEOUT_MS,
     );
   });

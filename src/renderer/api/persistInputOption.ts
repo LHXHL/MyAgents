@@ -57,7 +57,7 @@ export interface InputOptionFields {
   /** Selected model when on the builtin runtime. Legacy loose field; Chat's
    *  provider/model picker must use builtinSelection instead. */
   builtinModel?: string | null;
-  /** Selected model when on an external runtime (Codex/CC/Gemini). */
+  /** Selected model when on an external runtime (Codex/CC). */
   runtimeModel?: string | null;
   /** Provider-shaped selection whose execution is owned by an external runtime
    *  (currently Codex 订阅). This is intentionally separate from

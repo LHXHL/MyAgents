@@ -1525,7 +1525,7 @@ impl SidecarManager {
     ///     the IM peer gets a fresh Sidecar under the new session_id.
     ///
     /// `desired_runtime` follows the same normalization as everywhere else:
-    /// `"builtin"` | `"dsh"` | `"claude-code"` | `"codex"` | `"gemini"`. Internally
+    /// `"builtin"` | `"dsh"` | `"claude-code"` | `"codex"`. Internally
     /// Sidecars spawned as builtin have `runtime = None` (no env var
     /// injected); this method treats that as equivalent to `"builtin"` for
     /// comparison.

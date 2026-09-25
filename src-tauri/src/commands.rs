@@ -3351,7 +3351,6 @@ fn run_runtime_detection_with_policy(
     for (runtime, binary) in [
         ("claude-code", "claude"),
         ("codex", "codex"),
-        ("gemini", "gemini"),
     ] {
         results.insert(
             runtime.to_string(),
@@ -3690,7 +3689,7 @@ mod runtime_detection_cache_tests {
         .expect("valid DSH-only policy");
         let results = run_runtime_detection_with_policy(None, &policy);
 
-        for runtime in ["builtin", "claude-code", "codex", "gemini"] {
+        for runtime in ["builtin", "claude-code", "codex"] {
             let detection = results.get(runtime).expect("detection row");
             assert!(!detection.installed);
             assert_eq!(detection.readiness.as_deref(), Some("unavailable"));
@@ -3740,7 +3739,7 @@ mod runtime_detection_cache_tests {
 
         let mut cloned = clone_runtime_detection_cache_results(&cache);
         cloned.insert(
-            "gemini".to_string(),
+            "claude-code".to_string(),
             RuntimeDetectionResult {
                 installed: false,
                 version: None,
@@ -3751,7 +3750,7 @@ mod runtime_detection_cache_tests {
         );
 
         assert!(cache.results.contains_key("codex"));
-        assert!(!cache.results.contains_key("gemini"));
+        assert!(!cache.results.contains_key("claude-code"));
     }
 
     fn test_gate() -> RuntimeDetectionGate {

@@ -453,7 +453,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   const [effortFlipLeft, setEffortFlipLeft] = useState(false);
   const effortRowWrapRef = useRef<HTMLDivElement | null>(null);
   const effortCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // null = this surface has no reasoning-effort knob (Gemini / unknown) → row hidden.
+  // null = this surface has no reasoning-effort knob (unknown) → row hidden.
   const managedEffort = isRuntimeBackedProvider(provider);
   const effortModel = managedReasoningModel !== undefined
     ? managedReasoningModel
@@ -2306,7 +2306,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   <>
                     <div className="px-3 pb-0.5 pt-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]/60">
                       {t('input.runtimeModelHeader', {
-                        runtime: runtime === 'claude-code' ? 'CLAUDE CODE' : runtime === 'gemini' ? 'GEMINI CLI' : runtime?.toUpperCase(),
+                        runtime: runtime === 'claude-code' ? 'CLAUDE CODE' : runtime?.toUpperCase(),
                       })}
                     </div>
                     {runtimeModels.map(model => {
@@ -2409,7 +2409,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 />
 
                 {/* #324 — fixed bottom row: 推理强度. Hidden when the surface has
-                    no effort knob (Gemini / unknown runtime). Hover or click
+                    no effort knob (unknown runtime). Hover or click
                     opens the flyout; selection closes the whole menu. */}
                 {effortChoices && (
                   <div

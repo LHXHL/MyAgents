@@ -63,8 +63,7 @@ const SYSTEM_PROMPT_DIR = join(
  * give us UUID v4s in practice, but `external-session.ts:885` only upgrades
  * `pending-*` placeholders; it does NOT validate UUID shape. A malformed
  * sessionId reaching this helper without sanitization could escape
- * `SYSTEM_PROMPT_DIR` via `../`. Matches the defence in
- * `gemini.ts:sessionSystemPromptPath`.
+ * `SYSTEM_PROMPT_DIR` via `../`. The path is never derived from an unsanitized sessionId.
  */
 function systemPromptPath(sessionId: string): string {
   const safe = sessionId.replace(/[^A-Za-z0-9._-]/g, '_') || 'unknown';
@@ -102,8 +101,7 @@ function writeSystemPromptFile(sessionId: string, content: string): string {
 
 /**
  * Best-effort age-based GC for `SYSTEM_PROMPT_DIR`. Removes prompt files older
- * than 1 hour. Called from `startSession` (same trigger pattern as
- * `gemini.ts:cleanupStaleSessionPrompts`).
+ * than 1 hour. Called from `startSession`.
  *
  * Not unlinked on `stopSession` because the prompt filename is sessionId-keyed
  * (deterministic across spawns of the same session); a late delete from a

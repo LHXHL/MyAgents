@@ -61,7 +61,7 @@ Composer 从上到下为：
 
 - builtin Claude Agent SDK 可展示自身系统指令；
 - Managed Codex 只额外展示已原生支持的 `/compact`；
-- 用户自管 Claude Code/Codex/Gemini 不展示未适配的 SDK 系统指令。
+- 用户自管 Claude Code/Codex 不展示未适配的 SDK 系统指令。
 
 权限图标使用统一语义：只读规划、逐项确认、自动编辑、受约束自主执行、跳过审批分别使用对应的 Eye、ShieldQuestion、FilePenLine、ShieldCheck、LockOpen 词汇。未知自定义模式保留 Runtime 自己声明的图标和文案。
 

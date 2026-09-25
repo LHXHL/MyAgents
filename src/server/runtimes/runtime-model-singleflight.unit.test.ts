@@ -51,8 +51,8 @@ describe('runtime model query single-flight', () => {
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValueOnce([{ value: 'ok' }]);
 
-    await expect(queryRuntimeModelsSingleFlight('gemini', queryer)).rejects.toThrow('boom');
-    await expect(queryRuntimeModelsSingleFlight('gemini', queryer)).resolves.toEqual([{ value: 'ok' }]);
+    await expect(queryRuntimeModelsSingleFlight('claude-code', queryer)).rejects.toThrow('boom');
+    await expect(queryRuntimeModelsSingleFlight('claude-code', queryer)).resolves.toEqual([{ value: 'ok' }]);
     expect(queryer).toHaveBeenCalledTimes(2);
   });
 
@@ -72,8 +72,8 @@ describe('runtime model query single-flight', () => {
       signal.addEventListener('abort', () => reject(signal.reason), { once: true });
     }));
 
-    const a = queryRuntimeModelsSingleFlight('gemini', queryer, undefined, first.signal);
-    const b = queryRuntimeModelsSingleFlight('gemini', queryer, undefined, second.signal);
+    const a = queryRuntimeModelsSingleFlight('claude-code', queryer, undefined, first.signal);
+    const b = queryRuntimeModelsSingleFlight('claude-code', queryer, undefined, second.signal);
     first.abort(new Error('first cancelled'));
 
     await expect(a).rejects.toThrow('first cancelled');

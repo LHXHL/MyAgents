@@ -22,7 +22,7 @@ export interface KillEscalationOptions {
    *     `detached: false` (detached + stdio:'pipe' breaks parent stdout reads
    *     on Windows; see issue #170 #3/#5).
    *
-   * Required for runtime CLIs (Claude Code / Codex / Gemini) that fork their
+   * Required for runtime CLIs (Claude Code / Codex) that fork their
    * own model / tool subprocesses — without tree-kill those subprocesses
    * outlive the runtime parent and the helper would falsely report
    * `exited: true, orphanRisk: false`.

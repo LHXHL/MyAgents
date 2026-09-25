@@ -4513,7 +4513,7 @@ async function _doStartExternalSession(options: {
 
   // Build system prompt using MyAgents' three-layer architecture.
   // Pass the current runtime so L1 identity text reports the correct CLI
-  // (e.g. "Google Gemini CLI" instead of the builtin default).
+  // (e.g. "OpenAI Codex CLI" instead of the builtin default).
   //
   // cliToolsEnabled: true — teach the AI about `myagents cron …` / `myagents
   // im send-media` / `myagents im wake|channels` via a progressive-disclosure
@@ -4552,12 +4552,11 @@ async function _doStartExternalSession(options: {
   // Cross-runtime workspace protocol: append workspace instruction files
   // so external runtimes receive the same project context as the builtin SDK.
   //   - Codex: only .claude/rules/*.md (CLAUDE.md is loaded natively via -c flag)
-  //   - Gemini: full chain fallback (handled inside writeSessionSystemPrompt)
   //   - Claude Code: no injection needed (reads CLAUDE.md natively)
   const workspaceInstructions =
     runtimeType === 'codex'
       ? resolveCodexWorkspaceInstructions(options.workspacePath)
-      : ''; // Gemini handles it in writeSessionSystemPrompt; CC reads natively
+      : ''; // Claude Code reads workspace guidance natively
   if (workspaceInstructions) {
     console.log(
       `[external-session] Injecting workspace instructions for ${runtimeType} (${workspaceInstructions.length} bytes)`,
@@ -5023,8 +5022,8 @@ async function _doStartExternalSession(options: {
       process = await startOnce(options.resumeSessionId);
     } catch (err) {
       // Stale resume recovery (issue #105): the runtime reports our persisted
-      // runtimeSessionId is dead (Codex rollout GC'd, Gemini session dropped
-      // across CLI upgrade, etc.). Invalidate both the in-memory pointer and
+      // runtimeSessionId is dead (for example, Codex rollout GC or a CLI
+      // upgrade). Invalidate both the in-memory pointer and
       // the on-disk metadata, then retry fresh once so the user's message
       // still lands instead of looping on the stale id forever. If the fresh
       // retry also fails, fall through to the normal error surface.
@@ -5351,10 +5350,10 @@ async function _doStartExternalSession(options: {
  * Modality scope (V1): the model-input-modality filter (see
  * `agent-session.ts::enqueueUserMessage` + `model-capabilities.ts::modelSupportsModality`)
  * lives only on the builtin Claude Agent SDK path. External runtimes (Claude
- * Code CLI / Codex / Gemini CLI) pass `images` through unfiltered here.
+ * Code CLI / Codex) pass `images` through unfiltered here.
  * Rationale:
  *   - Each external runtime has its own modality contract (Codex blocks
- *     images, Gemini accepts image+video+audio, CC CLI accepts images).
+ *     images, CC CLI accepts images).
  *   - External runtime models aren't in MyAgents' PRESET_PROVIDERS registry,
  *     so `lookupModelCapability` would return undefined → optimistic
  *     default-allow → effectively no filter, just runtime overhead.
@@ -5656,7 +5655,7 @@ async function dispatchExternalMessageOperation(
   if (lifecycleReady.canceled) return canceledBeforeDispatch();
 
   // Serialize against any in-flight turn. Persistent-process runtimes (Codex
-  // app-server, Gemini --acp) accept one turn at a time — dispatching a
+  // app-server) accept one turn at a time — dispatching a
   // second user message while the first is still running can cause silent
   // drops or interleaved output. `turnCompleted=false && currentTurnStartTime
   // !== 0` means a previous user turn kicked off and hasn't finished. On
@@ -7157,8 +7156,8 @@ async function drainExternalOperationsAfterTurn(): Promise<void> {
  *   - running + runtime CAN interrupt a turn (Codex `interruptTurn`): interrupt now → the
  *     resulting turn/completed → turn_complete → persistTurnResult → idle → drain runs it
  *     immediately (true force). Process stays alive.
- *   - running + runtime CANNOT interrupt mid-turn (Claude Code `-p`; Gemini until its
- *     session/cancel→turn-end flow is verified): DEGRADE to move-to-front — the item is now
+ *   - running + runtime CANNOT interrupt mid-turn (Claude Code `-p`):
+ *     DEGRADE to move-to-front — the item is now
  *     first, so the NATURAL turn-end drain runs it next (not truly "immediate", but it does
  *     run, ahead of everything else). drainExternalQueueAfterTurn() is a no-op here (state is
  *     'running'); the turn-end hook handles it.
@@ -7657,7 +7656,7 @@ export async function respondExternalAskUserQuestion(
 
 /**
  * Pattern D — IM trace-id-targeted cancellation for external runtimes.
- * For CC/Codex/Gemini we don't have a per-request granularity (the runtime
+ * For CC/Codex we don't have a per-request granularity (the runtime
  * processes turns sequentially), so cancellation degenerates to "stop the
  * active session if `requestId` matches `activeRequestId`". Returns
  * { aborted, mode } same shape as the builtin `cancelImRequest`.
@@ -9095,9 +9094,9 @@ export async function retryLastExternalUserMessage(
  * Session identity is stable.
  *
  * Called from the `/api/runtime/prewarm` HTTP endpoint when the frontend opens
- * a Chat tab backed by a persistent protocol runtime (Integrated DSH, Gemini
- * or Codex). Claude Code's `-p` mode exits after every turn, so pre-warming it
- * is wasted work — the endpoint gates that out before reaching this path.
+ * a Chat tab backed by a persistent protocol runtime (Integrated DSH or Codex).
+ * Claude Code's `-p` mode exits after every turn, so pre-warming it is wasted
+ * work — the endpoint gates that out before reaching this path.
  *
  * Flow:
  *   1. Bail out if a session is already active (pre-warm is idempotent).
@@ -10927,7 +10926,7 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
 
     case 'session_init': {
       // Capture runtime's session ID for multi-turn resume
-      // CC: session_id from hook; Codex: threadId from thread/start response; Gemini: from session/new
+      // CC: session_id from hook; Codex: threadId from thread/start response
       if (event.sessionId) {
         setExternalRuntimeSessionId(event.sessionId);
         // Persist to SessionMetadata for cross-restart resume.
@@ -11533,13 +11532,13 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
       recordRuntimeActivity();
 
       // PRD 0.2.32 — 并发 context 用量快照。Codex 的 tokenUsage 通知在 turn 中流式到达
-      // → 亚轮实时刷新；CC/Gemini 每轮一次。
+      // → 亚轮实时刷新；CC 每轮一次。
       //
       // 占用**只用各 adapter 显式给出的 `contextOccupiedTokens`**（= 最近一次调用的 input 系
       // token），不从 `event.inputTokens` 推算——因为 `inputTokens` 的语义随 runtime 不同：
-      // Codex 是 running_total（累计，watchdog 用），CC 的 result.usage 是整 turn 累计，只有
-      // Gemini 才是 per-request。任一用作占用都会高估、让圆环钉死在 ~100%。所以三个 adapter
-      // 各自设 `contextOccupiedTokens`（codex=last.inputTokens / gemini=per-request input /
+      // Codex 是 running_total（累计，watchdog 用），CC 的 result.usage 是整 turn 累计。
+      // 任一用作占用都会高估、让圆环钉死在 ~100%。所以 adapter
+      // 各自设 `contextOccupiedTokens`（codex=last.inputTokens /
       // cc=最近一条主轮 assistant message 的 input+cache），缺失时**不发**（宁可不显示也不显错）。
       const ctxOccupied = event.contextOccupiedTokens;
       const ctxRuntime =

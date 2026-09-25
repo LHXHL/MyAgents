@@ -2103,7 +2103,7 @@ export async function handleAgentSet(payload: {
   // `runtime` field has a cross-runtime scrub policy (see
   // buildRuntimeChangePatch doc in shared/types/runtime.ts). A blind spread
   // here would leak the previous runtime's model/permissionMode/additionalArgs
-  // into the new runtime — Codex CLI then rejects e.g. a Gemini model with
+  // into the new runtime — Codex CLI then rejects e.g. a Claude model with
   // "model is not supported when using ChatGPT account". Route through the
   // helper so the CLI `myagents agent set <id> runtime codex` path stays in
   // lockstep with the Chat / Settings / Launcher in-app paths.
@@ -3378,7 +3378,6 @@ Examples:
   myagents runtime list                       # which runtimes are installed?
   myagents runtime list --json
   myagents runtime describe codex             # models + permission modes for codex
-  myagents runtime describe gemini --json
 
 Why this exists:
   'runtime describe' is the command to consult BEFORE choosing values for
@@ -6150,7 +6149,7 @@ export async function handleRecordCreate(payload: {
 // Session-scoped capabilities for external runtimes (v0.1.67)
 //
 // These handlers expose Pattern 1 (context-injected) MCP tools to the `myagents`
-// CLI so the AI running on external runtimes (Claude Code / Codex / Gemini CLI)
+// CLI so the AI running on external runtimes (Claude Code / Codex)
 // can reach MyAgents-specific capabilities through plain shell tool calls
 // instead of a Claude-Agent-SDK-only MCP protocol. See prd_0.1.67.
 //
@@ -6468,7 +6467,7 @@ CREATE OPTIONS (myagents cron add ...)
                                   or explicit UTC.
   --workspace <path>              Workspace the task runs in. Defaults to the
                                   current session workspace.
-  --runtime <builtin|dsh|claude-code|codex|gemini>
+  --runtime <builtin|dsh|claude-code|codex>
   --runtime-config <json-object>  Optional runtime identity/config override.
   --provider-id / --model / --permission-mode
                                   Optional Task execution overrides. Omit all
@@ -7462,7 +7461,6 @@ interface RuntimeDescribeResult {
   models: RuntimeModelInfo[];
   permissionModes: RuntimePermissionMode[];
   defaultPermissionMode: string;
-  modelDiscovery?: { state: 'unavailable'; message: string };
 }
 
 /** Per-runtime detection timeout — a wedged `<cli> --version` binary shouldn't
@@ -7607,7 +7605,6 @@ export async function handleRuntimeDescribe(
   // Only query models when the CLI is actually installed — otherwise we'd
   // waste 10+ seconds trying to spawn a binary that doesn't exist.
   let models: RuntimeModelInfo[] = [];
-  let modelDiscovery: RuntimeDescribeResult['modelDiscovery'];
   if (detection.installed) {
     try {
       models = (await queryRuntimeModels(runtimeArg, {
@@ -7616,23 +7613,16 @@ export async function handleRuntimeDescribe(
         throwOnError: true,
       })) as RuntimeModelInfo[];
     } catch (error) {
-      if (runtimeArg === 'gemini') {
-        modelDiscovery = {
-          state: 'unavailable',
-          message: 'The installed Gemini CLI could not provide its model list. Update or sign in to Gemini CLI, then retry.',
-        };
-      } else {
-        const detail = error instanceof Error ? error.message : String(error);
-        return {
-          success: false,
-          code: 'RUNTIME_MODEL_DISCOVERY_FAILED',
-          error: `Failed to discover ${RUNTIME_DISPLAY_NAMES[runtimeArg]} models: ${detail}`,
-          recoveryHint: {
-            recoveryCommand: `myagents runtime diagnose ${runtimeArg} --json`,
-            message: 'Inspect runtime installation and authentication, then retry.',
-          },
-        };
-      }
+      const detail = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        code: 'RUNTIME_MODEL_DISCOVERY_FAILED',
+        error: `Failed to discover ${RUNTIME_DISPLAY_NAMES[runtimeArg]} models: ${detail}`,
+        recoveryHint: {
+          recoveryCommand: `myagents runtime diagnose ${runtimeArg} --json`,
+          message: 'Inspect runtime installation and authentication, then retry.',
+        },
+      };
     }
   }
   const permissionModes = getRuntimePermissionModes(runtimeArg);
@@ -7646,7 +7636,6 @@ export async function handleRuntimeDescribe(
       installed: detection.installed,
       version: detection.version,
       models,
-      ...(modelDiscovery === undefined ? {} : { modelDiscovery }),
       permissionModes,
       defaultPermissionMode,
     } satisfies RuntimeDescribeResult,
@@ -7660,7 +7649,7 @@ export async function handleRuntimeDescribe(
  * (issue #194) and the in-app "诊断" button.
  *
  * Codex: spawns `codex app-server`, no thread created.
- * Claude Code / Gemini / builtin: not yet implemented — returns
+ * Claude Code / builtin: not yet implemented — returns
  * `unsupported` so the CLI can show a clear "not yet supported" message
  * without crashing.
  */
@@ -7700,7 +7689,6 @@ export async function handleRuntimeDiagnose(payload: {
 
   // Codex also exposes standalone app-server diagnostic RPCs. Claude Code's
   // -p mode doesn't expose an equivalent surface (it's one-shot per turn);
-  // Gemini's ACP has session-scoped state but no "list features / apps".
   if (runtimeArg !== 'codex') {
     return {
       success: false,
@@ -7862,7 +7850,7 @@ export async function handleAgentShow(payload: {
   // Per-runtime resolution of "effective" model / permissionMode
   // (cross-review fix, v0.1.69):
   //   - builtin       → read from agent.{model, permissionMode}
-  //   - CC/Codex/Gemini → prefer agent.runtimeConfig.{model, permissionMode};
+  //   - CC/Codex → prefer agent.runtimeConfig.{model, permissionMode};
   //     fall back to the top-level agent fields only when absent.
   //
   // External runtimes use distinct permission-mode vocabularies (`suggest`,
@@ -7872,8 +7860,7 @@ export async function handleAgentShow(payload: {
   // path never consults that field.
   const usesExternalCliConfiguration =
     runtime === 'claude-code' ||
-    (runtime === 'codex' && !usesManagedCodex) ||
-    runtime === 'gemini';
+    (runtime === 'codex' && !usesManagedCodex);
   const rcModel = usesExternalCliConfiguration
     ? (runtimeConfig?.model as string | undefined)
     : undefined;
@@ -8060,8 +8047,6 @@ function hintForMissingRuntime(runtime: RuntimeType): string {
       return 'Install the Claude Code CLI — see https://docs.anthropic.com/claude/docs/claude-code';
     case 'codex':
       return 'Install the OpenAI Codex CLI — `npm i -g @openai/codex` or see https://github.com/openai/codex';
-    case 'gemini':
-      return 'Install the Gemini CLI — `npm i -g @google/gemini-cli` or see https://github.com/google/gemini-cli';
     default:
       return '';
   }
@@ -8194,7 +8179,7 @@ async function validateTaskOverrides(
   if (
     hasProviderOverride &&
     typeof payload.runtime === 'string' &&
-    ['claude-code', 'codex', 'gemini'].includes(payload.runtime)
+    ['claude-code', 'codex'].includes(payload.runtime)
   ) {
     return {
       success: false,
@@ -8346,7 +8331,7 @@ async function validateTaskOverrides(
 
   // Step 2: permissionMode is validated against the runtime's allowlist.
   // Works for both builtin (BUILTIN_PERMISSION_MODES: auto/plan/fullAgency/custom)
-  // and external runtimes (CC/Codex/Gemini) — since `getRuntimePermissionModes`
+  // and external runtimes (CC/Codex) — since `getRuntimePermissionModes`
   // returns an exhaustive list for every runtime including builtin, we don't
   // need a separate builtin escape hatch. Previously builtin was skipped on
   // the assumption that Rust validates it, but Rust stores the field as
@@ -8393,8 +8378,7 @@ async function validateTaskOverrides(
   }
 
   // Step 3: model is validated for *external* runtimes that expose a known
-  // model list. External CLI model lists can be dynamic (Gemini calls the
-  // server to discover them) so an empty list is treated as "can't validate,
+  // model list. External CLI model lists can be dynamic, so an empty list is treated as "can't validate,
   // trust the caller". builtin runtime model ids depend on the active
   // provider — out of scope for this validator.
   const modelOverride =

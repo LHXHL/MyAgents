@@ -195,7 +195,6 @@ fn normalize_runtime_for_peer_drift(runtime: Option<&str>) -> &str {
         Some("dsh") => "dsh",
         Some("claude-code") => "claude-code",
         Some("codex") => "codex",
-        Some("gemini") => "gemini",
         _ => "builtin",
     }
 }
@@ -674,14 +673,14 @@ impl SessionRouter {
 
     /// Detect runtime drift for an IM peer session and reset it like a `/new`.
     ///
-    /// When the user changes the agent's runtime in Settings (codex → gemini
+    /// When the user changes the agent's runtime in Settings (codex → claude-code
     /// for example), either the live Sidecar runtime or the persisted session
     /// metadata can disagree with the agent's desired runtime. The persisted
     /// metadata check matters after idle collection/app restart, where there
     /// is no live Sidecar for `ManagedSidecarManager` to compare. The v0.1.62
     /// session-stability rule — which pins a session to whichever runtime
     /// created it — is wrong for IM: peer session mapping is opaque to the
-    /// user, they just see "my agent is now gemini" and expect the next IM
+    /// user, they just see "my agent is now Claude Code" and expect the next IM
     /// message to reflect that.
     ///
     /// This method runs at the TOP of message processing (before
@@ -700,7 +699,7 @@ impl SessionRouter {
     ///
     /// `desired_runtime` is the agent's CURRENT runtime as resolved from
     /// config (typically via `normalize_runtime_type(agent_config.runtime)`).
-    /// Valid values: `"builtin"`, `"dsh"`, `"claude-code"`, `"codex"`, `"gemini"`.
+    /// Valid values: `"builtin"`, `"dsh"`, `"claude-code"`, `"codex"`.
     pub async fn check_and_reset_on_runtime_drift(
         router: &Arc<Mutex<Self>>,
         session_key: &str,
@@ -1450,7 +1449,7 @@ impl SessionRouter {
         mcp_servers_json: Option<&str>,
         provider_env: Option<&serde_json::Value>,
     ) {
-        if matches!(runtime, "codex" | "claude-code" | "gemini") {
+        if matches!(runtime, "codex" | "claude-code") {
             let runtime_model = runtime_config
                 .and_then(|v| v.get("model"))
                 .and_then(|v| v.as_str())
@@ -1541,7 +1540,7 @@ impl SessionRouter {
         mcp_servers_json: Option<&str>,
         provider_env: Option<&serde_json::Value>,
     ) {
-        if matches!(runtime, "codex" | "claude-code" | "gemini") {
+        if matches!(runtime, "codex" | "claude-code") {
             let runtime_model = runtime_config
                 .and_then(|v| v.get("model"))
                 .and_then(|v| v.as_str())

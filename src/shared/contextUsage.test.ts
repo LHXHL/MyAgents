@@ -86,7 +86,7 @@ describe('computeContextUsage', () => {
     const r = computeContextUsage({
       occupiedTokens: 100_000,
       runtimeWindow: null,
-      source: 'gemini',
+      source: 'claude-code',
       model: 'some-custom-model',
       lookupWindow: noLookup,
     });

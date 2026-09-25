@@ -95,7 +95,7 @@ export function isSdkEffortLevel(value: string | undefined): value is SdkEffortL
  * The selectable effort levels for a given surface, or `null` when the
  * surface has no reasoning-effort knob (the UI hides the row entirely).
  *
- * @param runtime     'builtin' | 'claude-code' | 'codex' | 'gemini' | ...
+ * @param runtime     'builtin' | 'dsh' | 'claude-code' | 'codex' | ...
  * @param apiProtocol builtin only — the active provider's protocol
  *                    (undefined = Anthropic official / subscription)
  */
@@ -125,7 +125,7 @@ export function reasoningEffortChoices(
         : null;
     }
     default:
-      // Gemini (no ACP effort surface) and unknown runtimes → hidden.
+      // Unknown runtimes → hidden.
       return null;
   }
 }

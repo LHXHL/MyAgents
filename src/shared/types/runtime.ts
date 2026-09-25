@@ -22,9 +22,8 @@ import {
  * - builtin: Built-in Claude Agent SDK (current default)
  * - claude-code: Claude Code CLI (user-installed `claude`)
  * - codex: OpenAI Codex CLI (user-installed `codex`)
- * - gemini: Google Gemini CLI in ACP mode (user-installed `gemini`, v0.1.66+)
  */
-export type RuntimeType = 'builtin' | 'dsh' | 'claude-code' | 'codex' | 'gemini';
+export type RuntimeType = 'builtin' | 'dsh' | 'claude-code' | 'codex';
 
 /**
  * Distinguishes user-managed CLI runtimes from product-managed runtime-backed
@@ -71,7 +70,6 @@ export const VALID_RUNTIMES = [
   'dsh',
   'claude-code',
   'codex',
-  'gemini',
 ] as const satisfies readonly RuntimeType[];
 
 /**
@@ -97,12 +95,11 @@ export const RUNTIME_DISPLAY_NAMES: Record<RuntimeType, string> = {
   dsh: 'MyAgents (DSH)',
   'claude-code': 'Claude Code CLI',
   codex: 'OpenAI Codex CLI',
-  gemini: 'Google Gemini CLI (ACP)',
 };
 
 /** Runtime processes that can be started before the first user turn. */
 export function runtimeSupportsPrewarm(runtime: RuntimeType): boolean {
-  return runtime === 'dsh' || runtime === 'codex' || runtime === 'gemini';
+  return runtime === 'dsh' || runtime === 'codex';
 }
 
 /**
@@ -137,11 +134,6 @@ export function modelLooksLikeRuntime(model: string, runtime: RuntimeType): bool
   if (runtime === 'codex') {
     if (modelHasFamily(m, ['gpt', 'o1', 'o3', 'o4', 'codex', 'chatgpt'])) return true;
     if (modelHasFamily(m, ['gemini', 'claude', 'sonnet', 'opus', 'haiku'])) return false;
-    return true;
-  }
-  if (runtime === 'gemini') {
-    if (modelHasFamily(m, ['gemini'])) return true;
-    if (modelHasFamily(m, ['gpt', 'o1', 'o3', 'o4', 'codex', 'chatgpt', 'claude', 'sonnet', 'opus', 'haiku'])) return false;
     return true;
   }
   if (runtime === 'claude-code') {
@@ -372,7 +364,7 @@ export interface RuntimeConfig {
  *  - **NOT portable**: source / model / permissionMode / reasoningEffort /
  *    additionalArgs — runtime ownership, model lists, permission vocabularies,
  *    and effort vocabularies are wholly disjoint between managed Codex, user
- *    Codex CLI, Claude Code, and Gemini. Carrying a value from one runtime to
+ *    Codex CLI and Claude Code. Carrying a value from one runtime to
  *    another guarantees the new runtime either rejects it or silently falls
  *    back to defaults — both worse than starting clean.
  *  - **Portable**: envPolicy — per-agent network routing choice that has
@@ -399,13 +391,8 @@ export const RUNTIME_CONFIG_PER_RUNTIME_FIELDS = [
  * the object so the caller's atomic-merge logic doesn't persist a noise
  * `runtimeConfig: {}` entry.
  *
- * Cross-bugfix for issue #194 follow-up: pre-existing bug class where Gemini's
- * persisted `runtimeConfig.model` would leak into Codex sessions after a
- * runtime switch. Activated by commit `8020803e` (May 2) when
- * persistInputOption.ts started correctly writing external-runtime model to
- * `runtimeConfig.model` (previously it was wrongly going to `agent.model`,
- * masking the bug). See commit message of the migration commit for the full
- * archaeology.
+ * Runtime-specific model and permission settings must not leak into another
+ * runtime after a switch.
  */
 export function buildRuntimeChangePatch(
   currentRuntimeConfig: RuntimeConfig | undefined,
@@ -479,42 +466,6 @@ export const CC_PERMISSION_MODES: RuntimePermissionMode[] = [
     label: "Don't Ask",
     icon: '\u{1F6AB}',  // 🚫
     description: '不弹出权限确认，未授权操作直接拒绝',
-  },
-];
-
-// ─── Gemini CLI permission modes (ACP session modes, v0.1.66) ───
-//
-// These map 1:1 to Gemini CLI's ACP session/new response `modes.availableModes[]`:
-//   default  → "Prompts for approval"
-//   autoEdit → "Auto-approves edit tools"
-//   yolo     → "Auto-approves all tools"
-//   plan     → "Read-only mode"
-// We keep the internal value equal to Gemini's modeId to avoid a mapping table.
-
-export const GEMINI_PERMISSION_MODES: RuntimePermissionMode[] = [
-  {
-    value: 'default',
-    label: 'Default',
-    icon: '\u{1F6E1}',  // 🛡
-    description: '每次工具调用都需要确认',
-  },
-  {
-    value: 'autoEdit',
-    label: 'Auto Edit',
-    icon: '\u{1F4DD}',  // 📝
-    description: '自动接受文件编辑,其他需确认',
-  },
-  {
-    value: 'yolo',
-    label: 'YOLO',
-    icon: '\u26A1',      // ⚡
-    description: '跳过所有工具确认',
-  },
-  {
-    value: 'plan',
-    label: 'Plan',
-    icon: '\u{1F4CB}',  // 📋
-    description: '规划模式,只读不执行',
   },
 ];
 
@@ -593,7 +544,6 @@ export function getRuntimePermissionModes(runtime: RuntimeType): RuntimePermissi
     case 'dsh': return DSH_PERMISSION_MODES;
     case 'claude-code': return CC_PERMISSION_MODES;
     case 'codex': return CODEX_PERMISSION_MODES;
-    case 'gemini': return GEMINI_PERMISSION_MODES;
     case 'builtin': return BUILTIN_PERMISSION_MODES;
     default: return [];
   }
@@ -627,7 +577,7 @@ export function projectPermissionModeForRuntime(
  * Permission vocabularies are runtime-specific. We keep unknown future values
  * (same rationale as `modelLooksLikeRuntime`) but drop values that are known to
  * belong to another runtime. This prevents stale `fullAgency`/`auto` values
- * from downgrading Codex/Gemini/Claude Code into their adapter fallback modes.
+ * from downgrading Codex/Claude Code into their adapter fallback modes.
  */
 export function permissionModeLooksLikeRuntime(mode: string, runtime: RuntimeType): boolean {
   const trimmed = mode.trim();
@@ -667,13 +617,6 @@ export const CC_MODELS: RuntimeModelInfo[] = [
   { value: 'haiku', displayName: 'Haiku' },
 ];
 
-// Note: no static GEMINI_MODELS export (unlike CC_MODELS). Gemini's model
-// list is fetched dynamically via /api/runtime/models?type=gemini →
-// GeminiRuntime.queryModels() → short-lived `gemini --acp` handshake that
-// reads `result.models.availableModels` from the session/new response.
-// Launcher.tsx and Chat.tsx hold their own `geminiModels` useState seeded
-// to [] and populated on the first mount.
-
 /**
  * Get default permission mode for a given runtime type
  */
@@ -682,7 +625,6 @@ export function getDefaultRuntimePermissionMode(runtime: RuntimeType): string {
     case 'dsh': return 'auto';
     case 'claude-code': return 'manual';
     case 'codex': return 'full-auto';
-    case 'gemini': return 'autoEdit';  // D5: desktop default = Auto Edit
     case 'builtin': return 'auto';
     default: return '';
   }
@@ -696,7 +638,7 @@ export function getDefaultRuntimePermissionMode(runtime: RuntimeType): string {
  * actually run without blocking on a human approval that never comes".
  *
  * Distinct from getDefaultRuntimePermissionMode() which returns each runtime's
- * INTERACTIVE default (auto/default/autoEdit/full-auto). Those defaults are
+ * INTERACTIVE default (auto/default/full-auto). Those defaults are
  * correct for chat tabs but pathological for cron — they leave WebSearch /
  * Bash / mcp__* in a pending-approval state that times out on a 10-minute
  * deadline.
@@ -705,7 +647,6 @@ export function getDefaultRuntimePermissionMode(runtime: RuntimeType): string {
  *   - builtin     → 'fullAgency'        (mapToSdkPermissionMode → bypassPermissions)
  *   - claude-code → 'bypassPermissions' (CC CLI native value, no translation)
  *   - codex       → 'no-restrictions'   (Codex sandbox: skip approvals + sandbox)
- *   - gemini      → 'yolo'              (Gemini ACP: skip all confirmations)
  */
 export function getMaxPermissionForRuntime(runtime: RuntimeType): string {
   switch (runtime) {
@@ -713,7 +654,6 @@ export function getMaxPermissionForRuntime(runtime: RuntimeType): string {
     case 'builtin':     return 'fullAgency';
     case 'claude-code': return 'bypassPermissions';
     case 'codex':       return 'no-restrictions';
-    case 'gemini':      return 'yolo';
     default:            return 'fullAgency';
   }
 }
@@ -721,7 +661,7 @@ export function getMaxPermissionForRuntime(runtime: RuntimeType): string {
 // ─── Runtime diagnostics (issue #194) ───
 //
 // Diagnostic snapshot collected at session start for external runtimes (Codex /
-// Claude Code / Gemini). Renderer surfaces this to make 「为什么我看不到 X 工具？」
+// Claude Code). Renderer surfaces this to make 「为什么我看不到 X 工具？」
 // debuggable without grepping unified log. Codex fills all four sections via
 // RPC after thread/start; other runtimes contribute the subset they expose.
 //
@@ -981,7 +921,7 @@ export interface RuntimeInspection {
  *   - obvious foreign-runtime stale value → ignored; try the next source, then
  *     runtime max permission
  *
- * Crucially, 'auto' / 'default' / 'autoEdit' / 'full-auto' are NOT treated as
+ * Crucially, 'auto' / 'default' / 'full-auto' are NOT treated as
  * "user didn't pick" when they belong to the selected runtime — they're the
  * runtime's interactive defaults but if a user has them in their cron config,
  * that's a literal value we honor. Empty/undefined and obvious cross-runtime

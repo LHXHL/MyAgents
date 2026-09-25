@@ -39,7 +39,6 @@ function getRuntimeDisplayName(runtime: RuntimeType | undefined): string {
     case 'dsh':         return 'MyAgents integrated DeepSeek Harness';
     case 'claude-code': return 'Anthropic Claude Code CLI';
     case 'codex':       return 'OpenAI Codex CLI';
-    case 'gemini':      return 'Google Gemini CLI';
     case 'builtin':
     default:
       return 'MyAgents 内置 Claude Agent SDK';
@@ -124,7 +123,7 @@ export interface SystemPromptOptions {
    * `im-cron` / `im-media`) were retired in favour of the CLI surface, so
    * builtin sessions need the same prompt guidance to discover those
    * capabilities. Single CLI source of truth across builtin / Codex /
-   * Gemini / Claude Code runtimes. See prd_0.1.67 for the original (then
+   * Claude Code and Codex runtimes. See prd_0.1.67 for the original (then
    * external-only) introduction; current state described here.
    *
    * Note: generative-UI widget guidance is universal across runtimes (no MCP

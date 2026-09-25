@@ -38,7 +38,7 @@
 
 MyAgents 自带的默认执行引擎，无需用户另装外部 CLI，并能使用 MyAgents 管理的 Provider、MCP、子智能体与 Claude Plugin 等能力。
 
-### Claude Code CLI / Codex CLI / Gemini CLI
+### Claude Code CLI / Codex CLI
 
 这些属于 `runtimeSource=system-cli`：使用用户本机安装和登录的外部 CLI。需要在「设置 → 关于&反馈 → 实验室 → 更多 Agent Runtime」开启。它们的模型、权限模式、MCP、登录和恢复能力各不相同，不能套用 builtin 的固定值。
 
@@ -55,7 +55,7 @@ MyAgents 自带的默认执行引擎，无需用户另装外部 CLI，并能使�
 ## Model 与权限模式
 
 - Provider 可用模型会变化，外部 Runtime 还会动态报告自己的模型列表。
-- 不同 Runtime 的 permission mode 名称和含义不同。例如 builtin 的选择不能直接套给 Codex/Gemini。
+- 不同 Runtime 的 permission mode 名称和含义不同。例如 builtin 的选择不能直接套给 Codex。
 - Task 可以覆盖该次执行的 Runtime、Model、Permission 和 MCP，不必修改 Agent 默认值。
 - Session 出生后会保留必要的 Runtime identity；切换 Agent 默认值不会把历史 Session 静默变成另一种 Runtime。
 

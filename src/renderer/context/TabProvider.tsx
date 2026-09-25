@@ -1201,7 +1201,7 @@ export default function TabProvider({
     useState<McpEffectiveSnapshot | null>(null);
   const [sdkSlashCommands, setSdkSlashCommands] = useState<SlashCommand[]>([]);
   // Issue #194 — runtime diagnostics snapshot for external runtimes (Codex
-  // today; Claude Code / Gemini later). Replaces the previously-hardcoded
+  // today; Claude Code later). Replaces the previously-hardcoded
   // `systemInitInfo.tools: []` signal with a real diagnostic surface.
   const [runtimeDiagnostics, setRuntimeDiagnostics] =
     useState<RuntimeDiagnostics | null>(null);
@@ -4057,7 +4057,7 @@ export default function TabProvider({
             setSystemInitInfo(payload.info);
             // v0.1.69: backend tags every system-init with the runtime that
             // actually spawned the process (builtin / claude-code / codex /
-            // gemini). Freezing it here means a session created in this tab
+            // Codex). Freezing it here means a session created in this tab
             // gets its sessionRuntime set on first system-init and is never
             // affected by later agent.runtime changes — Chat.tsx's
             // currentRuntime = sessionRuntime ?? agentRuntime then keeps the

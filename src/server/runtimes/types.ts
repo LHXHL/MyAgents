@@ -203,8 +203,8 @@ export interface ExternalRuntimeConfigSnapshot {
  * path) instead of rendering it flat in the main transcript.
  *
  * builtin (Claude Agent SDK) does NOT use this — it has its own native
- * `parent_tool_use_id` stream path in agent-session.ts. Gemini / Claude Code
- * never set it, so their behaviour is unchanged.
+ * `parent_tool_use_id` stream path in agent-session.ts. Claude Code
+ * never sets it, so its behaviour is unchanged.
  *
  * `parentToolUseId` is the toolUseId of the card that REPRESENTS the sub-agent
  * (for Codex: the `spawnAgent` collabAgentToolCall item id), already resolved by
@@ -253,7 +253,7 @@ export type UnifiedEvent = (
   // === Tool use ===
   // `subAgent` (optional, Codex-only today): when set, the session layer nests
   // this tool under the parent spawn card instead of rendering it flat. See
-  // SubAgentScope. Absent for builtin / Gemini / Claude Code.
+  // SubAgentScope. Absent for builtin / Claude Code.
   | { kind: 'tool_use_start'; toolUseId: string; toolName: string; input?: Record<string, unknown>; subAgent?: SubAgentScope }
   | { kind: 'tool_input_delta'; toolUseId: string; delta: string; subAgent?: SubAgentScope }
   | { kind: 'tool_use_stop'; toolUseId: string; input?: Record<string, unknown>; subAgent?: SubAgentScope }
@@ -401,7 +401,7 @@ export type UnifiedEvent = (
      * PRD 0.2.32 — 当前 context 占用（最近一次调用 input 系 token），用于 context 用量指示器。
      * **与 `inputTokens` 分开**：`inputTokens` 可能是 running_total（Codex watchdog 依赖它），
      * 而占用必须是「最近一次」。**计算占用是 adapter 的职责**：Codex = `tokenUsage.last.inputTokens`
-     * （OpenAI 系，已含 cached、不再加）；Anthropic 系（CC/Gemini）= 最近一次的 `input + cacheRead + cacheCreation`。
+     * （OpenAI 系，已含 cached、不再加）；Anthropic 系（CC）= 最近一次的 `input + cacheRead + cacheCreation`。
      * external-session 只消费 adapter 显式填的这个字段，**自己不做回退**——缺失则不发 context-usage 事件。
      */
     contextOccupiedTokens?: number;
@@ -647,7 +647,7 @@ export interface AgentRuntime {
      * tool_result lands (control-transfer tool semantics: AskUserQuestion
      * cancellation, ExitPlanMode rejection, …); `false` (default) only
      * denies this single tool and lets the AI choose another. Other
-     * runtimes can ignore — Codex / Gemini have no equivalent knob today.
+     * runtimes can ignore — Codex has no equivalent knob today.
      */
     interrupt?: boolean,
   ): Promise<void>;
@@ -668,7 +668,7 @@ export interface AgentRuntime {
   /**
    * Apply a model update at the session layer's chosen turn boundary. The
    * actual meaning is declared by getConfigCapabilities(): Codex records
-   * next-turn state, Gemini performs ACP session/set_model, and per-turn
+   * next-turn state; per-turn
    * runtimes may omit this because the next spawn reads SessionStartOptions.
    */
   setModel?(process: RuntimeProcess, model: string | undefined): Promise<void>;
@@ -686,7 +686,7 @@ export interface AgentRuntime {
 }
 
 /**
- * Runtime rejected a `thread/resume` (Codex) or `session/load` (Gemini) because
+ * Runtime rejected a `thread/resume` (Codex) or `session/resume` (DSH) because
  * the persisted runtime-side session no longer exists — the rollout was GC'd,
  * the thread was archived, or the CLI upgraded across an on-disk format change.
  *
