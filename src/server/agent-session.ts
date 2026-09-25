@@ -10020,6 +10020,26 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
   }
 
   if (!isTurnInFlight()) {
+    // A desktop turn-mode send has an admission ticket before the SDK turn
+    // exists. Stop must cancel that exact ticket while enqueueUserMessage is
+    // still awaiting startup/config work; otherwise it reports "already
+    // stopped" and the later generator starts the turn anyway (#601).
+    const desktopAdmission = getTurnAdmissionTicket();
+    if (desktopAdmission && !desktopAdmission.turnOwner) {
+      const cancellation = await cancelQueueItem(desktopAdmission.queueId);
+      if (cancellation.status === 'cancelled') {
+        broadcast('chat:message-stopped', null);
+        if (!hasQueuedOrInFlightWork() && !isTurnInFlight()) setSessionState('idle');
+        return true;
+      }
+      // Admission crossed the commit seam while cancellation was attempted.
+      // The canonical abort below owns the active/replacing Query.
+      if (cancellation.status === 'not_cancelled'
+        || getTurnAdmissionTicket()?.queueId === desktopAdmission.queueId) {
+        abortPersistentSession();
+        return true;
+      }
+    }
     // A durable admission CAS has crossed the queue-cancellation boundary but
     // has not yet transferred to `isStreamingMessage`. Reuse the canonical
     // session abort: it marks the promoted item cancelled and sets
