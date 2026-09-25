@@ -45,6 +45,8 @@ builtin 启动先解析持久化的 SDK candidate，再确认对应 SDK transcri
 
 `pending-{tabId}` 是尚未实体化的新 Tab identity。普通惰性出生在首个被 Runtime 接纳的 turn 时实体化；显式桌面出生可在首轮前完成 prepare → owner rekey → commit，绑定真实 Product Session。已提交的空 V2 Session 仍是有效会话，不能按 legacy 空草稿规则隐藏。
 
+Chat 菜单在 pending 阶段展示本次启动已解析的 Runtime 意图；这只是 UI 投影，不伪造持久 metadata。`chat:system-init` 的 pending→real 升级经 App 接纳后，`TabProvider` 从当前 Session Sidecar 读取 metadata，菜单优先使用 birth snapshot；metadata 尚未写入时，可使用同一 Session 的 live Runtime 报告。SSE-native 新生会话不走历史 REST restore，因此这次 metadata 读取不能依赖恢复流程；请求结果和 live Runtime 都必须按当前 Session id 防止迟到写回。已有真实 Session 在自己的 metadata 或 live Runtime 到达前不借用当前 Agent 默认值或其它 Session 的 Runtime。
+
 identity 迁移由既有 Session binding owner 裁决，不能产生两个可继续分叉的会话。V2 的 binding CAS 修改当前内存 metadata，保存由 TranscriptWriter 后台完成；legacy 路径由 `SessionStore` 在 source/target transcript 锁与 sessions index 锁内完成 metadata 发布、已有 transcript 重命名及失败回滚。
 
 backend-created draft 使用 `materializationState: 'prepared'` 隐藏尚未提交的 metadata。所属出生事务 commit 或首轮 admission 与 rollback 经同一 binding/CAS 入口裁决；commit/admission 赢后清除 prepared，rollback 赢后不得继续发布 accepted。逻辑绑定成功不等同于 V2 已写盘，保存状态独立报告。

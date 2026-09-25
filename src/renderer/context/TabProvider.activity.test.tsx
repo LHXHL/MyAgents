@@ -136,6 +136,8 @@ function Probe() {
     historyMessages,
     streamingMessage,
     systemInitInfo,
+    sessionMeta,
+    sessionRuntimeSessionId,
     mcpEffectiveSnapshot,
     queuedMessages,
     agentError,
@@ -166,6 +168,11 @@ function Probe() {
       </output>
       <output data-testid="connected">{String(isConnected)}</output>
       <output data-testid="init-tools">{JSON.stringify(systemInitInfo?.tools ?? [])}</output>
+      <output data-testid="session-meta">{JSON.stringify(sessionMeta ? {
+        id: sessionMeta.id,
+        runtime: sessionMeta.runtime,
+      } : null)}</output>
+      <output data-testid="live-runtime-session-id">{sessionRuntimeSessionId ?? ''}</output>
       <output data-testid="mcp-runtime-generation">{mcpEffectiveSnapshot?.runtimeGeneration ?? ''}</output>
       <output data-testid="streaming-content">{JSON.stringify(streamingMessage?.content ?? null)}</output>
       <output data-testid="session-loading">{String(isSessionLoading)}</output>
@@ -1263,6 +1270,9 @@ describe('TabProvider session activity ownership', () => {
 
     await waitFor(() => expect(onSessionIdChange).toHaveBeenCalledWith('real-refused-upgrade'));
     expect(readActivity().sessionId).toBe('pending-refused-upgrade');
+    expect(tauriHarness.proxyFetch.mock.calls.some(([url]) =>
+      url.includes('/sessions/real-refused-upgrade'),
+    )).toBe(false);
   });
 
   it('commits system-init identity only after App accepts adoption', async () => {
@@ -1296,6 +1306,88 @@ describe('TabProvider session activity ownership', () => {
       resolveAdoption(true);
     });
     await waitFor(() => expect(readActivity().sessionId).toBe('real-delayed-upgrade'));
+  });
+
+  it('loads the frozen metadata for an SSE-native birth after App adopts its id', async () => {
+    const onSessionIdChange = vi.fn(async () => true);
+    tauriHarness.proxyFetch.mockImplementation(async (url: string) => {
+      if (url.endsWith('/sessions/real-birth?limit=1')) {
+        return new Response(JSON.stringify({
+          success: true,
+          session: { id: 'real-birth', agentDir: '/tmp/workspace', runtime: 'dsh', runtimeSource: 'integrated' },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    render(
+      <TabProvider
+        tabId="tab-birth-metadata"
+        agentDir="/tmp/workspace"
+        sessionId="pending-birth-metadata"
+        onSessionIdChange={onSessionIdChange}
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:system-init', {
+      info: { timestamp: '2026-07-15T00:00:00.000Z', model: 'model-a' },
+      sessionId: 'real-birth',
+      runtime: 'dsh',
+      runtimeSource: 'integrated',
+    });
+
+    await waitFor(() => expect(screen.getByTestId('session-meta')).toHaveTextContent(
+      JSON.stringify({ id: 'real-birth', runtime: 'dsh' }),
+    ));
+    expect(screen.getByTestId('live-runtime-session-id')).toHaveTextContent('real-birth');
+    expect(onSessionIdChange).toHaveBeenCalledWith('real-birth');
+    expect(tauriHarness.proxyFetch.mock.calls.some(([url]) =>
+      url === 'http://127.0.0.1:1234/sessions/real-birth?limit=1',
+    )).toBe(true);
+  });
+
+  it('retries birth metadata after the first turn when Runtime init precedes persistence', async () => {
+    let reads = 0;
+    tauriHarness.proxyFetch.mockImplementation(async (url: string) => {
+      if (!url.endsWith('/sessions/real-delayed-metadata?limit=1')) {
+        throw new Error(`Unexpected request: ${url}`);
+      }
+      reads += 1;
+      return new Response(JSON.stringify({
+        success: true,
+        session: reads === 1
+          ? { id: 'real-delayed-metadata', runtime: 'dsh' }
+          : { id: 'real-delayed-metadata', agentDir: '/tmp/workspace', runtime: 'dsh' },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    render(
+      <TabProvider
+        tabId="tab-delayed-metadata"
+        agentDir="/tmp/workspace"
+        sessionId="pending-delayed-metadata"
+        onSessionIdChange={vi.fn(async () => true)}
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:system-init', {
+      info: { timestamp: '2026-07-15T00:00:00.000Z', model: 'model-a' },
+      sessionId: 'real-delayed-metadata', runtime: 'dsh', runtimeSource: 'integrated',
+    });
+    await waitFor(() => expect(reads).toBe(1));
+    expect(screen.getByTestId('session-meta')).toHaveTextContent('null');
+
+    emit('chat:message-complete', {});
+    await waitFor(() => expect(reads).toBe(2));
+    await waitFor(() => expect(screen.getByTestId('session-meta')).toHaveTextContent(
+      JSON.stringify({ id: 'real-delayed-metadata', runtime: 'dsh' }),
+    ));
   });
 
   it('keeps the live SSE owner when an active pending session receives its real id', async () => {

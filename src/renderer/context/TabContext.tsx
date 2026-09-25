@@ -98,6 +98,8 @@ export interface TabState {
     sessionState: SessionState;
     sessionRuntime: string | null;  // Runtime that created this session (null = builtin)
     sessionRuntimeSource: RuntimeSource | null;
+    /** Session identity that supplied the live Runtime snapshot. */
+    sessionRuntimeSessionId: string | null;
     /**
      * Full session metadata — includes v0.1.69 snapshot fields (model / permissionMode /
      * mcpEnabledServers / providerId / configSnapshotAt). Derivation source for Chat.tsx
@@ -284,6 +286,7 @@ const defaultContextValue: TabContextValue = {
     sessionState: 'idle',
     sessionRuntime: null,
     sessionRuntimeSource: null,
+    sessionRuntimeSessionId: null,
     sessionMeta: null,
     logs: [],
     unifiedLogs: [],

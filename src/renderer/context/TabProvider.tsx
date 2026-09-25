@@ -1160,6 +1160,8 @@ export default function TabProvider({
   const [sessionRuntime, setSessionRuntime] = useState<string | null>(null);
   const [sessionRuntimeSource, setSessionRuntimeSource] =
     useState<RuntimeSource | null>(null);
+  const [sessionRuntimeSessionId, setSessionRuntimeSessionId] =
+    useState<string | null>(null);
   // Populate analyticsMetaRef (declared above). The session-FROZEN runtime is
   // authoritative once known — it mirrors the runtime the sidecar was actually
   // spawned with (Rust resolve_session_runtime takes precedence over agent
@@ -1197,6 +1199,29 @@ export default function TabProvider({
     sessionRuntimeSource,
   ]);
   const [sessionMeta, setSessionMeta] = useState<SessionMetadata | null>(null);
+  const sessionMetaRef = useRef(sessionMeta);
+  sessionMetaRef.current = sessionMeta;
+  const loadBornSessionMetadata = useCallback((bornSessionId: string) => {
+    if (sessionMetaRef.current?.id === bornSessionId) return;
+    void apiGetJson<{ success: boolean; session?: SessionMetadata }>(
+      `/sessions/${encodeURIComponent(bornSessionId)}?limit=1`,
+    ).then((response) => {
+      if (
+        currentSessionIdRef.current !== bornSessionId ||
+        !response.success ||
+        response.session?.id !== bornSessionId ||
+        !response.session.agentDir
+      ) return;
+      setSessionMeta((current) =>
+        current?.id === bornSessionId ? current : response.session!,
+      );
+    }).catch((error) => {
+      console.warn(
+        `[TabProvider ${tabId}] Session birth metadata load failed for ${bornSessionId}:`,
+        error,
+      );
+    });
+  }, [apiGetJson, tabId]);
   const [logs, setLogs] = useState<string[]>([]);
   const [unifiedLogs, setUnifiedLogs] = useState<LogEntry[]>([]);
   const [systemInitInfo, setSystemInitInfo] = useState<SystemInitInfo | null>(
@@ -1717,6 +1742,11 @@ export default function TabProvider({
         );
         return false;
       }
+      // Reset/migration keeps the same Session Sidecar and Runtime; carry its
+      // live identity to the new Product Session until its own init arrives.
+      if (sessionRuntime && sessionRuntimeSessionId === previousSessionId) {
+        setSessionRuntimeSessionId(newSessionId);
+      }
       return true;
     },
     [
@@ -1729,6 +1759,8 @@ export default function TabProvider({
       abortActiveRestoreRequest,
       publishPersistedRestoreLifecycle,
       setHistoryMessages,
+      sessionRuntime,
+      sessionRuntimeSessionId,
     ],
   );
 
@@ -3740,6 +3772,10 @@ export default function TabProvider({
 
         case 'chat:message-complete': {
           console.log(`[TabProvider ${tabId}] message-complete received`);
+          const completedSessionId = currentSessionIdRef.current;
+          if (completedSessionId && !isPendingSessionId(completedSessionId)) {
+            loadBornSessionMetadata(completedSessionId);
+          }
           // Track message_complete event with usage data
           const completePayload = data as {
             model?: string;
@@ -3978,6 +4014,10 @@ export default function TabProvider({
 
         case 'chat:message-stopped': {
           console.log(`[TabProvider ${tabId}] message-stopped received`);
+          const stoppedSessionId = currentSessionIdRef.current;
+          if (stoppedSessionId && !isPendingSessionId(stoppedSessionId)) {
+            loadBornSessionMetadata(stoppedSessionId);
+          }
           flushSync(() => {
             // isStreamingRef.current set inside moveStreamingToHistory's updater
             moveStreamingToHistory('stopped');
@@ -3998,6 +4038,10 @@ export default function TabProvider({
 
         case 'chat:message-error': {
           console.log(`[TabProvider ${tabId}] message-error received`);
+          const failedSessionId = currentSessionIdRef.current;
+          if (failedSessionId && !isPendingSessionId(failedSessionId)) {
+            loadBornSessionMetadata(failedSessionId);
+          }
           const errorMessage =
             typeof data === 'string'
               ? data
@@ -4075,6 +4119,7 @@ export default function TabProvider({
                 runtimeSourceForRuntimeType(runtime, payload.runtimeSource) ??
                   null,
               );
+              setSessionRuntimeSessionId(newSessionId ?? currentIdForSystemInit);
               if (runtime !== 'builtin') {
                 setSdkSlashCommands([]);
               }
@@ -4117,6 +4162,13 @@ export default function TabProvider({
                   }
                   currentSessionIdRef.current = newSessionId;
                   setCurrentSessionId(newSessionId);
+                  setSessionRuntimeSessionId(newSessionId);
+                  // SSE-native births skip the persisted-history restore below.
+                  // Read the new Session snapshot so menu
+                  // actions and the frozen Runtime use the same metadata owner
+                  // as restored Sessions. Fence the response against a later
+                  // tab switch and keep any newer local metadata mutation.
+                  loadBornSessionMetadata(newSessionId);
                   if (isNewSessionRef.current || resetBirthPendingRef.current) {
                     resetBirthSessionIdRef.current = newSessionId;
                     resetBirthPendingRef.current = false;
@@ -5352,6 +5404,7 @@ export default function TabProvider({
       setAgentError,
       toast,
       postJson,
+      loadBornSessionMetadata,
       clearInteractiveState,
       flushPendingTextNow,
       startRevealLoop,
@@ -6354,6 +6407,7 @@ export default function TabProvider({
             response.session.runtimeSource,
           ) ?? null,
         );
+        setSessionRuntimeSessionId(targetSessionId);
 
         const { messages: _metaMessages, ...metaOnly } =
           response.session as SessionMetadata & { messages?: unknown };
@@ -7098,6 +7152,7 @@ export default function TabProvider({
       sessionState,
       sessionRuntime,
       sessionRuntimeSource,
+      sessionRuntimeSessionId,
       sessionMeta,
       logs,
       unifiedLogs,
@@ -7163,6 +7218,7 @@ export default function TabProvider({
       sessionState,
       sessionRuntime,
       sessionRuntimeSource,
+      sessionRuntimeSessionId,
       sessionMeta,
       logs,
       unifiedLogs,

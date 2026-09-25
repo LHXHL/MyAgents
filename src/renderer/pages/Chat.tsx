@@ -64,6 +64,7 @@ import SessionSurfaceTags from '@/components/SessionSurfaceTags';
 import SessionMenuButton, {
   type BotChannelCandidate,
 } from '@/components/SessionMenuButton';
+import { sessionMenuRuntimeIdentity } from '@/utils/sessionMenuRuntime';
 import UserTagPills from '@/components/session-tags/UserTagPills';
 import { FileActionProvider } from '@/context/FileActionContext';
 import SimpleChatInput, {
@@ -225,7 +226,6 @@ import {
   coerceModelForRuntime,
   DSH_PERMISSION_MODES,
   getDefaultRuntimePermissionMode,
-  normalizeRuntime,
   projectPermissionModeForRuntime,
   resolveEffectiveRuntime,
   runtimeSourceForRuntimeType,
@@ -744,6 +744,7 @@ export default function Chat({
     sessionState,
     sessionRuntime,
     sessionRuntimeSource,
+    sessionRuntimeSessionId,
     sessionMeta,
     setSessionMeta,
     unifiedLogs,
@@ -1931,6 +1932,24 @@ export default function Chat({
   // spawned with its frozen runtime and the backend routes by sessionId.
   const currentRuntime: RuntimeType =
     (sessionRuntime as RuntimeType | null) ?? agentRuntime;
+  const launchRuntimeSource = runtimeSourceForRuntimeType(
+    agentRuntime,
+    currentAgent?.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID ||
+      currentAgent?.runtimeConfig?.source === 'managed-provider'
+      ? 'managed-provider'
+      : undefined,
+  ) ?? null;
+  const menuRuntimeIdentity = sessionId
+    ? sessionMenuRuntimeIdentity({
+        sessionId,
+        metadata: sessionMeta,
+        launchRuntime: agentRuntime,
+        launchRuntimeSource,
+        liveRuntime: sessionRuntime,
+        liveRuntimeSource: sessionRuntimeSource,
+        liveRuntimeSessionId: sessionRuntimeSessionId,
+      })
+    : null;
   const isExternalRuntime = currentRuntime !== 'builtin';
   const codexConversationBranchSupported =
     currentRuntime === 'codex' &&
@@ -6481,13 +6500,8 @@ export default function Chat({
               {sessionId && agentDir && (
                 <SessionMenuButton
                   sessionId={sessionId}
-                  runtime={sessionMeta?.id === sessionId ? normalizeRuntime(sessionMeta.runtime) : null}
-                  runtimeSource={
-                    sessionMeta?.id === sessionId
-                      ? (sessionMeta.runtimeSource ??
-                        (isManagedProviderSessionSnapshot(sessionMeta) ? 'managed-provider' : null))
-                      : null
-                  }
+                  runtime={menuRuntimeIdentity?.runtime ?? null}
+                  runtimeSource={menuRuntimeIdentity?.runtimeSource ?? null}
                         sessionTitle={
                           sessionTitle ?? t('shell.currentChatFallback')
                         }
