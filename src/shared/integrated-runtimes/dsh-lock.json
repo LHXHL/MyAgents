@@ -1,6 +1,9 @@
 {
   "schemaVersion": 1,
   "artifactId": "myagents-dsh",
+  "release": {
+    "tag": "v0.1.0"
+  },
   "handoff": {
     "manifestSha256": "8022a7f1a2099ff9ad570881c7912ca0407e15adbe33e24cf64a68d991b67eb2",
     "sourceCommit": "da749f37b7dd2c8802750eb1255fa5804ca21497",

@@ -474,6 +474,8 @@ test("repository lock, generated contracts, resources, and toolchain authorities
   ].map((path) => readFileSync(resolve(repoRoot, path), "utf8"));
 
   assert.equal(lock.runtime.requiredNodeVersion, "24.20.0");
+  assert.equal(lock.release.tag, "v0.1.0");
+  assert.equal(lock.release.assets, undefined);
   assert.equal(lock.bundledNpm.version, "11.19.0");
   assert.equal(lock.bundledNpm.authority, "myagents-product-resource");
   assert.equal(lock.protocol.version, "6.0.0");

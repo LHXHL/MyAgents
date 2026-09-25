@@ -26,7 +26,7 @@ This PRD covers production of the releasable handoff archive in MyAgents-dsh and
 | Selected source and effective identity of one Dev build | MyAgents build preparation, derived from the selected verified handoff |
 | Running Session's frozen Runtime binding | existing MyAgents Session owner |
 
-The GitHub URL is derived from repository, tag and fixed asset name. The version/tag is chosen before DSH release construction; archive and handoff digests are known only after construction. MyAgents updates its committed lock after a release exists. An optional latest index may propose an upgrade but never selects bytes during a build.
+The GitHub URL is derived from repository, tag and fixed asset name. MyAgents-dsh root `package.json` fixes the first planned distribution version at `0.1.0`; MyAgents already records its corresponding `release.tag` as `v0.1.0`. Archive, handoff and source-commit pins can only be filled after the release is built and accepted. Until then a Release build fails before network access. An optional latest index may propose an upgrade but never selects bytes during a build.
 
 ## 3. Source selection contract
 
@@ -35,7 +35,7 @@ The GitHub URL is derived from repository, tag and fixed asset name. The version
 | macOS/Windows/Linux Release build, direct production Tauri build | pinned GitHub Release | none | exact committed DSH lock |
 | macOS/Windows/Linux packaged Dev build | pinned GitHub Release | `local` with absolute handoff directory | exact verified selected handoff |
 
-Dev entry points expose `--dsh-source release|local`; `release` is the default. `local` requires `--dsh-handoff /absolute/path` and never discovers a sibling checkout or floating latest. The local input is the official handoff directory, not raw DSH source or a selected Runtime subtree. A changed DSH checkout must first create a new handoff through its official builders; this build selection does not mutate the DSH repository or silently rebuild it.
+Dev entry points expose `--dsh-source release|local` (Windows: `-DshSource`) and default to `release`. `local` requires `--dsh-handoff /absolute/path` (Windows: `-DshHandoff`) and never discovers a sibling checkout or floating latest. The local input is the official handoff directory, not raw DSH source or a selected Runtime subtree. A changed DSH checkout must first create a new handoff through its official builders; this build selection does not mutate the DSH repository or silently rebuild it.
 
 The normal release source uses the committed lock's tag, source commit and target-specific asset name, archive SHA-256, size and handoff SHA-256. A cache hit is accepted only after exact archive and extracted-handoff verification. A missing/corrupt cache is reacquired from that fixed URL. Download failure cannot fall back to a stale staged directory or the sibling source checkout. The existing shared build download policy owns timeout, retry, proxy and staging mechanics. The four targets are macOS arm64, macOS x64 (Intel), Windows x64 and Linux x64. Each needs its own native Runtime artifact and therefore its own handoff/Runtime digest; macOS arm64 bytes cannot be used in an Intel App.
 
@@ -61,11 +61,11 @@ The effective lock must be the same for Renderer/Sidecar TypeScript, Rust compil
 
 1. A clean MyAgents checkout with no staged DSH resource and a populated exact cache can build the pinned Release App offline; without cache it downloads the fixed GitHub asset and builds after verification.
 2. An unavailable asset, wrong archive SHA, changed handoff, wrong platform/Node/protocol or incompatible contract aborts before Tauri packaging. No local fallback occurs in Release mode.
-3. A Dev build with no DSH flags packages the same bytes as the committed release lock. A Dev build with an explicit local handoff packages that handoff and reports its distinct effective identity without modifying the release lock.
+3. A Dev build with no DSH flags packages the same bytes as the committed release lock. A Dev build with an explicit local handoff packages that handoff and reports its distinct effective identity without modifying the release lock. Before the first Release exists, the default fails clearly; an explicit local handoff remains available for development.
 4. Local mode works without a sibling DSH checkout; when a source checkout is explicitly supplied for freshness, it is checked against the local handoff rather than the committed release.
 5. TypeScript, Rust and the final App expose the same DSH handoff/Runtime/compatibility identity. Existing Sessions retain their frozen binding; runtime source paths are absent from user data.
 6. Tests cover release URL derivation, cache hit/corruption, failed download, local handoff selection, identity parity, direct build entry points and rejection of a local contract mismatch. At least one real macOS Dev package is verified from each available source. Intel macOS requires an x64 native Runtime and package smoke; Windows/Linux native claims are reported only if those platforms run.
 
 ## 7. Rollout
 
-Implement and test the MyAgents-dsh archive packager and MyAgents prepare helper without publishing a release. Keep the currently staged handoff usable for explicit local Dev builds during migration. Once an accepted GitHub Release asset exists, update MyAgents' committed release lock with its exact tag/asset/archive digest, then run clean-checkout Release and Dev package acceptance. A tag-triggered publisher follows after its exact-source/native gates are automated. No desktop build may implicitly follow `latest`.
+Implement and test the MyAgents-dsh archive packager and MyAgents prepare helper without publishing a release. Keep the currently staged handoff usable for explicit local Dev builds during migration. The planned `v0.1.0` tag is recorded now; once an accepted GitHub Release exists, add its source commit and all target asset/size/digest pins to the committed MyAgents lock, then run clean-checkout Release and Dev package acceptance. A tag-triggered publisher follows after its exact-source/native gates are automated. No desktop build may implicitly follow `latest`.
