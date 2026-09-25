@@ -724,6 +724,8 @@ export function cliRequestTimeoutMs(route: string): number {
   if (route === 'session/start') return 195_000;
   if (route === 'session/send') return 40_000;
   if (route === 'session/get') return 20_000;
+  if (route === 'mcp/test') return 20_000;
+  if (route === 'task/trigger/test') return 315_000;
   return 10_000;
 }
 
@@ -1257,6 +1259,20 @@ export function printResult(
     printTaskCreateResult(result.data as Record<string, unknown>);
     return;
   }
+  if (group === 'task' && action === 'update') {
+    const data = (result.data as Record<string, unknown> | undefined) ?? {};
+    const task = (data.task as Record<string, unknown> | undefined) ?? data;
+    console.log(`✓ Task updated ${String(task.id ?? task.taskId ?? '').trim()}`.trim());
+    if (task.name) console.log(`  name: ${String(task.name)}`);
+    if (task.description) console.log(`  description: ${String(task.description)}`);
+    if (task.status) console.log(`  status: ${String(task.status)}`);
+    if (task.executionMode) console.log(`  execution: ${String(task.executionMode)}`);
+    const docs = (task.docs as Record<string, unknown> | undefined) ?? {};
+    if (docs.taskMd) console.log(`  task.md: ${String(docs.taskMd)}`);
+    printTaskNextExecution(task.nextExecutionAt ?? data.nextExecutionAt);
+    console.log(`  inspect: myagents task get ${String(task.id ?? task.taskId ?? '<taskId>')}`);
+    return;
+  }
   if (group === 'space' && action === 'issue' && shouldCreateAttachedTaskForClaim(flags)) {
     printSpaceClaimAttachedResult(result.data as Record<string, unknown>);
     return;
@@ -1319,6 +1335,16 @@ export function printResult(
   if (group === 'task' && action === 'reset-checkpoint') {
     console.log('\u2713 Detector checkpoint reset');
     return;
+  }
+  if (group === 'task' && result.data && typeof result.data === 'object') {
+    const data = result.data as Record<string, unknown>;
+    const task = (data.task as Record<string, unknown> | undefined) ?? data;
+    const taskId = task.id ?? task.taskId ?? data.taskId;
+    if (typeof taskId === 'string' && taskId) {
+      console.log(`✓ Task ${action} ${taskId}`);
+      if (task.status ?? data.status) console.log(`  status: ${String(task.status ?? data.status)}`);
+      return;
+    }
   }
 
   // Generic success output
@@ -6404,6 +6430,14 @@ function readTaskTriggerJsonFile(
     if (value === null && allowNull) return null;
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       throw new Error(allowNull ? 'JSON must be an object or null' : 'JSON must be an object');
+    }
+    const checkpointKeys = Object.keys(value);
+    if (flag === '--checkpoint-file'
+      && Number.isSafeInteger((value as Record<string, unknown>).revision)
+      && checkpointKeys.includes('value')
+      && checkpointKeys.every(key => key === 'revision' || key === 'value' || key === 'updatedAt')
+    ) {
+      throw new Error('expected the checkpoint value object, not a {revision, value} wrapper');
     }
     return value as Record<string, unknown>;
   } catch (error) {

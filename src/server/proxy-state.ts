@@ -460,8 +460,9 @@ export function getProxyForProviderUrl(providerId: string, url: string): string 
   return proxyForUrlFromEnv(url, source);
 }
 
+/** General-owner proxy decision for DSH WebFetch, using the same sealed baseline as generic HTTP. */
 export function getProxyForUrl(url: string): string | undefined {
-  return proxyForUrlFromEnv(url, process.env);
+  return proxyForUrlFromEnv(url, generalRequestEnvSnapshot());
 }
 
 /**

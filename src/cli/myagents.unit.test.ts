@@ -83,6 +83,8 @@ describe('public external CLI declaration', () => {
     expect(cliRequestTimeoutMs('session/start')).toBeGreaterThan(180_000);
     expect(cliRequestTimeoutMs('session/send')).toBeGreaterThan(35_000);
     expect(cliRequestTimeoutMs('session/get')).toBeGreaterThan(18_000);
+    expect(cliRequestTimeoutMs('mcp/test')).toBeGreaterThan(15_000);
+    expect(cliRequestTimeoutMs('task/trigger/test')).toBeGreaterThan(310_000);
     expect(cliRequestTimeoutMs('status')).toBe(10_000);
   });
 
@@ -681,6 +683,19 @@ describe('myagents CLI Task Detector contracts', () => {
         checkpoint: { cursor: '消息 42' },
         expect: 'quiet',
       });
+      writeFileSync(checkpoint, JSON.stringify({ revision: 1, value: { cursor: 1 } }));
+      const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+        throw new Error(`process.exit(${code})`);
+      }) as typeof process.exit);
+      const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        expect(() => buildRequestBody('task', 'trigger', ['test', 'task-1'], { checkpointFile: checkpoint }))
+          .toThrow('process.exit(2)');
+        expect(error.mock.calls.map(([line]) => String(line)).join('\n')).toContain('not a {revision, value} wrapper');
+      } finally {
+        exit.mockRestore();
+        error.mockRestore();
+      }
       expect(buildRequestBody('task', 'trigger', ['test'], {
         specFile: spec,
         workspacePath: '/tmp/work space',
@@ -1197,6 +1212,39 @@ describe('myagents CLI Space issue contracts', () => {
         { slug: 'research-hub', name: 'Research Hub', role: 'owner' },
       ] } }, false);
       expect(log.mock.calls.map(([line]) => String(line)).join('\n')).toContain('research-hub');
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('shows the updated Task identity and authoritative state in human output', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      printResult('task', 'update', { success: true, data: { task: {
+        id: 'task-123', name: 'Daily check', description: 'Check the inbox', status: 'stopped', executionMode: 'recurring',
+        docs: { taskMd: '/tmp/task.md' },
+      } } }, false);
+      const output = log.mock.calls.map(([line]) => String(line)).join('\n');
+      expect(output).toContain('Task updated task-123');
+      expect(output).toContain('status: stopped');
+      expect(output).toContain('description: Check the inbox');
+      expect(output).toContain('task.md: /tmp/task.md');
+      expect(output).toContain('myagents task get task-123');
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('prints Task mutation receipts with their task id and resulting status', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      printResult('task', 'update-status', { success: true, data: { task: { id: 'task-123', status: 'done' } } }, false);
+      printResult('task', 'delete', { success: true, data: { taskId: 'task-123', status: 'deleted' } }, false);
+      const output = log.mock.calls.map(([line]) => String(line)).join('\n');
+      expect(output).toContain('Task update-status task-123');
+      expect(output).toContain('status: done');
+      expect(output).toContain('Task delete task-123');
+      expect(output).toContain('status: deleted');
     } finally {
       log.mockRestore();
     }

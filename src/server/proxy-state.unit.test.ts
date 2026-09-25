@@ -154,6 +154,13 @@ describe('proxy-state provider scope', () => {
     expect(proxyState.getProxyForUrl('https://space.example.com/v1')).toBe(
       generalUsesApp ? 'http://myagents.proxy:7890' : 'http://system.proxy:8080',
     );
+    // WebFetch must follow the general owner's snapshot even if an unrelated
+    // component changes process.env after proxy state was committed.
+    process.env.HTTPS_PROXY = '';
+    process.env.https_proxy = '';
+    expect(proxyState.getProxyForUrl('https://example.com/page')).toBe(
+      generalUsesApp ? 'http://myagents.proxy:7890' : 'http://system.proxy:8080',
+    );
     expect(proxyState.getMyAgentsProxyForGeneralUrl('https://space.example.com/v1')).toBe(
       generalUsesApp ? 'http://myagents.proxy:7890' : undefined,
     );

@@ -221,6 +221,14 @@ describe('Record Admin routing', () => {
 });
 
 describe('admin-api help registry', () => {
+  it('lists config unset and all MCP env actions in group help', async () => {
+    const { handleHelp } = await import('./admin-api');
+    const config = String((handleHelp({ path: ['config'] }).data as { text?: string })?.text ?? '');
+    const mcp = String((handleHelp({ path: ['mcp'] }).data as { text?: string })?.text ?? '');
+    expect(config).toContain('unset <key>');
+    expect(mcp).toContain('env <id> set|get|delete');
+  });
+
   it('presents Record as canonical and Thought only as a compatibility alias', async () => {
     const { handleHelp } = await import('./admin-api');
     const record = String((handleHelp({ path: ['record'] }).data as { text?: string })?.text ?? '');
@@ -723,9 +731,9 @@ describe('admin-api Skill scope and sync', () => {
       const response = parsed.pathname === '/api/skills'
         ? { success: true, skills: [{ name: 'Alpha Display', folderName: 'alpha', scope: 'project' }] }
         : parsed.pathname === '/api/project-capabilities'
-        ? { success: true, candidates: [{ kind: 'skill', source: 'project', sourceLocalId: 'alpha', id: 'project:skill:alpha' }] }
+        ? { success: true, skills: [{ scope: 'project', folderName: 'alpha', capabilityId: 'project:skill:alpha', enabled: true }] }
         : parsed.pathname === '/api/project-capability/toggle'
-          ? { success: true, candidates: [{ id: 'project:skill:alpha', enabled: false }] }
+          ? { success: true, skills: [{ capabilityId: 'project:skill:alpha', enabled: false }] }
         : parsed.pathname === '/api/skill/alpha'
           ? { success: true, skill: { name: 'alpha' } }
           : { success: true };
@@ -3157,7 +3165,23 @@ describe('admin-api MCP add contract', () => {
 });
 
 describe('admin-api MCP connectivity test', () => {
+  it('explains global disablement without attempting a connection', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpServers: [{ id: 'ddg-search', type: 'stdio', command: 'uvx', isBuiltin: false }],
+      mcpEnabledServers: [],
+    });
+    const { handleMcpTest } = await import('./admin-api');
+    expect(await handleMcpTest({ id: 'ddg-search' })).toMatchObject({
+      success: false,
+      error: expect.stringContaining('disabled globally'),
+      recoveryHint: { recoveryCommand: 'myagents mcp enable ddg-search --scope global' },
+    });
+  });
+
   it('diagnoses the managed Browser through its Session capability instead of spawning the sentinel', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpEnabledServers: ['myagents-browser'],
+    });
     managementApiMocks.managementApi.mockResolvedValueOnce({
       ok: true,
       url: 'http://127.0.0.1:31415/mcp/playwright',
@@ -3189,6 +3213,7 @@ describe('admin-api MCP connectivity test', () => {
 
   it('rejects a configured stdio command that exists but exits before MCP initialize', async () => {
     writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpEnabledServers: ['broken-stdio'],
       mcpServers: [{
         id: 'broken-stdio',
         name: 'Broken stdio fixture',
@@ -3224,6 +3249,7 @@ describe('admin-api MCP connectivity test', () => {
       'await server.connect(new StdioServerTransport());',
     ].join('\n');
     writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpEnabledServers: ['merged-stdio'],
       mcpServers: [{
         id: 'merged-stdio',
         name: 'Merged stdio fixture',
@@ -3253,6 +3279,7 @@ describe('admin-api MCP connectivity test', () => {
   it('redacts even short configured MCP environment values from stdio handshake diagnostics', async () => {
     const secret = 'z9';
     writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpEnabledServers: ['redacted-stdio'],
       mcpServers: [{
         id: 'redacted-stdio',
         name: 'Redacted stdio fixture',
@@ -3276,6 +3303,7 @@ describe('admin-api MCP connectivity test', () => {
     'rejects a 200 response that does not complete an MCP initialize handshake for %s',
     async (type) => {
       writeJson(join(scratch, '.myagents', 'config.json'), {
+        mcpEnabledServers: [`invalid-${type}`],
         mcpServers: [{
           id: `invalid-${type}`,
           name: `Invalid ${type} fixture`,
@@ -3303,6 +3331,7 @@ describe('admin-api MCP connectivity test', () => {
 
   it('handshakes with resolved HTTP URL placeholders and configured headers', async () => {
     writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpEnabledServers: ['resolved-http'],
       mcpServers: [{
         id: 'resolved-http',
         name: 'Resolved HTTP fixture',
@@ -3361,6 +3390,7 @@ describe('admin-api MCP connectivity test', () => {
 
   it('completes the endpoint and initialize exchange for an SSE server', async () => {
     writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpEnabledServers: ['valid-sse'],
       mcpServers: [{
         id: 'valid-sse',
         name: 'Valid SSE fixture',
@@ -3431,6 +3461,7 @@ describe('admin-api MCP connectivity test', () => {
 
   it('matches Session OAuth precedence when a canonical configured header is empty', async () => {
     writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpEnabledServers: ['oauth-http'],
       mcpServers: [{
         id: 'oauth-http',
         name: 'OAuth HTTP fixture',
@@ -3483,6 +3514,7 @@ describe('admin-api MCP connectivity test', () => {
 
   it('bounds stored OAuth resolution within the overall 15 second test deadline', async () => {
     writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpEnabledServers: ['stalled-oauth-http'],
       mcpServers: [{
         id: 'stalled-oauth-http',
         name: 'Stalled OAuth fixture',
@@ -3520,6 +3552,7 @@ describe('admin-api MCP connectivity test', () => {
 
   it('rejects an unknown persisted transport type instead of falling through to valid', async () => {
     writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpEnabledServers: ['unknown-transport'],
       mcpServers: [{
         id: 'unknown-transport',
         name: 'Unknown transport fixture',

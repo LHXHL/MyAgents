@@ -696,9 +696,20 @@ export async function handleMcpTest(payload: {
   const { id } = payload;
   if (!id) return { success: false, error: 'Missing required field: id' };
 
-  const allServers = getAllMcpServers();
+  const config = loadConfig();
+  const allServers = getAllMcpServers(config);
   const server = allServers.find((s) => s.id === id);
   if (!server) return { success: false, error: `MCP server '${id}' not found` };
+  if (!getEnabledMcpServerIds(config).includes(id)) {
+    return {
+      success: false,
+      error: `MCP server '${id}' is disabled globally. Enable it with myagents mcp enable ${id} --scope global.`,
+      recoveryHint: {
+        recoveryCommand: `myagents mcp enable ${id} --scope global`,
+        message: 'Global enablement is required before this server can be used in a Session.',
+      },
+    };
+  }
 
   const transportType = (server as { type?: unknown }).type;
   if (
@@ -876,7 +887,7 @@ export async function handleMcpTest(payload: {
         serverVersion: result.serverVersion,
         resolvedCommand: result.resolvedCommand,
       },
-      hint: `MCP configuration initialize succeeded${identity ? ` (${identity})` : ''}. Runtime compatibility is reported by the session.`,
+      hint: `MCP configuration initialize succeeded${identity ? ` (${identity})` : ''}. This checks the global server definition; current Session enablement and Runtime compatibility are separate.`,
     };
   } catch (err) {
     const probeError = err as { message?: unknown; statusCode?: unknown };
@@ -3197,7 +3208,7 @@ Commands:
   enable <id>              Enable an MCP server
   disable <id>             Disable an MCP server
   test <id>                Validate MCP server connectivity
-  env <id> <action>        Manage environment variables
+  env <id> set|get|delete  Manage environment variables
   oauth <action> <id>      Manage OAuth for HTTP/SSE servers
 
 Options for 'add':
@@ -3279,7 +3290,8 @@ Options for 'add':
 Commands:
   list [prefix]           Discover current keys, types and descriptions (no values)
   get <key>               Read a config value
-  set <key> <value>       Set a config value`,
+  set <key> <value>       Set a config value
+  unset <key>             Remove a stored config value`,
 
   cron: `myagents cron — Manage scheduled tasks
 
@@ -4317,7 +4329,7 @@ Related:
     effect:
       'Really executes the command using a snapshot/fixture checkpoint but does not commit MyAgents checkpoint, health, events, or AI activation.',
     options:
-      '  <taskId>             Test the persisted Trigger\n  --spec-file <path>   Or test an unpersisted Trigger with --workspacePath\n  --checkpoint-file    Optional checkpoint fixture\n  --expect quiet|activate',
+      '  <taskId>             Test the persisted Trigger\n  --spec-file <path>   Or test an unpersisted Trigger with --workspacePath\n  --checkpoint-file    Optional checkpoint value JSON object or null, without revision/value wrapper\n  --expect quiet|activate',
     mutation:
       'No MyAgents state or AI mutation. Script file/network/database side effects are real and are not rolled back.',
     output: 'Structured quiet/activate result or harness failure diagnostics.',
@@ -7498,17 +7510,17 @@ export async function handleSkillToggle(payload: {
     if (!workspacePath) return { success: false, error: 'Project scope requires --workspace or a current workspace' };
     const snapshot = await sidecarSelf(`/api/project-capabilities?agentDir=${encodeURIComponent(workspacePath)}`);
     if (!snapshot.json.success) return { success: false, error: String(snapshot.json.error ?? 'Project capabilities unavailable') };
-    const candidates = Array.isArray(snapshot.json.candidates) ? snapshot.json.candidates as Array<Record<string, unknown>> : [];
-    const match = candidates.find(candidate => candidate.kind === 'skill' && candidate.source === 'project' && candidate.sourceLocalId === folderName);
-    if (!match || typeof match.id !== 'string') return { success: false, error: 'Project skill not found or shadowed' };
+    const skills = Array.isArray(snapshot.json.skills) ? snapshot.json.skills as Array<Record<string, unknown>> : [];
+    const match = skills.find(skill => skill.scope === 'project' && skill.folderName === folderName);
+    if (!match || typeof match.capabilityId !== 'string') return { success: false, error: `Project skill '${folderName}' is unavailable in this workspace` };
     const changed = await sidecarSelf('/api/project-capability/toggle', 'POST', {
       agentDir: workspacePath,
-      capabilityId: match.id,
+      capabilityId: match.capabilityId,
       enabled: payload.enabled,
     });
     if (!changed.json.success) return { success: false, error: String(changed.json.error ?? 'Failed to toggle project skill') };
-    const effective = Array.isArray(changed.json.candidates)
-      ? (changed.json.candidates as Array<Record<string, unknown>>).find(candidate => candidate.id === match.id)
+    const effective = Array.isArray(changed.json.skills)
+      ? (changed.json.skills as Array<Record<string, unknown>>).find(skill => skill.capabilityId === match.capabilityId)
       : undefined;
     if (!effective || effective.enabled !== payload.enabled) {
       return { success: false, error: 'Project skill state did not match the requested change' };

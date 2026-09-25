@@ -219,7 +219,7 @@ describe('DshSafeHttpClient', () => {
   });
 
   it('uses explicit proxy DNS without invoking the direct resolver', async () => {
-    const lookup = publicLookup();
+    const lookup = vi.fn(async () => [{ address: '198.18.0.185', family: 4 as const }]);
     const proxyTransport = {
       dispatch: vi.fn(async () => raw(200, Buffer.from('proxied'), {
         'content-type': 'text/plain',
