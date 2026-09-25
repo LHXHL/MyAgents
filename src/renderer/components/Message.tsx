@@ -240,7 +240,7 @@ function systemTagLabel(kind: string, t: (key: string) => string): string | null
   return null;
 }
 
-function renderWidgetSegments(text: string, isLoading: boolean): ReactNode {
+function renderWidgetSegments(text: string, isLoading: boolean, unclosedNotice: string): ReactNode {
   const segments = parseWidgetTags(text);
   return segments.map((seg, si) => {
     if (seg.type === 'text') {
@@ -249,6 +249,15 @@ function renderWidgetSegments(text: string, isLoading: boolean): ReactNode {
           <div className="ai-message-content w-full max-w-none text-[var(--ink)] select-text">
             <Markdown>{seg.content}</Markdown>
           </div>
+        </div>
+      );
+    }
+
+    if (!seg.isComplete && !isLoading) {
+      return (
+        <div key={`w-${si}`} className="w-full px-1" data-testid="unclosed-widget-source">
+          <p className="text-sm text-[var(--ink-muted)]">{unclosedNotice}</p>
+          <pre className="whitespace-pre-wrap break-words select-text"><code>{seg.raw}</code></pre>
         </div>
       );
     }
@@ -494,7 +503,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
         <div className="w-full max-w-none">
           {hasWidgets ? (
             <div className="w-full space-y-3">
-              {renderWidgetSegments(message.content, isLoading)}
+              {renderWidgetSegments(message.content, isLoading, t('message.widgetUnclosed'))}
             </div>
           ) : (
             /* ai-message-content 标记 host prose 上下文；具体 16px/1.625、零字距和
@@ -571,7 +580,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
                   if (hasWidgetTags(item.text)) {
                     return (
                       <div key={index} className="w-full space-y-3">
-                        {renderWidgetSegments(item.text, isLoading)}
+                        {renderWidgetSegments(item.text, isLoading, t('message.widgetUnclosed'))}
                       </div>
                     );
                   }

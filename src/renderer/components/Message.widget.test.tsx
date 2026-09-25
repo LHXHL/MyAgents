@@ -50,13 +50,25 @@ describe('Message widget rendering', () => {
   it('finalizes an incomplete widget segment when the assistant turn is no longer loading', () => {
     render(<Message message={msg([{ type: 'text', text: UNCLOSED_WIDGET }])} isLoading={false} />);
 
-    expect(screen.getByTestId('widget')).toHaveAttribute('data-streaming', 'false');
+    expect(screen.queryByTestId('widget')).not.toBeInTheDocument();
+    expect(screen.getByTestId('unclosed-widget-source').querySelector('code')?.textContent).toBe(UNCLOSED_WIDGET);
   });
 
   it('finalizes an incomplete widget from string assistant content when the turn is no longer loading', () => {
     render(<Message message={msg(UNCLOSED_WIDGET)} isLoading={false} />);
 
-    expect(screen.getByTestId('widget')).toHaveAttribute('data-streaming', 'false');
+    expect(screen.queryByTestId('widget')).not.toBeInTheDocument();
+    expect(screen.getByTestId('unclosed-widget-source').querySelector('code')?.textContent).toBe(UNCLOSED_WIDGET);
+  });
+
+  it('keeps all text after a broken closing tag visible after the turn ends', () => {
+    const content = `${UNCLOSED_WIDGET}\n</｜｜DSML｜｜ parameter>\n\nFinal report follows.`;
+    render(<Message message={msg(content)} isLoading={false} />);
+
+    const source = screen.getByTestId('unclosed-widget-source');
+    expect(source).toHaveTextContent('Final report follows.');
+    expect(source).toHaveTextContent('</｜｜DSML｜｜ parameter>');
+    expect(screen.queryByTestId('widget')).not.toBeInTheDocument();
   });
 
   it('keeps an incomplete widget segment in preview mode while the assistant turn is loading', () => {
