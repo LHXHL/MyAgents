@@ -1661,3 +1661,14 @@ returned six results; repeating the TypeScript query returned ten, with the firs
 shown as `devblogs.microsoft.com` and all ten missing snippets still accurately empty. The
 quality diagnostic uses the Sidecar's patched `console.warn` sink so it reaches unified logging;
 `console.info` is not patched by that owner and would silently miss the file log.
+
+The same Dev App run exposed a separate Product transcript fault in an older restored Session.
+At 14:41:50 its V2 writer reported `invalid-history`; after restart at 15:14:51 the restored
+Session surfaced the unsaved-conversation toast before a new message was sent. Its exact final
+on-disk batch has a valid checksum and a stopped partial assistant turn, but both Node and Rust
+reader allowlists omitted the legitimate `completionState` and `terminalStatus` update fields
+(and `runtimeOperationAnchor`). The reader therefore rejected a record the writer had emitted.
+The repaired readers fold that unmodified real file to a clean revision 90081. Cross-language
+fixture parity and a DSH cold-reload/continued-write test cover this case. The toast was a real
+save-risk signal, not a false alarm; in-memory output after the writer degraded is not claimed
+durable merely because the earlier batch is readable again.

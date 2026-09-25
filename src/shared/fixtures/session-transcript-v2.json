@@ -779,6 +779,52 @@
         "validBytes": 637,
         "tail": "clean"
       }
+    },
+    {
+      "name": "partial-terminal-message-details",
+      "wire": "{\"kind\":\"session-transcript\",\"version\":2,\"sessionId\":\"fixture-session\",\"generation\":\"g1\",\"baseRevision\":0,\"baseline\":false}\n{\"batch\":{\"id\":\"partial-terminal\",\"mode\":\"delta\",\"fromRevision\":1,\"revision\":4,\"operations\":[{\"kind\":\"message-create\",\"message\":{\"id\":\"u1\",\"role\":\"user\",\"timestamp\":\"2026-09-25T00:00:00.000Z\",\"content\":\"Stop this turn\",\"turnId\":\"t1\"}},{\"kind\":\"message-create\",\"message\":{\"id\":\"a1\",\"role\":\"assistant\",\"timestamp\":\"2026-09-25T00:00:00.000Z\",\"content\":\"Partial answer\",\"turnId\":\"t1\"}},{\"kind\":\"message-update\",\"messageId\":\"a1\",\"details\":{\"runtimeTurnAnchor\":{\"turnId\":\"t1\",\"rootUserMessageId\":\"u1\"},\"runtimeOperationAnchor\":{\"runtime\":\"dsh\",\"clientOperationId\":\"op1\",\"runtimeSessionId\":\"native1\"},\"completionState\":\"partial\",\"terminalStatus\":\"stopped\",\"transcriptState\":\"complete\"}},{\"kind\":\"turn-update\",\"turn\":{\"id\":\"t1\",\"rootUserMessageId\":\"u1\",\"startedAt\":\"2026-09-25T00:00:00.000Z\",\"status\":\"stopped\"}}]},\"checksum\":\"ab60614f1ccb34971bbff0a34a6431954c951e25a26fbfcf309301b3d371f3d5\"}\n",
+      "expected": {
+        "messages": [
+          {
+            "id": "u1",
+            "role": "user",
+            "timestamp": "2026-09-25T00:00:00.000Z",
+            "content": "Stop this turn",
+            "turnId": "t1"
+          },
+          {
+            "id": "a1",
+            "role": "assistant",
+            "timestamp": "2026-09-25T00:00:00.000Z",
+            "content": "Partial answer",
+            "turnId": "t1",
+            "runtimeTurnAnchor": {
+              "turnId": "t1",
+              "rootUserMessageId": "u1"
+            },
+            "runtimeOperationAnchor": {
+              "runtime": "dsh",
+              "clientOperationId": "op1",
+              "runtimeSessionId": "native1"
+            },
+            "completionState": "partial",
+            "terminalStatus": "stopped",
+            "transcriptState": "complete"
+          }
+        ],
+        "turns": [
+          {
+            "id": "t1",
+            "rootUserMessageId": "u1",
+            "startedAt": "2026-09-25T00:00:00.000Z",
+            "status": "stopped"
+          }
+        ],
+        "revision": 4,
+        "lastBatchId": "partial-terminal",
+        "validBytes": 1010,
+        "tail": "clean"
+      }
     }
   ],
   "formats": [

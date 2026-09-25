@@ -66,6 +66,29 @@ async function settle(session: Awaited<ReturnType<typeof birth>>, id: string) {
 }
 
 describe('DSH execution journals with V2 product history', () => {
+  it('reloads a stopped partial assistant turn without disabling future transcript saves', async () => {
+    const session = await birth();
+    await admit(session, 'one');
+    const block = session.content.block('partial', 'text');
+    session.content.confirmText(block, 'text', 'partial answer');
+    session.content.finishTurn('stopped', {
+      runtimeTurnAnchor: { turnId: 'turn-one', rootUserMessageId: 'one' },
+      runtimeOperationAnchor: { runtime: 'dsh', clientOperationId: 'op-one', runtimeSessionId: session.metadata.runtimeSessionId! },
+      completionState: 'partial', terminalStatus: 'stopped',
+    });
+    expect(await store.settleDshRootOperation({ sessionId: session.metadata.id, clientOperationId: 'op-one' }))
+      .toMatchObject({ success: true });
+    expect(await session.active.writer.flush()).toBe(true);
+    await session.active.revoke();
+    vi.resetModules(); store = await import('../SessionStore');
+    const restored = (await store.activateSessionTranscript(session.metadata.id))!;
+    expect(restored.writer.status.reason).not.toBe('invalid-history');
+    expect((await store.getSessionData(session.metadata.id))?.messages.at(-1))
+      .toMatchObject({ completionState: 'partial', terminalStatus: 'stopped' });
+    restored.writer.requestCommit();
+    expect(await restored.writer.flush()).toBe(true);
+  });
+
   it('admits and settles native inputs while a body write holds the physical file lock', async () => {
     let release!: () => void;
     let entered!: () => void;

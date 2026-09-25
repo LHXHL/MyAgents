@@ -24,6 +24,8 @@ Rust 在 metadata 尚未发布的窗口，沿 active 或 recovering SessionSidec
 
 每行 batch 包含连续 revision、唯一 batch ID、操作及原始 batch JSON 字节的 SHA-256。替换文件使用 header 中的 generation 与完整 baseline 结束标记。Node codec 和 Rust `session_transcript.rs` 共享 `src/shared/fixtures/session-transcript-v2.json`。冷读只 fold 有效连续前缀，不跳过损坏中间行；未完成 baseline 不可当成会话历史。
 
+`message-update.details` 的可读字段必须覆盖 `SessionMessage` 的合法非身份字段，并在 Node 与 Rust 解码器中保持一致。停止后的部分 assistant turn 会写入 `completionState`、`terminalStatus`，DSH 同时可能写入 `runtimeOperationAnchor`。曾经的遗漏使这些合法记录落盘后在下一次读取时被误判为 `invalid-history`，从而真正停止后续保存并显示警告；修正读取表即可恢复既有完整记录，无须改写历史文件。共享 fixture 和冷启动后继续写入的集成测试守住此边界。
+
 ## 后台保存
 
 `TranscriptWriter` 在首个待写操作起约 100 ms 启动固定批次，不做滑动 debounce；接纳/终态等边界可提前提交。批次约 256 KiB，单行上限 8 MiB，用户正文、完整工具结果等大字符串复用 `operations.ts` 拆分为 32 Ki 字符操作；达到批量阈值可提前开始实际 IO。

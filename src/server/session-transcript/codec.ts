@@ -51,6 +51,7 @@ function isContent(value: unknown): boolean {
 
 const MESSAGE_DETAILS = new Set([
   'asyncQuestionReply', 'sdkUuid', 'runtimeTurnAnchor', 'attachments', 'usage',
+  'runtimeOperationAnchor', 'completionState', 'terminalStatus',
   'toolCount', 'durationMs', 'metadata', 'turnId', 'transcriptState',
 ]);
 
