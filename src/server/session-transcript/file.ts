@@ -107,7 +107,7 @@ function sameJsonValue(left: unknown, right: unknown): boolean {
 export class TranscriptFile implements TranscriptStorage {
   private cursor: FileCursor | null = null;
   private createdHeader: Buffer | null = null;
-  private pendingReplacement: { expected: TranscriptCommitTarget; generation: string; revision: number; candidate: string } | null = null;
+  private pendingReplacement: { expected: TranscriptCommitTarget; generation: string; revision: number; candidate: string; recoverEmptySource: boolean } | null = null;
 
   constructor(private readonly options: TranscriptFileOptions) {}
 
@@ -206,7 +206,9 @@ export class TranscriptFile implements TranscriptStorage {
       try {
         const source = await this.read();
         published = source.header.generation === pending.generation && source.revision === pending.revision && source.tail === 'clean';
-        if (!published && (source.header.generation !== pending.expected.generation || source.revision !== pending.expected.revision
+        const emptySource = pending.recoverEmptySource && source.tail === 'clean'
+          && source.revision === 0 && source.lastBatchId === null && source.header.baseline === false;
+        if (!published && !emptySource && (source.header.generation !== pending.expected.generation || source.revision !== pending.expected.revision
           || (source.tail !== 'clean' && !(this.options.recoverIncompleteTail && source.tail === 'incomplete')))) {
           throw new TranscriptStorageError('invalid-history', 'Baseline source changed');
         }
@@ -215,7 +217,12 @@ export class TranscriptFile implements TranscriptStorage {
           try { await file.truncate(source.validBytes); await file.sync(); } finally { await file.close(); }
         }
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || !this.options.allowCreate || pending.expected.revision !== 0) throw error;
+        const missingInitialBirth = (error as NodeJS.ErrnoException).code === 'ENOENT'
+          && this.options.allowCreate && pending.expected.revision === 0;
+        const emptyFile = pending.recoverEmptySource && error instanceof TranscriptStorageError
+          && error.reason === 'invalid-history'
+          && await stat(this.options.filePath).then(info => info.size === 0, () => false);
+        if (!missingInitialBirth && !emptyFile) throw error;
       }
       if (!published) {
         await this.options.prepareReplacement?.(pending.expected, { generation: pending.generation, revision: pending.revision });
@@ -244,6 +251,14 @@ export class TranscriptFile implements TranscriptStorage {
   }
 
   async replace(expected: TranscriptCommitTarget, snapshot: TranscriptProjection, revision: number): Promise<TranscriptCommitTarget> {
+    return this.prepareBaselineReplacement(expected, snapshot, revision, false);
+  }
+
+  async recoverEmptySource(expected: TranscriptCommitTarget, snapshot: TranscriptProjection, revision: number): Promise<TranscriptCommitTarget> {
+    return this.prepareBaselineReplacement(expected, snapshot, revision, true);
+  }
+
+  private async prepareBaselineReplacement(expected: TranscriptCommitTarget, snapshot: TranscriptProjection, revision: number, recoverEmptySource: boolean): Promise<TranscriptCommitTarget> {
     if (this.pendingReplacement) return this.publishReplacement();
     const generation = randomUUID();
     const candidate = join(dirname(this.options.filePath), `.${this.options.sessionId}.${generation}.tmp`);
@@ -293,7 +308,7 @@ export class TranscriptFile implements TranscriptStorage {
         }
         await yieldToRuntime();
       }
-      this.pendingReplacement = { expected, generation, revision, candidate };
+      this.pendingReplacement = { expected, generation, revision, candidate, recoverEmptySource };
     } catch (error) {
       await unlink(candidate);
       throw error;
