@@ -581,7 +581,7 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
       return typeof title === 'string' && /[<>]/u.test(title);
     }).length;
     if (emptySnippets > 0 || malformedSourceTitles > 0) {
-      console.info(
+      console.warn(
         `[dsh-web] search-quality route=${input.profile.providerRouteId} results=${results.length} emptySnippets=${emptySnippets} malformedSourceTitles=${malformedSourceTitles} citationExcerpts=${snippets.size}`,
       );
     }

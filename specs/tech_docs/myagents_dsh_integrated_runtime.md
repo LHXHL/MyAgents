@@ -1656,3 +1656,8 @@ now replaces malformed search titles with the source hostname, retains genuinely
 without inventing page content, and logs only counts of empty snippets, malformed source titles
 and citation excerpts. Future explicit Provider search failures record their validated error code
 separately from arbitrary response text; no query, URL, excerpt or credential enters that log.
+Replaying the report's exact `MyAgents harness 复测` query in a fresh packaged DSH Session
+returned six results; repeating the TypeScript query returned ten, with the first title now
+shown as `devblogs.microsoft.com` and all ten missing snippets still accurately empty. The
+quality diagnostic uses the Sidecar's patched `console.warn` sink so it reaches unified logging;
+`console.info` is not patched by that owner and would silently miss the file log.
