@@ -460,6 +460,20 @@ describe('DshRuntimeEventProjector', () => {
     expect(events).toEqual(['first', 'second', 'third'].map(text => ({ kind: 'text_delta', text })));
   });
 
+  it('filters the confirmed provider control token across text chunks before Product events', async () => {
+    const events: UnifiedEvent[] = [];
+    const projector = new DshRuntimeEventProjector({ productSessionId: 'product-session-1', runtimeGeneration: 'runtime-generation-1', onEvent: event => events.push(event) });
+    let sequence = 0;
+    const send = (event: Record<string, unknown>) => projector.accept(envelope(++sequence, event, { turnId: 'turn-1' }));
+    await send({ kind: 'assistant_stream', phase: 'start', streamId: 'stream-1' });
+    for (const [frameIndex, delta] of ['</', '｜｜DSML｜｜', ' parameter', '>\nPlain DSML text'].entries()) {
+      await send({ kind: 'assistant_delta', streamId: 'stream-1', frameIndex, delta });
+    }
+    await send({ kind: 'assistant_stream', phase: 'end', streamId: 'stream-1', chunkCount: 4, outcome: { kind: 'abandoned' } });
+    expect(events.filter(event => event.kind === 'text_delta').map(event => event.text).join(''))
+      .toBe('</[invalid provider control token] parameter>\nPlain DSML text');
+  });
+
   it.each([
     [{ kind: 'assistant_delta', streamId: 'other', frameIndex: 1, delta: 'bad' }, 'turn-1', 'active stream'],
     [{ kind: 'assistant_delta', streamId: 'stream-1', frameIndex: 1, delta: 'bad' }, 'turn-other', 'active stream'],

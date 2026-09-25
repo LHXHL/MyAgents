@@ -6,6 +6,7 @@ import type { SubagentLifecycle } from '../../../shared/types/subagent-lifecycle
 import type { UnifiedEvent } from '../../runtimes/types';
 import type { DshRpcObject } from './protocol-types';
 import { readDshUsage, readDshUsageTotals, telemetryRecord, tokenCount } from './telemetry';
+import { ProviderControlTokenFilter } from './provider-control-token';
 
 type DshRuntimeEventEnvelope = Readonly<{
   runtimeGeneration: string;
@@ -287,7 +288,7 @@ export class DshRuntimeEventProjector {
   private runtimeSessionIdValue: string | undefined;
   private nextSequence = 1;
   // Correlation only: final content belongs to native history reconciliation.
-  private assistantStream: { id: string; turnId: string; lastFrameIndex: number } | undefined;
+  private assistantStream: { id: string; turnId: string; lastFrameIndex: number; controlTokens: ProviderControlTokenFilter } | undefined;
   private readonly observedDigests = new Map<number, string>();
   private inbox: Promise<void> = Promise.resolve();
   private failureValue: Error | undefined;
@@ -387,7 +388,7 @@ export class DshRuntimeEventProjector {
         const turnId = string(envelope.turnId, 'DSH assistant stream turn');
         if (event.phase === 'start') {
           if (this.assistantStream) throw new Error('DSH assistant streams overlap');
-          this.assistantStream = { id, turnId, lastFrameIndex: -1 };
+          this.assistantStream = { id, turnId, lastFrameIndex: -1, controlTokens: new ProviderControlTokenFilter() };
           return;
         }
         if (event.phase !== 'end') throw new Error('DSH assistant stream phase is invalid');
@@ -404,6 +405,11 @@ export class DshRuntimeEventProjector {
         } else if (outcome.kind !== 'abandoned') {
           throw new Error('DSH assistant stream outcome is invalid');
         }
+        const filtered = active.controlTokens.finish();
+        if (filtered.text) onEvent({ kind: 'text_delta', text: filtered.text });
+        if (filtered.matches > 0) {
+          console.warn(`[dsh] provider control token filtered count=${filtered.matches} turnId=${turnId}`);
+        }
         this.assistantStream = undefined;
         return;
       }
@@ -418,9 +424,12 @@ export class DshRuntimeEventProjector {
         if (frameIndex <= active.lastFrameIndex) throw new Error('DSH assistant delta position is not increasing');
         active.lastFrameIndex = frameIndex;
         const text = string(event.delta, 'DSH assistant delta');
-        onEvent(kind === 'assistant_delta'
-          ? { kind: 'text_delta', text }
-          : { kind: 'thinking_delta', text, index: 0 });
+        if (kind === 'assistant_delta') {
+          const filtered = active.controlTokens.accept(text);
+          if (filtered) onEvent({ kind: 'text_delta', text: filtered });
+        } else {
+          onEvent({ kind: 'thinking_delta', text, index: 0 });
+        }
         return;
       }
       case 'tool': {
