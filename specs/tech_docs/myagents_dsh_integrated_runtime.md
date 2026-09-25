@@ -1672,3 +1672,10 @@ The repaired readers fold that unmodified real file to a clean revision 90081. C
 fixture parity and a DSH cold-reload/continued-write test cover this case. The toast was a real
 save-risk signal, not a false alarm; in-memory output after the writer degraded is not claimed
 durable merely because the earlier batch is readable again.
+
+The rebuilt Dev App restored that exact Session without the toast. Startup reconciliation
+advanced the native cursor from 1709 to 1799, retired all three pending root-input journals,
+and materialized their turns in Product history. A new short reply was saved through revision
+90109 and remained visible after a full App restart. In the same signed build, a live WebSearch
+returned ten results; unified logging recorded ten empty snippets and one malformed source title,
+while the visible title used the source hostname fallback.
