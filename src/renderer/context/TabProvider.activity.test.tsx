@@ -10,6 +10,8 @@ import {
 } from '@/utils/sessionDeletionCoordinator';
 import { useTabState } from './TabContext';
 import type { Message } from '@/types/chat';
+import { ToastProvider } from '@/components/Toast';
+import { NATIVE_RESUME_BOUNDARY_MESSAGE } from '../../shared/nativeResumeBoundary';
 import TabProvider, {
   applySubagentLifecycleUpdate,
   finalizeMessageSubagentProjection,
@@ -241,6 +243,15 @@ const allowSessionOpening = () => () => undefined;
 
 describe('Tab-owned query clock integration', () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it('shows a native resume refusal while keeping the recoverable error visible', async () => {
+    sseHarness.state.eventHandler = null;
+    render(<ToastProvider><TabProvider tabId="resume-refusal" agentDir="/tmp/workspace" sessionId="pending-resume-refusal" claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider></ToastProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:message-error', { message: NATIVE_RESUME_BOUNDARY_MESSAGE });
+    expect(screen.getByTestId('agent-error')).toHaveTextContent(NATIVE_RESUME_BOUNDARY_MESSAGE);
+    expect(screen.getAllByRole('status').some(element => element.textContent?.includes(NATIVE_RESUME_BOUNDARY_MESSAGE))).toBe(true);
+  });
 
   it('keeps query time through tool updates and pauses only for unresolved human requests', async () => {
     let now = 0;

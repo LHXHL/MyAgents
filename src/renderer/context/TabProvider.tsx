@@ -1,4 +1,6 @@
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
+import { NATIVE_RESUME_BOUNDARY_MESSAGE } from '../../shared/nativeResumeBoundary';
+import { useToastOptional } from '@/components/Toast';
 import {
   appendStreamingText,
   completeStreamingText,
@@ -933,6 +935,7 @@ export default function TabProvider({
   onUnreadChange,
   claimSessionOpeningTransition,
 }: TabProviderProps) {
+  const toast = useToastOptional();
   const initialPersistedSessionId =
     sessionId && !isPendingSessionId(sessionId) ? sessionId : null;
   // Core state
@@ -3999,6 +4002,7 @@ export default function TabProvider({
               : data && typeof data === 'object' && 'message' in data
                 ? String((data as { message?: unknown }).message ?? '')
                 : '';
+          if (errorMessage === NATIVE_RESUME_BOUNDARY_MESSAGE) toast?.error(errorMessage);
           flushSync(() => {
             // isStreamingRef.current set inside moveStreamingToHistory's updater
             moveStreamingToHistory('failed');
@@ -4307,6 +4311,7 @@ export default function TabProvider({
             userMessageId?: string;
           } | null;
           if (payload?.message) {
+            if (payload.message === NATIVE_RESUME_BOUNDARY_MESSAGE) toast?.error(payload.message);
             recoverStreamingUi('failed');
             setAgentError(payload.message);
             setAgentErrorUserMessageId(payload.userMessageId ?? null);
@@ -5343,6 +5348,7 @@ export default function TabProvider({
       recoverStreamingUi,
       setStreamingMessage,
       setAgentError,
+      toast,
       postJson,
       clearInteractiveState,
       flushPendingTextNow,

@@ -2,6 +2,7 @@ import type { SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { InteractionScenario } from '../system-prompt';
 import { trackServer as defaultTrackServer } from '../analytics';
 import { formatApiErrorDetail, shouldTitleCompletedTurn } from '../../shared/terminalReason';
+import { nativeResumeBoundaryRecoveryMessage } from '../../shared/nativeResumeBoundary';
 import type { CancelReason } from '../utils/cancellation';
 import {
   extractTurnUsageFromSdkResult,
@@ -619,6 +620,11 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       || resultMessage.errors?.join('; ')
       || getLastAssistantMessageError()
       || '';
+    const nativeResumeError = nativeResumeBoundaryRecoveryMessage([
+      resultText,
+      ...(resultMessage.errors ?? []),
+      getLastAssistantMessageError(),
+    ].filter(Boolean).join('\n'));
     const apiErrorStatus = 'api_error_status' in resultMessage
       ? resultMessage.api_error_status ?? null
       : null;
@@ -636,7 +642,8 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     // 是否已流式输出或执行工具，都要把细节 surface 成 agent-error。原守卫只覆盖「无输出
     // 且无工具」场景，多轮 / 多工具中途失败的 429 / 5xx 会被静默丢进日志。
     if (isTerminalFailure && !isAbortResult && hasProviderErrorDetail) {
-      const formatted = formatApiErrorDetail({ status: apiErrorStatus, rawMessage: resultErrorText });
+      const formatted = nativeResumeError
+        ?? formatApiErrorDetail({ status: apiErrorStatus, rawMessage: resultErrorText });
       console.warn('[agent] SDK terminal error surfaced as agent-error:', formatted, 'raw=', resultErrorText);
       deps.setLastAgentError(formatted);
       deps.broadcast('chat:agent-error', { message: formatted });
@@ -681,7 +688,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       console.log('[agent] SDK assistant message error recovered by successful result:', lastAssistantMessageError);
     }
     const terminalError = isTerminalFailure
-      ? (resultErrorText || resultText || `turn ended with terminal reason ${resultMessage.terminal_reason ?? 'unknown'}`)
+      ? (nativeResumeError || resultErrorText || resultText || `turn ended with terminal reason ${resultMessage.terminal_reason ?? 'unknown'}`)
       : undefined;
     deps.emitTrace('final', {
       status: isTerminalFailure || (emptySuccessfulResult && !successfulCompactControlTurn) ? 'error' : 'ok',

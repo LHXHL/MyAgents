@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { deriveReloadResumeAnchor, resolveEffectiveResumeAt, type ReloadAnchorMessage } from './rewind-anchor';
+import { nativeResumeBoundaryRecoveryMessage } from '../../shared/nativeResumeBoundary';
+
+it('recognizes an SDK native boundary refusal without exposing its UUID', () => {
+  const message = nativeResumeBoundaryRecoveryMessage('No message found with message.uuid of: sensitive-uuid');
+  expect(message).toContain('会话恢复点已失效');
+  expect(message).not.toContain('sensitive-uuid');
+  expect(nativeResumeBoundaryRecoveryMessage('Provider unavailable')).toBeNull();
+});
 
 const m = (role: 'user' | 'assistant', sdkUuid?: string): ReloadAnchorMessage => ({ role, sdkUuid });
 

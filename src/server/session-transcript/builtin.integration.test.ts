@@ -778,6 +778,7 @@ it('retains an exact rewind boundary across rejection and cold reopen', async ()
     undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
   await vi.waitFor(() => expect(state.query.mock.calls.at(-1)?.[0].options.resumeSessionAt).toBe('tail-frame-1'));
   await vi.waitFor(() => expect(state.events.some(([name]) => name === 'chat:message-error')).toBe(true));
+  expect(agent.getMessages().some(message => message.role === 'user' && message.content === 'after reopen')).toBe(true);
   expect(store.getSessionMetadata(meta.id)?.sdkResumeSessionAt).toBe('tail-frame-1');
   expect(state.query.mock.calls.at(-1)?.[0].options.resume).toBe(meta.id);
 });

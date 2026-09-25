@@ -37,6 +37,7 @@ import {
 } from './utils/model-capabilities';
 import { modelAliasEnvChangesForModel, resolveSessionModelAliases } from './utils/model-aliases';
 import { resolveEffectiveResumeAt } from './utils/rewind-anchor';
+import { nativeResumeBoundaryRecoveryMessage } from '../shared/nativeResumeBoundary';
 import { attemptFileRewind, type FileRewindStatus } from './utils/rewind-file-result';
 import { summarizeSensitiveSdkMessage } from './utils/sdk-log-summary';
 import { buildForkUuidRemap, remapStoredSdkUuids } from './utils/fork-remap';
@@ -13547,7 +13548,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
 
     // Cross-platform SDK subprocess diagnostics. Deterministic executable
     // denials also carry the Rust circuit's next legal probe delay.
-    let userFacingError = errorMessage;
+    let userFacingError = nativeResumeBoundaryRecoveryMessage(errorMessage) ?? errorMessage;
     const sdkSubprocessDiagnostic = diagnoseSdkSubprocessFailure({
       error,
       errorMessage,
@@ -13582,7 +13583,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // issue to surface. Error is still logged above (line 6611–6612) for
     // debugging, just not broadcast.
     if (!lifecycleState.preWarming && !lifecycleState.abortRequested) {
-      const completionTerminal = handleMessageError(errorMessage, sdkSubprocessDiagnostic?.imMessage);
+      const completionTerminal = handleMessageError(userFacingError, sdkSubprocessDiagnostic?.imMessage);
       setSessionState('error');
       broadcast(
         'chat:message-error',
