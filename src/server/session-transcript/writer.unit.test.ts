@@ -18,6 +18,47 @@ function setup(storage?: Partial<TranscriptStorage>) {
 afterEach(() => vi.useRealTimers());
 
 describe('V2 background persistence', () => {
+  it('coalesces pending text only, retaining live events and the full revision span', async () => {
+    vi.useFakeTimers();
+    const { writer, append } = setup();
+    const seen: string[] = [];
+    writer.subscribeOperations(operation => {
+      if (operation.kind === 'text-append') seen.push(operation.text);
+    });
+    for (let offset = 0; offset < 40; offset++) {
+      writer.observe({ kind: 'text-append', messageId: 'a1', field: 'text', offset, text: '🙂'[offset % 2] });
+    }
+    expect(seen).toHaveLength(40);
+    expect(writer.status.liveRevision).toBe(41);
+    expect(writer.projection.messages.get('a1')?.content).toBe('🙂'.repeat(20));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(append.mock.calls[0][1]).toMatchObject({ fromRevision: 1, revision: 41 });
+    expect(append.mock.calls[0][1].operations).toEqual([
+      { kind: 'message-create', message: { id: 'a1', role: 'assistant', timestamp: 't', content: '' } },
+      { kind: 'text-append', messageId: 'a1', field: 'text', offset: 0, text: '🙂'.repeat(20) },
+    ]);
+    await writer.close();
+  });
+
+  it('keeps explicit boundaries and metadata revisions separate', async () => {
+    vi.useFakeTimers();
+    const { writer, append } = setup();
+    writer.observe({ kind: 'text-append', messageId: 'a1', field: 'text', offset: 0, text: 'a' });
+    writer.requestCommit();
+    writer.observe({ kind: 'text-append', messageId: 'a1', field: 'text', offset: 1, text: 'b' }, true);
+    writer.observe({ kind: 'text-append', messageId: 'a1', field: 'text', offset: 2, text: 'c' });
+    await vi.runAllTimersAsync();
+    expect(append.mock.calls.flatMap(([, batch]) => batch.operations)
+      .filter(operation => operation.kind === 'text-append')).toEqual([
+        { kind: 'text-append', messageId: 'a1', field: 'text', offset: 0, text: 'a' },
+        { kind: 'text-append', messageId: 'a1', field: 'text', offset: 1, text: 'b' },
+        { kind: 'text-append', messageId: 'a1', field: 'text', offset: 2, text: 'c' },
+      ]);
+    expect(writer.status.durableRevision).toBe(5);
+    await writer.close();
+  });
+
   it('accepts one healthy 8 MiB tool result without discarding pending content', async () => {
     vi.useFakeTimers();
     const { writer, append, replace } = setup();
@@ -51,12 +92,18 @@ describe('V2 background persistence', () => {
     vi.useFakeTimers();
     const { writer, append } = setup();
     append.mockRejectedValueOnce(new Error('sync failed after append'));
+    writer.observe({ kind: 'text-append', messageId: 'a1', field: 'text', offset: 0, text: 'a' });
+    writer.observe({ kind: 'text-append', messageId: 'a1', field: 'text', offset: 1, text: 'b' });
     await vi.advanceTimersByTimeAsync(100);
     expect(writer.status.state).toBe('retrying');
-    writer.observe({ kind: 'text-append', messageId: 'a1', field: 'text', offset: 0, text: 'still running' });
-    expect(transcriptMessages(writer.projection)[0].content).toBe('still running');
+    writer.observe({ kind: 'text-append', messageId: 'a1', field: 'text', offset: 2, text: 'c' });
+    expect(transcriptMessages(writer.projection)[0].content).toBe('abc');
     await vi.advanceTimersByTimeAsync(501);
     expect(append.mock.calls[1][1]).toEqual(append.mock.calls[0][1]);
+    expect(append.mock.calls[0][1]).toMatchObject({ fromRevision: 1, revision: 3 });
+    expect(append.mock.calls[0][1].operations.at(-1)).toEqual({
+      kind: 'text-append', messageId: 'a1', field: 'text', offset: 0, text: 'ab',
+    });
     expect(writer.status.state).toBe('healthy');
     await writer.close();
   });

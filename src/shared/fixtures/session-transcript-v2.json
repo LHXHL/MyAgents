@@ -825,6 +825,25 @@
         "validBytes": 1010,
         "tail": "clean"
       }
+    },
+    {
+      "name": "coalesced-append-revision-span",
+      "wire": "{\"kind\":\"session-transcript\",\"version\":2,\"sessionId\":\"fixture-session\",\"generation\":\"g1\",\"baseRevision\":0,\"baseline\":false}\n{\"batch\":{\"id\":\"birth\",\"mode\":\"delta\",\"fromRevision\":1,\"revision\":1,\"operations\":[{\"kind\":\"message-create\",\"message\":{\"id\":\"a1\",\"role\":\"assistant\",\"timestamp\":\"t\",\"content\":\"\"}}]},\"checksum\":\"dd378e121a408c6f01fd2eceed0a6213ca808c253da7c3a0fdc813b2c8ea64e8\"}\n{\"batch\":{\"id\":\"merged-text\",\"mode\":\"delta\",\"fromRevision\":2,\"revision\":51,\"operations\":[{\"kind\":\"text-append\",\"messageId\":\"a1\",\"field\":\"text\",\"offset\":0,\"text\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}]},\"checksum\":\"57cf4c6d3362d750a08b981e09c486f0acaba195d7158100d4f2f8b6826a3e7c\"}\n{\"batch\":{\"id\":\"after-merge\",\"mode\":\"delta\",\"fromRevision\":52,\"revision\":52,\"operations\":[{\"kind\":\"text-append\",\"messageId\":\"a1\",\"field\":\"text\",\"offset\":50,\"text\":\"!\"}]},\"checksum\":\"fd7c272404c1899c963f8363457509ab702c24d5f91af9d6f00c0f7d2b8d79a1\"}\n",
+      "expected": {
+        "messages": [
+          {
+            "id": "a1",
+            "role": "assistant",
+            "timestamp": "t",
+            "content": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx!"
+          }
+        ],
+        "turns": [],
+        "revision": 52,
+        "lastBatchId": "after-merge",
+        "validBytes": 928,
+        "tail": "clean"
+      }
     }
   ],
   "formats": [

@@ -8,6 +8,7 @@ import {
   type TranscriptProjection,
 } from '../../shared/sessionTranscript';
 import messageDetailFields from '../../shared/session-transcript-message-details.json';
+import { coalesceTranscriptBatchOperations } from './operations';
 
 export const TRANSCRIPT_MAX_LINE_BYTES = 8 * 1024 * 1024;
 
@@ -175,7 +176,7 @@ export class TranscriptDecoder {
       } else if (!this.baselineComplete || batch.fromRevision !== result.revision + 1 || batch.revision < batch.fromRevision) {
         throw new Error('Non-contiguous transcript revision');
       }
-      applyTranscriptBatch(result.projection, batch.operations);
+      applyTranscriptBatch(result.projection, coalesceTranscriptBatchOperations(batch.operations));
       if (batch.mode === 'baseline' && batch.baselineEnd) this.baselineComplete = true;
       result.revision = batch.revision;
       result.lastBatchId = batch.id;

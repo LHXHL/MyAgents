@@ -1,5 +1,32 @@
 import type { TranscriptBlock, TranscriptMessage, TranscriptObject, TranscriptOperation, TranscriptProjection } from '../../shared/sessionTranscript';
 
+const APPEND_CHUNK_CHARS = 32 * 1024;
+type TextAppend = Extract<TranscriptOperation, { kind: 'text-append' }>;
+
+/** Merge only identical, contiguous targets; never change the meaning of an offset check. */
+export function mergeAdjacentTextAppends(previous: TranscriptOperation, next: TranscriptOperation): TextAppend | null {
+  if (previous.kind !== 'text-append' || next.kind !== 'text-append'
+    || previous.messageId !== next.messageId || previous.field !== next.field
+    || previous.blockId !== next.blockId || previous.subagentToolId !== next.subagentToolId
+    || next.offset !== previous.offset + previous.text.length
+    || previous.text.length + next.text.length > APPEND_CHUNK_CHARS) return null;
+  return { ...previous, text: previous.text + next.text };
+}
+
+/** Called only after wire validation; stays inside one batch and leaves its source untouched. */
+export function coalesceTranscriptBatchOperations(operations: readonly TranscriptOperation[]): readonly TranscriptOperation[] {
+  let result: TranscriptOperation[] | null = null;
+  for (let index = 1; index < operations.length; index++) {
+    const operation = operations[index];
+    const merged = mergeAdjacentTextAppends(result?.at(-1) ?? operations[index - 1], operation);
+    if (merged) {
+      result ??= operations.slice(0, index);
+      result[result.length - 1] = merged;
+    } else if (result) result.push(operation);
+  }
+  return result ?? operations;
+}
+
 function asObject(value: unknown): TranscriptObject | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as TranscriptObject : undefined;
 }
@@ -7,7 +34,7 @@ function asObject(value: unknown): TranscriptObject | undefined {
 /** Baseline encoding chunks large strings without duplicating accumulated text. */
 export function* appendTextParts(target: Omit<Extract<TranscriptOperation, { kind: 'text-append' }>, 'kind' | 'offset' | 'text'>, text: string, baseOffset = 0): Generator<TranscriptOperation> {
   for (let offset = 0; offset < text.length;) {
-    let end = Math.min(offset + 32 * 1024, text.length);
+    let end = Math.min(offset + APPEND_CHUNK_CHARS, text.length);
     const last = text.charCodeAt(end - 1);
     if (end < text.length && last >= 0xd800 && last <= 0xdbff) end -= 1;
     yield { kind: 'text-append', ...target, offset: baseOffset + offset, text: text.slice(offset, end) };
