@@ -26,11 +26,13 @@ export type DshCanonicalWebFailurePhase =
 type DshCanonicalWebErrorOptions = ErrorOptions & Readonly<{
   phase?: DshCanonicalWebFailurePhase;
   systemErrorClass?: string;
+  providerErrorCode?: string;
 }>;
 
 export class DshCanonicalWebError extends Error {
   readonly phase: DshCanonicalWebFailurePhase | undefined;
   readonly systemErrorClass: string | undefined;
+  readonly providerErrorCode: string | undefined;
 
   constructor(
     readonly code: DshCanonicalWebErrorCode,
@@ -41,6 +43,7 @@ export class DshCanonicalWebError extends Error {
     this.name = 'DshCanonicalWebError';
     this.phase = options?.phase;
     this.systemErrorClass = options?.systemErrorClass;
+    this.providerErrorCode = options?.providerErrorCode;
   }
 }
 

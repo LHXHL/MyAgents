@@ -195,11 +195,12 @@ function boundedResult(value: unknown, domains: ReturnType<typeof normalizeDomai
   const canonicalUrl = parsedUrl.toString();
   const fallbackTitle = parsedUrl.hostname || 'Web result';
   const titleValue = typeof item.title === 'string' && item.title.trim() ? item.title.trim() : fallbackTitle;
+  const title = /[<>]/u.test(titleValue) ? fallbackTitle : titleValue;
   const snippetValue = typeof item.snippet === 'string' && item.snippet.trim()
     ? item.snippet
     : typeof item.content === 'string' ? item.content : '';
   return Object.freeze({
-    title: titleValue.slice(0, 512),
+    title: title.slice(0, 512),
     url: canonicalUrl,
     snippet: snippetValue.slice(0, 8192),
   });
@@ -573,6 +574,17 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
       seen.add(result.url);
       return [result];
     });
+    const emptySnippets = results.filter(result => !result.snippet).length;
+    const malformedSourceTitles = rawResults.filter(value => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+      const title = (value as Record<string, unknown>).title;
+      return typeof title === 'string' && /[<>]/u.test(title);
+    }).length;
+    if (emptySnippets > 0 || malformedSourceTitles > 0) {
+      console.info(
+        `[dsh-web] search-quality route=${input.profile.providerRouteId} results=${results.length} emptySnippets=${emptySnippets} malformedSourceTitles=${malformedSourceTitles} citationExcerpts=${snippets.size}`,
+      );
+    }
     return searchOutput(
       input.query,
       results,

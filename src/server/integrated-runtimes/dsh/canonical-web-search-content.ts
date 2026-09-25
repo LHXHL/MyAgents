@@ -86,7 +86,7 @@ export function parseCompatibleServerSearchContent(value: unknown): Readonly<{
       throw new DshCanonicalWebError(
         'provider_search_failed',
         `Provider WebSearch failed${errorCode ? ` (${errorCode})` : ''}. ${guidance}`,
-        { phase: 'provider_response' },
+        { phase: 'provider_response', providerErrorCode: errorCode },
       );
     }
     const url = item.url ?? item.link;

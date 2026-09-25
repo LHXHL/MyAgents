@@ -1646,3 +1646,13 @@ unset global fallback. New file mode `0600` and the upstream malformed-image dia
 their documented behavior. The report's Gemini item was not rerun on this build; the local log
 shows only an earlier pre-build failure, while the current describe degradation unit test passes.
 Plan Mode remains outside this work by user decision.
+
+The packaged Dev App was then exercised through its visible DSH Agent chat with native
+`deepseek-flash`: a public TypeScript 5.9 query invoked exactly one WebSearch and returned ten
+results in 4.7 seconds. This confirms the end-to-end Agent path, while the earlier failed call's
+specific upstream code is unrecoverable from its old log. The live response exposed a separate
+quality defect: its first title was an XML fragment and every result lacked a snippet. The Host
+now replaces malformed search titles with the source hostname, retains genuinely absent snippets
+without inventing page content, and logs only counts of empty snippets, malformed source titles
+and citation excerpts. Future explicit Provider search failures record their validated error code
+separately from arbitrary response text; no query, URL, excerpt or credential enters that log.

@@ -247,6 +247,23 @@ describe('DshCanonicalWebProvider', () => {
     ] });
   });
 
+  it('uses the source hostname when a Provider search title is an XML fragment', async () => {
+    const provider = providerWith(vi.fn(async () => json({
+      stop_reason: 'end_turn', content: [{
+        type: 'web_search_tool_result', content: [{
+          url: 'https://devblogs.microsoft.com/typescript/feed/', title: '<dc:creator><', snippet: '',
+        }],
+      }], usage: { input_tokens: 1, output_tokens: 1 },
+    })));
+    await expect(provider.runSearch({
+      profile: zhipuAnthropicProfile, apiKey: 'synthetic-key', authType: 'both', query: 'fixture',
+      operationId: 'malformed-title', signal: new AbortController().signal,
+    })).resolves.toMatchObject({
+      results: [{ title: 'devblogs.microsoft.com', snippet: '' }],
+      citations: [{ title: 'devblogs.microsoft.com' }],
+    });
+  });
+
   it.each([anthropicProfile, zhipuAnthropicProfile])('accepts an empty server-search result for $provider', async (profile) => {
     const provider = providerWith(vi.fn(async () => json({
       stop_reason: 'end_turn',
@@ -294,6 +311,7 @@ describe('DshCanonicalWebProvider', () => {
       operationId: 'unknown-search', signal: new AbortController().signal,
     })).rejects.toMatchObject({
       code: 'provider_search_failed',
+      providerErrorCode: 'unavailable',
       message: expect.stringContaining('unavailable'),
     });
   });

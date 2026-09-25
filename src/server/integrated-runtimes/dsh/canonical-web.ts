@@ -170,7 +170,7 @@ export class DshCanonicalWebHost {
       const result = failure(error, context.signal);
       const authority = record(params.authority);
       console.warn(
-        `[dsh-web] tool=${tool} code=${String(result.code)} phase=${error instanceof DshCanonicalWebError ? error.phase ?? 'unknown' : 'unknown'} system=${error instanceof DshCanonicalWebError ? error.systemErrorClass ?? 'unknown' : 'unknown'} backend=${configuration.profile.api} route=${configuration.profile.providerRouteId} operation=${String(authority?.clientOperationId ?? 'unknown')} call=${String(authority?.callId ?? 'unknown')}`,
+        `[dsh-web] tool=${tool} code=${String(result.code)} phase=${error instanceof DshCanonicalWebError ? error.phase ?? 'unknown' : 'unknown'} system=${error instanceof DshCanonicalWebError ? error.systemErrorClass ?? 'unknown' : 'unknown'} providerError=${error instanceof DshCanonicalWebError ? error.providerErrorCode ?? 'unknown' : 'unknown'} backend=${configuration.profile.api} route=${configuration.profile.providerRouteId} operation=${String(authority?.clientOperationId ?? 'unknown')} call=${String(authority?.callId ?? 'unknown')}`,
       );
       return result;
     }
