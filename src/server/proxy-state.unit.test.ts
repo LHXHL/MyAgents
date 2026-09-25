@@ -160,6 +160,7 @@ describe('proxy-state provider scope', () => {
 
     const shellEnv = buildDshChildEnvironment({
       nodeExecutablePath: '/verified/node',
+      sessionCli: null,
       inheritedEnvironment: { HTTPS_PROXY: 'http://stale.proxy:9999' },
       proxyEnvironment: proxyState.getGeneralProxyEnvironment(),
     }).env;

@@ -1,5 +1,6 @@
 import { delimiter, dirname, isAbsolute, normalize } from "node:path";
 import { isCliProductSessionId } from '../../../shared/cli-session-scope';
+import { INTERNAL_CLI_TOKEN_ENV } from '../../../shared/externalCliCapabilities';
 import { PROXY_ENV_KEYS } from '../../../shared/proxyScope';
 
 const SAFE_INHERITED_ENVIRONMENT_KEYS = [
@@ -49,7 +50,7 @@ export function buildDshChildEnvironment(options: {
   commandDirectories?: readonly string[];
   inheritedEnvironment?: Readonly<NodeJS.ProcessEnv>;
   proxyEnvironment?: Readonly<NodeJS.ProcessEnv>;
-  sessionRoute?: Readonly<{ productSessionId: string; sidecarPort: number }>;
+  sessionCli: Readonly<{ productSessionId: string; sidecarPort: number; internalCliToken: string }> | null;
 }): DshChildEnvironment {
   if (!isAbsolute(options.nodeExecutablePath)) {
     throw new Error("DSH bundled Node path must be absolute");
@@ -66,14 +67,20 @@ export function buildDshChildEnvironment(options: {
   const env: NodeJS.ProcessEnv = {
     PATH: uniquePathEntries.join(delimiter),
   };
-  if (options.sessionRoute !== undefined) {
-    const { productSessionId, sidecarPort } = options.sessionRoute;
+  if (options.sessionCli !== null) {
+    const { productSessionId, sidecarPort, internalCliToken } = options.sessionCli;
     if (!isCliProductSessionId(productSessionId)
       || !Number.isSafeInteger(sidecarPort) || sidecarPort < 1 || sidecarPort > 65_535) {
       throw new Error('DSH Product Session CLI route is missing or invalid');
     }
+    if (safeEnvironmentValue(internalCliToken)?.trim() !== internalCliToken) {
+      throw new Error('DSH internal CLI capability is missing or invalid');
+    }
+    // The Session owner supplies this App-lifecycle capability explicitly;
+    // ambient CLI credentials must never select the DSH command surface.
     env.MYAGENTS_PORT = String(sidecarPort);
     env.MYAGENTS_SESSION_ID = productSessionId;
+    env[INTERNAL_CLI_TOKEN_ENV] = internalCliToken;
   }
   const inheritedKeys: string[] = [];
   for (const key of SAFE_INHERITED_ENVIRONMENT_KEYS) {

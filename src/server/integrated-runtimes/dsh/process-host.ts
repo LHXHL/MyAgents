@@ -8,10 +8,7 @@ import {
 } from "node:child_process";
 
 import dshLock from "../../../shared/integrated-runtimes/dsh-lock.json";
-import {
-  buildDshChildEnvironment,
-  type DshChildEnvironment,
-} from "./child-environment";
+import type { DshChildEnvironment } from "./child-environment";
 import {
   loadDshProtocolRuntime,
   type LoadedDshProtocolRuntime,
@@ -71,9 +68,7 @@ export type DshRuntimeProcessHostOptions = Readonly<{
   initialize: DshInitializeParams;
   hostHandlers: DshHostRequestHandlers;
   notificationHandlers: DshRuntimeNotificationHandlers;
-  commandDirectories?: readonly string[];
-  inheritedEnvironment?: Readonly<NodeJS.ProcessEnv>;
-  childEnvironment?: DshChildEnvironment;
+  childEnvironment: DshChildEnvironment;
   handshakeTimeoutMs?: number;
   shutdownGraceMs?: number;
   onStderrLine?: (redactedLine: string) => void;
@@ -204,15 +199,7 @@ export class DshRuntimeProcessHost {
         "DSH stderr forwarding requires an explicit redactor and sink",
       );
     }
-    this.childEnvironment = options.childEnvironment ?? buildDshChildEnvironment({
-      nodeExecutablePath: options.installation.nodeExecutablePath,
-      ...(options.commandDirectories
-        ? { commandDirectories: options.commandDirectories }
-        : {}),
-      ...(options.inheritedEnvironment
-        ? { inheritedEnvironment: options.inheritedEnvironment }
-        : {}),
-    });
+    this.childEnvironment = options.childEnvironment;
   }
 
   /** Project only names and credential-free proxy endpoints from the sealed environment. */

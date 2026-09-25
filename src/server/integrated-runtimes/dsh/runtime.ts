@@ -25,6 +25,7 @@ import {
   type RuntimeType,
 } from '../../../shared/types/runtime';
 import { isConcreteProviderRoute } from '../../../shared/providerRoute';
+import { INTERNAL_CLI_TOKEN_ENV } from '../../../shared/externalCliCapabilities';
 import { getSessionMetadata } from '../../SessionStore';
 import { fingerprintDshNativeInput } from './input-identity';
 import {
@@ -803,6 +804,7 @@ export class DshRuntime implements AgentRuntime {
       resources.state = 'verification_failed';
       await verifyDshHandoffInstallation(installation, buildDshChildEnvironment({
         nodeExecutablePath: installation.nodeExecutablePath, inheritedEnvironment: process.env,
+        sessionCli: null,
       }));
       resources.state = 'verified';
       resources.installedIdentity = { ...expectedIdentity };
@@ -858,7 +860,11 @@ export class DshRuntime implements AgentRuntime {
       commandDirectories,
       inheritedEnvironment: process.env,
       proxyEnvironment: getGeneralProxyEnvironment(),
-      sessionRoute: { productSessionId: options.sessionId, sidecarPort: getSidecarPort() },
+      sessionCli: {
+        productSessionId: options.sessionId,
+        sidecarPort: getSidecarPort(),
+        internalCliToken: process.env[INTERNAL_CLI_TOKEN_ENV] ?? '',
+      },
     });
     const environmentWithoutDigest = executionEnvironment(
       workspacePath,

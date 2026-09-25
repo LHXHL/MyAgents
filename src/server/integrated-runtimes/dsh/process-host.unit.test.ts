@@ -159,9 +159,14 @@ const notificationHandlers: DshRuntimeNotificationHandlers = {
   "host/interaction/cancel": vi.fn(),
 };
 
-function harness(result = initializeResult(), proxyEnvironment?: NodeJS.ProcessEnv) {
+function harness(
+  result = initializeResult(),
+  proxyEnvironment?: NodeJS.ProcessEnv,
+  sessionCli?: { productSessionId: string; sidecarPort: number; internalCliToken: string },
+) {
   const order: string[] = [];
   const child = new FakeChild();
+  let spawnedEnvironment: NodeJS.ProcessEnv | undefined;
   let registeredHostHandlers: DshHostRequestHandlers | undefined;
   let registeredNotifications: DshRuntimeNotificationHandlers | undefined;
   const peer: DshJsonRpcPeer = {
@@ -225,17 +230,19 @@ function harness(result = initializeResult(), proxyEnvironment?: NodeJS.ProcessE
   const failures: Error[] = [];
   const host = new DshRuntimeProcessHost({
     installation,
-    ...(proxyEnvironment ? { childEnvironment: buildDshChildEnvironment({
-      nodeExecutablePath: installation.nodeExecutablePath, inheritedEnvironment: {}, proxyEnvironment,
-    }) } : {}),
+    childEnvironment: buildDshChildEnvironment({
+      nodeExecutablePath: installation.nodeExecutablePath,
+      inheritedEnvironment: {
+        LANG: "en_US.UTF-8",
+        ANTHROPIC_API_KEY: "credential-canary",
+        NODE_OPTIONS: "--require=/tmp/inject.js",
+      },
+      proxyEnvironment,
+      sessionCli: sessionCli ?? null,
+    }),
     initialize: initialize(),
     hostHandlers: hostHandlers(),
     notificationHandlers,
-    inheritedEnvironment: {
-      LANG: "en_US.UTF-8",
-      ANTHROPIC_API_KEY: "credential-canary",
-      NODE_OPTIONS: "--require=/tmp/inject.js",
-    },
     assertHandoffVerification: async () => {
       order.push("assert-handoff");
     },
@@ -243,7 +250,8 @@ function harness(result = initializeResult(), proxyEnvironment?: NodeJS.ProcessE
       order.push("load-protocol");
       return protocolRuntime;
     },
-    spawnRuntime: () => {
+    spawnRuntime: (_command, _args, options) => {
+      spawnedEnvironment = options.env;
       order.push("spawn-runtime");
       return child as never;
     },
@@ -259,6 +267,9 @@ function harness(result = initializeResult(), proxyEnvironment?: NodeJS.ProcessE
     order,
     diagnostics,
     failures,
+    get spawnedEnvironment() {
+      return spawnedEnvironment;
+    },
     get registeredHostHandlers() {
       return registeredHostHandlers;
     },
@@ -269,6 +280,23 @@ function harness(result = initializeResult(), proxyEnvironment?: NodeJS.ProcessE
 }
 
 describe("DSH RuntimeProcessHost", () => {
+  it("starts a Session child with the App-owned internal CLI capability without exposing its value in diagnostics", async () => {
+    const test = harness(initializeResult(), undefined, {
+      productSessionId: "product-session-1",
+      sidecarPort: 31417,
+      internalCliToken: "app-capability",
+    });
+    await test.host.start();
+    expect(test.spawnedEnvironment).toMatchObject({
+      MYAGENTS_PORT: "31417",
+      MYAGENTS_SESSION_ID: "product-session-1",
+      MYAGENTS_INTERNAL_CLI_TOKEN: "app-capability",
+    });
+    expect(test.spawnedEnvironment?.MYAGENTS_API_TOKEN).toBeUndefined();
+    expect(JSON.stringify(test.host.diagnosticSnapshot)).not.toContain("app-capability");
+    await test.host.stop();
+  });
+
   it("reports sealed proxy endpoints without credentials, paths or query values", () => {
     const test = harness(undefined, { HTTPS_PROXY: 'http://private-user:private-pass@127.0.0.1:3128/private-path?secret=value', NO_PROXY: 'localhost' });
     expect(test.host.diagnosticSnapshot.proxy).toMatchObject({

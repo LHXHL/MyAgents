@@ -100,7 +100,7 @@ async function createNativeHostFixture(
     nodeExecutablePath: installation.nodeExecutablePath, commandDirectories: ["/bin"],
     inheritedEnvironment: { HOME: temporaryRoot, USERPROFILE: temporaryRoot, LANG: 'en_US.UTF-8' },
     proxyEnvironment,
-    ...(route === undefined ? {} : { sessionRoute: route }),
+    sessionCli: route === undefined ? null : { ...route, internalCliToken: 'fixture-capability' },
   });
   // A generated local test CA is trusted only by this synthetic child process.
   const childEnvironment = testCertificateAuthority === undefined ? launchEnvironment : {
@@ -184,7 +184,6 @@ async function createNativeHostFixture(
       hostHandlers: requests,
       notificationHandlers: notifications,
       childEnvironment,
-      commandDirectories: ["/bin"],
       handshakeTimeoutMs: 60_000,
       shutdownGraceMs: 10_000,
       onStderrLine: (line) => stderr.push(line),

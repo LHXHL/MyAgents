@@ -91,6 +91,8 @@ CLI 脚本只有一条执行 authority：`cli.rs` 使用当前安装包的 bundl
 
 App 启动时生成进程生命周期内的内部 CLI capability，并只注入 Global/Session Sidecar、集成终端和受管 Agent Runtime。DSH generation 由 Host 显式注入当前 `MYAGENTS_PORT`、Product `MYAGENTS_SESSION_ID` 与内部 capability；不继承陈旧 routing 值。普通终端不会获得该 capability：它通过薄启动器发现 Global Host 后，必须携带设置页生成的 `MYAGENTS_API_TOKEN`，并且只能进入静态公开清单。端口、Session ID、`--port` 和 payload 自报来源都不是内部身份。
 
+DSH 的 `buildDshChildEnvironment()` 要求调用方显式选择 `sessionCli`：真实 Session 必须同时提供端口、Product Session ID 和 App 内部 capability；仅安装校验、诊断等无 Session 调用传 `null`。`DshRuntimeProcessHost` 必须接收这份已构造的环境，不自行回退到无 Session 身份的环境。缺失或无效的内部 capability 在启动边界直接失败，不能退化为外部 CLI。该白名单不从 ambient env 拾取旧 CLI 身份，也不向 DSH 传外部 `MYAGENTS_API_TOKEN`。
+
 外部访问默认关闭。Rust App owner 在 `config.json.externalCliAccess` 中锁内管理开关、单个可恢复 token 与创建时间；普通 Renderer `AppConfig` 投影和通用 `config get/set` 不暴露或修改这份私有 envelope。设置 → 外部调用是唯一明文显示、复制、重置和启停入口。关闭或重置只影响后续准入，已经准入的业务继续按各自 owner 完成。
 
 设置页返回当前平台的 launcher、外部指南绝对路径与瞬时 `skillReady`，并生成一个“发送给其他 AI 的 Prompt”。页面展示使用 `<token>` 占位；只有用户主动点击复制且外部调用已开启、token 可用时，复制内容才即时注入真实 `MYAGENTS_API_TOKEN`。指南目录位于 `~/.myagents/skills` 之外，避免进入 global skill inventory 或投影到 Workspace。Rust 在 App 启动预检及设置 owner 命令中按内置字节幂等收敛该文件；内容过期会由当前 App 版本覆盖，父目录若是 symlink / Windows reparse point 则 fail closed。指南同步失败只令 `skillReady=false`，不阻断策略读取、关闭或 token 重置。
