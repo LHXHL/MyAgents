@@ -4,7 +4,9 @@ use myagents_media_worker::diarization::{
     SourceWindowBuffer, WindowObservation,
 };
 use myagents_media_worker::model_pack_source::verify_installed_pack;
-use myagents_media_worker::native_adapter::{AsrEngine, VadEngine};
+use myagents_media_worker::native_adapter::{
+    AsrEngine, NativeAdapterError, NativeStatus, VadEngine,
+};
 use myagents_media_worker::native_bundle::{LoadedNativeAdapter, verify_native_bundle};
 use myagents_media_worker::protocol::record_timeline::CaptureTimeQuality;
 use myagents_media_worker::protocol::{
@@ -287,7 +289,7 @@ fn run_record_diarization(
                     )
                     .err();
                 })
-                .map_err(|_| "SPEECH_INFERENCE_FAILED")?;
+                .map_err(|_| "SPEECH_DIARIZATION_FAILED")?;
             if let Some(error) = heartbeat_error {
                 return Err(error);
             }
@@ -406,7 +408,7 @@ fn run_record_diarization(
                             )
                             .err();
                         })
-                        .map_err(|_| "SPEECH_INFERENCE_FAILED")?;
+                        .map_err(|_| "SPEECH_DIARIZATION_FAILED")?;
                     if let Some(error) = heartbeat_error {
                         return Err(error);
                     }
@@ -574,7 +576,7 @@ fn run_record_backfill(
         checkpoint.analysis_sample = stream_samples;
     }
     for track in &mut tracks {
-        track.vad.flush().map_err(|_| "SPEECH_INFERENCE_FAILED")?;
+        track.vad.flush().map_err(|_| "SPEECH_VAD_FAILED")?;
         emitted_segments = emitted_segments.saturating_add(drain_source_vad(
             track,
             &mut asr,
@@ -693,7 +695,7 @@ fn run_attachment_asr(
         track
             .vad
             .accept(chunk.samples())
-            .map_err(|_| "SPEECH_INFERENCE_FAILED")?;
+            .map_err(|_| "SPEECH_VAD_FAILED")?;
         checkpoints[0].analysis_sample = checkpoints[0]
             .analysis_sample
             .checked_add(chunk.samples().len() as u64)
@@ -722,7 +724,7 @@ fn run_attachment_asr(
     if decoder.output_samples() != checkpoints[0].analysis_sample {
         return Err("SPEECH_CORRUPT_MEDIA");
     }
-    track.vad.flush().map_err(|_| "SPEECH_INFERENCE_FAILED")?;
+    track.vad.flush().map_err(|_| "SPEECH_VAD_FAILED")?;
     emitted_segments = emitted_segments.saturating_add(drain_source_vad(
         &mut track,
         &mut asr,
@@ -883,9 +885,9 @@ fn accept_source_chunk(
         if first_sample < track.end_sample {
             return Err("SPEECH_CAPTURE_TIME_INVALID");
         }
-        track.vad.flush().map_err(|_| "SPEECH_INFERENCE_FAILED")?;
+        track.vad.flush().map_err(|_| "SPEECH_VAD_FAILED")?;
         emitted = drain_source_vad(track, asr, identity, revision, writer)?;
-        track.vad.reset().map_err(|_| "SPEECH_INFERENCE_FAILED")?;
+        track.vad.reset().map_err(|_| "SPEECH_VAD_FAILED")?;
         track.has_input = false;
     }
     if chunk.quality == CaptureTimeQuality::Gap || chunk.echo_reference.is_some() {
@@ -899,7 +901,7 @@ fn accept_source_chunk(
     track
         .vad
         .accept(&mono[(first_sample - chunk.start_sample) as usize..])
-        .map_err(|_| "SPEECH_INFERENCE_FAILED")?;
+        .map_err(|_| "SPEECH_VAD_FAILED")?;
     track.end_sample = chunk.end_sample();
     track.has_input = true;
     Ok(emitted.saturating_add(drain_source_vad(track, asr, identity, revision, writer)?))
@@ -931,7 +933,11 @@ fn drain_source_vad(
 ) -> Result<u32, &'static str> {
     let mut emitted = 0_u32;
     loop {
-        let Some(mut segment) = track.vad.pop().map_err(|_| "SPEECH_INFERENCE_FAILED")? else {
+        let Some(mut segment) = track.vad.pop().map_err(|error| match error {
+            NativeAdapterError::InvalidOutput => "SPEECH_VAD_OUTPUT_INVALID",
+            _ => "SPEECH_VAD_FAILED",
+        })?
+        else {
             break;
         };
         let start_sample = track
@@ -943,11 +949,11 @@ fn drain_source_vad(
             .ok_or("SPEECH_RESOURCE_LIMIT")?;
         if end_sample > track.end_sample {
             segment.samples.zeroize();
-            return Err("SPEECH_INFERENCE_FAILED");
+            return Err("SPEECH_VAD_OUTPUT_INVALID");
         }
         let transcript = asr.transcribe(&segment.samples);
         segment.samples.zeroize();
-        let mut transcript = transcript.map_err(|_| "SPEECH_INFERENCE_FAILED")?;
+        let mut transcript = transcript.map_err(map_asr_error)?;
         if transcript.text.trim().is_empty() {
             transcript.zeroize_sensitive();
             continue;
@@ -979,6 +985,15 @@ fn drain_source_vad(
     Ok(emitted)
 }
 
+fn map_asr_error(error: NativeAdapterError) -> &'static str {
+    match error {
+        NativeAdapterError::Native(NativeStatus::ResourceLimit) => "SPEECH_ASR_RESOURCE_LIMIT",
+        NativeAdapterError::InvalidOutput
+        | NativeAdapterError::Native(NativeStatus::InvalidArgument) => "SPEECH_ASR_OUTPUT_INVALID",
+        _ => "SPEECH_ASR_FAILED",
+    }
+}
+
 fn map_attachment_decode_error(error: AttachmentAudioError) -> &'static str {
     match error {
         AttachmentAudioError::SourceUnavailable => "SPEECH_SOURCE_UNAVAILABLE",
@@ -1004,7 +1019,7 @@ fn map_diarization_error(error: DiarizationError) -> &'static str {
         | DiarizationError::DuplicateLocalSpeaker
         | DiarizationError::InvalidEmbedding
         | DiarizationError::InvalidSegment
-        | DiarizationError::InvalidClusterLabels => "SPEECH_INFERENCE_FAILED",
+        | DiarizationError::InvalidClusterLabels => "SPEECH_DIARIZATION_FAILED",
     }
 }
 
@@ -1115,7 +1130,7 @@ fn run_live(
                             writer,
                         )?);
                         for track in &mut transcription {
-                            track.vad.flush().map_err(|_| "SPEECH_INFERENCE_FAILED")?;
+                            track.vad.flush().map_err(|_| "SPEECH_VAD_FAILED")?;
                             emitted_segments = emitted_segments.saturating_add(drain_source_vad(
                                 track,
                                 &mut asr,
@@ -1123,7 +1138,7 @@ fn run_live(
                                 &mut revision,
                                 writer,
                             )?);
-                            track.vad.reset().map_err(|_| "SPEECH_INFERENCE_FAILED")?;
+                            track.vad.reset().map_err(|_| "SPEECH_VAD_FAILED")?;
                             track.has_input = false;
                         }
                         write_response(
@@ -1148,7 +1163,7 @@ fn run_live(
                             writer,
                         )?);
                         for track in &mut transcription {
-                            track.vad.flush().map_err(|_| "SPEECH_INFERENCE_FAILED")?;
+                            track.vad.flush().map_err(|_| "SPEECH_VAD_FAILED")?;
                             emitted_segments = emitted_segments.saturating_add(drain_source_vad(
                                 track,
                                 &mut asr,

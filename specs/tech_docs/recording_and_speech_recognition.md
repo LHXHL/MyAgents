@@ -43,6 +43,7 @@ Renderer → Tauri 的普通命令属于控制面。Worker 使用私有 stdin/st
 - Ogg archive/test 与 bundled libopus 共享固定内部 profile。Worker reader 保留分配前 packet 上限、连续 page sequence 与 fail-closed 校验；
 - Opus 浮点解码和附件 sinc 重采样允许产生正常的 full-scale overshoot；两条 decoder 都在输出边界将有限 PCM 限幅到 `[-1, 1]` 后交给推理。NaN/Inf 仍是解码错误，不能当作静音吞掉。
 - sherpa 的 `max_speech_duration` 只是促使端点出现的软参数。native VAD adapter 按模型窗口喂入，基于连续 detected speech 预算强制 flush，并预留 onset lookback；静音、自然端点、pause flush 和 reset 清除预算，保证长段在达到 ASR 硬上限前形成有界结果。
+- 锁定的 sherpa-onnx 1.13.6 在强制 `Flush` 排空 lookback 后，后续短静音窗口可能让 VAD 的 `end - start_` 为负，进而向 `CircularBuffer::Get/Pop` 传入非法长度。speech builder 对精确 SHA 校验后的上游源码施加局部补丁：仅在端点尚未超过起点时继续积累窗口；达到有效端点后仍走原有分段路径。补丁不可匹配时构建失败，不静默改写未知上游版本。#609 的私有 104 秒失败样本和重复形成的 208 秒样本已在本地 bundle 验证完整转写，原始音频与正文不进入仓库或日志。
 - diarization 模型推理属于 sherpa-onnx，受控 source patch 暴露原始 chunk/slot 活动、独占干净语音与可缺失 embedding；局部和全局融合复用 native complete-link，无 HDBSCAN noise 吸附、第二个 embedding extractor 或固定人数假设；
 - transcript revision 与 recording lifecycle 共享 `DurableRecordJournal` 的 regular-file、identity/schema、sequence/checksum、单行上限、durable append 与 torn-tail repair。
 

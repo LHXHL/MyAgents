@@ -6443,6 +6443,21 @@ mod tests {
         write_control_frame, Checkpoint, PcmStreamCheckpoint, WorkerMetrics, WorkerResponse,
     };
 
+    #[test]
+    fn deterministic_model_stage_failures_do_not_repeat_the_entire_recording() {
+        for code in [
+            "SPEECH_ASR_FAILED",
+            "SPEECH_ASR_RESOURCE_LIMIT",
+            "SPEECH_ASR_OUTPUT_INVALID",
+            "SPEECH_VAD_FAILED",
+            "SPEECH_VAD_OUTPUT_INVALID",
+            "SPEECH_DIARIZATION_FAILED",
+        ] {
+            assert!(!worker_code_retryable(code), "{code}");
+        }
+        assert!(worker_code_retryable("SPEECH_WORKER_DISCONNECTED"));
+    }
+
     fn fixture_job(
         job_id: &str,
         kind: SpeechJobKind,

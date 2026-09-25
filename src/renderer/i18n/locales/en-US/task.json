@@ -139,6 +139,7 @@
     "transcriptFailedPublishHint": "The transcript could not be saved. Check disk space and write permissions, then retry.",
     "transcriptFailedTimeoutHint": "Local transcription timed out. Reduce other running tasks, then retry.",
     "transcriptFailedInferenceHint": "Local speech processing failed. Retry; if it persists, check the speech recognition tool and report the error code.",
+    "transcriptFailedResourceHint": "Speech recognition reached this device's resource limit. Transcribe shorter sections and report the error code.",
     "transcriptFailureDetails": "Error details",
     "rerunTranscription": "Transcribe again",
     "retryTranscription": "Retry transcription",

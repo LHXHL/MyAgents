@@ -151,8 +151,15 @@ function transcriptionFailureHint(code?: string): string {
     case 'SPEECH_DEADLINE_EXCEEDED':
       return 'records.transcriptFailedTimeoutHint';
     case 'SPEECH_INFERENCE_FAILED':
+    case 'SPEECH_ASR_FAILED':
+    case 'SPEECH_ASR_OUTPUT_INVALID':
+    case 'SPEECH_VAD_FAILED':
+    case 'SPEECH_VAD_OUTPUT_INVALID':
+    case 'SPEECH_DIARIZATION_FAILED':
     case 'SPEECH_MODEL_LOAD_FAILED':
       return 'records.transcriptFailedInferenceHint';
+    case 'SPEECH_ASR_RESOURCE_LIMIT':
+      return 'records.transcriptFailedResourceHint';
     default:
       return 'records.transcriptFailedHint';
   }
