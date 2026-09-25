@@ -1217,6 +1217,53 @@ describe('myagents CLI Space issue contracts', () => {
     }
   });
 
+  it('renders Space identity, assignee ids, and effective project Skill state', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      printResult('space', 'whoami', { success: true, data: {
+        space: { slug: 'myagents', name: 'MyAgents' },
+        actor: { type: 'registered_agent', id: 'agent-1', name: 'Mino', source: 'registered_agent_session',
+          owner: { name: 'Ethan', role: 'owner' } },
+      } }, false);
+      printResult('space', 'assignee', { success: true, data: { items: [
+        { assigneeId: 'agent:agent-1', name: 'Mino', isSelf: true },
+      ] } }, false, {}, ['list']);
+      printResult('skill', 'disable', { success: true, data: {
+        name: 'nano-pdf', scope: 'project', enabled: false,
+      } }, false);
+      const output = log.mock.calls.map(([line]) => String(line)).join('\n');
+      expect(output).toContain('registered_agent:agent-1');
+      expect(output).toContain('Binding: registered_agent_session');
+      expect(output).toContain('agent:agent-1');
+      expect(output).toContain('Skill nano-pdf disabled');
+      expect(output).toContain('scope: project');
+    } finally { log.mockRestore(); }
+  });
+
+  it('shows structured results for commands without a dedicated text printer', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      printResult('space', 'issue', { success: true, data: { items: [
+        { id: 'issue-1', state: 'todo' },
+      ] } }, false, {}, ['list']);
+      const output = log.mock.calls.map(([line]) => String(line)).join('\n');
+      expect(output).toContain('issue-1');
+      expect(output).toContain('todo');
+    } finally { log.mockRestore(); }
+  });
+
+  it('labels permission modes as capabilities of the selected runtime', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      printResult('runtime', 'describe', { success: true, data: {
+        runtime: 'dsh', displayName: 'DSH', installed: true,
+        permissionModes: [{ value: 'auto', label: 'Auto' }],
+      } }, false);
+      expect(log.mock.calls.map(([line]) => String(line)).join('\n'))
+        .toContain('Permission modes supported by this runtime:');
+    } finally { log.mockRestore(); }
+  });
+
   it('shows the updated Task identity and authoritative state in human output', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     try {

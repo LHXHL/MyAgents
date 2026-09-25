@@ -6402,6 +6402,13 @@ CANONICAL COMMANDS
   exit --reason <text>              End the current eligible scheduled Task from inside it
   delete <taskId>                   Delete after explicit user confirmation
 
+DETECTOR OUTCOMES
+  quiet          No Activation Event was emitted; checkpoint may still advance.
+  activate       A new event.id was accepted and can dispatch the AI action.
+  deduplicated   The emitted event.id was already handled, so AI is not woken
+                 again. The checkpoint can still advance after reset-checkpoint.
+  error          Detector failed; inspect task get/check-now for the cause.
+
 SCHEDULE CREATION
   --executionMode scheduled --dispatchAt <ISO-with-offset>
   --executionMode recurring --intervalMinutes <n>             (minimum 5)

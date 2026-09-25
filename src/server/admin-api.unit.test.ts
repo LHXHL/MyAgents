@@ -455,6 +455,8 @@ describe('admin-api help registry', () => {
     expect(taskText).toContain('always');
     expect(taskText).toContain('command Detector');
     expect(taskText).toContain('myagents task exit');
+    expect(taskText).toContain('deduplicated');
+    expect(taskText).toContain('event.id was already handled');
     expect(cron.success).toBe(true);
     expect(cronText).toContain('myagents task readme');
     expect(cronText).toContain('Compatibility');

@@ -1058,6 +1058,26 @@ export function printResult(
     }
     return;
   }
+  if (group === 'space' && action === 'whoami') {
+    const data = (result.data as Record<string, unknown> | undefined) ?? {};
+    const space = objectValue(data.space) ?? {};
+    const actor = objectValue(data.actor) ?? {};
+    console.log(`Space: ${String(space.name ?? space.slug ?? '(unknown)')} (${String(space.slug ?? 'unknown')})`);
+    console.log(`Actor: ${String(actor.name ?? actor.id ?? '(unknown)')} (${String(actor.type ?? 'unknown')}:${String(actor.id ?? 'unknown')})`);
+    if (actor.role) console.log(`Role: ${String(actor.role)}`);
+    if (actor.source) console.log(`Binding: ${String(actor.source)}`);
+    const owner = objectValue(actor.owner);
+    if (owner?.name) console.log(`Owner: ${String(owner.name)} (${String(owner.role ?? 'unknown')})`);
+    return;
+  }
+  if (group === 'space' && action === 'assignee' && (rest[0] ?? 'list') === 'list') {
+    const items = (result.data as { items?: Array<Record<string, unknown>> } | undefined)?.items ?? [];
+    console.log(`Assignees (${items.length}):`);
+    for (const item of items) {
+      console.log(`  ${String(item.assigneeId ?? '(unknown)')}  ${String(item.name ?? '')}${item.isSelf === true ? '  (self)' : ''}`.trimEnd());
+    }
+    return;
+  }
   if (group === 'skill' && action === 'list') {
     printSkillList(result.data as Array<Record<string, unknown>>, { verbose: flags.verbose === true });
     return;
@@ -1070,6 +1090,12 @@ export function printResult(
   }
   if (group === 'skill' && action === 'info') {
     printSkillInfo(result.data as Record<string, unknown>);
+    return;
+  }
+  if (group === 'skill' && (action === 'enable' || action === 'disable')) {
+    const data = (result.data as Record<string, unknown> | undefined) ?? {};
+    console.log(`✓ Skill ${String(data.name ?? '(unknown)')} ${data.enabled === true ? 'enabled' : 'disabled'}`);
+    if (data.scope) console.log(`  scope: ${String(data.scope)}`);
     return;
   }
   if (group === 'skill' && action === 'sync') {
@@ -1347,11 +1373,17 @@ export function printResult(
     }
   }
 
-  // Generic success output
+  // Every successful command with structured data needs a useful text result.
+  // Specific printers above keep their concise format; this fallback also
+  // covers newly added leaf commands until they gain one.
   const symbol = '\u2713'; // ✓
   const hint = result.hint ? ` ${result.hint}` : '';
-  const id = (result.data as Record<string, unknown>)?.id ?? '';
-  console.log(`${symbol} ${action} ${id}${hint}`);
+  const data = result.data;
+  const id = data !== null && typeof data === 'object' && !Array.isArray(data)
+    ? (data as Record<string, unknown>).id
+    : undefined;
+  console.log(`${symbol} ${action}${typeof id === 'string' && id ? ` ${id}` : ''}${hint}`);
+  if (data !== undefined && data !== null) console.log(JSON.stringify(data, null, 2));
 }
 
 function formatDetectorOccurredAt(value: unknown): string {
@@ -1611,7 +1643,7 @@ function printRuntimeDescribe(data: Record<string, unknown>): void {
 
   const modes = (data.permissionModes as Array<Record<string, unknown>>) ?? [];
   console.log('');
-  console.log('Permission modes:');
+  console.log('Permission modes supported by this runtime:');
   if (modes.length === 0) {
     console.log('  (runtime uses the built-in PermissionMode enum; set via --permissionMode)');
   } else {
