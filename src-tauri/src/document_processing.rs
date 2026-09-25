@@ -2190,6 +2190,18 @@ fn source_version(metadata: &fs::Metadata) -> SourceVersion {
     }
 }
 
+fn unsafe_publish_path(
+    stage: &'static str,
+    error_kind: Option<std::io::ErrorKind>,
+) -> &'static str {
+    crate::ulog_warn!(
+        "[document] publish path rejected stage={} error_kind={:?}",
+        stage,
+        error_kind,
+    );
+    "DOCUMENT_OUTPUT_PATH_UNSAFE"
+}
+
 fn publish(
     staging: &Path,
     destination: &Path,
@@ -2198,15 +2210,18 @@ fn publish(
     output_root_identity: &same_file::Handle,
     deadline: std::time::Instant,
 ) -> Result<(), &'static str> {
-    let root = destination.parent().ok_or("DOCUMENT_OUTPUT_PATH_UNSAFE")?;
-    reject_link_ancestors(root, false).map_err(|_| "DOCUMENT_OUTPUT_PATH_UNSAFE")?;
-    let current_identity =
-        same_file::Handle::from_path(root).map_err(|_| "DOCUMENT_OUTPUT_PATH_UNSAFE")?;
+    let root = destination
+        .parent()
+        .ok_or_else(|| unsafe_publish_path("destination_parent", None))?;
+    reject_link_ancestors(root, false)
+        .map_err(|_| unsafe_publish_path("output_ancestors", None))?;
+    let current_identity = same_file::Handle::from_path(root)
+        .map_err(|error| unsafe_publish_path("output_identity_open", Some(error.kind())))?;
     if &current_identity != output_root_identity {
-        return Err("DOCUMENT_OUTPUT_PATH_UNSAFE");
+        return Err(unsafe_publish_path("output_identity_changed", None));
     }
     validate_staging_identity(staging, staging_identity, staging_token)
-        .map_err(|_| "DOCUMENT_OUTPUT_PATH_UNSAFE")?;
+        .map_err(|_| unsafe_publish_path("staging_identity", None))?;
     if std::time::Instant::now() >= deadline {
         return Err("DOCUMENT_TIMEOUT");
     }
@@ -2227,7 +2242,7 @@ fn publish(
     }
     if validate_staging_identity(destination, staging_identity, staging_token).is_err() {
         quarantine_rejected_path(destination, staging, staging_identity, staging_token);
-        return Err("DOCUMENT_OUTPUT_PATH_UNSAFE");
+        return Err(unsafe_publish_path("published_staging_identity", None));
     }
     if std::time::Instant::now() >= deadline {
         let _ = rollback_published_artifact_durable(
@@ -2238,11 +2253,11 @@ fn publish(
         );
         return Err("DOCUMENT_TIMEOUT");
     }
-    let published_identity =
-        same_file::Handle::from_path(destination).map_err(|_| "DOCUMENT_OUTPUT_PATH_UNSAFE")?;
+    let published_identity = same_file::Handle::from_path(destination)
+        .map_err(|error| unsafe_publish_path("published_identity_open", Some(error.kind())))?;
     if &published_identity != staging_identity {
         quarantine_rejected_path(destination, staging, staging_identity, staging_token);
-        return Err("DOCUMENT_OUTPUT_PATH_UNSAFE");
+        return Err(unsafe_publish_path("published_identity_changed", None));
     }
     if std::time::Instant::now() >= deadline {
         let _ = rollback_published_artifact_durable(
@@ -2502,7 +2517,14 @@ fn reject_link_ancestors(path: &Path, allow_missing: bool) -> Result<(), Documen
     let mut current = PathBuf::new();
     for component in path.components() {
         match component {
-            Component::Prefix(_) | Component::RootDir => current.push(component.as_os_str()),
+            // A Windows prefix such as `\\?\C:` is not a complete path until
+            // RootDir is appended. Inspecting that prefix alone fails even
+            // though the eventual canonical output directory is safe.
+            Component::Prefix(_) => {
+                current.push(component.as_os_str());
+                continue;
+            }
+            Component::RootDir => current.push(component.as_os_str()),
             Component::Normal(part) => current.push(part),
             _ => {
                 return Err(DocumentServiceError::new(
@@ -3969,6 +3991,38 @@ mod tests {
             fs::read_to_string(staging.join(STAGING_OWNER_MARKER)).unwrap(),
             token
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn publish_accepts_canonical_windows_verbatim_output_root() {
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("output");
+        fs::create_dir(&output).unwrap();
+        let canonical = fs::canonicalize(&output).unwrap();
+        assert!(matches!(
+            canonical.components().next(),
+            Some(Component::Prefix(_))
+        ));
+        reject_link_ancestors(&canonical, false).unwrap();
+
+        let staging = canonical.join("staging");
+        let destination = canonical.join("published");
+        fs::create_dir(&staging).unwrap();
+        let token = "f".repeat(32);
+        write_marker_file(&staging.join(STAGING_OWNER_MARKER), &token).unwrap();
+        let staging_identity = same_file::Handle::from_path(&staging).unwrap();
+        let root_identity = same_file::Handle::from_path(&canonical).unwrap();
+        publish(
+            &staging,
+            &destination,
+            &staging_identity,
+            &token,
+            &root_identity,
+            std::time::Instant::now() + std::time::Duration::from_secs(60),
+        )
+        .unwrap();
+        assert!(destination.is_dir());
     }
 
     #[test]
