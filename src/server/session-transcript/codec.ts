@@ -4,8 +4,10 @@ import {
   applyTranscriptBatch,
   createTranscriptProjection,
   type TranscriptOperation,
+  type TranscriptMessageDetails,
   type TranscriptProjection,
 } from '../../shared/sessionTranscript';
+import messageDetailFields from '../../shared/session-transcript-message-details.json';
 
 export const TRANSCRIPT_MAX_LINE_BYTES = 8 * 1024 * 1024;
 
@@ -49,11 +51,10 @@ function isContent(value: unknown): boolean {
     isRecord(block) && typeof block.id === 'string' && typeof block.type === 'string'));
 }
 
-const MESSAGE_DETAILS = new Set([
-  'asyncQuestionReply', 'sdkUuid', 'runtimeTurnAnchor', 'attachments', 'usage',
-  'runtimeOperationAnchor', 'completionState', 'terminalStatus',
-  'toolCount', 'durationMs', 'metadata', 'turnId', 'transcriptState',
-]);
+// The TS contract catches missing or extra fields; Rust reads this same JSON.
+const typedMessageDetailFields: Record<keyof TranscriptMessageDetails, null>
+  & Record<Exclude<keyof typeof messageDetailFields, keyof TranscriptMessageDetails>, never> = messageDetailFields;
+const MESSAGE_DETAILS = new Set(Object.keys(typedMessageDetailFields));
 
 function isOperation(value: unknown): value is TranscriptOperation {
   if (!isRecord(value)) return false;
