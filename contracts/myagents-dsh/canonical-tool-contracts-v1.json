@@ -721,6 +721,10 @@
             "type": "array",
             "uniqueItems": true
           },
+          "hint": {
+            "maxLength": 160,
+            "type": "string"
+          },
           "numFiles": {
             "maximum": 9007199254740991,
             "minimum": 0,

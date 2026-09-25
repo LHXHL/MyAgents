@@ -1597,3 +1597,32 @@ The official `session-checkpoint-policy`, `time-context`, `repeat-tool-reminder`
 The DSH Shell uses the App's internal `myagents` CLI. The App creates the internal capability for its lifecycle and supplies it to the Session Sidecar and DSH generation automatically. The DSH process policy admits only the exact `MYAGENTS_INTERNAL_CLI_TOKEN` key alongside route identifiers; arbitrary credential variables and the external `MYAGENTS_API_TOKEN` remain rejected. This preserves the internal full-capability CLI path without user token setup. The native tool test reads child runtime context from both string and block message content, as produced by the newly mounted time-context plugin.
 
 The exact staged handoff passes resource and source-freshness verification, 38 handoff policy tests, Host typecheck, changed-file lint, focused environment/process-host unit tests and five native process smoke cases. The native Shell test invokes the real bundled `myagents` CLI and observes its internal capability and Product Session ID at a synthetic Sidecar, without any external token. `build_dev.sh --build-only` produces a signed macOS Debug `MyAgents.app`; its bundled Node re-verifies all 18,783 Runtime files, the App signature verifies, and the five native process cases pass again against resources inside the App. A separate 12-generation packaged Runtime soak releases every process and returns open descriptors from 14 to 14. This is local development evidence; Linux/Windows native validation, real Provider and interactive GUI acceptance remain pending.
+
+### Issue #610 follow-up (2026-09-25)
+
+The new Dev Agent verified the earlier internal CLI fix and reported independent Runtime/Host defects.
+The Host's DeepSeek WebSearch binding now follows the same Anthropic Messages profile and base URL
+used by DSH execution. The Admin dispatcher forwards the already implemented `task start`, `stop`
+and `runs` handlers. `runtime list/describe dsh` reports the pinned DSH release instead of the
+internal Runtime manifest's `0.0.0`; Gemini model-discovery failure leaves installation and
+permission description available. Rust task-comment errors use the existing structured error
+envelope, and inline Record tags preserve internal hyphens. CLI status labels the global default
+Provider and the observed current-Session MCP state by scope.
+
+The paired DSH source corrects same-batch new-file Write checkpoint serialization, `ls` handling
+of outside-root symbolic links, file/search diagnostics and background child tool/model feedback.
+The user excluded Plan Mode Shell policy from this follow-up. The official filesystem tool's `0600`
+new-file mode is retained as its privacy policy; shell files still follow the caller's umask.
+The image decoder's common malformed-image response remains owned by the pinned upstream package;
+this change does not claim to distinguish corrupt image data from an otherwise policy-rejected
+image. DSH source `4e4617041231cd54e12d4eb160646b7e8cf8356b` produces Runtime manifest
+`2ce91016ddc5a0a195884adea1a8c47b70f917028706c463f400da853e2f458b` and official
+handoff `2630d08d920b4188ce0a8c09e56e65dac227988cbc32492d86dd9c8c1320c965`.
+Host ingestion verifies those exact bytes, generated contracts and freshness against the clean
+DSH source. Three platform claims remain pending native validation in the handoff; the Host's
+local native process smoke passes separately. `build_dev.sh --build-only` produces a signed macOS
+Debug App. The App signature, bundled Node/runtime verifier and five native process smoke cases
+pass against the packaged resources. DSH's source gate passes 870 tests, typecheck and build;
+its full lint still reports inherited `snapshotEvents()` deprecation diagnostics. Host focused
+tests pass 188 cases, handoff policy 38 cases, plus typecheck/lint/build. Interactive Agent
+acceptance and real DeepSeek search remain unverified in this local build.

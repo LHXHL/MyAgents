@@ -350,13 +350,11 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
   async runSearch(input: ProviderInput & SearchInput): Promise<Record<string, unknown>> {
     try {
       if (input.profile.providerRouteId === 'deepseek-official') {
-        if (input.profile.provider !== 'deepseek' || input.profile.api !== 'openai-completions'
-          || input.profile.baseUrl !== 'https://api.deepseek.com') {
+        if (input.profile.provider !== 'deepseek' || input.profile.api !== 'anthropic-messages'
+          || input.profile.baseUrl !== OFFICIAL_DEEPSEEK_ANTHROPIC_BASE_URL) {
           throw new DshCanonicalWebError('web_search_unavailable', 'Native DeepSeek search binding is invalid');
         }
-        return await this.runAnthropicCompatibleSearch(input, Object.freeze({
-          api: 'anthropic-messages', baseUrl: OFFICIAL_DEEPSEEK_ANTHROPIC_BASE_URL,
-        }));
+        return await this.runAnthropicCompatibleSearch(input);
       }
       if (input.profile.api === 'anthropic-messages') {
         return await this.runAnthropicCompatibleSearch(input);

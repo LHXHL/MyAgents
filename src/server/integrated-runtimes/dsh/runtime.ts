@@ -780,7 +780,7 @@ export class DshRuntime implements AgentRuntime {
       const installation = await installedRuntime();
       return {
         installed: true,
-        version: dshLock.runtime.version,
+        version: dshLock.dsh.version,
         path: installation.runtimeEntrypointPath,
       };
     } catch {

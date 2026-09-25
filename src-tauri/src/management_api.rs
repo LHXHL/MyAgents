@@ -3896,7 +3896,10 @@ async fn task_comments_handler(Query(query): Query<TaskCommentsQuery>) -> Json<s
         .await
     {
         Ok(page) => Json(serde_json::json!({ "ok": true, "page": page })),
-        Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
+        Err(error) => Json(task_error_response_value(
+            crate::task_application::TaskApplicationErrorCode::MutationFailed,
+            error,
+        )),
     }
 }
 

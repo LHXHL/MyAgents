@@ -197,6 +197,25 @@ afterEach(() => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
+describe('runtime description resilience', () => {
+  it('keeps Gemini installation and permission details when model discovery is unavailable', async () => {
+    const { getExternalRuntime } = await import('./runtimes/factory');
+    vi.spyOn(getExternalRuntime('gemini'), 'detect').mockResolvedValueOnce({ installed: true, version: 'fixture-gemini' });
+    runtimeModelMocks.queryRuntimeModels.mockRejectedValueOnce(new Error('This client is no longer supported'));
+    const { handleRuntimeDescribe } = await import('./admin-api');
+
+    const result = await handleRuntimeDescribe({ runtime: 'gemini' });
+    expect(result).toMatchObject({
+      success: true,
+      data: {
+        runtime: 'gemini', installed: true, version: 'fixture-gemini', models: [],
+        modelDiscovery: { state: 'unavailable' },
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain('This client is no longer supported');
+  });
+});
+
 describe('Record Admin routing', () => {
   it.each(['global', 'session'] as const)('forwards %s Record list results and errors through the production gate', async role => {
     const { composeSidecarRequestHandler, resolveSidecarComposition } = await import('./sidecar-composition');

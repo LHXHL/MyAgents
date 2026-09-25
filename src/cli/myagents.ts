@@ -1538,7 +1538,10 @@ function printRuntimeDescribe(data: Record<string, unknown>): void {
   const models = (data.models as Array<Record<string, unknown>>) ?? [];
   console.log('');
   console.log('Models:');
-  if (models.length === 0) {
+  const discovery = data.modelDiscovery as { state?: unknown; message?: unknown } | undefined;
+  if (discovery?.state === 'unavailable') {
+    console.log(`  ${String(discovery.message ?? 'Model list is temporarily unavailable.')}`);
+  } else if (models.length === 0) {
     console.log(runtime === 'dsh'
       ? '  Models come from the selected Provider. Run: myagents model list'
       : '  (none reported — runtime may not be installed, or has no static model list)');
@@ -1986,9 +1989,9 @@ function printStatus(data: Record<string, unknown>): void {
   const workspace = data.workspaceMcp as { selection?: string[] | null; enabled?: string[] | null } | undefined;
   const session = data.sessionMcp as { observation?: string; snapshot?: { servers?: Array<{ id: string; state: string }> } } | undefined;
   console.log(`Workspace MCP: ${workspace?.selection ? `${workspace.selection.length} selected, ${workspace.enabled?.length ?? 0} globally enabled` : 'no workspace selection available'}`);
-  console.log(`Active MCP in session: ${data.activeMcpInSession ?? 'unknown'} (${session?.observation ?? 'unavailable'})`);
+  console.log(`Active MCP in current Session: ${data.activeMcpInSession ?? 'not observed'} (${session?.observation ?? 'unavailable'})`);
   for (const server of session?.snapshot?.servers ?? []) console.log(`  ${server.id}: ${server.state}`);
-  console.log(`Default provider: ${data.defaultProvider}`);
+  console.log(`Global default provider: ${data.defaultProvider}`);
   console.log(`Agents: ${data.agents}`);
 }
 

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { DshCanonicalWebProvider } from './canonical-web-provider';
 import { DshCanonicalWebError } from './canonical-web-errors';
+import { OFFICIAL_DEEPSEEK_ANTHROPIC_BASE_URL } from '../../../shared/integrated-runtimes/provider-constraints';
 import type { DshModelExecutionProfile } from './profile-compiler';
 import type { DshRawHttpResponse, DshSafeHttpTransport } from './safe-http';
 
@@ -184,8 +185,8 @@ describe('DshCanonicalWebProvider', () => {
 
   it.each(['direct', 'proxy'] as const)('keeps native DeepSeek server search on the Host %s route', async (route) => {
     const profile: DshModelExecutionProfile = Object.freeze({
-      ...zhipuProfile, provider: 'deepseek', providerRouteId: 'deepseek-official',
-      modelId: 'deepseek-v4-pro', baseUrl: 'https://api.deepseek.com',
+      ...zhipuAnthropicProfile, provider: 'deepseek', providerRouteId: 'deepseek-official',
+      modelId: 'deepseek-v4-pro', baseUrl: OFFICIAL_DEEPSEEK_ANTHROPIC_BASE_URL,
     });
     const inspect = vi.fn(async (url: URL, request: { headers?: Readonly<Record<string, string>>; body?: Uint8Array }) => {
       expect(url.toString()).toBe('https://api.deepseek.com/anthropic/v1/messages');
@@ -213,8 +214,8 @@ describe('DshCanonicalWebProvider', () => {
     })).resolves.toMatchObject({ results: [{ title: 'Source', url: 'https://example.com/', snippet: '' }], searchCount: 1 });
     expect(route === 'proxy' ? proxy : direct).toHaveBeenCalledOnce();
     expect(route === 'proxy' ? direct : proxy).not.toHaveBeenCalled();
-    expect(profile.api).toBe('openai-completions');
-    expect(profile.baseUrl).toBe('https://api.deepseek.com');
+    expect(profile.api).toBe('anthropic-messages');
+    expect(profile.baseUrl).toBe(OFFICIAL_DEEPSEEK_ANTHROPIC_BASE_URL);
   });
 
   it('rejects a native DeepSeek identity attached to an unrelated endpoint before using credentials', async () => {

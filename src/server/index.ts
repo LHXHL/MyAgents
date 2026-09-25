@@ -1909,6 +1909,18 @@ async function routeAdminApi(
     return await api.handleTaskCheckNow(
       payload as Parameters<typeof api.handleTaskCheckNow>[0],
     );
+  if (route === 'task/start')
+    return await api.handleTaskStart(
+      payload as Parameters<typeof api.handleTaskStart>[0],
+    );
+  if (route === 'task/stop')
+    return await api.handleTaskStop(
+      payload as Parameters<typeof api.handleTaskStop>[0],
+    );
+  if (route === 'task/runs')
+    return await api.handleTaskRuns(
+      payload as Parameters<typeof api.handleTaskRuns>[0],
+    );
   if (route === 'task/reset-checkpoint')
     return await api.handleTaskResetCheckpoint(
       payload as Parameters<typeof api.handleTaskResetCheckpoint>[0],
