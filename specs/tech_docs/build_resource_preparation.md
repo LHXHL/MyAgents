@@ -26,11 +26,11 @@
 
 ### Integrated DSH 构建来源
 
-`scripts/integrated-runtimes/prepare-dsh-runtime.mjs` 在打包前选择并验证 DSH handoff。`dsh-lock.json` 已预设 `release.tag: v0.1.0`；正式入口和直接 `npm run tauri:build` 固定使用按目标平台锁定的 GitHub Release 资产。packaged Dev 入口也默认使用该版本，只有显式传入 `local` 和绝对 handoff 路径才改用本地资源。构建准备读取已有公共下载策略，缓存的归档仍逐次核对摘要，解包后运行 handoff 公共 verifier，再原子暂存完整资源。
+`scripts/integrated-runtimes/prepare-dsh-runtime.mjs` 在打包前选择并验证 DSH handoff。唯一的发行选择是 `src/shared/integrated-runtimes/dsh-release.json` 中的 `version: 0.1.0`；正式入口和直接 `npm run tauri:build` 从该版本的 GitHub Release `manifest.json` 选择目标资产。packaged Dev 入口也默认使用该版本，只有显式传入 `local` 和绝对 handoff 路径才改用本地资源。构建准备沿用公共下载策略，核对清单与归档字节，解包后运行 handoff 公共 verifier，再原子暂存完整资源。
 
-本地 Dev 的 effective lock 和 compatibility 由 handoff 派生，写入 ignored 的 `dsh-build-selection-v1.json`；Vite、Sidecar esbuild 与 Rust build.rs 在同一次构建读取该身份。它不改动已提交的 release lock。每个目标有自己的原生 DSH 资产，因此 macOS 双目标构建在目标循环中分别准备 DSH 并重建业务 bundle。`npm run tauri:build:prepared` 只供已调用 prepare 的平台脚本使用；通用直接入口负责自己准备。当前尚未发布任何 MyAgents-dsh GitHub Release，只有版本号 `v0.1.0` 已预设，尚缺源码 commit 和各平台资产摘要；release 模式在下载前明确失败。当前需打 Dev 包时可显式使用 `--dsh-source local --dsh-handoff /absolute/path`（Windows 为 `-DshSource local -DshHandoff`）。
+本地 Dev 的 effective lock 和 compatibility 由 handoff 派生，写入 ignored 的 `dsh-build-selection-v1.json`；Vite、Sidecar esbuild 与 Rust build.rs 在同一次构建读取该身份。它不改动已提交的版本选择。每个目标有自己的原生 DSH 资产，因此 macOS 双目标构建在目标循环中分别准备 DSH 并重建业务 bundle。`npm run tauri:build:prepared` 只供已调用 prepare 的平台脚本使用；通用直接入口负责自己准备。当前尚未发布任何 MyAgents-dsh GitHub Release；`0.1.0` 默认构建会在请求清单时失败。当前需打 Dev 包时可显式使用 `--dsh-source local --dsh-handoff /absolute/path`（Windows 为 `-DshSource local -DshHandoff`）。
 
-首个 Release 完成后，在已提交的 `dsh-lock.json` 保持对应的 `release.tag`，补入 `release.sourceCommit` 与每目标 `release.assets[<target>] = { name, sha256, size, handoffSha256 }`；`name` 是 `myagents-dsh-<tag>-<target>.tar.gz`。各平台原生依赖不同，handoff/Runtime 摘要也不同：prepare 先核对归档、目标 handoff 摘要与共同源码 commit，再由该 handoff 派生本次构建的完整 effective lock；不复用顶层单份 handoff 摘要去验证其它架构。compatibility 包含目标 Runtime 摘要，允许随目标变化，其余 Host 契约仍需匹配。不会在构建时读取 `latest` 索引。未打包的 `tauri:dev` 沿用现有 staged Runtime 与 source-mode 路径；本轮 `local` 覆盖范围是 `build_dev*` 的打包构建。
+升级 DSH 时只编辑 `dsh-release.json` 的版本号。MyAgents 通过 `https://github.com/hAcKlyc/MyAgents-dsh/releases/download/v<version>/manifest.json` 读取发布方维护的四平台清单，按目标核对包大小、archive/handoff/Runtime/compatibility 摘要、共同源码提交、原生模块和 Host 契约，再派生本次 effective lock。`dsh-lock.json` 保留未准备的 source-mode 开发身份快照，不再包含 `release` 资产表。未打包的 `tauri:dev` 沿用 staged Runtime 与 source-mode 路径；`local` 覆盖范围是 `build_dev*` 的打包构建。详情见 [DSH 构建来源 PRD](../prd/prd_2026-09-26_dsh_release_build_sources.md)。
 
 `setup.sh` / `setup_windows.ps1` 准备开发依赖与 host 资源；平台 build 脚本检查本次目标并准备安装包。不能把“以前运行过 setup”作为资源就绪依据。两类入口复用资源 helper，由 helper 校验版本、目标、完整性后决定复用或补齐。
 

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 
-import { acquireRelease, currentTarget, deriveLocalLock, deriveReleaseLock, hasTargetNativeAddon, prepareDshRuntime, releaseAssetUrl } from "./prepare-dsh-runtime.mjs";
+import { acquireRelease, currentTarget, deriveLocalLock, deriveReleaseLock, hasTargetNativeAddon, parseReleaseManifest, prepareDshRuntime, releaseAssetUrl } from "./prepare-dsh-runtime.mjs";
 
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
@@ -19,6 +19,29 @@ test("release URL is determined by an exact tag and target asset", () => {
   assert.throws(() => releaseAssetUrl("latest", "myagents-dsh-v0.1.0-darwin-arm64.tar.gz"));
   assert.equal(releaseAssetUrl("v0.1.0", "myagents-dsh-v0.1.0-darwin-x64.tar.gz"),
     "https://github.com/hAcKlyc/MyAgents-dsh/releases/download/v0.1.0/myagents-dsh-v0.1.0-darwin-x64.tar.gz");
+  assert.equal(releaseAssetUrl("v0.1.0", "manifest.json"),
+    "https://github.com/hAcKlyc/MyAgents-dsh/releases/download/v0.1.0/manifest.json");
+});
+
+const releaseTargets = ["darwin-arm64", "darwin-x64", "linux-x64", "win32-x64"];
+const manifestFixture = (asset) => ({
+  schemaVersion: 1, repository: "hAcKlyc/MyAgents-dsh", version: "0.1.0", tag: "v0.1.0",
+  sourceCommit: "a".repeat(40),
+  assets: Object.fromEntries(releaseTargets.map((target) => [target, {
+    name: `myagents-dsh-v0.1.0-${target}.tar.gz`, sha256: asset.sha256,
+    size: asset.size, handoffSha256: asset.handoffSha256,
+    runtimeManifestSha256: asset.runtimeManifestSha256,
+    compatibilitySha256: asset.compatibilitySha256, claim: "verified",
+  }])),
+});
+
+test("manifest must describe all four verified targets at the selected version", () => {
+  const fixture = manifestFixture({ sha256: "a".repeat(64), size: 1,
+    handoffSha256: "b".repeat(64), runtimeManifestSha256: "c".repeat(64),
+    compatibilitySha256: "d".repeat(64) });
+  assert.deepEqual(parseReleaseManifest(Buffer.from(JSON.stringify(fixture)), "0.1.0"), fixture);
+  delete fixture.assets["win32-x64"];
+  assert.throws(() => parseReleaseManifest(Buffer.from(JSON.stringify(fixture)), "0.1.0"), /all four targets/);
 });
 
 test("native module check uses the correct platform package", () => {
@@ -39,29 +62,31 @@ test("release cache uses exact archive bytes and reacquires a corrupt cache", as
   const archive = resolve(root, "fixture.tar.gz");
   execFileSync("tar", ["-czf", archive, "-C", resolve(root, "source"), "handoff"]);
   const bytes = readFileSync(archive);
-  const lock = { release: { tag: "v0.1.0", sourceCommit: "commit", assets: {
-    "darwin-arm64": { name: "myagents-dsh-v0.1.0-darwin-arm64.tar.gz", sha256: sha(bytes), size: bytes.length,
-      handoffSha256: sha("handoff") },
-  } } };
+  const manifest = manifestFixture({ sha256: sha(bytes), size: bytes.length,
+    handoffSha256: sha("handoff"), runtimeManifestSha256: sha("runtime"),
+    compatibilitySha256: sha("compatibility") });
+  const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
   let downloads = 0;
   const download = async (url, options) => {
     downloads += 1;
-    assert.equal(url, releaseAssetUrl(lock.release.tag, lock.release.assets["darwin-arm64"].name));
     assert.equal(options.redirect, "follow");
+    if (url === releaseAssetUrl(manifest.tag, "manifest.json")) return manifestBytes;
+    assert.equal(url, releaseAssetUrl(manifest.tag, manifest.assets["darwin-arm64"].name));
     return bytes;
   };
-  let found = await acquireRelease(root, lock, "darwin-arm64", download);
+  let found = await acquireRelease(root, "0.1.0", "darwin-arm64", download);
   assert.equal(readFileSync(resolve(found.root, "marker"), "utf8"), "release bytes");
-  found.cleanup();
-  assert.equal(downloads, 1);
-  found = await acquireRelease(root, lock, "darwin-arm64", download);
-  found.cleanup();
-  assert.equal(downloads, 1);
-  const cache = resolve(root, "src-tauri/resources/dsh-release-cache", `${sha(bytes)}.tar.gz`);
-  writeFileSync(cache, "corrupt");
-  found = await acquireRelease(root, lock, "darwin-arm64", download);
+  assert.equal(found.manifestSha256, sha(manifestBytes));
   found.cleanup();
   assert.equal(downloads, 2);
+  found = await acquireRelease(root, "0.1.0", "darwin-arm64", download);
+  found.cleanup();
+  assert.equal(downloads, 2);
+  const cache = resolve(root, "src-tauri/resources/dsh-release-cache", `${sha(bytes)}.tar.gz`);
+  writeFileSync(cache, "corrupt");
+  found = await acquireRelease(root, "0.1.0", "darwin-arm64", download);
+  found.cleanup();
+  assert.equal(downloads, 3);
   assert.equal(sha(readFileSync(cache)), sha(bytes));
   assert.ok(existsSync(cache));
 });
@@ -73,7 +98,7 @@ test("release source fails before network without an exact pin", async (t) => {
   writeFileSync(resolve(root, "src/shared/integrated-runtimes/dsh-lock.json"), "{}");
   let downloaded = false;
   await assert.rejects(prepareDshRuntime({ repoRoot: root, target: "darwin-arm64", download: async () => { downloaded = true; } }),
-    /No pinned MyAgents-dsh Release asset/);
+    /cannot read JSON .*dsh-release\.json/);
   assert.equal(downloaded, false);
 });
 
@@ -109,11 +134,13 @@ test("local identity derives from the handoff without changing the committed loc
   assert.equal(lock.runtime.sessionFormat, "format");
   assert.equal(lock.release, undefined);
   assert.equal(releaseLock.handoff.manifestSha256, "old");
-  releaseLock.release = { tag: "v0.1.0", sourceCommit: "source-commit", assets: {
-    "darwin-x64": { handoffSha256: handoffSha },
-  } };
-  const release = deriveReleaseLock(releaseLock, root, "darwin-x64");
+  const manifest = manifestFixture({ sha256: "a".repeat(64), size: 1,
+    handoffSha256: handoffSha, runtimeManifestSha256: outer.runtime.manifestSha256,
+    compatibilitySha256: outer.compatibility.sha256 });
+  manifest.sourceCommit = "source-commit";
+  const release = deriveReleaseLock(releaseLock, root, "darwin-x64", manifest, "f".repeat(64));
   assert.equal(release.lock.handoff.manifestSha256, handoffSha);
   assert.equal(release.lock.release.tag, "v0.1.0");
-  assert.throws(() => deriveReleaseLock(releaseLock, root, "darwin-arm64"), /differs from the darwin-arm64 pin/);
+  manifest.assets["darwin-arm64"].handoffSha256 = "0".repeat(64);
+  assert.throws(() => deriveReleaseLock(releaseLock, root, "darwin-arm64", manifest, "f".repeat(64)), /differs from the darwin-arm64 manifest/);
 });

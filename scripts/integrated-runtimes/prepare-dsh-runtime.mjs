@@ -19,6 +19,10 @@ import { buildSelectionPath } from "./dsh-build-selection.mjs";
 const defaultRoot = resolve(import.meta.dirname, "../..");
 const releaseRepository = "hAcKlyc/MyAgents-dsh";
 const compatibilityContract = "contracts/myagents-dsh-compatibility-v1.json";
+const releaseTargets = ["darwin-arm64", "darwin-x64", "linux-x64", "win32-x64"];
+const shaPattern = /^[a-f0-9]{64}$/;
+const sourcePattern = /^[a-f0-9]{40}$/;
+const versionPattern = /^\d+\.\d+\.\d+$/;
 
 export function currentTarget(platform = process.platform, arch = process.arch) {
   const os = platform === "win32" ? "win32" : platform;
@@ -28,10 +32,36 @@ export function currentTarget(platform = process.platform, arch = process.arch) 
 
 export function releaseAssetUrl(tag, asset) {
   if (!/^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(tag)
-    || !/^myagents-dsh-v[0-9A-Za-z.+-]+-(?:darwin-arm64|darwin-x64|linux-x64|win32-x64)\.tar\.gz$/.test(asset)) {
+    || (asset !== "manifest.json"
+      && !/^myagents-dsh-v[0-9A-Za-z.+-]+-(?:darwin-arm64|darwin-x64|linux-x64|win32-x64)\.tar\.gz$/.test(asset))) {
     throw new Error("DSH release tag or asset name is invalid");
   }
   return `https://github.com/${releaseRepository}/releases/download/${tag}/${asset}`;
+}
+
+export function parseReleaseManifest(bytes, version) {
+  if (!versionPattern.test(version)) throw new Error("MyAgents-dsh version must be stable X.Y.Z");
+  if (bytes.length > 64 * 1024) throw new Error("MyAgents-dsh Release manifest is too large");
+  const manifest = JSON.parse(bytes.toString("utf8"));
+  const tag = `v${version}`;
+  if (manifest.schemaVersion !== 1 || manifest.repository !== releaseRepository
+    || manifest.version !== version || manifest.tag !== tag
+    || !sourcePattern.test(manifest.sourceCommit ?? "")
+    || !manifest.assets || typeof manifest.assets !== "object" || Array.isArray(manifest.assets)
+    || JSON.stringify(Object.keys(manifest.assets).sort()) !== JSON.stringify([...releaseTargets].sort())) {
+    throw new Error(`MyAgents-dsh Release manifest does not describe ${tag} and all four targets`);
+  }
+  for (const target of releaseTargets) {
+    const asset = manifest.assets[target];
+    if (asset?.name !== `myagents-dsh-${tag}-${target}.tar.gz`
+      || !shaPattern.test(asset.sha256 ?? "") || !shaPattern.test(asset.handoffSha256 ?? "")
+      || !shaPattern.test(asset.runtimeManifestSha256 ?? "")
+      || !shaPattern.test(asset.compatibilitySha256 ?? "")
+      || !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.claim !== "verified") {
+      throw new Error(`MyAgents-dsh Release manifest has no verified ${target} archive`);
+    }
+  }
+  return manifest;
 }
 
 export function deriveLocalLock(releaseLock, handoffRoot) {
@@ -73,14 +103,17 @@ export function deriveLocalLock(releaseLock, handoffRoot) {
   return { lock, compatibility };
 }
 
-export function deriveReleaseLock(releaseLock, handoffRoot, target) {
+export function deriveReleaseLock(releaseLock, handoffRoot, target, manifest, manifestSha256) {
   const selected = deriveLocalLock(releaseLock, handoffRoot);
-  const pin = releaseLock.release?.assets?.[target];
-  if (!pin || selected.lock.handoff.manifestSha256 !== pin.handoffSha256
-    || selected.lock.handoff.sourceCommit !== releaseLock.release.sourceCommit) {
-    throw new Error(`MyAgents-dsh Release handoff identity differs from the ${target} pin`);
+  const asset = manifest.assets[target];
+  if (!asset || selected.lock.handoff.manifestSha256 !== asset.handoffSha256
+    || selected.lock.handoff.sourceCommit !== manifest.sourceCommit
+    || selected.lock.handoff.runtimeManifestSha256 !== asset.runtimeManifestSha256
+    || selected.lock.handoff.compatibilitySha256 !== asset.compatibilitySha256) {
+    throw new Error(`MyAgents-dsh Release handoff identity differs from the ${target} manifest`);
   }
-  selected.lock.release = releaseLock.release;
+  selected.lock.release = { version: manifest.version, tag: manifest.tag,
+    sourceCommit: manifest.sourceCommit, manifestSha256, archiveSha256: asset.sha256 };
   return selected;
 }
 
@@ -119,21 +152,38 @@ function digest(buffer) {
   return createHash("sha256").update(buffer).digest("hex");
 }
 
-export async function acquireRelease(repoRoot, lock, target, download) {
-  const pin = lock.release?.assets?.[target];
-  if (!lock.release?.tag || !lock.release?.sourceCommit || !pin?.name
-    || !/^[a-f0-9]{64}$/.test(pin.sha256 ?? "")
-    || !/^[a-f0-9]{64}$/.test(pin.handoffSha256 ?? "")
-    || !Number.isSafeInteger(pin.size) || pin.size <= 0) {
-    throw new Error(`No pinned MyAgents-dsh Release asset for ${target} in dsh-lock.json`);
-  }
-  if (pin.name !== `myagents-dsh-${lock.release.tag}-${target}.tar.gz`) {
-    throw new Error(`MyAgents-dsh Release asset name differs from pinned tag and target: ${pin.name}`);
-  }
-  const url = releaseAssetUrl(lock.release.tag, pin.name);
+export async function acquireRelease(repoRoot, version, target, download) {
+  if (!versionPattern.test(version)) throw new Error("No stable MyAgents-dsh version in dsh-release.json");
+  if (!releaseTargets.includes(target)) throw new Error(`Unsupported MyAgents-dsh Release target: ${target}`);
+  const tag = `v${version}`;
   const cacheRoot = resolve(repoRoot, "src-tauri/resources/dsh-release-cache");
-  const archive = resolve(cacheRoot, `${pin.sha256}.tar.gz`);
   mkdirSync(cacheRoot, { recursive: true });
+  const manifestCache = resolve(cacheRoot, `${tag}-manifest.json`);
+  let manifestBytes;
+  let manifest;
+  if (existsSync(manifestCache)) {
+    try {
+      manifestBytes = readFileSync(manifestCache);
+      manifest = parseReleaseManifest(manifestBytes, version);
+    } catch {
+      manifestBytes = undefined;
+    }
+  }
+  if (!manifestBytes) {
+    const manifestUrl = releaseAssetUrl(tag, "manifest.json");
+    manifestBytes = await download(manifestUrl, { maxBytes: 64 * 1024, redirect: "follow" });
+    manifest = parseReleaseManifest(manifestBytes, version);
+    const temporary = `${manifestCache}.tmp-${randomUUID()}`;
+    try {
+      writeFileSync(temporary, manifestBytes);
+      renameSync(temporary, manifestCache);
+    } finally {
+      rmSync(temporary, { force: true });
+    }
+  }
+  const pin = manifest.assets[target];
+  const url = releaseAssetUrl(tag, pin.name);
+  const archive = resolve(cacheRoot, `${pin.sha256}.tar.gz`);
   let bytes;
   if (existsSync(archive)) {
     bytes = readFileSync(archive);
@@ -160,7 +210,8 @@ export async function acquireRelease(repoRoot, lock, target, download) {
     if (!existsSync(handoff) || !statSync(handoff).isDirectory()) {
       throw new Error(`DSH Release asset has no handoff/ directory: ${url}`);
     }
-    return { root: handoff, cleanup: () => rmSync(extractionRoot, { recursive: true, force: true }), url };
+    return { root: handoff, cleanup: () => rmSync(extractionRoot, { recursive: true, force: true }),
+      url, manifest, manifestSha256: digest(manifestBytes) };
   } catch (error) {
     rmSync(extractionRoot, { recursive: true, force: true });
     throw error;
@@ -179,11 +230,12 @@ export async function prepareDshRuntime({
   if (source === "local") {
     input = { root: resolveExplicitDirectory(handoff, "--handoff"), cleanup: () => {} };
   } else {
-    input = await acquireRelease(repoRoot, releaseLock, target, download);
+    const version = readJson(resolve(repoRoot, "src/shared/integrated-runtimes/dsh-release.json")).version;
+    input = await acquireRelease(repoRoot, version, target, download);
   }
   try {
     const { lock, compatibility } = source === "release"
-      ? deriveReleaseLock(releaseLock, input.root, target)
+      ? deriveReleaseLock(releaseLock, input.root, target, input.manifest, input.manifestSha256)
       : deriveLocalLock(releaseLock, input.root);
     assertTarget(lock, target, source);
     assertNativeRuntimeTarget(input.root, target);
