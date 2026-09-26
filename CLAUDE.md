@@ -110,6 +110,7 @@ Builtin SDK 与 Claude Code / Codex 等外部 Runtime 的 session 操作统一�
 | 内置 Node / 三方 Provider / 代理 | `specs/tech_docs/bundled_node.md`、`specs/tech_docs/third_party_providers.md`、`specs/tech_docs/proxy_config.md` 中命中的文档 |
 | 搜索 / i18n / 埋点 / 日志 | 对应 `specs/tech_docs/search_architecture.md`、`specs/tech_docs/i18n_architecture.md`、`specs/tech_docs/analytics_design.md`、`specs/tech_docs/unified_logging.md` |
 | setup / build / 资源准备脚本（新增或修改） | `specs/tech_docs/build_resource_preparation.md`；按资源追加所属模块文档 |
+| 更新 MyAgents-dsh、打包本地 handoff 并集成到客户端 | 先切换到 MyAgents-dsh 仓库，按该仓库的 Agent 指引和开发集成指南完成 setup、提交、原生 handoff 构建；再读本仓库 `specs/tech_docs/build_resource_preparation.md` 的 Integrated DSH 构建来源。本地 Dev 构建传入验证后的 handoff 绝对路径，正式构建只改 `dsh-release.json` 的版本选择 |
 | 自动更新、发布 | `specs/tech_docs/auto_update.md` 与 `specs/guides/` 下对应平台文档 |
 
 ## 验证与维护
