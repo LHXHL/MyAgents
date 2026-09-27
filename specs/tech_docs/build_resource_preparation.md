@@ -26,7 +26,7 @@
 
 ### Integrated DSH 构建来源
 
-`scripts/integrated-runtimes/prepare-dsh-runtime.mjs` 在打包前选择并验证 DSH handoff。唯一的发行选择是 `src/shared/integrated-runtimes/dsh-release.json` 中的 `version: 0.1.0`；正式入口和直接 `npm run tauri:build` 从该版本的 GitHub Release `manifest.json` 选择目标资产。packaged Dev 入口也默认使用该版本，只有显式传入 `local` 和绝对 handoff 路径才改用本地资源。构建准备沿用公共下载策略，核对清单与归档字节，解包后运行 handoff 公共 verifier，再原子暂存完整资源。
+`scripts/integrated-runtimes/prepare-dsh-runtime.mjs` 在打包前选择并验证 DSH handoff。唯一的发行选择是 `src/shared/integrated-runtimes/dsh-release.json` 中的 `version`；正式入口和直接 `npm run tauri:build` 从该版本的 GitHub Release `manifest.json` 选择目标资产。packaged Dev 入口也默认使用该版本，只有显式传入 `local` 和绝对 handoff 路径才改用本地资源。构建准备沿用公共下载策略，核对清单与归档字节，解包后运行 handoff 公共 verifier，再原子暂存完整资源。
 
 本地 Dev 的 effective lock 和 compatibility 由 handoff 派生，写入 ignored 的 `dsh-build-selection-v1.json`；Vite、Sidecar esbuild 与 Rust build.rs 在同一次构建读取该身份。它不改动已提交的版本选择。每个目标有自己的原生 DSH 资产，因此 macOS 双目标构建在目标循环中分别准备 DSH 并重建业务 bundle。`npm run tauri:build:prepared` 只供已调用 prepare 的平台脚本使用；通用直接入口负责自己准备。若绑定版本的 GitHub Release 尚不可用，默认构建会在请求清单时失败；需打 Dev 包时可显式使用 `--dsh-source local --dsh-handoff /absolute/path`（Windows 为 `-DshSource local -DshHandoff`）。本地 handoff 由 MyAgents-dsh 的 `scripts/build-local-handoff.mjs` 生成，必须先在其仓库完成 setup、提交源代码并通过本机原生验证；该仓库的 `specs/tech_docs/assurance/development-and-local-integration.md` 维护完整入口。
 

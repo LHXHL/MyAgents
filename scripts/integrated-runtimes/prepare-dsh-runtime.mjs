@@ -205,7 +205,7 @@ export async function acquireRelease(repoRoot, version, target, download) {
   const extractionRoot = mkdtempSync(resolve(tmpdir(), "myagents-dsh-release-"));
   try {
     // The archive is accepted only by the exact committed SHA before extraction.
-    execFileSync("tar", ["-xzf", archive, "-C", extractionRoot], { stdio: "pipe" });
+    execFileSync("tar", ["-xzf", "-"], { cwd: extractionRoot, input: bytes, stdio: "pipe" });
     const handoff = resolve(extractionRoot, "handoff");
     if (!existsSync(handoff) || !statSync(handoff).isDirectory()) {
       throw new Error(`DSH Release asset has no handoff/ directory: ${url}`);

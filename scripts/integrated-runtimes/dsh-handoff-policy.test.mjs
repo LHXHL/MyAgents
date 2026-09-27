@@ -475,7 +475,8 @@ test("repository lock, generated contracts, resources, and toolchain authorities
 
   assert.equal(lock.runtime.requiredNodeVersion, "24.20.0");
   const release = JSON.parse(readFileSync(resolve(repoRoot, "src/shared/integrated-runtimes/dsh-release.json"), "utf8"));
-  assert.deepEqual(release, { version: "0.1.0" });
+  assert.deepEqual(Object.keys(release), ["version"]);
+  assert.match(release.version, /^\d+\.\d+\.\d+$/);
   assert.equal(lock.release, undefined);
   assert.equal(lock.bundledNpm.version, "11.19.0");
   assert.equal(lock.bundledNpm.authority, "myagents-product-resource");

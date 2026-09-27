@@ -60,7 +60,7 @@ test("release cache uses exact archive bytes and reacquires a corrupt cache", as
   mkdirSync(resolve(root, "source/handoff"), { recursive: true });
   writeFileSync(resolve(root, "source/handoff/marker"), "release bytes");
   const archive = resolve(root, "fixture.tar.gz");
-  execFileSync("tar", ["-czf", archive, "-C", resolve(root, "source"), "handoff"]);
+  execFileSync("tar", ["-czf", "fixture.tar.gz", "-C", "source", "handoff"], { cwd: root });
   const bytes = readFileSync(archive);
   const manifest = manifestFixture({ sha256: sha(bytes), size: bytes.length,
     handoffSha256: sha("handoff"), runtimeManifestSha256: sha("runtime"),

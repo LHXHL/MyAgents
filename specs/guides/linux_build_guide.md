@@ -38,7 +38,7 @@ CMake 必须满足 native prepare owner 的 **3.28+** 要求。setup 在下载�
 ./build_dev_linux.sh --build-only
 ```
 
-DSH Dev 默认下载 `dsh-lock.json` 锁定的 Release；需要试本地 DSH 改动时才显式传入 `--dsh-source local --dsh-handoff /absolute/path/to/handoff`。首个 `v0.1.0` 尚未发布、平台摘要尚未填入时，默认构建会在资源准备阶段失败；正式 `build_linux.sh` 始终走 Release 来源，不回退到本地目录。
+DSH Dev 默认下载 `src/shared/integrated-runtimes/dsh-release.json` 指定的 Release；需要试本地 DSH 改动时才显式传入 `--dsh-source local --dsh-handoff /absolute/path/to/handoff`。若对应 Release 不可用，默认构建会在资源准备阶段失败；正式 `build_linux.sh` 始终走 Release 来源。
 
 可执行文件：
 

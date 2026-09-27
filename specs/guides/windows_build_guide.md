@@ -117,7 +117,7 @@ src-tauri/target/x86_64-pc-windows-msvc/debug/myagents.exe
 
 `build_dev_win.ps1` 会清理 `debug/resources` 缓存、启用 `VITE_DEBUG_MODE=true`、构建 web/Sidecar/Plugin Bridge/CLI 一次，并在 Tauri build 阶段禁用重复的 `beforeBuildCommand`；这条路径用于快速测试，不替代正式发布构建。
 
-DSH Dev 默认拉取锁定的 Release；当前首版尚未发布，可显式用 `-DshSource local -DshHandoff C:\absolute\path\to\handoff` 指向官方本地交付物。正式版 `build_windows.ps1` 固定读取 `dsh-lock.json` 中预设的 `v0.1.0` 和对应平台资产；首个 GitHub Release 与摘要锁定前会在下载前失败。
+DSH Dev 默认拉取 `src/shared/integrated-runtimes/dsh-release.json` 指定的 Release；需要试本地 DSH 改动时可显式用 `-DshSource local -DshHandoff C:\absolute\path\to\handoff` 指向官方本地交付物。正式版 `build_windows.ps1` 使用同一版本和对应平台资产；若对应 Release 不可用则在下载时失败。
 
 两条 Windows 构建路径都会在 Tauri snapshot 前调用 `scripts/prepare-native-inference.mjs x86_64-pc-windows-msvc`，统一准备 document/speech capability。Sherpa 的锁定源码包只展开构建所需的根 `CMakeLists.txt`、`LICENSE`、`cmake/` 与 `sherpa-onnx/`；上游仓库其它目录中的 symlink 不会在 Windows 上落盘，不需要启用 Developer Mode、管理员权限或长路径开关。正式安装器验证除既有文档转换外，还必须检查 `speech-inference/v1` 的签名 manifest、media Worker/sherpa native inventory、与 `document-processing/v1` 共享的 ONNX Runtime identity，以及无系统 ORT/ffmpeg/Python 时的 WASAPI microphone/loopback、转录与 Job Object 取消。
 
