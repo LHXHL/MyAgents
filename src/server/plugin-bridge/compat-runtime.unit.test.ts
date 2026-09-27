@@ -125,12 +125,16 @@ describe('plugin bridge compat runtime dispatch ownership', () => {
     }
   });
 
-  it('keeps the legacy bypass path stateless and returns after Rust accepts the message', async () => {
+  it('keeps buffered plugin delivery open until the AI terminal reaches its renderer', async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('{}', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    const runtime = createCompatRuntime(31_426, 'bot-1', 'openclaw-plugin-yuanbao');
-    await expect(runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+    const runtime = createCompatRuntime(31_426, 'bot-1', 'wecom-openclaw-plugin');
+    const events: string[] = [];
+    let releaseDelivery!: () => void;
+    const deliveryGate = new Promise<void>(resolve => { releaseDelivery = resolve; });
+    let settled = false;
+    const dispatchPromise = runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
       ctx: {
         To: 'chat:peer-1',
         SenderId: 'sender-1',
@@ -138,19 +142,47 @@ describe('plugin bridge compat runtime dispatch ownership', () => {
         Body: 'hello',
       },
       dispatcherOptions: {
-        deliver: vi.fn(),
+        onReplyStart: () => { events.push('thinking'); },
+        deliver: async (payload: { text?: string }, info: { kind: string }) => {
+          events.push(`${info.kind}:${payload.text}`);
+          await deliveryGate;
+          events.push('delivered');
+        },
       },
-    })).resolves.toEqual({
-      queuedFinal: 0,
-      counts: {},
-      dispatcher: { waitForIdle: expect.any(Function) },
     });
+    void dispatchPromise.then(() => { settled = true; });
 
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
     const request = fetchMock.mock.calls[0]?.[1];
     const body = JSON.parse(String(request?.body ?? '{}')) as Record<string, unknown>;
+    expect(body.deliveryProtocol).toBe('openclaw-reply');
+    expect(typeof body.requestId).toBe('string');
+    expect(body.accountId).toBe('account-legacy');
+    expect(settled).toBe(false);
+
+    const requestId = String(body.requestId);
+    enqueueRunStart(requestId);
+    completePendingDispatch(requestId, [{ text: 'answer' }]);
+    await vi.waitFor(() => expect(events).toEqual(['thinking', 'final:answer']));
+    expect(settled).toBe(false);
+    releaseDelivery();
+    await expect(dispatchPromise).resolves.toMatchObject({ queuedFinal: 1 });
+    expect(events).toEqual(['thinking', 'final:answer', 'delivered']);
+    expect(settled).toBe(true);
+  });
+
+  it('keeps buffered calls without a renderer on the legacy admission path', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const runtime = createCompatRuntime(31_426, 'bot-1', 'openclaw-plugin-yuanbao');
+    await expect(runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+      ctx: { To: 'chat:peer-1', SenderId: 'sender-1', Body: 'hello' },
+    })).resolves.toMatchObject({ queuedFinal: 0 });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? '{}')) as Record<string, unknown>;
     expect(body.deliveryProtocol).toBeUndefined();
     expect(body.requestId).toBeUndefined();
-    expect(body.accountId).toBe('account-legacy');
   });
 
   it('preserves top-level account identity when standard callbacks fall back to legacy dispatch', async () => {
