@@ -245,6 +245,16 @@ try {
         }
     }
 
+    # libopus_sys builds Opus from source and invokes CMake during Cargo build.
+    if (-not (Test-Dependency "CMake" "cmake --version" "")) {
+        if ($HasWinget) {
+            $null = Install-WithWinget "CMake" "Kitware.CMake" "--scope user"
+            Refresh-ProcessPath
+        } else {
+            Write-Host "    请安装: https://cmake.org/download/" -ForegroundColor Yellow
+        }
+    }
+
     # Rust is prepared via rustup + rust-toolchain.toml below. Do not require
     # rustc/cargo before ensure_rust_toolchain.ps1 has a chance to install them.
     if (-not (Ensure-Rustup)) {
@@ -254,6 +264,7 @@ try {
     # Pre-toolchain check: rustc/cargo are installed by ensure_rust_toolchain.ps1.
     $Missing = $false
     if (-not (Test-Dependency "Node.js" "node --version" "")) { $Missing = $true }
+    if (-not (Test-Dependency "CMake" "cmake --version" "")) { $Missing = $true }
     if (-not (Test-Dependency "Rustup" "rustup --version" "")) { $Missing = $true }
 
     if ($Missing) {

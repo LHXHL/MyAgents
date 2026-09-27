@@ -39,7 +39,15 @@ function Test-BundledNode {
     }
 }
 
+function Write-BundledNodeMetadata {
+    param([string]$Directory)
+    $Utf8 = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText((Join-Path $Directory ".myagents-nodejs-version"), "$NodeVersion`n", $Utf8)
+    [System.IO.File]::WriteAllText((Join-Path $Directory ".myagents-nodejs-platform"), "win`n", $Utf8)
+}
+
 if (Test-BundledNode $NodeDir) {
+    Write-BundledNodeMetadata $NodeDir
     Write-Host "Node.js $NodeVersion / npm $NpmVersion (win-x64) already verified" -ForegroundColor Green
     $global:LASTEXITCODE = 0
     return
@@ -68,6 +76,7 @@ try {
     & robocopy (Join-Path $ExtractedDir "node_modules") (Join-Path $NodeDir "node_modules") /E /NFL /NDL /NJH /NJS /NC /NS /NP | Out-Null
     if ($LASTEXITCODE -ge 8) { throw "robocopy failed: exit $LASTEXITCODE" }
     if (-not (Test-BundledNode $NodeDir)) { throw "Staged runtime failed Node/npm verification" }
+    Write-BundledNodeMetadata $NodeDir
     Write-Host "Node.js $NodeVersion / npm $NpmVersion (win-x64) ready" -ForegroundColor Green
     $global:LASTEXITCODE = 0
 } finally {

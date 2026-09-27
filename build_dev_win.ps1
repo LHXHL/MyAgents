@@ -70,6 +70,11 @@ if ($PKG_VERSION -ne $TAURI_VERSION -or $PKG_VERSION -ne $CARGO_VERSION) {
     }
 }
 
+if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
+    Write-ColorOutput "✗ 缺少 CMake（Rust Opus 依赖需要），请运行 setup_windows.ps1" "Red"
+    exit 1
+}
+
 # Establish the pinned Rust identity, then ask the native owner for the exact
 # target/cache-aware prerequisites before stopping processes or cleaning output.
 Write-ColorOutput "[准备] 准备 Rust toolchain / components / Windows target..." "Blue"
@@ -91,10 +96,13 @@ if ($LASTEXITCODE -ne 0) {
 Write-ColorOutput "✓ 原生推理构建依赖检查完成" "Green"
 Write-Host ""
 
-# 杀死残留进程（避免"旧代码"问题）
-Write-ColorOutput "[准备] 杀死残留进程..." "Blue"
+# 只结束此 Debug 输出启动的旧进程，避免影响已安装的 MyAgents。
+Write-ColorOutput "[准备] 检查旧 Debug 进程..." "Blue"
 
-$appProcesses = Get-Process | Where-Object { $_.ProcessName -eq "MyAgents" }
+$debugExecutablePath = Join-Path $PROJECT_DIR "src-tauri/target/x86_64-pc-windows-msvc/debug/myagents.exe"
+$appProcesses = @(Get-Process -Name "MyAgents" -ErrorAction SilentlyContinue | Where-Object {
+    $_.Path -and [string]::Equals($_.Path, $debugExecutablePath, [System.StringComparison]::OrdinalIgnoreCase)
+})
 
 if ($appProcesses) {
     $appProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -105,7 +113,9 @@ if ($appProcesses) {
 $maxWait = 20  # 20 * 100ms = 2s
 $waited = 0
 while ($waited -lt $maxWait) {
-    $remainingApp = Get-Process -Name "MyAgents" -ErrorAction SilentlyContinue
+    $remainingApp = @(Get-Process -Name "MyAgents" -ErrorAction SilentlyContinue | Where-Object {
+        $_.Path -and [string]::Equals($_.Path, $debugExecutablePath, [System.StringComparison]::OrdinalIgnoreCase)
+    })
     if (-not $remainingApp) {
         break
     }

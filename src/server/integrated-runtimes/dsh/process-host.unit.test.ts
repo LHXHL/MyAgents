@@ -123,7 +123,7 @@ function initializeResult(
   return {
     protocolVersion: GENERATED_PROTOCOL_VERSION,
     schemaSha256: dshLock.protocol.schemaSha256,
-    runtimeVersion: "0.0.0",
+    runtimeVersion: dshLock.runtime.version as DshInitializeResult["runtimeVersion"],
     runtimeGeneration: "artifact-process-generation",
     sessionFormat: "dsh-session-events-v2",
     profileDigest: dshLock.profile.digest,
@@ -138,7 +138,7 @@ function initializeResult(
       name: "deepseek-harness",
       version: DSH_ENGINE_VERSION,
       distribution: "myagents-dsh",
-      distributionVersion: "0.0.0",
+      distributionVersion: dshLock.runtime.version as DshInitializeResult["runtimeEngine"]["distributionVersion"],
     },
     runtimeCapabilities: RUNTIME_CAPABILITIES,
     ...overrides,
