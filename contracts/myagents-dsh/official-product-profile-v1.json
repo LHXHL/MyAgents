@@ -416,13 +416,14 @@
     "contractVersion": "platform-adapters-v1",
     "targets": [
       "darwin-arm64",
+      "darwin-x64",
       "win32-x64",
       "linux-x64"
     ]
   },
   "profileId": "myagents-dsh-official-v1",
   "protocol": {
-    "schemaSha256": "ba11072548c34005ee4dad3809804b8cb24f1fe5e99b33680f012f378edcc1bd",
+    "schemaSha256": "36bdaa3e92c1c888a2d749cb29f82398c9a7ad84b9b91e3db65c5d9edb1aa500",
     "version": "6.0.0"
   },
   "runtimeActivation": "forbidden-until-patched-dsh-and-batch-1-gate",

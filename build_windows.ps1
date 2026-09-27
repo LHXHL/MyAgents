@@ -199,6 +199,7 @@ try {
     $depOk = $true
     if (-not (Test-Command "rustup --version" "https://rustup.rs")) { $depOk = $false }
     if (-not (Test-Command "npm --version" "https://nodejs.org")) { $depOk = $false }
+    if (-not (Test-Command "cmake --version" "https://cmake.org/download/")) { $depOk = $false }
 
     # Rust toolchain/components/target 必须与 rust-toolchain.toml 和 CI 对齐。
     if ($depOk) {

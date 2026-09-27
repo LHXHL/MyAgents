@@ -1,44 +1,30 @@
 {
   "schemaVersion": 1,
   "runtime": {
-    "version": "0.0.0",
-    "artifactSha256": "910660dde90d1260de8736507e4e97960412c17a7decf86db1034e18a484dcdd",
+    "version": "0.1.2",
+    "artifactSha256": "d04232ba0c7fbd6b5f5c8dd223089a804cd0f0c65e893ca089b4818b672b9a0a",
     "entrypoint": "runtime-server-process.artifact.mjs",
     "sessionFormat": "dsh-session-events-v2",
     "profileId": "myagents-dsh-batch-1-candidate-v1",
-    "profileDigest": "f6ea00ac31bfde66ded49b5d0a0f30df726a5c3b3183f92a23b972f44614fd2d"
+    "profileDigest": "88c503546eea450c8cddd8e4acbb5eb3d2c3a63db1a92be63575f143c9685214"
   },
   "protocol": {
     "version": "6.0.0",
-    "schemaSha256": "ba11072548c34005ee4dad3809804b8cb24f1fe5e99b33680f012f378edcc1bd",
-    "generatedClientSha256": "989cc0c461489148054b1558269828366c5a0d0ab965aebb65bada186e1c0a75"
+    "schemaSha256": "36bdaa3e92c1c888a2d749cb29f82398c9a7ad84b9b91e3db65c5d9edb1aa500",
+    "generatedClientSha256": "69cd375abbc92459192ecbad4898446914d79c293461fec04e2bf8c9e926757a"
   },
   "dsh": {
     "version": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
     "sourceCommit": "477b4f420553e8a52c2fbccc464d7561b239c443",
     "patchSeriesSha256": "8d5f1cfa482ebd42be6afd7e2d6b1db271753183dce5865a4148e05570486dfb",
-    "artifactManifestSha256": "6bbb8e457887296fbbebcc9b1cc6ffd283583799458207c358bfd1aeb677021d"
+    "artifactManifestSha256": "50f2ff28771679e24fdf84359a6b5988907dca8eedc861577bc5c183fc6fdb97"
   },
   "platforms": [
-    {
-      "target": "darwin-arm64",
-      "claim": "implementation-complete_pending-native-validation",
-      "evidenceSha256": [
-        "77d641ba238a0d2ce396e174dade94bcdf73405b9a9105a6c777ee8353a06e28"
-      ]
-    },
-    {
-      "target": "linux-x64",
-      "claim": "implementation-complete_pending-native-validation",
-      "evidenceSha256": [
-        "e9463d4b9e2ca91921375f5a1264c48b1c38cbbc1641558074de6d73443a5ded"
-      ]
-    },
     {
       "target": "win32-x64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "d0597b919ce1bf01f19ea7937ae826a0543f9951ecc7020e08ce2e405f2f7f26"
+        "e2267b54ea8577377a561a061e450fe5e5c5b5695d6f3a685afac2a1ef625680"
       ]
     }
   ],
