@@ -100,9 +100,9 @@ Write-Host ""
 Write-ColorOutput "[准备] 检查旧 Debug 进程..." "Blue"
 
 $debugExecutablePath = Join-Path $PROJECT_DIR "src-tauri/target/x86_64-pc-windows-msvc/debug/myagents.exe"
-$appProcesses = @(Get-Process -Name "MyAgents" -ErrorAction SilentlyContinue | Where-Object {
+$appProcesses = Get-Process -Name "MyAgents" -ErrorAction SilentlyContinue | Where-Object {
     $_.Path -and [string]::Equals($_.Path, $debugExecutablePath, [System.StringComparison]::OrdinalIgnoreCase)
-})
+}
 
 if ($appProcesses) {
     $appProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
