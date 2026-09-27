@@ -2920,6 +2920,10 @@ async function main(): Promise<void> {
 
   const commandError = validateCliCommand(positional, !!flags.help);
   if (commandError) return exitAgentCliError(flags, commandError);
+  if (!flags.help) {
+    const dryRunError = validateDryRunSupport(positional, flags);
+    if (dryRunError) return exitAgentCliError(flags, dryRunError);
+  }
 
   if (flags.help) {
     const help = publicCliHelp(positional);
@@ -3365,6 +3369,31 @@ export function validateCliCommand(
     error: `Unknown command: ${command}`,
     suggestion: `List the published ${group} commands and retry with one of them.`,
     suggestedCommand: `myagents ${group} --help`,
+  };
+}
+
+/** Only leaves with a real preview implementation may accept --dry-run. */
+const DRY_RUN_PREVIEW_COMMANDS = new Set([
+  'mcp add',
+  'model add',
+  'config set',
+  'cron add',
+  'skill add',
+  'tool add',
+]);
+
+export function validateDryRunSupport(
+  positional: string[],
+  flags: Record<string, unknown>,
+): AgentCliError | undefined {
+  if (flags.dryRun !== true) return undefined;
+  const route = buildRoute(positional[0], positional[1] || 'list', positional.slice(2));
+  const command = route.replaceAll('/', ' ');
+  if (DRY_RUN_PREVIEW_COMMANDS.has(command)) return undefined;
+  return {
+    code: 'DRY_RUN_UNSUPPORTED',
+    error: `myagents ${command} does not support --dry-run. No changes were applied.`,
+    suggestion: `Read myagents ${command} --help; remove --dry-run only when ready to run the command.`,
   };
 }
 

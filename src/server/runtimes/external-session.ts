@@ -7577,8 +7577,9 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
       // in-flight contract.
       let persistInFlight = isExternalTurnFinalizationInFlight();
       const terminalGenerationBefore = getExternalTurnTerminalGeneration();
+      const presentedAssistantText = currentExternalTurnTextSnapshot();
       const sessionPlan = markExternalSessionComplete(event, {
-        hasAssistantText: !!getExternalAssistantText().trim(),
+        hasAssistantText: !!presentedAssistantText.trim(),
         isUserRequestedStop: getExternalUserRequestedStop,
       });
       const terminalGeneration = getExternalTurnTerminalGeneration();
@@ -7586,9 +7587,9 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
         console.log(`[external-session] Ignoring pre-warm exit (subtype=${event.subtype}) — no user turn was in flight; next send will start fresh`);
       } else if (sessionPlan.kind === 'success') {
         // CC slash commands (e.g. /context, /cost) return output directly in `result`
-        // without streaming text_delta events. Only broadcast if NO turn completed
-        // (turnCompleted means text was already streamed + persisted normally).
-        if (event.result && sessionPlan.shouldFinalize && !getExternalAssistantText().trim()) {
+        // without streaming text_delta events. V2 text is owned by the product
+        // transcript; the legacy assistantText accumulator stays empty there.
+        if (event.result && sessionPlan.shouldFinalize && !presentedAssistantText.trim()) {
           appendExternalAssistantText(event.result);
           appendExternalPendingText(event.result);
           broadcast('chat:message-chunk', event.result);
