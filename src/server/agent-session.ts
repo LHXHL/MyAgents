@@ -6637,13 +6637,25 @@ function normalizeSdkSlashCommands(commands: unknown): UiSlashCommand[] | null {
   }
 
   const normalized: UiSlashCommand[] = [];
-  const seen = new Set<string>();
+  const indexByName = new Map<string, number>();
+  const builtinNames = new Set<string>();
   for (const command of commands) {
     const item = normalizeSdkSlashCommand(command);
     if (!item) continue;
     const key = item.name.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const existingIndex = indexByName.get(key);
+    // Claude Code resolves a marked built-in command before a same-name
+    // plugin/project command. Keep the picker aligned with what /name runs.
+    const builtin = (command as SdkSlashCommand).builtin === true;
+    if (existingIndex !== undefined) {
+      if (builtin && !builtinNames.has(key)) {
+        normalized[existingIndex] = item;
+        builtinNames.add(key);
+      }
+      continue;
+    }
+    indexByName.set(key, normalized.length);
+    if (builtin) builtinNames.add(key);
     normalized.push(item);
   }
   return normalized;
@@ -11864,6 +11876,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       );
     }
 
+    let sdkQueryResumed = Boolean(resumeFrom);
     try {
       activeQuery = await createGuardedSdkQuery(claudeCodeExecutable, () => query({
         prompt: promptGen,
@@ -11882,6 +11895,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       if (!resumeFrom && msg.includes('already in use')) {
         console.warn(`[agent] Session ${effectiveSdkSessionId} already exists on disk, switching to resume`);
         sessionRegistered = true;
+        sdkQueryResumed = true;
         activeQuery = await createGuardedSdkQuery(claudeCodeExecutable, () => query({
           prompt: promptGen,
           options: {
@@ -11899,6 +11913,20 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         throw queryError;
       }
     }
+
+    // The SDK reports cumulative modelUsage. A control turn can own usage
+    // without an assistant, so prefer the last Product turn snapshot. Fresh
+    // native sessions begin at zero even if Product history was retained.
+    const productTurns = getBuiltinProductContent()?.writer.projection.turns;
+    const priorTurnSnapshot = productTurns
+      ? [...productTurns.values()].reverse().find(turn => turn.usage?.sdkCumulativeModelUsage !== undefined)
+        ?.usage?.sdkCumulativeModelUsage
+      : undefined;
+    const priorAssistant = getBuiltinMessages().findLast(message => message.role === 'assistant');
+    builtinTurnLifecycle.beginSdkQueryUsage({
+      resumed: sdkQueryResumed,
+      previous: sdkQueryResumed ? priorTurnSnapshot ?? priorAssistant?.usage?.sdkCumulativeModelUsage : undefined,
+    });
 
     if (activeQuery) {
       if (rewindInputGate) {
@@ -12214,6 +12242,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // These acknowledge coalesced native notifications, not a product turn.
       // Route before provider settlement, queue/usage mutation or rewind cleanup.
       if (sdkMessage.type === 'result' && isCoalescedTaskNotificationReceipt(sdkMessage)) continue;
+      if (sdkMessage.type === 'conversation_reset') builtinTurnLifecycle.resetSdkQueryUsage();
       // Flip turn-scoped substantive-activity flag on first non-init frame.
       // `system/init` is the boilerplate startup frame and must not count
       // as "this turn produced output" for the watchdog auto-resume decision.

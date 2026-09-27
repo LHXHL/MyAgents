@@ -104,6 +104,8 @@ Product Session 的 prepare/commit/rollback 由 `product-session-binding.ts` 管
 
 SDK 合并后台 task-notification 时，前置通知可产生 `origin.kind=task-notification`、成功且 `num_turns=0` 的空 result 回执（0.3.276 实测不携带 `terminal_reason`）；它只确认通知被合并，不拥有产品 turn 的 terminal、usage、队列晋级或 rewind boundary。SDK iterator 在这些副作用前过滤该精确形态，其余真人、错误、取消和实际模型结果仍走原 turn owner。不能仅按空文本或零轮数忽略 result。
 
+SDK `result.modelUsage` 是按模型累计的快照；0.3.277 起恢复和 fork 后也继承累计量。`builtin-session/turn-lifecycle.ts` 在真正接纳 result 为产品 turn 时按上一快照求差，`transcript-persistence.ts` 将本轮增量和原始累计快照写进 Product turn usage；有 assistant 时也写进消息 usage。新 Query 从当前 Product transcript 最近的 turn 快照恢复基线，包括没有 assistant 的 `/compact` 控制回合；rewind 截断的历史自然裁剪该基线。`conversation_reset` 记录空基线，避免下一次 Query 沿用清空前累计量。升级前的历史没有原始快照，首次恢复只采用 SDK 的扁平 `result.usage` 作为保守近似，并从该轮开始建立精确基线。空的后台通知回执及自动重试结果不推进基线；最终失败的重试结果仍记录实际用量。
+
 `src/server/agent-session.ts` 是 builtin 的 public facade。可变状态按 owner 分布在 `src/server/builtin-session/`：
 
 | Owner | 职责 |

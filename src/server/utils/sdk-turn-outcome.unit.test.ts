@@ -7,8 +7,64 @@ import {
   isRecoveredAssistantMessageError,
   findTurnUsageStampIndex,
   extractTurnUsageFromSdkResult,
+  createSdkCumulativeUsageTracker,
 } from './sdk-turn-outcome';
 import type { SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
+
+describe('SDK cumulative result usage', () => {
+  const result = (input: number, output: number, flatInput = input) => ({
+    modelUsage: { opus: { inputTokens: input, outputTokens: output } },
+    usage: { input_tokens: flatInput, output_tokens: 1 },
+  });
+
+  it('books only the new work across turns in one persistent Query', () => {
+    const tracker = createSdkCumulativeUsageTracker({ resumed: false });
+    expect(tracker.preview(result(10, 4)).usage.inputTokens).toBe(10);
+    tracker.commit(result(10, 4));
+    expect(tracker.preview(result(17, 7)).usage).toMatchObject({ inputTokens: 7, outputTokens: 3 });
+  });
+
+  it('uses a persisted SDK snapshot when resuming or forking a Product transcript', () => {
+    const tracker = createSdkCumulativeUsageTracker({
+      resumed: true,
+      previous: { opus: { inputTokens: 10, outputTokens: 4 } },
+    });
+    expect(tracker.preview(result(17, 7)).usage).toMatchObject({ inputTokens: 7, outputTokens: 3 });
+  });
+
+  it('avoids booking all historical work for an old transcript without a snapshot', () => {
+    const tracker = createSdkCumulativeUsageTracker({ resumed: true });
+    expect(tracker.preview(result(117, 47, 7)).usage).toMatchObject({ inputTokens: 7, outputTokens: 1 });
+    tracker.commit(result(117, 47, 7));
+    expect(tracker.preview(result(120, 49)).usage).toMatchObject({ inputTokens: 3, outputTokens: 2 });
+  });
+
+  it('does not advance on a retry or a zeroed error result', () => {
+    const tracker = createSdkCumulativeUsageTracker({ resumed: false });
+    tracker.preview(result(10, 4));
+    expect(tracker.preview(result(14, 6)).usage.inputTokens).toBe(14);
+    tracker.commit(result(14, 6));
+    tracker.commit({ modelUsage: {}, usage: { input_tokens: 0, output_tokens: 0 } });
+    expect(tracker.preview(result(18, 8)).usage.inputTokens).toBe(4);
+  });
+
+  it('ignores an explicit zeroed model row from a crashed SDK process', () => {
+    const tracker = createSdkCumulativeUsageTracker({ resumed: false });
+    tracker.commit(result(14, 6));
+    tracker.commit({ modelUsage: { opus: { inputTokens: 0, outputTokens: 0 } }, usage: { input_tokens: 0, output_tokens: 0 } });
+    expect(tracker.preview(result(18, 8)).usage).toMatchObject({ inputTokens: 4, outputTokens: 2 });
+  });
+
+  it('starts again after a conversation reset', () => {
+    const tracker = createSdkCumulativeUsageTracker({ resumed: false });
+    tracker.commit(result(20, 9));
+    tracker.reset();
+    expect(tracker.preview({ modelUsage: {}, usage: { input_tokens: 0, output_tokens: 0 } }).cumulative).toEqual({});
+    expect(tracker.preview(result(3, 2)).usage).toMatchObject({ inputTokens: 3, outputTokens: 2 });
+    const resumed = createSdkCumulativeUsageTracker({ resumed: true, previous: {} });
+    expect(resumed.preview(result(25, 10)).usage).toMatchObject({ inputTokens: 25, outputTokens: 10 });
+  });
+});
 
 describe('coalesced task notification receipt', () => {
   const receipt = { subtype: 'success', is_error: false, origin: { kind: 'task-notification' },

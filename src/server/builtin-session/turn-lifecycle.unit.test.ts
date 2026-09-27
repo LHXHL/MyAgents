@@ -593,6 +593,7 @@ describe('turn-lifecycle owner', () => {
 
     await lifecycle.handleSdkResult(makeResult({
       result: '[Error]: Concurrency limit exceeded for account, please retry later',
+      modelUsage: { 'test-model': { inputTokens: 8, outputTokens: 2 } },
     }));
 
     expect(deps.retractTransientProviderTextOutput).toHaveBeenCalled();
@@ -603,6 +604,8 @@ describe('turn-lifecycle owner', () => {
     expect(transcriptState.messages.at(-1)).toMatchObject({
       role: 'assistant',
       content: expect.stringContaining('Error: 上游模型服务达到账号并发限制'),
+      usage: { inputTokens: 8, outputTokens: 2,
+        sdkCumulativeModelUsage: { 'test-model': { inputTokens: 8, outputTokens: 2 } } },
     });
   });
 

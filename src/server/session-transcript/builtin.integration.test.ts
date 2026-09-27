@@ -7,7 +7,7 @@ import { NO_CHANNEL_DELIVERY } from '../session-core/channel-delivery';
 import type { TurnTerminalOutcome } from '../session-core/turn-queue';
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
 
-const state = vi.hoisted(() => ({ home: '', failProductIo: false, publicationGate: null as Promise<void> | null, publicationBlocked: false, queryExitGate: null as Promise<void> | null, queryInputEnded: 0, backgroundTask: false, backgroundTaskGate: null as Promise<void> | null, independentInputPump: false, sdkInputs: [] as unknown[], resultMode: 'success' as 'success' | 'error', interruptCloses: false, throwAfterInputEnd: false, query: vi.fn(), sdkRead: vi.fn(), sdkFork: vi.fn(), sdkDelete: vi.fn(), rewindFiles: vi.fn(), beforeResult: vi.fn(), events: [] as [string, unknown][], queuedFollowup: false, exitWithoutResult: false, toolFrames: false, childFrames: false, media: vi.fn() }));
+const state = vi.hoisted(() => ({ home: '', failProductIo: false, publicationGate: null as Promise<void> | null, publicationBlocked: false, queryExitGate: null as Promise<void> | null, queryInputEnded: 0, backgroundTask: false, backgroundTaskGate: null as Promise<void> | null, independentInputPump: false, sdkInputs: [] as unknown[], resultMode: 'success' as 'success' | 'error', sdkCumulativeBase: null as { input: number; output: number } | null, compactAtTurn: null as number | null, resetAtTurn: null as number | null, sdkCommands: [] as unknown[], interruptCloses: false, throwAfterInputEnd: false, query: vi.fn(), sdkRead: vi.fn(), sdkFork: vi.fn(), sdkDelete: vi.fn(), rewindFiles: vi.fn(), beforeResult: vi.fn(), events: [] as [string, unknown][], queuedFollowup: false, exitWithoutResult: false, toolFrames: false, childFrames: false, media: vi.fn() }));
 vi.mock('os', async original => ({ ...await original<typeof import('os')>(), homedir: () => state.home }));
 vi.mock('../utils/fs-utils', async original => {
   const actual = await original<typeof import('../utils/fs-utils')>();
@@ -116,8 +116,37 @@ function fakeQuery(args: { prompt: AsyncIterable<unknown>; options: { sessionId?
         { type: 'result', subtype: 'success', is_error: false, result: `answer ${turn} full-only tail`,
           session_id: sessionId, uuid: randomUUID(), duration_ms: 1, duration_api_ms: 1, num_turns: 1,
           total_cost_usd: 0, usage: { input_tokens: 4, output_tokens: 5 }, permission_denials: [],
+          ...(state.sdkCumulativeBase === null ? {} : { modelUsage: { 'test-model': {
+            inputTokens: state.sdkCumulativeBase.input + turn * 4,
+            outputTokens: state.sdkCumulativeBase.output + turn * 5,
+          } } }),
         },
       );
+      if (state.compactAtTurn === turn) {
+        pending.splice(1);
+        pending.push(
+          { ...envelope, type: 'system', subtype: 'compact_boundary', uuid: randomUUID() },
+          { ...envelope, type: 'result', subtype: 'success', is_error: false, result: '',
+            uuid: randomUUID(), terminal_reason: 'completed', duration_ms: 1, duration_api_ms: 1,
+            num_turns: 1, total_cost_usd: 0, usage: { input_tokens: 4, output_tokens: 0 }, permission_denials: [],
+            modelUsage: { 'test-model': {
+              inputTokens: (state.sdkCumulativeBase?.input ?? 0) + turn * 4,
+              outputTokens: (state.sdkCumulativeBase?.output ?? 0) + (turn - 1) * 5,
+            } },
+          },
+        );
+      }
+      if (state.resetAtTurn === turn) {
+        pending.splice(1);
+        pending.push(
+          { ...envelope, type: 'conversation_reset', new_conversation_id: randomUUID(), uuid: randomUUID(), trigger: 'clear' },
+          { ...envelope, type: 'result', subtype: 'success', is_error: false, result: '',
+            uuid: randomUUID(), terminal_reason: 'completed', duration_ms: 1, duration_api_ms: 1,
+            num_turns: 0, total_cost_usd: 0, usage: { input_tokens: 0, output_tokens: 0 }, permission_denials: [],
+            modelUsage: {},
+          },
+        );
+      }
       if (state.resultMode === 'error') {
         Object.assign(pending[pending.length - 1] as object, {
           subtype: 'error_during_execution',
@@ -169,7 +198,7 @@ function fakeQuery(args: { prompt: AsyncIterable<unknown>; options: { sessionId?
       return { done: false, value: pending.shift() };
     },
     [Symbol.asyncIterator]() { return this; },
-    initializationResult: async () => ({ commands: [] }),
+    initializationResult: async () => ({ commands: state.sdkCommands }),
     interrupt: async () => { if (state.interruptCloses) close(); },
     close,
     rewindFiles: state.rewindFiles,
@@ -195,6 +224,10 @@ beforeEach(async () => {
   state.independentInputPump = false;
   state.sdkInputs.length = 0;
   state.resultMode = 'success';
+  state.sdkCumulativeBase = null;
+  state.compactAtTurn = null;
+  state.resetAtTurn = null;
+  state.sdkCommands = [];
   state.interruptCloses = false;
   state.throwAfterInputEnd = false;
   state.queuedFollowup = false;
@@ -1026,6 +1059,108 @@ async function startSdkContractSession(): Promise<Options> {
   await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
   return state.query.mock.calls.findLast(([call]) => call.options.cwd === workspace)![0].options as Options;
 }
+
+it('persists SDK cumulative usage as per-turn deltas across a Query restart', async () => {
+  state.sdkCumulativeBase = { input: 0, output: 0 };
+  const workspace = join(state.home, 'usage');
+  await mkdir(workspace);
+  const metadata = await store.createSession(workspace, { runtime: 'builtin' });
+  await agent.initializeAgent(workspace, null, metadata.id, { preWarmDisabled: true });
+  const send = async (text: string) => {
+    await agent.enqueueUserMessage(text, [], undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
+    await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
+  };
+
+  await send('first');
+  await send('second');
+  let assistants = agent.getMessages().filter(message => message.role === 'assistant');
+  expect(assistants.map(message => message.usage?.inputTokens)).toEqual([4, 4]);
+  expect(assistants.map(message => message.usage?.outputTokens)).toEqual([5, 5]);
+  expect(assistants[1].usage?.sdkCumulativeModelUsage?.['test-model']).toMatchObject({ inputTokens: 8, outputTokens: 10 });
+
+  await agent.resetSession();
+  state.sdkCumulativeBase = { input: 8, output: 10 };
+  await agent.initializeAgent(workspace, null, metadata.id, { preWarmDisabled: true });
+  await send('after restart');
+  assistants = agent.getMessages().filter(message => message.role === 'assistant');
+  expect(state.query.mock.calls.at(-1)?.[0].options.resume).toBe(metadata.id);
+  expect(assistants.map(message => message.usage?.inputTokens)).toEqual([4, 4, 4]);
+  expect(assistants[2].usage?.sdkCumulativeModelUsage?.['test-model']).toMatchObject({ inputTokens: 12, outputTokens: 15 });
+});
+
+it('resumes usage from a compact control turn that has no assistant message', async () => {
+  state.sdkCumulativeBase = { input: 0, output: 0 };
+  state.compactAtTurn = 2;
+  const workspace = join(state.home, 'compact-usage');
+  await mkdir(workspace);
+  const metadata = await store.createSession(workspace, { runtime: 'builtin' });
+  await agent.initializeAgent(workspace, null, metadata.id, { preWarmDisabled: true });
+  const send = async (text: string) => {
+    await agent.enqueueUserMessage(text, [], undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
+    await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
+  };
+
+  await send('first');
+  await send('/compact');
+  expect(agent.getMessages().filter(message => message.role === 'assistant')).toHaveLength(1);
+  const turns = [...store.getActiveSessionTranscript(metadata.id)!.writer.projection.turns.values()];
+  expect(turns.at(-1)?.usage?.sdkCumulativeModelUsage?.['test-model']).toMatchObject({ inputTokens: 8, outputTokens: 5 });
+  expect(await store.getActiveSessionTranscript(metadata.id)!.writer.flush()).toBe(true);
+
+  await agent.resetSession();
+  state.sdkCumulativeBase = { input: 8, output: 5 };
+  state.compactAtTurn = null;
+  await agent.initializeAgent(workspace, null, metadata.id, { preWarmDisabled: true });
+  expect([...store.getActiveSessionTranscript(metadata.id)!.writer.projection.turns.values()].at(-1)
+    ?.usage?.sdkCumulativeModelUsage?.['test-model']).toMatchObject({ inputTokens: 8, outputTokens: 5 });
+  await send('after compact');
+  const assistants = agent.getMessages().filter(message => message.role === 'assistant');
+  expect(assistants.map(message => message.usage?.inputTokens)).toEqual([4, 4]);
+  expect(assistants[1].usage?.sdkCumulativeModelUsage?.['test-model']).toMatchObject({ inputTokens: 12, outputTokens: 10 });
+});
+
+it('persists an SDK conversation reset baseline through a Query restart', async () => {
+  state.sdkCumulativeBase = { input: 0, output: 0 };
+  state.resetAtTurn = 2;
+  const workspace = join(state.home, 'reset-usage');
+  await mkdir(workspace);
+  const metadata = await store.createSession(workspace, { runtime: 'builtin' });
+  await agent.initializeAgent(workspace, null, metadata.id, { preWarmDisabled: true });
+  const send = async (text: string) => {
+    await agent.enqueueUserMessage(text, [], undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
+    await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
+  };
+
+  await send('first');
+  await send('/clear');
+  const active = store.getActiveSessionTranscript(metadata.id)!;
+  expect([...active.writer.projection.turns.values()].at(-1)?.usage?.sdkCumulativeModelUsage).toEqual({});
+  expect(await active.writer.flush()).toBe(true);
+
+  await agent.resetSession();
+  state.sdkCumulativeBase = { input: 10, output: 10 };
+  state.resetAtTurn = null;
+  await agent.initializeAgent(workspace, null, metadata.id, { preWarmDisabled: true });
+  await send('after reset');
+  const assistant = agent.getMessages().filter(message => message.role === 'assistant').at(-1);
+  expect(assistant?.usage).toMatchObject({ inputTokens: 14, outputTokens: 15 });
+});
+
+it('shows the built-in slash command when the SDK returns a same-name plugin command first', async () => {
+  state.sdkCommands = [
+    { name: 'compact', description: 'Plugin compact', argumentHint: '', builtin: false },
+    { name: 'Compact', description: 'Claude compact', argumentHint: '', builtin: true },
+  ];
+  await startSdkContractSession();
+  const commandEvent = state.events.find(([event, payload]) =>
+    event === 'chat:slash-commands' && (payload as { source?: string }).source === 'initialize');
+  expect(commandEvent?.[1]).toMatchObject({
+    commands: [{ name: 'Compact', description: 'Claude compact', source: 'sdk' }],
+  });
+});
 
 it('keeps product append fresh and coalesced notification receipts outside product terminal handling', async () => {
   notificationReceipts = true;
