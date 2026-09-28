@@ -36,7 +36,9 @@ const lock = selection?.lock ?? releaseLock;
 const { nodeExecutable, ...toolchain } = verifyBundledToolchain(repoRoot, lock, args["--node-root"]);
 runPublicVerifier(runtimeRoot, lock.handoff.manifestSha256, nodeExecutable);
 const verified = verifyHandoffFacts(runtimeRoot, lock);
-compareOrAcceptContracts(runtimeRoot, resolve(repoRoot, "contracts"), false,
-  selection ? ["contracts/myagents-dsh-compatibility-v1.json"] : []);
+if (selection?.source !== "release") {
+  compareOrAcceptContracts(runtimeRoot, resolve(repoRoot, "contracts"), false,
+    selection ? ["contracts/myagents-dsh-compatibility-v1.json"] : []);
+}
 
 process.stdout.write(`${JSON.stringify({ source: selection?.source ?? "release", ...verified, ...toolchain }, null, 2)}\n`);

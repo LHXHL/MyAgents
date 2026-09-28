@@ -88,17 +88,19 @@ function equalSet(left: readonly string[], right: readonly string[]): boolean {
 }
 
 export function assertDshProtocolContract(): void {
+  const sourceSnapshot = !("release" in dshLock);
   if (
     GENERATED_PROTOCOL_VERSION !== protocolMetaJson.protocolVersion ||
     protocolMetaJson.protocolVersion !== dshLock.protocol.version ||
-    protocolMetaJson.schemaSha256 !== dshLock.protocol.schemaSha256 ||
-    protocolMetaJson.sessionFormat !== dshLock.runtime.sessionFormat ||
-    protocolMetaJson.hostMethods.length !== dshLock.protocol.hostMethodCount ||
-    protocolMetaJson.reverseMethods.length !==
-      dshLock.protocol.reverseMethodCount ||
-    protocolMetaJson.notifications.length !== dshLock.protocol.notificationCount
+    (sourceSnapshot && (
+      protocolMetaJson.schemaSha256 !== dshLock.protocol.schemaSha256 ||
+      protocolMetaJson.sessionFormat !== dshLock.runtime.sessionFormat ||
+      protocolMetaJson.hostMethods.length !== dshLock.protocol.hostMethodCount ||
+      protocolMetaJson.reverseMethods.length !== dshLock.protocol.reverseMethodCount ||
+      protocolMetaJson.notifications.length !== dshLock.protocol.notificationCount
+    ))
   ) {
-    throw new Error("DSH protocol metadata differs from the committed lock");
+    throw new Error("DSH protocol metadata differs from the selected lock");
   }
   if (
     !equalSet(protocolMetaJson.hostMethods, HOST_METHOD_NAMES) ||

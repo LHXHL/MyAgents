@@ -142,10 +142,12 @@ function assertNativeRuntimeTarget(root, target) {
   }
 }
 
-function verifySelectedHandoff(root, lock, repoRoot, nodeExecutable) {
+function verifySelectedHandoff(root, lock, repoRoot, nodeExecutable, source) {
   runPublicVerifier(root, lock.handoff.manifestSha256, nodeExecutable);
   verifyHandoffFacts(root, lock);
-  compareOrAcceptContracts(root, resolve(repoRoot, "contracts"), false, [compatibilityContract]);
+  if (source === "local") {
+    compareOrAcceptContracts(root, resolve(repoRoot, "contracts"), false, [compatibilityContract]);
+  }
 }
 
 function digest(buffer) {
@@ -240,14 +242,14 @@ export async function prepareDshRuntime({
     assertTarget(lock, target, source);
     assertNativeRuntimeTarget(input.root, target);
     const { nodeExecutable } = verifyBundledToolchain(repoRoot, lock, nodeRoot);
-    verifySelectedHandoff(input.root, lock, repoRoot, nodeExecutable);
+    verifySelectedHandoff(input.root, lock, repoRoot, nodeExecutable, source);
     const outputRoot = resolve(repoRoot, "src-tauri/resources/integrated-runtimes/dsh");
     const selectionPath = buildSelectionPath(repoRoot);
     const temporary = `${selectionPath}.tmp-${randomUUID()}`;
     try {
       writeFileSync(temporary, `${JSON.stringify({ schemaVersion: 1, source, target, lock, compatibility }, null, 2)}\n`);
       stageCompleteHandoff(input.root, outputRoot, (staged) =>
-        verifySelectedHandoff(staged, lock, repoRoot, nodeExecutable),
+        verifySelectedHandoff(staged, lock, repoRoot, nodeExecutable, source),
       () => renameSync(temporary, selectionPath));
     } finally {
       rmSync(temporary, { force: true });

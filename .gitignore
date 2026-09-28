@@ -81,6 +81,7 @@ src-tauri/resources/nodejs/*
 src-tauri/resources/nodejs-cache/
 src-tauri/resources/integrated-runtimes/*
 !src-tauri/resources/integrated-runtimes/.gitkeep
+src-tauri/resources/dsh-release-cache/
 src-tauri/resources/cliproxy/
 src-tauri/resources/cliproxy-cache/
 src-tauri/resources/cuse-cache/
