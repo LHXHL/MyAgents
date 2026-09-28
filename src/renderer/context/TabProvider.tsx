@@ -2556,7 +2556,11 @@ export default function TabProvider({
             }
             if (streamingMessageRef.current) {
               const previous = streamingMessageRef.current;
-              setHistoryMessages((rows) => upsertMessageById(rows, previous));
+              // A new Session may receive legacy content before its first V2
+              // operation identifies the format. Only a V2-created assistant
+              // row has transcriptState; discard the temporary legacy preview.
+              if (previous.transcriptState !== undefined)
+                setHistoryMessages((rows) => upsertMessageById(rows, previous));
               setStreamingMessage(null);
             }
             seenIdsRef.current.add(message.id);

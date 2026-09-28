@@ -579,6 +579,35 @@ describe('TabProvider session activity ownership', () => {
     },
   );
 
+  it('discards a legacy thinking preview when a new Session adopts V2 assistant messages', async () => {
+    const sessionId = 'pending-v2-thinking-adoption';
+    render(<TabProvider tabId="v2-thinking-adoption" agentDir="/tmp/workspace" sessionId={sessionId} claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+
+    // The first DSH reasoning event can arrive before this Tab knows the new
+    // Session uses V2. It creates a temporary legacy assistant row.
+    emit('chat:thinking-start', { index: 0 });
+    emit('chat:thinking-chunk', { index: 0, delta: 'preview' });
+    expect(readStreamingContent()).toEqual([expect.objectContaining({ type: 'thinking', thinking: 'preview' })]);
+
+    const operation = (value: unknown) => emit('chat:transcript-operation', { sessionId, operation: value });
+    const assistant = (id: string, turnId?: string) => ({ id, role: 'assistant', content: [], timestamp: new Date(0).toISOString(), ...(turnId ? { turnId } : {}), transcriptState: 'streaming' });
+    operation({ kind: 'message-create', message: assistant('canonical-first') });
+    expect(readActivity().historyCount).toBe(0);
+    expect(JSON.parse(screen.getByTestId('history-identities').textContent!)).toEqual([]);
+
+    // A later canonical segment still moves the prior canonical row to history.
+    operation({ kind: 'message-create', message: assistant('canonical-second', 'turn') });
+    expect(JSON.parse(screen.getByTestId('history-identities').textContent!)).toEqual([
+      { id: 'canonical-first', runtimeTurnAnchor: null },
+    ]);
+    emit('chat:message-complete', {});
+    expect(JSON.parse(screen.getByTestId('history-identities').textContent!)).toEqual([
+      { id: 'canonical-first', runtimeTurnAnchor: null },
+      { id: 'canonical-second', runtimeTurnAnchor: null },
+    ]);
+  });
+
   it.each(['no-echo', 'echo-only', 'created-without-text'] as const)(
     'recovers a missed V2 user admission on SSE-native reconnect (%s)', async received => {
       const sessionId = 'pending-v2-reconnect';
