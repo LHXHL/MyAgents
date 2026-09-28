@@ -62,6 +62,7 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
     const detailsKey = JSON.stringify([request.requestId, sessionId, reviewRefId, reviewRefMime, detailsAttempt]);
     const currentDetails = fetchedDetails?.key === detailsKey ? fetchedDetails : undefined;
     const loadedReview = reviewRefId ? currentDetails?.review : request.review;
+    const sandboxEscalation = loadedReview?.scope.permissionClass === 'sandbox.escalation';
     const detailsError = currentDetails?.error;
     useEffect(() => {
         let cancelled = false;
@@ -184,8 +185,8 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
                         <ShieldAlert className="h-4.5 w-4.5 text-[var(--warning)]" />
                     </div>
                     <div className="flex-1 min-w-0">
-                        <div className="text-sm font-semibold text-[var(--ink)]">{t('shell.permissionPrompt.title')}</div>
-                        <div className="mt-0.5 text-xs text-[var(--ink-muted)]">{t('shell.permissionPrompt.subtitle')}</div>
+                        <div className="text-sm font-semibold text-[var(--ink)]">{t(sandboxEscalation ? 'shell.permissionPrompt.sandboxTitle' : 'shell.permissionPrompt.title')}</div>
+                        <div className="mt-0.5 text-xs text-[var(--ink-muted)]">{t(sandboxEscalation ? 'shell.permissionPrompt.sandboxSubtitle' : 'shell.permissionPrompt.subtitle')}</div>
                     </div>
                     <span className="flex items-center rounded-full bg-[var(--warning)]/15 px-2.5 py-1 text-xs font-medium text-[var(--warning)]">
                         {t('shell.permissionPrompt.badge')}
@@ -255,7 +256,7 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
                         className={`flex items-center gap-1.5 rounded-lg bg-[var(--warning)] px-3 py-1.5 font-medium text-[var(--on-warning)] transition-colors hover:brightness-110 disabled:opacity-50 ${commandDisplay ? 'text-sm' : 'text-xs'}`}
                     >
                         <Check className="size-3.5" />
-                        <span>{t(commandDisplay ? 'shell.permissionPrompt.allowOnce' : 'shell.permissionPrompt.allow')}</span>
+                        <span>{t(commandDisplay || sandboxEscalation ? 'shell.permissionPrompt.allowOnce' : 'shell.permissionPrompt.allow')}</span>
                     </button>
                 </div>
             </div>

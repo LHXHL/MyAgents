@@ -258,6 +258,7 @@ function normalizeInitialPermissionMode(
   value: unknown,
 ): InitialMessage['permissionMode'] | undefined {
   return value === 'auto' || value === 'plan' || value === 'fullAgency'
+    || value === 'approval-required' || value === 'workspace-autonomous' || value === 'full-autonomous'
     ? value
     : undefined;
 }

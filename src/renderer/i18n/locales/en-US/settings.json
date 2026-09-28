@@ -2285,20 +2285,5 @@
     "timing": "Collaboration message timing",
     "timingHint": "Controls messages between agents and completion reports. Realtime delivers after the current model or tool step. The chat queue setting above controls user input.",
     "unavailable": "Model unavailable"
-  },
-  "runtimeAvailability": {
-    "title": "Current Session availability",
-    "explanation": "Installation and enablement do not guarantee Runtime admission. Model invocation still requires execution permission.",
-    "generation": "Effective generation: {{effective}} · Requested: {{desired}}",
-    "unknown": "Unknown",
-    "noReceipts": "No admission receipts yet. Start or refresh the Session to check availability.",
-    "ready": "Admitted",
-    "rejected": "Rejected",
-    "disabled": "Disabled",
-    "pending": "Pending application",
-    "yes": "Yes",
-    "no": "No",
-    "enabled": "Enabled: {{value}}",
-    "invocation": "Model invocation: {{value}}"
   }
 }

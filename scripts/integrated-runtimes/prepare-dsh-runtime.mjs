@@ -242,7 +242,6 @@ export async function prepareDshRuntime({
     assertTarget(lock, target, source);
     assertNativeRuntimeTarget(input.root, target);
     const { nodeExecutable } = verifyBundledToolchain(repoRoot, lock, nodeRoot);
-    verifySelectedHandoff(input.root, lock, repoRoot, nodeExecutable, source);
     const outputRoot = resolve(repoRoot, "src-tauri/resources/integrated-runtimes/dsh");
     const selectionPath = buildSelectionPath(repoRoot);
     const temporary = `${selectionPath}.tmp-${randomUUID()}`;

@@ -1689,10 +1689,20 @@
             "type": "string"
           },
           "permissionMode": {
-            "maxLength": 256,
-            "minLength": 1,
-            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
-            "type": "string"
+            "anyOf": [
+              {
+                "const": "approval-required",
+                "type": "string"
+              },
+              {
+                "const": "workspace-autonomous",
+                "type": "string"
+              },
+              {
+                "const": "full-autonomous",
+                "type": "string"
+              }
+            ]
           },
           "provider": {
             "additionalProperties": false,
@@ -6419,8 +6429,16 @@
                     ]
                   },
                   "owner": {
-                    "const": "session_tree",
-                    "type": "string"
+                    "anyOf": [
+                      {
+                        "const": "session_tree",
+                        "type": "string"
+                      },
+                      {
+                        "const": "single_operation",
+                        "type": "string"
+                      }
+                    ]
                   },
                   "permissionClass": {
                     "maxLength": 256,
@@ -6989,30 +7007,6 @@
               "workspace": {
                 "additionalProperties": false,
                 "properties": {
-                  "allowedReadRoots": {
-                    "items": {
-                      "maxLength": 8192,
-                      "minLength": 1,
-                      "pattern": "^(?:/|[A-Za-z]:[\\\\/]|\\\\\\\\(?:\\?\\\\|[^\\\\/]+[\\\\/][^\\\\/]+))[^\\u0000-\\u001F\\u007F]*$",
-                      "type": "string"
-                    },
-                    "maxItems": 32,
-                    "minItems": 1,
-                    "type": "array",
-                    "uniqueItems": true
-                  },
-                  "allowedWriteRoots": {
-                    "items": {
-                      "maxLength": 8192,
-                      "minLength": 1,
-                      "pattern": "^(?:/|[A-Za-z]:[\\\\/]|\\\\\\\\(?:\\?\\\\|[^\\\\/]+[\\\\/][^\\\\/]+))[^\\u0000-\\u001F\\u007F]*$",
-                      "type": "string"
-                    },
-                    "maxItems": 32,
-                    "minItems": 1,
-                    "type": "array",
-                    "uniqueItems": true
-                  },
                   "canonicalRoot": {
                     "maxLength": 8192,
                     "minLength": 1,
@@ -7028,9 +7022,7 @@
                 },
                 "required": [
                   "identity",
-                  "canonicalRoot",
-                  "allowedReadRoots",
-                  "allowedWriteRoots"
+                  "canonicalRoot"
                 ],
                 "type": "object"
               }
@@ -8187,7 +8179,7 @@
                 "type": "string"
               },
               "distributionVersion": {
-                "const": "0.1.2",
+                "const": "0.1.9",
                 "type": "string"
               },
               "name": {
@@ -8214,7 +8206,7 @@
             "type": "string"
           },
           "runtimeVersion": {
-            "const": "0.1.2",
+            "const": "0.1.9",
             "type": "string"
           },
           "schemaSha256": {
@@ -8614,10 +8606,20 @@
             "uniqueItems": true
           },
           "permissionMode": {
-            "maxLength": 256,
-            "minLength": 1,
-            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
-            "type": "string"
+            "anyOf": [
+              {
+                "const": "approval-required",
+                "type": "string"
+              },
+              {
+                "const": "workspace-autonomous",
+                "type": "string"
+              },
+              {
+                "const": "full-autonomous",
+                "type": "string"
+              }
+            ]
           },
           "revision": {
             "maxLength": 256,
@@ -10076,10 +10078,20 @@
             "type": "string"
           },
           "permissionMode": {
-            "maxLength": 256,
-            "minLength": 1,
-            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
-            "type": "string"
+            "anyOf": [
+              {
+                "const": "approval-required",
+                "type": "string"
+              },
+              {
+                "const": "workspace-autonomous",
+                "type": "string"
+              },
+              {
+                "const": "full-autonomous",
+                "type": "string"
+              }
+            ]
           },
           "persistenceRef": {
             "maxLength": 256,
@@ -10996,7 +11008,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "contractSha256": {
-                    "const": "846de41bd872fd0996e20dd9f15884ba49892a7270fa6f498cae00418ce7f8e7",
+                    "const": "7d7d7d67b5cf2e9e06c6886a8490896de6e6488dffb11f322e055e61a49d8d22",
                     "type": "string"
                   },
                   "diagnostics": {
@@ -15415,10 +15427,20 @@
             "type": "string"
           },
           "permissionMode": {
-            "maxLength": 256,
-            "minLength": 1,
-            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
-            "type": "string"
+            "anyOf": [
+              {
+                "const": "approval-required",
+                "type": "string"
+              },
+              {
+                "const": "workspace-autonomous",
+                "type": "string"
+              },
+              {
+                "const": "full-autonomous",
+                "type": "string"
+              }
+            ]
           },
           "persistenceRef": {
             "maxLength": 256,
@@ -16336,7 +16358,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "contractSha256": {
-                    "const": "846de41bd872fd0996e20dd9f15884ba49892a7270fa6f498cae00418ce7f8e7",
+                    "const": "7d7d7d67b5cf2e9e06c6886a8490896de6e6488dffb11f322e055e61a49d8d22",
                     "type": "string"
                   },
                   "diagnostics": {

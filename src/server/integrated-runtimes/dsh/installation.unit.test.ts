@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { resolveDshRuntimeInstallation } from "./installation";
 
 describe("DSH Runtime installation paths", () => {
-  it("resolves the exact verifier, artifact entrypoint, and bundled Node", async () => {
+  it("resolves the artifact entrypoint and bundled Node without verifying the handoff", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "dsh-install-")));
     const dshRoot = join(root, "integrated-runtimes/dsh");
     const artifactRoot = join(dshRoot, "runtime-artifact");
@@ -17,7 +17,6 @@ describe("DSH Runtime installation paths", () => {
       mkdir(join(root, "nodejs/bin"), { recursive: true }),
     ]);
     await Promise.all([
-      writeFile(join(dshRoot, "verify.mjs"), "export {};\n"),
       writeFile(
         join(artifactRoot, "runtime-server-process.artifact.mjs"),
         "export {};\n",

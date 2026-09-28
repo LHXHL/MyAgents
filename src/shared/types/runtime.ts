@@ -504,10 +504,11 @@ export const BUILTIN_PERMISSION_MODES: RuntimePermissionMode[] = [
   },
 ];
 
-/** DSH keeps the universal MyAgents product vocabulary at the Host boundary. */
-export const DSH_PERMISSION_MODES: RuntimePermissionMode[] = BUILTIN_PERMISSION_MODES
-  .filter(mode => mode.value !== 'custom')
-  .map(mode => ({ ...mode }));
+export const DSH_PERMISSION_MODES: RuntimePermissionMode[] = [
+  { value: 'approval-required', label: '请求批准', icon: '\u{1F6E1}', description: '工作区内行动，使用工具需审批' },
+  { value: 'workspace-autonomous', label: '工作区自主', icon: '\u{1F4C1}', description: '工作区内无限制，无需审批' },
+  { value: 'full-autonomous', label: '完全自主', icon: '\u26A1', description: '无限制使用电脑与互联网，无需审批' },
+];
 
 // ─── Codex permission modes (pre-defined for v2) ───
 
@@ -622,7 +623,7 @@ export const CC_MODELS: RuntimeModelInfo[] = [
  */
 export function getDefaultRuntimePermissionMode(runtime: RuntimeType): string {
   switch (runtime) {
-    case 'dsh': return 'auto';
+    case 'dsh': return 'approval-required';
     case 'claude-code': return 'manual';
     case 'codex': return 'full-auto';
     case 'builtin': return 'auto';
@@ -650,7 +651,7 @@ export function getDefaultRuntimePermissionMode(runtime: RuntimeType): string {
  */
 export function getMaxPermissionForRuntime(runtime: RuntimeType): string {
   switch (runtime) {
-    case 'dsh':         return 'fullAgency';
+    case 'dsh':         return 'full-autonomous';
     case 'builtin':     return 'fullAgency';
     case 'claude-code': return 'bypassPermissions';
     case 'codex':       return 'no-restrictions';
@@ -902,7 +903,7 @@ export interface RuntimeInspection {
   runtime: RuntimeType;
   installed: boolean;
   version?: string;
-  resources: { state: 'verified' | 'unavailable' | 'verification_failed'; code?: string; expectedIdentity: IntegratedRuntimeArtifactIdentity; installedIdentity: IntegratedRuntimeArtifactIdentity | null };
+  resources: { state: 'available' | 'unavailable'; code?: string; expectedIdentity: IntegratedRuntimeArtifactIdentity; installedIdentity: IntegratedRuntimeArtifactIdentity | null };
   process: { state: string; pid?: number; identity?: object | null; artifact?: object | null };
   model: { id: string; provider: string; revision: string } | null;
   permissions: RuntimePermissionDiagnostics | null;

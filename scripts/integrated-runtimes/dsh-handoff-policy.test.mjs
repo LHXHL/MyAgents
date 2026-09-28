@@ -31,6 +31,7 @@ import {
   stageCompleteHandoff,
   verifyHandoffFacts,
 } from "./dsh-handoff-policy.mjs";
+import { readDshBuildSelection } from "./dsh-build-selection.mjs";
 import { verifyDshDevelopmentFreshness } from "./verify-dsh-dev-freshness.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
@@ -105,7 +106,8 @@ function admissionFixture(root, { platform, explicitNodeRoot = false } = {}) {
   }
 
   const source = resolve(repoRoot, "src-tauri/resources/integrated-runtimes/dsh");
-  const lock = JSON.parse(readFileSync(resolve(repoRoot, "src/shared/integrated-runtimes/dsh-lock.json")));
+  const lock = structuredClone(readDshBuildSelection(repoRoot)?.lock
+    ?? JSON.parse(readFileSync(resolve(repoRoot, "src/shared/integrated-runtimes/dsh-lock.json"))));
   const outer = JSON.parse(readFileSync(resolve(source, HANDOFF_MANIFEST)));
   for (const path of [...CONTRACT_PATHS, outer.notices.path]) {
     writeFixtureFile(resolve(runtimeRoot, path), readFileSync(resolve(source, path)));
@@ -454,13 +456,15 @@ test("Dev freshness binds the bundled Runtime to one clean source commit", () =>
   });
 });
 
-test("repository lock, generated contracts, resources, and toolchain authorities agree", () => {
-  const lock = JSON.parse(
+test("build-selected lock, generated contracts, resources, and toolchain authorities agree", () => {
+  const committedLock = JSON.parse(
     readFileSync(
       resolve(repoRoot, "src/shared/integrated-runtimes/dsh-lock.json"),
       "utf8",
     ),
   );
+  const selection = readDshBuildSelection(repoRoot);
+  const lock = selection?.lock ?? committedLock;
   const packageJson = JSON.parse(
     readFileSync(resolve(repoRoot, "package.json"), "utf8"),
   );
@@ -477,7 +481,7 @@ test("repository lock, generated contracts, resources, and toolchain authorities
   const release = JSON.parse(readFileSync(resolve(repoRoot, "src/shared/integrated-runtimes/dsh-release.json"), "utf8"));
   assert.deepEqual(Object.keys(release), ["version"]);
   assert.match(release.version, /^\d+\.\d+\.\d+$/);
-  assert.equal(lock.release, undefined);
+  assert.equal(committedLock.release, undefined);
   assert.equal(lock.bundledNpm.version, "11.19.0");
   assert.equal(lock.bundledNpm.authority, "myagents-product-resource");
   assert.equal(lock.protocol.version, "6.0.0");
@@ -489,7 +493,7 @@ test("repository lock, generated contracts, resources, and toolchain authorities
     "integrated-runtimes",
   );
   assert.match(packageJson.scripts["tauri:build"], /build-dsh-tauri/);
-  assert.match(packageJson.scripts["tauri:build:prepared"], /verify:dsh-runtime/);
+  assert.equal(packageJson.scripts["tauri:build:prepared"], "tauri build");
   assert.match(packageJson.scripts["tauri:dev"], /verify:dsh-runtime/);
   assert.equal(tauriConfig.build.beforeBundleCommand, undefined);
 
@@ -529,10 +533,10 @@ test("repository lock, generated contracts, resources, and toolchain authorities
   );
   assert.equal(
     sha256ForTest(generatedClient),
-    lock.handoff.generatedClientSha256,
+    committedLock.handoff.generatedClientSha256,
   );
-  assert.equal(sha256ForTest(compatibility), lock.handoff.compatibilitySha256);
-  assert.equal(sha256ForTest(schema), lock.protocol.schemaSha256);
+  assert.equal(sha256ForTest(compatibility), committedLock.handoff.compatibilitySha256);
+  assert.equal(sha256ForTest(schema), committedLock.protocol.schemaSha256);
   assert.equal(
     runtimeManifest.files.some((entry) => entry.kind === "symlink"),
     false,

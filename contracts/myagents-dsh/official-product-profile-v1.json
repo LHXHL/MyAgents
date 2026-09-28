@@ -86,6 +86,11 @@
         "version": "0.1.7-rc.2"
       },
       {
+        "name": "@deepseek-ai/dsh-fs-sandbox",
+        "role": "dsh-library",
+        "version": "0.1.7-rc.2"
+      },
+      {
         "name": "@deepseek-ai/dsh-invariants",
         "role": "dsh-library",
         "version": "0.1.7-rc.2"
@@ -408,7 +413,7 @@
     ]
   },
   "dsh": {
-    "baselineSha256": "4147e89a8712cc794b1909f7a5db2e9c5558bfcd49ffa62309387a67ea187eb0",
+    "baselineSha256": "6d0fa3578632d56bd4df61028e0161599ce68c6d678576f778ea97b64a7d6bd5",
     "release": "0.1.7-rc.2"
   },
   "formatVersion": 1,
@@ -423,7 +428,7 @@
   },
   "profileId": "myagents-dsh-official-v1",
   "protocol": {
-    "schemaSha256": "36bdaa3e92c1c888a2d749cb29f82398c9a7ad84b9b91e3db65c5d9edb1aa500",
+    "schemaSha256": "c52558486ded4d6e2f34ef0b00eb4937bcb5f5d33526f3a1d265c7e74b41e4fa",
     "version": "6.0.0"
   },
   "runtimeActivation": "forbidden-until-patched-dsh-and-batch-1-gate",

@@ -57,7 +57,7 @@
     "tauri": "tauri",
     "tauri:dev": "node scripts/prepare-cliproxy.mjs && npm run prepare:native-inference && npm run verify:dsh-runtime && npm run verify:dsh-runtime:fresh && tauri dev",
     "tauri:build": "node scripts/integrated-runtimes/build-dsh-tauri.mjs",
-    "tauri:build:prepared": "npm run verify:dsh-runtime && tauri build",
+    "tauri:build:prepared": "tauri build",
     "pretypecheck": "node scripts/patch-codemirror-view.mjs --check && node scripts/patch-react-virtuoso.mjs --check",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --cache --cache-location .eslintcache --max-warnings=0 && npm run lint:deps && npm run verify:agent-docs",

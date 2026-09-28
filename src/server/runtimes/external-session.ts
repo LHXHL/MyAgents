@@ -10888,6 +10888,8 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
           ? {}
           : { rootToolUseId: event.rootToolUseId }),
         ...(event.display === undefined ? {} : { display: event.display }),
+        ...(event.defaultToNo === undefined ? {} : { defaultToNo: event.defaultToNo }),
+        ...(event.suppressAlwaysAllowRule === undefined ? {} : { suppressAlwaysAllowRule: event.suppressAlwaysAllowRule }),
       };
       setExternalInteractiveRequest(event.requestId, {
         type: 'permission:request',

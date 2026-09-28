@@ -44,27 +44,7 @@
     "permissionModeHeader": "会话模式",
     "agentSettings": "Agent 设置",
     "autonomyWarning": "自主行动已启用：Agent 可能做出不可挽回的操作，请谨慎使用",
-    "dshAutonomyWarning": "Full Agency 会跳过 Runtime 权限确认；它不是操作系统沙箱，Host 与产品硬策略仍会执行。",
-    "permissionRules": {
-      "manage": "已授权操作",
-      "title": "已授权操作",
-      "description": "这些精确授权由 DSH 为当前会话持有；Runtime 的硬策略、工作区、模式、来源与 Hook 检查仍会执行。",
-      "loading": "正在读取授权规则…",
-      "loadFailed": "读取授权规则失败。",
-      "revokeFailed": "撤销授权规则失败。",
-      "productMode": "产品模式",
-      "effectiveMode": "Runtime 生效模式",
-      "drift": "期望权限模式与 Runtime 生效模式不一致；完成协调前会继续阻止新的执行。",
-      "ruleCount": "精确授权数",
-      "empty": "当前没有生效的精确授权。",
-      "expires": "到期时间：{{value}}",
-      "sessionLifetime": "当前会话内始终允许",
-      "revoke": "撤销",
-      "revokeRule": "撤销 {{tool}} 授权",
-      "addHint": "请在权限确认弹窗中选择“始终允许”来创建授权。",
-      "refresh": "刷新",
-      "close": "关闭"
-    },
+    "dshAutonomyWarning": "完全自主将跳过工具审批，允许在当前用户权限范围内使用电脑与互联网。",
     "toolsTitle": "使用工具",
     "toolsLabel": "工具",
     "toolsHeader": "工具 (在此对话中启用)",
@@ -132,6 +112,18 @@
       "thoughtSoftCap": "已显示前 {{count}} 条匹配，请输入更精确的关键词"
     },
     "permissionModes": {
+      "approval-required": {
+        "label": "请求批准",
+        "description": "工作区内行动，使用工具需审批"
+      },
+      "workspace-autonomous": {
+        "label": "工作区自主",
+        "description": "工作区内无限制，无需审批"
+      },
+      "full-autonomous": {
+        "label": "完全自主",
+        "description": "无限制使用电脑与互联网，无需审批"
+      },
       "auto": {
         "label": "行动",
         "description": "Agent 在工作区内行动，使用工具需确认"
@@ -554,6 +546,9 @@
       "cancelQueued": "取消排队"
     },
     "permissionPrompt": {
+      "sandboxTitle": "工作区外写入请求",
+      "sandboxSubtitle": "仅允许当前这次操作突破工作区写入限制",
+      "sandboxScope": "本次批准只用于当前操作，不改变会话权限模式。",
       "commandTitle": "{{shell}} 执行请求",
       "awaitingApproval": "等待确认",
       "command": "命令",

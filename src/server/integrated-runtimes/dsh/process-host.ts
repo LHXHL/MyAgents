@@ -17,10 +17,7 @@ import {
   createFencedDshHostHandlers,
   createFencedDshNotificationHandlers,
 } from "./host-ports";
-import {
-  assertDshHandoffVerification,
-  type DshRuntimeInstallation,
-} from "./installation";
+import type { DshRuntimeInstallation } from "./installation";
 import {
   DSH_CLIENT_METHOD_BY_PROTOCOL,
   type DshGeneratedHostClient,
@@ -77,10 +74,6 @@ export type DshRuntimeProcessHostOptions = Readonly<{
   loadProtocolRuntime?: (
     runtimeArtifactRoot: string,
   ) => Promise<LoadedDshProtocolRuntime>;
-  assertHandoffVerification?: (
-    installation: DshRuntimeInstallation,
-    childEnvironment: DshChildEnvironment,
-  ) => Promise<void>;
   spawnRuntime?: DshSpawnRuntime;
 }>;
 
@@ -263,10 +256,6 @@ export class DshRuntimeProcessHost {
     try {
       const loadProtocol =
         this.options.loadProtocolRuntime ?? loadDshProtocolRuntime;
-      const assertHandoff =
-        this.options.assertHandoffVerification ?? assertDshHandoffVerification;
-      await assertHandoff(this.options.installation, this.childEnvironment);
-      this.assertStartStillAdmitted();
       const protocolRuntime = await loadProtocol(
         this.options.installation.runtimeArtifactRoot,
       );

@@ -32,7 +32,9 @@ export function PermissionReviewDetails({ review }: { review: PermissionReview }
     <p className="mt-1 text-xs text-[var(--ink-muted)]">{review.actor.origin === 'root' ? label('rootAgent') : `${label('childAgent')} · ${review.actor.agentId}`}</p>
     {content(operation)}
     <div className="mt-3 border-t border-[var(--warning)]/20 pt-2 text-xs leading-relaxed text-[var(--ink-muted)]">
-      {t(review.scope.lifetimeMs === null ? 'shell.permissionPrompt.sessionRuleScope' : 'shell.permissionPrompt.ruleScope', {
+      {review.scope.permissionClass === 'sandbox.escalation'
+        ? t('shell.permissionPrompt.sandboxScope')
+        : t(review.scope.lifetimeMs === null ? 'shell.permissionPrompt.sessionRuleScope' : 'shell.permissionPrompt.ruleScope', {
         tool: review.scope.tool, target: review.scope.target,
         ...(review.scope.lifetimeMs === null ? {} : { hours: review.scope.lifetimeMs / 3_600_000 }),
       })}

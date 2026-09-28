@@ -87,7 +87,6 @@ import { useBrowserResourceReady } from '@/hooks/useBrowserResourceReady';
 import SelectionCommentMenu from '@/components/SelectionCommentMenu';
 import TerminalReasonBanner from '@/components/TerminalReasonBanner';
 import RuntimeDiagnosticsBanner from '@/components/RuntimeDiagnosticsBanner';
-import DshPermissionRulesDialog from '@/components/DshPermissionRulesDialog';
 import { UnifiedLogsPanel } from '@/components/UnifiedLogsPanel';
 import WorkspaceConfigPanel, {
   type Tab as WorkspaceTab,
@@ -1576,7 +1575,6 @@ export default function Chat({
   }, []);
 
   const [workspaceRefreshKey, _setWorkspaceRefreshKey] = useState(0); // Key to trigger workspace refresh
-  const [showDshPermissionRules, setShowDshPermissionRules] = useState(false);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(
     (currentAgent?.permissionMode as PermissionMode | undefined) ??
       currentProject?.permissionMode ??
@@ -7030,12 +7028,6 @@ export default function Chat({
                       setWorkspaceRefreshTrigger((value) => value + 1);
                     }}
               onOpenAgentSettings={handleOpenAgentSettings}
-              onManagePermissionRules={
-                currentRuntime === 'dsh' &&
-                currentRuntimeSource === 'integrated'
-                  ? () => setShowDshPermissionRules(true)
-                  : undefined
-              }
               onWorkspaceRefresh={triggerWorkspaceRefresh}
               // Cron task props - the non-blocking status bar is rendered inside SimpleChatInput.
               cronModeEnabled={cronState.isEnabled}
@@ -7586,14 +7578,6 @@ export default function Chat({
       )}
 
       {/* Workspace Config Panel */}
-      {showDshPermissionRules && (
-        <DshPermissionRulesDialog
-          desiredProductMode={inputChromePermissionMode}
-          permissionStatus={runtimeDiagnostics?.permissions}
-          onClose={() => setShowDshPermissionRules(false)}
-        />
-      )}
-
       {showWorkspaceConfig && (
         <WorkspaceConfigPanel
           agentDir={agentDir}

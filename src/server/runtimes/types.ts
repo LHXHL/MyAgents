@@ -362,6 +362,8 @@ export type UnifiedEvent = (
     suggestions?: unknown[];
     /** Preserve the Runtime interaction presentation instead of inferring it from a tool name. */
     interactionKind?: 'permission' | 'ask_user' | 'plan_approval';
+    defaultToNo?: boolean;
+    suppressAlwaysAllowRule?: boolean;
   }
   | {
     kind: 'interactive_request_resolved';

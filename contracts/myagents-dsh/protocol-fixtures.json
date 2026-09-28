@@ -52,12 +52,6 @@
           },
           "revision": "execution-v1",
           "workspace": {
-            "allowedReadRoots": [
-              "/fixture/workspace"
-            ],
-            "allowedWriteRoots": [
-              "/fixture/workspace"
-            ],
             "canonicalRoot": "/fixture/workspace",
             "identity": "workspace-1"
           }
@@ -149,12 +143,6 @@
           },
           "revision": "execution-v1",
           "workspace": {
-            "allowedReadRoots": [
-              "/fixture/workspace"
-            ],
-            "allowedWriteRoots": [
-              "/fixture/workspace"
-            ],
             "canonicalRoot": "/fixture/workspace",
             "identity": "workspace-1"
           }
@@ -303,13 +291,13 @@
         },
         "runtimeEngine": {
           "distribution": "myagents-dsh",
-          "distributionVersion": "0.1.2",
+          "distributionVersion": "0.1.9",
           "name": "deepseek-harness",
           "version": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e"
         },
         "runtimeGeneration": "generation-1",
-        "runtimeVersion": "0.1.2",
-        "schemaSha256": "36bdaa3e92c1c888a2d749cb29f82398c9a7ad84b9b91e3db65c5d9edb1aa500",
+        "runtimeVersion": "0.1.9",
+        "schemaSha256": "c52558486ded4d6e2f34ef0b00eb4937bcb5f5d33526f3a1d265c7e74b41e4fa",
         "sessionFormat": "dsh-session-events-v2"
       }
     },
@@ -338,7 +326,7 @@
         "runtimeSessionId": "runtime-session-1",
         "state": "ready",
         "toolCatalog": {
-          "contractSha256": "846de41bd872fd0996e20dd9f15884ba49892a7270fa6f498cae00418ce7f8e7",
+          "contractSha256": "7d7d7d67b5cf2e9e06c6886a8490896de6e6488dffb11f322e055e61a49d8d22",
           "diagnostics": [
             {
               "available": true,
@@ -437,7 +425,7 @@
               "tool": "TaskUpdate"
             }
           ],
-          "digest": "3f0e33afe062b02ad6dc502b41a98f6029957cb30bac37391c9f1f57583a4811",
+          "digest": "e57a18f3b04984bae3af70af55b8525a5fac0bca80464321ab6e7725a5b04dfd",
           "effectiveTools": [
             "Read",
             "Write",
@@ -1221,7 +1209,7 @@
     }
   ],
   "protocolVersion": "6.0.0",
-  "schemaSha256": "36bdaa3e92c1c888a2d749cb29f82398c9a7ad84b9b91e3db65c5d9edb1aa500",
+  "schemaSha256": "c52558486ded4d6e2f34ef0b00eb4937bcb5f5d33526f3a1d265c7e74b41e4fa",
   "valid": [
     {
       "frame": {
@@ -1273,12 +1261,6 @@
             },
             "revision": "execution-v1",
             "workspace": {
-              "allowedReadRoots": [
-                "/fixture/workspace"
-              ],
-              "allowedWriteRoots": [
-                "/fixture/workspace"
-              ],
               "canonicalRoot": "/fixture/workspace",
               "identity": "workspace-1"
             }
@@ -1430,13 +1412,13 @@
           },
           "runtimeEngine": {
             "distribution": "myagents-dsh",
-            "distributionVersion": "0.1.2",
+            "distributionVersion": "0.1.9",
             "name": "deepseek-harness",
             "version": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e"
           },
           "runtimeGeneration": "generation-1",
-          "runtimeVersion": "0.1.2",
-          "schemaSha256": "36bdaa3e92c1c888a2d749cb29f82398c9a7ad84b9b91e3db65c5d9edb1aa500",
+          "runtimeVersion": "0.1.9",
+          "schemaSha256": "c52558486ded4d6e2f34ef0b00eb4937bcb5f5d33526f3a1d265c7e74b41e4fa",
           "sessionFormat": "dsh-session-events-v2"
         }
       },
@@ -1456,7 +1438,7 @@
           "configRevision": "config-v1",
           "extensionDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "interactionScenario": "fixture-interaction",
-          "permissionMode": "default",
+          "permissionMode": "approval-required",
           "persistenceRef": "persistence-1",
           "provider": {
             "api": "openai-completions",

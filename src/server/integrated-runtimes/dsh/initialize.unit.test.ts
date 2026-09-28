@@ -10,8 +10,6 @@ function executionEnvironment(): Omit<DshExecutionEnvironment, "digest"> {
     workspace: {
       identity: "workspace-1",
       canonicalRoot: "/fixture/workspace",
-      allowedReadRoots: ["/fixture/workspace"],
-      allowedWriteRoots: ["/fixture/workspace"],
     },
     executables: {
       bundledNodeRef: "node-v24",

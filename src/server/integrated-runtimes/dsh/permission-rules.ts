@@ -52,8 +52,7 @@ export function parseDshPermissionRule(value: unknown): RuntimePermissionRule {
   const rule = object(value, 'DSH permission rule');
   if (rule.origin !== 'root') throw new Error('DSH permission rule origin is invalid');
   const createdAt = nonNegativeInteger(rule.createdAt, 'DSH permission rule createdAt');
-  const expiresAt = rule.expiresAt === null ? null : nonNegativeInteger(rule.expiresAt, 'DSH permission rule expiresAt');
-  if (expiresAt !== null && expiresAt < createdAt) throw new Error('DSH permission rule expiry is invalid');
+  if (rule.expiresAt !== null) throw new Error('DSH permission rule expiresAt must be null');
   return Object.freeze({
     ruleId: identifier(rule.ruleId, 'DSH permission rule id'),
     revision: identifier(rule.revision, 'DSH permission rule revision'),
@@ -62,7 +61,7 @@ export function parseDshPermissionRule(value: unknown): RuntimePermissionRule {
     target: target(rule.target),
     origin: 'root',
     createdAt,
-    expiresAt,
+    expiresAt: null,
   });
 }
 
@@ -84,8 +83,13 @@ export function parseDshPermissionRulesSnapshot(value: unknown): RuntimePermissi
   if (new Set(rules.map(rule => rule.ruleId)).size !== rules.length) {
     throw new Error('DSH permission policy contains duplicate rule ids');
   }
+  if (snapshot.permissionMode !== 'approval-required'
+    && snapshot.permissionMode !== 'workspace-autonomous'
+    && snapshot.permissionMode !== 'full-autonomous') {
+    throw new Error('DSH permission mode is invalid');
+  }
   return Object.freeze({
-    permissionMode: identifier(snapshot.permissionMode, 'DSH permission mode'),
+    permissionMode: snapshot.permissionMode,
     autoAllowTools: Object.freeze(autoAllowTools),
     revision: identifier(snapshot.revision, 'DSH permission policy revision'),
     rules: Object.freeze(rules),
@@ -126,16 +130,15 @@ export function validateDshPermissionTarget(value: string): string {
 }
 
 export function projectDshPermissionDiagnostics(
-  desiredProductMode: string,
-  desiredRuntimeMode: string,
+  desiredMode: string,
   snapshot: RuntimePermissionRulesSnapshot,
 ): RuntimePermissionDiagnostics {
   return Object.freeze({
-    desiredProductMode,
-    desiredRuntimeMode,
+    desiredProductMode: desiredMode,
+    desiredRuntimeMode: desiredMode,
     effectiveRuntimeMode: snapshot.permissionMode,
     policyRevision: snapshot.revision,
     ruleCount: snapshot.rules.length,
-    state: snapshot.permissionMode === desiredRuntimeMode ? 'applied' : 'drift',
+    state: snapshot.permissionMode === desiredMode ? 'applied' : 'drift',
   });
 }

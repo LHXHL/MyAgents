@@ -1372,6 +1372,7 @@ pub(crate) fn managed_permission_for_display(permission_mode: &str) -> &'static 
 
 pub(crate) fn max_permission_for_runtime(runtime: Option<&str>) -> &'static str {
     match runtime {
+        Some("dsh") => "full-autonomous",
         Some("claude-code") => "bypassPermissions",
         Some("codex") => "no-restrictions",
         _ => "fullAgency",
@@ -1380,6 +1381,7 @@ pub(crate) fn max_permission_for_runtime(runtime: Option<&str>) -> &'static str 
 
 fn default_permission_for_runtime(runtime: Option<&str>) -> &'static str {
     match runtime {
+        Some("dsh") => "approval-required",
         Some("claude-code") => "manual",
         Some("codex") => "full-auto",
         _ => "auto",
@@ -1388,6 +1390,10 @@ fn default_permission_for_runtime(runtime: Option<&str>) -> &'static str {
 
 fn is_permission_for_runtime(runtime: Option<&str>, permission_mode: &str) -> bool {
     match runtime {
+        Some("dsh") => matches!(
+            permission_mode,
+            "approval-required" | "workspace-autonomous" | "full-autonomous"
+        ),
         Some("claude-code") => matches!(
             permission_mode,
             "manual" | "auto" | "plan" | "acceptEdits" | "bypassPermissions" | "dontAsk"
@@ -1875,6 +1881,14 @@ mod tests {
             }
         );
         assert!(config.enabled);
+        assert_eq!(config.permission_mode, "full-autonomous");
+
+        let mut channel = base_channel();
+        channel.overrides = Some(ChannelOverrides {
+            permission_mode: Some("workspace-autonomous".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(channel.to_im_config(&agent).permission_mode, "workspace-autonomous");
     }
 
     #[test]

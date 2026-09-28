@@ -60,7 +60,7 @@
     }
   },
   "dsh": {
-    "artifactManifestSha256": "50f2ff28771679e24fdf84359a6b5988907dca8eedc861577bc5c183fc6fdb97",
+    "artifactManifestSha256": "bcad0a0138fb68c97f2853a7357e452f947ee5c9cd2e926c22ac7d430e46c98b",
     "artifactVersion": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
     "runtimePackages": {
       "@deepseek-ai/cordis": "4.0.4",
@@ -75,6 +75,7 @@
       "@deepseek-ai/dsh-compaction-basic": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
       "@deepseek-ai/dsh-compaction-tool-result-pruner": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
       "@deepseek-ai/dsh-fs-local": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
+      "@deepseek-ai/dsh-fs-sandbox": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
       "@deepseek-ai/dsh-llm": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
       "@deepseek-ai/dsh-llm-deepseek": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
       "@deepseek-ai/dsh-llm-pi-ai": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
@@ -177,13 +178,13 @@
       "host/attachment/acquire",
       "host/attachment/release"
     ],
-    "schemaSha256": "36bdaa3e92c1c888a2d749cb29f82398c9a7ad84b9b91e3db65c5d9edb1aa500",
+    "schemaSha256": "c52558486ded4d6e2f34ef0b00eb4937bcb5f5d33526f3a1d265c7e74b41e4fa",
     "version": "6.0.0"
   },
   "runtimeActivation": "workstream-evidence-only",
   "stage": "batch-1-w4-a11",
   "tools": {
     "contractProfile": "canonical-agent-experience-v1",
-    "contractSha256": "846de41bd872fd0996e20dd9f15884ba49892a7270fa6f498cae00418ce7f8e7"
+    "contractSha256": "7d7d7d67b5cf2e9e06c6886a8490896de6e6488dffb11f322e055e61a49d8d22"
   }
 }

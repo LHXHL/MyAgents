@@ -71,7 +71,7 @@ import {
 } from './extension-compiler';
 import { executeDshProductHostTool, resolveDshMcpCredential } from './extension-host';
 import { createDshInitializeParams } from './initialize';
-import { resolveDshRuntimeInstallation, verifyDshHandoffInstallation } from './installation';
+import { resolveDshRuntimeInstallation } from './installation';
 import { buildDshQuestionAnswer, reconcileExpiredDshInteractionResponse } from './interaction-response';
 import { dshPermissionReview } from './permission-display';
 import { resolveDshProviderApiKey } from './provider-credential';
@@ -101,12 +101,10 @@ import {
   type DshRuntimeNotificationHandlers,
 } from './protocol-types';
 
-const OFFICIAL_INITIAL_PERMISSION_MODE = 'default';
 const OFFICIAL_INTERACTION_REVISION = 'host-interaction-v1';
 const DSH_CHECKPOINT_POLICY_REVISION = 'myagents-root-write-edit-checkpoint-v1';
 
-type ProductPermissionMode = 'auto' | 'plan' | 'fullAgency';
-type DshPermissionMode = 'acceptEdits' | 'bypassPermissions';
+type ProductPermissionMode = 'approval-required' | 'workspace-autonomous' | 'full-autonomous';
 
 type PendingInteraction = Readonly<{
   kind: 'permission' | 'ask_user' | 'plan_approval';
@@ -124,7 +122,6 @@ type DshConfiguration = Readonly<{
   preparedProvider?: PreparedProvider;
   onManagedDrain?: () => void;
   productPermissionMode: ProductPermissionMode;
-  dshPermissionMode: DshPermissionMode;
   reasoningEffort: DshReasoningEffortSelection;
   revision: string;
 }>;
@@ -247,7 +244,6 @@ function extensionDiagnostics(
     ...(configuration && permissionRules ? {
       permissions: projectDshPermissionDiagnostics(
         configuration.productPermissionMode,
-        configuration.dshPermissionMode,
         permissionRules,
       ),
     } : {}),
@@ -354,21 +350,9 @@ function nonNegativeInteger(value: unknown, description: string): number {
 }
 
 function productPermissionMode(value: string | undefined): ProductPermissionMode {
-  if (value === undefined || value === '' || value === 'auto') return 'auto';
-  if (value === 'plan' || value === 'fullAgency') return value;
+  if (value === undefined || value === '') return 'approval-required';
+  if (value === 'approval-required' || value === 'workspace-autonomous' || value === 'full-autonomous') return value;
   throw new Error(`Unsupported MyAgents DSH permission mode: ${value}`);
-}
-
-function productModeForPlanProjection(
-  mode: 'normal' | 'plan',
-  configured: ProductPermissionMode,
-): ProductPermissionMode {
-  if (mode === 'plan') return 'plan';
-  return configured === 'plan' ? 'auto' : configured;
-}
-
-function dshPermissionMode(value: ProductPermissionMode): DshPermissionMode {
-  return value === 'fullAgency' ? 'bypassPermissions' : 'acceptEdits';
 }
 
 function reasoningSelection(value: string | undefined): DshReasoningEffortSelection {
@@ -507,7 +491,6 @@ export async function compileConfiguration(
       }
       return { provider: resolveProviderForModel(provider, ref.modelId), apiKey: refCredential.apiKey };
     });
-    const dshMode = dshPermissionMode(productMode);
     return Object.freeze({
       ...collaborative,
       profile,
@@ -517,13 +500,12 @@ export async function compileConfiguration(
       ...(previous?.onManagedDrain ?? onManagedDrain
         ? { onManagedDrain: previous?.onManagedDrain ?? onManagedDrain } : {}),
       productPermissionMode: productMode,
-      dshPermissionMode: dshMode,
       reasoningEffort: effort,
       revision: `myagents-dsh-config-v1:${hash(
         profile.revision,
         JSON.stringify(collaborative.collaboration),
         authType,
-        dshMode,
+        productMode,
         OFFICIAL_INTERACTION_REVISION,
         systemContextFingerprint(options),
       )}`,
@@ -570,8 +552,6 @@ function executionEnvironment(
     workspace: {
       identity: workspaceIdentity,
       canonicalRoot: workspacePath,
-      allowedReadRoots: [workspacePath],
-      allowedWriteRoots: [workspacePath],
     },
     executables: {
       bundledNodeRef: 'bundled-node',
@@ -851,17 +831,11 @@ export class DshRuntime implements AgentRuntime {
     };
     let installed = false;
     try {
-      const installation = await installedRuntime();
+      await installedRuntime();
       installed = true;
-      resources.state = 'verification_failed';
-      await verifyDshHandoffInstallation(installation, buildDshChildEnvironment({
-        nodeExecutablePath: installation.nodeExecutablePath, inheritedEnvironment: process.env,
-        sessionCli: null,
-      }));
-      resources.state = 'verified';
-      resources.installedIdentity = { ...expectedIdentity };
+      resources.state = 'available';
     } catch {
-      resources.code = installed ? 'dsh_handoff_verification_failed' : 'dsh_resources_unavailable';
+      resources.code = 'dsh_resources_unavailable';
     }
     const active = runtimeProcess ? dshProcess(runtimeProcess) : undefined;
     const current = active?.host.state === 'protocol-ready' && !active.exited ? active : undefined;
@@ -871,7 +845,7 @@ export class DshRuntime implements AgentRuntime {
       runtime: this.type, installed, version: dshLock.dsh.version, resources,
       process: active?.host.diagnosticSnapshot.process ?? { state: 'not_running' },
       model: configuration ? { id: configuration.profile.modelId, provider: configuration.profile.provider, revision: configuration.revision } : null,
-      permissions: configuration && rules ? projectDshPermissionDiagnostics(configuration.productPermissionMode, configuration.dshPermissionMode, rules) : null,
+      permissions: configuration && rules ? projectDshPermissionDiagnostics(configuration.productPermissionMode, rules) : null,
       extensions: current?.extensionDiagnostics ?? null,
       environment: active?.host.diagnosticSnapshot.environment ?? null,
       proxy: active?.host.diagnosticSnapshot.proxy ?? null,
@@ -1075,6 +1049,9 @@ export class DshRuntime implements AgentRuntime {
           input: schema,
           ...details,
           interactionKind: kind,
+          ...(params.permissionAction === 'sandbox.escalation'
+            ? { defaultToNo: true, suppressAlwaysAllowRule: true }
+            : {}),
         });
         emitProductEvent({ kind: 'status_change', state: 'waiting_permission' });
         return { registered: true };
@@ -1167,7 +1144,7 @@ export class DshRuntime implements AgentRuntime {
             kind: 'plan_state_update',
             mode: snapshot.mode,
             revision: snapshot.revision,
-            permissionMode: productModeForPlanProjection(snapshot.mode, productPermissionMode),
+            permissionMode: productPermissionMode,
           });
         },
         resolveToolImage: async (image, context) => {
@@ -1234,9 +1211,7 @@ export class DshRuntime implements AgentRuntime {
         );
       }
 
-      const bindingPermissionMode = options.resumeSessionId
-        ? configuration.dshPermissionMode
-        : OFFICIAL_INITIAL_PERMISSION_MODE;
+      const bindingPermissionMode = configuration.productPermissionMode;
       const bindingConfigRevision = options.resumeSessionId
         ? configuration.revision
         : `myagents-dsh-binding-v1:${hash(
@@ -1344,10 +1319,6 @@ export class DshRuntime implements AgentRuntime {
         if (turnId === undefined || !settledTurnIds.has(turnId)) action();
       }
       await this.applyConfiguration(processValue, configuration);
-      await this.applyPlanMode(
-        processValue,
-        configuration.productPermissionMode === 'plan' ? 'plan' : 'normal',
-      );
       onEvent({
         kind: 'session_init',
         sessionId: runtimeSessionId,
@@ -1867,6 +1838,9 @@ export class DshRuntime implements AgentRuntime {
     const process = dshProcess(runtimeProcess);
     const pending = process.pendingInteractions.get(requestId);
     if (!pending) throw new Error('DSH interaction is no longer pending');
+    if (decision === 'always_allow' && pending.schema.permissionClass === 'sandbox.escalation') {
+      throw new Error('Sandbox escalation can approve only this operation');
+    }
     const question = pending.kind !== 'permission';
     const wireDecision = question
       ? (pending.kind === 'plan_approval' || decision !== 'deny' ? 'answered' : 'cancelled')
@@ -1955,7 +1929,7 @@ export class DshRuntime implements AgentRuntime {
       revision: configuration.revision,
       provider: configuration.profile,
       collaboration: configuration.collaboration,
-      permissionMode: configuration.dshPermissionMode,
+      permissionMode: configuration.productPermissionMode,
       interactionScenario: OFFICIAL_INTERACTION_REVISION,
       ...systemContextParams(process.options),
       executionEnvironmentRevision: process.executionEnvironment.revision,
@@ -1981,7 +1955,7 @@ export class DshRuntime implements AgentRuntime {
       await prior.preparedProvider.release().catch(() => undefined);
     }
     const permissionRules = await this.refreshPermissionRules(process, false);
-    if (permissionRules.permissionMode !== configuration.dshPermissionMode) {
+    if (permissionRules.permissionMode !== configuration.productPermissionMode) {
       throw new Error('DSH effective permission mode differs from Product configuration');
     }
   }
@@ -2039,10 +2013,6 @@ export class DshRuntime implements AgentRuntime {
       reasoningEffort: process.configuration.reasoningEffort,
     }, process.configuration);
     await this.applyConfiguration(process, configuration);
-    await this.applyPlanMode(
-      process,
-      configuration.productPermissionMode === 'plan' ? 'plan' : 'normal',
-    );
     this.emitExtensionDiagnostics(process);
   }
 

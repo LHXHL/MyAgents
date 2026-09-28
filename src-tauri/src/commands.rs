@@ -1,7 +1,6 @@
 // Tauri IPC commands for sidecar management and app operations
 // Supports both legacy single-instance and new multi-instance APIs
 
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -3485,62 +3484,6 @@ fn json_string_at<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a
         .as_str()
 }
 
-fn sha256_file_matches(path: &Path, expected: Option<&str>) -> bool {
-    let Some(expected) = expected else {
-        return false;
-    };
-    let Ok(bytes) = fs::read(path) else {
-        return false;
-    };
-    format!("{:x}", Sha256::digest(bytes)).eq_ignore_ascii_case(expected)
-}
-
-fn dsh_resource_identity_matches(root: &Path, lock: &serde_json::Value, target: &str) -> bool {
-    let handoff_path = root.join("batch-3-integration-handoff-v1.json");
-    let runtime_manifest_path = root
-        .join("runtime-artifact")
-        .join("runtime-artifact-v1.json");
-    let compatibility_path = root
-        .join("contracts")
-        .join("myagents-dsh-compatibility-v1.json");
-    let Ok(handoff_content) = fs::read_to_string(&handoff_path) else {
-        return false;
-    };
-    let Ok(handoff) = serde_json::from_str::<serde_json::Value>(&handoff_content) else {
-        return false;
-    };
-    let platform_claim_matches = handoff
-        .get("platforms")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|platforms| {
-            platforms.iter().any(|platform| {
-                platform.get("target").and_then(serde_json::Value::as_str) == Some(target)
-                    && matches!(
-                        platform.get("claim").and_then(serde_json::Value::as_str),
-                        Some("implementation-complete_pending-native-validation" | "verified")
-                    )
-            })
-        });
-    platform_claim_matches
-        && json_string_at(&handoff, &["kind"]) == Some("myagents-dsh-batch-3-integration-handoff")
-        && json_string_at(&handoff, &["runtime", "manifestSha256"])
-            == json_string_at(lock, &["handoff", "runtimeManifestSha256"])
-        && json_string_at(&handoff, &["compatibility", "sha256"])
-            == json_string_at(lock, &["handoff", "compatibilitySha256"])
-        && sha256_file_matches(
-            &handoff_path,
-            json_string_at(lock, &["handoff", "manifestSha256"]),
-        )
-        && sha256_file_matches(
-            &runtime_manifest_path,
-            json_string_at(lock, &["handoff", "runtimeManifestSha256"]),
-        )
-        && sha256_file_matches(
-            &compatibility_path,
-            json_string_at(lock, &["handoff", "compatibilitySha256"]),
-        )
-}
-
 fn detect_dsh_runtime(resource_dir: Option<&Path>) -> RuntimeDetectionResult {
     let lock = serde_json::from_str::<serde_json::Value>(env!("MYAGENTS_DSH_EFFECTIVE_LOCK_JSON"));
     let Ok(lock) = lock else {
@@ -3562,6 +3505,28 @@ fn detect_dsh_runtime(resource_dir: Option<&Path>) -> RuntimeDetectionResult {
             reason: Some("platform-unverified".to_string()),
         };
     };
+    let platform_claim = lock
+        .get("platforms")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|platforms| {
+            platforms.iter().find(|platform| {
+                platform.get("target").and_then(serde_json::Value::as_str) == Some(target)
+            })
+        })
+        .and_then(|platform| platform.get("claim"))
+        .and_then(serde_json::Value::as_str);
+    if !matches!(
+        platform_claim,
+        Some("implementation-complete_pending-native-validation" | "verified")
+    ) {
+        return RuntimeDetectionResult {
+            installed: false,
+            version,
+            path: None,
+            readiness: Some("unavailable".to_string()),
+            reason: Some("platform-unverified".to_string()),
+        };
+    }
 
     let mut candidates = Vec::new();
     if let Some(resource_dir) = resource_dir {
@@ -3576,30 +3541,18 @@ fn detect_dsh_runtime(resource_dir: Option<&Path>) -> RuntimeDetectionResult {
         );
     }
     let root = candidates.into_iter().find(|root| {
-        root.join("verify.mjs").is_file()
-            && root.join("batch-3-integration-handoff-v1.json").is_file()
-            && root
-                .join("runtime-artifact")
-                .join("runtime-artifact-v1.json")
-                .is_file()
+        root.join("runtime-artifact")
+            .join("package.json")
+            .is_file()
             && root
                 .join("runtime-artifact")
                 .join("runtime-server-process.artifact.mjs")
                 .is_file()
     });
     match root {
-        Some(root) if dsh_resource_identity_matches(&root, &lock, target) => {
-            let release_ready = lock.get("release").is_some()
-                && lock
-                    .get("platforms")
-                    .and_then(serde_json::Value::as_array)
-                    .is_some_and(|platforms| {
-                        platforms.iter().any(|platform| {
-                            platform.get("target").and_then(serde_json::Value::as_str) == Some(target)
-                                && platform.get("claim").and_then(serde_json::Value::as_str)
-                                    == Some("verified")
-                        })
-                    });
+        Some(root) => {
+            let release_ready =
+                lock.get("release").is_some() && platform_claim == Some("verified");
             RuntimeDetectionResult {
                 installed: true,
                 version,
@@ -3608,13 +3561,6 @@ fn detect_dsh_runtime(resource_dir: Option<&Path>) -> RuntimeDetectionResult {
                 reason: None,
             }
         }
-        Some(_) => RuntimeDetectionResult {
-            installed: false,
-            version,
-            path: None,
-            readiness: Some("unavailable".to_string()),
-            reason: Some("artifact-invalid".to_string()),
-        },
         None => RuntimeDetectionResult {
             installed: false,
             version,
@@ -3715,7 +3661,7 @@ mod runtime_detection_cache_tests {
     }
 
     #[test]
-    fn bundled_dsh_detection_matches_the_committed_lock_on_supported_targets() {
+    fn bundled_dsh_detection_uses_build_selection_on_supported_targets() {
         if dsh_platform_target().is_none() {
             return;
         }
@@ -3726,8 +3672,33 @@ mod runtime_detection_cache_tests {
             "unexpected DSH detection: {:?}",
             result.reason
         );
-        assert_eq!(result.readiness.as_deref(), Some("unverified-dev-runtime"));
-        assert_eq!(result.version.as_deref(), Some("0.0.0"));
+        let lock: serde_json::Value =
+            serde_json::from_str(env!("MYAGENTS_DSH_EFFECTIVE_LOCK_JSON")).unwrap();
+        let expected_version = json_string_at(&lock, &["runtime", "version"]);
+        let expected_readiness = if lock.get("release").is_some() {
+            "ready"
+        } else {
+            "unverified-dev-runtime"
+        };
+        assert_eq!(result.readiness.as_deref(), Some(expected_readiness));
+        assert_eq!(result.version.as_deref(), expected_version);
+    }
+
+    #[test]
+    fn dsh_detection_does_not_reverify_build_manifests() {
+        if dsh_platform_target().is_none() {
+            return;
+        }
+        let temporary = tempfile::tempdir().unwrap();
+        let dsh = temporary.path().join("integrated-runtimes").join("dsh");
+        let artifact = dsh.join("runtime-artifact");
+        fs::create_dir_all(&artifact).unwrap();
+        fs::write(artifact.join("package.json"), "{}").unwrap();
+        fs::write(artifact.join("runtime-server-process.artifact.mjs"), "").unwrap();
+
+        let result = detect_dsh_runtime(Some(temporary.path()));
+        assert!(result.installed);
+        assert_eq!(result.path.as_deref(), dsh.to_str());
     }
 
     #[test]

@@ -262,7 +262,7 @@ Channel credential、token、App Secret和provider env不得进入日志、analy
 
 - 空白名单默认拒绝，不等于allow all；QR bind只绕过对应的一次绑定admission。
 - group默认Mention，未证明mention的事件不能触发AI。
-- Channel默认权限由当前Runtime的unattended policy解析；不继承桌面Agent permission造成静默降权。用户显式override才改变。
+- Channel默认权限由当前Runtime的unattended policy解析；集成 DSH 的默认值为 `full-autonomous`，显式 override 只接受三档 DSH 模式。不继承桌面Agent permission造成静默降权。用户显式override才改变。
 - credentials、prompt正文、tool参数、群history和platform payload不写常规日志。
 - platform/network request使用统一proxy、timeout、rate-limit与retry policy；401/invalid credential停止或降级，不无限重试。
 - QR credential provisioning只由Rust访问HTTPS allowlist并归一化response；Renderer只持短期session handle和展示数据。

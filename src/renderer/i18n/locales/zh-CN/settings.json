@@ -2285,20 +2285,5 @@
     "timing": "协作消息生效时机",
     "timingHint": "仅控制 Agent 间消息与完成报告。默认实时：最近一次模型思考或工具步骤结束后注入。上方对话队列设置继续控制用户输入。",
     "unavailable": "模型当前不可用"
-  },
-  "runtimeAvailability": {
-    "title": "当前会话组件可用性",
-    "explanation": "安装、启用与运行时准入分别判断。允许模型调用后，执行仍需通过权限检查。",
-    "generation": "当前生效版本：{{effective}} · 请求版本：{{desired}}",
-    "unknown": "未知",
-    "noReceipts": "尚无准入回执，请启动或刷新会话后查看。",
-    "ready": "已准入",
-    "rejected": "未准入",
-    "disabled": "已停用",
-    "pending": "等待生效",
-    "yes": "是",
-    "no": "否",
-    "enabled": "已启用：{{value}}",
-    "invocation": "模型可调用：{{value}}"
   }
 }

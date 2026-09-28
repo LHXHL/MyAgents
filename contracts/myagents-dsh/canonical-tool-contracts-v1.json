@@ -49,7 +49,7 @@
         {
           "code": "path_denied",
           "retryable": false,
-          "when": "The canonical target is outside an allowed read root or crosses a forbidden symlink."
+          "when": "The canonical target crosses a forbidden symbolic link."
         },
         {
           "code": "file_not_found",
@@ -313,7 +313,7 @@
       ],
       "checkpoint": "root_managed_file",
       "concurrency": "canonical_path",
-      "description": "Creates missing parent directories and a new file, or atomically replaces a previously read file, inside an allowed workspace. Existing files require a current complete Read receipt.",
+      "description": "Creates a new file or atomically replaces a previously read file. Writes follow the current sandbox mode; after a workspace-write denial, request one approved retry with sandbox_permissions and justification. Existing files require a current complete Read receipt.",
       "errorCodes": [
         {
           "code": "read_required",
@@ -328,7 +328,7 @@
         {
           "code": "path_denied",
           "retryable": false,
-          "when": "The target is outside an allowed write root or changes identity."
+          "when": "The target changes identity or the sandbox denies the write."
         },
         {
           "code": "mutation_conflict",
@@ -347,6 +347,15 @@
             "maxLength": 8192,
             "minLength": 1,
             "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "justification": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "type": "string"
+          },
+          "sandbox_permissions": {
+            "const": "danger-full-access",
             "type": "string"
           }
         },
@@ -367,6 +376,15 @@
             "maxLength": 8192,
             "minLength": 1,
             "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "justification": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "type": "string"
+          },
+          "sandbox_permissions": {
+            "const": "danger-full-access",
             "type": "string"
           }
         },
@@ -463,7 +481,7 @@
       ],
       "checkpoint": "root_managed_file",
       "concurrency": "canonical_path",
-      "description": "Performs an exact string replacement in a UTF-8 text file using official DSH edit semantics, including CRLF preservation. By default old_string must occur exactly once; replace_all replaces every non-overlapping occurrence.",
+      "description": "Performs an exact string replacement in a UTF-8 text file using official DSH edit semantics, including CRLF preservation. Writes follow the current sandbox mode; after a workspace-write denial, request one approved retry with sandbox_permissions and justification. By default old_string must occur exactly once; replace_all replaces every non-overlapping occurrence.",
       "errorCodes": [
         {
           "code": "read_required",
@@ -495,6 +513,11 @@
             "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
             "type": "string"
           },
+          "justification": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "type": "string"
+          },
           "new_string": {
             "maxLength": 1000000,
             "type": "string"
@@ -505,6 +528,10 @@
           },
           "replace_all": {
             "type": "boolean"
+          },
+          "sandbox_permissions": {
+            "const": "danger-full-access",
+            "type": "string"
           }
         },
         "required": [
@@ -523,6 +550,11 @@
             "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
             "type": "string"
           },
+          "justification": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "type": "string"
+          },
           "new_string": {
             "maxLength": 1000000,
             "type": "string"
@@ -533,6 +565,10 @@
           },
           "replace_all": {
             "type": "boolean"
+          },
+          "sandbox_permissions": {
+            "const": "danger-full-access",
+            "type": "string"
           }
         },
         "required": [
@@ -629,12 +665,12 @@
       ],
       "checkpoint": "none",
       "concurrency": "parallel",
-      "description": "Finds files by glob pattern under an allowed directory. Results include ignored files, are ordered by modification time, and are capped at 100 paths.",
+      "description": "Finds files by glob pattern under a readable directory. Results include ignored files, are ordered by modification time, and are capped at 100 paths.",
       "errorCodes": [
         {
           "code": "path_denied",
           "retryable": false,
-          "when": "The search root is outside an allowed workspace."
+          "when": "The search root is unavailable or changes identity."
         },
         {
           "code": "invalid_pattern",
@@ -766,7 +802,7 @@
         {
           "code": "path_denied",
           "retryable": false,
-          "when": "The search root is outside an allowed read root."
+          "when": "The search root is unavailable or changes identity."
         },
         {
           "code": "invalid_pattern",
@@ -2054,7 +2090,7 @@
         {
           "code": "path_denied",
           "retryable": false,
-          "when": "The target directory is outside the allowed workspace."
+          "when": "The target directory changes identity."
         },
         {
           "code": "directory_not_found",

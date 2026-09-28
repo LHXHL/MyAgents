@@ -44,27 +44,7 @@
     "permissionModeHeader": "Session mode",
     "agentSettings": "Agent settings",
     "autonomyWarning": "Autonomous mode is enabled. The Agent may perform irreversible actions.",
-    "dshAutonomyWarning": "Full Agency bypasses Runtime approval prompts. It is not an OS sandbox; Host and product hard-policy checks still apply.",
-    "permissionRules": {
-      "manage": "Allowed actions",
-      "title": "Allowed actions",
-      "description": "These exact grants are owned by DSH for this session. Runtime hard policy, workspace, mode, origin, and Hook checks still apply.",
-      "loading": "Loading allowed actions…",
-      "loadFailed": "Failed to load allowed actions.",
-      "revokeFailed": "Failed to revoke the allowed action.",
-      "productMode": "Product mode",
-      "effectiveMode": "Effective Runtime mode",
-      "drift": "The desired and effective Runtime permission modes differ. New execution remains blocked until reconciliation succeeds.",
-      "ruleCount": "Exact grants",
-      "empty": "No exact action grants are active.",
-      "expires": "Expires {{value}}",
-      "sessionLifetime": "Always allowed in this Session",
-      "revoke": "Revoke",
-      "revokeRule": "Revoke {{tool}} grant",
-      "addHint": "Create a grant from a permission prompt with “Always allow”.",
-      "refresh": "Refresh",
-      "close": "Close"
-    },
+    "dshAutonomyWarning": "Full autonomy skips tool approvals and can use the computer and internet within your user account's permissions.",
     "toolsTitle": "Use tools",
     "toolsLabel": "Tools",
     "toolsHeader": "Tools enabled in this chat",
@@ -132,6 +112,18 @@
       "thoughtSoftCap": "Showing the first {{count}} matches. Type a more specific keyword."
     },
     "permissionModes": {
+      "approval-required": {
+        "label": "Ask for approval",
+        "description": "Work in the workspace; ask before using tools"
+      },
+      "workspace-autonomous": {
+        "label": "Workspace autonomy",
+        "description": "Unrestricted within the workspace; no approval needed"
+      },
+      "full-autonomous": {
+        "label": "Full autonomy",
+        "description": "Unrestricted computer and internet access; no approval needed"
+      },
       "auto": {
         "label": "Act",
         "description": "Agent works in the workspace and asks before using tools"
@@ -554,6 +546,9 @@
       "cancelQueued": "Cancel queued"
     },
     "permissionPrompt": {
+      "sandboxTitle": "Write outside the workspace",
+      "sandboxSubtitle": "Approve wider write access for this operation only",
+      "sandboxScope": "Approval applies only to this operation and does not change the session mode.",
       "commandTitle": "Run {{shell}} command",
       "awaitingApproval": "Awaiting approval",
       "command": "Command",

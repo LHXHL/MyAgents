@@ -55,7 +55,6 @@ class FakeChild extends EventEmitter {
 const installation: DshRuntimeInstallation = {
   resourceRoot: "/verified/resources",
   dshResourceRoot: "/verified/resources/integrated-runtimes/dsh",
-  handoffVerifierPath: "/verified/resources/integrated-runtimes/dsh/verify.mjs",
   runtimeArtifactRoot:
     "/verified/resources/integrated-runtimes/dsh/runtime-artifact",
   runtimeEntrypointPath:
@@ -69,8 +68,6 @@ function executionEnvironment(): Omit<DshExecutionEnvironment, "digest"> {
     workspace: {
       identity: "workspace-1",
       canonicalRoot: "/fixture/workspace",
-      allowedReadRoots: ["/fixture/workspace"],
-      allowedWriteRoots: ["/fixture/workspace"],
     },
     executables: {
       bundledNodeRef: "node-v24",
@@ -243,9 +240,6 @@ function harness(
     initialize: initialize(),
     hostHandlers: hostHandlers(),
     notificationHandlers,
-    assertHandoffVerification: async () => {
-      order.push("assert-handoff");
-    },
     loadProtocolRuntime: async () => {
       order.push("load-protocol");
       return protocolRuntime;
@@ -317,7 +311,6 @@ describe("DSH RuntimeProcessHost", () => {
     });
     expect(test.host.state).toBe("protocol-ready");
     expect(test.order).toEqual([
-      "assert-handoff",
       "load-protocol",
       "spawn-runtime",
       "initialize",
@@ -375,6 +368,6 @@ describe("DSH RuntimeProcessHost", () => {
     await expect(starting).rejects.toThrow(/cancelled/);
     await stopping;
     expect(test.host.state).toBe("stopped");
-    expect(test.order).toEqual(["assert-handoff"]);
+    expect(test.order).toEqual(["load-protocol"]);
   });
 });

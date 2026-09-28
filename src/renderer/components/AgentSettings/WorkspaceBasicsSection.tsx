@@ -24,7 +24,7 @@ import RuntimeSelector from '../RuntimeSelector';
 import { PermissionModeIcon, PermissionModeMenuContent, type PermissionModeMenuItem } from '../PermissionModeMenu';
 import { Popover } from '../ui/Popover';
 import type { RuntimeType, RuntimeDetections, RuntimeConfig } from '../../../shared/types/runtime';
-import { isAgentRuntimeSelectorAvailable, resolveEffectiveRuntime } from '../../../shared/types/runtime';
+import { getRuntimePermissionModes, isAgentRuntimeSelectorAvailable, resolveEffectiveRuntime } from '../../../shared/types/runtime';
 import { agentUsesManagedCodexProvider, toProviderExecutionIntent } from '../../../shared/providerExecution';
 import { invoke } from '@tauri-apps/api/core';
 import { useToast } from '@/components/Toast';
@@ -314,7 +314,15 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
   }, []);
 
   const effectivePermissionMode = agent?.permissionMode ?? project?.permissionMode;
-  const permissionMode = permissionText(effectivePermissionMode, t);
+  const permissionModeChoices = currentRuntime === 'dsh'
+    ? getRuntimePermissionModes('dsh').map(mode => ({
+        ...mode,
+        label: tChat(`input.permissionModes.${mode.value}.label`, { defaultValue: mode.label }),
+        description: tChat(`input.permissionModes.${mode.value}.description`, { defaultValue: mode.description }),
+      }))
+    : PERMISSION_MODES.map(mode => permissionText(mode.value, t));
+  const permissionMode = permissionModeChoices.find(mode => mode.value === effectivePermissionMode)
+    ?? permissionModeChoices[0]!;
 
   // #324 — agent-level 推理强度 default (builtin; no project fallback — the
   // agent is the only storage for this field).
@@ -603,7 +611,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
           className="composer-toolbar-menu-enter w-72 py-1"
         >
           <PermissionModeMenuContent
-            items={PERMISSION_MODES.map(mode => permissionText(mode.value, t))}
+            items={permissionModeChoices}
             selectedValue={permissionMode.value}
             header={tChat('input.permissionModeHeader')}
             onSelect={handlePermissionSelect}

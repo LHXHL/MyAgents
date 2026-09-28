@@ -16,20 +16,20 @@ const rule = {
   target: 'npm test',
   origin: 'root',
   createdAt: 1_000,
-  expiresAt: 2_000,
+  expiresAt: null,
 };
 
 describe('DSH permission rule wire parsing', () => {
   it('accepts and freezes an authoritative policy snapshot', () => {
     const snapshot = parseDshPermissionRulesSnapshot({
-      permissionMode: 'acceptEdits',
+      permissionMode: 'approval-required',
       autoAllowTools: ['Read'],
       revision: 'permission-revision-2',
       rules: [rule],
     });
 
     expect(snapshot).toEqual({
-      permissionMode: 'acceptEdits',
+      permissionMode: 'approval-required',
       autoAllowTools: ['Read'],
       revision: 'permission-revision-2',
       rules: [rule],
@@ -40,31 +40,37 @@ describe('DSH permission rule wire parsing', () => {
 
   it('rejects malformed, duplicate, or non-root rules', () => {
     expect(() => parseDshPermissionRulesSnapshot({
-      permissionMode: 'acceptEdits',
+      permissionMode: 'approval-required',
       autoAllowTools: [],
       revision: 'permission-revision-2',
       rules: [{ ...rule, origin: 'child' }],
     })).toThrow('origin');
     expect(() => parseDshPermissionRulesSnapshot({
-      permissionMode: 'acceptEdits',
+      permissionMode: 'approval-required',
       autoAllowTools: [],
       revision: 'permission-revision-2',
       rules: [rule, rule],
     })).toThrow('duplicate rule ids');
     expect(() => parseDshPermissionRulesSnapshot({
-      permissionMode: 'acceptEdits',
+      permissionMode: 'approval-required',
       autoAllowTools: [],
       revision: 'permission-revision-2',
       rules: [{ ...rule, expiresAt: 999 }],
-    })).toThrow('expiry');
+    })).toThrow('expiresAt');
   });
 
-  it('accepts an explicit Session lifetime while rejecting missing or nonnumeric expiry', () => {
-    const snapshot = { permissionMode: 'acceptEdits', autoAllowTools: [], revision: 'permission-revision-2', rules: [{ ...rule, expiresAt: null }] };
+  it('accepts only an explicit Session lifetime', () => {
+    const snapshot = { permissionMode: 'approval-required', autoAllowTools: [], revision: 'permission-revision-2', rules: [rule] };
     expect(parseDshPermissionRulesSnapshot(snapshot).rules[0]?.expiresAt).toBeNull();
-    for (const expiresAt of [undefined, 'forever', -1, Number.NaN]) {
+    for (const expiresAt of [undefined, 'forever', -1, Number.NaN, 2_000]) {
       expect(() => parseDshPermissionRulesSnapshot({ ...snapshot, rules: [{ ...rule, expiresAt }] })).toThrow('expiresAt');
     }
+  });
+
+  it('rejects old DSH permission modes', () => {
+    expect(() => parseDshPermissionRulesSnapshot({
+      permissionMode: 'acceptEdits', autoAllowTools: [], revision: 'permission-revision-2', rules: [],
+    })).toThrow('permission mode');
   });
 
   it('parses all retry-safe mutation states', () => {
@@ -97,20 +103,20 @@ describe('DSH permission rule wire parsing', () => {
 
   it('reports desired/effective reconciliation without projecting exact targets', () => {
     const snapshot = parseDshPermissionRulesSnapshot({
-      permissionMode: 'bypassPermissions',
+      permissionMode: 'full-autonomous',
       autoAllowTools: [],
       revision: 'permission-revision-2',
       rules: [rule],
     });
-    expect(projectDshPermissionDiagnostics('auto', 'acceptEdits', snapshot)).toEqual({
-      desiredProductMode: 'auto',
-      desiredRuntimeMode: 'acceptEdits',
-      effectiveRuntimeMode: 'bypassPermissions',
+    expect(projectDshPermissionDiagnostics('workspace-autonomous', snapshot)).toEqual({
+      desiredProductMode: 'workspace-autonomous',
+      desiredRuntimeMode: 'workspace-autonomous',
+      effectiveRuntimeMode: 'full-autonomous',
       policyRevision: 'permission-revision-2',
       ruleCount: 1,
       state: 'drift',
     });
-    expect(JSON.stringify(projectDshPermissionDiagnostics('auto', 'acceptEdits', snapshot)))
+    expect(JSON.stringify(projectDshPermissionDiagnostics('workspace-autonomous', snapshot)))
       .not.toContain('npm test');
   });
 });

@@ -98,7 +98,7 @@ async function createNativeHostFixture(
     nodeExecutablePath: join(resourceRoot, "nodejs/bin/node"),
   });
   const launchEnvironment = buildDshChildEnvironment({
-    nodeExecutablePath: installation.nodeExecutablePath, commandDirectories: ["/bin"],
+    nodeExecutablePath: installation.nodeExecutablePath, commandDirectories: ["/bin", "/usr/bin"],
     inheritedEnvironment: { HOME: temporaryRoot, USERPROFILE: temporaryRoot, LANG: 'en_US.UTF-8' },
     proxyEnvironment,
     sessionCli: route === undefined ? null : { ...route, internalCliToken: 'fixture-capability' },
@@ -114,8 +114,6 @@ async function createNativeHostFixture(
     workspace: {
       identity: `native-${label}-workspace`,
       canonicalRoot: workspace,
-      allowedReadRoots: [workspace],
-      allowedWriteRoots: [workspace],
     },
     executables: {
       bundledNodeRef: "bundled-node",
@@ -281,7 +279,7 @@ describe.runIf(nativeSmokeEnabled)(
         provider.config.baseUrl = `https://provider-route.test:${targetPort}`;
         const profile = compileDshModelExecutionProfile({ provider, modelId: 'claude-sonnet-4-6' });
         await host.request('session/create', { clientOperationId: 'tls-bind', persistenceRef: 'tls-session', provider: profile,
-          configRevision: 'tls-config', extensionDigest: catalog.digest, systemPrompt: '', permissionMode: 'default', interactionScenario: 'host-interaction-v1' });
+          configRevision: 'tls-config', extensionDigest: catalog.digest, systemPrompt: '', permissionMode: 'approval-required', interactionScenario: 'host-interaction-v1' });
         const environmentDigest = createDshInitializeParams({ productSessionId: 'native-tls-provider-product-session', productVersion: '0.4.15',
           runtimeHome: fixture.runtimeHome, workspace: { path: fixture.workspace, identity: fixture.executionEnvironment.workspace.identity },
           executionEnvironment: fixture.executionEnvironment, interaction: 'deterministic-headless' }).executionEnvironment.digest;
@@ -468,10 +466,10 @@ describe.runIf(nativeSmokeEnabled)(
         provider.id = 'native-anthropic-fixture';
         provider.config.baseUrl = `http://127.0.0.1:${address.port}`;
         const profile = compileDshModelExecutionProfile({ provider, modelId: 'claude-sonnet-4-6' });
-        const binding = await host.request('session/create', { clientOperationId: 'native-shell-review-bind', persistenceRef: 'native-shell-review', provider: profile, configRevision: 'native-shell-review-config', extensionDigest: catalog.digest, systemPrompt: '', permissionMode: 'default', interactionScenario: 'host-interaction-v1' });
+        const binding = await host.request('session/create', { clientOperationId: 'native-shell-review-bind', persistenceRef: 'native-shell-review', provider: profile, configRevision: 'native-shell-review-config', extensionDigest: catalog.digest, systemPrompt: '', permissionMode: 'approval-required', interactionScenario: 'host-interaction-v1' });
         expect(binding.state).toBe('ready');
         const environmentDigest = createDshInitializeParams({ productSessionId, productVersion: '0.4.11', runtimeHome: fixture.runtimeHome, workspace: { path: fixture.workspace, identity: fixture.executionEnvironment.workspace.identity }, executionEnvironment: fixture.executionEnvironment, interaction: 'deterministic-headless' }).executionEnvironment.digest;
-        const configured = await host.request('config/apply', { revision: 'native-shell-review-auto', provider: profile, permissionMode: 'acceptEdits', interactionScenario: 'host-interaction-v1', systemPrompt: '', executionEnvironmentRevision: fixture.executionEnvironment.revision, executionEnvironmentDigest: environmentDigest });
+        const configured = await host.request('config/apply', { revision: 'native-shell-review-auto', provider: profile, permissionMode: 'approval-required', interactionScenario: 'host-interaction-v1', systemPrompt: '', executionEnvironmentRevision: fixture.executionEnvironment.revision, executionEnvironmentDigest: environmentDigest });
         expect(configured.state).toBe('applied');
         await host.request('turn/start', { clientOperationId: 'native-shell-review-turn', clientUserMessageId: 'native-shell-review-message', input: { parts: [{ kind: 'text', text: 'Read the current CLI route and verify file tools.' }] }, configRevision: 'native-shell-review-auto', extensionDigest: catalog.digest, executionEnvironmentRevision: fixture.executionEnvironment.revision, executionEnvironmentDigest: environmentDigest, limits: { maxTurns: 28 }, origin: { kind: 'headless', scenario: 'native-shell-review' } });
         await expect.poll(() => approvals.length, { timeout: 20_000 }).toBe(1);
@@ -485,42 +483,52 @@ describe.runIf(nativeSmokeEnabled)(
         expect(receipt.state).toBe('applied');
         let approvalIndex = 1;
         let expectedRevision = receipt.state === 'applied' ? receipt.effectivePolicyRevision : '';
-        const approveCall = async (callId: string, decision: 'always_allow' | 'allow_once' = 'allow_once') => {
+        const approveCall = async (callId: string, origin: 'root' | 'foreground_child') => {
           await expect.poll(() => approvals.length, { timeout: 20_000 }).toBe(approvalIndex + 1);
           const next = approvals[approvalIndex++]!;
           const call = calls.find(candidate => candidate?.id === callId)!;
           expect(next.kind).toBe('permission');
           expect((next.schema as Record<string, unknown>).tool).toBe(call.name);
-          expect(next.review?.actor.origin).toBe('foreground_child');
+          expect(next.review?.actor.origin).toBe(origin);
           expect(next.authority).toMatchObject({ callId: call.id, rootCallId: call.id });
           expect(next.desiredPolicyRevision).toBe(expectedRevision);
           expect(childResults.has(call.id)).toBe(false);
-          const result = await host.request('interaction/respond', { interactionId: next.interactionId, expectedRevision: next.desiredPolicyRevision, decision });
+          const result = await host.request('interaction/respond', { interactionId: next.interactionId, expectedRevision: next.desiredPolicyRevision, decision: 'allow_once' });
           expect(result.state).toBe('applied');
           if (result.state === 'applied') expectedRevision = result.effectivePolicyRevision;
         };
-        const answerQuestions = async (kind: 'ask_user' | 'plan_approval') => {
+        const answerQuestions = async () => {
           await expect.poll(() => approvals.length, { timeout: 20_000 }).toBe(approvalIndex + 1);
           const next = approvals[approvalIndex++]!;
-          expect(next.kind).toBe(kind);
-          const schema = next.schema as { questions: { id: string; multiSelect?: boolean; options: { label: string }[]; intent?: { approve: string } }[] };
-          if (kind === 'ask_user') {
-            expect(schema.questions).toHaveLength(3);
-            const invalid = await host.request('interaction/respond', { interactionId: next.interactionId, expectedRevision: next.desiredPolicyRevision, decision: 'answered', value: { answers: schema.questions.map(question => ({ id: question.id, selected: ['invalid synthetic option'] })) } });
-            expect(invalid).toMatchObject({ state: 'rejected', code: 'interaction_response_invalid' });
-          }
+          expect(next.kind).toBe('ask_user');
+          const schema = next.schema as { questions: { id: string; multiSelect?: boolean; options: { label: string }[] }[] };
+          expect(schema.questions).toHaveLength(3);
+          const invalid = await host.request('interaction/respond', { interactionId: next.interactionId, expectedRevision: next.desiredPolicyRevision, decision: 'answered', value: { answers: schema.questions.map(question => ({ id: question.id, selected: ['invalid synthetic option'] })) } });
+          expect(invalid).toMatchObject({ state: 'rejected', code: 'interaction_response_invalid' });
           const answers = schema.questions.map((question, index) => buildDshQuestionAnswer(question.id,
-            kind === 'plan_approval' ? { selected: [question.intent!.approve] }
-              : index === 2 ? { selected: [], custom: 'Write locally, then continue' }
-                : { selected: index === 1 ? ['Continue', 'Review, then continue'] : ['Continue'] },
+            index === 2 ? { selected: [], custom: 'Write locally, then continue' }
+              : { selected: index === 1 ? ['Continue', 'Review, then continue'] : ['Continue'] },
             question.options.map(option => option.label), question.multiSelect === true));
           const result = await host.request('interaction/respond', { interactionId: next.interactionId, expectedRevision: next.desiredPolicyRevision, decision: 'answered', value: { answers } });
           expect(result.state).toBe('applied');
         };
-        await approveCall('fixture-child-review-call');
-        await answerQuestions('ask_user');
-        await answerQuestions('plan_approval');
-        expect(approvals.filter(value => value.kind === 'permission')).toHaveLength(2);
+        await approveCall('fixture-create-call', 'root');
+        await approveCall('fixture-update-call', 'root');
+        await approveCall('fixture-skill-call', 'root');
+        await approveCall('fixture-agent-call', 'root');
+        await approveCall('fixture-child-review-call', 'foreground_child');
+        await answerQuestions();
+        await expect.poll(() => approvals.length, { timeout: 20_000 }).toBe(approvalIndex + 1);
+        const planApproval = approvals[approvalIndex++]!;
+        expect(planApproval.kind).toBe('plan_approval');
+        const planQuestion = (planApproval.schema as { questions: { id: string }[] }).questions[0]!;
+        expect(await host.request('interaction/respond', {
+          interactionId: planApproval.interactionId,
+          expectedRevision: planApproval.desiredPolicyRevision,
+          decision: 'answered',
+          value: { answers: [{ id: planQuestion.id, selected: ['Approve'] }] },
+        })).toMatchObject({ state: 'applied' });
+        expect(approvals.filter(value => value.kind === 'permission')).toHaveLength(6);
         expect(childResults.size).toBe(2);
         for (const result of childResults.values()) expect(result.is_error, JSON.stringify(result)).not.toBe(true);
         expect(JSON.stringify(childResults.get('fixture-child-inherited-call')?.content)).toContain('inherited-child');
@@ -732,7 +740,7 @@ describe.runIf(nativeSmokeEnabled)(
           configRevision: "native-smoke-config-v1",
           extensionDigest: String(extensionCatalog.digest),
           systemPrompt: "",
-          permissionMode: "default",
+          permissionMode: "approval-required",
           interactionScenario: "host-interaction-v1",
         });
         expect(binding).toMatchObject({ state: "ready" });
@@ -743,7 +751,7 @@ describe.runIf(nativeSmokeEnabled)(
         const applied = await host.request("config/apply", {
           revision: "native-smoke-config-v2",
           provider: profile,
-          permissionMode: "acceptEdits",
+          permissionMode: "approval-required",
           interactionScenario: "host-interaction-v1",
           systemPrompt: "",
           executionEnvironmentRevision: executionEnvironment.revision,
@@ -771,7 +779,7 @@ describe.runIf(nativeSmokeEnabled)(
         });
         const rules = await host.request("permission/rules/list", {});
         expect(rules).toMatchObject({
-          permissionMode: "acceptEdits",
+          permissionMode: "approval-required",
           rules: [],
         });
         const granted = await host.request("permission/rules/add", {
@@ -888,7 +896,7 @@ describe.runIf(nativeSmokeEnabled)(
           configRevision: "native-resume-config-v1",
           extensionDigest: String(catalog.digest),
           systemPrompt: "",
-          permissionMode: "default",
+          permissionMode: "approval-required",
           interactionScenario: "host-interaction-v1",
         });
         expect(created).toMatchObject({ state: "ready" });
@@ -896,7 +904,7 @@ describe.runIf(nativeSmokeEnabled)(
         await fixture.host.request("config/apply", {
           revision: "native-resume-config-v2",
           provider: profile,
-          permissionMode: "acceptEdits",
+          permissionMode: "approval-required",
           interactionScenario: "host-interaction-v1",
           systemPrompt: "",
           executionEnvironmentRevision: fixture.executionEnvironment.revision,
@@ -935,14 +943,14 @@ describe.runIf(nativeSmokeEnabled)(
           configRevision: "native-resume-config-v2",
           extensionDigest: String(catalog.digest),
           systemPrompt: "",
-          permissionMode: "acceptEdits",
+          permissionMode: "approval-required",
           interactionScenario: "host-interaction-v1",
         });
         expect(resumed).toMatchObject({ state: "ready", runtimeSessionId });
         expect(
           await resumedHost.request("permission/rules/list", {}),
         ).toMatchObject({
-          permissionMode: "acceptEdits",
+          permissionMode: "approval-required",
           revision: grant.revision,
           rules: [grant.rule],
         });

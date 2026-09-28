@@ -31,7 +31,8 @@ import {
 /**
  * Permission mode for agent behavior
  */
-export type PermissionMode = 'auto' | 'plan' | 'fullAgency';
+export type PermissionMode = 'auto' | 'plan' | 'fullAgency'
+  | 'approval-required' | 'workspace-autonomous' | 'full-autonomous';
 
 /**
  * Background-agent permission policy (issue #264).

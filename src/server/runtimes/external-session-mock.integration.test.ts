@@ -8846,6 +8846,8 @@ describe('external SessionEngine with fake runtime', () => {
         origin: 'root',
       },
       display,
+      defaultToNo: true,
+      suppressAlwaysAllowRule: true,
     });
     await waitFor(
       () =>
@@ -8854,13 +8856,13 @@ describe('external SessionEngine with fake runtime', () => {
     );
     expect(broadcastEvents).toContainEqual({
       event: 'permission:request',
-      data: expect.objectContaining({ display }),
+      data: expect.objectContaining({ display, defaultToNo: true, suppressAlwaysAllowRule: true }),
     });
     expect(
       harness.engine.getStreamReplaySnapshot().pendingInteractiveRequests,
     ).toContainEqual({
       type: 'permission:request',
-      data: expect.objectContaining({ display }),
+      data: expect.objectContaining({ display, defaultToNo: true, suppressAlwaysAllowRule: true }),
     });
   });
 

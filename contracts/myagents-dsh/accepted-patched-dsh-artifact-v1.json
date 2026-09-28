@@ -1,10 +1,10 @@
 {
   "formatVersion": 1,
   "artifactVersion": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
-  "manifestSha256": "50f2ff28771679e24fdf84359a6b5988907dca8eedc861577bc5c183fc6fdb97",
-  "sha256SumsSha256": "3ffae76f9484fb5052a2dde496a02a70d15263160839875258e18216f6b31793",
-  "consumerLockSha256": "4b49c6eceb9212bd5e23887a62ec928c0e1085b975201f41e92556b8c6f9771f",
-  "packageCount": 100,
+  "manifestSha256": "bcad0a0138fb68c97f2853a7357e452f947ee5c9cd2e926c22ac7d430e46c98b",
+  "sha256SumsSha256": "92a08176c1f3e22a23a30450e9072b3a478e1eb9e7f989a6a5f2073536a07c6e",
+  "consumerLockSha256": "73f03252ef9e85f90f24b67de17c7882d71eafc361fad7e13688fd105da0a8a8",
+  "packageCount": 101,
   "runtimePackages": {
     "@deepseek-ai/cordis": "4.0.4",
     "@deepseek-ai/dsh-agent": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
@@ -18,6 +18,7 @@
     "@deepseek-ai/dsh-compaction-basic": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
     "@deepseek-ai/dsh-compaction-tool-result-pruner": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
     "@deepseek-ai/dsh-fs-local": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
+    "@deepseek-ai/dsh-fs-sandbox": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
     "@deepseek-ai/dsh-llm": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
     "@deepseek-ai/dsh-llm-deepseek": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
     "@deepseek-ai/dsh-llm-pi-ai": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
