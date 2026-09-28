@@ -100,18 +100,24 @@ describe("Markdown typography contract", () => {
     );
   });
 
-  it("pins the default readable-but-clustered rhythm", () => {
+  it("pins the default reading rhythm", () => {
     expect(markdownStyles).toMatch(
-      /\.markdown-content\s*\{[\s\S]*?--markdown-line-height:\s*1\.625/,
+      /\.markdown-content\s*\{[\s\S]*?--markdown-line-height:\s*1\.7/,
     );
     expect(markdownStyles).toMatch(
-      /\.markdown-content\s*\{[\s\S]*?--markdown-flow-gap:\s*var\(--space-3\)/,
+      /\.markdown-content\s*\{[\s\S]*?--markdown-paragraph-gap:\s*var\(--space-4\)/,
     );
     expect(markdownStyles).toMatch(
       /\.markdown-content\s*\{[\s\S]*?--markdown-list-block-gap:\s*var\(--space-2\)/,
     );
     expect(markdownStyles).toMatch(
-      /\.markdown-content\s*\{[\s\S]*?--markdown-list-item-gap:\s*var\(--space-1\)/,
+      /\.markdown-content\s*\{[\s\S]*?--markdown-list-item-gap:\s*var\(--space-2\)/,
+    );
+    expect(markdownStyles).toMatch(
+      /\.markdown-content\s*\{[\s\S]*?--markdown-loose-list-item-gap:\s*var\(--space-3\)/,
+    );
+    expect(markdownStyles).toMatch(
+      /\.markdown-content\s*\{[\s\S]*?--markdown-after-list-gap:\s*var\(--space-5\)/,
     );
     expect(markdownStyles).toMatch(
       /\.markdown-content\s*\{[\s\S]*?--markdown-list-indent:\s*var\(--space-6\)/,

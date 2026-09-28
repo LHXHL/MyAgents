@@ -404,7 +404,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
               <span>via {SOURCE_LABELS[imSource as MessageSource] ?? imSource}</span>
             </div>
           )}
-          {/* 用户与 AI 正文都由 Markdown 默认变体承载 16px/1.625；article 的
+          {/* 用户与 AI 正文都由 Markdown 默认变体承载 16px/1.7；article 的
               text-base 只负责气泡内非 Markdown prose fallback。 */}
           <div className="group/user-actions flex w-fit max-w-[85%] flex-col items-end">
             <article className="relative w-fit max-w-full rounded-2xl bg-[var(--message-user-bg)] p-4 text-base text-[var(--ink)] select-text">
@@ -506,7 +506,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
               {renderWidgetSegments(message.content, isLoading, t('message.widgetUnclosed'))}
             </div>
           ) : (
-            /* ai-message-content 标记 host prose 上下文；具体 16px/1.625、零字距和
+            /* ai-message-content 标记 host prose 上下文；具体 16px/1.7、零字距和
                各语义块节奏由 Markdown 默认变体统一拥有。三个 assistant 分支
                （string/blocks/widget-segment）与文档预览共用这一条路径。 */
             <div className="ai-message-content text-[var(--ink)] select-text">
