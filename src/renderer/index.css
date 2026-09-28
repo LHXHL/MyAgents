@@ -952,7 +952,7 @@ pre code {
    字阶分叉正是那段历史的产物）。 */
 .ai-message-content {
   font-size: var(--text-base);
-  line-height: 1.625;
+  line-height: 1.7;
   letter-spacing: 0;
 }
 
