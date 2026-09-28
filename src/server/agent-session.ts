@@ -35,7 +35,7 @@ import {
   type ModelContextLengthSnapshot,
 } from './utils/model-capabilities';
 import { modelAliasEnvChangesForModel, resolveSessionModelAliases } from './utils/model-aliases';
-import { resolveEffectiveResumeAt } from './utils/rewind-anchor';
+import { isRejectedReloadAnchor, resolveEffectiveResumeAt } from './utils/rewind-anchor';
 import { attemptFileRewind, type FileRewindStatus } from './utils/rewind-file-result';
 import { summarizeSensitiveSdkMessage } from './utils/sdk-log-summary';
 import { buildForkUuidRemap, remapStoredSdkUuids } from './utils/fork-remap';
@@ -10881,6 +10881,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   // PRD 0.2.27 — query-scoped copy of the reloadAnchor this start actually sent. Local
   // (not module) so a late catch from THIS invocation evicts the right uuid even if a
   // newer session has since re-armed the module-level transcriptState.pendingReloadAnchor.
+  let sentReloadAnchor: string | undefined;
 
   // The exact SDK Query owns background-task liveness in lifecycle.ts so
   // deferred restart policy can see it. Whatever remains when this Query tears
@@ -10912,6 +10913,28 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   let deferredRewindResult: BuiltinSdkResultMessage | null = null;
   let queryExitFailed = false;
   let preparedProvider: PreparedProvider | undefined;
+  let recoveredRejectedReloadAnchor = false;
+
+  const recoverRejectedReloadAnchor = (rawError: string): boolean => {
+    if (lifecycleState.abortRequested || sessionId !== queryProductSessionId
+      || !isRejectedReloadAnchor(rawError, sentReloadAnchor)
+      || transcriptState.pendingReloadAnchor !== sentReloadAnchor) return false;
+
+    // This was inferred from Product history, not a persisted Rewind/Fork boundary.
+    // A bare resume lets the native Runtime select its durable head. The user
+    // explicitly accepts that legacy unmaterialized rewinds may expose a longer
+    // native history when their inferred boundary is rejected.
+    const rejected = sentReloadAnchor!;
+    setPendingReloadAnchor(undefined);
+    deleteCurrentSessionUuid(rejected);
+    const source = getCurrentTurnSourceItem();
+    abortPersistentSession({ notifyPendingRequests: false });
+    if (source) unshiftMessage({ ...source, resolve: () => {} });
+    recoveredRejectedReloadAnchor = true;
+    console.warn(`[agent] inferred reload anchor ${rejected} rejected by SDK; retrying with native selected head`);
+    schedulePreWarm();
+    return true;
+  };
 
   try {
     if (configState.currentProviderEnv?.endpointSource) managedQueryController = bindingController;
@@ -11119,6 +11142,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     const reloadAnchor = (!forkMode && !rewindResumeAt) ? transcriptState.pendingReloadAnchor : undefined;
     // Capture into a query-scoped local so a LATE catch from a previous (aborted) start
     // can't mis-attribute the eviction against a newer session's anchor (module state races).
+    sentReloadAnchor = reloadAnchor;
 
     const effectiveResumeAt = resolveEffectiveResumeAt({ forkMode, rewindResumeAt, forkResumeAt, reloadAnchor });
 
@@ -13498,7 +13522,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           retireRewoundQueryWhenQuiescent();
           continue;
         }
-        const handling = await builtinTurnLifecycle.handleSdkResult(resultMessage);
+        const handling = await builtinTurnLifecycle.handleSdkResult(resultMessage, recoverRejectedReloadAnchor);
         if (rewindInputGate && handling !== 'retrying') {
           retireRewoundQueryInput(rewindInputGate);
         }
@@ -13527,6 +13551,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       console.log('[agent] session start aborted pre-launch by user stop');
       return;
     }
+    if (recoverRejectedReloadAnchor(errorMessage)) return;
     const errorStack = error instanceof Error ? error.stack : String(error);
     console.error('[agent] session error:', errorMessage);
     console.error('[agent] session error stack:', errorStack);
@@ -13835,7 +13860,19 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     const turnBoundaryQueueLength = getTurnBoundaryQueue().length;
     if ((messageQueueLength > 0 || turnBoundaryQueueLength > 0) && !lifecycleState.processing && lifecycleState.query === null) {
       const hasOnlyTurnBoundaryQueue = messageQueueLength === 0 && turnBoundaryQueueLength > 0;
-      if (lifecycleState.preWarmDisabled || lifecycleState.preWarmFailCount >= PRE_WARM_MAX_RETRIES) {
+      if (recoveredRejectedReloadAnchor && (lifecycleState.preWarmDisabled
+        || lifecycleState.preWarmFailCount >= PRE_WARM_MAX_RETRIES)) {
+        // No speculative pre-warm is available, but this rejected inferred
+        // anchor still has one admitted input to replay against the native head.
+        setTimeout(() => {
+          if (sessionId !== queryProductSessionId || isSessionActive()
+            || (getMessageQueue().length === 0 && getTurnBoundaryQueue().length === 0)) return;
+          resetAbortFlag();
+          startStreamingSession().catch(error => {
+            console.error('[agent] failed to restart after inferred anchor rejection', error);
+          });
+        }, 0);
+      } else if (lifecycleState.preWarmDisabled || lifecycleState.preWarmFailCount >= PRE_WARM_MAX_RETRIES) {
         // A queued item cannot grant itself another startup retry budget. Once
         // preparation is exhausted, settle unsent input; a user/config action
         // can explicitly start a new recovery context.

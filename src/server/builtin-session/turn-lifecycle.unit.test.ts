@@ -488,6 +488,26 @@ describe('turn-lifecycle owner', () => {
     expect(deps.handleTerminalRecovery).toHaveBeenCalledWith(undefined);
   });
 
+  it.each([0, 1])('offers rejected reload recovery only before a model turn (num_turns=%s)', async numTurns => {
+    const { deps, broadcasts } = makeDeps();
+    const recover = vi.fn(() => true);
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+    const outcome = await lifecycle.handleSdkResult(makeResult({
+      subtype: 'error_during_execution', is_error: true, num_turns: numTurns,
+      result: 'SDK initialization failed',
+      errors: ['No message found with message.uuid of: rejected-anchor'], terminal_reason: 'error',
+    }), recover);
+    if (numTurns === 0) {
+      expect(recover).toHaveBeenCalledWith(expect.stringContaining('No message found with message.uuid of: rejected-anchor'));
+      expect(outcome).toBe('retrying');
+      expect(broadcasts.map(item => item.event)).not.toContain('chat:agent-error');
+    } else {
+      expect(recover).not.toHaveBeenCalled();
+      expect(outcome).toBe('terminal');
+      expect(broadcasts.map(item => item.event)).toContain('chat:agent-error');
+    }
+  });
+
 
   it('does not title a completed turn when turn-end persistence fails', async () => {
     const { deps, broadcasts } = makeDeps({

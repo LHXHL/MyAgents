@@ -7,7 +7,7 @@ import { NO_CHANNEL_DELIVERY } from '../session-core/channel-delivery';
 import type { TurnTerminalOutcome } from '../session-core/turn-queue';
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
 
-const state = vi.hoisted(() => ({ home: '', failProductIo: false, publicationGate: null as Promise<void> | null, publicationBlocked: false, queryExitGate: null as Promise<void> | null, queryInputEnded: 0, backgroundTask: false, backgroundTaskGate: null as Promise<void> | null, independentInputPump: false, sdkInputs: [] as unknown[], resultMode: 'success' as 'success' | 'error', sdkCumulativeBase: null as { input: number; output: number } | null, compactAtTurn: null as number | null, resetAtTurn: null as number | null, sdkCommands: [] as unknown[], interruptCloses: false, throwAfterInputEnd: false, query: vi.fn(), sdkRead: vi.fn(), sdkFork: vi.fn(), sdkDelete: vi.fn(), rewindFiles: vi.fn(), beforeResult: vi.fn(), events: [] as [string, unknown][], queuedFollowup: false, exitWithoutResult: false, toolFrames: false, childFrames: false, media: vi.fn() }));
+const state = vi.hoisted(() => ({ home: '', failProductIo: false, publicationGate: null as Promise<void> | null, publicationBlocked: false, queryExitGate: null as Promise<void> | null, queryInputEnded: 0, backgroundTask: false, backgroundTaskGate: null as Promise<void> | null, independentInputPump: false, sdkInputs: [] as unknown[], resultMode: 'success' as 'success' | 'error', rejectedResumeAt: null as string | null, sdkCumulativeBase: null as { input: number; output: number } | null, compactAtTurn: null as number | null, resetAtTurn: null as number | null, sdkCommands: [] as unknown[], interruptCloses: false, throwAfterInputEnd: false, query: vi.fn(), sdkRead: vi.fn(), sdkFork: vi.fn(), sdkDelete: vi.fn(), rewindFiles: vi.fn(), beforeResult: vi.fn(), events: [] as [string, unknown][], queuedFollowup: false, exitWithoutResult: false, toolFrames: false, childFrames: false, media: vi.fn() }));
 vi.mock('os', async original => ({ ...await original<typeof import('os')>(), homedir: () => state.home }));
 vi.mock('../utils/fs-utils', async original => {
   const actual = await original<typeof import('../utils/fs-utils')>();
@@ -49,7 +49,7 @@ let store: typeof import('../SessionStore');
 let releaseWrite: (() => void) | undefined;
 let notificationReceipts = false;
 
-function fakeQuery(args: { prompt: AsyncIterable<unknown>; options: { sessionId?: string; resume?: string } }) {
+function fakeQuery(args: { prompt: AsyncIterable<unknown>; options: { sessionId?: string; resume?: string; resumeSessionAt?: string } }) {
   const prompt = args.prompt[Symbol.asyncIterator]();
   const pullInput = () => prompt.next().then(next => {
     if (!next.done) state.sdkInputs.push(next.value);
@@ -60,11 +60,24 @@ function fakeQuery(args: { prompt: AsyncIterable<unknown>; options: { sessionId?
   const closed = new Promise<void>(resolve => { close = resolve; });
   const pending: unknown[] = [];
   let turn = 0;
+  let rejectedResume = false;
   let backgroundTaskPending = false;
   const sessionId = args.options.sessionId ?? args.options.resume;
   if (!sessionId) throw new Error('SDK test transport requires a new or resumed Session identity');
   const iterator = {
     async next(): Promise<IteratorResult<unknown>> {
+      if (args.options.resumeSessionAt === state.rejectedResumeAt) {
+        if (rejectedResume) return { done: true, value: undefined };
+        rejectedResume = true;
+        return { done: false, value: {
+          type: 'result', subtype: 'error_during_execution', is_error: true,
+          result: `No message found with message.uuid of: ${state.rejectedResumeAt}`,
+          errors: [`No message found with message.uuid of: ${state.rejectedResumeAt}`],
+          terminal_reason: 'error', session_id: sessionId, uuid: randomUUID(),
+          duration_ms: 1, duration_api_ms: 0, num_turns: 0, total_cost_usd: 0,
+          usage: { input_tokens: 0, output_tokens: 0 }, permission_denials: [],
+        } };
+      }
       if (pending.length) {
         const value = pending.shift();
         if ((value as { type?: string })?.type === 'result') state.beforeResult();
@@ -224,6 +237,7 @@ beforeEach(async () => {
   state.independentInputPump = false;
   state.sdkInputs.length = 0;
   state.resultMode = 'success';
+  state.rejectedResumeAt = null;
   state.sdkCumulativeBase = null;
   state.compactAtTurn = null;
   state.resetAtTurn = null;
@@ -810,6 +824,100 @@ it('retains an exact rewind boundary across rejection and cold reopen', async ()
   await vi.waitFor(() => expect(state.events.some(([name]) => name === 'chat:message-error')).toBe(true));
   expect(store.getSessionMetadata(meta.id)?.sdkResumeSessionAt).toBe('tail-frame-1');
   expect(state.query.mock.calls.at(-1)?.[0].options.resume).toBe(meta.id);
+});
+
+it.each([
+  ['v1', 'result', false], ['v2', 'result', false], ['v1', 'throw', false], ['v2', 'throw', false],
+  ['v1', 'result', true], ['v2', 'throw', true],
+] as const)('recovers a rejected derived reload anchor for %s (%s, no-pre-warm=%s) without repeating the user turn', async (format, failure, noPreWarm) => {
+  const workspace = join(state.home, 'workspace');
+  await mkdir(workspace);
+  const id = randomUUID();
+  if (format === 'v2') await store.createSession(workspace, { runtime: 'builtin', id });
+  else await store.saveSessionMetadata({ id, agentDir: workspace, title: 'legacy', createdAt: 't', lastActiveAt: 't', runtime: 'builtin', sdkSessionId: id });
+  const snapshot = await store.loadSessionTranscript(id);
+  expect(await store.appendSessionMessages(id, snapshot.cursor, [
+    { id: 'u1', role: 'user', content: 'prior', timestamp: 't', sdkUuid: 'native-user' },
+    { id: 'a1', role: 'assistant', content: 'prior answer', timestamp: 't', sdkUuid: 'native-tail' },
+  ])).toMatchObject({ ok: true });
+  state.sdkRead.mockResolvedValue([{ type: 'user', uuid: 'native-user' }, { type: 'assistant', uuid: 'native-tail' }]);
+  if (failure === 'result') state.rejectedResumeAt = 'native-tail';
+  else state.query.mockImplementation((args: Parameters<typeof fakeQuery>[0]) => {
+    if (args.options.resumeSessionAt === 'native-tail') {
+      throw new Error('No message found with message.uuid of: native-tail');
+    }
+    return fakeQuery(args);
+  });
+  await agent.initializeAgent(workspace, null, id, { preWarmDisabled: true });
+  if (!noPreWarm) (await import('../builtin-session/lifecycle')).setPreWarmDisabled(false);
+
+  await agent.enqueueUserMessage('continue once', [], undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
+
+  await vi.waitFor(() => expect(state.query.mock.calls.some(([args]) =>
+    args.options.resume === id && args.options.resumeSessionAt === undefined)).toBe(true));
+  await vi.waitFor(() => expect(agent.getLastBuiltinAssistantText()).toContain('answer 1'));
+  await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
+  expect(state.query.mock.calls[0][0].options.resumeSessionAt).toBe('native-tail');
+  expect(state.sdkInputs).toHaveLength(1);
+  expect(agent.getMessages().filter(message => message.role === 'user' && message.content === 'continue once')).toHaveLength(1);
+  expect(state.events.some(([name]) => name === 'chat:message-error')).toBe(false);
+  expect(store.getSessionMetadata(id)?.sdkResumeSessionAt).toBeUndefined();
+});
+
+it('pre-warm retries a rejected inferred anchor against the native head', async () => {
+  const workspace = join(state.home, 'workspace');
+  await mkdir(workspace);
+  const meta = await store.createSession(workspace, { runtime: 'builtin' });
+  const snapshot = await store.loadSessionTranscript(meta.id);
+  expect(await store.appendSessionMessages(meta.id, snapshot.cursor, [
+    { id: 'u1', role: 'user', content: 'prior', timestamp: 't', sdkUuid: 'native-user' },
+    { id: 'a1', role: 'assistant', content: 'prior answer', timestamp: 't', sdkUuid: 'native-tail' },
+  ])).toMatchObject({ ok: true });
+  state.sdkRead.mockResolvedValue([{ type: 'user', uuid: 'native-user' }, { type: 'assistant', uuid: 'native-tail' }]);
+  state.rejectedResumeAt = 'native-tail';
+
+  await agent.initializeAgent(workspace, null, meta.id);
+  agent.setMcpServers([]);
+  await vi.waitFor(() => {
+    const calls = state.query.mock.calls.map(([args]) => args.options);
+    const rejectedIndex = calls.findIndex(options => options.resume === meta.id && options.resumeSessionAt === 'native-tail');
+    expect(rejectedIndex).toBeGreaterThanOrEqual(0);
+    expect(calls.slice(rejectedIndex + 1).some(options =>
+      options.resume === meta.id && options.resumeSessionAt === undefined)).toBe(true);
+  }, { timeout: 3_000 });
+  expect(state.events.some(([name]) => name === 'chat:message-error')).toBe(false);
+
+  await agent.enqueueUserMessage('continue', [], undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
+  await vi.waitFor(() => expect(agent.getLastBuiltinAssistantText()).toContain('answer 1'));
+  expect(state.sdkInputs).toHaveLength(1);
+});
+
+it('preserves an IM turn across rejected inferred-anchor recovery', async () => {
+  const workspace = join(state.home, 'workspace');
+  await mkdir(workspace);
+  const meta = await store.createSession(workspace, { runtime: 'builtin' });
+  const snapshot = await store.loadSessionTranscript(meta.id);
+  expect(await store.appendSessionMessages(meta.id, snapshot.cursor, [
+    { id: 'u1', role: 'user', content: 'prior', timestamp: 't', sdkUuid: 'native-user' },
+    { id: 'a1', role: 'assistant', content: 'prior answer', timestamp: 't', sdkUuid: 'native-tail' },
+  ])).toMatchObject({ ok: true });
+  state.sdkRead.mockResolvedValue([{ type: 'user', uuid: 'native-user' }, { type: 'assistant', uuid: 'native-tail' }]);
+  state.rejectedResumeAt = 'native-tail';
+  await agent.initializeAgent(workspace, null, meta.id, { preWarmDisabled: true });
+  (await import('../builtin-session/lifecycle')).setPreWarmDisabled(false);
+
+  const onTerminal = vi.fn<(outcome: TurnTerminalOutcome) => void>();
+  const engine = (await import('../session-engine/builtin-adapter')).createBuiltinSessionEngine();
+  expect(await engine.enqueueImMessage({ message: 'IM once', requestId: 'im-reload', sessionId: meta.id, workspacePath: workspace,
+    scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' }, onTerminal })).toMatchObject({ success: true });
+
+  await vi.waitFor(() => expect(state.query.mock.calls.some(([args]) =>
+    args.options.resume === meta.id && args.options.resumeSessionAt === undefined)).toBe(true));
+  await vi.waitFor(() => expect(state.sdkInputs).toHaveLength(1));
+  await vi.waitFor(() => expect(onTerminal).toHaveBeenCalledTimes(1));
+  expect(onTerminal.mock.calls[0][0]).toMatchObject({ status: 'complete' });
 });
 
 it('admits the replay before a desktop send arriving during rewind', async () => {

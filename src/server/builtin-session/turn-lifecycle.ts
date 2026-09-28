@@ -174,7 +174,10 @@ export type BuiltinTurnLifecycle = {
   beginSdkQueryUsage: (seed: { resumed: boolean; previous?: MessageUsage['sdkCumulativeModelUsage'] }) => void;
   resetSdkQueryUsage: () => void;
   canMaterializeRewindResult: (resultMessage: BuiltinSdkResultMessage) => boolean;
-  handleSdkResult: (resultMessage: BuiltinSdkResultMessage) => Promise<'retrying' | 'terminal'>;
+  handleSdkResult: (
+    resultMessage: BuiltinSdkResultMessage,
+    recoverRejectedReloadAnchor?: (rawError: string) => boolean,
+  ) => Promise<'retrying' | 'terminal'>;
   completeTurn: (
     durationMs?: number,
     terminalError?: string,
@@ -517,7 +520,10 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     });
   };
 
-  const handleSdkResult = async (resultMessage: BuiltinSdkResultMessage): Promise<'retrying' | 'terminal'> => {
+  const handleSdkResult = async (
+    resultMessage: BuiltinSdkResultMessage,
+    recoverRejectedReloadAnchor?: (rawError: string) => boolean,
+  ): Promise<'retrying' | 'terminal'> => {
     deps.resetInFlightToolCount();
     deps.resetWatchdogFired();
 
@@ -594,6 +600,12 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
 
     if (isTerminalFailure || isAbortResult) {
       const rawError = resultText || resultMessage.errors?.join('; ') || getLastAssistantMessageError() || '';
+      if (isTerminalFailure && resultMessage.num_turns === 0
+        && recoverRejectedReloadAnchor?.([resultText, ...(resultMessage.errors ?? [])].join('; ') || rawError)) {
+        deps.clearApiRetryStatus();
+        commonTerminalCleanup('error');
+        return 'retrying';
+      }
       if (
         (rawError.includes('unknown variant') && rawError.includes('image')) ||
         (rawError.includes('image') && rawError.includes('exceed') && rawError.includes('max allowed size'))
