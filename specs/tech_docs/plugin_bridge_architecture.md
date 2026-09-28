@@ -207,6 +207,8 @@ promise 仍存活到平台投递结束，但同 chat 的下一条只等待当前
 
 OpenClaw Channel Plugin 是回复渲染 owner：由插件决定是否启用 streaming、CardKit 的创建/更新节奏、静态消息 fallback 与最终收尾。MyAgents 不复制任何平台 SDK 会话，也不根据凭据或插件 ID 推导流式能力；Bridge 只提供 OpenClaw dispatcher 所需的**请求级、有序、可等待传输**。
 
+插件通过 `dispatchReplyWithBufferedBlockDispatcher` 提供 `dispatcherOptions.deliver` 时，同样拥有这次回复的渲染生命周期：Bridge 用现有 request-scoped OpenClaw reply 协议承接，并在 AI terminal 与 renderer delivery 后才结算调用。只有没有 renderer callback 的旧式 buffered 调用走 admission-only 兼容路径；Rust 接管入站消息的 HTTP 200 不等于插件回复完成。
+
 `deliveryProtocol: "openclaw-reply"` 是本次入站已经成功创建真实 dispatcher 的事实，只能在 pending dispatch 按同一 `requestId` 注册后随该次请求发送。它不是 channel capability，也不能由 `streaming` 配置反推。Rust 将这个值保存在对应 `ReplySlot`，不影响同一 channel 的其他并发请求。
 
 Bridge 的 pending queue 只做一项背压优化：相邻、同 stream、同 lane 的 full-snapshot partial 可被更新值替换。run start、block barrier 与 terminal 都是顺序屏障；任何平台 I/O 延迟均由插件 dispatcher 自身消化，不得把 CardKit 请求放回 Rust `ReplyRouter` 的锁内。
