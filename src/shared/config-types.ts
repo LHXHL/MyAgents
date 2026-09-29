@@ -1137,13 +1137,54 @@ export interface ProjectSettings {
 
 // Preset providers with ModelEntity structure
 /** Anthropic 官方预设模型（订阅和 API 共用）
- *  contextLength / maxOutputTokens：来源 Anthropic Models overview (2026-07-03)
+ *  contextLength / maxOutputTokens：来源 https://platform.claude.com/docs/en/models/overview (2026-09-29)
  *  inputModalities：Anthropic current Claude models all support text+image input.
  *  contextLength > 200K 由 applyContextWindowSuffix 自动加 [1m] 走 SDK 1M 上下文路径。 */
 const ANTHROPIC_MODELS: ModelEntity[] = [
   {
+    model: 'claude-fable-5-1',
+    modelName: 'Claude Fable 5.1',
+    modelSeries: 'claude',
+    contextLength: 1_000_000,
+    maxOutputTokens: 128_000,
+    inputModalities: ['text', 'image'],
+  },
+  {
+    model: 'claude-opus-5-5',
+    modelName: 'Claude Opus 5.5',
+    modelSeries: 'claude',
+    contextLength: 1_000_000,
+    maxOutputTokens: 128_000,
+    inputModalities: ['text', 'image'],
+  },
+  {
+    model: 'claude-sonnet-5-5',
+    modelName: 'Claude Sonnet 5.5',
+    modelSeries: 'claude',
+    contextLength: 1_000_000,
+    maxOutputTokens: 128_000,
+    inputModalities: ['text', 'image'],
+  },
+  {
+    model: 'claude-haiku-4-5',
+    modelName: 'Claude Haiku 4.5',
+    modelSeries: 'claude',
+    contextLength: 200_000,
+    maxOutputTokens: 64_000,
+    inputModalities: ['text', 'image'],
+  },
+  // Legacy options kept selectable for users/accounts that have not moved yet.
+  {
     model: 'claude-fable-5',
     modelName: 'Claude Fable 5',
+    modelSeries: 'claude',
+    contextLength: 1_000_000,
+    maxOutputTokens: 128_000,
+    inputModalities: ['text', 'image'],
+  },
+  {
+    model: 'claude-opus-5',
+    modelName: 'Claude Opus 5',
     modelSeries: 'claude',
     contextLength: 1_000_000,
     maxOutputTokens: 128_000,
@@ -1165,15 +1206,6 @@ const ANTHROPIC_MODELS: ModelEntity[] = [
     maxOutputTokens: 128_000,
     inputModalities: ['text', 'image'],
   },
-  {
-    model: 'claude-haiku-4-5',
-    modelName: 'Claude Haiku 4.5',
-    modelSeries: 'claude',
-    contextLength: 200_000,
-    maxOutputTokens: 64_000,
-    inputModalities: ['text', 'image'],
-  },
-  // Legacy 4.x options kept selectable for users/accounts that have not moved yet.
   // contextLength: Anthropic Sonnet 4.6 / Opus 4.6 wire-default is 200K. The 1M
   // tier requires the `context-1m-2025-08-07` beta header AND either Tier-4 API
   // spend or a paid "extra usage" toggle on subscription plans. Defaulting to 1M
@@ -1208,12 +1240,11 @@ const ANTHROPIC_MODELS: ModelEntity[] = [
   },
 ];
 
-/** Anthropic 官方默认别名（对齐 SDK 0.3.220 当前模型族：fable5/opus48/sonnet5/haiku45）。
- *  显式 pin 可避免未来 SDK 默认变动时用户体验突变。 */
+/** Anthropic 默认别名显式 pin，避免未来 SDK 模型名录更新时悄悄改变默认模型。 */
 const ANTHROPIC_ALIASES = {
   fable: 'claude-fable-5',
   opus: 'claude-opus-4-8',
-  sonnet: 'claude-sonnet-5',
+  sonnet: 'claude-sonnet-5-5',
   haiku: 'claude-haiku-4-5',
 } as const;
 
@@ -1580,7 +1611,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     cloudProvider: '官方',
     type: 'subscription',
     subscriptionAuth: { kind: 'sdk-native' },
-    primaryModel: 'claude-sonnet-5',
+    primaryModel: 'claude-sonnet-5-5',
     isBuiltin: true,
     config: {},
     modelAliases: { ...ANTHROPIC_ALIASES },
@@ -1660,7 +1691,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     vendor: 'Anthropic',
     cloudProvider: '官方',
     type: 'api',
-    primaryModel: 'claude-sonnet-5',
+    primaryModel: 'claude-sonnet-5-5',
     isBuiltin: true,
     authType: 'both',
     config: {
