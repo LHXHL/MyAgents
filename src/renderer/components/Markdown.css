@@ -58,8 +58,8 @@
     .markdown-content:not(.markdown-content--compact):not(.md-editor-host *) {
     --markdown-font-size: var(--text-sm);
     --markdown-line-height: 1.6;
-    --markdown-flow-gap: var(--space-2);
-    --markdown-paragraph-gap: var(--space-3);
+    --markdown-flow-gap: var(--space-2-5);
+    --markdown-paragraph-gap: var(--space-3-5);
     --markdown-list-indent: var(--space-5);
     --markdown-list-block-gap: var(--space-1-5);
     --markdown-list-item-gap: var(--space-1-5);

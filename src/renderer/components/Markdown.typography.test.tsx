@@ -135,7 +135,8 @@ describe("Markdown typography contract", () => {
       /html\[data-markdown-reading-size='standard'\]\s*\.markdown-content:not\(\.markdown-content--compact\):not\(\.md-editor-host \*\)\s*\{[\s\S]*?--markdown-font-size:\s*var\(--text-sm\)/,
     );
     expect(markdownStyles).toMatch(/--markdown-line-height:\s*1\.6/);
-    expect(markdownStyles).toMatch(/--markdown-paragraph-gap:\s*var\(--space-3\)/);
+    expect(markdownStyles).toMatch(/--markdown-flow-gap:\s*var\(--space-2-5\)/);
+    expect(markdownStyles).toMatch(/--markdown-paragraph-gap:\s*var\(--space-3-5\)/);
     expect(markdownStyles).toMatch(/--markdown-list-item-gap:\s*var\(--space-1-5\)/);
     expect(markdownStyles).toMatch(/--markdown-heading-content-gap:\s*var\(--space-1-5\)/);
     expect(markdownStyles).toMatch(/--markdown-after-list-gap:\s*var\(--space-4\)/);
