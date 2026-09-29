@@ -1100,7 +1100,9 @@ export class DshRuntime implements AgentRuntime {
       redactStderrLine: redactDshDiagnosticLine,
       onFailure: error => {
         emitProductEvent({ kind: 'log', level: 'error', message: redactDshDiagnosticLine(error.message) });
-        emitProductEvent({ kind: 'status_change', state: 'error' });
+        // Transport failure ends this process generation. The shared lifecycle
+        // owner must release running state so queued input can resume it.
+        emitProductEvent({ kind: 'session_complete', subtype: 'error', result: redactDshDiagnosticLine(error.message) });
       },
     });
 

@@ -172,7 +172,7 @@ Codex Server → Client request 使用显式 allowlist。升级 app-server 时�
 
 ### 5.4 Integrated DSH
 
-`integrated-runtimes/dsh/runtime.ts` 通过 `RuntimeProcessHost` 和生成 client 连接一个 DSH generation。Runtime 独占原生 Session/Turn、DSH 工具流水线、permission revision 与子 Agent 生命周期；Host 的 `SessionStore` 独占 Product transcript、冻结 identity 和 mutation/input journal。原生 receipt 决定输入是否被消费；legacy Session 仍等待 Product durable commit，V2 则更新 canonical projection 并保留执行恢复 journal，正文由后台 writer 提交。RPC 成功本身不能推断 DSH 输入已进入对话。
+`integrated-runtimes/dsh/runtime.ts` 通过 `RuntimeProcessHost` 和生成 client 连接一个 DSH generation。 DSH transport/process failure 必须发送 `session_complete` 给共享 lifecycle owner，释放该 generation 的 running/process 状态；只发送 error status 会阻止下一条 query 的原生恢复。Runtime 独占原生 Session/Turn、DSH 工具流水线、permission revision 与子 Agent 生命周期；Host 的 `SessionStore` 独占 Product transcript、冻结 identity 和 mutation/input journal。原生 receipt 决定输入是否被消费；legacy Session 仍等待 Product durable commit，V2 则更新 canonical projection 并保留执行恢复 journal，正文由后台 writer 提交。RPC 成功本身不能推断 DSH 输入已进入对话。
 
 结构化 `systemContext` 分别传入 global/root contributions，主项目指令由 Runtime 的 DSH 指令插件加载。Skills/MCP 等扩展由同一次 Product capability inventory 编译为声明式快照；`dsh_first` 的子 Agent 由 DSH 原生工具创建。runtime-neutral `product-extensions` dispatcher 供 DSH reverse ports 与 Managed Codex 共用。DSH extension replacement 在原生事务边界更新，当前状态通过既有 SSE 和组件诊断投影。
 

@@ -8080,7 +8080,7 @@ describe('external SessionEngine with fake runtime', () => {
   });
 
 
-  it('starts one DSH root recovery when new queued work follows a stopped process', async () => {
+  it.each(['stop', 'transport failure'] as const)('starts one DSH root recovery when queued work follows %s', async (exit) => {
     const harness = await createHarness(
       [
         { kind: 'silent' },
@@ -8103,7 +8103,7 @@ describe('external SessionEngine with fake runtime', () => {
         workspacePath,
         'operation before process stop',
       ),
-      permissionMode: 'auto',
+      permissionMode: 'approval-required',
     });
     await expect(first.dispatchAcceptance).resolves.toEqual({ accepted: true });
     expect(
@@ -8111,10 +8111,12 @@ describe('external SessionEngine with fake runtime', () => {
         ?.pendingDshRootOperation,
     ).toBeDefined();
 
-    await expect(harness.engine.stopTurn()).resolves.toEqual({
-      success: true,
-      alreadyStopped: false,
-    });
+    if (exit === 'stop') {
+      await expect(harness.engine.stopTurn()).resolves.toEqual({ success: true, alreadyStopped: false });
+    } else {
+      harness.runtime.emitForTest({ kind: 'session_complete', subtype: 'error', result: 'Protocol input reached EOF' });
+      await waitFor(() => !harness.externalSession.hasExternalRuntimeProcess(), 'failed process release');
+    }
     expect(
       harness.sessionStore.getSessionMetadata(sessionId)
         ?.pendingDshRootOperation,
@@ -8122,7 +8124,7 @@ describe('external SessionEngine with fake runtime', () => {
 
     const followUp = await harness.engine.sendDesktopMessage({
       ...desktopRequest(sessionId, workspacePath, 'run after exact recovery'),
-      permissionMode: 'auto',
+      permissionMode: 'approval-required',
     });
     expect(followUp).toMatchObject({
       queued: true,
