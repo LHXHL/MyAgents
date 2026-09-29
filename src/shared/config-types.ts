@@ -272,6 +272,8 @@ export function normalizeProviderOrder(
   for (const id of providerIds) {
     if (seen.has(id)) continue;
     seen.add(id);
+    const insertBeforeIndex = id === OPENCODE_GO_PROVIDER_ID
+      ? ordered.indexOf('anthropic-api') : -1;
     const insertAfter =
       id === XAI_SUBSCRIPTION_PROVIDER_ID
         ? ordered.includes(CODEX_SUBSCRIPTION_PROVIDER_ID)
@@ -279,7 +281,9 @@ export function normalizeProviderOrder(
           : SUBSCRIPTION_PROVIDER_ID
         : MISSING_PROVIDER_INSERT_AFTER[id];
     const insertAfterIndex = insertAfter ? ordered.indexOf(insertAfter) : -1;
-    if (insertAfterIndex >= 0) {
+    if (insertBeforeIndex >= 0) {
+      ordered.splice(insertBeforeIndex, 0, id);
+    } else if (insertAfterIndex >= 0) {
       ordered.splice(insertAfterIndex + 1, 0, id);
     } else {
       ordered.push(id);
@@ -1584,27 +1588,6 @@ export const PRESET_PROVIDERS: Provider[] = [
     models: TOKENDANCE_MODELS,
   },
   {
-    id: OPENCODE_GO_PROVIDER_ID,
-    name: 'OpenCode Go',
-    subtitle: '使用 OpenCode Go 订阅的 coding agent 模型额度',
-    vendor: 'OpenCode',
-    cloudProvider: '官方',
-    type: 'api',
-    primaryModel: 'minimax-m3',
-    isBuiltin: true,
-    modelRouting: 'per-model',
-    modelProtocolBaseUrls: {
-      'anthropic:messages': OPENCODE_GO_BASE_URL,
-      'openai:responses': `${OPENCODE_GO_BASE_URL}/v1`,
-      'openai:chat-completions': `${OPENCODE_GO_BASE_URL}/v1`,
-    },
-    config: { baseUrl: OPENCODE_GO_BASE_URL },
-    authType: 'api_key',
-    websiteUrl: 'https://opencode.ai/docs/go/',
-    modelListUrl: OPENCODE_GO_MODEL_LIST_URL,
-    models: OPENCODE_GO_MODELS,
-  },
-  {
     id: 'anthropic-sub',
     name: 'Anthropic (订阅)',
     vendor: 'Anthropic',
@@ -1684,6 +1667,27 @@ export const PRESET_PROVIDERS: Provider[] = [
     apiProtocol: 'anthropic',
     config: {},
     models: [],
+  },
+  {
+    id: OPENCODE_GO_PROVIDER_ID,
+    name: 'OpenCode Go',
+    subtitle: '使用 OpenCode Go 订阅的 coding agent 模型额度',
+    vendor: 'OpenCode',
+    cloudProvider: '官方',
+    type: 'api',
+    primaryModel: 'minimax-m3',
+    isBuiltin: true,
+    modelRouting: 'per-model',
+    modelProtocolBaseUrls: {
+      'anthropic:messages': OPENCODE_GO_BASE_URL,
+      'openai:responses': `${OPENCODE_GO_BASE_URL}/v1`,
+      'openai:chat-completions': `${OPENCODE_GO_BASE_URL}/v1`,
+    },
+    config: { baseUrl: OPENCODE_GO_BASE_URL },
+    authType: 'api_key',
+    websiteUrl: 'https://opencode.ai/docs/go/',
+    modelListUrl: OPENCODE_GO_MODEL_LIST_URL,
+    models: OPENCODE_GO_MODELS,
   },
   {
     id: 'anthropic-api',

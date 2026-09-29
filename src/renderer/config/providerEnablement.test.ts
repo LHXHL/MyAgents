@@ -5,6 +5,7 @@ import {
   isProviderEnabled,
   normalizeDisabledProviderIds,
   normalizeProviderOrder,
+  PRESET_PROVIDERS,
   type Provider,
 } from './types';
 
@@ -29,6 +30,18 @@ describe('provider enablement and ordering helpers', () => {
       'alpha',
       'gamma',
     ])).toEqual(['gamma', 'alpha', 'beta']);
+  });
+
+  it('places a newly added OpenCode Go card immediately before Claude API', () => {
+    const ids = PRESET_PROVIDERS.map(provider => provider.id);
+    const assertGoBeforeClaudeApi = (ordered: string[]) => {
+      expect(ordered.indexOf('opencode-go')).toBe(ordered.indexOf('anthropic-api') - 1);
+    };
+    assertGoBeforeClaudeApi(normalizeProviderOrder(ids));
+    assertGoBeforeClaudeApi(normalizeProviderOrder(ids, ids.filter(id => id !== 'opencode-go')));
+    // A saved user order is an explicit choice and still takes precedence.
+    const custom = normalizeProviderOrder(ids, ['anthropic-api', 'opencode-go']);
+    expect(custom.indexOf('anthropic-api')).toBeLessThan(custom.indexOf('opencode-go'));
   });
 
   it('normalizes disabled ids by keeping only known unique providers', () => {
