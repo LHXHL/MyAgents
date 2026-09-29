@@ -196,7 +196,9 @@ export async function handleSessionConfigRoute(
   if (pathname === '/api/session/agent-work' && request.method === 'GET') {
     const engine = getSessionEngine();
     if (!engine.listAgentWork) return jsonResponse({ success: false, error: 'Agent work is unavailable' }, 409);
-    try { return jsonResponse({ success: true, ...await engine.listAgentWork() }); }
+    const tasksFor = new URL(request.url).searchParams.get('tasksFor') ?? undefined;
+    if (tasksFor !== undefined && (tasksFor.length < 1 || tasksFor.length > 256)) return jsonResponse({ success: false, error: 'Invalid Agent identity' }, 400);
+    try { return jsonResponse({ success: true, ...await engine.listAgentWork(tasksFor) }); }
     catch (error) { return jsonResponse({ success: false, error: error instanceof Error ? error.message : 'Agent work read failed' }, 409); }
   }
   if (pathname === '/api/session/agent-work' && request.method === 'POST') {

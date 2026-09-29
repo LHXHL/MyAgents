@@ -1,7 +1,7 @@
 ---
 type: module-technical-document
 status: implemented-native-validation-partial
-updated: 2026-09-25
+updated: 2026-09-30
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
 runtime_rfc: MyAgents-dsh/specs/prd/tech_rfc_0.3_myagents_dsh_integration.md
@@ -11,6 +11,8 @@ runtime_authority: src/shared/integrated-runtimes/dsh-lock.json
 # MyAgents-dsh Integrated Runtime — implementation and delivery ledger
 
 > Current owners and data flow follow [Architecture](../ARCHITECTURE.md), [Multi-Agent Runtime](multi_agent_runtime.md), [Product Session history V2](session_transcript_v2.md) and the implementation. The accepted Runtime identity, protocol, toolchain and platform claims come from `src/shared/integrated-runtimes/dsh-lock.json`, generated contracts and the verified immutable handoff. Sections 2–24 mix the original design with later implementation notes; the dated sections after the references are delivery history. Version numbers, pending gates and worktree observations in those sections describe their recorded moment, not the current checkout.
+
+When the selected `dsh_first` Runtime provides native subagent Host methods, the client projects DSH's native catalog rather than ProductWork. The Agent view retrieves root personal tasks, root shared tasks and the selected child's personal tasks by Agent Session ID. Root personal tasks alone feed the chat's todo panel; shared and child tasks never become root todos. Native follow-up uses `subagent/prompt`, and interrupt stops only the child's current turn. An older Runtime without these methods continues to use its ProductWork projection; the historical ProductWork text below describes that delivery.
 
 ## 1. Decision summary
 

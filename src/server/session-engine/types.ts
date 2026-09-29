@@ -442,7 +442,7 @@ export interface SessionEngine {
   updateModel(model: string, opts?: { imConfigSync?: boolean }): Promise<{ success: boolean; error?: string }>;
   updatePermissionMode(mode: string): Promise<{ success: boolean; error?: string }>;
   /** Optional because only Runtimes with an authoritative exact-rule API expose it. */
-  listAgentWork?(): Promise<RuntimeAgentWorkTree>;
+  listAgentWork?(tasksFor?: string): Promise<RuntimeAgentWorkTree>;
   controlAgentWork?(input: RuntimeAgentWorkControl): Promise<void>;
   listPermissionRules?(): Promise<RuntimePermissionRulesSnapshot>;
   addPermissionRule?(input: Readonly<{

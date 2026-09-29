@@ -1210,6 +1210,15 @@
     }
   },
   "agentTree": {
+    "personalTasks": "Personal tasks",
+    "sharedTasks": "Shared tasks",
+    "taskOwner": "Owner",
+    "taskOffered": "Offered to",
+    "taskBlockedBy": "Blocked by",
+    "interruptTurn": "Interrupt current turn",
+    "nativeModes": { "one-shot": "One-time delegation", "continuable": "Continuable Agent" },
+    "nativeStates": { "running": "Running", "inactive": "Inactive" },
+    "taskStates": { "pending": "Pending", "in_progress": "In progress", "completed": "Completed", "cancelled": "Cancelled" },
     "title": "Agent work tree",
     "close": "Close",
     "unknown": "Unknown",

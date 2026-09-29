@@ -172,11 +172,11 @@ Codex Server → Client request 使用显式 allowlist。升级 app-server 时�
 
 ### 5.4 Integrated DSH
 
-`integrated-runtimes/dsh/runtime.ts` 通过 `RuntimeProcessHost` 和生成 client 连接一个 DSH generation。Runtime 独占原生 Session/Turn、DSH 工具流水线、permission revision 与 ProductWork；Host 的 `SessionStore` 独占 Product transcript、冻结 identity 和 mutation/input journal。原生 receipt 决定输入是否被消费；legacy Session 仍等待 Product durable commit，V2 则更新 canonical projection 并保留执行恢复 journal，正文由后台 writer 提交。RPC 成功本身不能推断 DSH 输入已进入对话。
+`integrated-runtimes/dsh/runtime.ts` 通过 `RuntimeProcessHost` 和生成 client 连接一个 DSH generation。Runtime 独占原生 Session/Turn、DSH 工具流水线、permission revision 与子 Agent 生命周期；Host 的 `SessionStore` 独占 Product transcript、冻结 identity 和 mutation/input journal。原生 receipt 决定输入是否被消费；legacy Session 仍等待 Product durable commit，V2 则更新 canonical projection 并保留执行恢复 journal，正文由后台 writer 提交。RPC 成功本身不能推断 DSH 输入已进入对话。
 
-结构化 `systemContext` 分别传入 global/root contributions，主项目指令由 Runtime 的 DSH 指令插件加载。Skills/MCP/Agents 由同一次 Product capability inventory 编译为声明式快照；runtime-neutral `product-extensions` dispatcher 供 DSH reverse ports 与 Managed Codex 共用。DSH extension replacement 在原生事务边界更新，当前状态通过既有 SSE 和组件诊断投影。
+结构化 `systemContext` 分别传入 global/root contributions，主项目指令由 Runtime 的 DSH 指令插件加载。Skills/MCP 等扩展由同一次 Product capability inventory 编译为声明式快照；`dsh_first` 的子 Agent 由 DSH 原生工具创建。runtime-neutral `product-extensions` dispatcher 供 DSH reverse ports 与 Managed Codex 共用。DSH extension replacement 在原生事务边界更新，当前状态通过既有 SSE 和组件诊断投影。
 
-Fork/rewind/delete/retry/compact 走 SessionEngine 的 adapter operation；丢失回包由既有 Product journal 与原生 receipts 对账。Root/child 权限与 AskUser 复用产品交互；ProductWork whole snapshot 复用 Agent 卡片与状态面板。官方 Shell/Jobs 组件拥有平台命令执行，Host 仅声明执行环境和处理权限。
+Fork/rewind/delete/retry/compact 走 SessionEngine 的 adapter operation；丢失回包由既有 Product journal 与原生 receipts 对账。Root/child 权限与 AskUser 复用产品交互。绑定支持原生 Host 方法的 `dsh_first` Runtime 时，Agent 树来自 DSH 原生目录，个人任务按 Agent Session 读取，共享任务单独读取；客户端的中断按钮只中断当前轮次，给可延续子 Agent 发消息即可再次工作。旧 `ma_first` 产物仍走 ProductWork 投影。官方 Shell/Jobs 组件拥有平台命令执行，Host 仅声明执行环境和处理权限。
 
 DSH 权限选择先存为 Session 的期望模式；当前 turn 使用 admission 时冻结的模式，不因设置变化中断。下一条 query 启动前，adapter 在原生 `config/apply` 边界同时落实 Product 权限、DSH sandbox 与 approval policy，确认有效后才发送 `turn/start`；应用失败则阻止这条 query，不能沿用旧权限执行。
 

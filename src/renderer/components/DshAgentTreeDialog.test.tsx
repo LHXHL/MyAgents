@@ -63,4 +63,24 @@ describe('DSH Agent tree controls', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('消息已接收，将在目标允许的执行边界生效。');
     expect(mocks.apiPost.mock.calls[0]?.[1]).toMatchObject({ kind: 'message', agentId: 'child-1', message: 'Continue fixture task', clientMessageId: expect.any(String) });
   });
+
+  it('keeps native personal and shared tasks separate and interrupts only a live turn', async () => {
+    mocks.apiGet.mockResolvedValue({ success: true, items: [fixture({
+      native: { mode: 'continuable', activity: 'running' }, description: 'Review the result', status: 'running',
+    })], taskLists: [
+      { agentId: 'root-1', list: 'personal', tasks: [{ id: 'task-1', subject: 'Root private work', status: 'pending' }] },
+      { agentId: 'root-1', list: 'shared', tasks: [{ id: 'task-1', subject: 'Assigned review', status: 'in_progress', owner: 'child-1' }] },
+      { agentId: 'child-1', list: 'personal', tasks: [{ id: 'task-1', subject: 'Review steps', status: 'pending' }] },
+    ] });
+    mocks.apiPost.mockResolvedValue({ success: true });
+    render(<DshAgentTreeDialog onClose={vi.fn()} />);
+    expect(await screen.findByText('Root private work')).toBeInTheDocument();
+    expect(screen.getByText('Assigned review')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '恢复此节点' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '停止子树' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '个人任务' }));
+    expect(await screen.findByText('Review steps')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '中断当前轮次' }));
+    await waitFor(() => expect(mocks.apiPost).toHaveBeenCalledWith('/api/session/agent-work', expect.objectContaining({ kind: 'stop', agentId: 'child-1' })));
+  });
 });

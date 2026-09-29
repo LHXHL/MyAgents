@@ -2,7 +2,7 @@ import type { AskUserQuestionAnswers } from '../../../shared/types/askUserQuesti
 import { dshSessionOwnedPaths } from './owned-paths';
 import { resolveProviderForModel } from '../../../shared/tokendance';
 import type { MethodParams } from './protocol-types';
-import type { RuntimeAgentWorkControl } from '../../../shared/types/subagent-lifecycle';
+import type { RuntimeAgentWorkControl, RuntimeAgentWorkTree } from '../../../shared/types/subagent-lifecycle';
 import { createHash, randomUUID } from 'node:crypto';
 import { access, mkdir, realpath } from 'node:fs/promises';
 import { delimiter, dirname, isAbsolute, join, normalize } from 'node:path';
@@ -1485,9 +1485,39 @@ export class DshRuntime implements AgentRuntime {
     return snapshot;
   }
 
-  async listAgentWork(runtimeProcess: RuntimeProcess) {
+  async listAgentWork(runtimeProcess: RuntimeProcess, tasksFor?: string) {
     const process = dshProcess(runtimeProcess);
     const items: ReturnType<typeof projectDshAgentWorkSnapshot>[] = [];
+    let taskLists: RuntimeAgentWorkTree['taskLists'];
+    if (process.host.supportsNativeSubagents()) {
+      const catalog = await process.host.requestNativeSubagent('subagent/list', {});
+      if (!Array.isArray(catalog.items)) throw new Error('DSH subagent catalog is invalid');
+      for (const child of catalog.items) {
+        const activity = child.activity;
+        const mode = child.mode;
+        if ((activity !== 'running' && activity !== 'inactive') || (mode !== 'one-shot' && mode !== 'continuable')) throw new Error('DSH subagent state is invalid');
+        items.push({
+          native: { mode, activity },
+          agentId: child.id, taskId: child.id, parentToolUseId: child.id,
+          tree: { rootAgentId: process.runtimeSessionId, parentAgentId: child.parentId, depth: child.depth },
+          status: activity === 'running' ? 'running' : 'completed', startedAt: 0,
+          mode: mode === 'continuable' ? 'continuable' : 'foreground',
+          description: child.label ?? '',
+          handleState: mode === 'continuable' ? 'open' : 'closed',
+          handleRevision: 0,
+        });
+      }
+      const addresses = [
+        { agentId: process.runtimeSessionId, list: 'personal' as const },
+        { agentId: process.runtimeSessionId, list: 'shared' as const },
+        ...(tasksFor && items.some(item => item.agentId === tasksFor)
+          ? [{ agentId: tasksFor, list: 'personal' as const }] : []),
+      ];
+      taskLists = await Promise.all(addresses.map(async address => {
+        const result = await process.host.requestNativeSubagent('subagent/tasks', address);
+        return { agentId: result.agentId, list: result.list, tasks: result.snapshot.tasks };
+      }));
+    } else {
     const seen = new Set<string>();
     let afterTaskId: string | undefined;
     do {
@@ -1501,6 +1531,7 @@ export class DshRuntime implements AgentRuntime {
       afterTaskId = result.nextTaskId === undefined ? undefined : string(result.nextTaskId, 'DSH Work cursor');
       if (afterTaskId !== undefined && (result.items.length === 0 || afterTaskId !== items.at(-1)?.taskId)) throw new Error('DSH Work cursor did not advance');
     } while (afterTaskId !== undefined);
+    }
     const effective = process.configuration.collaboration;
     let desiredState: 'effective' | 'pending' | 'invalid';
     try {
@@ -1508,7 +1539,7 @@ export class DshRuntime implements AgentRuntime {
         permissionMode: process.desiredPermissionMode, reasoningEffort: process.configuration.reasoningEffort }, process.configuration);
       desiredState = desired.revision === process.configuration.revision ? 'effective' : 'pending';
     } catch { desiredState = 'invalid'; }
-    return { items, configuration: { revision: process.configuration.revision,
+    return { items, ...(taskLists === undefined ? {} : { taskLists }), configuration: { revision: process.configuration.revision,
       maxDepth: effective.maxDepth, maxActiveChildren: effective.maxActiveChildren, maxRetainedChildren: effective.maxRetainedChildren,
       messageDelivery: effective.messageDelivery, modelPolicy: effective.modelPolicy.mode, desiredState,
     } };
@@ -1516,6 +1547,14 @@ export class DshRuntime implements AgentRuntime {
 
   async controlAgentWork(runtimeProcess: RuntimeProcess, input: RuntimeAgentWorkControl): Promise<void> {
     const process = dshProcess(runtimeProcess);
+    if (process.host.supportsNativeSubagents()) {
+      if (input.kind === 'resume') throw new Error('Native DSH subagents resume through a new message');
+      const result = input.kind === 'message'
+        ? await process.host.requestNativeSubagent('subagent/prompt', { agentId: input.agentId, clientMessageId: input.clientMessageId, message: input.message })
+        : await process.host.requestNativeSubagent('subagent/interrupt', { agentId: input.agentId });
+      if (result.ok !== true) throw new Error('DSH subagent action was not accepted');
+      return;
+    }
     const { kind, ...params } = input;
     const method = kind === 'resume' ? 'work/agent/resume' : kind === 'stop' ? 'work/agent/stop' : 'work/agent/message';
     const result = await process.host.request(method, params);

@@ -60,6 +60,17 @@ export type DshRuntimeProcessIdentity = Readonly<{
   dshVersion: string;
 }>;
 
+type NativeSubagentMethods = {
+  'subagent/list': { params: Record<string, never>; result: { items: Array<{ id: string; parentId: string; depth: number; mode: 'one-shot' | 'continuable'; activity: 'running' | 'inactive'; label?: string }> } };
+  'subagent/tasks': { params: { agentId: string; list: 'personal' | 'shared' }; result: { agentId: string; list: 'personal' | 'shared'; snapshot: { tasks: Array<{ id: string; subject: string; status: 'pending' | 'in_progress' | 'completed' | 'cancelled'; owner?: string; offerTo?: string[]; blockedBy?: string[] }> } } };
+  'subagent/prompt': { params: { agentId: string; clientMessageId: string; message: string }; result: { ok: true } };
+  'subagent/interrupt': { params: { agentId: string }; result: { ok: true } };
+};
+const nativeSubagentClientMethods = {
+  'subagent/list': 'subagentList', 'subagent/tasks': 'subagentTasks',
+  'subagent/prompt': 'subagentPrompt', 'subagent/interrupt': 'subagentInterrupt',
+} as const;
+
 export type DshRuntimeProcessHostOptions = Readonly<{
   installation: DshRuntimeInstallation;
   initialize: DshInitializeParams;
@@ -221,6 +232,20 @@ export class DshRuntimeProcessHost {
 
   get identity(): DshRuntimeProcessIdentity | undefined {
     return this.identityValue;
+  }
+
+  supportsNativeSubagents(): boolean {
+    const client = this.client as unknown as Record<string, unknown> | undefined;
+    return client !== undefined && Object.values(nativeSubagentClientMethods).every(method => typeof client[method] === 'function');
+  }
+
+  async requestNativeSubagent<Name extends keyof NativeSubagentMethods>(
+    method: Name, params: NativeSubagentMethods[Name]['params'],
+  ): Promise<NativeSubagentMethods[Name]['result']> {
+    if (this.stateValue !== 'protocol-ready' || !this.client) throw new Error('DSH Runtime protocol is not ready');
+    const call = (this.client as unknown as Record<string, unknown>)[nativeSubagentClientMethods[method]];
+    if (typeof call !== 'function') throw new Error('DSH Runtime has no native subagent Host method');
+    return await Reflect.apply(call, this.client, [params]) as NativeSubagentMethods[Name]['result'];
   }
 
   get pid(): number | undefined {

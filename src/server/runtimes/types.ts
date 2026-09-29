@@ -551,7 +551,7 @@ export interface AgentRuntime {
   ): Promise<RuntimeExtensionDiagnostics | null>;
 
   /** Inspect the authoritative Runtime permission policy for this Session. */
-  listAgentWork?(process: RuntimeProcess): Promise<RuntimeAgentWorkTree>;
+  listAgentWork?(process: RuntimeProcess, tasksFor?: string): Promise<RuntimeAgentWorkTree>;
   controlAgentWork?(process: RuntimeProcess, input: RuntimeAgentWorkControl): Promise<void>;
   listPermissionRules?(process: RuntimeProcess): Promise<RuntimePermissionRulesSnapshot>;
 

@@ -111,6 +111,8 @@ export function finalizeResidualSubagentCall<T extends ResidualSubagentCall>(
 }
 
 export interface RuntimeAgentWorkSnapshot extends SubagentLifecycle {
+  /** Native DSH catalog identity; legacy work-only fields below are UI adapters. */
+  native?: { mode: 'one-shot' | 'continuable'; activity: 'running' | 'inactive' };
   agentId: string;
   taskId: string;
   parentToolUseId: string;
@@ -125,6 +127,11 @@ export type RuntimeAgentWorkControl =
 /** Effective facts are separate from global desired settings and contain no credentials. */
 export interface RuntimeAgentWorkTree {
   items: readonly RuntimeAgentWorkSnapshot[];
+  taskLists?: readonly {
+    agentId: string;
+    list: 'personal' | 'shared';
+    tasks: readonly { id: string; subject: string; status: 'pending' | 'in_progress' | 'completed' | 'cancelled'; owner?: string; offerTo?: readonly string[]; blockedBy?: readonly string[] }[];
+  }[];
   configuration: {
     revision: string; maxDepth: number; maxActiveChildren: number; maxRetainedChildren: number;
     messageDelivery: 'realtime' | 'turn'; modelPolicy: 'inherit' | 'fixed' | 'agent';

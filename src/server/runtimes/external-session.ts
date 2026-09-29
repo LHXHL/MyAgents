@@ -7484,11 +7484,11 @@ export async function inspectExternalRuntime(runtime: RuntimeType) {
   return active.runtime.inspectRuntime(active.process);
 }
 
-export async function listExternalAgentWork() {
+export async function listExternalAgentWork(tasksFor?: string) {
   const active = getExternalActivePair();
   if (!active?.runtime.listAgentWork)
     throw new Error('Active Runtime does not expose Agent work');
-  return active.runtime.listAgentWork(active.process);
+  return active.runtime.listAgentWork(active.process, tasksFor);
 }
 export async function controlExternalAgentWork(input: RuntimeAgentWorkControl) {
   const active = getExternalActivePair();

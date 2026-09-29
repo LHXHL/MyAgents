@@ -553,10 +553,14 @@ export class DshRuntimeEventProjector {
         return;
       }
       case 'task_graph': {
-        onEvent({
-          kind: 'agent_plan_update',
-          todos: taskGraphTodos(object(event.snapshot, 'DSH TaskGraph snapshot')),
-        });
+        // Only the root personal list belongs in the chat's own todo panel.
+        // Shared and child lists are read by Agent identity in the Agent view.
+        if (event.list === undefined || (event.list === 'personal' && event.agentId === envelope.runtimeSessionId)) {
+          onEvent({
+            kind: 'agent_plan_update',
+            todos: taskGraphTodos(object(event.snapshot, 'DSH TaskGraph snapshot')),
+          });
+        }
         return;
       }
       case 'plan': {

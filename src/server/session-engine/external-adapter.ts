@@ -898,7 +898,7 @@ export function createExternalSessionEngine(): SessionEngine {
       return setExternalPermissionMode(mode);
     },
 
-    listAgentWork() { return listExternalAgentWork(); },
+    listAgentWork(tasksFor) { return listExternalAgentWork(tasksFor); },
     controlAgentWork(input) { return controlExternalAgentWork(input); },
 
     listPermissionRules() {

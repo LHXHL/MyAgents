@@ -1210,6 +1210,15 @@
     }
   },
   "agentTree": {
+    "personalTasks": "个人任务",
+    "sharedTasks": "共享任务",
+    "taskOwner": "负责人",
+    "taskOffered": "开放给",
+    "taskBlockedBy": "依赖",
+    "interruptTurn": "中断当前轮次",
+    "nativeModes": { "one-shot": "一次性委派", "continuable": "可延续 Agent" },
+    "nativeStates": { "running": "执行中", "inactive": "未运行" },
+    "taskStates": { "pending": "待办", "in_progress": "进行中", "completed": "已完成", "cancelled": "已取消" },
     "title": "Agent 任务树",
     "close": "关闭",
     "unknown": "未知",
