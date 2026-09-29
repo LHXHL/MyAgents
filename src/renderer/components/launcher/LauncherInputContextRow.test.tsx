@@ -50,7 +50,7 @@ describe('LauncherInputContextRow', () => {
         runtime="builtin"
         runtimeDetections={{
           builtin: { installed: true },
-          dsh: { installed: false },
+          gemini: { installed: false },
           'claude-code': { installed: false },
           codex: { installed: false },
         }}
