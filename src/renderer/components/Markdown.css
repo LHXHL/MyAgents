@@ -477,11 +477,6 @@
     font-weight: var(--font-weight-prose);
   }
 
-  .markdown-content:not(.md-editor-host *) .markdown-inline-code-chip {
-    font-size: 0.95em;
-    vertical-align: 0.06em;
-  }
-
   .markdown-content .katex-display {
     max-inline-size: 100%;
     overflow-x: auto;
