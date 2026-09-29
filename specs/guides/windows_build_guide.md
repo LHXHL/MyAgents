@@ -205,6 +205,8 @@ src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/
 
 默认读取唯一权威锁 `src\shared\managed-codex-runtime.json::version`，并固定派生 `runtimeSet = codex-<version>`；升级时只改这个值，Rust、TypeScript、打包器和两端发布脚本都会自动派生相同版本，正式发布入口不接受版本 / set 覆盖。脚本会拒绝覆盖已存在的同平台 manifest；确实需要重发时显式加 `-ForceRepublish`。客户端按版本目录安装，旧 Sidecar 继续使用旧 exe，新 Sidecar 才切新版，因此不会尝试覆盖 Windows 正在运行的 `codex.exe`。
 
+升级时同时核对官方包的精确原生文件清单，更新 `scripts/package-managed-codex-policy.js` 与从官方包提取的 `src/server/__tests__/fixtures/managed-codex-native-files.json`。Windows 语音 host 与依赖 DLL 也必须检查 Authenticode：OpenAI 文件要求上游 OpenAI publisher，`vcruntime140.dll` 保留 Microsoft Corporation 的有效签名，`rg.exe` 是唯一允许的 unsigned helper。不能把整个语音目录或所有 DLL 当成免检资源。实际 Windows 签名验证在 Windows 发布机执行，macOS 上的 inventory 验证不能替代它。
+
 **环境变量**：
 
 | 变量 | 用途 |

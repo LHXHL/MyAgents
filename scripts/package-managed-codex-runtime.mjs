@@ -27,6 +27,7 @@ import {
   isCanonicalCodexVersion,
   macNativePathPolicy,
   windowsNativePathPolicy,
+  windowsNativeSigningForPath,
   validateManagedCodexNativePaths,
   managedCodexMacHelperSigningCandidates,
   managedCodexSignerEnv,
@@ -640,9 +641,7 @@ function verifyPackageNativeSigning(
           `Managed Codex ${platform} executable moved from its pinned path: ${executableRelativePath}`,
         );
       }
-      if (policy.openAiSignedPaths.has(relativePath)) {
-        nativeSigning = signing;
-      } else if (policy.unsignedHelperPaths.has(relativePath)) {
+      if (policy.unsignedHelperPaths.has(relativePath)) {
         const verification = verifyWindowsUnsignedHelper(join(packageDir, relativePath));
         if (verification.checked !== true) {
           throw new Error(
@@ -652,9 +651,7 @@ function verifyPackageNativeSigning(
         }
         return { relativePath, ...verification };
       } else {
-        throw new Error(
-          `Managed Codex ${platform} contains an unrecognized native helper: ${relativePath}`,
-        );
+        nativeSigning = windowsNativeSigningForPath(relativePath, signing);
       }
     }
     const verification = verifyPlatformSigning(platform, join(packageDir, relativePath), nativeSigning);

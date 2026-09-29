@@ -207,6 +207,8 @@ native inference 的受支持 target 由 `src-tauri/document-worker/resource-loc
 
 客户端升级采用版本目录 + Sidecar 启动边界切换：已验证安装的旧 runtime 在 `update-required`、后台下载或下载失败期间仍可使用；运行中的 Codex `app-server` 固定其启动时的绝对 binary path，不会因下载完成被 abort 或热替换。新 artifact 安装完成后只原子更新后续进程的安装指针，新建 / 自然重启的 Sidecar 使用新版，既有 Sidecar 继续使用旧版直到 owner 自然释放。macOS 与 Windows 产品时序相同，Windows 也因此无需覆盖运行中的 `codex.exe`。
 
+Windows voice host / DLL 同样属于精确原生清单；其中 `vcruntime140.dll` 使用 Microsoft Corporation 的 Authenticode 签名，不能套用 OpenAI publisher。清单与测试 fixture 从锁定版本的官方 npm 包提取；版本升级时同步核对三平台库存和各文件签名来源。
+
 Runtime set 是按平台分片补发的：macOS 主机默认发布 `darwin-arm64,darwin-x64`，Windows 主机使用 `publish_managed_codex_runtime.ps1` 发布 `win32-x64`。两边上传到同一个 `sets/<runtime-set>/` 前缀，默认只允许新增缺失平台；如果同平台 manifest 已存在会拒绝覆盖。
 
 ```powershell

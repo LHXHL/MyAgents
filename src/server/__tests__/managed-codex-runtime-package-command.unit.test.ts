@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import managedCodexRuntimeLock from '../../shared/managed-codex-runtime.json';
+import upstreamNativeInventory from './fixtures/managed-codex-native-files.json';
 
 // The publish helper lives under scripts/ because it is an operator entrypoint,
 // but its Windows process-spawn behavior is part of the managed runtime contract.
@@ -14,10 +16,18 @@ import {
   shouldSignManagedCodexPackage,
   macNativePathPolicy,
   windowsNativePathPolicy,
+  windowsNativeSigningForPath,
   validateManagedCodexNativePaths,
 } from '../../../scripts/package-managed-codex-policy.js';
 
 describe('managed Codex package command spawning', () => {
+  it.each(['darwin-arm64', 'darwin-x64', 'win32-x64'] as const)(
+    'accepts the exact native inventory extracted from the pinned upstream %s package', (platform) => {
+      expect(upstreamNativeInventory.version).toBe(managedCodexRuntimeLock.version);
+      expect(() => validateManagedCodexNativePaths(platform, upstreamNativeInventory.platforms[platform])).not.toThrow();
+    },
+  );
+
   it.each(['darwin-arm64', 'darwin-x64'])('requires upstream signatures for the %s voice host and dylibs', (platform) => {
     const policy = macNativePathPolicy(platform);
     const root = policy.codexPath.replace('/bin/codex', '');
@@ -36,11 +46,30 @@ describe('managed Codex package command spawning', () => {
 
   it('retains the Windows signed binaries and unsigned rg boundary', () => {
     const policy = windowsNativePathPolicy();
-    const paths = [...policy.openAiSignedPaths, ...policy.unsignedHelperPaths];
+    const paths = [...policy.openAiSignedPaths, ...policy.microsoftSignedPaths, ...policy.unsignedHelperPaths];
+    expect(paths).toHaveLength(32);
     expect(() => validateManagedCodexNativePaths('win32-x64', paths)).not.toThrow();
     expect([...policy.unsignedHelperPaths]).toEqual(['vendor/x86_64-pc-windows-msvc/codex-path/rg.exe']);
     expect(() => validateManagedCodexNativePaths('win32-x64', [...paths, 'vendor/x86_64-pc-windows-msvc/bin/unknown.exe'])).toThrow('native file set changed');
+    const microsoftCrt = 'vendor/x86_64-pc-windows-msvc/codex-resources/voice/bin/vcruntime140.dll';
+    expect(() => validateManagedCodexNativePaths('win32-x64', paths.filter(path => path !== microsoftCrt))).toThrow('native file set changed');
+    expect(() => validateManagedCodexNativePaths('win32-x64', [...paths.slice(1), paths[1]])).toThrow('native file set changed');
     expect(() => validateManagedCodexNativePaths('darwin-unknown', paths)).toThrow('Unsupported');
+  });
+
+  it('keeps Microsoft CRT and OpenAI voice DLL signatures separate', () => {
+    const root = 'vendor/x86_64-pc-windows-msvc';
+    const openAiSigning = {
+      type: 'authenticode', publisher: 'OpenAI OpCo, LLC', certificateSha256: 'openai-certificate',
+    };
+    expect(windowsNativeSigningForPath(`${root}/bin/codex.exe`, openAiSigning)).toBe(openAiSigning);
+    expect(windowsNativeSigningForPath(`${root}/codex-resources/voice/bin/glib-2.0-0.dll`, openAiSigning)).toBe(openAiSigning);
+    expect(windowsNativeSigningForPath(`${root}/codex-resources/voice/bin/vcruntime140.dll`, openAiSigning)).toEqual({
+      type: 'authenticode', publisher: 'Microsoft Corporation',
+    });
+    expect(windowsNativeSigningForPath(`${root}/codex-resources/voice/bin/vcruntime140.dll`, undefined)).toBeUndefined();
+    expect(() => windowsNativeSigningForPath(`${root}/codex-resources/voice/bin/unknown.dll`, openAiSigning)).toThrow('unrecognized signed native file');
+    expect(() => windowsNativeSigningForPath(`${root}/codex-path/rg.exe`, openAiSigning)).toThrow('unrecognized signed native file');
   });
 
   it('keeps signed releases pinned to the shared lock', () => {
