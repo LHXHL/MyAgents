@@ -39,8 +39,12 @@ export const restoreSourceFormat = StateEffect.define<SourceFormat>();
 export const sourceFormatField = StateField.define<SourceFormat>({
   create(state) { return decodeSource(state.doc.toString()).format; },
   update(format, tr) {
-    // History carries the actual separators, not a second mutable text buffer.
-    for (const effect of tr.effects) if (effect.is(restoreSourceFormat)) return effect.value;
+    // Grouped history may carry several snapshots. The last effect describes
+    // the final document after the whole undo or redo transaction.
+    for (let index = tr.effects.length - 1; index >= 0; index--) {
+      const effect = tr.effects[index];
+      if (effect.is(restoreSourceFormat)) return effect.value;
+    }
     if (!tr.docChanged) return format;
     // RangeSet mapping preserves some replacement-boundary ranges. Remove
     // consumed separators in the OLD coordinates before adding inserted ones.
