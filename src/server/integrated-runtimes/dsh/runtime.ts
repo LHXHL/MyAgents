@@ -627,6 +627,7 @@ class DshProcess implements RuntimeProcess {
   planRevision: string | undefined;
   planMode: 'normal' | 'plan' | undefined;
   configuration: DshConfiguration;
+  desiredPermissionMode: ProductPermissionMode;
   pendingConfiguration: DshConfiguration | undefined;
   readonly operationUserMessages = new Map<string, string>();
   readonly collaborationOperations = new Set<string>();
@@ -664,6 +665,7 @@ class DshProcess implements RuntimeProcess {
     pendingInteractions?: Map<string, PendingInteraction>,
   ) {
     this.configuration = configuration;
+    this.desiredPermissionMode = configuration.productPermissionMode;
     this.extensionDigest = extensionDigest;
     this.tools = Object.freeze([...tools]);
     this.extensionPlane = extensionPlane;
@@ -802,7 +804,7 @@ export class DshRuntime implements AgentRuntime {
   getConfigCapabilities(): RuntimeConfigCapabilities {
     return {
       model: 'live_session_rpc',
-      permissionMode: 'live_session_rpc',
+      permissionMode: 'next_turn_state',
       reasoningEffort: 'live_session_rpc',
     };
   }
@@ -1397,7 +1399,7 @@ export class DshRuntime implements AgentRuntime {
     // Global collaboration choices become effective through the existing
     // configuration owner at the next user-turn boundary, including a warm process.
     const desired = await compileConfiguration(process.options, { model: process.configuration.profile.modelId,
-      permissionMode: process.configuration.productPermissionMode, reasoningEffort: process.configuration.reasoningEffort }, process.configuration);
+      permissionMode: process.desiredPermissionMode, reasoningEffort: process.configuration.reasoningEffort }, process.configuration);
     if (desired.revision !== process.configuration.revision) await this.applyConfiguration(process, desired);
     else process.configuration = desired;
     if (process.activeOperationId) throw new Error('DSH Root acquired collaboration work during configuration admission');
@@ -1503,7 +1505,7 @@ export class DshRuntime implements AgentRuntime {
     let desiredState: 'effective' | 'pending' | 'invalid';
     try {
       const desired = await compileConfiguration(process.options, { model: process.configuration.profile.modelId,
-        permissionMode: process.configuration.productPermissionMode, reasoningEffort: process.configuration.reasoningEffort }, process.configuration);
+        permissionMode: process.desiredPermissionMode, reasoningEffort: process.configuration.reasoningEffort }, process.configuration);
       desiredState = desired.revision === process.configuration.revision ? 'effective' : 'pending';
     } catch { desiredState = 'invalid'; }
     return { items, configuration: { revision: process.configuration.revision,
@@ -2007,13 +2009,8 @@ export class DshRuntime implements AgentRuntime {
 
   async setPermissionMode(runtimeProcess: RuntimeProcess, mode: string | undefined): Promise<void> {
     const process = dshProcess(runtimeProcess);
-    const configuration = await compileConfiguration(process.options, {
-      model: process.configuration.profile.modelId,
-      permissionMode: mode,
-      reasoningEffort: process.configuration.reasoningEffort,
-    }, process.configuration);
-    await this.applyConfiguration(process, configuration);
-    this.emitExtensionDiagnostics(process);
+    if (process.exited) throw new Error('DSH process has exited');
+    process.desiredPermissionMode = productPermissionMode(mode);
   }
 
   async setReasoningEffort(runtimeProcess: RuntimeProcess, effort: string | undefined): Promise<void> {

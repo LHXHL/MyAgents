@@ -178,6 +178,8 @@ Codex Server → Client request 使用显式 allowlist。升级 app-server 时�
 
 Fork/rewind/delete/retry/compact 走 SessionEngine 的 adapter operation；丢失回包由既有 Product journal 与原生 receipts 对账。Root/child 权限与 AskUser 复用产品交互；ProductWork whole snapshot 复用 Agent 卡片与状态面板。官方 Shell/Jobs 组件拥有平台命令执行，Host 仅声明执行环境和处理权限。
 
+DSH 权限选择先存为 Session 的期望模式；当前 turn 使用 admission 时冻结的模式，不因设置变化中断。下一条 query 启动前，adapter 在原生 `config/apply` 边界同时落实 Product 权限、DSH sandbox 与 approval policy，确认有效后才发送 `turn/start`；应用失败则阻止这条 query，不能沿用旧权限执行。
+
 详细协议、制品边界与维护台账见 [DSH 集成指南](./myagents_dsh_integrated_runtime.md)。
 
 ## 6. External Session owner
