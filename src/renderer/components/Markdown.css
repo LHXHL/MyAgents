@@ -463,9 +463,23 @@
     margin-block: var(--space-3);
   }
 
-  /* Prose weight must not synthesize bold code or mathematical glyphs. */
+  /* Block code and math stay normal weight; inline labels have their own
+     reading weight so they do not look faint beside 500-weight prose. */
   .markdown-content :is(code, pre, .katex) {
     font-weight: var(--font-weight-normal);
+  }
+
+  .markdown-content .markdown-inline-code-chip {
+    font-size: 0.9em;
+  }
+
+  .markdown-content:not(.md-editor-host *) .markdown-inline-code {
+    font-weight: var(--font-weight-prose);
+  }
+
+  .markdown-content:not(.md-editor-host *) .markdown-inline-code-chip {
+    font-size: 0.95em;
+    vertical-align: 0.06em;
   }
 
   .markdown-content .katex-display {
@@ -551,6 +565,9 @@
    label changes the font, not the target's interactive surface or color. */
 .markdown-content-link:has(code) {
   font-size: 0.9em;
+}
+.markdown-content:not(.md-editor-host *) .markdown-content-link:has(code) {
+  font-size: 0.95em;
 }
 .markdown-content-link code {
   font-size: inherit;
