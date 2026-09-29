@@ -28,7 +28,9 @@ Rust 在 metadata 尚未发布的窗口，沿 active 或 recovering SessionSidec
 
 `TranscriptWriter` 在首个待写操作起约 100 ms 启动固定批次，不做滑动 debounce；接纳/终态等边界可提前提交。批次约 256 KiB，单行上限 8 MiB，用户正文、完整工具结果等大字符串复用 `operations.ts` 拆分为 32 Ki 字符操作；达到批量阈值可提前开始实际 IO。
 
-`observe` 先更新 live projection 并发出展示操作，再排保存队列。待写队列没有容量上限，不按积压量丢弃操作、触发降级或重建基线，也不反压 Runtime。持续故障时保留待写操作，接受额外内存增长风险；`queuedBytes` 是操作序列化字节统计，不是进程内存上限。只有创建或命名 mutation 需要的完整 projection 可生成替换基线；未知/损坏来源不能覆盖已提交文件，基线 R 之后新增操作按序保留。
+`observe` 先更新 live projection 并发出展示操作，再排保存队列。待写队列没有容量上限，不按积压量丢弃操作、触发降级或重建基线，也不反压 Runtime。持续故障时保留待写操作，接受额外内存增长风险；`queuedBytes` 是操作序列化字节统计，不是进程内存上限。创建、命名 mutation 及下述空来源恢复可用完整 projection 生成替换基线；未知/损坏来源不能覆盖已提交文件，基线 R 之后新增操作按序保留。
+
+活跃 writer 的记录完整时，`invalid-history` 可触发一次 `recoverEmptySource`：文件 owner 在原锁内证明来源是零字节文件，或无已提交 batch 且没有 baseline 的干净 header，才用完整 live projection 发布新基线。冷读不据此制造历史；有已提交内容、损坏尾部或恢复提交不确定时保持阻断，不重复恢复，live projection 仍保留供读取和导出。
 
 每个 Session 只有一个实际 IO。约 10 秒无提交标为异常；已结束的失败按 0.5/1.5/5/15/30 秒退避。超时仅结束等待，不能抢占尚未结束的写入。append 在原文件锁内检查 cursor、generation、文件身份和不确定批次，完成短写循环与文件 sync；重试精确确认已有批次，半写尾部仅在证据充分时修复。
 
