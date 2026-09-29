@@ -8,4 +8,6 @@ const effectiveDshLock = typeof __MYAGENTS_DSH_BUILD_LOCK__ === "undefined"
   ? releaseLock
   : __MYAGENTS_DSH_BUILD_LOCK__;
 
+export const isPreparedDshBuild = typeof __MYAGENTS_DSH_BUILD_LOCK__ !== "undefined";
+
 export default effectiveDshLock;

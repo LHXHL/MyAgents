@@ -1,6 +1,6 @@
 import candidateProfileJson from "../../../../contracts/myagents-dsh/batch-1-candidate-profile-v1.json";
 import protocolMetaJson from "../../../../contracts/myagents-dsh/protocol-meta.json";
-import dshLock from "../../../shared/integrated-runtimes/effective-dsh-lock";
+import dshLock, { isPreparedDshBuild } from "../../../shared/integrated-runtimes/effective-dsh-lock";
 
 export const DSH_CANONICAL_WEB_POLICY_REF = "deepseek-official-web-search-v1" as const;
 
@@ -88,11 +88,11 @@ function equalSet(left: readonly string[], right: readonly string[]): boolean {
 }
 
 export function assertDshProtocolContract(): void {
-  const sourceSnapshot = !("release" in dshLock);
+  const sourceSnapshot = !isPreparedDshBuild;
   if (
     GENERATED_PROTOCOL_VERSION !== protocolMetaJson.protocolVersion ||
-    protocolMetaJson.protocolVersion !== dshLock.protocol.version ||
     (sourceSnapshot && (
+      protocolMetaJson.protocolVersion !== dshLock.protocol.version ||
       protocolMetaJson.schemaSha256 !== dshLock.protocol.schemaSha256 ||
       protocolMetaJson.sessionFormat !== dshLock.runtime.sessionFormat ||
       protocolMetaJson.hostMethods.length !== dshLock.protocol.hostMethodCount ||

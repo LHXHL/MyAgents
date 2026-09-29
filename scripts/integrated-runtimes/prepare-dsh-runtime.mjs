@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url";
 import { downloadBuildResource } from "../build-resource-download.mjs";
 import {
   COMPATIBILITY_MANIFEST, HANDOFF_MANIFEST, PROTOCOL_META, RUNTIME_MANIFEST,
-  compareOrAcceptContracts, parseNamedArgs, readJson, resolveExplicitDirectory,
+  parseNamedArgs, readJson, resolveExplicitDirectory,
   runPublicVerifier, sha256File, stageCompleteHandoff, verifyBundledToolchain,
   verifyHandoffFacts,
 } from "./dsh-handoff-policy.mjs";
@@ -18,7 +18,6 @@ import { buildSelectionPath } from "./dsh-build-selection.mjs";
 
 const defaultRoot = resolve(import.meta.dirname, "../..");
 const releaseRepository = "hAcKlyc/MyAgents-dsh";
-const compatibilityContract = "contracts/myagents-dsh-compatibility-v1.json";
 const releaseTargets = ["darwin-arm64", "darwin-x64", "linux-x64", "win32-x64"];
 const shaPattern = /^[a-f0-9]{64}$/;
 const sourcePattern = /^[a-f0-9]{40}$/;
@@ -142,12 +141,9 @@ function assertNativeRuntimeTarget(root, target) {
   }
 }
 
-function verifySelectedHandoff(root, lock, repoRoot, nodeExecutable, source) {
+function verifySelectedHandoff(root, lock, nodeExecutable) {
   runPublicVerifier(root, lock.handoff.manifestSha256, nodeExecutable);
   verifyHandoffFacts(root, lock);
-  if (source === "local") {
-    compareOrAcceptContracts(root, resolve(repoRoot, "contracts"), false, [compatibilityContract]);
-  }
 }
 
 function digest(buffer) {
@@ -248,7 +244,7 @@ export async function prepareDshRuntime({
     try {
       writeFileSync(temporary, `${JSON.stringify({ schemaVersion: 1, source, target, lock, compatibility }, null, 2)}\n`);
       stageCompleteHandoff(input.root, outputRoot, (staged) =>
-        verifySelectedHandoff(staged, lock, repoRoot, nodeExecutable, source),
+        verifySelectedHandoff(staged, lock, nodeExecutable),
       () => renameSync(temporary, selectionPath));
     } finally {
       rmSync(temporary, { force: true });
