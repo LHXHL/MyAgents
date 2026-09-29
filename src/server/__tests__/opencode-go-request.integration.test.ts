@@ -43,11 +43,14 @@ describe('OpenCode Go outbound identity', () => {
     expect(other.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
   });
 
-  it('sends the Go identity in an actual SDK Anthropic request', async () => {
+  it.each([false, true])('sends the Go identity in an actual SDK Anthropic request (preconnect first: %s)', async (preconnectFirst) => {
     let capture!: (headers: { ua?: string; session?: string }) => void;
     const captured = new Promise<{ ua?: string; session?: string }>(resolve => { capture = resolve; });
     server = createServer((req, res) => {
-      capture({ ua: req.headers['user-agent'], session: req.headers['x-opencode-session'] as string | undefined });
+      // SDK startup can preconnect with a raw HEAD; identity belongs to the model request.
+      if (req.method === 'POST' && req.url?.split('?')[0] === '/v1/messages') {
+        capture({ ua: req.headers['user-agent'], session: req.headers['x-opencode-session'] as string | undefined });
+      }
       req.resume();
       res.writeHead(401, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'fixture' } }));
@@ -55,6 +58,12 @@ describe('OpenCode Go outbound identity', () => {
     await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve));
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('no fixture port');
+    if (preconnectFirst) {
+      // Make the SDK's optional startup probe arrive first regardless of proxy environment.
+      await fetch(`http://127.0.0.1:${address.port}/api/hello`, {
+        method: 'HEAD', headers: { 'User-Agent': 'Bun/1.4.3' },
+      });
+    }
     const controller = new AbortController();
     const sdkQuery = query({
       prompt: 'Say hello',
