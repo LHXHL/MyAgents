@@ -1,6 +1,7 @@
 // Provider and permission configuration types
 
 import { TOKENDANCE_MODELS, TOKENDANCE_MODEL_LIST_URL, TOKENDANCE_PROVIDER_ID, type ModelProtocol } from './tokendance';
+import { OPENCODE_GO_BASE_URL, OPENCODE_GO_MODEL_LIST_URL, OPENCODE_GO_MODELS, OPENCODE_GO_PROVIDER_ID } from './opencode-go';
 
 import type {
   HeartbeatConfig,
@@ -92,6 +93,8 @@ export interface ModelEntity extends Pick<RuntimeModelInfo, 'supportedReasoningE
   outputModalities?: string[]; // 输出模态 ["text"]
   /** Catalog-owned transport capabilities for managed aggregate providers. */
   supportedProtocols?: ModelProtocol[];
+  /** User-selected route when the supplier does not identify a unique one. */
+  executionProtocol?: ModelProtocol;
 
   // === 来源标记 ===
   source?: 'preset' | 'discovered' | 'manual';
@@ -123,6 +126,7 @@ export function mergePresetModelWithCustomEntry(
       inputModalities: preset.inputModalities ?? custom.inputModalities,
       outputModalities: preset.outputModalities ?? custom.outputModalities,
       supportedProtocols: custom.supportedProtocols ?? preset.supportedProtocols,
+      executionProtocol: custom.executionProtocol ?? preset.executionProtocol,
     };
   }
 
@@ -135,6 +139,7 @@ export function mergePresetModelWithCustomEntry(
     inputModalities: custom.inputModalities ?? preset.inputModalities,
     outputModalities: custom.outputModalities ?? preset.outputModalities,
     supportedProtocols: custom.supportedProtocols ?? preset.supportedProtocols,
+    executionProtocol: custom.executionProtocol ?? preset.executionProtocol,
   };
 }
 
@@ -449,6 +454,10 @@ export interface Provider {
   subscriptionAuth?: SubscriptionAuthPolicy;
   primaryModel: string; // 默认模型 API 代码
   isBuiltin: boolean;
+  /** Undefined means the existing fixed provider-wide protocol. */
+  modelRouting?: 'per-model';
+  /** Explicit upstream base for each executable conversation protocol. */
+  modelProtocolBaseUrls?: Partial<Record<ModelProtocol, string>>;
   enabled?: boolean; // Runtime-derived: false when globally disabled by the user
   runtimeReady?: boolean; // Runtime-backed providers only: true when their managed runtime/auth preconditions are ready
 
@@ -1531,11 +1540,38 @@ export const PRESET_PROVIDERS: Provider[] = [
     type: 'api',
     primaryModel: 'deepseek-v4-pro-0813',
     isBuiltin: true,
+    modelRouting: 'per-model',
+    modelProtocolBaseUrls: {
+      'anthropic:messages': 'https://tokendance.space/gateway',
+      'openai:responses': 'https://tokendance.space/gateway/v1',
+      'openai:chat-completions': 'https://tokendance.space/gateway/v1',
+    },
     config: { baseUrl: 'https://tokendance.space/gateway' },
     authType: 'api_key',
     websiteUrl: 'https://tokendance.space',
     modelListUrl: TOKENDANCE_MODEL_LIST_URL,
     models: TOKENDANCE_MODELS,
+  },
+  {
+    id: OPENCODE_GO_PROVIDER_ID,
+    name: 'OpenCode Go',
+    subtitle: '使用 OpenCode Go 订阅的 coding agent 模型额度',
+    vendor: 'OpenCode',
+    cloudProvider: '官方',
+    type: 'api',
+    primaryModel: 'minimax-m3',
+    isBuiltin: true,
+    modelRouting: 'per-model',
+    modelProtocolBaseUrls: {
+      'anthropic:messages': OPENCODE_GO_BASE_URL,
+      'openai:responses': `${OPENCODE_GO_BASE_URL}/v1`,
+      'openai:chat-completions': `${OPENCODE_GO_BASE_URL}/v1`,
+    },
+    config: { baseUrl: OPENCODE_GO_BASE_URL },
+    authType: 'api_key',
+    websiteUrl: 'https://opencode.ai/docs/go/',
+    modelListUrl: OPENCODE_GO_MODEL_LIST_URL,
+    models: OPENCODE_GO_MODELS,
   },
   {
     id: 'anthropic-sub',

@@ -596,6 +596,15 @@
       "contextWindow": "Context window",
       "contextPlaceholder": "e.g. 128000 · supports 128k / 1m",
       "inputModalities": "Input modalities",
+      "protocol": "Request protocol",
+      "protocolPlaceholder": "Choose a model protocol",
+      "protocolRequired": "Choose a model protocol",
+      "protocolConflict": "This differs from OpenCode Go's official route. Review before saving.",
+      "protocols": {
+        "anthropic_messages": "Anthropic Messages",
+        "openai_responses": "OpenAI Responses",
+        "openai_chat-completions": "OpenAI Chat Completions"
+      },
       "invalidContext": "Invalid format. Enter a token count; k / m suffixes supported, max 20m.",
       "modalityRequired": "Select at least one modality",
       "contextEcho": "≈ {{tokens}} tokens · takes effect next turn",

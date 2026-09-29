@@ -79,4 +79,6 @@ export interface UpstreamConfig {
     promptCacheBreakpointsDisabled?: boolean;
     disablePromptCacheBreakpoints?: () => void;
   };
+  /** OpenCode Go request identity; provided by the bridge token owner. */
+  opencodeSessionId?: string;
 }

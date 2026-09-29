@@ -1,6 +1,10 @@
 import { createBuiltinInterruptController } from './builtin-session/interrupt';
 import { configureBuiltinTranscriptBinding } from './builtin-session/transcript';
 import { randomUUID } from 'crypto';
+import { OPENCODE_GO_PROVIDER_ID } from '../shared/opencode-go';
+import { assertQueryModelRoutesCompatible } from '../shared/provider-model-routing';
+import type { Provider } from '../shared/config-types';
+import { OPENCODE_GO_SDK_CLIENT_APP, OPENCODE_GO_USER_AGENT, opencodeGoConversationId } from './opencode-go-request';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { createRequire } from 'module';
@@ -156,7 +160,7 @@ import {
   type SessionMaterializationScenario,
 } from './utils/session-materialization';
 import { isManagedCodexProviderReady } from './utils/managed-codex-readiness';
-import { canonicalizeManagedProviderEnv, findProjectAgentByWorkspacePath, getDefaultEnabledOfficialToolIdsForWorkspace, getEffectiveMcpServers, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig, resolveWorkspaceConfig } from './utils/admin-config';
+import { canonicalizeManagedProviderEnv, findEffectiveProvider, findProjectAgentByWorkspacePath, getDefaultEnabledOfficialToolIdsForWorkspace, getEffectiveMcpServers, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig, resolveWorkspaceConfig } from './utils/admin-config';
 import type { AgentConfig } from '../shared/types/agent';
 import {
   invalidateMcpEffectiveSnapshot,
@@ -1751,6 +1755,8 @@ async function resolveActiveSessionUpstreamConfig(request?: Request): Promise<Up
     cacheAffinity: configState.currentProviderEnv?.apiProtocol === 'openai'
       ? { sessionId, promptCacheKeyMode: 'session' }
       : undefined,
+    opencodeSessionId: activeProviderEnv?.providerId === OPENCODE_GO_PROVIDER_ID
+      ? opencodeGoConversationId(sessionId) : undefined,
   };
 }
 
@@ -1828,6 +1834,7 @@ export function startOneShotBridge(
   modelOverride: string | undefined,
   description: string,
   managedPurpose: ManagedOAuthPurpose = { purpose: 'execution' },
+  conversationId?: string,
 ): { token: string; release: () => void } {
   if (providerEnv.apiProtocol !== 'openai') {
     throw new Error('startOneShotBridge called with non-OpenAI provider — caller should not need a bridge');
@@ -1843,6 +1850,8 @@ export function startOneShotBridge(
     maxOutputTokens: providerEnv.maxOutputTokens,
     maxOutputTokensParamName: providerEnv.maxOutputTokensParamName,
     upstreamFormat: providerEnv.upstreamFormat,
+    opencodeSessionId: providerEnv.providerId === OPENCODE_GO_PROVIDER_ID
+      ? opencodeGoConversationId(conversationId) : undefined,
   };
   // Static routing snapshot; managed bearer resolution remains request-scoped.
   registerBridgeInRegistry(token, async (request) => {
@@ -6135,6 +6144,7 @@ export function buildClaudeSessionEnv(
     bridgeToken?: string;
     providerId?: string;
     contextWindowSnapshot?: ModelContextLengthSnapshot;
+    conversationId?: string;
   },
 ): NodeJS.ProcessEnv {
   // Ensure essential paths are always present, even when launched from Finder
@@ -6240,6 +6250,16 @@ export function buildClaudeSessionEnv(
     const headers = (env.ANTHROPIC_CUSTOM_HEADERS ?? '').split(/\r?\n/)
       .filter(line => line.trim() && line.split(':', 1)[0].trim().toLowerCase() !== 'x-app-url');
     headers.push(`X-App-URL: ${TOKENDANCE_APP_URL}`);
+    env.ANTHROPIC_CUSTOM_HEADERS = headers.join('\n');
+  }
+  if (effectiveProviderId === OPENCODE_GO_PROVIDER_ID) {
+    // The SDK app identity contributes to its User-Agent; the custom header
+    // carries only an opaque derivative of the Product Session identity.
+    env.CLAUDE_AGENT_SDK_CLIENT_APP = OPENCODE_GO_SDK_CLIENT_APP;
+    const headers = (env.ANTHROPIC_CUSTOM_HEADERS ?? '').split(/\r?\n/)
+      .filter(line => line.trim() && !['x-opencode-session', 'user-agent'].includes(line.split(':', 1)[0].trim().toLowerCase()));
+    headers.push(`User-Agent: ${OPENCODE_GO_USER_AGENT}`);
+    headers.push(`x-opencode-session: ${opencodeGoConversationId(opts?.conversationId)}`);
     env.ANTHROPIC_CUSTOM_HEADERS = headers.join('\n');
   }
 
@@ -10937,6 +10957,19 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   };
 
   try {
+    if (launchProviderId === OPENCODE_GO_PROVIDER_ID && configState.currentProviderEnv && configState.currentModel) {
+      const provider = findEffectiveProvider(launchProviderId, loadAdminConfig());
+      if (!provider) throw new Error('OpenCode Go provider is unavailable for this session.');
+      const aliases = resolveSessionModelAliases(configState.currentProviderEnv.modelAliases, configState.currentModel);
+      const routedModels = [
+        ...Object.values(aliases ?? {}),
+        ...Object.values(launchAgentDefinitionsSource ?? {}).flatMap(agent => {
+          if (!agent.model || agent.model === 'inherit') return [];
+          return [aliases?.[agent.model as keyof typeof aliases] ?? agent.model];
+        }),
+      ];
+      assertQueryModelRoutesCompatible(provider as unknown as Provider, configState.currentProviderEnv, routedModels);
+    }
     if (configState.currentProviderEnv?.endpointSource) managedQueryController = bindingController;
     preparedProvider = await prepareProviderBinding({
       providerEnv: configState.currentProviderEnv,
@@ -10954,6 +10987,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       bridgeToken: activeSessionBridgeToken ?? undefined,
       providerId: launchProviderId,
       contextWindowSnapshot: launchContextWindowSnapshot,
+      conversationId: sessionId,
     });
     const launchModel = applyContextWindowSuffixForContextLength(
       configState.currentModel,

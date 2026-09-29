@@ -27,6 +27,7 @@ import { fetch as undiciFetch, ProxyAgent, type Dispatcher } from 'undici';
 import { withAbortSignal } from './utils/cancellation';
 import type { ProviderEnv } from './provider-types';
 import { TOKENDANCE_APP_URL, TOKENDANCE_PROVIDER_ID } from '../shared/tokendance';
+import { opencodeGoConversationId, opencodeGoHeaders } from './opencode-go-request';
 
 const PROBE_TIMEOUT_MS = 15000;
 const PROBE_BODY_MAX = 500;
@@ -328,8 +329,9 @@ export async function probeAnthropicProviderDirect(args: {
   model: string | undefined;
   getProxyForProviderUrl: (providerId: string, url: string) => string | undefined;
   signal?: AbortSignal;
+  conversationId?: string;
 }): Promise<ProbeOutcome> {
-  const { providerEnv, model, getProxyForProviderUrl, signal } = args;
+  const { providerEnv, model, getProxyForProviderUrl, signal, conversationId } = args;
   const baseUrl = providerEnv.baseUrl;
   if (!baseUrl) return { connectError: 'no baseUrl' };
   if (!providerEnv.providerId) return { connectError: 'missing providerId' };
@@ -350,6 +352,7 @@ export async function probeAnthropicProviderDirect(args: {
             ...(providerEnv.providerId === TOKENDANCE_PROVIDER_ID
               ? { 'X-App-URL': TOKENDANCE_APP_URL }
               : {}),
+            ...opencodeGoHeaders(providerEnv.providerId, opencodeGoConversationId(conversationId)),
           },
           body: JSON.stringify({
             model: model ?? 'probe',

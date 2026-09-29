@@ -1,4 +1,4 @@
-import type { ModelEntity, Provider } from './config-types';
+import type { ModelEntity } from './config-types';
 
 export const TOKENDANCE_PROVIDER_ID = 'tokendance';
 export const TOKENDANCE_APP_URL = 'https://myagents.io';
@@ -94,45 +94,6 @@ export const TOKENDANCE_MODELS: ModelEntity[] = presetRows.map(
     source: 'preset',
   }),
 );
-
-/** Resolve an immutable execution projection. Never mutate a shared Provider. */
-export function resolveProviderForModel(
-  provider: Provider,
-  model: string,
-): Provider {
-  if (provider.id !== TOKENDANCE_PROVIDER_ID) return provider;
-  const protocols = parseSupportedProtocols(
-    provider.models.find((m) => m.model === model)?.supportedProtocols,
-  );
-  const protocol = protocols?.[0];
-  if (!protocol)
-    throw new Error(
-      `TokenDance model '${model}' has no known supported conversation protocol. Refresh the model catalog.`,
-    );
-  const isAnthropic = protocol === 'anthropic:messages';
-  return {
-    ...provider,
-    config: {
-      ...provider.config,
-      baseUrl: isAnthropic
-        ? 'https://tokendance.space/gateway'
-        : 'https://tokendance.space/gateway/v1',
-    },
-    authType: 'api_key',
-    apiProtocol: isAnthropic ? 'anthropic' : 'openai',
-    upstreamFormat: isAnthropic
-      ? undefined
-      : protocol === 'openai:responses'
-        ? 'responses'
-        : 'chat_completions',
-    maxOutputTokens: isAnthropic ? undefined : provider.maxOutputTokens,
-    maxOutputTokensParamName: isAnthropic
-      ? undefined
-      : protocol === 'openai:responses'
-        ? 'max_output_tokens'
-        : 'max_tokens',
-  };
-}
 
 /** Preserve raw microyuan for availability; this function is display only. */
 export function formatTokenDanceBalance(microyuan: number): string {
