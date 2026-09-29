@@ -12,6 +12,7 @@ import { emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import { useConfig } from '@/hooks/useConfig';
+import { normalizeMarkdownReadingSize, type MarkdownReadingSize } from '../../shared/config-types';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import {
@@ -53,6 +54,10 @@ function applyRootTheme(resolvedTheme: ResolvedTheme): void {
   root.dataset.colorScheme = resolvedTheme.resolvedColorScheme;
   root.classList.toggle('dark', resolvedTheme.resolvedColorScheme === 'dark');
   root.style.colorScheme = resolvedTheme.resolvedColorScheme;
+}
+
+function applyMarkdownReadingSize(size: MarkdownReadingSize): void {
+  document.documentElement.dataset.markdownReadingSize = size;
 }
 
 function syncMainWindowBackground(): void {
@@ -114,6 +119,7 @@ export interface ThemeRuntimeProviderProps {
   broadcastSelection?: boolean;
   persistBootstrapSnapshot?: boolean;
   syncNativeWindowBackground?: boolean;
+  markdownReadingSize?: MarkdownReadingSize;
 }
 
 export function ThemeRuntimeProvider({
@@ -124,6 +130,7 @@ export function ThemeRuntimeProvider({
   broadcastSelection = false,
   persistBootstrapSnapshot = true,
   syncNativeWindowBackground = false,
+  markdownReadingSize = 'large',
 }: ThemeRuntimeProviderProps) {
   const [bootstrapSelection] = useState(() => readThemeBootstrapSelection(
     typeof localStorage === 'undefined' ? null : localStorage,
@@ -158,6 +165,10 @@ export function ThemeRuntimeProvider({
     applyRootTheme(resolvedTheme);
     if (syncNativeWindowBackground) syncMainWindowBackground();
   }, [resolvedTheme, syncNativeWindowBackground]);
+
+  useLayoutEffect(() => {
+    applyMarkdownReadingSize(normalizeMarkdownReadingSize(markdownReadingSize));
+  }, [markdownReadingSize]);
 
   useEffect(() => {
     // Only the durable main-window selection replaces the bootstrap snapshot.
@@ -201,6 +212,7 @@ export function ConfiguredThemeRuntime({ children }: { children: React.ReactNode
   return (
     <ThemeRuntimeProvider
       selection={selection}
+      markdownReadingSize={config.markdownReadingSize}
       selectionExplicit={config.themeSelectionExplicit === true}
       broadcastSelection
       syncNativeWindowBackground
@@ -214,11 +226,13 @@ export function FloatingThemeRuntime({ children }: { children: React.ReactNode }
   const [selection, setSelection] = useState<ThemeSelection>(() => readThemeBootstrapSelection(
     typeof localStorage === 'undefined' ? null : localStorage,
   ));
+  const [markdownReadingSize, setMarkdownReadingSize] = useState<MarkdownReadingSize>('large');
 
   useEffect(() => {
     let cancelled = false;
     const abortController = new AbortController();
-    let liveEventRevision = 0;
+    let themeEventRevision = 0;
+    let readingEventRevision = 0;
 
     void (async () => {
       // Register first. An event emitted before registration is represented by
@@ -226,8 +240,19 @@ export function FloatingThemeRuntime({ children }: { children: React.ReactNode }
       // registration is newer than that hydration result and must win.
       if (isTauriEnvironment()) {
         await listenWithCleanup<ThemeSelection>(THEME_SELECTION_CHANGED_EVENT, event => {
-          liveEventRevision += 1;
+          themeEventRevision += 1;
           if (!cancelled) setSelection(normalizeSelection(event.payload));
+        }, abortController.signal);
+        await listenWithCleanup('app:config-changed', () => {
+          const revision = ++readingEventRevision;
+          void import('@/config/services/appConfigService')
+            .then(({ loadAppConfig }) => loadAppConfig())
+            .then(config => {
+              if (!cancelled && revision === readingEventRevision) {
+                setMarkdownReadingSize(normalizeMarkdownReadingSize(config.markdownReadingSize));
+              }
+            })
+            .catch(error => console.warn('[theme] Floating reading-size refresh failed:', error));
         }, abortController.signal);
       }
       if (cancelled) return;
@@ -235,8 +260,11 @@ export function FloatingThemeRuntime({ children }: { children: React.ReactNode }
       try {
         const { loadAppConfig } = await import('@/config/services/appConfigService');
         const config = await loadAppConfig();
-        if (!cancelled && liveEventRevision === 0) {
-          setSelection(normalizeSelection(config));
+        if (!cancelled) {
+          if (themeEventRevision === 0) setSelection(normalizeSelection(config));
+          if (readingEventRevision === 0) {
+            setMarkdownReadingSize(normalizeMarkdownReadingSize(config.markdownReadingSize));
+          }
         }
       } catch (error) {
         console.warn('[theme] Floating window config hydration failed:', error);
@@ -250,7 +278,7 @@ export function FloatingThemeRuntime({ children }: { children: React.ReactNode }
   }, []);
 
   return (
-    <ThemeRuntimeProvider selection={selection} persistBootstrapSnapshot={false}>
+    <ThemeRuntimeProvider selection={selection} markdownReadingSize={markdownReadingSize} persistBootstrapSnapshot={false}>
       {children}
     </ThemeRuntimeProvider>
   );

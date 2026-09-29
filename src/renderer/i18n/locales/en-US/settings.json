@@ -86,6 +86,12 @@
     "themeTitle": "Theme",
     "themeDescription": "Switch the app-wide visual theme",
     "themeSaveFailed": "Failed to switch Theme: {{message}}",
+    "markdownReadingSizeTitle": "Markdown reading size",
+    "markdownReadingSizeDescription": "Adjust body text, headings and spacing in AI replies and Markdown previews",
+    "markdownReadingSize": {
+      "large": "Large",
+      "standard": "Standard"
+    },
     "appearanceMode": {
       "system": "System",
       "light": "Light",

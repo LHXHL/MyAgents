@@ -43,6 +43,12 @@ export type PermissionMode = 'auto' | 'plan' | 'fullAgency';
  */
 export type BackgroundAgentPermissionMode = 'inherit' | 'fullAgency';
 
+export type MarkdownReadingSize = 'large' | 'standard';
+
+export function normalizeMarkdownReadingSize(value: unknown): MarkdownReadingSize {
+  return value === 'standard' ? 'standard' : 'large';
+}
+
 /**
  * Permission mode display configuration
  * Based on PRD 0.0.17 mode definitions
@@ -909,6 +915,8 @@ export interface AppConfig {
   themeSelectionExplicit?: boolean;
   /** User preference for resolving the selected Theme's light/dark scheme. */
   appearanceMode: AppearanceMode;
+  /** Reading typography for rendered Markdown; compact UI and the source editor are independent. */
+  markdownReadingSize?: MarkdownReadingSize;
   /** Product UI language. Existing pre-i18n configs missing this field migrate
    *  to `zh-CN`; new installs default to `system`. */
   uiLanguage?: UiLanguage;
@@ -2813,6 +2821,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   themeId: DEFAULT_THEME_ID,
   themeSelectionExplicit: false,
   appearanceMode: DEFAULT_APPEARANCE_MODE,
+  markdownReadingSize: 'large',
   uiLanguage: 'system',
   minimizeToTray: true, // 默认开启最小化到托盘
   forceWakeLock: false, // 默认关闭常开阻睡（智能模式仍在跑，覆盖 AI 工作期间）

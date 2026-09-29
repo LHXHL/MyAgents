@@ -86,6 +86,12 @@
     "themeTitle": "主题",
     "themeDescription": "切换应用的全局界面视觉风格",
     "themeSaveFailed": "切换主题失败：{{message}}",
+    "markdownReadingSizeTitle": "Markdown 阅读字号",
+    "markdownReadingSizeDescription": "调整 AI 回复和 Markdown 预览的正文、标题与间距",
+    "markdownReadingSize": {
+      "large": "大字号",
+      "standard": "标准字号"
+    },
     "appearanceMode": {
       "system": "跟随系统",
       "light": "日间模式",

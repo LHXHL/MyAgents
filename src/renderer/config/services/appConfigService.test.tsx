@@ -73,6 +73,18 @@ describe('atomicModifyConfig — CONFIG_CHANGED_EVENT dispatch (issue #303)', ()
     expect(loaded).not.toHaveProperty('externalCliAccess');
   });
 
+  it('defaults old or invalid Markdown reading preferences to large and persists standard', async () => {
+    localStorage.setItem('myagents:config', JSON.stringify({ markdownReadingSize: 'unexpected' }));
+    expect((await loadAppConfig()).markdownReadingSize).toBe('large');
+
+    const updated = await atomicModifyConfig(config => ({
+      ...config,
+      markdownReadingSize: 'standard',
+    }));
+    expect(updated.markdownReadingSize).toBe('standard');
+    expect((await loadAppConfig()).markdownReadingSize).toBe('standard');
+  });
+
   it('does NOT dispatch when the modifier returns an unchanged config (no-op write)', async () => {
     // First write seeds disk so the second pass observes "no change".
     await atomicModifyConfig(c => ({
