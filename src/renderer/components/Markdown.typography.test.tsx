@@ -100,18 +100,24 @@ describe("Markdown typography contract", () => {
     );
   });
 
-  it("pins the default readable-but-clustered rhythm", () => {
+  it("pins the default reading rhythm", () => {
     expect(markdownStyles).toMatch(
-      /\.markdown-content\s*\{[\s\S]*?--markdown-line-height:\s*1\.625/,
+      /\.markdown-content\s*\{[\s\S]*?--markdown-line-height:\s*1\.7/,
     );
     expect(markdownStyles).toMatch(
-      /\.markdown-content\s*\{[\s\S]*?--markdown-flow-gap:\s*var\(--space-3\)/,
+      /\.markdown-content\s*\{[\s\S]*?--markdown-paragraph-gap:\s*var\(--space-4\)/,
     );
     expect(markdownStyles).toMatch(
       /\.markdown-content\s*\{[\s\S]*?--markdown-list-block-gap:\s*var\(--space-2\)/,
     );
     expect(markdownStyles).toMatch(
-      /\.markdown-content\s*\{[\s\S]*?--markdown-list-item-gap:\s*var\(--space-1\)/,
+      /\.markdown-content\s*\{[\s\S]*?--markdown-list-item-gap:\s*var\(--space-2\)/,
+    );
+    expect(markdownStyles).toMatch(
+      /\.markdown-content\s*\{[\s\S]*?--markdown-loose-list-item-gap:\s*var\(--space-3\)/,
+    );
+    expect(markdownStyles).toMatch(
+      /\.markdown-content\s*\{[\s\S]*?--markdown-after-list-gap:\s*var\(--space-5\)/,
     );
     expect(markdownStyles).toMatch(
       /\.markdown-content\s*\{[\s\S]*?--markdown-list-indent:\s*var\(--space-6\)/,
@@ -122,6 +128,20 @@ describe("Markdown typography contract", () => {
     expect(markdownStyles).toMatch(
       /\.markdown-strong\s*\{[\s\S]*?font-weight:\s*var\(--font-weight-emphasis\)/,
     );
+  });
+
+  it("defines a smaller complete standard rhythm without targeting compact or live editor roots", () => {
+    expect(markdownStyles).toMatch(
+      /html\[data-markdown-reading-size='standard'\]\s*\.markdown-content:not\(\.markdown-content--compact\):not\(\.md-editor-host \*\)\s*\{[\s\S]*?--markdown-font-size:\s*var\(--text-sm\)/,
+    );
+    expect(markdownStyles).toMatch(/--markdown-line-height:\s*1\.6/);
+    expect(markdownStyles).toMatch(/--markdown-flow-gap:\s*var\(--space-2-5\)/);
+    expect(markdownStyles).toMatch(/--markdown-paragraph-gap:\s*var\(--space-3-5\)/);
+    expect(markdownStyles).toMatch(/--markdown-list-item-gap:\s*var\(--space-1-5\)/);
+    expect(markdownStyles).toMatch(/--markdown-heading-content-gap:\s*var\(--space-1-5\)/);
+    expect(markdownStyles).toMatch(/--markdown-after-list-gap:\s*var\(--space-4\)/);
+    expect(markdownStyles).toMatch(/\.markdown-h1\s*\{\s*margin-block-start:\s*var\(--space-6\);\s*font-size:\s*var\(--text-xl\)/);
+    expect(markdownStyles).toMatch(/:is\(\.markdown-table-cell, \.markdown-table-header\)\s*\{\s*padding:\s*var\(--space-1-5\) var\(--space-2\);\s*font-size:\s*var\(--text-xs\)/);
   });
 
   it("preserves GFM column alignment on both headers and cells", () => {

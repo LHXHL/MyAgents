@@ -90,6 +90,8 @@ export interface UpstreamBridgeConfig {
    *  bridges intentionally leave it off so verify/title/vision do not pollute
    *  conversation cache routing. */
   cacheAffinity?: BridgeCacheAffinity;
+  /** Request identity for OpenCode Go; scoped to this bridge, never persisted. */
+  opencodeSessionId?: string;
 }
 
 interface Entry {

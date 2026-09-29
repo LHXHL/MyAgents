@@ -9,7 +9,10 @@ import { X, Search, Loader2, RefreshCw, AlertCircle, Plus, Trash2, Settings2 } f
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { TOKENDANCE_PROVIDER_ID } from '../../shared/tokendance';
+import { MODEL_PROTOCOL_PRIORITY, TOKENDANCE_PROVIDER_ID } from '../../shared/tokendance';
+import { getOpenCodeGoOfficialProtocol, OPENCODE_GO_PROVIDER_ID } from '../../shared/opencode-go';
+import { isPerModelProtocolProvider } from '../../shared/provider-model-routing';
+import type { ModelProtocol } from '../../shared/tokendance';
 
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { useProviderModelDiscovery } from '@/hooks/useProviderModelDiscovery';
@@ -37,6 +40,7 @@ import { atomicModifyConfig, rebuildAndPersistAvailableProviders } from '@/confi
 import OverlayBackdrop from '@/components/OverlayBackdrop';
 import { ModalityBadges } from '@/components/ModalityBadges';
 import Popover from '@/components/ui/Popover';
+import CustomSelect from '@/components/CustomSelect';
 
 interface ModelManagementPanelProps {
   provider: Provider;
@@ -122,7 +126,7 @@ export default function ModelManagementPanel({
   useCloseLayer(() => { onClose(); return true; }, 200);
 
   // ===== Discovery fetch =====
-  const canDiscover = discoveryAction !== undefined || ((!!apiKey || provider.id === TOKENDANCE_PROVIDER_ID) && supportsModelDiscovery(provider));
+  const canDiscover = discoveryAction !== undefined || ((!!apiKey || provider.id === TOKENDANCE_PROVIDER_ID || provider.id === OPENCODE_GO_PROVIDER_ID) && supportsModelDiscovery(provider));
 
   const bundledModelsById = useMemo(
     () => new Map(
@@ -354,7 +358,7 @@ export default function ModelManagementPanel({
     const customModels = config.presetCustomModels?.[provider.id] ?? [];
     return new Set(
       customModels
-        .filter(m => !bundledModelIds.has(m.model) || m.source !== 'discovered')
+        .filter(m => !bundledModelIds.has(m.model) || m.source !== 'discovered' || Boolean(m.executionProtocol))
         .map(m => m.model)
     );
   }, [provider.isBuiltin, provider.id, activeModelIds, config.presetCustomModels, bundledModelIds]);
@@ -404,6 +408,14 @@ export default function ModelManagementPanel({
     if (activeModelIds.has(model.id)) return;
     const entity = toModelEntity(model, provider);
 
+    if (isPerModelProtocolProvider(provider) && provider.id !== TOKENDANCE_PROVIDER_ID
+        && !bundledModelIds.has(model.id)
+        && model.supportedProtocols?.length !== 1) {
+      setEditingModelId(null);
+      setPendingCustomModel(entity);
+      return;
+    }
+
     if (provider.id === TOKENDANCE_PROVIDER_ID) {
       if (!isTokenDanceConversationModel(model)) return;
       await atomicModifyConfig(c => {
@@ -417,6 +429,29 @@ export default function ModelManagementPanel({
           presetCustomModels: { ...c.presetCustomModels,
             [provider.id]: [...entries.filter(m => m.model !== model.id),
               { ...entity, ...existing, supportedProtocols: entity.supportedProtocols }],
+          },
+        };
+      });
+      await rebuildAndPersistAvailableProviders();
+      await onRefresh();
+      return;
+    }
+
+    if (provider.id === OPENCODE_GO_PROVIDER_ID) {
+      await atomicModifyConfig(c => {
+        const removed = c.presetRemovedModels?.[provider.id] ?? [];
+        const next = {
+          ...c,
+          presetRemovedModels: { ...c.presetRemovedModels, [provider.id]: removed.filter(id => id !== model.id) },
+        };
+        if (bundledModelIds.has(model.id)) return next;
+        const entries = c.presetCustomModels?.[provider.id] ?? [];
+        const existing = entries.find(entry => entry.model === model.id);
+        return {
+          ...next,
+          presetCustomModels: {
+            ...c.presetCustomModels,
+            [provider.id]: [...entries.filter(entry => entry.model !== model.id), { ...entity, ...existing, supportedProtocols: entity.supportedProtocols }],
           },
         };
       });
@@ -540,7 +575,9 @@ export default function ModelManagementPanel({
                     {editingModelId === model.model && (
                       <ModelSettingsEditor
                         model={model}
+                        provider={provider}
                         anchorRef={editingAnchorRef}
+                        fallbackFocusRef={panelRef}
                         onCancel={handleCancelEdit}
                         onSave={handleSaveModelSettings}
                       />
@@ -571,10 +608,12 @@ export default function ModelManagementPanel({
                   <Plus className="h-4 w-4" />
                 </button>
               </div>
-              {pendingCustomModel && (
+              {pendingCustomModel && pendingCustomModel.source !== 'discovered' && (
                 <ModelSettingsEditor
                   model={pendingCustomModel}
+                  provider={provider}
                   anchorRef={pendingAnchorRef}
+                  fallbackFocusRef={panelRef}
                   onCancel={handleCancelPendingCustomModel}
                   onSave={handleSavePendingCustomModelSettings}
                 />
@@ -669,6 +708,11 @@ export default function ModelManagementPanel({
                     key={m.id}
                     model={m}
                     onAdd={handleAddDiscoveredModel}
+                    pending={pendingCustomModel?.source === 'discovered' && pendingCustomModel.model === m.id ? pendingCustomModel : null}
+                    provider={provider}
+                    fallbackFocusRef={panelRef}
+                    onCancelPending={handleCancelPendingCustomModel}
+                    onSavePending={handleSavePendingCustomModelSettings}
                   />
                 ))}
               </div>
@@ -802,12 +846,16 @@ const ActiveModelRow = React.memo(function ActiveModelRow({
 
 const ModelSettingsEditor = function ModelSettingsEditor({
   model,
+  provider,
   anchorRef,
+  fallbackFocusRef,
   onCancel,
   onSave,
 }: {
   model: ModelEntity;
+  provider: Provider;
   anchorRef: React.RefObject<HTMLDivElement | null>;
+  fallbackFocusRef: React.RefObject<HTMLDivElement | null>;
   onCancel: () => void;
   onSave: (modelId: string, patch: Partial<ModelEntity>) => Promise<void>;
 }) {
@@ -820,6 +868,15 @@ const ModelSettingsEditor = function ModelSettingsEditor({
     () => initialModalitySelection(model.inputModalities),
   );
   const [modalitiesTouched, setModalitiesTouched] = useState(false);
+  const officialProtocol = provider.id === OPENCODE_GO_PROVIDER_ID
+    ? getOpenCodeGoOfficialProtocol(model.model) : undefined;
+  const protocolLabel = (value: ModelProtocol) => t(`providers.models.protocols.${value.replace(':', '_')}`);
+  const showProtocol = isPerModelProtocolProvider(provider) && provider.id !== TOKENDANCE_PROVIDER_ID;
+  const protocolLocked = Boolean(officialProtocol && !model.executionProtocol);
+  const [protocolDraft, setProtocolDraft] = useState<ModelProtocol | ''>(
+    model.executionProtocol ?? officialProtocol ??
+    (model.supportedProtocols?.length === 1 ? model.supportedProtocols[0] : ''),
+  );
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const mountedRef = useRef(true);
@@ -836,17 +893,20 @@ const ModelSettingsEditor = function ModelSettingsEditor({
   useEffect(() => {
     mountedRef.current = true;
     const trigger = focusBeforeOpen.current;
+    const fallback = fallbackFocusRef.current;
     return () => {
       mountedRef.current = false;
       if (trigger?.isConnected) trigger.focus();
+      else if (fallback?.isConnected) fallback.focus();
     };
-  }, []);
+  }, [fallbackFocusRef]);
   useCloseLayer(() => { onCancelRef.current(); return true; }, 210);
 
   const parsedContext = parseContextWindowInput(contextDraft);
   const contextInvalid = parsedContext === 'invalid';
   const modalitiesInvalid = !isModalitySelectionValid(modalities);
-  const canSave = !contextInvalid && !modalitiesInvalid && !saving;
+  const protocolInvalid = showProtocol && !protocolDraft;
+  const canSave = !contextInvalid && !modalitiesInvalid && !protocolInvalid && !saving;
 
   const toggleModality = (kind: EditableModality) => {
     setModalitiesTouched(true);
@@ -868,6 +928,7 @@ const ModelSettingsEditor = function ModelSettingsEditor({
         modelName: nameDraft.trim() || model.model,
         contextLength: parsedContext ?? undefined,
         inputModalities: resolveModalitiesToSave(modalitiesTouched, model.inputModalities, modalities),
+        ...(showProtocol && !protocolLocked ? { executionProtocol: protocolDraft || undefined } : {}),
       });
     } catch (error) {
       if (mountedRef.current) {
@@ -885,6 +946,8 @@ const ModelSettingsEditor = function ModelSettingsEditor({
       ? t('providers.models.invalidContext')
       : modalitiesInvalid
         ? t('providers.models.modalityRequired')
+        : protocolInvalid
+          ? t('providers.models.protocolRequired')
         : typeof parsedContext === 'number'
           ? t('providers.models.contextEcho', { tokens: formatTokenCount(parsedContext) })
           : t('providers.models.contextDefault');
@@ -954,6 +1017,33 @@ const ModelSettingsEditor = function ModelSettingsEditor({
           />
         </div>
 
+        {/* 执行协议 */}
+        {showProtocol && (
+          <div className="mb-2.5">
+            <label className="mb-1 block text-xs font-medium tracking-wide text-[var(--ink-muted)]">
+              {t('providers.models.protocol')}
+            </label>
+            {protocolLocked ? (
+              <p className="rounded-lg border border-[var(--line)] px-2.5 py-1.5 text-xs text-[var(--ink)]">
+                {protocolLabel(officialProtocol!)}
+              </p>
+            ) : (
+              <CustomSelect
+                value={protocolDraft}
+                options={MODEL_PROTOCOL_PRIORITY.filter(value => provider.modelProtocolBaseUrls?.[value])
+                  .map(value => ({ value, label: protocolLabel(value) }))}
+                onChange={value => setProtocolDraft(value as ModelProtocol)}
+                placeholder={t('providers.models.protocolPlaceholder')}
+                ariaLabel={t('providers.models.protocol')}
+                className="w-full"
+              />
+            )}
+            {officialProtocol && model.executionProtocol && model.executionProtocol !== officialProtocol && (
+              <p className="mt-1 text-xs text-[var(--error)]">{t('providers.models.protocolConflict')}</p>
+            )}
+          </div>
+        )}
+
         {/* 输入模态 */}
         <div>
           <label className="mb-1 block text-xs font-medium tracking-wide text-[var(--ink-muted)]">{t('providers.models.inputModalities')}</label>
@@ -1011,11 +1101,22 @@ const ModelSettingsEditor = function ModelSettingsEditor({
 const DiscoveredModelRow = React.memo(function DiscoveredModelRow({
   model,
   onAdd,
+  pending,
+  provider,
+  fallbackFocusRef,
+  onCancelPending,
+  onSavePending,
 }: {
   model: DiscoveredModel;
   onAdd: (model: DiscoveredModel) => void;
+  pending: ModelEntity | null;
+  provider: Provider;
+  fallbackFocusRef: React.RefObject<HTMLDivElement | null>;
+  onCancelPending: () => void;
+  onSavePending: (modelId: string, patch: Partial<ModelEntity>) => Promise<void>;
 }) {
   const { t } = useTranslation('settings');
+  const rowRef = useRef<HTMLDivElement | null>(null);
   const handleAdd = useCallback(() => onAdd(model), [onAdd, model]);
   const displayName = model.displayName && model.displayName !== model.id ? model.displayName : null;
   const title = displayName ?? model.id;
@@ -1028,7 +1129,7 @@ const DiscoveredModelRow = React.memo(function DiscoveredModelRow({
   const discoveredModalities = synthesizeModalitiesFromDiscovered(model);
 
   return (
-    <div className="group flex items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-[var(--hover-bg)]">
+    <div ref={rowRef} className="group flex items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-[var(--hover-bg)]">
       {/* Model info — same style as ActiveModelRow */}
       <div className="min-w-0 flex-1">
         <span className="text-sm font-medium text-[var(--ink)]">{title}</span>
@@ -1055,6 +1156,16 @@ const DiscoveredModelRow = React.memo(function DiscoveredModelRow({
       >
         {t('providers.models.add')}
       </button>
+      {pending && (
+        <ModelSettingsEditor
+          model={pending}
+          provider={provider}
+          anchorRef={rowRef}
+          fallbackFocusRef={fallbackFocusRef}
+          onCancel={onCancelPending}
+          onSave={onSavePending}
+        />
+      )}
     </div>
   );
 });

@@ -12,8 +12,11 @@ import { useToast } from '@/components/Toast';
 import { useConfig } from '@/hooks/useConfig';
 import {
     applyAgentChannelCredentialProvisioning,
-    patchAgentConfig,
     invokeStartAgentChannel,
+    modifyAgentChannelConfig,
+    patchAgentChannelConfig,
+    patchAgentChannelOpenClawConfig,
+    removeAgentChannelConfig,
 } from '@/config/services/agentConfigService';
 import { isDirtyChannelName } from '@/utils/channelDisplayName';
 import BotTokenInput from '../../ImSettings/components/BotTokenInput';
@@ -217,6 +220,9 @@ export default function ChannelWizard({
     const [botUsername, setBotUsername] = useState<string | undefined>();
     const [starting, setStarting] = useState(false);
     const [channelId] = useState(() => crypto.randomUUID());
+    const channelCreatedRef = useRef(false);
+    const channelSaveInFlightRef = useRef<Promise<ChannelConfig> | null>(null);
+    const cancelRequestedRef = useRef(false);
     const [allowedUsers, setAllowedUsers] = useState<string[]>([]);
     const [botStatus, setBotStatus] = useState<ChannelStatusData | null>(null);
     const [permJsonCopied, setPermJsonCopied] = useState(false);
@@ -228,6 +234,33 @@ export default function ChannelWizard({
     const [qrStatus, setQrStatus] = useState<'idle' | 'loading' | 'waiting' | 'scanned' | 'connected' | 'error'>('idle');
     const qrAbortRef = useRef(false);
     const qrSessionKeyRef = useRef<string | undefined>(undefined);
+
+    const persistWizardChannel = useCallback(async (
+        channelCfg: ChannelConfig,
+        provisioning?: { configValues: Readonly<Record<string, string>>; allowedUserId?: string },
+    ) => {
+        // Serialize saves from this wizard. A failed disk write can be retried;
+        // once committed, no later attempt may reinsert this ID after deletion.
+        if (channelSaveInFlightRef.current) return channelSaveInFlightRef.current;
+        const initialChannel = channelCreatedRef.current ? undefined : channelCfg;
+        const onPersisted = () => { channelCreatedRef.current = true; };
+        const save = provisioning
+            ? applyAgentChannelCredentialProvisioning(
+                agent.id, channelCfg.id, provisioning.configValues,
+                provisioning.allowedUserId, initialChannel,
+                () => !cancelRequestedRef.current, onPersisted,
+            )
+            : modifyAgentChannelConfig(agent.id, channelCfg.id, () => {
+                if (cancelRequestedRef.current) throw new Error('Channel setup was cancelled');
+                return channelCfg;
+            }, initialChannel, onPersisted);
+        channelSaveInFlightRef.current = save;
+        try {
+            return await save;
+        } finally {
+            if (channelSaveInFlightRef.current === save) channelSaveInFlightRef.current = null;
+        }
+    }, [agent.id]);
     // Rendered QR image: either the raw data URI (WhatsApp) or QR-encoded from URL (WeChat)
     const [qrImageUrl, setQrImageUrl] = useState<string | null>(null);
 
@@ -540,21 +573,15 @@ export default function ChannelWizard({
             // scanner is open is never overwritten by this renderer snapshot.
             let persistedChannel: ChannelConfig;
             if (isDualConfig && dualConfigMode === 'qr') {
-                persistedChannel = await applyAgentChannelCredentialProvisioning(
-                    agent.id,
-                    channelCfg.id,
-                    provisionedConfigValues,
-                    provisionedAllowedUserId,
-                    channelCfg,
-                );
-            } else {
-                const existingChannels = (agent.channels ?? []).filter(ch => ch.id !== channelCfg.id);
-                await patchAgentConfig(agent.id, {
-                    channels: [...existingChannels, channelCfg],
+                persistedChannel = await persistWizardChannel(channelCfg, {
+                    configValues: provisionedConfigValues,
+                    allowedUserId: provisionedAllowedUserId,
                 });
-                persistedChannel = channelCfg;
+            } else {
+                persistedChannel = await persistWizardChannel(channelCfg);
             }
             await refreshConfig();
+            if (cancelRequestedRef.current) return;
 
             // Start the channel
             await startChannel(persistedChannel);
@@ -571,26 +598,23 @@ export default function ChannelWizard({
         } finally {
             if (isMountedRef.current) setStarting(false);
         }
-    }, [buildChannelConfig, agent, platform, startChannel, refreshConfig, bindingStep, t, isDualConfig, dualConfigMode, provisionedConfigValues, provisionedAllowedUserId]);
+    }, [buildChannelConfig, platform, startChannel, refreshConfig, bindingStep, t, isDualConfig, dualConfigMode, provisionedConfigValues, provisionedAllowedUserId, persistWizardChannel]);
 
     // QR Login: start channel then initiate QR login flow
     const startQrLogin = useCallback(async () => {
-        if (!isTauriEnvironment()) return;
+        if (!isTauriEnvironment() || cancelRequestedRef.current) return;
         qrAbortRef.current = false;
         setQrStatus('loading');
         setQrMessage(t('agentSettings.channelWizard.qr.startingPlugin'));
 
         try {
             const { invoke } = await import('@tauri-apps/api/core');
+            if (cancelRequestedRef.current || !isMountedRef.current) return;
             // 1. Start the channel (spawns Bridge process)
-            // disk-first: read latest config from disk before writing (CLAUDE.md convention)
-            const { loadAppConfig } = await import('@/config/configService');
-            const latestConfig = await loadAppConfig();
-            const latestAgent = (latestConfig.agents ?? []).find(a => a.id === agent.id);
             const channelCfg = { ...buildChannelConfig(), setupCompleted: true };
-            const existingChannels = (latestAgent?.channels ?? agent.channels ?? []).filter(ch => ch.id !== channelCfg.id);
-            await patchAgentConfig(agent.id, { channels: [...existingChannels, channelCfg] });
+            await persistWizardChannel(channelCfg);
             await refreshConfig();
+            if (cancelRequestedRef.current || !isMountedRef.current) return;
             await invokeStartAgentChannel(agent, channelCfg);
 
             // 2. Wait a moment for Bridge to load the plugin
@@ -635,15 +659,8 @@ export default function ChannelWizard({
                         });
                         // Persist accountId to channel config so Bridge finds credentials on restart
                         if (waitResult.accountId) {
-                            const { loadAppConfig } = await import('@/config/configService');
-                            const lat = await loadAppConfig();
-                            const latAgent = (lat.agents ?? []).find(a => a.id === agent.id);
-                            const updChs = (latAgent?.channels ?? []).map(ch =>
-                                ch.id === channelId
-                                    ? { ...ch, openclawPluginConfig: { ...(ch.openclawPluginConfig ?? {}), accountId: waitResult.accountId! } }
-                                    : ch,
-                            );
-                            await patchAgentConfig(agent.id, { channels: updChs });
+                            await patchAgentChannelOpenClawConfig(agent.id, channelId,
+                                { type: 'set', key: 'accountId', value: waitResult.accountId });
                             await refreshConfig();
                         }
                         if (isMountedRef.current) {
@@ -699,7 +716,7 @@ export default function ChannelWizard({
             }
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [buildChannelConfig, agent, channelId, platform, refreshConfig, t]);
+    }, [buildChannelConfig, agent, channelId, platform, refreshConfig, t, persistWizardChannel]);
 
     // Auto-start QR login when entering step 1 for QR plugins.
     // CRITICAL: startQrLogin must NOT be in deps — it depends on `agent` which changes
@@ -767,12 +784,10 @@ export default function ChannelWizard({
         try {
             const channelCfg = buildChannelConfig();
 
-            // Save channel to agent config (dedup: replace if same ID exists from a previous attempt)
-            const existingChannels = (agent.channels ?? []).filter(ch => ch.id !== channelCfg.id);
-            await patchAgentConfig(agent.id, {
-                channels: [...existingChannels, channelCfg],
-            });
+            // Save only this Channel; another surface may have changed siblings.
+            await persistWizardChannel(channelCfg);
             await refreshConfig();
+            if (cancelRequestedRef.current) return;
 
             if (!isTauriEnvironment()) {
                 setVerifyStatus('valid');
@@ -790,10 +805,7 @@ export default function ChannelWizard({
                 // Save channel name from verification
                 if (status?.botUsername) {
                     const displayName = platform === 'telegram' ? `@${status.botUsername}` : status.botUsername;
-                    const updatedChannels = (agent.channels ?? [])
-                        .filter(ch => ch.id !== channelId)
-                        .concat([{ ...channelCfg, name: displayName }]);
-                    await patchAgentConfig(agent.id, { channels: updatedChannels });
+                    await patchAgentChannelConfig(agent.id, channelId, { name: displayName });
                     await refreshConfig();
                 }
                 setStep(2);
@@ -808,49 +820,39 @@ export default function ChannelWizard({
                 setStarting(false);
             }
         }
-    }, [hasCredentials, isFeishu, isDingtalk, isOpenClaw, step, botToken, feishuAppId, dingtalkClientId, channelId, platform, agent, config.agents, buildChannelConfig, startChannel, refreshConfig, t]);
+    }, [hasCredentials, isFeishu, isDingtalk, isOpenClaw, step, botToken, feishuAppId, dingtalkClientId, channelId, platform, agent, config.agents, buildChannelConfig, startChannel, refreshConfig, t, persistWizardChannel]);
 
     // Complete wizard — merge local users with any Rust-persisted users
     const handleComplete = useCallback(async () => {
-        // Read latest agent config from disk to merge users
-        const { loadAppConfig } = await import('@/config/configService');
-        const latest = await loadAppConfig();
-        const latestAgent = (latest.agents ?? []).find(a => a.id === agent.id);
-        const diskChannel = latestAgent?.channels?.find(ch => ch.id === channelId);
-        const diskUsers = diskChannel?.allowedUsers ?? [];
-        const mergedUsers = [...new Set([...diskUsers, ...allowedUsers])];
-
-        // Update channel with setupCompleted + merged users
-        const updatedChannels = (latestAgent?.channels ?? agent.channels ?? []).map(ch =>
-            ch.id === channelId
-                ? { ...ch, setupCompleted: true, allowedUsers: mergedUsers }
-                : ch,
-        );
-        await patchAgentConfig(agent.id, { channels: updatedChannels });
+        await modifyAgentChannelConfig(agent.id, channelId, ch => {
+            if (cancelRequestedRef.current) throw new Error('Channel setup was cancelled');
+            return {
+                ...ch,
+                setupCompleted: true,
+                allowedUsers: [...new Set([...(ch.allowedUsers ?? []), ...allowedUsers])],
+            };
+        });
         await refreshConfig();
 
         track('agent_channel_create', { source: 'desktop', platform });
         if (isMountedRef.current) onComplete(channelId);
-    }, [agent.id, agent.channels, channelId, allowedUsers, platform, onComplete, refreshConfig]);
+    }, [agent.id, channelId, allowedUsers, platform, onComplete, refreshConfig]);
 
-    // Cancel wizard - stop channel, remove from agent config
+    // Cancel wizard - remove desired config before stopping the runtime.
     const handleCancel = useCallback(async () => {
-        if (isTauriEnvironment()) {
-            try {
-                const { invoke } = await import('@tauri-apps/api/core');
-                await invoke('cmd_stop_agent_channel', { agentId: agent.id, channelId });
-            } catch {
-                // Channel might not be running
+        cancelRequestedRef.current = true;
+        qrAbortRef.current = true;
+        try {
+            await removeAgentChannelConfig(agent.id, channelId);
+            await refreshConfig();
+            if (isMountedRef.current) onCancel();
+        } catch (error) {
+            await refreshConfig();
+            if (isMountedRef.current) {
+                toastRef.current.error(t('agentSettings.channelDetail.deleteFailed', { message: String(error) }));
             }
         }
-
-        // Remove channel from agent config
-        const updatedChannels = (agent.channels ?? []).filter(ch => ch.id !== channelId);
-        await patchAgentConfig(agent.id, { channels: updatedChannels });
-        await refreshConfig();
-
-        if (isMountedRef.current) onCancel();
-    }, [agent.id, agent.channels, channelId, onCancel, refreshConfig]);
+    }, [agent.id, channelId, onCancel, refreshConfig, t]);
 
     const handleCopyPermJson = useCallback(async () => {
         try {

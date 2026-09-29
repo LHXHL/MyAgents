@@ -474,14 +474,6 @@ export default function ChannelDetailView({
     const executeDelete = useCallback(async () => {
         setDeleting(true);
         try {
-            if (isTauriEnvironment()) {
-                const { invoke } = await import('@tauri-apps/api/core');
-                try {
-                    await invoke('cmd_stop_agent_channel', { agentId: agent.id, channelId });
-                } catch {
-                    // May not be running
-                }
-            }
             await removeAgentChannelConfig(agent.id, channelId);
             track('agent_channel_remove', {
                 source: 'desktop',
@@ -495,6 +487,7 @@ export default function ChannelDetailView({
                 toastRef.current.error(t('agentSettings.channelDetail.deleteFailed', { message: String(err) }));
                 setDeleting(false);
                 setShowDeleteConfirm(false);
+                onChanged();
             }
         }
     }, [agent.id, channelId, onChanged, onBack, t]);

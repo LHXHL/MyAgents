@@ -40,6 +40,7 @@ type TurnScript =
     completeDelayMs?: number;
     usage?: { inputTokens: number; outputTokens: number };
   }
+  | { kind: 'session-success'; streamedText?: string; result: string }
   | {
     kind: 'failure';
     error: string;
@@ -373,6 +374,20 @@ class FakeRuntime implements AgentRuntime {
           script.completeDelayMs,
           script.usage,
         );
+        return;
+      }
+      if (script.kind === 'session-success') {
+        if (script.streamedText) {
+          const nativeSource = { messageId: 'msg-claude-code', blockIndex: 0 };
+          this.emit({ kind: 'text_delta', text: script.streamedText, nativeSource: {
+            ...nativeSource, blockStart: { type: 'text', text: '' },
+          } });
+          this.emit({ kind: 'text_stop', nativeSource });
+          this.emit({ kind: 'message_replay', nativeSource: { messageId: nativeSource.messageId }, message: {
+            id: 'sdk-claude-code', role: 'assistant', content: [{ type: 'text', text: script.streamedText }],
+          } });
+        }
+        this.emit({ kind: 'session_complete', subtype: 'success', result: script.result });
         return;
       }
       if (script.kind === 'failure') {
@@ -1649,6 +1664,44 @@ describe('external SessionEngine with fake runtime', () => {
         text: 'external desktop reply',
       },
     ]);
+  });
+
+  it('records a Claude Code streamed reply once when session_complete repeats its result', async () => {
+    const harness = await createHarness([
+      { kind: 'session-success', streamedText: 'streamed answer', result: 'streamed answer' },
+    ], { runtimeType: 'claude-code' });
+    const sessionId = 'session-claude-code-streamed-result';
+    const sent = await harness.engine.sendDesktopMessage(
+      { ...desktopRequest(sessionId, join(harness.home, 'workspace'), 'question'),
+        permissionMode: getMaxPermissionForRuntime('claude-code'), model: 'opus' },
+    );
+    await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    const assistant = (await harness.sessionStore.getSessionData(sessionId))!.messages
+      .findLast(message => message.role === 'assistant')!;
+    expect(JSON.parse(assistant.content)).toEqual([expect.objectContaining({
+      type: 'text', text: 'streamed answer', nativeMessageId: 'msg-claude-code',
+    })]);
+  });
+
+  it('keeps result-only Claude Code output when no text was streamed', async () => {
+    const harness = await createHarness([
+      { kind: 'session-success', result: 'slash command output' },
+    ], { runtimeType: 'claude-code' });
+    const sessionId = 'session-claude-code-result-only';
+    const sent = await harness.engine.sendDesktopMessage(
+      { ...desktopRequest(sessionId, join(harness.home, 'workspace'), '/cost'),
+        permissionMode: getMaxPermissionForRuntime('claude-code'), model: 'opus' },
+    );
+    await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    const assistant = (await harness.sessionStore.getSessionData(sessionId))!.messages
+      .findLast(message => message.role === 'assistant')!;
+    expect(JSON.parse(assistant.content)).toEqual([expect.objectContaining({
+      type: 'text', text: 'slash command output',
+    })]);
   });
 
   it('starts a clean runtime after a held turn terminal is followed by process completion', async () => {

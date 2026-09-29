@@ -4,16 +4,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { THEME_BOOTSTRAP_KEY } from './bootstrap';
 
 const floatingMocks = vi.hoisted(() => ({
-  listener: null as null | ((event: { payload: { themeId: string; appearanceMode: 'system' | 'light' | 'dark' } }) => void),
-  loadAppConfig: vi.fn(async () => ({ themeId: 'myagents-default', appearanceMode: 'dark' })),
+  listener: null as null | ((event: { payload: unknown }) => void),
+  configListener: null as null | ((event: { payload: unknown }) => void),
+  loadAppConfig: vi.fn<() => Promise<{ themeId: string; appearanceMode: 'system' | 'light' | 'dark'; markdownReadingSize?: 'large' | 'standard' }>>(async () => ({
+    themeId: 'myagents-default', appearanceMode: 'dark', markdownReadingSize: 'standard',
+  })),
 }));
 
 vi.mock('@/config/services/appConfigService', () => ({
   loadAppConfig: floatingMocks.loadAppConfig,
 }));
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn(async (_name: string, handler: typeof floatingMocks.listener) => {
-    floatingMocks.listener = handler;
+  listen: vi.fn(async (name: string, handler: NonNullable<typeof floatingMocks.listener>) => {
+    if (name === 'app:config-changed') floatingMocks.configListener = handler;
+    else floatingMocks.listener = handler;
     return vi.fn();
   }),
 }));
@@ -35,6 +39,7 @@ describe('FloatingThemeRuntime', () => {
       themeSelectionExplicit: true,
     }));
     floatingMocks.listener = null;
+    floatingMocks.configListener = null;
     floatingMocks.loadAppConfig.mockClear();
     (window as Window & { __TAURI__?: object }).__TAURI__ = {};
     vi.stubGlobal('matchMedia', vi.fn(() => ({
@@ -59,6 +64,7 @@ describe('FloatingThemeRuntime', () => {
 
     expect(screen.getByTestId('floating-theme')).toHaveTextContent('myagents-default:light');
     await waitFor(() => expect(screen.getByTestId('floating-theme')).toHaveTextContent('myagents-default:dark'));
+    expect(document.documentElement.dataset.markdownReadingSize).toBe('standard');
     await waitFor(() => expect(floatingMocks.listener).not.toBeNull());
 
     act(() => floatingMocks.listener?.({
@@ -66,6 +72,18 @@ describe('FloatingThemeRuntime', () => {
     }));
     expect(screen.getByTestId('floating-theme')).toHaveTextContent('myagents-default:light');
     expect(document.documentElement.dataset.colorScheme).toBe('light');
+  });
+
+  it('refreshes reading size from durable config after an existing app config event', async () => {
+    render(<FloatingThemeRuntime><Probe /></FloatingThemeRuntime>);
+    await waitFor(() => expect(document.documentElement.dataset.markdownReadingSize).toBe('standard'));
+    await waitFor(() => expect(floatingMocks.configListener).not.toBeNull());
+
+    floatingMocks.loadAppConfig.mockResolvedValueOnce({
+      themeId: 'myagents-default', appearanceMode: 'dark', markdownReadingSize: 'large',
+    });
+    act(() => floatingMocks.configListener?.({ payload: undefined }));
+    await waitFor(() => expect(document.documentElement.dataset.markdownReadingSize).toBe('large'));
   });
 
   it('registers live sync before hydration and never lets an older hydration overwrite a newer event', async () => {

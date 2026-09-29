@@ -96,7 +96,7 @@ import { launchSupportDiagnostics } from '@/utils/supportDiagnostics';
 import { createDefaultSessionGoalDraftConfig } from '@/utils/sessionGoalDraft';
 import { MANAGED_CODEX_COMPACT_SLASH_COMMAND } from '@/utils/slashActions';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID, type PermissionMode, type McpServerDefinition, type Project, type Provider, getEffectiveModelAliases } from '@/config/types';
-import { resolveProviderForModel } from '../../shared/tokendance';
+import { resolveProviderForModel } from '../../shared/provider-model-routing';
 import { syncMcpServerNames } from '@/components/tools/toolBadgeConfig';
 import {
   getAllMcpServers,

@@ -240,7 +240,7 @@ function systemTagLabel(kind: string, t: (key: string) => string): string | null
   return null;
 }
 
-function renderWidgetSegments(text: string, isLoading: boolean): ReactNode {
+function renderWidgetSegments(text: string, isLoading: boolean, unclosedNotice: string): ReactNode {
   const segments = parseWidgetTags(text);
   return segments.map((seg, si) => {
     if (seg.type === 'text') {
@@ -249,6 +249,15 @@ function renderWidgetSegments(text: string, isLoading: boolean): ReactNode {
           <div className="ai-message-content w-full max-w-none text-[var(--ink)] select-text">
             <Markdown>{seg.content}</Markdown>
           </div>
+        </div>
+      );
+    }
+
+    if (!seg.isComplete && !isLoading) {
+      return (
+        <div key={`w-${si}`} className="w-full px-1" data-testid="unclosed-widget-source">
+          <p className="text-sm text-[var(--ink-muted)]">{unclosedNotice}</p>
+          <pre className="whitespace-pre-wrap break-words select-text"><code>{seg.raw}</code></pre>
         </div>
       );
     }
@@ -395,7 +404,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
               <span>via {SOURCE_LABELS[imSource as MessageSource] ?? imSource}</span>
             </div>
           )}
-          {/* 用户与 AI 正文都由 Markdown 默认变体承载 16px/1.625；article 的
+          {/* 用户与 AI 正文都由 Markdown 默认变体承载 16px/1.7；article 的
               text-base 只负责气泡内非 Markdown prose fallback。 */}
           <div className="group/user-actions flex w-fit max-w-[85%] flex-col items-end">
             <article className="relative w-fit max-w-full rounded-2xl bg-[var(--message-user-bg)] p-4 text-base text-[var(--ink)] select-text">
@@ -494,10 +503,10 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
         <div className="w-full max-w-none">
           {hasWidgets ? (
             <div className="w-full space-y-3">
-              {renderWidgetSegments(message.content, isLoading)}
+              {renderWidgetSegments(message.content, isLoading, t('message.widgetUnclosed'))}
             </div>
           ) : (
-            /* ai-message-content 标记 host prose 上下文；具体 16px/1.625、零字距和
+            /* ai-message-content 标记 host prose 上下文；具体 16px/1.7、零字距和
                各语义块节奏由 Markdown 默认变体统一拥有。三个 assistant 分支
                （string/blocks/widget-segment）与文档预览共用这一条路径。 */
             <div className="ai-message-content text-[var(--ink)] select-text">
@@ -566,7 +575,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
                   if (hasWidgetTags(item.text)) {
                     return (
                       <div key={index} className="w-full space-y-3">
-                        {renderWidgetSegments(item.text, isLoading)}
+                        {renderWidgetSegments(item.text, isLoading, t('message.widgetUnclosed'))}
                       </div>
                     );
                   }

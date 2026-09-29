@@ -23,9 +23,8 @@ export interface ReloadAnchorMessage {
  *    tail and supplies its own persisted boundary instead of this inference.
  *  - the tail has an `sdkUuid` (the native chain entry for the displayed message).
  *  - that uuid was observed for this Product transcript (`currentSessionUuids`).
- *    This is only a cheap candidate filter: the Runtime owner must still validate
- *    the candidate against `getSessionMessages()`, because native resumability is
- *    relative to the SDK's selected parentUuid chain.
+ *    This is only a cheap candidate filter, not proof the SDK can resume there.
+ *    A zero-turn SDK rejection of this inferred anchor falls back to bare resume.
  *
  * No-op by construction in the normal case: when the tail == the SDK's newest leaf,
  * slicing the reconstructed chain at the tail returns the whole chain.
@@ -40,6 +39,13 @@ export function deriveReloadResumeAnchor(
   if (!tail.sdkUuid) return undefined;
   if (!currentSessionUuids.has(tail.sdkUuid)) return undefined;  // decision 4
   return tail.sdkUuid;
+}
+
+/** Only a rejection of the exact inferred UUID permits a bare native resume. */
+export function isRejectedReloadAnchor(errorMessage: string, sentAnchor?: string): boolean {
+  if (!sentAnchor) return false;
+  const rejected = /No message found with message\.uuid of:\s*([^\s;,]+)/u.exec(errorMessage)?.[1];
+  return rejected === sentAnchor;
 }
 
 export interface EffectiveResumeAtInputs {

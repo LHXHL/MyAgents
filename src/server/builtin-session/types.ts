@@ -220,6 +220,7 @@ export type BuiltinTurnUsage = {
   cacheCreationTokens: number;
   model?: string;
   modelUsage?: MessageUsage['modelUsage'];
+  sdkCumulativeModelUsage?: MessageUsage['sdkCumulativeModelUsage'];
 };
 
 export type BuiltinLifecycleSnapshot = {

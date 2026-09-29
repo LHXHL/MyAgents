@@ -219,7 +219,9 @@
   --space-1: 4px;
   --space-1-5: 6px;
   --space-2: 8px;
+  --space-2-5: 10px;
   --space-3: 12px;
+  --space-3-5: 14px;
   --space-4: 16px;
   --space-5: 20px;
   --space-6: 24px;
@@ -952,7 +954,7 @@ pre code {
    字阶分叉正是那段历史的产物）。 */
 .ai-message-content {
   font-size: var(--text-base);
-  line-height: 1.625;
+  line-height: 1.7;
   letter-spacing: 0;
 }
 

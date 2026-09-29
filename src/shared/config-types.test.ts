@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_CLAUDE_TRANSCRIPT_CLEANUP_PERIOD_DAYS,
   DEFAULT_CONFIG,
-  ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
   CODEX_SUBSCRIPTION_PROVIDER_ID,
   MANAGED_CODEX_PROVIDER,
   MANAGED_CODEX_REQUIRED_RUNTIME,
@@ -393,17 +392,40 @@ describe('Google Gemini preset models', () => {
 });
 
 describe('Anthropic preset models', () => {
-  it('ships the current Agent SDK model family and pins current default aliases', () => {
+  it('lists current Anthropic models and defaults Sonnet to 5.5', () => {
     const provider = PRESET_PROVIDERS.find(p => p.id === SUBSCRIPTION_PROVIDER_ID);
-    expect(provider?.primaryModel).toBe('claude-sonnet-5');
+    expect(provider?.primaryModel).toBe('claude-sonnet-5-5');
     expect(provider?.modelAliases).toEqual({
       fable: 'claude-fable-5',
       opus: 'claude-opus-4-8',
-      sonnet: 'claude-sonnet-5',
+      sonnet: 'claude-sonnet-5-5',
       haiku: 'claude-haiku-4-5',
     });
 
     const models = new Map(provider?.models.map(model => [model.model, model]));
+    expect(provider?.models.slice(0, 4).map(model => model.model)).toEqual([
+      'claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-4-5',
+    ]);
+    expect(models.get('claude-fable-5-1')).toMatchObject({
+      contextLength: 1_000_000,
+      maxOutputTokens: 128_000,
+      inputModalities: ['text', 'image'],
+    });
+    expect(models.get('claude-opus-5-5')).toMatchObject({
+      contextLength: 1_000_000,
+      maxOutputTokens: 128_000,
+      inputModalities: ['text', 'image'],
+    });
+    expect(models.get('claude-sonnet-5-5')).toMatchObject({
+      contextLength: 1_000_000,
+      maxOutputTokens: 128_000,
+      inputModalities: ['text', 'image'],
+    });
+    expect(models.get('claude-opus-5')).toMatchObject({
+      contextLength: 1_000_000,
+      maxOutputTokens: 128_000,
+      inputModalities: ['text', 'image'],
+    });
     expect(models.get('claude-fable-5')).toMatchObject({
       contextLength: 1_000_000,
       maxOutputTokens: 128_000,
@@ -418,6 +440,10 @@ describe('Anthropic preset models', () => {
       contextLength: 200_000,
       maxOutputTokens: 64_000,
     });
+    const apiProvider = PRESET_PROVIDERS.find(p => p.id === 'anthropic-api');
+    expect(apiProvider?.models).toEqual(provider?.models);
+    expect(apiProvider?.primaryModel).toBe('claude-sonnet-5-5');
+    expect(apiProvider?.modelAliases?.sonnet).toBe('claude-sonnet-5-5');
   });
 });
 
@@ -555,14 +581,9 @@ describe('Managed Codex provider readiness', () => {
   it('inserts the provider after Anthropic subscription in the default catalogue', () => {
     const catalog = withManagedCodexProviderCatalog(PRESET_PROVIDERS, DEFAULT_CONFIG);
 
-    expect(catalog.slice(0, 6).map(provider => provider.id)).toEqual([
-      TOKENDANCE_PROVIDER_ID,
-      SUBSCRIPTION_PROVIDER_ID,
-      CODEX_SUBSCRIPTION_PROVIDER_ID,
-      XAI_SUBSCRIPTION_PROVIDER_ID,
-      ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
-      'anthropic-api',
-    ]);
+    const subscriptionIndex = catalog.findIndex(provider => provider.id === SUBSCRIPTION_PROVIDER_ID);
+    expect(subscriptionIndex).toBeGreaterThanOrEqual(0);
+    expect(catalog[subscriptionIndex + 1]?.id).toBe(CODEX_SUBSCRIPTION_PROVIDER_ID);
   });
 
   it('shows the provider card by default but keeps it unselectable until ready', () => {

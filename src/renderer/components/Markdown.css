@@ -1,7 +1,7 @@
 /*
  * Markdown typography owns its rhythm at the renderer root. The default mode
- * is shared by chat and document surfaces; compact changes the whole system
- * together instead of shrinking only the body font.
+ * is shared by chat and document surfaces; the standard reading preset changes
+ * only rendered prose. Compact and the live editor keep their own geometry.
  *
  * Keep these rules in the components layer so a deliberately scoped surface
  * override (for example the compact user bubble paragraph reset) can still win
@@ -10,16 +10,17 @@
 @layer components {
   .markdown-content {
     --markdown-font-size: var(--text-base);
-    --markdown-line-height: 1.625;
+    --markdown-line-height: 1.7;
     --markdown-flow-gap: var(--space-3);
+    --markdown-paragraph-gap: var(--space-4);
     --markdown-list-indent: var(--space-6);
     --markdown-list-block-gap: var(--space-2);
-    --markdown-list-item-gap: var(--space-1);
-    --markdown-loose-list-item-gap: var(--space-2);
+    --markdown-list-item-gap: var(--space-2);
+    --markdown-loose-list-item-gap: var(--space-3);
     --markdown-nested-list-indent: var(--space-6);
     --markdown-nested-list-gap: var(--space-1);
     --markdown-heading-content-gap: var(--space-2);
-    --markdown-after-list-gap: var(--space-4);
+    --markdown-after-list-gap: var(--space-5);
     --markdown-rule-gap: var(--space-6);
     --markdown-highlight-bg: var(--accent-warm-subtle);
     --markdown-highlight-ink: var(--ink);
@@ -41,6 +42,7 @@
     --markdown-font-size: var(--text-sm);
     --markdown-line-height: 1.55;
     --markdown-flow-gap: var(--space-2);
+    --markdown-paragraph-gap: var(--space-2);
     --markdown-list-indent: var(--space-6);
     --markdown-list-block-gap: var(--space-1-5);
     --markdown-list-item-gap: var(--space-1);
@@ -52,6 +54,23 @@
     --markdown-rule-gap: var(--space-4);
   }
 
+  html[data-markdown-reading-size='standard']
+    .markdown-content:not(.markdown-content--compact):not(.md-editor-host *) {
+    --markdown-font-size: var(--text-sm);
+    --markdown-line-height: 1.6;
+    --markdown-flow-gap: var(--space-2-5);
+    --markdown-paragraph-gap: var(--space-3-5);
+    --markdown-list-indent: var(--space-5);
+    --markdown-list-block-gap: var(--space-1-5);
+    --markdown-list-item-gap: var(--space-1-5);
+    --markdown-loose-list-item-gap: var(--space-2);
+    --markdown-nested-list-indent: var(--space-5);
+    --markdown-nested-list-gap: var(--space-1);
+    --markdown-heading-content-gap: var(--space-1-5);
+    --markdown-after-list-gap: var(--space-4);
+    --markdown-rule-gap: var(--space-5);
+  }
+
   /* One-directional flow makes every adjacency deterministic: the following
      block owns the gap, so margins never add or collapse unpredictably. */
   .markdown-content > :first-child {
@@ -59,7 +78,7 @@
   }
 
   .markdown-paragraph {
-    margin: var(--markdown-flow-gap) 0 0;
+    margin: var(--markdown-paragraph-gap) 0 0;
     line-height: var(--markdown-line-height);
   }
 
@@ -145,6 +164,39 @@
     line-height: 1.5;
   }
 
+  html[data-markdown-reading-size='standard']
+    .markdown-content:not(.markdown-content--compact):not(.md-editor-host *) .markdown-h1 {
+    margin-block-start: var(--space-6);
+    font-size: var(--text-xl);
+    line-height: var(--text-xl--line-height);
+  }
+
+  html[data-markdown-reading-size='standard']
+    .markdown-content:not(.markdown-content--compact):not(.md-editor-host *) .markdown-h2 {
+    margin-block-start: var(--space-6);
+    font-size: var(--text-lg);
+    line-height: var(--text-lg--line-height);
+  }
+
+  html[data-markdown-reading-size='standard']
+    .markdown-content:not(.markdown-content--compact):not(.md-editor-host *) .markdown-h3 {
+    margin-block-start: var(--space-5);
+    font-size: var(--text-base);
+    line-height: 1.5;
+  }
+
+  html[data-markdown-reading-size='standard']
+    .markdown-content:not(.markdown-content--compact):not(.md-editor-host *) .markdown-h4 {
+    margin-block-start: var(--space-3);
+    font-size: var(--text-sm);
+  }
+
+  html[data-markdown-reading-size='standard']
+    .markdown-content:not(.markdown-content--compact):not(.md-editor-host *) :is(.markdown-h5, .markdown-h6) {
+    margin-block-start: var(--space-2);
+    font-size: var(--text-sm);
+  }
+
   .markdown-heading + .markdown-heading {
     margin-block-start: var(--markdown-heading-content-gap);
   }
@@ -208,16 +260,15 @@
     margin-block-start: var(--space-1-5);
   }
 
+  html[data-markdown-reading-size='standard']
+    .markdown-content:not(.markdown-content--compact):not(.md-editor-host *)
+    .markdown-list-item > .markdown-paragraph + .markdown-paragraph {
+    margin-block-start: var(--space-1-5);
+  }
+
   .markdown-list-item > .markdown-list {
     margin-block-start: var(--markdown-nested-list-gap);
     margin-inline-start: var(--markdown-nested-list-indent);
-  }
-
-  .markdown-list-item
-    > .markdown-list
-    > .markdown-list-item
-    + .markdown-list-item {
-    margin-block-start: var(--markdown-nested-list-gap);
   }
 
   /* A paragraph after a completed list starts a new thought. Giving that
@@ -274,6 +325,11 @@
     padding-inline: var(--space-3);
   }
 
+  html[data-markdown-reading-size='standard']
+    .markdown-content:not(.markdown-content--compact):not(.md-editor-host *) .markdown-blockquote {
+    padding-inline: var(--space-3);
+  }
+
   .markdown-table,
   .markdown-code-block {
     margin-block: var(--markdown-flow-gap) 0;
@@ -300,6 +356,13 @@
 
   .markdown-content--compact .markdown-table-cell,
   .markdown-content--compact .markdown-table-header {
+    padding: var(--space-1-5) var(--space-2);
+    font-size: var(--text-xs);
+  }
+
+  html[data-markdown-reading-size='standard']
+    .markdown-content:not(.markdown-content--compact):not(.md-editor-host *)
+    :is(.markdown-table-cell, .markdown-table-header) {
     padding: var(--space-1-5) var(--space-2);
     font-size: var(--text-xs);
   }
@@ -379,6 +442,11 @@
     font-size: var(--text-sm);
   }
 
+  html[data-markdown-reading-size='standard']
+    .markdown-content:not(.markdown-content--compact):not(.md-editor-host *) [data-footnotes] {
+    font-size: var(--text-xs);
+  }
+
   .markdown-content [data-footnotes] > .markdown-list {
     margin-block-start: 0;
   }
@@ -395,9 +463,18 @@
     margin-block: var(--space-3);
   }
 
-  /* Prose weight must not synthesize bold code or mathematical glyphs. */
+  /* Block code and math stay normal weight; inline labels have their own
+     reading weight so they do not look faint beside 500-weight prose. */
   .markdown-content :is(code, pre, .katex) {
     font-weight: var(--font-weight-normal);
+  }
+
+  .markdown-content .markdown-inline-code-chip {
+    font-size: 0.9em;
+  }
+
+  .markdown-content:not(.md-editor-host *) .markdown-inline-code {
+    font-weight: var(--font-weight-prose);
   }
 
   .markdown-content .katex-display {
@@ -483,6 +560,9 @@
    label changes the font, not the target's interactive surface or color. */
 .markdown-content-link:has(code) {
   font-size: 0.9em;
+}
+.markdown-content:not(.md-editor-host *) .markdown-content-link:has(code) {
+  font-size: 0.95em;
 }
 .markdown-content-link code {
   font-size: inherit;

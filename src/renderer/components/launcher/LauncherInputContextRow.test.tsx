@@ -38,4 +38,30 @@ describe('LauncherInputContextRow', () => {
     );
     expect(workspaceChip).not.toHaveClass('bg-[var(--hover-bg)]', 'shadow-md');
   });
+
+  it('gives the two bordered launcher chips the same outer height', () => {
+    render(
+      <LauncherInputContextRow
+        projects={[]}
+        selectedProject={null}
+        onSelectWorkspace={vi.fn()}
+        onAddFolder={vi.fn()}
+        showRuntime
+        runtime="builtin"
+        runtimeDetections={{
+          builtin: { installed: true },
+          gemini: { installed: false },
+          'claude-code': { installed: false },
+          codex: { installed: false },
+        }}
+        onRuntimeChange={vi.fn()}
+      />,
+    );
+
+    const workspaceChip = screen.getByRole('button', { name: 'Workspace' }).parentElement;
+    const runtimeChip = screen.getByRole('button', { name: 'Runtime' }).parentElement;
+    expect(workspaceChip).toHaveClass('h-[34px]');
+    expect(runtimeChip).toHaveClass('h-[34px]');
+    expect(runtimeChip?.className).toBe(workspaceChip?.className);
+  });
 });

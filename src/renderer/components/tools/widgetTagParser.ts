@@ -19,6 +19,8 @@ export interface WidgetSegment {
   title: string;
   code: string;
   isComplete: boolean;
+  /** Exact source for a partial block; terminal rendering must not lose its opening tag. */
+  raw?: string;
 }
 
 export interface TextSegment {
@@ -185,6 +187,7 @@ export function parseWidgetTags(text: string): Segment[] {
         title: found.title,
         code: remaining.slice(found.openEnd),
         isComplete: false,
+        raw: remaining.slice(found.openStart),
       });
       break;
     }

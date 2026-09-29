@@ -28,6 +28,8 @@ export interface TranscriptCommitTarget {
 export interface TranscriptStorage {
   append(expected: TranscriptCommitTarget, batch: TranscriptBatch): Promise<void>;
   replace(expected: TranscriptCommitTarget, snapshot: TranscriptProjection, revision: number): Promise<TranscriptCommitTarget>;
+  /** One-time live recovery; the storage owner must prove the target has no committed batch. */
+  recoverEmptySource?(expected: TranscriptCommitTarget, snapshot: TranscriptProjection, revision: number): Promise<TranscriptCommitTarget>;
   discardCandidate?(): Promise<void>;
 }
 
@@ -61,6 +63,8 @@ export class TranscriptWriter {
   private closed = false;
   private retiring = false;
   private blocked = false;
+  private emptySourceRecoveryAttempted = false;
+  private emptySourceRecoveryPending = false;
   private inFlight: Promise<void> | null = null;
   private retryBatch: TranscriptBatch | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -191,8 +195,10 @@ export class TranscriptWriter {
     this.state = state;
     if (changed) {
       console.warn(`[session-transcript] session=${this.options.sessionId} state=${state} reason=${reason} queuedBytes=${this.queuedBytes} liveRevision=${this.liveRevision} durableRevision=${this.durableRevision}`);
-      this.emit();
     }
+    // A second invalid-history may turn a degraded writer into a permanently
+    // blocked one without changing the visible reason. Wake flush waiters.
+    this.emit();
   }
 
   private watchHealth(): void {
@@ -224,6 +230,7 @@ export class TranscriptWriter {
     let work: Promise<void>;
     let targetRevision: number;
     let batch: TranscriptBatch | null = this.retryBatch;
+    let recoveringEmptySource = false;
     if (batch) {
       targetRevision = batch.revision;
       work = Promise.resolve().then(() => this.options.storage.append(expected, batch!));
@@ -235,8 +242,12 @@ export class TranscriptWriter {
       this.queue = [];
       this.queuedBytes = 0;
       this.needsBaseline = false;
+      recoveringEmptySource = this.emptySourceRecoveryPending;
+      this.emptySourceRecoveryPending = false;
       work = Promise.resolve().then(async () => {
-        const committed = await this.options.storage.replace(expected, snapshot, targetRevision);
+        const committed = recoveringEmptySource
+          ? await this.options.storage.recoverEmptySource!(expected, snapshot, targetRevision)
+          : await this.options.storage.replace(expected, snapshot, targetRevision);
         this.generation = committed.generation;
         if (committed.revision < targetRevision) this.needsBaseline = true;
         targetRevision = committed.revision;
@@ -271,9 +282,25 @@ export class TranscriptWriter {
       }
       this.emit();
     }).catch(error => {
-      if (error instanceof TranscriptStorageError && error.reason === 'invalid-history') {
+      if (recoveringEmptySource) {
+        // The sole recovery attempt did not durably commit. Keep the live
+        // projection for export, but never retry an uncertain replacement.
         this.blocked = true;
-        this.fail('invalid-history', 'degraded');
+        this.fail(error instanceof TranscriptStorageError ? error.reason : 'io', 'degraded');
+      } else if (error instanceof TranscriptStorageError && error.reason === 'invalid-history') {
+        if (!this.emptySourceRecoveryAttempted && this.recordingComplete && this.options.storage.recoverEmptySource) {
+          this.emptySourceRecoveryAttempted = true;
+          this.emptySourceRecoveryPending = true;
+          this.retryBatch = null;
+          this.queue = [];
+          this.queuedBytes = 0;
+          this.needsBaseline = true;
+          this.fail('invalid-history', 'degraded');
+          this.retryAttempt = 0;
+        } else {
+          this.blocked = true;
+          this.fail('invalid-history', 'degraded');
+        }
       } else {
         // Exact batch identity survives a sync/ack failure; later operations
         // stay queued until this batch has been confirmed.
@@ -281,7 +308,7 @@ export class TranscriptWriter {
         else this.needsBaseline = true;
         this.fail('io', this.needsBaseline ? 'degraded' : 'retrying');
       }
-      this.retryAttempt += 1;
+      if (!this.emptySourceRecoveryPending) this.retryAttempt += 1;
     }).finally(() => {
       if (this.inFlight === task) this.inFlight = null;
       this.watchHealth();

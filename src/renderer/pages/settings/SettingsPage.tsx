@@ -33,6 +33,7 @@ import React, {
 import { useTranslation } from 'react-i18next';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import TokenDanceProvider from '@/components/tokendance/TokenDanceProvider';
 import { TOKENDANCE_PROVIDER_ID } from '../../../shared/tokendance';
@@ -183,6 +184,7 @@ import {
   type ManagedCodexRuntimeBusyAction,
 } from './managedCodexRuntimePresentation';
 import { AppearanceModeControl } from './components/AppearanceModeControl';
+import { MarkdownReadingSizeControl } from './components/MarkdownReadingSizeControl';
 import { ThemePresetSelect } from './components/ThemePresetSelect';
 import { useResolvedTheme } from '@/theme';
 import {
@@ -5505,6 +5507,20 @@ export default function Settings({
                     }}
                   />
                 </div>
+
+                <MarkdownReadingSizeControl
+                  value={config.markdownReadingSize ?? 'large'}
+                  onChange={(size) => {
+                    void updateConfig({ markdownReadingSize: size })
+                      .then(() => {
+                        if (isTauriEnvironment()) {
+                          void emit('app:config-changed', undefined)
+                            .catch(error => console.warn('[settings] Failed to sync reading size:', error));
+                        }
+                      })
+                      .catch(() => toast.error(tSettings('general.saveFailedRetry')));
+                  }}
+                />
               </div>
 
               {/* Startup Settings */}

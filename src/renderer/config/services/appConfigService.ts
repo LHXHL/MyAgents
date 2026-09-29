@@ -8,6 +8,7 @@ import {
     DEFAULT_SYSTEM_PRESET_WORKSPACE_ID,
     getSystemPresetProjectMetadataPatch,
     normalizeClaudeTranscriptCleanupPeriodDays,
+    normalizeMarkdownReadingSize,
 } from '../types';
 export { mergePresetCustomModels } from '../../../shared/config-types';
 import {
@@ -123,6 +124,7 @@ export function migrateImBotConfig(config: AppConfig): AppConfig {
 
 function normalizeDeveloperSettings(config: AppConfig): AppConfig {
     config.uiLanguage = normalizeUiLanguage(config.uiLanguage);
+    config.markdownReadingSize = normalizeMarkdownReadingSize(config.markdownReadingSize);
     config.claudeTranscriptCleanupPeriodDays = normalizeClaudeTranscriptCleanupPeriodDays(
         config.claudeTranscriptCleanupPeriodDays,
     );

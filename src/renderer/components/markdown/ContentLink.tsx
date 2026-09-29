@@ -11,7 +11,7 @@ import { isAudioPath } from '@/utils/audioPlayer';
 import { useAudioPlayer } from '@/hooks/useAudioPlayer';
 import { MarkdownDocumentDirectoryContext, MarkdownLinkLabelContext } from './linkContext';
 
-export const INLINE_CODE_CLASS = 'rounded bg-[var(--paper-inset)]/40 px-1.5 py-0.5 font-mono text-[0.9em] text-[var(--ink)]';
+export const INLINE_CODE_CLASS = 'markdown-inline-code markdown-inline-code-chip rounded bg-[var(--paper-inset)]/40 px-1.5 py-0.5 font-mono text-[var(--ink)]';
 
 /** One target powers the affordance, tooltip, preview and context menu. */
 export default function ContentLink({ reference, displayReference = reference, native = false, basePath, children, ...props }: {
@@ -42,8 +42,8 @@ export default function ContentLink({ reference, displayReference = reference, n
   const status = target && !info?.exists ? t(info?.error ? 'fileActions.checkFailed' : info ? 'fileActions.targetUnavailable' : 'fileActions.checking') : '';
   const plain = native && (insideLink || (!web && (!target || !fileAction || (!info?.exists && !info?.error))));
   if (!reference.trim()) return <MarkdownLinkLabelContext.Provider value><span>{children}</span></MarkdownLinkLabelContext.Provider>;
-  if (insideLink) return <code className="font-mono">{children}</code>;
-  const label = native ? <code className={plain ? INLINE_CODE_CLASS : 'cursor-pointer font-mono'}>{children}</code> : children;
+  if (insideLink) return <code className="markdown-inline-code font-mono">{children}</code>;
+  const label = native ? <code className={plain ? INLINE_CODE_CLASS : 'markdown-inline-code cursor-pointer font-mono'}>{children}</code> : children;
   if (plain) return <span onMouseEnter={() => { if (target && info && !info.exists) fileAction?.refreshFileTarget(target); }}>{label}</span>;
   const fileName = (fullPath ?? target?.path ?? '').split(/[\\/]/).pop() ?? '';
   return (

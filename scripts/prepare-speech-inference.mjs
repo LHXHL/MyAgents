@@ -33,6 +33,7 @@ import {
   extractSherpaBuildSource,
   patchHclustWindowsFenvPragma,
   patchSherpaRawEvidence,
+  patchSherpaVadFlushBoundary,
   patchSherpaWindowsOnnxRuntimeImport,
 } from './sherpa-source-extraction.mjs';
 
@@ -591,6 +592,7 @@ export async function prepareSpeechInference(options, documentResult) {
       archiveRoot: speechLock.source.archiveRoot,
     });
     patchSherpaRawEvidence(sherpaSource);
+    patchSherpaVadFlushBoundary(sherpaSource);
     if (targetLock.platform === 'windows') {
       patchSherpaWindowsOnnxRuntimeImport(sherpaSource);
     }

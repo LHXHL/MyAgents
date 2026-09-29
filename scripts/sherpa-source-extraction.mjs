@@ -31,6 +31,42 @@ const WINDOWS_ORT_IMPORT_FIXED = `    elseif(WIN32)
       endif()
 `;
 
+const VAD_FLUSH_BOUNDARY_SOURCE_SHA256 =
+  'd8761999ff708637ea7ed1636484afa2d75854a7a7fb07e39ae4e68a2f6d0d15';
+const VAD_FLUSH_BOUNDARY_PATCHED_SHA256 =
+  'b08750eafcba6edd84c607f68f618694d165fb45e060ef52c7679d5edaa53cdc';
+const VAD_FLUSH_BOUNDARY_ORIGINAL = `    } else {
+      // non-speech
+
+      cur_segment_.start = -1;`;
+const VAD_FLUSH_BOUNDARY_FIXED = `    } else {
+      // non-speech
+
+      // Explicit Flush can empty the lookback buffer. The first later
+      // non-speech window may be shorter than min_silence_duration, so wait
+      // for a positive endpoint before asking CircularBuffer::Get/Pop.
+      if (start_ != -1 && buffer_.Size() &&
+          buffer_.Tail() - model_->MinSilenceDurationSamples() <= start_) {
+        return;
+      }
+
+      cur_segment_.start = -1;`;
+
+/** The locked Sherpa VAD may otherwise request a negative buffer length after a forced flush. */
+export function patchSherpaVadFlushBoundary(sourceRoot) {
+  const path = join(sourceRoot, 'sherpa-onnx', 'csrc', 'voice-activity-detector.cc');
+  requireEntry(path, 'file');
+  const source = readFileSync(path, 'utf8');
+  const sha256 = createHash('sha256').update(source).digest('hex');
+  if (sha256 === VAD_FLUSH_BOUNDARY_PATCHED_SHA256) return false;
+  if (sha256 !== VAD_FLUSH_BOUNDARY_SOURCE_SHA256
+      || source.split(VAD_FLUSH_BOUNDARY_ORIGINAL).length !== 2) {
+    throw new Error('Locked Sherpa VAD source no longer matches the expected flush boundary');
+  }
+  writeFileSync(path, source.replace(VAD_FLUSH_BOUNDARY_ORIGINAL, VAD_FLUSH_BOUNDARY_FIXED), 'utf8');
+  return true;
+}
+
 function requireEntry(path, kind) {
   const metadata = lstatSync(path);
   const valid =

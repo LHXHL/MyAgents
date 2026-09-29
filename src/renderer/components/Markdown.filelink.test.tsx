@@ -511,7 +511,7 @@ describe('Markdown local file links', () => {
     const links = screen.getAllByRole('link', { name: 'README.md' });
     expect(links).toHaveLength(2);
     for (const link of links) {
-      expect(link.querySelector('code')!.className).toBe('font-mono');
+      expect(link.querySelector('code')!.className).toBe('markdown-inline-code font-mono');
       expect(link.querySelector('img')).toHaveStyle({ width: '1.2em', height: '1.2em' });
     }
   });

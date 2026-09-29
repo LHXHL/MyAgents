@@ -1,6 +1,7 @@
 // Provider and permission configuration types
 
 import { TOKENDANCE_MODELS, TOKENDANCE_MODEL_LIST_URL, TOKENDANCE_PROVIDER_ID, type ModelProtocol } from './tokendance';
+import { OPENCODE_GO_BASE_URL, OPENCODE_GO_MODEL_LIST_URL, OPENCODE_GO_MODELS, OPENCODE_GO_PROVIDER_ID } from './opencode-go';
 
 import type {
   HeartbeatConfig,
@@ -41,6 +42,12 @@ export type PermissionMode = 'auto' | 'plan' | 'fullAgency';
  * See src/server/utils/background-agent-permission.ts for the decision core.
  */
 export type BackgroundAgentPermissionMode = 'inherit' | 'fullAgency';
+
+export type MarkdownReadingSize = 'large' | 'standard';
+
+export function normalizeMarkdownReadingSize(value: unknown): MarkdownReadingSize {
+  return value === 'standard' ? 'standard' : 'large';
+}
 
 /**
  * Permission mode display configuration
@@ -92,6 +99,8 @@ export interface ModelEntity extends Pick<RuntimeModelInfo, 'supportedReasoningE
   outputModalities?: string[]; // 输出模态 ["text"]
   /** Catalog-owned transport capabilities for managed aggregate providers. */
   supportedProtocols?: ModelProtocol[];
+  /** User-selected route when the supplier does not identify a unique one. */
+  executionProtocol?: ModelProtocol;
 
   // === 来源标记 ===
   source?: 'preset' | 'discovered' | 'manual';
@@ -123,6 +132,7 @@ export function mergePresetModelWithCustomEntry(
       inputModalities: preset.inputModalities ?? custom.inputModalities,
       outputModalities: preset.outputModalities ?? custom.outputModalities,
       supportedProtocols: custom.supportedProtocols ?? preset.supportedProtocols,
+      executionProtocol: custom.executionProtocol ?? preset.executionProtocol,
     };
   }
 
@@ -135,6 +145,7 @@ export function mergePresetModelWithCustomEntry(
     inputModalities: custom.inputModalities ?? preset.inputModalities,
     outputModalities: custom.outputModalities ?? preset.outputModalities,
     supportedProtocols: custom.supportedProtocols ?? preset.supportedProtocols,
+    executionProtocol: custom.executionProtocol ?? preset.executionProtocol,
   };
 }
 
@@ -267,6 +278,8 @@ export function normalizeProviderOrder(
   for (const id of providerIds) {
     if (seen.has(id)) continue;
     seen.add(id);
+    const insertBeforeIndex = id === OPENCODE_GO_PROVIDER_ID
+      ? ordered.indexOf('anthropic-api') : -1;
     const insertAfter =
       id === XAI_SUBSCRIPTION_PROVIDER_ID
         ? ordered.includes(CODEX_SUBSCRIPTION_PROVIDER_ID)
@@ -274,7 +287,9 @@ export function normalizeProviderOrder(
           : SUBSCRIPTION_PROVIDER_ID
         : MISSING_PROVIDER_INSERT_AFTER[id];
     const insertAfterIndex = insertAfter ? ordered.indexOf(insertAfter) : -1;
-    if (insertAfterIndex >= 0) {
+    if (insertBeforeIndex >= 0) {
+      ordered.splice(insertBeforeIndex, 0, id);
+    } else if (insertAfterIndex >= 0) {
       ordered.splice(insertAfterIndex + 1, 0, id);
     } else {
       ordered.push(id);
@@ -449,6 +464,10 @@ export interface Provider {
   subscriptionAuth?: SubscriptionAuthPolicy;
   primaryModel: string; // 默认模型 API 代码
   isBuiltin: boolean;
+  /** Undefined means the existing fixed provider-wide protocol. */
+  modelRouting?: 'per-model';
+  /** Explicit upstream base for each executable conversation protocol. */
+  modelProtocolBaseUrls?: Partial<Record<ModelProtocol, string>>;
   enabled?: boolean; // Runtime-derived: false when globally disabled by the user
   runtimeReady?: boolean; // Runtime-backed providers only: true when their managed runtime/auth preconditions are ready
 
@@ -896,6 +915,8 @@ export interface AppConfig {
   themeSelectionExplicit?: boolean;
   /** User preference for resolving the selected Theme's light/dark scheme. */
   appearanceMode: AppearanceMode;
+  /** Reading typography for rendered Markdown; compact UI and the source editor are independent. */
+  markdownReadingSize?: MarkdownReadingSize;
   /** Product UI language. Existing pre-i18n configs missing this field migrate
    *  to `zh-CN`; new installs default to `system`. */
   uiLanguage?: UiLanguage;
@@ -1128,13 +1149,54 @@ export interface ProjectSettings {
 
 // Preset providers with ModelEntity structure
 /** Anthropic 官方预设模型（订阅和 API 共用）
- *  contextLength / maxOutputTokens：来源 Anthropic Models overview (2026-07-03)
+ *  contextLength / maxOutputTokens：来源 https://platform.claude.com/docs/en/models/overview (2026-09-29)
  *  inputModalities：Anthropic current Claude models all support text+image input.
  *  contextLength > 200K 由 applyContextWindowSuffix 自动加 [1m] 走 SDK 1M 上下文路径。 */
 const ANTHROPIC_MODELS: ModelEntity[] = [
   {
+    model: 'claude-fable-5-1',
+    modelName: 'Claude Fable 5.1',
+    modelSeries: 'claude',
+    contextLength: 1_000_000,
+    maxOutputTokens: 128_000,
+    inputModalities: ['text', 'image'],
+  },
+  {
+    model: 'claude-opus-5-5',
+    modelName: 'Claude Opus 5.5',
+    modelSeries: 'claude',
+    contextLength: 1_000_000,
+    maxOutputTokens: 128_000,
+    inputModalities: ['text', 'image'],
+  },
+  {
+    model: 'claude-sonnet-5-5',
+    modelName: 'Claude Sonnet 5.5',
+    modelSeries: 'claude',
+    contextLength: 1_000_000,
+    maxOutputTokens: 128_000,
+    inputModalities: ['text', 'image'],
+  },
+  {
+    model: 'claude-haiku-4-5',
+    modelName: 'Claude Haiku 4.5',
+    modelSeries: 'claude',
+    contextLength: 200_000,
+    maxOutputTokens: 64_000,
+    inputModalities: ['text', 'image'],
+  },
+  // Legacy options kept selectable for users/accounts that have not moved yet.
+  {
     model: 'claude-fable-5',
     modelName: 'Claude Fable 5',
+    modelSeries: 'claude',
+    contextLength: 1_000_000,
+    maxOutputTokens: 128_000,
+    inputModalities: ['text', 'image'],
+  },
+  {
+    model: 'claude-opus-5',
+    modelName: 'Claude Opus 5',
     modelSeries: 'claude',
     contextLength: 1_000_000,
     maxOutputTokens: 128_000,
@@ -1156,15 +1218,6 @@ const ANTHROPIC_MODELS: ModelEntity[] = [
     maxOutputTokens: 128_000,
     inputModalities: ['text', 'image'],
   },
-  {
-    model: 'claude-haiku-4-5',
-    modelName: 'Claude Haiku 4.5',
-    modelSeries: 'claude',
-    contextLength: 200_000,
-    maxOutputTokens: 64_000,
-    inputModalities: ['text', 'image'],
-  },
-  // Legacy 4.x options kept selectable for users/accounts that have not moved yet.
   // contextLength: Anthropic Sonnet 4.6 / Opus 4.6 wire-default is 200K. The 1M
   // tier requires the `context-1m-2025-08-07` beta header AND either Tier-4 API
   // spend or a paid "extra usage" toggle on subscription plans. Defaulting to 1M
@@ -1199,12 +1252,11 @@ const ANTHROPIC_MODELS: ModelEntity[] = [
   },
 ];
 
-/** Anthropic 官方默认别名（对齐 SDK 0.3.220 当前模型族：fable5/opus48/sonnet5/haiku45）。
- *  显式 pin 可避免未来 SDK 默认变动时用户体验突变。 */
+/** Anthropic 默认别名显式 pin，避免未来 SDK 模型名录更新时悄悄改变默认模型。 */
 const ANTHROPIC_ALIASES = {
   fable: 'claude-fable-5',
   opus: 'claude-opus-4-8',
-  sonnet: 'claude-sonnet-5',
+  sonnet: 'claude-sonnet-5-5',
   haiku: 'claude-haiku-4-5',
 } as const;
 
@@ -1531,6 +1583,12 @@ export const PRESET_PROVIDERS: Provider[] = [
     type: 'api',
     primaryModel: 'deepseek-v4-pro-0813',
     isBuiltin: true,
+    modelRouting: 'per-model',
+    modelProtocolBaseUrls: {
+      'anthropic:messages': 'https://tokendance.space/gateway',
+      'openai:responses': 'https://tokendance.space/gateway/v1',
+      'openai:chat-completions': 'https://tokendance.space/gateway/v1',
+    },
     config: { baseUrl: 'https://tokendance.space/gateway' },
     authType: 'api_key',
     websiteUrl: 'https://tokendance.space',
@@ -1544,7 +1602,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     cloudProvider: '官方',
     type: 'subscription',
     subscriptionAuth: { kind: 'sdk-native' },
-    primaryModel: 'claude-sonnet-5',
+    primaryModel: 'claude-sonnet-5-5',
     isBuiltin: true,
     config: {},
     modelAliases: { ...ANTHROPIC_ALIASES },
@@ -1619,12 +1677,33 @@ export const PRESET_PROVIDERS: Provider[] = [
     models: [],
   },
   {
+    id: OPENCODE_GO_PROVIDER_ID,
+    name: 'OpenCode Go',
+    subtitle: '使用 OpenCode Go 订阅的 coding agent 模型额度',
+    vendor: 'OpenCode',
+    cloudProvider: '官方',
+    type: 'api',
+    primaryModel: 'minimax-m3',
+    isBuiltin: true,
+    modelRouting: 'per-model',
+    modelProtocolBaseUrls: {
+      'anthropic:messages': OPENCODE_GO_BASE_URL,
+      'openai:responses': `${OPENCODE_GO_BASE_URL}/v1`,
+      'openai:chat-completions': `${OPENCODE_GO_BASE_URL}/v1`,
+    },
+    config: { baseUrl: OPENCODE_GO_BASE_URL },
+    authType: 'api_key',
+    websiteUrl: 'https://opencode.ai/docs/go/',
+    modelListUrl: OPENCODE_GO_MODEL_LIST_URL,
+    models: OPENCODE_GO_MODELS,
+  },
+  {
     id: 'anthropic-api',
     name: 'Anthropic (API)',
     vendor: 'Anthropic',
     cloudProvider: '官方',
     type: 'api',
-    primaryModel: 'claude-sonnet-5',
+    primaryModel: 'claude-sonnet-5-5',
     isBuiltin: true,
     authType: 'both',
     config: {
@@ -2742,6 +2821,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   themeId: DEFAULT_THEME_ID,
   themeSelectionExplicit: false,
   appearanceMode: DEFAULT_APPEARANCE_MODE,
+  markdownReadingSize: 'large',
   uiLanguage: 'system',
   minimizeToTray: true, // 默认开启最小化到托盘
   forceWakeLock: false, // 默认关闭常开阻睡（智能模式仍在跑，覆盖 AI 工作期间）

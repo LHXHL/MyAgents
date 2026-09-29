@@ -6,12 +6,11 @@ export * from "./channel-reply-pipeline.auto.js";
 
 // Handwritten Bridge-mode implementation for createChannelReplyPipeline.
 //
-// In Bridge mode, the actual reply path is owned by MyAgents:
-// compat-runtime.ts::channel.reply.dispatchReplyWithBufferedBlockDispatcher
-// POSTs the inbound message to Rust's /api/im-bridge/message instead of
-// invoking the plugin's `dispatcherOptions.deliver` callback. So whatever
-// fields `replyPipeline` would normally inject into dispatcherOptions are
-// ignored on this path. We only need the destructure to succeed.
+// In Bridge mode, compat-runtime forwards the inbound message to Rust.
+// Buffered calls with `dispatcherOptions.deliver` use that plugin renderer
+// through the request-scoped reply dispatcher; calls without a renderer use
+// the admission-only path. This shim supplies no additional replyPipeline
+// dispatcher options, so callers only need the destructure to succeed.
 //
 // Yuanbao destructures `const { onModelSelected, ...replyPipeline } = ...`
 // at dispatch-reply.js and threads `onModelSelected` into replyOptions. We

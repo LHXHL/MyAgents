@@ -88,19 +88,64 @@ export function macNativePathPolicy(platform) {
 
 export function windowsNativePathPolicy() {
   const vendorTriple = 'x86_64-pc-windows-msvc';
-  const codexPath = `vendor/${vendorTriple}/bin/codex.exe`;
+  const root = `vendor/${vendorTriple}`;
+  const codexPath = `${root}/bin/codex.exe`;
+  // Extracted from the pinned official package. DLLs are executable payload,
+  // so new files still require an explicit inventory and publisher review.
+  const voicePaths = [
+    'codex-voice-host.exe',
+    'gio-2.0-0.dll',
+    'glib-2.0-0.dll',
+    'gmodule-2.0-0.dll',
+    'gobject-2.0-0.dll',
+    'gstapp-1.0-0.dll',
+    'gstapp.dll',
+    'gstaudio-1.0-0.dll',
+    'gstaudioconvert.dll',
+    'gstaudioresample.dll',
+    'gstbase-1.0-0.dll',
+    'gstcoreelements.dll',
+    'gstnet-1.0-0.dll',
+    'gstopus.dll',
+    'gstpbutils-1.0-0.dll',
+    'gstreamer-1.0-0.dll',
+    'gstrtp-1.0-0.dll',
+    'gstrtp.dll',
+    'gstrtpmanager.dll',
+    'gsttag-1.0-0.dll',
+    'gstvideo-1.0-0.dll',
+    'intl-8.dll',
+    'libffi-8.dll',
+    'opus.dll',
+    'pcre2-8.dll',
+    'z.dll',
+  ];
   return {
     codexPath,
     openAiSignedPaths: new Set([
       codexPath,
-      `vendor/${vendorTriple}/bin/codex-code-mode-host.exe`,
-      `vendor/${vendorTriple}/codex-resources/codex-command-runner.exe`,
-      `vendor/${vendorTriple}/codex-resources/codex-windows-sandbox-setup.exe`,
+      `${root}/bin/codex-code-mode-host.exe`,
+      `${root}/codex-resources/codex-command-runner.exe`,
+      `${root}/codex-resources/codex-windows-sandbox-setup.exe`,
+      ...voicePaths.map(path => `${root}/codex-resources/voice/bin/${path}`),
+    ]),
+    microsoftSignedPaths: new Set([
+      `${root}/codex-resources/voice/bin/vcruntime140.dll`,
     ]),
     unsignedHelperPaths: new Set([
-      `vendor/${vendorTriple}/codex-path/rg.exe`,
+      `${root}/codex-path/rg.exe`,
     ]),
   };
+}
+
+/** The Microsoft CRT retains its own trust chain, not the Codex EXE's signer. */
+export function windowsNativeSigningForPath(relativePath, openAiSigning) {
+  const policy = windowsNativePathPolicy();
+  if (policy.openAiSignedPaths.has(relativePath)) return openAiSigning;
+  if (policy.microsoftSignedPaths.has(relativePath)) {
+    return openAiSigning ? { type: 'authenticode', publisher: 'Microsoft Corporation' } : undefined;
+  }
+  throw new Error(`Managed Codex win32-x64 contains an unrecognized signed native file: ${relativePath}`);
 }
 
 export function validateManagedCodexNativePaths(platform, nativePaths) {
@@ -110,6 +155,7 @@ export function validateManagedCodexNativePaths(platform, nativePaths) {
   if (!policy) throw new Error(`Unsupported Managed Codex platform: ${platform}`);
   const expectedPaths = new Set([
     ...policy.openAiSignedPaths,
+    ...(policy.microsoftSignedPaths ?? []),
     ...(policy.helperPaths ?? policy.unsignedHelperPaths),
   ]);
   if (

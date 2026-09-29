@@ -4,11 +4,12 @@ import { trackServer as defaultTrackServer } from '../analytics';
 import { formatApiErrorDetail, shouldTitleCompletedTurn } from '../../shared/terminalReason';
 import type { CancelReason } from '../utils/cancellation';
 import {
-  extractTurnUsageFromSdkResult,
+  createSdkCumulativeUsageTracker,
   isEmptySuccessfulSdkResult,
   isRecoveredAssistantMessageError,
   isSuccessfulCompactControlTurn,
 } from '../utils/sdk-turn-outcome';
+import type { MessageUsage } from '../../shared/types/session-message';
 import {
   classifyBuiltinSdkTerminalResult,
   decideTransientProviderTextRetry,
@@ -170,8 +171,13 @@ export type BuiltinTurnLifecycleDeps = {
 };
 
 export type BuiltinTurnLifecycle = {
+  beginSdkQueryUsage: (seed: { resumed: boolean; previous?: MessageUsage['sdkCumulativeModelUsage'] }) => void;
+  resetSdkQueryUsage: () => void;
   canMaterializeRewindResult: (resultMessage: BuiltinSdkResultMessage) => boolean;
-  handleSdkResult: (resultMessage: BuiltinSdkResultMessage) => Promise<'retrying' | 'terminal'>;
+  handleSdkResult: (
+    resultMessage: BuiltinSdkResultMessage,
+    recoverRejectedReloadAnchor?: (rawError: string) => boolean,
+  ) => Promise<'retrying' | 'terminal'>;
   completeTurn: (
     durationMs?: number,
     terminalError?: string,
@@ -186,6 +192,7 @@ export type BuiltinTurnLifecycle = {
 
 export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): BuiltinTurnLifecycle {
   let lastTurnEndPersist: Promise<unknown> = Promise.resolve();
+  let sdkUsage = createSdkCumulativeUsageTracker({ resumed: false });
   const track = deps.trackServer ?? defaultTrackServer;
 
   const clearTerminalStreamState = (): void => {
@@ -452,9 +459,9 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     } else {
       console.log('[agent] Skipping error persistence for expected termination:', error);
     }
+    stampTurnUsageOnPendingAssistant({ usage: getCurrentTurnUsage(), toolCount: getCurrentTurnToolCount() });
     const product = getBuiltinProductContent();
     if (product) {
-      stampTurnUsageOnPendingAssistant({ usage: getCurrentTurnUsage(), toolCount: getCurrentTurnToolCount() });
       product.finishTurn('error');
     }
     lastTurnEndPersist = deps.persistTranscript(undefined, activityAt);
@@ -497,7 +504,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     });
     if (transientRetryDecision.error) return false;
 
-    const usage = extractTurnUsageFromSdkResult(resultMessage);
+    const usage = sdkUsage.preview(resultMessage).usage;
     const emptySuccessfulResult = isEmptySuccessfulSdkResult({
       isError: false,
       result: resultMessage.result || '',
@@ -513,7 +520,10 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     });
   };
 
-  const handleSdkResult = async (resultMessage: BuiltinSdkResultMessage): Promise<'retrying' | 'terminal'> => {
+  const handleSdkResult = async (
+    resultMessage: BuiltinSdkResultMessage,
+    recoverRejectedReloadAnchor?: (rawError: string) => boolean,
+  ): Promise<'retrying' | 'terminal'> => {
     deps.resetInFlightToolCount();
     deps.resetWatchdogFired();
 
@@ -559,6 +569,14 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       terminalTransientProviderMaxRetries = transientRetryDecision.maxRetries;
     }
 
+    const sdkUsageResult = sdkUsage.preview(resultMessage);
+    sdkUsage.commit(resultMessage);
+    const turnUsage = {
+      ...sdkUsageResult.usage,
+      sdkCumulativeModelUsage: sdkUsageResult.cumulative,
+    };
+    replaceCurrentTurnUsage(turnUsage);
+
     if (terminalTransientProviderError) {
       await deps.retractTransientProviderTextOutput(resultText);
       const retrySuffix = terminalTransientProviderRetryExhausted
@@ -582,6 +600,12 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
 
     if (isTerminalFailure || isAbortResult) {
       const rawError = resultText || resultMessage.errors?.join('; ') || getLastAssistantMessageError() || '';
+      if (isTerminalFailure && resultMessage.num_turns === 0
+        && recoverRejectedReloadAnchor?.([resultText, ...(resultMessage.errors ?? [])].join('; ') || rawError)) {
+        deps.clearApiRetryStatus();
+        commonTerminalCleanup('error');
+        return 'retrying';
+      }
       if (
         (rawError.includes('unknown variant') && rawError.includes('image')) ||
         (rawError.includes('image') && rawError.includes('exceed') && rawError.includes('max allowed size'))
@@ -596,8 +620,6 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       }
     }
 
-    const turnUsage = extractTurnUsageFromSdkResult(resultMessage);
-    replaceCurrentTurnUsage(turnUsage);
     if (!resultMessage.modelUsage && !resultMessage.usage) {
       console.warn('[agent] Result message has no usage data, token statistics may be incomplete');
     }
@@ -879,6 +901,16 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
   };
 
   return {
+    beginSdkQueryUsage: seed => { sdkUsage = createSdkCumulativeUsageTracker(seed); },
+    resetSdkQueryUsage: () => {
+      sdkUsage.reset();
+      const usage = { ...getCurrentTurnUsage(), sdkCumulativeModelUsage: {} };
+      replaceCurrentTurnUsage(usage);
+      const product = getBuiltinProductContent();
+      if (!product || product.currentTurn?.status === 'running') {
+        stampTurnUsageOnPendingAssistant({ usage, toolCount: getCurrentTurnToolCount() });
+      }
+    },
     canMaterializeRewindResult,
     handleSdkResult,
     completeTurn,

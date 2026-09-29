@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -67,6 +67,41 @@ afterEach(async () => {
 });
 
 describe('V2 real file commit and replacement', () => {
+  it.each(['header-only', 'zero-length'] as const)('recovers a %s target from the complete live projection', async shape => {
+    const { file, filePath } = await setup();
+    const source = await file.read();
+    const writer = new TranscriptWriter({
+      sessionId: 'session-test', generation: 'g1', revision: 1,
+      projection: source.projection, storage: file,
+    });
+    try {
+      await writeFile(filePath, shape === 'header-only'
+        ? JSON.stringify({ kind: 'session-transcript', version: 2, sessionId: 'session-test', generation: 'other', baseRevision: 0, baseline: false }) + '\n'
+        : '');
+      writer.observe({ kind: 'text-append', messageId: 'a', field: 'text', offset: 0, text: 'kept in memory' });
+      expect(await writer.flush(5000)).toBe(true);
+      expect(writer.status).toMatchObject({ state: 'healthy', durableRevision: 2 });
+      expect((await file.read()).projection.messages.get('a')?.content).toBe('kept in memory');
+    } finally { await writer.close(); }
+  });
+
+  it('refuses recovery when a different target contains one committed batch', async () => {
+    const { file, filePath } = await setup();
+    const source = await file.read();
+    const writer = new TranscriptWriter({
+      sessionId: 'session-test', generation: 'g1', revision: 1,
+      projection: source.projection, storage: file,
+    });
+    try {
+      const otherRoot = await setup();
+      const other = Buffer.from((await readFile(otherRoot.filePath, 'utf8')).replace('"generation":"g1"', '"generation":"other"'));
+      await writeFile(filePath, other);
+      writer.observe({ kind: 'text-append', messageId: 'a', field: 'text', offset: 0, text: 'live only' });
+      expect(await writer.flush(5000)).toBe(false);
+      expect(writer.status).toMatchObject({ state: 'degraded', reason: 'invalid-history' });
+      expect(await readFile(filePath)).toEqual(other);
+    } finally { await writer.close(); }
+  });
   it.each(['partial', 'sync', 'access'] as const)('retries the exact batch after %s failure without duplicates', async mode => {
     const { file, filePath } = await setup();
     const batch: TranscriptBatch = {

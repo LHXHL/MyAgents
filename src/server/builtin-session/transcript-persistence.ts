@@ -176,6 +176,7 @@ export function stampTurnUsageOnPendingAssistant(options: {
       cacheReadTokens: options.usage.cacheReadTokens || undefined,
       cacheCreationTokens: options.usage.cacheCreationTokens || undefined,
       providerId: options.providerId ?? priorUsage?.providerId, model: options.usage.model, modelUsage: options.usage.modelUsage,
+      sdkCumulativeModelUsage: options.usage.sdkCumulativeModelUsage,
     };
     if (product.currentAssistantId) product.writer.observe({ kind: 'message-update',
       messageId: product.currentAssistantId,
@@ -201,6 +202,7 @@ export function stampTurnUsageOnPendingAssistant(options: {
     providerId: options.providerId,
     model: options.usage.model,
     modelUsage: options.usage.modelUsage,
+    sdkCumulativeModelUsage: options.usage.sdkCumulativeModelUsage,
   };
   completedAssistant.toolCount = options.toolCount;
   completedAssistant.durationMs = options.durationMs;

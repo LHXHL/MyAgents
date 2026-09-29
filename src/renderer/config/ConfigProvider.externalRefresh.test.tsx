@@ -7,7 +7,7 @@ import { DEFAULT_CONFIG, type AppConfig, type Project, type Provider } from './t
 import { useConfigData } from './useConfigData';
 import { useConfigActions } from './useConfigActions';
 import { rebuildAndPersistAvailableProviders } from './services/providerService';
-import type { atomicModifyConfig } from './services/appConfigService';
+import { atomicModifyConfig } from './services/appConfigService';
 
 const mocks = vi.hoisted(() => ({
   config: {} as AppConfig,
@@ -77,7 +77,9 @@ vi.mock('./services/agentConfigService', () => ({
   configureMemoryAutoUpdateTaskForAgent: vi.fn(),
   configureMemoryEvolutionTasksForAgent: vi.fn(),
   migrateImBotConfigsToAgents: vi.fn((config: AppConfig) => config),
-  persistAgents: vi.fn(async () => {}),
+  persistAgents: vi.fn(async (agents: AppConfig['agents']) => {
+    mocks.config = { ...mocks.config, agents };
+  }),
   reconcilePersistedAgentWorkspaceIdentities: mocks.reconcileIdentities,
   reconcilePersistedAgentWorkspaceIdentitiesLocked: vi.fn(),
 }));
@@ -179,6 +181,27 @@ describe('ConfigProvider external config invalidation', () => {
 
     await waitFor(() => expect(rebuildAndPersistAvailableProviders).toHaveBeenCalledTimes(1));
     expect(mocks.config).toEqual(savedConfig);
+  });
+
+  it('does not restore a Channel deleted while startup provider maintenance is pending', async () => {
+    mocks.config = { ...mocks.config, agents: [{
+      id: 'agent-1', name: 'Agent', enabled: true, permissionMode: 'auto', channels: [{
+        id: 'channel-1', type: 'openclaw:openclaw-lark', enabled: true,
+        openclawEnabledToolGroups: ['doc', 'chat', 'wiki_drive', 'bitable'],
+      }],
+    }] };
+    let releaseProvider!: () => void;
+    vi.mocked(rebuildAndPersistAvailableProviders).mockImplementationOnce(() => new Promise<void>(resolve => {
+      releaseProvider = resolve;
+    }));
+
+    render(<ConfigProvider><Probe /></ConfigProvider>);
+    await waitFor(() => expect(rebuildAndPersistAvailableProviders).toHaveBeenCalledTimes(1));
+    const configWritesBeforeRelease = vi.mocked(atomicModifyConfig).mock.calls.length;
+    mocks.config = { ...mocks.config, agents: [{ ...mocks.config.agents![0], channels: [] }] };
+    await act(async () => releaseProvider());
+    await waitFor(() => expect(vi.mocked(atomicModifyConfig).mock.calls.length).toBeGreaterThan(configWritesBeforeRelease));
+    expect(mocks.config.agents?.[0].channels).toEqual([]);
   });
 
   it('keeps the readable disk snapshot visible when identity materialization is deferred', async () => {
