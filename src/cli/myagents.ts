@@ -22,6 +22,7 @@ import {
   EXTERNAL_CLI_PUBLIC_COMMANDS,
   findExternalCliPublicCapability,
 } from '../shared/externalCliCapabilities';
+import { INTERNAL_CLI_FLAGS } from './internalCliFlags';
 
 // ---------------------------------------------------------------------------
 // Port discovery
@@ -751,7 +752,7 @@ export function adminHttpErrorResult(
 
 export function commandResultExitCode(result: Record<string, unknown>): 0 | 1 | 2 | 3 {
   if (result.success) return 0;
-  if (result.code === 'admission_unconfirmed') return 2;
+  if (result.code === 'admission_unconfirmed' || result.code === 'INPUT_VALIDATION_ERROR') return 2;
   if (result.code === 'MYAGENTS_UNAVAILABLE') return 3;
   return 1;
 }
@@ -1037,6 +1038,16 @@ export function printResult(
   }
   if (group === 'record' && action === 'list') {
     printRecordList(result.data as Array<Record<string, unknown>>);
+    return;
+  }
+  if (group === 'record' && action === 'get') {
+    const record = (result.data as { record: Record<string, unknown> }).record;
+    console.log(`${String(record.title ?? '')} [${String(record.id ?? '')}]`);
+    console.log(String(record.content ?? record.text ?? ''));
+    return;
+  }
+  if (group === 'record' && action === 'delete') {
+    console.log('✓ Record deleted');
     return;
   }
   if (group === 'record' && action === 'create') {
@@ -1527,6 +1538,10 @@ function printSpaceIssueCompleteResult(data: Record<string, unknown>): void {
   if (taskStatus) console.log(`  task:      ${taskStatus}`);
 }
 
+function singleLine(value: unknown): string {
+  return String(value ?? '').replace(/[\r\n\t]+/g, ' ').trim();
+}
+
 function printSpaceGoalList(data: Record<string, unknown>, flags: Record<string, unknown>): void {
   const items = Array.isArray(data?.items) ? data.items as Array<Record<string, unknown>> : [];
   const slug = typeof flags.space === 'string' ? flags.space : '';
@@ -1543,12 +1558,12 @@ function printSpaceGoalList(data: Record<string, unknown>, flags: Record<string,
   for (const goal of items) {
     const id = String(goal.id ?? '');
     const depth = typeof goal.depth === 'number' ? Math.max(0, goal.depth) : 0;
-    const path = `${'  '.repeat(depth)}${String(goal.goalPathLabel ?? goal.title ?? '')}`;
+    const path = `${'  '.repeat(depth)}${singleLine(goal.goalPathLabel ?? goal.title)}`;
     if (includeArchived) {
       const status = goal.archivedAt ? 'archived' : 'active';
-      console.log(`${id.padEnd(24)}${status.padEnd(12)}${path}`);
+      console.log(`${id}  ${status.padEnd(12)}${path}`);
     } else {
-      console.log(`${id.padEnd(24)}${path}`);
+      console.log(`${id}  ${path}`);
     }
   }
   console.log('');
@@ -1590,12 +1605,13 @@ function printRuntimeList(rows: Array<Record<string, unknown>>): void {
     return;
   }
   const pad = (s: string, n: number) => s.padEnd(n);
-  console.log(pad('RUNTIME', 14) + pad('INSTALLED', 11) + pad('VERSION', 18) + 'NAME');
+  const versionWidth = Math.max(18, ...rows.map(row => singleLine(row.version).length + 2));
+  console.log(pad('RUNTIME', 14) + pad('INSTALLED', 11) + pad('VERSION', versionWidth) + 'NAME');
   for (const row of rows) {
     const rt = String(row.runtime ?? '');
     const installed = row.installed ? 'yes' : 'no';
-    const version = String(row.version ?? '').split('\n')[0].slice(0, 16) || '-';
-    console.log(pad(rt, 14) + pad(installed, 11) + pad(version, 18) + String(row.displayName ?? ''));
+    const version = singleLine(row.version) || '-';
+    console.log(pad(rt, 14) + pad(installed, 11) + pad(version, versionWidth) + singleLine(row.displayName));
     const hint = row.notInstalledHint;
     if (hint) console.log(`    \u2192 ${String(hint)}`);
   }
@@ -2063,10 +2079,10 @@ function printSessionList(
       pad(String(session.sessionId ?? '').slice(0, 36), 38)
       + pad(String(session.lastActiveAt ?? ''), 26)
       + pad(String(session.runtime ?? 'builtin'), 14)
-      + String(session.title ?? 'New Chat'),
+      + singleLine(session.title ?? 'New Chat'),
     );
     if (session.lastMessagePreview && String(session.lastMessagePreview).trim() !== String(session.title ?? '').trim()) {
-      console.log(`  ${String(session.lastMessagePreview)}`);
+      console.log(`  ${singleLine(session.lastMessagePreview)}`);
     }
   }
 }
@@ -2076,11 +2092,26 @@ function printStatus(data: Record<string, unknown>): void {
   console.log(`MCP Servers: ${mcp?.total ?? 0} total, ${mcp?.enabled ?? 0} enabled`);
   const workspace = data.workspaceMcp as { selection?: string[] | null; enabled?: string[] | null } | undefined;
   const session = data.sessionMcp as { observation?: string; snapshot?: { servers?: Array<{ id: string; state: string }> } } | undefined;
-  console.log(`Workspace MCP: ${workspace?.selection ? `${workspace.selection.length} selected, ${workspace.enabled?.length ?? 0} globally enabled` : 'no workspace selection available'}`);
+  console.log(`Workspace MCP: ${workspace?.selection ? `${workspace.selection.length} selected, ${workspace.enabled?.length ?? 0} enabled in this selection` : 'no workspace selection available'}`);
   console.log(`Active MCP in current Session: ${data.activeMcpInSession ?? 'not observed'} (${session?.observation ?? 'unavailable'})`);
   for (const server of session?.snapshot?.servers ?? []) console.log(`  ${server.id}: ${server.state}`);
   console.log(`Global default provider: ${data.defaultProvider}`);
   console.log(`Agents: ${data.agents}`);
+}
+
+export function resolveTaskExecutionMode(flags: Record<string, unknown>, creating: boolean): string | undefined {
+  const recurring = flags.cronExpression !== undefined || flags.intervalMinutes !== undefined;
+  const scheduled = flags.dispatchAt !== undefined;
+  const explicit = flags.executionMode;
+  if ((recurring && scheduled) || (explicit !== undefined && (
+    recurring && explicit !== 'recurring' || scheduled && explicit !== 'scheduled' && explicit !== 'once'
+  ))) {
+    return exitAgentCliError(flags, {
+      code: 'TASK_SCHEDULE_INVALID',
+      error: 'cronExpression/intervalMinutes require recurring mode; dispatchAt requires scheduled mode. Use one schedule type.',
+    });
+  }
+  return typeof explicit === 'string' ? explicit : recurring ? 'recurring' : scheduled ? 'scheduled' : creating ? 'once' : undefined;
 }
 
 export function resolveLocalTimezone(): string {
@@ -3052,10 +3083,10 @@ async function main(): Promise<void> {
     positional.push('version');
     delete flags.version;
   }
-  if (!process.env.MYAGENTS_INTERNAL_CLI_TOKEN?.trim()) {
-    const publicCommandError = validateExternalCliInvocation(positional, flags);
-    if (publicCommandError) return exitAgentCliError(flags, publicCommandError);
-  }
+  const invocationError = process.env.MYAGENTS_INTERNAL_CLI_TOKEN?.trim()
+    ? validateInternalCliInvocation(positional, flags)
+    : validateExternalCliInvocation(positional, flags);
+  if (invocationError) return exitAgentCliError(flags, invocationError);
 
   // Top-level help (no args, or bare --help)
   if (positional.length === 0) {
@@ -3076,7 +3107,7 @@ async function main(): Promise<void> {
     if (dryRunError) return exitAgentCliError(flags, dryRunError);
   }
 
-  if (flags.help) {
+  if (flags.help && !process.env.MYAGENTS_INTERNAL_CLI_TOKEN?.trim()) {
     const help = publicCliHelp(positional);
     if (help) {
       console.log(help);
@@ -3353,7 +3384,7 @@ const PUBLISHED_ADMIN_ROUTES = new Set([
   'task/list', 'task/get', 'task/comments', 'task/comment', 'task/create-direct', 'task/create-attached', 'task/run',
   'task/run-now', 'task/rerun', 'task/trigger/validate', 'task/trigger/test', 'task/check-now',
   'task/reset-checkpoint', 'task/update', 'task/update-status', 'task/start', 'task/stop', 'task/runs', 'task/append-session', 'task/archive', 'task/delete',
-  'thought/list', 'thought/create', 'record/list', 'record/create',
+  'thought/list', 'thought/create', 'record/list', 'record/create', 'record/get', 'record/delete',
   'space/list', 'space/whoami', 'space/assignee-list', 'space/goal-list', 'space/issue-create', 'space/issue-update',
   'space/issue-list', 'space/issue-get', 'space/issue-comment', 'space/issue-comments', 'space/issue-comment-get',
   'space/issue-status', 'space/issue-claim', 'space/issue-close', 'space/issue-complete', 'space/issue-cancel-claim',
@@ -3428,6 +3459,35 @@ export function validateDryRunSupport(
     error: `myagents ${command} does not support --dry-run. No changes were applied.`,
     suggestion: `Read myagents ${command} --help; remove --dry-run only when ready to run the command.`,
   };
+}
+
+
+/** Internal routing has more commands, but invalid options must never be silently dropped. */
+export function validateInternalCliInvocation(positional: string[], flags: Record<string, unknown>): AgentCliError | undefined {
+  const globals = new Set(positional.length > 0 ? ['help', 'json', 'port', 'dryRun'] : ['help', 'json', 'port']);
+  const group = positional[0];
+  const groupHelp = flags.help === true && positional.length === 1;
+  const action = positional[1] ?? 'list';
+  const route = group ? buildRoute(group, action, positional.slice(2)) : '';
+  const publicLeaf = findExternalCliPublicCapability(group && positional.length === 1 ? [group, action] : positional);
+  const allowed = new Set(groupHelp ? [] : [...(INTERNAL_CLI_FLAGS[route] ?? []), ...(publicLeaf?.capability.flags ?? [])]);
+  const unknown = Object.keys(flags).find(flag => !globals.has(flag) && !allowed.has(flag));
+  if (unknown) return {
+    code: 'UNKNOWN_FLAG',
+    error: `Unknown flag for '${positional.join(' ') || 'myagents'}': --${unknown}.`,
+    suggestion: `Run myagents ${positional.slice(0, 2).join(' ')} --help for supported options.`,
+  };
+  if (!groupHelp && ((action === 'readme' && group !== 'widget' && positional.length > 2)
+    || (['status', 'version', 'reload'].includes(group ?? '') && positional.length > 1))) {
+    return { code: 'ARGUMENT_INVALID', error: 'Unexpected positional arguments.', suggestion: `Run myagents ${group} --help.` };
+  }
+  if (!groupHelp && publicLeaf && publicLeaf.capability.maxPositionals !== undefined) {
+    const maximum = route === 'task/create-direct' ? 1 : publicLeaf.capability.maxPositionals;
+    if (positional.length - publicLeaf.commandLength > maximum) {
+      return { code: 'ARGUMENT_INVALID', error: `Unexpected positional arguments for '${publicLeaf.capability.command}'.`, suggestion: publicLeaf.capability.usage };
+    }
+  }
+  return undefined;
 }
 
 const EXTERNAL_CLI_GLOBAL_FLAGS = new Set(['help', 'json']);
@@ -5472,9 +5532,9 @@ export function buildRequestBody(
     if (action === 'set') return { id: rest[0], key: rest[1], value: tryParseJson(rest[2]) };
     if (action === 'channel') {
       const channelAction = rest[0] || 'list'; // list | add | remove
-      if (channelAction === 'list') return { agentId: rest[1] || flags.agentId };
+      if (channelAction === 'list') return { agentId: requirePositional(rest[1] ?? flags.agentId as string | undefined, 'agent-id', 'agent channel list', 'agent') };
       if (channelAction === 'add') return { agentId: rest[1] || flags.agentId, channel: stripGlobalFlags(flags) };
-      if (channelAction === 'remove') return { agentId: rest[1], channelId: rest[2] };
+      if (channelAction === 'remove') return { agentId: requirePositional(rest[1], 'agent-id', 'agent channel remove', 'agent'), channelId: requirePositional(rest[2], 'channel-id', 'agent channel remove', 'channel') };
       return { agentId: rest[1] };
     }
     return {};
@@ -5867,10 +5927,10 @@ export function buildRequestBody(
       // set. Mirrors the `cron add --prompt-file` pattern above.
       const taskMdContent = resolveTaskMdContent(flags);
       const taskMdFile = flags.taskMdFile ?? flags.taskMdContentFile;
-      const executionMode = (flags.executionMode as string | undefined) ?? 'once';
+      const executionMode = resolveTaskExecutionMode(flags, true);
       const preselectedSessionId = resolvePreselectedSessionId(flags.preselectedSessionId, flags);
       validateTaskSessionBinding(flags.runMode, preselectedSessionId, flags);
-      maybeWarnRecurringWithoutInterval(executionMode, flags);
+      maybeWarnRecurringWithoutInterval(executionMode ?? "once", flags);
       const cronExpression = typeof flags.cronExpression === 'string' ? flags.cronExpression : undefined;
       const cronTimezone = typeof flags.cronTimezone === 'string'
         ? flags.cronTimezone
@@ -5990,8 +6050,8 @@ export function buildRequestBody(
           || flags.taskMdContent !== undefined
           ? resolveTaskMdContent(flags)
           : undefined;
-      const executionMode = flags.executionMode as string | undefined;
-      if (executionMode) maybeWarnRecurringWithoutInterval(executionMode, flags);
+      const executionMode = resolveTaskExecutionMode(flags, false);
+      if (executionMode) maybeWarnRecurringWithoutInterval(executionMode ?? "once", flags);
       const body: Record<string, unknown> = { id };
       const preselectedSessionId = resolvePreselectedSessionId(flags.preselectedSessionId, flags);
       if (flags.runMode !== undefined || preselectedSessionId !== undefined) {
@@ -6045,6 +6105,9 @@ export function buildRequestBody(
   }
 
   // Canonical Record CLI plus the published Thought compatibility alias.
+  if (group === 'record' && (action === 'get' || action === 'delete')) {
+    return { id: requirePositional(rest[0] ?? flags.id as string | undefined, 'record-id', `record ${action}`, 'id') };
+  }
   if (group === 'record' || group === 'thought') {
     if (action === 'list') {
       if (group === 'thought' && flags.kind !== undefined) {

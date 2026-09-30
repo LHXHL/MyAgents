@@ -366,7 +366,7 @@ Admin API 注册在 Sidecar 的 `/api/admin/*` 路由下，提供与 GUI 对等�
 | `/api/admin/cron/*` | 定时任务 CRUD、启停、执行历史、状态查询 |
 | `/api/admin/goal/*` | 当前 session Goal Mode：`get` / `create` / `update` |
 | `/api/admin/task/*` | 任务中心：list/get/create/update/run/rerun/run-now、trigger validate/test/check-now/reset、status/session/archive/delete/doc |
-| `/api/admin/record/*` | 统一 Record：list/create；`thought` 路由仅作兼容 |
+| `/api/admin/record/*` | 统一 Record：list/get/create/delete；`thought` 路由仅作兼容 |
 | `/api/admin/speech/*` | 当前 Session 的附件转录 submit/status/cancel/list；`wait` 复用 status 轮询 |
 | `/api/admin/skill/*` | Skills CRUD、远程/本地来源安装、启停、sync；显式相对路径由 CLI 按调用者 cwd 归一化 |
 | `/api/admin/tool/*` | 用户注册 CLI 工具注册表（实验室门控，默认关闭） |
@@ -609,3 +609,21 @@ Round 6 diagnostics: `config list [prefix]` enumerates the existing config reade
 `config list` 现在标明 `settable`。通用 `config set` 只接收显式登记的简单偏好键和值，`--dry-run` 也做同样校验；有独立 owner 或副作用的配置仍走专用命令或设置页。`config unset <key>` 可删除已有误写键，但拒绝敏感和受专用 owner 管理的字段。`agent show.effectiveDefaults` 保留兼容字段名，其 `scope` 明确为未来 Session 的 Agent 默认值；`runtime describe.defaultPermissionMode` 是 Runtime 目录兜底值；`config get defaultPermissionMode` 是 App 新 Session 默认值。当前 Session 的真实权限以其固化配置和当前 generation 的 runtime 诊断为准。
 
 `version` separates Rust-launcher App identity from Sidecar identity. Bundles embed version/commit/dirty/capture time during esbuild; source-mode processes capture metadata once at startup, never at diagnostic request time. A launcher that did not send App metadata is reported as unknown. `diagnose runtime dsh` goes through SessionEngine and the existing runtime adapter: it verifies installed handoff bytes, uses the lifecycle owner's process and handshake identity, and projects effective model/permissions/extensions plus names of allowed environment and general-proxy keys and proxy endpoints stripped of credentials, paths and query values. It never exposes environment values, credentials or permission rule targets, and never creates a diagnostic Session.
+
+
+### CLI admission and audit reads
+
+Internal Agent commands validate options before dispatch too. Public leaves reuse
+`externalCliCapabilities.ts`; additional internal options live with the CLI in
+`internalCliFlags.ts`. Unknown options and extra readme arguments return an input
+error instead of silently succeeding. Internal help uses the Admin registry so
+Session watch, runtime diagnostics and Agent channel commands remain discoverable.
+
+Task cron/interval flags infer `recurring`; `dispatchAt` infers `scheduled`, while
+an update without schedule flags preserves the stored mode. An explicit incompatible
+mode is an input error. Deleted Tasks retain read authority for get/comments/runs;
+new comments and mutations still follow the lifecycle owner.
+
+Record get returns the complete stored Record, including text content. Record delete
+uses Rust RecordStore after cancelling speech processing, following the desktop
+operation's existing owners and change events. No CLI file store is introduced.

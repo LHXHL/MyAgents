@@ -31,6 +31,7 @@ import {
   validateCliCommand,
   validateDryRunSupport,
   validateExternalCliInvocation,
+  validateInternalCliInvocation,
   validateSessionMutationAcknowledgement,
 } from './myagents';
 import {
@@ -2657,5 +2658,30 @@ describe('concise skill inventory', () => {
       printSkillList(skills, { verbose: true });
       expect(log.mock.calls.flat().join('\n')).toContain('Runtime admission: ready');
     } finally { log.mockRestore(); }
+  });
+});
+
+
+describe('internal CLI command admission', () => {
+  it.each([
+    [[], { frobnicate: true }],
+    [['session', 'get', 'session-id'], { bogusflag: true }],
+    [['task', 'create-direct'], { totallyBogusFlag: 'yes' }],
+    [['session', 'start'], { model: 'ignored-model' }],
+    [['agent', 'channel'], { frobnicate: true }],
+  ])('rejects silently ignored options before dispatch', (positional, flags) => {
+    expect(validateInternalCliInvocation(positional as string[], flags)).toMatchObject({ code: 'UNKNOWN_FLAG' });
+  });
+  it('rejects a positional argument on readme and preserves real Record filters', () => {
+    expect(validateInternalCliInvocation(['vision', 'readme', 'extra-arg'], {})).toMatchObject({ code: 'ARGUMENT_INVALID' });
+    expect(validateInternalCliInvocation(['record', 'list'], { limit: '1', json: true })).toBeUndefined();
+    expect(buildRequestBody('record', 'get', ['record-id'], {})).toEqual({ id: 'record-id' });
+    expect(buildRequestBody('record', 'delete', ['record-id'], {})).toEqual({ id: 'record-id' });
+  });
+  it('infers recurring schedules on create and update while retaining an omitted update mode', () => {
+    const schedule = { name: 'test', workspacePath: '/test', taskMdContent: 'test', cronExpression: '0 9 * * *' };
+    expect(buildRequestBody('task', 'create-direct', [], schedule)).toMatchObject({ executionMode: 'recurring' });
+    expect(buildRequestBody('task', 'update', ['task-id'], { cronExpression: '0 9 * * *' })).toMatchObject({ executionMode: 'recurring' });
+    expect(buildRequestBody('task', 'update', ['task-id'], { name: 'renamed' })).not.toHaveProperty('executionMode');
   });
 });

@@ -231,6 +231,14 @@ function mgmtError(
   resp: Record<string, unknown>,
   fallbackMsg: string,
 ): AdminResponse {
+  if (typeof resp.error === 'string' && resp.error.trim().startsWith('{')) {
+    try {
+      const parsed: unknown = JSON.parse(resp.error);
+      if (parsed && typeof parsed === 'object' && 'message' in parsed && typeof parsed.message === 'string') {
+        resp = { ...resp, error: parsed.message, ...('code' in parsed && typeof parsed.code === 'string' ? { code: parsed.code } : {}) };
+      }
+    } catch { /* Plain text errors stay unchanged. */ }
+  }
   const response: AdminResponse = {
     success: false,
     error: String(resp.error ?? fallbackMsg),
@@ -252,21 +260,7 @@ function wrapMgmtResponse(mgmt: Record<string, unknown>): AdminResponse {
     const { ok: _ok, recoveryHint: _rh, ...rest } = mgmt;
     return { success: true, data: rest };
   }
-  const response: AdminResponse = {
-    success: false,
-    error: String(mgmt.error ?? 'Unknown error'),
-  };
-  for (const field of ['code', 'suggestion', 'suggestedCommand'] as const) {
-    if (typeof mgmt[field] === 'string' && mgmt[field])
-      response[field] = mgmt[field];
-  }
-  // Propagate the `recoveryHint` if the Management API helper attached one
-  // (currently only for unreachable-backend scenarios — see `managementApi`).
-  const maybeHint = mgmt.recoveryHint;
-  if (maybeHint && typeof maybeHint === 'object' && !Array.isArray(maybeHint)) {
-    response.recoveryHint = maybeHint as RecoveryHint;
-  }
-  return response;
+  return mgmtError(mgmt, 'Unknown error');
 }
 
 // ---------------------------------------------------------------------------
@@ -3910,12 +3904,14 @@ EXAMPLES
 RECOVERY
   Re-read the Issue if the notification version changed; never fabricate rollback values.`,
 
-  task: `myagents task — Manage Task Center tasks (v0.1.69+)
+  task: `myagents task — Manage Task Center tasks
 
 Commands:
   list                            Compact current-workspace list (--query / --limit supported)
   get <taskId>                    Task metadata + .task/ doc paths
-  create-direct <name>            Create a task with inline task.md content
+  comments <taskId>               Read Task comments
+  comment <taskId> --body-file <path>  Publish a comment from this Session
+  create-direct <name>            Create a task (--taskMdFile preferred)
   create-attached                 Create a running task attached to the current AI session
   update <taskId>                 Patch task fields (schedule / notification /
                                   prompt / overrides). Rejected while running.
@@ -3951,7 +3947,7 @@ Options for 'create-direct':
   --taskMdContent      Inline task.md body (use --taskMdFile instead when
                        content spans multiple lines / has backticks / quotes).
                        Exactly one of --taskMdFile / --taskMdContent must be set.
-    --executionMode      'once' | 'scheduled' | 'recurring' (default: once)
+    --executionMode      'once' | 'scheduled' | 'recurring' (inferred from schedule flags; otherwise once)
   --runMode            'single-session' | 'new-session'
   --preselectedSessionId current|<id>
                        Required for single-session; current resolves from
@@ -4405,6 +4401,8 @@ on 'myagents task create-direct / update'.`,
   record: `myagents record — Manage unified text and audio Records
 
 Commands:
+  get <record-id>                Read the complete Record
+  delete <record-id>             Cancel processing and delete the Record
   list                  List Records (--kind text|audio / --tag / --query / --limit)
   create <content>      Capture a text Record (also: --content / --content-file)
 
@@ -5215,7 +5213,7 @@ export async function handleTaskRuns(payload: {
   limit?: number;
 }): Promise<AdminResponse> {
   const qs = `?taskId=${encodeURIComponent(payload.taskId)}${payload.limit ? `&limit=${payload.limit}` : ''}`;
-  const resp = await managementApi(`/api/cron/runs${qs}`);
+  const resp = await managementApi(`/api/task/runs${qs}`);
   if (resp.ok) {
     return {
       success: true,
@@ -6204,6 +6202,14 @@ export async function handleRecordCreate(payload: {
   return wrapMgmtResponse(resp);
 }
 
+export async function handleRecordGet(payload: { id: string }): Promise<AdminResponse> {
+  return wrapMgmtResponse(await managementApi(`/api/record/get${qsFrom(payload)}`));
+}
+
+export async function handleRecordDelete(payload: { id: string }): Promise<AdminResponse> {
+  return wrapMgmtResponse(await managementApi('/api/record/delete', 'POST', payload));
+}
+
 // ---------------------------------------------------------------------------
 // Session-scoped capabilities for external runtimes (v0.1.67)
 //
@@ -7005,7 +7011,7 @@ export async function handleCcPluginShow(payload: {
   }
   if (!id) return { success: false, error: 'id or name is required' };
   const item = getPluginDetail(id);
-  if (!item) return { success: false, error: '插件未安装' };
+  if (!item) return { success: false, error: `Plugin is not installed: ${payload.name ?? payload.id ?? '(unspecified)'}` };
   return { success: true, data: item };
 }
 

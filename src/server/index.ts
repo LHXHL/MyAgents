@@ -1971,6 +1971,8 @@ async function routeAdminApi(
     return await api.handleRecordList(
       payload as Parameters<typeof api.handleRecordList>[0],
     );
+  if (route === 'record/get') return await api.handleRecordGet(payload as { id: string });
+  if (route === 'record/delete') return await api.handleRecordDelete(payload as { id: string });
   if (route === 'record/create')
     return await api.handleRecordCreate(
       payload as Parameters<typeof api.handleRecordCreate>[0],

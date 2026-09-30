@@ -866,16 +866,26 @@ fn task_comment_quote(body: &str) -> String {
     }
 }
 
-fn ordinary_task_for_comment<'a>(
+fn ordinary_task_for_read<'a>(
     tasks: &'a HashMap<String, Task>,
     task_id: &str,
 ) -> Result<&'a Task, String> {
     let task = tasks
         .get(task_id)
-        .filter(|task| !task.deleted)
         .ok_or_else(|| String::from(TaskOpError::not_found(task_id)))?;
     if is_managed_task(task) {
         return Err(MANAGED_TASK_ERROR.to_string());
+    }
+    Ok(task)
+}
+
+fn ordinary_task_for_comment<'a>(
+    tasks: &'a HashMap<String, Task>,
+    task_id: &str,
+) -> Result<&'a Task, String> {
+    let task = ordinary_task_for_read(tasks, task_id)?;
+    if task.deleted {
+        return Err(String::from(TaskOpError::already_deleted()));
     }
     Ok(task)
 }
@@ -1839,7 +1849,7 @@ impl TaskStore {
     ) -> Result<TaskCommentPage, String> {
         let limit = limit.clamp(1, 100);
         let guard = self.inner.write().await;
-        let task = ordinary_task_for_comment(&guard, task_id)?;
+        let task = ordinary_task_for_read(&guard, task_id)?;
         let path = self.comments_path(&task.id)?;
         let comments = self.load_task_comments(task_id, &path)?;
         let end = match before {
@@ -1869,7 +1879,7 @@ impl TaskStore {
     ) -> Result<TaskCommentPage, String> {
         let limit = limit.clamp(1, 100);
         let guard = self.inner.write().await;
-        let task = ordinary_task_for_comment(&guard, task_id)?;
+        let task = ordinary_task_for_read(&guard, task_id)?;
         let path = self.comments_path(&task.id)?;
         let comments = self.load_task_comments(task_id, &path)?;
         let start = comments
@@ -1898,7 +1908,7 @@ impl TaskStore {
         radius: usize,
     ) -> Result<TaskCommentContextPage, String> {
         let guard = self.inner.write().await;
-        let task = ordinary_task_for_comment(&guard, task_id)?;
+        let task = ordinary_task_for_read(&guard, task_id)?;
         let path = self.comments_path(&task.id)?;
         let comments = self.load_task_comments(task_id, &path)?;
         let target = comments
@@ -8193,6 +8203,13 @@ mod tests {
         );
 
         recovered.delete(&task.id).await.unwrap();
+        // Deletion preserves audit read authority, matching task get/runs.
+        assert!(!recovered
+            .list_comments(&task.id, None, 50)
+            .await
+            .unwrap()
+            .items
+            .is_empty());
         assert!(recovered
             .agent_comment_notification_source()
             .items

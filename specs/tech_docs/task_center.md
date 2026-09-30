@@ -220,3 +220,11 @@ Goal 是 Session 状态，不是 Task execution mode：
 - 任务中心的 Record 区只订阅 RecordStore change event，不轮询或复制 Recording/Speech 状态；详情从对应 authority 读取 snapshot。Record 与 Task 删除是独立事务。
 - Task 分桶只是 durable status 的只读 Renderer projection，不拥有状态转换。详情 route 使用递增 generation；页面已经激活也不能吞掉新的 Task/Comment deep link。
 - Command Task 的 test、check-now、run-now、reset 分别调用对应应用入口。新建 `single-session` Task 必须先 materialize 并持久化真实 `preselectedSessionId`。
+
+
+### Retained Task audit reads
+
+A deleted ordinary Task remains readable through get, comments, comment pagination/context
+and runs. TaskStore decides this read identity; the Cron scheduling projection is not a
+read authority. Comment insertion still rejects deleted Tasks. CLI schedule flags select
+recurring/scheduled mode when omitted, rather than leaving accepted schedule fields unused.

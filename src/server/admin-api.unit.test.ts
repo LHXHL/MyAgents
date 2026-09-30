@@ -1660,7 +1660,7 @@ describe('admin-api Task Agent experience', () => {
     expect(managementApiMocks.managementApi.mock.calls).toEqual([
       ['/api/cron/run', 'POST', { taskId: 'task-remote' }],
       ['/api/cron/stop', 'POST', { taskId: 'task-remote' }],
-      ['/api/cron/runs?taskId=task-remote&limit=5'],
+      ['/api/task/runs?taskId=task-remote&limit=5'],
     ]);
   });
 
@@ -4580,5 +4580,25 @@ describe('admin config discovery and MCP observations', () => {
     expect(await handleStatus()).toMatchObject({ data: { activeMcpInSession: null, sessionMcp: { observation: 'stale' } } });
     sessionEngineMocks.getStreamReplaySnapshot.mockReturnValue({ sessionId: 'session-1', mcpEffectiveSnapshot: { ...snapshot, observationStale: true } });
     expect(await handleStatus()).toMatchObject({ data: { activeMcpInSession: null } });
+  });
+});
+
+
+describe('Record details and deletion owner routing', () => {
+  it('reads full content and delegates deletion to the Rust Record owner', async () => {
+    const { handleRecordGet, handleRecordDelete } = await import('./admin-api');
+    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: true, record: { id: 'record-fixture', content: '完整正文' } });
+    await expect(handleRecordGet({ id: 'record-fixture' })).resolves.toMatchObject({ success: true, data: { record: { content: '完整正文' } } });
+    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: true, id: 'record-fixture' });
+    await expect(handleRecordDelete({ id: 'record-fixture' })).resolves.toMatchObject({ success: true });
+    expect(managementApiMocks.managementApi.mock.calls).toEqual([
+      ['/api/record/get?id=record-fixture'],
+      ['/api/record/delete', 'POST', { id: 'record-fixture' }],
+    ]);
+  });
+  it('unwraps an existing structured Task error without dropping its code', async () => {
+    const { handleTaskGet } = await import('./admin-api');
+    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: false, error: JSON.stringify({ code: 'not_found', message: 'Task not found: missing' }) });
+    await expect(handleTaskGet({ id: 'missing' })).resolves.toMatchObject({ success: false, code: 'not_found', error: 'Task not found: missing' });
   });
 });
