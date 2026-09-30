@@ -2272,7 +2272,7 @@
     "depth": "Maximum nesting depth",
     "active": "Concurrent agents",
     "retained": "Retained agents",
-    "depthHint": "Root depth is 0. Default 1 lets the root create children; those children cannot delegate further. All levels share execution capacity.",
+    "depthHint": "Root depth is 0. Default 2 lets the root create children, and those children can delegate one further level. All levels share execution capacity.",
     "strategy": "Default child model",
     "inherit": "Inherit direct parent",
     "fixed": "Use a specific model",

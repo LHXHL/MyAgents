@@ -15,10 +15,11 @@ describe('DSH collaboration settings', () => {
     const update = vi.fn().mockResolvedValue(undefined);
     render(<DshCollaborationSettings value={undefined} providers={[]} updateConfig={update} />);
     const inputs = screen.getAllByRole('spinbutton');
-    fireEvent.change(inputs[0]!, { target: { value: '2' } });
+    expect(inputs[0]).toHaveValue(2);
+    fireEvent.change(inputs[0]!, { target: { value: '3' } });
     expect(update).not.toHaveBeenCalled();
     fireEvent.blur(inputs[0]!);
-    await waitFor(() => expect(update).toHaveBeenCalledWith({ dshCollaboration: { maxDepth: 2 } }));
+    await waitFor(() => expect(update).toHaveBeenCalledWith({ dshCollaboration: { maxDepth: 3 } }));
     expect(document.querySelector('select')).toBeNull();
   });
 

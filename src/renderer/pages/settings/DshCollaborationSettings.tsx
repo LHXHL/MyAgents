@@ -48,7 +48,7 @@ export function DshCollaborationSettings({ value, providers, updateConfig }: {
     <fieldset disabled={busy} className="mt-4 grid gap-4">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         {([
-          ['maxDepth', 1, 8, 'depth'], ['maxActiveChildren', 32, 32, 'active'], ['maxRetainedChildren', 256, 256, 'retained'],
+          ['maxDepth', 2, 8, 'depth'], ['maxActiveChildren', 32, 32, 'active'], ['maxRetainedChildren', 256, 256, 'retained'],
         ] as const).map(([field, fallback, maximum, label]) => <label key={field} className="grid gap-1 text-sm text-[var(--ink-secondary)]">
           {t(`collaboration.${label}`)}
           <input key={`${field}:${settings[field] ?? fallback}`} type="number" min={1} max={maximum} defaultValue={settings[field] ?? fallback} aria-label={t(`collaboration.${label}`)}

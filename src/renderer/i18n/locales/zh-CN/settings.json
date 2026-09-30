@@ -2272,7 +2272,7 @@
     "depth": "最大嵌套深度",
     "active": "同时执行上限",
     "retained": "保留 Agent 上限",
-    "depthHint": "根 Agent 深度为 0。默认 1：允许根创建子 Agent，子 Agent 不能再创建后代。所有层共享执行额度。",
+    "depthHint": "根 Agent 深度为 0。默认 2：允许根创建子 Agent，子 Agent 还可再创建一层后代。所有层共享执行额度。",
     "strategy": "默认子模型策略",
     "inherit": "继承直接父 Agent",
     "fixed": "指定模型",

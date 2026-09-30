@@ -32,7 +32,7 @@ export function compileDshCollaboration(
   const settings = value === undefined ? {} : record(value);
   const allowedKeys = new Set(['maxDepth', 'maxActiveChildren', 'maxRetainedChildren', 'messageDelivery', 'modelPolicy', 'fixedModel', 'roleModels', 'allowedModels']);
   if (Object.keys(settings).some(key => !allowedKeys.has(key))) throw new Error('Unknown DSH collaboration setting');
-  const maxDepth = limit(settings.maxDepth, 1, 8);
+  const maxDepth = limit(settings.maxDepth, 2, 8);
   const maxActiveChildren = limit(settings.maxActiveChildren, 32, 32);
   const maxRetainedChildren = limit(settings.maxRetainedChildren, 256, 256);
   if (maxActiveChildren > maxRetainedChildren) throw new Error('DSH active capacity exceeds retained capacity');

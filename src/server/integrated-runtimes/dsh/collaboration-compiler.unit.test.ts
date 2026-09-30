@@ -9,7 +9,7 @@ const resolve = () => ({ provider, apiKey: 'synthetic-fixture' });
 describe('DSH collaboration catalog admission', () => {
   it('keeps the default direct-parent model and omits all credentials from Runtime declarations', () => {
     const result = compileDshCollaboration(primary, undefined, resolve);
-    expect(result.collaboration).toMatchObject({ maxDepth: 1, messageDelivery: 'realtime', modelProfiles: [], modelPolicy: { mode: 'inherit', roles: [] } });
+    expect(result.collaboration).toMatchObject({ maxDepth: 2, messageDelivery: 'realtime', modelProfiles: [], modelPolicy: { mode: 'inherit', roles: [] } });
     expect(JSON.stringify(result.collaboration)).not.toContain(primary.apiKey);
   });
   it('deduplicates shared credentials and preserves root reasoning when the same model is selected by a role', () => {
