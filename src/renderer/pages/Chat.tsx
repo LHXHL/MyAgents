@@ -1898,6 +1898,7 @@ export default function Chat({
   );
 
   // Agent Runtime detection (v0.1.59)
+  const [runtimeDetectionPending, setRuntimeDetectionPending] = useState(true);
   const [runtimeDetections, setRuntimeDetections] = useState<RuntimeDetections>(
     {
       builtin: { installed: true },
@@ -2011,17 +2012,17 @@ export default function Chat({
   // Detect installed runtimes once on mount
   useEffect(() => {
     let cancelled = false;
-    import('@tauri-apps/api/core').then(({ invoke }) => {
-      invoke<
-        Record<string, { installed: boolean; version?: string; path?: string }>
-      >('cmd_detect_runtimes')
-        .then((detections) => {
-          if (!cancelled) setRuntimeDetections(detections as RuntimeDetections);
-        })
-        .catch(() => {
-          /* detection failure is non-fatal */
-        });
-    });
+    void import('@tauri-apps/api/core')
+      .then(({ invoke }) => invoke<RuntimeDetections>('cmd_detect_runtimes'))
+      .then((detections) => {
+        if (!cancelled) setRuntimeDetections(detections);
+      })
+      .catch(() => {
+        /* A failed detection keeps the runtime unavailable. */
+      })
+      .finally(() => {
+        if (!cancelled) setRuntimeDetectionPending(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -4856,7 +4857,9 @@ export default function Chat({
         return false;
       }
       if (runtimeExecutionUnavailable) {
-        toastRef.current.warning(t('shell.toasts.runtimeUnavailable'));
+        toastRef.current.warning(t(runtimeDetectionPending
+          ? 'shell.sessionMenu.runtimeLoading'
+          : 'shell.toasts.runtimeUnavailable'));
         return false;
       }
       if (runtimeProviderSelectionIncomplete) {
@@ -5030,6 +5033,7 @@ export default function Chat({
       scrollToBottom,
       pinnedProviderUnavailable,
       runtimeExecutionUnavailable,
+      runtimeDetectionPending,
       runtimeProviderSelectionIncomplete,
       builtinSnapshotProviderSelectionIncomplete,
       showPinnedProviderUnavailableToast,
@@ -6970,7 +6974,9 @@ export default function Chat({
               availableProviderIds={availableProviderIdsForInput}
               providerUnavailableMessage={
                 runtimeExecutionUnavailable
-                  ? t('shell.toasts.runtimeUnavailable')
+                  ? t(runtimeDetectionPending
+                      ? 'shell.sessionMenu.runtimeLoading'
+                      : 'shell.toasts.runtimeUnavailable')
                   : builtinSnapshotProviderSelectionIncomplete
                     ? t('shell.toasts.reselectModelFirst')
                     : undefined
