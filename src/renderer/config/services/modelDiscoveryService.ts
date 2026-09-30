@@ -8,6 +8,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { Provider, ModelEntity } from '../types';
 import { parseSupportedProtocols, TOKENDANCE_PROVIDER_ID, type ModelProtocol } from '../../../shared/tokendance';
+import { OPENCODE_GO_PROVIDER_ID } from '../../../shared/opencode-go';
 
 // ============= Types =============
 
@@ -37,7 +38,7 @@ export async function fetchProviderModels(
   provider: Pick<Provider, 'id' | 'config' | 'modelListUrl'>,
   apiKey: string | undefined,
 ): Promise<DiscoveredModel[]> {
-  const publicCatalog = provider.id === TOKENDANCE_PROVIDER_ID;
+  const publicCatalog = provider.id === TOKENDANCE_PROVIDER_ID || provider.id === OPENCODE_GO_PROVIDER_ID;
   if (!apiKey && !publicCatalog) throw new Error('API Key is required');
   const url = resolveModelListUrl(provider);
   if (!url) throw new Error('No model list URL available for this provider');

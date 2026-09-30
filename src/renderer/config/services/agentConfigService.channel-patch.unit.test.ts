@@ -15,6 +15,7 @@ vi.mock('./appConfigService', () => ({
 
 import {
   applyAgentChannelCredentialProvisioning,
+  modifyAgentChannelConfig,
   patchAgentChannelConfig,
   patchAgentChannelOpenClawConfig,
 } from './agentConfigService';
@@ -67,6 +68,42 @@ describe('disk-latest Agent channel patches', () => {
       groupActivation: 'always',
       openclawPluginConfig: { streaming: true },
     });
+  });
+
+  it('adds one Channel without restoring a sibling deleted since the wizard snapshot', async () => {
+    (configState.current as AppConfig).agents![0].channels = [];
+    const initialChannel: ChannelConfig = {
+      id: 'channel-new', type: 'telegram', enabled: false, botToken: 'new-token',
+    };
+    await modifyAgentChannelConfig('agent-1', 'channel-new', () => initialChannel, initialChannel);
+    expect((configState.current as AppConfig).agents?.[0].channels).toEqual([
+      expect.objectContaining({ id: 'channel-new' }),
+    ]);
+  });
+
+  it('does not recreate a channel deleted after its wizard first saved it', async () => {
+    const initialChannel: ChannelConfig = {
+      id: 'channel-new', type: 'telegram', enabled: false, botToken: 'new-token',
+    };
+    await modifyAgentChannelConfig('agent-1', 'channel-new', () => initialChannel, initialChannel);
+    (configState.current as AppConfig).agents![0].channels = [];
+
+    await expect(modifyAgentChannelConfig('agent-1', 'channel-new', () => initialChannel))
+      .rejects.toThrow('Agent channel not found');
+    expect((configState.current as AppConfig).agents?.[0].channels).toEqual([]);
+  });
+
+  it('does not write a QR provisioning result after its wizard was cancelled', async () => {
+    const initialChannel: ChannelConfig = {
+      id: 'channel-new', type: 'openclaw:openclaw-lark', enabled: true,
+      openclawPluginId: 'openclaw-lark',
+    };
+    await expect(applyAgentChannelCredentialProvisioning(
+      'agent-1', 'channel-new', { appId: 'cli_app' }, undefined, initialChannel, () => false,
+    )).rejects.toThrow('Channel setup was cancelled');
+    expect((configState.current as AppConfig).agents?.[0].channels).toEqual([
+      expect.objectContaining({ id: 'channel-1' }),
+    ]);
   });
 
   it('atomically merges provisioned credentials and the scanning user into disk-latest state', async () => {

@@ -87,6 +87,12 @@
     "themeTitle": "主题",
     "themeDescription": "切换应用的全局界面视觉风格",
     "themeSaveFailed": "切换主题失败：{{message}}",
+    "markdownReadingSizeTitle": "Markdown 阅读字号",
+    "markdownReadingSizeDescription": "调整 AI 回复和 Markdown 预览的正文、标题与间距",
+    "markdownReadingSize": {
+      "large": "大字号",
+      "standard": "标准字号"
+    },
     "appearanceMode": {
       "system": "跟随系统",
       "light": "日间模式",
@@ -597,6 +603,15 @@
       "contextWindow": "上下文窗口",
       "contextPlaceholder": "如 128000 · 支持 128k / 1m",
       "inputModalities": "输入模态",
+      "protocol": "请求协议",
+      "protocolPlaceholder": "选择模型请求协议",
+      "protocolRequired": "请选择模型请求协议",
+      "protocolConflict": "当前选择与 OpenCode Go 官网映射不同，请确认后保存",
+      "protocols": {
+        "anthropic_messages": "Anthropic Messages",
+        "openai_responses": "OpenAI Responses",
+        "openai_chat-completions": "OpenAI Chat Completions"
+      },
       "invalidContext": "格式无效 — 输入 token 数，可带 k / m 后缀（上限 20m）",
       "modalityRequired": "至少选择一种模态",
       "contextEcho": "≈ {{tokens}} tokens · 下一轮对话生效",

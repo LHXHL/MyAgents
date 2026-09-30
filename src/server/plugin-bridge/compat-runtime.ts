@@ -4,7 +4,8 @@
  * Adapts the `pluginRuntime.channel` APIs that channel plugins use. The reply
  * dispatcher keeps the plugin's normal renderer lifecycle intact while
  * `dispatchReplyFromConfig` hands AI production to Rust using a request-scoped
- * transport. Legacy buffered dispatch remains only as an older-plugin fallback.
+ * transport. Buffered dispatch with a renderer uses the same transport;
+ * renderer-free calls retain the older admission-only fallback.
  *
  * This shim covers the FULL PluginRuntime.channel surface so that any OpenClaw
  * channel plugin can load without TypeError crashes, not just QQ Bot.
@@ -629,9 +630,11 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
         },
 
         /**
-         * Legacy interception point for plugins that do not enter the standard
-         * dispatcher protocol. AI replies return through the plugin's outbound
-         * send/edit surface; this path has no synthetic pending dispatcher.
+         * Some plugins use the buffered OpenClaw entry point while still
+         * supplying a real renderer in dispatcherOptions. Its promise must
+         * cover the AI terminal and renderer delivery: the plugin may close
+         * its own platform stream as soon as this call returns. Only calls
+         * without a renderer use the historical admission-only path.
          */
         async dispatchReplyWithBufferedBlockDispatcher(params: {
           ctx: Record<string, unknown>;
@@ -641,6 +644,25 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
           accountId?: string;
         }) {
           const { ctx } = params;
+          if (typeof params.dispatcherOptions?.deliver === 'function') {
+            const { dispatcher, replyOptions } = createShimReplyDispatcherWithTyping(params.dispatcherOptions);
+            const result = await withShimReplyDispatcher({
+              dispatcher,
+              run: () => runtime.channel.reply.dispatchReplyFromConfig({
+                ctx,
+                cfg: params.cfg,
+                accountId: params.accountId,
+                dispatcher,
+                replyOptions: {
+                  ...params.replyOptions,
+                  ...replyOptions,
+                  onReplyStart: replyOptions.onReplyStart ?? params.replyOptions?.onReplyStart,
+                },
+              }),
+              onSettled: undefined,
+            });
+            return { ...result, dispatcher };
+          }
 
           const text = String(ctx.BodyForAgent || ctx.Body || ctx.body || ctx.RawBody || '');
           const senderId = String(ctx.SenderId || ctx.senderId || '');

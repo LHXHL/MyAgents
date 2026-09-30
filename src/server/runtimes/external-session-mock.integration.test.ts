@@ -74,6 +74,7 @@ type TurnScript =
       completeDelayMs?: number;
       usage?: { inputTokens: number; outputTokens: number };
     }
+  | { kind: 'session-success'; streamedText?: string; result: string }
   | {
       kind: 'failure';
       error: string;
@@ -673,6 +674,20 @@ class FakeRuntime implements AgentRuntime {
         );
         return;
       }
+      if (script.kind === 'session-success') {
+        if (script.streamedText) {
+          const nativeSource = { messageId: 'msg-claude-code', blockIndex: 0 };
+          this.emit({ kind: 'text_delta', text: script.streamedText, nativeSource: {
+            ...nativeSource, blockStart: { type: 'text', text: '' },
+          } });
+          this.emit({ kind: 'text_stop', nativeSource });
+          this.emit({ kind: 'message_replay', nativeSource: { messageId: nativeSource.messageId }, message: {
+            id: 'sdk-claude-code', role: 'assistant', content: [{ type: 'text', text: script.streamedText }],
+          } });
+        }
+        this.emit({ kind: 'session_complete', subtype: 'success', result: script.result });
+        return;
+      }
       if (script.kind === 'failure') {
         this.defer(() => {
           if (script.partialText) {
@@ -1175,6 +1190,7 @@ type TestInjectedTurnRequest = Omit<
 function runInjectedTurn(harness: Harness, request: TestInjectedTurnRequest) {
   return harness.engine.runInjectedTurn({
     assistantChannelDelivery: 'none',
+    ...(harness.runtime.type === 'dsh' ? { permissionMode: getMaxPermissionForRuntime('dsh') } : {}),
     ...request,
   });
 }
@@ -2909,6 +2925,43 @@ describe('external SessionEngine with fake runtime', () => {
     ]);
   });
 
+  it('records a Claude Code streamed reply once when session_complete repeats its result', async () => {
+    const harness = await createHarness([
+      { kind: 'session-success', streamedText: 'streamed answer', result: 'streamed answer' },
+    ], { runtimeType: 'claude-code' });
+    const sessionId = 'session-claude-code-streamed-result';
+    const sent = await harness.engine.sendDesktopMessage(
+      { ...desktopRequest(sessionId, join(harness.home, 'workspace'), 'question'),
+        permissionMode: getMaxPermissionForRuntime('claude-code'), model: 'opus' },
+    );
+    await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    const assistant = (await harness.sessionStore.getSessionData(sessionId))!.messages
+      .findLast(message => message.role === 'assistant')!;
+    expect(JSON.parse(assistant.content)).toEqual([expect.objectContaining({
+      type: 'text', text: 'streamed answer', nativeMessageId: 'msg-claude-code',
+    })]);
+  });
+
+  it('keeps result-only Claude Code output when no text was streamed', async () => {
+    const harness = await createHarness([
+      { kind: 'session-success', result: 'slash command output' },
+    ], { runtimeType: 'claude-code' });
+    const sessionId = 'session-claude-code-result-only';
+    const sent = await harness.engine.sendDesktopMessage(
+      { ...desktopRequest(sessionId, join(harness.home, 'workspace'), '/cost'),
+        permissionMode: getMaxPermissionForRuntime('claude-code'), model: 'opus' },
+    );
+    await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    const assistant = (await harness.sessionStore.getSessionData(sessionId))!.messages
+      .findLast(message => message.role === 'assistant')!;
+    expect(JSON.parse(assistant.content)).toEqual([expect.objectContaining({
+      type: 'text', text: 'slash command output',
+    })]);
+  });
 
   it('starts a clean runtime after a held turn terminal is followed by process completion', async () => {
     const harness = await createHarness([
@@ -7975,7 +8028,7 @@ describe('external SessionEngine with fake runtime', () => {
     const sent = await harness.engine.sendDesktopMessage({
       ...desktopRequest(sessionId, workspacePath, 'create DSH on first send'),
       model: 'deepseek-v4-pro',
-      permissionMode: 'auto',
+      permissionMode: getMaxPermissionForRuntime('dsh'),
     });
     await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
@@ -8348,7 +8401,7 @@ describe('external SessionEngine with fake runtime', () => {
 
     const first = await harness.engine.sendDesktopMessage({
       ...desktopRequest(sessionId, workspacePath, 'first DSH question'),
-      permissionMode: 'auto',
+      permissionMode: getMaxPermissionForRuntime('dsh'),
     });
     await expect(first.dispatchAcceptance).resolves.toEqual({ accepted: true });
     await waitFor(
@@ -8362,7 +8415,7 @@ describe('external SessionEngine with fake runtime', () => {
 
     const second = await harness.engine.sendDesktopMessage({
       ...desktopRequest(sessionId, workspacePath, 'realtime DSH correction'),
-      permissionMode: 'auto',
+      permissionMode: getMaxPermissionForRuntime('dsh'),
     });
 
     expect(second).toMatchObject({
@@ -8426,7 +8479,7 @@ describe('external SessionEngine with fake runtime', () => {
         'exercise the Product projection',
       ),
       model: 'deepseek-v4-flash',
-      permissionMode: 'auto',
+      permissionMode: getMaxPermissionForRuntime('dsh'),
     });
     await waitFor(
       () =>
@@ -8499,7 +8552,7 @@ describe('external SessionEngine with fake runtime', () => {
     await harness.engine.sendDesktopMessage({
       ...desktopRequest(sessionId, workspacePath, 'show reasoning immediately'),
       model: 'deepseek-v4-flash',
-      permissionMode: 'auto',
+      permissionMode: getMaxPermissionForRuntime('dsh'),
     });
     await waitFor(
       () => broadcastEvents.some(({ event }) => event === 'chat:message-chunk'),
@@ -9084,7 +9137,7 @@ describe('external SessionEngine with fake runtime', () => {
           workspacePath,
           'start a process with the saved policy',
         ),
-        ...(runtimeType === 'dsh' ? { permissionMode: 'auto' as const } : {}),
+        ...(runtimeType === 'dsh' ? { permissionMode: getMaxPermissionForRuntime('dsh') } : {}),
       });
       await expect(initial.dispatchAcceptance).resolves.toEqual({
         accepted: true,
@@ -9133,7 +9186,7 @@ describe('external SessionEngine with fake runtime', () => {
           workspacePath,
           'finish before replacing Shell environment',
         ),
-        permissionMode: 'auto',
+        permissionMode: getMaxPermissionForRuntime('dsh'),
       });
       await expect(initial.dispatchAcceptance).resolves.toEqual({
         accepted: true,
@@ -9173,7 +9226,7 @@ describe('external SessionEngine with fake runtime', () => {
           workspacePath,
           'use the effective proxy policy',
         ),
-        permissionMode: 'auto',
+        permissionMode: getMaxPermissionForRuntime('dsh'),
       });
       await expect(next.dispatchAcceptance).resolves.toEqual({
         accepted: true,
@@ -9206,7 +9259,7 @@ describe('external SessionEngine with fake runtime', () => {
 
     const first = await harness.engine.sendDesktopMessage({
       ...desktopRequest(sessionId, workspacePath, 'first'),
-      permissionMode: 'auto',
+      permissionMode: getMaxPermissionForRuntime('dsh'),
     });
     if (!first.success) throw new Error(first.error);
     expect(first).toMatchObject({ success: true, queued: true });
@@ -9222,7 +9275,7 @@ describe('external SessionEngine with fake runtime', () => {
 
     const second = await harness.engine.sendDesktopMessage({
       ...desktopRequest(sessionId, workspacePath, 'force this'),
-      permissionMode: 'auto',
+      permissionMode: getMaxPermissionForRuntime('dsh'),
     });
     expect(second).toMatchObject({ queued: true });
     expect(second.queueId).toBeDefined();

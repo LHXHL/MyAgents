@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { deriveReloadResumeAnchor, resolveEffectiveResumeAt, type ReloadAnchorMessage } from './rewind-anchor';
+import { deriveReloadResumeAnchor, isRejectedReloadAnchor, resolveEffectiveResumeAt, type ReloadAnchorMessage } from './rewind-anchor';
 import { nativeResumeBoundaryRecoveryMessage } from '../../shared/nativeResumeBoundary';
 
 it('recognizes an SDK native boundary refusal without exposing its UUID', () => {
@@ -45,15 +45,23 @@ describe('deriveReloadResumeAnchor (PRD 0.2.27 window-B reconcile)', () => {
     expect(deriveReloadResumeAnchor([], new Set())).toBeUndefined();
   });
 
-  it('death-loop break (decision 6): after the rejected anchor is evicted from the valid set, re-derive yields undefined → bare resume, no retry loop', () => {
-    // The "No message found" recovery evicts the rejected uuid from currentSessionUuids.
-    // This proves the invariant the recovery relies on: the very next derive can no
-    // longer return the same (doomed) anchor, so the pre-warm retry uses a bare resume.
+  it('does not re-derive an evicted anchor during the same session load', () => {
+    // SDK rejection clears the load-captured candidate and evicts its local
+    // observation. A later disk reload can observe it again; that is a new run.
     const messages = [m('user', 'u1'), m('assistant', 'a50')];
     const valid = new Set(['u1', 'a50']);
     expect(deriveReloadResumeAnchor(messages, valid)).toBe('a50'); // first derive — sent, then rejected
     valid.delete('a50');                                            // recovery eviction
     expect(deriveReloadResumeAnchor(messages, valid)).toBeUndefined(); // retry won't re-derive it
+  });
+});
+
+describe('isRejectedReloadAnchor', () => {
+  it('matches only the exact derived UUID rejected by native resume', () => {
+    expect(isRejectedReloadAnchor('Claude Code returned an error result: No message found with message.uuid of: tail-2', 'tail-2')).toBe(true);
+    expect(isRejectedReloadAnchor('No message found with message.uuid of: tail-20', 'tail-2')).toBe(false);
+    expect(isRejectedReloadAnchor('No conversation found', 'tail-2')).toBe(false);
+    expect(isRejectedReloadAnchor('No message found with message.uuid of: tail-2')).toBe(false);
   });
 });
 

@@ -2482,6 +2482,7 @@ async function main() {
             // #324 — per-token live value (session bridges resolve it from
             // currentReasoningEffort on every request).
             reasoningEffort: cfg.reasoningEffort,
+            opencodeSessionId: cfg.opencodeSessionId,
             cacheAffinity: cfg.cacheAffinity
               ? {
                   ...cfg.cacheAffinity,

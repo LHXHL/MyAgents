@@ -22,7 +22,7 @@ import {
 import { resolve } from 'path';
 import { getHomeDirOrNull } from './platform';
 import { stripBom } from '../../shared/utils';
-import { resolveProviderForModel } from '../../shared/tokendance';
+import { resolveProviderForModel } from '../../shared/provider-model-routing';
 import { workspacePathsEqual } from '../../shared/workspacePath';
 import { promoteAgentMcpJsonToGlobal } from '../../shared/mcpConfig';
 import type { AppConfig, ManagedProviderCredential, ManagedProviderEndpoint, McpServerDefinition, PermissionMode, Provider, ProviderVerifyStatus, SubscriptionAuthPolicy } from '../../shared/config-types';

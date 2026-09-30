@@ -62,7 +62,6 @@ import {
     configureMemoryAutoUpdateTaskForAgent,
     configureMemoryEvolutionTasksForAgent,
     migrateImBotConfigsToAgents,
-    persistAgents,
     reconcilePersistedAgentWorkspaceIdentities,
     reconcilePersistedAgentWorkspaceIdentitiesLocked,
 } from './services/agentConfigService';
@@ -527,15 +526,17 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
         await rebuildAndPersistAvailableProviders();
 
-        // Normalize agents and self-heal corrupted config on disk
-        if (normalizeAgents(loadedConfig) && loadedConfig.agents) {
-            await persistAgents(loadedConfig.agents);
+        // Maintenance may have awaited provider work while a Channel changed.
+        // Re-read under the config lock instead of writing loadedConfig.agents
+        // back over a newer deletion or toggle.
+        let repairedAgents = false;
+        await atomicModifyConfig(current => {
+            repairedAgents = normalizeAgents(current);
+            migrateToolGroups(current);
+            return current;
+        });
+        if (repairedAgents) {
             console.log('[ConfigProvider] Repaired agents with missing channels — persisted to disk');
-        }
-
-        // Migrate old hardcoded tool groups → undefined (= all groups enabled)
-        if (migrateToolGroups(loadedConfig) && loadedConfig.agents) {
-            await persistAgents(loadedConfig.agents);
         }
 
         const snapshot = await commitConfigDiskSnapshot();

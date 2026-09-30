@@ -64,7 +64,7 @@ export async function generateAndApplyTitle(
   if (runtime === 'builtin') {
     // builtin needs providerEnv (third-party / OpenAI-bridge auth); generateTitle
     // applies applyContextWindowSuffix itself, so `model` must be the RAW id.
-    title = await generateTitle(rounds, model || '', providerEnv);
+    title = await generateTitle(rounds, model || '', providerEnv, sessionId);
   } else {
     // External runtimes own their auth. Preserve the Session's persisted
     // runtimeSource so a Managed Codex conversation cannot silently fall back

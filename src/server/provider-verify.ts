@@ -19,7 +19,9 @@ import { getLastBridgeError } from './openai-bridge';
 import { getProxyForProviderUrl } from './proxy-state';
 import { SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 import type { Provider } from '../shared/config-types';
-import { resolveProviderForModel, TOKENDANCE_PROVIDER_ID } from '../shared/tokendance';
+import { TOKENDANCE_PROVIDER_ID } from '../shared/tokendance';
+import { OPENCODE_GO_PROVIDER_ID } from '../shared/opencode-go';
+import { resolveProviderForModel } from '../shared/provider-model-routing';
 import { findEffectiveProvider, loadConfig as loadProviderConfig } from './utils/admin-config';
 import {
   classifySubscriptionVerifyFailureKind,
@@ -129,7 +131,7 @@ async function verifyViaSdk(
      * (fast-success case) doesn't outlive the call.
      */
     diagnostic?: (signal: AbortSignal) => Promise<ProbeOutcome | undefined>;
-    /** Managed subscription activation requires the SDK's terminal success. */
+    /** Managed subscription activation and OpenCode Go require SDK terminal success. */
     requireTerminalResult?: boolean;
     controller?: AbortController;
   },
@@ -430,11 +432,11 @@ export async function verifyProviderViaSdk(
   if (providerId === 'antigravity-sub') {
     return { success: false, error: '请通过 Antigravity 订阅账号卡片检查连接' };
   }
-  if (providerId === TOKENDANCE_PROVIDER_ID) {
+  if (providerId === TOKENDANCE_PROVIDER_ID || providerId === OPENCODE_GO_PROVIDER_ID) {
     try {
       const config = loadProviderConfig();
       const registered = findEffectiveProvider(providerId, config) as unknown as Provider | null;
-      if (!registered) return { success: false, error: 'TokenDance provider is unavailable.' };
+      if (!registered) return { success: false, error: `Provider '${providerId}' is unavailable.` };
       model ??= (config.providerPrimaryModels as Record<string, string> | undefined)?.[providerId] ?? registered.primaryModel;
       const effective = resolveProviderForModel(registered, model);
       baseUrl = effective.config.baseUrl!;
@@ -465,6 +467,7 @@ export async function verifyProviderViaSdk(
     upstreamFormat,
     credentialSource,
   };
+  const verificationConversationId = randomUUID();
   const startVerificationBridge: typeof startOneShotBridge = (env, bridgeModel, description) =>
     startOneShotBridge(
       env,
@@ -473,6 +476,7 @@ export async function verifyProviderViaSdk(
       managedVerification
         ? { purpose: 'verification', expectedLineage: managedVerification.expectedLineage }
         : { purpose: 'execution' },
+      verificationConversationId,
     );
   // Layer 1 (PRD 0.2.30) — OpenAI providers only: an AUTHORITATIVE probe through
   // the same one-shot bridge. It reads the bridge-translated upstream status and
@@ -517,6 +521,7 @@ export async function verifyProviderViaSdk(
     const env = buildClaudeSessionEnv(providerEnv, model, {
       bridgeToken: bridge?.token,
       providerId,
+      conversationId: verificationConversationId,
     });
     return await verifyViaSdk(env, {
       model,
@@ -543,8 +548,8 @@ export async function verifyProviderViaSdk(
       // authoritative pre-probe.
       diagnostic: apiProtocol === 'openai'
         ? undefined
-        : (signal) => probeAnthropicProviderDirect({ providerEnv, model, getProxyForProviderUrl, signal }),
-      requireTerminalResult: credentialSource?.kind === 'managed-oauth',
+        : (signal) => probeAnthropicProviderDirect({ providerEnv, model, getProxyForProviderUrl, signal, conversationId: verificationConversationId }),
+      requireTerminalResult: credentialSource?.kind === 'managed-oauth' || providerId === OPENCODE_GO_PROVIDER_ID,
     });
   } finally {
     bridge?.release();

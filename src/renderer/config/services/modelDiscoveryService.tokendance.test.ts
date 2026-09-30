@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { mergePresetCustomModels, PRESET_PROVIDERS } from '../types';
-import { resolveProviderForModel } from '../../../shared/tokendance';
+import { resolveProviderForModel } from '../../../shared/provider-model-routing';
 import {
   fetchProviderModels,
   parseModelsResponse,
@@ -9,6 +9,7 @@ import {
 import { invoke } from '@tauri-apps/api/core';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 const provider = PRESET_PROVIDERS.find((p) => p.id === 'tokendance')!;
+const go = PRESET_PROVIDERS.find((p) => p.id === 'opencode-go')!;
 describe('Token Dance public model discovery', () => {
   it('preserves protocol metadata through discovery, user editing and disk JSON reload', () => {
     const discovered = parseModelsResponse({
@@ -52,5 +53,22 @@ describe('Token Dance public model discovery', () => {
         authHeaderValue: null,
       }),
     );
+  });
+});
+
+describe('OpenCode Go public model discovery', () => {
+  it('parses the observed ID-only directory without inventing a protocol or sending a Key', async () => {
+    const observed = { data: [{ id: 'future-go', object: 'model', created: 1790658758, owned_by: 'opencode' }] };
+    vi.mocked(invoke).mockResolvedValue(observed);
+    const models = await fetchProviderModels(go, undefined);
+    expect(invoke).toHaveBeenCalledWith('cmd_fetch_provider_models', expect.objectContaining({
+      url: 'https://opencode.ai/zen/go/v1/models',
+      authHeaderName: null,
+      authHeaderValue: null,
+    }));
+    expect(models).toEqual([{ id: 'future-go', displayName: undefined, ownedBy: 'opencode', contextLength: undefined,
+      maxOutputTokens: undefined, supportsImage: undefined, supportsVideo: undefined,
+      supportsReasoning: undefined, status: undefined, supportedProtocols: undefined }]);
+    expect(toModelEntity(models[0], go).executionProtocol).toBeUndefined();
   });
 });

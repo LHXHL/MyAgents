@@ -28,6 +28,7 @@ import {
 } from '../proxy-state';
 import { isProviderReasoningEffortSupported } from '../../shared/reasoningEffort';
 import { TOKENDANCE_APP_URL, TOKENDANCE_PROVIDER_ID } from '../../shared/tokendance';
+import { opencodeGoHeaders } from '../opencode-go-request';
 
 const DEFAULT_TIMEOUT = 300_000; // 5 minutes
 const THOUGHT_SIG_CACHE_MAX = 500; // Max cached thought_signatures to prevent unbounded growth
@@ -582,6 +583,7 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
             ...(upstream.providerId === TOKENDANCE_PROVIDER_ID
               ? { 'X-App-URL': TOKENDANCE_APP_URL }
               : {}),
+            ...opencodeGoHeaders(upstream.providerId, upstream.opencodeSessionId),
           },
           body: requestBody,
           signal: controller.signal,

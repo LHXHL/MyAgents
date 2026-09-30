@@ -4,9 +4,9 @@ import {
   formatTokenDanceBalance,
   MODEL_PROTOCOL_PRIORITY,
   parseSupportedProtocols,
-  resolveProviderForModel,
   TOKENDANCE_PROVIDER_ID,
 } from './tokendance';
+import { resolveProviderForModel } from './provider-model-routing';
 
 const provider = PRESET_PROVIDERS.find((p) => p.id === TOKENDANCE_PROVIDER_ID)!;
 

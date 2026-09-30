@@ -154,6 +154,7 @@ export async function analyzeImages(input: VisionAnalyzeInput): Promise<VisionAn
     images: images.map(img => img.payload),
     prompt,
     deadlineMs,
+    conversationId: input.sessionMeta?.id,
   });
 
   return {
@@ -374,9 +375,11 @@ async function runVisionQuery(args: {
   images: ResolvedImagePayload[];
   prompt: string;
   deadlineMs: number;
+  conversationId?: string;
 }): Promise<string> {
+  const requestConversationId = args.conversationId ?? randomUUID();
   const bridge = args.providerEnv?.apiProtocol === 'openai'
-    ? startOneShotBridge(args.providerEnv, args.model, `official-vision:${args.providerEnv.baseUrl ?? args.providerId}`)
+    ? startOneShotBridge(args.providerEnv, args.model, `official-vision:${args.providerEnv.baseUrl ?? args.providerId}`, undefined, requestConversationId)
     : null;
   const controller = new AbortController();
   let prepared: PreparedProvider | undefined;
@@ -384,7 +387,7 @@ async function runVisionQuery(args: {
   try {
     prepared = await prepareProviderBinding({ providerEnv: args.providerEnv, model: args.model, controller });
     await prepared.beforeTurn();
-    return await runVisionQueryInner({ ...args, providerEnv: prepared.providerEnv, bridgeToken: bridge?.token, controller, prepared });
+    return await runVisionQueryInner({ ...args, conversationId: requestConversationId, providerEnv: prepared.providerEnv, bridgeToken: bridge?.token, controller, prepared });
   } finally {
     clearTimeout(deadline);
     controller.abort();
@@ -401,6 +404,7 @@ async function runVisionQueryInner(args: {
   images: ResolvedImagePayload[];
   prompt: string;
   deadlineMs: number;
+  conversationId?: string;
   bridgeToken?: string;
   controller: AbortController;
   prepared: PreparedProvider;
@@ -410,6 +414,7 @@ async function runVisionQueryInner(args: {
   const env = buildClaudeSessionEnv(args.providerEnv, args.model, {
     bridgeToken: args.bridgeToken,
     providerId: args.providerId,
+    conversationId: args.conversationId,
   });
   const launchModel = applyContextWindowSuffixForContextLength(
     args.model,

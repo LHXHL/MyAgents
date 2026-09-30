@@ -82,6 +82,7 @@ describe('ThemeRuntimeProvider', () => {
     document.documentElement.className = '';
     delete document.documentElement.dataset.themeId;
     delete document.documentElement.dataset.colorScheme;
+    delete document.documentElement.dataset.markdownReadingSize;
     document.documentElement.style.colorScheme = '';
   });
 
@@ -137,6 +138,25 @@ describe('ThemeRuntimeProvider', () => {
     expect(document.documentElement).toHaveClass('dark');
     expect(document.documentElement.style.colorScheme).toBe('dark');
     expect(screen.getByTestId('theme-probe')).toHaveTextContent('#120012');
+  });
+
+  it('projects the configured Markdown reading size on the document root', () => {
+    const view = render(
+      <ThemeRuntimeProvider selection={{ themeId: 'myagents-default', appearanceMode: 'light' }}>
+        <Probe />
+      </ThemeRuntimeProvider>,
+    );
+    expect(document.documentElement.dataset.markdownReadingSize).toBe('large');
+
+    view.rerender(
+      <ThemeRuntimeProvider
+        selection={{ themeId: 'myagents-default', appearanceMode: 'light' }}
+        markdownReadingSize="standard"
+      >
+        <Probe />
+      </ThemeRuntimeProvider>,
+    );
+    expect(document.documentElement.dataset.markdownReadingSize).toBe('standard');
   });
 
   it('tracks OS changes in system mode without replacing the provider', () => {

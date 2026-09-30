@@ -164,7 +164,7 @@ import {
   type Provider,
   getEffectiveModelAliases,
 } from '@/config/types';
-import { resolveProviderForModel } from '../../shared/tokendance';
+import { resolveProviderForModel } from '../../shared/provider-model-routing';
 import { syncMcpServerNames } from '@/components/tools/toolBadgeConfig';
 import {
   getAllMcpServers,

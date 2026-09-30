@@ -32,6 +32,27 @@ describe('Markdown source format', () => {
     expect(redo({ state, dispatch })).toBe(true);
     expect(encodeSource(state)).toBe(edited);
   });
+  it.each(['a\nb', '\uFEFFa\r\nb'])('restores the earliest format when history groups edits for %j', raw => {
+    let state = document(raw);
+    const dispatch = (transaction: { state: EditorState }) => { state = transaction.state; };
+    state = state.update({ changes: { from: state.doc.length, insert: '\n\n' } }).state;
+    state = state.update({ changes: { from: 4, to: 5, insert: '\n' } }).state;
+    expect(undo({ state, dispatch })).toBe(true);
+    expect(encodeSource(state)).toBe(raw);
+    expect(redo({ state, dispatch })).toBe(true);
+    expect(decodeSource(encodeSource(state)).text).toBe('a\nb\n\n');
+  });
+  it.each([['abc', '\n'], ['\uFEFFa\r\nb', '\r\n']])('keeps paste and typing in one undoable source snapshot for %j', (raw, separator) => {
+    let state = document(raw);
+    const dispatch = (transaction: { state: EditorState }) => { state = transaction.state; };
+    state = state.update({ changes: { from: state.doc.length, insert: '\n' }, userEvent: 'input.paste' }).state;
+    state = state.update({ changes: { from: state.doc.length, insert: 'x' }, userEvent: 'input.type' }).state;
+    expect(encodeSource(state)).toBe(`${raw}${separator}x`);
+    expect(undo({ state, dispatch })).toBe(true);
+    expect(encodeSource(state)).toBe(raw);
+    expect(redo({ state, dispatch })).toBe(true);
+    expect(encodeSource(state)).toBe(`${raw}${separator}x`);
+  });
   it('replaces separators without retaining overlapping format ranges', () => {
     for (const raw of ['a\nb\nc', 'a\r\nb', '\uFEFFa\r\nb\nc\r']) {
       const state = document(raw).update({ changes: { from: 1, to: 2, insert: '\n' } }).state;

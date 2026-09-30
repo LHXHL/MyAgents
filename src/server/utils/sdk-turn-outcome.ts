@@ -1,4 +1,5 @@
 import type { SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { ModelUsageEntry } from '../../shared/types/session-message';
 
 /**
  * SDK 0.3.274 coalesces queued task notifications into one model turn. Earlier
@@ -111,12 +112,14 @@ export function findTurnUsageStampIndex(
 }
 
 /**
- * #358 — pure extraction of per-turn usage from an SDK `result` message.
+ * #358 — pure extraction of usage fields from an SDK `result` message.
  *
  * The SDK puts a per-model breakdown in `modelUsage` (camelCase, preferred —
  * lets `byModel` stats show separate rows per provider/upstream model) and
- * falls back to the flat `usage` aggregate (snake_case). Both shapes can be
- * partial — fields are independently optional and missing entries are 0.
+ * falls back to the flat `usage` aggregate (snake_case). `modelUsage` is a
+ * cumulative snapshot and must be converted before it becomes Product turn
+ * usage. Both shapes can be partial — fields are independently optional and
+ * missing entries are 0.
  *
  * Why extract this from the inline result handler:
  *  - Lets the result handler stamp the assistant message with usage *before*
@@ -227,5 +230,105 @@ export function extractTurnUsageFromSdkResult(input: SdkResultUsageRaw): TurnUsa
     cacheCreationTokens: 0,
     model: undefined,
     modelUsage: undefined,
+  };
+}
+
+/** SDK result.modelUsage is a cumulative snapshot, including across a resumed Query.
+ * Product transcript usage is per turn, so conversion belongs at this boundary.
+ * The last raw snapshot is stored with the product turn for an exact resume baseline.
+ */
+export function createSdkCumulativeUsageTracker(seed: {
+  resumed: boolean;
+  previous?: Record<string, ModelUsageEntry>;
+}): {
+  preview: (result: SdkResultUsageRaw) => {
+    usage: TurnUsageBreakdown;
+    cumulative?: Record<string, ModelUsageEntry>;
+  };
+  commit: (result: SdkResultUsageRaw) => void;
+  reset: () => void;
+} {
+  let previous = seed.previous ?? {};
+  // Pre-upgrade Product transcripts have no raw SDK snapshot. Their first
+  // resumed result includes history that cannot be reconstructed exactly.
+  let unknownHistoricalBaseline = seed.resumed && !seed.previous;
+  let resetBaseline = false;
+
+  const readCumulative = (result: SdkResultUsageRaw) => {
+    const extracted = extractTurnUsageFromSdkResult(result);
+    if (!extracted.modelUsage || Object.keys(extracted.modelUsage).length === 0) return null;
+    // A startup/crash result may list models with all counters zero. It is
+    // not a new baseline and must not erase the last accounted snapshot.
+    if (extracted.inputTokens === 0 && extracted.outputTokens === 0
+      && extracted.cacheReadTokens === 0 && extracted.cacheCreationTokens === 0
+      && (result.usage?.input_tokens ?? 0) === 0
+      && (result.usage?.output_tokens ?? 0) === 0
+      && (result.usage?.cache_read_input_tokens ?? 0) === 0
+      && (result.usage?.cache_creation_input_tokens ?? 0) === 0) return null;
+    return extracted;
+  };
+
+  return {
+    preview(result) {
+      const cumulative = readCumulative(result);
+      if (!cumulative?.modelUsage) {
+        return {
+          usage: extractTurnUsageFromSdkResult({ usage: result.usage }),
+          cumulative: resetBaseline ? {} : undefined,
+        };
+      }
+      const snapshot = cumulative.modelUsage;
+      if (unknownHistoricalBaseline) {
+        // The flat result is main-loop only, but avoids charging all prior
+        // history to one turn. After this result the raw snapshot is exact.
+        return { usage: extractTurnUsageFromSdkResult({ usage: result.usage }), cumulative: snapshot };
+      }
+      const reset = Object.entries(previous).some(([model, prior]) => {
+        const next = snapshot[model];
+        return !next || next.inputTokens < prior.inputTokens
+          || next.outputTokens < prior.outputTokens
+          || (next.cacheReadTokens ?? 0) < (prior.cacheReadTokens ?? 0)
+          || (next.cacheCreationTokens ?? 0) < (prior.cacheCreationTokens ?? 0);
+      });
+      const baseline = reset ? {} : previous;
+      const modelUsage: Record<string, ModelUsageEntry> = {};
+      let inputTokens = 0;
+      let outputTokens = 0;
+      let cacheReadTokens = 0;
+      let cacheCreationTokens = 0;
+      let model: string | undefined;
+      let maxModelTokens = 0;
+      for (const [key, next] of Object.entries(snapshot)) {
+        const prior = baseline[key];
+        const entry = {
+          inputTokens: next.inputTokens - (prior?.inputTokens ?? 0),
+          outputTokens: next.outputTokens - (prior?.outputTokens ?? 0),
+          cacheReadTokens: (next.cacheReadTokens ?? 0) - (prior?.cacheReadTokens ?? 0),
+          cacheCreationTokens: (next.cacheCreationTokens ?? 0) - (prior?.cacheCreationTokens ?? 0),
+        };
+        modelUsage[key] = entry;
+        inputTokens += entry.inputTokens;
+        outputTokens += entry.outputTokens;
+        cacheReadTokens += entry.cacheReadTokens;
+        cacheCreationTokens += entry.cacheCreationTokens;
+        if (entry.inputTokens + entry.outputTokens > maxModelTokens) {
+          maxModelTokens = entry.inputTokens + entry.outputTokens;
+          model = key;
+        }
+      }
+      return { usage: { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, model, modelUsage }, cumulative: snapshot };
+    },
+    commit(result) {
+      const cumulative = readCumulative(result);
+      if (!cumulative?.modelUsage) return; // Startup/crash results can be zeroed.
+      previous = cumulative.modelUsage;
+      unknownHistoricalBaseline = false;
+      resetBaseline = false;
+    },
+    reset() {
+      previous = {};
+      unknownHistoricalBaseline = false;
+      resetBaseline = true;
+    },
   };
 }

@@ -414,16 +414,6 @@ export async function reconcilePersistedAgentWorkspaceIdentities(
 
 // ============= Persistence Helpers =============
 
-/**
- * Save agents to disk (atomic read-modify-write).
- */
-export async function persistAgents(agents: AgentConfig[]): Promise<void> {
-  await atomicModifyConfig(config => ({
-    ...config,
-    agents,
-  }));
-}
-
 function parseAgentMcpServersJson(raw: string | undefined): McpServerDefinition[] {
   if (!raw) return [];
   try {
@@ -877,11 +867,12 @@ export async function patchAgentProjectConfig(
   );
 }
 
-async function modifyAgentChannelConfig(
+export async function modifyAgentChannelConfig(
   agentId: string,
   channelId: string,
   modify: (channel: ChannelConfig) => ChannelConfig,
   initialChannel?: ChannelConfig,
+  onPersisted?: () => void,
 ): Promise<ChannelConfig> {
   if (initialChannel && initialChannel.id !== channelId) {
     throw new Error(`Initial Channel id mismatch: expected=${channelId} actual=${initialChannel.id}`);
@@ -926,6 +917,7 @@ async function modifyAgentChannelConfig(
   if (!updatedChannel || !authoritativeChannels) {
     throw new Error(`Agent channel not found: agentId=${agentId} channelId=${channelId}`);
   }
+  onPersisted?.();
   await syncAgentRuntime(agentId, { channels: authoritativeChannels });
   return updatedChannel;
 }
@@ -944,13 +936,24 @@ export async function removeAgentChannelConfig(agentId: string, channelId: strin
   await atomicModifyConfig(config => {
     const agents = [...(config.agents ?? [])];
     const agentIndex = agents.findIndex(agent => agent.id === agentId);
-    if (agentIndex < 0) return config;
+    if (agentIndex < 0) throw new Error(`Agent not found: ${agentId}`);
     const channels = (agents[agentIndex].channels ?? []).filter(channel => channel.id !== channelId);
-    if (channels.length === (agents[agentIndex].channels ?? []).length) return config;
     authoritativeChannels = channels;
+    if (channels.length === (agents[agentIndex].channels ?? []).length) return config;
     agents[agentIndex] = { ...agents[agentIndex], channels };
     return { ...config, agents };
   });
+  // Durable intent must precede runtime shutdown: monitor/start re-read disk
+  // after taking the exact Channel lifecycle lock and cannot resurrect it.
+  const { isTauriEnvironment } = await import('@/utils/browserMock');
+  if (isTauriEnvironment()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    try {
+      await invoke('cmd_stop_agent_channel', { agentId, channelId });
+    } catch (error) {
+      throw new Error(`Channel ${channelId} was removed from config, but its runtime could not be stopped: ${String(error)}`);
+    }
+  }
   if (authoritativeChannels) await syncAgentRuntime(agentId, { channels: authoritativeChannels });
 }
 
@@ -985,17 +988,22 @@ export function applyAgentChannelCredentialProvisioning(
   configValues: Readonly<Record<string, string>>,
   allowedUserId?: string,
   initialChannel?: ChannelConfig,
+  canApply?: () => boolean,
+  onPersisted?: () => void,
 ): Promise<ChannelConfig> {
-  return modifyAgentChannelConfig(agentId, channelId, channel => ({
-    ...channel,
-    openclawPluginConfig: {
-      ...(channel.openclawPluginConfig ?? {}),
-      ...configValues,
-    },
-    allowedUsers: allowedUserId
-      ? [...new Set([...(channel.allowedUsers ?? []), allowedUserId])]
-      : channel.allowedUsers,
-  }), initialChannel);
+  return modifyAgentChannelConfig(agentId, channelId, channel => {
+    if (canApply && !canApply()) throw new Error('Channel setup was cancelled');
+    return {
+      ...channel,
+      openclawPluginConfig: {
+        ...(channel.openclawPluginConfig ?? {}),
+        ...configValues,
+      },
+      allowedUsers: allowedUserId
+        ? [...new Set([...(channel.allowedUsers ?? []), allowedUserId])]
+        : channel.allowedUsers,
+    };
+  }, initialChannel, onPersisted);
 }
 
 /** Stop Channel runtime for workspace archival without changing Channel intent. */

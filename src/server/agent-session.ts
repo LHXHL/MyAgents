@@ -1,6 +1,10 @@
 import { createBuiltinInterruptController } from './builtin-session/interrupt';
 import { configureBuiltinTranscriptBinding } from './builtin-session/transcript';
 import { randomUUID } from 'crypto';
+import { OPENCODE_GO_PROVIDER_ID } from '../shared/opencode-go';
+import { assertQueryModelRoutesCompatible } from '../shared/provider-model-routing';
+import type { Provider } from '../shared/config-types';
+import { OPENCODE_GO_SDK_CLIENT_APP, OPENCODE_GO_USER_AGENT, opencodeGoConversationId } from './opencode-go-request';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { createRequire } from 'module';
@@ -36,7 +40,7 @@ import {
   type ModelContextLengthSnapshot,
 } from './utils/model-capabilities';
 import { modelAliasEnvChangesForModel, resolveSessionModelAliases } from './utils/model-aliases';
-import { resolveEffectiveResumeAt } from './utils/rewind-anchor';
+import { isRejectedReloadAnchor, resolveEffectiveResumeAt } from './utils/rewind-anchor';
 import { nativeResumeBoundaryRecoveryMessage } from '../shared/nativeResumeBoundary';
 import { attemptFileRewind, type FileRewindStatus } from './utils/rewind-file-result';
 import { summarizeSensitiveSdkMessage } from './utils/sdk-log-summary';
@@ -158,7 +162,7 @@ import {
   type SessionMaterializationScenario,
 } from './utils/session-materialization';
 import { isManagedCodexProviderReady } from './utils/managed-codex-readiness';
-import { canonicalizeManagedProviderEnv, findProjectAgentByWorkspacePath, getDefaultEnabledOfficialToolIdsForWorkspace, getEffectiveMcpServers, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig, resolveWorkspaceConfig } from './utils/admin-config';
+import { canonicalizeManagedProviderEnv, findEffectiveProvider, findProjectAgentByWorkspacePath, getDefaultEnabledOfficialToolIdsForWorkspace, getEffectiveMcpServers, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig, resolveWorkspaceConfig } from './utils/admin-config';
 import type { AgentConfig } from '../shared/types/agent';
 import {
   invalidateMcpEffectiveSnapshot,
@@ -1742,6 +1746,8 @@ async function resolveActiveSessionUpstreamConfig(request?: Request): Promise<Up
     cacheAffinity: configState.currentProviderEnv?.apiProtocol === 'openai'
       ? { sessionId, promptCacheKeyMode: 'session' }
       : undefined,
+    opencodeSessionId: activeProviderEnv?.providerId === OPENCODE_GO_PROVIDER_ID
+      ? opencodeGoConversationId(sessionId) : undefined,
   };
 }
 
@@ -1819,6 +1825,7 @@ export function startOneShotBridge(
   modelOverride: string | undefined,
   description: string,
   managedPurpose: ManagedOAuthPurpose = { purpose: 'execution' },
+  conversationId?: string,
 ): { token: string; release: () => void } {
   if (providerEnv.apiProtocol !== 'openai') {
     throw new Error('startOneShotBridge called with non-OpenAI provider — caller should not need a bridge');
@@ -1834,6 +1841,8 @@ export function startOneShotBridge(
     maxOutputTokens: providerEnv.maxOutputTokens,
     maxOutputTokensParamName: providerEnv.maxOutputTokensParamName,
     upstreamFormat: providerEnv.upstreamFormat,
+    opencodeSessionId: providerEnv.providerId === OPENCODE_GO_PROVIDER_ID
+      ? opencodeGoConversationId(conversationId) : undefined,
   };
   // Static routing snapshot; managed bearer resolution remains request-scoped.
   registerBridgeInRegistry(token, async (request) => {
@@ -6126,6 +6135,7 @@ export function buildClaudeSessionEnv(
     bridgeToken?: string;
     providerId?: string;
     contextWindowSnapshot?: ModelContextLengthSnapshot;
+    conversationId?: string;
   },
 ): NodeJS.ProcessEnv {
   // Ensure essential paths are always present, even when launched from Finder
@@ -6231,6 +6241,16 @@ export function buildClaudeSessionEnv(
     const headers = (env.ANTHROPIC_CUSTOM_HEADERS ?? '').split(/\r?\n/)
       .filter(line => line.trim() && line.split(':', 1)[0].trim().toLowerCase() !== 'x-app-url');
     headers.push(`X-App-URL: ${TOKENDANCE_APP_URL}`);
+    env.ANTHROPIC_CUSTOM_HEADERS = headers.join('\n');
+  }
+  if (effectiveProviderId === OPENCODE_GO_PROVIDER_ID) {
+    // The SDK app identity contributes to its User-Agent; the custom header
+    // carries only an opaque derivative of the Product Session identity.
+    env.CLAUDE_AGENT_SDK_CLIENT_APP = OPENCODE_GO_SDK_CLIENT_APP;
+    const headers = (env.ANTHROPIC_CUSTOM_HEADERS ?? '').split(/\r?\n/)
+      .filter(line => line.trim() && !['x-opencode-session', 'user-agent'].includes(line.split(':', 1)[0].trim().toLowerCase()));
+    headers.push(`User-Agent: ${OPENCODE_GO_USER_AGENT}`);
+    headers.push(`x-opencode-session: ${opencodeGoConversationId(opts?.conversationId)}`);
     env.ANTHROPIC_CUSTOM_HEADERS = headers.join('\n');
   }
 
@@ -6629,13 +6649,25 @@ function normalizeSdkSlashCommands(commands: unknown): UiSlashCommand[] | null {
   }
 
   const normalized: UiSlashCommand[] = [];
-  const seen = new Set<string>();
+  const indexByName = new Map<string, number>();
+  const builtinNames = new Set<string>();
   for (const command of commands) {
     const item = normalizeSdkSlashCommand(command);
     if (!item) continue;
     const key = item.name.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const existingIndex = indexByName.get(key);
+    // Claude Code resolves a marked built-in command before a same-name
+    // plugin/project command. Keep the picker aligned with what /name runs.
+    const builtin = (command as SdkSlashCommand).builtin === true;
+    if (existingIndex !== undefined) {
+      if (builtin && !builtinNames.has(key)) {
+        normalized[existingIndex] = item;
+        builtinNames.add(key);
+      }
+      continue;
+    }
+    indexByName.set(key, normalized.length);
+    if (builtin) builtinNames.add(key);
     normalized.push(item);
   }
   return normalized;
@@ -10881,6 +10913,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   // PRD 0.2.27 — query-scoped copy of the reloadAnchor this start actually sent. Local
   // (not module) so a late catch from THIS invocation evicts the right uuid even if a
   // newer session has since re-armed the module-level transcriptState.pendingReloadAnchor.
+  let sentReloadAnchor: string | undefined;
 
   // The exact SDK Query owns background-task liveness in lifecycle.ts so
   // deferred restart policy can see it. Whatever remains when this Query tears
@@ -10912,8 +10945,43 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   let deferredRewindResult: BuiltinSdkResultMessage | null = null;
   let queryExitFailed = false;
   let preparedProvider: PreparedProvider | undefined;
+  let recoveredRejectedReloadAnchor = false;
+
+  const recoverRejectedReloadAnchor = (rawError: string): boolean => {
+    if (lifecycleState.abortRequested || sessionId !== queryProductSessionId
+      || !isRejectedReloadAnchor(rawError, sentReloadAnchor)
+      || transcriptState.pendingReloadAnchor !== sentReloadAnchor) return false;
+
+    // This was inferred from Product history, not a persisted Rewind/Fork boundary.
+    // A bare resume lets the native Runtime select its durable head. The user
+    // explicitly accepts that legacy unmaterialized rewinds may expose a longer
+    // native history when their inferred boundary is rejected.
+    const rejected = sentReloadAnchor!;
+    setPendingReloadAnchor(undefined);
+    deleteCurrentSessionUuid(rejected);
+    const source = getCurrentTurnSourceItem();
+    abortPersistentSession({ notifyPendingRequests: false });
+    if (source) unshiftMessage({ ...source, resolve: () => {} });
+    recoveredRejectedReloadAnchor = true;
+    console.warn(`[agent] inferred reload anchor ${rejected} rejected by SDK; retrying with native selected head`);
+    schedulePreWarm();
+    return true;
+  };
 
   try {
+    if (launchProviderId === OPENCODE_GO_PROVIDER_ID && configState.currentProviderEnv && configState.currentModel) {
+      const provider = findEffectiveProvider(launchProviderId, loadAdminConfig());
+      if (!provider) throw new Error('OpenCode Go provider is unavailable for this session.');
+      const aliases = resolveSessionModelAliases(configState.currentProviderEnv.modelAliases, configState.currentModel);
+      const routedModels = [
+        ...Object.values(aliases ?? {}),
+        ...Object.values(launchAgentDefinitionsSource ?? {}).flatMap(agent => {
+          if (!agent.model || agent.model === 'inherit') return [];
+          return [aliases?.[agent.model as keyof typeof aliases] ?? agent.model];
+        }),
+      ];
+      assertQueryModelRoutesCompatible(provider as unknown as Provider, configState.currentProviderEnv, routedModels);
+    }
     if (configState.currentProviderEnv?.endpointSource) managedQueryController = bindingController;
     preparedProvider = await prepareProviderBinding({
       providerEnv: configState.currentProviderEnv,
@@ -10931,6 +10999,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       bridgeToken: activeSessionBridgeToken ?? undefined,
       providerId: launchProviderId,
       contextWindowSnapshot: launchContextWindowSnapshot,
+      conversationId: sessionId,
     });
     const launchModel = applyContextWindowSuffixForContextLength(
       configState.currentModel,
@@ -11119,6 +11188,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     const reloadAnchor = (!forkMode && !rewindResumeAt) ? transcriptState.pendingReloadAnchor : undefined;
     // Capture into a query-scoped local so a LATE catch from a previous (aborted) start
     // can't mis-attribute the eviction against a newer session's anchor (module state races).
+    sentReloadAnchor = reloadAnchor;
 
     const effectiveResumeAt = resolveEffectiveResumeAt({ forkMode, rewindResumeAt, forkResumeAt, reloadAnchor });
 
@@ -11876,6 +11946,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       );
     }
 
+    let sdkQueryResumed = Boolean(resumeFrom);
     try {
       activeQuery = await createGuardedSdkQuery(claudeCodeExecutable, () => query({
         prompt: promptGen,
@@ -11894,6 +11965,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       if (!resumeFrom && msg.includes('already in use')) {
         console.warn(`[agent] Session ${effectiveSdkSessionId} already exists on disk, switching to resume`);
         sessionRegistered = true;
+        sdkQueryResumed = true;
         activeQuery = await createGuardedSdkQuery(claudeCodeExecutable, () => query({
           prompt: promptGen,
           options: {
@@ -11911,6 +11983,20 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         throw queryError;
       }
     }
+
+    // The SDK reports cumulative modelUsage. A control turn can own usage
+    // without an assistant, so prefer the last Product turn snapshot. Fresh
+    // native sessions begin at zero even if Product history was retained.
+    const productTurns = getBuiltinProductContent()?.writer.projection.turns;
+    const priorTurnSnapshot = productTurns
+      ? [...productTurns.values()].reverse().find(turn => turn.usage?.sdkCumulativeModelUsage !== undefined)
+        ?.usage?.sdkCumulativeModelUsage
+      : undefined;
+    const priorAssistant = getBuiltinMessages().findLast(message => message.role === 'assistant');
+    builtinTurnLifecycle.beginSdkQueryUsage({
+      resumed: sdkQueryResumed,
+      previous: sdkQueryResumed ? priorTurnSnapshot ?? priorAssistant?.usage?.sdkCumulativeModelUsage : undefined,
+    });
 
     if (activeQuery) {
       if (rewindInputGate) {
@@ -12226,6 +12312,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // These acknowledge coalesced native notifications, not a product turn.
       // Route before provider settlement, queue/usage mutation or rewind cleanup.
       if (sdkMessage.type === 'result' && isCoalescedTaskNotificationReceipt(sdkMessage)) continue;
+      if (sdkMessage.type === 'conversation_reset') builtinTurnLifecycle.resetSdkQueryUsage();
       // Flip turn-scoped substantive-activity flag on first non-init frame.
       // `system/init` is the boilerplate startup frame and must not count
       // as "this turn produced output" for the watchdog auto-resume decision.
@@ -13481,7 +13568,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           retireRewoundQueryWhenQuiescent();
           continue;
         }
-        const handling = await builtinTurnLifecycle.handleSdkResult(resultMessage);
+        const handling = await builtinTurnLifecycle.handleSdkResult(resultMessage, recoverRejectedReloadAnchor);
         if (rewindInputGate && handling !== 'retrying') {
           retireRewoundQueryInput(rewindInputGate);
         }
@@ -13510,6 +13597,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       console.log('[agent] session start aborted pre-launch by user stop');
       return;
     }
+    if (recoverRejectedReloadAnchor(errorMessage)) return;
     const errorStack = error instanceof Error ? error.stack : String(error);
     console.error('[agent] session error:', errorMessage);
     console.error('[agent] session error stack:', errorStack);
@@ -13818,7 +13906,19 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     const turnBoundaryQueueLength = getTurnBoundaryQueue().length;
     if ((messageQueueLength > 0 || turnBoundaryQueueLength > 0) && !lifecycleState.processing && lifecycleState.query === null) {
       const hasOnlyTurnBoundaryQueue = messageQueueLength === 0 && turnBoundaryQueueLength > 0;
-      if (lifecycleState.preWarmDisabled || lifecycleState.preWarmFailCount >= PRE_WARM_MAX_RETRIES) {
+      if (recoveredRejectedReloadAnchor && (lifecycleState.preWarmDisabled
+        || lifecycleState.preWarmFailCount >= PRE_WARM_MAX_RETRIES)) {
+        // No speculative pre-warm is available, but this rejected inferred
+        // anchor still has one admitted input to replay against the native head.
+        setTimeout(() => {
+          if (sessionId !== queryProductSessionId || isSessionActive()
+            || (getMessageQueue().length === 0 && getTurnBoundaryQueue().length === 0)) return;
+          resetAbortFlag();
+          startStreamingSession().catch(error => {
+            console.error('[agent] failed to restart after inferred anchor rejection', error);
+          });
+        }, 0);
+      } else if (lifecycleState.preWarmDisabled || lifecycleState.preWarmFailCount >= PRE_WARM_MAX_RETRIES) {
         // A queued item cannot grant itself another startup retry budget. Once
         // preparation is exhausted, settle unsent input; a user/config action
         // can explicitly start a new recovery context.

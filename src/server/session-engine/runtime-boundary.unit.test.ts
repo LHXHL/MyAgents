@@ -261,7 +261,7 @@ describe('SessionEngine runtime boundary', () => {
     expect(forbiddenFacadePatterns.filter(pattern => pattern.test(facade)).map(String)).toEqual([]);
     expect(facade).toContain('publishForkSession');
 
-    expect(turnLifecycle).toContain('extractTurnUsageFromSdkResult');
+    expect(turnLifecycle).toContain('createSdkCumulativeUsageTracker');
     expect(turnLifecycle).toContain('isEmptySuccessfulSdkResult');
     expect(turnLifecycle).toContain('lastTurnEndPersist');
     expect(turnLifecycle).toContain('stampTurnUsageOnPendingAssistant');

@@ -15,7 +15,7 @@ import {
   type AppConfig,
 } from '@/config/types';
 import type { DiscoveredModel } from '@/config/services/modelDiscoveryService';
-import { resolveProviderForModel } from '../../shared/tokendance';
+import { resolveProviderForModel } from '../../shared/provider-model-routing';
 import ModelManagementPanel from './ModelManagementPanel';
 
 const mocks = vi.hoisted(() => ({

@@ -1,6 +1,6 @@
 import type { AskUserQuestionAnswers } from '../../../shared/types/askUserQuestion';
 import { dshSessionOwnedPaths } from './owned-paths';
-import { resolveProviderForModel } from '../../../shared/tokendance';
+import { resolveProviderForModel } from '../../../shared/provider-model-routing';
 import type { MethodParams } from './protocol-types';
 import type { RuntimeAgentWorkControl, RuntimeAgentWorkTree } from '../../../shared/types/subagent-lifecycle';
 import { createHash, randomUUID } from 'node:crypto';

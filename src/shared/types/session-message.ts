@@ -34,6 +34,8 @@ export interface MessageUsage {
     model?: string;
     /** Per-model breakdown (for detailed statistics) */
     modelUsage?: Record<string, ModelUsageEntry>;
+    /** Builtin SDK's raw cumulative result snapshot. Used only to recover the next Query's usage baseline. */
+    sdkCumulativeModelUsage?: Record<string, ModelUsageEntry>;
 }
 
 /** Session source: 'desktop' for desktop, '{platform}_{private|group}' for IM/channels (supports bridge plugins with dynamic platform names) */

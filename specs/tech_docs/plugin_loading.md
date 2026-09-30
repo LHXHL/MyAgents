@@ -111,6 +111,8 @@ Chat 的 slash menu 合并两类快照：
 1. 工作区/用户静态 commands 与 skills。Launcher 由 Rust `cmd_list_slash_commands` 扫描；Chat 使用 `/api/project-capabilities` 的 enabled snapshot。
 2. Builtin SDK 的 `initializationResult().commands` 与 `commands_changed.commands`。Sidecar 通过 `chat:slash-commands` 发布全量替换快照；空数组同样有效。
 
+SDK 0.3.277 起同名 command 可能同时返回内置与插件/项目来源。Sidecar 按 SDK 的 `builtin` 标记保留内置项，让菜单描述与输入 `/name` 后真正执行的命令一致；别名仍按 SDK 自身解析，不参与同名优先级判断。
+
 本地静态命令优先，SDK 只补充同名项之外的命令，不能覆盖 Renderer client action 或本地自定义命令。Renderer 不扫描 Plugin 安装目录重建 SDK 语义。Managed Codex 由 compiler 在 turn admission 时展开 Plugin Command，不消费这条 SSE。
 
 `pending-* → UUID` 的 Session birth upgrade 只有在内部 state 已采纳真实 id、父级 prop 只是补同步时才能保留对应 SDK command snapshot。真实 target replacement、reset 或切换 external Runtime 必须清空旧 snapshot；普通历史导航不能伪装成 birth upgrade。

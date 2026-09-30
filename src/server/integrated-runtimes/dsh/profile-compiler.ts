@@ -2,7 +2,7 @@ import type { MethodParams } from "./protocol-types";
 import { createHash } from "node:crypto";
 
 import type { Provider } from "../../../shared/config-types";
-import { resolveProviderForModel } from "../../../shared/tokendance";
+import { resolveProviderForModel } from "../../../shared/provider-model-routing";
 import { SDK_DEFAULT_CONTEXT_WINDOW } from "../../../shared/contextUsage";
 import dshLock from "../../../shared/integrated-runtimes/effective-dsh-lock";
 import {
@@ -60,7 +60,10 @@ type DshProfileCompilerProvider = Pick<
   | "maxOutputTokensParamName"
   | "config"
   | "models"
->;
+  | "authType"
+  | "modelRouting"
+  | "modelProtocolBaseUrls"
+> & Partial<Pick<Provider, "name" | "isBuiltin">>;
 
 const DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
 const OFFICIAL_DEEPSEEK_RUNTIME_BASE_URL = "https://api.deepseek.com/anthropic";

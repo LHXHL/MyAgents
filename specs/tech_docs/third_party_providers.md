@@ -51,7 +51,7 @@ Subscription 是产品/计费类型，不决定执行 Runtime 或 auth owner。�
 
 `tokendance` 仍是一个普通 API Provider。公开模型目录的 `supported_protocols` 经发现服务映射到 `ModelEntity.supportedProtocols`，随 `presetCustomModels` 合并保存；新增与手动输入的模型 ID 都要先取得可用的协议能力。自动刷新只更新能力，不替换用户的名称、启用列表或首选。目录返回不认识的协议集合时保留空集合，不能借 Provider 默认协议冒充兼容。
 
-`src/shared/tokendance.ts::resolveProviderForModel` 是唯一优先级策略：Anthropic Messages → OpenAI Responses → OpenAI Chat Completions。它依据具体模型生成不可变的 Provider execution projection，配套选择 `apiProtocol` / `upstreamFormat` / `baseUrl` / 认证与输出参数。`materializeProviderRouteEnv`、Task、IM、vision 和 provider probe 在既有入口接入；Renderer 使用同一纯函数显示模型对应的推理选项。普通 Provider 保持原行为，Runtime / Bridge 不读取供应商能力数组。切换协议由既有 `providerEnvEqual` 与 Query 重建路径处理，不修改全局 Provider。
+`src/shared/provider-model-routing.ts::resolveProviderForModel` 是唯一逐模型路由策略。TokenDance 保留 Anthropic Messages → OpenAI Responses → OpenAI Chat Completions 的能力优先级。该策略依据具体模型生成不可变的 Provider execution projection，配套选择 `apiProtocol` / `upstreamFormat` / `baseUrl` / 认证与输出参数。`materializeProviderRouteEnv`、Task、IM、vision 和 provider probe 在既有入口接入；Renderer 使用同一纯函数显示模型对应的推理选项。未声明 `modelRouting: 'per-model'` 的普通 Provider 保持固定路由。切换协议由既有 `providerEnvEqual` 与 Query 重建路径处理，不修改全局 Provider。
 
 `src-tauri/src/tokendance.rs` 在应用生命周期内拥有一次临时 PKCE loopback 授权。随机 `127.0.0.1` 回调路径接收一次 code；Key 通过 `with_config_lock` 保存到原有 `config.json`，并校验开始授权时的凭据版本，避免旧授权覆盖新账户。磁盘保存失败可重试同一 Key；凭据版本冲突则终止旧授权、释放待保存 Key，并由既有失败面板引导重新授权。面板打开期间持续等待，最后一个面板关闭后保留 15 分钟；不跨重启恢复。原生事件不携带 Key，ConfigProvider 在应用层刷新配置和既有可用供应商投影，隐藏设置页不影响授权保存。
 
@@ -60,6 +60,12 @@ OAuth `app_url` 与请求头 `X-App-URL` 同时固定为 `https://myagents.io`�
 余额与充值 API 经 Rust 的 Provider-aware HTTP client。余额是账户原始微元，UI 两位小数只用于展示；请求和 UI 结果绑定凭据版本。只有供应商明确返回的 `TokenDance-Recovery-Action` 控制重新授权、充值或管理 Key 额度，不从普通网络错误 / HTTP 状态推断。
 
 充值 attempt 只属于当前面板；提交才创建，打开时轮询供应商会话，关闭后停止本地请求并忽略迟到结果。没有持久订单表、后台付款轮询或本地余额加减。关闭不代表远端订单已取消，旧二维码直到供应商过期前仍可能被支付。
+
+### OpenCode Go 逐模型路由
+
+`opencode-go` 是 API Provider；官网 Endpoints 表的模型和唯一协议随 App 预设于 `src/shared/opencode-go.ts`。公开 `/zen/go/v1/models` 目录用于发现 ID，当前响应不提供协议；预设之外且目录没有唯一可信协议的模型必须在原有 `ModelSettingsEditor` 选择 Protocol 才能保存。用户手选执行协议存于 `ModelEntity.executionProtocol`，与目录声明的 `supportedProtocols` 分离；前者优先于后来新增的官方映射，冲突在编辑器提示。普通固定 Provider 不显示 Protocol 设置，TokenDance 也不要求用户手选。
+
+执行路径仍是现有 SDK Anthropic 直连或 OpenAI Bridge 的 Responses / Chat Completions 转换。SDK child 环境使用 `ANTHROPIC_CUSTOM_HEADERS` 与 `CLAUDE_AGENT_SDK_CLIENT_APP` 发送 MyAgents 身份；Bridge 和独立诊断从各自出站入口设置。`x-opencode-session` 是 Product Session ID 的不透明稳定摘要，标题和视觉等关联调用沿用该 Session ID，验证调用使用独立临时身份。它不是 Provider 静态配置，也不写入会话元数据、日志或分析。三协议不互相试错；同一 SDK Query 中显式跨协议子代理仍不支持。
 
 ### SDK child 环境
 

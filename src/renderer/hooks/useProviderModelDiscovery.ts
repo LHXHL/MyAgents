@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Provider } from '@/config/types';
 import { TOKENDANCE_PROVIDER_ID } from '../../shared/tokendance';
+import { OPENCODE_GO_PROVIDER_ID } from '../../shared/opencode-go';
 import { fetchProviderModels, type DiscoveredModel } from '@/config/services/modelDiscoveryService';
 
 interface DiscoveryOptions {
@@ -23,7 +24,7 @@ export function useProviderModelDiscovery({
   const { id, modelListUrl } = provider;
   const baseUrl = provider.config.baseUrl;
   const managed = discoveryAction !== undefined;
-  const credential = managed || id === TOKENDANCE_PROVIDER_ID ? undefined : apiKey;
+  const credential = managed || id === TOKENDANCE_PROVIDER_ID || id === OPENCODE_GO_PROVIDER_ID ? undefined : apiKey;
   const request = useMemo(() => ({
     provider: { id, modelListUrl, config: { baseUrl } },
     apiKey: credential,

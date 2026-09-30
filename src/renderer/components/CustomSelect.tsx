@@ -88,7 +88,16 @@ export default function CustomSelect({
   );
 
   return (
-    <div className={`relative ${className ?? ''}`}>
+    <div
+      className={`relative ${className ?? ''}`}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape' && isOpen) {
+          event.stopPropagation();
+          setIsOpen(false);
+          triggerRef.current?.focus();
+        }
+      }}
+    >
       <button
         ref={triggerRef}
         type="button"

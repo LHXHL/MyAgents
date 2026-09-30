@@ -29,6 +29,7 @@ import {
   resolveCliPort,
   validateCliRouting,
   validateCliCommand,
+  validateDryRunSupport,
   validateExternalCliInvocation,
   validateSessionMutationAcknowledgement,
 } from './myagents';
@@ -47,6 +48,42 @@ beforeEach(() => {
 afterEach(() => {
   if (inheritedMyAgentsSessionId === undefined) delete process.env.MYAGENTS_SESSION_ID;
   else process.env.MYAGENTS_SESSION_ID = inheritedMyAgentsSessionId;
+});
+
+describe('myagents CLI port authority', () => {
+  it('keeps --port above inherited Session or Rust-injected Global ports', () => {
+    expect(resolveCliPort('32003', '32002')).toBe('32003');
+    expect(resolveCliPort(undefined, '32002')).toBe('32002');
+    expect(resolveCliPort(undefined, '')).toBe('');
+  });
+});
+
+describe('CLI dry-run admission', () => {
+  it('rejects unsupported Agent and other mutation leaves before request building', () => {
+    for (const command of [
+      ['agent', 'disable', 'agent-1'],
+      ['agent', 'channel', 'remove', 'agent-1', 'channel-1'],
+      ['mcp', 'remove', 'server-1'],
+      ['session', 'send', 'session-1'],
+    ]) {
+      const positional = parseArgs([...command, '--dry-run']).positional;
+      expect(validateDryRunSupport(positional, { dryRun: true })).toMatchObject({
+        code: 'DRY_RUN_UNSUPPORTED',
+        error: expect.stringContaining('No changes were applied'),
+      });
+    }
+  });
+
+  it('preserves every documented preview leaf and ordinary commands', () => {
+    for (const command of [
+      ['mcp', 'add'], ['model', 'add'], ['config', 'set'],
+      ['cron', 'add'], ['skill', 'add'], ['tool', 'add'],
+    ]) {
+      expect(validateDryRunSupport(command, { dryRun: true })).toBeUndefined();
+    }
+    expect(validateDryRunSupport(['agent', 'disable', 'agent-1'], {})).toBeUndefined();
+    expect(parseArgs(['agent', 'disable', 'agent-1', '--dry-run=false']).flags.dryRun).toBe(true);
+  });
 });
 
 describe('public external CLI declaration', () => {

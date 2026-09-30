@@ -191,20 +191,22 @@ export async function generateTitle(
   rounds: TitleRound[],
   model: string,
   providerEnv?: ProviderEnv,
+  conversationId?: string,
 ): Promise<string | null> {
+  const requestConversationId = conversationId ?? randomUUID();
   // PRD #124: register a per-call bridge token if the title-gen provider is
   // OpenAI-protocol — the SDK subprocess routes to ITS upstream via a
   // dedicated /bridge/<token> path, fully isolated from the active session.
   // For Anthropic-direct / subscription title-gen, no token is needed.
   const bridge = providerEnv?.apiProtocol === 'openai'
-    ? startOneShotBridge(providerEnv, model, `title-gen:${providerEnv.baseUrl ?? 'anthropic'}`)
+    ? startOneShotBridge(providerEnv, model, `title-gen:${providerEnv.baseUrl ?? 'anthropic'}`, undefined, requestConversationId)
     : null;
   const controller = new AbortController();
   let prepared: PreparedProvider | undefined;
   try {
     prepared = await prepareProviderBinding({ providerEnv, model, controller });
     await prepared.beforeTurn();
-    return await generateTitleInner(rounds, model, prepared.providerEnv, bridge?.token, controller, prepared);
+    return await generateTitleInner(rounds, model, prepared.providerEnv, bridge?.token, controller, prepared, requestConversationId);
   } catch {
     return null;
   } finally {
@@ -221,6 +223,7 @@ async function generateTitleInner(
   bridgeToken?: string,
   controller = new AbortController(),
   prepared?: PreparedProvider,
+  conversationId?: string,
 ): Promise<string | null> {
   const startTime = Date.now();
   const sessionId = randomUUID();
@@ -237,6 +240,7 @@ async function generateTitleInner(
     const env = buildClaudeSessionEnv(providerEnv, model, {
       bridgeToken,
       providerId: providerEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID,
+      conversationId,
     });
     const launchModel = applyContextWindowSuffixForContextLength(
       model,
