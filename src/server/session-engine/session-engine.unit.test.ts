@@ -136,6 +136,7 @@ const mocks = vi.hoisted(() => {
     requireCurrentBuiltinSkill: vi.fn(async () => undefined),
     rewindSession: vi.fn(async () => ({ success: true, content: 'rewound' })),
     setAgents: vi.fn(),
+    forceReloadActiveSession: vi.fn(),
     setBackgroundAgentPermissionMode: vi.fn(),
     setInteractionScenario: vi.fn(),
     setMcpServers: vi.fn(),
@@ -388,6 +389,7 @@ vi.mock('../agent-session', () => ({
   requireCurrentBuiltinSkill: mocks.requireCurrentBuiltinSkill,
   rewindSession: mocks.rewindSession,
   setAgents: mocks.setAgents,
+  forceReloadActiveSession: mocks.forceReloadActiveSession,
   setBackgroundAgentPermissionMode: mocks.setBackgroundAgentPermissionMode,
   setInteractionScenario: mocks.setInteractionScenario,
   setMcpServers: mocks.setMcpServers,
@@ -568,6 +570,18 @@ describe('session-engine selector and adapters', () => {
     mocks.popLastUserMessageForRetry.mockResolvedValue({ success: true, content: 'retry' });
     mocks.getBuiltinLiveSessionSnapshot.mockReturnValue(null);
     mocks.getExternalLiveSessionSnapshot.mockReturnValue(null);
+  });
+
+  it('forces SDK agent reload only when explicitly requested by the builtin adapter', async () => {
+    const engine = getSessionEngine();
+    const agents = { helper: { description: 'Helper', prompt: 'Assist' } };
+
+    await engine.updateAgents(agents);
+    expect(mocks.setAgents).toHaveBeenCalledWith(agents);
+    expect(mocks.forceReloadActiveSession).not.toHaveBeenCalled();
+
+    await engine.updateAgents(agents, { forceReload: true });
+    expect(mocks.forceReloadActiveSession).toHaveBeenCalledExactlyOnceWith('agents');
   });
 
   it('resolves IM Bridge caller identity through the selected Runtime adapter', () => {

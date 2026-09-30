@@ -471,6 +471,28 @@ export default defineConfig(
       'no-restricted-syntax': ['error', ...SIDECAR_RESTRICTED_SYNTAX]
     }
   },
+  // Admin/session routes select the SessionEngine; SDK lifecycle mutations
+  // belong to its builtin adapter. Keep reads/constants available while
+  // preventing the reload bypass that attached a second DSH publisher.
+  {
+    files: ['src/server/admin-api.ts', 'src/server/routes/**/*.ts'],
+    ignores: ['**/*.test.ts'],
+    rules: {
+      'no-restricted-imports': 'off',
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        patterns: [{
+          regex: '(^|/)agent-session(?:\\.ts)?$',
+          importNames: ['setMcpServers', 'setAgents', 'forceReloadActiveSession', 'schedulePluginDeferredRestart'],
+          allowTypeImports: true,
+          message: 'Direct SDK configuration/reload in an Admin or session route bypasses the selected Runtime and can start an SDK process plus a second transcript publisher in a DSH Session. Use getSessionEngine().updateMcpServers/updateAgents; only the builtin adapter may invoke SDK reload.',
+        }],
+      }],
+      'no-restricted-syntax': ['error', ...SIDECAR_RESTRICTED_SYNTAX, {
+        selector: 'ImportExpression[source.value=/(^|\\u002f)agent-session([.]ts)?$/]',
+        message: 'Dynamically importing the SDK facade in an Admin or session route bypasses Runtime selection and the configuration import guard. Use getSessionEngine() for Session operations; SDK lifecycle belongs to the builtin adapter.',
+      }],
+    },
+  },
   // Tools + plugin-bridge: bare fetch() ban on top of all sidecar rules.
   // These code paths run inside SDK turns (tools/) or IM message processing
   // (plugin-bridge/), where a stuck upstream freezes the user-visible

@@ -107,6 +107,8 @@ scope 错误。普通无 Session 身份的外部 CLI 保留全局管理行为。
 进入同一路由，`--help` 仍可本地运行。构建后的 CLI fixture 覆盖两 Session 的 current/task/goal、
 身份头、缺失/非法路由与既有全局命令；实际安装包/Bash 联合证据由 DSH 自检 workstream 管理。
 
+`myagents reload` 与 MCP mutation 的当前会话更新使用 `SessionEngine.updateMcpServers` / `updateAgents`，工作区从同一 adapter 的 context 读取。显式 reload 的 `forceReload` 只由 builtin adapter 交给既有 SDK deferred restart；DSH / Managed Codex 使用自己的 extension reconciliation 边界。Admin API 不直接调用 SDK 配置 setter：Integrated DSH 并非 external CLI，但同样不拥有 SDK Query，误调用会在 DSH Sidecar 内启动 SDK 并重复发布同一 Product transcript 操作。
+
 ### 命令体系
 
 ```

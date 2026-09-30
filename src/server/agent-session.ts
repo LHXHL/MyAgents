@@ -1545,7 +1545,9 @@ async function setCurrentSessionId(next: string): Promise<void> {
   await setCurrentProductSessionId(next);
 }
 
-configureBuiltinTranscriptBinding(getCurrentProductSessionId);
+// Product identity is shared with Integrated DSH, but SDK content ownership
+// is not. A dormant SDK facade must never subscribe to another adapter's writer.
+configureBuiltinTranscriptBinding(() => getCurrentRuntimeType() === 'builtin' ? getCurrentProductSessionId() : '');
 
 let builtinTranscriptPresentation: TranscriptPresentation | undefined;
 
@@ -3889,8 +3891,9 @@ function schedulePreWarm(delayMs = 500): void {
   if (lifecycleState.preWarmTimer) clearTimeout(lifecycleState.preWarmTimer);
   if (!agentDir) return;
   if (lifecycleState.preWarmDisabled) return;
-  // External runtimes (CC/Codex) manage their own subprocess — skip builtin SDK pre-warm
-  if (isExternalRuntime(getCurrentRuntimeType())) return;
+  // Only the SDK adapter owns this pre-warm. Integrated DSH also owns its
+  // own process; "not an external CLI" does not imply "builtin SDK".
+  if (getCurrentRuntimeType() !== 'builtin') return;
 
   // Stop retrying after consecutive failures to avoid infinite loop
   if (lifecycleState.preWarmFailCount >= PRE_WARM_MAX_RETRIES) {

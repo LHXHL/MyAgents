@@ -49,6 +49,7 @@ import {
   rewindSession,
   retryBuiltinUserMessage,
   setAgents,
+  forceReloadActiveSession,
   setBackgroundAgentPermissionMode,
   setInteractionScenario,
   setMcpServers,
@@ -957,8 +958,9 @@ export function createBuiltinSessionEngine(): SessionEngine {
       return retryBuiltinMcpServer(serverId);
     },
 
-    async updateAgents(agents) {
+    async updateAgents(agents, options) {
       setAgents(agents as Record<string, AgentDefinition>);
+      if (options?.forceReload) forceReloadActiveSession('agents');
       return { success: true };
     },
 

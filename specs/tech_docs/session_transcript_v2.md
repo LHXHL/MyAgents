@@ -18,6 +18,7 @@ Rust 在 metadata 尚未发布的窗口，沿 active 或 recovering SessionSidec
 
 - Message/Block/Tool 的产品 ID 稳定。用户插话结束当前展示段，后续主文本进入新段；晚到工具、附件与完整帧仍更新原目标。
 - `ProductTranscriptContent` / `TranscriptPresentation` 只持有 native response、stream index、parent、SDK delivery UUID 到产品目标的关联。正文在 writer projection；完整帧确认 partial，retraction 按 root/child scope 删除对应块。
+- Product binding 共享 Session identity，不共享 Runtime presentation 权限。Builtin transcript binding 只在 `builtin` Runtime 返回该 identity；DSH / external Sidecar 中 dormant SDK facade 不得订阅 writer。否则正文只追加一次，两个发布器却各自生成 SSE revision，实时显示会逐 delta 重复；这不是应由 Renderer 按文字内容去重的故障。
 - 同一 native 文本块跨插话时记录片段边界，完整帧按边界确认各产品段；只有末段可取得该 native delivery 的末端锚点，中间段的 fork/rewind 明确拒绝。Codex item 的 `nativeText` 保留缩短/更正/空字符串；native item id 不伪装为 SDK UUID。
 - 工具 JSON 输入以 `inputJson` + `inputComplete` 表达，旧 wire 的 `input` 在读取时派生。结果/输入大字符串分块入日志；媒体字节仍走既有附件管线。
 - 列表 stats 从 canonical message 的角色与 usage 标量派生，预览沿用最后可见用户 query 的既有语义；不序列化 assistant 工具正文计算统计。Turn 的 root user、状态、usage 与 message 分开，同一 turn 多个展示段不重复计费。native success/Stop/error 输出读当前 projection，不读旧磁盘结果。

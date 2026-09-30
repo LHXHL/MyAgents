@@ -117,11 +117,8 @@ const SKILL_INSTALL_LOOPBACK_TIMEOUT_MS = 330_000;
 const AGENT_LIFECYCLE_LOOPBACK_TIMEOUT_MS = 300_000;
 import { resolve } from 'path';
 import {
-  setMcpServers,
-  setAgents,
   getAgentState,
   getSidecarPort,
-  forceReloadActiveSession,
 } from './agent-session';
 import { loadEnabledAgents } from './agents/agent-loader';
 import { getHomeDirOrNull } from './utils/platform';
@@ -2738,7 +2735,7 @@ function resolveEffectiveMcpServersForWorkspace(
   );
 }
 
-export function handleReload(workspacePath?: string): AdminResponse {
+export async function handleReload(workspacePath?: string): Promise<AdminResponse> {
   // Re-read config from disk and push effective MCP + sub-agents to in-memory state.
   // Workspace resolution: prefer explicit arg → fall back to the session's agentDir.
   // Without this fallback, sub-agent reload would only see global agents.
@@ -2775,23 +2772,19 @@ export function handleReload(workspacePath?: string): AdminResponse {
     };
   }
 
-  // Both sources loaded cleanly — now commit the in-memory state atomically
-  // (well, as atomically as two module-level setters allow) and trigger the
-  // forced restart that applies them.
-  setMcpServers(effectiveServers);
-  setAgents(agents);
+  // Runtime configuration belongs to the selected adapter. Direct SDK setters
+  // here can start a second Runtime and publisher inside a DSH Sidecar.
+  const engine = getSessionEngine();
+  const mcpResult = await engine.updateMcpServers(effectiveServers);
+  if (!mcpResult.success) return { success: false, error: mcpResult.error ?? 'Failed to reload MCP configuration' };
+  const agentsResult = await engine.updateAgents(agents, { forceReload: true });
+  if (!agentsResult.success) return { success: false, error: agentsResult.error ?? 'Failed to reload Agent configuration' };
   const agentCount = Object.keys(agents).length;
-
-  // Force a session restart even for snapshotted (Tab / Cron / Background)
-  // sessions — reload is an explicit request, not noise from React state
-  // sync. Without this the in-memory config is refreshed but the running
-  // SDK subprocess keeps delegating to the old sub-agent definitions (#98).
-  forceReloadActiveSession('agents');
 
   broadcast('config:changed', { section: 'all', action: 'reload' });
   return {
     success: true,
-    hint: `Configuration reloaded (MCP: ${effectiveServers.length}, sub-agents: ${agentCount}). The session will restart on the next turn to apply changes.`,
+    hint: `Configuration reloaded (MCP: ${effectiveServers.length}, sub-agents: ${agentCount}). Changes are applied by the current Runtime at its configuration boundary.`,
   };
 }
 
@@ -8780,7 +8773,8 @@ async function notifyMcpChange(action: string, id: string): Promise<void> {
     'notifyMcpChange',
   );
 
-  setMcpServers(effectiveServers);
+  const result = await getSessionEngine().updateMcpServers(effectiveServers);
+  if (!result.success) throw new Error(result.error ?? 'MCP configuration was saved, but current Runtime refresh failed');
   await notifyAppConfigChanged('mcp', action, id);
 }
 
@@ -8875,10 +8869,9 @@ async function disableMcpForCurrentProject(
   return result;
 }
 
-/** Get workspace path from agent-session (set during session init) */
+/** The selected adapter owns the current workspace for every Runtime. */
 function getCurrentWorkspacePath(): string | undefined {
-  const state = getAgentState();
-  return state.agentDir || undefined;
+  return getSessionEngine().getCurrentSessionContext().workspacePath || undefined;
 }
 
 /** Modify an agent in config by ID */

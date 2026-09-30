@@ -76,7 +76,9 @@ const sessionEngineMocks = vi.hoisted(() => {
   return {
     state,
     getStreamReplaySnapshot: vi.fn((): { sessionId: string; mcpEffectiveSnapshot: unknown } => ({ sessionId: '', mcpEffectiveSnapshot: null })),
-    getCurrentSessionContext: vi.fn(() => state.context),
+    getCurrentSessionContext: vi.fn(() => ({ ...state.context, workspacePath: state.context.workspacePath ?? agentSessionMocks.agentDir ?? null })),
+    updateMcpServers: vi.fn(async () => ({ success: true as boolean, error: undefined as string | undefined })),
+    updateAgents: vi.fn(async () => ({ success: true as boolean, error: undefined as string | undefined })),
     getCurrentTurnIdentity: vi.fn(() => state.turnIdentity),
     getSessionOrigin: vi.fn((sessionId: string) => state.origins.get(sessionId)),
   };
@@ -127,6 +129,8 @@ vi.mock('./session-engine', () => ({
     getStreamReplaySnapshot: sessionEngineMocks.getStreamReplaySnapshot,
     getCurrentTurnIdentity: sessionEngineMocks.getCurrentTurnIdentity,
     getSessionOrigin: sessionEngineMocks.getSessionOrigin,
+    updateMcpServers: sessionEngineMocks.updateMcpServers,
+    updateAgents: sessionEngineMocks.updateAgents,
   }),
 }));
 
@@ -160,6 +164,10 @@ beforeEach(() => {
   agentSessionMocks.agentDir = undefined;
   agentSessionMocks.getSidecarPort.mockReturnValue(0);
   agentSessionMocks.setMcpServers.mockClear();
+  agentSessionMocks.setAgents.mockClear();
+  agentSessionMocks.forceReloadActiveSession.mockClear();
+  sessionEngineMocks.updateMcpServers.mockReset().mockResolvedValue({ success: true, error: undefined });
+  sessionEngineMocks.updateAgents.mockReset().mockResolvedValue({ success: true, error: undefined });
   // Clear queued `mockResolvedValueOnce` entries as well as call history.
   // Some handlers make platform-dependent auxiliary calls; leaving an unused
   // one-shot response here can otherwise leak into the next test in the file.
@@ -217,6 +225,34 @@ describe('Record Admin routing', () => {
     managementApiMocks.managementApi.mockResolvedValueOnce({ ok: false, error: 'Record store unavailable', recoveryHint });
     const response = await handler(new Request('http://localhost/api/admin/record/list', { method: 'POST', body: '{}' }));
     expect(await response.json()).toMatchObject({ success: false, error: 'Record store unavailable', recoveryHint });
+  });
+});
+
+describe('current Runtime configuration ownership', () => {
+  it('routes reload through the SessionEngine and uses its workspace instead of dormant SDK state', async () => {
+    const workspace = join(scratch, 'runtime-workspace');
+    mkdirSync(workspace, { recursive: true });
+    sessionEngineMocks.state.context = { sessionId: 'dsh-session', workspacePath: workspace };
+    agentSessionMocks.agentDir = join(scratch, 'stale-sdk-workspace');
+    const server = { id: 'runtime-mcp', name: 'Runtime MCP', type: 'http', url: 'https://synthetic.invalid/mcp' };
+    writeJson(join(scratch, '.myagents', 'config.json'), { mcpServers: [server], mcpEnabledServers: [server.id] });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{ id: 'runtime-project', path: workspace, mcpEnabledServers: [server.id] }]);
+    const { handleReload } = await import('./admin-api');
+    expect(await handleReload()).toMatchObject({ success: true });
+    expect(sessionEngineMocks.updateMcpServers).toHaveBeenCalledWith([expect.objectContaining({ id: server.id })]);
+    expect(sessionEngineMocks.updateAgents).toHaveBeenCalledWith(expect.any(Object), { forceReload: true });
+    expect(agentSessionMocks.setMcpServers).not.toHaveBeenCalled();
+    expect(agentSessionMocks.setAgents).not.toHaveBeenCalled();
+    expect(agentSessionMocks.forceReloadActiveSession).not.toHaveBeenCalled();
+  });
+
+  it.each(['mcp', 'agents'])('reports %s reload failure from the selected adapter', async component => {
+    const update = component === 'mcp' ? sessionEngineMocks.updateMcpServers : sessionEngineMocks.updateAgents;
+    update.mockResolvedValueOnce({ success: false, error: 'Runtime configuration rejected' });
+    const { handleReload } = await import('./admin-api');
+    expect(await handleReload()).toEqual({ success: false, error: 'Runtime configuration rejected' });
+    if (component === 'mcp') expect(sessionEngineMocks.updateAgents).not.toHaveBeenCalled();
+    expect(agentSessionMocks.forceReloadActiveSession).not.toHaveBeenCalled();
   });
 });
 
@@ -3142,7 +3178,7 @@ describe('admin-api MCP add contract', () => {
       mcpServers: [original],
       mcpEnabledServers: ['existing-server'],
     });
-    expect(agentSessionMocks.setMcpServers).not.toHaveBeenCalled();
+    expect(sessionEngineMocks.updateMcpServers).not.toHaveBeenCalled();
     expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
   });
 
@@ -3591,7 +3627,7 @@ describe('admin-api MCP project scope', () => {
 
     expect(result.success).toBe(false);
     expect(readConfig().mcpEnabledServers).toEqual([]);
-    expect(agentSessionMocks.setMcpServers).not.toHaveBeenCalled();
+    expect(sessionEngineMocks.updateMcpServers).not.toHaveBeenCalled();
   });
 
   it('keeps global enable effective when project scope is skipped for an unregistered workspace', async () => {
@@ -3613,7 +3649,7 @@ describe('admin-api MCP project scope', () => {
     expect(result.success).toBe(true);
     expect(result.data).toMatchObject({ id: 'win-custom', projectScope: 'project-not-found' });
     expect(readConfig().mcpEnabledServers).toEqual(['win-custom']);
-    expect(agentSessionMocks.setMcpServers).toHaveBeenCalledWith([
+    expect(sessionEngineMocks.updateMcpServers).toHaveBeenCalledWith([
       expect.objectContaining({ id: 'win-custom' }),
     ]);
   });

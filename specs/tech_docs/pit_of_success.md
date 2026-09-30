@@ -37,6 +37,7 @@
 - [Context-window suffix helpers](#context-window-suffix) — >200K 模型上下文窗口解锁（provider-scoped lookup + `[1m]` wrap + env cap）
 
 **结构性其他**
+- [Session Runtime 配置入口](#session-runtime-config) — Admin / route 不能绕过 adapter 调用 SDK 配置重载
 - [Builtin MCP 懒加载](#builtin-mcp) — META/INSTANCE 两层架构
 - [snapshot helpers](#snapshot-helpers) — owned vs live-follow 命名分裂
 - [legacy Cron startup migration](#legacy-cron-migration) — 后端启动期幂等迁移
@@ -737,6 +738,19 @@ Sidecar HTTP workspace IO endpoint 已全部下线，Renderer 唯一入口是 `u
 - `EffectiveProjectCapabilitySnapshot.revision` 仍只表示 effective Runtime 内容；`integrityRevision` 单独表示诊断与 desired managed-link set。纯 warning/no-op reconcile 不换代，只有实际 unlink/create 才复用既有 deferred replacement。二者不进入持久 cache。Rust Launcher 使用共享 JSON fixtures 镜像 classifier，并先跳过指向 global root 的 project junction，避免同一 Skill 被误认成 project winner。
 
 **Don't.** seed/sync 里覆盖前不验源完整就 `remove_dir_all(dst)`；或对不完整结果照写版本戳。两者都会把瞬时打包缺陷固化成持久态。不要用 watcher、后台 timer、持久 registry 或全工作区 sweep 代替 admission snapshot，也不要自动 rename/delete/merge 可疑目录。改 Required 名单时必须同步 TS canonical 与 Rust mirror，禁止在 UI、CLI 或其它模块新增第三份名单，也不要把 Required 名称重新写进 disabled 配置。
+
+---
+
+<a id="session-runtime-config"></a>
+## Session Runtime 配置入口
+
+**Problem.** Admin reload 直接调用 SDK setter/restart，配合“非 external CLI 即 builtin”的预热判断，会在 Integrated DSH Session 内误启 SDK，并给同一 Product transcript writer 挂上第二个 SSE publisher；磁盘正文只写一次，界面逐 delta 重复。
+
+**Surface.** Admin / session route 使用 `getSessionEngine().updateMcpServers` / `updateAgents`，当前工作区取同一 adapter 的 context。显式 reload 的 `forceReload` 表达刷新请求，是否重建、何时应用由 adapter 决定；builtin 复用既有 deferred restart，DSH 使用原生 extension reconciliation。
+
+**Invariants enforced.** `eslint.config.js` 禁止这些入口从 `agent-session` 导入 `setMcpServers`、`setAgents`、`forceReloadActiveSession`、`schedulePluginDeferredRestart`，也禁止动态导入 SDK facade 绕开约束；builtin adapter 保留调用权限。`session-runtime-boundary.unit.test.ts` 使用真实 lint 配置验证错误入口被拒绝、正确入口可用。SDK prewarm 与 transcript binding 在各自 owner 入口只接受 `builtin`，集成回归覆盖 DSH / Claude Code / Codex 不启动 SDK、不订阅他人的正文。
+
+**Don't.** 不在 handler 判断 builtin/external，不把“不是 external CLI”当成 SDK ownership，也不在 Renderer 按文本去重掩盖多发布器。正文生命周期与发布范围见 [Session Transcript V2](./session_transcript_v2.md)。
 
 ---
 

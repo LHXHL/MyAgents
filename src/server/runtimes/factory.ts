@@ -51,7 +51,9 @@ export function getExternalRuntime(type: RuntimeType): AgentRuntime {
 }
 
 /**
- * Check if a runtime type is external (not builtin)
+ * External CLI classification (Claude Code / Codex), excluding Integrated DSH.
+ * This does not imply SDK ownership: builtin-only operations must check
+ * `type === 'builtin'` explicitly.
  */
 export function isExternalRuntime(type: RuntimeType | undefined): boolean {
   return type === 'claude-code' || type === 'codex';
