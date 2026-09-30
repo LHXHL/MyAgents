@@ -9044,18 +9044,19 @@ const SENSITIVE_TOP_KEYS = new Set([
   'mcpServerEnv',
   'cliToolEnv',
 ]);
+// Legacy snapshots serialize credentials into strings rather than nested objects.
+// Their dedicated discovery commands expose the non-secret configuration.
+const CREDENTIAL_SNAPSHOT_KEYS = new Set(['providerEnvJson', 'mcpServersJson']);
 
 /** Recursively redact sensitive values in config output */
 function redactSensitiveValues(key: string, value: unknown): unknown {
-  const rootKey = key.split('.')[0];
+  if (CREDENTIAL_SNAPSHOT_KEYS.has(key.split('.').at(-1) ?? '') && typeof value === 'string') {
+    return value ? '****' : value;
+  }
 
   // Top-level known sensitive maps
-  if (
-    SENSITIVE_TOP_KEYS.has(rootKey) &&
-    typeof value === 'object' &&
-    value !== null
-  ) {
-    return deepRedact(value);
+  if (key.split('.').some(part => SENSITIVE_TOP_KEYS.has(part))) {
+    return deepRedact(value, true);
   }
 
   // Any key path containing sensitive patterns
@@ -9072,17 +9073,19 @@ function redactSensitiveValues(key: string, value: unknown): unknown {
 }
 
 /** Recursively walk an object and redact string values whose keys match sensitive patterns */
-function deepRedact(obj: unknown): unknown {
+function deepRedact(obj: unknown, redactAll = false): unknown {
   if (obj === null || obj === undefined) return obj;
-  if (typeof obj === 'string') return obj;
-  if (Array.isArray(obj)) return obj.map((item) => deepRedact(item));
+  if (typeof obj === 'string') return redactAll ? redactSecret(obj) : obj;
+  if (Array.isArray(obj)) return obj.map((item) => deepRedact(item, redactAll));
   if (typeof obj === 'object') {
     const result: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-      if (typeof v === 'string' && SENSITIVE_KEY_PATTERNS.test(k)) {
+      if (typeof v === 'string' && CREDENTIAL_SNAPSHOT_KEYS.has(k)) {
+        result[k] = v ? '****' : v;
+      } else if (typeof v === 'string' && (redactAll || SENSITIVE_KEY_PATTERNS.test(k))) {
         result[k] = redactSecret(v);
       } else if (typeof v === 'object' && v !== null) {
-        result[k] = deepRedact(v);
+        result[k] = deepRedact(v, redactAll || SENSITIVE_TOP_KEYS.has(k));
       } else {
         result[k] = v;
       }

@@ -4512,6 +4512,28 @@ describe('admin-api Agent workspace archive', () => {
 
 
 describe('admin config discovery and MCP observations', () => {
+  it('redacts serialized Agent credentials and secret maps through both parent and leaf reads', async () => {
+    const secret = 'synthetic-provider-credential-123456789';
+    const snapshot = JSON.stringify({ apiKey: secret, baseUrl: 'https://fixture.invalid' });
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{ id: 'agent-fixture', name: 'Fixture', providerEnvJson: snapshot,
+        channels: [{ overrides: { providerEnvJson: snapshot, mcpServersJson: snapshot } }] }],
+      providerApiKeys: { fixture: secret },
+      mcpServerEnv: { fixture: { CUSTOM_AUTH: secret } },
+    });
+    const { handleConfigGet } = await import('./admin-api');
+    for (const key of ['agents', 'agents.0.providerEnvJson', 'agents.0.channels.0.overrides',
+      'providerApiKeys', 'mcpServerEnv', 'mcpServerEnv.fixture.CUSTOM_AUTH']) {
+      const result = handleConfigGet({ key });
+      expect(result.success).toBe(true);
+      expect(JSON.stringify(result)).not.toContain(secret);
+    }
+    expect(handleConfigGet({ key: 'agents' })).toMatchObject({
+      data: { value: [expect.objectContaining({ name: 'Fixture', providerEnvJson: '****' })] },
+    });
+    expect(handleConfigGet({ key: 'agents.0.providerEnvJson' })).toMatchObject({ data: { value: '****' } });
+  });
+
   it('lists stored keys and types without exposing secrets, including nested credentials', async () => {
     writeJson(join(scratch, '.myagents', 'config.json'), {
       theme: 'dark', providerApiKeys: { deepseek: 'synthetic-private-value' },

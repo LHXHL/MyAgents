@@ -71,6 +71,10 @@ bundled-guides/external-myagents-cli/      ├── npm-global/       (AI 自�
 
 ## CLI 脚本设计
 
+`config get` 对凭据 map 的全部字符串值脱敏，包括任意名称的 Provider ID / 环境变量。
+旧 Agent/Channel 的 `providerEnvJson`、`mcpServersJson` 是序列化凭据快照，父级读取和直接
+叶子读取都只显示 `****`；非秘密的 Provider/MCP 配置通过对应 discovery 命令读取。
+
 `status.agents` 与默认 `agent list` 共用持久化 Agent/workspace registry 的用户可见、
 非归档过滤；禁用但可见的 Agent 与历史 orphan 仍计入，internal Agent 不计入。
 DSH TaskGraph 的 `owner=root` 是当前对话主 Agent，其他 owner 为 Runtime child ID；
