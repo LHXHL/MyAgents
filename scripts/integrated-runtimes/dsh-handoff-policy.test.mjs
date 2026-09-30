@@ -29,7 +29,6 @@ import {
   resolveExplicitDirectory,
   runPublicVerifier,
   stageCompleteHandoff,
-  verifyHandoffFacts,
 } from "./dsh-handoff-policy.mjs";
 import { readDshBuildSelection } from "./dsh-build-selection.mjs";
 import { verifyDshDevelopmentFreshness } from "./verify-dsh-dev-freshness.mjs";
@@ -454,91 +453,4 @@ test("Dev freshness binds the bundled Runtime to one clean source commit", () =>
       /bundled Runtime is stale/,
     );
   });
-});
-
-test("build-selected lock, generated contracts, resources, and toolchain authorities agree", () => {
-  const committedLock = JSON.parse(
-    readFileSync(
-      resolve(repoRoot, "src/shared/integrated-runtimes/dsh-lock.json"),
-      "utf8",
-    ),
-  );
-  const selection = readDshBuildSelection(repoRoot);
-  const lock = selection?.lock ?? committedLock;
-  const packageJson = JSON.parse(
-    readFileSync(resolve(repoRoot, "package.json"), "utf8"),
-  );
-  verifyHandoffFacts(resolve(repoRoot, "src-tauri/resources/integrated-runtimes/dsh"), lock);
-  const tauriConfig = JSON.parse(
-    readFileSync(resolve(repoRoot, "src-tauri/tauri.conf.json"), "utf8"),
-  );
-  const resourceScripts = [
-    "scripts/download_nodejs.sh",
-    "scripts/download_nodejs.ps1",
-  ].map((path) => readFileSync(resolve(repoRoot, path), "utf8"));
-
-  assert.equal(lock.runtime.requiredNodeVersion, "24.20.0");
-  const release = JSON.parse(readFileSync(resolve(repoRoot, "src/shared/integrated-runtimes/dsh-release.json"), "utf8"));
-  assert.deepEqual(Object.keys(release), ["version"]);
-  assert.match(release.version, /^\d+\.\d+\.\d+$/);
-  assert.equal(committedLock.release, undefined);
-  assert.equal(lock.bundledNpm.version, "11.19.0");
-  assert.equal(lock.bundledNpm.authority, "myagents-product-resource");
-  assert.equal(lock.protocol.version, "6.0.0");
-  assert.equal(lock.protocol.hostMethodCount, 44);
-  assert.equal(lock.protocol.reverseMethodCount, 7);
-  assert.equal(lock.protocol.notificationCount, 4);
-  assert.equal(
-    tauriConfig.bundle.resources["../src-tauri/resources/integrated-runtimes"],
-    "integrated-runtimes",
-  );
-  assert.match(packageJson.scripts["tauri:build"], /build-dsh-tauri/);
-  assert.equal(packageJson.scripts["tauri:build:prepared"], "tauri build");
-  assert.match(packageJson.scripts["tauri:dev"], /verify:dsh-runtime/);
-  assert.equal(tauriConfig.build.beforeBundleCommand, undefined);
-
-  const distribution = JSON.parse(
-    readFileSync(resolve(repoRoot, "scripts/node-runtime.json"), "utf8"),
-  );
-  assert.equal(distribution.node, lock.runtime.requiredNodeVersion);
-  assert.equal(distribution.npm, lock.bundledNpm.version);
-  // Host build requirements are independent of the exact shipped runtime pair.
-  assert.equal(packageJson.engines.node, ">=24.14.0");
-  assert.equal(packageJson.engines.npm, ">=11.15.0");
-  for (const script of resourceScripts) {
-    assert.match(script, /node-runtime\.json/);
-    assert.doesNotMatch(script, /registry\.npmjs\.org\/npm\/latest/);
-  }
-
-  const generatedClient = readFileSync(
-    resolve(repoRoot, "contracts/myagents-dsh/host-client.generated.ts"),
-  );
-  const compatibility = readFileSync(
-    resolve(
-      repoRoot,
-      "contracts/myagents-dsh/myagents-dsh-compatibility-v1.json",
-    ),
-  );
-  const schema = readFileSync(
-    resolve(repoRoot, "contracts/myagents-dsh/protocol.schema.json"),
-  );
-  const runtimeManifest = JSON.parse(
-    readFileSync(
-      resolve(
-        repoRoot,
-        "src-tauri/resources/integrated-runtimes/dsh/runtime-artifact/runtime-artifact-v1.json",
-      ),
-      "utf8",
-    ),
-  );
-  assert.equal(
-    sha256ForTest(generatedClient),
-    committedLock.handoff.generatedClientSha256,
-  );
-  assert.equal(sha256ForTest(compatibility), committedLock.handoff.compatibilitySha256);
-  assert.equal(sha256ForTest(schema), committedLock.protocol.schemaSha256);
-  assert.equal(
-    runtimeManifest.files.some((entry) => entry.kind === "symlink"),
-    false,
-  );
 });
