@@ -225,3 +225,7 @@ RecordStore. `myagents record delete <id>` cancels pending speech processing bef
 RecordStore deletion, emits the existing Record change event, and records CliAgent
 analytics. List/create/get/delete share the desktop Store; CLI does not read or mutate
 Record directories directly.
+
+Speech cancellation settles any matching jobs, but updates transcription/diarization
+projections only for Audio Records. Text Records have no audio processing state;
+the shared desktop and CLI deletion preflight must leave them untouched.
