@@ -200,7 +200,6 @@ import {
   reasoningEffortChoices,
   reasoningEffortAfterModelChange,
 } from '../../shared/reasoningEffort';
-import type { ProviderHistoryEnv } from '../../shared/providerHistory';
 import {
   createConcreteProviderRoute,
   hasProviderRouteCredential,
@@ -247,6 +246,7 @@ import type { FilePreviewFocusTarget } from '@/types/filePreview';
 import { shouldAutoSendInitialMessage } from '@/utils/initialMessageAutoSend';
 import {
   canResumeProviderHistoryForSwitch,
+  toProviderHistoryEnv,
   resolveBuiltinPermissionMode,
   resolveCurrentProviderForSession,
   resolveLegacyBuiltinSnapshotProviderId,
@@ -551,27 +551,6 @@ function coerceReasoningEffortForUi(
   runtime: RuntimeType,
 ): string | undefined {
   return coerceReasoningEffortForRuntime(effort, runtime);
-}
-
-function toProviderHistoryEnv(
-  provider:
-    | Pick<Provider, 'id' | 'type' | 'config' | 'apiProtocol'>
-    | undefined,
-  model?: string,
-): ProviderHistoryEnv | undefined {
-  if (!provider) return model ? { model } : undefined;
-  if (provider.type === 'subscription') {
-    return {
-      providerId: provider.id,
-      model,
-    };
-  }
-  return {
-    providerId: provider.id,
-    baseUrl: provider.config.baseUrl,
-    apiProtocol: provider.apiProtocol,
-    model,
-  };
 }
 
 /** Imperative handle exposed by SessionTitleEditor — lets the SessionMenuButton's
@@ -4542,6 +4521,7 @@ export default function Chat({
       currentProviderForHistory?.type,
       currentProviderForHistory?.config.baseUrl,
       currentProviderForHistory?.apiProtocol,
+      currentProviderForHistory?.subscriptionAuth,
       currentProviderExecutionIntent,
       builtinSnapshotProviderHistoryUnknown,
       effectivePermissionMode,
@@ -4623,6 +4603,7 @@ export default function Chat({
       currentProviderForHistory?.type,
       currentProviderForHistory?.config.baseUrl,
       currentProviderForHistory?.apiProtocol,
+      currentProviderForHistory?.subscriptionAuth,
       currentProviderExecutionIntent,
       effectiveSelectedProviderId,
       currentProvider?.id,

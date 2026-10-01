@@ -14,7 +14,11 @@ import {
   canReuseSessionAcrossProviderExecutionBoundary,
   type ProviderExecutionIntent,
 } from '../../shared/providerExecution';
-import type { ProviderVerifyStatus } from '../../shared/config-types';
+import {
+  ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
+  type Provider,
+  type ProviderVerifyStatus,
+} from '../../shared/config-types';
 import {
   isConcreteProviderRoute,
   resolveLegacyModelOnlyProviderRoute,
@@ -186,6 +190,37 @@ export function resolveLegacyBuiltinSnapshotProviderId(args: {
     },
   });
   return isConcreteProviderRoute(route) ? route.providerId : undefined;
+}
+
+/** Project the non-secret execution endpoint, not the subscription billing type. */
+export function toProviderHistoryEnv(
+  provider: Pick<Provider, 'id' | 'type' | 'config' | 'apiProtocol' | 'subscriptionAuth'> | undefined,
+  model?: string,
+): ProviderHistoryEnv | undefined {
+  if (!provider) return model ? { model } : undefined;
+  if (provider.type === 'subscription') {
+    const auth = provider.subscriptionAuth;
+    if (auth?.kind === 'proxy-managed' && auth.proxy === 'cliproxy'
+      && provider.id === ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID) {
+      return {
+        providerId: provider.id,
+        apiProtocol: 'anthropic',
+        endpointSource: { kind: 'cliproxy', providerId: provider.id },
+        model,
+      };
+    }
+    // SDK-native (including legacy unmarked Claude) has no third-party endpoint.
+    // Host-managed OAuth uses the declared API endpoint, just like API Providers.
+    if (auth?.kind !== 'host-managed-oauth') {
+      return { providerId: provider.id, model };
+    }
+  }
+  return {
+    providerId: provider.id,
+    baseUrl: provider.config.baseUrl,
+    apiProtocol: provider.apiProtocol,
+    model,
+  };
 }
 
 /**

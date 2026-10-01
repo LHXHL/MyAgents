@@ -163,6 +163,8 @@ Provider / model 是 Session config。用户在已有 Session 修改它时：
 - runtime-backed `codex-sub`；
 - 只有确有证据的 Provider/model/endpoint 才进入 isolated key。
 
+Renderer 的 Provider definition 经 `optionResolve.ts::toProviderHistoryEnv` 转为非敏感历史身份后，再交给共享 policy 比较。转换必须读取 `subscriptionAuth`：Grok 保留声明的 API endpoint，Antigravity 保留稳定 `endpointSource`，不能因 `type: subscription` 丢掉这些信息并误归为 Anthropic direct。代理端口与本地凭据不参与历史身份。
+
 跨 family 时不能把旧 SDK execution identity 直接 resume 到新 transport；应在同一 Product Session 中创建新的 execution lineage。不要按 Provider 名称在各 UI / route 重新实现比较规则。
 
 ## Server tool projection

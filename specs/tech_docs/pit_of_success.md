@@ -744,6 +744,8 @@ Sidecar HTTP workspace IO endpoint 已全部下线，Renderer 唯一入口是 `u
 <a id="session-runtime-config"></a>
 ## Session Runtime 配置入口
 
+Renderer 的 Provider history 投影使用 `src/renderer/utils/optionResolve.ts::toProviderHistoryEnv`，保留 Host-managed OAuth 的 API endpoint 与 CLIProxy 的稳定 endpoint reference，再交给共享 history policy；订阅计费类型不能代替执行身份。原因和 family 边界见 [Provider history boundary](./third_party_providers.md#session-切换与-history-boundary)，回归测试覆盖 Grok / Antigravity 与普通 Provider、官方 Claude、Managed Codex 的双向切换。
+
 **Problem.** Admin reload 直接调用 SDK setter/restart，配合“非 external CLI 即 builtin”的预热判断，会在 Integrated DSH Session 内误启 SDK，并给同一 Product transcript writer 挂上第二个 SSE publisher；磁盘正文只写一次，界面逐 delta 重复。
 
 **Surface.** Admin / session route 使用 `getSessionEngine().updateMcpServers` / `updateAgents`，当前工作区取同一 adapter 的 context。显式 reload 的 `forceReload` 表达刷新请求，是否重建、何时应用由 adapter 决定；builtin 复用既有 deferred restart，DSH 使用原生 extension reconciliation。
