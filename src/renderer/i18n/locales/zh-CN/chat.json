@@ -978,6 +978,7 @@
       "noActiveSessions": "暂无聊天记录"
     },
     "providerSwitch": {
+      "channelTransferNotice": "确认后将创建新会话，并把当前 IM 对话转移到新会话。原会话历史仍保留。",
       "codexSubscription": "Codex（订阅）",
       "currentProviderFallback": "当前 Provider",
       "targetProviderFallback": "目标 Provider",

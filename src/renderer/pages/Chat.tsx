@@ -3801,14 +3801,14 @@ export default function Chat({
   // PATCH /sessions/:id. React bails on setState when target === current, so no render loop.
   useEffect(() => {
     if (!sessionMeta) return; // Not loaded yet — keep mount-time defaults
-    if (configDispositionRef.current !== 'push') return; // Adoption effect handles it
+    if (configDispositionRef.current !== 'push' && !sessionMeta.configSnapshotAt) return;
     // Sticky guard: adoption may have already completed and cleared the flag
     // BEFORE this sessionMeta dispatch arrived (loadSession sets sessionMeta after
     // /api/session/config returns). Re-applying persisted snapshot here would
     // overwrite the just-adopted live sidecar config.
     if (
       adoptedSessionRef.current &&
-      adoptedSessionRef.current === sessionMeta.id
+      adoptedSessionRef.current === sessionMeta.id && !sessionMeta.configSnapshotAt
     )
       return;
     // Field-by-field merge remains for unlocked / live-follow sessions. Owned
@@ -7608,8 +7608,8 @@ export default function Chat({
             t('shell.providerSwitch.newSessionTitle')
           }
           message={
-            providerSwitchDialogCopy?.message ??
-            t('shell.providerSwitch.defaultMessage')
+            (providerSwitchDialogCopy?.message ?? t('shell.providerSwitch.defaultMessage'))
+            + (surfaces.channel ? `\n\n${t('shell.providerSwitch.channelTransferNotice')}` : '')
           }
           confirmText={
             providerSwitchDialogCopy?.confirmText ??

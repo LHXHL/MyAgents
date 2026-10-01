@@ -90,7 +90,7 @@ Product Session 拥有产品 transcript、metadata、配置、事件 scope 和 S
 
 Builtin、Integrated DSH 与 external Runtime 的 session 操作统一经过 `src/server/session-engine/`。Route handler 只负责校验和响应映射，不直接 import Runtime 实现，也不自行分支 builtin/external。terminal 必须读取 adapter 的真实成功状态；idle 只表示没有活跃工作。
 
-Runtime 分为 Integrated（Claude Agent SDK、DSH）、Managed Provider Runtime（Managed Codex）和 External CLI。Agent/Channel 的 `runtimePreference` 表达未来执行意图，Session 的 `runtimeBinding` 固化实际执行身份；legacy `runtime/runtimeSource` 只是投影。分发 policy 与 Provider constraint 参与新 Session 的解析，已有 binding 不受选择器开关或默认值变化影响。DSH 子进程属于该 Session Sidecar，通过生成的协议 client 连接；Runtime 拥有原生会话、工具与工作树，Host 拥有产品状态、权限交互和投影。
+Runtime 分为 Integrated（Claude Agent SDK、DSH）、Managed Provider Runtime（Managed Codex）和 External CLI。Agent 的 `runtimePreference` 表达未来执行意图，Channel 只拥有 transport 与实时渠道规则，Session 的 `runtimeBinding` 固化实际执行身份；legacy `runtime/runtimeSource` 只是投影。分发 policy 与 Provider constraint 参与新 Session 的解析，已有 binding 不受选择器开关或默认值变化影响。DSH 子进程属于该 Session Sidecar，通过生成的协议 client 连接；Runtime 拥有原生会话、工具与工作树，Host 拥有产品状态、权限交互和投影。
 
 Rewind、Fork、Retry 由 SessionEngine adapter 编排 native history 与产品历史的联合操作；SessionStore 裁决产品提交，Renderer 投影结果。Retry 的回溯与重发接纳共用既有 mutation owner，不能拆成前端两次请求。操作边界与失败语义见 [Session 架构 §4.4](./tech_docs/session_architecture.md#44-rewindforkretry-与-reload-anchor)。
 

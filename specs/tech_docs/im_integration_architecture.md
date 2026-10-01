@@ -104,22 +104,33 @@ private和group使用不同、稳定的peer session key。每个binding记录Pro
 
 IM与Desktop可以共享同一个Product Session，但owner保持独立。Tab关闭只释放Tab，Channel轮换只释放目标Agent owner；两边都不能reset或迁移对方的owner。
 
-`/new`在per-peer fence内处理：
+`/new` 仅支持私聊，在 per-peer fence 内处理：
 
-- 先按exact Product Session id查询SessionStore；
-- 仅metadata仍存在的source需要freeze；stale/pending binding直接轮换；
-- 发布一个metadata-birth-pending的新binding并释放旧Agent owner；
-- 命令本身不创建空Sidecar、Runtime history或transcript；
-- 首条普通消息通过标准ensure/materialization实体化；
-- 任一失败恢复旧binding和group history。
+- 从 SessionStore 读取 source；有完整快照时原样保留，活跃 legacy 由其 Session owner 捕获真实 held 配置；
+- 由 Global `POST /sessions` 从 Agent 最新模板创建完整 metadata，采用与桌面同源的 Runtime policy、Provider constraint 和 snapshot compiler；IM 出生权限使用该 Runtime 的最高 unattended 档；
+- 在 projection → Router 短锁中校验 prior binding，发布已实体化 target，并持久化 peer projection；失败只回滚本次尚未提交的 binding；
+- 旧 consumer 有已接纳 request 时，复用 BackgroundCompletion owner 留到原请求 terminal 后退出，再释放精确 owner；历史与其它 Tab/Task/Goal owner 保留；
+- 命令无需启动目标 Runtime；首条普通消息经标准 ensure 唤醒。
 
-desktop handover、heartbeat和surface migration复用同一per-peer fence，不能并发决定同一个binding。
+desktop handover、heartbeat、模型选择和 surface migration 复用同一 per-peer fence。桌面主动的不兼容切换仍允许将当前渠道 binding 接管到新 Session，确认框明确告知转移；历史来源 tag 本身不授予 binding 修改权限。
 
-### 4.3 Runtime identity drift
+### 4.3 Session 配置与默认变更
 
-IM/Agent Channel是live-follow配置owner，但peer Session仍绑定完整执行identity`runtime + runtimeSource`。每次普通消息、heartbeat或模型切换唤醒前比较desired/persisted/live identity；发生真正漂移时轮换Session并释放旧Sidecar。
+IM 与桌面共享 owned Session 策略。`configSnapshotAt` 后，模型、Runtime/source/binding、effort、permission、MCP ID、plugins 和 official tools 服从该 Session；恢复、普通消息和 heartbeat 不读最新 Agent 模板覆盖它。SidecarManager 对 IM owner 同样优先持久执行身份，冲突 override 直接拒绝，不再按默认 Runtime drift 自动轮换。
 
-Managed Codex与system Codex即使Runtime type相同也不能复用。只切换同一identity中的model不等于Runtime漂移，配置由SessionEngine source-aware policy在turn boundary应用。
+Agent 默认设置变更只刷新出生模板，并向所有已建立私聊 binding 发送系统提示；不发群聊，不启动目标 Sidecar、不查询模型目录、不进入 AI queue。已与默认一致的当前 Session 不重复提示。消息从当前 metadata 读取旧模型，提供 `/new`、`/model`；在业务锁释放后由一次性后台任务投递，配置刷新不等待平台，元数据 IPC 使用 5 秒期限。单个读取或发送失败继续其他私聊，不回滚默认，不增加通知 outbox。Channel 关闭或不可达时按 best effort 处理。
+
+旧完整快照原样使用。legacy 活跃实例仅由对应 Session owner freeze；离线数据无法证明完整配置时拒绝恢复并引导 `/new`，保留历史，不能拿当前默认制造旧 snapshot。Cloud registered Agent 的 live-follow 生命周期保持独立。
+
+### 4.4 私聊模型命令
+
+`/new`、`/model`、`/status`、`/help`、`/start` 为私聊管理命令；群聊识别后静默 terminal，不交给 AI、不写 binding。`/provider`、`/mode` 已移除，私聊仅返回迁移提示；平台注册菜单同步移除。凭据绑定与插件业务指令保留原准入边界。
+
+`/model` 从 Node 读取桌面同源 Provider 顺序、启用/删除/自定义模型与 readiness，按供应商分组、模型连续编号，混入真实 Managed Codex catalog。本机 Claude Code/Codex CLI Session 仅显示该 CLI 的模型。无 Runtime 或权限选择菜单。
+
+每个 peer 只保存最后成功展示的临时菜单（Session id、execution observation、条目 identity）；数字绑定该菜单而非重新计算的顺序。选择前重查 availability，在 SessionStore writer 锁内 CAS 校验 observation 与当前 engine binding。兼容选择先写 snapshot，再经 SessionEngine apply；忙时下一轮生效。随后在 fresh config 锁内写 Agent 默认，释放 peer fence 后触发 Rust 模板刷新。分阶段失败明确返回已提交内容。
+
+不兼容条目标记“（会启用新会话）”，选择后直接完整 birth 并复用既有 handover 接管该私聊，不二次确认、不修改旧 snapshot、不自动重放未确认写入。`chat:session-config-changed` 仅携带 Session id；打开同一 Session 的 Tab 经自己的代理回读 metadata 更新模型展示。
 
 ## 5. ReplyRouter 与渠道投递
 
@@ -252,7 +263,7 @@ detached/new-session Goal需要独立parent/return-target设计，不能混入cu
 
 ## 10. 配置与持久化
 
-`config.json`是Agent/Channel desired config authority。所有写入在config lock内fresh read-modify-write；Renderer提交typed intent并在成功后refresh完整snapshot，不能用可能过期的React state覆盖其它Channel。
+`config.json` 是 Agent 出生模板和 Channel transport 配置的 authority。Channel 不再拥有独立执行配置；详情与 writer 移除 model/provider/runtime/permission 覆盖，旧字段只读保留以免损坏存量信息，正常解析不采用。连接凭据、白名单、群规则和 toolsDeny 仍由 Channel 实时拥有。所有写入在config lock内fresh read-modify-write；Renderer提交typed intent并在成功后refresh完整snapshot，不能用可能过期的React state覆盖其它Channel。
 
 运行时文件只保存可重建projection，例如health、bounded buffer、dedup与peer binding；它们不能覆盖config或SessionStore。health的uptime snapshot不是实时计时authority，live status由当前instance generation/started-at计算。
 
@@ -262,7 +273,7 @@ Channel credential、token、App Secret和provider env不得进入日志、analy
 
 - 空白名单默认拒绝，不等于allow all；QR bind只绕过对应的一次绑定admission。
 - group默认Mention，未证明mention的事件不能触发AI。
-- Channel默认权限由当前Runtime的unattended policy解析；集成 DSH 的默认值为 `full-autonomous`，显式 override 只接受三档 DSH 模式。不继承桌面Agent permission造成静默降权。用户显式override才改变。
+- 新 IM Session 由 snapshot compiler 固定最高 unattended 权限（DSH 为 `full-autonomous`）；`/mode` 与渠道权限覆盖已移除。已有 snapshot 权限保持原值，桌面主动修改仍按 Session 规则生效，不能在恢复或每轮隐式提权。
 - credentials、prompt正文、tool参数、群history和platform payload不写常规日志。
 - platform/network request使用统一proxy、timeout、rate-limit与retry policy；401/invalid credential停止或降级，不无限重试。
 - QR credential provisioning只由Rust访问HTTPS allowlist并归一化response；Renderer只持短期session handle和展示数据。
@@ -274,6 +285,8 @@ Channel credential、token、App Secret和provider env不得进入日志、analy
 | 路径 | 职责 |
 |---|---|
 | `src-tauri/src/im/agent_channel.rs` | Channel lifecycle与入站编排 |
+| `src-tauri/src/im/model_commands.rs` | 私聊模型菜单、选择、完整出生与默认通知 |
+| `src/server/routes/im-model-selection.ts` | 同源目录、兼容计划、Session CAS、Engine apply 与默认提交 |
 | `src-tauri/src/im/router.rs` | peer→Session binding与Sidecar owner |
 | `src-tauri/src/im/enqueue.rs` | Rust→Node admission |
 | `src-tauri/src/im/event_consumer.rs` | `/api/im/events` reconnect与dispatch |

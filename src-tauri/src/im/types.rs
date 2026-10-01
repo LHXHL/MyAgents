@@ -434,13 +434,6 @@ impl ImRuntimeIdentity {
             runtime_source,
         }
     }
-
-    pub fn label(&self) -> String {
-        match self.runtime_source.as_deref() {
-            Some(source) => format!("{}/{}", self.runtime, source),
-            None => self.runtime.clone(),
-        }
-    }
 }
 
 impl ImConfig {
@@ -1362,47 +1355,12 @@ pub(crate) fn project_permission_for_provider(
     }
 }
 
-pub(crate) fn managed_permission_for_display(permission_mode: &str) -> &'static str {
-    match permission_mode.trim() {
-        "suggest" | "plan" => "plan",
-        "no-restrictions" | "fullAgency" => "fullAgency",
-        _ => "auto",
-    }
-}
-
 pub(crate) fn max_permission_for_runtime(runtime: Option<&str>) -> &'static str {
     match runtime {
         Some("dsh") => "full-autonomous",
         Some("claude-code") => "bypassPermissions",
         Some("codex") => "no-restrictions",
         _ => "fullAgency",
-    }
-}
-
-fn default_permission_for_runtime(runtime: Option<&str>) -> &'static str {
-    match runtime {
-        Some("dsh") => "approval-required",
-        Some("claude-code") => "manual",
-        Some("codex") => "full-auto",
-        _ => "auto",
-    }
-}
-
-fn is_permission_for_runtime(runtime: Option<&str>, permission_mode: &str) -> bool {
-    match runtime {
-        Some("dsh") => matches!(
-            permission_mode,
-            "approval-required" | "workspace-autonomous" | "full-autonomous"
-        ),
-        Some("claude-code") => matches!(
-            permission_mode,
-            "manual" | "auto" | "plan" | "acceptEdits" | "bypassPermissions" | "dontAsk"
-        ),
-        Some("codex") => matches!(
-            permission_mode,
-            "suggest" | "auto-edit" | "full-auto" | "no-restrictions"
-        ),
-        _ => matches!(permission_mode, "auto" | "plan" | "fullAgency" | "custom"),
     }
 }
 
@@ -1493,20 +1451,7 @@ impl ChannelConfigRust {
                 None,
             ));
         }
-        let overrides = self.overrides.as_ref();
-        let runtime_config = overrides
-            .and_then(|value| value.runtime_config.clone())
-            .or_else(|| agent.runtime_config.clone());
-        if let Some(preference) = overrides.and_then(|value| value.runtime_preference.as_ref()) {
-            let (runtime, source) = runtime_from_preference(preference)?;
-            return Ok((
-                Some(runtime),
-                Self::runtime_config_for_preference(runtime_config, source.as_deref()),
-            ));
-        }
-        if let Some(runtime) = overrides.and_then(|value| value.runtime.clone()) {
-            return Ok((Some(runtime), runtime_config));
-        }
+        let runtime_config = agent.runtime_config.clone();
         if let Some(preference) = agent.runtime_preference.as_ref() {
             let (runtime, source) = runtime_from_preference(preference)?;
             return Ok((
@@ -1558,19 +1503,11 @@ impl ChannelConfigRust {
     }
 
     pub(crate) fn effective_permission_mode(&self, agent: &AgentConfigRust) -> String {
-        let overrides = self.overrides.as_ref();
-        let provider_id = overrides
-            .and_then(|o| o.provider_id.clone())
-            .or_else(|| self.provider_id.clone())
-            .or_else(|| agent.provider_id.clone());
-        let model = overrides
-            .and_then(|o| o.model.clone())
-            .or_else(|| self.model.clone())
-            .or_else(|| agent.model.clone());
+        let provider_id = agent.provider_id.clone();
+        let model = agent.model.clone();
         let (runtime, projected_runtime_config) = self
             .effective_runtime_projection(agent, provider_id.as_deref(), model.as_deref())
             .unwrap_or_else(|_| (Some("builtin".to_string()), None));
-        let permission_override = overrides.and_then(|o| o.permission_mode.clone());
         let permission_provider_id = if projected_runtime_config
             .as_ref()
             .and_then(|value| value.get("source"))
@@ -1581,33 +1518,17 @@ impl ChannelConfigRust {
         } else {
             None
         };
-        if permission_provider_id.is_some() {
-            return project_permission_for_provider(
-                permission_provider_id,
-                permission_override
-                    .unwrap_or_else(|| max_permission_for_runtime(runtime.as_deref()).to_string()),
-            );
-        }
-        match permission_override {
-            Some(raw) if is_permission_for_runtime(runtime.as_deref(), raw.trim()) => {
-                raw.trim().to_string()
-            }
-            Some(_) => default_permission_for_runtime(runtime.as_deref()).to_string(),
-            None => max_permission_for_runtime(runtime.as_deref()).to_string(),
-        }
+        project_permission_for_provider(
+            permission_provider_id,
+            max_permission_for_runtime(runtime.as_deref()).to_string(),
+        )
     }
 
     /// Convert to ImConfig for backward compatibility with existing start_im_bot logic.
     pub fn to_im_config(&self, agent: &AgentConfigRust) -> ImConfig {
         let overrides = self.overrides.as_ref();
-        let provider_id = overrides
-            .and_then(|o| o.provider_id.clone())
-            .or_else(|| self.provider_id.clone())
-            .or_else(|| agent.provider_id.clone());
-        let model = overrides
-            .and_then(|o| o.model.clone())
-            .or_else(|| self.model.clone())
-            .or_else(|| agent.model.clone());
+        let provider_id = agent.provider_id.clone();
+        let model = agent.model.clone();
         let runtime_projection =
             self.effective_runtime_projection(agent, provider_id.as_deref(), model.as_deref());
         let runtime_compatible = runtime_projection.is_ok();
@@ -1644,10 +1565,7 @@ impl ChannelConfigRust {
             // by persist_bot_config_patch before the bc06386 fix moved writes to overrides).
             provider_id,
             model,
-            provider_env_json: overrides
-                .and_then(|o| o.provider_env_json.clone())
-                .or_else(|| self.provider_env_json.clone())
-                .or_else(|| agent.provider_env_json.clone()),
+            provider_env_json: agent.provider_env_json.clone(),
             mcp_servers_json: agent.mcp_servers_json.clone(),
             runtime,
             runtime_config,
@@ -1888,7 +1806,10 @@ mod tests {
             permission_mode: Some("workspace-autonomous".to_string()),
             ..Default::default()
         });
-        assert_eq!(channel.to_im_config(&agent).permission_mode, "workspace-autonomous");
+        assert_eq!(
+            channel.to_im_config(&agent).permission_mode,
+            "full-autonomous"
+        );
     }
 
     #[test]
@@ -2002,7 +1923,7 @@ mod tests {
     }
 
     #[test]
-    fn channel_legacy_runtime_override_wins_over_agent_preference() {
+    fn channel_legacy_runtime_override_does_not_override_agent_preference() {
         let mut agent = base_agent();
         agent.runtime_preference = Some(RuntimePreferenceRust {
             family: "integrated".to_string(),
@@ -2016,10 +1937,10 @@ mod tests {
 
         let config = channel.to_im_config(&agent);
 
-        assert_eq!(config.runtime.as_deref(), Some("claude-code"));
+        assert_eq!(config.runtime.as_deref(), Some("dsh"));
         assert_eq!(
             config.runtime_identity().runtime_source.as_deref(),
-            Some("system-cli"),
+            Some("integrated"),
         );
     }
 
@@ -2053,7 +1974,7 @@ mod tests {
     }
 
     #[test]
-    fn system_runtime_channel_projects_invalid_history_to_interactive_default() {
+    fn system_runtime_channel_ignores_legacy_permission_overrides() {
         let mut agent = base_agent();
         agent.runtime = Some("claude-code".to_string());
         let mut channel = base_channel();
@@ -2062,21 +1983,33 @@ mod tests {
             ..Default::default()
         });
 
-        assert_eq!(channel.to_im_config(&agent).permission_mode, "manual");
+        assert_eq!(
+            channel.to_im_config(&agent).permission_mode,
+            "bypassPermissions"
+        );
 
         channel.overrides.as_mut().unwrap().permission_mode = Some("dontAsk".to_string());
-        assert_eq!(channel.to_im_config(&agent).permission_mode, "dontAsk");
+        assert_eq!(
+            channel.to_im_config(&agent).permission_mode,
+            "bypassPermissions"
+        );
 
         agent.runtime = Some("codex".to_string());
         channel.overrides.as_mut().unwrap().permission_mode = Some("fullAgency".to_string());
-        assert_eq!(channel.to_im_config(&agent).permission_mode, "full-auto");
+        assert_eq!(
+            channel.to_im_config(&agent).permission_mode,
+            "no-restrictions"
+        );
 
         agent.runtime = Some("claude-code".to_string());
-        assert_eq!(channel.to_im_config(&agent).permission_mode, "manual");
+        assert_eq!(
+            channel.to_im_config(&agent).permission_mode,
+            "bypassPermissions"
+        );
     }
 
     #[test]
-    fn agent_channel_respects_explicit_permission_override() {
+    fn agent_channel_ignores_legacy_permission_override() {
         let agent = base_agent();
         let mut channel = base_channel();
         channel.overrides = Some(ChannelOverrides {
@@ -2086,11 +2019,11 @@ mod tests {
 
         let config = channel.to_im_config(&agent);
 
-        assert_eq!(config.permission_mode, "plan");
+        assert_eq!(config.permission_mode, "fullAgency");
     }
 
     #[test]
-    fn codex_subscription_channel_maps_myagents_permission_overrides() {
+    fn legacy_channel_provider_and_permission_do_not_select_managed_codex() {
         let agent = base_agent();
         let mut channel = base_channel();
         channel.overrides = Some(ChannelOverrides {
@@ -2102,8 +2035,8 @@ mod tests {
 
         let config = channel.to_im_config(&agent);
 
-        assert_eq!(config.runtime.as_deref(), Some("codex"));
-        assert_eq!(config.permission_mode, "suggest");
+        assert_eq!(config.runtime.as_deref(), Some("builtin"));
+        assert_eq!(config.permission_mode, "fullAgency");
     }
 
     #[test]
@@ -2117,13 +2050,15 @@ mod tests {
             ..Default::default()
         });
 
-        assert_eq!(channel.to_im_config(&agent).permission_mode, "auto-edit");
-        assert_eq!(managed_permission_for_display("full-auto"), "auto");
+        assert_eq!(channel.to_im_config(&agent).permission_mode, "fullAgency");
     }
 
     #[test]
-    fn channel_override_codex_subscription_projects_to_managed_runtime() {
-        let agent = base_agent();
+    fn agent_codex_subscription_projects_to_managed_runtime() {
+        let mut agent = base_agent();
+        agent.provider_id = Some(CODEX_SUBSCRIPTION_PROVIDER_ID.to_string());
+        agent.model = Some("gpt-5.5-codex".to_string());
+        agent.runtime_config = Some(serde_json::json!({"envPolicy":{"proxy":"terminal"}}));
         let mut channel = base_channel();
         channel.overrides = Some(ChannelOverrides {
             provider_id: Some(CODEX_SUBSCRIPTION_PROVIDER_ID.to_string()),
@@ -2215,7 +2150,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_default_change_does_not_rotate_channel_with_own_runtime_override() {
+    fn channel_template_tracks_agent_defaults_while_legacy_overrides_are_ignored() {
         let mut before = base_agent();
         before.provider_id = Some(CODEX_SUBSCRIPTION_PROVIDER_ID.to_string());
         before.model = Some("gpt-5.5".to_string());
@@ -2233,8 +2168,9 @@ mod tests {
         after.model = Some("anthropic/claude-opus-4.6".to_string());
         let new_identity = channel.to_im_config(&after).runtime_identity();
 
-        assert_eq!(old_identity.runtime, "builtin");
-        assert_eq!(new_identity, old_identity);
+        assert_eq!(old_identity.runtime, "codex");
+        assert_eq!(new_identity.runtime, "builtin");
+        assert_ne!(new_identity, old_identity);
     }
 
     #[test]

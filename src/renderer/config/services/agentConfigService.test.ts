@@ -280,15 +280,15 @@ describe('migrateImBotConfigsToAgents', () => {
     expect(cfg.agents).toEqual(original);
   });
 
-  it('compares overrides with the existing Agent and preserves explicit channel permission', () => {
+  it('preserves legacy Bots when their execution settings differ from Agent defaults', () => {
     const cfg = { agents: [{ id: 'target', name: 'Target', channels: [], providerId: 'old', model: 'old' }], imBotConfigs: [{
       id: 'bot', platform: 'telegram', botToken: 'preserve', enabled: false, defaultWorkspacePath: '/target',
       providerId: 'new', model: 'new', permissionMode: 'plan',
     }] } as unknown as AppConfig;
     migrateImBotConfigsToAgents(cfg, [project({ path: '/target', agentId: 'target' })]);
-    expect(cfg.agents![0].channels[0].overrides).toEqual({ providerId: 'new', model: 'new', permissionMode: 'plan' });
+    expect(cfg.agents![0].channels).toEqual([]);
     expect(cfg.agents![0].providerId).toBe('old');
-    expect(cfg.imBotConfigs).toEqual([]);
+    expect(cfg.imBotConfigs).toHaveLength(1);
   });
 
   it.each([false, true])('never reclaims an Agent by its stale path (already migrated: %s)', alreadyMigrated => {

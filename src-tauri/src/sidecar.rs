@@ -98,9 +98,8 @@ pub(crate) use session_lifecycle::{
     ensure_session_sidecar_with_runtime_identity_override,
     ensure_session_sidecar_with_runtime_identity_override_lifecycle,
     ensure_session_sidecar_with_runtime_identity_override_lifecycle_held,
-    finish_runtime_drift_transition, finish_session_owner_release, has_persisted_session_owner,
-    release_session_owner_everywhere, release_session_sidecar_from_blocking_thread,
-    SessionLifecycleGuard,
+    finish_session_owner_release, has_persisted_session_owner, release_session_owner_everywhere,
+    release_session_sidecar_from_blocking_thread, SessionLifecycleGuard,
 };
 #[allow(unused_imports)]
 pub use session_lifecycle::{
@@ -125,8 +124,8 @@ pub(crate) use stdio::{classify_sidecar_stderr, SidecarStderrLevel};
 #[allow(unused_imports)]
 pub use types::SidecarInfo;
 use types::{
-    decide_runtime_identity_drift_result, normalize_runtime_name, normalize_runtime_source_name,
-    owner_prefers_live_agent_runtime, sidecar_removal_event_policy, ExistingSidecarReuse,
+    normalize_runtime_name, normalize_runtime_source_name, sidecar_removal_event_policy,
+    ExistingSidecarReuse,
 };
 
 /// Probe the next process-wide Sidecar port without retaining lifecycle state.
@@ -171,7 +170,7 @@ pub(crate) use types::{
     DispatchDrain, DispatchGate, DispatchLease, DispatchReplacement, GlobalShutdownTarget,
     SessionCompletionClaim, SessionGenerationDrain, SidecarRetirement, SidecarShutdownPreparation,
 };
-pub use types::{RuntimeDriftResult, SessionSidecar, SidecarInstance, SidecarOwner, SidecarState};
+pub use types::{SessionSidecar, SidecarInstance, SidecarOwner, SidecarState};
 
 // Ensure file descriptor limit is increased only once (unix only)
 #[cfg(unix)]

@@ -1050,6 +1050,7 @@ function hasProviderId(
 
 export function getAllEffectiveProviders(
   config?: AdminAppConfig,
+  runtimeModels?: readonly import('../../shared/types/runtime').RuntimeModelInfo[],
 ): ProviderRecord[] {
   const c = config ?? loadConfig();
   const presetProviders = (
@@ -1065,6 +1066,7 @@ export function getAllEffectiveProviders(
   const providersWithManagedCodex = withManagedCodexProviderCatalog(
     [...presetProviders, ...customProviders] as unknown as Provider[],
     providerConfig,
+    runtimeModels,
   );
   const providersWithUserModels = mergePresetCustomModels(
     providersWithManagedCodex,
@@ -1520,40 +1522,6 @@ function findImAgentAndChannel(
   return { agent, channel };
 }
 
-function channelLevelProviderId(
-  channel: ChannelConfigSlim | undefined,
-): string | undefined {
-  if (!channel) return undefined;
-  const overrides =
-    (channel.overrides as Record<string, unknown> | undefined) ?? undefined;
-  const overrideProviderId = overrides?.providerId;
-  if (typeof overrideProviderId === 'string' && overrideProviderId.trim()) {
-    return overrideProviderId;
-  }
-  const legacyProviderId = (channel as Record<string, unknown>).providerId;
-  if (typeof legacyProviderId === 'string' && legacyProviderId.trim()) {
-    return legacyProviderId;
-  }
-  return undefined;
-}
-
-function channelForSessionConfig(
-  channel: ChannelConfigSlim | undefined,
-): ChannelConfig | undefined {
-  if (!channel) return undefined;
-  const providerId = channelLevelProviderId(channel);
-  if (!providerId) return channel as unknown as ChannelConfig;
-  const overrides =
-    (channel.overrides as Record<string, unknown> | undefined) ?? {};
-  return {
-    ...channel,
-    overrides: {
-      ...overrides,
-      providerId,
-    },
-  } as unknown as ChannelConfig;
-}
-
 function providerRouteFailureMessage(
   route: ProviderRoute,
   providerId: string | undefined,
@@ -1587,14 +1555,13 @@ export function resolveImProviderRouting(
   const resolved = resolveSessionConfig(
     undefined,
     agent as unknown as AgentConfig,
-    channelForSessionConfig(channel),
+    channel as unknown as ChannelConfig | undefined,
     'im',
     { managedCodexProviderReady: options?.managedCodexProviderReady === true },
   );
 
   const providerId =
     resolved.providerId ||
-    channelLevelProviderId(channel) ||
     agent.providerId ||
     (c.defaultProviderId as string | undefined);
   const model = resolved.model;

@@ -88,7 +88,7 @@ Session identity、恢复与配置 snapshot 见 [`session_architecture.md`](sess
 
 显式 system CLI 选择优先于 provider compatibility projection。Managed provider 的 readiness 由自己的 provider gate、安装清单与认证状态裁决，不依赖实验室的 system CLI Runtime 开关。
 
-owned desktop/Task Session 持久化执行 identity；IM 与 Agent Channel 只固定 Runtime identity，model/provider/permission/MCP 在每条消息 admission 时 live resolve。Analytics 和 drift detection 同样必须携带完整 source，不能把 managed 与 system usage 合并。
+owned desktop/Task/IM Session 持久化完整执行 identity 与配置 snapshot；Agent Channel 的 model/provider/permission/MCP 选择同样服从 Session。默认 reload 不改旧会话，也不触发 drift rotation；显式模型选择经 SessionEngine operation 应用，忙时下一轮生效。Analytics 和真实执行身份检查须携带完整 source，不能把 managed 与 system usage 合并。
 
 Managed Runtime 的目标下载版本以 `src/shared/managed-codex-runtime.json` 为唯一锁定源；当前进程使用安装器已经原子发布并校验的 installed identity。更新下载期间不得因为目标锁变化而阻断现有健康版本或已有 Session。
 
@@ -96,7 +96,7 @@ Managed Runtime 的目标下载版本以 `src/shared/managed-codex-runtime.json`
 
 打包时的 DSH 来源由 [构建资源准备](build_resource_preparation.md#integrated-dsh-构建来源) 选定。Release lock 是正式包的 authority；显式本地 Dev 构建从已验证 handoff 派生一次性 effective lock。两种来源都在打包前冻结相同的 TypeScript/Rust 运行身份，不进入 Agent 设置或 Session 可变配置。
 
-DSH 是受控分发的 Integrated Runtime。`shared/integrated-runtimes/resolver.ts` 结合 distribution policy、Agent/Channel `runtimePreference`、Provider constraint 与 readiness，解析 `EffectiveRuntimeBinding`。`config.multiAgentRuntime` 控制选择器可用性；选择器不可用时，新 ordinary-provider Session 使用 allowlisted `config.defaultIntegratedRuntime` 或构建默认。已有 Session 优先读取 frozen `runtimeBinding`，未知组合只允许历史读取，不能静默回退 builtin。
+DSH 是受控分发的 Integrated Runtime。`shared/integrated-runtimes/resolver.ts` 结合 distribution policy、Agent `runtimePreference`、Provider constraint 与 readiness，解析 `EffectiveRuntimeBinding`。`config.multiAgentRuntime` 控制选择器可用性；选择器不可用时，新 ordinary-provider Session 使用 allowlisted `config.defaultIntegratedRuntime` 或构建默认。已有 Session 优先读取 frozen `runtimeBinding`，未知组合只允许历史读取，不能静默回退 builtin。
 
 `SessionEngine` selector 将 DSH 交给 integrated adapter，其实现复用 external-session 的队列、交互、transcript 和配置 owner；调用方判断 SDK 专属路径时使用 `engine.kind === 'builtin'`，不能把所有非 external engine 当作 SDK。
 

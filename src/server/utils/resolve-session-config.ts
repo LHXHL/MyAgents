@@ -37,14 +37,9 @@ export interface ResolvedSessionConfig {
   providerEnvJson: string | undefined;
 }
 
-/**
- * Only two behaviors: IM live-follows AgentConfig + ChannelOverrides; everyone
- * else (Desktop Tab, Cron new-task, Cron current-session) reads from the
- * session snapshot with Agent as fallback.
- *
- * Cron `new_task` looks like "live" but actually snapshots into a fresh
- * SessionMetadata per tick (T6), then reads that snapshot — so it's
- * structurally 'owned'.
+/** Owned snapshots are authoritative for desktop, task and IM alike.
+ * `im` only selects the unattended Agent-template birth/legacy resolver when
+ * no complete snapshot exists; Cloud registered Agents use a separate lifecycle.
  */
 export type SessionOwnerKind = 'im' | 'owned';
 
@@ -55,9 +50,9 @@ export interface ResolveSessionConfigOptions {
 /**
  * Resolve the effective config for one query (D2, D4, D7, Option C).
  *
- * - IM (`'im'`): every call re-merges `channel.overrides ?? agent`. No session
- *   snapshot read. This keeps the D4 live-follow semantic; IM session fork on
- *   runtime drift happens at the Router layer, not here.
+ * - IM with a complete snapshot uses the same owned policy. Without metadata,
+ *   the compatibility/birth resolver reads only Agent defaults; Channels own
+ *   transport and restrictions, never a second execution template.
  *
  * - Owned (`'owned'`): if `configSnapshotAt` is present, the session snapshot
  *   owns the field set and missing fields resolve only to runtime/provider
@@ -76,16 +71,16 @@ export function resolveSessionConfig(
   options: ResolveSessionConfigOptions = {},
 ): ResolvedSessionConfig {
   const managedCodexProviderReady = options.managedCodexProviderReady === true;
-  if (ownerKind === 'im') {
+  if (ownerKind === 'im' && !meta?.configSnapshotAt) {
     if (!agent) throw new Error('IM session config requires an Agent.');
     // A missing channel is only a startup/health fallback; use the same identity
     // projection instead of maintaining a second permission path.
-    const eff = channel ? resolveEffectiveConfig(agent, channel) : agent;
+    const eff = channel ? resolveEffectiveConfig(agent, channel) : { ...agent, permissionMode: getMaxPermissionForRuntime(agent.runtime ?? 'builtin') };
     const effectiveRuntime = eff.runtime ?? 'builtin';
     const managedCodexSelected = agentUsesManagedCodexProvider({
       providerId: eff.providerId,
-      runtime: channel?.overrides?.runtime ?? agent.runtime,
-      runtimeConfig: channel?.overrides?.runtimeConfig ?? agent.runtimeConfig,
+      runtime: agent.runtime,
+      runtimeConfig: agent.runtimeConfig,
     });
     if (managedCodexProviderReady && managedCodexSelected
         && eff.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID && eff.model) {

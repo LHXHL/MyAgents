@@ -635,7 +635,6 @@ import { sessionUserTagFailureStatus } from './session-user-tag-http';
 import {
   findProjectAgentByWorkspacePath,
   loadConfig,
-  resolveImProviderRouting,
   resolveProviderEnv,
   resolveWorkspaceConfig,
 } from './utils/admin-config';
@@ -647,7 +646,7 @@ import {
 import { createGlobalSkillInventorySnapshot } from './global-skill-inventory';
 import { isManagedSymlink } from './utils/project-user-config-sync';
 import { managementApi } from './utils/management-api-client';
-import { snapshotForOwnedSession } from './utils/session-snapshot';
+import { snapshotForOwnedSession, snapshotForImSession } from './utils/session-snapshot';
 import {
   isManagedCodexProviderReady,
   managedCodexNotReadyMessage,
@@ -719,6 +718,7 @@ import { handleSessionEngineRuntimeRoute } from './routes/session-engine-runtime
 import { handleSessionReadRoute } from './routes/session-read';
 import { handleChatStreamRoute } from './routes/chat-stream';
 import { handleSessionConfigRoute } from './routes/session-config';
+import { handleImModelRoute } from './routes/im-model-selection';
 import { handleSessionOperationRoute } from './routes/session-operations';
 import {
   handleGoalExecuteSyncRoute,
@@ -729,12 +729,9 @@ import type { ImagePayload } from './runtimes/types';
 import { rehomeImagePayloadsForSession } from './runtimes/image-payload';
 import {
   VALID_RUNTIMES,
-  coerceModelForRuntime,
-  projectPermissionModeForRuntime,
   getMaxPermissionForRuntime,
 } from '../shared/types/runtime';
 import { runtimeTypeForBinding } from '../shared/integrated-runtimes/identity';
-import { coerceReasoningEffortForRuntime } from '../shared/reasoningEffort';
 import { coerceRuntimeBirthReasoningEffort } from '../shared/runtimeBirthFields';
 import type {
   RuntimeConfig,
@@ -743,7 +740,6 @@ import type {
 } from '../shared/types/runtime';
 import {
   isPermissionModeForRuntimeIdentity,
-  projectManagedCodexPermissionToRuntime,
   type RuntimeBackedProviderIdentity,
 } from '../shared/providerExecution';
 import {
@@ -865,39 +861,6 @@ function desktopScenarioForAnalyticsSource(
   return source === 'floating_ball'
     ? { type: 'desktop', surface: 'floating-ball' }
     : { type: 'desktop' };
-}
-
-function getRuntimeConfigModel(
-  runtimeConfig?: RuntimeConfig | null,
-  runtime: RuntimeType = getActiveRuntimeType(),
-): string | undefined {
-  const model = runtimeConfig?.model?.trim();
-  return model ? coerceModelForRuntime(model, runtime) : undefined;
-}
-
-/** #324 — RAW effort setting from runtimeConfig for ExternalSendContext.
- *  Always defined ('default' when unset): headless IM/cron callers resolve
- *  authoritatively from the agent each turn, and the context value must be
- *  able to express "explicitly back to default" — collapsing 'default' to
- *  undefined here would make external-session fall back to stale module
- *  state (a session bumped to xhigh would keep xhigh forever after the
- *  agent reverted to default; cross-review Critical). */
-function getRuntimeConfigReasoningEffort(
-  runtimeConfig?: RuntimeConfig | null,
-  runtime: RuntimeType = getActiveRuntimeType(),
-): string {
-  const reasoningEffort = runtimeConfig?.reasoningEffort?.trim() || 'default';
-  return coerceReasoningEffortForRuntime(reasoningEffort, runtime) ?? 'default';
-}
-
-function getRuntimeConfigPermissionMode(
-  runtimeConfig?: RuntimeConfig | null,
-  runtime: RuntimeType = getActiveRuntimeType(),
-): string | undefined {
-  const permissionMode = runtimeConfig?.permissionMode?.trim();
-  return permissionMode
-    ? projectPermissionModeForRuntime(permissionMode, runtime)
-    : undefined;
 }
 
 function usesProductProviderConfiguration(runtime: RuntimeType): boolean {
@@ -3936,7 +3899,8 @@ async function main() {
             400,
           );
         }
-        const managedCodexReady = isManagedCodexProviderReady(loadConfig());
+        const birthConfig = loadConfig();
+        const managedCodexReady = isManagedCodexProviderReady(birthConfig);
         if (
           runtimeSourceValue === 'managed-provider' ||
           payloadProviderExecutionIdentity?.runtimeSource ===
@@ -3974,9 +3938,11 @@ async function main() {
           | AgentConfig
           | undefined;
         const baseSnapshot: Partial<SessionMetadata> = agent
-          ? snapshotForOwnedSession(agent, {
+          ? (payloadOrigin?.kind === 'agent-channel' ? snapshotForImSession : snapshotForOwnedSession)(agent, {
               runtimeOverride: runtimeValue,
+              runtimeSourceOverride: runtimeSourceValue,
               managedCodexProviderReady: managedCodexReady,
+              runtimePolicy: { multiAgentRuntime: !!birthConfig.multiAgentRuntime, defaultIntegratedRuntime: birthConfig.defaultIntegratedRuntime },
             })
           : runtimeValue
             ? { runtime: runtimeValue }
@@ -5365,6 +5331,9 @@ async function main() {
       if (qrCodeAssetResponse) return qrCodeAssetResponse;
 
       // ============= END PROVIDER VERIFICATION API =============
+
+      const imModelRouteResponse = await handleImModelRoute(pathname, request);
+      if (imModelRouteResponse) return imModelRouteResponse;
 
       const sessionConfigRouteResponse = await handleSessionConfigRoute(
         pathname,
@@ -10395,19 +10364,11 @@ async function main() {
           const snapshotOwnsConfig = Boolean(
             snapshotMetaForConfig?.configSnapshotAt,
           );
-          const configHeldByTab =
-            payload.configHeldByTab === true && !snapshotOwnsConfig;
-          const heldImConfig = configHeldByTab
-            ? engine.getHeldImConfigSnapshot()
-            : null;
-          const payloadRuntime = payload.runtime ?? getActiveRuntimeType();
-          const payloadRuntimeConfig = payload.runtimeConfig ?? null;
-          const snapshotResolvedConfig =
-            snapshotOwnsConfig && snapshotMetaForConfig
-              ? resolveWorkspaceConfig(agentDir, snapshotMetaForConfig, {
-                  includeMcp: false,
-                })
-              : null;
+          if (!snapshotOwnsConfig) {
+            imRequestRegistry.unregister(payload.requestId);
+            return jsonResponse({ success: false, error: 'IM Session requires a complete execution snapshot; create /new or migrate its held configuration.' }, 409);
+          }
+          const snapshotResolvedConfig = resolveWorkspaceConfig(agentDir, snapshotMetaForConfig!, { includeMcp: false });
           const snapshotRuntimeConfig = snapshotResolvedConfig
             ? buildSnapshotRuntimeConfig(snapshotResolvedConfig)
             : null;
@@ -10422,20 +10383,12 @@ async function main() {
           const effectiveRuntime =
             snapshotOwnsConfig && snapshotRuntime
               ? snapshotRuntime
-              : payloadRuntime;
+              : engine.getRuntimeIdentity().runtime;
           const activeRuntime = engine.getRuntimeIdentity().runtime;
           const activeRuntimeSource = engine.getRuntimeIdentity().runtimeSource;
-          const payloadExternalPermissionMode =
-            typeof payload.permissionMode === 'string'
-              ? activeRuntime === 'codex' &&
-                activeRuntimeSource === 'managed-provider'
-                ? projectManagedCodexPermissionToRuntime(payload.permissionMode)
-                : projectPermissionModeForRuntime(
-                    payload.permissionMode,
-                    activeRuntime,
-                  )
-              : undefined;
-          if (snapshotOwnsConfig && effectiveRuntime !== activeRuntime) {
+          const expectedRuntimeSource = effectiveRuntime === 'builtin' ? 'builtin' : effectiveRuntime === 'dsh' ? 'integrated'
+            : snapshotMetaForConfig?.runtimeSource ?? snapshotMetaForConfig?.providerExecutionIdentity?.runtimeSource ?? 'system-cli';
+          if (snapshotOwnsConfig && (effectiveRuntime !== activeRuntime || expectedRuntimeSource !== (activeRuntimeSource ?? 'builtin'))) {
             imRequestRegistry.unregister(payload.requestId);
             return jsonResponse(
               {
@@ -10452,65 +10405,21 @@ async function main() {
             if (payload.botId && process.env.MYAGENTS_MANAGEMENT_PORT) {
               const usesProductProvider =
                 usesProductProviderConfiguration(effectiveRuntime);
-              const imCronModel = snapshotResolvedConfig
-                ? snapshotResolvedConfig.model
-                : usesProductProvider
-                  ? (heldImConfig?.model ??
-                    payload.model ??
-                    (effectiveRuntime === 'builtin'
-                      ? getSessionModel()
-                      : undefined))
-                  : (heldImConfig?.model ??
-                    getRuntimeConfigModel(
-                      payloadRuntimeConfig,
-                      effectiveRuntime,
-                    ));
-              // Resolve Product Provider authority for Builtin and Integrated
-              // DSH; legacy External runtimes manage their own Provider.
-              const imAgentForProvider =
-                usesProductProvider && !snapshotOwnsConfig
-                  ? findProjectAgentByWorkspacePath(agentDir)
-                  : null;
-              const imProviderId = snapshotOwnsConfig
-                ? (snapshotMetaForConfig?.providerId ??
-                  snapshotResolvedConfig?.providerEnv?.providerId)
-                : ((imAgentForProvider?.providerId as string | undefined) ??
-                  undefined);
+              const imCronModel = snapshotResolvedConfig.model;
+              const imProviderId = snapshotMetaForConfig?.providerId ?? snapshotResolvedConfig.providerEnv?.providerId;
               setImCronContext({
                 botId: payload.botId,
                 chatId: payload.sourceId,
                 platform: payload.source.split('_')[0],
                 workspacePath: agentDir,
                 model: imCronModel,
-                permissionMode: snapshotResolvedConfig
-                  ? snapshotResolvedConfig.permissionMode
-                  : usesProductProvider
-                    ? (heldImConfig?.permissionMode ?? payload.permissionMode)
-                    : (heldImConfig?.permissionMode ??
-                      payloadExternalPermissionMode ??
-                      getRuntimeConfigPermissionMode(
-                        payloadRuntimeConfig,
-                        effectiveRuntime,
-                      ) ??
-                      getMaxPermissionForRuntime(effectiveRuntime)),
-                // Legacy frozen env (kept for back-compat); sidecar prefers
-                // `providerId` when both are present.
-                providerEnv: usesProductProvider
-                  ? cloneProviderEnvForImContext(
-                      (snapshotResolvedConfig?.providerEnv as
-                        | ProviderEnv
-                        | undefined) ??
-                        heldImConfig?.providerEnv ??
-                        payload.providerEnv,
-                    )
-                  : undefined,
+                permissionMode: snapshotResolvedConfig.permissionMode,
+                providerEnv: usesProductProvider ? cloneProviderEnvForImContext(snapshotResolvedConfig.providerEnv as ProviderEnv | undefined) : undefined,
                 providerId: imProviderId,
                 runtime: effectiveRuntime,
                 runtimeConfig: usesProductProvider
                   ? undefined
-                  : (snapshotRuntimeConfig ??
-                    payloadRuntimeConfig ??
-                    undefined),
+                  : (snapshotRuntimeConfig ?? undefined),
               });
               setImMediaContext({
                 botId: payload.botId,
@@ -10720,33 +10629,10 @@ async function main() {
             // Dispatch to runtime through SessionEngine. The route keeps IM
             // payload shaping; the engine owns builtin/external admission.
             if (engine.kind !== 'builtin') {
-              const runtimeConfig =
-                snapshotRuntimeConfig ?? payloadRuntimeConfig;
-              if (payloadRuntime !== activeRuntime) {
-                console.error(
-                  `[im/enqueue] Runtime mismatch (Rust drift detection failed to catch): sidecar=${activeRuntime} payload=${payloadRuntime}.`,
-                );
-              }
-              const resolvedExternalPermissionMode =
-                snapshotResolvedConfig?.permissionMode ??
-                heldImConfig?.permissionMode ??
-                payloadExternalPermissionMode ??
-                getRuntimeConfigPermissionMode(
-                  runtimeConfig,
-                  effectiveRuntime,
-                ) ??
-                getMaxPermissionForRuntime(effectiveRuntime);
-              const resolvedExternalModel = snapshotResolvedConfig
-                ? snapshotResolvedConfig.model
-                : (heldImConfig?.model ??
-                  getRuntimeConfigModel(runtimeConfig, effectiveRuntime));
-              const resolvedExternalReasoningEffort = snapshotResolvedConfig
-                ? snapshotResolvedConfig.reasoningEffort
-                : (heldImConfig?.reasoningEffort ??
-                  getRuntimeConfigReasoningEffort(
-                    runtimeConfig,
-                    effectiveRuntime,
-                  ));
+              const runtimeConfig = snapshotRuntimeConfig;
+              const resolvedExternalPermissionMode = snapshotResolvedConfig.permissionMode;
+              const resolvedExternalModel = snapshotResolvedConfig.model;
+              const resolvedExternalReasoningEffort = snapshotResolvedConfig.reasoningEffort;
               const result = await goalOrchestrator.enqueueImMessage(engine, {
                 message: finalMessage,
                 images: payload.images ?? undefined,
@@ -10780,92 +10666,11 @@ async function main() {
                 );
               }
             } else {
-              // PRD 0.2.14 Q4·A — handover-aware permission mode resolution.
-              // After a desktop session is handed over to this channel, the
-              // session carries a `configSnapshotAt` from its desktop creation.
-              // In that case the user's intent is "the desktop session's mode
-              // wins" (the desktop session is the authoritative state), so we
-              // ignore the live Agent values that Rust passed in payload.
-              // Pure IM-origin sessions never have a snapshot, so this branch
-              // is a no-op for them and behavior matches v0.2.13.
-              let resolvedPermissionMode: PermissionMode =
-                (payload.permissionMode as PermissionMode) ?? 'fullAgency';
-              let resolvedModel: string | undefined =
-                payload.model ?? undefined;
-              let resolvedReasoningEffort: string | undefined;
-              let resolvedProviderRoute: ProviderRoute | undefined;
-              // Pure IM-origin builtin sessions resolve ProviderRoute live from
-              // disk. This keeps route identity canonical (providerId + model)
-              // instead of trusting Rust's legacy providerEnv blob, and fails
-              // loud for known provider/model/key errors. Legacy fallback is kept
-              // only for unmatched historical bots where no Agent can be found.
-              let resolvedProviderEnv: ProviderEnv | undefined =
-                payload.providerEnv ?? undefined;
-              if (!heldImConfig && !snapshotResolvedConfig) {
-                const imRoutingConfig = loadConfig();
-                const imProviderRouting = resolveImProviderRouting(
-                  agentDir,
-                  payload.botId,
-                  {
-                    config: imRoutingConfig,
-                    managedCodexProviderReady:
-                      isManagedCodexProviderReady(imRoutingConfig),
-                  },
-                );
-                if (imProviderRouting.kind === 'provider-route') {
-                  resolvedProviderRoute = imProviderRouting.providerRoute;
-                  resolvedModel = imProviderRouting.model;
-                  resolvedProviderEnv = undefined;
-                } else if (imProviderRouting.kind === 'external-runtime') {
-                  imRequestRegistry.unregister(payload.requestId);
-                  return jsonResponse(
-                    {
-                      success: false,
-                      error: `IM channel now resolves to ${imProviderRouting.runtime}; current sidecar is builtin. Runtime drift recovery should create an external-runtime session before enqueue.`,
-                    },
-                    409,
-                  );
-                } else if (imProviderRouting.kind === 'error') {
-                  imRequestRegistry.unregister(payload.requestId);
-                  return jsonResponse(
-                    {
-                      success: false,
-                      error: imProviderRouting.message,
-                      reason: imProviderRouting.reason,
-                    },
-                    imProviderRouting.status,
-                  );
-                }
-              }
-              if (heldImConfig) {
-                resolvedPermissionMode =
-                  (heldImConfig.permissionMode as PermissionMode | undefined) ??
-                  resolvedPermissionMode;
-                resolvedModel = heldImConfig.model ?? resolvedModel;
-                resolvedProviderRoute = undefined;
-                resolvedProviderEnv =
-                  heldImConfig.providerEnv ?? resolvedProviderEnv;
-                resolvedReasoningEffort =
-                  heldImConfig.reasoningEffort ?? resolvedReasoningEffort;
-              }
-              if (snapshotResolvedConfig) {
-                // Desktop-handover snapshots own the full config. Missing fields
-                // mean "use product/runtime default", not "fall back to live
-                // Agent/channel config".
-                resolvedPermissionMode =
-                  snapshotResolvedConfig.permissionMode as PermissionMode;
-                resolvedModel = snapshotResolvedConfig.model;
-                resolvedProviderRoute = isConcreteProviderRoute(
-                  snapshotResolvedConfig.providerRoute,
-                )
-                  ? snapshotResolvedConfig.providerRoute
-                  : undefined;
-                resolvedProviderEnv = snapshotResolvedConfig.providerEnv as
-                  | ProviderEnv
-                  | undefined;
-                resolvedReasoningEffort =
-                  snapshotResolvedConfig.reasoningEffort;
-              }
+              const resolvedPermissionMode = snapshotResolvedConfig.permissionMode as PermissionMode;
+              const resolvedModel = snapshotResolvedConfig.model;
+              const resolvedReasoningEffort = snapshotResolvedConfig.reasoningEffort;
+              const resolvedProviderRoute = isConcreteProviderRoute(snapshotResolvedConfig.providerRoute) ? snapshotResolvedConfig.providerRoute : undefined;
+              const resolvedProviderEnv = snapshotResolvedConfig.providerEnv as ProviderEnv | undefined;
 
               applyBackgroundAgentPermissionModeFromDisk(); // #264 — IM/Task self-resolve
               const result = await goalOrchestrator.enqueueImMessage(engine, {
@@ -11437,8 +11242,10 @@ description: >
           let text = '';
 
           const engine = getSessionEngine();
-          const runtimeConfig = payload.runtimeConfig ?? null;
-          const activeRuntime = engine.getRuntimeIdentity().runtime;
+          const heartbeatMeta = engine.getCurrentSessionContext().sessionMeta;
+          if (!heartbeatMeta?.configSnapshotAt) return respondAfterDrain({ status: 'error', reason: 'session_snapshot_required' }, 409);
+          const heartbeatConfig = resolveWorkspaceConfig(agentDir, heartbeatMeta, { includeMcp: false });
+          const runtimeConfig = buildSnapshotRuntimeConfig(heartbeatConfig);
           const turnResult = await engine.runInjectedTurn({
             prompt: enrichedPrompt,
             sessionId: getRuntimeSessionIdForRequest(),
@@ -11454,22 +11261,11 @@ description: >
               ),
             },
             metadataBirthPending: payload.metadataBirthPending === true,
-            permissionMode:
-              engine.kind !== 'builtin'
-                ? getRuntimeConfigPermissionMode(runtimeConfig, activeRuntime)
-                : 'fullAgency',
-            model:
-              engine.kind !== 'builtin'
-                ? getRuntimeConfigModel(runtimeConfig, activeRuntime)
-                : engine.kind === 'builtin'
-                  ? (getSessionModel() ?? undefined)
-                  : undefined,
-            providerEnv:
-              engine.kind === 'builtin' ? getSessionProviderEnv() : undefined,
-            reasoningEffort:
-              engine.kind !== 'builtin'
-                ? getRuntimeConfigReasoningEffort(runtimeConfig, activeRuntime)
-                : undefined,
+            permissionMode: heartbeatConfig.permissionMode,
+            model: heartbeatConfig.model,
+            providerEnv: heartbeatConfig.providerEnv as ProviderEnv | undefined,
+            providerRoute: heartbeatMeta.providerRoute,
+            reasoningEffort: heartbeatConfig.reasoningEffort,
             runtimeConfig,
             metadata: {
               source: payload.source as SessionSource,

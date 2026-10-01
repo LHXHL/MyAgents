@@ -439,6 +439,7 @@ export interface SessionEngine {
   forceQueuedMessage(queueId: string): Promise<boolean>;
   getQueueStatus(): QueueStatusItem[];
   waitIdle(timeoutMs: number, pollMs?: number): Promise<boolean>;
+  applyModelSelection(input: { model: string; providerEnv?: ProviderEnv; reasoningEffort?: string }): Promise<{ success: boolean; status?: string; error?: string }>;
   updateModel(model: string, opts?: { imConfigSync?: boolean }): Promise<{ success: boolean; error?: string }>;
   updatePermissionMode(mode: string): Promise<{ success: boolean; error?: string }>;
   /** Optional because only Runtimes with an authoritative exact-rule API expose it. */

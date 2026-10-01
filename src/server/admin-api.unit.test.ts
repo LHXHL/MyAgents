@@ -2250,6 +2250,29 @@ describe('admin-api task runtime model identity', () => {
 });
 
 describe('admin-api agent set configuration intent', () => {
+  it('commits an IM model default without projecting Runtime changes before the caller releases its peer fence', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      providerVerifyStatus: { 'anthropic-sub': { status: 'valid' } },
+      agents: [{ id: 'im-agent', name: 'IM Agent', runtime: 'builtin', enabled: true,
+        providerId: 'anthropic-sub', model: 'old', permissionMode: 'plan', mcpEnabledServers: ['owned-mcp'] }],
+    });
+    const { commitAgentModelSelection } = await import('./admin-api');
+    expect(await commitAgentModelSelection('im-agent', { kind: 'product-provider', providerId: 'anthropic-sub', model: 'claude-sonnet-4-6' }))
+      .toMatchObject({ success: true, data: { reloadPatch: { model: 'claude-sonnet-4-6' } } });
+    expect(readConfig()).toMatchObject({ agents: [{ model: 'claude-sonnet-4-6', permissionMode: 'plan', mcpEnabledServers: ['owned-mcp'] }] });
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('rejects unavailable default selections and new Channel execution overrides before writing', async () => {
+    const config = { agents: [{ id: 'im-agent', name: 'IM Agent', permissionMode: 'auto', channels: [] }] };
+    writeJson(join(scratch, '.myagents', 'config.json'), config);
+    const { commitAgentModelSelection, handleAgentChannelAdd } = await import('./admin-api');
+    expect(await commitAgentModelSelection('im-agent', { kind: 'product-provider', providerId: 'anthropic-sub', model: 'claude-sonnet-4-6' }))
+      .toMatchObject({ success: false });
+    expect(await handleAgentChannelAdd({ agentId: 'im-agent', channel: { type: 'telegram', overrides: { model: 'override' } } }))
+      .toMatchObject({ success: false, error: expect.stringContaining('no longer supported') });
+    expect(readConfig()).toEqual(config);
+  });
   it.each([
     ['provider', 'providerId'],
     ['permission', 'permissionMode'],

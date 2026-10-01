@@ -1,3 +1,4 @@
+import { resolveAgentConfigMutation, mutationForAgentModelSelection, type AgentModelSelection } from '../shared/agentConfigMutation';
 import { APP_BUILD_IDENTITY, SIDECAR_BUILD_IDENTITY, SIDECAR_STARTED_AT } from './build-identity';
 /**
  * Admin API — Self-Configuration endpoints for the CLI tool.
@@ -11,11 +12,13 @@ import { APP_BUILD_IDENTITY, SIDECAR_BUILD_IDENTITY, SIDECAR_STARTED_AT } from '
  *   6. Return result
  */
 
+import { channelExecutionConfigChangeError } from '../shared/types/agent';
 import { execFile } from 'node:child_process';
 import { lstatSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { cp as fsCp } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import {
+  CODEX_SUBSCRIPTION_PROVIDER_ID,
   isProjectArchived,
   isProjectVisibleToUser,
   splitProviderModelInput,
@@ -2420,6 +2423,9 @@ export async function handleAgentChannelAdd(payload: {
     return { success: false, error: 'Missing required field: agentId' };
   if (!channel.type)
     return { success: false, error: 'Missing required field: channel.type' };
+
+  const executionError = channelExecutionConfigChangeError(undefined, channel);
+  if (executionError) return { success: false, error: executionError };
 
   const channelId = (channel.id as string) || crypto.randomUUID();
   const newChannel: ChannelConfigSlim = {
@@ -8920,7 +8926,7 @@ type AgentConfigIntentResolution =
     }
   | { ok: false; response: AdminResponse };
 
-async function modifyAgentConfigIntent(
+async function commitAgentConfigIntent(
   id: string,
   resolveIntent: (
     agent: AgentConfigSlim,
@@ -9015,6 +9021,35 @@ async function modifyAgentConfigIntent(
 
   if (commitResult) return commitResult;
 
+  broadcast('config:changed', { section: 'agent', action, id });
+  return { success: true, data: { id, reloadPatch: committedLivePatch } };
+}
+
+/** IM owns the subsequent Rust refresh after releasing its peer fence. */
+export async function commitAgentModelSelection(id: string, selection: AgentModelSelection, effort?: string): Promise<AdminResponse> {
+  return commitAgentConfigIntent(id, (current, config) => {
+    if (selection.kind === 'product-provider') {
+      const provider = getAllEffectiveProviders(config).find(candidate => candidate.id === selection.providerId);
+      const error = provider ? getProviderSelectionError(provider, config) : '供应商已不可用';
+      const models = Array.isArray(provider?.models) ? provider.models : [];
+      if (error || (selection.providerId !== CODEX_SUBSCRIPTION_PROVIDER_ID && !models.some(model => model && typeof model === 'object' && model.model === selection.model))) {
+        return { ok: false, response: { success: false, error: error ?? '模型已不可用，Agent 默认设置未修改' } };
+      }
+    }
+    const agent = current as import('../shared/types/agent').AgentConfig;
+    const patch = resolveAgentConfigMutation(agent, mutationForAgentModelSelection(agent, selection, effort));
+    return { ok: true, agent: { ...current, ...patch } as AgentConfigSlim, projectPatch: patch, livePatch: patch };
+  }, 'model-selection');
+}
+
+async function modifyAgentConfigIntent(
+  id: string,
+  resolveIntent: (agent: AgentConfigSlim, config: AdminAppConfig) => AgentConfigIntentResolution,
+  action: string,
+): Promise<AdminResponse> {
+  const result = await commitAgentConfigIntent(id, resolveIntent, action);
+  if (!result.success) return result;
+  const committedLivePatch = (result.data as { reloadPatch?: Record<string, unknown> } | undefined)?.reloadPatch;
   if (committedLivePatch) {
     try {
       const response = await managementApi('/api/agent/reload-config', 'POST', {

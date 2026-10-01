@@ -10,13 +10,10 @@ import type {
   GroupActivation,
 } from './im';
 import {
-  getDefaultRuntimePermissionMode,
   getMaxPermissionForRuntime,
-  projectPermissionModeForRuntime,
   type RuntimeType,
   type RuntimeConfig,
 } from './runtime';
-import { managedCodexRuntimePermissionToProviderPermission } from '../providerExecution';
 import {
   resolveAgentRuntimePreference,
   runtimeTypeForAgentRuntimePreference,
@@ -55,7 +52,7 @@ export interface LastActivePrivateTarget {
 }
 
 /**
- * Channel-level config overrides (empty = inherit from Agent)
+ * Channel tool restrictions. Execution fields remain read-only legacy migration data.
  */
 export interface ChannelOverrides {
   providerId?: string;
@@ -67,6 +64,23 @@ export interface ChannelOverrides {
   runtimePreference?: AgentRuntimePreference;
   permissionMode?: string;
   toolsDeny?: string[];
+}
+
+/** Writers preserve existing legacy bytes, but cannot create or edit execution overrides. */
+export function channelExecutionConfigChangeError(current: unknown, next: unknown): string | undefined {
+  const keys = ['providerId', 'providerEnvJson', 'model', 'runtime', 'runtimeConfig', 'runtimePreference', 'permissionMode', 'mcpEnabledServers', 'mcpServersJson', 'reasoningEffort', 'enabledPluginIds', 'enabledOfficialToolIds'];
+  const before = current as Record<string, unknown> | undefined;
+  const after = next as Record<string, unknown>;
+  for (const location of [undefined, 'overrides']) {
+    const oldFields = location ? before?.[location] as Record<string, unknown> | undefined : before;
+    const newFields = location ? after[location] as Record<string, unknown> | undefined : after;
+    for (const key of keys) {
+      if (JSON.stringify(oldFields?.[key]) !== JSON.stringify(newFields?.[key])) {
+        return `Channel execution override '${key}' is no longer supported. Update the Agent or Session instead.`;
+      }
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -106,7 +120,7 @@ export interface ChannelConfig {
   groupPermissions?: GroupPermission[];
   groupActivation?: GroupActivation;
 
-  // Optional overrides (empty/undefined = inherit from Agent)
+  // Channel tool restrictions; legacy execution fields are read-only migration data.
   overrides?: ChannelOverrides;
 
   // Runtime
@@ -171,20 +185,11 @@ export interface AgentConfig {
   setupCompleted?: boolean;
 }
 
-function resolveAgentChannelProviderId(agent: AgentConfig, channel: ChannelConfig): string | undefined {
-  return channel.overrides?.providerId ?? agent.providerId;
+function resolveAgentChannelProviderId(agent: AgentConfig, _channel: ChannelConfig): string | undefined {
+  return agent.providerId;
 }
 
 function resolveAgentChannelPreference(agent: AgentConfig, channel: ChannelConfig) {
-  const overrides = channel.overrides;
-  if (overrides?.runtimePreference !== undefined || overrides?.runtime !== undefined) {
-    return resolveAgentRuntimePreference({
-      runtimePreference: overrides.runtimePreference,
-      runtime: overrides.runtime,
-      runtimeSource: overrides.runtimeConfig?.source,
-      providerId: resolveAgentChannelProviderId(agent, channel),
-    });
-  }
   return resolveAgentRuntimePreference({
     runtimePreference: agent.runtimePreference,
     runtime: agent.runtime,
@@ -204,8 +209,8 @@ export function agentChannelUsesManagedCodexProvider(
 }
 
 /**
- * Resolve the runtime that an Agent Channel will execute on. Channel overrides
- * mirror the Rust start path and win over Agent defaults. Runtime-backed
+ * Resolve the future Channel-session Runtime from Agent preference and Provider
+ * constraints. Legacy Channel execution overrides are read-only data. Runtime-backed
  * providers are projected here so the renderer/shared view matches Rust
  * `ChannelConfigRust::to_im_config`.
  */
@@ -230,38 +235,28 @@ export function resolveAgentChannelDefaultPermissionMode(agent: AgentConfig, cha
 }
 
 /**
- * IM / Agent Channel is an unattended entry point: when the channel itself has
- * no explicit permission override, default to the selected runtime's maximum
- * agency rather than inheriting the desktop Agent permission mode.
+ * IM births use the selected Runtime's maximum unattended permission.
+ * Existing Session permissions remain owned by their snapshot.
  */
 export function resolveAgentChannelPermissionMode(agent: AgentConfig, channel: ChannelConfig): string {
-  const override = channel.overrides?.permissionMode?.trim();
-  if (override) {
-    if (agentChannelUsesManagedCodexProvider(agent, channel)) {
-      return managedCodexRuntimePermissionToProviderPermission(override) ?? 'auto';
-    }
-    const runtime = resolveAgentChannelRuntime(agent, channel);
-    return projectPermissionModeForRuntime(override, runtime)
-      ?? getDefaultRuntimePermissionMode(runtime);
-  }
   return resolveAgentChannelDefaultPermissionMode(agent, channel);
 }
 
 /**
- * Resolve effective config for a channel by merging Agent defaults with Channel overrides
+ * Resolve future-session Agent defaults plus live Channel tool restrictions.
  */
 export function resolveEffectiveConfig(agent: AgentConfig, channel: ChannelConfig) {
   const runtime = resolveAgentChannelRuntime(agent, channel);
   return {
-    providerId: channel.overrides?.providerId ?? agent.providerId,
-    providerEnvJson: channel.overrides?.providerEnvJson ?? agent.providerEnvJson,
-    model: channel.overrides?.model ?? agent.model,
+    providerId: agent.providerId,
+    providerEnvJson: agent.providerEnvJson,
+    model: agent.model,
     permissionMode: resolveAgentChannelPermissionMode(agent, channel),
     mcpEnabledServers: agent.mcpEnabledServers,      // Channel cannot override
     enabledPluginIds: agent.enabledPluginIds,        // Channel cannot override (mirrors MCP)
     toolsDeny: channel.overrides?.toolsDeny ?? [],
     heartbeat: agent.heartbeat,                       // Always Agent's
     runtime,
-    runtimeConfig: channel.overrides?.runtimeConfig ?? agent.runtimeConfig,
+    runtimeConfig: agent.runtimeConfig,
   };
 }

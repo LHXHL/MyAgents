@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveAgentConfigMutation } from './agentConfigMutation';
+import { resolveAgentConfigMutation, mutationForAgentModelSelection } from './agentConfigMutation';
 import type { AgentConfig } from './types/agent';
 
 const agent: AgentConfig = { id: 'a', name: 'test', enabled: false, permissionMode: 'auto', runtime: 'codex', channels: [], runtimeConfig: { model: 'model-b', permissionMode: 'full-auto', envPolicy: { proxy: 'terminal' } } };
@@ -25,5 +25,21 @@ describe('Agent execution edits at the config writer', () => {
     });
     expect(patch).toMatchObject({ providerId: 'codex-sub', runtime: 'builtin', permissionMode: 'fullAgency', model: 'model-c', runtimeConfig: { envPolicy: { proxy: 'terminal' } } });
     expect(patch.runtimeConfig).not.toHaveProperty('model');
+  });
+});
+
+describe('IM model default intents against fresh Agent records', () => {
+  it('preserves the latest CLI environment and permission while patching only model/effort', () => {
+    const mutation = mutationForAgentModelSelection(agent, { kind: 'external-cli', runtime: 'codex', runtimeSource: 'system-cli', model: 'next' }, 'low');
+    expect(resolveAgentConfigMutation(agent, mutation)).toEqual({ runtimeConfig: { ...agent.runtimeConfig, model: 'next', reasoningEffort: 'low' } });
+  });
+  it('refuses to copy native CLI models into another Agent default Runtime', () => {
+    expect(() => mutationForAgentModelSelection({ ...agent, runtime: 'builtin' }, { kind: 'external-cli', runtime: 'codex', runtimeSource: 'system-cli', model: 'next' })).toThrow('Runtime');
+  });
+  it('restores authoritative DSH preference when leaving Managed Codex', () => {
+    const current: AgentConfig = { ...agent, runtime: 'builtin', providerId: 'codex-sub', runtimePreference: { family: 'integrated', id: 'dsh' } };
+    const mutation = mutationForAgentModelSelection(current, { kind: 'product-provider', providerId: 'deepseek', model: 'next' });
+    expect(resolveAgentConfigMutation(current, mutation)).toMatchObject({ runtime: 'dsh', providerId: 'deepseek', model: 'next' });
+    expect(current.providerId).toBe('codex-sub');
   });
 });

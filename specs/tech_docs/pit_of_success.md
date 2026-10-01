@@ -579,17 +579,18 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 <a id="snapshot-helpers"></a>
 ## Session Config Snapshot Helpers
 
-**Problem.** Tab/Cron/Background 与 IM/Agent Channel 对 config 变更的感知策略不同——前者要冻结快照（Agent 配置变更不影响已开 session），后者要 live follow（每条消息都按当前配置 resolve）。如果用一个 snapshot helper + 布尔参数，调用方容易忘记某个分支。
+**Problem.** Desktop/Task/IM 的执行配置都归 owned Session；只有 Cloud registered Agent 保持独立 live-follow。把 IM 出生权限策略误当作 live-follow，会让默认配置覆盖旧会话。入口名称须表达真实 owner，复用同一完整 snapshot compiler。
 
 **Surface.** `src/server/utils/session-snapshot.ts` 按配置来源提供独立命名入口：
 
 - `snapshotForOwnedSession(agent, options)`：从 Agent 模板冻结执行配置，字段集以 `OwnedSessionSnapshot` 为准。
-- `snapshotForImSession(agent, options)`：只固定 Runtime identity，其它配置逐条消息 live resolve。
+- `snapshotForImSession(agent, options)`：复用完整 owned snapshot，仅在出生时种最高 unattended 权限；Agent-template birth 传 runtimePolicy 复用桌面分发与 Provider constraint。
+- `snapshotForRegisteredAgentSession(agent, options)`：只固定 Runtime identity，保留云端 registered Agent 自己的 live-follow 生命周期。
 - `snapshotForForkedSession(source, legacyFallback?)`：继承 source Session 的完整执行快照；已有 `configSnapshotAt` 时不借当前 Agent 配置补缺项，旧的未冻结 source 才使用调用方提供的兼容快照。Builtin 与 external fork 共用此入口。
 
 `runtime identity` = `runtime` + `runtimeSource`。`codex/system-cli` 与 `codex/managed-provider` 是两个不同身份；只传 `runtimeOverride:'codex'` 而不传 `runtimeSourceOverride:'managed-provider'` 的路径会被当作 system CLI。`runtimeOverride` / `runtimeSourceOverride` 只用于“会话出生时目标 runtime 已由 sidecar/用户动作决定，但 AgentConfig 还没落盘”的 materialization 路径。它必须在 helper 内构造目标 runtime identity 下的 agent view，并复用 `buildRuntimeChangePatch` 清掉非 portable `runtimeConfig` 字段；禁止先按旧 agent snapshot 再在 route 层 post-hoc 覆盖 `snapshot.runtime`。
 
-**Invariants.** 新增快照字段需同步维护 owned、live-follow 与 fork 的语义，并更新 `session-snapshot.unit.test.ts` 的继承测试；调用方不自行拼装字段。读侧用 `resolveSessionConfig(sessionMeta, ownerKind)` (`src/server/utils/resolve-session-config.ts`) 统一消费——owned session 走 meta 冻结值，IM session 走 live agent；meta 缺失时 fallback 到 agent config，向后兼容老 session。
+**Invariants.** 新增快照字段需同步维护 owned、live-follow 与 fork 的语义，并更新 `session-snapshot.unit.test.ts` 的继承测试；调用方不自行拼装字段。读侧用 `resolveSessionConfig(sessionMeta, ownerKind)` (`src/server/utils/resolve-session-config.ts`) 统一消费——所有 owned Session（含 IM）走 meta 冻结值；Agent fallback 只用于 birth 和明确的 legacy 兼容解析。无法证明旧 IM 的执行配置时拒绝恢复并引导新建，不能伪造 snapshot。
 
 **Don't.** 用一个布尔参数分派两种语义。
 

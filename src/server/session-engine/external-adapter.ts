@@ -1,3 +1,4 @@
+import { updateExternalRuntimeConfig } from '../runtimes/external-session';
 import { retryDesktopRequest } from './retry';
 import { randomUUID } from 'node:crypto';
 import { broadcast } from '../sse';
@@ -888,6 +889,11 @@ export function createExternalSessionEngine(): SessionEngine {
 
     waitIdle(timeoutMs, pollMs) {
       return waitForExternalSessionIdle(timeoutMs, pollMs);
+    },
+
+    async applyModelSelection(input) {
+      const result = await updateExternalRuntimeConfig({ model: input.model, reasoningEffort: input.reasoningEffort }, { source: 'message-snapshot' });
+      return { success: result.success, status: result.status === 'queued' ? 'pending-next-turn' : result.status, error: result.error };
     },
 
     updateModel(model, opts) {

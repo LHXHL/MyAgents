@@ -46,6 +46,7 @@ where
     A: adapter::ImStreamAdapter + Send + Sync + 'static,
 {
     let mut guard = consumers.lock().await;
+    guard.retain(|_, handle| !handle.cancel.load(std::sync::atomic::Ordering::SeqCst));
     if let Some(existing) = guard.get(session_key) {
         // Reuse the existing entry only if EVERYTHING about the sidecar
         // identity matches: same session_id (catches `upgrade_session_id` —
@@ -100,6 +101,12 @@ where
     }
 
     let cancel: event_consumer::CancelFlag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let retirement_owner = crate::sidecar::SidecarOwner::BackgroundCompletion(format!(
+        "im-reply:{}",
+        uuid::Uuid::new_v4()
+    ));
+    let retire_when_idle: event_consumer::CancelFlag =
+        Arc::new(std::sync::atomic::AtomicBool::new(false));
     let reply_router = reply_router::shared_router(pending_approvals, pending_questions);
     let join = event_consumer::spawn_consumer(
         stream_client,
@@ -108,12 +115,19 @@ where
         initial_replay_request_id,
         Arc::clone(&reply_router),
         adapter,
-        Arc::clone(&cancel),
+        event_consumer::ConsumerLifetime {
+            cancel: Arc::clone(&cancel),
+            retire_when_idle: Arc::clone(&retire_when_idle),
+            manager: sidecar_manager.clone(),
+            retirement_owner: retirement_owner.clone(),
+        },
         on_terminal,
     );
     guard.insert(
         session_key.to_string(),
         ImConsumerHandle {
+            retire_when_idle,
+            retirement_owner,
             cancel,
             reply_router: Arc::clone(&reply_router),
             sidecar_port,
@@ -123,6 +137,32 @@ where
         },
     );
     Some(reply_router)
+}
+
+/// Preserve already-admitted ReplySlots while the peer moves to another Session.
+/// Retired consumers stay in the same lifecycle registry so Channel stop still owns them.
+pub(super) async fn retire_im_consumer(
+    consumers: &ImConsumers,
+    manager: &ManagedSidecarManager,
+    session_key: &str,
+) {
+    let mut guard = consumers.lock().await;
+    if let Some(handle) = guard.remove(session_key) {
+        if let Ok(mut manager) = manager.lock() {
+            if manager.is_live(&handle.sidecar_session_id, handle.sidecar_generation) {
+                manager
+                    .add_session_owner(&handle.sidecar_session_id, handle.retirement_owner.clone());
+            }
+        }
+        handle
+            .retire_when_idle
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let key = format!(
+            "retired:{session_key}:{}:{}",
+            handle.sidecar_session_id, handle.sidecar_generation
+        );
+        guard.insert(key, handle);
+    }
 }
 
 /// Cancel + remove a consumer. Wired into shutdown / idle-collect / runtime-drift
@@ -146,17 +186,11 @@ pub(super) async fn enqueue_to_sidecar(
     client: &Client,
     port: u16,
     msg: &ImMessage,
-    permission_mode: &str,
-    provider_env: Option<&serde_json::Value>,
-    model: Option<&str>,
-    runtime: &str,
-    runtime_config: Option<&serde_json::Value>,
     images: Option<&Vec<serde_json::Value>>,
     bot_id: Option<&str>,
     bot_name: Option<&str>,
     group_context: Option<&GroupStreamContext>,
     metadata_birth_pending: bool,
-    config_held_by_frontend: bool,
     allowed_users: Option<&[String]>,
     adapter_bridge_context: Option<(u16, String, Vec<String>)>,
 ) -> Result<Option<String>, RouteError> {
@@ -182,24 +216,10 @@ pub(super) async fn enqueue_to_sidecar(
         "source": source,
         "sourceId": msg.chat_id,
         "senderName": msg.sender_name,
-        "permissionMode": permission_mode,
         "requestId": msg.request_id,
         "metadataBirthPending": metadata_birth_pending,
-        "configHeldByTab": config_held_by_frontend,
         "hostInteraction": HostInteractionCapability::for_platform(&msg.platform),
     });
-    if !is_external_runtime_type(runtime) {
-        if let Some(env) = provider_env {
-            body["providerEnv"] = env.clone();
-        }
-        if let Some(m) = model {
-            body["model"] = json!(m);
-        }
-    }
-    body["runtime"] = json!(runtime);
-    if let Some(config) = runtime_config {
-        body["runtimeConfig"] = config.clone();
-    }
     if let Some(imgs) = images {
         if !imgs.is_empty() {
             body["images"] = json!(imgs);
@@ -372,16 +392,10 @@ mod tests {
                 &client,
                 port,
                 &message,
-                "fullAgency",
-                None,
-                None,
-                "builtin",
-                None,
                 None,
                 None,
                 None,
                 Some(&context),
-                false,
                 false,
                 None,
                 None,

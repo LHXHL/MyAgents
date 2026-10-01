@@ -1602,4 +1602,99 @@ mod tests {
             vec![("chat-1".to_string(), "⚠️ safe error".to_string())]
         );
     }
+    #[tokio::test]
+    async fn retired_consumer_delivers_the_admitted_terminal_before_exiting() {
+        use super::super::event_consumer::{spawn_consumer, ConsumerLifetime};
+        use axum::response::sse::{Event, Sse};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let pending_approvals = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let pending_questions = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let mut router = ReplyRouter::new(pending_approvals, pending_questions);
+        router.register(
+            "old-request".into(),
+            "chat".into(),
+            "msg".into(),
+            ImSourceType::Private,
+            Some("user".into()),
+            None,
+            None,
+        );
+        let router = Arc::new(tokio::sync::Mutex::new(router));
+        let adapter = Arc::new(RecordingAdapter::default());
+        let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+        let receiver = Arc::new(tokio::sync::Mutex::new(Some(events_rx)));
+        let connected = Arc::new(tokio::sync::Notify::new());
+        let app = axum::Router::new().route(
+            "/api/im/events",
+            axum::routing::get({
+                let connected = connected.clone();
+                move || {
+                    let receiver = receiver.clone();
+                    let connected = connected.clone();
+                    async move {
+                        let rx = receiver.lock().await.take().unwrap();
+                        connected.notify_one();
+                        Sse::new(futures_util::stream::unfold(rx, |mut rx| async {
+                            rx.recv().await.map(|value| {
+                                (
+                                    Ok::<_, std::convert::Infallible>(
+                                        Event::default().json_data(value).unwrap(),
+                                    ),
+                                    rx,
+                                )
+                            })
+                        }))
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let retired = Arc::new(AtomicBool::new(true));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let terminal = Arc::new(AtomicBool::new(false));
+        let handle = spawn_consumer(
+            crate::local_http::sse_client(),
+            port,
+            "old-session".into(),
+            "old-request".into(),
+            router.clone(),
+            adapter.clone(),
+            ConsumerLifetime {
+                cancel: cancel.clone(),
+                retire_when_idle: retired,
+                manager: crate::sidecar::create_sidecar_manager(),
+                retirement_owner: crate::sidecar::SidecarOwner::BackgroundCompletion(
+                    "test-old-reply".into(),
+                ),
+            },
+            Arc::new({
+                let terminal = terminal.clone();
+                move |id, _| {
+                    assert_eq!(id, "old-request");
+                    terminal.store(true, Ordering::SeqCst);
+                }
+            }),
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(3), connected.notified())
+            .await
+            .unwrap();
+        assert!(!cancel.load(Ordering::SeqCst));
+        events_tx.send(serde_json::json!({ "seq":1, "requestId":"old-request", "type":"error", "data":{"finalPayloads":[{"text":"old turn completed","isError":true}]} })).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), handle)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(terminal.load(Ordering::SeqCst));
+        assert!(cancel.load(Ordering::SeqCst));
+        assert_eq!(router.lock().await.slot_count(), 0);
+        assert!(adapter
+            .sent_messages()
+            .iter()
+            .any(|(_, text)| text.contains("old turn completed")));
+        server.abort();
+    }
 }

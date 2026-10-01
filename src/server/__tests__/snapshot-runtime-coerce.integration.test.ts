@@ -216,6 +216,7 @@ describe('resolveSessionConfig — runtime-aware coercion (issue #224)', () => {
       makeAgent({
         permissionMode: 'plan',
         runtime: 'builtin',
+        providerId: 'codex-sub', model: 'gpt-5.5-codex',
       }),
       {
         id: 'channel-1',

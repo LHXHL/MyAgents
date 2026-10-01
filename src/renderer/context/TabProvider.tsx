@@ -5343,6 +5343,19 @@ export default function TabProvider({
           break;
         }
 
+        case 'chat:session-config-changed': {
+          const id = (data as { sessionId?: string })?.sessionId;
+          if (!id || !shouldAcceptInteractiveEvent(id)) break;
+          void apiGetJson<{ success: boolean; session?: SessionMetadata }>(
+            `/sessions/${encodeURIComponent(id)}?limit=1`,
+          ).then(response => {
+            if (currentSessionIdRef.current === id && response.success && response.session?.id === id) {
+              setSessionMeta(response.session);
+            }
+          }).catch(error => console.warn('[TabProvider] Session configuration refresh failed', error));
+          break;
+        }
+
         case 'config:changed': {
           // Admin CLI modified config — notify global ConfigProvider to refresh.
           // Routes through `notifyConfigChanged` so the event detail stays
@@ -5396,6 +5409,7 @@ export default function TabProvider({
       }
     },
     [
+      apiGetJson,
       appendLog,
       appendUnifiedLog,
       tabId,

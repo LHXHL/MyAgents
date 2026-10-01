@@ -978,6 +978,7 @@
       "noActiveSessions": "No chat history"
     },
     "providerSwitch": {
+      "channelTransferNotice": "Confirming creates a new chat and transfers the current IM conversation to it. The previous chat history is retained.",
       "codexSubscription": "Codex subscription",
       "currentProviderFallback": "current provider",
       "targetProviderFallback": "target provider",

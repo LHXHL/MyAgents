@@ -141,6 +141,7 @@ const mocks = vi.hoisted(() => {
     setInteractionScenario: vi.fn(),
     setMcpServers: vi.fn(),
     setSessionModel: vi.fn(),
+    applySessionModelSelection: vi.fn(async () => ({ success: true, status: 'applied' })),
     setSessionPermissionMode: vi.fn(),
     setSessionEnabledOfficialToolIds: vi.fn(),
     setSessionProviderEnv: vi.fn(),
@@ -275,7 +276,7 @@ const mocks = vi.hoisted(() => {
     updateExternalRuntimeConfig: vi.fn(async () => ({
       success: true,
       runtime: 'codex' as const,
-      status: 'applied' as const,
+      status: 'applied' as 'applied' | 'queued',
       warnings: [] as string[],
     })),
     waitForExternalSessionIdle: vi.fn(async () => true),
@@ -394,6 +395,7 @@ vi.mock('../agent-session', () => ({
   setInteractionScenario: mocks.setInteractionScenario,
   setMcpServers: mocks.setMcpServers,
   setSessionModel: mocks.setSessionModel,
+  applySessionModelSelection: mocks.applySessionModelSelection,
   setSessionPermissionMode: mocks.setSessionPermissionMode,
   setSessionEnabledOfficialToolIds: mocks.setSessionEnabledOfficialToolIds,
   setSessionProviderEnv: mocks.setSessionProviderEnv,
@@ -2365,6 +2367,21 @@ describe('session-engine selector and adapters', () => {
 
     expect(result).toEqual({ success: true });
     expect(mocks.setExternalModel).toHaveBeenCalledWith('channel-model', { imConfigSync: true });
+  });
+  it('applies an explicit model pair through the builtin Session owner', async () => {
+    mocks.state.useExternal = false;
+    const input = { model: 'model-two', reasoningEffort: 'high' };
+    expect(await getSessionEngine().applyModelSelection(input)).toEqual({ success: true, status: 'applied' });
+    expect(mocks.applySessionModelSelection).toHaveBeenCalledWith(input);
+  });
+
+  it('queues a busy external model edit using snapshot authority without permission changes', async () => {
+    mocks.state.useExternal = true;
+    mocks.updateExternalRuntimeConfig.mockResolvedValue({ success: true, runtime: 'codex', status: 'queued', warnings: [] });
+    expect(await getSessionEngine().applyModelSelection({ model: 'model-two', reasoningEffort: 'high' }))
+      .toMatchObject({ success: true, status: 'pending-next-turn' });
+    expect(mocks.updateExternalRuntimeConfig).toHaveBeenCalledWith(
+      { model: 'model-two', reasoningEffort: 'high' }, { source: 'message-snapshot' });
   });
 
   it('passes metadataBirthPending into external IM admission', async () => {

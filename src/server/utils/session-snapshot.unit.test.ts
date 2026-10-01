@@ -113,9 +113,24 @@ describe('snapshotForOwnedSession — reasoning effort capture (#324)', () => {
     expect(snapshotForOwnedSession(makeAgent({})).reasoningEffort).toBeUndefined();
   });
 
-  it('IM live-follow snapshot stays effort-free (D4: re-resolves per turn)', () => {
+  it('IM freezes effort with unattended permission', () => {
     const snap = snapshotForImSession(makeAgent({ reasoningEffort: 'max' }));
-    expect('reasoningEffort' in snap).toBe(false);
+    expect(snap.reasoningEffort).toBe('max');
+    expect(snap.permissionMode).toBe('fullAgency');
+  });
+  it('uses desktop distribution and subscription constraints for IM template births', () => {
+    const options = { runtimePolicy: { multiAgentRuntime: true, defaultIntegratedRuntime: 'dsh' } };
+    expect(snapshotForImSession(makeAgent({ runtime: 'dsh', runtimePreference: { family: 'integrated', id: 'dsh' },
+      providerId: 'anthropic-sub', model: 'claude-sonnet-4-6' }), options))
+      .toMatchObject({ runtime: 'builtin', providerId: 'anthropic-sub', model: 'claude-sonnet-4-6', permissionMode: 'fullAgency' });
+    expect(snapshotForImSession(makeAgent({ runtime: 'builtin', providerId: 'anthropic-api' }),
+      { runtimePolicy: { multiAgentRuntime: false, defaultIntegratedRuntime: 'dsh' } }))
+      .toMatchObject({ runtime: 'dsh', runtimeSource: 'integrated', permissionMode: 'full-autonomous' });
+  });
+  it('rejects an unavailable Managed Codex template instead of publishing a partial identity', () => {
+    expect(() => snapshotForImSession(makeAgent({ providerId: 'codex-sub', model: 'codex-live' }),
+      { runtimePolicy: { multiAgentRuntime: true }, managedCodexProviderReady: false }))
+      .toThrow('not ready');
   });
 
   it('Managed Codex provider snapshots runtime-backed identity instead of builtin provider env', () => {
@@ -250,14 +265,16 @@ describe('snapshotForOwnedSession — reasoning effort capture (#324)', () => {
     expect(snap.providerEnvJson).toBeUndefined();
   });
 
-  it('Managed Codex IM snapshot freezes only the runtime identity', () => {
+  it('Managed Codex IM snapshot freezes full provider identity', () => {
     expect(snapshotForImSession(makeAgent({
       providerId: 'codex-sub',
       model: 'gpt-5.4-codex',
       permissionMode: 'fullAgency',
-    }), { managedCodexProviderReady: true })).toEqual({
+    }), { managedCodexProviderReady: true })).toMatchObject({
       runtime: 'codex',
       runtimeSource: 'managed-provider',
+      providerExecutionIdentity: { providerId: 'codex-sub', model: 'gpt-5.4-codex' },
+      permissionMode: 'no-restrictions',
     });
   });
 
@@ -266,7 +283,7 @@ describe('snapshotForOwnedSession — reasoning effort capture (#324)', () => {
       providerId: 'codex-sub',
       model: 'gpt-5.4-codex',
       runtimeConfig: { source: 'system-cli' },
-    }), { runtimeOverride: 'codex' })).toEqual({
+    }), { runtimeOverride: 'codex' })).toMatchObject({
       runtime: 'codex',
       runtimeSource: 'system-cli',
     });
@@ -281,9 +298,11 @@ describe('snapshotForOwnedSession — reasoning effort capture (#324)', () => {
       runtimeOverride: 'codex',
       runtimeSourceOverride: 'managed-provider',
       managedCodexProviderReady: true,
-    })).toEqual({
+    })).toMatchObject({
       runtime: 'codex',
       runtimeSource: 'managed-provider',
+      providerExecutionIdentity: { providerId: 'codex-sub', model: 'gpt-5.4-codex' },
+      permissionMode: 'no-restrictions',
     });
   });
 });

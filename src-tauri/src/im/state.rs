@@ -51,6 +51,8 @@ pub(crate) type PeerLocks = Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>;
 /// /api/im/enqueue for a session_key, and is cancelled when the session_key
 /// is no longer active (Sidecar shutdown / peer eviction).
 pub(crate) struct ImConsumerHandle {
+    pub(crate) retire_when_idle: event_consumer::CancelFlag,
+    pub(crate) retirement_owner: crate::sidecar::SidecarOwner,
     pub(crate) cancel: event_consumer::CancelFlag,
     pub(crate) reply_router: reply_router::SharedReplyRouter,
     /// Sidecar port the consumer is currently bound to (used to detect Sidecar
@@ -196,169 +198,15 @@ pub(super) fn runtime_source_for_runtime(
     Some("system-cli".to_string())
 }
 
-pub(super) fn runtime_display_name(runtime: &str) -> &'static str {
-    match runtime {
-        "dsh" => "DSH",
-        "codex" => "Codex",
-        "claude-code" => "Claude Code CLI",
-        _ => "MyAgents Builtin SDK",
-    }
-}
-
-pub(super) fn runtime_config_string(
-    config: Option<&serde_json::Value>,
-    key: &str,
-) -> Option<String> {
-    config
-        .and_then(|v| v.get(key))
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-}
-
-pub(super) fn runtime_config_with_string(
-    current: Option<serde_json::Value>,
-    key: &str,
-    value: Option<String>,
-) -> serde_json::Value {
-    let mut map = current
-        .and_then(|v| v.as_object().cloned())
-        .unwrap_or_default();
-    match value {
-        Some(value) if !value.is_empty() => {
-            map.insert(key.to_string(), serde_json::Value::String(value));
-        }
-        _ => {
-            map.remove(key);
-        }
-    }
-    serde_json::Value::Object(map)
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct RuntimeModelChoice {
-    pub(super) value: String,
-    pub(super) display_name: String,
-    pub(super) is_default: bool,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct RuntimePermissionChoice {
-    pub(super) value: String,
-    pub(super) label: String,
-    pub(super) description: String,
-}
-
-pub(super) fn fallback_runtime_models(runtime: &str) -> Vec<RuntimeModelChoice> {
-    match runtime {
-        "claude-code" => vec![
-            RuntimeModelChoice {
-                value: String::new(),
-                display_name: "默认".to_string(),
-                is_default: true,
-            },
-            RuntimeModelChoice {
-                value: "sonnet".to_string(),
-                display_name: "Sonnet".to_string(),
-                is_default: false,
-            },
-            RuntimeModelChoice {
-                value: "opus".to_string(),
-                display_name: "Opus".to_string(),
-                is_default: false,
-            },
-            RuntimeModelChoice {
-                value: "haiku".to_string(),
-                display_name: "Haiku".to_string(),
-                is_default: false,
-            },
-        ],
-        _ => Vec::new(),
-    }
-}
-
-pub(super) fn runtime_permission_choices(runtime: &str) -> Vec<RuntimePermissionChoice> {
-    match runtime {
-        "codex" => vec![
-            RuntimePermissionChoice {
-                value: "suggest".to_string(),
-                label: "Suggest".to_string(),
-                description: "仅信任的命令自动执行，其他需确认".to_string(),
-            },
-            RuntimePermissionChoice {
-                value: "auto-edit".to_string(),
-                label: "Auto-Edit".to_string(),
-                description: "自动编辑文件，沙箱内执行命令".to_string(),
-            },
-            RuntimePermissionChoice {
-                value: "full-auto".to_string(),
-                label: "Full Auto".to_string(),
-                description: "沙箱内自主执行，按需询问".to_string(),
-            },
-            RuntimePermissionChoice {
-                value: "no-restrictions".to_string(),
-                label: "No Restrictions".to_string(),
-                description: "跳过所有审批和沙箱限制".to_string(),
-            },
-        ],
-        "claude-code" => vec![
-            RuntimePermissionChoice {
-                value: "manual".to_string(),
-                label: "Manual".to_string(),
-                description: "每次工具调用都需要确认".to_string(),
-            },
-            RuntimePermissionChoice {
-                value: "auto".to_string(),
-                label: "Auto".to_string(),
-                description: "由 Claude Code 自动判断工具权限".to_string(),
-            },
-            RuntimePermissionChoice {
-                value: "plan".to_string(),
-                label: "Plan".to_string(),
-                description: "规划模式，只读不执行".to_string(),
-            },
-            RuntimePermissionChoice {
-                value: "acceptEdits".to_string(),
-                label: "Accept Edits".to_string(),
-                description: "自动接受文件编辑，其他需确认".to_string(),
-            },
-            RuntimePermissionChoice {
-                value: "bypassPermissions".to_string(),
-                label: "Bypass Permissions".to_string(),
-                description: "跳过所有权限确认".to_string(),
-            },
-            RuntimePermissionChoice {
-                value: "dontAsk".to_string(),
-                label: "Don't Ask".to_string(),
-                description: "不弹出权限确认，未授权操作直接拒绝".to_string(),
-            },
-        ],
-        _ => Vec::new(),
-    }
-}
-
 pub(super) async fn ensure_sidecar_port_for_command<R: Runtime>(
     router: &Arc<Mutex<SessionRouter>>,
     session_key: &str,
-    desired_runtime: &str,
-    desired_runtime_source: Option<&str>,
+    _desired_runtime: &str,
+    _desired_runtime_source: Option<&str>,
     app_handle: &AppHandle<R>,
     manager: &ManagedSidecarManager,
     health: &Arc<HealthManager>,
 ) -> Result<u16, String> {
-    let drift_result = SessionRouter::check_and_reset_on_runtime_identity_drift(
-        router,
-        session_key,
-        desired_runtime,
-        desired_runtime_source,
-        manager,
-    )
-    .await?;
-    if drift_result.is_some() {
-        let _ =
-            health::persist_router_active_sessions(health, router, "command-runtime-drift").await;
-    }
-
     let prep = {
         let mut router_guard = router.lock().await;
         router_guard
@@ -369,7 +217,6 @@ pub(super) async fn ensure_sidecar_port_for_command<R: Runtime>(
     match prep {
         EnsureSidecarPrep::Healthy(port) => Ok(port),
         EnsureSidecarPrep::NeedCreate(info) => {
-            let info = info.with_runtime_identity(Some(desired_runtime), desired_runtime_source);
             // Command path only needs the port; is_new is irrelevant here (no
             // config sync). Destructure the tuple but ignore the flag.
             let (port, _is_new) =
@@ -382,110 +229,6 @@ pub(super) async fn ensure_sidecar_port_for_command<R: Runtime>(
                 health::persist_router_active_sessions(health, router, "command-ensure-sidecar")
                     .await;
             Ok(port)
-        }
-    }
-}
-
-pub(super) async fn query_runtime_models_from_sidecar(
-    client: &Client,
-    port: u16,
-    runtime: &str,
-    runtime_source: Option<&str>,
-) -> Result<Vec<RuntimeModelChoice>, String> {
-    let url = runtime_models_url(port, runtime, runtime_source);
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("查询 Runtime 模型失败: {}", e))?;
-    if !resp.status().is_success() {
-        return Err(format!("查询 Runtime 模型失败: HTTP {}", resp.status()));
-    }
-    let body: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("解析 Runtime 模型失败: {}", e))?;
-    let models = body
-        .get("models")
-        .and_then(|v| v.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|m| {
-                    let value = m.get("value").and_then(|v| v.as_str())?;
-                    let display_name = m
-                        .get("displayName")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(value);
-                    let is_default = m
-                        .get("isDefault")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    Some(RuntimeModelChoice {
-                        value: value.to_string(),
-                        display_name: display_name.to_string(),
-                        is_default,
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    Ok(models)
-}
-
-fn runtime_models_url(port: u16, runtime: &str, runtime_source: Option<&str>) -> String {
-    let mut url = format!(
-        "http://127.0.0.1:{}/api/runtime/models?type={}",
-        port, runtime,
-    );
-    if runtime == "codex" {
-        url.push_str("&source=");
-        url.push_str(runtime_source.unwrap_or("system-cli"));
-    }
-    url
-}
-
-pub(super) async fn sync_runtime_config_to_sidecars(
-    router: &Arc<Mutex<SessionRouter>>,
-    runtime: &str,
-    runtime_config: &serde_json::Value,
-) {
-    let (client, ports) = {
-        let router = router.lock().await;
-        (router.http_client().clone(), router.active_sidecar_ports())
-    };
-    if ports.is_empty() {
-        return;
-    }
-    for port in ports {
-        let url = format!("http://127.0.0.1:{}/api/runtime/config", port);
-        match client
-            .post(&url)
-            .json(&json!({
-                "runtime": runtime,
-                "runtimeConfig": runtime_config,
-                "source": "im-sync",
-            }))
-            .send()
-            .await
-        {
-            Ok(resp) if resp.status().is_success() => {
-                ulog_info!(
-                    "[im] Synced runtime config for {} to port {}",
-                    runtime,
-                    port
-                );
-            }
-            Ok(resp) => {
-                ulog_warn!(
-                    "[im] Failed to sync runtime config to port {}: HTTP {}",
-                    port,
-                    resp.status()
-                );
-            }
-            Err(e) => {
-                ulog_warn!("[im] Failed to sync runtime config to port {}: {}", port, e);
-            }
         }
     }
 }
@@ -1151,8 +894,6 @@ pub(crate) struct AgentChannelLink {
     pub last_active_channel: Arc<RwLock<Option<LastActiveChannel>>>,
     /// Shared with `AgentInstance.last_active_private_target` — private-only HB target.
     pub last_active_private_target: Arc<RwLock<Option<LastActivePrivateTarget>>>,
-    /// Shared with `AgentInstance.runtime_config` so IM commands update the agent-level runtime profile.
-    pub runtime_config: Arc<RwLock<Option<serde_json::Value>>>,
 }
 
 /// Shared, write-after-spawn link — the processing loop reads this via Arc.
@@ -1199,23 +940,7 @@ pub fn create_agent_state() -> ManagedAgents {
 
 #[cfg(test)]
 mod tests {
-    use super::{runtime_models_url, runtime_source_for_runtime};
-
-    #[test]
-    fn runtime_model_url_preserves_codex_catalog_owner() {
-        assert_eq!(
-            runtime_models_url(9527, "codex", Some("managed-provider")),
-            "http://127.0.0.1:9527/api/runtime/models?type=codex&source=managed-provider",
-        );
-        assert_eq!(
-            runtime_models_url(9527, "codex", None),
-            "http://127.0.0.1:9527/api/runtime/models?type=codex&source=system-cli",
-        );
-        assert_eq!(
-            runtime_models_url(9527, "claude-code", Some("managed-provider")),
-            "http://127.0.0.1:9527/api/runtime/models?type=claude-code",
-        );
-    }
+    use super::runtime_source_for_runtime;
 
     #[test]
     fn runtime_source_projection_keeps_dsh_integrated_and_external_cli_explicit() {

@@ -3,12 +3,12 @@ import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
 import { originFromMaterializationScenario } from '../../shared/session-origin';
 import type { SessionOrigin } from '../../shared/session-origin';
 import { createSessionMetadata, type SessionMetadata } from '../types/session';
-import { snapshotForImSession, snapshotForOwnedSession, snapshotRuntimeIdentity } from './session-snapshot';
+import { snapshotForImSession, snapshotForOwnedSession, snapshotForRegisteredAgentSession, snapshotRuntimeIdentity } from './session-snapshot';
 
 export type SessionMaterializationScenario = 'desktop' | 'cron' | 'im' | 'agent-channel' | 'registeredAgent';
 
 export function isLiveFollowScenario(scenario: SessionMaterializationScenario): boolean {
-  return scenario === 'im' || scenario === 'agent-channel' || scenario === 'registeredAgent';
+  return scenario === 'registeredAgent';
 }
 
 export function snapshotForMaterializedSession(
@@ -16,9 +16,9 @@ export function snapshotForMaterializedSession(
   scenario: SessionMaterializationScenario,
   options?: { runtimeOverride?: RuntimeType; runtimeSourceOverride?: RuntimeSource; managedCodexProviderReady?: boolean },
 ): Partial<SessionMetadata> {
-  return isLiveFollowScenario(scenario)
-    ? snapshotForImSession(agent, options)
-    : snapshotForOwnedSession(agent, options);
+  if (scenario === 'registeredAgent') return snapshotForRegisteredAgentSession(agent, options);
+  if (scenario === 'im' || scenario === 'agent-channel') return snapshotForImSession(agent, options);
+  return snapshotForOwnedSession(agent, options);
 }
 
 export function bindOwnedSnapshotToRuntimeIdentity(

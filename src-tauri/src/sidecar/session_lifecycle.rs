@@ -1,4 +1,4 @@
-use super::manager::{RuntimeDriftTransition, SessionOwnerRelease};
+use super::manager::SessionOwnerRelease;
 use super::runtime_identity::{admit_runtime_identity, distribution_default_runtime_identity};
 use super::*;
 
@@ -56,22 +56,6 @@ fn finish_unowned_session_after_drain(
         drop(retired);
     }
     Ok(())
-}
-
-pub(crate) fn finish_runtime_drift_transition(
-    manager: &ManagedSidecarManager,
-    transition: RuntimeDriftTransition,
-) -> Result<RuntimeDriftResult, String> {
-    let RuntimeDriftTransition { result, drain } = transition;
-    if let Some(drain) = drain {
-        drain.wait();
-        let retired = {
-            let mut manager_guard = manager.lock().map_err(|error| error.to_string())?;
-            manager_guard.finish_runtime_drift_retirement(&drain)
-        };
-        drop(retired);
-    }
-    Ok(result)
 }
 
 pub(crate) async fn has_persisted_session_owner(session_id: &str) -> Result<bool, String> {
@@ -328,24 +312,32 @@ pub(crate) async fn ensure_session_sidecar_with_runtime_identity_override_lifecy
 }
 
 fn resolve_runtime_identity_for_owner(
-    owner: &SidecarOwner,
+    _owner: &SidecarOwner,
     runtime_override: Option<&str>,
     runtime_source_override: Option<&str>,
     session_runtime_identity: Option<RuntimeIdentity>,
     agent_runtime_identity: Option<RuntimeIdentity>,
 ) -> RuntimeIdentity {
+    if let Some(identity) = session_runtime_identity {
+        if let Some(runtime) = runtime_override {
+            let requested = RuntimeIdentity::new(Some(runtime), runtime_source_override);
+            if identity.runtime != requested.runtime
+                || identity.runtime_source != requested.runtime_source
+            {
+                return RuntimeIdentity::incompatible(
+                    "Runtime override conflicts with persisted Session identity",
+                );
+            }
+        }
+        return identity;
+    }
     if let Some(runtime) = runtime_override {
         return admit_runtime_identity(RuntimeIdentity::new(
             Some(runtime),
             runtime_source_override,
         ));
     }
-    if owner_prefers_live_agent_runtime(owner) {
-        return agent_runtime_identity.unwrap_or_else(distribution_default_runtime_identity);
-    }
-    session_runtime_identity
-        .or(agent_runtime_identity)
-        .unwrap_or_else(distribution_default_runtime_identity)
+    agent_runtime_identity.unwrap_or_else(distribution_default_runtime_identity)
 }
 
 fn resolve_expected_runtime_identity(
@@ -355,15 +347,8 @@ fn resolve_expected_runtime_identity(
     runtime_override: Option<&str>,
     runtime_source_override: Option<&str>,
 ) -> RuntimeIdentity {
-    // Existing Session metadata is authoritative for desktop-style owners.
-    // A metadata creator has no Session row yet, so it follows the exact same
-    // override -> Agent resolution that the spawn path uses. Live IM owners
-    // intentionally ignore Session metadata and follow the Agent default.
-    let session_runtime_identity = if owner_prefers_live_agent_runtime(owner) {
-        None
-    } else {
-        resolve_session_runtime_identity_full(session_id)
-    };
+    // Every existing Product Session owns its execution identity, including IM.
+    let session_runtime_identity = resolve_session_runtime_identity_full(session_id);
     let agent_runtime_identity = resolve_agent_runtime_identity_from_config(workspace_path);
     resolve_runtime_identity_for_owner(
         owner,
@@ -461,10 +446,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
     // A V2 birth may already be bound and running while its product metadata
     // is still awaiting publication. The active generation retains its runtime
     // identity; an Agent template is not authority to replace that process.
-    if runtime_override.is_none()
-        && !owner_prefers_live_agent_runtime(&owner)
-        && resolve_session_runtime_identity_full(session_id).is_none()
-    {
+    if runtime_override.is_none() && resolve_session_runtime_identity_full(session_id).is_none() {
         if let Some(identity) = retained_session_runtime_identity(&manager_guard, session_id) {
             expected_runtime_identity = identity;
         }
@@ -2074,6 +2056,35 @@ mod session_lifecycle_tests {
 
         assert_eq!(expected.runtime, "claude-code");
         assert_eq!(expected.runtime_source.as_deref(), Some("system-cli"));
+    }
+
+    #[test]
+    fn im_owner_keeps_persisted_managed_identity_and_rejects_override() {
+        let owner = SidecarOwner::Agent("im-peer".into());
+        let frozen = RuntimeIdentity::new(Some("codex"), Some("managed-provider"));
+        let resolved = resolve_runtime_identity_for_owner(
+            &owner,
+            None,
+            None,
+            Some(frozen.clone()),
+            Some(RuntimeIdentity::new(Some("builtin"), None)),
+        );
+        assert_eq!(resolved, frozen);
+        let rejected = resolve_runtime_identity_for_owner(
+            &owner,
+            Some("codex"),
+            Some("system-cli"),
+            Some(frozen),
+            Some(RuntimeIdentity::new(Some("builtin"), None)),
+        );
+        assert!(validate_sidecar_runtime_invariant(
+            "im-peer",
+            &rejected,
+            Some("codex"),
+            Some("managed-provider"),
+            "test"
+        )
+        .is_err());
     }
 
     #[test]

@@ -46,17 +46,17 @@ describe('resolveSessionConfig DSH ownership', () => {
       providerId: 'anthropic-api',
       providerRoute: metadata.providerRoute,
       model: 'claude-sonnet-4-6',
-      permissionMode: 'plan',
+      permissionMode: 'approval-required',
     });
   });
 
-  it('keeps live-follow DSH on the universal Provider and product permission fields', () => {
+  it('resolves IM birth templates from Agent with maximum Runtime permission', () => {
     expect(resolveSessionConfig(undefined, agent, undefined, 'im')).toMatchObject({
       runtime: 'dsh',
       runtimeSource: 'integrated',
       providerId: 'anthropic-api',
       model: 'claude-sonnet-4-6',
-      permissionMode: 'plan',
+      permissionMode: 'full-autonomous',
     });
   });
 });

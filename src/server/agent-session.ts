@@ -3536,23 +3536,32 @@ function dispatchSetModelToSdk(model: string): Promise<void> {
   return promise;
 }
 
+/** A user-selected provider/model pair is applied synchronously before scheduling one restart. */
+export async function applySessionModelSelection(input: { model: string; providerEnv?: ProviderEnv; reasoningEffort?: string }): Promise<{ success: boolean; status: string }> {
+  // The metadata commit owns desired settings. Do not change an admitted turn;
+  // the next enqueue reads the complete Session snapshot through the normal path.
+  if (lifecycleState.processing) return { success: true, status: 'pending-next-turn' };
+  if (!canResumeAcrossBuiltinProviderHistory({ currentProviderEnv: configState.currentProviderEnv,
+    currentModel: configState.currentModel, nextProviderEnv: input.providerEnv, nextModel: input.model })) {
+    throw new Error('Incompatible provider requires a new Session');
+  }
+  const snapshotted = isCurrentSessionSnapshotted();
+  const provider = configApplyProviderEnvUpdate(input.providerEnv, { source: 'message-snapshot', isSnapshotted: snapshotted });
+  const model = configApplyModelUpdate(input.model, { source: 'message-snapshot', isSnapshotted: snapshotted });
+  const effortChanged = normalizeReasoningEffort(input.reasoningEffort) !== configState.currentReasoningEffort;
+  configSetReasoningEffort(normalizeReasoningEffort(input.reasoningEffort));
+  ensureActiveSessionBridgeRegistered();
+  if (model.applied && model.oldModel !== input.model || provider.changed || effortChanged) forceReloadActiveSession('provider');
+  return { success: true, status: lifecycleState.processing ? 'pending-next-turn' : 'applied' };
+}
+
 export async function setSessionModel(model: string, opts?: { imConfigSync?: boolean }): Promise<void> {
-  // #327 — snapshot authority. An owned (snapshotted) desktop session's model is
-  // frozen at the snapshot, and the per-turn /api/im/enqueue resolver already
-  // applies "snapshot wins" (index.ts). But the Rust IM router ALSO pushes the
-  // channel's model override straight here, via sync_ai_config → /api/model/set,
-  // when it (re)warms a sidecar that is SHARED with the desktop session (the
-  // desktop↔IM handover binds the IM peer to the desktop session_id). For a
-  // snapshotted session that push must be ignored — applying it clobbers the
-  // process-global `configState.currentModel`, which is read live by buildClaudeSessionEnv /
-  // broadcastBuiltinContextUsage. With an unregistered override (e.g.
-  // astron-code-latest) lookupModelContextLength returns undefined → the desktop
-  // tab's `chat:context-usage` window collapses to the SDK 200K default (100%),
-  // and it opens a window where the live provider/model desync into a real
-  // upstream mismatch → 500 (#327 comment). Desktop's own model push (Chat.tsx,
-  // no `imConfigSync`) stays authoritative — it updates the snapshot itself.
-  // Pure IM / cron / live-follow sessions have no snapshot, so this is a no-op
-  // for them (isCurrentSessionSnapshotted() === false) and the override applies.
+  // The snapshot already owns this desired edit. A desktop projection of an IM
+  // selection cannot mutate the admitted turn's held config or live Query;
+  // the next message applies its complete snapshot through normal admission.
+  if (isCurrentSessionSnapshotted() && lifecycleState.processing && !lifecycleState.preWarming) return;
+  // #327 compatibility: legacy im-sync cannot override an owned snapshot.
+  // Explicit desktop edits have already saved their desired Session metadata.
   const modelUpdate = configApplyModelUpdate(model, {
     source: opts?.imConfigSync ? 'im-sync' : 'desktop',
     isSnapshotted: isCurrentSessionSnapshotted(),
@@ -8351,8 +8360,8 @@ export async function initializeAgent(
         setPermissionPlanState(restored);
       }
     } catch (error) {
-      // Self-resolution failure is non-fatal — fall back to external sync (Rust sync_ai_config)
-      console.warn('[agent] self-resolution failed, falling back to external sync:', error);
+      // Startup discovery is best effort; turn admission resolves its owned snapshot again.
+      console.warn('[agent] startup configuration discovery failed; turn admission will resolve again:', error);
     }
   }
 

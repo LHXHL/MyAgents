@@ -1,3 +1,4 @@
+import { applySessionModelSelection } from '../agent-session';
 import { questionAnswersAsText } from '../../shared/types/askUserQuestion';
 import { retryDesktopRequest } from './retry';
 import { randomUUID } from 'node:crypto';
@@ -870,6 +871,8 @@ export function createBuiltinSessionEngine(): SessionEngine {
     waitIdle(timeoutMs, pollMs) {
       return waitForSessionIdle(timeoutMs, pollMs);
     },
+
+    applyModelSelection: applySessionModelSelection,
 
     async updateModel(model, opts) {
       await setSessionModel(model, opts);
