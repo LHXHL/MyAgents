@@ -64,6 +64,33 @@ describe('Sidecar production composition', () => {
     expect(classifySidecarRequest(request(path, method))).toBe(capability);
   });
 
+  it.each(['session', 'development-union'] as const)(
+    '%s dispatches the Rust-delegated live transcript read to its Session owner', async role => {
+      const composition = role === 'development-union'
+        ? resolveSidecarComposition(null, true)
+        : resolveSidecarComposition(role, false);
+      const ownerRead = request('/api/internal/session/text-page', 'POST');
+      const realHandler = vi.fn(async () => Response.json({ success: true, session: { id: 'target' } }));
+
+      const response = await composeSidecarRequestHandler(composition, realHandler)(ownerRead);
+
+      expect(classifySidecarRequest(ownerRead)).toBe('session');
+      expect(response.status).toBe(200);
+      expect(realHandler).toHaveBeenCalledExactlyOnceWith(ownerRead);
+    },
+  );
+
+  it('keeps delegated transcript reads out of Global and unknown internal endpoints unowned', async () => {
+    const realHandler = vi.fn(async () => Response.json({ success: true }));
+    const response = await composeSidecarRequestHandler(
+      resolveSidecarComposition('global', false), realHandler,
+    )(request('/api/internal/session/text-page', 'POST'));
+
+    expect(response.status).toBe(404);
+    expect(realHandler).not.toHaveBeenCalled();
+    expect(classifySidecarRequest(request('/api/internal/session/future-owner', 'POST'))).toBeNull();
+  });
+
   it('does not grant unknown control routes a default capability', () => {
     expect(classifySidecarRequest(request('/api/admin/future-owner', 'POST'))).toBeNull();
     expect(classifySidecarRequest(request('/api/future-owner', 'POST'))).toBeNull();

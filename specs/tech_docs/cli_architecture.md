@@ -418,6 +418,8 @@ session event 类型时必须同时更新该渲染层、目标 Sidecar 处理路
 
 原本地命令与本地 ID 继续使用原路径。Agent list 合并在线网络对象，show/start/list 接受 qualified Agent selector，get/send/watch 接受 qualified Session selector；完整代号不能截短或按名称猜对象。Node 统一 router 只选择寻址/传输，Rust App 拥有设备身份与 E2EE，目标仍交给原 Inbox/SessionEngine。start/send 只确认异步接纳；内部 Session 保留原回投与 watch，外部 CLI 仍 one-way。离线明确失败，无云端留存或自动重发。实现/预算/回程 owner 见 [Agent 网络](./agent_network.md)。
 
+`session get` 经 Rust 解析当前 transcript owner：有 ready Session Sidecar 时，通过其仅属 Session 的 exact route `/api/internal/session/text-page` 读取真实内存/流式投影，并验证内部 caller credential；无活跃 owner 时读取持久历史。capability 表必须登记该委托端点，不能把 Global 或调用方 overlay 当作目标实时历史，也不能开放整个 `/api/internal/` prefix。
+
 ### 写入模式
 
 AppConfig-backed 写操作的通用路径到当前 Sidecar 的兼容事件为止：
