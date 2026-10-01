@@ -30,6 +30,8 @@ vi.mock('@/utils/browserMock', async (importOriginal) => {
   return { ...actual, isTauriEnvironment: () => true };
 });
 
+vi.mock('@tauri-apps/api/event', () => ({ emit: vi.fn(async () => undefined) }));
+
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(async () => undefined) }));
 
 import {

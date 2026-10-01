@@ -75,3 +75,10 @@ CLI 使用原 `agent list/show`、`session list/get/start/send/watch` 命令。`
 ### Metadata failure outcomes
 
 Metadata reads and connection snapshots do not assert a user save. After metadata queue handoff, timeout or a dropped connection future yields uncertain outcome only for membership/enable/description writes; receipt inspection remains read-only and no write is replayed. Actual auth-generation changes fence discarded account scope; transport or power-generation changes alone are not evidence of account change. The existing actor reconnect loop owns recovery; Renderer describes that state and keeps its read retry separate from write receipt recovery.
+
+
+### 持久目录失效通知
+
+工作区目录的 authority 是 `projects.json` 与 `config.json` 的既有身份 registry；Renderer 快照不作为上传内容。Renderer 的 `notifyConfigChanged` 除无配置载荷的 DOM 通知外，向既有 native `app:config-changed` fanout；Sidecar 的 `broadcastAppConfigChanged` 同时广播 SSE 并调用既有 Management API。SSE bridge 只刷新窗口，不反向重复发布 native 通知。网络 actor 复用既有 `Notify` 后重新读取 registry，离线时由下次连接重建目录，无新增轮询。
+
+Project 保存仅在目录字段（身份、名称、路径、可见性、归档状态、exposure revision）变化时通知；打开工作区/排序/模型偏好不会产生目录上传。Agent/Project 复合写入复用 `notification: 'deferred'`，最终两份磁盘状态提交后统一发布。已持久化写入不能因通知失败被报告为回滚；通知错误保留明确日志，已有重连继续从磁盘恢复。

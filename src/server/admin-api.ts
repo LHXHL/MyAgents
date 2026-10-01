@@ -126,7 +126,7 @@ import {
 import { loadEnabledAgents } from './agents/agent-loader';
 import { getHomeDirOrNull } from './utils/platform';
 import { join } from 'path';
-import { broadcast } from './sse';
+import { broadcastAppConfigChanged } from './utils/app-config-events';
 import {
   getCronTaskContext,
   markCronTaskExitRequested,
@@ -1157,13 +1157,7 @@ async function notifyAppConfigChanged(
   // Preserve the current Sidecar-local event for tabs connected to this
   // process, then fan out an app-scoped invalidation through Rust so every
   // renderer reloads the disk authorities regardless of Sidecar ownership.
-  broadcast('config:changed', { section, action, id });
-  const result = await managementApi(
-    '/api/app/config-changed',
-    'POST',
-    {},
-    { timeoutMs: 2_000 },
-  );
+  const result = await broadcastAppConfigChanged({ section, action, id });
   if (result.ok !== true) {
     const label = section === 'model' ? 'Model' : 'MCP';
     throw new Error(
@@ -1927,7 +1921,7 @@ export async function handleAgentArchive(payload: {
     { timeoutMs: AGENT_LIFECYCLE_LOOPBACK_TIMEOUT_MS },
   );
   if (!wasEnabled) {
-    broadcast('config:changed', { section: 'project', action: 'archive', id });
+    await broadcastAppConfigChanged({ section: 'project', action: 'archive', id });
   }
 
   if (reloadResult.ok !== true) {
@@ -2044,7 +2038,7 @@ export async function handleAgentUnarchive(payload: {
     throw err;
   }
 
-  broadcast('config:changed', { section: 'project', action: 'unarchive', id });
+  await broadcastAppConfigChanged({ section: 'project', action: 'unarchive', id });
 
   const reloadResult = await managementApi(
     '/api/agent/reload-config',
@@ -2585,7 +2579,7 @@ export async function handleConfigSet(payload: {
   }
 
   await atomicModifyConfig((c) => setNestedValue(c, key, value));
-  broadcast('config:changed', { section: 'config', action: 'set', key });
+  await broadcastAppConfigChanged({ section: 'config', action: 'set', key });
   return { success: true, data: { key }, hint: `Config '${key}' updated.` };
 }
 
@@ -2695,7 +2689,7 @@ export function handleReload(workspacePath?: string): AdminResponse {
   // SDK subprocess keeps delegating to the old sub-agent definitions (#98).
   forceReloadActiveSession('agents');
 
-  broadcast('config:changed', { section: 'all', action: 'reload' });
+  void broadcastAppConfigChanged({ section: 'all', action: 'reload' });
   return {
     success: true,
     hint: `Configuration reloaded (MCP: ${effectiveServers.length}, sub-agents: ${agentCount}). The session will restart on the next turn to apply changes.`,
@@ -8594,7 +8588,7 @@ async function modifyAgent(
     return { ...c, agents: updated };
   });
 
-  broadcast('config:changed', { section: 'agent', action, id });
+  await broadcastAppConfigChanged({ section: 'agent', action, id });
   return { success: true, data: { id } };
 }
 
@@ -8715,7 +8709,7 @@ async function modifyAgentConfigIntent(
         patch: committedLivePatch,
       });
       if (response.ok === false) {
-        broadcast('config:changed', { section: 'agent', action, id });
+        await broadcastAppConfigChanged({ section: 'agent', action, id });
         return {
           success: false,
           error: `Agent configuration was saved, but runtime or managed-task reconciliation failed: ${response.error ?? 'unknown error'}`,
@@ -8723,7 +8717,7 @@ async function modifyAgentConfigIntent(
         };
       }
     } catch (error) {
-      broadcast('config:changed', { section: 'agent', action, id });
+      await broadcastAppConfigChanged({ section: 'agent', action, id });
       return {
         success: false,
         error: `Agent configuration was saved, but runtime or managed-task reconciliation failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -8732,7 +8726,7 @@ async function modifyAgentConfigIntent(
     }
   }
 
-  broadcast('config:changed', { section: 'agent', action, id });
+  await broadcastAppConfigChanged({ section: 'agent', action, id });
   return { success: true, data: { id } };
 }
 

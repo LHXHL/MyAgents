@@ -14,6 +14,8 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock('../sse', () => ({ broadcast: vi.fn() }));
+vi.mock('./management-api-client', () => ({ managementApi: vi.fn(async () => ({ ok: true })) }));
+import { managementApi } from './management-api-client';
 vi.mock('./admin-config', async importOriginal => {
   const actual = await importOriginal<typeof import('./admin-config')>();
   return {
@@ -107,6 +109,7 @@ describe('persisted Agent workspace identity', () => {
     await resolvePersistedAgentWorkspaceConflict(choice, stop);
     expect(stop).toHaveBeenCalledOnce();
     expect(state.writes).toEqual(['projects', 'config']);
+    expect(managementApi).toHaveBeenCalledWith('/api/app/config-changed', 'POST', {}, { timeoutMs: 2_000 });
     expect(state.projects[0].agentId).toBe('shared');
     expect(state.projects[1]).toMatchObject({ hidden: true });
     expect(state.projects[1].agentId).not.toBe('shared');

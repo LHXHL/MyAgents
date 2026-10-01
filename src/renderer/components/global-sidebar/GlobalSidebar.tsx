@@ -309,7 +309,7 @@ function SidebarMore({ expanded, activeView, teamAvailable, onNetwork, onTeam }:
     onKeyDown={event => { if (event.key === 'ArrowRight') { event.preventDefault(); enter(); } }}>
     <SidebarNavButton expanded={expanded} active={activeView === 'agentnetwork' || activeView === 'space'}
       icon={<MoreHorizontal className="h-4 w-4" />} label={t('globalSidebar.more')} tooltipDisabled={open} hasPopup="menu" ariaExpanded={open}
-      onClick={() => { if (open) close(); else enter(); }} />
+      onClick={enter} />
     <Popover open={open} onClose={close} anchorRef={anchor} placement="right-start" className="min-w-40 p-1">
       <div ref={setMenuRef} role="menu" aria-label={t('globalSidebar.more')} onPointerEnter={cancel} onPointerLeave={hide}
         onKeyDown={event => {

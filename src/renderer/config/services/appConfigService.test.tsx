@@ -1,5 +1,9 @@
+import * as browserMock from '@/utils/browserMock';
+import { emit } from '@tauri-apps/api/event';
+vi.mock('@tauri-apps/api/event', () => ({ emit: vi.fn(async () => undefined) }));
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
+  notifyConfigChanged,
   atomicModifyConfig,
   CONFIG_CHANGED_EVENT,
   ensureManagedCodexProviderDevGateDefault,
@@ -176,5 +180,23 @@ describe('ensureManagedCodexProviderDevGateDefault', () => {
     expect(stored.theme).toBe('dark');
     expect(stored.themeId).toBeUndefined();
     expect(stored.appearanceMode).toBeUndefined();
+  });
+});
+
+
+describe('App configuration fanout', () => {
+  afterEach(() => { vi.restoreAllMocks(); vi.clearAllMocks(); });
+  it('invalidates the native App owner without sending configuration or credentials', () => {
+    vi.spyOn(browserMock, 'isTauriEnvironment').mockReturnValue(true);
+    notifyConfigChanged('workspace-commit');
+    expect(emit).toHaveBeenCalledExactlyOnceWith('app:config-changed');
+  });
+  it('does not echo Sidecar SSE back into the App or invoke native APIs in browser mode', () => {
+    vi.spyOn(browserMock, 'isTauriEnvironment').mockReturnValue(true);
+    notifyConfigChanged('sse:config:changed', { native: false });
+    expect(emit).not.toHaveBeenCalled();
+    vi.mocked(browserMock.isTauriEnvironment).mockReturnValue(false);
+    notifyConfigChanged('browser-workspace-commit');
+    expect(emit).not.toHaveBeenCalled();
   });
 });

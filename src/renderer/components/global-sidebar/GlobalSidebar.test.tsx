@@ -1688,5 +1688,13 @@ describe('Agent network navigation', () => {
     expect(labels.indexOf(String(i18n.t('app:globalSidebar.skills')))).toBeLessThan(labels.indexOf(String(i18n.t('app:globalSidebar.more'))));
     fireEvent.pointerEnter(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.more')) }));
     expect(await screen.findByRole('menuitem', { name: String(i18n.t('app:globalSidebar.agentNetwork')) })).toBeVisible();
+    const more = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.more')) });
+    fireEvent.click(more);
+    expect(more).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('menuitem', { name: String(i18n.t('app:globalSidebar.agentNetwork')) })).toBeVisible();
+    fireEvent.click(more);
+    expect(screen.getByRole('menu')).toBeVisible();
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
   });
 });

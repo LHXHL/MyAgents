@@ -343,7 +343,7 @@ export async function reconcilePersistedAgentWorkspaceIdentitiesLocked(
     });
     if (projectResolution.relinkedProjectIds.length > 0) {
       try {
-        await saveProjects(projectResolution.projects);
+        await saveProjects(projectResolution.projects, { notification: 'deferred' });
       } catch (error) {
         if (projectResolution.createdAgentIds.length > 0) throw error;
         console.warn(
@@ -718,7 +718,7 @@ async function persistAgentProjectIntent(
       );
       if (!result.updated || !target) return;
       try {
-        const updatedProject = await patchProject(target.projectId, { ...target.projectPatch, ...projectMirrorPatchFromAgentPatch(result.effectivePatch) });
+        const updatedProject = await patchProject(target.projectId, { ...target.projectPatch, ...projectMirrorPatchFromAgentPatch(result.effectivePatch) }, { notification: 'deferred' });
         if (!updatedProject) throw new Error(`Project '${target.projectId}' not found`);
         projectCommitted = true;
       } catch (error) {

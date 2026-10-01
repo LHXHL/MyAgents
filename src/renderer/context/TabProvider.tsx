@@ -4017,7 +4017,7 @@ export default function TabProvider({
                 // level CustomEvent observable by any renderer listener must not
                 // carry providerApiKeys / mcpServerEnv).
                 console.log('[TabProvider] config:changed via Admin CLI', data);
-                notifyConfigChanged('sse:config:changed');
+                notifyConfigChanged('sse:config:changed', { native: false });
                 break;
             }
 
@@ -4039,7 +4039,7 @@ export default function TabProvider({
                 // plugins" even after the user just enabled 13 of them.
                 // Routes through `notifyConfigChanged` for the same secret-
                 // leakage reason as the `config:changed` case above.
-                notifyConfigChanged('sse:plugins:changed');
+                notifyConfigChanged('sse:plugins:changed', { native: false });
                 break;
             }
 

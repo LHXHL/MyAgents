@@ -7,7 +7,7 @@ import {
   isProjectActiveForUser,
   isSystemPresetProject,
 } from '../types';
-import { applyProjectArchiveIntent, applyProjectPatch, applyProjectRemovalIntent, applyProjectUnarchiveIntent } from './projectService';
+import { projectCatalogChanged, applyProjectArchiveIntent, applyProjectPatch, applyProjectRemovalIntent, applyProjectUnarchiveIntent } from './projectService';
 
 function project(overrides: Partial<Project> = {}): Project {
   return {
@@ -165,5 +165,25 @@ describe('project archive intents', () => {
 
     expect(result?.project).not.toHaveProperty('archivedAt');
     expect(result?.project).not.toHaveProperty('archivedAgentEnabledBeforeArchive');
+  });
+});
+
+
+describe('persisted Project catalog invalidation', () => {
+  it('covers birth, removal, legacy identity linking and lifecycle changes', () => {
+    const existing = project();
+    expect(projectCatalogChanged([], [existing])).toBe(true);
+    expect(projectCatalogChanged([existing], [])).toBe(true);
+    for (const patch of [{ agentId: 'agent-1' }, { hidden: true }, { internal: true },
+      { archivedAt: '2026-10-02T00:00:00Z' }, { agentNetworkExposureRevision: 1 },
+      { name: 'Renamed' }, { path: '/tmp/relocated' }]) {
+      expect(projectCatalogChanged([existing], [{ ...existing, ...patch }])).toBe(true);
+    }
+  });
+  it('does not wake the network for recency, order or unrelated runtime preferences', () => {
+    const first = project(), second = project({ id: 'project-2' });
+    expect(projectCatalogChanged([first, second], [second, { ...first,
+      lastOpened: '2026-10-02T00:00:00Z', providerId: 'new-provider', pinnedAt: '2026-10-02T00:00:00Z' }])).toBe(false);
+    expect(projectCatalogChanged([first], [{ ...first, hidden: false, internal: false, agentNetworkExposureRevision: 0 }])).toBe(false);
   });
 });

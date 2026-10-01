@@ -3,6 +3,7 @@ import { nextAgentNetworkExposureRevision } from "../../../shared/config-types";
 import { join, basename } from '@tauri-apps/api/path';
 
 import type { Project } from '../types';
+import { notifyConfigChanged, type ConfigChangeNotification } from './configEvents';
 import { isProjectArchived, isSystemPresetProject } from '../types';
 import { workspacePathsEqual } from '../../../shared/workspacePath';
 import {
@@ -62,9 +63,22 @@ export async function loadProjects(): Promise<Project[]> {
     }
 }
 
-export async function saveProjects(projects: Project[]): Promise<void> {
+/** Only catalog facts invalidate the App projection; opening/reordering a workspace
+ * must not cause network traffic. IDs and lifecycle come from persisted Projects. */
+export function projectCatalogChanged(before: Project[], after: Project[]): boolean {
+    const projection = (projects: Project[]) => projects.map(project => ({
+        id: project.id, agentId: project.agentId, name: project.name, path: project.path,
+        hidden: project.hidden === true, internal: project.internal === true,
+        archived: isProjectArchived(project), exposureRevision: project.agentNetworkExposureRevision ?? 0,
+    })).sort((a, b) => a.id.localeCompare(b.id));
+    return JSON.stringify(projection(before)) !== JSON.stringify(projection(after));
+}
+
+export async function saveProjects(projects: Project[], options: { notification: ConfigChangeNotification } = { notification: 'immediate' }): Promise<void> {
+    const changed = options.notification === 'immediate' && projectCatalogChanged(await loadProjects(), projects);
     if (isBrowserDevMode()) {
         mockSaveProjects(projects);
+        if (changed) notifyConfigChanged('saveProjects');
         return;
     }
 
@@ -74,18 +88,22 @@ export async function saveProjects(projects: Project[]): Promise<void> {
         const projectsPath = await join(dir, PROJECTS_FILE);
         await safeWriteJson(projectsPath, projects);
         console.log('[configService] Projects saved successfully');
+        if (changed) notifyConfigChanged('saveProjects');
     } catch (error) {
         console.error('[configService] Failed to save projects:', error);
         throw error;
     }
 }
 
-export async function addProject(path: string): Promise<Project> {
+export async function addProject(path: string, options: { notification: ConfigChangeNotification } = { notification: 'immediate' }): Promise<Project> {
     console.log('[configService] addProject called with path:', path);
 
     if (isBrowserDevMode()) {
         console.log('[configService] Browser mode: using mock addProject');
-        return mockAddProject(path);
+        const before = mockLoadProjects();
+        const result = mockAddProject(path);
+        if (options.notification === 'immediate' && projectCatalogChanged(before, mockLoadProjects())) notifyConfigChanged('addProject');
+        return result;
     }
 
     return withProjectsLock(async () => {
@@ -103,7 +121,7 @@ export async function addProject(path: string): Promise<Project> {
                 existing.name = parts[parts.length - 1] || existing.name;
                 console.log('[configService] Fixed project name from path to:', existing.name);
             }
-            await saveProjects(projects);
+            await saveProjects(projects, options);
             return existing;
         }
 
@@ -130,7 +148,7 @@ export async function addProject(path: string): Promise<Project> {
 
         console.log('[configService] Creating new project:', newProject);
         projects.push(newProject);
-        await saveProjects(projects);
+        await saveProjects(projects, options);
         return newProject;
     });
 }
@@ -200,13 +218,13 @@ export function applyProjectUnarchiveIntent(
     return { project, projects: nextProjects };
 }
 
-export async function patchProject(projectId: string, updates: Partial<Omit<Project, 'id'>>): Promise<Project | null> {
+export async function patchProject(projectId: string, updates: Partial<Omit<Project, 'id'>>, options: { notification: ConfigChangeNotification } = { notification: 'immediate' }): Promise<Project | null> {
     return withProjectsLock(async () => {
         const projects = await loadProjects();
         const index = projects.findIndex((p) => p.id === projectId);
         if (index >= 0) {
             projects[index] = applyProjectPatch(projects[index], updates);
-            await saveProjects(projects);
+            await saveProjects(projects, options);
             return projects[index];
         }
         return null;
