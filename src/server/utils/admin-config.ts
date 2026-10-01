@@ -216,6 +216,7 @@ export interface ChannelConfigSlim {
 
 /** Minimal Project shape */
 export interface ProjectSlim {
+  agentNetworkExposureRevision?: number;
   id: string;
   name: string;
   path: string;

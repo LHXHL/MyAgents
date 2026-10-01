@@ -22,6 +22,9 @@ import { readFile, mkdir, readdir, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import { preparePlaywrightControlRuntime } from './prepare-playwright-control-runtime.mjs';
+import { verifyAgentNetworkProtocol } from './verify-agent-network-protocol.mjs';
+
+await verifyAgentNetworkProtocol();
 
 // Read package.json version once and inject as a compile-time constant.
 // This is the ONLY way `myagents version` can show the real shipped

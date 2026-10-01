@@ -61,6 +61,7 @@ export interface ChatRenderBinding {
     agentDir: string,
     title: string,
     initialMessage?: string,
+    context?: import("../../../shared/agentMentions").QueryMentionContext,
   ) => Promise<boolean>;
   onUpdateSessionId: (tabId: string, newSessionId: string, options?: AdoptMigratedSessionOptions) => Promise<boolean>;
   claimSessionOpeningTransition: (sessionId: string, ownerId: string) => (() => void) | null;
@@ -115,8 +116,8 @@ const ChatTabRenderer = memo(function ChatTabRenderer({
             onFilePreviewIntentConsumed={(intentId) => binding.onFilePreviewIntentConsumed(tab.id, intentId)}
             sessionTitle={tab.title}
             onRenameSession={(title) => binding.onRenameSession(tab.id, title)}
-            onForkSession={(sessionId, agentDir, title, initialMessage) =>
-              binding.onForkSession(tab.id, sessionId, agentDir, title, initialMessage)
+            onForkSession={(sessionId, agentDir, title, initialMessage, context) =>
+              binding.onForkSession(tab.id, sessionId, agentDir, title, initialMessage, context)
             }
             sessionNotificationBadgeCounts={binding.sessionNotificationBadgeCounts}
             onOpenHistoryTag={binding.onOpenHistoryTag}

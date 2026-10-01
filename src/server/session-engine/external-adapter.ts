@@ -426,6 +426,7 @@ export function createExternalSessionEngine(): SessionEngine {
         {
           sessionId: request.sessionId,
           asyncQuestionReply: request.asyncQuestionReply,
+          desktopQuery: request.desktopQuery,
           workspacePath: request.workspacePath,
           scenario: request.scenario,
           analyticsSource: request.analyticsSource,

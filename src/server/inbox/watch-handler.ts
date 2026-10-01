@@ -66,7 +66,7 @@ async function latestResultForSession(sessionId: string): Promise<string> {
   return data ? getLatestAssistantResultFromMessages(data.messages) : '(no text response)';
 }
 
-function buildWatchEventPrompt(params: {
+export function buildWatchEvent(params: {
   type: 'watch.already_idle' | 'watch.error';
   watchId: string;
   targetSessionId: string;
@@ -76,7 +76,7 @@ function buildWatchEventPrompt(params: {
   finalState?: string;
   terminalReason?: string;
   latestResult: string;
-}): string {
+}): SessionEvent {
   const event: SessionEvent = {
     version: 1,
     type: params.type,
@@ -91,7 +91,7 @@ function buildWatchEventPrompt(params: {
     createdAt: new Date().toISOString(),
     latestResult: params.latestResult,
   };
-  return renderSessionEventPrompt(event);
+  return event;
 }
 
 export async function handleAdminSessionWatch(
@@ -199,7 +199,7 @@ export async function handleAdminSessionWatch(
   }
   if (result.delivery === 'already_idle' || result.delivery === 'error') {
     const latestResult = result.latestResult?.trim() || await latestResultForSession(targetSessionId);
-    const eventPrompt = buildWatchEventPrompt({
+    const eventPrompt = renderSessionEventPrompt(buildWatchEvent({
       type: result.delivery === 'already_idle' ? 'watch.already_idle' : 'watch.error',
       watchId: result.watchId,
       targetSessionId,
@@ -209,7 +209,7 @@ export async function handleAdminSessionWatch(
       finalState: result.finalState,
       terminalReason: result.terminalReason,
       latestResult,
-    });
+    }));
     return {
       status: 200,
       response: {

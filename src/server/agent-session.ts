@@ -1,3 +1,4 @@
+import { desktopContextOf } from '../shared/agentMentions';
 import { createBuiltinInterruptController } from './builtin-session/interrupt';
 import { configureBuiltinTranscriptBinding } from './builtin-session/transcript';
 import { randomUUID } from 'crypto';
@@ -1138,6 +1139,7 @@ async function surfaceInFlightQueueItem(
     id: allocateMessageId(),
     role: 'user',
     content: meta?.messageText ?? '',
+    desktopQuery: meta?.desktopQuery,
     timestamp: new Date().toISOString(),
     attachments: meta?.attachments,
     sdkUuid: options.sdkUuid,
@@ -2054,6 +2056,7 @@ function promoteNextFromPending(): void {
     : '';
   setInFlightQueueItem(pending.queueId, {
     messageText: promotedText,
+    desktopQuery: pending.sourceItem.desktopQuery,
     attachments: pending.userMessage.attachments,
     requestId: pending.sourceItem.requestId,
     analyticsSource: pending.sourceItem.analyticsSource,
@@ -2068,7 +2071,9 @@ function promoteNextFromPending(): void {
   // shifts in the cancel-after-start-sse_proxy race).
   broadcast('queue:added', {
     queueId: pending.queueId,
-    messageText: promotedText.slice(0, 100),
+    messageText: visibleDesktopMirrorText(promotedText).slice(0, 100),
+    agentMentions: pending.sourceItem.desktopQuery?.agentMentions,
+    primaryContext: desktopContextOf(pending.sourceItem.desktopQuery?.primaryContext),
     isInFlight: true,
     deliveryMode: pending.sourceItem.deliveryMode,
   });
@@ -2123,6 +2128,7 @@ function startNextTurnQueuedItem(
     id: allocateMessageId(),
     role: 'user',
     content: item.messageText,
+    desktopQuery: item.sourceItem?.desktopQuery,
     timestamp: new Date().toISOString(),
     attachments: item.attachments,
     metadata: item.source ? { source: item.source } : undefined,
@@ -8948,6 +8954,7 @@ export async function enqueueUserMessage(
   analyticsOrigin?: SessionOrigin,
   options?: {
     fromDesktopChatSend?: boolean;
+    desktopQuery?: import("../shared/agentMentions").DesktopQueryDraft;
     queueId?: string;
     turnOwner?: TurnOwner;
     onTerminal?: TurnTerminalObserver;
@@ -9060,6 +9067,7 @@ export async function enqueueUserMessage(
       requestId,
       createdAt: Date.now(),
       messageText: trimmed,
+      desktopQuery: options?.desktopQuery,
       turnOwner: options?.turnOwner,
       onTerminal: options?.onTerminal,
       beforeUserPersistence: options?.beforeUserPersistence,
@@ -9074,6 +9082,7 @@ export async function enqueueUserMessage(
         ready: false,
         admissionTicket,
         messageText: trimmed,
+      desktopQuery: options?.desktopQuery,
         requestId,
       };
       pushTurnBoundary(reservedTurnBoundaryItem);
@@ -9488,12 +9497,13 @@ export async function enqueueUserMessage(
         queueId,
         ready: false,
         messageText: trimmed,
+      desktopQuery: options?.desktopQuery,
         requestId,
       };
       pushTurnBoundary(reservedTurnBoundaryItem);
       console.log(`[agent] Reserved turn-boundary queue slot: queueId=${queueId} requestId=${requestId ?? '-'} text="${trimmed.slice(0, 50)}"`);
       if (!deferVisibleAdmission) {
-        broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: false, deliveryMode: 'turn' });
+        broadcast('queue:added', { queueId, messageText: visibleDesktopMirrorText(trimmed).slice(0, 100), agentMentions: options?.desktopQuery?.agentMentions, primaryContext: desktopContextOf(options?.desktopQuery?.primaryContext), isInFlight: false, deliveryMode: 'turn' });
       }
     }
   }
@@ -9683,6 +9693,7 @@ export async function enqueueUserMessage(
       id: queueId,
       message: { role: 'user', content: contentBlocks },
       messageText: trimmed,
+      desktopQuery: options?.desktopQuery,
       wasQueued: holdForWatchdogRecovery ? true : admissionAction !== 'turn-boundary',
       deliveryMode: queueDeliveryMode,
       resolve: () => {},  // No-op: no one is awaiting
@@ -9709,7 +9720,7 @@ export async function enqueueUserMessage(
       pushMessage(queueItem);
       console.log(`[agent] Message queued behind watchdog recovery reminder: queueId=${queueId} requestId=${requestId ?? '-'} text="${trimmed.slice(0, 50)}"`);
       if (!deferVisibleAdmission) {
-        broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: false, deliveryMode: queueDeliveryMode });
+        broadcast('queue:added', { queueId, messageText: visibleDesktopMirrorText(trimmed).slice(0, 100), agentMentions: options?.desktopQuery?.agentMentions, primaryContext: desktopContextOf(options?.desktopQuery?.primaryContext), isInFlight: false, deliveryMode: queueDeliveryMode });
       }
     } else if (admissionAction === 'turn-boundary') {
       const turnItem = reservedTurnBoundaryItem;
@@ -9722,6 +9733,7 @@ export async function enqueueUserMessage(
         queueId,
         ready: false,
         messageText: trimmed,
+      desktopQuery: options?.desktopQuery,
         requestId,
       };
       readyTurnItem.ready = true;
@@ -9738,7 +9750,7 @@ export async function enqueueUserMessage(
       if (!turnItem) {
         pushTurnBoundary(readyTurnItem);
         if (!deferVisibleAdmission) {
-          broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: false, deliveryMode: 'turn' });
+          broadcast('queue:added', { queueId, messageText: visibleDesktopMirrorText(trimmed).slice(0, 100), agentMentions: options?.desktopQuery?.agentMentions, primaryContext: desktopContextOf(options?.desktopQuery?.primaryContext), isInFlight: false, deliveryMode: 'turn' });
         }
       }
       console.log(`[agent] Message queued for next turn boundary: queueId=${queueId} requestId=${requestId ?? '-'} text="${trimmed.slice(0, 50)}"`);
@@ -9754,6 +9766,7 @@ export async function enqueueUserMessage(
       if (decideRealtimeHandoff(lifecycleState.messageResolver !== null) === 'sdk-inflight') {
         setInFlightQueueItem(queueId, {
           messageText: trimmed,
+      desktopQuery: options?.desktopQuery,
           attachments: savedAttachments.length > 0 ? savedAttachments : undefined,
           requestId,
           source: metadata?.source,
@@ -9765,7 +9778,7 @@ export async function enqueueUserMessage(
         wakeGenerator(queueItem);
         console.log(`[agent] Message queued mid-turn (in-flight to CLI): queueId=${queueId} requestId=${requestId ?? '-'} text="${trimmed.slice(0, 50)}"`);
         if (!deferVisibleAdmission) {
-          broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: true, deliveryMode: 'realtime' });
+          broadcast('queue:added', { queueId, messageText: visibleDesktopMirrorText(trimmed).slice(0, 100), agentMentions: options?.desktopQuery?.agentMentions, primaryContext: desktopContextOf(options?.desktopQuery?.primaryContext), isInFlight: true, deliveryMode: 'realtime' });
         }
       } else {
         // The generator is still owned by a promoted/active turn. Labeling
@@ -9776,7 +9789,7 @@ export async function enqueueUserMessage(
         pushMessage(queueItem);
         console.log(`[agent] Message queued mid-turn (local until generator handoff): queueId=${queueId} requestId=${requestId ?? '-'} text="${trimmed.slice(0, 50)}"`);
         if (!deferVisibleAdmission) {
-          broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: false, deliveryMode: 'realtime' });
+          broadcast('queue:added', { queueId, messageText: visibleDesktopMirrorText(trimmed).slice(0, 100), agentMentions: options?.desktopQuery?.agentMentions, primaryContext: desktopContextOf(options?.desktopQuery?.primaryContext), isInFlight: false, deliveryMode: 'realtime' });
         }
       }
     } else {
@@ -9788,6 +9801,7 @@ export async function enqueueUserMessage(
         id: allocateMessageId(),
         role: 'user',
         content: trimmed,
+        desktopQuery: options?.desktopQuery,
         timestamp: new Date().toISOString(),
         attachments: savedAttachments.length > 0 ? savedAttachments : undefined,
       };
@@ -9804,7 +9818,7 @@ export async function enqueueUserMessage(
       });
       console.log(`[agent] Message queued mid-turn (pending — in-flight slot busy): queueId=${queueId} requestId=${requestId ?? '-'} (pending=${getPendingMidTurnQueue().length})`);
       if (!deferVisibleAdmission) {
-        broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: false, deliveryMode: 'realtime' });
+        broadcast('queue:added', { queueId, messageText: visibleDesktopMirrorText(trimmed).slice(0, 100), agentMentions: options?.desktopQuery?.agentMentions, primaryContext: desktopContextOf(options?.desktopQuery?.primaryContext), isInFlight: false, deliveryMode: 'realtime' });
       }
     }
 
@@ -9837,6 +9851,7 @@ export async function enqueueUserMessage(
     id: allocateMessageId(),
     role: 'user',
     content: trimmed,
+    desktopQuery: options?.desktopQuery,
     timestamp: new Date().toISOString(),
     attachments: savedAttachments.length > 0 ? savedAttachments : undefined,
     metadata,
@@ -10472,7 +10487,7 @@ export async function forceExecuteQueueItem(queueId: string): Promise<boolean> {
 /**
  * Get current queue status — list of queued items with their IDs and preview text.
  */
-export function getQueueStatus(): Array<{ id: string; messagePreview: string }> {
+export function getQueueStatus(): Array<{ id: string; messagePreview: string; agentMentions?: import("../shared/agentMentions").AgentMentionSnapshot[] }> {
   return queueGetQueueStatus();
 }
 
@@ -10493,6 +10508,7 @@ export async function rewindSession(userMessageId: string): Promise<{
   error?: string;
   content?: string;
   attachments?: MessageWire['attachments'];
+  desktopQuery?: import("../shared/agentMentions").DesktopQueryDraft;
   skippedLinks?: number;
   fileRewindStatus?: FileRewindStatus;
 }> {
@@ -10593,6 +10609,7 @@ export async function rewindSession(userMessageId: string): Promise<{
     return {
       success: true as const,
       content: removedContent,
+      desktopQuery: targetMessage.desktopQuery,
       attachments: removedAttachments,
       fileRewindStatus,
       ...(skippedLinks > 0 ? { skippedLinks } : {}),
@@ -14392,6 +14409,7 @@ async function* messageGenerator(
       // SDK async-message cancellation.
       setInFlightQueueItem(item.id, {
         messageText: item.messageText,
+        desktopQuery: item.desktopQuery,
         attachments: item.attachments,
         requestId: item.requestId,
         analyticsSource: item.analyticsSource,
@@ -14403,7 +14421,9 @@ async function* messageGenerator(
       // cancel_async_message while it remains pending in SDK commandQueue.
       broadcast('queue:added', {
         queueId: item.id,
-        messageText: item.messageText.slice(0, 100),
+        messageText: visibleDesktopMirrorText(item.messageText).slice(0, 100),
+        agentMentions: item.desktopQuery?.agentMentions,
+        primaryContext: desktopContextOf(item.desktopQuery?.primaryContext),
         isInFlight: true,
         deliveryMode: item.deliveryMode,
       });

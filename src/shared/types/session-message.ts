@@ -59,6 +59,7 @@ export interface MessageSourceMetadata {
  * Simplified message format for storage
  */
 export interface SessionMessage {
+  desktopQuery?: import("../agentMentions").DesktopQueryDraft;
     asyncQuestionReply?: AsyncQuestionReply;
     id: string;
     role: 'user' | 'assistant';

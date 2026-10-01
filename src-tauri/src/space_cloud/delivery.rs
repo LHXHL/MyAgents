@@ -1638,6 +1638,7 @@ async fn deliver_space_deliveries(
         timestamp_ms: chrono::Utc::now().timestamp_millis(),
         kind: crate::inbox::InboxMessageKind::Event,
         in_reply_to: None,
+        network_return: None,
         session_event: Some(serde_json::json!({
             "version": 2,
             "type": "space.issue_delivery",

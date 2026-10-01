@@ -1,3 +1,4 @@
+import { composeQueryReminder } from "../shared/agentMentions";
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useContext, useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -2434,9 +2435,10 @@ describe('App helper launch', () => {
     const discussionChat = [...mocks.chatProps]
       .reverse()
       .find((props) => Boolean(props.initialMessage)) as
-      | { initialMessage?: { text?: string; requiredSystemSkill?: unknown } }
+      | { initialMessage?: import("./types/tab").InitialMessage }
       | undefined;
-    const prompt = discussionChat?.initialMessage?.text ?? '';
+    const initial = discussionChat?.initialMessage;
+    const prompt = composeQueryReminder({ visibleText: initial?.text ?? '', primaryContext: initial?.primaryContext });
     expect(prompt).toContain(
       'sourceRecordDocumentPath: /Users/me/.myagents/records/2026-08/record-audio/content.md',
     );

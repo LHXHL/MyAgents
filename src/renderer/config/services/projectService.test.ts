@@ -144,6 +144,16 @@ describe('project archive intents', () => {
     });
   });
 
+  it('retains an exposure reset through an offline archive/unarchive interval', () => {
+    const original=project({agentNetworkExposureRevision:4});
+    const archived=applyProjectArchiveIntent([original],original.id)!;
+    const repeated=applyProjectArchiveIntent(archived.projects,original.id)!;
+    const restored=applyProjectUnarchiveIntent(repeated.projects,original.id)!;
+    expect(restored.project.agentNetworkExposureRevision).toBe(5);
+    expect(restored.project.archivedAt).toBeUndefined();
+    expect(applyProjectPatch(restored.project,{name:'Renamed'}).agentNetworkExposureRevision).toBe(5);
+  });
+
   it('unarchives a project and clears archive metadata', () => {
     const result = applyProjectUnarchiveIntent(
       [project({

@@ -91,3 +91,11 @@ Cuse 的原始 ZIP 使用同一 `acquireLockedResource` helper，缓存到 `reso
 - **选择对应验证**：`package.json` 的 `test:build-scripts` 是脚本测试入口；按影响面选择其中的下载、缓存、资源准备和构建接线用例。Linux 入口另有 `test:linux-package`。不能只验证一个入口而遗漏同一 helper 的其他平台。
 - **验证真实边界**：涉及签名改变字节、跨目标原生产物或平台文件替换时，补最小相关真实验证；测试替身通过不等于 Windows/macOS/Linux 真机通过。无法执行的检查明确报告，不能记为 PASS。
 - **保持规范与实现一起变化**：通用原则与 helper 分工在本文维护，资源专属契约在所属技术文档维护，操作步骤在平台指南维护。改变默认参数时核对本文的现状描述；不把同一规则复制到多个文档或核心指令中。
+
+### AgentNet 部署身份
+
+`src-tauri/build.rs` 的 Space 构建配置同时读取公开的 `MYAGENTS_AGENT_NETWORK_SERVICE_ID` / `MYAGENTS_AGENT_NETWORK_DEV_SERVICE_ID`。官方值内置，开发者无需新增密钥。Dev service ID 与 Space dev origin 只在 debug 构建生效；release 清空 dev 配置。开发构建需设置 `MYAGENTS_SPACE_DEV_BASE_URL=https://space-dev.myagents.io`，客户端原开发者功能切换 Space 环境时，网络连接沿同一账号 owner 重建。CA / JWS 私钥仅配置在 Space Worker，禁止放进客户端构建环境。
+
+### AgentNet 固定协议产物
+
+协议源码归 AgentNet；客户端 `vendor/agent-network-protocol/manifest.json` 与固定 `.tgz` 是构建输入。npm 依赖/锁文件和 Rust build.rs 均校验此输入；安装后、typecheck、Web 和 Node bundle 构建复用 `verify-agent-network-protocol.mjs`，Rust 构建独立校验并只展开包内 Schema/fixtures 到 OUT_DIR。没有联网下载、sibling checkout、可编辑 Schema 副本或额外持久缓存。产物升级沿 [Agent 网络](agent_network.md#公共协议与仓库分发) 的单一源码更新流程，损坏则修复产物/引用；只删除自身旧 OUT_DIR 投影，避免已移除的 Schema 靠上一次构建继续通过。

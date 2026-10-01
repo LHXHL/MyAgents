@@ -1,3 +1,4 @@
+import { startAgentNetworkStore } from '@/features/agent-network/store';
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -170,7 +171,6 @@ import {
   createPendingSessionId,
   isPendingSessionId,
 } from '../shared/constants';
-import { buildTaskDiscussionReminder } from '../shared/systemReminder';
 import { TASK_ALIGNMENT_SKILL_REQUIREMENT } from '../shared/systemSkills';
 import type {
   PreparedTaskDiscussion,
@@ -2380,6 +2380,7 @@ export default function App() {
       forkAgentDir: string,
       title: string,
       initialMessage?: string,
+      context?: import("../shared/agentMentions").QueryMentionContext,
     ) => {
       // Check tab limit
       if (tabWorkspaceController.getSnapshot().tabs.length >= MAX_TABS) {
@@ -2403,7 +2404,7 @@ export default function App() {
         // already visible to history, so the opening claim above still excludes
         // user deletion until this Tab owner is attached.
         sidecarConfigDisposition: 'push',
-        ...(initialMessage ? { initialMessage: { text: initialMessage } } : {}),
+        ...(initialMessage ? { initialMessage: { text: initialMessage, agentMentions: context?.agentMentions, primaryContext: context?.primaryContext } } : {}),
       };
 
       tabWorkspaceController.append(newTab, {
@@ -3937,7 +3938,7 @@ export default function App() {
             sourceRecordId: sourceRecordId || undefined,
           },
         );
-        const discussionPrompt = buildTaskDiscussionReminder({
+        const discussionContext = {
           candidatesDir: prepared.candidatesDir,
           workspaceId: workspace.id,
           workspacePath: workspace.path,
@@ -3948,7 +3949,7 @@ export default function App() {
             sourceRecordKind === 'audio'
               ? '请完整读取 sourceRecordDocumentPath 指向的录音文稿。文稿包含转写内容、说话人信息、现场笔记和重点标记。请以文件中的当前内容为准，理解记录并与我进一步讨论；如需核对原始声音，可读取 sourceRecordAudioPaths 中列出的音频文件。'
               : (content ?? ''),
-        });
+        };
 
         const alignmentProviderIntent =
           sel && isRuntimeBackedProvider(sel.provider)
@@ -3964,7 +3965,8 @@ export default function App() {
           defaultPermissionMode: configRef.current?.defaultPermissionMode,
         });
         const initialMessage: InitialMessage = {
-          text: discussionPrompt,
+          text: discussionContext.visibleUserMessage,
+          primaryContext: { kind: 'task-discussion', input: discussionContext },
           requiredSystemSkill: TASK_ALIGNMENT_SKILL_REQUIREMENT,
           ...(alignmentPermissionMode
             ? { permissionMode: alignmentPermissionMode }
@@ -4625,6 +4627,7 @@ export default function App() {
     updateTabUnread,
   ]);
 
+  useEffect(() => startAgentNetworkStore(), []);
   const activeWorkspacePath = resolveGlobalSidebarWorkspace(activeTab);
   const launcherBinding = useMemo<BuiltinTabBindings['launcher']>(
     () => ({
@@ -4765,6 +4768,7 @@ export default function App() {
       capabilities: capabilitiesBinding,
       taskcenter: taskCenterBinding,
       space: spaceBinding,
+      agentnetwork: null,
       record: recordBinding,
     }),
     [
@@ -4792,6 +4796,7 @@ export default function App() {
             onOpenTaskCenter={handleOpenTaskCenter}
             onCreateTask={handleSidebarCreateTask}
             onOpenSpace={handleOpenSpace}
+            onOpenAgentNetwork={() => tabWorkspaceController.open('agentnetwork', { title: t('tabs.agentNetwork') })}
             onOpenAppRoute={handleOpenAppRoute}
             onOpenCapabilities={handleOpenCapabilities}
             onOpenSettings={handleOpenGeneralSettings}

@@ -120,6 +120,7 @@ function bindings(overrides: Partial<BuiltinTabBindings> = {}): BuiltinTabBindin
       onRouteConsumed: vi.fn(),
     },
     space: { onRouteConsumed: vi.fn() },
+    agentnetwork: null,
     record: {
       onRecordingSnapshotChange: vi.fn(),
       onTitleChange: vi.fn(),

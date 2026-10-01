@@ -182,6 +182,7 @@ export interface ExternalAssistantSnapshotState {
 }
 
 export interface ExternalSendContext {
+  desktopQuery?: import("../../../shared/agentMentions").DesktopQueryDraft;
   asyncQuestionReply?: AsyncQuestionReply;
   sessionId: string;
   workspacePath: string;

@@ -51,8 +51,8 @@ export interface AdoptMigratedSessionOptions {
 export type SessionState = 'idle' | 'starting' | 'running' | 'stopping' | 'error';
 
 export interface SystemNotice {
-    kind: 'compact';
-    level: 'success' | 'error';
+    kind: 'compact' | 'agent-mention';
+    level: 'success' | 'error' | 'warning';
     message: string;
 }
 
@@ -210,7 +210,7 @@ export interface TabContextValue extends TabState {
     isConnected: boolean;
 
     // Chat actions
-    sendMessage: (text: string, images?: ImageAttachment[], permissionMode?: PermissionMode, model?: string, providerEnv?: ChatProviderEnv, isCron?: boolean, reasoningEffort?: string, providerRoute?: ProviderRoute, requiredSystemSkill?: ProductSystemSkillRequirement, asyncQuestionReply?: AsyncQuestionReply) => Promise<boolean>;
+    sendMessage: (text: string, images?: ImageAttachment[], permissionMode?: PermissionMode, model?: string, providerEnv?: ChatProviderEnv, isCron?: boolean, reasoningEffort?: string, providerRoute?: ProviderRoute, requiredSystemSkill?: ProductSystemSkillRequirement, asyncQuestionReply?: AsyncQuestionReply, agentMentions?: import("../../shared/agentMentions").AgentMentionSnapshot[], primaryContext?: import("../../shared/agentMentions").DesktopPrimaryContext) => Promise<boolean>;
     stopResponse: () => Promise<{ success: boolean; alreadyStopped: boolean }>;
     retryCurrentSessionRestore: (targetMessageId?: string) => Promise<CurrentSessionRestoreResult>;
     /** Prepend the next page of older messages. Safe to call repeatedly — guarded internally. */

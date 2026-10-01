@@ -33,6 +33,10 @@ export type SessionEngineKind = 'builtin' | 'external';
 export type { PermissionMode } from '../agent-session';
 
 export type DesktopMessageRequest = {
+  desktopQuery?: import("../../shared/agentMentions").DesktopQueryDraft;
+  agentMentions?: import("../../shared/agentMentions").AgentMentionSnapshot[]; primaryContext?: import("../../shared/agentMentions").DesktopPrimaryContext;
+  /** Product-only primary context supplied by the Goal owner, never raw XML. */
+  queryPrimaryContext?: import("../../shared/agentMentions").QueryPrimaryContext;
   asyncQuestionReply?: AsyncQuestionReply;
   text: string;
   images?: ImagePayload[];
@@ -63,6 +67,7 @@ export type DesktopMessageRequest = {
 export type DesktopRetryOptions = Pick<DesktopMessageRequest, 'model' | 'reasoningEffort'>;
 
 export type DesktopAdmissionResult = {
+  agentMentionsNeedReselect?: boolean;
   success: boolean;
   queued?: boolean;
   queueId?: string;
@@ -238,7 +243,7 @@ export type ScheduledTurnPreparationResult = {
   status?: number;
 };
 
-export type QueueStatusItem = { id: string; messagePreview: string; asyncQuestionReply?: AsyncQuestionReply; canCancel?: boolean; canForceExecute?: boolean };
+export type QueueStatusItem = { id: string; messagePreview: string; asyncQuestionReply?: AsyncQuestionReply; agentMentions?: import("../../shared/agentMentions").AgentMentionSnapshot[]; primaryContext?: import("../../shared/agentMentions").DesktopPrimaryContext; canCancel?: boolean; canForceExecute?: boolean };
 
 export type SessionEngineRuntimeIdentity = {
   kind: SessionEngineKind;
@@ -354,6 +359,7 @@ export type SessionEngineLiveOverlay = {
 };
 
 export type CapabilityOperationResult = {
+  desktopQuery?: import("../../shared/agentMentions").DesktopQueryDraft;
   conversationCommitted?: boolean;
   retryQueued?: boolean;
   success: boolean;

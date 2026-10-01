@@ -1,3 +1,4 @@
+import { nextAgentNetworkExposureRevision } from "../shared/config-types";
 /**
  * Admin API — Self-Configuration endpoints for the CLI tool.
  *
@@ -1660,8 +1661,22 @@ export async function handleAgentList(
           })),
         };
       });
+    const { discoverAgents } = await import('./agent-network/discovery');
+    const discovery = lifecycle === 'archived' ? {items:[], networkStatus:'signedOut' as const, complete:true, authGeneration:0, principalId:null, networkId:null} : await discoverAgents(agents);
+    const localDiscovery = new Map(discovery.items.filter(item => item.isLocal).map(item => [item.selector, item]));
+    // The network candidate budget must not truncate the original local CLI
+    // registry. Only the compact composer projection applies that budget.
+    const combined: Array<Record<string, unknown>> = lifecycle === 'archived' ? agents : [
+      ...agents.filter(agent => !agent.archived).map(agent => ({ ...agent,
+        ...(localDiscovery.get(agent.agentId) ?? { selector: agent.agentId, isLocal: true,
+          deviceId: null, deviceName: null, platform: null, description: null, source: null }),
+      })),
+      ...discovery.items.filter(item => !item.isLocal).map(item => ({ ...item, agentId: item.selector })),
+    ];
+    if (lifecycle === 'all') for (const agent of agents.filter(agent => agent.archived)) combined.push(agent);
     return {
-      success: true, data: agents,
+      success: true, data: combined, networkStatus: discovery.networkStatus, complete: discovery.complete,
+      authGeneration: discovery.authGeneration, principalId: discovery.principalId, networkId: discovery.networkId,
       ...(registry.diagnostics.length ? {
         diagnostics: registry.diagnostics.map(item => ({ ...item,
           projects: registry.projects.filter(project => item.projectIds.includes(project.id))
@@ -1670,6 +1685,31 @@ export async function handleAgentList(
         hint: 'Some Agents have workspace identity conflicts. Open Settings → Chatbots to resolve them; healthy Agents remain available.',
       } : {}),
     };
+  } catch (error) {
+    return agentWorkspaceIdentityFailure(error);
+  }
+}
+
+export async function handleAgentDiscovery(): Promise<AdminResponse> {
+  try {
+    const { getAgentDiscovery } = await import('./agent-network/discovery');
+    return { success: true, data: await getAgentDiscovery() };
+  } catch (error) { return agentWorkspaceIdentityFailure(error); }
+}
+
+/** App catalog projection only. The persisted Workspace identity owner decides
+ * valid associations; network settings are never written or inferred here. */
+export async function handleAgentNetworkCatalog(): Promise<AdminResponse> {
+  try {
+    const registry = await resolvePersistedAgentWorkspaceRegistry();
+    const items: import('@myagents/agent-network-protocol').CatalogItem[] = registry.identities
+      .filter(identity => isProjectVisibleToUser(identity.project))
+      .map(({ agent, project, workspacePath }) => ({
+        localAgentId: agent.id, localWorkspaceId: project.id, name: agent.name,
+        path: workspacePath, lifecycle: isProjectArchived(project) ? 'archived' : 'active',
+        exposureRevision: project.agentNetworkExposureRevision ?? 0,
+      }));
+    return { success: true, data: { items, diagnostics: registry.diagnostics.map(({ code, projectIds, agentIds }) => ({ code, projectIds, agentIds })) } };
   } catch (error) {
     return agentWorkspaceIdentityFailure(error);
   }
@@ -1846,6 +1886,7 @@ export async function handleAgentArchive(payload: {
       ...entry.project,
       archivedAt,
       archivedAgentEnabledBeforeArchive: agentEnabledBeforeArchive,
+      agentNetworkExposureRevision: nextAgentNetworkExposureRevision(entry.project,alreadyArchived),
       pinnedAt: undefined,
     };
     return next;
@@ -4365,7 +4406,10 @@ OPTIONS
 OUTPUT
   agentId, name, projectId, workspacePath, association, enabled, archived,
   archivedAt, isCurrent, channelCount, channels. Human output marks the current
-  Project-selected Agent with *.
+  Project-selected Agent with *. Online network Agents are merged with local
+  Agents; remote agentId is a qualified ma-agent:1 reference. Remote rows omit
+  local paths. networkStatus/complete report incomplete discovery; local results
+  remain available when the network fails. --archived is local only.
 
 IDENTITY / PERMISSIONS
   Use agentId from this command; never guess IDs or use workspace paths as
@@ -4412,6 +4456,8 @@ OUTPUT
   Identity, lifecycle, isCurrent, channel summary, and effectiveDefaults:
   runtime/source, model, permissionMode, provider, runtimeConfig, MCP, plugins,
   and official tools. Secret and environment values are never returned.
+  Network targets return safe metadata and effective defaults without paths
+  or runtimeConfig.
 
 IDENTITY / PERMISSIONS
   Defaults belong to the target Agent. A later session start uses them and does
@@ -4426,7 +4472,11 @@ RECOVERY
 
   session: `myagents session — Discover and collaborate across Agent Sessions
 
-An Agent owns many isolated Sessions. Choose by context intent:
+An Agent owns many isolated Sessions. The same commands accept discovered
+ma-agent:1 / ma-session:1 qualified network references. Remote execution uses
+the target device's original Session and configuration; no cloud execution.
+
+Choose by context intent:
   Fresh context:       session start --agent <agentId> -p "<prompt>"
   Reuse known context: session send <sessionId> -p "<prompt>"
   Observe only:        session watch <sessionId>

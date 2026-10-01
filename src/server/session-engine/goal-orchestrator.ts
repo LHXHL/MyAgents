@@ -421,7 +421,13 @@ export function createGoalOrchestrator(client: ManagementClient = managementApi)
       });
       const result = await engine.sendDesktopMessage({
         ...request,
-        text: goalContext(lookup.goal, request.text, firstUserTurn),
+        text: visibleGoalMessage(request.text),
+        queryPrimaryContext: {kind:'goal',firstTurn:firstUserTurn,input:{
+          objective:lookup.goal.objective,goalId:lookup.goal.id,goalStatus:lookup.goal.status,
+          turnNumber:firstUserTurn?1:lookup.goal.turnCount+1,aiCanExit:lookup.goal.endConditions.aiCanExit,
+          visibleUserMessage:visibleGoalMessage(request.text),
+        }, desktopContext: request.queryPrimaryContext?.kind === 'goal'
+          ? request.queryPrimaryContext.desktopContext : request.queryPrimaryContext},
         queueId,
         turnOwner: owner,
         onTerminal: lifecycle.onTerminal,

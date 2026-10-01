@@ -14,7 +14,8 @@
     "closeTab": "Close tab",
     "generating": "AI is responding",
     "unread": "Unread messages",
-    "switchTo": "Switch to {{title}}"
+    "switchTo": "Switch to {{title}}",
+    "agentNetwork": "Agent Network"
   },
   "globalSidebar": {
     "navigation": "Global navigation",
@@ -23,7 +24,7 @@
     "expand": "Expand sidebar",
     "newChat": "New chat",
     "search": "Search",
-    "tasks": "Tasks",
+    "tasks": "Automations",
     "createTask": "Create task",
     "team": "Team",
     "capabilities": "Skills & Tools",
@@ -39,7 +40,9 @@
     "archived": "Archived",
     "newChatHere": "Start a new chat here",
     "emptyWorkspaceSessions": "No sessions yet",
-    "loadMore": "Show more"
+    "loadMore": "Show more",
+    "agentNetwork": "Agent Network",
+    "more": "More"
   },
   "titlebar": {
     "helper": "AI Helper",
@@ -113,7 +116,8 @@
     "networkError": "Network error",
     "networkDisconnected": "Network connection interrupted. Try again.",
     "sessionRestoreFailed": "This chat could not be restored",
-    "sessionAlreadyOpen": "This chat is already open in another tab"
+    "sessionAlreadyOpen": "This chat is already open in another tab",
+    "agentMentionsNeedReselect": "Some Agent references could not be resolved. Select them again with @."
   },
   "floatingSession": {
     "sidecarUnavailable": "Sidecar is unavailable",
@@ -293,7 +297,8 @@
       "spaceIssue": "Space issue",
       "taskComment": "Task comment",
       "goalMode": "Goal Mode",
-      "sessionRequest": "Session request"
+      "sessionRequest": "Session request",
+      "agentMentions": "Agent"
     },
     "systemInfo": "System info",
     "expand": "Expand"
@@ -1233,5 +1238,55 @@
       "replaced match on line $": "replaced match on line $"
     },
     "referenceDefinition": "Reference link"
+  },
+  "agentNetwork": {
+    "networkName": "My Agent Network",
+    "encryptionHint": "Devices exchange end-to-end encrypted messages through the MyAgents relay. Tasks run locally.",
+    "networkInfo": "About this network",
+    "myDevices": "My devices",
+    "join": "Join",
+    "leave": "Leave",
+    "saving": "Saving",
+    "online": "Online",
+    "offline": "Offline",
+    "syncing": "Syncing",
+    "local": "This device",
+    "onlineAgents": "{{count}} Agents online",
+    "unsyncedShort": "Not synced",
+    "unsynced": "This device has not synced its Agent catalog yet.",
+    "noAgents": "No Agent workspaces to manage",
+    "noDevices": "Your signed-in devices will appear here",
+    "partial": "This large list is only partially displayed.",
+    "openDevice": "View details for {{name}}",
+    "close": "Close",
+    "retry": "Retry",
+    "loading": "Loading",
+    "connecting": "Connecting to Agent Network…",
+    "reconnecting": "Network connection failed. Reconnecting automatically…",
+    "leaveTitle": "Leave network?",
+    "leaveMessage": "All Agents on this device will stop being available in this network. Rejoining requires enabling them again.",
+    "leaveConfirm": "Leave network",
+    "agents": "Agent workspaces",
+    "connectionStatus": "Status",
+    "computerName": "Computer name",
+    "ownership": "Device location",
+    "localDevice": "This device",
+    "remoteDevice": "Remote device",
+    "platform": "Platform",
+    "osVersion": "OS version",
+    "clientVersion": "Client version",
+    "deviceId": "Device ID",
+    "lastSeen": "Last online",
+    "joinToEnable": "Join the network to enable",
+    "descriptionPlaceholder": "Click to add a description to help Agents choose",
+    "descriptionFor": "Description for {{name}}",
+    "enableAgent": "Enable {{name}} in this network",
+    "errors": {
+      "conflict": "Settings changed in another client. Review the latest settings and retry.",
+      "descriptionTooLong": "Descriptions cannot exceed 4096 bytes.",
+      "unconfirmed": "Saving has not been confirmed. Refresh to check the result.",
+      "unconfigured": "Agent Network is not configured in this client.",
+      "failed": "Unable to complete this action. Please retry."
+    }
   }
 }

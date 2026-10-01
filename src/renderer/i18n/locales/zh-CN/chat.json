@@ -100,7 +100,7 @@
       "workspaceFiles": "工作区文件",
       "thoughts": "记录",
       "switchHint": "⌘/Ctrl + ←/→ 切换",
-      "filePlaceholder": "输入文件名搜索...",
+      "filePlaceholder": "搜索 Agent、想法或文件…",
       "searching": "搜索中...",
       "noFiles": "未找到文件",
       "emptyThoughts": "暂无记录，先在「任务中心」保存一条吧",
@@ -108,7 +108,24 @@
       "noThoughtMatchesSuffix": "的记录",
       "recentThoughts": "最近 {{count}} 条记录",
       "matchedThoughts": "匹配 \"{{query}}\" 的记录 · {{count}} 条",
-      "thoughtSoftCap": "已显示前 {{count}} 条匹配，请输入更精确的关键词"
+      "thoughtSoftCap": "已显示前 {{count}} 条匹配，请输入更精确的关键词",
+      "group": {
+        "agent": "Agent",
+        "thought": "想法",
+        "file": "文件"
+      },
+      "results": "提及选项",
+      "local": "本机",
+      "expand": "展开更多",
+      "collapse": "收起",
+      "more": "加载更多",
+      "retry": "重试",
+      "noMatches": "没有匹配结果",
+      "empty": "暂无内容",
+      "failed": "暂时无法加载",
+      "unavailable": "当前场景不可用",
+        "networkPartial": "网络 Agent 列表尚未完整加载",
+      "partial": "仅展示部分结果，请缩小搜索范围"
     },
     "permissionModes": {
       "auto": {

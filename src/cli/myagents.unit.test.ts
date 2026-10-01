@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { agentReference, sessionReference, REMOTE_DEADLINES } from '@myagents/agent-network-protocol';
 
 import {
   formatCronInstantForDisplay,
@@ -118,6 +119,24 @@ describe('public external CLI declaration', () => {
     expect(cliRequestTimeoutMs('session/send')).toBeGreaterThan(35_000);
     expect(cliRequestTimeoutMs('session/get')).toBeGreaterThan(18_000);
     expect(cliRequestTimeoutMs('status')).toBe(10_000);
+    expect(cliRequestTimeoutMs('session/watch')).toBeGreaterThan(30_000);
+  });
+  it('uses one shared remote budget without changing local start/send budgets', () => {
+    const ref = { serviceId: '00000000-0000-0000-0000-000000000001',
+      networkId: '00000000-0000-0000-0000-000000000002', mountId: '00000000-0000-0000-0000-000000000003' };
+    const agent = agentReference(ref);
+    const session = sessionReference({ ...ref, localSessionId: 'session-a' });
+    for (const [route, key, value] of [['agent/show', 'agentId', agent], ['session/list', 'agentId', agent],
+      ['session/start', 'agentId', agent], ['session/get', 'sessionId', session], ['session/send', 'toSessionId', session],
+      ['session/watch', 'targetSessionId', session]]) {
+      const method = route.replace('/', '.') as keyof typeof REMOTE_DEADLINES;
+      expect(cliRequestTimeoutMs(route, { [key]: value })).toBe(REMOTE_DEADLINES[method].cli);
+      expect(REMOTE_DEADLINES[method].cli).toBeGreaterThan(REMOTE_DEADLINES[method].admin);
+      expect(REMOTE_DEADLINES[method].admin).toBeGreaterThan(REMOTE_DEADLINES[method].connector);
+    }
+    expect(cliRequestTimeoutMs('session/start', { agentId: 'local' })).toBe(195_000);
+    expect(cliRequestTimeoutMs('session/send', { toSessionId: 'local' })).toBe(40_000);
+    expect(() => cliRequestTimeoutMs('session/get', { sessionId: agent })).toThrow();
   });
 
   it('provides exact offline help for every canonical command and alias', () => {

@@ -1599,6 +1599,18 @@ mod lifecycle_contract_tests {
     }
 
     #[test]
+    fn prepared_inbox_owner_is_not_its_own_unpublished_session_authority() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "unpublished", SidecarState::Healthy);
+        let prepared = SidecarOwner::Agent("inbox-deliver-prepared".into());
+        manager.get_session_sidecar_mut("unpublished").unwrap().owners.insert(prepared.clone());
+        assert!(manager.session_has_owners_other_than("unpublished", Some(&prepared)));
+        manager.get_session_sidecar_mut("unpublished").unwrap().owners.retain(|owner| owner == &prepared);
+        assert!(!manager.session_has_owners_other_than("unpublished", Some(&prepared)));
+        assert!(manager.session_has_owners("unpublished"));
+    }
+
+    #[test]
     fn dead_sidecar_with_owners_still_protects_session_identity() {
         let mut manager = SidecarManager::new();
         insert_test_sidecar(&mut manager, "session-a", SidecarState::Dead);

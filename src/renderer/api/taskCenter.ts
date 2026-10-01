@@ -1,3 +1,4 @@
+import type { PickerPage } from './pickerPage';
 // Task Center API — thin wrappers around Tauri invoke()
 // Handles both Tauri (desktop) and browser dev mode (no-op fallback).
 
@@ -115,6 +116,10 @@ export function thoughtList(filter?: {
   archived?: ThoughtArchiveFilter;
 }): Promise<Thought[]> {
   return inv('cmd_thought_list', { filter });
+}
+
+export function thoughtListPage(query: string, cursor: string | null, limit: number): Promise<PickerPage<Thought>> {
+  return inv('cmd_thought_list_page', { query, cursor, limit });
 }
 
 export function thoughtGet(id: string): Promise<Thought | null> {

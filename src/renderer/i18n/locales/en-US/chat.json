@@ -100,7 +100,7 @@
       "workspaceFiles": "Workspace files",
       "thoughts": "Records",
       "switchHint": "⌘/Ctrl + ←/→ to switch",
-      "filePlaceholder": "Type a filename to search...",
+      "filePlaceholder": "Search Agents, thoughts or files…",
       "searching": "Searching...",
       "noFiles": "No files found",
       "emptyThoughts": "No records yet. Capture one in Task Center first.",
@@ -108,7 +108,24 @@
       "noThoughtMatchesSuffix": "",
       "recentThoughts": "Recent {{count}} records",
       "matchedThoughts": "Records matching \"{{query}}\" · {{count}}",
-      "thoughtSoftCap": "Showing the first {{count}} matches. Type a more specific keyword."
+      "thoughtSoftCap": "Showing the first {{count}} matches. Type a more specific keyword.",
+      "group": {
+        "agent": "Agent",
+        "thought": "Thoughts",
+        "file": "Files"
+      },
+      "results": "Mention options",
+      "local": "Local",
+      "expand": "Show more",
+      "collapse": "Collapse",
+      "more": "Load more",
+      "retry": "Retry",
+      "noMatches": "No matches",
+      "empty": "Nothing here yet",
+      "failed": "Could not load results",
+      "unavailable": "Unavailable in this context",
+        "networkPartial": "Network Agent list is incomplete",
+      "partial": "Partial results. Refine your search."
     },
     "permissionModes": {
       "auto": {

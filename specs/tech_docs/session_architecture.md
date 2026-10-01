@@ -187,6 +187,10 @@ backend-created target 只有在 Runtime dispatch claim 成功后才发布 prepa
 
 `myagents session get` 不进入 Inbox、不唤醒 Runtime，也不创建 turn。它按 message id 合并持久 snapshot、活跃内存与 streaming overlay，先严格投影 user/assistant 的可见顶层 text，再执行 `before`/`limit` 分页；疑似结构化 assistant 内容只要解析或 block schema 异常就 fail closed，工具、思考、隐藏 reminder 和无 text 结构块绝不回退为原始 JSON。Rust 在 owner transport 或响应体失败时释放旧 dispatch、重新解析当前 owner 并只重试一次；最终错误保留 `SESSION_OWNER_UNAVAILABLE` 与 `SESSION_OWNER_INVALID_RESPONSE` 的区别。锚点只在可读文本序列内成立，失效时明确报错，避免静默重复或漏读。
 
+跨设备协作使用 Rust App 的 `agent_network` 传输适配，同样进入上述原 Inbox/SessionEngine；不建立另一 SessionStore 或执行队列。本机 `PreparedFreshSession` / `PreparedDelivery` 在冷准备后释放 lifecycle 锁，保留原 transient owner，取得网络 permit 后重读原 identity/generation，再交给原 Node owner。最后本机 handoff 后属于在途；真实 `accepted` / `delivered` 以 Node 收据为准，网络 permit 不是业务收据。远端 handoff 的 HTTP ACK 丢失返回 `Unconfirmed`，包括内部无回推调用；准备失败和明确 `accepted:false` 仍拒绝，不自动重派。
+
+内部跨设备请求的 `networkReturn` 是 Rust 验证后的 opaque 关联，存于原 turn/watch owner。目标原 terminal 回调通过 App 当前 scope 的 return registry 返回，来源仍投递自己的原 Inbox，拿到真实 source settlement 后再 ACK。`watch` 复用原 one-shot registry/formatter，返回 idle/error 不创建模型 turn。来源未公开或目标退出网络不取消已接纳工作；真实断线销毁关联且无离线补投。完整身份、加密和传输边界见 `agent_network.md`。
+
 ### 5.3 Registered Agent origin
 
 Space Issue Delivery 复用 Inbox admission，但使用专用 `myagents-space-issue` reminder 与持久化 origin。Registered Agent identity 必须同时绑定 exact `spaceId` 与 `registeredAgentId`；缺失、畸形或普通 desktop origin 都 fail closed，不能因 workspace 相同或一次定向 delivery 把普通 Session 提升为 Agent。Fork 总是重置为 desktop origin。

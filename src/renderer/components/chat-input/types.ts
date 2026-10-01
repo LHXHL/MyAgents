@@ -49,6 +49,7 @@ export interface SimpleChatInputProps {
     text: string,
     images?: ImageAttachment[],
     permissionMode?: PermissionMode,
+    context?: import("../../../shared/agentMentions").QueryMentionContext,
   ) => boolean | void | Promise<boolean | void>;
   active?: boolean;
   /** Blocks both keyboard and button send while the owning Session is not authoritative. */
@@ -159,10 +160,11 @@ export interface SimpleChatInputHandle {
   insertReferences: (paths: string[]) => void;
   appendReferenceToken: (token: string) => void;
   insertSlashCommand: (command: string) => void;
-  setValue: (value: string) => void;
+  setValue: (value: string, context?: import("../../../shared/agentMentions").QueryMentionContext) => void;
   setImages: (images: ImageAttachment[]) => void;
   focus: () => void;
   clearWorkspaceBoundDraft: () => { strippedReferences: number; clearedImages: number };
   getCurrentValue: () => string;
+  getQueryContext: () => import("../../../shared/agentMentions").QueryMentionContext;
   getImages: () => ImageAttachment[];
 }

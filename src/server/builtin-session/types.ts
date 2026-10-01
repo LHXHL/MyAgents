@@ -83,6 +83,7 @@ export type MessageWireAttachment = {
 };
 
 export type MessageWire = {
+  desktopQuery?: import("../../shared/agentMentions").DesktopQueryDraft;
   id: string;
   role: 'user' | 'assistant';
   content: string | ContentBlock[];
@@ -139,6 +140,7 @@ export type MessageQueueItem = {
   id: string;
   message: SDKUserMessage['message'];
   messageText: string;
+  desktopQuery?: import("../../shared/agentMentions").DesktopQueryDraft;
   wasQueued: boolean;
   deliveryMode?: DesktopDeliveryMode;
   resolve: () => void;
@@ -179,6 +181,7 @@ export type TurnBoundaryQueueItem = {
   admissionTicket?: TurnAdmissionTicket;
   sourceItem?: MessageQueueItem;
   messageText: string;
+  desktopQuery?: import("../../shared/agentMentions").DesktopQueryDraft;
   attachments?: MessageWire['attachments'];
   requestId?: string;
   source?: SessionSource;
@@ -192,6 +195,7 @@ export type TurnAdmissionTicket = {
   requestId?: string;
   createdAt: number;
   messageText: string;
+  desktopQuery?: import("../../shared/agentMentions").DesktopQueryDraft;
   turnOwner?: TurnOwner;
   onTerminal?: TurnTerminalObserver;
   beforeUserPersistence?: DispatchGuard;
@@ -204,6 +208,7 @@ export type TurnAdmissionTicket = {
 
 export type InFlightMetadata = {
   messageText: string;
+  desktopQuery?: import("../../shared/agentMentions").DesktopQueryDraft;
   attachments?: MessageWire['attachments'];
   requestId?: string;
   source?: SessionSource;

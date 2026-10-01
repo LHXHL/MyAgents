@@ -86,6 +86,7 @@ interface BrandSectionProps {
     text: string,
     images?: ImageAttachment[],
     cron?: import('@/types/tab').InitialMessageCron,
+    context?: import('../../../shared/agentMentions').QueryMentionContext,
   ) => void;
   onStartRecording: () => void | Promise<void>;
   onOpenRecord: (recordId: string) => void;
@@ -431,7 +432,7 @@ export default memo(function BrandSection({
   // calls `thoughtCreate` itself and fires `handleThoughtCreated`, so
   // this handler never sees thought content anymore.
   const handleSend = useCallback(
-    (text: string, images?: ImageAttachment[]) => {
+    (text: string, images?: ImageAttachment[], _permissionMode?: PermissionMode, context?: import('../../../shared/agentMentions').QueryMentionContext) => {
       if (recordingBusy) return;
       // Repackage staged cron config into the InitialMessageCron shape so
       // Chat's autoSend can dispatch to startCronTask without poking back
@@ -459,7 +460,7 @@ export default memo(function BrandSection({
             executionTarget: stagedCron.executionTarget,
           }
         : undefined;
-      onSend(text, images, cron);
+      onSend(text, images, cron, context);
     },
     [onSend, recordingBusy, stagedCron],
   );

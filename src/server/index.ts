@@ -661,6 +661,8 @@ function getCommandDownloadInfo(command: string): { runtimeName?: string; downlo
 }
 
 type SendMessagePayload = {
+  primaryContext?: import("../shared/agentMentions").DesktopPrimaryContext;
+  agentMentions?: import("../shared/agentMentions").AgentMentionSnapshot[];
   asyncQuestionReply?: AsyncQuestionReply;
   text?: string;
   images?: ImagePayload[];
@@ -1289,6 +1291,12 @@ async function routeAdminApi(
 ): Promise<Record<string, unknown>> {
   // Strip the prefix for matching
   const route = pathname.replace('/api/admin/', '');
+  if (['agent/show', 'session/list', 'session/get', 'session/start', 'session/send', 'session/watch'].includes(route)) {
+    const { routeNetworkRequest } = await import('./agent-network/source');
+    const networkResult = await routeNetworkRequest(route, payload,
+      caller.kind === 'external-cli' ? 'external-cli' : 'internal-session', signal);
+    if (networkResult) return networkResult;
+  }
   if (
     caller.kind === 'external-cli' &&
     (route.startsWith('task/') || route.startsWith('cron/'))
@@ -1358,6 +1366,15 @@ async function routeAdminApi(
       payload as Parameters<typeof api.handleAgentList>[0],
     );
   if (route === 'agent/current') return await api.handleAgentCurrent();
+  if (route === 'agent/discovery') return await api.handleAgentDiscovery();
+  if (route === 'agent/network-catalog') return await api.handleAgentNetworkCatalog();
+  if (route === 'agent/network-precheck' || route === 'agent/network-read' || route === 'agent/network-watch-result') {
+    const target = await import('./agent-network/target');
+    if (route === 'agent/network-watch-result') return target.handleNetworkWatchProjection(payload);
+    return route === 'agent/network-precheck'
+      ? target.handleNetworkTargetPrecheck(payload)
+      : target.handleNetworkTargetRead(payload);
+  }
   if (route === 'agent/resolve-conflict') return api.handleAgentResolveConflict(payload as Parameters<typeof api.handleAgentResolveConflict>[0]);
   if (route === 'agent/show') return await api.handleAgentShow(payload as Parameters<typeof api.handleAgentShow>[0]);
   if (route === 'agent/enable') return api.handleAgentEnable(payload as Parameters<typeof api.handleAgentEnable>[0]);
@@ -2312,6 +2329,18 @@ async function main() {
         } catch {
           return jsonResponse({ success: false, error: 'Invalid JSON payload.' }, 400);
         }
+        if (payload.primaryContext !== undefined) {
+          const { desktopPrimaryContextSchema } = await import('../shared/agentMentions');
+          const primary = desktopPrimaryContextSchema.safeParse(payload.primaryContext);
+          if (!primary.success) return jsonResponse({ success: false, error: 'Invalid query context' }, 400);
+          payload.primaryContext = primary.data;
+        }
+        if (payload.agentMentions !== undefined) {
+          const { agentMentionSnapshotSchema } = await import('../shared/agentMentions');
+          const mentions = agentMentionSnapshotSchema.array().max(5000).safeParse(payload.agentMentions);
+          if (!mentions.success) return jsonResponse({ success: false, error: 'Invalid Agent mention context.' }, 400);
+          payload.agentMentions = mentions.data;
+        }
         if (payload.asyncQuestionReply !== undefined && !isAsyncQuestionReply(payload.asyncQuestionReply)) {
           return jsonResponse({ success: false, error: 'Invalid async question reply.' }, 400);
         }
@@ -2395,6 +2424,8 @@ async function main() {
           console.log(`[chat] send via ${runtimeLabel}: text="${text.slice(0, 200)}" images=${images.length} mode=${permissionMode}${permissionMode !== requestedPermissionMode ? ` (session authority; caller=${requestedPermissionMode})` : ''} model=${model ?? 'default'} baseUrl=${providerLabel}`);
           const result = await goalOrchestrator.sendDesktopMessage(engine, {
             text,
+            agentMentions: payload.agentMentions,
+            queryPrimaryContext: payload.primaryContext,
             asyncQuestionReply: payload.asyncQuestionReply,
             images,
             permissionMode,
@@ -2422,6 +2453,7 @@ async function main() {
             ...(result.deliveryMode ? { deliveryMode: result.deliveryMode } : {}),
             ...(result.canCancel !== undefined ? { canCancel: result.canCancel } : {}),
             ...(result.canForceExecute !== undefined ? { canForceExecute: result.canForceExecute } : {}),
+            ...(result.agentMentionsNeedReselect ? { agentMentionsNeedReselect: true } : {}),
           });
         } catch (error) {
           return jsonResponse(

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ImagePreviewProvider } from '@/context/ImagePreviewContext';
 
 vi.mock('@/config/useConfigData', () => ({
-  useConfigData: () => ({ config: { chatSendShortcut: 'enter' } }),
+  useConfigData: () => ({ config: { chatSendShortcut: 'enter' }, projects: [] }),
 }));
 
 import SimpleChatInput from './SimpleChatInput';

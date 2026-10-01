@@ -125,6 +125,13 @@ pub async fn start_management_api() -> Result<u16, String> {
         .route("/api/app/config-changed", post(app_config_changed_handler))
         .route("/api/external-cli/admit", post(external_cli_admit_handler))
         .route("/api/session/text-page", post(session_text_page_handler))
+        .route("/api/agent-network/discovery", post(agent_network_discovery_handler))
+        .route("/api/agent-network/return", post(agent_network_return_handler)
+            .layer(DefaultBodyLimit::max(myagents_agent_network_protocol::budget("objectBytes")))
+            .layer(middleware::from_fn(agent_network_body_budget)))
+        .route("/api/agent-network/invoke", post(agent_network_invoke_handler)
+            .layer(DefaultBodyLimit::max(myagents_agent_network_protocol::budget("objectBytes")))
+            .layer(middleware::from_fn(agent_network_body_budget)))
         .route(
             "/api/runtime/sdk-child/admit",
             post(sdk_child_admit_handler),
@@ -751,6 +758,94 @@ fn sidecar_is_live(sidecar_id: &str, generation: u64) -> bool {
     get_sidecar_state()
         .and_then(|sidecars| sidecars.lock().ok())
         .is_some_and(|manager| manager.is_live_process(sidecar_id, generation))
+}
+
+/// Charge network request bytes before JSON extraction and retain the lease
+/// until the response body is consumed or dropped. This shares the connector's
+/// App budget; small requests reserve their actual size, never the object limit.
+async fn agent_network_body_budget(request: Request, next: Next) -> Response {
+    use futures_util::StreamExt;
+    use tauri::Manager;
+    let failure = |code: &str| no_store_json(serde_json::json!({"ok":false,"error":{"code":code}})).into_response();
+    let Some(app) = crate::logger::get_app_handle() else { return failure("CONNECTOR_UNAVAILABLE"); };
+    let Some(owner) = app.try_state::<crate::agent_network::actor::ManagedAgentNetwork>() else { return failure("CONNECTOR_UNAVAILABLE"); };
+    let memory = owner.memory_budget();
+    let Ok(mut allocation) = memory.reserve(0) else { return failure("CONNECTOR_CAPACITY"); };
+    let (parts, body) = request.into_parts();
+    let mut stream = body.into_data_stream();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let Ok(chunk) = chunk else { return failure("PROTOCOL_INVALID"); };
+        let Some(size) = bytes.len().checked_add(chunk.len()) else { return failure("MESSAGE_TOO_LARGE"); };
+        if size > myagents_agent_network_protocol::budget("objectBytes") { return failure("MESSAGE_TOO_LARGE"); }
+        if allocation.resize(size.saturating_mul(2)).is_err() || bytes.try_reserve_exact(chunk.len()).is_err() { return failure("CONNECTOR_CAPACITY"); }
+        bytes.extend_from_slice(&chunk);
+    }
+    let response = next.run(Request::from_parts(parts, axum::body::Body::from(bytes))).await;
+    let (parts, body) = response.into_parts();
+    // Json has serialized the response at this point. Account its exact bound
+    // while it is handed back to the authenticated local caller.
+    if let Some(size) = axum::body::HttpBody::size_hint(&body).exact() {
+        if allocation.resize((size as usize).saturating_mul(2)).is_err() { return failure("CONNECTOR_CAPACITY"); }
+    }
+    let stream = futures_util::stream::unfold((body.into_data_stream(), allocation), |(mut stream, allocation)| async move {
+        stream.next().await.map(|chunk| (chunk, (stream, allocation)))
+    });
+    Response::from_parts(parts, axum::body::Body::from_stream(stream))
+}
+
+async fn agent_network_invoke_handler(
+    headers: HeaderMap,
+    Json(request): Json<crate::agent_network::source::InvokeRequest>,
+) -> (HeaderMap, Json<serde_json::Value>) {
+    use tauri::Manager;
+    let queued_at = std::time::Instant::now();
+    let generation = match request_sidecar_generation(&headers) {
+        Ok(value) => value, Err(Json(value)) => return no_store_json(value),
+    };
+    let failure = |error: crate::agent_network::NetworkError| no_store_json(serde_json::json!({"ok":false,"error":error}));
+    let Some(manager) = get_sidecar_state() else {
+        return failure(crate::agent_network::NetworkError::new("SOURCE_OWNER_UNAVAILABLE"));
+    };
+    let Some(app) = crate::logger::get_app_handle() else {
+        return failure(crate::agent_network::NetworkError::new("CONNECTOR_UNAVAILABLE"));
+    };
+    let Some(owner) = app.try_state::<crate::agent_network::actor::ManagedAgentNetwork>() else {
+        return failure(crate::agent_network::NetworkError::new("CONNECTOR_UNAVAILABLE"));
+    };
+    match crate::agent_network::source::invoke(&owner, manager, generation, request, queued_at).await {
+        Ok(outcome) => no_store_json(serde_json::json!({"ok":true,"outcome":outcome})),
+        Err(error) => failure(error),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+struct NetworkDiscoveryRequest {sidecar_id:String}
+async fn agent_network_discovery_handler(headers:HeaderMap,Json(request):Json<NetworkDiscoveryRequest>) ->(HeaderMap,Json<serde_json::Value>) {
+    use tauri::Manager;
+    let generation=match request_sidecar_generation(&headers){Ok(generation)=>generation,Err(Json(value))=>return no_store_json(value)};
+    let failure=|code|no_store_json(serde_json::json!({"ok":false,"error":{"code":code}}));
+    if !sidecar_is_live(&request.sidecar_id,generation){return failure("SOURCE_GENERATION_CHANGED");}
+    let Some(app)=crate::logger::get_app_handle()else{return failure("CONNECTOR_UNAVAILABLE");};
+    let Some(owner)=app.try_state::<crate::agent_network::actor::ManagedAgentNetwork>()else{return failure("CONNECTOR_UNAVAILABLE");};
+    let result=crate::agent_network::discovery::remote(&owner).await;
+    if !sidecar_is_live(&request.sidecar_id,generation){return failure("SOURCE_GENERATION_CHANGED");}
+    match result {Ok(data)=>no_store_json(serde_json::json!({"ok":true,"data":data})),Err(error)=>no_store_json(serde_json::json!({"ok":false,"error":error}))}
+}
+
+async fn agent_network_return_handler(
+    headers:HeaderMap,Json(request):Json<crate::agent_network::returns::CallbackRequest>,
+)->(HeaderMap,Json<serde_json::Value>) {
+    use tauri::Manager;
+    let generation=match request_sidecar_generation(&headers){Ok(value)=>value,Err(Json(value))=>return no_store_json(value)};
+    let failure=|error:crate::agent_network::NetworkError|no_store_json(serde_json::json!({"ok":false,"error":error}));
+    let Some(manager)=get_sidecar_state()else{return failure(crate::agent_network::NetworkError::new("SOURCE_OWNER_UNAVAILABLE"));};
+    let Some(app)=crate::logger::get_app_handle()else{return failure(crate::agent_network::NetworkError::new("CONNECTOR_UNAVAILABLE"));};
+    let Some(owner)=app.try_state::<crate::agent_network::actor::ManagedAgentNetwork>()else{return failure(crate::agent_network::NetworkError::new("CONNECTOR_UNAVAILABLE"));};
+    match crate::agent_network::source::return_event(&owner,manager,generation,request).await {
+        Ok(settlement)=>no_store_json(serde_json::json!({"ok":true,"settlement":settlement})),Err(error)=>failure(error),
+    }
 }
 
 async fn mcp_startup_acquire_handler(

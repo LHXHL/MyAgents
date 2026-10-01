@@ -2,11 +2,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const fetchMock = vi.hoisted(() => ({
   cancellableFetch: vi.fn(),
+  networkReturn: vi.fn(),
 }));
 
 vi.mock('../utils/cancellation', () => ({
   cancellableFetch: fetchMock.cancellableFetch,
 }));
+vi.mock('../agent-network/return', () => ({ deliverNetworkReturn: fetchMock.networkReturn }));
 
 import { deliverSessionWatchEvents } from './watch-deliver';
 import {
@@ -30,6 +32,7 @@ describe('deliverSessionWatchEvents', () => {
   afterEach(() => {
     clearPendingSessionWatchesForTest();
     fetchMock.cancellableFetch.mockReset();
+    fetchMock.networkReturn.mockReset();
     delete process.env.MYAGENTS_MANAGEMENT_PORT;
   });
 
@@ -57,5 +60,22 @@ describe('deliverSessionWatchEvents', () => {
     await deliverSessionWatchEvents('target-session', { text: 'done' });
 
     expect(pendingSessionWatchCount()).toBe(1);
+  });
+  it('settles a remote watch once without treating the remote source as a local Session', async () => {
+    process.env.MYAGENTS_MANAGEMENT_PORT = '8123';
+    const reference = { opId: 'op', returnRouteId: 'route' };
+    registerPendingSessionWatch({ watchId: 'remote-watch', watcherSessionId: 'remote-source',
+      targetSessionId: 'target-session', targetLabel: 'Target', targetStateAtRegistration: 'running',
+      registeredAt: 'now', networkReturn: reference });
+    fetchMock.networkReturn.mockResolvedValue('unconfirmed');
+    await deliverSessionWatchEvents('target-session', { text: 'done' });
+    expect(fetchMock.networkReturn).toHaveBeenCalledWith(reference, expect.objectContaining({
+      type: 'watch.completed', watchId: 'remote-watch', sourceSessionId: 'target-session',
+      targetSessionId: 'remote-source', latestResult: 'done',
+    }));
+    expect(fetchMock.cancellableFetch).not.toHaveBeenCalled();
+    expect(pendingSessionWatchCount()).toBe(0);
+    await deliverSessionWatchEvents('target-session', { text: 'later' });
+    expect(fetchMock.networkReturn).toHaveBeenCalledTimes(1);
   });
 });

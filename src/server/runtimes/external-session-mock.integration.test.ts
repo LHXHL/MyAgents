@@ -4120,6 +4120,9 @@ describe('external SessionEngine with fake runtime', () => {
     await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'first'));
     await waitFor(() => harness.runtime.sentMessages.includes('first'), 'first ordered-mirror dispatch');
     await waitFor(() => harness.mirrorCalls.length === 1, 'first ordered user mirror');
+    // Dispatch records before the fake runtime's scheduled text event. Wait for
+    // its actual text boundary before injecting a causally later steer answer.
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'pre-steer answer boundary');
     const second = await harness.engine.sendDesktopMessage(
       desktopRequest(sessionId, workspacePath, 'second with slow persist'),
     );

@@ -10,6 +10,7 @@ import {
   shouldUseExternalRuntime,
   updateExternalRuntimeConfig,
 } from '../runtimes/external-session';
+import { prepareDesktopQuery } from './query-reminder';
 import { createBuiltinSessionEngine } from './builtin-adapter';
 import { createExternalSessionEngine } from './external-adapter';
 import type { ExternalRuntimeConfigPatch } from '../runtimes/types';
@@ -23,8 +24,16 @@ import type { TurnOwner } from '../session-core/turn-queue';
 import { managementApi } from '../utils/management-api-client';
 import { cancelTaskSessionBirth } from './task-session-birth';
 
-const builtinEngine = createBuiltinSessionEngine();
-const externalEngine = createExternalSessionEngine();
+function queryFacade(engine:SessionEngine):SessionEngine {
+  return {...engine,
+    async sendDesktopMessage(request) {
+      const prepared = await prepareDesktopQuery(request);
+      const result = await engine.sendDesktopMessage(prepared.request);
+      return { ...result, ...(prepared.needsReselect ? { agentMentionsNeedReselect: true } : {}) };
+    }};
+}
+const builtinEngine = queryFacade(createBuiltinSessionEngine());
+const externalEngine = queryFacade(createExternalSessionEngine());
 
 const EXTERNAL_CONFIG_SOURCES = new Set<ExternalConfigSource>([
   'runtime-config',

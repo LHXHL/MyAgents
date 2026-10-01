@@ -1,3 +1,4 @@
+import { nextAgentNetworkExposureRevision } from "../../../shared/config-types";
 // Project management — CRUD, touch, sort
 import { join, basename } from '@tauri-apps/api/path';
 
@@ -169,6 +170,7 @@ export function applyProjectArchiveIntent(
     const project = projects[index];
     const existingArchived = isProjectArchived(project);
     const archivedProject = applyProjectPatch(project, {
+        agentNetworkExposureRevision: nextAgentNetworkExposureRevision(project,existingArchived),
         archivedAt: existingArchived
             ? project.archivedAt
             : options.archivedAtIso ?? new Date().toISOString(),

@@ -17,6 +17,7 @@ use crate::workspace_files::path_safety::open_regular_file_no_follow;
 use crate::{ulog_info, ulog_warn};
 
 pub(crate) mod attachments;
+pub(crate) mod agent_network;
 pub(crate) mod cli;
 pub(crate) mod delivery;
 pub(crate) mod notifications;
@@ -746,11 +747,7 @@ pub async fn cmd_space_auth_poll(
                 AuthenticatedSpaceSession::from_account(session, session_path)?,
                 identity,
             );
-            notifications::auth_boundary_changed(
-                &app,
-                app.state::<notifications::ManagedNotificationCenter>()
-                    .inner(),
-            );
+            account_auth_boundary_changed(&app);
         }
         if let Some(map) = data.as_object_mut() {
             map.remove("sessionToken");
@@ -780,11 +777,7 @@ pub async fn cmd_space_auth_ack(input: SpaceAuthPollInput) -> Result<(), String>
 pub async fn cmd_space_logout(app: tauri::AppHandle) -> Result<(), String> {
     if crate::space_cloud_mock::is_enabled() {
         crate::space_cloud_mock::reset();
-        notifications::auth_boundary_changed(
-            &app,
-            app.state::<notifications::ManagedNotificationCenter>()
-                .inner(),
-        );
+        account_auth_boundary_changed(&app);
         return Ok(());
     }
     let capability = space_build_capability();
@@ -793,11 +786,7 @@ pub async fn cmd_space_logout(app: tauri::AppHandle) -> Result<(), String> {
         tauri::async_runtime::spawn_blocking(move || take_session_for_logout(&path))
             .await
             .map_err(|error| format!("remove Space session task failed: {error:?}"))??;
-    notifications::auth_boundary_changed(
-        &app,
-        app.state::<notifications::ManagedNotificationCenter>()
-            .inner(),
-    );
+    account_auth_boundary_changed(&app);
     let session_to_revoke = capability
         .available
         .then(|| capability_base_url(&capability).ok())
@@ -1599,7 +1588,7 @@ async fn parse_authorized_cloud_data(
                     "[space] user session moved to reauth_required: sessionBindingId={}",
                     session.session_binding_id()
                 );
-                notifications::user_session_invalidated();
+                account_user_session_invalidated();
             }
             Ok(false) => {
                 ulog_info!(
@@ -2511,3 +2500,17 @@ fn url_component(value: &str) -> String {
 
 #[cfg(test)]
 mod tests;
+
+/// Fan out an already committed account transition from the authentication
+/// owner. Every account projection clears synchronously before remote refresh.
+pub(crate) fn account_auth_boundary_changed<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    crate::agent_network::actor::auth_boundary_changed(app);
+    if let Some(center) = app.try_state::<notifications::ManagedNotificationCenter>() {
+        notifications::auth_boundary_changed(app, center.inner());
+    }
+}
+pub(crate) fn account_user_session_invalidated() {
+    if let Some(app) = crate::logger::get_app_handle() {
+        account_auth_boundary_changed(app);
+    }
+}

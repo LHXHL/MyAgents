@@ -491,7 +491,7 @@ interface ChatProps {
   /** Called when user renames the session */
   onRenameSession?: (newTitle: string) => void;
   /** Called when user forks session at a specific assistant message — App creates new tab */
-  onForkSession?: (newSessionId: string, agentDir: string, title: string, initialMessage?: string) => Promise<boolean>;
+  onForkSession?: (newSessionId: string, agentDir: string, title: string, initialMessage?: string, context?: import("../../shared/agentMentions").QueryMentionContext) => Promise<boolean>;
   /** App-owned fresh-session launch for a runtime-backed provider switch. */
   onLaunchRuntimeBackedProviderSession?: (
     project: Project,
@@ -1997,7 +1997,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
           });
           const startedKind = await startScheduledTask(launchMessage.text);
           if (startedKind === 'goal') {
-            await sendMessage(
+            const admitted = await sendMessage(
               launchMessage.text,
               launchMessage.images,
               effectivePermission,
@@ -2005,12 +2005,13 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
               isExternalRuntime || providerRoute ? undefined : providerEnv,
               undefined,
               isExternalRuntime ? undefined : (launchMessage.reasoningEffort ?? reasoningEffort),
-              isExternalRuntime ? undefined : providerRoute,
+              isExternalRuntime ? undefined : providerRoute, undefined, undefined, launchMessage.agentMentions, launchMessage.primaryContext,
             );
+            if (admitted === false) throw new Error(t("tabProvider.sendFailed", { ns: "app" }));
           }
         } else {
           // 5b. Normal send path.
-          await sendMessage(
+          const admitted = await sendMessage(
             launchMessage.text,
             launchMessage.images,
             effectivePermission,
@@ -2022,8 +2023,9 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
             // message must already carry the launcher's choice.
             isExternalRuntime ? undefined : (launchMessage.reasoningEffort ?? reasoningEffort),
             isExternalRuntime ? undefined : providerRoute,
-            launchMessage.requiredSystemSkill,
+            launchMessage.requiredSystemSkill, undefined, launchMessage.agentMentions, launchMessage.primaryContext,
           );
+          if (admitted === false) throw new Error(t("tabProvider.sendFailed", { ns: "app" }));
         }
 
         // 6. Mark initialMessage consumed. DO NOT close overlay here:
@@ -2046,7 +2048,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
         // without losing what they typed. Pre-PRD-0.2.7 the toast just said
         // "请重试" while the textarea was empty, silently dropping the draft.
         try {
-          chatInputRef.current?.setValue(launchMessage.text);
+          chatInputRef.current?.setValue(launchMessage.text,{agentMentions:launchMessage.agentMentions, primaryContext:launchMessage.primaryContext});
           if (launchMessage.images && launchMessage.images.length > 0) {
             chatInputRef.current?.setImages(launchMessage.images);
           }
@@ -3784,6 +3786,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
   const [pendingCrossRuntimeMessage, setPendingCrossRuntimeMessage] = useState<{
     text: string;
     images: ImageAttachment[];
+    context?: import("../../shared/agentMentions").QueryMentionContext;
   } | null>(null);
 
   const [questionDraft, setQuestionDraft] = useState<{ sessionId: string | null; reply: AsyncQuestionReply; title: string } | null>(null);
@@ -3794,7 +3797,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
   // PERFORMANCE: text is now passed from SimpleChatInput (which manages its own state)
   // This avoids re-rendering Chat on every keystroke.
   // Returns false to signal SimpleChatInput NOT to clear the input (e.g., on rejection).
-  const handleSendMessage = useCallback(async (text: string, images?: ImageAttachment[], _permissionMode?: PermissionMode, explicitReply?: AsyncQuestionReply): Promise<boolean | void> => {
+  const handleSendMessage = useCallback(async (text: string, images?: ImageAttachment[], _permissionMode?: PermissionMode, context?: import("../../shared/agentMentions").QueryMentionContext, explicitReply?: AsyncQuestionReply): Promise<boolean | void> => {
     const draft = explicitReply ? null : questionTargetRef.current;
     const reply = explicitReply ?? draft?.reply;
     // Must have content and not be in stopping state
@@ -3805,7 +3808,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
     // Cross-runtime guard: session was created by external runtime (Codex/CC) but
     // current runtime is builtin. Show confirm dialog instead of sending directly.
     if (isCrossRuntimeSession) {
-      setPendingCrossRuntimeMessage({ text, images: images ?? [] });
+      setPendingCrossRuntimeMessage({ text, images: images ?? [], context });
       return false;  // Signal SimpleChatInput NOT to clear the input
     }
 
@@ -3917,7 +3920,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
       const admitted = await sendMessage(draft?.title ? `${draft.title}\n\n${text}` : text, images, effectivePermissionMode, effectiveModel, isExternalRuntime ? undefined : providerEnv, undefined,
         // #324 — builtin only: external runtimes apply effort via /api/reasoning-effort/set
         isExternalRuntime ? undefined : reasoningEffort,
-        isExternalRuntime ? undefined : providerRoute, undefined, reply);
+        isExternalRuntime ? undefined : providerRoute, undefined, reply, context?.agentMentions, context?.primaryContext);
       if (admitted && reply) setQuestionDraft(current => current && sameAsyncQuestionReply(current.reply, reply) ? null : current);
       if (!admitted && !isAiBusy) setIsLoading(false);
       return admitted;
@@ -3947,7 +3950,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
     answered: [...historyMessages, ...messages].flatMap(message => message.role === 'user' && message.asyncQuestionReply ? [message.asyncQuestionReply] : []),
     queued: queuedMessages.flatMap(message => message.asyncQuestionReply ? [message.asyncQuestionReply] : []),
     disabled: isSessionLoading || !isConnected || sessionState === 'stopping',
-    onReply: async (reply, text) => (await handleSendMessageRef.current(text, undefined, undefined, reply)) === true,
+    onReply: async (reply, text) => (await handleSendMessageRef.current(text, undefined, undefined, undefined, reply)) === true,
     onCompose: (reply, title) => {
       setQuestionDraft({ sessionId, reply, title });
       inputRef.current?.focus();
@@ -3977,7 +3980,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
         ? restoreAsyncQuestionAnswerDraft(queuedMsg.asyncQuestionReply, cancelledText, sourceContents)
         : null;
       setQuestionDraft(restored ? { sessionId: cancelledSessionId, reply: restored.reply, title: restored.title } : null);
-      chatInputRef.current?.setValue(restored?.text ?? cancelledText);
+      chatInputRef.current?.setValue(restored?.text ?? cancelledText, { agentMentions: queuedMsg?.agentMentions, primaryContext: queuedMsg?.primaryContext });
       // Restore images if the queued message had them
       // Note: We only have preview data URLs (not File blobs) to avoid memory leaks,
       // so we reconstruct ImageAttachment with a minimal placeholder File.
@@ -4266,7 +4269,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
       if (pending.images.length > 0) {
         toastRef.current.warning(t('shell.toasts.imagesNotTransferred'));
       }
-      const opened = await onForkSession(session.id, agentDir, pending.text.slice(0, 40) || t('shell.toasts.newSession'), pending.text);
+      const opened = await onForkSession(session.id, agentDir, pending.text.slice(0, 40) || t('shell.toasts.newSession'), pending.text, pending.context);
       if (!opened) {
         toastRef.current.error(t('shell.toasts.runtimeSwitchTabOpenFailed'));
       }
@@ -4708,6 +4711,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
     const snapshot = messagesRef.current.slice();
     const composerSnapshot = {
       value: chatInputRef.current?.getCurrentValue() ?? '',
+      context: chatInputRef.current?.getQueryContext(),
       images: chatInputRef.current?.getImages() ?? [],
     };
     const rewindSessionId = sessionIdRef.current;
@@ -4756,7 +4760,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
           warnRewindFileOutcome(r);
           // 后端明确返回失败 → 回滚 UI
           setMessages(snapshot);
-          chatInputRef.current?.setValue(composerSnapshot.value);
+          chatInputRef.current?.setValue(composerSnapshot.value, composerSnapshot.context);
           chatInputRef.current?.setImages(composerSnapshot.images);
           const error = r.errorCode
             ? t(`shell.toasts.conversationError.${r.errorCode}`)
@@ -4797,7 +4801,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
           setMessages(snapshot);
         }
         if (recovery.restoreComposerSnapshot) {
-          chatInputRef.current?.setValue(composerSnapshot.value);
+          chatInputRef.current?.setValue(composerSnapshot.value, composerSnapshot.context);
           chatInputRef.current?.setImages(composerSnapshot.images);
         }
         if (transportOutcome === 'committed') {

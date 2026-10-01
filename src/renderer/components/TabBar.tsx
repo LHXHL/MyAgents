@@ -310,7 +310,7 @@ export default memo(function TabBar({
               onClose={() => setMenuOpen(false)}
               anchorRef={overflowButtonRef}
               placement="bottom-end"
-              className="max-h-96 w-72 overflow-y-auto py-1"
+              maxHeight="24rem" className="w-72 overflow-y-auto py-1"
             >
               <div className="px-3 py-2 text-xs font-semibold tracking-[0.04em] text-[var(--ink-muted)]/60">
                 {t('tabs.genericTab')}

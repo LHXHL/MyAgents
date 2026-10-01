@@ -14,7 +14,8 @@
     "closeTab": "关闭标签页",
     "generating": "AI 正在输出",
     "unread": "有未读消息",
-    "switchTo": "切换到 {{title}}"
+    "switchTo": "切换到 {{title}}",
+    "agentNetwork": "Agent 网络"
   },
   "globalSidebar": {
     "navigation": "全局导航",
@@ -23,7 +24,7 @@
     "expand": "展开侧边栏",
     "newChat": "新对话",
     "search": "搜索",
-    "tasks": "任务",
+    "tasks": "自动化任务",
     "createTask": "创建任务",
     "team": "团队",
     "capabilities": "技能与工具",
@@ -39,7 +40,9 @@
     "archived": "已归档",
     "newChatHere": "在此工作区新建对话",
     "emptyWorkspaceSessions": "还没有会话",
-    "loadMore": "展开更多"
+    "loadMore": "展开更多",
+    "agentNetwork": "Agent 网络",
+    "more": "更多"
   },
   "titlebar": {
     "helper": "小助理",
@@ -113,7 +116,8 @@
     "networkError": "网络错误",
     "networkDisconnected": "网络连接中断，请重试",
     "sessionRestoreFailed": "无法恢复这段对话",
-    "sessionAlreadyOpen": "这段对话已在另一个标签页中打开"
+    "sessionAlreadyOpen": "这段对话已在另一个标签页中打开",
+    "agentMentionsNeedReselect": "部分 Agent 引用无法识别，请重新 @ 选择。"
   },
   "floatingSession": {
     "sidecarUnavailable": "sidecar 不可达",
@@ -293,7 +297,8 @@
       "spaceIssue": "Space issue",
       "taskComment": "Task 评论",
       "goalMode": "目标模式",
-      "sessionRequest": "跨会话请求"
+      "sessionRequest": "跨会话请求",
+      "agentMentions": "Agent"
     },
     "systemInfo": "系统信息",
     "expand": "展开"
@@ -1232,5 +1237,55 @@
       "replaced match on line $": "已替换第 $ 行的匹配"
     },
     "referenceDefinition": "引用链接"
+  },
+  "agentNetwork": {
+    "networkName": "我的 Agent 网络",
+    "encryptionHint": "加入网络的设备会通过 MyAgents 网络中转端到端加密信息，实际任务均在本地执行。",
+    "networkInfo": "网络说明",
+    "myDevices": "我的设备",
+    "join": "加入",
+    "leave": "退出",
+    "saving": "保存中",
+    "online": "在线",
+    "offline": "离线",
+    "syncing": "同步中",
+    "local": "本机",
+    "onlineAgents": "{{count}} 个 Agent 在线",
+    "unsyncedShort": "未同步",
+    "unsynced": "这台设备尚未同步 Agent 目录。",
+    "noAgents": "暂无可管理的 Agent 工作区",
+    "noDevices": "登录的设备会自动显示在这里",
+    "partial": "列表过大，当前仅显示部分结果。",
+    "openDevice": "查看 {{name}} 的设备详情",
+    "close": "关闭",
+    "retry": "重试",
+    "loading": "加载中",
+    "connecting": "正在连接 Agent 网络…",
+    "reconnecting": "网络连接失败，正在自动重连…",
+    "leaveTitle": "退出网络？",
+    "leaveMessage": "退出后，这台设备的所有 Agent 将停止在当前网络中开放。重新加入后，需要重新开启。",
+    "leaveConfirm": "退出网络",
+    "agents": "Agent 工作区",
+    "connectionStatus": "状态",
+    "computerName": "电脑名称",
+    "ownership": "设备归属",
+    "localDevice": "本机",
+    "remoteDevice": "远端设备",
+    "platform": "平台",
+    "osVersion": "系统版本",
+    "clientVersion": "客户端版本",
+    "deviceId": "Device ID",
+    "lastSeen": "最后在线",
+    "joinToEnable": "加入网络后才能启用",
+    "descriptionPlaceholder": "点击可填写简介，方便 Agent 浏览选择",
+    "descriptionFor": "{{name}} 的简介",
+    "enableAgent": "在网络中开启 {{name}}",
+    "errors": {
+      "conflict": "设置已在其他客户端改变，请查看最新设置后重试。",
+      "descriptionTooLong": "简介不能超过 4096 字节。",
+      "unconfirmed": "尚未确认保存结果，请刷新后查看。",
+      "unconfigured": "此客户端尚未配置 Agent 网络服务。",
+      "failed": "暂时无法完成，请稍后重试。"
+    }
   }
 }

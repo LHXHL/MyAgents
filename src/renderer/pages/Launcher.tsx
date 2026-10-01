@@ -967,6 +967,7 @@ export default function Launcher({
       text: string,
       images?: ImageAttachment[],
       cron?: import('@/types/tab').InitialMessageCron,
+      context?: import('../../shared/agentMentions').QueryMentionContext,
     ) => {
       if (!selectedWorkspace) {
         toastRef.current.error(t('toasts.selectWorkspaceFirst'));
@@ -1019,6 +1020,7 @@ export default function Launcher({
       );
 
       const initialMessage: InitialMessage = {
+        agentMentions:context?.agentMentions,
         text,
         images,
         permissionMode: launcherPermissionMode,

@@ -1,3 +1,4 @@
+import { useMyAgentsLogin } from '@/hooks/useMyAgentsLogin';
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
   type KeyboardEvent,
@@ -12,9 +13,6 @@ import { Loader2, RefreshCw, X } from "lucide-react";
 
 import {
   DEFAULT_SPACE_ID,
-  spaceAuthAck,
-  spaceAuthPoll,
-  spaceAuthStart,
   spaceCreateSpace,
   spaceErrorMessage,
   isSpaceErrorRetryable,
@@ -74,7 +72,6 @@ import SpaceProfileSettingsDialog from "@/pages/space/SpaceProfileSettingsDialog
 import {
   nowForSpaceMetric,
   recordSpaceMetric,
-  trackSpaceAuth,
   trackSpaceOpen,
 } from "@/pages/space/spaceMetrics";
 import {
@@ -84,8 +81,6 @@ import {
 import { spaceSlugCandidate } from "@/pages/space/spaceSlug";
 import type { PendingAppRoute } from "../../shared/appRoute";
 
-const AUTH_POLL_DELAY_MS = 3000;
-const AUTH_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 const SPACE_EVENTS_SYNC_INTERVAL_MS = 15_000;
 const AGENT_CONNECTING_WINDOW_MS = 75_000;
 
@@ -320,9 +315,7 @@ export function SpaceQuickActionDialog({
   );
 }
 
-function errMessage(error: unknown): string {
-  return spaceErrorMessage(error);
-}
+
 
 function agentIssueSubscriptionRunMode(
   value?: SpaceIssueSubscriptionRunMode | null,
@@ -467,13 +460,8 @@ export default function Space({
   const { projects, config } = useConfig();
   const spaceData = useSpaceData({ isActive });
   const { actions } = spaceData;
-  const [authBusy, setAuthBusy] = useState(false);
-  const [authFlow, setAuthFlow] = useState<{
-    token: string;
-    expiresAt: number;
-  } | null>(null);
-  const authPollWarningShownRef = useRef(false);
-  const authPollWakeRef = useRef<(() => void) | null>(null);
+  const afterLogin = useCallback(async () => { await actions.ensureBootstrapped({ force: true }); }, [actions]);
+  const { authBusy, authFlow, startLogin } = useMyAgentsLogin(isActive, afterLogin);
   const previousModeRef = useRef<ViewMode>("issues");
   const [mode, setMode] = useState<ViewMode>("issues");
   const [issueQ, setIssueQ] = useState("");
@@ -1010,131 +998,6 @@ export default function Space({
     };
   }, [actions, isActive, revalidateForEvents, spaceData.boot, toast]);
 
-  useEffect(() => {
-    if (!authFlow) return;
-    let cancelled = false;
-
-    const wakeAuthPoll = () => {
-      authPollWakeRef.current?.();
-    };
-
-    const wakeAuthPollWhenVisible = () => {
-      if (document.visibilityState === "visible") {
-        wakeAuthPoll();
-      }
-    };
-
-    const waitForNextPoll = (ms: number): Promise<void> => {
-      if (ms <= 0) return Promise.resolve();
-      return new Promise((resolve) => {
-        let timer: number | null = null;
-        const finish = () => {
-          if (timer !== null) {
-            window.clearTimeout(timer);
-            timer = null;
-          }
-          if (authPollWakeRef.current === finish) {
-            authPollWakeRef.current = null;
-          }
-          resolve();
-        };
-        timer = window.setTimeout(finish, ms);
-        authPollWakeRef.current = finish;
-      });
-    };
-
-    const stopAuth = () => {
-      authPollWarningShownRef.current = false;
-      authPollWakeRef.current = null;
-      setAuthFlow(null);
-      setAuthBusy(false);
-    };
-
-    const poll = async () => {
-      while (!cancelled && Date.now() < authFlow.expiresAt) {
-        const startedAt = Date.now();
-        try {
-          const result = await spaceAuthPoll(authFlow.token);
-          if (cancelled) return;
-          if (result.status === "done") {
-            stopAuth();
-            toast.success(t("space.toasts.loginSuccess"));
-            await actions.ensureBootstrapped({ force: true });
-            trackSpaceAuth("success", true);
-            void spaceAuthAck(authFlow.token).catch((error) => {
-              console.warn("[Space] auth ack failed:", errMessage(error));
-            });
-            return;
-          }
-          if (result.status === "failed") {
-            stopAuth();
-            toast.error(String(result.error ?? t("space.toasts.loginFailed")));
-            trackSpaceAuth("failure", false, result.error ?? "failed");
-            void spaceAuthAck(authFlow.token).catch((error) => {
-              console.warn("[Space] auth ack failed:", errMessage(error));
-            });
-            return;
-          }
-        } catch (_error) {
-          if (cancelled) return;
-          if (
-            !authPollWarningShownRef.current &&
-            Date.now() < authFlow.expiresAt
-          ) {
-            authPollWarningShownRef.current = true;
-            toast.warning(t("space.toasts.loginSlow"));
-          }
-        }
-        const elapsed = Date.now() - startedAt;
-        await waitForNextPoll(Math.max(0, AUTH_POLL_DELAY_MS - elapsed));
-      }
-
-      if (!cancelled) {
-        stopAuth();
-        toast.error(t("space.toasts.loginTimeout"));
-        trackSpaceAuth("failure", false, "timeout");
-      }
-    };
-
-    window.addEventListener("focus", wakeAuthPoll);
-    document.addEventListener("visibilitychange", wakeAuthPollWhenVisible);
-    void poll();
-    return () => {
-      cancelled = true;
-      wakeAuthPoll();
-      window.removeEventListener("focus", wakeAuthPoll);
-      document.removeEventListener("visibilitychange", wakeAuthPollWhenVisible);
-    };
-  }, [actions, authFlow, t, toast]);
-
-  useEffect(() => {
-    if (authFlow && isActive) {
-      authPollWakeRef.current?.();
-    }
-  }, [authFlow, isActive]);
-
-  const startLogin = useCallback(async () => {
-    setAuthBusy(true);
-    trackSpaceAuth("start", true);
-    try {
-      const result = await spaceAuthStart();
-      const serverExpiresInMs =
-        Number.isFinite(result.expiresInSeconds) && result.expiresInSeconds > 0
-          ? result.expiresInSeconds * 1000
-          : AUTH_POLL_TIMEOUT_MS;
-      authPollWarningShownRef.current = false;
-      setAuthFlow({
-        token: result.loginToken,
-        expiresAt:
-          Date.now() + Math.min(serverExpiresInMs, AUTH_POLL_TIMEOUT_MS),
-      });
-      toast.info(t("space.toasts.browserLoginOpened"));
-    } catch (error) {
-      setAuthBusy(false);
-      trackSpaceAuth("failure", false, error);
-      toast.error(spaceErrorMessage(error));
-    }
-  }, [t, toast]);
 
   const selectSpaceTab = useCallback((next: ViewMode) => {
     setMode(next);

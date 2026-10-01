@@ -1,3 +1,5 @@
+import { desktopContextOf } from '../../shared/agentMentions';
+import { stripLeadingSystemReminder } from "../../shared/systemReminder";
 import { findQueueLocation, moveQueueIndexToFront } from '../session-core/turn-queue';
 import type { TurnIdentity, TurnOwner } from '../session-core/turn-queue';
 import type {
@@ -10,7 +12,7 @@ import type {
 
 type PendingMidTurnQueueItem = {
   queueId: string;
-  userMessage: Pick<MessageWire, 'id' | 'role' | 'content' | 'timestamp' | 'attachments'>;
+  userMessage: Pick<MessageWire, 'id' | 'role' | 'content' | 'timestamp' | 'attachments' | 'desktopQuery'>;
   sourceItem: MessageQueueItem;
 };
 
@@ -470,13 +472,14 @@ export function drainQueuedItems(): {
   return { messages, turnBoundary };
 }
 
-export function getQueueStatus(): Array<{ id: string; messagePreview: string }> {
+export function getQueueStatus(): Array<{ id: string; messagePreview: string; agentMentions?: import("../../shared/agentMentions").AgentMentionSnapshot[]; primaryContext?: import("../../shared/agentMentions").DesktopPrimaryContext }> {
   return [
     ...messageQueue
       .filter(item => !item.deferVisibleAdmission)
       .map(item => ({
         id: item.id,
-        messagePreview: item.messageText.slice(0, 100),
+        messagePreview: stripLeadingSystemReminder(item.messageText).slice(0, 100),
+        agentMentions: item.desktopQuery?.agentMentions, primaryContext: desktopContextOf(item.desktopQuery?.primaryContext),
       })),
     ...turnBoundaryQueue
       .filter(item =>
@@ -484,7 +487,8 @@ export function getQueueStatus(): Array<{ id: string; messagePreview: string }> 
         && item.sourceItem?.deferVisibleAdmission !== true)
       .map(item => ({
         id: item.queueId,
-        messagePreview: item.messageText.slice(0, 100),
+        messagePreview: stripLeadingSystemReminder(item.messageText).slice(0, 100),
+        agentMentions: item.desktopQuery?.agentMentions, primaryContext: desktopContextOf(item.desktopQuery?.primaryContext),
       })),
   ];
 }

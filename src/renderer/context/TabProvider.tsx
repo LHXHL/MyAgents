@@ -1,3 +1,4 @@
+import { queryAgentSelectors } from "../../shared/agentMentions";
 import { appendStreamingText, completeStreamingText } from '@/utils/streamingTextBlocks';
 import { sameAsyncQuestionReply, type AsyncQuestionSet, type AsyncQuestionReply } from '../../shared/asyncUserQuestions';
 /**
@@ -1945,7 +1946,7 @@ export default function TabProvider({
                     sessionId?: string | null;
                     sessionState?: SessionState;
                     liveStreamingMessage?: WireSessionMessage | null;
-                    queuedMessages?: Array<{ id: string; messagePreview: string; asyncQuestionReply?: AsyncQuestionReply; canCancel?: boolean; canForceExecute?: boolean }>;
+                    queuedMessages?: Array<{ id: string; messagePreview: string; asyncQuestionReply?: AsyncQuestionReply; agentMentions?: import("../../shared/agentMentions").AgentMentionSnapshot[]; primaryContext?: import("../../shared/agentMentions").DesktopPrimaryContext; canCancel?: boolean; canForceExecute?: boolean }>;
                 } | null;
                 const payloadSessionId = initPayload?.sessionId ?? null;
                 if (payloadSessionId && !shouldAcceptSessionScopedSseSnapshot({
@@ -3754,6 +3755,8 @@ export default function TabProvider({
                 const payload = data as {
                     queueId: string;
                     messageText: string;
+                    agentMentions?: import("../../shared/agentMentions").AgentMentionSnapshot[];
+                    primaryContext?: import("../../shared/agentMentions").DesktopPrimaryContext;
                     asyncQuestionReply?: AsyncQuestionReply;
                     isInFlight?: boolean;
                     deliveryMode?: 'realtime' | 'turn';
@@ -3783,12 +3786,16 @@ export default function TabProvider({
                                 && prev[existingIdx].canCancel === nextCanCancel
                                 && prev[existingIdx].canForceExecute === nextCanForceExecute
                                 && (!reply || sameAsyncQuestionReply(prev[existingIdx].asyncQuestionReply, reply))
+                                && (!payload.agentMentions || payload.agentMentions === prev[existingIdx].agentMentions)
+                                && (!payload.primaryContext || payload.primaryContext === prev[existingIdx].primaryContext)
                             ) return prev;
                             const next = [...prev];
                             next[existingIdx] = {
                                 ...prev[existingIdx],
                                 text: visibleMessageText,
                                 asyncQuestionReply: payload.asyncQuestionReply,
+                                agentMentions: payload.agentMentions ?? prev[existingIdx].agentMentions,
+                                primaryContext: payload.primaryContext ?? prev[existingIdx].primaryContext,
                                 isInFlight: !!payload.isInFlight,
                                 deliveryMode: nextDeliveryMode,
                                 canCancel: nextCanCancel,
@@ -3802,6 +3809,8 @@ export default function TabProvider({
                             queueId: payload.queueId,
                             text: visibleMessageText,
                             asyncQuestionReply: payload.asyncQuestionReply,
+                                agentMentions: payload.agentMentions,
+                                primaryContext: payload.primaryContext,
                             timestamp: Date.now(),
                             isInFlight: !!payload.isInFlight,
                             deliveryMode: payload.deliveryMode,
@@ -4387,6 +4396,8 @@ export default function TabProvider({
         providerRoute?: ProviderRoute,
         requiredSystemSkill?: ProductSystemSkillRequirement,
         asyncQuestionReply?: AsyncQuestionReply,
+        agentMentions?: import("../../shared/agentMentions").AgentMentionSnapshot[],
+        primaryContext?: import("../../shared/agentMentions").DesktopPrimaryContext,
     ): Promise<boolean> => {
         const trimmed = text.trim();
         if (!trimmed && (!images || images.length === 0)) return false;
@@ -4448,6 +4459,8 @@ export default function TabProvider({
                 queueId: localQueueId,
                 text: visibleQueueText,
                 asyncQuestionReply,
+                agentMentions,
+                primaryContext,
                 images: images?.map(queuedImageInfo),
                 timestamp: Date.now(),
                 canCancel: false,
@@ -4464,6 +4477,8 @@ export default function TabProvider({
         // IM/Task callers omit the field entirely (undefined = "keep current provider").
         const sendPayload = {
             text: trimmed,
+            agentMentions,
+            primaryContext,
             images: imageData,
             sessionId: sessionIdForSend,
             permissionMode: permissionMode ?? 'auto',
@@ -4483,6 +4498,7 @@ export default function TabProvider({
 
         const admission = postJson<{
             success: boolean;
+            agentMentionsNeedReselect?: boolean;
             error?: string;
             queued?: boolean;
             queueId?: string;
@@ -4492,6 +4508,7 @@ export default function TabProvider({
             canForceExecute?: boolean;
         }>('/chat/send', sendPayload).then((response) => {
             if (response.success) {
+                if (response.agentMentionsNeedReselect) setSystemNotice({ kind: 'agent-mention', level: 'warning', message: appText('tabProvider.agentMentionsNeedReselect') });
                 trackTabEvent('message_send', {
                     runtime: analyticsMetaRef.current.runtime,
                     runtime_source: analyticsMetaRef.current.runtimeSource,
@@ -4524,6 +4541,8 @@ export default function TabProvider({
                                     canCancel: response.canCancel,
                                     canForceExecute: response.canForceExecute,
                                     images: images?.map(queuedImageInfo),
+                                    agentMentions,
+                                    primaryContext,
                                 }
                                 : q
                         ));
@@ -4539,6 +4558,8 @@ export default function TabProvider({
                                         canCancel: response.canCancel ?? q.canCancel,
                                         canForceExecute: response.canForceExecute ?? q.canForceExecute,
                                         images: images?.length ? images.map(queuedImageInfo) : q.images,
+                                        agentMentions,
+                                    primaryContext,
                                     }
                                     : q
                                 );
@@ -4547,6 +4568,8 @@ export default function TabProvider({
                                 queueId: realQueueId,
                                 text: visibleQueueText,
                                 images: images?.map(queuedImageInfo),
+                                agentMentions,
+                primaryContext,
                                 timestamp: Date.now(),
                                 isInFlight: !!response.isInFlight,
                                 deliveryMode: response.deliveryMode,
@@ -4584,7 +4607,7 @@ export default function TabProvider({
 
         // A question reply keeps the composer/card retryable if admission fails.
         // Only the accepted user-message replay, never this HTTP receipt, answers it.
-        return asyncQuestionReply ? admission : true;
+        return asyncQuestionReply || queryAgentSelectors(trimmed).length > 0 ? admission : true;
         // eslint-disable-next-line react-hooks/exhaustive-deps -- postJson is stable
     }, [tabId, sessionId, claimSessionOpeningTransition]);
 
@@ -4745,7 +4768,7 @@ export default function TabProvider({
                     snapshotRevision?: number;
                     liveSessionState?: SessionState;
                     liveStreamingMessage?: WireSessionMessage | null;
-                    queuedMessages?: Array<{ id: string; messagePreview: string; asyncQuestionReply?: AsyncQuestionReply; canCancel?: boolean; canForceExecute?: boolean }>;
+                    queuedMessages?: Array<{ id: string; messagePreview: string; asyncQuestionReply?: AsyncQuestionReply; agentMentions?: import("../../shared/agentMentions").AgentMentionSnapshot[]; primaryContext?: import("../../shared/agentMentions").DesktopPrimaryContext; canCancel?: boolean; canForceExecute?: boolean }>;
                     pendingInteractiveRequests?: Array<{ type: string; data: unknown }>;
                     messages: WireSessionMessage[];
                     totalCount?: number;

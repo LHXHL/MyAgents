@@ -1372,19 +1372,6 @@ pub fn auth_boundary_changed<R: tauri::Runtime>(
     center.wake.notify_one();
 }
 
-/// Called by the canonical Space 401 transition after it has atomically
-/// committed `reauth_required`. This keeps notification privacy attached to
-/// that single auth owner instead of each API caller remembering a cleanup.
-pub fn user_session_invalidated() {
-    let Some(app) = crate::logger::get_app_handle() else {
-        return;
-    };
-    let Some(center) = app.try_state::<ManagedNotificationCenter>() else {
-        return;
-    };
-    auth_boundary_changed(app, center.inner());
-}
-
 #[tauri::command]
 pub fn cmd_notification_get_snapshot(
     state: tauri::State<'_, ManagedNotificationCenter>,

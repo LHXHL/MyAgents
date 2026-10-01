@@ -18,6 +18,7 @@ import SimpleChatInput, { type SimpleChatInputHandle } from './SimpleChatInput';
 import { ToastProvider } from './Toast';
 
 const workspaceMocks = vi.hoisted(() => ({
+  discovery: vi.fn(),
   service: {
     isAvailable: true,
     importBase64Files: vi.fn(),
@@ -25,6 +26,7 @@ const workspaceMocks = vi.hoisted(() => ({
     addGitignore: vi.fn(),
     prepareUserImageAttachments: vi.fn(),
     searchFiles: vi.fn(),
+    searchFilesPage: vi.fn(),
     listSlashCommands: vi.fn(),
   },
 }));
@@ -53,8 +55,10 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+vi.mock('@tauri-apps/api/core', () => ({ invoke: workspaceMocks.discovery }));
+
 vi.mock('@/config/useConfigData', () => ({
-  useConfigData: () => ({ config: { chatSendShortcut: 'enter' } }),
+  useConfigData: () => ({ config: { chatSendShortcut: 'enter' }, projects: [] }),
 }));
 
 vi.mock('@/hooks/useWorkspaceFileService', () => ({
@@ -81,6 +85,8 @@ function renderInput(props: Partial<React.ComponentProps<typeof SimpleChatInput>
 describe('SimpleChatInput send paths', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    workspaceMocks.discovery.mockResolvedValue({ items: [], complete: true, networkStatus: 'connecting', authGeneration: 0, principalId: null, networkId: null });
+    workspaceMocks.service.searchFilesPage.mockResolvedValue({ items: [], complete: true, hasMore: false, scanLimitReached: false, nextCursor: null });
     workspaceMocks.service.importBase64Files.mockResolvedValue({
       success: true,
       files: ['myagents_files/pasted.txt'],
@@ -92,6 +98,74 @@ describe('SimpleChatInput send paths', () => {
     workspaceMocks.service.addGitignore.mockResolvedValue({ success: true });
     workspaceMocks.service.searchFiles.mockResolvedValue([]);
     workspaceMocks.service.listSlashCommands.mockResolvedValue([]);
+  });
+
+  it('defers mention search and keeps expansion during IME composition', async () => {
+    await i18n.changeLanguage('zh-CN');
+    workspaceMocks.service.searchFilesPage.mockResolvedValue({items:Array.from({length:8},(_,i)=>({name:`file${i}`,path:`file${i}`,type:'file'})),complete:true,hasMore:false,scanLimitReached:false,nextCursor:null});
+    renderInput({workspacePath:'/ws'});
+    const textbox=screen.getByRole('textbox');
+    fireEvent.change(textbox,{target:{value:'@',selectionStart:1}});
+    fireEvent.change(textbox,{target:{value:'@f',selectionStart:2}});
+    await screen.findByText((_, node) => node?.textContent === 'file0');
+    fireEvent.click(screen.getByRole('option',{name:'展开更多'}));
+    expect(screen.getByText((_, node) => node?.textContent === 'file7')).toBeInTheDocument();
+    workspaceMocks.service.searchFilesPage.mockClear();
+    fireEvent.compositionStart(textbox);
+    fireEvent.change(textbox,{target:{value:'@wen',selectionStart:4}});
+    await act(async()=>{await new Promise(resolve=>setTimeout(resolve,200));});
+    expect(workspaceMocks.service.searchFilesPage).not.toHaveBeenCalled();
+    expect(screen.getByText((_, node) => node?.textContent === 'file7')).toBeInTheDocument();
+    fireEvent.change(textbox,{target:{value:'@文件',selectionStart:3}});
+    fireEvent.compositionEnd(textbox);
+    await waitFor(()=>expect(workspaceMocks.service.searchFilesPage).toHaveBeenCalledWith(expect.objectContaining({query:'文件'})));
+  });
+
+  it('keeps the next draft typed while an admission response is pending', async () => {
+    const admission = deferred<boolean>();
+    const onSend = vi.fn(() => admission.promise);
+    renderInput({ value: 'first query', onSend });
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith('first query', undefined);
+    fireEvent.change(input, { target: { value: 'next query' } });
+    await act(async () => admission.resolve(true));
+    expect(input.value).toBe('next query');
+  });
+
+  it('restores typed launcher context and retains it on failed admission', async () => {
+    const ref = createRef<SimpleChatInputHandle>();
+    const onSend = vi.fn().mockResolvedValue(false);
+    const primaryContext = { kind: 'floating-context' as const, input: { appName: 'Editor', selectedText: 'selected' } };
+    renderInput({ ref, onSend });
+    act(() => ref.current!.setValue('query', { primaryContext }));
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('query', undefined, undefined, { agentMentions: [], primaryContext }));
+    expect(input.value).toBe('query');
+    expect(ref.current!.getQueryContext()).toEqual({ agentMentions: [], primaryContext });
+  });
+
+  it('replaces the exact @ fragment, preserves the tail/caret and keeps typed mentions on rejected send', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const agent = { selector: 'local', name: 'Review Agent', isLocal: true, deviceId: null, deviceName: null, platform: null, description: 'Reviewer', source: null };
+    workspaceMocks.discovery.mockResolvedValue({ items: [agent], complete: true, networkStatus: 'connecting', authGeneration: 0, principalId: null, networkId: null });
+    const onSend = vi.fn().mockResolvedValue(false);
+    renderInput({ value: 'before  after', onSend });
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+    input.focus(); input.setSelectionRange(7, 7);
+    fireEvent.change(input, { target: { value: 'before @ after', selectionStart: 8 } });
+    fireEvent.click(await screen.findByText('Review Agent'));
+    await waitFor(() => expect(input.value).toBe('before @Agent-id:local  after'));
+    await waitFor(() => expect(input.selectionStart).toBe(23));
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    await waitFor(() => expect(onSend).toHaveBeenCalled());
+    expect(onSend).toHaveBeenLastCalledWith('before @Agent-id:local  after', undefined, undefined, { agentMentions: [{ agent, authGeneration: 0, principalId: null, networkId: null }] });
+    expect(input.value).toBe('before @Agent-id:local  after');
+    fireEvent.change(input, { target: { value: 'no mention' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2));
+    expect(onSend).toHaveBeenLastCalledWith('no mention', undefined);
   });
 
   it('shows native managed model efforts and default, including future values', async () => {
@@ -254,7 +328,7 @@ describe('SimpleChatInput send paths', () => {
     const textarea = screen.getByPlaceholderText('输入消息，使用 @ 引用文件，/ 使用技能...');
     await user.type(textarea, '@');
 
-    const emptySearchHint = await screen.findByText('输入文件名搜索...');
+    const emptySearchHint = await screen.findByRole('listbox', { name: '提及选项' });
     const mentionPicker = emptySearchHint.closest('[style*="box-shadow"]');
     expect(mentionPicker).toHaveStyle({ boxShadow: 'var(--shadow-md)' });
 

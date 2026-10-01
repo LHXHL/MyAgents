@@ -193,3 +193,7 @@ Cloud内部entitlement、计量、D1 schema、运营API和发布流程不在Desk
 - protocol兼容由Cloud serializer和Desktop strict parser共同锁定。
 
 Session origin与注入后的本地生命周期见 [`session_architecture.md`](session_architecture.md)。
+
+## Agent 网络账号 adapter
+
+Space 原登录/sessionBindingId 是 Agent 网络的账号 authority，但 AgentNet 的网络设置与中转属于独立 Worker/SQLite DO，不写 Space Issue/Delivery。Rust App 经窄身份接口获得稳定 key-bound 凭据与独立按需设备 leaf；AgentNet 经 named `AgentNetworkEntrypoint` Service Binding 查询当前授权/roster，不接收原用户登录 token。目录与设置不等于业务接纳，Space Issue 的持久队列/轮询不参与该在线通信。完整边界见 [Agent 网络](./agent_network.md)。

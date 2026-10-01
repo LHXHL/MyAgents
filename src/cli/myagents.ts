@@ -22,6 +22,8 @@ import {
   EXTERNAL_CLI_PUBLIC_COMMANDS,
   findExternalCliPublicCapability,
 } from '../shared/externalCliCapabilities';
+import { networkAddress } from '../shared/agentNetworkRouting';
+import { REMOTE_DEADLINES } from '@myagents/agent-network-protocol';
 
 // ---------------------------------------------------------------------------
 // Port discovery
@@ -595,7 +597,7 @@ async function callApi(
             : {}),
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(cliRequestTimeoutMs(route)),
+      signal: AbortSignal.timeout(cliRequestTimeoutMs(route, body)),
     });
     // Non-JSON error bodies (e.g. axum 4xx returns plain text like
     // "Failed to deserialize query string: missing field `doc`") would
@@ -697,16 +699,19 @@ export function validateSessionMutationAcknowledgement(
 
 function sessionMutationReceipt(result: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
-    ['agentId', 'sessionId', 'messageId']
+    ['agentId', 'sessionId', 'messageId', 'requestId', 'selector']
       .filter(key => typeof result[key] === 'string')
       .map(key => [key, result[key]]),
   );
 }
 
-export function cliRequestTimeoutMs(route: string): number {
+export function cliRequestTimeoutMs(route: string, body: Record<string, unknown> = {}): number {
+  const address = networkAddress(route, body);
+  if (address) return REMOTE_DEADLINES[address.method].cli;
   if (route === 'session/start') return 195_000;
   if (route === 'session/send') return 40_000;
   if (route === 'session/get') return 20_000;
+  if (route === 'session/watch') return 40_000;
   return 10_000;
 }
 

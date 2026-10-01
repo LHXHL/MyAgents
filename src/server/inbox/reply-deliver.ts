@@ -21,6 +21,7 @@ import { sanitizeInboxLabel } from './sanitize-label';
 import { deriveSessionLabel } from './derive-label';
 import { getSessionMetadata, getSessionData } from '../SessionStore';
 import type { InboxTurnMeta, PendingInboxMessage, DeliverOutcome } from './types';
+import { deliverNetworkReturn } from '../agent-network/return';
 
 /// Optional payload pieces to combine into reply text. Caller (turn-end hook)
 /// passes what it has; this builder formats them into a single text blob.
@@ -117,6 +118,10 @@ export async function deliverInboxReply(
       payload: text,
     },
   };
+
+  if (inboxMeta.networkReturn) {
+    return await deliverNetworkReturn(inboxMeta.networkReturn, message.sessionEvent!) === 'delivered';
+  }
 
   // Resolve caller workspace path for resume (caller may have gone idle)
   const callerMeta = getSessionMetadata(inboxMeta.fromSessionId);

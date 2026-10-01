@@ -16,6 +16,8 @@ pub struct SessionWatchRequest {
     pub target_session_id: String,
     #[serde(default)]
     pub target_label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_return: Option<super::types::NetworkReturnReference>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -80,6 +82,10 @@ async fn register_on_target_sidecar(
     loop {
         let response = client
             .post(&url)
+            .header(
+                crate::external_cli::INTERNAL_TOKEN_HEADER,
+                crate::external_cli::internal_token(),
+            )
             .json(&serde_json::json!({
                 "watchId": req.watch_id.clone(),
                 "watcherSessionId": req.watcher_session_id.clone(),
@@ -87,6 +93,7 @@ async fn register_on_target_sidecar(
                 "targetSessionId": req.target_session_id.clone(),
                 "targetLabel": req.target_label.clone(),
                 "observedSidecarState": observed_sidecar_state,
+                "networkReturn": req.network_return.clone(),
             }))
             .send()
             .await;
@@ -203,4 +210,19 @@ pub async fn register_session_watch(
             }
         }
     }
+}
+
+/// Remove only the watcher bound to this original remote invocation. Cleanup
+/// cannot select a URL, cancel a turn, or remove a local/replacement watcher.
+pub(crate) async fn remove_network_watch(
+    manager:&ManagedSidecarManager,target_session:&str,watch_id:&str,
+    reference:&super::types::NetworkReturnReference,
+) {
+    let dispatch=manager.lock().ok().and_then(|mut state|state.acquire_session_dispatch(target_session).ok().flatten());
+    let Some(dispatch)=dispatch else{return;};
+    let Ok(url)=dispatch.url_for_path("/api/session-watch/network-remove")else{return;};
+    let _=crate::local_http::json_client(Duration::from_secs(10)).post(url)
+        .header(crate::external_cli::INTERNAL_TOKEN_HEADER,crate::external_cli::internal_token())
+        .json(&serde_json::json!({"targetSessionId":target_session,"watchId":watch_id,"networkReturn":reference}))
+        .send().await;
 }

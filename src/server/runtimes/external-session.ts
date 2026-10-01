@@ -1,3 +1,4 @@
+import { desktopContextOf } from '../../shared/agentMentions';
 import { asyncQuestionSetsInContent, sameAsyncQuestionReply, type AsyncQuestionSet, type AsyncQuestionReply } from '../../shared/asyncUserQuestions';
 import { getExternalPendingMessageOperations } from './external-session/operation-queue';
 // External Runtime Session Handler (v0.1.59)
@@ -4593,7 +4594,8 @@ function deferRealtimeOperationToTurnBoundary(input: {
   const queued = enqueueExistingExternalMessageOperation(input.operation, input.generation);
   broadcast('queue:added', {
     queueId: input.queueId,
-    messageText: input.text.slice(0, 100),
+    messageText: visibleDesktopMirrorText(input.text).slice(0, 100),
+    agentMentions: input.operation.context.desktopQuery?.agentMentions, primaryContext: desktopContextOf(input.operation.context.desktopQuery?.primaryContext),
     asyncQuestionReply: input.operation.context.asyncQuestionReply,
     isInFlight: false,
     deliveryMode: 'turn',
@@ -4680,7 +4682,8 @@ function enqueueExternalTurnBoundaryOperation(
   }
   broadcast('queue:added', {
     queueId: queued.queueId,
-    messageText: text.slice(0, 100),
+    messageText: visibleDesktopMirrorText(text).slice(0, 100),
+    agentMentions: context.desktopQuery?.agentMentions, primaryContext: desktopContextOf(context.desktopQuery?.primaryContext),
     asyncQuestionReply: context.asyncQuestionReply,
     isInFlight: false,
     deliveryMode: 'turn',
@@ -4807,7 +4810,8 @@ export function enqueueExternalSendForDesktop(
     });
     broadcast('queue:added', {
       queueId,
-      messageText: text.slice(0, 100),
+      messageText: visibleDesktopMirrorText(text).slice(0, 100),
+    agentMentions: context.desktopQuery?.agentMentions, primaryContext: desktopContextOf(context.desktopQuery?.primaryContext),
       asyncQuestionReply: context.asyncQuestionReply,
       isInFlight: true,
       deliveryMode: 'realtime',
@@ -4868,7 +4872,8 @@ export function enqueueExternalSendForDesktop(
     surfaceMode: context.asyncQuestionReply ? 'queue-started' : 'chat-replay',
   });
   if (context.asyncQuestionReply) {
-    broadcast('queue:added', { queueId: operation.queueId, messageText: text.slice(0, 100),
+    broadcast('queue:added', { queueId: operation.queueId, messageText: visibleDesktopMirrorText(text).slice(0, 100),
+    agentMentions: context.desktopQuery?.agentMentions, primaryContext: desktopContextOf(context.desktopQuery?.primaryContext),
       asyncQuestionReply: context.asyncQuestionReply, isInFlight: true, deliveryMode: 'turn', canCancel: false, canForceExecute: false });
   }
   const generation = getExternalOperationGeneration();
@@ -5149,13 +5154,13 @@ export function hasExternalQueuedTurnByOwner(
 }
 
 /** Current external queue (for /chat/queue/status). Mirrors builtin getQueueStatus shape. */
-export function getExternalQueueStatus(): Array<{ id: string; messagePreview: string; asyncQuestionReply?: AsyncQuestionReply; canCancel?: boolean; canForceExecute?: boolean }> {
+export function getExternalQueueStatus(): Array<{ id: string; messagePreview: string; asyncQuestionReply?: AsyncQuestionReply; agentMentions?: import("../../shared/agentMentions").AgentMentionSnapshot[]; primaryContext?: import("../../shared/agentMentions").DesktopPrimaryContext; canCancel?: boolean; canForceExecute?: boolean }> {
   const queued = getExternalQueueStatusSnapshot();
   const waiting = [...getExternalPendingMessageOperations(), ...pendingRealtimeSteeredUserMessages.map(entry => entry.operation)];
   for (const operation of waiting) {
     if (!operation.context.asyncQuestionReply || operation.userProjection.surfaced || operation.userProjection.retracted) continue;
     if (queued.some(item => item.id === operation.queueId)) continue;
-    queued.push({ id: operation.queueId, messagePreview: operation.text.slice(0, 100), asyncQuestionReply: operation.context.asyncQuestionReply, canCancel: false, canForceExecute: false });
+    queued.push({ id: operation.queueId, messagePreview: visibleDesktopMirrorText(operation.text).slice(0, 100), agentMentions: operation.context.desktopQuery?.agentMentions, primaryContext: desktopContextOf(operation.context.desktopQuery?.primaryContext), asyncQuestionReply: operation.context.asyncQuestionReply, canCancel: false, canForceExecute: false });
   }
   return queued;
 }
@@ -5904,7 +5909,7 @@ export async function rewindExternalConversation(
         restartSidecarForConversationMutation('source-stop-unconfirmed');
         return {
           success: true,
-          content: targetUser.content,
+          content: targetUser.content, desktopQuery: targetUser.desktopQuery,
           attachments: targetUser.attachments,
           rewindScope: 'conversation-only',
           errorCode: 'restore_failed',
@@ -5927,7 +5932,7 @@ export async function rewindExternalConversation(
       }
       return {
         success: true,
-        content: targetUser.content,
+        content: targetUser.content, desktopQuery: targetUser.desktopQuery,
         attachments: targetUser.attachments,
         rewindScope: 'conversation-only',
         ...(!restored.success ? {
@@ -5936,7 +5941,7 @@ export async function rewindExternalConversation(
         } : {}),
       };
     } catch (error) {
-      return { success: true, conversationCommitted: true, content: targetUser.content, attachments: targetUser.attachments,
+      return { success: true, conversationCommitted: true, content: targetUser.content, desktopQuery: targetUser.desktopQuery, attachments: targetUser.attachments,
         rewindScope: 'conversation-only', errorCode: 'restore_failed', error: String(error) };
     }
   }, afterCommit);

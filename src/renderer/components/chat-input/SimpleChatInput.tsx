@@ -1,3 +1,4 @@
+import { agentMentionToken, activeAgentSnapshots, type AgentMentionSnapshot, type QueryMentionContext } from '../../../shared/agentMentions';
 import { isRuntimeBackedProvider } from '../../../shared/providerExecution';
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
@@ -19,7 +20,6 @@ import {
 import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, forwardRef, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { FileIcon } from '@/components/file-icon';
 import Tip from '@/components/Tip';
 import { useToast } from '@/components/Toast';
 import ConfirmDialog from '@/components/ConfirmDialog';
@@ -27,6 +27,7 @@ import { ModalityBadges } from '@/components/ModalityBadges';
 import { useImagePreview } from '@/context/ImagePreviewContext';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 import { type PermissionMode, PERMISSION_MODES, type Provider, type ProviderVerifyStatus, getModelDisplayName } from '@/config/types';
+import { resolveAgentWorkspaceProjections } from '../../../shared/agentWorkspaceIdentity';
 import { useConfigData } from '@/config/useConfigData';
 import { resolveEnterKeyAction, sendKeyHint } from '@/utils/chatSendKey';
 import SlashCommandMenu, {
@@ -56,8 +57,6 @@ import { isProviderAvailable } from '@/config/configService';
 import { modelSupportsModality } from '@/config/services/providerService';
 import RuntimeSelector from '@/components/RuntimeSelector';
 import { Popover } from '@/components/ui/Popover';
-import { thoughtList, taskCenterAvailable } from '@/api/taskCenter';
-import type { Thought } from '@/../shared/types/thought';
 import type {
   ImageAttachment,
   SimpleChatInputHandle,
@@ -70,8 +69,8 @@ import {
   MAX_LINES,
 } from './constants';
 import { imageAttachmentName } from './attachmentNames';
-import { MentionTabButton } from './components/MentionTabButton';
-import { ThoughtPickerRow } from './components/ThoughtPickerRow';
+import { MentionPicker } from './components/MentionPicker';
+import { useMentionPicker, type MentionOption } from './hooks/useMentionPicker';
 import { McpStatusNotice } from './components/McpStatusNotice';
 import { useAttachmentHandling } from './hooks/useAttachmentHandling';
 import { PermissionModeIcon, PermissionModeMenuContent } from '../PermissionModeMenu';
@@ -123,22 +122,6 @@ function ModelSelectionScrollSync({
   }, [listRef, modelSource, selectedRowRef, selectionKey]);
 
   return null;
-}
-
-// File search result type
-interface FileSearchResult {
-  path: string;
-  name: string;
-  type: 'file' | 'dir';
-}
-
-function getFileSearchParentPath(path: string, name: string, workspaceRootLabel: string): string {
-  const normalized = path.replace(/\\/g, '/');
-  const suffix = `/${name}`;
-  if (normalized.endsWith(suffix)) {
-    return normalized.slice(0, -suffix.length) || workspaceRootLabel;
-  }
-  return normalized === name ? workspaceRootLabel : normalized;
 }
 
 const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputProps>(function SimpleChatInput({
@@ -293,6 +276,8 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   // PERFORMANCE FIX: Use internal state to avoid parent re-renders on every keystroke
   // This prevents MessageList from re-rendering when typing in long conversations
   const [inputValue, setInputValue] = useState(externalValue ?? '');
+  const [agentMentions,setAgentMentions]=useState<AgentMentionSnapshot[]>([]);
+  const [primaryContext, setPrimaryContext] = useState<QueryMentionContext["primaryContext"]>();
 
   // Sync with external value when it changes (e.g., after send clears input)
   // NOTE: Intentionally only depend on externalValue - we only want to sync when
@@ -326,7 +311,11 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   // Send-key preference (Enter vs ⌘/Ctrl+Enter). Shared with AI 小助理 / 问题反馈
   // via @/utils/chatSendKey. Mirrored to a ref so the big handleKeyDown callback
   // reads the latest value without re-binding (its deps are intentionally pinned).
-  const { config } = useConfigData();
+  const { config, projects } = useConfigData();
+  const localWorkspaceIcons = useMemo(() => Object.fromEntries(
+    resolveAgentWorkspaceProjections(projects, config.agents ?? []).agentProjections
+      .map(identity => [identity.agentId, identity.project?.icon]),
+  ), [projects, config.agents]);
   const sendShortcut = config.chatSendShortcut ?? 'enter';
   const sendShortcutRef = useRef(sendShortcut);
   sendShortcutRef.current = sendShortcut;
@@ -501,25 +490,26 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
       ? (provider ? getModelDisplayName(provider, currentModelId) : currentModelId)
       : t('input.selectModel'));
 
-  // @file search
   const [showFileSearch, setShowFileSearch] = useState(false);
   const [fileSearchQuery, setFileSearchQuery] = useState('');
-  const [fileSearchResults, setFileSearchResults] = useState<FileSearchResult[]>([]);
-  const [selectedFileIndex, setSelectedFileIndex] = useState(0);
   const [atPosition, setAtPosition] = useState<number | null>(null);
-  const [isFileSearching, setIsFileSearching] = useState(false); // Track if actively searching
-
-  // @ picker tab — files vs. thoughts. Persisted only for the lifetime of
-  // this SimpleChatInput instance (per-tab) so re-opening @ in the same
-  // chat session lands the user back in the picker they last used. PRD 0.2.4
-  // §需求 3 (3c).
-  const [mentionTab, setMentionTab] = useState<'file' | 'thought'>('file');
-  // Thought results for the @ picker. `null` = no fetch yet; an empty array
-  // is a real state ("0 results"). Soft cap of 50 — see §需求 3 (3d).
-  const [thoughtResults, setThoughtResults] = useState<Thought[]>([]);
-  const [isThoughtSearching, setIsThoughtSearching] = useState(false);
-  const THOUGHT_SOFT_CAP = 50;
-  const THOUGHT_RECENT_LIMIT = 5;
+  const mentionPicker = useMentionPicker(showFileSearch, fileSearchQuery, workspacePath, fileService);
+  const chooseMention = (option: MentionOption) => {
+    if (option.kind !== 'agent' && option.kind !== 'thought' && option.kind !== 'file') {
+      mentionPicker.activateControl(option);
+      return;
+    }
+    const text = inputValueRef.current;
+    const end = textareaRef.current?.selectionStart ?? (atPosition ?? 0) + 1 + fileSearchQuery.length;
+    if (atPosition === null || text[atPosition] !== '@' || end < atPosition + 1) return;
+    const token = option.kind === 'agent' ? agentMentionToken(option.value.agent.selector)
+      : option.kind === 'file' ? `@${option.value.path}` : option.value.content;
+    const next = `${text.slice(0, atPosition)}${token} ${text.slice(end)}`;
+    if (option.kind === 'agent') setAgentMentions(previous => [...previous.filter(item => item.agent.selector !== option.value.agent.selector), option.value]);
+    setInputValue(next); setShowFileSearch(false); setAtPosition(null);
+    const caret = atPosition + token.length + 1;
+    requestAnimationFrame(() => { textareaRef.current?.focus(); textareaRef.current?.setSelectionRange(caret, caret); });
+  };
 
   // /slash command search
   const [showSlashMenu, setShowSlashMenu] = useState(false);
@@ -660,7 +650,12 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   const handleCompositionEnd = useCallback(() => {
     isComposingRef.current = false;
     setResizeBump((b) => b + 1);
-  }, []);
+    const textarea = textareaRef.current;
+    if (textarea && showFileSearch && atPosition !== null && textarea.value[atPosition] === '@') {
+      const query = textarea.value.slice(atPosition + 1, textarea.selectionStart);
+      if (!/[\s]/u.test(query)) setFileSearchQuery(query);
+    }
+  }, [showFileSearch, atPosition, textareaRef]);
 
   // Fetch slash commands function (extracted for reuse).
   // Chat tabs inject the same effective capability winners used by their
@@ -818,7 +813,9 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   }, [textareaRef]);
 
   // Set input value directly (for restoring content after cron stop)
-  const setValue = useCallback((value: string) => {
+  const setValue = useCallback((value: string, context?: QueryMentionContext) => {
+    setAgentMentions(context?.agentMentions ?? []);
+    setPrimaryContext(context?.primaryContext);
     setInputValue(value);
     // Also focus the textarea
     textareaRef.current?.focus();
@@ -836,6 +833,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     setImages,
     focus: () => textareaRef.current?.focus(),
     getCurrentValue: () => inputValueRef.current,
+    getQueryContext: () => ({ agentMentions: activeAgentSnapshots(inputValueRef.current, agentMentions), primaryContext }),
     getImages: () => [...images],
     clearWorkspaceBoundDraft: () => {
       // Match `@<path>` tokens that target the workspace-managed `myagents_files/`
@@ -857,88 +855,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
       return { strippedReferences: strippedCount, clearedImages };
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- textareaRef is stable
-  }), [processDroppedFiles, processDroppedFilePaths, insertReferences, appendReferenceToken, insertSlashCommand, setValue, images.length]);
-
-  // @file search logic — PRD 0.2.7: routed via fileService.searchFiles
-  // (cmd_workspace_search_files_fuzzy). Works identically in launcher and chat
-  // tab as long as `workspacePath` is bound.
-  const searchFiles = useCallback(async (query: string) => {
-    if (query.length < 1 || !fileService.isAvailable) {
-      setFileSearchResults([]);
-      setIsFileSearching(false);
-      return;
-    }
-
-    setIsFileSearching(true);
-    try {
-      const results = await fileService.searchFiles({ query });
-      setFileSearchResults(results.slice(0, 10)); // Limit to 10 results
-      setSelectedFileIndex(0);
-    } catch (err) {
-      console.error('File search error:', err);
-      setFileSearchResults([]);
-    } finally {
-      setIsFileSearching(false);
-    }
-  }, [fileService]);
-
-  // Debounced file search
-  useEffect(() => {
-    if (!showFileSearch) return;
-    if (mentionTab !== 'file') return;
-
-    // Set searching state immediately when query changes (to avoid flash of 'not found')
-    if (fileSearchQuery.length > 0) {
-      setIsFileSearching(true);
-    }
-
-    const timer = setTimeout(() => {
-      searchFiles(fileSearchQuery);
-    }, 150);
-
-    return () => clearTimeout(timer);
-  }, [fileSearchQuery, showFileSearch, searchFiles, mentionTab]);
-
-  // Debounced thought search. Mirrors the file path: empty query → most
-  // recent N (PRD 5 default), otherwise full-text via `thoughtList({query})`
-  // capped at the soft limit. Reuses the same `fileSearchQuery` state so
-  // typing inside the picker drives both tabs without a separate buffer.
-  useEffect(() => {
-    if (!showFileSearch) return;
-    if (mentionTab !== 'thought') return;
-    if (!taskCenterAvailable()) {
-      setThoughtResults([]);
-      return;
-    }
-    setIsThoughtSearching(true);
-    let cancelled = false;
-    const timer = setTimeout(() => {
-      // `#` picker is a passive surface — archived thoughts are
-      // intentionally excluded (v0.2.16). Explicitly tag `archived: 'active'`
-      // even though the backend default already hides them, so intent is
-      // visible at the call site.
-      const filter = fileSearchQuery.length === 0
-        ? { limit: THOUGHT_RECENT_LIMIT, archived: 'active' as const }
-        : { query: fileSearchQuery, limit: THOUGHT_SOFT_CAP, archived: 'active' as const };
-      thoughtList(filter)
-        .then((rows) => {
-          if (cancelled) return;
-          setThoughtResults(rows);
-          setSelectedFileIndex(0);
-        })
-        .catch((err) => {
-          console.error('[SimpleChatInput] thought search failed', err);
-          if (!cancelled) setThoughtResults([]);
-        })
-        .finally(() => {
-          if (!cancelled) setIsThoughtSearching(false);
-        });
-    }, 150);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [fileSearchQuery, showFileSearch, mentionTab]);
+  }), [processDroppedFiles, processDroppedFilePaths, insertReferences, appendReferenceToken, insertSlashCommand, setValue, images.length, agentMentions, primaryContext]);
 
   // Handle text input change (detect @ and / and backspace)
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -963,7 +880,6 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
         setShowFileSearch(true);
         setAtPosition(cursorPos - 1);
         setFileSearchQuery('');
-        setFileSearchResults([]);
         // Close slash menu if open
         currentShowSlashMenu = false;
         currentSlashPosition = null;
@@ -985,7 +901,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     }
 
     // Update file search query if @ is active (handles both add and delete)
-    if (currentShowFileSearch && currentAtPosition !== null) {
+    if (currentShowFileSearch && currentAtPosition !== null && !isComposingRef.current) {
       // Check if @ was deleted
       if (currentAtPosition >= newValue.length || newValue[currentAtPosition] !== '@') {
         setShowFileSearch(false);
@@ -1125,18 +1041,28 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
       // BrandSection owns `thoughtCreate` + refresh-key bump). The
       // boolean-return protocol (`return true` = saved, clear textarea)
       // lets the parent signal when to reset input state here.
-      const result = onSend(text, images.length > 0 ? images : undefined);
+      const mentions = activeAgentSnapshots(text, agentMentions);
+      const result = mentions.length || primaryContext
+        ? onSend(text, images.length > 0 ? images : undefined, undefined, { agentMentions: mentions, primaryContext })
+        : onSend(text, images.length > 0 ? images : undefined);
       // If onSend returns a promise, await it; if sync, use directly
       const accepted = result instanceof Promise ? await result : result;
       // Only clear input if not explicitly rejected (false)
       if (accepted !== false) {
-        setInputValue('');
-        setImages([]);
+        // Admission may take time. Clear the submitted draft only if the user
+        // has not started the next one while awaiting the response.
+        if (inputValueRef.current === inputValue) {
+          setInputValue('');
+          setAgentMentions([]);
+          setPrimaryContext(undefined);
+        }
+        const submitted = new Set(images.map(image => image.id));
+        setImages(current => current.filter(image => !submitted.has(image.id)));
       }
     } finally {
       sendingRef.current = false;
     }
-  }, [onSend, images, inputValue, provider, currentModelId, isExternalRuntime, setImages, onSlashAction, enabledClientActionCommands, showConfigLockedReason, notifyUnsupportedImageFallback]);
+  }, [onSend, images, inputValue, agentMentions, primaryContext, provider, currentModelId, isExternalRuntime, setImages, onSlashAction, enabledClientActionCommands, showConfigLockedReason, notifyUnsupportedImageFallback]);
 
   // Handle keyboard navigation in file search and slash menu
   // Handler for selecting a slash command — shared by the click path
@@ -1173,7 +1099,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   // eslint-disable-next-line react-hooks/exhaustive-deps -- textareaRef is a stable ref
   }, [slashPosition, inputValue, slashSearchQuery, handleSkillSelect, onSlashAction, enabledClientActionCommands, showConfigLockedReason]);
 
-  const handleKeyDown = useCallback(async (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const handleKeyDown = useCallback(async (event: React.KeyboardEvent<HTMLElement>) => {
     // Candidate confirmation/navigation belongs to IME before slash/@ menus,
     // permission shortcuts, or message sending can interpret the same key.
     if (isComposingRef.current || isImeComposingEvent(event)) return;
@@ -1276,72 +1202,18 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
       }
     }
 
-    // @ picker keyboard nav (file or thought tab) — owns ↑↓/Enter/Tab/Esc
-    // and ←/→ switches between tabs.
     if (showFileSearch) {
-      // ←/→ + Cmd/Ctrl switches tabs. Without a modifier we'd swallow the
-      // user's caret navigation while editing the query (e.g. backing up
-      // to fix a typo in `@partial`). PRD 0.2.4 §需求 3 (3b) — "仅当焦点
-      // 在 picker 时" — interpreted here as "explicit modifier intent".
-      if (
-        (event.key === 'ArrowLeft' || event.key === 'ArrowRight')
-        && (event.metaKey || event.ctrlKey)
-      ) {
-        event.preventDefault();
-        setMentionTab((t) => (t === 'file' ? 'thought' : 'file'));
-        setSelectedFileIndex(0);
-        return;
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault(); mentionPicker.move(event.key === 'ArrowDown' ? 1 : -1); return;
       }
-
-      const activeResults = mentionTab === 'thought' ? thoughtResults : fileSearchResults;
-      if (activeResults.length > 0) {
-        if (event.key === 'ArrowDown') {
-          event.preventDefault();
-          setSelectedFileIndex((i) => Math.min(i + 1, activeResults.length - 1));
-          return;
-        }
-        if (event.key === 'ArrowUp') {
-          event.preventDefault();
-          setSelectedFileIndex((i) => Math.max(i - 1, 0));
-          return;
-        }
-        // Tab or Enter to commit selection. File tab inserts `@<path> `;
-        // thought tab inserts the full markdown body of the thought —
-        // PRD 0.2.4 §需求 3 (3a) — replacing the `@<query>` trigger so the
-        // `@` glyph itself is gone (thoughts don't carry a path-style
-        // reference for the LLM to dereference).
-        if (event.key === 'Enter' || event.key === 'Tab') {
-          event.preventDefault();
-          event.stopPropagation();
-          if (atPosition === null) return;
-          const selectionEnd =
-            textareaRef.current?.selectionStart
-            ?? atPosition + 1 + fileSearchQuery.length;
-          const before = inputValue.slice(0, atPosition);
-          const after = inputValue.slice(selectionEnd);
-          if (mentionTab === 'file') {
-            const selected = fileSearchResults[selectedFileIndex];
-            if (selected) {
-              setInputValue(`${before}@${selected.path} ${after}`);
-            }
-          } else {
-            const thought = thoughtResults[selectedFileIndex];
-            if (thought) {
-              // Drop the leading `@` since thoughts are inserted as raw
-              // content rather than as references the AI will dereference.
-              setInputValue(`${before}${thought.content} ${after}`);
-            }
-          }
-          setShowFileSearch(false);
-          setAtPosition(null);
-          return;
-        }
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault(); event.stopPropagation();
+        const option = mentionPicker.allOptions.find(item => item.key === mentionPicker.selectedKey);
+        if (option) chooseMention(option);
+        return;
       }
       if (event.key === 'Escape') {
-        event.preventDefault();
-        setShowFileSearch(false);
-        setAtPosition(null);
-        return;
+        event.preventDefault(); setShowFileSearch(false); setAtPosition(null); textareaRef.current?.focus(); return;
       }
     }
 
@@ -1358,7 +1230,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
       // 'newline' → fall through, the browser inserts the newline.
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- textareaRef is stable
-  }, [cyclePermissionMode, undoStack, fileService, showSlashMenu, filteredSlashCommands, slashSearchQuery, selectedSlashIndex, slashPosition, showFileSearch, fileSearchResults, selectedFileIndex, inputValue, atPosition, fileSearchQuery, images.length, handleSend, handleSkillSelect, handleSlashSelect, mentionTab, thoughtResults]);
+  }, [cyclePermissionMode, undoStack, fileService, showSlashMenu, filteredSlashCommands, slashSearchQuery, selectedSlashIndex, slashPosition, showFileSearch, mentionPicker, chooseMention, inputValue, atPosition, fileSearchQuery, images.length, handleSend, handleSkillSelect, handleSlashSelect]);
 
   const visibleGoal = !isLauncherMode ? sessionGoal : null;
   const goalDraftFromCronConfig = cronModeEnabled
@@ -1573,154 +1445,12 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
               }}
             />
 
-            {/* @ picker — segmented tabs let the user switch between
-                workspace files and thoughts. Keyboard is owned by the
-                textarea (↑↓/Enter/Esc + ←/→ for tab switch), so we disable
-                Popover's own Escape handler to avoid double-fire. PRD 0.2.4
-                §需求 3. */}
-            <Popover
-              open={showFileSearch}
-              onClose={() => setShowFileSearch(false)}
-              anchorRef={textareaWrapperRef}
-              placement="top-start"
-              offset={8}
-              closeOnEscape={false}
-              style={{ boxShadow: 'var(--shadow-md)' }}
-              className="w-[34rem] max-w-[calc(100vw-2rem)] max-h-80 flex flex-col"
-            >
-              {/* Tabs header */}
-              <div className="flex shrink-0 items-center gap-1 border-b border-[var(--line-subtle)] bg-[var(--paper)] p-1">
-                <MentionTabButton
-                  label={t('input.mention.workspaceFiles')}
-                  active={mentionTab === 'file'}
-                  onClick={() => {
-                    setMentionTab('file');
-                    setSelectedFileIndex(0);
-                  }}
-                />
-                <MentionTabButton
-                  label={t('input.mention.thoughts')}
-                  active={mentionTab === 'thought'}
-                  onClick={() => {
-                    setMentionTab('thought');
-                    setSelectedFileIndex(0);
-                  }}
-                />
-                <span className="ml-auto pr-2 text-xs text-[var(--ink-muted)]/60">
-                  {t('input.mention.switchHint')}
-                </span>
-              </div>
-
-              <div className="flex-1 overflow-auto">
-                {mentionTab === 'file' ? (
-                  fileSearchQuery.length === 0 ? (
-                    <div className="px-3 py-2 text-sm text-[var(--ink-muted)]">
-                      {t('input.mention.filePlaceholder')}
-                    </div>
-                  ) : isFileSearching ? (
-                    <div className="px-3 py-2 text-sm text-[var(--ink-muted)]">
-                      {t('input.mention.searching')}
-                    </div>
-                  ) : fileSearchResults.length === 0 ? (
-                    <div className="px-3 py-2 text-sm text-[var(--ink-muted)]">
-                      {t('input.mention.noFiles')}
-                    </div>
-                  ) : (
-                    fileSearchResults.map((file, idx) => {
-                      const isSelected = idx === selectedFileIndex;
-                      const parentPath = getFileSearchParentPath(file.path, file.name, t('input.workspaceRoot'));
-                      return (
-                        <div
-                          key={file.path}
-                          className={`grid cursor-pointer grid-cols-[auto_minmax(8rem,1fr)_minmax(10rem,1.35fr)] items-center gap-2 px-3 py-2 text-sm ${
-                            isSelected
-                              ? 'bg-[var(--accent)]/10'
-                              : 'hover:bg-[var(--hover-bg)]'
-                          }`}
-                          onClick={() => {
-                            if (atPosition !== null) {
-                              const before = inputValue.slice(0, atPosition);
-                              // `??` (not `||`) so a legitimate caret-at-start
-                              // position (`selectionStart === 0`) doesn't get
-                              // overwritten by the synthetic fallback.
-                              const after = inputValue.slice(
-                                textareaRef.current?.selectionStart
-                                ?? atPosition + fileSearchQuery.length + 1,
-                              );
-                              setInputValue(`${before}@${file.path} ${after}`);
-                              setShowFileSearch(false);
-                              setAtPosition(null);
-                            }
-                          }}
-                        >
-                          <FileIcon name={file.name} />
-                          <span className={`min-w-0 truncate font-medium ${isSelected ? 'text-[var(--ink)]' : 'text-[var(--ink-secondary)]'}`}>
-                            {file.name}
-                          </span>
-                          <span
-                            className="min-w-0 truncate text-right text-xs text-[var(--ink-muted)]/70"
-                            title={file.path}
-                          >
-                            {parentPath}
-                          </span>
-                        </div>
-                      );
-                    })
-                  )
-                ) : (
-                  // Thought tab
-                  isThoughtSearching ? (
-                    <div className="px-3 py-2 text-sm text-[var(--ink-muted)]">
-                      {t('input.mention.searching')}
-                    </div>
-                  ) : thoughtResults.length === 0 ? (
-                    <div className="px-3 py-3 text-sm text-[var(--ink-muted)]">
-                      {fileSearchQuery.length === 0
-                        ? t('input.mention.emptyThoughts')
-                        : (
-                          <>
-                            {t('input.mention.noThoughtMatchesPrefix')}{' '}
-                            <span className="font-medium text-[var(--ink)]">{`"${fileSearchQuery}"`}</span>
-                            {' '}{t('input.mention.noThoughtMatchesSuffix')}
-                          </>
-                        )}
-                    </div>
-                  ) : (
-                    <>
-                      <div className="px-3 pt-2 pb-1 text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]/60">
-                        {fileSearchQuery.length === 0
-                          ? t('input.mention.recentThoughts', { count: Math.min(thoughtResults.length, THOUGHT_RECENT_LIMIT) })
-                          : t('input.mention.matchedThoughts', { query: fileSearchQuery, count: thoughtResults.length })}
-                      </div>
-                      {thoughtResults.map((thought, idx) => (
-                        <ThoughtPickerRow
-                          key={thought.id}
-                          thought={thought}
-                          query={fileSearchQuery}
-                          active={idx === selectedFileIndex}
-                          onClick={() => {
-                            if (atPosition === null) return;
-                            const before = inputValue.slice(0, atPosition);
-                            const after = inputValue.slice(
-                              textareaRef.current?.selectionStart
-                              ?? atPosition + fileSearchQuery.length + 1,
-                            );
-                            setInputValue(`${before}${thought.content} ${after}`);
-                            setShowFileSearch(false);
-                            setAtPosition(null);
-                          }}
-                        />
-                      ))}
-                      {fileSearchQuery.length > 0
-                        && thoughtResults.length >= THOUGHT_SOFT_CAP && (
-                          <div className="border-t border-[var(--line-subtle)] px-3 py-2 text-xs text-[var(--ink-muted)]/70">
-                            {t('input.mention.thoughtSoftCap', { count: THOUGHT_SOFT_CAP })}
-                          </div>
-                        )}
-                    </>
-                  )
-                )}
-              </div>
+            <Popover open={showFileSearch} onClose={() => setShowFileSearch(false)} anchorRef={textareaWrapperRef}
+              placement="top-start" offset={8} closeOnEscape={false}
+              style={{ height: 'min(32rem, 65vh)', boxShadow: 'var(--shadow-md)' }}
+              maxHeight="min(32rem, 65vh)" viewportPadding={{ top: 52, bottom: 8, left: 8, right: 8 }}
+              className="flex w-[34rem] max-w-[calc(100vw-2rem)] flex-col">
+              <MentionPicker localWorkspaceIcons={localWorkspaceIcons} picker={mentionPicker} query={fileSearchQuery} onChoose={chooseMention} onKeyDown={handleKeyDown} />
             </Popover>
 
             {/* /slash command popup. Same ownership pattern — textarea owns
@@ -1732,6 +1462,9 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 both launcher and chat modes (workspace_files Rust commands
                 power both). */}
             <Popover
+              maxHeight="min(32rem, 65vh)"
+              viewportPadding={{ top: 52, bottom: 8, left: 8, right: 8 }}
+              className="overflow-y-auto"
               open={showSlashMenu}
               onClose={() => setShowSlashMenu(false)}
               anchorRef={textareaWrapperRef}
@@ -1995,7 +1728,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 // past the viewport top. 50vh shows ~6 full rows AND
                 // half-clips the next one — the partial row is the
                 // affordance that tells the user "scroll for more".
-                className="composer-toolbar-menu-enter w-64 max-h-[50vh] overflow-y-auto py-1"
+                maxHeight="50vh" className="composer-toolbar-menu-enter w-64 overflow-y-auto py-1"
               >
                     <div className="px-3 py-2 text-xs font-medium text-[var(--ink-muted)] border-b border-[var(--line)]">
                       {t('input.toolsHeader')}

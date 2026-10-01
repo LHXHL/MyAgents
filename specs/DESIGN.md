@@ -203,7 +203,7 @@ Tag 用于类型、来源或紧凑元信息，通常使用 12px。状态 Tag 只
 | 模态遮罩 | `components/OverlayBackdrop.tsx` |
 | 文件身份 | `components/file-icon/` |
 
-菜单按高频到低频排列，危险动作尾置并用分隔表达。共享 `ContextMenu` 自身 portal 到 body，默认层级 320，避免工作树/能力面板的裁切与文档预览遮挡；Tab 内菜单遵循当前 Tab 的可见性与关闭顺序。Popover/Dropdown 必须逃逸滚动裁切、留在 viewport 内，并由统一 close-layer 处理外部点击与 Escape。
+菜单按高频到低频排列，危险动作尾置并用分隔表达。共享 `ContextMenu` 自身 portal 到 body，默认层级 320，避免工作树/能力面板的裁切与文档预览遮挡；Tab 内菜单遵循当前 Tab 的可见性与关闭顺序。Popover/Dropdown 必须逃逸滚动裁切、留在 viewport 内，并由统一 close-layer 处理外部点击与 Escape。共享 `Popover` 沿 Floating UI size 约束 anchor 侧可用高度；容器高度上限使用 `maxHeight` 参数（可用空间与产品上限取较小值），为顶部栏预留空间时使用 `viewportPadding`。内容不能因收缩丢失访问路径；固定高度的结果面板由调用方给出 height，搜索结果只在内部滚动。
 
 Tip 在悬停或聚焦时显示；触发动作后立即关闭，保留按钮焦点，直到新的悬停或聚焦事件再显示。关闭由共享 Tip 在点击捕获阶段处理，避免业务按钮停止冒泡、隐藏或移动面板后残留提示。
 

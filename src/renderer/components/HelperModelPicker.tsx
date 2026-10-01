@@ -128,7 +128,7 @@ export function HelperModelPicker({
                 onClose={() => setOpen(false)}
                 anchorRef={btnRef}
                 placement={placement}
-                className="max-h-[300px] w-[260px] overflow-y-auto rounded-xl py-1 shadow-lg"
+                maxHeight="300px" className="w-[260px] overflow-y-auto rounded-xl py-1 shadow-lg"
             >
                 {(() => {
                     const availableProviders = providers.filter(p =>

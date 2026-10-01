@@ -870,9 +870,9 @@ describe('GlobalSidebar rail flyout', () => {
     renderSidebar();
 
     expect(screen.queryByRole('tooltip', { name: 'Agent 工作区' })).not.toBeInTheDocument();
-    const taskButton = screen.getByRole('button', { name: '任务' });
+    const taskButton = screen.getByRole('button', { name: '自动化任务' });
     fireEvent.mouseEnter(taskButton.parentElement!);
-    const taskTip = screen.getByRole('tooltip', { name: '任务' });
+    const taskTip = screen.getByRole('tooltip', { name: '自动化任务' });
     expect(taskTip).toHaveClass('bg-[var(--button-dark-bg)]/90');
     expect(taskTip).not.toHaveClass('delay-500', 'transition-opacity');
 
@@ -1200,12 +1200,12 @@ describe('GlobalSidebar rail flyout', () => {
     for (const label of [
       i18n.t('app:globalSidebar.newChat'),
       i18n.t('app:globalSidebar.tasks'),
-      i18n.t('app:globalSidebar.team'),
+      i18n.t('app:globalSidebar.more'),
       i18n.t('app:globalSidebar.capabilities'),
       i18n.t('app:globalSidebar.helper'),
       i18n.t('app:globalSidebar.settings'),
     ]) {
-      const action = screen.getByRole('button', { name: String(label) });
+      const action = screen.getAllByRole('button', { name: String(label) }).find(button => button.hasAttribute('data-global-sidebar-nav-button'))!;
       expect(action).toHaveClass('h-8');
       expect(action).not.toHaveClass('h-9', 'h-10');
     }
@@ -1659,5 +1659,34 @@ describe('GlobalSidebar rail flyout', () => {
     expect(screen.getByText('config unavailable')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: String(i18n.t('launcher:rightRail.retry')) }));
     expect(mocks.refreshConfig).toHaveBeenCalled();
+  });
+});
+
+describe('Agent network navigation', () => {
+  beforeEach(() => { vi.useRealTimers(); vi.clearAllMocks(); mocks.projects = []; window.localStorage.clear(); });
+  it('opens the right menu by keyboard and restores focus on Escape', async () => {
+    const onOpenAgentNetwork = vi.fn();
+    renderSidebar({ onOpenAgentNetwork });
+    const more = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.more')) });
+    more.focus(); fireEvent.keyDown(more, { key: 'ArrowRight' });
+    const network = await screen.findByRole('menuitem', { name: String(i18n.t('app:globalSidebar.agentNetwork')) });
+    expect(more).toHaveAttribute('aria-expanded', 'true');
+    await vi.waitFor(() => expect(network).toHaveFocus());
+    fireEvent.keyDown(network, { key: 'ArrowDown' });
+    expect(screen.getByRole('menuitem', { name: String(i18n.t('app:globalSidebar.team')) })).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    expect(more).toHaveFocus();
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    fireEvent.click(more); fireEvent.click(await screen.findByRole('menuitem', { name: String(i18n.t('app:globalSidebar.agentNetwork')) }));
+    expect(onOpenAgentNetwork).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+  });
+  it('keeps skills above More and opens the secondary menu on hover', async () => {
+    renderSidebar({ onOpenAgentNetwork: vi.fn() });
+    const buttons = screen.getAllByRole('button').filter(button => button.hasAttribute('data-global-sidebar-nav-button'));
+    const labels = buttons.map(button => button.getAttribute('aria-label'));
+    expect(labels.indexOf(String(i18n.t('app:globalSidebar.skills')))).toBeLessThan(labels.indexOf(String(i18n.t('app:globalSidebar.more'))));
+    fireEvent.pointerEnter(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.more')) }));
+    expect(await screen.findByRole('menuitem', { name: String(i18n.t('app:globalSidebar.agentNetwork')) })).toBeVisible();
   });
 });

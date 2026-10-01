@@ -574,6 +574,8 @@ export interface Project {
   hiddenAt?: string;
   /** ISO timestamp for user-facing archive. Archived workspaces stay restorable. */
   archivedAt?: string;
+  /** Durable reset generation: archive invalidates network exposure even while offline. */
+  agentNetworkExposureRevision?: number;
   /** Whether proactive Agent mode was enabled when the workspace was archived. */
   archivedAgentEnabledBeforeArchive?: boolean;
 }
@@ -623,6 +625,14 @@ export function isProjectVisibleToUser(
   project: Pick<Project, 'internal' | 'hidden'> | null | undefined,
 ): boolean {
   return !!project && project.internal !== true && project.hidden !== true;
+}
+
+/** Archive invalidates exposure at the durable Project owner, including offline intervals. */
+export function nextAgentNetworkExposureRevision(project: {agentNetworkExposureRevision?: number}, alreadyArchived: boolean): number {
+  const current = project.agentNetworkExposureRevision ?? 0;
+  if (alreadyArchived) return current;
+  if (!Number.isSafeInteger(current) || current < 0 || current === Number.MAX_SAFE_INTEGER) throw new Error('PROJECT_NETWORK_REVISION_INVALID');
+  return current + 1;
 }
 
 export function isProjectArchived(

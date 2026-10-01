@@ -1,3 +1,5 @@
+import { desktopContextOf } from '../../../shared/agentMentions';
+import { stripLeadingSystemReminder } from "../../../shared/systemReminder";
 import type { AsyncQuestionReply } from '../../../shared/asyncUserQuestions';
 import type { ImagePayload } from '../types';
 import type { ExternalRuntimeConfigPatch, ExternalRuntimeConfigSnapshot } from '../types';
@@ -133,7 +135,7 @@ export function createExternalMessageOperation(input: {
     context: { ...input.context, queueId },
     runtimeConfig: input.runtimeConfig,
     userProjection: {
-      message: { ...input.userMessage, ...(input.context.asyncQuestionReply ? { asyncQuestionReply: input.context.asyncQuestionReply } : {}) },
+      message: { ...input.userMessage, desktopQuery: input.context.desktopQuery, ...(input.context.asyncQuestionReply ? { asyncQuestionReply: input.context.asyncQuestionReply } : {}) },
       surfaceMode: input.surfaceMode ?? 'chat-replay',
       surfaced: false,
       inTranscript: false,
@@ -406,10 +408,10 @@ export function settleExternalMessageOperation(
   item.settleDispatchAcceptance(result);
 }
 
-export function getExternalQueueStatusSnapshot(): Array<{ id: string; messagePreview: string; asyncQuestionReply?: AsyncQuestionReply; canCancel?: boolean; canForceExecute?: boolean }> {
+export function getExternalQueueStatusSnapshot(): Array<{ id: string; messagePreview: string; asyncQuestionReply?: AsyncQuestionReply; agentMentions?: import("../../../shared/agentMentions").AgentMentionSnapshot[]; primaryContext?: import("../../../shared/agentMentions").DesktopPrimaryContext; canCancel?: boolean; canForceExecute?: boolean }> {
   return externalOperationQueue
     .filter((q): q is ExternalQueuedMessageOperation => q.kind === 'message')
-    .map(q => ({ id: q.queueId, messagePreview: q.text.slice(0, 100), ...(q.context.asyncQuestionReply ? { asyncQuestionReply: q.context.asyncQuestionReply } : {}) }));
+    .map(q => ({ id: q.queueId, messagePreview: stripLeadingSystemReminder(q.text).slice(0, 100), agentMentions: q.context.desktopQuery?.agentMentions, primaryContext: desktopContextOf(q.context.desktopQuery?.primaryContext), ...(q.context.asyncQuestionReply ? { asyncQuestionReply: q.context.asyncQuestionReply } : {}) }));
 }
 
 export function chainExternalSend<T>(

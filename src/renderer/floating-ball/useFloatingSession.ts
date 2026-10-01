@@ -44,7 +44,7 @@ import {
 } from '@/components/tools/subagentActivity';
 import { workspacePathsEqual } from '../../shared/workspacePath';
 import { localDate } from '../../shared/logTime';
-import { buildFloatingBallContextReminder, stripLeadingSystemReminder } from '../../shared/systemReminder';
+import { stripLeadingSystemReminder } from '../../shared/systemReminder';
 import type { AskUserQuestionRequest } from '../../shared/types/askUserQuestion';
 import type { ExitPlanModeRequest } from '../../shared/types/planMode';
 import type { SubagentLifecycle } from '../../shared/types/subagent-lifecycle';
@@ -1725,14 +1725,13 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
 
             const quote = opts?.quote?.trim() || undefined;
 
-            const reminder = buildFloatingBallContextReminder({
+            const primaryContext = { kind: 'floating-context' as const, input: {
                 appName: opts?.appName,
                 windowTitle: opts?.windowTitle,
                 selectedText: quote,
                 screenshotAttached: opts?.screenshotAttached === true,
-            });
-            const parts = [reminder, text.trim()].filter(Boolean);
-            const finalText = parts.join('\n\n');
+            } };
+            const finalText = text.trim();
 
             const reply = opts?.asyncQuestionReply;
             const optimisticQueueId = reply ? `opt-${crypto.randomUUID()}` : null;
@@ -1765,6 +1764,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         text: finalText,
+                    primaryContext,
                         images,
                         permissionMode: sendMode,
                         analyticsSource: 'floating_ball',

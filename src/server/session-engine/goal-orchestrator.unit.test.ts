@@ -1,3 +1,4 @@
+import { composeQueryReminder } from '../../shared/agentMentions';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -124,7 +125,9 @@ describe('Goal orchestrator', () => {
       desktopRequest('Ship the feature'),
     );
     const dispatched = sendDesktopMessage.mock.calls[0][0];
-    const parsed = parseLeadingSystemReminder(dispatched.text);
+    expect(dispatched.text).toBe("Ship the feature");
+    expect(dispatched.queryPrimaryContext).toMatchObject({kind:"goal",firstTurn:false});
+    const parsed = parseLeadingSystemReminder(composeQueryReminder({visibleText:dispatched.text,primaryContext:dispatched.queryPrimaryContext}));
     expect(parsed.kind).toBe(GOAL_CONTEXT_TAG);
     expect(parsed.visibleText).toBe('Ship the feature');
     expect(dispatched.turnOwner).toEqual({ kind: 'goal', id: 'goal-1' });
@@ -171,7 +174,7 @@ describe('Goal orchestrator', () => {
       desktopRequest('Ship the feature'),
     );
 
-    const parsed = parseLeadingSystemReminder(sendDesktopMessage.mock.calls[0][0].text);
+    const parsed = parseLeadingSystemReminder(composeQueryReminder({visibleText:sendDesktopMessage.mock.calls[0][0].text,primaryContext:sendDesktopMessage.mock.calls[0][0].queryPrimaryContext}));
     expect(parsed.kind).toBe(GOAL_CONTINUATION_TAG);
     expect(parsed.visibleText).toBe('Ship the feature');
   });

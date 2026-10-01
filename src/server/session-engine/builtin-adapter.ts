@@ -422,6 +422,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         request.analyticsOrigin,
         {
           fromDesktopChatSend: true,
+          desktopQuery: request.desktopQuery,
           sessionBirthOrigin: request.birthOrigin,
           queueId: request.queueId,
           turnOwner: request.turnOwner,
