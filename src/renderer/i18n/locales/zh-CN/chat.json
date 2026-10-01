@@ -125,16 +125,16 @@
         "description": "无限制使用电脑与互联网，无需审批"
       },
       "auto": {
-        "label": "行动",
-        "description": "Agent 在工作区内行动，使用工具需确认"
+        "label": "请求批准",
+        "description": "工作区内行动，使用工具需审批"
       },
       "plan": {
         "label": "规划",
         "description": "规划模式，只读不执行"
       },
       "fullAgency": {
-        "label": "自主行动",
-        "description": "Agent 拥有完全自主权限，无需人工确认"
+        "label": "完全自主",
+        "description": "无限制使用电脑与互联网，无需审批"
       },
       "custom": {
         "label": "自定义",
@@ -157,15 +157,15 @@
         "description": "只读模式；仅信任的命令自动执行，其他需确认"
       },
       "auto-edit": {
-        "label": "Ask for approval",
+        "label": "请求批准",
         "description": "工作区内自动执行；联网或修改外部文件时请求批准"
       },
       "full-auto": {
-        "label": "Approve for me",
+        "label": "帮我批准",
         "description": "由 Codex 自动审查审批请求，仅潜在不安全操作需确认"
       },
       "no-restrictions": {
-        "label": "Full Access",
+        "label": "完全访问权限",
         "description": "无需审批即可访问文件和网络"
       }
     },
@@ -424,7 +424,7 @@
     "settings": "设置",
     "notInstalled": "未安装",
     "comingSoon": "即将支持",
-    "integrated": "集成运行时",
+    "integrated": "内置 Agent 运行环境",
     "integratedHelp": "内置Agent 运行环境，在 MyAgents 可完成全部设置",
     "externalCli": "外部 CLI",
     "externalCliHelp": "本机安装的其他 Agent 环境，设置与升级均需要前往对应软件进行"

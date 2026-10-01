@@ -90,6 +90,8 @@ Session identity、恢复与配置 snapshot 见 [`session_architecture.md`](sess
 
 owned desktop/Task/IM Session 持久化完整执行 identity 与配置 snapshot；Agent Channel 的 model/provider/permission/MCP 选择同样服从 Session。默认 reload 不改旧会话，也不触发 drift rotation；显式模型选择经 SessionEngine operation 应用，忙时下一轮生效。Analytics 和真实执行身份检查须携带完整 source，不能把 managed 与 system usage 合并。
 
+Claude SDK 与 DSH 的权限展示名称可以相同，传参词汇仍各自独立。Agent 配置 writer 切换内置运行环境时，在同一次原子写入中清理 `runtimeConfig` 和不属于目标运行环境的顶层 `permissionMode`；未显式选择目标权限时使用目标默认值。已有旧配置由 Renderer 与服务端按当前运行环境读取，跳过外来权限值；菜单显示与发送使用同一个解析结果，不按文案转换 key。
+
 Managed Runtime 的目标下载版本以 `src/shared/managed-codex-runtime.json` 为唯一锁定源；当前进程使用安装器已经原子发布并校验的 installed identity。更新下载期间不得因为目标锁变化而阻断现有健康版本或已有 Session。
 
 ### Integrated DSH identity
@@ -121,6 +123,8 @@ stdin user message
 
 MyAgents 把 native stream 归一化为 UnifiedEvent，并通过 SessionStart hook 获取可靠的 session id。权限模式使用 CLI 当前支持的 native vocabulary；产品权限只在 Runtime boundary 做可证明的映射。
 
+系统 Claude Code CLI 的权限菜单与快捷键轮换只提供 Accept Edits、Bypass Permissions、Don't Ask。Manual、Auto、Plan 仍属于支持的运行参数，已有会话保留原权限并显示实际模式；隐藏菜单项不修改持久化权限。
+
 SessionStart 的应用自有 forwarder 通过 Sidecar `process.execPath` 启动，不从外部 CLI 的 PATH 寻找 Node。生成的 command 使用 Bash 安全参数引用并声明 `shell: bash`（Windows 使用产品已有 Git Bash）；保留 2.1.119/2.1.138 的旧 command-hook 支持，不依赖 2.1.139 新增的 `args`。外部 Runtime 与 AI Shell 的环境策略保持独立。
 
 IM/Agent Channel 需要 native-card `AskUserQuestion` 时，启动策略必须保留 stdio permission channel。full-agency 对普通工具可以 fast-path，但不能用 bypass mode 吞掉结构化提问。
@@ -138,11 +142,11 @@ Managed Codex 的推理档位以实际 app-server `model/list` 返回的 `suppor
 | Source / UI | 内部值 | approvalPolicy | sandbox | approvalsReviewer |
 |---|---|---|---|---|
 | managed 规划 | suggest | untrusted | read-only | user |
-| managed 行动 | auto-edit | on-request | workspace-write | auto_review |
-| managed 自主行动 | no-restrictions | never | danger-full-access | user |
-| system Ask for approval | auto-edit | on-request | workspace-write | user |
-| system Approve for me | full-auto | on-request | workspace-write | auto_review |
-| system Full Access | no-restrictions | never | danger-full-access | user |
+| managed 请求批准 | auto-edit | on-request | workspace-write | auto_review |
+| managed 完全自主 | no-restrictions | never | danger-full-access | user |
+| system 请求批准 | auto-edit | on-request | workspace-write | user |
+| system 帮我批准 | full-auto | on-request | workspace-write | auto_review |
+| system 完全访问权限 | no-restrictions | never | danger-full-access | user |
 
 system 菜单只提供上述三项；历史 suggest 仍按只读恢复，并保留真实只读显示。auto_review 是原生审批 reviewer，不等于 never 或直接开放网络。start/resume 与每轮 turn/start 均显式传 reviewer，避免切回人工审批时沿用旧 reviewer；原生响应未启用请求的 auto_review 时明确报不支持，不能静默降级。
 
@@ -296,6 +300,10 @@ Codex 在 Session 启动后异步收集 auth、feature、MCP 与 app 状态，�
 Runtime tool catalog 是独立的可变 capability snapshot；只包含当前 native Runtime 已确认可用的工具。查询暂时失败保留仍健康的上一 snapshot，明确 failed/cancelled 才撤回对应 server。广播前必须校验 process generation，避免退出进程的迟到诊断污染新 Session。
 
 CLI 诊断命令与真实 Session 启动使用同一个 env resolver 和 adapter probe。命令入口见 [`cli_architecture.md`](cli_architecture.md)。
+
+外部 CLI 选择遵循用户 Shell 的 PATH 顺序；检测、查询与启动等待同一次异步环境发现，并以子进程实际 env 解析绝对路径。平台目录只用于兜底，不抢占用户版本管理器。顺序、超时和平台边界见 [Bundled Node 的 Runtime locator 与 PATH](bundled_node.md#runtime-locator-与-path)。
+
+Codex 模型和推理强度来自原生 `model/list`（含分页），不维护静态模型白名单。已有 Codex Session 查询自己的活跃 app-server，包含 `system-cli` 和 `managed-provider`；没有活跃对应 Session 时才临时启动已安装 CLI 查询。临时查询的五分钟缓存按 Runtime source、解析后 executable/文件 revision、原生 home 与 PATH 区分，安装来源变化不会沿用另一份 CLI 的目录。
 
 DSH 与 Codex 共用 `runtimeSupportsPrewarm()`，先建立 Product Session/config owner 再预热。DSH compact 使用 `session/compact`；reasoning delta 若无独立 block lifecycle，由 Host 补齐 start/stop 后投影，保持与 text/tool 的顺序。
 

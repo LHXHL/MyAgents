@@ -566,6 +566,20 @@ describe('Codex app-server protocol helpers', () => {
     expect(newKey).not.toBe(oldKey);
   });
 
+  it('invalidates external model discovery when the executable or native home changes', () => {
+    const base = { source: 'system-cli' as const, commandPath: '/brew/bin/codex', env: { PATH: '/brew/bin:/usr/bin', HOME: '/users/test' } };
+    const oldKey = codexModelCacheKey('system-cli', base);
+    expect(codexModelCacheKey('system-cli', { ...base, commandPath: '/fnm/bin/codex' })).not.toBe(oldKey);
+    expect(codexModelCacheKey('system-cli', { ...base, env: { ...base.env, CODEX_HOME: '/other/codex' } })).not.toBe(oldKey);
+    expect(codexModelCacheKey('system-cli', { ...base, env: { ...base.env, PATH: '/fnm/bin:/brew/bin:/usr/bin' } })).not.toBe(oldKey);
+    const binary = join(tempWorkspace(), 'codex');
+    writeFileSync(binary, 'old');
+    const context = { ...base, commandPath: binary };
+    const installedKey = codexModelCacheKey('system-cli', context);
+    writeFileSync(binary, 'updated installation');
+    expect(codexModelCacheKey('system-cli', context)).not.toBe(installedKey);
+  });
+
   it('keeps system-cli Codex app-server startup free of managed provider MCP config', () => {
     const env: Record<string, string | undefined> = {};
     expect(

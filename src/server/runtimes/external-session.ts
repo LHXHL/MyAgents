@@ -9324,13 +9324,16 @@ export async function queryRuntimeModels(
 ): Promise<unknown[]> {
   if (runtimeType === 'builtin') return [];
   const runtimeSource =
-    runtimeType === 'codex' ? options.runtimeSource : undefined;
-  const managedCodex =
-    runtimeType === 'codex' && runtimeSource === 'managed-provider';
+    runtimeType === 'codex' ? options.runtimeSource ?? 'system-cli' : undefined;
+  const codex = runtimeType === 'codex';
   try {
-    if (managedCodex) await awaitExternalLifecycleStarting();
-    const process = managedCodex ? getExternalActiveProcess() : null;
-    const runtime = managedCodex ? getExternalActiveRuntime() : null;
+    if (codex && getCurrentRuntimeType() === runtimeType && getCurrentRuntimeSource() === runtimeSource) {
+      await awaitExternalLifecycleStarting();
+    }
+    const runtime = codex ? getExternalActiveRuntime() : null;
+    const process = runtime?.type === runtimeType && runtimeSource === getCurrentRuntimeSource()
+      ? getExternalActiveProcess()
+      : null;
     const models =
       runtime?.type === runtimeType &&
       runtimeSource === getCurrentRuntimeSource() &&
@@ -9342,19 +9345,22 @@ export async function queryRuntimeModels(
             signal: options.signal,
           })
         : await queryRuntimeModelsSingleFlight(
-      runtimeType,
-      async (ownerSignal) => {
+            runtimeType,
+            async (ownerSignal) => {
               return await getExternalRuntime(runtimeType).queryModels({
-          runtimeSource,
-          signal: ownerSignal,
-        });
-      },
-      runtimeSource,
-      options.signal,
-    );
+                runtimeSource,
+                signal: ownerSignal,
+              });
+            },
+            runtimeSource,
+            options.signal,
+          );
     // The lifecycle owner arbitrates late discovery, including a temporary
     // query begun just before prewarm published the Session's actual process.
-    if (managedCodex && getExternalActiveProcess() !== process) {
+    const currentProcess = getExternalActiveRuntime()?.type === runtimeType && runtimeSource === getCurrentRuntimeSource()
+      ? getExternalActiveProcess()
+      : null;
+    if (codex && currentProcess !== process) {
       throw new Error('Codex Session changed during model discovery');
     }
     return models;

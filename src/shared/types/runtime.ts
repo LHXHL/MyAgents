@@ -299,6 +299,8 @@ export interface RuntimePermissionMode {
   label: string;        // UI display label
   icon: string;         // Emoji icon
   description: string;  // Description text
+  /** Supported by the runtime, but omitted from selection menus and cycling. */
+  hidden?: boolean;
 }
 
 /**
@@ -433,6 +435,7 @@ export interface RuntimeInfo {
 export const CC_PERMISSION_MODES: RuntimePermissionMode[] = [
   {
     value: 'manual',
+    hidden: true,
     label: 'Manual',
     icon: '\u{1F6E1}',  // 🛡
     description: '每次工具调用都需要确认',
@@ -442,12 +445,14 @@ export const CC_PERMISSION_MODES: RuntimePermissionMode[] = [
     label: 'Auto',
     icon: '\u2728',      // ✨
     description: '由 Claude Code 自动判断工具权限',
+    hidden: true,
   },
   {
     value: 'plan',
     label: 'Plan',
     icon: '\u{1F4CB}',  // 📋
     description: '规划模式，只读不执行',
+    hidden: true,
   },
   {
     value: 'acceptEdits',
@@ -536,9 +541,9 @@ export const CODEX_PERMISSION_MODES: RuntimePermissionMode[] = [
 /**
  * Get permission modes for a given runtime type
  *
- * Returns the selectable modes for every runtime — including builtin —
- * so callers (UI dropdowns, `runtime describe`, validators) don't have to
- * special-case the builtin path.
+ * Returns supported modes for every runtime, including builtin. Selection
+ * menus and cycling omit hidden entries; validators retain supported values
+ * so existing sessions can keep their execution permissions.
  */
 export function getRuntimePermissionModes(runtime: RuntimeType): RuntimePermissionMode[] {
   switch (runtime) {

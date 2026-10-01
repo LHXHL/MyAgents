@@ -10,6 +10,7 @@ import {
 import type { RuntimeEnvPolicy, RuntimeSource } from '../../shared/types/runtime';
 import { INTERNAL_CLI_TOKEN_ENV } from '../../shared/externalCliCapabilities';
 import { ensureDirSync } from '../utils/fs-utils';
+import { ensureShellPath } from '../utils/shell';
 import { applyProviderProxyPolicyToEnv } from '../proxy-state';
 import { augmentedProcessEnv, resolveCommand } from './env-utils';
 
@@ -348,10 +349,11 @@ function buildManagedCodexEnv(
   return env;
 }
 
-export function resolveCodexCommandContext(args: {
+export async function resolveCodexCommandContext(args: {
   source?: RuntimeSource;
   envPolicy?: RuntimeEnvPolicy;
-} = {}): CodexCommandContext {
+} = {}): Promise<CodexCommandContext> {
+  await ensureShellPath();
   const source = args.source ?? 'system-cli';
   if (source === 'managed-provider') {
     const platform = managedCodexPlatform();
@@ -366,10 +368,11 @@ export function resolveCodexCommandContext(args: {
     };
   }
 
+  const env = augmentedProcessEnv(args.envPolicy);
   return {
     source: 'system-cli',
-    commandPath: resolveCommand('codex'),
-    env: augmentedProcessEnv(args.envPolicy),
+    commandPath: resolveCommand('codex', env),
+    env,
   };
 }
 

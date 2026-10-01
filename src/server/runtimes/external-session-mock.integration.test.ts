@@ -1443,9 +1443,9 @@ describe('external SessionEngine with fake runtime', () => {
   );
 
 
-  it('discards installed model discovery when prewarm publishes the managed Session process', async () => {
+  it.each(['system-cli', 'managed-provider'] as const)('discards installed model discovery when prewarm publishes the %s Session process', async (runtimeSource) => {
     const harness = await createHarness([], {
-      runtimeSource: 'managed-provider',
+      runtimeSource,
     });
     let completeDiscovery!: (models: RuntimeModelInfo[]) => void;
     const discovery = vi
@@ -1457,7 +1457,7 @@ describe('external SessionEngine with fake runtime', () => {
           }),
       );
     const pending = harness.externalSession.queryRuntimeModels('codex', {
-      runtimeSource: 'managed-provider',
+      runtimeSource,
       throwOnError: true,
     });
     const rejected = expect(pending).rejects.toThrow(
@@ -1482,7 +1482,7 @@ describe('external SessionEngine with fake runtime', () => {
     ]);
     await expect(
       harness.externalSession.queryRuntimeModels('codex', {
-        runtimeSource: 'managed-provider',
+        runtimeSource,
         throwOnError: true,
       }),
     ).resolves.toEqual([
@@ -1490,7 +1490,7 @@ describe('external SessionEngine with fake runtime', () => {
     ]);
     expect(discovery).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        runtimeSource: 'managed-provider',
+        runtimeSource,
         process: expect.any(FakeRuntimeProcess),
       }),
     );

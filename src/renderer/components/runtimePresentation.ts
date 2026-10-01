@@ -3,10 +3,17 @@ import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
 import myagentsIcon from '@/assets/runtime-icons/myagents.png';
 import claudeCodeIcon from '@/assets/runtime-icons/claude-code.png';
 import codexIcon from '@/assets/runtime-icons/codex.png';
+import dshIcon from '@/assets/runtime-icons/deepseek-harness.png';
 
-export const RUNTIME_PRESENTATION: Record<RuntimeType, { name: string; icon: string }> = {
-  builtin: { name: 'MyAgents (Claude Agent SDK)', icon: myagentsIcon },
-  dsh: { name: 'MyAgents (DeepSeek Harness)', icon: myagentsIcon },
+interface RuntimePresentation {
+  name: string;
+  icon: string;
+  engineIcon?: string;
+}
+
+export const RUNTIME_PRESENTATION: Record<RuntimeType, RuntimePresentation> = {
+  builtin: { name: 'MyAgents (Claude Agent SDK)', icon: myagentsIcon, engineIcon: claudeCodeIcon },
+  dsh: { name: 'MyAgents (DeepSeek Harness)', icon: myagentsIcon, engineIcon: dshIcon },
   'claude-code': { name: 'Claude Code CLI', icon: claudeCodeIcon },
   codex: { name: 'Codex CLI', icon: codexIcon },
 };
@@ -15,7 +22,7 @@ export const RUNTIME_PRESENTATION: Record<RuntimeType, { name: string; icon: str
 export function sessionRuntimePresentation(
   runtime: RuntimeType,
   source?: RuntimeSource | null,
-): { name: string; icon: string } {
+): RuntimePresentation {
   if (runtime === 'codex' && source === 'managed-provider') {
     return { ...RUNTIME_PRESENTATION.codex, name: 'Managed Codex' };
   }

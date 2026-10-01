@@ -451,17 +451,22 @@ export function TaskAdvancedConfigEditor(props: Props) {
           }] : [];
         })
         : getRuntimePermissionModes(effectiveRuntime))
-        .filter((m) => isPermissionModeForRuntimeIdentity(
+        .filter((m) => !m.hidden && isPermissionModeForRuntimeIdentity(
           m.value,
           effectiveRuntime,
           effectiveRuntimeSource,
         ))
-        .map((m) => ({
-        value: m.value,
-        label: m.description
-          ? `${m.label} · ${effectiveRuntimeSource === 'managed-provider' ? m.description : t(`advanced.permissionModes.${effectiveRuntime}.${m.value}`, { defaultValue: m.description })}`
-          : m.label,
-        })),
+        .map((m) => {
+          const label = effectiveRuntimeSource === 'managed-provider'
+            ? m.label
+            : t(`chat:input.permissionModes.${m.value}.label`, { defaultValue: m.label });
+          return {
+            value: m.value,
+            label: m.description
+              ? `${label} · ${effectiveRuntimeSource === 'managed-provider' ? m.description : t(`advanced.permissionModes.${effectiveRuntime}.${m.value}`, { defaultValue: m.description })}`
+              : label,
+          };
+        }),
     ],
     [effectiveRuntime, effectiveRuntimeSource, t],
   );

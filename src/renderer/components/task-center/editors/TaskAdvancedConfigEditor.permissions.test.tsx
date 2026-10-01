@@ -32,9 +32,8 @@ describe('Task Codex permissions', () => {
     const setPermissionMode = renderSource('managed-provider');
     openPermissions();
     const plan = screen.getByRole('button', { name: /^规划/ });
-    expect(screen.getByRole('button', { name: /^行动/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^自主行动/ })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Ask for approval/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^请求批准/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^完全自主/ })).toBeInTheDocument();
     fireEvent.click(plan);
     expect(setPermissionMode).toHaveBeenCalledWith('suggest');
   });
@@ -42,10 +41,10 @@ describe('Task Codex permissions', () => {
   it('offers only native presets for the external CLI', () => {
     const setPermissionMode = renderSource('system-cli');
     openPermissions();
-    expect(screen.getByRole('button', { name: /^Ask for approval/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^Full Access/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^请求批准/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^完全访问权限/ })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Suggest/ })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /^Approve for me/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^帮我批准/ }));
     expect(setPermissionMode).toHaveBeenCalledWith('full-auto');
   });
 
@@ -56,6 +55,6 @@ describe('Task Codex permissions', () => {
     expect(trigger).toHaveTextContent('只读');
     expect(trigger).not.toHaveTextContent('最大权限');
     expect(screen.queryByRole('button', { name: /^Suggest/ })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^Ask for approval/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^请求批准/ })).toBeInTheDocument();
   });
 });

@@ -1010,12 +1010,12 @@
       "runningChannelsHint": "有运行中的 Channel，请先停止"
     },
     "permission": {
-      "auto": "行动",
+      "auto": "请求批准",
       "plan": "规划",
-      "fullAgency": "自主行动",
-      "autoDescription": "Agent 在工作区内行动，使用工具需确认",
+      "fullAgency": "完全自主",
+      "autoDescription": "工作区内行动，使用工具需审批",
       "planDescription": "Agent 仅研究信息并与你讨论规划",
-      "fullAgencyDescription": "Agent 拥有完全自主权限，无需人工确认"
+      "fullAgencyDescription": "无限制使用电脑与互联网，无需审批"
     },
     "reasoning": {
       "descriptions": {

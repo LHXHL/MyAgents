@@ -434,7 +434,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
         <>
           <div className="flex items-center gap-3">
             <label className="w-16 shrink-0 text-sm text-[var(--ink-muted)]">{t('agentSettings.basics.runtime')}</label>
-            <div className="flex-1">
+            <div className="min-w-0 flex-1">
               <RuntimeSelector
                 value={currentRuntime}
                 detections={runtimeDetections}

@@ -46,6 +46,7 @@ import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
 
 import ConfirmDialog from './ConfirmDialog';
 import { sessionRuntimePresentation } from './runtimePresentation';
+import RuntimeIcon from './RuntimeIcon';
 import SessionStatsModal from './SessionStatsModal';
 import Tip from './Tip';
 import { useToast } from './Toast';
@@ -341,14 +342,7 @@ export default function SessionMenuButton({
                 closeOnEscape={!submenuOpen && !tagLayerOpen}
             >
                 <div className="flex min-w-0 items-center gap-2 border-b border-[var(--line-subtle)] px-3 py-2.5">
-                    {runtimePresentation && (
-                        <img
-                            src={runtimePresentation.icon}
-                            alt=""
-                            className="h-5 w-5 shrink-0 rounded-[4px]"
-                            draggable={false}
-                        />
-                    )}
+                    {runtime && <RuntimeIcon type={runtime} size={20} />}
                     <span className="min-w-0 truncate text-sm font-medium text-[var(--ink)]" title={runtimePresentation?.name}>
                         {runtimePresentation?.name ?? t('shell.sessionMenu.runtimeLoading')}
                     </span>

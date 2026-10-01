@@ -3575,6 +3575,9 @@ fn detect_cli_version(path: &Path) -> Option<String> {
     // MUST use process_cmd::new() to prevent Windows console flash.
     let mut cmd = crate::process_cmd::new(path);
     cmd.arg("--version")
+        // npm shims use /usr/bin/env node; resolve Node in the same environment
+        // that selected the CLI, rather than the GUI application's minimal PATH.
+        .env("PATH", crate::system_binary::augmented_path())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .stdin(Stdio::null());

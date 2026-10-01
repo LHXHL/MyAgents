@@ -2399,10 +2399,20 @@ const modelCache = new Map<string, { models: RuntimeModelInfo[]; timestamp: numb
 const MODEL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 export function codexModelCacheKey(runtimeSource: RuntimeSource, context: CodexCommandContext): string {
-  if (runtimeSource === 'managed-provider') {
-    return `${runtimeSource}:${context.version ?? 'unknown'}:${context.commandPath}`;
-  }
-  return runtimeSource;
+  // Include the resolved target: version-manager symlinks can select a different
+  // installation without changing the command spelling. Live sessions use RPC.
+  let executable = context.commandPath;
+  let revision = '';
+  try {
+    executable = realpathSync(executable);
+    const stat = statSync(executable);
+    revision = `${stat.size}:${stat.mtimeMs}`;
+  } catch { /* unavailable executable will fail at spawn */ }
+  return JSON.stringify([
+    runtimeSource, executable, context.version, revision,
+    context.codexHome ?? context.env.CODEX_HOME ?? context.env.HOME ?? context.env.USERPROFILE,
+    context.env.Path ?? context.env.PATH,
+  ]);
 }
 
 // ─── JSON-RPC 2.0 Client ───
@@ -3435,7 +3445,7 @@ export class CodexRuntime implements AgentRuntime {
 
   async detect(): Promise<RuntimeDetection> {
     try {
-      const context = resolveCodexCommandContext({ source: 'system-cli' });
+      const context = await resolveCodexCommandContext({ source: 'system-cli' });
       const command = context.commandPath;
       const proc = spawn([command, '--version'], {
         stdout: 'pipe',
@@ -3472,7 +3482,7 @@ export class CodexRuntime implements AgentRuntime {
     }
     let context: CodexCommandContext;
     try {
-      context = resolveCodexCommandContext({ source: runtimeSource });
+      context = await resolveCodexCommandContext({ source: runtimeSource });
     } catch (err) {
       console.error(
         `[codex] Failed to resolve model runtime for source=${runtimeSource}:`,
@@ -3565,7 +3575,7 @@ export class CodexRuntime implements AgentRuntime {
     workspacePath?: string,
     envPolicy?: import('../../shared/types/runtime').RuntimeEnvPolicy,
   ): Promise<RuntimeDiagnostics> {
-    const context = resolveCodexCommandContext({ source: 'system-cli', envPolicy });
+    const context = await resolveCodexCommandContext({ source: 'system-cli', envPolicy });
     const env = context.env;
     const cwd = workspacePath || env.HOME || process.cwd();
 
@@ -3637,7 +3647,7 @@ export class CodexRuntime implements AgentRuntime {
     // Capture the env we hand to Codex so the diagnostic snapshot reflects what
     // the subprocess actually saw (issue #194). The env policy is resolved by
     // the session caller from the agent's runtimeConfig.envPolicy.
-    const context = resolveCodexCommandContext({
+    const context = await resolveCodexCommandContext({
       source: runtimeSource,
       envPolicy: options.envPolicy,
     });

@@ -48,12 +48,12 @@ describe('Codex model capabilities', () => {
     const state = { exited: false, rpc: { call: vi.fn(async () => { state.exited = true; return { data: [{ id: 'old' }] }; }) }, models };
     await expect(new CodexRuntime().queryModels({ runtimeSource: 'managed-provider', process: state as unknown as RuntimeProcess })).rejects.toThrow('exited');
   });
-  it('queries the live process instead of resolving a newly installed binary, keeping its catalog on failure', async () => {
+  it.each(['system-cli', 'managed-provider'] as const)('queries the live %s process, keeping its catalog on failure', async (runtimeSource) => {
     const call = vi.fn().mockResolvedValueOnce({ data: [{ id: 'old-model', supportedReasoningEfforts: [{ reasoningEffort: 'old-tier' }], defaultReasoningEffort: 'old-tier' }] }).mockRejectedValueOnce(new Error('disconnected'));
     const proc = { exited: false, rpc: { call }, models: [] } as unknown as RuntimeProcess;
     const runtime = new CodexRuntime();
-    const first = await runtime.queryModels({ runtimeSource: 'managed-provider', process: proc });
+    const first = await runtime.queryModels({ runtimeSource, process: proc });
     expect(first[0].value).toBe('old-model');
-    expect(await runtime.queryModels({ runtimeSource: 'managed-provider', process: proc })).toEqual(first);
+    expect(await runtime.queryModels({ runtimeSource, process: proc })).toEqual(first);
   });
 });

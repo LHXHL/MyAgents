@@ -18,6 +18,26 @@ describe('Agent execution edits at the config writer', () => {
   it('keeps explicit full replacements distinct from field patches', () => {
     expect(resolveAgentConfigMutation(agent, { runtimeConfig: {} })).toEqual({ runtimeConfig: {} });
   });
+  it('scrubs top-level DSH permissions when switching to Claude SDK', () => {
+    const patch = resolveAgentConfigMutation({
+      ...agent, runtime: 'dsh', permissionMode: 'full-autonomous',
+    }, { runtime: 'builtin' });
+    expect(patch).toMatchObject({ runtime: 'builtin', permissionMode: 'auto' });
+    expect(patch.runtimeConfig).toEqual({ envPolicy: { proxy: 'terminal' } });
+  });
+  it('uses DSH permission keys when switching from Claude SDK', () => {
+    const patch = resolveAgentConfigMutation({
+      ...agent, runtime: 'builtin', permissionMode: 'fullAgency',
+    }, { runtime: 'dsh' });
+    expect(patch).toMatchObject({ runtime: 'dsh', permissionMode: 'approval-required' });
+  });
+  it('preserves an explicit valid permission selected with the target runtime', () => {
+    expect(resolveAgentConfigMutation({
+      ...agent, runtime: 'dsh', permissionMode: 'full-autonomous',
+    }, { runtime: 'builtin', permissionMode: 'fullAgency' })).toMatchObject({
+      runtime: 'builtin', permissionMode: 'fullAgency',
+    });
+  });
   it('resolves managed provider selection using the latest environment and product permission', () => {
     const patch = resolveAgentConfigMutation(agent, {
       runtimeBackedProviderSelection: { kind: 'runtime-backed-provider', providerId: 'codex-sub', model: 'model-c', runtime: 'codex', runtimeSource: 'managed-provider' },

@@ -1,0 +1,60 @@
+[
+  {
+    "name": "fnm selection before Homebrew fallback",
+    "platform": "darwin",
+    "inheritedPath": "/usr/bin:/bin",
+    "shellPath": "/users/test/fnm/bin:/opt/homebrew/bin:/usr/bin",
+    "fallbackPaths": [
+      "/opt/homebrew/bin",
+      "/app/node/bin",
+      "/bin"
+    ],
+    "expected": "/users/test/fnm/bin:/opt/homebrew/bin:/usr/bin:/bin:/app/node/bin"
+  },
+  {
+    "name": "user can select Homebrew before fnm",
+    "platform": "darwin",
+    "inheritedPath": "/usr/bin",
+    "shellPath": "/opt/homebrew/bin:/users/test/fnm/bin:/usr/bin",
+    "fallbackPaths": [
+      "/users/test/fnm/bin",
+      "/opt/homebrew/bin"
+    ],
+    "expected": "/opt/homebrew/bin:/users/test/fnm/bin:/usr/bin"
+  },
+  {
+    "name": "failed shell discovery preserves inherited order",
+    "platform": "linux",
+    "inheritedPath": "/custom/node/bin:/usr/local/bin:/usr/bin",
+    "shellPath": null,
+    "fallbackPaths": [
+      "/usr/bin",
+      "/app/node/bin",
+      "/usr/local/bin"
+    ],
+    "expected": "/custom/node/bin:/usr/local/bin:/usr/bin:/app/node/bin"
+  },
+  {
+    "name": "Windows preserves inherited order and deduplicates ignoring case",
+    "platform": "win32",
+    "inheritedPath": "C:\\Users\\test\\fnm;C:\\Windows\\System32",
+    "shellPath": null,
+    "fallbackPaths": [
+      "c:\\users\\test\\FNM",
+      "C:\\Program Files\\nodejs",
+      "c:\\windows\\system32"
+    ],
+    "expected": "C:\\Users\\test\\fnm;C:\\Windows\\System32;C:\\Program Files\\nodejs"
+  },
+  {
+    "name": "empty environment still has discovery fallbacks",
+    "platform": "darwin",
+    "inheritedPath": "",
+    "shellPath": null,
+    "fallbackPaths": [
+      "/opt/homebrew/bin",
+      "/usr/bin"
+    ],
+    "expected": "/opt/homebrew/bin:/usr/bin"
+  }
+]

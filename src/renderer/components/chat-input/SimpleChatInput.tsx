@@ -249,11 +249,13 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
       icon: m.icon,
       description: t(`input.permissionModes.${m.value}.description`, { defaultValue: m.description }),
       sdkValue: m.value,
+      hidden: m.hidden,
     }))
     : PERMISSION_MODES.map(m => ({
       ...m,
       label: t(`input.permissionModes.${m.value}.label`, { defaultValue: m.label }),
       description: t(`input.permissionModes.${m.value === 'auto' && isRuntimeBackedProvider(provider) ? 'full-auto' : m.value}.description`, { defaultValue: m.description }),
+      hidden: false,
     }));
   const currentModeDisplay = displayPermissionModes.find(m => m.value === permissionMode)
     // Historical Codex read-only sessions remain read-only, but are no longer
@@ -1029,7 +1031,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   const cyclePermissionMode = useCallback(() => {
     if (showConfigLockedReason()) return;
     const modeOrder: string[] = runtimePermissionModes?.length
-      ? runtimePermissionModes.map(m => m.value)
+      ? runtimePermissionModes.filter(m => !m.hidden).map(m => m.value)
       : ['auto', 'plan', 'fullAgency'];
     const currentIndex = modeOrder.indexOf(permissionMode);
     // If current mode not in list (e.g., mode from a different runtime), start from first
@@ -1923,7 +1925,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 className="composer-toolbar-menu-enter w-72 py-1"
               >
                 <PermissionModeMenuContent
-                  items={displayPermissionModes}
+                  items={displayPermissionModes.filter(m => !m.hidden)}
                   selectedValue={permissionMode}
                   header={t('input.permissionModeHeader')}
                   headerAction={onOpenAgentSettings ? {

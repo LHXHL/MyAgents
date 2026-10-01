@@ -12,6 +12,7 @@ import { OFFICIAL_TOOLS } from '../../shared/official-tools';
 import {
   CC_PERMISSION_MODES,
   CODEX_PERMISSION_MODES,
+  DSH_PERMISSION_MODES,
 } from '../../shared/types/runtime';
 import SimpleChatInput, { type SimpleChatInputHandle } from './SimpleChatInput';
 import { ToastProvider } from './Toast';
@@ -168,7 +169,7 @@ describe('SimpleChatInput send paths', () => {
       name: 'Claude Code',
       runtime: 'claude-code' as const,
       modes: CC_PERMISSION_MODES,
-      expectedIcons: ['shield-question-mark', 'shield-check', 'eye', 'file-pen-line', 'lock-open', 'ban'],
+      expectedIcons: ['file-pen-line', 'lock-open', 'ban'],
     },
     {
       name: 'Codex',
@@ -179,23 +180,50 @@ describe('SimpleChatInput send paths', () => {
   ])('maps $name permission boundaries to the shared line icon vocabulary', async ({ runtime, modes, expectedIcons }) => {
     await i18n.changeLanguage('zh-CN');
     const user = userEvent.setup();
-    renderInput({ runtime, runtimePermissionModes: modes });
+    renderInput({ runtime, runtimePermissionModes: modes, permissionMode: modes.find(m => !m.hidden)!.value as PermissionMode });
 
     await user.click(screen.getByTitle('切换执行模式'));
 
     for (const iconName of expectedIcons) {
       expect(document.querySelector(`.lucide-${iconName}`)).toBeInTheDocument();
     }
+    if (runtime === 'claude-code') {
+      expect(screen.queryByText('Manual')).not.toBeInTheDocument();
+      expect(screen.queryByText('行动')).not.toBeInTheDocument();
+      expect(screen.queryByText('规划')).not.toBeInTheDocument();
+      expect(screen.getByText('Bypass Permissions')).toBeInTheDocument();
+      expect(screen.getByText("Don't Ask")).toBeInTheDocument();
+    }
   });
 
-  it('describes managed Codex action as automatic review without changing the product mode names', async () => {
+  it('cycles Claude Code choices without returning to hidden modes', () => {
+    const onPermissionModeChange = vi.fn();
+    renderInput({ runtime: 'claude-code', runtimePermissionModes: CC_PERMISSION_MODES, permissionMode: 'dontAsk' as PermissionMode, onPermissionModeChange });
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(onPermissionModeChange).toHaveBeenCalledWith('acceptEdits');
+  });
+
+  it.each([
+    { runtime: 'builtin' as const, modes: undefined, initial: 'auto', key: 'fullAgency' },
+    { runtime: 'dsh' as const, modes: DSH_PERMISSION_MODES, initial: 'approval-required', key: 'full-autonomous' },
+  ])('keeps the $runtime permission key when both menus display 完全自主', async ({ runtime, modes, initial, key }) => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    const onPermissionModeChange = vi.fn();
+    renderInput({ runtime, runtimePermissionModes: modes, permissionMode: initial as PermissionMode, onPermissionModeChange });
+    await user.click(screen.getByTitle('切换执行模式'));
+    await user.click(screen.getByText('完全自主'));
+    expect(onPermissionModeChange).toHaveBeenCalledWith(key);
+  });
+
+  it('uses product mode names and the native automatic-review description for managed Codex', async () => {
     await i18n.changeLanguage('zh-CN');
     const user = userEvent.setup();
     renderInput({ runtime: 'builtin', provider: { id: 'codex-sub', name: 'Codex' } as Provider, permissionMode: 'auto' });
     await user.click(screen.getByTitle('切换执行模式'));
     expect(screen.getByText('由 Codex 自动审查审批请求，仅潜在不安全操作需确认')).toBeInTheDocument();
     expect(screen.getByText('规划')).toBeInTheDocument();
-    expect(screen.getByText('自主行动')).toBeInTheDocument();
+    expect(screen.getByText('完全自主')).toBeInTheDocument();
   });
 
   it('offers native Codex three choices and keeps the legacy read-only caption truthful', async () => {
@@ -205,10 +233,10 @@ describe('SimpleChatInput send paths', () => {
     renderInput({ runtime: 'codex', runtimePermissionModes: CODEX_PERMISSION_MODES, permissionMode: 'suggest' as PermissionMode, onPermissionModeChange });
     expect(screen.getByTitle('切换执行模式')).toHaveTextContent('Suggest');
     await user.click(screen.getByTitle('切换执行模式'));
-    expect(screen.getByText('Ask for approval')).toBeInTheDocument();
-    expect(screen.getByText('Full Access')).toBeInTheDocument();
+    expect(screen.getByText('请求批准')).toBeInTheDocument();
+    expect(screen.getByText('完全访问权限')).toBeInTheDocument();
     expect(screen.getAllByText('Suggest')).toHaveLength(1);
-    await user.click(screen.getByText('Approve for me'));
+    await user.click(screen.getByText('帮我批准'));
     expect(onPermissionModeChange).toHaveBeenCalledWith('full-auto');
   });
 
@@ -977,8 +1005,8 @@ describe('SimpleChatInput send paths', () => {
 
     await user.click(screen.getByTitle('Switch execution mode'));
     expect(screen.getByText('Session mode')).toBeInTheDocument();
-    expect(screen.getAllByText('Act').length).toBeGreaterThan(0);
-    expect(screen.getByText('Agent works in the workspace and asks before using tools')).toBeInTheDocument();
+    expect(screen.getAllByText('Ask for approval').length).toBeGreaterThan(0);
+    expect(screen.getByText('Work in the workspace; ask before using tools')).toBeInTheDocument();
   });
 
   it('accepts pasted image attachments without routing through workspace file IO for external runtimes', async () => {

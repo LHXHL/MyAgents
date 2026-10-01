@@ -453,6 +453,22 @@ describe('resolveBuiltinPermissionMode (#244)', () => {
       resolveBuiltinPermissionMode({ projectSynced: false, statePermissionMode: 'auto' }),
     ).toBe('auto');
   });
+  it('ignores a persisted DSH permission on a fresh Claude SDK tab', () => {
+    expect(resolveBuiltinPermissionMode({
+      projectSynced: false,
+      statePermissionMode: 'full-autonomous',
+      agentPermissionMode: 'full-autonomous',
+      projectPermissionMode: 'plan',
+      defaultPermissionMode: 'auto',
+    })).toBe('plan');
+  });
+  it('never sends a foreign key from authoritative state or launcher handoff', () => {
+    expect(resolveBuiltinPermissionMode({
+      projectSynced: true,
+      statePermissionMode: 'full-autonomous',
+      agentPermissionMode: 'fullAgency',
+    })).toBe('auto');
+  });
 });
 
 describe('resolveLauncherProvider (#234)', () => {

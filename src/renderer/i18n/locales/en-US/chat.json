@@ -125,16 +125,16 @@
         "description": "Unrestricted computer and internet access; no approval needed"
       },
       "auto": {
-        "label": "Act",
-        "description": "Agent works in the workspace and asks before using tools"
+        "label": "Ask for approval",
+        "description": "Work in the workspace; ask before using tools"
       },
       "plan": {
         "label": "Plan",
         "description": "Read-only planning mode"
       },
       "fullAgency": {
-        "label": "Autonomous",
-        "description": "Agent has full autonomy without manual confirmation"
+        "label": "Full autonomy",
+        "description": "Unrestricted computer and internet access; no approval needed"
       },
       "custom": {
         "label": "Custom",
@@ -424,7 +424,7 @@
     "settings": "Settings",
     "notInstalled": "Not installed",
     "comingSoon": "Coming soon",
-    "integrated": "Integrated",
+    "integrated": "Built-in Agent runtimes",
     "integratedHelp": "Built-in Agent runtimes. You can manage all their settings in MyAgents.",
     "externalCli": "External CLI",
     "externalCliHelp": "Other Agent runtimes installed on this computer. Manage their settings and updates in the corresponding app."

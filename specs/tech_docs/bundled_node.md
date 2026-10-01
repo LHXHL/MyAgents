@@ -77,7 +77,9 @@ SDK shell 不设置全局 `npm_config_prefix` 等会干扰 nvm 的变量。需�
 
 ### 外部 Runtime 与应用内终端
 
-- Claude Code / Codex 等外部 Runtime 的进程环境走 `runtimes/env-utils.ts → getShellEnv()`，不是 `buildClaudeSessionEnv()`。它以 `shell.ts` 的平台目录表开头，再追加 inherited PATH 和异步检测到的用户 Shell PATH；常见系统目录在 bundled 前，但部分版本管理器目录在 bundled 后。外部 Runtime 内部 Shell 的最终环境仍由相应 Runtime 决定。
+- Claude Code / Codex 等外部 Runtime 的进程环境走 `runtimes/env-utils.ts → getShellEnv()`，不是 `buildClaudeSessionEnv()`。macOS/Linux 的 PATH 顺序为用户交互登录 Shell 检测结果、inherited PATH、缺失的兜底目录；Windows 使用 inherited PATH，再追加兜底目录。保留用户目录顺序，去重时不按软件版本重排。Shell 发现失败时保留 inherited PATH 优先级。
+- 外部 Runtime 的检测、Codex 模型查询/诊断与会话启动，必须先等待 `ensureShellPath()` 完成首次发现，再从即将交给子进程的同一份 env 解析 CLI 绝对路径。发现异步执行且有五秒超时，不阻塞 Sidecar HTTP 启动。Rust `system_binary` 使用相同优先规则，CLI 版本探测也传入匹配的 PATH，使 npm shim 的 `env node` 使用同一用户环境。两端规则通过 `runtime-search-path.json` 共享案例验证。
+- 环境发现按当前进程生命周期缓存，默认对齐用户 Shell 启动配置；修改默认 Node/Shell 配置后重启应用重新发现。独立终端窗口中临时执行的 `fnm use`、alias/function 或项目切换 hook 不属于自动同步范围。CLI 内部 Shell 的最终环境由相应 Runtime 决定。应用自有 Node 仍使用资源定位入口，不参与外部 CLI 的选择。
 - MyAgents 自有 CC SessionStart forwarder 使用当前 Sidecar `process.execPath`，路径按 Bash 参数安全引用，并显式声明 hook shell。保留旧版 CC 的 command-hook 协议，不要求 2.1.139 才增加的 exec-form args；Windows 沿用产品的 Git Bash 依赖。它不改变外部 Runtime 的 AI Shell PATH。
 - 应用内 PTY 终端由 `src-tauri/src/terminal.rs::inject_terminal_env()` 注入：`~/.myagents/bin`、应用可执行资源目录、bundled Node、inherited PATH。因此它的初始优先级与内置 AI 的 Shell 不同；终端 Shell 加载用户配置后还可能重排。
 - `myagents tool add` 注册的用户工具也不等同于官方 CLI：POSIX 启动器使用 `#!/usr/bin/env node`，随后沿用该 Node；Windows shim 优先使用写入时的 bundled Node 绝对路径，失效后才回退 PATH 上的 Node。

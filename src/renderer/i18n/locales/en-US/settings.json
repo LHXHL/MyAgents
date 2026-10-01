@@ -1010,12 +1010,12 @@
       "runningChannelsHint": "Stop running Channels first"
     },
     "permission": {
-      "auto": "Action",
+      "auto": "Ask for approval",
       "plan": "Plan",
-      "fullAgency": "Full agency",
-      "autoDescription": "Agent acts in the workspace and asks before using tools",
+      "fullAgency": "Full autonomy",
+      "autoDescription": "Work in the workspace; ask before using tools",
       "planDescription": "Agent only researches information and discusses plans with you",
-      "fullAgencyDescription": "Agent has full autonomous permission without human confirmation"
+      "fullAgencyDescription": "Unrestricted computer and internet access; no approval needed"
     },
     "reasoning": {
       "descriptions": {

@@ -5,6 +5,7 @@
  * standing up React.
  */
 import type { PermissionMode } from '@/config/types';
+import { projectPermissionModeForRuntime } from '../../shared/types/runtime';
 import {
   canResumeAcrossProviderBoundary,
   type ProviderHistoryEnv,
@@ -61,12 +62,17 @@ export function resolveBuiltinPermissionMode(args: {
   projectPermissionMode?: string | null;
   defaultPermissionMode?: string | null;
 }): PermissionMode {
-  if (args.projectSynced) return args.statePermissionMode;
+  const project = (value: string | null | undefined) =>
+    projectPermissionModeForRuntime(value, 'builtin') as PermissionMode | undefined;
+  // Existing configs may retain a DSH permission after an earlier runtime
+  // switch. Keep precedence within the active vocabulary, as the server does.
+  if (args.projectSynced) return project(args.statePermissionMode) ?? 'auto';
   return (
-    (args.agentPermissionMode as PermissionMode | undefined) ??
-    (args.projectPermissionMode as PermissionMode | undefined) ??
-    (args.defaultPermissionMode as PermissionMode | undefined) ??
-    args.statePermissionMode
+    project(args.agentPermissionMode) ??
+    project(args.projectPermissionMode) ??
+    project(args.defaultPermissionMode) ??
+    project(args.statePermissionMode) ??
+    'auto'
   );
 }
 

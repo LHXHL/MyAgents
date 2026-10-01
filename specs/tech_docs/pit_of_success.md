@@ -159,7 +159,9 @@
 
 **Problem.** macOS 上从 Finder 启动的 Tauri 应用，PATH 不包含 `/opt/homebrew/bin`、`/usr/local/bin` 等用户工具路径，`which::which("npm")` / `which::which("node")` 会失败。
 
-**Surface.** `crate::system_binary::find(name)` — 在标准系统路径列表中查找。
+**Surface.** `crate::system_binary::find(name)` — 按用户交互登录 Shell PATH、inherited PATH、兜底目录顺序查找；Windows 为 inherited PATH、兜底目录。`augmented_path()` 提供匹配的子进程 PATH。
+
+**Invariants enforced.** Rust 与 Node 的 PATH 合并规则用 `src/shared/fixtures/runtime-search-path.json` 保持一致。外部 CLI 的子进程必须使用选择 executable 时的环境，尤其 npm shim 仍需通过 PATH 解析 Node。Node 的异步入口等待 `ensureShellPath()`，不在首次查询中固化尚未完成发现的兜底选择。
 
 **Don't.** 裸 `which::which()` 查找系统工具。
 

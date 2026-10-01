@@ -61,7 +61,9 @@ import {
   CC_PERMISSION_MODES,
   CODEX_PERMISSION_MODES,
   DSH_PERMISSION_MODES,
+  getDefaultRuntimePermissionMode,
   isAgentRuntimeSelectorAvailable,
+  projectPermissionModeForRuntime,
   resolveEffectiveRuntime,
 } from '../../shared/types/runtime';
 import {
@@ -78,7 +80,7 @@ import {
 import { apiGetJson } from '@/api/apiFetch';
 import { runtimeModelCatalogPath } from '@/utils/runtimeModelCatalog';
 import { isBrowserDevMode, pickFolderForDialog } from '@/utils/browserMock';
-import { resolveLauncherProvider } from '@/utils/optionResolve';
+import { resolveBuiltinPermissionMode, resolveLauncherProvider } from '@/utils/optionResolve';
 import {
   isProviderModelCompatibleWithRuntime,
   projectProvidersForRuntime,
@@ -351,6 +353,12 @@ export default function Launcher({
   // separate from user-managed CLI configuration.
   const isExternalRuntime =
     launcherRuntime !== 'builtin' && launcherRuntime !== 'dsh';
+  // The same runtime-scoped value drives the menu and the new Session handoff.
+  // Cached/configured permissions from another runtime are not portable.
+  const effectiveLauncherPermissionMode = (
+    projectPermissionModeForRuntime(launcherPermissionMode, launcherRuntime)
+      ?? getDefaultRuntimePermissionMode(launcherRuntime)
+  ) as PermissionMode;
   const runtimeExecutionUnavailable =
     launcherRuntime === 'dsh' &&
     runtimeDetections.dsh.readiness !== 'ready' &&
@@ -647,15 +655,24 @@ export default function Launcher({
     if (isExternalRuntime) {
       setLauncherSelectedModel(agentRuntimeModel ?? undefined);
       setLauncherPermissionMode(
-        (agentRuntimePermMode as PermissionMode | undefined) ??
-          config.defaultPermissionMode,
+        (projectPermissionModeForRuntime(agentRuntimePermMode, launcherRuntime)
+          ?? getDefaultRuntimePermissionMode(launcherRuntime)) as PermissionMode,
       );
       setLauncherReasoningEffort(agentRuntimeReasoningEffort ?? 'default');
     } else {
       setLauncherPermissionMode(
-        (selectedAgent?.permissionMode as PermissionMode | undefined) ??
-          selectedWorkspace.permissionMode ??
-          config.defaultPermissionMode,
+        launcherRuntime === 'builtin'
+          ? resolveBuiltinPermissionMode({
+              projectSynced: false,
+              statePermissionMode: 'auto',
+              agentPermissionMode: selectedAgent?.permissionMode,
+              projectPermissionMode: selectedWorkspace.permissionMode,
+              defaultPermissionMode: config.defaultPermissionMode,
+            })
+          : (projectPermissionModeForRuntime(selectedAgent?.permissionMode, launcherRuntime)
+            ?? projectPermissionModeForRuntime(selectedWorkspace.permissionMode, launcherRuntime)
+            ?? projectPermissionModeForRuntime(config.defaultPermissionMode, launcherRuntime)
+            ?? getDefaultRuntimePermissionMode(launcherRuntime)) as PermissionMode,
       );
       setLauncherSelectedModel(
         selectedAgent?.model ?? selectedWorkspace.model ?? undefined,
@@ -702,6 +719,7 @@ export default function Launcher({
     config.defaultIntegratedRuntime,
     multiAgentRuntimeEnabled,
     isExternalRuntime,
+    launcherRuntime,
   ]);
 
   // Write-back handlers: persist Launcher setting changes to the selected project
@@ -1068,7 +1086,7 @@ export default function Launcher({
       const initialMessage: InitialMessage = {
         text,
         images,
-        permissionMode: launcherPermissionMode,
+        permissionMode: effectiveLauncherPermissionMode,
         mcpEnabledServers: launcherWorkspaceMcpEnabled.filter((id) =>
           launcherGlobalMcpEnabled.includes(id),
         ),
@@ -1094,7 +1112,7 @@ export default function Launcher({
         launcherLastUsed: {
           providerId: launcherProvider?.id,
           model: launcherSelectedModel,
-          permissionMode: launcherPermissionMode,
+          permissionMode: effectiveLauncherPermissionMode,
           mcpEnabledServers: launcherWorkspaceMcpEnabled,
           enabledPluginIds: launcherEnabledPlugins,
           enabledOfficialToolIds: launcherOfficialToolEnabled,
@@ -1146,7 +1164,7 @@ export default function Launcher({
               : undefined,
           });
           const cronPermissionMode = coerceRuntimeBirthPermissionMode(
-            launcherPermissionMode,
+            effectiveLauncherPermissionMode,
             cronExecution.runtime ?? launcherRuntime,
           );
           const created = await createCronTask({
@@ -1200,7 +1218,7 @@ export default function Launcher({
     [
       selectedWorkspace,
       launcherProvider,
-      launcherPermissionMode,
+      effectiveLauncherPermissionMode,
       launcherSelectedModel,
       launcherReasoningEffort,
       launcherWorkspaceMcpEnabled,
@@ -1341,7 +1359,7 @@ export default function Launcher({
             onModelChange={handleLauncherModelChange}
             reasoningEffort={launcherReasoningEffort}
             onReasoningEffortChange={handleLauncherReasoningEffortChange}
-            permissionMode={launcherPermissionMode}
+            permissionMode={effectiveLauncherPermissionMode}
             onPermissionModeChange={handleLauncherPermissionModeChange}
             apiKeys={apiKeys}
             providerVerifyStatus={providerVerifyStatus}

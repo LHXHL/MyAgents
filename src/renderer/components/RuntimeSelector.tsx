@@ -2,12 +2,13 @@
 // Used by the Launcher and Agent settings; a Chat Session's Runtime is read-only.
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronUp, CircleHelp, Settings } from 'lucide-react';
+import { Check, ChevronUp, CircleHelp, Settings } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Popover } from '@/components/ui/Popover';
 import Tip from '@/components/Tip';
 import { RUNTIME_PRESENTATION } from '@/components/runtimePresentation';
+import RuntimeIcon from '@/components/RuntimeIcon';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import type { RuntimeType, RuntimeDetections } from '../../shared/types/runtime';
 import {
@@ -32,33 +33,21 @@ const RUNTIME_OPTIONS: {
     { type: 'codex', name: RUNTIME_PRESENTATION.codex.name, group: 'external' },
   ];
 
-function RuntimeIcon({ type, size = 14 }: { type: RuntimeType; size?: number }) {
-  return (
-    <img
-      src={RUNTIME_PRESENTATION[type].icon}
-      alt=""
-      className="shrink-0 rounded-[3px]"
-      style={{ width: size, height: size }}
-      draggable={false}
-    />
-  );
-}
-
 function RuntimeGroupHeading({ group }: { group: 'integrated' | 'external' }) {
   const { t } = useTranslation('chat');
   const label = t(group === 'integrated' ? 'runtime.integrated' : 'runtime.externalCli');
   const description = t(group === 'integrated' ? 'runtime.integratedHelp' : 'runtime.externalCliHelp');
 
   return (
-    <div className="flex items-center gap-1 px-3 pb-1 pt-2 text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]/60">
+    <div className="flex items-center gap-1.5 px-3 pb-1.5 pt-2 text-xs font-medium text-[var(--ink-muted)]">
       <span>{label}</span>
       <Tip label={description} wrap>
         <button
           type="button"
           aria-label={`${label}: ${description}`}
-          className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--accent)]"
+          className="inline-flex h-4 w-4 items-center justify-center rounded-full text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--accent)]"
         >
-          <CircleHelp className="h-3.5 w-3.5" aria-hidden="true" />
+          <CircleHelp className="h-3 w-3" aria-hidden="true" />
         </button>
       </Tip>
     </div>
@@ -126,116 +115,52 @@ export default memo(function RuntimeSelector({
   const currentOption = availableOptions.find(o => o.type === value) ?? availableOptions[0];
   if (!currentOption) return null;
 
-  if (variant === 'panel') {
-    return (
-      <>
-        <button
-          ref={triggerRef}
-          type="button"
-          aria-disabled={disabled}
-          onClick={() => {
-            if (disabled) {
-              onDisabledClick?.();
-              return;
-            }
-            setOpen(!menuOpen);
-          }}
-          className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-sm text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)] ${
-            disabled ? 'cursor-not-allowed opacity-50 hover:bg-transparent' : ''
-          }`}
-          title={disabled ? disabledReason : undefined}
-        >
-          <span className="flex items-center gap-2">
-            <RuntimeIcon type={value} size={16} />
-            {currentOption.name}
-          </span>
-          <ChevronUp className={`h-3.5 w-3.5 text-[var(--ink-muted)] transition-transform ${menuOpen ? '' : 'rotate-180'}`} />
-        </button>
-        <Popover
-          open={menuOpen}
-          onClose={() => setOpen(false)}
-          anchorRef={triggerRef}
-          placement="top-start"
-          className="w-72 py-1"
-        >
-          {availableOptions.map((opt, index) => {
-            const detection = detections[opt.type];
-            const installed = opt.type === 'builtin' || (detection?.installed && IMPLEMENTED_RUNTIMES.has(opt.type));
-            return (
-              <div key={opt.type}>
-              {(index === 0 || availableOptions[index - 1].group !== opt.group) && (
-                <RuntimeGroupHeading group={opt.group} />
-              )}
-              <button
-                type="button"
-                onClick={() => installed && handleSelect(opt.type)}
-                disabled={!installed}
-                className={`flex w-full items-center gap-3 px-3 py-2.5 text-left whitespace-nowrap transition-colors ${installed
-                  ? opt.type === value
-                    ? 'bg-[var(--accent-warm-subtle)]'
-                    : 'hover:bg-[var(--hover-bg)]'
-                  : 'opacity-40 cursor-not-allowed'
-                  }`}
-              >
-                <RuntimeIcon type={opt.type} size={20} />
-                <span className={`text-sm font-medium ${opt.type === value ? 'text-[var(--accent)]' : 'text-[var(--ink)]'}`}>
-                  {opt.name}
-                </span>
-                {!installed && (
-                  <span className="ml-auto text-[var(--ink-subtle)] text-xs">
-                    {detection?.installed && !IMPLEMENTED_RUNTIMES.has(opt.type)
-                      ? t('runtime.comingSoon')
-                      : t('runtime.notInstalled')}
-                  </span>
-                )}
-              </button>
-              </div>
-            );
-          })}
-        </Popover>
-      </>
-    );
-  }
-
-  // Launcher variant: compact icon button
   return (
     <>
       <button
         ref={triggerRef}
         type="button"
         aria-disabled={disabled}
-        onClick={(e) => {
-          e.stopPropagation();
+        aria-expanded={menuOpen}
+        onClick={(event) => {
+          if (variant === 'launcher') event.stopPropagation();
           if (disabled) {
             onDisabledClick?.();
             return;
           }
           setOpen(!menuOpen);
         }}
-        className={`inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] ${
-          disabled ? 'cursor-not-allowed opacity-50 hover:bg-transparent hover:text-[var(--ink-muted)]' : ''
+        className={`${variant === 'panel'
+          ? 'flex w-full min-w-0 items-center justify-between gap-3 rounded-lg border border-[var(--line)] bg-[var(--paper-inset)] px-3 py-2 text-sm text-[var(--ink)] [--runtime-icon-surface:var(--paper-inset)]'
+          : 'inline-flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm font-medium text-[var(--ink-muted)] [--runtime-icon-surface:var(--paper)]'
+        } transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] ${disabled
+          ? 'cursor-not-allowed opacity-50'
+          : 'hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] hover:[--runtime-icon-surface:var(--hover-bg)]'
         }`}
         title={disabled ? disabledReason : `Runtime: ${currentOption.name}`}
       >
-        <RuntimeIcon type={value} size={16} />
-        <ChevronUp className={`h-3 w-3 shrink-0 transition-transform ${menuOpen ? '' : 'rotate-180'}`} />
+        <span className="flex min-w-0 items-center gap-3">
+          <RuntimeIcon type={value} size={16} />
+          {variant === 'panel' && <span className="truncate">{currentOption.name}</span>}
+        </span>
+        <ChevronUp className={`h-3 w-3 shrink-0 text-[var(--ink-muted)] transition-transform ${menuOpen ? '' : 'rotate-180'}`} />
       </button>
       <Popover
         open={menuOpen}
         onClose={() => setOpen(false)}
         anchorRef={triggerRef}
         placement="top-start"
-        className="w-72 py-1"
+        className="w-88 max-w-[calc(100vw-1rem)] rounded-xl py-2"
       >
-        <div className="flex items-center justify-between px-3 pb-0.5 pt-1.5">
-          <span className="text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]/60">{t('runtime.header')}</span>
+        <div className="flex items-center justify-between gap-2 px-3 pb-1 pt-1">
+          <span className="text-xs font-semibold text-[var(--ink-muted)]">{t('runtime.header')}</span>
           {onOpenSettings && (
             <button
               type="button"
-              onClick={(e) => { e.stopPropagation(); setOpen(false); onOpenSettings(); }}
+              onClick={(event) => { event.stopPropagation(); setOpen(false); onOpenSettings(); }}
               className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
             >
-              <Settings className="h-2.5 w-2.5" />
+              <Settings className="h-3 w-3" />
               {t('runtime.settings')}
             </button>
           )}
@@ -243,33 +168,49 @@ export default memo(function RuntimeSelector({
         {availableOptions.map((opt, index) => {
           const detection = detections[opt.type];
           const installed = opt.type === 'builtin' || (detection?.installed && IMPLEMENTED_RUNTIMES.has(opt.type));
+          const selected = opt.type === value;
+          const groupStart = index === 0 || availableOptions[index - 1].group !== opt.group;
           return (
             <div key={opt.type}>
-            {(index === 0 || availableOptions[index - 1].group !== opt.group) && (
-              <RuntimeGroupHeading group={opt.group} />
-            )}
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                if (installed) handleSelect(opt.type);
-              }}
-              disabled={!installed}
-              className={`flex w-full items-center gap-3 px-3 py-2.5 text-left whitespace-nowrap transition-colors ${installed
-                ? opt.type === value
-                  ? 'bg-[var(--accent-warm-subtle)]'
-                  : 'hover:bg-[var(--hover-bg)]'
-                : 'opacity-40 cursor-not-allowed'
-                }`}
-            >
-              <RuntimeIcon type={opt.type} size={20} />
-              <span className={`text-sm font-medium ${opt.type === value ? 'text-[var(--accent)]' : 'text-[var(--ink)]'}`}>
-                {opt.name}
-              </span>
-              {!installed && (
-                <span className="ml-auto text-[var(--ink-subtle)] text-xs">{t('runtime.notInstalled')}</span>
+              {groupStart && (
+                <>
+                  {index > 0 && <div className="mx-3 my-2 h-px bg-[var(--line-subtle)]" />}
+                  <RuntimeGroupHeading group={opt.group} />
+                </>
               )}
-            </button>
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (installed) handleSelect(opt.type);
+                }}
+                disabled={!installed}
+                aria-pressed={selected}
+                title={opt.name}
+                className={`flex w-full items-center gap-3 px-3 py-3 text-left transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--accent)] ${selected && installed
+                  ? 'bg-[var(--accent-warm-subtle)] [--runtime-icon-surface:var(--accent-warm-subtle)]'
+                  : '[--runtime-icon-surface:var(--paper-elevated)]'
+                } ${installed
+                  ? selected ? '' : 'hover:bg-[var(--hover-bg)] hover:[--runtime-icon-surface:var(--hover-bg)]'
+                  : 'cursor-not-allowed opacity-40'
+                }`}
+              >
+                <span className="flex w-9 shrink-0 items-center">
+                  <RuntimeIcon type={opt.type} size={20} />
+                </span>
+                <span className={`min-w-0 flex-1 truncate text-sm font-medium ${selected ? 'text-[var(--accent)]' : 'text-[var(--ink)]'}`}>
+                  {opt.name}
+                </span>
+                {installed ? (
+                  <Check className={`h-3.5 w-3.5 shrink-0 text-[var(--accent)] ${selected ? '' : 'invisible'}`} aria-hidden="true" />
+                ) : (
+                  <span className="shrink-0 text-xs text-[var(--ink-subtle)]">
+                    {detection?.installed && !IMPLEMENTED_RUNTIMES.has(opt.type)
+                      ? t('runtime.comingSoon')
+                      : t('runtime.notInstalled')}
+                  </span>
+                )}
+              </button>
             </div>
           );
         })}

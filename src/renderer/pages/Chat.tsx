@@ -1555,9 +1555,13 @@ export default function Chat({
 
   const [workspaceRefreshKey, _setWorkspaceRefreshKey] = useState(0); // Key to trigger workspace refresh
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(
-    (currentAgent?.permissionMode as PermissionMode | undefined) ??
-      currentProject?.permissionMode ??
-      'auto',
+    () => resolveBuiltinPermissionMode({
+      projectSynced: false,
+      statePermissionMode: 'auto',
+      agentPermissionMode: currentAgent?.permissionMode,
+      projectPermissionMode: currentProject?.permissionMode,
+      defaultPermissionMode: config.defaultPermissionMode,
+    }),
   );
   const [selectedModel, setSelectedModel] = useState<string | undefined>(
     currentAgent?.model ??
@@ -2429,16 +2433,15 @@ export default function Chat({
           effectiveRuntimePermissionMode ??
           getDefaultRuntimePermissionMode(currentRuntime) ??
           'default')
-        : (launchMessage.permissionMode ??
-          resolveBuiltinPermissionMode({
-            projectSynced: false,
-            statePermissionMode: permissionMode,
+        : resolveBuiltinPermissionMode({
+            projectSynced: projectPermissionModeForRuntime(launchMessage.permissionMode, 'builtin') !== undefined,
+            statePermissionMode: launchMessage.permissionMode ?? permissionMode,
             agentPermissionMode: currentAgent?.permissionMode as
               | string
               | undefined,
             projectPermissionMode: currentProject?.permissionMode,
             defaultPermissionMode: config.defaultPermissionMode,
-          }))
+          })
     ) as PermissionMode;
     const effectiveModel = inputUsesExternalRuntimeControls
       ? (coerceExternalRuntimeModelForUi(
@@ -2525,7 +2528,7 @@ export default function Chat({
               setPermissionMode(providerPermission);
             }
           } else {
-            setPermissionMode(launchMessage.permissionMode);
+            setPermissionMode(effectivePermission);
             // #244: the launcher choice is now the authoritative builtin mode —
             // mark synced so effectivePermissionMode trusts state and doesn't
             // re-derive from the agent default (the project-sync effect is
@@ -3754,10 +3757,13 @@ export default function Chat({
     }
     projectSyncedRef.current = true;
     // AgentConfig is source of truth, Project is fallback for non-agent workspaces
-    const effectivePermission =
-      (currentAgent?.permissionMode as PermissionMode | undefined) ??
-      currentProject.permissionMode ??
-      config.defaultPermissionMode;
+    const effectivePermission = resolveBuiltinPermissionMode({
+      projectSynced: false,
+      statePermissionMode: permissionMode,
+      agentPermissionMode: currentAgent?.permissionMode,
+      projectPermissionMode: currentProject.permissionMode,
+      defaultPermissionMode: config.defaultPermissionMode,
+    });
     setPermissionMode(effectivePermission);
     // Runtime-specific permission mode sync is handled by the `[currentRuntime, isExternalRuntime]`
     // effect higher up, which validates the persisted value against the current runtime's mode
