@@ -22,6 +22,18 @@ import {
 afterEach(() => resetExternalContentState());
 
 describe('external live assistant content', () => {
+  it('persists Provider images with their original server tool and rejects a different route', () => {
+    const attachment = { kind: 'image' as const, mimeType: 'image/png', refPath: '/api/attachment/tool/session/turn/image.png' };
+    startExternalProviderToolUse({ toolUseId: 'provider-call', toolName: 'image_generation',
+      providerRouteId: 'provider', providerBlockType: 'server_tool_use', toolInput: {} });
+    const result = { toolUseId: 'provider-call', providerRouteId: 'provider',
+      providerBlockType: 'image_generation_result', content: 'Generated image', isError: false, attachments: [attachment] };
+    expect(applyExternalProviderToolResult({ ...result, providerRouteId: 'other' })).toBe(false);
+    expect(applyExternalProviderToolResult(result)).toBe(true);
+    const blocks = JSON.parse(buildCurrentExternalAssistantSnapshotContent()!);
+    expect(blocks[0].tool).toMatchObject({ result: 'Generated image', isLoading: false, attachments: [attachment] });
+  });
+
   it('persists Provider-owned activity as a distinct server tool block', () => {
     startExternalProviderToolUse({
       toolUseId: 'provider-call-1',

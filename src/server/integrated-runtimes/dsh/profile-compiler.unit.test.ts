@@ -215,7 +215,7 @@ describe("DSH ModelExecutionProfile compiler", () => {
     })).toThrowError(expect.objectContaining({ code: "model-capabilities-invalid" }));
   });
 
-  it("keeps explicit reasoning effort on the native route only", () => {
+  it("uses the model default when an optional reasoning effort is unsupported", () => {
     const high = compileDshModelExecutionProfile({
       provider: preset("deepseek"),
       modelId: "deepseek-v4-pro",
@@ -223,12 +223,14 @@ describe("DSH ModelExecutionProfile compiler", () => {
     });
     expect(high).toMatchObject({ reasoning: true, effort: "max" });
 
-    expect(() => compileDshModelExecutionProfile({
+    const fallback = compileDshModelExecutionProfile({
       provider: preset("zhipu-ai"),
       modelId: "glm-5.3",
       reasoningEffort: "high",
-    })).toThrowError(expect.objectContaining({
-      code: "reasoning-effort-unsupported",
-    } satisfies Partial<DshProfileCompilerError>));
+    });
+    expect(fallback).toEqual(compileDshModelExecutionProfile({
+      provider: preset("zhipu-ai"), modelId: "glm-5.3",
+    }));
+    expect(fallback.effort).toBeUndefined();
   });
 });

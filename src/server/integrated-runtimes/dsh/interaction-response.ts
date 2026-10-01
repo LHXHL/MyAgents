@@ -10,9 +10,10 @@ export function buildDshQuestionAnswer(id: string, value: unknown, labels: reado
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('DSH question answer is missing');
   const answer = value as { selected?: unknown; custom?: unknown };
-  if (!Array.isArray(answer.selected) || !answer.selected.every(label => typeof label === 'string')
+  const selected = answer.selected === undefined ? [] : answer.selected;
+  if (!Array.isArray(selected) || !selected.every(label => typeof label === 'string')
     || (answer.custom !== undefined && typeof answer.custom !== 'string')) throw new Error('DSH question answer has an invalid shape');
-  return { id, selected: answer.selected as string[], ...(answer.custom === undefined ? {} : { custom: answer.custom as string }) };
+  return { id, selected: selected as string[], ...(answer.custom === undefined ? {} : { custom: answer.custom as string }) };
 }
 
 export function reconcileExpiredDshInteractionResponse(

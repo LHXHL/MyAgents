@@ -470,6 +470,7 @@ export function applyExternalProviderToolResult(input: {
   providerBlockType: string;
   content: string;
   isError: boolean;
+  attachments?: ToolAttachment[];
 }): boolean {
   for (let index = currentContentBlocks.length - 1; index >= 0; index -= 1) {
     const block = currentContentBlocks[index];
@@ -480,6 +481,7 @@ export function applyExternalProviderToolResult(input: {
     block.tool.result = input.content;
     block.tool.isError = input.isError;
     block.tool.isLoading = false;
+    if (input.attachments) block.tool.attachments = input.attachments;
     return true;
   }
   return false;

@@ -10175,6 +10175,8 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         'tool_use_stop',
         'tool_result_delta',
         'tool_result',
+        'provider_tool_use_start',
+        'provider_tool_result',
         'subagent_lifecycle',
         'tool_attachment_update',
         'message_replay',
@@ -10646,13 +10648,15 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
     case 'provider_tool_use_start':
       closePendingThinkingProjection();
       flushPendingText('mirror-completed-block');
-      startExternalProviderToolUse({
-        toolUseId: event.toolUseId,
-        toolName: event.toolName,
-        providerRouteId: event.providerRouteId,
-        providerBlockType: event.providerBlockType,
-        toolInput: event.input,
-      });
+      if (!presentation) {
+        startExternalProviderToolUse({
+          toolUseId: event.toolUseId,
+          toolName: event.toolName,
+          providerRouteId: event.providerRouteId,
+          providerBlockType: event.providerBlockType,
+          toolInput: event.input,
+        });
+      }
       broadcast('chat:server-tool-use-start', {
         id: event.toolUseId,
         name: event.toolName,
@@ -10669,19 +10673,30 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
       break;
 
     case 'provider_tool_result': {
-      if (
-        !applyExternalProviderToolResult({
-          toolUseId: event.toolUseId,
-          providerRouteId: event.providerRouteId,
-          providerBlockType: event.providerBlockType,
-          content: event.content,
-          isError: event.isError,
-        })
-      ) {
+      const product = getExternalProductContent();
+      const target = product?.tool(event.toolUseId);
+      const block = target ? product!.readBlock(target) : undefined;
+      const correlated = product
+        ? block?.type === 'server_tool_use' && block.providerRouteId === event.providerRouteId
+        : applyExternalProviderToolResult({
+            toolUseId: event.toolUseId,
+            providerRouteId: event.providerRouteId,
+            providerBlockType: event.providerBlockType,
+            content: event.content,
+            isError: event.isError,
+            attachments: event.attachments,
+          });
+      if (!correlated) {
         console.warn(
           `[external-session] Ignoring uncorrelated Provider tool result ${event.toolUseId}`,
         );
         break;
+      }
+      if (product && target) {
+        product.confirmText(target, 'result', event.content);
+        product.updateBlock(target, { resultProviderBlockType: event.providerBlockType });
+        product.updateTool(target, { isLoading: false, isError: event.isError }, true);
+        if (event.attachments) product.confirmAttachments(target, event.attachments as unknown as TranscriptObject[]);
       }
       broadcast('chat:tool-result-complete', {
         toolUseId: event.toolUseId,
@@ -10689,6 +10704,7 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
         isError: event.isError,
         providerRouteId: event.providerRouteId,
         providerBlockType: event.providerBlockType,
+        ...(event.attachments ? { attachments: event.attachments } : {}),
       });
       break;
     }

@@ -59,6 +59,41 @@ MyAgents-dsh continues to own:
 - provider-profile execution and exact compatibility manifest;
 - the verified Runtime artifact.
 
+### Live content projection
+
+The generated protocol owns payload shape; Host projection must not add content
+restrictions absent from that contract. `assistant_delta` and `thinking_delta`
+allow empty strings, including Provider block-ending frames. The Host advances
+their frame position and emits no Product content for them, then continues to
+the next delta and native terminal. Warning messages also accept empty content
+while retaining their required code. Non-empty identity, generation, sequence and
+stream-boundary checks retain their authority role. Treating content as a
+non-empty identifier previously turned valid stream endings into fatal
+`Protocol dispatch failed` errors and caused Host shutdown to abort native turns.
+
+Tool display input uses the same pure normalization for live events and durable
+reconciliation: objects retain their fields; other JSON values appear under
+`arguments`. This projection never validates or changes native tool execution.
+Native and Provider tool `image_ref` results share the existing attachment lease,
+storage and gallery pipeline. Product history retains registered attachments when
+native terminal reconciliation confirms tool content. UI display does not depend
+on model input modalities; DSH owns whether a model can consume image bytes.
+Only a failed image registration shows an unavailable marker for that image,
+while retaining sibling text/images and the native turn's actual result.
+
+Reasoning effort is an optional model preference. An unrecognized value or an
+effort unsupported by the selected model uses that model's declared default;
+the effective configuration reports `default` rather than the ignored preference.
+Permission modes, Provider ownership and execution identities remain exact.
+Custom AskUser answers may omit `selected`, which normalizes to an empty list;
+invalid answers still leave the interaction pending for correction.
+
+Host tool execution settlement precedes output publication. Long text uses the
+existing MyAgents ref store at the DSH wire bound, scoped to the Product Session.
+Publication failures retain the real execution state and readable output, with
+an explicit unavailable-media marker or bounded preview. They cannot relabel a
+completed action as failed and encourage duplicate execution.
+
 ## 2. Historical design audit (MyAgents 0.4.12)
 
 This RFC was originally audited against MyAgents `0.4.12` at commit `c39d7387a6122f9ebed5f4ec94583aebd1da93f6` and was revalidated against committed HEAD `61a81af384a2333dd8f4fc5f14436ab6e360c820` after the formal DSH `2.0.0` handoff was produced. Since the previous audit at `d6ba358f…`, committed changes touching `Launcher.tsx` and `specs/ARCHITECTURE.md` are limited to the Record/AI-discussion flow; they do not alter `src/server/session-engine/`, Runtime identity types, Provider execution policy, or the Rust Runtime identity owner. The architectural findings therefore remain valid.

@@ -20,6 +20,72 @@ function envelope(
 }
 
 describe('DshRuntimeEventProjector', () => {
+  it.each([null, 'raw tool arguments', ['one', 'two'], 42])(
+    'keeps a turn usable when tool display input is not an object: %j', async input => {
+      const events: UnifiedEvent[] = [];
+      const projector = new DshRuntimeEventProjector({
+        productSessionId: 'product-session-1', runtimeGeneration: 'runtime-generation-1', onEvent: event => events.push(event),
+      });
+      await projector.accept(envelope(1, { kind: 'tool', phase: 'start', name: 'Fixture', input }, { toolCallId: 'call-1' }));
+      await projector.accept(envelope(2, { kind: 'turn_terminal', clientOperationId: 'operation-1',
+        terminal: { kind: 'succeeded', assistantEventId: 'assistant-1' } }));
+      expect(events[0]).toMatchObject({ kind: 'tool_use_start', input: { arguments: input } });
+      expect(events.at(-1)).toMatchObject({ kind: 'turn_complete', status: 'success' });
+    },
+  );
+
+  it.each(['available', 'partly-unavailable', 'no-resolver'] as const)(
+    'publishes Provider images independently of model modality and isolates attachment failures: %s', async mode => {
+    const events: UnifiedEvent[] = [];
+    const attachment = { kind: 'image' as const, mimeType: 'image/png',
+      refPath: '/api/attachment/tool/product-session-1/turn-1/image.png' };
+    const resolveToolImage = vi.fn(async (image: Record<string, unknown>) => {
+      if (mode === 'partly-unavailable' && image.attachmentId === 'fixture-image') throw new Error('fixture lease unavailable');
+      return attachment;
+    });
+    const projector = new DshRuntimeEventProjector({
+      productSessionId: 'product-session-1', runtimeGeneration: 'runtime-generation-1', onEvent: event => events.push(event),
+      ...(mode === 'no-resolver' ? {} : { resolveToolImage }),
+    });
+    await projector.accept(envelope(1, { kind: 'provider_tool', phase: 'end', name: 'Fixture',
+      providerRouteId: 'provider-1', providerToolCallId: 'call-1', providerBlockType: 'fixture_result',
+      result: { state: 'succeeded', isError: false, content: [
+        { type: 'text', text: 'Useful text' },
+        { type: 'image_ref', attachmentId: 'fixture-image', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64) },
+        { type: 'text', text: 'More text' },
+        { type: 'image_ref', attachmentId: 'fixture-image-2', mimeType: 'image/png', sizeBytes: 1, sha256: 'b'.repeat(64) },
+      ] } }, { turnId: 'turn-1' }));
+    await projector.accept(envelope(2, { kind: 'turn_terminal', clientOperationId: 'operation-1',
+      terminal: { kind: 'succeeded', assistantEventId: 'assistant-1' } }));
+    const result = events.find(event => event.kind === 'provider_tool_result');
+    expect(result).toMatchObject({ kind: 'provider_tool_result', isError: false,
+      content: mode === 'available' ? 'Useful text\nMore text'
+        : 'Useful text\n[DSH image attachment unavailable]\nMore text'
+          + (mode === 'no-resolver' ? '\n[DSH image attachment unavailable]' : ''),
+      ...(mode === 'no-resolver' ? {} : { attachments: mode === 'available' ? [attachment, attachment] : [attachment] }),
+    });
+    if (mode === 'no-resolver') expect(result).not.toHaveProperty('attachments');
+    else expect(resolveToolImage).toHaveBeenCalledWith(expect.objectContaining({ attachmentId: 'fixture-image-2' }), {
+      runtimeSessionId: 'runtime-session-1', turnId: 'turn-1', toolUseId: 'call-1', toolName: 'Fixture',
+    });
+    expect(events.at(-1)).toMatchObject({ kind: 'turn_complete', status: 'success' });
+  });
+
+  it.each(['tool', 'provider_tool'])('isolates unsupported display blocks in %s results', async kind => {
+    const events: UnifiedEvent[] = [];
+    const projector = new DshRuntimeEventProjector({ productSessionId: 'product-session-1',
+      runtimeGeneration: 'runtime-generation-1', onEvent: event => events.push(event) });
+    await projector.accept(envelope(1, { kind, phase: 'end', name: 'Fixture',
+      providerRouteId: 'provider-1', providerToolCallId: 'call-1', providerBlockType: 'fixture_result',
+      result: { state: 'succeeded', content: [{ type: 'text', text: 'Useful text' }, null, { type: 'future-media' }] },
+    }, { toolCallId: 'call-1' }));
+    await projector.accept(envelope(2, { kind: 'turn_terminal', clientOperationId: 'operation-1',
+      terminal: { kind: 'succeeded', assistantEventId: 'assistant-1' } }));
+    expect(events[0]).toMatchObject({ kind: kind === 'tool' ? 'tool_result' : 'provider_tool_result',
+      content: 'Useful text\n[Unsupported DSH tool result block: undefined]\n[Unsupported DSH tool result block: future-media]', isError: false });
+    expect(events.at(-1)).toMatchObject({ kind: 'turn_complete', status: 'success' });
+  });
+
   it.each([null, 'unavailable', {}, { inputTokens: -1, outputTokens: 2 }])(
     'settles a successful turn despite unusable optional telemetry: %j', async usage => {
       const events: UnifiedEvent[] = [];
@@ -458,6 +524,70 @@ describe('DshRuntimeEventProjector', () => {
       await send({ kind: 'assistant_stream', phase: 'end', streamId, chunkCount: 4, outcome });
     }
     expect(events).toEqual(['first', 'second', 'third'].map(text => ({ kind: 'text_delta', text })));
+  });
+
+  it.each(['thinking_delta', 'assistant_delta'])(
+    'accepts an empty %s frame and continues through text and successful settlement', async kind => {
+      const events: UnifiedEvent[] = [];
+      const projector = new DshRuntimeEventProjector({
+        productSessionId: 'product-session-1', runtimeGeneration: 'runtime-generation-1',
+        onEvent: event => events.push(event),
+      });
+      let sequence = 0;
+      const send = (event: Record<string, unknown>) => projector.accept(envelope(++sequence, event, { turnId: 'turn-1' }));
+      await send({ kind: 'assistant_stream', phase: 'start', streamId: 'stream-1' });
+      await send({ kind: 'thinking_delta', streamId: 'stream-1', frameIndex: 1, delta: 'Fixture reasoning' });
+      if (kind === 'thinking_delta') {
+        await send({ kind, streamId: 'stream-1', frameIndex: 2, delta: '' });
+        expect(events).toEqual([{ kind: 'thinking_delta', text: 'Fixture reasoning', index: 0 }]);
+      }
+      await send({ kind: 'assistant_delta', streamId: 'stream-1', frameIndex: 4, delta: 'Fixture answer' });
+      if (kind === 'assistant_delta') {
+        await send({ kind, streamId: 'stream-1', frameIndex: 5, delta: '' });
+      }
+      await send({ kind: 'assistant_stream', phase: 'end', streamId: 'stream-1', chunkCount: 6,
+        outcome: { kind: 'committed', eventType: 'assistant/message', eventId: 'assistant-1', messageId: 'message-1' } });
+      await send({ kind: 'turn_terminal', clientOperationId: 'operation-1',
+        terminal: { kind: 'succeeded', assistantEventId: 'assistant-1' } });
+      await projector.whenIdle();
+      expect(projector.failure).toBeUndefined();
+      expect(events).toEqual([
+        { kind: 'thinking_delta', text: 'Fixture reasoning', index: 0 },
+        { kind: 'text_delta', text: 'Fixture answer' },
+        { kind: 'turn_complete', clientOperationId: 'operation-1', status: 'success' },
+      ]);
+    },
+  );
+
+  it('retains frame ordering after an empty delta', async () => {
+    const projector = new DshRuntimeEventProjector({
+      productSessionId: 'product-session-1', runtimeGeneration: 'runtime-generation-1', onEvent: vi.fn(),
+    });
+    await projector.accept(envelope(1, { kind: 'assistant_stream', phase: 'start', streamId: 'stream-1' }, { turnId: 'turn-1' }));
+    await projector.accept(envelope(2, { kind: 'thinking_delta', streamId: 'stream-1', frameIndex: 2, delta: '' }, { turnId: 'turn-1' }));
+    await expect(projector.accept(envelope(3, {
+      kind: 'assistant_delta', streamId: 'stream-1', frameIndex: 2, delta: 'Out of order',
+    }, { turnId: 'turn-1' }))).rejects.toThrow('not increasing');
+  });
+
+  it.each([undefined, null, 0])('rejects a non-string delta: %j', async delta => {
+    const projector = new DshRuntimeEventProjector({
+      productSessionId: 'product-session-1', runtimeGeneration: 'runtime-generation-1', onEvent: vi.fn(),
+    });
+    await projector.accept(envelope(1, { kind: 'assistant_stream', phase: 'start', streamId: 'stream-1' }, { turnId: 'turn-1' }));
+    await expect(projector.accept(envelope(2, {
+      kind: 'assistant_delta', streamId: 'stream-1', frameIndex: 0, ...(delta === undefined ? {} : { delta }),
+    }, { turnId: 'turn-1' }))).rejects.toThrow('DSH assistant delta must be a string');
+  });
+
+  it('projects an empty warning message without failing the session', async () => {
+    const onEvent = vi.fn();
+    const projector = new DshRuntimeEventProjector({
+      productSessionId: 'product-session-1', runtimeGeneration: 'runtime-generation-1', onEvent,
+    });
+    await projector.accept(envelope(1, { kind: 'warning', code: 'fixture_warning', message: '' }));
+    await projector.whenIdle();
+    expect(onEvent).toHaveBeenCalledWith({ kind: 'log', level: 'warn', message: 'fixture_warning: ' }, undefined);
   });
 
   it('filters the confirmed provider control token across text chunks before Product events', async () => {

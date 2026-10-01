@@ -361,7 +361,7 @@ function reasoningSelection(value: string | undefined): DshReasoningEffortSelect
     || value === 'high' || value === 'xhigh' || value === 'max') {
     return value;
   }
-  throw new Error(`Unsupported DSH reasoning effort: ${value}`);
+  return 'default';
 }
 
 function scenarioCapability(options: SessionStartOptions): 'interactive' | 'deterministic-headless' {
@@ -500,7 +500,7 @@ export async function compileConfiguration(
       ...(previous?.onManagedDrain ?? onManagedDrain
         ? { onManagedDrain: previous?.onManagedDrain ?? onManagedDrain } : {}),
       productPermissionMode: productMode,
-      reasoningEffort: effort,
+      reasoningEffort: effort === 'off' || profile.effort === effort ? effort : 'default',
       revision: `myagents-dsh-config-v1:${hash(
         profile.revision,
         JSON.stringify(collaborative.collaboration),
@@ -1067,6 +1067,7 @@ export class DshRuntime implements AgentRuntime {
                   plane,
                   attachments,
                   runtimeSessionId: processValue?.runtimeSessionId,
+                  productSessionId: options.sessionId,
                   params,
                   context,
                 })

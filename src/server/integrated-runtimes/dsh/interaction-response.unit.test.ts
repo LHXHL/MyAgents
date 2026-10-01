@@ -3,6 +3,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { buildDshQuestionAnswer, reconcileExpiredDshInteractionResponse } from './interaction-response';
 
 describe('DSH question answers', () => {
+  it('accepts a custom-only answer with the optional selection omitted', () => {
+    expect(buildDshQuestionAnswer('q', { custom: 'Use my custom answer' }, ['One'], false))
+      .toEqual({ id: 'q', selected: [], custom: 'Use my custom answer' });
+  });
   it('preserves selected labels and custom text independently, including commas', () => {
     expect(buildDshQuestionAnswer('q', {
       selected: ['One, two', 'Three'], custom: 'Write locally, then continue',

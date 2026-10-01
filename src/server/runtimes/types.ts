@@ -274,6 +274,7 @@ export type UnifiedEvent = (
     toolName: string;
     content: string;
     isError: boolean;
+    attachments?: ToolAttachment[];
   }
   | {
     kind: 'tool_result';

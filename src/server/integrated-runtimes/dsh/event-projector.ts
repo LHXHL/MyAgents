@@ -7,6 +7,7 @@ import type { UnifiedEvent } from '../../runtimes/types';
 import type { DshRpcObject } from './protocol-types';
 import { readDshUsage, readDshUsageTotals, telemetryRecord, tokenCount } from './telemetry';
 import { ProviderControlTokenFilter } from './provider-control-token';
+import { projectDshToolInput } from './history-content';
 
 type DshRuntimeEventEnvelope = Readonly<{
   runtimeGeneration: string;
@@ -49,11 +50,17 @@ function object(value: unknown, description: string): DshRpcObject {
   return value as DshRpcObject;
 }
 
+function contentString(value: unknown, description: string): string {
+  if (typeof value !== 'string') throw new Error(`${description} must be a string`);
+  return value;
+}
+
 function string(value: unknown, description: string): string {
-  if (typeof value !== 'string' || value.length === 0) {
+  const result = contentString(value, description);
+  if (result.length === 0) {
     throw new Error(`${description} must be a non-empty string`);
   }
-  return value;
+  return result;
 }
 
 function optionalString(value: unknown): string | undefined {
@@ -355,6 +362,32 @@ export class DshRuntimeEventProjector {
     return active;
   }
 
+  private async projectToolResult(
+    content: unknown[],
+    context: { runtimeSessionId: string; turnId?: string; toolUseId: string; toolName: string },
+    onEvent: (event: UnifiedEvent) => void,
+  ): Promise<{ content: string; attachments?: ToolAttachment[] }> {
+    const textBlocks: string[] = [];
+    const attachments: ToolAttachment[] = [];
+    for (const candidate of content) {
+      const block = telemetryRecord(candidate);
+      if (block?.type === 'text') {
+        textBlocks.push(typeof block.text === 'string' ? block.text : '');
+      } else if (block?.type === 'image_ref') {
+        try {
+          if (!this.options.resolveToolImage) throw new Error('DSH image resolver unavailable');
+          attachments.push(await this.options.resolveToolImage(block, context));
+        } catch {
+          textBlocks.push('[DSH image attachment unavailable]');
+          onEvent({ kind: 'log', level: 'warn', message: `DSH tool image could not be registered for ${context.toolUseId}` });
+        }
+      } else {
+        textBlocks.push(`[Unsupported DSH tool result block: ${String(block?.type)}]`);
+      }
+    }
+    return { content: textBlocks.join('\n'), ...(attachments.length > 0 ? { attachments } : {}) };
+  }
+
   private async emit(envelope: DshRuntimeEventEnvelope): Promise<void> {
     const onEvent = (event: UnifiedEvent): void => this.options.onEvent(event,
       envelope.turnId ?? (event.kind === 'root_turn_admitted' ? event.runtimeTurnId : undefined));
@@ -423,7 +456,10 @@ export class DshRuntimeEventProjector {
         // Non-text native chunks are omitted from the Product notification stream.
         if (frameIndex <= active.lastFrameIndex) throw new Error('DSH assistant delta position is not increasing');
         active.lastFrameIndex = frameIndex;
-        const text = string(event.delta, 'DSH assistant delta');
+        const text = contentString(event.delta, 'DSH assistant delta');
+        // The wire contract allows empty deltas, including provider block endings.
+        // They consume a frame position without producing Product content.
+        if (text.length === 0) return;
         if (kind === 'assistant_delta') {
           const filtered = active.controlTokens.accept(text);
           if (filtered) onEvent({ kind: 'text_delta', text: filtered });
@@ -437,7 +473,7 @@ export class DshRuntimeEventProjector {
         const toolUseId = envelope.toolCallId ?? envelope.itemId;
         if (!toolUseId) throw new Error('DSH tool event lacks a stable tool identity');
         if (phase === 'start') {
-          const input = event.input === undefined ? {} : object(event.input, 'DSH tool input');
+          const input = event.input === undefined ? {} : projectDshToolInput(event.input);
           onEvent({ kind: 'tool_use_start', toolUseId, toolName: string(event.name, 'DSH tool name'), input });
           onEvent({ kind: 'tool_use_stop', toolUseId, input });
           return;
@@ -445,40 +481,17 @@ export class DshRuntimeEventProjector {
         if (phase === 'end') {
           const result = object(event.result, 'DSH tool result');
           if (!Array.isArray(result.content)) throw new Error('DSH tool result content must be an array');
-          const textBlocks: string[] = [];
-          const attachments: ToolAttachment[] = [];
-          for (const candidate of result.content) {
-            const block = object(candidate, 'DSH tool result block');
-            if (block.type === 'text') {
-              textBlocks.push(typeof block.text === 'string' ? block.text : '');
-              continue;
-            }
-            if (block.type === 'image_ref' && this.options.resolveToolImage) {
-              try {
-                attachments.push(await this.options.resolveToolImage(block, {
-                  runtimeSessionId: envelope.runtimeSessionId,
-                  turnId: envelope.turnId,
-                  toolUseId,
-                  toolName: string(event.name, 'DSH tool name'),
-                }));
-              } catch {
-                textBlocks.push('[DSH image attachment unavailable]');
-                onEvent({
-                  kind: 'log',
-                  level: 'warn',
-                  message: `DSH tool image could not be registered for ${toolUseId}`,
-                });
-              }
-              continue;
-            }
-            textBlocks.push(`[Unsupported DSH tool result block: ${String(block.type)}]`);
-          }
+          const content = await this.projectToolResult(result.content, {
+            runtimeSessionId: envelope.runtimeSessionId,
+            turnId: envelope.turnId,
+            toolUseId,
+            toolName: optionalString(event.name) ?? toolUseId,
+          }, onEvent);
           const metadata = toolMetadata(result.metadata);
           onEvent({
             kind: 'tool_result',
             toolUseId,
-            content: textBlocks.join('\n'),
-            ...(attachments.length > 0 ? { attachments } : {}),
+            ...content,
             isError: result.isError === true || result.state === 'failed',
             ...(metadata ? { metadata } : {}),
           });
@@ -504,23 +517,19 @@ export class DshRuntimeEventProjector {
         }
         if (phase === 'end') {
           const result = object(event.result, 'DSH Provider tool result');
-          if (!Array.isArray(result.content)) {
-            throw new Error('DSH Provider tool result content must be an array');
-          }
-          const content = result.content.map((candidate) => {
-            const block = object(candidate, 'DSH Provider tool result block');
-            if (block.type !== 'text' || typeof block.text !== 'string') {
-              throw new Error('DSH Provider tool result supports bounded text blocks only');
-            }
-            return block.text;
-          }).join('\n');
+          const content = await this.projectToolResult(Array.isArray(result.content) ? result.content : [], {
+            runtimeSessionId: envelope.runtimeSessionId,
+            turnId: envelope.turnId,
+            toolUseId,
+            toolName,
+          }, onEvent);
           onEvent({
             kind: 'provider_tool_result',
             providerRouteId,
             providerBlockType,
             toolUseId,
             toolName,
-            content,
+            ...content,
             isError: result.isError === true || result.state === 'failed',
           });
           return;
@@ -580,7 +589,7 @@ export class DshRuntimeEventProjector {
         onEvent({ kind: 'log', level: event.phase === 'failed' ? 'error' : 'info', message: `DSH compaction ${String(event.phase)}` });
         return;
       case 'warning':
-        onEvent({ kind: 'log', level: 'warn', message: `${string(event.code, 'DSH warning code')}: ${string(event.message, 'DSH warning message')}` });
+        onEvent({ kind: 'log', level: 'warn', message: `${string(event.code, 'DSH warning code')}: ${contentString(event.message, 'DSH warning message')}` });
         return;
       case 'session':
         if (event.phase === 'ready') onEvent({ kind: 'status_change', state: 'idle' });

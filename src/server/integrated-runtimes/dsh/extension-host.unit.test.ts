@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../../utils/large-value-store', () => ({ maybeSpill: vi.fn() }));
+import { maybeSpill } from '../../utils/large-value-store';
 
 import type { ProductHostToolDispatcher } from '../../runtimes/product-extensions/contracts';
 import type { DshCompiledExtensionPlane } from './extension-compiler';
@@ -58,7 +61,76 @@ function context(signal = new AbortController().signal): DshRequestContext {
   };
 }
 
+function toolParams() {
+  return {
+    authority: {
+      componentId: 'mcp__myagents_host__lookup', componentGenerationId: `extensions-v1:${'a'.repeat(64)}`,
+      runtimeGeneration: 'generation-one', runtimeSessionId: 'runtime-session', turnId: 'turn-one', callId: 'call-one',
+    },
+    tool: 'mcp__myagents_host__lookup', input: {},
+  };
+}
+
 describe('DSH extension Host reverse ports', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(maybeSpill).mockImplementation(async value => ({ inline: value }));
+  });
+
+  it('keeps successful execution when one attachment cannot be published', async () => {
+    const dispatch = vi.fn().mockResolvedValue({ success: true, contentItems: [
+      { type: 'text', text: 'Already completed' }, { type: 'image', dataUrl: 'data:image/png;base64,YQ==' },
+      { type: 'text', text: 'Additional useful output' },
+    ] });
+    const result = await executeDshProductHostTool({
+      plane: plane({ descriptors: [], dispatch, dispose: vi.fn() }),
+      attachments: { publishDataUrl: vi.fn().mockRejectedValue(new Error('Synthetic archive failure')) },
+      runtimeSessionId: 'runtime-session', productSessionId: 'product-session', params: toolParams(), context: context(),
+    });
+    expect(result).toEqual({ state: 'succeeded', content: [
+      { type: 'text', text: 'Already completed' }, { type: 'text', text: '[MyAgents Host tool attachment unavailable]' },
+      { type: 'text', text: 'Additional useful output' },
+    ] });
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+
+  it('still reports real dispatcher failures as failed operations', async () => {
+    const result = await executeDshProductHostTool({
+      plane: plane({ descriptors: [], dispatch: vi.fn().mockRejectedValue(new Error('Synthetic execution failure')), dispose: vi.fn() }),
+      attachments: { publishDataUrl: vi.fn() }, runtimeSessionId: 'runtime-session', productSessionId: 'product-session',
+      params: toolParams(), context: context(),
+    });
+    expect(result).toEqual({ state: 'failed', code: 'host_tool_failed' });
+  });
+
+  it('spills long successful output at the DSH wire bound instead of reporting execution failure', async () => {
+    const text = 'x'.repeat(180_000);
+    vi.mocked(maybeSpill).mockResolvedValueOnce({
+      kind: 'ref', id: 'a'.repeat(32), preview: 'Output preview', sizeBytes: text.length,
+      mimetype: 'text/plain', expiresAt: 1,
+    });
+    const result = await executeDshProductHostTool({
+      plane: plane({ descriptors: [], dispatch: vi.fn().mockResolvedValue({ success: true, contentItems: [{ type: 'text', text }] }), dispose: vi.fn() }),
+      attachments: { publishDataUrl: vi.fn() }, runtimeSessionId: 'runtime-session', productSessionId: 'product-session',
+      params: toolParams(), context: context(),
+    });
+    expect(result).toMatchObject({ state: 'succeeded', content: [{ type: 'text', text: expect.stringContaining('Output preview') }] });
+    expect(maybeSpill).toHaveBeenCalledWith(text, expect.objectContaining({ inlineMaxBytes: 131_072, sessionId: 'product-session' }));
+  });
+
+  it('retains a bounded preview and real success when full output storage fails', async () => {
+    vi.mocked(maybeSpill).mockRejectedValueOnce(new Error('Synthetic disk failure'));
+    const result = await executeDshProductHostTool({
+      plane: plane({ descriptors: [], dispatch: vi.fn().mockResolvedValue({ success: true, contentItems: [{ type: 'text', text: 'x'.repeat(180_000) }] }), dispose: vi.fn() }),
+      attachments: { publishDataUrl: vi.fn() }, runtimeSessionId: 'runtime-session', productSessionId: 'product-session',
+      params: toolParams(), context: context(),
+    });
+    expect(result.state).toBe('succeeded');
+    const content = result.content as Array<{ text: string }>;
+    expect(content[0]?.text).toContain('Full output unavailable');
+    expect(content[0]?.text.length).toBeLessThan(131_072);
+  });
+
   it('returns MCP material only for the exact component, digest, and revision', () => {
     const extensionPlane = plane();
     expect(resolveDshMcpCredential({
@@ -118,6 +190,7 @@ describe('DSH extension Host reverse ports', () => {
       plane: extensionPlane,
       attachments: { publishDataUrl },
       runtimeSessionId: 'runtime-session',
+      productSessionId: 'product-session',
       params: {
         authority: {
           componentId: 'mcp__myagents_host__lookup',
@@ -165,6 +238,7 @@ describe('DSH extension Host reverse ports', () => {
       plane: extensionPlane,
       attachments: { publishDataUrl: vi.fn() },
       runtimeSessionId: 'runtime-session',
+      productSessionId: 'product-session',
       params: {
         authority: {
           componentId: 'mcp__myagents_host__lookup',

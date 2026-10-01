@@ -5,6 +5,8 @@ import {
   type DshCompiledExtensionPlane,
 } from './extension-compiler';
 import type { DshRequestContext, DshRpcObject } from './protocol-types';
+import type { ProductHostToolResult } from '../../runtimes/product-extensions/contracts';
+import { maybeSpill } from '../../utils/large-value-store';
 
 type HostAttachmentPublisher = Readonly<{
   publishDataUrl(dataUrl: string): Promise<DshRpcObject>;
@@ -75,6 +77,7 @@ export async function executeDshProductHostTool(input: {
   plane: DshCompiledExtensionPlane;
   attachments: HostAttachmentPublisher;
   runtimeSessionId: string | undefined;
+  productSessionId: string;
   params: DshRpcObject;
   context: DshRequestContext;
 }): Promise<DshRpcObject> {
@@ -101,8 +104,9 @@ export async function executeDshProductHostTool(input: {
   ) {
     return { state: 'failed', code: 'host_tool_authority_mismatch' };
   }
+  let result: ProductHostToolResult;
   try {
-    const result = await dispatcher.dispatch({
+    result = await dispatcher.dispatch({
       processGeneration: authority.runtimeGeneration,
       threadId: authority.runtimeSessionId,
       turnId: authority.turnId,
@@ -111,26 +115,38 @@ export async function executeDshProductHostTool(input: {
       arguments: input.params.input,
       signal: input.context.signal,
     });
-    const content: DshRpcObject[] = [];
-    for (const item of result.contentItems) {
+  } catch {
+    return input.context.signal.aborted
+      ? { state: 'aborted', code: 'host_tool_aborted' }
+      : { state: 'failed', code: 'host_tool_failed' };
+  }
+
+  // Execution is settled. Result publication cannot turn a successful action
+  // into a failed action (and encourage the model to execute it again).
+  const content: DshRpcObject[] = [];
+  for (const item of result.contentItems) {
+    try {
       if (item.type === 'text') {
-        if (item.text.length > 131_072) throw new Error('Host tool text exceeds the DSH protocol bound');
-        content.push({ type: 'text', text: item.text });
+        const spilled = await maybeSpill(item.text, {
+          mimetype: 'text/plain; charset=utf-8', inlineMaxBytes: 131_072, sessionId: input.productSessionId,
+        });
+        content.push({ type: 'text', text: 'inline' in spilled ? item.text
+          : `${spilled.preview}\n\n[完整结果已保存为 MyAgents ref: ${spilled.id}]` });
       } else {
         content.push({
           type: 'attachment_ref',
           attachment: await input.attachments.publishDataUrl(item.dataUrl),
         });
       }
+    } catch {
+      content.push({ type: 'text', text: item.type === 'text'
+        ? `${item.text.slice(0, 4_096)}\n\n[Full output unavailable; only a preview is shown]`
+        : '[MyAgents Host tool attachment unavailable]' });
     }
-    return {
-      state: result.success ? 'succeeded' : 'failed',
-      ...(result.success ? {} : { code: 'host_tool_failed' }),
-      ...(content.length > 0 ? { content } : {}),
-    };
-  } catch {
-    return input.context.signal.aborted
-      ? { state: 'aborted', code: 'host_tool_aborted' }
-      : { state: 'failed', code: 'host_tool_failed' };
   }
+  return {
+    state: result.success ? 'succeeded' : 'failed',
+    ...(result.success ? {} : { code: 'host_tool_failed' }),
+    ...(content.length > 0 ? { content } : {}),
+  };
 }

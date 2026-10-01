@@ -69,8 +69,13 @@ export function reconcileDshV2Assistant(
   const recovered = settled ? undefined : JSON.parse(recoverDshSegmentTail(assistant, segments.slice(0, -1).map(segment => segment.message))) as Block[];
   const priorBlocks = blocks(final.message);
   const content = recovered ? JSON.stringify(recovered.map((block, index) => {
-    const prior = priorBlocks[index];
-    return prior?.type === block.type ? { ...block, ...(typeof prior.id === 'string' ? { id: prior.id } : {}) } : block;
+    const tool = block.tool as Block | undefined;
+    const prior = tool ? priorBlocks.find(candidate => candidate.type === block.type
+      && (candidate.tool as Block | undefined)?.id === tool.id) : priorBlocks[index];
+    if (!prior || prior.type !== block.type) return block;
+    const priorTool = prior.tool as Block | undefined;
+    return { ...block, ...(typeof prior.id === 'string' ? { id: prior.id } : {}),
+      ...(tool && priorTool?.attachments ? { tool: { ...tool, attachments: priorTool.attachments } } : {}) };
   })) : final.message.content;
   let changed = appendedTail;
   if (!settled) {

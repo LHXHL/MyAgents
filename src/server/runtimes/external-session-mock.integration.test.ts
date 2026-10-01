@@ -8455,6 +8455,54 @@ describe('external SessionEngine with fake runtime', () => {
   });
 
 
+  it('preserves DSH Provider tool images and text through live content, terminal and disk reload', async () => {
+    const harness = await createHarness([{ kind: 'silent' }], { runtimeType: 'dsh' });
+    const sessionId = 'session-dsh-provider-image';
+    const workspacePath = join(harness.home, 'workspace');
+    await harness.sessionStore.saveSessionMetadata(createSessionMetadata(workspacePath, {
+      id: sessionId, runtimeBinding: createDshBinding('darwin-arm64'),
+    }));
+    await expect(harness.externalSession.restoreExternalSessionState(sessionId, workspacePath, { type: 'desktop' }))
+      .resolves.toEqual({ success: true });
+    const dispatch = await harness.engine.sendDesktopMessage({
+      ...desktopRequest(sessionId, workspacePath, 'generate an image'),
+      model: 'deepseek-v4-flash', permissionMode: getMaxPermissionForRuntime('dsh'),
+    });
+    await dispatch.dispatchAcceptance;
+    const attachment = { kind: 'image' as const, mimeType: 'image/png',
+      refPath: `/api/attachment/tool/${sessionId}/turn/image.png` };
+    harness.runtime.emitForTest({ kind: 'provider_tool_use_start', toolUseId: 'provider-image',
+      toolName: 'image_generation', providerRouteId: 'provider', providerBlockType: 'server_tool_use', input: {} });
+    harness.runtime.emitForTest({ kind: 'provider_tool_result', toolUseId: 'provider-image',
+      toolName: 'image_generation', providerRouteId: 'different-provider', providerBlockType: 'image_result',
+      content: 'foreign result', isError: false, attachments: [attachment] });
+    harness.runtime.emitForTest({ kind: 'provider_tool_result', toolUseId: 'provider-image',
+      toolName: 'image_generation', providerRouteId: 'provider', providerBlockType: 'image_result',
+      content: 'Generated image', isError: false, attachments: [attachment] });
+    const assertImage = (messages: Array<{ role: string; content: string }>) => {
+      const blocks = messages.filter(message => message.role === 'assistant').flatMap(message => JSON.parse(message.content));
+      expect(blocks).toContainEqual(expect.objectContaining({ type: 'server_tool_use', providerRouteId: 'provider',
+        resultProviderBlockType: 'image_result', tool: expect.objectContaining({
+          id: 'provider-image', result: 'Generated image', isLoading: false, isError: false, attachments: [attachment],
+        }) }));
+      expect(JSON.stringify(blocks)).not.toContain('foreign result');
+    };
+    await waitFor(() => harness.engine.getLiveSessionOverlay(sessionId).liveStreamingMessage?.content.includes(attachment.refPath) ?? false,
+      'DSH Provider image live content');
+    assertImage((await harness.sessionStore.getSessionData(sessionId))!.messages);
+    harness.runtime.emitForTest({ kind: 'text_delta', text: 'Here is the image' });
+    harness.runtime.emitForTest({ kind: 'text_stop' });
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'success' });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    assertImage((await harness.sessionStore.getSessionData(sessionId))!.messages);
+    await harness.externalSession.stopExternalSession();
+    await harness.sessionStore.drainSessionTranscripts();
+    const { readTranscriptFile } = await import('../session-transcript/file');
+    const { transcriptMessages } = await import('../../shared/sessionTranscript');
+    const saved = await readTranscriptFile(join(harness.home, '.myagents', 'sessions-v2', `${sessionId}.jsonl`), sessionId);
+    assertImage(transcriptMessages(saved.projection));
+  });
+
   it('projects DSH thinking, text, tools, usage, and terminal truth through the Product session', async () => {
     const harness = await createHarness(
       [

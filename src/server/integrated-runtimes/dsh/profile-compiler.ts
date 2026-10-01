@@ -23,8 +23,7 @@ export type DshProfileCompilerErrorCode =
   | "provider-api-family-unsupported"
   | "provider-endpoint-invalid"
   | "model-unavailable"
-  | "model-capabilities-invalid"
-  | "reasoning-effort-unsupported";
+  | "model-capabilities-invalid";
 
 export class DshProfileCompilerError extends Error {
   readonly code: DshProfileCompilerErrorCode;
@@ -183,12 +182,9 @@ function applyReasoningSelection(
     return { ...withoutEffort, reasoning: false };
   }
   if (!nativeDeepSeek || (selection !== "high" && selection !== "max")) {
-    throw new DshProfileCompilerError(
-      "reasoning-effort-unsupported",
-      profile.provider,
-      profile.modelId,
-      `Provider/model ${profile.provider}/${profile.modelId} does not declare reasoning effort ${selection}`,
-    );
+    // An optional preference may survive a model switch. The selected model
+    // still runs with its declared default when it cannot apply that preference.
+    return profile;
   }
   return { ...profile, reasoning: true, effort: selection };
 }

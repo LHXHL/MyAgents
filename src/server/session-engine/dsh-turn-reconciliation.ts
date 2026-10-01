@@ -8,7 +8,7 @@ import type {
 } from '../integrated-runtimes/dsh/mutations';
 import type { DshRpcObject } from '../integrated-runtimes/dsh/protocol-types';
 import type { SubagentLifecycle } from '../../shared/types/subagent-lifecycle';
-import { isProtocolIdentifier, projectWorkHistory, providerContentFailed, providerIdentity } from '../integrated-runtimes/dsh/history-content';
+import { isProtocolIdentifier, projectDshToolInput, projectWorkHistory, providerContentFailed, providerIdentity } from '../integrated-runtimes/dsh/history-content';
 import { reconcileDshTurnProjections } from '../SessionStore';
 import { readDshUsage, tokenCount } from '../integrated-runtimes/dsh/telemetry';
 import type {
@@ -238,10 +238,7 @@ function addUsage(total: MessageUsage | undefined, value: MessageUsage): Message
 function parseToolInput(rawArguments: string): Record<string, unknown> {
   try {
     const parsed: unknown = JSON.parse(rawArguments);
-    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return structuredClone(parsed as Record<string, unknown>);
-    }
-    return { arguments: parsed };
+    return projectDshToolInput(parsed);
   } catch {
     return { rawArguments };
   }

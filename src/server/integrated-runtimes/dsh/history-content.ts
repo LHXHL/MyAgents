@@ -5,6 +5,13 @@ import type { DshNativeHistory } from './mutations';
 import { readDshUsage } from './telemetry';
 
 type RecordValue = Readonly<Record<string, unknown>>;
+
+/** Tool display keeps arbitrary native input without imposing execution validation. */
+export function projectDshToolInput(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? structuredClone(value as Record<string, unknown>) : { arguments: value };
+}
+
 function record(value: unknown): RecordValue {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('DSH history content must be an object');

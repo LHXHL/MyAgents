@@ -21,7 +21,7 @@ vi.mock('../../utils/managed-proxy-binding', () => ({
 const options = {
   sessionId: 'session-1',
   workspacePath: '/workspace',
-  permissionMode: 'auto',
+  permissionMode: 'workspace-autonomous',
 } as SessionStartOptions;
 
 function preset(id: string): Provider {
@@ -35,6 +35,25 @@ describe('DSH Provider configuration', () => {
     vi.clearAllMocks();
     vi.mocked(loadConfig).mockReturnValue({} as ReturnType<typeof loadConfig>);
   });
+
+  it.each(['high', 'future-effort'])(
+    'uses and reports the model default for an unsupported optional effort: %s', async reasoningEffort => {
+      const provider = preset('zhipu-ai');
+      vi.mocked(getSessionMetadata).mockReturnValue({
+        providerRoute: { kind: 'provider', providerId: provider.id, model: 'glm-5.3' },
+      } as ReturnType<typeof getSessionMetadata>);
+      vi.mocked(findEffectiveProvider).mockReturnValue(provider as unknown as NonNullable<ReturnType<typeof findEffectiveProvider>>);
+      vi.mocked(resolveProviderEnv).mockReturnValue({
+        providerId: provider.id, providerName: provider.name, apiProtocol: 'anthropic',
+        authType: 'api_key', apiKey: 'synthetic-key', baseUrl: provider.config.baseUrl,
+      });
+      const result = await compileConfiguration({ ...options, reasoningEffort });
+      const baseline = await compileConfiguration(options);
+      expect(result.profile).toEqual(baseline.profile);
+      expect(result.reasoningEffort).toBe('default');
+      expect(result.revision).toBe(baseline.revision);
+    },
+  );
 
   it('keeps Grok bearer out of the configuration and marks only its exact binding dynamic', async () => {
     const provider = preset('xai-sub');

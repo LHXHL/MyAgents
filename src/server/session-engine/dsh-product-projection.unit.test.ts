@@ -3,6 +3,26 @@ import { recoverDshSegmentTail, reconcileDshV2Assistant } from './dsh-product-pr
 import type { SessionMessage } from '../types/session';
 const message = (id: string, text: string): SessionMessage => ({ id, role: 'assistant', timestamp: 't', content: JSON.stringify([{ type: 'text', text, id: `${id}-block` }]) });
 describe('DSH V2 native recovery preserves Product segments', () => {
+  it.each(['tool_use', 'server_tool_use'])(
+    'retains registered attachments by exact tool identity during terminal reconciliation: %s', type => {
+      const attachment = { kind: 'image', mimeType: 'image/png', refPath: '/api/attachment/tool/session/turn/image.png' };
+      const tool = { type, id: 'product-block', tool: { id: 'native-tool', name: 'image_generation',
+        input: {}, result: 'part', attachments: [attachment] } };
+      const rows: SessionMessage[] = [{ id: 'user', role: 'user', content: 'hello', timestamp: 't', turnId: 'user' },
+        { ...message('last', ''), content: JSON.stringify([tool]), turnId: 'user', transcriptState: 'interrupted' }];
+      const assistant: SessionMessage = { ...message('full', ''), content: JSON.stringify([
+        { type: 'text', text: 'before' }, { type, tool: { id: 'native-tool', name: 'image_generation', input: {}, result: 'complete' } },
+        { type, tool: { id: 'different-tool', name: 'image_generation', input: {}, result: 'other' } },
+      ]), runtimeTurnAnchor: { turnId: 'native-turn', rootUserMessageId: 'user' } };
+      const root = { clientUserMessageId: 'user', productTurnId: 'native-turn' };
+      expect(reconcileDshV2Assistant(rows, assistant, root)).toBe(true);
+      const blocks = JSON.parse(rows[1].content);
+      expect(blocks[1]).toMatchObject({ id: 'product-block', tool: { id: 'native-tool', result: 'complete', attachments: [attachment] } });
+      expect(blocks[2].tool).not.toHaveProperty('attachments');
+      expect(reconcileDshV2Assistant(rows, assistant, root)).toBe(false);
+    },
+  );
+
   it('recovers only the suffix absent from an earlier displayed segment', () => {
     expect(JSON.parse(recoverDshSegmentTail(message('full', 'beforeafter'), [message('first', 'before')]))).toEqual([expect.objectContaining({ text: 'after' })]);
     expect(() => recoverDshSegmentTail(message('full', 'other'), [message('first', 'before')])).toThrow('prefix');
