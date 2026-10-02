@@ -61,7 +61,7 @@ Node 冷读先校验原始 batch 字节与操作 schema，再仅在该 batch 的
 
 DSH 同样使用 V2 canonical projection 和后台 writer；旧 Session 的 legacy 格式不变。流式文本、thinking、工具、插话分段、partial Stop/error 与 collaboration 均进入同一 Product 内容路径。collaboration turn 使用明确的 `origin: collaboration`，没有伪造的用户消息；Node/Rust codec 共享 fixture。native terminal 只赋给末展示段，恢复保留已展示的消息和 block 身份，不把整轮正文重复塞入末段。
 
-DSH 的执行事务仍由 SessionStore journal 裁决，不能把 V2 的保存状态当作 native 成功状态。`pendingDshRootOperation` 表示当前 root admission；`pendingDshRootInputs` 保留尚未确认正文落盘的准确用户输入。普通后续执行使用 active projection，不获取后台正文的物理文件锁；即使正文写入一直悬挂，接纳与收据结算也不等待正文 IO，立即写执行记录时也不能提前清掉上一笔尚未落盘的输入或 rewind generation。writer 的 metadata callback 只有在本次提交覆盖当前 live revision 时才退休这些记录；连续发送、插话收据和 metadata 发布失败均遵守这个顺序。
+DSH 的执行事务仍由 SessionStore journal 裁决，不能把 V2 的保存状态当作 native 成功状态。`pendingDshRootOperation` 表示当前 root admission；`pendingDshRootInputs` 保留尚未确认正文落盘的准确用户输入。普通后续执行使用 active projection，不获取后台正文的物理文件锁；即使正文写入一直悬挂，接纳与收据结算也不等待正文 IO，立即写执行记录时也不能提前清掉上一笔尚未落盘的输入或 rewind generation。writer 的 metadata callback 只有在本次提交覆盖当前 live revision 时才退休这些记录；异步发布返回的旧快照不能覆盖当前执行状态，也不能确认尚未覆盖的执行字段；连续发送、插话收据和 metadata 发布失败均遵守这个顺序。
 
 冷恢复先采用 journal 中准确、缺失的 root 输入，再依据 native receipts 恢复输出。唯一允许重新建立尚未出现的 V2 文件的情形，是 journal 持有明确的未发布出生证明；已经发布却丢失或损坏的历史不能被这条路径重建。后者保持不可覆盖，并允许已验证的 native Session 继续产生 live 内容；fork/rewind 仍拒绝不完整来源。
 

@@ -133,14 +133,22 @@ export class SessionTranscript {
       for (const key of this.options.contentBoundMetadataKeys ?? []) delete patch[key];
     }
     if (this.birthPublished && Object.keys(patch).length === 0) return;
+    const metadataAtPublication = this.currentMetadata;
     const updated = await this.options.publishMetadata(this.metadata, patch, !this.birthPublished, committed);
     this.birthPublished = true;
+    // A body commit acknowledges its snapshot, not newer execution state.
+    // SessionStore may have settled/admitted native work while publication awaited IO.
+    const executionKeys = this.options.contentBoundMetadataKeys ?? [];
+    const execution = Object.fromEntries(executionKeys
+      .filter(key => this.currentMetadata[key] !== metadataAtPublication[key])
+      .map(key => [key, this.currentMetadata[key]]));
     const remaining = { ...this.pendingMetadata };
     for (const key of Object.keys(patch) as (keyof SessionMetadata)[]) {
+      if (executionKeys.includes(key) && committed.revision < this.writer.status.liveRevision) continue;
       if (remaining[key] === patch[key]) delete remaining[key];
     }
     this.pendingMetadata = remaining;
-    this.currentMetadata = { ...updated, ...remaining };
+    this.currentMetadata = { ...updated, ...execution, ...remaining };
     if (this.mutation?.target?.generation === committed.generation
       && committed.revision >= this.mutation.target.revision) this.mutation = null;
   }
