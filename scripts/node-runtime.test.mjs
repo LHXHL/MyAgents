@@ -99,6 +99,20 @@ test('all resource consumers use the pinned official pair, without npm overrides
   assert.doesNotMatch(readFileSync(join(repo, 'scripts/download_nodejs.sh'), 'utf8'), /upgrade_npm|npm\/latest/);
 });
 
+test('Windows setup and builds initialize MSVC before native preflight and activate bundled Node before npm install', () => {
+  for (const name of ['setup_windows.ps1', 'build_windows.ps1', 'build_dev_win.ps1']) {
+    const source = readFileSync(join(repo, name), 'utf8');
+    const helper = source.indexOf('windows-build-environment.ps1');
+    const msvc = source.indexOf('Initialize-MsvcBuildEnvironment');
+    const preflight = source.indexOf('--check-prerequisites');
+    const download = source.indexOf('download_nodejs.ps1');
+    const activate = source.indexOf('Use-BundledNodeBuildTools');
+    const install = source.indexOf('& npm install');
+    assert.ok(helper >= 0 && helper < msvc && msvc < preflight, `${name}: MSVC must be ready before preflight`);
+    assert.ok(download >= 0 && download < activate && activate < install, `${name}: bundled Node must be active before npm install`);
+  }
+});
+
 for (const scenario of ['empty', 'valid-cache', 'wrong-npm', 'missing-npx', 'old-node', 'wrong-arch', 'stale-staging', 'bad-download']) {
   test(`Unix resource preparation: ${scenario}`, { skip: process.platform === 'win32' }, (t) => {
     const root = fixture(t);

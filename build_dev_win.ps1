@@ -13,6 +13,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $PROJECT_DIR = $PSScriptRoot
+. (Join-Path $PROJECT_DIR 'scripts\windows-build-environment.ps1')
 $BUILD_MODE_LABEL = if ($BundleNsis) { "Debug NSIS 安装包" } else { "快速 Debug exe（不打安装包）" }
 
 # 加载 .env 文件（如果存在）
@@ -88,6 +89,7 @@ Write-ColorOutput "✓ Rust toolchain ready" "Green"
 Write-Host ""
 
 Write-ColorOutput "[准备] 检查原生推理构建依赖 (x86_64-pc-windows-msvc)..." "Blue"
+Initialize-MsvcBuildEnvironment
 & node "$PROJECT_DIR\scripts\prepare-native-inference.mjs" "x86_64-pc-windows-msvc" --check-prerequisites
 if ($LASTEXITCODE -ne 0) {
     Write-ColorOutput "✗ 原生推理构建依赖不完整，请按上方提示安装后重试" "Red"
@@ -156,6 +158,7 @@ foreach ($dir in $dirsToClean) {
 
 # Prepare the same pinned Node/npm pair as setup and release builds.
 & "$PROJECT_DIR\scripts\download_nodejs.ps1"
+Use-BundledNodeBuildTools -ProjectDir $PROJECT_DIR
 if ($DshSource -eq "local") {
     if (-not $DshHandoff) { throw "-DshSource local requires -DshHandoff <absolute directory>" }
     & node "$PROJECT_DIR\scripts\integrated-runtimes\prepare-dsh-runtime.mjs" --source local --handoff $DshHandoff --target win32-x64

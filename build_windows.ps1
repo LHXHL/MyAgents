@@ -15,6 +15,7 @@ $BuildSuccess = $false
 try {
     $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     Set-Location $ProjectDir
+    . (Join-Path $ProjectDir 'scripts\windows-build-environment.ps1')
 
     # 读取版本号
     $TauriConf = Get-Content "src-tauri\tauri.conf.json" -Raw | ConvertFrom-Json
@@ -220,43 +221,7 @@ try {
         throw "请先安装缺失的依赖"
     }
 
-    # ========================================
-    # 初始化 MSVC 编译环境 (link.exe / cl.exe)
-    # ========================================
-    if (-not (Get-Command link.exe -ErrorAction SilentlyContinue)) {
-        Write-Host "[准备] 初始化 MSVC 编译环境..." -ForegroundColor Blue
-        $vcFound = $false
-
-        # Find vcvarsall.bat via vswhere
-        $programFilesX86 = [Environment]::GetFolderPath("ProgramFilesX86")
-        $vsWhere = Join-Path $programFilesX86 "Microsoft Visual Studio\Installer\vswhere.exe"
-        if (Test-Path $vsWhere) {
-            $vsPath = & $vsWhere -latest -products * -property installationPath 2>$null
-            if ($vsPath) {
-                $vcvarsall = Join-Path $vsPath "VC\Auxiliary\Build\vcvarsall.bat"
-                if (Test-Path $vcvarsall) {
-                    Write-Host "  找到: $vcvarsall" -ForegroundColor Cyan
-                    # Import environment variables from vcvarsall into PowerShell
-                    $tempFile = [System.IO.Path]::GetTempFileName()
-                    cmd /c "`"$vcvarsall`" x64 > nul 2>&1 && set > `"$tempFile`""
-                    Get-Content $tempFile | ForEach-Object {
-                        if ($_ -match '^([^=]+)=(.*)$') {
-                            [System.Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
-                        }
-                    }
-                    Remove-Item $tempFile -ErrorAction SilentlyContinue
-                    $vcFound = $true
-                    Write-Host "  OK - MSVC x64 环境已加载" -ForegroundColor Green
-                }
-            }
-        }
-
-        if (-not $vcFound) {
-            Write-Host "  未找到 vcvarsall.bat，Rust 编译可能失败" -ForegroundColor Yellow
-            Write-Host "  建议从 Developer PowerShell for VS 运行此脚本" -ForegroundColor Yellow
-        }
-        Write-Host ""
-    }
+    Initialize-MsvcBuildEnvironment
 
     # The prepare owner is the only source of target/cache-specific native
     # prerequisites. Check before downloads, npm install, cleanup, or builds.
@@ -270,6 +235,7 @@ try {
 
     # Setup and release builds share the same pinned runtime preparation.
     & "$ProjectDir\scripts\download_nodejs.ps1"
+    Use-BundledNodeBuildTools -ProjectDir $ProjectDir
     & node "$ProjectDir\scripts\integrated-runtimes\prepare-dsh-runtime.mjs" --source release --target win32-x64
     if ($LASTEXITCODE -ne 0) { throw "MyAgents-dsh Release 准备失败" }
 

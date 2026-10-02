@@ -12,6 +12,7 @@ try {
     $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     Set-Location $ProjectDir
     . (Join-Path $ProjectDir "scripts\download-build-file.ps1")
+    . (Join-Path $ProjectDir 'scripts\windows-build-environment.ps1')
 
     Write-Host "`n=========================================" -ForegroundColor Blue
     Write-Host "  MyAgents Windows 开发环境初始化" -ForegroundColor Green
@@ -297,6 +298,7 @@ try {
 
     # Keep target/cache/tool policy in the native prepare owner. Run its
     # read-only preflight before runtime downloads, npm install, or cargo fetch.
+    Initialize-MsvcBuildEnvironment
     Write-Host "`nStep 1.75/8: 检查原生推理构建依赖" -ForegroundColor Blue
     & node "$ProjectDir\scripts\prepare-native-inference.mjs" "x86_64-pc-windows-msvc" --check-prerequisites
     if ($LASTEXITCODE -ne 0) {
@@ -309,6 +311,7 @@ try {
 
     Write-Host "`nStep 2/7: 下载 Node.js 运行时 (Sidecar + MCP Server + 社区工具统一 runtime)" -ForegroundColor Blue
     Get-NodeJSBinary
+    Use-BundledNodeBuildTools -ProjectDir $ProjectDir
 
     Write-Host "`nStep 3/7: 下载 Git 安装包 (用于 NSIS 打包)" -ForegroundColor Blue
     Get-GitInstaller
