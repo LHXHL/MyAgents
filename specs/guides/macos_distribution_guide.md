@@ -120,16 +120,13 @@ source ~/.zshrc
 ## 第六步：构建签名并公证的应用
 
 ```bash
-# 确保环境变量已设置
-echo $APPLE_SIGNING_IDENTITY
-
-# 构建 universal binary（同时支持 Intel 和 Apple Silicon）
-npm run tauri build -- --target universal-apple-darwin
+# 从 .env 加载签名配置，选择 Apple Silicon、Intel 或分别构建两种架构
+./build_macos.sh
 ```
 
-如果环境变量配置正确，Tauri 会自动：
-1. ✅ 使用 Developer ID 签名应用
-2. ✅ 提交到 Apple 进行公证
+环境变量配置正确后，构建脚本与 Tauri 依次完成：
+1. ✅ 构建脚本按目标准备资源，为 DSH 内嵌的 Mach-O 可执行文件、`.node` 与动态库签名
+2. ✅ Tauri 使用 Developer ID 签名应用并提交到 Apple 公证
 3. ✅ 等待公证完成（通常 2-5 分钟）
 4. ✅ Staple 公证票据到应用
 
