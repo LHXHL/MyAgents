@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.4.23] - 2026-10-02
+## [0.4.23] - 2026-10-03
 
 > MyAgents 0.4.23 新增 DeepSeek Harness 运行环境，开放 Agent 运行环境选择，并统一设置入口与应用图标。
 
