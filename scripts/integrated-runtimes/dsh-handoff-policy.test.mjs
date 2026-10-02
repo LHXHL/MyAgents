@@ -364,6 +364,13 @@ test("complete handoff staging replaces atomically only after verification", () 
   });
 });
 
+test("Tauri bundles only the published DSH handoff, excluding interrupted staging", () => {
+  const config = JSON.parse(readFileSync(resolve(repoRoot, "src-tauri/tauri.conf.json"), "utf8"));
+  const resources = config.bundle.resources;
+  assert.equal(resources["../src-tauri/resources/integrated-runtimes/dsh"], "integrated-runtimes/dsh");
+  assert.equal(resources["../src-tauri/resources/integrated-runtimes"], undefined);
+});
+
 test("sealed handoff evidence can be packaged without changing source bytes or modes", {
   skip: process.platform === "win32",
 }, () => {
