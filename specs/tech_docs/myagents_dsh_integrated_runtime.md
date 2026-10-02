@@ -40,7 +40,7 @@ Provider constraint 优先于通用默认：官方 Anthropic subscription/API �
 
 打包 Dev 默认也使用 Release；显式 `local` 才从绝对 handoff 路径构建。Vite、Sidecar esbuild 和 Rust build.rs 必须消费同一次选择，不能混入另一 target 或 generation 的身份。Release 准入按整包 SHA-256 与少量身份清单验证，不重扫暂存后的全部文件；显式本地 handoff 仍用公共 verifier 全量校验。运行时只核对受信资源路径、必要文件和实际协议握手，不重新扫描整个交付清单。
 
-DSH 使用应用内置的单一 Node，不回退系统 Node。Node/npm 组合由 `scripts/node-runtime.json` 决定，handoff 声明其所需 Node；公共 verifier 也必须使用待打包的 bundled Node。源码 setup、本地 handoff 和平台构建入口见 [构建资源准备](build_resource_preparation.md#integrated-dsh-构建来源) 与 [内置 Node](bundled_node.md#integrated-dsh)。
+DSH 使用应用内置的单一 Node，不回退系统 Node。Node/npm 组合由 `scripts/node-runtime.json` 决定，handoff 声明其所需 Node；构建入口只核对版本要求，结构校验使用构建机 Node，不执行目标 Node 或 Runtime self-check。源码 setup、本地 handoff 和平台构建入口见 [构建资源准备](build_resource_preparation.md#integrated-dsh-构建来源) 与 [内置 Node](bundled_node.md#integrated-dsh)。
 
 `contracts/myagents-dsh/public-contract.generated.ts` 与构建派生契约提供 wire 类型、validator、方法 inventory 和协议版本。Host 不手写另一份协议 schema，也不把“方法存在”当成能力已接纳。
 

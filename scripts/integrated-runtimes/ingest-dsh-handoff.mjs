@@ -9,7 +9,7 @@ import {
   resolveExplicitDirectory,
   runPublicVerifier,
   stageCompleteHandoff,
-  verifyBundledToolchain,
+  assertBundledNodeRequirement,
   verifyHandoffFacts,
 } from "./dsh-handoff-policy.mjs";
 import { buildSelectionPath } from "./dsh-build-selection.mjs";
@@ -18,7 +18,6 @@ const repoRoot = resolve(import.meta.dirname, "../..");
 const args = parseNamedArgs(process.argv.slice(2), {
   "--handoff": "value",
   "--out": "value",
-  "--node-root": "value",
   "--accept-contracts": "boolean",
 });
 const handoffRoot = resolveExplicitDirectory(args["--handoff"], "--handoff");
@@ -32,8 +31,8 @@ const lock = JSON.parse(
     "utf8",
   ),
 );
-const { nodeExecutable } = verifyBundledToolchain(repoRoot, lock, args["--node-root"]);
-runPublicVerifier(handoffRoot, lock.handoff.manifestSha256, nodeExecutable);
+assertBundledNodeRequirement(repoRoot, lock);
+runPublicVerifier(handoffRoot, lock.handoff.manifestSha256);
 const verified = verifyHandoffFacts(handoffRoot, lock);
 compareOrAcceptContracts(
   handoffRoot,
@@ -41,7 +40,7 @@ compareOrAcceptContracts(
   args["--accept-contracts"] === true,
 );
 stageCompleteHandoff(handoffRoot, outputRoot, (stagedRoot) => {
-  runPublicVerifier(stagedRoot, lock.handoff.manifestSha256, nodeExecutable);
+  runPublicVerifier(stagedRoot, lock.handoff.manifestSha256);
   verifyHandoffFacts(stagedRoot, lock);
   compareOrAcceptContracts(stagedRoot, resolve(repoRoot, "contracts"), false);
 });

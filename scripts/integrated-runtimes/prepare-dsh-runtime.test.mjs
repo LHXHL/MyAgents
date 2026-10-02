@@ -98,11 +98,11 @@ test("release staging uses its archive digest while local handoffs retain the fu
     publicVerifier: (...args) => calls.push(["public", ...args]),
     factsVerifier: (...args) => calls.push(["facts", ...args]),
   };
-  verifySelectedHandoff("staged", lock, "node", "release", checks);
+  verifySelectedHandoff("staged", lock, "release", checks);
   assert.deepEqual(calls, []);
-  verifySelectedHandoff("staged", lock, "node", "local", checks);
+  verifySelectedHandoff("staged", lock, "local", checks);
   assert.deepEqual(calls, [
-    ["public", "staged", "expected", "node"],
+    ["public", "staged", "expected"],
     ["facts", "staged", lock],
   ]);
 });

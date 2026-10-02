@@ -11,7 +11,7 @@ import { downloadBuildResource } from "../build-resource-download.mjs";
 import {
   COMPATIBILITY_MANIFEST, HANDOFF_MANIFEST, PROTOCOL_META, RUNTIME_MANIFEST,
   parseNamedArgs, readJson, resolveExplicitDirectory,
-  runPublicVerifier, sha256File, stageCompleteHandoff, verifyBundledToolchain,
+  runPublicVerifier, sha256File, stageCompleteHandoff, assertBundledNodeRequirement,
   verifyHandoffFacts,
 } from "./dsh-handoff-policy.mjs";
 import { buildSelectionPath } from "./dsh-build-selection.mjs";
@@ -141,14 +141,14 @@ function assertNativeRuntimeTarget(root, target) {
   }
 }
 
-export function verifySelectedHandoff(root, lock, nodeExecutable, source, {
+export function verifySelectedHandoff(root, lock, source, {
   publicVerifier = runPublicVerifier,
   factsVerifier = verifyHandoffFacts,
 } = {}) {
   // Release archives are checked against their exact SHA-256 before extraction.
   // Local handoffs have no archive pin and retain the full staged audit.
   if (source === "release") return;
-  publicVerifier(root, lock.handoff.manifestSha256, nodeExecutable);
+  publicVerifier(root, lock.handoff.manifestSha256);
   factsVerifier(root, lock);
 }
 
@@ -224,7 +224,7 @@ export async function acquireRelease(repoRoot, version, target, download) {
 
 export async function prepareDshRuntime({
   repoRoot = defaultRoot, source = "release", handoff, target = currentTarget(),
-  nodeRoot, download = downloadBuildResource,
+  download = downloadBuildResource,
 } = {}) {
   if (source !== "release" && source !== "local") throw new Error(`Unknown DSH source: ${source}`);
   if (source === "local" && !handoff) throw new Error("Local DSH source requires --handoff /absolute/path");
@@ -243,14 +243,14 @@ export async function prepareDshRuntime({
       : deriveLocalLock(releaseLock, input.root);
     assertTarget(lock, target, source);
     assertNativeRuntimeTarget(input.root, target);
-    const { nodeExecutable } = verifyBundledToolchain(repoRoot, lock, nodeRoot);
+    assertBundledNodeRequirement(repoRoot, lock);
     const outputRoot = resolve(repoRoot, "src-tauri/resources/integrated-runtimes/dsh");
     const selectionPath = buildSelectionPath(repoRoot);
     const temporary = `${selectionPath}.tmp-${randomUUID()}`;
     try {
       writeFileSync(temporary, `${JSON.stringify({ schemaVersion: 1, source, target, lock, compatibility }, null, 2)}\n`);
       stageCompleteHandoff(input.root, outputRoot, (staged) =>
-        verifySelectedHandoff(staged, lock, nodeExecutable, source),
+        verifySelectedHandoff(staged, lock, source),
       () => renameSync(temporary, selectionPath));
     } finally {
       rmSync(temporary, { force: true });
@@ -267,11 +267,11 @@ export async function prepareDshRuntime({
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
     const args = parseNamedArgs(process.argv.slice(2), {
-      "--source": "value", "--handoff": "value", "--target": "value", "--node-root": "value",
+      "--source": "value", "--handoff": "value", "--target": "value",
     });
     const result = await prepareDshRuntime({
       source: args["--source"], handoff: args["--handoff"],
-      target: args["--target"], nodeRoot: args["--node-root"],
+      target: args["--target"],
     });
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   } catch (error) {

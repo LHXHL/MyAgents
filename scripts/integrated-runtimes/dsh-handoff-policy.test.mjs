@@ -3,7 +3,6 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
-  copyFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -27,7 +26,6 @@ import {
   compareOrAcceptContracts,
   parseNamedArgs,
   resolveExplicitDirectory,
-  runPublicVerifier,
   stageCompleteHandoff,
 } from "./dsh-handoff-policy.mjs";
 import { verifyDshDevelopmentFreshness } from "./verify-dsh-dev-freshness.mjs";
@@ -52,52 +50,15 @@ function writeFixtureFile(path, contents) {
   writeFileSync(path, contents);
 }
 
-function copyFixtureNode(root, platform = process.platform === "win32" ? "win" : process.platform) {
-  const executable = resolve(root, platform === "win" ? "node.exe" : "bin/node");
-  mkdirSync(resolve(executable, ".."), { recursive: true });
-  copyFileSync(process.execPath, executable);
-  return executable;
-}
-
-test("public verifier runs with the explicitly selected Node, not the build process Node", () => {
-  withTemporaryDirectory((root) => {
-    const nodeExecutable = copyFixtureNode(resolve(root, "bundled node"));
-    const handoffRoot = resolve(root, "handoff with spaces");
-    writeFixtureFile(resolve(handoffRoot, "verify.mjs"), `
-      import assert from "node:assert/strict";
-      import { realpathSync } from "node:fs";
-      assert.equal(realpathSync(process.execPath), ${JSON.stringify(realpathSync(nodeExecutable))});
-      assert.equal(realpathSync(process.cwd()), realpathSync(import.meta.dirname));
-      assert.equal(process.argv[2], "expected-digest");
-      process.stdout.write("verified");
-    `);
-    assert.equal(runPublicVerifier(handoffRoot, "expected-digest", nodeExecutable), "verified");
-    assert.throws(() => runPublicVerifier(handoffRoot, "expected-digest"), /explicit absolute Node executable/);
-    assert.throws(() => runPublicVerifier(handoffRoot, "expected-digest", "node"), /explicit absolute Node executable/);
-    assert.throws(() => runPublicVerifier(handoffRoot, "wrong-digest", nodeExecutable), /public verifier rejected/);
-  });
-});
-
-// Exercise the real admission CLIs in an isolated repository. The copied Node
-// is a distinct executable; the tiny public verifier rejects the build Node.
-// Only fixture manifests are rebound to the locally available test Node, so
-// these tests need neither a downloaded runtime nor a second installed version.
-function admissionFixture(root, { platform, explicitNodeRoot = false } = {}) {
+// Exercise admission with the host Node and the official structural API shape.
+// No target Node/npm distribution is needed by the DSH packaging layer.
+function admissionFixture(root) {
   root = realpathSync(root);
   const runtimeRoot = resolve(root, "src-tauri/resources/integrated-runtimes/dsh");
-  const nodeRoot = resolve(root, explicitNodeRoot ? "custom node distribution" : "src-tauri/resources/nodejs");
   const outputRoot = resolve(root, "accepted dsh");
   const trace = resolve(root, "verifier-calls.jsonl");
-  platform ??= process.platform === "win32" ? "win" : process.platform;
-  const nodeExecutable = copyFixtureNode(nodeRoot, platform);
-  const npmRoot = resolve(nodeRoot, platform === "win" ? "node_modules/npm" : "lib/node_modules/npm");
-  const npmVersion = "11.19.0";
-  writeFixtureFile(resolve(nodeRoot, ".myagents-nodejs-version"), process.versions.node);
-  writeFixtureFile(resolve(nodeRoot, ".myagents-nodejs-platform"), platform);
-  writeFixtureFile(resolve(npmRoot, "package.json"), JSON.stringify({ version: npmVersion }));
-  writeFixtureFile(resolve(npmRoot, "bin/npm-cli.js"), `process.stdout.write(${JSON.stringify(npmVersion)});`);
   const distributionPath = resolve(root, "scripts/node-runtime.json");
-  writeFixtureFile(distributionPath, JSON.stringify({ node: process.versions.node, npm: npmVersion }));
+  writeFixtureFile(distributionPath, JSON.stringify({ node: process.versions.node }));
   for (const name of ["dsh-handoff-policy", "dsh-build-selection", "verify-dsh-resources", "ingest-dsh-handoff"]) {
     writeFixtureFile(resolve(root, `scripts/integrated-runtimes/${name}.mjs`),
       readFileSync(resolve(import.meta.dirname, `${name}.mjs`)));
@@ -151,102 +112,52 @@ function admissionFixture(root, { platform, explicitNodeRoot = false } = {}) {
   const lockPath = resolve(root, "src/shared/integrated-runtimes/dsh-lock.json");
   writeFixtureFile(lockPath, JSON.stringify(lock));
   compareOrAcceptContracts(runtimeRoot, resolve(root, "contracts"), true);
-  writeFixtureFile(resolve(runtimeRoot, "verify.mjs"), `
+  writeFixtureFile(resolve(runtimeRoot, "verify.mjs"), 'throw new Error("target Runtime self-check must not run during packaging");');
+  const verifierRoot = resolve(runtimeRoot, "runtime-artifact/node_modules/@myagents-dsh/artifact-verifier");
+  writeFixtureFile(resolve(verifierRoot, "package.json"), '{"type":"module"}');
+  writeFixtureFile(resolve(verifierRoot, "src/integration-handoff.js"), `
     import assert from "node:assert/strict";
     import { appendFileSync, realpathSync } from "node:fs";
-    assert.equal(realpathSync(process.execPath), ${JSON.stringify(realpathSync(nodeExecutable))});
-    assert.equal(process.argv[2], ${JSON.stringify(lock.handoff.manifestSha256)});
-    appendFileSync(${JSON.stringify(trace)}, JSON.stringify({ cwd: realpathSync(process.cwd()), node: process.execPath }) + "\\n");
-    process.stdout.write("verified");
+    export function verifyBatch3IntegrationHandoffReport(root, expected) {
+      assert.equal(realpathSync(process.execPath), ${JSON.stringify(realpathSync(process.execPath))});
+      assert.equal(expected, ${JSON.stringify(lock.handoff.manifestSha256)});
+      appendFileSync(${JSON.stringify(trace)}, JSON.stringify({ cwd: realpathSync(root) }) + "\\n");
+      return { manifest: { kind: "fixture", files: [] } };
+    }
   `);
 
-  return { root, runtimeRoot, nodeRoot, nodeExecutable, npmRoot, outputRoot, trace, lock, lockPath, distributionPath, explicitNodeRoot };
+  return { root, runtimeRoot, outputRoot, trace, distributionPath };
 }
 
-function runAdmission(fixture, command, extraArgs = []) {
+function runAdmission(fixture, command) {
   const args = command === "ingest-dsh-handoff"
     ? ["--handoff", fixture.runtimeRoot, "--out", fixture.outputRoot]
     : [];
-  if (fixture.explicitNodeRoot) args.push("--node-root", fixture.nodeRoot);
   return spawnSync(process.execPath, [
-    resolve(fixture.root, `scripts/integrated-runtimes/${command}.mjs`), ...args, ...extraArgs,
+    resolve(fixture.root, `scripts/integrated-runtimes/${command}.mjs`), ...args,
   ], { cwd: fixture.root, encoding: "utf8" });
 }
 
 for (const command of ["verify-dsh-resources", "ingest-dsh-handoff"]) {
-  for (const explicitNodeRoot of [false, true]) {
-    test(`${command} uses the ${explicitNodeRoot ? "explicit" : "default"} bundled Node for every public verification`, () => {
-      withTemporaryDirectory((root) => {
-        const fixture = admissionFixture(root, { explicitNodeRoot });
-        const result = runAdmission(fixture, command);
-        assert.equal(result.status, 0, result.stdout + result.stderr);
-        const report = JSON.parse(result.stdout);
-        const calls = readFileSync(fixture.trace, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-        assert.equal(calls[0].cwd, fixture.runtimeRoot);
-        if (command === "ingest-dsh-handoff") {
-          assert.equal(calls.length, 2, "source and temporary copy must both be verified");
-          assert.ok(calls[1].cwd.startsWith(`${fixture.outputRoot}.tmp-`));
-          assert.equal(report.outputRoot, fixture.outputRoot);
-          compareOrAcceptContracts(fixture.outputRoot, resolve(fixture.root, "contracts"), false);
-        } else {
-          assert.equal(calls.length, 1);
-          assert.equal(report.bundledNodeVersion, process.versions.node);
-          assert.equal(report.bundledNpmVersion, "11.19.0");
-        }
-      });
+  test(`${command} verifies handoff structure with the host Node without target execution`, () => {
+    withTemporaryDirectory((root) => {
+      const fixture = admissionFixture(root);
+      const result = runAdmission(fixture, command);
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      const report = JSON.parse(result.stdout);
+      const calls = readFileSync(fixture.trace, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      assert.equal(calls[0].cwd, fixture.runtimeRoot);
+      if (command === "ingest-dsh-handoff") {
+        assert.equal(calls.length, 2);
+        assert.ok(calls[1].cwd.startsWith(`${fixture.outputRoot}.tmp-`));
+        assert.equal(report.outputRoot, fixture.outputRoot);
+        compareOrAcceptContracts(fixture.outputRoot, resolve(fixture.root, "contracts"), false);
+      } else {
+        assert.equal(calls.length, 1);
+      }
     });
-  }
-
-  for (const [name, mutate, expected] of [
-    ["missing Node directory", (f) => rmSync(f.nodeRoot, { recursive: true }), /bundled Node directory is missing.*download_nodejs/],
-    ["missing executable", (f) => rmSync(f.nodeExecutable), /bundled toolchain file is missing/],
-    ["missing metadata", (f) => rmSync(resolve(f.nodeRoot, ".myagents-nodejs-version")), /bundled toolchain metadata is missing/],
-    ["stale Node metadata", (f) => writeFileSync(resolve(f.nodeRoot, ".myagents-nodejs-version"), "0.0.1"), /bundled Node mismatch/],
-    ["unsupported platform", (f) => writeFileSync(resolve(f.nodeRoot, ".myagents-nodejs-platform"), "invalid"), /unsupported bundled Node platform/],
-    ["distribution drift", (f) => writeFileSync(f.distributionPath, JSON.stringify({ node: "0.0.1", npm: "11.19.0" })), /bundled distribution Node mismatch/],
-    ["npm package drift", (f) => writeFileSync(resolve(f.npmRoot, "package.json"), JSON.stringify({ version: "0.0.1" })), /bundled npm mismatch/],
-    ["missing npm CLI", (f) => rmSync(resolve(f.npmRoot, "bin/npm-cli.js")), /bundled toolchain file is missing/],
-    ["npm executable drift", (f) => writeFileSync(resolve(f.npmRoot, "bin/npm-cli.js"), 'process.stdout.write("0.0.1")'), /bundled npm executable mismatch/],
-    ["npm execution failure", (f) => writeFileSync(resolve(f.npmRoot, "bin/npm-cli.js"), 'throw new Error("npm fixture failure")'), /cannot execute bundled Node\/npm.*npm fixture failure/s],
-    ["Node executable drift", (f) => {
-      f.lock.runtime.requiredNodeVersion = "0.0.1";
-      writeFileSync(f.lockPath, JSON.stringify(f.lock));
-      writeFileSync(f.distributionPath, JSON.stringify({ node: "0.0.1", npm: "11.19.0" }));
-      writeFileSync(resolve(f.nodeRoot, ".myagents-nodejs-version"), "0.0.1");
-    }, /bundled Node executable mismatch/],
-  ]) {
-    test(`${command} rejects ${name} before executing the handoff`, () => {
-      withTemporaryDirectory((root) => {
-        const fixture = admissionFixture(root);
-        mutate(fixture);
-        const result = runAdmission(fixture, command);
-        assert.notEqual(result.status, 0);
-        assert.match(result.stderr, expected);
-        assert.equal(existsSync(fixture.trace), false);
-        assert.equal(existsSync(fixture.outputRoot), false);
-      });
-    });
-  }
+  });
 }
-
-test("resource verification supports the Windows Node/npm distribution layout", () => {
-  withTemporaryDirectory((root) => {
-    const fixture = admissionFixture(root, { platform: "win" });
-    const result = runAdmission(fixture, "verify-dsh-resources");
-    assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.equal(JSON.parse(result.stdout).bundledNodeVersion, process.versions.node);
-  });
-});
-
-test("resource verification cannot skip the Runtime self-check's Node prerequisite", () => {
-  withTemporaryDirectory((root) => {
-    const fixture = admissionFixture(root);
-    const result = runAdmission(fixture, "verify-dsh-resources", ["--skip-node"]);
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /unknown argument: --skip-node/);
-    assert.equal(existsSync(fixture.trace), false);
-  });
-});
 
 test("handoff input requires an explicit absolute canonical directory", () => {
   assert.throws(
