@@ -148,6 +148,7 @@ class FakeRuntime implements AgentRuntime {
   }> = [];
   private permissionRevisionNumber = 1;
   private permissionRules: RuntimePermissionRule[] = [];
+  getTurnProviderAnalytics?: AgentRuntime['getTurnProviderAnalytics'];
   canSteerMessage?: AgentRuntime['canSteerMessage'];
   steerMessage?: AgentRuntime['steerMessage'];
   interruptTurn?: AgentRuntime['interruptTurn'];
@@ -824,6 +825,7 @@ interface Harness {
   externalSession: typeof import('./external-session');
   sessionStore: typeof import('../SessionStore');
   mirrorCalls: MirrorPayload[];
+  analyticsEvents: Array<{ event: string; params: Record<string, unknown> }>;
   messagePersistStarted: () => boolean;
   messagePersistCount: () => number;
   releaseMessagePersist: () => void;
@@ -1054,6 +1056,12 @@ async function createHarness(
     };
   });
 
+  const analyticsEvents: Harness['analyticsEvents'] = [];
+  const analytics = await import('../analytics');
+  vi.spyOn(analytics, 'trackServer').mockImplementation((event, params) => {
+    analyticsEvents.push({ event, params: params ?? {} });
+  });
+
   // Load consumers in dependency order after installing the event observer.
   const externalSession = await import('./external-session');
   const { getSessionEngine } = await import('../session-engine');
@@ -1074,6 +1082,7 @@ async function createHarness(
     externalSession,
     sessionStore,
     mirrorCalls,
+    analyticsEvents,
     messagePersistStarted: () => messagePersistStarted,
     messagePersistCount: () => messagePersistCount,
     releaseMessagePersist,
@@ -1145,6 +1154,90 @@ function desktopRequest(
     analyticsSource: 'desktop' as const,
   };
 }
+
+describe('Runtime turn analytics', () => {
+  it('uses DSH execution Provider attribution and preserves unknown usage', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'answer', usage: { inputTokens: 12, outputTokens: 0 } },
+    ], { runtimeType: 'dsh', runtimeSource: 'integrated' });
+    harness.runtime.getTurnProviderAnalytics = () => ({
+      provider_id: 'deepseek', provider_name: 'DeepSeek', api_protocol: 'anthropic',
+      provider_api_protocol: 'anthropic', provider_api_family: 'anthropic-messages',
+      provider_base_url: 'https://api.deepseek.com/anthropic',
+    });
+    const request = desktopRequest('dsh-analytics', join(harness.home, 'workspace'), 'hello');
+    request.permissionMode = 'workspace-autonomous';
+    const receipt = await harness.engine.sendDesktopMessage(request);
+    await expect(receipt.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.analyticsEvents).toEqual([
+      { event: 'ai_turn_complete', params: expect.objectContaining({
+        session_id: 'dsh-analytics', source: 'desktop', runtime: 'dsh', runtime_source: 'integrated',
+        model: 'gpt-5-codex', provider_id: 'deepseek', provider_name: 'DeepSeek',
+        api_protocol: 'anthropic', provider_api_family: 'anthropic-messages',
+        provider_base_url: 'https://api.deepseek.com/anthropic', input_tokens: 12, output_tokens: 0,
+      }) },
+    ]);
+    expect(harness.analyticsEvents[0].params.cache_read_tokens).toBeUndefined();
+    expect(harness.analyticsEvents[0].params.cache_creation_tokens).toBeUndefined();
+  });
+
+  it('freezes Provider metadata before asynchronous transcript persistence', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'answer' }]);
+    const provider = {
+      provider_id: 'first', provider_name: 'First Provider', api_protocol: 'openai' as const,
+      provider_api_protocol: 'openai' as const, provider_api_family: 'openai-responses' as const,
+      provider_base_url: 'https://first.example.test',
+    };
+    harness.runtime.getTurnProviderAnalytics = () => provider;
+    const persistence = await import('./external-session/transcript-persistence');
+    const original = persistence.appendAndPersistExternalAssistantTurn;
+    let entered = false;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(persistence, 'appendAndPersistExternalAssistantTurn').mockImplementation(async (...args) => {
+      entered = true;
+      await gate;
+      return original(...args);
+    });
+    try {
+      const receipt = await harness.engine.sendDesktopMessage(desktopRequest('frozen-analytics', join(harness.home, 'workspace'), 'hello'));
+      await receipt.dispatchAcceptance;
+      await waitFor(() => entered, 'assistant persistence');
+      provider.provider_id = 'next';
+      provider.provider_name = 'Next Provider';
+      provider.provider_base_url = 'https://next.example.test';
+    } finally {
+      release();
+    }
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.analyticsEvents[0]?.params).toMatchObject({
+      provider_id: 'first', provider_name: 'First Provider', provider_base_url: 'https://first.example.test',
+    });
+  });
+
+  it.each(['failed', 'interrupted'] as const)('does not report %s turns as successful completion', async status => {
+    const harness = await createHarness([{ kind: 'failure', status, error: 'fake failure', usage: { inputTokens: 12, outputTokens: 3 } }], { runtimeType: 'dsh' });
+    const request = desktopRequest('terminal-analytics', join(harness.home, 'workspace'), 'hello');
+    request.permissionMode = 'workspace-autonomous';
+    const receipt = await harness.engine.sendDesktopMessage(request);
+    await receipt.dispatchAcceptance;
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.analyticsEvents).toEqual([]);
+  });
+
+  it('does not let unavailable optional attribution fail a successful turn', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'answer' }]);
+    harness.runtime.getTurnProviderAnalytics = () => { throw new Error('no metadata'); };
+    const receipt = await harness.engine.sendDesktopMessage(desktopRequest('unknown-provider-analytics', join(harness.home, 'workspace'), 'hello'));
+    await receipt.dispatchAcceptance;
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.analyticsEvents).toEqual([
+      { event: 'ai_turn_complete', params: expect.objectContaining({ runtime: 'codex', provider_name: 'OpenAI Codex CLI' }) },
+    ]);
+    expect(harness.analyticsEvents[0].params.input_tokens).toBe(0);
+  });
+});
 
 async function restorePersistedDshSession(
   harness: Harness,

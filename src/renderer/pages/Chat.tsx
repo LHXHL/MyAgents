@@ -4431,7 +4431,14 @@ export default function Chat({
       }
 
       // Track provider_switch event
-      track('provider_switch', { provider_id: providerId });
+      track('provider_switch', {
+        source: 'desktop',
+        tab_id: tabId,
+        session_id: sessionIdRef.current,
+        runtime: currentRuntime,
+        runtime_source: runtimeSourceForRuntimeType(currentRuntime, currentRuntimeSource) ?? null,
+        provider_id: providerId,
+      });
 
       const newProvider = providers.find((p) => p.id === providerId);
       const model = targetModel ?? newProvider?.primaryModel;
@@ -4490,6 +4497,9 @@ export default function Chat({
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; messagesRef avoids dep on messages array
     [
+      tabId,
+      currentRuntime,
+      currentRuntimeSource,
       effectiveSelectedProviderId,
       selectedModel,
       providers,
@@ -4526,7 +4536,14 @@ export default function Chat({
       }
 
       // Track model_switch event
-      track('model_switch', { model });
+      track('model_switch', {
+        source: 'desktop',
+        tab_id: tabId,
+        session_id: sessionIdRef.current,
+        runtime: currentRuntime,
+        runtime_source: runtimeSourceForRuntimeType(currentRuntime, currentRuntimeSource) ?? null,
+        model,
+      });
 
       const nextIntent = buildProviderExecutionIntent(
         currentProviderForHistory,
@@ -4574,6 +4591,9 @@ export default function Chat({
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; currentProvider fields cover toProviderHistoryEnv inputs
     [
+      tabId,
+      currentRuntime,
+      currentRuntimeSource,
       selectedModel,
       currentProviderForHistory?.id,
       currentProviderForHistory?.type,
@@ -4640,7 +4660,14 @@ export default function Chat({
     async (effort: string) => {
       if (guardCronConfigMutation()) return;
       if (reasoningEffort === effort) return;
-      track('reasoning_effort_switch', { effort });
+      track('reasoning_effort_switch', {
+        source: 'desktop',
+        tab_id: tabId,
+        session_id: sessionIdRef.current,
+        runtime: currentRuntime,
+        runtime_source: runtimeSourceForRuntimeType(currentRuntime, currentRuntimeSource) ?? null,
+        effort,
+      });
       const persisted = await persistTabConfigChange({
         reasoningEffort: effort,
       });
@@ -4658,6 +4685,9 @@ export default function Chat({
     },
     [
       reasoningEffort,
+      tabId,
+      currentRuntime,
+      currentRuntimeSource,
       persistTabConfigChange,
       pushReasoningEffort,
       guardCronConfigMutation,
@@ -5931,6 +5961,9 @@ export default function Chat({
         if (sessionIdRef.current !== rewindSessionId) return;
         const r = res as RewindResponse | undefined;
         track('session_rewind', {
+          source: 'desktop',
+          tab_id: tabId,
+          session_id: rewindSessionId,
           runtime: currentRuntime,
           runtime_source:
             runtimeSourceForRuntimeType(currentRuntime, currentRuntimeSource) ??
@@ -5972,6 +6005,9 @@ export default function Chat({
             ? structured.errorCode
             : undefined;
         track('session_rewind', {
+          source: 'desktop',
+          tab_id: tabId,
+          session_id: rewindSessionId,
           runtime: currentRuntime,
           runtime_source:
             runtimeSourceForRuntimeType(currentRuntime, currentRuntimeSource) ??
@@ -6022,6 +6058,7 @@ export default function Chat({
         }
       });
   }, [
+    tabId,
     rewindTarget,
     apiPost,
     setMessages,
@@ -6053,7 +6090,13 @@ export default function Chat({
           if (result.conversationCommitted) await retryCurrentSessionRestore(userMsg.id);
           toastRef.current.error(t('shell.toasts.retryFailedWithError', { error: result.error || t('shell.toasts.unknownError') }));
         } else {
-          track('message_retry', {});
+          track('message_retry', {
+            source: 'desktop',
+            tab_id: tabId,
+            session_id: retrySessionId,
+            runtime: currentRuntime,
+            runtime_source: runtimeSourceForRuntimeType(currentRuntime, currentRuntimeSource) ?? null,
+          });
         }
       })
       .catch(async error => {
@@ -6074,7 +6117,7 @@ export default function Chat({
           if (!queued) setIsLoading(false);
         }
       });
-  }, [apiPost, setIsLoading, pauseAutoScroll, t, warnRewindFileOutcome, retryCurrentSessionRestore, effectiveModel, reasoningEffort]);
+  }, [apiPost, setIsLoading, pauseAutoScroll, t, warnRewindFileOutcome, retryCurrentSessionRestore, effectiveModel, reasoningEffort, currentRuntime, currentRuntimeSource, tabId]);
 
   // Uses refs for messagesRef/toastRef/handleSendMessageRef — deps are all stable → reference stable
   const handleRetry = useCallback(
@@ -6158,7 +6201,14 @@ export default function Chat({
     apiPost('/sessions/fork', { messageId, targetSessionId })
       .then(async res => {
         const result = res as ForkResult;
-        track('session_fork', { runtime: currentRuntime, result: result.success ? 'success' : 'failed' });
+        track('session_fork', {
+          source: 'desktop',
+          tab_id: tabId,
+          session_id: sourceId,
+          runtime: currentRuntime,
+          runtime_source: runtimeSourceForRuntimeType(currentRuntime, currentRuntimeSource) ?? null,
+          result: result.success ? 'success' : 'failed',
+        });
         if (await openFork(result)) return;
         const error = result.errorCode ? t(`shell.toasts.conversationError.${result.errorCode}`)
           : result.error || t('shell.toasts.unknownError');
@@ -6181,7 +6231,7 @@ export default function Chat({
         conversationOperationPendingRef.current = false;
         setForkPending(false);
       });
-  }, [forkTarget, forkPending, apiPost, apiGet, onForkSession, t, currentRuntime]);
+  }, [forkTarget, forkPending, apiPost, apiGet, onForkSession, t, currentRuntime, currentRuntimeSource, tabId]);
 
   const handleSelectSession = useCallback(
     (

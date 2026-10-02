@@ -1,3 +1,4 @@
+import { buildTurnProviderAnalytics, type TurnProviderAnalytics } from '../../session-core/turn-analytics';
 import type { AskUserQuestionAnswers } from '../../../shared/types/askUserQuestion';
 import { dshSessionOwnedPaths } from './owned-paths';
 import { resolveProviderForModel } from '../../../shared/provider-model-routing';
@@ -117,6 +118,7 @@ type DshConfiguration = Readonly<{
   collaboration: DshCollaborationDeclaration;
   bindings: readonly DshHostModelBinding[];
   profile: DshModelExecutionProfile;
+  providerAnalytics: TurnProviderAnalytics;
   apiKey: string;
   authType: ProviderAuthType;
   preparedProvider?: PreparedProvider;
@@ -494,6 +496,9 @@ export async function compileConfiguration(
     return Object.freeze({
       ...collaborative,
       profile,
+      providerAnalytics: buildTurnProviderAnalytics({
+        providerId: profile.provider, providerName: selected.provider.name, baseUrl: profile.baseUrl,
+      }, profile.api),
       apiKey,
       authType,
       ...(preparedProvider ? { preparedProvider } : {}),
@@ -800,6 +805,10 @@ export async function createDshForkTargetFacts(
 
 export class DshRuntime implements AgentRuntime {
   readonly type: RuntimeType = 'dsh';
+
+  getTurnProviderAnalytics(process: RuntimeProcess): TurnProviderAnalytics {
+    return dshProcess(process).configuration.providerAnalytics;
+  }
 
   getConfigCapabilities(): RuntimeConfigCapabilities {
     return {

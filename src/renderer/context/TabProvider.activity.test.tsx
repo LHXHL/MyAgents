@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { StrictMode, useEffect, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { track } from '@/analytics';
 import * as largeValueRefs from '@/api/largeValueRef';
 import type { SseEventMetadata } from '@/api/SseConnection';
 import {
@@ -250,6 +251,60 @@ const allowSessionOpening = () => () => undefined;
 
 describe('Tab-owned query clock integration', () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it('attributes immediate DSH tool and terminal analytics to this Tab rather than the active context', async () => {
+    sseHarness.state.eventHandler = null;
+    render(<TabProvider tabId="dsh-analytics-tab" agentDir="/tmp/workspace" sessionId="pending-dsh-analytics" claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    vi.mocked(track).mockClear();
+    act(() => {
+      sseHarness.state.eventHandler?.('chat:system-init', {
+        sessionId: 'pending-dsh-analytics', runtime: 'dsh', runtimeSource: 'integrated', info: { model: 'deepseek-test', tools: [] },
+      }, { connectionGeneration: sseHarness.state.generation });
+      sseHarness.state.eventHandler?.('chat:tool-use-start', { id: 'runtime-tool', name: 'read', input: {} }, { connectionGeneration: sseHarness.state.generation });
+      sseHarness.state.eventHandler?.('chat:server-tool-use-start', { id: 'provider-tool', name: 'web_search', input: {} }, { connectionGeneration: sseHarness.state.generation });
+      sseHarness.state.eventHandler?.('chat:message-complete', { model: 'deepseek-test', output_tokens: 0 }, { connectionGeneration: sseHarness.state.generation });
+      sseHarness.state.eventHandler?.('chat:message-error', { message: 'private error' }, { connectionGeneration: sseHarness.state.generation });
+      sseHarness.state.eventHandler?.('chat:message-stopped', {}, { connectionGeneration: sseHarness.state.generation });
+    });
+    for (const name of ['tool_use', 'message_complete', 'message_error', 'message_stop']) {
+      expect(track).toHaveBeenCalledWith(name, expect.objectContaining({
+        source: 'desktop', session_id: 'pending-dsh-analytics', tab_id: 'dsh-analytics-tab', runtime: 'dsh', runtime_source: 'integrated',
+      }));
+    }
+    const completion = vi.mocked(track).mock.calls.find(([event]) => event === 'message_complete')?.[1];
+    expect(completion).toMatchObject({ output_tokens: 0 });
+    expect(completion).not.toHaveProperty('input_tokens');
+    expect(track).toHaveBeenCalledWith('tool_use', expect.objectContaining({ tool: 'read', tool_origin: 'runtime' }));
+    expect(track).toHaveBeenCalledWith('tool_use', expect.objectContaining({ tool: 'web_search', tool_origin: 'provider' }));
+    expect(JSON.stringify(vi.mocked(track).mock.calls)).not.toContain('private error');
+  });
+
+  it('records permission decisions only after backend acceptance', async () => {
+    let tab: ReturnType<typeof useTabState>;
+    function PermissionProbe() {
+      const value = useTabState();
+      useEffect(() => { tab = value; }, [value]);
+      return null;
+    }
+    sseHarness.state.eventHandler = null;
+    render(<TabProvider tabId="permission-analytics" agentDir="/tmp/workspace" sessionId="pending-permission-analytics" claimSessionOpeningTransition={allowSessionOpening}><PermissionProbe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('permission:request', { sessionId: 'pending-permission-analytics', requestId: 'p1', toolName: 'read', input: '{}' });
+    vi.mocked(track).mockClear();
+    tauriHarness.proxyFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: false, error: 'not accepted' })));
+    await act(async () => {
+      await expect(tab.respondPermission('allow_once')).rejects.toThrow('not accepted');
+    });
+    expect(track).not.toHaveBeenCalledWith('permission_grant', expect.anything());
+    expect(tab!.pendingPermission?.requestId).toBe('p1');
+    tauriHarness.proxyFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: true })));
+    await act(async () => { await tab.respondPermission('allow_once'); });
+    expect(track).toHaveBeenCalledWith('permission_grant', expect.objectContaining({
+      session_id: 'pending-permission-analytics', tab_id: 'permission-analytics', tool: 'read', type: 'allow_once',
+    }));
+    expect(tab!.pendingPermission).toBeNull();
+  });
 
   it('shows a native resume refusal while keeping the recoverable error visible', async () => {
     sseHarness.state.eventHandler = null;

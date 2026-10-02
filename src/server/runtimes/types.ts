@@ -1,3 +1,4 @@
+import type { TurnProviderAnalytics } from '../session-core/turn-analytics';
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 import type { RuntimeAgentWorkControl, RuntimeAgentWorkTree } from '../../shared/types/subagent-lifecycle';
 import type { AsyncQuestionSet } from '../../shared/asyncUserQuestions';
@@ -507,6 +508,9 @@ export interface AgentRuntime {
 
   /** How this runtime applies turn-scoped config changes at a safe boundary. */
   getConfigCapabilities?(): RuntimeConfigCapabilities;
+
+  /** Read the effective process configuration without IO; callers snapshot before terminal persistence. */
+  getTurnProviderAnalytics?(process: RuntimeProcess): TurnProviderAnalytics;
 
   /** Check if the CLI is installed and get version info */
   detect(): Promise<RuntimeDetection>;

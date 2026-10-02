@@ -1,3 +1,4 @@
+import { messageCompletionParams, type MessageCompletionTelemetry } from '@/analytics/conversation';
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 import type { QueuedMessageInfo } from '@/types/queue';
 import type { ToolPermissionHints } from '../../shared/types/toolPermission';
@@ -50,11 +51,12 @@ import type { AskUserQuestionRequest } from '../../shared/types/askUserQuestion'
 import type { ExitPlanModeRequest } from '../../shared/types/planMode';
 import type { SubagentLifecycle } from '../../shared/types/subagent-lifecycle';
 import {
-    isAgentRuntimeSelectorAvailable,
     normalizeRuntime,
-    resolveEffectiveRuntime,
+    runtimeSourceForRuntimeType,
+    type RuntimeSource,
     type RuntimeType,
 } from '../../shared/types/runtime';
+import { runtimeTypeForBinding, runtimeSourceForBinding, type EffectiveRuntimeBinding } from '../../shared/integrated-runtimes/identity';
 import type { FbPendingKind } from './petStateMapper';
 import { resolveBoundWorkspace, type FbProject } from './workspaceBinding';
 import { SESSION_MIGRATED_EVENT, type FloatingBallSessionMigratedPayload } from './sessionBinding';
@@ -579,15 +581,24 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
     const rotateToRef = useRef<(today: string, ws: { path: string; name?: string }) => Promise<void>>(
         async () => undefined,
     );
-    // Before the first frozen Session snapshot arrives, a hidden selector has
-    // one exact distribution default. When selection is available, the Agent
-    // preference is intentionally unresolved here and remains `unknown`.
-    const analyticsRuntimeRef = useRef<RuntimeType | 'unknown'>('builtin');
+    // Attribution comes from this Companion Session, never the active Chat Tab.
+    // Until its execution snapshot arrives, the Runtime remains unknown.
+    const analyticsRuntimeRef = useRef<RuntimeType | 'unknown'>('unknown');
+    const analyticsRuntimeSourceRef = useRef<RuntimeSource | null>(null);
+    const analyticsModelRef = useRef<string | null>(null);
+    const trackSessionEvent = useCallback((event: string, params: Record<string, string | number | boolean | null | undefined> = {}) => {
+        track(event, {
+            source: 'floating_ball', surface: 'floating_ball', session_id: sessionIdRef.current,
+            runtime: analyticsRuntimeRef.current, runtime_source: analyticsRuntimeSourceRef.current, ...params,
+        });
+    }, []);
 
-    const applySessionSnapshot = useCallback((meta: { runtime?: string; providerId?: string; model?: string } | null | undefined) => {
+    const applySessionSnapshot = useCallback((meta: { runtimeBinding?: EffectiveRuntimeBinding; runtime?: string; runtimeSource?: RuntimeSource; providerId?: string; model?: string } | null | undefined) => {
         if (!meta) return;
-        const snapshotRuntime = normalizeRuntime(meta.runtime);
+        const snapshotRuntime = meta.runtimeBinding ? runtimeTypeForBinding(meta.runtimeBinding) : normalizeRuntime(meta.runtime);
         analyticsRuntimeRef.current = snapshotRuntime;
+        analyticsRuntimeSourceRef.current = runtimeSourceForRuntimeType(snapshotRuntime, meta.runtimeBinding ? runtimeSourceForBinding(meta.runtimeBinding) : meta.runtimeSource) ?? null;
+        analyticsModelRef.current = meta.model ?? null;
         setRuntime(snapshotRuntime);
         setProviderId(meta.providerId ?? null);
         setModel(meta.model ?? null);
@@ -893,12 +904,14 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                     const payload = data as ToolUse | null;
                     if (!payload?.id || !payload.name) break;
                     setBusy(true);
+                    trackSessionEvent('tool_use', { tool: payload.name, tool_origin: 'runtime' });
                     appendToolBlock(payload, 'tool_use');
                     break;
                 }
                 case 'chat:server-tool-use-start': {
                     const payload = data as ProviderToolUsePayload | null;
                     if (!payload?.id || !payload.name) break;
+                    trackSessionEvent('tool_use', { tool: payload.name, tool_origin: 'provider' });
                     appendToolBlock(payload, 'server_tool_use');
                     break;
                 }
@@ -1063,6 +1076,10 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                     break;
                 }
                 case 'chat:message-complete': {
+                    trackSessionEvent('message_complete', messageCompletionParams(
+                        analyticsRuntimeRef.current, analyticsRuntimeSourceRef.current,
+                        data as MessageCompletionTelemetry | null,
+                    ));
                     // Turn presentation can finish while queued Session work is
                     // still running. chat:status / REST owns the busy projection.
                     finalizeStream();
@@ -1077,6 +1094,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                     break;
                 }
                 case 'chat:message-error': {
+                    trackSessionEvent('message_error');
                     const msg =
                         typeof data === 'string'
                             ? data
@@ -1091,6 +1109,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                     break;
                 }
                 case 'chat:message-stopped': {
+                    trackSessionEvent('message_stop');
                     finalizeStream('stopped');
                     setPermReqs([]);
                     setAskReq(null);
@@ -1234,6 +1253,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             updateLiveContent,
             updateToolBlock,
             showTranscriptSaveToast,
+            trackSessionEvent,
         ],
     );
     const handleSseEventRef = useRef(handleSseEvent);
@@ -1253,7 +1273,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             const json = await resp.json() as { success: boolean; session?: {
                 id: string; transcriptFormat?: 2; messages: unknown[]; liveStreamingMessage?: unknown;
                 snapshotRevision?: number; liveSessionState?: string; transcriptSaveStatus?: TranscriptSaveStatus;
-                runtime?: string; providerId?: string; model?: string; permissionMode?: string;
+                runtimeBinding?: EffectiveRuntimeBinding; runtime?: string; runtimeSource?: RuntimeSource; providerId?: string; model?: string; permissionMode?: string;
                 pendingInteractiveRequests?: Array<{ type: string; data: unknown }>;
                 queuedMessages?: Array<{ id: string; messagePreview: string; asyncQuestionReply?: AsyncQuestionReply }>;
             } };
@@ -1356,13 +1376,13 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             // — including the server-side ai_turn_complete — join back to this via
             // session_id, which is how the desktop channel becomes sliceable in
             // analytics without any server change.
-            track('session_new', {
+            trackSessionEvent('session_new', {
                 session_id: sid,
                 triggered_by: 'floating_ball',
                 ...originAnalyticsFields(origin),
                 entry_intent: 'new_chat',
                 runtime: analyticsRuntimeRef.current,
-                runtime_source: null,
+                runtime_source: analyticsRuntimeSourceRef.current,
                 has_initial_message: false,
                 agent_hash: null,
             });
@@ -1372,7 +1392,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             console.error(`[fb-session] mint failed workspace=${workspace} elapsed=${elapsedMs(startedAt)} error=${describeError(err)}`);
             throw err;
         }
-    }, [applySessionSnapshot]);
+    }, [applySessionSnapshot, trackSessionEvent]);
 
     /** Ensure sidecar + (re)connect SSE for `sid`. */
     const connectSession = useCallback(async (
@@ -1531,16 +1551,6 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 console.info(
                     `[fb-session] boot config loaded projects=${projects.length} hasSession=${Boolean(cfg.floatingBallSessionId)} date=${cfg.floatingBallSessionDate ?? 'none'} workspace=${cfg.floatingBallSessionWorkspace ?? 'none'} elapsed=${elapsedMs(bootStartedAt)}`,
                 );
-                analyticsRuntimeRef.current = isAgentRuntimeSelectorAvailable()
-                    ? 'unknown'
-                    : resolveEffectiveRuntime(
-                        undefined,
-                        undefined,
-                        undefined,
-                        undefined,
-                        undefined,
-                        cfg.defaultIntegratedRuntime,
-                    );
                 setSendShortcut(cfg.chatSendShortcut ?? 'enter');
                 // 设置面板（D17）：工作区选择器的候选 + 当前绑定覆盖。
                 setProjects(projects.map((p) => ({ path: p.path, name: p.name })));
@@ -1777,6 +1787,11 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             // 会把发完就走的渠道意外降级成逐项确认。`/chat/send` 内部再按 session 的
             // runtime 分流到 builtin / external（D16 无需前端分流）。破坏性保护由
             // hook 硬闸承担（plan-mode-gate / background-agent-permission）。
+            const sendAnalytics = {
+                runtime: analyticsRuntimeRef.current,
+                runtime_source: analyticsRuntimeSourceRef.current,
+                model: analyticsModelRef.current,
+            };
             const sendMode = permissionModeRef.current || 'fullAgency';
             const sendStartedAt = Date.now();
             console.info(
@@ -1797,13 +1812,11 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 const body = (await resp.json().catch(() => ({}))) as { success?: boolean; error?: string; queueId?: string };
                 if (!resp.ok || body.success !== true) throw new Error(body.error || `HTTP ${resp.status}`);
                 if (optimisticQueueId && body.queueId) setQueuedMessages(prev => prev.map(item => item.queueId === optimisticQueueId ? { ...item, queueId: body.queueId! } : item));
-                // 打点放在确认入队之后（失败不计），runtime 用 gate-aware 口径。
-                track('message_send', {
-                    runtime: analyticsRuntimeRef.current,
-                    runtime_source: null,
+                // Emit only after admission, using the Session identity captured for this send.
+                trackSessionEvent('message_send', {
                     mode: sendMode,
-                    model: '',
-                    has_image: Boolean(images),
+                    ...sendAnalytics,
+                    has_image: Boolean(images?.length),
                     has_file: false,
                     is_cron: false,
                     surface: 'floating_ball',
@@ -1821,7 +1834,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 sendingRef.current = false;
             }
         },
-        [],
+        [trackSessionEvent],
     );
 
     const respondPermission = useCallback(
@@ -1831,6 +1844,11 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 ? permReqs.find(item => item.requestId === requestIdOverride)
                 : permReq;
             if (!sid || !req) return;
+            const permissionAnalytics = {
+                session_id: sid,
+                runtime: analyticsRuntimeRef.current,
+                runtime_source: analyticsRuntimeSourceRef.current,
+            };
             try {
                 const resp = await floatingProxyFetch(sid, '/api/permission/respond', {
                     method: 'POST',
@@ -1841,6 +1859,9 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 // POST 失败或后端回 {success:false}（过期/已轮换）时让 pending 永久挂起
                 // 且无从重试（review W4 + cross-review C3）。
                 await assertRespondSucceeded(resp);
+                trackSessionEvent(decision === 'deny' ? 'permission_deny' : 'permission_grant', {
+                    ...permissionAnalytics, tool: req.toolName, ...(decision === 'deny' ? {} : { type: decision }),
+                });
                 setPermReqs(prev => removePermissionRequest(prev, req.requestId));
             } catch (err) {
                 console.error('[fb] permission respond failed:', err);
@@ -1848,7 +1869,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 throw err;
             }
         },
-        [permReq, permReqs],
+        [permReq, permReqs, trackSessionEvent],
     );
 
     /** 回答 ask-user-question（D13）。answers=null 表示用户取消（SDK deny+interrupt）。

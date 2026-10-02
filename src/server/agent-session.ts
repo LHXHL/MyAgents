@@ -1,3 +1,4 @@
+import { buildTurnProviderAnalytics } from './session-core/turn-analytics';
 import { createBuiltinInterruptController } from './builtin-session/interrupt';
 import { configureBuiltinTranscriptBinding } from './builtin-session/transcript';
 import { randomUUID } from 'crypto';
@@ -496,7 +497,6 @@ import type {
   InFlightMetadata,
   MessageQueueItem,
   TurnBoundaryQueueItem,
-  TurnProviderAnalytics,
 } from './builtin-session/types';
 
 /**
@@ -954,26 +954,6 @@ let watchdogFired = false;
 // queue item changes before the interrupt result/stop handler runs (for
 // example replay(A) promotes B), the terminal event belongs to A and must not
 // drop or surface B.
-
-const SUBSCRIPTION_PROVIDER_ANALYTICS: TurnProviderAnalytics = {
-  provider_id: 'anthropic-sub',
-  provider_name: 'Anthropic (订阅)',
-  api_protocol: 'anthropic',
-  provider_base_url: 'https://api.anthropic.com',
-  provider_api_protocol: 'anthropic',
-};
-
-function buildTurnProviderAnalytics(providerEnv: ProviderEnv | undefined): TurnProviderAnalytics {
-  if (!providerEnv) return SUBSCRIPTION_PROVIDER_ANALYTICS;
-  const protocol = providerEnv.apiProtocol ?? 'anthropic';
-  return {
-    provider_id: providerEnv.providerId ?? null,
-    provider_name: providerEnv.providerName ?? providerEnv.providerId ?? null,
-    api_protocol: protocol,
-    provider_base_url: providerEnv.baseUrl ?? 'https://api.anthropic.com',
-    provider_api_protocol: protocol,
-  };
-}
 
 /**
  * Clear the in-flight queued-command slot. Keeps the three coupled fields in lockstep so a

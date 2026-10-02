@@ -1,3 +1,4 @@
+import { messageCompletionParams } from '@/analytics/conversation';
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 import { NATIVE_RESUME_BOUNDARY_MESSAGE } from '../../shared/nativeResumeBoundary';
 import { useToastOptional } from '@/components/Toast';
@@ -1006,6 +1007,9 @@ export default function TabProvider({
       track(event, {
         session_id: currentSessionIdRef.current ?? null,
         tab_id: tabId,
+        source: 'desktop',
+        runtime: analyticsMetaRef.current.runtime,
+        runtime_source: analyticsMetaRef.current.runtimeSource,
         ...params,
       });
     },
@@ -1824,6 +1828,7 @@ export default function TabProvider({
       track('session_new', {
         session_id: newSessionId,
         tab_id: tabId,
+        source: 'desktop',
         triggered_by: birth.surface,
         ...originFields,
         entry_intent: birth.entryIntent,
@@ -3287,7 +3292,7 @@ export default function TabProvider({
         case 'chat:tool-use-start': {
           if (isV2) {
             const tool = data as ToolUse;
-            trackTabEvent('tool_use', { tool: tool.name });
+            trackTabEvent('tool_use', { tool: tool.name, tool_origin: 'runtime' });
             toolNameMapRef.current.set(tool.id, tool.name);
             break;
           }
@@ -3322,7 +3327,7 @@ export default function TabProvider({
           const tool = data as ToolUse;
 
           // Track tool_use event
-          trackTabEvent('tool_use', { tool: tool.name });
+          trackTabEvent('tool_use', { tool: tool.name, tool_origin: 'runtime' });
 
           // Synchronously record toolUseId → toolName for file-modifying tool detection.
           // This map is read in chat:tool-result-complete to trigger directory refresh.
@@ -3384,7 +3389,7 @@ export default function TabProvider({
         case 'chat:server-tool-use-start': {
           if (isV2) {
             const tool = data as ToolUse;
-            trackTabEvent('tool_use', { tool: tool.name });
+            trackTabEvent('tool_use', { tool: tool.name, tool_origin: 'provider' });
             toolNameMapRef.current.set(tool.id, tool.name);
             break;
           }
@@ -3417,7 +3422,7 @@ export default function TabProvider({
           const tool = data as ProviderToolUsePayload;
 
           // Track tool_use event (server-side tools)
-          trackTabEvent('tool_use', { tool: tool.name });
+          trackTabEvent('tool_use', { tool: tool.name, tool_origin: 'provider' });
 
           // Server tools come with complete input, no streaming
           const toolSimple: ToolUseSimple = {
@@ -3905,18 +3910,11 @@ export default function TabProvider({
               message: appText('tabProvider.compactSuccess'),
             });
           }
-          // Always track message_complete, use defaults if payload is missing
-          trackTabEvent('message_complete', {
-            runtime: analyticsMetaRef.current.runtime,
-            runtime_source: analyticsMetaRef.current.runtimeSource,
-            model: completePayload?.model,
-            input_tokens: completePayload?.input_tokens ?? 0,
-            output_tokens: completePayload?.output_tokens ?? 0,
-            cache_read_tokens: completePayload?.cache_read_tokens ?? 0,
-            cache_creation_tokens: completePayload?.cache_creation_tokens ?? 0,
-            tool_count: completePayload?.tool_count ?? 0,
-            duration_ms: completePayload?.duration_ms ?? 0,
-          });
+          trackTabEvent('message_complete', messageCompletionParams(
+            analyticsMetaRef.current.runtime,
+            analyticsMetaRef.current.runtimeSource,
+            completePayload,
+          ));
 
           // Auto-title generation is backend-owned (#296) — the sidecar
           // triggers it off this same turn-success signal and pushes the
@@ -4117,11 +4115,11 @@ export default function TabProvider({
             // bottom-bar display consistent with how messages route.
             if (payload.runtime) {
               const runtime = normalizeRuntime(payload.runtime);
+              const runtimeSource = runtimeSourceForRuntimeType(runtime, payload.runtimeSource) ?? null;
+              // SSE can deliver the next tool/terminal before React runs effects.
+              analyticsMetaRef.current = { ...analyticsMetaRef.current, runtime, runtimeSource };
               setSessionRuntime(runtime);
-              setSessionRuntimeSource(
-                runtimeSourceForRuntimeType(runtime, payload.runtimeSource) ??
-                  null,
-              );
+              setSessionRuntimeSource(runtimeSource);
               setSessionRuntimeSessionId(newSessionId ?? currentIdForSystemInit);
               if (runtime !== 'builtin') {
                 setSdkSlashCommands([]);
@@ -7032,12 +7030,12 @@ export default function TabProvider({
         `[TabProvider] Permission response: ${decision} for ${toolName}`,
       );
 
-      // Track permission decision
-      if (decision === 'deny') {
-        trackTabEvent('permission_deny', { tool: toolName });
-      } else {
-        trackTabEvent('permission_grant', { tool: toolName, type: decision });
-      }
+      const permissionAnalytics = {
+        session_id: currentSessionIdRef.current ?? null,
+        runtime: analyticsMetaRef.current.runtime,
+        runtime_source: analyticsMetaRef.current.runtimeSource,
+        tool: toolName,
+      };
 
       // Send response to backend
       try {
@@ -7050,6 +7048,10 @@ export default function TabProvider({
             response.error || 'Permission response was not accepted by backend',
           );
         }
+        trackTabEvent(decision === 'deny' ? 'permission_deny' : 'permission_grant', {
+          ...permissionAnalytics,
+          ...(decision === 'deny' ? {} : { type: decision }),
+        });
         setPendingPermissions((prev) =>
           removePermissionRequest(prev, requestId),
         );

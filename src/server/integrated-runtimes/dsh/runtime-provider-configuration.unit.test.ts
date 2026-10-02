@@ -55,6 +55,26 @@ describe('DSH Provider configuration', () => {
     },
   );
 
+  it('attributes the official DeepSeek native route using its compiled endpoint', async () => {
+    const provider = preset('deepseek');
+    vi.mocked(getSessionMetadata).mockReturnValue({
+      providerRoute: { kind: 'provider', providerId: provider.id, model: 'deepseek-flash' },
+    } as ReturnType<typeof getSessionMetadata>);
+    vi.mocked(findEffectiveProvider).mockReturnValue(provider as unknown as NonNullable<ReturnType<typeof findEffectiveProvider>>);
+    vi.mocked(resolveProviderEnv).mockReturnValue({
+      providerId: provider.id, providerName: provider.name, apiProtocol: 'anthropic',
+      authType: 'api_key', apiKey: 'synthetic-key', baseUrl: provider.config.baseUrl,
+    });
+    const result = await compileConfiguration(options);
+    expect(result.profile.providerRouteId).toBe('deepseek-official');
+    expect(result.providerAnalytics).toMatchObject({
+      provider_id: 'deepseek', provider_name: provider.name,
+      api_protocol: 'anthropic', provider_api_family: 'anthropic-messages',
+      provider_base_url: result.profile.baseUrl,
+    });
+    expect(JSON.stringify(result.providerAnalytics)).not.toContain('synthetic-key');
+  });
+
   it('keeps Grok bearer out of the configuration and marks only its exact binding dynamic', async () => {
     const provider = preset('xai-sub');
     vi.mocked(getSessionMetadata).mockReturnValue({
@@ -68,6 +88,7 @@ describe('DSH Provider configuration', () => {
     });
     const result = await compileConfiguration(options);
     expect(result.profile).toMatchObject({ provider: 'xai-sub', api: 'openai-responses' });
+    expect(result.providerAnalytics).toMatchObject({ provider_id: 'xai-sub', provider_name: provider.name, api_protocol: 'openai', provider_api_family: 'openai-responses', provider_base_url: result.profile.baseUrl });
     expect(result.bindings[0]).toMatchObject({ apiKey: '', managedOauth: true });
     expect(JSON.stringify(result)).not.toContain('bearer');
     expect(prepareProviderBinding).not.toHaveBeenCalled();
@@ -96,6 +117,8 @@ describe('DSH Provider configuration', () => {
     }));
     const first = await compileConfiguration(options);
     expect(first.profile.baseUrl).toBe('http://127.0.0.1:40123');
+    expect(first.providerAnalytics).toMatchObject({ provider_id: 'antigravity-sub', provider_name: provider.name, api_protocol: 'anthropic', provider_base_url: first.profile.baseUrl });
+    expect(JSON.stringify(first.providerAnalytics)).not.toContain('key-model-a');
     expect(first.bindings[0].apiKey).toBe('key-model-a');
     const unchanged = await compileConfiguration(options, undefined, first);
     expect(unchanged.preparedProvider).toBe(first.preparedProvider);

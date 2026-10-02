@@ -1,3 +1,4 @@
+import { runtimeProviderAnalytics } from '../session-core/turn-analytics';
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 import type { RuntimeAgentWorkControl } from '../../shared/types/subagent-lifecycle';
 import {
@@ -88,7 +89,6 @@ import {
   resolveDshWorkspaceSupplement,
 } from './workspace-instructions';
 import {
-  RUNTIME_DISPLAY_NAMES,
   runtimeSupportsPrewarm,
   type RuntimeEnvPolicy,
   type RuntimeExtensionDiagnostics,
@@ -606,10 +606,6 @@ export function summarizeExternalRuntimeMessageForLog(value: unknown): string {
 // insufficient here: CC `-p` has no mid-turn interrupt, so Stop = SIGTERM kill,
 // whose synthetic session_complete carries no terminal_reason. Consumed (reset to
 // false) the first time the handler reads it, with a backstop reset at session start.
-function externalRuntimeProviderName(runtime: RuntimeType): string {
-  return RUNTIME_DISPLAY_NAMES[runtime];
-}
-
 let watchdogTimer: ReturnType<typeof setInterval> | null = null; // Hung process detection (suspension-aware interval)
 
 let externalTurnSeq = 0;
@@ -9437,6 +9433,21 @@ async function persistTurnResult(
   // the inbox-meta discipline. Null = no usage event this turn → persist must OMIT
   // the field (never write undefined, which would erase the prior persisted value).
   const turnContextUsage = getExternalCurrentTurnContextUsage();
+  const runtimeType = getCurrentRuntimeType();
+  const runtimeSource = getCurrentRuntimeSource();
+  const lifecycleSessionId = getExternalLifecycleSessionId();
+  const turnModel = settledTurnUsage?.model
+    || getExternalRuntimeLiveReportedModel() || getExternalRuntimeDesiredModel() || null;
+  let providerAnalytics = runtimeProviderAnalytics(runtimeType);
+  const activeRuntime = getExternalActiveRuntime();
+  const activeProcess = getExternalActiveProcess();
+  if (activeRuntime?.getTurnProviderAnalytics && activeProcess) {
+    try {
+      providerAnalytics = { ...activeRuntime.getTurnProviderAnalytics(activeProcess) };
+    } catch {
+      // Optional attribution must not change execution or terminal settlement.
+    }
+  }
   const runtimeTurnAnchor = getExternalRuntimeTurnAnchor();
   const turnAnalyticsSource =
     currentTurnAnalyticsSource ?? getExternalLifecycleAnalyticsSource();
@@ -9503,12 +9514,6 @@ async function persistTurnResult(
     // BEFORE we snapshot to disk. Without this await, large/slow saves land
     // their `tool_attachment_update` after `currentContentBlocks = []` reset
     // and the disk JSON keeps the "生成中" placeholder forever.
-    if (!productTranscript) await awaitInFlightSaves();
-    else {
-      getTranscriptPresentation()?.closeText();
-      getTranscriptPresentation()?.closeThinking();
-    }
-
     const usageData = settledTurnUsage;
     const turnToolCount = productTranscript
       ? [...productTranscript.writer.projection.messages.values()]
@@ -9530,8 +9535,13 @@ async function persistTurnResult(
             0,
           )
       : getExternalTurnContentSnapshotToolCount(turnContentSnapshot);
-    const runtimeType = getCurrentRuntimeType();
-    const runtimeSource = getCurrentRuntimeSource();
+
+    if (!productTranscript) await awaitInFlightSaves();
+    else {
+      getTranscriptPresentation()?.closeText();
+      getTranscriptPresentation()?.closeThinking();
+    }
+
     // turnContextUsage was snapshotted at the synchronous function entry (above) to
     // survive a concurrent turn's resetTurnAccumulators() during the await window.
 
@@ -9549,7 +9559,6 @@ async function persistTurnResult(
     const persistedContent = productTranscript
       ? null
       : getExternalTurnContentSnapshotPersistedContent(turnContentSnapshot);
-    const lifecycleSessionId = getExternalLifecycleSessionId();
     activityOwnedByTranscriptPersist = true;
     const persistResult = await appendAndPersistExternalAssistantTurn({
       sessionId: lifecycleSessionId,
@@ -9667,31 +9676,26 @@ async function persistTurnResult(
     // `lastSessionId` is typed `string` and bootstrap-initialized to `''`, so we
     // coerce empty to null here. Analytics tolerates null and groups those as
     // "pre-session" (negligible volume — only first turn before any id lands).
-    const analyticsScenario = getExternalLifecycleScenario();
-    trackServer('ai_turn_complete', {
-      source: turnAnalyticsSource,
-      ...originAnalyticsFields(turnAnalyticsOrigin),
-      session_id: lifecycleSessionId || null,
-      platform:
-        analyticsScenario.type === 'im' ? analyticsScenario.platform : null,
-      runtime: runtimeType,
-      runtime_source: runtimeSource ?? null,
-      model:
-        usageData?.model ||
-        getExternalRuntimeLiveReportedModel() ||
-        getExternalRuntimeDesiredModel() ||
-        null,
-      provider_name: externalRuntimeProviderName(runtimeType),
-      api_protocol: null,
-      provider_base_url: null,
-      provider_api_protocol: null,
-      input_tokens: usageData?.inputTokens ?? 0,
-      output_tokens: usageData?.outputTokens ?? 0,
-      cache_read_tokens: usageData?.cacheReadTokens ?? 0,
-      cache_creation_tokens: usageData?.cacheCreationTokens ?? 0,
-      tool_count: turnToolCount,
-      duration_ms: turnDurationMs ?? 0,
-    });
+    const analyticsScenario = lifecycleScenarioForOrigin;
+    if (turnSucceededAtTerminal && !persistFailed) {
+      trackServer('ai_turn_complete', {
+        source: turnAnalyticsSource,
+        ...originAnalyticsFields(turnAnalyticsOrigin),
+        session_id: lifecycleSessionId || null,
+        platform:
+          analyticsScenario.type === 'im' ? analyticsScenario.platform : null,
+        runtime: runtimeType,
+        runtime_source: runtimeSource ?? null,
+        model: turnModel,
+        ...providerAnalytics,
+        input_tokens: usageData?.inputTokens,
+        output_tokens: usageData?.outputTokens,
+        cache_read_tokens: usageData?.cacheReadTokens,
+        cache_creation_tokens: usageData?.cacheCreationTokens,
+        tool_count: turnToolCount,
+        duration_ms: turnDurationMs,
+      });
+    }
 
     // #296 — backend-owned auto session titling for external runtimes. Gate on a
     // real successful turn (`lastTurnSucceeded`), not just "persistTurnResult ran".
