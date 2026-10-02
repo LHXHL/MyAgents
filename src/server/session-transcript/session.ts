@@ -139,12 +139,13 @@ export class SessionTranscript {
     // A body commit acknowledges its snapshot, not newer execution state.
     // SessionStore may have settled/admitted native work while publication awaited IO.
     const executionKeys = this.options.contentBoundMetadataKeys ?? [];
+    const supersededCommit = committed.revision < this.writer.status.liveRevision;
     const execution = Object.fromEntries(executionKeys
-      .filter(key => this.currentMetadata[key] !== metadataAtPublication[key])
+      .filter(key => supersededCommit || this.currentMetadata[key] !== metadataAtPublication[key])
       .map(key => [key, this.currentMetadata[key]]));
     const remaining = { ...this.pendingMetadata };
     for (const key of Object.keys(patch) as (keyof SessionMetadata)[]) {
-      if (executionKeys.includes(key) && committed.revision < this.writer.status.liveRevision) continue;
+      if (executionKeys.includes(key) && supersededCommit) continue;
       if (remaining[key] === patch[key]) delete remaining[key];
     }
     this.pendingMetadata = remaining;

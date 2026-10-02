@@ -76,12 +76,18 @@ describe('DSH execution journals with V2 product history', () => {
     const release = Promise.withResolvers<void>();
     let firstPublication = true;
     const transcript = new SessionTranscript({
-      metadata, birth: true, filePath: join(state.home, 'publication-race.jsonl'),
+      metadata: { ...metadata, pendingDshRootOperation: undefined }, birth: true,
+      filePath: join(state.home, 'publication-race.jsonl'),
       generation: 'publication-race', revision: 0, projection: createTranscriptProjection(),
       withLock: run => run(),
       publishMetadata: async (current, patch) => {
         const updated = { ...current, ...patch };
-        if (firstPublication) { firstPublication = false; entered.resolve(); await release.promise; }
+        if (firstPublication) {
+          firstPublication = false;
+          // A superseded body commit leaves the durable execution journal intact.
+          updated.pendingDshRootOperation = metadata.pendingDshRootOperation;
+          entered.resolve(); await release.promise;
+        }
         return updated;
       },
       contentBoundMetadataKeys: ['pendingDshRootOperation'],
@@ -91,7 +97,7 @@ describe('DSH execution journals with V2 product history', () => {
     const flushing = transcript.writer.flush();
     await entered.promise;
     try {
-      transcript.patchMetadata({ pendingDshRootOperation: undefined });
+      transcript.patchMetadata({ title: 'next revision' });
       transcript.adoptExecutionMetadata(transcript.metadata, ['pendingDshRootOperation']);
     } finally { release.resolve(); }
     expect(await flushing).toBe(true);
