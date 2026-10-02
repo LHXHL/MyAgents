@@ -3,6 +3,7 @@ import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
   AlertIcon,
   AtIcon,
+  SlashCommandIcon,
   ChevronRightIcon,
   ChevronUpIcon,
   GaugeIcon,
@@ -1843,7 +1844,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   }}
                   className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                 >
-                  <span className="inline-flex h-4 w-4 items-center justify-center font-medium text-[var(--ink-muted)]">/</span>
+                  <SlashCommandIcon className="h-4 w-4" />
                   {t('input.useSkill')}
                 </button>
                 <button

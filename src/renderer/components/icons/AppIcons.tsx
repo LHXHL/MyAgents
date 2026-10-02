@@ -914,6 +914,12 @@ export const TerminalIcon = createAppIcon('terminal', (
     <path d="M10.5 12.25h3.25" />
   </>
 ));
+export const SlashCommandIcon = createAppIcon('slash-command', (
+  <>
+    <rect x="3.25" y="3.25" width="13.5" height="13.5" rx="3.5" />
+    <path d="M11.75 6.75l-3.5 6.5" />
+  </>
+));
 export const CodeIcon = createAppIcon('code', (
   <>
     <path d="M7 6.25L3.25 10 7 13.75" />

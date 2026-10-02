@@ -11,6 +11,7 @@ import {
   TrashIcon,
   ChevronRightIcon,
   AlertIcon,
+  CloseIcon,
 } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -288,9 +289,7 @@ export default memo(function TemplateLibraryDialog({
                         onClick={onClose}
                         className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                     >
-                        <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M18 6 6 18M6 6l12 12" />
-                        </svg>
+                        <CloseIcon className="h-4 w-4" />
                     </button>
                 </div>
 

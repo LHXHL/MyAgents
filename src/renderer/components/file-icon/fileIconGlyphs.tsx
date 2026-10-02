@@ -78,13 +78,8 @@ const GLYPHS = {
       <path d="M7.25 15h3.5" />
     </>
   ),
-  markdown: (
-    <>
-      <path d="M6.6 14.75v-4.25l1.7 2.1 1.7-2.1v4.25" />
-      <path d="M12.9 10.5v4.25" />
-      <path d="M11.6 13.4l1.3 1.35 1.3-1.35" />
-    </>
-  ),
+  // A single "M" mark: the conventional down-arrow reads as a download badge at 16px.
+  markdown: <path d="M7.4 14.75V10.5l2.6 2.75 2.6-2.75v4.25" />,
   word: <path d="M6.6 10.25l1.3 4.75 2.1-3.6 2.1 3.6 1.3-4.75" />,
   sheet: (
     <>

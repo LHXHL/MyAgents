@@ -21,6 +21,11 @@ import {
   SettingsIcon,
   StopCircleIcon,
   XCircleIcon,
+  ArrowUpIcon,
+  ArrowUpRightIcon,
+  CameraIcon,
+  CloseIcon,
+  StopIcon,
 } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
@@ -1372,10 +1377,10 @@ export default function CompanionWindow() {
                     <SettingsIcon className="size-4" />
                 </button>
                 <button onClick={onExpand} title={t('floatingBall.chrome.openInMyAgents')}>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M7 17L17 7" /><path d="M9 7h8v8" /></svg>
+                    <ArrowUpRightIcon />
                 </button>
                 <button onClick={hideSelf} title={t('floatingBall.chrome.closeEsc')}>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
+                    <CloseIcon />
                 </button>
             </div>
 
@@ -1479,7 +1484,7 @@ export default function CompanionWindow() {
                         <span className="rule" />
                         <span className="q-text">{quote}</span>
                         <button className="q-x" onClick={() => setQuote(null)} title={t('floatingBall.removeQuote')}>
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
+                            <CloseIcon size={10} strokeWidth={2.5} />
                         </button>
                     </div>
                 )}
@@ -1518,16 +1523,16 @@ export default function CompanionWindow() {
                         onCompositionEnd={composerKeydown.onCompositionEnd}
                     />
                     <button className="cam" onClick={() => void onShot()} title={t('input.addScreenshot')}>
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" /><circle cx="12" cy="13" r="4" /></svg>
+                        <CameraIcon />
                     </button>
                     {/* 与主对话框同语义：运行中 = 停止（方块），否则 = 发送（箭头） */}
                     {session.busy && !questionTarget ? (
                         <button className="send stop" onClick={() => void session.stop()} title={t('input.stop')}>
-                            <svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="1.5" /></svg>
+                            <StopIcon fill="currentColor" />
                         </button>
                     ) : (
                         <button className={`send${sendReady ? ' ready' : ''}`} onClick={() => void doSend()} title={t('input.send')}>
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
+                            <ArrowUpIcon strokeWidth={2.5} />
                         </button>
                     )}
                 </div>

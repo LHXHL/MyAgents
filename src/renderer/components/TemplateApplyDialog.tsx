@@ -21,6 +21,7 @@ import {
   FilePlusIcon,
   FileWarningIcon,
   ArrowLeftIcon,
+  CloseIcon,
 } from '@/components/icons';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
@@ -175,9 +176,7 @@ export default function TemplateApplyDialog({ agentDir, onClose, onApplied }: Te
                         title={tSettings('agentSettings.templateApply.close')}
                         className="rounded-md p-1 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                        <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M18 6 6 18M6 6l12 12" />
-                        </svg>
+                        <CloseIcon className="h-4 w-4" />
                     </button>
                 </div>
 

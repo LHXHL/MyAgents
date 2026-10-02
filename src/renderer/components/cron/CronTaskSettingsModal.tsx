@@ -7,6 +7,7 @@ import {
   FlagIcon,
   MessageIcon,
   AlertIcon,
+  CheckIcon,
 } from '@/components/icons';
 import { useState, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -45,9 +46,7 @@ function Checkbox({ checked, onChange, label }: { checked: boolean; onChange: (v
         checked ? 'border-[var(--accent)] bg-[var(--accent)]' : 'border-[var(--line-strong)] bg-transparent hover:border-[var(--accent-muted)]'
       }`}>
       {checked && (
-        <svg className="h-3 w-3 text-[var(--on-accent)]" viewBox="0 0 12 12" fill="none">
-          <path d="M2.5 6L5 8.5L9.5 3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
+        <CheckIcon className="h-3 w-3 text-[var(--on-accent)]" strokeWidth={3} />
       )}
     </button>
   );
