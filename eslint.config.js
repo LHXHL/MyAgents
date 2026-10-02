@@ -205,6 +205,10 @@ export default defineConfig(
               message: "Use `listenWithCleanup` from '@/utils/tauriListen' instead — bare `await listen(...)` leaks the Tauri listener if the component unmounts mid-registration. See `tauriListen.ts` doc-comment.",
               allowTypeImports: true,
             },
+            {
+              name: 'lucide-react',
+              message: "Use the MyAgents icon set from '@/components/icons' (UI glyphs) or '@/components/file-icon' (file identity). lucide glyphs use a different grid, weight and corner language, so mixing them makes toolbars look uneven. Add a missing glyph to AppIcons.tsx instead.",
+            },
           ],
         },
       ],

@@ -5,20 +5,20 @@ import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Activity,
-  Archive,
-  Bell,
-  Bot,
-  CheckCircle,
-  Pencil,
-  Play,
-  RotateCcw,
-  RadioTower,
-  SlidersHorizontal,
-  Square,
-  Trash2,
-  X,
-} from "lucide-react";
+  ActivityIcon,
+  ArchiveIcon,
+  BellIcon,
+  HelperIcon,
+  SuccessIcon,
+  EditIcon,
+  PlayIcon,
+  UndoIcon,
+  RadioIcon,
+  SlidersIcon,
+  StopIcon,
+  TrashIcon,
+  CloseIcon,
+} from '@/components/icons';
 import ConfirmDialog from "@/components/ConfirmDialog";
 import OverlayBackdrop from "@/components/OverlayBackdrop";
 import {
@@ -565,11 +565,11 @@ export function TaskDetailOverlay({
               title={t("detail.properties")}
               aria-label={t("detail.properties")}
             >
-              <SlidersHorizontal className="h-4 w-4" />
+              <SlidersIcon className="h-4 w-4" />
             </button>
             {task.status === "todo" && (
               <ActionBtn
-                icon={<Play className="h-3.5 w-3.5" />}
+                icon={<PlayIcon className="h-3.5 w-3.5" />}
                 label={t("detail.runNow")}
                 disabled={busy}
                 onClick={dispatchRun}
@@ -582,7 +582,7 @@ export function TaskDetailOverlay({
               task.executionState === "stop_failed") &&
               task.executionState !== "stopping" && (
                 <ActionBtn
-                  icon={<Square className="h-3.5 w-3.5" />}
+                  icon={<StopIcon className="h-3.5 w-3.5" />}
                   label={
                     task.executionState === "stop_failed"
                       ? t("detail.retryStop")
@@ -600,7 +600,7 @@ export function TaskDetailOverlay({
               task.dispatchOrigin !== "attached-session" &&
               !task.executionState && (
                 <ActionBtn
-                  icon={<RotateCcw className="h-3.5 w-3.5" />}
+                  icon={<UndoIcon className="h-3.5 w-3.5" />}
                   label={t("detail.rerun")}
                   disabled={busy}
                   onClick={dispatchRerun}
@@ -630,7 +630,7 @@ export function TaskDetailOverlay({
               title={t("detail.closeTitle")}
               aria-label={t("detail.closeTitle")}
             >
-              <X className="h-4 w-4" />
+              <CloseIcon className="h-4 w-4" />
             </button>
           </header>
 
@@ -703,7 +703,7 @@ export function TaskDetailOverlay({
                     onClick={() => setShowMobileProperties(false)}
                     aria-label={t("common.close")}
                   >
-                    <X className="h-4 w-4" />
+                    <CloseIcon className="h-4 w-4" />
                   </button>
                 </div>
                 <SummaryCard task={task} stats={runStats} />
@@ -784,7 +784,7 @@ function OverflowMenu({
 
   const secondary: DropdownMenuItem[] = [
     {
-      icon: <Pencil className="h-3.5 w-3.5" />,
+      icon: <EditIcon className="h-3.5 w-3.5" />,
       label: t("detail.edit"),
       onClick: onEdit,
       disabled: locked,
@@ -793,21 +793,21 @@ function OverflowMenu({
   ];
   if (canMarkDone) {
     secondary.push({
-      icon: <CheckCircle className="h-3.5 w-3.5" />,
+      icon: <SuccessIcon className="h-3.5 w-3.5" />,
       label: t("detail.markDone"),
       onClick: onMarkDone,
     });
   }
   if (canArchive) {
     secondary.push({
-      icon: <Archive className="h-3.5 w-3.5" />,
+      icon: <ArchiveIcon className="h-3.5 w-3.5" />,
       label: t("detail.archive"),
       onClick: onArchive,
     });
   }
   if (canSyncToAgent) {
     secondary.push({
-      icon: <Bot className="h-3.5 w-3.5" />,
+      icon: <HelperIcon className="h-3.5 w-3.5" />,
       label: syncing ? t("detail.syncing") : t("detail.syncToAgent"),
       title: t("detail.syncToAgentTitle"),
       onClick: onSyncToAgent,
@@ -818,7 +818,7 @@ function OverflowMenu({
   const destructive: DropdownMenuItem[] = onDelete
     ? [
         {
-          icon: <Trash2 className="h-3.5 w-3.5" />,
+          icon: <TrashIcon className="h-3.5 w-3.5" />,
           label: t("common.delete"),
           onClick: onDelete,
           danger: true,
@@ -902,7 +902,7 @@ export function TriggerRuntimeSection({
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <div>
           <div className="flex items-center gap-2 text-sm font-semibold text-[var(--ink)]">
-            <RadioTower className="h-4 w-4" />
+            <RadioIcon className="h-4 w-4" />
             {t("trigger.runtimeTitle")}
             <span className="rounded-md bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-medium text-[var(--ink-muted)]">
               {t(`trigger.health.${health}`)}
@@ -915,7 +915,7 @@ export function TriggerRuntimeSection({
         <div className="flex flex-wrap items-center gap-1">
           <ActionBtn
             icon={
-              <Activity
+              <ActivityIcon
                 className={
                   action === "test"
                     ? "h-3.5 w-3.5 animate-pulse"
@@ -929,7 +929,7 @@ export function TriggerRuntimeSection({
           />
           <ActionBtn
             icon={
-              <RadioTower
+              <RadioIcon
                 className={
                   action === "check"
                     ? "h-3.5 w-3.5 animate-pulse"
@@ -946,7 +946,7 @@ export function TriggerRuntimeSection({
             onClick={onCheck}
           />
           <ActionBtn
-            icon={<Play className="h-3.5 w-3.5" />}
+            icon={<PlayIcon className="h-3.5 w-3.5" />}
             label={t("trigger.runNow")}
             disabled={
               anyBusy ||
@@ -956,7 +956,7 @@ export function TriggerRuntimeSection({
             onClick={onRun}
           />
           <ActionBtn
-            icon={<RotateCcw className="h-3.5 w-3.5" />}
+            icon={<UndoIcon className="h-3.5 w-3.5" />}
             label={t("trigger.reset")}
             disabled={anyBusy || !!state?.pendingActivation}
             onClick={onReset}
@@ -1148,7 +1148,7 @@ function NotificationSummary({ task }: { task: Task }) {
   return (
     <div>
       <div className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-[var(--ink)]">
-        <Bell className="h-3.5 w-3.5" />
+        <BellIcon className="h-3.5 w-3.5" />
         {t("detail.notification")}
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">

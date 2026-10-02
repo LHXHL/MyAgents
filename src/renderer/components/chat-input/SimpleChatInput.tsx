@@ -1,21 +1,21 @@
 import { isRuntimeBackedProvider } from '../../../shared/providerExecution';
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
-  AlertCircle,
-  AtSign,
-  ChevronRight,
-  ChevronUp,
-  Gauge,
-  Loader,
-  Paperclip,
-  Plus,
-  Send,
-  Settings2,
-  Square,
-  Timer,
-  Wrench,
-  X,
-} from 'lucide-react';
+  AlertIcon,
+  AtIcon,
+  ChevronRightIcon,
+  ChevronUpIcon,
+  GaugeIcon,
+  LoaderIcon,
+  AttachIcon,
+  PlusIcon,
+  SendIcon,
+  SlidersIcon,
+  StopIcon,
+  TimerIcon,
+  WrenchIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, forwardRef, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -1527,7 +1527,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                     className="absolute -top-1.5 -right-1.5 h-5 w-5 rounded-full bg-[var(--error)] text-[var(--on-error)] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                     title={t('input.deleteImage')}
                   >
-                    <X className="h-3 w-3" />
+                    <CloseIcon className="h-3 w-3" />
                   </button>
                 </div>
               ))}
@@ -1779,7 +1779,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 className="rounded-lg p-2 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                 title={t('input.addContext')}
               >
-                <Plus className="h-4 w-4" />
+                <PlusIcon className="h-4 w-4" />
               </button>
               <Popover
                 open={showPlusMenu}
@@ -1817,7 +1817,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   }}
                   className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                 >
-                  <AtSign className="h-4 w-4" />
+                  <AtIcon className="h-4 w-4" />
                   {t('input.referenceFile')}
                 </button>
                 <button
@@ -1854,7 +1854,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   }}
                   className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                 >
-                  <Paperclip className="h-4 w-4" />
+                  <AttachIcon className="h-4 w-4" />
                   {t('input.uploadFile')}
                 </button>
                 {onCronButtonClick && (
@@ -1876,7 +1876,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                     }`}
                     title={configControlLockTitle ?? (cronModeEnabled ? t('input.cronEnabled') : t('input.cron'))}
                   >
-                    <Timer className="h-4 w-4" />
+                    <TimerIcon className="h-4 w-4" />
                     {t('input.cron')}
                   </button>
                 )}
@@ -1915,7 +1915,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   className="h-3.5 w-3.5 shrink-0"
                 />
                 <span className="toolbar-label">{currentModeDisplay?.label}</span>
-                <ChevronUp className="h-3 w-3" />
+                <ChevronUpIcon className="h-3 w-3" />
               </button>
               <Popover
                 open={modeMenuOpen}
@@ -1964,7 +1964,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 }`}
                 title={configControlLockTitle ?? t('input.toolsTitle')}
               >
-                <Wrench className="h-3.5 w-3.5" />
+                <WrenchIcon className="h-3.5 w-3.5" />
                 <span className="toolbar-label">{t('input.toolsLabel')}</span>
                 {enabledToolEntryCount > 0 && (
                   <span className="text-xs text-[var(--ink-muted)]">
@@ -2018,7 +2018,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                               }}
                               className="ml-2 shrink-0 rounded p-0.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                             >
-                              <Settings2 className="h-3.5 w-3.5" />
+                              <SlidersIcon className="h-3.5 w-3.5" />
                             </button>
                             <button
                               type="button"
@@ -2093,7 +2093,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                                   }}
                                   className="ml-2 shrink-0 rounded p-0.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                                 >
-                                  <Settings2 className="h-3.5 w-3.5" />
+                                  <SlidersIcon className="h-3.5 w-3.5" />
                                 </button>
                               )}
                               <button
@@ -2188,7 +2188,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                               }}
                               className="ml-2 shrink-0 rounded p-0.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                             >
-                              <Settings2 className="h-3.5 w-3.5" />
+                              <SlidersIcon className="h-3.5 w-3.5" />
                             </button>
                             <button
                               type="button"
@@ -2259,7 +2259,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 title={configControlLockTitle ?? t('input.switchModel')}
               >
                 <span className="max-w-[140px] truncate">{currentModelName}</span>
-                <ChevronUp className="h-3 w-3 shrink-0" />
+                <ChevronUpIcon className="h-3 w-3 shrink-0" />
               </button>
               {/* #324 — unstyled + hand-rolled chrome (= Popover DEFAULT_CHROME minus
                   `overflow-hidden`): the 推理强度 flyout is positioned OUTSIDE the
@@ -2338,7 +2338,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                         {p.name}
                         {isProviderWarning(p, apiKeys, providerVerifyStatus) && (
                           <Tip label={t('input.providerWarning')} position="bottom">
-                            <AlertCircle className="h-3 w-3 shrink-0 text-[var(--warning)]" />
+                            <AlertIcon className="h-3 w-3 shrink-0 text-[var(--warning)]" />
                           </Tip>
                         )}
                       </div>
@@ -2409,7 +2409,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                         showEffortSubmenu ? 'bg-[var(--hover-bg)]' : 'hover:bg-[var(--hover-bg)]'
                       }`}
                     >
-                      <Gauge className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />
+                      <GaugeIcon className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />
                       <span className="flex-1">{t('input.reasoningEffort')}</span>
                       <span className={`text-xs ${
                         reasoningEffort !== REASONING_EFFORT_DEFAULT
@@ -2418,7 +2418,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                       }`}>
                         {reasoningEffort === REASONING_EFFORT_DEFAULT ? defaultEffortLabel : reasoningEffort}
                       </span>
-                      <ChevronRight className="h-3 w-3 shrink-0 text-[var(--ink-muted)]" />
+                      <ChevronRightIcon className="h-3 w-3 shrink-0 text-[var(--ink-muted)]" />
                     </button>
 
                     {showEffortSubmenu && (
@@ -2480,9 +2480,9 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                       }}
                       className="flex w-full items-center gap-1.5 rounded-md px-3 py-1.5 text-left text-sm text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)]"
                     >
-                      <Settings2 className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />
+                      <SlidersIcon className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />
                       <span className="flex-1">{t('input.customModelService')}</span>
-                      <ChevronRight className="h-3 w-3 shrink-0 text-[var(--ink-muted)]" />
+                      <ChevronRightIcon className="h-3 w-3 shrink-0 text-[var(--ink-muted)]" />
                     </button>
                   </div>
                 )}
@@ -2507,7 +2507,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   className="rounded-lg bg-[var(--ink-muted)]/15 p-2 text-[var(--ink-muted)]/60"
                   title={t('input.systemBusy')}
                 >
-                  <Send className="h-4 w-4" />
+                  <SendIcon className="h-4 w-4" />
                 </button>
               ) : isLoading && sessionState === 'stopping' ? (
                 // Stop in progress - waiting for confirmation
@@ -2517,7 +2517,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   className="rounded-lg bg-[var(--ink-muted)]/15 p-2 text-[var(--ink-muted)]"
                   title={t('input.stopping')}
                 >
-                  <Loader className="h-4 w-4 animate-spin" />
+                  <LoaderIcon className="h-4 w-4 animate-spin" />
                 </button>
               ) : isLoading || systemStatus?.startsWith('api_retry:') ? (
                 // AI responding OR api_retry backoff - both can be stopped.
@@ -2532,7 +2532,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   className="rounded-lg bg-[var(--error)] p-2 text-[var(--on-error)] transition-colors hover:brightness-110"
                   title={systemStatus?.startsWith('api_retry:') ? t('input.stopRetry') : t('input.stop')}
                 >
-                  <Square className="h-4 w-4" />
+                  <StopIcon className="h-4 w-4" />
                 </button>
               ) : (
                 <button
@@ -2544,7 +2544,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                     ? (providerUnavailableMessage ?? t('input.providerUnavailableDefault'))
                     : `${t('input.send')} (${sendKeyHint(sendShortcut, isMac).shortcut})`}
                 >
-                  <Send className="h-4 w-4" />
+                  <SendIcon className="h-4 w-4" />
                 </button>
               )}
             </div>

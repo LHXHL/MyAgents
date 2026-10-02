@@ -1,4 +1,4 @@
-import { ChevronRight, Loader2 } from "lucide-react";
+import { ChevronRightIcon, LoaderIcon } from '@/components/icons';
 import { memo, useCallback } from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 
@@ -110,9 +110,9 @@ export const WorkspaceTreeRow = memo(function WorkspaceTreeRow({
     >
       <span className="flex h-4 w-4 flex-shrink-0 items-center justify-center text-[var(--ink-muted)]">
         {row.isLoading ? (
-          <Loader2 className="h-3 w-3 animate-spin" />
+          <LoaderIcon className="h-3 w-3 animate-spin" />
         ) : row.isDir ? (
-          <ChevronRight
+          <ChevronRightIcon
             className={`h-3 w-3 transition-transform ${row.isOpen ? "rotate-90" : ""}`}
           />
         ) : null}

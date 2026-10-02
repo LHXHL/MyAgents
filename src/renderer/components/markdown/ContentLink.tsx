@@ -1,5 +1,10 @@
 import { useContext, type ReactNode } from 'react';
-import { Globe, Link as LinkIcon, Play, Pause } from 'lucide-react';
+import {
+  GlobeIcon,
+  LinkIcon,
+  PlayIcon,
+  PauseIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import { useFileAction, useFileTargetInfo } from '@/context/fileActionState';
 import { useOpenWebLink } from '@/context/BrowserPanelContext';
@@ -70,7 +75,7 @@ export default function ContentLink({ reference, displayReference = reference, n
         }}
       >
         {target ? <FileIcon name={fileName} nodeKind={info?.type === 'dir' ? 'directory' : 'file'} size="inline" className="!my-0 mr-[0.25em] !inline-block" />
-          : web ? <Globe aria-hidden className="mr-[0.25em] inline size-[1em] align-[-0.125em]" /> : <LinkIcon aria-hidden className="mr-[0.25em] inline size-[1em] align-[-0.125em]" />}
+          : web ? <GlobeIcon aria-hidden className="mr-[0.25em] inline size-[1em] align-[-0.125em]" /> : <LinkIcon aria-hidden className="mr-[0.25em] inline size-[1em] align-[-0.125em]" />}
         <MarkdownLinkLabelContext.Provider value>{label}</MarkdownLinkLabelContext.Provider>
       </a>
     </Tip>{native && info?.exists && fullPath && isAudioPath(fullPath) && <AudioPlayButton filePath={fullPath} />}</>
@@ -84,6 +89,6 @@ function AudioPlayButton({ filePath }: { filePath: string }) {
   return <button type="button" onClick={event => { event.preventDefault(); event.stopPropagation(); toggle(); }}
     className="ml-1 inline-flex size-[18px] items-center justify-center rounded-full bg-[var(--accent)] text-[var(--on-accent)] align-middle"
     aria-label={isPlaying ? t('inlineCode.pause') : t('inlineCode.playAudio')}>
-    {isPlaying ? <Pause className="size-2.5 fill-current" /> : <Play className="size-2.5 fill-current" />}
+    {isPlaying ? <PauseIcon className="size-2.5 fill-current" /> : <PlayIcon className="size-2.5 fill-current" />}
   </button>;
 }

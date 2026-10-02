@@ -16,7 +16,18 @@ import { ExpandableResult } from '@/components/tools/utils';
 import { useTabApiOptional, useTabStateOptional } from '@/context/TabContext';
 import { useBackgroundTaskPolling } from '@/hooks/useBackgroundTaskPolling';
 import { getBackgroundTaskStatus, isTerminalStatus, BACKGROUND_TASK_STATUS_EVENT, type BackgroundTaskTerminalStatus } from '@/utils/backgroundTaskStatus';
-import { CheckCircle, ChevronDown, ChevronRight, Clock, Coins, Loader2, StopCircle, Terminal, Wrench, XCircle } from 'lucide-react';
+import {
+  SuccessIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  ClockIcon,
+  CoinsIcon,
+  LoaderIcon,
+  StopCircleIcon,
+  TerminalIcon,
+  WrenchIcon,
+  XCircleIcon,
+} from '@/components/icons';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Virtuoso } from 'react-virtuoso';
@@ -150,7 +161,7 @@ function CollapsibleContent({ children, maxLines = DEFAULT_MAX_LINES }: { childr
           onClick={handleToggle}
           className="mt-2 flex items-center gap-1 text-xs text-[var(--ink-muted)] hover:text-[var(--ink)] transition-colors"
         >
-          <ChevronDown className={`size-3 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+          <ChevronDownIcon className={`size-3 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
           <span>{isExpanded ? t('shell.toolChrome.task.collapse') : t('shell.toolChrome.task.expandMore')}</span>
         </button>
       )}
@@ -209,20 +220,20 @@ function TaskRunningStats({
       <div className="flex flex-wrap items-center gap-3 text-[var(--ink-muted)]">
         {/* 运行中状态 */}
         <div className="flex items-center gap-1.5 text-[var(--accent)]">
-          <Loader2 className="size-3.5 animate-spin" />
+          <LoaderIcon className="size-3.5 animate-spin" />
           <span className="font-medium">{t('shell.toolChrome.task.statusRunning')}</span>
         </div>
 
         {/* 已运行时间 */}
         <div className="flex items-center gap-1">
-          <Clock className="size-3.5" />
+          <ClockIcon className="size-3.5" />
           <span>{t('shell.toolChrome.task.ranFor', { duration: formatDuration(elapsed) })}</span>
         </div>
 
         {/* 工具调用次数 */}
         {stats.toolCount > 0 && (
           <div className="flex items-center gap-1">
-            <Wrench className="size-3.5" />
+            <WrenchIcon className="size-3.5" />
             <span>{t('shell.toolChrome.task.toolCalls', { count: stats.toolCount })}</span>
           </div>
         )}
@@ -230,7 +241,7 @@ function TaskRunningStats({
         {/* Token 消耗 */}
         {totalTokens > 0 && (
           <div className="flex items-center gap-1">
-            <Coins className="size-3.5" />
+            <CoinsIcon className="size-3.5" />
             <span>{t('shell.toolChrome.task.tokenUsage', { tokens: formatTokens(totalTokens) })}</span>
           </div>
         )}
@@ -238,7 +249,7 @@ function TaskRunningStats({
 
       {/* 展开/收起箭头 */}
       {hasTrace && (
-        <ChevronRight
+        <ChevronRightIcon
           className={`size-4 text-[var(--ink-muted)] transition-transform ${traceExpanded ? 'rotate-90' : ''}`}
           aria-hidden="true"
         />
@@ -267,13 +278,13 @@ function TaskCompletedStats({
   const isStopped = result.status === 'stopped';
 
   const statusIcon = isSuccess ? (
-    <CheckCircle className="size-3.5" />
+    <SuccessIcon className="size-3.5" />
   ) : isError ? (
-    <XCircle className="size-3.5" />
+    <XCircleIcon className="size-3.5" />
   ) : isStopped ? (
-    <StopCircle className="size-3.5" />
+    <StopCircleIcon className="size-3.5" />
   ) : (
-    <Loader2 className="size-3.5 animate-spin" />
+    <LoaderIcon className="size-3.5 animate-spin" />
   );
 
   const statusLabel =
@@ -326,7 +337,7 @@ function TaskCompletedStats({
         {/* 耗时 */}
         {duration != null && (
           <div className="flex items-center gap-1">
-            <Clock className="size-3.5" />
+            <ClockIcon className="size-3.5" />
             <span>{formatDuration(duration)}</span>
           </div>
         )}
@@ -334,7 +345,7 @@ function TaskCompletedStats({
         {/* 工具调用次数 */}
         {toolCount > 0 && (
           <div className="flex items-center gap-1">
-            <Wrench className="size-3.5" />
+            <WrenchIcon className="size-3.5" />
             <span>{t('shell.toolChrome.task.toolCallsShort', { count: toolCount })}</span>
           </div>
         )}
@@ -342,7 +353,7 @@ function TaskCompletedStats({
         {/* Token 消耗 */}
         {totalTokens > 0 && (
           <div className="flex items-center gap-1">
-            <Coins className="size-3.5" />
+            <CoinsIcon className="size-3.5" />
             <span>{t('shell.toolChrome.task.tokenUsage', { tokens: formatTokens(totalTokens) })}</span>
           </div>
         )}
@@ -358,7 +369,7 @@ function TaskCompletedStats({
 
       {/* 展开/收起箭头 */}
       {hasTrace && (
-        <ChevronRight
+        <ChevronRightIcon
           className={`size-4 transition-transform ${traceExpanded ? 'rotate-90' : ''}`}
           aria-hidden="true"
         />
@@ -422,18 +433,18 @@ function TaskBackgroundStats({
         {isDone ? (
           isSuccess ? (
             <div className="flex items-center gap-1.5 text-[var(--success)]">
-              <CheckCircle className="size-3.5" />
+              <SuccessIcon className="size-3.5" />
               <span className="font-medium">{t('shell.toolChrome.task.backgroundCompleted')}</span>
             </div>
           ) : (
             <div className="flex items-center gap-1.5 text-[var(--error)]">
-              <XCircle className="size-3.5" />
+              <XCircleIcon className="size-3.5" />
               <span className="font-medium">{t('shell.toolChrome.task.backgroundFailed')}</span>
             </div>
           )
         ) : (
           <div className="flex items-center gap-1.5 text-[var(--accent)]">
-            <Loader2 className="size-3.5 animate-spin" />
+            <LoaderIcon className="size-3.5 animate-spin" />
             <span className="font-medium">{t('shell.toolChrome.task.backgroundRunning')}</span>
           </div>
         )}
@@ -441,7 +452,7 @@ function TaskBackgroundStats({
         {/* 已运行时间 */}
         {elapsed > 0 && (
           <div className="flex items-center gap-1">
-            <Clock className="size-3.5" />
+            <ClockIcon className="size-3.5" />
             <span>{formatDuration(elapsed)}</span>
           </div>
         )}
@@ -449,7 +460,7 @@ function TaskBackgroundStats({
         {/* 工具调用次数 */}
         {stats && stats.toolCount > 0 && (
           <div className="flex items-center gap-1">
-            <Wrench className="size-3.5" />
+            <WrenchIcon className="size-3.5" />
             <span>{t('shell.toolChrome.task.toolCalls', { count: stats.toolCount })}</span>
           </div>
         )}
@@ -492,13 +503,13 @@ const SubagentCallItem = memo(function SubagentCallItem({ call }: { call: Subage
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="flex size-6 items-center justify-center rounded bg-[var(--accent-cool)]/10 text-[var(--accent-cool)]">
-            <Terminal className="size-3.5" />
+            <TerminalIcon className="size-3.5" />
           </div>
           <span className="text-sm font-medium text-[var(--ink)]">{call.name}</span>
         </div>
         {isCallRunning && (
           <div className="flex items-center gap-1.5 rounded-full bg-[var(--accent)]/10 px-2 py-0.5 text-xs font-medium text-[var(--accent)]">
-            <Loader2 className="size-3 animate-spin" />
+            <LoaderIcon className="size-3 animate-spin" />
             <span>{t('shell.toolChrome.common.executing')}</span>
           </div>
         )}

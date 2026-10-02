@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { GitBranch, X } from 'lucide-react';
+import { GitBranchIcon, CloseIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
 import { useTabApi } from '@/context/TabContext';
@@ -93,8 +93,8 @@ export default function DshAgentTreeDialog({ onClose }: { onClose: () => void })
   return <OverlayBackdrop onClose={busy ? undefined : onClose} className="z-[220] p-4" portal>
     <section role="dialog" aria-modal="true" aria-label={t('agentTree.title')} className="glass-panel flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden">
       <header className="flex items-center justify-between gap-4 border-b border-[var(--line)] p-5">
-        <h2 className="flex items-center gap-2 text-lg font-semibold text-[var(--ink)]"><GitBranch className="h-4 w-4" />{t('agentTree.title')}<span className="rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-medium text-[var(--ink-muted)]">{items.length}</span></h2>
-        <button onClick={onClose} disabled={Boolean(busy)} aria-label={t('agentTree.close')} className="rounded-lg p-2 text-[var(--ink)]"><X className="h-4 w-4" /></button>
+        <h2 className="flex items-center gap-2 text-lg font-semibold text-[var(--ink)]"><GitBranchIcon className="h-4 w-4" />{t('agentTree.title')}<span className="rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-medium text-[var(--ink-muted)]">{items.length}</span></h2>
+        <button onClick={onClose} disabled={Boolean(busy)} aria-label={t('agentTree.close')} className="rounded-lg p-2 text-[var(--ink)]"><CloseIcon className="h-4 w-4" /></button>
       </header>
       <div className="min-h-0 overflow-auto p-5">
         {notice && <p role="status" className="mb-3 text-sm text-[var(--ink-secondary)]">{notice}</p>}

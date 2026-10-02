@@ -4,7 +4,12 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { CheckCircle, XCircle, ChevronDown, Loader2 } from 'lucide-react';
+import {
+  SuccessIcon,
+  XCircleIcon,
+  ChevronDownIcon,
+  LoaderIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import * as cronClient from '@/api/cronTaskClient';
 import type { CronRunRecord } from '@/types/cronTask';
@@ -47,7 +52,7 @@ export default function TaskRunHistory({ taskId, onOpenSession, sessionId }: Tas
   if (loading && runs.length === 0) {
     return (
       <div className="flex items-center justify-center py-4">
-        <Loader2 className="h-4 w-4 animate-spin text-[var(--ink-muted)]" />
+        <LoaderIcon className="h-4 w-4 animate-spin text-[var(--ink-muted)]" />
       </div>
     );
   }
@@ -85,9 +90,9 @@ export default function TaskRunHistory({ taskId, onOpenSession, sessionId }: Tas
               </span>
               {/* Status icon */}
               {run.ok ? (
-                <CheckCircle className="h-3 w-3 flex-shrink-0 text-[var(--success)]" />
+                <SuccessIcon className="h-3 w-3 flex-shrink-0 text-[var(--success)]" />
               ) : (
-                <XCircle className="h-3 w-3 flex-shrink-0 text-[var(--error)]" />
+                <XCircleIcon className="h-3 w-3 flex-shrink-0 text-[var(--error)]" />
               )}
               {/* Duration */}
               <span className="w-12 flex-shrink-0 text-xs text-[var(--ink-muted)]">
@@ -98,7 +103,7 @@ export default function TaskRunHistory({ taskId, onOpenSession, sessionId }: Tas
                 {content ? content.slice(0, 50) : '—'}
               </span>
               {content && (
-                <ChevronDown className={`h-3 w-3 flex-shrink-0 text-[var(--ink-subtle)] transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                <ChevronDownIcon className={`h-3 w-3 flex-shrink-0 text-[var(--ink-subtle)] transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
               )}
             </div>
             {/* Expanded content */}

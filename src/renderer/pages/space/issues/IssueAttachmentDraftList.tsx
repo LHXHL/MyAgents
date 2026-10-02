@@ -1,4 +1,4 @@
-import { X } from 'lucide-react';
+import { CloseIcon } from '@/components/icons';
 
 import type { SpaceAttachmentDraft } from '@/api/spaceCloud';
 import { FileIcon } from '@/components/file-icon';
@@ -31,7 +31,7 @@ export function IssueAttachmentDraftList({
             className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-[var(--ink-muted)] outline-none transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] focus-visible:ring-2 focus-visible:ring-[var(--accent-warm)]"
             aria-label={removeLabel(draft.name)}
           >
-            <X className="h-3.5 w-3.5" />
+            <CloseIcon className="h-3.5 w-3.5" />
           </button>
         </div>
       ))}

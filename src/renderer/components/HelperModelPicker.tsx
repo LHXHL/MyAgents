@@ -13,7 +13,7 @@
 // step on the picker.
 
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { ChevronUp } from 'lucide-react';
+import { ChevronUpIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import type { Provider, ProviderVerifyStatus } from '@/config/types';
@@ -121,7 +121,7 @@ export function HelperModelPicker({
                 className={triggerClassName ?? DEFAULT_TRIGGER_CLASS}
             >
                 <span className="max-w-[180px] truncate">{modelDisplayName}</span>
-                <ChevronUp className="h-3 w-3" />
+                <ChevronUpIcon className="h-3 w-3" />
             </button>
             <Popover
                 open={open}

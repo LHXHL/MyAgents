@@ -1,7 +1,7 @@
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import React, { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Plus, X } from 'lucide-react';
+import { PlusIcon, CloseIcon } from '@/components/icons';
 import type { ImPlatform } from '../../../../shared/types/im';
 
 export default function WhitelistManager({
@@ -55,7 +55,7 @@ export default function WhitelistManager({
                                     onClick={() => handleRemove(user)}
                                     className="rounded-full p-0.5 text-[var(--ink-muted)] hover:text-[var(--error)]"
                                 >
-                                    <X className="h-3 w-3" />
+                                    <CloseIcon className="h-3 w-3" />
                                 </button>
                             </span>
                         ))}
@@ -89,7 +89,7 @@ export default function WhitelistManager({
                     disabled={!newUser.trim()}
                     className="rounded-lg bg-[var(--button-primary-bg)] p-2 text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
                 >
-                    <Plus className="h-4 w-4" />
+                    <PlusIcon className="h-4 w-4" />
                 </button>
             </div>
 
@@ -105,7 +105,7 @@ export default function WhitelistManager({
                                 onClick={() => handleRemove(user)}
                                 className="rounded-full p-0.5 text-[var(--ink-muted)] hover:text-[var(--error)]"
                             >
-                                <X className="h-3 w-3" />
+                                <CloseIcon className="h-3 w-3" />
                             </button>
                         </span>
                     ))}

@@ -1,6 +1,13 @@
 // Cron Task Settings Modal - Configure scheduled task parameters
 // Redesigned for v0.1.42: adds execution mode (当前对话/新开对话) + ScheduleTypeTabs (3 schedule types)
-import { X, Clock, Bell, Flag, MessageSquare, AlertCircle } from 'lucide-react';
+import {
+  CloseIcon,
+  ClockIcon,
+  BellIcon,
+  FlagIcon,
+  MessageIcon,
+  AlertIcon,
+} from '@/components/icons';
 import { useState, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -46,7 +53,7 @@ function Checkbox({ checked, onChange, label }: { checked: boolean; onChange: (v
   );
 }
 
-function SectionHeader({ icon: Icon, children }: { icon: typeof Clock; children: React.ReactNode }) {
+function SectionHeader({ icon: Icon, children }: { icon: typeof ClockIcon; children: React.ReactNode }) {
   return (
     <div className="flex items-center gap-2">
       <Icon className="h-4 w-4 text-[var(--ink-muted)]" />
@@ -246,11 +253,11 @@ function CronTaskSettingsForm({
         {/* Header */}
         <div className="flex shrink-0 items-center justify-between px-6 py-4">
           <div className="flex items-center gap-2.5">
-            <Clock className="h-4 w-4 text-[var(--accent)]" />
+            <ClockIcon className="h-4 w-4 text-[var(--accent)]" />
             <h2 className="text-lg font-semibold text-[var(--ink)]">{t(isGoalMode ? 'cron.settingsModal.goalTitle' : 'cron.settingsModal.title')}</h2>
           </div>
           <button onClick={onClose} className="rounded-lg p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
-            <X className="h-4 w-4" />
+            <CloseIcon className="h-4 w-4" />
           </button>
         </div>
 
@@ -268,7 +275,7 @@ function CronTaskSettingsForm({
 
               {/* ── 执行模式 ── */}
               <div>
-                <SectionHeader icon={MessageSquare}>{t('cron.settingsModal.executionMode')}</SectionHeader>
+                <SectionHeader icon={MessageIcon}>{t('cron.settingsModal.executionMode')}</SectionHeader>
                 <div className="mt-3">
                   <div className="flex gap-2">
                     <PillButton selected={executionTarget === 'current_session'} onClick={() => setExecutionTarget('current_session')}>{t('cron.settingsModal.currentSession')}</PillButton>
@@ -289,7 +296,7 @@ function CronTaskSettingsForm({
           {/* ── 结束条件 ── */}
           {!isAtSchedule && (
             <div>
-              <SectionHeader icon={Flag}>{t('cron.settingsModal.endConditions')}</SectionHeader>
+              <SectionHeader icon={FlagIcon}>{t('cron.settingsModal.endConditions')}</SectionHeader>
               <div className="mt-3 space-y-3">
                 <div className="flex gap-1.5 rounded-[var(--radius-md)] bg-[var(--paper-inset)] p-1">
                   <button type="button" onClick={() => setEndMode('forever')}
@@ -349,7 +356,7 @@ function CronTaskSettingsForm({
 
           {/* ── 任务通知 ── */}
           <div>
-            <SectionHeader icon={Bell}>{t('cron.settingsModal.notifications')}</SectionHeader>
+            <SectionHeader icon={BellIcon}>{t('cron.settingsModal.notifications')}</SectionHeader>
             <div className="mt-3 space-y-3">
               <div className="flex items-center justify-between rounded-lg border border-[var(--line)] bg-[var(--paper)] px-4 py-3">
                 <span className="text-sm text-[var(--ink)]">{t(isGoalMode ? 'cron.settingsModal.goalNotifyOnStop' : 'cron.settingsModal.notifyOnCompletion')}</span>
@@ -367,7 +374,7 @@ function CronTaskSettingsForm({
           {/* Validation Errors */}
           {validationErrors.length > 0 && (
             <div className="flex items-start gap-2 rounded-lg border border-[var(--error)]/30 bg-[var(--error)]/5 p-3">
-              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--error)]" />
+              <AlertIcon className="mt-0.5 h-4 w-4 shrink-0 text-[var(--error)]" />
               <div className="text-xs text-[var(--error)]">
                 {validationErrors.map((err, i) => <p key={i}>{err}</p>)}
               </div>

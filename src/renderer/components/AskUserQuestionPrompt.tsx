@@ -1,7 +1,14 @@
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import { MessageCircleQuestion, ChevronLeft, ChevronRight, X, Check, Eye } from 'lucide-react';
+import {
+  HelpBubbleIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  CloseIcon,
+  CheckIcon,
+  EyeIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 // Import shared types
@@ -258,7 +265,7 @@ function AskUserQuestionForm({ request, onSubmit, onCancel }: AskUserQuestionPro
                 {/* Header row */}
                 <div className="flex items-center gap-2.5">
                     <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[var(--accent)]/10">
-                        <MessageCircleQuestion className="size-4 text-[var(--accent)]" />
+                        <HelpBubbleIcon className="size-4 text-[var(--accent)]" />
                     </div>
                     <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
@@ -306,7 +313,7 @@ function AskUserQuestionForm({ request, onSubmit, onCancel }: AskUserQuestionPro
                                                 : 'border-[var(--line)]'
                                             }`}
                                         >
-                                            {isSelected && <Check className="size-3 text-[var(--on-accent)]" />}
+                                            {isSelected && <CheckIcon className="size-3 text-[var(--on-accent)]" />}
                                         </div>
                                         <div className="flex-1 min-w-0">
                                             <div className="flex items-center gap-2">
@@ -336,7 +343,7 @@ function AskUserQuestionForm({ request, onSubmit, onCancel }: AskUserQuestionPro
                                                             }`}
                                                         title={t('shell.askQuestion.preview')}
                                                     >
-                                                        <Eye className="size-3" />
+                                                        <EyeIcon className="size-3" />
                                                     </span>
                                                 )}
                                             </div>
@@ -389,7 +396,7 @@ function AskUserQuestionForm({ request, onSubmit, onCancel }: AskUserQuestionPro
                                         : 'border-[var(--line)]'
                                     }`}
                                 >
-                                    {isCustomSelected && <Check className="size-3 text-[var(--on-accent)]" />}
+                                    {isCustomSelected && <CheckIcon className="size-3 text-[var(--on-accent)]" />}
                                 </div>
                             </button>
                             <input
@@ -448,7 +455,7 @@ function AskUserQuestionForm({ request, onSubmit, onCancel }: AskUserQuestionPro
                             border border-[var(--line-subtle)] hover:border-[var(--line)] hover:bg-[var(--paper-inset)]
                             transition-colors disabled:opacity-50"
                     >
-                        <X className="size-3.5" />
+                        <CloseIcon className="size-3.5" />
                         <span>{t('shell.common.cancel')}</span>
                     </button>
 
@@ -463,7 +470,7 @@ function AskUserQuestionForm({ request, onSubmit, onCancel }: AskUserQuestionPro
                                     border border-[var(--line-subtle)] hover:border-[var(--line)] hover:bg-[var(--paper-inset)]
                                     transition-colors disabled:opacity-50"
                             >
-                                <ChevronLeft className="size-3.5" />
+                                <ChevronLeftIcon className="size-3.5" />
                                 <span>{t('shell.askQuestion.previous')}</span>
                             </button>
                         )}
@@ -477,7 +484,7 @@ function AskUserQuestionForm({ request, onSubmit, onCancel }: AskUserQuestionPro
                                     text-[var(--on-accent)] bg-[var(--accent)] hover:bg-[var(--accent-warm-hover)]
                                     transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                             >
-                                <Check className="size-3.5" />
+                                <CheckIcon className="size-3.5" />
                                 <span>{t('shell.askQuestion.submit')}</span>
                             </button>
                         ) : (
@@ -490,7 +497,7 @@ function AskUserQuestionForm({ request, onSubmit, onCancel }: AskUserQuestionPro
                                     transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                                 <span>{t('shell.askQuestion.next')}</span>
-                                <ChevronRight className="size-3.5" />
+                                <ChevronRightIcon className="size-3.5" />
                             </button>
                         )}
                     </div>

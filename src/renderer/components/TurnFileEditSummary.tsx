@@ -1,4 +1,4 @@
-import { Ellipsis, FilePenLine } from 'lucide-react';
+import { MoreIcon, FileEditIcon } from '@/components/icons';
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -66,7 +66,7 @@ export function TurnFileEditSummary({ content }: { content: Message['content'] }
             setOpen((current) => !current);
           }}
         >
-          <FilePenLine className="h-3.5 w-3.5 shrink-0" />
+          <FileEditIcon className="h-3.5 w-3.5 shrink-0" />
           <span className="truncate">{capsuleLabel}</span>
           {showTotals && (
             <span className="shrink-0 font-mono text-xs text-[var(--ink-muted)]/80">
@@ -195,7 +195,7 @@ function TurnFileEditRow({
           onOpenMenu(rect.right, rect.bottom + 4);
         }}
       >
-        <Ellipsis className="size-4" aria-hidden="true" />
+        <MoreIcon className="size-4" aria-hidden="true" />
       </button>
     </div>
   );

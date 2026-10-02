@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, Play, Terminal } from 'lucide-react';
+import { ActivityIcon, PlayIcon, TerminalIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import { taskTriggerTestSpec } from '@/api/taskCenter';
@@ -254,7 +254,7 @@ export function TriggerEditor({
           <div className="rounded-[var(--radius-lg)] border border-[var(--line-subtle)] bg-[var(--paper-inset)] p-3">
             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
               <div className="flex min-w-0 gap-2.5">
-                <Activity className="mt-0.5 h-4 w-4 shrink-0 text-[var(--ink-muted)]" />
+                <ActivityIcon className="mt-0.5 h-4 w-4 shrink-0 text-[var(--ink-muted)]" />
                 <div>
                   <p className="text-sm font-medium text-[var(--ink-secondary)]">
                     {t('trigger.testTitle')}
@@ -270,7 +270,7 @@ export function TriggerEditor({
                 disabled={disabled || testing || !!validationError || !workspacePath}
                 className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-[var(--line)] px-3 py-2 text-sm font-medium text-[var(--ink-secondary)] transition hover:bg-[var(--paper-elevated)] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {testing ? <Activity className="h-3.5 w-3.5 animate-pulse" /> : <Play className="h-3.5 w-3.5" />}
+                {testing ? <ActivityIcon className="h-3.5 w-3.5 animate-pulse" /> : <PlayIcon className="h-3.5 w-3.5" />}
                 {testing ? t('trigger.testing') : t('trigger.test')}
               </button>
             </div>
@@ -282,7 +282,7 @@ export function TriggerEditor({
                 data-testid="trigger-test-result"
               >
                 <div className="flex items-start gap-2">
-                  <Terminal className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <TerminalIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                   {testResult.ok ? (
                     <div className="min-w-0 space-y-1">
                       <p className="font-medium">

@@ -3,7 +3,7 @@
  * Two tabs: 「系统提示词」(CLAUDE.md + rules) and 「技能 Skills」(skills + commands + agents)
  */
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
-import { X, SlidersHorizontal, ChevronLeft } from 'lucide-react';
+import { CloseIcon, SlidersIcon, ChevronLeftIcon } from '@/components/icons';
 import { useCallback, useEffect, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -243,11 +243,11 @@ export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: ex
                                 className="mr-1 rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                                 title={t('agentSettings.panel.backToList')}
                             >
-                                <ChevronLeft className="h-5 w-5" />
+                                <ChevronLeftIcon className="h-5 w-5" />
                             </button>
                         )}
                         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--button-dark-bg)] shadow">
-                            <SlidersHorizontal className="h-4 w-4 text-[var(--button-dark-text)]" />
+                            <SlidersIcon className="h-4 w-4 text-[var(--button-dark-text)]" />
                         </div>
                         <h2 className="text-lg font-semibold text-[var(--ink)]">{t('agentSettings.panel.title')}</h2>
                     </div>
@@ -285,7 +285,7 @@ export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: ex
                         className="shrink-0 rounded-lg p-2 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                         title={t('agentSettings.panel.closeEsc')}
                     >
-                        <X className="h-5 w-5" />
+                        <CloseIcon className="h-5 w-5" />
                     </button>
                 </div>
 

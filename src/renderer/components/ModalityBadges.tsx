@@ -1,4 +1,4 @@
-import { Image as ImageIcon, Video, AudioLines } from 'lucide-react';
+import { ImageIcon, VideoIcon, AudioLinesIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import Tip from '@/components/Tip';
 
@@ -63,8 +63,8 @@ export function ModalityBadges({
   if (!modalities || modalities.length === 0) return null;
   const items: Array<{ key: string; label: string; Icon: typeof ImageIcon }> = [];
   if (modalities.includes('image')) items.push({ key: 'image', label: t('modalities.image'), Icon: ImageIcon });
-  if (RENDER_VIDEO_BADGES && modalities.includes('video')) items.push({ key: 'video', label: t('modalities.video'), Icon: Video });
-  if (RENDER_AUDIO_BADGES && modalities.includes('audio')) items.push({ key: 'audio', label: t('modalities.audio'), Icon: AudioLines });
+  if (RENDER_VIDEO_BADGES && modalities.includes('video')) items.push({ key: 'video', label: t('modalities.video'), Icon: VideoIcon });
+  if (RENDER_AUDIO_BADGES && modalities.includes('audio')) items.push({ key: 'audio', label: t('modalities.audio'), Icon: AudioLinesIcon });
   if (items.length === 0) return null;
   return (
     <span className={`inline-flex items-center gap-1 text-[var(--ink-muted)]/70 ${className}`}>

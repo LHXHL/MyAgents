@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronUp, Ellipsis } from 'lucide-react';
+import { ChevronDownIcon, ChevronUpIcon, MoreIcon } from '@/components/icons';
 import { cloneElement, isValidElement, useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -202,7 +202,7 @@ export function FileActionMenuButton({ path, className = '' }: { path?: string |
       }}
       className={`flex size-8 shrink-0 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-[background-color,color,transform] duration-150 hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] active:translate-y-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-border)]/30 ${className}`}
     >
-      <Ellipsis className="size-4" aria-hidden="true" />
+      <MoreIcon className="size-4" aria-hidden="true" />
     </button>
   );
 }
@@ -350,7 +350,7 @@ export function ExpandableContainer({
           }}
           className={`absolute inset-x-0 bottom-0 flex h-12 w-full items-end justify-center gap-1.5 bg-gradient-to-t ${COMPACT_EXPAND_FADE_CLASSES[fade]} pb-2 text-xs text-[var(--ink-secondary)] hover:text-[var(--ink)] focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--accent)]`}
         >
-          <ChevronDown className="mb-0.5 size-3.5" aria-hidden="true" />
+          <ChevronDownIcon className="mb-0.5 size-3.5" aria-hidden="true" />
           {expandLabel ?? t('shell.toolChrome.common.expandAll')}
         </button>
       )}
@@ -381,7 +381,7 @@ export function ExpandableContainer({
           }}
           className="flex w-full items-center justify-center gap-1.5 py-2 text-xs text-[var(--ink-muted)] hover:text-[var(--ink)] focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--accent)]"
         >
-          <ChevronUp className="size-3.5" aria-hidden="true" />
+          <ChevronUpIcon className="size-3.5" aria-hidden="true" />
           {collapseLabel ?? t('shell.toolChrome.common.collapse')}
         </button>
       )}

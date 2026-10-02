@@ -25,7 +25,7 @@
  * Enter to select; Shift+Tab to inner button when revealed).
  */
 
-import { ChevronUp, Plus } from 'lucide-react';
+import { ChevronUpIcon, PlusIcon } from '@/components/icons';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -92,7 +92,7 @@ export default function WorkspaceSelector({
                 onClick={onAddFolder}
                 className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--accent)]"
             >
-                <Plus className="h-3.5 w-3.5" />
+                <PlusIcon className="h-3.5 w-3.5" />
                 <span>{t('workspaceSelector.selectWorkspace')}</span>
             </button>
         );
@@ -109,7 +109,7 @@ export default function WorkspaceSelector({
                 <span className="max-w-[120px] truncate">
                     {selectedProject ? (selectedProject.displayName || getFolderName(selectedProject.path)) : t('workspaceSelector.selectWorkspace')}
                 </span>
-                <ChevronUp className={`h-3 w-3 shrink-0 transition-transform ${isOpen ? '' : 'rotate-180'}`} />
+                <ChevronUpIcon className={`h-3 w-3 shrink-0 transition-transform ${isOpen ? '' : 'rotate-180'}`} />
             </button>
             <Popover
                 open={isOpen}

@@ -11,7 +11,12 @@
  */
 
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
-import { ChevronDown, ChevronUp, Search, X } from 'lucide-react';
+import {
+  ChevronDownIcon,
+  ChevronUpIcon,
+  SearchIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { useEffect, useRef, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -66,7 +71,7 @@ export default function ChatSearchPanel({ controller, onClose }: ChatSearchPanel
       role="search"
       onMouseDown={e => e.stopPropagation()}
     >
-      <Search className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />
+      <SearchIcon className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />
       <input
         ref={inputRef}
         type="text"
@@ -89,7 +94,7 @@ export default function ChatSearchPanel({ controller, onClose }: ChatSearchPanel
         aria-label={t('shell.search.previousAria')}
         className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
       >
-        <ChevronUp className="h-3.5 w-3.5" />
+        <ChevronUpIcon className="h-3.5 w-3.5" />
       </button>
       <button
         type="button"
@@ -99,7 +104,7 @@ export default function ChatSearchPanel({ controller, onClose }: ChatSearchPanel
         aria-label={t('shell.search.nextAria')}
         className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
       >
-        <ChevronDown className="h-3.5 w-3.5" />
+        <ChevronDownIcon className="h-3.5 w-3.5" />
       </button>
       <button
         type="button"
@@ -108,7 +113,7 @@ export default function ChatSearchPanel({ controller, onClose }: ChatSearchPanel
         aria-label={t('shell.search.closeAria')}
         className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
       >
-        <X className="h-3.5 w-3.5" />
+        <CloseIcon className="h-3.5 w-3.5" />
       </button>
     </div>
   );

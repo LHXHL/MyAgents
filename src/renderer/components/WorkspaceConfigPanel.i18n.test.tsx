@@ -214,9 +214,9 @@ describe('WorkspaceConfigPanel i18n', () => {
 
     expect(screen.getByText('Session mode')).toBeInTheDocument();
     expect(document.querySelector('.composer-toolbar-menu-enter')).toBeInTheDocument();
-    expect(document.querySelector('.lucide-shield-check')).toBeInTheDocument();
-    expect(document.querySelector('.lucide-eye')).toBeInTheDocument();
-    expect(document.querySelector('.lucide-lock-open')).toBeInTheDocument();
+    expect(document.querySelector('.app-icon-shield-check')).toBeInTheDocument();
+    expect(document.querySelector('.app-icon-eye')).toBeInTheDocument();
+    expect(document.querySelector('.app-icon-lock-open')).toBeInTheDocument();
     expect(screen.queryByText(/⚡|📋|🚀/u)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /PlanAgent only researches information/ })).toHaveAttribute('aria-current', 'true');
   });

@@ -1,18 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  ChevronDown,
-  GitBranch,
-  Loader2,
-  LogIn,
-  LogOut,
-  MessageSquare,
-  Package,
-  Plus,
-  Settings,
-  UserPlus,
-  Wrench,
-} from "lucide-react";
+  ChevronDownIcon,
+  GitBranchIcon,
+  LoaderIcon,
+  LogInIcon,
+  LogOutIcon,
+  MessageIcon,
+  PackageIcon,
+  PlusIcon,
+  SettingsIcon,
+  UserPlusIcon,
+  WrenchIcon,
+} from '@/components/icons';
 
 import type { SpaceInfo, SpaceListItem, SpaceSession } from "@/api/spaceCloud";
 import myagentsWebLogo from "@/assets/brand/myagents-web-logo.png";
@@ -105,9 +105,9 @@ export function SpaceLogin({
           className="flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-4 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
         >
           {authBusy ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
+            <LoaderIcon className="h-4 w-4 animate-spin" />
           ) : (
-            <LogIn className="h-4 w-4" />
+            <LogInIcon className="h-4 w-4" />
           )}
           {authFlow
             ? t("space.login.waiting")
@@ -284,19 +284,19 @@ export function SpaceSidebar({
     const items: Array<{
       mode: SpaceViewMode;
       label: string;
-      icon: typeof MessageSquare;
+      icon: typeof MessageIcon;
       badge?: number;
     }> = [
-      { mode: "issues", label: t("space.sidebar.issues"), icon: MessageSquare },
-      { mode: "goals", label: t("space.sidebar.goals"), icon: GitBranch },
-      { mode: "skills", label: t("space.sidebar.skills"), icon: Package },
-      { mode: "tools", label: t("space.sidebar.tools"), icon: Wrench },
+      { mode: "issues", label: t("space.sidebar.issues"), icon: MessageIcon },
+      { mode: "goals", label: t("space.sidebar.goals"), icon: GitBranchIcon },
+      { mode: "skills", label: t("space.sidebar.skills"), icon: PackageIcon },
+      { mode: "tools", label: t("space.sidebar.tools"), icon: WrenchIcon },
     ];
     if (canManage) {
       items.push({
         mode: "settings",
         label: t("space.sidebar.settings"),
-        icon: Settings,
+        icon: SettingsIcon,
         badge: space.pendingJoinRequestCount,
       });
     }
@@ -312,7 +312,7 @@ export function SpaceSidebar({
             onClick={onJoinSpace}
             className="grid min-h-8 w-full grid-cols-[16px_minmax(0,1fr)] items-center gap-2 rounded-lg px-2.5 text-left text-sm font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
           >
-            <UserPlus className="h-3.5 w-3.5" />
+            <UserPlusIcon className="h-3.5 w-3.5" />
             <span className="truncate">
               {t("space.sidebar.joinSpace", { defaultValue: "加入空间" })}
             </span>
@@ -322,7 +322,7 @@ export function SpaceSidebar({
             onClick={onCreateSpace}
             className="grid min-h-8 w-full grid-cols-[16px_minmax(0,1fr)] items-center gap-2 rounded-lg px-2.5 text-left text-sm font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
           >
-            <Plus className="h-3.5 w-3.5" />
+            <PlusIcon className="h-3.5 w-3.5" />
             <span className="truncate">
               {t("space.sidebar.createSpace", { defaultValue: "创建空间" })}
             </span>
@@ -369,7 +369,7 @@ export function SpaceSidebar({
                   className={`grid min-h-10 w-full grid-cols-[32px_minmax(0,1fr)_auto] items-center gap-2 rounded-xl px-2 py-1.5 text-left transition-colors ${selected ? "hover:bg-[var(--paper-elevated)]/70" : "hover:bg-[var(--hover-bg)]"}`}
                 >
                   {identity}
-                  <ChevronDown
+                  <ChevronDownIcon
                     className={`h-4 w-4 text-[var(--ink-muted)] transition-transform ${expanded ? "rotate-0" : "-rotate-90"}`}
                   />
                 </button>
@@ -432,7 +432,7 @@ export function SpaceSidebar({
             size={22}
           />
           <span className="min-w-0 flex-1 truncate">{displayName}</span>
-          <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+          <ChevronDownIcon className="h-3.5 w-3.5 shrink-0" />
         </button>
         {accountMenuOpen ? (
           <div
@@ -466,7 +466,7 @@ export function SpaceSidebar({
               >
                 <span className="min-w-0 flex-1">{planDescription}</span>
                 {accountRefreshing ? (
-                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                  <LoaderIcon className="h-3.5 w-3.5 shrink-0 animate-spin" />
                 ) : null}
               </div>
             </div>
@@ -478,7 +478,7 @@ export function SpaceSidebar({
               }}
               className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-sm font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
             >
-              <Settings className="h-3.5 w-3.5" />
+              <SettingsIcon className="h-3.5 w-3.5" />
               {t("space.sidebar.settings")}
             </button>
             <button
@@ -489,7 +489,7 @@ export function SpaceSidebar({
               }}
               className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-sm font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
             >
-              <LogOut className="h-3.5 w-3.5" />
+              <LogOutIcon className="h-3.5 w-3.5" />
               {t("space.sidebar.logout")}
             </button>
           </div>

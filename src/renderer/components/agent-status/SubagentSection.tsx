@@ -9,7 +9,7 @@
 
 import { memo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { CheckCircle2, OctagonX, StopCircle } from 'lucide-react';
+import { SuccessIcon, XCircleIcon, StopCircleIcon } from '@/components/icons';
 
 import { SubagentRunningIcon } from './icons';
 import type { SubagentStatus } from './types';
@@ -55,11 +55,11 @@ function SubagentRow({ subagent, onJumpToTool }: SubagentRowProps) {
       {subagent.status === 'running' ? (
         <SubagentRunningIcon />
       ) : subagent.status === 'failed' ? (
-        <OctagonX aria-label={t('agentStatus.failed')} className="size-3.5 shrink-0 text-[var(--error)]" />
+        <XCircleIcon aria-label={t('agentStatus.failed')} className="size-3.5 shrink-0 text-[var(--error)]" />
       ) : subagent.status === 'interrupted' ? (
-        <StopCircle aria-label={t('agentStatus.interrupted')} className="size-3.5 shrink-0 text-[var(--warning)]" />
+        <StopCircleIcon aria-label={t('agentStatus.interrupted')} className="size-3.5 shrink-0 text-[var(--warning)]" />
       ) : (
-        <CheckCircle2 aria-label={t('agentStatus.completed')} className="size-3.5 shrink-0 text-[var(--success)]" />
+        <SuccessIcon aria-label={t('agentStatus.completed')} className="size-3.5 shrink-0 text-[var(--success)]" />
       )}
       <div className="flex min-w-0 flex-1 items-baseline gap-1.5 text-xs">
         <span className="shrink-0 font-medium text-[var(--ink)]">

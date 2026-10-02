@@ -7,7 +7,7 @@ import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
-import { ChevronRight } from 'lucide-react';
+import { ChevronRightIcon } from '@/components/icons';
 import { useConfig } from '@/hooks/useConfig';
 import { useAvailableProviders } from '@/hooks/useAvailableProviders';
 import { getAllMcpServers, getEnabledMcpServerIds } from '@/config/configService';
@@ -542,7 +542,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
               </span>
             )}
           </span>
-          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--ink-subtle)]" />
+          <ChevronRightIcon className="h-3.5 w-3.5 shrink-0 text-[var(--ink-subtle)]" />
         </button>
 
         <Popover
@@ -606,7 +606,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
             />
             {permissionMode.label}
           </span>
-          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--ink-subtle)]" />
+          <ChevronRightIcon className="h-3.5 w-3.5 shrink-0 text-[var(--ink-subtle)]" />
         </button>
 
         <Popover
@@ -637,7 +637,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
           onClick={() => setOpenPopup(openPopup === 'effort' ? null : 'effort')}
         >
           <span>{effectiveReasoningEffort === 'default' ? defaultEffortLabel : effectiveReasoningEffort}</span>
-          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--ink-subtle)]" />
+          <ChevronRightIcon className="h-3.5 w-3.5 shrink-0 text-[var(--ink-subtle)]" />
         </button>
 
         <Popover
@@ -683,7 +683,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
           onClick={() => setOpenPopup(openPopup === 'mcp' ? null : 'mcp')}
         >
           <span className="truncate">{mcpSummary}</span>
-          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--ink-subtle)]" />
+          <ChevronRightIcon className="h-3.5 w-3.5 shrink-0 text-[var(--ink-subtle)]" />
         </button>
 
         <Popover
@@ -737,7 +737,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
           onClick={() => setOpenPopup(openPopup === 'plugins' ? null : 'plugins')}
         >
           <span className="truncate">{pluginSummary}</span>
-          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--ink-subtle)]" />
+          <ChevronRightIcon className="h-3.5 w-3.5 shrink-0 text-[var(--ink-subtle)]" />
         </button>
 
         {openPopup === 'plugins' && (

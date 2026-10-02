@@ -1,12 +1,12 @@
 import {
-  Ban,
-  Eye,
-  FilePenLine,
-  LockOpen,
-  ShieldCheck,
-  ShieldQuestion,
-  type LucideIcon,
-} from 'lucide-react';
+  BanIcon,
+  EyeIcon,
+  FileEditIcon,
+  LockOpenIcon,
+  ShieldCheckIcon,
+  ShieldQuestionIcon,
+  type AppIconComponent,
+} from '@/components/icons';
 
 export interface PermissionModeMenuItem {
   value: string;
@@ -15,22 +15,22 @@ export interface PermissionModeMenuItem {
   icon?: string;
 }
 
-const PERMISSION_MODE_ICONS: Partial<Record<string, LucideIcon>> = {
-  auto: ShieldCheck,
-  plan: Eye,
-  fullAgency: LockOpen,
-  'approval-required': ShieldQuestion,
-  'workspace-autonomous': ShieldCheck,
-  'full-autonomous': LockOpen,
-  default: ShieldQuestion,
-  manual: ShieldQuestion,
-  dontAsk: Ban,
-  acceptEdits: FilePenLine,
-  bypassPermissions: LockOpen,
-  suggest: ShieldQuestion,
-  'auto-edit': FilePenLine,
-  'full-auto': ShieldCheck,
-  'no-restrictions': LockOpen,
+const PERMISSION_MODE_ICONS: Partial<Record<string, AppIconComponent>> = {
+  auto: ShieldCheckIcon,
+  plan: EyeIcon,
+  fullAgency: LockOpenIcon,
+  'approval-required': ShieldQuestionIcon,
+  'workspace-autonomous': ShieldCheckIcon,
+  'full-autonomous': LockOpenIcon,
+  default: ShieldQuestionIcon,
+  manual: ShieldQuestionIcon,
+  dontAsk: BanIcon,
+  acceptEdits: FileEditIcon,
+  bypassPermissions: LockOpenIcon,
+  suggest: ShieldQuestionIcon,
+  'auto-edit': FileEditIcon,
+  'full-auto': ShieldCheckIcon,
+  'no-restrictions': LockOpenIcon,
 };
 
 export function PermissionModeIcon({

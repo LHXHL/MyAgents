@@ -13,7 +13,7 @@
 // needs a separate "遗留" pill — see <TaskCategoryBadge legacy />.
 
 import { useEffect, useState } from 'react';
-import { Folder, MessageCircle } from 'lucide-react';
+import { FolderIcon, MessageCircleIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import { taskGetRunStats } from '@/api/taskCenter';
@@ -207,7 +207,7 @@ function MetaRow({
 
   return (
     <div className="flex items-center gap-1.5 text-xs text-[var(--ink-muted)]">
-      <Folder className="h-3 w-3 shrink-0" strokeWidth={1.5} />
+      <FolderIcon className="h-3 w-3 shrink-0" strokeWidth={1.5} />
       <span className="truncate">{workspace}</span>
       {parts.map((p, i) => (
         <span key={i} className="contents">
@@ -313,7 +313,7 @@ export function ViewSessionButton({ task }: { task?: Task }) {
         aria-label={t('tasks.viewSessionTooltip')}
         className="flex items-center gap-1 rounded-[var(--radius-md)] px-2 py-0.5 text-xs text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--accent-cool)]"
       >
-        <MessageCircle className="h-3.5 w-3.5" strokeWidth={1.5} />
+        <MessageCircleIcon className="h-3.5 w-3.5" strokeWidth={1.5} />
         {t('tasks.viewSession')}
       </button>
       <span className="pointer-events-none absolute -bottom-7 left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-md bg-[var(--button-dark-bg)] px-2 py-0.5 text-xs text-[var(--button-dark-text)] opacity-0 shadow-lg transition-opacity group-hover/view-session:opacity-100">

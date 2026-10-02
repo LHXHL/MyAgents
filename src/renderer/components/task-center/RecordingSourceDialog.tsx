@@ -2,7 +2,7 @@ import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { createPortal } from 'react-dom';
-import { Mic, MonitorUp } from 'lucide-react';
+import { MicIcon, MonitorUpIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import OverlayBackdrop from '@/components/OverlayBackdrop';
@@ -131,13 +131,13 @@ export default function RecordingSourceDialog({
   const sourceOptions = [
     {
       key: 'microphone' as const,
-      icon: <Mic className="h-4 w-4" />,
+      icon: <MicIcon className="h-4 w-4" />,
       title: t('records.microphone'),
       description: t('records.microphoneSourceDescription'),
     },
     {
       key: 'system' as const,
-      icon: <MonitorUp className="h-4 w-4" />,
+      icon: <MonitorUpIcon className="h-4 w-4" />,
       title: t('records.system'),
       description: t('records.systemSourceDescription'),
     },

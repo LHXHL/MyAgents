@@ -4,7 +4,7 @@
  */
 
 import { memo } from 'react';
-import { Clock, BarChart2, Trash2 } from 'lucide-react';
+import { ClockIcon, ChartIcon, TrashIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import type { SessionSearchHit } from '@/api/searchClient';
 import type { SessionMetadata } from '@/api/sessionClient';
@@ -69,7 +69,7 @@ export default memo(function SessionSearchItem({
         >
             {/* Left column: Time — fixed width so content column is consistently left-aligned */}
             <div className="mt-1 flex w-20 shrink-0 items-center gap-1 whitespace-nowrap text-xs text-[var(--ink-muted)]/50">
-                <Clock className="h-2.5 w-2.5" />
+                <ClockIcon className="h-2.5 w-2.5" />
                 <Tip label={exactTime}><time dateTime={validDate ? date.toISOString() : undefined} aria-label={exactTime}>{displayTime}</time></Tip>
             </div>
 
@@ -121,14 +121,14 @@ export default memo(function SessionSearchItem({
                             title={t('historyOverlay.viewStats')}
                             className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper)] hover:text-[var(--ink)]"
                         >
-                            <BarChart2 className="h-3.5 w-3.5" />
+                            <ChartIcon className="h-3.5 w-3.5" />
                         </button>
                         <button
                             onClick={onDelete}
                             title={deleteProtected ? t('historyOverlay.deleteBlocked') : t('historyOverlay.delete')}
                             className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--error-bg)] hover:text-[var(--error)]"
                         >
-                            <Trash2 className="h-3.5 w-3.5" />
+                            <TrashIcon className="h-3.5 w-3.5" />
                         </button>
                     </div>
                 </div>

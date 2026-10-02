@@ -12,7 +12,7 @@
  *   避免本组件误切 provider。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Minimize2 } from 'lucide-react';
+import { MinimizeIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import { useTabState } from '@/context/TabContext';
@@ -136,7 +136,7 @@ export default function ContextUsageIndicator({ onCompact }: ContextUsageIndicat
                   }}
                   className="flex items-center gap-1 rounded-lg border border-[var(--accent-warm-muted)] bg-[var(--accent-warm-subtle)] px-2 py-1 text-xs font-semibold leading-none text-[var(--accent)] transition-colors hover:border-[var(--accent)] hover:bg-[var(--accent-warm-muted)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <Minimize2 className="h-3 w-3" />
+                  <MinimizeIcon className="h-3 w-3" />
                   {t('contextUsage.compact')}
                 </button>
               </Tip>

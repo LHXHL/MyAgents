@@ -31,7 +31,13 @@
  *    title to expand/collapse.
  */
 
-import { AlertTriangle, Bot, ChevronDown, ChevronRight, X } from 'lucide-react';
+import {
+  WarningIcon,
+  HelperIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -150,14 +156,14 @@ export default function RuntimeDiagnosticsBanner({
   return (
     <div className="relative z-10 flex-shrink-0 border-b border-[var(--line)] bg-[var(--warning-bg)] px-4 py-2 text-xs text-[var(--ink)]">
       <div className="mx-auto flex max-w-3xl items-start gap-2">
-        <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-[var(--warning)]" />
+        <WarningIcon className="mt-0.5 h-4 w-4 flex-shrink-0 text-[var(--warning)]" />
         <div className="flex-1 min-w-0">
           <button
             type="button"
             onClick={() => setExpanded(v => !v)}
             className="flex items-center gap-1 font-semibold hover:underline focus:outline-none"
           >
-            {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            {expanded ? <ChevronDownIcon className="h-3 w-3" /> : <ChevronRightIcon className="h-3 w-3" />}
             {assessment.headline}
           </button>
           {expanded && (
@@ -302,7 +308,7 @@ export default function RuntimeDiagnosticsBanner({
             title={t('shell.diagnostics.askHelper')}
             aria-label={t('shell.diagnostics.askHelper')}
           >
-            <Bot className="h-3.5 w-3.5" />
+            <HelperIcon className="h-3.5 w-3.5" />
           </button>
         )}
         {/* Close button — always rendered in v2. v1 made it conditional on a
@@ -314,7 +320,7 @@ export default function RuntimeDiagnosticsBanner({
           title={t('shell.runtimeDiagnostics.closeTitle')}
           className="flex-shrink-0 rounded p-0.5 text-[var(--ink-muted)] hover:bg-[var(--paper-hover)] hover:text-[var(--ink)]"
         >
-          <X className="h-3.5 w-3.5" />
+          <CloseIcon className="h-3.5 w-3.5" />
         </button>
       </div>
     </div>

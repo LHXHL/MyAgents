@@ -1,25 +1,23 @@
 import { selectUsableAgentWorkspaceRecords } from '../../../shared/agentWorkspaceIdentity';
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
-  AlertCircle,
-  Archive,
-  Check,
-  ChevronDown,
-  Eye,
-  EyeOff,
-  FolderOpen,
-  LayoutGrid,
-  Loader2,
-  Pin,
-  PinOff,
-  RefreshCw,
-  RotateCcw,
-  Search,
-  Settings2,
-  Star,
-  Trash2,
-  X,
-} from 'lucide-react';
+  AlertIcon,
+  CheckIcon,
+  ChevronDownIcon,
+  EyeIcon,
+  EyeOffIcon,
+  FolderOpenIcon,
+  GridIcon,
+  LoaderIcon,
+  PinIcon,
+  PinOffIcon,
+  RefreshIcon,
+  UndoIcon,
+  SlidersIcon,
+  StarIcon,
+  TrashIcon,
+  CloseIcon,
+} from '@/components/icons';
 import {
   lazy,
   memo,
@@ -64,8 +62,8 @@ import {
   SidebarIcon,
   TasksIcon,
   TeamIcon,
-  WorkspacesIcon,
-} from '@/components/icons/AppIcons';
+  FolderIcon,
+} from '@/components/icons';
 import UnreadNotificationIndicator from '@/components/UnreadNotificationIndicator';
 import { useToast } from '@/components/Toast';
 import { AddWorkspaceMenu, TemplateLibraryDialog } from '@/components/launcher';
@@ -371,7 +369,7 @@ function HistorySearchOverlayFallback({ onClose }: { onClose: () => void }) {
           aria-label={t('historyOverlay.exitSearch')}
           className="rounded-md p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
         >
-          <X className="h-4 w-4" />
+          <CloseIcon className="h-4 w-4" />
         </button>
       </div>
       <div className="flex h-8 items-center justify-between gap-4">
@@ -392,11 +390,11 @@ function HistorySearchOverlayFallback({ onClose }: { onClose: () => void }) {
           data-history-search-fallback-compact
         >
           <span className="truncate text-sm">{t('historyOverlay.searchPlaceholder')}</span>
-          <Search className="h-3.5 w-3.5 shrink-0" />
+          <SearchIcon className="h-3.5 w-3.5 shrink-0" />
         </div>
       </div>
       <div aria-busy="true" className="flex min-h-0 flex-1 items-center justify-center">
-        <Loader2 className="h-4 w-4 animate-spin text-[var(--ink-muted)]/50" />
+        <LoaderIcon className="h-4 w-4 animate-spin text-[var(--ink-muted)]/50" />
       </div>
     </>
   );
@@ -1267,7 +1265,7 @@ export default memo(function GlobalSidebar({
                       : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
                   }`}
                 >
-                  <WorkspacesIcon className="h-4 w-4" />
+                  <FolderIcon className="h-4 w-4" />
                 </button>
               </div>
             </div>
@@ -1741,19 +1739,19 @@ function WorkspaceTree({
           className="global-sidebar-nested-layer w-56 py-1"
         >
           <MenuItem
-            icon={sessionView === 'all' ? <Check className="h-3.5 w-3.5" /> : <LayoutGrid className="h-3.5 w-3.5" />}
+            icon={sessionView === 'all' ? <CheckIcon className="h-3.5 w-3.5" /> : <GridIcon className="h-3.5 w-3.5" />}
             label={t('globalSidebar.allSessions')}
             active={sessionView === 'all'}
             onClick={() => { onSetSessionView('all'); setViewMenu(false); }}
           />
           <MenuItem
-            icon={sessionView === 'favorites' ? <Check className="h-3.5 w-3.5" /> : <Star className="h-3.5 w-3.5" />}
+            icon={sessionView === 'favorites' ? <CheckIcon className="h-3.5 w-3.5" /> : <StarIcon className="h-3.5 w-3.5" />}
             label={t('globalSidebar.favoriteSessions')}
             active={sessionView === 'favorites'}
             onClick={() => { onSetSessionView('favorites'); setViewMenu(false); }}
           />
           <MenuItem
-            icon={showAutomationSessions ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+            icon={showAutomationSessions ? <EyeIcon className="h-3.5 w-3.5" /> : <EyeOffIcon className="h-3.5 w-3.5" />}
             label={showAutomationSessions
               ? t('globalSidebar.hideAutomationHistory')
               : t('globalSidebar.showAutomationHistory')}
@@ -1791,7 +1789,7 @@ function WorkspaceTree({
         ) : projectsError ? (
           <div className="mx-1 my-2 rounded-lg border border-dashed border-[var(--line)] px-3 py-3">
             <div className="flex items-center gap-2 text-xs text-[var(--warning)]">
-              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+              <AlertIcon className="h-3.5 w-3.5 shrink-0" />
               <span className="min-w-0 flex-1">{projectsError}</span>
               <button
                 type="button"
@@ -1799,7 +1797,7 @@ function WorkspaceTree({
                 className="rounded-md p-1 hover:bg-[var(--paper-inset)]"
                 aria-label={tLauncher('rightRail.retry')}
               >
-                <RefreshCw className="h-3.5 w-3.5" />
+                <RefreshIcon className="h-3.5 w-3.5" />
               </button>
             </div>
           </div>
@@ -1858,7 +1856,7 @@ function WorkspaceTree({
                           {workspaceSessionState?.error && (
                             <div className="my-1 rounded-lg border border-dashed border-[var(--line)] px-3 py-2">
                               <div className="flex items-center gap-2 text-xs text-[var(--warning)]">
-                                <AlertCircle className="h-3.5 w-3.5" />
+                                <AlertIcon className="h-3.5 w-3.5" />
                                 <span className="min-w-0 flex-1 truncate">{workspaceSessionState.error}</span>
                                 <button
                                   type="button"
@@ -1866,7 +1864,7 @@ function WorkspaceTree({
                                   className="rounded-md p-1 hover:bg-[var(--paper-inset)]"
                                   aria-label={tLauncher('rightRail.retry')}
                                 >
-                                  <RefreshCw className="h-3.5 w-3.5" />
+                                  <RefreshIcon className="h-3.5 w-3.5" />
                                 </button>
                               </div>
                             </div>
@@ -1906,7 +1904,7 @@ function WorkspaceTree({
                               onClick={() => onLoadMore(project, sessions.length)}
                               className="flex h-8 w-full items-center gap-2 rounded-lg pl-3 pr-3 text-xs font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                             >
-                              <ChevronDown className="h-3.5 w-3.5" />
+                              <ChevronDownIcon className="h-3.5 w-3.5" />
                               {t('globalSidebar.loadMore')}
                             </button>
                           )}
@@ -2072,15 +2070,15 @@ function WorkspaceRow({
         placement="bottom-end"
         className="global-sidebar-nested-layer w-44 py-1"
       >
-        <MenuItem icon={<Settings2 className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.agentSettings')} onClick={() => { setMenu(false); onAgentSettings(menuRef.current); }} />
-        <MenuItem icon={<FolderOpen className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.openFolder')} onClick={() => { setMenu(false); onOpenFolder(); }} />
+        <MenuItem icon={<SlidersIcon className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.agentSettings')} onClick={() => { setMenu(false); onAgentSettings(menuRef.current); }} />
+        <MenuItem icon={<FolderOpenIcon className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.openFolder')} onClick={() => { setMenu(false); onOpenFolder(); }} />
         <MenuItem
-          icon={project.pinnedAt ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
+          icon={project.pinnedAt ? <PinOffIcon className="h-3.5 w-3.5" /> : <PinIcon className="h-3.5 w-3.5" />}
           label={project.pinnedAt ? tLauncher('workspaceCard.unpin') : tLauncher('workspaceCard.pin')}
           onClick={() => { setMenu(false); onTogglePin(); }}
         />
-        <MenuItem icon={<Archive className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.archive')} onClick={() => { setMenu(false); onArchive(); }} />
-        <MenuItem icon={<Trash2 className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.remove')} tone="danger" onClick={() => { setMenu(false); onRemove(menuRef.current); }} />
+        <MenuItem icon={<ArchiveIcon className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.archive')} onClick={() => { setMenu(false); onArchive(); }} />
+        <MenuItem icon={<TrashIcon className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.remove')} tone="danger" onClick={() => { setMenu(false); onRemove(menuRef.current); }} />
       </Popover>
     </div>
   );
@@ -2175,9 +2173,9 @@ function SessionRow({
           className="min-w-0 flex-1 truncate text-sm"
           data-global-sidebar-session-title
         />
-        {session.favorite && <Star className="h-3 w-3 shrink-0 text-[var(--accent)]" fill="currentColor" />}
+        {session.favorite && <StarIcon className="h-3 w-3 shrink-0 text-[var(--accent)]" fill="currentColor" />}
         {session.pinnedAt && (
-          <Pin
+          <PinIcon
             role="img"
             aria-label={tLauncher('rightRail.pinned')}
             className="h-3 w-3 shrink-0 text-[var(--ink-muted)]"
@@ -2284,10 +2282,10 @@ function ArchivedWorkspaceRow({ project, onUnarchive, onAgentSettings, onOpenFol
         placement="bottom-end"
         className="global-sidebar-nested-layer w-44 py-1"
       >
-        <MenuItem icon={<RotateCcw className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.unarchive')} onClick={() => { setMenu(false); onUnarchive(); }} />
-        <MenuItem icon={<Settings2 className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.agentSettings')} onClick={() => { setMenu(false); onAgentSettings(menuRef.current); }} />
-        <MenuItem icon={<FolderOpen className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.openFolder')} onClick={() => { setMenu(false); onOpenFolder(); }} />
-        <MenuItem icon={<Trash2 className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.remove')} tone="danger" onClick={() => { setMenu(false); onRemove(menuRef.current); }} />
+        <MenuItem icon={<UndoIcon className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.unarchive')} onClick={() => { setMenu(false); onUnarchive(); }} />
+        <MenuItem icon={<SlidersIcon className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.agentSettings')} onClick={() => { setMenu(false); onAgentSettings(menuRef.current); }} />
+        <MenuItem icon={<FolderOpenIcon className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.openFolder')} onClick={() => { setMenu(false); onOpenFolder(); }} />
+        <MenuItem icon={<TrashIcon className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.remove')} tone="danger" onClick={() => { setMenu(false); onRemove(menuRef.current); }} />
       </Popover>
     </div>
   );

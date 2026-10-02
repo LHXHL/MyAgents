@@ -1,6 +1,6 @@
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useEffect, useRef, useState } from 'react';
-import { AlertCircle, Loader2, X } from 'lucide-react';
+import { AlertIcon, LoaderIcon, CloseIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import OverlayBackdrop from '@/components/OverlayBackdrop';
@@ -97,7 +97,7 @@ export default function SessionRenameDialog({
             className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:opacity-50"
             aria-label={tCommon('actions.close')}
           >
-            <X className="h-4 w-4" />
+            <CloseIcon className="h-4 w-4" />
           </button>
         </div>
 
@@ -128,7 +128,7 @@ export default function SessionRenameDialog({
         />
         {error && (
           <p id="session-rename-error" role="alert" className="mt-2 flex items-center gap-1.5 text-xs text-[var(--danger)]">
-            <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+            <AlertIcon className="h-3.5 w-3.5 shrink-0" />
             {error}
           </p>
         )}
@@ -148,7 +148,7 @@ export default function SessionRenameDialog({
             disabled={!canSave}
             className="action-button inline-flex min-w-20 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium disabled:opacity-50"
           >
-            {saving && <Loader2 className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />}
+            {saving && <LoaderIcon className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />}
             {tCommon('actions.save')}
           </button>
         </div>

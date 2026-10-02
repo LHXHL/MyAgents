@@ -4,7 +4,13 @@ import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
-import { Download, Loader2, Puzzle, RefreshCw, Trash2 } from 'lucide-react';
+import {
+  DownloadIcon,
+  LoaderIcon,
+  PluginIcon,
+  RefreshIcon,
+  TrashIcon,
+} from '@/components/icons';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import { useToast } from '@/components/Toast';
 import ConfirmDialog from '@/components/ConfirmDialog';
@@ -221,7 +227,7 @@ export default function BotPlatformRegistry({
       ),
       iconElement: (
         <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--accent-warm-subtle)]">
-          <Puzzle className="h-6 w-6 text-[var(--accent-warm)]" />
+          <PluginIcon className="h-6 w-6 text-[var(--accent-warm)]" />
         </div>
       ),
       plugin,
@@ -242,7 +248,7 @@ export default function BotPlatformRegistry({
         className="rounded-full p-1 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:opacity-50"
         title={t('agentSettings.botRegistry.checkUpdates')}
       >
-        <RefreshCw className={`h-3 w-3 ${updatingSet.has(plugin.pluginId) ? 'animate-spin' : ''}`} />
+        <RefreshIcon className={`h-3 w-3 ${updatingSet.has(plugin.pluginId) ? 'animate-spin' : ''}`} />
       </button>
     </>
   );
@@ -285,7 +291,7 @@ export default function BotPlatformRegistry({
                 title={t('agentSettings.botRegistry.uninstallPlugin')}
                 className="absolute right-2 top-2 rounded-md p-1.5 text-[var(--ink-muted)] opacity-0 transition-all hover:bg-[var(--error-bg)] hover:text-[var(--error)] group-hover:opacity-100"
               >
-                <Trash2 className="h-3.5 w-3.5" />
+                <TrashIcon className="h-3.5 w-3.5" />
               </button>
             )}
           </div>
@@ -321,7 +327,7 @@ export default function BotPlatformRegistry({
                   disabled={isInstalling || isUpdating || loading}
                   className="mt-auto flex items-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-xs font-medium text-[var(--button-primary-text)] disabled:opacity-50"
                 >
-                  {(isInstalling || isUpdating) && <Loader2 className="h-3 w-3 animate-spin" />}
+                  {(isInstalling || isUpdating) && <LoaderIcon className="h-3 w-3 animate-spin" />}
                   {isInstalling || isUpdating
                     ? t('agentSettings.botRegistry.installing')
                     : t('agentSettings.botRegistry.install')}
@@ -338,10 +344,10 @@ export default function BotPlatformRegistry({
           className="flex min-h-52 flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-[var(--line-strong)] p-5 transition-all hover:border-[var(--accent-warm)] hover:bg-[var(--accent-warm-subtle)]"
         >
           {loading ? (
-            <Loader2 className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />
+            <LoaderIcon className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />
           ) : (
             <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-dashed border-[var(--ink-subtle)]">
-              <Download className="h-6 w-6 text-[var(--ink-muted)]" />
+              <DownloadIcon className="h-6 w-6 text-[var(--ink-muted)]" />
             </div>
           )}
           <div className="text-center">
@@ -372,7 +378,7 @@ export default function BotPlatformRegistry({
             disabled={!installNpmSpec.trim() || installing}
             className="rounded-lg bg-[var(--button-primary-bg)] px-4 py-2 text-sm font-medium text-[var(--button-primary-text)] disabled:opacity-50"
           >
-            {installing ? <Loader2 className="h-4 w-4 animate-spin" /> : t('agentSettings.botRegistry.install')}
+            {installing ? <LoaderIcon className="h-4 w-4 animate-spin" /> : t('agentSettings.botRegistry.install')}
           </button>
           <button
             type="button"

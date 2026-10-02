@@ -4,7 +4,7 @@
 
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useEffect, useRef, useState } from 'react';
-import { X } from 'lucide-react';
+import { CloseIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import { useCloseLayer } from '@/hooks/useCloseLayer';
@@ -67,7 +67,7 @@ export default function PathInputDialog({
                         onClick={onCancel}
                         className="rounded-lg p-1 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                     >
-                        <X className="h-5 w-5" />
+                        <CloseIcon className="h-5 w-5" />
                     </button>
                 </div>
 

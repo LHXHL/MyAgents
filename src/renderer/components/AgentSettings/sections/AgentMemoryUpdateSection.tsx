@@ -1,7 +1,7 @@
 // Agent memory auto-update section (v0.1.43)
 import { useState, useCallback, useRef, useEffect, Suspense, lazy } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDownIcon } from '@/components/icons';
 import type { AgentConfig } from '../../../../shared/types/agent';
 import type { MemoryAutoUpdateConfig } from '../../../../shared/types/im';
 import { DEFAULT_MEMORY_AUTO_UPDATE_CONFIG } from '../../../../shared/types/im';
@@ -175,7 +175,7 @@ export default function AgentMemoryUpdateSection({ agent, workspacePath, onAgent
               onClick={() => setMoreSettingsOpen(open => !open)}
               className="flex items-center gap-2 text-sm font-medium text-[var(--ink)] transition-colors hover:text-[var(--accent)]"
             >
-              <ChevronDown className={`h-4 w-4 transition-transform ${moreSettingsOpen ? '' : '-rotate-90'}`} />
+              <ChevronDownIcon className={`h-4 w-4 transition-transform ${moreSettingsOpen ? '' : '-rotate-90'}`} />
               {t('agentSettings.common.moreSettings')}
             </button>
 

@@ -14,16 +14,16 @@ import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  Archive,
-  ArchiveRestore,
-  CheckSquare,
-  Check,
-  MessageSquare,
-  MoreHorizontal,
-  Pencil,
-  Trash2,
-  Zap,
-} from 'lucide-react';
+  ArchiveIcon,
+  ArchiveRestoreIcon,
+  TasksIcon,
+  CheckIcon,
+  MessageIcon,
+  MoreIcon,
+  EditIcon,
+  TrashIcon,
+  ZapIcon,
+} from '@/components/icons';
 import { thoughtDelete, thoughtSetArchived, thoughtUpdate } from '@/api/taskCenter';
 import { Popover } from '@/components/ui/Popover';
 import type { Thought } from '@/../shared/types/thought';
@@ -281,7 +281,7 @@ export function ThoughtCard({
                     onClick={() => setShowWorkspacePicker((v) => !v)}
                     className="flex items-center gap-1 rounded-[var(--radius-md)] px-2 py-0.5 text-sm text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--accent-cool)]"
                   >
-                    <MessageSquare className="h-3.5 w-3.5" strokeWidth={1.5} />
+                    <MessageIcon className="h-3.5 w-3.5" strokeWidth={1.5} />
                     {t('thoughts.aiDiscuss')}
                   </button>
                   {!showWorkspacePicker && (
@@ -298,7 +298,7 @@ export function ThoughtCard({
                     onClick={() => onDispatch(thought)}
                     className="flex items-center gap-1 rounded-[var(--radius-md)] px-2 py-0.5 text-sm text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--accent-warm)]"
                   >
-                    <Zap className="h-3.5 w-3.5" strokeWidth={1.5} />
+                    <ZapIcon className="h-3.5 w-3.5" strokeWidth={1.5} />
                     {t('thoughts.dispatch')}
                   </button>
                   <span className="pointer-events-none absolute -bottom-7 left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-md bg-[var(--button-dark-bg)] px-2 py-0.5 text-xs text-[var(--button-dark-text)] opacity-0 shadow-lg transition-opacity group-hover/dispatch:opacity-100">
@@ -332,7 +332,7 @@ export function ThoughtCard({
               title={t('thoughts.moreActions')}
               className="flex h-5 w-5 items-center justify-center rounded-[var(--radius-md)] text-[var(--ink-muted)]/70 transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
             >
-              <MoreHorizontal className="h-3.5 w-3.5" strokeWidth={1.5} />
+              <MoreIcon className="h-3.5 w-3.5" strokeWidth={1.5} />
             </button>
             <Popover
               open={showMenu}
@@ -349,7 +349,7 @@ export function ThoughtCard({
                 }}
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--ink-secondary)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
               >
-                <Pencil className="h-3.5 w-3.5" strokeWidth={1.5} />
+                <EditIcon className="h-3.5 w-3.5" strokeWidth={1.5} />
                 {t('common.edit')}
               </button>
               {onEnterSelectMode && (
@@ -361,7 +361,7 @@ export function ThoughtCard({
                   }}
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--ink-secondary)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                 >
-                  <CheckSquare className="h-3.5 w-3.5" strokeWidth={1.5} />
+                  <TasksIcon className="h-3.5 w-3.5" strokeWidth={1.5} />
                   {t('thoughts.multiSelect')}
                 </button>
               )}
@@ -373,12 +373,12 @@ export function ThoughtCard({
               >
                 {isArchived ? (
                   <>
-                    <ArchiveRestore className="h-3.5 w-3.5" strokeWidth={1.5} />
+                    <ArchiveRestoreIcon className="h-3.5 w-3.5" strokeWidth={1.5} />
                     {t('thoughts.unarchive')}
                   </>
                 ) : (
                   <>
-                    <Archive className="h-3.5 w-3.5" strokeWidth={1.5} />
+                    <ArchiveIcon className="h-3.5 w-3.5" strokeWidth={1.5} />
                     {t('thoughts.archive')}
                   </>
                 )}
@@ -388,7 +388,7 @@ export function ThoughtCard({
                 onClick={() => void handleDelete()}
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--error)] hover:bg-[var(--error-bg)]"
               >
-                <Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} />
+                <TrashIcon className="h-3.5 w-3.5" strokeWidth={1.5} />
                 {t('common.delete')}
               </button>
             </Popover>
@@ -444,7 +444,7 @@ export function ThoughtCard({
                 : 'border-[var(--line-strong)] bg-[var(--paper-elevated)] text-transparent'
             }`}
           >
-            <Check className="h-3 w-3" strokeWidth={3} />
+            <CheckIcon className="h-3 w-3" strokeWidth={3} />
           </div>
         </div>
       )}

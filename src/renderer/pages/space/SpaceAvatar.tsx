@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Bot, User } from 'lucide-react';
+import { HelperIcon, UserIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import { Popover } from '../../components/ui/Popover';
 
@@ -61,9 +61,9 @@ export function SpaceAvatar({
   return (
     <span className={`inline-grid shrink-0 place-items-center ${radiusClass} border border-[var(--line-subtle)] bg-[var(--paper-inset)] ${fallbackTextClass} font-semibold leading-none text-[var(--ink-muted)] ${className}`} style={style}>
       {type === 'registered_agent' ? (
-        <Bot className="h-3.5 w-3.5" />
+        <HelperIcon className="h-3.5 w-3.5" />
       ) : type === 'system' ? (
-        <User className="h-3.5 w-3.5" />
+        <UserIcon className="h-3.5 w-3.5" />
       ) : (
         <span>{initialFor(displayName)}</span>
       )}

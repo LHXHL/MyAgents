@@ -12,17 +12,17 @@ import {
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import type { FilePreviewHandle } from '@/components/FilePreviewModal';
 import {
-  AlertTriangle,
-  Bot,
-  Globe,
-  History,
-  Loader2,
-  MessageSquarePlus,
-  PanelRight,
-  RotateCcw,
-  TerminalSquare,
-  X,
-} from 'lucide-react';
+  WarningIcon,
+  HelperIcon,
+  GlobeIcon,
+  HistoryIcon,
+  LoaderIcon,
+  ComposeIcon,
+  PanelRightIcon,
+  UndoIcon,
+  TerminalIcon,
+  CloseIcon,
+} from '@/components/icons';
 import {
   forwardRef,
   lazy,
@@ -6554,7 +6554,7 @@ export default function Chat({
                 className="flex items-center gap-1.5 whitespace-nowrap rounded-lg px-2 py-1.5 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                 title={t('shell.header.newChat')}
               >
-                <MessageSquarePlus className="h-3.5 w-3.5 flex-shrink-0" />
+                <ComposeIcon className="h-3.5 w-3.5 flex-shrink-0" />
                       {!splitFile && (
                         <span>{t('shell.header.newChatShort')}</span>
                       )}
@@ -6574,7 +6574,7 @@ export default function Chat({
                         : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
                     }`}
                   >
-                    <History className="h-3.5 w-3.5 flex-shrink-0" />
+                    <HistoryIcon className="h-3.5 w-3.5 flex-shrink-0" />
                           {!splitFile && (
                             <span>{t('shell.header.history')}</span>
                           )}
@@ -6624,7 +6624,7 @@ export default function Chat({
                     aria-label={t('shell.header.expandWorkspace')}
                     className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                   >
-                    <PanelRight className="h-4 w-4" />
+                    <PanelRightIcon className="h-4 w-4" />
                   </button>
                 </Tip>
               )}
@@ -6723,7 +6723,7 @@ export default function Chat({
                 return (
                   <div className="relative z-10 flex-shrink-0 border-b border-[var(--line)] bg-[var(--paper-inset)] px-4 py-2 text-xs text-[var(--ink)]">
                     <div className="mx-auto flex max-w-3xl items-start gap-2">
-                      <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-[var(--accent)]" />
+                      <WarningIcon className="mt-0.5 h-4 w-4 flex-shrink-0 text-[var(--accent)]" />
                       <div className="flex-1">
                         <span className="font-semibold text-[var(--ink)]">
                           {t('shell.agentError.title')}
@@ -6767,7 +6767,7 @@ export default function Chat({
                           title={t('shell.diagnostics.askHelper')}
                           aria-label={t('shell.diagnostics.askHelper')}
                         >
-                          <Bot className="h-3.5 w-3.5" />
+                          <HelperIcon className="h-3.5 w-3.5" />
                         </button>
                         {canRetry && (
                           <button
@@ -6775,7 +6775,7 @@ export default function Chat({
                             onClick={handleRetryLastUserMessage}
                             className="flex items-center gap-1 rounded-md px-2 py-0.5 text-sm font-medium text-[var(--accent)] transition-colors hover:bg-[var(--accent-warm-subtle)]"
                           >
-                            <RotateCcw className="h-3 w-3" />
+                            <UndoIcon className="h-3 w-3" />
                             {t('shell.agentError.resend')}
                           </button>
                         )}
@@ -6785,7 +6785,7 @@ export default function Chat({
                           className="flex-shrink-0 rounded p-0.5 text-[var(--ink-subtle)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink-muted)]"
                           title={t('shell.common.close')}
                         >
-                          <X className="h-3.5 w-3.5" />
+                          <CloseIcon className="h-3.5 w-3.5" />
                         </button>
                       </div>
                     </div>
@@ -7240,7 +7240,7 @@ export default function Chat({
                         : 'text-[var(--ink-muted)] hover:text-[var(--ink)]'
                     }`}
                   >
-                    <TerminalSquare className="h-3 w-3" />
+                    <TerminalIcon className="h-3 w-3" />
                     {t('shell.split.terminal')}
                     <span
                       role="button"
@@ -7273,7 +7273,7 @@ export default function Chat({
                         : 'text-[var(--ink-muted)] hover:text-[var(--ink)]'
                     }`}
                   >
-                    <Globe className="h-3 w-3" />
+                    <GlobeIcon className="h-3 w-3" />
                     <span className="max-w-[120px] truncate">
                       {browserSourceFile
                         ? browserSourceFile.name
@@ -7322,7 +7322,7 @@ export default function Chat({
                 <Suspense
                   fallback={
                     <div className="flex h-full items-center justify-center text-[var(--ink-muted)]">
-                      <Loader2 className="h-5 w-5 animate-spin" />
+                      <LoaderIcon className="h-5 w-5 animate-spin" />
                     </div>
                   }
                 >
@@ -7410,7 +7410,7 @@ export default function Chat({
                 ].filter(Boolean).length < 2 && (
                   <div className="flex h-9 flex-shrink-0 items-center justify-between bg-[var(--paper)] px-3">
                     <div className="flex items-center gap-1.5">
-                      <TerminalSquare className="h-3.5 w-3.5 text-[var(--ink)]" />
+                      <TerminalIcon className="h-3.5 w-3.5 text-[var(--ink)]" />
                       <span className="text-sm font-medium text-[var(--ink)]">
                         {t('shell.split.terminal')}
                       </span>
@@ -7433,7 +7433,7 @@ export default function Chat({
                         }}
                         className="flex h-5 w-5 items-center justify-center rounded text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                       >
-                        <X className="h-3.5 w-3.5" />
+                        <CloseIcon className="h-3.5 w-3.5" />
                       </button>
                     </Tip>
                   </div>
@@ -7441,7 +7441,7 @@ export default function Chat({
                 <Suspense
                   fallback={
                     <div className="flex h-full items-center justify-center bg-[var(--paper)]">
-                      <Loader2 className="h-5 w-5 animate-spin text-[var(--ink-muted)]" />
+                      <LoaderIcon className="h-5 w-5 animate-spin text-[var(--ink-muted)]" />
                     </div>
                   }
                 >
@@ -7484,7 +7484,7 @@ export default function Chat({
                 <Suspense
                   fallback={
                     <div className="flex h-full items-center justify-center bg-[var(--paper)]">
-                      <Loader2 className="h-5 w-5 animate-spin text-[var(--ink-muted)]" />
+                      <LoaderIcon className="h-5 w-5 animate-spin text-[var(--ink-muted)]" />
                     </div>
                   }
                 >
@@ -7702,7 +7702,7 @@ export default function Chat({
                 disabled={goalEditSubmitting}
                 className="shrink-0 rounded-lg p-1 text-[var(--ink-muted)] transition hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <X className="h-4 w-4" />
+                <CloseIcon className="h-4 w-4" />
               </button>
             </div>
             <div className="px-6 py-4">

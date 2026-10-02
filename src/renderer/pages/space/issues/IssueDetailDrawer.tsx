@@ -1,7 +1,20 @@
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronLeft, ChevronRight, Copy, Download, FileText, Loader2, Paperclip, Pencil, Save, Send, UploadCloud, X } from 'lucide-react';
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  CopyIcon,
+  DownloadIcon,
+  DocumentIcon,
+  LoaderIcon,
+  AttachIcon,
+  EditIcon,
+  SaveIcon,
+  SendIcon,
+  UploadCloudIcon,
+  CloseIcon,
+} from '@/components/icons';
 
 import { spaceErrorMessage, type SpaceAttachment, type SpaceGoal, type SpaceRegisteredAgent, type SpaceSession } from '@/api/spaceCloud';
 import Markdown from '@/components/Markdown';
@@ -431,12 +444,12 @@ export function IssueDetailDrawer({
     {
       items: [
         ...(!editingIssue ? [{
-          icon: <Pencil className="h-3.5 w-3.5" />,
+          icon: <EditIcon className="h-3.5 w-3.5" />,
           label: t('space.detail.editIssue'),
           onClick: startIssueEdit,
         }] : []),
         {
-          icon: <Copy className="h-3.5 w-3.5" />,
+          icon: <CopyIcon className="h-3.5 w-3.5" />,
           label: t('space.detail.copyIssueCommand'),
           onClick: () => void copyIssueCommand(),
         },
@@ -469,7 +482,7 @@ export function IssueDetailDrawer({
           aria-controls={projects.length > 1 ? `attachment-download-menu-${attachment.id}` : undefined}
           title={projects.length > 1 ? t('space.detail.chooseDownloadWorkspace') : t('space.detail.downloadAttachment', { name: attachment.name })}
         >
-          {downloadingAttachmentId === attachment.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+          {downloadingAttachmentId === attachment.id ? <LoaderIcon className="h-3.5 w-3.5 animate-spin" /> : <DownloadIcon className="h-3.5 w-3.5" />}
         </button>
         {downloadTargetAttachmentId === attachment.id && projects.length > 1 && (
           <div
@@ -509,7 +522,7 @@ export function IssueDetailDrawer({
           aria-label={t('space.detail.copyAttachmentCommand', { name: attachment.name })}
           title={t('space.detail.copyCliDownloadCommand')}
         >
-          <Copy className="h-3.5 w-3.5" />
+          <CopyIcon className="h-3.5 w-3.5" />
         </button>
         {downloadedAttachmentPaths[attachment.id] && (
           <button
@@ -519,7 +532,7 @@ export function IssueDetailDrawer({
             aria-label={t('space.detail.copyAttachmentPath', { name: attachment.name })}
             title={t('space.detail.copyLocalPath')}
           >
-            <FileText className="h-3.5 w-3.5" />
+            <DocumentIcon className="h-3.5 w-3.5" />
           </button>
         )}
       </span>
@@ -531,13 +544,13 @@ export function IssueDetailDrawer({
       <aside className="relative h-full w-[82vw] max-w-7xl border-l border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl max-lg:w-[92vw] max-sm:w-full">
         <header className="absolute right-4 top-4 z-10 flex justify-end">
           <button type="button" onClick={onClose} className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]" aria-label={t('space.detail.close')}>
-            <X className="h-4 w-4" />
+            <CloseIcon className="h-4 w-4" />
           </button>
         </header>
 
         {!detail && loading ? (
           <div className="flex h-full items-center justify-center text-sm text-[var(--ink-muted)]">
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
             {t('space.detail.loadingIssue')}
           </div>
         ) : !detail ? (
@@ -577,7 +590,7 @@ export function IssueDetailDrawer({
                       aria-label={t('space.detail.previousIssue')}
                       title={t('space.detail.previousIssue')}
                     >
-                      <ChevronLeft className="h-4 w-4" />
+                      <ChevronLeftIcon className="h-4 w-4" />
                     </button>
                     <button
                       type="button"
@@ -587,7 +600,7 @@ export function IssueDetailDrawer({
                       aria-label={t('space.detail.nextIssue')}
                       title={t('space.detail.nextIssue')}
                     >
-                      <ChevronRight className="h-4 w-4" />
+                      <ChevronRightIcon className="h-4 w-4" />
                     </button>
                     <DropdownMenu
                       sections={issueActionSections}
@@ -636,7 +649,7 @@ export function IssueDetailDrawer({
                         onClick={() => void saveIssueEdit()}
                         className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-3 text-sm font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
                       >
-                        {savingIssue ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                        {savingIssue ? <LoaderIcon className="h-3.5 w-3.5 animate-spin" /> : <SaveIcon className="h-3.5 w-3.5" />}
                         {t('space.common.save')}
                       </button>
                     </div>
@@ -665,7 +678,7 @@ export function IssueDetailDrawer({
                       className="inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-wait disabled:opacity-70"
                       title={t('space.detail.uploadAttachment')}
                     >
-                      {attachmentUploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <UploadCloud className="h-3.5 w-3.5" />}
+                      {attachmentUploading ? <LoaderIcon className="h-3.5 w-3.5 animate-spin" /> : <UploadCloudIcon className="h-3.5 w-3.5" />}
                       {t('space.common.upload')}
                     </button>
                   </div>
@@ -708,7 +721,7 @@ export function IssueDetailDrawer({
                         onClick={() => void loadOlderComments()}
                         className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:opacity-60"
                       >
-                        {commentsLoading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                        {commentsLoading && <LoaderIcon className="h-3.5 w-3.5 animate-spin" />}
                         {t('space.detail.loadOlderComments')}
                       </button>
                     </div>
@@ -771,7 +784,7 @@ export function IssueDetailDrawer({
                         className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-wait disabled:opacity-70"
                         aria-label={t('space.detail.uploadAttachmentAria')}
                       >
-                        {commentFilesPicking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
+                        {commentFilesPicking ? <LoaderIcon className="h-4 w-4 animate-spin" /> : <AttachIcon className="h-4 w-4" />}
                       </button>
                     </Tip>
                     <span />
@@ -788,7 +801,7 @@ export function IssueDetailDrawer({
                         className="grid h-9 w-9 place-items-center rounded-xl bg-[var(--button-primary-bg)] text-sm font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
                         aria-label={t('space.detail.sendComment')}
                       >
-                        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                        {busy ? <LoaderIcon className="h-4 w-4 animate-spin" /> : <SendIcon className="h-4 w-4" />}
                       </button>
                     </Tip>
                   </div>

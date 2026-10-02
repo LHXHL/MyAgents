@@ -2,7 +2,12 @@
 // Used by the Launcher and Agent settings; a Chat Session's Runtime is read-only.
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { Check, ChevronUp, CircleHelp, Settings } from 'lucide-react';
+import {
+  CheckIcon,
+  ChevronUpIcon,
+  HelpIcon,
+  SettingsIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import { Popover } from '@/components/ui/Popover';
@@ -47,7 +52,7 @@ function RuntimeGroupHeading({ group }: { group: 'integrated' | 'external' }) {
           aria-label={`${label}: ${description}`}
           className="inline-flex h-4 w-4 items-center justify-center rounded-full text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--accent)]"
         >
-          <CircleHelp className="h-3 w-3" aria-hidden="true" />
+          <HelpIcon className="h-3 w-3" aria-hidden="true" />
         </button>
       </Tip>
     </div>
@@ -143,7 +148,7 @@ export default memo(function RuntimeSelector({
           <RuntimeIcon type={value} size={16} />
           {variant === 'panel' && <span className="truncate">{currentOption.name}</span>}
         </span>
-        <ChevronUp className={`h-3 w-3 shrink-0 text-[var(--ink-muted)] transition-transform ${menuOpen ? '' : 'rotate-180'}`} />
+        <ChevronUpIcon className={`h-3 w-3 shrink-0 text-[var(--ink-muted)] transition-transform ${menuOpen ? '' : 'rotate-180'}`} />
       </button>
       <Popover
         open={menuOpen}
@@ -160,7 +165,7 @@ export default memo(function RuntimeSelector({
               onClick={(event) => { event.stopPropagation(); setOpen(false); onOpenSettings(); }}
               className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
             >
-              <Settings className="h-3 w-3" />
+              <SettingsIcon className="h-3 w-3" />
               {t('runtime.settings')}
             </button>
           )}
@@ -202,7 +207,7 @@ export default memo(function RuntimeSelector({
                   {opt.name}
                 </span>
                 {installed ? (
-                  <Check className={`h-3.5 w-3.5 shrink-0 text-[var(--accent)] ${selected ? '' : 'invisible'}`} aria-hidden="true" />
+                  <CheckIcon className={`h-3.5 w-3.5 shrink-0 text-[var(--accent)] ${selected ? '' : 'invisible'}`} aria-hidden="true" />
                 ) : (
                   <span className="shrink-0 text-xs text-[var(--ink-subtle)]">
                     {detection?.installed && !IMPLEMENTED_RUNTIMES.has(opt.type)

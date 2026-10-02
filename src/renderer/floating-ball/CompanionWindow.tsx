@@ -13,7 +13,15 @@ import { sameAsyncQuestionReply, type AsyncQuestionReply } from '../../shared/as
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { AlertCircle, Brain, Image as ImageIcon, Loader2, Settings as SettingsIcon, StopCircle, XCircle } from 'lucide-react';
+import {
+  AlertIcon,
+  BrainIcon,
+  ImageIcon,
+  LoaderIcon,
+  SettingsIcon,
+  StopCircleIcon,
+  XCircleIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import { listenWithCleanup } from '@/utils/tauriListen';
@@ -128,20 +136,20 @@ function ActivityRow({ block, isStreaming, tick }: { block: ContentBlock; isStre
             mainLabel = durationSec > 0
                 ? t('floatingBall.activity.thinkingRunningWithSeconds', { seconds: durationSec })
                 : t('floatingBall.activity.thinkingRunning');
-            icon = <Loader2 className="size-4 animate-spin" />;
+            icon = <LoaderIcon className="size-4 animate-spin" />;
         } else if (block.isFailed) {
             mainLabel = durationSec > 0
                 ? t('floatingBall.activity.thinkingFailedWithSeconds', { seconds: durationSec })
                 : t('floatingBall.activity.thinkingFailed');
-            icon = <XCircle className="size-4 text-[var(--error)]" />;
+            icon = <XCircleIcon className="size-4 text-[var(--error)]" />;
         } else if (block.isStopped) {
             mainLabel = durationSec > 0
                 ? t('floatingBall.activity.thinkingStoppedWithSeconds', { seconds: durationSec })
                 : t('floatingBall.activity.thinkingStopped');
-            icon = <StopCircle className="size-4 text-[var(--warning)]" />;
+            icon = <StopCircleIcon className="size-4 text-[var(--warning)]" />;
         } else {
             mainLabel = t('floatingBall.activity.thinkingDone', { seconds: Math.max(durationSec, 1) });
-            icon = <Brain className="size-4" />;
+            icon = <BrainIcon className="size-4" />;
         }
     } else if (tool) {
         const config = getToolBadgeConfig(tool.name);
@@ -164,13 +172,13 @@ function ActivityRow({ block, isStreaming, tick }: { block: ContentBlock; isStre
             }
         }
         if (isToolActive || isTaskRunning) {
-            icon = <Loader2 className="size-4 animate-spin" />;
+            icon = <LoaderIcon className="size-4 animate-spin" />;
         } else if (lifecycleStatus === 'failed' || tool.isFailed) {
-            icon = <XCircle className="size-4 text-[var(--error)]" />;
+            icon = <XCircleIcon className="size-4 text-[var(--error)]" />;
         } else if (lifecycleStatus === 'interrupted' || tool.isStopped) {
-            icon = <StopCircle className="size-4 text-[var(--warning)]" />;
+            icon = <StopCircleIcon className="size-4 text-[var(--warning)]" />;
         } else if (tool.isError) {
-            icon = <AlertCircle className="size-4 text-[var(--error)]" />;
+            icon = <AlertIcon className="size-4 text-[var(--error)]" />;
         } else {
             icon = config.icon;
         }

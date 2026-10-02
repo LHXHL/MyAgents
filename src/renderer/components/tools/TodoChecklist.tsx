@@ -1,4 +1,4 @@
-import { Check, Loader2 } from 'lucide-react';
+import { CheckIcon, LoaderIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 export interface ChecklistItem {
@@ -55,9 +55,9 @@ export default function TodoChecklist({ items }: TodoChecklistProps) {
                     : 'border-[var(--line)]'
                 }`}>
                 {isCompleted ? (
-                  <Check className="size-3.5" strokeWidth={3} />
+                  <CheckIcon className="size-3.5" strokeWidth={3} />
                 ) : isInProgress ? (
-                  <Loader2 className="size-3 animate-spin text-[var(--accent)]" />
+                  <LoaderIcon className="size-3 animate-spin text-[var(--accent)]" />
                 ) : null}
               </div>
 

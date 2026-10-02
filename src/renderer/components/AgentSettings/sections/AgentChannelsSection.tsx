@@ -4,7 +4,7 @@ import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useState, useCallback, useRef, useEffect, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { Plus, X, Loader2 } from 'lucide-react';
+import { PlusIcon, CloseIcon, LoaderIcon } from '@/components/icons';
 import type { AgentConfig, ChannelConfig, ChannelType } from '../../../../shared/types/agent';
 import type { AgentStatusData, ChannelStatusData } from '@/hooks/useAgentStatuses';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
@@ -99,7 +99,7 @@ function ChannelOverlayPanel({
           onClick={onClose}
           className="absolute right-4 top-4 z-10 rounded-lg p-2 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
         >
-          <X className="h-5 w-5" />
+          <CloseIcon className="h-5 w-5" />
         </button>
         <div className="flex-1 overflow-y-auto px-8 py-6">
           <div className="mx-auto max-w-2xl">
@@ -253,7 +253,7 @@ export default function AgentChannelsSection({
             className="flex items-center gap-1 rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-xs font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)]"
             onClick={() => setOverlay({ view: 'add' })}
           >
-            <Plus className="h-3.5 w-3.5" />
+            <PlusIcon className="h-3.5 w-3.5" />
             {t('agentSettings.channels.add')}
           </button>
         </div>
@@ -320,7 +320,7 @@ export default function AgentChannelsSection({
                   disabled={isLoading}
                 >
                   {isLoading ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <LoaderIcon className="h-3.5 w-3.5 animate-spin" />
                   ) : shouldStop ? t('agentSettings.channels.stop') : t('agentSettings.channels.start')}
                 </button>
               </div>

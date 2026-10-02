@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Globe, ExternalLink as ExternalLinkIcon, ChevronDown } from 'lucide-react';
+import { GlobeIcon, ExternalIcon as ExternalLinkIcon, ChevronDownIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import type { ToolUseSimple, WebSearchInput } from '@/types/chat';
 import ExternalLink from '@/components/ExternalLink';
@@ -102,7 +102,7 @@ export default function WebSearchTool({ tool }: WebSearchToolProps) {
               className="flex items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-[var(--paper-inset)] [&:hover_.result-title]:text-[var(--accent)] [&:hover_.result-icon]:opacity-100"
             >
               {/* Globe icon */}
-              <Globe className="size-4 shrink-0 text-[var(--ink-muted)]" />
+              <GlobeIcon className="size-4 shrink-0 text-[var(--ink-muted)]" />
 
               {/* Title */}
               <span className="result-title flex-1 truncate text-[var(--ink)] transition-colors">
@@ -120,7 +120,7 @@ export default function WebSearchTool({ tool }: WebSearchToolProps) {
               onClick={() => setExpanded(true)}
               className="flex items-center gap-1 px-2 py-1 text-xs text-[var(--ink-muted)] hover:text-[var(--ink)] transition-colors"
             >
-              <ChevronDown className="size-3" />
+              <ChevronDownIcon className="size-3" />
               <span>{t('shell.toolChrome.webSearch.expandRemaining', { count: hiddenCount })}</span>
             </button>
           )}
@@ -150,7 +150,7 @@ export default function WebSearchTool({ tool }: WebSearchToolProps) {
       {/* Loading state if no result yet */}
       {!tool.result && tool.isLoading && (
         <div className="flex items-center gap-2 text-xs text-[var(--ink-muted)] animate-pulse">
-          <Globe className="size-3" />
+          <GlobeIcon className="size-3" />
           <span>{t('shell.toolChrome.webSearch.searchingFor', { query })}</span>
         </div>
       )}

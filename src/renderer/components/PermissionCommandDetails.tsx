@@ -1,4 +1,9 @@
-import { Check, Copy, Folder, Terminal } from 'lucide-react';
+import {
+  CheckIcon,
+  CopyIcon,
+  FolderIcon,
+  TerminalIcon,
+} from '@/components/icons';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -47,7 +52,7 @@ export function PermissionCommandDetails({ command, cwd, description, dialect }:
       <span className="mr-2 text-xs text-[var(--ink-muted)]">{t('shell.permissionPrompt.purpose')}</span>{description}
     </p>}
     {cwd !== undefined && <div className="mt-3 flex min-w-0 items-start gap-2 text-xs text-[var(--ink-muted)]">
-      <Folder className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+      <FolderIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
       <span className="sr-only">{t('shell.permissionPrompt.cwd')}: </span>
       <span data-permission-cwd="" className="min-w-0 break-all font-mono text-[var(--ink-secondary)]">
         {cwd.slice(0, pathSeparator + 1)}<strong className="font-semibold text-[var(--ink)]">{cwd.slice(pathSeparator + 1)}</strong>
@@ -55,9 +60,9 @@ export function PermissionCommandDetails({ command, cwd, description, dialect }:
     </div>}
     <div className="mt-3 min-w-0 overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--code-bg)]">
       <div className="flex items-center justify-between gap-3 px-3 py-1.5 text-xs text-[var(--ink-muted)]">
-        <span className="flex items-center gap-1.5"><Terminal className="size-3.5" aria-hidden="true" />{t('shell.permissionPrompt.command')}</span>
+        <span className="flex items-center gap-1.5"><TerminalIcon className="size-3.5" aria-hidden="true" />{t('shell.permissionPrompt.command')}</span>
         <button type="button" aria-label={t('app:markdown.copy')} onClick={() => void copy()} className="flex items-center gap-1.5 rounded px-1 py-1 hover:text-[var(--ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]">
-          {copyState === 'copied' ? <Check className="size-3.5" aria-hidden="true" /> : <Copy className="size-3.5" aria-hidden="true" />}
+          {copyState === 'copied' ? <CheckIcon className="size-3.5" aria-hidden="true" /> : <CopyIcon className="size-3.5" aria-hidden="true" />}
           <span role="status">{copyState === 'copied' ? t('app:markdown.copied') : copyState === 'failed' ? t('workspaceFiles.common.copyFailed') : t('app:markdown.copy')}</span>
         </button>
       </div>

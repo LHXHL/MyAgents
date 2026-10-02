@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Settings2, Square, Timer, X } from 'lucide-react';
+import {
+  SlidersIcon,
+  StopIcon,
+  TimerIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import type { CronSchedule } from '@/types/cronTask';
@@ -78,7 +83,7 @@ export default function CronTaskStatusBar({
     <div className="flex items-center justify-between gap-3 rounded-t-lg border border-b-0 border-[var(--heartbeat-border)] bg-[var(--heartbeat-bg)] px-3 py-2">
       <div className="flex min-w-0 items-center gap-2">
         <span className="relative shrink-0">
-          <Timer className={`h-4 w-4 text-[var(--heartbeat)] ${mode === 'stopped' ? 'opacity-60' : ''}`} />
+          <TimerIcon className={`h-4 w-4 text-[var(--heartbeat)] ${mode === 'stopped' ? 'opacity-60' : ''}`} />
           {mode === 'executing' && (
             <span className="absolute -right-0.5 -top-0.5 h-2 w-2">
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--heartbeat)] opacity-40" />
@@ -98,7 +103,7 @@ export default function CronTaskStatusBar({
             className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-hover)] hover:text-[var(--heartbeat)]"
             title={t('cron.statusBar.settingsTitle')}
           >
-            <Settings2 className="h-4 w-4" />
+            <SlidersIcon className="h-4 w-4" />
           </button>
         )}
         {mode === 'draft' && onCancel && (
@@ -108,7 +113,7 @@ export default function CronTaskStatusBar({
             className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-hover)] hover:text-[var(--heartbeat)]"
             title={t('cron.statusBar.cancelTitle')}
           >
-            <X className="h-4 w-4" />
+            <CloseIcon className="h-4 w-4" />
           </button>
         )}
         {active && onStop && (
@@ -118,7 +123,7 @@ export default function CronTaskStatusBar({
             className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-[var(--heartbeat)] transition hover:bg-[var(--paper-hover)]"
             title={t('cron.statusBar.stopTitle')}
           >
-            <Square className="h-3.5 w-3.5" />
+            <StopIcon className="h-3.5 w-3.5" />
             {t('cron.statusBar.stopButton')}
           </button>
         )}
@@ -129,7 +134,7 @@ export default function CronTaskStatusBar({
             className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-hover)] hover:text-[var(--heartbeat)]"
             title={t('cron.statusBar.dismissStoppedTitle')}
           >
-            <X className="h-4 w-4" />
+            <CloseIcon className="h-4 w-4" />
           </button>
         )}
       </div>

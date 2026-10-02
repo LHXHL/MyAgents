@@ -20,13 +20,13 @@ describe('TableActions copy feedback', () => {
   it('shows a check only after success, resets after 1500ms, and restarts on repeated copy', async () => {
     render(<StrictMode><TableActions getSnapshot={() => snapshot} /></StrictMode>);
     await clickCopy();
-    expect(copiedButton().querySelector('.lucide-check')).toBeInTheDocument();
+    expect(copiedButton().querySelector('.app-icon-check')).toBeInTheDocument();
     act(() => { vi.advanceTimersByTime(1000); });
     await act(async () => { fireEvent.click(copiedButton()); });
     act(() => { vi.advanceTimersByTime(1000); });
     expect(copiedButton()).toBeInTheDocument();
     act(() => { vi.advanceTimersByTime(500); });
-    expect(copyButton().querySelector('.lucide-copy')).toBeInTheDocument();
+    expect(copyButton().querySelector('.app-icon-copy')).toBeInTheDocument();
     expect(copyRichText).toHaveBeenCalledTimes(2);
   });
 
@@ -36,7 +36,7 @@ describe('TableActions copy feedback', () => {
     render(<TableActions getSnapshot={() => Promise.resolve(snapshot)} />);
     await clickCopy();
     expect(copyButton()).toHaveAttribute('aria-disabled', 'true');
-    expect(copyButton().querySelector('.lucide-loader-circle')).toBeInTheDocument();
+    expect(copyButton().querySelector('.app-icon-loader')).toBeInTheDocument();
     await clickCopy();
     expect(copyRichText).toHaveBeenCalledOnce();
     await act(async () => { rejectWrite(new Error('denied')); });
@@ -52,7 +52,7 @@ describe('TableActions copy feedback', () => {
     await clickCopy();
     vi.mocked(copyRichText).mockRejectedValueOnce(new Error('denied'));
     await act(async () => { fireEvent.click(copiedButton()); });
-    expect(copyButton().querySelector('.lucide-copy')).toBeInTheDocument();
+    expect(copyButton().querySelector('.app-icon-copy')).toBeInTheDocument();
     expect(screen.getByRole('alert')).toBeInTheDocument();
   });
 

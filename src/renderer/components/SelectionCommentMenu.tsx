@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { Quote, Sparkles } from 'lucide-react';
+import { QuoteIcon, CapabilitiesIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { expandAssistantParagraphSelection } from '@/utils/assistantTextSelection';
@@ -205,7 +205,7 @@ const SelectionCommentMenu = memo(function SelectionCommentMenu({
           className="flex items-center gap-1 rounded-md px-2 py-1 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
           onClick={handleQuote}
         >
-          <Quote className="h-3 w-3" />
+          <QuoteIcon className="h-3 w-3" />
           {t('shell.selection.quote')}
         </button>
       )}
@@ -216,7 +216,7 @@ const SelectionCommentMenu = memo(function SelectionCommentMenu({
           className="flex items-center gap-1 rounded-md px-2 py-1 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
           onClick={handleElaborate}
         >
-          <Sparkles className="h-3 w-3" />
+          <CapabilitiesIcon className="h-3 w-3" />
           {t('shell.selection.elaborate')}
         </button>
       )}

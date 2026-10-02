@@ -1,4 +1,4 @@
-import { ChevronRight } from "lucide-react";
+import { ChevronRightIcon } from '@/components/icons';
 import { memo } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import { useTranslation } from "react-i18next";
@@ -101,7 +101,7 @@ const StickyAncestorRow = memo(function StickyAncestorRow({
           }
         }}
       >
-        <ChevronRight className="h-3 w-3 rotate-90 transition-transform" />
+        <ChevronRightIcon className="h-3 w-3 rotate-90 transition-transform" />
       </button>
       <FileIcon name={ancestor.name} nodeKind="directory" expanded />
       <OverflowNameTooltip

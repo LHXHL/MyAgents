@@ -14,7 +14,7 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { Copy, Download, FileText } from 'lucide-react';
+import { CopyIcon, DownloadIcon, DocumentIcon } from '@/components/icons';
 
 import ContextMenu, { type ContextMenuItem } from '@/components/ContextMenu';
 import { useToastOptional } from '@/components/Toast';
@@ -170,20 +170,20 @@ export default function ToolImageAttachment({ attachment }: Props) {
   const contextMenuItems = useMemo((): ContextMenuItem[] => [
     {
       label: t('shell.toolChrome.image.copyImage'),
-      icon: <Copy className="h-4 w-4" />,
+      icon: <CopyIcon className="h-4 w-4" />,
       disabled: urlState.state !== 'ready',
       onClick: copyImage,
     },
     {
       label: t('shell.toolChrome.image.saveAs'),
-      icon: <Download className="h-4 w-4" />,
+      icon: <DownloadIcon className="h-4 w-4" />,
       disabled: urlState.state !== 'ready',
       onClick: saveImageAs,
     },
     { separator: true },
     {
       label: t('shell.toolChrome.image.copyLocalPath'),
-      icon: <FileText className="h-4 w-4" />,
+      icon: <DocumentIcon className="h-4 w-4" />,
       disabled: !localPath,
       onClick: copyLocalPath,
     },

@@ -1,4 +1,4 @@
-import { X } from 'lucide-react';
+import { CloseIcon } from '@/components/icons';
 import { useMemo, useState } from 'react';
 
 import { FileIcon } from '@/components/file-icon';
@@ -128,7 +128,7 @@ export default function AttachmentPreviewList({
                 onClick={() => handleRemove(attachment.id)}
                 className="absolute top-1.5 right-1.5 rounded-full bg-[var(--paper-elevated)]/95 p-1 text-[var(--ink)] shadow-sm transition hover:bg-[var(--paper-elevated)]"
               >
-                <X className="h-3.5 w-3.5" />
+                <CloseIcon className="h-3.5 w-3.5" />
               </button>
             )}
           </div>

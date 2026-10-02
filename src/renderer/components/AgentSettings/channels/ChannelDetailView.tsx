@@ -4,7 +4,13 @@
 // Execution settings belong to Agent defaults and individual Sessions.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, Loader2, Power, PowerOff, Trash2 } from 'lucide-react';
+import {
+  ChevronDownIcon,
+  LoaderIcon,
+  PowerIcon,
+  PowerOffIcon,
+  TrashIcon,
+} from '@/components/icons';
 import QRCode from 'qrcode';
 import telegramIcon from '../../ImSettings/assets/telegram.png';
 import feishuIcon from '../../ImSettings/assets/feishu.jpeg';
@@ -175,7 +181,7 @@ function FeishuPermissionsButton() {
                 onClick={() => setExpanded(!expanded)}
                 className="flex items-center gap-1.5 self-start rounded-lg px-2.5 py-1.5 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
             >
-                <ChevronDown className={`h-3 w-3 transition-transform ${expanded ? '' : '-rotate-90'}`} />
+                <ChevronDownIcon className={`h-3 w-3 transition-transform ${expanded ? '' : '-rotate-90'}`} />
                 {t('agentSettings.channelDetail.feishuPermissionsJson')}
             </button>
             {expanded && (
@@ -723,11 +729,11 @@ export default function ChannelDetailView({
                     } disabled:opacity-50`}
                 >
                     {toggling ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
+                        <LoaderIcon className="h-4 w-4 animate-spin" />
                     ) : shouldStop ? (
-                        <PowerOff className="h-4 w-4" />
+                        <PowerOffIcon className="h-4 w-4" />
                     ) : (
-                        <Power className="h-4 w-4" />
+                        <PowerIcon className="h-4 w-4" />
                     )}
                     {shouldStop ? t('agentSettings.channelDetail.stop') : t('agentSettings.channelDetail.start')}
                 </button>
@@ -765,7 +771,7 @@ export default function ChannelDetailView({
                             </span>
                         )}
                     </div>
-                    <ChevronDown className={`h-4 w-4 text-[var(--ink-muted)] transition-transform ${isCredentialsExpanded ? '' : '-rotate-90'}`} />
+                    <ChevronDownIcon className={`h-4 w-4 text-[var(--ink-muted)] transition-transform ${isCredentialsExpanded ? '' : '-rotate-90'}`} />
                 </button>
                 {isCredentialsExpanded && (
                     <div className="px-5 pb-5">
@@ -808,7 +814,7 @@ export default function ChannelDetailView({
                                 )}
                                 {dualDetailMode === 'qr' && (
                                     <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-[var(--line)] bg-[var(--paper-inset)] p-4">
-                                        {credentialQrStatus === 'loading' && <Loader2 className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />}
+                                        {credentialQrStatus === 'loading' && <LoaderIcon className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />}
                                         {credentialQrStatus === 'waiting' && credentialQrImageUrl && (
                                             <div className="rounded-xl border border-[var(--line)] bg-white p-1">
                                                 <img src={credentialQrImageUrl} alt={t('agentSettings.channelDetail.qrAlt')} className="h-[180px] w-[180px] rounded-lg" />
@@ -953,7 +959,7 @@ export default function ChannelDetailView({
                             </span>
                         )}
                     </div>
-                    <ChevronDown className={`h-4 w-4 text-[var(--ink-muted)] transition-transform ${isBindingExpanded ? '' : '-rotate-90'}`} />
+                    <ChevronDownIcon className={`h-4 w-4 text-[var(--ink-muted)] transition-transform ${isBindingExpanded ? '' : '-rotate-90'}`} />
                 </button>
                 {isBindingExpanded && (
                     <div className="space-y-5 px-5 pb-5">
@@ -990,7 +996,7 @@ export default function ChannelDetailView({
                                         );
                                     })()}
                                     {qrStatus === 'loading' && (
-                                        <Loader2 className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />
+                                        <LoaderIcon className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />
                                     )}
                                     {(qrStatus === 'waiting') && qrImageUrl && (
                                         <div className="rounded-lg border border-[var(--line)] bg-white p-1">
@@ -1075,7 +1081,7 @@ export default function ChannelDetailView({
                                     </span>
                                 )}
                             </div>
-                            <ChevronDown className={`h-4 w-4 text-[var(--ink-muted)] transition-transform ${isGroupsExpanded_ ? '' : '-rotate-90'}`} />
+                            <ChevronDownIcon className={`h-4 w-4 text-[var(--ink-muted)] transition-transform ${isGroupsExpanded_ ? '' : '-rotate-90'}`} />
                         </button>
                         {isGroupsExpanded_ && (
                             <div className="space-y-4 px-5 pb-5">
@@ -1203,7 +1209,7 @@ export default function ChannelDetailView({
                     onClick={() => setShowDeleteConfirm(true)}
                     className="flex items-center gap-2 rounded-lg bg-[var(--error-bg)] px-4 py-2 text-sm font-medium text-[var(--error)] transition-colors hover:brightness-95"
                 >
-                    <Trash2 className="h-4 w-4" />
+                    <TrashIcon className="h-4 w-4" />
                     {t('agentSettings.channelDetail.deleteChannel')}
                 </button>
             </div>

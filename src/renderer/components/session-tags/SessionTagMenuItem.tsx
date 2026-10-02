@@ -1,6 +1,15 @@
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronRight, Loader2, Pencil, Search, Tags, Trash2, X } from 'lucide-react';
+import {
+  CheckIcon,
+  ChevronRightIcon,
+  LoaderIcon,
+  EditIcon,
+  SearchIcon,
+  TagIcon,
+  TrashIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -239,7 +248,7 @@ function SessionTagManager({ open, tags, focusSessionId, onMutationStart, onClos
                         aria-label={t('sessionTags.close')}
                         className="rounded-md p-1.5 text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:opacity-50"
                     >
-                        <X className="h-4 w-4" />
+                        <CloseIcon className="h-4 w-4" />
                     </button>
                 </header>
                 <div className="min-h-0 flex-1 overflow-y-auto p-3">
@@ -280,7 +289,7 @@ function SessionTagManager({ open, tags, focusSessionId, onMutationStart, onClos
                                         onClick={() => { setEditing(tag.name); setNextName(tag.name); setError(null); }}
                                         className="rounded-md p-1.5 text-[var(--ink-muted)] hover:bg-[var(--paper)] hover:text-[var(--ink)]"
                                     >
-                                        <Pencil className="h-3.5 w-3.5" />
+                                        <EditIcon className="h-3.5 w-3.5" />
                                     </button>
                                     <button
                                         type="button"
@@ -288,7 +297,7 @@ function SessionTagManager({ open, tags, focusSessionId, onMutationStart, onClos
                                         onClick={() => setPendingDelete(tag)}
                                         className="rounded-md p-1.5 text-[var(--ink-muted)] hover:bg-[var(--error-bg)] hover:text-[var(--error)]"
                                     >
-                                        <Trash2 className="h-3.5 w-3.5" />
+                                        <TrashIcon className="h-3.5 w-3.5" />
                                     </button>
                                 </>
                             )}
@@ -477,9 +486,9 @@ function SessionTagMenuContent({
         <>
             <MenuItem
                 ref={anchorRef}
-                icon={<Tags className="h-3.5 w-3.5" />}
+                icon={<TagIcon className="h-3.5 w-3.5" />}
                 label={t('sessionTags.addTag')}
-                trailing={<ChevronRight className="h-4 w-4 shrink-0 text-[var(--ink-muted)]" />}
+                trailing={<ChevronRightIcon className="h-4 w-4 shrink-0 text-[var(--ink-muted)]" />}
                 active={open}
                 onClick={() => setOpen((current) => !current)}
             />
@@ -494,7 +503,7 @@ function SessionTagMenuContent({
             >
                 <div className="border-b border-[var(--line-subtle)] p-2">
                     <div className="relative">
-                        <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-[var(--ink-muted)]" />
+                        <SearchIcon className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-[var(--ink-muted)]" />
                         <input
                             ref={inputRef}
                             value={query}
@@ -523,7 +532,7 @@ function SessionTagMenuContent({
                 </div>
                 <div role="menu" aria-label={t('sessionTags.addTag')} className="max-h-64 overflow-y-auto py-1">
                     {loading ? (
-                        <div className="flex justify-center py-6"><Loader2 className="h-4 w-4 animate-spin text-[var(--ink-muted)]" /></div>
+                        <div className="flex justify-center py-6"><LoaderIcon className="h-4 w-4 animate-spin text-[var(--ink-muted)]" /></div>
                     ) : (
                         <>
                             {candidates.map((tag, index) => {
@@ -541,10 +550,10 @@ function SessionTagMenuContent({
                                         className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-45 ${activeIndex === index ? 'bg-[var(--hover-bg)]' : ''}`}
                                     >
                                         <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${checked ? 'border-[var(--accent)] bg-[var(--accent)] text-[var(--on-accent)]' : 'border-[var(--line-strong)]'}`}>
-                                            {checked && <Check className="h-3 w-3" />}
+                                            {checked && <CheckIcon className="h-3 w-3" />}
                                         </span>
                                         <span className="min-w-0 flex-1 truncate">{tag.name}</span>
-                                        {mutating?.toLowerCase() === tag.name.toLowerCase() && <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--ink-muted)]" />}
+                                        {mutating?.toLowerCase() === tag.name.toLowerCase() && <LoaderIcon className="h-3.5 w-3.5 animate-spin text-[var(--ink-muted)]" />}
                                     </button>
                                 );
                             })}
@@ -576,7 +585,7 @@ function SessionTagMenuContent({
                     onClick={() => { setOpen(false); setManagerOpen(true); }}
                     className="flex w-full items-center gap-2 border-t border-[var(--line-subtle)] px-3 py-2 text-left text-sm text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                 >
-                    <Tags className="h-3.5 w-3.5" />
+                    <TagIcon className="h-3.5 w-3.5" />
                     {t('sessionTags.manageTags')}
                 </button>
             </Popover>

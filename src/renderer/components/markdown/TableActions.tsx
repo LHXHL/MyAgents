@@ -1,4 +1,9 @@
-import { Check, Copy, Download, Loader2 } from 'lucide-react';
+import {
+  CheckIcon,
+  CopyIcon,
+  DownloadIcon,
+  LoaderIcon,
+} from '@/components/icons';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import Tip from '../Tip';
@@ -62,10 +67,10 @@ export default function TableActions({ getSnapshot, disabled = false }: {
     // Let native buttons activate without the enclosing editor consuming Enter/Space.
     onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation(); }}>
     <Tip label={copyLabel} position="top"><button type="button" aria-label={copyLabel} disabled={disabled} aria-disabled={disabled || busy !== null} onClick={() => { void run('copy'); }}>
-      {busy === 'copy' ? <Loader2 className="size-3.5 animate-spin" /> : copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+      {busy === 'copy' ? <LoaderIcon className="size-3.5 animate-spin" /> : copied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
     </button></Tip>
     <Tip label={t('markdown.downloadTable')} position="bottom"><button type="button" aria-label={t('markdown.downloadTable')} disabled={disabled} aria-disabled={disabled || busy !== null} onClick={() => { void run('download'); }}>
-      {busy === 'download' ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
+      {busy === 'download' ? <LoaderIcon className="size-3.5 animate-spin" /> : <DownloadIcon className="size-3.5" />}
     </button></Tip>
     {error && <span role="alert" className="markdown-table-error">{t('markdown.tableActionFailed')}</span>}
   </div>;

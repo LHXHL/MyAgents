@@ -3,7 +3,7 @@
  * Extracted from SkillsCommandsList and GlobalSkillsPanel to avoid duplication
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { Loader2, FolderOpen, Link2 } from 'lucide-react';
+import { LoaderIcon, FolderOpenIcon, LinkIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
@@ -74,7 +74,7 @@ export function CreateDialog({
                         disabled={!name.trim() || loading}
                         className="flex items-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-4 py-2 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
                     >
-                        {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+                        {loading && <LoaderIcon className="h-4 w-4 animate-spin" />}
                         {t('agentSettings.common.create')}
                     </button>
                 </div>
@@ -222,7 +222,7 @@ export function NewSkillChooser({
                             className="group flex w-full items-center gap-4 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-4 text-left transition-all hover:border-[var(--line-strong)] hover:shadow-sm"
                         >
                             <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--paper-inset)] transition-colors group-hover:bg-[var(--accent-warm-subtle)]">
-                                <Link2 className="h-6 w-6 text-[var(--ink-muted)]" />
+                                <LinkIcon className="h-6 w-6 text-[var(--ink-muted)]" />
                             </div>
                             <div>
                                 <div className="font-medium text-[var(--ink)]">{t('agentSettings.skillDialogs.importFromUrlTitle')}</div>
@@ -239,7 +239,7 @@ export function NewSkillChooser({
                             className="group flex w-full items-center gap-4 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-4 text-left transition-all hover:border-[var(--line-strong)] hover:shadow-sm"
                         >
                             <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--paper-inset)] transition-colors group-hover:bg-[var(--accent-warm-subtle)]">
-                                <FolderOpen className="h-6 w-6 text-[var(--ink-muted)]" />
+                                <FolderOpenIcon className="h-6 w-6 text-[var(--ink-muted)]" />
                             </div>
                             <div>
                                 <div className="font-medium text-[var(--ink)]">{t('agentSettings.skillDialogs.importFolderTitle')}</div>
@@ -258,7 +258,7 @@ export function NewSkillChooser({
                         >
                             <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--paper-inset)] transition-colors group-hover:bg-[var(--accent-warm-subtle)]">
                                 {syncing ? (
-                                    <Loader2 className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />
+                                    <LoaderIcon className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />
                                 ) : (
                                     <svg className="h-6 w-6 text-[var(--ink-muted)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                                         <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -564,7 +564,7 @@ export function InstallFromUrlDialog({ onInstall, onCancel, onInstalled }: Insta
 
                 {loading && (
                     <div className="mt-4 flex items-center gap-3 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-4 py-3 text-sm text-[var(--ink-muted)]">
-                        <Loader2 className="h-4 w-4 animate-spin" />
+                        <LoaderIcon className="h-4 w-4 animate-spin" />
                         {phase || t('agentSettings.skillDialogs.processing')}
                     </div>
                 )}
@@ -730,7 +730,7 @@ export function InstallFromUrlDialog({ onInstall, onCancel, onInstalled }: Insta
                             disabled={!url.trim() || loading}
                             className="flex items-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-4 py-2 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
                         >
-                            {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+                            {loading && <LoaderIcon className="h-4 w-4 animate-spin" />}
                             {t('agentSettings.skillDialogs.probe')}
                         </button>
                     ) : (
@@ -740,7 +740,7 @@ export function InstallFromUrlDialog({ onInstall, onCancel, onInstalled }: Insta
                             disabled={loading}
                             className="flex items-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-4 py-2 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
                         >
-                            {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+                            {loading && <LoaderIcon className="h-4 w-4 animate-spin" />}
                             {t('agentSettings.skillDialogs.install')}
                         </button>
                     )}

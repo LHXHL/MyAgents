@@ -1,4 +1,4 @@
-import { History, Plus } from 'lucide-react';
+import { HistoryIcon, PlusIcon } from '@/components/icons';
 
 interface TitleBarProps {
   onOpenHistory?: () => void;
@@ -27,7 +27,7 @@ export default function TitleBar({ onOpenHistory, onNewChat }: TitleBarProps) {
                 title="Open chat history"
                 aria-label="Open chat history"
               >
-                <History className="h-4 w-4" />
+                <HistoryIcon className="h-4 w-4" />
                 <span className="hidden sm:inline">Chats</span>
               </button>
             )}
@@ -39,7 +39,7 @@ export default function TitleBar({ onOpenHistory, onNewChat }: TitleBarProps) {
                 title="Start new chat"
                 aria-label="Start new chat"
               >
-                <Plus className="h-4 w-4" />
+                <PlusIcon className="h-4 w-4" />
               </button>
             )}
           </div>

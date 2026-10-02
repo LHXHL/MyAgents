@@ -1,7 +1,7 @@
 // Agent create menu — dropdown for creating a new Agent from Settings page
 // Two options: upgrade existing workspace, create from template
 import { useState, useCallback, useRef, memo } from 'react';
-import { Plus, FolderUp, LayoutTemplate } from 'lucide-react';
+import { PlusIcon, FolderUpIcon, TemplateIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import { Popover } from '@/components/ui/Popover';
@@ -28,7 +28,7 @@ export default memo(function AgentCreateMenu({
         onClick={toggle}
         className="flex items-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-3 py-2 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)]"
       >
-        <Plus className="h-3.5 w-3.5" />
+        <PlusIcon className="h-3.5 w-3.5" />
         {t('agentSettings.createMenu.create')}
       </button>
       <Popover
@@ -44,7 +44,7 @@ export default memo(function AgentCreateMenu({
           onClick={() => { setOpen(false); onUpgradeWorkspace(); }}
           className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm text-[var(--ink)] transition-colors hover:bg-[var(--paper-inset)]"
         >
-          <FolderUp className="h-3.5 w-3.5 text-[var(--ink-subtle)]" />
+          <FolderUpIcon className="h-3.5 w-3.5 text-[var(--ink-subtle)]" />
           {t('agentSettings.createMenu.upgradeWorkspace')}
         </button>
         <button
@@ -53,7 +53,7 @@ export default memo(function AgentCreateMenu({
           onClick={() => { setOpen(false); onCreateFromTemplate(); }}
           className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm text-[var(--ink)] transition-colors hover:bg-[var(--paper-inset)]"
         >
-          <LayoutTemplate className="h-3.5 w-3.5 text-[var(--ink-subtle)]" />
+          <TemplateIcon className="h-3.5 w-3.5 text-[var(--ink-subtle)]" />
           {t('agentSettings.createMenu.fromTemplate')}
         </button>
       </Popover>

@@ -1,5 +1,10 @@
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
-import { X, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
+import {
+  CloseIcon,
+  ZoomInIcon,
+  ZoomOutIcon,
+  UndoIcon,
+} from '@/components/icons';
 import {
     useCallback,
     useEffect,
@@ -319,7 +324,7 @@ export default function ImagePreview({ src, name, onClose }: ImagePreviewProps) 
                         className="rounded-lg p-2 text-white/80 transition-colors hover:bg-white/10 hover:text-white active:scale-[0.96] disabled:opacity-35 disabled:hover:bg-transparent"
                         title={t('imagePreview.zoomOut')}
                     >
-                        <ZoomOut className="h-5 w-5" />
+                        <ZoomOutIcon className="h-5 w-5" />
                     </button>
                     <span className="min-w-[3rem] text-center text-xs tabular-nums text-white/60">{Math.round(view.scale * 100)}%</span>
                     <button
@@ -329,7 +334,7 @@ export default function ImagePreview({ src, name, onClose }: ImagePreviewProps) 
                         className="rounded-lg p-2 text-white/80 transition-colors hover:bg-white/10 hover:text-white active:scale-[0.96] disabled:opacity-35 disabled:hover:bg-transparent"
                         title={t('imagePreview.zoomIn')}
                     >
-                        <ZoomIn className="h-5 w-5" />
+                        <ZoomInIcon className="h-5 w-5" />
                     </button>
                     <button
                         type="button"
@@ -337,7 +342,7 @@ export default function ImagePreview({ src, name, onClose }: ImagePreviewProps) 
                         className="rounded-lg p-2 text-white/80 transition-colors hover:bg-white/10 hover:text-white active:scale-[0.96]"
                         title={t('imagePreview.rotate')}
                     >
-                        <RotateCcw className="h-5 w-5" style={{ transform: 'scaleX(-1)' }} />
+                        <UndoIcon className="h-5 w-5" style={{ transform: 'scaleX(-1)' }} />
                     </button>
                     <button
                         type="button"
@@ -353,7 +358,7 @@ export default function ImagePreview({ src, name, onClose }: ImagePreviewProps) 
                         className="ml-4 rounded-lg p-2 text-white/80 transition-colors hover:bg-white/10 hover:text-white active:scale-[0.96]"
                         title={t('imagePreview.closeEsc')}
                     >
-                        <X className="h-5 w-5" />
+                        <CloseIcon className="h-5 w-5" />
                     </button>
                 </div>
             </div>

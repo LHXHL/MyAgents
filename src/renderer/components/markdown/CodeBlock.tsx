@@ -3,7 +3,7 @@
  * Supports all major programming languages via react-syntax-highlighter
  */
 
-import { Check, Copy } from 'lucide-react';
+import { CheckIcon, CopyIcon } from '@/components/icons';
 import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -50,12 +50,12 @@ export default function CodeBlock({ children, language, className }: CodeBlockPr
                 >
                     {copied ? (
                         <>
-                            <Check className="size-3.5" />
+                            <CheckIcon className="size-3.5" />
                             <span>{t('markdown.copied')}</span>
                         </>
                     ) : (
                         <>
-                            <Copy className="size-3.5" />
+                            <CopyIcon className="size-3.5" />
                             <span>{t('markdown.copy')}</span>
                         </>
                     )}

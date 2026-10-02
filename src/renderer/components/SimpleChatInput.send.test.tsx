@@ -154,13 +154,13 @@ describe('SimpleChatInput send paths', () => {
     });
 
     const modeButton = screen.getByTitle('切换执行模式');
-    expect(modeButton.querySelector('.lucide-lock-open')).toBeInTheDocument();
+    expect(modeButton.querySelector('.app-icon-lock-open')).toBeInTheDocument();
 
     await user.click(modeButton);
 
-    expect(document.querySelector('.lucide-shield-check')).toBeInTheDocument();
-    expect(document.querySelector('.lucide-eye')).toBeInTheDocument();
-    expect(document.querySelectorAll('.lucide-lock-open')).toHaveLength(2);
+    expect(document.querySelector('.app-icon-shield-check')).toBeInTheDocument();
+    expect(document.querySelector('.app-icon-eye')).toBeInTheDocument();
+    expect(document.querySelectorAll('.app-icon-lock-open')).toHaveLength(2);
     expect(screen.queryByText(/⚡|📋|🚀/u)).not.toBeInTheDocument();
   });
 
@@ -169,13 +169,13 @@ describe('SimpleChatInput send paths', () => {
       name: 'Claude Code',
       runtime: 'claude-code' as const,
       modes: CC_PERMISSION_MODES,
-      expectedIcons: ['file-pen-line', 'lock-open', 'ban'],
+      expectedIcons: ['file-edit', 'lock-open', 'ban'],
     },
     {
       name: 'Codex',
       runtime: 'codex' as const,
       modes: CODEX_PERMISSION_MODES,
-      expectedIcons: ['file-pen-line', 'shield-check', 'lock-open'],
+      expectedIcons: ['file-edit', 'shield-check', 'lock-open'],
     },
   ])('maps $name permission boundaries to the shared line icon vocabulary', async ({ runtime, modes, expectedIcons }) => {
     await i18n.changeLanguage('zh-CN');
@@ -185,7 +185,7 @@ describe('SimpleChatInput send paths', () => {
     await user.click(screen.getByTitle('切换执行模式'));
 
     for (const iconName of expectedIcons) {
-      expect(document.querySelector(`.lucide-${iconName}`)).toBeInTheDocument();
+      expect(document.querySelector(`.app-icon-${iconName}`)).toBeInTheDocument();
     }
     if (runtime === 'claude-code') {
       expect(screen.queryByText('Manual')).not.toBeInTheDocument();
@@ -251,7 +251,7 @@ describe('SimpleChatInput send paths', () => {
     await user.click(screen.getByTitle('添加上下文'));
 
     const cronButton = screen.getByRole('button', { name: '定时任务' });
-    expect(cronButton.querySelector('.lucide-timer')).toBeInTheDocument();
+    expect(cronButton.querySelector('.app-icon-timer')).toBeInTheDocument();
     expect(cronButton.closest('.composer-toolbar-menu-enter')).toBeInTheDocument();
 
     await user.click(cronButton);

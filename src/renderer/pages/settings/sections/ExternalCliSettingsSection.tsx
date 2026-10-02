@@ -1,13 +1,13 @@
 import { invoke } from '@tauri-apps/api/core';
 import {
-  Copy,
-  Eye,
-  EyeOff,
-  Loader2,
-  RefreshCw,
-  ShieldAlert,
-  Terminal,
-} from 'lucide-react';
+  CopyIcon,
+  EyeIcon,
+  EyeOffIcon,
+  LoaderIcon,
+  RefreshIcon,
+  ShieldAlertIcon,
+  TerminalIcon,
+} from '@/components/icons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -167,7 +167,7 @@ export function ExternalCliSettingsSection() {
     <div className="mx-auto max-w-3xl space-y-6 px-8 py-8">
       <div>
         <div className="flex items-center gap-2">
-          <Terminal className="h-5 w-5 text-[var(--ink-secondary)]" />
+          <TerminalIcon className="h-5 w-5 text-[var(--ink-secondary)]" />
           <h2 className="text-lg font-semibold text-[var(--ink)]">
             {t('externalCli.title')}
           </h2>
@@ -222,9 +222,9 @@ export function ExternalCliSettingsSection() {
                   )}
                 >
                   {revealed ? (
-                    <EyeOff className="h-4 w-4" />
+                    <EyeOffIcon className="h-4 w-4" />
                   ) : (
-                    <Eye className="h-4 w-4" />
+                    <EyeIcon className="h-4 w-4" />
                   )}
                 </button>
                 <button
@@ -236,7 +236,7 @@ export function ExternalCliSettingsSection() {
                   className="rounded-lg border border-[var(--line)] p-2 text-[var(--ink-muted)] hover:text-[var(--ink)] disabled:opacity-50"
                   aria-label={t('externalCli.copyToken')}
                 >
-                  <Copy className="h-4 w-4" />
+                  <CopyIcon className="h-4 w-4" />
                 </button>
               </div>
               <p className="mt-1 text-xs text-[var(--ink-muted)]">
@@ -250,14 +250,14 @@ export function ExternalCliSettingsSection() {
               className="inline-flex items-center gap-2 rounded-lg border border-[var(--line)] px-3 py-2 text-sm font-medium text-[var(--ink)] hover:bg-[var(--paper-inset)] disabled:opacity-50"
             >
               {busy ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
+                <LoaderIcon className="h-4 w-4 animate-spin" />
               ) : (
-                <RefreshCw className="h-4 w-4" />
+                <RefreshIcon className="h-4 w-4" />
               )}
               {t('externalCli.resetToken')}
             </button>
             <div className="flex gap-2 rounded-lg bg-[var(--warning-bg)] p-3 text-xs text-[var(--warning)]">
-              <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+              <ShieldAlertIcon className="mt-0.5 h-4 w-4 shrink-0" />
               <p>{t('externalCli.securityWarning')}</p>
             </div>
           </div>

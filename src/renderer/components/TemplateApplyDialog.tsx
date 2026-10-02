@@ -15,7 +15,13 @@
  * Same-name files in the workspace are overwritten; everything else is preserved.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Loader2, AlertCircle, FilePlus, FileWarning, ArrowLeft } from 'lucide-react';
+import {
+  LoaderIcon,
+  AlertIcon,
+  FilePlusIcon,
+  FileWarningIcon,
+  ArrowLeftIcon,
+} from '@/components/icons';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 
@@ -153,7 +159,7 @@ export default function TemplateApplyDialog({ agentDir, onClose, onApplied }: Te
                                 className="rounded-md p-1 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                                 title={tSettings('agentSettings.templateApply.back')}
                             >
-                                <ArrowLeft className="h-4 w-4" />
+                                <ArrowLeftIcon className="h-4 w-4" />
                             </button>
                         )}
                         <h2 className="text-lg font-semibold text-[var(--ink)]">
@@ -221,7 +227,7 @@ export default function TemplateApplyDialog({ agentDir, onClose, onApplied }: Te
                             {preview && preview.overwrite.length > 0 && (
                                 <section>
                                     <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-[var(--warning)]">
-                                        <FileWarning className="h-3.5 w-3.5" />
+                                        <FileWarningIcon className="h-3.5 w-3.5" />
                                         {tSettings('agentSettings.templateApply.overwriteFiles', { count: preview.overwrite.length })}
                                     </h3>
                                     <ul className="max-h-[180px] overflow-auto rounded-lg border border-[var(--line)] bg-[var(--paper-inset)] px-3 py-2 font-mono text-xs text-[var(--ink-muted)]">
@@ -232,7 +238,7 @@ export default function TemplateApplyDialog({ agentDir, onClose, onApplied }: Te
                             {preview && preview.add.length > 0 && (
                                 <section>
                                     <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-[var(--ink-secondary)]">
-                                        <FilePlus className="h-3.5 w-3.5" />
+                                        <FilePlusIcon className="h-3.5 w-3.5" />
                                         {tSettings('agentSettings.templateApply.addFiles', { count: preview.add.length })}
                                     </h3>
                                     <ul className="max-h-[180px] overflow-auto rounded-lg border border-[var(--line)] bg-[var(--paper-inset)] px-3 py-2 font-mono text-xs text-[var(--ink-muted)]">
@@ -250,7 +256,7 @@ export default function TemplateApplyDialog({ agentDir, onClose, onApplied }: Te
                 {/* Error */}
                 {error && (
                     <div className="mx-6 mb-2 flex items-start gap-2 rounded-lg border border-[var(--error)]/30 bg-[var(--error-bg)] px-3 py-2 text-xs text-[var(--error)]">
-                        <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+                        <AlertIcon className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
                         <span>{error}</span>
                     </div>
                 )}
@@ -272,7 +278,7 @@ export default function TemplateApplyDialog({ agentDir, onClose, onApplied }: Te
                             disabled={loading || !selectedTemplate}
                             className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-[var(--on-accent)] hover:bg-[var(--accent-warm-hover)] disabled:opacity-50"
                         >
-                            {loading && <Loader2 className="h-3 w-3 animate-spin" />}
+                            {loading && <LoaderIcon className="h-3 w-3 animate-spin" />}
                             {tSettings('agentSettings.templateApply.next')}
                         </button>
                     ) : (
@@ -282,7 +288,7 @@ export default function TemplateApplyDialog({ agentDir, onClose, onApplied }: Te
                             disabled={loading || !preview || (preview.overwrite.length === 0 && preview.add.length === 0)}
                             className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-[var(--on-accent)] hover:bg-[var(--accent-warm-hover)] disabled:opacity-50"
                         >
-                            {loading && <Loader2 className="h-3 w-3 animate-spin" />}
+                            {loading && <LoaderIcon className="h-3 w-3 animate-spin" />}
                             {tSettings('agentSettings.templateApply.confirmApply')}
                         </button>
                     )}

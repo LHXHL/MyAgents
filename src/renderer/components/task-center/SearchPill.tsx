@@ -15,7 +15,7 @@
 
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useRef, useState } from 'react';
-import { Search, X } from 'lucide-react';
+import { SearchIcon, CloseIcon } from '@/components/icons';
 import type { CSSProperties, RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -106,10 +106,10 @@ export function SearchPill({
           onClick={() => localInputRef.current?.focus()}
           className="absolute inset-0 flex items-center justify-center rounded-full transition-colors hover:bg-[var(--hover-bg)] active:scale-[0.97] @[720px]:hidden"
         >
-          <Search className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />
+          <SearchIcon className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />
         </button>
       )}
-      <Search
+      <SearchIcon
         className={`h-3 w-3 shrink-0 ${compactResting ? 'hidden @[720px]:block' : ''}`}
         strokeWidth={1.5}
         aria-hidden
@@ -158,7 +158,7 @@ export function SearchPill({
           aria-label={t('search.clear')}
           className="shrink-0 rounded-full p-0.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-elevated)] hover:text-[var(--ink)]"
         >
-          <X className="h-3 w-3" strokeWidth={1.75} />
+          <CloseIcon className="h-3 w-3" strokeWidth={1.75} />
         </button>
       )}
     </div>

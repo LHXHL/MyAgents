@@ -1,6 +1,17 @@
 import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { BarChart2, Clock, Download, Eye, EyeOff, Loader2, MoreHorizontal, SquareArrowOutUpRight, Star, Trash2 } from 'lucide-react';
+import {
+  ChartIcon,
+  ClockIcon,
+  DownloadIcon,
+  EyeIcon,
+  EyeOffIcon,
+  LoaderIcon,
+  MoreIcon,
+  ExternalIcon,
+  StarIcon,
+  TrashIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import { getSessions, updateSession, type SessionMetadata } from '@/api/sessionClient';
@@ -452,8 +463,8 @@ export default function SessionHistoryDropdown({
                                     : t('shell.history.automationHidden')}
                             >
                                 {showAutomationSessions
-                                    ? <Eye className="h-3.5 w-3.5" />
-                                    : <EyeOff className="h-3.5 w-3.5" />}
+                                    ? <EyeIcon className="h-3.5 w-3.5" />
+                                    : <EyeOffIcon className="h-3.5 w-3.5" />}
                             </button>
                         </Tip>
                     </div>
@@ -530,7 +541,7 @@ export default function SessionHistoryDropdown({
                                             </div>
                                             <div className="mt-1 flex items-center gap-2 text-xs text-[var(--ink-muted)]">
                                                 <span className="flex items-center gap-1">
-                                                    <Clock className="h-3 w-3" />
+                                                    <ClockIcon className="h-3 w-3" />
                                                     {formatTime(session.lastActiveAt, new Date(), locale)}
                                                 </span>
                                                 {hasStats && (
@@ -565,7 +576,7 @@ export default function SessionHistoryDropdown({
                                                         className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper)] hover:text-[var(--ink)]"
                                                         onClick={(e) => handleOpenInNewTab(e, session)}
                                                     >
-                                                        <SquareArrowOutUpRight className="h-3.5 w-3.5" />
+                                                        <ExternalIcon className="h-3.5 w-3.5" />
                                                     </button>
                                                 </Tip>
                                             )}
@@ -586,7 +597,7 @@ export default function SessionHistoryDropdown({
                                                         setMenuSessionId((prev) => (prev === session.id ? null : session.id));
                                                     }}
                                                 >
-                                                    <MoreHorizontal className="h-4 w-4" />
+                                                    <MoreIcon className="h-4 w-4" />
                                                 </button>
                                             </Tip>
                                         </div>
@@ -614,26 +625,26 @@ export default function SessionHistoryDropdown({
                 {menuSession && (
                     <>
                         <MenuItem
-                            icon={<Star className="h-3.5 w-3.5" fill={menuSession.favorite ? 'currentColor' : 'none'} />}
+                            icon={<StarIcon className="h-3.5 w-3.5" fill={menuSession.favorite ? 'currentColor' : 'none'} />}
                             label={menuSession.favorite ? t('shell.history.unfavorite') : t('shell.history.favorite')}
                             onClick={() => { closeMenu(); void handleToggleFavorite(menuSession); }}
                         />
                         <MenuItem
                             icon={exportingId === menuSession.id
-                                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                : <Download className="h-3.5 w-3.5" />}
+                                ? <LoaderIcon className="h-3.5 w-3.5 animate-spin" />
+                                : <DownloadIcon className="h-3.5 w-3.5" />}
                             label={t('shell.history.exportMarkdown')}
                             onClick={() => { closeMenu(); void handleExport(menuSession); }}
                             disabled={exportingId === menuSession.id}
                         />
                         <MenuItem
-                            icon={<BarChart2 className="h-3.5 w-3.5" />}
+                            icon={<ChartIcon className="h-3.5 w-3.5" />}
                             label={t('shell.history.viewStats')}
                             onClick={() => { closeMenu(); handleShowStats(menuSession); }}
                         />
                         <div className="my-1 border-t border-[var(--line-subtle)]" />
                         <MenuItem
-                            icon={<Trash2 className="h-3.5 w-3.5" />}
+                            icon={<TrashIcon className="h-3.5 w-3.5" />}
                             label={t('shell.history.delete')}
                             onClick={() => { closeMenu(); handleDeleteClick(menuSession); }}
                             tone="danger"

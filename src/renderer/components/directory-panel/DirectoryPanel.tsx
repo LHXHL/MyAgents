@@ -1,32 +1,32 @@
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import type { FilePreviewHandle } from '../FilePreviewModal';
 import {
-  AtSign,
-  ChevronUp,
-  ClipboardPaste,
-  Copy,
-  Eye,
-  FilePlus,
-  FolderOpen,
-  FolderPlus,
-  GitBranch,
-  ListChecks,
-  LocateFixed,
-  NotebookPen,
-  Pencil,
-  RefreshCw,
-  Scissors,
-  SlidersHorizontal,
-  Trash2,
-  Undo2,
-  Upload,
-  ExternalLink,
-  TerminalSquare,
-  Search,
-  Globe,
-  PanelRight,
-  X,
-} from "lucide-react";
+  AtIcon,
+  ChevronUpIcon,
+  PasteIcon,
+  CopyIcon,
+  EyeIcon,
+  FilePlusIcon,
+  FolderOpenIcon,
+  FolderPlusIcon,
+  GitBranchIcon,
+  ListChecksIcon,
+  LocateIcon,
+  NotebookIcon,
+  EditIcon,
+  RefreshIcon,
+  ScissorsIcon,
+  SlidersIcon,
+  TrashIcon,
+  UndoIcon,
+  UploadIcon,
+  ExternalIcon,
+  TerminalIcon,
+  SearchIcon,
+  GlobeIcon,
+  PanelRightIcon,
+  CloseIcon,
+} from '@/components/icons';
 import Tip from "@/components/Tip";
 import {
   forwardRef,
@@ -1769,17 +1769,17 @@ const DirectoryPanel = memo(
     ): ContextMenuItem[] => [
       {
         label: t("workspaceFiles.common.preview"),
-        icon: <Eye className="h-4 w-4" />,
+        icon: <EyeIcon className="h-4 w-4" />,
         onClick: () => handlePreviewSearchHit(hit),
       },
       {
         label: t("workspaceFiles.common.revealInTree"),
-        icon: <LocateFixed className="h-4 w-4" />,
+        icon: <LocateIcon className="h-4 w-4" />,
         onClick: () => void handleRevealSearchResultInTree(hit.path),
       },
       {
         label: t("workspaceFiles.common.openContainingFolder"),
-        icon: <FolderOpen className="h-4 w-4" />,
+        icon: <FolderOpenIcon className="h-4 w-4" />,
         onClick: () => void handleOpenSearchResultInFinder(hit.path),
       },
     ];
@@ -2747,21 +2747,21 @@ const DirectoryPanel = memo(
             label: t("workspaceFiles.directory.copyCount", {
               count: selectedNodes.length,
             }),
-            icon: <Copy className="h-4 w-4" />,
+            icon: <CopyIcon className="h-4 w-4" />,
             onClick: () => copySelection("copy"),
           },
           {
             label: t("workspaceFiles.directory.cutCount", {
               count: selectedNodes.length,
             }),
-            icon: <Scissors className="h-4 w-4" />,
+            icon: <ScissorsIcon className="h-4 w-4" />,
             onClick: () => copySelection("cut"),
           },
           {
             label: t("workspaceFiles.directory.openFoldersCount", {
               count: uniqueParentDirs.length,
             }),
-            icon: <FolderOpen className="h-4 w-4" />,
+            icon: <FolderOpenIcon className="h-4 w-4" />,
             onClick: () => {
               for (const dir of uniqueParentDirs) {
                 void handleOpenInFinder(dir);
@@ -2772,7 +2772,7 @@ const DirectoryPanel = memo(
             label: t("workspaceFiles.directory.quoteCount", {
               count: selectedNodes.length,
             }),
-            icon: <AtSign className="h-4 w-4" />,
+            icon: <AtIcon className="h-4 w-4" />,
             onClick: () => {
               onInsertReference?.(selectedNodes.map((n) => n.path));
             },
@@ -2781,7 +2781,7 @@ const DirectoryPanel = memo(
             label: t("workspaceFiles.directory.deleteCount", {
               count: selectedNodes.length,
             }),
-            icon: <Trash2 className="h-4 w-4" />,
+            icon: <TrashIcon className="h-4 w-4" />,
             danger: true,
             onClick: () =>
               setDialog({
@@ -2798,22 +2798,22 @@ const DirectoryPanel = memo(
         return [
           {
             label: t("workspaceFiles.common.newNote"),
-            icon: <NotebookPen className="h-4 w-4" />,
+            icon: <NotebookIcon className="h-4 w-4" />,
             onClick: () => void handleNewNote(""),
           },
           {
             label: t("workspaceFiles.common.newFile"),
-            icon: <FilePlus className="h-4 w-4" />,
+            icon: <FilePlusIcon className="h-4 w-4" />,
             onClick: () => startCreate("", "create-file"),
           },
           {
             label: t("workspaceFiles.common.newFolder"),
-            icon: <FolderPlus className="h-4 w-4" />,
+            icon: <FolderPlusIcon className="h-4 w-4" />,
             onClick: () => startCreate("", "create-folder"),
           },
           {
             label: t("workspaceFiles.common.importFile"),
-            icon: <Upload className="h-4 w-4" />,
+            icon: <UploadIcon className="h-4 w-4" />,
             onClick: () => {
               setImportTargetDir("");
               importInputRef.current?.click();
@@ -2821,7 +2821,7 @@ const DirectoryPanel = memo(
           },
           {
             label: t("workspaceFiles.common.paste"),
-            icon: <ClipboardPaste className="h-4 w-4" />,
+            icon: <PasteIcon className="h-4 w-4" />,
             disabled: !clipboard,
             onClick: () => void pasteFromClipboard(),
           },
@@ -2833,7 +2833,7 @@ const DirectoryPanel = memo(
             // (⌘C/⌘Z are still consumed by their native menu items, so the
             // copy/undo entries below remain their only reachable path).
             label: t("workspaceFiles.common.selectAll"),
-            icon: <ListChecks className="h-4 w-4" />,
+            icon: <ListChecksIcon className="h-4 w-4" />,
             disabled: visibleRows.length === 0,
             onClick: () => setSelectedNodes(visibleRows.map((r) => r.data)),
           },
@@ -2841,13 +2841,13 @@ const DirectoryPanel = memo(
             // ⌘Z is consumed by the native Edit menu on macOS, so the menu
             // is the tree-undo's reachable entry point there.
             label: t("workspaceFiles.common.undoLast"),
-            icon: <Undo2 className="h-4 w-4" />,
+            icon: <UndoIcon className="h-4 w-4" />,
             disabled: undoJournalRef.current.length === 0,
             onClick: () => void executeUndo(),
           },
           {
             label: t("workspaceFiles.common.refresh"),
-            icon: <RefreshCw className="h-4 w-4" />,
+            icon: <RefreshIcon className="h-4 w-4" />,
             onClick: () => {
               refresh();
               onRefreshAll?.();
@@ -2867,22 +2867,22 @@ const DirectoryPanel = memo(
         return [
           {
             label: t("workspaceFiles.common.newNote"),
-            icon: <NotebookPen className="h-4 w-4" />,
+            icon: <NotebookIcon className="h-4 w-4" />,
             onClick: () => void handleNewNote(node.path),
           },
           {
             label: t("workspaceFiles.common.newFile"),
-            icon: <FilePlus className="h-4 w-4" />,
+            icon: <FilePlusIcon className="h-4 w-4" />,
             onClick: () => startCreate(node.path, "create-file"),
           },
           {
             label: t("workspaceFiles.common.newFolder"),
-            icon: <FolderPlus className="h-4 w-4" />,
+            icon: <FolderPlusIcon className="h-4 w-4" />,
             onClick: () => startCreate(node.path, "create-folder"),
           },
           {
             label: t("workspaceFiles.common.importFile"),
-            icon: <Upload className="h-4 w-4" />,
+            icon: <UploadIcon className="h-4 w-4" />,
             onClick: () => {
               setImportTargetDir(node.path);
               importInputRef.current?.click();
@@ -2891,29 +2891,29 @@ const DirectoryPanel = memo(
           { separator: true },
           {
             label: t("workspaceFiles.common.copy"),
-            icon: <Copy className="h-4 w-4" />,
+            icon: <CopyIcon className="h-4 w-4" />,
             onClick: () => copySelection("copy"),
           },
           {
             label: t("workspaceFiles.common.cut"),
-            icon: <Scissors className="h-4 w-4" />,
+            icon: <ScissorsIcon className="h-4 w-4" />,
             onClick: () => copySelection("cut"),
           },
           {
             label: t("workspaceFiles.common.paste"),
-            icon: <ClipboardPaste className="h-4 w-4" />,
+            icon: <PasteIcon className="h-4 w-4" />,
             disabled: !clipboard,
             onClick: () => void pasteFromClipboard(),
           },
           { separator: true },
           {
             label: t("workspaceFiles.common.openContainingFolder"),
-            icon: <FolderOpen className="h-4 w-4" />,
+            icon: <FolderOpenIcon className="h-4 w-4" />,
             onClick: () => handleOpenInFinder(node.path),
           },
           {
             label: t("workspaceFiles.common.copyFolderPath"),
-            icon: <Copy className="h-4 w-4" />,
+            icon: <CopyIcon className="h-4 w-4" />,
             onClick: () =>
               handleCopyPath(
                 node.path,
@@ -2922,24 +2922,24 @@ const DirectoryPanel = memo(
           },
           {
             label: t("workspaceFiles.common.quote"),
-            icon: <AtSign className="h-4 w-4" />,
+            icon: <AtIcon className="h-4 w-4" />,
             onClick: () => onInsertReference?.([node.path]),
           },
           {
             label: t("workspaceFiles.common.rename"),
-            icon: <Pencil className="h-4 w-4" />,
+            icon: <EditIcon className="h-4 w-4" />,
             onClick: () => startRename(node.path),
           },
           {
             label: t("workspaceFiles.common.delete"),
-            icon: <Trash2 className="h-4 w-4" />,
+            icon: <TrashIcon className="h-4 w-4" />,
             danger: true,
             onClick: () => setDialog({ type: "delete", node }),
           },
           { separator: true },
           {
             label: t("workspaceFiles.common.refresh"),
-            icon: <RefreshCw className="h-4 w-4" />,
+            icon: <RefreshIcon className="h-4 w-4" />,
             onClick: () => {
               refresh();
               onRefreshAll?.();
@@ -2950,7 +2950,7 @@ const DirectoryPanel = memo(
         return [
           {
             label: t("workspaceFiles.common.preview"),
-            icon: <Eye className="h-4 w-4" />,
+            icon: <EyeIcon className="h-4 w-4" />,
             disabled: !canPreview,
             onClick: () => {
               if (isImageFile(node.name)) {
@@ -2964,33 +2964,33 @@ const DirectoryPanel = memo(
           },
           {
             label: t("workspaceFiles.common.quote"),
-            icon: <AtSign className="h-4 w-4" />,
+            icon: <AtIcon className="h-4 w-4" />,
             onClick: () => onInsertReference?.([node.path]),
           },
           {
             label: t("workspaceFiles.common.open"),
-            icon: <ExternalLink className="h-4 w-4" />,
+            icon: <ExternalIcon className="h-4 w-4" />,
             onClick: () => handleOpenWithDefault(node.path),
           },
           {
             label: t("workspaceFiles.common.openContainingFolder"),
-            icon: <FolderOpen className="h-4 w-4" />,
+            icon: <FolderOpenIcon className="h-4 w-4" />,
             onClick: () => handleOpenInFinder(node.path),
           },
           { separator: true },
           {
             label: t("workspaceFiles.common.copy"),
-            icon: <Copy className="h-4 w-4" />,
+            icon: <CopyIcon className="h-4 w-4" />,
             onClick: () => copySelection("copy"),
           },
           {
             label: t("workspaceFiles.common.cut"),
-            icon: <Scissors className="h-4 w-4" />,
+            icon: <ScissorsIcon className="h-4 w-4" />,
             onClick: () => copySelection("cut"),
           },
           {
             label: t("workspaceFiles.common.copyFilePath"),
-            icon: <Copy className="h-4 w-4" />,
+            icon: <CopyIcon className="h-4 w-4" />,
             onClick: () =>
               handleCopyPath(
                 node.path,
@@ -2999,12 +2999,12 @@ const DirectoryPanel = memo(
           },
           {
             label: t("workspaceFiles.common.rename"),
-            icon: <Pencil className="h-4 w-4" />,
+            icon: <EditIcon className="h-4 w-4" />,
             onClick: () => startRename(node.path),
           },
           {
             label: t("workspaceFiles.common.delete"),
-            icon: <Trash2 className="h-4 w-4" />,
+            icon: <TrashIcon className="h-4 w-4" />,
             danger: true,
             onClick: () => setDialog({ type: "delete", node }),
           },
@@ -3057,7 +3057,7 @@ const DirectoryPanel = memo(
                           : "text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                   }`}
               >
-                  <Search className="h-4 w-4" />
+                  <SearchIcon className="h-4 w-4" />
               </button>
             </Tip>
             {/* Terminal button */}
@@ -3083,7 +3083,7 @@ const DirectoryPanel = memo(
                       : "text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                   }`}
                 >
-                  <TerminalSquare className="h-4 w-4" />
+                  <TerminalIcon className="h-4 w-4" />
                   {/* Alive indicator dot */}
                   {terminalAlive && (
                     <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--success)]" />
@@ -3103,7 +3103,7 @@ const DirectoryPanel = memo(
                   aria-label={t("workspaceFiles.directory.browser")}
                   className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                 >
-                  <Globe className="h-4 w-4" />
+                  <GlobeIcon className="h-4 w-4" />
                 </button>
               </Tip>
             )}
@@ -3124,7 +3124,7 @@ const DirectoryPanel = memo(
                   }}
                   className="compact-action gap-1 px-2 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                 >
-                  <SlidersHorizontal className="h-4 w-4" />
+                  <SlidersIcon className="h-4 w-4" />
                   {t("workspaceFiles.directory.agentSettings")}
                 </button>
               </Tip>
@@ -3144,7 +3144,7 @@ const DirectoryPanel = memo(
                   aria-label={t("workspaceFiles.directory.collapseWorkspace")}
                   className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                 >
-                  <PanelRight className="h-4 w-4" />
+                  <PanelRightIcon className="h-4 w-4" />
                 </button>
               </Tip>
             )}
@@ -3168,7 +3168,7 @@ const DirectoryPanel = memo(
                     : t("workspaceFiles.directory.foldWorkspace")}
                   className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                 >
-                  <ChevronUp
+                  <ChevronUpIcon
                     className={`h-4 w-4 transition-transform ${isCollapsed ? "rotate-180" : ""}`}
                   />
                 </button>
@@ -3187,7 +3187,7 @@ const DirectoryPanel = memo(
             {isSearchMode ? (
               <div className="flex h-[52px] items-center gap-2 px-4 py-2 border-b border-[var(--line-subtle)] flex-shrink-0">
                   <div className="relative flex-1 flex items-center">
-                      <Search className="absolute left-2.5 h-3.5 w-3.5 text-[var(--ink-muted)]" />
+                      <SearchIcon className="absolute left-2.5 h-3.5 w-3.5 text-[var(--ink-muted)]" />
                       <input
                           ref={searchInputRef}
                           type="text"
@@ -3211,7 +3211,7 @@ const DirectoryPanel = memo(
                           title={t("workspaceFiles.directory.exitSearch")}
                           className="absolute right-2 flex items-center text-[var(--ink-muted)]/50 transition-colors hover:text-[var(--ink)]"
                       >
-                          <X className="h-3.5 w-3.5" />
+                          <CloseIcon className="h-3.5 w-3.5" />
                       </button>
                   </div>
               </div>
@@ -3228,7 +3228,7 @@ const DirectoryPanel = memo(
                     </span>
                     {gitBranch && (
                       <span className="flex max-w-[45%] shrink-0 items-center gap-0.5 overflow-hidden whitespace-nowrap rounded-md bg-[var(--accent-warm-subtle)] px-1.5 py-0.5 text-xs font-medium text-[var(--ink-muted)]">
-                        <GitBranch className="h-3 w-3 shrink-0" />
+                        <GitBranchIcon className="h-3 w-3 shrink-0" />
                         <span className="min-w-0 truncate">{gitBranch}</span>
                       </span>
                     )}

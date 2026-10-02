@@ -1,7 +1,17 @@
 // Channel creation wizard — adapted from ImBotWizard for Agent+Channel architecture.
 // Removes workspace step (Agent already has one), uses cmd_start_agent_channel.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Check, Copy, ExternalLink, Loader2, Plus, Puzzle, Trash2 } from 'lucide-react';
+import {
+  ArrowLeftIcon,
+  ArrowRightIcon,
+  CheckIcon,
+  CopyIcon,
+  ExternalIcon,
+  LoaderIcon,
+  PlusIcon,
+  PluginIcon,
+  TrashIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import QRCode from 'qrcode';
 import { track } from '@/analytics';
@@ -930,7 +940,7 @@ export default function ChannelWizard({
                     onClick={props.onBack}
                     className="flex items-center gap-1.5 rounded-lg border border-[var(--line)] px-4 py-2 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)]"
                 >
-                    <ArrowLeft className="h-4 w-4" />
+                    <ArrowLeftIcon className="h-4 w-4" />
                     {props.backLabel || t('agentSettings.channelWizard.nav.back')}
                 </button>
             ) : (
@@ -948,7 +958,7 @@ export default function ChannelWizard({
             >
                 {props.nextLabel}
                 {props.nextLoading ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <LoaderIcon className="h-4 w-4 animate-spin" />
                 ) : props.nextIcon ? (
                     props.nextIcon
                 ) : null}
@@ -985,7 +995,7 @@ export default function ChannelWizard({
                                             }}
                                         >
                                             {linkText}
-                                            <ExternalLink className="inline h-3 w-3" />
+                                            <ExternalIcon className="inline h-3 w-3" />
                                         </a>
                                         {guideStep.caption.slice(splitIdx + linkText.length)}
                                     </>
@@ -1064,7 +1074,7 @@ export default function ChannelWizard({
                         <div className="flex flex-col items-center gap-4">
                             {qrStatus === 'loading' && (
                                 <div className="flex h-48 w-48 items-center justify-center rounded-xl bg-[var(--paper-inset)]">
-                                    <Loader2 className="h-8 w-8 animate-spin text-[var(--ink-muted)]" />
+                                    <LoaderIcon className="h-8 w-8 animate-spin text-[var(--ink-muted)]" />
                                 </div>
                             )}
                             {(qrStatus === 'waiting' || qrStatus === 'scanned') && qrImageUrl && (
@@ -1072,7 +1082,7 @@ export default function ChannelWizard({
                             )}
                             {qrStatus === 'connected' && (
                                 <div className="flex h-48 w-48 items-center justify-center rounded-xl bg-[var(--accent-success-subtle)]">
-                                    <Check className="h-12 w-12 text-[var(--accent-success)]" />
+                                    <CheckIcon className="h-12 w-12 text-[var(--accent-success)]" />
                                 </div>
                             )}
                             {qrStatus === 'error' && (
@@ -1100,7 +1110,7 @@ export default function ChannelWizard({
                         onNext: handleNext,
                         nextLabel: t('agentSettings.channelWizard.nav.next'),
                         nextDisabled: !hasCredentials,
-                        nextIcon: <ArrowRight className="h-4 w-4" />,
+                        nextIcon: <ArrowRightIcon className="h-4 w-4" />,
                     })}
 
                     {/* Plugin info card */}
@@ -1172,7 +1182,7 @@ export default function ChannelWizard({
                             <div className="mt-5 flex flex-col items-center py-4">
                                 {credentialQrStatus === 'loading' && (
                                     <div className="flex h-[200px] w-[200px] items-center justify-center rounded-xl border border-[var(--line)] bg-white">
-                                        <Loader2 className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />
+                                        <LoaderIcon className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />
                                     </div>
                                 )}
                                 {credentialQrStatus === 'waiting' && credentialQrImageUrl && (
@@ -1186,7 +1196,7 @@ export default function ChannelWizard({
                                 )}
                                 {credentialQrStatus === 'success' && (
                                     <div className="flex h-[200px] w-[200px] flex-col items-center justify-center rounded-xl border border-[var(--success)] bg-[var(--success-bg)]">
-                                        <Check className="h-8 w-8 text-[var(--success)]" />
+                                        <CheckIcon className="h-8 w-8 text-[var(--success)]" />
                                         <p className="mt-2 text-sm font-medium text-[var(--success)]">{t('agentSettings.channelWizard.dual.scanSuccess')}</p>
                                         <p className="mt-1 text-xs text-[var(--success)]">{t('agentSettings.channelWizard.dual.credentialsReceived')}</p>
                                     </div>
@@ -1217,7 +1227,7 @@ export default function ChannelWizard({
                                 )}
                                 {credentialQrStatus === 'idle' && (
                                     <div className="flex h-[200px] w-[200px] items-center justify-center rounded-xl border border-[var(--line)] bg-[var(--paper-inset)]">
-                                        <Loader2 className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />
+                                        <LoaderIcon className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />
                                     </div>
                                 )}
 
@@ -1262,7 +1272,7 @@ export default function ChannelWizard({
                                                 }}
                                             >
                                                 {promoted.setupGuide.credentialHint}
-                                                <ExternalLink className="inline h-3 w-3" />
+                                                <ExternalIcon className="inline h-3 w-3" />
                                             </a>
                                         </>
                                     ) : (
@@ -1310,7 +1320,7 @@ export default function ChannelWizard({
                         onNext: handleNext,
                         nextLabel: t('agentSettings.channelWizard.nav.next'),
                         nextDisabled: openclawHasIncompleteFields || openclawHasIncompleteSchema,
-                        nextIcon: <ArrowRight className="h-4 w-4" />,
+                        nextIcon: <ArrowRightIcon className="h-4 w-4" />,
                     })}
 
                     {/* Plugin info card */}
@@ -1320,7 +1330,7 @@ export default function ChannelWizard({
                                 <img src={promoted.icon} alt={openclawPluginName} className="h-10 w-10 shrink-0 rounded-xl" />
                             ) : (
                                 <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--accent-warm-subtle)]">
-                                    <Puzzle className="h-5 w-5 text-[var(--accent-warm)]" />
+                                    <PluginIcon className="h-5 w-5 text-[var(--accent-warm)]" />
                                 </div>
                             )}
                             <div className="min-w-0 flex-1">
@@ -1346,7 +1356,7 @@ export default function ChannelWizard({
                                             }
                                         }}
                                     >
-                                        <ExternalLink className="h-3 w-3" />
+                                        <ExternalIcon className="h-3 w-3" />
                                         {t('agentSettings.channelWizard.config.projectHomepage')}
                                     </button>
                                 )}
@@ -1376,7 +1386,7 @@ export default function ChannelWizard({
                                         }}
                                     >
                                         {t('agentSettings.channelWizard.config.openPlatform', { name: openclawPluginName })}
-                                        <ExternalLink className="inline h-3 w-3" />
+                                        <ExternalIcon className="inline h-3 w-3" />
                                     </a>
                                     {t('agentSettings.channelWizard.config.createAppSuffix')}
                                 </>
@@ -1412,11 +1422,11 @@ export default function ChannelWizard({
                                                 <div key={i} className="flex items-center gap-2">
                                                     <input type="text" value={field.key} onChange={(e) => { const next = [...openclawCustomFields]; next[i] = { ...next[i], key: e.target.value }; setOpenclawCustomFields(next); }} placeholder={t('agentSettings.channelWizard.config.keyPlaceholder')} className="w-[140px] shrink-0 rounded-[var(--radius-sm)] border border-[var(--line)] bg-transparent px-3 py-2 text-sm text-[var(--ink)] placeholder:text-[var(--ink-muted)] focus:border-[var(--button-primary-bg)] focus:outline-none transition-colors" />
                                                     <input type="text" value={field.value} onChange={(e) => { const next = [...openclawCustomFields]; next[i] = { ...next[i], value: e.target.value }; setOpenclawCustomFields(next); }} placeholder={t('agentSettings.channelWizard.config.valuePlaceholder')} className="min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--line)] bg-transparent px-3 py-2 text-sm text-[var(--ink)] placeholder:text-[var(--ink-muted)] focus:border-[var(--button-primary-bg)] focus:outline-none transition-colors" />
-                                                    <button onClick={() => setOpenclawCustomFields(openclawCustomFields.filter((_, idx) => idx !== i))} className="shrink-0 rounded-lg p-1.5 text-[var(--ink-subtle)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--error)]"><Trash2 className="h-3.5 w-3.5" /></button>
+                                                    <button onClick={() => setOpenclawCustomFields(openclawCustomFields.filter((_, idx) => idx !== i))} className="shrink-0 rounded-lg p-1.5 text-[var(--ink-subtle)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--error)]"><TrashIcon className="h-3.5 w-3.5" /></button>
                                                 </div>
                                             ))}
                                             <button onClick={() => setOpenclawCustomFields([...openclawCustomFields, { key: '', value: '' }])} className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
-                                                <Plus className="h-3.5 w-3.5" />
+                                                <PlusIcon className="h-3.5 w-3.5" />
                                                 {t('agentSettings.channelWizard.config.addConfigItem')}
                                             </button>
                                         </div>
@@ -1428,11 +1438,11 @@ export default function ChannelWizard({
                                         <div key={i} className="flex items-center gap-2">
                                             <input type="text" value={field.key} onChange={(e) => { const next = [...openclawCustomFields]; next[i] = { ...next[i], key: e.target.value }; setOpenclawCustomFields(next); }} placeholder={t('agentSettings.channelWizard.config.keyPlaceholder')} className="w-[140px] shrink-0 rounded-[var(--radius-sm)] border border-[var(--line)] bg-transparent px-3 py-2 text-sm text-[var(--ink)] placeholder:text-[var(--ink-muted)] focus:border-[var(--button-primary-bg)] focus:outline-none transition-colors" />
                                             <input type="text" value={field.value} onChange={(e) => { const next = [...openclawCustomFields]; next[i] = { ...next[i], value: e.target.value }; setOpenclawCustomFields(next); }} placeholder={t('agentSettings.channelWizard.config.valuePlaceholder')} className="min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--line)] bg-transparent px-3 py-2 text-sm text-[var(--ink)] placeholder:text-[var(--ink-muted)] focus:border-[var(--button-primary-bg)] focus:outline-none transition-colors" />
-                                            <button onClick={() => setOpenclawCustomFields(openclawCustomFields.filter((_, idx) => idx !== i))} className="shrink-0 rounded-lg p-1.5 text-[var(--ink-subtle)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--error)]"><Trash2 className="h-3.5 w-3.5" /></button>
+                                            <button onClick={() => setOpenclawCustomFields(openclawCustomFields.filter((_, idx) => idx !== i))} className="shrink-0 rounded-lg p-1.5 text-[var(--ink-subtle)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--error)]"><TrashIcon className="h-3.5 w-3.5" /></button>
                                         </div>
                                     ))}
                                     <button onClick={() => setOpenclawCustomFields([...openclawCustomFields, { key: '', value: '' }])} className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
-                                        <Plus className="h-3.5 w-3.5" />
+                                        <PlusIcon className="h-3.5 w-3.5" />
                                         {t('agentSettings.channelWizard.config.addConfigItem')}
                                     </button>
                                 </div>
@@ -1454,7 +1464,7 @@ export default function ChannelWizard({
                         nextLabel: t('agentSettings.channelWizard.nav.next'),
                         nextDisabled: !hasCredentials || starting,
                         nextLoading: starting,
-                        nextIcon: !starting ? <ArrowRight className="h-4 w-4" /> : undefined,
+                        nextIcon: !starting ? <ArrowRightIcon className="h-4 w-4" /> : undefined,
                     })}
 
                     {isDingtalk ? (
@@ -1564,7 +1574,7 @@ export default function ChannelWizard({
                         onBack: () => setStep(1),
                         onNext: handleNext,
                         nextLabel: t('agentSettings.channelWizard.nav.next'),
-                        nextIcon: <ArrowRight className="h-4 w-4" />,
+                        nextIcon: <ArrowRightIcon className="h-4 w-4" />,
                     })}
 
                     <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
@@ -1614,13 +1624,13 @@ export default function ChannelWizard({
                         onBack: () => setStep(1),
                         onNext: handleNext,
                         nextLabel: t('agentSettings.channelWizard.nav.next'),
-                        nextIcon: <ArrowRight className="h-4 w-4" />,
+                        nextIcon: <ArrowRightIcon className="h-4 w-4" />,
                     })}
 
                     {/* Status strip: credential verified, what's next */}
                     <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-inset)] px-4 py-3">
                         <div className="flex items-center gap-2 text-sm text-[var(--ink)]">
-                            <Check className="h-4 w-4 text-[var(--success)]" />
+                            <CheckIcon className="h-4 w-4 text-[var(--success)]" />
                             <span>
                                 {botUsername
                                     ? t('agentSettings.channelWizard.guides.feishu.credentialVerifiedWithName', { name: botUsername })
@@ -1647,7 +1657,7 @@ export default function ChannelWizard({
                                 className="absolute right-2 top-2 rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                                 title={t('agentSettings.channelWizard.guides.feishu.copyJson')}
                             >
-                                {permJsonCopied ? <Check className="h-3.5 w-3.5 text-[var(--success)]" /> : <Copy className="h-3.5 w-3.5" />}
+                                {permJsonCopied ? <CheckIcon className="h-3.5 w-3.5 text-[var(--success)]" /> : <CopyIcon className="h-3.5 w-3.5" />}
                             </button>
                             <pre className="overflow-x-auto rounded-lg bg-[var(--paper-inset)] p-3 text-xs leading-relaxed text-[var(--ink-muted)]">
                                 {FEISHU_PERMISSIONS_JSON}
@@ -1694,14 +1704,14 @@ export default function ChannelWizard({
                             : t('agentSettings.channelWizard.nav.startChannel'),
                         nextDisabled: starting,
                         nextLoading: starting,
-                        nextIcon: !starting ? <Check className="h-4 w-4" /> : undefined,
+                        nextIcon: !starting ? <CheckIcon className="h-4 w-4" /> : undefined,
                     })}
 
                     {/* Status strip (lark): show credentials + what's next */}
                     {promoted?.pluginId === 'openclaw-lark' && (
                         <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-inset)] px-4 py-3">
                             <div className="flex items-center gap-2 text-sm text-[var(--ink)]">
-                                <Check className="h-4 w-4 text-[var(--success)]" />
+                                <CheckIcon className="h-4 w-4 text-[var(--success)]" />
                                 <span>
                                     {isDualConfig && dualConfigMode === 'qr'
                                         ? t('agentSettings.channelWizard.openclaw.larkBotProvisioned')
@@ -1734,7 +1744,7 @@ export default function ChannelWizard({
                                         className="absolute right-2 top-2 rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                                         title={t('agentSettings.channelWizard.guides.feishu.copyJson')}
                                     >
-                                        {permJsonCopied ? <Check className="h-3.5 w-3.5 text-[var(--success)]" /> : <Copy className="h-3.5 w-3.5" />}
+                                        {permJsonCopied ? <CheckIcon className="h-3.5 w-3.5 text-[var(--success)]" /> : <CopyIcon className="h-3.5 w-3.5" />}
                                     </button>
                                     <pre className="overflow-x-auto rounded-lg bg-[var(--paper-inset)] p-3 text-xs leading-relaxed text-[var(--ink-muted)]">
                                         {FEISHU_PERMISSIONS_JSON}
@@ -1794,7 +1804,7 @@ export default function ChannelWizard({
                                         <img src={promoted.icon} alt={openclawPluginName} className="h-8 w-8 shrink-0 rounded-lg" />
                                     ) : (
                                         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--accent-warm-subtle)]">
-                                            <Puzzle className="h-4 w-4 text-[var(--accent-warm)]" />
+                                            <PluginIcon className="h-4 w-4 text-[var(--accent-warm)]" />
                                         </div>
                                     )}
                                     <div>
@@ -1831,7 +1841,7 @@ export default function ChannelWizard({
                         onBack: isQrLogin ? undefined : () => setStep((isFeishu || isDingtalk || isOpenClaw) ? 2 : 1),
                         onNext: handleComplete,
                         nextLabel: t('agentSettings.channelWizard.nav.finish'),
-                        nextIcon: <Check className="h-4 w-4" />,
+                        nextIcon: <CheckIcon className="h-4 w-4" />,
                     })}
 
                     {(isFeishu || isDingtalk || (isOpenClaw && !isQrLogin)) ? (

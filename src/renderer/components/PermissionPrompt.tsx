@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { ShieldAlert, Terminal, X, Check, CheckCheck } from 'lucide-react';
+import {
+  ShieldAlertIcon,
+  TerminalIcon,
+  CloseIcon,
+  CheckIcon,
+  CheckCheckIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import type { PermissionOperationDisplay, PermissionReview } from '../../shared/types/runtime';
 import type { ToolPermissionHints } from '../../shared/types/toolPermission';
@@ -172,7 +178,7 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
                 )}
 
                 {commandDisplay ? <div className="flex min-w-0 items-center gap-2">
-                    <Terminal className="size-4 shrink-0 text-[var(--warning)]" aria-hidden="true" />
+                    <TerminalIcon className="size-4 shrink-0 text-[var(--warning)]" aria-hidden="true" />
                     <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-3 gap-y-1">
                         <h3 className="text-sm font-semibold text-[var(--ink)]">{t('shell.permissionPrompt.commandTitle', { shell: commandDisplay.dialect === 'pwsh' ? 'PowerShell' : 'Bash' })}</h3>
                         {actor && <span className="min-w-0 break-all text-xs text-[var(--ink-muted)]">{actor.origin === 'root' ? t('shell.permissionPrompt.rootAgent') : `${t('shell.permissionPrompt.childAgent')} · ${actor.agentId}`}</span>}
@@ -182,7 +188,7 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
                     </span>
                 </div> : <div className="flex items-center gap-2.5">
                     <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[var(--warning)]/15">
-                        <ShieldAlert className="h-4.5 w-4.5 text-[var(--warning)]" />
+                        <ShieldAlertIcon className="h-4.5 w-4.5 text-[var(--warning)]" />
                     </div>
                     <div className="flex-1 min-w-0">
                         <div className="text-sm font-semibold text-[var(--ink)]">{t(sandboxEscalation ? 'shell.permissionPrompt.sandboxTitle' : 'shell.permissionPrompt.title')}</div>
@@ -233,7 +239,7 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
                         disabled={isResponding}
                         className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:opacity-50 ${commandDisplay ? 'text-sm' : 'border border-[var(--line)] text-xs hover:border-[var(--line-strong)]'}`}
                     >
-                        {!commandDisplay && <X className="size-3.5" />}
+                        {!commandDisplay && <CloseIcon className="size-3.5" />}
                         <span>{t('shell.permissionPrompt.deny')}</span>
                     </button>
 
@@ -245,7 +251,7 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
                         disabled={isResponding || awaitingDetails}
                         className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 font-medium transition-colors disabled:opacity-50 ${commandDisplay ? 'border-[var(--line)] text-sm text-[var(--ink-secondary)] hover:bg-[var(--paper-inset)]' : 'border-[var(--warning)]/20 bg-[var(--warning)]/10 text-xs text-[var(--warning)] hover:bg-[var(--warning)]/15'}`}
                     >
-                        {!commandDisplay && <CheckCheck className="size-3.5" />}
+                        {!commandDisplay && <CheckCheckIcon className="size-3.5" />}
                         <span>{t('shell.permissionPrompt.alwaysAllow')}</span>
                     </button>}
 
@@ -255,7 +261,7 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
                         disabled={isResponding || awaitingDetails}
                         className={`flex items-center gap-1.5 rounded-lg bg-[var(--warning)] px-3 py-1.5 font-medium text-[var(--on-warning)] transition-colors hover:brightness-110 disabled:opacity-50 ${commandDisplay ? 'text-sm' : 'text-xs'}`}
                     >
-                        <Check className="size-3.5" />
+                        <CheckIcon className="size-3.5" />
                         <span>{t(commandDisplay || sandboxEscalation ? 'shell.permissionPrompt.allowOnce' : 'shell.permissionPrompt.allow')}</span>
                     </button>
                 </div>

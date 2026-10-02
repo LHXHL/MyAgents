@@ -1,4 +1,14 @@
-import { AlertCircle, Check, Copy, ExternalLink, Link, Loader2, RefreshCw, Unlink, X } from 'lucide-react';
+import {
+  AlertIcon,
+  CheckIcon,
+  CopyIcon,
+  ExternalIcon,
+  LinkIcon,
+  LoaderIcon,
+  RefreshIcon,
+  UnlinkIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -307,7 +317,7 @@ export default function GrokSubscriptionProvider({ onAuthChanged }: GrokSubscrip
                   title={t('providers.reverify')}
                   className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-wait disabled:opacity-50"
                 >
-                  <RefreshCw className={`h-4 w-4 ${busy ? 'animate-spin' : ''}`} />
+                  <RefreshIcon className={`h-4 w-4 ${busy ? 'animate-spin' : ''}`} />
                 </button>
                 <button
                   type="button"
@@ -316,7 +326,7 @@ export default function GrokSubscriptionProvider({ onAuthChanged }: GrokSubscrip
                   title={t('providers.grok.logout')}
                   className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-wait disabled:opacity-50"
                 >
-                  <Unlink className="h-4 w-4" />
+                  <UnlinkIcon className="h-4 w-4" />
                 </button>
               </>
             )}
@@ -327,7 +337,7 @@ export default function GrokSubscriptionProvider({ onAuthChanged }: GrokSubscrip
                 disabled={busy || loadingStatus}
                 className="flex items-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-60"
               >
-                {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Link className="h-3.5 w-3.5" />}
+                {busy ? <LoaderIcon className="h-3.5 w-3.5 animate-spin" /> : <LinkIcon className="h-3.5 w-3.5" />}
                 {t('providers.login')}
               </button>
             )}
@@ -347,13 +357,13 @@ export default function GrokSubscriptionProvider({ onAuthChanged }: GrokSubscrip
                 <p className="mt-1 text-sm text-[var(--ink-muted)]">{t('providers.grok.loginDescription')}</p>
               </div>
               <button type="button" aria-label={t('providers.grok.close')} onClick={closeDialog} className="rounded-lg p-1.5 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
-                <X className="h-4 w-4" />
+                <CloseIcon className="h-4 w-4" />
               </button>
             </div>
 
             {!loginView && !operationError && (
               <div className="flex items-center justify-center gap-2 py-10 text-sm text-[var(--ink-muted)]">
-                <Loader2 className="h-4 w-4 animate-spin" />
+                <LoaderIcon className="h-4 w-4 animate-spin" />
                 {t('providers.grok.preparingLogin')}
               </div>
             )}
@@ -361,7 +371,7 @@ export default function GrokSubscriptionProvider({ onAuthChanged }: GrokSubscrip
             {loginFailed && (
               <div className="mt-5 rounded-xl border border-[var(--error)] bg-[var(--error-bg)] p-4">
                 <div className="flex items-center gap-2 text-sm font-medium text-[var(--error)]">
-                  <AlertCircle className="h-4 w-4" />
+                  <AlertIcon className="h-4 w-4" />
                   {t('providers.grok.loginFailed')}
                 </div>
                 <p className="mt-2 break-words text-sm text-[var(--ink-muted)]">
@@ -383,8 +393,8 @@ export default function GrokSubscriptionProvider({ onAuthChanged }: GrokSubscrip
                 <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-inset)] p-4">
                   <div className="flex items-center gap-2 text-sm font-medium text-[var(--ink)]">
                     {loginView.status === 'validating'
-                      ? <Loader2 className="h-4 w-4 animate-spin text-[var(--info)]" />
-                      : <ExternalLink className="h-4 w-4 text-[var(--info)]" />}
+                      ? <LoaderIcon className="h-4 w-4 animate-spin text-[var(--info)]" />
+                      : <ExternalIcon className="h-4 w-4 text-[var(--info)]" />}
                     {loginView.status === 'validating' ? t('providers.grok.validating') : t('providers.grok.browserOpened')}
                   </div>
                   {loginView.userCode && (
@@ -393,7 +403,7 @@ export default function GrokSubscriptionProvider({ onAuthChanged }: GrokSubscrip
                       <div className="mt-1 flex items-center gap-2">
                         <code className="flex-1 rounded-lg bg-[var(--paper)] px-3 py-2 text-lg font-semibold tracking-widest text-[var(--ink)]">{loginView.userCode}</code>
                         <button type="button" onClick={() => { void copyPlainText(loginView.userCode ?? '').catch(error => console.warn('[Grok] Failed to copy device code:', error)); }} className="rounded-lg p-2 text-[var(--ink-muted)] hover:bg-[var(--paper)] hover:text-[var(--ink)]" title={t('providers.grok.copyCode')}>
-                          <Copy className="h-4 w-4" />
+                          <CopyIcon className="h-4 w-4" />
                         </button>
                       </div>
                     </div>
@@ -408,7 +418,7 @@ export default function GrokSubscriptionProvider({ onAuthChanged }: GrokSubscrip
                         {loginUrl}
                       </button>
                       <button type="button" onClick={() => { void copyPlainText(loginUrl).catch(error => console.warn('[Grok] Failed to copy login URL:', error)); }} className="rounded-lg border border-[var(--line)] p-2 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]" title={t('providers.grok.copyUrl')}>
-                        <Copy className="h-4 w-4" />
+                        <CopyIcon className="h-4 w-4" />
                       </button>
                     </div>
                   </div>
@@ -416,7 +426,7 @@ export default function GrokSubscriptionProvider({ onAuthChanged }: GrokSubscrip
 
                 <div className="flex items-center justify-between gap-3 border-t border-[var(--line)] pt-4">
                   <span className="flex items-center gap-1.5 text-xs text-[var(--ink-muted)]">
-                    {loginView.status === 'waiting' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                    {loginView.status === 'waiting' ? <LoaderIcon className="h-3.5 w-3.5 animate-spin" /> : <CheckIcon className="h-3.5 w-3.5" />}
                     {loginView.status === 'waiting' ? t('providers.grok.waitingForLogin') : t('providers.grok.validating')}
                     {loginView.status === 'waiting' && remainingSeconds > 0 && (
                       <span>· {t('providers.grok.expiresIn', { time: remainingLabel })}</span>

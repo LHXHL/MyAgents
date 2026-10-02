@@ -90,9 +90,9 @@ describe('App Shell chrome contract', () => {
       directory.indexOf('{/* Collapsible content'),
     );
 
-    expect(chat).toContain('<PanelRight className="h-4 w-4" />');
+    expect(chat).toContain('<PanelRightIcon className="h-4 w-4" />');
     expect(chat).not.toContain('PanelRightOpen');
-    expect(directory).toContain('<PanelRight className="h-4 w-4" />');
+    expect(directory).toContain('<PanelRightIcon className="h-4 w-4" />');
     expect(directory).not.toContain('PanelRightClose');
     expect(
       rightActions.indexOf('workspaceFiles.directory.agentSettings'),
@@ -152,9 +152,9 @@ describe('App Shell chrome contract', () => {
     );
 
     expect(newSessionAction).toContain(
-      '<MessageSquarePlus className="h-3.5 w-3.5 flex-shrink-0" />',
+      '<ComposeIcon className="h-3.5 w-3.5 flex-shrink-0" />',
     );
-    expect(newSessionAction).not.toContain('<Plus ');
+    expect(newSessionAction).not.toContain('<PlusIcon ');
   });
 
   it('gates the legacy Chat history entry behind its default-off developer setting', () => {

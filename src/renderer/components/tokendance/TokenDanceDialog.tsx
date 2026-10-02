@@ -1,6 +1,6 @@
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useEffect, useId, useRef, type ReactNode } from 'react';
-import { X } from 'lucide-react';
+import { CloseIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import OverlayBackdrop from '../OverlayBackdrop';
 import { useCloseLayer } from '../../hooks/useCloseLayer';
@@ -97,7 +97,7 @@ export function TokenDanceDialog({
             onClick={onClose}
             aria-label={t('actions.close')}
           >
-            <X className="h-4 w-4" />
+            <CloseIcon className="h-4 w-4" />
           </button>
         </header>
         <div className="space-y-5 overflow-y-auto px-6 py-5">{children}</div>

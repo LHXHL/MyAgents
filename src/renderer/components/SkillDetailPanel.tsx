@@ -5,7 +5,17 @@
  * Uses Tab-scoped API when in Tab context (WorkspaceConfigPanel),
  * falls back to global API when not in Tab context (GlobalSkillsPanel).
  */
-import { Save, FolderOpen, Loader2, ChevronDown, ChevronUp, Trash2, Edit2, X, Check } from 'lucide-react';
+import {
+  SaveIcon,
+  FolderOpenIcon,
+  LoaderIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
+  TrashIcon,
+  EditIcon,
+  CloseIcon,
+  CheckIcon,
+} from '@/components/icons';
 import { useCallback, useEffect, useState, useImperativeHandle, forwardRef, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -381,7 +391,7 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, SkillDetailPanelProps>(
         if (loading) {
             return (
                 <div className="flex h-full items-center justify-center">
-                    <Loader2 className="h-8 w-8 animate-spin text-[var(--ink-muted)]" />
+                    <LoaderIcon className="h-8 w-8 animate-spin text-[var(--ink-muted)]" />
                 </div>
             );
         }
@@ -432,7 +442,7 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, SkillDetailPanelProps>(
                                 className="flex-shrink-0 rounded p-0.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:opacity-50 disabled:cursor-not-allowed"
                                 title={pathChanged ? t('resourceDetail.common.openAfterSave') : t('resourceDetail.common.openLocation')}
                             >
-                                <FolderOpen className="h-3.5 w-3.5" />
+                                <FolderOpenIcon className="h-3.5 w-3.5" />
                             </button>
                         </div>
                     </div>
@@ -444,7 +454,7 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, SkillDetailPanelProps>(
                                     onClick={() => setShowDeleteConfirm(true)}
                                     className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-[var(--error)] hover:bg-[var(--error-bg)]"
                                 >
-                                    <Trash2 className="h-4 w-4" />
+                                    <TrashIcon className="h-4 w-4" />
                                     {t('resourceDetail.common.delete')}
                                 </button>
                                 <button
@@ -452,7 +462,7 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, SkillDetailPanelProps>(
                                     onClick={handleCancel}
                                     className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]"
                                 >
-                                    <X className="h-4 w-4" />
+                                    <CloseIcon className="h-4 w-4" />
                                     {t('resourceDetail.common.cancel')}
                                 </button>
                                 <button
@@ -461,7 +471,7 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, SkillDetailPanelProps>(
                                     disabled={saving}
                                     className="flex items-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-4 py-1.5 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
                                 >
-                                    {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                                    {saving ? <LoaderIcon className="h-4 w-4 animate-spin" /> : <SaveIcon className="h-4 w-4" />}
                                     {t('resourceDetail.common.save')}
                                 </button>
                             </div>
@@ -472,7 +482,7 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, SkillDetailPanelProps>(
                                 onClick={() => handleEdit('name')}
                                 className="flex items-center gap-1.5 rounded-lg bg-[var(--button-dark-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-dark-text)] transition-colors hover:bg-[var(--button-dark-bg-hover)]"
                             >
-                                <Edit2 className="h-4 w-4" />
+                                <EditIcon className="h-4 w-4" />
                                 {t('resourceDetail.common.edit')}
                             </button>
                         ) : null}
@@ -589,7 +599,7 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, SkillDetailPanelProps>(
                             onClick={() => setShowAdvanced(!showAdvanced)}
                             className="flex items-center gap-2 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:text-[var(--ink)]"
                         >
-                            {showAdvanced ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                            {showAdvanced ? <ChevronUpIcon className="h-4 w-4" /> : <ChevronDownIcon className="h-4 w-4" />}
                             {t('resourceDetail.skill.advancedSettings')}
                         </button>
 
@@ -620,7 +630,7 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, SkillDetailPanelProps>(
                                                         ? 'border-[var(--accent)] bg-[var(--accent)]'
                                                         : 'border-[var(--ink-muted)]/50'
                                                 }`}>
-                                                    {invocationMode === option.value && <Check className="h-2.5 w-2.5 text-[var(--on-accent)]" />}
+                                                    {invocationMode === option.value && <CheckIcon className="h-2.5 w-2.5 text-[var(--on-accent)]" />}
                                                 </span>
                                                 <span>{option.label}</span>
                                             </button>
@@ -674,7 +684,7 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, SkillDetailPanelProps>(
                                         <span className={context ? 'text-[var(--ink)]' : 'text-[var(--ink-muted)]'}>
                                             {context === 'fork' ? t('resourceDetail.skill.contextFork') : t('resourceDetail.skill.contextDefault')}
                                         </span>
-                                        <ChevronDown className="h-4 w-4 text-[var(--ink-muted)]" />
+                                        <ChevronDownIcon className="h-4 w-4 text-[var(--ink-muted)]" />
                                     </button>
                                     <Popover
                                         open={showContextMenu && isEditing}
@@ -703,7 +713,7 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, SkillDetailPanelProps>(
                                                     <div className="font-medium">{option.label}</div>
                                                     <div className="text-xs text-[var(--ink-muted)]">{option.desc}</div>
                                                 </div>
-                                                {context === option.value && <Check className="h-4 w-4" />}
+                                                {context === option.value && <CheckIcon className="h-4 w-4" />}
                                             </button>
                                         ))}
                                     </Popover>
@@ -734,7 +744,7 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, SkillDetailPanelProps>(
                                             {agent === 'general-purpose' && t('resourceDetail.skill.agentGeneral')}
                                             {!agent && t('resourceDetail.skill.agentDefault')}
                                         </span>
-                                        <ChevronDown className="h-4 w-4 text-[var(--ink-muted)]" />
+                                        <ChevronDownIcon className="h-4 w-4 text-[var(--ink-muted)]" />
                                     </button>
                                     <Popover
                                         open={showAgentMenu && isEditing}
@@ -765,7 +775,7 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, SkillDetailPanelProps>(
                                                     <div className="font-medium">{option.label}</div>
                                                     <div className="text-xs text-[var(--ink-muted)]">{option.desc}</div>
                                                 </div>
-                                                {agent === option.value && <Check className="h-4 w-4" />}
+                                                {agent === option.value && <CheckIcon className="h-4 w-4" />}
                                             </button>
                                         ))}
                                     </Popover>

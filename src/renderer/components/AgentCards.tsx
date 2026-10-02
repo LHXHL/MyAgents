@@ -1,7 +1,7 @@
 /**
  * AgentCards - Reusable agent card components for list views
  */
-import { Bot } from 'lucide-react';
+import { HelperIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import type { AgentItem } from '../../shared/agentTypes';
@@ -22,7 +22,7 @@ export function AgentCard({ agent, onClick }: { agent: AgentItem; onClick: () =>
             onClick={onClick}
         >
             <div className="flex items-center gap-2">
-                <Bot data-capability-type-icon="agent" className="h-3.5 w-3.5 shrink-0 text-violet-500" />
+                <HelperIcon data-capability-type-icon="agent" className="h-3.5 w-3.5 shrink-0 text-violet-500" />
                 <h4 className="min-w-0 flex-1 truncate text-sm font-semibold text-[var(--ink)]">
                     {agent.name}
                 </h4>

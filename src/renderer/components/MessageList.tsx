@@ -1,5 +1,10 @@
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
-import { AlertCircle, CheckCircle, Loader2, X } from 'lucide-react';
+import {
+  AlertIcon,
+  SuccessIcon,
+  LoaderIcon,
+  CloseIcon,
+} from '@/components/icons';
 import React, {
   createContext,
   memo,
@@ -228,7 +233,7 @@ const StatusTimer = memo(function StatusTimer({
           class/style removal inside content-visibility:hidden, retaining the
           old CSS animation until the subtree becomes renderable again. */}
       <span className="h-3 w-3 shrink-0" aria-hidden="true">
-        {canPresent && <Loader2 className="h-full w-full animate-spin" />}
+        {canPresent && <LoaderIcon className="h-full w-full animate-spin" />}
       </span>
       <span className="min-w-0 truncate">{displayText}</span>
     </div>
@@ -266,7 +271,7 @@ const SystemNoticeRow = memo(function SystemNoticeRow({
 }) {
   const { t } = useTranslation('chat');
   const isError = notice.level === 'error';
-  const Icon = isError ? AlertCircle : CheckCircle;
+  const Icon = isError ? AlertIcon : SuccessIcon;
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--ink-muted)]">
       <Icon
@@ -280,7 +285,7 @@ const SystemNoticeRow = memo(function SystemNoticeRow({
           className="rounded p-0.5 text-[var(--ink-subtle)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink-muted)]"
           title={t('shell.common.close')}
         >
-          <X className="h-3 w-3" />
+          <CloseIcon className="h-3 w-3" />
         </button>
       )}
     </div>

@@ -1,5 +1,16 @@
 
-import { AlertCircle, Brain, ChevronDown, Image as ImageIcon, Loader2, XCircle, StopCircle, Copy, Check, Download } from 'lucide-react';
+import {
+  AlertIcon,
+  BrainIcon,
+  ChevronDownIcon,
+  ImageIcon,
+  LoaderIcon,
+  XCircleIcon,
+  StopCircleIcon,
+  CopyIcon,
+  CheckIcon,
+  DownloadIcon,
+} from '@/components/icons';
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -269,20 +280,20 @@ const ProcessRow = memo(function ProcessRow({
             mainLabel = elapsedSec > 0 ?
                 t('shell.toolChrome.thinking.activeWithSeconds', { seconds: elapsedSec })
                 : t('shell.toolChrome.thinking.active');
-            icon = <Loader2 className="size-4 animate-spin" />;
+            icon = <LoaderIcon className="size-4 animate-spin" />;
         } else if (block.isFailed) {
             mainLabel = durationSec > 0 ?
                 t('shell.toolChrome.thinking.failedWithSeconds', { seconds: durationSec })
                 : t('shell.toolChrome.thinking.failed');
-            icon = <XCircle className="size-4 text-[var(--error)]" />;
+            icon = <XCircleIcon className="size-4 text-[var(--error)]" />;
         } else if (block.isStopped) {
             mainLabel = durationSec > 0 ?
                 t('shell.toolChrome.thinking.stoppedWithSeconds', { seconds: durationSec })
                 : t('shell.toolChrome.thinking.stopped');
-            icon = <StopCircle className="size-4 text-[var(--warning)]" />;
+            icon = <StopCircleIcon className="size-4 text-[var(--warning)]" />;
         } else {
             mainLabel = t('shell.toolChrome.thinking.completedWithSeconds', { seconds: Math.max(durationSec, 1) });
-            icon = <Brain className="size-4" />;
+            icon = <BrainIcon className="size-4" />;
         }
     } else if (isTool && block.tool) {
         const config = getToolBadgeConfig(block.tool.name);
@@ -296,13 +307,13 @@ const ProcessRow = memo(function ProcessRow({
             // above: parallel Task/Agent dispatches that aren't the last
             // block also need the spinner so the icon stays coherent with
             // the dot and the detail panel's "Agent is running" badge.
-            icon = <Loader2 className="size-4 animate-spin" />;
+            icon = <LoaderIcon className="size-4 animate-spin" />;
         } else if (subagentLifecycleStatus === 'failed' || block.tool.isFailed) {
-            icon = <XCircle className="size-4 text-[var(--error)]" />;
+            icon = <XCircleIcon className="size-4 text-[var(--error)]" />;
         } else if (subagentLifecycleStatus === 'interrupted' || block.tool.isStopped) {
-            icon = <StopCircle className="size-4 text-[var(--warning)]" />;
+            icon = <StopCircleIcon className="size-4 text-[var(--warning)]" />;
         } else if (block.tool.isError) {
-            icon = <AlertCircle className="size-4 text-[var(--error)]" />;
+            icon = <AlertIcon className="size-4 text-[var(--error)]" />;
         } else {
             icon = config.icon;
         }
@@ -401,7 +412,7 @@ const ProcessRow = memo(function ProcessRow({
 
                 {/* Chevron */}
                 {hasContent && (
-                    <ChevronDown className={`size-4 text-[var(--ink-muted)] transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''
+                    <ChevronDownIcon className={`size-4 text-[var(--ink-muted)] transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''
                         }`} />
                 )}
             </button>
@@ -433,7 +444,7 @@ const ProcessRow = memo(function ProcessRow({
                                                         aria-label={t('shell.toolChrome.thinking.copyAria')}
                                                         onClick={handleCopyThinking}
                                                         className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
-                                                        {thinkingCopied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+                                                        {thinkingCopied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
                                                     </button>
                                                 </Tip>
                                                 <Tip label={t('shell.toolChrome.common.exportMarkdown')}>
@@ -441,7 +452,7 @@ const ProcessRow = memo(function ProcessRow({
                                                         aria-label={t('shell.toolChrome.thinking.exportAria')}
                                                         onClick={handleExportThinking}
                                                         className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
-                                                        <Download className="size-3.5" />
+                                                        <DownloadIcon className="size-3.5" />
                                                     </button>
                                                 </Tip>
                                             </div>

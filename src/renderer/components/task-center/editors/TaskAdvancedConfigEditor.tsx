@@ -16,7 +16,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, Settings2 } from 'lucide-react';
+import { ChevronDownIcon, SlidersIcon } from '@/components/icons';
 import CustomSelect from '@/components/CustomSelect';
 import { useConfig } from '@/hooks/useConfig';
 import { useAvailableProviders } from '@/hooks/useAvailableProviders';
@@ -503,14 +503,14 @@ export function TaskAdvancedConfigEditor(props: Props) {
         className="flex w-full items-center gap-2 rounded-[var(--radius-md)] px-4 py-2.5 text-left transition-colors hover:bg-[var(--hover-bg)]"
         aria-expanded={open}
       >
-        <Settings2 className="h-4 w-4 text-[var(--ink-muted)]" strokeWidth={1.5} />
+        <SlidersIcon className="h-4 w-4 text-[var(--ink-muted)]" strokeWidth={1.5} />
         <span className="flex-1 text-sm font-medium text-[var(--ink)]">
           {t('advanced.title')}
           <span className="ml-1.5 text-xs font-normal text-[var(--ink-muted)]">
             {t('advanced.subtitle')}
           </span>
         </span>
-        <ChevronDown
+        <ChevronDownIcon
           className={`h-4 w-4 text-[var(--ink-muted)] transition-transform ${open ? 'rotate-180' : ''}`}
         />
       </button>
@@ -831,7 +831,7 @@ function ModelPicker(props: {
         onClick={() => setOpen(isOpen ? null : variant)}
       >
         <span className="min-w-0 flex-1 truncate">{closedLabel}</span>
-        <ChevronDown
+        <ChevronDownIcon
           className={`h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)] transition-transform ${
             isOpen ? 'rotate-180' : ''
           }`}

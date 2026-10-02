@@ -1,4 +1,11 @@
-import { Check, CircleDot, ListTodo, Plus, Search, Trash2 } from 'lucide-react';
+import {
+  CheckIcon,
+  CircleDotIcon,
+  ListTodoIcon,
+  PlusIcon,
+  SearchIcon,
+  TrashIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import type { TaskCreateInput, TaskGetInput, TaskUpdateInput, ToolUseSimple } from '@/types/chat';
@@ -61,7 +68,7 @@ function describeTaskOp(tool: ToolUseSimple, t: ChatTranslator): { icon: React.R
       const input = tool.parsedInput as TaskCreateInput | undefined;
       const subject = typeof input?.subject === 'string' ? input.subject : '';
       return {
-        icon: <Plus className={iconCls} />,
+        icon: <PlusIcon className={iconCls} />,
         text: subject ? t('shell.toolChrome.taskOp.createWithSubject', { subject }) : t('shell.toolChrome.taskOp.create'),
         accent: false
       };
@@ -70,22 +77,22 @@ function describeTaskOp(tool: ToolUseSimple, t: ChatTranslator): { icon: React.R
       const input = tool.parsedInput as TaskUpdateInput | undefined;
       const subject = typeof input?.subject === 'string' ? input.subject : '';
       if (input?.status === 'deleted') {
-        return { icon: <Trash2 className={iconCls} />, text: subject ? t('shell.toolChrome.taskOp.deleteWithSubject', { subject }) : t('shell.toolChrome.taskOp.delete'), accent: false };
+        return { icon: <TrashIcon className={iconCls} />, text: subject ? t('shell.toolChrome.taskOp.deleteWithSubject', { subject }) : t('shell.toolChrome.taskOp.delete'), accent: false };
       }
       if (input?.status === 'completed') {
-        return { icon: <Check className={iconCls} strokeWidth={3} />, text: subject ? t('shell.toolChrome.taskOp.completeWithSubject', { subject }) : t('shell.toolChrome.taskOp.complete'), accent: false };
+        return { icon: <CheckIcon className={iconCls} strokeWidth={3} />, text: subject ? t('shell.toolChrome.taskOp.completeWithSubject', { subject }) : t('shell.toolChrome.taskOp.complete'), accent: false };
       }
       if (input?.status === 'in_progress') {
-        return { icon: <CircleDot className={iconCls} />, text: subject ? t('shell.toolChrome.taskOp.startWithSubject', { subject }) : t('shell.toolChrome.taskOp.start'), accent: true };
+        return { icon: <CircleDotIcon className={iconCls} />, text: subject ? t('shell.toolChrome.taskOp.startWithSubject', { subject }) : t('shell.toolChrome.taskOp.start'), accent: true };
       }
-      return { icon: <ListTodo className={iconCls} />, text: subject ? t('shell.toolChrome.taskOp.updateWithSubject', { subject }) : t('shell.toolChrome.taskOp.update'), accent: false };
+      return { icon: <ListTodoIcon className={iconCls} />, text: subject ? t('shell.toolChrome.taskOp.updateWithSubject', { subject }) : t('shell.toolChrome.taskOp.update'), accent: false };
     }
     case 'TaskGet': {
       const input = tool.parsedInput as TaskGetInput | undefined;
       const id = typeof input?.taskId === 'string' ? input.taskId : '';
-      return { icon: <Search className={iconCls} />, text: id ? t('shell.toolChrome.taskOp.getWithId', { id }) : t('shell.toolChrome.taskOp.get'), accent: false };
+      return { icon: <SearchIcon className={iconCls} />, text: id ? t('shell.toolChrome.taskOp.getWithId', { id }) : t('shell.toolChrome.taskOp.get'), accent: false };
     }
     default:
-      return { icon: <ListTodo className={iconCls} />, text: tool.name, accent: false };
+      return { icon: <ListTodoIcon className={iconCls} />, text: tool.name, accent: false };
   }
 }
