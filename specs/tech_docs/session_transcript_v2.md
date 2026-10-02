@@ -49,7 +49,7 @@ Node 冷读先校验原始 batch 字节与操作 schema，再仅在该 batch 的
 
 冷恢复仅在旧 execution owner 已失效后派生并提交 interrupted 状态。未结束工具保留已观察结果，停止展示 loading，不自动重跑；不能把仍活跃的后台子任务因父 turn terminal 关掉。
 
-`setCurrentProductSessionId` 在同进程变更真实 binding 前调用 `releaseSessionTranscriptForBinding`。writer retirement 暂停新批次并等待既有 IO；截止失败恢复原 writer 调度并保留旧 binding，成功后取消未提交尾部、移除 active 实例。pending materialization 在 claim 目标 metadata 前完成旧 writer 退役，并在等待后复核原事务归属；失败仍可沿既有入口 retry/rollback。目标身份生效后才执行 `afterBind`。异步 candidate 清理只处理该实例独占的未发布文件。普通保存失败不阻止同一 binding 上继续 AI。
+`setCurrentProductSessionId` 在同进程变更真实 binding 前调用 `releaseSessionTranscriptForBinding`，在同一截止时间内先尝试保存当前 live revision，再退役 writer、移除 active 实例。普通保存失败不新增切换拦截；物理 IO 尚未结束、无法安全退役时保留原 writer 与旧 binding。SDK reset/switch 在 binding 成功后才清空展示、UUID 和交互状态。pending materialization 在 claim 目标 metadata 前完成旧 writer 退役，并在等待后复核原事务归属；失败仍可沿既有入口 retry/rollback。目标身份生效后才执行 `afterBind`。异步 candidate 清理只处理该实例独占的未发布文件。普通保存失败不阻止同一 binding 上继续 AI。
 
 - Rewind 先由 SessionStore 检查来源；已有未落盘 mutation 时先通过 writer 的 `flushForMutation` 等待，再做 native/file 副作用；本次 commit 同样等待实际 IO 并核对 cursor 和 binding。正常慢写无业务 deadline，真实 IO 失败仍由既有 writer 后台重试；忙碌/写盘未完成不是历史损坏。复用命名 mutation 和 pending intent；target live/native binding 已裁决后，普通对话继续使用 target，磁盘发布后台补齐，不能回退 native 或重复执行。
 - Fork 经 `publishForkSession` 登记隐藏的 prepared 目标，复制用户与工具附件，生成、校验并发布完整 V2 baseline，最后解除 prepared 状态进入持久列表。不完整来源不能 fork；必要附件尚未保存或缺失时显式失败。源 V1 不强刷、不改写；目标 writer 不留在源 Sidecar。失败仅清理自身未发布资源，metadata 已提交后不删除目标；正常慢写等待实际 IO，不设置固定发布取消 deadline。

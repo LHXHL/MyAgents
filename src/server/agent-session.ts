@@ -1518,11 +1518,10 @@ const imTextBlockIndices = new Set<number>();
 
 const childToolToParent: Map<string, string> = new Map();
 async function setCurrentSessionId(next: string): Promise<void> {
-  if (getCurrentProductSessionId() !== next) {
-    flushPendingLiveEvents();
-    resetBuiltinLiveRevision();
-  }
+  const changing = getCurrentProductSessionId() !== next;
+  if (changing) flushPendingLiveEvents();
   await setCurrentProductSessionId(next);
+  if (changing) resetBuiltinLiveRevision();
 }
 
 // Product identity is shared with Integrated DSH, but SDK content ownership
@@ -8018,14 +8017,12 @@ export async function resetSession(options?: { sessionId?: string }): Promise<vo
     ).catch(() => { /* swallow — best-effort cleanup */ });
   }
 
-  // 2. Clear all message state (shared with initializeAgent)
+  // 2. Bind before clearing the old presentation and interaction state. A
+  // writer that is still doing physical IO keeps its original usable binding.
+  // Surface migration supplies the Rust-generated target identity.
+  await setCurrentSessionId(options?.sessionId ?? randomUUID());
   clearMessageState();
   clearImBridgeToolsContext();
-
-  // 3. Bind the caller-proven target identity, or mint one for ordinary
-  // desktop reset. Surface migration passes its Rust-generated target so
-  // Router, SidecarManager, Runtime, and renderer adopt one exact identity.
-  await setCurrentSessionId(options?.sessionId ?? randomUUID());
   hasInitialPrompt = false; // Reset so first message creates a new session in SessionStore
   resetSessionMaterializationState({ allowLazySessionMaterialization: true });
 
@@ -8446,6 +8443,9 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
     await persistMessagesToStorage();
   }
 
+  // Settle the old writer before clearing state needed by the retained binding.
+  await setCurrentSessionId(targetSessionId);
+
   // Reset message/queue/streaming state (shared with initializeAgent, resetSession)
   clearMessageState();
   clearImBridgeToolsContext();
@@ -8469,8 +8469,6 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
   resetPreWarmFailCount();
   if (lifecycleState.preWarmTimer) { clearTimeout(lifecycleState.preWarmTimer); setPreWarmTimer(null); }
 
-  // Preserve target sessionId so new transcriptState.messages are saved to the same session
-  await setCurrentSessionId(targetSessionId);
   resetSessionMaterializationState({ allowLazySessionMaterialization: false });
 
   await activateSessionTranscript(targetSessionId);

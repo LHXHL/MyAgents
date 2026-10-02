@@ -4640,7 +4640,13 @@ export async function publishSessionForHandoff(sessionId: string): Promise<boole
 export async function releaseSessionTranscriptForBinding(sessionId: string, timeoutMs = 2000): Promise<void> {
     const active = activeTranscripts.get(sessionId);
     if (!active) return;
-    if (!await active.retire(timeoutMs)) throw new Error('Session history IO is still finishing; retry the session change');
+    const deadline = Date.now() + timeoutMs;
+    // Save the live tail when possible without making storage health a new
+    // admission gate. Retirement alone decides whether physical IO is settled.
+    if (!active.isRevoked) await active.writer.flush(timeoutMs);
+    if (!await active.retire(Math.max(0, deadline - Date.now()))) {
+        throw new Error('Session history IO is still finishing; retry the session change');
+    }
     if (activeTranscripts.get(sessionId) === active) activeTranscripts.delete(sessionId);
 }
 
