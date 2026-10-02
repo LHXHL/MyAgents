@@ -84,6 +84,7 @@ jobs:
           mkdir -p src-tauri/resources/sharp-runtime
           mkdir -p src-tauri/resources/tsx-runtime
           mkdir -p src-tauri/resources/nodejs
+          mkdir -p src-tauri/resources/integrated-runtimes/dsh
           mkdir -p src-tauri/resources/speech-inference
           mkdir -p src-tauri/resources/playwright-control/@playwright/mcp
           mkdir -p src-tauri/resources/playwright-control/playwright
@@ -94,6 +95,7 @@ jobs:
           printf 'ci placeholder\n' > src-tauri/resources/sharp-runtime/.ci-placeholder
           printf 'ci placeholder\n' > src-tauri/resources/tsx-runtime/.ci-placeholder
           printf 'ci placeholder\n' > src-tauri/resources/nodejs/.ci-placeholder
+          printf 'ci placeholder\n' > src-tauri/resources/integrated-runtimes/dsh/.ci-placeholder
           printf 'ci placeholder\n' > src-tauri/resources/playwright-control/@playwright/mcp/.ci-placeholder
           printf 'ci placeholder\n' > src-tauri/resources/playwright-control/playwright/.ci-placeholder
           printf 'ci placeholder\n' > src-tauri/resources/playwright-control/playwright-core/.ci-placeholder
@@ -127,6 +129,7 @@ jobs:
             'src-tauri/resources/sharp-runtime',
             'src-tauri/resources/tsx-runtime',
             'src-tauri/resources/nodejs',
+            'src-tauri/resources/integrated-runtimes/dsh',
             'src-tauri/resources/speech-inference',
             'src-tauri/resources/cli',
             'src-tauri/resources/playwright-control/@playwright/mcp',
@@ -142,6 +145,7 @@ jobs:
           Set-Content src-tauri/resources/sharp-runtime/.ci-placeholder 'ci placeholder'
           Set-Content src-tauri/resources/tsx-runtime/.ci-placeholder 'ci placeholder'
           Set-Content src-tauri/resources/nodejs/.ci-placeholder 'ci placeholder'
+          Set-Content src-tauri/resources/integrated-runtimes/dsh/.ci-placeholder 'ci placeholder'
           Set-Content src-tauri/resources/cli/.ci-placeholder 'ci placeholder'
           Set-Content src-tauri/resources/playwright-control/@playwright/mcp/.ci-placeholder 'ci placeholder'
           Set-Content src-tauri/resources/playwright-control/playwright/.ci-placeholder 'ci placeholder'
@@ -168,9 +172,9 @@ jobs:
         run: node scripts/prepare-cliproxy.mjs
       - name: Prepare non-executed Tauri resource paths
         run: |
-          mkdir -p src-tauri/resources/{claude-agent-sdk,sharp-runtime,tsx-runtime,nodejs,speech-inference,cli,document-processing}
+          mkdir -p src-tauri/resources/{claude-agent-sdk,sharp-runtime,tsx-runtime,nodejs,speech-inference,cli,document-processing,integrated-runtimes/dsh}
           mkdir -p src-tauri/resources/playwright-control/{@playwright/mcp,playwright,playwright-core}
-          for directory in claude-agent-sdk sharp-runtime tsx-runtime nodejs speech-inference cli document-processing playwright-control/@playwright/mcp playwright-control/playwright playwright-control/playwright-core; do
+          for directory in claude-agent-sdk sharp-runtime tsx-runtime nodejs speech-inference cli document-processing integrated-runtimes/dsh playwright-control/@playwright/mcp playwright-control/playwright playwright-control/playwright-core; do
             touch "src-tauri/resources/$directory/.ci-placeholder"
           done
           touch src-tauri/resources/server-dist.js src-tauri/resources/plugin-bridge-dist.mjs
