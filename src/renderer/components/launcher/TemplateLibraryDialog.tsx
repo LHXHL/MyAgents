@@ -21,7 +21,7 @@ import { exists } from '@tauri-apps/plugin-fs';
 import type { WorkspaceTemplate } from '@/config/types';
 import { PRESET_TEMPLATES } from '@/config/types';
 import { loadUserTemplates, addUserTemplate, removeUserTemplate, updateUserTemplate } from '@/config/services/templateService';
-import { ALL_WORKSPACE_ICON_IDS, DEFAULT_WORKSPACE_ICON } from '@/assets/workspace-icons';
+import { ALL_WORKSPACE_ICON_IDS, DEFAULT_WORKSPACE_ICON, resolveWorkspaceIconId } from '@/assets/workspace-icons';
 import { isBrowserDevMode } from '@/utils/browserMock';
 import { shortenPathForDisplay } from '@/utils/pathDetection';
 import WorkspaceIcon from './WorkspaceIcon';
@@ -395,7 +395,7 @@ export default memo(function TemplateLibraryDialog({
                                             >
                                                 <div className="max-h-[200px] overflow-y-auto overscroll-contain">
                                                     <div className="flex flex-wrap gap-1.5">
-                                                        {ALL_WORKSPACE_ICON_IDS.filter(id => id !== 'folder-open').map((iconId) => (
+                                                        {ALL_WORKSPACE_ICON_IDS.map((iconId) => (
                                                             <button
                                                                 key={iconId}
                                                                 type="button"
@@ -404,7 +404,7 @@ export default memo(function TemplateLibraryDialog({
                                                                     setShowIconPicker(false);
                                                                 }}
                                                                 className={`flex h-10 w-10 items-center justify-center rounded-xl transition-all ${
-                                                                    (selectedTemplate.icon || DEFAULT_WORKSPACE_ICON) === iconId
+                                                                    resolveWorkspaceIconId(selectedTemplate.icon) === iconId
                                                                         ? 'bg-[var(--accent-warm-muted)] ring-1 ring-[var(--accent-warm)]'
                                                                         : 'hover:bg-[var(--hover-bg)]'
                                                                 }`}

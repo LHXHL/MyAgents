@@ -230,6 +230,41 @@
   --space-12: 48px;
 }
 
+/* Agent identity hues for WorkspaceIcon. Each glyph owns one hue, so the hue is
+   part of the identity; the dark set lifts lightness for the same recognition
+   on dark surfaces (enforced by workspaceIcons.test.ts). */
+:root {
+  /* agent-icon hues */
+  --agent-icon-clay: #c4613d;
+  --agent-icon-amber: #c98f1f;
+  --agent-icon-olive: #7f8f2e;
+  --agent-icon-sage: #4f9466;
+  --agent-icon-teal: #2f8a86;
+  --agent-icon-sky: #3f7fc0;
+  --agent-icon-indigo: #5562c4;
+  --agent-icon-violet: #8657bd;
+  --agent-icon-plum: #a94d8a;
+  --agent-icon-rose: #cc566f;
+  --agent-icon-cocoa: #8b6a52;
+  --agent-icon-slate: #5d6977;
+}
+
+html[data-color-scheme='dark'] {
+  /* agent-icon hues */
+  --agent-icon-clay: #d9774f;
+  --agent-icon-amber: #d9a33a;
+  --agent-icon-olive: #99aa45;
+  --agent-icon-sage: #67ad7e;
+  --agent-icon-teal: #46a6a1;
+  --agent-icon-sky: #5b98d6;
+  --agent-icon-indigo: #7380dc;
+  --agent-icon-violet: #a07ad6;
+  --agent-icon-plum: #c56ba6;
+  --agent-icon-rose: #e0738a;
+  --agent-icon-cocoa: #a98a70;
+  --agent-icon-slate: #7d8a99;
+}
+
 /* FileIcon type tones. Theme-independent hues tuned for paper surfaces; the
    dark set lifts lightness so 16px glyphs keep their type signal. Colour is the
    primary cue in dense file trees, so every tone exists in both schemes

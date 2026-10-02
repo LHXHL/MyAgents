@@ -18,7 +18,7 @@ import { applyBuiltinBrowserExecutionToolToggle } from '@/../shared/browserTools
 import { PERMISSION_MODES, type Project, type McpServerDefinition } from '@/config/types';
 import type { AgentConfig } from '../../../shared/types/agent';
 import { reasoningEffortChoices, reasoningEffortAfterModelChange, REASONING_EFFORT_DESCRIPTIONS } from '@/../shared/reasoningEffort';
-import { ALL_WORKSPACE_ICON_IDS, DEFAULT_WORKSPACE_ICON } from '@/assets/workspace-icons';
+import { ALL_WORKSPACE_ICON_IDS, DEFAULT_WORKSPACE_ICON, resolveWorkspaceIconId } from '@/assets/workspace-icons';
 import WorkspaceIcon from '../launcher/WorkspaceIcon';
 import RuntimeSelector from '../RuntimeSelector';
 import { PermissionModeIcon, PermissionModeMenuContent, type PermissionModeMenuItem } from '../PermissionModeMenu';
@@ -395,21 +395,21 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
                   type="button"
                   onClick={() => handleIconSelect('')}
                   className={`flex h-9 w-9 items-center justify-center rounded-lg transition-all ${
-                    !project.icon ? 'bg-[var(--accent-warm-muted)] ring-1 ring-[var(--accent-warm)]' : 'hover:bg-[var(--hover-bg)]'
+                    resolveWorkspaceIconId(project.icon) === DEFAULT_WORKSPACE_ICON ? 'bg-[var(--accent-warm-muted)] ring-1 ring-[var(--accent-warm)]' : 'hover:bg-[var(--hover-bg)]'
                   }`}
                   title={t('agentSettings.basics.defaultIcon')}
                 >
                   <WorkspaceIcon icon={DEFAULT_WORKSPACE_ICON} size={20} />
                 </button>
                 {ALL_WORKSPACE_ICON_IDS
-                  .filter(id => id !== 'folder-open' && id !== DEFAULT_WORKSPACE_ICON)
+                  .filter(id => id !== DEFAULT_WORKSPACE_ICON)
                   .map(iconId => (
                     <button
                       key={iconId}
                       type="button"
                       onClick={() => handleIconSelect(iconId)}
                       className={`flex h-9 w-9 items-center justify-center rounded-lg transition-all ${
-                        project.icon === iconId
+                        resolveWorkspaceIconId(project.icon) === iconId
                           ? 'bg-[var(--accent-warm-muted)] ring-1 ring-[var(--accent-warm)]'
                           : 'hover:bg-[var(--hover-bg)]'
                       }`}
