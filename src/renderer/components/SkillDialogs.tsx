@@ -280,7 +280,7 @@ export function NewSkillChooser({
                                 {syncConfig.syncableFolders.map(folder => <li key={folder}>{folder}</li>)}
                             </ul>
                             <button type="button" onClick={handleSyncClick} disabled={syncing}
-                                className="mt-3 rounded-lg bg-[var(--accent)] px-3 py-2 text-sm text-white disabled:opacity-50">
+                                className="mt-3 rounded-lg bg-[var(--button-primary-bg)] px-3 py-2 text-sm text-[var(--button-primary-text)] disabled:opacity-50">
                                 {t('agentSettings.skillDialogs.syncApply')}
                             </button>
                         </div>

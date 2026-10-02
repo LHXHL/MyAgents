@@ -8,9 +8,8 @@ import { projectProvidersForRuntime, isProviderModelCompatibleWithRuntime, resol
 import { workspacePathsEqual } from '../../shared/workspacePath';
 import { createHash } from 'node:crypto';
 import { coerceReasoningEffortSettingForRuntime, reasoningEffortAfterModelChange, type ModelReasoningCapabilities } from '../../shared/reasoningEffort';
-import { getSessionEngine } from '../session-engine';
+import { getSessionEngine, queryRuntimeModels } from '../session-engine';
 import { getSessionMetadata, updateSessionMetadata } from '../SessionStore';
-import { queryRuntimeModels } from '../runtimes/external-session';
 import { findProjectAgentByWorkspacePath, getAllEffectiveProviders, getProviderSelectionError, loadConfig, loadProjects, resolveProviderEnv } from '../utils/admin-config';
 import { snapshotForImSession } from '../utils/session-snapshot';
 import { resolveWorkspaceConfig } from '../utils/admin-config';

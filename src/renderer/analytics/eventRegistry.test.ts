@@ -40,7 +40,7 @@ function trackedLiteralEvents(): Map<string, Set<string>> {
     ...readFiles(resolve(REPO_ROOT, 'src/server')),
   ];
   const events = new Map<string, Set<string>>();
-  const trackedCallNames = new Set(['track', 'trackTabEvent', 'trackServer']);
+  const trackedCallNames = new Set(['track', 'trackTabEvent', 'trackSessionEvent', 'trackServer']);
 
   for (const file of files) {
     const source = ts.createSourceFile(
@@ -57,10 +57,13 @@ function trackedLiteralEvents(): Map<string, Set<string>> {
         trackedCallNames.has(node.expression.text)
       ) {
         const firstArg = node.arguments[0];
-        if (firstArg && ts.isStringLiteralLike(firstArg)) {
-          const paths = events.get(firstArg.text) ?? new Set<string>();
+        const eventArgs = firstArg && ts.isConditionalExpression(firstArg)
+          ? [firstArg.whenTrue, firstArg.whenFalse] : [firstArg];
+        for (const eventArg of eventArgs) {
+          if (!eventArg || !ts.isStringLiteralLike(eventArg)) continue;
+          const paths = events.get(eventArg.text) ?? new Set<string>();
           paths.add(relative(REPO_ROOT, file.path));
-          events.set(firstArg.text, paths);
+          events.set(eventArg.text, paths);
         }
       }
       ts.forEachChild(node, visit);

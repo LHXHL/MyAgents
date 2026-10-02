@@ -1650,7 +1650,7 @@ mod tests {
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let server = tokio::spawn(async move {
+        let server = tauri::async_runtime::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
         let retired = Arc::new(AtomicBool::new(true));

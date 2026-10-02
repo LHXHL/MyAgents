@@ -34,3 +34,5 @@ export type {
 } from './types';
 
 export { inspectRuntime } from './runtime-inspection';
+
+export { queryRuntimeModels } from '../runtimes/external-session';

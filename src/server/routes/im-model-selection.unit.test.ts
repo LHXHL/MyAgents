@@ -12,9 +12,14 @@ vi.mock('../utils/admin-config', () => ({ loadConfig: mocks.loadConfig, loadProj
   findProjectAgentByWorkspacePath: mocks.agent, getAllEffectiveProviders: mocks.providers,
   resolveProviderEnv: mocks.env, getProviderSelectionError: mocks.availability, resolveWorkspaceConfig: mocks.resolve }));
 vi.mock('../utils/managed-codex-readiness', () => ({ isManagedCodexProviderReady: mocks.ready }));
-vi.mock('../runtimes/external-session', () => ({ queryRuntimeModels: mocks.models }));
+// Model-selection policy is tested with all providers available; platform
+// availability is covered by runtimeProviderProjection's own tests.
+vi.mock('../../shared/runtimeProviderProjection', async importOriginal => ({
+  ...await importOriginal<typeof import('../../shared/runtimeProviderProjection')>(),
+  platformHiddenProviderIds: () => [],
+}));
 vi.mock('../SessionStore', () => ({ getSessionMetadata: mocks.get, updateSessionMetadata: mocks.update }));
-vi.mock('../session-engine', () => ({ getSessionEngine: () => ({ getCurrentSessionContext: mocks.context, applyModelSelection: mocks.apply }) }));
+vi.mock('../session-engine', () => ({ queryRuntimeModels: mocks.models, getSessionEngine: () => ({ getCurrentSessionContext: mocks.context, applyModelSelection: mocks.apply }) }));
 vi.mock('../admin-api', () => ({ commitAgentModelSelection: mocks.commit }));
 vi.mock('../sse', () => ({ broadcast: mocks.broadcast }));
 import { handleImModelRoute, imSnapshotObservation } from './im-model-selection';

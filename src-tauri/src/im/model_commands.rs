@@ -413,10 +413,11 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let server = tokio::spawn(async move {
+        let server = tauri::async_runtime::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut request = [0u8; 4096];
-            socket.read(&mut request).await.unwrap();
+            let received = socket.read(&mut request).await.unwrap();
+            assert!(received > 0);
             let body = r#"{"session":{"configSnapshotAt":"owned","model":"session-model"}}"#;
             socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
         });
