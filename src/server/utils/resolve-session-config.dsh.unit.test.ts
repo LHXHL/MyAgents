@@ -14,7 +14,7 @@ const agent: AgentConfig = {
   providerId: 'anthropic-api',
   model: 'claude-sonnet-4-6',
   reasoningEffort: 'default',
-  permissionMode: 'plan',
+  permissionMode: 'workspace-autonomous',
 };
 
 describe('resolveSessionConfig DSH ownership', () => {
@@ -36,7 +36,7 @@ describe('resolveSessionConfig DSH ownership', () => {
       },
       model: 'claude-sonnet-4-6',
       reasoningEffort: 'default',
-      permissionMode: 'plan',
+      permissionMode: 'workspace-autonomous',
       configSnapshotAt: '2026-08-30T00:00:00.000Z',
     } satisfies SessionMetadata;
 
@@ -46,7 +46,7 @@ describe('resolveSessionConfig DSH ownership', () => {
       providerId: 'anthropic-api',
       providerRoute: metadata.providerRoute,
       model: 'claude-sonnet-4-6',
-      permissionMode: 'approval-required',
+      permissionMode: 'workspace-autonomous',
     });
   });
 

@@ -131,7 +131,7 @@ export default memo(function RuntimeSelector({
           setOpen(!menuOpen);
         }}
         className={`${variant === 'panel'
-          ? 'flex w-full min-w-0 items-center justify-between gap-3 rounded-lg border border-[var(--line)] bg-[var(--paper-inset)] px-3 py-2 text-sm text-[var(--ink)] [--runtime-icon-surface:var(--paper-inset)]'
+          ? 'flex w-full min-w-0 items-center justify-between gap-3 rounded-lg border border-[var(--line)] bg-transparent px-3 py-2 text-sm text-[var(--ink)] [--runtime-icon-surface:var(--paper-elevated)]'
           : 'inline-flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm font-medium text-[var(--ink-muted)] [--runtime-icon-surface:var(--paper)]'
         } transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] ${disabled
           ? 'cursor-not-allowed opacity-50'

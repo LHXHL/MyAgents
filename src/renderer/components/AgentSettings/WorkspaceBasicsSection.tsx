@@ -72,7 +72,10 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
   const [mcpServers, setMcpServers] = useState<McpServerDefinition[]>([]);
   const [globalEnabledMcp, setGlobalEnabledMcp] = useState<string[]>([]);
   const isMountedRef = useRef(true);
+  const modelButtonRef = useRef<HTMLButtonElement>(null);
   const permissionButtonRef = useRef<HTMLButtonElement>(null);
+  const effortButtonRef = useRef<HTMLButtonElement>(null);
+  const toolsButtonRef = useRef<HTMLButtonElement>(null);
 
   // Runtime detection (v0.1.59)
   const [runtimeDetections, setRuntimeDetections] = useState<RuntimeDetections>({
@@ -521,6 +524,8 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
       <div className="relative flex items-center gap-3">
         <label className="w-16 shrink-0 text-sm text-[var(--ink-muted)]">{t('agentSettings.basics.model')}</label>
         <button
+          ref={modelButtonRef}
+          aria-expanded={openPopup === 'model'}
           className="flex flex-1 items-center justify-between rounded-lg border border-[var(--line)] px-3 py-1.5 text-left text-sm text-[var(--ink)] transition-colors hover:border-[var(--line-strong)]"
           onClick={() => setOpenPopup(openPopup === 'model' ? null : 'model')}
         >
@@ -540,46 +545,47 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
           <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--ink-subtle)]" />
         </button>
 
-        {openPopup === 'model' && (
-          <>
-            <div className="fixed inset-0 z-40" onMouseDown={(e) => { if (e.target === e.currentTarget) setOpenPopup(null); }} />
-            <div className="absolute left-20 top-0 z-50 max-h-[300px] w-[320px] overflow-y-auto overscroll-contain rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-2 shadow-lg">
-              {availableProviders.length === 0 ? (
-                <div className="px-3 py-3">
-                  <p className="mb-2 text-xs leading-relaxed text-[var(--ink-muted)]">
-                    {t('agentSettings.basics.noProviders')}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={openProviderSettings}
-                    className="text-xs font-medium text-[var(--accent-warm)] hover:underline"
-                  >
-                    {t('agentSettings.basics.openProviderSettings')}
-                  </button>
-                </div>
-              ) : (
-                availableProviders.map(provider => (
-                  <div key={provider.id} className="mb-1">
-                    <div className="px-2 py-1 text-xs font-medium text-[var(--ink-muted)]">{provider.name}</div>
-                    {provider.models?.map(model => (
-                      <button
-                        key={`${provider.id}:${model.model}`}
-                        className={`flex w-full items-center rounded-lg px-3 py-1.5 text-left text-sm transition-colors ${
-                          effectiveProviderId === provider.id && effectiveModel === model.model
-                            ? 'bg-[var(--accent-warm-muted)] text-[var(--accent-warm)]'
-                            : 'text-[var(--ink)] hover:bg-[var(--hover-bg)]'
-                        }`}
-                        onClick={() => handleModelSelect(provider.id, model.model)}
-                      >
-                        {model.modelName}
-                      </button>
-                    ))}
-                  </div>
-                ))
-              )}
+        <Popover
+          open={openPopup === 'model'}
+          onClose={() => setOpenPopup(null)}
+          anchorRef={modelButtonRef}
+          placement="bottom-start"
+          className="max-h-[300px] w-[320px] overflow-y-auto overscroll-contain rounded-xl p-2"
+        >
+          {availableProviders.length === 0 ? (
+            <div className="px-3 py-3">
+              <p className="mb-2 text-xs leading-relaxed text-[var(--ink-muted)]">
+                {t('agentSettings.basics.noProviders')}
+              </p>
+              <button
+                type="button"
+                onClick={openProviderSettings}
+                className="text-xs font-medium text-[var(--accent-warm)] hover:underline"
+              >
+                {t('agentSettings.basics.openProviderSettings')}
+              </button>
             </div>
-          </>
-        )}
+          ) : (
+            availableProviders.map(provider => (
+              <div key={provider.id} className="mb-1">
+                <div className="px-2 py-1 text-xs font-medium text-[var(--ink-muted)]">{provider.name}</div>
+                {provider.models?.map(model => (
+                  <button
+                    key={`${provider.id}:${model.model}`}
+                    className={`flex w-full items-center rounded-lg px-3 py-1.5 text-left text-sm transition-colors ${
+                      effectiveProviderId === provider.id && effectiveModel === model.model
+                        ? 'bg-[var(--accent-warm-muted)] text-[var(--accent-warm)]'
+                        : 'text-[var(--ink)] hover:bg-[var(--hover-bg)]'
+                    }`}
+                    onClick={() => handleModelSelect(provider.id, model.model)}
+                  >
+                    {model.modelName}
+                  </button>
+                ))}
+              </div>
+            ))
+          )}
+        </Popover>
       </div>
       )}
 
@@ -625,6 +631,8 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
       <div className="relative flex items-center gap-3">
         <label className="w-16 shrink-0 text-sm text-[var(--ink-muted)]">{t('agentSettings.basics.reasoningEffort')}</label>
         <button
+          ref={effortButtonRef}
+          aria-expanded={openPopup === 'effort'}
           className="flex flex-1 items-center justify-between rounded-lg border border-[var(--line)] px-3 py-1.5 text-left text-sm text-[var(--ink)] transition-colors hover:border-[var(--line-strong)]"
           onClick={() => setOpenPopup(openPopup === 'effort' ? null : 'effort')}
         >
@@ -632,34 +640,35 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
           <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--ink-subtle)]" />
         </button>
 
-        {openPopup === 'effort' && (
-          <>
-            <div className="fixed inset-0 z-40" onMouseDown={(e) => { if (e.target === e.currentTarget) setOpenPopup(null); }} />
-            <div className="absolute left-20 top-0 z-50 w-[280px] rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-2 shadow-lg">
-              {['default', ...(visibleReasoningEffortChoices ?? [])].map(level => (
-                <button
-                  key={level}
-                  className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left transition-colors ${
-                    effectiveReasoningEffort === level
-                      ? 'bg-[var(--accent-warm-muted)] text-[var(--accent-warm)]'
-                      : 'text-[var(--ink)] hover:bg-[var(--hover-bg)]'
-                  }`}
-                  onClick={() => handleEffortSelect(level)}
-                >
-                  <span className="shrink-0 text-sm font-medium">{level === 'default' ? defaultEffortLabel : level}</span>
-                  <span title={usesManagedCodexProvider ? effortModel?.supportedReasoningEfforts?.find(option => option.reasoningEffort === level)?.description : undefined} className="ml-3 min-w-0 truncate text-xs text-[var(--ink-muted)]">
-                    {usesManagedCodexProvider ? effortModel?.supportedReasoningEfforts?.find(option => option.reasoningEffort === level)?.description ?? '' : t(`agentSettings.reasoning.descriptions.${level}`, {
-                      defaultValue: REASONING_EFFORT_DESCRIPTIONS[level] ?? '',
-                    })}
-                  </span>
-                </button>
-              ))}
-              <div className="mt-1 whitespace-nowrap border-t border-[var(--line)] px-3 pb-1 pt-2 text-xs text-[var(--ink-muted)]/60">
-                {t('agentSettings.basics.reasoningSupportHint')}
-              </div>
-            </div>
-          </>
-        )}
+        <Popover
+          open={openPopup === 'effort'}
+          onClose={() => setOpenPopup(null)}
+          anchorRef={effortButtonRef}
+          placement="bottom-start"
+          className="max-h-[300px] w-[280px] overflow-y-auto overscroll-contain rounded-xl p-2"
+        >
+          {['default', ...(visibleReasoningEffortChoices ?? [])].map(level => (
+            <button
+              key={level}
+              className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left transition-colors ${
+                effectiveReasoningEffort === level
+                  ? 'bg-[var(--accent-warm-muted)] text-[var(--accent-warm)]'
+                  : 'text-[var(--ink)] hover:bg-[var(--hover-bg)]'
+              }`}
+              onClick={() => handleEffortSelect(level)}
+            >
+              <span className="shrink-0 text-sm font-medium">{level === 'default' ? defaultEffortLabel : level}</span>
+              <span title={usesManagedCodexProvider ? effortModel?.supportedReasoningEfforts?.find(option => option.reasoningEffort === level)?.description : undefined} className="ml-3 min-w-0 truncate text-xs text-[var(--ink-muted)]">
+                {usesManagedCodexProvider ? effortModel?.supportedReasoningEfforts?.find(option => option.reasoningEffort === level)?.description ?? '' : t(`agentSettings.reasoning.descriptions.${level}`, {
+                  defaultValue: REASONING_EFFORT_DESCRIPTIONS[level] ?? '',
+                })}
+              </span>
+            </button>
+          ))}
+          <div className="mt-1 whitespace-nowrap border-t border-[var(--line)] px-3 pb-1 pt-2 text-xs text-[var(--ink-muted)]/60">
+            {t('agentSettings.basics.reasoningSupportHint')}
+          </div>
+        </Popover>
       </div>
       )}
 
@@ -668,6 +677,8 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
       <div className="relative flex items-center gap-3">
         <label className="w-16 shrink-0 text-sm text-[var(--ink-muted)]">{t('agentSettings.basics.tools')}</label>
         <button
+          ref={toolsButtonRef}
+          aria-expanded={openPopup === 'mcp'}
           className="flex flex-1 items-center justify-between rounded-lg border border-[var(--line)] px-3 py-1.5 text-left text-sm text-[var(--ink)] transition-colors hover:border-[var(--line-strong)]"
           onClick={() => setOpenPopup(openPopup === 'mcp' ? null : 'mcp')}
         >
@@ -675,41 +686,42 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
           <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--ink-subtle)]" />
         </button>
 
-        {openPopup === 'mcp' && (
-          <>
-            <div className="fixed inset-0 z-40" onMouseDown={(e) => { if (e.target === e.currentTarget) setOpenPopup(null); }} />
-            <div className="absolute left-20 top-0 z-50 max-h-[300px] w-[320px] overflow-y-auto overscroll-contain rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-2 shadow-lg">
-              {availableMcpServers.length === 0 ? (
-                <p className="px-3 py-2 text-xs text-[var(--ink-subtle)]">
-                  {t('agentSettings.basics.noGlobalTools')}
-                </p>
-              ) : (
-                availableMcpServers.map(server => {
-                  const checked = effectiveMcpServers?.includes(server.id) ?? false;
-                  return (
-                    <label
-                      key={server.id}
-                      className="flex cursor-pointer items-center gap-3 rounded-lg p-2 transition-colors hover:bg-[var(--hover-bg)]"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => handleMcpToggle(server.id)}
-                        className="h-4 w-4 rounded border-[var(--line)]"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm text-[var(--ink)]">{server.name}</p>
-                        {server.description && (
-                          <p className="truncate text-xs text-[var(--ink-muted)]">{server.description}</p>
-                        )}
-                      </div>
-                    </label>
-                  );
-                })
-              )}
-            </div>
-          </>
-        )}
+        <Popover
+          open={openPopup === 'mcp'}
+          onClose={() => setOpenPopup(null)}
+          anchorRef={toolsButtonRef}
+          placement="bottom-start"
+          className="max-h-[300px] w-[320px] overflow-y-auto overscroll-contain rounded-xl p-2"
+        >
+          {availableMcpServers.length === 0 ? (
+            <p className="px-3 py-2 text-xs text-[var(--ink-subtle)]">
+              {t('agentSettings.basics.noGlobalTools')}
+            </p>
+          ) : (
+            availableMcpServers.map(server => {
+              const checked = effectiveMcpServers?.includes(server.id) ?? false;
+              return (
+                <label
+                  key={server.id}
+                  className="flex cursor-pointer items-center gap-3 rounded-lg p-2 transition-colors hover:bg-[var(--hover-bg)]"
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => handleMcpToggle(server.id)}
+                    className="h-4 w-4 rounded border-[var(--line)]"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm text-[var(--ink)]">{server.name}</p>
+                    {server.description && (
+                      <p className="truncate text-xs text-[var(--ink-muted)]">{server.description}</p>
+                    )}
+                  </div>
+                </label>
+              );
+            })
+          )}
+        </Popover>
       </div>
       )}
 
