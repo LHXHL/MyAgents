@@ -230,6 +230,70 @@
   --space-12: 48px;
 }
 
+/* FileIcon type tones. Theme-independent hues tuned for paper surfaces; the
+   dark set lifts lightness so 16px glyphs keep their type signal. Colour is the
+   primary cue in dense file trees, so every tone exists in both schemes
+   (enforced by fileIconRegistry.test.ts). */
+:root {
+  /* file-icon tones */
+  --file-icon-folder: #b07f52;
+  --file-icon-text: #7d7870;
+  --file-icon-markdown: #5d6f86;
+  --file-icon-pdf: #c2483d;
+  --file-icon-word: #3f6fb3;
+  --file-icon-sheet: #3b8457;
+  --file-icon-slides: #cc6a35;
+  --file-icon-image: #8d5cab;
+  --file-icon-video: #c04d72;
+  --file-icon-audio: #c08128;
+  --file-icon-config: #6f6a62;
+  --file-icon-ts: #3a6fc0;
+  --file-icon-js: #b8941c;
+  --file-icon-react: #2f8fae;
+  --file-icon-html: #cf5c35;
+  --file-icon-py: #3d7d9e;
+  --file-icon-rust: #b1532f;
+  --file-icon-db: #4c759c;
+  --file-icon-shell: #44805f;
+  --file-icon-json: #a8862a;
+  --file-icon-archive: #9a7446;
+  --file-icon-lock: #8a7a58;
+  --file-icon-binary: #6a6f78;
+  --file-icon-secure: #a87526;
+  --file-icon-git: #cb5536;
+  --file-icon-unknown: #9a958c;
+}
+
+html[data-color-scheme='dark'] {
+  /* file-icon tones */
+  --file-icon-folder: #d1a273;
+  --file-icon-text: #aaa69e;
+  --file-icon-markdown: #93a6bf;
+  --file-icon-pdf: #e37a6e;
+  --file-icon-word: #7ea4e0;
+  --file-icon-sheet: #6fbf8b;
+  --file-icon-slides: #e6965f;
+  --file-icon-image: #bb92d6;
+  --file-icon-video: #e486a6;
+  --file-icon-audio: #e0aa58;
+  --file-icon-config: #b0aaa0;
+  --file-icon-ts: #78a3e8;
+  --file-icon-js: #e2c254;
+  --file-icon-react: #6cc4e0;
+  --file-icon-html: #ec8d63;
+  --file-icon-py: #74b2cf;
+  --file-icon-rust: #e08a63;
+  --file-icon-db: #88add0;
+  --file-icon-shell: #7cbf98;
+  --file-icon-json: #d8b958;
+  --file-icon-archive: #c9a273;
+  --file-icon-lock: #c3b38c;
+  --file-icon-binary: #a4aab4;
+  --file-icon-secure: #dcab5a;
+  --file-icon-git: #ec8a67;
+  --file-icon-unknown: #8f8a82;
+}
+
 /* The compact website link owns the App Icon and wordmark in one normal-flow
    box. Its 40px hit target shares x=12px with rail controls; a 10px inner
    inset centers the 20px App Icon on the functional glyph axis at x=32px.

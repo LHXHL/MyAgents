@@ -1,4 +1,4 @@
-import type { FileIconId } from "./fileIconAssets";
+import type { FileIconId } from "./fileIconGlyphs";
 
 export const FILE_ICON_CATEGORIES = [
   "folder",
