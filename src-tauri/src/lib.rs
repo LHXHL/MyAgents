@@ -11,10 +11,10 @@ pub mod browser_runtime_authority;
 pub mod cli;
 pub mod cliproxy;
 mod commands;
-mod cuse_skill;
 pub mod config_io;
 mod crash_artifact_retention;
 pub mod cron_task;
+mod cuse_skill;
 pub mod device_identity;
 pub mod document_processing;
 mod durable_fs;
@@ -25,7 +25,6 @@ pub mod floating_ball;
 pub mod floating_ball_pets;
 mod global_shortcut;
 pub mod grok_auth;
-pub mod tokendance;
 pub mod i18n;
 pub mod im;
 pub mod inbox;
@@ -44,6 +43,7 @@ mod macos_traffic_light;
 pub mod managed_codex;
 pub mod management_api;
 pub mod mcp_startup_admission;
+pub mod tokendance;
 pub use myagents_media_worker_protocol as media_worker_protocol;
 pub mod memory_auto_update;
 pub mod memory_evolution;
@@ -58,6 +58,7 @@ pub mod record;
 mod record_analytics;
 pub mod recording;
 mod resource_signature;
+mod runtime_distribution_policy;
 mod resource_download;
 pub mod runtime_launch_guard;
 pub mod search;
@@ -284,6 +285,10 @@ pub fn run() {
             prev(info);
         }));
     }
+
+    // Distribution composition is build-owned and must fail before any
+    // window, Sidecar, or user state can observe an invalid policy.
+    let _ = runtime_distribution_policy::policy();
 
     // NOTE: cleanup_stale_sidecars() was moved into .setup() callback below.
     // This ensures it only runs for the PRIMARY app instance, not when a second

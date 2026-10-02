@@ -292,7 +292,7 @@ export interface Task {
    *  copies land in `~/.myagents/tasks/...jsonl`.
    *
    *  Mutually exclusive with external runtime (`runtime ∈ {claude-code,
-   *  codex, gemini}`) — those runtimes manage their own provider; the Rust
+   *  codex}`) — those runtimes manage their own provider; the Rust
    *  validator rejects the combination. */
   providerId?: string;
   /** Per-task permission mode (auto / plan / fullAgency / …). Defaults to

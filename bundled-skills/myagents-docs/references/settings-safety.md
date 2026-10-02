@@ -10,7 +10,7 @@ MyAgents 的模型列表、Runtime 版本、Provider 验证状态、MCP/Skill �
 
 ### 更多 Agent Runtime
 
-允许使用用户系统安装的 Claude Code、Codex、Gemini CLI，默认关闭。只门控 `runtimeSource=system-cli`；Codex 订阅这类 `managed-provider` 由自己的 Provider readiness 控制。
+允许使用用户系统安装的 Claude Code、Codex CLI，默认关闭。只门控 `runtimeSource=system-cli`；Codex 订阅这类 `managed-provider` 由自己的 Provider readiness 控制。
 
 ### CLI 工具注册表
 

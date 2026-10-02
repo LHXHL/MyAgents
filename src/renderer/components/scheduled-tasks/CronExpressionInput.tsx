@@ -6,7 +6,7 @@
 
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertCircle, Code2 } from 'lucide-react';
+import { AlertIcon, CodeIcon } from '@/components/icons';
 import CustomSelect from '@/components/CustomSelect';
 import { isSupportedLocale } from '@/../shared/i18n';
 
@@ -394,7 +394,7 @@ export default function CronExpressionInput({
                 onClick={handleSwitchToCustom}
                 className="flex items-center gap-1 text-xs text-[var(--ink-muted)]/60 hover:text-[var(--ink-muted)] transition-colors"
               >
-                <Code2 className="h-3 w-3" />
+                <CodeIcon className="h-3 w-3" />
                 {t('schedule.useCron')}
               </button>
             </>
@@ -415,7 +415,7 @@ export default function CronExpressionInput({
             />
             {parseError && (
               <div className="mt-1.5 flex items-center gap-1 text-xs text-[var(--error)]">
-                <AlertCircle className="h-3 w-3" />
+                <AlertIcon className="h-3 w-3" />
                 {parseError}
               </div>
             )}

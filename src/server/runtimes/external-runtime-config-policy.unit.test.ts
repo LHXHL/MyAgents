@@ -21,14 +21,6 @@ describe('external runtime config capability policy', () => {
     });
   });
 
-  it('keeps Gemini model and permission on boundary-delayed RPCs', () => {
-    expect(getDefaultExternalConfigCapabilities('gemini')).toEqual({
-      model: 'live_session_rpc',
-      permissionMode: 'live_session_rpc',
-      reasoningEffort: 'unsupported',
-    });
-  });
-
   it('merges only consecutive config patch fields and lets later values win', () => {
     expect(mergeExternalRuntimeConfigPatches(
       { model: 'gpt-5.1', permissionMode: 'full-auto' },

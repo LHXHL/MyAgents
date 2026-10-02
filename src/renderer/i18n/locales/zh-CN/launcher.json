@@ -10,6 +10,8 @@
     "thoughtSaved": "记录已保存，可在任务中心查看",
     "runtimeNeedsAgent": "该工作区未配置 Agent，无法切换 Runtime",
     "runtimeSwitchFailed": "切换 Runtime 失败，请重试",
+    "runtimeUnavailable": "此 Runtime 产物不可用或未通过完整性校验，请先修复或重新安装 MyAgents",
+    "selectCompatibleProviderModel": "请先选择此 Runtime 支持的 Provider 和模型",
     "setDefaultFailed": "设为默认失败，请重试",
     "selectWorkspaceFirst": "请先选择工作区",
     "standaloneCronCreated": "独立定时任务已创建，可在任务中心查看",

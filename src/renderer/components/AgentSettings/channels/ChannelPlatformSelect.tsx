@@ -4,7 +4,12 @@ import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
-import { Download, Loader2, Puzzle, Trash2 } from 'lucide-react';
+import {
+  DownloadIcon,
+  LoaderIcon,
+  PluginIcon,
+  TrashIcon,
+} from '@/components/icons';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import { useToast } from '@/components/Toast';
 import ConfirmDialog from '@/components/ConfirmDialog';
@@ -135,7 +140,7 @@ export default function ChannelPlatformSelect({ onSelect }: ChannelPlatformSelec
       description: p.manifest?.description || t('agentSettings.channels.communityPluginDescription', { npmSpec: p.npmSpec }),
       iconElement: (
         <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--accent-warm-subtle)]">
-          <Puzzle className="h-6 w-6 text-[var(--accent-warm)]" />
+          <PluginIcon className="h-6 w-6 text-[var(--accent-warm)]" />
         </div>
       ),
       plugin: p,
@@ -175,7 +180,7 @@ export default function ChannelPlatformSelect({ onSelect }: ChannelPlatformSelec
                 title={t('agentSettings.channels.uninstallPlugin')}
                 className="absolute right-2 top-2 rounded-md p-1.5 text-[var(--ink-muted)] opacity-0 transition-all hover:bg-[var(--error-bg)] hover:text-[var(--error)] group-hover:opacity-100"
               >
-                <Trash2 className="h-3.5 w-3.5" />
+                <TrashIcon className="h-3.5 w-3.5" />
               </button>
             )}
           </div>
@@ -194,7 +199,7 @@ export default function ChannelPlatformSelect({ onSelect }: ChannelPlatformSelec
               <div className="relative">
                 <img src={pp.icon} alt={pp.name} className={`h-12 w-12 rounded-xl${isInstalling ? ' opacity-40' : ''}`} />
                 {isInstalling && (
-                  <Loader2 className="absolute inset-0 m-auto h-6 w-6 animate-spin text-[var(--ink-muted)]" />
+                  <LoaderIcon className="absolute inset-0 m-auto h-6 w-6 animate-spin text-[var(--ink-muted)]" />
                 )}
               </div>
               <div className="text-center">
@@ -212,10 +217,10 @@ export default function ChannelPlatformSelect({ onSelect }: ChannelPlatformSelec
           className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-[var(--line-strong)] bg-transparent p-6 transition-all hover:border-[var(--accent-warm)] hover:bg-[var(--accent-warm-subtle)]"
         >
           {loading ? (
-            <Loader2 className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />
+            <LoaderIcon className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />
           ) : (
             <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-dashed border-[var(--ink-subtle)]">
-              <Download className="h-6 w-6 text-[var(--ink-muted)]" />
+              <DownloadIcon className="h-6 w-6 text-[var(--ink-muted)]" />
             </div>
           )}
           <div className="text-center">
@@ -242,7 +247,7 @@ export default function ChannelPlatformSelect({ onSelect }: ChannelPlatformSelec
             disabled={!installNpmSpec.trim() || installing}
             className="rounded-lg bg-[var(--button-primary-bg)] px-4 py-2 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
           >
-            {installing ? <Loader2 className="h-4 w-4 animate-spin" /> : t('agentSettings.channels.install')}
+            {installing ? <LoaderIcon className="h-4 w-4 animate-spin" /> : t('agentSettings.channels.install')}
           </button>
           <button
             onClick={() => { setShowInstallInput(false); setInstallNpmSpec(''); }}

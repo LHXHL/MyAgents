@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Eye, EyeOff, ExternalLink } from 'lucide-react';
+import { EyeIcon, EyeOffIcon, ExternalIcon } from '@/components/icons';
 
 export default function DingtalkCredentialInput({
     clientId,
@@ -81,7 +81,7 @@ export default function DingtalkCredentialInput({
                         onClick={() => setShowSecret(!showSecret)}
                         className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-[var(--ink-muted)] hover:text-[var(--ink)]"
                     >
-                        {showSecret ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                        {showSecret ? <EyeOffIcon className="h-3.5 w-3.5" /> : <EyeIcon className="h-3.5 w-3.5" />}
                     </button>
                 </div>
             </div>
@@ -112,7 +112,7 @@ export default function DingtalkCredentialInput({
                             rel="noopener noreferrer"
                             className="mx-0.5 inline-flex items-center gap-0.5 text-[var(--button-primary-bg)] hover:underline"
                         >
-                            {t('agentSettings.imComponents.dingtalkOpenPlatform')}<ExternalLink className="inline h-2.5 w-2.5" />
+                            {t('agentSettings.imComponents.dingtalkOpenPlatform')}<ExternalIcon className="inline h-2.5 w-2.5" />
                         </a>{t('agentSettings.imComponents.dingtalkGuideStep1Suffix')}</li>
                         <li>2. {t('agentSettings.imComponents.dingtalkGuideStep2')}</li>
                         <li>3. {t('agentSettings.imComponents.dingtalkGuideStep3')}</li>

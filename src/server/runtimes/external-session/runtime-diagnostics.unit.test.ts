@@ -143,6 +143,29 @@ describe('Runtime diagnostics log projection', () => {
     });
   });
 
+  it('labels Integrated DSH extension degradation with its owning Runtime', () => {
+    const entries = projectRuntimeDiagnosticLogEntries(diagnostics({
+      runtime: 'dsh',
+      runtimeSource: 'integrated',
+      extensions: {
+        desiredRevision: 'desired',
+        effectiveRevision: 'desired',
+        state: 'applied',
+        components: [{
+          component: 'mcp',
+          id: 'local-tools',
+          state: 'unsupported',
+          code: 'dsh_stdio_launch_profile_unavailable',
+        }],
+      },
+    }));
+
+    expect(entries).toEqual([{
+      level: 'warn',
+      message: expect.stringContaining('[dsh-diag] DSH extension component(s) degraded'),
+    }]);
+  });
+
   it('caps issue fan-out and preserves omitted error severity in one summary', () => {
     const entries = projectRuntimeDiagnosticLogEntries(diagnostics({
       issues: Array.from({ length: 12 }, (_, index) => ({

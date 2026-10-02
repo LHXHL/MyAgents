@@ -18,10 +18,13 @@
 // half-fixed bundle.
 
 import { build } from 'esbuild';
+import { execFileSync } from 'node:child_process';
 import { readFile, mkdir, readdir, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { preparePlaywrightControlRuntime } from './prepare-playwright-control-runtime.mjs';
+import { dshBuildDefines } from './integrated-runtimes/dsh-build-selection.mjs';
 
 // Read package.json version once and inject as a compile-time constant.
 // This is the ONLY way `myagents version` can show the real shipped
@@ -33,6 +36,15 @@ import { preparePlaywrightControlRuntime } from './prepare-playwright-control-ru
 const PKG_VERSION = JSON.parse(
   await readFile(new URL('../package.json', import.meta.url), 'utf8'),
 ).version;
+
+let commit = null;
+let dirty = null;
+try {
+  const git = args => execFileSync('git', args, { encoding: 'utf8', cwd: new URL('..', import.meta.url), stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  commit = git(['rev-parse', 'HEAD']);
+  dirty = git(['status', '--porcelain']).length > 0;
+} catch { /* Source archives may omit Git. */ }
+const BUILD_IDENTITY = { version: PKG_VERSION, mode: 'bundle', capturedAt: new Date().toISOString(), commit, dirty };
 
 // Banner content kept as plain string literals here — no shell parsing
 // involved, so single/double quotes mean what they say.
@@ -165,10 +177,12 @@ await build({
   platform: 'node',
   target: 'node22',
   define: {
+    ...dshBuildDefines(fileURLToPath(new URL('..', import.meta.url))),
     // Compile-time version constant. Replaces `process.env.npm_package_version`
     // fallbacks across the codebase so `myagents version` reports the real
     // shipped build instead of a stale hardcoded string in production.
     __MYAGENTS_VERSION__: JSON.stringify(PKG_VERSION),
+    __MYAGENTS_BUILD_IDENTITY__: JSON.stringify(BUILD_IDENTITY),
   },
   // `postBuild` is our own hook — strip it before handing config to esbuild.
   ...(({ postBuild: _strip, ...rest }) => rest)(cfg),

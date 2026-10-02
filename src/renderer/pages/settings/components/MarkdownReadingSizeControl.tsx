@@ -17,7 +17,7 @@ export function MarkdownReadingSizeControl({ value, onChange }: MarkdownReadingS
         <p className="mt-0.5 text-xs text-[var(--ink-muted)]">{t('general.markdownReadingSizeDescription')}</p>
       </div>
       <div className="flex shrink-0 gap-0.5 rounded-full bg-[var(--paper-inset)] p-0.5">
-        {(['large', 'standard'] as const).map(size => (
+        {(['standard', 'large'] as const).map(size => (
           <button
             key={size}
             type="button"

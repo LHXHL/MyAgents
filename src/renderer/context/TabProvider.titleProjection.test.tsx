@@ -49,7 +49,7 @@ vi.mock('@/api/SseConnection', () => ({
 }));
 
 vi.mock('@/config/useConfigData', () => ({
-  useConfigData: () => ({ config: { multiAgentRuntime: false }, projects: [] }),
+  useConfigData: () => ({ config: {  }, projects: [] }),
 }));
 
 vi.mock('@/config/services/agentConfigService', () => ({

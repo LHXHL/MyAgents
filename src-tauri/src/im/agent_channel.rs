@@ -1,7 +1,6 @@
 use super::router::peer_binding_source_requires_freeze;
 use super::*;
 use crate::sidecar::{release_session_sidecar, SidecarOwner};
-use tauri::Manager;
 
 static CHANNEL_LIFECYCLE_LOCKS: std::sync::LazyLock<
     std::sync::Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
@@ -68,7 +67,8 @@ async fn rotate_peer_binding_for_new_command(
     router: &Arc<Mutex<SessionRouter>>,
     health: &Arc<HealthManager>,
     manager: &ManagedSidecarManager,
-    fallback_snapshot: &runtime_change::OwnedSessionSnapshot,
+    target_session_id: &str,
+    consumers: &ImConsumers,
 ) -> Result<String, String> {
     rotate_peer_binding_for_new_command_with_metadata_lookup(
         session_key,
@@ -76,8 +76,8 @@ async fn rotate_peer_binding_for_new_command(
         router,
         health,
         manager,
-        fallback_snapshot,
         |session_id| crate::sidecar::resolve_session_runtime_identity_full(session_id).is_some(),
+        Some((target_session_id, consumers)),
     )
     .await
 }
@@ -88,8 +88,8 @@ async fn rotate_peer_binding_for_new_command_with_metadata_lookup<F>(
     router: &Arc<Mutex<SessionRouter>>,
     health: &Arc<HealthManager>,
     manager: &ManagedSidecarManager,
-    fallback_snapshot: &runtime_change::OwnedSessionSnapshot,
     metadata_exists: F,
+    prepared: Option<(&str, &ImConsumers)>,
 ) -> Result<String, String>
 where
     F: FnOnce(&str) -> bool,
@@ -97,9 +97,15 @@ where
     // Match every other active-session projection lock order: projection ->
     // Router -> per-Session lifecycle. The caller already holds the per-peer
     // message lock, so no ordinary IM turn can race this mutation.
-    let _projection = health.lock_active_sessions_projection().await;
-    let mut router_guard = router.lock().await;
-    let prior = router_guard.peer_session_snapshot(session_key);
+    let prior = router.lock().await.peer_session_snapshot(session_key);
+    let metadata_disposition = router
+        .lock()
+        .await
+        .classify_peer_session_metadata_for_binding_rotation_with_lookup(
+            session_key,
+            metadata_exists,
+        );
+
     let _session_lifecycle = if let Some(peer) = prior.as_ref() {
         let guard = crate::sidecar::acquire_session_lifecycle(&[&peer.session_id]).await;
         if crate::sidecar::has_persisted_session_owner(&peer.session_id).await? {
@@ -118,16 +124,21 @@ where
                 short_session_id(&peer.session_id)
             ));
         }
-        let metadata_disposition = router_guard
-            .classify_peer_session_metadata_for_binding_rotation_with_lookup(
-                session_key,
-                metadata_exists,
-            );
         if peer_binding_source_requires_freeze(metadata_disposition) {
-            router_guard
-                .freeze_peer_before_binding_rotation(peer, fallback_snapshot)
-                .await
-                .map_err(|error| format!("Failed to freeze old Session: {error}"))?;
+            // This detached Router is only a transport helper; it never owns bindings.
+            let transport = { router.lock().await.http_client().clone() };
+            if peer.sidecar_port > 0 {
+                let response = transport.post(format!("http://127.0.0.1:{}/api/session/freeze-current", peer.sidecar_port))
+                    .json(&json!({"metadataBirthPending":peer.metadata_birth_pending,"metadataIndexed":peer.metadata_indexed}))
+                    .send().await.map_err(|e| format!("Failed to freeze old Session: {e}"))?;
+                if !response.status().is_success() {
+                    return Err("Failed to freeze old Session".into());
+                }
+            } else {
+                runtime_change::freeze_via_file_lock_status(&peer.session_id)
+                    .await
+                    .map_err(|error| format!("Failed to preserve old Session: {error}"))?;
+            }
         } else {
             ulog_info!(
                 "[im-router] Skipping freeze for unmaterialized source before /new: session_key={} session={} disposition={:?}",
@@ -141,7 +152,21 @@ where
         None
     };
 
-    let transition = router_guard.stage_new_session_binding(session_key);
+    drop(_session_lifecycle);
+    let _projection = health.lock_active_sessions_projection().await;
+    let mut router_guard = router.lock().await;
+    if router_guard
+        .peer_session_snapshot(session_key)
+        .as_ref()
+        .map(|p| p.session_id.as_str())
+        != prior.as_ref().map(|p| p.session_id.as_str())
+    {
+        return Err("Conversation binding changed; retry /new".into());
+    }
+    let transition = match prepared {
+        Some((id, _)) => router_guard.stage_materialized_session_binding(session_key, id),
+        None => router_guard.stage_new_session_binding(session_key),
+    };
     let new_session_id = transition.target_session_id().to_string();
     let old_session_id = transition.old_session_id().map(str::to_string);
 
@@ -161,18 +186,17 @@ where
         return Err(format!("Failed to save new conversation binding: {error}"));
     }
 
+    drop(router_guard);
+    drop(_projection);
+    if let Some((_, consumers)) = prepared {
+        enqueue::retire_im_consumer(consumers, manager, session_key).await;
+    }
     if let Some(old_session_id) = old_session_id.as_deref() {
         let owner = SidecarOwner::Agent(session_key.to_string());
         if let Err(error) = release_session_sidecar(manager, old_session_id, &owner).await {
-            let rolled_back = router_guard.rollback_peer_binding_transition(&transition);
-            let rollback_persisted = if rolled_back {
-                health
-                    .persist_active_sessions_snapshot(router_guard.active_sessions())
-                    .await
-                    .is_ok()
-            } else {
-                false
-            };
+            // Binding is committed. A teardown failure must not rebind to an already-retired consumer.
+            let rolled_back = false;
+            let rollback_persisted = false;
             ulog_error!(
                 "[im-router] operation=im_binding_rotation stage=owner-transfer result=failed session_key={} old={} new={} rollback={} rollback_persisted={} error={}",
                 session_key,
@@ -182,7 +206,7 @@ where
                 rollback_persisted,
                 error
             );
-            return Err(format!("Failed to release old Session owner: {error}"));
+            return Err(format!("新会话绑定已保存，但旧会话资源释放失败：{error}"));
         }
     }
 
@@ -344,13 +368,6 @@ pub(crate) async fn stop_agent_channels_runtime(
     }
 }
 
-fn filter_legacy_provider_command_providers(
-    mut providers: Vec<serde_json::Value>,
-) -> Vec<serde_json::Value> {
-    providers.retain(|p| p.get("id").and_then(|id| id.as_str()) != Some("codex-sub"));
-    providers
-}
-
 fn uses_openclaw_reply_protocol(msg: &ImMessage) -> bool {
     !msg.request_id.is_empty()
         && msg.delivery_protocol == Some(types::ImDeliveryProtocol::OpenClawReply)
@@ -366,11 +383,18 @@ async fn send_immediate_reply<A: adapter::ImStreamAdapter>(
     text: &str,
 ) -> adapter::AdapterResult<()> {
     if uses_openclaw_reply_protocol(msg) {
+        let payloads = adapter::split_message(text, adapter.max_message_length())
+            .into_iter()
+            .map(|chunk| json!({"text":chunk}))
+            .collect::<Vec<_>>();
         return adapter
-            .complete_reply_dispatch(&msg.request_id, &json!([{ "text": text }]))
+            .complete_reply_dispatch(&msg.request_id, &json!(payloads))
             .await;
     }
-    adapter.send_message(&msg.chat_id, text).await
+    for chunk in adapter::split_message(text, adapter.max_message_length()) {
+        adapter.send_message(&msg.chat_id, &chunk).await?;
+    }
+    Ok(())
 }
 
 async fn complete_immediate_without_reply<A: adapter::ImStreamAdapter>(
@@ -644,7 +668,6 @@ pub(super) async fn restart_agent_channel_instance<R: Runtime>(
             agent_id: agent_id.to_string(),
             last_active_channel: Arc::clone(&agent.last_active_channel),
             last_active_private_target: Arc::clone(&agent.last_active_private_target),
-            runtime_config: Arc::clone(&agent.runtime_config),
         })
     };
     let Some(link) = link else {
@@ -770,7 +793,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
     // Shared mutable whitelist — updated when a user binds via QR code
     let allowed_users = Arc::new(tokio::sync::RwLock::new(config.allowed_users.clone()));
 
-    // Shared mutable model — updated by /model command from Telegram
+    // Hot Agent template projection; established Sessions own their execution settings.
     let current_model = Arc::new(tokio::sync::RwLock::new(config.model.clone()));
 
     // Generate bind code for QR code binding flow
@@ -1209,7 +1232,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
 
     // Per-peer locks: shared between the processing loop and heartbeat runner.
     // Pattern C (IM Pipeline v2): scope was reduced to ms-level — covers only
-    // the enqueue phase (drift check + ensure_sidecar + POST /api/im/enqueue).
+    // the enqueue phase (Session identity check + ensure_sidecar + POST /api/im/enqueue).
     // The reply event stream now flows through `event_consumer.rs` long-poll,
     // independent of the lock.
     let peer_locks: PeerLocks = Arc::new(Mutex::new(HashMap::new()));
@@ -1222,7 +1245,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
     //
     //   Lock ordering (per task):
     //     1. Per-peer lock — serializes the enqueue phase per session_key
-    //        (drift check + ensure_sidecar + POST /api/im/enqueue, ~ms).
+    //        (Session identity check + ensure_sidecar + POST /api/im/enqueue, ~ms).
     //        Heartbeat runner also acquires this lock to keep the enqueue
     //        phase ordered (Pattern C/D).
     //     2. Global semaphore — limits total concurrent Sidecar I/O across all peers.
@@ -1242,7 +1265,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
     )));
     let runtime_config = Arc::new(tokio::sync::RwLock::new(config.runtime_config.clone()));
     // Parse provider env from config (for per-message forwarding to Sidecar)
-    // Wrapped in RwLock so /provider command can update it at runtime
+    // Hot template projection for future IM Session births.
     let provider_env: Option<serde_json::Value> = config
         .provider_env_json
         .as_ref()
@@ -1250,17 +1273,11 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
     let current_provider_env = Arc::new(tokio::sync::RwLock::new(provider_env));
     // MCP servers JSON — hot-reloadable
     let mcp_servers_json = Arc::new(tokio::sync::RwLock::new(config.mcp_servers_json.clone()));
-    let provider_id_for_loop = config.provider_id.clone();
     let bot_name_for_loop = config.name.clone();
     let bind_code_for_loop = bind_code.clone();
     let bot_id_for_loop = bot_id.clone();
     let allowed_users_for_loop = Arc::clone(&allowed_users);
-    let current_model_for_loop = Arc::clone(&current_model);
-    let current_provider_env_for_loop = Arc::clone(&current_provider_env);
-    let permission_mode_for_loop = Arc::clone(&permission_mode);
     let runtime_for_loop = Arc::clone(&runtime);
-    let runtime_config_for_loop = Arc::clone(&runtime_config);
-    let mcp_servers_json_for_loop = Arc::clone(&mcp_servers_json);
     let pending_approvals_for_loop = Arc::clone(&pending_approvals);
     let pending_questions_for_loop = Arc::clone(&pending_questions);
     let approval_tx_for_loop = approval_tx.clone();
@@ -1405,6 +1422,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
             first_received: Instant,
         }
         let mut media_groups: HashMap<String, MediaGroupEntry> = HashMap::new();
+        let mut model_menus: HashMap<String, model_commands::ModelMenu> = HashMap::new();
         const MEDIA_GROUP_TIMEOUT: Duration = Duration::from_millis(500);
         const MEDIA_GROUP_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -1617,8 +1635,24 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         continue;
                     }
 
+                    let command = model_commands::management_command(&text);
+                    if msg.source_type == ImSourceType::Group && command.is_some() {
+                        complete_immediate_without_reply(adapter_for_reply.as_ref(), &msg).await;
+                        continue;
+                    }
+                    if command.is_some() && !matches!(command, Some("/start" | "/help"))
+                        && !allowed_users_for_loop.read().await.contains(&msg.sender_id) {
+                        complete_immediate_without_reply(adapter_for_reply.as_ref(), &msg).await;
+                        continue;
+                    }
+                    if matches!(command, Some("/provider" | "/mode")) {
+                        let reply = if command == Some("/provider") { "/provider 已移除，请发送 /model 按供应商查看并选择模型。" } else { "/mode 已移除，IM 会话使用无需审批的权限策略。" };
+                        let _ = send_immediate_reply(adapter_for_reply.as_ref(), &msg, reply).await;
+                        continue;
+                    }
+
                     // Handle plain /start (first-time interaction, not a bind)
-                    if text == "/start" {
+                    if command == Some("/start") {
                         if let Err(e) = send_immediate_reply(
                             adapter_for_reply.as_ref(),
                             &msg,
@@ -1626,9 +1660,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                              可用命令：\n\
                              /help — 查看所有命令\n\
                              /new — 开始新对话\n\
-                             /model — 查看或切换 AI 模型\n\
-                             /provider — 查看或切换 AI 供应商\n\
-                             /mode — 切换权限模式\n\
+                             /model — 查看和切换模型\n\
                              /status — 查看状态\n\n\
                              直接发消息即可开始对话。",
                         ).await {
@@ -1637,18 +1669,20 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         continue;
                     }
 
-                    if text == "/help" {
-                        let mut help = String::from(
-                            "📖 可用命令\n\n\
-                             /new — 开始新对话（清空当前上下文）\n\
-                             /model — 查看当前供应商的可用模型\n\
-                             /model <序号或模型ID> — 切换模型\n\
-                             /provider — 查看可用 AI 供应商\n\
-                             /provider <序号或ID> — 切换供应商\n\
-                             /mode — 查看当前权限模式\n\
-                             /mode <模式> — 切换模式（plan / auto / full）\n\
-                             /status — 查看会话状态\n\
-                             /help — 显示本帮助",
+                    if command == Some("/help") {
+                        let (client, session_id) = {
+                            let router = router_clone.lock().await;
+                            (router.http_client().clone(), router.get_peer_session(&session_key)
+                                .filter(|peer| peer.metadata_indexed).map(|peer| peer.session_id.clone()))
+                        };
+                        let model_line = model_commands::model_help_line(&client, &manager_clone, session_id.as_deref()).await;
+                        let mut help = format!(
+                            "📖 私聊命令\n\n直接发送消息即可开始对话。\n\n\
+                             /new — 使用最新 Agent 默认设置开始新对话，历史仍保留\n\
+                             /model — {model_line}\n\
+                             /model <序号> — 选择模型，并更新 Agent 默认设置\n\
+                             /status — 查看当前会话状态\n\
+                             /help — 查看帮助"
                         );
                         // Append plugin commands if available (translate English descriptions to Chinese)
                         if let AnyAdapter::Bridge(ref bridge) = *adapter_for_reply {
@@ -1661,22 +1695,14 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                 }
                             }
                         }
-                        help.push_str("\n\n💬 直接发送文字即可与 AI 对话。\n🔒 工具审批：收到权限请求时，回复「允许」「始终允许」或「拒绝」。");
+                        help.push_str("\n\nAgent 默认设置变化不会自动修改已有对话。\n以上管理命令仅支持私聊。");
                         if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &help).await {
                             ulog_warn!("[im-cmd] send_message (/help) failed: {}", e);
                         }
                         continue;
                     }
 
-                    if text == "/new" {
-                        // Group auth check: only allowedUsers can /new in groups
-                        if msg.source_type == ImSourceType::Group {
-                            let is_allowed = allowed_users_for_loop.read().await.contains(&msg.sender_id);
-                            if !is_allowed {
-                                complete_immediate_without_reply(adapter_for_reply.as_ref(), &msg).await;
-                                continue; // Silently skip unauthorized /new
-                            }
-                        }
+                    if command == Some("/new") {
                         adapter_for_reply.ack_processing(&chat_id, &message_id).await;
                         let peer_lock = {
                             let mut locks = peer_locks_for_loop.lock().await;
@@ -1687,24 +1713,13 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         };
                         let _peer_guard = peer_lock.lock().await;
                         let runtime = runtime_for_loop.read().await.clone();
-                        let fallback_snapshot = runtime_change::build_snapshot_from_channel_state(
-                            &runtime_for_loop,
-                            &current_model_for_loop,
-                            &permission_mode_for_loop,
-                            &mcp_servers_json_for_loop,
-                            &runtime_config_for_loop,
-                            provider_id_for_loop.clone(),
-                            &current_provider_env_for_loop,
-                        ).await;
-                        let result = rotate_peer_binding_for_new_command(
-                            &session_key,
-                            &runtime,
-                            &router_clone,
-                            &health_clone,
-                            &manager_clone,
-                            &fallback_snapshot,
-                        )
-                        .await;
+                        let (client, workspace) = { let router = router_clone.lock().await; (router.http_client().clone(), router.peer_session_workspace(&session_key).unwrap_or_else(|| router.default_workspace_path())) };
+                        let result = match model_commands::create_birth(&client, &manager_clone, &json!({ "agentDir": workspace, "seedMaxPermission": true, "origin": { "kind": "agent-channel", "surface": "channel_message" } })).await {
+                            Ok(target_id) => rotate_peer_binding_for_new_command(&session_key, &runtime, &router_clone, &health_clone, &manager_clone, &target_id, &im_consumers_for_loop).await,
+                            Err(error) => Err(error),
+                        };
+                        model_menus.remove(&session_key);
+                        drop(_peer_guard);
                         adapter_for_reply.ack_clear(&chat_id, &message_id).await;
                         match result {
                             Ok(new_id) => {
@@ -1712,7 +1727,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                 // context is cleared. A failed `/new` keeps A
                                 // fully usable, including its pending group history.
                                 group_history_for_loop.lock().await.clear(&session_key);
-                                drop_im_consumer(&im_consumers_for_loop, &session_key).await;
+                                enqueue::retire_im_consumer(&im_consumers_for_loop, &manager_clone, &session_key).await;
                                 let reply = format!(
                                     "✅ 已创建新对话 ({})",
                                     short_session_id(&new_id)
@@ -1734,33 +1749,12 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         continue;
                     }
 
-                    // Private-only commands: silently skip in group chats (v0.1.28)
-                    // Note: /start and /help are already handled above (before this point),
-                    // so they don't need to be listed here.
-                    if msg.source_type == ImSourceType::Group
-                        && (text.starts_with("/model")
-                            || text.starts_with("/provider")
-                            || text.starts_with("/mode")
-                            || text == "/status")
-                    {
-                        complete_immediate_without_reply(adapter_for_reply.as_ref(), &msg).await;
-                        continue;
-                    }
-
-                    if text == "/status" {
+                    if command == Some("/status") {
                         adapter_for_reply.ack_processing(&chat_id, &message_id).await;
-                        let router = router_clone.lock().await;
-                        let sessions = router.active_sessions();
-                        let current = sessions.iter().find(|s| s.session_key == session_key);
-                        let reply = match current {
-                            Some(s) => format!(
-                                "📊 Session 状态\n\n工作区: {}\n消息数: {}\n会话: {}",
-                                s.workspace_path, s.message_count, &session_key
-                            ),
-                            None => format!(
-                                "📊 Session 状态\n\n当前无活跃 Session\n会话键: {}",
-                                session_key
-                            ),
+                        let (peer, client) = { let router = router_clone.lock().await; (router.peer_session_snapshot(&session_key), router.http_client().clone()) };
+                        let reply = match peer {
+                            Some(peer) => model_commands::read_status(&client, &manager_clone, &peer).await.unwrap_or_else(|error| format!("无法读取当前会话状态：{error}")),
+                            None => "当前尚未建立会话。发送消息开始对话，或发送 /model 选择模型。".into(),
                         };
                         adapter_for_reply.ack_clear(&chat_id, &message_id).await;
                         if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &reply).await {
@@ -1769,671 +1763,49 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         continue;
                     }
 
-                    // /model — show or switch AI model (runtime-aware)
-                    if text.starts_with("/model") {
-                        let arg = text.strip_prefix("/model").unwrap_or("").trim().to_string();
-                        let current_runtime = runtime_for_loop.read().await.clone();
-
-                        if is_external_runtime_type(&current_runtime) {
-                            let current_runtime_config = runtime_config_for_loop.read().await.clone();
-                            let current_runtime_source = runtime_config_string(
-                                current_runtime_config.as_ref(),
-                                "source",
-                            );
-                            let managed_codex_runtime = current_runtime == "codex"
-                                && current_runtime_source.as_deref() == Some("managed-provider");
-                            let current_display = runtime_config_string(
-                                current_runtime_config.as_ref(),
-                                "model",
-                            ).unwrap_or_else(|| "(默认)".to_string());
-
-                            let mut models = fallback_runtime_models(&current_runtime);
-                            if models.is_empty() {
-                                match ensure_sidecar_port_for_command(
-                                    &router_clone,
-                                    &session_key,
-                                    &current_runtime,
-                                    current_runtime_source.as_deref(),
-                                    &app_clone,
-                                    &manager_clone,
-                                    &health_clone,
-                                ).await {
-                                    Ok(port) => {
-                                        let client = {
-                                            let router = router_clone.lock().await;
-                                            router.http_client().clone()
-                                        };
-                                        match query_runtime_models_from_sidecar(
-                                            &client,
-                                            port,
-                                            &current_runtime,
-                                            current_runtime_source.as_deref(),
-                                        ).await {
-                                            Ok(remote_models) => models = remote_models,
-                                            Err(e) => {
-                                                if arg.is_empty() {
-                                                    let reply = format!(
-                                                        "❌ 查询 {} 模型列表失败：{}\n\n你仍可以直接使用 /model <模型ID> 设置模型。",
-                                                        runtime_display_name(&current_runtime),
-                                                        e,
-                                                    );
-                                                    if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &reply).await {
-                                                        ulog_warn!("[im-cmd] send_message (/model runtime query failed) failed: {}", e);
-                                                    }
-                                                    continue;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        if arg.is_empty() {
-                                            let reply = format!(
-                                                "❌ 启动 {} Runtime 以查询模型失败：{}\n\n你仍可以直接使用 /model <模型ID> 设置模型。",
-                                                runtime_display_name(&current_runtime),
-                                                e,
-                                            );
-                                            if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &reply).await {
-                                                ulog_warn!("[im-cmd] send_message (/model runtime ensure failed) failed: {}", e);
-                                            }
-                                            continue;
-                                        }
-                                    }
-                                }
-                            }
-
-                            if arg.is_empty() {
-                                let mut menu = format!(
-                                    "📊 当前 Runtime：{}\n当前模型: {}\n\n可用模型:\n",
-                                    runtime_display_name(&current_runtime),
-                                    current_display,
-                                );
-                                if models.is_empty() {
-                                    menu.push_str("(未能获取模型列表，可直接输入模型 ID)\n");
-                                } else {
-                                    for (i, m) in models.iter().enumerate() {
-                                        let value_display = if m.value.is_empty() { "default" } else { m.value.as_str() };
-                                        let suffix = if m.is_default { " [默认]" } else { "" };
-                                        menu.push_str(&format!(
-                                            "{}. {} ({}){}\n",
-                                            i + 1,
-                                            m.display_name,
-                                            value_display,
-                                            suffix,
-                                        ));
-                                    }
-                                }
-                                menu.push_str("\n用法: /model <序号或模型ID>");
-                                if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &menu).await {
-                                    ulog_warn!("[im-cmd] send_message (/model runtime list) failed: {}", e);
-                                }
-                            } else {
-                                let model_id = if let Ok(idx) = arg.parse::<usize>() {
-                                    if idx == 0 {
-                                        None
-                                    } else {
-                                        models.get(idx - 1).map(|m| m.value.clone())
-                                    }
-                                } else {
-                                    Some(arg)
-                                };
-
-                                match model_id {
-                                    Some(id) => {
-                                        let link = agent_link_for_loop.read().await.clone();
-                                        if managed_codex_runtime {
-                                            if let Some(link) = link {
-                                                let agent_id = link.agent_id.clone();
-                                                let channel_id = link.channel_id.clone();
-                                                let model_for_disk = id.clone();
-                                                let persisted = tokio::task::spawn_blocking(move || {
-                                                    persist_agent_channel_model(
-                                                        &agent_id,
-                                                        &channel_id,
-                                                        &model_for_disk,
-                                                    )
-                                                    .map(|patch| (agent_id, patch))
-                                                })
-                                                .await
-                                                .map_err(|error| error.to_string())
-                                                .and_then(|result| result);
-                                                let reload_result = match persisted {
-                                                    Ok((agent_id, patch)) => {
-                                                        match app_clone.try_state::<ManagedAgents>() {
-                                                            Some(agent_state) => reload_agent_config_from_disk(
-                                                                &app_clone,
-                                                                agent_state.inner(),
-                                                                &manager_clone,
-                                                                agent_id,
-                                                                patch,
-                                                            ).await,
-                                                            None => Err("Agent runtime state is unavailable".to_string()),
-                                                        }
-                                                    }
-                                                    Err(error) => Err(error),
-                                                };
-                                                if let Err(error) = reload_result {
-                                                    ulog_warn!("[im] /model managed model update failed: {}", error);
-                                                    if let Err(reply_error) = send_immediate_reply(
-                                                        adapter_for_reply.as_ref(),
-                                                        &msg,
-                                                        &format!("❌ 模型切换失败：{}", error),
-                                                    ).await {
-                                                        ulog_warn!("[im-cmd] send_message (/model managed update failed) failed: {}", reply_error);
-                                                    }
-                                                    continue;
-                                                }
-                                            } else {
-                                                ulog_warn!("[im] /model managed runtime has no Agent owner");
-                                                if let Err(error) = send_immediate_reply(
-                                                    adapter_for_reply.as_ref(),
-                                                    &msg,
-                                                    "❌ 当前 managed Runtime 未绑定 Agent，无法持久化模型",
-                                                ).await {
-                                                    ulog_warn!("[im-cmd] send_message (/model managed owner missing) failed: {}", error);
-                                                }
-                                                continue;
-                                            }
-                                        } else {
-                                            let new_config = runtime_config_with_string(
-                                                current_runtime_config,
-                                                "model",
-                                                Some(id.clone()),
-                                            );
-                                            *runtime_config_for_loop.write().await = Some(new_config.clone());
-                                            let sync_config = if id.is_empty() {
-                                                let mut map = new_config.as_object().cloned().unwrap_or_default();
-                                                map.insert("model".to_string(), serde_json::Value::Null);
-                                                serde_json::Value::Object(map)
-                                            } else {
-                                                new_config.clone()
-                                            };
-                                            sync_runtime_config_to_sidecars(
-                                                &router_clone,
-                                                &current_runtime,
-                                                &sync_config,
-                                            ).await;
-                                            if let Some(link) = link {
-                                                let agent_id = link.agent_id.clone();
-                                                *link.runtime_config.write().await = Some(new_config.clone());
-                                                let config_for_disk = new_config.clone();
-                                                tokio::task::spawn_blocking(move || {
-                                                    let patch = AgentConfigPatch {
-                                                        runtime_config: Some(Some(config_for_disk)),
-                                                        ..Default::default()
-                                                    };
-                                                    if let Err(e) = persist_agent_config_patch(&agent_id, &patch) {
-                                                        ulog_warn!("[im] /model runtime persist failed: {}", e);
-                                                    }
-                                                });
-                                                let _ = app_clone.emit("agent:config-changed", json!({}));
-                                            }
-                                        }
-                                        let display = if id.is_empty() { "(默认)".to_string() } else { id.clone() };
-                                        ulog_info!("[im] /model: set {} runtime model to {}", current_runtime, display);
-                                        if let Err(e) = send_immediate_reply(
-                                            adapter_for_reply.as_ref(),
-                                            &msg,
-                                            &format!("✅ {} 模型已切换为: {}", runtime_display_name(&current_runtime), display),
-                                        ).await {
-                                            ulog_warn!("[im-cmd] send_message (/model runtime switch) failed: {}", e);
-                                        }
-                                    }
-                                    None => {
-                                        if let Err(e) = send_immediate_reply(
-                                            adapter_for_reply.as_ref(),
-                                            &msg,
-                                            "❌ 无效的序号，请使用 /model 查看可用列表",
-                                        ).await {
-                                            ulog_warn!("[im-cmd] send_message (/model runtime invalid) failed: {}", e);
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            // Find current provider's models from availableProvidersJson (lazy-read from disk)
-                            let models: Vec<serde_json::Value> = {
-                                let providers: Vec<serde_json::Value> = {
-                                    let ap = tokio::task::spawn_blocking(read_available_providers_from_disk)
-                                        .await.ok().flatten();
-                                    ap.as_ref()
-                                        .and_then(|json| serde_json::from_str(json).ok())
-                                        .map(filter_legacy_provider_command_providers)
-                                        .unwrap_or_default()
-                                };
-                                let current_env = current_provider_env_for_loop.read().await;
-                                let current_provider = if current_env.is_none() {
-                                    // Subscription (Anthropic) — find provider whose id contains "sub"
-                                    providers.iter().find(|p| {
-                                        p["id"].as_str().map(|s| s.contains("sub")).unwrap_or(false)
-                                    }).cloned()
-                                } else {
-                                    // Match by baseUrl
-                                    let base_url = current_env.as_ref()
-                                        .and_then(|v| v["baseUrl"].as_str());
-                                    providers.iter()
-                                        .find(|p| p["baseUrl"].as_str() == base_url)
-                                        .cloned()
-                                };
-                                current_provider
-                                    .and_then(|p| p["models"].as_array().cloned())
-                                    .unwrap_or_default()
-                            };
-
-                            if arg.is_empty() {
-                                let current = current_model_for_loop.read().await;
-                                let display = current.as_deref().unwrap_or("(默认)");
-
-                                if models.is_empty() {
-                                    // Fallback: no models info available
-                                    let help = format!(
-                                        "📊 当前模型: {}\n\n提示: 可直接输入模型 ID 切换\n用法: /model <模型ID>",
-                                        display,
-                                    );
-                                    if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &help).await {
-                                        ulog_warn!("[im-cmd] send_message (/model help) failed: {}", e);
-                                    }
-                                } else {
-                                    let mut menu = format!("📊 当前模型: {}\n\n可用模型:\n", display);
-                                    for (i, m) in models.iter().enumerate() {
-                                        let model_id = m["model"].as_str().unwrap_or("?");
-                                        let model_name = m["modelName"].as_str().unwrap_or(model_id);
-                                        menu.push_str(&format!("{}. {} ({})\n", i + 1, model_name, model_id));
-                                    }
-                                    menu.push_str("\n用法: /model <序号或模型ID>");
-                                    if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &menu).await {
-                                        ulog_warn!("[im-cmd] send_message (/model list) failed: {}", e);
-                                    }
-                                }
-                            } else {
-                                // Resolve target model: by index (1-based) or by model ID
-                                let model_id = if let Ok(idx) = arg.parse::<usize>() {
-                                    if idx == 0 {
-                                        None // invalid: 1-based index
-                                    } else {
-                                        models.get(idx - 1)
-                                            .and_then(|m| m["model"].as_str())
-                                            .map(|s| s.to_string())
-                                    }
-                                } else {
-                                    Some(arg) // accept any string as model ID
-                                };
-
-                                match model_id {
-                                    Some(id) => {
-                                        // Update shared model state
-                                        {
-                                            let mut model_guard = current_model_for_loop.write().await;
-                                            *model_guard = Some(id.clone());
-                                        }
-                                        // If peer has an active Sidecar, log it
-                                        let router = router_clone.lock().await;
-                                        let sessions = router.active_sessions();
-                                        if let Some(s) = sessions.iter().find(|s| s.session_key == session_key) {
-                                            drop(router);
-                                            ulog_info!("[im] /model: set to {} (session={})", id, s.session_key);
-                                        }
-                                        if let Err(e) = send_immediate_reply(
-                                            adapter_for_reply.as_ref(),
-                                            &msg,
-                                            &format!("✅ 模型已切换为: {}", id),
-                                        ).await {
-                                            ulog_warn!("[im-cmd] send_message (/model switch) failed: {}", e);
-                                        }
-
-                                        // Persist to config.json + notify frontend
-                                        let bid = bot_id_for_loop.clone();
-                                        let model_str = id.clone();
-                                        tokio::task::spawn_blocking(move || {
-                                            let patch = BotConfigPatch {
-                                                model: Some(model_str),
-                                                ..Default::default()
-                                            };
-                                            if let Err(e) = persist_bot_config_patch(&bid, &patch) {
-                                                ulog_warn!("[im] /model persist failed: {}", e);
-                                            }
-                                        });
-                                        let _ = app_clone.emit("im:bot-config-changed", json!({
-                                            "botId": bot_id_for_loop,
-                                        }));
-                                    }
-                                    None => {
-                                        if let Err(e) = send_immediate_reply(
-                                            adapter_for_reply.as_ref(),
-                                            &msg,
-                                            "❌ 无效的序号，请使用 /model 查看可用列表",
-                                        ).await {
-                                            ulog_warn!("[im-cmd] send_message (/model invalid) failed: {}", e);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        continue;
-                    }
-
-                    // /provider — show or switch AI provider
-                    if text.starts_with("/provider") {
-                        let arg = text.strip_prefix("/provider").unwrap_or("").trim().to_string();
-                        let current_runtime = runtime_for_loop.read().await.clone();
-
-                        if is_external_runtime_type(&current_runtime) {
-                            let runtime_name = runtime_display_name(&current_runtime);
-                            let reply = if arg.is_empty() {
-                                format!(
-                                    "📡 当前 Runtime：{}\n\n供应商/账号由 {} 管理，IM Bot 不能通过 /provider 切换 MyAgents 供应商。\n如需切换模型，请使用 /model 查看 {} 可用模型。",
-                                    runtime_name,
-                                    runtime_name,
-                                    runtime_name,
-                                )
-                            } else {
-                                format!(
-                                    "❌ 当前 Runtime 是 {}，不能通过 /provider 切换 MyAgents 供应商。\n供应商/账号由 {} 管理。如需切换模型，请使用 /model。",
-                                    runtime_name,
-                                    runtime_name,
-                                )
-                            };
-                            if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &reply).await {
-                                ulog_warn!("[im-cmd] send_message (/provider runtime) failed: {}", e);
-                            }
+                    if command == Some("/model") {
+                        let arg = text.split_once(char::is_whitespace).map(|(_, arg)| arg.trim()).unwrap_or("");
+                        let link = agent_link_for_loop.read().await.clone();
+                        let Some(link) = link else {
+                            let _ = send_immediate_reply(adapter_for_reply.as_ref(), &msg, "当前渠道未绑定 Agent，无法选择模型。").await;
                             continue;
-                        }
-
-                        // Parse available providers from config (lazy-read from disk)
-                        let providers: Vec<serde_json::Value> = {
-                            let ap = tokio::task::spawn_blocking(read_available_providers_from_disk)
-                                .await.ok().flatten();
-                            ap.as_ref()
-                                .and_then(|json| serde_json::from_str(json).ok())
-                                .map(filter_legacy_provider_command_providers)
-                                .unwrap_or_default()
                         };
-
+                        let (client, session_id, workspace) = {
+                            let router = router_clone.lock().await;
+                            (router.http_client().clone(), router.get_peer_session(&session_key).filter(|peer| peer.metadata_indexed).map(|peer| peer.session_id.clone()), router.peer_session_workspace(&session_key).unwrap_or_else(|| router.default_workspace_path()).to_string_lossy().to_string())
+                        };
                         if arg.is_empty() {
-                            // Show current provider + available list
-                            let current_env = current_provider_env_for_loop.read().await;
-                            let current_name = if current_env.is_none() {
-                                "Anthropic (订阅) [默认]".to_string()
-                            } else {
-                                // Find name by matching baseUrl
-                                let base_url = current_env.as_ref()
-                                    .and_then(|v| v["baseUrl"].as_str());
-                                providers.iter()
-                                    .find(|p| p["baseUrl"].as_str() == base_url)
-                                    .and_then(|p| p["name"].as_str())
-                                    .unwrap_or("自定义")
-                                    .to_string()
-                            };
-
-                            let mut menu = format!("📡 当前供应商: {}\n\n可用供应商:\n", current_name);
-                            for (i, p) in providers.iter().enumerate() {
-                                let name = p["name"].as_str().unwrap_or("?");
-                                let id = p["id"].as_str().unwrap_or("?");
-                                menu.push_str(&format!("{}. {} ({})\n", i + 1, name, id));
-                            }
-                            menu.push_str("\n用法: /provider <序号或ID>");
-
-                            if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &menu).await {
-                                ulog_warn!("[im-cmd] send_message (/provider list) failed: {}", e);
-                            }
-                        } else {
-                            // Switch provider by index (1-based) or ID
-                            let target = if let Ok(idx) = arg.parse::<usize>() {
-                                providers.get(idx.saturating_sub(1)).cloned()
-                            } else {
-                                providers.iter()
-                                    .find(|p| p["id"].as_str().map(|s| s == arg).unwrap_or(false))
-                                    .cloned()
-                            };
-
-                            match target {
-                                Some(provider) => {
-                                    let name = provider["name"].as_str().unwrap_or("?");
-                                    let primary_model = provider["primaryModel"].as_str().unwrap_or("");
-                                    let provider_id = provider["id"].as_str().unwrap_or("");
-
-                                    // Subscription provider → clear provider env
-                                    let (penv_json, pid_str): (Option<String>, Option<String>) = if provider_id.contains("sub") {
-                                        *current_provider_env_for_loop.write().await = None;
-                                        (Some(String::new()), Some(String::new())) // empty = clear
-                                    } else {
-                                        // Build new provider env from stored info (include apiProtocol)
-                                        let new_env = serde_json::json!({
-                                            "baseUrl": provider["baseUrl"],
-                                            "apiKey": provider["apiKey"],
-                                            "authType": provider["authType"],
-                                            "apiProtocol": provider["apiProtocol"],
-                                        });
-                                        let env_str = new_env.to_string();
-                                        *current_provider_env_for_loop.write().await = Some(new_env);
-                                        (Some(env_str), Some(provider_id.to_string()))
-                                    };
-
-                                    // Also switch model to the provider's primary model
-                                    let model_for_persist = if !primary_model.is_empty() {
-                                        *current_model_for_loop.write().await = Some(primary_model.to_string());
-                                        Some(primary_model.to_string())
-                                    } else {
-                                        None
-                                    };
-
-                                    if let Err(e) = send_immediate_reply(
-                                        adapter_for_reply.as_ref(),
-                                        &msg,
-                                        &format!("✅ 已切换供应商: {}\n模型: {}", name, primary_model),
-                                    ).await {
-                                        ulog_warn!("[im-cmd] send_message (/provider switch) failed: {}", e);
-                                    }
-
-                                    // Persist to config.json + notify frontend
-                                    let bid = bot_id_for_loop.clone();
-                                    tokio::task::spawn_blocking(move || {
-                                        let patch = BotConfigPatch {
-                                            model: model_for_persist,
-                                            provider_env_json: penv_json,
-                                            provider_id: pid_str,
-                                            ..Default::default()
-                                        };
-                                        if let Err(e) = persist_bot_config_patch(&bid, &patch) {
-                                            ulog_warn!("[im] /provider persist failed: {}", e);
-                                        }
-                                    });
-                                    let _ = app_clone.emit("im:bot-config-changed", json!({
-                                        "botId": bot_id_for_loop,
-                                    }));
-                                }
-                                None => {
-                                    if let Err(e) = send_immediate_reply(
-                                        adapter_for_reply.as_ref(),
-                                        &msg,
-                                        "❌ 未找到该供应商，请使用 /provider 查看可用列表",
-                                    ).await {
-                                        ulog_warn!("[im-cmd] send_message (/provider not found) failed: {}", e);
-                                    }
-                                }
-                            }
-                        }
-                        continue;
-                    }
-
-                    // /mode — show or switch permission mode
-                    if text.starts_with("/mode") {
-                        let arg = text.strip_prefix("/mode").unwrap_or("").trim().to_lowercase();
-                        let current_runtime = runtime_for_loop.read().await.clone();
-                        let current_runtime_config = runtime_config_for_loop.read().await.clone();
-                        let managed_codex_runtime = current_runtime == "codex"
-                            && current_runtime_config
-                                .as_ref()
-                                .and_then(|value| value.get("source"))
-                                .and_then(|value| value.as_str())
-                                == Some("managed-provider");
-
-                        if is_external_runtime_type(&current_runtime) && !managed_codex_runtime {
-                            let choices = runtime_permission_choices(&current_runtime);
-                            let current = permission_mode_for_loop.read().await.clone();
-
-                            if arg.is_empty() {
-                                let mut menu = format!(
-                                    "🔐 当前 Runtime：{}\n当前权限模式: {}\n\n可选模式：\n",
-                                    runtime_display_name(&current_runtime),
-                                    current,
-                                );
-                                for choice in &choices {
-                                    menu.push_str(&format!(
-                                        "• {} — {}（{}）\n",
-                                        choice.value,
-                                        choice.label,
-                                        choice.description,
-                                    ));
-                                }
-                                menu.push_str("\n用法: /mode <模式>");
-                                if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &menu).await {
-                                    ulog_warn!("[im-cmd] send_message (/mode runtime display) failed: {}", e);
-                                }
-                            } else {
-                                let target = choices
-                                    .iter()
-                                    .find(|choice| choice.value.eq_ignore_ascii_case(&arg))
-                                    .cloned();
-                                let Some(target) = target else {
-                                    let allowed = choices.iter().map(|c| c.value.as_str()).collect::<Vec<_>>().join(" / ");
-                                    if let Err(e) = send_immediate_reply(
-                                        adapter_for_reply.as_ref(),
-                                        &msg,
-                                        &format!("❌ 无效模式，可选: {}", allowed),
-                                    ).await {
-                                        ulog_warn!("[im-cmd] send_message (/mode runtime invalid) failed: {}", e);
-                                    }
+                            if session_id.is_some() {
+                                let lock = { let mut locks = peer_locks_for_loop.lock().await; locks.entry(session_key.clone()).or_insert_with(|| Arc::new(Mutex::new(()))).clone() };
+                                let fence = lock.lock().await;
+                                let result = model_commands::ensure_peer_snapshot(&router_clone, &health_clone, &manager_clone, &session_key).await;
+                                drop(fence);
+                                if let Err(error) = result {
+                                    let _ = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &error).await;
                                     continue;
-                                };
-
-                                let new_config = runtime_config_with_string(
-                                    current_runtime_config,
-                                    "permissionMode",
-                                    Some(target.value.clone()),
-                                );
-                                *permission_mode_for_loop.write().await = target.value.clone();
-                                sync_runtime_config_to_sidecars(
-                                    &router_clone,
-                                    &current_runtime,
-                                    &new_config,
-                                ).await;
-
-                                let bid = bot_id_for_loop.clone();
-                                let mode_for_disk = target.value.clone();
-                                tokio::task::spawn_blocking(move || {
-                                    let patch = BotConfigPatch {
-                                        permission_mode: Some(mode_for_disk),
-                                        ..Default::default()
-                                    };
-                                    if let Err(e) = persist_bot_config_patch(&bid, &patch) {
-                                        ulog_warn!("[im] /mode runtime persist failed: {}", e);
-                                    }
-                                });
-                                let _ = app_clone.emit("im:bot-config-changed", json!({
-                                    "botId": bot_id_for_loop,
-                                }));
-
-                                ulog_info!("[im] /mode: set {} runtime permission to {}", current_runtime, target.value);
-                                if let Err(e) = send_immediate_reply(
-                                    adapter_for_reply.as_ref(),
-                                    &msg,
-                                    &format!(
-                                        "✅ {} 权限模式已切换为: {}\n\n{}",
-                                        runtime_display_name(&current_runtime),
-                                        target.value,
-                                        target.description,
-                                    ),
-                                ).await {
-                                    ulog_warn!("[im-cmd] send_message (/mode runtime switch) failed: {}", e);
                                 }
+                            }
+                            match model_commands::read_menu(&client, &manager_clone, &link.agent_id, session_id.as_deref()).await {
+                                Ok((menu, reply)) => {
+                                    if send_immediate_reply(adapter_for_reply.as_ref(), &msg, &reply).await.is_ok() { model_menus.insert(session_key.clone(), menu); }
+                                }
+                                Err(error) => { let _ = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &error).await; }
                             }
                         } else {
-                            let current = permission_mode_for_loop.read().await.clone();
-                            let current_product_mode = if managed_codex_runtime {
-                                types::managed_permission_for_display(&current)
-                            } else {
-                                current.as_str()
+                            let result = match model_menus.get(&session_key).cloned() {
+                                Some(menu) => match model_commands::resolve_menu_option(&menu, arg) {
+                                    Ok(option) => model_commands::select_model(model_commands::SelectionContext {
+                                        app: &app_clone, manager: &manager_clone, router: &router_clone, health: &health_clone,
+                                        peer_locks: &peer_locks_for_loop, session_key: &session_key, agent_id: &link.agent_id,
+                                        channel_id: &link.channel_id, workspace: &workspace,
+                                    }, &menu, &option).await,
+                                    Err(error) => Err(error),
+                                },
+                                None => Err("请先发送 /model 查看列表，再按序号选择模型。".to_string()),
                             };
-
-                            if arg.is_empty() {
-                                let display = match current_product_mode {
-                                    "plan" => "🛡 计划模式 (plan) — AI 执行操作前需要审批",
-                                    "auto" => "⚡ 自动模式 (auto) — 安全操作自动执行，敏感操作需审批",
-                                    "fullAgency" => "🚀 全自主模式 (fullAgency) — 所有操作自动执行",
-                                    _ => "❓ 未知模式",
-                                };
-                                if let Err(e) = send_immediate_reply(
-                                    adapter_for_reply.as_ref(),
-                                    &msg,
-                                    &format!(
-                                        "🔐 当前权限模式\n\n{}\n\n\
-                                         可选模式：\n\
-                                         • plan — 计划模式（最安全）\n\
-                                         • auto — 自动模式（推荐）\n\
-                                         • full — 全自主模式\n\n\
-                                         用法: /mode <模式>",
-                                        display,
-                                    ),
-                                ).await {
-                                    ulog_warn!("[im-cmd] send_message (/mode display) failed: {}", e);
-                                }
-                            } else {
-                                let new_mode = match arg.as_str() {
-                                    "plan" => "plan",
-                                    "auto" => "auto",
-                                    "full" | "fullagency" => "fullAgency",
-                                    _ => {
-                                        if let Err(e) = send_immediate_reply(
-                                            adapter_for_reply.as_ref(),
-                                            &msg,
-                                            "❌ 无效模式，可选: plan / auto / full",
-                                        ).await {
-                                            ulog_warn!("[im-cmd] send_message (/mode invalid) failed: {}", e);
-                                        }
-                                        continue;
-                                    }
-                                };
-                                let execution_mode = if managed_codex_runtime {
-                                    types::project_permission_for_provider(
-                                        Some("codex-sub"),
-                                        new_mode.to_string(),
-                                    )
-                                } else {
-                                    new_mode.to_string()
-                                };
-                                *permission_mode_for_loop.write().await = execution_mode;
-
-                                let display = match new_mode {
-                                    "plan" => "🛡 计划模式 — AI 执行操作前需要审批",
-                                    "auto" => "⚡ 自动模式 — 安全操作自动执行",
-                                    "fullAgency" => "🚀 全自主模式 — 所有操作自动执行",
-                                    _ => unreachable!(),
-                                };
-                                ulog_info!("[im] /mode: switched to {} (session={})", new_mode, session_key);
-                                if let Err(e) = send_immediate_reply(
-                                    adapter_for_reply.as_ref(),
-                                    &msg,
-                                    &format!("✅ 权限模式已切换\n\n{}", display),
-                                ).await {
-                                    ulog_warn!("[im-cmd] send_message (/mode switch) failed: {}", e);
-                                }
-
-                                // Persist to config.json + notify frontend
-                                let bid = bot_id_for_loop.clone();
-                                let mode_str = new_mode.to_string();
-                                tokio::task::spawn_blocking(move || {
-                                    let patch = BotConfigPatch {
-                                        permission_mode: Some(mode_str),
-                                        ..Default::default()
-                                    };
-                                    if let Err(e) = persist_bot_config_patch(&bid, &patch) {
-                                        ulog_warn!("[im] /mode persist failed: {}", e);
-                                    }
-                                });
-                                let _ = app_clone.emit("im:bot-config-changed", json!({
-                                    "botId": bot_id_for_loop,
-                                }));
-                            }
+                            model_menus.remove(&session_key);
+                            let reply = result.unwrap_or_else(|error| format!("模型操作未完全成功：{error}"));
+                            let _ = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &reply).await;
                         }
                         continue;
                     }
@@ -2692,12 +2064,6 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                     let task_manager = Arc::clone(&manager_clone);
                     let task_buffer = Arc::clone(&buffer_clone);
                     let task_health = Arc::clone(&health_clone);
-                    let task_perm = permission_mode_for_loop.read().await.clone();
-                    let task_provider_env = Arc::clone(&current_provider_env_for_loop);
-                    let task_model = Arc::clone(&current_model_for_loop);
-                    let task_runtime = runtime_for_loop.read().await.clone();
-                    let task_runtime_config = runtime_config_for_loop.read().await.clone();
-                    let task_mcp_json = mcp_servers_json_for_loop.read().await.clone();
                     let task_stream_client = stream_client.clone();
                     let task_sem = Arc::clone(&global_semaphore);
                     let task_locks = Arc::clone(&peer_locks_for_loop);
@@ -2765,88 +2131,22 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         task_adapter.ack_processing(&chat_id, &message_id).await;
                         task_adapter.send_typing(&chat_id).await;
 
-                        let task_runtime_source =
-                            runtime_config_string(task_runtime_config.as_ref(), "source");
 
-                        // 3b. Runtime drift check (v0.1.66): if the agent's runtime has
-                        // been changed in Settings since the current Sidecar was spawned,
-                        // kill it, regenerate the peer session_id, and notify the user with
-                        // the same format as a manual `/new`. The old session's messages
-                        // remain on disk at the old session_id and stay discoverable via
-                        // global search — the WeChat Bot chat just starts a clean thread
-                        // under the new session_id with the new runtime.
-                        {
-                            // task_runtime is already a String cloned above at the top of
-                            // this spawn (runtime_for_loop.read().await.clone()).
-                            let drift_result = match SessionRouter::check_and_reset_on_runtime_identity_drift(
-                                &task_router,
-                                &session_key,
-                                &task_runtime,
-                                task_runtime_source.as_deref(),
-                                &task_manager,
-                            )
-                            .await
-                            {
-                                Ok(result) => result,
-                                Err(error) => {
-                                    ulog_error!(
-                                        "[im] Could not reconcile Session identity for {}: {}",
-                                        session_key,
-                                        error
-                                    );
-                                    let _ = abort_immediate_reply(
-                                        task_adapter.as_ref(),
-                                        &msg,
-                                        "session_reconcile_failed",
-                                        "会话状态同步失败，请稍后重试。",
-                                    )
-                                    .await;
-                                    return;
-                                }
-                            };
-                            if let Some((_old_id, new_id)) = drift_result {
-                                let _ = health::persist_router_active_sessions(
-                                    &task_health,
-                                    &task_router,
-                                    "message-runtime-drift",
-                                )
-                                .await;
-                                // C3 fix: drift killed the old Sidecar, so its
-                                // ImEventConsumer must be cancelled before we spawn
-                                // a fresh one against the new Sidecar port. Otherwise
-                                // the old consumer keeps long-polling the dead port.
-                                drop_im_consumer(&task_consumers, &session_key).await;
-                                // Clear pending group history so the fresh session doesn't
-                                // get stale context carried over from the drift point.
-                                task_group_history.lock().await.clear(&session_key);
-                                let reply = format!(
-                                    "🔁 运行环境已切换为 {},已自动创建新对话 ({})",
-                                    runtime_display_name(&task_runtime),
-                                    &new_id[..8.min(new_id.len())]
-                                );
-                                if !uses_openclaw_reply_protocol(&msg) {
-                                    if let Err(e) =
-                                        task_adapter.send_message(&chat_id, &reply).await
-                                    {
-                                        ulog_warn!(
-                                            "[im-drift] send_message (runtime-drift notify) failed: {}",
-                                            e
-                                        );
-                                    }
-                                }
-                            }
+                        if let Err(error) = model_commands::ensure_peer_snapshot(&task_router, &task_health, &task_manager, &session_key).await {
+                            let _ = abort_immediate_reply(task_adapter.as_ref(), &msg, "session_snapshot_unavailable", &error).await;
+                            return;
                         }
 
                         // 4. Ensure Sidecar is running (brief router lock)
-                        let (port, is_new_sidecar) = match task_router
+                        let (port, _is_new_sidecar) = match task_router
                             .lock()
                             .await
                             .ensure_sidecar_with_runtime_identity(
                                 &session_key,
                                 &task_app,
                                 &task_manager,
-                                Some(&task_runtime),
-                                task_runtime_source.as_deref(),
+                                None,
+                                None,
                             )
                             .await
                         {
@@ -2873,24 +2173,6 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             "message-ensure-sidecar",
                         )
                         .await;
-
-                        // 4b. Sync AI config to newly created Sidecar
-                        if is_new_sidecar {
-                            let model = task_model.read().await.clone();
-                            let penv = task_provider_env.read().await.clone();
-                            task_router
-                                .lock()
-                                .await
-                                .sync_ai_config(
-                                    port,
-                                    &task_runtime,
-                                    task_runtime_config.as_ref(),
-                                    model.as_deref(),
-                                    task_mcp_json.as_deref(),
-                                    penv.as_ref(),
-                                )
-                                .await;
-                        }
 
                         // C2 fix order: build on_terminal + ensure_im_consumer FIRST so the
                         // consumer is established with the real callback. Buffer drain (Pattern E)
@@ -3081,31 +2363,19 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     buf_msg.delivery_protocol.clone(),
                                 );
 
-                                let buf_penv = task_provider_env.read().await.clone();
-                                let buf_model = task_model.read().await.clone();
                                 let buf_metadata_birth_pending = task_router
                                     .lock()
                                     .await
                                     .metadata_birth_pending(&session_key);
-                                let buf_config_held_by_frontend = task_manager
-                                    .lock()
-                                    .unwrap()
-                                    .session_has_frontend_owner(&sidecar_session_id_initial);
                                 let result = enqueue_to_sidecar(
                                     &task_stream_client,
                                     port,
                                     &buf_msg,
-                                    &task_perm,
-                                    buf_penv.as_ref(),
-                                    buf_model.as_deref(),
-                                    &task_runtime,
-                                    task_runtime_config.as_ref(),
                                     None,
                                     Some(&task_bot_id),
                                     task_bot_name.as_deref(),
                                     None,
                                     buf_metadata_birth_pending,
-                                    buf_config_held_by_frontend,
                                     Some(&allowed_snapshot_buf),
                                     bridge_ctx_buf,
                                 )
@@ -3217,8 +2487,6 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         // 7. POST /api/im/enqueue — sync ACK, ms-level. peer_lock drops at end
                         //    of spawn, so concurrent same-chat messages no longer wait on each
                         //    other through the entire turn.
-                        let penv = task_provider_env.read().await.clone();
-                        let task_model_val = task_model.read().await.clone();
                         let images = if image_payloads.is_empty() {
                             None
                         } else {
@@ -3228,27 +2496,17 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             .lock()
                             .await
                             .metadata_birth_pending(&session_key);
-                        let config_held_by_frontend = task_manager
-                            .lock()
-                            .unwrap()
-                            .session_has_frontend_owner(&sidecar_session_id_initial);
                         let allowed_snapshot = task_allowed_users.read().await.clone();
                         let bridge_ctx = task_adapter.bridge_context();
                         match enqueue_to_sidecar(
                             &task_stream_client,
                             port,
                             &msg,
-                            &task_perm,
-                            penv.as_ref(),
-                            task_model_val.as_deref(),
-                            &task_runtime,
-                            task_runtime_config.as_ref(),
                             images,
                             Some(&task_bot_id),
                             task_bot_name.as_deref(),
                             group_ctx.as_ref(),
                             metadata_birth_pending,
-                            config_held_by_frontend,
                             Some(&allowed_snapshot),
                             bridge_ctx,
                         )
@@ -3579,11 +2837,6 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
         let (runner, config_arc) = heartbeat::HeartbeatRunner::new(
             hb_config,
             hb_bot_label,
-            Arc::clone(&current_model),
-            Arc::clone(&current_provider_env),
-            Arc::clone(&mcp_servers_json),
-            Arc::clone(&runtime),
-            Arc::clone(&runtime_config),
             types::HostInteractionCapability::for_platform(&config.platform),
             Arc::clone(&pending_cron_events),
             Arc::clone(&model_work_gate),
@@ -3855,19 +3108,6 @@ mod tests {
         }
     }
 
-    async fn rotation_snapshot() -> runtime_change::OwnedSessionSnapshot {
-        runtime_change::build_snapshot_from_channel_state(
-            &tokio::sync::RwLock::new("builtin".to_string()),
-            &tokio::sync::RwLock::new(Some("test-model".to_string())),
-            &tokio::sync::RwLock::new("auto".to_string()),
-            &tokio::sync::RwLock::new(None),
-            &tokio::sync::RwLock::new(None),
-            Some("test-provider".to_string()),
-            &tokio::sync::RwLock::new(None),
-        )
-        .await
-    }
-
     #[test]
     fn all_stop_lock_set_unions_durable_and_live_channel_ids() {
         let channel_ids = agent_channel_ids_for_stop(
@@ -3948,7 +3188,6 @@ mod tests {
         let server = tauri::async_runtime::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
-        let snapshot = rotation_snapshot().await;
         let manager = crate::sidecar::create_sidecar_manager();
 
         let missing_key = "agent:a:openclaw:weixin:private:missing";
@@ -3970,8 +3209,8 @@ mod tests {
             &missing_router,
             &missing_health,
             &manager,
-            &snapshot,
             |_| false,
+            None,
         )
         .await
         .expect("missing source should rotate without freeze");
@@ -4010,8 +3249,8 @@ mod tests {
             &indexed_router,
             &indexed_health,
             &manager,
-            &snapshot,
             |_| true,
+            None,
         )
         .await
         .expect("indexed source should freeze then rotate");
@@ -4035,7 +3274,6 @@ mod tests {
         std::fs::write(&blocked_parent, b"block mkdir").expect("create blocked parent");
         let health = Arc::new(HealthManager::new(blocked_parent.join("state.json")));
         let manager = crate::sidecar::create_sidecar_manager();
-        let snapshot = rotation_snapshot().await;
 
         let error = rotate_peer_binding_for_new_command_with_metadata_lookup(
             session_key,
@@ -4043,8 +3281,8 @@ mod tests {
             &router,
             &health,
             &manager,
-            &snapshot,
             |_| false,
+            None,
         )
         .await
         .expect_err("projection persist must fail");

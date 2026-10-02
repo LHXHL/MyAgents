@@ -384,10 +384,6 @@
     "routeInvalid": "This in-app link is not supported"
   },
   "contextUsage": {
-    "windowDefault": "No limit configured. Estimated with default {{window}}",
-    "windowRuntime": "Window {{window}} · runtime live value",
-    "windowModelConfig": "Window {{window}} from model configuration",
-    "autoCompactFootnote": "{{windowDesc}} · auto-compacts at about {{threshold}}",
     "aria": "Context usage {{percent}}%",
     "title": "Context usage",
     "compactTip": "Compact context to free up more usable space",

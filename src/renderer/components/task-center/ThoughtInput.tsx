@@ -20,7 +20,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import { Hash, Mic, PenLine } from 'lucide-react';
+import { HashIcon, MicIcon, EditIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import { thoughtCreate } from '@/api/taskCenter';
 import Tip from '@/components/Tip';
@@ -669,7 +669,7 @@ export const ThoughtInput = forwardRef<ThoughtInputHandle, Props>(
                 title={t('thoughts.insertTag')}
                 className={`rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--accent-warm)] disabled:cursor-not-allowed disabled:opacity-50 ${theme.toolbarButtonPaddingClass}`}
               >
-                <Hash className="h-4 w-4" />
+                <HashIcon className="h-4 w-4" />
               </button>
             </div>
             <div className="flex items-center gap-1.5">
@@ -682,7 +682,7 @@ export const ThoughtInput = forwardRef<ThoughtInputHandle, Props>(
                     variant === 'launcher' ? 'h-8 px-2.5' : 'h-7 px-2'
                   }`}
                 >
-                  <Mic className="h-4 w-4" />
+                  <MicIcon className="h-4 w-4" />
                   <span>
                     {recordingBusy
                       ? t('records.startingRecording')
@@ -701,7 +701,7 @@ export const ThoughtInput = forwardRef<ThoughtInputHandle, Props>(
                   disabled={!canSend || recordingBusy}
                   className={`rounded-lg bg-[var(--button-primary-bg)] text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:bg-[var(--ink-muted)]/15 disabled:text-[var(--ink-muted)]/60 ${theme.toolbarButtonPaddingClass}`}
                 >
-                  <PenLine className="h-4 w-4" />
+                  <EditIcon className="h-4 w-4" />
                 </button>
               </Tip>
             </div>

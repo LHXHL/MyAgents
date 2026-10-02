@@ -1,7 +1,7 @@
 // PRD 0.2.17 — Agent Status Panel
 //
 // Runtime-agnostic 渲染契约。当前由 useAgentStatusState 在 renderer 侧从 messages
-// 与 backgroundTaskStatus 模块派生；后续接入 Codex / CC / Gemini Runtime 时新增各自
+// 与 backgroundTaskStatus 模块派生；后续接入 Codex / CC Runtime 时新增各自
 // mapper 输出同形态，消费侧组件不变。
 
 export type TodoStatus = 'pending' | 'in_progress' | 'completed';

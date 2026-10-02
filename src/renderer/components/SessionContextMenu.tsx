@@ -1,4 +1,12 @@
-import { BarChart2, Copy, Pencil, Pin, PinOff, Star, Trash2 } from 'lucide-react';
+import {
+  ChartIcon,
+  CopyIcon,
+  EditIcon,
+  PinIcon,
+  PinOffIcon,
+  StarIcon,
+  TrashIcon,
+} from '@/components/icons';
 import { useState, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -70,7 +78,7 @@ export default function SessionContextMenu({
                 closeOnEscape={!tagLayerOpen}
             >
                 <MenuItem
-                    icon={<Copy className="h-3.5 w-3.5" />}
+                    icon={<CopyIcon className="h-3.5 w-3.5" />}
                     label={t('rightRail.copySessionId')}
                     onClick={() => {
                         onClose();
@@ -78,15 +86,15 @@ export default function SessionContextMenu({
                     }}
                 />
                 <MenuItem
-                    icon={<Pencil className="h-3.5 w-3.5" />}
+                    icon={<EditIcon className="h-3.5 w-3.5" />}
                     label={t('rightRail.rename')}
                     onClick={() => setRenameOpen(true)}
                 />
                 {onTogglePin && (
                     <MenuItem
                         icon={session.pinnedAt
-                            ? <PinOff className="h-3.5 w-3.5" />
-                            : <Pin className="h-3.5 w-3.5" />}
+                            ? <PinOffIcon className="h-3.5 w-3.5" />
+                            : <PinIcon className="h-3.5 w-3.5" />}
                         label={session.pinnedAt ? t('rightRail.unpin') : t('rightRail.pin')}
                         onClick={() => {
                             onClose();
@@ -95,7 +103,7 @@ export default function SessionContextMenu({
                     />
                 )}
                 <MenuItem
-                    icon={<Star className="h-3.5 w-3.5" fill={session.favorite ? 'currentColor' : 'none'} />}
+                    icon={<StarIcon className="h-3.5 w-3.5" fill={session.favorite ? 'currentColor' : 'none'} />}
                     label={session.favorite ? t('rightRail.unfavorite') : t('rightRail.favorite')}
                     onClick={() => {
                         onClose();
@@ -110,7 +118,7 @@ export default function SessionContextMenu({
                     onSubmenuOpenChange={setTagLayerOpen}
                 />
                 <MenuItem
-                    icon={<BarChart2 className="h-3.5 w-3.5" />}
+                    icon={<ChartIcon className="h-3.5 w-3.5" />}
                     label={t('rightRail.viewStats')}
                     onClick={() => {
                         onClose();
@@ -118,7 +126,7 @@ export default function SessionContextMenu({
                     }}
                 />
                 <MenuItem
-                    icon={<Trash2 className="h-3.5 w-3.5" />}
+                    icon={<TrashIcon className="h-3.5 w-3.5" />}
                     label={t('rightRail.delete')}
                     tone="danger"
                     title={deleteProtected ? t('rightRail.deleteBlockedByOwner') : undefined}

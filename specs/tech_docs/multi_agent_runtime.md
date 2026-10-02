@@ -1,6 +1,6 @@
 # Multi-Agent Runtime 架构
 
-> 本文定义 builtin、Claude Code、Codex 与 Gemini 如何接入同一 Product Session。Runtime 的安装版本、完整 RPC schema 和字段枚举以锁文件、生成类型与实现为准，不在本文维护副本。
+> 本文定义 builtin、DSH、Claude Code 与 Codex 如何接入同一 Product Session。Runtime 的安装版本、完整 RPC schema 和字段枚举以锁文件、生成类型与实现为准，不在本文维护副本。
 
 ## 1. 总体边界
 
@@ -8,18 +8,18 @@
 routes
   -> session-engine/selector.ts
       -> builtin-adapter.ts  -> agent-session.ts       -> Claude Agent SDK
+      -> integrated-adapter.ts -> DSH RuntimeProcessHost -> native DSH
       -> external-adapter.ts -> external-session.ts    -> AgentRuntime
                                                          |- Claude Code CLI
-                                                         |- Codex app-server
-                                                         `- Gemini ACP
+                                                         `- Codex app-server
 ```
 
-`SessionEngine` 是 route 面向当前 Session Runtime 的唯一 facade。Route 只做请求校验和响应映射，不自行判断 builtin/external，也不直接 import Runtime owner。
+`SessionEngine` 是 route 面向当前 Session Runtime 的唯一 facade。Route 只做请求校验和响应映射，不自行判断 builtin/integrated/external，也不直接 import Runtime owner。
 
 Runtime 抽象统一的是产品行为，不是 mutable state：
 
 - Product Session identity、metadata 与 transcript 仍由 Session 层拥有；
-- builtin 和 external 各自拥有进程、queue、turn、config 与 terminal state；
+- builtin 独立拥有 SDK Query 状态；Integrated DSH 与 external Runtime 复用 external-session 的 queue/config/transcript owners，各 adapter 拥有自己的原生执行状态；
 - `src/server/session-core/` 只共享无副作用 policy；
 - 不为某个 Runtime 不支持的能力建立伪对称 stub；adapter 返回明确 capability/unsupported 结果。
 
@@ -34,7 +34,7 @@ Session identity、恢复与配置 snapshot 见 [`session_architecture.md`](sess
 - live state、stream replay、latest result、completion terminal 与 config snapshot 读取；
 - Rewind、Fork、Retry、desktop reset 与已证明的 surface migration；
 - model、permission、reasoning、MCP、Agent、Plugin 与 interaction scenario 配置入口；
-- external-only 的 pre-warm、diagnostics 与 native compact 能力检查。
+- 按 adapter 能力提供 pre-warm、diagnostics 与 native compact。
 
 `product-session-binding.ts` 是 Product Session prepare/commit/rollback 的事务入口。adapter 只能在完成自身 Runtime 清理和绑定后提交产品 identity；SDK UUID、Codex thread id 等 native identity 不进入这里。
 
@@ -87,11 +87,21 @@ Session identity、恢复与配置 snapshot 见 [`session_architecture.md`](sess
 
 同为 Codex，两个 source 也不能复用进程或混用配置。Rust 在一次 Sidecar ensure attempt 开始时解析完整 `RuntimeIdentity(runtime + source)`；复用校验与 spawn 使用同一快照，不能在中间重新读取 Agent 配置。
 
-显式 system CLI 选择优先于 provider compatibility projection。Managed provider 的 readiness 由自己的 provider gate、安装清单与认证状态裁决，不依赖实验室的 system CLI Runtime 开关。
+显式 system CLI 选择优先于 provider compatibility projection。Managed provider 的 readiness 由自己的 provider gate、安装清单与认证状态裁决，独立于 system CLI 的检测和安装。
 
-owned desktop/Task Session 持久化执行 identity；IM 与 Agent Channel 只固定 Runtime identity，model/provider/permission/MCP 在每条消息 admission 时 live resolve。Analytics 和 drift detection 同样必须携带完整 source，不能把 managed 与 system usage 合并。
+owned desktop/Task/IM Session 持久化完整执行 identity 与配置 snapshot；Agent Channel 的 model/provider/permission/MCP 选择同样服从 Session。默认 reload 不改旧会话，也不触发 drift rotation；显式模型选择经 SessionEngine operation 应用，忙时下一轮生效。Analytics 和真实执行身份检查须携带完整 source，不能把 managed 与 system usage 合并。
+
+Claude SDK 与 DSH 的权限展示名称可以相同，传参词汇仍各自独立。Agent 配置 writer 切换内置运行环境时，在同一次原子写入中清理 `runtimeConfig` 和不属于目标运行环境的顶层 `permissionMode`；未显式选择目标权限时使用目标默认值。已有旧配置由 Renderer 与服务端按当前运行环境读取，跳过外来权限值；菜单显示与发送使用同一个解析结果，不按文案转换 key。
 
 Managed Runtime 的目标下载版本以 `src/shared/managed-codex-runtime.json` 为唯一锁定源；当前进程使用安装器已经原子发布并校验的 installed identity。更新下载期间不得因为目标锁变化而阻断现有健康版本或已有 Session。
+
+### Integrated DSH identity
+
+打包时的 DSH 来源由 [构建资源准备](build_resource_preparation.md#integrated-dsh-构建来源) 选定。Release lock 是正式包的 authority；显式本地 Dev 构建从已验证 handoff 派生一次性 effective lock。两种来源都在打包前冻结相同的 TypeScript/Rust 运行身份，不进入 Agent 设置或 Session 可变配置。
+
+DSH 是受控分发的 Integrated Runtime。`shared/integrated-runtimes/resolver.ts` 结合 distribution policy、Agent `runtimePreference`、Provider constraint 与 readiness，解析 `EffectiveRuntimeBinding`。产品发行版始终开放 Runtime 选择；Agent 未明确选择时，新 ordinary-provider Session 使用 allowlisted `config.defaultIntegratedRuntime` 或构建默认，明确选择则优先。通用设置中的“Agent 功能设置”配置此默认值，仅影响新 Session，不将显示的默认值自动写回 Agent。已有 Session 优先读取 frozen `runtimeBinding`，未知组合只允许历史读取，不能静默回退 builtin。
+
+`SessionEngine` selector 将 DSH 交给 integrated adapter，其实现复用 external-session 的队列、交互、transcript 和配置 owner；调用方判断 SDK 专属路径时使用 `engine.kind === 'builtin'`，不能把所有非 external engine 当作 SDK。
 
 ## 5. 各 Runtime 协议
 
@@ -114,6 +124,8 @@ stdin user message
 
 MyAgents 把 native stream 归一化为 UnifiedEvent，并通过 SessionStart hook 获取可靠的 session id。权限模式使用 CLI 当前支持的 native vocabulary；产品权限只在 Runtime boundary 做可证明的映射。
 
+系统 Claude Code CLI 的权限菜单与快捷键轮换只提供 Accept Edits、Bypass Permissions、Don't Ask。Manual、Auto、Plan 仍属于支持的运行参数，已有会话保留原权限并显示实际模式；隐藏菜单项不修改持久化权限。
+
 SessionStart 的应用自有 forwarder 通过 Sidecar `process.execPath` 启动，不从外部 CLI 的 PATH 寻找 Node。生成的 command 使用 Bash 安全参数引用并声明 `shell: bash`（Windows 使用产品已有 Git Bash）；保留 2.1.119/2.1.138 的旧 command-hook 支持，不依赖 2.1.139 新增的 `args`。外部 Runtime 与 AI Shell 的环境策略保持独立。
 
 IM/Agent Channel 需要 native-card `AskUserQuestion` 时，启动策略必须保留 stdio permission channel。full-agency 对普通工具可以 fast-path，但不能用 bypass mode 吞掉结构化提问。
@@ -131,11 +143,11 @@ Managed Codex 的推理档位以实际 app-server `model/list` 返回的 `suppor
 | Source / UI | 内部值 | approvalPolicy | sandbox | approvalsReviewer |
 |---|---|---|---|---|
 | managed 规划 | suggest | untrusted | read-only | user |
-| managed 行动 | auto-edit | on-request | workspace-write | auto_review |
-| managed 自主行动 | no-restrictions | never | danger-full-access | user |
-| system Ask for approval | auto-edit | on-request | workspace-write | user |
-| system Approve for me | full-auto | on-request | workspace-write | auto_review |
-| system Full Access | no-restrictions | never | danger-full-access | user |
+| managed 请求批准 | auto-edit | on-request | workspace-write | auto_review |
+| managed 完全自主 | no-restrictions | never | danger-full-access | user |
+| system 请求批准 | auto-edit | on-request | workspace-write | user |
+| system 帮我批准 | full-auto | on-request | workspace-write | auto_review |
+| system 完全访问权限 | no-restrictions | never | danger-full-access | user |
 
 system 菜单只提供上述三项；历史 suggest 仍按只读恢复，并保留真实只读显示。auto_review 是原生审批 reviewer，不等于 never 或直接开放网络。start/resume 与每轮 turn/start 均显式传 reviewer，避免切回人工审批时沿用旧 reviewer；原生响应未启用请求的 auto_review 时明确报不支持，不能静默降级。
 
@@ -163,13 +175,17 @@ Codex Server → Client request 使用显式 allowlist。升级 app-server 时�
 
 工具与子 Agent item 在 adapter 内映射为标准 tool/content blocks：command、file change、MCP、dynamic tool、web search、image view/generation 与 collab-agent 都走同一 transcript/attachment pipeline。raw protocol payload 不越过 adapter，也不写日志。
 
-### 5.4 Gemini
+### 5.4 Integrated DSH
 
-Gemini 使用 ACP JSON-RPC stdio，并保持一个可多轮使用的进程。adapter 负责 initialize/session new/prompt、模型与 mode RPC、权限/提问请求及 terminal 映射。
+`integrated-runtimes/dsh/runtime.ts` 通过 `RuntimeProcessHost` 和生成 client 连接一个 DSH generation。 DSH transport/process failure 必须发送 `session_complete` 给共享 lifecycle owner，释放该 generation 的 running/process 状态；只发送 error status 会阻止下一条 query 的原生恢复。Runtime 独占原生 Session/Turn、DSH 工具流水线、permission revision 与子 Agent 生命周期；Host 的 `SessionStore` 独占 Product transcript、冻结 identity 和 mutation/input journal。原生 receipt 决定输入是否被消费；legacy Session 仍等待 Product durable commit，V2 则更新 canonical projection 并保留执行恢复 journal，正文由后台 writer 提交。RPC 成功本身不能推断 DSH 输入已进入对话。
 
-系统提示词通过当前 Product Session 的 deterministic `GEMINI_SYSTEM_MD` 临时文件合并注入，不能修改用户文件或使用跨 Session 的共享文件。进程退出不删除该文件：Windows `.cmd` launcher 退出不能证明 grandchild 已完成读取，迟到的旧进程 callback 也不能删除 retry 复用的同名文件；创建新 Session 文件时只清理超过一小时的 stale `session-*.md`。
+结构化 `systemContext` 分别传入 global/root contributions，主项目指令由 Runtime 的 DSH 指令插件加载。Skills/MCP 等扩展由同一次 Product capability inventory 编译为声明式快照；子 Agent 由 DSH 原生工具创建。runtime-neutral `product-extensions` dispatcher 供 DSH reverse ports 与 Managed Codex 共用。DSH extension replacement 在原生事务边界更新，当前状态通过既有 SSE 和组件诊断投影。
 
-Gemini 模型与权限在 turn boundary 通过 native session RPC 应用；reasoning effort 未建立等价能力时返回 unsupported，不用 prompt 或重启伪装支持。
+Fork/rewind/delete/retry/compact 走 SessionEngine 的 adapter operation；丢失回包由既有 Product journal 与原生 receipts 对账。Root/child 权限与 AskUser 复用产品交互。Agent 树来自 DSH 原生目录，个人任务按 Agent Session 读取，共享任务单独读取；客户端的中断按钮只中断当前轮次，给可延续子 Agent 发消息即可再次工作。官方 Shell/Jobs 组件拥有平台命令执行，Host 仅声明执行环境和处理权限。
+
+DSH 权限选择先存为 Session 的期望模式；当前 turn 使用 admission 时冻结的模式，不因设置变化中断。下一条 query 启动前，adapter 在原生 `config/apply` 边界同时落实 Product 权限、DSH sandbox 与 approval policy，确认有效后才发送 `turn/start`；应用失败则阻止这条 query，不能沿用旧权限执行。
+
+详细协议、制品边界与恢复规则见 [DSH 集成指南](./myagents_dsh_integrated_runtime.md)。
 
 ## 6. External Session owner
 
@@ -224,7 +240,7 @@ model、permission、reasoning 与 capability changes 都先进入 source-aware 
 
 ### 6.4 pre-warm
 
-Pre-warm 只适用于可保持 idle process 的 Codex/Gemini；Claude Code 每 turn 启动进程，不预热。
+Pre-warm 只适用于可保持 idle process 的 Codex/DSH；Claude Code 每 turn 启动进程，不预热。
 
 pre-warm 建立真实、可由后续首条消息复用的 process/thread，但不把 Session 标为 running、不启动 per-turn watchdog，也不凭空发布 Product metadata。首个真实 turn 在统一 materialization helper 中提交 metadata 和 user transcript。
 
@@ -250,6 +266,8 @@ Renderer 对 MCP 只提交 ID intent；Sidecar 必须重新读取 command/env/ur
 单个 Skill/MCP/Agent/Plugin 无法解析或不受支持时，只排除该组件并产生结构化诊断；基础 Runtime generation 仍可用。只有顶层 Runtime 无法启动/应用时才阻断 Chat。依赖 `ProductSystemSkillRequirement` 的 turn 是明确例外：它必须核对 exact app-owned candidate、内容 digest、inventory revision 与 native read-back，已知不可用时拒绝该依赖 turn，但不使普通会话失效。
 
 动态工具目录绑定 native thread birth 和 process generation。未知、已删除、参数无效、重复或 stale tool call 只失败该调用；不得因 catalog 漂移清空 transcript、制造空 thread 或建立第二套 Agent loop。
+
+Project Skill resolver 默认依次合并 `.claude/skills` 与 `.agents/skills`；相同有效 folder 由前者获胜，invalid candidate 不遮蔽后根。Managed Codex 按 exact native path 禁用未进入 effective inventory 的 `.agents/skills` 候选，选中项仍由原生 parser 读取。全局兼容投影继续只维护 `.claude/skills`，不建立第二套用户级目录。
 
 ## 8. Skill、Command 与工具能力
 
@@ -284,6 +302,12 @@ Runtime tool catalog 是独立的可变 capability snapshot；只包含当前 na
 
 CLI 诊断命令与真实 Session 启动使用同一个 env resolver 和 adapter probe。命令入口见 [`cli_architecture.md`](cli_architecture.md)。
 
+外部 CLI 选择遵循用户 Shell 的 PATH 顺序；检测、查询与启动等待同一次异步环境发现，并以子进程实际 env 解析绝对路径。平台目录只用于兜底，不抢占用户版本管理器。顺序、超时和平台边界见 [Bundled Node 的 Runtime locator 与 PATH](bundled_node.md#runtime-locator-与-path)。
+
+Codex 模型和推理强度来自原生 `model/list`（含分页），不维护静态模型白名单。已有 Codex Session 查询自己的活跃 app-server，包含 `system-cli` 和 `managed-provider`；没有活跃对应 Session 时才临时启动已安装 CLI 查询。临时查询的五分钟缓存按 Runtime source、解析后 executable/文件 revision、原生 home 与 PATH 区分，安装来源变化不会沿用另一份 CLI 的目录。
+
+DSH 与 Codex 共用 `runtimeSupportsPrewarm()`，先建立 Product Session/config owner 再预热。DSH compact 使用 `session/compact`；reasoning delta 若无独立 block lifecycle，由 Host 补齐 start/stop 后投影，保持与 text/tool 的顺序。
+
 ## 10. Context 用量
 
 Context 指示器展示最近一次主模型 API 调用的 input-side 占用，不是整个 turn 的累计 token。否则工具循环会重复计算上下文并严重高估。
@@ -292,13 +316,12 @@ Context 指示器展示最近一次主模型 API 调用的 input-side 占用，�
 |---|---|
 | Anthropic（builtin / Claude Code） | ordinary input + cache read + cache creation |
 | OpenAI（Codex） | Runtime 已包含 cached 的 input total，不再重复相加 |
-| Gemini | Runtime 提供的 per-request input tokens |
 
 分母优先使用 Runtime 报告的窗口，其次模型注册表，最后产品默认值。OpenAI Bridge 必须先把 total input 拆成与 Anthropic 互斥的 ordinary/read/create 分区，防止下游重复计算 cache。
 
 external adapter 只在 UnifiedEvent 显式给出 `contextOccupiedTokens` 时广播 context usage；缺失时宁可不显示，也不拿 running total/turn total 猜测。turn settlement 的同一 snapshot同时写入 Session metadata供重开恢复，并校验 source 与 Session Runtime 一致。
 
-native compact 是 capability，不是所有 Runtime 的共同功能。builtin 走 SDK command；Managed Codex 走 SessionEngine native compact operation并隔离 control turn事件；其它 Runtime 没有等价语义时不展示入口。
+native compact 是 capability，不是所有 Runtime 的共同功能。builtin 走 SDK command；Managed Codex 走 SessionEngine native compact operation并隔离 control turn事件；DSH 走 `session/compact`；没有等价语义的 Runtime 不展示入口。
 
 ## 11. 安全与日志
 
@@ -319,7 +342,6 @@ native compact 是 capability，不是所有 Runtime 的共同功能。builtin �
 | `src/server/runtimes/factory.ts` | Runtime detection 与工厂 |
 | `src/server/runtimes/claude-code.ts` | Claude Code NDJSON adapter |
 | `src/server/runtimes/codex.ts` | Codex app-server adapter |
-| `src/server/runtimes/gemini.ts` | Gemini ACP adapter |
 | `src/server/runtimes/external-session.ts` | external public facade |
 | `src/server/runtimes/external-session/` | external lifecycle、queue、turn、config、content、interactive 与 extension owners |
 | `src/server/project-capabilities.ts` | Project/global Skill 与 Command winner snapshot |

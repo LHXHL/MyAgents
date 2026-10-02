@@ -23,7 +23,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { i18n } from '@/i18n';
-import { Loader2 } from 'lucide-react';
+import { LoaderIcon } from '@/components/icons';
 import { renderAsync } from 'docx-preview';
 import { revokeBlobUrls } from './docxBlobUrls';
 import type { RichDocSubViewerProps } from './types';
@@ -73,7 +73,7 @@ export default function DocxViewer({ bytes, onError }: RichDocSubViewerProps) {
       </div>
       {loading ? (
         <div className="absolute inset-0 flex items-center justify-center text-[var(--ink-muted)]">
-          <Loader2 className="h-5 w-5 animate-spin" />
+          <LoaderIcon className="h-5 w-5 animate-spin" />
         </div>
       ) : (
         <ZoomControls zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onReset={reset} />

@@ -17,7 +17,15 @@
  * generated file the tool card advertises) so what's shown == what's opened.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { MoreHorizontal, FolderOpen, ExternalLink, Play, Pause, RotateCcw, RotateCw } from 'lucide-react';
+import {
+  MoreIcon,
+  FolderOpenIcon,
+  ExternalIcon,
+  PlayIcon,
+  PauseIcon,
+  UndoIcon,
+  RedoIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
@@ -118,7 +126,7 @@ export default function ToolAudioAttachment({ attachment }: Props) {
         onClick={() => setMenuOpen(o => !o)}
         className="flex size-7 items-center justify-center rounded-full text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink-secondary)]"
       >
-        <MoreHorizontal className="size-4" />
+        <MoreIcon className="size-4" />
       </button>
       {menuOpen && (
         <div className="absolute right-0 top-9 z-50 min-w-[168px] overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] py-1 shadow-[var(--shadow-md)]">
@@ -129,7 +137,7 @@ export default function ToolAudioAttachment({ attachment }: Props) {
             disabled={!seekable}
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)] disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
           >
-            <RotateCcw className="size-3.5" /> {t('shell.toolChrome.audio.rewindSeconds', { seconds: SKIP_SECONDS })}
+            <UndoIcon className="size-3.5" /> {t('shell.toolChrome.audio.rewindSeconds', { seconds: SKIP_SECONDS })}
           </button>
           <button
             type="button"
@@ -137,7 +145,7 @@ export default function ToolAudioAttachment({ attachment }: Props) {
             disabled={!seekable}
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)] disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
           >
-            <RotateCw className="size-3.5" /> {t('shell.toolChrome.audio.forwardSeconds', { seconds: SKIP_SECONDS })}
+            <RedoIcon className="size-3.5" /> {t('shell.toolChrome.audio.forwardSeconds', { seconds: SKIP_SECONDS })}
           </button>
           <div className="my-1 h-px bg-[var(--line-subtle)]" />
           <button
@@ -145,14 +153,14 @@ export default function ToolAudioAttachment({ attachment }: Props) {
             onClick={reveal}
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)]"
           >
-            <FolderOpen className="size-3.5" /> {t('shell.toolChrome.audio.reveal')}
+            <FolderOpenIcon className="size-3.5" /> {t('shell.toolChrome.audio.reveal')}
           </button>
           <button
             type="button"
             onClick={openDefault}
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)]"
           >
-            <ExternalLink className="size-3.5" /> {t('shell.toolChrome.audio.openDefault')}
+            <ExternalIcon className="size-3.5" /> {t('shell.toolChrome.audio.openDefault')}
           </button>
         </div>
       )}
@@ -179,8 +187,8 @@ export default function ToolAudioAttachment({ attachment }: Props) {
         className="flex size-10 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-[var(--on-accent)] transition-colors hover:bg-[var(--accent-warm-hover)] active:scale-95"
       >
         {isPlaying
-          ? <Pause className="size-4 fill-current" />
-          : <Play className="size-[18px] fill-current ml-0.5" />
+          ? <PauseIcon className="size-4 fill-current" />
+          : <PlayIcon className="size-[18px] fill-current ml-0.5" />
         }
       </button>
 

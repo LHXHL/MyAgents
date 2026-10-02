@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "artifactId": "myagents-dsh",
+  "handoff": {
+    "manifestSha256": "baa0e3bf919913d0d85ee4c0c2e8899f3607f5f72554ca421f8e6ccaa5624526",
+    "sourceCommit": "2746902d2aef2ea0ee5ae2b815984964f9e2c808",
+    "runtimeManifestSha256": "3684592206f6045b3a4312fea7887ad7c39006eb43c1800a3b74de4cbb3f478b",
+    "compatibilitySha256": "c89bea0e7e7e6e58d182a3eea0042f0c8f30f141a5e5eea9a59f19f646c7da74",
+    "generatedClientSha256": "bfa7d72d1356b4471a9e76142d07083cc62c444ce46af62f9e7e059d3b7056bc",
+    "noticesSha256": "1863d0cd6a34fc4658ea227213ec1885d14294663ea45235f3572db8bc89f503"
+  },
+  "runtime": {
+    "version": "0.1.9",
+    "entrypoint": "runtime-server-process.artifact.mjs",
+    "sessionFormat": "dsh-session-events-v2",
+    "requiredNodeVersion": "24.20.0"
+  },
+  "protocol": {
+    "version": "6.0.0",
+    "schemaSha256": "c52558486ded4d6e2f34ef0b00eb4937bcb5f5d33526f3a1d265c7e74b41e4fa",
+    "hostMethodCount": 44,
+    "reverseMethodCount": 7,
+    "notificationCount": 4
+  },
+  "profile": {
+    "id": "myagents-dsh-batch-1-candidate-v1",
+    "digest": "07cf8a6d44a0a94ebb601e0e9954abfa09b4f839dcfa1c7c6c24c8cc1b9faf90"
+  },
+  "dsh": {
+    "version": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
+    "sourceCommit": "477b4f420553e8a52c2fbccc464d7561b239c443",
+    "artifactManifestSha256": "bcad0a0138fb68c97f2853a7357e452f947ee5c9cd2e926c22ac7d430e46c98b",
+    "patchSeriesSha256": "8d5f1cfa482ebd42be6afd7e2d6b1db271753183dce5865a4148e05570486dfb"
+  },
+  "platforms": [
+    {
+      "target": "darwin-arm64",
+      "claim": "verified",
+      "evidenceSha256": [
+        "ac406f9bac57cc1dc6ce594760e47485e05173bcd9669b185ac60a978257f046"
+      ]
+    }
+  ],
+  "bundledNpm": {
+    "version": "11.19.0",
+    "authority": "myagents-product-resource"
+  },
+  "resourcePath": "integrated-runtimes/dsh"
+}

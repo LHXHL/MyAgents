@@ -1848,7 +1848,7 @@ fn initial_state() -> MockState {
                 "skl_mock_runtime_probe",
                 "Runtime Probe",
                 "runtime-probe",
-                "Investigates Codex, Claude Code, and Gemini runtime behavior.",
+                "Investigates Codex, Claude Code, and DSH runtime behavior.",
                 3,
             ),
             "Runtime debugging helper.",

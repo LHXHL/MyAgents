@@ -5,7 +5,14 @@
 
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { Plus, Loader2, Trash2, ChevronRight, AlertCircle } from 'lucide-react';
+import {
+  PlusIcon,
+  LoaderIcon,
+  TrashIcon,
+  ChevronRightIcon,
+  AlertIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
@@ -15,7 +22,7 @@ import { exists } from '@tauri-apps/plugin-fs';
 import type { WorkspaceTemplate } from '@/config/types';
 import { PRESET_TEMPLATES } from '@/config/types';
 import { loadUserTemplates, addUserTemplate, removeUserTemplate, updateUserTemplate } from '@/config/services/templateService';
-import { ALL_WORKSPACE_ICON_IDS, DEFAULT_WORKSPACE_ICON } from '@/assets/workspace-icons';
+import { ALL_WORKSPACE_ICON_IDS, DEFAULT_WORKSPACE_ICON, resolveWorkspaceIconId } from '@/assets/workspace-icons';
 import { isBrowserDevMode } from '@/utils/browserMock';
 import { shortenPathForDisplay } from '@/utils/pathDetection';
 import WorkspaceIcon from './WorkspaceIcon';
@@ -282,9 +289,7 @@ export default memo(function TemplateLibraryDialog({
                         onClick={onClose}
                         className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                     >
-                        <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M18 6 6 18M6 6l12 12" />
-                        </svg>
+                        <CloseIcon className="h-4 w-4" />
                     </button>
                 </div>
 
@@ -331,7 +336,7 @@ export default memo(function TemplateLibraryDialog({
                                             className="rounded p-1 text-[var(--ink-muted)] opacity-0 transition-all hover:text-[var(--error)] group-hover:opacity-100"
                                             title={t('templateLibrary.deleteTemplate')}
                                         >
-                                            <Trash2 className="h-3 w-3" />
+                                            <TrashIcon className="h-3 w-3" />
                                         </button>
                                     )}
                                 </div>
@@ -347,9 +352,9 @@ export default memo(function TemplateLibraryDialog({
                                 className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:opacity-50"
                             >
                                 {addingTemplate ? (
-                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    <LoaderIcon className="h-3.5 w-3.5 animate-spin" />
                                 ) : (
-                                    <Plus className="h-3.5 w-3.5" />
+                                    <PlusIcon className="h-3.5 w-3.5" />
                                 )}
                                 {t('templateLibrary.addTemplate')}
                             </button>
@@ -389,7 +394,7 @@ export default memo(function TemplateLibraryDialog({
                                             >
                                                 <div className="max-h-[200px] overflow-y-auto overscroll-contain">
                                                     <div className="flex flex-wrap gap-1.5">
-                                                        {ALL_WORKSPACE_ICON_IDS.filter(id => id !== 'folder-open').map((iconId) => (
+                                                        {ALL_WORKSPACE_ICON_IDS.map((iconId) => (
                                                             <button
                                                                 key={iconId}
                                                                 type="button"
@@ -398,7 +403,7 @@ export default memo(function TemplateLibraryDialog({
                                                                     setShowIconPicker(false);
                                                                 }}
                                                                 className={`flex h-10 w-10 items-center justify-center rounded-xl transition-all ${
-                                                                    (selectedTemplate.icon || DEFAULT_WORKSPACE_ICON) === iconId
+                                                                    resolveWorkspaceIconId(selectedTemplate.icon) === iconId
                                                                         ? 'bg-[var(--accent-warm-muted)] ring-1 ring-[var(--accent-warm)]'
                                                                         : 'hover:bg-[var(--hover-bg)]'
                                                                 }`}
@@ -511,7 +516,7 @@ export default memo(function TemplateLibraryDialog({
                                             </span>
                                             {projectName && (
                                                 <>
-                                                    <ChevronRight className="mx-1 h-3 w-3 shrink-0 text-[var(--ink-subtle)]" />
+                                                    <ChevronRightIcon className="mx-1 h-3 w-3 shrink-0 text-[var(--ink-subtle)]" />
                                                     <span className="min-w-0 truncate text-sm font-medium text-[var(--ink)]">
                                                         {projectName}
                                                     </span>
@@ -531,7 +536,7 @@ export default memo(function TemplateLibraryDialog({
                                 {/* Path exists warning */}
                                 {pathExists && !error && (
                                     <div className="mb-4 flex items-center gap-1.5 text-xs text-[var(--warning)]">
-                                        <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                                        <AlertIcon className="h-3.5 w-3.5 shrink-0" />
                                         <span>{t('templateLibrary.pathExistsWarning')}</span>
                                     </div>
                                 )}
@@ -551,9 +556,9 @@ export default memo(function TemplateLibraryDialog({
                                         className="flex items-center gap-1.5 rounded-full bg-[var(--button-primary-bg)] px-5 py-2.5 text-sm font-medium text-[var(--button-primary-text)] transition-all hover:bg-[var(--button-primary-bg-hover)] hover:shadow-sm disabled:opacity-50"
                                     >
                                         {creating ? (
-                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                            <LoaderIcon className="h-3.5 w-3.5 animate-spin" />
                                         ) : (
-                                            <Plus className="h-3.5 w-3.5" />
+                                            <PlusIcon className="h-3.5 w-3.5" />
                                         )}
                                         {t('templateLibrary.createAgent')}
                                     </button>

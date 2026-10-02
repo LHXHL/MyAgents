@@ -24,6 +24,8 @@ export type ProviderSwitchSessionBirth = {
   };
 };
 
+export { resolveProviderSwitchIntegratedRuntime } from '../../shared/runtimeProviderProjection';
+
 export function buildProviderSwitchSessionBirth(args: {
   targetIntent: ProviderExecutionIntent;
   providerId: string;
@@ -33,6 +35,7 @@ export function buildProviderSwitchSessionBirth(args: {
   mcpEnabledServers: string[];
   enabledPluginIds: string[];
   enabledOfficialToolIds?: OfficialToolId[];
+  targetIntegratedRuntime: 'builtin' | 'dsh';
 }): ProviderSwitchSessionBirth {
   const common = {
     permissionMode: args.permissionMode,
@@ -62,7 +65,7 @@ export function buildProviderSwitchSessionBirth(args: {
   }
 
   return {
-    runtime: 'builtin',
+    runtime: args.targetIntegratedRuntime,
     opts: {
       ...common,
       providerId: args.providerId,

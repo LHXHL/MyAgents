@@ -6,6 +6,7 @@ import {
   type TranscriptSaveStatus,
 } from '../../shared/sessionTranscript';
 import type { TranscriptBatch } from './codec';
+import { mergeAdjacentTextAppends } from './operations';
 
 export const TRANSCRIPT_BATCH_MS = 100;
 export const TRANSCRIPT_BATCH_BYTES = 256 * 1024;
@@ -33,7 +34,7 @@ export interface TranscriptStorage {
   discardCandidate?(): Promise<void>;
 }
 
-type QueuedOperation = { operation?: TranscriptOperation; revision: number; fromRevision?: number; bytes: number };
+type QueuedOperation = { operation?: TranscriptOperation; revision: number; fromRevision?: number; bytes: number; boundary?: boolean };
 
 export interface TranscriptWriterOptions {
   sessionId: string;
@@ -112,11 +113,21 @@ export class TranscriptWriter {
       this.publishOperation(operation);
       const detached = structuredClone(operation);
       const bytes = Buffer.byteLength(JSON.stringify(detached));
-      // Retain every pending operation during slow/failed IO. The queue has no
-      // capacity policy: memory growth during a prolonged fault is accepted,
-      // and neither recording nor Runtime admission depends on its size.
+      // Keep a conservative pre-merge byte count. Re-serializing the growing
+      // merged string on every token would make admission quadratic.
+      // The queue has no capacity policy or Runtime backpressure.
       if (!this.needsBaseline) {
-        this.queue.push({ operation: detached, revision: this.liveRevision, bytes });
+        const last = this.queue.at(-1);
+        const merged = last?.operation && !last.boundary && !boundary
+          ? mergeAdjacentTextAppends(last.operation, detached) : null;
+        if (merged && last) {
+          last.fromRevision ??= last.revision;
+          last.operation = merged;
+          last.revision = this.liveRevision;
+          last.bytes += bytes;
+        } else {
+          this.queue.push({ operation: detached, revision: this.liveRevision, bytes, boundary });
+        }
         this.queuedBytes += bytes;
       }
       this.watchHealth();

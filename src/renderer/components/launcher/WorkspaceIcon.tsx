@@ -1,10 +1,12 @@
 /**
- * WorkspaceIcon — renders a workspace icon (Phosphor SVG or emoji fallback)
- * Phosphor icons are tinted with the Cocoa CSS filter.
+ * WorkspaceIcon — renders an Agent workspace identity glyph (or a legacy emoji).
+ * Glyphs are inline SVG in the "Accent" style: hue-coloured line work, a 14%
+ * body tint and one solid focal detail. Colour comes from `--agent-icon-<hue>`
+ * tokens so light and dark Themes both keep the identity legible.
  */
 
 import { memo } from 'react';
-import { getWorkspaceIconUrl, DEFAULT_WORKSPACE_ICON } from '@/assets/workspace-icons';
+import { WORKSPACE_ICON_GLYPHS, resolveWorkspaceIconId, type WorkspaceIconGlyph } from '@/assets/workspace-icons';
 
 interface WorkspaceIconProps {
     icon?: string;
@@ -12,32 +14,16 @@ interface WorkspaceIconProps {
     className?: string;
 }
 
-/**
- * Cocoa color filter for monochrome SVGs.
- * Matches design system warm brown (#8b6f5a).
- */
-const COCOA_FILTER = 'invert(45%) sepia(15%) saturate(500%) hue-rotate(350deg) brightness(85%)';
+// Shared icon grid: 20-unit drawing shown through a 16.5-unit crop.
+const VIEW_BOX = '1.75 1.75 16.5 16.5';
+// Slightly lighter than UI glyphs so identity colour, not weight, carries the mark.
+const STROKE = 1.3;
 
 export default memo(function WorkspaceIcon({ icon, size = 24, className = '' }: WorkspaceIconProps) {
-    // Try Phosphor icon ID first
-    const iconUrl = icon ? getWorkspaceIconUrl(icon) : undefined;
+    const iconId = resolveWorkspaceIconId(icon);
 
-    if (iconUrl) {
-        return (
-            <img
-                src={iconUrl}
-                alt=""
-                width={size}
-                height={size}
-                className={className}
-                style={{ filter: COCOA_FILTER }}
-                draggable={false}
-            />
-        );
-    }
-
-    // Emoji fallback (legacy data or custom emoji)
-    if (icon) {
+    if (!iconId) {
+        // Emoji fallback (legacy data or custom emoji)
         return (
             <span
                 className={className}
@@ -48,17 +34,27 @@ export default memo(function WorkspaceIcon({ icon, size = 24, className = '' }: 
         );
     }
 
-    // Default folder icon
-    const defaultUrl = getWorkspaceIconUrl(DEFAULT_WORKSPACE_ICON);
+    const glyph: WorkspaceIconGlyph = WORKSPACE_ICON_GLYPHS[iconId];
     return (
-        <img
-            src={defaultUrl}
-            alt=""
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox={VIEW_BOX}
             width={size}
             height={size}
-            className={className}
-            style={{ filter: COCOA_FILTER }}
-            draggable={false}
-        />
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={STROKE}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+            focusable="false"
+            className={`shrink-0${className ? ` ${className}` : ''}`}
+            style={{ color: `var(--agent-icon-${glyph.hue})` }}
+            data-workspace-icon={iconId}
+        >
+            {glyph.body && <path d={glyph.body} fill="currentColor" fillOpacity={0.14} stroke="none" />}
+            {glyph.line}
+            {glyph.accent && <g fill="currentColor" stroke="none">{glyph.accent}</g>}
+        </svg>
     );
 });

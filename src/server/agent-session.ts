@@ -1,3 +1,4 @@
+import { buildTurnProviderAnalytics } from './session-core/turn-analytics';
 import { createBuiltinInterruptController } from './builtin-session/interrupt';
 import { configureBuiltinTranscriptBinding } from './builtin-session/transcript';
 import { randomUUID } from 'crypto';
@@ -23,6 +24,7 @@ import {
 } from './utils/background-agent-permission';
 import { registerBridge as registerBridgeInRegistry, unregisterBridge as unregisterBridgeInRegistry, type UpstreamBridgeConfig } from './openai-bridge/bridge-registry';
 import { getScriptDir } from './utils/runtime';
+import { getSidecarPort } from './session-core/sidecar-port';
 import { buildMcpStdioLaunchConfig } from './utils/mcp-command';
 import { resolveRemoteMcpTransportConfig } from './session-core/mcp-template-resolution';
 import { getCrossPlatformEnv } from './utils/platform';
@@ -40,6 +42,7 @@ import {
 } from './utils/model-capabilities';
 import { modelAliasEnvChangesForModel, resolveSessionModelAliases } from './utils/model-aliases';
 import { isRejectedReloadAnchor, resolveEffectiveResumeAt } from './utils/rewind-anchor';
+import { nativeResumeBoundaryRecoveryMessage } from '../shared/nativeResumeBoundary';
 import { attemptFileRewind, type FileRewindStatus } from './utils/rewind-file-result';
 import { summarizeSensitiveSdkMessage } from './utils/sdk-log-summary';
 import { buildForkUuidRemap, remapStoredSdkUuids } from './utils/fork-remap';
@@ -494,7 +497,6 @@ import type {
   InFlightMetadata,
   MessageQueueItem,
   TurnBoundaryQueueItem,
-  TurnProviderAnalytics,
 } from './builtin-session/types';
 
 /**
@@ -563,7 +565,7 @@ export const SDK_RESERVED_MCP_NAMES = ['claude-in-chrome', 'computer-use'];
  *
  * v0.2.11 — `cron-tools`, `im-cron`, and `im-media` were retired in favour of
  * `myagents` CLI commands + system prompt guidance (single CLI surface usable
- * across builtin / Codex / Gemini / Claude Code runtimes). Only `im-bridge-tools`
+ * across builtin / DSH / Codex / Claude Code runtimes). Only `im-bridge-tools`
  * remains a context-injected MCP because its tool surface is a runtime-dynamic
  * passthrough of OpenClaw plugin tools — no fixed schema to teach via prompt.
  */
@@ -853,7 +855,7 @@ async function awaitSessionTermination(timeoutMs = 10_000, label = ''): Promise<
 }
 
 let isStreamingMessage = false;
-// Every `system` subtype defined in SDK 0.3.261 (sdk.d.ts) — handled here or
+// Every `system` subtype defined in SDK 0.3.276 (sdk.d.ts) — handled here or
 // deliberately untouched. A subtype outside this set means a NEWER SDK started
 // emitting a message kind we have never seen; the loop logs it once per
 // process instead of letting it vanish silently. Update this set when bumping
@@ -871,7 +873,7 @@ const KNOWN_SYSTEM_SUBTYPES = new Set([
 ]);
 const warnedUnknownSystemSubtypes = new Set<string>();
 // Top-level half of the same sentinel: every `type` value an SDKMessage union
-// member carries in 0.3.261. Verified 1:1 against sdk.d.ts at upgrade time
+// member carries in 0.3.276. Verified 1:1 against sdk.d.ts at upgrade time
 // (the system-typed members are covered by KNOWN_SYSTEM_SUBTYPES above).
 const KNOWN_MESSAGE_TYPES = new Set([
   'assistant', 'user', 'result', 'system', 'stream_event', 'rate_limit_event',
@@ -952,26 +954,6 @@ let watchdogFired = false;
 // queue item changes before the interrupt result/stop handler runs (for
 // example replay(A) promotes B), the terminal event belongs to A and must not
 // drop or surface B.
-
-const SUBSCRIPTION_PROVIDER_ANALYTICS: TurnProviderAnalytics = {
-  provider_id: 'anthropic-sub',
-  provider_name: 'Anthropic (订阅)',
-  api_protocol: 'anthropic',
-  provider_base_url: 'https://api.anthropic.com',
-  provider_api_protocol: 'anthropic',
-};
-
-function buildTurnProviderAnalytics(providerEnv: ProviderEnv | undefined): TurnProviderAnalytics {
-  if (!providerEnv) return SUBSCRIPTION_PROVIDER_ANALYTICS;
-  const protocol = providerEnv.apiProtocol ?? 'anthropic';
-  return {
-    provider_id: providerEnv.providerId ?? null,
-    provider_name: providerEnv.providerName ?? providerEnv.providerId ?? null,
-    api_protocol: protocol,
-    provider_base_url: providerEnv.baseUrl ?? 'https://api.anthropic.com',
-    provider_api_protocol: protocol,
-  };
-}
 
 /**
  * Clear the in-flight queued-command slot. Keeps the three coupled fields in lockstep so a
@@ -1536,14 +1518,15 @@ const imTextBlockIndices = new Set<number>();
 
 const childToolToParent: Map<string, string> = new Map();
 async function setCurrentSessionId(next: string): Promise<void> {
-  if (getCurrentProductSessionId() !== next) {
-    flushPendingLiveEvents();
-    resetBuiltinLiveRevision();
-  }
+  const changing = getCurrentProductSessionId() !== next;
+  if (changing) flushPendingLiveEvents();
   await setCurrentProductSessionId(next);
+  if (changing) resetBuiltinLiveRevision();
 }
 
-configureBuiltinTranscriptBinding(getCurrentProductSessionId);
+// Product identity is shared with Integrated DSH, but SDK content ownership
+// is not. A dormant SDK facade must never subscribe to another adapter's writer.
+configureBuiltinTranscriptBinding(() => getCurrentRuntimeType() === 'builtin' ? getCurrentProductSessionId() : '');
 
 let builtinTranscriptPresentation: TranscriptPresentation | undefined;
 
@@ -1637,12 +1620,11 @@ const _pendingAttachments: MessageAttachment[] = [];
 // in `./openai-bridge/bridge-registry`; this module owns its session's
 // token (`activeSessionBridgeToken` below) and the resolver that updates
 // when `configState.currentProviderEnv` / `configState.currentModel` change.
-let sidecarPort: number = 0;
 
 /** Set the sidecar port (called once from index.ts on startup).
  *
  *  Side effect: exports `MYAGENTS_PORT` to `process.env` so every subprocess
- *  spawned later via `augmentedProcessEnv()` (external runtimes: gemini / claude-code /
+ *  spawned later via `augmentedProcessEnv()` (external runtimes: claude-code /
  *  codex) inherits it automatically — the AI's shell tool can then invoke
  *  `myagents` CLI without the CLI bailing with `MYAGENTS_PORT not set`. This is
  *  the pit-of-success alternative to editing three runtime `spawn()` call sites
@@ -1651,17 +1633,7 @@ let sidecarPort: number = 0;
  *  The builtin SDK path still sets `env.MYAGENTS_PORT` explicitly in
  *  `buildClaudeSessionEnv()` (idempotent) because pre-warm can spawn before
  *  this function is called and the process.env write would arrive too late. */
-export function setSidecarPort(port: number): void {
-  sidecarPort = port;
-  if (port > 0) {
-    process.env.MYAGENTS_PORT = String(port);
-  }
-}
-
-/** Get the current sidecar port (used by admin-api for self-loopback) */
-export function getSidecarPort(): number {
-  return sidecarPort;
-}
+export { getSidecarPort, setSidecarPort } from './session-core/sidecar-port';
 
 // ── Active session bridge token (PRD #124) ────────────────────────────────
 //
@@ -3543,23 +3515,32 @@ function dispatchSetModelToSdk(model: string): Promise<void> {
   return promise;
 }
 
+/** A user-selected provider/model pair is applied synchronously before scheduling one restart. */
+export async function applySessionModelSelection(input: { model: string; providerEnv?: ProviderEnv; reasoningEffort?: string }): Promise<{ success: boolean; status: string }> {
+  // The metadata commit owns desired settings. Do not change an admitted turn;
+  // the next enqueue reads the complete Session snapshot through the normal path.
+  if (lifecycleState.processing) return { success: true, status: 'pending-next-turn' };
+  if (!canResumeAcrossBuiltinProviderHistory({ currentProviderEnv: configState.currentProviderEnv,
+    currentModel: configState.currentModel, nextProviderEnv: input.providerEnv, nextModel: input.model })) {
+    throw new Error('Incompatible provider requires a new Session');
+  }
+  const snapshotted = isCurrentSessionSnapshotted();
+  const provider = configApplyProviderEnvUpdate(input.providerEnv, { source: 'message-snapshot', isSnapshotted: snapshotted });
+  const model = configApplyModelUpdate(input.model, { source: 'message-snapshot', isSnapshotted: snapshotted });
+  const effortChanged = normalizeReasoningEffort(input.reasoningEffort) !== configState.currentReasoningEffort;
+  configSetReasoningEffort(normalizeReasoningEffort(input.reasoningEffort));
+  ensureActiveSessionBridgeRegistered();
+  if (model.applied && model.oldModel !== input.model || provider.changed || effortChanged) forceReloadActiveSession('provider');
+  return { success: true, status: lifecycleState.processing ? 'pending-next-turn' : 'applied' };
+}
+
 export async function setSessionModel(model: string, opts?: { imConfigSync?: boolean }): Promise<void> {
-  // #327 — snapshot authority. An owned (snapshotted) desktop session's model is
-  // frozen at the snapshot, and the per-turn /api/im/enqueue resolver already
-  // applies "snapshot wins" (index.ts). But the Rust IM router ALSO pushes the
-  // channel's model override straight here, via sync_ai_config → /api/model/set,
-  // when it (re)warms a sidecar that is SHARED with the desktop session (the
-  // desktop↔IM handover binds the IM peer to the desktop session_id). For a
-  // snapshotted session that push must be ignored — applying it clobbers the
-  // process-global `configState.currentModel`, which is read live by buildClaudeSessionEnv /
-  // broadcastBuiltinContextUsage. With an unregistered override (e.g.
-  // astron-code-latest) lookupModelContextLength returns undefined → the desktop
-  // tab's `chat:context-usage` window collapses to the SDK 200K default (100%),
-  // and it opens a window where the live provider/model desync into a real
-  // upstream mismatch → 500 (#327 comment). Desktop's own model push (Chat.tsx,
-  // no `imConfigSync`) stays authoritative — it updates the snapshot itself.
-  // Pure IM / cron / live-follow sessions have no snapshot, so this is a no-op
-  // for them (isCurrentSessionSnapshotted() === false) and the override applies.
+  // The snapshot already owns this desired edit. A desktop projection of an IM
+  // selection cannot mutate the admitted turn's held config or live Query;
+  // the next message applies its complete snapshot through normal admission.
+  if (isCurrentSessionSnapshotted() && lifecycleState.processing && !lifecycleState.preWarming) return;
+  // #327 compatibility: legacy im-sync cannot override an owned snapshot.
+  // Explicit desktop edits have already saved their desired Session metadata.
   const modelUpdate = configApplyModelUpdate(model, {
     source: opts?.imConfigSync ? 'im-sync' : 'desktop',
     isSnapshotted: isCurrentSessionSnapshotted(),
@@ -3898,8 +3879,9 @@ function schedulePreWarm(delayMs = 500): void {
   if (lifecycleState.preWarmTimer) clearTimeout(lifecycleState.preWarmTimer);
   if (!agentDir) return;
   if (lifecycleState.preWarmDisabled) return;
-  // External runtimes (CC/Codex) manage their own subprocess — skip builtin SDK pre-warm
-  if (isExternalRuntime(getCurrentRuntimeType())) return;
+  // Only the SDK adapter owns this pre-warm. Integrated DSH also owns its
+  // own process; "not an external CLI" does not imply "builtin SDK".
+  if (getCurrentRuntimeType() !== 'builtin') return;
 
   // Stop retrying after consecutive failures to avoid infinite loop
   if (lifecycleState.preWarmFailCount >= PRE_WARM_MAX_RETRIES) {
@@ -4110,7 +4092,7 @@ function buildSettingSources(): ('user' | 'project')[] {
  *    Other historical context-injected MCPs (`cron-tools`, `im-cron`,
  *    `im-media`) were retired in v0.2.11 — the AI now reaches those
  *    capabilities through the `myagents` CLI + system prompt guidance,
- *    so the same surface is available across builtin / Codex / Gemini /
+ *    so the same surface is available across builtin / DSH / Codex /
  *    Claude Code runtimes.
  * 2. Builtin registry (command='__builtin__') — in-process servers, user-toggled via Settings,
  *    registered as META in `./tools/builtin-mcp-meta.ts`. Adding a new one:
@@ -6289,6 +6271,7 @@ export function buildClaudeSessionEnv(
   // projected into project .claude/skills/ at Query birth.
 
   // Self-Config CLI: expose sidecar port so the `myagents` CLI can call back
+  const sidecarPort = getSidecarPort();
   if (sidecarPort > 0) {
     env.MYAGENTS_PORT = String(sidecarPort);
   }
@@ -8034,14 +8017,12 @@ export async function resetSession(options?: { sessionId?: string }): Promise<vo
     ).catch(() => { /* swallow — best-effort cleanup */ });
   }
 
-  // 2. Clear all message state (shared with initializeAgent)
+  // 2. Bind before clearing the old presentation and interaction state. A
+  // writer that is still doing physical IO keeps its original usable binding.
+  // Surface migration supplies the Rust-generated target identity.
+  await setCurrentSessionId(options?.sessionId ?? randomUUID());
   clearMessageState();
   clearImBridgeToolsContext();
-
-  // 3. Bind the caller-proven target identity, or mint one for ordinary
-  // desktop reset. Surface migration passes its Rust-generated target so
-  // Router, SidecarManager, Runtime, and renderer adopt one exact identity.
-  await setCurrentSessionId(options?.sessionId ?? randomUUID());
   hasInitialPrompt = false; // Reset so first message creates a new session in SessionStore
   resetSessionMaterializationState({ allowLazySessionMaterialization: true });
 
@@ -8356,8 +8337,8 @@ export async function initializeAgent(
         setPermissionPlanState(restored);
       }
     } catch (error) {
-      // Self-resolution failure is non-fatal — fall back to external sync (Rust sync_ai_config)
-      console.warn('[agent] self-resolution failed, falling back to external sync:', error);
+      // Startup discovery is best effort; turn admission resolves its owned snapshot again.
+      console.warn('[agent] startup configuration discovery failed; turn admission will resolve again:', error);
     }
   }
 
@@ -8462,6 +8443,9 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
     await persistMessagesToStorage();
   }
 
+  // Settle the old writer before clearing state needed by the retained binding.
+  await setCurrentSessionId(targetSessionId);
+
   // Reset message/queue/streaming state (shared with initializeAgent, resetSession)
   clearMessageState();
   clearImBridgeToolsContext();
@@ -8485,8 +8469,6 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
   resetPreWarmFailCount();
   if (lifecycleState.preWarmTimer) { clearTimeout(lifecycleState.preWarmTimer); setPreWarmTimer(null); }
 
-  // Preserve target sessionId so new transcriptState.messages are saved to the same session
-  await setCurrentSessionId(targetSessionId);
   resetSessionMaterializationState({ allowLazySessionMaterialization: false });
 
   await activateSessionTranscript(targetSessionId);
@@ -8505,7 +8487,7 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
     sessionRegistered = true;
     console.log(`[agent] switchToSession: will resume session ${resumeDecision.resumeSessionId} (reason=${resumeDecision.reason})`);
   } else if (resumeDecision.reason === 'external-runtime') {
-    // External runtimes (codex/gemini/CC) don't use builtin SDK resume state.
+    // External runtimes (codex/CC) don't use builtin SDK resume state.
     // Their resume is driven by runtimeSessionId in external-session.ts.
     sessionRegistered = false;
   } else {
@@ -10504,7 +10486,7 @@ export async function rewindSession(userMessageId: string): Promise<{
     const targetIndex = history.findIndex(m => m.id === userMessageId && m.role === 'user');
     if (targetIndex < 0) return { success: false as const, error: 'Message not found' };
     const targetMessage = history[targetIndex];
-    // SDK 0.3.261 accepts any native chain entry, including user messages.
+    // SDK 0.3.276 accepts any native chain entry, including user messages.
     // The retained tail owns the boundary; looking backward for an assistant
     // would silently discard consecutive user messages from native context.
     const retainedTail = history[targetIndex - 1];
@@ -11443,7 +11425,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // noise doesn't show up in SDK debug output.
       ...(enabledPluginConfigs.length > 0 ? {
         plugins: enabledPluginConfigs,
-        // SDK/native 0.3.261 delivers paths over stdin, avoiding Windows'
+        // SDK/native 0.3.276 delivers paths over stdin, avoiding Windows'
         // command-line limit without changing the enabled plugin inventory.
         pluginDelivery: 'initialize' as const,
       } : {}),
@@ -13644,7 +13626,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
 
     // Cross-platform SDK subprocess diagnostics. Deterministic executable
     // denials also carry the Rust circuit's next legal probe delay.
-    let userFacingError = errorMessage;
+    let userFacingError = nativeResumeBoundaryRecoveryMessage(errorMessage) ?? errorMessage;
     const sdkSubprocessDiagnostic = diagnoseSdkSubprocessFailure({
       error,
       errorMessage,
@@ -13679,7 +13661,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // issue to surface. Error is still logged above (line 6611–6612) for
     // debugging, just not broadcast.
     if (!lifecycleState.preWarming && !lifecycleState.abortRequested) {
-      const completionTerminal = handleMessageError(errorMessage, sdkSubprocessDiagnostic?.imMessage);
+      const completionTerminal = handleMessageError(userFacingError, sdkSubprocessDiagnostic?.imMessage);
       setSessionState('error');
       broadcast(
         'chat:message-error',

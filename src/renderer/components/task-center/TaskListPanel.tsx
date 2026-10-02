@@ -9,7 +9,7 @@
 // Unmigrated historical Cron rows remain visible as read-only diagnostics.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CheckSquare, Folder, Plus } from 'lucide-react';
+import { TasksIcon, FolderIcon, PlusIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -547,7 +547,7 @@ export function TaskListPanel({
         <div className={`${searchActive ? 'hidden @[720px]:flex' : 'flex'} shrink-0 items-center gap-2`}>
           {/* `relative top-[1px]` keeps optical centering consistent with
               ThoughtPanel's Lightbulb — see the comment there. */}
-          <CheckSquare className="relative top-[1px] h-4 w-4 text-[var(--ink-muted)]" strokeWidth={1.5} />
+          <TasksIcon className="relative top-[1px] h-4 w-4 text-[var(--ink-muted)]" strokeWidth={1.5} />
           <span className="whitespace-nowrap text-base font-semibold text-[var(--ink)]">
             {t('tasks.title')}
           </span>
@@ -566,7 +566,7 @@ export function TaskListPanel({
               aria-label={t('tasks.newTask')}
               className="inline-flex h-7 w-7 items-center justify-center rounded-full text-xs text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] @[720px]:w-auto @[720px]:gap-1 @[720px]:px-2.5"
             >
-              <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
+              <PlusIcon className="h-3.5 w-3.5" strokeWidth={1.75} />
               <span className="sr-only @[720px]:not-sr-only">{t('tasks.new')}</span>
             </button>
             <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded-md bg-[var(--ink)] px-2 py-1 text-xs font-medium text-[var(--paper)] opacity-0 shadow-md transition-opacity duration-150 group-hover/newTask:opacity-100">
@@ -589,7 +589,7 @@ export function TaskListPanel({
               }}
               compact
               placeholder={t('tasks.allWorkspaces')}
-              triggerIcon={<Folder className="h-3.5 w-3.5" strokeWidth={1.5} />}
+              triggerIcon={<FolderIcon className="h-3.5 w-3.5" strokeWidth={1.5} />}
               popoverMinWidth={160}
             />
           )}

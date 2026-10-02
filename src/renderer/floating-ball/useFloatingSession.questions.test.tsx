@@ -1,3 +1,4 @@
+import { track } from '@/analytics';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SseEventHandler } from '@/api/SseConnection';
@@ -8,6 +9,7 @@ const harness = vi.hoisted(() => ({
   handler: null as SseEventHandler | null,
   fetch: vi.fn(),
   config: vi.fn(),
+  snapshot: {} as Record<string, unknown>,
 }));
 vi.mock('@/api/SseConnection', () => ({
   createSseConnection: () => ({
@@ -55,6 +57,7 @@ describe('Companion question receipts', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     harness.handler = null;
+    harness.snapshot = {};
     harness.config.mockResolvedValue({
       floatingBallSessionId: 'companion-test',
       floatingBallSessionDate: localDate(),
@@ -63,10 +66,35 @@ describe('Companion question receipts', () => {
     });
     harness.fetch.mockImplementation(async (_sid, _owner, path) => {
       if (path.startsWith('/sessions/'))
-        return response({ success: true, session: { id: 'companion-test', messages: [] } });
+        return response({ success: true, session: { id: 'companion-test', messages: [], ...harness.snapshot } });
       throw new Error(`Unexpected route: ${path}`);
     });
   });
+  it('attributes DSH companion sends, terminal and tool events to the frozen Session', async () => {
+    harness.snapshot = { runtime: 'dsh', runtimeSource: 'integrated', model: 'deepseek-test', permissionMode: 'workspace-autonomous' };
+    const { result } = renderHook(() => useFloatingSession({ current: 'pin' }));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    harness.fetch.mockResolvedValueOnce(response({ success: true }));
+    await act(async () => { expect(await result.current.send('hello')).toBe(true); });
+    const event = (name: string, data: unknown) => act(() => harness.handler!(name, data, {
+      sessionId: 'companion-test', connectionGeneration: 1,
+    }));
+    event('chat:tool-use-start', { id: 'tool-1', name: 'read', input: {} });
+    event('chat:server-tool-use-start', { id: 'server-1', name: 'web_search', input: {} });
+    event('chat:message-complete', { model: 'deepseek-test', input_tokens: 12, output_tokens: 0 });
+    event('chat:message-error', { message: 'private error' });
+    event('chat:message-stopped', null);
+    for (const name of ['message_send', 'message_complete', 'message_error', 'message_stop', 'tool_use']) {
+      expect(track).toHaveBeenCalledWith(name, expect.objectContaining({ source: 'floating_ball', session_id: 'companion-test', runtime: 'dsh', runtime_source: 'integrated' }));
+    }
+    expect(track).toHaveBeenCalledWith('message_send', expect.objectContaining({ model: 'deepseek-test', has_image: false }));
+    const completion = vi.mocked(track).mock.calls.find(([name]) => name === 'message_complete')![1];
+    expect(completion).toMatchObject({ input_tokens: 12, output_tokens: 0 });
+    expect(completion).not.toHaveProperty('cache_read_tokens');
+    expect(JSON.stringify(vi.mocked(track).mock.calls)).not.toContain('private error');
+    expect(track).toHaveBeenCalledWith('tool_use', expect.objectContaining({ tool_origin: 'provider' }));
+  });
+
   it.each(['chat:message-complete', 'chat:message-stopped', 'chat:message-error', 'chat:agent-error'])(
     'keeps accepted queued replies busy across %s until backend idle', async terminal => {
       const { result } = renderHook(() => useFloatingSession({ current: 'pin' }));

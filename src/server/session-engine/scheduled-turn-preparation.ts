@@ -15,7 +15,9 @@ export function runtimeConfigSource(
   config: RuntimeConfig | null | undefined,
 ): RuntimeSource | undefined {
   const source = config?.source;
-  return source === 'managed-provider' || source === 'system-cli' ? source : undefined;
+  return source === 'integrated' || source === 'managed-provider' || source === 'system-cli'
+    ? source
+    : undefined;
 }
 
 export function createScheduledDispatchGuard(input: {

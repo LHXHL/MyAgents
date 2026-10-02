@@ -20,7 +20,7 @@
 //   • 想法 → Lightbulb (same as `ThoughtPanel` header) — ideation pairs
 //            naturally with the Sparkles affordance.
 
-import { NotebookPen, Sparkles } from 'lucide-react';
+import { NotebookIcon, CapabilitiesIcon } from '@/components/icons';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -90,7 +90,7 @@ export function ModeSegment({
           title={chatTitle}
           className={`${baseBtn} disabled:cursor-wait disabled:opacity-50 ${value === 'chat' ? activeBtn : inactiveBtn}`}
         >
-          <Sparkles className="h-3 w-3" strokeWidth={1.75} />
+          <CapabilitiesIcon className="h-3 w-3" strokeWidth={1.75} />
           {t('input.mode.chat')}
         </button>
         <button
@@ -102,7 +102,7 @@ export function ModeSegment({
           title={recordTitle}
           className={`${baseBtn} disabled:cursor-wait disabled:opacity-50 ${value === 'record' ? activeBtn : inactiveBtn}`}
         >
-          <NotebookPen className="h-3 w-3" strokeWidth={1.75} />
+          <NotebookIcon className="h-3 w-3" strokeWidth={1.75} />
           {t('input.mode.record')}
         </button>
       </div>

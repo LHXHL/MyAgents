@@ -1,6 +1,7 @@
 export {
   getAskUserQuestionResponseEngine,
   getPermissionResponseEngine,
+  getPlanApprovalResponseEngine,
   getSessionEngine,
   getSessionEngineKind,
   getSessionRuntimeType,
@@ -31,3 +32,7 @@ export type {
   SessionEngine,
   SessionEngineKind,
 } from './types';
+
+export { inspectRuntime } from './runtime-inspection';
+
+export { queryRuntimeModels } from '../runtimes/external-session';

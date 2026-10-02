@@ -15,12 +15,12 @@
 import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  Activity,
-  Bell,
-  Clock,
-  Flag,
-  Zap,
-} from 'lucide-react';
+  ActivityIcon,
+  BellIcon,
+  ClockIcon,
+  FlagIcon,
+  ZapIcon,
+} from '@/components/icons';
 import CustomSelect from '@/components/CustomSelect';
 import WorkspaceIcon from '@/components/launcher/WorkspaceIcon';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
@@ -450,7 +450,7 @@ export function DispatchTaskDialog({
         className="flex max-h-[85vh] w-[min(780px,92vw)] flex-col rounded-[var(--radius-2xl)] bg-[var(--paper-elevated)] shadow-2xl"
       >
         <PanelHeader
-          icon={Zap}
+          icon={ZapIcon}
           title={t('dispatch.titleNew')}
           trailing={(
             <div className="flex rounded-lg bg-[var(--paper-inset)] p-0.5" role="tablist" aria-label={t('dispatch.createMode')}>
@@ -578,7 +578,7 @@ export function DispatchTaskDialog({
           <div className={SECTION_DIVIDER} />
 
           {/* 执行模式 */}
-          <FormSection icon={Clock} title={t('dispatch.sectionExecution')}>
+          <FormSection icon={ClockIcon} title={t('dispatch.sectionExecution')}>
             <ExecutionModeEditor
               executionMode={executionMode}
               setExecutionMode={setExecutionMode}
@@ -622,7 +622,7 @@ export function DispatchTaskDialog({
           {isRecurring && (
             <>
               <div className={SECTION_DIVIDER} />
-              <FormSection icon={Activity} title={t('trigger.sectionTitle')}>
+              <FormSection icon={ActivityIcon} title={t('trigger.sectionTitle')}>
                 <TriggerEditor
                   value={trigger}
                   workspacePath={workspace?.path ?? ''}
@@ -636,7 +636,7 @@ export function DispatchTaskDialog({
           {showEndConditions && (
             <>
               <div className={SECTION_DIVIDER} />
-              <FormSection icon={Flag} title={t('dispatch.sectionEndConditions')}>
+              <FormSection icon={FlagIcon} title={t('dispatch.sectionEndConditions')}>
                 <EndConditionsEditor
                   mode={endConditionMode}
                   setMode={setEndConditionMode}
@@ -654,7 +654,7 @@ export function DispatchTaskDialog({
           <div className={SECTION_DIVIDER} />
 
           {/* 通知 */}
-          <FormSection icon={Bell} title={t('dispatch.sectionNotifications')}>
+          <FormSection icon={BellIcon} title={t('dispatch.sectionNotifications')}>
             <NotificationConfigEditor
               value={notification}
               onChange={setNotification}

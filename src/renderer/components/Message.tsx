@@ -1,6 +1,13 @@
 import AsyncQuestionCard from '@/components/AsyncQuestionCard';
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { ChevronDown, Copy, Check, Undo2, RotateCcw, GitBranch, Download } from 'lucide-react';
+import {
+  ChevronDownIcon,
+  CopyIcon,
+  CheckIcon,
+  UndoIcon,
+  GitBranchIcon,
+  DownloadIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import { track } from '@/analytics';
@@ -186,7 +193,7 @@ function AssistantActions({ message, onRetry, onFork, className = '' }: {
             }
           }}
           className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
-          {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+          {copied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
         </button>
       </Tip>
       <Tip label={t('message.actions.exportMarkdown')}>
@@ -194,7 +201,7 @@ function AssistantActions({ message, onRetry, onFork, className = '' }: {
           aria-label={t('message.actions.exportMarkdown')}
           onClick={handleExport}
           className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
-          <Download className="size-3.5" />
+          <DownloadIcon className="size-3.5" />
         </button>
       </Tip>
       {onRetry && (
@@ -203,7 +210,7 @@ function AssistantActions({ message, onRetry, onFork, className = '' }: {
             aria-label={t('message.actions.retry')}
             onClick={() => onRetry(message.id)}
             className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
-            <RotateCcw className="size-3.5" />
+            <UndoIcon className="size-3.5" />
           </button>
         </Tip>
       )}
@@ -213,7 +220,7 @@ function AssistantActions({ message, onRetry, onFork, className = '' }: {
             aria-label={t('message.actions.fork')}
             onClick={() => onFork(message.id)}
             className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
-            <GitBranch className="size-3.5" />
+            <GitBranchIcon className="size-3.5" />
           </button>
         </Tip>
       )}
@@ -449,7 +456,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
                     }}
                     className="flex w-full items-center justify-center gap-1 rounded-b-2xl bg-[var(--message-user-bg)] py-1.5 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:text-[var(--ink)]"
                   >
-                    <ChevronDown className="size-3.5" />
+                    <ChevronDownIcon className="size-3.5" />
                     {t('message.expand')}
                   </button>
                 </div>
@@ -465,7 +472,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
                       aria-label={t('message.actions.rewind')}
                       onClick={() => onRewind(message.id)}
                       className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
-                      <Undo2 className="size-3.5" />
+                      <UndoIcon className="size-3.5" />
                     </button>
                   </Tip>
                 </span>
@@ -485,7 +492,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
                     }
                   }}
                   className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
-                  {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+                  {copied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
                 </button>
               </Tip>
             </div>
@@ -533,9 +540,14 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
     if (block.type === 'thinking') {
       return !block.isComplete;
     }
-    if (block.type === 'tool_use' || block.type === 'server_tool_use') {
-      // Tool is incomplete if it doesn't have a result yet
-      // server_tool_use is treated the same as tool_use for streaming state
+    if (block.type === 'server_tool_use') {
+      // Provider tools own their own completion bit. An empty Provider result is
+      // still a valid terminal result and must not keep the message streaming.
+      return Boolean(block.tool?.isLoading);
+    }
+    if (block.type === 'tool_use') {
+      // Local tools can predate the explicit loading bit, so retain the legacy
+      // result fallback for history compatibility.
       const subagentRunning = block.tool?.subagentCalls?.some((call) => call.isLoading);
       return Boolean(block.tool?.isLoading) || Boolean(subagentRunning) || !block.tool?.result;
     }

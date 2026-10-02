@@ -1,7 +1,15 @@
 /**
  * UsageStatsPanel - Global token usage statistics panel for Settings page
  */
-import { ArrowDownLeft, ArrowUpRight, BarChart2, Database, Loader2, MessageSquare, UserRound } from 'lucide-react';
+import {
+  ArrowDownLeftIcon,
+  ArrowUpRightIcon,
+  ChartIcon,
+  DatabaseIcon,
+  LoaderIcon,
+  MessageIcon,
+  UserIcon,
+} from '@/components/icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -106,7 +114,7 @@ export default function UsageStatsPanel() {
                 <div className="flex items-center gap-2">
                     {isLoading && stats && (
                         <span className="flex items-center gap-1.5 text-xs text-[var(--ink-muted)]" role="status">
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            <LoaderIcon className="h-3.5 w-3.5 animate-spin" />
                             {t('usageStats.loading')}
                         </span>
                     )}
@@ -130,7 +138,7 @@ export default function UsageStatsPanel() {
 
             {isLoading && !stats ? (
                 <div className="flex h-48 items-center justify-center gap-2 text-[var(--ink-muted)]" role="status">
-                    <Loader2 className="h-5 w-5 animate-spin" />
+                    <LoaderIcon className="h-5 w-5 animate-spin" />
                     <span className="text-sm">{t('usageStats.loading')}</span>
                 </div>
             ) : errorMessage ? (
@@ -166,32 +174,32 @@ function SummaryCards({ stats, totalTokens }: { stats: GlobalStats; totalTokens:
         {
             label: t('usageStats.summary.totalTokens'),
             value: formatTokens(totalTokens),
-            icon: BarChart2,
+            icon: ChartIcon,
         },
         {
             label: t('usageStats.summary.inputTokens'),
             value: formatTokens(stats.summary.totalInputTokens),
-            icon: ArrowUpRight,
+            icon: ArrowUpRightIcon,
         },
         {
             label: t('usageStats.summary.outputTokens'),
             value: formatTokens(stats.summary.totalOutputTokens),
-            icon: ArrowDownLeft,
+            icon: ArrowDownLeftIcon,
         },
         {
             label: t('usageStats.summary.cacheInput'),
             value: formatTokens(stats.summary.totalCacheReadTokens + stats.summary.totalCacheCreationTokens),
-            icon: Database,
+            icon: DatabaseIcon,
         },
         {
             label: t('usageStats.summary.turnCount'),
             value: String(stats.summary.turnCount),
-            icon: MessageSquare,
+            icon: MessageIcon,
         },
         {
             label: t('usageStats.summary.humanQueryCount'),
             value: String(stats.summary.humanQueryCount),
-            icon: UserRound,
+            icon: UserIcon,
         },
     ];
 

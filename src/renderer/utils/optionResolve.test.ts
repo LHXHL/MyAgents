@@ -9,14 +9,82 @@ import {
   resolveCurrentProviderForSession,
   resolveLegacyBuiltinSnapshotProviderId,
   resolveLauncherProvider,
-  shouldBlockSendForLabsDisabledExternalRuntime,
   shouldDegradedLoad,
   shouldResetModelOnProviderChange,
   shouldReuseSseSubscriptionForSessionChange,
   shouldSkipSnapshotWrite,
+  toProviderHistoryEnv,
 } from './optionResolve';
-import { MANAGED_CODEX_PROVIDER, SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
+import { MANAGED_CODEX_PROVIDER, PRESET_PROVIDERS, SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
 import { toProviderExecutionIntent } from '../../shared/providerExecution';
+
+describe('Chat provider-definition history boundary', () => {
+  const preset = (id: string) => {
+    const provider = [...PRESET_PROVIDERS, MANAGED_CODEX_PROVIDER].find(candidate => candidate.id === id);
+    if (!provider) throw new Error(`Missing preset provider: ${id}`);
+    return provider;
+  };
+  const canSwitch = (currentId: string, nextId: string) => {
+    const current = preset(currentId);
+    const next = preset(nextId);
+    const currentModel = current.primaryModel || 'catalog-model';
+    const nextModel = next.primaryModel || 'catalog-model';
+    return canResumeProviderHistoryForSwitch({
+      currentIntent: toProviderExecutionIntent(current, currentModel),
+      nextIntent: toProviderExecutionIntent(next, nextModel),
+      currentProviderEnv: toProviderHistoryEnv(current, currentModel),
+      nextProviderEnv: toProviderHistoryEnv(next, nextModel),
+      legacyCurrentProviderUnknown: false,
+    });
+  };
+
+  it.each([
+    ['antigravity-sub', 'zhipu'],
+    ['xai-sub', 'zhipu'],
+    ['antigravity-sub', 'deepseek'],
+    ['xai-sub', 'deepseek'],
+    ['antigravity-sub', 'opencode-go'],
+    ['xai-sub', 'opencode-go'],
+    ['antigravity-sub', 'xai-sub'],
+    ['opencode-go', 'zhipu'],
+  ])('allows portable history switches between %s and %s in both directions', (current, next) => {
+    expect(canSwitch(current, next)).toBe(true);
+    expect(canSwitch(next, current)).toBe(true);
+  });
+
+  it.each(['antigravity-sub', 'xai-sub', 'opencode-go', 'zhipu'])
+    ('keeps %s outside official Claude and Managed Codex history in both directions', (portable) => {
+      for (const isolated of ['anthropic-sub', 'anthropic-api', 'codex-sub']) {
+        expect(canSwitch(portable, isolated)).toBe(false);
+        expect(canSwitch(isolated, portable)).toBe(false);
+      }
+    });
+
+  it('keeps Claude subscription and official API in the same history family', () => {
+    expect(canSwitch('anthropic-sub', 'anthropic-api')).toBe(true);
+    expect(canSwitch('anthropic-api', 'anthropic-sub')).toBe(true);
+  });
+
+  it('retains the stable managed endpoint reference before Antigravity proxy binding', () => {
+    const provider = preset('antigravity-sub');
+    const env = toProviderHistoryEnv(provider, 'catalog-model');
+    expect(env).toMatchObject({
+      providerId: 'antigravity-sub',
+      apiProtocol: 'anthropic',
+      endpointSource: { kind: 'cliproxy', providerId: 'antigravity-sub' },
+    });
+    const policy = { isolatedKeys: new Set(['provider:antigravity-sub']) };
+    expect(canResumeProviderHistoryForSwitch({
+      currentProviderEnv: env,
+      nextProviderEnv: toProviderHistoryEnv({
+        ...provider,
+        config: { ...provider.config, baseUrl: 'http://127.0.0.1:14002' },
+      }, 'catalog-model'),
+      legacyCurrentProviderUnknown: false,
+      policy,
+    })).toBe(true);
+  });
+});
 
 describe('resolveCurrentProviderForSession (#401)', () => {
   const pinned = { id: 'zhipu' };
@@ -56,37 +124,6 @@ describe('resolveCurrentProviderForSession (#401)', () => {
         fallbackProvider: fallback,
       }),
     ).toBe(pinned);
-  });
-});
-
-describe('shouldBlockSendForLabsDisabledExternalRuntime', () => {
-  it('blocks user-managed external CLI sessions when Labs runtime mode is off', () => {
-    expect(shouldBlockSendForLabsDisabledExternalRuntime({
-      sessionRuntime: 'codex',
-      sessionRuntimeSource: 'system-cli',
-      multiAgentRuntimeEnabled: false,
-    })).toBe(true);
-  });
-
-  it('does not block Managed Codex Provider sessions when Labs runtime mode is off', () => {
-    expect(shouldBlockSendForLabsDisabledExternalRuntime({
-      sessionRuntime: 'codex',
-      sessionRuntimeSource: 'managed-provider',
-      multiAgentRuntimeEnabled: false,
-    })).toBe(false);
-  });
-
-  it('does not block builtin sessions or Labs-enabled external sessions', () => {
-    expect(shouldBlockSendForLabsDisabledExternalRuntime({
-      sessionRuntime: 'builtin',
-      sessionRuntimeSource: undefined,
-      multiAgentRuntimeEnabled: false,
-    })).toBe(false);
-    expect(shouldBlockSendForLabsDisabledExternalRuntime({
-      sessionRuntime: 'codex',
-      sessionRuntimeSource: 'system-cli',
-      multiAgentRuntimeEnabled: true,
-    })).toBe(false);
   });
 });
 
@@ -375,6 +412,22 @@ describe('resolveBuiltinPermissionMode (#244)', () => {
     expect(
       resolveBuiltinPermissionMode({ projectSynced: false, statePermissionMode: 'auto' }),
     ).toBe('auto');
+  });
+  it('ignores a persisted DSH permission on a fresh Claude SDK tab', () => {
+    expect(resolveBuiltinPermissionMode({
+      projectSynced: false,
+      statePermissionMode: 'full-autonomous',
+      agentPermissionMode: 'full-autonomous',
+      projectPermissionMode: 'plan',
+      defaultPermissionMode: 'auto',
+    })).toBe('plan');
+  });
+  it('never sends a foreign key from authoritative state or launcher handoff', () => {
+    expect(resolveBuiltinPermissionMode({
+      projectSynced: true,
+      statePermissionMode: 'full-autonomous',
+      agentPermissionMode: 'fullAgency',
+    })).toBe('auto');
   });
 });
 

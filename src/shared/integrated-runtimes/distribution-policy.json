@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "allowedIntegratedRuntimes": ["claude-agent-sdk", "dsh"],
+  "allowedExternalRuntimes": ["claude-code", "codex"],
+  "defaultIntegratedRuntime": "claude-agent-sdk",
+  "selectorAvailability": "always"
+}

@@ -1,5 +1,5 @@
 import { useRef, useState, type ReactNode } from 'react';
-import { Check, ChevronDown, Loader2 } from 'lucide-react';
+import { CheckIcon, ChevronDownIcon, LoaderIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import type {
@@ -88,12 +88,12 @@ export function IssueTaskCard({
             onClick={() => setGoalOpen((value) => !value)}
             className="inline-flex min-w-0 items-center gap-1 rounded-md px-1.5 py-1 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-inset)] active:scale-[0.98] disabled:pointer-events-none"
           >
-            {goalBusy && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />}
+            {goalBusy && <LoaderIcon className="h-3.5 w-3.5 shrink-0 animate-spin" />}
             <GoalPathLabel
               label={goalLabel}
               leafLabel={goalLeafLabel || goalLabel}
             />
-            {admin && <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />}
+            {admin && <ChevronDownIcon className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />}
           </button>
           <Popover
             open={goalOpen && admin}
@@ -113,7 +113,7 @@ export function IssueTaskCard({
                 className="flex min-h-9 w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-sm font-medium text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)]"
               >
                 <span className="truncate">{t('space.detail.noGoal')}</span>
-                {!issue.goalId && <Check className="h-4 w-4 shrink-0 text-[var(--accent-cool)]" />}
+                {!issue.goalId && <CheckIcon className="h-4 w-4 shrink-0 text-[var(--accent-cool)]" />}
               </button>
               {goals.filter((goal) => !goal.archivedAt).map((goal) => {
                 const selected = goal.id === issue.goalId;
@@ -132,7 +132,7 @@ export function IssueTaskCard({
                       label={goal.goalPathLabel || goal.path || goal.title}
                       leafLabel={goal.title}
                     />
-                    {selected && <Check className="h-4 w-4 shrink-0 text-[var(--accent-cool)]" />}
+                    {selected && <CheckIcon className="h-4 w-4 shrink-0 text-[var(--accent-cool)]" />}
                   </button>
                 );
               })}
@@ -150,9 +150,9 @@ export function IssueTaskCard({
             onClick={() => setStatusOpen((value) => !value)}
             className={`inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 text-xs font-semibold transition-colors active:scale-[0.98] ${statusPillClass(issue.state)} disabled:pointer-events-none`}
           >
-            {statusBusy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            {statusBusy && <LoaderIcon className="h-3.5 w-3.5 animate-spin" />}
             {issueStatusLabel(issue.state, t)}
-            {statusOptions.length > 0 && <ChevronDown className="h-3.5 w-3.5" />}
+            {statusOptions.length > 0 && <ChevronDownIcon className="h-3.5 w-3.5" />}
           </button>
           <Popover
             open={statusOpen && statusOptions.length > 0}
@@ -174,7 +174,7 @@ export function IssueTaskCard({
                     className="flex h-9 w-full items-center justify-between gap-3 rounded-lg px-2.5 text-left text-sm font-semibold transition-colors hover:bg-[var(--paper-inset)]"
                   >
                     <span className={statusTextClass(option.value)}>{option.label}</span>
-                    {selected && <Check className={`h-4 w-4 ${statusTextClass(option.value)}`} />}
+                    {selected && <CheckIcon className={`h-4 w-4 ${statusTextClass(option.value)}`} />}
                   </button>
                 );
               })}

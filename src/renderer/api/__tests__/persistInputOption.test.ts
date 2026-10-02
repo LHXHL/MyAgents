@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { reasoningEffortAfterModelChange } from '../../../shared/reasoningEffort';
+import { resolveAgentConfigMutation } from '../../../shared/agentConfigMutation';
+import type { AgentConfig } from '../../../shared/types/agent';
 import { persistInputOptionChange } from '../persistInputOption';
 
 function makeMocks() {
@@ -329,6 +331,43 @@ describe('persistInputOptionChange — disk write fanout', () => {
     });
   });
 
+  it('preserves DSH as the base Integrated Runtime when leaving Managed Codex', async () => {
+    const m = makeMocks();
+
+    await persistInputOptionChange({
+      workspaceId: 'ws-1',
+      agentId: 'agent-1',
+      isExternalRuntime: true,
+      currentProviderId: 'codex-sub',
+      currentRuntimePreference: { family: 'integrated', id: 'dsh' },
+      currentRuntimeConfig: {
+        source: 'managed-provider',
+        model: 'gpt-5.5-codex',
+        envPolicy: { proxy: 'terminal' },
+      },
+      fields: {
+        builtinSelection: { providerId: 'zhipu', model: 'glm-5.3' },
+      },
+      patchProject: m.patchProject,
+      patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
+      patchSnapshot: m.patchSnapshot,
+    });
+
+    const intent = m.patchAgentConfig.mock.calls[0][1];
+    expect(intent).toEqual({
+      providerId: 'zhipu',
+      model: 'glm-5.3',
+      runtime: 'dsh',
+      runtimePreference: { family: 'integrated', id: 'dsh' },
+    });
+    const resolved = resolveAgentConfigMutation({
+      id: 'agent-1', providerId: 'codex-sub', runtime: 'builtin',
+      runtimeConfig: { source: 'managed-provider', model: 'gpt-5.5-codex', envPolicy: { proxy: 'terminal' } },
+    } as AgentConfig, intent);
+    expect(resolved.runtimeConfig).toEqual({ envPolicy: { proxy: 'terminal' } });
+  });
+
   it('writes ordinary provider fields as builtin defaults even when the current session is managed Codex', async () => {
     const m = makeMocks();
 
@@ -637,6 +676,43 @@ describe('persistInputOptionChange — disk write fanout', () => {
     expect(m.pushRuntimeConfigToSidecar).toHaveBeenCalledWith({
       model: 'gpt-5.2-codex',
       permissionMode: 'no-restrictions',
+    });
+  });
+
+  it('keeps DSH Provider fields product-owned while pushing the live runtime config', async () => {
+    const m = makeMocks();
+    await persistInputOptionChange({
+      workspaceId: 'ws-1',
+      agentId: 'agent-1',
+      isExternalRuntime: true,
+      usesProductConfiguration: true,
+      fields: {
+        builtinSelection: { providerId: 'deepseek', model: 'deepseek-v4-flash' },
+        permissionMode: 'fullAgency',
+        reasoningEffort: 'high',
+      },
+      patchProject: m.patchProject,
+      patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
+      patchSnapshot: m.patchSnapshot,
+      pushRuntimeConfigToSidecar: m.pushRuntimeConfigToSidecar,
+    });
+
+    expect(m.patchProject).toHaveBeenCalledWith('ws-1', {
+      providerId: 'deepseek',
+      model: 'deepseek-v4-flash',
+      permissionMode: 'fullAgency',
+    });
+    expect(m.patchAgentConfig).toHaveBeenCalledWith('agent-1', {
+      providerId: 'deepseek',
+      model: 'deepseek-v4-flash',
+      permissionMode: 'fullAgency',
+      reasoningEffort: 'high',
+    });
+    expect(m.pushRuntimeConfigToSidecar).toHaveBeenCalledWith({
+      model: 'deepseek-v4-flash',
+      permissionMode: 'fullAgency',
+      reasoningEffort: 'high',
     });
   });
 

@@ -6542,6 +6542,23 @@ mod tests {
         .unwrap()
     }
 
+    #[tokio::test]
+    async fn text_record_delete_preflight_does_not_project_audio_processing() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = manager(&root);
+        let record = manager.record_store.create_text(crate::record::TextRecordCreateInput {
+            content: "Text Record delete regression".to_string(),
+            images: Vec::new(),
+        }).await.unwrap();
+        manager.cancel_record_processing(&record.id).await.unwrap();
+        let retained = manager.record_store.get(&record.id).await.unwrap();
+        assert_eq!(retained.kind, RecordKind::Text);
+        assert_eq!(retained.content, record.content);
+        assert_eq!(retained.revision, record.revision);
+        manager.record_store.delete(&record.id).await.unwrap();
+        assert!(manager.record_store.get(&record.id).await.is_none());
+    }
+
     #[test]
     fn record_backfill_accepts_only_the_selected_physical_or_real_legacy_sources() {
         let dual_input = WorkloadInput::RecordArtifacts {

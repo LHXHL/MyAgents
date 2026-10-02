@@ -1,27 +1,30 @@
+import { isProjectActiveForUser } from '@/config/types';
+import WorkspaceSelector, { resolveDefaultWorkspaceProject } from '@/components/launcher/WorkspaceSelector';
+import AgentFunctionSettings from './sections/AgentFunctionSettings';
+import { DshCollaborationSettings } from './DshCollaborationSettings';
 import { getPlatformHiddenProviderIds, isLinuxDesktop } from '@/utils/desktopPlatform';
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
-  Check,
-  ChevronDown,
-  Copy,
-  Download,
-  FolderOpen,
+  CheckIcon,
+  ChevronDownIcon,
+  CopyIcon,
+  DownloadIcon,
   ImageIcon,
-  KeyRound,
-  Link,
-  Loader2,
-  Plus,
-  RefreshCw,
-  SlidersHorizontal,
-  Square,
-  Trash2,
-  Unlink,
-  X,
-  AlertCircle,
-  Globe,
-  ExternalLink as ExternalLinkIcon,
-  Settings2,
-} from 'lucide-react';
+  KeyIcon,
+  LinkIcon,
+  LoaderIcon,
+  PlusIcon,
+  RefreshIcon,
+  SlidersIcon,
+  StopIcon,
+  TrashIcon,
+  UnlinkIcon,
+  CloseIcon,
+  AlertIcon,
+  GlobeIcon,
+  ExternalIcon as ExternalLinkIcon,
+  PlayIcon,
+} from '@/components/icons';
 import { ExternalLink } from '@/components/ExternalLink';
 import React, {
   useCallback,
@@ -82,11 +85,10 @@ import {
   getPresetMcpServer,
   DEFAULT_CLAUDE_TRANSCRIPT_CLEANUP_PERIOD_DAYS,
   normalizeClaudeTranscriptCleanupPeriodDays,
-  normalizeChatQueueResponseMode,
+  normalizeMarkdownReadingSize,
   getManagedCodexProviderReadiness,
   isManagedCodexProviderGateEnabled,
   type ManagedCodexRuntimeInstallState,
-  type ChatQueueResponseMode,
   type ProxyProtocol,
   type SpaceEnvironment,
 } from '@/config/types';
@@ -123,7 +125,6 @@ import { REACT_LOG_EVENT } from '@/utils/frontendLogger';
 import { dispatchHelperRequest } from '@/utils/dispatchHelperRequest';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import { getPlatform } from '@/analytics/device';
-import { shortenPathForDisplay } from '@/utils/pathDetection';
 import type { LogEntry } from '@/types/log';
 import BugReportOverlay from '@/components/BugReportOverlay';
 import SettingsHelperInbox from '@/components/SettingsHelperInbox';
@@ -147,7 +148,6 @@ import {
   speechModelPackRemove,
   speechModelPackStatus as readSpeechModelPackStatus,
 } from '@/api/recording';
-import { workspacePathsEqual } from '../../../shared/workspacePath';
 import { normalizeProxyScope } from '../../../shared/proxyScope';
 import { describeProxyScopeSummary } from './proxyScopePresentation';
 import { formatSubscriptionVerifyError } from '../../../shared/subscription';
@@ -359,7 +359,6 @@ export default function Settings({
     patchProxySettings,
     providers,
     projects,
-    addProject,
     updateProject,
     addCustomProvider,
     updateCustomProvider,
@@ -373,6 +372,7 @@ export default function Settings({
     managedCodexRuntimeUpdateInFlight,
     requestManagedCodexRuntimeUpdate,
   } = useConfig();
+  const startupWorkspaceProjects = useMemo(() => projects.filter(isProjectActiveForUser), [projects]);
   const spaceBuildCapability = useSpaceBuildCapability(config.spaceEnvironment);
   const toast = useToast();
   const resolvedTheme = useResolvedTheme();
@@ -472,10 +472,11 @@ export default function Settings({
         await runFloatingBallToggleTransaction({
           enabled: false,
           nativeStateBeforeChange: config.floatingBallEnabled === true,
-          persistDesiredState: enabled => updateConfig({
-            floatingBallDevGate: enabled,
-            floatingBallEnabled: enabled,
-          }),
+          persistDesiredState: (enabled) =>
+            updateConfig({
+              floatingBallDevGate: enabled,
+              floatingBallEnabled: enabled,
+            }),
           applyNativeState: setNativeFloatingBallEnabled,
         });
       } else {
@@ -1801,11 +1802,7 @@ export default function Settings({
     setVisionToolSaving(true);
     try {
       await atomicModifyConfig((current) =>
-        applyVisionToolSettings(
-          current,
-          parsed,
-          visionToolEnableAfterSave,
-        ),
+        applyVisionToolSettings(current, parsed, visionToolEnableAfterSave),
       );
       await refreshConfig();
       resetVisionToolSettings();
@@ -4031,7 +4028,7 @@ export default function Settings({
                 {subscriptionStatus?.verifyStatus === 'loading' &&
                   !isLoginActive && (
                     <span className="flex shrink-0 items-center gap-1 rounded bg-[var(--info-bg)] px-1.5 py-0.5 text-xs font-medium text-[var(--info)]">
-                      <Loader2 className="h-3 w-3 animate-spin" />
+                      <LoaderIcon className="h-3 w-3 animate-spin" />
                       {tSettings('providers.verifying')}
                     </span>
                   )}
@@ -4054,7 +4051,7 @@ export default function Settings({
                 className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-wait disabled:opacity-50"
                 title={tSettings('providers.reverify')}
               >
-                <RefreshCw
+                <RefreshIcon
                   className={`h-4 w-4 ${subscriptionVerifying ? 'animate-spin' : ''}`}
                 />
               </button>
@@ -4067,9 +4064,9 @@ export default function Settings({
                 className="flex shrink-0 items-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-60"
               >
                 {isLoginActive ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <LoaderIcon className="h-3.5 w-3.5 animate-spin" />
                 ) : (
-                  <Link className="h-3.5 w-3.5" />
+                  <LinkIcon className="h-3.5 w-3.5" />
                 )}
                 {tSettings('providers.login')}
               </button>
@@ -4192,7 +4189,7 @@ export default function Settings({
               className="shrink-0 rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
               title={tSettings('providers.managedCodex.settingsTitle')}
             >
-              <Settings2 className="h-4 w-4" />
+              <SlidersIcon className="h-4 w-4" />
             </button>
           )}
         </div>
@@ -4201,7 +4198,7 @@ export default function Settings({
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-3 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5">
               <div className="flex min-w-0 items-center gap-2">
-                <Download className="h-4 w-4 shrink-0 text-[var(--accent)]" />
+                <DownloadIcon className="h-4 w-4 shrink-0 text-[var(--accent)]" />
                 <span className="truncate text-sm font-semibold text-[var(--ink)]">
                   {runtimeRowLabel}
                 </span>
@@ -4213,7 +4210,7 @@ export default function Settings({
                 className="flex min-w-16 items-center justify-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
               >
                 {isDownloadingRuntime && progressPercent == null && (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <LoaderIcon className="h-3.5 w-3.5 animate-spin" />
                 )}
                 {downloadButtonLabel}
               </button>
@@ -4265,9 +4262,9 @@ export default function Settings({
                   className="flex shrink-0 items-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-60"
                 >
                   {loginInProgress ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <LoaderIcon className="h-3.5 w-3.5 animate-spin" />
                   ) : (
-                    <Link className="h-3.5 w-3.5" />
+                    <LinkIcon className="h-3.5 w-3.5" />
                   )}
                   {tSettings('providers.login')}
                 </button>
@@ -4352,7 +4349,7 @@ export default function Settings({
               onClick={() => setManagedCodexDetailsOpen(false)}
               className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
             >
-              <X className="h-4 w-4" />
+              <CloseIcon className="h-4 w-4" />
             </button>
           </div>
 
@@ -4396,7 +4393,7 @@ export default function Settings({
                   onClick={() => void checkManagedCodexUpdate()}
                   className="flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--line)] px-3 py-1.5 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-inset)] disabled:cursor-wait disabled:opacity-60"
                 >
-                  <RefreshCw
+                  <RefreshIcon
                     className={`h-3.5 w-3.5 ${managedCodexBusy === 'status' ? 'animate-spin' : ''}`}
                   />
                   {tSettings('providers.managedCodex.refresh')}
@@ -4434,9 +4431,9 @@ export default function Settings({
                     className="flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--line)] px-3 py-1.5 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-inset)] disabled:cursor-wait disabled:opacity-60"
                   >
                     {managedCodexBusy === 'logout' ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      <LoaderIcon className="h-3.5 w-3.5 animate-spin" />
                     ) : (
-                      <Unlink className="h-3.5 w-3.5" />
+                      <UnlinkIcon className="h-3.5 w-3.5" />
                     )}
                     {tSettings('providers.managedCodex.logout')}
                   </button>
@@ -4451,9 +4448,9 @@ export default function Settings({
                     className="flex shrink-0 items-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-60"
                   >
                     {managedCodexBusy === 'login' ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      <LoaderIcon className="h-3.5 w-3.5 animate-spin" />
                     ) : (
-                      <Link className="h-3.5 w-3.5" />
+                      <LinkIcon className="h-3.5 w-3.5" />
                     )}
                     {tSettings('providers.login')}
                   </button>
@@ -4519,7 +4516,7 @@ export default function Settings({
               onClick={() => setManagedCodexLoginDialogOpen(false)}
               className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
             >
-              <X className="h-4 w-4" />
+              <CloseIcon className="h-4 w-4" />
             </button>
           </div>
 
@@ -4527,11 +4524,11 @@ export default function Settings({
             <section hidden={isLoginSucceeded}>
               <div className="flex items-center gap-2">
                 {isActiveLogin ? (
-                  <Loader2 className="h-4 w-4 animate-spin text-[var(--info)]" />
+                  <LoaderIcon className="h-4 w-4 animate-spin text-[var(--info)]" />
                 ) : state.status === 'succeeded' ? (
-                  <Check className="h-4 w-4 text-[var(--success)]" />
+                  <CheckIcon className="h-4 w-4 text-[var(--success)]" />
                 ) : (
-                  <AlertCircle className="h-4 w-4 text-[var(--error)]" />
+                  <AlertIcon className="h-4 w-4 text-[var(--error)]" />
                 )}
                 <p className="text-sm font-medium text-[var(--ink)]">
                   {tSettings('providers.loginDialog.autoOpenBrowser')}
@@ -4551,7 +4548,7 @@ export default function Settings({
                   onClick={() => void copyManagedCodexLoginUrl()}
                   className="flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-inset)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <Copy className="h-3.5 w-3.5" />
+                  <CopyIcon className="h-3.5 w-3.5" />
                   {tSettings('providers.loginDialog.copy')}
                 </button>
               </div>
@@ -4576,7 +4573,7 @@ export default function Settings({
               <section>
                 <div className="flex items-start gap-3">
                   <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--success-bg)]">
-                    <Check className="h-4 w-4 text-[var(--success)]" />
+                    <CheckIcon className="h-4 w-4 text-[var(--success)]" />
                   </div>
                   <div className="min-w-0">
                     <p className="text-sm font-semibold text-[var(--ink)]">
@@ -4623,7 +4620,7 @@ export default function Settings({
                 className="flex items-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-4 py-2 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-60"
               >
                 {managedCodexBusy === 'login' && (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <LoaderIcon className="h-3.5 w-3.5 animate-spin" />
                 )}
                 {tSettings('providers.loginDialog.retryLogin')}
               </button>
@@ -4682,7 +4679,7 @@ export default function Settings({
               onClick={closeSubscriptionLoginDialog}
               className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
             >
-              <X className="h-4 w-4" />
+              <CloseIcon className="h-4 w-4" />
             </button>
           </div>
 
@@ -4690,11 +4687,11 @@ export default function Settings({
             <section>
               <div className="flex items-center gap-2">
                 {isActiveLogin ? (
-                  <Loader2 className="h-4 w-4 animate-spin text-[var(--info)]" />
+                  <LoaderIcon className="h-4 w-4 animate-spin text-[var(--info)]" />
                 ) : state.status === 'succeeded' ? (
-                  <Check className="h-4 w-4 text-[var(--success)]" />
+                  <CheckIcon className="h-4 w-4 text-[var(--success)]" />
                 ) : (
-                  <AlertCircle className="h-4 w-4 text-[var(--error)]" />
+                  <AlertIcon className="h-4 w-4 text-[var(--error)]" />
                 )}
                 <p className="text-sm font-medium text-[var(--ink)]">
                   {tSettings('providers.loginDialog.autoOpenBrowser')}
@@ -4714,7 +4711,7 @@ export default function Settings({
                   onClick={() => void copySubscriptionLoginUrl()}
                   className="flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-inset)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <Copy className="h-3.5 w-3.5" />
+                  <CopyIcon className="h-3.5 w-3.5" />
                   {tSettings('providers.loginDialog.copy')}
                 </button>
               </div>
@@ -4723,7 +4720,7 @@ export default function Settings({
             {isActiveLogin && (
               <section className="border-t border-[var(--line-subtle)] pt-5">
                 <div className="flex items-center gap-2">
-                  <KeyRound className="h-4 w-4 text-[var(--ink-muted)]" />
+                  <KeyIcon className="h-4 w-4 text-[var(--ink-muted)]" />
                   <p className="text-sm font-medium text-[var(--ink)]">
                     {tSettings('providers.loginDialog.manualCodeTitle')}
                   </p>
@@ -4757,9 +4754,9 @@ export default function Settings({
                     className="flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-4 py-2 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {subscriptionLoginSubmitting ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      <LoaderIcon className="h-3.5 w-3.5 animate-spin" />
                     ) : (
-                      <KeyRound className="h-3.5 w-3.5" />
+                      <KeyIcon className="h-3.5 w-3.5" />
                     )}
                     {subscriptionLoginSubmitting
                       ? tSettings('providers.loginDialog.submittingCode')
@@ -4814,7 +4811,7 @@ export default function Settings({
                 className="flex items-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-4 py-2 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-60"
               >
                 {subscriptionLoginBusy && (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <LoaderIcon className="h-3.5 w-3.5 animate-spin" />
                 )}
                 {tSettings('providers.loginDialog.retryLogin')}
               </button>
@@ -4840,17 +4837,17 @@ export default function Settings({
       <div className="flex items-center gap-1">
         {isLoading && (
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--info-bg)]">
-            <Loader2 className="h-4 w-4 animate-spin text-[var(--info)]" />
+            <LoaderIcon className="h-4 w-4 animate-spin text-[var(--info)]" />
           </div>
         )}
         {!isLoading && verifyStatus === 'valid' && (
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--success-bg)]">
-            <Check className="h-4 w-4 text-[var(--success)]" />
+            <CheckIcon className="h-4 w-4 text-[var(--success)]" />
           </div>
         )}
         {!isLoading && verifyStatus === 'invalid' && (
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--error-bg)]">
-            <AlertCircle className="h-4 w-4 text-[var(--error)]" />
+            <AlertIcon className="h-4 w-4 text-[var(--error)]" />
           </div>
         )}
         {!isLoading && !verifyStatus && (
@@ -4858,7 +4855,7 @@ export default function Settings({
             className="flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--warning-bg)]"
             title={tSettings('providers.verifyPending')}
           >
-            <AlertCircle className="h-4 w-4 text-[var(--warning)]" />
+            <AlertIcon className="h-4 w-4 text-[var(--warning)]" />
           </div>
         )}
         {/* Refresh button for re-verification - hide if already valid */}
@@ -4870,7 +4867,7 @@ export default function Settings({
             className="flex h-10 w-10 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:opacity-50"
             title={tSettings('providers.reverify')}
           >
-            <RefreshCw
+            <RefreshIcon
               className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`}
             />
           </button>
@@ -4886,7 +4883,7 @@ export default function Settings({
 
     return (
       <div className="flex items-start gap-1.5 pt-1.5 text-xs text-[var(--error)]">
-        <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+        <AlertIcon className="mt-0.5 h-3 w-3 shrink-0" />
         <span className="min-w-0 break-words">
           {errObj.error}
           {errObj.action === 'proxy-settings' && (
@@ -4951,6 +4948,7 @@ export default function Settings({
           activeSection={activeSection}
           setActiveSection={setActiveSection}
           showDevTools={config.showDevTools}
+          developerUnlocked={devSectionVisible}
           floatingBallDevGate={linuxDesktop ? false : config.floatingBallDevGate}
           onShowLogs={() => setShowLogs(true)}
         />
@@ -5077,14 +5075,14 @@ export default function Settings({
                   onClick={openProviderOrderDialog}
                   className="flex items-center gap-1.5 rounded-lg border border-[var(--line)] px-3 py-1.5 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-inset)]"
                 >
-                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                  <SlidersIcon className="h-3.5 w-3.5" />
                   {tSettings('providers.enableAndSort')}
                 </button>
                 <button
                   onClick={() => setShowCustomForm(true)}
                   className="flex items-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)]"
                 >
-                  <Plus className="h-3.5 w-3.5" />
+                  <PlusIcon className="h-3.5 w-3.5" />
                   {tSettings('providers.addProvider')}
                 </button>
               </div>
@@ -5100,7 +5098,11 @@ export default function Settings({
                 provider.id === CODEX_SUBSCRIPTION_PROVIDER_ID ? (
                   renderManagedCodexProviderCard(provider)
                 ) : provider.id === TOKENDANCE_PROVIDER_ID ? (
-                  <TokenDanceProvider key={provider.id} provider={provider} isActive={isActive} />
+                  <TokenDanceProvider
+                    key={provider.id}
+                    provider={provider}
+                    isActive={isActive}
+                  />
                 ) : (
                   <div
                     key={provider.id}
@@ -5112,7 +5114,9 @@ export default function Settings({
                         <div className="flex items-center gap-2">
                           <h3 className="truncate text-lg font-semibold text-[var(--ink)]">
                             {provider.id === 'anthropic-sub'
-                              ? tSettings('providers.cardTitles.claudeSubscription')
+                              ? tSettings(
+                                  'providers.cardTitles.claudeSubscription',
+                                )
                               : provider.id === 'anthropic-api'
                                 ? tSettings('providers.cardTitles.claudeApi')
                                 : provider.name}
@@ -5148,7 +5152,7 @@ export default function Settings({
                           className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                           title={tSettings('providers.manage')}
                         >
-                          <Settings2 className="h-4 w-4" />
+                          <SlidersIcon className="h-4 w-4" />
                         </button>
                       </div>
                     </div>
@@ -5158,7 +5162,7 @@ export default function Settings({
                       <div>
                         <div className="flex items-center gap-2">
                           <div className="relative flex-1">
-                            <KeyRound className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--ink-muted)]" />
+                            <KeyIcon className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--ink-muted)]" />
                             <input
                               type="password"
                               placeholder={tSettings(
@@ -5469,7 +5473,7 @@ export default function Settings({
                       await updateConfig({ uiLanguage: value as UiLanguage });
                       toast.success(tSettings('general.languageChanged'));
                     }}
-                    triggerIcon={<Globe className="h-3.5 w-3.5" />}
+                    triggerIcon={<GlobeIcon className="h-3.5 w-3.5" />}
                     className="w-[220px]"
                   />
                 </div>
@@ -5509,7 +5513,7 @@ export default function Settings({
                 </div>
 
                 <MarkdownReadingSizeControl
-                  value={config.markdownReadingSize ?? 'large'}
+                  value={normalizeMarkdownReadingSize(config.markdownReadingSize)}
                   onChange={(size) => {
                     void updateConfig({ markdownReadingSize: size })
                       .then(() => {
@@ -5655,133 +5659,27 @@ export default function Settings({
                       {tSettings('general.defaultWorkspaceDescription')}
                     </p>
                   </div>
-                  <CustomSelect
-                    value={config.defaultWorkspacePath ?? ''}
-                    options={[
-                      {
-                        value: '',
-                        label: tSettings('general.defaultWorkspaceNone'),
-                      },
-                      ...projects.map((p) => ({
-                        value: p.path,
-                        label: shortenPathForDisplay(p.path),
-                        icon: <FolderOpen className="h-3.5 w-3.5" />,
-                      })),
-                    ]}
-                    onChange={async (val) => {
-                      if (val === '') {
-                        await updateConfig({ defaultWorkspacePath: undefined });
-                      } else {
-                        await updateConfig({ defaultWorkspacePath: val });
-                        toast.success(
-                          tSettings('general.defaultWorkspaceSaved'),
-                        );
-                      }
-                    }}
-                    placeholder={tSettings('general.defaultWorkspaceNone')}
-                    triggerIcon={<FolderOpen className="h-3.5 w-3.5" />}
-                    className="w-[240px]"
-                    footerAction={{
-                      label: tSettings('general.defaultWorkspaceBrowse'),
-                      icon: <Plus className="h-3.5 w-3.5" />,
-                      onClick: async () => {
+                  <div className="w-72 max-w-[45%] shrink-0">
+                    <WorkspaceSelector
+                      projects={startupWorkspaceProjects}
+                      selectedProject={resolveDefaultWorkspaceProject(startupWorkspaceProjects, config.defaultWorkspacePath)}
+                      defaultWorkspacePath={config.defaultWorkspacePath}
+                      variant="panel"
+                      onSelect={async (project) => {
                         try {
-                          const { open } = await import(
-                            '@tauri-apps/plugin-dialog'
-                          );
-                          const selected = await open({
-                            directory: true,
-                            multiple: false,
-                            title: tSettings(
-                              'general.defaultWorkspacePickTitle',
-                            ),
-                          });
-                          if (selected && typeof selected === 'string') {
-                            if (
-                              !projects.find((p) =>
-                                workspacePathsEqual(p.path, selected),
-                              )
-                            ) {
-                              await addProject(selected);
-                            }
-                            await updateConfig({
-                              defaultWorkspacePath: selected,
-                            });
-                            toast.success(
-                              tSettings('general.defaultWorkspaceSaved'),
-                            );
-                          }
-                        } catch (err) {
-                          console.error(
-                            '[Settings] Browse folder failed:',
-                            err,
-                          );
+                          await updateConfig({ defaultWorkspacePath: project.path });
+                          toast.success(tSettings('general.defaultWorkspaceSaved'));
+                        } catch (error) {
+                          console.error('[Settings] Failed to set default workspace:', error);
+                          toast.warning(tSettings('toasts.setDefaultFailed', { ns: 'launcher' }));
                         }
-                      },
-                    }}
-                  />
+                      }}
+                    />
+                  </div>
                 </div>
               </div>
 
-              {/* Chat Queue Response Mode */}
-              <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
-                <h3 className="text-base font-medium text-[var(--ink)]">
-                  {tSettings('general.queueTitle')}
-                </h3>
-                <div className="mt-4 flex items-center justify-between gap-4">
-                  <div className="flex-1">
-                    <p className="text-sm font-medium text-[var(--ink)]">
-                      {tSettings('general.queueModeTitle')}
-                    </p>
-                    <p className="text-xs text-[var(--ink-muted)]">
-                      {normalizeChatQueueResponseMode(
-                        config.chatQueueResponseMode,
-                      ) === 'turn'
-                        ? tSettings('general.queueTurnDescription')
-                        : tSettings('general.queueRealtimeDescription')}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 gap-0.5 rounded-full bg-[var(--paper-inset)] p-0.5">
-                    {(
-                      [
-                        {
-                          value: 'realtime',
-                          label: tSettings('general.queueRealtime'),
-                        },
-                        {
-                          value: 'turn',
-                          label: tSettings('general.queueTurn'),
-                        },
-                      ] as const satisfies ReadonlyArray<{
-                        value: ChatQueueResponseMode;
-                        label: string;
-                      }>
-                    ).map((opt) => {
-                      const active =
-                        normalizeChatQueueResponseMode(
-                          config.chatQueueResponseMode,
-                        ) === opt.value;
-                      return (
-                        <button
-                          key={opt.value}
-                          onClick={() =>
-                            void updateConfig({
-                              chatQueueResponseMode: opt.value,
-                            })
-                          }
-                          className={`rounded-full px-3 py-1 text-xs font-medium transition-all ${
-                            active
-                              ? 'bg-[var(--paper-elevated)] text-[var(--ink)] shadow-sm'
-                              : 'text-[var(--ink-muted)] hover:text-[var(--ink-secondary)]'
-                          }`}
-                        >
-                          {opt.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
+              <AgentFunctionSettings config={config} updateConfig={updateConfig} />
 
               {/* Notification Settings */}
               <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
@@ -6013,7 +5911,7 @@ export default function Settings({
                         className="rounded-lg border border-[var(--line)] p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
                         aria-label={tSettings('proxy.scopeDialogTitle')}
                       >
-                        <SlidersHorizontal size={16} />
+                        <SlidersIcon size={16} />
                       </button>
                     </div>
                   </div>
@@ -6120,11 +6018,11 @@ export default function Settings({
                         }
                       >
                         {proxyProbeState.status === 'checking' ? (
-                          <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
+                          <LoaderIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
                         ) : proxyProbeState.status === 'ok' ? (
-                          <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                          <CheckIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                         ) : (
-                          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                          <AlertIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                         )}
                         <span className="min-w-0 break-words">
                           {proxyProbeState.status === 'checking'
@@ -6189,12 +6087,12 @@ export default function Settings({
                   >
                     {logExporting ? (
                       <>
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        <LoaderIcon className="h-3.5 w-3.5 animate-spin" />
                         {tSettings('general.logsExporting')}
                       </>
                     ) : (
                       <>
-                        <Download className="h-3.5 w-3.5" />
+                        <DownloadIcon className="h-3.5 w-3.5" />
                         {tSettings('general.logsExport')}
                       </>
                     )}
@@ -6241,7 +6139,7 @@ export default function Settings({
                       >
                         {updateChecking ? (
                           <span className="flex items-center gap-1">
-                            <Loader2 className="h-3 w-3 animate-spin" />
+                            <LoaderIcon className="h-3 w-3 animate-spin" />
                             {tSettings('about.checking')}
                           </span>
                         ) : (
@@ -6267,7 +6165,7 @@ export default function Settings({
                   {!linuxDesktop && updateDownloading && propUpdateVersion && (
                     <div className="mt-3 space-y-2">
                       <div className="flex items-center gap-2 text-sm text-[var(--ink-secondary)]">
-                        <Loader2 className="h-4 w-4 animate-spin text-[var(--accent)]" />
+                        <LoaderIcon className="h-4 w-4 animate-spin text-[var(--accent)]" />
                         <span>
                           {tSettings('about.downloadingVersion', {
                             version: propUpdateVersion,
@@ -6396,36 +6294,6 @@ export default function Settings({
                   </button>
                 </div>
 
-                <div className="mt-4 flex items-center justify-between border-t border-[var(--line)] pt-4">
-                  <div className="flex-1 pr-4">
-                    <p className="text-sm font-medium text-[var(--ink)]">
-                      {tSettings('about.runtimeTitle')}
-                    </p>
-                    <p className="text-xs text-[var(--ink-muted)]">
-                      {tSettings('about.runtimeDescription')}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() =>
-                      updateConfig({
-                        multiAgentRuntime: !config.multiAgentRuntime,
-                      })
-                    }
-                    className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors ${
-                      config.multiAgentRuntime
-                        ? 'bg-[var(--accent)]'
-                        : 'bg-[var(--line-strong)]'
-                    }`}
-                  >
-                    <span
-                      className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${
-                        config.multiAgentRuntime
-                          ? 'translate-x-5'
-                          : 'translate-x-0'
-                      }`}
-                    />
-                  </button>
-                </div>
 
                 <div className="mt-4 flex items-center justify-between border-t border-[var(--line)] pt-4">
                   <div className="flex-1 pr-4">
@@ -6492,7 +6360,7 @@ export default function Settings({
                     </p>
                     {qrCodeLoading ? (
                       <div className="mt-4 h-36 w-36 flex items-center justify-center">
-                        <Loader2 className="h-8 w-8 animate-spin text-[var(--ink-muted)]" />
+                        <LoaderIcon className="h-8 w-8 animate-spin text-[var(--ink-muted)]" />
                       </div>
                     ) : (
                       <img
@@ -6590,10 +6458,12 @@ export default function Settings({
               <p className="text-center text-xs text-[var(--ink-muted)]">
                 {tSettings('about.licensingCopyright')}
               </p>
+            </div>
+          )}
 
-              {/* Developer Section - Hidden by default, unlocked by tapping logo 5 times */}
-              {devSectionVisible && (
-                <div>
+          {/* Developer page - unlocked by tapping the About logo 5 times */}
+          {activeSection === 'developer' && devSectionVisible && (
+            <div>
                   <h2 className="mb-4 text-base font-medium text-[var(--ink-muted)]">
                     {tSettings('about.developerSection')}
                   </h2>
@@ -6629,6 +6499,12 @@ export default function Settings({
                         </button>
                       </div>
                     </div>
+
+                    <DshCollaborationSettings
+                      value={config.dshCollaboration}
+                      providers={providers}
+                      updateConfig={updateConfig}
+                    />
 
                     {/* Legacy Chat History Entry */}
                     <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
@@ -6983,8 +6859,6 @@ export default function Settings({
                       </div>
                     </div>
                   </div>
-                </div>
-              )}
 
               {/* Cron Task Debug Panel Modal */}
               <CronTaskDebugPanel
@@ -6998,10 +6872,7 @@ export default function Settings({
 
       {/* Official image understanding tool settings */}
       {visionToolSettingsOpen && (
-        <OverlayBackdrop
-          onClose={closeVisionToolSettings}
-          className="z-50"
-        >
+        <OverlayBackdrop onClose={closeVisionToolSettings} className="z-50">
           <div className="mx-4 flex max-h-[85vh] w-full max-w-lg flex-col rounded-2xl bg-[var(--paper-elevated)] shadow-xl">
             <div className="flex items-center justify-between border-b border-[var(--line)] px-6 py-4">
               <div className="min-w-0 flex-1">
@@ -7018,7 +6889,7 @@ export default function Settings({
                 disabled={visionToolSaving}
                 className="shrink-0 rounded-lg p-1 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <X className="h-5 w-5" />
+                <CloseIcon className="h-5 w-5" />
               </button>
             </div>
 
@@ -7115,7 +6986,7 @@ export default function Settings({
                 onClick={() => setBuiltinMcpSettings(null)}
                 className="shrink-0 rounded-lg p-1 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]"
               >
-                <X className="h-5 w-5" />
+                <CloseIcon className="h-5 w-5" />
               </button>
             </div>
 
@@ -7168,7 +7039,7 @@ export default function Settings({
                           }
                           className="shrink-0 rounded p-1 text-[var(--error)] hover:bg-[var(--error-bg)]"
                         >
-                          <X className="h-3.5 w-3.5" />
+                          <CloseIcon className="h-3.5 w-3.5" />
                         </button>
                       </div>
                     ))}
@@ -7226,7 +7097,7 @@ export default function Settings({
                         disabled={!builtinMcpSettings.newArg.trim()}
                         className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--on-accent)] disabled:opacity-40"
                       >
-                        <Plus className="h-3.5 w-3.5" />
+                        <PlusIcon className="h-3.5 w-3.5" />
                       </button>
                     </div>
                   </div>
@@ -7237,7 +7108,7 @@ export default function Settings({
               {(builtinMcpSettings.server.configHint ||
                 builtinMcpSettings.server.websiteUrl) && (
                 <div className="flex items-center gap-2 rounded-lg bg-[var(--accent-bg)] px-3 py-2 text-xs text-[var(--ink-secondary)]">
-                  <Globe className="h-3.5 w-3.5 shrink-0 text-[var(--accent)]" />
+                  <GlobeIcon className="h-3.5 w-3.5 shrink-0 text-[var(--accent)]" />
                   <span>{builtinMcpSettings.server.configHint}</span>
                   {builtinMcpSettings.server.websiteUrl && (
                     <ExternalLink
@@ -7288,7 +7159,7 @@ export default function Settings({
                           }
                           className="shrink-0 rounded p-1 text-[var(--error)] hover:bg-[var(--error-bg)]"
                         >
-                          <X className="h-3.5 w-3.5" />
+                          <CloseIcon className="h-3.5 w-3.5" />
                         </button>
                       </div>
                     ),
@@ -7365,7 +7236,7 @@ export default function Settings({
                       }
                       className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--on-accent)] disabled:opacity-40"
                     >
-                      <Plus className="h-3.5 w-3.5" />
+                      <PlusIcon className="h-3.5 w-3.5" />
                     </button>
                   </div>
                 </div>
@@ -7411,7 +7282,7 @@ export default function Settings({
                 onClick={() => setGeminiImageSettings(null)}
                 className="shrink-0 rounded-lg p-1 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]"
               >
-                <X className="h-5 w-5" />
+                <CloseIcon className="h-5 w-5" />
               </button>
             </div>
 
@@ -7754,7 +7625,7 @@ export default function Settings({
                 onClick={() => setPlaywrightSettings(null)}
                 className="shrink-0 rounded-lg p-1 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]"
               >
-                <X className="h-5 w-5" />
+                <CloseIcon className="h-5 w-5" />
               </button>
             </div>
 
@@ -8023,7 +7894,7 @@ export default function Settings({
                         }
                         className="shrink-0 rounded p-1 text-[var(--error)] hover:bg-[var(--error-bg)]"
                       >
-                        <X className="h-3.5 w-3.5" />
+                        <CloseIcon className="h-3.5 w-3.5" />
                       </button>
                     </div>
                   ))}
@@ -8055,7 +7926,7 @@ export default function Settings({
                       disabled={!playwrightSettings.newArg.trim()}
                       className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--on-accent)] disabled:opacity-40"
                     >
-                      <Plus className="h-3.5 w-3.5" />
+                      <PlusIcon className="h-3.5 w-3.5" />
                     </button>
                   </div>
                 </div>
@@ -8101,7 +7972,7 @@ export default function Settings({
                 onClick={() => setEdgeTtsSettings(null)}
                 className="shrink-0 rounded-lg p-1 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]"
               >
-                <X className="h-5 w-5" />
+                <CloseIcon className="h-5 w-5" />
               </button>
             </div>
 
@@ -8110,7 +7981,7 @@ export default function Settings({
               {/* Free service notice */}
               <div className="rounded-lg bg-[var(--success-bg)] border border-[var(--success)]/20 px-3 py-2">
                 <div className="flex items-center gap-2 text-xs text-[var(--success)]">
-                  <Check className="h-3.5 w-3.5" />
+                  <CheckIcon className="h-3.5 w-3.5" />
                   {tSettings('toolbox.dialogs.edgeTts.freeNotice')}
                 </div>
               </div>
@@ -8387,18 +8258,11 @@ export default function Settings({
                     }
                   >
                     {ttsPreviewLoading ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <LoaderIcon className="h-4 w-4 animate-spin" />
                     ) : ttsPreviewPlaying ? (
-                      <Square className="h-3.5 w-3.5" fill="currentColor" />
+                      <StopIcon className="h-3.5 w-3.5" fill="currentColor" />
                     ) : (
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        viewBox="0 0 24 24"
-                        fill="currentColor"
-                        className="h-4 w-4 ml-0.5"
-                      >
-                        <path d="M8 5v14l11-7z" />
-                      </svg>
+                      <PlayIcon className="h-4 w-4 ml-0.5" fill="currentColor" />
                     )}
                   </button>
                 </div>
@@ -8456,7 +8320,7 @@ export default function Settings({
                   }}
                   className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)]"
                 >
-                  <X className="h-5 w-5" />
+                  <CloseIcon className="h-5 w-5" />
                 </button>
               </div>
             </div>
@@ -8650,7 +8514,7 @@ export default function Settings({
                                     }}
                                     className="ml-1 text-[var(--ink-muted)] hover:text-[var(--error)]"
                                   >
-                                    <X className="h-3 w-3" />
+                                    <CloseIcon className="h-3 w-3" />
                                   </button>
                                 </div>
                               ))}
@@ -8699,7 +8563,7 @@ export default function Settings({
                               disabled={!mcpForm.newArg.trim()}
                               className="flex items-center gap-1.5 rounded-lg border border-[var(--ink)] px-3 py-2 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-inset)] disabled:opacity-50"
                             >
-                              <Plus className="h-4 w-4" />
+                              <PlusIcon className="h-4 w-4" />
                               {tSettings('toolbox.common.add')}
                             </button>
                           </div>
@@ -8752,7 +8616,7 @@ export default function Settings({
                                 }}
                                 className="rounded-lg p-2 text-[var(--error)] transition-colors hover:bg-[var(--error-bg)]"
                               >
-                                <Trash2 className="h-4 w-4" />
+                                <TrashIcon className="h-4 w-4" />
                               </button>
                             </div>
                           ))}
@@ -8822,7 +8686,7 @@ export default function Settings({
                               }
                               className="flex items-center gap-1.5 rounded-lg border border-[var(--ink)] px-3 py-2 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-inset)] disabled:opacity-50"
                             >
-                              <Plus className="h-4 w-4" />
+                              <PlusIcon className="h-4 w-4" />
                               {tSettings('toolbox.common.add')}
                             </button>
                           </div>
@@ -8877,7 +8741,7 @@ export default function Settings({
                             className="flex w-full items-center justify-between p-4 text-sm font-medium text-[var(--ink)]"
                           >
                             <span className="flex items-center gap-2">
-                              <KeyRound className="h-4 w-4" />{' '}
+                              <KeyIcon className="h-4 w-4" />{' '}
                               {tSettings('toolbox.dialogs.customMcp.headers')}{' '}
                               <span className="font-mono text-[var(--ink-muted)]">
                                 headers
@@ -8888,7 +8752,7 @@ export default function Settings({
                                 </span>
                               )}
                             </span>
-                            <ChevronDown
+                            <ChevronDownIcon
                               className={`h-4 w-4 text-[var(--ink-muted)] transition-transform ${mcpHeadersExpanded ? '' : '-rotate-90'}`}
                             />
                           </button>
@@ -8937,7 +8801,7 @@ export default function Settings({
                                       }}
                                       className="rounded-lg p-2 text-[var(--error)] transition-colors hover:bg-[var(--error-bg)]"
                                     >
-                                      <Trash2 className="h-4 w-4" />
+                                      <TrashIcon className="h-4 w-4" />
                                     </button>
                                   </div>
                                 ),
@@ -9007,7 +8871,7 @@ export default function Settings({
                                   disabled={!mcpForm.newHeaderKey}
                                   className="flex items-center gap-1.5 rounded-lg border border-[var(--ink)] px-3 py-2 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-inset)] disabled:opacity-50"
                                 >
-                                  <Plus className="h-4 w-4" />
+                                  <PlusIcon className="h-4 w-4" />
                                 </button>
                               </div>
                               <p className="mt-2 text-xs text-[var(--ink-muted)]">
@@ -9024,7 +8888,7 @@ export default function Settings({
                           <div className="p-4">
                             <div className="flex items-center justify-between">
                               <span className="flex items-center gap-2 text-sm font-medium text-[var(--ink)]">
-                                <Link className="h-4 w-4" />{' '}
+                                <LinkIcon className="h-4 w-4" />{' '}
                                 {tSettings(
                                   'toolbox.dialogs.customMcp.oauthTitle',
                                 )}
@@ -9032,7 +8896,7 @@ export default function Settings({
                               <span className="flex items-center gap-2">
                                 {mcpOAuthStatus[mcpForm.id] === 'connected' && (
                                   <span className="flex items-center gap-1 rounded-full bg-[var(--success)]/10 px-2 py-0.5 text-xs text-[var(--success)]">
-                                    <Check className="h-3 w-3" />{' '}
+                                    <CheckIcon className="h-3 w-3" />{' '}
                                     {tSettings(
                                       'toolbox.dialogs.customMcp.oauthAuthorized',
                                     )}
@@ -9040,7 +8904,7 @@ export default function Settings({
                                 )}
                                 {mcpOAuthStatus[mcpForm.id] === 'expired' && (
                                   <span className="flex items-center gap-1 rounded-full bg-[var(--warning)]/10 px-2 py-0.5 text-xs text-[var(--warning)]">
-                                    <AlertCircle className="h-3 w-3" />{' '}
+                                    <AlertIcon className="h-3 w-3" />{' '}
                                     {tSettings(
                                       'toolbox.dialogs.customMcp.oauthExpired',
                                     )}
@@ -9058,7 +8922,7 @@ export default function Settings({
                                   }
                                   className="flex items-center gap-1.5 rounded-lg border border-[var(--error)] px-3 py-2 text-sm font-medium text-[var(--error)] transition-colors hover:bg-[var(--error-bg)]"
                                 >
-                                  <Unlink className="h-4 w-4" />{' '}
+                                  <UnlinkIcon className="h-4 w-4" />{' '}
                                   {tSettings(
                                     'toolbox.dialogs.customMcp.revokeAuthorization',
                                   )}
@@ -9081,14 +8945,14 @@ export default function Settings({
                                 >
                                   {mcpOAuthConnecting === mcpForm.id ? (
                                     <>
-                                      <Loader2 className="h-4 w-4 animate-spin" />{' '}
+                                      <LoaderIcon className="h-4 w-4 animate-spin" />{' '}
                                       {tSettings(
                                         'toolbox.dialogs.customMcp.waitingAuthorization',
                                       )}
                                     </>
                                   ) : (
                                     <>
-                                      <Link className="h-4 w-4" />{' '}
+                                      <LinkIcon className="h-4 w-4" />{' '}
                                       {tSettings(
                                         'toolbox.dialogs.customMcp.reauthorize',
                                       )}
@@ -9138,14 +9002,14 @@ export default function Settings({
                                       >
                                         {mcpOAuthConnecting === mcpForm.id ? (
                                           <>
-                                            <Loader2 className="h-4 w-4 animate-spin" />{' '}
+                                            <LoaderIcon className="h-4 w-4 animate-spin" />{' '}
                                             {tSettings(
                                               'toolbox.dialogs.customMcp.waitingAuthorization',
                                             )}
                                           </>
                                         ) : (
                                           <>
-                                            <Link className="h-4 w-4" />{' '}
+                                            <LinkIcon className="h-4 w-4" />{' '}
                                             {tSettings(
                                               'toolbox.dialogs.customMcp.authorizeLogin',
                                             )}
@@ -9305,14 +9169,14 @@ export default function Settings({
                                       >
                                         {mcpOAuthConnecting === mcpForm.id ? (
                                           <>
-                                            <Loader2 className="h-4 w-4 animate-spin" />{' '}
+                                            <LoaderIcon className="h-4 w-4 animate-spin" />{' '}
                                             {tSettings(
                                               'toolbox.dialogs.customMcp.waitingAuthorization',
                                             )}
                                           </>
                                         ) : (
                                           <>
-                                            <Link className="h-4 w-4" />{' '}
+                                            <LinkIcon className="h-4 w-4" />{' '}
                                             {tSettings(
                                               'toolbox.dialogs.customMcp.manualConnect',
                                             )}
@@ -9365,7 +9229,7 @@ export default function Settings({
                     }}
                     className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium text-[var(--error)] transition-colors hover:bg-[var(--error-bg)]"
                   >
-                    <Trash2 className="h-4 w-4" />
+                    <TrashIcon className="h-4 w-4" />
                     {tSettings('toolbox.dialogs.customMcp.delete')}
                   </button>
                 )}
@@ -9446,7 +9310,7 @@ export default function Settings({
                   }}
                   className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)]"
                 >
-                  <X className="h-5 w-5" />
+                  <CloseIcon className="h-5 w-5" />
                 </button>
               </div>
             </div>
@@ -9739,7 +9603,7 @@ export default function Settings({
                           }
                           className="rounded-sm p-0.5 text-[var(--ink-subtle)] transition-colors hover:text-[var(--ink)]"
                         >
-                          <X className="h-3 w-3" />
+                          <CloseIcon className="h-3 w-3" />
                         </button>
                       </span>
                     ))}
@@ -9766,7 +9630,7 @@ export default function Settings({
                     onClick={addCustomModelFromInput}
                     className="rounded-lg bg-[var(--paper-inset)] px-2.5 py-1.5 text-[var(--ink-muted)] transition-colors hover:text-[var(--ink)]"
                   >
-                    <Plus className="h-4 w-4" />
+                    <PlusIcon className="h-4 w-4" />
                   </button>
                 </div>
               </div>
@@ -9817,7 +9681,7 @@ export default function Settings({
                   onClick={() => setEditingProvider(null)}
                   className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)]"
                 >
-                  <X className="h-5 w-5" />
+                  <CloseIcon className="h-5 w-5" />
                 </button>
               </div>
             </div>
@@ -10159,7 +10023,7 @@ export default function Settings({
                     }
                     className="flex items-center gap-1 rounded-lg px-2 py-1 text-sm font-medium text-[var(--accent)] transition-colors hover:bg-[var(--accent-warm-subtle)]"
                   >
-                    <Settings2 className="h-3.5 w-3.5" />
+                    <SlidersIcon className="h-3.5 w-3.5" />
                     {tSettings('providers.custom.manageModels')}
                   </button>
                 </div>
@@ -10185,7 +10049,7 @@ export default function Settings({
                       }
                       className="flex w-full items-center gap-1.5 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:text-[var(--ink)]"
                     >
-                      <ChevronDown
+                      <ChevronDownIcon
                         className={`h-4 w-4 transition-transform ${editingProvider.showAdvanced ? '' : '-rotate-90'}`}
                       />
                       {tSettings('providers.custom.advanced')}
@@ -10283,7 +10147,7 @@ export default function Settings({
                     }
                     className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium text-[var(--error)] transition-colors hover:bg-[var(--error-bg)]"
                   >
-                    <Trash2 className="h-4 w-4" />
+                    <TrashIcon className="h-4 w-4" />
                     {tSettings('providers.custom.delete')}
                   </button>
                 ) : (
@@ -10364,7 +10228,7 @@ export default function Settings({
           <div className="mx-4 w-full max-w-sm rounded-2xl bg-[var(--paper-elevated)] p-6 shadow-xl">
             <div className="mb-4 flex items-center gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--error-bg)]">
-                <Trash2 className="h-5 w-5 text-[var(--error)]" />
+                <TrashIcon className="h-5 w-5 text-[var(--error)]" />
               </div>
               <h3 className="text-lg font-semibold text-[var(--ink)]">
                 {tSettings('providers.custom.deleteTitle')}
@@ -10402,7 +10266,7 @@ export default function Settings({
           <div className="mx-4 w-full max-w-sm rounded-2xl bg-[var(--paper-elevated)] p-6 shadow-xl">
             <div className="flex items-center gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--warning-bg)]">
-                <AlertCircle className="h-5 w-5 text-[var(--warning)]" />
+                <AlertIcon className="h-5 w-5 text-[var(--warning)]" />
               </div>
               <h3 className="flex-1 text-lg font-semibold text-[var(--ink)]">
                 {tSettings('toolbox.dialogs.runtimeMissing.title')}
@@ -10412,7 +10276,7 @@ export default function Settings({
                 aria-label={tSettings('toolbox.dialogs.runtimeMissing.close')}
                 className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
               >
-                <X className="h-4 w-4" />
+                <CloseIcon className="h-4 w-4" />
               </button>
             </div>
             <p className="mt-4 text-sm text-[var(--ink-muted)]">

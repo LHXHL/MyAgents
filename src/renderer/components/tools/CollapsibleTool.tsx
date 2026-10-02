@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronUp } from 'lucide-react';
+import { ChevronDownIcon, ChevronUpIcon } from '@/components/icons';
 import { useState, type ReactNode } from 'react';
 
 interface CollapsibleToolProps {
@@ -33,8 +33,8 @@ export function CollapsibleTool({
         {hasExpandedContent && (
           <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center text-[var(--ink-muted)] transition-colors">
             {isExpanded ?
-              <ChevronUp className="size-3" />
-            : <ChevronDown className="size-3" />}
+              <ChevronUpIcon className="size-3" />
+            : <ChevronDownIcon className="size-3" />}
           </span>
         )}
       </button>

@@ -34,23 +34,8 @@ import { randomUUID } from "crypto";
  *
  * Stable shape — clients (renderer, Rust proxy) discriminate on `kind === 'ref'`.
  */
-export interface LargeValueRef {
-  kind: "ref";
-  /** 128-bit UUID encoded as 32 lowercase hex characters. */
-  id: string;
-  /** Total byte size of the full payload on disk. */
-  sizeBytes: number;
-  /** MIME type — drives renderer decoding (text vs binary, image preview, …). */
-  mimetype: string;
-  /**
-   * Inline preview — head `previewBytes` of the payload as a UTF-8 string when
-   * the mimetype is text-like, or the base64-encoded head when binary. The full
-   * body is on disk; this is purely for SSE-side previews / log summaries.
-   */
-  preview: string;
-  /** Epoch ms when the ref expires and may be GC'd. */
-  expiresAt: number;
-}
+import type { LargeValueRef } from '../../shared/types/large-value';
+export type { LargeValueRef } from '../../shared/types/large-value';
 
 interface RefMeta extends LargeValueRef {
   /** Optional session tag for `clearSessionRefs`. Empty string = unscoped. */
@@ -472,6 +457,12 @@ export async function clearExpiredRefs(): Promise<void> {
  * Evict refs tagged with `sessionId`. Called from session-end / reset so refs
  * created during a session don't outlive their consumer.
  */
+/** Release a ref when its existing interaction owner settles. */
+export async function releaseLargeValueRef(id: string): Promise<void> {
+  if (!REF_ID_RE.test(id)) throw new Error('Invalid large-value reference id');
+  await deleteRef(getRefsDir(), id);
+}
+
 export async function clearSessionRefs(sessionId: string): Promise<void> {
   if (!sessionId) return;
   const dir = getRefsDir();

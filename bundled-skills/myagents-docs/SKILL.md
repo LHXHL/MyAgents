@@ -34,7 +34,7 @@ metadata:
 |---|---|
 | MyAgents 的定位、能力地图、主要入口、应该选哪类功能 | `references/product-overview.md` |
 | Workspace、Agent、Session、Tab、历史、文件、搜索、终端、浏览器 | `references/workspaces-sessions-files.md` |
-| Provider、Model、订阅、Runtime、权限模式、代理、Codex/Claude Code/Gemini | `references/models-providers-runtimes.md` |
+| Provider、Model、订阅、Runtime、权限模式、代理、Codex/Claude Code | `references/models-providers-runtimes.md` |
 | MCP、Skills、官方/自定义 CLI 工具、Claude Plugin、OpenClaw Plugin、读图与 Widget | `references/tools-skills-plugins.md` |
 | 自定义 Agent、IM Channel、Telegram/钉钉/飞书/微信、heartbeat、长期记忆、小助理与悬浮窗 | `references/agents-channels.md` |
 | Record、Task、定时/Cron、Goal Mode、状态与执行关系 | `references/automation.md` |

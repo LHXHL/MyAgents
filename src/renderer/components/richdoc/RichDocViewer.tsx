@@ -25,7 +25,7 @@ import {
   type LazyExoticComponent,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ExternalLink, FileWarning, Loader2 } from 'lucide-react';
+import { ExternalIcon, FileWarningIcon, LoaderIcon } from '@/components/icons';
 
 import { FileIcon } from '@/components/file-icon';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
@@ -57,7 +57,7 @@ interface RichDocViewerProps {
 
 const Spinner = (
   <div className="flex h-full items-center justify-center bg-[var(--paper-elevated)] text-[var(--ink-muted)]">
-    <Loader2 className="h-5 w-5 animate-spin" />
+    <LoaderIcon className="h-5 w-5 animate-spin" />
   </div>
 );
 
@@ -125,7 +125,7 @@ export default function RichDocViewer({ kind, path, workspacePath, localPath = n
     const tooLarge = state.phase === 'error' && state.tooLarge;
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 bg-[var(--paper-elevated)] px-6 text-center">
-        <FileWarning className="h-9 w-9 text-[var(--ink-subtle)]" />
+        <FileWarningIcon className="h-9 w-9 text-[var(--ink-subtle)]" />
         <p className="max-w-md text-sm text-[var(--ink-muted)]">
           {tooLarge
             ? t('richDoc.tooLarge')
@@ -138,7 +138,7 @@ export default function RichDocViewer({ kind, path, workspacePath, localPath = n
           onClick={openExternal}
           className="inline-flex items-center gap-1.5 rounded-md border border-[var(--line-strong)] bg-[var(--button-secondary-bg)] px-3 py-1.5 text-sm font-semibold text-[var(--ink)] shadow-sm transition-all duration-150 hover:bg-[var(--button-secondary-bg-hover)] hover:shadow-md active:scale-[0.98]"
         >
-          <ExternalLink className="h-3.5 w-3.5" />
+          <ExternalIcon className="h-3.5 w-3.5" />
           {t('richDoc.openDefault')}
         </button>
       </div>

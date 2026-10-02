@@ -18,6 +18,7 @@ import { useCallback, useMemo } from 'react';
 import { useConfigData } from '@/config/useConfigData';
 import { patchAgentConfig } from '@/config/services/agentConfigService';
 import { buildRuntimeChangePatch, type RuntimeConfig } from '@/../shared/types/runtime';
+import { runtimeTypeForAgentRuntimePreference } from '@/../shared/integrated-runtimes/identity';
 import {
     agentDefaultsForRuntimeBackedProvider,
     isRuntimeBackedProvider,
@@ -45,14 +46,17 @@ export function useHelperAgentModelDefaults(): HelperAgentModelDefaults {
         if (!helperAgentId) return;
         const provider = providers.find(p => p.id === providerId);
         const currentRuntimeConfig = helperAgent?.runtimeConfig as RuntimeConfig | undefined;
+        const returnRuntime = helperAgent?.runtimePreference?.family === 'integrated'
+            ? runtimeTypeForAgentRuntimePreference(helperAgent.runtimePreference)
+            : 'builtin';
         const runtimePatch = provider && isRuntimeBackedProvider(provider)
             ? (() => {
                 const intent = toProviderExecutionIntent(provider, model);
                 return intent.kind === 'runtime-backed-provider'
                     ? agentDefaultsForRuntimeBackedProvider(intent, currentRuntimeConfig)
-                    : buildRuntimeChangePatch(currentRuntimeConfig, 'builtin');
+                    : buildRuntimeChangePatch(currentRuntimeConfig, returnRuntime);
             })()
-            : buildRuntimeChangePatch(currentRuntimeConfig, 'builtin');
+            : buildRuntimeChangePatch(currentRuntimeConfig, returnRuntime);
         // Same dual-write semantics as patchAgentConfig calls in Chat.tsx —
         // disk + runtime sync — but the helper has no live snapshot to patch
         // (no owned Tab session is open at this moment), so the agent-level
@@ -62,10 +66,13 @@ export function useHelperAgentModelDefaults(): HelperAgentModelDefaults {
             model,
             runtime: runtimePatch.runtime,
             runtimeConfig: runtimePatch.runtimeConfig,
+            ...('runtimePreference' in runtimePatch
+                ? { runtimePreference: runtimePatch.runtimePreference }
+                : {}),
         }).catch(err => {
             console.warn('[useHelperAgentModelDefaults] persist failed:', err);
         });
-    }, [helperAgent?.runtimeConfig, helperAgentId, providers]);
+    }, [helperAgent, helperAgentId, providers]);
 
     return {
         initialProviderId: helperAgent?.providerId,

@@ -94,25 +94,24 @@ describe('handleFreshSessionStart', () => {
     expect(mocks.deleteSession).not.toHaveBeenCalled();
   });
 
-  it('accepts an external fresh start without inventing reply metadata', async () => {
-    const externalMessage: PendingInboxMessage = {
-      ...message,
-      sourceKind: 'external-cli',
-      fromSessionId: undefined,
-      fromLabel: 'External CLI',
-      replyBack: false,
+  it('materializes a DSH Inbox Session with its Integrated frozen identity', async () => {
+    const dshContext = {
+      ...context,
+      runtime: 'dsh' as const,
+      runtimeSource: 'integrated' as const,
     };
     const inject = vi.fn<FreshSessionInjector>(async (_text, options) => ({
       queued: true,
-      queueId: options.queueId,
       dispatchAcceptance: Promise.resolve(await options.beforeDispatch()),
     }));
 
-    await expect(handleFreshSessionStart(externalMessage, context, inject))
-      .resolves.toEqual({ accepted: true });
-    expect(inject).toHaveBeenCalledWith(
-      expect.stringContaining('source_kind="external-cli"'),
-      expect.objectContaining({ inboxMeta: undefined }),
+    await handleFreshSessionStart(message, dshContext, inject);
+
+    expect(mocks.createMaterializedSessionMetadata).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtimeOverride: 'dsh',
+        runtimeSourceOverride: 'integrated',
+      }),
     );
   });
 

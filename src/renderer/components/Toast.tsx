@@ -1,7 +1,13 @@
 import { createContext, useContext, useCallback, useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import type { ReactNode } from 'react';
-import { AlertCircle, CheckCircle, Info, X, AlertTriangle } from 'lucide-react';
+import {
+  AlertIcon,
+  SuccessIcon,
+  InfoIcon,
+  CloseIcon,
+  WarningIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 export type ToastType = 'success' | 'error' | 'warning' | 'info';
@@ -27,28 +33,28 @@ const ERROR_TOAST_DURATION = 5000; // 5 seconds — errors need more reading tim
 
 const typeConfig = {
     success: {
-        icon: CheckCircle,
+        icon: SuccessIcon,
         bg: 'bg-[var(--success-bg)]',
         border: 'border-[var(--success)]/20',
         text: 'text-[var(--success)]',
         iconColor: 'text-[var(--success)]',
     },
     error: {
-        icon: AlertCircle,
+        icon: AlertIcon,
         bg: 'bg-[var(--error-bg)]',
         border: 'border-[var(--error)]/20',
         text: 'text-[var(--error)]',
         iconColor: 'text-[var(--error)]',
     },
     warning: {
-        icon: AlertTriangle,
+        icon: WarningIcon,
         bg: 'bg-[var(--warning-bg)]',
         border: 'border-[var(--warning)]/20',
         text: 'text-[var(--warning)]',
         iconColor: 'text-[var(--warning)]',
     },
     info: {
-        icon: Info,
+        icon: InfoIcon,
         bg: 'bg-[var(--info-bg)]',
         border: 'border-[var(--info)]/20',
         text: 'text-[var(--info)]',
@@ -79,7 +85,7 @@ function ToastItem({ toast, onClose }: { toast: Toast; onClose: () => void }) {
                 onClick={onClose}
                 className={`ml-2 p-0.5 rounded-md hover:bg-black/5 dark:hover:bg-white/10 transition-colors ${config.text}`}
             >
-                <X className="h-4 w-4" />
+                <CloseIcon className="h-4 w-4" />
             </button>
         </div>
     );

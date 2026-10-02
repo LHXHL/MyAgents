@@ -15,6 +15,7 @@ import { isSdkEffortLevel } from '../../shared/reasoningEffort';
 import type { AgentRuntime, RuntimeConfigCapabilities, RuntimeProcess, SessionStartOptions, UnifiedEvent, UnifiedEventCallback, ResolvedImagePayload } from './types';
 import { augmentedProcessEnv, resolveCommand, stripAnsi } from './env-utils';
 import { ensureDirSync } from '../utils/fs-utils';
+import { ensureShellPath } from '../utils/shell';
 import { killWithEscalation } from './utils/kill-with-escalation';
 import { withLogContext } from '../logger-context';
 
@@ -63,8 +64,7 @@ const SYSTEM_PROMPT_DIR = join(
  * give us UUID v4s in practice, but `external-session.ts:885` only upgrades
  * `pending-*` placeholders; it does NOT validate UUID shape. A malformed
  * sessionId reaching this helper without sanitization could escape
- * `SYSTEM_PROMPT_DIR` via `../`. Matches the defence in
- * `gemini.ts:sessionSystemPromptPath`.
+ * `SYSTEM_PROMPT_DIR` via `../`. The path is never derived from an unsanitized sessionId.
  */
 function systemPromptPath(sessionId: string): string {
   const safe = sessionId.replace(/[^A-Za-z0-9._-]/g, '_') || 'unknown';
@@ -102,8 +102,7 @@ function writeSystemPromptFile(sessionId: string, content: string): string {
 
 /**
  * Best-effort age-based GC for `SYSTEM_PROMPT_DIR`. Removes prompt files older
- * than 1 hour. Called from `startSession` (same trigger pattern as
- * `gemini.ts:cleanupStaleSessionPrompts`).
+ * than 1 hour. Called from `startSession`.
  *
  * Not unlinked on `stopSession` because the prompt filename is sessionId-keyed
  * (deterministic across spawns of the same session); a late delete from a
@@ -276,12 +275,14 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 
   async detect(): Promise<RuntimeDetection> {
     try {
-      const command = resolveCommand('claude');
+      await ensureShellPath();
+      const env = augmentedProcessEnv();
+      const command = resolveCommand('claude', env);
       const proc = spawn([command, '--version'], {
         stdout: 'pipe',
         stderr: 'pipe',
         stdin: 'ignore',
-        env: augmentedProcessEnv(),
+        env,
       });
       const text = await new Response(proc.stdout).text();
       const code = await proc.exited;
@@ -471,10 +472,11 @@ export class ClaudeCodeRuntime implements AgentRuntime {
     // wrapping the .cmd shim.
     // Issue #194 — pass envPolicy and pin PWD to workspacePath for terminal
     // parity (same fix applied to Codex runtime).
+    await ensureShellPath();
     const ccEnv = augmentedProcessEnv(options.envPolicy);
     ccEnv.PWD = options.workspacePath;
     ccEnv.MYAGENTS_SESSION_ID = options.sessionId;
-    const proc = spawn([resolveCommand('claude'), ...args], {
+    const proc = spawn([resolveCommand('claude', ccEnv), ...args], {
       cwd: options.workspacePath,
       env: ccEnv,
       stdout: 'pipe',

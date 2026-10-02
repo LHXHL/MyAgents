@@ -69,7 +69,7 @@ function message(id: string, role: 'user' | 'assistant', content: string): Messa
   return { id, role, content, timestamp: new Date() } as MessageType;
 }
 
-describe('MessageList — Codex conversation actions', () => {
+describe.each(['codex', 'dsh'] as const)('MessageList — %s conversation actions', (runtime) => {
   it('shows rewind and fork only at persisted exact root-turn anchors', () => {
     const user1 = message('user-1', 'user', 'first');
     const assistant1 = {
@@ -91,7 +91,7 @@ describe('MessageList — Codex conversation actions', () => {
         followEnabledRef={{ current: true }}
         scrollToBottom={vi.fn()}
         handleAtBottomChange={vi.fn()}
-        conversationOperations="codex"
+        conversationOperations={runtime}
         rewindableUserMessageIds={new Set([user1.id])}
         onRewind={vi.fn()}
         onFork={vi.fn()}
@@ -117,7 +117,7 @@ describe('MessageList — Codex conversation actions', () => {
       followEnabledRef: { current: true as const },
       scrollToBottom: vi.fn(),
       handleAtBottomChange: vi.fn(),
-      conversationOperations: 'codex' as const,
+      conversationOperations: runtime,
       onFork: vi.fn(),
     };
     const { rerender } = render(

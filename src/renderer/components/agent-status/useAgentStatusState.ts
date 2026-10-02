@@ -114,7 +114,7 @@ export function useAgentStatusState(
           const input = tool.parsedInput as AgentInput | undefined;
           const isBackground = isBackgroundSubagentTool(tool);
 
-          if (tool.name === 'CollabAgent' && tool.subagentLifecycle) {
+          if (tool.subagentLifecycle) {
             if (lifecycleMessageId !== undefined) {
               if (lifecycleMessageId === msg.id) {
                 latestLifecycleSubagents.push(buildSubagentStatus(tool, input, 'sync', sessionId));
@@ -268,16 +268,17 @@ function buildSubagentStatus(
     }
   }
   const fallback = buildSubagentStatusFallback(tool);
+  const lifecycle = tool.subagentLifecycle;
   return {
     id: tool.id,
-    agentType: input?.subagent_type ?? fallback.agentType,
-    description: input?.description ?? fallback.description,
-    mode,
+    agentType: lifecycle?.agentType ?? input?.subagent_type ?? fallback.agentType,
+    description: lifecycle?.description ?? input?.description ?? fallback.description,
+    mode: lifecycle?.mode === 'continuable' ? 'background' : mode,
     startedAt,
     finishedAt: tool.subagentLifecycle?.finishedAt,
     status: tool.subagentLifecycle?.status ?? 'running',
-    inputTokens: tool.taskStats?.inputTokens ?? 0,
-    outputTokens: tool.taskStats?.outputTokens ?? 0,
+    inputTokens: lifecycle?.usage?.inputTokens ?? tool.taskStats?.inputTokens ?? 0,
+    outputTokens: lifecycle?.usage?.outputTokens ?? tool.taskStats?.outputTokens ?? 0,
     toolCount: tool.taskStats?.toolCount ?? tool.subagentCalls?.length ?? 0,
   };
 }

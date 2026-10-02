@@ -11,7 +11,13 @@
 // Historical Cron rows reuse the same component and surface only read-only
 // detail.
 
-import { Pencil, Play, RotateCcw, Square, Trash2 } from 'lucide-react';
+import {
+  EditIcon,
+  PlayIcon,
+  UndoIcon,
+  StopIcon,
+  TrashIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import { DropdownMenu, type DropdownMenuItem, type DropdownMenuSection } from '@/components/ui/DropdownMenu';
@@ -71,7 +77,7 @@ export function TaskItemActions({
   const primaryGroup: DropdownMenuItem[] = [];
   if (variant === 'task' && onEdit) {
     primaryGroup.push({
-      icon: <Pencil className="h-3.5 w-3.5" />,
+      icon: <EditIcon className="h-3.5 w-3.5" />,
       label: t('tasks.actions.edit'),
       onClick: onEdit,
     });
@@ -94,7 +100,7 @@ export function TaskItemActions({
   const destructiveGroup: DropdownMenuItem[] = onDelete && !executionState
     ? [
         {
-          icon: <Trash2 className="h-3.5 w-3.5" />,
+          icon: <TrashIcon className="h-3.5 w-3.5" />,
           label: t('tasks.actions.delete'),
           onClick: onDelete,
           danger: true,
@@ -127,7 +133,7 @@ function primaryActionFor(
 ): PrimaryAction | null {
   if (executionState === 'stopping') {
     return {
-      icon: <Square className="h-3.5 w-3.5" />,
+      icon: <StopIcon className="h-3.5 w-3.5" />,
       title: t('tasks.actions.stopping'),
       menuClassName: 'text-[var(--warning)]',
       handler: undefined,
@@ -135,7 +141,7 @@ function primaryActionFor(
   }
   if (executionState === 'stop_failed') {
     return {
-      icon: <Square className="h-3.5 w-3.5" />,
+      icon: <StopIcon className="h-3.5 w-3.5" />,
       title: t('tasks.actions.retryStop'),
       menuClassName:
         'text-[var(--error)] hover:bg-[var(--error-bg)]',
@@ -144,7 +150,7 @@ function primaryActionFor(
   }
   if (executionState === 'running') {
     return {
-      icon: <Square className="h-3.5 w-3.5" />,
+      icon: <StopIcon className="h-3.5 w-3.5" />,
       title: t('tasks.actions.stop'),
       menuClassName:
         'text-[var(--ink-secondary)] hover:bg-[var(--error-bg)] hover:text-[var(--error)]',
@@ -154,7 +160,7 @@ function primaryActionFor(
   switch (status) {
     case 'todo':
       return {
-        icon: <Play className="h-3.5 w-3.5" />,
+        icon: <PlayIcon className="h-3.5 w-3.5" />,
         title: t('tasks.actions.runNow'),
         menuClassName:
           'text-[var(--accent-warm)] hover:bg-[var(--accent-warm-subtle)]',
@@ -163,7 +169,7 @@ function primaryActionFor(
     case 'running':
     case 'verifying':
       return {
-        icon: <Square className="h-3.5 w-3.5" />,
+        icon: <StopIcon className="h-3.5 w-3.5" />,
         title: t('tasks.actions.stop'),
         menuClassName:
           'text-[var(--ink-secondary)] hover:bg-[var(--error-bg)] hover:text-[var(--error)]',
@@ -174,7 +180,7 @@ function primaryActionFor(
     case 'done':
       if (!canRerun) return null;
       return {
-        icon: <RotateCcw className="h-3.5 w-3.5" />,
+        icon: <UndoIcon className="h-3.5 w-3.5" />,
         title: t('tasks.actions.rerun'),
         menuClassName:
           'text-[var(--ink-secondary)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]',

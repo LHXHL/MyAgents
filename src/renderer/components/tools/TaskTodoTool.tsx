@@ -1,9 +1,16 @@
-import { Check, CircleDot, ListTodo, Plus, Search, Trash2 } from 'lucide-react';
+import {
+  CheckIcon,
+  CircleDotIcon,
+  ListTodoIcon,
+  PlusIcon,
+  SearchIcon,
+  TrashIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import type { TaskCreateInput, TaskGetInput, TaskUpdateInput, ToolUseSimple } from '@/types/chat';
 
-import { getTaskListSnapshot } from '@/utils/taskTodoState';
+import { getTaskListSnapshot, getTaskResultOwner } from '@/utils/taskTodoState';
 
 import TodoChecklist from './TodoChecklist';
 
@@ -28,7 +35,7 @@ export default function TaskTodoTool({ tool }: TaskTodoToolProps) {
     if (snapshot.length === 0) {
       return <div className="text-sm text-[var(--ink-muted)]">{t('shell.toolChrome.taskOp.emptyList')}</div>;
     }
-    return <TodoChecklist items={snapshot.map(task => ({ content: task.content, status: task.status, key: task.id }))} />;
+    return <TodoChecklist items={snapshot.map(task => ({ content: task.content, status: task.status, key: task.id, detail: task.owner ? taskOwnerLabel(task.owner, t) : undefined }))} />;
   }
 
   return <TaskOpRow tool={tool} />;
@@ -37,15 +44,22 @@ export default function TaskTodoTool({ tool }: TaskTodoToolProps) {
 function TaskOpRow({ tool }: { tool: ToolUseSimple }) {
   const { t } = useTranslation('chat');
   const { icon, text, accent } = describeTaskOp(tool, t);
+  const owner = getTaskResultOwner(tool);
   return (
     <div className="flex items-center gap-2 text-sm">
       <span className={accent ? 'text-[var(--accent)]' : 'text-[var(--ink-muted)]'}>{icon}</span>
-      <span className="select-text text-[var(--ink-secondary)]">{text}</span>
+      <span className="select-text text-[var(--ink-secondary)]">{text}
+        {owner && <span className="block text-xs text-[var(--ink-muted)]">{taskOwnerLabel(owner, t)}</span>}
+      </span>
     </div>
   );
 }
 
 type ChatTranslator = (key: string, options?: Record<string, unknown>) => string;
+
+function taskOwnerLabel(owner: string, t: ChatTranslator): string {
+  return t(owner === 'root' ? 'shell.toolChrome.taskOp.rootOwner' : 'shell.toolChrome.taskOp.agentOwner', { owner });
+}
 
 function describeTaskOp(tool: ToolUseSimple, t: ChatTranslator): { icon: React.ReactNode; text: string; accent: boolean } {
   const iconCls = 'size-4 shrink-0';
@@ -54,7 +68,7 @@ function describeTaskOp(tool: ToolUseSimple, t: ChatTranslator): { icon: React.R
       const input = tool.parsedInput as TaskCreateInput | undefined;
       const subject = typeof input?.subject === 'string' ? input.subject : '';
       return {
-        icon: <Plus className={iconCls} />,
+        icon: <PlusIcon className={iconCls} />,
         text: subject ? t('shell.toolChrome.taskOp.createWithSubject', { subject }) : t('shell.toolChrome.taskOp.create'),
         accent: false
       };
@@ -63,22 +77,22 @@ function describeTaskOp(tool: ToolUseSimple, t: ChatTranslator): { icon: React.R
       const input = tool.parsedInput as TaskUpdateInput | undefined;
       const subject = typeof input?.subject === 'string' ? input.subject : '';
       if (input?.status === 'deleted') {
-        return { icon: <Trash2 className={iconCls} />, text: subject ? t('shell.toolChrome.taskOp.deleteWithSubject', { subject }) : t('shell.toolChrome.taskOp.delete'), accent: false };
+        return { icon: <TrashIcon className={iconCls} />, text: subject ? t('shell.toolChrome.taskOp.deleteWithSubject', { subject }) : t('shell.toolChrome.taskOp.delete'), accent: false };
       }
       if (input?.status === 'completed') {
-        return { icon: <Check className={iconCls} strokeWidth={3} />, text: subject ? t('shell.toolChrome.taskOp.completeWithSubject', { subject }) : t('shell.toolChrome.taskOp.complete'), accent: false };
+        return { icon: <CheckIcon className={iconCls} strokeWidth={3} />, text: subject ? t('shell.toolChrome.taskOp.completeWithSubject', { subject }) : t('shell.toolChrome.taskOp.complete'), accent: false };
       }
       if (input?.status === 'in_progress') {
-        return { icon: <CircleDot className={iconCls} />, text: subject ? t('shell.toolChrome.taskOp.startWithSubject', { subject }) : t('shell.toolChrome.taskOp.start'), accent: true };
+        return { icon: <CircleDotIcon className={iconCls} />, text: subject ? t('shell.toolChrome.taskOp.startWithSubject', { subject }) : t('shell.toolChrome.taskOp.start'), accent: true };
       }
-      return { icon: <ListTodo className={iconCls} />, text: subject ? t('shell.toolChrome.taskOp.updateWithSubject', { subject }) : t('shell.toolChrome.taskOp.update'), accent: false };
+      return { icon: <ListTodoIcon className={iconCls} />, text: subject ? t('shell.toolChrome.taskOp.updateWithSubject', { subject }) : t('shell.toolChrome.taskOp.update'), accent: false };
     }
     case 'TaskGet': {
       const input = tool.parsedInput as TaskGetInput | undefined;
       const id = typeof input?.taskId === 'string' ? input.taskId : '';
-      return { icon: <Search className={iconCls} />, text: id ? t('shell.toolChrome.taskOp.getWithId', { id }) : t('shell.toolChrome.taskOp.get'), accent: false };
+      return { icon: <SearchIcon className={iconCls} />, text: id ? t('shell.toolChrome.taskOp.getWithId', { id }) : t('shell.toolChrome.taskOp.get'), accent: false };
     }
     default:
-      return { icon: <ListTodo className={iconCls} />, text: tool.name, accent: false };
+      return { icon: <ListTodoIcon className={iconCls} />, text: tool.name, accent: false };
   }
 }

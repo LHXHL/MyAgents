@@ -1,6 +1,6 @@
 // Dialog for selecting a workspace to upgrade to Agent
 import { useMemo } from 'react';
-import { X } from 'lucide-react';
+import { CloseIcon } from '@/components/icons';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { isProjectActiveForUser, type Project } from '@/config/types';
@@ -32,7 +32,7 @@ export default function WorkspaceSelectDialog({ projects, onSelect, onClose }: W
             {t('agentSettings.workspaceSelect.title')}
           </h2>
           <button onClick={onClose} className="rounded p-1 text-[var(--ink-subtle)] hover:text-[var(--ink-muted)] transition-colors">
-            <X className="h-4 w-4" />
+            <CloseIcon className="h-4 w-4" />
           </button>
         </div>
 

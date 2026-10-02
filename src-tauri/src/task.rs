@@ -520,7 +520,7 @@ pub struct Task {
     /// a re-save and credential copies never land in `tasks.jsonl` /
     /// the legacy Cron store.
     ///
-    /// Mutually exclusive with `runtime ∈ {claude-code, codex, gemini}`
+    /// Mutually exclusive with `runtime ∈ {claude-code, codex}`
     /// (external runtimes manage their own provider) — enforced by
     /// `validate_task_provider_routing`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -866,16 +866,26 @@ fn task_comment_quote(body: &str) -> String {
     }
 }
 
-fn ordinary_task_for_comment<'a>(
+fn ordinary_task_for_read<'a>(
     tasks: &'a HashMap<String, Task>,
     task_id: &str,
 ) -> Result<&'a Task, String> {
     let task = tasks
         .get(task_id)
-        .filter(|task| !task.deleted)
         .ok_or_else(|| String::from(TaskOpError::not_found(task_id)))?;
     if is_managed_task(task) {
         return Err(MANAGED_TASK_ERROR.to_string());
+    }
+    Ok(task)
+}
+
+fn ordinary_task_for_comment<'a>(
+    tasks: &'a HashMap<String, Task>,
+    task_id: &str,
+) -> Result<&'a Task, String> {
+    let task = ordinary_task_for_read(tasks, task_id)?;
+    if task.deleted {
+        return Err(String::from(TaskOpError::already_deleted()));
     }
     Ok(task)
 }
@@ -1839,7 +1849,7 @@ impl TaskStore {
     ) -> Result<TaskCommentPage, String> {
         let limit = limit.clamp(1, 100);
         let guard = self.inner.write().await;
-        let task = ordinary_task_for_comment(&guard, task_id)?;
+        let task = ordinary_task_for_read(&guard, task_id)?;
         let path = self.comments_path(&task.id)?;
         let comments = self.load_task_comments(task_id, &path)?;
         let end = match before {
@@ -1869,7 +1879,7 @@ impl TaskStore {
     ) -> Result<TaskCommentPage, String> {
         let limit = limit.clamp(1, 100);
         let guard = self.inner.write().await;
-        let task = ordinary_task_for_comment(&guard, task_id)?;
+        let task = ordinary_task_for_read(&guard, task_id)?;
         let path = self.comments_path(&task.id)?;
         let comments = self.load_task_comments(task_id, &path)?;
         let start = comments
@@ -1898,7 +1908,7 @@ impl TaskStore {
         radius: usize,
     ) -> Result<TaskCommentContextPage, String> {
         let guard = self.inner.write().await;
-        let task = ordinary_task_for_comment(&guard, task_id)?;
+        let task = ordinary_task_for_read(&guard, task_id)?;
         let path = self.comments_path(&task.id)?;
         let comments = self.load_task_comments(task_id, &path)?;
         let target = comments
@@ -4395,14 +4405,14 @@ fn validate_new_task_session_binding(
 ///      misroute that #130 surfaced.
 ///
 ///   2. **External-runtime exclusion**: external runtimes (claude-code /
-///      codex / gemini) MUST NOT carry a builtin `provider_id`; they
+///      codex) MUST NOT carry a builtin `provider_id`; they
 ///      self-manage providers via their own CLI. A task with
 ///      `runtime='codex' + provider_id='openai-...'` would either fail
 ///      validation or, worse, get a model id that codex doesn't recognise.
 ///
 ///      `runtime: None` is treated as "force builtin" when `provider_id`
 ///      is set — see invariant 3 below. This closes the codex-review
-///      finding "Agent runtime later switched to Codex/Gemini → task
+///      finding "Agent runtime later switched to Codex/Claude Code → task
 ///      survives with `providerId+model` and silently ignores them at
 ///      execute time" (Codex P1 #5 against PRD 0.2.9): with `provider_id`
 ///      set, the only valid runtime is `'builtin'` or `None` AND we
@@ -4428,7 +4438,7 @@ fn validate_task_provider_routing(
         );
     }
     if let Some(rt) = runtime.as_deref() {
-        let is_external = matches!(rt, "claude-code" | "codex" | "gemini");
+        let is_external = matches!(rt, "claude-code" | "codex");
         if is_external && provider_id.is_some() {
             return Err(format!(
                 "外部 runtime '{}' 自管 provider — 不允许同时指定 providerId（请在该 runtime 自身的设置中切换 provider）",
@@ -4464,13 +4474,22 @@ fn validate_task_execution_routing(
     let source = source_value
         .as_str()
         .ok_or_else(|| "runtimeConfig.source must be a string".to_string())?;
-    if !matches!(source, "system-cli" | "managed-provider") {
+    if !matches!(source, "integrated" | "system-cli" | "managed-provider") {
         return Err(format!(
-            "invalid runtimeConfig.source '{source}'; valid values: system-cli, managed-provider"
+            "invalid runtimeConfig.source '{source}'; valid values: integrated, system-cli, managed-provider"
         ));
+    }
+    if source == "integrated" && runtime.as_deref() != Some("dsh") {
+        return Err("runtimeConfig.source=integrated requires runtime=dsh".to_string());
     }
     if source == "managed-provider" && runtime.as_deref() != Some("codex") {
         return Err("runtimeConfig.source=managed-provider requires runtime=codex".to_string());
+    }
+    if runtime.as_deref() == Some("dsh") && source != "integrated" {
+        return Err(
+            "runtime=dsh requires runtimeConfig.source=integrated when source is explicit"
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -7693,9 +7712,9 @@ mod tests {
         assert!(err.contains("providerId"), "got: {}", err);
         assert!(err.contains("model"), "got: {}", err);
 
-        // 4. External runtime + providerId — rejected (codex / cc / gemini
+        // 4. External runtime + providerId — rejected (codex / cc
         //    self-manage providers).
-        for rt in ["claude-code", "codex", "gemini"] {
+        for rt in ["claude-code", "codex"] {
             let err = validate_task_provider_routing(
                 &Some("openai-x".into()),
                 &Some("gpt-4o".into()),
@@ -7711,12 +7730,25 @@ mod tests {
         );
 
         // 6. External runtime without provider override — accepted (the
-        //    common case for codex/gemini/cc tasks).
+        //    common case for codex/cc tasks).
         assert!(validate_task_provider_routing(&None, &None, &Some("codex".into()),).is_ok());
     }
 
     #[test]
     fn validate_task_execution_routing_enforces_runtime_config_source() {
+        let integrated = Some(serde_json::json!({
+            "source": "integrated",
+            "model": "glm-4.7",
+        }));
+        assert!(
+            validate_task_execution_routing(&None, &None, &Some("dsh".into()), &integrated,)
+                .is_ok()
+        );
+        assert!(
+            validate_task_execution_routing(&None, &None, &Some("codex".into()), &integrated,)
+                .unwrap_err()
+                .contains("requires runtime=dsh")
+        );
         let managed = Some(serde_json::json!({
             "source": "managed-provider",
             "model": "gpt-5.6-sol",
@@ -7725,7 +7757,7 @@ mod tests {
             validate_task_execution_routing(&None, &None, &Some("codex".into()), &managed,).is_ok()
         );
         assert!(
-            validate_task_execution_routing(&None, &None, &Some("gemini".into()), &managed,)
+            validate_task_execution_routing(&None, &None, &Some("claude-code".into()), &managed,)
                 .unwrap_err()
                 .contains("requires runtime=codex")
         );
@@ -7737,6 +7769,14 @@ mod tests {
         )
         .unwrap_err()
         .contains("invalid runtimeConfig.source"));
+        assert!(validate_task_execution_routing(
+            &None,
+            &None,
+            &Some("dsh".into()),
+            &Some(serde_json::json!({ "source": "system-cli" })),
+        )
+        .unwrap_err()
+        .contains("requires runtimeConfig.source=integrated"));
     }
 
     #[tokio::test]
@@ -7747,7 +7787,7 @@ mod tests {
         std::fs::create_dir_all(&ws).unwrap();
         let store = TaskStore::new(dir.path().join("data"));
         let mut create = sample_direct_input(&ws);
-        create.runtime = Some("gemini".to_string());
+        create.runtime = Some("claude-code".to_string());
         let created = store.create_direct(create).await.unwrap();
         let mut update = empty_update_input(&created.id);
         update.runtime_config = Some(serde_json::json!({
@@ -7759,7 +7799,7 @@ mod tests {
 
         assert!(error.contains("requires runtime=codex"));
         let unchanged = store.get(&created.id).await.unwrap();
-        assert_eq!(unchanged.runtime.as_deref(), Some("gemini"));
+        assert_eq!(unchanged.runtime.as_deref(), Some("claude-code"));
         assert!(unchanged.runtime_config.is_none());
     }
 
@@ -8163,6 +8203,13 @@ mod tests {
         );
 
         recovered.delete(&task.id).await.unwrap();
+        // Deletion preserves audit read authority, matching task get/runs.
+        assert!(!recovered
+            .list_comments(&task.id, None, 50)
+            .await
+            .unwrap()
+            .items
+            .is_empty());
         assert!(recovered
             .agent_comment_notification_source()
             .items

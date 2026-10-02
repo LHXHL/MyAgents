@@ -20,7 +20,7 @@ export const CLIENT_ACTION_SLASH_COMMANDS: SlashCommand[] = [
   { name: 'goal', description: 'Run toward a goal continuously', source: 'client', aliases: ['loop'] },
 ];
 
-/** Native Managed Codex action; Chat injects it only for that runtime. */
+/** Runtime-native compact action; Chat injects it only when SessionEngine implements it. */
 export const MANAGED_CODEX_COMPACT_SLASH_COMMAND: SlashCommand = {
   name: 'compact',
   description: 'Compress chat history to free context space',

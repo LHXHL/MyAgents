@@ -7,7 +7,7 @@
  */
 
 import { memo, useId } from 'react';
-import { LocateFixed } from 'lucide-react';
+import { LocateIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import type {
@@ -212,7 +212,7 @@ export default memo(function FileSearchResults({
                                                     onRevealInTree(hit);
                                                 }}
                                             >
-                                                <LocateFixed className="h-3.5 w-3.5" />
+                                                <LocateIcon className="h-3.5 w-3.5" />
                                             </button>
                                         </div>
                                     </div>

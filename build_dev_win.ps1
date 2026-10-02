@@ -5,7 +5,9 @@
 # 如需验证安装器，可传入 -BundleNsis 构建 Debug NSIS 安装包。
 
 param(
-    [switch]$BundleNsis
+    [switch]$BundleNsis,
+    [ValidateSet("release", "local")][string]$DshSource = "release",
+    [string]$DshHandoff
 )
 
 $ErrorActionPreference = "Stop"
@@ -68,6 +70,11 @@ if ($PKG_VERSION -ne $TAURI_VERSION -or $PKG_VERSION -ne $CARGO_VERSION) {
     }
 }
 
+if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
+    Write-ColorOutput "✗ 缺少 CMake（Rust Opus 依赖需要），请运行 setup_windows.ps1" "Red"
+    exit 1
+}
+
 # Establish the pinned Rust identity, then ask the native owner for the exact
 # target/cache-aware prerequisites before stopping processes or cleaning output.
 Write-ColorOutput "[准备] 准备 Rust toolchain / components / Windows target..." "Blue"
@@ -89,10 +96,13 @@ if ($LASTEXITCODE -ne 0) {
 Write-ColorOutput "✓ 原生推理构建依赖检查完成" "Green"
 Write-Host ""
 
-# 杀死残留进程（避免"旧代码"问题）
-Write-ColorOutput "[准备] 杀死残留进程..." "Blue"
+# 只结束此 Debug 输出启动的旧进程，避免影响已安装的 MyAgents。
+Write-ColorOutput "[准备] 检查旧 Debug 进程..." "Blue"
 
-$appProcesses = Get-Process | Where-Object { $_.ProcessName -eq "MyAgents" }
+$debugExecutablePath = Join-Path $PROJECT_DIR "src-tauri/target/x86_64-pc-windows-msvc/debug/myagents.exe"
+$appProcesses = Get-Process -Name "MyAgents" -ErrorAction SilentlyContinue | Where-Object {
+    $_.Path -and [string]::Equals($_.Path, $debugExecutablePath, [System.StringComparison]::OrdinalIgnoreCase)
+}
 
 if ($appProcesses) {
     $appProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -103,7 +113,9 @@ if ($appProcesses) {
 $maxWait = 20  # 20 * 100ms = 2s
 $waited = 0
 while ($waited -lt $maxWait) {
-    $remainingApp = Get-Process -Name "MyAgents" -ErrorAction SilentlyContinue
+    $remainingApp = @(Get-Process -Name "MyAgents" -ErrorAction SilentlyContinue | Where-Object {
+        $_.Path -and [string]::Equals($_.Path, $debugExecutablePath, [System.StringComparison]::OrdinalIgnoreCase)
+    })
     if (-not $remainingApp) {
         break
     }
@@ -144,6 +156,13 @@ foreach ($dir in $dirsToClean) {
 
 # Prepare the same pinned Node/npm pair as setup and release builds.
 & "$PROJECT_DIR\scripts\download_nodejs.ps1"
+if ($DshSource -eq "local") {
+    if (-not $DshHandoff) { throw "-DshSource local requires -DshHandoff <absolute directory>" }
+    & node "$PROJECT_DIR\scripts\integrated-runtimes\prepare-dsh-runtime.mjs" --source local --handoff $DshHandoff --target win32-x64
+} else {
+    & node "$PROJECT_DIR\scripts\integrated-runtimes\prepare-dsh-runtime.mjs" --source release --target win32-x64
+}
+if ($LASTEXITCODE -ne 0) { throw "MyAgents-dsh 构建资源准备失败" }
 
 # 创建占位符资源目录（满足 Tauri bundle 阶段的资源校验）。
 # server-dist.js / plugin-bridge-dist.mjs / cli/myagents.cjs 在下面的
@@ -267,12 +286,12 @@ $fastConfigJson = @'
 
 try {
     if ($BundleNsis) {
-        & npm run tauri:build -- --debug --bundles nsis --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config $fastConfig
+        & npm run tauri:build:prepared -- --debug --bundles nsis --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config $fastConfig
         if ($LASTEXITCODE -ne 0) {
             throw "Tauri build failed"
         }
     } else {
-        & npm run tauri:build -- --debug --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config $fastConfig
+        & npm run tauri:build:prepared -- --debug --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config $fastConfig
         if ($LASTEXITCODE -ne 0) {
             throw "Tauri build failed"
         }

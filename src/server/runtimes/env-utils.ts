@@ -1,10 +1,10 @@
 // Shared environment utilities for external runtime subprocesses (v0.1.60)
 
-import { statSync } from 'node:fs';
+import { accessSync, constants, statSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 
 import type { RuntimeEnvPolicy } from '../../shared/types/runtime';
-import { getShellEnv, getShellPath, getDetectedTerminalProxyEnv } from '../utils/shell';
+import { getShellEnv, getDetectedTerminalProxyEnv } from '../utils/shell';
 
 const PROXY_KEYS_UPPER = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY'] as const;
 const PROXY_KEYS_LOWER = ['http_proxy', 'https_proxy', 'all_proxy', 'no_proxy'] as const;
@@ -17,8 +17,7 @@ const PROXY_KEYS_ALL = [...PROXY_KEYS_UPPER, ...PROXY_KEYS_LOWER] as const;
  * npm-global installs are found. Absolute paths bypass PATH and are verified
  * via `statSync` directly.
  */
-function which(command: string, opts?: { PATH?: string }): string | null {
-  const pathStr = opts?.PATH ?? process.env.PATH ?? '';
+function which(command: string, pathStr: string): string | null {
   if (!pathStr) return null;
   const exts = process.platform === 'win32'
     ? (process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';').map((e) => e.toLowerCase())
@@ -26,7 +25,10 @@ function which(command: string, opts?: { PATH?: string }): string | null {
   // Absolute path bypass: if caller passed an absolute executable, just verify it.
   if (command.includes('/') || (process.platform === 'win32' && command.includes('\\'))) {
     try {
-      if (statSync(command).isFile()) return command;
+      if (statSync(command).isFile()) {
+        if (process.platform !== 'win32') accessSync(command, constants.X_OK);
+        return command;
+      }
     } catch { /* not found */ }
     return null;
   }
@@ -35,7 +37,10 @@ function which(command: string, opts?: { PATH?: string }): string | null {
     for (const ext of exts) {
       const candidate = join(dir, command + ext);
       try {
-        if (statSync(candidate).isFile()) return candidate;
+        if (statSync(candidate).isFile()) {
+          if (process.platform !== 'win32') accessSync(candidate, constants.X_OK);
+          return candidate;
+        }
       } catch { /* skip */ }
     }
   }
@@ -113,10 +118,8 @@ export function augmentedProcessEnv(
       }
     }
   }
-  // If warmup hasn't completed yet, `detected` is null → env stays stripped.
-  // Caller (codex.ts / claude-code.ts) can choose to await `ensureShellPath()`
-  // beforehand to guarantee the terminal proxy is loaded; production already
-  // does this on first spawn ~5–6s into Sidecar startup.
+  // External-runtime entry points await ensureShellPath before building env,
+  // including the first model query before startup warmup has finished.
 
   return env;
 }
@@ -177,8 +180,8 @@ export async function resolveAgentEnvPolicy(
 /**
  * Resolve an external CLI command to its full executable path.
  *
- * Uses our local `which()` with the augmented PATH (from `getShellPath()`)
- * on ALL platforms.
+ * Callers pass the same environment they will give to spawn, after awaiting
+ * ensureShellPath. Detection and execution therefore select the same CLI.
  *
  * Why this is needed everywhere (not just Windows):
  * - Windows: npm global installs create `.cmd` wrappers; `spawn()` via libuv
@@ -189,8 +192,9 @@ export async function resolveAgentEnvPolicy(
  *   a correct PATH, the bare command name won't be found by posix_spawnp.
  *   Pre-resolving to a full path bypasses PATH lookup entirely.
  */
-export function resolveCommand(command: string): string {
-  const resolved = which(command, { PATH: getShellPath() });
+export function resolveCommand(command: string, env: Record<string, string | undefined>): string {
+  const path = process.platform === 'win32' ? env.Path ?? env.PATH ?? '' : env.PATH ?? '';
+  const resolved = which(command, path);
   if (resolved) return resolved;
   // Fallback: return as-is and let spawn fail with a clear error
   return command;

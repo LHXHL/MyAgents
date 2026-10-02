@@ -1,0 +1,129 @@
+import policyJson from "./distribution-policy.json";
+import {
+  EXTERNAL_RUNTIME_IDS,
+  INTEGRATED_RUNTIME_IDS,
+  type ExternalRuntimeId,
+  type IntegratedRuntimeId,
+} from "./identity";
+
+export type DistributionRuntimeType = "builtin" | "dsh" | ExternalRuntimeId;
+
+export type RuntimeSelectorAvailability = "always" | "hidden";
+
+export interface AgentRuntimeDistributionPolicy {
+  schemaVersion: 1;
+  allowedIntegratedRuntimes: IntegratedRuntimeId[];
+  allowedExternalRuntimes: ExternalRuntimeId[];
+  defaultIntegratedRuntime: IntegratedRuntimeId;
+  selectorAvailability: RuntimeSelectorAvailability;
+}
+
+function hasDuplicates(values: readonly string[]): boolean {
+  return new Set(values).size !== values.length;
+}
+
+export function parseAgentRuntimeDistributionPolicy(
+  value: unknown,
+): AgentRuntimeDistributionPolicy {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Runtime distribution policy must be an object");
+  }
+  const row = value as Record<string, unknown>;
+  const integrated = row.allowedIntegratedRuntimes;
+  const external = row.allowedExternalRuntimes;
+  if (row.schemaVersion !== 1) {
+    throw new Error("Runtime distribution policy schemaVersion must be 1");
+  }
+  if (
+    !Array.isArray(integrated) ||
+    integrated.length === 0 ||
+    hasDuplicates(integrated as string[]) ||
+    integrated.some(
+      (id) => !INTEGRATED_RUNTIME_IDS.includes(id as IntegratedRuntimeId),
+    )
+  ) {
+    throw new Error("Runtime distribution policy has invalid Integrated Runtimes");
+  }
+  if (
+    !Array.isArray(external) ||
+    hasDuplicates(external as string[]) ||
+    external.some(
+      (id) => !EXTERNAL_RUNTIME_IDS.includes(id as ExternalRuntimeId),
+    )
+  ) {
+    throw new Error("Runtime distribution policy has invalid External Runtimes");
+  }
+  if (
+    !INTEGRATED_RUNTIME_IDS.includes(
+      row.defaultIntegratedRuntime as IntegratedRuntimeId,
+    ) ||
+    !integrated.includes(row.defaultIntegratedRuntime)
+  ) {
+    throw new Error("Default Integrated Runtime must be allowed");
+  }
+  if (!(["always", "hidden"] as const).includes(
+    row.selectorAvailability as RuntimeSelectorAvailability,
+  )) {
+    throw new Error("Runtime distribution policy has invalid selectorAvailability");
+  }
+  return {
+    schemaVersion: 1,
+    allowedIntegratedRuntimes: [...integrated] as IntegratedRuntimeId[],
+    allowedExternalRuntimes: [...external] as ExternalRuntimeId[],
+    defaultIntegratedRuntime: row.defaultIntegratedRuntime as IntegratedRuntimeId,
+    selectorAvailability:
+      row.selectorAvailability as RuntimeSelectorAvailability,
+  };
+}
+
+export const AGENT_RUNTIME_DISTRIBUTION_POLICY = Object.freeze(
+  parseAgentRuntimeDistributionPolicy(policyJson),
+);
+
+export function isRuntimeSelectorAvailable(
+  policy: AgentRuntimeDistributionPolicy,
+): boolean {
+  return policy.selectorAvailability === "always";
+}
+
+export function integratedRuntimeType(id: IntegratedRuntimeId): "builtin" | "dsh" {
+  return id === "claude-agent-sdk" ? "builtin" : "dsh";
+}
+
+export function resolveDefaultIntegratedRuntime(
+  policy: AgentRuntimeDistributionPolicy,
+  configuredDefault?: unknown,
+): IntegratedRuntimeId {
+  return typeof configuredDefault === "string" &&
+    policy.allowedIntegratedRuntimes.includes(
+      configuredDefault as IntegratedRuntimeId,
+    )
+    ? (configuredDefault as IntegratedRuntimeId)
+    : policy.defaultIntegratedRuntime;
+}
+
+export function defaultIntegratedRuntimeType(
+  policy: AgentRuntimeDistributionPolicy,
+  configuredDefault?: unknown,
+): "builtin" | "dsh" {
+  return integratedRuntimeType(
+    resolveDefaultIntegratedRuntime(policy, configuredDefault),
+  );
+}
+
+export function isRuntimeAllowedByDistribution(
+  policy: AgentRuntimeDistributionPolicy,
+  runtime: DistributionRuntimeType,
+  runtimeSource?: "integrated" | "system-cli" | "managed-provider" | null,
+): boolean {
+  if (runtime === "builtin") {
+    return policy.allowedIntegratedRuntimes.includes("claude-agent-sdk");
+  }
+  if (runtime === "dsh") {
+    return policy.allowedIntegratedRuntimes.includes("dsh");
+  }
+  if (runtime === "codex" && runtimeSource === "managed-provider") {
+    return policy.allowedIntegratedRuntimes.includes("claude-agent-sdk");
+  }
+  return policy.allowedExternalRuntimes.includes(runtime);
+}

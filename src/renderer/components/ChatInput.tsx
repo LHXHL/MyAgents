@@ -1,4 +1,9 @@
-import { ArrowUp, Loader2, Paperclip, Square } from 'lucide-react';
+import {
+  ArrowUpIcon,
+  LoaderIcon,
+  AttachIcon,
+  StopIcon,
+} from '@/components/icons';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import AttachmentPreviewList from '@/components/AttachmentPreviewList';
@@ -308,7 +313,7 @@ export default function ChatInput({
                 className="flex h-10 w-10 items-center justify-center rounded-full border border-[var(--line)]/80 bg-[var(--paper-inset)] text-[var(--ink-muted)] transition hover:bg-[var(--hover-bg)] focus:ring-2 focus:ring-[var(--line-strong)] focus:outline-none"
                 title="Attach files"
               >
-                <Paperclip className="h-4 w-4" />
+                <AttachIcon className="h-4 w-4" />
               </button>
               <div className="flex h-10 items-center gap-2 rounded-full border border-[var(--line)]/80 bg-[var(--paper-inset)] px-2 py-1 transition">
                 <button
@@ -371,7 +376,7 @@ export default function ChatInput({
                 </div>
               </div>
               {isModelPreferenceUpdating && (
-                <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--ink-muted)]" />
+                <LoaderIcon className="h-3.5 w-3.5 animate-spin text-[var(--ink-muted)]" />
               )}
             </div>
             <button
@@ -385,9 +390,9 @@ export default function ChatInput({
             >
               {isLoading ?
                 onStopStreaming ?
-                  <Square className="h-5 w-5" />
-                : <Loader2 className="h-5 w-5 animate-spin" />
-              : <ArrowUp className="h-5 w-5" />}
+                  <StopIcon className="h-5 w-5" />
+                : <LoaderIcon className="h-5 w-5 animate-spin" />
+              : <ArrowUpIcon className="h-5 w-5" />}
             </button>
           </div>
         </div>

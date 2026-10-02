@@ -1,4 +1,4 @@
-import { Download, RefreshCw } from 'lucide-react';
+import { DownloadIcon, RefreshIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import type { SpeechModelPackStatus } from '@/../shared/types/record';
@@ -118,7 +118,7 @@ export function SpeechModelResourceControls({
             onClick={onRemove}
             className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--danger)] disabled:cursor-wait disabled:opacity-60"
           >
-            <RefreshCw className="h-3.5 w-3.5" />
+            <RefreshIcon className="h-3.5 w-3.5" />
             {t('toolbox.speechResource.retryRemove')}
           </button>
         ) : (
@@ -128,9 +128,9 @@ export function SpeechModelResourceControls({
             className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-inset)]"
           >
             {error || hasActivationWarning ? (
-              <RefreshCw className="h-3.5 w-3.5" />
+              <RefreshIcon className="h-3.5 w-3.5" />
             ) : (
-              <Download className="h-3.5 w-3.5" />
+              <DownloadIcon className="h-3.5 w-3.5" />
             )}
             {hasActivationWarning
               ? t('toolbox.speechResource.reinstall')

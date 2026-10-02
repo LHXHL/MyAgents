@@ -1,6 +1,8 @@
 import type { MessageUsage, RuntimeTurnAnchor, SessionMessage } from '../../types/session';
 import {
   appendSessionMessages,
+  beginDshRootOperation,
+  discardUnpersistedDshRootOperation,
   loadSessionTranscript,
   mutateSessionTranscript,
   updateSessionMetadata,
@@ -186,6 +188,11 @@ export async function persistExternalUserMessageAppend(
   failureContext: string,
   lastActiveAt?: string,
   metadataDisposition: 'update' | 'skip' = 'update',
+  dshRootOperation?: {
+    clientOperationId: string;
+    runtimeSessionId: string;
+    productImageSha256: readonly string[];
+  },
 ): Promise<{ lastMessagePreview?: string }> {
   const active = getActiveSessionTranscript(sessionId);
   if (active) {
@@ -196,6 +203,14 @@ export async function persistExternalUserMessageAppend(
     for (const message of allSessionMessages) if (message.role === 'user') product.admitUser(message);
     allSessionMessages = [];
     const user = active.writer.projection.messages.get(_userMessageId);
+    if (dshRootOperation) {
+      if (!user || user.role !== 'user') throw new Error(`${failureContext}: Missing DSH Product user`);
+      const begun = await beginDshRootOperation({
+        sessionId, cursor: (await loadSessionTranscript(sessionId)).cursor,
+        ...dshRootOperation, userMessage: toStoredTranscriptMessage(user),
+      });
+      if (!begun.success) throw new Error(`${failureContext}: ${begun.error}`);
+    }
     const { preview: lastMessagePreview } = resolveLastVisibleTurnPreview(user ? [toStoredTranscriptMessage(user)] : []);
     if (metadataDisposition !== 'skip') active.patchMetadata({ lastMessagePreview, ...(lastActiveAt ? { lastActiveAt } : {}) });
     return { lastMessagePreview };
@@ -203,8 +218,36 @@ export async function persistExternalUserMessageAppend(
   const { preview: lastMessagePreview } = resolveLastVisibleTurnPreview(allSessionMessages);
   const cursor = await ensureExternalTranscriptCursor(sessionId);
   const tail = allSessionMessages.slice(cursor.persistedMessageCount);
+  const rootUser = dshRootOperation
+    ? tail.find(message => message.role === 'user' && message.id === _userMessageId)
+    : undefined;
+  if (dshRootOperation && (tail.length !== 1 || !rootUser)) {
+    throw new Error(`${failureContext}: DSH admission requires one exact Product user tail`);
+  }
+  if (dshRootOperation && rootUser) {
+    const begun = await beginDshRootOperation({
+      sessionId,
+      cursor,
+      runtimeSessionId: dshRootOperation.runtimeSessionId,
+      clientOperationId: dshRootOperation.clientOperationId,
+      userMessage: rootUser,
+      productImageSha256: dshRootOperation.productImageSha256,
+    });
+    if (!begun.success) throw new Error(`${failureContext}: ${begun.error}`);
+  }
   const saveResult = await appendSessionMessages(sessionId, cursor, tail);
-  transcriptCursor = assertExternalSessionMessagesPersisted(saveResult, failureContext);
+  try {
+    transcriptCursor = assertExternalSessionMessagesPersisted(saveResult, failureContext);
+  } catch (error) {
+    if (dshRootOperation) {
+      await discardUnpersistedDshRootOperation({
+        sessionId,
+        clientOperationId: dshRootOperation.clientOperationId,
+        clientUserMessageId: _userMessageId,
+      });
+    }
+    throw error;
+  }
 
   if (metadataDisposition === 'skip') return { lastMessagePreview };
   try {
@@ -247,6 +290,57 @@ export async function removeAndPersistExternalSessionMessage(
 }
 
 
+export async function retryUnadmittedDshTranscript(
+  sessionId: string,
+  userMessageId: string,
+): Promise<{
+  success: boolean;
+  error?: string;
+  content?: string;
+  attachments?: SessionMessage['attachments'];
+}> {
+  const messages = getExternalSessionMessagesSnapshot();
+  const targetIndex = messages.findIndex(
+    m => m.id === userMessageId && m.role === 'user',
+  );
+  if (targetIndex < 0) {
+    return { success: false, error: 'Message not found' };
+  }
+  const target = messages[targetIndex];
+  if (!target) {
+    return { success: false, error: 'Message not found' };
+  }
+  const content = typeof target.content === 'string' ? target.content : '';
+  const attachments = target.attachments;
+
+  try {
+    const cursor = await ensureExternalTranscriptCursor(sessionId);
+    const result = await mutateSessionTranscript(sessionId, cursor, {
+      kind: 'dsh-unadmitted-retry',
+      targetMessageId: userMessageId,
+      targetMessageCount: targetIndex,
+    });
+    if (!result.ok) {
+      if (result.reason === 'stale-cursor') await reloadExternalTranscript(sessionId);
+      const userFacingError = result.reason === 'stale-cursor'
+        ? 'Conversation history changed while retrying; reopen the session before trying again.'
+        : result.reason === 'malformed-transcript'
+          ? 'Conversation history contains data that cannot be safely modified.'
+          : `Failed to persist truncation: ${result.error}`;
+      throw new Error(userFacingError);
+    }
+    transcriptCursor = result.cursor;
+    if (!getExternalProductContent()) allSessionMessages.length = targetIndex;
+  } catch (err) {
+    console.error('[external-session] popLastUserMessageForRetry: failed to persist truncation:', err);
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Failed to persist truncation',
+    };
+  }
+  return { success: true, content, attachments };
+}
+
 export interface ExternalAssistantTurnPersistInput {
   sessionId: string | null;
   content: string | null;
@@ -256,6 +350,7 @@ export interface ExternalAssistantTurnPersistInput {
   contextUsage: ContextUsage | null;
   lastActiveAt?: string;
   runtimeTurnAnchor?: RuntimeTurnAnchor;
+  completionState?: 'partial';
   terminalStatus?: 'complete' | 'stopped' | 'error';
 }
 
@@ -276,6 +371,8 @@ export async function appendAndPersistExternalAssistantTurn(
     const assistantMessageId = product.finishTurn(input.terminalStatus ?? 'complete', {
       durationMs: input.durationMs, usage: input.usage ?? undefined, toolCount: input.toolCount,
       runtimeTurnAnchor: input.runtimeTurnAnchor,
+      completionState: input.completionState,
+      terminalStatus: input.terminalStatus === 'complete' ? undefined : input.terminalStatus,
     }) ?? undefined;
     active.patchMetadata({
       runtimeUsageTotals: lastPersistedRuntimeUsageTotals ?? undefined,
@@ -297,6 +394,8 @@ export async function appendAndPersistExternalAssistantTurn(
       usage: input.usage || undefined,
       toolCount: input.toolCount || undefined,
       runtimeTurnAnchor: input.runtimeTurnAnchor,
+      completionState: input.completionState,
+      terminalStatus: input.terminalStatus === 'complete' ? undefined : input.terminalStatus,
     });
     appendedAssistant = true;
   }

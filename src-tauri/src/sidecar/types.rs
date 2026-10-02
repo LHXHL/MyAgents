@@ -253,31 +253,6 @@ pub enum SidecarState {
 
 /// Session-centric Sidecar instance
 /// Each Session has at most one Sidecar, shared by multiple owners.
-/// Result of `SidecarManager::kill_sidecar_if_runtime_differs`.
-///
-/// Distinguishes between three cases:
-/// - `NoDrift`: the existing Sidecar's runtime matches the desired runtime
-///   (or there's no existing Sidecar).
-/// - `DetectedKeptAlive`: drift was detected but the Sidecar has non-Agent
-///   owners (Tab/Task/Goal/BackgroundCompletion) attached, so killing would
-///   orphan a desktop session. The caller (IM router) should still treat
-///   this as drift and fork the peer to a new session_id.
-/// - `KilledAndRemoved`: drift was detected AND the Sidecar had only Agent
-///   owners, so it's been killed and evicted from the manager.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuntimeDriftResult {
-    NoDrift,
-    DetectedKeptAlive,
-    KilledAndRemoved,
-}
-
-impl RuntimeDriftResult {
-    /// Did we observe a runtime drift? (True for both kill outcomes.)
-    pub fn is_drift(&self) -> bool {
-        matches!(self, Self::KilledAndRemoved | Self::DetectedKeptAlive)
-    }
-}
-
 pub(super) enum ExistingSidecarReuse {
     Healthy {
         port: u16,
@@ -316,16 +291,13 @@ pub(super) fn normalize_runtime_source_name(
     if runtime == "builtin" {
         return "builtin";
     }
+    if runtime == "dsh" {
+        return "integrated";
+    }
     match runtime_source {
         Some("managed-provider") => "managed-provider",
         _ => "system-cli",
     }
-}
-
-pub(super) fn sidecar_has_non_agent_owner(owners: &HashSet<SidecarOwner>) -> bool {
-    owners
-        .iter()
-        .any(|owner| !matches!(owner, SidecarOwner::Agent(_)))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -344,55 +316,14 @@ pub(super) fn sidecar_removal_event_policy(
 }
 
 #[cfg(test)]
-pub(super) fn decide_runtime_drift_result(
-    sidecar_runtime: Option<&str>,
-    desired_runtime: &str,
-    owners: &HashSet<SidecarOwner>,
-) -> RuntimeDriftResult {
-    decide_runtime_identity_drift_result(sidecar_runtime, None, desired_runtime, None, owners)
-}
-
-pub(super) fn decide_runtime_identity_drift_result(
-    sidecar_runtime: Option<&str>,
-    sidecar_runtime_source: Option<&str>,
-    desired_runtime: &str,
-    desired_runtime_source: Option<&str>,
-    owners: &HashSet<SidecarOwner>,
-) -> RuntimeDriftResult {
-    let sidecar_runtime = normalize_runtime_name(sidecar_runtime);
-    let desired_runtime = normalize_runtime_name(Some(desired_runtime));
-    let sidecar_source = normalize_runtime_source_name(sidecar_runtime, sidecar_runtime_source);
-    let desired_source = normalize_runtime_source_name(desired_runtime, desired_runtime_source);
-
-    if sidecar_runtime == desired_runtime && sidecar_source == desired_source {
-        RuntimeDriftResult::NoDrift
-    } else if sidecar_has_non_agent_owner(owners) {
-        RuntimeDriftResult::DetectedKeptAlive
-    } else {
-        RuntimeDriftResult::KilledAndRemoved
-    }
-}
-
-pub(super) fn owner_prefers_live_agent_runtime(owner: &SidecarOwner) -> bool {
-    matches!(
-        owner,
-        SidecarOwner::Agent(key) if key.starts_with("agent:") || key.starts_with("im:")
-    )
-}
-
-pub(super) fn resolve_runtime_for_owner(
+fn resolve_runtime_for_owner(
     runtime_override: Option<String>,
     owner: &SidecarOwner,
     session_runtime: Option<String>,
     agent_runtime: Option<String>,
 ) -> Option<String> {
-    runtime_override.or_else(|| {
-        if owner_prefers_live_agent_runtime(owner) {
-            agent_runtime
-        } else {
-            session_runtime.or(agent_runtime)
-        }
-    })
+    let _ = owner;
+    runtime_override.or(session_runtime).or(agent_runtime)
 }
 
 #[cfg(test)]
@@ -848,69 +779,6 @@ mod lifecycle_contract_tests {
     }
 
     #[test]
-    fn runtime_drift_with_tab_and_agent_owner_is_kept_alive() {
-        let owners = owners(vec![
-            SidecarOwner::Tab("tab-a".to_string()),
-            SidecarOwner::Agent("agent-a".to_string()),
-        ]);
-
-        assert_eq!(
-            decide_runtime_drift_result(Some("codex"), "gemini", &owners),
-            RuntimeDriftResult::DetectedKeptAlive
-        );
-    }
-
-    #[test]
-    fn runtime_drift_with_only_agent_owners_is_killable() {
-        let owners = owners(vec![SidecarOwner::Agent("agent-a".to_string())]);
-
-        assert_eq!(
-            decide_runtime_drift_result(Some("codex"), "gemini", &owners),
-            RuntimeDriftResult::KilledAndRemoved
-        );
-    }
-
-    #[test]
-    fn builtin_runtime_names_are_normalized_for_no_drift() {
-        let owners = owners(vec![SidecarOwner::Agent("agent-a".to_string())]);
-
-        assert_eq!(
-            decide_runtime_drift_result(None, "", &owners),
-            RuntimeDriftResult::NoDrift
-        );
-        assert_eq!(
-            decide_runtime_drift_result(None, "builtin", &owners),
-            RuntimeDriftResult::NoDrift
-        );
-    }
-
-    #[test]
-    fn runtime_source_is_part_of_drift_identity() {
-        let owners = owners(vec![SidecarOwner::Agent("agent-a".to_string())]);
-
-        assert_eq!(
-            decide_runtime_identity_drift_result(
-                Some("codex"),
-                Some("system-cli"),
-                "codex",
-                Some("managed-provider"),
-                &owners,
-            ),
-            RuntimeDriftResult::KilledAndRemoved
-        );
-        assert_eq!(
-            decide_runtime_identity_drift_result(
-                Some("codex"),
-                None,
-                "codex",
-                Some("system-cli"),
-                &owners,
-            ),
-            RuntimeDriftResult::NoDrift
-        );
-    }
-
-    #[test]
     fn desktop_style_owner_prefers_builtin_session_metadata_over_agent_runtime() {
         assert_eq!(
             resolve_runtime_for_owner(
@@ -924,7 +792,7 @@ mod lifecycle_contract_tests {
     }
 
     #[test]
-    fn agent_owner_ignores_session_runtime_and_follows_agent_runtime() {
+    fn im_agent_owner_preserves_session_runtime() {
         assert_eq!(
             resolve_runtime_for_owner(
                 None,
@@ -932,7 +800,7 @@ mod lifecycle_contract_tests {
                 Some("builtin".to_string()),
                 Some("codex".to_string()),
             ),
-            Some("codex".to_string())
+            Some("builtin".to_string())
         );
     }
 
@@ -977,6 +845,8 @@ mod lifecycle_contract_tests {
             Some(RuntimeIdentity {
                 runtime: "codex".to_string(),
                 runtime_source: Some("system-cli".to_string()),
+                runtime_binding_json: None,
+                compatibility_error: None,
             })
         );
         assert_eq!(
@@ -984,35 +854,25 @@ mod lifecycle_contract_tests {
             Some(RuntimeIdentity {
                 runtime: "codex".to_string(),
                 runtime_source: Some("managed-provider".to_string()),
+                runtime_binding_json: None,
+                compatibility_error: None,
             })
         );
         assert_eq!(
             resolve_session_runtime_identity_full_from_json("malformed-managed-runtime", &content),
             Some(RuntimeIdentity {
-                runtime: "codex".to_string(),
-                runtime_source: Some("managed-provider".to_string()),
+                runtime: "incompatible".to_string(),
+                runtime_source: None,
+                runtime_binding_json: None,
+                compatibility_error: Some(
+                    "legacy builtin/managed-provider Session has no managed Codex proof"
+                        .to_string(),
+                ),
             })
         );
         assert_eq!(
             resolve_session_runtime_identity_from_json("unknown", &content),
             None
-        );
-    }
-
-    #[test]
-    fn task_and_background_owners_make_runtime_drift_non_killable() {
-        let task = owners(vec![SidecarOwner::Task("task-a".to_string())]);
-        let background = owners(vec![SidecarOwner::BackgroundCompletion(
-            "session-a".to_string(),
-        )]);
-
-        assert_eq!(
-            decide_runtime_drift_result(Some("codex"), "gemini", &task),
-            RuntimeDriftResult::DetectedKeptAlive
-        );
-        assert_eq!(
-            decide_runtime_drift_result(Some("codex"), "gemini", &background),
-            RuntimeDriftResult::DetectedKeptAlive
         );
     }
 
@@ -1760,7 +1620,7 @@ pub struct SessionSidecar {
     pub created_at: std::time::Instant,
     /// MYAGENTS_RUNTIME env var value this Sidecar was spawned with.
     /// Used for drift detection on Agent-owner reuse: when the agent's
-    /// runtime config changes (e.g. codex → gemini), subsequent IM messages
+    /// runtime config changes (e.g. codex → claude-code), subsequent IM messages
     /// for the same peer session must not reuse a Sidecar that's still
     /// running the old runtime. None = builtin (no env var injected).
     pub runtime: Option<String>,

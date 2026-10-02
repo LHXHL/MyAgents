@@ -18,6 +18,8 @@ const SPACE_BUILD_ENV_KEYS: &[&str] = &[
 ];
 const MANAGED_CODEX_RUNTIME_LOCK_PATH: &str = "../src/shared/managed-codex-runtime.json";
 const MANAGED_BROWSER_RUNTIME_LOCK_PATH: &str = "../src/shared/managed-browser-runtime.json";
+const DSH_RELEASE_LOCK_PATH: &str = "../src/shared/integrated-runtimes/dsh-lock.json";
+const DSH_BUILD_SELECTION_PATH: &str = "resources/integrated-runtimes/dsh-build-selection-v1.json";
 
 fn main() {
     let package_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../package.json");
@@ -28,8 +30,85 @@ fn main() {
     build_cliproxy::verify_bundle(package["version"].as_str().expect("App version"));
     expose_managed_codex_runtime_lock();
     expose_managed_browser_runtime_lock();
+    expose_dsh_build_lock();
     expose_space_build_env();
+    prepare_incremental_tauri_resource_output();
     tauri_build::build()
+}
+
+fn expose_dsh_build_lock() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let release_path = root.join(DSH_RELEASE_LOCK_PATH);
+    let selection_path = root.join(DSH_BUILD_SELECTION_PATH);
+    println!("cargo:rerun-if-changed={}", release_path.display());
+    println!("cargo:rerun-if-changed={}", selection_path.display());
+    let lock: serde_json::Value = if selection_path.exists() {
+        let selection: serde_json::Value = serde_json::from_slice(
+            &fs::read(&selection_path).expect("DSH build selection"),
+        ).expect("DSH build selection JSON");
+        selection.get("lock").cloned().expect("DSH build selection lock")
+    } else {
+        serde_json::from_slice(&fs::read(release_path).expect("DSH release lock"))
+            .expect("DSH release lock JSON")
+    };
+    println!("cargo:rustc-env=MYAGENTS_DSH_EFFECTIVE_LOCK_JSON={lock}");
+}
+
+/// Tauri copies bundle resources beside the binary without removing files that
+/// disappeared from a prior inventory. It also preserves the sealed handoff's
+/// read-only permissions. Reset only the generated integrated-runtime copy so
+/// every build starts from the exact current inventory. Never mutate the
+/// accepted handoff itself.
+fn prepare_incremental_tauri_resource_output() {
+    let Some(out_dir) = env::var_os("OUT_DIR") else {
+        return;
+    };
+    // tauri-build copies bundle resources beside the debug/release binary,
+    // three levels above Cargo's package-specific OUT_DIR.
+    let out_dir = PathBuf::from(out_dir);
+    let Some(target_dir) = out_dir
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+    else {
+        return;
+    };
+    let generated_runtime_root = target_dir.join("integrated-runtimes");
+    if !generated_runtime_root.exists() {
+        return;
+    }
+    make_generated_tree_owner_writable(&generated_runtime_root).unwrap_or_else(|error| {
+        panic!(
+            "Failed to prepare generated integrated-runtime resources {}: {error}",
+            generated_runtime_root.display()
+        )
+    });
+    fs::remove_dir_all(&generated_runtime_root).unwrap_or_else(|error| {
+        panic!(
+            "Failed to reset generated integrated-runtime resources {}: {error}",
+            generated_runtime_root.display()
+        )
+    });
+}
+
+fn make_generated_tree_owner_writable(path: &Path) -> std::io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path)? {
+            make_generated_tree_owner_writable(&entry?.path())?;
+        }
+    }
+
+    let mut permissions = metadata.permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let required = if metadata.is_dir() { 0o700 } else { 0o200 };
+        permissions.set_mode(permissions.mode() | required);
+    }
+    #[cfg(windows)]
+    permissions.set_readonly(false);
+    fs::set_permissions(path, permissions)
 }
 
 fn expose_managed_browser_runtime_lock() {

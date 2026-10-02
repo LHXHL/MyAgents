@@ -10,7 +10,16 @@
  * - Right-click Agent: enable/disable, settings
  * - Right-click Skills/Commands: settings
  */
-import { Bot, ChevronDown, ChevronRight, Globe, RefreshCw, Settings2, Sparkles, Terminal } from 'lucide-react';
+import {
+  HelperIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  GlobeIcon,
+  RefreshIcon,
+  SlidersIcon,
+  CapabilitiesIcon,
+  TerminalIcon,
+} from '@/components/icons';
 import { memo, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -220,8 +229,8 @@ export default memo(function AgentCapabilitiesPanel({
         const select: CapabilityInitialSelect | undefined =
             scope && folderName ? { kind: 'agent', folderName, scope } : undefined;
         const items: ContextMenuItem[] = [
-            { label: t('agentSettings.capabilities.settings'), icon: <Settings2 className="h-3.5 w-3.5" />, onClick: () => openSettingsFor(scope, select) },
-            { label: t('agentSettings.capabilities.refresh'), icon: <RefreshCw className="h-3.5 w-3.5" />, onClick: () => onRefresh?.() },
+            { label: t('agentSettings.capabilities.settings'), icon: <SlidersIcon className="h-3.5 w-3.5" />, onClick: () => openSettingsFor(scope, select) },
+            { label: t('agentSettings.capabilities.refresh'), icon: <RefreshIcon className="h-3.5 w-3.5" />, onClick: () => onRefresh?.() },
         ];
         setCtxMenu({ x: e.clientX, y: e.clientY, items });
     }, [openSettingsFor, onRefresh, t]);
@@ -232,14 +241,14 @@ export default memo(function AgentCapabilitiesPanel({
         const select: CapabilityInitialSelect | undefined =
             scope && folderName ? { kind: 'skill', folderName, scope } : undefined;
         const items: ContextMenuItem[] = [
-            { label: t('agentSettings.capabilities.settings'), icon: <Settings2 className="h-3.5 w-3.5" />, onClick: () => openSettingsFor(scope, select) },
-            { label: t('agentSettings.capabilities.refresh'), icon: <RefreshCw className="h-3.5 w-3.5" />, onClick: () => onRefresh?.() },
+            { label: t('agentSettings.capabilities.settings'), icon: <SlidersIcon className="h-3.5 w-3.5" />, onClick: () => openSettingsFor(scope, select) },
+            { label: t('agentSettings.capabilities.refresh'), icon: <RefreshIcon className="h-3.5 w-3.5" />, onClick: () => onRefresh?.() },
         ];
         // Project skills can be synced to global (hide if already exists globally)
         if (scope === 'project' && folderName && !globalSkillFolderNamesRef.current?.has(folderName)) {
             items.push({
                 label: t('agentSettings.capabilities.syncToGlobal'),
-                icon: <Globe className="h-3.5 w-3.5" />,
+                icon: <GlobeIcon className="h-3.5 w-3.5" />,
                 onClick: () => {
                     onSyncSkillToGlobalRef.current?.(folderName);
                     setCtxMenu(null);
@@ -255,8 +264,8 @@ export default memo(function AgentCapabilitiesPanel({
         const select: CapabilityInitialSelect | undefined =
             scope && fileName ? { kind: 'command', fileName, scope } : undefined;
         const items: ContextMenuItem[] = [
-            { label: t('agentSettings.capabilities.settings'), icon: <Settings2 className="h-3.5 w-3.5" />, onClick: () => openSettingsFor(scope, select) },
-            { label: t('agentSettings.capabilities.refresh'), icon: <RefreshCw className="h-3.5 w-3.5" />, onClick: () => onRefresh?.() },
+            { label: t('agentSettings.capabilities.settings'), icon: <SlidersIcon className="h-3.5 w-3.5" />, onClick: () => openSettingsFor(scope, select) },
+            { label: t('agentSettings.capabilities.refresh'), icon: <RefreshIcon className="h-3.5 w-3.5" />, onClick: () => onRefresh?.() },
         ];
         setCtxMenu({ x: e.clientX, y: e.clientY, items });
     }, [openSettingsFor, onRefresh, t]);
@@ -274,8 +283,8 @@ export default memo(function AgentCapabilitiesPanel({
                         aria-expanded={isExpanded}
                         className="flex min-w-0 flex-1 items-center gap-2 text-sm text-[var(--ink)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
                     >
-                        {isExpanded ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
-                        <Bot className="h-3.5 w-3.5 shrink-0 text-violet-500" />
+                        {isExpanded ? <ChevronDownIcon className="h-3 w-3 shrink-0" /> : <ChevronRightIcon className="h-3 w-3 shrink-0" />}
+                        <HelperIcon className="h-3.5 w-3.5 shrink-0 text-violet-500" />
                         <span className="truncate font-semibold">{t('agentSettings.capabilities.title')}</span>
                     </button>
                     <button
@@ -311,8 +320,8 @@ export default memo(function AgentCapabilitiesPanel({
                     aria-expanded={isExpanded}
                     className="flex min-w-0 flex-1 items-center gap-2 text-sm text-[var(--ink)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
                 >
-                    {isExpanded ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
-                    <Bot className="h-3.5 w-3.5 shrink-0 text-violet-500" />
+                    {isExpanded ? <ChevronDownIcon className="h-3 w-3 shrink-0" /> : <ChevronRightIcon className="h-3 w-3 shrink-0" />}
+                    <HelperIcon className="h-3.5 w-3.5 shrink-0 text-violet-500" />
                     <span className="truncate font-semibold">{t('agentSettings.capabilities.titleWithCount', { count: totalCount })}</span>
                 </button>
                 <button
@@ -348,7 +357,7 @@ export default memo(function AgentCapabilitiesPanel({
                                             onMouseDown={retainFocusOnMouseDown}
                                             className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-[var(--hover-bg)] transition-colors"
                                         >
-                                            <Terminal className="h-3 w-3 shrink-0 text-[var(--success)]" />
+                                            <TerminalIcon className="h-3 w-3 shrink-0 text-[var(--success)]" />
                                             <p className="min-w-0 flex-1 truncate text-sm text-[var(--ink)]">{item.name}</p>
                                         </button>
                                     </ItemTooltip>
@@ -373,7 +382,7 @@ export default memo(function AgentCapabilitiesPanel({
                                             onMouseDown={retainFocusOnMouseDown}
                                             className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-[var(--hover-bg)] transition-colors"
                                         >
-                                            <Sparkles className="h-3 w-3 shrink-0 text-amber-500" />
+                                            <CapabilitiesIcon className="h-3 w-3 shrink-0 text-amber-500" />
                                             <p className="min-w-0 flex-1 truncate text-sm text-[var(--ink)]">{item.name}</p>
                                         </button>
                                     </ItemTooltip>
@@ -396,7 +405,7 @@ export default memo(function AgentCapabilitiesPanel({
                                             onContextMenu={e => handleAgentContextMenu(e, item.scope, item.folderName)}
                                             className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-[var(--hover-bg)] transition-colors"
                                         >
-                                            <Bot className="h-3 w-3 shrink-0 text-violet-500" />
+                                            <HelperIcon className="h-3 w-3 shrink-0 text-violet-500" />
                                             <p className="min-w-0 flex-1 truncate text-sm text-[var(--ink)]">{item.name}</p>
                                             {item.model && (
                                                 <span className="shrink-0 rounded bg-[var(--paper-inset)] px-1 py-0.5 text-xs text-[var(--ink-muted)]">

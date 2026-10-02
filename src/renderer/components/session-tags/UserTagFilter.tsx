@@ -1,6 +1,11 @@
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, Search, Tags } from 'lucide-react';
+import {
+  CheckIcon,
+  ChevronDownIcon,
+  SearchIcon,
+  TagIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import { Popover } from '@/components/ui/Popover';
@@ -49,9 +54,9 @@ export default function UserTagFilter({ tags, value, onChange }: UserTagFilterPr
                 }}
                 className="flex h-8 w-40 shrink-0 items-center gap-1.5 rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-2.5 text-sm text-[var(--ink-secondary)] transition-colors hover:border-[var(--line-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/20"
             >
-                <Tags className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />
+                <TagIcon className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />
                 <span className="min-w-0 flex-1 truncate text-left">{value ?? t('sessionTags.allTags')}</span>
-                <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />
+                <ChevronDownIcon className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />
             </button>
             <Popover
                 open={open}
@@ -63,7 +68,7 @@ export default function UserTagFilter({ tags, value, onChange }: UserTagFilterPr
             >
                 <div className="border-b border-[var(--line-subtle)] p-2">
                     <div className="relative">
-                        <Search className="pointer-events-none absolute left-2 top-2.5 h-3.5 w-3.5 text-[var(--ink-muted)]" />
+                        <SearchIcon className="pointer-events-none absolute left-2 top-2.5 h-3.5 w-3.5 text-[var(--ink-muted)]" />
                         <input
                             ref={inputRef}
                             value={query}
@@ -89,7 +94,7 @@ export default function UserTagFilter({ tags, value, onChange }: UserTagFilterPr
                         onClick={() => select(null)}
                         className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-[var(--ink)] hover:bg-[var(--hover-bg)]"
                     >
-                        <span className="w-4">{value === null && <Check className="h-3.5 w-3.5 text-[var(--accent)]" />}</span>
+                        <span className="w-4">{value === null && <CheckIcon className="h-3.5 w-3.5 text-[var(--accent)]" />}</span>
                         <span className="flex-1">{t('sessionTags.allTags')}</span>
                     </button>
                     {filtered.map((tag) => (
@@ -101,7 +106,7 @@ export default function UserTagFilter({ tags, value, onChange }: UserTagFilterPr
                             onClick={() => select(tag.name)}
                             className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-[var(--ink)] hover:bg-[var(--hover-bg)]"
                         >
-                            <span className="w-4">{value?.toLowerCase() === tag.name.toLowerCase() && <Check className="h-3.5 w-3.5 text-[var(--accent)]" />}</span>
+                            <span className="w-4">{value?.toLowerCase() === tag.name.toLowerCase() && <CheckIcon className="h-3.5 w-3.5 text-[var(--accent)]" />}</span>
                             <span className="min-w-0 flex-1 truncate">{tag.name}</span>
                             <span className="text-xs text-[var(--ink-muted)]">{tag.count}</span>
                         </button>

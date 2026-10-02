@@ -15,7 +15,7 @@
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X } from 'lucide-react';
+import { CloseIcon } from '@/components/icons';
 
 type IconType = React.ComponentType<{ className?: string }>;
 
@@ -81,7 +81,7 @@ export function PanelHeader({
         title={closeTitle ?? t('common.close')}
         className="shrink-0 rounded-[var(--radius-md)] p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
       >
-        <X className="h-4 w-4" />
+        <CloseIcon className="h-4 w-4" />
       </button>
     </div>
   );

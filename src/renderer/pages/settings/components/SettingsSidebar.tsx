@@ -7,6 +7,7 @@ interface SettingsSidebarProps {
   activeSection: SettingsSection;
   setActiveSection: Dispatch<SetStateAction<SettingsSection>>;
   showDevTools?: boolean;
+  developerUnlocked?: boolean;
   floatingBallDevGate?: boolean;
   onShowLogs: () => void;
 }
@@ -21,12 +22,14 @@ const NAV_ITEMS: Array<{ section: SettingsSection; labelKey: string }> = [
   { section: 'external-cli', labelKey: 'sidebar.nav.externalCli' },
   { section: 'shortcuts', labelKey: 'sidebar.nav.shortcuts' },
   { section: 'about', labelKey: 'sidebar.nav.about' },
+  { section: 'developer', labelKey: 'sidebar.nav.developer' },
 ];
 
 export function SettingsSidebar({
   activeSection,
   setActiveSection,
   showDevTools,
+  developerUnlocked,
   floatingBallDevGate,
   onShowLogs,
 }: SettingsSidebarProps) {
@@ -50,6 +53,7 @@ export function SettingsSidebar({
       <nav className="settings-nav overflow-x-auto space-y-1">
         {NAV_ITEMS.map((item) => {
           if (item.section === 'desktop-pet' && floatingBallDevGate === false) return null;
+          if (item.section === 'developer' && !developerUnlocked) return null;
           const isActive = item.section === activeSection;
           return (
             <button

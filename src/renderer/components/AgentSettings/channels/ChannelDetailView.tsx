@@ -1,10 +1,16 @@
 // Channel detail view — adapted from ImBotDetail for Agent+Channel architecture.
 // Keeps: credentials, binding, groups, platform-specific options, start/stop, enable/disable.
 // Removes: workspace, MCP, heartbeat (all Agent-level).
-// Adds: optional override section for provider/model/permission.
+// Execution settings belong to Agent defaults and individual Sessions.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, Loader2, Power, PowerOff, Trash2 } from 'lucide-react';
+import {
+  ChevronDownIcon,
+  LoaderIcon,
+  PowerIcon,
+  PowerOffIcon,
+  TrashIcon,
+} from '@/components/icons';
 import QRCode from 'qrcode';
 import telegramIcon from '../../ImSettings/assets/telegram.png';
 import feishuIcon from '../../ImSettings/assets/feishu.jpeg';
@@ -15,8 +21,6 @@ import { isTauriEnvironment } from '@/utils/browserMock';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import { useToast } from '@/components/Toast';
 import { useConfig } from '@/hooks/useConfig';
-import { CODEX_SUBSCRIPTION_PROVIDER_ID, XAI_SUBSCRIPTION_PROVIDER_ID, getEffectiveModelAliases, getProviderModels, isProviderEnabled } from '@/config/types';
-import { isProviderAvailable } from '@/config/services/providerService';
 import {
     applyAgentChannelCredentialProvisioning,
     channelHasCredentials,
@@ -28,26 +32,16 @@ import {
     stopAndDisableAgentChannel,
     type OpenClawPluginConfigMutation,
 } from '@/config/services/agentConfigService';
-import {
-    agentChannelUsesManagedCodexProvider,
-    resolveAgentChannelDefaultPermissionMode,
-    resolveAgentChannelRuntime,
-    resolveEffectiveConfig,
-} from '../../../../shared/types/agent';
-import { getRuntimePermissionModes, type RuntimeConfig } from '../../../../shared/types/runtime';
-import { runtimeConfigForRuntimeBackedProviderDefault, toProviderExecutionIntent } from '../../../../shared/providerExecution';
 import BotTokenInput from '../../ImSettings/components/BotTokenInput';
 import FeishuCredentialInput from '../../ImSettings/components/FeishuCredentialInput';
 import DingtalkCredentialInput from '../../ImSettings/components/DingtalkCredentialInput';
 import WhitelistManager from '../../ImSettings/components/WhitelistManager';
-import PermissionModeSelect from '../../ImSettings/components/PermissionModeSelect';
 import BindQrPanel from '../../ImSettings/components/BindQrPanel';
 import BindCodePanel from '../../ImSettings/components/BindCodePanel';
-import AiConfigCard from '../../ImSettings/components/AiConfigCard';
 import DingtalkCardConfig from '../../ImSettings/components/DingtalkCardConfig';
 import GroupPermissionList from '../../ImSettings/components/GroupPermissionList';
 import { resolveChannelDisplayName, isDirtyDisplayName } from '@/utils/channelDisplayName';
-import type { AgentConfig, ChannelConfig, ChannelOverrides } from '../../../../shared/types/agent';
+import type { AgentConfig, ChannelConfig } from '../../../../shared/types/agent';
 import type { GroupActivation } from '../../../../shared/types/im';
 import type { ChannelStatusData } from '@/hooks/useAgentStatuses';
 import { isOpenClawPlatform } from '../../../../shared/types/im';
@@ -187,7 +181,7 @@ function FeishuPermissionsButton() {
                 onClick={() => setExpanded(!expanded)}
                 className="flex items-center gap-1.5 self-start rounded-lg px-2.5 py-1.5 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
             >
-                <ChevronDown className={`h-3 w-3 transition-transform ${expanded ? '' : '-rotate-90'}`} />
+                <ChevronDownIcon className={`h-3 w-3 transition-transform ${expanded ? '' : '-rotate-90'}`} />
                 {t('agentSettings.channelDetail.feishuPermissionsJson')}
             </button>
             {expanded && (
@@ -230,7 +224,7 @@ export default function ChannelDetailView({
     onChanged,
 }: ChannelDetailViewProps) {
     const { t } = useTranslation('settings');
-    const { config, providers, apiKeys, providerVerifyStatus, refreshConfig } = useConfig();
+    const { config, refreshConfig } = useConfig();
     const toast = useToast();
     const toastRef = useRef(toast);
     toastRef.current = toast;
@@ -253,7 +247,6 @@ export default function ChannelDetailView({
     const [credentialsExpanded, setCredentialsExpanded] = useState<boolean | null>(null);
     const [bindingExpanded, setBindingExpanded] = useState<boolean | null>(null);
     const [groupsExpanded, setGroupsExpanded] = useState<boolean | null>(null);
-    const [overridesExpanded, setOverridesExpanded] = useState(false);
     const [pluginMissing, setPluginMissing] = useState(false);
     const [installedPlugin, setInstalledPlugin] = useState<InstalledPlugin | null>(null);
     const [dualDetailMode, setDualDetailMode] = useState<'view' | 'qr' | 'edit'>('view');
@@ -314,20 +307,6 @@ export default function ChannelDetailView({
         if (isMountedRef.current) onChanged();
         return updated.openclawPluginConfig ?? {};
     }, [agent.id, channelId, onChanged]);
-
-    // Patch channel overrides
-    const patchOverrides = useCallback(async (overridePatch: Partial<ChannelOverrides>) => {
-        const current = channel?.overrides ?? {};
-        const updated = { ...current, ...overridePatch };
-        // Remove keys that are undefined/empty to "unset" override
-        for (const key of Object.keys(updated) as (keyof ChannelOverrides)[]) {
-            if (updated[key] === undefined || updated[key] === '') {
-                delete updated[key];
-            }
-        }
-        const hasAnyOverride = Object.keys(updated).length > 0;
-        await patchChannel({ overrides: hasAnyOverride ? updated : undefined });
-    }, [channel?.overrides, patchChannel]);
 
     // Ref for channel (used in effects without re-triggering)
     const channelRef = useRef(channel);
@@ -491,69 +470,6 @@ export default function ChannelDetailView({
             }
         }
     }, [agent.id, channelId, onChanged, onBack, t]);
-
-    // === Override section: provider/model/permission ===
-    // Resolve effective values (agent default or channel override)
-    const effective = useMemo(
-        () => channel ? resolveEffectiveConfig(agent, channel) : null,
-        [agent, channel],
-    );
-
-    const providerOptions = useMemo(() => {
-        const options = [{ value: '', label: t('agentSettings.channelDetail.defaultInheritAgent') }];
-        for (const p of providers) {
-            if (!isProviderEnabled(p)) continue;
-            if (p.type === 'subscription'
-                && p.id !== CODEX_SUBSCRIPTION_PROVIDER_ID
-                && p.id !== XAI_SUBSCRIPTION_PROVIDER_ID) continue;
-            if (isProviderAvailable(p, apiKeys, providerVerifyStatus)) {
-                options.push({ value: p.id, label: p.name });
-            }
-        }
-        return options;
-    }, [providers, apiKeys, providerVerifyStatus, t]);
-
-    const overrideProviderId = channel?.overrides?.providerId ?? '';
-    const effectiveProviderId = effective?.providerId || 'anthropic-sub';
-
-    const selectedProvider = useMemo(
-        () => providers.find(p => p.id === effectiveProviderId),
-        [providers, effectiveProviderId],
-    );
-
-    const modelOptions = useMemo(() => {
-        if (!selectedProvider) return [];
-        const options = [{ value: '', label: t('agentSettings.channelDetail.defaultInheritAgent') }];
-        for (const m of getProviderModels(selectedProvider)) {
-            options.push({ value: m.model, label: m.modelName });
-        }
-        return options;
-    }, [selectedProvider, t]);
-
-    const _effectiveModel = useMemo(() => {
-        if (channel?.overrides?.model) return channel.overrides.model;
-        if (agent.model) return agent.model;
-        if (selectedProvider?.primaryModel) return selectedProvider.primaryModel;
-        if (modelOptions.length > 0) return modelOptions[0].value;
-        return '';
-    }, [channel?.overrides?.model, agent.model, selectedProvider?.primaryModel, modelOptions]);
-
-    const hasAnyOverride = !!(channel?.overrides && Object.keys(channel.overrides).length > 0);
-    const defaultChannelPermissionMode = useMemo(
-        () => channel ? resolveAgentChannelDefaultPermissionMode(agent, channel) : 'fullAgency',
-        [agent, channel],
-    );
-    const channelPermissionModes = useMemo(() => {
-        if (!channel || agentChannelUsesManagedCodexProvider(agent, channel)) return undefined;
-        const runtime = resolveAgentChannelRuntime(agent, channel);
-        return runtime === 'builtin' ? undefined : getRuntimePermissionModes(runtime);
-    }, [agent, channel]);
-    const productPermissionOverride = channel?.overrides?.permissionMode;
-    const legalProductPermissionOverride = productPermissionOverride === 'auto'
-        || productPermissionOverride === 'plan'
-        || productPermissionOverride === 'fullAgency'
-        ? productPermissionOverride
-        : undefined;
 
     // Derived values that depend on channel (safe with optional chaining before early return)
     const isRunning = botStatus?.status === 'online' || botStatus?.status === 'connecting';
@@ -813,11 +729,11 @@ export default function ChannelDetailView({
                     } disabled:opacity-50`}
                 >
                     {toggling ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
+                        <LoaderIcon className="h-4 w-4 animate-spin" />
                     ) : shouldStop ? (
-                        <PowerOff className="h-4 w-4" />
+                        <PowerOffIcon className="h-4 w-4" />
                     ) : (
-                        <Power className="h-4 w-4" />
+                        <PowerIcon className="h-4 w-4" />
                     )}
                     {shouldStop ? t('agentSettings.channelDetail.stop') : t('agentSettings.channelDetail.start')}
                 </button>
@@ -855,7 +771,7 @@ export default function ChannelDetailView({
                             </span>
                         )}
                     </div>
-                    <ChevronDown className={`h-4 w-4 text-[var(--ink-muted)] transition-transform ${isCredentialsExpanded ? '' : '-rotate-90'}`} />
+                    <ChevronDownIcon className={`h-4 w-4 text-[var(--ink-muted)] transition-transform ${isCredentialsExpanded ? '' : '-rotate-90'}`} />
                 </button>
                 {isCredentialsExpanded && (
                     <div className="px-5 pb-5">
@@ -898,7 +814,7 @@ export default function ChannelDetailView({
                                 )}
                                 {dualDetailMode === 'qr' && (
                                     <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-[var(--line)] bg-[var(--paper-inset)] p-4">
-                                        {credentialQrStatus === 'loading' && <Loader2 className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />}
+                                        {credentialQrStatus === 'loading' && <LoaderIcon className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />}
                                         {credentialQrStatus === 'waiting' && credentialQrImageUrl && (
                                             <div className="rounded-xl border border-[var(--line)] bg-white p-1">
                                                 <img src={credentialQrImageUrl} alt={t('agentSettings.channelDetail.qrAlt')} className="h-[180px] w-[180px] rounded-lg" />
@@ -1043,7 +959,7 @@ export default function ChannelDetailView({
                             </span>
                         )}
                     </div>
-                    <ChevronDown className={`h-4 w-4 text-[var(--ink-muted)] transition-transform ${isBindingExpanded ? '' : '-rotate-90'}`} />
+                    <ChevronDownIcon className={`h-4 w-4 text-[var(--ink-muted)] transition-transform ${isBindingExpanded ? '' : '-rotate-90'}`} />
                 </button>
                 {isBindingExpanded && (
                     <div className="space-y-5 px-5 pb-5">
@@ -1080,7 +996,7 @@ export default function ChannelDetailView({
                                         );
                                     })()}
                                     {qrStatus === 'loading' && (
-                                        <Loader2 className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />
+                                        <LoaderIcon className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />
                                     )}
                                     {(qrStatus === 'waiting') && qrImageUrl && (
                                         <div className="rounded-lg border border-[var(--line)] bg-white p-1">
@@ -1165,7 +1081,7 @@ export default function ChannelDetailView({
                                     </span>
                                 )}
                             </div>
-                            <ChevronDown className={`h-4 w-4 text-[var(--ink-muted)] transition-transform ${isGroupsExpanded_ ? '' : '-rotate-90'}`} />
+                            <ChevronDownIcon className={`h-4 w-4 text-[var(--ink-muted)] transition-transform ${isGroupsExpanded_ ? '' : '-rotate-90'}`} />
                         </button>
                         {isGroupsExpanded_ && (
                             <div className="space-y-4 px-5 pb-5">
@@ -1286,144 +1202,6 @@ export default function ChannelDetailView({
                 </div>
             )}
 
-            {/* Channel Overrides (optional: provider/model/permission) */}
-            <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)]">
-                <button
-                    type="button"
-                    onClick={() => setOverridesExpanded(!overridesExpanded)}
-                    className="flex w-full items-center justify-between p-5"
-                >
-                    <div className="flex items-center gap-2">
-                        <h3 className="text-sm font-semibold text-[var(--ink)]">{t('agentSettings.channelDetail.overridesTitle')}</h3>
-                        {!overridesExpanded && hasAnyOverride && (
-                            <span className="text-xs text-[var(--ink-muted)]">
-                                {t('agentSettings.channelDetail.customized')}
-                            </span>
-                        )}
-                    </div>
-                    <ChevronDown className={`h-4 w-4 text-[var(--ink-muted)] transition-transform ${overridesExpanded ? '' : '-rotate-90'}`} />
-                </button>
-                {overridesExpanded && (
-                    <div className="space-y-5 px-5 pb-5">
-                        <p className="text-xs text-[var(--ink-muted)]">
-                            {t('agentSettings.channelDetail.overridesDescription')}
-                        </p>
-
-                        {/* AI Configuration override */}
-                        <AiConfigCard
-                            providerId={overrideProviderId}
-                            model={channel?.overrides?.model ?? ''}
-                            providerOptions={providerOptions}
-                            modelOptions={modelOptions}
-                            onProviderChange={async (providerId) => {
-                                if (!providerId) {
-                                    // Clear override → inherit from agent
-                                    await patchOverrides({
-                                        providerId: undefined,
-                                        providerEnvJson: undefined,
-                                        model: undefined,
-                                        runtime: undefined,
-                                        runtimeConfig: undefined,
-                                        permissionMode: undefined,
-                                    });
-                                    return;
-                                }
-                                const provider = providers.find(p => p.id === providerId);
-                                const newModel = provider ? provider.primaryModel : undefined;
-                                if (provider && newModel) {
-                                    const intent = toProviderExecutionIntent(provider, newModel);
-                                    if (intent.kind === 'runtime-backed-provider') {
-                                        await patchOverrides({
-                                            providerId,
-                                            providerEnvJson: undefined,
-                                            model: newModel,
-                                            runtime: 'builtin',
-                                            runtimeConfig: runtimeConfigForRuntimeBackedProviderDefault(
-                                                channel?.overrides?.runtimeConfig as RuntimeConfig | undefined,
-                                            ),
-                                            permissionMode: legalProductPermissionOverride,
-                                        });
-                                        return;
-                                    }
-                                }
-                                let providerEnvJson: string | undefined;
-                                if (provider && provider.type !== 'subscription') {
-                                    const aliases = getEffectiveModelAliases(provider, config.providerModelAliases);
-                                    providerEnvJson = JSON.stringify({
-                                        providerId: provider.id,
-                                        baseUrl: provider.config.baseUrl,
-                                        apiKey: apiKeys[provider.id],
-                                        authType: provider.authType,
-                                        apiProtocol: provider.apiProtocol,
-                                        maxOutputTokens: provider.maxOutputTokens,
-                                        maxOutputTokensParamName: provider.maxOutputTokensParamName,
-                                        upstreamFormat: provider.upstreamFormat,
-                                        ...(aliases ? { modelAliases: aliases } : {}),
-                                    });
-                                }
-                                await patchOverrides({
-                                    providerId,
-                                    providerEnvJson,
-                                    model: newModel,
-                                    runtime: 'builtin',
-                                    runtimeConfig: undefined,
-                                    permissionMode: legalProductPermissionOverride,
-                                });
-                            }}
-                            onModelChange={async (model) => {
-                                const provider = channel?.overrides?.providerId
-                                    ? providers.find(p => p.id === channel.overrides?.providerId)
-                                    : undefined;
-                                if (provider) {
-                                    const fallbackModel = model || provider.primaryModel;
-                                    const intent = fallbackModel
-                                        ? toProviderExecutionIntent(provider, fallbackModel)
-                                        : undefined;
-                                    if (intent?.kind === 'runtime-backed-provider') {
-                                        await patchOverrides({
-                                            model: model || undefined,
-                                            runtime: 'builtin',
-                                            runtimeConfig: runtimeConfigForRuntimeBackedProviderDefault(
-                                                channel?.overrides?.runtimeConfig as RuntimeConfig | undefined,
-                                            ),
-                                        });
-                                        return;
-                                    }
-                                }
-                                await patchOverrides({ model: model || undefined });
-                            }}
-                        />
-
-                        {/* Permission mode override */}
-                        <div className="rounded-xl border border-[var(--line)] bg-[var(--paper)] p-4">
-                            <div className="flex items-center justify-between mb-3">
-                                <h4 className="text-sm font-medium text-[var(--ink)]">{t('agentSettings.channelDetail.permissionMode')}</h4>
-                                {channel?.overrides?.permissionMode && (
-                                    <button
-                                        className="text-xs text-[var(--ink-subtle)] hover:text-[var(--ink-muted)] transition-colors"
-                                        onClick={() => patchOverrides({ permissionMode: undefined })}
-                                    >
-                                        {t('agentSettings.channelDetail.restoreDefault')}
-                                    </button>
-                                )}
-                            </div>
-                            <PermissionModeSelect
-                                value={effective?.permissionMode ?? defaultChannelPermissionMode}
-                                modes={channelPermissionModes}
-                                onChange={async (mode) => {
-                                    // If same as the IM Channel default, clear override.
-                                    if (mode === defaultChannelPermissionMode) {
-                                        await patchOverrides({ permissionMode: undefined });
-                                    } else {
-                                        await patchOverrides({ permissionMode: mode });
-                                    }
-                                }}
-                            />
-                        </div>
-                    </div>
-                )}
-            </div>
-
             {/* Danger zone */}
             <div className="rounded-xl border border-[var(--error)]/20 bg-[var(--error-bg)]/50 p-5">
                 <h3 className="mb-3 text-sm font-semibold text-[var(--error)]">{t('agentSettings.channelDetail.dangerZone')}</h3>
@@ -1431,7 +1209,7 @@ export default function ChannelDetailView({
                     onClick={() => setShowDeleteConfirm(true)}
                     className="flex items-center gap-2 rounded-lg bg-[var(--error-bg)] px-4 py-2 text-sm font-medium text-[var(--error)] transition-colors hover:brightness-95"
                 >
-                    <Trash2 className="h-4 w-4" />
+                    <TrashIcon className="h-4 w-4" />
                     {t('agentSettings.channelDetail.deleteChannel')}
                 </button>
             </div>

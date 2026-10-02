@@ -20,7 +20,15 @@ import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { memo, useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { Search, Loader2, BarChart2, Clock, Star, Trash2, X } from 'lucide-react';
+import {
+  SearchIcon,
+  LoaderIcon,
+  ChartIcon,
+  ClockIcon,
+  StarIcon,
+  TrashIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { Virtuoso } from 'react-virtuoso';
 
 import type { SessionSearchHit } from '@/api/searchClient';
@@ -111,7 +119,7 @@ const HistorySessionRow = memo(function HistorySessionRow({
                 data-history-session-row
             >
                 <div className="flex w-16 shrink-0 items-center gap-1 text-xs text-[var(--ink-muted)]/50">
-                    <Clock className="h-2.5 w-2.5" />
+                    <ClockIcon className="h-2.5 w-2.5" />
                     <span>{formatTime(session.lastActiveAt)}</span>
                 </div>
                 {tags.map((tag, index) => (
@@ -146,7 +154,7 @@ const HistorySessionRow = memo(function HistorySessionRow({
                                         : 'text-[var(--ink-muted)] hover:text-[var(--ink)]'
                                 }`}
                             >
-                                <Star className="h-3.5 w-3.5" fill={session.favorite ? 'currentColor' : 'none'} />
+                                <StarIcon className="h-3.5 w-3.5" fill={session.favorite ? 'currentColor' : 'none'} />
                             </button>
                         </Tip>
                         <Tip label={t('historyOverlay.viewStats')} position="bottom">
@@ -155,7 +163,7 @@ const HistorySessionRow = memo(function HistorySessionRow({
                                 aria-label={t('historyOverlay.viewStats')}
                                 className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper)] hover:text-[var(--ink)]"
                             >
-                                <BarChart2 className="h-3.5 w-3.5" />
+                                <ChartIcon className="h-3.5 w-3.5" />
                             </button>
                         </Tip>
                         <Tip
@@ -167,7 +175,7 @@ const HistorySessionRow = memo(function HistorySessionRow({
                                 aria-label={deleteProtected ? t('historyOverlay.deleteBlockedAria') : t('historyOverlay.delete')}
                                 className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--error-bg)] hover:text-[var(--error)]"
                             >
-                                <Trash2 className="h-3.5 w-3.5" />
+                                <TrashIcon className="h-3.5 w-3.5" />
                             </button>
                         </Tip>
                     </div>
@@ -508,7 +516,7 @@ export default memo(function HistorySearchOverlayContent({
                         aria-label={t('common.close')}
                         className="rounded-md p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                     >
-                        <X className="h-4 w-4" />
+                        <CloseIcon className="h-4 w-4" />
                     </button>
                 </div>
 
@@ -586,7 +594,7 @@ export default memo(function HistorySearchOverlayContent({
                                 <span className="truncate text-[var(--ink-muted)]/60">
                                     {t('historyOverlay.searchPlaceholder')}
                                 </span>
-                                <Search className="h-3.5 w-3.5 shrink-0" />
+                                <SearchIcon className="h-3.5 w-3.5 shrink-0" />
                             </button>
 
                             <div
@@ -609,7 +617,7 @@ export default memo(function HistorySearchOverlayContent({
                                 data-history-search-expanded-content
                             >
                                 <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5 text-[var(--ink-muted)]/50">
-                                    <Search className="h-3.5 w-3.5" />
+                                    <SearchIcon className="h-3.5 w-3.5" />
                                 </div>
                                 <input
                                     ref={searchInputRef}
@@ -639,7 +647,7 @@ export default memo(function HistorySearchOverlayContent({
                                 />
                                 <div className="absolute inset-y-0 right-0 flex items-center gap-1 pr-2">
                                     {isSearching && (
-                                        <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--ink-muted)]/50" />
+                                        <LoaderIcon className="h-3.5 w-3.5 animate-spin text-[var(--ink-muted)]/50" />
                                     )}
                                     <button
                                         type="button"
@@ -648,7 +656,7 @@ export default memo(function HistorySearchOverlayContent({
                                         tabIndex={isSearchMode ? 0 : -1}
                                         className="flex items-center rounded-sm text-[var(--ink-muted)]/50 transition-colors hover:text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/20"
                                     >
-                                        <X className="h-3.5 w-3.5" />
+                                        <CloseIcon className="h-3.5 w-3.5" />
                                     </button>
                                 </div>
                             </div>
@@ -688,7 +696,7 @@ export default memo(function HistorySearchOverlayContent({
                                             data-history-direct-session-row
                                         >
                                             <div className="flex w-16 shrink-0 items-center gap-1 text-xs text-[var(--ink-muted)]/50">
-                                                <Clock className="h-2.5 w-2.5" />
+                                                <ClockIcon className="h-2.5 w-2.5" />
                                                 <span>{formatTime(directSessionMatch.session.lastActiveAt)}</span>
                                             </div>
                                             <UserTagPills tags={directSessionMatch.session.userTags} onTagClick={openTagAggregation} />
@@ -752,7 +760,7 @@ export default memo(function HistorySearchOverlayContent({
                                         )}
                                     />
                                 )}
-                                {search.loadingMore && <div role="status" className="flex justify-center py-2"><Loader2 className="h-4 w-4 animate-spin text-[var(--ink-muted)]" aria-label={t('historyOverlay.loadingMore')} /></div>}
+                                {search.loadingMore && <div role="status" className="flex justify-center py-2"><LoaderIcon className="h-4 w-4 animate-spin text-[var(--ink-muted)]" aria-label={t('historyOverlay.loadingMore')} /></div>}
                                 {search.pageError && <div role="alert" className="py-2 text-center text-xs text-[var(--error)]">
                                     {t(search.pageError === 'expired' ? 'historyOverlay.searchExpired' : 'historyOverlay.pageFailed')}
                                     <button type="button" className="ml-2 underline" onClick={search.pageError === 'expired' ? search.refresh : () => { void search.loadMore(); }}>{t('historyOverlay.retry')}</button>
@@ -760,7 +768,7 @@ export default memo(function HistorySearchOverlayContent({
                             </div>
                         ) : isSessionsLoading && browseRows.length === 0 ? (
                             <div className="flex flex-1 items-center justify-center" aria-busy="true">
-                                <Loader2 className="h-4 w-4 animate-spin text-[var(--ink-muted)]/50" />
+                                <LoaderIcon className="h-4 w-4 animate-spin text-[var(--ink-muted)]/50" />
                             </div>
                         ) : browseRows.length === 0 ? (
                             <div className="flex-1 py-8 text-center text-sm text-[var(--ink-muted)]/60">

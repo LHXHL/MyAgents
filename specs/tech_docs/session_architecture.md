@@ -10,7 +10,7 @@ Session 不是单一对象，而是同一产品会话在不同生命周期阶段
 |---|---|---|
 | Product Session identity 与 metadata | `SessionStore` | 稳定 `sessionId`、workspace、标题、Runtime 类型、配置快照等 |
 | 当前 Product Session 绑定 | `session-engine/product-session-binding.ts` | 当前 Sidecar 正在服务哪个 Product Session |
-| Runtime execution identity | 对应 SessionEngine adapter | builtin 的 SDK Session UUID；外部 Runtime 的 thread/session id |
+| Runtime execution identity | 对应 SessionEngine adapter | builtin 的 SDK Session UUID；DSH/外部 Runtime 的 session/thread id |
 | Sidecar 生命周期与 Owner | Rust `SidecarManager` | 创建、复用、replacement、Owner 附着与释放 |
 | transcript | `SessionStore` | MyAgents UI、搜索与恢复使用的产品历史 |
 | 当前 turn 与 Runtime queue | 对应 adapter | admission、执行、stop 与 terminal settlement |
@@ -24,10 +24,12 @@ Session 不是单一对象，而是同一产品会话在不同生命周期阶段
 每个 Product Session 有稳定的 `SessionMetadata.id`。它拥有历史、Tab/Sidecar scope、workspace、配置快照和产品级状态。Runtime 还可以拥有独立执行身份：
 
 - builtin 使用 `sdkSessionId` 作为 Claude Agent SDK 的 create/resume candidate；
-- Codex、Claude Code、Gemini 等外部 Runtime 使用 `runtimeSessionId`；
+- DSH、Codex、Claude Code 使用 `runtimeSessionId`；
 - Rewind、Fork 或 provider history 边界可以替换执行身份，但不得偷偷替换 Product Session identity。
 
 普通新会话中两个身份可能相同，这只是初始化结果，不是可依赖的不变量。读取和写入 metadata 时使用 `src/server/types/session.ts` 的当前类型，不在文档中复制完整字段表。
+
+`runtimeBinding` 是已有 Session 的执行权威，Agent/Channel 的 `runtimePreference` 只影响未来 Session。新 birth 写合法 binding 与 legacy `runtime/runtimeSource` 投影；启动迁移在 index lock 内补齐合法 legacy 行，未知组合保留证据并标记 `runtimeBindingCompatibility`，只允许读历史。Fork/snapshot 复制 binding 或 compatibility，不能用 fallback 拼接身份。
 
 ### 2.1 新建、恢复与 SDK probe
 
@@ -42,6 +44,8 @@ builtin 启动先解析持久化的 SDK candidate，再确认对应 SDK transcri
 ### 2.2 pending materialization
 
 `pending-{tabId}` 是尚未实体化的新 Tab identity。普通惰性出生在首个被 Runtime 接纳的 turn 时实体化；显式桌面出生可在首轮前完成 prepare → owner rekey → commit，绑定真实 Product Session。已提交的空 V2 Session 仍是有效会话，不能按 legacy 空草稿规则隐藏。
+
+Chat 菜单在 pending 阶段展示本次启动已解析的 Runtime 意图；这只是 UI 投影，不伪造持久 metadata。`chat:system-init` 的 pending→real 升级经 App 接纳后，`TabProvider` 从当前 Session Sidecar 读取 metadata，菜单优先使用 birth snapshot；metadata 尚未写入时，可使用同一 Session 的 live Runtime 报告。SSE-native 新生会话不走历史 REST restore，因此这次 metadata 读取不能依赖恢复流程；请求结果和 live Runtime 都必须按当前 Session id 防止迟到写回。已有真实 Session 在自己的 metadata 或 live Runtime 到达前不借用当前 Agent 默认值或其它 Session 的 Runtime。
 
 identity 迁移由既有 Session binding owner 裁决，不能产生两个可继续分叉的会话。V2 的 binding CAS 修改当前内存 metadata，保存由 TranscriptWriter 后台完成；legacy 路径由 `SessionStore` 在 source/target transcript 锁与 sessions index 锁内完成 metadata 发布、已有 transcript 重命名及失败回滚。
 
@@ -58,6 +62,12 @@ backend-created draft 使用 `materializationState: 'prepared'` 隐藏尚未提�
 
 只有满足这些条件后，Rust 才释放调用方提交且已验证的 Tab owner。失败时保留 Session 与 Tab，不能用 Renderer 的 `isGenerating`、事前端口探测或列表缓存代替最终裁决。
 
+### 2.4 DSH 原生存储
+
+DSH 原生会话使用官方 JSONL persistence，Runtime 自己的 coordination SQLite 只保存 locator、mutation/checkpoint 和文件恢复记录。Host SessionStore 拥有独立的产品目录、transcript 与输入/mutation journal；二者以原生 receipt 对账，不互相替代。
+
+每个 Product Session 的 Runtime home 与附件根由 `dshSessionOwnedPaths()` 派生，进程 replacement 沿用同一 home。当前接入没有旧 DSH 协议读取、开发数据重置或迁移入口；旧开发数据由维护人员在写入进程停止后手动清理。目录和恢复约束见 [DSH 集成指南](myagents_dsh_integrated_runtime.md#4-数据与持久化)。
+
 ## 3. Session metadata 的语义
 
 ### 3.1 配置快照
@@ -68,7 +78,9 @@ backend-created draft 使用 `materializationState: 'prepared'` 隐藏尚未提�
 
 - 新 Session 模板；
 - 尚未建立 snapshot 的兼容会话；
-- 无 Tab owner、明确 live-follow 的 IM 场景。
+- 独立的 Cloud registered Agent live-follow 场景。
+
+IM/Agent Channel 与桌面一样拥有完整 snapshot；消息、heartbeat、恢复均不回落到最新默认。新 IM Session 仅在出生时采用最高 unattended 权限。私聊 `/model` 经对应 Session Sidecar CAS 保存 snapshot，再经 SessionEngine 应用，并单独提交 Agent 默认；忙时下一轮生效。身份不兼容时主动创建并 handover，默认 reload 不再自动轮换。默认变化仅按既有私聊 binding 投递系统提示。
 
 `providerRoute` 是 builtin provider/model 的 canonical identity，只持久化 provider 类型、provider id 与 model。API key、base URL、auth mode 和 aliases 始终从当前 `config.json` materialize，不能写入 Session 历史。`providerEnvJson` 只作为旧 Session 的只读兼容输入；新的 snapshot 写入必须使用 `providerRoute` 并移除 legacy env。
 
@@ -148,7 +160,7 @@ MCP pre-warm 是 soft readiness observation，不是 AI turn 的 admission autho
 | Fork | 创建新 identity | 先建立精确 native 分支，再发布完整产品历史与独立附件 |
 | Retry | 保持原 identity | 同一 mutation 内先 Rewind，再通过普通 desktop admission 接纳原输入；接纳成功不等于 turn 成功 |
 
-Builtin Rewind 以完整保留前缀末条消息的 native chain UUID 为边界，包括 user；非空前缀缺少锚点时在文件副作用前失败，只有空前缀才分配新的 SDK execution identity。UUID 出现在 Product transcript、原始 SDK JSONL 或 SDK `getSessionMessages()` 的单链投影中，都不能证明它位于 native runtime 当前可恢复分支；同样，缺席该投影也不能证明它无效，因为投影按物理记录选择 leaf，而 CLI resume 使用 durable selected head。Query 启动是 native resumability 的唯一裁决；拒绝时保留显式边界并报告失败，不能清除锚点、恢复更长历史或自动重放。边界通过既有 mutation intent 与 `sdkResumeSessionAt` metadata 一起提交；新一轮成功后先正常结束该 Query，让 native runtime 发布新的 selected head，再解除边界并发布 Product terminal，配置重启只能发生在此后。已有坏锚点通过从更早、仍可由 native runtime 接受的消息重新 Rewind / Retry 覆盖恢复。文件恢复仍使用现有 Query 的 `rewindFiles`；standalone SDK fork 不携带 undo 历史，不能用它替换 builtin Rewind。旧记录的 `reloadAnchor` 只在加载时推导，优先级低于显式回溯边界；它不是另一份持久化状态或 Session identity。若 SDK 在零模型轮次明确拒绝本次推导的 UUID，清掉这个临时锚点并以 bare resume 重试，保留 Product 历史和当前输入；旧版未持久化的回溯边界在这种失败后可能恢复较长的 native 历史，这是宽松兼容策略，不适用于显式 `sdkResumeSessionAt` 或 fork 边界。
+Builtin Rewind 以完整保留前缀末条消息的 native chain UUID 为边界，包括 user；非空前缀缺少锚点时在文件副作用前失败，只有空前缀才分配新的 SDK execution identity。UUID 出现在 Product transcript、原始 SDK JSONL 或 SDK `getSessionMessages()` 的单链投影中，都不能证明它位于 native runtime 当前可恢复分支；同样，缺席该投影也不能证明它无效，因为投影按物理记录选择 leaf，而 CLI resume 使用 durable selected head。Query 启动是 native resumability 的唯一裁决；拒绝时保留显式边界并报告失败，不能清除锚点、恢复更长历史或自动重放。拒绝 `No message found with message.uuid` 且不能恢复推导锚点时展示恢复提示和 toast，保持用户消息及 Product 历史。边界通过既有 mutation intent 与 `sdkResumeSessionAt` metadata 一起提交；新一轮成功后先正常结束该 Query，让 native runtime 发布新的 selected head，再解除边界并发布 Product terminal，配置重启只能发生在此后。已有坏锚点通过从更早、仍可由 native runtime 接受的消息重新 Rewind / Retry 覆盖恢复。文件恢复仍使用现有 Query 的 `rewindFiles`；standalone SDK fork 不携带 undo 历史，不能用它替换 builtin Rewind。旧记录的 `reloadAnchor` 只在加载时推导，优先级低于显式回溯边界；它不是另一份持久化状态或 Session identity。若 SDK 在零模型轮次明确拒绝本次推导的 UUID，清掉这个临时锚点并以 bare resume 重试，保留 Product 历史和当前输入；旧版未持久化的回溯边界在这种失败后可能恢复较长的 native 历史，这是宽松兼容策略，不适用于显式 `sdkResumeSessionAt` 或 fork 边界。
 
 新 Fork 统一先实体化 native history，builtin 同时映射 SDK UUID；完整执行配置复用 `snapshotForForkedSession`，不手工挑字段。Fork 不继承 source 的 Agent origin、Goal、置顶或 Tag。旧 lazy fork 通过记录的 binding/source 解析真实 native 来源，允许尚未启动的旧分支继续 fork；新请求不再生成 lazy fork 或通过设置切回旧路径。prepared 发布、附件复制和清理见 [V2 transcript](session_transcript_v2.md#生命周期与显式操作)。
 
@@ -186,6 +198,10 @@ Goal 的详细产品行为和 Task/Goal provider routing 见 [`task_center.md`](
 backend-created target 只有在 Runtime dispatch claim 成功后才发布 prepared Session；ACK 不明时保留 identity，不能自动重试导致重复执行。`session start/send` 的每一层外部 timeout 都大于内层 owner/ACK timeout；transport error、成功状态但不可解析的 ACK 和外层超时统一是 `admission_unconfirmed`，只有明确拒绝才是 definitive failure。
 
 `myagents session get` 不进入 Inbox、不唤醒 Runtime，也不创建 turn。它按 message id 合并持久 snapshot、活跃内存与 streaming overlay，先严格投影 user/assistant 的可见顶层 text，再执行 `before`/`limit` 分页；疑似结构化 assistant 内容只要解析或 block schema 异常就 fail closed，工具、思考、隐藏 reminder 和无 text 结构块绝不回退为原始 JSON。Rust 在 owner transport 或响应体失败时释放旧 dispatch、重新解析当前 owner 并只重试一次；最终错误保留 `SESSION_OWNER_UNAVAILABLE` 与 `SESSION_OWNER_INVALID_RESPONSE` 的区别。锚点只在可读文本序列内成立，失效时明确报错，避免静默重复或漏读。
+
+当前 Session 的文本分页由 Rust Management API 发往 owner Sidecar 的 `POST /api/internal/session/text-page`；该路径必须登记为 Session role 路由。否则历史 Session 可从持久化读取，当前 Session 却会在生产 role gate 返回 404。
+
+Desktop、Goal、Task、Inbox、IM、Heartbeat 和 Memory 的执行都经 SessionEngine；DSH 的 `integrated` kind 不能落入 SDK enqueue/config 路径。DSH 强制发送先 interrupt 并持久化 partial terminal，再提升目标 queue item。跨 Sidecar Inbox 只有收到可解析的 `{ accepted: true }` 才算投递成功，HTTP 2xx 的协议错误必须保留上层重试权。
 
 ### 5.3 Registered Agent origin
 
@@ -250,6 +266,8 @@ Chat mount 必须明确当前 Tab 对 Sidecar 配置的方向：
 
 mount 期配置同步必须受 disposition 门控；用户主动修改配置可以先持久化 intent，但在 `pending` 期间延后 Runtime push。打开已有 Session 的所有入口都复用 App 的 materialization/reconcile 流程，以 exact Tab owner ensure 并在 replacement 时保持 Owner 集合。
 
+Sidecar ready 而 External/DSH Product Session 尚未绑定 workspace owner 时，Agent/MCP setter 返回 `pending_next_start / awaiting_product_session_owner`；birth 从落盘 authority 编译扩展，不能伪造 live apply。DSH replacement resume 先恢复当前 Session 实际 permission/config，再校验持久 permission revision chain；mutation journal 只协调 fork/rewind/delete。
+
 ### 7.2 snapshot setter guard
 
 `sidecarConfigDisposition` 约束 desktop writer；Runtime config policy 还必须约束 IM 等其它 writer。已有 `configSnapshotAt` 的 Session 保持 snapshot authority：
@@ -271,6 +289,7 @@ mount 期配置同步必须受 disposition 门控；用户主动修改配置可�
 | `src/server/session-engine/` | Product binding、Runtime selector 与统一 adapter contract |
 | `src/server/agent-session.ts` | builtin public facade |
 | `src/server/builtin-session/` | builtin lifecycle、queue、turn、config 与 transcript owners |
+| `src/server/integrated-runtimes/dsh/` | DSH process、生成协议、native history 与 Host ports |
 | `src/server/runtimes/external-session.ts` | external public facade |
 | `src/server/runtimes/external-session/` | external process、queue、config、transcript 与 result owners |
 | `src-tauri/src/sidecar/` | Session Sidecar、generation、Owner 与 recovery |

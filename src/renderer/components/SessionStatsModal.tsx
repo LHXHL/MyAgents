@@ -1,7 +1,15 @@
 /**
  * SessionStatsModal - Detailed session statistics modal
  */
-import { BarChart2, Clock, Loader2, MessageSquare, UserRound, Wrench, X } from 'lucide-react';
+import {
+  ChartIcon,
+  ClockIcon,
+  LoaderIcon,
+  MessageIcon,
+  UserIcon,
+  WrenchIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -69,7 +77,7 @@ export default function SessionStatsModal({
                 <div className="flex flex-shrink-0 items-center justify-between gap-4 border-b border-[var(--line)] px-5 py-4">
                     <div className="flex items-center gap-3 min-w-0">
                         <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-[var(--accent-warm-muted)]">
-                            <BarChart2 className="h-4 w-4 text-[var(--accent)]" />
+                            <ChartIcon className="h-4 w-4 text-[var(--accent)]" />
                         </div>
                         <div className="min-w-0">
                             <div className="truncate text-sm font-semibold text-[var(--ink)]">
@@ -85,7 +93,7 @@ export default function SessionStatsModal({
                         onClick={onClose}
                         className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                     >
-                        <X className="h-4 w-4" />
+                        <CloseIcon className="h-4 w-4" />
                     </button>
                 </div>
 
@@ -93,7 +101,7 @@ export default function SessionStatsModal({
                 <div className="flex-1 overflow-y-auto p-5">
                     {isLoading ? (
                         <div className="flex h-32 items-center justify-center gap-2 text-[var(--ink-muted)]">
-                            <Loader2 className="h-5 w-5 animate-spin" />
+                            <LoaderIcon className="h-5 w-5 animate-spin" />
                             <span className="text-sm">{t('shell.stats.loading')}</span>
                         </div>
                     ) : error ? (
@@ -106,7 +114,7 @@ export default function SessionStatsModal({
                             <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
                                 <div className="rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-4">
                                     <div className="flex items-center gap-2 text-[var(--ink-muted)]">
-                                        <MessageSquare className="h-4 w-4" />
+                                        <MessageIcon className="h-4 w-4" />
                                         <span className="text-xs">{t('shell.stats.summary.turns')}</span>
                                     </div>
                                     <div className="mt-2 text-2xl font-semibold text-[var(--ink)]">
@@ -115,7 +123,7 @@ export default function SessionStatsModal({
                                 </div>
                                 <div className="rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-4">
                                     <div className="flex items-center gap-2 text-[var(--ink-muted)]">
-                                        <UserRound className="h-4 w-4" />
+                                        <UserIcon className="h-4 w-4" />
                                         <span className="text-xs">{t('shell.stats.summary.humanQueries')}</span>
                                     </div>
                                     <div className="mt-2 text-2xl font-semibold text-[var(--ink)]">
@@ -124,7 +132,7 @@ export default function SessionStatsModal({
                                 </div>
                                 <div className="rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-4">
                                     <div className="flex items-center gap-2 text-[var(--ink-muted)]">
-                                        <BarChart2 className="h-4 w-4" />
+                                        <ChartIcon className="h-4 w-4" />
                                         <span className="text-xs">{t('shell.stats.summary.totalTokens')}</span>
                                     </div>
                                     <div className="mt-2 text-2xl font-semibold text-[var(--ink)]">
@@ -139,7 +147,7 @@ export default function SessionStatsModal({
                                 </div>
                                 <div className="rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-4">
                                     <div className="flex items-center gap-2 text-[var(--ink-muted)]">
-                                        <Clock className="h-4 w-4" />
+                                        <ClockIcon className="h-4 w-4" />
                                         <span className="text-xs">{t('shell.stats.summary.inputCache')}</span>
                                     </div>
                                     <div className="mt-2 text-2xl font-semibold text-[var(--ink)]">
@@ -235,10 +243,10 @@ export default function SessionStatsModal({
                                                             {t('shell.stats.common.inputCache')}
                                                         </th>
                                                         <th className="px-4 py-2 text-right text-xs font-medium text-[var(--ink-muted)]">
-                                                            <Wrench className="inline h-3 w-3" />
+                                                            <WrenchIcon className="inline h-3 w-3" />
                                                         </th>
                                                         <th className="px-4 py-2 text-right text-xs font-medium text-[var(--ink-muted)]">
-                                                            <Clock className="inline h-3 w-3" />
+                                                            <ClockIcon className="inline h-3 w-3" />
                                                         </th>
                                                     </tr>
                                                 </thead>

@@ -104,7 +104,7 @@ describe('decideBuiltinSessionResume', () => {
     const sdkProbe = probe([{ type: 'user' }]);
 
     const decision = await decideBuiltinSessionResume({
-      meta: meta({ runtime: 'gemini' }),
+      meta: meta({ runtime: 'claude-code' }),
       currentRuntime: 'builtin',
       agentDir: '/tmp/workspace',
       probeSdkTranscript: sdkProbe,
@@ -116,8 +116,8 @@ describe('decideBuiltinSessionResume', () => {
 
   it('keeps external runtimes out of builtin SDK resume state', async () => {
     const decision = await decideBuiltinSessionResume({
-      meta: meta({ runtime: 'gemini' }),
-      currentRuntime: 'gemini' as RuntimeType,
+      meta: meta({ runtime: 'claude-code' }),
+      currentRuntime: 'claude-code' as RuntimeType,
       agentDir: '/tmp/workspace',
       probeSdkTranscript: probe([{ type: 'user' }]),
     });

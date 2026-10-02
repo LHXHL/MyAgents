@@ -199,6 +199,7 @@ try {
     $depOk = $true
     if (-not (Test-Command "rustup --version" "https://rustup.rs")) { $depOk = $false }
     if (-not (Test-Command "npm --version" "https://nodejs.org")) { $depOk = $false }
+    if (-not (Test-Command "cmake --version" "https://cmake.org/download/")) { $depOk = $false }
 
     # Rust toolchain/components/target 必须与 rust-toolchain.toml 和 CI 对齐。
     if ($depOk) {
@@ -269,6 +270,8 @@ try {
 
     # Setup and release builds share the same pinned runtime preparation.
     & "$ProjectDir\scripts\download_nodejs.ps1"
+    & node "$ProjectDir\scripts\integrated-runtimes\prepare-dsh-runtime.mjs" --source release --target win32-x64
+    if ($LASTEXITCODE -ne 0) { throw "MyAgents-dsh Release 准备失败" }
 
     $gitInstallerPath = "src-tauri\nsis\Git-Installer.exe"
     Write-Host "  检查 Git installer... " -NoNewline
@@ -505,7 +508,7 @@ try {
     & node "$ProjectDir\scripts\prepare-native-inference.mjs" "x86_64-pc-windows-msvc"
     if ($LASTEXITCODE -ne 0) { throw "原生推理资源准备失败" }
 
-    & npm run tauri:build -- --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config $buildAssetsConfig
+    & npm run tauri:build:prepared -- --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config $buildAssetsConfig
     if ($LASTEXITCODE -ne 0) {
         throw "Tauri 构建失败"
     }

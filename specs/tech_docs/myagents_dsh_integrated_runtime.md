@@ -1,877 +1,170 @@
----
-type: technical-rfc
-status: ready-for-implementation
-version: 0.5
-updated: 2026-08-30
-implementation_repository: "MyAgents"
-repository_mirror: ../../../MyAgents-dsh/specs/prd/tech_rfc_0.3_myagents_host_integration.md
-product_prd: ../../../MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
-runtime_rfc: ../../../MyAgents-dsh/specs/prd/tech_rfc_0.3_myagents_dsh_integration.md
-audit_baseline:
-  version: 0.4.12
-  original_commit: c39d7387a6122f9ebed5f4ec94583aebd1da93f6
-  revalidated_commit: 61a81af384a2333dd8f4fc5f14436ab6e360c820
-runtime_handoff:
-  status: current-protocol-2.0.0-ready-for-ingestion
-  reviewed_repository_head: 2464cf684e755c3b749aba273e0639ec17a108b3
-  source_commit: e9fbd6e7f1669fd776bda44d707f5fb7227bc5df
-  protocol: 2.0.0
-  manifest_sha256: 437dd66cbdfa224d225dffa0aafe485c08a6da8663c1c2a61279aee6d6a74e66
-  runtime_manifest_sha256: d9d8c5706365dc5b3443f278779225e22115202af752dfe986112957825a8036
-  compatibility_sha256: 21a482048dd8ddd84288391a7a632d0c5f4191df4a6787585acca14c730a5a5f
-  protocol_schema_sha256: 5610b423694e364c01ade64391893275c8a4a71734b865b8992d0a02247e3a60
-  generated_client_sha256: a571c919d1daa4ee410e53823eb64dc61dc0580b827ba87036c954955a5e6626
----
+# Integrated DSH 接入架构
 
-# Batch 3 Technical RFC — MyAgents integration of MyAgents-dsh
+> 本文描述当前客户端如何接入 MyAgents-dsh：进程与数据 owner、协议准入、配置、交互、历史恢复和联合 mutation。安装版本、方法、字段及能力以 Release 选择、effective lock、生成契约和实现为准；发布记录与验收流水账不属于本文。
 
-> **Proposal, not current architecture.** This RFC is ready for implementation; current Runtime ownership and supported adapters are documented in [Multi-Agent Runtime](multi_agent_runtime.md).
-
-## 1. Decision summary
-
-MyAgents will add DSH as a first-party **Integrated Runtime**, not as an External CLI and not as a Managed Provider Runtime.
-
-The implementation reuses the existing product architecture:
+## 1. 职责与进程
 
 ```text
-Desktop / IM / Task / Cron / Goal / Heartbeat / Inbox
-                         |
-                         v
-              SessionEngine facade
-                         |
-                         v
-              ExecutionResolver
-        _________|___________
-       |         |           |
- Claude SDK   DSH adapter   existing external/managed adapters
-                 |
-          RuntimeProcessHost
-        generated protocol client
-                 |
-          DSH runtime-server
+Renderer / IM / Task / Goal / Inbox
+  → SessionEngine selector
+  → integrated adapter
+  → external-session queue / config / transcript / interaction owners
+  → DSH RuntimeProcessHost + generated client
+  → Session-owned DSH process
+  → native Session / AgentLoop / tools / children / jobs
 ```
 
-There is no new conversation product, no DSH-specific Renderer, no global Runtime daemon, and no reuse of a native Session across different runtimes.
+| 事实 | Owner |
+|---|---|
+| Product Session、冻结 runtimeBinding、配置快照、UI transcript 与目录 | Host SessionStore |
+| Tab、Sidecar generation、进程保活与删除 lifecycle fence | Rust SidecarManager 与领域 owner |
+| 产品消息准入、队列、交互和结果投影 | SessionEngine 与 external-session owners |
+| DSH 子进程、stdio 请求与 reverse ports | RuntimeProcessHost |
+| 原生 Session/Turn、模型上下文、工具、子 Agent、Shell Jobs | DSH Runtime |
+| 原生 JSONL、locator、checkpoint 和 mutation receipt | DSH 原生 persistence 与 Product 协调 owner |
+| Provider、凭据、代理选择、产品扩展与附件交付 | Host 的既有 owner，通过声明与 reverse ports 提供 |
 
-MyAgents continues to own:
+一个活跃 Product Session 最多有一个 Session Sidecar；该 Sidecar 的 DSH adapter 连接一个 Runtime generation。DSH 不是全局 daemon，不增加 TCP listener。Renderer 不直接消费 DSH wire，Rust 不解析 Runtime frames。集成复用既有队列、Store、SSE、附件和领域 owner。
 
-- Product Session identity, transcript and UI projection;
-- Agent defaults, distribution policy and runtime resolution;
-- Sidecar ownership and process lifecycle;
-- Provider configuration and credentials;
-- permission/AskUser/plan interaction UI;
-- Host tools, Hooks, attachment storage and product automation;
-- Task, Goal, Cron, Heartbeat, Inbox, IM and notification semantics.
+## 2. Runtime 选择与冻结身份
 
-MyAgents-dsh continues to own:
+产品发行版始终开放 Agent Runtime 选择。普通 API Provider 上，Agent 的明确 `runtimePreference` 优先；未选择时采用通用设置的 `defaultIntegratedRuntime`，缺失或不在发行 allowlist 时采用构建默认。该默认只有 Claude Agent SDK 与 DSH 两项，不自动写回 Agent。
 
-- the DSH AgentLoop and durable native conversation;
-- its single `ctx.tools` execution pipeline;
-- native Runtime Session, Turn, work and mutation truth;
-- the generated bidirectional protocol contract;
-- provider-profile execution and exact compatibility manifest;
-- the verified Runtime artifact.
+Provider constraint 优先于通用默认：官方 Anthropic subscription/API 使用 Claude Agent SDK，`codex-sub` 使用 Managed Codex；其他 Provider 按声明的 API family 与模型能力解析。不能为了选择 DSH 把固定 Provider 伪装为普通 API。
 
-## 2. Audited current state
+出生时将 effective identity 固化为 Session `runtimeBinding`。已有 Session 使用自己的 binding 与配置快照；默认值或 Agent 设置变化不替换它。未知 binding 保留历史读取，不能静默改成 SDK。DSH 的 integrated engine kind 也不能进入 SDK 专属配置或 enqueue 分支。
 
-This RFC was originally audited against MyAgents `0.4.12` at commit `c39d7387a6122f9ebed5f4ec94583aebd1da93f6` and was revalidated against committed HEAD `61a81af384a2333dd8f4fc5f14436ab6e360c820` after the formal DSH `2.0.0` handoff was produced. Since the previous audit at `d6ba358f…`, committed changes touching `Launcher.tsx` and `specs/ARCHITECTURE.md` are limited to the Record/AI-discussion flow; they do not alter `src/server/session-engine/`, Runtime identity types, Provider execution policy, or the Rust Runtime identity owner. The architectural findings therefore remain valid.
+## 3. 构建与协议准入
 
-The live MyAgents worktree also contains unrelated uncommitted Record/AI-discussion and UI work. It was inspected for boundary overlap and does not implement DSH integration. It is not design authority for Batch 3 and must be preserved during implementation; an implementation branch or worktree must not absorb, overwrite, or reinterpret it.
+`src/shared/integrated-runtimes/dsh-release.json` 是正式 Runtime 的版本选择。构建准备读取该 Release 的四平台资产清单，校验归档、handoff、Runtime 与契约身份，再派生本次 effective lock。已提交的 `dsh-lock.json` 和静态生成契约是未准备 source-mode 的编译快照；不能拿其中旧摘要拒绝本次已验证选择。
 
-### 2.1 Reusable product owners
+打包 Dev 默认也使用 Release；显式 `local` 才从绝对 handoff 路径构建。Vite、Sidecar esbuild 和 Rust build.rs 必须消费同一次选择，不能混入另一 target 或 generation 的身份。完整交付验证发生在构建准备与打包前，运行时只核对受信资源路径、必要文件和实际协议握手，不重新扫描整个交付清单。
 
-| Existing owner | Current fact | Batch 3 decision |
-| --- | --- | --- |
-| `src/server/session-engine/` | One facade already covers Desktop, IM, background, Inbox, scheduled/injected turns, queue, stop, config, interactions and history operations | Keep as the only product entry seam |
-| Session Sidecar | Architecture guarantees at most one Sidecar per Product Session; multiple owners share it | Sidecar hosts one DSH Runtime process for a DSH-bound Session |
-| `SessionStore` | Owns transcript and Session metadata | Remains Product transcript authority |
-| `src/server/runtimes/types.ts` | `UnifiedEvent` already represents text, thinking, tools, permission, usage, plan and terminal events | Extend only where DSH semantics cannot be represented losslessly |
-| Chat Renderer | Already provides the complete AI conversation, tool blocks, inline interactions, queue/stop and mutations | Reuse; no DSH debug cards |
-| `providerSwitchSessionBirth.ts` and Chat transitions | Existing incompatible Provider/Runtime flow confirms, preserves old Session and opens a new Tab | Reuse for DSH, `anthropic-sub` and managed-provider boundaries |
-| Rust Sidecar manager | Owns generation, process tree, owner tokens and replacement | Remains the process owner; does not parse DSH RPC |
-| IM runtime rotation | Existing Agent config change freezes old binding, creates a fresh Session and notifies the user | Generalize identity input, preserve behavior |
+DSH 使用应用内置的单一 Node，不回退系统 Node。Node/npm 组合由 `scripts/node-runtime.json` 决定，handoff 声明其所需 Node；公共 verifier 也必须使用待打包的 bundled Node。源码 setup、本地 handoff 和平台构建入口见 [构建资源准备](build_resource_preparation.md#integrated-dsh-构建来源) 与 [内置 Node](bundled_node.md#integrated-dsh)。
 
-### 2.2 Current binary assumptions that must change
+`contracts/myagents-dsh/public-contract.generated.ts` 与构建派生契约提供 wire 类型、validator、方法 inventory 和协议版本。Host 不手写另一份协议 schema，也不把“方法存在”当成能力已接纳。
 
-The current model is too narrow:
+进程启动依次完成：
 
-- `RuntimeType` is `builtin | claude-code | codex | gemini`;
-- `RuntimeSource` is `system-cli | managed-provider`;
-- `SessionEngineKind` is `builtin | external`;
-- `getSessionEngine()` selects only Builtin or External;
-- the Labs gate collapses the Agent's effective Runtime to historical `builtin`;
-- provider execution has a Codex-specific runtime-backed variant;
-- Rust runtime identity normalizes nearly every non-builtin source toward `system-cli`.
+1. 解析受信安装目录、canonical workspace 与 Session-owned roots；
+2. 冻结 executionEnvironment、进程环境和 generation identity；
+3. 注册 reverse handlers，完成 `initialize` 的精确版本、格式、profile 与 capability 检查；
+4. 发送 `initialized`，读取状态并 create/resume 原生 Session；
+5. 准入成功后才允许用户 turn。
 
-Simply adding `dsh` to `RuntimeType` would classify it through External Runtime assumptions, permit illegal runtime/source combinations, and make future Pi integration repeat the same migration. Batch 3 therefore introduces an explicit product identity model instead of growing two independent string unions.
+进程状态与 turn activity 分开。pre-warm 可建立真实 idle Runtime，但不能制造 running turn。transport/process failure 必须通过 `session_complete` 交给共享 lifecycle owner 释放该 generation；仅发 error status 会留下无法恢复的 running/process 状态。
 
-### 2.3 Existing change behavior is already correct
+## 4. 数据与持久化
 
-The audited product behavior matches the accepted PRD and must be retained:
-
-- Agent Settings and Launcher update the Agent template only; future Sessions use the new selection.
-- In a live Chat, an incompatible Runtime or Provider change uses the existing confirmation and new-Tab birth flow.
-- The old Session retains its frozen identity and transcript.
-- An explicit External Runtime wins over a dormant `codex-sub` Agent field.
-- IM/Agent Channel effective-identity drift freezes the old Session and rotates to a new binding; admission and Heartbeat checks are recovery fences.
-
-Batch 3 generalizes the compatibility inputs to these flows. It does not redesign them.
-
-### 2.4 Exact-handoff revalidation and required amendments
-
-The formal repository-external handoff validates successfully without a sibling source checkout and freezes:
-
-- handoff manifest `437dd66cbdfa224d225dffa0aafe485c08a6da8663c1c2a61279aee6d6a74e66`;
-- Runtime manifest `d9d8c5706365dc5b3443f278779225e22115202af752dfe986112957825a8036`, built from clean MyAgents-dsh source commit `e9fbd6e7f1669fd776bda44d707f5fb7227bc5df`;
-- compatibility manifest `21a482048dd8ddd84288391a7a632d0c5f4191df4a6787585acca14c730a5a5f`;
-- formal protocol `2.0.0`, schema `5610b423694e364c01ade64391893275c8a4a71734b865b8992d0a02247e3a60`, and generated Host client `a571c919d1daa4ee410e53823eb64dc61dc0580b827ba87036c954955a5e6626`;
-- DSH artifact `9c5ed754341bae0f82bbb118188c5c45a97f640133cc3e91d22b9a2bee1b3f7c` at upstream commit `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`;
-- macOS arm64, Linux x64 and Windows x64 all labeled `implementation-complete_pending-native-validation` for these bytes.
-
-Formal `2.0.0` is wire-identical to draft.3 and contains 40 Host requests, seven reverse requests and four notifications, including `plan/apply`, `permission/rules/list`, `permission/rules/add`, and `permission/rules/revoke`. H0 must ingest and verify this complete immutable handoff; all draft handoffs remain historical evidence and are a hard compatibility failure for the first implementation lock. No pending-native-validation platform claim may be surfaced as verified product support.
-
-The current MyAgents-dsh repository HEAD reviewed for this RFC is `2464cf684e755c3b749aba273e0639ec17a108b3`. It adds only the final handoff documentation after source commit `e9fbd6e…`; it does not create newer executable Runtime bytes. The integration identity therefore remains the content-addressed handoff above rather than the repository HEAD. The handoff's public verifier succeeds against the trusted outer digest and reports the same Runtime and compatibility manifests.
-
-The Node integration blocker found by version 0.1 is now resolved at the artifact source: the accepted Runtime requires exact Node `24.14.0`, which matches MyAgents' bundled Runtime Node. MyAgents must still cross-check every Node version authority, including `scripts/download_nodejs.sh`, `setup_windows.ps1`, and the fallback in `build_windows.ps1`, plus resource/version assertions and executable architecture examples. A user-installed Node or a semver assumption must fail readiness before process spawn. A later Node upgrade requires a newly accepted Runtime artifact and native evidence rather than a Host-side bypass.
-
-npm has a different boundary. The installed DSH Runtime never invokes npm; its recorded npm `11.8.0` is build provenance, not a Host compatibility requirement. MyAgents currently declares development package manager `npm@11.13.0`, ships npm `11.15.0` beside its bundled Node, and resolves `npm/latest` in resource setup. H0 must remove the floating resource download and record an explicit product-owned bundled-npm version. The development npm and bundled npm may remain distinct authorities when their roles are explicit, exact, and independently verified; neither is copied from or constrained by the DSH handoff.
-
-The revalidation also sharpens two existing rules:
-
-1. MyAgents ingests the immutable handoff through a deterministic build-time verifier and committed lock; it never imports from a sibling MyAgents-dsh checkout or edits files inside the Runtime directory.
-2. `apiFamilies` proves transport-family support, not arbitrary Provider/model support. MyAgents owns an exact allowlisted Provider/model cell table. The native `deepseek-official` route is read from the included candidate profile; the three pi-ai families are read from the compatibility manifest. No other cell becomes visible without joint evidence.
-
-## 3. Target product identity model
-
-### 3.1 Agent preference
-
-Agent configuration stores user intent, not the final engine process:
-
-```ts
-type AgentRuntimePreference =
-  | { family: 'integrated'; id: 'claude-agent-sdk' | 'dsh' }
-  | { family: 'external'; id: 'claude-code' | 'codex' | 'gemini' };
-```
-
-The type may reserve an internal future identifier for Pi in schema evolution, but Batch 3 must not show or accept Pi as a selectable value.
-
-### 3.2 Provider execution constraint
-
-Provider execution is generalized from the current Codex-only special case:
-
-```ts
-type ProviderExecutionConstraint =
-  | { kind: 'portable'; apiFamily: ApiFamily }
-  | {
-      kind: 'requires-integrated-runtime';
-      runtimeId: 'claude-agent-sdk';
-      providerId: 'anthropic-sub';
-    }
-  | {
-      kind: 'requires-managed-runtime';
-      runtimeId: 'managed-codex';
-      providerId: 'codex-sub';
-    };
-```
-
-An ordinary Anthropic API-key Provider is portable when the selected Integrated Runtime supports `anthropic-messages`. It is not the same thing as `anthropic-sub`.
-
-### 3.3 Effective Session binding
-
-Every new Product Session freezes a legal discriminated binding:
-
-```ts
-type EffectiveRuntimeBinding =
-  | {
-      family: 'integrated';
-      id: 'claude-agent-sdk';
-      implementationVersion: string;
-    }
-  | {
-      family: 'integrated';
-      id: 'dsh';
-      implementationVersion: string;
-      protocolVersion: string;
-      protocolSchemaSha256: string;
-      runtimeArtifactSha256: string;
-      compatibilityManifestSha256: string;
-      sessionFormat: string;
-      platformTarget: string;
-    }
-  | {
-      family: 'managed-provider';
-      id: 'managed-codex';
-      providerId: 'codex-sub';
-      implementationVersion: string;
-    }
-  | {
-      family: 'external';
-      id: 'claude-code' | 'codex' | 'gemini';
-      implementationVersion?: string;
-    };
-```
-
-Provider route/model, effective configuration revisions and native `runtimeSessionId` remain Session metadata associated with this binding. No free-form combination of runtime and source is accepted at a new write boundary.
-
-### 3.4 Legacy projection
-
-During migration MyAgents reads existing flat `runtime` / `runtimeSource` fields into the new discriminated value and may continue writing a legacy projection for old consumers. The new `runtimeBinding` is authoritative when present.
-
-Legacy mapping:
-
-| Legacy values | New binding |
-| --- | --- |
-| `builtin` with no managed Provider | integrated / Claude Agent SDK |
-| `builtin` + `codex-sub` | managed-provider / managed Codex |
-| `codex + managed-provider` | managed-provider / managed Codex |
-| `claude-code`, `codex` or `gemini` + missing/system source | matching external binding |
-
-Unknown or illegal combinations are quarantined as read-only compatibility errors. They do not silently become Claude SDK.
-
-## 4. Distribution policy and selection
-
-### 4.1 Policy
-
-Introduce a validated distribution policy:
-
-```ts
-interface AgentRuntimeDistributionPolicy {
-  schemaVersion: 1;
-  allowedIntegratedRuntimes: Array<'claude-agent-sdk' | 'dsh'>;
-  allowedExternalRuntimes: Array<'claude-code' | 'codex' | 'gemini'>;
-  defaultIntegratedRuntime: 'claude-agent-sdk' | 'dsh';
-  selectorAvailability: 'always' | 'labs' | 'hidden';
-}
-```
-
-The general development/release baseline is:
-
-- allowed Integrated Runtimes: Claude Agent SDK and DSH;
-- default Integrated Runtime: Claude Agent SDK;
-- DSH exposed only through the controlled rollout/Labs policy;
-- Pi absent.
-
-A DSH-only edition sets DSH as the sole allowed/default Integrated Runtime and hides the selector. Invalid policy fails during build or application startup.
-
-### 4.2 Labs semantics
-
-`multiAgentRuntime` becomes a selection-availability gate, not a runtime kill switch:
-
-- when unavailable, normal UI does not let the user change Runtime;
-- new ordinary-provider Sessions use the Default Integrated Runtime;
-- saved Agent preferences remain stored;
-- existing frozen Sessions remain executable if their exact Runtime is allowed and available;
-- a distribution that excludes the frozen Runtime leaves transcript readable and blocks execution explicitly.
-
-### 4.3 Central resolution algorithm
-
-For an existing Session, return its frozen binding after policy/artifact validation.
-
-For a new Session:
-
-1. load and validate distribution policy;
-2. resolve the Agent preference, using the Default Integrated Runtime when selection is unavailable;
-3. resolve Provider/model execution intent;
-4. if an explicit allowed External Runtime is selected, choose it and treat Integrated/managed Provider template fields as dormant;
-5. otherwise apply a Runtime-constrained Provider:
-   - `anthropic-sub` -> Claude Agent SDK;
-   - `codex-sub` -> managed Codex;
-6. otherwise choose the resolved Integrated Runtime;
-7. validate Runtime readiness and exact Provider/model compatibility;
-8. atomically persist the binding before first turn admission.
-
-The resolver returns either one complete binding plus configuration plan or one structured failure. No caller retries with a different Runtime.
-
-## 5. SessionEngine architecture
-
-### 5.1 One product facade
-
-Keep `SessionEngine` as the product-facing contract. Replace the binary selector with a registry keyed by `EffectiveRuntimeBinding`:
+`dshSessionOwnedPaths()` 用 canonical Product Session id 的稳定摘要派生：
 
 ```text
-SessionEngine
-  |- ClaudeSdkSessionEngineAdapter
-  |- DshSessionEngineAdapter
-  |- ManagedCodexSessionEngineAdapter / existing external core
-  '- ExternalCliSessionEngineAdapter / existing runtimes
+<app-data>/dsh-runtime/<session-identity-hash>/
+  sessions/<generation-id>/.../*.jsonl.zstd
+  persistence/coordination.sqlite
+<app-data>/dsh-attachments/<session-identity-hash>/
 ```
 
-Physical code reuse does not define product taxonomy. Managed Codex may continue sharing external-session machinery while remaining a Managed Provider Runtime in the resolver and UI.
+原生对话事件由官方 DSH JSONL persistence 管理，采用官方 V4 编码与项目/Session 目录布局。`coordination.sqlite` 每个 Runtime home 一份，只保存 locator、mutation journal、checkpoint 与文件 preimage，不保存原生会话事件。原生查询还可使用可丢弃的进程内 SQLite 派生索引；它不是第二份会话 authority。
 
-### 5.2 Capability extensions
+Host 的 `sessions.json` 与 Product transcript 属于另一层：它们服务列表、UI、搜索和产品恢复。两份历史通过明确 identity 与 receipt 对齐，不能把产品气泡当作原生执行证明，也不能用原生日志替换产品历史。
 
-The common facade keeps currently universal product operations. Runtime-specific rich operations are exposed through negotiated, narrow capabilities instead of fake success:
+Host 只接入匹配当前生成契约的 DSH 进程；原生格式解析由官方 JSONL codec 拥有。旧开发数据在写入进程停止后手动清理；应用中没有自建旧 DSH schema 迁移、开发数据自动重置或自动删除入口。其他 Runtime 仍在执行的兼容行为独立维护。
 
-```ts
-interface NativeRuntimeCapabilities {
-  configuration?: RuntimeConfigurationCapability;
-  extensions?: RuntimeExtensionCapability;
-  durableTurnTruth?: RuntimeTurnTruthCapability;
-  mutations?: RuntimeMutationCapability;
-  nativeHistory?: RuntimeHistoryCapability;
-}
-```
+V2 产品记录先更新 canonical live projection，再由 TranscriptWriter 后台保存。正文 IO 失败或悬挂不阻止后续 AI turn；执行 journal 保留尚未落盘的准确输入与 generation。fork/rewind/reset/delete 仍遵守各自的物理写权限与发布边界。详细保存和恢复协议见 [Product transcript V2](session_transcript_v2.md)。
 
-If a control is unsupported, the resolver/UI disables it before use or SessionEngine returns a structured `unsupported_capability`. It must not return `success + skipped` for a visible action.
+## 5. 模型、凭据与网络
 
-### 5.3 Product entry points
+`profile-compiler.ts` 将 Host Provider/model 能力编译为声明式 model profile。通用接口按 Anthropic Messages、OpenAI Responses、Chat Completions 分流；DeepSeek 官方路径使用原生 adapter。模型能力、reasoning 选项与子 Agent 可选集合来自当前 Provider inventory，不另建静态白名单。不可表达的可选参数采用该模型的合法默认，不使基础模型失效。
 
-The following must continue to call only SessionEngine and the central resolver:
+Provider credential 由 Host 的既有配置或认证 owner 管理，每个模型请求通过 `host/credential/resolve` 获取有效凭据和有界 `providerNetwork`。secret 不进入 profile、Session、argv 或常规日志；退休 generation 的 credential plane 只服务原请求，直到对应进程关闭后释放。
 
-- Desktop Chat and Launcher;
-- Agent Settings and workspace defaults;
-- IM/Agent Channel and Heartbeat;
-- Task/Cron and Goal;
-- Inbox and registered Agent;
-- injected/system turns and background completion;
-- title/utility operations where their current owner applies.
+代理有两个 scope：模型请求采用 Provider policy；普通网络与 Shell 使用 Host 创建进程时冻结的 general snapshot。并发模型请求各自拥有连接池，不能切换进程全局 dispatcher。general 配置变化沿共享 config lifecycle 在 idle 边界换代，当前 turn 不被中断。
 
-Implementation must re-run `rg` over direct Builtin/External calls before promotion; newly discovered bypasses are blockers.
+原生 `web_fetch` 由 Runtime 的安全 HTTP 与内容转换链执行，包含 PDF 转换；`web_search` 消费准入的 Host 搜索 backend。Host canonical Web 工具仍有自己的 dispatcher。直连校验并 pin 公网 DNS answer；显式代理仍检查 URL、hostname 和字面量 IP，域名解析交给代理。不能把代理路径描述为本地 DNS pinning，详见 [代理配置](proxy_config.md)。
 
-## 6. DSH RuntimeProcessHost
+子进程环境采用 allowlist。PATH 使用应用工具入口和已发现的用户执行环境；只准入 OS、用户目录、locale、临时目录和标准 proxy 等必要变量；bundled Node 目录排在 PATH 首位。内部 CLI capability 通过专用 token 注入，Provider/MCP secret 不因继承整个 `process.env` 泄漏给 Shell。
 
-### 6.1 Process topology
+## 6. Prompt 与扩展
 
-For a DSH-bound Product Session:
+Host 以结构化 `systemContext` 提供 global/root contributions；DSH 的 literal-context seam 保留文本语义，不将产品提示词改写成组件摘要。主项目指令由 DSH 原生 instruction plugin 加载，每层目录按 `CLAUDE.md`、`AGENTS.override.md`、`AGENTS.md` 的优先级选择。Host 只补充其拥有的 companion/rules 内容，不重复读取原生主指令。
 
-- Rust creates/owns the existing Session Sidecar and its process-tree control handle;
-- Rust injects verified DSH artifact paths and a session-scoped Runtime home;
-- the Sidecar and DSH child use MyAgents' one bundled Node, which must exactly match the Runtime lock (`24.14.0` for this candidate);
-- the Node Sidecar creates one `RuntimeProcessHost`;
-- `RuntimeProcessHost` starts one DSH runtime-server with bundled Node;
-- communication is bidirectional JSON-RPC over stdin/stdout;
-- stderr enters the existing redacted unified logger;
-- the Renderer communicates only through existing Rust proxy and Sidecar APIs.
+Skills、Commands、MCP 与 Host tools 等组件由同一次 Product capability inventory 编译。DSH 与 Managed Codex 共用 runtime-neutral `product-extensions` discovery/dispatcher；执行仍属于各自 Runtime。Host 也会生成 Agent descriptor，但当前 DSH 没有对应的角色编译器，这类组件返回 `unsupported/implementation_batch_pending`，不会据此创建子 Agent。子 Agent 由 DSH 原生工具创建并管理，Host 不运行第二套 Agent loop。
 
-Rust does not parse DSH frames. DSH does not open TCP/HTTP. A Product Session does not share one DSH root process with another Product Session.
+组件损坏或不支持时，只淘汰该组件并产生结构化诊断；基础 Runtime 仍可用。明确依赖 required system Skill 的 turn 才必须核对该 exact capability。扩展 replacement 在原生事务边界执行，并由 catalog/read-back 确认实际结果；SSE 仅投影状态，不成为配置 authority。
 
-### 6.2 Handshake and admission
+## 7. 权限、计划与问答
 
-Process readiness requires:
+DSH 使用 `approval-required`、`workspace-autonomous`、`full-autonomous` 三种产品模式，不复用 Claude SDK 的传参字面量。前两项采用原生 workspace-write sandbox，最后一项为 danger-full-access；受限 Shell 无可用 sandbox 时拒绝执行。权限模式先成为 Session desired state，当前 turn 使用 admission snapshot，下一条 query 前由 `config/apply` 确认 approval/sandbox 的 effective state，失败则不发送该 query。
 
-1. handoff, artifact inventory, lock, platform evidence and exact Node validation;
-2. process spawn with explicit generation;
-3. protocol `initialize`;
-4. exact protocol/schema/profile/session-format verification;
-5. Runtime capability verification;
-6. registration of all reverse Host handlers;
-7. `initialized` notification;
-8. `session/create` or exact `session/resume`;
-9. atomic persistence of the native binding.
+Root/child 共享 Session-tree 的精确 grant 与产品交互，但每次调用必须绑定原 generation、operation、Agent 和 tool call。approval 不自动覆盖其他工具或未来无关调用。用户等待不套普通执行 timeout；执行 deadline 从审批完成后开始计算。
 
-No user turn is admitted before all applicable steps succeed.
+AskUser 与权限卡片通过真实 response receipt 结算。选项与自定义文字都保留；无效回答、传输失败或未确认 ACK 不清卡片，也不伪报已回答。迟到回执不能关闭新 request。
 
-### 6.3 Generation fencing and shutdown
+Plan 是独立状态，不等同于 permission mode。Host 显式退出与 Agent 请求审阅分别按原生 Plan owner 的契约处理；审阅消费实际 plan 文件内容。UI 不用虚构工具成功替代原生状态。
 
-Every pending request, reverse call, event and terminal is scoped by Product Session, Sidecar generation, Runtime generation and operation identity.
+原生 sandbox 约束支持该边界的工具，不代表整个 Runtime、MCP、Host reverse tools 或内部 CLI 都被同一个 OS sandbox 覆盖。协议固定 security literal 也不是每 Session 的 sandbox 状态报告；安全能力以 composition、有效策略与工具路径判断。
 
-On shutdown:
+## 8. Turn、队列与输出
 
-1. stop new admission;
-2. cancel or drain reverse requests according to protocol;
-3. reconcile admitted turns and mutations;
-4. call `runtime/shutdown`;
-5. wait for quiescence;
-6. use existing process-tree termination only after grace expiry.
+所有 desktop、IM、Inbox、Task、Goal 和后台 turn 都经过 SessionEngine。Root admission 在 `turn/start` 前保存准确 Product input 与 operation identity；原生 receipt 才证明输入消费。RPC 返回、HTTP queued、进程 idle 都不能代替真实 terminal。
 
-Crash recovery is bounded. Process exit is not a turn terminal; `turn/get` and durable Session truth decide the outcome.
+普通消息由共享 operation queue 排序。realtime 只有在当前 generation 有明确 steer target 且原生确认输入接纳后成立；明确未接收可降级为 turn-boundary，transport uncertainty 不自动重发。冷恢复取得的 operation 不具备 same-turn steer 资格。force-start 先停止并结算旧 turn 的 partial output，再提升目标项，不能丢弃无关排队消息。
 
-## 7. Generated protocol and artifact consumption
+Live event inbox 按 generation、sequence 与 identity 串行处理。精确重复可幂等消费；gap、冲突或 replacement 触发既有恢复。空 delta 仍推进协议位置但不制造产品正文。工具输入中的非 object JSON 只包装展示，不改原生执行参数。
 
-MyAgents consumes only a pinned DSH handoff containing:
+DSH 原生 Agent 目录投影到产品 Agent 树；个人任务按 Agent Session 读取，共享任务单独读取。中断只停止当前轮次，可延续子 Agent 可继续收消息。Shell Jobs 的创建、状态和停止归官方 Jobs/Shell 组件，不由 Host 重建调度器。
 
-- Runtime artifact and complete file inventory;
-- artifact, source and lock digests;
-- protocol version and schema digest;
-- generated Host client and wire types;
-- Runtime/profile/session-format identity;
-- capability and canonical tool fixtures;
-- Provider/API-family compatibility manifest;
-- supported-platform claims and evidence;
-- license and notice inventory.
+图片输出通过 Runtime image registry 与 generation-bound lease 进入共享 Tool Attachment 管道；图片字节不放入普通 event JSON。工具发布和模型随后读图各自取得有效 request scope。输入与 native history 的 image content reference 保留，由当前模型请求按能力消费，不通过永久改写历史移除图片。
 
-The following block is the exact formal `2.0.0` seed for the first implementation lock:
+Provider `server_tool_use` 是独立、有界的内容投影，不进入 canonical Host permission，也不作为 root loading 状态。usage/latency 等可选统计缺失时省略，不填假零；统计异常不阻断有效正文或 terminal。工具执行成功与输出发布失败分开报告，不能因附件不可用把已经完成的副作用改写为未执行。
 
-```text
-sourceCommit                 e9fbd6e7f1669fd776bda44d707f5fb7227bc5df
-protocolVersion              2.0.0
-handoffManifestSha256        437dd66cbdfa224d225dffa0aafe485c08a6da8663c1c2a61279aee6d6a74e66
-runtimeManifestSha256        d9d8c5706365dc5b3443f278779225e22115202af752dfe986112957825a8036
-compatibilitySha256          21a482048dd8ddd84288391a7a632d0c5f4191df4a6787585acca14c730a5a5f
-protocolSchemaSha256         5610b423694e364c01ade64391893275c8a4a71734b865b8992d0a02247e3a60
-generatedClientSha256        a571c919d1daa4ee410e53823eb64dc61dc0580b827ba87036c954955a5e6626
-dshArtifactManifestSha256    9c5ed754341bae0f82bbb118188c5c45a97f640133cc3e91d22b9a2bee1b3f7c
-requiredNodeVersion          24.14.0
-```
+## 9. 冷恢复与 native history
 
-An ingestion script accepts one explicit external `--handoff <absolute-directory>` input, first executes that directory's public `verify.mjs` entrypoint with the expected handoff digest, validates the compatibility/platform facts, copies the complete Runtime directory byte-for-byte into build resources, and copies the generated client/contracts through a generated-diff gate. MyAgents code may wrap the generated client but may not hand-edit it or import verifier/package-private `src/*` paths. Installed application startup verifies the committed lock again before marking DSH ready.
+`session/read` 的分页 assembler 校验 exact Session/generation、head、hash、连续 cursor 和 `inheritedEventCount`。`cursor_stale` / `session_read_unstable` 时丢弃整轮部分结果，从第一页重读，最多三轮、每轮 1,024 页；其他协议、identity 或 hash 错误不套用通用重试。
 
-The first implementation lock must be populated from these exact handoff values after running the package's public `verify.mjs` against the trusted outer digest. Its generated client contains 40 Host methods and all four permission/Plan control-plane methods; any draft or independently reconstructed client is a hard compatibility failure.
+继承前缀只提供模型/UI 上下文，不拥有目标 Session 的执行状态。startup 只查询并恢复 target-owned operations；源 settled root 保持源 identity。嵌套 fork 与 inherited-prefix rewind 使用官方 inherited scope 和 seed constructor，不能只拼接看似 hash 正确的 JSONL。
 
-For local Batch 3 development, that input may be a content-addressed artifact cache produced by the pinned MyAgents-dsh build. Release CI must obtain the same immutable bytes from its approved distribution asset/channel before resource staging; application startup does not fetch a floating Runtime from the network. The exact asset transport may vary by distribution policy without changing Host architecture, but every channel terminates in the same digest verifier before admission.
+`pendingDshRootOperation` 与 `pendingDshRootInputs` 属于 Host 执行恢复 journal：
 
-Create a committed MyAgents lock file, for example `src/shared/integrated-runtimes/dsh-lock.json`. Release builds reject:
+- 原生未接纳且产品正文也未出现的输入，可撤销未发布 admission；
+- 产品已保存、原生明确未接纳时，只能按准确输入 identity 重试；
+- 原生活跃 operation 由一个恢复 owner 接管；队列派发与 force-start 先等待该恢复完成，不能把进程已存在视为恢复已完成；
+- 已 terminal 的 receipt 对账输出与真实结果，再退休 journal、推进队列。
 
-- floating versions or sibling source checkout;
-- missing/extra artifact files;
-- hash, protocol, profile or platform drift;
-- an unaccepted native-platform claim;
-- development path overrides.
+失败/停止仍保留已产生的 partial assistant，结果保持真实失败/停止。不能因有文字推断成功，也不能在 acknowledgement 不确定时自动发送第二次 prompt。
 
-Development override is allowed only through an explicit developer setting and must be visibly marked `unverified-dev-runtime` in diagnostics.
+## 10. Fork、Rewind、Retry 与 Delete
 
-## 8. Provider, credentials and configuration
+这些操作统一进入 SessionEngine adapter，由 Host journal 与 DSH native mutation receipts 协调；不在 Renderer 拆成多个请求，也不只修改 UI transcript。`pendingDshMutation` 保存 intent、token、fingerprint 与预期 postconditions，恢复先核对原生结果。
 
-### 8.1 Execution profile compiler
+| 操作 | 提交顺序与结果 |
+|---|---|
+| Fork | 保存 intent → native prepare → 保存 token → 隐藏 Product target/附件 → native commit → 发布 Product target |
+| Rewind | native commit 发布新 generation 与受治理文件恢复 → Product history 对齐同一 cut |
+| Retry | 同一 mutation scope 完成精确 rewind，再走普通 desktop admission 重发原输入 |
+| Delete | Rust lifecycle fence → native tombstone → Product 隐藏 → native purge → Product 删除 |
 
-MyAgents compiles the selected ordinary Provider/model into the DSH `ModelExecutionProfile`:
+root 文件恢复只覆盖 checkpoint 所治理的原生 Write/Edit，不回滚任意 Shell 或子 Agent 文件副作用。连续 rewind 复用不可变 checkpoint 与已提交 retained cuts，不复制第二份恢复记录。Fork 不继承源 Goal、置顶、Tag 或 registered-Agent origin。
 
-- stable profile revision;
-- Provider route and API family;
-- exact model ID;
-- approved base URL;
-- opaque `credentialRef`;
-- context window and max output;
-- reasoning/effort;
-- typed compatibility options;
-- pricing where MyAgents has authoritative data.
+Retry 使用原生 operation anchor 区分未接纳与已接纳：前者只移除产品未执行尾部；后者必须建立精确 native rewind（包含 genesis 边界），再截断产品历史。失败响应区分会话是否已提交、文件是否已恢复与重发是否已接纳。丢响应后读取权威 receipt，不用旧前端快照覆盖，不自动重复 mutation。
 
-The compiler consumes both the exact DSH compatibility manifest and the included native DeepSeek candidate profile. It does not infer compatibility merely from an OpenAI-shaped URL, a pi-ai catalog entry, or a Provider name.
+DSH recovery admission 当前按未结算 mutation 的种类限制 prepare；具体 journal 的幂等由 mutation ID 与 fingerprint 决定。不能声称 Runtime 已在入口保证“只有完全相同的请求才能再次 prepare”。Host 应继续恢复自己的稳定 intent。
 
-The selected MyAgents-dsh design reuses the official DSH `dsh-llm-pi-ai` adapter for ordinary Anthropic Messages, OpenAI Chat Completions and OpenAI Responses routes, while retaining the native DSH DeepSeek adapter for `deepseek-official`. This does not weaken Host authority: MyAgents still compiles the frozen profile and owns credentials; the Runtime's thin control layer translates that profile into the official adapter's public settings seam and activates the Host credential port for each model request. MyAgents treats only manifest-listed Provider/model cells as portable. Its existing Claude-SDK `authType` and Bridge quirks are inputs to that mapping, not proof that the DSH adapter supports the same wire behavior.
+## 11. 维护与验证入口
 
-The exact cell table also carries candidate limitations: pi-ai routes do not support Host stop-sequence projection; reasoning content is available but provider reasoning-token counts are not; the bundled pi-ai catalog is advisory; AWS, Vertex, Azure and subscription/OAuth routes are not advertised. The same-release public `dsh-authorization` package is present only because `dsh-llm-pi-ai` requires it as a public peer. MyAgents must not mount its login/OAuth service or expose it as a capability.
+| 路径 | 职责 |
+|---|---|
+| `src/shared/integrated-runtimes/` | distribution、resolver、Release 选择与 effective identity |
+| `contracts/myagents-dsh/` | 公共生成契约快照 |
+| `scripts/integrated-runtimes/` | handoff 准备、校验与构建选择 |
+| `src/server/integrated-runtimes/dsh/process-host.ts` | process/transport、握手与 reverse request |
+| `src/server/integrated-runtimes/dsh/runtime.ts` | AgentRuntime、native history、事件与操作 |
+| `src/server/integrated-runtimes/dsh/profile-compiler.ts` | Provider/model profile |
+| `src/server/integrated-runtimes/dsh/extension-compiler.ts` | Product capability 编译 |
+| `src/server/integrated-runtimes/dsh/host-ports.ts` | Host reverse port dispatcher |
+| `src/server/integrated-runtimes/dsh/attachments.ts` | 输入/输出引用与 lease |
+| `src/server/session-engine/` | adapter、root recovery、mutation 与产品 projection |
+| `src/server/runtimes/external-session/` | 共享 queue/config/interaction/transcript owners |
 
-### 8.2 Subscription providers
-
-- `anthropic-sub` requires the Claude Agent SDK path.
-- `codex-sub` requires managed Codex.
-- Settings/Launcher only save the template.
-- A live incompatible Session uses the existing confirm/new-Tab flow.
-- Explicit External Runtime selection continues to win over dormant subscription fields.
-
-No DSH request is attempted for either unsupported subscription route.
-
-### 8.3 Secret ownership
-
-Provider and MCP secrets remain in MyAgents authorities. DSH receives only opaque references in configuration. Runtime material requests use `host/credential/resolve` and receive request- or connection-scoped values.
-
-Secret material is never:
-
-- persisted in Session metadata or Runtime declarative snapshots;
-- written to logs, diagnostics, fixtures or support bundles;
-- inherited through broad process environment;
-- returned to the Renderer.
-
-`RuntimeProcessHost` therefore constructs an explicit child environment allowlist and removes Provider/MCP/API-key variables even if the current Sidecar inherited them for another Runtime. Credential material crosses only `host/credential/resolve` and is discarded when that request/connection scope settles.
-
-## 9. Host reverse ports
-
-`RuntimeProcessHost` registers these generated handlers before readiness:
-
-| Port | MyAgents implementation |
-| --- | --- |
-| `host/credential/resolve` | Provider/MCP credential owner with revision and authority checks |
-| `host/interaction/request` | Existing permission, AskUser and plan interaction store/UI |
-| `host/tool/execute` | Runtime-neutral Host tool dispatcher |
-| `host/hook/execute` | Existing Hook policy and lifecycle |
-| `host/attachment/put` | Product attachment store publication |
-| `host/attachment/acquire` | Scoped read-only attachment lease |
-| `host/attachment/release` | Exact lease settlement |
-
-The current managed-Codex Host dispatcher is useful implementation evidence, but it must be extracted into a runtime-neutral domain module before DSH consumes it. DSH calls still pass through DSH's one model-visible tool pipeline; the Host port is an executor boundary, not a second tool runtime.
-
-For non-DeepSeek model routes, MyAgents also supplies the approved Host-backed executor for the canonical `WebSearch`/`WebFetch` definitions when the DSH compatibility manifest requires it. DSH performs catalog registration, schema validation, visibility, permission, Hook, origin and terminal handling; MyAgents executes the governed web capability through `host/tool/execute`. A Session is not advertised with the complete 20-tool profile unless this backend is ready and has passed the joint contract campaign.
-
-Reverse calls are bounded, cancellable and generation-fenced. Host disconnect or timeout returns one protocol-defined failure and cannot leave a turn appearing idle.
-
-### 9.1 Permission and Plan ownership
-
-MyAgents keeps its product vocabulary and translates it at the DSH adapter boundary:
-
-| MyAgents product choice | DSH base permission mode | DSH Plan state |
-| --- | --- | --- |
-| `auto` | `acceptEdits` | normal |
-| `plan` | `acceptEdits` | enter/retain with `plan/apply` |
-| `fullAgency` | `bypassPermissions` | normal |
-
-Plan is not encoded as a DSH permission string. At Session birth, `plan` compiles the deterministic `acceptEdits` base and enters Plan before the first turn. When the user changes to or from `plan`, the SessionEngine adapter applies the corresponding base configuration plus `plan/apply` with current revision facts, waits for Runtime acknowledgement, and only then updates effective UI state. Stale revisions and mismatched Plan artifacts fail closed; desired/effective drift remains visible and retryable.
-
-Inline permission requests continue through `host/interaction/request`. One-shot allow/deny settles only that request. `always_allow` creates an exact durable Runtime rule. The adapter also exposes the generated `permission/rules/list`, `permission/rules/add`, and `permission/rules/revoke` operations so settings, diagnostics, or later policy UI can inspect and revoke authoritative Runtime state without scraping transcript events. Batch 3 need not add `default` or `dontAsk` to the ordinary desktop selector, but it must preserve them as valid protocol values and must not coerce them silently.
-
-Visibility and permission remain independent: hiding a tool is configuration; allowing it is execution policy. `fullAgency` removes interactive permission prompts but is not an OS sandbox and does not contain arbitrary Bash subprocess effects. Its UI copy must say this explicitly. Hard policy, origin/workspace/revision constraints and Hooks remain enforceable even in `fullAgency`.
-
-## 10. Events, transcript and conversation UI
-
-### 10.1 Serialized event inbox
-
-DSH `runtime/event` notifications enter one serialized inbox. The durable identity is:
-
-```text
-(productSessionId, runtimeSessionId, stable item/operation identity)
-```
-
-`(runtimeGeneration, sequence)` orders one generation but is not sufficient for cross-generation product-effect deduplication.
-
-### 10.2 Projection
-
-Project canonical DSH events into existing MyAgents domains:
-
-| DSH event | MyAgents projection |
-| --- | --- |
-| `assistant_delta` | assistant streaming text |
-| `thinking_delta` | reasoning block |
-| `tool start/update/end` | one existing tool block lifecycle |
-| `interaction` + reverse request | inline permission/question/plan block |
-| `queued_message` | existing queue item |
-| `usage/context` | usage and context UI |
-| `plan/task_graph/work/component` | existing Agent status/background projections |
-| `checkpoint/compaction/retry/warning` | existing status/error surfaces |
-| `turn_terminal` | the only authoritative turn terminal |
-
-If an event cannot be represented without losing user-visible semantics, extend `UnifiedEvent` and all exhaustive consumers. Do not serialize raw DSH protocol cards into the chat.
-
-### 10.3 Dual authorities without dual transcript
-
-DSH native history is the durable model-conversation authority for DSH resume. MyAgents `SessionStore` is the Product transcript authority for product UI, search and cross-feature linkage.
-
-This is a projection relationship, not two competing model transcripts:
-
-- MyAgents never reconstructs DSH native state from rendered transcript;
-- DSH never becomes the Product transcript store;
-- restore uses `session/resume` and `session/read` to reconcile native truth with idempotent Product projection;
-- success is not published upward until Runtime terminal truth and required Product persistence have both settled.
-
-### 10.4 Runtime-owned automatic and explicit compaction
-
-The accepted Runtime composition installs the official DSH `TokenMeter`, official `ToolResultPruner`, and official `BasicCompactionEngine` in that order, with `auto: true`; the locked DSH patch series strengthens capacity safety without moving ownership into MyAgents. DSH remains the only owner of pressure measurement, range selection, summary generation, durable surface replacement, overflow retry and compaction recovery.
-
-Automatic pressure is model-aware at each admitted request. The Runtime resolves the exact routed model profile, derives the current pressure threshold and verbatim-tail target from that model's context window, and handles provider-confirmed overflow through the same durable compaction authority. MyAgents supplies the admitted Provider/model capacity facts once through the exact execution profile; it must not maintain a second compaction threshold table, generate summaries, rewrite native history, or infer compaction success from reduced Product transcript length.
-
-MyAgents projects canonical compaction events and context metrics into its existing status/context surfaces. A user-initiated compact action calls `session/compact` only through the DSH SessionEngine capability at an idle/quiescent boundary and correlates its `clientOperationId` with durable Runtime settlement. Automatic and explicit compaction share the same DSH engine; the Host does not create a second memory subsystem or transcript. Repeated-compaction, restart continuity, provider-overflow and explicit-operation recovery are joint acceptance requirements for the exact staged artifact.
-
-## 11. Queue, steering and stop
-
-- Use the existing SessionEngine queue owner for Product admission.
-- Active DSH turns use protocol `turn/steer` only when current product policy selects steering.
-- Follow-ups use `turn/followUp` with stable message IDs.
-- Queue cancellation uses `turn/message/cancel`.
-- Stop uses the exact admitted `clientOperationId` with `turn/interrupt`; no global “current operation” guess is allowed.
-- The returned queue settlement and later terminal event are reconciled before the UI becomes idle.
-
-The current historical fallback that tries an External stop and then Builtin interrupt must not apply to a DSH-bound Session.
-
-## 12. Configuration and extension updates
-
-MyAgents maintains desired and effective revisions for:
-
-- Provider/model and reasoning;
-- permission mode and interaction scenario;
-- system prompt;
-- execution environment;
-- MCP, Skills, agents, commands, Hooks and Host tools.
-
-Apply according to negotiated DSH modes:
-
-- next-turn changes wait for or apply at a stable turn boundary;
-- restart-when-idle changes schedule a bounded Runtime replacement;
-- unsupported changes are rejected before updating effective UI;
-- failed apply leaves desired/effective drift visible and recoverable.
-
-Declarative extension snapshots contain only validated descriptors and references. Arbitrary Plugin JavaScript is never sent into DSH; trusted runtime plugins remain build-time DSH composition.
-
-## 13. Mutations and native history
-
-Fork, rewind and delete/purge use the DSH prepare/commit/status protocols plus existing Product owners.
-
-General transaction rule:
-
-1. MyAgents records Product intent and stable mutation ID;
-2. DSH prepares and returns its durable receipt/postconditions;
-3. MyAgents stages Product transcript/metadata/workspace changes;
-4. DSH and Product commits are coordinated in the method-specific order;
-5. crash recovery queries mutation status and resumes or rolls back;
-6. UI reports complete only after both authorities satisfy postconditions.
-
-Rewind's file rollback claim remains limited to governed root-origin Write/Edit. The UI and documentation must not imply shell, child or external modifications are rolled back.
-
-No operation ever resumes DSH native history using Claude SDK, Pi, managed Codex or an External CLI.
-
-## 14. Desktop and settings UX
-
-### 14.1 Runtime selector
-
-Reuse the current selector placement, grouped as:
-
-- Integrated: MyAgents (Claude Agent SDK), MyAgents (DSH);
-- External CLI: Claude Code, Codex, Gemini.
-
-Managed Codex is not listed. Pi is not listed until integrated.
-
-Each item uses the readiness result from the resolver/artifact verifier: ready, setup required, update required, unavailable, incompatible or experimental.
-
-### 14.2 Change behavior
-
-- Settings/Launcher: save Agent template; toast that a new Tab uses it.
-- Live compatible model change: preserve existing policy.
-- Live incompatible Provider/Runtime change: existing confirm dialog, preserve current Session, create a new Session and open its Tab.
-- Cancel: no template/session mutation.
-- Failed new birth: keep old Tab intact and show actionable error.
-
-### 14.3 Conversation
-
-DSH uses existing MessageList, composer, queue, stop, inline tool/permission/question/plan cards, attachment pipeline, history actions and status panel. Every visible control must call a real SessionEngine capability. Permission/AskUser cards settle through the reverse request exactly once; switching the product to Plan uses `plan/apply`, not a decorative local state; any exact always-allow rule shown by product UI is read from Runtime and is revocable through the generated rule API.
-
-## 15. IM, Agent Channel and automation
-
-### 15.1 IM/Agent Channel
-
-Generalize the current full runtime identity comparison to `EffectiveRuntimeBinding` compatibility:
-
-- compatible live config continues through the same Session;
-- incompatible identity change freezes the old Session;
-- a new UUID/binding is created;
-- the existing user notification is sent;
-- old owner is released only through current lifecycle authority;
-- message-time and Heartbeat checks remain fallback repair.
-
-### 15.2 Tasks, Cron, Goal and injected work
-
-Birth snapshots freeze the exact effective binding selected by the central resolver. Runtime changes do not rewrite already-running operations.
-
-All queues, cancellation, terminal reporting and owner release continue through SessionEngine. A DSH adapter cannot require the Renderer to be mounted.
-
-## 16. Persistence and migration
-
-Implementation introduces versioned schema migration for:
-
-- distribution policy/default;
-- Agent runtime preference;
-- Session effective binding;
-- Provider execution constraint/identity;
-- DSH native runtime metadata and projection cursor;
-- pending DSH operations and mutations.
-
-Migration requirements:
-
-- idempotent and restart-safe;
-- preserves old fields until all supported readers migrate;
-- never changes an existing Session's runtime semantics;
-- unknown binding becomes an explicit compatibility state;
-- legacy `builtin` remains Claude Agent SDK unless an existing managed-Codex projection proves otherwise;
-- backup/export/import retains frozen binding facts.
-
-## 17. Packaging, update and platform policy
-
-The MyAgents build stages the exact DSH Runtime directory; it does not bundle it as one guessed esbuild file. Tauri resources include its full verified inventory and notices. Resource staging is content-addressed by the committed handoff/Runtime digests and rejects symlinks, missing files, extra files and post-copy mutation.
-
-Supported claims:
-
-- macOS arm64, Windows x64 and Linux x64 are all `implementation-complete_pending-native-validation` in the supplied formal `2.0.0` handoff;
-- MyAgents may mark a platform path verified only after an updated exact handoff carries passing native Runtime evidence and MyAgents' own packaged smoke passes against that nested manifest;
-- the UI must not turn “implementation complete” into “verified”.
-
-Updates are atomic and side-by-side by artifact identity. Existing Sessions may require their compatible artifact to remain available. Garbage collection cannot remove an artifact referenced by a retained executable Session.
-
-## 18. Security and observability
-
-Structured logs include:
-
-- Product Session and Sidecar/Runtime generation;
-- resolver decision codes;
-- artifact/protocol/profile identities;
-- request method, operation/item/interaction identity and duration;
-- queue/stop/config/mutation state;
-- process exit and reconciliation result.
-
-Logs exclude:
-
-- credentials and authorization material;
-- prompt, assistant, thinking and tool payload text;
-- raw attachment bytes and user file contents;
-- private system prompts and arbitrary Provider error bodies.
-
-The support surface exposes redacted readiness and lifecycle facts plus recovery actions. A DSH failure must be diagnosable without opening the Runtime's durable conversation files.
-
-## 19. Proposed code ownership map
-
-Suggested paths; exact names may change without changing owners:
-
-```text
-src/shared/integrated-runtimes/
-  identity.ts
-  distribution-policy.ts
-  resolver.ts
-  provider-constraints.ts
-  dsh-compatibility.ts
-  dsh-lock.json
-
-scripts/integrated-runtimes/
-  ingest-dsh-handoff.mjs
-  verify-dsh-resources.mjs
-
-src/server/integrated-runtimes/dsh/
-  adapter.ts
-  process-host.ts
-  generated-client.ts
-  host-ports.ts
-  event-projector.ts
-  profile-compiler.ts
-  extension-compiler.ts
-  lifecycle.ts
-  mutations.ts
-
-src/server/session-engine/
-  selector.ts
-  types.ts
-
-src-tauri/src/sidecar/
-  runtime_identity.rs
-  session_lifecycle.rs
-  types.rs
-```
-
-Likely shared refactors:
-
-- generalize `src/shared/providerExecution.ts` from Codex-only execution intent;
-- replace binary `shouldUseExternalRuntime` decisions at product seams;
-- extract the Host tool dispatcher from managed-Codex-specific placement;
-- extend `UnifiedEvent` only for proven projection gaps;
-- preserve current Chat/Launcher/Agent Settings transition components;
-- update build-resource staging and Tauri resource manifests;
-- verify the single bundled Node against the exact Runtime requirement and pin MyAgents' bundled npm distribution independently before DSH process work begins.
-
-## 20. Verification and release gates
-
-### 20.1 Deterministic tests
-
-- distribution policy and resolver matrix;
-- all legal/illegal legacy identity conversions;
-- explicit External versus dormant subscription precedence;
-- `anthropic-sub` and `codex-sub` required-runtime behavior;
-- Settings/Launcher versus active Chat transition behavior;
-- frozen Session behavior with selector hidden and with distribution exclusion;
-- DSH handshake/artifact/schema/capability mismatch;
-- exact handoff ingestion, generated-diff, complete-inventory, bundled-Node mismatch rejection, and deterministic bundled-npm resource validation;
-- native DeepSeek plus every explicitly allowlisted pi-ai Provider/model cell, including rejection of catalog-only and OAuth/cloud cells;
-- generated RPC client, reverse ports and cancellation;
-- event ordering, reconnect replay and cross-generation dedupe;
-- queue/follow-up/steer/stop races;
-- configuration desired/effective transitions;
-- all four DSH base permission modes, accepted `auto/plan/fullAgency` mappings, Plan enter/exit/retry/stale revision, exact rule add/list/revoke/restart, interaction settlement and timeout;
-- `fullAgency` still obeys hard policy, origin/workspace/revision constraints and Host Hook deny;
-- automatic model-aware compaction, explicit `session/compact`, repeated-compaction/restart continuity, provider-overflow recovery, and rejection of any Host-owned summary or pressure policy;
-- transcript terminal/persistence failure reconciliation;
-- fork/rewind/delete crash points;
-- IM rotation and Heartbeat fallback;
-- artifact staging/path/symlink/tamper rejection;
-- credential canaries and log redaction.
-
-Default tests use fake model and Host adapters, temporary homes/workspaces and no real network or credentials.
-
-### 20.2 Product integration campaigns
-
-Against the exact staged DSH artifact:
-
-- J1–J18 from the accepted PRD;
-- Desktop, IM, Task/Cron, Goal, Inbox and injected entry points;
-- ordinary Provider routes for every advertised API-family cell;
-- permission and AskUser inline, Host Plan transitions, exact always-allow rule creation/revocation, and no inert permission controls;
-- tools, MCP, Skills, Host tools, Hooks, attachment/image;
-- restart/resume, operation uncertainty and mutation recovery;
-- packaged macOS arm64 smoke and native Windows/Linux campaigns before verified claims;
-- bounded soak with process/memory/file-descriptor checks.
-
-### 20.3 Repository gates
-
-At promotion:
-
-```bash
-npm run typecheck
-npm run lint
-npm test
-npm run build
-```
-
-Also run MyAgents packaging/resource verification, Rust tests, DSH/MyAgents cross-contract conformance, generated-diff checks and native platform smoke required by the release candidate.
-
-## 21. Implementation sequence
-
-1. Preserve the current dirty worktree, verify every single-bundled-Node version authority at `24.14.0`, pin the separately owned bundled-npm resource, and land explicit-path exact handoff ingestion/resource verification.
-2. Land identity, distribution policy, resolver and legal/illegal legacy fixtures.
-3. Generalize Provider execution constraints and preserve existing transition behavior.
-4. Land the exact Provider/model cell compiler plus the formal `2.0.0` generated protocol client.
-5. Build `RuntimeProcessHost`, reverse ports, sanitized child environment and handshake.
-6. Build the DSH SessionEngine adapter, serialized event inbox, projection and transcript reconciliation.
-7. Connect queue/steer/follow-up/stop, configuration, interactions, Host Plan, exact permission-rule management, extensions and Host canonical web.
-8. Connect mutation and recovery protocols.
-9. Migrate every non-Desktop entry point through the same resolver/adapter.
-10. Expose grouped selector/readiness and existing new-Tab behavior.
-11. Run deterministic, packaged and cross-repository J1–J18 acceptance; only then allow controlled rollout.
-
-Each step updates an implementation ledger in this document or a linked dev plan. Partial code does not make DSH selectable.
-
-### 21.1 Implementation ledger
-
-| ID | Action | Status |
-| --- | --- | --- |
-| MA-B3-RFC | Current-code and exact-handoff technical review | `complete` |
-| MA-B3-H0 | Node/npm resource authority, formal `2.0.0` handoff ingest, lock and resource verifier | `not_started` |
-| MA-B3-H1 | Runtime identity, policy, resolver and persistence migration | `not_started` |
-| MA-B3-H2 | Provider constraints and exact DSH profile compiler | `not_started` |
-| MA-B3-H3 | RuntimeProcessHost, 40-method formal `2.0.0` generated client and seven reverse ports | `not_started` |
-| MA-B3-H4 | SessionEngine adapter, projection, queue/config/interaction/mutation/recovery | `not_started` |
-| MA-B3-H4P | `auto/plan/fullAgency` translation, Host Plan and exact permission-rule adapter | `not_started` |
-| MA-B3-H5 | Desktop/IM/Task/Goal/Inbox UI and entrypoint integration | `not_started` |
-| MA-B3-H6 | Packaged cross-repository J1–J18 acceptance | `not_started` |
-
-## 22. PRD traceability
-
-| PRD requirement | This RFC |
-| --- | --- |
-| P0-01 taxonomy | Sections 3, 5 |
-| P0-02 policy/default | Section 4 |
-| P0-03 preference/binding | Sections 3, 16 |
-| P0-04 central resolution | Sections 4.3, 5.3 |
-| P0-05 DSH adapter | Sections 5–6 |
-| P0-06 Host ports | Section 9 |
-| P0-07 product UI | Sections 10, 14 |
-| P0-08 compatibility/readiness | Sections 7–8, 17 |
-| P0-09 lifecycle/recovery | Sections 6, 11 |
-| P0-10 mutations/history | Sections 13, 16 |
-| P0-11 security/provenance | Sections 7, 8.3, 17–18 |
-| P0-12 observability | Section 18 |
-| P0-13 permission/Plan control plane | Sections 9.1, 12, 14.3 and 20 |
-| P1-01 future Pi | Sections 3.1, 5.1; no Batch 3 UI |
-
-## 23. Definition of done
-
-The MyAgents side is complete only when:
-
-- DSH is resolved as an Integrated Runtime through one central policy;
-- old Session and Agent data migrate without semantic reclassification;
-- all product entry points execute through the DSH SessionEngine adapter;
-- standard conversation UI exposes only real, working capabilities;
-- Provider subscriptions follow the confirmed required-runtime/new-Session behavior;
-- exact DSH artifact/protocol/compatibility facts are verified before admission;
-- the application uses the Runtime's accepted exact Node version and contains no second bundled Node or unverified version bypass;
-- MyAgents' bundled npm resource is independently pinned and verified; it is never inferred from DSH build provenance or a floating registry tag;
-- lifecycle, queue/stop, interactions, configuration, projection and mutations pass fault-injected tests;
-- `auto/plan/fullAgency` are mapped to real Runtime behavior; Plan and exact rules use generated formal `2.0.0` methods; the UI makes no OS-sandbox claim;
-- automatic and explicit compaction remain DSH-owned, while MyAgents exposes real status/control projection without a second memory or summary engine;
-- J1–J18 pass against pinned MyAgents and DSH commits;
-- release/platform claims match native evidence;
-- DSH remains controlled rollout and Claude Agent SDK remains the general default for this development release.
-
-## 24. References
-
-- `../../../MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md`
-- `../../../MyAgents-dsh/specs/prd/tech_rfc_0.3_myagents_dsh_integration.md`
-- `../../../MyAgents-dsh/specs/tech_docs/permissions-and-interactions.md`
-- `../../../MyAgents-dsh/specs/tech_docs/compaction-architecture.md`
-- `../../../MyAgents-dsh/specs/tech_docs/runtime-protocol.md`
-- `../../../MyAgents-dsh/specs/tech_docs/artifact-verification-and-handoff.md`
-- `../ARCHITECTURE.md`
-- `./multi_agent_runtime.md`
-- `../prd/prd_0.1_pi_native_agent_runtime_myagents_integration.md`
-- `../prd/prd_0.1_pi_native_agent_runtime_myagents_integration_technical_rfc.md`
+默认 unit/integration 使用 fake model、隔离目录和 loopback fixture；覆盖握手与失配、generation retirement、admission uncertainty、恢复、权限、steer、附件与联合 mutation。真实 Provider/native smoke 必须显式执行，结果只证明对应 artifact、平台与模型。构建验证不代替真实桌面交互验收，也不在状态文档固化某次测试数量、源码 hash 或机器记录。

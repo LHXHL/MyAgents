@@ -1,7 +1,16 @@
+import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
+import type { RuntimeAgentWorkControl, RuntimeAgentWorkTree } from '../../shared/types/subagent-lifecycle';
 import type { AsyncQuestionReply } from '../../shared/asyncUserQuestions';
 import type { BackgroundAgentPermissionMode, ProxySettings } from '../../shared/config-types';
-import type { RuntimeConfig, RuntimeSource } from '../../shared/types/runtime';
-import type { RuntimeType } from '../../shared/types/runtime';
+import type {
+  RuntimeConfig,
+  RuntimeExtensionDiagnostics,
+  RuntimePermissionRuleMutationResult,
+  RuntimePermissionRulesSnapshot,
+  RuntimePermissionDiagnostics,
+  RuntimeSource,
+  RuntimeType,
+} from '../../shared/types/runtime';
 import type { McpServerDefinition } from '../../shared/config-types';
 import type { ProviderEnv } from '../provider-types';
 import type { InteractionScenario } from '../system-prompt';
@@ -25,10 +34,9 @@ import type {
   TurnTerminalObserver,
 } from '../session-core/turn-queue';
 import type { AssistantChannelDelivery } from '../session-core/channel-delivery';
-import type { RuntimeExtensionDiagnostics } from '../../shared/types/runtime';
 import type { ImBridgeTurnContext } from '../session-core/im-bridge-types';
 
-export type SessionEngineKind = 'builtin' | 'external';
+export type SessionEngineKind = 'builtin' | 'integrated' | 'external';
 
 export type { PermissionMode } from '../agent-session';
 
@@ -299,6 +307,8 @@ export type SessionEngineConfigSnapshot = {
   agentNames: string[] | null;
   enabledPluginIds?: string[] | null;
   extensionStatus?: RuntimeExtensionDiagnostics;
+  /** Non-sensitive desired/effective Runtime permission reconciliation. */
+  permissionStatus?: RuntimePermissionDiagnostics;
   enabledOfficialToolIds: OfficialToolId[] | null;
   permissionMode: string | null;
   providerId: string | null;
@@ -375,12 +385,18 @@ export type CapabilityOperationResult = {
   rewindScope?: 'conversation-only';
 };
 
+export type ForkConversationOptions = {
+  /** Product Session identity allocated by the caller for transport-loss reconciliation. */
+  targetSessionId?: string;
+};
+
 export type ConversationOperationErrorCode =
   | 'unsupported_runtime'
   | 'codex_update_required'
   | 'session_busy'
   | 'anchor_unavailable'
   | 'native_fork_failed'
+  | 'native_mutation_failed'
   | 'persistence_failed'
   | 'storage_consistency_error'
   | 'restore_failed';
@@ -394,6 +410,7 @@ export interface SessionEngine {
   getLatestAssistantResult(): Promise<SessionEngineLatestResult>;
   getStreamReplaySnapshot(): SessionEngineStreamReplaySnapshot;
   getSessionConfigSnapshot(): SessionEngineConfigSnapshot;
+  inspectRuntime?(runtime: RuntimeType): Promise<import('../../shared/types/runtime').RuntimeInspection | null>;
   getCurrentSessionContext(): SessionEngineCurrentContext;
   getSessionOrigin(sessionId: string): SessionOrigin | undefined;
   ensureRegisteredAgentSessionOrigin(
@@ -422,8 +439,23 @@ export interface SessionEngine {
   forceQueuedMessage(queueId: string): Promise<boolean>;
   getQueueStatus(): QueueStatusItem[];
   waitIdle(timeoutMs: number, pollMs?: number): Promise<boolean>;
+  applyModelSelection(input: { model: string; providerEnv?: ProviderEnv; reasoningEffort?: string }): Promise<{ success: boolean; status?: string; error?: string }>;
   updateModel(model: string, opts?: { imConfigSync?: boolean }): Promise<{ success: boolean; error?: string }>;
   updatePermissionMode(mode: string): Promise<{ success: boolean; error?: string }>;
+  /** Optional because only Runtimes with an authoritative exact-rule API expose it. */
+  listAgentWork?(tasksFor?: string): Promise<RuntimeAgentWorkTree>;
+  controlAgentWork?(input: RuntimeAgentWorkControl): Promise<void>;
+  listPermissionRules?(): Promise<RuntimePermissionRulesSnapshot>;
+  addPermissionRule?(input: Readonly<{
+    expectedRevision: string;
+    tool: string;
+    permissionClass: string;
+    target: string;
+  }>): Promise<RuntimePermissionRuleMutationResult>;
+  revokePermissionRule?(input: Readonly<{
+    expectedRevision: string;
+    ruleId: string;
+  }>): Promise<RuntimePermissionRuleMutationResult>;
   updateReasoningEffort(effort: string): Promise<{ success: boolean; error?: string }>;
   updateOfficialToolIds(ids: OfficialToolId[] | null): Promise<{ success: boolean; error?: string; skipped?: string }>;
   updateProxyConfig(proxySettings: ProxySettings | null): Promise<{ success: boolean; error?: string; skipped?: string }>;
@@ -450,13 +482,17 @@ export interface SessionEngine {
     decision: 'deny' | 'allow_once' | 'always_allow',
     reason?: string,
   ): Promise<boolean>;
-  respondAskUserQuestion(requestId: string, answers: Record<string, string> | null): Promise<boolean>;
+  respondAskUserQuestion(requestId: string, answers: AskUserQuestionAnswers | null): Promise<boolean>;
+  respondPlanApproval(requestId: string, approved: boolean, feedback?: string): Promise<boolean>;
   retryUserMessage(userMessageId: string, options?: DesktopRetryOptions): Promise<CapabilityOperationResult>;
   rewindToUserMessage(userMessageId: string): Promise<CapabilityOperationResult>;
-  forkAtAssistantMessage(messageId: string, targetSessionId?: string): Promise<CapabilityOperationResult>;
+  forkAtAssistantMessage(
+    messageId: string,
+    options?: ForkConversationOptions,
+  ): Promise<CapabilityOperationResult>;
   updateProviderEnv(providerEnv: ProviderEnv | undefined): Promise<{ success: boolean; skipped?: string; error?: string }>;
   updateMcpServers(servers: McpServerDefinition[]): Promise<{ success: boolean; servers?: string[]; skipped?: string; error?: string }>;
-  updateAgents(agents: Record<string, unknown>): Promise<{ success: boolean; skipped?: string; error?: string }>;
+  updateAgents(agents: Record<string, unknown>, options?: { forceReload?: boolean }): Promise<{ success: boolean; skipped?: string; error?: string }>;
   updateEnabledPluginIds(ids: string[] | null): Promise<{ success: boolean; enabledIds?: string[] | null; skipped?: string; error?: string }>;
   updateDesktopInteractionScenario(
     scenario: Extract<InteractionScenario, { type: 'desktop' }>,

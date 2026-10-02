@@ -524,8 +524,6 @@ impl TelegramAdapter {
             "commands": [
                 { "command": "new", "description": "开始新对话" },
                 { "command": "model", "description": "查看或切换 AI 模型" },
-                { "command": "provider", "description": "查看或切换 AI 供应商" },
-                { "command": "mode", "description": "查看或切换权限模式" },
                 { "command": "status", "description": "查看当前状态" },
                 { "command": "help", "description": "查看所有命令" }
             ]

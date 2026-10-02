@@ -26,6 +26,32 @@ function makeAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
 }
 
 describe('createMaterializedSessionMetadata', () => {
+  it('materializes DSH with an authoritative binding while retaining ordinary Provider facts', () => {
+    const meta = createMaterializedSessionMetadata({
+      agentDir: '/tmp/workspace',
+      sessionId: 'dsh-session-id',
+      scenario: 'desktop',
+      agent: makeAgent({
+        runtime: 'dsh',
+        providerId: 'anthropic-api',
+        model: 'claude-sonnet-4-6',
+        permissionMode: 'plan',
+      }),
+      runtimeOverride: 'dsh',
+      runtimeSourceOverride: 'integrated',
+    });
+
+    expect(meta.runtime).toBe('dsh');
+    expect(meta.runtimeSource).toBe('integrated');
+    expect(meta.runtimeBinding).toMatchObject({ family: 'integrated', id: 'dsh' });
+    expect(meta.providerRoute).toEqual({
+      kind: 'provider',
+      providerId: 'anthropic-api',
+      model: 'claude-sonnet-4-6',
+    });
+    expect(meta.permissionMode).toBe('plan');
+  });
+
   it('binds owned metadata to the live Sidecar identity after Agent config drifts', () => {
     const staleAgentSnapshot = {
       runtime: 'builtin' as const,
@@ -41,7 +67,7 @@ describe('createMaterializedSessionMetadata', () => {
     });
   });
 
-  it('materializes published IM reset ids as live-follow sessions', () => {
+  it('materializes published IM reset ids as complete owned sessions', () => {
     const meta = createMaterializedSessionMetadata({
       agentDir: '/tmp/workspace',
       sessionId: 'fixed-session-id',
@@ -52,9 +78,9 @@ describe('createMaterializedSessionMetadata', () => {
     expect(meta.id).toBe('fixed-session-id');
     expect(meta.title).toBe('New Chat');
     expect(meta.runtime).toBe('codex');
-    expect(meta.model).toBeUndefined();
-    expect(meta.permissionMode).toBeUndefined();
-    expect(meta.configSnapshotAt).toBeUndefined();
+    expect(meta.model).toBe('gpt-5.1-codex');
+    expect(meta.permissionMode).toBe('no-restrictions');
+    expect(meta.configSnapshotAt).toBeTruthy();
     expect(meta.origin).toEqual({ kind: 'agent-channel', surface: 'channel_message' });
   });
 
@@ -86,8 +112,8 @@ describe('createMaterializedSessionMetadata', () => {
         model: 'claude-opus-4-7',
         permissionMode: 'fullAgency',
         runtimeConfig: {
-          model: 'gemini-3.1-pro-preview',
-          permissionMode: 'yolo',
+          model: 'claude-sonnet-4-5',
+          permissionMode: 'bypassPermissions',
         },
       }),
       runtimeOverride: 'codex',
@@ -124,7 +150,7 @@ describe('createMaterializedSessionMetadata', () => {
     expect(meta.origin).toEqual({ kind: 'desktop', surface: 'launcher_input' });
   });
 
-  it('materializes live-follow managed Codex as provider-backed runtime identity', () => {
+  it('materializes owned managed Codex as provider-backed runtime identity', () => {
     const meta = createMaterializedSessionMetadata({
       agentDir: '/tmp/workspace',
       sessionId: 'managed-codex-session-id',
@@ -142,13 +168,14 @@ describe('createMaterializedSessionMetadata', () => {
 
     expect(meta.runtime).toBe('codex');
     expect(meta.runtimeSource).toBe('managed-provider');
-    expect(meta.model).toBeUndefined();
-    expect(meta.providerExecutionIdentity).toBeUndefined();
+    expect(meta.model).toBe('gpt-5.4-codex');
+    expect(meta.providerExecutionIdentity).toMatchObject({ providerId: 'codex-sub', model: 'gpt-5.4-codex' });
+    expect(meta.configSnapshotAt).toBeTruthy();
   });
 
-  it('classifies IM, agent-channel, and registeredAgent scenarios as live-follow', () => {
-    expect(isLiveFollowScenario('im')).toBe(true);
-    expect(isLiveFollowScenario('agent-channel')).toBe(true);
+  it('only classifies registeredAgent as live-follow', () => {
+    expect(isLiveFollowScenario('im')).toBe(false);
+    expect(isLiveFollowScenario('agent-channel')).toBe(false);
     expect(isLiveFollowScenario('registeredAgent')).toBe(true);
     expect(isLiveFollowScenario('desktop')).toBe(false);
     expect(isLiveFollowScenario('cron')).toBe(false);

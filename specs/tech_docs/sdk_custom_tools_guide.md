@@ -1,6 +1,6 @@
 # In-process MCP 工具架构
 
-MyAgents 的 builtin custom tools 以 MCP server handler 为复用边界。Builtin Claude 通过 Claude Agent SDK 的 in-process MCP transport 使用它们；Managed Codex 把同一个 `McpServer` 接到内存 MCP client，再投影为 Codex dynamic tools。
+MyAgents 的 builtin custom tools 以 MCP server handler 为复用边界。Builtin Claude 通过 Claude Agent SDK 的 in-process MCP transport 使用它们；Managed Codex 与 Integrated DSH 经共享 `product-extensions` dispatcher，把同一 handler 投影到各自的原生 Host tool 协议。
 
 本文不维护完整工具清单。当前注册项以 `src/server/tools/builtin-mcp-meta.ts`、动态 Channel owner 和测试为准。
 
@@ -91,7 +91,7 @@ Live mutation 由单一 mutation owner 串行化，有 timeout、fingerprint 和
 
 ## Managed Codex 复用
 
-`src/server/runtimes/managed-codex/extensions/host-dispatcher.ts` 不重写 builtin handler：
+`src/server/runtimes/product-extensions/host-dispatcher.ts` 是共用执行 owner；Managed Codex 的同名模块只转发这个入口，不重写 builtin handler：
 
 1. 取得同一个 `McpServer` instance；
 2. 用 linked `InMemoryTransport` 建立 MCP Client/Server connection；
@@ -105,6 +105,8 @@ Codex 保留 `mcp` / `mcp__*` namespace，因此 host tool 使用独立的 `myag
 同一 cached server reconnect 前要等待上一 connection 完整关闭；否则共享 `McpServer` 会发生 generation 间 transport 竞争。
 
 其它 external Runtime 没有等价 host-tool protocol 时，不得假装 in-process MCP 已跨 Runtime 可用。是否支持必须由 adapter capability 明确表达。
+
+Integrated DSH 使用同一 discovery/dispatcher，但由 DSH compiler 创建 `host_tool` 声明，reverse port 把原生调用交给共享 handler。声明、实际调用与输出附件分别按 generation 校验，不复用 Codex wire name。
 
 ## 不应恢复的旧 surface
 

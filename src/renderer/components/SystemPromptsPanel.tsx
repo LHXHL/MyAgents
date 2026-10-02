@@ -5,7 +5,17 @@
  * Uses Tab-scoped API when in Tab context, falls back to global API otherwise.
  */
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
-import { Save, Edit2, X, Plus, AlertCircle, Loader2, Trash2, Sparkles, FolderArchive } from 'lucide-react';
+import {
+  SaveIcon,
+  EditIcon,
+  CloseIcon,
+  PlusIcon,
+  AlertIcon,
+  LoaderIcon,
+  TrashIcon,
+  CapabilitiesIcon,
+  FolderArchiveIcon,
+} from '@/components/icons';
 import { useCallback, useEffect, useState, useImperativeHandle, forwardRef, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -359,7 +369,7 @@ const SystemPromptsPanel = forwardRef<SystemPromptsPanelRef, SystemPromptsPanelP
         if (error && !loading) {
             return (
                 <div className="flex h-full flex-col items-center justify-center gap-4 p-8">
-                    <AlertCircle className="h-12 w-12 text-[var(--error)]" />
+                    <AlertIcon className="h-12 w-12 text-[var(--error)]" />
                     <p className="text-sm text-[var(--ink-muted)]">{error}</p>
                 </div>
             );
@@ -495,7 +505,7 @@ const SystemPromptsPanel = forwardRef<SystemPromptsPanelRef, SystemPromptsPanelP
                                 }}
                                 className="flex items-center gap-1 rounded-md px-2 py-1.5 text-xs text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper)] hover:text-[var(--ink)]"
                             >
-                                <Plus className="h-3.5 w-3.5" />
+                                <PlusIcon className="h-3.5 w-3.5" />
                             </button>
                             {addTipPos && (
                                 <div
@@ -528,7 +538,7 @@ const SystemPromptsPanel = forwardRef<SystemPromptsPanelRef, SystemPromptsPanelP
                                             onClick={() => setDeleteTarget(activeFile.type === 'rule' ? activeFile.filename : null)}
                                             className="flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--error)]/10 hover:text-[var(--error)]"
                                         >
-                                            <Trash2 className="h-3.5 w-3.5" />
+                                            <TrashIcon className="h-3.5 w-3.5" />
                                             {t('agentSettings.common.delete')}
                                         </button>
                                     )}
@@ -537,7 +547,7 @@ const SystemPromptsPanel = forwardRef<SystemPromptsPanelRef, SystemPromptsPanelP
                                         onClick={handleCancel}
                                         className="flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]"
                                     >
-                                        <X className="h-3.5 w-3.5" />
+                                        <CloseIcon className="h-3.5 w-3.5" />
                                         {t('agentSettings.common.cancel')}
                                     </button>
                                     <button
@@ -546,7 +556,7 @@ const SystemPromptsPanel = forwardRef<SystemPromptsPanelRef, SystemPromptsPanelP
                                         disabled={saving}
                                         className="flex items-center gap-1 rounded-lg bg-[var(--button-primary-bg)] px-2.5 py-1 text-xs font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
                                     >
-                                        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                                        {saving ? <LoaderIcon className="h-3.5 w-3.5 animate-spin" /> : <SaveIcon className="h-3.5 w-3.5" />}
                                         {t('agentSettings.common.save')}
                                     </button>
                                 </>
@@ -556,7 +566,7 @@ const SystemPromptsPanel = forwardRef<SystemPromptsPanelRef, SystemPromptsPanelP
                                     onClick={handleEdit}
                                     className="flex items-center gap-1 rounded-lg bg-[var(--button-dark-bg)] px-2.5 py-1 text-xs font-medium text-[var(--button-dark-text)] transition-colors hover:bg-[var(--button-dark-bg-hover)]"
                                 >
-                                    <Edit2 className="h-3.5 w-3.5" />
+                                    <EditIcon className="h-3.5 w-3.5" />
                                     {t('agentSettings.common.edit')}
                                 </button>
                             )}
@@ -568,7 +578,7 @@ const SystemPromptsPanel = forwardRef<SystemPromptsPanelRef, SystemPromptsPanelP
                 <div className="flex-1 overflow-hidden">
                     {loading ? (
                         <div className="flex h-full items-center justify-center">
-                            <Loader2 className="h-8 w-8 animate-spin text-[var(--ink-muted)]" />
+                            <LoaderIcon className="h-8 w-8 animate-spin text-[var(--ink-muted)]" />
                         </div>
                     ) : !exists && !isEditing ? (
                         isClaudeMd ? (
@@ -593,7 +603,7 @@ const SystemPromptsPanel = forwardRef<SystemPromptsPanelRef, SystemPromptsPanelP
                                             className="group flex cursor-pointer flex-col gap-1.5 rounded-xl bg-[var(--paper-elevated)] px-4 py-3.5 text-left transition-shadow hover:shadow-sm"
                                         >
                                             <div className="flex items-center gap-2">
-                                                <Sparkles className="h-4 w-4 shrink-0 text-amber-500" />
+                                                <CapabilitiesIcon className="h-4 w-4 shrink-0 text-amber-500" />
                                                 <h4 className="text-base font-semibold text-[var(--ink)]">{t('agentSettings.systemPrompts.generateTitle')}</h4>
                                                 <span className="rounded-full bg-[var(--accent-warm-subtle)] px-2 py-0.5 text-xs font-medium text-[var(--accent)]">{t('agentSettings.systemPrompts.recommended')}</span>
                                             </div>
@@ -610,7 +620,7 @@ const SystemPromptsPanel = forwardRef<SystemPromptsPanelRef, SystemPromptsPanelP
                                         className="group flex cursor-pointer flex-col gap-1.5 rounded-xl bg-[var(--paper-elevated)] px-4 py-3.5 text-left transition-shadow hover:shadow-sm"
                                     >
                                         <div className="flex items-center gap-2">
-                                            <FolderArchive className="h-4 w-4 shrink-0 text-amber-500" />
+                                            <FolderArchiveIcon className="h-4 w-4 shrink-0 text-amber-500" />
                                             <h4 className="text-base font-semibold text-[var(--ink)]">{t('agentSettings.systemPrompts.templateTitle')}</h4>
                                         </div>
                                         <p className="text-sm leading-relaxed text-[var(--ink-muted)]">
@@ -623,7 +633,7 @@ const SystemPromptsPanel = forwardRef<SystemPromptsPanelRef, SystemPromptsPanelP
                                         className="group flex cursor-pointer flex-col gap-1.5 rounded-xl bg-[var(--paper-elevated)] px-4 py-3.5 text-left transition-shadow hover:shadow-sm"
                                     >
                                         <div className="flex items-center gap-2">
-                                            <Edit2 className="h-4 w-4 shrink-0 text-amber-500" />
+                                            <EditIcon className="h-4 w-4 shrink-0 text-amber-500" />
                                             <h4 className="text-base font-semibold text-[var(--ink)]">{t('agentSettings.systemPrompts.manualTitle')}</h4>
                                         </div>
                                         <p className="text-sm leading-relaxed text-[var(--ink-muted)]">
@@ -649,7 +659,7 @@ const SystemPromptsPanel = forwardRef<SystemPromptsPanelRef, SystemPromptsPanelP
                                     onClick={handleEdit}
                                     className="mt-2 flex items-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-4 py-2 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)]"
                                 >
-                                    <Edit2 className="h-4 w-4" />
+                                    <EditIcon className="h-4 w-4" />
                                     {t('agentSettings.systemPrompts.createFile', { filename: activeFilename })}
                                 </button>
                             </div>

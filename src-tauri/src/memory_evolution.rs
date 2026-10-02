@@ -746,7 +746,7 @@ mod tests {
     async fn reconcile_replaces_legacy_execution_identity_in_place() {
         task::ensure_test_docs_root();
         for kind in [MANAGED_KIND_MEMORY_GARDENER, MANAGED_KIND_MEMORY_MOLT] {
-            for runtime in [Some("builtin"), Some("codex"), Some("gemini"), None] {
+            for runtime in [Some("builtin"), Some("codex"), Some("claude-code"), None] {
                 let dir = tempfile::tempdir().unwrap();
                 let id = uuid::Uuid::new_v4().to_string();
                 let legacy: task::Task = serde_json::from_value(serde_json::json!({

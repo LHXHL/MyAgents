@@ -5,7 +5,7 @@
  * portals to <body> and auto-flips when there isn't room below.
  */
 
-import { Check, ChevronDown } from 'lucide-react';
+import { CheckIcon, ChevronDownIcon } from '@/components/icons';
 import { type ReactNode, useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -138,7 +138,7 @@ export default function CustomSelect({
         {showSelectedSuffix && selectedOption?.suffix && (
           <span className="shrink-0">{selectedOption.suffix}</span>
         )}
-        <ChevronDown
+        <ChevronDownIcon
           className={`h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)] transition-transform ${isOpen ? 'rotate-180' : ''}`}
         />
       </button>
@@ -197,7 +197,7 @@ export default function CustomSelect({
                   )}
                 </span>
                 {option.value === value && (
-                  <Check data-selected-indicator className="h-3 w-3 shrink-0" />
+                  <CheckIcon data-selected-indicator className="h-3 w-3 shrink-0" />
                 )}
                 <span className="min-w-0 flex-1" />
                 {option.suffix && (

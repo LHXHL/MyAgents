@@ -384,10 +384,6 @@
     "routeInvalid": "这个应用内链接无法识别"
   },
   "contextUsage": {
-    "windowDefault": "未配置上限，按默认 {{window}} 估算",
-    "windowRuntime": "窗口 {{window}} · runtime 实时",
-    "windowModelConfig": "窗口 {{window}} 来自模型配置",
-    "autoCompactFootnote": "{{windowDesc}} · 约 {{threshold}} 时自动压缩",
     "aria": "上下文已使用 {{percent}}%",
     "title": "上下文用量",
     "compactTip": "智能压缩上下文，提供更大可用空间",

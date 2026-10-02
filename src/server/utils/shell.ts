@@ -5,7 +5,6 @@ import { getMyAgentsNpmGlobalBinDir } from './npm-prefix-env';
 import { getBundledNodeDir } from './runtime';
 
 const isWindows = process.platform === 'win32';
-const PATH_SEPARATOR = isWindows ? ';' : ':';
 const PATH_KEY = isWindows ? 'Path' : 'PATH';
 
 type PathPlatform = NodeJS.Platform;
@@ -116,9 +115,8 @@ export function getFallbackPaths(options: FallbackPathOptions = {}): string[] {
 
     // Attempt to resolve NVM paths manually if exists.
     // Add ALL installed versions (sorted highest-first so the newest takes PATH priority).
-    // Why all versions: `zsh -l -c` doesn't source .zshrc (non-interactive), so shell PATH
-    // detection misses NVM. If we only add the highest version but the user installed
-    // claude/codex on a different version, detection fails.
+    // Used only after the inherited/detected PATH, including when shell discovery
+    // fails. Never let this version ordering override the user's selected Node.
     if (home) {
         const nvmDir = joinForPlatform(platform, home, '.nvm', 'versions', 'node');
         if (exists(nvmDir)) {
@@ -155,25 +153,45 @@ export function getFallbackPaths(options: FallbackPathOptions = {}): string[] {
 }
 
 /**
- * Builds the "fallback PATH": platform fallback directories ∪ process.env.PATH.
- * Pure string construction, always fast. Used on first access (before the
- * async shell-interactive detection completes) and as baseline prefix even
- * after detection — detected entries are appended, not replaced.
+ * Preserve the selected shell's directory order, then append missing inherited
+ * and fallback directories. Rust system_binary uses the same fixture cases.
  */
+export function mergeSearchPaths(options: {
+    platform: PathPlatform;
+    inheritedPath: string;
+    shellPath?: string | null;
+    fallbackPaths: string[];
+}): string {
+    const separator = pathSeparatorFor(options.platform);
+    const parts: string[] = [];
+    const seen = new Set<string>();
+    for (const value of [
+        ...(options.shellPath ?? '').split(separator),
+        ...options.inheritedPath.split(separator),
+        ...options.fallbackPaths,
+    ]) {
+        if (!value) continue;
+        const key = options.platform === 'win32' ? value.toLowerCase() : value;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        parts.push(value);
+    }
+    return parts.join(separator);
+}
+
+/** Inherited PATH first; common directories are only a discovery fallback. */
 export function buildFallbackPath(options: FallbackPathOptions = {}): string {
     const platform = options.platform ?? process.platform;
     const env = options.env ?? process.env;
-    const separator = pathSeparatorFor(platform);
     const pathKey = pathKeyFor(platform);
-    const fallback = getFallbackPaths(options).join(separator);
     const existing = env[pathKey] || env.PATH || '';
-    return existing ? `${fallback}${separator}${existing}` : fallback;
+    return mergeSearchPaths({ platform, inheritedPath: existing, fallbackPaths: getFallbackPaths(options) });
 }
 
 // Populated lazily with the fallback PATH on first sync read.
 let cachedPath: string | null = null;
-// Set once the async interactive-shell detection completes. Appended to
-// the fallback PATH to form the enriched cached value.
+// Set once the async interactive-shell detection completes. Its order takes
+// precedence over the inherited GUI environment and fallback directories.
 let detectedUserPath: string | null = null;
 // Promise guard — ensures exactly one concurrent execFile to the shell.
 let warmupInFlight: Promise<void> | null = null;
@@ -199,7 +217,7 @@ let detectedTerminalProxyEnv: TerminalProxyEnv | null = null;
 /**
  * Synchronous PATH getter. Non-blocking by design:
  *   - First call returns the fallback PATH immediately
- *   - If background warmup has completed, returns fallback + detected user PATH
+ *   - After warmup, preserves detected user PATH before fallback directories
  *   - Never calls execSync (which would block the Node event loop and starve
  *     TCP accept during sidecar startup — measured 4-5s hang on slow .zshrc)
  *
@@ -244,7 +262,7 @@ export function getShellEnv(): Record<string, string> {
  * wait ~1-3s for a complete PATH than miss a user-installed binary.
  */
 export async function ensureShellPath(): Promise<string> {
-    if (warmupInFlight) await warmupInFlight;
+    await warmupShellPath();
     return getShellPath();
 }
 
@@ -320,7 +338,12 @@ export function warmupShellPath(): Promise<void> {
                     const pathMatch = stdout.match(new RegExp(`${pathMarker}(.+?)${pathMarker}`));
                     if (pathMatch && pathMatch[1].length > 10) {
                         detectedUserPath = pathMatch[1];
-                        cachedPath = `${buildFallbackPath()}${PATH_SEPARATOR}${detectedUserPath}`;
+                        cachedPath = mergeSearchPaths({
+                            platform: process.platform,
+                            shellPath: detectedUserPath,
+                            inheritedPath: buildFallbackPath(),
+                            fallbackPaths: [],
+                        });
                         console.log('[shell] Detected user PATH via interactive shell');
                     }
                     // Parse proxy env vars — each `${proxyMarker}KEY=VALUE${proxyMarker}`.

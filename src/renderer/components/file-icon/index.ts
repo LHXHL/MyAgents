@@ -1,7 +1,7 @@
 export { FileIcon, FILE_ICON_SIZES } from "./FileIcon";
 export type { FileIconProps, FileIconSize } from "./FileIcon";
-export { FILE_ICON_ASSETS, SYMBOLS_UPSTREAM } from "./fileIconAssets";
-export type { FileIconId } from "./fileIconAssets";
+export { FILE_ICON_GLYPHS, FILE_ICON_TONES } from "./fileIconGlyphs";
+export type { FileIconGlyph, FileIconId, FileIconTone } from "./fileIconGlyphs";
 export {
   FILE_ICON_CATEGORIES,
   FILE_ICON_RULES,

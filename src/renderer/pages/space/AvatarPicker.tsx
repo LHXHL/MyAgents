@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, Loader2, Upload, X } from "lucide-react";
+import {
+  CheckIcon,
+  LoaderIcon,
+  UploadIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { useTranslation } from "react-i18next";
 
 import type { SpaceAvatarPreset } from "@/api/spaceCloud";
@@ -121,7 +126,7 @@ export default function AvatarPicker({
             className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-wait disabled:opacity-60"
             aria-label={t("space.detail.close")}
           >
-            <X className="h-4 w-4" />
+            <CloseIcon className="h-4 w-4" />
           </button>
         </header>
 
@@ -136,9 +141,9 @@ export default function AvatarPicker({
               title={t("space.avatarPicker.upload")}
             >
               {pickingUpload ? (
-                <Loader2 className="h-5 w-5 animate-spin" />
+                <LoaderIcon className="h-5 w-5 animate-spin" />
               ) : (
-                <Upload className="h-5 w-5" />
+                <UploadIcon className="h-5 w-5" />
               )}
             </button>
             {presets.map((preset) => {
@@ -167,7 +172,7 @@ export default function AvatarPicker({
                   />
                   {selected && (
                     <span className="absolute right-1 top-1 grid h-5 w-5 place-items-center rounded-full bg-[var(--button-primary-bg)] text-[var(--button-primary-text)]">
-                      <Check className="h-3 w-3" />
+                      <CheckIcon className="h-3 w-3" />
                     </span>
                   )}
                 </button>

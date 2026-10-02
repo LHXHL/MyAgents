@@ -30,12 +30,14 @@
 - [`DeferredInitState` + readiness endpoints](#deferredinitstate) — 三分健康探针
 
 **Node.js 辅助层**
+- [DSH 构建校验的 Node identity](#dsh-build-node) — verifier 使用已验证的 bundled Node，构建机版本不参与 Runtime 自检
 - [`fs-utils`](#fs-utils) — 跨平台 mkdir / 目录判定 + 断链 symlink 探针（cpSync C++ 异常）
 - [`subprocess`](#subprocess) — Node 子进程 stream 形态适配
 - [`file-response`](#file-response) — 流式 HTTP 文件响应 + 渲染器直连接口的 CORS/CSP
 - [Context-window suffix helpers](#context-window-suffix) — >200K 模型上下文窗口解锁（provider-scoped lookup + `[1m]` wrap + env cap）
 
 **结构性其他**
+- [Session Runtime 配置入口](#session-runtime-config) — Admin / route 不能绕过 adapter 调用 SDK 配置重载
 - [Builtin MCP 懒加载](#builtin-mcp) — META/INSTANCE 两层架构
 - [snapshot helpers](#snapshot-helpers) — owned vs live-follow 命名分裂
 - [legacy Cron startup migration](#legacy-cron-migration) — 后端启动期幂等迁移
@@ -49,6 +51,17 @@
 - [Test classification + non-credentialed no-egress](#test-classification-no-egress) — server 测试显式分层，非 credentialed Node 测试禁止真实出站
 
 ---
+
+<a id="dsh-build-node"></a>
+## DSH 构建校验的 Node identity
+
+**Problem.** DSH 公开 verifier 包含运行时自检。用构建进程的 `process.execPath` 启动它，会把满足开发工具链范围的本机 Node 误当作产品运行时，导致构建或 handoff 接纳因精确版本不匹配失败。
+
+**Surface.** `scripts/integrated-runtimes/dsh-handoff-policy.mjs` 的 `verifyBundledToolchain(repoRoot, lock, nodeRoot?)` 与 `runPublicVerifier(root, digest, nodeExecutable)`；构建校验和 handoff 接纳入口共用。
+
+**Invariants enforced.** 先验证 `scripts/node-runtime.json` 与 DSH lock、资源 Node/npm 元数据及实际 executable 版本，再以返回的 Node 绝对路径执行公开 verifier。接纳前后的两次 verifier 使用同一 Node。默认目录为产品 staging，显式 `--node-root` 也必须通过同一验证；缺失、漂移或不能执行时在运行 handoff 前失败。
+
+**Don't.** 不用 PATH 或 `process.execPath` 隐式选择 verifier 的 Node，不通过升级本机最低版本、修改不可变 handoff 的版本字段或跳过 Node 检查掩盖执行身份错位。行为回归在 `dsh-handoff-policy.test.mjs`，资源准备路径见 [Bundled Node](./bundled_node.md)。
 
 <a id="test-classification-no-egress"></a>
 ## Test classification + non-credentialed no-egress
@@ -146,7 +159,9 @@
 
 **Problem.** macOS 上从 Finder 启动的 Tauri 应用，PATH 不包含 `/opt/homebrew/bin`、`/usr/local/bin` 等用户工具路径，`which::which("npm")` / `which::which("node")` 会失败。
 
-**Surface.** `crate::system_binary::find(name)` — 在标准系统路径列表中查找。
+**Surface.** `crate::system_binary::find(name)` — 按用户交互登录 Shell PATH、inherited PATH、兜底目录顺序查找；Windows 为 inherited PATH、兜底目录。`augmented_path()` 提供匹配的子进程 PATH。
+
+**Invariants enforced.** Rust 与 Node 的 PATH 合并规则用 `src/shared/fixtures/runtime-search-path.json` 保持一致。外部 CLI 的子进程必须使用选择 executable 时的环境，尤其 npm shim 仍需通过 PATH 解析 Node。Node 的异步入口等待 `ensureShellPath()`，不在首次查询中固化尚未完成发现的兜底选择。
 
 **Don't.** 裸 `which::which()` 查找系统工具。
 
@@ -317,7 +332,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 <a id="killwithescalation"></a>
 ## `killWithEscalation`
 
-**Problem.** 三个外部 runtime adapter（claude-code / codex / gemini）之前共用反模式：SIGTERM + 短 wait + 无界 `waitForExit()`。子进程拒收 SIGTERM 时 sidecar 永久卡死，每条 stop 路径都中招（用户停止、模型切换、权限切换、runtime 切换）。
+**Problem.** 外部 runtime adapter 曾共用反模式：SIGTERM + 短 wait + 无界 `waitForExit()`。子进程拒收 SIGTERM 时 sidecar 永久卡死，每条 stop 路径都中招（用户停止、模型切换、权限切换、runtime 切换）。
 
 **Surface.** `killWithEscalation(child, { gracefulMs, hardMs, label })` (`src/server/runtimes/utils/kill-with-escalation.ts`) — 返回 `Promise<void>`。
 
@@ -566,17 +581,18 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 <a id="snapshot-helpers"></a>
 ## Session Config Snapshot Helpers
 
-**Problem.** Tab/Cron/Background 与 IM/Agent Channel 对 config 变更的感知策略不同——前者要冻结快照（Agent 配置变更不影响已开 session），后者要 live follow（每条消息都按当前配置 resolve）。如果用一个 snapshot helper + 布尔参数，调用方容易忘记某个分支。
+**Problem.** Desktop/Task/IM 的执行配置都归 owned Session；只有 Cloud registered Agent 保持独立 live-follow。把 IM 出生权限策略误当作 live-follow，会让默认配置覆盖旧会话。入口名称须表达真实 owner，复用同一完整 snapshot compiler。
 
 **Surface.** `src/server/utils/session-snapshot.ts` 按配置来源提供独立命名入口：
 
 - `snapshotForOwnedSession(agent, options)`：从 Agent 模板冻结执行配置，字段集以 `OwnedSessionSnapshot` 为准。
-- `snapshotForImSession(agent, options)`：只固定 Runtime identity，其它配置逐条消息 live resolve。
+- `snapshotForImSession(agent, options)`：复用完整 owned snapshot，仅在出生时种最高 unattended 权限；Agent-template birth 传 runtimePolicy 复用桌面分发与 Provider constraint。
+- `snapshotForRegisteredAgentSession(agent, options)`：只固定 Runtime identity，保留云端 registered Agent 自己的 live-follow 生命周期。
 - `snapshotForForkedSession(source, legacyFallback?)`：继承 source Session 的完整执行快照；已有 `configSnapshotAt` 时不借当前 Agent 配置补缺项，旧的未冻结 source 才使用调用方提供的兼容快照。Builtin 与 external fork 共用此入口。
 
 `runtime identity` = `runtime` + `runtimeSource`。`codex/system-cli` 与 `codex/managed-provider` 是两个不同身份；只传 `runtimeOverride:'codex'` 而不传 `runtimeSourceOverride:'managed-provider'` 的路径会被当作 system CLI。`runtimeOverride` / `runtimeSourceOverride` 只用于“会话出生时目标 runtime 已由 sidecar/用户动作决定，但 AgentConfig 还没落盘”的 materialization 路径。它必须在 helper 内构造目标 runtime identity 下的 agent view，并复用 `buildRuntimeChangePatch` 清掉非 portable `runtimeConfig` 字段；禁止先按旧 agent snapshot 再在 route 层 post-hoc 覆盖 `snapshot.runtime`。
 
-**Invariants.** 新增快照字段需同步维护 owned、live-follow 与 fork 的语义，并更新 `session-snapshot.unit.test.ts` 的继承测试；调用方不自行拼装字段。读侧用 `resolveSessionConfig(sessionMeta, ownerKind)` (`src/server/utils/resolve-session-config.ts`) 统一消费——owned session 走 meta 冻结值，IM session 走 live agent；meta 缺失时 fallback 到 agent config，向后兼容老 session。
+**Invariants.** 新增快照字段需同步维护 owned、live-follow 与 fork 的语义，并更新 `session-snapshot.unit.test.ts` 的继承测试；调用方不自行拼装字段。读侧用 `resolveSessionConfig(sessionMeta, ownerKind)` (`src/server/utils/resolve-session-config.ts`) 统一消费——所有 owned Session（含 IM）走 meta 冻结值；Agent fallback 只用于 birth 和明确的 legacy 兼容解析。无法证明旧 IM 的执行配置时拒绝恢复并引导新建，不能伪造 snapshot。
 
 **Don't.** 用一个布尔参数分派两种语义。
 
@@ -725,6 +741,21 @@ Sidecar HTTP workspace IO endpoint 已全部下线，Renderer 唯一入口是 `u
 - `EffectiveProjectCapabilitySnapshot.revision` 仍只表示 effective Runtime 内容；`integrityRevision` 单独表示诊断与 desired managed-link set。纯 warning/no-op reconcile 不换代，只有实际 unlink/create 才复用既有 deferred replacement。二者不进入持久 cache。Rust Launcher 使用共享 JSON fixtures 镜像 classifier，并先跳过指向 global root 的 project junction，避免同一 Skill 被误认成 project winner。
 
 **Don't.** seed/sync 里覆盖前不验源完整就 `remove_dir_all(dst)`；或对不完整结果照写版本戳。两者都会把瞬时打包缺陷固化成持久态。不要用 watcher、后台 timer、持久 registry 或全工作区 sweep 代替 admission snapshot，也不要自动 rename/delete/merge 可疑目录。改 Required 名单时必须同步 TS canonical 与 Rust mirror，禁止在 UI、CLI 或其它模块新增第三份名单，也不要把 Required 名称重新写进 disabled 配置。
+
+---
+
+<a id="session-runtime-config"></a>
+## Session Runtime 配置入口
+
+Renderer 的 Provider history 投影使用 `src/renderer/utils/optionResolve.ts::toProviderHistoryEnv`，保留 Host-managed OAuth 的 API endpoint 与 CLIProxy 的稳定 endpoint reference，再交给共享 history policy；订阅计费类型不能代替执行身份。原因和 family 边界见 [Provider history boundary](./third_party_providers.md#session-切换与-history-boundary)，回归测试覆盖 Grok / Antigravity 与普通 Provider、官方 Claude、Managed Codex 的双向切换。
+
+**Problem.** Admin reload 直接调用 SDK setter/restart，配合“非 external CLI 即 builtin”的预热判断，会在 Integrated DSH Session 内误启 SDK，并给同一 Product transcript writer 挂上第二个 SSE publisher；磁盘正文只写一次，界面逐 delta 重复。
+
+**Surface.** Admin / session route 使用 `getSessionEngine().updateMcpServers` / `updateAgents`，当前工作区取同一 adapter 的 context。显式 reload 的 `forceReload` 表达刷新请求，是否重建、何时应用由 adapter 决定；builtin 复用既有 deferred restart，DSH 使用原生 extension reconciliation。
+
+**Invariants enforced.** `eslint.config.js` 禁止这些入口从 `agent-session` 导入 `setMcpServers`、`setAgents`、`forceReloadActiveSession`、`schedulePluginDeferredRestart`，也禁止动态导入 SDK facade 绕开约束；builtin adapter 保留调用权限。`session-runtime-boundary.unit.test.ts` 使用真实 lint 配置验证错误入口被拒绝、正确入口可用。SDK prewarm 与 transcript binding 在各自 owner 入口只接受 `builtin`，集成回归覆盖 DSH / Claude Code / Codex 不启动 SDK、不订阅他人的正文。
+
+**Don't.** 不在 handler 判断 builtin/external，不把“不是 external CLI”当成 SDK ownership，也不在 Renderer 按文本去重掩盖多发布器。正文生命周期与发布范围见 [Session Transcript V2](./session_transcript_v2.md)。
 
 ---
 

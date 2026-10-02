@@ -21,7 +21,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, ChevronUp, FolderOpen } from 'lucide-react';
+import { ChevronDownIcon, ChevronUpIcon, FolderOpenIcon } from '@/components/icons';
 
 import Markdown from '@/components/Markdown';
 import { taskOpenDocsDir, taskReadDoc, type TaskDocName } from '@/api/taskCenter';
@@ -180,7 +180,7 @@ export function TaskDocBlock({
           title={t('docBlock.openDocsDirTitle')}
           className="inline-flex shrink-0 items-center gap-1 rounded-[var(--radius-md)] px-2 py-0.5 text-xs text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
         >
-          <FolderOpen className="h-3 w-3" />
+          <FolderOpenIcon className="h-3 w-3" />
           {t('docBlock.openDocsDir')}
         </button>
       </div>
@@ -224,12 +224,12 @@ export function TaskDocBlock({
               >
                 {expanded ? (
                   <>
-                    <ChevronUp className="h-3.5 w-3.5" />
+                    <ChevronUpIcon className="h-3.5 w-3.5" />
                     {t('docBlock.collapse')}
                   </>
                 ) : (
                   <>
-                    <ChevronDown className="h-3.5 w-3.5" />
+                    <ChevronDownIcon className="h-3.5 w-3.5" />
                     {t('docBlock.expandAll')}
                   </>
                 )}

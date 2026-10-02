@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Check, X, Trash2 } from 'lucide-react';
+import { CheckIcon, CloseIcon, TrashIcon } from '@/components/icons';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import type { GroupPermission } from '../../../../shared/types/im';
 
@@ -69,7 +69,7 @@ export default function GroupPermissionList({
                                     className="rounded-md bg-[var(--accent)] p-1.5 text-[var(--on-accent)] transition-colors hover:bg-[var(--accent-warm-hover)] disabled:opacity-50"
                                     title={t('agentSettings.imComponents.allow')}
                                 >
-                                    <Check className="h-3.5 w-3.5" />
+                                    <CheckIcon className="h-3.5 w-3.5" />
                                 </button>
                                 <button
                                     onClick={() => handleAction(() => onReject(g.groupId), g.groupId)}
@@ -77,7 +77,7 @@ export default function GroupPermissionList({
                                     className="rounded-md bg-[var(--paper-inset)] p-1.5 text-[var(--ink-muted)] transition-colors hover:text-[var(--error)] disabled:opacity-50"
                                     title={t('agentSettings.imComponents.reject')}
                                 >
-                                    <X className="h-3.5 w-3.5" />
+                                    <CloseIcon className="h-3.5 w-3.5" />
                                 </button>
                             </div>
                         </div>
@@ -107,7 +107,7 @@ export default function GroupPermissionList({
                                 className="ml-3 rounded-md p-1.5 text-[var(--ink-muted)] opacity-0 transition-all hover:text-[var(--error)] group-hover:opacity-100"
                                 title={t('agentSettings.imComponents.remove')}
                             >
-                                <Trash2 className="h-3.5 w-3.5" />
+                                <TrashIcon className="h-3.5 w-3.5" />
                             </button>
                         </div>
                     ))}

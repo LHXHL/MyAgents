@@ -1,37 +1,23 @@
 import { selectUsableAgentWorkspaceRecords } from '../../../shared/agentWorkspaceIdentity';
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
-  AlertCircle,
-  Archive,
-  Bell,
-  Bot,
-  Check,
-  CheckSquare,
-  ChevronDown,
-  ChevronRight,
-  Cloud,
-  Eye,
-  EyeOff,
-  FolderOpen,
-  FolderTree,
-  LayoutGrid,
-  Loader2,
-  MessageSquarePlus,
-  MoreHorizontal,
-  PanelLeft,
-  Pin,
-  PinOff,
-  Plus,
-  RefreshCw,
-  RotateCcw,
-  Search,
-  Settings,
-  Settings2,
-  Sparkles,
-  Star,
-  Trash2,
-  X,
-} from 'lucide-react';
+  AlertIcon,
+  CheckIcon,
+  ChevronDownIcon,
+  EyeIcon,
+  EyeOffIcon,
+  FolderOpenIcon,
+  GridIcon,
+  LoaderIcon,
+  PinIcon,
+  PinOffIcon,
+  RefreshIcon,
+  UndoIcon,
+  SlidersIcon,
+  StarIcon,
+  TrashIcon,
+  CloseIcon,
+} from '@/components/icons';
 import {
   lazy,
   memo,
@@ -62,6 +48,22 @@ import SessionContextMenu from '@/components/SessionContextMenu';
 import SessionTagBadge from '@/components/SessionTagBadge';
 import TabActivityIndicator from '@/components/TabActivityIndicator';
 import Tip from '@/components/Tip';
+import {
+  ArchiveIcon,
+  BellIcon,
+  CapabilitiesIcon,
+  ChevronRightIcon,
+  ComposeIcon,
+  HelperIcon,
+  MoreIcon,
+  PlusIcon,
+  SearchIcon,
+  SettingsIcon,
+  SidebarIcon,
+  TasksIcon,
+  TeamIcon,
+  FolderIcon,
+} from '@/components/icons';
 import UnreadNotificationIndicator from '@/components/UnreadNotificationIndicator';
 import { useToast } from '@/components/Toast';
 import { AddWorkspaceMenu, TemplateLibraryDialog } from '@/components/launcher';
@@ -230,6 +232,43 @@ interface SidebarNavButtonProps {
   onClick: () => void;
 }
 
+/**
+ * One 16px slot on the sidebar icon axis. At rest it shows the row's identity
+ * (workspace avatar / group icon); on hover or keyboard focus the disclosure
+ * chevron takes its place, so expandable rows do not spend a second leading
+ * column on an arrow that only matters while pointing at the row.
+ */
+function SidebarDisclosureSlot({
+  expanded,
+  group,
+  children,
+}: {
+  expanded: boolean;
+  group: 'workspace' | 'archived';
+  children: ReactNode;
+}) {
+  // Row hover reveals for the whole workspace row (including its actions);
+  // keyboard focus reveals only via focus-visible on the toggle itself, so a
+  // mouse click does not leave the avatar replaced by a chevron.
+  const reveal = group === 'workspace'
+    ? 'group-hover/workspace:opacity-100 group-focus-visible/disclosure:opacity-100'
+    : 'group-hover/disclosure:opacity-100 group-focus-visible/disclosure:opacity-100';
+  const conceal = group === 'workspace'
+    ? 'group-hover/workspace:opacity-0 group-focus-visible/disclosure:opacity-0'
+    : 'group-hover/disclosure:opacity-0 group-focus-visible/disclosure:opacity-0';
+  return (
+    <span className="relative flex h-4 w-4 shrink-0 items-center justify-center" data-global-sidebar-disclosure-slot>
+      <span className={`flex items-center justify-center transition-opacity duration-150 motion-reduce:transition-none ${conceal}`}>
+        {children}
+      </span>
+      <ChevronRightIcon
+        className={`absolute inset-0 h-4 w-4 text-[var(--ink-muted)] opacity-0 transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none ${reveal} ${expanded ? 'rotate-90' : ''}`}
+        data-global-sidebar-disclosure-chevron
+      />
+    </span>
+  );
+}
+
 function SidebarNavButton({
   icon,
   label,
@@ -330,7 +369,7 @@ function HistorySearchOverlayFallback({ onClose }: { onClose: () => void }) {
           aria-label={t('historyOverlay.exitSearch')}
           className="rounded-md p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
         >
-          <X className="h-4 w-4" />
+          <CloseIcon className="h-4 w-4" />
         </button>
       </div>
       <div className="flex h-8 items-center justify-between gap-4">
@@ -351,11 +390,11 @@ function HistorySearchOverlayFallback({ onClose }: { onClose: () => void }) {
           data-history-search-fallback-compact
         >
           <span className="truncate text-sm">{t('historyOverlay.searchPlaceholder')}</span>
-          <Search className="h-3.5 w-3.5 shrink-0" />
+          <SearchIcon className="h-3.5 w-3.5 shrink-0" />
         </div>
       </div>
       <div aria-busy="true" className="flex min-h-0 flex-1 items-center justify-center">
-        <Loader2 className="h-4 w-4 animate-spin text-[var(--ink-muted)]/50" />
+        <LoaderIcon className="h-4 w-4 animate-spin text-[var(--ink-muted)]/50" />
       </div>
     </>
   );
@@ -1074,7 +1113,7 @@ export default memo(function GlobalSidebar({
                   data-global-sidebar-toggle
                   data-no-drag
                 >
-                  <PanelLeft className="h-4 w-4" data-global-sidebar-toggle-icon />
+                  <SidebarIcon className="h-4 w-4" data-global-sidebar-toggle-icon />
                 </button>
               </Tip>
             </div>
@@ -1117,14 +1156,14 @@ export default memo(function GlobalSidebar({
         >
           <SidebarNavButton
             expanded={expanded}
-            icon={<MessageSquarePlus className="h-4 w-4" />}
+            icon={<ComposeIcon className="h-4 w-4" />}
             label={t('globalSidebar.newChat')}
             onClick={onNewTab}
           />
           {isTauriEnvironment() && (
             <SidebarNavButton
               expanded={expanded}
-              icon={<Search className="h-4 w-4" />}
+              icon={<SearchIcon className="h-4 w-4" />}
               label={t('globalSidebar.search')}
               onIntent={() => { void loadHistorySearchOverlayContent(); }}
               onClick={handleSearchOpen}
@@ -1134,7 +1173,7 @@ export default memo(function GlobalSidebar({
             <SidebarNavButton
               expanded={expanded}
               active={activeView === 'taskcenter'}
-              icon={<CheckSquare className="h-4 w-4" />}
+              icon={<TasksIcon className="h-4 w-4" />}
               label={t('globalSidebar.tasks')}
               onClick={handleOpenTaskCenter}
             />
@@ -1153,7 +1192,7 @@ export default memo(function GlobalSidebar({
                     aria-label={t('globalSidebar.createTask')}
                     className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--ink-muted)] opacity-0 transition-[opacity,color,background-color] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] group-hover/task-create:opacity-100 group-focus-within/task-create:opacity-100"
                   >
-                    <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
+                    <PlusIcon className="h-3.5 w-3.5" />
                   </button>
                 </Tip>
               </span>
@@ -1163,7 +1202,7 @@ export default memo(function GlobalSidebar({
             <SidebarNavButton
               expanded={expanded}
               active={activeView === 'space'}
-              icon={<Cloud className="h-4 w-4" />}
+              icon={<TeamIcon className="h-4 w-4" />}
               label={t('globalSidebar.team')}
               onClick={onOpenSpace}
             />
@@ -1171,7 +1210,7 @@ export default memo(function GlobalSidebar({
           <SidebarNavButton
             expanded={expanded}
             active={activeView === 'capabilities'}
-            icon={<Sparkles className="h-4 w-4" />}
+            icon={<CapabilitiesIcon className="h-4 w-4" />}
             label={t('globalSidebar.capabilities')}
             onClick={() => onOpenCapabilities()}
           />
@@ -1226,7 +1265,7 @@ export default memo(function GlobalSidebar({
                       : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
                   }`}
                 >
-                  <FolderTree className="h-4 w-4" />
+                  <FolderIcon className="h-4 w-4" />
                 </button>
               </div>
             </div>
@@ -1267,7 +1306,7 @@ export default memo(function GlobalSidebar({
             data-notification-center-trigger
           >
             <span className="absolute left-3 flex h-4 w-4 items-center justify-center">
-              <Bell className="h-4 w-4" />
+              <BellIcon className="h-4 w-4" />
               {notificationCenter.snapshot.hasUnread && (
                 <span
                   className="absolute -right-1 -top-1 h-1.5 w-1.5 rounded-full bg-[var(--accent-warm)] ring-2 ring-[var(--global-sidebar-bg)]"
@@ -1289,7 +1328,7 @@ export default memo(function GlobalSidebar({
           >
             <SidebarNavButton
               expanded={expanded}
-              icon={<Bot className="h-4 w-4" />}
+              icon={<HelperIcon className="h-4 w-4" />}
               label={t('globalSidebar.helper')}
               tooltipDisabled={showFeedback}
               onClick={toggleFeedback}
@@ -1304,7 +1343,7 @@ export default memo(function GlobalSidebar({
           <SidebarNavButton
             expanded={expanded}
             active={activeView === 'settings'}
-            icon={<Settings className="h-4 w-4" />}
+            icon={<SettingsIcon className="h-4 w-4" />}
             label={t('globalSidebar.settings')}
             onClick={onOpenSettings}
           />
@@ -1571,7 +1610,7 @@ function WorkspaceSessionBranch({
         }`}
       >
         {rendered && (
-          <div className="ml-2.5 border-l border-[var(--line-subtle)] pl-1">
+          <div className="ml-6 border-l border-[var(--line-subtle)] pl-1.5">
             {children}
           </div>
         )}
@@ -1677,7 +1716,7 @@ function WorkspaceTree({
 
   return (
     <section className="relative flex h-full min-h-0 flex-col" aria-label={t('globalSidebar.workspaces')}>
-      <div className="flex h-8 shrink-0 items-center gap-1 px-3">
+      <div className="flex h-8 shrink-0 items-center gap-1 pl-6 pr-3">
         <h2 className="min-w-0 flex-1 truncate text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]">
           {t('globalSidebar.workspaceSection')}
         </h2>
@@ -1689,7 +1728,7 @@ function WorkspaceTree({
             className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
             aria-label={t('globalSidebar.workspaceViewOptions')}
           >
-            <MoreHorizontal className="h-4 w-4" />
+            <MoreIcon className="h-4 w-4" />
           </button>
         </Tip>
         <Popover
@@ -1700,19 +1739,19 @@ function WorkspaceTree({
           className="global-sidebar-nested-layer w-56 py-1"
         >
           <MenuItem
-            icon={sessionView === 'all' ? <Check className="h-3.5 w-3.5" /> : <LayoutGrid className="h-3.5 w-3.5" />}
+            icon={sessionView === 'all' ? <CheckIcon className="h-3.5 w-3.5" /> : <GridIcon className="h-3.5 w-3.5" />}
             label={t('globalSidebar.allSessions')}
             active={sessionView === 'all'}
             onClick={() => { onSetSessionView('all'); setViewMenu(false); }}
           />
           <MenuItem
-            icon={sessionView === 'favorites' ? <Check className="h-3.5 w-3.5" /> : <Star className="h-3.5 w-3.5" />}
+            icon={sessionView === 'favorites' ? <CheckIcon className="h-3.5 w-3.5" /> : <StarIcon className="h-3.5 w-3.5" />}
             label={t('globalSidebar.favoriteSessions')}
             active={sessionView === 'favorites'}
             onClick={() => { onSetSessionView('favorites'); setViewMenu(false); }}
           />
           <MenuItem
-            icon={showAutomationSessions ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+            icon={showAutomationSessions ? <EyeIcon className="h-3.5 w-3.5" /> : <EyeOffIcon className="h-3.5 w-3.5" />}
             label={showAutomationSessions
               ? t('globalSidebar.hideAutomationHistory')
               : t('globalSidebar.showAutomationHistory')}
@@ -1744,13 +1783,13 @@ function WorkspaceTree({
         {projectsLoading ? (
           <div className="space-y-2 px-1 py-2" aria-label={t('common.loading')}>
             {[0, 1, 2].map((item) => (
-              <div key={item} className="h-9 animate-pulse rounded-lg bg-[var(--paper-inset)]/70 motion-reduce:animate-none" />
+              <div key={item} className="h-8 animate-pulse rounded-lg bg-[var(--paper-inset)]/70 motion-reduce:animate-none" />
             ))}
           </div>
         ) : projectsError ? (
           <div className="mx-1 my-2 rounded-lg border border-dashed border-[var(--line)] px-3 py-3">
             <div className="flex items-center gap-2 text-xs text-[var(--warning)]">
-              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+              <AlertIcon className="h-3.5 w-3.5 shrink-0" />
               <span className="min-w-0 flex-1">{projectsError}</span>
               <button
                 type="button"
@@ -1758,7 +1797,7 @@ function WorkspaceTree({
                 className="rounded-md p-1 hover:bg-[var(--paper-inset)]"
                 aria-label={tLauncher('rightRail.retry')}
               >
-                <RefreshCw className="h-3.5 w-3.5" />
+                <RefreshIcon className="h-3.5 w-3.5" />
               </button>
             </div>
           </div>
@@ -1771,7 +1810,7 @@ function WorkspaceTree({
               onClick={onAddFolder}
               className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-3 py-2 text-sm font-medium text-[var(--button-primary-text)] hover:bg-[var(--button-primary-bg-hover)]"
             >
-              <Plus className="h-3.5 w-3.5" />
+              <PlusIcon className="h-3.5 w-3.5" />
               {tLauncher('rightRail.addFolder')}
             </button>
           </div>
@@ -1809,7 +1848,7 @@ function WorkspaceTree({
                       {workspaceSessionState?.isLoading && sessions.length === 0 ? (
                         <div className="space-y-1 py-1" data-global-sidebar-session-placeholder>
                           {[0, 1, 2].map((item) => (
-                            <div key={item} className="h-9" aria-hidden="true" />
+                            <div key={item} className="h-8" aria-hidden="true" />
                           ))}
                         </div>
                       ) : (
@@ -1817,7 +1856,7 @@ function WorkspaceTree({
                           {workspaceSessionState?.error && (
                             <div className="my-1 rounded-lg border border-dashed border-[var(--line)] px-3 py-2">
                               <div className="flex items-center gap-2 text-xs text-[var(--warning)]">
-                                <AlertCircle className="h-3.5 w-3.5" />
+                                <AlertIcon className="h-3.5 w-3.5" />
                                 <span className="min-w-0 flex-1 truncate">{workspaceSessionState.error}</span>
                                 <button
                                   type="button"
@@ -1825,7 +1864,7 @@ function WorkspaceTree({
                                   className="rounded-md p-1 hover:bg-[var(--paper-inset)]"
                                   aria-label={tLauncher('rightRail.retry')}
                                 >
-                                  <RefreshCw className="h-3.5 w-3.5" />
+                                  <RefreshIcon className="h-3.5 w-3.5" />
                                 </button>
                               </div>
                             </div>
@@ -1863,9 +1902,9 @@ function WorkspaceTree({
                             <button
                               type="button"
                               onClick={() => onLoadMore(project, sessions.length)}
-                              className="flex h-9 w-full items-center gap-2 rounded-lg px-3 text-xs font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                              className="flex h-8 w-full items-center gap-2 rounded-lg pl-3 pr-3 text-xs font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                             >
-                              <ChevronDown className="h-3.5 w-3.5" />
+                              <ChevronDownIcon className="h-3.5 w-3.5" />
                               {t('globalSidebar.loadMore')}
                             </button>
                           )}
@@ -1882,15 +1921,17 @@ function WorkspaceTree({
                   type="button"
                   onClick={onToggleArchived}
                   aria-expanded={archivedExpanded}
-                  className="flex h-9 w-full items-center gap-2 rounded-lg px-3 text-sm text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                  className="group/disclosure flex h-8 w-full items-center gap-3 rounded-lg pl-4 pr-3 text-sm text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                  data-global-sidebar-archived-toggle
                 >
-                  <ChevronRight className={`h-4 w-4 transition-transform ${archivedExpanded ? 'rotate-90' : ''}`} />
-                  <Archive className="h-4 w-4" />
+                  <SidebarDisclosureSlot expanded={archivedExpanded} group="archived">
+                    <ArchiveIcon className="h-4 w-4" />
+                  </SidebarDisclosureSlot>
                   <span className="min-w-0 flex-1 truncate text-left">{t('globalSidebar.archived')}</span>
                   <span className="text-xs tabular-nums text-[var(--ink-subtle)]">{archivedProjects.length}</span>
                 </button>
                 {archivedExpanded && (
-                  <div className="ml-5 border-l border-[var(--line-subtle)] pl-2">
+                  <div className="ml-6 border-l border-[var(--line-subtle)] pl-1.5">
                     {archivedProjects.map((project) => (
                       <ArchivedWorkspaceRow
                         key={project.id}
@@ -1959,7 +2000,7 @@ function WorkspaceRow({
       role="treeitem"
       aria-expanded={expanded}
       aria-current={active ? 'page' : undefined}
-      className="global-sidebar-row global-sidebar-resource-row group/workspace relative flex h-9 select-none items-center transition-colors"
+      className="global-sidebar-row global-sidebar-resource-row group/workspace relative flex h-8 select-none items-center transition-colors"
       data-menu-open={menuOpen || undefined}
       data-global-sidebar-workspace-row
       onMouseDown={(event) => {
@@ -1976,12 +2017,13 @@ function WorkspaceRow({
       <button
         type="button"
         onClick={onToggle}
-        className="flex h-full min-w-0 flex-1 items-center gap-1 pl-1 pr-2 text-left text-sm text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]"
+        className="group/disclosure flex h-full min-w-0 flex-1 items-center gap-3 pl-4 pr-2 text-left text-sm text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]"
       >
-        <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)] transition-transform duration-200 ease-out motion-reduce:transition-none ${expanded ? 'rotate-90' : ''}`} />
-        <WorkspaceIcon icon={project.icon} size={16} />
+        <SidebarDisclosureSlot expanded={expanded} group="workspace">
+          <WorkspaceIcon icon={project.icon} size={16} />
+        </SidebarDisclosureSlot>
         <span
-          className="ml-1 min-w-0 flex-1 truncate font-medium"
+          className="min-w-0 flex-1 truncate font-medium"
           data-global-sidebar-workspace-title
         >
           {displayName}
@@ -2004,7 +2046,7 @@ function WorkspaceRow({
             className={`flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] ${menuOpen ? 'pointer-events-auto' : 'pointer-events-none group-hover/workspace:pointer-events-auto group-focus-within/workspace:pointer-events-auto'}`}
             aria-label={tLauncher('workspaceCard.more')}
           >
-            <MoreHorizontal className="h-3.5 w-3.5" />
+            <MoreIcon className="h-3.5 w-3.5" />
           </button>
         </Tip>
         <Tip label={t('globalSidebar.newChat')} position={actionTipPosition} align="end">
@@ -2014,7 +2056,7 @@ function WorkspaceRow({
             className={`flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] ${menuOpen ? 'pointer-events-auto' : 'pointer-events-none group-hover/workspace:pointer-events-auto group-focus-within/workspace:pointer-events-auto'}`}
             aria-label={t('globalSidebar.newChatHere')}
           >
-            <MessageSquarePlus className="h-3.5 w-3.5" />
+            <ComposeIcon className="h-3.5 w-3.5" />
           </button>
         </Tip>
       </div>
@@ -2028,15 +2070,15 @@ function WorkspaceRow({
         placement="bottom-end"
         className="global-sidebar-nested-layer w-44 py-1"
       >
-        <MenuItem icon={<Settings2 className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.agentSettings')} onClick={() => { setMenu(false); onAgentSettings(menuRef.current); }} />
-        <MenuItem icon={<FolderOpen className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.openFolder')} onClick={() => { setMenu(false); onOpenFolder(); }} />
+        <MenuItem icon={<SlidersIcon className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.agentSettings')} onClick={() => { setMenu(false); onAgentSettings(menuRef.current); }} />
+        <MenuItem icon={<FolderOpenIcon className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.openFolder')} onClick={() => { setMenu(false); onOpenFolder(); }} />
         <MenuItem
-          icon={project.pinnedAt ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
+          icon={project.pinnedAt ? <PinOffIcon className="h-3.5 w-3.5" /> : <PinIcon className="h-3.5 w-3.5" />}
           label={project.pinnedAt ? tLauncher('workspaceCard.unpin') : tLauncher('workspaceCard.pin')}
           onClick={() => { setMenu(false); onTogglePin(); }}
         />
-        <MenuItem icon={<Archive className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.archive')} onClick={() => { setMenu(false); onArchive(); }} />
-        <MenuItem icon={<Trash2 className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.remove')} tone="danger" onClick={() => { setMenu(false); onRemove(menuRef.current); }} />
+        <MenuItem icon={<ArchiveIcon className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.archive')} onClick={() => { setMenu(false); onArchive(); }} />
+        <MenuItem icon={<TrashIcon className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.remove')} tone="danger" onClick={() => { setMenu(false); onRemove(menuRef.current); }} />
       </Popover>
     </div>
   );
@@ -2098,7 +2140,7 @@ function SessionRow({
     <div
       role="treeitem"
       aria-current={active ? 'page' : undefined}
-      className={`global-sidebar-row global-sidebar-resource-row group/session relative flex h-9 select-none items-center pl-2 pr-1 transition-colors ${
+      className={`global-sidebar-row global-sidebar-resource-row group/session relative flex h-8 select-none items-center pl-3 pr-1 transition-colors ${
         active ? 'text-[var(--ink)]' : 'text-[var(--ink-secondary)]'
       }`}
       data-menu-open={menuOpen || undefined}
@@ -2131,9 +2173,9 @@ function SessionRow({
           className="min-w-0 flex-1 truncate text-sm"
           data-global-sidebar-session-title
         />
-        {session.favorite && <Star className="h-3 w-3 shrink-0 text-[var(--accent)]" fill="currentColor" />}
+        {session.favorite && <StarIcon className="h-3 w-3 shrink-0 text-[var(--accent)]" fill="currentColor" />}
         {session.pinnedAt && (
-          <Pin
+          <PinIcon
             role="img"
             aria-label={tLauncher('rightRail.pinned')}
             className="h-3 w-3 shrink-0 text-[var(--ink-muted)]"
@@ -2170,7 +2212,7 @@ function SessionRow({
             className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
             aria-label={tLauncher('rightRail.more')}
           >
-            <MoreHorizontal className="h-3.5 w-3.5" />
+            <MoreIcon className="h-3.5 w-3.5" />
           </button>
         </Tip>
       </div>
@@ -2216,7 +2258,7 @@ function ArchivedWorkspaceRow({ project, onUnarchive, onAgentSettings, onOpenFol
   }, [onMenuOpenChange]);
   useNestedInteractionCleanup(onMenuOpenChange);
   return (
-    <div className="group/archive flex h-9 items-center gap-2 rounded-lg px-2 text-sm text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]">
+    <div className="group/archive flex h-8 items-center gap-2 rounded-lg px-3 text-sm text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]">
       <WorkspaceIcon icon={project.icon} size={16} />
       <span className="min-w-0 flex-1 truncate">{project.displayName || project.name}</span>
       <Tip label={tLauncher('workspaceCard.more')} align="end" disabled={menuOpen}>
@@ -2227,7 +2269,7 @@ function ArchivedWorkspaceRow({ project, onUnarchive, onAgentSettings, onOpenFol
           className={`flex h-7 w-7 items-center justify-center rounded-md hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] ${menuOpen ? '' : 'opacity-0 group-hover/archive:opacity-100 group-focus-within/archive:opacity-100'}`}
           aria-label={tLauncher('workspaceCard.more')}
         >
-          <MoreHorizontal className="h-3.5 w-3.5" />
+          <MoreIcon className="h-3.5 w-3.5" />
         </button>
       </Tip>
       <Popover
@@ -2240,10 +2282,10 @@ function ArchivedWorkspaceRow({ project, onUnarchive, onAgentSettings, onOpenFol
         placement="bottom-end"
         className="global-sidebar-nested-layer w-44 py-1"
       >
-        <MenuItem icon={<RotateCcw className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.unarchive')} onClick={() => { setMenu(false); onUnarchive(); }} />
-        <MenuItem icon={<Settings2 className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.agentSettings')} onClick={() => { setMenu(false); onAgentSettings(menuRef.current); }} />
-        <MenuItem icon={<FolderOpen className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.openFolder')} onClick={() => { setMenu(false); onOpenFolder(); }} />
-        <MenuItem icon={<Trash2 className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.remove')} tone="danger" onClick={() => { setMenu(false); onRemove(menuRef.current); }} />
+        <MenuItem icon={<UndoIcon className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.unarchive')} onClick={() => { setMenu(false); onUnarchive(); }} />
+        <MenuItem icon={<SlidersIcon className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.agentSettings')} onClick={() => { setMenu(false); onAgentSettings(menuRef.current); }} />
+        <MenuItem icon={<FolderOpenIcon className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.openFolder')} onClick={() => { setMenu(false); onOpenFolder(); }} />
+        <MenuItem icon={<TrashIcon className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.remove')} tone="danger" onClick={() => { setMenu(false); onRemove(menuRef.current); }} />
       </Popover>
     </div>
   );

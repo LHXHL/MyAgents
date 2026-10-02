@@ -8,21 +8,21 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  ArrowLeft,
-  Bot,
-  Camera,
-  Check,
-  ChevronRight,
-  Copy,
-  Loader2,
-  MoreHorizontal,
-  RefreshCw,
-  Save,
-  Shield,
-  Trash2,
-  Users,
-  X,
-} from "lucide-react";
+  ArrowLeftIcon,
+  HelperIcon,
+  CameraIcon,
+  CheckIcon,
+  ChevronRightIcon,
+  CopyIcon,
+  LoaderIcon,
+  MoreIcon,
+  RefreshIcon,
+  SaveIcon,
+  ShieldIcon,
+  TrashIcon,
+  TeamIcon,
+  CloseIcon,
+} from '@/components/icons';
 
 import {
   spaceApproveJoinRequest,
@@ -177,7 +177,7 @@ function menuItems(
     {
       id: "members" as const,
       label: t("space.settings.members"),
-      icon: Users,
+      icon: TeamIcon,
       hint:
         pendingCount > 0
           ? t("space.settings.pendingJoinCount", { count: pendingCount })
@@ -186,13 +186,13 @@ function menuItems(
     {
       id: "agents" as const,
       label: t("space.settings.agents"),
-      icon: Bot,
+      icon: HelperIcon,
       hint: t("space.settings.agentsHint"),
     },
     {
       id: "roles" as const,
       label: t("space.settings.roles"),
-      icon: Shield,
+      icon: ShieldIcon,
       hint: t("space.settings.rolesHint"),
     },
   ];
@@ -440,7 +440,7 @@ export function SpaceSettingsWorkspace({
               }
               className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
             >
-              <ArrowLeft className="h-4 w-4" />
+              <ArrowLeftIcon className="h-4 w-4" />
             </button>
             <div className="flex min-w-0 items-center gap-1.5 text-sm font-semibold text-[var(--ink)]">
               {section ? (
@@ -458,7 +458,7 @@ export function SpaceSettingsWorkspace({
               )}
               {section ? (
                 <>
-                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--ink-subtle)]" />
+                  <ChevronRightIcon className="h-3.5 w-3.5 shrink-0 text-[var(--ink-subtle)]" />
                   <span className="truncate">{activeTitle}</span>
                 </>
               ) : null}
@@ -475,7 +475,7 @@ export function SpaceSettingsWorkspace({
             aria-label={t("space.common.refresh")}
             title={t("space.common.refresh")}
           >
-            <RefreshCw className="h-4 w-4" />
+            <RefreshIcon className="h-4 w-4" />
           </button>
         </div>
       </header>
@@ -547,7 +547,7 @@ export function SpaceSettingsWorkspace({
             aria-label={t("fileActions.copy")}
             className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--button-secondary-bg)] text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)]"
           >
-            <Copy className="h-3.5 w-3.5" />
+            <CopyIcon className="h-3.5 w-3.5" />
           </button>
         </div>
         {memberQuotaReached ? (
@@ -600,7 +600,7 @@ export function SpaceSettingsWorkspace({
                   }
                   className="grid h-8 w-8 place-items-center rounded-lg text-[var(--success)] hover:bg-[var(--hover-bg)] disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  <Check className="h-4 w-4" />
+                  <CheckIcon className="h-4 w-4" />
                 </button>
                 <button
                   type="button"
@@ -617,7 +617,7 @@ export function SpaceSettingsWorkspace({
                   }
                   className="grid h-8 w-8 place-items-center rounded-lg text-[var(--error)] hover:bg-[var(--hover-bg)]"
                 >
-                  <Trash2 className="h-4 w-4" />
+                  <TrashIcon className="h-4 w-4" />
                 </button>
               </div>
             ))}
@@ -692,7 +692,7 @@ export function SpaceSettingsWorkspace({
                     }
                     className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] opacity-0 transition-opacity hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] group-hover:opacity-100"
                   >
-                    <MoreHorizontal className="h-4 w-4" />
+                    <MoreIcon className="h-4 w-4" />
                   </button>
                   {menuMemberId === member.id ? (
                     <div className="absolute right-0 z-20 mt-1 w-36 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-1 shadow-md">
@@ -791,7 +791,7 @@ export function SpaceSettingsWorkspace({
                 className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-wait disabled:opacity-60"
                 aria-label={t("space.detail.close")}
               >
-                <X className="h-4 w-4" />
+                <CloseIcon className="h-4 w-4" />
               </button>
             </header>
             <div className="grid gap-5 px-5 py-5">
@@ -811,9 +811,9 @@ export function SpaceSettingsWorkspace({
                   />
                   <span className="absolute inset-0 grid place-items-center rounded-[22%] bg-[var(--ink)]/45 text-[var(--paper)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
                     {pickingAvatar ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <LoaderIcon className="h-4 w-4 animate-spin" />
                     ) : (
-                      <Camera className="h-4 w-4" />
+                      <CameraIcon className="h-4 w-4" />
                     )}
                   </span>
                 </button>
@@ -825,9 +825,9 @@ export function SpaceSettingsWorkspace({
                     className="inline-flex h-9 items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] px-3 text-sm font-semibold text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)] disabled:cursor-wait disabled:opacity-70"
                   >
                     {pickingAvatar ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <LoaderIcon className="h-4 w-4 animate-spin" />
                     ) : (
-                      <Camera className="h-4 w-4" />
+                      <CameraIcon className="h-4 w-4" />
                     )}
                     {t("space.spaceActions.chooseAvatar")}
                   </button>
@@ -869,9 +869,9 @@ export function SpaceSettingsWorkspace({
                 className="inline-flex h-9 items-center gap-2 rounded-xl bg-[var(--button-primary-bg)] px-3 text-sm font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {busyKey === "overview" ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <LoaderIcon className="h-4 w-4 animate-spin" />
                 ) : (
-                  <Save className="h-4 w-4" />
+                  <SaveIcon className="h-4 w-4" />
                 )}
                 {t("space.common.save")}
               </button>
@@ -902,7 +902,7 @@ export function SpaceSettingsWorkspace({
                     aria-label={t("space.toasts.spaceSlugCopied")}
                     title={t("space.toasts.spaceSlugCopied")}
                   >
-                    <Copy className="h-3.5 w-3.5" />
+                    <CopyIcon className="h-3.5 w-3.5" />
                   </button>
                 </div>
               </div>
@@ -1034,7 +1034,7 @@ export function SpaceSettingsWorkspace({
                     {item.hint}
                   </span>
                 </span>
-                <ChevronRight className="h-4 w-4 shrink-0 text-[var(--ink-subtle)] transition-transform group-hover:translate-x-0.5" />
+                <ChevronRightIcon className="h-4 w-4 shrink-0 text-[var(--ink-subtle)] transition-transform group-hover:translate-x-0.5" />
               </button>
             );
           })}

@@ -35,14 +35,14 @@ function normalizedIds(ids: readonly string[] | null): string[] | null {
   return ids === null ? null : [...new Set(ids)].sort();
 }
 
-export function resolveManagedCodexMcpSelection(
+export function resolveProductExtensionMcpSelection(
   requestedIds: readonly string[],
   availableServers: readonly McpServerDefinition[],
 ): McpServerDefinition[] {
   const byId = new Map(availableServers.map(server => [server.id, server]));
   const unknownIds = requestedIds.filter(id => !byId.has(id));
   if (unknownIds.length > 0) {
-    throw new Error(`Unknown Managed Codex MCP selection: ${unknownIds.join(', ')}`);
+    throw new Error(`Unknown Product extension MCP selection: ${unknownIds.join(', ')}`);
   }
   return requestedIds.map(id => byId.get(id)!);
 }
@@ -160,15 +160,15 @@ export function releaseManagedCodexExtensionGeneration(processGeneration?: strin
   if (desiredSnapshot) applyState = 'pending_next_start';
 }
 
-export function setManagedCodexSessionEnabledPluginIds(ids: readonly string[] | null): void {
+export function setProductExtensionSessionEnabledPluginIds(ids: readonly string[] | null): void {
   sessionEnabledPluginIds = normalizedIds(ids);
 }
 
-export function getManagedCodexSessionEnabledPluginIds(): string[] | null {
+export function getProductExtensionSessionEnabledPluginIds(): string[] | null {
   return sessionEnabledPluginIds ? [...sessionEnabledPluginIds] : null;
 }
 
-export function setManagedCodexSessionMcpServers(servers: readonly McpServerDefinition[]): void {
+export function setProductExtensionSessionMcpServers(servers: readonly McpServerDefinition[]): void {
   sessionMcpServers = servers.map(server => ({
     ...server,
     ...(server.args ? { args: [...server.args] } : {}),
@@ -177,7 +177,7 @@ export function setManagedCodexSessionMcpServers(servers: readonly McpServerDefi
   }));
 }
 
-export function getManagedCodexSessionMcpServers(): McpServerDefinition[] | null {
+export function getProductExtensionSessionMcpServers(): McpServerDefinition[] | null {
   return sessionMcpServers?.map(server => ({
     ...server,
     ...(server.args ? { args: [...server.args] } : {}),

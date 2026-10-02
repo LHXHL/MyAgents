@@ -6,7 +6,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { Check, Loader2, RefreshCw } from 'lucide-react';
+import { CheckIcon, LoaderIcon, RefreshIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import QRCode from 'qrcode';
 import type {
@@ -249,7 +249,7 @@ export function TokenDancePayment({
               onClick={() => void create()}
             >
               {creating && (
-                <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" />
+                <LoaderIcon className="h-4 w-4 animate-spin motion-reduce:animate-none" />
               )}
               {t(creating ? 'payment.creating' : 'payment.generate')}
             </button>
@@ -351,7 +351,7 @@ export function TokenDancePayment({
                       {t('payment.qrFailed')}
                     </span>
                   ) : (
-                    <Loader2 className="h-5 w-5 animate-spin text-gray-500 motion-reduce:animate-none" />
+                    <LoaderIcon className="h-5 w-5 animate-spin text-gray-500 motion-reduce:animate-none" />
                   )}
                 </div>
                 <p className="text-xs text-[var(--ink-muted)]">
@@ -369,9 +369,9 @@ export function TokenDancePayment({
           >
             <p className="flex items-center gap-2 text-sm font-medium">
               {session.status === 'paid' ? (
-                <Check className="h-4 w-4 text-[var(--success)]" />
+                <CheckIcon className="h-4 w-4 text-[var(--success)]" />
               ) : !terminal ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />
+                <LoaderIcon className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />
               ) : null}
               {t(`payment.result.${status ?? 'pending'}`)}
             </p>
@@ -392,7 +392,7 @@ export function TokenDancePayment({
                   className={secondaryButton}
                   onClick={() => void query()}
                 >
-                  <RefreshCw className="h-3.5 w-3.5" />
+                  <RefreshIcon className="h-3.5 w-3.5" />
                   {t('retry')}
                 </button>
               </div>

@@ -12,7 +12,6 @@ import type { SessionGoal } from '@/types/sessionGoal';
 import type { SlashCommand } from '../SlashCommandMenu';
 import type { OfficialToolDefinition, OfficialToolId } from '../../../shared/official-tools';
 import type {
-  RuntimeDetections,
   RuntimeModelInfo,
   RuntimePermissionMode,
   RuntimeType,
@@ -100,6 +99,7 @@ export interface SimpleChatInputProps {
   onWorkspacePluginToggle?: (pluginId: string, enabled: boolean) => void;
   onRefreshProviders?: () => void;
   onOpenAgentSettings?: () => void;
+  /** Open the active Runtime's authoritative exact permission-rule inspector. */
   onWorkspaceRefresh?: () => void;
   cronModeEnabled?: boolean;
   cronConfig?: {
@@ -140,8 +140,8 @@ export interface SimpleChatInputProps {
   toolbarPrefix?: React.ReactNode;
   contextIndicator?: React.ReactNode;
   runtime?: RuntimeType;
-  runtimeDetections?: RuntimeDetections;
-  onRuntimeChange?: (runtime: RuntimeType) => void;
+  /** True only for user-managed CLI controls; Integrated DSH keeps Product provider/tool controls. */
+  usesExternalRuntimeControls?: boolean;
   runtimeModels?: RuntimeModelInfo[];
   /** Session-scoped capability; null means still unknown (do not use Global catalog). */
   managedReasoningModel?: Pick<RuntimeModelInfo, 'supportedReasoningEfforts' | 'defaultReasoningEffort'> | null;

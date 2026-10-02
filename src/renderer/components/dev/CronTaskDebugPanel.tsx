@@ -2,7 +2,13 @@
 // Shows all active cron tasks with controls to open/stop them
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Timer, StopCircle, RefreshCw, ExternalLink, AlertCircle } from 'lucide-react';
+import {
+  TimerIcon,
+  StopCircleIcon,
+  RefreshIcon,
+  ExternalIcon,
+  AlertIcon,
+} from '@/components/icons';
 
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { getAllCronTasks, stopCronTask } from '@/api/cronTaskClient';
@@ -111,7 +117,7 @@ export default function CronTaskDebugPanel({ isOpen, onClose }: CronTaskDebugPan
         {/* Header */}
         <div className="flex items-center justify-between border-b border-[var(--line)] px-5 py-4">
           <div className="flex items-center gap-2">
-            <Timer className="h-5 w-5 text-[var(--accent)]" />
+            <TimerIcon className="h-5 w-5 text-[var(--accent)]" />
             <h2 className="text-base font-semibold text-[var(--ink)]">循环任务调试面板</h2>
             <span className="rounded bg-[var(--paper-inset)] px-1.5 py-0.5 text-xs font-medium text-[var(--ink-muted)]">
               DEV
@@ -124,7 +130,7 @@ export default function CronTaskDebugPanel({ isOpen, onClose }: CronTaskDebugPan
               className="rounded-lg p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:opacity-50"
               title="刷新"
             >
-              <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+              <RefreshIcon className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
             </button>
             <button
               onClick={onClose}
@@ -139,7 +145,7 @@ export default function CronTaskDebugPanel({ isOpen, onClose }: CronTaskDebugPan
         <div className="max-h-96 overflow-y-auto p-5">
           {error && (
             <div className="mb-4 flex items-center gap-2 rounded-lg bg-[var(--error-bg)] px-3 py-2 text-sm text-[var(--error)]">
-              <AlertCircle className="h-4 w-4" />
+              <AlertIcon className="h-4 w-4" />
               {error}
             </div>
           )}
@@ -202,7 +208,7 @@ export default function CronTaskDebugPanel({ isOpen, onClose }: CronTaskDebugPan
                             className="rounded-lg p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--accent)]/10 hover:text-[var(--accent)]"
                             title="打开"
                           >
-                            <ExternalLink className="h-4 w-4" />
+                            <ExternalIcon className="h-4 w-4" />
                           </button>
                           <button
                             onClick={() => handleStopClick(task.id)}
@@ -210,7 +216,7 @@ export default function CronTaskDebugPanel({ isOpen, onClose }: CronTaskDebugPan
                             className="rounded-lg p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--error)]/10 hover:text-[var(--error)] disabled:opacity-50"
                             title="停止"
                           >
-                            <StopCircle className="h-4 w-4" />
+                            <StopCircleIcon className="h-4 w-4" />
                           </button>
                         </>
                       )}

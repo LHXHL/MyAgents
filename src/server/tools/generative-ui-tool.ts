@@ -35,6 +35,7 @@ Widgets render inline in the chat message flow. They must feel like a natural pa
 - **Text goes in response, visuals go in \`<generative-ui-widget>\` tags**: all explanatory text must be OUTSIDE the widget tags
 
 ## Streaming rules
+Emit widget tags in visible assistant text. Reasoning/thinking and tool arguments are not rendered as widgets. Visible text can share a turn with tool calls.
 HTML streams token by token. Structure for progressive rendering:
 - <style> first (short, ≤15 lines) — so elements are styled as they appear
 - Content HTML next — visual elements render progressively

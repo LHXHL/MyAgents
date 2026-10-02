@@ -4,7 +4,7 @@
 
 ## 项目定位
 
-MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端。React Renderer 提供多 Tab 工作区；Rust/Tauri 拥有桌面生命周期、本地持久化与系统能力；Node.js Sidecar 承载 Claude Agent SDK 和外部 Agent Runtime。
+MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端。React Renderer 提供多 Tab 工作区；Rust/Tauri 拥有桌面生命周期、本地持久化与系统能力；Node.js Sidecar 通过 SessionEngine 接入 Claude Agent SDK、Integrated DSH 与外部 Agent Runtime。
 
 主要产品域包括对话与 Goal、Task 自动化、Agent Channel、Record/本地语音、文档转换、MCP/Skill/Plugin、内嵌终端与浏览器，以及实验室 Cloud Space。
 
@@ -15,9 +15,9 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端。React Renderer 提供
 | React 19 + TypeScript + Vite + TailwindCSS | WebView UI、Tab 内派生状态和用户交互 |
 | Tauri v2 / Rust | App 生命周期、Sidecar/Worker 进程、持久化 Store、文件与系统 IO、HTTP/SSE 代理 |
 | 内置 Node.js v24 | Global/Session Sidecar、Plugin Bridge、MCP Server、CLI 与随 App 运行的 Node 工具 |
-| Claude Agent SDK / 外部 CLI Runtime | 具体模型会话和工具执行；只能经 SessionEngine 进入产品 Session |
+| Claude Agent SDK / Integrated DSH / 外部 CLI Runtime | 具体模型会话和工具执行；只能经 SessionEngine 进入产品 Session |
 
-正常安装中的 MyAgents 自有 Node 服务使用随 App 发布的 Node.js v24，无需用户安装系统 Node。核心服务的资源缺失回退、CLI 的严格资源定位，以及用户工具的 PATH 优先级分别由对应启动入口决定，见 [Bundled Node](./tech_docs/bundled_node.md)。SDK native binary、Codex、Claude Code、Gemini、CLIProxy、Document Worker 和 Media Worker 都是独立进程，不共享 Node 进程内状态。
+正常安装中的 MyAgents 自有 Node 服务使用随 App 发布的 Node.js v24，无需用户安装系统 Node。核心服务的资源缺失回退、CLI 的严格资源定位，以及用户工具的 PATH 优先级分别由对应启动入口决定，见 [Bundled Node](./tech_docs/bundled_node.md)。SDK native binary、Codex、Claude Code、CLIProxy、Document Worker 和 Media Worker 都是独立进程，不共享 Node 进程内状态。
 
 ## 全景架构
 
@@ -40,7 +40,7 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端。React Renderer 提供
 └──────────────┬──────────────┘  └──────────────────────┘  └──────────────────┘
                │ SessionEngine facade
 ┌──────────────▼───────────────────────────────────────────────────────────────┐
-│ builtin Claude Agent SDK · Claude Code · Codex · Gemini                    │
+│ builtin Claude Agent SDK · Integrated DSH · Claude Code · Codex               │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -88,7 +88,9 @@ Product Session 拥有产品 transcript、metadata、配置、事件 scope 和 S
 
 现有 Session 打开由 App 统一规划：已打开则聚焦，未打开则创建从首帧绑定目标 Session 的 Chat Tab，再由 Rust ensure/reconcile exact Tab owner。普通历史导航不把一个真实 Session Tab hot-swap 成另一个 Session。
 
-Builtin 与 external Runtime 的 session 操作统一经过 `src/server/session-engine/`。Route handler 只负责校验和响应映射，不直接 import Runtime 实现，也不自行分支 builtin/external。terminal 必须读取 adapter 的真实成功状态；idle 只表示没有活跃工作。
+Builtin、Integrated DSH 与 external Runtime 的 session 操作统一经过 `src/server/session-engine/`。Route handler 只负责校验和响应映射，不直接 import Runtime 实现，也不自行分支 builtin/integrated/external。terminal 必须读取 adapter 的真实成功状态；idle 只表示没有活跃工作。
+
+Runtime 分为 Integrated（Claude Agent SDK、DSH）、Managed Provider Runtime（Managed Codex）和 External CLI。Agent 的 `runtimePreference` 表达未来执行意图，Channel 只拥有 transport 与实时渠道规则，Session 的 `runtimeBinding` 固化实际执行身份；legacy `runtime/runtimeSource` 只是投影。新 Session 按分发 policy 与 Provider constraint 解析；普通 Provider 的 Agent 未明确选择时采用通用设置默认，明确选择优先。发行版始终开放 Runtime 选择，已有 binding 不受默认值变化影响。DSH 子进程属于该 Session Sidecar，通过生成的协议 client 连接；Runtime 拥有原生会话、工具与工作树，Host 拥有产品状态、权限交互和投影。
 
 Rewind、Fork、Retry 由 SessionEngine adapter 编排 native history 与产品历史的联合操作；SessionStore 裁决产品提交，Renderer 投影结果。Retry 的回溯与重发接纳共用既有 mutation owner，不能拆成前端两次请求。操作边界与失败语义见 [Session 架构 §4.4](./tech_docs/session_architecture.md#44-rewindforkretry-与-reload-anchor)。
 
@@ -128,6 +130,7 @@ Node → Rust 的反向调用只经过 localhost Management API。应用级资�
 |------|--------------|
 | App 配置 | `config.json`；写前锁内重读并合并，写后刷新 projection |
 | Product Session metadata/transcript | SessionStore；旧格式保持原读写，新建/fork 固定 V2，产品保存与 AI 执行独立（[详述](./tech_docs/session_transcript_v2.md)） |
+| DSH 原生对话与协调记录 | DSH 官方 JSONL persistence 与 Runtime-owned coordination store；Host 不写原生事件 |
 | Custom MCP OAuth credential | Node `mcp-oauth` state store；Global Sidecar 独占 proactive refresh scheduler，revision CAS 裁决 refresh/revoke |
 | 新定时自动化 | Rust TaskStore；Cron 只是兼容 surface |
 | Session Goal | SessionGoalManager |
@@ -146,7 +149,7 @@ Node → Rust 的反向调用只经过 localhost Management API。应用级资�
   → Chat Tab Session-scoped API
   → Rust generation-aware proxy
   → SessionEngine
-  → builtin/external adapter
+  → builtin/integrated/external adapter
   → Runtime
   → normalized events
   → Node SSE
@@ -186,13 +189,14 @@ Record 的物理音轨与媒体时钟由 RecordingManager 持有；Media Worker 
 | Sidecar Manager | Rust；Session owner set、generation、recovery、Global intent 和请求 lease | [Session](./tech_docs/session_architecture.md)、[冷启动](./tech_docs/sidecar_cold_start.md) |
 | Tab Workspace | App + feature module；Tab union、导航、恢复、关闭 lifecycle | [DESIGN](./DESIGN.md)、[Chat 呈现](./tech_docs/chat_scroll_presentation_lifecycle.md) |
 | System Prompt | Node；产品 append、Workspace 指令和逐轮 reminder 分层组装 | [Prompt](./tech_docs/system_prompt_architecture.md)、[Reminder](./tech_docs/system_reminder_protocol.md) |
-| SessionEngine | Node facade；builtin/external Runtime 的唯一 route-facing 入口 | [Multi-Agent Runtime](./tech_docs/multi_agent_runtime.md) |
+| SessionEngine | Node facade；builtin/integrated/external Runtime 的唯一 route-facing 入口 | [Multi-Agent Runtime](./tech_docs/multi_agent_runtime.md) |
 | Builtin Session | Node；Claude Agent SDK Query、queue、turn、transcript 与配置 owner 分层 | [Session](./tech_docs/session_architecture.md) |
-| External Runtime | Node；Claude Code/Codex/Gemini adapter、进程与 normalized event | [Multi-Agent Runtime](./tech_docs/multi_agent_runtime.md) |
+| Integrated DSH | Session Sidecar 的 adapter 与独立 DSH 进程；原生 Session/Turn、工具、子 Agent 与 mutation receipts 由 Runtime 拥有，Host 负责配置、交互和 Product projection | [DSH 集成](./tech_docs/myagents_dsh_integrated_runtime.md) |
+| External Runtime | Node；Claude Code/Codex adapter、进程与 normalized event | [Multi-Agent Runtime](./tech_docs/multi_agent_runtime.md) |
 | Provider / OpenAI Bridge | Node + Rust credential owner；Provider route materialization 与协议转换 | [第三方 Provider](./tech_docs/third_party_providers.md) |
 | 托管 CLIProxy | Rust 拥有组件/账号目录/进程与执行 lease；原版 CLIProxy 拥有 OAuth/refresh/协议转换，SDK 仍属 builtin | [CLIProxy](./tech_docs/managed_cliproxy.md) |
 | Custom MCP OAuth | Node state store；Global scheduler 主动刷新，Session Sidecar 观察 credential revision | [冷启动](./tech_docs/sidecar_cold_start.md) |
-| CLI / Admin API | App-owned CLI bundle；Node 统一区分 App 内部 caller 与 token-authenticated 外部 caller，固定公开清单后才进入 Admin/Management 业务 owner；外部策略/token 由 Rust App owner 管理 | [CLI](./tech_docs/cli_architecture.md) |
+| CLI / Admin API | App-owned CLI bundle；Node 区分带内部 capability 的 Session caller 与 token-authenticated 外部 caller，公开命令经过固定清单准入；外部策略/token 由 Rust App owner 管理，业务写入仍由对应 owner 裁决 | [CLI](./tech_docs/cli_architecture.md) |
 | 内置小助理 | `bundled-agents/myagents_helper/` 模板 + Global Sidecar Admin API；不建立第二套业务 authority | [CLI](./tech_docs/cli_architecture.md) |
 | Task Center | Rust TaskStore、TaskApplication 与 TaskScheduler | [任务中心](./tech_docs/task_center.md)、[Provider routing](./tech_docs/task_provider_routing.md) |
 | Goal | Rust SessionGoalManager + Node goal orchestrator；Session 一等状态 | [Session](./tech_docs/session_architecture.md) |
@@ -235,6 +239,8 @@ Record 的物理音轨与媒体时钟由 RecordingManager 持有；Media Worker 
 ### 跨平台
 
 平台差异必须收敛在 Rust policy/helper 或明确的 adapter 中；Renderer 不根据 OS 复制进程、路径、WebView 和系统 UI 规则。Windows 路径、reparse point、进程树、console 抑制和 WebView2 限制见 [Windows 平台](./tech_docs/windows_platform.md)。构建与发布以 `package.json`、`rust-toolchain.toml` 和 `specs/guides/` 为准。
+
+DSH 的模型请求通过既有 credential reverse port 取得临时 Provider network policy；Host 决定代理选择，Runtime request scope 拥有并发连接池。普通网络与 Shell 使用 Host 的 general launch snapshot，详见 [代理配置](./tech_docs/proxy_config.md)。
 
 ### 日志与诊断
 

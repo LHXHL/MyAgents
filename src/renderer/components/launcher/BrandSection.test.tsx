@@ -326,7 +326,7 @@ describe('BrandSection', () => {
     },
     {
       name: 'system CLI runtime',
-      props: { runtime: 'gemini' as const },
+      props: { runtime: 'claude-code' as const },
       expected: 'false',
     },
     {

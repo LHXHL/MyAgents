@@ -14,6 +14,10 @@ import {
   agentUsesManagedCodexProvider,
   projectManagedCodexPermissionToRuntime,
 } from '../../shared/providerExecution';
+import {
+  runtimeSourceForBinding,
+  runtimeTypeForBinding,
+} from '../../shared/integrated-runtimes/identity';
 
 /**
  * Effective runtime config for a single query (v0.1.69).
@@ -33,14 +37,9 @@ export interface ResolvedSessionConfig {
   providerEnvJson: string | undefined;
 }
 
-/**
- * Only two behaviors: IM live-follows AgentConfig + ChannelOverrides; everyone
- * else (Desktop Tab, Cron new-task, Cron current-session) reads from the
- * session snapshot with Agent as fallback.
- *
- * Cron `new_task` looks like "live" but actually snapshots into a fresh
- * SessionMetadata per tick (T6), then reads that snapshot — so it's
- * structurally 'owned'.
+/** Owned snapshots are authoritative for desktop, task and IM alike.
+ * `im` only selects the unattended Agent-template birth/legacy resolver when
+ * no complete snapshot exists; Cloud registered Agents use a separate lifecycle.
  */
 export type SessionOwnerKind = 'im' | 'owned';
 
@@ -51,9 +50,9 @@ export interface ResolveSessionConfigOptions {
 /**
  * Resolve the effective config for one query (D2, D4, D7, Option C).
  *
- * - IM (`'im'`): every call re-merges `channel.overrides ?? agent`. No session
- *   snapshot read. This keeps the D4 live-follow semantic; IM session fork on
- *   runtime drift happens at the Router layer, not here.
+ * - IM with a complete snapshot uses the same owned policy. Without metadata,
+ *   the compatibility/birth resolver reads only Agent defaults; Channels own
+ *   transport and restrictions, never a second execution template.
  *
  * - Owned (`'owned'`): if `configSnapshotAt` is present, the session snapshot
  *   owns the field set and missing fields resolve only to runtime/provider
@@ -72,16 +71,16 @@ export function resolveSessionConfig(
   options: ResolveSessionConfigOptions = {},
 ): ResolvedSessionConfig {
   const managedCodexProviderReady = options.managedCodexProviderReady === true;
-  if (ownerKind === 'im') {
+  if (ownerKind === 'im' && !meta?.configSnapshotAt) {
     if (!agent) throw new Error('IM session config requires an Agent.');
     // A missing channel is only a startup/health fallback; use the same identity
     // projection instead of maintaining a second permission path.
-    const eff = channel ? resolveEffectiveConfig(agent, channel) : agent;
+    const eff = channel ? resolveEffectiveConfig(agent, channel) : { ...agent, permissionMode: getMaxPermissionForRuntime(agent.runtime ?? 'builtin') };
     const effectiveRuntime = eff.runtime ?? 'builtin';
     const managedCodexSelected = agentUsesManagedCodexProvider({
       providerId: eff.providerId,
-      runtime: channel?.overrides?.runtime ?? agent.runtime,
-      runtimeConfig: channel?.overrides?.runtimeConfig ?? agent.runtimeConfig,
+      runtime: agent.runtime,
+      runtimeConfig: agent.runtimeConfig,
     });
     if (managedCodexProviderReady && managedCodexSelected
         && eff.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID && eff.model) {
@@ -99,11 +98,16 @@ export function resolveSessionConfig(
     }
     const permissionMode = effectiveRuntime === 'builtin'
       ? eff.permissionMode
+      : effectiveRuntime === 'dsh'
+        ? (projectPermissionModeForRuntime(eff.permissionMode, effectiveRuntime)
+          ?? getDefaultRuntimePermissionMode(effectiveRuntime))
       : (projectPermissionModeForRuntime(eff.permissionMode, effectiveRuntime)
         ?? getMaxPermissionForRuntime(effectiveRuntime));
     return {
       runtime: effectiveRuntime,
-      runtimeSource: effectiveRuntime !== 'builtin' ? 'system-cli' : undefined,
+      runtimeSource: effectiveRuntime === 'dsh'
+        ? 'integrated'
+        : effectiveRuntime !== 'builtin' ? 'system-cli' : undefined,
       model: eff.model,
       permissionMode,
       mcpEnabledServers: eff.mcpEnabledServers,
@@ -123,10 +127,16 @@ export function resolveSessionConfig(
     && managedCodexProviderReady
     && typeof agent?.model === 'string'
     && agent.model.trim().length > 0;
-  const runtime = meta?.runtime ?? (agentUsesManagedProvider ? 'codex' : agent?.runtime) ?? 'builtin';
-  const runtimeSource = runtime === 'builtin'
-    ? undefined
-    : (meta?.runtime !== undefined
+  const runtime = meta?.runtimeBinding
+    ? runtimeTypeForBinding(meta.runtimeBinding)
+    : meta?.runtime ?? (agentUsesManagedProvider ? 'codex' : agent?.runtime) ?? 'builtin';
+  const runtimeSource = meta?.runtimeBinding
+    ? runtimeSourceForBinding(meta.runtimeBinding)
+    : runtime === 'builtin'
+      ? undefined
+      : runtime === 'dsh'
+        ? 'integrated'
+        : (meta?.runtime !== undefined
       ? (meta.runtimeSource
         ?? meta.providerExecutionIdentity?.runtimeSource
         ?? 'system-cli')
@@ -139,7 +149,8 @@ export function resolveSessionConfig(
   // (which is the builtin/provider field). Without this branch a fresh
   // unsnapshotted external session would read `agent.model` (Claude) and
   // hand it to Codex → 400 (issue #224).
-  const rawModel = runtime === 'builtin'
+  const usesIntegratedProvider = runtime === 'builtin' || runtime === 'dsh';
+  const rawModel = usesIntegratedProvider
     ? (snapshotOwnsConfig ? meta?.model : (meta?.model ?? agent?.model))
     : (snapshotOwnsConfig
       ? meta?.model
@@ -163,7 +174,7 @@ export function resolveSessionConfig(
     model = coercedModel;
   }
 
-  const rawPermissionMode = runtime === 'builtin'
+  const rawPermissionMode = usesIntegratedProvider
     ? (snapshotOwnsConfig ? meta?.permissionMode : (meta?.permissionMode ?? agent?.permissionMode))
     : (meta ? meta.permissionMode : (managedCodexSession
       ? agent?.permissionMode
@@ -187,11 +198,11 @@ export function resolveSessionConfig(
     model,
     permissionMode,
     mcpEnabledServers: snapshotOwnsConfig ? meta?.mcpEnabledServers : (meta?.mcpEnabledServers ?? agent?.mcpEnabledServers),
-    providerId: runtime === 'builtin'
+    providerId: usesIntegratedProvider
       ? (snapshotOwnsConfig ? meta?.providerId : (meta?.providerId ?? agent?.providerId))
       : undefined,
-    providerRoute: runtime === 'builtin' && snapshotOwnsConfig ? meta?.providerRoute : undefined,
-    providerEnvJson: runtime === 'builtin'
+    providerRoute: usesIntegratedProvider && snapshotOwnsConfig ? meta?.providerRoute : undefined,
+    providerEnvJson: usesIntegratedProvider
       ? (snapshotOwnsConfig ? meta?.providerEnvJson : (meta?.providerEnvJson ?? agent?.providerEnvJson))
       : undefined,
   };

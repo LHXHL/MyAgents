@@ -1,4 +1,4 @@
-import { ArrowRight, Info } from 'lucide-react';
+import { ArrowRightIcon, InfoIcon } from '@/components/icons';
 import { useId, useMemo, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -89,7 +89,7 @@ function RawFilePatchResult({
   return (
     <section className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--line)] bg-[var(--paper-elevated)] shadow-[var(--shadow-xs)]">
       <div className="flex items-center gap-2 border-b border-[var(--line-subtle)] px-3 py-2 text-xs font-medium text-[var(--ink-muted)]">
-        <Info className="size-3.5" aria-hidden="true" />
+        <InfoIcon className="size-3.5" aria-hidden="true" />
         {t('shell.toolChrome.filePatch.rawResult')}
         {hasHiddenContent && (
           <span className="ml-auto text-[var(--warning)]">
@@ -203,7 +203,7 @@ function FilePatchSection({
             {movePath && (
               <>
                 <span className="sr-only">{t('shell.toolChrome.filePatch.moveTo', { path: movePath.fileName })}</span>
-                <ArrowRight className="size-3.5 shrink-0 text-[var(--ink-muted)]" aria-hidden="true" />
+                <ArrowRightIcon className="size-3.5 shrink-0 text-[var(--ink-muted)]" aria-hidden="true" />
                 <span className="truncate font-mono text-sm font-semibold text-[var(--ink)]" title={change.movePath}>
                   {movePath.fileName}
                 </span>
@@ -229,7 +229,7 @@ function FilePatchSection({
 
       {showsPreviousVersionNotice && (
         <div className="flex items-center gap-1.5 border-b border-[var(--line-subtle)] bg-[var(--info-bg)] px-3 py-1.5 text-xs text-[var(--info)]">
-          <Info className="size-3.5 shrink-0" aria-hidden="true" />
+          <InfoIcon className="size-3.5 shrink-0" aria-hidden="true" />
           {t('shell.toolChrome.filePatch.previousVersionUnavailable')}
         </div>
       )}

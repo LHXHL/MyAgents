@@ -140,12 +140,20 @@ export interface ToolUseSimple extends ToolUse {
   display?: ToolDisplayPayload;
 }
 
+export interface ProviderToolUsePayload extends ToolUse {
+  providerRouteId?: string;
+  providerBlockType?: string;
+}
+
 export interface ContentBlock {
   /** Present on V2 blocks; supplied by the product transcript owner. */
   id?: string;
   asyncQuestions?: AsyncQuestionSet;
   type: 'text' | 'tool_use' | 'thinking' | 'server_tool_use';
   text?: string;
+  providerRouteId?: string;
+  providerBlockType?: string;
+  resultProviderBlockType?: string;
   tool?: ToolUseSimple;
   thinking?: string;
   thinkingStartedAt?: number;

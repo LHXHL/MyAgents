@@ -4,7 +4,7 @@
  */
 
 import { memo, useCallback, useRef, useState } from 'react';
-import { Plus, FolderPlus, LayoutTemplate } from 'lucide-react';
+import { PlusIcon, FolderPlusIcon, TemplateIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import Tip from '@/components/Tip';
@@ -43,7 +43,7 @@ export default memo(function AddWorkspaceMenu({
                     : 'flex items-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-2.5 py-1 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)]'}
                 aria-label={t('addWorkspaceMenu.add')}
             >
-                <Plus className="h-3.5 w-3.5" />
+                <PlusIcon className="h-3.5 w-3.5" />
                 {variant === 'label' && t('addWorkspaceMenu.add')}
             </button>
     );
@@ -68,7 +68,7 @@ export default memo(function AddWorkspaceMenu({
                     onClick={() => { setMenuOpen(false); onAddFolder(); }}
                     className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)]"
                 >
-                    <FolderPlus className="h-3.5 w-3.5 text-[var(--ink-muted)]" />
+                    <FolderPlusIcon className="h-3.5 w-3.5 text-[var(--ink-muted)]" />
                     {t('addWorkspaceMenu.addLocalFolder')}
                 </button>
                 <button
@@ -77,7 +77,7 @@ export default memo(function AddWorkspaceMenu({
                     onClick={() => { setMenuOpen(false); onCreateFromTemplate(); }}
                     className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)]"
                 >
-                    <LayoutTemplate className="h-3.5 w-3.5 text-[var(--ink-muted)]" />
+                    <TemplateIcon className="h-3.5 w-3.5 text-[var(--ink-muted)]" />
                     {t('addWorkspaceMenu.createFromTemplateAgent')}
                 </button>
             </Popover>

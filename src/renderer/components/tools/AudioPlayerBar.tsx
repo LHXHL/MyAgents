@@ -10,7 +10,7 @@
  * source (Tauri: cmd_read_file_base64 → blob URL; browser: /api/audio).
  */
 import { useCallback, useRef } from 'react';
-import { Play, Pause } from 'lucide-react';
+import { PlayIcon, PauseIcon } from '@/components/icons';
 import { track } from '@/analytics';
 import { useAudioPlayer } from '@/hooks/useAudioPlayer';
 import { formatPlaybackTime as formatTime } from '@/utils/audioPlayer';
@@ -39,8 +39,8 @@ export default function AudioPlayerBar({ filePath }: { filePath: string }) {
         className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-[var(--on-accent)] transition-colors hover:bg-[var(--accent-warm-hover)]"
       >
         {isPlaying
-          ? <Pause className="size-3 fill-current" />
-          : <Play className="size-3 fill-current ml-0.5" />
+          ? <PauseIcon className="size-3 fill-current" />
+          : <PlayIcon className="size-3 fill-current ml-0.5" />
         }
       </button>
 

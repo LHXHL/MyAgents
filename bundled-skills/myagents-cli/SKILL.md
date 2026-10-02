@@ -194,11 +194,12 @@ myagents agent runtime-status                           # 看所有 Agent 的实
 ### Agent Runtime 发现（runtime）
 
 ```bash
-myagents runtime list                                   # 4 个 runtime（builtin/claude-code/codex/gemini）的装机情况 + 版本
+myagents runtime list                                   # builtin/dsh/claude-code/codex 的装机情况 + 版本
 myagents runtime list --json                            # 机读：installed/version/path
 myagents runtime describe <runtime>                     # 某 runtime 的 model 清单 + permissionMode 枚举
 myagents runtime diagnose codex [--workspacePath PATH]  # Codex 的 auth/features/MCP/apps/effective-env 快照（issue #194）
 myagents diagnose runtime codex                         # 同上的 sugar 写法
+myagents diagnose runtime dsh                           # 资源校验、当前进程/模型/权限/代理/扩展，不启动新 Session
 ```
 
 **何时用：**
@@ -207,7 +208,7 @@ myagents diagnose runtime codex                         # 同上的 sugar 写法
 - 用户问"codex 支持什么 model" → `runtime describe codex`
 - 「@oai/artifact-tool 我从终端能调用、MyAgents 里就不行」/「Codex MCP 在 MyAgents 里看不到」/「Codex 是不是用错代理了」→ `runtime diagnose codex`。它 spawn 一个临时 codex app-server，跑 `getAuthStatus` / `experimentalFeature/list` / `mcpServerStatus/list` / `app/list` 四个 RPC，把 Codex 自己看到的状态原样吐出来，省得猜。effectiveEnv 节里能看到 MyAgents 注入的代理是不是真到了子进程，feature flag 是不是真生效。
 
-每个外部 runtime 有自己的动态 model 清单（Codex/Gemini 会 spawn CLI 查）和自己的 permissionMode 枚举（`suggest` / `auto-edit` / `full-auto` ≠ 内置的 `auto` / `plan` / `fullAgency`）——别混。
+每个外部 runtime 有自己的 model 清单和 permissionMode 枚举；Codex 的 model 清单通过 CLI 查询。不要把 Codex 的 `suggest` / `auto-edit` / `full-auto` 与内置 Runtime 的 `auto` / `plan` / `fullAgency` 混用。
 
 ### Session 协作与只读历史
 
@@ -223,7 +224,7 @@ myagents session get <sessionId> [--limit 5] [--before <messageId>] [--json]
 ### Skills（skill）
 
 ```bash
-myagents skill list                                     # 已装 skill（全局 + 项目级）
+myagents skill list [--verbose]                          # 已装 skill（全局 + 项目级）
 myagents skill info <name>                              # 某 skill 的详情
 myagents skill add <source> [--scope user|project] [--plugin X] [--skill Y] [--force] [--dry-run]
 myagents skill remove <name>                            # 删除
@@ -340,7 +341,7 @@ myagents task delete <taskId>                           # 不可恢复地移出�
 
 | Flag | 语义 |
 |------|------|
-| `--runtime` | `builtin` / `claude-code` / `codex` / `gemini`，不传则继承 |
+| `--runtime` | `builtin` / `dsh` / `claude-code` / `codex`，不传则继承 |
 | `--providerId` | builtin Provider id；必须与 `--model` 成对设置，不传则继承 |
 | `--model` | 值取决于 runtime，**先 `runtime describe <runtime>` 查** |
 | `--permissionMode` | 值取决于 runtime，**同样先 `runtime describe`** |
@@ -445,15 +446,16 @@ myagents cc-plugin show <id|name>                       # 详情（含 manifest 
 - "装本地正在调的插件" → `cc-plugin install file:///path/to/plugin`
 - "禁掉 X 插件" → `cc-plugin disable X`
 
-启停 / 安装 / 卸载后会触发 SDK 柔性重启（500ms 防抖），下一次发消息时 plugin 内组件才生效。外部 Runtime（Claude Code CLI / Codex / Gemini）下不读取这里——它们各自管自己的 plugin 体系。
+启停 / 安装 / 卸载后会触发 SDK 柔性重启（500ms 防抖），下一次发消息时 plugin 内组件才生效。外部 Runtime（Claude Code CLI / Codex）下不读取这里——它们各自管自己的 plugin 体系。
 
 ### 通用配置 + 状态（config / status / version / reload）
 
 ```bash
+myagents config list [prefix]                           # 发现当前配置键、类型、说明；不返回值
 myagents config get <key>                               # 读，支持点号路径如 proxySettings.host
 myagents config set <key> <value> [--dry-run]           # 写，value 是 JSON 字面量（字符串要带引号）
 myagents status                                         # 应用整体运行状态
-myagents version                                        # 应用版本号
+myagents version                                        # App 与 Sidecar 版本、构建/启动时固定的代码身份
 myagents reload [--workspacePath <abs>]                 # 热加载配置（不重启进程）
 ```
 
@@ -462,6 +464,8 @@ myagents reload [--workspacePath <abs>]                 # 热加载配置（不�
 - "把代理 host 改成 X" → `config set proxySettings.host '"X"'`
 - "应用版本" → `version`
 - "改完手动让它生效" → `reload`（多数命令已经自动 broadcast，这个是兜底）
+
+`status` 分别显示全局 MCP 配置、工作区选择和当前 Session 实际观测；unknown 表示没有可信的当前观测，不表示 0 个服务器。`skill list` 默认收起正常 admission 详情，异常和不可用原因仍显示；`--verbose` 展开，`--json` 保留完整结构。DSH 的模型目录由所选 Provider 提供，使用 `model list` 查询。
 
 ### IM 媒体下发（im）
 

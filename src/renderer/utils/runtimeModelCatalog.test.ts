@@ -17,8 +17,8 @@ describe('runtimeModelCatalogPath', () => {
   });
 
   it('does not add a Codex source to other runtimes', () => {
-    expect(runtimeModelCatalogPath('gemini', 'managed-provider'))
-      .toBe('/api/runtime/models?type=gemini');
+    expect(runtimeModelCatalogPath('claude-code', 'managed-provider'))
+      .toBe('/api/runtime/models?type=claude-code');
   });
 });
 
@@ -71,5 +71,26 @@ describe('resolveRuntimeModelCatalogIdentity', () => {
       providerId: 'codex-sub',
       runtime: 'builtin',
     })).toEqual({ runtime: 'codex', source: 'managed-provider' });
+  });
+
+  it('keeps explicit DSH preference when the configured default changes', () => {
+    const agent = {
+      runtime: 'builtin' as const,
+      runtimePreference: { family: 'integrated' as const, id: 'dsh' as const },
+    };
+    expect(resolveAgentRuntimeModelCatalogIdentity(agent)).toEqual({
+      runtime: 'dsh',
+      source: 'integrated',
+    });
+    expect(resolveAgentRuntimeModelCatalogIdentity(agent, 'claude-agent-sdk')).toEqual({
+      runtime: 'dsh', source: 'integrated',
+    });
+    expect(resolveAgentRuntimeModelCatalogIdentity({}, 'dsh')).toEqual({
+      runtime: 'dsh', source: 'integrated',
+    });
+    expect(resolveAgentRuntimeModelCatalogIdentity(agent, 'dsh')).toEqual({
+      runtime: 'dsh',
+      source: 'integrated',
+    });
   });
 });

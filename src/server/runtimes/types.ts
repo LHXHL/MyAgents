@@ -1,15 +1,20 @@
+import type { TurnProviderAnalytics } from '../session-core/turn-analytics';
+import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
+import type { RuntimeAgentWorkControl, RuntimeAgentWorkTree } from '../../shared/types/subagent-lifecycle';
 import type { AsyncQuestionSet } from '../../shared/asyncUserQuestions';
 // AgentRuntime abstraction types (v0.1.59)
 // Defines the interface that all runtime implementations must satisfy
 
-import type { RuntimeType, RuntimeModelInfo, RuntimePermissionMode, RuntimeDetection, RuntimeDiagnostics, RuntimeEnvPolicy, RuntimeSource } from '../../shared/types/runtime';
+import type { RuntimeType, RuntimeModelInfo, RuntimePermissionMode, RuntimeDetection, RuntimeDiagnostics, RuntimeEnvPolicy, RuntimeExtensionDiagnostics, RuntimePermissionRuleMutationResult, RuntimePermissionRulesSnapshot, RuntimeSource } from '../../shared/types/runtime';
 import type { McpServerDefinition } from '../../shared/config-types';
-import type { InteractionScenario } from '../system-prompt';
+import type { DshSystemContextSnapshot, InteractionScenario } from '../system-prompt';
 import type { ModelUsageEntry } from '../types/session';
 import type { ToolAttachment } from '../../shared/types/tool-attachment';
-import type { SubagentLifecycleStatus } from '../../shared/types/subagent-lifecycle';
+import type { SubagentLifecycle, SubagentLifecycleStatus } from '../../shared/types/subagent-lifecycle';
 import type { LargeValueRef } from '../utils/large-value-store';
 import type { ManagedCodexExtensionSnapshot } from './managed-codex/extensions/contracts';
+import type { DshProductExtensionSource } from '../integrated-runtimes/dsh/extension-compiler';
+import type { PermissionOperationDisplay, PermissionReview } from '../../shared/types/runtime';
 
 export interface InlineImagePayload {
   kind?: 'inline_base64';
@@ -51,6 +56,8 @@ export type ResolvedImagePayload = InlineImagePayload & { data: string };
 export interface RuntimeInitialTurn {
   message: string;
   clientUserMessageId: string;
+  /** Product-owned stable operation identity for runtimes with durable admission. */
+  clientOperationId?: string;
   images?: ResolvedImagePayload[];
 }
 
@@ -70,6 +77,8 @@ export interface SessionStartOptions {
   workspacePath: string;
   initialTurn?: RuntimeInitialTurn;
   systemPromptAppend?: string;
+  /** Declarative Host context used only by the Integrated DSH Runtime. */
+  systemContext?: DshSystemContextSnapshot;
   model?: string;
   permissionMode?: string;
   /** #324 — NORMALIZED reasoning effort level (never 'default'); absent =
@@ -109,6 +118,11 @@ export interface SessionStartOptions {
    * adapter. It is generation-scoped and never persisted by the runtime.
    */
   managedCodexExtensions?: ManagedCodexExtensionSnapshot;
+  /**
+   * Product-owned declarative inventory for the Integrated DSH component
+   * compiler. Credential material remains generation-scoped in the Host.
+   */
+  dshExtensions?: DshProductExtensionSource;
 }
 
 /**
@@ -118,6 +132,8 @@ export interface RuntimeProcess {
   readonly pid: number;
   /** Optional adapter-owned identity for generation-scoped projections/callbacks. */
   readonly runtimeGeneration?: string;
+  /** Runtime admission completed a durable mutation that changed Product transcript state. */
+  readonly productTranscriptChangedAtStartup?: boolean;
   /** Runtime-native Skill names confirmed after startup, when the adapter can inspect them. */
   loadedSkillNames?: readonly string[];
   /** Write a line to the process stdin */
@@ -188,8 +204,8 @@ export interface ExternalRuntimeConfigSnapshot {
  * path) instead of rendering it flat in the main transcript.
  *
  * builtin (Claude Agent SDK) does NOT use this — it has its own native
- * `parent_tool_use_id` stream path in agent-session.ts. Gemini / Claude Code
- * never set it, so their behaviour is unchanged.
+ * `parent_tool_use_id` stream path in agent-session.ts. Claude Code
+ * never sets it, so its behaviour is unchanged.
  *
  * `parentToolUseId` is the toolUseId of the card that REPRESENTS the sub-agent
  * (for Codex: the `spawnAgent` collabAgentToolCall item id), already resolved by
@@ -238,11 +254,29 @@ export type UnifiedEvent = (
   // === Tool use ===
   // `subAgent` (optional, Codex-only today): when set, the session layer nests
   // this tool under the parent spawn card instead of rendering it flat. See
-  // SubAgentScope. Absent for builtin / Gemini / Claude Code.
+  // SubAgentScope. Absent for builtin / Claude Code.
   | { kind: 'tool_use_start'; toolUseId: string; toolName: string; input?: Record<string, unknown>; subAgent?: SubAgentScope }
   | { kind: 'tool_input_delta'; toolUseId: string; delta: string; subAgent?: SubAgentScope }
   | { kind: 'tool_use_stop'; toolUseId: string; input?: Record<string, unknown>; subAgent?: SubAgentScope }
   | { kind: 'tool_result_delta'; toolUseId: string; delta: string; subAgent?: SubAgentScope }
+  | {
+    kind: 'provider_tool_use_start';
+    providerRouteId: string;
+    providerBlockType: string;
+    toolUseId: string;
+    toolName: string;
+    input: Record<string, unknown>;
+  }
+  | {
+    kind: 'provider_tool_result';
+    providerRouteId: string;
+    providerBlockType: string;
+    toolUseId: string;
+    toolName: string;
+    content: string;
+    isError: boolean;
+    attachments?: ToolAttachment[];
+  }
   | {
     kind: 'tool_result';
     toolUseId: string;
@@ -281,14 +315,39 @@ export type UnifiedEvent = (
   // === Normalized child-turn lifecycle ===
   | {
     kind: 'subagent_lifecycle';
+    handleRevision?: number;
+    agentId?: string;
+    taskId?: string;
+    tree?: SubagentLifecycle['tree'];
+    modelRoute?: SubagentLifecycle['modelRoute'];
+    lastActivityAt?: number;
+    activation?: SubagentLifecycle['activation'];
+    handleState?: SubagentLifecycle['handleState'];
+    startedAt?: number;
     parentToolUseId: string;
     status: SubagentLifecycleStatus;
     observedAt: number;
+    agentType?: string;
+    description?: string;
+    mode?: 'foreground' | 'continuable';
+    model?: string;
+    result?: string;
+    resultTruncated?: boolean;
+    usage?: {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens?: number;
+      cacheCreationTokens?: number;
+      costUsd?: number | null;
+    };
+    /** ProductWork is child/background state and must not drive root loading/watchdogs. */
+    affectsRootActivity?: boolean;
   }
 
   // === Turn lifecycle ===
   | { kind: 'turn_started' }
-  | { kind: 'root_turn_admitted'; runtimeTurnId: string; clientUserMessageId: string }
+  | { kind: 'root_turn_admitted'; runtimeTurnId: string; clientUserMessageId: string; origin?: 'user' }
+  | { kind: 'root_turn_admitted'; runtimeTurnId: string; clientOperationId: string; origin: 'collaboration'; clientUserMessageId?: never }
 
   // === Permission delegation ===
   | {
@@ -297,18 +356,34 @@ export type UnifiedEvent = (
     toolName: string;
     toolUseId: string;
     input: Record<string, unknown>;
+    display?: PermissionOperationDisplay;
+    review?: PermissionReview;
+    reviewRef?: LargeValueRef;
+    rootToolUseId?: string;
     /** CC's suggested permission rules for "always allow" (echoed back as updatedPermissions) */
     suggestions?: unknown[];
+    /** Preserve the Runtime interaction presentation instead of inferring it from a tool name. */
+    interactionKind?: 'permission' | 'ask_user' | 'plan_approval';
+    defaultToNo?: boolean;
+    suppressAlwaysAllowRule?: boolean;
   }
   | {
     kind: 'interactive_request_resolved';
     requestId: string;
+    status?: 'applied' | 'already_settled' | 'expired' | 'cancelled';
   }
 
   // === Session lifecycle ===
   | { kind: 'session_init'; sessionId: string; model: string; tools: string[] }
   | { kind: 'status_change'; state: 'idle' | 'running' | 'waiting_permission' | 'error' }
-  | { kind: 'turn_complete'; result?: string; status?: string; error?: string }
+  | {
+    kind: 'turn_complete';
+    result?: string;
+    status?: string;
+    error?: string;
+    /** Exact durable operation owner when the Runtime exposes one. */
+    clientOperationId?: string;
+  }
   | {
     kind: 'session_complete';
     result: string;
@@ -330,12 +405,24 @@ export type UnifiedEvent = (
      * PRD 0.2.32 — 当前 context 占用（最近一次调用 input 系 token），用于 context 用量指示器。
      * **与 `inputTokens` 分开**：`inputTokens` 可能是 running_total（Codex watchdog 依赖它），
      * 而占用必须是「最近一次」。**计算占用是 adapter 的职责**：Codex = `tokenUsage.last.inputTokens`
-     * （OpenAI 系，已含 cached、不再加）；Anthropic 系（CC/Gemini）= 最近一次的 `input + cacheRead + cacheCreation`。
+     * （OpenAI 系，已含 cached、不再加）；Anthropic 系（CC）= 最近一次的 `input + cacheRead + cacheCreation`。
      * external-session 只消费 adapter 显式填的这个字段，**自己不做回退**——缺失则不发 context-usage 事件。
      */
     contextOccupiedTokens?: number;
     /** PRD 0.2.32 — runtime 自报的 context 窗口（Codex `tokenUsage.modelContextWindow`）；不报传 null/省略 → 回落 registry/200K。 */
     runtimeContextWindow?: number | null;
+  }
+  | {
+    kind: 'context_update';
+    contextOccupiedTokens: number;
+    runtimeContextWindow: number;
+  }
+  | {
+    kind: 'plan_state_update';
+    mode: 'normal' | 'plan';
+    revision: string;
+    /** Product permission mode to display for this effective Plan state. */
+    permissionMode: string;
   }
   | { kind: 'model_update'; model: string }
   | { kind: 'log'; level: 'info' | 'warn' | 'error'; message: string }
@@ -378,6 +465,7 @@ export type UnifiedEvent = (
   // a visible user bubble; the turn/steer RPC response alone is only transport
   // acknowledgement.
   | { kind: 'user_message_accepted'; clientUserMessageId?: string }
+  | { kind: 'user_message_cancelled'; clientUserMessageId: string }
 
   // === Passthrough for unrecognized events ===
   | { kind: 'native_retraction'; messageIds: string[]; scope?: 'local' | 'session'; parentToolUseId?: string }
@@ -421,8 +509,14 @@ export interface AgentRuntime {
   /** How this runtime applies turn-scoped config changes at a safe boundary. */
   getConfigCapabilities?(): RuntimeConfigCapabilities;
 
+  /** Read the effective process configuration without IO; callers snapshot before terminal persistence. */
+  getTurnProviderAnalytics?(process: RuntimeProcess): TurnProviderAnalytics;
+
   /** Check if the CLI is installed and get version info */
   detect(): Promise<RuntimeDetection>;
+
+  /** Read-only resources plus the supplied lifecycle-owned process, if any. */
+  inspectRuntime?(process?: RuntimeProcess): Promise<import('../../shared/types/runtime').RuntimeInspection>;
 
   /** Query available models from the CLI (may spawn a temporary process) */
   queryModels(options?: {
@@ -445,13 +539,64 @@ export interface AgentRuntime {
     onEvent: UnifiedEventCallback,
   ): Promise<RuntimeProcess>;
 
+  /**
+   * Replace the declarative Product extension generation owned by an
+   * Integrated DSH process. The adapter preserves desired/effective state
+   * when DSH has prepared a candidate that is waiting for an operation
+   * boundary.
+   */
+  replaceDshExtensions?(
+    process: RuntimeProcess,
+    extensions: DshProductExtensionSource,
+  ): Promise<RuntimeExtensionDiagnostics>;
+
+  /** Retry a prepared DSH extension generation at a quiescent boundary. */
+  reconcileDshExtensions?(
+    process: RuntimeProcess,
+  ): Promise<RuntimeExtensionDiagnostics | null>;
+
+  /** Inspect the authoritative Runtime permission policy for this Session. */
+  listAgentWork?(process: RuntimeProcess, tasksFor?: string): Promise<RuntimeAgentWorkTree>;
+  controlAgentWork?(process: RuntimeProcess, input: RuntimeAgentWorkControl): Promise<void>;
+  listPermissionRules?(process: RuntimeProcess): Promise<RuntimePermissionRulesSnapshot>;
+
+  /** Pre-authorize one exact Runtime-owned permission tuple. */
+  addPermissionRule?(
+    process: RuntimeProcess,
+    input: Readonly<{
+      expectedRevision: string;
+      tool: string;
+      permissionClass: string;
+      target: string;
+    }>,
+  ): Promise<RuntimePermissionRuleMutationResult>;
+
+  /** Revoke one exact Runtime-owned permission rule. */
+  revokePermissionRule?(
+    process: RuntimeProcess,
+    input: Readonly<{ expectedRevision: string; ruleId: string }>,
+  ): Promise<RuntimePermissionRuleMutationResult>;
+
   /** Send a follow-up user message to an active session */
   sendMessage(
     process: RuntimeProcess,
     message: string,
     images?: ResolvedImagePayload[],
-    options?: { clientUserMessageId?: string },
+    options?: {
+      clientUserMessageId?: string;
+      clientOperationId?: string;
+      /** Recovered roots remain turn-boundary-only until their exact terminal settles. */
+      allowRealtimeSteer?: boolean;
+    },
   ): Promise<void>;
+
+  /** Exact active root and whether this Host generation may steer it in-place. */
+  getActiveRootOperation?(process: RuntimeProcess): Readonly<{
+    clientOperationId: string;
+    clientUserMessageId?: string;
+    origin?: 'collaboration';
+    realtimeSteerEligible?: boolean;
+  }> | null;
 
   /**
    * Compact the active conversation through the runtime's native control
@@ -477,8 +622,21 @@ export interface AgentRuntime {
     process: RuntimeProcess,
     message: string,
     images?: ResolvedImagePayload[],
-    options?: { clientUserMessageId?: string },
+    options?: {
+      clientUserMessageId?: string;
+      clientOperationId?: string;
+      beforeDispatch?: (identity: { clientOperationId: string; inputFingerprint: string }) => Promise<void>;
+    },
   ): Promise<void>;
+
+  /** Cancel one identified input; a consumed input cannot be retracted. */
+  cancelSteeredMessage?(
+    process: RuntimeProcess,
+    input: { clientOperationId: string; clientUserMessageId: string },
+  ): Promise<'cancelled' | 'delivered'>;
+
+  /** Deliver lossless structured answers when supported by the Runtime. */
+  respondAskUserQuestion?(process: RuntimeProcess, requestId: string, answers: AskUserQuestionAnswers | null): Promise<void>;
 
   /** Respond to a permission request from the runtime */
   respondPermission(
@@ -496,7 +654,7 @@ export interface AgentRuntime {
      * tool_result lands (control-transfer tool semantics: AskUserQuestion
      * cancellation, ExitPlanMode rejection, …); `false` (default) only
      * denies this single tool and lets the AI choose another. Other
-     * runtimes can ignore — Codex / Gemini have no equivalent knob today.
+     * runtimes can ignore — Codex has no equivalent knob today.
      */
     interrupt?: boolean,
   ): Promise<void>;
@@ -517,7 +675,7 @@ export interface AgentRuntime {
   /**
    * Apply a model update at the session layer's chosen turn boundary. The
    * actual meaning is declared by getConfigCapabilities(): Codex records
-   * next-turn state, Gemini performs ACP session/set_model, and per-turn
+   * next-turn state; per-turn
    * runtimes may omit this because the next spawn reads SessionStartOptions.
    */
   setModel?(process: RuntimeProcess, model: string | undefined): Promise<void>;
@@ -535,7 +693,7 @@ export interface AgentRuntime {
 }
 
 /**
- * Runtime rejected a `thread/resume` (Codex) or `session/load` (Gemini) because
+ * Runtime rejected a `thread/resume` (Codex) or `session/resume` (DSH) because
  * the persisted runtime-side session no longer exists — the rollout was GC'd,
  * the thread was archived, or the CLI upgraded across an on-disk format change.
  *

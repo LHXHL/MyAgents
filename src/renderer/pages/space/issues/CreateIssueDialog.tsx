@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Cloud, Loader2, Paperclip, Target, X } from 'lucide-react';
+import {
+  CloudIcon,
+  LoaderIcon,
+  AttachIcon,
+  TargetIcon,
+  CloseIcon,
+} from '@/components/icons';
 
 import { spaceErrorMessage, type SpaceGoal, type SpaceIdentitySummary, type SpaceRegisteredAgent, type SpaceSession } from '@/api/spaceCloud';
 import CustomSelect, { type SelectOption } from '@/components/CustomSelect';
@@ -143,7 +149,7 @@ export function CreateIssueDialog({
         <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4">
           <div className="flex min-h-[34px] items-center gap-2.5 text-base font-medium text-[var(--ink-muted)]">
             <span className="grid h-6 w-6 place-items-center rounded-lg border border-[var(--accent-warm-muted)] bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]">
-              <Cloud className="h-3.5 w-3.5" />
+              <CloudIcon className="h-3.5 w-3.5" />
             </span>
             <span>{t('space.createIssue.community')}</span>
             <span>›</span>
@@ -155,7 +161,7 @@ export function CreateIssueDialog({
             className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
             aria-label={t('space.createIssue.close')}
           >
-            <X className="h-4 w-4" />
+            <CloseIcon className="h-4 w-4" />
           </button>
         </div>
 
@@ -190,11 +196,11 @@ export function CreateIssueDialog({
               className="inline-flex h-10 items-center gap-2 rounded-full border border-[var(--line)] bg-[var(--paper-elevated)]/80 px-3 text-sm font-semibold text-[var(--ink-muted)] shadow-sm transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-wait disabled:opacity-70"
               aria-label={t('space.createIssue.addAttachment')}
             >
-              <Paperclip className="h-4 w-4" />
+              <AttachIcon className="h-4 w-4" />
               {t('space.createIssue.attachment')}
             </button>
             <span className="inline-flex min-h-10 items-center gap-2 rounded-full border border-[var(--line)] bg-[var(--paper-elevated)]/70 px-3 text-sm font-medium text-[var(--ink-muted)] shadow-sm">
-              <Target className="h-4 w-4" />
+              <TargetIcon className="h-4 w-4" />
               <span className="shrink-0 text-xs font-semibold uppercase text-[var(--ink-muted)]/70">
                 {t('space.createIssue.targetGoal')}
               </span>
@@ -236,7 +242,7 @@ export function CreateIssueDialog({
               disabled={submitting || attachmentDrafts.pending || !title.trim() || !body.trim()}
               className="flex h-11 items-center gap-2 rounded-full bg-[var(--button-primary-bg)] px-6 text-sm font-semibold text-[var(--button-primary-text)] shadow-sm transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
             >
-              {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {submitting ? <LoaderIcon className="h-4 w-4 animate-spin" /> : null}
               {t('space.common.create')}
             </button>
           </div>

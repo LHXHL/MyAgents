@@ -22,11 +22,26 @@ function bashTool(overrides: Partial<ToolUseSimple> = {}): ToolUseSimple {
 describe('BashTranscript command language', () => {
   it('labels PowerShell commands as powershell and Bash commands as bash', () => {
     expect(resolveBashTranscriptModel(bashTool()).commandLanguage).toBe('bash');
+    expect(resolveBashTranscriptModel(bashTool({ name: 'bash' })).commandLanguage).toBe('bash');
+    const official = resolveBashTranscriptModel(bashTool({ name: 'pwsh', input: { command: 'Get-ChildItem', workdir: 'C:\\workspace' } }));
+    expect(official.commandLanguage).toBe('powershell');
+    expect(official.shell).toBe('PowerShell');
+    expect(official.meta.cwd).toBe('C:\\workspace');
     expect(resolveBashTranscriptModel(bashTool({ name: 'PowerShell', input: { command: 'Get-ChildItem' } })).commandLanguage).toBe('powershell');
   });
 });
 
 describe('BashTool terminal transcript', () => {
+  it('renders official PowerShell output and foreground timeout in the shared terminal', () => {
+    const { container } = render(<BashTool tool={bashTool({
+      name: 'pwsh', input: { command: "Write-Output '中文'" }, result: '中文\n[Timed out]',
+      resultMeta: { status: 'timeout', cwd: 'C:\\workspace', exitCode: null },
+    })} />);
+    expect(screen.getByText('PowerShell')).toBeInTheDocument();
+    expect(container.querySelector('[data-bash-status]')).toHaveAttribute('data-bash-status', 'timeout');
+    expect(container.querySelector('[data-bash-transcript]')).toHaveTextContent('中文');
+  });
+
   it('renders command, output, state, and metadata inside one terminal surface', () => {
     const { container } = render(<BashTool tool={bashTool({
       input: { command: 'pwd', cwd: '/project' },

@@ -1,4 +1,4 @@
-import { Upload } from 'lucide-react';
+import { UploadIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 interface DropZoneOverlayProps {
@@ -30,7 +30,7 @@ export default function DropZoneOverlay({
     <div className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center bg-[var(--paper-elevated)]/90 backdrop-blur-sm">
       <div className="flex flex-col items-center gap-4 rounded-2xl border-2 border-dashed border-[var(--accent)] bg-[var(--paper)]/80 px-12 py-8 shadow-2xl">
         <div className="flex h-16 w-16 items-center justify-center rounded-full bg-[var(--accent)]/10">
-          <Upload className="h-8 w-8 text-[var(--accent)]" />
+          <UploadIcon className="h-8 w-8 text-[var(--accent)]" />
         </div>
         <div className="text-center">
           <p className="text-lg font-semibold text-[var(--ink)]">{message ?? t('dropZone.defaultMessage')}</p>

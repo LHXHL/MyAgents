@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { buildFallbackPath, getFallbackPaths } from './shell';
+import { buildFallbackPath, getFallbackPaths, mergeSearchPaths } from './shell';
+import pathCases from '../../shared/fixtures/runtime-search-path.json';
 
 describe('external runtime shell PATH fallback', () => {
   it('includes MyAgents-managed CLI locations on Windows', () => {
@@ -31,7 +32,7 @@ describe('external runtime shell PATH fallback', () => {
     );
   });
 
-  it('prepends fallback paths before the inherited Windows PATH', () => {
+  it('keeps inherited Windows PATH before fallback paths', () => {
     const fallback = buildFallbackPath({
       platform: 'win32',
       env: {
@@ -44,7 +45,7 @@ describe('external runtime shell PATH fallback', () => {
 
     expect(
       fallback.indexOf('C:\\Users\\tester\\AppData\\Local\\MyAgents\\nodejs'),
-    ).toBeLessThan(fallback.indexOf('C:\\Windows\\System32'));
+    ).toBeGreaterThan(fallback.indexOf('C:\\Windows\\System32'));
   });
 
   it('keeps the app CLI ahead of npm-global on Unix-like platforms', () => {
@@ -61,5 +62,11 @@ describe('external runtime shell PATH fallback', () => {
     expect(
       paths.indexOf('/Users/tester/.myagents/bin'),
     ).toBeLessThan(paths.indexOf('/Users/tester/.myagents/npm-global/bin'));
+  });
+});
+
+describe('user PATH precedence shared with Rust', () => {
+  it.each(pathCases)('$name', ({ platform, ...input }) => {
+    expect(mergeSearchPaths({ ...input, platform: platform as NodeJS.Platform })).toBe(input.expected);
   });
 });

@@ -117,6 +117,8 @@ src-tauri/target/x86_64-pc-windows-msvc/debug/myagents.exe
 
 `build_dev_win.ps1` 会清理 `debug/resources` 缓存、启用 `VITE_DEBUG_MODE=true`、构建 web/Sidecar/Plugin Bridge/CLI 一次，并在 Tauri build 阶段禁用重复的 `beforeBuildCommand`；这条路径用于快速测试，不替代正式发布构建。
 
+DSH Dev 默认拉取 `src/shared/integrated-runtimes/dsh-release.json` 指定的 Release；需要试本地 DSH 改动时可显式用 `-DshSource local -DshHandoff C:\absolute\path\to\handoff` 指向官方本地交付物。正式版 `build_windows.ps1` 使用同一版本和对应平台资产；若对应 Release 不可用则在下载时失败。
+
 两条 Windows 构建路径都会在 Tauri snapshot 前调用 `scripts/prepare-native-inference.mjs x86_64-pc-windows-msvc`，统一准备 document/speech capability。Sherpa 的锁定源码包只展开构建所需的根 `CMakeLists.txt`、`LICENSE`、`cmake/` 与 `sherpa-onnx/`；上游仓库其它目录中的 symlink 不会在 Windows 上落盘，不需要启用 Developer Mode、管理员权限或长路径开关。正式安装器验证除既有文档转换外，还必须检查 `speech-inference/v1` 的签名 manifest、media Worker/sherpa native inventory、与 `document-processing/v1` 共享的 ONNX Runtime identity，以及无系统 ORT/ffmpeg/Python 时的 WASAPI microphone/loopback、转录与 Job Object 取消。
 
 Sherpa 的附加宏通过 `CMAKE_CXX_FLAGS_INIT` 传入，不能覆盖 `CMAKE_CXX_FLAGS`，否则会丢失 MSVC 默认的 `/EHsc`，引发标准库 C4530 警告并破坏异常展开语义。Windows 构建还会在 CMake 配置完成、编译开始前，为锁定 hclust 源码的 `STDC FENV_ACCESS` pragma 添加 MSVC 条件保护；MSVC 原本就忽略该指令，保护只消除 C4068，保留浮点环境检查。补丁 helper 和准备脚本都参与构建指纹，修复后旧 speech 缓存不会被复用。

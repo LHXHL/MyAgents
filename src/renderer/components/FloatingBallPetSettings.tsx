@@ -1,4 +1,15 @@
-import { Check, Download, ExternalLink as ExternalLinkIcon, FolderOpen, Link2, Loader2, RefreshCw, Trash2, UploadCloud, X } from 'lucide-react';
+import {
+  CheckIcon,
+  DownloadIcon,
+  ExternalIcon as ExternalLinkIcon,
+  FolderOpenIcon,
+  LinkIcon,
+  LoaderIcon,
+  RefreshIcon,
+  TrashIcon,
+  UploadCloudIcon,
+  CloseIcon,
+} from '@/components/icons';
 import type { TFunction } from 'i18next';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
@@ -117,7 +128,7 @@ export function PetStyleCard({
                         <span className="line-clamp-1 min-w-0 text-base font-semibold text-[var(--ink)]">
                             {pack.displayName}
                         </span>
-                        {active && <Check className="h-4 w-4 shrink-0 text-[var(--accent)]" />}
+                        {active && <CheckIcon className="h-4 w-4 shrink-0 text-[var(--accent)]" />}
                     </div>
                     {description && (
                         <p className="mt-1 line-clamp-2 text-sm leading-6 text-[var(--ink-muted)]">
@@ -141,9 +152,9 @@ export function PetStyleCard({
                     title={t('floatingBallPet.delete')}
                 >
                     {deleting ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
+                        <LoaderIcon className="h-4 w-4 animate-spin" />
                     ) : (
-                        <Trash2 className="h-4 w-4" />
+                        <TrashIcon className="h-4 w-4" />
                     )}
                 </button>
             )}
@@ -237,7 +248,7 @@ function PetdexImportDialog({
                         className="rounded-lg p-1 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-wait disabled:opacity-60"
                         aria-label={t('floatingBallPet.close')}
                     >
-                        <X className="h-5 w-5" />
+                        <CloseIcon className="h-5 w-5" />
                     </button>
                 </div>
 
@@ -269,7 +280,7 @@ function PetdexImportDialog({
                         disabled={importing || !value.trim()}
                         className="inline-flex items-center justify-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-4 py-2 text-sm font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
                     >
-                        {importing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link2 className="h-4 w-4" />}
+                        {importing ? <LoaderIcon className="h-4 w-4 animate-spin" /> : <LinkIcon className="h-4 w-4" />}
                         {t('floatingBallPet.import')}
                     </button>
                 </div>
@@ -313,7 +324,7 @@ export default function FloatingBallPetSettings() {
             ...projects.map((project) => ({
                 value: project.path,
                 label: shortenPathForDisplay(project.path),
-                icon: <FolderOpen className="h-3.5 w-3.5" />,
+                icon: <FolderOpenIcon className="h-3.5 w-3.5" />,
             })),
         ],
         [projects, t],
@@ -642,7 +653,7 @@ export default function FloatingBallPetSettings() {
                             className="self-end rounded-lg p-2 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] sm:self-auto"
                             title={t('floatingBallPet.refreshImported')}
                         >
-                            {loadingInstalled ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                            {loadingInstalled ? <LoaderIcon className="h-4 w-4 animate-spin" /> : <RefreshIcon className="h-4 w-4" />}
                         </button>
                     </div>
 
@@ -669,7 +680,7 @@ export default function FloatingBallPetSettings() {
                         }`}
                     >
                         <div className="flex min-h-44 w-full flex-col items-center justify-center text-center">
-                            <UploadCloud className="h-8 w-8 text-[var(--ink-muted)]" />
+                            <UploadCloudIcon className="h-8 w-8 text-[var(--ink-muted)]" />
                             <h4 className="mt-4 text-base font-semibold text-[var(--ink)]">{t('floatingBallPet.dropImportTitle')}</h4>
                             <p className="mt-2 max-w-xl whitespace-normal break-words text-sm leading-6 text-[var(--ink-muted)]">
                                 {t('floatingBallPet.dropImportDescription')}
@@ -681,7 +692,7 @@ export default function FloatingBallPetSettings() {
                                     disabled={importing}
                                     className="inline-flex w-full min-w-0 flex-wrap items-center justify-center gap-2 whitespace-normal rounded-lg bg-[var(--button-primary-bg)] px-4 py-2 text-sm font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-70 lg:w-auto"
                                 >
-                                    {importing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                                    {importing ? <LoaderIcon className="h-4 w-4 animate-spin" /> : <DownloadIcon className="h-4 w-4" />}
                                     {t('floatingBallPet.importFromCodex')}
                                 </button>
                                 <button
@@ -690,7 +701,7 @@ export default function FloatingBallPetSettings() {
                                     disabled={importing}
                                     className="inline-flex w-full min-w-0 flex-wrap items-center justify-center gap-2 whitespace-normal rounded-lg border border-[var(--line)] bg-[var(--paper)] px-4 py-2 text-sm font-semibold text-[var(--ink)] transition-colors hover:bg-[var(--paper-inset)] disabled:cursor-wait disabled:opacity-70 lg:w-auto"
                                 >
-                                    <FolderOpen className="h-4 w-4" />
+                                    <FolderOpenIcon className="h-4 w-4" />
                                     {t('floatingBallPet.chooseZip')}
                                 </button>
                                 <button
@@ -699,7 +710,7 @@ export default function FloatingBallPetSettings() {
                                     disabled={importing}
                                     className="inline-flex w-full min-w-0 flex-wrap items-center justify-center gap-2 whitespace-normal rounded-lg border border-[var(--line)] bg-[var(--paper)] px-4 py-2 text-sm font-semibold text-[var(--ink)] transition-colors hover:bg-[var(--paper-inset)] disabled:cursor-wait disabled:opacity-70 lg:w-auto"
                                 >
-                                    <Link2 className="h-4 w-4" />
+                                    <LinkIcon className="h-4 w-4" />
                                     {t('floatingBallPet.importFromPetdex')}
                                 </button>
                             </div>

@@ -11,7 +11,13 @@
  * - severity=error 用 error 色调，notice 用 warning 色调，info 用 muted 色调
  */
 
-import { AlertCircle, AlertTriangle, Bot, Info, X } from 'lucide-react';
+import {
+  AlertIcon,
+  WarningIcon,
+  HelperIcon,
+  InfoIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -31,22 +37,22 @@ interface TerminalReasonBannerProps {
 
 const SEVERITY_STYLES: Record<TerminalReasonSeverity, {
   bg: string;
-  icon: typeof AlertCircle;
+  icon: typeof AlertIcon;
   iconColor: string;
 }> = {
   error: {
     bg: 'bg-[var(--error-bg)]',
-    icon: AlertCircle,
+    icon: AlertIcon,
     iconColor: 'text-[var(--error)]',
   },
   notice: {
     bg: 'bg-[var(--warning-bg)]',
-    icon: AlertTriangle,
+    icon: WarningIcon,
     iconColor: 'text-[var(--warning)]',
   },
   info: {
     bg: 'bg-[var(--paper-inset)]',
-    icon: Info,
+    icon: InfoIcon,
     iconColor: 'text-[var(--ink-muted)]',
   },
 };
@@ -107,7 +113,7 @@ export default function TerminalReasonBanner({
               title={t('shell.diagnostics.askHelper')}
               aria-label={t('shell.diagnostics.askHelper')}
             >
-              <Bot className="h-3.5 w-3.5" />
+              <HelperIcon className="h-3.5 w-3.5" />
             </button>
           )}
           {showNewSession && (
@@ -134,7 +140,7 @@ export default function TerminalReasonBanner({
             className="rounded p-0.5 text-[var(--ink-subtle)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink-muted)]"
             title={t('shell.common.close')}
           >
-            <X className="h-3.5 w-3.5" />
+            <CloseIcon className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>

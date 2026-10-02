@@ -1,5 +1,17 @@
 import type { ProxySettings, ProxyScopeSettings } from './config-types';
 
+/** The standard subprocess proxy surface; Provider keys and app-injection markers stay outside it. */
+export const PROXY_ENV_KEYS = [
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'ALL_PROXY',
+  'all_proxy',
+  'NO_PROXY',
+  'no_proxy',
+] as const;
+
 export const DEFAULT_PROXY_SCOPE: ProxyScopeSettings = Object.freeze({ mode: 'all' });
 
 function cleanProviderIds(ids: unknown, visibleProviderIds?: readonly string[]): string[] {

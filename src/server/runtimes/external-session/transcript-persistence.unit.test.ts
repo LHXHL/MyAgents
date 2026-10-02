@@ -16,6 +16,7 @@ import {
   persistExternalUserMessageAppend,
   pushExternalSessionMessage,
   removeAndPersistExternalSessionMessage,
+  retryUnadmittedDshTranscript,
   resetExternalTranscriptState,
   setExternalSessionMessages,
 } from './transcript-persistence';
@@ -63,6 +64,26 @@ describe('external transcript persistence owner', () => {
       cursor: current,
     }));
     vi.mocked(updateSessionMetadata).mockResolvedValue(null);
+  });
+
+  it('truncates only the proven unadmitted DSH retry target', async () => {
+    setExternalSessionMessages('session-a', [message('prior'), message('target')], cursor(2));
+    vi.mocked(mutateSessionTranscript).mockResolvedValueOnce({
+      ok: true,
+      action: 'replaced',
+      cursor: cursor(1),
+    } as Awaited<ReturnType<typeof mutateSessionTranscript>>);
+
+    await expect(retryUnadmittedDshTranscript('session-a', 'target')).resolves.toMatchObject({
+      success: true,
+      content: 'target',
+    });
+    expect(mutateSessionTranscript).toHaveBeenCalledWith(
+      'session-a',
+      expect.objectContaining({ persistedMessageCount: 2 }),
+      { kind: 'dsh-unadmitted-retry', targetMessageId: 'target', targetMessageCount: 1 },
+    );
+    expect(getExternalSessionMessagesSnapshot().map(item => item.id)).toEqual(['prior']);
   });
 
   it('tracks transcript Session ownership and cursor together', () => {

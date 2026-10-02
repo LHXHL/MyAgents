@@ -7,11 +7,16 @@ use super::*;
 use crate::utils::bom::strip_bom;
 
 const CODEX_SUBSCRIPTION_PROVIDER_ID: &str = "codex-sub";
+const ANTHROPIC_SUBSCRIPTION_PROVIDER_ID: &str = "anthropic-sub";
+#[cfg(test)]
+const ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID: &str = "antigravity-sub";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeIdentity {
     pub runtime: String,
     pub runtime_source: Option<String>,
+    pub runtime_binding_json: Option<String>,
+    pub compatibility_error: Option<String>,
 }
 
 impl RuntimeIdentity {
@@ -32,6 +37,22 @@ impl RuntimeIdentity {
             } else {
                 Some(normalized_source.to_string())
             },
+            runtime_binding_json: None,
+            compatibility_error: None,
+        }
+    }
+
+    pub(super) fn with_binding(mut self, binding: &serde_json::Value) -> Self {
+        self.runtime_binding_json = Some(binding.to_string());
+        self
+    }
+
+    pub(super) fn incompatible(message: impl Into<String>) -> Self {
+        Self {
+            runtime: "incompatible".to_string(),
+            runtime_source: None,
+            runtime_binding_json: None,
+            compatibility_error: Some(message.into()),
         }
     }
 
@@ -50,6 +71,156 @@ impl RuntimeIdentity {
 
     pub fn runtime_source_label(&self) -> &str {
         normalize_runtime_source_name(&self.runtime, self.runtime_source.as_deref())
+    }
+}
+
+pub(super) fn distribution_default_runtime_identity() -> RuntimeIdentity {
+    let policy = crate::runtime_distribution_policy::policy();
+    let configured = dirs::home_dir()
+        .and_then(|home| std::fs::read_to_string(home.join(".myagents/config.json")).ok())
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(strip_bom(&content)).ok());
+    configured
+        .as_ref()
+        .map(|cfg| configured_distribution_default_runtime_identity_for(cfg, policy))
+        .unwrap_or_else(|| distribution_default_runtime_identity_for(policy))
+}
+
+fn distribution_default_runtime_identity_for(
+    policy: &crate::runtime_distribution_policy::RuntimeDistributionPolicy,
+) -> RuntimeIdentity {
+    RuntimeIdentity::new(Some(policy.default_runtime()), None)
+}
+
+fn configured_distribution_default_runtime_identity_for(
+    cfg: &serde_json::Value,
+    policy: &crate::runtime_distribution_policy::RuntimeDistributionPolicy,
+) -> RuntimeIdentity {
+    let configured_default = cfg
+        .get("defaultIntegratedRuntime")
+        .and_then(serde_json::Value::as_str);
+    RuntimeIdentity::new(
+        Some(policy.default_runtime_for_override(configured_default)),
+        None,
+    )
+}
+
+pub(super) fn admit_runtime_identity(identity: RuntimeIdentity) -> RuntimeIdentity {
+    admit_runtime_identity_for(identity, crate::runtime_distribution_policy::policy())
+}
+
+fn admit_runtime_identity_for(
+    identity: RuntimeIdentity,
+    policy: &crate::runtime_distribution_policy::RuntimeDistributionPolicy,
+) -> RuntimeIdentity {
+    if identity.compatibility_error.is_some() {
+        return identity;
+    }
+    if policy.allows_runtime(&identity.runtime, identity.runtime_source.as_deref()) {
+        identity
+    } else {
+        RuntimeIdentity::incompatible(format!(
+            "Runtime {}/{} is not included in this distribution",
+            identity.runtime,
+            identity.runtime_source_label(),
+        ))
+    }
+}
+
+fn non_empty_string(value: Option<&serde_json::Value>) -> Option<&str> {
+    value
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn runtime_identity_from_binding(binding: &serde_json::Value) -> Result<RuntimeIdentity, String> {
+    let family =
+        non_empty_string(binding.get("family")).ok_or("runtimeBinding.family is missing")?;
+    let id = non_empty_string(binding.get("id")).ok_or("runtimeBinding.id is missing")?;
+
+    let identity = match (family, id) {
+        ("integrated", "claude-agent-sdk") => {
+            non_empty_string(binding.get("implementationVersion"))
+                .ok_or("runtimeBinding.implementationVersion is missing")?;
+            RuntimeIdentity::new(Some("builtin"), None)
+        }
+        ("integrated", "dsh") => {
+            for field in [
+                "implementationVersion",
+                "protocolVersion",
+                "protocolSchemaSha256",
+                "runtimeArtifactSha256",
+                "compatibilityManifestSha256",
+                "sessionFormat",
+                "platformTarget",
+            ] {
+                non_empty_string(binding.get(field))
+                    .ok_or_else(|| format!("runtimeBinding.{field} is missing"))?;
+            }
+            RuntimeIdentity::new(Some("dsh"), Some("integrated"))
+        }
+        ("managed-provider", "managed-codex")
+            if non_empty_string(binding.get("providerId"))
+                == Some(CODEX_SUBSCRIPTION_PROVIDER_ID) =>
+        {
+            non_empty_string(binding.get("implementationVersion"))
+                .ok_or("runtimeBinding.implementationVersion is missing")?;
+            RuntimeIdentity::new(Some("codex"), Some("managed-provider"))
+        }
+        ("external", runtime @ ("claude-code" | "codex")) => {
+            RuntimeIdentity::new(Some(runtime), Some("system-cli"))
+        }
+        _ => return Err(format!("unsupported runtimeBinding {family}/{id}")),
+    };
+    Ok(identity.with_binding(binding))
+}
+
+fn runtime_identity_from_preference(
+    preference: &serde_json::Value,
+) -> Result<RuntimeIdentity, String> {
+    let family =
+        non_empty_string(preference.get("family")).ok_or("runtimePreference.family is missing")?;
+    let id = non_empty_string(preference.get("id")).ok_or("runtimePreference.id is missing")?;
+    match (family, id) {
+        ("integrated", "claude-agent-sdk") => Ok(RuntimeIdentity::new(Some("builtin"), None)),
+        ("integrated", "dsh") => Ok(RuntimeIdentity::new(Some("dsh"), Some("integrated"))),
+        ("external", runtime @ ("claude-code" | "codex")) => {
+            Ok(RuntimeIdentity::new(Some(runtime), Some("system-cli")))
+        }
+        _ => Err(format!("unsupported runtimePreference {family}/{id}")),
+    }
+}
+
+fn runtime_identity_from_legacy_agent(
+    agent: &serde_json::Value,
+) -> Result<RuntimeIdentity, String> {
+    let runtime = match agent.get("runtime") {
+        None => "builtin",
+        Some(value) => non_empty_string(Some(value)).ok_or("legacy Agent runtime is invalid")?,
+    };
+    let runtime_source = agent
+        .get("runtimeConfig")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|config| config.get("source"))
+        .and_then(serde_json::Value::as_str);
+    let provider_id = agent.get("providerId").and_then(serde_json::Value::as_str);
+
+    match runtime {
+        "builtin" if runtime_source.is_none() => Ok(RuntimeIdentity::new(Some("builtin"), None)),
+        "codex"
+            if runtime_source == Some("managed-provider")
+                && provider_id == Some(CODEX_SUBSCRIPTION_PROVIDER_ID) =>
+        {
+            // This is the historical projection of the Provider constraint,
+            // not an explicit user-managed Codex preference.
+            Ok(RuntimeIdentity::new(Some("builtin"), None))
+        }
+        runtime @ ("claude-code" | "codex") => {
+            Ok(RuntimeIdentity::new(Some(runtime), Some("system-cli")))
+        }
+        "dsh" if runtime_source.is_none() || runtime_source == Some("integrated") => {
+            Ok(RuntimeIdentity::new(Some("dsh"), Some("integrated")))
+        }
+        _ => Err(format!("unsupported legacy Agent Runtime shape: {runtime}")),
     }
 }
 
@@ -116,6 +287,18 @@ fn resolve_agent_runtime_identity_by_id_from_value(
     cfg: &serde_json::Value,
     agent_id: &str,
 ) -> Option<RuntimeIdentity> {
+    resolve_agent_runtime_identity_by_id_with_policy(
+        cfg,
+        agent_id,
+        crate::runtime_distribution_policy::policy(),
+    )
+}
+
+fn resolve_agent_runtime_identity_by_id_with_policy(
+    cfg: &serde_json::Value,
+    agent_id: &str,
+    policy: &crate::runtime_distribution_policy::RuntimeDistributionPolicy,
+) -> Option<RuntimeIdentity> {
     let agent = cfg
         .get("agents")?
         .as_array()?
@@ -130,41 +313,77 @@ fn resolve_agent_runtime_identity_by_id_from_value(
         .and_then(|value| value.as_object())
         .and_then(|config| config.get("source"))
         .and_then(|value| value.as_str());
-    let managed_codex_selected = agent.get("providerId").and_then(|value| value.as_str())
-        == Some(CODEX_SUBSCRIPTION_PROVIDER_ID)
-        && (runtime == "builtin"
-            || (runtime == "codex" && runtime_source == Some("managed-provider")));
-    if managed_codex_selected {
+    let selection_available = policy.selector_available();
+    let preference = if selection_available {
+        match agent.get("runtimePreference") {
+            Some(preference) => runtime_identity_from_preference(preference).map(Some),
+            None if agent.get("runtime").is_none_or(serde_json::Value::is_null) => {
+                Ok(Some(configured_distribution_default_runtime_identity_for(
+                    cfg, policy,
+                )))
+            }
+            None => runtime_identity_from_legacy_agent(agent).map(Some),
+        }
+    } else {
+        Ok(Some(configured_distribution_default_runtime_identity_for(
+            cfg, policy,
+        )))
+    };
+    let preference = match preference {
+        Ok(preference) => preference,
+        Err(error) => return Some(RuntimeIdentity::incompatible(error)),
+    };
+
+    // An explicitly selected External Runtime wins over dormant integrated or
+    // managed Provider template fields.
+    if let Some(preference) = preference.as_ref().filter(|identity| {
+        matches!(
+            identity.runtime.as_str(),
+            "claude-code" | "codex"
+        )
+    }) {
+        return Some(admit_runtime_identity_for(preference.clone(), policy));
+    }
+
+    let provider_id = agent.get("providerId").and_then(|value| value.as_str());
+    if provider_id == Some(CODEX_SUBSCRIPTION_PROVIDER_ID) {
         return Some(if managed_codex_provider_ready(cfg) {
-            RuntimeIdentity::new(Some("codex"), Some("managed-provider"))
+            admit_runtime_identity_for(
+                RuntimeIdentity::new(Some("codex"), Some("managed-provider")),
+                policy,
+            )
         } else {
-            RuntimeIdentity::new(Some("builtin"), None)
+            RuntimeIdentity::incompatible("codex-sub requires a ready managed Codex Runtime")
         });
     }
-    // Gate: multi-agent runtime feature must be explicitly enabled
-    // for user-managed external runtimes. Managed Codex provider
-    // is gated above by its own provider readiness flags instead.
-    if !cfg
-        .get("multiAgentRuntime")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-    {
-        return Some(RuntimeIdentity::new(Some("builtin"), None));
+    if matches!(
+        provider_id,
+        Some(
+            ANTHROPIC_SUBSCRIPTION_PROVIDER_ID | "anthropic-api"
+        )
+    ) {
+        return Some(admit_runtime_identity_for(
+            RuntimeIdentity::new(Some("builtin"), None),
+            policy,
+        ));
+    }
+    if let Some(preference) = preference {
+        return Some(admit_runtime_identity_for(preference, policy));
     }
     if runtime != "builtin" {
         // Only the readable legacy Managed Codex shape may retain this source.
         // Other explicit runtimes win over dormant provider/source fields,
         // matching the renderer/server Agent-template projection.
         let explicit_runtime_source = runtime_source.filter(|source| *source != "managed-provider");
-        return Some(RuntimeIdentity::new(Some(runtime), explicit_runtime_source));
+        return Some(admit_runtime_identity_for(
+            RuntimeIdentity::new(Some(runtime), explicit_runtime_source),
+            policy,
+        ));
     }
-    Some(RuntimeIdentity::new(Some("builtin"), None))
-}
-
-pub(super) fn resolve_agent_runtime_from_config(
-    workspace_path: &std::path::Path,
-) -> Option<String> {
-    resolve_agent_runtime_identity_from_config(workspace_path).map(|identity| identity.runtime)
+    Some(admit_runtime_identity_for(
+        configured_distribution_default_runtime_identity_for(cfg, policy),
+        policy,
+    ))
 }
 
 fn managed_codex_provider_ready(cfg: &serde_json::Value) -> bool {
@@ -206,9 +425,9 @@ fn workspace_paths_match(agent_path: &str, workspace_path: &std::path::Path) -> 
 ///
 /// This is the authoritative source for EXISTING sessions — the session's own metadata
 /// records which runtime created it, regardless of the current agent config.
-/// Agent config (resolve_agent_runtime_from_config) decides the default for NEW sessions
-/// and is gated by `multiAgentRuntime`; session metadata is stable once created and is
-/// read regardless of that gate so an existing runtime-A history is never reopened as
+/// Agent config (resolve_agent_runtime_identity_from_config) decides the default for NEW sessions
+/// using explicit preference or the root default; session metadata is stable once
+/// created so an existing runtime-A history is never reopened as
 /// runtime B under the same MyAgents session_id.
 #[allow(dead_code)]
 pub fn resolve_session_runtime_identity(session_id: &str) -> Option<String> {
@@ -258,6 +477,79 @@ fn session_metadata_matches_workspace_from_json(
     })
 }
 
+fn legacy_session_has_managed_codex_proof(session: &serde_json::Value) -> bool {
+    if session
+        .get("providerId")
+        .and_then(serde_json::Value::as_str)
+        == Some(CODEX_SUBSCRIPTION_PROVIDER_ID)
+    {
+        return true;
+    }
+    let Some(identity) = session
+        .get("providerExecutionIdentity")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return false;
+    };
+    identity.get("kind").and_then(serde_json::Value::as_str) == Some("runtime-backed-provider")
+        && identity
+            .get("providerId")
+            .and_then(serde_json::Value::as_str)
+            == Some(CODEX_SUBSCRIPTION_PROVIDER_ID)
+        && identity.get("runtime").and_then(serde_json::Value::as_str) == Some("codex")
+        && identity
+            .get("runtimeSource")
+            .and_then(serde_json::Value::as_str)
+            == Some("managed-provider")
+}
+
+fn runtime_identity_from_legacy_session(
+    session: &serde_json::Value,
+) -> Result<RuntimeIdentity, String> {
+    let runtime = match session.get("runtime") {
+        None => "builtin",
+        Some(value) => non_empty_string(Some(value)).ok_or("legacy Session runtime is invalid")?,
+    };
+    let source = match session.get("runtimeSource") {
+        None => None,
+        Some(value) => {
+            Some(non_empty_string(Some(value)).ok_or("legacy Session runtimeSource is invalid")?)
+        }
+    };
+    let managed_codex_proof = legacy_session_has_managed_codex_proof(session);
+
+    match (runtime, source) {
+        ("builtin", None) if managed_codex_proof => Ok(RuntimeIdentity::new(
+            Some("codex"),
+            Some("managed-provider"),
+        )),
+        ("builtin", None) => Ok(RuntimeIdentity::new(Some("builtin"), None)),
+        ("builtin", Some("managed-provider")) if !managed_codex_proof => {
+            Err("legacy builtin/managed-provider Session has no managed Codex proof".to_string())
+        }
+        ("codex", Some("managed-provider")) => Ok(RuntimeIdentity::new(
+            Some("codex"),
+            Some("managed-provider"),
+        )),
+        (runtime @ ("claude-code" | "codex"), None | Some("system-cli")) => {
+            Ok(RuntimeIdentity::new(Some(runtime), Some("system-cli")))
+        }
+        ("dsh", None | Some("integrated")) => {
+            Ok(RuntimeIdentity::new(Some("dsh"), Some("integrated")))
+        }
+        ("builtin", Some(source)) => Err(format!(
+            "legacy builtin Session cannot use runtimeSource {source}"
+        )),
+        (runtime @ ("claude-code" | "codex"), Some(source)) => Err(format!(
+            "legacy {runtime} Session cannot use runtimeSource {source}"
+        )),
+        ("dsh", Some(source)) => Err(format!(
+            "legacy dsh Session cannot use runtimeSource {source}"
+        )),
+        (runtime, _) => Err(format!("unknown legacy Session Runtime {runtime}")),
+    }
+}
+
 #[cfg(test)]
 pub(super) fn resolve_session_runtime_identity_from_json(
     session_id: &str,
@@ -276,10 +568,25 @@ pub(super) fn resolve_session_runtime_identity_full_from_json(
 
     for session in sessions_arr {
         if session.get("id").and_then(|v| v.as_str()) == Some(session_id) {
-            return Some(RuntimeIdentity::new(
-                session.get("runtime").and_then(|v| v.as_str()),
-                session.get("runtimeSource").and_then(|v| v.as_str()),
-            ));
+            if let Some(binding) = session.get("runtimeBinding") {
+                return Some(match runtime_identity_from_binding(binding) {
+                    Ok(identity) => admit_runtime_identity(identity),
+                    Err(error) => RuntimeIdentity::incompatible(error),
+                });
+            }
+            if let Some(compatibility) = session.get("runtimeBindingCompatibility") {
+                let code = compatibility
+                    .get("code")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown");
+                return Some(RuntimeIdentity::incompatible(format!(
+                    "Session Runtime binding is quarantined: {code}"
+                )));
+            }
+            return Some(match runtime_identity_from_legacy_session(session) {
+                Ok(identity) => admit_runtime_identity(identity),
+                Err(error) => RuntimeIdentity::incompatible(error),
+            });
         }
     }
     None
@@ -356,6 +663,9 @@ pub(super) fn validate_sidecar_runtime_invariant(
     sidecar_runtime_source: Option<&str>,
     site: &str,
 ) -> Result<(), String> {
+    if let Some(error) = &expected_identity.compatibility_error {
+        return Err(error.clone());
+    }
     let sidecar_rt = normalize_runtime_name(sidecar_runtime);
     let sidecar_source = normalize_runtime_source_name(sidecar_rt, sidecar_runtime_source);
     let expected_runtime = expected_identity.runtime.as_str();
@@ -481,9 +791,8 @@ mod tests {
     #[test]
     fn project_agent_id_selects_runtime_even_when_legacy_agent_path_disagrees() {
         let config = serde_json::json!({
-            "multiAgentRuntime": true,
             "agents": [
-                { "id": "extra", "workspacePath": "/repo/current", "runtime": "gemini" },
+                { "id": "extra", "workspacePath": "/repo/current", "runtime": "claude-code" },
                 { "id": "selected", "workspacePath": "/repo/old", "runtime": "codex" }
             ]
         });
@@ -502,9 +811,8 @@ mod tests {
     #[test]
     fn exact_agent_id_selects_extra_or_orphan_runtime_without_project_guessing() {
         let config = serde_json::json!({
-            "multiAgentRuntime": true,
             "agents": [
-                { "id": "project-agent", "runtime": "gemini" },
+                { "id": "project-agent", "runtime": "claude-code" },
                 { "id": "extra", "workspacePath": "/repo/current", "runtime": "codex" },
                 { "id": "orphan", "workspacePath": "/repo/orphan", "runtime": "claude-code" }
             ]
@@ -527,7 +835,6 @@ mod tests {
     #[test]
     fn exact_builtin_agent_id_overrides_another_agents_external_workspace_runtime() {
         let config = serde_json::json!({
-            "multiAgentRuntime": true,
             "agents": [
                 { "id": "project-agent", "runtime": "codex" },
                 { "id": "extra-builtin", "workspacePath": "/repo/current", "runtime": "builtin" }
@@ -543,7 +850,6 @@ mod tests {
     #[test]
     fn managed_codex_provider_only_owns_managed_compatible_agent_shapes() {
         let config = serde_json::json!({
-            "multiAgentRuntime": true,
             "managedCodexProviderDevGate": true,
             "managedCodexRuntimeInstall": {
                 "usable": true
@@ -563,12 +869,12 @@ mod tests {
                 { "id": "system-codex", "runtime": "codex", "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID },
                 { "id": "claude-code", "runtime": "claude-code", "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID },
                 {
-                    "id": "gemini",
-                    "runtime": "gemini",
+                    "id": "other-external",
+                    "runtime": "claude-code",
                     "runtimeConfig": { "source": "managed-provider" },
                     "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID
                 },
-                { "id": "ordinary-provider", "runtime": "gemini", "providerId": "anthropic-api" }
+                { "id": "ordinary-provider", "runtime": "claude-code", "providerId": "anthropic-api" }
             ]
         });
 
@@ -582,8 +888,8 @@ mod tests {
         for (agent_id, expected_runtime) in [
             ("system-codex", "codex"),
             ("claude-code", "claude-code"),
-            ("gemini", "gemini"),
-            ("ordinary-provider", "gemini"),
+            ("other-external", "claude-code"),
+            ("ordinary-provider", "claude-code"),
         ] {
             let identity = resolve_agent_runtime_identity_by_id_from_value(&config, agent_id)
                 .expect("explicit external Agent identity");
@@ -593,9 +899,8 @@ mod tests {
     }
 
     #[test]
-    fn dormant_managed_provider_does_not_bypass_external_runtime_gate() {
+    fn explicit_external_choice_wins_over_dormant_managed_provider() {
         let config = serde_json::json!({
-            "multiAgentRuntime": false,
             "managedCodexProviderDevGate": true,
             "managedCodexRuntimeInstall": {
                 "usable": true
@@ -605,20 +910,63 @@ mod tests {
                 "authMethod": "chatgpt"
             },
             "agents": [
-                { "id": "gemini", "runtime": "gemini", "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID }
+                { "id": "claude-code", "runtime": "claude-code", "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID }
             ]
         });
 
-        let identity = resolve_agent_runtime_identity_by_id_from_value(&config, "gemini")
-            .expect("feature gate fallback identity");
-        assert_eq!(identity.runtime, "builtin");
-        assert_eq!(identity.runtime_source, None);
+        let identity = resolve_agent_runtime_identity_by_id_from_value(&config, "claude-code")
+            .expect("managed provider identity");
+        assert_eq!(identity.runtime, "claude-code");
+        assert_eq!(identity.runtime_source.as_deref(), Some("system-cli"));
+    }
+
+    #[test]
+    fn unset_agent_uses_configured_integrated_default() {
+        let config = serde_json::json!({
+            "defaultIntegratedRuntime": "dsh",
+            "agents": [
+                {
+                    "id": "ordinary",
+                    "providerId": "deepseek"
+                }
+            ]
+        });
+
+        let identity = resolve_agent_runtime_identity_by_id_from_value(&config, "ordinary")
+            .expect("configured default identity");
+        assert_eq!(identity.runtime, "dsh");
+        assert_eq!(identity.runtime_source.as_deref(), Some("integrated"));
+    }
+
+    #[test]
+    fn explicit_integrated_choices_win_over_the_root_default() {
+        let config = serde_json::json!({
+            "defaultIntegratedRuntime": "dsh",
+            "agents": [
+                { "id": "sdk", "runtime": "builtin", "providerId": "deepseek" },
+                { "id": "sdk-preference", "runtimePreference": { "family": "integrated", "id": "claude-agent-sdk" } },
+                { "id": "fixed-provider", "providerId": "anthropic-api" }
+            ]
+        });
+        for id in ["sdk", "sdk-preference", "fixed-provider"] {
+            assert_eq!(
+                resolve_agent_runtime_identity_by_id_from_value(&config, id).unwrap().runtime,
+                "builtin"
+            );
+        }
+        let config = serde_json::json!({
+            "defaultIntegratedRuntime": "claude-agent-sdk",
+            "agents": [{ "id": "dsh", "runtimePreference": { "family": "integrated", "id": "dsh" } }]
+        });
+        assert_eq!(
+            resolve_agent_runtime_identity_by_id_from_value(&config, "dsh").unwrap().runtime,
+            "dsh"
+        );
     }
 
     #[test]
     fn legacy_managed_codex_shape_does_not_bypass_provider_readiness() {
         let config = serde_json::json!({
-            "multiAgentRuntime": true,
             "managedCodexProviderDevGate": true,
             "managedCodexRuntimeInstall": {
                 "usable": true
@@ -638,15 +986,248 @@ mod tests {
         });
 
         let identity = resolve_agent_runtime_identity_by_id_from_value(&config, "legacy")
-            .expect("unready managed provider fallback identity");
-        assert_eq!(identity.runtime, "builtin");
+            .expect("unready managed provider compatibility identity");
+        assert_eq!(identity.runtime, "incompatible");
         assert_eq!(identity.runtime_source, None);
+        assert!(identity.compatibility_error.is_some());
+    }
+
+    #[test]
+    fn integrated_preferences_and_provider_constraints_follow_central_precedence() {
+        let config = serde_json::json!({
+            "managedCodexProviderDevGate": true,
+            "managedCodexRuntimeInstall": { "usable": true },
+            "managedCodexAuth": { "status": "valid", "authMethod": "chatgpt" },
+            "agents": [
+                {
+                    "id": "dsh",
+                    "runtimePreference": { "family": "integrated", "id": "dsh" }
+                },
+                {
+                    "id": "anthropic-sub",
+                    "providerId": ANTHROPIC_SUBSCRIPTION_PROVIDER_ID,
+                    "runtimePreference": { "family": "integrated", "id": "dsh" }
+                },
+                {
+                    "id": "antigravity",
+                    "providerId": ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
+                    "runtimePreference": { "family": "integrated", "id": "dsh" }
+                },
+                {
+                    "id": "anthropic-api",
+                    "providerId": "anthropic-api",
+                    "runtimePreference": { "family": "integrated", "id": "dsh" }
+                },
+                {
+                    "id": "managed",
+                    "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID,
+                    "runtimePreference": { "family": "integrated", "id": "dsh" }
+                },
+                {
+                    "id": "external-wins",
+                    "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID,
+                    "runtimePreference": { "family": "external", "id": "claude-code" }
+                }
+            ]
+        });
+
+        assert_eq!(
+            resolve_agent_runtime_identity_by_id_from_value(&config, "dsh")
+                .expect("DSH identity")
+                .runtime,
+            "dsh"
+        );
+        assert_eq!(
+            resolve_agent_runtime_identity_by_id_from_value(&config, "anthropic-sub")
+                .expect("Claude constraint")
+                .runtime,
+            "builtin"
+        );
+        assert_eq!(
+            resolve_agent_runtime_identity_by_id_from_value(&config, "antigravity")
+                .expect("Antigravity API route")
+                .runtime,
+            "dsh"
+        );
+        assert_eq!(
+            resolve_agent_runtime_identity_by_id_from_value(&config, "anthropic-api")
+                .expect("Claude API constraint")
+                .runtime,
+            "builtin"
+        );
+        let managed = resolve_agent_runtime_identity_by_id_from_value(&config, "managed")
+            .expect("managed Codex constraint");
+        assert_eq!(managed.runtime, "codex");
+        assert_eq!(managed.runtime_source.as_deref(), Some("managed-provider"));
+        assert_eq!(
+            resolve_agent_runtime_identity_by_id_from_value(&config, "external-wins")
+                .expect("explicit External preference")
+                .runtime,
+            "claude-code"
+        );
+    }
+
+    #[test]
+    fn dsh_only_policy_drives_real_agent_birth_and_rejects_incompatible_routes() {
+        let policy = crate::runtime_distribution_policy::RuntimeDistributionPolicy::parse(
+            r#"{
+                "schemaVersion": 1,
+                "allowedIntegratedRuntimes": ["dsh"],
+                "allowedExternalRuntimes": [],
+                "defaultIntegratedRuntime": "dsh",
+                "selectorAvailability": "hidden"
+            }"#,
+        )
+        .expect("valid DSH-only policy");
+        let config = serde_json::json!({
+            "managedCodexProviderDevGate": true,
+            "managedCodexRuntimeInstall": { "usable": true },
+            "managedCodexAuth": { "status": "valid", "authMethod": "chatgpt" },
+            "agents": [
+                {
+                    "id": "ordinary",
+                    "runtimePreference": { "family": "external", "id": "codex" }
+                },
+                {
+                    "id": "claude-subscription",
+                    "providerId": ANTHROPIC_SUBSCRIPTION_PROVIDER_ID
+                },
+                {
+                    "id": "antigravity-subscription",
+                    "providerId": ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID
+                },
+                {
+                    "id": "claude-api",
+                    "providerId": "anthropic-api"
+                },
+                {
+                    "id": "managed-codex",
+                    "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID
+                }
+            ]
+        });
+
+        let ordinary =
+            resolve_agent_runtime_identity_by_id_with_policy(&config, "ordinary", &policy)
+                .expect("ordinary Agent identity");
+        assert_eq!(ordinary.runtime, "dsh");
+        assert_eq!(ordinary.runtime_source.as_deref(), Some("integrated"));
+        assert_eq!(
+            resolve_agent_runtime_identity_by_id_with_policy(&config, "antigravity-subscription", &policy)
+                .expect("portable Provider identity")
+                .runtime,
+            "dsh"
+        );
+
+        for agent_id in [
+            "claude-subscription",
+            "claude-api",
+            "managed-codex",
+        ] {
+            let identity =
+                resolve_agent_runtime_identity_by_id_with_policy(&config, agent_id, &policy)
+                    .expect("incompatible Provider identity");
+            assert_eq!(identity.runtime, "incompatible");
+            assert!(identity.compatibility_error.is_some());
+        }
+
+        let frozen_claude =
+            admit_runtime_identity_for(RuntimeIdentity::new(Some("builtin"), None), &policy);
+        assert_eq!(frozen_claude.runtime, "incompatible");
+        assert!(frozen_claude.compatibility_error.is_some());
+    }
+
+    #[test]
+    fn invalid_authoritative_agent_preference_fails_closed_when_selector_is_available() {
+        let config = serde_json::json!({
+            "agents": [{
+                "id": "future",
+                "runtime": "builtin",
+                "runtimePreference": { "family": "integrated", "id": "pi" }
+            }]
+        });
+        let identity = resolve_agent_runtime_identity_by_id_from_value(&config, "future")
+            .expect("compatibility identity");
+        assert_eq!(identity.runtime, "incompatible");
+        assert!(identity.compatibility_error.is_some());
+    }
+
+    #[test]
+    fn authoritative_session_binding_wins_over_legacy_projection() {
+        let binding = serde_json::json!({
+            "family": "integrated",
+            "id": "dsh",
+            "implementationVersion": "0.0.0",
+            "protocolVersion": "2.0.0",
+            "protocolSchemaSha256": "schema",
+            "runtimeArtifactSha256": "artifact",
+            "compatibilityManifestSha256": "compatibility",
+            "sessionFormat": "dsh-session-events-v1",
+            "platformTarget": "darwin-arm64"
+        });
+        let content = serde_json::json!([{
+            "id": "dsh-session",
+            "runtime": "builtin",
+            "runtimeBinding": binding
+        }])
+        .to_string();
+
+        let identity = resolve_session_runtime_identity_full_from_json("dsh-session", &content)
+            .expect("DSH binding identity");
+        assert_eq!(identity.runtime, "dsh");
+        assert_eq!(identity.runtime_source.as_deref(), Some("integrated"));
+        assert!(identity.runtime_binding_json.is_some());
+        assert_eq!(identity.compatibility_error, None);
+    }
+
+    #[test]
+    fn external_binding_allows_an_unpinned_system_cli_version() {
+        let content = serde_json::json!([{
+            "id": "external",
+            "runtimeBinding": { "family": "external", "id": "codex" }
+        }])
+        .to_string();
+        let identity = resolve_session_runtime_identity_full_from_json("external", &content)
+            .expect("External binding identity");
+        assert_eq!(identity.runtime, "codex");
+        assert_eq!(identity.runtime_source.as_deref(), Some("system-cli"));
+        assert_eq!(identity.compatibility_error, None);
+    }
+
+    #[test]
+    fn invalid_binding_and_explicit_compatibility_state_block_execution() {
+        let content = serde_json::json!([
+            {
+                "id": "invalid-binding",
+                "runtime": "builtin",
+                "runtimeBinding": {
+                    "family": "integrated",
+                    "id": "dsh",
+                    "implementationVersion": "0.0.0"
+                }
+            },
+            {
+                "id": "quarantined",
+                "runtime": "builtin",
+                "runtimeBindingCompatibility": {
+                    "state": "incompatible",
+                    "code": "unknown-legacy-runtime"
+                }
+            }
+        ])
+        .to_string();
+
+        for session_id in ["invalid-binding", "quarantined"] {
+            let identity = resolve_session_runtime_identity_full_from_json(session_id, &content)
+                .expect("compatibility identity");
+            assert_eq!(identity.runtime, "incompatible");
+            assert!(identity.compatibility_error.is_some());
+        }
     }
 
     #[test]
     fn duplicate_project_claim_is_target_local_failure() {
         let config = serde_json::json!({
-            "multiAgentRuntime": true,
             "agents": [{ "id": "selected", "runtime": "codex" }]
         });
         let projects = serde_json::json!([

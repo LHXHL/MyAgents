@@ -14,7 +14,19 @@
  *    (e.g. Settings panels editing `~/.myagents/agents/...`)
  */
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
-import { AtSign, Check, Copy, Edit2, Expand, Eye, FolderOpen, Loader2, LocateFixed, MoreHorizontal, X } from 'lucide-react';
+import {
+  AtIcon,
+  CheckIcon,
+  CopyIcon,
+  EditIcon,
+  ExpandIcon,
+  EyeIcon,
+  FolderOpenIcon,
+  LoaderIcon,
+  LocateIcon,
+  MoreIcon,
+  CloseIcon,
+} from '@/components/icons';
 import Tip from './Tip';
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useImperativeHandle, useMemo, useState, useRef, type Ref } from 'react';
 import { createPortal } from 'react-dom';
@@ -58,7 +70,7 @@ const noop = () => {};
 // Static loading spinner (module-level to avoid allocation per render)
 const monacoLoading = (
     <div className="flex h-full items-center justify-center bg-[var(--paper-elevated)] text-[var(--ink-muted)]">
-        <Loader2 className="h-5 w-5 animate-spin" />
+        <LoaderIcon className="h-5 w-5 animate-spin" />
     </div>
 );
 
@@ -154,7 +166,7 @@ function AutoSaveIndicator({ status }: { status: 'idle' | 'saving' | 'saved' | '
     if (status === 'saving') {
         return (
             <span className="flex items-center gap-1 text-xs text-[var(--ink-muted)]">
-                <Loader2 className="h-3 w-3 animate-spin" />
+                <LoaderIcon className="h-3 w-3 animate-spin" />
                 {t('workspaceFiles.filePreview.saving')}
             </span>
         );
@@ -162,14 +174,14 @@ function AutoSaveIndicator({ status }: { status: 'idle' | 'saving' | 'saved' | '
     if (status === 'saved') {
         return (
             <span className="flex items-center gap-1 text-xs text-[var(--success)]">
-                <Check className="h-3 w-3" />
+                <CheckIcon className="h-3 w-3" />
                 {t('workspaceFiles.filePreview.saved')}
             </span>
         );
     }
     return (
         <span className="flex items-center gap-1 text-xs text-[var(--error)]">
-            <X className="h-3 w-3" />
+            <CloseIcon className="h-3 w-3" />
             {t('workspaceFiles.filePreview.saveFailed')}
         </span>
     );
@@ -345,7 +357,7 @@ function MdViewSegment({
                 aria-pressed={value === 'preview'}
                 className={`${baseBtn} ${value === 'preview' ? activeBtn : inactiveBtn}`}
             >
-                <Eye className={iconCls} strokeWidth={1.75} />
+                <EyeIcon className={iconCls} strokeWidth={1.75} />
                 {t('workspaceFiles.filePreview.previewMode')}
             </button>
             <button
@@ -355,7 +367,7 @@ function MdViewSegment({
                 aria-pressed={value === 'edit'}
                 className={`${baseBtn} ${value === 'edit' ? activeBtn : inactiveBtn}`}
             >
-                <Edit2 className={iconCls} strokeWidth={1.75} />
+                <EditIcon className={iconCls} strokeWidth={1.75} />
                 {t('workspaceFiles.filePreview.editMode')}
             </button>
         </div>
@@ -1236,7 +1248,7 @@ export default function FilePreviewModal({
                         className={buttonClass}
                         aria-label={t('workspaceFiles.common.more')}
                     >
-                        <MoreHorizontal className={iconClass} />
+                        <MoreIcon className={iconClass} />
                     </button>
                 </Tip>
                 <Popover
@@ -1246,44 +1258,44 @@ export default function FilePreviewModal({
                     placement="bottom-end"
                     className="w-48 py-1"
                 >
-                    {isWorkspaceMarkdown && <MenuItem icon={<Edit2 className="h-3.5 w-3.5" />} label={t('app:markdownEditor.source')} disabled={isLoading || !!error}
+                    {isWorkspaceMarkdown && <MenuItem icon={<EditIcon className="h-3.5 w-3.5" />} label={t('app:markdownEditor.source')} disabled={isLoading || !!error}
                         onClick={() => runMenuAction(() => setMarkdownSourceMode(true))} />}
                     {onQuoteFile && (
                         <MenuItem
-                            icon={<AtSign className="h-3.5 w-3.5" />}
+                            icon={<AtIcon className="h-3.5 w-3.5" />}
                             label={t('workspaceFiles.common.quote')}
                             onClick={() => runMenuAction(handleQuoteFileClick)}
                         />
                     )}
                     {onRevealInTree && !localPath && (
                         <MenuItem
-                            icon={<LocateFixed className="h-3.5 w-3.5" />}
+                            icon={<LocateIcon className="h-3.5 w-3.5" />}
                             label={t('workspaceFiles.common.revealInTree')}
                             onClick={() => runMenuAction(handleRevealInTree)}
                         />
                     )}
                     <MenuItem
-                        icon={<Copy className="h-3.5 w-3.5" />}
+                        icon={<CopyIcon className="h-3.5 w-3.5" />}
                         label={t('workspaceFiles.common.copyFilePath')}
                         onClick={() => runMenuAction(handleCopyFilePath)}
                     />
                     {canReveal && (
                         <MenuItem
-                            icon={<FolderOpen className="h-3.5 w-3.5" />}
+                            icon={<FolderOpenIcon className="h-3.5 w-3.5" />}
                             label={t('workspaceFiles.common.openContainingFolder')}
                             onClick={() => runMenuAction(handleOpenInFinder)}
                         />
                     )}
                     {canRename && (
                         <MenuItem
-                            icon={<Edit2 className="h-3.5 w-3.5" />}
+                            icon={<EditIcon className="h-3.5 w-3.5" />}
                             label={t('workspaceFiles.common.rename')}
                             onClick={() => runMenuAction(handleStartRename)}
                         />
                     )}
                     {!richDocKind && (
                         <MenuItem
-                            icon={<Copy className="h-3.5 w-3.5" />}
+                            icon={<CopyIcon className="h-3.5 w-3.5" />}
                             label={t('workspaceFiles.filePreview.copyFullText')}
                             disabled={isLoading || !!error}
                             title={isLoading
@@ -1308,7 +1320,7 @@ export default function FilePreviewModal({
         if (error) {
             return (
                 <div className="flex h-full flex-col items-center justify-center gap-2 text-[var(--error)]">
-                    <X className="h-8 w-8" />
+                    <CloseIcon className="h-8 w-8" />
                     <span className="text-sm">{error}</span>
                 </div>
             );
@@ -1557,7 +1569,7 @@ export default function FilePreviewModal({
                                 <button type="button" onClick={handleSwitchToBrowserClick}
                                     aria-label={t('workspaceFiles.filePreview.browserPreview')}
                                     className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
-                                    <Eye className="h-3.5 w-3.5" />
+                                    <EyeIcon className="h-3.5 w-3.5" />
                                 </button>
                             </Tip>
                         )}
@@ -1567,7 +1579,7 @@ export default function FilePreviewModal({
                                 <button type="button" onClick={handleFullscreenClick}
                                     aria-label={t('workspaceFiles.filePreview.fullscreenPreview')}
                                     className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
-                                    <Expand className="h-3.5 w-3.5" />
+                                    <ExpandIcon className="h-3.5 w-3.5" />
                                 </button>
                             </Tip>
                         )}
@@ -1576,7 +1588,7 @@ export default function FilePreviewModal({
                             <button type="button" onClick={handleClose}
                                 aria-label={t('workspaceFiles.common.close')}
                                 className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
-                                <X className="h-3.5 w-3.5" />
+                                <CloseIcon className="h-3.5 w-3.5" />
                             </button>
                         </Tip>
                     </div>
@@ -1643,7 +1655,7 @@ export default function FilePreviewModal({
                                         className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                                         title={t('workspaceFiles.common.openContainingFolder')}
                                     >
-                                        <FolderOpen className="h-3.5 w-3.5" />
+                                        <FolderOpenIcon className="h-3.5 w-3.5" />
                                     </button>
                                 )}
                             </div>

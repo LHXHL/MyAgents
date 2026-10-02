@@ -18,6 +18,13 @@ import {
   type RuntimeType,
 } from './types/runtime';
 
+export { getProviderExecutionConstraint } from './integrated-runtimes/provider-constraints';
+export type {
+  ApiFamily,
+  DshApiFamily,
+  ProviderExecutionConstraint,
+} from './integrated-runtimes/provider-constraints';
+
 export type RuntimeBackedProviderIdentity = {
   kind: 'runtime-backed-provider';
   providerId: typeof CODEX_SUBSCRIPTION_PROVIDER_ID;
@@ -43,7 +50,7 @@ function nonEmpty(value: string | null | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
-const MANAGED_CODEX_PROVIDER_PERMISSION_TO_RUNTIME: Record<PermissionMode, string> = {
+const MANAGED_CODEX_PROVIDER_PERMISSION_TO_RUNTIME: Partial<Record<PermissionMode, string>> = {
   auto: 'auto-edit',
   plan: 'suggest',
   fullAgency: 'no-restrictions',

@@ -67,7 +67,11 @@ export function buildAgentPatchFromSessionSnapshot(
     currentAgent?.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
     || currentAgent?.runtimeConfig?.source === 'managed-provider';
   if (currentAgentUsesManagedCodexProvider) {
-    Object.assign(patch, buildRuntimeChangePatch(currentAgent?.runtimeConfig, 'builtin'));
+    // This action syncs Provider/session defaults, not Runtime preference.
+    // Clear only the managed legacy carrier and preserve any dormant
+    // authoritative Integrated/External preference on the Agent.
+    const { runtimeConfig } = buildRuntimeChangePatch(currentAgent?.runtimeConfig, 'builtin');
+    Object.assign(patch, { runtime: 'builtin', runtimeConfig });
   }
   return patch;
 }

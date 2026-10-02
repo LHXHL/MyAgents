@@ -24,6 +24,20 @@ const mocks = vi.hoisted(() => ({
     updateAgents: vi.fn(async () => ({ success: true })),
     updateProviderEnv: vi.fn(async () => ({ success: true, skipped: 'external-runtime' })),
     updatePermissionMode: vi.fn(async () => ({ success: true })),
+    listPermissionRules: vi.fn(async () => ({
+      permissionMode: 'acceptEdits',
+      autoAllowTools: ['Read'],
+      revision: 'permission-revision-1',
+      rules: [],
+    })),
+    addPermissionRule: vi.fn(async () => ({
+      state: 'applied' as const,
+      revision: 'permission-revision-2',
+    })),
+    revokePermissionRule: vi.fn(async () => ({
+      state: 'applied' as const,
+      revision: 'permission-revision-3',
+    })),
     materializePendingDesktopSession: vi.fn(async () => ({
       success: true,
       sessionId: 'real-session',
@@ -72,6 +86,20 @@ describe('handleSessionConfigRoute', () => {
     }));
     mocks.engine.updateProviderEnv.mockResolvedValue({ success: true, skipped: 'external-runtime' });
     mocks.engine.updatePermissionMode.mockResolvedValue({ success: true });
+    mocks.engine.listPermissionRules.mockResolvedValue({
+      permissionMode: 'acceptEdits',
+      autoAllowTools: ['Read'],
+      revision: 'permission-revision-1',
+      rules: [],
+    });
+    mocks.engine.addPermissionRule.mockResolvedValue({
+      state: 'applied',
+      revision: 'permission-revision-2',
+    });
+    mocks.engine.revokePermissionRule.mockResolvedValue({
+      state: 'applied',
+      revision: 'permission-revision-3',
+    });
     mocks.engine.getRuntimeIdentity.mockReturnValue({
       kind: 'builtin',
       runtime: 'builtin',
@@ -201,6 +229,91 @@ describe('handleSessionConfigRoute', () => {
       providerId: null,
       reasoningEffort: 'medium',
     });
+  });
+
+  it('lists, adds, and revokes DSH-owned exact permission rules', async () => {
+    mocks.engine.getRuntimeIdentity.mockReturnValue({
+      kind: 'integrated',
+      runtime: 'dsh',
+      runtimeSource: 'integrated',
+      sessionId: 'session-1',
+    });
+
+    const listed = await handleSessionConfigRoute(
+      '/api/session/permission-rules',
+      new Request('http://local/api/session/permission-rules'),
+    );
+    expect(listed?.status).toBe(200);
+    expect(await readJson(listed as Response)).toEqual({
+      success: true,
+      permissionMode: 'acceptEdits',
+      autoAllowTools: ['Read'],
+      revision: 'permission-revision-1',
+      rules: [],
+    });
+
+    const added = await handleSessionConfigRoute(
+      '/api/session/permission-rules',
+      new Request('http://local/api/session/permission-rules', {
+        method: 'POST',
+        body: JSON.stringify({
+          expectedRevision: 'permission-revision-1',
+          tool: 'Bash',
+          permissionClass: 'process.execute',
+          target: 'npm test',
+        }),
+      }),
+    );
+    expect(added?.status).toBe(200);
+    expect(mocks.engine.addPermissionRule).toHaveBeenCalledWith({
+      expectedRevision: 'permission-revision-1',
+      tool: 'Bash',
+      permissionClass: 'process.execute',
+      target: 'npm test',
+    });
+
+    const revoked = await handleSessionConfigRoute(
+      '/api/session/permission-rules',
+      new Request(
+        'http://local/api/session/permission-rules?expectedRevision=permission-revision-2&ruleId=rule-1',
+        { method: 'DELETE' },
+      ),
+    );
+    expect(revoked?.status).toBe(200);
+    expect(mocks.engine.revokePermissionRule).toHaveBeenCalledWith({
+      expectedRevision: 'permission-revision-2',
+      ruleId: 'rule-1',
+    });
+  });
+
+  it('fails closed for unsupported or malformed permission rule operations', async () => {
+    const unsupported = await handleSessionConfigRoute(
+      '/api/session/permission-rules',
+      new Request('http://local/api/session/permission-rules'),
+    );
+    expect(unsupported?.status).toBe(409);
+    expect(mocks.engine.listPermissionRules).not.toHaveBeenCalled();
+
+    mocks.engine.getRuntimeIdentity.mockReturnValue({
+      kind: 'integrated',
+      runtime: 'dsh',
+      runtimeSource: 'integrated',
+      sessionId: 'session-1',
+    });
+    const malformed = await handleSessionConfigRoute(
+      '/api/session/permission-rules',
+      new Request('http://local/api/session/permission-rules', {
+        method: 'POST',
+        body: JSON.stringify({
+          expectedRevision: 'permission-revision-1',
+          tool: 'Bash',
+          permissionClass: 'process.execute',
+          target: '',
+        }),
+      }),
+    );
+    expect(malformed?.status).toBe(400);
+    expect(mocks.engine.addPermissionRule).not.toHaveBeenCalled();
   });
 
   it('materializes a pending desktop session through the active engine', async () => {

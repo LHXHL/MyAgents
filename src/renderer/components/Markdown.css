@@ -1,6 +1,6 @@
 /*
  * Markdown typography owns its rhythm at the renderer root. The default mode
- * is shared by chat and document surfaces; the standard reading preset changes
+ * is standard across chat and document surfaces; reading presets change
  * only rendered prose. Compact and the live editor keep their own geometry.
  *
  * Keep these rules in the components layer so a deliberately scoped surface
@@ -54,7 +54,7 @@
     --markdown-rule-gap: var(--space-4);
   }
 
-  html[data-markdown-reading-size='standard']
+  html:not([data-markdown-reading-size='large'])
     .markdown-content:not(.markdown-content--compact):not(.md-editor-host *) {
     --markdown-font-size: var(--text-sm);
     --markdown-line-height: 1.6;
@@ -164,34 +164,34 @@
     line-height: 1.5;
   }
 
-  html[data-markdown-reading-size='standard']
+  html:not([data-markdown-reading-size='large'])
     .markdown-content:not(.markdown-content--compact):not(.md-editor-host *) .markdown-h1 {
     margin-block-start: var(--space-6);
     font-size: var(--text-xl);
     line-height: var(--text-xl--line-height);
   }
 
-  html[data-markdown-reading-size='standard']
+  html:not([data-markdown-reading-size='large'])
     .markdown-content:not(.markdown-content--compact):not(.md-editor-host *) .markdown-h2 {
     margin-block-start: var(--space-6);
     font-size: var(--text-lg);
     line-height: var(--text-lg--line-height);
   }
 
-  html[data-markdown-reading-size='standard']
+  html:not([data-markdown-reading-size='large'])
     .markdown-content:not(.markdown-content--compact):not(.md-editor-host *) .markdown-h3 {
     margin-block-start: var(--space-5);
     font-size: var(--text-base);
     line-height: 1.5;
   }
 
-  html[data-markdown-reading-size='standard']
+  html:not([data-markdown-reading-size='large'])
     .markdown-content:not(.markdown-content--compact):not(.md-editor-host *) .markdown-h4 {
     margin-block-start: var(--space-3);
     font-size: var(--text-sm);
   }
 
-  html[data-markdown-reading-size='standard']
+  html:not([data-markdown-reading-size='large'])
     .markdown-content:not(.markdown-content--compact):not(.md-editor-host *) :is(.markdown-h5, .markdown-h6) {
     margin-block-start: var(--space-2);
     font-size: var(--text-sm);
@@ -260,7 +260,7 @@
     margin-block-start: var(--space-1-5);
   }
 
-  html[data-markdown-reading-size='standard']
+  html:not([data-markdown-reading-size='large'])
     .markdown-content:not(.markdown-content--compact):not(.md-editor-host *)
     .markdown-list-item > .markdown-paragraph + .markdown-paragraph {
     margin-block-start: var(--space-1-5);
@@ -325,7 +325,7 @@
     padding-inline: var(--space-3);
   }
 
-  html[data-markdown-reading-size='standard']
+  html:not([data-markdown-reading-size='large'])
     .markdown-content:not(.markdown-content--compact):not(.md-editor-host *) .markdown-blockquote {
     padding-inline: var(--space-3);
   }
@@ -360,7 +360,7 @@
     font-size: var(--text-xs);
   }
 
-  html[data-markdown-reading-size='standard']
+  html:not([data-markdown-reading-size='large'])
     .markdown-content:not(.markdown-content--compact):not(.md-editor-host *)
     :is(.markdown-table-cell, .markdown-table-header) {
     padding: var(--space-1-5) var(--space-2);
@@ -442,7 +442,7 @@
     font-size: var(--text-sm);
   }
 
-  html[data-markdown-reading-size='standard']
+  html:not([data-markdown-reading-size='large'])
     .markdown-content:not(.markdown-content--compact):not(.md-editor-host *) [data-footnotes] {
     font-size: var(--text-xs);
   }

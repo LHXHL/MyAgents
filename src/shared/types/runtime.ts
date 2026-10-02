@@ -1,20 +1,56 @@
+export type { PermissionReview, PermissionOperation } from '../../../contracts/myagents-dsh/public-contract.generated';
 // Multi-Agent Runtime types (v0.1.59)
 // Defines runtime types and metadata for external CLI agent integration
+
+import {
+  agentRuntimePreferenceForRuntime,
+  resolveAgentRuntimePreference,
+  runtimeTypeForAgentRuntimePreference,
+  type AgentRuntimePreference,
+} from '../integrated-runtimes/identity';
+import {
+  AGENT_RUNTIME_DISTRIBUTION_POLICY,
+  defaultIntegratedRuntimeType,
+  isRuntimeAllowedByDistribution,
+  isRuntimeSelectorAvailable,
+  resolveDefaultIntegratedRuntime,
+  type AgentRuntimeDistributionPolicy,
+} from '../integrated-runtimes/distribution-policy';
 
 /**
  * Available Agent Runtime types
  * - builtin: Built-in Claude Agent SDK (current default)
  * - claude-code: Claude Code CLI (user-installed `claude`)
  * - codex: OpenAI Codex CLI (user-installed `codex`)
- * - gemini: Google Gemini CLI in ACP mode (user-installed `gemini`, v0.1.66+)
  */
-export type RuntimeType = 'builtin' | 'claude-code' | 'codex' | 'gemini';
+export type RuntimeType = 'builtin' | 'dsh' | 'claude-code' | 'codex';
 
 /**
  * Distinguishes user-managed CLI runtimes from product-managed runtime-backed
  * providers. Missing source is treated as `system-cli` for existing sessions.
  */
-export type RuntimeSource = 'system-cli' | 'managed-provider';
+export type RuntimeSource = 'integrated' | 'system-cli' | 'managed-provider';
+
+/** Optional review details, separate from the Runtime's authorization input. */
+export interface PermissionOperationDisplay {
+  command: string;
+  cwd: string;
+  description?: string;
+  alwaysAllowScope?: 'session_workspace';
+}
+
+/** Canonical source projection for legacy RuntimeType consumers and analytics. */
+export function runtimeSourceForRuntimeType(
+  runtime: RuntimeType,
+  runtimeSource?: RuntimeSource | null,
+): RuntimeSource | undefined {
+  if (runtime === 'builtin') return undefined;
+  if (runtime === 'dsh') return 'integrated';
+  if (runtime === 'codex' && runtimeSource === 'managed-provider') {
+    return 'managed-provider';
+  }
+  return 'system-cli';
+}
 
 /**
  * Canonical runtime type list — single source of truth.
@@ -31,9 +67,9 @@ export type RuntimeSource = 'system-cli' | 'managed-provider';
  */
 export const VALID_RUNTIMES = [
   'builtin',
+  'dsh',
   'claude-code',
   'codex',
-  'gemini',
 ] as const satisfies readonly RuntimeType[];
 
 /**
@@ -56,10 +92,15 @@ export const _exhaustiveRuntimeCheck: _AssertRuntimeExhaustive = true;
 /** Human-readable display names keyed by runtime type. */
 export const RUNTIME_DISPLAY_NAMES: Record<RuntimeType, string> = {
   builtin: 'Built-in (Claude Agent SDK)',
+  dsh: 'MyAgents (DeepSeek Harness)',
   'claude-code': 'Claude Code CLI',
   codex: 'OpenAI Codex CLI',
-  gemini: 'Google Gemini CLI (ACP)',
 };
+
+/** Runtime processes that can be started before the first user turn. */
+export function runtimeSupportsPrewarm(runtime: RuntimeType): boolean {
+  return runtime === 'dsh' || runtime === 'codex';
+}
 
 /**
  * Coerce an arbitrary string (agent config value, persisted state, env) into a
@@ -95,11 +136,6 @@ export function modelLooksLikeRuntime(model: string, runtime: RuntimeType): bool
     if (modelHasFamily(m, ['gemini', 'claude', 'sonnet', 'opus', 'haiku'])) return false;
     return true;
   }
-  if (runtime === 'gemini') {
-    if (modelHasFamily(m, ['gemini'])) return true;
-    if (modelHasFamily(m, ['gpt', 'o1', 'o3', 'o4', 'codex', 'chatgpt', 'claude', 'sonnet', 'opus', 'haiku'])) return false;
-    return true;
-  }
   if (runtime === 'claude-code') {
     if (modelHasFamily(m, ['sonnet', 'opus', 'haiku', 'claude'])) return true;
     if (modelHasFamily(m, ['gpt', 'o1', 'o3', 'o4', 'codex', 'chatgpt', 'gemini'])) return false;
@@ -118,15 +154,15 @@ export function coerceModelForRuntime(
 }
 
 /**
- * Resolve the **agent-config** effective runtime, gated by the `multiAgentRuntime`
- * developer flag: when it is OFF, everything collapses to `builtin` regardless of
- * the agent's configured runtime.
+ * Resolve the **agent-config** effective runtime through the build distribution
+ * and its selector policy. Agents without an explicit choice use the configured
+ * Default Integrated Runtime; displaying that default does not persist a preference.
  *
  * SCOPE — this is the spawn runtime for a NEW session (and the pre-session
  * fallback), NOT the authoritative runtime of an EXISTING session. It mirrors
  * only the **config fallback** leg of the Rust spawn decision in
- * `src-tauri/src/sidecar.rs::resolve_agent_runtime_from_config` (gate check +
- * builtin fallback). The Rust spawn path for an existing Tab/Cron sidecar
+ * `src-tauri/src/sidecar/runtime_identity.rs` (distribution/selector policy,
+ * Provider constraint, and default projection). The Rust spawn path for an existing Tab/Cron sidecar
  * resolves `resolve_session_runtime(session_id)` FIRST (the frozen runtime the
  * session was created with), and only falls back to agent config when there is
  * no session yet. That frozen value — surfaced to the frontend as
@@ -135,21 +171,72 @@ export function coerceModelForRuntime(
  *
  * Therefore **session-scoped analytics** (`session_new` / `message_send` /
  * `message_complete` / `history_open`) MUST prefer the frozen session runtime
- * (`sessionRuntime ?? resolveEffectiveRuntime(agentConfig, gate)`, the canonical
+ * (`sessionRuntime ?? resolveEffectiveRuntime(agentConfig)`, the canonical
  * precedence in `Chat.tsx` `currentRuntime`); using this helper alone would
  * diverge from `ai_turn_complete` once a user changes an agent's runtime after
  * session creation. Only genuinely config-level callers (`workspace_open` for a
  * brand-new session, `app_launch` adoption snapshot) may use this directly.
  *
- * Keep the gate + builtin-fallback semantics in sync with the Rust function
- * above (and vice-versa).
+ * Keep these projection semantics in sync with the Rust Session-birth owner.
  */
 export function resolveEffectiveRuntime(
   agentRuntime: string | null | undefined,
-  multiAgentRuntimeEnabled: boolean,
+  runtimePreference?: unknown,
+  runtimeSource?: RuntimeSource | null,
+  providerId?: unknown,
+  policy: AgentRuntimeDistributionPolicy = AGENT_RUNTIME_DISTRIBUTION_POLICY,
+  configuredDefaultIntegratedRuntime?: unknown,
 ): RuntimeType {
-  if (!multiAgentRuntimeEnabled) return 'builtin';
-  return normalizeRuntime(agentRuntime);
+  const defaultIntegratedRuntime = resolveDefaultIntegratedRuntime(
+    policy,
+    configuredDefaultIntegratedRuntime,
+  );
+  const distributionDefault = defaultIntegratedRuntimeType(
+    policy,
+    configuredDefaultIntegratedRuntime,
+  );
+  const selectorAvailable = isRuntimeSelectorAvailable(
+    policy,
+  );
+  const preference = selectorAvailable
+    ? resolveAgentRuntimePreference({
+        runtimePreference,
+        runtime: agentRuntime,
+        runtimeSource,
+        providerId,
+        defaultIntegratedRuntime,
+      })
+    : { family: 'integrated' as const, id: defaultIntegratedRuntime };
+  if (!preference) return distributionDefault;
+  const preferredRuntime = runtimeTypeForAgentRuntimePreference(preference);
+  // Explicit External CLI intent wins over dormant Product Provider fields.
+  if (preference.family === 'external') {
+    return isRuntimeAllowedByDistribution(policy, preferredRuntime, 'system-cli')
+      ? preferredRuntime
+      : distributionDefault;
+  }
+  // Product subscription Providers have fixed execution owners and constrain
+  // either Integrated preference before Session birth. Managed Codex keeps its
+  // historical builtin carrier in renderer-facing configuration.
+  if (providerId === 'codex-sub') {
+    return isRuntimeAllowedByDistribution(policy, 'codex', 'managed-provider')
+      ? 'builtin'
+      : distributionDefault;
+  }
+  if (providerId === 'anthropic-sub' || providerId === 'xai-sub') {
+    return isRuntimeAllowedByDistribution(policy, 'builtin')
+      ? 'builtin'
+      : distributionDefault;
+  }
+  return isRuntimeAllowedByDistribution(policy, preferredRuntime, runtimeSource)
+    ? preferredRuntime
+    : distributionDefault;
+}
+
+export function isAgentRuntimeSelectorAvailable(
+  policy: AgentRuntimeDistributionPolicy = AGENT_RUNTIME_DISTRIBUTION_POLICY,
+): boolean {
+  return isRuntimeSelectorAvailable(policy);
 }
 
 /**
@@ -178,6 +265,9 @@ export interface RuntimeDetection {
   installed: boolean;
   version?: string;
   path?: string;
+  /** Resolver-facing readiness; DSH remains experimental until native release evidence is accepted. */
+  readiness?: 'ready' | 'unverified-dev-runtime' | 'unavailable';
+  reason?: 'not-distributed' | 'artifact-missing' | 'artifact-invalid' | 'platform-unverified' | 'protocol-mismatch';
 }
 
 /**
@@ -206,6 +296,8 @@ export interface RuntimePermissionMode {
   label: string;        // UI display label
   icon: string;         // Emoji icon
   description: string;  // Description text
+  /** Supported by the runtime, but omitted from selection menus and cycling. */
+  hidden?: boolean;
 }
 
 /**
@@ -271,7 +363,7 @@ export interface RuntimeConfig {
  *  - **NOT portable**: source / model / permissionMode / reasoningEffort /
  *    additionalArgs — runtime ownership, model lists, permission vocabularies,
  *    and effort vocabularies are wholly disjoint between managed Codex, user
- *    Codex CLI, Claude Code, and Gemini. Carrying a value from one runtime to
+ *    Codex CLI and Claude Code. Carrying a value from one runtime to
  *    another guarantees the new runtime either rejects it or silently falls
  *    back to defaults — both worse than starting clean.
  *  - **Portable**: envPolicy — per-agent network routing choice that has
@@ -298,27 +390,31 @@ export const RUNTIME_CONFIG_PER_RUNTIME_FIELDS = [
  * the object so the caller's atomic-merge logic doesn't persist a noise
  * `runtimeConfig: {}` entry.
  *
- * Cross-bugfix for issue #194 follow-up: pre-existing bug class where Gemini's
- * persisted `runtimeConfig.model` would leak into Codex sessions after a
- * runtime switch. Activated by commit `8020803e` (May 2) when
- * persistInputOption.ts started correctly writing external-runtime model to
- * `runtimeConfig.model` (previously it was wrongly going to `agent.model`,
- * masking the bug). See commit message of the migration commit for the full
- * archaeology.
+ * Runtime-specific model and permission settings must not leak into another
+ * runtime after a switch.
  */
 export function buildRuntimeChangePatch(
   currentRuntimeConfig: RuntimeConfig | undefined,
   newRuntime: RuntimeType,
-): { runtime: RuntimeType; runtimeConfig: RuntimeConfig | undefined } {
+): {
+  runtime: RuntimeType;
+  runtimeConfig: RuntimeConfig | undefined;
+  runtimePreference: AgentRuntimePreference;
+} {
+  const runtimePreference = agentRuntimePreferenceForRuntime(newRuntime);
   if (!currentRuntimeConfig) {
-    return { runtime: newRuntime, runtimeConfig: undefined };
+    return { runtime: newRuntime, runtimeConfig: undefined, runtimePreference };
   }
   const next: RuntimeConfig = { ...currentRuntimeConfig };
   for (const k of RUNTIME_CONFIG_PER_RUNTIME_FIELDS) {
     delete next[k];
   }
   const hasFields = Object.keys(next).length > 0;
-  return { runtime: newRuntime, runtimeConfig: hasFields ? next : undefined };
+  return {
+    runtime: newRuntime,
+    runtimeConfig: hasFields ? next : undefined,
+    runtimePreference,
+  };
 }
 
 /**
@@ -336,6 +432,7 @@ export interface RuntimeInfo {
 export const CC_PERMISSION_MODES: RuntimePermissionMode[] = [
   {
     value: 'manual',
+    hidden: true,
     label: 'Manual',
     icon: '\u{1F6E1}',  // 🛡
     description: '每次工具调用都需要确认',
@@ -345,12 +442,14 @@ export const CC_PERMISSION_MODES: RuntimePermissionMode[] = [
     label: 'Auto',
     icon: '\u2728',      // ✨
     description: '由 Claude Code 自动判断工具权限',
+    hidden: true,
   },
   {
     value: 'plan',
     label: 'Plan',
     icon: '\u{1F4CB}',  // 📋
     description: '规划模式，只读不执行',
+    hidden: true,
   },
   {
     value: 'acceptEdits',
@@ -369,42 +468,6 @@ export const CC_PERMISSION_MODES: RuntimePermissionMode[] = [
     label: "Don't Ask",
     icon: '\u{1F6AB}',  // 🚫
     description: '不弹出权限确认，未授权操作直接拒绝',
-  },
-];
-
-// ─── Gemini CLI permission modes (ACP session modes, v0.1.66) ───
-//
-// These map 1:1 to Gemini CLI's ACP session/new response `modes.availableModes[]`:
-//   default  → "Prompts for approval"
-//   autoEdit → "Auto-approves edit tools"
-//   yolo     → "Auto-approves all tools"
-//   plan     → "Read-only mode"
-// We keep the internal value equal to Gemini's modeId to avoid a mapping table.
-
-export const GEMINI_PERMISSION_MODES: RuntimePermissionMode[] = [
-  {
-    value: 'default',
-    label: 'Default',
-    icon: '\u{1F6E1}',  // 🛡
-    description: '每次工具调用都需要确认',
-  },
-  {
-    value: 'autoEdit',
-    label: 'Auto Edit',
-    icon: '\u{1F4DD}',  // 📝
-    description: '自动接受文件编辑,其他需确认',
-  },
-  {
-    value: 'yolo',
-    label: 'YOLO',
-    icon: '\u26A1',      // ⚡
-    description: '跳过所有工具确认',
-  },
-  {
-    value: 'plan',
-    label: 'Plan',
-    icon: '\u{1F4CB}',  // 📋
-    description: '规划模式,只读不执行',
   },
 ];
 
@@ -443,6 +506,12 @@ export const BUILTIN_PERMISSION_MODES: RuntimePermissionMode[] = [
   },
 ];
 
+export const DSH_PERMISSION_MODES: RuntimePermissionMode[] = [
+  { value: 'approval-required', label: '请求批准', icon: '\u{1F6E1}', description: '工作区内行动，使用工具需审批' },
+  { value: 'workspace-autonomous', label: '工作区自主', icon: '\u{1F4C1}', description: '工作区内无限制，无需审批' },
+  { value: 'full-autonomous', label: '完全自主', icon: '\u26A1', description: '无限制使用电脑与互联网，无需审批' },
+];
+
 // ─── Codex permission modes (pre-defined for v2) ───
 
 export const CODEX_PERMISSION_MODES: RuntimePermissionMode[] = [
@@ -469,15 +538,15 @@ export const CODEX_PERMISSION_MODES: RuntimePermissionMode[] = [
 /**
  * Get permission modes for a given runtime type
  *
- * Returns the selectable modes for every runtime — including builtin —
- * so callers (UI dropdowns, `runtime describe`, validators) don't have to
- * special-case the builtin path.
+ * Returns supported modes for every runtime, including builtin. Selection
+ * menus and cycling omit hidden entries; validators retain supported values
+ * so existing sessions can keep their execution permissions.
  */
 export function getRuntimePermissionModes(runtime: RuntimeType): RuntimePermissionMode[] {
   switch (runtime) {
+    case 'dsh': return DSH_PERMISSION_MODES;
     case 'claude-code': return CC_PERMISSION_MODES;
     case 'codex': return CODEX_PERMISSION_MODES;
-    case 'gemini': return GEMINI_PERMISSION_MODES;
     case 'builtin': return BUILTIN_PERMISSION_MODES;
     default: return [];
   }
@@ -511,7 +580,7 @@ export function projectPermissionModeForRuntime(
  * Permission vocabularies are runtime-specific. We keep unknown future values
  * (same rationale as `modelLooksLikeRuntime`) but drop values that are known to
  * belong to another runtime. This prevents stale `fullAgency`/`auto` values
- * from downgrading Codex/Gemini/Claude Code into their adapter fallback modes.
+ * from downgrading Codex/Claude Code into their adapter fallback modes.
  */
 export function permissionModeLooksLikeRuntime(mode: string, runtime: RuntimeType): boolean {
   const trimmed = mode.trim();
@@ -551,21 +620,14 @@ export const CC_MODELS: RuntimeModelInfo[] = [
   { value: 'haiku', displayName: 'Haiku' },
 ];
 
-// Note: no static GEMINI_MODELS export (unlike CC_MODELS). Gemini's model
-// list is fetched dynamically via /api/runtime/models?type=gemini →
-// GeminiRuntime.queryModels() → short-lived `gemini --acp` handshake that
-// reads `result.models.availableModels` from the session/new response.
-// Launcher.tsx and Chat.tsx hold their own `geminiModels` useState seeded
-// to [] and populated on the first mount.
-
 /**
  * Get default permission mode for a given runtime type
  */
 export function getDefaultRuntimePermissionMode(runtime: RuntimeType): string {
   switch (runtime) {
+    case 'dsh': return 'approval-required';
     case 'claude-code': return 'manual';
     case 'codex': return 'full-auto';
-    case 'gemini': return 'autoEdit';  // D5: desktop default = Auto Edit
     case 'builtin': return 'auto';
     default: return '';
   }
@@ -579,7 +641,7 @@ export function getDefaultRuntimePermissionMode(runtime: RuntimeType): string {
  * actually run without blocking on a human approval that never comes".
  *
  * Distinct from getDefaultRuntimePermissionMode() which returns each runtime's
- * INTERACTIVE default (auto/default/autoEdit/full-auto). Those defaults are
+ * INTERACTIVE default (auto/default/full-auto). Those defaults are
  * correct for chat tabs but pathological for cron — they leave WebSearch /
  * Bash / mcp__* in a pending-approval state that times out on a 10-minute
  * deadline.
@@ -588,14 +650,13 @@ export function getDefaultRuntimePermissionMode(runtime: RuntimeType): string {
  *   - builtin     → 'fullAgency'        (mapToSdkPermissionMode → bypassPermissions)
  *   - claude-code → 'bypassPermissions' (CC CLI native value, no translation)
  *   - codex       → 'no-restrictions'   (Codex sandbox: skip approvals + sandbox)
- *   - gemini      → 'yolo'              (Gemini ACP: skip all confirmations)
  */
 export function getMaxPermissionForRuntime(runtime: RuntimeType): string {
   switch (runtime) {
+    case 'dsh':         return 'full-autonomous';
     case 'builtin':     return 'fullAgency';
     case 'claude-code': return 'bypassPermissions';
     case 'codex':       return 'no-restrictions';
-    case 'gemini':      return 'yolo';
     default:            return 'fullAgency';
   }
 }
@@ -603,7 +664,7 @@ export function getMaxPermissionForRuntime(runtime: RuntimeType): string {
 // ─── Runtime diagnostics (issue #194) ───
 //
 // Diagnostic snapshot collected at session start for external runtimes (Codex /
-// Claude Code / Gemini). Renderer surfaces this to make 「为什么我看不到 X 工具？」
+// Claude Code). Renderer surfaces this to make 「为什么我看不到 X 工具？」
 // debuggable without grepping unified log. Codex fills all four sections via
 // RPC after thread/start; other runtimes contribute the subset they expose.
 //
@@ -705,6 +766,11 @@ export type RuntimeExtensionApplyState =
   | 'failed';
 
 export interface RuntimeExtensionComponentStatus {
+  /** Admission and invocation are runtime facts, separate from installed/enabled settings and permission. */
+  admission?: 'ready' | 'rejected' | 'disabled' | 'pending';
+  enabled?: boolean;
+  modelInvocable?: boolean;
+  effectiveGeneration?: string;
   component: string;
   id?: string;
   state: RuntimeExtensionApplyState;
@@ -722,6 +788,45 @@ export interface RuntimeExtensionDiagnostics {
   effectiveRevision: string | null;
   state: RuntimeExtensionApplyState;
   components: RuntimeExtensionComponentStatus[];
+}
+
+/** One exact, root-origin permission grant owned and persisted by the Runtime. */
+export interface RuntimePermissionRule {
+  ruleId: string;
+  revision: string;
+  tool: string;
+  permissionClass: string;
+  target: string;
+  origin: 'root';
+  createdAt: number;
+  /** null means the Runtime grant lasts for this Session, until revoked. */
+  expiresAt: number | null;
+}
+
+/** Authoritative Runtime permission policy snapshot. */
+export interface RuntimePermissionRulesSnapshot {
+  readonly permissionMode: string;
+  readonly autoAllowTools: readonly string[];
+  readonly revision: string;
+  readonly rules: readonly RuntimePermissionRule[];
+}
+
+export type RuntimePermissionRuleMutationResult =
+  | { state: 'applied'; revision: string; rule?: RuntimePermissionRule }
+  | { state: 'already_effective'; revision: string; rule: RuntimePermissionRule }
+  | { state: 'already_absent'; revision: string };
+
+/**
+ * Non-sensitive permission reconciliation summary. Exact targets stay behind
+ * the explicit rule-list API and never enter generic diagnostics or logs.
+ */
+export interface RuntimePermissionDiagnostics {
+  desiredProductMode: string;
+  desiredRuntimeMode: string;
+  effectiveRuntimeMode: string;
+  policyRevision: string;
+  ruleCount: number;
+  state: 'applied' | 'drift';
 }
 
 /**
@@ -780,8 +885,34 @@ export interface RuntimeDiagnostics {
   issues?: RuntimeDiagnosticIssue[];
   /** MyAgents product-extension projection consumed by this Runtime process. */
   extensions?: RuntimeExtensionDiagnostics;
+  /** Runtime-owned permission state, excluding rule targets and identities. */
+  permissions?: RuntimePermissionDiagnostics;
   /** ISO-8601 UTC string. */
   timestamp: string;
+}
+
+/** Read-only diagnostic projection; adapters must exclude credentials and rule targets. */
+export interface IntegratedRuntimeArtifactIdentity {
+  runtimeVersion: string;
+  dshVersion: string;
+  requiredNodeVersion: string;
+  sourceCommit: string;
+  handoffSha256: string;
+  runtimeManifestSha256: string;
+}
+
+export interface RuntimeInspection {
+  runtime: RuntimeType;
+  installed: boolean;
+  version?: string;
+  resources: { state: 'available' | 'unavailable'; code?: string; expectedIdentity: IntegratedRuntimeArtifactIdentity; installedIdentity: IntegratedRuntimeArtifactIdentity | null };
+  process: { state: string; pid?: number; identity?: object | null; artifact?: object | null };
+  model: { id: string; provider: string; revision: string } | null;
+  permissions: RuntimePermissionDiagnostics | null;
+  extensions: RuntimeExtensionDiagnostics | null;
+  environment: { policy: string; allowedKeys: readonly string[] } | null;
+  proxy: { scope: string; capturedAt: string; endpoints: Record<string, string>; keys: readonly string[] } | null;
+  observedAt: string;
 }
 
 /**
@@ -793,7 +924,7 @@ export interface RuntimeDiagnostics {
  *   - obvious foreign-runtime stale value → ignored; try the next source, then
  *     runtime max permission
  *
- * Crucially, 'auto' / 'default' / 'autoEdit' / 'full-auto' are NOT treated as
+ * Crucially, 'auto' / 'default' / 'full-auto' are NOT treated as
  * "user didn't pick" when they belong to the selected runtime — they're the
  * runtime's interactive defaults but if a user has them in their cron config,
  * that's a literal value we honor. Empty/undefined and obvious cross-runtime

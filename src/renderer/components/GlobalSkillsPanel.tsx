@@ -2,7 +2,13 @@
  * GlobalSkillsPanel - User-level Skills & Commands management for Settings page
  * Refactored to reuse SkillDetailPanel and CommandDetailPanel for consistent UX
  */
-import { Plus, Sparkles, Terminal, Loader2, ChevronLeft } from 'lucide-react';
+import {
+  PlusIcon,
+  CapabilitiesIcon,
+  TerminalIcon,
+  LoaderIcon,
+  ChevronLeftIcon,
+} from '@/components/icons';
 import { useCallback, useEffect, useState, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -81,6 +87,7 @@ export default function GlobalSkillsPanel({
     // Sync from Claude Code state
     const [canSyncFromClaude, setCanSyncFromClaude] = useState(false);
     const [syncableCount, setSyncableCount] = useState(0);
+    const [syncableFolders, setSyncableFolders] = useState<string[]>([]);
 
     // Track mounted state to prevent setState after unmount
     const isMountedRef = useRef(true);
@@ -142,6 +149,7 @@ export default function GlobalSkillsPanel({
             // Update sync state (with defensive checks for API errors)
             setCanSyncFromClaude(syncCheckRes?.canSync ?? false);
             setSyncableCount(syncCheckRes?.count ?? 0);
+            setSyncableFolders(syncCheckRes?.folders ?? []);
         } catch {
             if (!isMountedRef.current) return;
             toastRef.current.error(tRef.current('agentSettings.common.loadFailed'));
@@ -192,7 +200,8 @@ export default function GlobalSkillsPanel({
                 synced: number;
                 failed: number;
                 errors?: string[];
-            }>('/api/skill/sync-from-claude', {});
+                error?: string;
+            }>('/api/skill/sync-from-claude', { expectedFolders: syncableFolders, folders: syncableFolders });
 
             if (response.success) {
                 if (response.failed > 0) {
@@ -207,13 +216,18 @@ export default function GlobalSkillsPanel({
                 if (response.synced > 0) {
                     window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
                 }
+            } else if (response.synced > 0) {
+                toastRef.current.warning(tRef.current('agentSettings.skillCommandList.syncPartial', { synced: response.synced, failed: response.failed }));
+                setShowNewSkillDialog(false);
+                setRefreshKey(k => k + 1);
+                window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
             } else {
-                toastRef.current.error(tRef.current('agentSettings.skillCommandList.syncFailed'));
+                toastRef.current.error(response.error || tRef.current('agentSettings.skillCommandList.syncFailed'));
             }
         } catch {
             toastRef.current.error(tRef.current('agentSettings.skillCommandList.syncFailed'));
         }
-    }, []);
+    }, [syncableFolders]);
 
     // 上传技能文件
     const handleUploadSkill = useCallback(async (file: File) => {
@@ -364,7 +378,7 @@ export default function GlobalSkillsPanel({
     if (loading && viewState.type === 'list') {
         return (
             <div className="flex h-64 items-center justify-center">
-                <Loader2 className="h-8 w-8 animate-spin text-[var(--ink-muted)]" />
+                <LoaderIcon className="h-8 w-8 animate-spin text-[var(--ink-muted)]" />
             </div>
         );
     }
@@ -377,7 +391,7 @@ export default function GlobalSkillsPanel({
                     onClick={handleBackToList}
                     className="flex items-center gap-1 text-sm text-[var(--ink-muted)] hover:text-[var(--ink)]"
                 >
-                    <ChevronLeft className="h-4 w-4" />
+                    <ChevronLeftIcon className="h-4 w-4" />
                     {t('agentSettings.panel.backToList')}
                 </button>
                 <div className="rounded-xl border border-[var(--line)] bg-[var(--paper)] overflow-hidden" style={{ minHeight: '500px' }}>
@@ -403,7 +417,7 @@ export default function GlobalSkillsPanel({
                     onClick={handleBackToList}
                     className="flex items-center gap-1 text-sm text-[var(--ink-muted)] hover:text-[var(--ink)]"
                 >
-                    <ChevronLeft className="h-4 w-4" />
+                    <ChevronLeftIcon className="h-4 w-4" />
                     {t('agentSettings.panel.backToList')}
                 </button>
                 <div className="rounded-xl border border-[var(--line)] bg-[var(--paper)] overflow-hidden" style={{ minHeight: '400px' }}>
@@ -427,7 +441,7 @@ export default function GlobalSkillsPanel({
             <div>
                 <div className="mb-4 flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                        <Sparkles className="h-5 w-5 text-[var(--ink-muted)]" />
+                        <CapabilitiesIcon className="h-5 w-5 text-[var(--ink-muted)]" />
                         <h3 className="text-base font-semibold text-[var(--ink)]">{t('agentSettings.skillCommandList.userSkillsTitle')}</h3>
                         <span className="text-xs text-[var(--ink-muted)]">({skills.length})</span>
                     </div>
@@ -435,7 +449,7 @@ export default function GlobalSkillsPanel({
                         onClick={() => setShowNewSkillDialog(true)}
                         className="flex items-center gap-1 rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-primary-text)] hover:bg-[var(--button-primary-bg-hover)]"
                     >
-                        <Plus className="h-4 w-4" />
+                        <PlusIcon className="h-4 w-4" />
                         {t('agentSettings.common.new')}
                     </button>
                 </div>
@@ -453,7 +467,7 @@ export default function GlobalSkillsPanel({
                     </div>
                 ) : (
                     <div className="rounded-xl border border-dashed border-[var(--line)] bg-[var(--paper-inset)]/30 py-8 text-center">
-                        <Sparkles className="mx-auto h-10 w-10 text-[var(--ink-muted)]/30" />
+                        <CapabilitiesIcon className="mx-auto h-10 w-10 text-[var(--ink-muted)]/30" />
                         <p className="mt-2 text-sm text-[var(--ink-muted)]">{t('agentSettings.skillCommandList.emptyUserSkills')}</p>
                     </div>
                 )}
@@ -463,7 +477,7 @@ export default function GlobalSkillsPanel({
             <div>
                 <div className="mb-4 flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                        <Terminal className="h-5 w-5 text-[var(--ink-muted)]" />
+                        <TerminalIcon className="h-5 w-5 text-[var(--ink-muted)]" />
                         <h3 className="text-base font-semibold text-[var(--ink)]">{t('agentSettings.skillCommandList.userCommandsTitle')}</h3>
                         <span className="text-xs text-[var(--ink-muted)]">({commands.length})</span>
                     </div>
@@ -471,7 +485,7 @@ export default function GlobalSkillsPanel({
                         onClick={() => setShowNewCommandDialog(true)}
                         className="flex items-center gap-1 rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-primary-text)] hover:bg-[var(--button-primary-bg-hover)]"
                     >
-                        <Plus className="h-4 w-4" />
+                        <PlusIcon className="h-4 w-4" />
                         {t('agentSettings.common.new')}
                     </button>
                 </div>
@@ -487,7 +501,7 @@ export default function GlobalSkillsPanel({
                     </div>
                 ) : (
                     <div className="rounded-xl border border-dashed border-[var(--line)] bg-[var(--paper-inset)]/30 py-8 text-center">
-                        <Terminal className="mx-auto h-10 w-10 text-[var(--ink-muted)]/30" />
+                        <TerminalIcon className="mx-auto h-10 w-10 text-[var(--ink-muted)]/30" />
                         <p className="mt-2 text-sm text-[var(--ink-muted)]">{t('agentSettings.skillCommandList.emptyUserCommands')}</p>
                     </div>
                 )}
@@ -511,7 +525,8 @@ export default function GlobalSkillsPanel({
                     syncConfig={canSyncFromClaude ? {
                         onSync: handleSyncFromClaude,
                         canSync: canSyncFromClaude,
-                        syncableCount: syncableCount
+                        syncableCount: syncableCount,
+                        syncableFolders
                     } : undefined}
                 />
             )}

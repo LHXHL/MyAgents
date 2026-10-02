@@ -71,6 +71,17 @@ bundled-guides/external-myagents-cli/      ├── npm-global/       (AI 自�
 
 ## CLI 脚本设计
 
+`config get` 对凭据 map 的全部字符串值脱敏，包括任意名称的 Provider ID / 环境变量。
+旧 Agent/Channel 的 `providerEnvJson`、`mcpServersJson` 是序列化凭据快照，父级读取和直接
+叶子读取都只显示 `****`；非秘密的 Provider/MCP 配置通过对应 discovery 命令读取。
+
+`status.agents` 与默认 `agent list` 共用持久化 Agent/workspace registry 的用户可见、
+非归档过滤；禁用但可见的 Agent 与历史 orphan 仍计入，internal Agent 不计入。
+DSH TaskGraph 的 `owner=root` 是当前对话主 Agent，其他 owner 为 Runtime child ID；
+CLI help 解释其与 Host Workspace Agent ID/可变显示名的区别，不重写持久化身份。
+
+CLI 文本输出优先使用命令专属格式；其余成功且含 `data` 的命令回显结构化结果，避免只出现 `✓ <verb>` 而丢失 help 承诺的结果。`--json` 仍返回完整响应。Space `whoami`、assignee 列表和 Skill 开关显示身份、候选 ID 与生效状态；`runtime describe` 的权限模式标题明确限定于所查询的 Runtime。
+
 ### 执行方式
 
 CLI 脚本只有一条执行 authority：`cli.rs` 使用当前安装包的 bundled Node.js 执行当前安装包的 `resources/cli/myagents.cjs`。`.cjs` 是产物自描述契约：即使开发 `.app` 位于上层声明 `type: module` 的源码目录，Node 也必须按 CommonJS 加载。AI Bash 与用户终端的 `myagents` 先经过薄启动器回到当前 app executable；兼容的 `MyAgents <known-group>` 直调则直接进入同一个 Rust CLI mode。两条入口最终执行同一 bundle，不依赖系统 Node 或 HOME 中的业务脚本。
@@ -81,15 +92,26 @@ CLI 脚本只有一条执行 authority：`cli.rs` 使用当前安装包的 bundl
 优先级：--port 标志 > 已继承 MYAGENTS_PORT > Global sidecar.port
 ```
 
-- **AI 调用场景**：`buildClaudeSessionEnv()` 注入 `MYAGENTS_PORT` 环境变量（当前 Session Sidecar 端口）
-- **终端调用场景**：只有环境没有有效 `MYAGENTS_PORT` 时，`cli.rs` 才从 `~/.myagents/sidecar.port` 读取并校验 Global 端口
+- **AI 调用场景**：SDK 路径由 `buildClaudeSessionEnv()` 提供端口；DSH generation 由 Host 显式注入当前 `MYAGENTS_PORT` 与 Product `MYAGENTS_SESSION_ID`，来源为 Sidecar bootstrap 和 Session binding，不继承环境中的陈旧 routing 值。
+- **终端调用场景**：只有没有 Session 身份且环境没有有效 `MYAGENTS_PORT` 时，`cli.rs` 才从 `~/.myagents/sidecar.port` 读取并校验 Global 端口。已有 Session 身份（包括格式无效的值）不能回退 Global。
 
-App 启动时生成进程生命周期内的内部 CLI capability，并只注入 Global/Session Sidecar、集成终端和受管 Agent Runtime。普通终端不会获得该 capability：它通过薄启动器发现 Global Host 后，必须携带设置页生成的 `MYAGENTS_API_TOKEN`，并且只能进入静态公开清单。端口、`MYAGENTS_SESSION_ID`、`--port` 和 payload 中自报的来源都不是内部身份。
+App 启动时生成进程生命周期内的内部 CLI capability，并自动注入 Global/Session Sidecar、集成终端和受管 Agent Runtime。内部 Agent 从 Bash 调用完整的内置 `myagents` CLI，不需要用户配置 token；CLI 独立进程仍凭自动注入的 `MYAGENTS_INTERNAL_CLI_TOKEN` 向 Sidecar 证明内部身份。DSH generation 由 Host 显式注入当前 `MYAGENTS_PORT`、Product `MYAGENTS_SESSION_ID` 和该内部 capability，不继承陈旧 routing 值。普通终端不会获得内部 capability：它通过薄启动器发现 Global Host 后，必须携带设置页生成的 `MYAGENTS_API_TOKEN`，并且只能进入静态公开清单。端口、Session ID、`--port` 和 payload 自报来源都不是内部身份。
 
-外部访问默认关闭。Rust App owner 在 `config.json.externalCliAccess` 中锁内管理开关、单个可恢复 token 与创建时间；普通 Renderer `AppConfig` 投影和通用 `config get/set` 不暴露或修改这份私有 envelope。设置 → 外部调用是唯一明文显示、复制、重置和启停入口。关闭或重置只影响后续 admission，已经准入的业务继续按各自 owner 完成。
+DSH 的 `buildDshChildEnvironment()` 要求调用方显式选择 `sessionCli`：真实 Session 必须同时提供端口、Product Session ID 和 App 内部 capability；仅安装校验、诊断等无 Session 调用传 `null`。`DshRuntimeProcessHost` 接收这份已构造的环境，不自行回退到无 Session 身份的环境。缺失或无效的内部 capability 在启动边界直接失败。DSH 的进程环境只对精确的 `MYAGENTS_INTERNAL_CLI_TOKEN` 开放这一项内部 CLI 例外；Provider、MCP 凭据和外部 `MYAGENTS_API_TOKEN` 仍被拒绝，且 capability 值不进入诊断、协议快照或持久化。
 
-设置页还返回当前平台的 launcher、外部指南绝对路径与瞬时 `skillReady`，并生成一个“发送给其他 AI 的 Prompt”。页面展示始终用 `<token>` 占位，只有用户主动点击复制且外部调用已开启、当前 token 可用时，复制内容才即时注入真实 `MYAGENTS_API_TOKEN`；指南或路径尚未就绪时不能复制。外部 AI 先读指南，再使用绝对 launcher，并只把 Prompt 中的 token 设置到调用进程环境，不应继续输出或持久化。指南目录刻意位于 `~/.myagents/skills` 之外，因此不进入 global skill inventory、不投影到 Workspace，也不会与 App 内 Required/User Skill 混淆。Rust 在 App 启动预检及设置 owner 命令中按内置字节幂等收敛该文件；内容过期会被当前 App 版本覆盖，父目录若是 symlink / Windows reparse point 则 fail closed。指南同步失败只令 `skillReady=false`、隐藏交接 Prompt，不能阻断外部访问策略的读取、关闭或 token 重置。
+外部访问默认关闭。Rust App owner 在 `config.json.externalCliAccess` 中锁内管理开关、单个可恢复 token 与创建时间；普通 Renderer `AppConfig` 投影和通用 `config get/set` 不暴露或修改这份私有 envelope。设置 → 外部调用是唯一明文显示、复制、重置和启停入口。关闭或重置只影响后续准入，已经准入的业务继续按各自 owner 完成。
+
+设置页返回当前平台的 launcher、外部指南绝对路径与瞬时 `skillReady`，并生成一个“发送给其他 AI 的 Prompt”。页面展示使用 `<token>` 占位；只有用户主动点击复制且外部调用已开启、token 可用时，复制内容才即时注入真实 `MYAGENTS_API_TOKEN`。指南目录位于 `~/.myagents/skills` 之外，避免进入 global skill inventory 或投影到 Workspace。Rust 在 App 启动预检及设置 owner 命令中按内置字节幂等收敛该文件；内容过期会由当前 App 版本覆盖，父目录若是 symlink / Windows reparse point 则 fail closed。指南同步失败只令 `skillReady=false`，不阻断策略读取、关闭或 token 重置。
 - **显式覆盖**：Node CLI parser 最后解析 `--port`，所以命令行值高于 Rust 保留或补入的环境值
+
+Session-scoped CLI 对每个 Admin 请求附加 `x-myagents-session-id`；通用 Sidecar 入口通过
+`SessionEngine.currentSessionContext()` 和共享 `cli-session-scope.ts` 校验，不按 Runtime 分支。
+错误 Session/Global 落点在业务 handler 前拒绝，缺失/非法端口在 CLI 发 HTTP 前返回结构化
+scope 错误。普通无 Session 身份的外部 CLI 保留全局管理行为。顶层 `--version` 与 `version`
+进入同一路由，`--help` 仍可本地运行。构建后的 CLI fixture 覆盖两 Session 的 current/task/goal、
+身份头、缺失/非法路由与既有全局命令；实际安装包/Bash 联合证据由 DSH 自检 workstream 管理。
+
+`myagents reload` 与 MCP mutation 的当前会话更新使用 `SessionEngine.updateMcpServers` / `updateAgents`，工作区从同一 adapter 的 context 读取。显式 reload 的 `forceReload` 只由 builtin adapter 交给既有 SDK deferred restart；DSH / Managed Codex 使用自己的 extension reconciliation 边界。Admin API 不直接调用 SDK 配置 setter：Integrated DSH 并非 external CLI，但同样不拥有 SDK Query，误调用会在 DSH Sidecar 内启动 SDK 并重复发布同一 Product transcript 操作。
 
 ### 命令体系
 
@@ -97,7 +119,7 @@ App 启动时生成进程生命周期内的内部 CLI capability，并只注入 
 myagents <group> <action> [args] [flags]
 ```
 
-命令按 owner 分组：配置与能力（MCP/model/skill/tool/plugin/config）、Agent 与 Runtime、Session/Goal、Task/Record/Speech、Space/IM，以及 status/version/reload 等应用控制。canonical group、action、flag 和输出字段以当前 bundle 的顶层/leaf `--help` 为准；本文只记录跨命令的路由、身份和 mutation 规则，不维护静态全集。
+命令按 owner 分组：配置与能力（MCP/model/skill/tool/plugin/config）、Agent 与 Runtime、Session/Goal、Task/Record/Speech、Space/IM，以及 status/version/reload 等应用控制。status/version/reload 与分组命令都提供 `-h` / `--help`；帮助请求不执行对应业务，失败响应使用非零退出码，普通文本错误输出到 stderr。canonical group、action、flag 和输出字段以当前 bundle 的顶层/leaf `--help` 为准；本文只记录跨命令的路由、身份和 mutation 规则，不维护静态全集。
 
 所有 mutation 对未知 flag fail closed。`--dry-run` 只有在 leaf help 明确声明支持时才有效；不能把拒绝执行描述成成功预览。
 
@@ -136,7 +158,7 @@ AI 在调用写操作前通常需要先「问清楚选项」。以下三条命�
 myagents runtime list                             # 看哪些 runtime 装了、未装的给出安装提示
 myagents runtime describe <runtime>               # 看某 runtime 的 model + permissionMode 枚举
 myagents agent list --active|--archived           # 找 stable Agent ID；human/JSON 标记当前调用方
-myagents agent show <agent-id>                    # 看 identity + effective Session birth 默认
+myagents agent show <agent-id>                    # 看 identity + Agent 对未来 Session 的默认值
 myagents session list --agent <agent-id>          # 看最近可复用的 persisted Session context
 ```
 
@@ -272,6 +294,8 @@ bundle / launcher 缺失或不可写时没有系统 Node、npm 包或旧 HOME pa
 
 Skill frontmatter 以 Agent Skills 标准为 canonical：作者写在 `metadata.author`，不能新增顶层 `author`。`src/shared/slashCommands.ts` 是 UI / Sidecar 共用的归一化 owner：读取时标准 `metadata.author` 优先，并兼容旧顶层 `author` / `Author`；list/detail/CLI 投影继续提供扁平 `author` 方便消费，保存时只写回 `metadata.author`，同时保留其它标准 string metadata。这样旧 Skill 无需一次性迁移也能展示，而任何后续编辑都会自然收敛到标准格式。
 
+`myagents skill sync` 默认仅列出 `~/.claude/skills/` 中可导入的目录；只有显式 `--apply` 才复制选定项，新导入项先写为 disabled。列表与按名操作使用 `scope + folderName + workspace` 定位，同名或显示名歧义须显式指定 scope/文件夹；project Skill 的开关由 Project 选中的 AgentConfig capabilitySelection 裁决，CLI 回读同一有效快照后才报告成功。`remove --dry-run` 只读取目标信息，不发删除请求。`tool-creator` 在 CLI 工具注册表实验开关关闭时保持不可启用，不能因全局 disabled 列表变化而回报假成功。
+
 `SYSTEM_SKILLS` 是版本化安装集合，`REQUIRED_SYSTEM_SKILLS` 是其中始终可用的产品契约子集，二者不能混为一谈。canonical 名单在 `src/shared/systemSkills.ts`，Rust workspace/slash 路径在 `src-tauri/src/workspace_files/skills_config.rs` 维护必要镜像，并由 cross-language test 锁定；改名单必须同步这两处，禁止 UI、CLI、文档或其它模块再复制第三份。读取旧 `skills-config.json` 和每次写回都会移除这些名称的 stale disabled 项；Skills API 以 `required:true, enabled:true` 投影，disable 请求返回 409。其它版本化或用户 Skill 仍可正常 enable/disable。
 
 内容所有权与启停权彼此独立：user scope 的 `SYSTEM_SKILLS` 内容一律由 MyAgents 持有并保持只读，不因是否 `required` 而改变；optional system Skill 仍可按现有策略 enable/disable。project scope 中同 canonical name 的实体 Skill 仍归项目所有，可独立编辑和删除；普通用户 Skill 的 CRUD 不变。
@@ -342,7 +366,7 @@ Admin API 注册在 Sidecar 的 `/api/admin/*` 路由下，提供与 GUI 对等�
 | `/api/admin/cron/*` | 定时任务 CRUD、启停、执行历史、状态查询 |
 | `/api/admin/goal/*` | 当前 session Goal Mode：`get` / `create` / `update` |
 | `/api/admin/task/*` | 任务中心：list/get/create/update/run/rerun/run-now、trigger validate/test/check-now/reset、status/session/archive/delete/doc |
-| `/api/admin/record/*` | 统一 Record：list/create；`thought` 路由仅作兼容 |
+| `/api/admin/record/*` | 统一 Record：list/get/create/delete；`thought` 路由仅作兼容 |
 | `/api/admin/speech/*` | 当前 Session 的附件转录 submit/status/cancel/list；`wait` 复用 status 轮询 |
 | `/api/admin/skill/*` | Skills CRUD、远程/本地来源安装、启停、sync；显式相对路径由 CLI 按调用者 cwd 归一化 |
 | `/api/admin/tool/*` | 用户注册 CLI 工具注册表（实验室门控，默认关闭） |
@@ -445,9 +469,11 @@ live runtime 未收敛”，不能把当前 Sidecar 的 `config:changed` 当作�
 
 ### 管理 API 转发（`/api/task/*` / `/api/cron/*` 等）
 
-部分能力（Task / Cron compatibility / Plugin）在 Rust Management API 而非 Node.js。Admin handler 作为薄转发层，并通过 `wrapMgmtResponse()` / `mgmtError()` 保证：
+部分能力（Task / Record / Cron compatibility / Plugin）在 Rust Management API 而非 Node.js。Admin handler 作为薄转发层，并通过 `wrapMgmtResponse()` / `mgmtError()` 保证：
 - 成功响应剥掉 Rust `ok` 字段、包成 Admin `{ success: true, data }`
 - 失败响应原样透传 `recoveryHint`（例如 Management API 不可达时 Admin handler 注入 `→ Run: myagents status` 指引）
+
+`record/list` 和 `record/create` 经当前 Sidecar 转发到 Rust Record owner，`record/` 与兼容 `thought/` 都在 `sidecar-composition.ts` 登记为 common。该 gate 先于 Admin handler 执行；漏登记会直接返回 404，不能把这种错误当作“没有记录”转换为空数组。
 
 ### 官方 CLI 工具与用户 CLI 工具
 
@@ -570,8 +596,34 @@ PATH 优先级（agent-session.ts::buildClaudeSessionEnv）：
 | `SPEECH_JOB_NOT_FOUND` | 该 job 不属于当前 Session 或已不存在；先在同一 Session 运行 `myagents speech list` |
 | `MyAgents <new-group>` 进了 GUI | app-binary 直调只兼容已发布 group；canonical `myagents <new-group>` 不受 Rust group 名单约束 |
 
+DSH Session 路由下，`myagents skill list` 的 JSON 保留安装字段，并增加 `runtimeAvailability`（准入状态、effective/desired revision、组件调用开关与原因）。文本输出使用同一回执。没有回执显示 unknown，不用 enabled 推断模型可调用；模型可调用不代表已经授予执行权限。
+
 ### 已移除内置 MCP 的旧定义
 
 旧 Cuse MCP 已退出内置 MCP 目录，其专用可执行文件不再打包；旧配置或 Session snapshot 中的 `__bundled_cuse__` 启动标记由共享 `isRetiredBundledMcpServer` 在目录及 SDK/Codex 启动投影排除，不跨 owner 改写持久化数据。自定义真实命令（即使 ID 为 `cuse`）仍按普通 MCP 处理。历史工具结果沿用公共媒体展示。
 
 Cuse 是可关闭的版本化 Skill，携带独立 CLI，由构建从 Cuse 发布源下载，运行时不联网更新。它复用上述内容归属/启停分离与完整目录投影，详见 [Cuse bundle](cuse_bundle.md)。
+
+Round 6 diagnostics: `config list [prefix]` enumerates the existing config reader's normalized keys with types/descriptions and no values; credential maps remain opaque. `status` reads actual MCP states from SessionEngine's current effective snapshot, independently of global configuration and workspace selection. Missing/stale observations remain unknown. `runtime describe dsh` directs model discovery to the Provider catalog. `skill list --verbose` expands normal admission details; abnormal admissions remain visible by default. Session recovery commands require `session list --agent <agentId> --json`.
+
+`config list` 现在标明 `settable`。通用 `config set` 只接收显式登记的简单偏好键和值，`--dry-run` 也做同样校验；有独立 owner 或副作用的配置仍走专用命令或设置页。`config unset <key>` 可删除已有误写键，但拒绝敏感和受专用 owner 管理的字段。`agent show.effectiveDefaults` 保留兼容字段名，其 `scope` 明确为未来 Session 的 Agent 默认值；`runtime describe.defaultPermissionMode` 是 Runtime 目录兜底值；`config get defaultPermissionMode` 是 App 新 Session 默认值。当前 Session 的真实权限以其固化配置和当前 generation 的 runtime 诊断为准。
+
+`version` separates Rust-launcher App identity from Sidecar identity. Bundles embed version/commit/dirty/capture time during esbuild; source-mode processes capture metadata once at startup, never at diagnostic request time. A launcher that did not send App metadata is reported as unknown. `diagnose runtime dsh` goes through SessionEngine and the existing runtime adapter: it verifies installed handoff bytes, uses the lifecycle owner's process and handshake identity, and projects effective model/permissions/extensions plus names of allowed environment and general-proxy keys and proxy endpoints stripped of credentials, paths and query values. It never exposes environment values, credentials or permission rule targets, and never creates a diagnostic Session.
+
+
+### CLI admission and audit reads
+
+Internal Agent commands validate options before dispatch too. Public leaves reuse
+`externalCliCapabilities.ts`; additional internal options live with the CLI in
+`internalCliFlags.ts`. Unknown options and extra readme arguments return an input
+error instead of silently succeeding. Internal help uses the Admin registry so
+Session watch, runtime diagnostics and Agent channel commands remain discoverable.
+
+Task cron/interval flags infer `recurring`; `dispatchAt` infers `scheduled`, while
+an update without schedule flags preserves the stored mode. An explicit incompatible
+mode is an input error. Deleted Tasks retain read authority for get/comments/runs;
+new comments and mutations still follow the lifecycle owner.
+
+Record get returns the complete stored Record, including text content. Record delete
+uses Rust RecordStore after cancelling speech processing, following the desktop
+operation's existing owners and change events. No CLI file store is introduced.

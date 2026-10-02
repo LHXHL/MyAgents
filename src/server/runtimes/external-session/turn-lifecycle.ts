@@ -574,8 +574,10 @@ function isInterruptedExternalTurnStatus(status: string | undefined): boolean {
 export function classifyExternalTurnFailureCleanup(
   event: Pick<Extract<UnifiedEvent, { kind: 'turn_complete' }>, 'status'>,
   intentionalStopInProgress: boolean,
+  forceTransferInProgress = false,
 ): ExternalTurnFailureCleanup {
   if (intentionalStopInProgress) return 'defer-to-stop';
+  if (forceTransferInProgress) return 'stopped';
   if (isInterruptedExternalTurnStatus(event.status)) return 'stopped';
   return 'error';
 }
@@ -588,7 +590,7 @@ export function externalTurnFailureMessage(event: Extract<UnifiedEvent, { kind: 
 
 export function markExternalTurnComplete(
   event: Extract<UnifiedEvent, { kind: 'turn_complete' }>,
-  input: { intentionalStopInProgress: boolean },
+  input: { intentionalStopInProgress: boolean; forceTransferInProgress?: boolean },
 ): ExternalTurnCompletePlan {
   recordExternalTurnTerminal();
   turnCompleted = true;
@@ -597,7 +599,11 @@ export function markExternalTurnComplete(
   if (turnSucceeded) return { kind: 'persist-success' };
 
   const message = externalTurnFailureMessage(event);
-  const cleanup = classifyExternalTurnFailureCleanup(event, input.intentionalStopInProgress);
+  const cleanup = classifyExternalTurnFailureCleanup(
+    event,
+    input.intentionalStopInProgress,
+    input.forceTransferInProgress,
+  );
   if (cleanup === 'defer-to-stop') {
     return { kind: 'defer-to-stop', message };
   }

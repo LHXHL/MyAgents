@@ -23,6 +23,20 @@ function setup() {
 }
 
 describe('native blocks and product presentation', () => {
+  it('retains Provider tool identity in canonical content across display segmentation', async () => {
+    const { writer, content, presentation } = setup();
+    presentation.record('chat:server-tool-use-start', { id: 'provider-tool', name: 'image_generation', input: {},
+      providerRouteId: 'provider', providerBlockType: 'server_tool_use' });
+    const target = content.tool('provider-tool')!;
+    content.admitUser({ id: 'followup', role: 'user', content: 'continue', timestamp: 't' });
+    const attachment = { kind: 'image', mimeType: 'image/png', refPath: '/api/attachment/tool/session/turn/image.png' };
+    content.confirmAttachments(target, [attachment]);
+    expect(content.readBlock(target)).toMatchObject({ type: 'server_tool_use', providerRouteId: 'provider',
+      providerBlockType: 'server_tool_use', tool: { id: 'provider-tool', attachments: [attachment] } });
+    await writer.close();
+    expect(transcriptMessages(writer.projection)[1].content).toContain(attachment.refPath);
+  });
+
   it('continues streaming through the same presentation after canonical truncation', async () => {
     const { writer, content, presentation } = setup();
     presentation.beginNativeMessage('before');

@@ -16,6 +16,7 @@ pub mod group_history;
 pub mod handover;
 pub mod health;
 pub mod heartbeat;
+mod model_commands;
 pub mod reply_router;
 pub mod router;
 pub mod runtime_change;
@@ -50,6 +51,7 @@ pub use agent_channel::{get_all_bots_status, get_im_bot_status, start_im_bot, st
 pub(crate) use agent_channel::{stop_agent_channel_runtime, stop_agent_channels_runtime};
 use bridge::BridgeAdapter;
 use buffer::MessageBuffer;
+use commands::persist_bot_config_patch;
 pub(crate) use commands::reload_agent_config_from_disk;
 #[allow(unused_imports, deprecated)]
 pub use commands::{
@@ -62,13 +64,11 @@ pub use commands::{
     cmd_stop_agent_channel, cmd_stop_im_bot, cmd_uninstall_openclaw_plugin,
     cmd_update_agent_config, cmd_update_im_bot_config,
 };
-use commands::{persist_bot_config_patch, read_available_providers_from_disk};
 pub(crate) use config_store::{
     agent_id_for_project, is_agent_workspace_archived, read_agent_configs_from_disk,
 };
 use config_store::{
-    missing_configured_channel_status, persist_agent_channel_model, persist_agent_config_patch,
-    read_im_configs_from_disk, route_agent_heartbeat_once,
+    missing_configured_channel_status, read_im_configs_from_disk, route_agent_heartbeat_once,
     should_report_missing_configured_channel,
 };
 pub use config_store::{monitor_agent_channels, schedule_agent_auto_start, schedule_auto_start};
@@ -85,11 +85,10 @@ pub use state::{
     QuestionCallback,
 };
 use state::{
-    ensure_sidecar_port_for_command, fallback_runtime_models, is_external_runtime_type,
-    normalize_runtime_type, query_runtime_models_from_sidecar, runtime_config_string,
-    runtime_config_with_string, runtime_display_name, runtime_permission_choices,
-    sync_runtime_config_to_sidecars,
+    ensure_sidecar_port_for_command, is_external_runtime_type, normalize_runtime_type,
+    runtime_source_for_runtime,
 };
+
 pub(crate) use state::{
     AgentChannelLink, AnyAdapter, ChannelModelWorkGate, ImConsumerHandle, ImConsumers, PeerLocks,
     PendingApproval, PendingApprovals, PendingQuestion, PendingQuestions, SharedAgentLink,

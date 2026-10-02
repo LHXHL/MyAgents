@@ -105,7 +105,7 @@ describe('AudioRecordCard', () => {
     expect(discussButton).not.toHaveClass('absolute');
     const card = container.querySelector('article');
     expect(card).toHaveClass('w-full', 'max-w-full', 'overflow-hidden');
-    const mic = container.querySelector('.lucide-mic');
+    const mic = container.querySelector('.app-icon-mic');
     expect(mic).toHaveClass('h-3.5', 'w-3.5');
 
     dateNow.mockRestore();

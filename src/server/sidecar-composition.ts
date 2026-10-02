@@ -73,6 +73,7 @@ const SESSION_EXACT_PATHS = new Set([
   '/api/generate-session-title',
   '/api/goal/objective',
   '/api/image',
+  '/api/internal/session/text-page',
   '/api/audio',
   '/api/interaction-scenario/set',
   '/api/mcp/set',
@@ -114,7 +115,6 @@ const GLOBAL_EXACT_PATHS = new Set([
   '/api/mcp/enable',
   '/api/provider/verify',
   '/api/process/graceful-shutdown',
-  '/api/proxy/set',
   '/api/session/messages',
   '/api/session-tags',
   '/api/subscription/status',
@@ -131,6 +131,8 @@ const GLOBAL_EXACT_PATHS = new Set([
 const GLOBAL_PREFIXES = ['/api/mcp/oauth/', '/api/session-tags/'] as const;
 
 const COMMON_EXACT_PATHS = new Set([
+  '/api/im/model-options',
+  '/api/proxy/set',
   // Both Global one-shots and Session Queries own managed-provider leases.
   '/api/cliproxy/control',
   '/api/runtime/models',

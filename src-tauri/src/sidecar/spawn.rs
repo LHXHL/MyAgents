@@ -255,17 +255,11 @@ pub(super) fn find_server_script<R: Runtime>(app_handle: &AppHandle<R>) -> Optio
     find_server_script_inner(app_handle).map(normalize_external_path)
 }
 
-pub(super) fn find_server_script_inner<R: Runtime>(_app_handle: &AppHandle<R>) -> Option<PathBuf> {
-    // 1. First check for bundled server-dist.js (Production)
-    // Modified: Only check bundled script in Release mode, so Dev mode uses source
-    #[cfg(debug_assertions)]
-    ulog_info!(
-        "[sidecar] Debug mode detected, SKIPPING bundled script check (forcing source usage)"
-    );
-
-    #[cfg(not(debug_assertions))]
-    {
-        match _app_handle.path().resource_dir() {
+pub(super) fn find_server_script_inner<R: Runtime>(app_handle: &AppHandle<R>) -> Option<PathBuf> {
+    // Packaged Debug apps use the same build-selected Sidecar as Release apps.
+    // Only `tauri dev` runs the live TypeScript source.
+    if !tauri::is_dev() {
+        match app_handle.path().resource_dir() {
             Ok(resource_dir) => {
                 let bundled_script = resource_dir.join("server-dist.js");
                 if bundled_script.exists() {
@@ -274,13 +268,6 @@ pub(super) fn find_server_script_inner<R: Runtime>(_app_handle: &AppHandle<R>) -
                         bundled_script
                     );
                     return Some(bundled_script);
-                }
-
-                // Legacy check: Check for server/index.ts (Development / Legacy)
-                let legacy_script = resource_dir.join("server").join("index.ts");
-                if legacy_script.exists() {
-                    ulog_info!("Using bundled server script (legacy): {:?}", legacy_script);
-                    return Some(legacy_script);
                 }
             }
             Err(e) => {
@@ -301,7 +288,7 @@ pub(super) fn find_server_script_inner<R: Runtime>(_app_handle: &AppHandle<R>) -
         }
     }
 
-    if cfg!(debug_assertions) {
+    if tauri::is_dev() {
         let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .map(|p| p.join("src").join("server").join("index.ts"));

@@ -4,9 +4,9 @@
  * Runtime-aware:
  *   - builtin  → Claude Agent SDK query() with provider-env (current behavior)
  *   - external → spawns a fresh short-lived process of the session's runtime
- *                (claude-code / codex / gemini) with the title system prompt.
+ *                (claude-code / codex) with the title system prompt.
  *                Model, CLI auth, etc. are inherited from the active runtime
- *                so Gemini/Codex sessions no longer fall back to Anthropic SDK.
+ *                so external sessions no longer fall back to Anthropic SDK.
  *
  * Always single-turn; never persists the title session. Timing: the backend
  * Title Service triggers this after AUTO_TITLE_MIN_ROUNDS (2) completed QA rounds;
@@ -25,7 +25,6 @@ import { isLikelyErrorTitle } from '../shared/titleFilters';
 import { capTitleAtBoundary } from '../shared/sessionTitle';
 import { ClaudeCodeRuntime } from './runtimes/claude-code';
 import { CodexRuntime } from './runtimes/codex';
-import { GeminiRuntime } from './runtimes/gemini';
 import type { AgentRuntime, RuntimeProcess, SessionStartOptions } from './runtimes/types';
 import type { RuntimeSource, RuntimeType } from '../shared/types/runtime';
 import { ensureDirSync } from './utils/fs-utils';
@@ -34,9 +33,8 @@ import { getPreparedSdkSystemPrompt, prepareProviderBinding, type PreparedProvid
 
 const TITLE_MAX_LENGTH = 30;
 export const BUILTIN_TITLE_TIMEOUT_MS = 30_000;
-/** External runtimes (Gemini/Codex/CC) have higher cold-start cost — node/CLI
- *  spawn + ACP/JSON-RPC handshake + potential OAuth refresh. Gemini alone can
- *  take ~10s to first token. 30s keeps headroom without stalling the UI. */
+/** External runtimes (Codex/CC) have higher cold-start cost — node/CLI
+ *  spawn + protocol handshake + potential OAuth refresh. */
 const EXTERNAL_TIMEOUT_MS = 30_000;
 /** Max chars per user/assistant message when building context */
 const PER_MESSAGE_LIMIT = 200;
@@ -45,7 +43,7 @@ const PER_MESSAGE_LIMIT = 200;
  * Security (review #2): the title turn must NOT be able to run any tool — its
  * sole input is (indirect-injection-prone) transcript text. Claude Code is the
  * one external runtime that honours `--disallowed-tools` (claude-code.ts:382),
- * so we strip the full built-in surface there. Codex/Gemini don't consume this
+ * so we strip the full built-in surface there. Codex doesn't consume this
  * list, so they're constrained via a read-only / approval-required permission
  * mode instead (see `titlePermissionMode`). Listing every built-in name (rather
  * than relying on permission mode) removes the tools from the model's context
@@ -358,7 +356,6 @@ function createFreshRuntime(type: RuntimeType): AgentRuntime {
   switch (type) {
     case 'claude-code': return new ClaudeCodeRuntime();
     case 'codex': return new CodexRuntime();
-    case 'gemini': return new GeminiRuntime();
     default:
       throw new Error(`Unsupported external runtime for title generation: ${type}`);
   }
@@ -367,7 +364,7 @@ function createFreshRuntime(type: RuntimeType): AgentRuntime {
 /**
  * Pick the LEAST-capable per-runtime mode that still lets a pure-text turn
  * complete without blocking. Title generation is text-only; the previous code
- * forced the MOST permissive mode (fullAgency/full-auto/yolo) "to be safe",
+ * forced the MOST permissive mode (fullAgency/full-auto) "to be safe",
  * which was backwards — it made an injected tool_use execute with no approval
  * (review #2). The happy text path needs no tools, so:
  *   - claude-code → fullAgency, but `TITLE_GEN_DISALLOWED_TOOLS` strips every
@@ -375,15 +372,12 @@ function createFreshRuntime(type: RuntimeType): AgentRuntime {
  *   - codex       → 'suggest' = read-only sandbox (codex.ts:1082): an injected
  *     command can't touch the FS/network, and approval='untrusted' surfaces a
  *     permission_request that the caller settles+kills (no execution).
- *   - gemini      → 'default' = approval-required (NOT yolo): a tool attempt
- *     raises a permission_request → settled+killed; text still streams freely.
  * Any tool attempt therefore degrades to "no title", never to execution.
  */
 function titlePermissionMode(runtimeType: RuntimeType): string {
   switch (runtimeType) {
     case 'claude-code': return 'fullAgency';  // tools stripped via disallowedTools
     case 'codex': return 'suggest';           // → approval=untrusted + sandbox=read-only
-    case 'gemini': return 'default';          // → approval-required (no yolo)
     default: return 'auto';
   }
 }
@@ -414,7 +408,7 @@ export function buildExternalTitleSessionOptions(input: {
     ...(input.model ? { model: input.model } : {}),
     permissionMode: titlePermissionMode(input.runtimeType),
     // Strip all tools from the model's context (Claude Code honours this;
-    // Codex/Gemini are constrained by the read-only/approval mode above).
+    // Codex is constrained by the read-only/approval mode above).
     disallowedTools: TITLE_GEN_DISALLOWED_TOOLS,
     maxTurns: 1,
     // Placeholder — title-gen passes its own systemPromptAppend and explicit permissionMode,
@@ -439,11 +433,11 @@ export function buildExternalTitleSessionOptions(input: {
 }
 
 /**
- * Generate a title using the session's external runtime (claude-code / codex /
- * gemini). Spawns a brand-new short-lived process, sends the title prompt as
+ * Generate a title using the session's external runtime (Claude Code or Codex).
+ * Spawns a brand-new short-lived process, sends the title prompt as
  * initialTurn, accumulates text_delta, returns on turn_complete or
  * session_complete. The process is always stopped afterwards (including on
- * timeout), so Gemini's temporary GEMINI_SYSTEM_MD file is cleaned up.
+ * timeout), so the temporary runtime process is cleaned up.
  *
  * Silent-fail contract matches generateTitle(): any error → null, frontend
  * falls back to truncated first message.
@@ -489,8 +483,8 @@ export async function generateTitleExternal(
   });
 
   // Hoist startSession out of the Promise ctor so we can await it on the timeout path —
-  // without that, a 30s timeout during Gemini's cold-start handshake leaves `handle === null`
-  // forever, stranding the child process + its GEMINI_SYSTEM_MD tmp file.
+  // without that, a 30s timeout during runtime cold start leaves `handle === null`
+  // forever, stranding the child process.
   const titleSessionOptions = buildExternalTitleSessionOptions({
     sessionId: titleSessionId,
     workspacePath,
@@ -510,7 +504,7 @@ export async function generateTitleExternal(
       outcome = collected ? 'ok' : 'empty';
       settle(collected || null);
     } else if (event.kind === 'session_complete') {
-      // On non-success (Gemini session/prompt error, Codex turn error) a few tokens may have
+      // On non-success (for example, a Codex turn error) a few tokens may have
       // streamed before the failure — those partial fragments make garbage titles. Settle null.
       if (event.subtype === 'success') {
         outcome = collected ? 'ok' : 'empty';
@@ -521,7 +515,7 @@ export async function generateTitleExternal(
       }
     } else if (event.kind === 'permission_request') {
       // Title-gen is text-only and forces the most permissive mode per runtime so this shouldn't
-      // fire. If it does (e.g. Gemini set_mode non-fatally fell back to default), don't deadlock
+      // fire. If it does, don't deadlock
       // waiting on an approval we'd never grant — settle with whatever text we have and let the
       // cleanup path kill the process. No respondPermission call needed.
       outcome = 'permission';
@@ -555,7 +549,7 @@ export async function generateTitleExternal(
   // Cleanup path — three cases:
   //   1. handle already set → stopSession directly.
   //   2. handle still null because we timed out mid-handshake → wait briefly (5s) for startSession
-  //      to resolve, then stop. This is the critical leak fix: without it, Gemini's ACP handshake
+  //      to resolve, then stop. This is the critical leak fix: without it, a runtime handshake
   //      could complete AFTER our 30s budget, assign `handle` via the .then() above, and nobody
   //      would ever kill the subprocess.
   //   3. startPromise rejects during the grace window → .catch above already fired, no handle to

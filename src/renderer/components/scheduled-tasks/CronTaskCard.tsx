@@ -4,7 +4,7 @@
  */
 
 import { useState, useCallback } from 'react';
-import { Clock, ArrowRight } from 'lucide-react';
+import { ClockIcon, ArrowRightIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import type { CronTask } from '@/types/cronTask';
 import * as cronClient from '@/api/cronTaskClient';
@@ -44,7 +44,7 @@ export default function CronTaskCard({ taskId, name, scheduleDesc, nextExecution
       {/* Header */}
       <div className="mb-2 flex items-center gap-2">
         <div className="flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--accent-warm-subtle)]">
-          <Clock className="h-3.5 w-3.5 text-[var(--accent)]" />
+          <ClockIcon className="h-3.5 w-3.5 text-[var(--accent)]" />
         </div>
         <span className="text-xs font-medium text-[var(--accent)]">{t('cron.created')}</span>
       </div>
@@ -66,7 +66,7 @@ export default function CronTaskCard({ taskId, name, scheduleDesc, nextExecution
           className="mt-2.5 flex items-center gap-1 text-xs font-medium text-[var(--accent)] hover:text-[var(--accent-warm-hover)] transition-colors disabled:opacity-50"
         >
           {t('cron.viewDetails')}
-          <ArrowRight className="h-3 w-3" />
+          <ArrowRightIcon className="h-3 w-3" />
         </button>
       )}
     </div>

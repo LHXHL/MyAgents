@@ -899,7 +899,7 @@ mod tests {
         );
         assert_eq!(running.status, crate::task::TaskStatus::Running);
 
-        running.runtime = Some("gemini".to_string());
+        running.runtime = Some("claude-code".to_string());
         let stale_managed_source = task_update_from_cron_patch(
             &running,
             serde_json::json!({

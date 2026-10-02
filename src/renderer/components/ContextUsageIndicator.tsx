@@ -12,11 +12,10 @@
  *   避免本组件误切 provider。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Minimize2 } from 'lucide-react';
+import { MinimizeIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import { useTabState } from '@/context/TabContext';
-import { computeBuiltinAutoCompactThreshold } from '../../shared/contextUsage';
 import Popover from './ui/Popover';
 import Tip from './Tip';
 
@@ -95,22 +94,8 @@ export default function ContextUsageIndicator({ onCompact }: ContextUsageIndicat
   // popover open without a hover.)
   if (!contextUsage) return null;
 
-  const { contextTokens, contextWindow, usedPercent, source, windowSource } = contextUsage;
-  const isBuiltin = source === 'builtin';
-  const compactAt = computeBuiltinAutoCompactThreshold(contextWindow);
+  const { contextTokens, contextWindow, usedPercent } = contextUsage;
   const showCompact = !!onCompact;
-
-  // 窗口来源描述 + （仅 builtin）共享 90% policy 投影的自动压缩阈值；
-  // 外部 runtime 的压缩阈值各不相同（Codex 有自己的 auto-compact），不能套用同一文案（review #W4）。
-  const windowDesc =
-    windowSource === 'default'
-      ? t('contextUsage.windowDefault', { window: formatTokens(contextWindow) })
-      : windowSource === 'runtime'
-        ? t('contextUsage.windowRuntime', { window: formatTokens(contextWindow) })
-        : t('contextUsage.windowModelConfig', { window: formatTokens(contextWindow) });
-  const footnote = isBuiltin
-    ? t('contextUsage.autoCompactFootnote', { windowDesc, threshold: formatTokens(compactAt) })
-    : windowDesc;
 
   return (
     <span
@@ -151,7 +136,7 @@ export default function ContextUsageIndicator({ onCompact }: ContextUsageIndicat
                   }}
                   className="flex items-center gap-1 rounded-lg border border-[var(--accent-warm-muted)] bg-[var(--accent-warm-subtle)] px-2 py-1 text-xs font-semibold leading-none text-[var(--accent)] transition-colors hover:border-[var(--accent)] hover:bg-[var(--accent-warm-muted)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <Minimize2 className="h-3 w-3" />
+                  <MinimizeIcon className="h-3 w-3" />
                   {t('contextUsage.compact')}
                 </button>
               </Tip>
@@ -170,15 +155,10 @@ export default function ContextUsageIndicator({ onCompact }: ContextUsageIndicat
           </div>
 
           {/* tokens 行 */}
-          <div className="mb-1 text-xs tabular-nums text-[var(--ink-muted)]">
+          <div className="text-xs tabular-nums text-[var(--ink-muted)]">
             <span className="font-semibold text-[var(--ink-secondary)]">{formatTokens(contextTokens)}</span>
             {' / '}
             {formatTokens(contextWindow)} tokens
-          </div>
-
-          {/* 底部弱灰说明（窗口来源 + 压缩点） */}
-          <div className="mt-2 border-t border-[var(--line)] pt-2 text-xs leading-relaxed text-[var(--ink-faint)]">
-            {footnote}
           </div>
         </div>
       </Popover>

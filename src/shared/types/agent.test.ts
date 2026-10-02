@@ -37,21 +37,20 @@ describe('Agent Channel effective config', () => {
     expect(resolveEffectiveConfig(a, ch).permissionMode).toBe('fullAgency');
   });
 
-  it('respects an explicit channel permission override', () => {
+  it('ignores legacy channel permission overrides at birth', () => {
     const a = agent({ permissionMode: 'fullAgency' });
     const ch = channel({ overrides: { permissionMode: 'plan' } });
 
-    expect(resolveAgentChannelPermissionMode(a, ch)).toBe('plan');
-    expect(resolveEffectiveConfig(a, ch).permissionMode).toBe('plan');
+    expect(resolveAgentChannelPermissionMode(a, ch)).toBe('fullAgency');
+    expect(resolveEffectiveConfig(a, ch).permissionMode).toBe('fullAgency');
   });
 
   it('uses the selected runtime max permission when no channel override exists', () => {
     expect(resolveAgentChannelPermissionMode(agent({ runtime: 'codex' }), channel())).toBe('no-restrictions');
     expect(resolveAgentChannelPermissionMode(agent({ runtime: 'claude-code' }), channel())).toBe('bypassPermissions');
-    expect(resolveAgentChannelPermissionMode(agent({ runtime: 'gemini' }), channel())).toBe('yolo');
   });
 
-  it('lets channel runtime overrides control the default permission and runtimeConfig', () => {
+  it('ignores legacy channel runtime and runtimeConfig overrides', () => {
     const a = agent({
       runtime: 'builtin',
       runtimeConfig: { permissionMode: 'auto' },
@@ -64,13 +63,13 @@ describe('Agent Channel effective config', () => {
     });
 
     const effective = resolveEffectiveConfig(a, ch);
-    expect(effective.runtime).toBe('codex');
-    expect(effective.permissionMode).toBe('no-restrictions');
-    expect(effective.runtimeConfig).toEqual({ permissionMode: 'full-auto' });
+    expect(effective.runtime).toBe('builtin');
+    expect(effective.permissionMode).toBe('fullAgency');
+    expect(effective.runtimeConfig).toEqual({ permissionMode: 'auto' });
   });
 
   it('keeps managed Channel permission in product vocabulary until execution projection', () => {
-    const a = agent({ permissionMode: 'plan', runtime: 'builtin' });
+    const a = agent({ permissionMode: 'plan', runtime: 'builtin', providerId: 'codex-sub', model: 'gpt-5.5-codex' });
     const ch = channel({
       overrides: {
         providerId: 'codex-sub',
@@ -87,27 +86,53 @@ describe('Agent Channel effective config', () => {
     const a = agent({
       providerId: 'codex-sub',
       model: 'gpt-5.5-codex',
-      runtime: 'gemini',
+      runtime: 'claude-code',
       runtimeConfig: { source: 'managed-provider' },
     });
 
-    expect(resolveAgentChannelRuntime(a, channel())).toBe('gemini');
-    expect(resolveAgentChannelPermissionMode(a, channel())).toBe('yolo');
+    expect(resolveAgentChannelRuntime(a, channel())).toBe('claude-code');
+    expect(resolveAgentChannelPermissionMode(a, channel())).toBe('bypassPermissions');
   });
 
-  it('projects invalid system Runtime history to the interactive default without changing missing-override max agency', () => {
+  it('uses authoritative Integrated DSH preference ahead of a stale legacy projection', () => {
+    const a = agent({
+      runtime: 'codex',
+      runtimePreference: { family: 'integrated', id: 'dsh' },
+      providerId: 'deepseek',
+    });
+
+    expect(resolveAgentChannelRuntime(a, channel())).toBe('dsh');
+    expect(resolveAgentChannelPermissionMode(a, channel())).toBe('full-autonomous');
+  });
+
+  it('applies subscription constraints after Integrated preference but preserves explicit External preference', () => {
+    expect(resolveAgentChannelRuntime(agent({
+      runtimePreference: { family: 'integrated', id: 'dsh' },
+      providerId: 'anthropic-sub',
+    }), channel())).toBe('builtin');
+    expect(resolveAgentChannelRuntime(agent({
+      runtimePreference: { family: 'integrated', id: 'dsh' },
+      providerId: 'codex-sub',
+    }), channel())).toBe('codex');
+    expect(resolveAgentChannelRuntime(agent({
+      runtimePreference: { family: 'external', id: 'claude-code' },
+      providerId: 'codex-sub',
+    }), channel())).toBe('claude-code');
+  });
+
+  it('ignores invalid system Runtime Channel history without weakening IM max agency', () => {
     const a = agent({ runtime: 'claude-code' });
 
     expect(resolveAgentChannelPermissionMode(a, channel())).toBe('bypassPermissions');
     expect(resolveAgentChannelPermissionMode(a, channel({
       overrides: { permissionMode: 'fullAgency' },
-    }))).toBe('manual');
+    }))).toBe('bypassPermissions');
   });
 
-  it('projects invalid managed Channel history to the product auto mode', () => {
+  it('ignores invalid managed Channel history without weakening IM max agency', () => {
     const a = agent({ providerId: 'codex-sub', runtime: 'builtin' });
     const ch = channel({ overrides: { permissionMode: 'full-auto' } });
 
-    expect(resolveAgentChannelPermissionMode(a, ch)).toBe('auto');
+    expect(resolveAgentChannelPermissionMode(a, ch)).toBe('fullAgency');
   });
 });

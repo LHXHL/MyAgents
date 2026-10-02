@@ -1,11 +1,11 @@
 import {
-  CheckCircle2,
-  CircleStop,
-  Clock3,
-  Loader2,
-  Terminal,
-  TriangleAlert,
-} from 'lucide-react';
+  SuccessIcon,
+  StopCircleIcon,
+  ClockIcon,
+  LoaderIcon,
+  TerminalIcon,
+  WarningIcon,
+} from '@/components/icons';
 import { useId, useMemo, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -80,7 +80,7 @@ function BashTerminal({ model, t }: { model: BashTranscriptModel; t: ChatTransla
     >
       <header className="flex min-h-10 min-w-0 items-center justify-between gap-3 border-b border-[var(--line)] bg-[var(--code-header-bg)] px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
-          <Terminal className="size-4 shrink-0 text-[var(--code-line-number)]" aria-hidden="true" />
+          <TerminalIcon className="size-4 shrink-0 text-[var(--code-line-number)]" aria-hidden="true" />
           <span className="truncate font-mono text-xs text-[var(--code-text)]">
             {model.shell ?? t('shell.toolChrome.bash.terminal')}
           </span>
@@ -307,7 +307,7 @@ function TerminalEmptyState({ status, t }: { status: BashTranscriptStatus; t: Ch
       className="flex min-h-16 items-center gap-2 px-3 py-4 font-mono text-sm text-[var(--code-line-number)]"
     >
       {waiting && (
-        <Loader2 className="size-3.5 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+        <LoaderIcon className="size-3.5 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />
       )}
       <span>{t(waiting ? 'shell.toolChrome.bash.waitingForOutput' : 'shell.toolChrome.bash.noOutput')}</span>
     </div>
@@ -316,15 +316,15 @@ function TerminalEmptyState({ status, t }: { status: BashTranscriptStatus; t: Ch
 
 function statusIcon(status: BashTranscriptStatus): ReactNode {
   if (status === 'running' || status === 'initializing') {
-    return <Loader2 className="size-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />;
+    return <LoaderIcon className="size-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />;
   }
-  if (status === 'completed') return <CheckCircle2 className="size-3.5" aria-hidden="true" />;
-  if (status === 'timeout') return <Clock3 className="size-3.5" aria-hidden="true" />;
+  if (status === 'completed') return <SuccessIcon className="size-3.5" aria-hidden="true" />;
+  if (status === 'timeout') return <ClockIcon className="size-3.5" aria-hidden="true" />;
   if (status === 'stopped' || status === 'interrupted') {
-    return <CircleStop className="size-3.5" aria-hidden="true" />;
+    return <StopCircleIcon className="size-3.5" aria-hidden="true" />;
   }
-  if (status === 'failed') return <TriangleAlert className="size-3.5" aria-hidden="true" />;
-  return <Terminal className="size-3.5" aria-hidden="true" />;
+  if (status === 'failed') return <WarningIcon className="size-3.5" aria-hidden="true" />;
+  return <TerminalIcon className="size-3.5" aria-hidden="true" />;
 }
 
 function statusTone(status: BashTranscriptStatus): string {

@@ -1,4 +1,4 @@
-import { X } from 'lucide-react';
+import { CloseIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
 import { WorkspaceRow } from '@/components/launcher/WorkspaceSelector';
@@ -45,7 +45,7 @@ export default function BotWorkspacePickerDialog({
             aria-label={t('agentSettings.botRegistry.cancel')}
             className="rounded-lg p-1.5 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
           >
-            <X className="h-4 w-4" />
+            <CloseIcon className="h-4 w-4" />
           </button>
         </div>
         <div className="max-h-[60vh] overflow-y-auto py-1">

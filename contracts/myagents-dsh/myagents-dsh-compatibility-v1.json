@@ -1,0 +1,460 @@
+{
+  "schemaVersion": 1,
+  "runtime": {
+    "version": "0.1.9",
+    "artifactSha256": "3684592206f6045b3a4312fea7887ad7c39006eb43c1800a3b74de4cbb3f478b",
+    "entrypoint": "runtime-server-process.artifact.mjs",
+    "sessionFormat": "dsh-session-events-v2",
+    "profileId": "myagents-dsh-batch-1-candidate-v1",
+    "profileDigest": "07cf8a6d44a0a94ebb601e0e9954abfa09b4f839dcfa1c7c6c24c8cc1b9faf90"
+  },
+  "protocol": {
+    "version": "6.0.0",
+    "schemaSha256": "c52558486ded4d6e2f34ef0b00eb4937bcb5f5d33526f3a1d265c7e74b41e4fa",
+    "generatedClientSha256": "bfa7d72d1356b4471a9e76142d07083cc62c444ce46af62f9e7e059d3b7056bc"
+  },
+  "dsh": {
+    "version": "0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
+    "sourceCommit": "477b4f420553e8a52c2fbccc464d7561b239c443",
+    "patchSeriesSha256": "8d5f1cfa482ebd42be6afd7e2d6b1db271753183dce5865a4148e05570486dfb",
+    "artifactManifestSha256": "bcad0a0138fb68c97f2853a7357e452f947ee5c9cd2e926c22ac7d430e46c98b"
+  },
+  "platforms": [
+    {
+      "target": "darwin-arm64",
+      "claim": "verified",
+      "evidenceSha256": [
+        "ac406f9bac57cc1dc6ce594760e47485e05173bcd9669b185ac60a978257f046"
+      ]
+    }
+  ],
+  "apiFamilies": [
+    {
+      "id": "anthropic-messages",
+      "adapter": "@deepseek-ai/dsh-llm-pi-ai@0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
+      "piAiVersion": "0.85.1",
+      "compatibilityProfileVersion": 1,
+      "credentialMode": "request-scoped-api-key",
+      "routeAdmission": "host-declared-api-family",
+      "modelCapabilities": "host-profile",
+      "webBackend": "route-dependent",
+      "liveApply": "next-turn",
+      "deterministicEvidence": [
+        "reasoning",
+        "stream",
+        "terminal",
+        "text",
+        "tool-call",
+        "usage"
+      ]
+    },
+    {
+      "id": "openai-completions",
+      "adapter": "@deepseek-ai/dsh-llm-pi-ai@0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
+      "piAiVersion": "0.85.1",
+      "compatibilityProfileVersion": 1,
+      "credentialMode": "request-scoped-api-key",
+      "routeAdmission": "host-declared-api-family",
+      "modelCapabilities": "host-profile",
+      "webBackend": "route-dependent",
+      "liveApply": "next-turn",
+      "deterministicEvidence": [
+        "reasoning",
+        "stream",
+        "terminal",
+        "text",
+        "tool-call",
+        "usage"
+      ]
+    },
+    {
+      "id": "openai-responses",
+      "adapter": "@deepseek-ai/dsh-llm-pi-ai@0.1.7-rc.2.myagents.477b4f420553.8d5f1cfa482e",
+      "piAiVersion": "0.85.1",
+      "compatibilityProfileVersion": 1,
+      "credentialMode": "request-scoped-api-key",
+      "routeAdmission": "host-declared-api-family",
+      "modelCapabilities": "host-profile",
+      "webBackend": "route-dependent",
+      "liveApply": "next-turn",
+      "deterministicEvidence": [
+        "reasoning",
+        "stream",
+        "terminal",
+        "text",
+        "tool-call",
+        "usage"
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "Read",
+      "availability": "runtime"
+    },
+    {
+      "name": "Write",
+      "availability": "runtime"
+    },
+    {
+      "name": "Edit",
+      "availability": "runtime"
+    },
+    {
+      "name": "Glob",
+      "availability": "runtime"
+    },
+    {
+      "name": "Grep",
+      "availability": "runtime"
+    },
+    {
+      "name": "bash",
+      "availability": "runtime"
+    },
+    {
+      "name": "pwsh",
+      "availability": "runtime"
+    },
+    {
+      "name": "job_output",
+      "availability": "runtime"
+    },
+    {
+      "name": "job_list",
+      "availability": "runtime"
+    },
+    {
+      "name": "job_kill",
+      "availability": "runtime"
+    },
+    {
+      "name": "ls",
+      "availability": "runtime"
+    },
+    {
+      "name": "WebFetch",
+      "availability": "route-dependent",
+      "backends": [
+        "deepseek-native",
+        "host:myagents-host-canonical-web-v1"
+      ]
+    },
+    {
+      "name": "WebSearch",
+      "availability": "route-dependent",
+      "backends": [
+        "deepseek-native",
+        "host:myagents-host-canonical-web-v1"
+      ]
+    },
+    {
+      "name": "AskUserQuestion",
+      "availability": "runtime"
+    },
+    {
+      "name": "EnterPlanMode",
+      "availability": "runtime"
+    },
+    {
+      "name": "ExitPlanMode",
+      "availability": "runtime"
+    },
+    {
+      "name": "Skill",
+      "availability": "runtime"
+    },
+    {
+      "name": "Agent",
+      "availability": "runtime"
+    },
+    {
+      "name": "TaskStop",
+      "availability": "runtime"
+    },
+    {
+      "name": "SendMessage",
+      "availability": "runtime"
+    },
+    {
+      "name": "TaskCreate",
+      "availability": "runtime"
+    },
+    {
+      "name": "TaskGet",
+      "availability": "runtime"
+    },
+    {
+      "name": "TaskList",
+      "availability": "runtime"
+    },
+    {
+      "name": "TaskUpdate",
+      "availability": "runtime"
+    }
+  ],
+  "hostPorts": [
+    {
+      "method": "host/credential/resolve",
+      "availability": "runtime"
+    },
+    {
+      "method": "host/interaction/request",
+      "availability": "runtime"
+    },
+    {
+      "method": "host/tool/execute",
+      "availability": "runtime"
+    },
+    {
+      "method": "host/hook/execute",
+      "availability": "runtime"
+    },
+    {
+      "method": "host/attachment/put",
+      "availability": "runtime"
+    },
+    {
+      "method": "host/attachment/acquire",
+      "availability": "runtime"
+    },
+    {
+      "method": "host/attachment/release",
+      "availability": "runtime"
+    }
+  ],
+  "methods": [
+    {
+      "method": "initialize",
+      "availability": "runtime"
+    },
+    {
+      "method": "runtime/status",
+      "availability": "runtime"
+    },
+    {
+      "method": "runtime/shutdown",
+      "availability": "runtime"
+    },
+    {
+      "method": "interaction/respond",
+      "availability": "runtime"
+    },
+    {
+      "method": "session/create",
+      "availability": "runtime"
+    },
+    {
+      "method": "session/resume",
+      "availability": "runtime"
+    },
+    {
+      "method": "session/read",
+      "availability": "runtime"
+    },
+    {
+      "method": "session/close",
+      "availability": "runtime"
+    },
+    {
+      "method": "session/compact",
+      "availability": "runtime"
+    },
+    {
+      "method": "session/delete/prepare",
+      "availability": "runtime"
+    },
+    {
+      "method": "session/delete/commit",
+      "availability": "runtime"
+    },
+    {
+      "method": "session/delete/purge",
+      "availability": "runtime"
+    },
+    {
+      "method": "session/delete/rollback",
+      "availability": "runtime"
+    },
+    {
+      "method": "session/delete/status",
+      "availability": "runtime"
+    },
+    {
+      "method": "session/fork/prepare",
+      "availability": "runtime"
+    },
+    {
+      "method": "session/fork/commit",
+      "availability": "runtime"
+    },
+    {
+      "method": "session/fork/abort",
+      "availability": "runtime"
+    },
+    {
+      "method": "session/fork/status",
+      "availability": "runtime"
+    },
+    {
+      "method": "session/rewind/prepare",
+      "availability": "runtime"
+    },
+    {
+      "method": "session/rewind/commit",
+      "availability": "runtime"
+    },
+    {
+      "method": "session/rewind/rollback",
+      "availability": "runtime"
+    },
+    {
+      "method": "session/rewind/status",
+      "availability": "runtime"
+    },
+    {
+      "method": "work/list",
+      "availability": "runtime"
+    },
+    {
+      "method": "work/agent/resume",
+      "availability": "runtime"
+    },
+    {
+      "method": "work/agent/stop",
+      "availability": "runtime"
+    },
+    {
+      "method": "work/agent/message",
+      "availability": "runtime"
+    },
+    {
+      "method": "turn/start",
+      "availability": "runtime"
+    },
+    {
+      "method": "turn/get",
+      "availability": "runtime"
+    },
+    {
+      "method": "turn/steer",
+      "availability": "runtime"
+    },
+    {
+      "method": "turn/followUp",
+      "availability": "runtime"
+    },
+    {
+      "method": "turn/message/cancel",
+      "availability": "runtime"
+    },
+    {
+      "method": "turn/interrupt",
+      "availability": "runtime"
+    },
+    {
+      "method": "command/invoke",
+      "availability": "runtime"
+    },
+    {
+      "method": "config/apply",
+      "availability": "runtime"
+    },
+    {
+      "method": "plan/apply",
+      "availability": "runtime"
+    },
+    {
+      "method": "permission/rules/list",
+      "availability": "runtime"
+    },
+    {
+      "method": "permission/rules/add",
+      "availability": "runtime"
+    },
+    {
+      "method": "permission/rules/revoke",
+      "availability": "runtime"
+    },
+    {
+      "method": "credential/reconcile",
+      "availability": "runtime"
+    },
+    {
+      "method": "extension/replace",
+      "availability": "runtime"
+    },
+    {
+      "method": "extension/status",
+      "availability": "runtime"
+    },
+    {
+      "method": "extension/catalog",
+      "availability": "runtime"
+    },
+    {
+      "method": "extension/reload",
+      "availability": "runtime"
+    },
+    {
+      "method": "utility/run",
+      "availability": "runtime"
+    }
+  ],
+  "features": [
+    {
+      "id": "agent-loop-authority",
+      "value": "dsh-only"
+    },
+    {
+      "id": "durable-conversation-authority",
+      "value": "dsh-session"
+    },
+    {
+      "id": "max-primary-root-sessions",
+      "value": 1
+    },
+    {
+      "id": "model-tool-pipeline",
+      "value": "dsh-ctx-tools-only"
+    },
+    {
+      "id": "provider-configuration",
+      "value": "in-memory-host-authority"
+    },
+    {
+      "id": "provider-credentials",
+      "value": "reverse-port-request-scope"
+    },
+    {
+      "id": "arbitrary-runtime-plugin-javascript",
+      "value": false
+    }
+  ],
+  "limitations": [
+    {
+      "id": "stop-sequences-unsupported-on-pi-ai",
+      "statement": "GenerateOptions.stop is not available on pi-ai routes in the locked adapter."
+    },
+    {
+      "id": "catalog-is-advisory",
+      "statement": "The installed pi-ai catalog is a versioned snapshot and is not authority for MyAgents model availability."
+    },
+    {
+      "id": "native-cloud-and-oauth-auth-unadvertised",
+      "statement": "AWS, Vertex, Azure, subscription OAuth, anthropic-sub, and codex-sub routes are not advertised by this compatibility contract."
+    },
+    {
+      "id": "pi-ai-reasoning-token-usage-unavailable",
+      "statement": "The locked public pi-ai adapter exposes reasoning content but does not project provider reasoning-token counts into DSH TokenUsage."
+    },
+    {
+      "id": "canonical-web-route-dependent",
+      "statement": "Base model execution does not require Web. Canonical Web tools use the native backend or optional Host capability myagents-host-canonical-web-v1 when available."
+    },
+    {
+      "id": "checkpoint-coverage",
+      "statement": "File rollback covers root-origin governed Write and Edit only; shell, child-agent, and external changes are excluded."
+    }
+  ]
+}

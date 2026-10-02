@@ -64,7 +64,7 @@ Skill 可从 GitHub 仓库、支持的压缩包或本地来源安装。安装成
 
 ### Claude Plugin
 
-遵循 Anthropic Claude Plugin 目录协议，可以包含 Skills、Agents、MCP 和 Hooks。MyAgents 在 builtin Runtime 中提供这套集成；启停后通常在下一次 Session 重启或发消息时生效。外部 Claude Code/Codex/Gemini Runtime 各自管理自己的插件体系，不自动读取 MyAgents Claude Plugin。
+遵循 Anthropic Claude Plugin 目录协议，可以包含 Skills、Agents、MCP 和 Hooks。MyAgents 在 builtin Runtime 中提供这套集成；启停后通常在下一次 Session 重启或发消息时生效。外部 Claude Code/Codex Runtime 各自管理自己的插件体系，不自动读取 MyAgents Claude Plugin。
 
 ### OpenClaw Plugin
 

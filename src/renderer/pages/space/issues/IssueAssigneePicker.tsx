@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2, Search, X } from 'lucide-react';
+import { LoaderIcon, SearchIcon, CloseIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -196,7 +196,7 @@ export function IssueAssigneePicker({
         className="w-80 rounded-xl p-2"
       >
           <label className="flex h-9 items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-2.5">
-            <Search className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />
+            <SearchIcon className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />
             <input
               autoFocus
               value={query}
@@ -235,7 +235,7 @@ export function IssueAssigneePicker({
                     className="grid h-7 w-7 place-items-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-elevated)] hover:text-[var(--error)]"
                     aria-label={t('space.detail.cancelAssignee')}
                   >
-                    <X className="h-3.5 w-3.5" />
+                    <CloseIcon className="h-3.5 w-3.5" />
                   </button>
                 )}
               </div>
@@ -245,7 +245,7 @@ export function IssueAssigneePicker({
           <div className="mt-2 max-h-64 overflow-y-auto">
             {loadingMembers && choices.length === 0 ? (
               <div className="flex h-12 items-center justify-center text-xs text-[var(--ink-muted)]">
-                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                <LoaderIcon className="mr-2 h-3.5 w-3.5 animate-spin" />
                 {t('space.detail.loadingAssignees')}
               </div>
             ) : choices.length === 0 ? (
@@ -272,7 +272,7 @@ export function IssueAssigneePicker({
                       {choice.type === 'registered_agent' && (
                         <span className="rounded-md bg-[var(--paper-inset)] px-1.5 py-0.5 text-xs font-medium text-[var(--ink-muted)]">Agent</span>
                       )}
-                      {busyKey === key && <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--ink-muted)]" />}
+                      {busyKey === key && <LoaderIcon className="h-3.5 w-3.5 animate-spin text-[var(--ink-muted)]" />}
                     </span>
                   </button>
                 );

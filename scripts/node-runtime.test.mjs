@@ -32,6 +32,60 @@ function unixTree(root, npmVersion = versions.npm) {
   put(join(root, 'lib/node_modules/npm/package.json'), JSON.stringify({ version: npmVersion, dependencies: { version: '4.29.0' } }, null, 2));
 }
 
+test('development version ranges stay separate from the pinned runtime', () => {
+  const pkg = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
+  const lock = JSON.parse(readFileSync(join(repo, 'package-lock.json'), 'utf8'));
+  assert.deepEqual(pkg.engines, { node: '>=24.14.0', npm: '>=11.15.0' });
+  assert.deepEqual(lock.packages[''].engines, pkg.engines);
+  assert.deepEqual(pkg.devEngines, {
+    runtime: { name: 'node', version: pkg.engines.node, onFail: 'error' },
+    packageManager: { name: 'npm', version: pkg.engines.npm, onFail: 'error' },
+  });
+  assert.equal(pkg.packageManager, undefined, 'do not override the npm range with an exact Corepack pin');
+  assert.equal(readFileSync(join(repo, '.nvmrc'), 'utf8').trim(), '24.14.0');
+  const setup = readFileSync(join(repo, 'setup.sh'), 'utf8');
+  for (const [name, range] of Object.entries(pkg.engines)) {
+    const line = setup.split('\n').find((line) => line.includes(`$(${name} --version`));
+    assert.ok(line?.includes(`\\" ${range.slice(2)}"`), `${name} setup minimum must match package.json`);
+  }
+});
+
+for (const [name, node, npm, accepted] of [
+  ['minimum', '24.14.0', '11.15.0', true],
+  ['newer patch', '24.14.1', '11.15.1', true],
+  ['bundled pair', versions.node, versions.npm, true],
+  ['newer major', '26.0.0', '12.0.0', true],
+  ['older Node minor', '24.13.99', '11.15.0', false],
+  ['older Node major', '22.99.99', '11.19.0', false],
+  ['older npm minor', '24.20.0', '11.14.99', false],
+  ['older npm major', '24.20.0', '9.99.99', false],
+  ['prerelease Node', '26.0.0-rc.1', '11.15.0', false],
+  ['missing Node', '', '11.15.0', false],
+  ['missing npm', '24.14.0', '', false],
+]) {
+  test(`macOS setup toolchain admission: ${name}`, { skip: process.platform === 'win32' }, (t) => {
+    const root = fixture(t);
+    copyFileSync(join(repo, 'setup.sh'), join(root, 'setup.sh'));
+    // This matrix covers the macOS version ranges, independently of the runner.
+    // Linux's setup delegation is exercised by linux-package.test.mjs.
+    put(join(root, 'bin/uname'), '#!/bin/sh\necho Darwin\n', true);
+    for (const [tool, version] of [['node', node && `v${node}`], ['npm', npm]]) {
+      put(join(root, 'bin', tool), version ? `#!/bin/sh\nprintf '%s\\n' ${quote(version)}\n` : '#!/bin/sh\nexit 127\n', true);
+    }
+    for (const tool of ['rustc', 'cargo', 'rustup']) put(join(root, 'bin', tool), '#!/bin/sh\nexit 0\n', true);
+    // Stop immediately after dependency admission: no downloads, installs,
+    // Rust builds, or access to the real user's toolchain and home directory.
+    put(join(root, 'scripts/ensure_rust_toolchain.sh'), '#!/bin/sh\necho TOOLCHAIN_ACCEPTED\nexit 91\n', true);
+    const result = spawnSync('/bin/bash', [join(root, 'setup.sh')], {
+      encoding: 'utf8',
+      env: { PATH: `${join(root, 'bin')}:/usr/bin:/bin`, HOME: root },
+      timeout: 10_000,
+    });
+    assert.equal(result.status, accepted ? 91 : 1, result.stdout + result.stderr);
+    assert.equal(result.stdout.includes('TOOLCHAIN_ACCEPTED'), accepted);
+  });
+}
+
 test('all resource consumers use the pinned official pair, without npm overrides', () => {
   assert.deepEqual(versions, { node: '24.20.0', npm: '11.19.0' });
   for (const name of ['scripts/download_nodejs.sh', 'scripts/download_nodejs.ps1', 'vite.config.ts']) {

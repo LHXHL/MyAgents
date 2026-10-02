@@ -44,6 +44,7 @@
     "permissionModeHeader": "Session mode",
     "agentSettings": "Agent settings",
     "autonomyWarning": "Autonomous mode is enabled. The Agent may perform irreversible actions.",
+    "dshAutonomyWarning": "Full autonomy skips tool approvals and can use the computer and internet within your user account's permissions.",
     "toolsTitle": "Use tools",
     "toolsLabel": "Tools",
     "toolsHeader": "Tools enabled in this chat",
@@ -111,17 +112,29 @@
       "thoughtSoftCap": "Showing the first {{count}} matches. Type a more specific keyword."
     },
     "permissionModes": {
+      "approval-required": {
+        "label": "Ask for approval",
+        "description": "Work in the workspace; ask before using tools"
+      },
+      "workspace-autonomous": {
+        "label": "Workspace autonomy",
+        "description": "Unrestricted within the workspace; no approval needed"
+      },
+      "full-autonomous": {
+        "label": "Full autonomy",
+        "description": "Unrestricted computer and internet access; no approval needed"
+      },
       "auto": {
-        "label": "Act",
-        "description": "Agent works in the workspace and asks before using tools"
+        "label": "Ask for approval",
+        "description": "Work in the workspace; ask before using tools"
       },
       "plan": {
         "label": "Plan",
         "description": "Read-only planning mode"
       },
       "fullAgency": {
-        "label": "Autonomous",
-        "description": "Agent has full autonomy without manual confirmation"
+        "label": "Full autonomy",
+        "description": "Unrestricted computer and internet access; no approval needed"
       },
       "custom": {
         "label": "Custom",
@@ -138,14 +151,6 @@
       "bypassPermissions": {
         "label": "Bypass Permissions",
         "description": "Skip all permission prompts"
-      },
-      "autoEdit": {
-        "label": "Auto Edit",
-        "description": "Automatically accept file edits; ask for other actions"
-      },
-      "yolo": {
-        "label": "YOLO",
-        "description": "Automatically approve all tools"
       },
       "suggest": {
         "label": "Suggest",
@@ -418,7 +423,11 @@
     "header": "Runtime",
     "settings": "Settings",
     "notInstalled": "Not installed",
-    "comingSoon": "Coming soon"
+    "comingSoon": "Coming soon",
+    "integrated": "Built-in Agent runtimes",
+    "integratedHelp": "Built-in Agent runtimes. You can manage all their settings in MyAgents.",
+    "externalCli": "External CLI",
+    "externalCliHelp": "Other Agent runtimes installed on this computer. Manage their settings and updates in the corresponding app."
   },
   "shell": {
     "common": {
@@ -427,6 +436,7 @@
     },
     "sessionMenu": {
       "trigger": "Chat actions",
+      "runtimeLoading": "Loading runtime…",
       "copySessionIdAria": "Copy SessionID",
       "copied": "Copied",
       "copy": "Copy",
@@ -536,13 +546,48 @@
       "cancelQueued": "Cancel queued"
     },
     "permissionPrompt": {
+      "sandboxTitle": "Write outside the workspace",
+      "sandboxSubtitle": "Approve wider write access for this operation only",
+      "sandboxScope": "Approval applies only to this operation and does not change the session mode.",
+      "commandTitle": "Run {{shell}} command",
+      "awaitingApproval": "Awaiting approval",
+      "command": "Command",
+      "expandCommand": "Expand full command",
+      "collapseCommand": "Collapse command",
+      "allowOnce": "Allow once",
+      "cwd": "Working directory",
+      "sessionWorkspaceScope": "Always allow also permits other Bash commands in this workspace for this Session.",
+      "sessionRuleScope": "Always allow: permit {{tool}} for the same target {{target}} in this Session and its children.",
       "progress": "Permission approval {{index}} / {{total}}",
       "title": "Permission request",
       "subtitle": "AI wants to run the following action",
       "badge": "Authorization required",
       "deny": "Deny",
       "alwaysAllow": "Always allow",
-      "allow": "Allow"
+      "allow": "Allow",
+      "query": "Search query",
+      "provider": "Search service",
+      "allowedDomains": "Allowed domains",
+      "blockedDomains": "Excluded domains",
+      "purpose": "Purpose",
+      "file": "File",
+      "create": "Create file",
+      "write": "Overwrite file",
+      "edit": "Edit file",
+      "replacements": "Replacements",
+      "fullChange": "Complete change",
+      "before": "Before",
+      "after": "After",
+      "action": "Action",
+      "target": "Target",
+      "arguments": "Arguments",
+      "rootAgent": "Main Agent",
+      "childAgent": "Child Agent",
+      "loadingDetails": "Loading complete operation details…",
+      "detailsFailed": "Could not load complete details",
+      "retry": "Retry",
+      "responseFailed": "The approval response did not complete. Retry this request",
+      "ruleScope": "Always allow: permit {{tool}} for the same target {{target}} in this Session and its children for {{hours}} hours after approval."
     },
     "askQuestion": {
       "preview": "Preview",
@@ -551,7 +596,9 @@
       "questionAria": "Question {{index}}: {{header}}",
       "previous": "Previous",
       "submit": "Submit",
-      "next": "Next"
+      "next": "Next",
+      "submitFailed": "Could not submit your answers. Your choices are saved; retry or cancel.",
+      "cancelFailed": "Could not cancel. Retry, or use the composer Stop button to end this turn."
     },
     "planPrompt": {
       "submitFeedback": "Submit feedback",
@@ -597,7 +644,15 @@
     },
     "toolChrome": {
       "common": {
+        "completedContinuable": "Completed · available for follow-up",
         "background": "Background",
+        "providerOwned": "Provider",
+        "providerOutcome": {
+          "running": "Running",
+          "succeeded": "Result returned",
+          "failed": "Failed",
+          "unknown": "Result unconfirmed"
+        },
         "copy": "Copy",
         "copied": "Copied",
         "exportMarkdown": "Export Markdown",
@@ -756,6 +811,8 @@
         "imBridgeTools": "Plugin tools"
       },
       "taskOp": {
+        "rootOwner": "Owner: main Agent (root)",
+        "agentOwner": "Owner: Agent ({{owner}})",
         "loadingList": "Loading task list...",
         "emptyList": "No tasks yet",
         "create": "Create task",
@@ -797,6 +854,9 @@
         "partialFiles": "Showing files {{start}}–{{end}} of {{total}}"
       },
       "webSearch": {
+        "unverifiedText": "Some source links could not be confirmed. The search service's text is retained below.",
+        "unverifiedDomainText": "Some source links and domain filters could not be confirmed. The search service's text is retained below.",
+        "noMatches": "No matching pages found.",
         "initializing": "Initializing search...",
         "expandRemaining": "Show {{count}} more results",
         "toolOutput": "Tool Output",
@@ -918,6 +978,7 @@
       "noActiveSessions": "No chat history"
     },
     "providerSwitch": {
+      "channelTransferNotice": "Confirming creates a new chat and transfers the current IM conversation to it. The previous chat history is retained.",
       "codexSubscription": "Codex subscription",
       "currentProviderFallback": "current provider",
       "targetProviderFallback": "target provider",
@@ -948,11 +1009,6 @@
         "title": "New session required to send",
         "message": "This historical chat was created by \"{{sessionRuntime}}\", but external Runtime support is currently disabled, so it cannot continue in the original session. The current chat will stay open and this message will be sent in a new \"{{currentRuntime}}\" chat.",
         "confirm": "Open new chat and send"
-      },
-      "runtimeSwitch": {
-        "title": "New Runtime session required",
-        "message": "This chat is already bound to \"{{currentRuntime}}\" and cannot switch to \"{{targetRuntime}}\" in the same history. The current chat will stay open, a \"{{targetRuntime}}\" chat will open in a new tab, and the workspace default Runtime will be updated to \"{{targetRuntime}}\".",
-        "confirm": "Switch"
       },
       "rewind": {
         "title": "Time rewind",
@@ -992,11 +1048,6 @@
       "cronTaskCreated": "Scheduled task created.",
       "createFailedWithError": "Create failed: {{error}}",
       "channelNotificationFailed": "The new chat took over the Channel, but the IM notification failed.",
-      "runtimeSwitchCreateFailed": "Runtime switch failed: cannot create a new chat.",
-      "runtimeSwitchDefaultUpdateFailed": "Runtime switch failed: the workspace default Runtime could not be updated.",
-      "runtimeSwitchDefaultUpdateWarning": "The new chat will still open, but the workspace default Runtime could not be updated.",
-      "runtimeSwitchTabOpenFailed": "The session was created but could not be opened. You can reopen it from history.",
-      "runtimeSwitchChannelTransferFailed": "The new chat opened, but the Channel binding was not migrated. Saved workspace settings were kept.",
       "providerSwitchTargetUnavailable": "Failed to create new chat: the target Provider is unavailable.",
       "providerSwitchDefaultSaveFailed": "New chat created, but the Agent default model could not be saved.",
       "providerSwitchChannelTransferFailed": "The new chat opened, but the Channel binding was not migrated.",
@@ -1005,6 +1056,7 @@
       "channelRebindFailedNewCancelled": "Channel rebind failed. The new conversation was cancelled.",
       "channelRebindFailedDeleteCancelled": "Channel rebind failed. Delete was cancelled.",
       "reselectModelFirst": "Select the model again in the model picker first.",
+      "runtimeUnavailable": "This Runtime artifact is unavailable or failed integrity checks. Reinstall or repair MyAgents before sending.",
       "submitFailedRetry": "Submit failed. Please try again.",
       "unknownError": "Unknown error",
       "rewindFailedWithError": "Time rewind failed: {{error}}",
@@ -1027,9 +1079,8 @@
       "rewindFilesNotAttempted": "Conversation rewound without a usable file checkpoint; workspace files remain unchanged.",
       "retryFailedWithError": "Retry failed: {{error}}",
       "retryFailed": "Retry failed",
-      "forkOpenFailed": "The branch was created. Open it from history.",
-      "rewindFilesAlreadyRestored": "Files were restored, but conversation rewind did not complete. Check your workspace files.",
-      "conversationResultUnknown": "The operation result is not confirmed. We tried to resync the conversation; check its current state before repeating the action.",
+      "forkOpenFailed": "Failed to create branch: cannot open a new chat.",
+      "forkReconciled": "The connection was interrupted, but the new branch was recovered and opened.",
       "forkFailedWithError": "Failed to create branch: {{error}}",
       "forkFailed": "Failed to create branch.",
       "taskDeleted": "Task deleted.",
@@ -1134,6 +1185,7 @@
       },
       "starting": "Starting AI... first launch may take a while.",
       "loadingHistory": "Loading chat history...",
+      "waitingForInteraction": "Waiting for your response",
       "streaming": {
         "0": "Thinking hard...",
         "1": "Thinking it through...",
@@ -1156,6 +1208,54 @@
         "18": "Worth taking a little time...",
         "19": "Taking your question seriously..."
       }
+    }
+  },
+  "agentTree": {
+    "personalTasks": "Personal tasks",
+    "sharedTasks": "Shared tasks",
+    "taskOwner": "Owner",
+    "taskOffered": "Offered to",
+    "taskBlockedBy": "Blocked by",
+    "interruptTurn": "Interrupt current turn",
+    "nativeModes": { "one-shot": "One-time delegation", "continuable": "Continuable Agent" },
+    "nativeStates": { "running": "Running", "inactive": "Inactive" },
+    "taskStates": { "pending": "Pending", "in_progress": "In progress", "completed": "Completed", "cancelled": "Cancelled" },
+    "title": "Agent work tree",
+    "close": "Close",
+    "unknown": "Unknown",
+    "loading": "Loading…",
+    "empty": "No child agents in this session.",
+    "descendants": "This activation finished; descendants remain active",
+    "tokens": "Reported tokens",
+    "context": "Estimated next input / capacity",
+    "details": "View details",
+    "parent": "Direct parent",
+    "message": "Follow up",
+    "resume": "Resume this node",
+    "stop": "Stop subtree",
+    "send": "Send",
+    "states": {
+      "queued": "Queued",
+      "running": "Running",
+      "waiting_child": "Waiting for child",
+      "waiting_delivery": "Waiting for delivery",
+      "waiting_interaction": "Waiting for user",
+      "completed": "Completed",
+      "failed": "Failed",
+      "aborted": "Interrupted",
+      "interrupted": "Interrupted",
+      "stopping": "Stopping",
+      "closed": "Closed"
+    },
+    "messageAccepted": "Message received. It takes effect at the next allowed execution boundary.",
+    "latestResult": "Latest result",
+    "provider": "Provider",
+    "model": "Model",
+    "activation": "Activations",
+    "roles": {
+      "general": "General",
+      "Explore": "Explore",
+      "Plan": "Plan"
     }
   }
 }

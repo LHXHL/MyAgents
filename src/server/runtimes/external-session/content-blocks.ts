@@ -3,7 +3,7 @@ import { buildFilePatchDisplayDescriptor } from '../../../shared/toolDisplay/fil
 import type { ToolAttachment } from '../../../shared/types/tool-attachment';
 import {
   finalizeResidualSubagentCall,
-  isTerminalSubagentLifecycleStatus,
+  mergeSubagentLifecycleUpdate,
   type SubagentLifecycle,
   type SubagentLifecycleStatus,
 } from '../../../shared/types/subagent-lifecycle';
@@ -198,18 +198,18 @@ export function mergeSubagentLifecycle(
   current: SubagentLifecycle | undefined,
   status: SubagentLifecycleStatus,
   observedAt: number,
+  details: Partial<Omit<SubagentLifecycle, 'status' | 'finishedAt'>> = {},
 ): SubagentLifecycle {
   const safeObservedAt = Number.isFinite(observedAt) && observedAt > 0 ? observedAt : Date.now();
-  if (current && isTerminalSubagentLifecycleStatus(current.status)) return current;
-  if (status === 'running') {
-    return current ?? { status, startedAt: safeObservedAt };
-  }
-  const startedAt = current?.startedAt ?? safeObservedAt;
-  return {
+  const sameActivation = current?.activation?.id === details.activation?.id;
+  const startedAt = details.startedAt ?? (sameActivation ? current?.startedAt : undefined) ?? safeObservedAt;
+  return mergeSubagentLifecycleUpdate(current, {
+    ...(sameActivation ? current : {}),
+    ...details,
     status,
     startedAt,
-    finishedAt: Math.max(startedAt, safeObservedAt),
-  };
+    ...(status === 'running' ? { finishedAt: undefined } : { finishedAt: Math.max(startedAt, safeObservedAt) }),
+  });
 }
 
 export function attachExternalPendingSubagentLifecycle(
@@ -223,16 +223,53 @@ export function attachExternalPendingSubagentLifecycle(
         parentTool.subagentLifecycle,
         pending.status,
         pending.status === 'running' ? pending.startedAt : pending.finishedAt ?? pending.startedAt,
+        pending,
       )
     : { ...pending };
+  // Lifecycle is a separate projection. Only tool_result owns the original
+  // call's result, error and loading state, including an early lifecycle event.
   pendingSubagentLifecyclesByParent.delete(parentToolUseId);
 }
 
 export function applyExternalSubagentLifecycle(input: {
+  handleRevision?: number;
+  agentId?: string;
+  taskId?: string;
+  tree?: SubagentLifecycle['tree'];
+  modelRoute?: SubagentLifecycle['modelRoute'];
+  lastActivityAt?: number;
+  activation?: SubagentLifecycle['activation'];
+  handleState?: SubagentLifecycle['handleState'];
+  startedAt?: number;
   parentToolUseId: string;
   status: SubagentLifecycleStatus;
   observedAt: number;
+  agentType?: string;
+  description?: string;
+  mode?: 'foreground' | 'continuable';
+  model?: string;
+  result?: string;
+  resultTruncated?: boolean;
+  usage?: SubagentLifecycle['usage'];
 }): SubagentLifecycle {
+  const details = {
+    ...(input.handleRevision === undefined ? {} : { handleRevision: input.handleRevision }),
+    ...(input.agentId === undefined ? {} : { agentId: input.agentId }),
+    ...(input.taskId === undefined ? {} : { taskId: input.taskId }),
+    ...(input.tree === undefined ? {} : { tree: input.tree }),
+    ...(input.modelRoute === undefined ? {} : { modelRoute: input.modelRoute }),
+    ...(input.lastActivityAt === undefined ? {} : { lastActivityAt: input.lastActivityAt }),
+    ...(input.activation === undefined ? {} : { activation: input.activation }),
+    ...(input.handleState === undefined ? {} : { handleState: input.handleState }),
+    ...(input.startedAt === undefined ? {} : { startedAt: input.startedAt }),
+    ...(input.agentType === undefined ? {} : { agentType: input.agentType }),
+    ...(input.description === undefined ? {} : { description: input.description }),
+    ...(input.mode === undefined ? {} : { mode: input.mode }),
+    ...(input.model === undefined ? {} : { model: input.model }),
+    ...(input.result === undefined ? {} : { result: input.result }),
+    ...(input.resultTruncated === undefined ? {} : { resultTruncated: input.resultTruncated }),
+    ...(input.usage === undefined ? {} : { usage: input.usage }),
+  };
   const parent = findExternalToolBlockById(input.parentToolUseId);
   if (parent?.tool) {
     attachExternalPendingSubagentLifecycle(input.parentToolUseId, parent.tool);
@@ -240,6 +277,7 @@ export function applyExternalSubagentLifecycle(input: {
       parent.tool.subagentLifecycle,
       input.status,
       input.observedAt,
+      details,
     );
     return parent.tool.subagentLifecycle;
   }
@@ -248,6 +286,7 @@ export function applyExternalSubagentLifecycle(input: {
     pendingSubagentLifecyclesByParent.get(input.parentToolUseId),
     input.status,
     input.observedAt,
+    details,
   );
   pendingSubagentLifecyclesByParent.set(input.parentToolUseId, merged);
   return merged;
@@ -261,6 +300,7 @@ export function finalizeExternalSubagentLifecyclesForTurn(input: {
   for (const block of currentContentBlocks) {
     const tool = block.tool;
     if (block.type !== 'tool_use' || !tool?.subagentLifecycle) continue;
+    if (tool.subagentLifecycle.activation && tool.subagentLifecycle.handleState !== 'closed') continue;
     if (tool.subagentLifecycle.status === 'running') {
       tool.subagentLifecycle = mergeSubagentLifecycle(
         tool.subagentLifecycle,
@@ -276,12 +316,15 @@ export function finalizeExternalSubagentLifecyclesForTurn(input: {
     }
   }
   for (const [parentToolUseId, calls] of pendingSubagentCallsByParent) {
+    const lifecycle = pendingSubagentLifecyclesByParent.get(parentToolUseId);
+    if (lifecycle?.activation && lifecycle.handleState !== 'closed') continue;
     pendingSubagentCallsByParent.set(
       parentToolUseId,
       calls.map(call => finalizeResidualSubagentCall(call, input.status)),
     );
   }
   for (const [parentToolUseId, lifecycle] of pendingSubagentLifecyclesByParent) {
+    if (lifecycle.activation && lifecycle.handleState !== 'closed') continue;
     if (lifecycle.status !== 'running') continue;
     const terminal = mergeSubagentLifecycle(lifecycle, input.status, input.observedAt);
     pendingSubagentLifecyclesByParent.set(parentToolUseId, terminal);
@@ -396,6 +439,60 @@ export function startExternalToolUseInput(input: {
     name: input.toolName,
     inputJson: input.toolInput ? JSON.stringify(input.toolInput, null, 2) : '',
   });
+}
+
+export function startExternalProviderToolUse(input: {
+  toolUseId: string;
+  toolName: string;
+  providerRouteId: string;
+  providerBlockType: string;
+  toolInput: Record<string, unknown>;
+}): void {
+  const inputJson = JSON.stringify(input.toolInput, null, 2);
+  currentContentBlocks.push({
+    type: 'server_tool_use',
+    providerRouteId: input.providerRouteId,
+    providerBlockType: input.providerBlockType,
+    tool: {
+      id: input.toolUseId,
+      name: input.toolName,
+      input: input.toolInput,
+      inputJson,
+      streamIndex: currentContentBlocks.length,
+      isLoading: true,
+    },
+  });
+}
+
+export function applyExternalProviderToolResult(input: {
+  toolUseId: string;
+  providerRouteId: string;
+  providerBlockType: string;
+  content: string;
+  isError: boolean;
+  attachments?: ToolAttachment[];
+}): boolean {
+  for (let index = currentContentBlocks.length - 1; index >= 0; index -= 1) {
+    const block = currentContentBlocks[index];
+    if (block.type !== 'server_tool_use'
+      || block.tool?.id !== input.toolUseId
+      || block.providerRouteId !== input.providerRouteId) continue;
+    block.resultProviderBlockType = input.providerBlockType;
+    block.tool.result = input.content;
+    block.tool.isError = input.isError;
+    block.tool.isLoading = false;
+    if (input.attachments) block.tool.attachments = input.attachments;
+    return true;
+  }
+  return false;
+}
+
+export function finalizeExternalProviderToolsForTurn(): void {
+  for (const block of currentContentBlocks) {
+    if (block.type === 'server_tool_use' && block.tool?.isLoading) {
+      block.tool.isLoading = false;
+    }
+  }
 }
 
 export function appendExternalToolInputDelta(

@@ -146,17 +146,17 @@ describe('ThemeRuntimeProvider', () => {
         <Probe />
       </ThemeRuntimeProvider>,
     );
-    expect(document.documentElement.dataset.markdownReadingSize).toBe('large');
+    expect(document.documentElement.dataset.markdownReadingSize).toBe('standard');
 
     view.rerender(
       <ThemeRuntimeProvider
         selection={{ themeId: 'myagents-default', appearanceMode: 'light' }}
-        markdownReadingSize="standard"
+        markdownReadingSize="large"
       >
         <Probe />
       </ThemeRuntimeProvider>,
     );
-    expect(document.documentElement.dataset.markdownReadingSize).toBe('standard');
+    expect(document.documentElement.dataset.markdownReadingSize).toBe('large');
   });
 
   it('tracks OS changes in system mode without replacing the provider', () => {

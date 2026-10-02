@@ -7,7 +7,13 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { CornerUpLeft, Loader2, RotateCcw, Send, X } from "lucide-react";
+import {
+  ReplyIcon,
+  LoaderIcon,
+  UndoIcon,
+  SendIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { useTranslation } from "react-i18next";
 
 import {
@@ -355,7 +361,7 @@ export function TaskCommentTimeline({
 
             {loading ? (
               <div className="flex items-center gap-2 py-8 text-sm text-[var(--ink-muted)]">
-                <Loader2 className="h-4 w-4 animate-spin" />{" "}
+                <LoaderIcon className="h-4 w-4 animate-spin" />{" "}
                 {t("comments.loading")}
               </div>
             ) : (
@@ -488,7 +494,7 @@ export function TaskCommentTimeline({
                           onClick={() => setReplyTo(comment)}
                           className="inline-flex items-center gap-1 text-[var(--ink-muted)] hover:text-[var(--ink)]"
                         >
-                          <CornerUpLeft className="h-3 w-3" />{" "}
+                          <ReplyIcon className="h-3 w-3" />{" "}
                           {t("comments.reply")}
                         </button>
                         {comment.admission && (
@@ -510,7 +516,7 @@ export function TaskCommentTimeline({
                             onClick={() => void retry(comment)}
                             className="inline-flex items-center gap-1 text-[var(--accent-warm)] hover:underline"
                           >
-                            <RotateCcw className="h-3 w-3" />{" "}
+                            <UndoIcon className="h-3 w-3" />{" "}
                             {t("comments.retry")}
                           </button>
                         )}
@@ -539,7 +545,7 @@ export function TaskCommentTimeline({
         <div className="mx-auto max-w-[860px]">
           {replyTo && (
             <div className="mb-1.5 flex items-center gap-2 rounded-r-lg border-l-2 border-[var(--line)] bg-[var(--hover-bg)] px-2.5 py-1.5 text-xs text-[var(--ink-muted)]">
-              <CornerUpLeft className="h-3.5 w-3.5 shrink-0" />
+              <ReplyIcon className="h-3.5 w-3.5 shrink-0" />
               <span className="min-w-0 flex-1 truncate">
                 {replyTo.body.trim()}
               </span>
@@ -548,7 +554,7 @@ export function TaskCommentTimeline({
                 onClick={() => setReplyTo(null)}
                 aria-label={t("comments.cancelReply")}
               >
-                <X className="h-3.5 w-3.5" />
+                <CloseIcon className="h-3.5 w-3.5" />
               </button>
             </div>
           )}
@@ -586,9 +592,9 @@ export function TaskCommentTimeline({
                 aria-label={t("comments.send")}
               >
                 {sending ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <LoaderIcon className="h-4 w-4 animate-spin" />
                 ) : (
-                  <Send className="h-4 w-4" />
+                  <SendIcon className="h-4 w-4" />
                 )}
               </button>
             </div>

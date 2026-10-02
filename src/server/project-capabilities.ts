@@ -17,11 +17,13 @@ import {
   normalizeCapabilitySourceLocalId,
   normalizeProjectCapabilitySelection,
   projectCapabilityId,
+  DEFAULT_PROJECT_SKILL_DIRECTORIES,
   type EffectiveProjectCapabilitySnapshot,
   type ProjectCapabilityCandidate,
   type ProjectCapabilityKind,
   type ProjectCapabilitySelectionV1,
   type ProjectCapabilitySource,
+  type ProjectSkillDirectory,
 } from '../shared/projectCapabilities';
 import {
   isReservedSlashCommandName,
@@ -139,6 +141,7 @@ function scanSkills(params: {
   rootPath: string;
   globalSkillsRoot: string;
   projectSlots?: Set<string>;
+  projectWinnerSlots?: Set<string>;
 }): Array<Omit<ProjectCapabilityCandidate, 'enabled'>> {
   if (!existsSync(params.rootPath)) return [];
   const root = canonicalDirectory(params.rootPath, false);
@@ -156,6 +159,8 @@ function scanSkills(params: {
   const result: Array<Omit<ProjectCapabilityCandidate, 'enabled'>> = [];
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     if (entry.name.startsWith('.')) continue;
+    const projectSlot = `skill:${entry.name}`;
+    if (params.projectWinnerSlots?.has(projectSlot)) continue;
     const diskFolder = join(root, entry.name);
     const lst = (() => {
       try { return lstatSync(diskFolder); } catch { return null; }
@@ -164,7 +169,7 @@ function scanSkills(params: {
     if (lst.isSymbolicLink()) {
       if (symlinkTargetIsWithin(diskFolder, params.globalSkillsRoot)) continue;
     }
-    params.projectSlots?.add(`skill:${entry.name}`);
+    params.projectSlots?.add(projectSlot);
     // A symlink under the project Skill root is itself a project-owned
     // declaration. Follow it just like Claude/Codex do; only MyAgents' own
     // global projection links are excluded above so they retain global
@@ -190,6 +195,7 @@ function scanSkills(params: {
         content,
         author: parsed.frontmatter.author,
       }));
+      params.projectWinnerSlots?.add(projectSlot);
     } catch (error) {
       console.warn(`[project-capabilities] Ignoring unreadable project Skill ${entry.name}:`, error);
     }
@@ -327,6 +333,7 @@ export function resolveEffectiveProjectCapabilities(
   workspacePath: string,
   options: {
     globalSkillInventory?: GlobalSkillInventorySnapshot;
+    projectSkillDirectories?: readonly ProjectSkillDirectory[];
   } = {},
 ): EffectiveProjectCapabilitySnapshot {
   const resolvedWorkspace = resolve(workspacePath);
@@ -353,11 +360,14 @@ export function resolveEffectiveProjectCapabilities(
   }
 
   const projectSlots = new Set<string>();
-  const projectSkills = scanSkills({
-    rootPath: join(resolvedWorkspace, '.claude', 'skills'),
-    globalSkillsRoot,
-    projectSlots,
-  });
+  const projectWinnerSlots = new Set<string>();
+  const projectSkills = (options.projectSkillDirectories ?? DEFAULT_PROJECT_SKILL_DIRECTORIES)
+    .flatMap(directory => scanSkills({
+      rootPath: join(resolvedWorkspace, ...directory.split('/')),
+      globalSkillsRoot,
+      projectSlots,
+      projectWinnerSlots,
+    }));
   const projectCommands = scanCommands({
     rootPath: join(resolvedWorkspace, '.claude', 'commands'),
     source: 'project',
@@ -425,6 +435,7 @@ export function resolveEffectiveProjectCapabilities(
     enabled: item.enabled,
     required: item.required,
     contentSha256: item.contentSha256,
+    path: item.path,
   }));
   const revision = createHash('sha256').update(stableStringify(revisionProjection)).digest('hex');
   return {

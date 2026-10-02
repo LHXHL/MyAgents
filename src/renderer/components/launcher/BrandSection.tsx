@@ -132,12 +132,13 @@ interface BrandSectionProps {
   onGoToSettings?: () => void;
   // Runtime (external runtimes adapt model/permission selectors)
   runtime?: RuntimeType;
+  usesExternalRuntimeControls?: boolean;
   runtimeModels?: RuntimeModelInfo[];
   runtimePermissionModes?: RuntimePermissionMode[];
   // PRD 0.2.7 Phase F: runtime selector lives in the row below the input
-  // (not the toolbar) when `multiAgentRuntime` is on. Caller provides the
+  // when permitted by the build distribution. Caller provides the
   // detection map + onChange just like in chat-tab.
-  multiAgentRuntimeEnabled?: boolean;
+  runtimeSelectorAvailable?: boolean;
   runtimeDetections?: RuntimeDetections;
   onRuntimeChange?: (runtime: RuntimeType) => void;
   /** All runtimes (builtin + external) so the row's chip shows the full picture.
@@ -188,9 +189,10 @@ export default memo(function BrandSection({
   onRefreshProviders,
   onGoToSettings,
   runtime,
+  usesExternalRuntimeControls,
   runtimeModels,
   runtimePermissionModes,
-  multiAgentRuntimeEnabled,
+  runtimeSelectorAvailable,
   runtimeDetections,
   onRuntimeChange,
   activeRuntime,
@@ -735,6 +737,7 @@ export default memo(function BrandSection({
                 onWorkspacePluginToggle={onWorkspacePluginToggle}
                 onRefreshProviders={onRefreshProviders}
                 runtime={runtime}
+                usesExternalRuntimeControls={usesExternalRuntimeControls}
                 runtimeModels={runtimeModels}
                 runtimePermissionModes={runtimePermissionModes}
                 /* PRD 0.2.7 Phase F: workspace + runtime selectors moved out of
@@ -786,7 +789,7 @@ export default memo(function BrandSection({
                   onSelectWorkspace={onSelectWorkspace}
                   onAddFolder={onAddFolder}
                   onSetDefaultWorkspace={onSetDefaultWorkspace}
-                  showRuntime={!!multiAgentRuntimeEnabled}
+                  showRuntime={!!runtimeSelectorAvailable}
                   runtime={activeRuntime}
                   runtimeDetections={runtimeDetections}
                   onRuntimeChange={onRuntimeChange}

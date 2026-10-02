@@ -48,7 +48,7 @@ const USER_RELATIVE_DIRS: &[&str] = &[
 ///
 /// Returns the full path to the binary, or `None` if not found anywhere.
 pub fn find(binary_name: &str) -> Option<PathBuf> {
-    // Build augmented search path: process PATH + platform-specific extras
+    // Preserve user shell selection before common discovery fallbacks.
     let search_path = augmented_path();
 
     which::which_in(binary_name, Some(&search_path), ".").ok()
@@ -58,10 +58,9 @@ pub fn find(binary_name: &str) -> Option<PathBuf> {
 /// Useful when spawning subprocesses that need the full search path.
 pub fn augmented_path() -> std::ffi::OsString {
     let system_path = std::env::var("PATH").unwrap_or_default();
-    let sep = if cfg!(windows) { ";" } else { ":" };
     // mut needed on non-Windows (EXTRA_SEARCH_DIRS / USER_RELATIVE_DIRS push below)
     #[allow(unused_mut)]
-    let mut parts: Vec<String> = system_path.split(sep).map(|s| s.to_string()).collect();
+    let mut parts: Vec<String> = Vec::new();
 
     append_app_local_runtime_dirs(&mut parts);
 
@@ -83,20 +82,55 @@ pub fn augmented_path() -> std::ffi::OsString {
                 push_path_part(&mut parts, home.join(rel));
             }
         }
-
-        // Shell-detected PATH: covers custom directories from .zshrc/.bashrc
-        // (NVM, fnm, Codex.app, custom PATHs, etc.) that the fixed list above misses.
-        if let Some(shell_path) = detect_shell_path() {
-            for dir in shell_path.split(':') {
-                push_path_string(&mut parts, dir.to_string());
-            }
-        }
     }
 
     #[cfg(target_os = "windows")]
     append_windows_runtime_dirs(&mut parts);
 
-    std::env::join_paths(parts).unwrap_or_default()
+    #[cfg(not(target_os = "windows"))]
+    let shell_path = detect_shell_path();
+    #[cfg(target_os = "windows")]
+    let shell_path: Option<String> = None;
+    std::env::join_paths(merge_search_paths(
+        &system_path,
+        shell_path.as_deref(),
+        &parts,
+        cfg!(windows),
+    ))
+    .unwrap_or_default()
+}
+
+/// Same precedence as Node shell.ts; shared fixtures keep the two entry points
+/// aligned without adding another process or environment-discovery protocol.
+fn merge_search_paths(
+    inherited_path: &str,
+    shell_path: Option<&str>,
+    fallback_paths: &[String],
+    windows: bool,
+) -> Vec<String> {
+    let separator = if windows { ';' } else { ':' };
+    let mut parts: Vec<String> = Vec::new();
+    for dir in shell_path
+        .unwrap_or_default()
+        .split(separator)
+        .chain(inherited_path.split(separator))
+        .chain(fallback_paths.iter().map(String::as_str))
+    {
+        if dir.is_empty() {
+            continue;
+        }
+        let exists = parts.iter().any(|p| {
+            if windows {
+                p.eq_ignore_ascii_case(dir)
+            } else {
+                p == dir
+            }
+        });
+        if !exists {
+            parts.push(dir.to_string());
+        }
+    }
+    parts
 }
 
 fn normalize_external_path(path: PathBuf) -> PathBuf {
@@ -234,10 +268,10 @@ fn detect_shell_path() -> Option<String> {
                 Err(_) => return None,
             };
 
-            // 3-second timeout (matches TypeScript getShellPath)
+            // Same five-second discovery budget as Node shell.ts.
             let output = {
                 use std::time::{Duration, Instant};
-                let deadline = Instant::now() + Duration::from_secs(3);
+                let deadline = Instant::now() + Duration::from_secs(5);
                 loop {
                     match child.try_wait() {
                         Ok(Some(_)) => break child.wait_with_output(),
@@ -274,4 +308,38 @@ fn detect_shell_path() -> Option<String> {
             }
         })
         .clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_search_paths;
+
+    #[test]
+    fn user_path_precedence_matches_sidecar() {
+        let fixtures: serde_json::Value = serde_json::from_str(include_str!(
+            "../../src/shared/fixtures/runtime-search-path.json"
+        ))
+        .unwrap();
+        for case in fixtures.as_array().unwrap() {
+            let windows = case["platform"] == "win32";
+            let fallbacks: Vec<String> = case["fallbackPaths"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect();
+            let paths = merge_search_paths(
+                case["inheritedPath"].as_str().unwrap(),
+                case["shellPath"].as_str(),
+                &fallbacks,
+                windows,
+            );
+            assert_eq!(
+                paths.join(if windows { ";" } else { ":" }),
+                case["expected"].as_str().unwrap(),
+                "{}",
+                case["name"]
+            );
+        }
+    }
 }

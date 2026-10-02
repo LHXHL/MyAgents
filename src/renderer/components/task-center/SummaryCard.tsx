@@ -13,13 +13,13 @@
 import { useCallback, useEffect, useMemo, useState, type ComponentType, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  Calendar,
-  ChevronDown,
-  ChevronRight,
-  Heart,
-  Play,
-  Timer,
-} from 'lucide-react';
+  CalendarIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  HeartIcon,
+  PlayIcon,
+  TimerIcon,
+} from '@/components/icons';
 
 import { useAgentStatuses } from '@/hooks/useAgentStatuses';
 import { useConfig } from '@/hooks/useConfig';
@@ -39,10 +39,10 @@ interface Props {
 
 type IconComp = ComponentType<{ className?: string }>;
 const MODE_META: Record<TaskExecutionMode, { icon: IconComp; labelKey: string }> = {
-  once: { icon: Play, labelKey: 'badges.category.once' },
-  scheduled: { icon: Calendar, labelKey: 'badges.category.scheduled' },
-  recurring: { icon: Timer, labelKey: 'badges.category.recurring' },
-  loop: { icon: Heart, labelKey: 'badges.category.loop' },
+  once: { icon: PlayIcon, labelKey: 'badges.category.once' },
+  scheduled: { icon: CalendarIcon, labelKey: 'badges.category.scheduled' },
+  recurring: { icon: TimerIcon, labelKey: 'badges.category.recurring' },
+  loop: { icon: HeartIcon, labelKey: 'badges.category.loop' },
 };
 
 export function SummaryCard({ task, stats }: Props) {
@@ -213,9 +213,9 @@ export function SummaryCard({ task, stats }: Props) {
         className="mt-2.5 flex items-center gap-1 text-xs text-[var(--ink-muted)]/70 transition-colors hover:text-[var(--ink-muted)]"
       >
         {detailsOpen ? (
-          <ChevronDown className="h-3 w-3" />
+          <ChevronDownIcon className="h-3 w-3" />
         ) : (
-          <ChevronRight className="h-3 w-3" />
+          <ChevronRightIcon className="h-3 w-3" />
         )}
         {detailsOpen ? t('summary.collapseDetails') : t('summary.expandDetails')}
       </button>

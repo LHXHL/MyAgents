@@ -2,7 +2,12 @@
  * GlobalAgentsPanel - User-level Sub-Agent management for Settings page
  * Follows the same pattern as GlobalSkillsPanel
  */
-import { Plus, Bot, Loader2, ChevronLeft } from 'lucide-react';
+import {
+  PlusIcon,
+  HelperIcon,
+  LoaderIcon,
+  ChevronLeftIcon,
+} from '@/components/icons';
 import { useCallback, useEffect, useState, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -245,7 +250,7 @@ export default function GlobalAgentsPanel({
     if (loading && viewState.type === 'list') {
         return (
             <div className="flex h-64 items-center justify-center">
-                <Loader2 className="h-8 w-8 animate-spin text-[var(--ink-muted)]" />
+                <LoaderIcon className="h-8 w-8 animate-spin text-[var(--ink-muted)]" />
             </div>
         );
     }
@@ -258,7 +263,7 @@ export default function GlobalAgentsPanel({
                     onClick={handleBackToList}
                     className="flex items-center gap-1 text-sm text-[var(--ink-muted)] hover:text-[var(--ink)]"
                 >
-                    <ChevronLeft className="h-4 w-4" />
+                    <ChevronLeftIcon className="h-4 w-4" />
                     {t('agentSettings.globalAgents.backToList')}
                 </button>
                 <div className="rounded-xl border border-[var(--line)] bg-[var(--paper)] overflow-hidden" style={{ minHeight: '500px' }}>
@@ -283,7 +288,7 @@ export default function GlobalAgentsPanel({
             <div>
                 <div className="mb-4 flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                        <Bot className="h-5 w-5 text-[var(--ink-muted)]" />
+                        <HelperIcon className="h-5 w-5 text-[var(--ink-muted)]" />
                         <h3 className="text-base font-semibold text-[var(--ink)]">{t('agentSettings.globalAgents.title')}</h3>
                         <span className="text-xs text-[var(--ink-muted)]">({agents.length})</span>
                     </div>
@@ -303,7 +308,7 @@ export default function GlobalAgentsPanel({
                             }}
                             className="flex items-center gap-1 rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-primary-text)] hover:bg-[var(--button-primary-bg-hover)]"
                         >
-                            <Plus className="h-4 w-4" />
+                            <PlusIcon className="h-4 w-4" />
                             {t('agentSettings.common.new')}
                         </button>
                     </div>
@@ -320,7 +325,7 @@ export default function GlobalAgentsPanel({
                     </div>
                 ) : (
                     <div className="rounded-xl border border-dashed border-[var(--line)] bg-[var(--paper-inset)]/30 py-8 text-center">
-                        <Bot className="mx-auto h-10 w-10 text-[var(--ink-muted)]/30" />
+                        <HelperIcon className="mx-auto h-10 w-10 text-[var(--ink-muted)]/30" />
                         <p className="mt-2 text-sm text-[var(--ink-muted)]">{t('agentSettings.globalAgents.emptyTitle')}</p>
                         <p className="mt-1 text-xs text-[var(--ink-muted)]">
                             {t('agentSettings.globalAgents.emptyDescription')}

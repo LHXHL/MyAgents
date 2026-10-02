@@ -39,6 +39,14 @@ const runtimeDiagnostics: RuntimeDiagnostics = {
       message: 'Run codex login. OPENAI_API_KEY=sk-runtime-secret-token /bridge/runtimeSecretToken',
     },
   ],
+  permissions: {
+    desiredProductMode: 'auto',
+    desiredRuntimeMode: 'acceptEdits',
+    effectiveRuntimeMode: 'acceptEdits',
+    policyRevision: 'permission-revision-7',
+    ruleCount: 2,
+    state: 'applied',
+  },
   effectiveEnv: {
     cwd: '/Users/example/project',
     proxy: {
@@ -133,6 +141,14 @@ describe('sanitizeRuntimeDiagnosticsForSupport', () => {
       https: true,
       all: false,
       noProxy: true,
+    });
+    expect(sanitized.permissions).toEqual({
+      desiredProductMode: 'auto',
+      desiredRuntimeMode: 'acceptEdits',
+      effectiveRuntimeMode: 'acceptEdits',
+      policyRevision: 'permission-revision-7',
+      ruleCount: 2,
+      state: 'applied',
     });
     expect(JSON.stringify(sanitized)).not.toContain('password');
     expect(JSON.stringify(sanitized)).not.toContain('secure-proxy');

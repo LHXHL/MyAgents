@@ -303,7 +303,7 @@ fn agent_channel_has_start_credentials(
     channel_cfg: &types::ChannelConfigRust,
 ) -> bool {
     let im_config = channel_cfg.to_im_config(agent_cfg);
-    im_config_has_start_credentials(&im_config)
+    im_config.enabled && im_config_has_start_credentials(&im_config)
 }
 
 static GENERAL_PROXY_RECONNECT_GENERATION: std::sync::atomic::AtomicU64 =
@@ -647,7 +647,7 @@ fn find_missing_startable_agent_channels(
                 continue;
             }
             let im_config = channel_cfg.to_im_config(agent_cfg);
-            if im_config_has_start_credentials(&im_config) {
+            if im_config.enabled && im_config_has_start_credentials(&im_config) {
                 missing.push(key);
             }
         }
@@ -937,67 +937,6 @@ mod agent_monitor_tests {
             .is_none());
     }
 
-    #[test]
-    fn model_command_updates_the_existing_channel_override_owner() {
-        let mut config = serde_json::json!({
-            "agents": [{
-                "id": "agent-1",
-                "model": "agent-model",
-                "channels": [{
-                    "id": "channel-1",
-                    "overrides": { "model": "channel-model" }
-                }]
-            }]
-        });
-
-        let channel_owned =
-            update_agent_channel_model_value(&mut config, "agent-1", "channel-1", "next-model")
-                .unwrap();
-
-        assert!(channel_owned);
-        assert_eq!(config["agents"][0]["model"], "agent-model");
-        assert_eq!(
-            config["agents"][0]["channels"][0]["overrides"]["model"],
-            "next-model",
-        );
-    }
-
-    #[test]
-    fn model_command_updates_agent_owner_when_channel_inherits() {
-        let mut config = serde_json::json!({
-            "agents": [{
-                "id": "agent-1",
-                "model": "agent-model",
-                "channels": [{ "id": "channel-1" }]
-            }]
-        });
-
-        let channel_owned =
-            update_agent_channel_model_value(&mut config, "agent-1", "channel-1", "next-model")
-                .unwrap();
-
-        assert!(!channel_owned);
-        assert_eq!(config["agents"][0]["model"], "next-model");
-    }
-
-    #[tokio::test]
-    async fn proxy_restart_waiter_closes_admission_only_at_idle_boundary() {
-        use std::sync::atomic::Ordering;
-
-        let generation = GENERAL_PROXY_RECONNECT_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
-        let consumers: ImConsumers = Arc::new(Mutex::new(HashMap::new()));
-        let gate = ChannelModelWorkGate::new();
-
-        assert!(wait_for_channel_idle(consumers, Arc::clone(&gate), generation).await);
-        assert!(gate.try_enter().is_none());
-    }
-
-    /// Issue #301: a legacy/hand-edited config can persist `providerEnvJson` /
-    /// `mcpServersJson` as a raw JSON object instead of a stringified blob, which
-    /// fails the strict `AgentConfigRust` parse with
-    /// `invalid type: map, expected a string`. The Value-level normalizer heals it
-    /// before deserialization. Shared fixture with the TS twin test:
-    /// `src/shared/__fixtures__/dirtyConfig301.json`.
     #[test]
     fn normalize_coerces_object_stringified_json_fields() {
         let fixture = include_str!(concat!(
@@ -1599,6 +1538,28 @@ mod agent_monitor_tests {
         assert!(salvage_agents_from_value(&non_array, &keys).is_none());
     }
 
+    #[test]
+    fn salvage_agents_projects_the_root_runtime_default_without_persisting_it_per_agent() {
+        let keys = std::collections::HashMap::new();
+        let value = serde_json::json!({
+            "defaultIntegratedRuntime": "dsh",
+            "agents": [{
+                "id": "a",
+                "name": "A",
+                "enabled": true,
+                "workspacePath": "/w"
+            }]
+        });
+
+        let agents = salvage_agents_from_value(&value, &keys).expect("valid Agent");
+        assert!(agents[0].runtime_selection_available);
+        assert_eq!(agents[0].default_integrated_runtime.as_deref(), Some("dsh"));
+        assert!(serde_json::to_value(&agents[0])
+            .expect("serialized Agent")
+            .get("defaultIntegratedRuntime")
+            .is_none());
+    }
+
     fn agent_config_with_weixin_channel(enabled: bool) -> Vec<types::AgentConfigRust> {
         serde_json::from_value(json!([{
             "id": "agent-1",
@@ -1662,6 +1623,29 @@ mod agent_monitor_tests {
             &std::collections::HashSet::new(),
             &[],
             &archived,
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn monitor_and_status_skip_runtime_incompatible_channels() {
+        let mut agents = agent_config_with_weixin_channel(true);
+        agents[0].runtime_selection_available = true;
+        agents[0].runtime_preference = Some(types::RuntimePreferenceRust {
+            family: "integrated".to_string(),
+            id: "future-runtime".to_string(),
+        });
+        let channel = &agents[0].channels[0];
+
+        assert!(!channel.to_im_config(&agents[0]).enabled);
+        assert!(!should_report_missing_configured_channel(
+            &agents[0], channel,
+        ));
+        assert!(find_missing_startable_agent_channels(
+            &agents,
+            &std::collections::HashSet::new(),
+            &[],
+            &ArchivedAgentWorkspaces::default(),
         )
         .is_empty());
     }
@@ -2543,6 +2527,12 @@ fn salvage_agents_from_value(
     value: &serde_json::Value,
     api_keys: &std::collections::HashMap<String, String>,
 ) -> Option<Vec<AgentConfigRust>> {
+    let runtime_selection_available =
+        crate::runtime_distribution_policy::policy().selector_available();
+    let default_integrated_runtime = value
+        .get("defaultIntegratedRuntime")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
     match value.get("agents") {
         // Absent → no agents configured; nothing to recover.
         None => Some(Vec::new()),
@@ -2554,6 +2544,8 @@ fn salvage_agents_from_value(
             for (ai, a) in arr.iter().enumerate() {
                 match serde_json::from_value::<AgentConfigRust>(a.clone()) {
                     Ok(mut agent) => {
+                        agent.runtime_selection_available = runtime_selection_available;
+                        agent.default_integrated_runtime = default_integrated_runtime.clone();
                         // Rebuild providerEnvJson for agents/channels that have a
                         // providerId but no providerEnvJson (same as
                         // parse_bot_entries does for legacy bots).
@@ -3051,6 +3043,21 @@ pub(super) fn persist_agent_config_patch(
         apply_field!(runtime, "runtime");
         apply_field!(setup_completed, "setupCompleted");
 
+        if let Some(ref runtime_preference) = patch.runtime_preference {
+            match runtime_preference {
+                Some(value) => {
+                    agent["runtimePreference"] = serde_json::to_value(value).map_err(|e| {
+                        format!("[agent] Failed to serialize Runtime preference: {}", e)
+                    })?;
+                }
+                None => {
+                    if let Some(obj) = agent.as_object_mut() {
+                        obj.remove("runtimePreference");
+                    }
+                }
+            }
+        }
+
         if let Some(ref runtime_config) = patch.runtime_config {
             match runtime_config {
                 Some(value) => agent["runtimeConfig"] = value.clone(),
@@ -3079,98 +3086,6 @@ pub(super) fn persist_agent_config_patch(
 
     ulog_info!("[agent] Persisted config patch for agent {}", agent_id);
     Ok(())
-}
-
-pub(super) fn persist_agent_channel_model(
-    agent_id: &str,
-    channel_id: &str,
-    model: &str,
-) -> Result<AgentConfigPatch, String> {
-    let home = dirs::home_dir().ok_or("[agent] Home dir not found")?;
-    let config_path = home.join(".myagents").join("config.json");
-    let mut channel_owned = false;
-    let updated = with_config_lock(&config_path, true, |config| {
-        channel_owned = update_agent_channel_model_value(config, agent_id, channel_id, model)?;
-        Ok(())
-    })?;
-
-    if !channel_owned {
-        return Ok(AgentConfigPatch {
-            model: Some(model.to_string()),
-            ..Default::default()
-        });
-    }
-
-    let channels = updated
-        .get("agents")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|agents| {
-            agents
-                .iter()
-                .find(|agent| agent.get("id").and_then(serde_json::Value::as_str) == Some(agent_id))
-        })
-        .and_then(|agent| agent.get("channels"))
-        .cloned()
-        .ok_or_else(|| format!("[agent] Agent {} has no channels[]", agent_id))?;
-    let channels = serde_json::from_value(channels)
-        .map_err(|error| format!("[agent] Invalid channels after model update: {}", error))?;
-    Ok(AgentConfigPatch {
-        channels: Some(channels),
-        ..Default::default()
-    })
-}
-
-fn update_agent_channel_model_value(
-    config: &mut serde_json::Value,
-    agent_id: &str,
-    channel_id: &str,
-    model: &str,
-) -> Result<bool, String> {
-    let agents = config
-        .get_mut("agents")
-        .and_then(serde_json::Value::as_array_mut)
-        .ok_or_else(|| "[agent] No agents[] in config.json".to_string())?;
-    let agent = agents
-        .iter_mut()
-        .find(|agent| agent.get("id").and_then(serde_json::Value::as_str) == Some(agent_id))
-        .ok_or_else(|| format!("[agent] Agent {} not found in config.json", agent_id))?;
-    let channel_owned = {
-        let channel = agent
-            .get_mut("channels")
-            .and_then(serde_json::Value::as_array_mut)
-            .and_then(|channels| {
-                channels.iter_mut().find(|channel| {
-                    channel.get("id").and_then(serde_json::Value::as_str) == Some(channel_id)
-                })
-            })
-            .ok_or_else(|| {
-                format!(
-                    "[agent] Channel {} not found for Agent {}",
-                    channel_id, agent_id,
-                )
-            })?;
-        let override_owned = channel
-            .get("overrides")
-            .and_then(serde_json::Value::as_object)
-            .and_then(|overrides| overrides.get("model"))
-            .is_some_and(serde_json::Value::is_string);
-        if override_owned {
-            channel["overrides"]["model"] = serde_json::Value::String(model.to_string());
-            true
-        } else if channel
-            .get("model")
-            .is_some_and(serde_json::Value::is_string)
-        {
-            channel["model"] = serde_json::Value::String(model.to_string());
-            true
-        } else {
-            false
-        }
-    };
-    if !channel_owned {
-        agent["model"] = serde_json::Value::String(model.to_string());
-    }
-    Ok(channel_owned)
 }
 
 #[derive(Debug, Clone)]
@@ -3562,7 +3477,6 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
                             last_active_private_target: Arc::clone(
                                 &agent_instance.last_active_private_target,
                             ),
-                            runtime_config: Arc::clone(&agent_instance.runtime_config),
                         };
                         *bot_instance.agent_link.write().await = Some(link);
 
@@ -4085,7 +3999,6 @@ pub async fn monitor_agent_channels(
                         agent_id: agent_id.clone(),
                         last_active_channel: Arc::clone(&agent.last_active_channel),
                         last_active_private_target: Arc::clone(&agent.last_active_private_target),
-                        runtime_config: Arc::clone(&agent.runtime_config),
                     };
                     *bot_instance.agent_link.write().await = Some(link);
 

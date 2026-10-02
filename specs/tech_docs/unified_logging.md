@@ -45,7 +45,7 @@ Node/Rust 日志都不是 per-call 同步写入：
 - Node `UnifiedLogger.ts`：in-memory queue、100ms flusher、bounded queue、drop counter、50MB per-file rotation、exit drain。
 - Rust `logger.rs`：bounded mpsc、single writer task、`BufWriter<File>`、200ms flush、drop counter、pre-init sync fallback。
 
-同一条 Node 日志必须只有一个文件持久化 owner。Sidecar logger 初始化后，`console.*` / `sendLog()` 由 Node `UnifiedLogger.ts` 落盘；Rust 只保留真实的原始 stderr（native/runtime crash 与 logger 初始化前输出），不得让已被 Node 落盘的 `console.warn/error` 再经 stderr 进入 `[bun-err]`。stdout 仅承担初始化握手，Rust 看到 `[Logger] Unified logging initialized` 后停止捕获。Plugin Bridge 不初始化 Node UnifiedLogger，因此它的 stdout/stderr 仍由 Rust Bridge owner 落盘。
+同一条 Node 日志必须只有一个文件持久化 owner。Sidecar logger 初始化后，`console.log/warn/error/debug` 与 `sendLog()` 由 Node `UnifiedLogger.ts` 落盘；`console.info` 没有被该 logger 接管，不能用它记录需要排障留存的 Sidecar 诊断。Rust 只保留真实的原始 stderr（native/runtime crash 与 logger 初始化前输出），不得让已被 Node 落盘的 `console.warn/error` 再经 stderr 进入 `[bun-err]`。stdout 仅承担初始化握手，Rust 看到 `[Logger] Unified logging initialized` 后停止捕获。Plugin Bridge 不初始化 Node UnifiedLogger，因此它的 stdout/stderr 仍由 Rust Bridge owner 落盘。
 
 Rust unit-test binary 不写用户真实的 `~/.myagents/logs/unified-*.log`；测试日志只进入测试 runner 的标准日志捕获。这样 synthetic failure 不会污染随后用于产品排障的本机日志。
 
@@ -82,7 +82,7 @@ export interface LogEntry {
 
 ### 1. frontendLogger.ts (React 日志拦截)
 
-拦截前端 `console.*` 方法，将日志分发到 UI 和持久化队列。
+拦截前端 `console.log/error/warn/debug`，将这些日志分发到 UI 和持久化队列；`console.info` 不在此拦截范围内。
 
 ```typescript
 // 初始化（在 main.tsx 调用一次）

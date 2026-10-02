@@ -14,7 +14,7 @@ import AgentHeartbeatSection from './sections/AgentHeartbeatSection';
 import AgentMemoryUpdateSection from './sections/AgentMemoryUpdateSection';
 import AgentMemoryEvolutionSection from './sections/AgentMemoryEvolutionSection';
 import AgentTasksSection from './sections/AgentTasksSection';
-import { Settings2, HeartPulse } from 'lucide-react';
+import { SlidersIcon, HeartPulseIcon } from '@/components/icons';
 import type { ChannelType } from '../../../shared/types/agent';
 import AgentIdentityConflicts from './AgentIdentityConflicts';
 import { resolveAgentWorkspaceProjections } from '../../../shared/agentWorkspaceIdentity';
@@ -112,7 +112,7 @@ export default function WorkspaceGeneralTab({
         {/* Card 1: Basic settings */}
         <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
           <h3 className="flex items-center gap-2 text-base font-medium text-[var(--ink)]">
-            <Settings2 className="h-[18px] w-[18px] text-[var(--ink-muted)]" />
+            <SlidersIcon className="h-[18px] w-[18px] text-[var(--ink-muted)]" />
             {t('agentSettings.general.basicsTitle')}
           </h3>
           <div className="mt-4">
@@ -138,7 +138,7 @@ export default function WorkspaceGeneralTab({
           <div className="flex items-center justify-between">
             <div className="flex-1 pr-4">
               <h3 className="flex items-center gap-2 text-base font-medium text-[var(--ink)]">
-                <HeartPulse className="h-[18px] w-[18px] text-[var(--heartbeat)]" />
+                <HeartPulseIcon className="h-[18px] w-[18px] text-[var(--heartbeat)]" />
                 {t('agentSettings.general.proactiveTitle')}
               </h3>
               <p className="mt-0.5 text-xs text-[var(--ink-muted)]">

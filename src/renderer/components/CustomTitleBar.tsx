@@ -9,7 +9,14 @@
  * we use decorations: false on Windows for custom title bar styling.
  */
 
-import { Minus, Square, X, RefreshCw, RotateCcw, Copy } from 'lucide-react';
+import {
+  MinusIcon,
+  StopIcon,
+  CloseIcon,
+  RefreshIcon,
+  UndoIcon,
+  CopyIcon,
+} from '@/components/icons';
 import { type CSSProperties, type ReactNode, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { isTauri } from '@/api/tauriClient';
@@ -193,7 +200,7 @@ export default function CustomTitleBar({
                                 title={t('titlebar.restoreTitle', { count: restoreCount })}
                                 data-no-drag
                             >
-                                <RotateCcw className="h-3.5 w-3.5 text-[var(--accent-warm)]" />
+                                <UndoIcon className="h-3.5 w-3.5 text-[var(--accent-warm)]" />
                                 <span>{t('titlebar.restorePrevious')}</span>
                                 {restoreCount > 1 && (
                                     <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--accent-warm-muted)] px-1 text-xs font-semibold text-[var(--accent-warm)]">
@@ -208,7 +215,7 @@ export default function CustomTitleBar({
                                 title={t('titlebar.dismiss')}
                                 data-no-drag
                             >
-                                <X className="h-3 w-3" />
+                                <CloseIcon className="h-3 w-3" />
                             </button>
                         </div>
                         <TitlebarDragSpacer className="w-1" />
@@ -233,7 +240,7 @@ export default function CustomTitleBar({
                                 : (updateVersion ? t('titlebar.updateToVersion', { version: updateVersion }) : t('titlebar.restartAndUpdate'))}
                             data-no-drag
                         >
-                            <RefreshCw className={`h-3.5 w-3.5 ${updateInstalling ? 'animate-spin' : ''}`} />
+                            <RefreshIcon className={`h-3.5 w-3.5 ${updateInstalling ? 'animate-spin' : ''}`} />
                             <span>{updateInstalling ? t('titlebar.installing') : t('titlebar.restartUpdate')}</span>
                         </button>
                         <TitlebarDragSpacer className="w-1" />
@@ -250,7 +257,7 @@ export default function CustomTitleBar({
                         title={t('titlebar.minimize')}
                         data-no-drag
                     >
-                        <Minus className="h-4 w-4" />
+                        <MinusIcon className="h-4 w-4" />
                     </button>
                     <button
                         onClick={handleMaximize}
@@ -259,9 +266,9 @@ export default function CustomTitleBar({
                         data-no-drag
                     >
                         {isMaximized ? (
-                            <Copy className="h-3.5 w-3.5" />
+                            <CopyIcon className="h-3.5 w-3.5" />
                         ) : (
-                            <Square className="h-3.5 w-3.5" />
+                            <StopIcon className="h-3.5 w-3.5" />
                         )}
                     </button>
                     <button
@@ -270,7 +277,7 @@ export default function CustomTitleBar({
                         title={t('titlebar.close')}
                         data-no-drag
                     >
-                        <X className="h-4 w-4" />
+                        <CloseIcon className="h-4 w-4" />
                     </button>
                 </div>
             )}

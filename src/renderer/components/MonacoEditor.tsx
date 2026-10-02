@@ -9,7 +9,15 @@
  * - Local bundle (no CDN) for Tauri CSP compatibility
  */
 import Editor, { loader, type Monaco } from '@monaco-editor/react';
-import { ClipboardPaste, Copy, Loader2, Quote, Scissors, Search, TextSelect } from 'lucide-react';
+import {
+  PasteIcon,
+  CopyIcon,
+  LoaderIcon,
+  QuoteIcon,
+  ScissorsIcon,
+  SearchIcon,
+  TextSelectIcon,
+} from '@/components/icons';
 import * as monaco from 'monaco-editor';
 import { retainFocusOnMouseDown } from '@/utils/focusRetention';
 import {
@@ -553,16 +561,16 @@ export default function MonacoEditor({
         const hasSelection = !!sel && !sel.isEmpty();
         const items: ContextMenuItem[] = [];
         if (!readOnly) {
-            items.push({ label: t('monacoContext.cut'), icon: <Scissors className="h-4 w-4" />, disabled: !hasSelection, onClick: cutSelection });
+            items.push({ label: t('monacoContext.cut'), icon: <ScissorsIcon className="h-4 w-4" />, disabled: !hasSelection, onClick: cutSelection });
         }
-        items.push({ label: t('monacoContext.copy'), icon: <Copy className="h-4 w-4" />, disabled: !hasSelection, onClick: copySelection });
+        items.push({ label: t('monacoContext.copy'), icon: <CopyIcon className="h-4 w-4" />, disabled: !hasSelection, onClick: copySelection });
         if (!readOnly) {
-            items.push({ label: t('monacoContext.paste'), icon: <ClipboardPaste className="h-4 w-4" />, onClick: pasteClipboard });
+            items.push({ label: t('monacoContext.paste'), icon: <PasteIcon className="h-4 w-4" />, onClick: pasteClipboard });
         }
         items.push({ separator: true });
-        items.push({ label: t('monacoContext.selectAll'), icon: <TextSelect className="h-4 w-4" />, onClick: selectAllText });
+        items.push({ label: t('monacoContext.selectAll'), icon: <TextSelectIcon className="h-4 w-4" />, onClick: selectAllText });
         items.push({ separator: true });
-        items.push({ label: t('monacoContext.find'), icon: <Search className="h-4 w-4" />, onClick: openFind });
+        items.push({ label: t('monacoContext.find'), icon: <SearchIcon className="h-4 w-4" />, onClick: openFind });
         return items;
     }, [readOnly, cutSelection, copySelection, pasteClipboard, selectAllText, openFind, t]);
 
@@ -663,7 +671,7 @@ export default function MonacoEditor({
                 onMount={handleOnMount}
                 loading={
                     <div className="flex h-full items-center justify-center gap-2 text-[var(--ink-muted)]">
-                        <Loader2 className="h-5 w-5 animate-spin" />
+                        <LoaderIcon className="h-5 w-5 animate-spin" />
                         <span className="text-sm">{t('monacoEditor.loading')}</span>
                     </div>
                 }
@@ -691,7 +699,7 @@ export default function MonacoEditor({
                         onClick={handleQuoteClick}
                         onMouseDown={retainFocusOnMouseDown}
                     >
-                        <Quote className="h-3 w-3" />
+                        <QuoteIcon className="h-3 w-3" />
                         {t('monacoEditor.quote')}
                     </button>
                 </div>

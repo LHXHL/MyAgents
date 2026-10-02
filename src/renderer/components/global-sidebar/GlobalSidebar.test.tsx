@@ -514,7 +514,7 @@ describe('GlobalSidebar rail flyout', () => {
     const placeholder = region.querySelector('[data-global-sidebar-session-placeholder]')!;
     expect(placeholder.children).toHaveLength(3);
     for (const row of Array.from(placeholder.children)) {
-      expect(row).toHaveClass('h-9');
+      expect(row).toHaveClass('h-8');
       expect(row).not.toHaveClass('animate-pulse', 'bg-[var(--paper-inset)]/60');
       expect(row).toHaveAttribute('aria-hidden', 'true');
     }
@@ -1124,7 +1124,7 @@ describe('GlobalSidebar rail flyout', () => {
     expect(expand).not.toHaveAttribute('title');
     const toggleSlot = expand.closest('.absolute');
     expect(toggleSlot).toHaveClass('left-[var(--global-sidebar-toggle-left)]');
-    expect(expand.querySelector('[data-global-sidebar-toggle-icon]')).toHaveClass('lucide-panel-left');
+    expect(expand.querySelector('[data-global-sidebar-toggle-icon]')).toHaveClass('app-icon-sidebar');
     fireEvent.mouseEnter(expand.parentElement!);
     expect(screen.getByRole('tooltip', { name: String(i18n.t('app:globalSidebar.expand')) }))
       .toHaveClass('bg-[var(--button-dark-bg)]/90');
@@ -1132,7 +1132,7 @@ describe('GlobalSidebar rail flyout', () => {
     const collapse = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.collapse')) });
     expect(collapse).toBe(expand);
     expect(collapse.closest('.absolute')).toBe(toggleSlot);
-    expect(collapse.querySelector('[data-global-sidebar-toggle-icon]')).toHaveClass('lucide-panel-left');
+    expect(collapse.querySelector('[data-global-sidebar-toggle-icon]')).toHaveClass('app-icon-sidebar');
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
     fireEvent.mouseLeave(collapse.parentElement!);
     fireEvent.mouseEnter(collapse.parentElement!);
@@ -1214,8 +1214,9 @@ describe('GlobalSidebar rail flyout', () => {
     const inactiveRow = screen.getByText('Project two').closest<HTMLElement>('[data-global-sidebar-workspace-row]')!;
     const activeTitle = activeRow.querySelector('[data-global-sidebar-workspace-title]');
     const inactiveTitle = inactiveRow.querySelector('[data-global-sidebar-workspace-title]');
-    expect(activeRow).toHaveClass('h-9');
-    expect(inactiveRow).toHaveClass('h-9');
+    // Navigation, workspace and session rows share one 32px rhythm.
+    expect(activeRow).toHaveClass('h-8');
+    expect(inactiveRow).toHaveClass('h-8');
     expect(activeTitle).toHaveClass('font-medium');
     expect(inactiveTitle).toHaveClass('font-medium');
     expect(inactiveTitle?.className).not.toContain('group-hover/workspace:font-medium');
@@ -1244,7 +1245,7 @@ describe('GlobalSidebar rail flyout', () => {
     // occupy the exact pixels that used to be solid spacing below the
     // section title, instead of stacking a fade below an unchanged gap.
     const workspaceSectionHeader = screen.getByText(String(i18n.t('app:globalSidebar.workspaceSection'))).closest('div');
-    expect(workspaceSectionHeader).toHaveClass('h-8', 'px-3');
+    expect(workspaceSectionHeader).toHaveClass('h-8', 'pl-6', 'pr-3');
     // The fade must consume the spacing directly above the notification entry:
     // the expanded footer drops its top padding so the scroller edge (and the
     // fade) reach the notification button, instead of stacking an extra
@@ -1290,19 +1291,24 @@ describe('GlobalSidebar rail flyout', () => {
     const workspaceRow = screen.getByText('Project one').closest<HTMLElement>('[data-global-sidebar-workspace-row]')!;
     const workspaceToggle = within(workspaceRow).getAllByRole('button')[0];
     const branch = workspaceRow.nextElementSibling as HTMLElement;
-    const workspaceChevron = workspaceToggle.querySelector('svg');
+    const disclosureSlot = workspaceToggle.querySelector('[data-global-sidebar-disclosure-slot]');
+    const workspaceChevron = workspaceToggle.querySelector('[data-global-sidebar-disclosure-chevron]');
     expect(branch).toHaveAttribute('data-global-sidebar-workspace-branch');
     expect(branch).toHaveAttribute('data-state', 'closed');
-    expect(workspaceToggle).toHaveClass('gap-1', 'pl-1', 'pr-2', 'text-sm');
-    expect(workspaceChevron).toHaveClass('h-3.5', 'w-3.5');
-    expect(workspaceRow.querySelector('[data-global-sidebar-workspace-title]')).toHaveClass('ml-1');
+    // Avatar and chevron share one 16px slot on the sidebar icon axis; the
+    // chevron only appears on row hover or keyboard focus.
+    expect(workspaceToggle).toHaveClass('gap-3', 'pl-4', 'pr-2', 'text-sm');
+    expect(disclosureSlot).toHaveClass('h-4', 'w-4');
+    expect(workspaceChevron).toHaveClass('absolute', 'opacity-0', 'group-hover/workspace:opacity-100');
+    expect(workspaceChevron).not.toHaveClass('rotate-90');
     expect(screen.queryByText('Animated session')).not.toBeInTheDocument();
 
     fireEvent.click(workspaceToggle);
     act(() => vi.advanceTimersByTime(16));
     expect(branch).toHaveAttribute('data-state', 'open');
     expect(branch).toHaveClass('grid-rows-[1fr]', 'duration-200', 'motion-reduce:transition-none');
-    expect(branch.querySelector('.ml-2\\.5')).toHaveClass('pl-1');
+    expect(workspaceChevron).toHaveClass('rotate-90');
+    expect(branch.querySelector('.ml-6')).toHaveClass('border-l', 'pl-1.5');
     expect(screen.getByText('Animated session')).toHaveClass('text-sm');
 
     fireEvent.click(workspaceToggle);
@@ -1506,7 +1512,7 @@ describe('GlobalSidebar rail flyout', () => {
     expect(firstSession).toHaveTextContent('Telegram');
     expect(firstSession).toHaveTextContent(String(i18n.t('app:sessionTags.cron')));
     const firstSessionRow = firstSession.closest('[data-global-sidebar-session-row]');
-    expect(firstSessionRow).toHaveClass('h-9');
+    expect(firstSessionRow).toHaveClass('h-8');
     expect(firstSessionRow?.querySelector('[data-global-sidebar-session-title]')).toHaveClass('text-sm');
     expect(firstSessionRow?.querySelector('[data-global-sidebar-session-title]')).not.toHaveClass('text-xs');
     expect(screen.getByText('Telegram')).toHaveClass('text-xs', 'font-medium');

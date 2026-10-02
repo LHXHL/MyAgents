@@ -305,7 +305,7 @@ test('macOS release prepares and validates Sharp inside each target build', () =
     targetLoopAt,
   );
   const tauriBuildAt = buildMacos.indexOf(
-    'npm run tauri:build -- --target "$TARGET"',
+    'npm run tauri:build:prepared -- --target "$TARGET"',
     targetLoopAt,
   );
 
@@ -495,14 +495,14 @@ test('every setup, dev, and release entry point delegates native resources to on
   const macDevPrepare = buildDev.indexOf(
     'prepare-native-inference.mjs" "$DEV_NATIVE_TARGET"',
   );
-  const macDevBuild = buildDev.indexOf('npm run tauri:build -- --debug');
+  const macDevBuild = buildDev.indexOf('npm run tauri:build:prepared -- --debug');
   assert.ok(macDevPrepare >= 0 && macDevPrepare < macDevBuild);
 
   const windowsDevPrepare = buildDevWindows.indexOf(
     'prepare-native-inference.mjs" "x86_64-pc-windows-msvc"',
   );
   const windowsDevBuild = buildDevWindows.indexOf(
-    'npm run tauri:build -- --debug',
+    'npm run tauri:build:prepared -- --debug',
   );
   assert.ok(windowsDevPrepare >= 0 && windowsDevPrepare < windowsDevBuild);
 
@@ -510,7 +510,7 @@ test('every setup, dev, and release entry point delegates native resources to on
     'prepare-native-inference.mjs" "$TARGET"',
   );
   const macBuild = buildMacos.indexOf(
-    'npm run tauri:build -- --target "$TARGET"',
+    'npm run tauri:build:prepared -- --target "$TARGET"',
   );
   assert.ok(macPrepare >= 0 && macPrepare < macBuild);
 
@@ -518,13 +518,13 @@ test('every setup, dev, and release entry point delegates native resources to on
     'prepare-native-inference.mjs" "$TARGET"',
   );
   const linuxBuild = buildLinux.indexOf(
-    'npm run tauri:build -- --target "$TARGET"',
+    'npm run tauri:build:prepared -- --target "$TARGET"',
   );
   assert.ok(linuxPrepare >= 0 && linuxPrepare < linuxBuild);
 
   const windowsPrepare = buildWindows.indexOf('prepare-native-inference.mjs');
   const windowsBuild = buildWindows.indexOf(
-    'npm run tauri:build -- --target x86_64-pc-windows-msvc',
+    'npm run tauri:build:prepared -- --target x86_64-pc-windows-msvc',
   );
   assert.ok(windowsPrepare >= 0 && windowsPrepare < windowsBuild);
 
@@ -546,7 +546,7 @@ test('every setup, dev, and release entry point delegates native resources to on
   );
   assert.match(
     packageJson.scripts['tauri:dev'],
-    /^node scripts\/prepare-cliproxy\.mjs && npm run prepare:native-inference && tauri dev$/,
+    /^node scripts\/prepare-cliproxy\.mjs && npm run prepare:native-inference && npm run verify:dsh-runtime && npm run verify:dsh-runtime:fresh && tauri dev$/,
   );
   assert.match(nativeResourceScript, /prepare-document-processing\.mjs/);
   assert.match(nativeResourceScript, /prepare-speech-inference\.mjs/);

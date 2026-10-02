@@ -1,5 +1,5 @@
-import { Ellipsis } from 'lucide-react';
-import { cloneElement, isValidElement, useEffect, useRef, useState } from 'react';
+import { ChevronDownIcon, ChevronUpIcon, MoreIcon } from '@/components/icons';
+import { cloneElement, isValidElement, useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -202,7 +202,7 @@ export function FileActionMenuButton({ path, className = '' }: { path?: string |
       }}
       className={`flex size-8 shrink-0 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-[background-color,color,transform] duration-150 hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] active:translate-y-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-border)]/30 ${className}`}
     >
-      <Ellipsis className="size-4" aria-hidden="true" />
+      <MoreIcon className="size-4" aria-hidden="true" />
     </button>
   );
 }
@@ -280,6 +280,11 @@ const EXPAND_FADE_CLASSES: Record<ExpandFade, string> = {
   'paper-elevated': 'from-[var(--paper-elevated)] to-[var(--paper-elevated-a0)]',
   'code-bg': 'from-[var(--code-bg)] to-[var(--code-bg-a0)]',
 };
+const COMPACT_EXPAND_FADE_CLASSES: Record<ExpandFade, string> = {
+  'paper-inset': 'from-[var(--paper-inset)]/90 via-[var(--paper-inset)]/80 via-40% to-[var(--paper-inset-a0)]',
+  'paper-elevated': 'from-[var(--paper-elevated)]/90 via-[var(--paper-elevated)]/80 via-40% to-[var(--paper-elevated-a0)]',
+  'code-bg': 'from-[var(--code-bg)]/90 via-[var(--code-bg)]/80 via-40% to-[var(--code-bg-a0)]',
+};
 
 interface ExpandableContainerProps {
   children: ReactNode;
@@ -287,17 +292,25 @@ interface ExpandableContainerProps {
   wrapperClassName?: string;
   /** Fade color — must match the actual content background for a smooth fade. */
   fade?: ExpandFade;
+  /** A short preview with a translucent inline expander and a collapse action. */
+  compact?: boolean;
+  expandLabel?: string;
+  collapseLabel?: string;
 }
 
 export function ExpandableContainer({
   children,
   wrapperClassName = '',
-  fade = 'paper-inset'
+  fade = 'paper-inset',
+  compact = false,
+  expandLabel,
+  collapseLabel,
 }: ExpandableContainerProps) {
   const { t } = useTranslation('chat');
   const ref = useRef<HTMLDivElement>(null);
   const [isExpanded, setIsExpanded] = useState(false);
   const [needsExpand, setNeedsExpand] = useState(false);
+  const contentId = useId();
   const notifyRowLayoutChanged = useNotifyRowLayoutChanged();
 
   useEffect(() => {
@@ -315,29 +328,62 @@ export function ExpandableContainer({
       ro.disconnect();
       mo.disconnect();
     };
-  }, [isExpanded]);
+  }, [isExpanded, compact]);
 
   return (
     <div className={`relative ${wrapperClassName}`}>
       <div
         ref={ref}
-        className={`${isExpanded ? '' : 'max-h-96'} overflow-hidden`}
+        id={contentId}
+        className={`${isExpanded ? '' : compact ? 'max-h-20' : 'max-h-96'} overflow-hidden`}
       >
         {children}
       </div>
-      {needsExpand && !isExpanded && (
+      {needsExpand && !isExpanded && compact && (
+        <button
+          type="button"
+          aria-expanded={false}
+          aria-controls={contentId}
+          onClick={() => {
+            notifyRowLayoutChanged('expandable-container-expand');
+            setIsExpanded(true);
+          }}
+          className={`absolute inset-x-0 bottom-0 flex h-12 w-full items-end justify-center gap-1.5 bg-gradient-to-t ${COMPACT_EXPAND_FADE_CLASSES[fade]} pb-2 text-xs text-[var(--ink-secondary)] hover:text-[var(--ink)] focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--accent)]`}
+        >
+          <ChevronDownIcon className="mb-0.5 size-3.5" aria-hidden="true" />
+          {expandLabel ?? t('shell.toolChrome.common.expandAll')}
+        </button>
+      )}
+      {needsExpand && !isExpanded && !compact && (
         <div className={`absolute bottom-0 left-0 right-0 flex justify-center bg-gradient-to-t ${EXPAND_FADE_CLASSES[fade]} pb-2 pt-8`}>
           <button
             type="button"
+            aria-expanded={false}
+            aria-controls={contentId}
             onClick={() => {
               notifyRowLayoutChanged('expandable-container-expand');
               setIsExpanded(true);
             }}
             className="rounded-full border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-1 text-xs text-[var(--ink-muted)] shadow-sm hover:text-[var(--ink-secondary)] transition-colors"
           >
-            {t('shell.toolChrome.common.expandAll')}
+            {expandLabel ?? t('shell.toolChrome.common.expandAll')}
           </button>
         </div>
+      )}
+      {isExpanded && compact && (
+        <button
+          type="button"
+          aria-expanded
+          aria-controls={contentId}
+          onClick={() => {
+            notifyRowLayoutChanged('expandable-container-collapse');
+            setIsExpanded(false);
+          }}
+          className="flex w-full items-center justify-center gap-1.5 py-2 text-xs text-[var(--ink-muted)] hover:text-[var(--ink)] focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--accent)]"
+        >
+          <ChevronUpIcon className="size-3.5" aria-hidden="true" />
+          {collapseLabel ?? t('shell.toolChrome.common.collapse')}
+        </button>
       )}
     </div>
   );
