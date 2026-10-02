@@ -322,16 +322,10 @@
   --global-sidebar-row-bg: var(--paper-inset);
 }
 
-.global-sidebar-resource-row[aria-current='page']::before {
-  position: absolute;
-  top: calc(var(--space-2) + var(--space-0-5));
-  bottom: calc(var(--space-2) + var(--space-0-5));
-  left: 0;
-  width: var(--space-0-5);
-  border-radius: var(--radius-full);
-  background: var(--accent);
-  content: '';
-  pointer-events: none;
+/* Selected/open sidebar entries fill their AppIcon tint layer instead of
+   adding a second accent marker; the row surface alone carries selection. */
+.global-sidebar-row:is([aria-current='page'], [aria-expanded='true'][data-notification-center-trigger]) {
+  --app-icon-tint: 0.2;
 }
 
 .global-sidebar-workspace-actions {
