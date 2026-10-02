@@ -66,7 +66,7 @@ vi.mock('@/api/SseConnection', () => ({
 }));
 
 vi.mock('@/config/useConfigData', () => ({
-  useConfigData: () => ({ config: { multiAgentRuntime: false } }),
+  useConfigData: () => ({ config: {  } }),
 }));
 
 vi.mock('@/config/services/agentConfigService', () => ({

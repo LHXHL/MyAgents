@@ -1179,7 +1179,6 @@ export default function TabProvider({
       ? normalizeRuntime(sessionRuntime)
       : resolveEffectiveRuntime(
           agent?.runtime,
-          !!appConfig.multiAgentRuntime,
           agent?.runtimePreference,
           agent?.runtimeConfig?.source,
           agent?.providerId,

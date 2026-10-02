@@ -173,45 +173,30 @@ describe('disk-latest Agent channel patches', () => {
     ]));
   });
 
-  it('accepts only the native permission vocabulary for a system Runtime channel', async () => {
+  it('keeps system Runtime execution permissions owned by the Agent or Session', async () => {
     (configState.current as AppConfig).agents![0].runtime = 'codex';
-
-    await expect(patchAgentChannelConfig('agent-1', 'channel-1', {
-      overrides: { permissionMode: 'fullAgency' },
-    })).rejects.toThrow("Invalid Channel permissionMode 'fullAgency'");
-
-    await expect(patchAgentChannelConfig('agent-1', 'channel-1', {
-      overrides: { permissionMode: '' },
-    })).rejects.toThrow("Invalid Channel permissionMode ''");
-
-    await expect(patchAgentChannelConfig('agent-1', 'channel-1', {
-      overrides: { permissionMode: 'full-auto' },
-    })).resolves.toMatchObject({ overrides: { permissionMode: 'full-auto' } });
+    for (const permissionMode of ['fullAgency', '', 'full-auto']) {
+      await expect(patchAgentChannelConfig('agent-1', 'channel-1', {
+        overrides: { permissionMode },
+      })).rejects.toThrow("Channel execution override 'permissionMode' is no longer supported");
+    }
   });
 
-  it('keeps managed Channel writes in the product permission vocabulary', async () => {
+  it('keeps managed Provider execution permissions owned by the Agent or Session', async () => {
     (configState.current as AppConfig).agents![0].providerId = 'codex-sub';
-
-    await expect(patchAgentChannelConfig('agent-1', 'channel-1', {
-      overrides: { permissionMode: 'full-auto' },
-    })).rejects.toThrow("Invalid Channel permissionMode 'full-auto'");
-
-    await expect(patchAgentChannelConfig('agent-1', 'channel-1', {
-      overrides: { permissionMode: 'fullAgency' },
-    })).resolves.toMatchObject({ overrides: { permissionMode: 'fullAgency' } });
+    for (const permissionMode of ['full-auto', 'fullAgency']) {
+      await expect(patchAgentChannelConfig('agent-1', 'channel-1', {
+        overrides: { permissionMode },
+      })).rejects.toThrow("Channel execution override 'permissionMode' is no longer supported");
+    }
   });
 
-  it('preserves a historical managed native permission during a model-only edit', async () => {
+  it('rejects a Channel model override without changing persisted execution settings', async () => {
     (configState.current as AppConfig).agents![0].providerId = 'codex-sub';
-    (configState.current as AppConfig).agents![0].channels![0].overrides = {
-      permissionMode: 'suggest',
-      model: 'gpt-old',
-    };
-
+    const before = structuredClone(configState.current);
     await expect(patchAgentChannelConfig('agent-1', 'channel-1', {
-      overrides: { permissionMode: 'suggest', model: 'gpt-new' },
-    })).resolves.toMatchObject({
-      overrides: { permissionMode: 'suggest', model: 'gpt-new' },
-    });
+      overrides: { model: 'gpt-new' },
+    })).rejects.toThrow("Channel execution override 'model' is no longer supported");
+    expect(configState.current).toEqual(before);
   });
 });

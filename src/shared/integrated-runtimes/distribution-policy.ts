@@ -8,7 +8,7 @@ import {
 
 export type DistributionRuntimeType = "builtin" | "dsh" | ExternalRuntimeId;
 
-export type RuntimeSelectorAvailability = "always" | "labs" | "hidden";
+export type RuntimeSelectorAvailability = "always" | "hidden";
 
 export interface AgentRuntimeDistributionPolicy {
   schemaVersion: 1;
@@ -61,7 +61,7 @@ export function parseAgentRuntimeDistributionPolicy(
   ) {
     throw new Error("Default Integrated Runtime must be allowed");
   }
-  if (!(["always", "labs", "hidden"] as const).includes(
+  if (!(["always", "hidden"] as const).includes(
     row.selectorAvailability as RuntimeSelectorAvailability,
   )) {
     throw new Error("Runtime distribution policy has invalid selectorAvailability");
@@ -82,12 +82,8 @@ export const AGENT_RUNTIME_DISTRIBUTION_POLICY = Object.freeze(
 
 export function isRuntimeSelectorAvailable(
   policy: AgentRuntimeDistributionPolicy,
-  labsEnabled: boolean,
 ): boolean {
-  return (
-    policy.selectorAvailability === "always" ||
-    (policy.selectorAvailability === "labs" && labsEnabled)
-  );
+  return policy.selectorAvailability === "always";
 }
 
 export function integratedRuntimeType(id: IntegratedRuntimeId): "builtin" | "dsh" {

@@ -36,7 +36,7 @@ beforeEach(() => {
     configSnapshotAt: '2026-10-01T00:00:00.000Z', runtime: 'builtin', providerId: 'alpha',
     model: 'one', permissionMode: 'plan', providerRoute: createConcreteProviderRoute('alpha', 'one'),
     providerEnvJson: JSON.stringify(env), reasoningEffort: 'high', mcpEnabledServers: ['mcp-a'], enabledPluginIds: ['plugin-a'] };
-  mocks.loadConfig.mockReturnValue({ multiAgentRuntime: true });
+  mocks.loadConfig.mockReturnValue({  });
   mocks.loadProjects.mockReturnValue([{ id: 'p', agentId: 'a', path: '/workspace' }]);
   mocks.agent.mockReturnValue({ id: 'a', name: 'Agent', enabled: true, permissionMode: 'plan', runtime: 'builtin', providerId: 'alpha', model: 'one' });
   mocks.providers.mockReturnValue([

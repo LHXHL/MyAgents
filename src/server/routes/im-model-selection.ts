@@ -38,7 +38,7 @@ async function modelContext(agentId: string, sessionId?: string) {
   const metadata = sessionId ? getSessionMetadata(sessionId) : null;
   if (sessionId && (!metadata || !workspacePathsEqual(metadata.agentDir, workspacePath))) throw new Error('Session workspace does not match Agent');
   if (metadata && !metadata.configSnapshotAt) throw new Error('Legacy Session must be frozen before model selection');
-  const current = metadata ?? snapshotForImSession(agent, { managedCodexProviderReady: isManagedCodexProviderReady(config), runtimePolicy: { multiAgentRuntime: !!config.multiAgentRuntime, defaultIntegratedRuntime: config.defaultIntegratedRuntime } });
+  const current = metadata ?? snapshotForImSession(agent, { managedCodexProviderReady: isManagedCodexProviderReady(config), runtimePolicy: { defaultIntegratedRuntime: config.defaultIntegratedRuntime } });
   const runtime = current.runtime ?? 'builtin';
   const nativeCli = (runtime === 'codex' || runtime === 'claude-code') && current.runtimeSource !== 'managed-provider';
   const options: ImModelOption[] = [];

@@ -151,23 +151,15 @@ export function TaskAdvancedConfigEditor(props: Props) {
       : null;
   }, [workspacePath, config, projects]);
 
-  // Multi-Agent Runtime feature gate (Settings → 实验室) gates user-managed
-  // external runtimes only. Managed Codex Provider tasks carry
-  // runtimeConfig.source='managed-provider' and must keep rendering as Codex
-  // even when Labs is off; otherwise editing a valid managed-provider task
-  // would collapse it into a builtin/provider shape.
-  const multiAgentRuntimeEnabled = !!config?.multiAgentRuntime;
-  const runtimeSelectorAvailable = isAgentRuntimeSelectorAvailable(
-    multiAgentRuntimeEnabled,
-  );
+  // Runtime selection follows the build distribution; Task overrides retain their identity.
+  const runtimeSelectorAvailable = isAgentRuntimeSelectorAvailable();
 
   // Effective runtime that this task will run under (in this UI's view):
-  //   user override `runtime` (if set) > Agent's runtime > 'builtin' default
+  //   Task override (if set) > explicit Agent choice > root Integrated default
   // External runtimes self-manage model/permission/MCP, so all three
   // sub-fields are gated on `effectiveRuntime === 'builtin'`.
   const agentRuntimeCatalogIdentity = resolveAgentRuntimeModelCatalogIdentity(
     workspaceAgent,
-    multiAgentRuntimeEnabled,
     config?.defaultIntegratedRuntime,
   );
   const agentRuntime = agentRuntimeCatalogIdentity.runtime;
@@ -178,7 +170,6 @@ export function TaskAdvancedConfigEditor(props: Props) {
   );
   const rawEffectiveRuntime = runtimeCatalogIdentity.runtime;
   const effectiveRuntimeSource = runtimeCatalogIdentity.source;
-  // Labs gates new selection, not execution/editing of an already-frozen Task.
   const effectiveRuntime: RuntimeType = rawEffectiveRuntime;
   const usesProductConfiguration = effectiveRuntime === 'builtin' || effectiveRuntime === 'dsh';
   const availableProviders = useMemo(

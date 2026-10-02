@@ -9,7 +9,6 @@ import {
   resolveCurrentProviderForSession,
   resolveLegacyBuiltinSnapshotProviderId,
   resolveLauncherProvider,
-  shouldBlockSendForLabsDisabledExternalRuntime,
   shouldDegradedLoad,
   shouldResetModelOnProviderChange,
   shouldReuseSseSubscriptionForSessionChange,
@@ -125,45 +124,6 @@ describe('resolveCurrentProviderForSession (#401)', () => {
         fallbackProvider: fallback,
       }),
     ).toBe(pinned);
-  });
-});
-
-describe('shouldBlockSendForLabsDisabledExternalRuntime', () => {
-  it('keeps frozen external CLI sessions executable when Labs runtime mode is off', () => {
-    expect(shouldBlockSendForLabsDisabledExternalRuntime({
-      sessionRuntime: 'codex',
-      sessionRuntimeSource: 'system-cli',
-      multiAgentRuntimeEnabled: false,
-    })).toBe(false);
-  });
-
-  it('does not block Managed Codex Provider sessions when Labs runtime mode is off', () => {
-    expect(shouldBlockSendForLabsDisabledExternalRuntime({
-      sessionRuntime: 'codex',
-      sessionRuntimeSource: 'managed-provider',
-      multiAgentRuntimeEnabled: false,
-    })).toBe(false);
-  });
-
-  it('does not block builtin sessions or Labs-enabled external sessions', () => {
-    expect(shouldBlockSendForLabsDisabledExternalRuntime({
-      sessionRuntime: 'builtin',
-      sessionRuntimeSource: undefined,
-      multiAgentRuntimeEnabled: false,
-    })).toBe(false);
-    expect(shouldBlockSendForLabsDisabledExternalRuntime({
-      sessionRuntime: 'codex',
-      sessionRuntimeSource: 'system-cli',
-      multiAgentRuntimeEnabled: true,
-    })).toBe(false);
-  });
-
-  it('keeps frozen integrated DSH sessions executable when Labs runtime mode is off', () => {
-    expect(shouldBlockSendForLabsDisabledExternalRuntime({
-      sessionRuntime: 'dsh',
-      sessionRuntimeSource: 'integrated',
-      multiAgentRuntimeEnabled: false,
-    })).toBe(false);
   });
 });
 

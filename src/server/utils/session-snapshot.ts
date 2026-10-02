@@ -85,7 +85,7 @@ export function snapshotForForkedSession(
 /** Caller-resolved execution identity and Agent-template birth policy. */
 interface SessionSnapshotRuntimeOptions {
   /** Agent-template births need the same distribution/gate policy as desktop. */
-  runtimePolicy?: { multiAgentRuntime: boolean; defaultIntegratedRuntime?: unknown };
+  runtimePolicy?: { defaultIntegratedRuntime?: unknown };
   /**
    * Runtime the session is being materialized for. Used when a caller creates a
    * session as part of a runtime switch before the AgentConfig patch is written.
@@ -200,8 +200,7 @@ export function snapshotForImSession(
 ): OwnedSessionSnapshot & Pick<SessionMetadata, 'configSnapshotAt'> {
   let birthOptions = options;
   if (options?.runtimePolicy && options.runtimeOverride === undefined) {
-    const preferred = resolveEffectiveRuntime(agent.runtime, options.runtimePolicy.multiAgentRuntime,
-      agent.runtimePreference, agent.runtimeConfig?.source, agent.providerId, undefined,
+    const preferred = resolveEffectiveRuntime(agent.runtime, agent.runtimePreference, agent.runtimeConfig?.source, agent.providerId, undefined,
       options.runtimePolicy.defaultIntegratedRuntime);
     const managed = preferred === 'builtin' && agentUsesManagedCodexProvider(agent);
     if (managed && options.managedCodexProviderReady !== true) {

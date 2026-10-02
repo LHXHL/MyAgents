@@ -250,7 +250,6 @@ import {
   resolveCurrentProviderForSession,
   resolveLegacyBuiltinSnapshotProviderId,
   isPinnedProviderUnavailable,
-  shouldBlockSendForLabsDisabledExternalRuntime,
   shouldResetModelOnProviderChange,
   shouldSkipSnapshotWrite,
 } from '@/utils/optionResolve';
@@ -380,21 +379,6 @@ const LazyIntroductionOverlay = lazy(
 );
 // Terminal chrome now uses CSS tokens that auto-switch with light/dark theme.
 // No need for cached theme constants — the header uses var(--paper), var(--ink), etc.
-
-/** Human-readable label for a runtime type (used in confirm dialogs, toasts, etc.) */
-function getRuntimeDisplayLabel(runtime: RuntimeType | undefined): string {
-  switch (runtime) {
-    case 'dsh':
-      return 'MyAgents (DeepSeek Harness)';
-    case 'claude-code':
-      return 'Claude Code';
-    case 'codex':
-      return 'Codex';
-    case 'builtin':
-    default:
-      return 'MyAgents';
-  }
-}
 
 function buildBuiltinProviderRoute(
   provider: Provider | undefined,
@@ -810,7 +794,6 @@ export default function Chat({
     (sessionRuntime as RuntimeType | null) ??
     resolveEffectiveRuntime(
       currentAgent?.runtime,
-      !!config.multiAgentRuntime,
       currentAgent?.runtimePreference,
       currentAgent?.runtimeConfig?.source,
       currentAgent?.providerId,
@@ -1890,16 +1873,13 @@ export default function Chat({
       codex: { installed: false },
     },
   );
-  // Resolve the Agent template through the build policy. Labs controls selector
-  // availability in the standard distribution; hidden custom distributions use
-  // their own exact default without rewriting the stored Agent preference.
-  const multiAgentRuntimeEnabled = !!config.multiAgentRuntime;
+  // Resolve new Sessions through explicit Agent preference or the root default.
+  // Existing Sessions keep their frozen Runtime identity.
   // Agent's currently-configured runtime — used as the default for NEW sessions.
   // Managed Codex is a provider default, not the legacy user-managed Codex CLI
   // runtime, so stale `agent.runtime=codex` must not leak into Chat chrome.
   const agentRuntime: RuntimeType = resolveEffectiveRuntime(
     currentAgent?.runtime,
-    multiAgentRuntimeEnabled,
     currentAgent?.runtimePreference,
     currentAgent?.runtimeConfig?.source,
     currentAgent?.providerId,
@@ -2142,14 +2122,7 @@ export default function Chat({
     // 'pending' waits for the post-ensure resolver; 'adopt' must not override the
     // live sidecar's config. (External-runtime sibling of the MCP/model push gates.)
     if (configDispositionRef.current !== 'push') return;
-    // Cross-runtime sessions are opened in read-only mode until the user
-    // confirms a fresh session — don't pre-warm those (the confirmation flow
-    // resets sessionId, which retriggers this effect). Mirrors the
-    // `isCrossRuntimeSession` const defined later in this file, inlined here
-    // to avoid the TDZ ordering dependency.
-    // Backend also enforces this via SessionStore metadata check — belt-and-
-    // suspenders against a loading-session race where sessionRuntime is still
-    // null when this effect fires.
+    // Prewarm only the frozen Session runtime after its identity is known.
     if (sessionRuntime !== null && sessionRuntime !== currentRuntime) return;
     // Do not gate on runtime-model list readiness. Codex model discovery can
     // start its own app-server process; serializing it with pre-warm delays
@@ -4781,18 +4754,6 @@ export default function Chat({
     ? permissionMode
     : effectivePermissionMode;
 
-  // Labs controls creation/selection only. Existing sessions keep their frozen
-  // Runtime binding and remain executable after the gate is disabled.
-  const isCrossRuntimeSession = shouldBlockSendForLabsDisabledExternalRuntime({
-    sessionRuntime,
-    sessionRuntimeSource: currentRuntimeSource,
-    multiAgentRuntimeEnabled,
-  });
-  const [pendingCrossRuntimeMessage, setPendingCrossRuntimeMessage] = useState<{
-    text: string;
-    images: ImageAttachment[];
-  } | null>(null);
-
   const [questionDraft, setQuestionDraft] = useState<{
     sessionId: string | null;
     reply: AsyncQuestionReply;
@@ -4822,13 +4783,6 @@ export default function Chat({
         sessionState === 'stopping'
       ) {
         return false;
-      }
-
-      // Cross-runtime guard: session was created by external runtime (Codex/CC) but
-      // current runtime is builtin. Show confirm dialog instead of sending directly.
-      if (isCrossRuntimeSession) {
-        setPendingCrossRuntimeMessage({ text, images: images ?? [] });
-        return false; // Signal SimpleChatInput NOT to clear the input
       }
 
       // #300: the session pinned a provider that is no longer available (missing
@@ -5013,7 +4967,6 @@ export default function Chat({
       effectiveModel,
       reasoningEffort,
       inputUsesExternalRuntimeControls,
-      isCrossRuntimeSession,
       scrollToBottom,
       pinnedProviderUnavailable,
       runtimeExecutionUnavailable,
@@ -5322,6 +5275,7 @@ export default function Chat({
             legacyAgentRuntime: currentAgent?.runtime,
             legacyAgentRuntimeSource: currentAgent?.runtimeConfig?.source,
             legacyAgentProviderId: currentAgent?.providerId,
+            configuredDefaultIntegratedRuntime: config.defaultIntegratedRuntime,
           }),
         });
         const { createSession } = await import('@/api/sessionClient');
@@ -5412,47 +5366,10 @@ export default function Chat({
     currentProject,
     currentAgent,
     currentRuntime,
+    config.defaultIntegratedRuntime,
     patchProject,
     refreshConfig,
     guardCronConfigMutation,
-    t,
-  ]);
-
-  // Cross-runtime confirm: create new session in new tab and send the pending message
-  const confirmCrossRuntimeSend = useCallback(async () => {
-    const pending = pendingCrossRuntimeMessage;
-    if (!pending || !agentDir || !onForkSession) return;
-    try {
-      const { createSession } = await import('@/api/sessionClient');
-      // Pass currentRuntime so the new session has matching runtime metadata,
-      // preventing infinite cross-runtime detection loop.
-      const session = await createSession(agentDir, currentRuntime, {
-        origin: DESKTOP_SESSION_FORK_ORIGIN,
-      });
-      setPendingCrossRuntimeMessage(null); // Clear only after success
-      // Open new tab with the pending message as initialMessage
-      if (pending.images.length > 0) {
-        toastRef.current.warning(t('shell.toasts.imagesNotTransferred'));
-      }
-      const opened = await onForkSession(
-        session.id,
-        agentDir,
-        pending.text.slice(0, 40) || t('shell.toasts.newSession'),
-        pending.text,
-      );
-      if (!opened) {
-        toastRef.current.error(t('shell.toasts.createNewSessionFailed'));
-      }
-    } catch (err) {
-      setPendingCrossRuntimeMessage(null); // Clear on error too (dialog dismissed)
-      console.error('[chat] Failed to create cross-runtime session:', err);
-      toastRef.current.error(t('shell.toasts.createNewSessionFailed'));
-    }
-  }, [
-    pendingCrossRuntimeMessage,
-    agentDir,
-    onForkSession,
-    currentRuntime,
     t,
   ]);
 
@@ -7584,23 +7501,6 @@ export default function Chat({
           initialTab={workspaceConfigInitialTab}
           initialSelect={workspaceConfigInitialSelect}
           onRequestInit={handleRequestInitFromSettings}
-        />
-      )}
-
-      {/* Cross-Runtime Session Confirm Dialog */}
-      {pendingCrossRuntimeMessage && (
-        <ConfirmDialog
-          title={t('shell.dialogs.crossRuntime.title')}
-          message={t('shell.dialogs.crossRuntime.message', {
-            sessionRuntime: getRuntimeDisplayLabel(
-              sessionRuntime as RuntimeType | undefined,
-            ),
-            currentRuntime: getRuntimeDisplayLabel(currentRuntime),
-          })}
-          confirmText={t('shell.dialogs.crossRuntime.confirm')}
-          cancelText={t('shell.common.cancel')}
-          onConfirm={confirmCrossRuntimeSend}
-          onCancel={() => setPendingCrossRuntimeMessage(null)}
         />
       )}
 

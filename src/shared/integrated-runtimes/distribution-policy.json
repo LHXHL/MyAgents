@@ -3,5 +3,5 @@
   "allowedIntegratedRuntimes": ["claude-agent-sdk", "dsh"],
   "allowedExternalRuntimes": ["claude-code", "codex"],
   "defaultIntegratedRuntime": "claude-agent-sdk",
-  "selectorAvailability": "labs"
+  "selectorAvailability": "always"
 }

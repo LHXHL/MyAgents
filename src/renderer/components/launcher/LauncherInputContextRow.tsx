@@ -1,6 +1,6 @@
 // LauncherInputContextRow — small chip row below the launcher input.
-// PRD 0.2.7 D7 / Phase F: hosts a workspace chip + (when the multiAgentRuntime
-// gate is on) a runtime chip in the same screen slot the thought-mode
+// Hosts a workspace chip and, when the distribution permits, a runtime chip
+// in the same screen slot the thought-mode
 // `RecentThoughtsRow` uses (`absolute left-0 right-0 top-full mt-3`). Moving
 // these two controls out of the input toolbar de-clutters the launcher input.
 //
@@ -32,9 +32,8 @@ interface LauncherInputContextRowProps {
    *  "设为默认" button. Threaded straight through to WorkspaceSelector. */
   onSetDefaultWorkspace?: (project: Project) => void;
 
-  // Runtime (only rendered when multiAgentRuntime gate is on AND callers
-  // supply onRuntimeChange — keeps the chip out of the row entirely if the
-  // experimental feature is off).
+  // Runtime (only rendered when distribution permits selection AND callers
+  // supply onRuntimeChange).
   showRuntime: boolean;
   runtime?: RuntimeType;
   runtimeDetections?: RuntimeDetections;

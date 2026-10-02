@@ -155,9 +155,8 @@ export function coerceModelForRuntime(
 
 /**
  * Resolve the **agent-config** effective runtime through the build distribution
- * and its selector policy. When selection is unavailable, new ordinary-provider
- * Sessions use the distribution's Default Integrated Runtime while the stored
- * preference remains untouched.
+ * and its selector policy. Agents without an explicit choice use the configured
+ * Default Integrated Runtime; displaying that default does not persist a preference.
  *
  * SCOPE — this is the spawn runtime for a NEW session (and the pre-session
  * fallback), NOT the authoritative runtime of an EXISTING session. It mirrors
@@ -172,7 +171,7 @@ export function coerceModelForRuntime(
  *
  * Therefore **session-scoped analytics** (`session_new` / `message_send` /
  * `message_complete` / `history_open`) MUST prefer the frozen session runtime
- * (`sessionRuntime ?? resolveEffectiveRuntime(agentConfig, gate)`, the canonical
+ * (`sessionRuntime ?? resolveEffectiveRuntime(agentConfig)`, the canonical
  * precedence in `Chat.tsx` `currentRuntime`); using this helper alone would
  * diverge from `ai_turn_complete` once a user changes an agent's runtime after
  * session creation. Only genuinely config-level callers (`workspace_open` for a
@@ -182,7 +181,6 @@ export function coerceModelForRuntime(
  */
 export function resolveEffectiveRuntime(
   agentRuntime: string | null | undefined,
-  multiAgentRuntimeEnabled: boolean,
   runtimePreference?: unknown,
   runtimeSource?: RuntimeSource | null,
   providerId?: unknown,
@@ -199,7 +197,6 @@ export function resolveEffectiveRuntime(
   );
   const selectorAvailable = isRuntimeSelectorAvailable(
     policy,
-    multiAgentRuntimeEnabled,
   );
   const preference = selectorAvailable
     ? resolveAgentRuntimePreference({
@@ -207,6 +204,7 @@ export function resolveEffectiveRuntime(
         runtime: agentRuntime,
         runtimeSource,
         providerId,
+        defaultIntegratedRuntime,
       })
     : { family: 'integrated' as const, id: defaultIntegratedRuntime };
   if (!preference) return distributionDefault;
@@ -236,10 +234,9 @@ export function resolveEffectiveRuntime(
 }
 
 export function isAgentRuntimeSelectorAvailable(
-  labsEnabled: boolean,
   policy: AgentRuntimeDistributionPolicy = AGENT_RUNTIME_DISTRIBUTION_POLICY,
 ): boolean {
-  return isRuntimeSelectorAvailable(policy, labsEnabled);
+  return isRuntimeSelectorAvailable(policy);
 }
 
 /**

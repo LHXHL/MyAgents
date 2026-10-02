@@ -46,12 +46,10 @@ export function resolveRuntimeModelCatalogIdentity(
 
 export function resolveAgentRuntimeModelCatalogIdentity(
   agent: AgentRuntimeDefaults | null | undefined,
-  runtimeSelectionAvailable = true,
   configuredDefaultIntegratedRuntime?: unknown,
 ): RuntimeModelCatalogIdentity {
   const runtime = resolveEffectiveRuntime(
     agent?.runtime,
-    runtimeSelectionAvailable,
     agent?.runtimePreference,
     agent?.runtimeConfig?.source,
     agent?.providerId,

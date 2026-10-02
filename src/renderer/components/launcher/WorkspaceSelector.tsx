@@ -41,10 +41,21 @@ interface WorkspaceSelectorProps {
     selectedProject: Project | null;
     defaultWorkspacePath?: string;
     onSelect: (project: Project) => void;
-    onAddFolder: () => void;
+    onAddFolder?: () => void;
+    variant?: 'launcher' | 'panel';
     /** Promote a project to default workspace. When omitted (e.g. caller has no
      *  config write access), the hover-only "设为默认" button is hidden. */
     onSetDefault?: (project: Project) => void;
+}
+
+/** The start page and Settings project the same default workspace. */
+export function resolveDefaultWorkspaceProject(
+    projects: readonly Project[],
+    defaultWorkspacePath?: string,
+): Project | null {
+    const configured = projects.find(project => workspacePathsEqual(project.path, defaultWorkspacePath));
+    if (configured) return configured;
+    return projects.find(project => project.path.replace(/\\/g, '/').endsWith('/mino')) ?? projects[0] ?? null;
 }
 
 export function orderWorkspaceSelectorProjects(
@@ -69,6 +80,7 @@ export default function WorkspaceSelector({
     onSelect,
     onAddFolder,
     onSetDefault,
+    variant = 'launcher',
 }: WorkspaceSelectorProps) {
     const { t } = useTranslation('launcher');
     const [isOpen, setIsOpen] = useState(false);
@@ -90,6 +102,7 @@ export default function WorkspaceSelector({
         return (
             <button
                 onClick={onAddFolder}
+                disabled={!onAddFolder}
                 className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--accent)]"
             >
                 <PlusIcon className="h-3.5 w-3.5" />
@@ -103,10 +116,13 @@ export default function WorkspaceSelector({
             <button
                 ref={triggerRef}
                 onClick={() => setIsOpen(!isOpen)}
-                className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                className={`${variant === 'panel'
+                    ? 'flex w-full min-w-0 items-center gap-3 rounded-lg border border-[var(--line)] px-3 py-2 text-sm text-[var(--ink)]'
+                    : 'inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm font-medium text-[var(--ink-muted)]'
+                } text-left transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]`}
             >
                 <WorkspaceIcon icon={selectedProject?.icon} size={16} />
-                <span className="max-w-[120px] truncate">
+                <span className={variant === 'panel' ? 'min-w-0 flex-1 truncate' : 'max-w-[120px] truncate'}>
                     {selectedProject ? (selectedProject.displayName || getFolderName(selectedProject.path)) : t('workspaceSelector.selectWorkspace')}
                 </span>
                 <ChevronUpIcon className={`h-3 w-3 shrink-0 transition-transform ${isOpen ? '' : 'rotate-180'}`} />

@@ -335,16 +335,6 @@ export function isPinnedProviderUnavailable(args: {
   return args.resolvedProviderId !== args.selectedProviderId;
 }
 
-/** Labs is a creation/selection gate, never a kill switch for a frozen Session. */
-export function shouldBlockSendForLabsDisabledExternalRuntime(args: {
-  sessionRuntime: string | null;
-  sessionRuntimeSource: string | undefined;
-  multiAgentRuntimeEnabled: boolean;
-}): boolean {
-  void args;
-  return false;
-}
-
 /**
  * #300 — should the deferred provider-change effect reset `selectedModel` to the
  * resolved provider's primaryModel?

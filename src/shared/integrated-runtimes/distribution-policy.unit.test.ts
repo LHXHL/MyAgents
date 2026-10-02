@@ -8,19 +8,16 @@ import {
 } from "./distribution-policy";
 
 describe("Agent Runtime distribution policy", () => {
-  it("loads the controlled-rollout product policy", () => {
+  it("loads the fully available product policy", () => {
     expect(AGENT_RUNTIME_DISTRIBUTION_POLICY).toEqual({
       schemaVersion: 1,
       allowedIntegratedRuntimes: ["claude-agent-sdk", "dsh"],
       allowedExternalRuntimes: ["claude-code", "codex"],
       defaultIntegratedRuntime: "claude-agent-sdk",
-      selectorAvailability: "labs",
+      selectorAvailability: "always",
     });
     expect(
-      isRuntimeSelectorAvailable(AGENT_RUNTIME_DISTRIBUTION_POLICY, false),
-    ).toBe(false);
-    expect(
-      isRuntimeSelectorAvailable(AGENT_RUNTIME_DISTRIBUTION_POLICY, true),
+      isRuntimeSelectorAvailable(AGENT_RUNTIME_DISTRIBUTION_POLICY),
     ).toBe(true);
   });
 
@@ -40,7 +37,7 @@ describe("Agent Runtime distribution policy", () => {
     });
   });
 
-  it("accepts only an allowed developer default override", () => {
+  it("accepts only an allowed default override", () => {
     expect(
       resolveDefaultIntegratedRuntime(
         AGENT_RUNTIME_DISTRIBUTION_POLICY,
@@ -73,7 +70,7 @@ describe("Agent Runtime distribution policy", () => {
       allowedIntegratedRuntimes: ["claude-agent-sdk"],
       allowedExternalRuntimes: ["codex"],
       defaultIntegratedRuntime: "claude-agent-sdk",
-      selectorAvailability: "labs",
+      selectorAvailability: "always",
     };
     expect(() =>
       parseAgentRuntimeDistributionPolicy({

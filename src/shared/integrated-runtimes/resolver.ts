@@ -69,7 +69,6 @@ export type RuntimeResolutionResult =
 
 export interface RuntimeResolutionInput {
   policy: AgentRuntimeDistributionPolicy;
-  labsEnabled: boolean;
   configuredDefaultIntegratedRuntime?: unknown;
   agentPreference?: AgentRuntimePreference | unknown;
   legacyAgentRuntime?: string | null;
@@ -199,7 +198,6 @@ export function resolveEffectiveRuntimeBinding(
 
   const selectorAvailable = isRuntimeSelectorAvailable(
     input.policy,
-    input.labsEnabled,
   );
   let preference: AgentRuntimePreference;
   if (selectorAvailable) {
@@ -208,6 +206,7 @@ export function resolveEffectiveRuntimeBinding(
       runtime: input.legacyAgentRuntime,
       runtimeSource: input.legacyAgentRuntimeSource,
       providerId: input.legacyAgentProviderId,
+      defaultIntegratedRuntime: resolveDefaultIntegratedRuntime(input.policy, input.configuredDefaultIntegratedRuntime),
     });
     if (!storedPreference) {
       return {
@@ -260,6 +259,7 @@ export function resolveEffectiveRuntimeBinding(
   return resolveIntegrated(
     preference.id,
     input,
-    selectorAvailable ? "selected-integrated" : "distribution-default",
+    selectorAvailable && (input.agentPreference !== undefined || input.legacyAgentRuntime != null)
+      ? "selected-integrated" : "distribution-default",
   );
 }

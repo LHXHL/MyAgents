@@ -7,6 +7,7 @@ import {
 import { isRuntimeBackedProvider, isRuntimeBackedProviderId } from './providerExecution';
 import type { RuntimeType, RuntimeSource } from './types/runtime';
 import { resolveAgentRuntimePreference } from './integrated-runtimes/identity';
+import { AGENT_RUNTIME_DISTRIBUTION_POLICY, resolveDefaultIntegratedRuntime } from './integrated-runtimes/distribution-policy';
 
 const LINUX_HIDDEN_PROVIDER_IDS = [CODEX_SUBSCRIPTION_PROVIDER_ID, ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID];
 export function platformHiddenProviderIds(platform: string): readonly string[] {
@@ -54,6 +55,7 @@ export function resolveProviderSwitchIntegratedRuntime(args: {
   legacyAgentRuntime?: RuntimeType;
   legacyAgentRuntimeSource?: RuntimeSource;
   legacyAgentProviderId?: string;
+  configuredDefaultIntegratedRuntime?: unknown;
 }): 'builtin' | 'dsh' {
   const constraint = getProviderExecutionConstraint(args.targetProvider);
   if (constraint.kind === 'requires-integrated-runtime') return 'builtin';
@@ -67,6 +69,7 @@ export function resolveProviderSwitchIntegratedRuntime(args: {
     runtime: args.legacyAgentRuntime,
     runtimeSource: args.legacyAgentRuntimeSource,
     providerId: args.legacyAgentProviderId,
+    defaultIntegratedRuntime: resolveDefaultIntegratedRuntime(AGENT_RUNTIME_DISTRIBUTION_POLICY, args.configuredDefaultIntegratedRuntime),
   });
   if (preference?.family !== 'integrated') return 'builtin';
   return preference.id === 'dsh' ? 'dsh' : 'builtin';

@@ -55,16 +55,15 @@ impl RuntimeDistributionPolicy {
         }
         if !matches!(
             self.selector_availability.as_str(),
-            "always" | "labs" | "hidden"
+            "always" | "hidden"
         ) {
             return Err("Runtime distribution policy has invalid selectorAvailability".to_string());
         }
         Ok(())
     }
 
-    pub(crate) fn selector_available(&self, labs_enabled: bool) -> bool {
+    pub(crate) fn selector_available(&self) -> bool {
         self.selector_availability == "always"
-            || (self.selector_availability == "labs" && labs_enabled)
     }
 
     pub(crate) fn default_runtime(&self) -> &'static str {
@@ -156,8 +155,7 @@ mod tests {
         .expect("valid DSH-only policy");
 
         assert_eq!(policy.default_runtime(), "dsh");
-        assert!(!policy.selector_available(false));
-        assert!(!policy.selector_available(true));
+        assert!(!policy.selector_available());
         assert!(policy.allows_runtime("dsh", Some("integrated")));
         assert!(!policy.allows_runtime("builtin", None));
         assert!(!policy.allows_runtime("codex", Some("system-cli")));

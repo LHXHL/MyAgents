@@ -36,7 +36,6 @@ function input(
 ): RuntimeResolutionInput {
   return {
     policy: AGENT_RUNTIME_DISTRIBUTION_POLICY,
-    labsEnabled: true,
     providerConstraint: {
       kind: "portable",
       apiFamily: "anthropic-messages",
@@ -65,12 +64,10 @@ describe("central Runtime resolver", () => {
     });
   });
 
-  it("uses the distribution default while Labs selection is unavailable", () => {
+  it("uses the distribution default for an Agent without a Runtime choice", () => {
     expect(
       resolveEffectiveRuntimeBinding(
         input({
-          labsEnabled: false,
-          agentPreference: { family: "external", id: "codex" },
         }),
       ),
     ).toEqual({
@@ -81,13 +78,11 @@ describe("central Runtime resolver", () => {
     });
   });
 
-  it("uses an allowed developer default override while selection is unavailable", () => {
+  it("uses the configured default for an Agent without a Runtime choice", () => {
     expect(
       resolveEffectiveRuntimeBinding(
         input({
-          labsEnabled: false,
           configuredDefaultIntegratedRuntime: "dsh",
-          agentPreference: { family: "external", id: "codex" },
         }),
       ),
     ).toMatchObject({
@@ -95,6 +90,24 @@ describe("central Runtime resolver", () => {
       binding: { family: "integrated", id: "dsh" },
       decision: "distribution-default",
     });
+  });
+
+  it.each([
+    ["claude-agent-sdk", "dsh"],
+    ["dsh", "claude-agent-sdk"],
+  ] as const)("keeps explicit %s when the default is %s", (id, defaultId) => {
+    expect(resolveEffectiveRuntimeBinding(input({
+      agentPreference: { family: "integrated", id },
+      configuredDefaultIntegratedRuntime: defaultId,
+    }))).toMatchObject({
+      status: "resolved", binding: { family: "integrated", id }, decision: "selected-integrated",
+    });
+  });
+
+  it("preserves an existing SDK Session when the default changes to DSH", () => {
+    expect(resolveEffectiveRuntimeBinding(input({
+      existingBinding: createClaudeSdkBinding(), configuredDefaultIntegratedRuntime: "dsh",
+    }))).toMatchObject({ binding: createClaudeSdkBinding(), decision: "existing-session" });
   });
 
   it("lets an explicit External preference win over dormant Provider fields", () => {

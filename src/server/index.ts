@@ -3942,7 +3942,7 @@ async function main() {
               runtimeOverride: runtimeValue,
               runtimeSourceOverride: runtimeSourceValue,
               managedCodexProviderReady: managedCodexReady,
-              runtimePolicy: { multiAgentRuntime: !!birthConfig.multiAgentRuntime, defaultIntegratedRuntime: birthConfig.defaultIntegratedRuntime },
+              runtimePolicy: { defaultIntegratedRuntime: birthConfig.defaultIntegratedRuntime },
             })
           : runtimeValue
             ? { runtime: runtimeValue }

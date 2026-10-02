@@ -1,3 +1,6 @@
+import { isProjectActiveForUser } from '@/config/types';
+import WorkspaceSelector, { resolveDefaultWorkspaceProject } from '@/components/launcher/WorkspaceSelector';
+import AgentFunctionSettings from './sections/AgentFunctionSettings';
 import { DshCollaborationSettings } from './DshCollaborationSettings';
 import { getPlatformHiddenProviderIds, isLinuxDesktop } from '@/utils/desktopPlatform';
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
@@ -6,7 +9,6 @@ import {
   ChevronDownIcon,
   CopyIcon,
   DownloadIcon,
-  FolderOpenIcon,
   ImageIcon,
   KeyIcon,
   LinkIcon,
@@ -83,11 +85,10 @@ import {
   getPresetMcpServer,
   DEFAULT_CLAUDE_TRANSCRIPT_CLEANUP_PERIOD_DAYS,
   normalizeClaudeTranscriptCleanupPeriodDays,
-  normalizeChatQueueResponseMode,
+  normalizeMarkdownReadingSize,
   getManagedCodexProviderReadiness,
   isManagedCodexProviderGateEnabled,
   type ManagedCodexRuntimeInstallState,
-  type ChatQueueResponseMode,
   type ProxyProtocol,
   type SpaceEnvironment,
 } from '@/config/types';
@@ -124,7 +125,6 @@ import { REACT_LOG_EVENT } from '@/utils/frontendLogger';
 import { dispatchHelperRequest } from '@/utils/dispatchHelperRequest';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import { getPlatform } from '@/analytics/device';
-import { shortenPathForDisplay } from '@/utils/pathDetection';
 import type { LogEntry } from '@/types/log';
 import BugReportOverlay from '@/components/BugReportOverlay';
 import SettingsHelperInbox from '@/components/SettingsHelperInbox';
@@ -148,16 +148,11 @@ import {
   speechModelPackRemove,
   speechModelPackStatus as readSpeechModelPackStatus,
 } from '@/api/recording';
-import { workspacePathsEqual } from '../../../shared/workspacePath';
 import { normalizeProxyScope } from '../../../shared/proxyScope';
 import { describeProxyScopeSummary } from './proxyScopePresentation';
 import { formatSubscriptionVerifyError } from '../../../shared/subscription';
 import type { UiLanguage } from '../../../shared/i18n';
 import type { ChannelType } from '../../../shared/types/agent';
-import {
-  AGENT_RUNTIME_DISTRIBUTION_POLICY,
-  resolveDefaultIntegratedRuntime,
-} from '../../../shared/integrated-runtimes/distribution-policy';
 import { reconcilePersistedAgentWorkspaceIdentities } from '@/config/services/agentConfigService';
 import { getBotWorkspaceCandidates } from '@/components/ImSettings/botWorkspaceSelection';
 import ProviderEnableOrderDialog from '@/components/ProviderEnableOrderDialog';
@@ -364,7 +359,6 @@ export default function Settings({
     patchProxySettings,
     providers,
     projects,
-    addProject,
     updateProject,
     addCustomProvider,
     updateCustomProvider,
@@ -378,6 +372,7 @@ export default function Settings({
     managedCodexRuntimeUpdateInFlight,
     requestManagedCodexRuntimeUpdate,
   } = useConfig();
+  const startupWorkspaceProjects = useMemo(() => projects.filter(isProjectActiveForUser), [projects]);
   const spaceBuildCapability = useSpaceBuildCapability(config.spaceEnvironment);
   const toast = useToast();
   const resolvedTheme = useResolvedTheme();
@@ -5518,7 +5513,7 @@ export default function Settings({
                 </div>
 
                 <MarkdownReadingSizeControl
-                  value={config.markdownReadingSize ?? 'large'}
+                  value={normalizeMarkdownReadingSize(config.markdownReadingSize)}
                   onChange={(size) => {
                     void updateConfig({ markdownReadingSize: size })
                       .then(() => {
@@ -5664,133 +5659,27 @@ export default function Settings({
                       {tSettings('general.defaultWorkspaceDescription')}
                     </p>
                   </div>
-                  <CustomSelect
-                    value={config.defaultWorkspacePath ?? ''}
-                    options={[
-                      {
-                        value: '',
-                        label: tSettings('general.defaultWorkspaceNone'),
-                      },
-                      ...projects.map((p) => ({
-                        value: p.path,
-                        label: shortenPathForDisplay(p.path),
-                        icon: <FolderOpenIcon className="h-3.5 w-3.5" />,
-                      })),
-                    ]}
-                    onChange={async (val) => {
-                      if (val === '') {
-                        await updateConfig({ defaultWorkspacePath: undefined });
-                      } else {
-                        await updateConfig({ defaultWorkspacePath: val });
-                        toast.success(
-                          tSettings('general.defaultWorkspaceSaved'),
-                        );
-                      }
-                    }}
-                    placeholder={tSettings('general.defaultWorkspaceNone')}
-                    triggerIcon={<FolderOpenIcon className="h-3.5 w-3.5" />}
-                    className="w-[240px]"
-                    footerAction={{
-                      label: tSettings('general.defaultWorkspaceBrowse'),
-                      icon: <PlusIcon className="h-3.5 w-3.5" />,
-                      onClick: async () => {
+                  <div className="w-72 max-w-[45%] shrink-0">
+                    <WorkspaceSelector
+                      projects={startupWorkspaceProjects}
+                      selectedProject={resolveDefaultWorkspaceProject(startupWorkspaceProjects, config.defaultWorkspacePath)}
+                      defaultWorkspacePath={config.defaultWorkspacePath}
+                      variant="panel"
+                      onSelect={async (project) => {
                         try {
-                          const { open } = await import(
-                            '@tauri-apps/plugin-dialog'
-                          );
-                          const selected = await open({
-                            directory: true,
-                            multiple: false,
-                            title: tSettings(
-                              'general.defaultWorkspacePickTitle',
-                            ),
-                          });
-                          if (selected && typeof selected === 'string') {
-                            if (
-                              !projects.find((p) =>
-                                workspacePathsEqual(p.path, selected),
-                              )
-                            ) {
-                              await addProject(selected);
-                            }
-                            await updateConfig({
-                              defaultWorkspacePath: selected,
-                            });
-                            toast.success(
-                              tSettings('general.defaultWorkspaceSaved'),
-                            );
-                          }
-                        } catch (err) {
-                          console.error(
-                            '[Settings] Browse folder failed:',
-                            err,
-                          );
+                          await updateConfig({ defaultWorkspacePath: project.path });
+                          toast.success(tSettings('general.defaultWorkspaceSaved'));
+                        } catch (error) {
+                          console.error('[Settings] Failed to set default workspace:', error);
+                          toast.warning(tSettings('toasts.setDefaultFailed', { ns: 'launcher' }));
                         }
-                      },
-                    }}
-                  />
+                      }}
+                    />
+                  </div>
                 </div>
               </div>
 
-              {/* Chat Queue Response Mode */}
-              <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
-                <h3 className="text-base font-medium text-[var(--ink)]">
-                  {tSettings('general.queueTitle')}
-                </h3>
-                <div className="mt-4 flex items-center justify-between gap-4">
-                  <div className="flex-1">
-                    <p className="text-sm font-medium text-[var(--ink)]">
-                      {tSettings('general.queueModeTitle')}
-                    </p>
-                    <p className="text-xs text-[var(--ink-muted)]">
-                      {normalizeChatQueueResponseMode(
-                        config.chatQueueResponseMode,
-                      ) === 'turn'
-                        ? tSettings('general.queueTurnDescription')
-                        : tSettings('general.queueRealtimeDescription')}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 gap-0.5 rounded-full bg-[var(--paper-inset)] p-0.5">
-                    {(
-                      [
-                        {
-                          value: 'realtime',
-                          label: tSettings('general.queueRealtime'),
-                        },
-                        {
-                          value: 'turn',
-                          label: tSettings('general.queueTurn'),
-                        },
-                      ] as const satisfies ReadonlyArray<{
-                        value: ChatQueueResponseMode;
-                        label: string;
-                      }>
-                    ).map((opt) => {
-                      const active =
-                        normalizeChatQueueResponseMode(
-                          config.chatQueueResponseMode,
-                        ) === opt.value;
-                      return (
-                        <button
-                          key={opt.value}
-                          onClick={() =>
-                            void updateConfig({
-                              chatQueueResponseMode: opt.value,
-                            })
-                          }
-                          className={`rounded-full px-3 py-1 text-xs font-medium transition-all ${
-                            active
-                              ? 'bg-[var(--paper-elevated)] text-[var(--ink)] shadow-sm'
-                              : 'text-[var(--ink-muted)] hover:text-[var(--ink-secondary)]'
-                          }`}
-                        >
-                          {opt.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
+              <AgentFunctionSettings config={config} updateConfig={updateConfig} />
 
               {/* Notification Settings */}
               <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
@@ -6405,39 +6294,6 @@ export default function Settings({
                   </button>
                 </div>
 
-                {AGENT_RUNTIME_DISTRIBUTION_POLICY.selectorAvailability ===
-                  'labs' && (
-                  <div className="mt-4 flex items-center justify-between border-t border-[var(--line)] pt-4">
-                    <div className="flex-1 pr-4">
-                      <p className="text-sm font-medium text-[var(--ink)]">
-                        {tSettings('about.runtimeTitle')}
-                      </p>
-                      <p className="text-xs text-[var(--ink-muted)]">
-                        {tSettings('about.runtimeDescription')}
-                      </p>
-                    </div>
-                    <button
-                      onClick={() =>
-                        updateConfig({
-                          multiAgentRuntime: !config.multiAgentRuntime,
-                        })
-                      }
-                      className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors ${
-                        config.multiAgentRuntime
-                          ? 'bg-[var(--accent)]'
-                          : 'bg-[var(--line-strong)]'
-                      }`}
-                    >
-                      <span
-                        className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${
-                          config.multiAgentRuntime
-                            ? 'translate-x-5'
-                            : 'translate-x-0'
-                        }`}
-                      />
-                    </button>
-                  </div>
-                )}
 
                 <div className="mt-4 flex items-center justify-between border-t border-[var(--line)] pt-4">
                   <div className="flex-1 pr-4">
@@ -6612,47 +6468,6 @@ export default function Settings({
                     {tSettings('about.developerSection')}
                   </h2>
                   <div className="space-y-4">
-                    {/* Default runtime for new integrated sessions */}
-                    <div className="flex items-center justify-between gap-4 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-[var(--ink)]">
-                          {tSettings('about.defaultIntegratedRuntimeTitle')}
-                        </p>
-                        <p className="text-xs text-[var(--ink-muted)]">
-                          {tSettings('about.defaultIntegratedRuntimeDescription')}
-                        </p>
-                      </div>
-                      <CustomSelect
-                        className="w-52 shrink-0"
-                        value={resolveDefaultIntegratedRuntime(
-                          AGENT_RUNTIME_DISTRIBUTION_POLICY,
-                          config.defaultIntegratedRuntime,
-                        )}
-                        options={AGENT_RUNTIME_DISTRIBUTION_POLICY.allowedIntegratedRuntimes.map(
-                          (runtime) => ({
-                            value: runtime,
-                            label:
-                              runtime === 'dsh'
-                                ? tSettings('about.defaultIntegratedRuntimeDsh')
-                                : tSettings(
-                                    'about.defaultIntegratedRuntimeClaudeSdk',
-                                  ),
-                          }),
-                        )}
-                        onChange={(runtime) =>
-                          void updateConfig({
-                            defaultIntegratedRuntime: runtime as
-                              | 'claude-agent-sdk'
-                              | 'dsh',
-                          })
-                        }
-                        disabled={
-                          AGENT_RUNTIME_DISTRIBUTION_POLICY
-                            .allowedIntegratedRuntimes.length === 1
-                        }
-                      />
-                    </div>
-
                     {/* Developer Mode Toggle */}
                     <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
                       <div className="flex items-center justify-between">

@@ -119,17 +119,22 @@ describe('snapshotForOwnedSession — reasoning effort capture (#324)', () => {
     expect(snap.permissionMode).toBe('fullAgency');
   });
   it('uses desktop distribution and subscription constraints for IM template births', () => {
-    const options = { runtimePolicy: { multiAgentRuntime: true, defaultIntegratedRuntime: 'dsh' } };
+    const options = { runtimePolicy: { defaultIntegratedRuntime: 'dsh' } };
     expect(snapshotForImSession(makeAgent({ runtime: 'dsh', runtimePreference: { family: 'integrated', id: 'dsh' },
       providerId: 'anthropic-sub', model: 'claude-sonnet-4-6' }), options))
       .toMatchObject({ runtime: 'builtin', providerId: 'anthropic-sub', model: 'claude-sonnet-4-6', permissionMode: 'fullAgency' });
-    expect(snapshotForImSession(makeAgent({ runtime: 'builtin', providerId: 'anthropic-api' }),
-      { runtimePolicy: { multiAgentRuntime: false, defaultIntegratedRuntime: 'dsh' } }))
+    expect(snapshotForImSession(makeAgent({ runtime: undefined, providerId: 'deepseek' }),
+      { runtimePolicy: { defaultIntegratedRuntime: 'dsh' } }))
       .toMatchObject({ runtime: 'dsh', runtimeSource: 'integrated', permissionMode: 'full-autonomous' });
+  });
+  it('keeps an explicit SDK choice when the global default is DSH', () => {
+    expect(snapshotForImSession(makeAgent({ runtime: 'builtin', providerId: 'deepseek' }),
+      { runtimePolicy: { defaultIntegratedRuntime: 'dsh' } }))
+      .toMatchObject({ runtime: 'builtin', permissionMode: 'fullAgency' });
   });
   it('rejects an unavailable Managed Codex template instead of publishing a partial identity', () => {
     expect(() => snapshotForImSession(makeAgent({ providerId: 'codex-sub', model: 'codex-live' }),
-      { runtimePolicy: { multiAgentRuntime: true }, managedCodexProviderReady: false }))
+      { runtimePolicy: {}, managedCodexProviderReady: false }))
       .toThrow('not ready');
   });
 

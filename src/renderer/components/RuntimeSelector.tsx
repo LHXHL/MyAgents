@@ -71,6 +71,7 @@ interface RuntimeSelectorProps {
   disabledReason?: string;
   onDisabledClick?: () => void;
   distributionPolicy?: AgentRuntimeDistributionPolicy;
+  integratedOnly?: boolean;
 }
 
 export default memo(function RuntimeSelector({
@@ -83,6 +84,7 @@ export default memo(function RuntimeSelector({
   disabledReason,
   onDisabledClick,
   distributionPolicy = AGENT_RUNTIME_DISTRIBUTION_POLICY,
+  integratedOnly = false,
 }: RuntimeSelectorProps) {
   const { t } = useTranslation('chat');
   const [open, setOpen] = useState(false);
@@ -104,17 +106,14 @@ export default memo(function RuntimeSelector({
 
   const handleSelect = useCallback((type: RuntimeType) => {
     if (disabled) return;
-    if (type === value) {
-      setOpen(false);
-      return;
-    }
     const detection = detections[type];
     if (!detection?.installed) return; // Can't select uninstalled runtime
     setOpen(false);
     onChange(type);
-  }, [value, detections, onChange, disabled]);
+  }, [detections, onChange, disabled]);
 
   const availableOptions = RUNTIME_OPTIONS.filter(option =>
+    (!integratedOnly || option.group === 'integrated') &&
     isRuntimeAllowedByDistribution(distributionPolicy, option.type),
   );
   const currentOption = availableOptions.find(o => o.type === value) ?? availableOptions[0];

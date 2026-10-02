@@ -1217,10 +1217,10 @@ pub struct AgentConfigRust {
     pub runtime_config: Option<serde_json::Value>,
     #[serde(default)]
     pub runtime_preference: Option<RuntimePreferenceRust>,
-    /// Runtime-only projection of the build policy plus root Labs selector gate.
+    /// Runtime-only projection of the build distribution selector policy.
     #[serde(default = "default_true", skip_serializing)]
     pub runtime_selection_available: bool,
-    /// Root developer override used only when Runtime selection is unavailable.
+    /// Root default for Agents without an explicit Runtime preference.
     #[serde(default, skip_serializing, skip_deserializing)]
     pub default_integrated_runtime: Option<String>,
 
@@ -1459,7 +1459,12 @@ impl ChannelConfigRust {
                 Self::runtime_config_for_preference(runtime_config, source.as_deref()),
             ));
         }
-        Ok((agent.runtime.clone(), runtime_config))
+        let runtime = agent.runtime.clone().unwrap_or_else(|| {
+            policy
+                .default_runtime_for_override(agent.default_integrated_runtime.as_deref())
+                .to_string()
+        });
+        Ok((Some(runtime), runtime_config))
     }
 
     fn effective_runtime_projection(
@@ -1813,7 +1818,7 @@ mod tests {
     }
 
     #[test]
-    fn labs_off_defaults_new_im_sessions_to_builtin_without_erasing_preference() {
+    fn hidden_selector_defaults_new_im_sessions_without_erasing_preference() {
         let mut agent = base_agent();
         agent.runtime = Some("dsh".to_string());
         agent.runtime_preference = Some(RuntimePreferenceRust {
@@ -1835,9 +1840,10 @@ mod tests {
     }
 
     #[test]
-    fn labs_off_uses_the_allowed_developer_integrated_default() {
+    fn unset_agent_uses_the_configured_integrated_default() {
         let mut agent = base_agent();
-        agent.runtime_selection_available = false;
+        agent.runtime_selection_available = true;
+        agent.runtime = None;
         agent.default_integrated_runtime = Some("dsh".to_string());
 
         let config = base_channel().to_im_config(&agent);
@@ -1846,6 +1852,21 @@ mod tests {
         assert_eq!(
             config.runtime_identity().runtime_source.as_deref(),
             Some("integrated")
+        );
+
+        agent.runtime = Some("builtin".to_string());
+        assert_eq!(
+            base_channel().to_im_config(&agent).runtime.as_deref(),
+            Some("builtin")
+        );
+        agent.runtime = None;
+        agent.runtime_preference = Some(RuntimePreferenceRust {
+            family: "integrated".to_string(),
+            id: "claude-agent-sdk".to_string(),
+        });
+        assert_eq!(
+            base_channel().to_im_config(&agent).runtime.as_deref(),
+            Some("builtin")
         );
     }
 

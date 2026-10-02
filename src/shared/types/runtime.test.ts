@@ -49,61 +49,37 @@ describe('resolveEffectiveRuntime', () => {
   // Mirrors the Rust spawn-time policy in
   // src-tauri/src/sidecar/runtime_identity.rs — keep in sync.
 
-  test('Labs OFF uses the distribution default (builtin in the product profile)', () => {
-    // This is the Gap-3 case: an agent configured for codex but the
-    // multiAgentRuntime feature flag is off → the sidecar actually runs
-    // builtin, so analytics must report builtin, not the configured intent.
-    expect(resolveEffectiveRuntime('codex', false)).toBe('builtin');
-    expect(resolveEffectiveRuntime('dsh', false)).toBe('builtin');
-    expect(resolveEffectiveRuntime('claude-code', false)).toBe('builtin');
-    expect(resolveEffectiveRuntime('builtin', false)).toBe('builtin');
-    expect(resolveEffectiveRuntime(undefined, false)).toBe('builtin');
+  test('an Agent without a choice follows the configured Integrated default', () => {
+    expect(resolveEffectiveRuntime(undefined)).toBe('builtin');
+    expect(resolveEffectiveRuntime(undefined, undefined, undefined, undefined, undefined, 'dsh')).toBe('dsh');
+    expect(resolveEffectiveRuntime(undefined, undefined, undefined, undefined, undefined, 'future-runtime')).toBe('builtin');
   });
 
-  test('Labs OFF uses an allowed developer Default Integrated Runtime override', () => {
-    expect(resolveEffectiveRuntime(
-      'codex',
-      false,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      'dsh',
-    )).toBe('dsh');
-    expect(resolveEffectiveRuntime(
-      'codex',
-      false,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      'future-runtime',
-    )).toBe('builtin');
+  test('an explicit Integrated choice wins over the global default', () => {
+    expect(resolveEffectiveRuntime('builtin', undefined, undefined, undefined, undefined, 'dsh')).toBe('builtin');
+    expect(resolveEffectiveRuntime('dsh', undefined, undefined, undefined, undefined, 'claude-agent-sdk')).toBe('dsh');
   });
 
-  test('gate ON honors the configured (normalized) runtime', () => {
-    expect(resolveEffectiveRuntime('codex', true)).toBe('codex');
-    expect(resolveEffectiveRuntime('dsh', true)).toBe('dsh');
-    expect(resolveEffectiveRuntime('claude-code', true)).toBe('claude-code');
-    expect(resolveEffectiveRuntime('builtin', true)).toBe('builtin');
+  test('honors the configured (normalized) runtime', () => {
+    expect(resolveEffectiveRuntime('codex')).toBe('codex');
+    expect(resolveEffectiveRuntime('dsh')).toBe('dsh');
+    expect(resolveEffectiveRuntime('claude-code')).toBe('claude-code');
+    expect(resolveEffectiveRuntime('builtin')).toBe('builtin');
   });
 
-  test('gate ON gives authoritative runtimePreference precedence over the legacy projection', () => {
+  test('gives authoritative runtimePreference precedence over the legacy projection', () => {
     expect(resolveEffectiveRuntime(
       'codex',
-      true,
       { family: 'integrated', id: 'dsh' },
       'system-cli',
     )).toBe('dsh');
     expect(resolveEffectiveRuntime(
       'dsh',
-      true,
       { family: 'external', id: 'claude-code' },
       'integrated',
     )).toBe('claude-code');
     expect(resolveEffectiveRuntime(
       'dsh',
-      true,
       { family: 'integrated', id: 'future-runtime' },
       'integrated',
     )).toBe('builtin');
@@ -112,39 +88,34 @@ describe('resolveEffectiveRuntime', () => {
   test('applies Product Provider constraints after explicit External preference precedence', () => {
     expect(resolveEffectiveRuntime(
       'dsh',
-      true,
       { family: 'integrated', id: 'dsh' },
       'integrated',
       'anthropic-sub',
     )).toBe('builtin');
     expect(resolveEffectiveRuntime(
       'dsh',
-      true,
       { family: 'integrated', id: 'dsh' },
       'integrated',
       'codex-sub',
     )).toBe('builtin');
     expect(resolveEffectiveRuntime(
       'builtin',
-      true,
       { family: 'external', id: 'codex' },
       undefined,
       'codex-sub',
     )).toBe('codex');
   });
 
-  test('gate ON with no/unknown agent runtime is builtin', () => {
-    expect(resolveEffectiveRuntime(undefined, true)).toBe('builtin');
-    expect(resolveEffectiveRuntime(null, true)).toBe('builtin');
-    expect(resolveEffectiveRuntime('nonsense', true)).toBe('builtin');
+  test('with no/unknown agent runtime is builtin', () => {
+    expect(resolveEffectiveRuntime(undefined)).toBe('builtin');
+    expect(resolveEffectiveRuntime(null)).toBe('builtin');
+    expect(resolveEffectiveRuntime('nonsense')).toBe('builtin');
   });
 
-  test('a DSH-only build uses DSH regardless of Labs or stored incompatible intent', () => {
-    expect(resolveEffectiveRuntime('builtin', false, undefined, undefined, undefined, DSH_ONLY_POLICY)).toBe('dsh');
-    expect(resolveEffectiveRuntime('builtin', true, undefined, undefined, undefined, DSH_ONLY_POLICY)).toBe('dsh');
+  test('a DSH-only build uses DSH regardless of stored incompatible intent', () => {
+    expect(resolveEffectiveRuntime('builtin', undefined, undefined, undefined, DSH_ONLY_POLICY)).toBe('dsh');
     expect(resolveEffectiveRuntime(
       'codex',
-      true,
       { family: 'external', id: 'codex' },
       'system-cli',
       undefined,
@@ -152,7 +123,6 @@ describe('resolveEffectiveRuntime', () => {
     )).toBe('dsh');
     expect(resolveEffectiveRuntime(
       'builtin',
-      true,
       { family: 'integrated', id: 'dsh' },
       undefined,
       'codex-sub',
@@ -169,7 +139,7 @@ describe('resolveEffectiveRuntime', () => {
     // returns 'claude-code'. Session-scoped analytics must therefore prefer the frozen
     // `sessionRuntime` and use this only as the pre-session fallback.
     const currentAgentConfig = 'claude-code';
-    expect(resolveEffectiveRuntime(currentAgentConfig, true)).toBe('claude-code'); // config view
+    expect(resolveEffectiveRuntime(currentAgentConfig)).toBe('claude-code'); // config view
     // The authoritative value for an existing session would be the frozen
     // 'codex' — which lives in session metadata, not derivable from this fn.
   });

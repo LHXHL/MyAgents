@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { i18n } from "@/i18n";
 
 import { ToastProvider } from "@/components/Toast";
-import { DEFAULT_CONFIG, PROXY_DEFAULTS, type AppConfig, type Provider } from "@/config/types";
+import { DEFAULT_CONFIG, PROXY_DEFAULTS, type AppConfig, type Provider, type Project } from "@/config/types";
 import Settings from "./SettingsPage";
 
 const settingsMocks = vi.hoisted(() => ({
@@ -41,7 +41,7 @@ const visionProvider = {
   ],
 } as Provider;
 const stableProviders = [visionProvider];
-const stableProjects: never[] = [];
+const stableProjects: Project[] = [];
 const stableApiKeys = { "vision-provider": "configured-key" };
 const stableVerifyStatus = {};
 const configNoop = vi.fn();
@@ -150,13 +150,36 @@ vi.mock('@/utils/tauriListen', () => ({ listenWithCleanup: vi.fn(async () => {})
 describe('Ubuntu settings availability', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
+    stableProjects.length = 0;
     settingsMocks.config = { ...DEFAULT_CONFIG, agents: [], showDevTools: true,
       floatingBallDevGate: true, managedCodexProviderDevGate: true,
       proxySettings: { ...PROXY_DEFAULTS, enabled: true, scope: { mode: 'custom', generalRequests: false,
         providerIds: ['codex-sub', 'vision-provider', 'antigravity-sub'] } } };
-    settingsMocks.invoke.mockResolvedValue(undefined);
+    settingsMocks.invoke.mockImplementation(async (command) => command === 'cmd_detect_runtimes' ? {
+      builtin: { installed: true }, dsh: { installed: true },
+      'claude-code': { installed: false }, codex: { installed: false },
+    } : undefined);
     settingsMocks.apiPostJson.mockResolvedValue({ success: true, data: { models: [] } });
     await i18n.changeLanguage('en-US');
+  });
+
+  it('uses the Agent workspace selector and the same defaultWorkspacePath as Launcher', async () => {
+    const project = (id: string, displayName: string, extra: Partial<Project> = {}): Project => ({
+      id, name: id, displayName, path: `/agents/${id}`, lastOpened: '2026-10-02T00:00:00Z',
+      providerId: null, permissionMode: null, ...extra,
+    });
+    stableProjects.push(project('alpha', 'Agent Alpha'), project('beta', 'Agent Beta'),
+      project('hidden', 'Hidden Agent', { hidden: true }),
+      project('archived', 'Archived Agent', { archivedAt: '2026-10-01T00:00:00Z' }));
+    settingsMocks.config.defaultWorkspacePath = '/agents/alpha';
+    render(<ToastProvider><Settings mode="settings" initialSection="general" isActive /></ToastProvider>);
+    const trigger = await screen.findByRole('button', { name: 'Agent Alpha' });
+    fireEvent.click(trigger);
+    expect(screen.getByText('Agent Workspaces')).toBeInTheDocument();
+    expect(screen.queryByText('Hidden Agent')).not.toBeInTheDocument();
+    expect(screen.queryByText('Archived Agent')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Agent Beta/ }));
+    await waitFor(() => expect(configNoop).toHaveBeenCalledWith({ defaultWorkspacePath: '/agents/beta' }));
   });
 
   it('redirects a saved desktop-pet route and removes unsupported/update controls without changing config', async () => {
@@ -190,16 +213,16 @@ describe('Ubuntu settings availability', () => {
 
     await waitFor(() => expect(screen.getByRole('heading', { name: 'MyAgents' })).toBeInTheDocument());
     expect(within(screen.getByRole('navigation')).queryByRole('button', { name: String(i18n.t('sidebar.nav.developer', { ns: 'settings' })) })).not.toBeInTheDocument();
-    expect(screen.queryByText(String(i18n.t('about.defaultIntegratedRuntimeTitle', { ns: 'settings' })))).not.toBeInTheDocument();
+    expect(screen.queryByText(String(i18n.t('general.defaultRuntimeTitle', { ns: 'settings' })))).not.toBeInTheDocument();
   });
 
-  it('moves the integrated runtime default into the unlocked Developer tab', async () => {
+  it('keeps the default Runtime in General without requiring Developer mode', async () => {
     settingsMocks.linux = false;
     render(<ToastProvider><Settings mode="settings" initialSection="about" isActive /></ToastProvider>);
 
     const navigation = screen.getByRole('navigation');
     const developerLabel = String(i18n.t('sidebar.nav.developer', { ns: 'settings' }));
-    const runtimeLabel = String(i18n.t('about.defaultIntegratedRuntimeTitle', { ns: 'settings' }));
+    const runtimeLabel = String(i18n.t('general.defaultRuntimeTitle', { ns: 'settings' }));
     expect(within(navigation).queryByRole('button', { name: developerLabel })).not.toBeInTheDocument();
     expect(screen.queryByText(runtimeLabel)).not.toBeInTheDocument();
 
@@ -210,7 +233,11 @@ describe('Ubuntu settings availability', () => {
     expect(screen.queryByText(runtimeLabel)).not.toBeInTheDocument();
     fireEvent.click(developerTab);
 
+    expect(screen.queryByText(runtimeLabel)).not.toBeInTheDocument();
+    fireEvent.click(within(navigation).getByRole('button', { name: String(i18n.t('sidebar.nav.general', { ns: 'settings' })) }));
     expect(screen.getByText(runtimeLabel)).toBeInTheDocument();
+    expect(screen.getByText(String(i18n.t('general.agentFeaturesTitle', { ns: 'settings' })))).toBeInTheDocument();
+    fireEvent.click(developerTab);
     expect(screen.getByText(String(i18n.t('about.developer.devModeTitle', { ns: 'settings' })))).toBeInTheDocument();
     expect(screen.getByText(String(i18n.t('about.developer.cronTaskTitle', { ns: 'settings' })))).toBeInTheDocument();
   });

@@ -4290,7 +4290,6 @@ describe('admin-api Agent / Session discovery', () => {
 
   it('reports DSH Agent defaults and Session history as Integrated Product identity', async () => {
     writeJson(join(scratch, '.myagents', 'config.json'), {
-      multiAgentRuntime: true,
       agents: [{
         id: 'agent-dsh',
         name: 'DSH Workspace',

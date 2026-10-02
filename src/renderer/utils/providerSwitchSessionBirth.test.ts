@@ -173,6 +173,20 @@ describe('buildProviderSwitchSessionBirth', () => {
     })).toBe('dsh');
   });
 
+  it('uses the global default when returning from a managed Provider with no Agent Runtime choice', () => {
+    const targetProvider = PRESET_PROVIDERS.find(provider => provider.id === 'zhipu')!;
+    expect(resolveProviderSwitchIntegratedRuntime({
+      targetProvider, currentSessionRuntime: 'codex', configuredDefaultIntegratedRuntime: 'dsh',
+    })).toBe('dsh');
+    expect(resolveProviderSwitchIntegratedRuntime({
+      targetProvider, currentSessionRuntime: 'codex', configuredDefaultIntegratedRuntime: 'dsh',
+      legacyAgentRuntime: 'builtin',
+    })).toBe('builtin');
+    expect(resolveProviderSwitchIntegratedRuntime({
+      targetProvider, currentSessionRuntime: 'builtin', configuredDefaultIntegratedRuntime: 'dsh',
+    })).toBe('builtin');
+  });
+
   it('keeps the official Claude routes on SDK and portable subscriptions on DSH', () => {
     for (const id of ['anthropic-sub', 'anthropic-api', 'xai-sub', 'antigravity-sub']) {
       const targetProvider = PRESET_PROVIDERS.find(provider => provider.id === id);

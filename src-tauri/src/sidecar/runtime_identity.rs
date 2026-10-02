@@ -313,14 +313,15 @@ fn resolve_agent_runtime_identity_by_id_with_policy(
         .and_then(|value| value.as_object())
         .and_then(|config| config.get("source"))
         .and_then(|value| value.as_str());
-    let labs_enabled = cfg
-        .get("multiAgentRuntime")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let selection_available = policy.selector_available(labs_enabled);
+    let selection_available = policy.selector_available();
     let preference = if selection_available {
         match agent.get("runtimePreference") {
             Some(preference) => runtime_identity_from_preference(preference).map(Some),
+            None if agent.get("runtime").is_none_or(serde_json::Value::is_null) => {
+                Ok(Some(configured_distribution_default_runtime_identity_for(
+                    cfg, policy,
+                )))
+            }
             None => runtime_identity_from_legacy_agent(agent).map(Some),
         }
     } else {
@@ -425,8 +426,8 @@ fn workspace_paths_match(agent_path: &str, workspace_path: &std::path::Path) -> 
 /// This is the authoritative source for EXISTING sessions — the session's own metadata
 /// records which runtime created it, regardless of the current agent config.
 /// Agent config (resolve_agent_runtime_identity_from_config) decides the default for NEW sessions
-/// and is gated by `multiAgentRuntime`; session metadata is stable once created and is
-/// read regardless of that gate so an existing runtime-A history is never reopened as
+/// using explicit preference or the root default; session metadata is stable once
+/// created so an existing runtime-A history is never reopened as
 /// runtime B under the same MyAgents session_id.
 #[allow(dead_code)]
 pub fn resolve_session_runtime_identity(session_id: &str) -> Option<String> {
@@ -790,7 +791,6 @@ mod tests {
     #[test]
     fn project_agent_id_selects_runtime_even_when_legacy_agent_path_disagrees() {
         let config = serde_json::json!({
-            "multiAgentRuntime": true,
             "agents": [
                 { "id": "extra", "workspacePath": "/repo/current", "runtime": "claude-code" },
                 { "id": "selected", "workspacePath": "/repo/old", "runtime": "codex" }
@@ -811,7 +811,6 @@ mod tests {
     #[test]
     fn exact_agent_id_selects_extra_or_orphan_runtime_without_project_guessing() {
         let config = serde_json::json!({
-            "multiAgentRuntime": true,
             "agents": [
                 { "id": "project-agent", "runtime": "claude-code" },
                 { "id": "extra", "workspacePath": "/repo/current", "runtime": "codex" },
@@ -836,7 +835,6 @@ mod tests {
     #[test]
     fn exact_builtin_agent_id_overrides_another_agents_external_workspace_runtime() {
         let config = serde_json::json!({
-            "multiAgentRuntime": true,
             "agents": [
                 { "id": "project-agent", "runtime": "codex" },
                 { "id": "extra-builtin", "workspacePath": "/repo/current", "runtime": "builtin" }
@@ -852,7 +850,6 @@ mod tests {
     #[test]
     fn managed_codex_provider_only_owns_managed_compatible_agent_shapes() {
         let config = serde_json::json!({
-            "multiAgentRuntime": true,
             "managedCodexProviderDevGate": true,
             "managedCodexRuntimeInstall": {
                 "usable": true
@@ -902,9 +899,8 @@ mod tests {
     }
 
     #[test]
-    fn selector_gate_uses_default_integrated_before_managed_provider_constraint() {
+    fn explicit_external_choice_wins_over_dormant_managed_provider() {
         let config = serde_json::json!({
-            "multiAgentRuntime": false,
             "managedCodexProviderDevGate": true,
             "managedCodexRuntimeInstall": {
                 "usable": true
@@ -920,34 +916,57 @@ mod tests {
 
         let identity = resolve_agent_runtime_identity_by_id_from_value(&config, "claude-code")
             .expect("managed provider identity");
-        assert_eq!(identity.runtime, "codex");
-        assert_eq!(identity.runtime_source.as_deref(), Some("managed-provider"));
+        assert_eq!(identity.runtime, "claude-code");
+        assert_eq!(identity.runtime_source.as_deref(), Some("system-cli"));
     }
 
     #[test]
-    fn selector_gate_uses_allowed_developer_integrated_default() {
+    fn unset_agent_uses_configured_integrated_default() {
         let config = serde_json::json!({
-            "multiAgentRuntime": false,
             "defaultIntegratedRuntime": "dsh",
             "agents": [
                 {
                     "id": "ordinary",
-                    "runtimePreference": { "family": "external", "id": "codex" },
                     "providerId": "deepseek"
                 }
             ]
         });
 
         let identity = resolve_agent_runtime_identity_by_id_from_value(&config, "ordinary")
-            .expect("developer default identity");
+            .expect("configured default identity");
         assert_eq!(identity.runtime, "dsh");
         assert_eq!(identity.runtime_source.as_deref(), Some("integrated"));
     }
 
     #[test]
+    fn explicit_integrated_choices_win_over_the_root_default() {
+        let config = serde_json::json!({
+            "defaultIntegratedRuntime": "dsh",
+            "agents": [
+                { "id": "sdk", "runtime": "builtin", "providerId": "deepseek" },
+                { "id": "sdk-preference", "runtimePreference": { "family": "integrated", "id": "claude-agent-sdk" } },
+                { "id": "fixed-provider", "providerId": "anthropic-api" }
+            ]
+        });
+        for id in ["sdk", "sdk-preference", "fixed-provider"] {
+            assert_eq!(
+                resolve_agent_runtime_identity_by_id_from_value(&config, id).unwrap().runtime,
+                "builtin"
+            );
+        }
+        let config = serde_json::json!({
+            "defaultIntegratedRuntime": "claude-agent-sdk",
+            "agents": [{ "id": "dsh", "runtimePreference": { "family": "integrated", "id": "dsh" } }]
+        });
+        assert_eq!(
+            resolve_agent_runtime_identity_by_id_from_value(&config, "dsh").unwrap().runtime,
+            "dsh"
+        );
+    }
+
+    #[test]
     fn legacy_managed_codex_shape_does_not_bypass_provider_readiness() {
         let config = serde_json::json!({
-            "multiAgentRuntime": true,
             "managedCodexProviderDevGate": true,
             "managedCodexRuntimeInstall": {
                 "usable": true
@@ -976,7 +995,6 @@ mod tests {
     #[test]
     fn integrated_preferences_and_provider_constraints_follow_central_precedence() {
         let config = serde_json::json!({
-            "multiAgentRuntime": true,
             "managedCodexProviderDevGate": true,
             "managedCodexRuntimeInstall": { "usable": true },
             "managedCodexAuth": { "status": "valid", "authMethod": "chatgpt" },
@@ -1062,7 +1080,6 @@ mod tests {
         )
         .expect("valid DSH-only policy");
         let config = serde_json::json!({
-            "multiAgentRuntime": true,
             "managedCodexProviderDevGate": true,
             "managedCodexRuntimeInstall": { "usable": true },
             "managedCodexAuth": { "status": "valid", "authMethod": "chatgpt" },
@@ -1123,7 +1140,6 @@ mod tests {
     #[test]
     fn invalid_authoritative_agent_preference_fails_closed_when_selector_is_available() {
         let config = serde_json::json!({
-            "multiAgentRuntime": true,
             "agents": [{
                 "id": "future",
                 "runtime": "builtin",
@@ -1212,7 +1228,6 @@ mod tests {
     #[test]
     fn duplicate_project_claim_is_target_local_failure() {
         let config = serde_json::json!({
-            "multiAgentRuntime": true,
             "agents": [{ "id": "selected", "runtime": "codex" }]
         });
         let projects = serde_json::json!([

@@ -1542,7 +1542,6 @@ mod agent_monitor_tests {
     fn salvage_agents_projects_the_root_runtime_default_without_persisting_it_per_agent() {
         let keys = std::collections::HashMap::new();
         let value = serde_json::json!({
-            "multiAgentRuntime": false,
             "defaultIntegratedRuntime": "dsh",
             "agents": [{
                 "id": "a",
@@ -1553,7 +1552,7 @@ mod agent_monitor_tests {
         });
 
         let agents = salvage_agents_from_value(&value, &keys).expect("valid Agent");
-        assert!(!agents[0].runtime_selection_available);
+        assert!(agents[0].runtime_selection_available);
         assert_eq!(agents[0].default_integrated_runtime.as_deref(), Some("dsh"));
         assert!(serde_json::to_value(&agents[0])
             .expect("serialized Agent")
@@ -2528,12 +2527,8 @@ fn salvage_agents_from_value(
     value: &serde_json::Value,
     api_keys: &std::collections::HashMap<String, String>,
 ) -> Option<Vec<AgentConfigRust>> {
-    let labs_enabled = value
-        .get("multiAgentRuntime")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
     let runtime_selection_available =
-        crate::runtime_distribution_policy::policy().selector_available(labs_enabled);
+        crate::runtime_distribution_policy::policy().selector_available();
     let default_integrated_runtime = value
         .get("defaultIntegratedRuntime")
         .and_then(serde_json::Value::as_str)

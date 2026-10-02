@@ -1531,13 +1531,10 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 console.info(
                     `[fb-session] boot config loaded projects=${projects.length} hasSession=${Boolean(cfg.floatingBallSessionId)} date=${cfg.floatingBallSessionDate ?? 'none'} workspace=${cfg.floatingBallSessionWorkspace ?? 'none'} elapsed=${elapsedMs(bootStartedAt)}`,
                 );
-                analyticsRuntimeRef.current = isAgentRuntimeSelectorAvailable(
-                    !!cfg.multiAgentRuntime,
-                )
+                analyticsRuntimeRef.current = isAgentRuntimeSelectorAvailable()
                     ? 'unknown'
                     : resolveEffectiveRuntime(
                         undefined,
-                        !!cfg.multiAgentRuntime,
                         undefined,
                         undefined,
                         undefined,

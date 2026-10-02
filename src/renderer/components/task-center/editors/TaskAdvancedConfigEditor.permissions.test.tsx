@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { i18n } from '@/i18n';
 import { TaskAdvancedConfigEditor } from './TaskAdvancedConfigEditor';
 
-const config = { multiAgentRuntime: true, agents: [] };
+const config = { agents: [] };
 const empty: never[] = [];
 vi.mock('@/hooks/useConfig', () => ({ useConfig: () => ({ config, projects: empty, providers: empty, apiKeys: {}, providerVerifyStatus: {} }) }));
 vi.mock('@/hooks/useAvailableProviders', () => ({ useAvailableProviders: () => empty }));

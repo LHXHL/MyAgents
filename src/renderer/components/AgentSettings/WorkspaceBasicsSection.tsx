@@ -84,21 +84,17 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
     'claude-code': { installed: false },
     'codex': { installed: false },
   });
-  // When selection is unavailable, preserve Agent intent and project the
-  // configured/default Integrated Runtime for new Sessions.
+  // Unset Agents follow the root default; explicit choices remain authoritative.
   const agentRuntimeConfig = agent?.runtimeConfig as RuntimeConfig | undefined;
   const currentRuntime: RuntimeType = resolveEffectiveRuntime(
     agent?.runtime,
-    !!config.multiAgentRuntime,
     agent?.runtimePreference,
     agent?.runtimeConfig?.source,
     agent?.providerId,
     undefined,
     config.defaultIntegratedRuntime,
   );
-  const runtimeSelectorAvailable = isAgentRuntimeSelectorAvailable(
-    !!config.multiAgentRuntime,
-  );
+  const runtimeSelectorAvailable = isAgentRuntimeSelectorAvailable();
   const usesManagedCodexProvider = currentRuntime === 'builtin'
     && agentUsesManagedCodexProvider(agent);
   const usesExternalCliConfiguration = currentRuntime !== 'builtin' && currentRuntime !== 'dsh';

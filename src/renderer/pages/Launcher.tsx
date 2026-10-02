@@ -1,3 +1,4 @@
+import { resolveDefaultWorkspaceProject } from '@/components/launcher/WorkspaceSelector';
 import { reasoningEffortAfterModelChange } from '../../shared/reasoningEffort';
 /**
  * Launcher - Main entry page for MyAgents
@@ -163,25 +164,6 @@ export default function Launcher({
 
   // ===== Launcher-specific state for BrandSection =====
 
-  // Fallback chain: defaultWorkspacePath → mino project → first project → null
-  const resolveDefaultWorkspace = useCallback(
-    (projs: Project[]): Project | null => {
-      if (config.defaultWorkspacePath) {
-        const def = projs.find((p) =>
-          workspacePathsEqual(p.path, config.defaultWorkspacePath),
-        );
-        if (def) return def;
-      }
-      // Fallback: find mino project by path suffix
-      const mino = projs.find((p) =>
-        p.path.replace(/\\/g, '/').endsWith('/mino'),
-      );
-      if (mino) return mino;
-      return projs[0] ?? null;
-    },
-    [config.defaultWorkspacePath],
-  );
-
   const selectedWorkspace = useMemo(() => {
     if (selectedWorkspacePath) {
       const selected = visibleProjects.find((project) =>
@@ -189,8 +171,8 @@ export default function Launcher({
       );
       if (selected) return selected;
     }
-    return resolveDefaultWorkspace(visibleProjects);
-  }, [resolveDefaultWorkspace, selectedWorkspacePath, visibleProjects]);
+    return resolveDefaultWorkspaceProject(visibleProjects, config.defaultWorkspacePath);
+  }, [config.defaultWorkspacePath, selectedWorkspacePath, visibleProjects]);
 
   useEffect(() => {
     const resolvedPath = selectedWorkspace?.path ?? null;
@@ -255,10 +237,7 @@ export default function Launcher({
     useState<string>('default');
 
   // Runtime state — adapts model/permission selectors when workspace uses external runtime
-  const multiAgentRuntimeEnabled = !!config.multiAgentRuntime;
-  const runtimeSelectorAvailable = isAgentRuntimeSelectorAvailable(
-    multiAgentRuntimeEnabled,
-  );
+  const runtimeSelectorAvailable = isAgentRuntimeSelectorAvailable();
 
   // PRD 0.2.7 D6 / Phase F: Launcher exposes Runtime selector in the row
   // below the input. We detect once on mount, mirroring Chat.tsx's pattern.
@@ -325,7 +304,6 @@ export default function Launcher({
   // Runtime-aware model/permission lists — adapts input bar for external runtimes
   const resolvedLauncherRuntime: RuntimeType = resolveEffectiveRuntime(
     selectedAgent?.runtime,
-    multiAgentRuntimeEnabled,
     selectedAgent?.runtimePreference,
     selectedAgent?.runtimeConfig?.source,
     selectedAgent?.providerId,
@@ -340,7 +318,6 @@ export default function Launcher({
   const launcherRuntime: RuntimeType = selectedAgentUsesManagedCodexProvider
     ? resolveEffectiveRuntime(
         selectedAgent?.runtime,
-        multiAgentRuntimeEnabled,
         selectedAgent?.runtimePreference,
         selectedAgent?.runtimeConfig?.source,
         undefined,
@@ -717,7 +694,6 @@ export default function Launcher({
     selectedWorkspace?.enabledOfficialToolIds,
     config.defaultPermissionMode,
     config.defaultIntegratedRuntime,
-    multiAgentRuntimeEnabled,
     isExternalRuntime,
     launcherRuntime,
   ]);
@@ -1399,9 +1375,8 @@ export default function Launcher({
                 ? launcherRuntimePermissionModes
                 : undefined
             }
-            /* PRD 0.2.7 Phase F: runtime selector lives below the input
-             * (LauncherInputContextRow) when the experimental gate is on. */
-            multiAgentRuntimeEnabled={runtimeSelectorAvailable}
+            /* Runtime selector lives below the input (LauncherInputContextRow). */
+            runtimeSelectorAvailable={runtimeSelectorAvailable}
             runtimeDetections={runtimeDetections}
             onRuntimeChange={handleLauncherRuntimeChange}
             activeRuntime={launcherRuntime}

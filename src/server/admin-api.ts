@@ -8007,7 +8007,6 @@ export async function handleAgentShow(payload: {
   const rootConfig = loadConfig();
   const preferredRuntime = resolveEffectiveRuntime(
     storedRuntime,
-    !!rootConfig.multiAgentRuntime,
     agent.runtimePreference,
     (agent.runtimeConfig as RuntimeConfig | undefined)?.source,
     agent.providerId,
@@ -8695,7 +8694,6 @@ function resolveAgentRuntimeIdentityFromWorkspace(payload: {
     typeof raw === 'string' && isValidRuntimeType(raw) ? raw : 'builtin';
   const preferredRuntime = resolveEffectiveRuntime(
     legacyRuntime,
-    !!config.multiAgentRuntime,
     agent.runtimePreference,
     (agent.runtimeConfig as RuntimeConfig | undefined)?.source,
     agent.providerId,

@@ -73,19 +73,22 @@ describe('resolveRuntimeModelCatalogIdentity', () => {
     })).toEqual({ runtime: 'codex', source: 'managed-provider' });
   });
 
-  it('uses authoritative DSH preference only while new Runtime selection is available', () => {
+  it('keeps explicit DSH preference when the configured default changes', () => {
     const agent = {
       runtime: 'builtin' as const,
       runtimePreference: { family: 'integrated' as const, id: 'dsh' as const },
     };
-    expect(resolveAgentRuntimeModelCatalogIdentity(agent, true)).toEqual({
+    expect(resolveAgentRuntimeModelCatalogIdentity(agent)).toEqual({
       runtime: 'dsh',
       source: 'integrated',
     });
-    expect(resolveAgentRuntimeModelCatalogIdentity(agent, false)).toEqual({
-      runtime: 'builtin',
+    expect(resolveAgentRuntimeModelCatalogIdentity(agent, 'claude-agent-sdk')).toEqual({
+      runtime: 'dsh', source: 'integrated',
     });
-    expect(resolveAgentRuntimeModelCatalogIdentity(agent, false, 'dsh')).toEqual({
+    expect(resolveAgentRuntimeModelCatalogIdentity({}, 'dsh')).toEqual({
+      runtime: 'dsh', source: 'integrated',
+    });
+    expect(resolveAgentRuntimeModelCatalogIdentity(agent, 'dsh')).toEqual({
       runtime: 'dsh',
       source: 'integrated',
     });

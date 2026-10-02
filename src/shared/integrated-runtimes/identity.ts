@@ -1,9 +1,10 @@
+import packageJson from "../../../package.json";
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from "../config-types";
 import managedCodexRuntimeLock from "../managed-codex-runtime.json";
 import type { RuntimeSource, RuntimeType } from "../types/runtime";
 import dshLock from "./effective-dsh-lock";
 
-export const CLAUDE_AGENT_SDK_IMPLEMENTATION_VERSION = "0.3.276";
+export const CLAUDE_AGENT_SDK_IMPLEMENTATION_VERSION = packageJson.dependencies["@anthropic-ai/claude-agent-sdk"];
 
 export const INTEGRATED_RUNTIME_IDS = ["claude-agent-sdk", "dsh"] as const;
 export type IntegratedRuntimeId = (typeof INTEGRATED_RUNTIME_IDS)[number];
@@ -89,6 +90,7 @@ export type LegacyAgentRuntimePreferenceFacts = {
   runtime?: unknown;
   runtimeSource?: unknown;
   providerId?: unknown;
+  defaultIntegratedRuntime?: IntegratedRuntimeId;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -139,7 +141,7 @@ export function parseAgentRuntimePreference(
 export function preferenceFromLegacyAgentFacts(
   facts: LegacyAgentRuntimePreferenceFacts,
 ): AgentRuntimePreference | undefined {
-  const runtime = facts.runtime ?? "builtin";
+  const runtime = facts.runtime ?? (facts.defaultIntegratedRuntime === "dsh" ? "dsh" : "builtin");
   const source = facts.runtimeSource;
   if (runtime === "builtin") {
     return source === undefined
@@ -167,6 +169,7 @@ export function resolveAgentRuntimePreference(facts: {
   runtime?: unknown;
   runtimeSource?: unknown;
   providerId?: unknown;
+  defaultIntegratedRuntime?: IntegratedRuntimeId;
 }): AgentRuntimePreference | undefined {
   if (facts.runtimePreference !== undefined) {
     return parseAgentRuntimePreference(facts.runtimePreference);

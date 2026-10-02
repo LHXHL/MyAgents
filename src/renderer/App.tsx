@@ -138,7 +138,6 @@ import {
   setAppActiveTabId,
 } from '@/utils/frontendLogger';
 import {
-  normalizeRuntime,
   resolveEffectiveRuntime,
   planSessionOpen,
   sessionRuntimeIdentityFromMetadataForOpen,
@@ -296,12 +295,10 @@ interface SessionRuntimeOpenIdentity {
 
 function fallbackRuntimeForOpen(
   fallbackRuntime: RuntimeType,
-  multiAgentRuntime: boolean | undefined,
   defaultIntegratedRuntime?: unknown,
 ): RuntimeType {
   return resolveEffectiveRuntime(
     fallbackRuntime,
-    !!multiAgentRuntime,
     undefined,
     undefined,
     undefined,
@@ -327,12 +324,10 @@ function analyticsRuntimeSource(
 async function resolveSessionRuntimeIdentityForOpen(
   sessionId: string | null | undefined,
   fallbackRuntime: RuntimeType,
-  multiAgentRuntime: boolean | undefined,
   defaultIntegratedRuntime?: unknown,
 ): Promise<SessionRuntimeOpenIdentity> {
   const fallback = fallbackRuntimeForOpen(
     fallbackRuntime,
-    multiAgentRuntime,
     defaultIntegratedRuntime,
   );
   if (!sessionId || isPendingSessionId(sessionId)) {
@@ -804,8 +799,8 @@ export default function App() {
         const agent = getProjectAgent(cfg, configProjects, agentDir);
         const runtimeIdentity = await resolveSessionRuntimeIdentityForOpen(
           sessionId,
-          normalizeRuntime(agent?.runtime),
-          cfg?.multiAgentRuntime,
+          resolveEffectiveRuntime(agent?.runtime, agent?.runtimePreference, agent?.runtimeConfig?.source,
+            agent?.providerId, undefined, cfg?.defaultIntegratedRuntime),
           cfg?.defaultIntegratedRuntime,
         );
         const originFields = await resolveSessionOriginFieldsForAnalytics(
@@ -1054,7 +1049,7 @@ export default function App() {
     void initAnalytics().then(() => {
       const cfg = configRef.current;
       // distinct effective external runtimes the user has configured agents for.
-      // gate-aware → '' when multiAgentRuntime is off; '' (not omitted) for a
+      // '' (not omitted) for a
       // loaded-but-no-agents user. Captures "configured but maybe never used"
       // runtimes that turn-level events (ai_turn_complete) can't see.
       const runtimesActive = Array.from(
@@ -1063,7 +1058,6 @@ export default function App() {
             .map((a) =>
               resolveEffectiveRuntime(
                 a.runtime,
-                !!cfg.multiAgentRuntime,
                 a.runtimePreference,
                 a.runtimeConfig?.source,
                 a.providerId,
@@ -1903,7 +1897,6 @@ export default function App() {
           agent_hash: hashAgentNameSync(agent?.name ?? null),
           runtime: resolveEffectiveRuntime(
             agent?.runtime,
-            !!cfg.multiAgentRuntime,
             agent?.runtimePreference,
             agent?.runtimeConfig?.source,
             agent?.providerId,
@@ -3951,7 +3944,6 @@ export default function App() {
             : undefined;
         const workspaceRuntime = resolveEffectiveRuntime(
           workspaceAgent?.runtime,
-          Boolean(configRef.current?.multiAgentRuntime),
           workspaceAgent?.runtimePreference,
           workspaceAgent?.runtimeConfig?.source,
           workspaceAgent?.providerId,
@@ -4305,7 +4297,6 @@ export default function App() {
             : undefined;
         const helperRuntime = resolveEffectiveRuntime(
           helperAgent?.runtime,
-          Boolean(configRef.current?.multiAgentRuntime),
           helperAgent?.runtimePreference,
           helperAgent?.runtimeConfig?.source,
           helperAgent?.providerId,

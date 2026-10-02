@@ -130,7 +130,7 @@ export function ThemeRuntimeProvider({
   broadcastSelection = false,
   persistBootstrapSnapshot = true,
   syncNativeWindowBackground = false,
-  markdownReadingSize = 'large',
+  markdownReadingSize,
 }: ThemeRuntimeProviderProps) {
   const [bootstrapSelection] = useState(() => readThemeBootstrapSelection(
     typeof localStorage === 'undefined' ? null : localStorage,
@@ -226,7 +226,7 @@ export function FloatingThemeRuntime({ children }: { children: React.ReactNode }
   const [selection, setSelection] = useState<ThemeSelection>(() => readThemeBootstrapSelection(
     typeof localStorage === 'undefined' ? null : localStorage,
   ));
-  const [markdownReadingSize, setMarkdownReadingSize] = useState<MarkdownReadingSize>('large');
+  const [markdownReadingSize, setMarkdownReadingSize] = useState<MarkdownReadingSize>(() => normalizeMarkdownReadingSize(undefined));
 
   useEffect(() => {
     let cancelled = false;

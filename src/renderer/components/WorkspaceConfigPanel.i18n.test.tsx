@@ -143,7 +143,6 @@ vi.mock('@/hooks/useConfig', () => ({
       }],
       defaultPermissionMode: 'plan',
       enabledPlugins: {},
-      multiAgentRuntime: true,
       plugins: [],
     },
     patchProject: mocks.patchProject,

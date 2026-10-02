@@ -17,7 +17,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@/hooks/useConfig', () => ({ useConfig: () => ({
-  config: { multiAgentRuntime: true },
+  config: {  },
   providers: mocks.providers,
   apiKeys: { 'test-provider': 'test-only-placeholder' },
   providerVerifyStatus: {},

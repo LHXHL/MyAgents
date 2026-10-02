@@ -47,7 +47,7 @@ export type BackgroundAgentPermissionMode = 'inherit' | 'fullAgency';
 export type MarkdownReadingSize = 'large' | 'standard';
 
 export function normalizeMarkdownReadingSize(value: unknown): MarkdownReadingSize {
-  return value === 'standard' ? 'standard' : 'large';
+  return value === 'large' ? 'large' : 'standard';
 }
 
 /**
@@ -964,9 +964,8 @@ export interface AppConfig {
   showDevTools: boolean; // 显示开发者工具 (Logs/System Info)
   /** 开发者开关：在 AI 对话页顶栏显示旧的工作区历史入口。默认关闭。 */
   showChatHistoryEntry?: boolean;
-  multiAgentRuntime?: boolean; // 多 Agent Runtime 模式（开发者，默认关闭）
-  /** 开发者覆盖：选择器不可用时，新 ordinary-provider Session 使用的
-   *  Integrated Runtime。缺省或不在当前 distribution allowlist 时使用构建策略默认值。 */
+  /** Agent 未明确选择运行环境时，新 Session 使用的 Integrated Runtime。
+   *  已有 Session 保持冻结 identity；Provider 固定运行要求仍优先。 */
   defaultIntegratedRuntime?: 'claude-agent-sdk' | 'dsh';
   experimentalSplitView?: boolean; // 实验性：文件预览在右侧分屏而非弹窗
   /** 实验室：用户注册 CLI 工具注册表（PRD 0.2.36）。默认关。
@@ -2840,7 +2839,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   themeId: DEFAULT_THEME_ID,
   themeSelectionExplicit: false,
   appearanceMode: DEFAULT_APPEARANCE_MODE,
-  markdownReadingSize: 'large',
+  markdownReadingSize: normalizeMarkdownReadingSize(undefined),
   uiLanguage: 'system',
   minimizeToTray: true, // 默认开启最小化到托盘
   forceWakeLock: false, // 默认关闭常开阻睡（智能模式仍在跑，覆盖 AI 工作期间）
