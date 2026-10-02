@@ -1,6 +1,6 @@
 # Builtin Claude 工具权限架构
 
-本文描述 Builtin Claude Agent SDK 的工具可见性、`canUseTool` 与 hooks 如何共同形成 MyAgents 权限边界。External Runtime 由 `session-engine` adapter 和各 Runtime 原生协议拥有，不复用本文回调。
+本文描述 Builtin Claude Agent SDK 的工具可见性、`canUseTool` 与 hooks 如何共同形成 MyAgents 权限边界。Integrated DSH 与 External Runtime 由 `session-engine` adapter 和各 Runtime 原生协议拥有，不复用本文回调。
 
 SDK 类型与行为必须先核对当前安装的：
 
@@ -100,6 +100,8 @@ Abort handler 必须先确认 entry 仍 pending，再 reject `AbortError`。如�
 6. 通过 `updatedInput.answers` 交回 SDK。
 
 用户取消返回 deny + interrupt。当前 host 不支持 native card 时 fail closed，并要求模型用普通文本询问；不能把 request 丢到没有 response route 的 event bus。
+
+Chat 与 Companion 的问答表单保留 `requestId` 和提交 Promise。只有后端明确 `success=true` 才移除对应卡片；失败保留答案、显示错误并恢复操作。旧 request 的回执不能清新问题，取消也必须走对应的产品响应入口。
 
 Permission card 与 AskUserQuestion card 是两种协议：前者回答 allow/deny，后者返回结构化答案。不得复用 payload shape 或 response endpoint。
 

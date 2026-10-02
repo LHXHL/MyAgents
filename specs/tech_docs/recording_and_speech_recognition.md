@@ -218,14 +218,8 @@ Tauri 提供 `cmd_speech_model_pack_status/install/remove`。状态为 `not_inst
 5. 资源准备或安装失败时依次核对 target native manifest、共享 ORT identity、第一方 manifest/signature、pack 文件 hash 与最小真实加载。不得回退系统 ORT、在线 ASR、用户 cache 或临时下载。
 
 
-### Record CLI read and delete
+## Record CLI 读取与删除
 
-`myagents record get <id>` reads the complete Record through Management API and
-RecordStore. `myagents record delete <id>` cancels pending speech processing before
-RecordStore deletion, emits the existing Record change event, and records CliAgent
-analytics. List/create/get/delete share the desktop Store; CLI does not read or mutate
-Record directories directly.
+`myagents record get <id>` 经 Management API 与 RecordStore 读取完整 Record；`myagents record delete <id>` 先取消对应 speech job，再由 RecordStore 删除，发布既有变更事件并记录 CliAgent 埋点。list/create/get/delete 与桌面共用 Store，CLI 不直接读写 Record 目录。
 
-Speech cancellation settles any matching jobs, but updates transcription/diarization
-projections only for Audio Records. Text Records have no audio processing state;
-the shared desktop and CLI deletion preflight must leave them untouched.
+Speech 取消结算所有匹配 job，但只更新 Audio Record 的转录/人物投影。Text Record 没有音频处理状态，桌面与 CLI 的共享删除 preflight 不修改它。

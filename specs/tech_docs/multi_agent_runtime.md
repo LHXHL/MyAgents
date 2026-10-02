@@ -8,17 +8,18 @@
 routes
   -> session-engine/selector.ts
       -> builtin-adapter.ts  -> agent-session.ts       -> Claude Agent SDK
+      -> integrated-adapter.ts -> DSH RuntimeProcessHost -> native DSH
       -> external-adapter.ts -> external-session.ts    -> AgentRuntime
                                                          |- Claude Code CLI
                                                          `- Codex app-server
 ```
 
-`SessionEngine` 是 route 面向当前 Session Runtime 的唯一 facade。Route 只做请求校验和响应映射，不自行判断 builtin/external，也不直接 import Runtime owner。
+`SessionEngine` 是 route 面向当前 Session Runtime 的唯一 facade。Route 只做请求校验和响应映射，不自行判断 builtin/integrated/external，也不直接 import Runtime owner。
 
 Runtime 抽象统一的是产品行为，不是 mutable state：
 
 - Product Session identity、metadata 与 transcript 仍由 Session 层拥有；
-- builtin 和 external 各自拥有进程、queue、turn、config 与 terminal state；
+- builtin 独立拥有 SDK Query 状态；Integrated DSH 与 external Runtime 复用 external-session 的 queue/config/transcript owners，各 adapter 拥有自己的原生执行状态；
 - `src/server/session-core/` 只共享无副作用 policy；
 - 不为某个 Runtime 不支持的能力建立伪对称 stub；adapter 返回明确 capability/unsupported 结果。
 
@@ -33,7 +34,7 @@ Session identity、恢复与配置 snapshot 见 [`session_architecture.md`](sess
 - live state、stream replay、latest result、completion terminal 与 config snapshot 读取；
 - Rewind、Fork、Retry、desktop reset 与已证明的 surface migration；
 - model、permission、reasoning、MCP、Agent、Plugin 与 interaction scenario 配置入口；
-- external-only 的 pre-warm、diagnostics 与 native compact 能力检查。
+- 按 adapter 能力提供 pre-warm、diagnostics 与 native compact。
 
 `product-session-binding.ts` 是 Product Session prepare/commit/rollback 的事务入口。adapter 只能在完成自身 Runtime 清理和绑定后提交产品 identity；SDK UUID、Codex thread id 等 native identity 不进入这里。
 
@@ -86,7 +87,7 @@ Session identity、恢复与配置 snapshot 见 [`session_architecture.md`](sess
 
 同为 Codex，两个 source 也不能复用进程或混用配置。Rust 在一次 Sidecar ensure attempt 开始时解析完整 `RuntimeIdentity(runtime + source)`；复用校验与 spawn 使用同一快照，不能在中间重新读取 Agent 配置。
 
-显式 system CLI 选择优先于 provider compatibility projection。Managed provider 的 readiness 由自己的 provider gate、安装清单与认证状态裁决，不依赖实验室的 system CLI Runtime 开关。
+显式 system CLI 选择优先于 provider compatibility projection。Managed provider 的 readiness 由自己的 provider gate、安装清单与认证状态裁决，独立于 system CLI 的检测和安装。
 
 owned desktop/Task/IM Session 持久化完整执行 identity 与配置 snapshot；Agent Channel 的 model/provider/permission/MCP 选择同样服从 Session。默认 reload 不改旧会话，也不触发 drift rotation；显式模型选择经 SessionEngine operation 应用，忙时下一轮生效。Analytics 和真实执行身份检查须携带完整 source，不能把 managed 与 system usage 合并。
 
@@ -178,13 +179,13 @@ Codex Server → Client request 使用显式 allowlist。升级 app-server 时�
 
 `integrated-runtimes/dsh/runtime.ts` 通过 `RuntimeProcessHost` 和生成 client 连接一个 DSH generation。 DSH transport/process failure 必须发送 `session_complete` 给共享 lifecycle owner，释放该 generation 的 running/process 状态；只发送 error status 会阻止下一条 query 的原生恢复。Runtime 独占原生 Session/Turn、DSH 工具流水线、permission revision 与子 Agent 生命周期；Host 的 `SessionStore` 独占 Product transcript、冻结 identity 和 mutation/input journal。原生 receipt 决定输入是否被消费；legacy Session 仍等待 Product durable commit，V2 则更新 canonical projection 并保留执行恢复 journal，正文由后台 writer 提交。RPC 成功本身不能推断 DSH 输入已进入对话。
 
-结构化 `systemContext` 分别传入 global/root contributions，主项目指令由 Runtime 的 DSH 指令插件加载。Skills/MCP 等扩展由同一次 Product capability inventory 编译为声明式快照；`dsh_first` 的子 Agent 由 DSH 原生工具创建。runtime-neutral `product-extensions` dispatcher 供 DSH reverse ports 与 Managed Codex 共用。DSH extension replacement 在原生事务边界更新，当前状态通过既有 SSE 和组件诊断投影。
+结构化 `systemContext` 分别传入 global/root contributions，主项目指令由 Runtime 的 DSH 指令插件加载。Skills/MCP 等扩展由同一次 Product capability inventory 编译为声明式快照；子 Agent 由 DSH 原生工具创建。runtime-neutral `product-extensions` dispatcher 供 DSH reverse ports 与 Managed Codex 共用。DSH extension replacement 在原生事务边界更新，当前状态通过既有 SSE 和组件诊断投影。
 
-Fork/rewind/delete/retry/compact 走 SessionEngine 的 adapter operation；丢失回包由既有 Product journal 与原生 receipts 对账。Root/child 权限与 AskUser 复用产品交互。绑定支持原生 Host 方法的 `dsh_first` Runtime 时，Agent 树来自 DSH 原生目录，个人任务按 Agent Session 读取，共享任务单独读取；客户端的中断按钮只中断当前轮次，给可延续子 Agent 发消息即可再次工作。旧 `ma_first` 产物仍走 ProductWork 投影。官方 Shell/Jobs 组件拥有平台命令执行，Host 仅声明执行环境和处理权限。
+Fork/rewind/delete/retry/compact 走 SessionEngine 的 adapter operation；丢失回包由既有 Product journal 与原生 receipts 对账。Root/child 权限与 AskUser 复用产品交互。Agent 树来自 DSH 原生目录，个人任务按 Agent Session 读取，共享任务单独读取；客户端的中断按钮只中断当前轮次，给可延续子 Agent 发消息即可再次工作。官方 Shell/Jobs 组件拥有平台命令执行，Host 仅声明执行环境和处理权限。
 
 DSH 权限选择先存为 Session 的期望模式；当前 turn 使用 admission 时冻结的模式，不因设置变化中断。下一条 query 启动前，adapter 在原生 `config/apply` 边界同时落实 Product 权限、DSH sandbox 与 approval policy，确认有效后才发送 `turn/start`；应用失败则阻止这条 query，不能沿用旧权限执行。
 
-详细协议、制品边界与维护台账见 [DSH 集成指南](./myagents_dsh_integrated_runtime.md)。
+详细协议、制品边界与恢复规则见 [DSH 集成指南](./myagents_dsh_integrated_runtime.md)。
 
 ## 6. External Session owner
 
@@ -320,7 +321,7 @@ Context 指示器展示最近一次主模型 API 调用的 input-side 占用，�
 
 external adapter 只在 UnifiedEvent 显式给出 `contextOccupiedTokens` 时广播 context usage；缺失时宁可不显示，也不拿 running total/turn total 猜测。turn settlement 的同一 snapshot同时写入 Session metadata供重开恢复，并校验 source 与 Session Runtime 一致。
 
-native compact 是 capability，不是所有 Runtime 的共同功能。builtin 走 SDK command；Managed Codex 走 SessionEngine native compact operation并隔离 control turn事件；其它 Runtime 没有等价语义时不展示入口。
+native compact 是 capability，不是所有 Runtime 的共同功能。builtin 走 SDK command；Managed Codex 走 SessionEngine native compact operation并隔离 control turn事件；DSH 走 `session/compact`；没有等价语义的 Runtime 不展示入口。
 
 ## 11. 安全与日志
 

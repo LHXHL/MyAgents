@@ -70,8 +70,8 @@ Task Activation Detector同样拥有 Job Object。timeout、stdout超限、Task 
 
 `system_binary::find()` 补充 GUI应用缺少的常见 PATH。具体 runtime优先使用自己的 locator：
 
-- Sidecar、Plugin Bridge和CLI使用 bundled Node绝对路径；
-- Task Detector的 bare Node固定到 bundled Node；
+- Sidecar 优先使用 bundled Node，资源缺失时保留系统查找回退；Plugin Bridge 与 CLI 只接受完整 bundled 资源；
+- Task Detector 的 bare Node 优先 bundled，缺失时沿 Sidecar locator 查找系统 Node；
 - SDK shell允许系统 Node优先、bundled Node兜底；
 - managed runtime使用签名/验证后的绝对 executable，不回退 PATH同名程序。
 
@@ -99,7 +99,7 @@ Windows production document origin、IPC和custom resource URL与macOS不同：
 
 - Tauri IPC通过 `http://ipc.localhost` 的 Fetch，需要同时被 `default-src` / `connect-src` 允许；
 - `fetch-src` 不是标准 CSP directive，不能代替 `connect-src`；
-- loopback只出现在 control-plane `connect-src`，工具/用户 attachment subresource走 `myagents-resource` origin；
+- loopback `connect-src` 供登记的 `/refs`、`/attachment` 大载荷 fetch 使用，普通控制面仍经 Rust；工具/用户 attachment subresource 走 `myagents-resource` origin；
 - `srcdoc` widget继承 top-level CSP，已登记外部库在 render时替换为bundled inline source；
 - `webview_policy.rs` 为所有共享 data directory的 WebView统一选择 Windows Fluent Overlay scrollbar。
 

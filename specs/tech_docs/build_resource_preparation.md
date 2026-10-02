@@ -36,12 +36,12 @@
 
 Linux 的 setup 通过 `build_linux.sh --install-deps` 和 `--prepare` 复用资源路径，debug/release 也走该脚本。macOS/Windows 的开发版仍可使用项目 node_modules 提供 sharp/tsx；正式包必须携带自包含资源。
 
-## 架构无关的业务产物只构建一次
+## 业务 bundle 与本次 Runtime 选择一致
 
-`npm run build:assets` 是前端、Sidecar、Bridge、CLI 的组合入口，各 target 的细节仍属于既有 Vite / esbuild driver。
+`npm run build:assets` 是前端、Sidecar、Bridge、CLI 的组合入口。构建派生的 DSH 契约和身份进入业务 bundle，因此必须在选定本次 target 的 handoff 后执行，不能跨 target 复用上一份 bundle。各产物细节仍属于既有 Vite / esbuild driver。
 
 - 直接 `npm run tauri:build`：主配置的 `beforeBuildCommand` 调用 `build:assets`。
-- macOS/Windows build：先成功运行 `build:assets`，再用**本次命令的配置覆盖**关闭钩子；不修改持久 Tauri 配置。macOS 双架构在 target loop 外构建一次，原生资源仍逐 target 准备。
+- macOS/Windows build：先成功运行 `build:assets`，再用**本次命令的配置覆盖**关闭钩子；不修改持久 Tauri 配置。macOS release 在每个 target loop 中先 prepare DSH 再构建业务 bundle；单目标 Dev/Windows 构建只执行一次。
 - Linux build：沿用 Tauri 默认钩子，只执行一次。Linux `--prepare` 仅准备开发资源及 Node 业务 bundle，不生成前端发行包或 Rust 应用。
 
 遗漏显式业务构建后关闭钩子会打包旧产物。`scripts/build-assets.test.mjs` 检查组合入口、失败短路、各平台调用次序以及默认钩子，`scripts/linux-package.test.mjs` 执行隔离的 Linux 入口流程。
@@ -63,7 +63,7 @@ Linux 的 setup 通过 `build_linux.sh --install-deps` 和 `--prepare` 复用资
 
 准备日志使用 `HIT`（校验后复用）、`MISS`（指纹变化/缺失/损坏，需要准备）、`STAGED`（复制到本次打包目录）与 `WAIT`（等待资源锁）。已有 Node 下载器保留带版本/架构原因的 `[nodejs]` 日志；文档、语音与 CLIProxy 同样标记缓存结果。Cuse 在判断本地资源前仍会联网检查当前发布清单，`CHECK` 不等于下载完整资源。
 
-热缓存仍要读文件校验并复制，不能承诺零 IO 或整个 build 离线。前端与 Node 业务产物每次重建一次；Rust 保留自身增量编译机制。完整安装包、签名及真实 OS 运行仍按对应平台发布指南验收。
+热缓存仍要读文件校验并复制，不能承诺零 IO 或整个 build 离线。前端与 Node 业务产物按本次 target 的 Runtime 选择构建，不在 Tauri 钩子重复执行；Rust 保留自身增量编译机制。完整安装包、签名及真实 OS 运行仍按对应平台发布指南验收。
 
 ## Rust 编译缓存与磁盘维护
 

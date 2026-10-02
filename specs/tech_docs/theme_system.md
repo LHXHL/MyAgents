@@ -217,7 +217,7 @@ default + system，不能阻断窗口创建。
 
 事件 payload 只能含当前生效的 `themeId + appearanceMode`。`themeSelectionExplicit` 只属于 durable config 与首帧快照，浮窗无需拥有默认选择策略。主窗口与浮窗不得通过 Sidecar/HTTP/SSE 同步 Theme。
 
-Markdown 阅读字号是独立的 `AppConfig.markdownReadingSize` 偏好，不进入 Theme selection 或 bootstrap snapshot。ThemeRuntime 只将归一值投影为根节点 `data-markdown-reading-size`；主窗口保存配置后发送 `app:config-changed`，浮窗沿该事件重新读取磁盘配置。阅读字号与 Theme 的异步 hydration 各有独立 freshness，迟到读取不能覆盖较新的配置事件；呈现范围与字号见 [设计规范](../DESIGN.md) 的 Markdown 章节。
+Markdown 阅读字号默认标准字号，设置菜单左侧为标准、右侧为大字号；已显式保存的选择继续生效。它是独立的 `AppConfig.markdownReadingSize` 偏好，不进入 Theme selection 或 bootstrap snapshot。ThemeRuntime 只将归一值投影为根节点 `data-markdown-reading-size`；主窗口保存配置后发送 `app:config-changed`，浮窗沿该事件重新读取磁盘配置。阅读字号与 Theme 的异步 hydration 各有独立 freshness，迟到读取不能覆盖较新的配置事件；呈现范围与字号见 [设计规范](../DESIGN.md) 的 Markdown 章节。
 
 ## 6. 消费者不变量
 

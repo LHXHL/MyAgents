@@ -169,7 +169,7 @@ Prompt 中出现一个能力名称，不等于真实 Tool 已被注册或授权�
 | Builtin Claude Agent SDK | Claude Code preset + `systemPrompt.append`                  | `settingSources: ['project']` 原生读取项目配置；全局启用 Skill 先投影到项目目录                               |
 | Claude Code CLI          | 临时文件 + `--append-system-prompt-file`                    | Claude Code 原生发现 `CLAUDE.md` / rules                                                                      |
 | Codex                    | `thread/start` / `thread/resume` 的 `developerInstructions` | Codex 原生发现 `AGENTS.md`，并将 `CLAUDE.md` 配为 fallback；MyAgents 另外把 `.claude/rules/*.md` 格式化后追加 |
-| Integrated DSH           | 协议 `2.3.0` 保留的 `systemContext.sections/contexts`        | DSH 每目录互斥加载 `CLAUDE.md` → `AGENTS.override.md` → `AGENTS.md`；Host 仅冻结 `.claude/CLAUDE.md` 与 rules companion supplement |
+| Integrated DSH           | 当前生成契约中的 `systemContext.sections/contexts`        | DSH 每目录互斥加载 `CLAUDE.md` → `AGENTS.override.md` → `AGENTS.md`；Host 仅冻结 `.claude/CLAUDE.md` 与 rules companion supplement |
 
 External Runtime 的兼容读取拒绝 symlink，并限制递归深度、文件数量、单文件大小和总
 大小，避免 Workspace 文件把任意工作区外文件或无界内容注入模型上下文。

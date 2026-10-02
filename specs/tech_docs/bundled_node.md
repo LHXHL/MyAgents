@@ -30,7 +30,7 @@ npm 随官方 Node 发行包整组获取，禁止通过 `npm/latest` 或独立�
 
 DSH Runtime 使用同一个 bundled Node，不增加第二份 Node，也不回退到系统 Node。`scripts/node-runtime.json` 拥有产品内置 Node/npm 组合；DSH handoff 的 Runtime manifest 拥有构建 provenance 和所需 Node 版本。内置运行时当前固定为 Node `24.20.0` / npm `11.19.0`，必须与 DSH handoff 经过实际构建与验证后相符，不能只改旧制品的版本字段。构建 MyAgents 的本机 Node/npm 只需满足开发工具链最低版本，不参与这组精确相等校验。
 
-`src-tauri/resources/integrated-runtimes/dsh/` 保存完整不可变交付。`ingest:dsh-runtime` 在临时副本内设置可打包权限并验证后原子接纳；`verify:dsh-runtime` 校验交付、契约、Node 元数据及实际 Node/npm executable。npm 版本读取官方发行包自己的 `package.json`，不另建版本标记权威；开发 freshness 检查还对照配置的 Runtime 仓库 HEAD。构建不从兄弟仓库或网络临时获取 DSH。
+`src-tauri/resources/integrated-runtimes/dsh/` 保存完整不可变交付。`ingest:dsh-runtime` 在临时副本内设置可打包权限并验证后原子接纳；`verify:dsh-runtime` 校验交付、契约、Node 元数据及实际 Node/npm executable。npm 版本读取官方发行包自己的 `package.json`，不另建版本标记权威；开发 freshness 检查还对照配置的 Runtime 仓库 HEAD。构建默认从绑定的 GitHub Release 准备 DSH；本地来源只能显式选择已验证 handoff，不在打包时从兄弟仓库临时编译。
 
 构建校验与 handoff 接纳共用 `dsh-handoff-policy.mjs::verifyBundledToolchain()`：先核对发行组合、资源元数据与实际 Node/npm executable，再把返回的 Node 绝对路径传给 `runPublicVerifier()`，包括接纳临时副本的第二次校验。公开 verifier 包含 Runtime self-check，必须使用产品内置 Node；若继承构建脚本的 `process.execPath`，合规的本机 Node 也可能因版本不同而被错误拒绝。两个入口默认使用 `resources/nodejs`，可通过 `--node-root` 显式指定待验证的发行目录；资源缺失时先运行对应平台的 `scripts/download_nodejs.sh` / `.ps1`。不回退本机 Node，也不提供 `--skip-node` 绕过入口。
 

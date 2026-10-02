@@ -10,7 +10,7 @@ Session 不是单一对象，而是同一产品会话在不同生命周期阶段
 |---|---|---|
 | Product Session identity 与 metadata | `SessionStore` | 稳定 `sessionId`、workspace、标题、Runtime 类型、配置快照等 |
 | 当前 Product Session 绑定 | `session-engine/product-session-binding.ts` | 当前 Sidecar 正在服务哪个 Product Session |
-| Runtime execution identity | 对应 SessionEngine adapter | builtin 的 SDK Session UUID；外部 Runtime 的 thread/session id |
+| Runtime execution identity | 对应 SessionEngine adapter | builtin 的 SDK Session UUID；DSH/外部 Runtime 的 session/thread id |
 | Sidecar 生命周期与 Owner | Rust `SidecarManager` | 创建、复用、replacement、Owner 附着与释放 |
 | transcript | `SessionStore` | MyAgents UI、搜索与恢复使用的产品历史 |
 | 当前 turn 与 Runtime queue | 对应 adapter | admission、执行、stop 与 terminal settlement |
@@ -24,7 +24,7 @@ Session 不是单一对象，而是同一产品会话在不同生命周期阶段
 每个 Product Session 有稳定的 `SessionMetadata.id`。它拥有历史、Tab/Sidecar scope、workspace、配置快照和产品级状态。Runtime 还可以拥有独立执行身份：
 
 - builtin 使用 `sdkSessionId` 作为 Claude Agent SDK 的 create/resume candidate；
-- Codex、Claude Code 等外部 Runtime 使用 `runtimeSessionId`；
+- DSH、Codex、Claude Code 使用 `runtimeSessionId`；
 - Rewind、Fork 或 provider history 边界可以替换执行身份，但不得偷偷替换 Product Session identity。
 
 普通新会话中两个身份可能相同，这只是初始化结果，不是可依赖的不变量。读取和写入 metadata 时使用 `src/server/types/session.ts` 的当前类型，不在文档中复制完整字段表。
@@ -62,12 +62,11 @@ backend-created draft 使用 `materializationState: 'prepared'` 隐藏尚未提�
 
 只有满足这些条件后，Rust 才释放调用方提交且已验证的 Tab owner。失败时保留 Session 与 Tab，不能用 Renderer 的 `isGenerating`、事前端口探测或列表缓存代替最终裁决。
 
-### 2.4 DSH 开发数据
+### 2.4 DSH 原生存储
 
-DSH 尚未发布，当前 Runtime 只采用官方 0.2.0-rc.2 的原生 JSONL 存储与当前协议。
-旧开发数据由维护人员在 App、Sidecar 与 Runtime 停止后手动清理。产品中不保留旧 DSH
-协议读取、开发数据重置、迁移或自动删除入口。工作区、配置、凭据及其他 Runtime 的
-Session 不属于旧 DSH 数据清理范围。
+DSH 原生会话使用官方 JSONL persistence，Runtime 自己的 coordination SQLite 只保存 locator、mutation/checkpoint 和文件恢复记录。Host SessionStore 拥有独立的产品目录、transcript 与输入/mutation journal；二者以原生 receipt 对账，不互相替代。
+
+每个 Product Session 的 Runtime home 与附件根由 `dshSessionOwnedPaths()` 派生，进程 replacement 沿用同一 home。当前接入没有旧 DSH 协议读取、开发数据重置或迁移入口；旧开发数据由维护人员在写入进程停止后手动清理。目录和恢复约束见 [DSH 集成指南](myagents_dsh_integrated_runtime.md#4-数据与持久化)。
 
 ## 3. Session metadata 的语义
 
@@ -290,6 +289,7 @@ Sidecar ready 而 External/DSH Product Session 尚未绑定 workspace owner 时�
 | `src/server/session-engine/` | Product binding、Runtime selector 与统一 adapter contract |
 | `src/server/agent-session.ts` | builtin public facade |
 | `src/server/builtin-session/` | builtin lifecycle、queue、turn、config 与 transcript owners |
+| `src/server/integrated-runtimes/dsh/` | DSH process、生成协议、native history 与 Host ports |
 | `src/server/runtimes/external-session.ts` | external public facade |
 | `src/server/runtimes/external-session/` | external process、queue、config、transcript 与 result owners |
 | `src-tauri/src/sidecar/` | Session Sidecar、generation、Owner 与 recovery |

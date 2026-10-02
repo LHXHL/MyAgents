@@ -1,6 +1,6 @@
 # 托管 CLIProxy 组件
 
-`antigravity-sub` 是 builtin SDK 的订阅 Provider，直接使用原版 CLIProxy 的 Anthropic 接口，不经过 OpenAI Bridge。随包基线由 `src/shared/managed-cliproxy-source.json` 锁定；线上资源按最低 MyAgents 版本选择，独立于客户端发版。组件完整性、资源策略与模型目录分开裁决。MyAgents 不维护模型白名单，不以模型请求验证登录。
+`antigravity-sub` 使用 Rust 管理的原版 CLIProxy Anthropic 接口，可由 Claude Agent SDK 或 Integrated DSH 执行，不经过 OpenAI Bridge。随包基线由 `src/shared/managed-cliproxy-source.json` 锁定；线上资源按最低 MyAgents 版本选择，独立于客户端发版。组件完整性、资源策略与模型目录分开裁决。MyAgents 不维护模型白名单，不以模型请求验证登录。
 
 ## Owner 与数据流
 
@@ -10,11 +10,11 @@ Renderer 设置操作 → Tauri commands → Rust CliProxyManager
                                       ├─ account-state / component-state
                                       └─ 临时 localhost OAuth callback relay
 
-Session / Task / Goal / Channel 的 builtin Query，title / vision one-shot
+Session / Task / Goal / Channel 的 SDK Query 或 DSH 模型请求；SDK title / vision one-shot
   → prepareProviderBinding(non-secret endpointSource)
   → Rust management API（准确 Sidecar generation）
   → execution-only binding + native model metadata
-  → Claude SDK → CLIProxy /v1/messages → Antigravity
+  → Claude SDK / DSH → CLIProxy /v1/messages → Antigravity
 ```
 
 Rust 是账号目录注册、正式/候选指针、组件选择、进程、准入和 lease 的 owner。CLIProxy 独占 OAuth state、token 文件与 refresh；MyAgents 不读取完整 token 文档、不调用强制 refresh、不自行交换 Google code。浏览器 URL 由原版生成，Rust 只校验并转交回调。
@@ -84,7 +84,7 @@ MyAgents 不传 `-local-model`，保留原版启动及每三小时更新线上 m
 
 ## 资源策略：最低客户端版本
 
-这是 MyAgents 0.4.17 首次发布的机制。最终清单格式为 `schemaVersion: 1`、`controls`、`releases[]`；没有精确 App/SDK 白名单，也没有额外的集成协议代际。
+当前清单格式为 `schemaVersion: 1`、`controls`、`releases[]`；没有精确 App/SDK 白名单，也没有额外的集成协议代际。
 
 每条 release 保留 `version / tag / commit / artifacts`，以及以下 `compatibility`：
 
@@ -210,7 +210,7 @@ MYAGENTS_CLIPROXY_DISTRIBUTION_DIR=/path/to/distribution ./build_dev.sh --build-
 
 ## 验证与维护
 
-开发版与正式版共用 `~/.myagents`。0.4.17 发布前使用 `component/appVersions` 的实验组件状态不是公开兼容契约；若本机残留该格式，应在退出 App 后备份并移走 `providers/cliproxy/component-state.json`，由正式包的签名资源重建组件记录。保留 `antigravity-sub/account-state.json` 与所有 `accounts/*/auth`，不删除登录信息，也不把任意正式状态损坏都当成可自动重置的缓存。
+开发版与正式版共用 `~/.myagents`。组件状态只接受当前签名资源契约；存储损坏不是可自动重置的缓存，不能通过删除账号目录或凭据修复组件状态。
 
 - `node --test scripts/package-cliproxy-component.test.mjs scripts/prepare-cliproxy.test.mjs`：门槛选择、同门槛替换、保留旧门槛、未来 App/SDK 升版复用资源、发布完整性与 CI 下载。
 - Rust `cliproxy::oauth_tests` 用离线本地 HTTP 覆盖原生失败分类、回调响应丢失后成功、单次 code 提交、轮询恢复、确定性拒绝、取消/截止时间及敏感响应隔离；不需要真实 Google 登录。

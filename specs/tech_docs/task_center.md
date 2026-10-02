@@ -95,7 +95,7 @@ Detector protocol v1 只允许 `quiet | activate`。进程退出、timeout、输
 
 ## 3. Session 与配置边界
 
-Task 执行统一经过 `task_execution.rs` -> Rust Sidecar bridge -> Node `SessionEngine` facade，builtin/external runtime 均走 adapter selector。
+Task 执行统一经过 `task_execution.rs` -> Rust Sidecar bridge -> Node `SessionEngine` facade，builtin/integrated/external Runtime 均走 adapter selector。
 
 - 已存在的 Session：runtime/model/provider/reasoning/MCP 全部继承该 Session；Task 不做 turn-scoped 覆盖或回滚。
 - 新建执行 Session，或首次 materialize 专属 single-session Session：Task 配置只用于初始化一次。
