@@ -38,7 +38,7 @@ Provider constraint 优先于通用默认：官方 Anthropic subscription/API �
 
 `src/shared/integrated-runtimes/dsh-release.json` 是正式 Runtime 的版本选择。构建准备读取该 Release 的四平台资产清单，校验归档、handoff、Runtime 与契约身份，再派生本次 effective lock。已提交的 `dsh-lock.json` 和静态生成契约是未准备 source-mode 的编译快照；不能拿其中旧摘要拒绝本次已验证选择。
 
-打包 Dev 默认也使用 Release；显式 `local` 才从绝对 handoff 路径构建。Vite、Sidecar esbuild 和 Rust build.rs 必须消费同一次选择，不能混入另一 target 或 generation 的身份。完整交付验证发生在构建准备与打包前，运行时只核对受信资源路径、必要文件和实际协议握手，不重新扫描整个交付清单。
+打包 Dev 默认也使用 Release；显式 `local` 才从绝对 handoff 路径构建。Vite、Sidecar esbuild 和 Rust build.rs 必须消费同一次选择，不能混入另一 target 或 generation 的身份。Release 准入按整包 SHA-256 与少量身份清单验证，不重扫暂存后的全部文件；显式本地 handoff 仍用公共 verifier 全量校验。运行时只核对受信资源路径、必要文件和实际协议握手，不重新扫描整个交付清单。
 
 DSH 使用应用内置的单一 Node，不回退系统 Node。Node/npm 组合由 `scripts/node-runtime.json` 决定，handoff 声明其所需 Node；公共 verifier 也必须使用待打包的 bundled Node。源码 setup、本地 handoff 和平台构建入口见 [构建资源准备](build_resource_preparation.md#integrated-dsh-构建来源) 与 [内置 Node](bundled_node.md#integrated-dsh)。
 

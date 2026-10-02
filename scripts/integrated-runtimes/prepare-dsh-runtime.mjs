@@ -141,9 +141,15 @@ function assertNativeRuntimeTarget(root, target) {
   }
 }
 
-function verifySelectedHandoff(root, lock, nodeExecutable) {
-  runPublicVerifier(root, lock.handoff.manifestSha256, nodeExecutable);
-  verifyHandoffFacts(root, lock);
+export function verifySelectedHandoff(root, lock, nodeExecutable, source, {
+  publicVerifier = runPublicVerifier,
+  factsVerifier = verifyHandoffFacts,
+} = {}) {
+  // Release archives are checked against their exact SHA-256 before extraction.
+  // Local handoffs have no archive pin and retain the full staged audit.
+  if (source === "release") return;
+  publicVerifier(root, lock.handoff.manifestSha256, nodeExecutable);
+  factsVerifier(root, lock);
 }
 
 function digest(buffer) {
@@ -244,7 +250,7 @@ export async function prepareDshRuntime({
     try {
       writeFileSync(temporary, `${JSON.stringify({ schemaVersion: 1, source, target, lock, compatibility }, null, 2)}\n`);
       stageCompleteHandoff(input.root, outputRoot, (staged) =>
-        verifySelectedHandoff(staged, lock, nodeExecutable),
+        verifySelectedHandoff(staged, lock, nodeExecutable, source),
       () => renameSync(temporary, selectionPath));
     } finally {
       rmSync(temporary, { force: true });

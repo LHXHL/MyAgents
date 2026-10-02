@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 
-import { acquireRelease, currentTarget, deriveLocalLock, deriveReleaseLock, hasTargetNativeAddon, parseReleaseManifest, prepareDshRuntime, releaseAssetUrl } from "./prepare-dsh-runtime.mjs";
+import { acquireRelease, currentTarget, deriveLocalLock, deriveReleaseLock, hasTargetNativeAddon, parseReleaseManifest, prepareDshRuntime, releaseAssetUrl, verifySelectedHandoff } from "./prepare-dsh-runtime.mjs";
 
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
@@ -89,6 +89,22 @@ test("release cache uses exact archive bytes and reacquires a corrupt cache", as
   assert.equal(downloads, 3);
   assert.equal(sha(readFileSync(cache)), sha(bytes));
   assert.ok(existsSync(cache));
+});
+
+test("release staging uses its archive digest while local handoffs retain the full verifier", () => {
+  const calls = [];
+  const lock = { handoff: { manifestSha256: "expected" } };
+  const checks = {
+    publicVerifier: (...args) => calls.push(["public", ...args]),
+    factsVerifier: (...args) => calls.push(["facts", ...args]),
+  };
+  verifySelectedHandoff("staged", lock, "node", "release", checks);
+  assert.deepEqual(calls, []);
+  verifySelectedHandoff("staged", lock, "node", "local", checks);
+  assert.deepEqual(calls, [
+    ["public", "staged", "expected", "node"],
+    ["facts", "staged", lock],
+  ]);
 });
 
 test("release source fails before network without an exact pin", async (t) => {
