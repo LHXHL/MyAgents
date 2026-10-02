@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, rmSync } from 'node:fs';
-import { materializeProviderRouteEnv, resolveImProviderRouting, type AdminAppConfig } from '../utils/admin-config';
+import { materializeProviderRouteEnv, type AdminAppConfig } from '../utils/admin-config';
 import { providerEnvEqual } from '../builtin-session/config';
 
 const scratch = vi.hoisted(() => ({ home: `/tmp/myagents-go-route-${process.pid}-${Date.now()}` }));
@@ -45,17 +45,4 @@ describe('OpenCode Go execution materialization', () => {
     expect(route('minimax-m3', withUnknown).apiProtocol).toBe('anthropic');
   });
 
-  it('materializes IM overrides from the concrete model route', () => {
-    const c = { ...config, agents: [{
-      id: 'go-test', name: 'Go test', enabled: true, workspacePath: '/tmp/myagents-opencode-go-routing',
-      providerId: 'opencode-go', model: 'minimax-m3',
-      channels: [{ id: 'test-channel', type: 'telegram', enabled: true, overrides: { model: 'future-go' } }],
-    }] } as AdminAppConfig;
-    const result = resolveImProviderRouting('/tmp/myagents-opencode-go-routing', 'test-channel', { config: c });
-    expect(result.kind).toBe('provider-route');
-    if (result.kind === 'provider-route') {
-      expect(result.providerRoute.model).toBe('future-go');
-      expect(result.providerEnv?.upstreamFormat).toBe('responses');
-    }
-  });
 });

@@ -6589,11 +6589,13 @@ function pendingQueuedDshRootRecoveryContext(): Readonly<{
 }
 
 function ensureQueuedDshRootRecovery(): Promise<void> {
-  const context = pendingQueuedDshRootRecoveryContext();
-  if (!context) return Promise.resolve();
-  if (queuedDshRootRecovery?.sessionId === context.sessionId) {
+  // Startup can expose the process before the recovered operation is restored.
+  // Join its owner before interpreting process presence as recovery completion.
+  if (queuedDshRootRecovery?.sessionId === getExternalLifecycleSessionId()) {
     return queuedDshRootRecovery.promise;
   }
+  const context = pendingQueuedDshRootRecoveryContext();
+  if (!context) return Promise.resolve();
 
   const generation = getExternalOperationGeneration();
   const recovery = (async () => {

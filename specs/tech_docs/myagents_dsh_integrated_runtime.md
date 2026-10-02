@@ -129,7 +129,7 @@ Provider `server_tool_use` 是独立、有界的内容投影，不进入 canonic
 
 - 原生未接纳且产品正文也未出现的输入，可撤销未发布 admission；
 - 产品已保存、原生明确未接纳时，只能按准确输入 identity 重试；
-- 原生活跃 operation 由一个恢复 owner 接管；
+- 原生活跃 operation 由一个恢复 owner 接管；队列派发与 force-start 先等待该恢复完成，不能把进程已存在视为恢复已完成；
 - 已 terminal 的 receipt 对账输出与真实结果，再退休 journal、推进队列。
 
 失败/停止仍保留已产生的 partial assistant，结果保持真实失败/停止。不能因有文字推断成功，也不能在 acknowledgement 不确定时自动发送第二次 prompt。
