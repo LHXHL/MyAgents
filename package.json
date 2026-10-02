@@ -100,7 +100,6 @@
     "prepare:dsh-runtime": "node scripts/integrated-runtimes/prepare-dsh-runtime.mjs --source release",
     "verify:dsh-runtime": "node scripts/integrated-runtimes/verify-dsh-resources.mjs",
     "verify:dsh-runtime:fresh": "node scripts/integrated-runtimes/verify-dsh-dev-freshness.mjs",
-    "reset:dsh-dev": "node --import tsx/esm scripts/reset-dsh-development-sessions.ts",
     "build:assets": "npm run build:web && npm run build:server && npm run build:bridge && npm run build:cli",
     "build:sharp-runtime": "node scripts/prepare-sharp-runtime.mjs"
   },

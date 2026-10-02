@@ -5,9 +5,18 @@ import {
   projectRuntimeExtensionUpdateNotice,
   shouldShowBuiltinSdkSlashCommands,
   shouldUseExternalRuntimeInputControls,
+  supportsRuntimeConversationBranches,
 } from './runtimeUiProjection';
 
 describe('runtime UI projection', () => {
+  it('exposes bundled DSH mutations without borrowing the Codex CLI version gate', () => {
+    expect(supportsRuntimeConversationBranches('dsh', 'integrated', undefined)).toBe(true);
+    expect(supportsRuntimeConversationBranches('builtin', undefined, undefined)).toBe(true);
+    expect(supportsRuntimeConversationBranches('claude-code', 'system-cli', '0.146.0')).toBe(false);
+    expect(supportsRuntimeConversationBranches('codex', 'system-cli', '0.142.9')).toBe(false);
+    expect(supportsRuntimeConversationBranches('codex', 'system-cli', '0.143.0')).toBe(true);
+    expect(supportsRuntimeConversationBranches('codex', 'managed-provider', undefined)).toBe(true);
+  });
   it('keeps managed Codex execution hidden behind builtin provider chrome', () => {
     expect(projectInputChromeRuntime({
       currentRuntime: 'codex',

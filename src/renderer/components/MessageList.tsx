@@ -128,14 +128,14 @@ interface MessageListProps {
   onRewind?: (messageId: string) => void;
   onRetry?: (assistantMessageId: string) => void;
   onFork?: (assistantMessageId: string) => void;
-  conversationOperations?: 'builtin' | 'codex';
-  /** Stable projection of persisted Codex root-turn anchors for user-row eligibility. */
+  conversationOperations?: 'builtin' | 'codex' | 'dsh';
+  /** Stable projection of persisted native root-turn anchors for user-row eligibility. */
   rewindableUserMessageIds?: ReadonlySet<string>;
   bottomSpacerPx?: number;
 }
 
 interface MessageActionContext {
-  conversationOperations: 'builtin' | 'codex';
+  conversationOperations: 'builtin' | 'codex' | 'dsh';
   rewindableUserMessageIds: ReadonlySet<string>;
   onRewind?: (messageId: string) => void;
   onFork?: (assistantMessageId: string) => void;
@@ -721,12 +721,12 @@ const MessageList = memo(function MessageList({
       ) {
         const sm = streamingMessageRef.current;
         const isStreamingMsg = !!sm && message === sm;
-        const codexOperations =
-          actionContext.conversationOperations === 'codex';
+        const nativeOperations =
+          actionContext.conversationOperations !== 'builtin';
         const canRewind =
-          !codexOperations ||
+          !nativeOperations ||
           actionContext.rewindableUserMessageIds.has(message.id);
-        const canFork = !codexOperations || Boolean(message.runtimeTurnAnchor);
+        const canFork = !nativeOperations || Boolean(message.runtimeTurnAnchor);
         // `flow-root` (not `overflow-hidden`) establishes a BFC so child Markdown
         // margins don't leak past the wrapper — that's what e6de7173 originally
         // wanted. `overflow-hidden` did the same job but added a hard clip side

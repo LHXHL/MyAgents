@@ -196,6 +196,7 @@ describe('DSH Product mutation journal', () => {
     ];
     const readHistory = vi.fn(async () => ({
       runtimeSessionId,
+      inheritedEventCount: 0,
       durableSequence: events.length,
       events,
       mutationBoundaries: [],
@@ -237,6 +238,14 @@ describe('DSH Product mutation journal', () => {
       controller: { readHistory, getTurn } as never,
     })).resolves.toEqual({ transcriptChanged: false, reconciledOperations: 1, settledTurnIds: ['product-turn-crash-window'] });
     expect((await store.getSessionData(sessionId))?.messages).toHaveLength(2);
+    const inheritedMessages = (await store.getSessionData(sessionId))?.messages;
+    const inheritedGet = vi.fn(async () => { throw new Error('Inherited history has no target operation'); });
+    await expect(turnReconciliation.reconcileDshTurnsAtStartup({
+      productSessionId: sessionId, runtimeSessionId,
+      controller: { readHistory: async () => ({ ...(await readHistory()), inheritedEventCount: events.length }), getTurn: inheritedGet } as never,
+    })).resolves.toEqual({ transcriptChanged: false, reconciledOperations: 0, settledTurnIds: ['product-turn-crash-window'] });
+    expect(inheritedGet).not.toHaveBeenCalled();
+    expect((await store.getSessionData(sessionId))?.messages).toEqual(inheritedMessages);
   });
 
   it('preserves the exact Product owner while a resumed DSH turn remains active', async () => {
@@ -283,6 +292,7 @@ describe('DSH Product mutation journal', () => {
     ];
     const readHistory = vi.fn(async () => ({
       runtimeSessionId,
+      inheritedEventCount: 0,
       durableSequence: events.length,
       events,
       mutationBoundaries: [],
@@ -369,6 +379,7 @@ describe('DSH Product mutation journal', () => {
 
     const emptyHistory = vi.fn(async () => ({
       runtimeSessionId,
+      inheritedEventCount: 0,
       durableSequence: 0,
       events: [],
       mutationBoundaries: [],
@@ -421,6 +432,7 @@ describe('DSH Product mutation journal', () => {
       controller: {
         readHistory: vi.fn(async () => ({
           runtimeSessionId,
+          inheritedEventCount: 0,
           durableSequence: events.length,
           events,
           mutationBoundaries: [],
@@ -718,6 +730,7 @@ describe('DSH Product mutation journal', () => {
     const cursor = {
       schemaVersion: 1 as const,
       runtimeSessionId,
+      inheritedEventCount: 0,
       durableSequence: 21,
       transcriptPostcondition: 'e'.repeat(64),
     };

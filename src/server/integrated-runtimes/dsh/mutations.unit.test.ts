@@ -42,6 +42,7 @@ function historyPages(): DshRpcObject[] {
     {
       runtimeSessionId: 'runtime-session-1',
       historyFormat: 'dsh-session-events-v2',
+      inheritedEventCount: 0,
       durableHead: { sequence: 4, stableBoundaryId: 'boundary-2' },
       genesisBoundary: {
         stableBoundaryId: 'genesis-1',
@@ -86,6 +87,7 @@ function historyPages(): DshRpcObject[] {
     {
       runtimeSessionId: 'runtime-session-1',
       historyFormat: 'dsh-session-events-v2',
+      inheritedEventCount: 0,
       durableHead: { sequence: 4, stableBoundaryId: 'boundary-2' },
       records: [{
         kind: 'event_chunk',
@@ -103,6 +105,22 @@ function historyPages(): DshRpcObject[] {
 }
 
 describe('DSH native mutation controller', () => {
+  it('requires one exact native inherited cut across the complete history cursor chain', async () => {
+    const pages = historyPages();
+    pages[0]!.inheritedEventCount = 2;
+    pages[1]!.inheritedEventCount = 2;
+    const valid = new DshMutationController({ request: vi.fn(async () => pages.shift()!) }, 'runtime-session-1');
+    expect((await valid.readHistory()).inheritedEventCount).toBe(2);
+    const changed = historyPages();
+    changed[1]!.inheritedEventCount = 1;
+    await expect(new DshMutationController({ request: vi.fn(async () => changed.shift()!) }, 'runtime-session-1').readHistory())
+      .rejects.toThrow('changed mid-chain');
+    const beyond = historyPages();
+    beyond[0]!.inheritedEventCount = 5;
+    await expect(new DshMutationController({ request: vi.fn(async () => beyond.shift()!) }, 'runtime-session-1').readHistory())
+      .rejects.toThrow('inherited prefix exceeds');
+  });
+
   it('validates the independent durable turn lookup identity', async () => {
     const request = vi.fn(async () => ({
       clientOperationId: 'operation-1',

@@ -194,7 +194,6 @@ import {
 import { isSupportedLocale } from '../../shared/i18n';
 import { workspacePathsEqual } from '../../shared/workspacePath';
 import type { MainWindowPresentation } from '@/utils/mainWindowPresentation';
-import { supportsCodexConversationBranch } from '../../shared/codex-conversation-capability';
 import {
   coerceReasoningEffortForRuntime,
   reasoningEffortChoices,
@@ -264,6 +263,7 @@ import {
   projectRuntimeExtensionUpdateNotice,
   shouldShowBuiltinSdkSlashCommands,
   shouldUseExternalRuntimeInputControls,
+  supportsRuntimeConversationBranches,
 } from '@/utils/runtimeUiProjection';
 import {
   isProviderModelCompatibleWithRuntime,
@@ -1933,12 +1933,9 @@ export default function Chat({
       })
     : null;
   const isExternalRuntime = currentRuntime !== 'builtin';
-  const codexConversationBranchSupported =
-    currentRuntime === 'codex' &&
-    supportsCodexConversationBranch(
-      currentRuntimeSource,
-      runtimeDetections.codex.version,
-    );
+  const runtimeConversationBranchSupported = supportsRuntimeConversationBranches(
+    currentRuntime, currentRuntimeSource, runtimeDetections.codex.version,
+  );
   const handleDiagnoseAgentError = useCallback(
     (message: string) => {
       launchSupportDiagnostics({
@@ -6851,7 +6848,7 @@ export default function Chat({
                   sessionState={sessionState}
                   onRewind={
                     isExternalRuntime
-                      ? codexConversationBranchSupported &&
+                      ? runtimeConversationBranchSupported &&
                         !isLoading &&
                         sessionState === 'idle' &&
                         queuedMessages.length === 0 &&
@@ -6864,7 +6861,7 @@ export default function Chat({
                   onRetry={handleRetry}
                   onFork={
                     isExternalRuntime
-                      ? codexConversationBranchSupported &&
+                      ? runtimeConversationBranchSupported &&
                         !isLoading &&
                         sessionState === 'idle' &&
                         queuedMessages.length === 0 &&
@@ -6875,7 +6872,8 @@ export default function Chat({
                       : handleFork
                   }
                   conversationOperations={
-                    currentRuntime === 'codex' ? 'codex' : 'builtin'
+                    currentRuntime === 'codex' || currentRuntime === 'dsh'
+                      ? currentRuntime : 'builtin'
                   }
                   rewindableUserMessageIds={rewindableUserMessageIds}
                   bottomSpacerPx={inputOverlayHeight}

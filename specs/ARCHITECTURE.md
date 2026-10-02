@@ -277,8 +277,7 @@ persistent proxy owner is added. See [proxy configuration](./tech_docs/proxy_con
 admitted through official verification and complete contract inventory checks.
 
 
-The UPG15 offline development reset remains a named SessionStore maintenance operation. It shares
-DSH owned-root derivation with Runtime birth, verifies the old binding under existing storage
-locks, and preserves other Runtime/config/workspace authorities and referenced attachments.
-It requires stopped app/Sidecar/Runtime processes and does not replace Rust live deletion fencing.
-See [Session architecture](./tech_docs/session_architecture.md#24-upg15-开发数据重置).
+DSH native Session history uses official JSONL. Product mutation/checkpoint metadata remains
+Runtime-owned coordination; Host SessionStore owns the UI transcript and catalog. Unreleased
+old DSH data is cleaned manually while writers are stopped. No development-reset or legacy DSH
+migration entry is installed. See [Session architecture](./tech_docs/session_architecture.md#24-dsh-开发数据).

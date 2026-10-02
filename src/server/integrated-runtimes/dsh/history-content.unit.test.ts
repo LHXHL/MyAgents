@@ -27,6 +27,7 @@ function fixture(): DshNativeHistory {
     }],
   ] as const;
   return {
+    inheritedEventCount: 0,
     runtimeSessionId: 'root-1', durableSequence: data.length,
     transcriptPostcondition: 'a'.repeat(64), mutationBoundaries: [],
     events: data.map(([eventType, value], sequence) => ({

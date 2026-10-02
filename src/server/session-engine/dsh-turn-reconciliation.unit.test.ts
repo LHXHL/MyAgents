@@ -107,6 +107,7 @@ function succeededHistory(usage: unknown = {
   return {
     history: {
       runtimeSessionId,
+      inheritedEventCount: 0,
       durableSequence: events.length,
       events,
       mutationBoundaries: [],
@@ -128,6 +129,19 @@ function succeededHistory(usage: unknown = {
 }
 
 describe('DSH ordinary turn reconciliation', () => {
+
+  it('keeps inherited terminals as history without querying or rebuilding target operations', () => {
+    const fixture = succeededHistory();
+    const history = { ...fixture.history, runtimeSessionId: 'independent-fork', inheritedEventCount: fixture.history.events.length };
+    const snapshot = buildDshTurnProjectionSnapshot(history, new Map());
+    expect(snapshot.assistantTurns).toEqual([]);
+    expect(snapshot.unsettledTurns).toEqual([]);
+    expect(snapshot.rootOperations).toEqual([expect.objectContaining({ inherited: true, terminal: true, productTurnId: 'product-turn-1' })]);
+    expect(() => buildDshTurnProjectionSnapshot({ ...history, inheritedEventCount: 0 }, new Map()))
+      .toThrow('DSH accepted operation is absent from turn/get');
+    expect(() => buildDshTurnProjectionSnapshot({ ...history, inheritedEventCount: history.events.length - 1 }, new Map()))
+      .toThrow('DSH inherited terminal exceeds its native prefix');
+  });
   it('does not turn a usage-only lookup difference into a conflicting operation outcome', () => {
     const fixture = succeededHistory('omitted');
     const lookup = fixture.lookups.get('operation-1')!;

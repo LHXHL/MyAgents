@@ -62,22 +62,12 @@ backend-created draft 使用 `materializationState: 'prepared'` 隐藏尚未提�
 
 只有满足这些条件后，Rust 才释放调用方提交且已验证的 Tab owner。失败时保留 Session 与 Tab，不能用 Renderer 的 `isGenerating`、事前端口探测或列表缓存代替最终裁决。
 
-### 2.4 UPG15 开发数据重置
+### 2.4 DSH 开发数据
 
-`npm run reset:dsh-dev` 是升级前开发环境的离线维护工具，默认只输出内容无关 plan；
-`--apply <plan-sha256>` 在 MyAgents/Sidecar/DSH 进程停止后复核清单。它不替代 Rust 的在线
-删除权限，也不用于已发布用户数据迁移。工具只选择显式绑定协议 2/3/4 的 DSH Session，
-保留协议 5、其他 Runtime、共享配置和工作区；保护会话或 Task/Goal 引用会阻止执行。
-
-Runtime home 与专属附件由 `dsh/owned-paths.ts` 和 Runtime birth 共用推导；所有计划路径
-先验证 canonical containment、符号链接和挂载边界。公共附件被其他 Session 引用或引用
-无法可靠解析时保留；任意工具 `savedPath` 都不成为删除路径。SessionStore 的专用维护
-入口在既有 Session 文件锁→索引锁内重新核对旧 binding。该入口使用共享严格 parser 的原始
-元数据结果，不触发读取时的 Runtime 身份规范化或损坏索引恢复，避免改写保留会话。先删除所选 owned roots，再用
-既有数据文件先、索引后的顺序删除投影。失败保留可再次处理的索引，不自动执行副作用重试。
-
-该入口只处理本次未发布开发数据；未来持久版本升级必须另立数据兼容政策。实现及验证见
-[DSH 集成指南](./myagents_dsh_integrated_runtime.md)。
+DSH 尚未发布，当前 Runtime 只采用官方 0.2.0-rc.2 的原生 JSONL 存储与当前协议。
+旧开发数据由维护人员在 App、Sidecar 与 Runtime 停止后手动清理。产品中不保留旧 DSH
+协议读取、开发数据重置、迁移或自动删除入口。工作区、配置、凭据及其他 Runtime 的
+Session 不属于旧 DSH 数据清理范围。
 
 ## 3. Session metadata 的语义
 

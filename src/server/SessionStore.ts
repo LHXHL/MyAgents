@@ -32,8 +32,7 @@ import { TranscriptStorageError, type TranscriptCommitTarget } from './session-t
 import type { DecodedTranscript } from './session-transcript/codec';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 import { isPendingSessionId } from '../shared/constants';
-import { isCliProductSessionId } from '../shared/cli-session-scope';
-import { parseEffectiveRuntimeBinding, runtimeTypeForBinding } from '../shared/integrated-runtimes/identity';
+import { runtimeTypeForBinding } from '../shared/integrated-runtimes/identity';
 import { isSystemMaintenanceSession } from '../shared/managedScheduledJob';
 import {
     deriveSessionUserTagSummaries,
@@ -1370,11 +1369,6 @@ export type SessionDeleteIntent =
     | { kind: 'user-delete' }
     | { kind: 'prepared-materialization-rollback'; sourceSessionId: string };
 
-type DevelopmentDshResetIntent = {
-    kind: 'development-dsh-upg15-reset';
-    expectedBinding: NonNullable<SessionMetadata['runtimeBinding']>;
-};
-
 export type SessionDeleteResult =
     | { deleted: true }
     | {
@@ -1384,7 +1378,7 @@ export type SessionDeleteResult =
 
 function rejectSessionDeletion(
     sessionId: string,
-    intent: SessionDeleteIntent | DevelopmentDshResetIntent,
+    intent: SessionDeleteIntent,
     reason: Exclude<SessionDeleteResult, { deleted: true }>['reason'],
     detail: string,
 ): SessionDeleteResult {
@@ -1408,26 +1402,13 @@ export async function deleteSession(
     return deleteSessionOwned(sessionId, intent);
 }
 
-/** Offline, one-time UPG15 maintenance. The CLI proves quiescence before entering. */
-export async function resetDshDevelopmentSession(
-    sessionId: string,
-    expectedBinding: NonNullable<SessionMetadata['runtimeBinding']>,
-    removeOwnedData: () => Promise<void>,
-): Promise<SessionDeleteResult> {
-    if (!isCliProductSessionId(sessionId) || typeof removeOwnedData !== 'function') throw new Error('Invalid development DSH reset authority');
-    return deleteSessionOwned(sessionId, { kind: 'development-dsh-upg15-reset', expectedBinding }, removeOwnedData);
-}
-
 async function deleteSessionOwned(
     sessionId: string,
-    intent: SessionDeleteIntent | DevelopmentDshResetIntent,
-    removeOwnedData?: () => Promise<void>,
+    intent: SessionDeleteIntent,
 ): Promise<SessionDeleteResult> {
     const active = activeTranscripts.get(sessionId);
     const metadata = active?.metadata ?? getSessionMetadata(sessionId);
     if (metadata?.transcriptFormat !== undefined) {
-        // The one-time protocol-5 reset only owns pre-upgrade legacy Sessions.
-        if (intent.kind === 'development-dsh-upg15-reset') return { deleted: false, reason: 'precondition-failed' };
         if (intent.kind === 'prepared-materialization-rollback' && (
             metadata.materializationState !== 'prepared'
             || metadata.materializationSourceSessionId !== intent.sourceSessionId
@@ -1483,12 +1464,7 @@ async function deleteSessionOwned(
     // just-recreated one.
     try {
         return await withSessionFileLock(sessionId, async () => withSessionsLock(async () => {
-            // An offline targeted reset must not migrate unrelated legacy rows
-            // or repair the index as a side effect. Keep the shared validation
-            // and locks, but preserve every surviving raw metadata value.
-            const all = intent.kind === 'development-dsh-upg15-reset'
-                ? parseSessionsIndexRaw(readFileSync(SESSIONS_FILE, 'utf-8'))
-                : readSessionsIndexForWrite();
+            const all = readSessionsIndexForWrite();
             const index = all.findIndex(s => s.id === sessionId);
 
             if (index < 0) {
@@ -1501,19 +1477,6 @@ async function deleteSessionOwned(
             const hasLegacyData = existsSync(legacyFile);
 
             switch (intent.kind) {
-                case 'development-dsh-upg15-reset': {
-                    const binding = current.runtimeBinding;
-                    if (!binding || binding.family !== 'integrated' || binding.id !== 'dsh'
-                        || !/^[234]\./u.test(binding.protocolVersion)
-                        || JSON.stringify(parseEffectiveRuntimeBinding(binding)) !== JSON.stringify(parseEffectiveRuntimeBinding(intent.expectedBinding))
-                        || isSystemMaintenanceSession(current)) {
-                        return rejectSessionDeletion(sessionId, intent, 'precondition-failed',
-                            'the unreleased DSH binding changed or is outside the UPG15 reset scope');
-                    }
-                    if (!removeOwnedData) throw new Error('Development reset requires its owned-data action');
-                    await removeOwnedData();
-                    break;
-                }
                 case 'user-delete':
                     if (isSystemMaintenanceSession(current)) {
                         return rejectSessionDeletion(
@@ -2333,6 +2296,7 @@ export async function reconcileDshTurnProjections(input: {
         sequence: number; state: 'pending' | 'consumed' | 'cancelled';
     }[];
     nativeRootOperations: readonly {
+        inherited?: true;
         origin?: 'collaboration';
         consumedUserMessageIds?: readonly string[];
         clientOperationId: string;
@@ -2381,6 +2345,7 @@ export async function reconcileDshTurnProjections(input: {
                         || !validDshOperationIdentifier(operation.clientUserMessageId)
                         || !validDshOperationIdentifier(operation.productTurnId)
                         || typeof operation.terminal !== 'boolean'
+                        || (operation.inherited !== undefined && (operation.inherited !== true || !operation.terminal))
                         || (operation.origin !== undefined && operation.origin !== 'collaboration')
                         || (
                             operation.partialTerminalStatus !== undefined
@@ -2633,8 +2598,8 @@ export async function reconcileDshTurnProjections(input: {
                     target.splice(insertionIndex, 0, structuredClone(assistant));
                     transcriptChanged = true;
                 }
-                const retainedPartialTurns = new Set<string>();
-                const retainedPartialRoots = new Set<string>();
+                const retainedHistoryTurns = new Set<string>();
+                const retainedHistoryRoots = new Set<string>();
                 for (let messageIndex = 0; messageIndex < target.length; messageIndex += 1) {
                     const message = target[messageIndex]!;
                     if (message.role !== 'assistant' || message.runtimeTurnAnchor === undefined) continue;
@@ -2644,19 +2609,26 @@ export async function reconcileDshTurnProjections(input: {
                     const nativeByUser = anchor.origin === 'collaboration'
                         ? nativeByTurn?.origin === 'collaboration' && nativeByTurn.clientOperationId === anchor.clientOperationId ? nativeByTurn : undefined
                         : nativeRootsByUser.get(anchor.rootUserMessageId);
+                    if (nativeByTurn?.inherited === true && nativeByTurn === nativeByUser && nativeByTurn.terminal
+                        && !retainedHistoryTurns.has(anchor.turnId)
+                        && (anchor.rootUserMessageId === undefined || !retainedHistoryRoots.has(anchor.rootUserMessageId))) {
+                        retainedHistoryTurns.add(anchor.turnId);
+                        if (anchor.rootUserMessageId !== undefined) retainedHistoryRoots.add(anchor.rootUserMessageId);
+                        continue;
+                    }
                     if (
                         nativeByTurn === undefined
                         || nativeByTurn !== nativeByUser
                         || !nativeByTurn.terminal
                         || nativeByTurn.partialTerminalStatus === undefined
                         || message.completionState !== 'partial'
-                        || retainedPartialTurns.has(anchor.turnId)
-                        || (anchor.rootUserMessageId !== undefined && retainedPartialRoots.has(anchor.rootUserMessageId))
+                        || retainedHistoryTurns.has(anchor.turnId)
+                        || (anchor.rootUserMessageId !== undefined && retainedHistoryRoots.has(anchor.rootUserMessageId))
                     ) {
                         return dshMutationFailure('storage_consistency_error', 'The Product transcript contains a terminal absent from DSH native truth');
                     }
-                    retainedPartialTurns.add(anchor.turnId);
-                    if (anchor.rootUserMessageId !== undefined) retainedPartialRoots.add(anchor.rootUserMessageId);
+                    retainedHistoryTurns.add(anchor.turnId);
+                    if (anchor.rootUserMessageId !== undefined) retainedHistoryRoots.add(anchor.rootUserMessageId);
                     if (message.terminalStatus !== nativeByTurn.partialTerminalStatus) {
                         target[messageIndex] = {
                             ...message,

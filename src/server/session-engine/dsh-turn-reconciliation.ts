@@ -72,6 +72,7 @@ export type DshRecoveredTurnProjection = Readonly<{
 }>;
 
 export type DshNativeRootOperation = DshUnsettledTurn & Readonly<{
+  inherited?: true;
   terminal: boolean;
   consumedUserMessageIds?: readonly string[];
   partialTerminalStatus?: 'stopped' | 'error';
@@ -508,16 +509,17 @@ export function buildDshTurnProjectionSnapshot(
   let runtimeUsageTotals: MessageUsage | undefined;
   let usageComplete = true;
   for (const operation of [...accepted].sort((left, right) => left.sequence - right.sequence)) {
-    const lookup = lookups.get(operation.clientOperationId);
-    if (!lookup?.admission) throw new Error('DSH accepted operation is absent from turn/get');
+    const inherited = operation.sequence < history.inheritedEventCount;
+    const lookup = inherited ? undefined : lookups.get(operation.clientOperationId);
+    if (!inherited && !lookup?.admission) throw new Error('DSH accepted operation is absent from turn/get');
     const expectedAdmittedAt = new Date(operation.acceptedAt).toISOString();
-    if (
+    if (!inherited && lookup?.admission && (
       lookup.clientOperationId !== operation.clientOperationId
       || lookup.admission.clientOperationId !== operation.clientOperationId
       || lookup.admission.turnId !== operation.productTurnId
       || lookup.admission.admittedAt !== expectedAdmittedAt
       || (lookup.admission.origin === 'collaboration') !== (operation.origin === 'collaboration')
-    ) {
+    )) {
       throw new Error('DSH turn/get admission differs from durable Session truth');
     }
     const terminal = terminalById.get(operation.clientOperationId);
@@ -525,6 +527,7 @@ export function buildDshTurnProjectionSnapshot(
       ? undefined
       : string(terminal.terminal.kind, 'DSH terminal kind');
     rootOperations.push(Object.freeze({
+      ...(inherited ? { inherited: true as const } : {}),
       ...(operation.origin === undefined ? {} : { origin: operation.origin }),
       clientOperationId: operation.clientOperationId,
       clientUserMessageId: operation.clientUserMessageId,
@@ -536,7 +539,8 @@ export function buildDshTurnProjectionSnapshot(
         : { partialTerminalStatus: terminalKind === 'aborted' ? 'stopped' as const : 'error' as const }),
     }));
     if (!terminal) {
-      if (lookup.terminal) throw new DshHistoryAdvancedError('DSH history advanced after session/read');
+      if (inherited) throw new Error('DSH inherited operation lacks its settled terminal');
+      if (lookup?.terminal) throw new DshHistoryAdvancedError('DSH history advanced after session/read');
       unsettledTurns.push(Object.freeze({
         ...(operation.origin === undefined ? {} : { origin: operation.origin }),
         clientOperationId: operation.clientOperationId,
@@ -545,13 +549,14 @@ export function buildDshTurnProjectionSnapshot(
       }));
       continue;
     }
+    if (inherited && terminal.sequence >= history.inheritedEventCount) throw new Error('DSH inherited terminal exceeds its native prefix');
     if (terminal.sequence <= operation.sequence || terminal.terminalAt < operation.acceptedAt) {
       throw new Error('DSH terminal precedes its accepted operation');
     }
     if (terminal.productTurnId !== operation.productTurnId) {
       throw new Error('DSH terminal changed its Product turn identity');
     }
-    if (!lookup.terminal || canonicalJson(terminalOutcome(lookup.terminal)) !== canonicalJson(terminalOutcome(terminal.terminal))) {
+    if (!inherited && (!lookup?.terminal || canonicalJson(terminalOutcome(lookup.terminal)) !== canonicalJson(terminalOutcome(terminal.terminal)))) {
       throw new Error('DSH turn/get terminal differs from durable Session truth');
     }
     if (terminalKind === undefined) throw new Error('DSH terminal kind is absent');
@@ -569,6 +574,16 @@ export function buildDshTurnProjectionSnapshot(
     const claimedTurns = claimedByOperation.get(operation.clientOperationId) ?? [];
     if (terminal.finalDshTurn !== claimedTurns[claimedTurns.length - 1]) {
       throw new Error('DSH successful terminal does not own its last claimed native turn');
+    }
+    if (inherited) {
+      // Product fork/rewind already preserves these rows under their source identities.
+      // Only target-owned operations are recovered or queried from live turn/get.
+      const usage = parseUsage(terminal.terminal.usage);
+      if (usageComplete) {
+        runtimeUsageTotals = usage === undefined ? undefined : addUsage(runtimeUsageTotals, usage);
+        usageComplete = runtimeUsageTotals !== undefined;
+      }
+      continue;
     }
     const projected = projectOperationContent(
       history,
@@ -633,7 +648,7 @@ async function readVerifiedProjection(
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const history = await controller.readHistory(signal);
     const operationIds = history.events
-      .filter(event => event.eventType === 'myagents/operation/accepted')
+      .filter(event => event.sequence >= history.inheritedEventCount && event.eventType === 'myagents/operation/accepted')
       .map(event => string(
         object(event.data, 'DSH operation acceptance').clientOperationId,
         'DSH accepted operation id',

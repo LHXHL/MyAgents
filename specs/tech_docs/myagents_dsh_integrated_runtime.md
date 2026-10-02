@@ -557,6 +557,11 @@ Ordinary approval retains exact **始终允许** rules for the current Session l
 
 ## 10. Events, transcript and conversation UI
 
+DSH exposes the existing Chat rewind and fork controls through the Runtime UI capability
+projection. Eligibility uses persisted `runtimeTurnAnchor` facts: rewind targets their exact root
+user row, and fork targets the anchored assistant row. The Codex CLI version gate applies only to
+Codex. Busy turns, queued input and pending mutations continue to use the shared operation gates.
+
 ### 10.1 Serialized event inbox
 
 DSH `runtime/event` notifications enter one serialized inbox. The durable identity is:
@@ -1367,21 +1372,9 @@ and actual target receipts. The general proxy receives neither model request. Th
 is restricted to this explicitly enabled smoke; production child environment policy is unchanged.
 
 
-UPG15 adds the one-time offline `reset:dsh-dev` maintenance entry. `owned-paths.ts` shares exact
-Product Session root derivation with Runtime birth. The planner verifies selected pre-5 DSH
-bindings and path containment, rejects links/mounts and retained Task/Goal references, and keeps
-shared/ambiguous attachments. It never turns external savedPath values into deletion targets.
-SessionStore owns the final binding check and the existing file-lock → index-lock deletion order;
-the callback removes only prevalidated DSH roots before transcript/index deletion. Default CLI
-execution only prints a content-free plan; apply requires its unchanged digest and stopped app/
-Sidecar/Runtime processes. Nine reset tests plus twenty existing mutation tests pass with real
-SessionStore over synthetic homes. The actual offline reset removed 23 old DSH Sessions and retains
-15 other Sessions. Their full metadata, configuration and 11 existing transcript digests match the
-pre-reset values; repeat planning is empty and repeat apply leaves the index unchanged.
-The first preservation check detected two legacy sibling bindings materialized by the shared read
-normalizer. A digest-proven correction removed exactly those additions under the existing locks.
-The reset now uses the same strict parser without read-time normalization or corruption recovery;
-its regression preserves raw legacy sibling metadata, including Provider fields.
+旧 DSH 开发数据由维护人员在所有写入进程停止后手动清理。原生会话采用官方
+`dsh-session-persistence-jsonl`，产品只保留回退、分叉、删除及文件恢复所需的协调记录。
+不提供旧协议读取、自动迁移或开发数据重置入口。其他 Runtime、配置、凭据和工作区保留。
 
 The pre-ingestion Host source regression passed 4,228 unit, 1,301 DOM and 541 integration tests, with eight
 explicit skips, plus 146 build-script tests (five platform skips). The initial concurrent build
@@ -1609,7 +1602,7 @@ The native contract is protocol 6.0.0 with 44 Host methods, 7 reverse methods an
 
 Host typecheck, lint, web/server/bridge/CLI asset builds, 237 focused DSH and reconciliation tests, 38 handoff-policy tests, staged resource/freshness verification and five explicit native process tests pass; one native case is platform skipped. The native cases cover exact handoff, local HTTPS Provider routing, tools and approvals, pruned results, cold resume and shutdown. The separate 12-generation lifecycle soak also passes, releasing every Runtime process and returning file descriptors from 14 to 14. The three platform claims remain `implementation-complete_pending-native-validation`; credentialed real-Provider, Windows/Linux native, signed App and packaged GUI acceptance remain pending. Runtime's full default lint currently reports inherited `snapshotEvents()` deprecation diagnostics from the official rc.2 types; focused changed-file lint passes apart from that rule, and no rule suppression was added.
 
-The one-time reset identified four old DSH development Sessions but did not apply: `/Applications/MyAgents.app` and its Sidecar were running, so the reset's stopped-process guard rejected it. The old data remains isolated from the new protocol; after the App exits, rerun the reset plan and apply its fresh digest through `npm run reset:dsh-dev -- --apply <digest>`. The reset must never use the stale digest from this ledger or delete unrelated user state.
+The previous reset entry was removed under the prelaunch scope. Old DSH development data is cleaned manually with all writers stopped; no old-protocol migration or automatic cleanup path is retained.
 
 ### Official DSH capability increment (2026-09-25)
 
@@ -1699,3 +1692,86 @@ shared message-detail field table, and TypeScript checks it against all legal no
 message fields at compile time; the invariant is specified in [Product Session history V2](session_transcript_v2.md#内容和读取).
 In the same signed build, a live WebSearch returned ten results; unified logging recorded ten
 empty snippets and one malformed source title, while the visible title used the hostname fallback.
+
+### 2026-10-02 native JSONL branch recovery
+
+DSH native conversations now use the official 0.2.0-rc.2 JSONL persistence. The required native
+`session/read.inheritedEventCount` is checked against the durable head and across the full cursor
+chain. Startup queries and recovers only target-owned operations; inherited settled roots retain
+copied Product rows under their source identities. Runtime and Host both follow the official
+inherited scope, including rewind or nested fork inside a parent's prefix. This adds no legacy-data
+fallback, migration or cleanup path. The separate product coordination SQLite is retained for now.
+
+Initial native branch acceptance used DSH source
+`8674db77a52d0509f4268bdd9f49955a7c0f2fff`, handoff
+`18472d64679b89335000f4be1d2b502cb6a1aa7326e857063a697622d0ca0fa2`.
+The final complete local Dev App uses source
+`fcbe3e57ff3ef54270f8f59757df7b30b4d2a460`, handoff
+`9ae2a61fc18b1ebb08eda45bcb560fc48c257de6227ef70e880296f443c0e842`.
+Native JSONL, mutation and branch regressions pass in the 825-test Runtime suite (two skips);
+the unchanged patched upstream passes 1,106 tests (three skips). Host recovery tests pass 63
+cases, and UI action/capability tests pass 31 cases, with typecheck and lint passing.
+The visible desktop acceptance uses one isolated workspace and dedicated test files: native
+Write/Read/Edit, retry, fork continuation, nested fork from an earlier inherited turn,
+rewind inside inherited history, governed file restoration from `VERSION_TWO` to `VERSION_ONE`,
+and cold disk recovery followed by Read and remembered conversation context all pass.
+For the final cold test, the App and its Dev Session processes were stopped before reopening;
+retained history and new target-owned execution were then both verified.
+
+Final consecutive-rewind acceptance creates a new file and directory, edits `ONE` to `TWO`,
+and adds a read-only third turn. Rewinding three times keeps `TWO`, restores `ONE`, then removes
+the created file and directory, preserving an unrelated test file. After the second rewind the
+App and Session processes are stopped; cold recovery and a subsequent fork retain the original
+checkpoint, file content and remembered context. This uses existing committed rewind journals
+and intersected retained cuts; immutable checkpoint records stay in their creation generation.
+No new table, copied recovery record, compatibility layer or relaxed validation is introduced.
+
+Rewind inside inherited history uses DSH's official seed constructor to retain its required
+inherited end-seed marker. The selected history prefix remains exact; the native suffix and Product
+receipt are owned by the new generation. This prevents a hash-valid but undecodable native log
+without weakening recovery checks. Old development Sessions and failed disposable acceptance
+Sessions were cleaned manually with writers stopped; unrelated transcripts and configuration
+were checked unchanged. No reset script, old-protocol fallback or data migration remains.
+
+#### Published Runtime identity
+
+[MyAgents-dsh 0.1.14](https://github.com/hAcKlyc/MyAgents-dsh/releases/tag/v0.1.14)
+is published from merge commit `bdd9b897d3f6f17c6a0a38caa8e71ce6d6717fa7`, replacing
+0.1.13 at `8b1f8c7a969ef64942c003beea0462e642af4c15`. Both releases pin official DSH
+0.2.0-rc.2, source `639ed015397290b3745d163aafe02ffee4aa3f84`, tree
+`ac66a6a3e77f6fa396509ddfecc7beacf0cf642a`; package/source association remains explicitly
+unproven. The source-built patched artifact, rather than a presumed registry association,
+owns executable bytes. The complete capability and 13-seam adjudication/removal conditions are
+in the [Runtime maintenance review](https://github.com/hAcKlyc/MyAgents-dsh/blob/bdd9b897d3f6f17c6a0a38caa8e71ce6d6717fa7/specs/dsh/upstream-refresh-2026-10-02.md).
+
+| Identity | 0.1.13 | 0.1.14 |
+| --- | --- | --- |
+| Ordered patch count / required DSH packages | 10 / 104 | 11 / 105 |
+| Patch-series SHA-256 | `7ac2652ae40f20b378202680c2706d379e73cd9e763f117d3bc5a57c3d112b0b` | `56bce4eb7e0751e0e071cd455d400b24ea9dabc1346d4345e24e49d4ecda0cfd` |
+| Patched artifact manifest SHA-256 | `18057cae5d7fe1f4c6dc6e3196b715bcfc6b2c2d869703f2ad0c192c93ee4f17` | `4b976d757a6686d85eeeb18bbb42ffd7fd4064039b434c0793621f908ecde885` |
+
+The [tag release workflow](https://github.com/hAcKlyc/MyAgents-dsh/actions/runs/36994517170)
+passes native packed Runtime and installed-process conformance on darwin-arm64, darwin-x64,
+linux-x64 and win32-x64. The public Release contains exactly nine assets: four archives, four
+companion manifests and `manifest.json`. The publisher verifies remote bytes before publication;
+the Host checks all four verified claims, source identity, archive sizes and SHA-256 values.
+The public manifest SHA-256 is
+`0539d6858a8e4f58a94cfff586d723e0963623b24a99c4e7fe99f07fc52115e3`.
+The selected darwin-arm64 handoff SHA-256 is
+`af3ace9637a068e8b6bdf6f9d55e449621e4f220e5e2dc8a66c65464ae360045`,
+and its Runtime manifest SHA-256 is
+`a559799926c359c4d1470c25b3473103021b027ff44c4626ac294428c9444abd`.
+The client selects 0.1.14 only in `dsh-release.json`; staging and effective build locks are
+derived by the existing Release preparation owner, without hand-editing generated identities.
+
+`build_dev.sh --dsh-source release` completes the full macOS Dev App build from these published
+bytes. The bundled Node verifies the handoff identity inside the final App; the App signature
+also passes. Local source-checkout freshness is not requested for a Release selection.
+Computer-use acceptance restores existing tabs in the rebuilt App:
+the inherited-history branch executes Read, observes `VERSION_ONE`, and retains its original
+conversation memory; the branch created after consecutive rewinds independently retains its
+own first-turn memory. Both produce new successful turns after cold recovery. The earlier
+write/edit/retry/rewind/nested-fork/file-directory checks remain valid for the unchanged production
+implementation; the final Runtime source additionally fixes Windows-only test-fixture disposal.
+No native-platform validation remains pending for this published Runtime. This delivery creates
+a local MyAgents Dev App; it does not publish a new MyAgents client version.

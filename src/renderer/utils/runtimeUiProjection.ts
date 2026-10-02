@@ -1,4 +1,15 @@
-import type { RuntimeExtensionDiagnostics, RuntimeType } from '../../shared/types/runtime';
+import type { RuntimeExtensionDiagnostics, RuntimeSource, RuntimeType } from '../../shared/types/runtime';
+import { supportsCodexConversationBranch } from '../../shared/codex-conversation-capability';
+
+/** DSH ships native product mutations; user-managed Codex depends on its CLI version. */
+export function supportsRuntimeConversationBranches(
+  runtime: RuntimeType,
+  source: RuntimeSource | undefined,
+  codexVersion: string | undefined,
+): boolean {
+  return runtime === 'builtin' || runtime === 'dsh'
+    || (runtime === 'codex' && supportsCodexConversationBranch(source, codexVersion));
+}
 
 export function projectInputChromeRuntime(args: {
   currentRuntime: RuntimeType;

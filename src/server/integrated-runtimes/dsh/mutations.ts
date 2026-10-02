@@ -52,6 +52,7 @@ export type DshVerifiedHistoryEvent = Readonly<{
 }>;
 
 export type DshNativeHistory = Readonly<{
+  inheritedEventCount: number;
   runtimeSessionId: string;
   durableSequence: number;
   events: readonly DshVerifiedHistoryEvent[];
@@ -149,6 +150,7 @@ type PendingChunk = {
 };
 
 class DshHistoryAssembler {
+  private inheritedEventCount: number | undefined;
   private runtimeSessionId: string | undefined;
   private historyFormat: string | undefined;
   private durableHead: DshRpcObject | undefined;
@@ -169,13 +171,17 @@ class DshHistoryAssembler {
     const historyFormat = string(pageValue.historyFormat, 'DSH history format');
     if (historyFormat !== 'dsh-session-events-v2') throw new Error('DSH history format is incompatible');
     const durableHead = object(pageValue.durableHead, 'DSH durable history head');
-    safeInteger(durableHead.sequence, 'DSH durable history sequence');
+    const durableSequence = safeInteger(durableHead.sequence, 'DSH durable history sequence');
+    const inheritedEventCount = safeInteger(pageValue.inheritedEventCount, 'DSH inherited event count');
+    if (inheritedEventCount > durableSequence) throw new Error('DSH inherited prefix exceeds its durable head');
     if (this.runtimeSessionId === undefined) {
       this.runtimeSessionId = runtimeSessionId;
+      this.inheritedEventCount = inheritedEventCount;
       this.historyFormat = historyFormat;
       this.durableHead = structuredClone(durableHead);
     } else if (
       runtimeSessionId !== this.runtimeSessionId
+      || inheritedEventCount !== this.inheritedEventCount
       || historyFormat !== this.historyFormat
       || !sameJson(durableHead, this.durableHead)
     ) {
@@ -275,6 +281,7 @@ class DshHistoryAssembler {
     }
     return Object.freeze({
       runtimeSessionId: this.runtimeSessionId,
+      inheritedEventCount: safeInteger(this.inheritedEventCount, 'DSH inherited event count'),
       durableSequence: safeInteger(this.durableHead.sequence, 'DSH durable history sequence'),
       events: Object.freeze([...this.events]),
       ...(this.genesisBoundary === undefined ? {} : { genesisBoundary: this.genesisBoundary }),
