@@ -30,7 +30,6 @@ import {
   runPublicVerifier,
   stageCompleteHandoff,
 } from "./dsh-handoff-policy.mjs";
-import { readDshBuildSelection } from "./dsh-build-selection.mjs";
 import { verifyDshDevelopmentFreshness } from "./verify-dsh-dev-freshness.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
@@ -104,23 +103,49 @@ function admissionFixture(root, { platform, explicitNodeRoot = false } = {}) {
       readFileSync(resolve(import.meta.dirname, `${name}.mjs`)));
   }
 
-  const source = resolve(repoRoot, "src-tauri/resources/integrated-runtimes/dsh");
-  const lock = structuredClone(readDshBuildSelection(repoRoot)?.lock
-    ?? JSON.parse(readFileSync(resolve(repoRoot, "src/shared/integrated-runtimes/dsh-lock.json"))));
-  const outer = JSON.parse(readFileSync(resolve(source, HANDOFF_MANIFEST)));
-  for (const path of [...CONTRACT_PATHS, outer.notices.path]) {
-    writeFixtureFile(resolve(runtimeRoot, path), readFileSync(resolve(source, path)));
+  // The admission tests need consistent manifests and the tracked contracts,
+  // not a developer's downloaded Runtime or ignored build selection.
+  const lock = JSON.parse(readFileSync(resolve(repoRoot, "src/shared/integrated-runtimes/dsh-lock.json")));
+  for (const path of CONTRACT_PATHS) {
+    writeFixtureFile(resolve(runtimeRoot, path),
+      readFileSync(resolve(repoRoot, "contracts/myagents-dsh", path.slice("contracts/".length))));
   }
   const writeManifest = (path, value) => {
     const contents = JSON.stringify(value);
     writeFixtureFile(resolve(runtimeRoot, path), contents);
     return sha256ForTest(contents);
   };
-  const runtime = JSON.parse(readFileSync(resolve(source, RUNTIME_MANIFEST)));
-  runtime.build.toolchain.node = lock.runtime.requiredNodeVersion = process.versions.node;
+  const clientPath = "contracts/host-client.generated.ts";
+  const noticesPath = "notices/fixture.json";
+  writeFixtureFile(resolve(runtimeRoot, noticesPath), '{"fixture":true}');
+  lock.handoff.generatedClientSha256 = sha256ForTest(readFileSync(resolve(runtimeRoot, clientPath)));
+  lock.handoff.noticesSha256 = sha256ForTest(readFileSync(resolve(runtimeRoot, noticesPath)));
+  lock.runtime.requiredNodeVersion = process.versions.node;
+  const outer = {
+    schemaVersion: 1,
+    kind: "myagents-dsh-batch-3-integration-handoff",
+    runtime: {}, compatibility: {},
+    generatedClient: { path: clientPath, sha256: lock.handoff.generatedClientSha256 },
+    notices: { path: noticesPath, sha256: lock.handoff.noticesSha256 },
+    platforms: lock.platforms,
+  };
+  const runtime = {
+    build: { repositoryHead: lock.handoff.sourceCommit, toolchain: { node: process.versions.node } },
+    runtimeVersion: lock.runtime.version,
+    entrypoint: lock.runtime.entrypoint,
+    protocol: { version: lock.protocol.version, schemaSha256: lock.protocol.schemaSha256 },
+    profile: lock.profile,
+    dsh: {
+      artifactVersion: lock.dsh.version, sourceCommit: lock.dsh.sourceCommit,
+      artifactManifestSha256: lock.dsh.artifactManifestSha256, patchSeriesSha256: lock.dsh.patchSeriesSha256,
+    },
+  };
   lock.handoff.runtimeManifestSha256 = outer.runtime.manifestSha256 = writeManifest(RUNTIME_MANIFEST, runtime);
-  const compatibility = JSON.parse(readFileSync(resolve(source, COMPATIBILITY_MANIFEST)));
+  const compatibility = JSON.parse(readFileSync(resolve(runtimeRoot, COMPATIBILITY_MANIFEST)));
+  compatibility.runtime.sessionFormat = lock.runtime.sessionFormat;
   compatibility.runtime.artifactSha256 = lock.handoff.runtimeManifestSha256;
+  compatibility.protocol.generatedClientSha256 = lock.handoff.generatedClientSha256;
+  compatibility.platforms = lock.platforms;
   lock.handoff.compatibilitySha256 = outer.compatibility.sha256 = writeManifest(COMPATIBILITY_MANIFEST, compatibility);
   lock.handoff.manifestSha256 = writeManifest(HANDOFF_MANIFEST, outer);
   const lockPath = resolve(root, "src/shared/integrated-runtimes/dsh-lock.json");

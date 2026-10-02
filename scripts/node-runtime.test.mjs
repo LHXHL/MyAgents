@@ -63,9 +63,12 @@ for (const [name, node, npm, accepted] of [
   ['missing Node', '', '11.15.0', false],
   ['missing npm', '24.14.0', '', false],
 ]) {
-  test(`setup toolchain admission: ${name}`, { skip: process.platform === 'win32' }, (t) => {
+  test(`macOS setup toolchain admission: ${name}`, { skip: process.platform === 'win32' }, (t) => {
     const root = fixture(t);
     copyFileSync(join(repo, 'setup.sh'), join(root, 'setup.sh'));
+    // This matrix covers the macOS version ranges, independently of the runner.
+    // Linux's setup delegation is exercised by linux-package.test.mjs.
+    put(join(root, 'bin/uname'), '#!/bin/sh\necho Darwin\n', true);
     for (const [tool, version] of [['node', node && `v${node}`], ['npm', npm]]) {
       put(join(root, 'bin', tool), version ? `#!/bin/sh\nprintf '%s\\n' ${quote(version)}\n` : '#!/bin/sh\nexit 127\n', true);
     }

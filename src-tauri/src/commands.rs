@@ -3495,7 +3495,14 @@ fn detect_dsh_runtime(resource_dir: Option<&Path>) -> RuntimeDetectionResult {
             reason: Some("artifact-invalid".to_string()),
         };
     };
-    let version = json_string_at(&lock, &["runtime", "version"]).map(str::to_string);
+    detect_dsh_runtime_with_lock(resource_dir, &lock)
+}
+
+fn detect_dsh_runtime_with_lock(
+    resource_dir: Option<&Path>,
+    lock: &serde_json::Value,
+) -> RuntimeDetectionResult {
+    let version = json_string_at(lock, &["runtime", "version"]).map(str::to_string);
     let Some(target) = dsh_platform_target() else {
         return RuntimeDetectionResult {
             installed: false,
@@ -3613,6 +3620,26 @@ fn detect_cli_version(path: &Path) -> Option<String> {
 mod runtime_detection_cache_tests {
     use super::*;
 
+    fn dsh_fixture_lock(claim: &str, release: bool) -> serde_json::Value {
+        let mut lock = serde_json::json!({
+            "runtime": { "version": "fixture-runtime" },
+            "platforms": [{ "target": dsh_platform_target().unwrap(), "claim": claim }]
+        });
+        if release {
+            lock["release"] = serde_json::json!({ "tag": "fixture-release" });
+        }
+        lock
+    }
+
+    fn dsh_fixture_files(resource_dir: &Path) -> std::path::PathBuf {
+        let dsh = resource_dir.join("integrated-runtimes").join("dsh");
+        let artifact = dsh.join("runtime-artifact");
+        fs::create_dir_all(&artifact).unwrap();
+        fs::write(artifact.join("package.json"), "{}").unwrap();
+        fs::write(artifact.join("runtime-server-process.artifact.mjs"), "").unwrap();
+        dsh
+    }
+
     #[test]
     fn runtime_detection_cache_hit_within_ttl() {
         let cached_at = Instant::now();
@@ -3664,27 +3691,22 @@ mod runtime_detection_cache_tests {
     }
 
     #[test]
-    fn bundled_dsh_detection_uses_build_selection_on_supported_targets() {
+    fn bundled_dsh_detection_uses_admitted_build_identity_on_supported_targets() {
         if dsh_platform_target().is_none() {
             return;
         }
-        let resource_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources");
-        let result = detect_dsh_runtime(Some(&resource_dir));
-        assert!(
-            result.installed,
-            "unexpected DSH detection: {:?}",
-            result.reason
-        );
-        let lock: serde_json::Value =
-            serde_json::from_str(env!("MYAGENTS_DSH_EFFECTIVE_LOCK_JSON")).unwrap();
-        let expected_version = json_string_at(&lock, &["runtime", "version"]);
-        let expected_readiness = if lock.get("release").is_some() {
-            "ready"
-        } else {
-            "unverified-dev-runtime"
-        };
-        assert_eq!(result.readiness.as_deref(), Some(expected_readiness));
-        assert_eq!(result.version.as_deref(), expected_version);
+        let temporary = tempfile::tempdir().unwrap();
+        dsh_fixture_files(temporary.path());
+        for (claim, release, readiness) in [
+            ("verified", true, "ready"),
+            ("verified", false, "unverified-dev-runtime"),
+        ] {
+            let lock = dsh_fixture_lock(claim, release);
+            let result = detect_dsh_runtime_with_lock(Some(temporary.path()), &lock);
+            assert!(result.installed, "unexpected DSH detection: {:?}", result.reason);
+            assert_eq!(result.readiness.as_deref(), Some(readiness));
+            assert_eq!(result.version.as_deref(), Some("fixture-runtime"));
+        }
     }
 
     #[test]
@@ -3693,13 +3715,9 @@ mod runtime_detection_cache_tests {
             return;
         }
         let temporary = tempfile::tempdir().unwrap();
-        let dsh = temporary.path().join("integrated-runtimes").join("dsh");
-        let artifact = dsh.join("runtime-artifact");
-        fs::create_dir_all(&artifact).unwrap();
-        fs::write(artifact.join("package.json"), "{}").unwrap();
-        fs::write(artifact.join("runtime-server-process.artifact.mjs"), "").unwrap();
+        let dsh = dsh_fixture_files(temporary.path());
 
-        let result = detect_dsh_runtime(Some(temporary.path()));
+        let result = detect_dsh_runtime_with_lock(Some(temporary.path()), &dsh_fixture_lock("verified", true));
         assert!(result.installed);
         assert_eq!(result.path.as_deref(), dsh.to_str());
     }

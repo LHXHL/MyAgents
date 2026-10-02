@@ -7,6 +7,7 @@ import test from 'node:test';
 
 const repo = resolve(import.meta.dirname, '..');
 const source = readFileSync(join(repo, 'build_linux.sh'), 'utf8');
+const toolchain = JSON.parse(readFileSync(join(repo, 'scripts/node-runtime.json'), 'utf8'));
 
 function put(path, content, executable = false) {
   mkdirSync(dirname(path), { recursive: true });
@@ -34,10 +35,12 @@ function fixture(t, { os = 'ubuntu', version = '24.04', kernel = 'Linux', arch =
   }
   put(join(bin, 'node'), `#!/bin/sh
 echo node "$@" >> "$TEST_CALLS"
+if [ "$1" = --version ]; then echo v${toolchain.node}; fi
 if [ "$1" = -p ]; then echo 0.4.17; fi
 `, true);
   put(join(bin, 'npm'), `#!/bin/sh
 echo npm "$@" >> "$TEST_CALLS"
+if [ "$1" = --version ]; then echo ${toolchain.npm}; fi
 case "$*" in
   *--debug*)
     mkdir -p src-tauri/target/x86_64-unknown-linux-gnu/debug
@@ -123,7 +126,8 @@ test('dev wrapper delegates resources and debug/no-bundle build without launchin
   const f = fixture(t);
   const result = f.run(['--build-only'], true);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(f.calls(), /tauri:build -- --target x86_64-unknown-linux-gnu --debug --no-bundle/);
+  assert.match(f.calls(), /tauri:build:prepared -- --target x86_64-unknown-linux-gnu --debug --no-bundle/);
+  assert.ok(f.calls().indexOf('prepare-dsh-runtime.mjs') < f.calls().indexOf('tauri:build:prepared'));
   assert.doesNotMatch(f.calls(), /--bundles|app-started/);
 });
 
@@ -132,7 +136,8 @@ test('release uses the same resources and produces only the current amd64 deb', 
   const result = f.run();
   assert.equal(result.status, 0, result.stderr);
   assert.match(f.calls(), /build:tsx-runtime -- linux x64/);
-  assert.match(f.calls(), /tauri:build -- --target x86_64-unknown-linux-gnu --bundles deb/);
+  assert.match(f.calls(), /tauri:build:prepared -- --target x86_64-unknown-linux-gnu --bundles deb/);
+  assert.ok(f.calls().indexOf('prepare-dsh-runtime.mjs') < f.calls().indexOf('tauri:build:prepared'));
   assert.match(result.stdout, /MyAgents_0.4.17_amd64.deb/);
   assert.doesNotMatch(f.calls(), /appimage|codesign/);
 });
