@@ -40,13 +40,22 @@ describe('workspace identity icons', () => {
     }
   });
 
-  it('keeps the old default and unset icons on the robot default, and Mino on lightning', () => {
-    expect(DEFAULT_WORKSPACE_ICON).toBe('robot');
-    expect(resolveWorkspaceIconId(undefined)).toBe('robot');
-    expect(resolveWorkspaceIconId('')).toBe('robot');
-    expect(resolveWorkspaceIconId('cube')).toBe('robot');
+  it('shows the neutral project folder for unset and old default icons, and Mino keeps lightning', () => {
+    expect(DEFAULT_WORKSPACE_ICON).toBe('project');
+    expect(ALL_WORKSPACE_ICON_IDS[0]).toBe('project');
+    expect(WORKSPACE_ICON_GLYPHS.project.hue).toBe('brand');
+    for (const unset of [undefined, null, '', 'cube', 'folder-open']) {
+      expect(resolveWorkspaceIconId(unset), String(unset)).toBe('project');
+    }
+    // Robot stays a selectable identity, no longer the fallback.
+    expect(resolveWorkspaceIconId('robot')).toBe('robot');
     expect(resolveWorkspaceIconId(getSystemPresetProjectMetadata('mino').icon)).toBe('lightning');
     expect(resolveWorkspaceIconId(PRESET_TEMPLATES.find(t => t.name === 'Mino')?.icon)).toBe('lightning');
+  });
+
+  it('binds the default project hue to the Theme accent', () => {
+    const css = readFileSync(resolve(import.meta.dirname, '../../index.css'), 'utf8');
+    expect(css).toContain('--agent-icon-brand: var(--accent);');
   });
 
   it('leaves emoji icons to the text fallback', () => {

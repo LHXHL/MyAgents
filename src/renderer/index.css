@@ -231,10 +231,11 @@
 }
 
 /* Agent identity hues for WorkspaceIcon. Each glyph owns one hue, so the hue is
-   part of the identity; the dark set lifts lightness for the same recognition
+   part of the identity; `brand` follows the Theme accent for the neutral default; the dark set lifts lightness for the same recognition
    on dark surfaces (enforced by workspaceIcons.test.ts). */
 :root {
   /* agent-icon hues */
+  --agent-icon-brand: var(--accent);
   --agent-icon-clay: #c4613d;
   --agent-icon-amber: #c98f1f;
   --agent-icon-olive: #7f8f2e;
@@ -251,6 +252,7 @@
 
 html[data-color-scheme='dark'] {
   /* agent-icon hues */
+  --agent-icon-brand: var(--accent);
   --agent-icon-clay: #d9774f;
   --agent-icon-amber: #d9a33a;
   --agent-icon-olive: #99aa45;

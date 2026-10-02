@@ -9,8 +9,12 @@ import { WORKSPACE_ICON_GLYPHS, type WorkspaceIconId } from './glyphs';
 export { WORKSPACE_ICON_GLYPHS, WORKSPACE_ICON_HUES } from './glyphs';
 export type { WorkspaceIconGlyph, WorkspaceIconHue, WorkspaceIconId } from './glyphs';
 
-/** Default icon for workspaces without a custom icon. */
-export const DEFAULT_WORKSPACE_ICON: WorkspaceIconId = 'robot';
+/**
+ * Default icon for workspaces without a custom icon — e.g. ones added from a
+ * local folder. Template-created agents carry their template's icon instead
+ * (Mino: lightning).
+ */
+export const DEFAULT_WORKSPACE_ICON: WorkspaceIconId = 'project';
 
 /**
  * IDs written by the previous (Phosphor) icon set. Saved configs keep these

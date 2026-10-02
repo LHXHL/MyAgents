@@ -10,6 +10,7 @@ import type { ReactNode } from 'react';
  * the glyph through `--agent-icon-<hue>` tokens (light and dark in index.css).
  */
 export const WORKSPACE_ICON_HUES = [
+  'brand',
   'sky',
   'amber',
   'clay',
@@ -33,8 +34,16 @@ export interface WorkspaceIconGlyph {
   accent?: ReactNode;
 }
 
-/** Picker order: creatures, nature, food, objects, symbols — shown as one ungrouped grid. */
+/** Picker order: the neutral default first, then creatures, nature, food, objects, symbols — one ungrouped grid. */
 export const WORKSPACE_ICON_GLYPHS = {
+  // Neutral default for workspaces added from a local folder: a project folder
+  // with a small spark for "Agent". Uses the Theme accent ('brand' hue).
+  project: {
+    hue: 'brand',
+    body: 'M3 6a2.25 2.25 0 0 1 2.25-2.25h2.6c.5 0 .98.2 1.33.55l1.07 1.07c.35.35.83.55 1.33.55h3.17A2.25 2.25 0 0 1 17 8.17v5.83a2.25 2.25 0 0 1-2.25 2.25h-9.5A2.25 2.25 0 0 1 3 14z',
+    line: <path d="M3 6a2.25 2.25 0 0 1 2.25-2.25h2.6c.5 0 .98.2 1.33.55l1.07 1.07c.35.35.83.55 1.33.55h3.17A2.25 2.25 0 0 1 17 8.17v5.83a2.25 2.25 0 0 1-2.25 2.25h-9.5A2.25 2.25 0 0 1 3 14z" />,
+    accent: <path d="M10 8.50l0.73 1.87 1.87 0.73-1.87 0.73-0.73 1.87-0.73-1.87-1.87-0.73 1.87-0.73z" />,
+  },
   robot: {
     hue: 'sky',
     body: 'M7.25 6.5h5.5a3.5 3.5 0 0 1 3.5 3.5v2.75a3.5 3.5 0 0 1-3.5 3.5h-5.5a3.5 3.5 0 0 1-3.5-3.5V10a3.5 3.5 0 0 1 3.5-3.5z',
