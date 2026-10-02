@@ -352,6 +352,28 @@ validate_macho_binary() {
     return 0
 }
 
+# DSH handoff is verified before staging. Sign only this target's mutable copy;
+# nested resource binaries are not signed by Tauri's outer App signature.
+sign_dsh_runtime() {
+    local DSH_DIR="${PROJECT_DIR}/src-tauri/resources/integrated-runtimes/dsh"
+    local BINARY
+    local BINARY_TYPE
+    local SIGNED_COUNT=0
+
+    while IFS= read -r -d '' BINARY; do
+        BINARY_TYPE=$(file -b "$BINARY") || return 1
+        case "$BINARY_TYPE" in
+            *Mach-O*) ;;
+            *) continue ;;
+        esac
+        echo -e "    ${CYAN}签名 DSH: ${BINARY#${DSH_DIR}/}${NC}"
+        codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" "$BINARY" || return 1
+        SIGNED_COUNT=$((SIGNED_COUNT + 1))
+    done < <(find "$DSH_DIR" -type f -print0)
+    echo -e "    ${GREEN}✓ DSH 原生文件签名完成 (${SIGNED_COUNT} 个)${NC}"
+}
+
 prepare_sharp_runtime() {
     local ARCH="$1"
     local EXPECTED_ARCH
@@ -505,6 +527,7 @@ for TARGET in "${BUILD_TARGETS[@]}"; do
     "${PROJECT_DIR}/scripts/download_nodejs.sh" --target "$NODE_TARGET_ARCH"
     node "${PROJECT_DIR}/scripts/integrated-runtimes/prepare-dsh-runtime.mjs" \
         --source release --target "darwin-${NODE_TARGET_ARCH}"
+    sign_dsh_runtime
     npm run build:assets
     node "${PROJECT_DIR}/scripts/prepare-cliproxy.mjs" "darwin-${NODE_TARGET_ARCH}"
 

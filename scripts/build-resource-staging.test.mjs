@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
-import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import test from 'node:test';
-import { resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 const repoRoot = resolve(import.meta.dirname, '..');
 const buildDev = readFileSync(resolve(repoRoot, 'build_dev.sh'), 'utf8');
@@ -468,7 +470,7 @@ test('native prerequisite preflight runs before expensive or destructive entry-p
   });
 
   const windowsMsvcAt = buildWindows.indexOf(
-    'VC\\Auxiliary\\Build\\vcvarsall.bat',
+    'Initialize-MsvcBuildEnvironment',
   );
   const windowsPreflightAt = buildWindows.indexOf(
     'prepare-native-inference.mjs" "x86_64-pc-windows-msvc" --check-prerequisites',
@@ -748,4 +750,41 @@ test('setup, local builds and CI share signed CLIProxy preparation without a pub
   }
   assert.match(speechResourceScript, /-DBUILD_TESTING=\$\{speechNativeTestPlan\(target\)\.buildTesting\}/);
   assert.match(speechResourceScript, /runSpeechNativeTests\(\{ target, buildDir: adapterBuild/);
+});
+
+
+test('macOS signs all staged DSH Mach-O resources before bundling', t => {
+  const root = mkdtempSync(join(tmpdir(), 'myagents-dsh-signing-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const staging = join(root, 'src-tauri/resources/integrated-runtimes/dsh');
+  const paths = ['bin/rg', 'prebuilds/spawn-helper', 'native/pty.node', 'lib/with space.dylib'];
+  // A real Mach-O header lets file(1) classify binaries without executing them.
+  const header = Buffer.alloc(32);
+  header.writeUInt32LE(0xfeedfacf, 0);
+  header.writeUInt32LE(0x0100000c, 4);
+  header.writeUInt32LE(2, 12);
+  for (const path of [...paths, 'runtime.js']) {
+    const absolute = join(staging, path);
+    mkdirSync(dirname(absolute), { recursive: true });
+    writeFileSync(absolute, path === 'runtime.js' ? 'export {};' : header);
+  }
+  const tools = join(root, 'tools');
+  mkdirSync(tools);
+  const signer = join(tools, 'codesign');
+  writeFileSync(signer, '#!/bin/bash\n[[ "$1 $2 $3 $4 $5 $6" == "--force --options runtime --timestamp --sign Test Developer ID" ]] || exit 2\nprintf "%s\n" "$7" >> "$SIGN_LOG"\n');
+  chmodSync(signer, 0o755);
+  const signFunction = buildMacos.match(/^sign_dsh_runtime\(\) \{[\s\S]*?^\}/m)?.[0];
+  assert.ok(signFunction);
+  const result = spawnSync('bash', ['-c', `${signFunction}\nsign_dsh_runtime`], { encoding: 'utf8', env: {
+    ...process.env, PATH: `${tools}:${process.env.PATH}`, PROJECT_DIR: root,
+    APPLE_SIGNING_IDENTITY: 'Test Developer ID', SIGN_LOG: join(root, 'signed'),
+  } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(readFileSync(join(root, 'signed'), 'utf8').trim().split('\n').sort(), paths.map(path => join(staging, path)).sort());
+  writeFileSync(signer, '#!/bin/bash\nexit 1\n');
+  const failed = spawnSync('bash', ['-c', `${signFunction}\nsign_dsh_runtime`], { env: { ...process.env, PATH: `${tools}:${process.env.PATH}`, PROJECT_DIR: root } });
+  assert.equal(failed.status, 1, 'a failed native signature must stop the release build');
+  const prepareAt = buildMacos.indexOf('--source release --target "darwin-${NODE_TARGET_ARCH}"');
+  const signAt = buildMacos.indexOf('    sign_dsh_runtime', prepareAt);
+  assert.ok(signAt > prepareAt && signAt < buildMacos.indexOf('tauri:build:prepared', prepareAt));
 });
