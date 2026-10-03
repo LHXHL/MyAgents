@@ -419,7 +419,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         routed.model,
         routed.providerEnv,
         request.reasoningEffort,
-        { source: 'desktop' },
+        { source: 'desktop', ...(request.clientRequestId ? { clientRequestId: request.clientRequestId } : {}) },
         undefined,
         undefined,
         request.analyticsSource,

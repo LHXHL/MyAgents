@@ -1123,7 +1123,7 @@ async function surfaceInFlightQueueItem(
     timestamp: new Date().toISOString(),
     attachments: meta?.attachments,
     sdkUuid: options.sdkUuid,
-    metadata: meta?.source ? { source: meta.source } : undefined,
+    metadata: meta?.metadata ?? (meta?.source ? { source: meta.source } : undefined),
   };
   appendMessage(userMessage);
   if (options.sdkUuid) {
@@ -2025,6 +2025,7 @@ function promoteNextFromPending(): void {
     ? pending.userMessage.content
     : '';
   setInFlightQueueItem(pending.queueId, {
+    metadata: pending.sourceItem.metadata,
     messageText: promotedText,
     attachments: pending.userMessage.attachments,
     requestId: pending.sourceItem.requestId,
@@ -2097,7 +2098,7 @@ function startNextTurnQueuedItem(
     content: item.messageText,
     timestamp: new Date().toISOString(),
     attachments: item.attachments,
-    metadata: item.source ? { source: item.source } : undefined,
+    metadata: sourceItem.metadata ?? (item.source ? { source: item.source } : undefined),
   };
   const surface: DeferredUserSurface = {
     event: 'queue-started',
@@ -8917,7 +8918,7 @@ export async function enqueueUserMessage(
   // #324 — reasoning effort setting ('default' | level). undefined = caller
   // doesn't manage effort (cron/IM/heartbeat) → current session value stays.
   reasoningEffort?: string,
-  metadata?: { source: SessionSource; sourceId?: string; senderName?: string },
+  metadata?: { source: SessionSource; sourceId?: string; senderName?: string; clientRequestId?: string },
   // Pattern A — IM trace ID. Forwarded from /api/im/chat (Rust generates at edge).
   // Desktop / cron / heartbeat callers omit this — those paths get no IM identity.
   requestId?: string,
@@ -9663,6 +9664,7 @@ export async function enqueueUserMessage(
     const admissionCallbacks = takeAdmissionCallbacks();
     const queueItem: MessageQueueItem = {
       id: queueId,
+      metadata,
       message: { role: 'user', content: contentBlocks },
       messageText: trimmed,
       wasQueued: holdForWatchdogRecovery ? true : admissionAction !== 'turn-boundary',
@@ -9735,6 +9737,7 @@ export async function enqueueUserMessage(
       // concurrent enqueue arriving in the same micro-task takes the buffer path.
       if (decideRealtimeHandoff(lifecycleState.messageResolver !== null) === 'sdk-inflight') {
         setInFlightQueueItem(queueId, {
+          metadata,
           messageText: trimmed,
           attachments: savedAttachments.length > 0 ? savedAttachments : undefined,
           requestId,
@@ -14373,6 +14376,7 @@ async function* messageGenerator(
       // be eventually resolved via replay, assistant-start confirmation, or
       // SDK async-message cancellation.
       setInFlightQueueItem(item.id, {
+        metadata: item.metadata,
         messageText: item.messageText,
         attachments: item.attachments,
         requestId: item.requestId,

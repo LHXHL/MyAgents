@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ImageAttachment } from '@/components/SimpleChatInput';
 import type { MessageAttachment } from '@/types/chat';
-import { imagePayloadForSend, mergeAttachmentPreviews } from './userImageAttachmentProjection';
+import { imagePayloadForSend, mergeAttachmentPreviews, restoreMessageImages } from './userImageAttachmentProjection';
 
 function inlineImage(id: string, preview: string): ImageAttachment {
   return {
@@ -29,6 +29,18 @@ function messageAttachment(id: string, previewUrl?: string): MessageAttachment {
 }
 
 describe('user image attachment projection', () => {
+  it('restores failed-send images without losing path refs or inline bytes', () => {
+    const restored = restoreMessageImages([
+      { ...messageAttachment('path-image', 'blob:preview'), relativePath: '.myagents/attachments/test.png', size: 27 },
+      messageAttachment('inline-image', 'data:image/png;base64,b25l'),
+      { ...messageAttachment('document'), mimeType: 'text/plain', isImage: false },
+    ]);
+    expect(restored.map(imagePayloadForSend)).toEqual([
+      { kind: 'attachment_ref', id: 'path-image', name: 'image.png', mimeType: 'image/png', sizeBytes: 27, relativePath: '.myagents/attachments/test.png' },
+      { kind: 'inline_base64', id: 'inline-image', name: 'image.png', mimeType: 'image/png', sizeBytes: 3, data: 'b25l' },
+    ]);
+  });
+
   it('carries the renderer attachment identity through inline payloads', () => {
     expect(imagePayloadForSend(inlineImage('local-image-1', 'data:image/png;base64,b25l')))
       .toMatchObject({

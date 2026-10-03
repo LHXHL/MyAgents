@@ -50,6 +50,8 @@ export type TurnAnalyticsSource = 'desktop' | 'floating_ball' | 'cron' | 'im' | 
  * Message source metadata (IM integration)
  */
 export interface MessageSourceMetadata {
+    /** Correlates a desktop send preview with its server-owned user message. */
+    clientRequestId?: string;
     source: SessionSource;
     sourceId?: string;
     senderName?: string;

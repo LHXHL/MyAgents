@@ -198,6 +198,7 @@ export interface ExternalAssistantSnapshotState {
 }
 
 export interface ExternalSendContext {
+  clientRequestId?: string;
   asyncQuestionReply?: AsyncQuestionReply;
   sessionId: string;
   workspacePath: string;

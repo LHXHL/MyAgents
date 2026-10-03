@@ -182,6 +182,7 @@ export interface MessageAttachment {
 export type MessageSource = 'desktop' | `${string}_private` | `${string}_group`;
 
 export interface MessageMetadata {
+  clientRequestId?: string;
   source: MessageSource;
   sourceId?: string;
   senderName?: string;
@@ -205,6 +206,8 @@ export interface MessageUsage {
 }
 
 export interface Message {
+  /** Local send presentation only; never written into the product transcript. */
+  deliveryStatus?: 'sending' | 'failed';
   turnId?: string;
   transcriptState?: import('../../shared/types/session-message').SessionMessage['transcriptState'];
   asyncQuestionReply?: AsyncQuestionReply;

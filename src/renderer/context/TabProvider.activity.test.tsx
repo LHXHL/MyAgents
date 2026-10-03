@@ -179,6 +179,7 @@ function Probe() {
       <output data-testid="session-loading">{String(isSessionLoading)}</output>
       <output data-testid="session-restore-error">{sessionRestoreError ?? ''}</output>
       <output data-testid="history-content">{JSON.stringify(historyMessages.map(message => message.content))}</output>
+      <output data-testid="history-delivery">{JSON.stringify(historyMessages.map(message => message.deliveryStatus ?? null))}</output>
       <output data-testid="history-identities">{JSON.stringify(historyMessages.map(message => ({
         id: message.id,
         runtimeTurnAnchor: message.runtimeTurnAnchor ?? null,
@@ -193,6 +194,10 @@ function Probe() {
       <output data-testid="pending-ask-id">{pendingAskUserQuestion?.requestId ?? ''}</output>
       <output data-testid="retry-restore-target-present">{JSON.stringify(retryRestoreTargetPresent)}</output>
       <button type="button" onClick={() => void sendMessage('hello')}>send message</button>
+      <button type="button" onClick={() => {
+        const failed = historyMessages.find(message => message.deliveryStatus === 'failed');
+        if (failed) void sendMessage('hello', undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, failed.id);
+      }}>resend failed message</button>
       <button type="button" onClick={() => void resetSession()}>reset session</button>
       <button type="button" onClick={() => void stopResponse()}>stop response</button>
       <button type="button" onClick={() => {
@@ -613,6 +618,107 @@ describe('TabProvider session activity ownership', () => {
     } finally { time.mockRestore(); }
   });
 
+  it.each(['echo-first', 'canonical-first'] as const)(
+    'shows a send before HTTP admission and adopts it once with %s V2 events', async order => {
+      const sessionId = 'pending-immediate-send';
+      let respond!: (response: Response) => void;
+      const receipt = new Promise<Response>(resolve => { respond = resolve; });
+      tauriHarness.proxyFetch.mockImplementation(() => receipt);
+      render(<TabProvider tabId="immediate-send" agentDir="/tmp/workspace" sessionId={sessionId} claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+      await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+      emit('chat:init', { sessionId, transcriptFormat: 2, sessionState: 'idle' });
+      fireEvent.click(screen.getByRole('button', { name: 'send message' }));
+      expect(JSON.parse(screen.getByTestId('history-content').textContent!)).toEqual(['hello']);
+      expect(readActivity()).toMatchObject({ isLoading: true, historyCount: 1 });
+      // A cold init received while the POST is pending must not blank the send.
+      emit('chat:init', { sessionId, transcriptFormat: 2, sessionState: 'idle' });
+      expect(readActivity()).toMatchObject({ isLoading: true, historyCount: 1 });
+      await waitFor(() => expect(tauriHarness.proxyFetch).toHaveBeenCalled());
+      const sendCall = tauriHarness.proxyFetch.mock.calls.find(([url]) => String(url).endsWith('/chat/send'));
+      const { clientRequestId } = JSON.parse(String(sendCall?.[1]?.body));
+      expect(clientRequestId).toEqual(expect.any(String));
+      const message = { id: 'server-user', role: 'user', content: 'hello', metadata: { source: 'desktop', clientRequestId }, timestamp: new Date(0).toISOString() };
+      const echo = () => emit('chat:message-replay', { sessionId, replayKind: 'live-user-echo', message });
+      const operation = (value: unknown) => emit('chat:transcript-operation', { sessionId, operation: value });
+      if (order === 'echo-first') echo();
+      expect(JSON.parse(screen.getByTestId('history-content').textContent!)).toEqual(['hello']);
+      operation({ kind: 'message-create', message: { ...message, content: '', turnId: 'turn', transcriptState: 'complete' } });
+      expect(JSON.parse(screen.getByTestId('history-content').textContent!)).toEqual(['hello']);
+      expect(readActivity().isLoading).toBe(true);
+      operation({ kind: 'text-append', messageId: message.id, field: 'text', offset: 0, text: 'hel' });
+      operation({ kind: 'text-append', messageId: message.id, field: 'text', offset: 3, text: 'lo' });
+      if (order === 'canonical-first') echo();
+      expect(JSON.parse(screen.getByTestId('history-content').textContent!)).toEqual(['hello']);
+      expect(JSON.parse(screen.getByTestId('history-identities').textContent!)).toEqual([{ id: 'server-user', runtimeTurnAnchor: null }]);
+      emit('chat:message-complete', {});
+      emit('chat:status', { sessionState: 'idle' });
+      expect(readActivity().isLoading).toBe(false);
+      await act(async () => { respond(new Response(JSON.stringify({ success: true }))); });
+      expect(readActivity()).toMatchObject({ isLoading: false, historyCount: 1 });
+    },
+  );
+
+  it.each(['rejected', 'network-error'] as const)('retains a failed query after %s and ends pending loading', async failure => {
+    let respond!: (response: Response) => void;
+    let reject!: (error: Error) => void;
+    const receipt = new Promise<Response>((resolve, fail) => { respond = resolve; reject = fail; });
+    tauriHarness.proxyFetch.mockImplementation(() => receipt);
+    render(<TabProvider tabId="failed-send" agentDir="/tmp/workspace" sessionId="pending-failed-send" claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: 'send message' }));
+    expect(readActivity()).toMatchObject({ isLoading: true, historyCount: 1 });
+    await waitFor(() => expect(tauriHarness.proxyFetch).toHaveBeenCalled());
+    await act(async () => {
+      if (failure === 'rejected') respond(new Response(JSON.stringify({ success: false, error: 'send rejected' })));
+      else reject(new Error('connection closed'));
+    });
+    expect(readActivity()).toMatchObject({ isLoading: false, historyCount: 1 });
+    expect(JSON.parse(screen.getByTestId('history-content').textContent!)).toEqual(['hello']);
+    expect(JSON.parse(screen.getByTestId('history-delivery').textContent!)).toEqual(['failed']);
+    expect(screen.getByTestId('agent-error')).toHaveTextContent(failure === 'rejected' ? 'send rejected' : 'connection closed');
+  });
+
+  it('resends a local failure through ordinary send and replaces its failed bubble', async () => {
+    const sessionId = 'pending-resend-failure';
+    let respond!: (response: Response) => void;
+    tauriHarness.proxyFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: false, error: 'rejected' })));
+    tauriHarness.proxyFetch.mockImplementation(() => new Promise<Response>(resolve => { respond = resolve; }));
+    render(<TabProvider tabId="resend-failure" agentDir="/tmp/workspace" sessionId={sessionId} claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:init', { sessionId, transcriptFormat: 2, sessionState: 'idle' });
+    fireEvent.click(screen.getByRole('button', { name: 'send message' }));
+    await waitFor(() => expect(screen.getByTestId('history-delivery')).toHaveTextContent('failed'));
+    const oldId = JSON.parse(screen.getByTestId('history-identities').textContent!)[0].id;
+    fireEvent.click(screen.getByRole('button', { name: 'resend failed message' }));
+    expect(readActivity()).toMatchObject({ isLoading: true, historyCount: 1 });
+    expect(JSON.parse(screen.getByTestId('history-delivery').textContent!)).toEqual(['sending']);
+    expect(JSON.parse(screen.getByTestId('history-identities').textContent!)[0].id).not.toBe(oldId);
+    await waitFor(() => expect(tauriHarness.proxyFetch).toHaveBeenCalledTimes(2));
+    expect(tauriHarness.proxyFetch.mock.calls.every(([url]) => String(url).endsWith('/chat/send'))).toBe(true);
+    const first = JSON.parse(String(tauriHarness.proxyFetch.mock.calls[0][1]?.body));
+    const second = JSON.parse(String(tauriHarness.proxyFetch.mock.calls[1][1]?.body));
+    expect(second.clientRequestId).not.toBe(first.clientRequestId);
+    expect(second.text).toBe('hello');
+    emit('chat:transcript-operation', { sessionId, operation: { kind: 'message-create', message: { id: 'resend-user', role: 'user', content: '', timestamp: new Date(0).toISOString(), metadata: { source: 'desktop', clientRequestId: second.clientRequestId } } } });
+    emit('chat:transcript-operation', { sessionId, operation: { kind: 'text-append', messageId: 'resend-user', field: 'text', offset: 0, text: 'hello' } });
+    await act(async () => { respond(new Response(JSON.stringify({ success: true }))); });
+    emit('chat:message-complete', {});
+    emit('chat:status', { sessionState: 'idle' });
+    expect(readActivity()).toMatchObject({ isLoading: false, historyCount: 1 });
+    expect(JSON.parse(screen.getByTestId('history-delivery').textContent!)).toEqual([null]);
+  });
+
+  it('shows a send immediately in the existing queue while the Runtime is starting', async () => {
+    tauriHarness.proxyFetch.mockImplementation(() => new Promise<Response>(() => undefined));
+    render(<TabProvider tabId="starting-send" agentDir="/tmp/workspace" sessionId="pending-starting-send" claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:status', { sessionState: 'starting' });
+    fireEvent.click(screen.getByRole('button', { name: 'send message' }));
+    expect(readQueueIds()).toEqual([expect.stringMatching(/^opt-/)]);
+    expect(screen.getByTestId('question-queue')).toHaveTextContent('hello');
+    expect(readActivity().isLoading).toBe(true);
+  });
+
   it.each(['echo-first', 'canonical-first', 'late-format'] as const)(
     'uses canonical user content exactly once with %s admission', async order => {
       const sessionId = 'pending-v2-user-admission';
@@ -701,7 +807,9 @@ describe('TabProvider session activity ownership', () => {
     await act(async () => {
       await tab.sendMessage('image', [{ id: 'image-1', name: 'test.png', file: new File(['image'], 'test.png', { type: 'image/png' }), preview: 'data:image/png;base64,aW1hZ2U=' }]);
     });
-    const message = { id: 'image-user', role: 'user', content: 'image', timestamp: new Date(0).toISOString(), attachments: [{ id: 'image-1', name: 'test.png', mimeType: 'image/png', relativePath: 'attachments/test.png', size: 5 }] };
+    const sendCall = tauriHarness.proxyFetch.mock.calls.find(([url, init]) => String(url).endsWith('/chat/send') && init?.method === 'POST');
+    const { clientRequestId } = JSON.parse(String(sendCall?.[1]?.body));
+    const message = { id: 'image-user', role: 'user', content: 'image', metadata: { source: 'desktop', clientRequestId }, timestamp: new Date(0).toISOString(), attachments: [{ id: 'image-1', name: 'test.png', mimeType: 'image/png', relativePath: 'attachments/test.png', size: 5 }] };
     const echo = () => emit('chat:message-replay', { sessionId, replayKind: 'live-user-echo', message });
     if (order === 'echo-first') echo();
     emit('chat:transcript-operation', { sessionId, operation: { kind: 'message-create', message: { ...message, content: '', turnId: 'turn', transcriptState: 'complete' } } });
@@ -730,13 +838,16 @@ describe('TabProvider session activity ownership', () => {
     await act(async () => {
       await tab.sendMessage('new image', [{ id: 'new-image', name: 'test.png', file: new File(['image'], 'test.png', { type: 'image/png' }), preview: 'data:image/png;base64,aW1hZ2U=' }]);
     });
-    const newest = { ...base, id: 'new-user', content: 'new image', attachments: [{ id: 'new-image', name: 'test.png', mimeType: 'image/png', relativePath: 'attachments/new.png', size: 5 }] };
+    const sendCall = tauriHarness.proxyFetch.mock.calls.find(([url, init]) => String(url).endsWith('/chat/send') && init?.method === 'POST');
+    const { clientRequestId } = JSON.parse(String(sendCall?.[1]?.body));
+    const newest = { ...base, id: 'new-user', content: 'new image', metadata: { source: 'desktop', clientRequestId }, attachments: [{ id: 'new-image', name: 'test.png', mimeType: 'image/png', relativePath: 'attachments/new.png', size: 5 }] };
     emit('chat:message-replay', { sessionId, replayKind: 'live-user-echo', message: newest });
     emit('chat:init', { sessionId, transcriptFormat: 2, sessionState: 'idle' });
     for (const message of [earlier, sameNameImage, newest]) emit('chat:message-replay', { sessionId, replayKind: 'cold-history', message });
     expect(tab.historyMessages[0].attachments).toBeUndefined();
     expect(tab.historyMessages[1].attachments?.[0].previewUrl).not.toBe('data:image/png;base64,aW1hZ2U=');
     expect(tab.historyMessages[2]).toMatchObject({ content: 'new image', attachments: [{ id: 'new-image', previewUrl: 'data:image/png;base64,aW1hZ2U=' }] });
+    expect(tab.historyMessages).toHaveLength(3);
     emit('chat:transcript-operation', { sessionId, operation: { kind: 'message-create', message: { ...base, id: 'later-text', content: 'next plain text' } } });
     expect(tab.historyMessages[3].attachments).toBeUndefined();
   });

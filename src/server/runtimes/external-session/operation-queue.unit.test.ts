@@ -60,6 +60,22 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 describe('external operation queue owner', () => {
+  it('carries desktop send correlation through direct and queued projections without replacing server identity', async () => {
+    const queue = await loadFreshQueueOwner();
+    const message = userMessage('hello');
+    const operation = queue.createExternalMessageOperation({
+      text: 'hello', userMessage: message,
+      context: context({ clientRequestId: 'desktop-request-1' }),
+      runtimeConfig: snapshot(),
+    });
+    expect(operation.userProjection.message).toMatchObject({
+      id: message.id, metadata: { source: 'desktop', clientRequestId: 'desktop-request-1' },
+    });
+    expect(message.metadata).toBeUndefined();
+    queue.enqueueExistingExternalMessageOperation(operation);
+    expect(queue.reserveExternalOperationForDrain()).toBe(operation);
+  });
+
   it('tracks user-message projection state per in-flight operation', async () => {
     const queue = await loadFreshQueueOwner();
     const firstGate = deferred();

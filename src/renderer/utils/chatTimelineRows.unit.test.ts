@@ -4,6 +4,7 @@ import type { Message } from '@/types/chat';
 import {
   countVisibleChatTimelineRows,
   isVisibleChatTimelineRow,
+  projectOptimisticUserMessages,
   projectVisibleChatTimelineRows,
   shiftFirstItemIndexForVisiblePrepend,
 } from '@/utils/chatTimelineRows';
@@ -13,6 +14,22 @@ function message(id: string, content: string, role: Message['role'] = 'user'): M
 }
 
 describe('chatTimelineRows', () => {
+  it('overlays an admitted user before text arrives without seeding canonical offsets', () => {
+    const pending = { ...message('local', 'hello'), metadata: { source: 'desktop' as const, clientRequestId: 'request-1' }, deliveryStatus: 'sending' as const };
+    const canonical = { ...message('server', ''), metadata: pending.metadata };
+    expect(projectOptimisticUserMessages([], [pending])).toEqual([pending]);
+    expect(projectOptimisticUserMessages([canonical], [pending])).toEqual([{ ...canonical, content: 'hello' }]);
+    expect(canonical.content).toBe('');
+    const complete = { ...canonical, content: 'hello' };
+    expect(projectOptimisticUserMessages([complete], [pending])).toEqual([complete]);
+  });
+
+  it('does not correlate identical text from history or another source', () => {
+    const pending = { ...message('local', 'hello'), metadata: { source: 'desktop' as const, clientRequestId: 'request-1' } };
+    const other = { ...message('other', 'hello'), metadata: { source: 'desktop' as const, clientRequestId: 'request-2' } };
+    expect(projectOptimisticUserMessages([message('history', 'hello'), other], [pending]).map(row => row.id)).toEqual(['history', 'other', 'local']);
+  });
+
   const completedNotification = message(
     'task-notification-bg-1',
     '<task-notification>{"taskId":"bg-1","status":"completed"}</task-notification>',

@@ -798,6 +798,7 @@ describe('session-engine selector and adapters', () => {
   it('keeps Anthropic subscription routes on the native subscription sentinel', async () => {
     await getSessionEngine().sendDesktopMessage({
       text: 'hello Claude',
+      clientRequestId: 'desktop-request-1',
       model: 'claude-sonnet-5',
       providerRoute: {
         kind: 'subscription',
@@ -810,6 +811,7 @@ describe('session-engine selector and adapters', () => {
     });
 
     expect(mocks.enqueueUserMessage.mock.calls.at(-1)?.[4]).toBe('subscription');
+    expect(mocks.enqueueUserMessage.mock.calls.at(-1)?.[6]).toEqual({ source: 'desktop', clientRequestId: 'desktop-request-1' });
   });
 
   it('passes Goal dispatch guards into builtin queue ownership and exposes its acknowledgement', async () => {

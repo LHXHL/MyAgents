@@ -75,6 +75,7 @@ import type { SlashCommand as InputSlashCommand } from '@/components/SlashComman
 import AgentStatusPanel from '@/components/agent-status/AgentStatusPanel';
 import ContextUsageIndicator from '@/components/ContextUsageIndicator';
 import ChatBootOverlay from '@/components/ChatBootOverlay';
+import { restoreMessageImages } from '@/context/userImageAttachmentProjection';
 import {
   sessionConfigPushFingerprint,
   shouldPushSessionConfig,
@@ -1634,6 +1635,7 @@ export default function Chat({
   // ChatBootOverlay as the lazy-Chat Suspense fallback, so the chunk-load → mount
   // handoff is seamless: ONE continuous loading state from flip to ready.
   const [showStartupOverlay, setShowStartupOverlay] = useState(true);
+  const startupMessageRef = useRef(initialMessage);
 
   // Time rewind state
   const [rewindTarget, setRewindTarget] = useState<{
@@ -2623,13 +2625,9 @@ export default function Chat({
           );
         }
 
-        // 6. Mark initialMessage consumed. DO NOT close overlay here:
-        //    sendMessage() returns immediately (fire-and-forget), and on external
-        //    runtimes (Codex/DSH) the backend may still be in prewarm — sessionState
-        //    stays `idle` and isLoading gets cleared by the prewarm chat:init event.
-        //    Closing the overlay now produced the "stable idle" gap the user saw.
-        //    Overlay closure is now driven by the dedicated effect below — it waits
-        //    for the AI to actually start (sessionState='running' or streaming).
+        // 6. Retire the launch request. TabProvider's immediate send projection
+        //    lets the effect below reveal the user bubble and pending loading
+        //    before the Runtime begins executing.
         onInitialMessageConsumedRef.current?.();
       } catch (err) {
         console.error('[Chat] Auto-send failed:', err);
@@ -2714,10 +2712,11 @@ export default function Chat({
       sessionState === 'starting' ||
       streamingMessage ||
       agentError ||
+      (hadInitialMessage.current && historyMessages.length > 0) ||
       // Workspace-card / no-auto-send entry: there is no turn to wait for, so the
       // chat is "ready" the moment the session connects (SSE up). The
-      // initialMessage path keeps waiting for the turn (conditions above) so the
-      // overlay doesn't flash an empty chat before the auto-sent message lands.
+      // Initial sends reveal the timeline once TabProvider has the user row;
+      // before that the overlay itself displays the shell's launch query.
       (isConnected && !hadInitialMessage.current && !isSessionLoading)
     ) {
       setShowStartupOverlay(false);
@@ -2727,6 +2726,7 @@ export default function Chat({
     sessionState,
     streamingMessage,
     agentError,
+    historyMessages.length,
     isConnected,
     isSessionLoading,
   ]);
@@ -4803,6 +4803,7 @@ export default function Chat({
       images?: ImageAttachment[],
       _permissionMode?: PermissionMode,
       explicitReply?: AsyncQuestionReply,
+      retryFailedMessageId?: string,
     ): Promise<boolean | void> => {
       const draft = explicitReply ? null : questionTargetRef.current;
       const reply = explicitReply ?? draft?.reply;
@@ -4838,15 +4839,6 @@ export default function Chat({
         showSnapshotProviderIncompleteToast();
         return false;
       }
-      if (
-        !inputUsesExternalRuntimeControls &&
-        isRuntimeBackedProvider(currentProviderRef.current)
-      ) {
-        toastRef.current.warning(
-          t('shell.toasts.codexSubscriptionNeedsSession'),
-        );
-        return false;
-      }
 
       // Queue limit: max 5 queued messages.
       // (issue #174) 'starting' is also busy — SDK subprocess is launching but
@@ -4866,8 +4858,8 @@ export default function Chat({
       // Scheduling a future Task does not start an AI turn. TabProvider owns
       // loading for ordinary sends and actual scheduled execution events.
 
-      // Note: User message is added by SSE replay from backend
-      // TabProvider.sendMessage passes attachments which will be merged with the replay message
+      // TabProvider displays the send immediately, then adopts the server user
+      // message by request identity without seeding canonical transcript text.
 
       try {
         // Build provider env from current provider config (read from refs for stability)
@@ -4960,6 +4952,7 @@ export default function Chat({
           inputUsesExternalRuntimeControls ? undefined : providerRoute,
           undefined,
           reply,
+          retryFailedMessageId,
         );
         if (admitted && reply)
           setQuestionDraft((current) =>
@@ -5936,21 +5929,7 @@ export default function Chat({
       return idx >= 0 ? prev.slice(0, idx) : prev;
     });
     chatInputRef.current?.setValue(content);
-    const imageAttachments = attachments?.filter(
-      (a) => a.isImage || a.mimeType?.startsWith('image/'),
-    );
-    const restoredImages: ImageAttachment[] =
-      imageAttachments?.map((a) => ({
-        id: a.id,
-        file: new File([], a.name, { type: a.mimeType }),
-        preview: a.previewUrl || '',
-        source: a.relativePath || a.savedPath ? 'attachment_ref' : undefined,
-        name: a.name,
-        mimeType: a.mimeType,
-        sizeBytes: a.size,
-        relativePath: a.relativePath || a.savedPath,
-      })) ?? [];
-    chatInputRef.current?.setImages(restoredImages);
+    chatInputRef.current?.setImages(restoreMessageImages(attachments));
 
     // 2. 后端回溯（rewindPromise 会阻塞 enqueueUserMessage 防止竞态）
     //    成功：丢弃快照；失败：从快照回滚 UI
@@ -6166,6 +6145,16 @@ export default function Chat({
       }
     }
     if (!userMsg) return;
+    if (userMsg.deliveryStatus === 'failed') {
+      void handleSendMessageRef.current(
+        typeof userMsg.content === 'string' ? userMsg.content : '',
+        restoreMessageImages(userMsg.attachments),
+        undefined,
+        undefined,
+        userMsg.id,
+      );
+      return;
+    }
     setAgentError(null);
     performRetryFromUserMessage(userMsg);
   }, [agentErrorUserMessageId, performRetryFromUserMessage, setAgentError]);
@@ -6627,6 +6616,7 @@ export default function Chat({
               projection commits, so cold SSE replay is never a visible phase. */}
             <ChatBootOverlay
               show={showStartupOverlay || isSessionLoading}
+              initialMessage={showStartupOverlay ? startupMessageRef.current : undefined}
               error={sessionRestoreError}
               onRetry={
                 sessionRestoreError && sessionId

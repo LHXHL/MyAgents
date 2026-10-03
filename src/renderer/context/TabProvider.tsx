@@ -202,6 +202,7 @@ import {
 } from '@/utils/backgroundTaskStatus';
 import {
   countVisibleChatTimelineRows,
+  projectOptimisticUserMessages,
   shiftFirstItemIndexForVisiblePrepend,
 } from '@/utils/chatTimelineRows';
 import {
@@ -1017,6 +1018,13 @@ export default function TabProvider({
   );
 
   // ── Split message state: history (stable during streaming) + streaming (updates on every SSE event)
+  const [pendingDesktopMessages, rawSetPendingDesktopMessages] = useState<Message[]>([]);
+  const pendingDesktopMessagesRef = useRef<Message[]>([]);
+  const setPendingDesktopMessages = useCallback((action: React.SetStateAction<Message[]>) => {
+    const next = typeof action === 'function' ? action(pendingDesktopMessagesRef.current) : action;
+    pendingDesktopMessagesRef.current = next;
+    rawSetPendingDesktopMessages(next);
+  }, []);
   const [historyMessages, rawSetHistoryMessages] = useState<Message[]>([]);
   // Publish each event's projection before React batches its rendering. A
   // second SSE event/RAF callback in the same batch must see the first one.
@@ -1025,14 +1033,30 @@ export default function TabProvider({
   const historyMessagesRef = useRef<Message[]>(historyMessages);
   const setHistoryMessages = useCallback(
     (action: React.SetStateAction<Message[]>) => {
-      const next =
+      let next =
         typeof action === 'function'
           ? action(historyMessagesRef.current)
           : action;
+      const pending = pendingDesktopMessagesRef.current;
+      if (pending.length) {
+        next = next.map(row => {
+          const preview = row.role === 'user' && row.metadata?.clientRequestId
+            ? pending.find(candidate => candidate.metadata?.clientRequestId === row.metadata?.clientRequestId)
+            : undefined;
+          return preview?.attachments
+            ? { ...row, attachments: mergeAttachmentPreviews(row.attachments, preview.attachments) }
+            : row;
+        });
+        const remaining = pending.filter(preview => !next.some(row => (
+          row.role === 'user' && row.metadata?.clientRequestId === preview.metadata?.clientRequestId &&
+          (row.content !== '' || preview.content === '')
+        )));
+        if (remaining.length !== pending.length) setPendingDesktopMessages(remaining);
+      }
       historyMessagesRef.current = next;
       rawSetHistoryMessages(next);
     },
-    [],
+    [setPendingDesktopMessages],
   );
   const [streamingMessage, rawSetStreamingMessage] = useState<Message | null>(
     null,
@@ -1074,11 +1098,15 @@ export default function TabProvider({
   // Combined view for backward compat (used by Chat.tsx messagesRef, rewind, error handling)
   // Mid-turn injected user messages are inserted into historyMessages via the mid-turn break
   // mechanism (queue:started with midTurnBreak=true splits the streaming message).
+  const displayedHistoryMessages = useMemo(
+    () => projectOptimisticUserMessages(historyMessages, pendingDesktopMessages),
+    [historyMessages, pendingDesktopMessages],
+  );
   const messages = useMemo<Message[]>(() => {
     return streamingMessage
-      ? [...historyMessages, streamingMessage]
-      : historyMessages;
-  }, [historyMessages, streamingMessage]);
+      ? [...displayedHistoryMessages, streamingMessage]
+      : displayedHistoryMessages;
+  }, [displayedHistoryMessages, streamingMessage]);
 
   // Compat wrapper: setMessages operates on combined array, drains streaming into history.
   // Note: The functional-update path has side effects (clearing streamingMessage) inside
@@ -1105,7 +1133,8 @@ export default function TabProvider({
     [setHistoryMessages],
   );
 
-  const [isLoading, setIsLoading] = useState(false);
+  const [backendIsLoading, setIsLoading] = useState(false);
+  const isLoading = backendIsLoading || pendingDesktopMessages.some(row => row.deliveryStatus === 'sending');
   // Persisted history owns the first visible frame. Seed the shell during
   // render so the synchronous cold-history replay sent on initial SSE attach
   // can never become an intermediate projection.
@@ -1320,12 +1349,13 @@ export default function TabProvider({
     liveContextUsageSessionIdRef.current = null;
     setContextUsage(null);
     if (!shouldPreservePendingBirthSnapshots) {
+      if (previousSessionId !== sessionId) setPendingDesktopMessages([]);
       setAgentPlanTodos(null);
       setSdkSlashCommands([]);
       setSystemInitInfo(null);
       setMcpEffectiveSnapshot(null);
     }
-  }, [sessionId]);
+  }, [sessionId, setPendingDesktopMessages]);
 
   // Store callbacks in refs to avoid triggering effects on every render
   const onGeneratingChangeRef = useRef(onGeneratingChange);
@@ -1633,6 +1663,7 @@ export default function TabProvider({
       resetBirthPendingRef.current = false;
 
       // Mirror resetSession's local clear (kept in lockstep to avoid drift).
+      setPendingDesktopMessages([]);
       setHistoryMessages([]);
       resetPaginationState();
       setStreamingMessage(null);
@@ -1760,6 +1791,7 @@ export default function TabProvider({
       clearSessionActive,
       resetPaginationState,
       abortActiveRestoreRequest,
+      setPendingDesktopMessages,
       publishPersistedRestoreLifecycle,
       setHistoryMessages,
       sessionRuntime,
@@ -2552,9 +2584,12 @@ export default function TabProvider({
             // V2 was known. Canonical creation owns the content baseline;
             // only local image previews survive its adoption.
             if (message.role === 'user') {
+              const preview = pendingDesktopMessagesRef.current.find(row =>
+                row.metadata?.clientRequestId === message.metadata?.clientRequestId,
+              );
               message.attachments = mergeAttachmentPreviews(
                 message.attachments,
-                pendingAttachmentsRef.current ?? existing?.attachments,
+                preview?.attachments ?? pendingAttachmentsRef.current ?? existing?.attachments,
               );
               pendingAttachmentsRef.current = null;
             }
@@ -5847,6 +5882,7 @@ export default function TabProvider({
       providerRoute?: ProviderRoute,
       requiredSystemSkill?: ProductSystemSkillRequirement,
       asyncQuestionReply?: AsyncQuestionReply,
+      retryFailedMessageId?: string,
     ): Promise<boolean> => {
       const trimmed = text.trim();
       if (!trimmed && (!images || images.length === 0)) return false;
@@ -5909,7 +5945,7 @@ export default function TabProvider({
       // We don't know the real queueId yet (backend assigns it), so use a local ID.
       // .then() will reconcile: replace opt- with real queueId, or clean up if already started.
       const localQueueId =
-        isStreamingRef.current || asyncQuestionReply
+        isStreamingRef.current || isSessionActiveRef.current || asyncQuestionReply
         ? `opt-${crypto.randomUUID()}`
         : null;
       if (localQueueId) {
@@ -5926,6 +5962,26 @@ export default function TabProvider({
           },
         ]);
       }
+      const clientRequestId = crypto.randomUUID();
+      // A local failure has no native history anchor. Its explicit resend is
+      // an ordinary send; replace only that failed presentation after admission.
+      if (retryFailedMessageId) {
+        setPendingDesktopMessages(rows => rows.filter(row =>
+          row.id !== retryFailedMessageId || row.deliveryStatus !== 'failed',
+        ));
+      }
+      if (!localQueueId) {
+        setIsLoading(true);
+        setPendingDesktopMessages(previous => [...previous, {
+          id: `pending-send-${clientRequestId}`,
+          role: 'user',
+          content: trimmed,
+          timestamp: new Date(),
+          metadata: { source: 'desktop', clientRequestId },
+          attachments: hasImages ? pendingAttachmentsRef.current ?? undefined : undefined,
+          deliveryStatus: 'sending',
+        }]);
+      }
 
       // Fire-and-forget: send to backend without blocking the UI.
       // The HTTP response may be delayed by provider changes or session startup,
@@ -5935,6 +5991,7 @@ export default function TabProvider({
       // so enqueueUserMessage knows this is an intentional switch, not "I don't know".
       // IM/Task callers omit the field entirely (undefined = "keep current provider").
       const sendPayload = {
+        clientRequestId,
         text: trimmed,
         images: imageData,
         sessionId: sessionIdForSend,
@@ -5980,6 +6037,7 @@ export default function TabProvider({
             });
 
             if (response.queued && response.queueId) {
+              setPendingDesktopMessages(rows => rows.filter(row => row.metadata?.clientRequestId !== clientRequestId));
               pendingAttachmentsRef.current = null;
               const realQueueId = response.queueId;
               if (!response.isInFlight) {
@@ -6059,6 +6117,7 @@ export default function TabProvider({
               );
             }
           } else {
+            setPendingDesktopMessages(rows => rows.map(row => row.metadata?.clientRequestId === clientRequestId ? { ...row, deliveryStatus: 'failed' } : row));
             // Backend rejected: queue full, validation error, etc.
             console.error(
               `[TabProvider ${tabId}] Send rejected:`,
@@ -6078,6 +6137,7 @@ export default function TabProvider({
           return response.success;
         })
         .catch((error) => {
+          setPendingDesktopMessages(rows => rows.map(row => row.metadata?.clientRequestId === clientRequestId ? { ...row, deliveryStatus: 'failed' } : row));
           console.error(`[TabProvider ${tabId}] Send message failed:`, error);
           if (localQueueId) {
             setQueuedMessages((prev) =>
@@ -6108,7 +6168,7 @@ export default function TabProvider({
       return asyncQuestionReply ? admission : true;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- postJson is stable
-    [tabId, sessionId, claimSessionOpeningTransition],
+    [tabId, sessionId, claimSessionOpeningTransition, setPendingDesktopMessages],
   );
 
     // Stop receipt/transport timing never decides the turn outcome.
@@ -7159,7 +7219,7 @@ export default function TabProvider({
       agentDir,
       sessionId: currentSessionId,
       messages,
-      historyMessages,
+      historyMessages: displayedHistoryMessages,
       streamingMessage,
       firstItemIndex,
       hasMoreBefore,
@@ -7226,7 +7286,7 @@ export default function TabProvider({
       agentDir,
       currentSessionId,
       messages,
-      historyMessages,
+      displayedHistoryMessages,
       streamingMessage,
       firstItemIndex,
       hasMoreBefore,
