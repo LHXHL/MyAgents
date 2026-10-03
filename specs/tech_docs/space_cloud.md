@@ -4,7 +4,7 @@
 
 ## 1. 定位与权威边界
 
-Cloud Space 是 Desktop 连接团队服务的实验性能力，不是 AI Runtime，也不属于 Session Sidecar。
+Cloud Space（中文入口“协作空间”，英文 Team Space）是 Desktop 连接团队服务的能力，不是 AI Runtime，也不属于 Session Sidecar。
 
 | 事实 | Authority |
 |---|---|
@@ -26,7 +26,7 @@ Space 是 build-time capability：
 - `src-tauri/build.rs` 只转发 `MYAGENTS_SPACE_*` 白名单；
 - production origin 必须是无 credential、无 path/query/fragment 的 HTTPS origin；
 - release build 不携带 Dev origin；
-- `cmd_space_get_capability` 返回 Rust 当前可用的 baked origin，Renderer 还要叠加 `config.teamSpaceEnabled`；
+- `cmd_space_get_capability` 返回 Rust 当前可用的 baked origin，Renderer 还要叠加隐藏开发者开关 `config.teamSpaceDevGate !== false`；该开关默认开启，Rust Connector 使用相同的显式 false 才关闭语义。旧实验室字段 `teamSpaceEnabled` 不再读取，升级用户无需手动开启；显式开发者关闭继续由 config.json 持久化；
 - `config.spaceEnvironment` 只能在构建中已经烘焙的 production/dev origin 间选择；
 - 所有请求通过 `space_build_capability()` / `space_base_url()` 解析 origin，不能硬编码或让用户输入任意 URL。
 

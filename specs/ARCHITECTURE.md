@@ -6,7 +6,7 @@
 
 MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端。React Renderer 提供多 Tab 工作区；Rust/Tauri 拥有桌面生命周期、本地持久化与系统能力；Node.js Sidecar 通过 SessionEngine 接入 Claude Agent SDK、Integrated DSH 与外部 Agent Runtime。
 
-主要产品域包括对话与 Goal、Task 自动化、Agent Channel、Record/本地语音、文档转换、MCP/Skill/Plugin、内嵌终端与浏览器，以及实验室 Cloud Space 与 Agent 网络。
+主要产品域包括对话与 Goal、Task 自动化、Agent Channel、Record/本地语音、文档转换、MCP/Skill/Plugin、内嵌终端与浏览器，以及 Cloud Space（协作空间）与实验室 Agent 网络。
 
 ## 技术与进程边界
 

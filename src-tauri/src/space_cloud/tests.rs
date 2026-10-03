@@ -7,6 +7,24 @@ use super::registered_agents::*;
 use super::*;
 
 #[test]
+fn space_dev_gate_defaults_open_and_ignores_legacy_lab_opt_out() {
+    for config in [
+        serde_json::json!({}),
+        serde_json::json!({ "teamSpaceEnabled": false }),
+        serde_json::json!({ "teamSpaceEnabled": true }),
+        serde_json::json!({ "teamSpaceDevGate": true }),
+        serde_json::json!({ "teamSpaceDevGate": null }),
+        serde_json::json!({ "teamSpaceDevGate": "false" }),
+    ] {
+        assert!(team_space_dev_gate_enabled(&config), "config: {config}");
+    }
+    assert!(!team_space_dev_gate_enabled(&serde_json::json!({
+        "teamSpaceDevGate": false,
+        "teamSpaceEnabled": true,
+    })));
+}
+
+#[test]
 fn space_environment_serializes_only_current_public_values() {
     assert_eq!(
         serde_json::to_value(SpaceEnvironment::Production).expect("serialize production"),

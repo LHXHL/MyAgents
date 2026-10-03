@@ -398,7 +398,9 @@ export default function App() {
   } = useConfig();
   const spaceBuildCapability = useSpaceBuildCapability(config.spaceEnvironment);
   const teamSpaceAvailable =
-    spaceBuildCapability.available && config.teamSpaceEnabled === true;
+    !configLoading &&
+    spaceBuildCapability.available &&
+    config.teamSpaceDevGate !== false;
   const [windowPresentation, setWindowPresentation] = useState(() =>
     createInitialMainWindowPresentation(
       typeof document === 'undefined' || document.visibilityState === 'visible',
@@ -3858,7 +3860,7 @@ export default function App() {
   }, [handleOpenAppRoute]);
 
   const handleOpenSpace = useCallback(() => {
-    if (spaceBuildCapability.isLoading) {
+    if (configLoading || spaceBuildCapability.isLoading) {
       toastRef.current.info(t('titlebar.teamLoading'));
       return;
     }
@@ -3876,6 +3878,7 @@ export default function App() {
       title: t('tabs.team'),
     });
   }, [
+    configLoading,
     spaceBuildCapability.isLoading,
     spaceBuildCapability.available,
     spaceBuildCapability.reason,

@@ -47,6 +47,9 @@ const mocks = vi.hoisted(() => {
 
   return {
     project,
+    spaceDevGate: undefined as boolean | undefined,
+    spaceBuildAvailable: true,
+    configLoading: false,
     agent,
     provider,
     resolveBuiltinSelection: vi.fn((): { provider: typeof provider; model: string } | undefined => ({
@@ -429,9 +432,10 @@ vi.mock('@/hooks/useConfig', () => ({
       managedCodexRuntimeInstall: { status: 'installed', usable: true },
       managedCodexAuth: { status: 'valid', authMethod: 'chatgpt' },
       defaultPermissionMode: 'auto',
-      teamSpaceEnabled: true,
+      teamSpaceEnabled: false, // Legacy Lab opt-out must not hide the released entry.
+      teamSpaceDevGate: mocks.spaceDevGate,
     },
-    isLoading: false,
+    isLoading: mocks.configLoading,
     error: null,
     projects: [mocks.project],
     providers: [mocks.provider],
@@ -477,7 +481,7 @@ vi.mock('@/hooks/useTabSwipeGesture', () => ({
 }));
 
 vi.mock('@/hooks/useSpaceBuildCapability', () => ({
-  useSpaceBuildCapability: () => ({ isLoading: false, available: true, reason: null }),
+  useSpaceBuildCapability: () => ({ isLoading: false, available: mocks.spaceBuildAvailable, reason: null }),
 }));
 
 vi.mock('@/utils/browserMock', () => ({
@@ -529,6 +533,9 @@ import App from './App';
 
 describe('App helper launch', () => {
   afterEach(() => {
+  mocks.configLoading = false;
+  mocks.spaceDevGate = undefined;
+  mocks.spaceBuildAvailable = true;
     vi.unstubAllGlobals();
     vi.clearAllMocks();
     localStorage.clear();
@@ -657,6 +664,7 @@ describe('App helper launch', () => {
       onOpenSettings: () => void;
       onOpenTaskCenter: () => void;
       onOpenSpace: () => void;
+      teamSpaceAvailable: boolean;
       onOpenWorkspace: (
         project: typeof mocks.project,
         initialMessage?: unknown,
@@ -2204,7 +2212,7 @@ describe('App helper launch', () => {
     expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(3);
   });
 
-  it('keeps Task Center and Team as one tab each', async () => {
+  it('keeps Task Center and default-enabled Collaboration Space as one tab each', async () => {
     render(<App />);
 
     act(() => latestSidebarProps().onOpenTaskCenter());
@@ -2217,6 +2225,35 @@ describe('App helper launch', () => {
     act(() => latestSidebarProps().onOpenSpace());
 
     expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(3);
+    expect(latestSidebarProps().teamSpaceAvailable).toBe(true);
+    expect(latestTabbarProps().tabs).toContainEqual(
+      expect.objectContaining({ view: 'space', title: '协作空间' }),
+    );
+  });
+
+  it.each([false, true])('waits for config before opening Space, then honors persisted gate %s', async (enabled) => {
+    mocks.configLoading = true;
+    const view = render(<App />);
+    expect(latestSidebarProps().teamSpaceAvailable).toBe(false);
+    act(() => latestSidebarProps().onOpenSpace());
+    expect(latestTabbarProps().tabs.some((tab) => tab.view === 'space')).toBe(false);
+    expect(mocks.toast.info).toHaveBeenCalledWith('正在读取协作空间状态');
+
+    mocks.spaceDevGate = enabled;
+    mocks.configLoading = false;
+    view.rerender(<App />);
+    expect(latestSidebarProps().teamSpaceAvailable).toBe(enabled);
+    act(() => latestSidebarProps().onOpenSpace());
+    expect(latestTabbarProps().tabs.some((tab) => tab.view === 'space')).toBe(enabled);
+  });
+
+  it.each(['developer', 'build'] as const)('hides Collaboration Space when disabled by %s', async (gate) => {
+    mocks.spaceDevGate = gate === 'developer' ? false : undefined;
+    mocks.spaceBuildAvailable = gate !== 'build';
+    render(<App />);
+    expect(latestSidebarProps().teamSpaceAvailable).toBe(false);
+    act(() => latestSidebarProps().onOpenSpace());
+    expect(latestTabbarProps().tabs.some((tab) => tab.view === 'space')).toBe(false);
   });
 
   it('reuses Task Center for the active recording stop surface when the tab strip is full', async () => {

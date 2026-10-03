@@ -2316,18 +2316,21 @@ fn space_base_urls_equal(a: &str, b: &str) -> bool {
 
 fn team_space_runtime_enabled() -> bool {
     let Some(dir) = crate::app_dirs::myagents_data_dir() else {
-        return false;
+        return true;
     };
     let Ok(content) = fs::read_to_string(dir.join("config.json")) else {
-        return false;
+        return true;
     };
     let Ok(config) = serde_json::from_str::<Value>(crate::utils::bom::strip_bom(&content)) else {
-        return false;
+        return true;
     };
-    config
-        .get("teamSpaceEnabled")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+    team_space_dev_gate_enabled(&config)
+}
+
+fn team_space_dev_gate_enabled(config: &Value) -> bool {
+    // The former opt-in Lab setting is deliberately ignored. Only an explicit
+    // Developer opt-out pauses the Connector, matching the Renderer policy.
+    config.get("teamSpaceDevGate") != Some(&Value::Bool(false))
 }
 
 fn required_value_string(value: &Value, key: &str) -> Result<String, String> {

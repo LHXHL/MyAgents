@@ -15,6 +15,8 @@ import Settings from "./SettingsPage";
 const settingsMocks = vi.hoisted(() => ({
   linux: true,
   config: {} as AppConfig,
+  spaceAvailable: true,
+  updateConfig: vi.fn(),
   atomicModifyConfig: vi.fn(),
   patchProxySettings: vi.fn(),
   refreshConfig: vi.fn(),
@@ -72,7 +74,7 @@ vi.mock("@/hooks/useConfig", () => ({
     providerVerifyStatus: stableVerifyStatus,
     saveProviderVerifyStatus: configNoop,
     config: settingsMocks.config,
-    updateConfig: configNoop,
+    updateConfig: settingsMocks.updateConfig,
     patchProxySettings: settingsMocks.patchProxySettings,
     providers: stableProviders,
     projects: stableProjects,
@@ -112,6 +114,8 @@ vi.mock("@/api/apiFetch", () => ({
 
 vi.mock("@/hooks/useSpaceBuildCapability", () => ({
   useSpaceBuildCapability: () => ({
+    available: settingsMocks.spaceAvailable,
+    isLoading: false,
     activeEnvironment: "production",
     environments: ["production"],
   }),
@@ -150,6 +154,7 @@ vi.mock('@/utils/tauriListen', () => ({ listenWithCleanup: vi.fn(async () => {})
 describe('Ubuntu settings availability', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
+    settingsMocks.spaceAvailable = true;
     stableProjects.length = 0;
     settingsMocks.config = { ...DEFAULT_CONFIG, agents: [], showDevTools: true,
       floatingBallDevGate: true, managedCodexProviderDevGate: true,
@@ -179,7 +184,7 @@ describe('Ubuntu settings availability', () => {
     expect(screen.queryByText('Hidden Agent')).not.toBeInTheDocument();
     expect(screen.queryByText('Archived Agent')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Agent Beta/ }));
-    await waitFor(() => expect(configNoop).toHaveBeenCalledWith({ defaultWorkspacePath: '/agents/beta' }));
+    await waitFor(() => expect(settingsMocks.updateConfig).toHaveBeenCalledWith({ defaultWorkspacePath: '/agents/beta' }));
   });
 
   it('redirects a saved desktop-pet route and removes unsupported/update controls without changing config', async () => {
@@ -240,5 +245,32 @@ describe('Ubuntu settings availability', () => {
     fireEvent.click(developerTab);
     expect(screen.getByText(String(i18n.t('about.developer.devModeTitle', { ns: 'settings' })))).toBeInTheDocument();
     expect(screen.getByText(String(i18n.t('about.developer.cronTaskTitle', { ns: 'settings' })))).toBeInTheDocument();
+    const spaceLabel = String(i18n.t('about.teamSpaceTitle', { ns: 'settings' }));
+    const spaceToggle = screen.getByRole('button', { name: spaceLabel });
+    expect(spaceToggle).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(spaceToggle);
+    expect(settingsMocks.updateConfig).toHaveBeenCalledWith({ teamSpaceDevGate: false });
+    fireEvent.click(within(navigation).getByRole('button', { name: String(i18n.t('sidebar.nav.about', { ns: 'settings' })) }));
+    expect(screen.queryByText(spaceLabel)).not.toBeInTheDocument();
+
   });
+  it.each([false, true])('keeps the Developer Space switch functional (build available: %s)', async (available) => {
+    const { unlockDeveloperSection } = await import('@/utils/developerMode');
+    unlockDeveloperSection();
+    settingsMocks.spaceAvailable = available;
+    settingsMocks.config.teamSpaceDevGate = false;
+    render(<ToastProvider><Settings mode="settings" initialSection="developer" isActive /></ToastProvider>);
+    const toggle = await screen.findByRole('button', { name: 'Team Space' });
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    if (available) {
+      expect(toggle).toBeEnabled();
+      fireEvent.click(toggle);
+      expect(settingsMocks.updateConfig).toHaveBeenCalledWith({ teamSpaceDevGate: true });
+    } else {
+      expect(toggle).toBeDisabled();
+      fireEvent.click(toggle);
+      expect(settingsMocks.updateConfig).not.toHaveBeenCalled();
+    }
+  });
+
 });
