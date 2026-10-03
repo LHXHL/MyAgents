@@ -295,10 +295,11 @@ describe("Space switching", () => {
     vi.useRealTimers();
   });
 
-  function useRealTeamStore() {
+  function useRealTeamStore(officialSlug = 'official') {
     harness.realStore = true;
     const team = { ...sessionFor('id-team', 'team'), sessionBindingId: 'binding-route' };
-    const official = sessionFor('id-official', 'official');
+    const official = sessionFor('id-official', officialSlug);
+    official.space.spaceKind = 'official';
     const result = { space: official.space, membership: official.membership, goals: [] };
     __setSpaceStoreStateForTest({ boot: 'ready', session: team, spaceId: 'team', serviceBaseUrl: team.baseUrl });
     harness.api.spaceGetCapability.mockReset().mockResolvedValue({ available: true, baseUrl: team.baseUrl });
@@ -307,6 +308,33 @@ describe("Space switching", () => {
     harness.api.spaceSetActiveSpace.mockReset().mockResolvedValue(undefined);
     return result;
   }
+
+  it('opens official Tools when bootstrap returns the real community slug', async () => {
+    useRealTeamStore('myagents');
+    const consumed = vi.fn();
+    render(<Space isActive pendingRoute={{ generation: 40, route: { version: 1, name: 'space.tools', params: { spaceId: 'official' } } }} onRouteConsumed={consumed} />);
+    await act(async () => undefined);
+    expect(screen.getByRole('main', { name: 'tool market' })).toHaveAttribute('data-space-id', 'myagents');
+    expect(consumed).toHaveBeenCalledWith(40);
+    expect(harness.toast.error).not.toHaveBeenCalled();
+  });
+
+  it.each(['space.tools', 'space.issue'] as const)('accepts the official alias for %s when the community is already current', async (name) => {
+    const community = useRealTeamStore('myagents');
+    const team = getSnapshot().session!;
+    __setSpaceStoreStateForTest({ session: { ...team, ...community, lastActiveSpaceId: 'official' }, spaceId: 'myagents' });
+    const consumed = vi.fn();
+    const route = name === 'space.tools'
+      ? { version: 1 as const, name, params: { spaceId: 'official' } }
+      : { version: 1 as const, name, params: { spaceId: 'official', issueId: 'community-issue' } };
+    render(<Space isActive pendingRoute={{ generation: 41, route }} onRouteConsumed={consumed} />);
+    await act(async () => undefined);
+    if (name === 'space.tools') expect(screen.getByRole('main', { name: 'tool market' })).toHaveAttribute('data-space-id', 'myagents');
+    else expect(screen.getByRole('dialog', { name: 'issue detail' })).toHaveAttribute('data-issue-id', 'community-issue');
+    expect(harness.api.spaceGetOfficial).not.toHaveBeenCalled();
+    expect(consumed).toHaveBeenCalledWith(41);
+    expect(harness.toast.error).not.toHaveBeenCalled();
+  });
 
   it('retains the official Tools intent when real store bootstrap fails and recovers on retry', async () => {
     useRealTeamStore();
@@ -491,8 +519,8 @@ describe("Space switching", () => {
 
     await act(async () => undefined);
     expect(screen.queryByRole("dialog", { name: "issue detail" })).not.toBeInTheDocument();
-    expect(screen.getByText(/已无法访问.*Space/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "返回 Space" })).toBeInTheDocument();
+    expect(screen.getByText(/已无法访问.*协作空间/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "返回协作空间" })).toBeInTheDocument();
     expect(harness.toast.error).toHaveBeenCalled();
     expect(onRouteConsumed).toHaveBeenCalledWith(13);
   });

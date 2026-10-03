@@ -52,6 +52,8 @@ debug/test 可以通过 `MYAGENTS_SPACE_MOCK_DATA=true` 使用 Rust owner 的 de
 
 技能与工具页的本地横幅通过 App 的 `CapabilitiesRenderBinding.onOpenToolMarket` 发出 `space.tools` AppRoute，固定目标为 `DEFAULT_SPACE_ID`（`official`）。对应外部深链为 `myagents://open/v1/spaces/official/tools`；TS 与 Rust parser 共用测试样例，外部入口继续使用现有 Rust AppRouteQueue。
 
+`official` 是 Cloud API 保留的官方空间别名，不是资源的实际 slug。`spaceStore` 的统一匹配同时接受精确 id/slug，以及 `official` 对 Cloud 返回 `spaceKind: official` 的资源；当前空间、列表目标与 bootstrap 到达校验共用该判断。实际官方 slug（通常为 `myagents`）和 opaque id 仍由 Cloud 拥有，不能硬编码或从名称推断；旧缓存缺少 kind 时通过现有 bootstrap 刷新确认。
+
 App 复用协作空间单实例 Tab，并持有导航 generation；Space 等待 boot/auth ready 后通过 `spaceStore.switchSpace` 切换，再显示 Tools 列表、清除资源详情并消费当前 generation。未登录或需重新认证时保留目标，瞬时切换错误沿已有 routeFailure 重试；过时 intent 不消费新目标。本地横幅同时遵循 config readiness、build capability 与开发者门控。工具列表、详情和安装继续由现有 ToolsWorkspace 与 Rust tools 模块处理。
 
 导航 effect 以 intent、认证 binding、origin 与 readiness 为生命周期边界，使用 effect event 读取当前 session；本地 Space 投影不重启在途导航。所有路由（含当前 Space）都交给 `switchSpace`，由已有请求 sequence 取消过时 switch/bootstrap，并沿既有队列持久化最新目标。未知空间的显式切换要求 bootstrap 传播原始失败，且不能把默认空间回退当成目标到达；普通后台刷新仍保留最近成功快照与错误投影。

@@ -659,7 +659,9 @@ function spaceMatchesRoute(
   space: SpaceSession["space"],
   route: string,
 ): boolean {
-  return space.id === route || space.slug === route;
+  // `official` is the Cloud API's reserved specifier, not the community's slug.
+  return space.id === route || space.slug === route
+    || (route === DEFAULT_SPACE_ID && space.spaceKind === "official");
 }
 
 function resolveSpaceSwitchTarget(

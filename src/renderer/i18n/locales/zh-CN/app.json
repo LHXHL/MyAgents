@@ -397,9 +397,9 @@
   },
   "space": {
     "route": {
-      "spaceUnavailable": "你已无法访问这条通知对应的 Space，或该 Space 已不存在。",
-      "openFailed": "无法打开这条 Issue：{{message}}",
-      "back": "返回 Space"
+      "spaceUnavailable": "你已无法访问这个协作空间，或它已不存在。",
+      "openFailed": "无法打开协作空间：{{message}}",
+      "back": "返回协作空间"
     },
     "errors": {
       "toolsUnavailable": "当前服务暂不可用，请稍后重试。",

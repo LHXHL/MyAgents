@@ -1048,6 +1048,38 @@ describe("spaceStore boot", () => {
     expect(getSnapshot().session?.space.slug).toBe("official");
   });
 
+  it("resolves the official alias from listed kind without assuming the community slug", async () => {
+    const community = { ...fakeSession.space, id: "space-community", slug: "public-community", spaceKind: "official" };
+    __setSpaceStoreStateForTest({
+      boot: "ready", spaceId: "team",
+      session: { ...fakeSession, space: { ...fakeSession.space, id: "space-team", slug: "team", spaceKind: "user" }, spaces: [{ ...community, membership: fakeSession.membership }] },
+    });
+    await actions.switchSpace("official");
+    expect(getSnapshot().spaceId).toBe("public-community");
+    expect(apiMocks.spaceGetOfficial).not.toHaveBeenCalled();
+    expect(apiMocks.spaceSetActiveSpace).toHaveBeenCalledWith("official", "binding-old");
+  });
+
+  it.each([undefined, "user"])("refreshes official authority instead of inferring it from a cached slug with kind %s", async (spaceKind) => {
+    const cached = { ...fakeSession, space: { ...fakeSession.space, id: "space-community", slug: "myagents", spaceKind }, lastActiveSpaceId: "official" };
+    const community = { ...cached.space, spaceKind: "official" };
+    __setSpaceStoreStateForTest({ boot: "ready", session: cached, spaceId: "myagents" });
+    apiMocks.spaceGetSession.mockResolvedValueOnce({ state: "authenticated", session: cached });
+    apiMocks.spaceGetOfficial.mockResolvedValueOnce({ space: community, membership: fakeSession.membership, goals: [] });
+    await actions.switchSpace("official");
+    expect(apiMocks.spaceGetOfficial).toHaveBeenCalledWith("official");
+    expect(getSnapshot().session?.space.spaceKind).toBe("official");
+    expect(getSnapshot().spaceId).toBe("myagents");
+  });
+
+  it("rejects a non-official response for the official alias even if its name resembles the community", async () => {
+    const wrong = { ...fakeSession.space, id: "space-team", slug: "myagents", name: "MyAgents社区", spaceKind: "user" };
+    __setSpaceStoreStateForTest({ boot: "ready", session: { ...fakeSession, space: wrong }, spaceId: "myagents" });
+    apiMocks.spaceGetSession.mockResolvedValueOnce({ state: "authenticated", session: { ...fakeSession, space: wrong, lastActiveSpaceId: "official" } });
+    apiMocks.spaceGetOfficial.mockResolvedValueOnce({ space: wrong, membership: fakeSession.membership, goals: [] });
+    await expect(actions.switchSpace("official")).rejects.toMatchObject({ code: "SPACE_NOT_FOUND" });
+  });
+
   it("projects a listed Space immediately without waiting for Cloud bootstrap", async () => {
     const teamSpace = {
       ...fakeSession.space,

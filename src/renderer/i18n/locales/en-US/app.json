@@ -397,9 +397,9 @@
   },
   "space": {
     "route": {
-      "spaceUnavailable": "You no longer have access to the Space for this notification, or it no longer exists.",
-      "openFailed": "Could not open this Issue: {{message}}",
-      "back": "Back to Space"
+      "spaceUnavailable": "You no longer have access to this Team Space, or it no longer exists.",
+      "openFailed": "Could not open Team Space: {{message}}",
+      "back": "Back to Team Space"
     },
     "errors": {
       "toolsUnavailable": "This service is currently unavailable. Try again later.",
