@@ -221,6 +221,7 @@ const mocks = vi.hoisted(() => {
     respondExternalPermission: vi.fn(async () => true),
     restoreExternalSessionState: vi.fn(async (): Promise<{ success: boolean; error?: string }> => ({ success: true })),
     enqueueExternalTurnBoundaryOperation: vi.fn<(...args: unknown[]) => { queued: boolean; dispatch: Promise<{ queued: boolean; error?: string }> }>(() => ({ queued: true, dispatch: Promise.resolve({ queued: true }) })),
+    enqueueExternalSendForInbox: vi.fn<(...args: unknown[]) => { queued: boolean; dispatch: Promise<{ queued: boolean; error?: string }> }>(() => ({ queued: true, dispatch: Promise.resolve({ queued: true }) })),
     sendExternalMessage: vi.fn<(...args: unknown[]) => Promise<{
       queued: boolean;
       error?: string;
@@ -461,6 +462,7 @@ vi.mock('../runtimes/external-session', () => ({
   restoreExternalSessionState: mocks.restoreExternalSessionState,
   sendExternalMessage: mocks.sendExternalMessage,
   enqueueExternalTurnBoundaryOperation: mocks.enqueueExternalTurnBoundaryOperation,
+  enqueueExternalSendForInbox: mocks.enqueueExternalSendForInbox,
   getExternalExecutionTurnId: () => mocks.state.externalCurrentQueueId,
   setExternalModel: mocks.setExternalModel,
   setExternalPermissionMode: mocks.setExternalPermissionMode,
@@ -704,6 +706,8 @@ describe('session-engine selector and adapters', () => {
       {
         allowLazySessionMaterialization: true,
         sessionBirthOrigin: birthOrigin,
+        queueResponseModeOverride: 'realtime',
+        inputSource: 'inbox',
         channelDelivery: {
           user: 'none',
           assistant: 'session-binding',
@@ -713,11 +717,8 @@ describe('session-engine selector and adapters', () => {
 
     mocks.state.useExternal = true;
     await getSessionEngine().enqueueInboxMessage(request);
-    expect(mocks.enqueueExternalTurnBoundaryOperation).toHaveBeenLastCalledWith(
+    expect(mocks.enqueueExternalSendForInbox).toHaveBeenLastCalledWith(
       request.text,
-      undefined,
-      undefined,
-      undefined,
       expect.objectContaining({
         sessionId: 'delivery-session',
         workspacePath: '/workspace',
@@ -744,6 +745,8 @@ describe('session-engine selector and adapters', () => {
 
     expect(mocks.enqueueUserMessage.mock.calls.at(-1)?.[11]).toMatchObject({
       queueId: 'request-builtin',
+      queueResponseModeOverride: 'realtime',
+      inputSource: 'inbox',
       beforeDispatch: builtinGuard,
     });
     await expect(builtinResult.dispatchAcceptance).resolves.toEqual({ accepted: true });
@@ -758,14 +761,14 @@ describe('session-engine selector and adapters', () => {
       beforeDispatch: externalGuard,
     });
 
-    expect(mocks.enqueueExternalTurnBoundaryOperation.mock.calls.at(-1)?.[4]).toMatchObject({
+    expect(mocks.enqueueExternalSendForInbox.mock.calls.at(-1)?.[1]).toMatchObject({
       queueId: 'request-external',
       beforeDispatch: externalGuard,
     });
     await expect(externalResult.dispatchAcceptance).resolves.toMatchObject({ accepted: true });
 
     let completeDispatch!: (value: { queued: boolean; error?: string }) => void;
-    mocks.enqueueExternalTurnBoundaryOperation.mockReturnValueOnce({ queued: true,
+    mocks.enqueueExternalSendForInbox.mockReturnValueOnce({ queued: true,
       dispatch: new Promise(resolve => { completeDispatch = resolve; }),
     });
     const busyResult = await getSessionEngine().enqueueInboxMessage({

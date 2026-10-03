@@ -8504,6 +8504,136 @@ describe('external SessionEngine with fake runtime', () => {
     await waitFor(() => harness.runtime.sentMessages.includes('Inbox'), 'Inbox dispatch after native terminal');
     await harness.engine.waitIdle(2_000, 10);
   });
+  it.each(['dsh', 'codex'] as const)('injects %s Inbox ahead of a manual query waiting for the next turn, preserving all reply identities', async runtimeType => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'shared A result', completeDelayMs: 600 },
+      { kind: 'success', text: 'B result' },
+    ], { runtimeType, realtimeSteering: true, config: { chatQueueResponseMode: 'turn' } });
+    const delivery = vi.spyOn(await import('../inbox/watch-deliver'), 'deliverSessionWatchEvents').mockResolvedValue(undefined);
+    const sessionId = `mixed-inbox-${runtimeType}`;
+    const workspacePath = join(harness.home, 'workspace');
+    const a = await harness.engine.sendDesktopMessage({ ...desktopRequest(sessionId, workspacePath, 'A'), permissionMode: getMaxPermissionForRuntime(runtimeType) });
+    await a.dispatchAcceptance;
+    await waitFor(() => harness.runtime.sentMessages.includes('A'), 'A active');
+    const b = await harness.engine.sendDesktopMessage({ ...desktopRequest(sessionId, workspacePath, 'B'), permissionMode: getMaxPermissionForRuntime(runtimeType) });
+    expect(b.deliveryMode).toBe('turn');
+    const inputs = [];
+    for (const id of ['C', 'D']) inputs.push(await harness.engine.enqueueInboxMessage({ text: id, sessionId, workspacePath,
+      inboxMeta: { fromSessionId: `caller-${id}`, fromLabel: id, originalMessageId: id, originalSnippet: id, replyBack: true } }));
+    await Promise.all(inputs.map(input => input.dispatchAcceptance));
+    expect(harness.runtime.sentMessages).toEqual(['A']);
+    expect(harness.runtime.steeredMessages.map(input => input.message)).toEqual(['C', 'D']);
+    expect(broadcastEvents.filter(item => item.event === 'queue:started')).toEqual([]);
+    for (const input of harness.runtime.steeredMessages) harness.runtime.emitUserMessageAccepted(input.clientUserMessageId);
+    await waitFor(() => broadcastEvents.filter(item => item.event === 'queue:started').length === 2, 'Inbox consumption');
+    expect(harness.runtime.sentMessages).toEqual(['A']);
+    await b.dispatchAcceptance;
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.runtime.sentMessages).toEqual(['A', 'B']);
+    await vi.waitFor(() => expect(delivery).toHaveBeenCalledWith(sessionId,
+      expect.objectContaining({ text: expect.stringContaining('shared A result'), requestEventIds: ['C', 'D'] }),
+      expect.arrayContaining([expect.objectContaining({ originalMessageId: 'C' }), expect.objectContaining({ originalMessageId: 'D' })])));
+    expect(delivery.mock.calls.find(call => call[1].text.includes('B result'))?.[2]).toEqual([]);
+  });
+
+  it.each(['dsh', 'codex'] as const)('keeps %s Inbox realtime when manual query mode is realtime', async runtimeType => {
+    const harness = await createHarness([{ kind: 'success', text: 'A result', completeDelayMs: 350 }],
+      { runtimeType, realtimeSteering: true, config: { chatQueueResponseMode: 'realtime' } });
+    const sessionId = `realtime-inbox-${runtimeType}`;
+    const workspacePath = join(harness.home, 'workspace');
+    const a = await harness.engine.sendDesktopMessage({ ...desktopRequest(sessionId, workspacePath, 'A'), permissionMode: getMaxPermissionForRuntime(runtimeType) });
+    await a.dispatchAcceptance;
+    await waitFor(() => harness.runtime.sentMessages.includes('A'), 'A active');
+    const b = await harness.engine.sendDesktopMessage({ ...desktopRequest(sessionId, workspacePath, 'B'), permissionMode: getMaxPermissionForRuntime(runtimeType) });
+    await b.dispatchAcceptance;
+    const c = await harness.engine.enqueueInboxMessage({ text: 'C', sessionId, workspacePath });
+    await c.dispatchAcceptance;
+    expect(harness.runtime.steeredMessages.map(input => input.message)).toEqual(['B', 'C']);
+    for (const input of harness.runtime.steeredMessages) harness.runtime.emitUserMessageAccepted(input.clientUserMessageId);
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.runtime.sentMessages).toEqual(['A']);
+  });
+
+  it('demotes a definitely rejected Inbox steer without replacing or replaying its admission', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'A result', completeDelayMs: 250 },
+      { kind: 'success', text: 'C result' },
+    ], { realtimeSteering: true, rejectSteerUnavailable: true });
+    const sessionId = 'inbox-definite-reject'; const workspacePath = join(harness.home, 'workspace');
+    const a = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'A'));
+    await a.dispatchAcceptance;
+    const c = await harness.engine.enqueueInboxMessage({ text: 'C', queueId: 'inbox-C', sessionId, workspacePath });
+    await c.dispatchAcceptance;
+    await harness.engine.waitIdle(2_000, 10);
+    expect(harness.runtime.steeredMessages.map(input => input.message)).toEqual(['C']);
+    expect(harness.runtime.sentMessages).toEqual(['A', 'C']);
+    expect(broadcastEvents.filter(item => item.event === 'queue:started' && (item.data as { queueId: string }).queueId === 'inbox-C')).toHaveLength(1);
+  });
+
+  it('demotes a definitely rejected DSH Inbox after clearing its pre-dispatch journal', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'A result', completeDelayMs: 300 },
+      { kind: 'success', text: 'C result' },
+    ], { runtimeType: 'dsh', realtimeSteering: true });
+    const sessionId = 'inbox-dsh-definite-reject'; const workspacePath = join(harness.home, 'workspace');
+    const a = await harness.engine.sendDesktopMessage({ ...desktopRequest(sessionId, workspacePath, 'A'), permissionMode: getMaxPermissionForRuntime('dsh') });
+    await a.dispatchAcceptance;
+    const persisted = vi.spyOn(harness.sessionStore, 'beginDshInput');
+    harness.runtime.steerMessage = async (_process, _message, _images, options) => {
+      await options?.beforeDispatch?.({ clientOperationId: options.clientOperationId!, inputFingerprint: 'a'.repeat(64) });
+      expect(harness.sessionStore.getSessionMetadata(sessionId)?.pendingDshInputs).toHaveLength(1);
+      throw new RuntimeSteerUnavailableError('turn_not_active');
+    };
+    const c = await harness.engine.enqueueInboxMessage({ text: 'C', queueId: 'inbox-C', sessionId, workspacePath });
+    await c.dispatchAcceptance;
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(persisted).toHaveBeenCalledOnce();
+    expect(harness.sessionStore.getSessionMetadata(sessionId)?.pendingDshInputs ?? []).toEqual([]);
+    expect(harness.runtime.sentMessages).toEqual(['A', 'C']);
+    expect(broadcastEvents.filter(item => item.event === 'queue:started' && (item.data as { queueId: string }).queueId === 'inbox-C')).toHaveLength(1);
+  });
+
+  it.each(['stop', 'late-error'] as const)('retains native-consumed Inbox authority when RPC is pending: %s', async outcome => {
+    const harness = await createHarness([{ kind: 'success', text: 'A result', completeDelayMs: 500 }],
+      { realtimeSteering: true, deferSteerSuccess: true, rejectSteer: outcome === 'late-error' });
+    const reply = vi.spyOn(await import('../inbox/reply-deliver'), 'deliverInboxReply').mockResolvedValue(true);
+    const sessionId = `inbox-consume-before-rpc-${outcome}`; const workspacePath = join(harness.home, 'workspace');
+    const a = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'A'));
+    await a.dispatchAcceptance;
+    const c = await harness.engine.enqueueInboxMessage({ text: 'C', sessionId, workspacePath,
+      inboxMeta: { fromSessionId: 'caller', fromLabel: 'caller', originalMessageId: 'C', originalSnippet: 'C', replyBack: true } });
+    await waitFor(() => harness.runtime.steeredMessages.length === 1, 'steer pending');
+    harness.runtime.emitUserMessageAccepted(harness.runtime.steeredMessages[0].clientUserMessageId);
+    await c.dispatchAcceptance;
+    if (outcome === 'stop') await harness.engine.stopTurn();
+    harness.runtime.releaseSteerSuccess();
+    await harness.engine.waitIdle(2_000, 10);
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+    expect(reply.mock.calls[0][2].error?.code).not.toBe('input_not_consumed');
+    expect(broadcastEvents.filter(item => item.event === 'queue:started')).toHaveLength(1);
+    expect(broadcastEvents.filter(item => item.event === 'queue:cancelled')).toEqual([]);
+    const users = (await harness.sessionStore.getSessionData(sessionId))?.messages.filter(message => message.role === 'user');
+    expect(users?.map(message => message.content)).toContain('C');
+  });
+
+  it('never treats an ack-only Inbox steer as consumed and returns an independent failure', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'A result', completeDelayMs: 250 }], { realtimeSteering: true });
+    const reply = vi.spyOn(await import('../inbox/reply-deliver'), 'deliverInboxReply').mockResolvedValue(true);
+    const sessionId = 'inbox-ack-only'; const workspacePath = join(harness.home, 'workspace');
+    const a = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'A'));
+    await a.dispatchAcceptance;
+    const c = await harness.engine.enqueueInboxMessage({ text: 'C', sessionId, workspacePath,
+      inboxMeta: { fromSessionId: 'caller', fromLabel: 'caller', originalMessageId: 'C', originalSnippet: 'C', replyBack: true } });
+    await c.dispatchAcceptance;
+    await harness.engine.waitIdle(2_000, 10);
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledWith(sessionId, expect.objectContaining({ originalMessageId: 'C' }),
+      expect.objectContaining({ error: expect.objectContaining({ code: 'input_not_consumed' }) })));
+    expect(harness.runtime.sentMessages).toEqual(['A']);
+    expect(broadcastEvents.filter(item => item.event === 'queue:started')).toEqual([]);
+    harness.runtime.emitUserMessageAccepted(harness.runtime.steeredMessages[0].clientUserMessageId);
+    expect(broadcastEvents.filter(item => item.event === 'queue:started')).toEqual([]);
+  });
+
   it('starts consumption of an idle external Inbox without awaiting dispatch or introducing another queue', async () => {
     const harness = await createHarness([{ kind: 'success', text: 'warm' }, { kind: 'success', text: 'Inbox answer' }]);
     const sessionId = 'idle-inbox'; const workspacePath = join(harness.home, 'workspace');

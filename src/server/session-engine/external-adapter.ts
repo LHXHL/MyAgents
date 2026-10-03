@@ -13,6 +13,7 @@ import {
   retryExternalMcpServer,
   awaitExternalSessionStarting,
   enqueueExternalSendForDesktop,
+  enqueueExternalSendForInbox,
   enqueueExternalSendForIm,
   forceExecuteExternalQueueItem,
   getActiveRuntimeSource,
@@ -63,7 +64,6 @@ import {
   retryDshConversation,
   forkExternalConversation,
   sendExternalMessage,
-  enqueueExternalTurnBoundaryOperation,
   setExternalModel,
   setExternalPermissionMode,
   setExternalReasoningEffort,
@@ -582,11 +582,8 @@ export function createExternalSessionEngine(): SessionEngine {
     async enqueueInboxMessage(request) {
       // The operation queue owns admission. Runtime dispatch can wait for the
       // preceding turn and must not hold the caller's Inbox HTTP/lifecycle lease.
-      const result = enqueueExternalTurnBoundaryOperation(
+      const result = enqueueExternalSendForInbox(
         request.text,
-        undefined,
-        undefined,
-        undefined,
         {
           sessionId: request.sessionId,
           workspacePath: request.workspacePath,

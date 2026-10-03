@@ -204,6 +204,75 @@ async function createNativeHostFixture(
 describe.runIf(nativeSmokeEnabled)(
   "DSH RuntimeProcessHost native smoke",
   () => {
+    it('consumes realtime followUp at the next model boundary inside the native root turn', async () => {
+      const fixture = await createNativeHostFixture('realtime-inbox');
+      const events: Record<string, unknown>[] = [];
+      const modelInputs: string[] = [];
+      let releaseFirst!: () => void;
+      const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+      const server = createServer(async (request, response) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        modelInputs.push(Buffer.concat(chunks).toString());
+        const first = modelInputs.length === 1;
+        if (first) await firstGate;
+        const emit = (name: string, data: unknown) => response.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        emit('message_start', { type: 'message_start', message: { id: `realtime-${modelInputs.length}`, type: 'message', role: 'assistant', model: 'claude-sonnet-4-6', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } } });
+        emit('content_block_start', { type: 'content_block_start', index: 0, content_block: first
+          ? { type: 'tool_use', id: 'read-fixture', name: 'read', input: {} } : { type: 'text', text: '' } });
+        emit('content_block_delta', { type: 'content_block_delta', index: 0, delta: first
+          ? { type: 'input_json_delta', partial_json: JSON.stringify({ file_path: 'note.txt' }) }
+          : { type: 'text_delta', text: 'Same native turn finished.' } });
+        emit('content_block_stop', { type: 'content_block_stop', index: 0 });
+        emit('message_delta', { type: 'message_delta', delta: { stop_reason: first ? 'tool_use' : 'end_turn', stop_sequence: null }, usage: { output_tokens: 10 } });
+        emit('message_stop', { type: 'message_stop' });
+        response.end();
+      });
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Fixture port missing');
+      const host = fixture.createHost({ ...fixture.hostHandlers,
+        'host/credential/resolve': params => params.purpose === 'availability'
+          ? { kind: 'availability', available: true, authoritativeCredentialRevision: params.profileRevision }
+          : { kind: 'material', authoritativeCredentialRevision: params.profileRevision, material: { apiKey: 'synthetic-realtime-key' } },
+        'host/hook/execute': () => ({ state: 'continue' }),
+      }, { 'runtime/event': params => { events.push(params); }, 'host/interaction/cancel': () => undefined });
+      try {
+        await writeFile(join(fixture.workspace, 'note.txt'), 'fixture');
+        await host.start();
+        const catalog = await host.request('extension/catalog', {});
+        const provider = structuredClone(PRESET_PROVIDERS.find(({ id }) => id === 'anthropic-api'))!;
+        provider.id = 'native-realtime-fixture'; provider.config.baseUrl = `http://127.0.0.1:${address.port}`;
+        const profile = compileDshModelExecutionProfile({ provider, modelId: 'claude-sonnet-4-6' });
+        await host.request('session/create', { clientOperationId: 'realtime-bind', persistenceRef: 'realtime-session', provider: profile,
+          configRevision: 'realtime-config', extensionDigest: catalog.digest, systemPrompt: '', permissionMode: 'full-autonomous', interactionScenario: 'host-interaction-v1' });
+        const digest = createDshInitializeParams({ productSessionId: 'native-realtime-inbox-product-session', productVersion: '0.4.25',
+          runtimeHome: fixture.runtimeHome, workspace: { path: fixture.workspace, identity: fixture.executionEnvironment.workspace.identity },
+          executionEnvironment: fixture.executionEnvironment, interaction: 'deterministic-headless' }).executionEnvironment.digest;
+        await host.request('turn/start', { clientOperationId: 'root-A', clientUserMessageId: 'A', input: { parts: [{ kind: 'text', text: 'Read note.txt' }] },
+          configRevision: 'realtime-config', extensionDigest: catalog.digest, executionEnvironmentRevision: fixture.executionEnvironment.revision,
+          executionEnvironmentDigest: digest, limits: { maxTurns: 3 }, origin: { kind: 'headless', scenario: 'realtime-inbox' } });
+        await expect.poll(() => modelInputs.length, { timeout: 20_000 }).toBe(1);
+        await host.request('turn/followUp', { clientOperationId: 'root-A', messageId: 'Inbox-C',
+          input: { parts: [{ kind: 'text', text: 'INBOX_REALTIME_MARKER' }] }, delivery: 'realtime' });
+        expect(modelInputs[0]).not.toContain('INBOX_REALTIME_MARKER');
+        releaseFirst();
+        await expect.poll(async () => (await host.request('turn/get', { clientOperationId: 'root-A' })).terminal?.kind, { timeout: 20_000 }).toBe('succeeded');
+        expect(modelInputs).toHaveLength(2);
+        expect(modelInputs[1]).toContain('INBOX_REALTIME_MARKER');
+        const rootTurn = (await host.request('turn/get', { clientOperationId: 'root-A' })).admission?.turnId;
+        expect(events).toContainEqual(expect.objectContaining({ turnId: rootTurn,
+          event: expect.objectContaining({ kind: 'queued_message', messageId: 'Inbox-C', state: 'delivered' }) }));
+      } finally {
+        releaseFirst();
+        await host.stop();
+        server.closeAllConnections();
+        await new Promise<void>(resolve => server.close(() => resolve()));
+        await rm(fixture.temporaryRoot, { recursive: true, force: true });
+      }
+    }, 60_000);
+
     it.runIf(process.platform === 'darwin')('routes packed HTTPS model requests by current Provider policy', async () => {
       const certificateRoot = await mkdtemp(join(tmpdir(), 'myagents-dsh-tls-'));
       const certificate = join(certificateRoot, 'certificate.pem');

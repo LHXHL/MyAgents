@@ -5,7 +5,7 @@ import { imRequestRegistry } from '../../utils/im-request-registry';
 import type { ExternalPendingInteractiveRequest } from './types';
 
 let activeRequestId: string | null = null;
-let currentTurnInboxMeta: InboxTurnMeta | null = null;
+const currentTurnInboxMetas: InboxTurnMeta[] = [];
 
 const currentTurnAttachmentHints: string[] = [];
 const pendingPermissionSuggestions = new Map<string, unknown[] | undefined>();
@@ -14,7 +14,7 @@ const pendingExternalInteractiveRequests = new Map<string, ExternalPendingIntera
 
 export function resetExternalInteractiveState(): void {
   activeRequestId = null;
-  currentTurnInboxMeta = null;
+  currentTurnInboxMetas.length = 0;
   currentTurnAttachmentHints.length = 0;
   pendingPermissionSuggestions.clear();
   pendingExternalAskUserQuestions.clear();
@@ -67,15 +67,22 @@ export function finalizeExternalQueuedImRequest(
 }
 
 export function setExternalTurnInboxMeta(meta: InboxTurnMeta | null): void {
-  currentTurnInboxMeta = meta;
+  currentTurnInboxMetas.length = 0;
+  appendExternalTurnInboxMeta(meta);
+}
+
+/** Join only after the native input consumption receipt, never at HTTP admission. */
+export function appendExternalTurnInboxMeta(meta: InboxTurnMeta | null | undefined): void {
+  if (meta && !currentTurnInboxMetas.some(item => item.originalMessageId === meta.originalMessageId && item.fromSessionId === meta.fromSessionId))
+    currentTurnInboxMetas.push(meta);
 }
 
 export function getExternalTurnInboxMeta(): InboxTurnMeta | null {
-  return currentTurnInboxMeta;
+  return currentTurnInboxMetas[0] ?? null;
 }
 
 export function clearExternalTurnInboxMeta(): void {
-  currentTurnInboxMeta = null;
+  currentTurnInboxMetas.length = 0;
 }
 
 export function resetExternalTurnAttachmentHints(): void {
@@ -91,13 +98,12 @@ export function getExternalTurnAttachmentHintsSnapshot(): string[] {
 }
 
 export function snapshotExternalTurnReplyState(): {
-  inboxMeta: InboxTurnMeta | null;
+  inboxMetas: InboxTurnMeta[];
   attachmentHints: string[];
 } {
-  const inboxMeta = currentTurnInboxMeta;
-  currentTurnInboxMeta = null;
+  const inboxMetas = currentTurnInboxMetas.splice(0);
   const attachmentHints = currentTurnAttachmentHints.splice(0);
-  return { inboxMeta, attachmentHints };
+  return { inboxMetas, attachmentHints };
 }
 
 export function deliverExternalWatchError(input: {
@@ -109,9 +115,8 @@ export function deliverExternalWatchError(input: {
 }): void {
   if (!input.sessionId) return;
   const turnId = input.turnId ?? getExternalExecutionTurnId() ?? undefined;
-  const inboxMeta = currentTurnInboxMeta;
-  currentTurnInboxMeta = null;
-  const requestEventIds = inboxMeta ? [inboxMeta.originalMessageId] : undefined;
+  const inboxMetas = currentTurnInboxMetas.splice(0);
+  const requestEventIds = inboxMetas.map(meta => meta.originalMessageId);
   const attachmentHintSnapshot = getExternalTurnAttachmentHintsSnapshot();
   const attachmentHints = attachmentHintSnapshot.length > 0
     ? attachmentHintSnapshot
@@ -123,7 +128,7 @@ export function deliverExternalWatchError(input: {
       terminalStatus: input.errorCode === 'session_aborted' ? 'stopped' : 'error',
       error: { code: input.errorCode, message: input.errorMessage },
       attachmentHints,
-    }, inboxMeta ?? undefined),
+    }, inboxMetas),
   ).catch((err) =>
     console.error('[session-watch] external failure watch push failed:', err),
   );
@@ -141,22 +146,17 @@ export function clearExternalInboxMetaOnRejection(input: {
   errorCode: string;
   errorMessage: string;
 }): void {
-  const meta = currentTurnInboxMeta;
-  if (!meta) return;
-  currentTurnInboxMeta = null;
+  const metas = currentTurnInboxMetas.splice(0);
   resetExternalTurnAttachmentHints();
-  if (!meta.replyBack) return;
-  const sid = input.sessionId || meta.fromSessionId; // best-effort
-  void import('../../inbox/reply-deliver').then(({ deliverInboxReply }) =>
-    deliverInboxReply(sid, meta, {
-      text: '',
-      turnId: input.turnId,
+  if (metas.length === 0 || !input.sessionId) return;
+  void import('../../inbox/watch-deliver').then(({ deliverSessionWatchEvents }) =>
+    deliverSessionWatchEvents(input.sessionId!, {
+      text: '', turnId: input.turnId,
+      requestEventIds: metas.map(meta => meta.originalMessageId),
       terminalStatus: input.errorCode === 'session_aborted' ? 'stopped' : 'error',
       error: { code: input.errorCode, message: input.errorMessage },
-    }),
-  ).catch((err) =>
-    console.error('[inbox] external rejection reply pushback failed:', err),
-  );
+    }, metas),
+  ).catch(err => console.error('[inbox] external rejection reply pushback failed:', err));
 }
 
 export function setExternalPermissionSuggestions(requestId: string, suggestions: unknown[] | undefined): void {

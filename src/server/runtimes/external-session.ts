@@ -545,6 +545,7 @@ import {
   setExternalInteractiveRequest,
   setExternalPermissionSuggestions,
   setExternalTurnInboxMeta,
+  appendExternalTurnInboxMeta,
   snapshotExternalTurnReplyState,
 } from './external-session/interactive';
 import type {
@@ -903,9 +904,9 @@ function scheduleExternalQueueDrainAfterTurnBoundary(): void {
 }
 
 function scheduleExternalQueueDrainAfterDirectAdmission(): void {
-  if (hasExternalQueuedOperations() && getExternalLifecycleState() === 'idle') {
-    scheduleExternalQueueDrainAfterTurnBoundary();
-  }
+  if (!hasExternalQueuedOperations()) return;
+  if (getExternalLifecycleState() === 'idle') scheduleExternalQueueDrainAfterTurnBoundary();
+  else setTimeout(drainExternalQueueAfterTurn, 0);
 }
 
 interface PendingRealtimeSteeredUserMessage {
@@ -918,6 +919,7 @@ interface PendingRealtimeSteeredUserMessage {
   userChannelProjection: ExternalUserChannelProjection;
   admission?: Promise<void>;
   steerAcknowledged: boolean;
+  executionTurnId?: string;
 }
 
 const pendingRealtimeSteeredUserMessages: PendingRealtimeSteeredUserMessage[] =
@@ -1070,6 +1072,15 @@ function finalizeRejectedExternalOperation(
   terminal: 'cancelled' | 'failed',
   reason: string,
 ): void {
+  const inboxMeta = item.context.inboxMeta;
+  if (inboxMeta?.replyBack) {
+    item.context.inboxMeta = undefined;
+    void import('../inbox/reply-deliver').then(({ deliverInboxReply }) =>
+      deliverInboxReply(item.context.sessionId, inboxMeta, {
+        text: '', error: { code: terminal === 'cancelled' ? 'session_aborted' : 'input_not_consumed', message: reason },
+      }),
+    ).catch(error => console.error('[inbox] rejected input reply failed:', error));
+  }
   if (item.context.requestId) {
     finalizeExternalQueuedImRequest(
       item.context.requestId,
@@ -1128,6 +1139,7 @@ function clearPendingRealtimeSteeredUserMessagesWithCancellation(): void {
         continue;
       markExternalUserMessageRetracted(pending.operation);
       broadcast('queue:cancelled', { queueId: pending.queueId });
+      finalizeRejectedExternalOperation(pending.operation, 'cancelled', 'Session stopped before input consumption was confirmed');
     }
   }
 }
@@ -1176,8 +1188,22 @@ function takePendingRealtimeSteeredUserMessage(
 function surfaceRealtimeSteeredUserMessage(
   entry: PendingRealtimeSteeredUserMessage,
 ): Promise<boolean> {
+  if (entry.operation.inputSource === 'inbox' && (isExternalTurnCompleted()
+    || entry.executionTurnId !== getExternalExecutionTurnId())) {
+    // A receipt arriving after its turn retired cannot lend that request to a successor.
+    markExternalUserMessageRetracted(entry.operation);
+    broadcast('queue:cancelled', { queueId: entry.queueId });
+    finalizeRejectedExternalOperation(entry.operation, 'failed', 'Input consumption was confirmed after its turn retired');
+    return Promise.resolve(false);
+  }
   const userMsg = entry.operation.userProjection.message;
   setExternalTurnActivityFacts(entry.activityFacts);
+  appendExternalTurnInboxMeta(entry.operation.context.inboxMeta);
+  entry.operation.context.inboxMeta = undefined;
+  // Native consumption transfers reply/projection authority from queue to turn,
+  // even if the steer RPC is still waiting for its transport response.
+  releaseExternalDrainReservation(entry.operation);
+  settleExternalMessageOperation(entry.operation, { queued: true });
   const admissionActivityAt = shouldRecordAdmissionActivity(entry.activityFacts)
     ? new Date().toISOString()
     : undefined;
@@ -1251,12 +1277,15 @@ function surfaceAcceptedRealtimeSteeredUserMessage(
 function finalizeUnconfirmedRealtimeSteeredUserMessage(
   entry: PendingRealtimeSteeredUserMessage,
 ): Promise<boolean> {
-  if (entry.operation.context.asyncQuestionReply) {
+  if (entry.operation.context.asyncQuestionReply || entry.operation.inputSource === 'inbox') {
     // A steer RPC ack says transport succeeded, not that this answer was consumed.
     markExternalUserMessageRetracted(entry.operation);
     broadcast('queue:cancelled', { queueId: entry.queueId });
+    finalizeRejectedExternalOperation(entry.operation, 'failed', 'Runtime did not confirm input consumption');
     broadcast('chat:agent-error', {
-      message: 'The runtime did not confirm the answer. Please try again.',
+      message: entry.operation.inputSource === 'inbox'
+        ? 'The runtime did not confirm consumption of the Inbox message.'
+        : 'The runtime did not confirm the answer. Please try again.',
     });
     return Promise.resolve(false);
   } else {
@@ -6279,7 +6308,7 @@ type ExternalRealtimeSteerDispatch = {
   deferredDispatchAcceptance?: Promise<ExternalSendResult>;
 };
 
-async function steerExternalMessageForDesktop(input: {
+async function steerExternalMessage(input: {
   queueId: string;
   text: string;
   images?: ImagePayload[];
@@ -6368,6 +6397,7 @@ async function steerExternalMessageForDesktop(input: {
     ),
     admission: admission.promise,
     steerAcknowledged: false,
+    executionTurnId: getExternalExecutionTurnId() ?? undefined,
   });
   try {
     await active.runtime.steerMessage(
@@ -6423,7 +6453,17 @@ async function steerExternalMessageForDesktop(input: {
     return { result: { queued: true } };
   } catch (err) {
     admission.reject(err);
-    if (!dshIntentPersisted && isRuntimeSteerUnavailableError(err)) {
+    if (input.operation.userProjection.inTranscript) return { result: { queued: true } };
+    if (isRuntimeSteerUnavailableError(err)) {
+      if (dshIntentPersisted) {
+        const anchor = userMsg.runtimeOperationAnchor!;
+        const settled = await settleDshInput({ sessionId: input.context.sessionId,
+          clientOperationId: anchor.clientOperationId, clientUserMessageId: userMsg.id, state: 'cancelled' });
+        if (!settled.success) {
+          console.warn('[external-session] definite DSH rejection awaits intent settlement:', settled.error);
+          return { result: { queued: true } };
+        }
+      }
       forgetPendingRealtimeSteeredUserMessage(userMsg.id);
       return deferRealtimeOperationToTurnBoundary(input);
     }
@@ -6454,6 +6494,7 @@ function deferRealtimeOperationToTurnBoundary(input: {
   operation: ExternalMessageOperation;
   generation: number;
 }): ExternalRealtimeSteerDispatch {
+  input.operation.deliveryMode = 'turn';
   const queued = enqueueExistingExternalMessageOperation(
     input.operation,
     input.generation,
@@ -6504,6 +6545,18 @@ export function enqueueExternalTurnBoundaryOperation(
   permissionMode: string | undefined,
   model: string | undefined,
   context: ExternalSendContext,
+): ReturnType<typeof enqueueExternalQueuedMessage> {
+  return enqueueExternalQueuedMessage(text, images, permissionMode, model, context);
+}
+
+function enqueueExternalQueuedMessage(
+  text: string,
+  images: ImagePayload[] | undefined,
+  permissionMode: string | undefined,
+  model: string | undefined,
+  context: ExternalSendContext,
+  deliveryMode: 'realtime' | 'turn' = 'turn',
+  inputSource?: 'desktop' | 'inbox',
 ): {
   queued: boolean;
   queueId?: string;
@@ -6557,6 +6610,8 @@ export function enqueueExternalTurnBoundaryOperation(
     runtimeConfig,
     userMessage,
     surfaceMode: 'queue-started',
+    deliveryMode,
+    inputSource,
     queueId: context.queueId,
   });
   if (!queued.queued) {
@@ -6572,7 +6627,7 @@ export function enqueueExternalTurnBoundaryOperation(
     agentMentions: context.desktopQuery?.agentMentions, primaryContext: desktopContextOf(context.desktopQuery?.primaryContext),
     asyncQuestionReply: context.asyncQuestionReply,
     isInFlight: false,
-    deliveryMode: 'turn',
+    deliveryMode,
     canCancel: true,
     canForceExecute: true,
   });
@@ -6714,6 +6769,13 @@ export async function validateExternalAsyncQuestionReply(
   }
 }
 
+/** Inbox timing is independent of desktop settings; the original queue owns admission. */
+export function enqueueExternalSendForInbox(
+  text: string, context: ExternalSendContext,
+): ReturnType<typeof enqueueExternalQueuedMessage> {
+  return enqueueExternalQueuedMessage(text, undefined, undefined, undefined, context, 'realtime', 'inbox');
+}
+
 export function enqueueExternalSendForDesktop(
   text: string,
   images: ImagePayload[] | undefined,
@@ -6782,7 +6844,7 @@ export function enqueueExternalSendForDesktop(
       canSteerActiveTurn,
     })
   ) {
-    const queued = enqueueExternalTurnBoundaryOperation(
+    const queued = enqueueExternalQueuedMessage(
       text,
       images,
       permissionMode,
@@ -6820,6 +6882,8 @@ export function enqueueExternalSendForDesktop(
       runtimeConfig,
       userMessage: createExternalUserMessage(text, images, context.sessionId),
       surfaceMode: 'queue-started',
+      deliveryMode: 'realtime',
+      inputSource: 'desktop',
       queueId,
     });
     broadcast('queue:added', {
@@ -6836,7 +6900,7 @@ export function enqueueExternalSendForDesktop(
     const dispatch = withExternalMessageOperation(operation, () =>
       chainExternalSend(
       () =>
-        steerExternalMessageForDesktop({
+        steerExternalMessage({
           queueId,
           text,
           images,
@@ -7032,9 +7096,9 @@ export function enqueueExternalSendForIm(
  */
 function drainExternalQueueAfterTurn(): void {
   if (
-    externalSessionMutationInFlight ||
-    hasPendingDshNativeWork() ||
-    !canDrainExternalOperations(getExternalLifecycleState())
+    externalSessionMutationInFlight || hasPendingDshMutation() ||
+    (hasPendingDshNativeWork() && getExternalActiveSteerPair() === null) ||
+    !canDrainExternalOperations(getExternalLifecycleState(), getExternalActiveSteerPair() !== null)
   )
     return;
   void drainExternalOperationsAfterTurn();
@@ -7042,18 +7106,19 @@ function drainExternalQueueAfterTurn(): void {
 
 async function drainExternalOperationsAfterTurn(): Promise<void> {
   if (
-    externalSessionMutationInFlight ||
-    hasPendingDshNativeWork() ||
-    !canDrainExternalOperations(getExternalLifecycleState())
+    externalSessionMutationInFlight || hasPendingDshMutation() ||
+    (hasPendingDshNativeWork() && getExternalActiveSteerPair() === null) ||
+    !canDrainExternalOperations(getExternalLifecycleState(), getExternalActiveSteerPair() !== null)
   )
     return;
+  const realtimeOnly = getExternalLifecycleState() === 'running';
   const drainGeneration = getExternalOperationGeneration();
   setExternalOperationDrainInFlight(true);
   let reservedItem:
     | ReturnType<typeof reserveExternalOperationForDrain>
     | undefined;
   try {
-    const leadingConfig = consumeLeadingExternalConfigOps();
+    const leadingConfig = realtimeOnly ? null : consumeLeadingExternalConfigOps();
     if (leadingConfig) {
       const applyResult = await applyExternalRuntimeConfigAtBoundary(
         leadingConfig.patch,
@@ -7072,7 +7137,7 @@ async function drainExternalOperationsAfterTurn(): Promise<void> {
       }
     }
 
-    const item = reserveExternalOperationForDrain();
+    const item = reserveExternalOperationForDrain(realtimeOnly);
     reservedItem = item;
     if (!item) return;
     if (!isCurrentExternalOperationGeneration(drainGeneration)) {
@@ -7083,6 +7148,28 @@ async function drainExternalOperationsAfterTurn(): Promise<void> {
       reservedItem = undefined;
       unshiftExternalOperation(item);
       setTimeout(drainExternalQueueAfterTurn, 0);
+      return;
+    }
+
+    if (realtimeOnly) {
+      try {
+        const dispatched = await withExternalMessageOperation(item, () => chainExternalSend(
+          () => steerExternalMessage({ queueId: item.queueId, text: item.text, images: item.images,
+            context: item.context, operation: item, generation: drainGeneration }), drainGeneration));
+        // A definite native rejection requeues the same intent; its dispatch
+        // promise remains pending until that later boundary actually dispatches.
+        if (!dispatched.deferredDispatchAcceptance) {
+          settleExternalMessageOperation(item, dispatched.result);
+          if (!dispatched.result.queued) finalizeRejectedExternalOperation(item, 'failed', dispatched.result.error ?? 'Inbox dispatch rejected');
+        }
+      } catch (error) {
+        const result = { queued: false, error: error instanceof Error ? error.message : String(error) };
+        settleExternalMessageOperation(item, result);
+        if (isCurrentExternalOperationGeneration(drainGeneration)) {
+          broadcast('queue:cancelled', { queueId: item.queueId });
+          finalizeRejectedExternalOperation(item, 'failed', result.error);
+        }
+      }
       return;
     }
 
@@ -7151,8 +7238,9 @@ async function drainExternalOperationsAfterTurn(): Promise<void> {
     reservedItem = undefined;
   } finally {
     releaseExternalDrainReservation(reservedItem);
-    if (isExternalOperationDrainInFlight()) {
+    if (isCurrentExternalOperationGeneration(drainGeneration)) {
       setExternalOperationDrainInFlight(false);
+      scheduleExternalQueueDrainAfterDirectAdmission();
     }
   }
 }
@@ -9415,7 +9503,7 @@ async function persistTurnResult(
   // before this turn's finally reads the meta — replying to the wrong caller
   // or losing the reply entirely (cross-review CC BLOCKER #1 + Codex Critical
   // #1 / Scenario 1+11).
-  const { inboxMeta: turnInboxMeta, attachmentHints: turnAttachmentHints } =
+  const { inboxMetas: turnInboxMetas, attachmentHints: turnAttachmentHints } =
     snapshotExternalTurnReplyState();
   const turnSucceededAtTerminal = didExternalLastTurnSucceed();
   const turnActivityFacts = getExternalTurnActivityFacts();
@@ -9467,7 +9555,7 @@ async function persistTurnResult(
         lifecycleScenarioForOrigin.type === 'desktop'
           ? lifecycleScenarioForOrigin.surface
           : undefined,
-      inboxMeta: turnInboxMeta,
+      inboxMeta: turnInboxMetas[0],
     });
   const persistTraceStarted = nowMs();
   let persistFailed = false;
@@ -9764,11 +9852,11 @@ async function persistTurnResult(
           deliverSessionWatchEvents(lifecycleSessionId, {
             text: watchText,
             turnId: resultTurnId, terminalStatus: finalizedTurnSucceeded ? 'complete' : 'error',
-            requestEventIds: turnInboxMeta ? [turnInboxMeta.originalMessageId] : undefined,
+            requestEventIds: turnInboxMetas.map(meta => meta.originalMessageId),
             error: watchError,
             attachmentHints:
               turnAttachmentHints.length > 0 ? turnAttachmentHints : undefined,
-          }, turnInboxMeta ?? undefined),
+          }, turnInboxMetas),
         )
         .catch((err) =>
           console.error(
@@ -11126,6 +11214,7 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
       if (entry) {
         markExternalUserMessageRetracted(entry.operation);
         broadcast('queue:cancelled', { queueId: entry.queueId });
+        finalizeRejectedExternalOperation(entry.operation, 'cancelled', 'Runtime cancelled queued input before consumption');
       }
       break;
     }

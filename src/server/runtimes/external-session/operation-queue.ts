@@ -96,8 +96,9 @@ export function shouldQueueExternalOperation(
   }) || externalOperationDrainInFlight;
 }
 
-export function canDrainExternalOperations(state: ExternalSessionState): boolean {
-  return canDrainExternalQueue(state, externalOperationQueue.length)
+export function canDrainExternalOperations(state: ExternalSessionState, canSteerActiveTurn = false): boolean {
+  return (canDrainExternalQueue(state, externalOperationQueue.length)
+    || (state === 'running' && canSteerActiveTurn && externalOperationQueue.some(item => item.kind === 'message' && item.deliveryMode === 'realtime' && !item.forcePriority)))
     && !externalOperationDrainInFlight
     && externalSendTail === null;
 }
@@ -117,6 +118,8 @@ export function createExternalMessageOperation(input: {
   runtimeConfig: ExternalRuntimeConfigSnapshot;
   userMessage: SessionMessage;
   surfaceMode?: 'chat-replay' | 'queue-started';
+  deliveryMode?: 'realtime' | 'turn';
+  inputSource?: 'desktop' | 'inbox';
   queueId?: string;
 }): ExternalMessageOperation {
   const queueId = input.queueId ?? input.context.queueId ?? nextExternalQueueId();
@@ -126,6 +129,8 @@ export function createExternalMessageOperation(input: {
   });
   return {
     kind: 'message',
+    deliveryMode: input.deliveryMode ?? 'turn',
+    inputSource: input.inputSource,
     dispatchAcceptance,
     settleDispatchAcceptance,
     admissionOrder: externalAdmissionSeq++,
@@ -208,6 +213,8 @@ export function enqueueExternalMessageOperation(input: {
   runtimeConfig: ExternalRuntimeConfigSnapshot;
   userMessage: SessionMessage;
   surfaceMode?: 'chat-replay' | 'queue-started';
+  deliveryMode?: 'realtime' | 'turn';
+  inputSource?: 'desktop' | 'inbox';
   queueId?: string;
 }): {
   queued: true;
@@ -344,8 +351,11 @@ export function shiftExternalOperation(): ExternalTurnOperation | undefined {
   return externalOperationQueue.shift();
 }
 
-export function reserveExternalOperationForDrain(): ExternalTurnOperation | undefined {
-  externalReservedDrainOperation = externalOperationQueue.shift() ?? null;
+export function reserveExternalOperationForDrain(realtimeOnly = false): ExternalTurnOperation | undefined {
+  const index = realtimeOnly
+    ? externalOperationQueue.findIndex(item => item.kind === 'message' && item.deliveryMode === 'realtime' && !item.forcePriority)
+    : 0;
+  externalReservedDrainOperation = index < 0 ? null : externalOperationQueue.splice(index, 1)[0] ?? null;
   return externalReservedDrainOperation ?? undefined;
 }
 

@@ -42,6 +42,7 @@ import { ensureShellPath } from '../../utils/shell';
 import { getSidecarPort } from '../../session-core/sidecar-port';
 import { getPreparedModelPolicy, prepareProviderBinding, type PreparedProvider } from '../../utils/managed-proxy-binding';
 import { getGeneralProxyEnvironment, getProviderRequestProxyPolicy } from '../../proxy-state';
+import { RuntimeSteerUnavailableError } from '../../runtimes/types';
 import type {
   AgentRuntime,
   ResolvedImagePayload,
@@ -1802,9 +1803,9 @@ export class DshRuntime implements AgentRuntime {
     const pending = getSessionMetadata(process.options.sessionId)?.pendingDshInputs?.find(input => input.clientUserMessageId === options.clientUserMessageId
       && input.clientOperationId === options.clientOperationId && input.sourceRuntimeSessionId === process.runtimeSessionId);
     const clientOperationId = pending?.clientOperationId ?? process.activeOperationId;
-    if (!clientOperationId) throw new Error('DSH has no active root turn to steer');
+    if (!clientOperationId) throw new RuntimeSteerUnavailableError('DSH has no active root turn to steer');
     if (!pending && process.realtimeSteerEligibleOperationId !== process.activeOperationId) {
-      throw new Error('DSH active root turn is not eligible for realtime steering');
+      throw new RuntimeSteerUnavailableError('DSH active root turn is not eligible for realtime steering');
     }
     if (options.clientOperationId !== undefined && options.clientOperationId !== clientOperationId) throw new Error('DSH realtime input target changed before admission');
     const input = await this.canonicalInput(process, message, images);
@@ -1818,7 +1819,11 @@ export class DshRuntime implements AgentRuntime {
         clientOperationId, messageId: options.clientUserMessageId, input, delivery: 'realtime',
       });
     } catch (error) {
-      if (!pending || !(error instanceof Error) || !('code' in error) || error.code !== 'turn_not_active') throw error;
+      if (!(error instanceof Error) || !('code' in error) || error.code !== 'turn_not_active') throw error;
+      if (!pending) {
+        process.injectedUserMessages.delete(options.clientUserMessageId);
+        throw new RuntimeSteerUnavailableError(error.message);
+      }
       const history = await new DshMutationController(process.host, process.runtimeSessionId).readHistory();
       const terminal = history.events.some(event => event.eventType === 'myagents/operation/terminal'
         && object(event.data, 'DSH terminal input owner').clientOperationId === clientOperationId);

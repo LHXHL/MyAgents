@@ -22,7 +22,7 @@ import type { ProviderEnv } from '../provider-types';
 import type { InFlightMetadata, TurnProviderAnalytics } from './types';
 import {
   getCurrentTurnText,
-  getCurrentTurnInboxMeta,
+  takeCurrentTurnInboxMetas,
   getCurrentTurnSourceItem,
   getCurrentTurnAnalyticsSource,
   getCurrentTurnAnalyticsOrigin,
@@ -42,7 +42,6 @@ import {
   replaceCurrentTurnUsage,
   sawCompactBoundary,
   setCurrentTurnImTerminalEmitted,
-  setCurrentTurnInboxMeta,
   snapshotCurrentTurnTerminalOutcome,
   clearCurrentTurnTextBlocks,
   type PendingOutputOwner,
@@ -255,6 +254,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       product.finishTurn(terminalKind === 'cancelled' ? 'stopped' : (terminalError ? 'error' : 'complete'));
     }
     let confirmedQueueTurnKeepStreaming = false;
+    let surfaceNextInput: (() => void) | undefined;
 
     const inFlightQueueId = getInFlightQueueId();
     if (inFlightQueueId !== null) {
@@ -282,14 +282,16 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
           // must not publish idle merely because no queued work remains.
           confirmedQueueTurnKeepStreaming = true;
           deps.setStreamingMessage(true);
-          void deps.surfaceInFlightQueueItem(stale, meta, {
-            sdkUuid: stale,
-            midTurnBreak: true,
-            reason: forced ? 'force-send #289' : 'confirmed result handoff',
-            awaitPersist: false,
-          }).catch((error) => {
-            console.error(`[agent] Failed to surface in-flight queue item ${stale} at result boundary:`, error);
-          });
+          surfaceNextInput = () => {
+            void deps.surfaceInFlightQueueItem(stale, meta, {
+              sdkUuid: stale,
+              midTurnBreak: true,
+              reason: forced ? 'force-send #289' : 'confirmed result handoff',
+              awaitPersist: false,
+            }).catch((error) => {
+              console.error(`[agent] Failed to surface in-flight queue item ${stale} at result boundary:`, error);
+            });
+          };
         } else if (inFlightAction === 'await-replay') {
           deps.preserveInFlightAfterTerminalBoundary(
             deps.getIsInterruptingResponse()
@@ -384,6 +386,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     void lastTurnEndPersist.catch(() => undefined);
     notifyCurrentTurnTerminalOutcome(terminalOutcome, lastTurnEndPersist);
     deps.claimPostInterruptResultTerminal();
+    surfaceNextInput?.();
     return confirmedQueueTurnKeepStreaming;
   };
 
@@ -580,6 +583,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     replaceCurrentTurnUsage(turnUsage);
 
     if (terminalTransientProviderError) {
+      const replyMetas = takeCurrentTurnInboxMetas();
       await deps.retractTransientProviderTextOutput(resultText);
       const retrySuffix = terminalTransientProviderRetryExhausted
         ? `已自动重试 ${terminalTransientProviderMaxRetries} 次仍失败。`
@@ -590,11 +594,21 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
         `\n\n原始错误：${terminalTransientProviderError.rawText}`;
       deps.setLastAgentError(finalError);
       deps.broadcast('chat:agent-error', { message: finalError });
+      const replyText = getCurrentTurnText();
+      const replySessionId = deps.getSessionId();
       const completionTerminal = failTurn(finalError);
       deps.broadcast(
         'chat:message-error',
         withSessionCompletionTerminal(finalError, completionTerminal),
       );
+      void import('../inbox/watch-deliver').then(({ deliverSessionWatchEvents }) =>
+        deliverSessionWatchEvents(replySessionId, {
+          text: replyText, turnId: resultTurnId, terminalStatus: 'error',
+          requestEventIds: replyMetas.map(meta => meta.originalMessageId),
+          error: { code: 'turn_failed', message: finalError },
+        }, replyMetas),
+      ).catch(err => console.error('[session-watch] provider-error watch push failed:', err));
+      clearCurrentTurnTextBlocks();
       deps.handleTerminalRecovery(undefined);
       deps.applyDeferredRestartIfNeeded();
       return 'terminal';
@@ -622,6 +636,8 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       }
     }
 
+    // Detach the completed turn before terminal cleanup can promote another input.
+    const replyMetas = takeCurrentTurnInboxMetas();
     if (!resultMessage.modelUsage && !resultMessage.usage) {
       console.warn('[agent] Result message has no usage data, token statistics may be incomplete');
     }
@@ -746,19 +762,17 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
         withSessionCompletionTerminal(emptyResultError, completionTerminal),
       );
       const replyText = getCurrentTurnText();
-      const replyMeta = getCurrentTurnInboxMeta();
-      setCurrentTurnInboxMeta(undefined);
       clearCurrentTurnTextBlocks();
       void import('../inbox/watch-deliver').then(({ deliverSessionWatchEvents }) =>
         deliverSessionWatchEvents(deps.getSessionId(), {
           text: replyText,
           turnId: resultTurnId, terminalStatus: 'error',
-          requestEventIds: replyMeta ? [replyMeta.originalMessageId] : undefined,
+          requestEventIds: replyMetas.map(meta => meta.originalMessageId),
           error: {
             code: 'turn_failed',
             message: emptyResultError,
           },
-        }, replyMeta),
+        }, replyMetas),
       ).catch((err) =>
         console.error('[session-watch] empty-result watch push failed:', err),
       );
@@ -868,16 +882,14 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
             message: resultErrorText || 'turn ended with error',
           }
         : undefined;
-      const replyMeta = getCurrentTurnInboxMeta();
-      setCurrentTurnInboxMeta(undefined);
       clearCurrentTurnTextBlocks();
       void import('../inbox/watch-deliver').then(({ deliverSessionWatchEvents }) =>
         deliverSessionWatchEvents(deps.getSessionId(), {
           text: sessionEventText,
           turnId: resultTurnId, terminalStatus: isAbortResult ? 'stopped' : sessionEventError ? 'error' : 'complete',
-          requestEventIds: replyMeta ? [replyMeta.originalMessageId] : undefined,
+          requestEventIds: replyMetas.map(meta => meta.originalMessageId),
           error: sessionEventError,
-        }, replyMeta),
+        }, replyMetas),
       ).catch((err) =>
         console.error('[session-watch] result-handler watch push failed:', err),
       );

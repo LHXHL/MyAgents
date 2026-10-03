@@ -73,7 +73,7 @@ describe('deliverSessionWatchEvents', () => {
     fetchMock.cancellableFetch.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
     fetchMock.cancellableFetch.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, outcome: { status: 'delivered' } })));
     const delivery = deliverSessionWatchEvents('target-session', { text: 'done', turnId: 'turn', requestEventIds: ['request'] },
-      { fromSessionId: 'caller', fromLabel: 'Caller', originalMessageId: 'request', originalSnippet: 'query', replyBack: true });
+      [{ fromSessionId: 'caller', fromLabel: 'Caller', originalMessageId: 'request', originalSnippet: 'query', replyBack: true }]);
     await vi.waitFor(() => expect(fetchMock.cancellableFetch).toHaveBeenCalledTimes(2));
     const messages = fetchMock.cancellableFetch.mock.calls.map(call => JSON.parse(call[1].body).message.sessionEvent);
     expect(messages.filter(event => event.targetSessionId === 'caller')).toEqual([expect.objectContaining({
@@ -83,6 +83,17 @@ describe('deliverSessionWatchEvents', () => {
     await delivery;
     expect(pendingSessionWatchCount()).toBe(delivered ? 0 : 1);
     expect(fetchMock.cancellableFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns each same-turn request independently and never replies to notifications', async () => {
+    process.env.MYAGENTS_MANAGEMENT_PORT = '8123';
+    fetchMock.cancellableFetch.mockImplementation(async () => new Response(JSON.stringify({ ok: true, outcome: { status: 'delivered' } })));
+    const metas = ['one', 'two', 'notification'].map(id => ({ fromSessionId: 'caller', fromLabel: 'caller',
+      originalMessageId: id, originalSnippet: id, replyBack: id !== 'notification' }));
+    await deliverSessionWatchEvents('target-session', { text: 'shared result', turnId: 'turn' }, metas);
+    const replies = fetchMock.cancellableFetch.mock.calls.map(call => JSON.parse(call[1].body).message);
+    expect(replies.map(reply => reply.inReplyTo)).toEqual(['one', 'two']);
+    expect(replies.every(reply => reply.replyBack === false && reply.text.includes('shared result'))).toBe(true);
   });
 
   it('settles a remote watch once without treating the remote source as a local Session', async () => {

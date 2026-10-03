@@ -10,12 +10,15 @@ import { deliverNetworkReturn } from '../agent-network/return';
 export async function deliverSessionWatchEvents(
   currentSessionId: string,
   payload: ReplyPayload,
-  inboxMeta?: InboxTurnMeta,
+  inboxMetas: readonly InboxTurnMeta[] = [],
 ): Promise<void> {
   const watches = listPendingSessionWatches();
   // The turn owner coordinates one local notification before either delivery
   // can yield. Each network route keeps its own source-owned settlement.
-  const reply = inboxMeta?.replyBack ? deliverInboxReply(currentSessionId, inboxMeta, payload) : undefined;
+  const replies = inboxMetas.filter(meta => meta.replyBack).map(meta => ({
+    meta, delivery: deliverInboxReply(currentSessionId, meta, payload),
+  }));
+  const reply = Promise.all(replies.map(item => item.delivery));
   if (watches.length === 0) { await reply; return; }
 
   const managementPort = process.env.MYAGENTS_MANAGEMENT_PORT;
@@ -40,9 +43,10 @@ export async function deliverSessionWatchEvents(
       return;
     }
 
-    if (reply && payload.turnId && !inboxMeta?.networkReturn && !watch.networkReturn
-      && watch.turnId === payload.turnId && watch.watcherSessionId === inboxMeta?.fromSessionId) {
-      if (await reply) ackPendingSessionWatch(watch.watchId);
+    const matchingReplies = replies.filter(item => !item.meta.networkReturn && !watch.networkReturn
+      && payload.turnId && watch.turnId === payload.turnId && watch.watcherSessionId === item.meta.fromSessionId);
+    if (matchingReplies.length > 0) {
+      if ((await Promise.all(matchingReplies.map(item => item.delivery))).some(Boolean)) ackPendingSessionWatch(watch.watchId);
       return;
     }
 

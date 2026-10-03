@@ -80,7 +80,18 @@ function fakeQuery(args: { prompt: AsyncIterable<unknown>; options: { sessionId?
       }
       if (pending.length) {
         const value = pending.shift();
-        if ((value as { type?: string })?.type === 'result') state.beforeResult();
+        if ((value as { type?: string })?.type === 'result') {
+          const consumeFollowup = await state.beforeResult(value);
+          if (consumeFollowup === true && prefetchedInput) {
+            const input = await prefetchedInput;
+            if (input.done) throw new Error('Synthetic queued input ended before consumption');
+            prefetchedInput = pullInput();
+            pending.unshift(value);
+            const message = input.value as { uuid: string; message: unknown };
+            return { done: false, value: { type: 'user', isReplay: true, uuid: message.uuid,
+              session_id: sessionId, parent_tool_use_id: null, message: message.message } };
+          }
+        }
         return { done: false, value };
       }
       if (backgroundTaskPending) {
@@ -337,6 +348,43 @@ describe('builtin V2 execution independent of product storage', () => {
     const disk = JSON.parse(await readFile(join(state.home, '.myagents', 'sessions.json'), 'utf8'));
     expect(disk).toContainEqual(expect.objectContaining({ id: result.sessionId, agentDir: workspace, model: 'configured-model', providerId: 'configured-provider', configSnapshotAt: expect.any(String) }));
     expect(agent.getMessages()).toHaveLength(0);
+  });
+
+  it.each(['complete', 'stopped'] as const)('consumes builtin Inbox C/D during A before manual B, with %s terminal', async ending => {
+    const workspace = join(state.home, 'workspace'); await mkdir(workspace);
+    vi.spyOn(await import('../utils/admin-config'), 'loadConfig').mockReturnValue({ chatQueueResponseMode: 'turn' });
+    const sessionId = (await store.createSession(workspace, { runtime: 'builtin' })).id;
+    await agent.initializeAgent(workspace, null, sessionId, { preWarmDisabled: true });
+    const engine = (await import('../session-engine/builtin-adapter')).createBuiltinSessionEngine();
+    const delivery = vi.spyOn(await import('../inbox/watch-deliver'), 'deliverSessionWatchEvents').mockResolvedValue(undefined);
+    state.independentInputPump = true;
+    let release!: () => void;
+    releaseWrite = () => release();
+    const ready = new Promise<void>(resolve => { release = resolve; });
+    let replays = 0;
+    state.beforeResult.mockImplementation(async value => {
+      if (replays < 2) { await ready; replays++; return true; }
+      if (replays === 2) {
+        replays++;
+        if (ending === 'stopped') value.terminal_reason = 'aborted_streaming';
+      }
+      return false;
+    });
+    const a = await engine.sendDesktopMessage({ text: 'A', images: [], sessionId, workspacePath: workspace, scenario: { type: 'desktop' } });
+    await a.dispatchAcceptance;
+    await vi.waitFor(() => expect(state.beforeResult).toHaveBeenCalledOnce());
+    const b = await engine.sendDesktopMessage({ text: 'B', images: [], sessionId, workspacePath: workspace, scenario: { type: 'desktop' } });
+    expect(b.deliveryMode).toBe('turn');
+    for (const id of ['C', 'D']) await engine.enqueueInboxMessage({ text: id, sessionId, workspacePath: workspace,
+      inboxMeta: { fromSessionId: `caller-${id}`, fromLabel: id, originalMessageId: id, originalSnippet: id, replyBack: true } });
+    release();
+    await b.dispatchAcceptance;
+    await expect(engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    await vi.waitFor(() => expect(delivery).toHaveBeenCalledWith(sessionId,
+      expect.objectContaining({ terminalStatus: ending, requestEventIds: ['C', 'D'], text: expect.stringContaining('answer 1') }),
+      expect.arrayContaining([expect.objectContaining({ originalMessageId: 'C' }), expect.objectContaining({ originalMessageId: 'D' })])));
+    expect(state.sdkInputs.map(input => (input as { message: { content: { text?: string }[] } }).message.content.find(block => block.text)?.text)).toEqual(['A', 'C', 'D', 'B']);
+    expect(delivery.mock.calls.find(call => call[1].text.includes('answer 2'))?.[2]).toEqual([]);
   });
 
   it.each(['v1', 'v2'] as const)('keeps %s identity across real builtin IM, Inbox and injected-turn adapters', async format => {

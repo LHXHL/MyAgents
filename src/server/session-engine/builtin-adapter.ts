@@ -551,6 +551,8 @@ export function createBuiltinSessionEngine(): SessionEngine {
           allowLazySessionMaterialization: request.allowLazySessionMaterialization === true,
           sessionBirthOrigin: request.birthOrigin,
           queueId: request.queueId,
+          queueResponseModeOverride: 'realtime',
+          inputSource: 'inbox',
           beforeDispatch: request.beforeDispatch,
           channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY,
         },

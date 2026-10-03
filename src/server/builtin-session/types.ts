@@ -147,6 +147,7 @@ export type MessageQueueItem = {
   analyticsOrigin?: SessionOrigin;
   sessionBirthOrigin?: SessionOrigin;
   providerAnalytics?: TurnProviderAnalytics;
+  inputSource?: 'inbox';
   inboxMeta?: InboxTurnMeta;
   turnOwner?: TurnOwner;
   onTerminal?: TurnTerminalObserver;

@@ -397,9 +397,10 @@ import {
   getCurrentTurnQueueId as getBuiltinCurrentTurnQueueId,
   getLastSessionCompletionTerminal,
   getCurrentTurnSourceItem,
-  getCurrentTurnInboxMeta,
+  consumePendingInboxInput,
   getPendingImRequestIds,
   hasPendingOutputOwnerByQueueId,
+  getPendingOutputOwnerByQueueId,
   peekPendingOutputOwner,
   incrementCurrentTurnToolCount,
   isAssistantMessagePresent,
@@ -1096,6 +1097,7 @@ async function rollbackFailedBuiltinUserSurface(messageId: string): Promise<void
 type SurfaceInFlightOptions = {
   sdkUuid?: string;
   midTurnBreak?: boolean;
+  joinsCurrentTurn?: boolean;
   reason: string;
   /** Replay can await durability before SSE; synchronous assistant-start cannot. */
   awaitPersist?: boolean;
@@ -1116,6 +1118,8 @@ async function surfaceInFlightQueueItem(
   else await prepareSessionPlansForUserTurn({ clearStale: false });
   if (product && (!isCurrentQueryAuthority(authority) || getBuiltinProductContent() !== product
     || getInFlightQueueId() !== queueId)) return;
+
+  consumePendingInboxInput(queueId, options.joinsCurrentTurn === true);
 
   const userMessage: MessageWire = {
     id: allocateMessageId(),
@@ -1178,6 +1182,8 @@ function dropInFlightQueueItem(
   const queueId = getInFlightQueueId();
   if (!queueId) return null;
   const requestId = getInFlightMetadata()?.requestId;
+  const inboxInput = getPendingOutputOwnerByQueueId(queueId)?.sourceItem;
+  if (inboxInput) pushInboxAbortReplyForQueuedItem(inboxInput, 'input_not_consumed', reason);
   removePendingOutputOwnerByQueueId(queueId);
   if (requestId) {
     if (imTerminal === 'failed') {
@@ -1417,6 +1423,7 @@ function emitImEvent(type: ImEventType, data?: unknown): void {
 function pushPendingOutputOwner(item: MessageQueueItem): void {
   turnAdmitPendingOutputOwnerForYield({
     queueId: item.id,
+    sourceItem: item,
     requestId: item.requestId,
     assistantChannelDelivery: item.channelDelivery.assistant,
     channelSessionId: sessionId,
@@ -2188,6 +2195,7 @@ async function handleQueuedCommandReplay(
     sdkUuid: sdkMessage.uuid,
     midTurnBreak: true,
     reason: 'SDKUserMessageReplay consumed by AI',
+    joinsCurrentTurn: true,
     awaitPersist: true,
   });
 }
@@ -2270,18 +2278,18 @@ function abortPersistentSession(options: { notifyPendingRequests?: boolean } = {
   // in flight, push a session_aborted reply back to the caller so it doesn't
   // wait forever. Fire-and-forget. Read + clear immediately to avoid the
   // recovery session inheriting this binding.
-  const { inboxMeta: replyMeta, replyText: abortedReplyText } = terminalCleanup();
+  const { inboxMetas: replyMetas, replyText: abortedReplyText } = terminalCleanup();
   if (notifyPendingRequests) {
     void import('./inbox/watch-deliver').then(({ deliverSessionWatchEvents }) =>
       deliverSessionWatchEvents(sessionId, {
         turnId: abortedTurnId, terminalStatus: 'stopped',
-        requestEventIds: replyMeta ? [replyMeta.originalMessageId] : undefined,
+        requestEventIds: replyMetas.map(meta => meta.originalMessageId),
         text: abortedReplyText,
         error: {
           code: 'session_aborted',
           message: 'target session was aborted before the turn completed',
         },
-      }, replyMeta),
+      }, replyMetas),
     ).catch((err) =>
       console.error('[session-watch] abort-path watch push failed:', err),
     );
@@ -7958,7 +7966,8 @@ function drainQueueWithCancellation(): void {
  *  or replyBack=false. */
 function pushInboxAbortReplyForQueuedItem(
   item: { inboxMeta?: import('./inbox/types').InboxTurnMeta },
-  code: 'message_dropped_on_reset' | 'message_dropped_on_clear',
+  code: 'message_dropped_on_reset' | 'message_dropped_on_clear' | 'input_not_consumed',
+  reason?: string,
 ): void {
   const meta = item.inboxMeta;
   if (!meta || !meta.replyBack) return;
@@ -7968,10 +7977,10 @@ function pushInboxAbortReplyForQueuedItem(
       text: '',
       error: {
         code,
-        message:
+        message: reason ?? (
           code === 'message_dropped_on_reset'
             ? 'target session was reset before the message ran'
-            : 'target session state was cleared before the message ran',
+            : 'target session state was cleared before the message ran'),
       },
     }),
   ).catch((err) =>
@@ -8947,6 +8956,7 @@ export async function enqueueUserMessage(
     allowLazySessionMaterialization?: boolean;
     sessionBirthOrigin?: SessionOrigin;
     queueResponseModeOverride?: 'realtime' | 'turn';
+    inputSource?: 'inbox';
     /** Infrastructure-only gate after Query-changing config, before user/session persistence. */
     beforeUserPersistence?: import('./session-core/turn-queue').DispatchGuard;
     beforeDispatch?: import('./session-core/turn-queue').DispatchGuard;
@@ -9690,6 +9700,7 @@ export async function enqueueUserMessage(
       analyticsOrigin,
       providerAnalytics: turnProviderAnalytics,
       inboxMeta,
+      inputSource: options?.inputSource,
       turnOwner: options?.turnOwner,
       onTerminal: admissionCallbacks.onTerminal,
       beforeDispatch: options?.beforeDispatch,
@@ -9882,6 +9893,7 @@ export async function enqueueUserMessage(
     sessionBirthOrigin: options?.sessionBirthOrigin,
     providerAnalytics: turnProviderAnalytics,
     inboxMeta,
+    inputSource: options?.inputSource,
     turnOwner: options?.turnOwner,
     onTerminal: admissionCallbacks.onTerminal,
     beforeDispatch: options?.beforeDispatch,
@@ -14419,12 +14431,15 @@ async function* messageGenerator(
       });
       console.log(`[messageGenerator] Recovery path: wasQueued item ${item.id} adopted as in-flight (rescue or queueState.messageQueue push)`);
     }
-    beginBuiltinTurnTrace(traceSource, traceTurnId, item.requestId);
-    setCurrentTurnAnalyticsSource(item.analyticsSource ?? currentScenario.type);
-    setCurrentTurnAnalyticsOrigin(turnOrigin);
-    setCurrentTurnProviderAnalytics(item.providerAnalytics ?? buildTurnProviderAnalytics(configState.currentProviderEnv));
-    setAssistantMessagePresent(false);
-    setCurrentTurnSourceItem(item);
+    const pendingInboxConsumption = item.wasQueued && item.inputSource === 'inbox';
+    if (!pendingInboxConsumption) {
+      beginBuiltinTurnTrace(traceSource, traceTurnId, item.requestId);
+      setCurrentTurnAnalyticsSource(item.analyticsSource ?? currentScenario.type);
+      setCurrentTurnAnalyticsOrigin(turnOrigin);
+      setCurrentTurnProviderAnalytics(item.providerAnalytics ?? buildTurnProviderAnalytics(configState.currentProviderEnv));
+      setAssistantMessagePresent(false);
+      setCurrentTurnSourceItem(item);
+    }
 
     // Irreversible admission commit. The final lease/domain validation above
     // and this owner transfer are one synchronous event-loop transaction: no
@@ -14457,7 +14472,7 @@ async function* messageGenerator(
       lifecycleState.abortRequested
       || builtinInterrupt.isInterrupting()
       || !isStreamingMessage
-      || getCurrentTurnSourceItem() !== item
+      || (!pendingInboxConsumption && getCurrentTurnSourceItem() !== item)
     ) {
       item.resolve();
       return;
@@ -14488,7 +14503,7 @@ async function* messageGenerator(
           lifecycleState.abortRequested
           || builtinInterrupt.isInterrupting()
           || !isStreamingMessage
-          || getCurrentTurnSourceItem() !== item
+          || (!pendingInboxConsumption && getCurrentTurnSourceItem() !== item)
         ) {
           item.resolve();
           return;
@@ -14538,7 +14553,7 @@ async function* messageGenerator(
       lifecycleState.abortRequested
       || builtinInterrupt.isInterrupting()
       || !isStreamingMessage
-      || getCurrentTurnSourceItem() !== item
+      || (!pendingInboxConsumption && getCurrentTurnSourceItem() !== item)
     ) {
       item.resolve();
       return;
@@ -14549,19 +14564,9 @@ async function* messageGenerator(
     // therefore reuses the owner retained when the retry was selected.
     pushPendingOutputOwner(item);
 
-    // PRD 0.2.18 Session Inbox — per-turn binding (read at result handler /
-    // abort path). Bound here at generator yield (NOT at enqueue), so the
-    // mutable always reflects the turn that's actually about to execute.
-    // Cleared at result handler / abort path; if a subsequent yield happens
-    // before clear, the new binding overwrites — that's correct because SDK
-    // persistent session yields one turn at a time.
-    setCurrentTurnInboxMeta(item.inboxMeta);
-    const currentTurnInboxMeta = getCurrentTurnInboxMeta();
-    if (currentTurnInboxMeta) {
-      console.log(
-        `[inbox] Bound turn inboxMeta from=${currentTurnInboxMeta.fromSessionId} replyBack=${currentTurnInboxMeta.replyBack} msgId=${currentTurnInboxMeta.originalMessageId}`,
-      );
-    }
+    // Queued Inbox inputs may join the running SDK turn. Bind them at the
+    // native replay/assistant-start receipt, never merely at stdin yield.
+    if (!item.wasQueued && !item.transientProviderRetry) setCurrentTurnInboxMeta(item.inboxMeta);
 
     // Modality re-check at dequeue (see prior comment in pre-fix file).
     const yieldedMessage = stripUnsupportedModalityBlocks(item.message, configState.currentModel);

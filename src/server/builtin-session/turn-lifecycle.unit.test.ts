@@ -776,7 +776,7 @@ describe('turn-lifecycle owner', () => {
       expect.objectContaining({
         error: expect.objectContaining({ code: 'turn_failed', message: 'upstream overloaded' }),
       }),
-      undefined,
+      [],
     );
   });
 
