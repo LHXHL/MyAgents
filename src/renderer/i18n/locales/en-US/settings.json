@@ -407,6 +407,12 @@
     "addProvider": "Add Provider",
     "official": "Official",
     "openaiProtocol": "OpenAI protocol",
+    "subscriptionInfo": {
+      "label": "Subscription connection details",
+      "claude": "Uses the built-in official Claude AgentSDK with no account risk",
+      "codex": "Uses the built-in Codex CLI with no account risk",
+      "reverseProxy": "Uses an API reverse proxy. Please be aware of the risks"
+    },
     "noModels": "No models",
     "website": "Website",
     "manage": "Manage",

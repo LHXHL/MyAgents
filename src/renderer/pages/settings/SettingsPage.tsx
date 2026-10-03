@@ -111,6 +111,7 @@ import {
 import { useConfig } from '@/hooks/useConfig';
 import { useSpaceBuildCapability } from '@/hooks/useSpaceBuildCapability';
 import { SpaceEnvironmentSwitch } from './components/SpaceEnvironmentSwitch';
+import { SubscriptionProviderInfo } from './components/SubscriptionProviderInfo';
 import { actions as spaceActions } from '@/pages/space/spaceStore';
 import { useHelperAgentModelDefaults } from '@/hooks/useHelperAgentModelDefaults';
 import { useAutostart } from '@/hooks/useAutostart';
@@ -4169,6 +4170,7 @@ export default function Settings({
               <h3 className="truncate text-lg font-semibold text-[var(--ink)]">
                 {tSettings('providers.cardTitles.chatgptSubscription')}
               </h3>
+              <SubscriptionProviderInfo providerId={provider.id} />
               <span className="shrink-0 rounded bg-[var(--paper-inset)] px-1.5 py-0.5 text-xs font-medium text-[var(--ink-muted)]">
                 {tSettings('providers.official')}
               </span>
@@ -5121,6 +5123,9 @@ export default function Settings({
                                 ? tSettings('providers.cardTitles.claudeApi')
                                 : provider.name}
                           </h3>
+                          {provider.type === 'subscription' && (
+                            <SubscriptionProviderInfo providerId={provider.id} />
+                          )}
                           <span className="shrink-0 rounded bg-[var(--paper-inset)] px-1.5 py-0.5 text-xs font-medium text-[var(--ink-muted)]">
                             {provider.cloudProvider}
                           </span>

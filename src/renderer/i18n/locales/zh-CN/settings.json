@@ -407,6 +407,12 @@
     "addProvider": "添加供应商",
     "official": "官方",
     "openaiProtocol": "OpenAI 协议",
+    "subscriptionInfo": {
+      "label": "订阅接入说明",
+      "claude": "基于内置的官方 Claude AgentSDK 无账号风险",
+      "codex": "基于内置的 Codex CLI 无账号风险",
+      "reverseProxy": "基于 API 反向代理，需注意存在风险"
+    },
     "noModels": "暂无模型",
     "website": "去官网",
     "manage": "管理",
