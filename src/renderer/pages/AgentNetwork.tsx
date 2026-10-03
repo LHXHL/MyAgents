@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { InfoIcon, MonitorIcon, DatabaseIcon } from '@/components/icons';
+import { CheckIcon, InfoIcon, LockIcon } from "@/components/icons";
 import { metadataSchemas } from "@myagents/agent-network-protocol";
 import {
   spaceGetSession,
@@ -8,6 +8,7 @@ import {
   type SpaceSessionView,
 } from "@/api/spaceCloud";
 import {
+  allDeviceAgents,
   allNetworkDevices,
   networkErrorKey,
   networkRequest,
@@ -20,118 +21,16 @@ import { SpaceLogin } from "@/pages/space/SpaceChrome";
 import Popover from "@/components/ui/Popover";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { getDeviceId, preloadDeviceId } from "@/identity/deviceIdentity";
+import { useToastOptional } from "@/components/Toast";
+import { copyPlainText } from "@/utils/clipboard";
+import { DeviceCard } from "@/features/agent-network/DeviceCard";
 import { DeviceDetails } from "@/features/agent-network/DeviceDetails";
+import type { DeviceCatalog } from "@/features/agent-network/deviceDisplay";
 import {
   currentNetworkGeneration,
   useAgentNetworkSnapshot,
 } from "@/features/agent-network/store";
 
-function osName(platform: string): string {
-  if (/darwin|macos/i.test(platform)) return "macOS";
-  if (/win/i.test(platform)) return "Windows";
-  if (/linux/i.test(platform)) return "Linux";
-  return platform || "—";
-}
-function DeviceCard({
-  device,
-  isLocal,
-  busy,
-  error,
-  onOpen,
-  onMembership,
-}: {
-  device: NetworkDevice;
-  isLocal: boolean;
-  busy: boolean;
-  error: string | null;
-  onOpen: () => void;
-  onMembership: () => void;
-}) {
-  const { t } = useTranslation("app");
-  const OsIcon = /darwin|macos/i.test(device.platform)
-    ? MonitorIcon
-    : /win/i.test(device.platform)
-      ? MonitorIcon
-      : DatabaseIcon;
-  return (
-    <article className="relative rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-5 transition-shadow hover:shadow-sm">
-      <button
-        type="button"
-        onClick={onOpen}
-        aria-label={t("agentNetwork.openDevice", { name: device.name })}
-        className="absolute inset-0 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
-      />
-      <div className="pointer-events-none relative pr-16">
-        <div className="flex items-center gap-2 text-xs text-[var(--ink-muted)]">
-          <OsIcon className="h-4 w-4 shrink-0" />
-          <span>{osName(device.platform)}</span>
-          <span aria-hidden>·</span>
-          <span>
-            {t(
-              device.connectionState === "offline"
-                ? "agentNetwork.offline"
-                : device.connectionState === "ready"
-                  ? "agentNetwork.online"
-                  : "agentNetwork.syncing",
-            )}
-          </span>
-        </div>
-        <div className="mt-3 flex min-w-0 items-center gap-2">
-          <h2
-            className="min-w-0 truncate text-base font-medium text-[var(--ink)]"
-            title={device.name}
-          >
-            {device.name}
-          </h2>
-          {isLocal && (
-            <span className="shrink-0 rounded bg-[var(--paper-inset)] px-1.5 py-0.5 text-xs text-[var(--ink-muted)]">
-              {t("agentNetwork.local")}
-            </span>
-          )}
-        </div>
-        <p
-          className={`mt-6 flex items-center gap-2 text-sm ${device.onlineAgentCount && device.onlineAgentCount > 0 ? "text-[var(--success)]" : "text-[var(--ink-muted)]"}`}
-        >
-          {device.onlineAgentCount !== null && (
-            <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-current" />
-          )}
-          {device.onlineAgentCount === null
-            ? t("agentNetwork.unsyncedShort")
-            : t("agentNetwork.onlineAgents", {
-                count: device.onlineAgentCount,
-              })}
-        </p>
-      </div>
-      <button
-        type="button"
-        disabled={busy}
-        onClick={onMembership}
-        aria-busy={busy}
-        className={`absolute right-4 top-4 rounded-md px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-wait disabled:opacity-60 ${
-          device.joined
-            ? "bg-[var(--button-secondary-bg)] text-[var(--button-secondary-text)] hover:bg-[var(--button-secondary-bg-hover)]"
-            : "bg-[var(--button-primary-bg)] text-[var(--button-primary-text)] hover:bg-[var(--button-primary-bg-hover)]"
-        }`}
-      >
-        {t(
-          busy
-            ? "agentNetwork.saving"
-            : device.joined
-              ? "agentNetwork.leave"
-              : "agentNetwork.join",
-        )}
-      </button>
-      {error && (
-        <p
-          role="alert"
-          className="pointer-events-none relative mt-3 text-xs text-[var(--error)]"
-        >
-          {error}
-        </p>
-      )}
-    </article>
-  );
-}
 export default function AgentNetwork({
   isActive = true,
 }: {
@@ -169,7 +68,24 @@ function AgentNetworkContent({
   const [leaving, setLeaving] = useState<NetworkDevice | null>(null);
   const [busy, setBusy] = useState<Record<string, boolean>>({}),
     [errors, setErrors] = useState<Record<string, string>>({});
+  const [catalogs, setCatalogs] = useState<Record<string, DeviceCatalog>>({});
   const flight = useRef(new Set<string>());
+  const toast = useToastOptional();
+  // Never throws: one device's unreadable catalog must not hide the others.
+  const readCatalog = useCallback(
+    async (deviceId: string): Promise<DeviceCatalog> => {
+      try {
+        const page = await allDeviceAgents(deviceId);
+        return { status: "ready", items: page.items, complete: page.complete };
+      } catch (failure) {
+        return {
+          status: "error",
+          error: t(`agentNetwork.errors.${networkErrorKey(failure)}`),
+        };
+      }
+    },
+    [t],
+  );
   const reloadAccount = useCallback(async () => {
     const generation = currentNetworkGeneration();
     setAuthLoading(true);
@@ -202,11 +118,13 @@ function AgentNetworkContent({
       return;
     let cancelled = false;
     const generation = currentNetworkGeneration();
+    const current = () =>
+      !cancelled && generation === currentNetworkGeneration();
     setLoading(true);
     setLoadError(null);
     void Promise.all([networkRequest({ kind: "network" }), allNetworkDevices()])
-      .then(([info, page]) => {
-        if (cancelled || generation !== currentNetworkGeneration()) return;
+      .then(async ([info, page]) => {
+        if (!current()) return;
         setNetwork(metadataSchemas.network.parse(info));
         const localId = getDeviceId();
         setDevices(
@@ -218,19 +136,53 @@ function AgentNetworkContent({
           ),
         );
         setComplete(page.complete);
+        setLoading(false);
+        // Cards show which Agents each device opens, so catalogs are read with
+        // the device list; the previous catalogs stay visible until replaced.
+        const entries = await Promise.all(
+          page.items.map(
+            async (device) =>
+              [device.deviceId, await readCatalog(device.deviceId)] as const,
+          ),
+        );
+        if (current()) setCatalogs(Object.fromEntries(entries));
       })
       .catch((failure) => {
-        if (!cancelled && generation === currentNetworkGeneration())
-          setLoadError(t(`agentNetwork.errors.${networkErrorKey(failure)}`));
-      })
-      .finally(() => {
-        if (!cancelled && generation === currentNetworkGeneration())
-          setLoading(false);
+        if (!current()) return;
+        setLoadError(t(`agentNetwork.errors.${networkErrorKey(failure)}`));
+        setLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [isActive, snapshot.state, snapshot.revision, session?.state, refresh, t]);
+  }, [
+    isActive,
+    snapshot.state,
+    snapshot.revision,
+    session?.state,
+    refresh,
+    readCatalog,
+    t,
+  ]);
+  async function retryCatalog(deviceId: string) {
+    const generation = currentNetworkGeneration();
+    setCatalogs((current) => {
+      const next = { ...current };
+      delete next[deviceId];
+      return next;
+    });
+    const catalog = await readCatalog(deviceId);
+    if (generation === currentNetworkGeneration())
+      setCatalogs((current) => ({ ...current, [deviceId]: catalog }));
+  }
+  async function copyDeviceId(device: NetworkDevice) {
+    try {
+      await copyPlainText(device.deviceId);
+      toast?.success(t("agentNetwork.copied"));
+    } catch {
+      toast?.error(t("agentNetwork.copyFailed"));
+    }
+  }
   async function membership(device: NetworkDevice, joined: boolean) {
     if (flight.current.has(device.deviceId)) return;
     flight.current.add(device.deviceId);
@@ -251,6 +203,7 @@ function AgentNetworkContent({
       if (generation !== currentNetworkGeneration()) return;
       setLeaving(null);
       setRefresh((value) => value + 1);
+      // Joining leads straight to choosing which workspaces to open.
       if (joined) setSelected(device.deviceId);
     } catch (failure) {
       if (generation !== currentNetworkGeneration()) return;
@@ -315,15 +268,59 @@ function AgentNetworkContent({
       />
     );
   }
+  const localId = getDeviceId();
+  const joinedDevices = devices.filter((device) => device.joined);
+  const pendingDevices = devices.filter((device) => !device.joined);
+  const joinedCatalogs = joinedDevices.map(
+    (device) => catalogs[device.deviceId],
+  );
+  const catalogsKnown = joinedCatalogs.every(
+    (catalog) => catalog?.status === "ready",
+  );
+  const openAgents = joinedCatalogs.reduce(
+    (sum, catalog) =>
+      sum +
+      (catalog?.status === "ready"
+        ? catalog.items.filter((agent) => agent.enabled).length
+        : 0),
+    0,
+  );
+  // The guide only states facts already read: it stays hidden while unknown.
+  const setupStep =
+    loading || loadError || snapshot.state !== "ready"
+      ? null
+      : !joinedDevices.some((device) => device.deviceId === localId)
+        ? 1
+        : catalogsKnown && openAgents === 0
+          ? 2
+          : null;
   const selectedDevice = devices.find((device) => device.deviceId === selected);
+  const card = (device: NetworkDevice) => (
+    <DeviceCard
+      key={device.deviceId}
+      device={device}
+      catalog={catalogs[device.deviceId]}
+      isLocal={device.deviceId === localId}
+      busy={busy[device.deviceId] ?? false}
+      error={errors[device.deviceId] || null}
+      onOpen={() => setSelected(device.deviceId)}
+      onJoin={() => {
+        void membership(device, true);
+      }}
+      onLeave={() => setLeaving(device)}
+      onCopyId={() => {
+        void copyDeviceId(device);
+      }}
+    />
+  );
   return (
     <main className="h-full overflow-y-auto bg-[var(--paper)] text-[var(--ink)]">
-      <div className="mx-auto max-w-5xl px-6 py-8">
-        <header className="mb-8 flex items-center gap-2">
-          <h1 className="text-xl font-semibold">
-            {network?.name || t("agentNetwork.networkName")}
-          </h1>
-          <div>
+      <div className="mx-auto max-w-5xl px-8 pb-12 pt-8">
+        <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
+          <div className="flex items-center gap-1.5">
+            <h1 className="text-2xl font-semibold">
+              {network?.name || t("agentNetwork.networkName")}
+            </h1>
             <button
               type="button"
               ref={infoButton}
@@ -331,7 +328,7 @@ function AgentNetworkContent({
               aria-expanded={infoOpen}
               aria-controls="agent-network-explanation"
               onClick={() => setInfoOpen((value) => !value)}
-              className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
+              className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
             >
               <InfoIcon className="h-4 w-4" />
             </button>
@@ -339,13 +336,38 @@ function AgentNetworkContent({
               open={infoOpen}
               onClose={() => setInfoOpen(false)}
               anchorRef={infoButton}
-              className="max-w-sm px-4 py-3 text-xs leading-relaxed text-[var(--ink-muted)]"
+              className="max-w-xs space-y-1.5 px-4 py-3 text-xs leading-relaxed text-[var(--ink-secondary)]"
             >
-              <p id="agent-network-explanation">
-                {t("agentNetwork.encryptionHint")}
-              </p>
+              <div id="agent-network-explanation">
+                <p className="flex items-center gap-1.5 font-medium text-[var(--ink)]">
+                  <LockIcon className="h-3.5 w-3.5" />
+                  {t("agentNetwork.infoTitle")}
+                </p>
+                <p className="mt-1.5">{t("agentNetwork.infoRelay")}</p>
+                <p className="mt-1.5">{t("agentNetwork.infoLocal")}</p>
+              </div>
             </Popover>
           </div>
+          {devices.length > 0 && (
+            <dl className="flex gap-6">
+              <div>
+                <dd className="text-xl font-semibold leading-tight">
+                  {joinedDevices.length}
+                </dd>
+                <dt className="text-xs text-[var(--ink-muted)]">
+                  {t("agentNetwork.statDevices")}
+                </dt>
+              </div>
+              <div>
+                <dd className="text-xl font-semibold leading-tight">
+                  {catalogsKnown ? openAgents : "—"}
+                </dd>
+                <dt className="text-xs text-[var(--ink-muted)]">
+                  {t("agentNetwork.statAgents")}
+                </dt>
+              </div>
+            </dl>
+          )}
         </header>
         {(loadError || accountError) && (
           <p role="alert" className="mb-4 text-sm text-[var(--error)]">
@@ -373,30 +395,47 @@ function AgentNetworkContent({
             )}
           </p>
         )}
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {loading && devices.length === 0 && snapshot.state === "ready"
-            ? [0, 1].map((index) => (
-                <div
-                  key={index}
-                  aria-busy="true"
-                  className="h-40 animate-pulse rounded-lg bg-[var(--paper-inset)]"
-                />
-              ))
-            : devices.map((device) => (
-                <DeviceCard
-                  key={device.deviceId}
-                  device={device}
-                  isLocal={device.deviceId === getDeviceId()}
-                  busy={busy[device.deviceId] ?? false}
-                  error={errors[device.deviceId] || null}
-                  onOpen={() => setSelected(device.deviceId)}
-                  onMembership={() => {
-                    if (device.joined) setLeaving(device);
-                    else void membership(device, true);
-                  }}
-                />
-              ))}
-        </div>
+        {setupStep !== null && <SetupGuide step={setupStep} />}
+        {loading && devices.length === 0 && snapshot.state === "ready" ? (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            {[0, 1].map((index) => (
+              <div
+                key={index}
+                aria-busy="true"
+                className="h-40 animate-pulse rounded-xl bg-[var(--paper-inset)]"
+              />
+            ))}
+          </div>
+        ) : (
+          <>
+            {joinedDevices.length > 0 && (
+              <section className="mb-7">
+                <h2 className="mb-3 flex items-baseline gap-2 text-sm font-semibold text-[var(--ink-muted)]">
+                  {t("agentNetwork.joinedDevices")}
+                  <span className="font-normal text-[var(--ink-subtle)]">
+                    {joinedDevices.length}
+                  </span>
+                </h2>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {joinedDevices.map(card)}
+                </div>
+              </section>
+            )}
+            {pendingDevices.length > 0 && (
+              <section>
+                <h2 className="mb-3 flex items-baseline gap-2 text-sm font-semibold text-[var(--ink-muted)]">
+                  {t("agentNetwork.pendingDevices")}
+                  <span className="font-normal text-[var(--ink-subtle)]">
+                    {pendingDevices.length}
+                  </span>
+                </h2>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {pendingDevices.map(card)}
+                </div>
+              </section>
+            )}
+          </>
+        )}
         {!loading &&
           !loadError &&
           snapshot.state === "ready" &&
@@ -414,11 +453,19 @@ function AgentNetworkContent({
       {selectedDevice && (
         <DeviceDetails
           device={selectedDevice}
-          isLocal={selectedDevice.deviceId === getDeviceId()}
+          catalog={catalogs[selectedDevice.deviceId]}
+          isLocal={selectedDevice.deviceId === localId}
           membershipBusy={busy[selectedDevice.deviceId] ?? false}
           membershipError={errors[selectedDevice.deviceId] || null}
           onJoin={() => {
             void membership(selectedDevice, true);
+          }}
+          onLeave={() => setLeaving(selectedDevice)}
+          onCopyId={() => {
+            void copyDeviceId(selectedDevice);
+          }}
+          onRetry={() => {
+            void retryCatalog(selectedDevice.deviceId);
           }}
           onClose={() => setSelected(null)}
           onChanged={() => setRefresh((value) => value + 1)}
@@ -438,5 +485,47 @@ function AgentNetworkContent({
         />
       )}
     </main>
+  );
+}
+
+/** First-use path from the product story: join, open workspaces, then just talk. */
+function SetupGuide({ step }: { step: 1 | 2 }) {
+  const { t } = useTranslation("app");
+  return (
+    <ol className="mb-7 grid grid-cols-1 overflow-hidden rounded-xl border border-[var(--line-subtle)] bg-[var(--paper-elevated)] md:grid-cols-3">
+      {([1, 2, 3] as const).map((index) => {
+        const done = index < step;
+        const current = index === step;
+        return (
+          <li
+            key={index}
+            aria-current={current ? "step" : undefined}
+            className="flex gap-3 border-[var(--line-subtle)] px-[18px] py-4 [&:not(:first-child)]:border-t md:[&:not(:first-child)]:border-l md:[&:not(:first-child)]:border-t-0"
+          >
+            <span
+              className={`flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full border text-xs ${
+                done
+                  ? "border-[var(--success)] bg-[var(--success)] text-[var(--on-success)]"
+                  : current
+                    ? "border-[var(--accent)] text-[var(--accent)]"
+                    : "border-[var(--line-strong)] text-[var(--ink-muted)]"
+              }`}
+            >
+              {done ? <CheckIcon className="h-3 w-3" /> : index}
+            </span>
+            <div className="min-w-0">
+              <p
+                className={`text-sm font-semibold ${done ? "text-[var(--ink-muted)]" : "text-[var(--ink)]"}`}
+              >
+                {t(`agentNetwork.guide.step${index}Title`)}
+              </p>
+              <p className="mt-0.5 text-xs text-[var(--ink-muted)]">
+                {t(`agentNetwork.guide.step${index}Body`)}
+              </p>
+            </div>
+          </li>
+        );
+      })}
+    </ol>
   );
 }

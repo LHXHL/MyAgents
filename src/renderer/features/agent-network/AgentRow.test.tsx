@@ -85,7 +85,9 @@ describe("network Agent inline description and independent field CAS", () => {
     );
     const changed = vi.fn();
     render(<AgentRow agent={agent} device={device} onChanged={changed} />);
-    fireEvent.click(screen.getByText("点击可填写简介，方便 Agent 浏览选择"));
+    fireEvent.click(
+      screen.getByRole("button", { name: "为 Research 添加简介" }),
+    );
     const input = screen.getByRole("textbox");
     fireEvent.change(input, { target: { value: "Handles research" } });
     fireEvent.keyDown(input, { key: "Enter", isComposing: true });
@@ -121,7 +123,9 @@ describe("network Agent inline description and independent field CAS", () => {
     const first = render(
       <AgentRow agent={agent} device={device} onChanged={changed} />,
     );
-    fireEvent.click(screen.getByText("点击可填写简介，方便 Agent 浏览选择"));
+    fireEvent.click(
+      screen.getByRole("button", { name: "为 Research 添加简介" }),
+    );
     fireEvent.change(screen.getByRole("textbox"), {
       target: { value: "Unsent draft" },
     });
@@ -161,12 +165,39 @@ describe("network Agent inline description and independent field CAS", () => {
     fireEvent.click(switchButton);
     expect(mocks.request).not.toHaveBeenCalled();
     fireEvent.mouseLeave(switchButton.parentElement!);
-    fireEvent.click(screen.getByText("点击可填写简介，方便 Agent 浏览选择"));
+    fireEvent.click(
+      screen.getByRole("button", { name: "为 Research 添加简介" }),
+    );
     fireEvent.change(screen.getByRole("textbox"), {
       target: { value: "汉".repeat(1366) },
     });
     fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
     expect(screen.getByRole("alert")).toHaveTextContent("4096");
+    expect(mocks.request).not.toHaveBeenCalled();
+  });
+  it("Shift+Enter keeps editing, and an open Agent without a description asks for one", () => {
+    render(
+      <AgentRow
+        agent={{ ...agent, enabled: true, path: "/Users/fixture/research" }}
+        device={device}
+        onChanged={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("~/research")).toHaveAttribute(
+      "title",
+      "/Users/fixture/research",
+    );
+    expect(screen.getByText("已开放")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "添加简介，让其他 Agent 知道该找它做什么",
+      }),
+    );
+    fireEvent.keyDown(screen.getByRole("textbox"), {
+      key: "Enter",
+      shiftKey: true,
+    });
+    expect(screen.getByRole("textbox")).toBeInTheDocument();
     expect(mocks.request).not.toHaveBeenCalled();
   });
 });

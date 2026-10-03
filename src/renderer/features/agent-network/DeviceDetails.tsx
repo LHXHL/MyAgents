@@ -1,33 +1,50 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, type ReactNode } from "react";
 import { FloatingFocusManager, useFloating } from "@floating-ui/react";
 import { useTranslation } from "react-i18next";
-import { CloseIcon } from '@/components/icons';
+import {
+  ChevronRightIcon,
+  CloseIcon,
+  CopyIcon,
+  InfoIcon,
+} from "@/components/icons";
 import OverlayBackdrop from "@/components/OverlayBackdrop";
 import { useCloseLayer } from "@/hooks/useCloseLayer";
 import { isImeComposingEvent } from "@/utils/imeKeyboard";
-import {
-  allDeviceAgents,
-  networkErrorKey,
-  type NetworkAgent,
-  type NetworkDevice,
-} from "@/api/agentNetwork";
+import type { NetworkDevice } from "@/api/agentNetwork";
 import { AgentRow } from "./AgentRow";
-import { currentNetworkGeneration } from "./store";
+import {
+  DeviceIcon,
+  DeviceMenu,
+  deviceStatusText,
+  LocalTag,
+  osName,
+  sortAgents,
+  type DeviceCatalog,
+} from "./deviceDisplay";
 
 export function DeviceDetails({
   device,
+  catalog,
   isLocal,
   onClose,
   onChanged,
+  onRetry,
   onJoin,
+  onLeave,
+  onCopyId,
   membershipBusy,
   membershipError,
 }: {
   device: NetworkDevice;
+  /** `undefined` while the page is still reading this device's catalog. */
+  catalog: DeviceCatalog | undefined;
   isLocal: boolean;
   onClose: () => void;
   onChanged: () => void;
+  onRetry: () => void;
   onJoin: () => void;
+  onLeave: () => void;
+  onCopyId: () => void;
   membershipBusy: boolean;
   membershipError: string | null;
 }) {
@@ -37,75 +54,55 @@ export function DeviceDetails({
     context,
   } = useFloating({ open: true });
   const close = useRef<HTMLButtonElement>(null);
-  const [agents, setAgents] = useState<NetworkAgent[]>([]);
-  const [complete, setComplete] = useState(true),
-    [loadedKey, setLoadedKey] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null),
-    [refresh, setRefresh] = useState(0);
-  const requestKey = `${device.deviceId}/${device.membershipRevision}/${refresh}`;
-  const loading = loadedKey !== requestKey;
   useCloseLayer(() => {
     onClose();
     return true;
   }, 220);
-  useEffect(() => {
-    let cancelled = false;
-    const generation = currentNetworkGeneration();
-    void allDeviceAgents(device.deviceId)
-      .then((page) => {
-        if (cancelled || generation !== currentNetworkGeneration()) return;
-        setAgents(
-          page.items.sort(
-            (a, b) =>
-              a.name.localeCompare(b.name) ||
-              a.mountId.localeCompare(b.mountId),
-          ),
-        );
-        setComplete(page.complete);
-        setError(null);
-      })
-      .catch((failure) => {
-        if (!cancelled && generation === currentNetworkGeneration())
-          setError(t(`agentNetwork.errors.${networkErrorKey(failure)}`));
-      })
-      .finally(() => {
-        if (!cancelled && generation === currentNetworkGeneration())
-          setLoadedKey(requestKey);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [device.deviceId, requestKey, t]);
-  const changed = () => {
-    setRefresh((value) => value + 1);
-    onChanged();
-  };
-  const details = [
-    [
-      t("agentNetwork.connectionStatus"),
-      t(
-        device.connectionState === "offline"
-          ? "agentNetwork.offline"
-          : device.connectionState === "ready"
-            ? "agentNetwork.online"
-            : "agentNetwork.syncing",
+  const agents = catalog?.status === "ready" ? sortAgents(catalog.items) : [];
+  const openCount = agents.filter((agent) => agent.enabled).length;
+  const info: { label: string; value: ReactNode }[] = [
+    {
+      label: t("agentNetwork.system"),
+      value: (
+        <>
+          {device.osVersion || "—"}
+          {device.platform && (
+            <span className="text-[var(--ink-subtle)]">
+              {" · "}
+              <span>{device.platform}</span>
+            </span>
+          )}
+        </>
       ),
-    ],
-    [t("agentNetwork.computerName"), device.name],
-    [
-      t("agentNetwork.ownership"),
-      t(isLocal ? "agentNetwork.localDevice" : "agentNetwork.remoteDevice"),
-    ],
-    [t("agentNetwork.platform"), device.platform],
-    [t("agentNetwork.osVersion"), device.osVersion],
-    [t("agentNetwork.clientVersion"), device.appVersion],
-    [t("agentNetwork.deviceId"), device.deviceId],
-    [
-      t("agentNetwork.lastSeen"),
-      device.lastNetworkSeenAt
+    },
+    {
+      label: t("agentNetwork.clientVersion"),
+      value: device.appVersion || "—",
+    },
+    {
+      label: t("agentNetwork.lastSeen"),
+      value: device.lastNetworkSeenAt
         ? new Date(device.lastNetworkSeenAt).toLocaleString()
         : "—",
-    ],
+    },
+    {
+      label: t("agentNetwork.deviceId"),
+      value: (
+        <span className="flex min-w-0 items-center gap-1">
+          <span className="min-w-0 truncate font-mono" title={device.deviceId}>
+            {device.deviceId}
+          </span>
+          <button
+            type="button"
+            onClick={onCopyId}
+            aria-label={t("agentNetwork.copyDeviceId")}
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+          >
+            <CopyIcon className="h-3.5 w-3.5" />
+          </button>
+        </span>
+      ),
+    },
   ];
   return (
     <OverlayBackdrop portal onClose={onClose} className="z-[220] p-4">
@@ -121,107 +118,136 @@ export function DeviceDetails({
               onClose();
             }
           }}
-          className="flex max-h-[min(760px,90dvh)] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl"
+          className="flex max-h-[min(760px,90dvh)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-[var(--paper-elevated)] shadow-xl"
         >
-          <header className="flex items-center justify-between gap-4 border-b border-[var(--line)] px-6 py-4">
-            <h2
-              id="network-device-title"
-              className="min-w-0 truncate text-lg font-semibold text-[var(--ink)]"
-            >
-              {device.name}
-            </h2>
+          <header className="flex items-center gap-3.5 px-6 pb-4 pt-5">
+            <DeviceIcon device={device} />
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center gap-2">
+                <h2
+                  id="network-device-title"
+                  className="min-w-0 truncate text-lg font-semibold text-[var(--ink)]"
+                >
+                  {device.name}
+                </h2>
+                {isLocal && <LocalTag />}
+              </div>
+              <p className="mt-0.5 truncate text-xs text-[var(--ink-muted)]">
+                {osName(device.platform)} · {deviceStatusText(t, device)}
+              </p>
+            </div>
+            {device.joined && (
+              <DeviceMenu
+                busy={membershipBusy}
+                onCopyId={onCopyId}
+                onLeave={onLeave}
+              />
+            )}
             <button
               ref={close}
               type="button"
               onClick={onClose}
               aria-label={t("agentNetwork.close")}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
             >
               <CloseIcon className="h-4 w-4" />
             </button>
           </header>
-          <div className="min-h-0 overflow-y-auto px-6 py-5">
-            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-3 rounded-lg bg-[var(--paper-inset)] p-4 text-xs">
-              {details.map(([label, value]) => (
-                <div key={label} className="contents">
-                  <dt className="text-[var(--ink-muted)]">{label}</dt>
-                  <dd
-                    className="min-w-0 break-words text-[var(--ink)]"
-                    title={value}
-                  >
-                    {value || "—"}
-                  </dd>
-                </div>
-              ))}
-            </dl>
+          <div className="min-h-0 overflow-y-auto px-6 pb-5">
             {!device.joined && (
-              <div className="mt-4 flex items-center justify-end">
+              <div className="mb-3 flex items-center gap-3 rounded-[10px] bg-[var(--accent)]/10 px-3.5 py-3 text-sm text-[var(--ink-secondary)]">
+                <InfoIcon className="h-4 w-4 shrink-0 text-[var(--accent)]" />
+                <span className="min-w-0 flex-1">
+                  {t("agentNetwork.notJoinedHint")}
+                </span>
                 <button
                   type="button"
                   onClick={onJoin}
                   disabled={membershipBusy}
                   aria-busy={membershipBusy}
-                  className="rounded-md bg-[var(--button-primary-bg)] px-3 py-1.5 text-xs font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-60"
+                  className="shrink-0 rounded-lg bg-[var(--button-primary-bg)] px-2.5 py-1.5 text-xs font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-60"
                 >
-                  {t("agentNetwork.join")}
+                  {t(
+                    membershipBusy
+                      ? "agentNetwork.saving"
+                      : "agentNetwork.join",
+                  )}
                 </button>
               </div>
             )}
             {membershipError && (
-              <p role="alert" className="mt-3 text-xs text-[var(--error)]">
+              <p role="alert" className="mb-3 text-xs text-[var(--error)]">
                 {membershipError}
               </p>
             )}
-            <h3 className="mb-1 mt-6 text-sm font-semibold text-[var(--ink-muted)]">
+            <h3 className="mb-1.5 flex items-baseline gap-2 text-sm font-semibold text-[var(--ink-muted)]">
               {t("agentNetwork.agents")}
+              {catalog?.status === "ready" && agents.length > 0 && (
+                <span className="text-xs font-normal text-[var(--ink-subtle)]">
+                  {t("agentNetwork.openRatio", {
+                    open: openCount,
+                    total: agents.length,
+                  })}
+                </span>
+              )}
             </h3>
-            {loading && agents.length === 0 ? (
-              <div aria-busy="true" className="space-y-4 py-4">
+            {catalog === undefined ? (
+              <div aria-busy="true" className="space-y-3 py-3">
                 {[0, 1, 2].map((index) => (
                   <div
                     key={index}
-                    className="h-10 animate-pulse rounded-md bg-[var(--paper-inset)]"
+                    className="h-12 animate-pulse rounded-[10px] bg-[var(--paper-inset)]"
                   />
                 ))}
               </div>
-            ) : (
-              <ul className="divide-y divide-[var(--line)]">
-                {agents.map((agent) => (
-                  <AgentRow
-                    key={agent.mountId}
-                    agent={agent}
-                    device={device}
-                    onChanged={changed}
-                  />
-                ))}
-              </ul>
-            )}
-            {!loading && error && (
+            ) : catalog.status === "error" ? (
               <p role="alert" className="py-4 text-sm text-[var(--error)]">
-                {error}{" "}
-                <button
-                  type="button"
-                  onClick={() => setRefresh((value) => value + 1)}
-                  className="underline"
-                >
+                {catalog.error}{" "}
+                <button type="button" onClick={onRetry} className="underline">
                   {t("agentNetwork.retry")}
                 </button>
               </p>
-            )}
-            {!loading && !error && agents.length === 0 && (
-              <p className="py-5 text-sm text-[var(--ink-muted)]">
+            ) : agents.length === 0 ? (
+              <p className="py-6 text-center text-sm text-[var(--ink-muted)]">
                 {t(
                   device.catalogSyncedAt === null
                     ? "agentNetwork.unsynced"
                     : "agentNetwork.noAgents",
                 )}
               </p>
+            ) : (
+              <ul className="-mx-3">
+                {agents.map((agent) => (
+                  <AgentRow
+                    key={agent.mountId}
+                    agent={agent}
+                    device={device}
+                    onChanged={onChanged}
+                  />
+                ))}
+              </ul>
             )}
-            {!complete && (
+            {catalog?.status === "ready" && !catalog.complete && (
               <p className="py-3 text-xs text-[var(--ink-muted)]">
                 {t("agentNetwork.partial")}
               </p>
             )}
+            <details className="group/info mt-4 border-t border-[var(--line-subtle)] pt-2">
+              <summary className="flex cursor-pointer list-none items-center gap-1.5 py-1.5 text-sm text-[var(--ink-muted)] hover:text-[var(--ink)] [&::-webkit-details-marker]:hidden">
+                <ChevronRightIcon className="h-3.5 w-3.5 transition-transform group-open/info:rotate-90" />
+                {t("agentNetwork.deviceInfo")}
+              </summary>
+              <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-2 py-2 pl-5 text-xs">
+                {info.map(({ label, value }) => (
+                  <div key={label} className="contents">
+                    <dt className="text-[var(--ink-muted)]">{label}</dt>
+                    <dd className="min-w-0 break-words text-[var(--ink-secondary)]">
+                      {value}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </details>
           </div>
         </section>
       </FloatingFocusManager>

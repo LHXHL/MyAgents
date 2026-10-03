@@ -42,7 +42,8 @@ vi.mock("@/hooks/useMyAgentsLogin", () => ({
     startLogin: mocks.login,
   }),
 }));
-vi.mock("@/features/agent-network/store", () => ({
+vi.mock("@/features/agent-network/store", async (original) => ({
+  ...(await original<typeof import("@/features/agent-network/store")>()),
   useAgentNetworkSnapshot: () => mocks.snapshot,
   currentNetworkGeneration: () => mocks.snapshot.authGeneration,
 }));
@@ -135,9 +136,9 @@ describe("Agent network account and device management", () => {
   });
   it("keeps a real membership write uncertain when its transport result is lost", async () => {
     render(<AgentNetwork />);
-    await screen.findByRole("button", { name: "加入" });
+    await screen.findByRole("button", { name: "加入网络" });
     mocks.request.mockRejectedValueOnce({ code: "NETWORK_TRANSPORT_FAILED" });
-    fireEvent.click(screen.getByRole("button", { name: "加入" }));
+    fireEvent.click(screen.getByRole("button", { name: "加入网络" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "尚未确认保存结果",
     );
@@ -145,10 +146,16 @@ describe("Agent network account and device management", () => {
   it("reports a details read failure without a save claim", async () => {
     mocks.agents.mockRejectedValueOnce({ code: "NETWORK_REQUEST_UNCONFIRMED" });
     render(<AgentNetwork />);
-    fireEvent.click(await screen.findByRole("button", {name: "查看 Fixture Mac 的设备详情"}));
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "查看 Fixture Mac 的设备详情",
+      }),
+    );
     const dialog = await screen.findByRole("dialog");
-    expect(await within(dialog).findByRole("alert")).not.toHaveTextContent("保存结果");
-    fireEvent.click(within(dialog).getByRole("button", {name: "重试"}));
+    expect(await within(dialog).findByRole("alert")).not.toHaveTextContent(
+      "保存结果",
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "重试" }));
     await waitFor(() => expect(mocks.agents).toHaveBeenCalledTimes(2));
   });
   it("uses the shared account login screen without querying network metadata while signed out", async () => {
@@ -164,19 +171,20 @@ describe("Agent network account and device management", () => {
     expect(mocks.devices).not.toHaveBeenCalled();
     expect(mocks.request).not.toHaveBeenCalled();
   });
-  it("shows unsynced count honestly and keeps membership separate from the whole-card details action", async () => {
+  it("groups an unjoined device apart and keeps membership separate from the whole-card details action", async () => {
     render(<AgentNetwork />);
     const details = await screen.findByRole("button", {
       name: "查看 Fixture Mac 的设备详情",
     });
-    expect(screen.getByText("未同步")).toBeInTheDocument();
-    expect(screen.queryByText("0 个 Agent 在线")).not.toBeInTheDocument();
+    expect(screen.getByText("同账号下未加入的设备")).toBeInTheDocument();
+    expect(screen.queryByText("网络中的设备")).not.toBeInTheDocument();
+    expect(screen.getByText("macOS · 未加入网络")).toBeInTheDocument();
     fireEvent.click(details);
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("darwin-aarch64")).toBeInTheDocument();
     expect(mocks.request).toHaveBeenCalledTimes(1); // Read network only; opening details cannot join.
     fireEvent.click(within(dialog).getByRole("button", { name: "关闭" }));
-    fireEvent.click(screen.getByRole("button", { name: "加入" }));
+    fireEvent.click(screen.getByRole("button", { name: "加入网络" }));
     await waitFor(() =>
       expect(mocks.request).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -192,7 +200,7 @@ describe("Agent network account and device management", () => {
     render(<AgentNetwork />);
     const button = await screen.findByRole("button", { name: "网络说明" });
     const hint =
-      "加入网络的设备会通过 MyAgents 网络中转端到端加密信息，实际任务均在本地执行。";
+      "设备之间的任务、响应和结果都在设备端加密，MyAgents 服务器只转发密文。";
     expect(screen.queryByText(hint)).not.toBeInTheDocument();
     fireEvent.click(button);
     expect(await screen.findByText(hint)).toBeInTheDocument();
@@ -219,11 +227,11 @@ describe("Agent network account and device management", () => {
       }),
     );
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText("离线")).toBeInTheDocument();
+    expect(within(dialog).getByText("macOS · 未加入网络")).toBeInTheDocument();
     expect(
       within(dialog).getByText(new Date(seen).toLocaleString()),
     ).toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole("button", { name: "加入" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "加入网络" }));
     await waitFor(() =>
       expect(mocks.request).toHaveBeenCalledWith(
         expect.objectContaining({ kind: "membership", joined: true }),
@@ -255,7 +263,8 @@ describe("Agent network account and device management", () => {
           }),
     );
     const view = render(<AgentNetwork />);
-    fireEvent.click(await screen.findByRole("button", { name: "退出" }));
+    fireEvent.click(await screen.findByTitle("更多操作"));
+    fireEvent.click(await screen.findByRole("button", { name: "退出网络" }));
     const confirmation = (
       await screen.findByText("退出网络？")
     ).closest<HTMLElement>(".glass-panel")!;
@@ -285,5 +294,106 @@ describe("Agent network account and device management", () => {
     });
     expect(screen.queryByText("Fixture Mac")).not.toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+  it("shows each joined device's open Agents and guides first use from facts already read", async () => {
+    const remote = {
+      ...device,
+      deviceId: "44444444-4444-4444-8444-444444444444",
+      name: "Fixture PC",
+      platform: "windows-x86_64",
+      joined: true,
+      catalogSyncedAt: 1,
+    };
+    const agent = (name: string, enabled: boolean, index: number) => ({
+      principalId: "account",
+      networkId: device.networkId,
+      deviceId: remote.deviceId,
+      mountId: `55555555-5555-4555-8555-55555555555${index}`,
+      localAgentId: `agent-${index}`,
+      localWorkspaceId: `workspace-${index}`,
+      name,
+      path: `C:\\Users\\fixture\\${name}`,
+      lifecycle: "active" as const,
+      catalogRevision: 1,
+      enabled,
+      enableRevision: 1,
+      description: null,
+      descriptionRevision: 1,
+      icon: index === 1 ? "not-a-glyph" : null,
+    });
+    mocks.devices.mockResolvedValue({
+      items: [device, remote],
+      complete: true,
+    });
+    mocks.agents.mockImplementation(async (deviceId: string) =>
+      deviceId === remote.deviceId
+        ? {
+            items: [agent("Builder", true, 1), agent("Docs", false, 2)],
+            complete: true,
+          }
+        : { items: [], complete: true },
+    );
+    render(<AgentNetwork />);
+    const card = (
+      await screen.findByRole("button", { name: "查看 Fixture PC 的设备详情" })
+    ).closest("article")!;
+    expect(await within(card).findByText("Builder")).toBeInTheDocument();
+    expect(within(card).queryByText("Docs")).not.toBeInTheDocument();
+    expect(within(card).getByText("已开放 1 / 2 个 Agent")).toBeInTheDocument();
+    // An unknown remote icon falls back to the neutral glyph, never raw text.
+    expect(within(card).queryByText("not-a-glyph")).not.toBeInTheDocument();
+    // This device has not joined, so the guide points at step one.
+    const guide = screen.getByRole("list");
+    expect(
+      within(guide).getByText("让设备加入网络").closest("li"),
+    ).toHaveAttribute("aria-current", "step");
+    // Leaving is reachable from the details header and still asks first.
+    fireEvent.click(
+      within(card).getByRole("button", { name: "查看 Fixture PC 的设备详情" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText("~\\Builder"),
+    ).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByTitle("更多操作"));
+    fireEvent.click(await screen.findByRole("button", { name: "退出网络" }));
+    expect(await screen.findByText("退出网络？")).toBeInTheDocument();
+    expect(
+      mocks.request.mock.calls.filter(
+        ([request]) => request.kind === "membership",
+      ),
+    ).toHaveLength(0);
+  });
+  it("hides the guide once this device is in and an Agent is open", async () => {
+    mocks.devices.mockResolvedValue({
+      items: [{ ...device, joined: true, catalogSyncedAt: 1 }],
+      complete: true,
+    });
+    mocks.agents.mockResolvedValue({
+      items: [
+        {
+          principalId: "account",
+          networkId: device.networkId,
+          deviceId: device.deviceId,
+          mountId: "66666666-6666-4666-8666-666666666666",
+          localAgentId: "agent",
+          localWorkspaceId: "workspace",
+          name: "Mino",
+          path: "/Users/fixture/mino",
+          lifecycle: "active",
+          catalogRevision: 1,
+          enabled: true,
+          enableRevision: 1,
+          description: "Daily helper",
+          descriptionRevision: 1,
+        },
+      ],
+      complete: true,
+    });
+    render(<AgentNetwork />);
+    expect(await screen.findByText("Mino")).toBeInTheDocument();
+    expect(screen.getByText("本机")).toBeInTheDocument();
+    expect(screen.queryByText("让设备加入网络")).not.toBeInTheDocument();
+    expect(screen.queryByText("开放 Agent 工作区")).not.toBeInTheDocument();
   });
 });
