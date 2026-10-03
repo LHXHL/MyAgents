@@ -12,7 +12,7 @@
 import 'katex/dist/katex.min.css';
 import './Markdown.css';
 
-import { lazy, Suspense, memo, useEffect, useMemo, useState, type ComponentProps } from 'react';
+import { Fragment, lazy, Suspense, memo, useEffect, useMemo, useState, type ComponentProps } from 'react';
 import type { Components } from 'react-markdown';
 import type { Element } from 'hast';
 import ReactMarkdown from 'react-markdown';
@@ -495,14 +495,18 @@ const Markdown = memo(function Markdown({ children, compact = false, preserveNew
     <MarkdownDocumentDirectoryContext.Provider value={basePath}>
     <div className={`markdown-content min-w-0 max-w-full break-words${compact ? ' markdown-content--compact' : ''}`}>
       {chunks.map((chunk, index) => (
+        <Fragment key={index}>
+        {/* ReactMarkdown separates top-level blocks with a "\n" text node;
+            keep it at chunk boundaries so the DOM (and plain-text copy) is
+            identical to a whole-document render. */}
+        {index > 0 && '\n'}
         <MarkdownChunk
-          // Chunks are prefix-stable, so position is their identity.
-          key={index}
           source={chunk}
           remarkPlugins={preserveNewlines ? MARKDOWN_REMARK_PLUGINS_WITH_BREAKS : MARKDOWN_REMARK_PLUGINS_DEFAULT}
           rehypePlugins={streaming && !raw && index === chunks.length - 1 ? REHYPE_PLUGINS_STREAMING : MARKDOWN_REHYPE_PLUGINS}
           components={components}
         />
+        </Fragment>
       ))}
     </div>
     </MarkdownDocumentDirectoryContext.Provider>

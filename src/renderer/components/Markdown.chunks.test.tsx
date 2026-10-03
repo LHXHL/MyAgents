@@ -57,17 +57,13 @@ afterEach(() => {
 });
 
 describe('Markdown chunked rendering (#634)', () => {
-  // Chunk boundaries only drop the inter-block "\n" text nodes ReactMarkdown
-  // emits between block elements; those never render.
-  const normalize = (html: string) => html.replace(/>\s+</g, '><').trim();
-
   it('produces the same DOM as one whole-document parse', () => {
     const doc = report(40);
     probe.chunking = false;
     const whole = render(<Theme><Markdown>{doc}</Markdown></Theme>).container.innerHTML;
     probe.chunking = true;
     const chunked = render(<Theme><Markdown>{doc}</Markdown></Theme>).container.innerHTML;
-    expect(normalize(chunked)).toBe(normalize(whole));
+    expect(chunked).toBe(whole);
   });
 
   // Shapes whose meaning spans blank lines (review reproductions). Each must
@@ -88,7 +84,7 @@ describe('Markdown chunked rendering (#634)', () => {
       const whole = render(<Theme><Markdown raw={raw}>{doc}</Markdown></Theme>).container.innerHTML;
       probe.chunking = true;
       const chunked = render(<Theme><Markdown raw={raw}>{doc}</Markdown></Theme>).container.innerHTML;
-      expect(normalize(chunked)).toBe(normalize(whole));
+      expect(chunked).toBe(whole);
     }
   });
 
