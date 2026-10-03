@@ -113,7 +113,7 @@ mod platform {
     use super::super::{actor::ManagedAgentNetwork, NetworkError};
     use windows_sys::Win32::System::Power::{
         PowerRegisterSuspendResumeNotification, PowerUnregisterSuspendResumeNotification,
-        DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS,
+        DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS, HPOWERNOTIFY,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         DEVICE_NOTIFY_CALLBACK, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMECRITICAL,
@@ -124,7 +124,7 @@ mod platform {
         owner: ManagedAgentNetwork,
     }
     pub(crate) struct Monitor {
-        handle: *mut core::ffi::c_void,
+        handle: HPOWERNOTIFY,
         context: Box<Context>,
     }
     // SAFETY: registration handles are unregistered from any thread; boxed
@@ -170,7 +170,12 @@ mod platform {
         if status != 0 {
             return Err(NetworkError::new("NETWORK_POWER_MONITOR_UNAVAILABLE"));
         }
-        Ok(Monitor { handle, context })
+        // Registration writes a pointer, while unregistration takes the same
+        // pointer-sized handle as HPOWERNOTIFY in windows-sys.
+        Ok(Monitor {
+            handle: handle as HPOWERNOTIFY,
+            context,
+        })
     }
     impl Drop for Monitor {
         fn drop(&mut self) {
