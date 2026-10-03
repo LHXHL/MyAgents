@@ -32,6 +32,8 @@ CLI 使用原 `agent list/show`、`session list/get/state/start/send/watch` 命�
 
 空闲 watch 优先原 live 结果，缺失再读目标原 SessionStore 的最近 assistant；回执包含 latest-session-result 范围与 live/history/none/unavailable 来源，历史保留自己的时间与已知 terminalStatus/turnId，不能沿用另一轮的终态或声称是某请求的回答。保留 partial/stopped/error 文本。V2 历史终态取原 transcriptTurns 的对应 turn.status；消息封口不能证明执行成功，transcriptRecovery unavailable 不能解释成没有回答。
 
+跨设备内部 Agent 的初始请求沿原 `VerifiedCaller.label` 携带 `Agent名称@来源设备名称`，设备名称复用 `device_identity::local_device_name`，与网络注册名称同源；目标 `start/send` 原 Inbox 和请求气泡直接使用这个展示标签。本地跨会话标签保持原格式，已有历史不改写。
+
 Session label 继续表示会话标题/原摘要。来源回执和异步事件另含 Agent/设备 identity，显示为 `Agent @ device · Session label`，不拿 UUID 充当标题。`session list` 文本保留完整可复制的 Session selector。`agent network-diagnose --json` 按需列出协议能力、分页设备 appVersion 与原目录 connectionState（ready / syncing / offline），不从版本号或可发现性推断在线状态。错误记录阶段、代码、requestId，schema 日志只记录字段路径，不打印正文或配置；只有已发送的 start/send 可能接纳未知，读失败按查询错误重试。严格旧客户端会拒绝这些协议扩展（包括目录 icon），本次 dev 验收双方须升级同一固定包。
 
 ## 身份、加密与资源

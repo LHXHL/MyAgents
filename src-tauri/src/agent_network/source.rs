@@ -21,6 +21,23 @@ pub(crate) enum SourceKind {
     ExternalCli,
 }
 
+/// Presentation only: the network directory registers this same device name.
+/// Keep the existing caller label budget, including non-BMP names.
+fn network_caller_label(agent_name: &str, device_name: Option<&str>) -> String {
+    let label = match device_name {
+        Some(device) => format!("{agent_name}@{device}"),
+        None => agent_name.to_owned(),
+    };
+    let mut units = 0;
+    label
+        .chars()
+        .take_while(|ch| {
+            units += ch.len_utf16();
+            units <= 320
+        })
+        .collect()
+}
+
 pub(crate) async fn invoke(
     owner: &ManagedAgentNetwork,
     manager: &ManagedSidecarManager,
@@ -76,7 +93,10 @@ pub(crate) async fn invoke(
         VerifiedCaller::Internal {
             source_session_id: current.product_session_id,
             source_agent_id: identity.local_agent_id.clone(),
-            label: identity.name.chars().take(320).collect(),
+            label: network_caller_label(
+                &identity.name,
+                crate::device_identity::local_device_name().as_deref(),
+            ),
         }
     } else {
         VerifiedCaller::External {
@@ -138,4 +158,29 @@ pub(crate) async fn watches(owner:&ManagedAgentNetwork, manager:&ManagedSidecarM
         return Err(NetworkError::new("SOURCE_GENERATION_CHANGED"));
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_request_label_carries_the_registered_device_name() {
+        assert_eq!(
+            network_caller_label("Mino", Some("Example-Mac.local")),
+            "Mino@Example-Mac.local"
+        );
+        assert_eq!(
+            network_caller_label("Mino", Some("EXAMPLE-WIN")),
+            "Mino@EXAMPLE-WIN"
+        );
+        assert_eq!(network_caller_label("Mino", None), "Mino");
+    }
+
+    #[test]
+    fn network_request_label_stays_within_the_protocol_utf16_budget() {
+        let label = network_caller_label(&"😀".repeat(159), Some("Win"));
+        assert_eq!(label.encode_utf16().count(), 320);
+        assert_eq!(label, format!("{}@W", "😀".repeat(159)));
+    }
 }
