@@ -646,16 +646,25 @@ pub struct HandoverResult {
 /// after acquiring the manager lock with NO subsequent log line, which made
 /// root-causing the missing notification impossible. Each step is now a
 /// log breadcrumb so partial-failure diagnosis is grep-able.
-#[tauri::command]
 #[allow(non_snake_case)]
-pub async fn cmd_handover_session_to_channel<R: Runtime>(
+pub(super) async fn handover_session_to_channel<R: Runtime>(
     app: AppHandle<R>,
     sessionId: String,
     agentId: String,
     channelId: String,
     workspacePath: String,
     sessionKey: Option<String>,
-) -> Result<HandoverResult, String> {
+    held_fence: Option<(String, tokio::sync::OwnedMutexGuard<()>)>,
+    expected_source: Option<String>,
+) -> Result<
+    (
+        HandoverResult,
+        tokio::sync::OwnedMutexGuard<()>,
+        std::sync::Arc<super::AnyAdapter>,
+        String,
+    ),
+    String,
+> {
     ulog_info!(
         "[handover] start session={} → agent={} channel={}",
         short_id(&sessionId),
@@ -681,7 +690,6 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
         agent_workspace,
         last_active_channel,
         last_active_private_target,
-        fallback_snapshot,
         channel_runtimes,
     ) = {
         let agents = agent_state.lock().await;
@@ -700,16 +708,6 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
             );
             format!("Channel {} not found in agent {}", channelId, agentId)
         })?;
-        let fallback_snapshot = runtime_change::build_snapshot_from_channel_state(
-            &channel.bot_instance.runtime,
-            &channel.bot_instance.current_model,
-            &channel.bot_instance.permission_mode,
-            &channel.bot_instance.mcp_servers_json,
-            &channel.bot_instance.runtime_config,
-            channel.bot_instance.config.provider_id.clone(),
-            &channel.bot_instance.current_provider_env,
-        )
-        .await;
         let channel_runtimes = agent
             .channels
             .iter()
@@ -728,7 +726,6 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
             agent.config.resolved_workspace_path.clone(),
             agent.last_active_channel.clone(),
             agent.last_active_private_target.clone(),
-            fallback_snapshot,
             channel_runtimes,
         )
     };
@@ -793,12 +790,25 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
     // heartbeat, and surface migration for this exact chat. In particular,
     // a first IM message must finish its SessionStore materialization before
     // the source is classified as durable vs unmaterialized below.
-    let _target_peer_guard =
-        acquire_peer_operation_fence(&target_peer_locks, &target_session_key).await;
+    let target_peer_guard = match held_fence {
+        Some((key, guard)) if key == target_session_key => guard,
+        Some(_) => return Err("Peer fence does not match handover target".to_string()),
+        None => acquire_peer_operation_fence(&target_peer_locks, &target_session_key).await,
+    };
     let prior_before_handover = {
         let router = router_arc.lock().await;
         router.peer_session_snapshot(&target_session_key)
     };
+
+    if let Some(expected) = expected_source {
+        if prior_before_handover
+            .as_ref()
+            .map(|peer| peer.session_id.as_str())
+            != Some(expected.as_str())
+        {
+            return Err("Session binding changed; refresh /model".to_string());
+        }
+    }
 
     // ----- 3. Check whether the target session already has a Sidecar in the
     // manager. We don't require one here: provider/runtime boundary forks can
@@ -914,7 +924,6 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
             } else {
                 runtime_change::freeze_via_file_lock_status(
                     &prior_for_freeze.session_id,
-                    &fallback_snapshot,
                 )
                 .await
                 .and_then(|outcome| {
@@ -926,9 +935,9 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
                     )
                 })
                 .map(|disposition| match disposition {
-                        runtime_change::PeerFileLockFreezeDisposition::Frozen => {
+                        runtime_change::PeerFileLockFreezeDisposition::Frozen | runtime_change::PeerFileLockFreezeDisposition::PreservedLegacy => {
                             ulog_info!(
-                                "[handover] step4b froze idle prior session {} via file lock",
+                                "[handover] step4b preserved offline prior session {} without reconstructing settings",
                                 short_id(&prior_for_freeze.session_id)
                             );
                         }
@@ -1035,20 +1044,12 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
             .iter()
             .find(|runtime| runtime.channel_id == channelId)
         {
-            if let Some(handle) = target_runtime
-                .consumers
-                .lock()
-                .await
-                .remove(&target_session_key)
-            {
-                handle
-                    .cancel
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-                ulog_info!(
-                    "[handover] step5 cancelled stale target ImEventConsumer for {}",
-                    target_session_key
-                );
-            }
+            super::enqueue::retire_im_consumer(
+                &target_runtime.consumers,
+                manager.inner(),
+                &target_session_key,
+            )
+            .await;
         }
     }
 
@@ -1091,15 +1092,12 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
         for removed in removed_bindings {
             removed_count += 1;
             let removed_owner = SidecarOwner::Agent(removed.session_key.clone());
-            if let Some(handle) = runtime.consumers.lock().await.remove(&removed.session_key) {
-                handle
-                    .cancel
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-                ulog_info!(
-                    "[handover] step5b cancelled stale ImEventConsumer for {}",
-                    removed.session_key
-                );
-            }
+            super::enqueue::retire_im_consumer(
+                &runtime.consumers,
+                manager.inner(),
+                &removed.session_key,
+            )
+            .await;
             match release_session_sidecar(manager.inner(), &removed.session_id, &removed_owner).await {
                 Ok(stopped) => ulog_info!(
                     "[handover] step5b removed stale channel binding {} from session {} (sidecar_stopped={})",
@@ -1178,40 +1176,45 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
         }
     }
 
-    // ----- 7. Notify the channel. Same 8-char session-id prefix surface that
-    // `/new` shows in IM (`✅ 已创建新对话 (xxxxxxxx)`) so the user can
-    // correlate the two affordances. Failure here is non-fatal — `notified`
-    // surfaces back to the renderer toast.
+    Ok((
+        HandoverResult {
+            ok: true,
+            session_key: target_session_key,
+            notified: false,
+            state_persisted: persist_warning.is_none(),
+            warning: persist_warning,
+        },
+        target_peer_guard,
+        adapter,
+        chat_id,
+    ))
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn cmd_handover_session_to_channel<R: Runtime>(
+    app: AppHandle<R>,
+    sessionId: String,
+    agentId: String,
+    channelId: String,
+    workspacePath: String,
+    sessionKey: Option<String>,
+) -> Result<HandoverResult, String> {
     let notification = format!("当前会话切换至「{}」", short_id(&sessionId));
-    ulog_info!(
-        "[handover] step7 sending notification to chat={} via adapter",
-        chat_id
-    );
-    let notified = match adapter.send_message(&chat_id, &notification).await {
-        Ok(_) => {
-            ulog_info!("[handover] step7 notification sent");
-            true
-        }
-        Err(e) => {
-            ulog_warn!("[handover] step7 notification send failed: {}", e);
-            false
-        }
-    };
-
-    ulog_info!(
-        "[handover] done: session={} now bound to {} (notified={})",
-        short_id(&sessionId),
-        target_session_key,
-        notified,
-    );
-
-    Ok(HandoverResult {
-        ok: true,
-        session_key: target_session_key,
-        notified,
-        state_persisted: persist_warning.is_none(),
-        warning: persist_warning,
-    })
+    let (mut result, fence, adapter, chat_id) = handover_session_to_channel(
+        app,
+        sessionId,
+        agentId,
+        channelId,
+        workspacePath,
+        sessionKey,
+        None,
+        None,
+    )
+    .await?;
+    drop(fence);
+    result.notified = adapter.send_message(&chat_id, &notification).await.is_ok();
+    Ok(result)
 }
 
 // AnyAdapter::send_message is on `ImAdapter` — pull the trait into scope so

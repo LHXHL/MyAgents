@@ -2,17 +2,24 @@
 # Same resource/build owner as release; debug builds disable automatic updates.
 set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-case "${1:-}" in
-    ""|--build-only) ;;
-    --help|-h) echo "Usage: ./build_dev_linux.sh [--build-only]"; exit 0 ;;
-    *) echo "Usage: ./build_dev_linux.sh [--build-only]" >&2; exit 1 ;;
-esac
-if [ "$#" -gt 1 ]; then
-    echo "Usage: ./build_dev_linux.sh [--build-only]" >&2
-    exit 1
+BUILD_ONLY=false
+DSH_SOURCE="release"
+DSH_HANDOFF=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --build-only) BUILD_ONLY=true; shift ;;
+        --dsh-source) DSH_SOURCE="${2:-}"; shift 2 ;;
+        --dsh-handoff) DSH_HANDOFF="${2:-}"; shift 2 ;;
+        --help|-h) echo "Usage: ./build_dev_linux.sh [--build-only] [--dsh-source release|local] [--dsh-handoff /absolute/path]"; exit 0 ;;
+        *) echo "Unsupported option: $1" >&2; exit 1 ;;
+    esac
+done
+if [ "$DSH_SOURCE" = "local" ]; then
+    "${PROJECT_DIR}/build_linux.sh" --debug --dsh-source local --dsh-handoff "$DSH_HANDOFF"
+else
+    "${PROJECT_DIR}/build_linux.sh" --debug
 fi
-"${PROJECT_DIR}/build_linux.sh" --debug
-if [ "${1:-}" = "--build-only" ]; then exit 0; fi
+if [ "$BUILD_ONLY" = true ]; then exit 0; fi
 if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
     echo "Build succeeded. Start the development executable from an Ubuntu desktop session."
     exit 0

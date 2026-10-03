@@ -4,7 +4,11 @@
 
 本文描述 Runtime 工具产物进入 MyAgents 消息、持久化和 WebView 数据面的当前契约。历史接入过程和未来能力不属于本文。
 
-`ToolAttachment` wire 与 Renderer 都是 Runtime-neutral；当前生产者包括 builtin Claude Agent SDK 和 Codex。没有产物映射的 Runtime 不伪造附件。
+`ToolAttachment` wire 与 Renderer 都是 Runtime-neutral；当前生产者包括 builtin Claude Agent SDK、Codex 和 Integrated DSH。没有产物映射的 Runtime 不伪造附件。
+
+Integrated DSH 事件只携带 Runtime registry 签发的 `image_ref` 与元数据。adapter 按 exact generation/session/digest 获取只读 lease，校验路径后调用共享 `saveToolAttachment({ externalPath })`，并在成功/失败时释放 lease；附件失败只降级该附件。图片字节和任意绝对路径不进入普通 Runtime JSON 事件。
+
+Host 的 `DshAttachmentRegistry` 在发布时把对象设为只读，并在签发 lease 前校验字节身份、兼容旧版仍可写的对象；`readOnlyPath` 必须与磁盘权限一致，否则 Runtime 会拒绝模型侧图片消费。工具发布附件和模型随后读取附件分别使用各自有效的 request scope，不能沿用已经结束的工具 scope。
 
 ## Owner 与数据流
 

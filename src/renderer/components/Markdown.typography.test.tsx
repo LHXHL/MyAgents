@@ -100,7 +100,7 @@ describe("Markdown typography contract", () => {
     );
   });
 
-  it("pins the default reading rhythm", () => {
+  it("pins the large reading rhythm", () => {
     expect(markdownStyles).toMatch(
       /\.markdown-content\s*\{[\s\S]*?--markdown-line-height:\s*1\.7/,
     );
@@ -130,9 +130,9 @@ describe("Markdown typography contract", () => {
     );
   });
 
-  it("defines a smaller complete standard rhythm without targeting compact or live editor roots", () => {
+  it("uses standard rhythm unless large is explicitly selected, without targeting compact or live editor roots", () => {
     expect(markdownStyles).toMatch(
-      /html\[data-markdown-reading-size='standard'\]\s*\.markdown-content:not\(\.markdown-content--compact\):not\(\.md-editor-host \*\)\s*\{[\s\S]*?--markdown-font-size:\s*var\(--text-sm\)/,
+      /html:not\(\[data-markdown-reading-size='large'\]\)\s*\.markdown-content:not\(\.markdown-content--compact\):not\(\.md-editor-host \*\)\s*\{[\s\S]*?--markdown-font-size:\s*var\(--text-sm\)/,
     );
     expect(markdownStyles).toMatch(/--markdown-line-height:\s*1\.6/);
     expect(markdownStyles).toMatch(/--markdown-flow-gap:\s*var\(--space-2-5\)/);

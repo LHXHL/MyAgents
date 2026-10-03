@@ -9,7 +9,14 @@
  * - Copy button: copies raw Mermaid source in both modes
  */
 
-import { AlertCircle, Check, Code, Copy, Eye, RefreshCw } from 'lucide-react';
+import {
+  AlertIcon,
+  CheckIcon,
+  CodeIcon,
+  CopyIcon,
+  EyeIcon,
+  RefreshIcon,
+} from '@/components/icons';
 import mermaid from 'mermaid';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -193,7 +200,7 @@ export default function MermaidDiagram({ children }: MermaidDiagramProps) {
                                 : 'text-[var(--code-line-number)] hover:text-[var(--code-text)]'
                         }`}
                     >
-                        <Eye className="size-3" />
+                        <EyeIcon className="size-3" />
                         <span>{t('markdown.preview')}</span>
                     </button>
                     <button
@@ -205,7 +212,7 @@ export default function MermaidDiagram({ children }: MermaidDiagramProps) {
                                 : 'text-[var(--code-line-number)] hover:text-[var(--code-text)]'
                         }`}
                     >
-                        <Code className="size-3" />
+                        <CodeIcon className="size-3" />
                         <span>{t('markdown.code')}</span>
                     </button>
                 </div>
@@ -218,12 +225,12 @@ export default function MermaidDiagram({ children }: MermaidDiagramProps) {
                 >
                     {copied ? (
                         <>
-                            <Check className="size-3.5" />
+                            <CheckIcon className="size-3.5" />
                             <span>{t('markdown.copied')}</span>
                         </>
                     ) : (
                         <>
-                            <Copy className="size-3.5" />
+                            <CopyIcon className="size-3.5" />
                             <span>{t('markdown.copy')}</span>
                         </>
                     )}
@@ -260,7 +267,7 @@ export default function MermaidDiagram({ children }: MermaidDiagramProps) {
                 <>
                     {isRendering && (
                         <div className="flex items-center gap-1.5 border-b border-[var(--line)] px-3 py-1.5 text-xs text-[var(--code-line-number)]">
-                            <RefreshCw className="size-3 animate-spin" />
+                            <RefreshIcon className="size-3 animate-spin" />
                             <span>{t('markdown.updating')}</span>
                         </div>
                     )}
@@ -283,7 +290,7 @@ export default function MermaidDiagram({ children }: MermaidDiagramProps) {
                 <div className="p-4">
                     <div className="flex items-start justify-between gap-2">
                         <div className="flex items-start gap-2 text-[var(--warning)]">
-                            <AlertCircle className="mt-0.5 size-4 shrink-0" />
+                            <AlertIcon className="mt-0.5 size-4 shrink-0" />
                             <div className="min-w-0">
                                 <p className="text-sm font-medium">{t('markdown.diagramRendering')}</p>
                                 <p className="mt-1 truncate text-xs opacity-60">{parseError}</p>
@@ -304,7 +311,7 @@ export default function MermaidDiagram({ children }: MermaidDiagramProps) {
         return (
             <div className="flex h-20 items-center justify-center bg-[var(--paper-inset)]/50">
                 <div className="flex items-center gap-2 text-sm text-[var(--ink-muted)]">
-                    <RefreshCw className="size-4 animate-spin" />
+                    <RefreshIcon className="size-4 animate-spin" />
                     <span>{t('markdown.renderDiagram')}</span>
                 </div>
             </div>

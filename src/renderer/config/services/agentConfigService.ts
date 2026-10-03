@@ -3,8 +3,7 @@ import { resolveAgentConfigMutation, type AgentConfigMutation } from '../../../s
 import type { AppConfig, McpServerDefinition, Project, WorkspaceTemplateAgentDefaults } from '../types';
 import { getEffectiveModelAliases, isProjectArchived } from '../types';
 import {
-  agentChannelUsesManagedCodexProvider,
-  resolveAgentChannelRuntime,
+  channelExecutionConfigChangeError,
   type AgentConfig,
   type ChannelConfig,
   type ChannelOverrides,
@@ -17,7 +16,7 @@ import {
   projectManagedCodexPermissionToRuntime,
   runtimeConfigForRuntimeBackedProvider,
 } from '../../../shared/providerExecution';
-import { isRuntimePermissionMode, type RuntimeConfig, type RuntimeType } from '../../../shared/types/runtime';
+import { type RuntimeConfig, type RuntimeType } from '../../../shared/types/runtime';
 import {
   atomicModifyConfig,
   loadAppConfig,
@@ -192,7 +191,7 @@ export function migrateImBotConfigsToAgents(config: AppConfig, projects: Project
         // Keep unsupported data rather than changing its behavior during migration.
         return (agent.runtime && agent.runtime !== 'builtin')
           || ['providerId', 'model', 'providerEnvJson'].some(key =>
-            bot[key as keyof ImBotConfig] === undefined && agent[key as keyof AgentConfig] !== undefined)
+            JSON.stringify(bot[key as keyof ImBotConfig]) !== JSON.stringify(agent[key as keyof AgentConfig]))
           || JSON.stringify(bot.mcpEnabledServers ?? []) !== JSON.stringify(agent.mcpEnabledServers ?? [])
           || JSON.stringify(bot.heartbeat ?? null) !== JSON.stringify(agent.heartbeat ?? null);
       });
@@ -210,23 +209,6 @@ export function migrateImBotConfigsToAgents(config: AppConfig, projects: Project
       const overrides: ChannelOverrides = {};
       let hasOverrides = false;
 
-      if (bot.providerId !== agent.providerId && bot.providerId !== undefined) {
-        overrides.providerId = bot.providerId;
-        hasOverrides = true;
-      }
-      if (bot.providerEnvJson !== agent.providerEnvJson && bot.providerEnvJson !== undefined) {
-        overrides.providerEnvJson = bot.providerEnvJson;
-        hasOverrides = true;
-      }
-      if (bot.model !== agent.model && bot.model !== undefined) {
-        overrides.model = bot.model;
-        hasOverrides = true;
-      }
-      // Channels otherwise use runtime maximum permission, not Agent defaults.
-      if (bot.permissionMode) {
-        overrides.permissionMode = bot.permissionMode;
-        hasOverrides = true;
-      }
       if (bot.groupToolsDeny && bot.groupToolsDeny.length > 0) {
         overrides.toolsDeny = bot.groupToolsDeny;
         hasOverrides = true;
@@ -890,23 +872,9 @@ export async function modifyAgentChannelConfig(
 
     const currentChannel = channelIndex >= 0 ? channels[channelIndex] : initialChannel!;
     updatedChannel = modify(currentChannel);
-    const currentPermission = currentChannel.overrides?.permissionMode;
-    const updatedPermission = updatedChannel.overrides?.permissionMode;
-    const identityChanged = resolveAgentChannelRuntime(agents[agentIndex], currentChannel)
-      !== resolveAgentChannelRuntime(agents[agentIndex], updatedChannel)
-      || agentChannelUsesManagedCodexProvider(agents[agentIndex], currentChannel)
-        !== agentChannelUsesManagedCodexProvider(agents[agentIndex], updatedChannel);
-    if (updatedPermission !== undefined && (updatedPermission !== currentPermission || identityChanged)) {
-      const valid = agentChannelUsesManagedCodexProvider(agents[agentIndex], updatedChannel)
-        ? updatedPermission === 'auto' || updatedPermission === 'plan' || updatedPermission === 'fullAgency'
-        : isRuntimePermissionMode(
-          updatedPermission,
-          resolveAgentChannelRuntime(agents[agentIndex], updatedChannel),
-        );
-      if (!valid) {
-        throw new Error(`Invalid Channel permissionMode '${updatedPermission}' for its Runtime identity.`);
-      }
-    }
+    // Retain legacy values on unrelated edits; execution settings belong to the Agent/Session.
+    const executionError = channelExecutionConfigChangeError(channelIndex >= 0 ? currentChannel : undefined, updatedChannel);
+    if (executionError) throw new Error(executionError);
     if (channelIndex >= 0) channels[channelIndex] = updatedChannel;
     else channels.push(updatedChannel);
     authoritativeChannels = channels;
@@ -1076,6 +1044,10 @@ async function syncAgentRuntime(
   }
   if ('runtime' in patch) {
     runtimePatch.runtime = patch.runtime ?? null;
+    hasRuntimeChanges = true;
+  }
+  if ('runtimePreference' in patch) {
+    runtimePatch.runtimePreference = patch.runtimePreference ?? null;
     hasRuntimeChanges = true;
   }
   if ('runtimeConfig' in patch) {

@@ -6,7 +6,14 @@
  * Uses Tab-scoped API when in Tab context (WorkspaceConfigPanel),
  * falls back to global API when not in Tab context (GlobalSkillsPanel).
  */
-import { Save, FolderOpen, Loader2, Trash2, Edit2, X } from 'lucide-react';
+import {
+  SaveIcon,
+  FolderOpenIcon,
+  LoaderIcon,
+  TrashIcon,
+  EditIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { useCallback, useEffect, useState, useImperativeHandle, forwardRef, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -243,7 +250,7 @@ const CommandDetailPanel = forwardRef<CommandDetailPanelRef, CommandDetailPanelP
         if (loading) {
             return (
                 <div className="flex h-full items-center justify-center">
-                    <Loader2 className="h-8 w-8 animate-spin text-[var(--ink-muted)]" />
+                    <LoaderIcon className="h-8 w-8 animate-spin text-[var(--ink-muted)]" />
                 </div>
             );
         }
@@ -275,7 +282,7 @@ const CommandDetailPanel = forwardRef<CommandDetailPanelRef, CommandDetailPanelP
                                 className="flex-shrink-0 rounded p-0.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                                 title={t('resourceDetail.common.openLocation')}
                             >
-                                <FolderOpen className="h-3.5 w-3.5" />
+                                <FolderOpenIcon className="h-3.5 w-3.5" />
                             </button>
                         </div>
                     </div>
@@ -287,7 +294,7 @@ const CommandDetailPanel = forwardRef<CommandDetailPanelRef, CommandDetailPanelP
                                     onClick={() => setShowDeleteConfirm(true)}
                                     className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-[var(--error)] hover:bg-[var(--error-bg)]"
                                 >
-                                    <Trash2 className="h-4 w-4" />
+                                    <TrashIcon className="h-4 w-4" />
                                     {t('resourceDetail.common.delete')}
                                 </button>
                                 <button
@@ -295,7 +302,7 @@ const CommandDetailPanel = forwardRef<CommandDetailPanelRef, CommandDetailPanelP
                                     onClick={handleCancel}
                                     className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]"
                                 >
-                                    <X className="h-4 w-4" />
+                                    <CloseIcon className="h-4 w-4" />
                                     {t('resourceDetail.common.cancel')}
                                 </button>
                                 <button
@@ -304,7 +311,7 @@ const CommandDetailPanel = forwardRef<CommandDetailPanelRef, CommandDetailPanelP
                                     disabled={saving}
                                     className="flex items-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-4 py-1.5 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
                                 >
-                                    {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                                    {saving ? <LoaderIcon className="h-4 w-4 animate-spin" /> : <SaveIcon className="h-4 w-4" />}
                                     {t('resourceDetail.common.save')}
                                 </button>
                             </div>
@@ -315,7 +322,7 @@ const CommandDetailPanel = forwardRef<CommandDetailPanelRef, CommandDetailPanelP
                                 onClick={() => handleEdit('name')}
                                 className="flex items-center gap-1.5 rounded-lg bg-[var(--button-dark-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-dark-text)] transition-colors hover:bg-[var(--button-dark-bg-hover)]"
                             >
-                                <Edit2 className="h-4 w-4" />
+                                <EditIcon className="h-4 w-4" />
                                 {t('resourceDetail.common.edit')}
                             </button>
                         )}

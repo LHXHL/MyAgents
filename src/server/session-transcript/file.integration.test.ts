@@ -67,6 +67,30 @@ afterEach(async () => {
 });
 
 describe('V2 real file commit and replacement', () => {
+  it('persists coalesced appends and reads them back with the original revision span', async () => {
+    const { file, filePath } = await setup();
+    const source = await file.read();
+    const writer = new TranscriptWriter({
+      sessionId: 'session-test', generation: 'g1', revision: 1,
+      projection: source.projection, storage: file,
+    });
+    try {
+      for (let offset = 0; offset < 200; offset++) {
+        writer.observe({ kind: 'text-append', messageId: 'a', field: 'text', offset, text: 'x' });
+      }
+      expect(await writer.flush(5000)).toBe(true);
+      const restored = await file.read();
+      expect(restored).toMatchObject({ revision: 201, tail: 'clean' });
+      expect(restored.projection.messages.get('a')?.content).toBe('x'.repeat(200));
+      const lines = (await readFile(filePath, 'utf8')).trim().split('\n');
+      expect(lines).toHaveLength(3);
+      expect(JSON.parse(lines[2]).batch).toMatchObject({
+        fromRevision: 2, revision: 201,
+        operations: [{ kind: 'text-append', messageId: 'a', field: 'text', offset: 0, text: 'x'.repeat(200) }],
+      });
+    } finally { await writer.close(); }
+  });
+
   it.each(['header-only', 'zero-length'] as const)('recovers a %s target from the complete live projection', async shape => {
     const { file, filePath } = await setup();
     const source = await file.read();

@@ -1,4 +1,5 @@
-use super::manager::{RuntimeDriftTransition, SessionOwnerRelease};
+use super::manager::SessionOwnerRelease;
+use super::runtime_identity::{admit_runtime_identity, distribution_default_runtime_identity};
 use super::*;
 
 pub(crate) type SessionLifecycleGuard = crate::keyed_lifecycle::KeyedLifecycleGuard;
@@ -55,22 +56,6 @@ fn finish_unowned_session_after_drain(
         drop(retired);
     }
     Ok(())
-}
-
-pub(crate) fn finish_runtime_drift_transition(
-    manager: &ManagedSidecarManager,
-    transition: RuntimeDriftTransition,
-) -> Result<RuntimeDriftResult, String> {
-    let RuntimeDriftTransition { result, drain } = transition;
-    if let Some(drain) = drain {
-        drain.wait();
-        let retired = {
-            let mut manager_guard = manager.lock().map_err(|error| error.to_string())?;
-            manager_guard.finish_runtime_drift_retirement(&drain)
-        };
-        drop(retired);
-    }
-    Ok(result)
 }
 
 pub(crate) async fn has_persisted_session_owner(session_id: &str) -> Result<bool, String> {
@@ -327,50 +312,32 @@ pub(crate) async fn ensure_session_sidecar_with_runtime_identity_override_lifecy
 }
 
 fn resolve_runtime_identity_for_owner(
-    owner: &SidecarOwner,
+    _owner: &SidecarOwner,
     runtime_override: Option<&str>,
     runtime_source_override: Option<&str>,
     session_runtime_identity: Option<RuntimeIdentity>,
     agent_runtime_identity: Option<RuntimeIdentity>,
 ) -> RuntimeIdentity {
-    let session_runtime = session_runtime_identity
-        .as_ref()
-        .map(|identity| identity.runtime.clone());
-    let agent_runtime = agent_runtime_identity
-        .as_ref()
-        .map(|identity| identity.runtime.clone());
-    let resolved_runtime = resolve_runtime_for_owner(
-        runtime_override.map(str::to_string),
-        owner,
-        session_runtime,
-        agent_runtime,
-    );
-    let resolved_runtime_name = normalize_runtime_name(resolved_runtime.as_deref()).to_string();
-    let resolved_runtime_source = if resolved_runtime_name == "builtin" {
-        None
-    } else if runtime_override.is_some() {
-        Some(runtime_source_override.unwrap_or("system-cli"))
-    } else if session_runtime_identity
-        .as_ref()
-        .map(|identity| identity.runtime.as_str())
-        == Some(resolved_runtime_name.as_str())
-        && !owner_prefers_live_agent_runtime(owner)
-    {
-        session_runtime_identity
-            .as_ref()
-            .and_then(|identity| identity.runtime_source.as_deref())
-    } else if agent_runtime_identity
-        .as_ref()
-        .map(|identity| identity.runtime.as_str())
-        == Some(resolved_runtime_name.as_str())
-    {
-        agent_runtime_identity
-            .as_ref()
-            .and_then(|identity| identity.runtime_source.as_deref())
-    } else {
-        Some("system-cli")
-    };
-    RuntimeIdentity::new(Some(&resolved_runtime_name), resolved_runtime_source)
+    if let Some(identity) = session_runtime_identity {
+        if let Some(runtime) = runtime_override {
+            let requested = RuntimeIdentity::new(Some(runtime), runtime_source_override);
+            if identity.runtime != requested.runtime
+                || identity.runtime_source != requested.runtime_source
+            {
+                return RuntimeIdentity::incompatible(
+                    "Runtime override conflicts with persisted Session identity",
+                );
+            }
+        }
+        return identity;
+    }
+    if let Some(runtime) = runtime_override {
+        return admit_runtime_identity(RuntimeIdentity::new(
+            Some(runtime),
+            runtime_source_override,
+        ));
+    }
+    agent_runtime_identity.unwrap_or_else(distribution_default_runtime_identity)
 }
 
 fn resolve_expected_runtime_identity(
@@ -380,15 +347,8 @@ fn resolve_expected_runtime_identity(
     runtime_override: Option<&str>,
     runtime_source_override: Option<&str>,
 ) -> RuntimeIdentity {
-    // Existing Session metadata is authoritative for desktop-style owners.
-    // A metadata creator has no Session row yet, so it follows the exact same
-    // override -> Agent resolution that the spawn path uses. Live IM owners
-    // intentionally ignore Session metadata and follow the Agent default.
-    let session_runtime_identity = if owner_prefers_live_agent_runtime(owner) {
-        None
-    } else {
-        resolve_session_runtime_identity_full(session_id)
-    };
+    // Every existing Product Session owns its execution identity, including IM.
+    let session_runtime_identity = resolve_session_runtime_identity_full(session_id);
     let agent_runtime_identity = resolve_agent_runtime_identity_from_config(workspace_path);
     resolve_runtime_identity_for_owner(
         owner,
@@ -455,6 +415,9 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
         runtime_override.as_deref(),
         runtime_source_override.as_deref(),
     );
+    if let Some(error) = &expected_runtime_identity.compatibility_error {
+        return Err(format!("RUNTIME_BINDING_INCOMPATIBLE: {error}"));
+    }
     let requested_runtime_for_trace = expected_runtime_identity.runtime.clone();
     emit_perf_trace(
         PerfTrace::new(PerfTraceName::SidecarBoot, "ensure_start")
@@ -483,10 +446,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
     // A V2 birth may already be bound and running while its product metadata
     // is still awaiting publication. The active generation retains its runtime
     // identity; an Agent template is not authority to replace that process.
-    if runtime_override.is_none()
-        && !owner_prefers_live_agent_runtime(&owner)
-        && resolve_session_runtime_identity_full(session_id).is_none()
-    {
+    if runtime_override.is_none() && resolve_session_runtime_identity_full(session_id).is_none() {
         if let Some(identity) = retained_session_runtime_identity(&manager_guard, session_id) {
             expected_runtime_identity = identity;
         }
@@ -1057,6 +1017,9 @@ fn create_new_session_sidecar<'a, R: Runtime>(
     if let Some(runtime_source) = resolved_identity.runtime_source_for_env() {
         cmd.env("MYAGENTS_RUNTIME_SOURCE", runtime_source);
     }
+    if let Some(runtime_binding_json) = &resolved_identity.runtime_binding_json {
+        cmd.env("MYAGENTS_RUNTIME_BINDING", runtime_binding_json);
+    }
     let sidecar_generation = manager_guard.next_generation(session_id);
     cmd.env("MYAGENTS_SIDECAR_ID", session_id);
     cmd.env(
@@ -1580,7 +1543,7 @@ pub async fn cmd_ensure_session_sidecar(
             || !is_canonical_session_id(&sessionId)
             || !matches!(
                 birthRuntime.as_deref(),
-                Some("builtin" | "claude-code" | "codex" | "gemini")
+                Some("builtin" | "claude-code" | "codex")
             )
             || !matches!(
                 birthRuntimeSource.as_deref(),
@@ -1894,7 +1857,9 @@ pub async fn cmd_delete_session_if_unowned(
         // Do not unlink until the exact old Node process has actually exited.
         retire_session_writer_for_delete(&sidecars, &sessionId)?;
         let client = crate::local_http::blocking_builder()
-            .timeout(Duration::from_secs(15))
+            // Integrated DSH deletion verifies and starts the pinned Runtime,
+            // tombstones native state, purges it, then commits Product removal.
+            .timeout(Duration::from_secs(120))
             .build()
             .map_err(|error| format!("Failed to create local HTTP client: {error}"))?;
         let delete_url = delete_dispatch.url_for_path(&format!("/sessions/{sessionId}"))?;
@@ -2080,7 +2045,7 @@ mod session_lifecycle_tests {
     fn metadata_creator_runtime_override_wins_before_metadata_birth() {
         let expected = resolve_runtime_identity_for_owner(
             &SidecarOwner::Task("task-a".to_string()),
-            Some("gemini"),
+            Some("claude-code"),
             Some("system-cli"),
             None,
             Some(RuntimeIdentity::new(
@@ -2089,8 +2054,75 @@ mod session_lifecycle_tests {
             )),
         );
 
-        assert_eq!(expected.runtime, "gemini");
+        assert_eq!(expected.runtime, "claude-code");
         assert_eq!(expected.runtime_source.as_deref(), Some("system-cli"));
+    }
+
+    #[test]
+    fn im_owner_keeps_persisted_managed_identity_and_rejects_override() {
+        let owner = SidecarOwner::Agent("im-peer".into());
+        let frozen = RuntimeIdentity::new(Some("codex"), Some("managed-provider"));
+        let resolved = resolve_runtime_identity_for_owner(
+            &owner,
+            None,
+            None,
+            Some(frozen.clone()),
+            Some(RuntimeIdentity::new(Some("builtin"), None)),
+        );
+        assert_eq!(resolved, frozen);
+        let rejected = resolve_runtime_identity_for_owner(
+            &owner,
+            Some("codex"),
+            Some("system-cli"),
+            Some(frozen),
+            Some(RuntimeIdentity::new(Some("builtin"), None)),
+        );
+        assert!(validate_sidecar_runtime_invariant(
+            "im-peer",
+            &rejected,
+            Some("codex"),
+            Some("managed-provider"),
+            "test"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn persisted_binding_and_compatibility_state_survive_owner_resolution() {
+        let binding = serde_json::json!({
+            "family": "integrated",
+            "id": "dsh",
+            "implementationVersion": "0.0.0",
+            "protocolVersion": "2.0.0",
+            "protocolSchemaSha256": "schema",
+            "runtimeArtifactSha256": "artifact",
+            "compatibilityManifestSha256": "compatibility",
+            "sessionFormat": "dsh-session-events-v1",
+            "platformTarget": "darwin-arm64"
+        });
+        let dsh = RuntimeIdentity::new(Some("dsh"), Some("integrated")).with_binding(&binding);
+        let expected = resolve_runtime_identity_for_owner(
+            &SidecarOwner::Tab("tab-a".to_string()),
+            None,
+            None,
+            Some(dsh.clone()),
+            Some(RuntimeIdentity::new(Some("builtin"), None)),
+        );
+        assert_eq!(expected, dsh);
+
+        let incompatible = RuntimeIdentity::incompatible("invalid frozen binding");
+        let expected = resolve_runtime_identity_for_owner(
+            &SidecarOwner::Tab("tab-a".to_string()),
+            None,
+            None,
+            Some(incompatible.clone()),
+            Some(RuntimeIdentity::new(Some("builtin"), None)),
+        );
+        assert_eq!(expected, incompatible);
+        assert!(
+            validate_sidecar_runtime_invariant("quarantined", &expected, None, None, "test",)
+                .is_err()
+        );
     }
 
     #[test]

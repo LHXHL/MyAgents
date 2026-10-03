@@ -87,7 +87,7 @@ describe('resolveImProviderEnv (#237)', () => {
     });
   });
 
-  it('honors channel.overrides.providerId when present (intentional per-channel override)', async () => {
+  it('ignores channel.overrides.providerId for new Agent defaults', async () => {
     writeConfig({
       agents: [{
         id: 'agent-1',
@@ -110,7 +110,7 @@ describe('resolveImProviderEnv (#237)', () => {
     const { resolveImProviderEnv } = await import('../utils/admin-config');
     // With channelId → channel override wins.
     const overrideEnv = resolveImProviderEnv(AGENT_WORKSPACE, 'channel-1');
-    expect(overrideEnv?.baseUrl).toBe('https://api.minimaxi.com/anthropic');
+    expect(overrideEnv?.baseUrl).toBe('https://api.deepseek.com/anthropic');
     // Without channelId → agent default.
     const defaultEnv = resolveImProviderEnv(AGENT_WORKSPACE, undefined);
     expect(defaultEnv?.baseUrl).toBe('https://api.deepseek.com/anthropic');
@@ -199,7 +199,7 @@ describe('resolveImProviderEnv (#237)', () => {
     expect(resolveImProviderEnv(AGENT_WORKSPACE, undefined)).toBeUndefined();
   });
 
-  it('Codex review-fix #2: honors legacy channel root-level providerId (pre-bc06386)', async () => {
+  it('ignores legacy Channel root providerId when resolving new Agent defaults', async () => {
     // Pre-v0.1.45 the in-IM `/provider` command wrote the channel-root
     // `providerId` field directly (not via `overrides.providerId`). Rust still
     // honors that field — `ChannelConfigRust::to_im_config` at
@@ -229,11 +229,11 @@ describe('resolveImProviderEnv (#237)', () => {
 
     const { resolveImProviderEnv } = await import('../utils/admin-config');
     const env = resolveImProviderEnv(AGENT_WORKSPACE, 'channel-legacy');
-    expect(env?.baseUrl).toBe('https://api.minimaxi.com/anthropic');
-    expect(env?.apiKey).toBe('sk-m');
+    expect(env?.baseUrl).toBe('https://api.deepseek.com/anthropic');
+    expect(env?.apiKey).toBe('sk-d');
   });
 
-  it('Codex review-fix #2b: overrides.providerId still wins over legacy channel-root providerId', async () => {
+  it('ignores both Channel override and root providerId in Agent default resolution', async () => {
     writeConfig({
       agents: [{
         id: 'agent-1',
@@ -256,7 +256,7 @@ describe('resolveImProviderEnv (#237)', () => {
 
     const { resolveImProviderEnv } = await import('../utils/admin-config');
     const env = resolveImProviderEnv(AGENT_WORKSPACE, 'channel-mixed');
-    expect(env?.baseUrl).toBe('https://open.bigmodel.cn/api/anthropic');
+    expect(env?.baseUrl).toBe('https://api.deepseek.com/anthropic');
   });
 
   it('normalizes Windows workspace identity across separators, case, and trailing slash', async () => {

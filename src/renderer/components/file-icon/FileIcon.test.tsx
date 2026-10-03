@@ -5,16 +5,17 @@ import { describe, expect, it } from "vitest";
 import { FileIcon } from "./FileIcon";
 
 describe("FileIcon", () => {
-  it("renders a fixed-size decorative local asset by default", () => {
+  it("renders a fixed-size decorative inline glyph coloured by its tone token", () => {
     const { container } = render(<FileIcon name="report.pdf" size="regular" />);
-    const icon = container.querySelector("img");
+    const icon = container.querySelector("svg");
 
-    expect(icon).toHaveAttribute("alt", "");
     expect(icon).toHaveAttribute("aria-hidden", "true");
+    expect(icon).not.toHaveAttribute("role");
     expect(icon).toHaveAttribute("width", "20");
     expect(icon).toHaveAttribute("height", "20");
     expect(icon).toHaveAttribute("data-file-icon-id", "pdf");
-    expect(icon?.getAttribute("src")).not.toMatch(/^https?:/);
+    expect(icon?.style.color).toBe("var(--file-icon-pdf)");
+    expect(container.querySelector("img")).toBeNull();
   });
 
   it("supports an accessible label when the icon stands alone", () => {
@@ -30,7 +31,7 @@ describe("FileIcon", () => {
       <FileIcon name="docs" nodeKind="directory" expanded />,
     );
 
-    expect(container.querySelector("img")).toHaveAttribute(
+    expect(container.querySelector("svg")).toHaveAttribute(
       "data-file-icon-id",
       "folder-open",
     );

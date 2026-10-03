@@ -65,8 +65,22 @@ describe('reasoningEffortChoices — per-surface vocabularies', () => {
     expect(reasoningEffortChoices('codex')).toEqual(CODEX_EFFORT_LEVELS);
     expect(CODEX_EFFORT_LEVELS).not.toContain('max');
   });
+  it('DSH projects the exact selected Provider effort vocabulary', () => {
+    expect(reasoningEffortChoices(
+      'dsh',
+      'anthropic',
+      'deepseek',
+      'deepseek-v4-flash',
+      'https://api.deepseek.com/anthropic',
+    ))
+      .toEqual(['high', 'max']);
+    expect(reasoningEffortChoices('dsh', 'anthropic', 'anthropic-api', 'claude-sonnet-4-6'))
+      .toBeNull();
+    expect(reasoningEffortChoices('dsh', 'openai', 'openrouter', 'unsupported'))
+      .toBeNull();
+  });
   it('gemini / unknown → null (UI hides the row entirely)', () => {
-    expect(reasoningEffortChoices('gemini')).toBeNull();
+    expect(reasoningEffortChoices('unknown-runtime')).toBeNull();
     expect(reasoningEffortChoices('some-future-runtime')).toBeNull();
   });
 });

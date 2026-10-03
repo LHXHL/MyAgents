@@ -32,7 +32,8 @@ import {
 /**
  * Permission mode for agent behavior
  */
-export type PermissionMode = 'auto' | 'plan' | 'fullAgency';
+export type PermissionMode = 'auto' | 'plan' | 'fullAgency'
+  | 'approval-required' | 'workspace-autonomous' | 'full-autonomous';
 
 /**
  * Background-agent permission policy (issue #264).
@@ -46,7 +47,7 @@ export type BackgroundAgentPermissionMode = 'inherit' | 'fullAgency';
 export type MarkdownReadingSize = 'large' | 'standard';
 
 export function normalizeMarkdownReadingSize(value: unknown): MarkdownReadingSize {
-  return value === 'standard' ? 'standard' : 'large';
+  return value === 'large' ? 'large' : 'standard';
 }
 
 /**
@@ -907,6 +908,18 @@ export function normalizeClaudeTranscriptCleanupPeriodDays(
   return Math.max(1, Math.floor(numericValue));
 }
 
+export interface DshCollaborationModelRef { providerId: string; modelId: string; }
+export interface DshCollaborationSettings {
+  maxDepth?: number;
+  maxActiveChildren?: number;
+  maxRetainedChildren?: number;
+  messageDelivery?: 'realtime' | 'turn';
+  modelPolicy?: 'inherit' | 'fixed' | 'agent';
+  fixedModel?: DshCollaborationModelRef;
+  roleModels?: (DshCollaborationModelRef & { role: string })[];
+  allowedModels?: DshCollaborationModelRef[];
+}
+
 export interface AppConfig {
   // Default settings for new projects
   defaultProviderId?: string;
@@ -956,10 +969,14 @@ export interface AppConfig {
    *  不支持实时 steering 的 external runtime 自动 fallback 到 'turn' 行为。
    *  仅桌面交互发送读取；IM/Task/Inbox 等非桌面来源保持既有语义。 */
   chatQueueResponseMode?: ChatQueueResponseMode;
+  /** Host model catalog and tree limits for Integrated DSH; applied at a safe configuration boundary. */
+  dshCollaboration?: DshCollaborationSettings;
   showDevTools: boolean; // 显示开发者工具 (Logs/System Info)
   /** 开发者开关：在 AI 对话页顶栏显示旧的工作区历史入口。默认关闭。 */
   showChatHistoryEntry?: boolean;
-  multiAgentRuntime?: boolean; // 多 Agent Runtime 模式（开发者，默认关闭）
+  /** Agent 未明确选择运行环境时，新 Session 使用的 Integrated Runtime。
+   *  已有 Session 保持冻结 identity；Provider 固定运行要求仍优先。 */
+  defaultIntegratedRuntime?: 'claude-agent-sdk' | 'dsh';
   experimentalSplitView?: boolean; // 实验性：文件预览在右侧分屏而非弹窗
   /** 实验室：用户注册 CLI 工具注册表（PRD 0.2.36）。默认关。
    *  只控制工具箱里的 CLI 工具注册/管理/AI 自动发现；不影响 myagents CLI
@@ -1899,8 +1916,9 @@ export const PRESET_PROVIDERS: Provider[] = [
     // Open BigModel API (OpenAI-protocol chat-completions path). Shares the
     // "Zhipu" vendor + model catalog with the Coding Plan provider above;
     // the distinction is protocol: Coding Plan uses the `/api/anthropic`
-    // path (Anthropic-native), this one uses `/api/paas/v4/chat/completions`
-    // via the Bridge's OpenAI translator (see src/server/openai-bridge).
+    // path (Anthropic-native), this one uses `/api/paas/v4/chat/completions`.
+    // Claude Agent SDK execution reaches it through the legacy Bridge; DSH
+    // preserves this declared OpenAI Chat protocol and calls it through pi-ai.
     id: 'zhipu-ai',
     name: '智谱 AI',
     vendor: 'Zhipu',
@@ -2831,7 +2849,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   themeId: DEFAULT_THEME_ID,
   themeSelectionExplicit: false,
   appearanceMode: DEFAULT_APPEARANCE_MODE,
-  markdownReadingSize: 'large',
+  markdownReadingSize: normalizeMarkdownReadingSize(undefined),
   uiLanguage: 'system',
   minimizeToTray: true, // 默认开启最小化到托盘
   forceWakeLock: false, // 默认关闭常开阻睡（智能模式仍在跑，覆盖 AI 工作期间）

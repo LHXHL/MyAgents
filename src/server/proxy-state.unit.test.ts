@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ProxySettings } from '../shared/config-types';
+import { buildDshChildEnvironment } from './integrated-runtimes/dsh/child-environment';
+
+vi.mock('node:fs', async importOriginal => ({
+  ...await importOriginal<typeof import('node:fs')>(),
+  // Initial proxy settings must not come from the developer's config.json.
+  readFileSync: vi.fn(() => '{}'),
+}));
 
 const socksBridgeMocks = vi.hoisted(() => ({
   isSocksBridgeRunning: vi.fn(),
@@ -147,9 +154,30 @@ describe('proxy-state provider scope', () => {
     expect(proxyState.getProxyForUrl('https://space.example.com/v1')).toBe(
       generalUsesApp ? 'http://myagents.proxy:7890' : 'http://system.proxy:8080',
     );
+    // WebFetch must follow the general owner's snapshot even if an unrelated
+    // component changes process.env after proxy state was committed.
+    process.env.HTTPS_PROXY = '';
+    process.env.https_proxy = '';
+    expect(proxyState.getProxyForUrl('https://example.com/page')).toBe(
+      generalUsesApp ? 'http://myagents.proxy:7890' : 'http://system.proxy:8080',
+    );
     expect(proxyState.getMyAgentsProxyForGeneralUrl('https://space.example.com/v1')).toBe(
       generalUsesApp ? 'http://myagents.proxy:7890' : undefined,
     );
+
+    const shellEnv = buildDshChildEnvironment({
+      nodeExecutablePath: '/verified/node',
+      sessionCli: null,
+      inheritedEnvironment: { HTTPS_PROXY: 'http://stale.proxy:9999' },
+      proxyEnvironment: proxyState.getGeneralProxyEnvironment(),
+    }).env;
+    expect(shellEnv.HTTPS_PROXY).toBe(
+      generalUsesApp ? 'http://myagents.proxy:7890' : 'http://system.proxy:8080',
+    );
+    expect(shellEnv.HTTP_PROXY).toBe(generalUsesApp ? 'http://myagents.proxy:7890' : undefined);
+    expect(shellEnv.NO_PROXY).toContain('localhost');
+    expect(shellEnv.no_proxy).toBe(shellEnv.NO_PROXY);
+    if (!generalUsesApp) expect(shellEnv.NO_PROXY).toContain('.corp.local');
 
     const providerEnv: Record<string, string | undefined> = {};
     proxyState.applyProviderProxyPolicyToEnv(providerEnv, providerId);
@@ -159,6 +187,11 @@ describe('proxy-state provider scope', () => {
     expect(providerEnv.HTTP_PROXY).toBe(
       providerUsesApp ? 'http://myagents.proxy:7890' : undefined,
     );
+    const requestPolicy = proxyState.getProviderRequestProxyPolicy(providerId);
+    expect(requestPolicy.httpProxy).toBe(providerEnv.HTTP_PROXY);
+    expect(requestPolicy.httpsProxy).toBe(providerEnv.HTTPS_PROXY);
+    expect(requestPolicy.noProxy).toBe(providerEnv.NO_PROXY);
+    expect(Object.isFrozen(requestPolicy)).toBe(true);
     expect(providerEnv.NO_PROXY).toContain('localhost');
     if (!providerUsesApp) expect(providerEnv.NO_PROXY).toContain('.corp.local');
     expect(providerEnv.MYAGENTS_PROXY_INJECTED).toBeUndefined();
@@ -275,6 +308,10 @@ describe('proxy-state provider scope', () => {
     });
 
     const bridgeUrl = 'http://127.0.0.1:41234';
+    expect(proxyState.getGeneralProxyEnvironment().http_proxy).toBe(generalUsesApp ? bridgeUrl : undefined);
+    expect(proxyState.getGeneralProxyEnvironment().HTTPS_PROXY).toBe(
+      generalUsesApp ? bridgeUrl : 'http://system.proxy:8080',
+    );
     expect(proxyState._getGeneralRequestProxyOptionsForTests().httpsProxy).toBe(
       generalUsesApp ? bridgeUrl : 'http://system.proxy:8080',
     );
@@ -301,6 +338,26 @@ describe('proxy-state provider scope', () => {
 
     expect(socksBridgeMocks.startSocksBridge).not.toHaveBeenCalled();
     expect(process.env.HTTP_PROXY).toBeUndefined();
+  });
+
+  it('restores inherited ALL_PROXY after disabling the app overlay and seals each generation', async () => {
+    process.env.ALL_PROXY = 'socks5://inherited.proxy:1080';
+    process.env.NO_PROXY = '.corp.local';
+    const proxyState = await loadProxyState();
+    await proxyState.setProcessProxyConfig({ ...scopedProxySettings, scope: { mode: 'all' } });
+    const previous = proxyState.getGeneralProxyEnvironment();
+    expect(previous.https_proxy).toBe('http://myagents.proxy:7890');
+    expect(previous.ALL_PROXY).toBeUndefined();
+
+    await proxyState.setProcessProxyConfig({ ...scopedProxySettings, enabled: false });
+    process.env.HTTPS_PROXY = 'http://unexpected.process-mutation:9999';
+    const current = proxyState.getGeneralProxyEnvironment();
+    expect(current.ALL_PROXY).toBe('socks5://inherited.proxy:1080');
+    expect(current.HTTPS_PROXY).toBeUndefined();
+    expect(current.NO_PROXY).toContain('.corp.local');
+    expect(current.NO_PROXY).toContain('127.0.0.1');
+    expect(current.NO_PROXY).toContain('::1');
+    expect(previous.https_proxy).toBe('http://myagents.proxy:7890');
   });
 
   it('does not tear down a stable SOCKS bridge from a superseded transition', async () => {

@@ -3,7 +3,7 @@
 // search icon. The choice is persisted in localStorage so returning
 // users see the view they last picked.
 
-import { LayoutGrid, List } from 'lucide-react';
+import { GridIcon, ListIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 export type TaskView = 'card' | 'list';
@@ -22,14 +22,14 @@ export function ViewToggle({ value, onChange }: Props) {
         onClick={() => onChange('card')}
         title={t('tasks.viewCard')}
       >
-        <LayoutGrid className="h-3.5 w-3.5" strokeWidth={1.5} />
+        <GridIcon className="h-3.5 w-3.5" strokeWidth={1.5} />
       </ToggleButton>
       <ToggleButton
         active={value === 'list'}
         onClick={() => onChange('list')}
         title={t('tasks.viewList')}
       >
-        <List className="h-3.5 w-3.5" strokeWidth={1.5} />
+        <ListIcon className="h-3.5 w-3.5" strokeWidth={1.5} />
       </ToggleButton>
     </div>
   );

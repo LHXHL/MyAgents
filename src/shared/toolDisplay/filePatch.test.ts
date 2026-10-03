@@ -722,29 +722,6 @@ describe('filePatch render model', () => {
     });
   });
 
-  it('parses only provenance-marked Gemini flat diffs and keeps relative line numbers', () => {
-    const model = resolveFilePatchRenderModel({
-      name: 'Edit',
-      input: {
-        _displayName: 'replace',
-        _geminiKind: 'edit',
-        file_path: '/tmp/gemini.ts',
-      },
-      result: '--- /tmp/gemini.ts\n+++ /tmp/gemini.ts\n keep\n-old\n+new',
-    });
-    expect(model).toMatchObject({
-      source: 'external',
-      summary: { files: 1, added: 1, removed: 1 },
-      changes: [{ path: '/tmp/gemini.ts', lineNumbers: 'relative' }],
-    });
-
-    expect(resolveFilePatchRenderModel({
-      name: 'Edit',
-      input: { file_path: '/tmp/generic.ts' },
-      result: '--- /tmp/generic.ts\n+++ /tmp/generic.ts\n-old\n+new',
-    })).toBeNull();
-  });
-
   it('fails closed for incomplete multi-file snapshots but retains a protocol-shaped diff-less move', () => {
     expect(resolveFilePatchRenderModel({
       name: 'Edit',
@@ -987,7 +964,7 @@ describe('filePatch render model', () => {
     });
   });
 
-  it('applies the shared row and character bounds to builtin and Gemini projections', () => {
+  it('applies the shared row and character bounds to builtin projections', () => {
     const oversizedWrite = resolveFilePatchRenderModel({
       name: 'Write',
       input: {
@@ -1001,22 +978,6 @@ describe('filePatch render model', () => {
     });
     expect(oversizedWrite?.changes[0]?.written).toBeUndefined();
     expect(oversizedWrite?.changes[0]?.rows).toHaveLength(FILE_PATCH_MAX_ROW_BUDGET);
-
-    const oversizedGemini = resolveFilePatchRenderModel({
-      name: 'Edit',
-      input: {
-        _displayName: 'replace',
-        _geminiKind: 'edit',
-        file_path: '/tmp/gemini.txt',
-      },
-      result: `--- /tmp/gemini.txt\n+++ /tmp/gemini.txt\n${'+line\n'.repeat(FILE_PATCH_MAX_ROW_BUDGET + 2)}`,
-    });
-    expect(oversizedGemini).toMatchObject({
-      hasHiddenContent: true,
-      summary: { added: FILE_PATCH_MAX_ROW_BUDGET, removed: 0 },
-      changes: [{ hasHiddenContent: true }],
-    });
-    expect(oversizedGemini?.changes[0]?.rows).toHaveLength(FILE_PATCH_MAX_ROW_BUDGET);
 
     const oversizedInputJson = JSON.stringify({
       file_path: '/tmp/stale.txt',
@@ -1035,16 +996,6 @@ describe('filePatch render model', () => {
       input: { file_path: '/tmp/single.txt', content: hugeSingleLine },
     });
     expect(singleLineWrite).toMatchObject({
-      hasHiddenContent: true,
-      changes: [{ rows: [], hasHiddenContent: true }],
-    });
-
-    const singleLineGemini = resolveFilePatchRenderModel({
-      name: 'Edit',
-      input: { _displayName: 'replace', _geminiKind: 'edit' },
-      result: `--- /tmp/single.txt\n+++ /tmp/single.txt\n+${hugeSingleLine}`,
-    });
-    expect(singleLineGemini).toMatchObject({
       hasHiddenContent: true,
       changes: [{ rows: [], hasHiddenContent: true }],
     });

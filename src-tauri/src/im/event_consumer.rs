@@ -47,30 +47,47 @@ pub type CancelFlag = Arc<AtomicBool>;
 /// filter by session (Sidecar is 1:1 with session, so the bus implicitly
 /// scopes). Kept as a parameter so the log line can identify which
 /// peer_session this consumer belongs to.
-pub fn spawn_consumer<A>(
+pub(super) struct ConsumerLifetime {
+    pub cancel: CancelFlag,
+    pub retire_when_idle: CancelFlag,
+    pub manager: crate::sidecar::ManagedSidecarManager,
+    pub retirement_owner: crate::sidecar::SidecarOwner,
+}
+
+pub(super) fn spawn_consumer<A>(
     client: Client,
     sidecar_port: u16,
     session_label: String,
     initial_replay_request_id: String,
     router: Arc<Mutex<ReplyRouter>>,
     adapter: Arc<A>,
-    cancel: CancelFlag,
+    lifetime: ConsumerLifetime,
     on_terminal: Arc<dyn Fn(String, TerminalOutcome) + Send + Sync>,
 ) -> JoinHandle<()>
 where
     A: ImStreamAdapter + Send + Sync + 'static,
 {
     tauri::async_runtime::spawn(async move {
+        let ConsumerLifetime {
+            cancel,
+            retire_when_idle,
+            manager,
+            retirement_owner,
+        } = lifetime;
         let mut last_seq: u64 = 0;
         let mut backoff_ms = RECONNECT_INITIAL_MS;
 
-        loop {
+        'consume: loop {
+            if retire_when_idle.load(Ordering::SeqCst) && router.lock().await.slot_count() == 0 {
+                cancel.store(true, Ordering::SeqCst);
+                break 'consume;
+            }
             if cancel.load(Ordering::SeqCst) {
                 ulog_info!(
                     "[event-consumer] Cancelled (session={})",
                     &session_label[..session_label.len().min(8)],
                 );
-                return;
+                break 'consume;
             }
 
             // W6 fix: legacy URL had `?session=<id>` but the Sidecar handler
@@ -116,8 +133,13 @@ where
             let mut buffer = String::new();
 
             'inner: loop {
+                if retire_when_idle.load(Ordering::SeqCst) && router.lock().await.slot_count() == 0
+                {
+                    cancel.store(true, Ordering::SeqCst);
+                    break 'consume;
+                }
                 if cancel.load(Ordering::SeqCst) {
-                    return;
+                    break 'consume;
                 }
                 // W8a fix: race the stream read against a periodic cancel
                 // poll. Without this, a quiet stream (no events for tens of
@@ -131,7 +153,7 @@ where
                     _ = tokio::time::sleep(Duration::from_secs(1)) => {
                         // Tick: check cancel and continue waiting for the next byte.
                         if cancel.load(Ordering::SeqCst) {
-                            return;
+                            break 'consume;
                         }
                         continue 'inner;
                     }
@@ -193,6 +215,11 @@ where
             sleep_with_cancel(&cancel, backoff_ms).await;
             backoff_ms = (backoff_ms * 2).min(RECONNECT_MAX_MS);
         }
+        // The BackgroundCompletion lease exists only after retirement. Exact owner
+        // release is harmless when no binding transfer ever installed it.
+        let _ =
+            crate::sidecar::release_session_sidecar(&manager, &session_label, &retirement_owner)
+                .await;
     })
 }
 

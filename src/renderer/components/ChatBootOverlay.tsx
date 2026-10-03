@@ -1,4 +1,4 @@
-import { AlertCircle, Loader2 } from 'lucide-react';
+import { AlertIcon, LoaderIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 /**
@@ -35,8 +35,8 @@ export default function ChatBootOverlay({
         >
             <div className="flex max-w-md flex-col items-center gap-3 px-6 text-center">
                 {hasError
-                    ? <AlertCircle className="h-6 w-6 text-[var(--error)]" />
-                    : <Loader2 className={`h-6 w-6 text-[var(--ink-muted)] ${show ? 'animate-spin' : ''}`} />}
+                    ? <AlertIcon className="h-6 w-6 text-[var(--error)]" />
+                    : <LoaderIcon className={`h-6 w-6 text-[var(--ink-muted)] ${show ? 'animate-spin' : ''}`} />}
                 <p className="text-sm text-[var(--ink-muted)]">
                     {hasError ? t('shell.boot.restoreFailed') : t('shell.boot.loading')}
                 </p>

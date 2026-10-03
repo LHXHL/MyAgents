@@ -4,7 +4,14 @@
  * Uses Tab-scoped API when in Tab context (WorkspaceConfigPanel),
  * falls back to global API when not in Tab context (GlobalSkillsPanel in Settings).
  */
-import { FolderOpen, Loader2, Plus, ShieldAlert, Sparkles, Terminal } from 'lucide-react';
+import {
+  FolderOpenIcon,
+  LoaderIcon,
+  PlusIcon,
+  ShieldAlertIcon,
+  CapabilitiesIcon,
+  TerminalIcon,
+} from '@/components/icons';
 import { useCallback, useEffect, useState, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -337,7 +344,7 @@ export default function SkillsCommandsList({
     if (loading) {
         return (
             <div className="flex h-full items-center justify-center">
-                <Loader2 className="h-8 w-8 animate-spin text-[var(--ink-muted)]" />
+                <LoaderIcon className="h-8 w-8 animate-spin text-[var(--ink-muted)]" />
             </div>
         );
     }
@@ -348,7 +355,7 @@ export default function SkillsCommandsList({
             <div className="mb-8">
                 <div className="mb-4 flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                        <Sparkles className="h-5 w-5 text-[var(--ink-muted)]" />
+                        <CapabilitiesIcon className="h-5 w-5 text-[var(--ink-muted)]" />
                         <h3 className="text-base font-semibold text-[var(--ink)]">
                             {scope === 'project' ? t('agentSettings.skillCommandList.projectSkillsTitle') : t('agentSettings.skillCommandList.skillsTitle')}
                         </h3>
@@ -363,7 +370,7 @@ export default function SkillsCommandsList({
                         onClick={() => setShowNewSkillDialog(true)}
                         className="flex items-center gap-1 rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)]"
                     >
-                        <Plus className="h-4 w-4" />
+                        <PlusIcon className="h-4 w-4" />
                         {t('agentSettings.common.new')}
                     </button>
                 </div>
@@ -387,7 +394,7 @@ export default function SkillsCommandsList({
                     </div>
                 ) : (
                     <EmptyState
-                        icon={<Sparkles className="h-12 w-12" />}
+                        icon={<CapabilitiesIcon className="h-12 w-12" />}
                         title={scope === 'project' ? t('agentSettings.skillCommandList.emptyProjectSkills') : t('agentSettings.skillCommandList.emptySkills')}
                         description={t('agentSettings.skillCommandList.emptySkillsDescription')}
                     />
@@ -399,7 +406,7 @@ export default function SkillsCommandsList({
             <div>
                 <div className="mb-4 flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                        <Terminal className="h-5 w-5 text-[var(--ink-muted)]" />
+                        <TerminalIcon className="h-5 w-5 text-[var(--ink-muted)]" />
                         <h3 className="text-base font-semibold text-[var(--ink)]">
                             {scope === 'project' ? t('agentSettings.skillCommandList.projectCommandsTitle') : t('agentSettings.skillCommandList.commandsTitle')}
                         </h3>
@@ -414,7 +421,7 @@ export default function SkillsCommandsList({
                         onClick={() => setShowNewCommandDialog(true)}
                         className="flex items-center gap-1 rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)]"
                     >
-                        <Plus className="h-4 w-4" />
+                        <PlusIcon className="h-4 w-4" />
                         {t('agentSettings.common.new')}
                     </button>
                 </div>
@@ -436,7 +443,7 @@ export default function SkillsCommandsList({
                     </div>
                 ) : (
                     <EmptyState
-                        icon={<Terminal className="h-12 w-12" />}
+                        icon={<TerminalIcon className="h-12 w-12" />}
                         title={scope === 'project' ? t('agentSettings.skillCommandList.emptyProjectCommands') : t('agentSettings.skillCommandList.emptyCommands')}
                         description={t('agentSettings.skillCommandList.emptyCommandsDescription')}
                     />
@@ -542,7 +549,7 @@ export function SkillIntegrityIssuesPanel({ issues }: { issues: readonly SkillIn
                             ? 'border-red-500/25 bg-red-500/5'
                             : 'border-amber-500/25 bg-amber-500/5'}`}
                     >
-                        <ShieldAlert className={`mt-0.5 h-4 w-4 shrink-0 ${blocked ? 'text-red-500' : 'text-amber-500'}`} />
+                        <ShieldAlertIcon className={`mt-0.5 h-4 w-4 shrink-0 ${blocked ? 'text-red-500' : 'text-amber-500'}`} />
                         <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-2">
                                 <span className="text-sm font-semibold text-[var(--ink)]">{issue.folderName}</span>
@@ -562,7 +569,7 @@ export function SkillIntegrityIssuesPanel({ issues }: { issues: readonly SkillIn
                             onClick={() => void reveal(issue.revealPath)}
                             className="inline-flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                         >
-                            <FolderOpen className="h-3.5 w-3.5" />
+                            <FolderOpenIcon className="h-3.5 w-3.5" />
                             {t('agentSettings.skillCommandList.integrityReveal')}
                         </button>
                     </div>
@@ -595,7 +602,7 @@ export function SkillCard({ skill, onClick, onToggleEnabled, saving = false }: {
         >
             {/* Top row — type identity on the left, state and controls on the right. */}
             <div className="flex items-center gap-2">
-                <Sparkles data-capability-type-icon="skill" className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                <CapabilitiesIcon data-capability-type-icon="skill" className="h-3.5 w-3.5 shrink-0 text-amber-500" />
                 <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
                     <h4 className="min-w-0 truncate text-sm font-semibold text-[var(--ink)]">
                         {skill.name}
@@ -669,7 +676,7 @@ export function CommandCard({ command, onClick, onToggleEnabled, saving = false 
             onClick={onClick}
         >
             <div className="flex items-center gap-2">
-                <Terminal data-capability-type-icon="command" className="h-3.5 w-3.5 shrink-0 text-sky-500" />
+                <TerminalIcon data-capability-type-icon="command" className="h-3.5 w-3.5 shrink-0 text-sky-500" />
                 <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
                     <h4 className="min-w-0 truncate text-sm font-semibold text-[var(--ink)]">
                         {command.name}

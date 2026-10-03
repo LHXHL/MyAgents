@@ -2,8 +2,8 @@
  * ToolAttachment — 工具产物（图片/音频/PDF/文件）一等公民通道。
  *
  * 由 Sidecar 落盘后通过 UnifiedEvent.tool_result.attachments[] 送达前端，
- * 前端通过 ToolAttachmentGallery 统一渲染。任意 Runtime（builtin / Codex /
- * Gemini / CC）+ 任意工具的图片产物都走这条通道，不再"按工具名前缀分发到
+ * 前端通过 ToolAttachmentGallery 统一渲染。任意 Runtime（builtin / DSH /
+ * Codex / CC）+ 任意工具的图片产物都走这条通道，不再"按工具名前缀分发到
  * 专门 React 组件"。
  *
  * 详见 specs/prd/prd_0.2.15_codex_tool_outputs_normalization.md。

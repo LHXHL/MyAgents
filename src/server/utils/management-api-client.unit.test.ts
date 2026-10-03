@@ -66,3 +66,12 @@ describe('resolveManagedOAuthCredential', () => {
     expect(mocks.cancellableFetch).not.toHaveBeenCalled();
   });
 });
+
+
+describe('loopback input error projection', () => {
+  it('preserves actionable schema details with a stable input-error code', async () => {
+    const { readLoopbackJson } = await import('./loopback-response');
+    const response = new Response('Failed to deserialize the JSON body into the target type: trigger.bogus: unknown field bogus', { status: 422, headers: { 'content-type': 'text/plain' } });
+    await expect(readLoopbackJson(response, 'Management API')).resolves.toEqual({ ok: false, code: 'INPUT_VALIDATION_ERROR', error: 'Invalid input: trigger.bogus: unknown field bogus' });
+  });
+});

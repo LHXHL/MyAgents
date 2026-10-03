@@ -2,7 +2,7 @@
 // TaskDetailOverlay edit mode). Extracted so every surface that touches a
 // Task stays pixel-aligned — input widths, pill shape, toggle animation.
 
-import { Check } from 'lucide-react';
+import { CheckIcon } from '@/components/icons';
 
 /** Shared input class for every text/number/datetime field in the task dialogs. */
 export const INPUT_CLS =
@@ -62,7 +62,7 @@ export function Checkbox({
             : 'border-[var(--line-strong)] bg-transparent'
         }`}
       >
-        {checked && <Check className="h-2.5 w-2.5" />}
+        {checked && <CheckIcon className="h-2.5 w-2.5" />}
       </span>
       {label}
     </button>

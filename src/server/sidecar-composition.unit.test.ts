@@ -35,6 +35,7 @@ describe('Sidecar production composition', () => {
     ['GET', '/sessions', 'global'],
     ['POST', '/sessions', 'global'],
     ['POST', '/api/session/birth', 'session'],
+    ['POST', '/api/internal/session/text-page', 'session'],
     ['GET', '/api/session-tags', 'global'],
     ['POST', '/api/session-tags/assign', 'global'],
     ['POST', '/api/session-tags/manage', 'global'],
@@ -44,6 +45,9 @@ describe('Sidecar production composition', () => {
     ['POST', '/cron/execute-sync', 'session'],
     ['POST', '/goal/execute-sync', 'session'],
     ['POST', '/api/im/enqueue', 'session'],
+    ['GET', '/api/im/model-options', 'common'],
+    ['POST', '/api/im/model-options', 'common'],
+    ['POST', '/api/im/model-selection', 'session'],
     ['POST', '/api/inbox/drain', 'session'],
     ['POST', '/api/runtime/config', 'session'],
     ['POST', '/api/admin/session/send', 'common'],
@@ -96,6 +100,23 @@ describe('Sidecar production composition', () => {
     expect(classifySidecarRequest(request('/api/future-owner', 'POST'))).toBeNull();
   });
 
+  it.each(['global', 'session'] as const)('%s admits canonical Record commands and proxy propagation', async role => {
+    for (const path of [
+      '/api/admin/record/list',
+      '/api/admin/record/create',
+      '/api/admin/thought/list',
+      '/api/admin/thought/create',
+      '/api/proxy/set',
+    ]) {
+      const downstream = vi.fn(async () => Response.json({ success: true, data: [] }));
+      const response = await composeSidecarRequestHandler(
+        resolveSidecarComposition(role, false), downstream,
+      )(request(path, 'POST'));
+      expect(response.status, path).toBe(200);
+      expect(downstream, path).toHaveBeenCalledOnce();
+      expect(await response.json()).toEqual({ success: true, data: [] });
+    }
+  });
   describe.each(['global', 'session', 'development-union'] as const)(
     '%s Record CLI admission',
     (role) => {

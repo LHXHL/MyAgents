@@ -1,20 +1,20 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  ChevronDown,
-  CircleAlert,
-  History,
-  Loader2,
-  MoreHorizontal,
-  PackagePlus,
-  Pencil,
-  RefreshCw,
-  RotateCcw,
-  Trash2,
-  UploadCloud,
-  Wrench,
-  X,
-} from "lucide-react";
+  ChevronDownIcon,
+  AlertIcon,
+  HistoryIcon,
+  LoaderIcon,
+  MoreIcon,
+  PackagePlusIcon,
+  EditIcon,
+  RefreshIcon,
+  UndoIcon,
+  TrashIcon,
+  UploadCloudIcon,
+  WrenchIcon,
+  CloseIcon,
+} from '@/components/icons';
 
 import {
   spaceErrorMessage,
@@ -85,7 +85,7 @@ function ToolIcon({
       style={{ width: size, height: size }}
       className="grid shrink-0 place-items-center rounded-lg bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)] shadow-sm"
     >
-      <Wrench className="h-4 w-4" />
+      <WrenchIcon className="h-4 w-4" />
       <span className="sr-only">{name}</span>
     </span>
   );
@@ -153,7 +153,7 @@ function OverlayHeader({
         aria-label={t("space.tools.close")}
         className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
       >
-        <X className="h-4 w-4" />
+        <CloseIcon className="h-4 w-4" />
       </button>
     </header>
   );
@@ -269,7 +269,7 @@ function McpPublishOverlay({
           onClick={() => selected && onContinue(selected)}
           className={SPACE_PRIMARY_TOOL_BUTTON_CLASS}
         >
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+          {busy ? <LoaderIcon className="h-4 w-4 animate-spin" /> : null}
           {t("space.tools.next")}
         </button>
       </footer>
@@ -519,7 +519,7 @@ function CustomToolFormOverlay({
           }
           className={SPACE_PRIMARY_TOOL_BUTTON_CLASS}
         >
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+          {busy ? <LoaderIcon className="h-4 w-4 animate-spin" /> : null}
           {existing ? t("space.common.save") : t("space.tools.publish")}
         </button>
       </footer>
@@ -679,7 +679,7 @@ function McpToolFormOverlay({
           }}
           className={SPACE_PRIMARY_TOOL_BUTTON_CLASS}
         >
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+          {busy ? <LoaderIcon className="h-4 w-4 animate-spin" /> : null}
           {existing ? t("space.common.save") : t("space.tools.publish")}
         </button>
       </footer>
@@ -973,7 +973,7 @@ export function ToolsWorkspace({
     <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)]">
       <section className="flex min-h-12 items-center gap-2.5 border-b border-[var(--line)] bg-[var(--paper-elevated)]/60 px-5 py-1.5 backdrop-blur-md">
         <div className="flex min-w-0 flex-1 items-center gap-2 text-sm font-semibold text-[var(--ink-secondary)]">
-          <Wrench className="h-4 w-4 shrink-0" />
+          <WrenchIcon className="h-4 w-4 shrink-0" />
           <span>{t("space.tools.title")}</span>
           <span className="rounded-md bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-semibold text-[var(--ink-muted)]">
             {toolsState.items.length}
@@ -987,9 +987,9 @@ export function ToolsWorkspace({
                 onClick={() => setPublishMenuOpen((open) => !open)}
                 className={SPACE_PRIMARY_TOOL_BUTTON_CLASS}
               >
-                <UploadCloud className="h-4 w-4" />
+                <UploadCloudIcon className="h-4 w-4" />
                 {t("space.tools.publishTool")}
-                <ChevronDown className="h-3.5 w-3.5" />
+                <ChevronDownIcon className="h-3.5 w-3.5" />
               </button>
               {publishMenuOpen ? (
                 <div className="absolute right-0 top-full z-20 mt-2 w-72 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-1.5 shadow-lg">
@@ -1001,7 +1001,7 @@ export function ToolsWorkspace({
                     }}
                     className="flex min-h-10 w-full items-center gap-2 rounded-lg px-3 text-left text-sm font-semibold text-[var(--ink)] hover:bg-[var(--hover-bg)]"
                   >
-                    <PackagePlus className="h-4 w-4" />
+                    <PackagePlusIcon className="h-4 w-4" />
                     {t("space.tools.publishInstalledMcp")}
                   </button>
                   <button
@@ -1012,7 +1012,7 @@ export function ToolsWorkspace({
                     }}
                     className="flex min-h-10 w-full items-center gap-2 rounded-lg px-3 text-left text-sm font-semibold text-[var(--ink)] hover:bg-[var(--hover-bg)]"
                   >
-                    <Pencil className="h-4 w-4" />
+                    <EditIcon className="h-4 w-4" />
                     {t("space.tools.publishCustomPrompt")}
                   </button>
                 </div>
@@ -1026,9 +1026,9 @@ export function ToolsWorkspace({
             aria-label={t("space.common.refresh")}
           >
             {toolsState.isLoading ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
+              <LoaderIcon className="h-4 w-4 animate-spin" />
             ) : (
-              <RefreshCw className="h-4 w-4" />
+              <RefreshIcon className="h-4 w-4" />
             )}
           </button>
         </div>
@@ -1041,13 +1041,13 @@ export function ToolsWorkspace({
         >
           {toolsState.error && toolsState.items.length ? (
             <div className="mb-3 flex items-center gap-2 rounded-xl border border-[var(--warning)]/20 bg-[var(--warning-bg)] p-3 text-sm text-[var(--warning)]">
-              <CircleAlert className="h-4 w-4" />
+              <AlertIcon className="h-4 w-4" />
               {t("space.common.listRefreshFailed")}
             </div>
           ) : null}
           {toolsState.isLoading && !toolsState.items.length ? (
             <div className="grid min-h-48 place-items-center">
-              <Loader2 className="h-5 w-5 animate-spin text-[var(--ink-muted)]" />
+              <LoaderIcon className="h-5 w-5 animate-spin text-[var(--ink-muted)]" />
             </div>
           ) : toolsState.items.length ? (
             <div className={SPACE_TWO_COLUMN_GRID_CLASS}>
@@ -1087,7 +1087,7 @@ export function ToolsWorkspace({
                 className="flex h-9 items-center gap-2 rounded-lg border border-[var(--line)] px-4 text-sm font-semibold text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
               >
                 {toolsState.isLoadingMore ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <LoaderIcon className="h-4 w-4 animate-spin" />
                 ) : null}
                 {t("space.common.loadMore")}
               </button>
@@ -1161,9 +1161,9 @@ export function ToolsWorkspace({
                 className={SPACE_PRIMARY_TOOL_BUTTON_CLASS}
               >
                 {busy ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <LoaderIcon className="h-4 w-4 animate-spin" />
                 ) : (
-                  <PackagePlus className="h-4 w-4" />
+                  <PackagePlusIcon className="h-4 w-4" />
                 )}
                 {t("space.tools.install")}
               </button>
@@ -1176,7 +1176,7 @@ export function ToolsWorkspace({
                   aria-label={t("space.tools.moreActions")}
                   className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
                 >
-                  <MoreHorizontal className="h-4 w-4" />
+                  <MoreIcon className="h-4 w-4" />
                 </button>
                 {adminMenuOpen ? (
                   <div className="absolute right-0 top-full z-20 mt-1 w-40 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-1.5 shadow-lg">
@@ -1189,7 +1189,7 @@ export function ToolsWorkspace({
                       }}
                       className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-sm font-semibold hover:bg-[var(--hover-bg)]"
                     >
-                      <Pencil className="h-4 w-4" />
+                      <EditIcon className="h-4 w-4" />
                       {t("space.common.edit")}
                     </button>
                     <button
@@ -1203,7 +1203,7 @@ export function ToolsWorkspace({
                       }}
                       className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-sm font-semibold hover:bg-[var(--hover-bg)]"
                     >
-                      <History className="h-4 w-4" />
+                      <HistoryIcon className="h-4 w-4" />
                       {t("space.tools.history")}
                     </button>
                     <button
@@ -1214,7 +1214,7 @@ export function ToolsWorkspace({
                       }}
                       className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-sm font-semibold text-[var(--danger)] hover:bg-[var(--danger-bg)]"
                     >
-                      <Trash2 className="h-4 w-4" />
+                      <TrashIcon className="h-4 w-4" />
                       {t("space.common.delete")}
                     </button>
                   </div>
@@ -1228,13 +1228,13 @@ export function ToolsWorkspace({
               aria-label={t("space.tools.close")}
               className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <X className="h-4 w-4" />
+              <CloseIcon className="h-4 w-4" />
             </button>
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto p-5">
             {detailState?.isLoading && !detail ? (
               <div className="grid min-h-48 place-items-center">
-                <Loader2 className="h-5 w-5 animate-spin" />
+                <LoaderIcon className="h-5 w-5 animate-spin" />
               </div>
             ) : detailState?.error && !detail ? (
               <div className="grid min-h-48 place-items-center text-center text-sm text-[var(--danger)]">
@@ -1279,7 +1279,7 @@ export function ToolsWorkspace({
                   </div>
                 ) : null}
                 {revisionState?.isLoading && !revisionState.history ? (
-                  <Loader2 className="mx-auto h-5 w-5 animate-spin" />
+                  <LoaderIcon className="mx-auto h-5 w-5 animate-spin" />
                 ) : (
                   <div className="grid gap-2">
                     {(revisionState?.history?.items ?? []).map((revision) => (
@@ -1312,7 +1312,7 @@ export function ToolsWorkspace({
                             onClick={() => void rollback(revision.revision)}
                             className="flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-[var(--accent-warm)] hover:bg-[var(--accent-warm-subtle)]"
                           >
-                            <RotateCcw className="h-3.5 w-3.5" />
+                            <UndoIcon className="h-3.5 w-3.5" />
                             {t("space.tools.rollback")}
                           </button>
                         )}
@@ -1330,7 +1330,7 @@ export function ToolsWorkspace({
                         className="mt-1 flex h-9 items-center justify-center gap-2 rounded-lg text-sm font-semibold text-[var(--accent-warm)] hover:bg-[var(--hover-bg)] disabled:opacity-60"
                       >
                         {revisionState.isLoadingMore ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
+                          <LoaderIcon className="h-4 w-4 animate-spin" />
                         ) : null}
                         {t("space.common.loadMore")}
                       </button>
@@ -1340,7 +1340,7 @@ export function ToolsWorkspace({
               </div>
             ) : detailMode === "delete" && detail ? (
               <div className="mx-auto max-w-md py-10 text-center">
-                <Trash2 className="mx-auto h-8 w-8 text-[var(--danger)]" />
+                <TrashIcon className="mx-auto h-8 w-8 text-[var(--danger)]" />
                 <h3 className="mt-4 text-base font-semibold text-[var(--ink)]">
                   {t("space.tools.deleteConfirmTitle")}
                 </h3>
@@ -1363,7 +1363,7 @@ export function ToolsWorkspace({
                     onClick={() => void remove()}
                     className="flex h-9 items-center gap-2 rounded-lg bg-[var(--danger)] px-3 text-sm font-semibold text-[var(--on-danger)] disabled:opacity-60"
                   >
-                    {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    {busy ? <LoaderIcon className="h-4 w-4 animate-spin" /> : null}
                     {t("space.common.delete")}
                   </button>
                 </div>

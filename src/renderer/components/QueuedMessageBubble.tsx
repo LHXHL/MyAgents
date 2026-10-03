@@ -1,4 +1,4 @@
-import { Clock, Play, X } from 'lucide-react';
+import { ClockIcon, PlayIcon, CloseIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import type { QueuedMessageInfo } from '@/types/queue';
@@ -29,7 +29,7 @@ export default function QueuedMessagesPanel({ messages, onCancel, onForceExecute
     >
       {/* Header */}
       <div className="mb-1.5 flex items-center gap-1 text-xs text-[var(--ink-muted)]">
-        <Clock size={11} />
+        <ClockIcon size={11} />
         <span>{t('shell.queue.title', { count: messages.length })}</span>
       </div>
 
@@ -68,7 +68,7 @@ export default function QueuedMessagesPanel({ messages, onCancel, onForceExecute
                       title={t('shell.queue.sendNow')}
                       className="rounded p-0.5 text-[var(--ink-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)]"
                     >
-                      <Play size={12} />
+                      <PlayIcon size={12} />
                     </button>
                   )}
                   {canCancel && (
@@ -77,7 +77,7 @@ export default function QueuedMessagesPanel({ messages, onCancel, onForceExecute
                       title={qm.isInFlight ? t('shell.queue.recallSend') : t('shell.queue.cancelQueued')}
                       className="rounded p-0.5 text-[var(--ink-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)]"
                     >
-                      <X size={12} />
+                      <CloseIcon size={12} />
                     </button>
                   )}
                 </div>

@@ -3,6 +3,7 @@ import type {
   SubagentLifecycle,
   SubagentLifecycleStatus,
 } from '../../../shared/types/subagent-lifecycle';
+import { mergeSubagentLifecycleUpdate } from '../../../shared/types/subagent-lifecycle';
 
 /**
  * Tools that render as an expandable sub-agent container (a card holding a nested
@@ -43,7 +44,7 @@ export function hasRunningSubagentCall(tool: Pick<ToolUseSimple, 'subagentCalls'
  */
 export function isSubagentContainerRunning(tool: Pick<ToolUseSimple, 'name' | 'isLoading' | 'result' | 'subagentCalls' | 'subagentLifecycle'> | null | undefined): boolean {
   if (!tool || !isSubagentContainerTool(tool.name)) return false;
-  if (tool.name === 'CollabAgent' && tool.subagentLifecycle) {
+  if (tool.subagentLifecycle) {
     return tool.subagentLifecycle.status === 'running';
   }
   return (tool.isLoading === true && !tool.result) || hasRunningSubagentCall(tool);
@@ -52,7 +53,7 @@ export function isSubagentContainerRunning(tool: Pick<ToolUseSimple, 'name' | 'i
 export function getSubagentContainerLifecycleStatus(
   tool: Pick<ToolUseSimple, 'name' | 'subagentLifecycle'> | null | undefined,
 ): SubagentLifecycleStatus | null {
-  if (tool?.name !== 'CollabAgent') return null;
+  if (!tool || !isSubagentContainerTool(tool.name)) return null;
   return tool.subagentLifecycle?.status ?? null;
 }
 
@@ -60,8 +61,9 @@ export function getSubagentContainerDurationMs(
   tool: Pick<ToolUseSimple, 'name' | 'subagentLifecycle'> | null | undefined,
   now = Date.now(),
 ): number | null {
-  const lifecycle = tool?.name === 'CollabAgent' ? tool.subagentLifecycle : undefined;
+  const lifecycle = tool && isSubagentContainerTool(tool.name) ? tool.subagentLifecycle : undefined;
   if (!lifecycle) return null;
+  if (lifecycle.timingVerified === false) return null;
   const end = lifecycle.status === 'running' ? now : lifecycle.finishedAt ?? lifecycle.startedAt;
   return Math.max(0, end - lifecycle.startedAt);
 }
@@ -83,11 +85,15 @@ export function applySubagentLifecycleToContent(
   const block = content[index];
   if (block.type !== 'tool_use' || !block.tool) return null;
   const current = block.tool.subagentLifecycle;
-  if (current && current.status !== 'running') return content;
+  const next = mergeSubagentLifecycleUpdate(current, lifecycle);
+  if (next === current) return content;
   const updated = [...content];
   updated[index] = {
     ...block,
-    tool: { ...block.tool, subagentLifecycle: lifecycle },
+    tool: {
+      ...block.tool,
+      subagentLifecycle: next,
+    },
   };
   return updated;
 }

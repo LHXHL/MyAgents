@@ -1,4 +1,4 @@
-import { RadioTower } from 'lucide-react';
+import { RadioIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 export function TaskTriggerBadge({ compact = false }: { compact?: boolean }) {
@@ -10,7 +10,7 @@ export function TaskTriggerBadge({ compact = false }: { compact?: boolean }) {
       }`}
       title={t('trigger.badgeTitle')}
     >
-      <RadioTower className={compact ? 'h-3 w-3' : 'h-3.5 w-3.5'} />
+      <RadioIcon className={compact ? 'h-3 w-3' : 'h-3.5 w-3.5'} />
       {t('trigger.badge')}
     </span>
   );

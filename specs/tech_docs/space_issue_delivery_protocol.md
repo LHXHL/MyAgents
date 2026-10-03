@@ -71,7 +71,7 @@ Desktop Rust owner 负责：
 
 ### 3.3 SessionEngine
 
-SessionEngine 负责让 builtin、Claude Code、Codex、Gemini 等 Runtime 走同一套：
+SessionEngine 负责让 builtin、Integrated DSH、Claude Code、Codex 等 Runtime 走同一套：
 
 - Session origin 设置与恢复；
 - hidden user message 注入；
@@ -123,7 +123,7 @@ trigger / issueMeta / goalMeta
 
 这些字段在poll时从当前Registered Agent Instruction、source IssueUpdate与当前Issue/Goal/assignee projection动态生成；legacy snapshot列不是权威。旧Prompt逐字内容、截断规则与golden由`MyAgents_space` serializer/tests和旧Desktop版本拥有，当前文档不复制。当前Desktop不保留v1 builder或运行时fallback。
 
-## 6. Protocol v2：设计不变量
+## 6. Protocol v2：结构不变量
 
 v2 固定采用以下逻辑顺序：
 
@@ -145,7 +145,7 @@ v2 固定采用以下逻辑顺序：
 
 ## 7. Protocol v2 完整主模板
 
-以下是目标 Prompt 的逐字 contract。动态字段必须按第 15 节规则插值。
+以下是当前 Prompt 的逐字 contract。动态字段必须按第 15 节规则插值。
 
 ~~~xml
 <system-reminder>
@@ -642,7 +642,7 @@ legacy/v1响应、endpoint和Cloud列只服务最低支持客户端与rollback f
 - 当前Desktop只保留v2 parser/builder；旧客户端兼容不通过新客户端复制v1 builder实现；
 - src/shared/session-origin.ts 的 context normalize/serialize/restore；
 - src/server/session-engine/ 的 origin 与 hidden message facade；
-- builtin/external Runtime 的一致行为；
+- builtin/integrated/external Runtime 的一致行为；
 - src/cli/myagents.ts、当前 app bundle、Admin API 与 Rust Management route；CLI 不再有独立复制版本号；
 - bundled myagents-cli skill；
 - Renderer 的 instruction、multi-subscription、legacy warning 与 visible copy；

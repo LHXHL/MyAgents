@@ -73,9 +73,9 @@ myagents-releases/
 
 此脚本会：
 1. 检查基础依赖，并按 `rust-toolchain.toml` 准备 Rust toolchain、`rustfmt` / `clippy`、`x86_64-pc-windows-msvc` target
-2. 根据 exact prepared cache 提前检查 CMake 3.28+/MSVC 等原生推理构建工具；缺失时在下载或安装项目依赖前给出修复命令，不自动安装原生构建工具
+2. 自动加载已安装的 MSVC x64 编译环境，再根据 exact prepared cache 提前检查 CMake 3.28+/MSVC 等原生推理构建工具；缺失时在下载或安装项目依赖前给出修复命令，不自动安装原生构建工具
 3. 下载 bundled Node.js v24 运行时、Git 安装包和 VC++ Runtime DLL
-4. 安装前端/后端依赖 (`npm install`)
+4. 使用已验证的 bundled Node.js/npm 安装前端/后端依赖 (`npm install`)
 5. 下载 Rust crates（`cargo fetch`）
 6. 准备 x64 离线文档 Worker、OCR、ONNX Runtime 与 PDFium；资源缓存跨 `npm run clean` 复用
 
@@ -116,6 +116,8 @@ src-tauri/target/x86_64-pc-windows-msvc/debug/myagents.exe
 ```
 
 `build_dev_win.ps1` 会清理 `debug/resources` 缓存、启用 `VITE_DEBUG_MODE=true`、构建 web/Sidecar/Plugin Bridge/CLI 一次，并在 Tauri build 阶段禁用重复的 `beforeBuildCommand`；这条路径用于快速测试，不替代正式发布构建。
+
+DSH Dev 默认拉取 `src/shared/integrated-runtimes/dsh-release.json` 指定的 Release；需要试本地 DSH 改动时可显式用 `-DshSource local -DshHandoff C:\absolute\path\to\handoff` 指向官方本地交付物。正式版 `build_windows.ps1` 使用同一版本和对应平台资产；若对应 Release 不可用则在下载时失败。
 
 两条 Windows 构建路径都会在 Tauri snapshot 前调用 `scripts/prepare-native-inference.mjs x86_64-pc-windows-msvc`，统一准备 document/speech capability。Sherpa 的锁定源码包只展开构建所需的根 `CMakeLists.txt`、`LICENSE`、`cmake/` 与 `sherpa-onnx/`；上游仓库其它目录中的 symlink 不会在 Windows 上落盘，不需要启用 Developer Mode、管理员权限或长路径开关。正式安装器验证除既有文档转换外，还必须检查 `speech-inference/v1` 的签名 manifest、media Worker/sherpa native inventory、与 `document-processing/v1` 共享的 ONNX Runtime identity，以及无系统 ORT/ffmpeg/Python 时的 WASAPI microphone/loopback、转录与 Job Object 取消。
 

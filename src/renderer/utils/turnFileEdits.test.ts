@@ -52,6 +52,15 @@ function change(
 }
 
 describe('deriveTurnFileEdits', () => {
+  it('includes successful DSH write and edit calls in the turn summary', () => {
+    const summary = deriveTurnFileEdits([
+      toolBlock({ name: 'write', input: { file_path: '/workspace/native.txt', content: 'first' } }),
+      toolBlock({ name: 'edit', input: { file_path: '/workspace/native.txt', old_string: 'first', new_string: 'second' } }),
+    ], '/workspace');
+    expect(summary?.files).toHaveLength(1);
+    expect(summary?.files[0]?.displayPath).toBe('native.txt');
+  });
+
   it('aggregates completed top-level and nested edits by normalized target', () => {
     const content: ContentBlock[] = [
       toolBlock({

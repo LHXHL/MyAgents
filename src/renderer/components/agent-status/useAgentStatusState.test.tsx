@@ -89,6 +89,36 @@ describe('useAgentStatusState — TodoWrite ↔ Task selection', () => {
 });
 
 describe('useAgentStatusState — Codex CollabAgent activity', () => {
+  it('treats an explicit DSH Agent lifecycle as authoritative', () => {
+    const messages: Message[] = [toolMsg('dsh-agent', {
+      name: 'Agent',
+      parsedInput: { subagent_type: 'general', description: 'Old input' },
+      isLoading: true,
+      subagentLifecycle: {
+        status: 'completed',
+        startedAt: 100,
+        finishedAt: 500,
+        agentType: 'Explore',
+        description: 'Inspect the workspace',
+        mode: 'continuable',
+        model: 'deepseek-chat',
+        result: 'Done',
+        usage: { inputTokens: 12, outputTokens: 3 },
+      },
+    })];
+
+    const { result } = renderHook(() => useAgentStatusState(messages));
+    expect(result.current.subagents[0]).toMatchObject({
+      agentType: 'Explore',
+      description: 'Inspect the workspace',
+      mode: 'background',
+      status: 'completed',
+      inputTokens: 12,
+      outputTokens: 3,
+    });
+    expect(result.current.summary.subagentRunning).toBe(0);
+  });
+
   it('uses the explicit child lifecycle even when nested loading is stale', () => {
     const messages: Message[] = [
       toolMsg('m1', {

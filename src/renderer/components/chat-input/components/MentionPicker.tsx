@@ -1,4 +1,4 @@
-import { Bot, ChevronDown, ChevronUp } from "lucide-react";
+import { HelperIcon, ChevronDownIcon, ChevronUpIcon } from '@/components/icons';
 import { useLayoutEffect, useRef, type KeyboardEventHandler } from "react";
 import { useTranslation } from "react-i18next";
 import WorkspaceIcon from "@/components/launcher/WorkspaceIcon";
@@ -99,7 +99,7 @@ export function MentionPicker({
                         className="shrink-0"
                       />
                     ) : (
-                      <Bot
+                      <HelperIcon
                         size={16}
                         className="shrink-0 text-[var(--ink-muted)]"
                       />
@@ -143,9 +143,9 @@ export function MentionPicker({
                 ) : (
                   <span className="flex items-center gap-1">
                     {option.kind === "collapse" ? (
-                      <ChevronUp size={12} />
+                      <ChevronUpIcon size={12} />
                     ) : (
-                      <ChevronDown size={12} />
+                      <ChevronDownIcon size={12} />
                     )}
                     {t(`input.mention.${option.kind}`)}
                   </span>

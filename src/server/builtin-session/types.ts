@@ -1,3 +1,4 @@
+import type { TurnProviderAnalytics } from '../session-core/turn-analytics';
 import type { Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type {
   BackgroundAgentPermissionMode,
@@ -128,13 +129,7 @@ export type BuiltinRestartReason =
   | 'capabilities'
   | 'reasoning-effort';
 
-export type TurnProviderAnalytics = {
-  provider_id?: string | null;
-  provider_name: string | null;
-  api_protocol: 'anthropic' | 'openai' | null;
-  provider_base_url: string | null;
-  provider_api_protocol: 'anthropic' | 'openai' | null;
-};
+export type { TurnProviderAnalytics } from '../session-core/turn-analytics';
 
 export type MessageQueueItem = {
   id: string;

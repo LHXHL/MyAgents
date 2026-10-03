@@ -15,7 +15,16 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
 import { listenWithCleanup } from '@/utils/tauriListen';
-import { ChevronLeft, ChevronRight, Code2, RotateCw, ExternalLink, Loader2, Globe, X } from 'lucide-react';
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  CodeIcon,
+  RedoIcon,
+  ExternalIcon,
+  LoaderIcon,
+  GlobeIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { openExternal } from '@/utils/openExternal';
 import {
   BROWSER_BLANK_URL,
@@ -458,20 +467,20 @@ export default function BrowserPanel({
       <div className="relative flex h-9 flex-shrink-0 items-center gap-0.5 border-b border-[var(--line)] bg-[var(--paper)] px-2">
         <Tip label={t('browserPanel.back')} position="bottom">
           <button type="button" className={navBtn} onClick={handleGoBack}>
-            <ChevronLeft className="h-3.5 w-3.5" />
+            <ChevronLeftIcon className="h-3.5 w-3.5" />
           </button>
         </Tip>
         <Tip label={t('browserPanel.forward')} position="bottom">
           <button type="button" className={navBtn} onClick={handleGoForward}>
-            <ChevronRight className="h-3.5 w-3.5" />
+            <ChevronRightIcon className="h-3.5 w-3.5" />
           </button>
         </Tip>
         <Tip label={isLoading ? t('browserPanel.stop') : t('browserPanel.reload')} position="bottom">
           <button type="button" className={navBtn} onClick={handleReload}>
             {isLoading ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <LoaderIcon className="h-3.5 w-3.5 animate-spin" />
             ) : (
-              <RotateCw className="h-3.5 w-3.5" />
+              <RedoIcon className="h-3.5 w-3.5" />
             )}
           </button>
         </Tip>
@@ -508,7 +517,7 @@ export default function BrowserPanel({
         {sourceFile && onSwitchToEditor && (
           <Tip label={t('browserPanel.editSource')} position="bottom" align="end">
             <button type="button" className={navBtn} onClick={onSwitchToEditor}>
-              <Code2 className="h-3.5 w-3.5" />
+              <CodeIcon className="h-3.5 w-3.5" />
             </button>
           </Tip>
         )}
@@ -520,14 +529,14 @@ export default function BrowserPanel({
             onClick={handleOpenExternal}
             disabled={!currentUrl || isBlankPage}
           >
-            <ExternalLink className="h-3.5 w-3.5" />
+            <ExternalIcon className="h-3.5 w-3.5" />
           </button>
         </Tip>
 
         {/* Close button — always present */}
         <Tip label={t('browserPanel.close')} position="bottom" align="end">
           <button type="button" className={navBtn} onClick={onClose}>
-            <X className="h-3.5 w-3.5" />
+            <CloseIcon className="h-3.5 w-3.5" />
           </button>
         </Tip>
 
@@ -544,7 +553,7 @@ export default function BrowserPanel({
         {!browserAlive && !isBlankPage && (
           <div className="flex h-full items-center justify-center">
             <div className="flex flex-col items-center gap-2 text-[var(--ink-subtle)]">
-              <Globe className="h-6 w-6" />
+              <GlobeIcon className="h-6 w-6" />
               <span className="text-xs">{url ? t('common.loading') : ''}</span>
             </div>
           </div>
@@ -568,7 +577,7 @@ export default function BrowserPanel({
             />
             <div className="relative flex flex-col items-center gap-4">
               <div className="flex h-16 w-16 items-center justify-center rounded-full border border-[var(--line)] bg-[var(--paper-elevated)] shadow-md">
-                <Globe
+                <GlobeIcon
                   className="h-7 w-7 text-[var(--accent-warm)]"
                   strokeWidth={1.5}
                 />
@@ -588,7 +597,7 @@ export default function BrowserPanel({
         {(isDraggingSplit || isSplitTransitioning) && browserAlive && !isBlankPage && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-[var(--paper)]/80 backdrop-blur-md">
             <div className="flex flex-col items-center gap-2 text-[var(--ink-subtle)]">
-              <Globe className="h-5 w-5" />
+              <GlobeIcon className="h-5 w-5" />
               <span className="text-xs">{displayUrl}</span>
             </div>
           </div>

@@ -53,6 +53,21 @@ pub enum DeliverOutcome {
     Rejected { reason: String },
 }
 
+#[cfg(test)]
+fn drain_outcome(message_id: &str, response: Result<DrainResponse, String>) -> DeliverOutcome {
+    match response {
+        Ok(response) if response.accepted => DeliverOutcome::Delivered {
+            message_id: message_id.to_string(),
+        },
+        Ok(response) => DeliverOutcome::Rejected {
+            reason: response.reason.unwrap_or_else(|| "unknown".to_string()),
+        },
+        Err(error) => DeliverOutcome::DeliveryFailed {
+            reason: format!("invalid drain acknowledgement: {error}"),
+        },
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FreshSessionStartRequest {
@@ -128,19 +143,9 @@ async fn http_post_drain(port: u16, message: &PendingInboxMessage, network_hando
                 .map_err(|error| error.to_string());
             let outcome = drain_ack_outcome_for_handoff(message, status.as_u16(), acknowledgement, network_handoff);
             match &outcome {
-                DeliverOutcome::Delivered { .. } => {
-                    ulog_info!("[inbox] delivered msg_id={} (port {})", message_id, port)
-                }
-                DeliverOutcome::Rejected { reason } => ulog_warn!(
-                    "[inbox] target rejected message {} with HTTP {}: {}",
-                    message_id,
-                    status.as_u16(),
-                    reason
-                ),
-                DeliverOutcome::Unconfirmed { reason }
-                | DeliverOutcome::DeliveryFailed { reason } => {
-                    ulog_warn!("[inbox] {} (msg_id={})", reason, message_id)
-                }
+                DeliverOutcome::Delivered { .. } => ulog_info!("[inbox] delivered msg_id={} (port {})", message_id, port),
+                DeliverOutcome::Rejected { reason } => ulog_warn!("[inbox] target rejected message {} with HTTP {}: {}", message_id, status.as_u16(), reason),
+                DeliverOutcome::Unconfirmed { reason } | DeliverOutcome::DeliveryFailed { reason } => ulog_warn!("[inbox] {} (msg_id={})", reason, message_id),
                 DeliverOutcome::SessionNotFound => {}
             }
             outcome
@@ -878,5 +883,25 @@ mod tests {
             }
         ));
         assert!(!birth_probe_called.get());
+    }
+
+    #[test]
+    fn drain_ack_requires_an_explicit_boolean_accepted_field() {
+        assert!(matches!(
+            drain_outcome(
+                "message-1",
+                serde_json::from_value::<DrainResponse>(serde_json::json!({ "accepted": true }))
+                    .map_err(|error| error.to_string()),
+            ),
+            DeliverOutcome::Delivered { .. }
+        ));
+        assert!(matches!(
+            drain_outcome(
+                "message-1",
+                serde_json::from_value::<DrainResponse>(serde_json::json!({ "success": true }))
+                    .map_err(|error| error.to_string()),
+            ),
+            DeliverOutcome::DeliveryFailed { .. }
+        ));
     }
 }

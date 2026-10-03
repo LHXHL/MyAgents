@@ -1,7 +1,13 @@
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertCircle, Check, Eye, EyeOff, Loader2 } from 'lucide-react';
+import {
+  AlertIcon,
+  CheckIcon,
+  EyeIcon,
+  EyeOffIcon,
+  LoaderIcon,
+} from '@/components/icons';
 
 export default function BotTokenInput({
     value,
@@ -49,18 +55,18 @@ export default function BotTokenInput({
                         onClick={() => setVisible(!visible)}
                         className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-[var(--ink-muted)] hover:text-[var(--ink)]"
                     >
-                        {visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                        {visible ? <EyeOffIcon className="h-4 w-4" /> : <EyeIcon className="h-4 w-4" />}
                     </button>
                 </div>
                 {/* Verify status indicator */}
                 {verifyStatus === 'verifying' && (
-                    <Loader2 className="h-4 w-4 animate-spin text-[var(--ink-muted)]" />
+                    <LoaderIcon className="h-4 w-4 animate-spin text-[var(--ink-muted)]" />
                 )}
                 {verifyStatus === 'valid' && (
-                    <Check className="h-4 w-4 text-[var(--success)]" />
+                    <CheckIcon className="h-4 w-4 text-[var(--success)]" />
                 )}
                 {verifyStatus === 'invalid' && (
-                    <AlertCircle className="h-4 w-4 text-[var(--error)]" />
+                    <AlertIcon className="h-4 w-4 text-[var(--error)]" />
                 )}
             </div>
             {verifyStatus === 'valid' && botUsername && (

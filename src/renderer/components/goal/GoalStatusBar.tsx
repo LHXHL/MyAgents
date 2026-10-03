@@ -1,4 +1,9 @@
-import { Flag, Play, Settings2, X } from 'lucide-react';
+import {
+  FlagIcon,
+  PlayIcon,
+  SlidersIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import type { SessionGoal } from '@/types/sessionGoal';
@@ -29,7 +34,7 @@ function GoalDraftStatusBar({ onSettings, onCancel }: GoalDraftStatusBarProps) {
   return (
     <div className="flex items-center justify-between gap-3 rounded-t-lg border border-b-0 border-[var(--heartbeat-border)] bg-[var(--heartbeat-bg)] px-3 py-2">
       <div className="flex min-w-0 items-center gap-2">
-        <Flag className="h-4 w-4 shrink-0 text-[var(--heartbeat)]" />
+        <FlagIcon className="h-4 w-4 shrink-0 text-[var(--heartbeat)]" />
         <span className="shrink-0 text-sm font-medium text-[var(--heartbeat)]">
           {t('cron.statusBar.goalDraftTitle')}
         </span>
@@ -46,7 +51,7 @@ function GoalDraftStatusBar({ onSettings, onCancel }: GoalDraftStatusBarProps) {
             className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-hover)] hover:text-[var(--heartbeat)]"
             title={t('cron.statusBar.settingsTitle')}
           >
-            <Settings2 className="h-4 w-4" />
+            <SlidersIcon className="h-4 w-4" />
           </button>
         )}
         {onCancel && (
@@ -56,7 +61,7 @@ function GoalDraftStatusBar({ onSettings, onCancel }: GoalDraftStatusBarProps) {
             className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-hover)] hover:text-[var(--heartbeat)]"
             title={t('cron.statusBar.cancelGoalDraftTitle')}
           >
-            <X className="h-4 w-4" />
+            <CloseIcon className="h-4 w-4" />
           </button>
         )}
       </div>
@@ -124,7 +129,7 @@ function GoalRuntimeStatusBar({
     >
       <div className="flex min-w-0 items-center gap-2">
         <span className="relative shrink-0">
-          <Flag className="h-4 w-4" style={{ color }} />
+          <FlagIcon className="h-4 w-4" style={{ color }} />
           {isExecuting && !terminal && (
             <span className="absolute -right-0.5 -top-0.5 h-2 w-2">
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-40" style={{ backgroundColor: color }} />
@@ -156,7 +161,7 @@ function GoalRuntimeStatusBar({
             style={{ color }}
             title={t('cron.statusBar.resumeGoalTitle')}
           >
-            <Play className="h-3.5 w-3.5" />
+            <PlayIcon className="h-3.5 w-3.5" />
             {t('cron.statusBar.resumeGoalButton')}
           </button>
         )}
@@ -168,7 +173,7 @@ function GoalRuntimeStatusBar({
             style={{ color }}
             title={t('cron.statusBar.cancelGoalTitle')}
           >
-            <X className="h-3.5 w-3.5" />
+            <CloseIcon className="h-3.5 w-3.5" />
             {t('cron.statusBar.cancelGoalButton')}
           </button>
         )}
@@ -179,7 +184,7 @@ function GoalRuntimeStatusBar({
             className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--heartbeat-bg)] hover:text-[var(--heartbeat)]"
             title={t('cron.statusBar.dismissGoalTitle')}
           >
-            <X className="h-4 w-4" />
+            <CloseIcon className="h-4 w-4" />
           </button>
         )}
       </div>

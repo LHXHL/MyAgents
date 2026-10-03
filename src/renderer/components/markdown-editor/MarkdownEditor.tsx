@@ -6,7 +6,7 @@ import { drawSelection, EditorView, keymap, lineNumbers } from '@codemirror/view
 import { defaultKeymap, history, historyKeymap, isolateHistory } from '@codemirror/commands';
 import { bracketMatching, forceParsing, syntaxHighlighting, syntaxTree } from '@codemirror/language';
 import { search, searchKeymap } from '@codemirror/search';
-import { Quote, X } from 'lucide-react';
+import { QuoteIcon, CloseIcon } from '@/components/icons';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 import { useTauriFileDrop } from '@/hooks/useTauriFileDrop';
 import { useOpenWebLink } from '@/context/BrowserPanelContext';
@@ -353,7 +353,7 @@ export default function MarkdownEditor(props: Props) {
       const view = viewRef.current;
       if (props.sourceMode) { props.onExitSource?.(); view?.focus(); }
       else if (view) void gate.current?.run(() => { view.dispatch({ effects: revealBlock.of(null) }); view.focus(); });
-    }}><span>{t(props.sourceMode ? 'markdownEditor.source' : 'markdownEditor.blockSource')}</span><X size={14} aria-hidden="true" /></button></div>}
+    }}><span>{t(props.sourceMode ? 'markdownEditor.source' : 'markdownEditor.blockSource')}</span><CloseIcon size={14} aria-hidden="true" /></button></div>}
     <div className="md-editor-status">
       {importing && <><span role="status">{t('markdownEditor.images.importing')}</span><button onClick={() => imports.current?.invalidate('cancelled')}>{t('markdownEditor.images.cancel')}</button></>}
     </div>
@@ -382,7 +382,7 @@ export default function MarkdownEditor(props: Props) {
     {outline && outline.headings.length > 0 && !props.sourceMode && props.active !== false && !props.paused && <DocumentOutline {...outline} onNavigate={navigateHeading} />}
     {selectionVisible && !linkDraft && !searchPanel && <div ref={toolsElement} style={toolPosition} className="md-selection-tools overflow-auto" role="toolbar" aria-label={t('markdownEditor.formatting')} onMouseDown={event => event.preventDefault()}>
       {([['bold', '**'], ['italic', '*'], ['strike', '~~'], ['code', '`'], ['link', '[']] as const).map(([label, marker]) => <button key={label} onClick={() => { if (marker === '[') openLinkEditor(); else if (viewRef.current) wrapSelection(marker)(viewRef.current); }}>{t(`markdownEditor.${label}`)}</button>)}
-      {props.onQuote && <><span className="md-selection-divider" role="separator" aria-orientation="vertical" /><button className="md-selection-quote" onClick={quote}><Quote size={12} aria-hidden="true" />{t('chat:workspaceFiles.common.quote')}</button></>}
+      {props.onQuote && <><span className="md-selection-divider" role="separator" aria-orientation="vertical" /><button className="md-selection-quote" onClick={quote}><QuoteIcon size={12} aria-hidden="true" />{t('chat:workspaceFiles.common.quote')}</button></>}
     </div>}
     {searchPanel && createPortal(<EditorSearchPanel {...searchPanel} active={props.active} />, searchPanel.dom)}
     {linkDraft && <form className="md-link-editor" role="dialog" aria-label={t('markdownEditor.link')} onSubmit={event => {

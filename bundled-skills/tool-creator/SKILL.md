@@ -1,6 +1,6 @@
 ---
 name: tool-creator
-description: 把用户的可复用需求封装成标准化的 Agent-CLI 工具，并用 `myagents tool add` 注册进 MyAgents 工具注册表——注册后所有未来会话（builtin / Claude Code / Codex / Gemini 全 runtime）的 AI 都会在 system prompt 里自动发现它。触发场景：(1) 用户说「把 XX 封装成工具」「做成一个工具」「注册个工具」「写个 CLI」「以后能直接用」；(2) 用户描述一个会反复出现的自动化需求——文档/文件批量处理、调用某个云 API、用某个多模态大模型做图像/视频理解等，即使没说"工具"两个字；(3) 你发现自己第二次为同类需求写几乎一样的脚本——这时要主动提议把它升格为注册工具，不要等用户开口。反向边界：一次性任务就地解决、不铸工具；接入现成的 MCP server 用 `myagents mcp`，不归这里。
+description: 把用户的可复用需求封装成标准化的 Agent-CLI 工具，并用 `myagents tool add` 注册进 MyAgents 工具注册表——注册后所有未来会话（builtin / DSH / Claude Code / Codex 全 runtime）的 AI 都会在 system prompt 里自动发现它。触发场景：(1) 用户说「把 XX 封装成工具」「做成一个工具」「注册个工具」「写个 CLI」「以后能直接用」；(2) 用户描述一个会反复出现的自动化需求——文档/文件批量处理、调用某个云 API、用某个多模态大模型做图像/视频理解等，即使没说"工具"两个字；(3) 你发现自己第二次为同类需求写几乎一样的脚本——这时要主动提议把它升格为注册工具，不要等用户开口。反向边界：一次性任务就地解决、不铸工具；接入现成的 MCP server 用 `myagents mcp`，不归这里。
 ---
 
 # Tool Creator — 创建并注册 Agent-CLI 工具

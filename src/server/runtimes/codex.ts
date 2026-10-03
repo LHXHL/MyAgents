@@ -515,11 +515,70 @@ export function buildManagedCodexAgentRoleConfig(role: ManagedCodexAgentRoleSpec
   return `${lines.join('\n')}\n`;
 }
 
+function nativeProjectSkillPaths(workspacePath: string): string[] {
+  const workspace = resolve(workspacePath);
+  let projectRoot = workspace;
+  for (let current = workspace; ; current = dirname(current)) {
+    if (existsSync(join(current, '.git'))) {
+      projectRoot = current;
+      break;
+    }
+    const parent = dirname(current);
+    if (parent === current) break;
+  }
+  const directories: string[] = [];
+  for (let current = workspace; ; current = dirname(current)) {
+    directories.push(current);
+    if (current === projectRoot) break;
+  }
+  return directories.flatMap(directory => {
+    const root = join(directory, '.agents', 'skills');
+    try {
+      return readdirSync(root, { withFileTypes: true })
+        .filter(entry => !entry.name.startsWith('.'))
+        .flatMap(entry => {
+          const path = join(root, entry.name, 'SKILL.md');
+          try {
+            return statSync(path).isFile() ? [realpathSync(path)] : [];
+          } catch {
+            return [];
+          }
+        });
+    } catch {
+      return [];
+    }
+  }).sort();
+}
+
+function disabledNativeSkillConfigArg(
+  workspacePath: string,
+  selectedSkills: readonly ManagedCodexSkillSpec[],
+): string[] {
+  const selectedPaths = new Set(selectedSkills.flatMap(skill => {
+    try {
+      return [realpathSync(skill.path)];
+    } catch {
+      return [];
+    }
+  }));
+  const paths = nativeProjectSkillPaths(workspacePath)
+    .filter(path => !selectedPaths.has(path));
+  if (paths.length === 0) return [];
+  return [
+    '-c',
+    `skills.config=[${paths.map(path => `{path=${tomlString(path)},enabled=false}`).join(',')}]`,
+  ];
+}
+
 export function materializeManagedCodexExtensions(
   snapshot: ManagedCodexExtensionSnapshot | undefined,
 ): ManagedCodexExtensionMaterialization {
-  if (!snapshot || (snapshot.agents.length === 0 && snapshot.skills.length === 0)) {
+  if (!snapshot) {
     return { configArgs: [], skillRoots: [], skills: [], cleanup() {} };
+  }
+  const configArgs = disabledNativeSkillConfigArg(snapshot.workspacePath, snapshot.skills);
+  if (snapshot.agents.length === 0 && snapshot.skills.length === 0) {
+    return { configArgs, skillRoots: [], skills: [], cleanup() {} };
   }
   let root: string;
   try {
@@ -529,9 +588,8 @@ export function materializeManagedCodexExtensions(
       '[codex] managed extension materialization unavailable; continuing without projected Agents and Skills:',
       summarizeCodexErrorForLog(error),
     );
-    return { configArgs: [], skillRoots: [], skills: [], cleanup() {} };
+    return { configArgs, skillRoots: [], skills: [], cleanup() {} };
   }
-  const configArgs: string[] = [];
   const skillRoots: string[] = [];
   const skills: ManagedCodexSkillSpec[] = [];
   let cleaned = false;
@@ -2341,10 +2399,20 @@ const modelCache = new Map<string, { models: RuntimeModelInfo[]; timestamp: numb
 const MODEL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 export function codexModelCacheKey(runtimeSource: RuntimeSource, context: CodexCommandContext): string {
-  if (runtimeSource === 'managed-provider') {
-    return `${runtimeSource}:${context.version ?? 'unknown'}:${context.commandPath}`;
-  }
-  return runtimeSource;
+  // Include the resolved target: version-manager symlinks can select a different
+  // installation without changing the command spelling. Live sessions use RPC.
+  let executable = context.commandPath;
+  let revision = '';
+  try {
+    executable = realpathSync(executable);
+    const stat = statSync(executable);
+    revision = `${stat.size}:${stat.mtimeMs}`;
+  } catch { /* unavailable executable will fail at spawn */ }
+  return JSON.stringify([
+    runtimeSource, executable, context.version, revision,
+    context.codexHome ?? context.env.CODEX_HOME ?? context.env.HOME ?? context.env.USERPROFILE,
+    context.env.Path ?? context.env.PATH,
+  ]);
 }
 
 // ─── JSON-RPC 2.0 Client ───
@@ -3377,7 +3445,7 @@ export class CodexRuntime implements AgentRuntime {
 
   async detect(): Promise<RuntimeDetection> {
     try {
-      const context = resolveCodexCommandContext({ source: 'system-cli' });
+      const context = await resolveCodexCommandContext({ source: 'system-cli' });
       const command = context.commandPath;
       const proc = spawn([command, '--version'], {
         stdout: 'pipe',
@@ -3414,7 +3482,7 @@ export class CodexRuntime implements AgentRuntime {
     }
     let context: CodexCommandContext;
     try {
-      context = resolveCodexCommandContext({ source: runtimeSource });
+      context = await resolveCodexCommandContext({ source: runtimeSource });
     } catch (err) {
       console.error(
         `[codex] Failed to resolve model runtime for source=${runtimeSource}:`,
@@ -3507,7 +3575,7 @@ export class CodexRuntime implements AgentRuntime {
     workspacePath?: string,
     envPolicy?: import('../../shared/types/runtime').RuntimeEnvPolicy,
   ): Promise<RuntimeDiagnostics> {
-    const context = resolveCodexCommandContext({ source: 'system-cli', envPolicy });
+    const context = await resolveCodexCommandContext({ source: 'system-cli', envPolicy });
     const env = context.env;
     const cwd = workspacePath || env.HOME || process.cwd();
 
@@ -3579,7 +3647,7 @@ export class CodexRuntime implements AgentRuntime {
     // Capture the env we hand to Codex so the diagnostic snapshot reflects what
     // the subprocess actually saw (issue #194). The env policy is resolved by
     // the session caller from the agent's runtimeConfig.envPolicy.
-    const context = resolveCodexCommandContext({
+    const context = await resolveCodexCommandContext({
       source: runtimeSource,
       envPolicy: options.envPolicy,
     });

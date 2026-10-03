@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Tip from "@/components/Tip";
-import { Loader2 } from "lucide-react";
+import { LoaderIcon } from '@/components/icons';
 import {
   metadataSchemas,
   NETWORK_BUDGETS,
@@ -241,7 +241,7 @@ export function AgentRow({
           className={`flex h-5 w-9 shrink-0 items-center rounded-full p-0.5 transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${agent.enabled ? "bg-[var(--accent)]" : "bg-[var(--line)]"}`}
         >
           {switchBusy ? (
-            <Loader2 className="mx-auto h-3.5 w-3.5 animate-spin text-[var(--ink-muted)]" />
+            <LoaderIcon className="mx-auto h-3.5 w-3.5 animate-spin text-[var(--ink-muted)]" />
           ) : (
             <span
               className={`h-4 w-4 rounded-full bg-[var(--paper-elevated)] shadow-sm transition-transform ${agent.enabled ? "translate-x-4" : ""}`}

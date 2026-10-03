@@ -24,16 +24,24 @@
 
 ## 当前入口职责
 
+### Integrated DSH 构建来源
+
+`scripts/integrated-runtimes/prepare-dsh-runtime.mjs` 在打包前选择 DSH handoff。唯一的发行选择是 `src/shared/integrated-runtimes/dsh-release.json` 中的 `version`；正式入口和直接 `npm run tauri:build` 从该版本的 GitHub Release `manifest.json` 选择目标资产。packaged Dev 入口也默认使用该版本，只有显式传入 `local` 和绝对 handoff 路径才改用本地资源。Release 构建按清单校验整个 `.tar.gz` 的大小与 SHA-256，再读取必要的身份清单、复制到临时 staging 并原子暂存；不再逐文件扫描暂存副本。本地 handoff 没有归档摘要，暂存副本使用构建机 Node 调用官方 handoff 结构 verifier；不执行目标 Node/npm 或 Runtime self-check。`tauri:build:prepared` 消费已暂存的 Runtime，不重复遍历交付清单。macOS 正式构建在每个目标的准备完成后，为 DSH staging 内所有 Mach-O 文件附加 Developer ID、secure timestamp 与 hardened runtime 签名，再交给 Tauri 打包和公证；签名不修改 Release 归档、缓存或上游清单。
+
+本地 Dev 的 effective lock 和 compatibility 由 handoff 派生，写入 ignored 的 `dsh-build-selection-v1.json`；Vite、Sidecar esbuild 与 Rust build.rs 在同一次构建读取该身份。打包 Dev App 与正式 App 都运行这个 Sidecar bundle，只有 `tauri dev` 运行源码。它不改动已提交的版本选择。每个目标有自己的原生 DSH 资产，因此 macOS 双目标构建在目标循环中分别准备 DSH 并重建业务 bundle。`npm run tauri:build:prepared` 只供已调用 prepare 的平台脚本使用；通用直接入口负责自己准备。若绑定版本的 GitHub Release 尚不可用，默认构建会在请求清单时失败；需打 Dev 包时可显式使用 `--dsh-source local --dsh-handoff /absolute/path`（Windows 为 `-DshSource local -DshHandoff`）。本地 handoff 由 MyAgents-dsh 的 `scripts/build-local-handoff.mjs` 生成，先在其仓库完成 setup 并提交源代码即可；本地 Dev 不要求模型密钥或原生模型验收，handoff 标记为待原生验证。该仓库的 `specs/tech_docs/assurance/development-and-local-integration.md` 维护完整入口。
+
+升级正式绑定的 DSH 版本时只编辑 `dsh-release.json` 的版本号。MyAgents 通过 `https://github.com/hAcKlyc/MyAgents-dsh/releases/download/v<version>/manifest.json` 读取发布方维护的四平台清单，按目标核对包大小、archive/handoff/Runtime/compatibility 摘要、共同源码提交、原生模块和 Host 契约，再派生本次 effective lock。Release 的完整字节校验以归档摘要为界，暂存复制失败会回滚旧目录，但不对复制后的每个文件重新计算摘要；本地 handoff 仍逐文件验证。客户端静态生成文件保留为未准备的 source-mode 编译快照，不用旧版本中嵌入的版本号和摘要阻止选定的新 Runtime。运行时检查必要文件和路径，并在进程握手中核对协议身份与 Host 方法表面，不重新遍历交付清单。`dsh-lock.json` 保留未准备的 source-mode 开发身份快照；显式本地 Dev 构建以 handoff 派生的 effective lock 为准。未打包的 `tauri:dev` 沿用 staged Runtime 与 source-mode 路径；`local` 覆盖范围是 `build_dev*` 的打包构建。
+
 `setup.sh` / `setup_windows.ps1` 准备开发依赖与 host 资源；平台 build 脚本检查本次目标并准备安装包。不能把“以前运行过 setup”作为资源就绪依据。两类入口复用资源 helper，由 helper 校验版本、目标、完整性后决定复用或补齐。
 
 Linux 的 setup 通过 `build_linux.sh --install-deps` 和 `--prepare` 复用资源路径，debug/release 也走该脚本。macOS/Windows 的开发版仍可使用项目 node_modules 提供 sharp/tsx；正式包必须携带自包含资源。
 
-## 架构无关的业务产物只构建一次
+## 业务 bundle 与本次 Runtime 选择一致
 
-`npm run build:assets` 是前端、Sidecar、Bridge、CLI 的组合入口，各 target 的细节仍属于既有 Vite / esbuild driver。
+`npm run build:assets` 是前端、Sidecar、Bridge、CLI 的组合入口。构建派生的 DSH 契约和身份进入业务 bundle，因此必须在选定本次 target 的 handoff 后执行，不能跨 target 复用上一份 bundle。各产物细节仍属于既有 Vite / esbuild driver。
 
 - 直接 `npm run tauri:build`：主配置的 `beforeBuildCommand` 调用 `build:assets`。
-- macOS/Windows build：先成功运行 `build:assets`，再用**本次命令的配置覆盖**关闭钩子；不修改持久 Tauri 配置。macOS 双架构在 target loop 外构建一次，原生资源仍逐 target 准备。
+- macOS/Windows build：先成功运行 `build:assets`，再用**本次命令的配置覆盖**关闭钩子；不修改持久 Tauri 配置。macOS release 在每个 target loop 中先 prepare DSH 再构建业务 bundle；单目标 Dev/Windows 构建只执行一次。
 - Linux build：沿用 Tauri 默认钩子，只执行一次。Linux `--prepare` 仅准备开发资源及 Node 业务 bundle，不生成前端发行包或 Rust 应用。
 
 遗漏显式业务构建后关闭钩子会打包旧产物。`scripts/build-assets.test.mjs` 检查组合入口、失败短路、各平台调用次序以及默认钩子，`scripts/linux-package.test.mjs` 执行隔离的 Linux 入口流程。
@@ -55,7 +63,7 @@ Linux 的 setup 通过 `build_linux.sh --install-deps` 和 `--prepare` 复用资
 
 准备日志使用 `HIT`（校验后复用）、`MISS`（指纹变化/缺失/损坏，需要准备）、`STAGED`（复制到本次打包目录）与 `WAIT`（等待资源锁）。已有 Node 下载器保留带版本/架构原因的 `[nodejs]` 日志；文档、语音与 CLIProxy 同样标记缓存结果。Cuse 在判断本地资源前仍会联网检查当前发布清单，`CHECK` 不等于下载完整资源。
 
-热缓存仍要读文件校验并复制，不能承诺零 IO 或整个 build 离线。前端与 Node 业务产物每次重建一次；Rust 保留自身增量编译机制。完整安装包、签名及真实 OS 运行仍按对应平台发布指南验收。
+热缓存仍要读文件校验并复制，不能承诺零 IO 或整个 build 离线。前端与 Node 业务产物按本次 target 的 Runtime 选择构建，不在 Tauri 钩子重复执行；Rust 保留自身增量编译机制。完整安装包、签名及真实 OS 运行仍按对应平台发布指南验收。
 
 ## Rust 编译缓存与磁盘维护
 

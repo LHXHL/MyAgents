@@ -13,16 +13,13 @@ use std::time::{Duration, Instant};
 
 use crate::{ulog_info, ulog_warn};
 use reqwest::Client;
-use serde_json::json;
 use tauri::{AppHandle, Runtime};
-use tokio::sync::Mutex;
 
 use crate::sidecar::{
     ensure_session_sidecar_with_runtime_identity_override_lifecycle, release_session_sidecar,
-    resolve_session_runtime_identity_full, ManagedSidecarManager, RuntimeDriftResult, SidecarOwner,
+    resolve_session_runtime_identity_full, ManagedSidecarManager, SidecarOwner,
 };
 
-use super::runtime_change::OwnedSessionSnapshot;
 use super::types::{ImMessage, ImSourceType, PeerSession};
 
 /// Max concurrent AI requests across all peers
@@ -190,63 +187,6 @@ pub fn create_sidecar_stream_client() -> Client {
     crate::local_http::sse_client()
 }
 
-fn normalize_runtime_for_peer_drift(runtime: Option<&str>) -> &str {
-    match runtime {
-        Some("claude-code") => "claude-code",
-        Some("codex") => "codex",
-        Some("gemini") => "gemini",
-        _ => "builtin",
-    }
-}
-
-fn normalize_runtime_source_for_peer_drift(
-    runtime: Option<&str>,
-    source: Option<&str>,
-) -> &'static str {
-    let runtime = normalize_runtime_for_peer_drift(runtime);
-    if runtime == "builtin" {
-        return "builtin";
-    }
-    match source {
-        Some("managed-provider") => "managed-provider",
-        _ => "system-cli",
-    }
-}
-
-#[cfg(test)]
-fn persisted_session_runtime_differs(
-    persisted_runtime: Option<&str>,
-    desired_runtime: &str,
-) -> bool {
-    persisted_session_runtime_identity_differs(persisted_runtime, None, desired_runtime, None)
-}
-
-fn persisted_session_runtime_identity_differs(
-    persisted_runtime: Option<&str>,
-    persisted_source: Option<&str>,
-    desired_runtime: &str,
-    desired_source: Option<&str>,
-) -> bool {
-    let Some(persisted_runtime) = persisted_runtime else {
-        return false;
-    };
-    normalize_runtime_for_peer_drift(Some(persisted_runtime))
-        != normalize_runtime_for_peer_drift(Some(desired_runtime))
-        || normalize_runtime_source_for_peer_drift(Some(persisted_runtime), persisted_source)
-            != normalize_runtime_source_for_peer_drift(Some(desired_runtime), desired_source)
-}
-
-fn runtime_identity_label(runtime: &str, source: Option<&str>) -> String {
-    let normalized_runtime = normalize_runtime_for_peer_drift(Some(runtime));
-    let normalized_source =
-        normalize_runtime_source_for_peer_drift(Some(normalized_runtime), source);
-    if normalized_runtime == "builtin" {
-        normalized_runtime.to_string()
-    } else {
-        format!("{}/{}", normalized_runtime, normalized_source)
-    }
-}
-
 impl SessionRouter {
     pub fn new(default_workspace: PathBuf) -> Self {
         Self {
@@ -361,9 +301,8 @@ impl SessionRouter {
             }
             EnsureSidecarPrep::Healthy(_) => unreachable!(),
         };
-        // #327: forward the manager's authoritative is_new — a reused sidecar
-        // reports false here so the caller skips sync_ai_config (which would
-        // otherwise push channel config onto a shared/snapshotted session).
+        // The manager owns process-birth disposition; existing Session metadata
+        // supplies execution configuration for both new and reused processes.
         let (port, is_new) =
             Self::create_sidecar_blocking(info.clone(), app_handle, manager).await?;
 
@@ -548,13 +487,8 @@ impl SessionRouter {
     ///
     /// Returns `(port, is_new)`. `is_new` is the AUTHORITATIVE value from
     /// `ensure_session_sidecar` (decided inside the manager lock): false when the
-    /// manager REUSED an already-healthy sidecar for this session_id (only adding
-    /// the Agent owner), true when it actually spawned one. #327: callers MUST
-    /// forward this verbatim and gate `sync_ai_config` on it — the old code
-    /// discarded it and reported is_new=true unconditionally, so a reused sidecar
-    /// (e.g. the desktop session's, shared via handover, whose router port cache
-    /// went stale after a health blip) got the channel's model/provider override
-    /// pushed onto its live state.
+    /// manager reused an already-healthy Sidecar (adding only the Agent owner),
+    /// true when it spawned one. Execution configuration remains Session-owned.
     pub async fn create_sidecar_blocking<R: Runtime>(
         info: EnsureSidecarInfo,
         app_handle: &AppHandle<R>,
@@ -620,6 +554,10 @@ impl SessionRouter {
     }
 
     /// Get a reference to a peer session by session_key.
+    pub fn default_workspace_path(&self) -> PathBuf {
+        self.default_workspace.clone()
+    }
+
     pub fn get_peer_session(&self, session_key: &str) -> Option<&PeerSession> {
         self.peer_sessions.get(session_key)
     }
@@ -666,263 +604,6 @@ impl SessionRouter {
             }
         }
         false
-    }
-
-    /// Detect runtime drift for an IM peer session and reset it like a `/new`.
-    ///
-    /// When the user changes the agent's runtime in Settings (codex → gemini
-    /// for example), either the live Sidecar runtime or the persisted session
-    /// metadata can disagree with the agent's desired runtime. The persisted
-    /// metadata check matters after idle collection/app restart, where there
-    /// is no live Sidecar for `ManagedSidecarManager` to compare. The v0.1.62
-    /// session-stability rule — which pins a session to whichever runtime
-    /// created it — is wrong for IM: peer session mapping is opaque to the
-    /// user, they just see "my agent is now gemini" and expect the next IM
-    /// message to reflect that.
-    ///
-    /// This method runs at the TOP of message processing (before
-    /// `ensure_sidecar`). If drift is detected it:
-    ///   1. Kills the running Sidecar process (best-effort).
-    ///   2. Removes the entry from `ManagedSidecarManager`.
-    ///   3. Regenerates `peer_sessions[session_key].session_id` to a fresh
-    ///      UUID. The old session_id's messages remain on disk (SessionStore
-    ///      persisted them) and stay findable via global search — we just
-    ///      detach them from the IM peer map so the WeChat Bot's live chat
-    ///      starts clean.
-    ///
-    /// Returns `Some((old_session_id, new_session_id))` when a reset happened
-    /// so the caller can send the user a notification ("🔁 已自动创建新对话
-    /// (xxxxxxxx)"). Returns `None` when no drift was detected.
-    ///
-    /// `desired_runtime` is the agent's CURRENT runtime as resolved from
-    /// config (typically via `normalize_runtime_type(agent_config.runtime)`).
-    /// Valid values: `"builtin"`, `"claude-code"`, `"codex"`, `"gemini"`.
-    pub async fn check_and_reset_on_runtime_drift(
-        router: &Arc<Mutex<Self>>,
-        session_key: &str,
-        desired_runtime: &str,
-        manager: &ManagedSidecarManager,
-    ) -> Result<Option<(String, String)>, String> {
-        Self::check_and_reset_on_runtime_identity_drift(
-            router,
-            session_key,
-            desired_runtime,
-            None,
-            manager,
-        )
-        .await
-    }
-
-    pub async fn check_and_reset_on_runtime_identity_drift(
-        router: &Arc<Mutex<Self>>,
-        session_key: &str,
-        desired_runtime: &str,
-        desired_runtime_source: Option<&str>,
-        manager: &ManagedSidecarManager,
-    ) -> Result<Option<(String, String)>, String> {
-        Self::check_and_reset_on_runtime_identity_drift_with_resolver(
-            router,
-            session_key,
-            desired_runtime,
-            desired_runtime_source,
-            manager,
-            |session_id| {
-                resolve_session_runtime_identity_full(session_id)
-                    .map(|identity| (identity.runtime, identity.runtime_source))
-            },
-        )
-        .await
-    }
-
-    async fn check_and_reset_on_runtime_identity_drift_with_resolver<F>(
-        router: &Arc<Mutex<Self>>,
-        session_key: &str,
-        desired_runtime: &str,
-        desired_runtime_source: Option<&str>,
-        manager: &ManagedSidecarManager,
-        resolve_persisted_runtime: F,
-    ) -> Result<Option<(String, String)>, String>
-    where
-        F: FnOnce(&str) -> Option<(String, Option<String>)>,
-    {
-        let session_id = {
-            let router_guard = router.lock().await;
-            let Some(session_id) = router_guard
-                .peer_sessions
-                .get(session_key)
-                .map(|peer| peer.session_id.clone())
-            else {
-                return Ok(None);
-            };
-            session_id
-        };
-        let _lifecycle = crate::sidecar::acquire_session_lifecycle(&[&session_id]).await;
-        if crate::sidecar::has_persisted_session_owner(&session_id).await? {
-            return Ok(None);
-        }
-
-        // The Router mutex is deliberately not held across Sidecar drain. It
-        // is shared by every IM peer, whereas this lifecycle fence is scoped
-        // to exactly one Session.
-        let binding_is_current = matches!(
-            router.lock().await.peer_sessions.get(session_key),
-            Some(peer) if peer.session_id == session_id
-        );
-        if !binding_is_current {
-            return Ok(None);
-        }
-        let transition = {
-            let mut manager_guard = manager.lock().map_err(|error| error.to_string())?;
-            manager_guard.kill_sidecar_if_runtime_identity_differs(
-                &session_id,
-                desired_runtime,
-                desired_runtime_source,
-            )
-        };
-        let drain_manager = manager.clone();
-        let drift_result = tauri::async_runtime::spawn_blocking(move || {
-            crate::sidecar::finish_runtime_drift_transition(&drain_manager, transition)
-        })
-        .await
-        .map_err(|error| format!("Runtime drift retirement task failed: {error:?}"))??;
-
-        let persisted_identity = resolve_persisted_runtime(&session_id);
-        let persisted_drift = persisted_identity
-            .as_ref()
-            .map(|(runtime, source)| {
-                persisted_session_runtime_identity_differs(
-                    Some(runtime.as_str()),
-                    source.as_deref(),
-                    desired_runtime,
-                    desired_runtime_source,
-                )
-            })
-            .unwrap_or(false);
-        if !drift_result.is_drift() && !persisted_drift {
-            return Ok(None);
-        }
-
-        if matches!(
-            drift_result,
-            RuntimeDriftResult::NoDrift | RuntimeDriftResult::DetectedKeptAlive
-        ) {
-            let release_owner = SidecarOwner::Agent(session_key.to_string());
-            let release = release_session_sidecar(manager, &session_id, &release_owner).await;
-            if let Err(error) = release {
-                ulog_warn!(
-                    "[im-router] Failed to release old Agent owner during runtime drift (session_key={} session={}): {}",
-                    session_key,
-                    session_id,
-                    error
-                );
-            }
-        }
-
-        Ok(router.lock().await.commit_runtime_drift_reset(
-            session_key,
-            &session_id,
-            desired_runtime,
-            desired_runtime_source,
-            persisted_identity,
-            drift_result,
-        ))
-    }
-
-    fn commit_runtime_drift_reset(
-        &mut self,
-        session_key: &str,
-        old_id: &str,
-        desired_runtime: &str,
-        desired_runtime_source: Option<&str>,
-        persisted_identity: Option<(String, Option<String>)>,
-        drift_result: RuntimeDriftResult,
-    ) -> Option<(String, String)> {
-        let binding_is_current = matches!(
-            self.peer_sessions.get(session_key),
-            Some(peer) if peer.session_id == old_id
-        );
-        if !binding_is_current {
-            return None;
-        }
-
-        // Runtime drift and `/new` share the exact same pending peer-state
-        // transition. Their orchestration/failure policies differ, but neither
-        // may invent a second representation of a freshly rotated binding.
-        let transition = self.stage_new_session_binding(session_key);
-        let new_id = transition.target_session_id().to_string();
-
-        let desired_label = runtime_identity_label(desired_runtime, desired_runtime_source);
-        let persisted_label = persisted_identity
-            .as_ref()
-            .map(|(runtime, source)| runtime_identity_label(runtime, source.as_deref()))
-            .unwrap_or_else(|| "unknown".to_string());
-        ulog_info!(
-            "[im-router] Runtime drift: peer={} old={} → new={} desired={} persisted={} live_result={:?}",
-            session_key,
-            &old_id[..8.min(old_id.len())],
-            &new_id[..8.min(new_id.len())],
-            desired_label,
-            persisted_label,
-            drift_result,
-        );
-
-        Some((old_id.to_string(), new_id))
-    }
-
-    /// Freeze the source Session before an owner-scoped binding rotation.
-    /// A live Sidecar is authoritative for its effective config; an idle peer
-    /// uses the existing file-lock snapshot path. This method never resets or
-    /// rekeys the Sidecar.
-    pub async fn freeze_peer_before_binding_rotation(
-        &self,
-        peer: &PeerSession,
-        fallback_snapshot: &OwnedSessionSnapshot,
-    ) -> Result<(), String> {
-        if peer.sidecar_port > 0 {
-            let url = format!(
-                "http://127.0.0.1:{}/api/session/freeze-current",
-                peer.sidecar_port
-            );
-            let response = self
-                .http_client
-                .post(&url)
-                .json(&json!({
-                    "metadataBirthPending": peer.metadata_birth_pending,
-                    "metadataIndexed": peer.metadata_indexed,
-                }))
-                .send()
-                .await
-                .map_err(|error| format!("freeze-current request failed: {error}"))?;
-            if !response.status().is_success() {
-                let status = response.status();
-                let body = response.text().await.unwrap_or_default();
-                return Err(format!("freeze-current returned {status}: {body}"));
-            }
-            ulog_info!(
-                "[im-router] operation=im_binding_rotation stage=freeze source=sidecar session={} port={}",
-                short_id(&peer.session_id),
-                peer.sidecar_port
-            );
-            return Ok(());
-        }
-
-        let disposition =
-            super::runtime_change::freeze_via_file_lock_status(&peer.session_id, fallback_snapshot)
-                .await
-                .and_then(|outcome| {
-                    super::runtime_change::resolve_peer_file_lock_freeze_outcome(
-                        outcome,
-                        peer.metadata_birth_pending,
-                        peer.metadata_indexed,
-                        &peer.session_id,
-                    )
-                })?;
-        ulog_info!(
-            "[im-router] operation=im_binding_rotation stage=freeze source=file-lock session={} disposition={:?}",
-            short_id(&peer.session_id),
-            disposition
-        );
-        Ok(())
     }
 
     /// Collect idle sessions that haven't been active for IDLE_TIMEOUT_SECS.
@@ -1141,6 +822,22 @@ impl SessionRouter {
             prior,
             target_session_id,
         }
+    }
+
+    /// A metadata-first IM birth uses the returned Product Session id, never a second UUID.
+    pub fn stage_materialized_session_binding(
+        &mut self,
+        session_key: &str,
+        session_id: &str,
+    ) -> PeerBindingTransition {
+        let mut transition = self.stage_new_session_binding(session_key);
+        transition.target_session_id = session_id.to_string();
+        if let Some(peer) = self.peer_sessions.get_mut(session_key) {
+            peer.session_id = session_id.to_string();
+            peer.metadata_birth_pending = false;
+            peer.metadata_indexed = true;
+        }
+        transition
     }
 
     /// Stage the desktop Tab + Agent migration after owner admission. Unlike
@@ -1435,194 +1132,9 @@ impl SessionRouter {
         self.default_workspace = path;
     }
 
-    /// Sync AI config (model + MCP + provider) to a newly created Sidecar.
-    /// Called after ensure_sidecar returns is_new=true.
-    pub async fn sync_ai_config(
-        &self,
-        port: u16,
-        runtime: &str,
-        runtime_config: Option<&serde_json::Value>,
-        model: Option<&str>,
-        mcp_servers_json: Option<&str>,
-        provider_env: Option<&serde_json::Value>,
-    ) {
-        if matches!(runtime, "codex" | "claude-code" | "gemini") {
-            let runtime_model = runtime_config
-                .and_then(|v| v.get("model"))
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .unwrap_or("(default)");
-            ulog_info!(
-                "[im-router] Runtime {} owns provider/model/MCP, skipped Builtin config sync to port {} (runtimeModel={})",
-                runtime,
-                port,
-                runtime_model
-            );
-            return;
-        }
-
-        // 1. Provider env (sync BEFORE model so pre-warm uses the correct provider)
-        if let Some(penv) = provider_env {
-            let url = format!("http://127.0.0.1:{}/api/provider/set", port);
-            match self
-                .http_client
-                .post(&url)
-                .json(&json!({ "providerEnv": penv }))
-                .send()
-                .await
-            {
-                Ok(_) => ulog_info!("[im-router] Synced provider env to port {}", port),
-                Err(e) => ulog_warn!(
-                    "[im-router] Failed to sync provider env to port {}: {}",
-                    port,
-                    e
-                ),
-            }
-        }
-
-        // 2. Model
-        if let Some(model_id) = model {
-            let url = format!("http://127.0.0.1:{}/api/model/set", port);
-            // `imConfigSync` (#327): mark this as channel/agent config sync so a
-            // snapshotted (desktop-owned) session ignores it — the snapshot model
-            // wins. Without it, a shared/handover sidecar's live model would be
-            // clobbered by the channel override (context window → 200K + 500).
-            match self
-                .http_client
-                .post(&url)
-                .json(&json!({ "model": model_id, "imConfigSync": true }))
-                .send()
-                .await
-            {
-                Ok(_) => ulog_info!("[im-router] Synced model {} to port {}", model_id, port),
-                Err(e) => ulog_warn!("[im-router] Failed to sync model to port {}: {}", port, e),
-            }
-        }
-
-        // 3. MCP servers
-        if let Some(mcp_json) = mcp_servers_json {
-            if let Ok(servers) = serde_json::from_str::<Vec<serde_json::Value>>(mcp_json) {
-                let url = format!("http://127.0.0.1:{}/api/mcp/set", port);
-                match self
-                    .http_client
-                    .post(&url)
-                    .json(&json!({ "servers": servers }))
-                    .send()
-                    .await
-                {
-                    Ok(_) => ulog_info!(
-                        "[im-router] Synced {} MCP server(s) to port {}",
-                        servers.len(),
-                        port
-                    ),
-                    Err(e) => ulog_warn!("[im-router] Failed to sync MCP to port {}: {}", port, e),
-                }
-            }
-        }
-    }
-
     /// Get a reference to the HTTP client (for callers that need to sync config outside the lock).
     pub fn http_client(&self) -> &Client {
         &self.http_client
-    }
-
-    /// Static version of sync_ai_config — takes an explicit HTTP client instead of &self.
-    /// Used by heartbeat to sync config WITHOUT holding the router lock.
-    pub async fn sync_ai_config_with_client(
-        client: &Client,
-        port: u16,
-        runtime: &str,
-        runtime_config: Option<&serde_json::Value>,
-        model: Option<&str>,
-        mcp_servers_json: Option<&str>,
-        provider_env: Option<&serde_json::Value>,
-    ) {
-        if matches!(runtime, "codex" | "claude-code" | "gemini") {
-            let runtime_model = runtime_config
-                .and_then(|v| v.get("model"))
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .unwrap_or("(default)");
-            ulog_info!(
-                "[im-router] Runtime {} owns provider/model/MCP, skipped Builtin config sync to port {} (runtimeModel={})",
-                runtime,
-                port,
-                runtime_model
-            );
-            return;
-        }
-
-        if let Some(penv) = provider_env {
-            let url = format!("http://127.0.0.1:{}/api/provider/set", port);
-            match client
-                .post(&url)
-                .json(&json!({ "providerEnv": penv }))
-                .send()
-                .await
-            {
-                Ok(_) => ulog_info!("[im-router] Synced provider env to port {}", port),
-                Err(e) => ulog_warn!(
-                    "[im-router] Failed to sync provider env to port {}: {}",
-                    port,
-                    e
-                ),
-            }
-        }
-        if let Some(model_id) = model {
-            let url = format!("http://127.0.0.1:{}/api/model/set", port);
-            // `imConfigSync` (#327): see sync_ai_config — snapshotted desktop
-            // sessions ignore channel model overrides (snapshot wins).
-            match client
-                .post(&url)
-                .json(&json!({ "model": model_id, "imConfigSync": true }))
-                .send()
-                .await
-            {
-                Ok(_) => ulog_info!("[im-router] Synced model {} to port {}", model_id, port),
-                Err(e) => ulog_warn!("[im-router] Failed to sync model to port {}: {}", port, e),
-            }
-        }
-        if let Some(mcp_json) = mcp_servers_json {
-            if let Ok(servers) = serde_json::from_str::<Vec<serde_json::Value>>(mcp_json) {
-                let url = format!("http://127.0.0.1:{}/api/mcp/set", port);
-                match client
-                    .post(&url)
-                    .json(&json!({ "servers": servers }))
-                    .send()
-                    .await
-                {
-                    Ok(_) => ulog_info!(
-                        "[im-router] Synced {} MCP server(s) to port {}",
-                        servers.len(),
-                        port
-                    ),
-                    Err(e) => ulog_warn!("[im-router] Failed to sync MCP to port {}: {}", port, e),
-                }
-            }
-        }
-    }
-
-    /// Sync permission mode to a Sidecar.
-    pub async fn sync_permission_mode(&self, port: u16, mode: &str) {
-        let url = format!("http://127.0.0.1:{}/api/session/permission-mode", port);
-        match self
-            .http_client
-            .post(&url)
-            .json(&json!({ "permissionMode": mode }))
-            .send()
-            .await
-        {
-            Ok(_) => ulog_info!(
-                "[im-router] Synced permission mode '{}' to port {}",
-                mode,
-                port
-            ),
-            Err(e) => ulog_warn!(
-                "[im-router] Failed to sync permission mode to port {}: {}",
-                port,
-                e
-            ),
-        }
     }
 
     /// Release all sessions and DROP the peer→session binding map.
@@ -1775,9 +1287,9 @@ mod tests {
     use std::time::Instant;
 
     use super::{
-        parse_session_key, peer_binding_source_requires_freeze, persisted_session_runtime_differs,
-        persisted_session_runtime_identity_differs, reconcile_peer_metadata_with_lookup,
-        EnsureSidecarInfo, EnsureSidecarPrep, PeerMetadataDisposition, SessionRouter,
+        parse_session_key, peer_binding_source_requires_freeze,
+        reconcile_peer_metadata_with_lookup, EnsureSidecarInfo, EnsureSidecarPrep,
+        PeerMetadataDisposition, SessionRouter,
     };
     use crate::im::types::{ImActiveSession, PeerSession};
     use crate::sidecar::{SidecarManager, SidecarOwner};
@@ -2004,37 +1516,6 @@ mod tests {
                 .session_id,
             "session-newer"
         );
-    }
-
-    #[test]
-    fn persisted_builtin_session_drift_is_detected_for_external_agent_runtime() {
-        assert!(persisted_session_runtime_differs(Some("builtin"), "codex"));
-    }
-
-    #[test]
-    fn missing_persisted_session_metadata_does_not_force_a_peer_reset() {
-        assert!(!persisted_session_runtime_differs(None, "codex"));
-    }
-
-    #[test]
-    fn matching_persisted_external_runtime_has_no_peer_drift() {
-        assert!(!persisted_session_runtime_differs(Some("codex"), "codex"));
-    }
-
-    #[test]
-    fn persisted_external_runtime_source_drift_is_detected() {
-        assert!(persisted_session_runtime_identity_differs(
-            Some("codex"),
-            Some("system-cli"),
-            "codex",
-            Some("managed-provider"),
-        ));
-        assert!(!persisted_session_runtime_identity_differs(
-            Some("codex"),
-            Some("managed-provider"),
-            "codex",
-            Some("managed-provider"),
-        ));
     }
 
     #[test]
@@ -2358,40 +1839,5 @@ mod tests {
             .expect("peer session exists");
         assert!(!restored_peer.metadata_birth_pending);
         assert!(restored_peer.metadata_indexed);
-    }
-
-    #[tokio::test]
-    async fn persisted_runtime_drift_rotates_peer_session_without_live_sidecar() {
-        let session_key = "agent:a:feishu:private:user";
-        let mut router = SessionRouter::new(PathBuf::from("/tmp/workspace"));
-        router.upsert_peer_session(peer(session_key, "old-session"));
-        let router = Arc::new(tokio::sync::Mutex::new(router));
-        let manager = Arc::new(std::sync::Mutex::new(SidecarManager::new()));
-
-        let reset = SessionRouter::check_and_reset_on_runtime_identity_drift_with_resolver(
-            &router,
-            session_key,
-            "codex",
-            None,
-            &manager,
-            |_| Some(("builtin".to_string(), None)),
-        )
-        .await
-        .expect("runtime drift check");
-
-        let (old_id, new_id) = reset.expect("persisted runtime drift should reset");
-        assert_eq!(old_id, "old-session");
-        assert_ne!(new_id, "old-session");
-
-        let ps = router
-            .lock()
-            .await
-            .peer_session_snapshot(session_key)
-            .expect("peer session remains bound after rotation");
-        assert_eq!(ps.session_id, new_id);
-        assert_eq!(ps.sidecar_port, 0);
-        assert_eq!(ps.message_count, 0);
-        assert!(ps.metadata_birth_pending);
-        assert!(!ps.metadata_indexed);
     }
 }

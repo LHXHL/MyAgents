@@ -1,6 +1,6 @@
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { X, Send, ImagePlus } from 'lucide-react';
+import { CloseIcon, SendIcon, ImagePlusIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import { useCloseLayer } from '@/hooks/useCloseLayer';
@@ -131,7 +131,7 @@ export default function BugReportOverlay({
                         onClick={onClose}
                         className="rounded-lg p-1 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                     >
-                        <X className="h-4 w-4" />
+                        <CloseIcon className="h-4 w-4" />
                     </button>
                 </div>
 
@@ -157,7 +157,7 @@ export default function BugReportOverlay({
                                             onClick={() => removeAt(img.id)}
                                             className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-[var(--error)] text-[var(--on-error)] opacity-0 transition-opacity group-hover:opacity-100"
                                         >
-                                            <X className="h-3 w-3" />
+                                            <CloseIcon className="h-3 w-3" />
                                         </button>
                                     </div>
                                 ))}
@@ -201,7 +201,7 @@ export default function BugReportOverlay({
                                     className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                                     title={t('helper.uploadImage')}
                                 >
-                                    <ImagePlus className="h-4 w-4" />
+                                    <ImagePlusIcon className="h-4 w-4" />
                                 </button>
 
                                 {/* Model selector */}
@@ -232,7 +232,7 @@ export default function BugReportOverlay({
                                         : 'bg-[var(--ink-muted)]/15 text-[var(--ink-muted)]/40'
                                 }`}
                             >
-                                <Send className="h-4 w-4" />
+                                <SendIcon className="h-4 w-4" />
                             </button>
                         </div>
                     </div>

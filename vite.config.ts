@@ -3,6 +3,7 @@ import { resolve } from 'path';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
+import { dshBuildDefines } from './scripts/integrated-runtimes/dsh-build-selection.mjs';
 
 // Read version info from package.json and Cargo.toml at build time
 function getBuildVersions() {
@@ -55,6 +56,7 @@ export default defineConfig({
   },
   // Define environment variables for client code
   define: {
+    ...dshBuildDefines(__dirname),
     // DEBUG_MODE: true when VITE_DEBUG_MODE is set or in dev server mode
     '__DEBUG_MODE__': JSON.stringify(process.env.VITE_DEBUG_MODE === 'true'),
     // Build-time version info for developer mode

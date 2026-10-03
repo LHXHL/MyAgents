@@ -13,7 +13,7 @@ describe('Codex native permission presets', () => {
 
   it('keeps hidden legacy suggest confined to Codex when changing runtimes', () => {
     expect(coercePermissionModeForRuntime('suggest', 'codex')).toBe('suggest');
-    for (const runtime of ['builtin', 'gemini', 'claude-code'] as const) {
+    for (const runtime of ['builtin', 'claude-code'] as const) {
       expect(coercePermissionModeForRuntime('suggest', runtime)).toBeUndefined();
     }
   });

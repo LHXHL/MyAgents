@@ -12,7 +12,8 @@ export type TranscriptMessageDetails = Omit<TranscriptMessage, 'id' | 'role' | '
 
 export interface TranscriptTurn {
   id: string;
-  rootUserMessageId: string;
+  rootUserMessageId?: string;
+  origin?: 'collaboration';
   startedAt: string;
   status: 'running' | 'complete' | 'stopped' | 'error' | 'interrupted';
   usage?: MessageUsage;
@@ -230,7 +231,7 @@ export function applyTranscriptOperation(projection: TranscriptProjection, opera
     }
     case 'messages-remove':
       for (const id of operation.messageIds) projection.messages.delete(id);
-      for (const [id, turn] of projection.turns) if (operation.messageIds.includes(turn.rootUserMessageId)) projection.turns.delete(id);
+      for (const [id, turn] of projection.turns) if (turn.rootUserMessageId !== undefined && operation.messageIds.includes(turn.rootUserMessageId)) projection.turns.delete(id);
       break;
     case 'turn-update':
       projection.turns.set(operation.turn.id, structuredClone(operation.turn));
@@ -250,7 +251,7 @@ export function applyTranscriptBatch(projection: TranscriptProjection, operation
   for (const operation of operations) {
     if (operation.kind === 'messages-remove') {
       for (const [id, turn] of projection.turns) {
-        if (operation.messageIds.includes(turn.rootUserMessageId) && !priorTurns.has(id)) priorTurns.set(id, turn);
+        if (turn.rootUserMessageId !== undefined && operation.messageIds.includes(turn.rootUserMessageId) && !priorTurns.has(id)) priorTurns.set(id, turn);
       }
     }
     const ids = operation.kind === 'message-create' ? [operation.message.id]

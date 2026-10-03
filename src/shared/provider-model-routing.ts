@@ -5,12 +5,14 @@ import {
   type ModelProtocol,
 } from './tokendance';
 
-export function isPerModelProtocolProvider(provider: Provider): boolean {
-  return provider.isBuiltin && provider.modelRouting === 'per-model';
+type ModelRoutingProvider = Pick<Provider, 'id' | 'config' | 'models' | 'apiProtocol' | 'upstreamFormat' | 'maxOutputTokens' | 'maxOutputTokensParamName' | 'authType' | 'modelRouting' | 'modelProtocolBaseUrls'> & Partial<Pick<Provider, 'name' | 'isBuiltin'>>;
+
+export function isPerModelProtocolProvider(provider: ModelRoutingProvider): boolean {
+  return provider.isBuiltin === true && provider.modelRouting === 'per-model';
 }
 
 /** A unique route is required unless this provider explicitly defines a preference. */
-export function resolveModelProtocol(provider: Provider, model: ModelEntity): ModelProtocol | undefined {
+export function resolveModelProtocol(provider: ModelRoutingProvider, model: ModelEntity): ModelProtocol | undefined {
   if (!isPerModelProtocolProvider(provider)) return undefined;
   if (provider.id === TOKENDANCE_PROVIDER_ID) {
     const available = parseSupportedProtocols(model.supportedProtocols);
@@ -26,7 +28,7 @@ export function resolveModelProtocol(provider: Provider, model: ModelEntity): Mo
 }
 
 /** Resolve an immutable execution projection for the concrete route model. */
-export function resolveProviderForModel(provider: Provider, modelId: string): Provider {
+export function resolveProviderForModel<T extends ModelRoutingProvider>(provider: T, modelId: string): T {
   if (!isPerModelProtocolProvider(provider)) return provider;
   const model = provider.models.find(item => item.model === modelId);
   const protocol = model && resolveModelProtocol(provider, model);
@@ -34,7 +36,7 @@ export function resolveProviderForModel(provider: Provider, modelId: string): Pr
     if (provider.id === TOKENDANCE_PROVIDER_ID) {
       throw new Error(`TokenDance model '${modelId}' has no known supported conversation protocol. Refresh the model catalog.`);
     }
-    throw new Error(`Model '${modelId}' has no known execution protocol for ${provider.name}. Set its protocol in model settings or refresh the catalog.`);
+    throw new Error(`Model '${modelId}' has no known execution protocol for ${provider.name ?? provider.id}. Set its protocol in model settings or refresh the catalog.`);
   }
   const isAnthropic = protocol === 'anthropic:messages';
   const baseUrl = provider.modelProtocolBaseUrls?.[protocol];

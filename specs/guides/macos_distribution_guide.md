@@ -120,16 +120,13 @@ source ~/.zshrc
 ## 第六步：构建签名并公证的应用
 
 ```bash
-# 确保环境变量已设置
-echo $APPLE_SIGNING_IDENTITY
-
-# 构建 universal binary（同时支持 Intel 和 Apple Silicon）
-npm run tauri build -- --target universal-apple-darwin
+# 从 .env 加载签名配置，选择 Apple Silicon、Intel 或分别构建两种架构
+./build_macos.sh
 ```
 
-如果环境变量配置正确，Tauri 会自动：
-1. ✅ 使用 Developer ID 签名应用
-2. ✅ 提交到 Apple 进行公证
+环境变量配置正确后，构建脚本与 Tauri 依次完成：
+1. ✅ 构建脚本按目标准备资源，为 DSH 内嵌的 Mach-O 可执行文件、`.node` 与动态库签名
+2. ✅ Tauri 使用 Developer ID 签名应用并提交到 Apple 公证
 3. ✅ 等待公证完成（通常 2-5 分钟）
 4. ✅ Staple 公证票据到应用
 
@@ -169,6 +166,16 @@ src-tauri/target/universal-apple-darwin/release/bundle/dmg/
 ---
 
 ## 常见问题
+
+### Q: 编译成功，但打包报 `failed to remove extra attributes from app bundle: failed to run xattr`
+
+Tauri CLI 2.11.4 在签名前对 `.app` 执行 `xattr -crs`，简略错误会隐藏具体文件路径。可对失败的构建副本执行同一命令查看底层错误：
+
+```bash
+/usr/bin/xattr -crs src-tauri/target/debug/bundle/macos/MyAgents.app
+```
+
+2026-09-06 的 DSH 集成故障由 3 个平台 evidence JSON 的 `0400` 权限引起：导入时保留只读权限，复制进 App 后 `xattr` 返回 `Permission denied`。`ingest:dsh-runtime` 已在临时副本中统一资源权限，保持文件内容和原始交付物不变，并在原子替换前重新校验完整交付包。已有 staging 需用锁定交付物重新运行导入，再运行 `./build_dev.sh`；不要对源交付包递归 chmod，也不要用 `sudo`、跳过签名或忽略 `xattr` 失败来绕过问题。具体权限和校验边界见 [DSH 集成指南](../tech_docs/myagents_dsh_integrated_runtime.md#7-generated-protocol-and-artifact-consumption)。
 
 ### Q: 公证失败怎么办？
 

@@ -23,14 +23,14 @@
 
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
-  Plus,
-  Loader2,
-  AlertTriangle,
-  Trash2,
-  FolderOpen,
-  ChevronLeft,
-  Puzzle,
-} from 'lucide-react';
+  PlusIcon,
+  LoaderIcon,
+  WarningIcon,
+  TrashIcon,
+  FolderOpenIcon,
+  ChevronLeftIcon,
+  PluginIcon,
+} from '@/components/icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -238,7 +238,7 @@ export default function GlobalPluginsPanel({
        *  into a single info row so the page weight matches SkillsCommandsList §300-313. */}
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-2">
-          <Puzzle className="h-5 w-5 text-[var(--accent-warm)]" />
+          <PluginIcon className="h-5 w-5 text-[var(--accent-warm)]" />
           <h3 className="text-base font-semibold text-[var(--ink)]">{t('plugins.title')}</h3>
           <span className="rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs text-[var(--ink-muted)]">
             {plugins.length}
@@ -249,7 +249,7 @@ export default function GlobalPluginsPanel({
           onClick={() => setShowInstall(true)}
           className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)]"
         >
-          <Plus className="h-4 w-4" />
+          <PlusIcon className="h-4 w-4" />
           {t('plugins.installButton')}
         </button>
       </div>
@@ -264,12 +264,12 @@ export default function GlobalPluginsPanel({
 
       {loading ? (
         <div className="flex items-center justify-center py-12 text-[var(--ink-muted)]">
-          <Loader2 className="h-5 w-5 animate-spin" />
+          <LoaderIcon className="h-5 w-5 animate-spin" />
           <span className="ml-2 text-sm">{t('plugins.loading')}</span>
         </div>
       ) : plugins.length === 0 ? (
         <div className="rounded-xl bg-[var(--paper-elevated)] py-16 text-center">
-          <Puzzle className="mx-auto h-10 w-10 text-[var(--ink-subtle)]" />
+          <PluginIcon className="mx-auto h-10 w-10 text-[var(--ink-subtle)]" />
           <p className="mt-3 text-base font-medium text-[var(--ink)]">{t('plugins.emptyTitle')}</p>
           <p className="mt-1 text-sm text-[var(--ink-muted)]">
             {t('plugins.emptyDescription')}
@@ -347,11 +347,11 @@ function PluginCard({
       onClick={onOpen}
     >
       <div className="flex items-center gap-2">
-        {isBad && <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" />}
+        {isBad && <WarningIcon className="h-3.5 w-3.5 shrink-0 text-amber-500" />}
         <h4 className="min-w-0 flex-1 truncate text-sm font-semibold text-[var(--ink)]">
           {item.name}
         </h4>
-        <Puzzle className="h-3.5 w-3.5 shrink-0 text-[var(--accent-warm)]" />
+        <PluginIcon className="h-3.5 w-3.5 shrink-0 text-[var(--accent-warm)]" />
         {item.version && (
           <span className="shrink-0 rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-medium tracking-[0.04em] text-[var(--ink-muted)]">
             v{item.version}
@@ -432,7 +432,7 @@ function PluginDetailView({
         onClick={onBack}
         className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-sm text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
       >
-        <ChevronLeft className="h-4 w-4" />
+        <ChevronLeftIcon className="h-4 w-4" />
         {t('plugins.detail.back')}
       </button>
 
@@ -467,7 +467,7 @@ function PluginDetailView({
           onClick={openInFinder}
           className="inline-flex items-center gap-1.5 rounded-full bg-[var(--button-secondary-bg)] px-4 py-1.5 text-sm font-medium text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)]"
         >
-          <FolderOpen className="h-3.5 w-3.5" />
+          <FolderOpenIcon className="h-3.5 w-3.5" />
           {t('plugins.detail.openDirectory')}
         </button>
         <button
@@ -475,7 +475,7 @@ function PluginDetailView({
           onClick={onUninstall}
           className="inline-flex items-center gap-1.5 rounded-full bg-[var(--error-bg)] px-4 py-1.5 text-sm font-medium text-[var(--error)] transition-colors hover:brightness-95"
         >
-          <Trash2 className="h-3.5 w-3.5" />
+          <TrashIcon className="h-3.5 w-3.5" />
           {t('plugins.detail.uninstall')}
         </button>
       </div>
@@ -981,14 +981,14 @@ function InputView({
         </label>
 
         <div className="rounded-lg border border-[var(--warning,#d97706)]/40 bg-[var(--warning,#d97706)]/10 px-3 py-2 text-xs text-[var(--warning,#d97706)]">
-          <AlertTriangle className="mr-1 inline h-3 w-3 align-text-bottom" />
+          <WarningIcon className="mr-1 inline h-3 w-3 align-text-bottom" />
           {t('plugins.install.input.trustWarning')}
         </div>
 
         {phase && (
           <div className="rounded-lg border border-[var(--line)] px-3 py-2 text-xs">
             <div className="flex items-center gap-2">
-              {phase !== 'done' && phase !== 'failed' && <Loader2 className="h-3 w-3 animate-spin" />}
+              {phase !== 'done' && phase !== 'failed' && <LoaderIcon className="h-3 w-3 animate-spin" />}
               <span className="font-medium text-[var(--ink)]">{t(phaseLabelKey(phase))}</span>
             </div>
             {phaseMsg && <div className="mt-1 break-all text-[var(--ink-muted)]">{phaseMsg}</div>}
@@ -1011,7 +1011,7 @@ function InputView({
           disabled={submitting || !sourceUrl.trim()}
           className="flex items-center gap-1.5 rounded-full bg-[var(--button-primary-bg)] px-4 py-1.5 text-sm font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
         >
-          {submitting && <Loader2 className="h-3 w-3 animate-spin" />}
+          {submitting && <LoaderIcon className="h-3 w-3 animate-spin" />}
           {t('plugins.install.input.start')}
         </button>
       </div>
@@ -1217,7 +1217,7 @@ function InstallingView({
                 textColor = 'text-[var(--error)]';
               }
             } else if (!done && i === cursor) {
-              icon = <Loader2 className="h-3 w-3 animate-spin text-[var(--accent)]" />;
+              icon = <LoaderIcon className="h-3 w-3 animate-spin text-[var(--accent)]" />;
               textColor = 'text-[var(--ink)]';
             } else {
               icon = <span className="text-[var(--ink-muted)]">·</span>;
@@ -1248,7 +1248,7 @@ function InstallingView({
           disabled={!done}
           className="flex items-center gap-1.5 rounded-full bg-[var(--button-primary-bg)] px-4 py-1.5 text-sm font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
         >
-          {!done && <Loader2 className="h-3 w-3 animate-spin" />}
+          {!done && <LoaderIcon className="h-3 w-3 animate-spin" />}
           {done ? t('plugins.install.progress.close') : t('plugins.install.progress.installing')}
         </button>
       </div>

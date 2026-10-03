@@ -18,6 +18,20 @@ afterEach(() => cleanup());
 
 const REASONING = 'secret reasoning detail';
 
+it('shows a completed open child handle without a running indicator', () => {
+  const block = { type: 'tool_use', tool: {
+    id: 'completed-child-call', name: 'Agent', parsedInput: { description: 'Research fixture' },
+    result: '{"taskId":"work-1","agentId":"child-1","state":"background"}', isLoading: false,
+    subagentLifecycle: {
+      activation: { id: 'activation-1', ordinal: 1, state: 'completed' }, handleState: 'open',
+      status: 'completed', startedAt: 100, finishedAt: 200,
+    },
+  } } as ContentBlock;
+  const { container } = render(<ProcessRow block={block} index={0} totalBlocks={1} isStreaming={false} />);
+  expect(screen.getByText('已完成，可继续')).toBeTruthy();
+  expect(container.querySelector('.animate-spin')).toBeNull();
+});
+
 function thinkingBlock(overrides: Partial<ContentBlock> = {}): ContentBlock {
   return { type: 'thinking', thinking: REASONING, isComplete: false, ...overrides } as ContentBlock;
 }
@@ -137,5 +151,43 @@ describe('ProcessRow tool body layout ownership', () => {
     fireEvent.click(screen.getByRole('button', { expanded: false }));
 
     expect(container.querySelector('[data-process-body-layout="indented"]')).toHaveClass('ml-7');
+  });
+});
+
+describe('ProcessRow Provider tool ownership', () => {
+  it.each([
+    { isLoading: false, result: undefined, isError: false, streaming: false, outcome: 'unknown', label: '结果未确认' },
+    { isLoading: false, result: '', isError: false, streaming: false, outcome: 'succeeded', label: '已返回结果' },
+    { isLoading: false, result: 'Service error', isError: true, streaming: false, outcome: 'failed', label: '失败' },
+    { isLoading: true, result: undefined, isError: false, streaming: true, outcome: 'running', label: '执行中' },
+    { isLoading: true, result: undefined, isError: false, streaming: false, outcome: 'unknown', label: '结果未确认' },
+  ])('shows $outcome from Provider evidence for live and reopened rows', ({ isLoading, result, isError, streaming, outcome, label }) => {
+    const block = {
+      type: 'server_tool_use', providerRouteId: 'fixture-provider', providerBlockType: 'server_tool_use',
+      tool: { id: 'provider-call', name: 'vendor_tool', input: {}, result, isError, isLoading, streamIndex: 0 },
+    } as ContentBlock;
+    const { container } = render(<ProcessRow block={block} index={0} totalBlocks={2} isStreaming={streaming} />);
+    expect(container.querySelector(`[data-provider-outcome="${outcome}"]`)).toHaveTextContent(label);
+    expect(Boolean(container.querySelector('.animate-spin'))).toBe(outcome === 'running');
+  });
+
+  it('labels server tool activity as Provider-owned', () => {
+    const block = {
+      type: 'server_tool_use',
+      providerRouteId: 'fixture-provider',
+      providerBlockType: 'server_tool_use',
+      tool: {
+        id: 'provider-call-1',
+        name: 'web_search',
+        input: { query: 'reference' },
+        result: '[]',
+        isLoading: false,
+        streamIndex: 0,
+      },
+    } as ContentBlock;
+
+    const { container } = render(<ProcessRow block={block} index={0} totalBlocks={1} />);
+
+    expect(container.querySelector('[data-provider-owned="true"]')).toHaveTextContent('Provider 执行');
   });
 });

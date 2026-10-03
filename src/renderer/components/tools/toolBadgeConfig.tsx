@@ -1,24 +1,23 @@
 import {
-  BookOpen,
-  Brain,
-  Clock,
-  FileEdit,
-  FilePen,
-  FileText,
-  Globe,
+  BookIcon,
+  BrainIcon,
+  ClockIcon,
+  FileEditIcon,
+  DocumentIcon,
+  GlobeIcon,
   ImageIcon,
-  ListTodo,
-  Palette,
-  Plug,
-  Search,
-  SearchCode,
-  Sparkles,
-  Terminal,
-  Volume2,
-  Wrench,
-  XCircle,
-  Zap
-} from 'lucide-react';
+  ListTodoIcon,
+  PaletteIcon,
+  PlugIcon,
+  SearchIcon,
+  SearchCodeIcon,
+  CapabilitiesIcon,
+  TerminalIcon,
+  VolumeIcon,
+  WrenchIcon,
+  XCircleIcon,
+  ZapIcon,
+} from '@/components/icons';
 import type { ReactNode } from 'react';
 
 import { i18n } from '@/i18n';
@@ -31,6 +30,7 @@ import {
   resolveFilePatchRenderModel,
   type FilePatchRenderModel,
 } from '../../../shared/toolDisplay/filePatch';
+import { dshToolDisplayName } from '../../../shared/toolDisplay/dshToolNames';
 import {
   isSubagentCallRunning,
   isSubagentContainerRunning,
@@ -104,6 +104,12 @@ function getStringProp(input: ToolInput | Record<string, unknown> | null | undef
   return typeof value === 'string' ? value : undefined;
 }
 
+function getFirstSearchQuery(input: ToolInput | Record<string, unknown> | null | undefined): string | undefined {
+  if (!input || !isObject(input) || !Array.isArray(input.queries)) return undefined;
+  const first: unknown = input.queries[0];
+  return typeof first === 'string' ? first : undefined;
+}
+
 // Helper to get string prop from either parsedInput or raw input
 function getSubagentStringProp(call: SubagentToolCall, key: string): string | undefined {
   // Try parsedInput first
@@ -118,7 +124,7 @@ function getSubagentStringProp(call: SubagentToolCall, key: string): string | un
 
 // Generate label for subagent tool call (used in Task tool display)
 function getSubagentCallLabel(call: SubagentToolCall, t?: ToolChromeTranslator, maxLength = 35): string {
-  const { name } = call;
+  const name = dshToolDisplayName(call.name);
   let label = name;
 
   switch (name) {
@@ -133,6 +139,8 @@ function getSubagentCallLabel(call: SubagentToolCall, t?: ToolChromeTranslator, 
       }
       break;
     }
+    case 'bash':
+    case 'pwsh':
     case 'Bash':
     case 'PowerShell': {
       const desc = getSubagentStringProp(call, 'description');
@@ -282,11 +290,13 @@ export interface ToolBadgeConfig {
 // ToolHeader (utils.tsx) rewrites this size class to `size-3` for its denser
 // header via regex, so the flat base size here does not change that view.
 export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
+  const displayName = dshToolDisplayName(toolName);
+  if (displayName !== toolName) return getToolBadgeConfig(displayName);
   switch (toolName) {
     // File operations - Green/Emerald
     case 'Read':
       return {
-        icon: <FileText className="size-4" />,
+        icon: <DocumentIcon className="size-4" />,
         colors: {
           border: 'border-emerald-200/60 dark:border-emerald-500/30',
           bg: 'bg-emerald-50/80 dark:bg-emerald-500/10',
@@ -298,7 +308,7 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
       };
     case 'Write':
       return {
-        icon: <FilePen className="size-4" />,
+        icon: <FileEditIcon className="size-4" />,
         colors: {
           border: 'border-emerald-200/60 dark:border-emerald-500/30',
           bg: 'bg-emerald-50/80 dark:bg-emerald-500/10',
@@ -310,7 +320,7 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
       };
     case 'Edit':
       return {
-        icon: <FileEdit className="size-4" />,
+        icon: <FileEditIcon className="size-4" />,
         colors: {
           border: 'border-emerald-200/60 dark:border-emerald-500/30',
           bg: 'bg-emerald-50/80 dark:bg-emerald-500/10',
@@ -321,10 +331,16 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
         }
       };
     // Terminal/Shell operations - Orange/Amber
+    case 'bash':
+    case 'pwsh':
     case 'Bash':
+    case 'job_output':
+    case 'job_list':
+    case 'job_kill':
+    case 'PowerShell':
     case 'BashOutput':
       return {
-        icon: <Terminal className="size-4" />,
+        icon: <TerminalIcon className="size-4" />,
         colors: {
           border: 'border-amber-200/60 dark:border-amber-500/30',
           bg: 'bg-amber-50/80 dark:bg-amber-500/10',
@@ -336,7 +352,7 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
       };
     case 'KillShell':
       return {
-        icon: <XCircle className="size-4" />,
+        icon: <XCircleIcon className="size-4" />,
         colors: {
           border: 'border-amber-200/60 dark:border-amber-500/30',
           bg: 'bg-amber-50/80 dark:bg-amber-500/10',
@@ -349,7 +365,7 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
     // Search operations - Purple/Violet
     case 'Grep':
       return {
-        icon: <SearchCode className="size-4" />,
+        icon: <SearchCodeIcon className="size-4" />,
         colors: {
           border: 'border-violet-200/60 dark:border-violet-500/30',
           bg: 'bg-violet-50/80 dark:bg-violet-500/10',
@@ -361,7 +377,7 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
       };
     case 'Glob':
       return {
-        icon: <Search className="size-4" />,
+        icon: <SearchIcon className="size-4" />,
         colors: {
           border: 'border-violet-200/60 dark:border-violet-500/30',
           bg: 'bg-violet-50/80 dark:bg-violet-500/10',
@@ -373,7 +389,7 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
       };
     case 'WebSearch':
       return {
-        icon: <Search className="size-4" />,
+        icon: <SearchIcon className="size-4" />,
         colors: {
           border: 'border-violet-200/60 dark:border-violet-500/30',
           bg: 'bg-violet-50/80 dark:bg-violet-500/10',
@@ -386,7 +402,7 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
     // Web operations - Blue/Cyan
     case 'WebFetch':
       return {
-        icon: <Globe className="size-4" />,
+        icon: <GlobeIcon className="size-4" />,
         colors: {
           border: 'border-cyan-200/60 dark:border-cyan-500/30',
           bg: 'bg-cyan-50/80 dark:bg-cyan-500/10',
@@ -400,7 +416,7 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
     case 'Task':
     case 'Agent':
       return {
-        icon: <Zap className="size-4" />,
+        icon: <ZapIcon className="size-4" />,
         colors: {
           border: 'border-indigo-200/60 dark:border-indigo-500/30',
           bg: 'bg-indigo-50/80 dark:bg-indigo-500/10',
@@ -417,7 +433,7 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
     case 'TaskGet':
     case 'TaskList':
       return {
-        icon: <ListTodo className="size-4" />,
+        icon: <ListTodoIcon className="size-4" />,
         colors: {
           border: 'border-indigo-200/60 dark:border-indigo-500/30',
           bg: 'bg-indigo-50/80 dark:bg-indigo-500/10',
@@ -430,7 +446,7 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
     // Skills - Sky blue (friendly, non-error)
     case 'Skill':
       return {
-        icon: <Sparkles className="size-4" />,
+        icon: <CapabilitiesIcon className="size-4" />,
         colors: {
           border: 'border-sky-200/60 dark:border-sky-500/30',
           bg: 'bg-sky-50/80 dark:bg-sky-500/10',
@@ -443,7 +459,7 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
     // Notebook - Teal
     case 'NotebookEdit':
       return {
-        icon: <BookOpen className="size-4" />,
+        icon: <BookIcon className="size-4" />,
         colors: {
           border: 'border-teal-200/60 dark:border-teal-500/30',
           bg: 'bg-teal-50/80 dark:bg-teal-500/10',
@@ -458,7 +474,7 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
       // Gemini Image tools - Purple
       if (toolName.startsWith('mcp__gemini-image__')) {
         return {
-          icon: <Palette className="size-4" />,
+          icon: <PaletteIcon className="size-4" />,
           colors: {
             border: 'border-purple-200/60 dark:border-purple-500/30',
             bg: 'bg-purple-50/80 dark:bg-purple-500/10',
@@ -473,7 +489,7 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
       // Edge TTS tools - Rose/Pink
       if (toolName.startsWith('mcp__edge-tts__')) {
         return {
-          icon: <Volume2 className="size-4" />,
+          icon: <VolumeIcon className="size-4" />,
           colors: {
             border: 'border-rose-200/60 dark:border-rose-500/30',
             bg: 'bg-rose-50/80 dark:bg-rose-500/10',
@@ -488,7 +504,7 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
       // Cron/Scheduled task tools - Teal
       if (toolName.startsWith('mcp__im-cron__') || toolName.startsWith('mcp__cron-tools__')) {
         return {
-          icon: <Clock className="size-4" />,
+          icon: <ClockIcon className="size-4" />,
           colors: {
             border: 'border-teal-200/60 dark:border-teal-500/30',
             bg: 'bg-teal-50/80 dark:bg-teal-500/10',
@@ -518,7 +534,7 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
       // IM Bridge (OpenClaw plugin) tools - Cyan
       if (toolName.startsWith('mcp__im-bridge-tools__')) {
         return {
-          icon: <Plug className="size-4" />,
+          icon: <PlugIcon className="size-4" />,
           colors: {
             border: 'border-cyan-200/60 dark:border-cyan-500/30',
             bg: 'bg-cyan-50/80 dark:bg-cyan-500/10',
@@ -533,7 +549,7 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
       // Playwright browser tools - Sky blue
       if (toolName.startsWith('mcp__playwright__')) {
         return {
-          icon: <Globe className="size-4" />,
+          icon: <GlobeIcon className="size-4" />,
           colors: {
             border: 'border-sky-200/60 dark:border-sky-500/30',
             bg: 'bg-sky-50/80 dark:bg-sky-500/10',
@@ -548,7 +564,7 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
       // Search tools (DuckDuckGo, Tavily, etc.) - Emerald
       if (toolName.startsWith('mcp__ddg-search__') || toolName.startsWith('mcp__tavily-search__')) {
         return {
-          icon: <Search className="size-4" />,
+          icon: <SearchIcon className="size-4" />,
           colors: {
             border: 'border-emerald-200/60 dark:border-emerald-500/30',
             bg: 'bg-emerald-50/80 dark:bg-emerald-500/10',
@@ -562,7 +578,7 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
 
       // Default fallback for unknown MCP and other tools
       return {
-        icon: <Wrench className="size-4" />,
+        icon: <WrenchIcon className="size-4" />,
         colors: {
           border: 'border-blue-200/60 dark:border-blue-500/30',
           bg: 'bg-blue-50/80 dark:bg-blue-500/10',
@@ -579,7 +595,7 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
 // For MCP tools: uses server display name from config (e.g., "Playwright 浏览器", "天眼查")
 // For Task tool: returns the subagent_type (e.g., "Explore", "Plan")
 // Generic override: if parsedInput has `_displayName`, use it verbatim — this lets
-// external runtimes (like Gemini) surface their real tool identifier (e.g.
+// external runtimes surface their real tool identifier (e.g.
 // "run_shell_command") in the UI while internally still routing tool.name to a
 // MyAgents-native component (BashTool/GrepTool/...) for rich body rendering.
 export { isSubagentContainerTool } from './subagentActivity';
@@ -623,6 +639,8 @@ export function getToolMainLabel(tool: ToolUseSimple, t?: ToolChromeTranslator):
 
 // Unified label generation logic - extracts compact label from tool
 export function getToolLabel(tool: ToolUseSimple, t?: ToolChromeTranslator): string {
+  const displayName = dshToolDisplayName(tool.name);
+  if (displayName !== tool.name) return getToolLabel({ ...tool, name: displayName }, t);
   if (tool.name === 'TodoWrite') {
     return getTodoWriteLabel(tool, t);
   }
@@ -644,7 +662,7 @@ export function getToolLabel(tool: ToolUseSimple, t?: ToolChromeTranslator): str
         if (tool.name === 'Read' || tool.name === 'Write' || tool.name === 'Edit') {
           return parsed.file_path ? `${tool.name} ${parsed.file_path.split(/[/\\]/).pop()}` : tool.name;
         }
-        if (tool.name === 'Bash') {
+        if (['Bash', 'PowerShell', 'bash', 'pwsh'].includes(tool.name)) {
           return parsed.description || parsed.command ?
               parsed.description || parsed.command.split(' ')[0]
             : tc(t, 'labels.runCommand');
@@ -671,7 +689,7 @@ export function getToolLabel(tool: ToolUseSimple, t?: ToolChromeTranslator): str
           return tc(t, 'labels.killShell');
         }
       } catch {
-        if (tool.name === 'Bash') {
+        if (['Bash', 'PowerShell', 'bash', 'pwsh'].includes(tool.name)) {
           const raw = tool.inputJson.trim();
           if (raw) {
             const cmd = raw.split(' ')[0];
@@ -698,6 +716,8 @@ export function getToolLabel(tool: ToolUseSimple, t?: ToolChromeTranslator): str
       }
       return tool.name;
     }
+    case 'bash':
+    case 'pwsh':
     case 'Bash': {
       const description = getStringProp(tool.parsedInput, 'description');
       if (description) return description;
@@ -765,7 +785,7 @@ export function getToolLabel(tool: ToolUseSimple, t?: ToolChromeTranslator): str
       return tc(t, 'labels.fetch');
     }
     case 'WebSearch': {
-      const query = getStringProp(tool.parsedInput, 'query');
+      const query = getStringProp(tool.parsedInput, 'query') || getFirstSearchQuery(tool.parsedInput);
       if (query) {
         return query.length > 20 ? `${query.substring(0, 17)}...` : query;
       }
@@ -789,6 +809,8 @@ export function getToolLabel(tool: ToolUseSimple, t?: ToolChromeTranslator): str
 // Unified expanded label generation logic - for ToolHeader in expanded state
 // Returns the base semantic label (without pattern/file details) to match collapsed badge
 export function getToolExpandedLabel(tool: ToolUseSimple, t?: ToolChromeTranslator): string {
+  const displayName = dshToolDisplayName(tool.name);
+  if (displayName !== tool.name) return getToolExpandedLabel({ ...tool, name: displayName }, t);
   // External-runtime display override — see getToolMainLabel for the rationale.
   const displayNameOverride = getStringProp(tool.parsedInput, '_displayName');
   if (displayNameOverride) return displayNameOverride;
@@ -801,6 +823,8 @@ export function getToolExpandedLabel(tool: ToolUseSimple, t?: ToolChromeTranslat
       return tc(t, 'labels.search');
     case 'WebFetch':
       return tc(t, 'labels.fetch');
+    case 'bash':
+    case 'pwsh':
     case 'Bash': {
       const description = getStringProp(tool.parsedInput, 'description');
       return description || tc(t, 'labels.runCommand');
@@ -996,6 +1020,8 @@ function renderFilePatchSummary(display: FilePatchRenderModel, t?: ToolChromeTra
  * arrived yet (streaming-safe).
  */
 export function getToolSummaryNode(tool: ToolUseSimple, t?: ToolChromeTranslator): ReactNode | null {
+  const displayName = dshToolDisplayName(tool.name);
+  if (displayName !== tool.name) return getToolSummaryNode({ ...tool, name: displayName }, t);
   switch (tool.name) {
     case 'Edit':
     case 'Write': {
@@ -1031,7 +1057,7 @@ export function getToolSummaryNode(tool: ToolUseSimple, t?: ToolChromeTranslator
 // Thinking badge configuration - single source of truth
 export function getThinkingBadgeConfig(): ToolBadgeConfig {
   return {
-    icon: <Brain className="size-4" />,
+    icon: <BrainIcon className="size-4" />,
     colors: {
       border: 'border-purple-200/60 dark:border-purple-500/30',
       bg: 'bg-purple-50/80 dark:bg-purple-500/10',

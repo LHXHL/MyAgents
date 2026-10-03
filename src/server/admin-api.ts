@@ -1,4 +1,6 @@
 import { nextAgentNetworkExposureRevision } from "../shared/config-types";
+import { resolveAgentConfigMutation, mutationForAgentModelSelection, type AgentModelSelection } from '../shared/agentConfigMutation';
+import { APP_BUILD_IDENTITY, SIDECAR_BUILD_IDENTITY, SIDECAR_STARTED_AT } from './build-identity';
 /**
  * Admin API — Self-Configuration endpoints for the CLI tool.
  *
@@ -11,16 +13,19 @@ import { nextAgentNetworkExposureRevision } from "../shared/config-types";
  *   6. Return result
  */
 
+import { channelExecutionConfigChangeError } from '../shared/types/agent';
 import { execFile } from 'node:child_process';
 import { lstatSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { cp as fsCp } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import {
+  CODEX_SUBSCRIPTION_PROVIDER_ID,
   isProjectArchived,
   isProjectVisibleToUser,
   splitProviderModelInput,
   type McpServerDefinition,
   type PermissionMode,
+  type Provider,
   type ProxySettings,
 } from '../shared/config-types';
 import {
@@ -90,7 +95,7 @@ import {
   ADMIN_LOOPBACK_TIMEOUT_MS,
   managementApi,
 } from './utils/management-api-client';
-import { getSessionEngine } from './session-engine';
+import { getSessionEngine, inspectRuntime } from './session-engine';
 import { getSessionsByAgentDir, isHistoryVisibleSession } from './SessionStore';
 import {
   agentWorkspaceIdentityFailure,
@@ -116,12 +121,8 @@ const SKILL_INSTALL_LOOPBACK_TIMEOUT_MS = 330_000;
 const AGENT_LIFECYCLE_LOOPBACK_TIMEOUT_MS = 300_000;
 import { resolve } from 'path';
 import {
-  setMcpServers,
-  setAgents,
-  getMcpServers,
   getAgentState,
   getSidecarPort,
-  forceReloadActiveSession,
 } from './agent-session';
 import { loadEnabledAgents } from './agents/agent-loader';
 import { getHomeDirOrNull } from './utils/platform';
@@ -144,7 +145,9 @@ import {
   getDefaultRuntimePermissionMode,
   isRuntimePermissionMode,
   projectPermissionModeForRuntime,
+  resolveEffectiveRuntime,
   buildRuntimeChangePatch,
+  runtimeSourceForRuntimeType,
   type RuntimeType,
   type RecoveryHint,
   type RuntimePermissionMode,
@@ -155,6 +158,7 @@ import {
 } from '../shared/types/runtime';
 import { getExternalRuntime, isRuntimeSupported } from './runtimes/factory';
 import { queryRuntimeModels } from './runtimes/external-session';
+import { isDshModelSelectable } from '../shared/integrated-runtimes/provider-constraints';
 import { isManagedCodexRuntimeInstalled } from './runtimes/codex-command-context';
 import { trackServer } from './analytics';
 
@@ -231,6 +235,14 @@ function mgmtError(
   resp: Record<string, unknown>,
   fallbackMsg: string,
 ): AdminResponse {
+  if (typeof resp.error === 'string' && resp.error.trim().startsWith('{')) {
+    try {
+      const parsed: unknown = JSON.parse(resp.error);
+      if (parsed && typeof parsed === 'object' && 'message' in parsed && typeof parsed.message === 'string') {
+        resp = { ...resp, error: parsed.message, ...('code' in parsed && typeof parsed.code === 'string' ? { code: parsed.code } : {}) };
+      }
+    } catch { /* Plain text errors stay unchanged. */ }
+  }
   const response: AdminResponse = {
     success: false,
     error: String(resp.error ?? fallbackMsg),
@@ -252,21 +264,7 @@ function wrapMgmtResponse(mgmt: Record<string, unknown>): AdminResponse {
     const { ok: _ok, recoveryHint: _rh, ...rest } = mgmt;
     return { success: true, data: rest };
   }
-  const response: AdminResponse = {
-    success: false,
-    error: String(mgmt.error ?? 'Unknown error'),
-  };
-  for (const field of ['code', 'suggestion', 'suggestedCommand'] as const) {
-    if (typeof mgmt[field] === 'string' && mgmt[field])
-      response[field] = mgmt[field];
-  }
-  // Propagate the `recoveryHint` if the Management API helper attached one
-  // (currently only for unreachable-backend scenarios — see `managementApi`).
-  const maybeHint = mgmt.recoveryHint;
-  if (maybeHint && typeof maybeHint === 'object' && !Array.isArray(maybeHint)) {
-    response.recoveryHint = maybeHint as RecoveryHint;
-  }
-  return response;
+  return mgmtError(mgmt, 'Unknown error');
 }
 
 // ---------------------------------------------------------------------------
@@ -693,9 +691,20 @@ export async function handleMcpTest(payload: {
   const { id } = payload;
   if (!id) return { success: false, error: 'Missing required field: id' };
 
-  const allServers = getAllMcpServers();
+  const config = loadConfig();
+  const allServers = getAllMcpServers(config);
   const server = allServers.find((s) => s.id === id);
   if (!server) return { success: false, error: `MCP server '${id}' not found` };
+  if (!getEnabledMcpServerIds(config).includes(id)) {
+    return {
+      success: false,
+      error: `MCP server '${id}' is disabled globally. Enable it with myagents mcp enable ${id} --scope global.`,
+      recoveryHint: {
+        recoveryCommand: `myagents mcp enable ${id} --scope global`,
+        message: 'Global enablement is required before this server can be used in a Session.',
+      },
+    };
+  }
 
   const transportType = (server as { type?: unknown }).type;
   if (
@@ -873,7 +882,7 @@ export async function handleMcpTest(payload: {
         serverVersion: result.serverVersion,
         resolvedCommand: result.resolvedCommand,
       },
-      hint: `MCP configuration initialize succeeded${identity ? ` (${identity})` : ''}. Runtime compatibility is reported by the session.`,
+      hint: `MCP configuration initialize succeeded${identity ? ` (${identity})` : ''}. This checks the global server definition; current Session enablement and Runtime compatibility are separate.`,
     };
   } catch (err) {
     const probeError = err as { message?: unknown; statusCode?: unknown };
@@ -1611,6 +1620,25 @@ function isCurrentAgentIdentity(
   );
 }
 
+function filterAgentIdentities(
+  identities: readonly PersistedAgentWorkspaceProjection[],
+  lifecycle: 'all' | 'active' | 'archived' = 'active',
+): PersistedAgentWorkspaceProjection[] {
+  return identities
+    .filter(
+      (identity) =>
+        !identity.project || isProjectVisibleToUser(identity.project),
+    )
+    .filter((identity) => {
+      const archived = identity.project
+        ? isProjectArchived(identity.project)
+        : false;
+      return (
+        lifecycle === 'all' || (lifecycle === 'archived' ? archived : !archived)
+      );
+    });
+}
+
 export async function handleAgentList(
   payload: { lifecycle?: string } = {},
 ): Promise<AdminResponse> {
@@ -1618,19 +1646,7 @@ export async function handleAgentList(
     const registry = await resolvePersistedAgentWorkspaceRegistry();
     const lifecycle = normalizeAgentLifecycleFilter(payload.lifecycle);
     const currentWorkspacePath = getCurrentWorkspacePath();
-    const agents = registry.agentProjections
-      .filter(
-        (identity) =>
-          !identity.project || isProjectVisibleToUser(identity.project),
-      )
-      .filter((identity) => {
-        const archived = identity.project
-          ? isProjectArchived(identity.project)
-          : false;
-        if (lifecycle === 'active') return !archived;
-        if (lifecycle === 'archived') return archived;
-        return true;
-      })
+    const agents = filterAgentIdentities(registry.agentProjections, lifecycle)
       .map((identity) => {
         const { agent, project, workspacePath } = identity;
         return {
@@ -1672,7 +1688,8 @@ export async function handleAgentList(
       success: true, data: combined, networkStatus: discovery.networkStatus, complete: discovery.complete,
       authGeneration: discovery.authGeneration, principalId: discovery.principalId, networkId: discovery.networkId,
       ...(registry.diagnostics.length ? {
-        diagnostics: registry.diagnostics.map(item => ({ ...item,
+        diagnostics: registry.diagnostics.map(item => ({
+          ...item,
           projects: registry.projects.filter(project => item.projectIds.includes(project.id))
             .map(({ id, name, path }) => ({ id, name, path })),
         })),
@@ -1710,15 +1727,21 @@ export async function handleAgentNetworkCatalog(): Promise<AdminResponse> {
 }
 
 export async function handleAgentResolveConflict(payload: {
-  agentId?: string; keepProjectId?: string; expectedClaims?: Array<{ id: string; path: string }>;
+  agentId?: string;
+  keepProjectId?: string;
+  expectedClaims?: Array<{ id: string; path: string }>;
 }): Promise<AdminResponse> {
-  if (typeof payload.agentId !== 'string' || !payload.agentId || typeof payload.keepProjectId !== 'string' || !payload.keepProjectId || !Array.isArray(payload.expectedClaims)
-    || payload.expectedClaims.length < 2 || payload.expectedClaims.some(item => !item || typeof item.id !== 'string' || typeof item.path !== 'string')) {
+  if (typeof payload.agentId !== 'string' || !payload.agentId
+    || typeof payload.keepProjectId !== 'string' || !payload.keepProjectId
+    || !Array.isArray(payload.expectedClaims) || payload.expectedClaims.length < 2
+    || payload.expectedClaims.some(item => !item || typeof item.id !== 'string' || typeof item.path !== 'string')) {
     return { success: false, error: 'Choose a workspace from the current conflict before repairing.' };
   }
   try {
     await resolvePersistedAgentWorkspaceConflict({
-      agentId: payload.agentId, keepProjectId: payload.keepProjectId, expectedClaims: payload.expectedClaims,
+      agentId: payload.agentId,
+      keepProjectId: payload.keepProjectId,
+      expectedClaims: payload.expectedClaims,
     }, async () => {
       const stopped = await managementApi('/api/agent/stop-channels', 'POST', { agentId: payload.agentId },
         { timeoutMs: AGENT_LIFECYCLE_LOOPBACK_TIMEOUT_MS });
@@ -2117,7 +2140,7 @@ export async function handleAgentSet(payload: {
   // `runtime` field has a cross-runtime scrub policy (see
   // buildRuntimeChangePatch doc in shared/types/runtime.ts). A blind spread
   // here would leak the previous runtime's model/permissionMode/additionalArgs
-  // into the new runtime — Codex CLI then rejects e.g. a Gemini model with
+  // into the new runtime — Codex CLI then rejects e.g. a Claude model with
   // "model is not supported when using ChatGPT account". Route through the
   // helper so the CLI `myagents agent set <id> runtime codex` path stays in
   // lockstep with the Chat / Settings / Launcher in-app paths.
@@ -2144,10 +2167,12 @@ export async function handleAgentSet(payload: {
             ...agent,
             runtime: patch.runtime,
             runtimeConfig: patch.runtimeConfig,
+            runtimePreference: patch.runtimePreference,
           },
           livePatch: {
             runtime: patch.runtime,
             runtimeConfig: patch.runtimeConfig ?? null,
+            runtimePreference: patch.runtimePreference,
           },
         };
       },
@@ -2431,6 +2456,9 @@ export async function handleAgentChannelAdd(payload: {
   if (!channel.type)
     return { success: false, error: 'Missing required field: channel.type' };
 
+  const executionError = channelExecutionConfigChangeError(undefined, channel);
+  if (executionError) return { success: false, error: executionError };
+
   const channelId = (channel.id as string) || crypto.randomUUID();
   const newChannel: ChannelConfigSlim = {
     ...channel, // user-provided fields first
@@ -2511,6 +2539,103 @@ export async function handleAgentChannelRemove(payload: {
 // Config Handlers
 // ---------------------------------------------------------------------------
 
+// Generic CLI mutation is deliberately limited to simple preferences. Other
+// config fields have their own owner, validation, or cross-process side effect.
+const CONFIG_SETTABLE_KEYS = [
+  'appearanceMode', 'uiLanguage', 'defaultPermissionMode',
+  'chatSendShortcut', 'chatQueueResponseMode', 'minimizeToTray',
+  'osNotifications', 'notificationSound', 'notificationBadge',
+  'showDevTools', 'showChatHistoryEntry', 'experimentalSplitView',
+] as const;
+type ConfigSettableKey = typeof CONFIG_SETTABLE_KEYS[number];
+const CONFIG_SETTABLE_VALUES: Partial<Record<ConfigSettableKey, readonly unknown[]>> = {
+  appearanceMode: ['system', 'light', 'dark'],
+  uiLanguage: ['system', 'zh-CN', 'en-US'],
+  defaultPermissionMode: ['auto', 'plan', 'fullAgency'],
+  chatSendShortcut: ['enter', 'modEnter'],
+  chatQueueResponseMode: ['realtime', 'turn'],
+};
+
+function configKeyDistance(a: string, b: string): number {
+  let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j++) {
+      current[j] = Math.min(current[j - 1]! + 1, previous[j]! + 1,
+        previous[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    previous = current;
+  }
+  return previous[b.length]!;
+}
+
+function validateConfigMutationKey(key: string, action: 'set' | 'unset'): AdminResponse | null {
+  if (!key || hasDangerousKeySegment(key)) return { success: false, error: 'Invalid config key path' };
+  const root = key.split('.')[0];
+  if (root === 'cliToolRegistryEnabled') {
+    return { success: false, error: "Use Settings → About & Feedback → Lab to change 'cliToolRegistryEnabled'." };
+  }
+  if (SENSITIVE_TOP_KEYS.has(root) || SENSITIVE_KEY_PATTERNS.test(key) ||
+      ['agents', 'providers', 'providerVerifyStatus', 'defaultProviderId', 'presetCustomModels',
+        'presetRemovedModels', 'mcpServers', 'mcpEnabledServers', 'imBotConfigs', 'externalCliAccess',
+        'proxySettings', 'themeId', 'themeSelectionExplicit', 'forceWakeLock', 'cliToolRegistryEnabled',
+        'dshCollaboration', 'floatingBallSessionId', 'floatingBallSessionDate',
+        'floatingBallSessionWorkspace'].includes(root)) {
+    return { success: false, error: `Cannot ${action} '${key}' via config ${action}. Use its dedicated command or Settings.` };
+  }
+  if (action === 'unset') {
+    return getNestedValue(loadConfig(), key) === undefined
+      ? { success: false, error: `Config key '${key}' not found` } : null;
+  }
+  if ((CONFIG_SETTABLE_KEYS as readonly string[]).includes(key)) return null;
+  if (getNestedValue(loadConfig(), key) !== undefined) {
+    return { success: false, error: `Config key '${key}' cannot be changed with config set. Use its dedicated command or Settings.` };
+  }
+  const candidate = [...CONFIG_SETTABLE_KEYS].sort((a, b) =>
+    configKeyDistance(a.toLowerCase(), key.toLowerCase()) - configKeyDistance(b.toLowerCase(), key.toLowerCase()))[0];
+  const suggestion = candidate && configKeyDistance(candidate.toLowerCase(), key.toLowerCase()) <= 3
+    ? ` Did you mean '${candidate}'?` : '';
+  return { success: false, error: `Unknown config key '${key}'.${suggestion} Run 'myagents config list' for stored keys and types.` };
+}
+
+/** Discover normalized config shape without returning values or traversing secret maps. */
+export function handleConfigList(payload: { prefix?: string } = {}): AdminResponse {
+  const prefix = payload.prefix ?? '';
+  if (typeof prefix !== 'string' || hasDangerousKeySegment(prefix)) {
+    return { success: false, error: 'Invalid config prefix' };
+  }
+  if (SENSITIVE_TOP_KEYS.has(prefix.split('.')[0]) || SENSITIVE_KEY_PATTERNS.test(prefix)) {
+    return { success: false, error: 'Sensitive configuration is opaque. Use the dedicated credential command.' };
+  }
+  const value = prefix ? getNestedValue(loadConfig(), prefix) : loadConfig();
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { success: false, error: 'Config prefix must name an object. Use config get for a leaf value.' };
+  }
+  const descriptions: Record<string, string> = {
+    defaultProviderId: 'Default model Provider selection',
+    providers: 'Model Provider definitions; manage with model commands',
+    providerApiKeys: 'Provider credentials; manage with model set-key',
+    agents: 'Agent defaults; manage with agent commands',
+    mcpServers: 'MCP server definitions; manage with mcp commands',
+    mcpEnabledServers: 'Globally enabled MCP server IDs',
+    proxySettings: 'Proxy settings for each traffic scope',
+    themeId: 'Selected visual theme',
+    appearanceMode: 'Application light/dark appearance preference',
+    uiLanguage: 'Application language preference',
+  };
+  const keys = Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([name, item]) => {
+    const key = prefix ? `${prefix}.${name}` : name;
+    const sensitive = SENSITIVE_TOP_KEYS.has(key.split('.')[0]) || SENSITIVE_KEY_PATTERNS.test(key);
+    const type = item === null ? 'null' : Array.isArray(item) ? 'array' : typeof item;
+    return { key, type, sensitive, settable: (CONFIG_SETTABLE_KEYS as readonly string[]).includes(key),
+      description: descriptions[key] ?? (sensitive ? 'Sensitive field; values are redacted'
+        : type === 'object' ? `Nested settings; inspect with config list ${key}`
+          : `Stored setting; inspect with config get ${key}`),
+    };
+  });
+  return { success: true, data: { prefix, keys, note: 'Current normalized configuration keys; absent optional keys are not listed. Values are omitted. Only settable keys accept config set; config unset can remove a stored non-protected key.' } };
+}
+
 export function handleConfigGet(payload: { key: string }): AdminResponse {
   const { key } = payload;
   if (!key) return { success: false, error: 'Missing required field: key' };
@@ -2529,7 +2654,9 @@ export function handleConfigGet(payload: { key: string }): AdminResponse {
 
   // Redact sensitive fields recursively
   const redacted = redactSensitiveValues(key, value);
-  return { success: true, data: { key, value: redacted } };
+  return { success: true, data: { key, value: redacted,
+    ...(key === 'defaultPermissionMode' ? { scope: 'app-default-for-new-sessions' } : {}),
+  } };
 }
 
 export async function handleConfigSet(payload: {
@@ -2538,41 +2665,11 @@ export async function handleConfigSet(payload: {
   dryRun?: boolean;
 }): Promise<AdminResponse> {
   const { key, value, dryRun } = payload;
-  if (!key) return { success: false, error: 'Missing required field: key' };
-
-  // Reject dangerous key paths (prototype pollution)
-  if (hasDangerousKeySegment(key)) {
-    return { success: false, error: 'Invalid key path' };
-  }
-
-  if (key.split('.')[0] === 'cliToolRegistryEnabled') {
-    return {
-      success: false,
-      error:
-        "Cannot set 'cliToolRegistryEnabled' via config set. Enable it from Settings → About & Feedback → Lab.",
-    };
-  }
-
-  // Protect structural/sensitive keys that have dedicated commands
-  const protectedKeys = [
-    'providerApiKeys',
-    'providerVerifyStatus',
-    'agents',
-    'mcpServers',
-    'mcpEnabledServers',
-    'mcpServerEnv',
-    'mcpServerArgs',
-    'imBotConfigs',
-    'cliToolEnv',
-    'externalCliAccess',
-  ];
-  const rootKey = key.split('.')[0];
-  if (protectedKeys.includes(rootKey)) {
-    return {
-      success: false,
-      error: `Cannot set '${key}' via config set. Use dedicated commands (e.g., 'myagents mcp', 'myagents agent', 'myagents model set-key').`,
-    };
-  }
+  const keyFailure = validateConfigMutationKey(key, 'set');
+  if (keyFailure) return keyFailure;
+  const choices = CONFIG_SETTABLE_VALUES[key as ConfigSettableKey];
+  if (choices && !choices.includes(value)) return { success: false, error: `Invalid value for '${key}'. Valid: ${choices.join(', ')}.` };
+  if (!choices && typeof value !== 'boolean') return { success: false, error: `'${key}' expects a boolean value.` };
 
   if (dryRun) {
     return { success: true, dryRun: true, preview: { key, value } };
@@ -2583,23 +2680,54 @@ export async function handleConfigSet(payload: {
   return { success: true, data: { key }, hint: `Config '${key}' updated.` };
 }
 
+export async function handleConfigUnset(payload: { key: string; dryRun?: boolean }): Promise<AdminResponse> {
+  const { key, dryRun } = payload;
+  const keyFailure = validateConfigMutationKey(key, 'unset');
+  if (keyFailure) return keyFailure;
+  if (dryRun) return { success: true, dryRun: true, preview: { key, action: 'unset' } };
+  await atomicModifyConfig((config) => {
+    // Recheck against the lock's fresh disk snapshot.
+    if (getNestedValue(config, key) === undefined) return config;
+    return deleteNestedValue(config, key);
+  });
+  void broadcastAppConfigChanged({ section: 'config', action: 'unset', key });
+  return { success: true, data: { key }, hint: `Config '${key}' removed.` };
+}
+
 // ---------------------------------------------------------------------------
 // Status & Reload
 // ---------------------------------------------------------------------------
 
-export function handleStatus(): AdminResponse {
+export async function handleStatus(): Promise<AdminResponse> {
+  let registry: Awaited<
+    ReturnType<typeof resolvePersistedAgentWorkspaceRegistry>
+  >;
+  try {
+    registry = await resolvePersistedAgentWorkspaceRegistry();
+  } catch (error) {
+    return agentWorkspaceIdentityFailure(error);
+  }
   const config = loadConfig();
   const allServers = getAllMcpServers(config);
   const enabledIds = getEnabledMcpServerIds(config);
-  const currentMcp = getMcpServers();
+  const engine = getSessionEngine();
+  const replay = engine.getStreamReplaySnapshot();
+  const snapshot = replay.mcpEffectiveSnapshot;
+  const current = snapshot && snapshot.sessionId === replay.sessionId && !snapshot.observationStale ? snapshot : null;
+  const workspacePath = engine.getCurrentSessionContext().workspacePath;
+  const project = workspacePath ? loadProjects().find(p => workspacePathsEqual(p.path, workspacePath)) : undefined;
+  const selected = project ? [...(project.mcpEnabledServers ?? [])] : null;
 
   return {
     success: true,
     data: {
       mcpServers: { total: allServers.length, enabled: enabledIds.length },
-      activeMcpInSession: currentMcp ? currentMcp.length : 0,
+      workspaceMcp: { selection: selected, enabled: selected?.filter(id => enabledIds.includes(id)) ?? null },
+      activeMcpInSession: current ? current.servers.filter(server => server.state === 'ready').length : null,
+      sessionMcp: { scope: 'current-session', sessionId: replay.sessionId || null, observation: current ? 'current' : snapshot ? 'stale' : 'unavailable', snapshot: current },
       defaultProvider: config.defaultProviderId ?? 'not set',
-      agents: (config.agents ?? []).length,
+      defaultProviderScope: 'global-fallback',
+      agents: filterAgentIdentities(registry.agentProjections).length,
     },
   };
 }
@@ -2639,7 +2767,7 @@ function resolveEffectiveMcpServersForWorkspace(
   );
 }
 
-export function handleReload(workspacePath?: string): AdminResponse {
+export async function handleReload(workspacePath?: string): Promise<AdminResponse> {
   // Re-read config from disk and push effective MCP + sub-agents to in-memory state.
   // Workspace resolution: prefer explicit arg → fall back to the session's agentDir.
   // Without this fallback, sub-agent reload would only see global agents.
@@ -2676,23 +2804,19 @@ export function handleReload(workspacePath?: string): AdminResponse {
     };
   }
 
-  // Both sources loaded cleanly — now commit the in-memory state atomically
-  // (well, as atomically as two module-level setters allow) and trigger the
-  // forced restart that applies them.
-  setMcpServers(effectiveServers);
-  setAgents(agents);
+  // Runtime configuration belongs to the selected adapter. Direct SDK setters
+  // here can start a second Runtime and publisher inside a DSH Sidecar.
+  const engine = getSessionEngine();
+  const mcpResult = await engine.updateMcpServers(effectiveServers);
+  if (!mcpResult.success) return { success: false, error: mcpResult.error ?? 'Failed to reload MCP configuration' };
+  const agentsResult = await engine.updateAgents(agents, { forceReload: true });
+  if (!agentsResult.success) return { success: false, error: agentsResult.error ?? 'Failed to reload Agent configuration' };
   const agentCount = Object.keys(agents).length;
-
-  // Force a session restart even for snapshotted (Tab / Cron / Background)
-  // sessions — reload is an explicit request, not noise from React state
-  // sync. Without this the in-memory config is refreshed but the running
-  // SDK subprocess keeps delegating to the old sub-agent definitions (#98).
-  forceReloadActiveSession('agents');
 
   void broadcastAppConfigChanged({ section: 'all', action: 'reload' });
   return {
     success: true,
-    hint: `Configuration reloaded (MCP: ${effectiveServers.length}, sub-agents: ${agentCount}). The session will restart on the next turn to apply changes.`,
+    hint: `Configuration reloaded (MCP: ${effectiveServers.length}, sub-agents: ${agentCount}). Changes are applied by the current Runtime at its configuration boundary.`,
   };
 }
 
@@ -2741,7 +2865,31 @@ RECOVERY
   ${input.recovery}`;
 }
 
+const LEAF_HELP: Record<string, string> = {
+  status: `myagents status — Show current configuration and active Session status
+
+Read-only. Reports MCP, provider, permission, and current Session state.
+OPTIONS
+  --json    Return the structured response
+  -h, --help    Show this help without running the command`,
+  version: `myagents version — Show the App and Sidecar build identity
+
+Read-only. Reports version, build mode, source identity, and Node version.
+OPTIONS
+  --json    Return the structured response
+  -h, --help    Show this help without running the command`,
+  reload: `myagents reload — Reload configuration for the current Session
+
+Requires a Session Sidecar. Re-reads MCP and sub-agent configuration and
+restarts the Session runtime to apply it. This does not rebuild the App.
+OPTIONS
+  --workspacePath PATH    Workspace to resolve configuration from
+  --json    Return the structured response
+  -h, --help    Show this help without reloading anything`,
+};
+
 const HELP_TEXTS: Record<string, string> = {
+  ...LEAF_HELP,
   anydoc: `myagents anydoc — Convert one local document to Markdown with offline OCR
 
 Commands:
@@ -3041,19 +3189,39 @@ ERROR RECOVERY
     recovery:
       'For subscription authentication errors, follow the returned Settings or runtime recovery hint.',
   }),
+  'config/list': taskLeafHelp({
+    usage: 'myagents config list [prefix] [--json]',
+    when: 'Use to discover current normalized configuration keys, types, and whether config set supports them.',
+    effect: 'Enumerates one object level from the existing config reader, without values.',
+    options: '  prefix                 Optional dotted object path; omit for top-level keys',
+    mutation: 'Read-only. Sensitive maps remain opaque.',
+    output: 'Key, type, sensitivity, settable flag and description. Absent optional keys are not listed.',
+    example: '  myagents config list proxySettings --json',
+    recovery: 'Use config get for leaf values and dedicated commands for credential fields.',
+  }),
   'config/set': taskLeafHelp({
     usage: 'myagents config set <key> <value> [--dry-run]',
     when: 'Use when changing one supported application configuration key.',
     effect:
-      'Parses and validates the value, then persists it unless --dry-run is set.',
+      'Validates the key and value against supported simple preferences, then persists unless --dry-run is set.',
     options:
       '  --dry-run              Preview the parsed value without writing config.json',
     mutation:
       '--dry-run does not write or persist config.json. Without it, this mutates application configuration.',
     output: 'The parsed key/value preview or the persisted value.',
-    example: '  myagents config set locale en-US --dry-run',
+    example: '  myagents config set uiLanguage en-US --dry-run',
     recovery:
-      'Run myagents config --help to inspect supported keys and value shapes.',
+      'Run myagents config list to discover keys, then config get <key> to inspect its value.',
+  }),
+  'config/unset': taskLeafHelp({
+    usage: 'myagents config unset <key> [--dry-run]',
+    when: 'Use to remove a stored configuration key, including an old accidental key.',
+    effect: 'Removes the exact stored key after rejecting protected and sensitive fields.',
+    options: '  --dry-run              Validate the removal without writing config.json',
+    mutation: 'Without --dry-run, this mutates application configuration.',
+    output: 'The removed key or a dry-run preview.',
+    example: '  myagents config unset notARealKey --dry-run',
+    recovery: 'Run myagents config list to inspect stored keys.',
   }),
   mcp: `myagents mcp — Manage MCP tool servers
 
@@ -3065,7 +3233,7 @@ Commands:
   enable <id>              Enable an MCP server
   disable <id>             Disable an MCP server
   test <id>                Validate MCP server connectivity
-  env <id> <action>        Manage environment variables
+  env <id> set|get|delete  Manage environment variables
   oauth <action> <id>      Manage OAuth for HTTP/SSE servers
 
 Options for 'add':
@@ -3145,8 +3313,10 @@ Options for 'add':
   config: `myagents config — Read/write application config
 
 Commands:
+  list [prefix]           Discover current keys, types and descriptions (no values)
   get <key>               Read a config value
-  set <key> <value>       Set a config value`,
+  set <key> <value>       Set a config value
+  unset <key>             Remove a stored config value`,
 
   cron: `myagents cron — Manage scheduled tasks
 
@@ -3300,7 +3470,6 @@ Examples:
   myagents runtime list                       # which runtimes are installed?
   myagents runtime list --json
   myagents runtime describe codex             # models + permission modes for codex
-  myagents runtime describe gemini --json
 
 Why this exists:
   'runtime describe' is the command to consult BEFORE choosing values for
@@ -3773,12 +3942,14 @@ EXAMPLES
 RECOVERY
   Re-read the Issue if the notification version changed; never fabricate rollback values.`,
 
-  task: `myagents task — Manage Task Center tasks (v0.1.69+)
+  task: `myagents task — Manage Task Center tasks
 
 Commands:
   list                            Compact current-workspace list (--query / --limit supported)
   get <taskId>                    Task metadata + .task/ doc paths
-  create-direct <name>            Create a task with inline task.md content
+  comments <taskId>               Read Task comments
+  comment <taskId> --body-file <path>  Publish a comment from this Session
+  create-direct <name>            Create a task (--taskMdFile preferred)
   create-attached                 Create a running task attached to the current AI session
   update <taskId>                 Patch task fields (schedule / notification /
                                   prompt / overrides). Rejected while running.
@@ -3814,7 +3985,7 @@ Options for 'create-direct':
   --taskMdContent      Inline task.md body (use --taskMdFile instead when
                        content spans multiple lines / has backticks / quotes).
                        Exactly one of --taskMdFile / --taskMdContent must be set.
-    --executionMode      'once' | 'scheduled' | 'recurring' (default: once)
+    --executionMode      'once' | 'scheduled' | 'recurring' (inferred from schedule flags; otherwise once)
   --runMode            'single-session' | 'new-session'
   --preselectedSessionId current|<id>
                        Required for single-session; current resolves from
@@ -4185,7 +4356,7 @@ Related:
     effect:
       'Really executes the command using a snapshot/fixture checkpoint but does not commit MyAgents checkpoint, health, events, or AI activation.',
     options:
-      '  <taskId>             Test the persisted Trigger\n  --spec-file <path>   Or test an unpersisted Trigger with --workspacePath\n  --checkpoint-file    Optional checkpoint fixture\n  --expect quiet|activate',
+      '  <taskId>             Test the persisted Trigger\n  --spec-file <path>   Or test an unpersisted Trigger with --workspacePath\n  --checkpoint-file    Optional checkpoint value JSON object or null, without revision/value wrapper\n  --expect quiet|activate',
     mutation:
       'No MyAgents state or AI mutation. Script file/network/database side effects are real and are not rolled back.',
     output: 'Structured quiet/activate result or harness failure diagnostics.',
@@ -4268,6 +4439,8 @@ on 'myagents task create-direct / update'.`,
   record: `myagents record — Manage unified text and audio Records
 
 Commands:
+  get <record-id>                Read the complete Record
+  delete <record-id>             Cancel processing and delete the Record
   list                  List Records (--kind text|audio / --tag / --query / --limit)
   create <content>      Capture a text Record (also: --content / --content-file)
 
@@ -4288,20 +4461,19 @@ IM bot sessions don't render widgets.`,
   skill: `myagents skill — Manage MyAgents skills (user skills live under ~/.myagents/skills/)
 
 Commands:
-  list                       List installed skills + enabled state
-  info <name>                Show one skill's manifest + description
+  list [--verbose]           List skills; include normal admission details with --verbose [--workspace <path>]
+  info <name>                Show one skill's manifest + description [--scope user|project] [--workspace <path>]
   add <source>               Install from GitHub, HTTPS .zip, or a local source
                              Local: absolute path, file://, explicit ./ or ../
                              Formats: directory, .zip, .skill (not .tar.gz/.tgz)
                              [--scope user|project] [--plugin <id>] [--skill <id>]
                              [--force] [--dry-run]
-  remove <name>              Uninstall a skill   [--scope user|project]
-  enable <name>              Enable an installed skill
-  disable <name>             Disable without uninstalling
-  sync                       Import skills from Claude Code (~/.claude/skills) into
-                             MyAgents. Optional interop only — errors "directory not
-                             found" when Claude Code is not installed; your own skills
-                             always live under ~/.myagents/skills/ regardless.`,
+  remove <name>              Uninstall a skill [--scope user|project] [--workspace <path>] [--dry-run]
+  enable <name>              Enable an installed skill [--scope user|project] [--workspace <path>]
+  disable <name>             Disable without uninstalling [--scope user|project] [--workspace <path>]
+  sync [name ...]            Preview available Claude Code skills without writing
+                             [--apply] imports all previewed or selected names into
+                             ~/.myagents/skills/; new imports are disabled until enabled.`,
 
   tool: `myagents tool — CLI tool registry (user tools live under ~/.myagents/tools/)
 
@@ -4346,6 +4518,10 @@ Project.agentId. Historical extra/orphan Agents remain addressable by exact ID.
 The Agent owns execution defaults; Project.path owns the current workspace.
 enabled=false pauses Heartbeat, Memory Update, and Memory Evo. Channels remain
 independently controlled by channel.enabled.
+The default status Agent count uses the same visible, non-archived set as agent list.
+DSH Task owner=root means the main Agent in that conversation, even when this
+Workspace Agent has a different display name. Other DSH Task owner values are
+Runtime child agentIds; they are not Workspace Agent IDs for these CLI commands.
 
 Discovery:
   list [--active|--archived]      Find Agent IDs; marks this CLI caller's Agent
@@ -4642,31 +4818,21 @@ export function handleHelp(payload: { path?: string[] }): AdminResponse {
     return { success: true, data: { text: HELP_TEXTS[matchedKey] } };
   }
 
-  // Derive the group list from HELP_TEXTS so it can't drift as new commands
-  // are added (issue #205 gap #5: the previous hardcoded list claimed only
-  // 8 groups existed and omitted im / task / runtime / cc-plugin / session,
-  // turning `myagents im --help` into a misleading "use one of these
-  // unrelated groups" message). Append the leaf commands that aren't in
-  // HELP_TEXTS but are still valid top-level invocations.
-  const groups = [
-    ...new Set(Object.keys(HELP_TEXTS).map((key) => key.split('/')[0])),
-  ].sort();
-  const leafCommands = ['status', 'reload', 'version'];
-  const header = group
-    ? `Unknown command group "${group}".`
-    : 'myagents — Available commands';
-  return {
-    success: true,
-    data: {
-      text: `${header}
-
-Command groups (run "myagents <group> --help" for details):
+  const groups = [...new Set(Object.keys(HELP_TEXTS).map(key => key.split('/')[0]))]
+    .filter(key => !Object.hasOwn(LEAF_HELP, key)).sort();
+  const commands = `Command groups (run "myagents <group> --help" for details):
   ${groups.join(', ')}
 
 Leaf commands:
-  ${leafCommands.join(', ')}`,
-    },
+  ${Object.keys(LEAF_HELP).join(', ')}`;
+  if (group) return {
+    success: false,
+    code: 'UNKNOWN_COMMAND_GROUP',
+    error: `Unknown command group "${group}".`,
+    suggestion: commands,
+    suggestedCommand: 'myagents --help',
   };
+  return { success: true, data: { text: `myagents — Available commands\n\n${commands}` } };
 }
 
 export async function handleAnydocConvert(payload: {
@@ -4813,30 +4979,12 @@ export async function handleSpeechList(payload: {
 // Version
 // ---------------------------------------------------------------------------
 
-// Compile-time injected by esbuild (scripts/esbuild-bundle.mjs `define`).
-// In dev (`npm run server` via tsx, no esbuild), the identifier is undefined
-// at runtime — the `?? process.env.…` chain below reaches the env fallback.
-declare const __MYAGENTS_VERSION__: string | undefined;
-
 export function handleVersion(): AdminResponse {
-  // Resolution order:
-  //   1. esbuild-injected `__MYAGENTS_VERSION__` (production sidecar bundle).
-  //   2. `npm_package_version` (set by npm in dev when launched via scripts).
-  //   3. `MYAGENTS_VERSION` env override (build system / tests).
-  //   4. 'dev' sentinel — visibly NOT a release version, so anyone reading
-  //      `myagents version` knows they're on an un-stamped build instead of
-  //      seeing a stale hardcoded number that lies about which build is
-  //      installed (issue #149: users had no way to tell whether the dmg they
-  //      reinstalled actually contained the patched CLI/sidecar — the old
-  //      hardcoded '0.1.70' fallback shipped in every release).
-  const version =
-    (typeof __MYAGENTS_VERSION__ !== 'undefined'
-      ? __MYAGENTS_VERSION__
-      : undefined) ??
-    process.env.npm_package_version ??
-    process.env.MYAGENTS_VERSION ??
-    'dev';
-  return { success: true, data: { version } };
+  return { success: true, data: {
+    version: SIDECAR_BUILD_IDENTITY.version,
+    app: APP_BUILD_IDENTITY,
+    sidecar: { ...SIDECAR_BUILD_IDENTITY, startedAt: SIDECAR_STARTED_AT, nodeVersion: process.versions.node },
+  } };
 }
 
 // ---------------------------------------------------------------------------
@@ -5112,7 +5260,7 @@ export async function handleTaskRuns(payload: {
   limit?: number;
 }): Promise<AdminResponse> {
   const qs = `?taskId=${encodeURIComponent(payload.taskId)}${payload.limit ? `&limit=${payload.limit}` : ''}`;
-  const resp = await managementApi(`/api/cron/runs${qs}`);
+  const resp = await managementApi(`/api/task/runs${qs}`);
   if (resp.ok) {
     return {
       success: true,
@@ -6101,11 +6249,19 @@ export async function handleRecordCreate(payload: {
   return wrapMgmtResponse(resp);
 }
 
+export async function handleRecordGet(payload: { id: string }): Promise<AdminResponse> {
+  return wrapMgmtResponse(await managementApi(`/api/record/get${qsFrom(payload)}`));
+}
+
+export async function handleRecordDelete(payload: { id: string }): Promise<AdminResponse> {
+  return wrapMgmtResponse(await managementApi('/api/record/delete', 'POST', payload));
+}
+
 // ---------------------------------------------------------------------------
 // Session-scoped capabilities for external runtimes (v0.1.67)
 //
 // These handlers expose Pattern 1 (context-injected) MCP tools to the `myagents`
-// CLI so the AI running on external runtimes (Claude Code / Codex / Gemini CLI)
+// CLI so the AI running on external runtimes (Claude Code / Codex)
 // can reach MyAgents-specific capabilities through plain shell tool calls
 // instead of a Claude-Agent-SDK-only MCP protocol. See prd_0.1.67.
 //
@@ -6292,6 +6448,13 @@ CANONICAL COMMANDS
   exit --reason <text>              End the current eligible scheduled Task from inside it
   delete <taskId>                   Delete after explicit user confirmation
 
+DETECTOR OUTCOMES
+  quiet          No Activation Event was emitted; checkpoint may still advance.
+  activate       A new event.id was accepted and can dispatch the AI action.
+  deduplicated   The emitted event.id was already handled, so AI is not woken
+                 again. The checkpoint can still advance after reset-checkpoint.
+  error          Detector failed; inspect task get/check-now for the cause.
+
 SCHEDULE CREATION
   --executionMode scheduled --dispatchAt <ISO-with-offset>
   --executionMode recurring --intervalMinutes <n>             (minimum 5)
@@ -6423,7 +6586,7 @@ CREATE OPTIONS (myagents cron add ...)
                                   or explicit UTC.
   --workspace <path>              Workspace the task runs in. Defaults to the
                                   current session workspace.
-  --runtime <builtin|claude-code|codex|gemini>
+  --runtime <builtin|dsh|claude-code|codex>
   --runtime-config <json-object>  Optional runtime identity/config override.
   --provider-id / --model / --permission-mode
                                   Optional Task execution overrides. Omit all
@@ -6895,7 +7058,7 @@ export async function handleCcPluginShow(payload: {
   }
   if (!id) return { success: false, error: 'id or name is required' };
   const item = getPluginDetail(id);
-  if (!item) return { success: false, error: '插件未安装' };
+  if (!item) return { success: false, error: `Plugin is not installed: ${payload.name ?? payload.id ?? '(unspecified)'}` };
   return { success: true, data: item };
 }
 
@@ -6991,10 +7154,37 @@ export async function handleCcPluginToggle(payload: {
 // Skill handlers (thin wrappers over /api/skill/* self-loopback)
 // ---------------------------------------------------------------------------
 
-export async function handleSkillList(): Promise<AdminResponse> {
-  const { json } = await sidecarSelf('/api/skills?scope=all');
+export async function handleSkillList(payload: { workspacePath?: string } = {}): Promise<AdminResponse> {
+  const workspacePath = payload.workspacePath ?? getCurrentWorkspacePath();
+  const { json } = await sidecarSelf(`/api/skills?scope=all${workspacePath ? `&agentDir=${encodeURIComponent(workspacePath)}` : ''}`);
   if (json.success) {
-    return { success: true, data: json.skills ?? [] };
+    const config = getSessionEngine().getSessionConfigSnapshot();
+    const status =
+      config.runtime === 'dsh' ? config.extensionStatus : undefined;
+    const skills = Array.isArray(json.skills) ? json.skills : [];
+    return {
+      success: true,
+      data: skills.map((skill: Record<string, unknown>) => {
+        if (config.runtime !== 'dsh') return skill;
+        const matches =
+          status?.components.filter(
+            (component) =>
+              component.component === 'skill' &&
+              component.id === skill.name &&
+              component.admission !== undefined,
+          ) ?? [];
+        return {
+          ...skill,
+          runtimeAvailability: {
+            runtime: 'dsh',
+            desiredRevision: status?.desiredRevision ?? null,
+            effectiveRevision: status?.effectiveRevision ?? null,
+            state: matches.length === 1 ? matches[0].admission : 'unknown',
+            ...(matches.length === 1 ? { component: matches[0] } : {}),
+          },
+        };
+      }),
+    };
   }
   return {
     success: false,
@@ -7002,14 +7192,40 @@ export async function handleSkillList(): Promise<AdminResponse> {
   };
 }
 
+async function resolveListedSkillTarget(
+  name: string,
+  workspacePath?: string,
+  requestedScope?: 'user' | 'project',
+): Promise<{ scope: 'user' | 'project'; folderName: string }> {
+  if (requestedScope === 'project' && !workspacePath) throw new Error('Project scope requires --workspace or a current workspace');
+  const { json } = await sidecarSelf(`/api/skills?scope=all${workspacePath ? `&agentDir=${encodeURIComponent(workspacePath)}` : ''}`);
+  if (!json.success || !Array.isArray(json.skills)) throw new Error(String(json.error ?? 'Failed to list skills'));
+  const skills = (json.skills as Array<Record<string, unknown>>).filter(skill =>
+    (skill.scope === 'user' || skill.scope === 'project')
+    && typeof skill.folderName === 'string'
+    && (!requestedScope || skill.scope === requestedScope));
+  const folderMatches = skills.filter(skill => skill.folderName === name);
+  const matches = folderMatches.length > 0 ? folderMatches : skills.filter(skill => skill.name === name);
+  if (matches.length === 0) throw new Error(`Skill "${name}" not found`);
+  if (matches.length > 1) throw new Error(`Skill "${name}" is ambiguous; pass --scope and its folder name`);
+  return { scope: matches[0].scope as 'user' | 'project', folderName: matches[0].folderName as string };
+}
+
 export async function handleSkillInfo(payload: {
   name: string;
   scope?: 'user' | 'project';
+  workspacePath?: string;
 }): Promise<AdminResponse> {
   if (!payload.name) return { success: false, error: 'name is required' };
-  const scope = payload.scope ?? 'user';
+  if (payload.scope !== undefined && payload.scope !== 'user' && payload.scope !== 'project') return { success: false, error: 'Invalid skill scope' };
+  const workspacePath = payload.workspacePath ?? getCurrentWorkspacePath();
+  let target: { scope: 'user' | 'project'; folderName: string };
+  try { target = await resolveListedSkillTarget(payload.name, workspacePath, payload.scope); }
+  catch (error) { return { success: false, error: error instanceof Error ? error.message : String(error) }; }
+  const { scope, folderName } = target;
+  if (scope === 'project' && !workspacePath) return { success: false, error: 'Project scope requires --workspace or a current workspace' };
   const { json } = await sidecarSelf(
-    `/api/skill/${encodeURIComponent(payload.name)}?scope=${scope}`,
+    `/api/skill/${encodeURIComponent(folderName)}?scope=${scope}${scope === 'project' ? `&agentDir=${encodeURIComponent(workspacePath!)}` : ''}`,
   );
   if (json.success) {
     return { success: true, data: json.skill ?? null };
@@ -7300,11 +7516,27 @@ export async function handleSkillAdd(payload: {
 export async function handleSkillRemove(payload: {
   name: string;
   scope?: 'user' | 'project';
+  workspacePath?: string;
+  dryRun?: boolean;
 }): Promise<AdminResponse> {
   if (!payload.name) return { success: false, error: 'name is required' };
-  const scope = payload.scope ?? 'user';
+  if (payload.scope !== undefined && payload.scope !== 'user' && payload.scope !== 'project') return { success: false, error: 'Invalid skill scope' };
+  const workspacePath = payload.workspacePath ?? getCurrentWorkspacePath();
+  let target: { scope: 'user' | 'project'; folderName: string };
+  try { target = await resolveListedSkillTarget(payload.name, workspacePath, payload.scope); }
+  catch (error) { return { success: false, error: error instanceof Error ? error.message : String(error) }; }
+  const { scope, folderName } = target;
+  if (scope === 'project' && !workspacePath) return { success: false, error: 'Project scope requires --workspace or a current workspace' };
+  if (payload.dryRun) {
+    const preview = await sidecarSelf(`/api/skill/${encodeURIComponent(folderName)}?scope=${scope}${scope === 'project' ? `&agentDir=${encodeURIComponent(workspacePath!)}` : ''}`);
+    if (!preview.json.success) return { success: false, error: String(preview.json.error ?? 'Skill not found') };
+    if ((preview.json.skill as { systemOwned?: boolean } | undefined)?.systemOwned) {
+      return { success: false, error: 'System Skill is read-only' };
+    }
+    return { success: true, data: { name: payload.name, folderName, scope, dryRun: true }, hint: `Preview only: would remove ${scope} skill "${folderName}"` };
+  }
   const { json } = await sidecarSelf(
-    `/api/skill/${encodeURIComponent(payload.name)}?scope=${scope}`,
+    `/api/skill/${encodeURIComponent(folderName)}?scope=${scope}${scope === 'project' ? `&agentDir=${encodeURIComponent(workspacePath!)}` : ''}`,
     'DELETE',
   );
   if (json.success) return { success: true, data: { name: payload.name } };
@@ -7317,33 +7549,84 @@ export async function handleSkillRemove(payload: {
 export async function handleSkillToggle(payload: {
   name: string;
   enabled: boolean;
+  scope?: 'user' | 'project';
+  workspacePath?: string;
 }): Promise<AdminResponse> {
   if (!payload.name) return { success: false, error: 'name is required' };
+  if (payload.scope !== undefined && payload.scope !== 'user' && payload.scope !== 'project') return { success: false, error: 'Invalid skill scope' };
+  const workspacePath = payload.workspacePath ?? getCurrentWorkspacePath();
+  let target: { scope: 'user' | 'project'; folderName: string };
+  try { target = await resolveListedSkillTarget(payload.name, workspacePath, payload.scope); }
+  catch (error) { return { success: false, error: error instanceof Error ? error.message : String(error) }; }
+  const { scope, folderName } = target;
+  if (scope === 'project') {
+    if (!workspacePath) return { success: false, error: 'Project scope requires --workspace or a current workspace' };
+    const snapshot = await sidecarSelf(`/api/project-capabilities?agentDir=${encodeURIComponent(workspacePath)}`);
+    if (!snapshot.json.success) return { success: false, error: String(snapshot.json.error ?? 'Project capabilities unavailable') };
+    const skills = Array.isArray(snapshot.json.skills) ? snapshot.json.skills as Array<Record<string, unknown>> : [];
+    const match = skills.find(skill => skill.scope === 'project' && skill.folderName === folderName);
+    if (!match || typeof match.capabilityId !== 'string') return { success: false, error: `Project skill '${folderName}' is unavailable in this workspace` };
+    const changed = await sidecarSelf('/api/project-capability/toggle', 'POST', {
+      agentDir: workspacePath,
+      capabilityId: match.capabilityId,
+      enabled: payload.enabled,
+    });
+    if (!changed.json.success) return { success: false, error: String(changed.json.error ?? 'Failed to toggle project skill') };
+    const effective = Array.isArray(changed.json.skills)
+      ? (changed.json.skills as Array<Record<string, unknown>>).find(skill => skill.capabilityId === match.capabilityId)
+      : undefined;
+    if (!effective || effective.enabled !== payload.enabled) {
+      return { success: false, error: 'Project skill state did not match the requested change' };
+    }
+    return { success: true, data: { name: payload.name, scope: 'project', enabled: payload.enabled } };
+  }
   const { json } = await sidecarSelf('/api/skill/toggle-enable', 'POST', {
-    folderName: payload.name,
+    folderName,
     enabled: payload.enabled,
   });
-  if (json.success)
-    return {
-      success: true,
-      data: { name: payload.name, enabled: payload.enabled },
-    };
+  if (json.success) {
+    const listed = await sidecarSelf('/api/skills?scope=user');
+    const entry = Array.isArray(listed.json.skills)
+      ? (listed.json.skills as Array<Record<string, unknown>>).find(skill => skill.folderName === folderName)
+      : undefined;
+    if (!listed.json.success || !entry || entry.enabled !== payload.enabled) {
+      return { success: false, error: 'User skill state did not match the requested change' };
+    }
+    return { success: true, data: { name: payload.name, scope: 'user', enabled: payload.enabled } };
+  }
   return {
     success: false,
     error: String(json.error ?? 'Failed to toggle skill'),
   };
 }
 
-export async function handleSkillSync(): Promise<AdminResponse> {
-  const { json } = await sidecarSelf('/api/skill/sync-from-claude', 'POST', {});
-  if (json.success) {
-    return {
-      success: true,
-      data: { synced: json.synced ?? 0, failed: json.failed ?? 0 },
-      hint: `Synced ${json.synced ?? 0} skill(s) from ~/.claude/skills`,
-    };
+export async function handleSkillSync(payload: { apply?: boolean; names?: string[] } = {}): Promise<AdminResponse> {
+  const preview = await sidecarSelf('/api/skill/sync-check');
+  if (preview.status >= 400 || preview.json.error) {
+    return { success: false, error: String(preview.json.error ?? 'Sync preview failed') };
   }
-  return { success: false, error: String(json.error ?? 'Sync failed') };
+  const candidates = Array.isArray(preview.json.folders)
+    ? preview.json.folders.filter((name): name is string => typeof name === 'string')
+    : [];
+  const requested = payload.names ?? [];
+  if (!Array.isArray(requested) || requested.some(name => typeof name !== 'string' || !candidates.includes(name))) {
+    return { success: false, error: 'Requested skill is unavailable. Preview again.' };
+  }
+  const folders = requested.length > 0 ? candidates.filter(name => requested.includes(name)) : candidates;
+  if (!payload.apply) {
+    return { success: true, data: { applied: false, folders, scope: 'user', enabled: false } };
+  }
+  const { json } = await sidecarSelf('/api/skill/sync-from-claude', 'POST', { expectedFolders: candidates, folders });
+  if (!json.success) return {
+    success: false,
+    error: String(json.error ?? `Imported ${json.synced ?? 0} skill(s); ${json.failed ?? 0} failed: ${(Array.isArray(json.errors) ? json.errors : []).join('; ')}`),
+    data: { applied: true, synced: json.syncedFolders ?? [], failed: json.errors ?? [] },
+  };
+  return {
+    success: Number(json.failed ?? 0) === 0,
+    data: { applied: true, synced: json.syncedFolders ?? [], failed: json.errors ?? [] },
+    ...(Number(json.failed ?? 0) > 0 ? { error: `Failed to import ${json.failed} skill(s)` } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -7391,6 +7674,7 @@ interface RuntimeDescribeResult {
   models: RuntimeModelInfo[];
   permissionModes: RuntimePermissionMode[];
   defaultPermissionMode: string;
+  defaultPermissionModeSource: 'runtime-catalog-fallback';
 }
 
 /** Per-runtime detection timeout — a wedged `<cli> --version` binary shouldn't
@@ -7513,6 +7797,7 @@ export async function handleRuntimeDescribe(
         models: [],
         permissionModes: getRuntimePermissionModes('builtin'),
         defaultPermissionMode: getDefaultRuntimePermissionMode('builtin'),
+        defaultPermissionModeSource: 'runtime-catalog-fallback',
         note:
           'Built-in runtime uses the configured provider + model from `myagents model list`. ' +
           'It does not have a runtime-specific model catalogue — override `--model` with any ' +
@@ -7548,18 +7833,10 @@ export async function handleRuntimeDescribe(
         success: false,
         code: 'RUNTIME_MODEL_DISCOVERY_FAILED',
         error: `Failed to discover ${RUNTIME_DISPLAY_NAMES[runtimeArg]} models: ${detail}`,
-        recoveryHint:
-          runtimeArg === 'gemini'
-            ? {
-                recoveryCommand: 'gemini',
-                message:
-                  'Authenticate Gemini in a normal terminal, then retry `myagents runtime describe gemini`.',
-              }
-            : {
-                recoveryCommand: `myagents runtime diagnose ${runtimeArg} --json`,
-                message:
-                  'Inspect runtime installation and authentication, then retry.',
-              },
+        recoveryHint: {
+          recoveryCommand: `myagents runtime diagnose ${runtimeArg} --json`,
+          message: 'Inspect runtime installation and authentication, then retry.',
+        },
       };
     }
   }
@@ -7576,6 +7853,7 @@ export async function handleRuntimeDescribe(
       models,
       permissionModes,
       defaultPermissionMode,
+      defaultPermissionModeSource: 'runtime-catalog-fallback',
     } satisfies RuntimeDescribeResult,
   };
 }
@@ -7587,7 +7865,7 @@ export async function handleRuntimeDescribe(
  * (issue #194) and the in-app "诊断" button.
  *
  * Codex: spawns `codex app-server`, no thread created.
- * Claude Code / Gemini / builtin: not yet implemented — returns
+ * Claude Code / builtin: not yet implemented — returns
  * `unsupported` so the CLI can show a clear "not yet supported" message
  * without crashing.
  */
@@ -7613,13 +7891,24 @@ export async function handleRuntimeDiagnose(payload: {
     };
   }
 
-  // Codex is the only runtime with diagnostic RPCs today. Claude Code's
+  try {
+    const inspection = await inspectRuntime(runtimeArg);
+    if (inspection) {
+      const replay = getSessionEngine().getStreamReplaySnapshot();
+      const mcp = replay.mcpEffectiveSnapshot;
+      return { success: true, data: { ...inspection, sessionMcp: mcp?.runtime === runtimeArg
+        && mcp.sessionId === replay.sessionId && !mcp.observationStale ? mcp : null } };
+    }
+  } catch {
+    return { success: false, error: 'Runtime inspection failed; inspect the Sidecar log for details.' };
+  }
+
+  // Codex also exposes standalone app-server diagnostic RPCs. Claude Code's
   // -p mode doesn't expose an equivalent surface (it's one-shot per turn);
-  // Gemini's ACP has session-scoped state but no "list features / apps".
   if (runtimeArg !== 'codex') {
     return {
       success: false,
-      error: `Diagnostic not yet implemented for runtime '${runtimeArg}'. Only 'codex' is currently supported.`,
+      error: `Diagnostic not yet implemented for runtime '${runtimeArg}'. Supported: codex, dsh.`,
       data: { runtime: runtimeArg, supported: false },
     };
   }
@@ -7751,12 +8040,23 @@ export async function handleAgentShow(payload: {
   // runtime / permissionMode / runtimeConfig exist on the full AgentConfig
   // but not on the slim shape. Extract defensively.
   const storedRuntime = (agent.runtime as RuntimeType | undefined) ?? 'builtin';
-  const usesManagedCodex = agentUsesManagedCodexProvider({
+  const rawUsesManagedCodex = agentUsesManagedCodexProvider({
     providerId: agent.providerId,
     runtime: storedRuntime,
     runtimeConfig: agent.runtimeConfig as { source?: string } | undefined,
   });
-  const runtime: RuntimeType = usesManagedCodex ? 'codex' : storedRuntime;
+  const rootConfig = loadConfig();
+  const preferredRuntime = resolveEffectiveRuntime(
+    storedRuntime,
+    agent.runtimePreference,
+    (agent.runtimeConfig as RuntimeConfig | undefined)?.source,
+    agent.providerId,
+    undefined,
+    rootConfig.defaultIntegratedRuntime,
+  );
+  const usesManagedCodex =
+    preferredRuntime === 'builtin' && rawUsesManagedCodex;
+  const runtime: RuntimeType = usesManagedCodex ? 'codex' : preferredRuntime;
   const agentPermissionMode =
     (agent.permissionMode as string | undefined) ?? '';
   const runtimeConfig =
@@ -7765,7 +8065,7 @@ export async function handleAgentShow(payload: {
   // Per-runtime resolution of "effective" model / permissionMode
   // (cross-review fix, v0.1.69):
   //   - builtin       → read from agent.{model, permissionMode}
-  //   - CC/Codex/Gemini → prefer agent.runtimeConfig.{model, permissionMode};
+  //   - CC/Codex → prefer agent.runtimeConfig.{model, permissionMode};
   //     fall back to the top-level agent fields only when absent.
   //
   // External runtimes use distinct permission-mode vocabularies (`suggest`,
@@ -7773,11 +8073,13 @@ export async function handleAgentShow(payload: {
   // enum. Reporting `agent.permissionMode = 'fullAgency'` as the effective
   // value for a Codex agent would be actively misleading — the dispatch
   // path never consults that field.
-  const isExternal = runtime !== 'builtin';
-  const rcModel = isExternal
+  const usesExternalCliConfiguration =
+    runtime === 'claude-code' ||
+    (runtime === 'codex' && !usesManagedCodex);
+  const rcModel = usesExternalCliConfiguration
     ? (runtimeConfig?.model as string | undefined)
     : undefined;
-  const rcPermissionMode = isExternal
+  const rcPermissionMode = usesExternalCliConfiguration
     ? (runtimeConfig?.permissionMode as string | undefined)
     : undefined;
   const effectiveModel = usesManagedCodex
@@ -7786,7 +8088,7 @@ export async function handleAgentShow(payload: {
   const effectivePermissionMode = usesManagedCodex
     ? (managedCodexProviderPermissionToRuntimePermission(agentPermissionMode) ??
       'auto-edit')
-    : isExternal
+    : usesExternalCliConfiguration
       ? (projectPermissionModeForRuntime(rcPermissionMode, runtime) ??
         getDefaultRuntimePermissionMode(runtime))
       : agentPermissionMode;
@@ -7807,12 +8109,16 @@ export async function handleAgentShow(payload: {
       association: identity.association,
       isCurrent: isCurrentAgentIdentity(identity, getCurrentWorkspacePath()),
       effectiveDefaults: {
+        scope: 'agent-default-for-future-sessions',
+        permissionModeSource: usesManagedCodex ? 'managed-provider-projection'
+          : usesExternalCliConfiguration ? 'agent-runtime-config-or-runtime-fallback' : 'agent-config',
         runtime,
         ...(runtime !== 'builtin'
           ? {
-              runtimeSource: usesManagedCodex
-                ? 'managed-provider'
-                : 'system-cli',
+              runtimeSource: runtimeSourceForRuntimeType(
+                runtime,
+                usesManagedCodex ? 'managed-provider' : undefined,
+              ),
             }
           : {}),
         model: effectiveModel || null,
@@ -7899,9 +8205,10 @@ export async function handleSessionList(payload: {
       lastMessagePreview: session.lastMessagePreview ?? null,
       runtime: session.runtime ?? 'builtin',
       runtimeSource:
-        session.runtime && session.runtime !== 'builtin'
-          ? (session.runtimeSource ?? 'system-cli')
-          : null,
+        runtimeSourceForRuntimeType(
+          (session.runtime as RuntimeType | undefined) ?? 'builtin',
+          session.runtimeSource,
+        ) ?? null,
       model: session.model ?? null,
       origin: session.origin ?? null,
     }));
@@ -7958,8 +8265,6 @@ function hintForMissingRuntime(runtime: RuntimeType): string {
       return 'Install the Claude Code CLI — see https://docs.anthropic.com/claude/docs/claude-code';
     case 'codex':
       return 'Install the OpenAI Codex CLI — `npm i -g @openai/codex` or see https://github.com/openai/codex';
-    case 'gemini':
-      return 'Install the Gemini CLI — `npm i -g @google/gemini-cli` or see https://github.com/google/gemini-cli';
     default:
       return '';
   }
@@ -8092,7 +8397,7 @@ async function validateTaskOverrides(
   if (
     hasProviderOverride &&
     typeof payload.runtime === 'string' &&
-    ['claude-code', 'codex', 'gemini'].includes(payload.runtime)
+    ['claude-code', 'codex'].includes(payload.runtime)
   ) {
     return {
       success: false,
@@ -8101,12 +8406,13 @@ async function validateTaskOverrides(
   }
   if (
     rawRuntimeSource !== undefined &&
+    rawRuntimeSource !== 'integrated' &&
     rawRuntimeSource !== 'system-cli' &&
     rawRuntimeSource !== 'managed-provider'
   ) {
     return {
       success: false,
-      error: `Invalid runtimeConfig.source: '${String(rawRuntimeSource)}'. Valid: system-cli, managed-provider.`,
+      error: `Invalid runtimeConfig.source: '${String(rawRuntimeSource)}'. Valid: integrated, system-cli, managed-provider.`,
     };
   }
   const runtimeConfigSource = rawRuntimeSource as RuntimeSource | undefined;
@@ -8135,8 +8441,13 @@ async function validateTaskOverrides(
     const runtime = payload.runtime;
     effectiveRuntimeIdentity = {
       runtime,
-      ...(runtime === 'codex'
-        ? { runtimeSource: runtimeConfigSource ?? 'system-cli' }
+      ...(runtime !== 'builtin'
+        ? {
+            runtimeSource: runtimeSourceForRuntimeType(
+              runtime,
+              runtimeConfigSource,
+            ),
+          }
         : {}),
     };
   } else if (
@@ -8181,6 +8492,23 @@ async function validateTaskOverrides(
   }
   const { runtime: effectiveRuntime, runtimeSource: effectiveRuntimeSource } =
     effectiveRuntimeIdentity;
+  if (runtimeConfigSource === 'integrated' && effectiveRuntime !== 'dsh') {
+    return {
+      success: false,
+      error: 'runtimeConfig.source=integrated requires runtime=dsh.',
+    };
+  }
+  if (
+    effectiveRuntime === 'dsh' &&
+    runtimeConfigSource &&
+    runtimeConfigSource !== 'integrated'
+  ) {
+    return {
+      success: false,
+      error:
+        'runtime=dsh requires runtimeConfig.source=integrated when a source is provided.',
+    };
+  }
   if (
     runtimeConfigSource === 'managed-provider' &&
     effectiveRuntime !== 'codex'
@@ -8221,7 +8549,7 @@ async function validateTaskOverrides(
 
   // Step 2: permissionMode is validated against the runtime's allowlist.
   // Works for both builtin (BUILTIN_PERMISSION_MODES: auto/plan/fullAgency/custom)
-  // and external runtimes (CC/Codex/Gemini) — since `getRuntimePermissionModes`
+  // and external runtimes (CC/Codex) — since `getRuntimePermissionModes`
   // returns an exhaustive list for every runtime including builtin, we don't
   // need a separate builtin escape hatch. Previously builtin was skipped on
   // the assumption that Rust validates it, but Rust stores the field as
@@ -8268,14 +8596,34 @@ async function validateTaskOverrides(
   }
 
   // Step 3: model is validated for *external* runtimes that expose a known
-  // model list. External CLI model lists can be dynamic (Gemini calls the
-  // server to discover them) so an empty list is treated as "can't validate,
+  // model list. External CLI model lists can be dynamic, so an empty list is treated as "can't validate,
   // trust the caller". builtin runtime model ids depend on the active
   // provider — out of scope for this validator.
   const modelOverride =
     effectiveRuntime === 'builtin' || runtimeConfigModel === undefined
       ? payload.model
       : runtimeConfigModel;
+  if (
+    effectiveRuntime === 'dsh' &&
+    hasProviderOverride &&
+    typeof modelOverride === 'string'
+  ) {
+    const providerId = payload.providerId as string;
+    const provider = findEffectiveProvider(
+      providerId,
+      loadConfig(),
+    ) as Provider | null;
+    if (!provider || !isDshModelSelectable(provider, modelOverride)) {
+      return {
+        success: false,
+        error: `Provider/model '${providerId}/${modelOverride}' is not an enabled ordinary API route configured for DSH.`,
+        recoveryHint: {
+          recoveryCommand: 'myagents model list',
+          message: 'Choose a model from an enabled API Provider.',
+        },
+      };
+    }
+  }
   if (
     modelOverride !== undefined &&
     modelOverride !== null &&
@@ -8383,20 +8731,30 @@ function resolveAgentRuntimeIdentityFromWorkspace(payload: {
   if (!agent) return undefined;
 
   const raw = agent.runtime as unknown;
-  const runtime =
+  const legacyRuntime =
     typeof raw === 'string' && isValidRuntimeType(raw) ? raw : 'builtin';
+  const preferredRuntime = resolveEffectiveRuntime(
+    legacyRuntime,
+    agent.runtimePreference,
+    (agent.runtimeConfig as RuntimeConfig | undefined)?.source,
+    agent.providerId,
+    undefined,
+    config.defaultIntegratedRuntime,
+  );
   if (
+    preferredRuntime === 'builtin' &&
     agentUsesManagedCodexProvider({
       providerId: agent.providerId,
-      runtime,
+      runtime: legacyRuntime,
       runtimeConfig: agent.runtimeConfig as { source?: string } | undefined,
     })
   ) {
     return { runtime: 'codex', runtimeSource: 'managed-provider' };
   }
-  return runtime === 'codex'
-    ? { runtime, runtimeSource: 'system-cli' }
-    : { runtime };
+  const runtime = preferredRuntime;
+  return runtime === 'builtin'
+    ? { runtime }
+    : { runtime, runtimeSource: runtimeSourceForRuntimeType(runtime) };
 }
 
 function taskRuntimeConfigField(
@@ -8466,7 +8824,8 @@ async function notifyMcpChange(action: string, id: string): Promise<void> {
     'notifyMcpChange',
   );
 
-  setMcpServers(effectiveServers);
+  const result = await getSessionEngine().updateMcpServers(effectiveServers);
+  if (!result.success) throw new Error(result.error ?? 'MCP configuration was saved, but current Runtime refresh failed');
   await notifyAppConfigChanged('mcp', action, id);
 }
 
@@ -8561,10 +8920,9 @@ async function disableMcpForCurrentProject(
   return result;
 }
 
-/** Get workspace path from agent-session (set during session init) */
+/** The selected adapter owns the current workspace for every Runtime. */
 function getCurrentWorkspacePath(): string | undefined {
-  const state = getAgentState();
-  return state.agentDir || undefined;
+  return getSessionEngine().getCurrentSessionContext().workspacePath || undefined;
 }
 
 /** Modify an agent in config by ID */
@@ -8607,7 +8965,7 @@ type AgentConfigIntentResolution =
     }
   | { ok: false; response: AdminResponse };
 
-async function modifyAgentConfigIntent(
+async function commitAgentConfigIntent(
   id: string,
   resolveIntent: (
     agent: AgentConfigSlim,
@@ -8702,6 +9060,35 @@ async function modifyAgentConfigIntent(
 
   if (commitResult) return commitResult;
 
+  void broadcastAppConfigChanged({ section: 'agent', action, id });
+  return { success: true, data: { id, reloadPatch: committedLivePatch } };
+}
+
+/** IM owns the subsequent Rust refresh after releasing its peer fence. */
+export async function commitAgentModelSelection(id: string, selection: AgentModelSelection, effort?: string): Promise<AdminResponse> {
+  return commitAgentConfigIntent(id, (current, config) => {
+    if (selection.kind === 'product-provider') {
+      const provider = getAllEffectiveProviders(config).find(candidate => candidate.id === selection.providerId);
+      const error = provider ? getProviderSelectionError(provider, config) : '供应商已不可用';
+      const models = Array.isArray(provider?.models) ? provider.models : [];
+      if (error || (selection.providerId !== CODEX_SUBSCRIPTION_PROVIDER_ID && !models.some(model => model && typeof model === 'object' && model.model === selection.model))) {
+        return { ok: false, response: { success: false, error: error ?? '模型已不可用，Agent 默认设置未修改' } };
+      }
+    }
+    const agent = current as import('../shared/types/agent').AgentConfig;
+    const patch = resolveAgentConfigMutation(agent, mutationForAgentModelSelection(agent, selection, effort));
+    return { ok: true, agent: { ...current, ...patch } as AgentConfigSlim, projectPatch: patch, livePatch: patch };
+  }, 'model-selection');
+}
+
+async function modifyAgentConfigIntent(
+  id: string,
+  resolveIntent: (agent: AgentConfigSlim, config: AdminAppConfig) => AgentConfigIntentResolution,
+  action: string,
+): Promise<AdminResponse> {
+  const result = await commitAgentConfigIntent(id, resolveIntent, action);
+  if (!result.success) return result;
+  const committedLivePatch = (result.data as { reloadPatch?: Record<string, unknown> } | undefined)?.reloadPatch;
   if (committedLivePatch) {
     try {
       const response = await managementApi('/api/agent/reload-config', 'POST', {
@@ -8737,18 +9124,19 @@ const SENSITIVE_TOP_KEYS = new Set([
   'mcpServerEnv',
   'cliToolEnv',
 ]);
+// Legacy snapshots serialize credentials into strings rather than nested objects.
+// Their dedicated discovery commands expose the non-secret configuration.
+const CREDENTIAL_SNAPSHOT_KEYS = new Set(['providerEnvJson', 'mcpServersJson']);
 
 /** Recursively redact sensitive values in config output */
 function redactSensitiveValues(key: string, value: unknown): unknown {
-  const rootKey = key.split('.')[0];
+  if (CREDENTIAL_SNAPSHOT_KEYS.has(key.split('.').at(-1) ?? '') && typeof value === 'string') {
+    return value ? '****' : value;
+  }
 
   // Top-level known sensitive maps
-  if (
-    SENSITIVE_TOP_KEYS.has(rootKey) &&
-    typeof value === 'object' &&
-    value !== null
-  ) {
-    return deepRedact(value);
+  if (key.split('.').some(part => SENSITIVE_TOP_KEYS.has(part))) {
+    return deepRedact(value, true);
   }
 
   // Any key path containing sensitive patterns
@@ -8765,17 +9153,19 @@ function redactSensitiveValues(key: string, value: unknown): unknown {
 }
 
 /** Recursively walk an object and redact string values whose keys match sensitive patterns */
-function deepRedact(obj: unknown): unknown {
+function deepRedact(obj: unknown, redactAll = false): unknown {
   if (obj === null || obj === undefined) return obj;
-  if (typeof obj === 'string') return obj;
-  if (Array.isArray(obj)) return obj.map((item) => deepRedact(item));
+  if (typeof obj === 'string') return redactAll ? redactSecret(obj) : obj;
+  if (Array.isArray(obj)) return obj.map((item) => deepRedact(item, redactAll));
   if (typeof obj === 'object') {
     const result: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-      if (typeof v === 'string' && SENSITIVE_KEY_PATTERNS.test(k)) {
+      if (typeof v === 'string' && CREDENTIAL_SNAPSHOT_KEYS.has(k)) {
+        result[k] = v ? '****' : v;
+      } else if (typeof v === 'string' && (redactAll || SENSITIVE_KEY_PATTERNS.test(k))) {
         result[k] = redactSecret(v);
       } else if (typeof v === 'object' && v !== null) {
-        result[k] = deepRedact(v);
+        result[k] = deepRedact(v, redactAll || SENSITIVE_TOP_KEYS.has(k));
       } else {
         result[k] = v;
       }
@@ -8817,6 +9207,21 @@ function setNestedValue(
     ...obj,
     [first]: setNestedValue(child as AdminAppConfig, rest.join('.'), value),
   };
+}
+
+/** Remove one stored key, leaving its siblings intact. */
+function deleteNestedValue(obj: AdminAppConfig, key: string): AdminAppConfig {
+  const [first, ...rest] = key.split('.');
+  const copy: AdminAppConfig = { ...obj };
+  if (rest.length === 0) {
+    delete copy[first];
+  } else {
+    const child = obj[first];
+    if (child && typeof child === 'object' && !Array.isArray(child)) {
+      copy[first] = deleteNestedValue(child as AdminAppConfig, rest.join('.'));
+    }
+  }
+  return copy;
 }
 
 // ---------------------------------------------------------------------------

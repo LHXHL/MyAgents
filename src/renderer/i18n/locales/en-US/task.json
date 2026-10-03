@@ -619,12 +619,6 @@
         "acceptEdits": "Automatically accept file edits; confirm other actions",
         "bypassPermissions": "Skip all permission confirmations"
       },
-      "gemini": {
-        "default": "Confirm every tool call",
-        "autoEdit": "Automatically accept file edits; confirm other actions",
-        "yolo": "Skip all tool confirmations",
-        "plan": "Planning mode; read-only and does not execute"
-      },
       "builtin": {
         "auto": "Default mode; tools request permission as needed",
         "plan": "Planning mode; read-only and does not execute",

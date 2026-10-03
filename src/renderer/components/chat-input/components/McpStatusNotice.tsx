@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { RotateCw } from 'lucide-react';
+import { RedoIcon } from '@/components/icons';
 import Tip from '@/components/Tip';
 import { useToast } from '@/components/Toast';
 import type { McpEffectiveServerSnapshot } from '../../../../shared/mcpEffectiveState';
@@ -58,7 +58,7 @@ export function McpStatusNotice({ server, stale, busy, onRetry }: {
             disabled={busy || retrying}
             onClick={(event) => { event.stopPropagation(); void retry(); }}
           >
-            <RotateCw className={`h-3.5 w-3.5 ${retrying ? 'animate-spin' : ''}`} />
+            <RedoIcon className={`h-3.5 w-3.5 ${retrying ? 'animate-spin' : ''}`} />
           </button>
         </Tip>
       )}

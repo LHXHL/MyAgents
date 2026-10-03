@@ -28,7 +28,7 @@ import {
   sortableKeyboardCoordinates,
   horizontalListSortingStrategy,
 } from '@dnd-kit/sortable';
-import { List, Plus } from 'lucide-react';
+import { ListIcon, PlusIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import SortableTabItem from '@/components/SortableTabItem';
@@ -303,7 +303,7 @@ export default memo(function TabBar({
               aria-label={t('tabs.allTabs')}
               title={t('tabs.allTabs')}
             >
-              <List className="h-4 w-4" />
+              <ListIcon className="h-4 w-4" />
             </button>
             <Popover
               open={menuOpen}
@@ -369,7 +369,7 @@ export default memo(function TabBar({
             onClick={onNewTab}
             title={`${t('tabs.newTab')} (${navigator.platform.toLowerCase().includes('mac') ? '⌘T' : 'Ctrl+T'})`}
           >
-            <Plus className="h-4 w-4" />
+            <PlusIcon className="h-4 w-4" />
           </button>
         )}
       </div>

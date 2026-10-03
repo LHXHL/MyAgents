@@ -10,7 +10,13 @@
 // design rationale.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { History, Loader2, Paperclip, Send, X } from 'lucide-react';
+import {
+  HistoryIcon,
+  LoaderIcon,
+  AttachIcon,
+  SendIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import type { Provider, ProviderVerifyStatus } from '@/config/types';
@@ -220,7 +226,7 @@ export default function SettingsHelperInbox({
                             : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
                     }`}
                 >
-                    <History className="h-3.5 w-3.5 flex-shrink-0" />
+                    <HistoryIcon className="h-3.5 w-3.5 flex-shrink-0" />
                     <span>{t('helper.history')}</span>
                 </button>
                 {helperAgentDir && (
@@ -276,7 +282,7 @@ export default function SettingsHelperInbox({
                                         onClick={() => removeAt(img.id)}
                                         className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-[var(--ink)]/70 text-[var(--paper)] opacity-0 transition-all hover:bg-[var(--ink)] group-hover/thumb:opacity-100"
                                     >
-                                        <X className="h-3 w-3" />
+                                        <CloseIcon className="h-3 w-3" />
                                     </button>
                                 </div>
                             ))}
@@ -308,7 +314,7 @@ export default function SettingsHelperInbox({
                                 onClick={() => fileInputRef.current?.click()}
                                 className="flex items-center rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                             >
-                                <Paperclip className="h-3.5 w-3.5" />
+                                <AttachIcon className="h-3.5 w-3.5" />
                             </button>
                         </Tip>
                     </div>
@@ -336,9 +342,9 @@ export default function SettingsHelperInbox({
                                 className="flex items-center gap-1.5 rounded-full bg-[var(--button-primary-bg)] px-3.5 py-1.5 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-50"
                             >
                                 {isSending ? (
-                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    <LoaderIcon className="h-3.5 w-3.5 animate-spin" />
                                 ) : (
-                                    <Send className="h-3.5 w-3.5" />
+                                    <SendIcon className="h-3.5 w-3.5" />
                                 )}
                                 {t('helper.send')}
                             </button>

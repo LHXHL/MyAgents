@@ -8,7 +8,7 @@
 - Events describe product state changes, not raw UI clicks.
 - Reuse dimensions (`source`, `surface`, `entry_intent`) instead of splitting events by every entry point.
 - Session-scoped events should carry `session_id` directly or receive it from the active analytics context.
-- User-defined names must not be uploaded raw. Use local salted hashes for agent/workspace grouping.
+- User-defined Agent/workspace names use local salted hashes for grouping; their raw names are not uploaded.
 
 ## Shared Dimensions
 
@@ -81,21 +81,24 @@ same navigation surface.
 
 Events that describe session or turn execution carry:
 
-- `runtime`: execution runtime (`builtin`, `claude-code`, `codex`, `gemini`, or
+- `runtime`: execution runtime (`builtin`, `dsh`, `claude-code`, or `codex`;
   `unknown` on renderer fallback paths).
 - `runtime_source`: runtime owner source. `builtin` / `unknown` report `null`;
-  external runtime turns report `system-cli` for user-installed CLIs or
+  DSH reports `integrated`; external runtime turns report `system-cli` for user-installed CLIs or
   `managed-provider` for product-managed runtime-backed Providers such as
   `codex-sub`.
 
 `source` and `runtime_source` are intentionally different dimensions:
 `source` answers which product channel triggered the event (`desktop`, `cron`,
-`im`, ...); `runtime_source` answers who owns the external runtime binary/auth.
+`im`, ...); `runtime_source` answers who owns the selected Runtime distribution/auth.
 
-The stable runtime-source-bearing events are `session_new`, `history_open`,
-`message_send`, `message_complete`, and `ai_turn_complete`. Older client
-versions may omit `runtime_source`; treat missing as unknown rather than
-inferring it from `runtime='codex'`.
+Session and turn events (`session_new`, `history_open`, `message_send`,
+`message_complete`, `message_error`, `message_stop`, `ai_turn_complete`),
+conversation operations (`message_retry`, `session_rewind`, `session_fork`),
+and Chat tool, permission, Provider, model and reasoning-effort events carry
+Runtime identity. Background Tabs and the Companion window supply their own
+`session_id` and Runtime dimensions explicitly; the active Tab context must
+not attribute their events. Missing identity remains unknown.
 
 ## Event Names
 
@@ -293,17 +296,45 @@ Server-side AI turn:
 
 - `ai_turn_complete`
 
-`ai_turn_complete` is the canonical per-turn usage event emitted from the
-Sidecar. In addition to source/session/runtime/runtime_source/model/token/
-duration fields, it reports the provider attribution for builtin turns:
+`ai_turn_complete` is the canonical usage event for a successfully completed
+root turn. Builtin emits after a non-aborted successful result; the shared
+Runtime session owner emits after a successful terminal and transcript
+settlement. Failed, stopped and pre-warm operations do not emit this success
+event. It is not a complete accounting of failed requests or child-model calls.
 
-- `provider_name`: provider display name. Builtin subscription turns report
-  `Anthropic (订阅)`; external runtime turns report the current
-  `RUNTIME_DISPLAY_NAMES` value such as `Claude Code CLI`, `OpenAI Codex CLI`,
-  or `Google Gemini CLI (ACP)`.
-- `api_protocol`: effective provider protocol, currently `anthropic` or
-  `openai`; `null` for external runtime turns.
-- `provider_base_url`: effective provider base URL. Builtin subscription turns
-  report `https://api.anthropic.com`; external runtime turns report `null`.
-- `provider_api_protocol`: same protocol dimension as `api_protocol`, kept as a
-  provider-prefixed field for downstream schema compatibility.
+The Sidecar records `source`, origin fields, Product `session_id`, `runtime`,
+`runtime_source`, effective `model`, token counts, tool count and duration.
+Provider attribution comes from the configuration used to execute the turn:
+
+- `provider_id` and `provider_name`: configured Provider identity and display
+  name. Builtin subscription uses `anthropic-sub` / `Anthropic (订阅)`.
+  DSH uses the resolved Provider, never the Runtime display name.
+- `api_protocol` and `provider_api_protocol`: effective `anthropic` or `openai`
+  protocol. Both fields use the same value.
+- `provider_api_family`: effective request family, `anthropic-messages`,
+  `openai-responses` or `openai-completions`. DSH reads the compiled profile,
+  including per-model routing, native protocol selection and OAuth leases.
+- `provider_base_url`: effective HTTP(S) endpoint with URL credentials, query
+  and fragment removed. Builtin subscription uses `https://api.anthropic.com`.
+
+CLI-owned credentials do not expose a configured API endpoint to the Host.
+Claude Code and Codex retain their Runtime display name as `provider_name`;
+Provider identity, API family/protocol and endpoint remain `null` when unknown.
+DSH without execution attribution reports an unknown Provider rather than a
+CLI label. Attribution and counters are captured before asynchronous transcript
+persistence, so later configuration or turn changes cannot alter this record.
+
+`message_complete` is the Renderer observation of the terminal event, not a
+second usage record to add to `ai_turn_complete`. Both Chat Tabs and Companion
+use the shared completion mapper: missing or invalid measurements are omitted,
+and an explicitly reported zero remains zero. Never infer zero usage from a
+Runtime omitting a field. `message_error` and `message_stop` describe UI-observed
+failure and stop terminals; they contain no raw error text and do not supply
+usage accounting for turns without a successful result.
+
+`tool_use.tool_origin` distinguishes `runtime` tool calls from `provider`
+server tools. The `tool` value preserves the Runtime's native tool name; UI
+presentation aliases must not rewrite the wire identity. Permission events are
+emitted after the response is accepted. Companion events use
+`source='floating_ball'` and `surface='floating_ball'`, with the Companion's
+frozen Session binding rather than the main window's active Tab.

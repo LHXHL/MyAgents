@@ -287,7 +287,8 @@ impl SpeechRecognitionManager {
             let state = manager.state.lock().map_err(|_| "SPEECH_MANAGER_UNAVAILABLE".to_string())?;
             if !state.jobs.values().any(|job| !job.state.is_terminal()
                 && matches!(&job.origin, SpeechJobOrigin::Record { record_id: id } if id == &record_id))
-                && tauri::async_runtime::block_on(manager.record_store.get(&record_id)).is_some()
+                && tauri::async_runtime::block_on(manager.record_store.get(&record_id))
+                    .is_some_and(|record| record.kind == RecordKind::Audio)
             {
                 let has_final = tauri::async_runtime::block_on(manager.record_store.read_recording_final_transcript(&record_id))?.is_some();
                 let has_speakers = tauri::async_runtime::block_on(manager.record_store.read_diarization_result(&record_id))?.is_some();

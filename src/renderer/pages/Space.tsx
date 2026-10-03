@@ -9,7 +9,7 @@ import {
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2, RefreshCw, X } from "lucide-react";
+import { LoaderIcon, RefreshIcon, CloseIcon } from '@/components/icons';
 
 import {
   DEFAULT_SPACE_ID,
@@ -216,7 +216,7 @@ export function SpaceQuickActionDialog({
             onClick={onClose}
             className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:opacity-50"
           >
-            <X className="h-4 w-4" />
+            <CloseIcon className="h-4 w-4" />
           </button>
         </header>
         {busy ? (
@@ -225,7 +225,7 @@ export function SpaceQuickActionDialog({
             role="status"
             aria-live="polite"
           >
-            <Loader2 className="h-5 w-5 animate-spin" />
+            <LoaderIcon className="h-5 w-5 animate-spin" />
             <span>{busyLabel}</span>
           </div>
         ) : (
@@ -1247,7 +1247,7 @@ export default function Space({
   if (spaceData.boot === "idle" || spaceData.boot === "loading") {
     return (
       <div className="flex h-full items-center justify-center bg-[var(--paper)] text-sm text-[var(--ink-muted)]">
-        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+        <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
         {t("space.common.loadingTeam")}
       </div>
     );
@@ -1283,7 +1283,7 @@ export default function Space({
             }
             className="mt-3 inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] hover:bg-[var(--button-secondary-bg-hover)]"
           >
-            <RefreshCw className="h-4 w-4" />
+            <RefreshIcon className="h-4 w-4" />
             {t("space.common.retry")}
           </button>
         </div>
@@ -1316,7 +1316,7 @@ export default function Space({
             }}
             className="mt-3 inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] hover:bg-[var(--button-secondary-bg-hover)]"
           >
-            {canRetry && <RefreshCw className="h-4 w-4" />}
+            {canRetry && <RefreshIcon className="h-4 w-4" />}
             {t(canRetry ? "space.common.retry" : "space.route.back")}
           </button>
         </div>

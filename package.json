@@ -4,9 +4,21 @@
   "type": "module",
   "version": "0.4.24",
   "license": "AGPL-3.0-only",
-  "packageManager": "npm@11.13.0",
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=24.14.0",
+    "npm": ">=11.15.0"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": ">=24.14.0",
+      "onFail": "error"
+    },
+    "packageManager": {
+      "name": "npm",
+      "version": ">=11.15.0",
+      "onFail": "error"
+    }
   },
   "author": "MyAgents Team <myagents.io@gmail.com>",
   "homepage": "https://myagents.io",
@@ -43,8 +55,9 @@
     "server": "node --import tsx/esm src/server/index.ts",
     "start": "npm run build:web && npm run server",
     "tauri": "tauri",
-    "tauri:dev": "node scripts/prepare-cliproxy.mjs && npm run prepare:native-inference && tauri dev",
-    "tauri:build": "tauri build",
+    "tauri:dev": "node scripts/prepare-cliproxy.mjs && npm run prepare:native-inference && npm run verify:dsh-runtime && npm run verify:dsh-runtime:fresh && tauri dev",
+    "tauri:build": "node scripts/integrated-runtimes/build-dsh-tauri.mjs",
+    "tauri:build:prepared": "tauri build",
     "pretypecheck": "node scripts/verify-agent-network-protocol.mjs && node scripts/patch-codemirror-view.mjs --check && node scripts/patch-react-virtuoso.mjs --check",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --cache --cache-location .eslintcache --max-warnings=0 && npm run lint:deps && npm run verify:agent-docs",
@@ -52,7 +65,7 @@
     "test": "npm run test:classification && npm run test:build-scripts && npm run test:unit && npm run test:dom && npm run test:integration",
     "test:classification": "node scripts/check-test-classification.mjs",
     "test:linux-package": "node --test scripts/linux-package.test.mjs",
-    "test:build-scripts": "node --test scripts/build-resource-download.test.mjs scripts/npm-runtime-cache.test.mjs scripts/build-assets.test.mjs scripts/rust-build-cache.test.mjs scripts/package-cliproxy-component.test.mjs scripts/prepare-cliproxy.test.mjs scripts/patch-react-virtuoso.test.mjs scripts/patch-codemirror-view.test.mjs scripts/prepare-cuse-bundle.test.mjs scripts/node-runtime.test.mjs scripts/browser-runtime-packaging.test.mjs scripts/build-resource-staging.test.mjs scripts/cli-bundle-contract.test.mjs scripts/document-processing-build-tools.test.mjs scripts/document-processing-resource-cache.test.mjs scripts/package-speech-model-set.test.mjs scripts/prepare-native-inference.test.mjs scripts/prepare-speech-model-mirror.test.mjs scripts/server-bundle-browser-host.test.mjs scripts/sherpa-source-extraction.test.mjs scripts/speech-inference-resource-cache.test.mjs scripts/speech-quality-benchmark.test.mjs scripts/verify-agent-network-protocol.test.mjs",
+    "test:build-scripts": "node --test scripts/build-resource-download.test.mjs scripts/npm-runtime-cache.test.mjs scripts/build-assets.test.mjs scripts/rust-build-cache.test.mjs scripts/package-cliproxy-component.test.mjs scripts/prepare-cliproxy.test.mjs scripts/patch-react-virtuoso.test.mjs scripts/patch-codemirror-view.test.mjs scripts/prepare-cuse-bundle.test.mjs scripts/node-runtime.test.mjs scripts/browser-runtime-packaging.test.mjs scripts/build-resource-staging.test.mjs scripts/cli-bundle-contract.test.mjs scripts/document-processing-build-tools.test.mjs scripts/document-processing-resource-cache.test.mjs scripts/package-speech-model-set.test.mjs scripts/prepare-native-inference.test.mjs scripts/prepare-speech-model-mirror.test.mjs scripts/server-bundle-browser-host.test.mjs scripts/sherpa-source-extraction.test.mjs scripts/speech-inference-resource-cache.test.mjs scripts/speech-quality-benchmark.test.mjs scripts/integrated-runtimes/dsh-handoff-policy.test.mjs scripts/integrated-runtimes/prepare-dsh-runtime.test.mjs scripts/server-bundle-dsh-web.test.mjs scripts/verify-agent-network-protocol.test.mjs",
     "test:unit": "vitest run --project unit",
     "test:dom": "vitest run --project dom",
     "test:integration": "vitest run --project integration",
@@ -83,6 +96,10 @@
     "clean:rust": "cargo clean --manifest-path src-tauri/Cargo.toml --target-dir src-tauri/target",
     "clean": "rm -rf node_modules dist .turbo .eslintcache *.tsbuildinfo src-tauri/target",
     "version": "node scripts/sync-version.js && git add src-tauri/tauri.conf.json src-tauri/Cargo.toml",
+    "ingest:dsh-runtime": "node scripts/integrated-runtimes/ingest-dsh-handoff.mjs",
+    "prepare:dsh-runtime": "node scripts/integrated-runtimes/prepare-dsh-runtime.mjs --source release",
+    "verify:dsh-runtime": "node scripts/integrated-runtimes/verify-dsh-resources.mjs",
+    "verify:dsh-runtime:fresh": "node scripts/integrated-runtimes/verify-dsh-dev-freshness.mjs",
     "build:assets": "npm run build:web && npm run build:server && npm run build:bridge && npm run build:cli",
     "build:sharp-runtime": "node scripts/prepare-sharp-runtime.mjs",
     "verify:agent-network-protocol": "node scripts/verify-agent-network-protocol.mjs"
@@ -116,6 +133,7 @@
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-shell": "^2.3.4",
     "@tauri-apps/plugin-updater": "~2.10",
+    "@thednp/dommatrix": "3.1.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/xterm": "^6.0.0",
@@ -128,9 +146,9 @@
     "docx-preview": "^0.3.7",
     "i18next": "^26.3.3",
     "js-yaml": "^4.1.1",
+    "json5": "2.2.3",
     "katex": "^0.16.27",
     "lucide": "^0.554.0",
-    "lucide-react": "^0.554.0",
     "mermaid": "^11.12.2",
     "monaco-editor": "^0.55.1",
     "pdfjs-dist": "^5.7.284",
@@ -153,6 +171,7 @@
     "remark-rehype": "11.1.2",
     "sharp": "0.34.5",
     "socks": "^2.8.7",
+    "turndown": "7.2.4",
     "undici": "^8.1.0",
     "unified": "11.0.5",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
@@ -194,6 +213,7 @@
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@types/react-syntax-highlighter": "^15.5.13",
+    "@types/turndown": "5.0.6",
     "@vitejs/plugin-react": "^5.1.1",
     "@vitest/coverage-v8": "^3.2.4",
     "autoprefixer": "^10.4.21",

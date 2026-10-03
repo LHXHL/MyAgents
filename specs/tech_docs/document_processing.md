@@ -72,7 +72,7 @@ queued/running/cancelling --App restart/shutdown--> interrupted
 
 ## Queue 与 Worker lifecycle
 
-- 全 App FIFO 上限 16（running 计入），首版并发固定为 1。
+- 全 App FIFO 上限 16（running 计入），当前并发固定为 1。
 - admission 打开 source 的 no-follow regular-file handle；queued job 持有该 handle，避免 path 后续被替换成别的文件。
 - running 首先把 held source 分块复制到私有 `input/source.bin` 并计算 SHA-256；每块检查 cancellation/deadline，实际字节数以及复制前后的 size、mtime/ctime（Windows 为 last-write time）必须与 admission metadata 一致。即使同一 inode 被等长改写也 fail closed 为 `DOCUMENT_SOURCE_CHANGED`。
 - Worker 使用 `process_cmd::new()` + `spawn_tree()`；环境清空，stdin/stdout 仅承载私有协议，stderr 不进入用户错误。
@@ -104,7 +104,7 @@ AnyDoc 的 recoverable 分支直接产生 typed `{code, message, location}` diag
 
 未加密 PDF 先由 `pdf-inspector 1.14.2` 输出逐页 native Markdown 和 `needs_ocr`。页码 adapter 显式按 0-based source index 校验 coverage；只有 `needs_ocr` 页由 PDFium `chromium/7999` 渲染后 OCR，再按原页顺序组合并保留 `## Page N` 边界。不得用字符数另造 routing，也不得对混合 PDF 全文 OCR。
 
-PDF 始终先由 `pdf-inspector` 区分损坏与加密；传入密码不会把损坏 PDF 错判为密码错误。确认加密后才用 transient password 由 PDFium 打开，首版对加密 PDF 所有页 render + OCR；未加密 PDF 即使多传了密码仍走原生逐页 routing。PDFium 只从 manifest 的绝对库路径加载；系统库与 PATH 不参与 fallback。
+PDF 始终先由 `pdf-inspector` 区分损坏与加密；传入密码不会把损坏 PDF 错判为密码错误。确认加密后才用 transient password 由 PDFium 打开，当前对加密 PDF 所有页 render + OCR；未加密 PDF 即使多传了密码仍走原生逐页 routing。PDFium 只从 manifest 的绝对库路径加载；系统库与 PATH 不参与 fallback。
 
 ### 图片与 OCR
 
@@ -173,7 +173,7 @@ macOS ORT source cache 是可中断状态机：仅存在 `.git` 不代表已有�
 
 App 启动同步路径只解析 manifest，并校验 target/pipeline、路径、regular-file、size 与 Worker 可执行位，不读取 ORT、PDFium、OCR 模型或字典的完整正文。App ready 后先等 10 秒安静窗口，再由最低优先级 `BackgroundResourceValidation` lease 分块校验：共享 ORT 只由 `LocalInferenceRuntimeRegistry` 校验一次，Document Manager 校验 Worker/PDFium/OCR 模型/字典；Record live 到来时 chunk-level yield，稍后重新等待安静窗口再试。后台失败会阻止新的对应 admission，但不阻止 MyAgents UI 启动；Worker 启动后仍再次完整校验它实际要加载的五个资源并 fail closed。运行时不得下载、访问 Hugging Face 或使用用户 cache。
 
-speech 的用户可移除模型权重不属于本节的 build cache，也不进入 Tauri resource projection。它们由 `SpeechRecognitionManager` 在用户显式操作后写入 App data 下的版本目录；安装前仍复用本节同一 App-owned ORT identity，但下载/签名、模型最小加载、`active.json` 切换与 busy removal 由 speech domain owner 裁决。两者只共享受信任 runtime 和 compute lease，不共享 job store 或模型 activation authority。详见 [`recording_and_speech_recognition.md`](./recording_and_speech_recognition.md)。
+speech 的用户可移除模型权重不属于本节的 build cache，也不进入 Tauri resource projection。它们由 `SpeechModelPackManager` 在首次显式安装及后续已授权维护时写入 App data 下的版本目录；安装前仍复用本节同一 App-owned ORT identity，但下载/签名、模型最小加载、`active.json` 切换与 busy removal 由 speech domain owner 裁决。两者只共享受信任 runtime 和 compute lease，不共享 job store 或模型 activation authority。详见 [`recording_and_speech_recognition.md`](./recording_and_speech_recognition.md)。
 
 ## Skill 与 help 防漂移
 

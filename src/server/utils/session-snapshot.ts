@@ -2,6 +2,8 @@ import type { AgentConfig } from '../../shared/types/agent';
 import {
   buildRuntimeChangePatch,
   coerceModelForRuntime,
+  getMaxPermissionForRuntime,
+  resolveEffectiveRuntime,
   projectPermissionModeForRuntime,
   type RuntimeSource,
   type RuntimeType,
@@ -15,45 +17,19 @@ import {
   createRuntimeBackedProviderIdentity,
   managedCodexProviderPermissionToRuntimePermission,
 } from '../../shared/providerExecution';
+import { createDshBinding } from '../../shared/integrated-runtimes/identity';
 
-/**
- * Session config snapshot helpers (v0.1.69).
- *
- * Two independent helpers for two owner policies. **Do not** collapse them
- * into an enum-dispatched single function — the split is intentional
- * pit-of-success: each call site self-documents which snapshot policy it
- * wants, and a compile error is the only thing that can silently change
- * behavior when a new field is added.
- *
- * Callers feed the returned `Partial<SessionMetadata>` to
- * `createSessionMetadata(agentDir, snapshot)`. Hand-assembling snapshot
- * fields outside these helpers is forbidden (see PRD §6.2 Pit-of-success).
- */
-
-/**
- * Payload set captured by the "owned session" snapshot policy. Single
- * source of truth for "what to copy from agent config into a session
- * being frozen". Referenced by:
- *   - `snapshotForOwnedSession()` below (desktop/Cron creation path)
- *   - `/api/session/freeze` endpoint (v0.2.14+ runtime-change detach)
- *   - Rust `OwnedSessionSnapshot` in `src-tauri/src/im/runtime_change.rs`
- *     (v0.2.14+ — must keep field set in lock-step with this type)
- *
- * `configSnapshotAt` is INTENTIONALLY EXCLUDED from this Pick — it's the
- * "this session is frozen" marker, stamped by the writer (sidecar
- * `/api/session/freeze` and Rust file-lock fallback) at write time, not
- * passed through the snapshot payload. Mixing it into the payload caused
- * TS↔Rust drift in the v0.2.14 first-cut review. (review-by-codex F2.)
- *
- * `enabledPluginIds` is optional and currently only Node/desktop paths can
- * populate it; Rust IM freeze does not track Claude cc-plugin state and may
- * omit it. Omission means "freeze with no session plugin override", never
- * "fall back to Agent" once `configSnapshotAt` exists.
+/** Complete Product Session execution snapshots. Desktop, Task and IM share
+ * the owned snapshot compiler; IM changes only its birth permission policy.
+ * Registered cloud Agents retain their independent live-follow lifecycle.
+ * configSnapshotAt is stamped by the Session writer, never by Rust templates.
  */
 export type OwnedSessionSnapshot = Pick<
   SessionMetadata,
   | 'runtime'
   | 'runtimeSource'
+  | 'runtimeBinding'
+  | 'runtimeBindingCompatibility'
   | 'model'
   | 'reasoningEffort'
   | 'permissionMode'
@@ -72,9 +48,19 @@ export function snapshotForForkedSession(
   legacyFallback?: OwnedSessionSnapshot & Pick<SessionMetadata, 'configSnapshotAt'>,
 ): OwnedSessionSnapshot & Pick<SessionMetadata, 'configSnapshotAt'> {
   const fallback = source.configSnapshotAt ? undefined : legacyFallback;
+  const runtimeIdentity = source.runtimeBinding
+    ? { runtimeBinding: source.runtimeBinding }
+    : source.runtimeBindingCompatibility
+      ? { runtimeBindingCompatibility: source.runtimeBindingCompatibility }
+      : fallback?.runtimeBinding
+        ? { runtimeBinding: fallback.runtimeBinding }
+        : fallback?.runtimeBindingCompatibility
+          ? { runtimeBindingCompatibility: fallback.runtimeBindingCompatibility }
+          : {};
   return {
     runtime: source.runtime ?? fallback?.runtime ?? 'builtin',
     runtimeSource: source.runtimeSource ?? fallback?.runtimeSource,
+    ...runtimeIdentity,
     model: source.model ?? fallback?.model,
     reasoningEffort: source.reasoningEffort ?? fallback?.reasoningEffort,
     permissionMode: source.permissionMode ?? fallback?.permissionMode,
@@ -96,29 +82,10 @@ export function snapshotForForkedSession(
     configSnapshotAt: source.configSnapshotAt ?? fallback?.configSnapshotAt ?? new Date().toISOString(),
   };
 }
-// #324 — `reasoningEffort` is a DOCUMENTED divergence from the Rust mirror
-// (`runtime_change.rs::OwnedSessionSnapshot` does NOT carry it): Rust never
-// tracks effort state (it is deliberately not part of sync_ai_config, same
-// one-direction design as #327), so the runtime-change freeze path cannot
-// supply it. That is safe: the freeze endpoint skips absent fields (never
-// clears), and a live-follow session being frozen falls back to
-// `agent.reasoningEffort`, which survives a runtime change un-scrubbed —
-// the resolved value is identical. Desktop/cron creation (this file) is the
-// path that must capture it, and does.
-
-/**
- * IM (Agent channel) owner — live-follow policy (D4).
- *
- * IM sessions deliberately do NOT snapshot model/permission/mcp; each message
- * re-resolves `agent + channel.overrides` live so the Telegram/Feishu/etc. peer
- * tracks the Agent's current config. Only `runtime` is recorded, because runtime
- * drift triggers session fork at the Router layer (sidecar.rs + router.rs) and
- * needs a stable reference.
- *
- * `runtimeSessionId` is left absent — it is filled in by the runtime on first
- * `session/new` / thread creation.
- */
+/** Caller-resolved execution identity and Agent-template birth policy. */
 interface SessionSnapshotRuntimeOptions {
+  /** Agent-template births need the same distribution/gate policy as desktop. */
+  runtimePolicy?: { defaultIntegratedRuntime?: unknown };
   /**
    * Runtime the session is being materialized for. Used when a caller creates a
    * session as part of a runtime switch before the AgentConfig patch is written.
@@ -134,6 +101,33 @@ interface SessionSnapshotRuntimeOptions {
    * helpers stay pure and do not read config.json themselves.
    */
   managedCodexProviderReady?: boolean;
+}
+
+function dshPlatformTarget(): string {
+  const target = `${process.platform}-${process.arch}`;
+  if (target !== 'darwin-arm64' && target !== 'win32-x64' && target !== 'linux-x64') {
+    throw new Error(`DSH Session binding has no accepted platform target for ${target}`);
+  }
+  return target;
+}
+
+export function snapshotRuntimeIdentity(
+  runtime: RuntimeType,
+  runtimeSource?: RuntimeSource,
+): Pick<SessionMetadata, 'runtime' | 'runtimeSource' | 'runtimeBinding'> {
+  if (runtime === 'dsh') {
+    return {
+      runtime,
+      runtimeSource: 'integrated',
+      runtimeBinding: createDshBinding(dshPlatformTarget()),
+    };
+  }
+  return {
+    runtime,
+    runtimeSource: runtime === 'builtin'
+      ? undefined
+      : (runtimeSource ?? 'system-cli'),
+  };
 }
 
 function agentForSnapshotRuntime(
@@ -178,7 +172,8 @@ function shouldSnapshotManagedCodexProvider(
     && agent.model.trim().length > 0;
 }
 
-export function snapshotForImSession(
+/** Cloud registered Agents retain Runtime-only identity and their own live-follow policy. */
+export function snapshotForRegisteredAgentSession(
   agent: AgentConfig,
   options?: SessionSnapshotRuntimeOptions,
 ): Partial<SessionMetadata> {
@@ -191,10 +186,33 @@ export function snapshotForImSession(
   const snapshotAgent = agentForSnapshotRuntime(agent, options);
   const runtime = snapshotAgent.runtime ?? 'builtin';
   return {
-    runtime,
-    runtimeSource: runtime !== 'builtin'
-      ? (options?.runtimeSourceOverride ?? snapshotAgent.runtimeConfig?.source ?? 'system-cli')
-      : undefined,
+    ...snapshotRuntimeIdentity(
+      runtime,
+      options?.runtimeSourceOverride ?? snapshotAgent.runtimeConfig?.source,
+    ),
+  };
+}
+
+/** IM uses the same complete snapshot as desktop, with unattended birth permissions. */
+export function snapshotForImSession(
+  agent: AgentConfig,
+  options?: SessionSnapshotRuntimeOptions,
+): OwnedSessionSnapshot & Pick<SessionMetadata, 'configSnapshotAt'> {
+  let birthOptions = options;
+  if (options?.runtimePolicy && options.runtimeOverride === undefined) {
+    const preferred = resolveEffectiveRuntime(agent.runtime, agent.runtimePreference, agent.runtimeConfig?.source, agent.providerId, undefined,
+      options.runtimePolicy.defaultIntegratedRuntime);
+    const managed = preferred === 'builtin' && agentUsesManagedCodexProvider(agent);
+    if (managed && options.managedCodexProviderReady !== true) {
+      throw new Error('Managed Codex is not ready for IM Session birth');
+    }
+    birthOptions = { ...options, runtimeOverride: managed ? 'codex' : preferred,
+      runtimeSourceOverride: managed ? 'managed-provider' : undefined };
+  }
+  const snapshot = snapshotForOwnedSession(agent, birthOptions);
+  return {
+    ...snapshot,
+    permissionMode: getMaxPermissionForRuntime(snapshot.runtime ?? 'builtin'),
   };
 }
 
@@ -221,7 +239,7 @@ export function snapshotForImSession(
  * `renderer/api/persistInputOption.ts::buildSnapshotPatch` already encodes
  * this dispatch. Snapshot creation must match: previously this helper
  * blindly captured `agent.model` even for external runtimes, leaking a
- * Claude/builtin model name into a Codex/Gemini session snapshot. The cron
+ * Claude/builtin model name into a Codex session snapshot. The cron
  * `followAgent` resolution path then promoted that into
  * `runtimeConfig.model`, which Codex CLI rejects (issue #224).
  */
@@ -256,7 +274,8 @@ export function snapshotForOwnedSession(
   }
   const snapshotAgent = agentForSnapshotRuntime(agent, options);
   const runtime = snapshotAgent.runtime ?? 'builtin';
-  const isExternal = runtime !== 'builtin';
+  const isDsh = runtime === 'dsh';
+  const isExternal = runtime !== 'builtin' && !isDsh;
   const hasStaleManagedProviderId = snapshotAgent.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID;
   const builtinProviderId = !isExternal && !hasStaleManagedProviderId
     ? snapshotAgent.providerId
@@ -268,10 +287,10 @@ export function snapshotForOwnedSession(
     ? createConcreteProviderRoute(builtinProviderId, model)
     : undefined;
   return {
-    runtime,
-    runtimeSource: isExternal
-      ? (options?.runtimeSourceOverride ?? snapshotAgent.runtimeConfig?.source ?? 'system-cli')
-      : undefined,
+    ...snapshotRuntimeIdentity(
+      runtime,
+      options?.runtimeSourceOverride ?? snapshotAgent.runtimeConfig?.source,
+    ),
     model,
     // #324 — same runtime-aware dispatch as model (issue #224 rationale).
     reasoningEffort: isExternal

@@ -17,7 +17,15 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Activity, Bell, Bot, Clock, FileText, FolderOpen, Settings2 } from 'lucide-react';
+import {
+  ActivityIcon,
+  BellIcon,
+  HelperIcon,
+  ClockIcon,
+  DocumentIcon,
+  FolderOpenIcon,
+  SlidersIcon,
+} from '@/components/icons';
 
 import {
   taskOpenDocsDir,
@@ -101,7 +109,7 @@ interface Draft {
   /** PRD 0.2.9 — Per-task provider id; paired with `model`. */
   providerId: string | undefined;
   model: string | undefined;
-  /** PRD 0.2.9 — External-runtime config (model/permissionMode for codex/CC/gemini). */
+  /** PRD 0.2.9 — External-runtime config (model/permissionMode for codex/CC). */
   runtimeConfig: RuntimeConfig | undefined;
   permissionMode: string | undefined;
   mcpEnabledServers: string[] | undefined;
@@ -644,7 +652,7 @@ export function TaskEditPanel({
       <div className="flex min-h-0 flex-1 flex-col">
         <div className={`flex-1 overflow-y-auto px-6 py-5 ${SECTION_GAP}`}>
         {/* 基本信息 */}
-        <FormSection icon={FileText} title={t('edit.sectionBasic')}>
+        <FormSection icon={DocumentIcon} title={t('edit.sectionBasic')}>
           <div className="space-y-4">
             <Field label={t('edit.name')} required>
               <input
@@ -662,7 +670,7 @@ export function TaskEditPanel({
 
         {/* task.md is the single editable semantic contract. */}
         <FormSection
-          icon={FileText}
+          icon={DocumentIcon}
           title={t('detail.taskDocTitle')}
           action={<OpenFolderButton onClick={() => void handleOpenDocsDir()} />}
         >
@@ -695,7 +703,7 @@ export function TaskEditPanel({
 
         <div className={SECTION_DIVIDER} />
 
-        <FormSection icon={Bot} title={t('dispatch.workspace')}>
+        <FormSection icon={HelperIcon} title={t('dispatch.workspace')}>
           <CustomSelect
             value={workspace?.path ?? draft.workspacePath}
             options={projectOptions}
@@ -722,7 +730,7 @@ export function TaskEditPanel({
         <div className={SECTION_DIVIDER} />
 
         {/* 高级配置 — runtime / provider / model / permission / MCP overrides (PRD 0.2.9) */}
-        <FormSection icon={Settings2} title={t('edit.advanced')}>
+        <FormSection icon={SlidersIcon} title={t('edit.advanced')}>
           <TaskAdvancedConfigEditor
             workspacePath={draft.workspacePath}
             runtime={draft.runtime}
@@ -745,7 +753,7 @@ export function TaskEditPanel({
         <div className={SECTION_DIVIDER} />
 
         {/* 执行模式 */}
-        <FormSection icon={Clock} title={t('dispatch.sectionExecution')}>
+        <FormSection icon={ClockIcon} title={t('dispatch.sectionExecution')}>
           <ExecutionModeEditor
             executionMode={draft.executionMode}
             setExecutionMode={setExecutionMode}
@@ -786,7 +794,7 @@ export function TaskEditPanel({
         {isRecurring && (
           <>
             <div className={SECTION_DIVIDER} />
-            <FormSection icon={Activity} title={t('trigger.sectionTitle')}>
+            <FormSection icon={ActivityIcon} title={t('trigger.sectionTitle')}>
               <TriggerEditor
                 value={draft.trigger}
                 workspacePath={draft.workspacePath}
@@ -807,7 +815,7 @@ export function TaskEditPanel({
         {showEndConditions && (
           <>
             <div className={SECTION_DIVIDER} />
-            <FormSection icon={Bot} title={t('dispatch.sectionEndConditions')}>
+            <FormSection icon={HelperIcon} title={t('dispatch.sectionEndConditions')}>
               <EndConditionsEditor
                 mode={draft.endConditionMode}
                 setMode={(v) => setDraft((d) => ({ ...d, endConditionMode: v }))}
@@ -825,7 +833,7 @@ export function TaskEditPanel({
         <div className={SECTION_DIVIDER} />
 
         {/* 通知 */}
-        <FormSection icon={Bell} title={t('dispatch.sectionNotifications')}>
+        <FormSection icon={BellIcon} title={t('dispatch.sectionNotifications')}>
           <div ref={notificationRef}>
             <NotificationConfigEditor
               value={draft.notification}
@@ -896,7 +904,7 @@ function OpenFolderButton({ onClick }: { onClick: () => void }) {
       title={t('edit.openDocsDirTitle')}
       className="inline-flex shrink-0 items-center gap-1 rounded-[var(--radius-md)] px-2 py-0.5 text-xs text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
     >
-      <FolderOpen className="h-3 w-3" />
+      <FolderOpenIcon className="h-3 w-3" />
       {t('edit.openDocsDir')}
     </button>
   );

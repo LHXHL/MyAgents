@@ -2,23 +2,23 @@ import { useRecordPlayback } from '@/hooks/useRecordPlayback';
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Archive,
-  ArchiveRestore,
-  Check,
-  Copy,
-  Download,
-  FileText,
-  MessageSquare,
-  Pause,
-  Pencil,
-  Play,
-  RotateCcw,
-  Square,
-  Trash2,
-  Volume2,
-  VolumeX,
-  X,
-} from 'lucide-react';
+  ArchiveIcon,
+  ArchiveRestoreIcon,
+  CheckIcon,
+  CopyIcon,
+  DownloadIcon,
+  DocumentIcon,
+  MessageIcon,
+  PauseIcon,
+  EditIcon,
+  PlayIcon,
+  UndoIcon,
+  StopIcon,
+  TrashIcon,
+  VolumeIcon,
+  VolumeXIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import CustomSelect from '@/components/CustomSelect';
@@ -1437,9 +1437,9 @@ export default function RecordDetail({
               className="pointer-events-none absolute -bottom-2 -left-12 -right-2 -top-2 -z-10 bg-gradient-to-r from-[var(--paper-elevated-a0)] to-[var(--paper-elevated)]"
             />
             {copiedSegmentId === segment.segmentId ? (
-              <Check className="h-3 w-3" />
+              <CheckIcon className="h-3 w-3" />
             ) : (
-              <Copy className="h-3 w-3" />
+              <CopyIcon className="h-3 w-3" />
             )}
             {copiedSegmentId === segment.segmentId
               ? t('records.copied')
@@ -1545,7 +1545,7 @@ export default function RecordDetail({
                     className="rounded p-1 text-[var(--success)] hover:bg-[var(--paper-inset)] disabled:opacity-40"
                     aria-label={t('records.saveNoteEdit')}
                   >
-                    <Check className="h-3.5 w-3.5" />
+                    <CheckIcon className="h-3.5 w-3.5" />
                   </button>
                   <button
                     type="button"
@@ -1557,7 +1557,7 @@ export default function RecordDetail({
                     className="rounded p-1 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]"
                     aria-label={t('records.cancelNoteEdit')}
                   >
-                    <X className="h-3.5 w-3.5" />
+                    <CloseIcon className="h-3.5 w-3.5" />
                   </button>
                 </div>
               </div>
@@ -1582,7 +1582,7 @@ export default function RecordDetail({
                         ...(item.type === 'note'
                           ? [
                               {
-                                icon: <Pencil className="h-3.5 w-3.5" />,
+                                icon: <EditIcon className="h-3.5 w-3.5" />,
                                 label: t('records.editNote'),
                                 onClick: () => {
                                   setEditingNoteId(item.noteId);
@@ -1592,7 +1592,7 @@ export default function RecordDetail({
                             ]
                           : []),
                         {
-                          icon: <Trash2 className="h-3.5 w-3.5" />,
+                          icon: <TrashIcon className="h-3.5 w-3.5" />,
                           label:
                             item.type === 'note'
                               ? t('records.deleteNote')
@@ -1699,7 +1699,7 @@ export default function RecordDetail({
       {
         items: [
           {
-            icon: <MessageSquare className="h-3.5 w-3.5" />,
+            icon: <MessageIcon className="h-3.5 w-3.5" />,
             label: t('thoughts.aiDiscuss'),
             onClick: () => setShowWorkspacePicker(true),
             disabled: !canDiscuss,
@@ -1711,7 +1711,7 @@ export default function RecordDetail({
         // candidate. Their presence must not hide the explicit rerun entrance.
         items: transcript && !ownsCaptureSlot && !completedTranscriptionFailed
           ? [{
-              icon: <RotateCcw className="h-3.5 w-3.5" />,
+              icon: <UndoIcon className="h-3.5 w-3.5" />,
               label: t('records.rerunTranscription'),
               onClick: () => void handleStartTranscription(),
               disabled: !modelPack?.usable || transcriptionStatus !== 'ready'
@@ -1722,7 +1722,7 @@ export default function RecordDetail({
       },
       {
         items: tracks.map((track) => ({
-          icon: <Download className="h-3.5 w-3.5" />,
+          icon: <DownloadIcon className="h-3.5 w-3.5" />,
           label: t('records.exportAudioTrack', {
             track: t(`records.${track}`),
           }),
@@ -1733,7 +1733,7 @@ export default function RecordDetail({
       {
         items: [
           {
-            icon: <FileText className="h-3.5 w-3.5" />,
+            icon: <DocumentIcon className="h-3.5 w-3.5" />,
             label: t('records.exportTranscriptAndNotes'),
             onClick: () => void handleExportText('markdown'),
             disabled: ownsCaptureSlot,
@@ -1745,9 +1745,9 @@ export default function RecordDetail({
           ? [
               {
                 icon: record.archived ? (
-                  <ArchiveRestore className="h-3.5 w-3.5" />
+                  <ArchiveRestoreIcon className="h-3.5 w-3.5" />
                 ) : (
-                  <Archive className="h-3.5 w-3.5" />
+                  <ArchiveIcon className="h-3.5 w-3.5" />
                 ),
                 label: t(
                   record.archived ? 'records.unarchive' : 'records.archive',
@@ -1761,7 +1761,7 @@ export default function RecordDetail({
       {
         items: [
           {
-            icon: <Trash2 className="h-3.5 w-3.5" />,
+            icon: <TrashIcon className="h-3.5 w-3.5" />,
             label: t('records.delete'),
             danger: true,
             disabled: ownsCaptureSlot,
@@ -1917,7 +1917,7 @@ export default function RecordDetail({
                         aria-hidden="true"
                         className="flex justify-end opacity-70"
                       >
-                        {!enabled && <X className="h-3 w-3" />}
+                        {!enabled && <CloseIcon className="h-3 w-3" />}
                       </span>
                     </button>
                   );
@@ -1950,9 +1950,9 @@ export default function RecordDetail({
                   className="inline-flex h-9 items-center gap-1.5 rounded-[var(--radius-md)] bg-[var(--media-control-text)]/12 px-3 text-sm font-medium transition-colors hover:bg-[var(--media-control-text)]/20 disabled:opacity-40"
                 >
                   {isPaused ? (
-                    <Play className="h-4 w-4" />
+                    <PlayIcon className="h-4 w-4" />
                   ) : (
-                    <Pause className="h-4 w-4" />
+                    <PauseIcon className="h-4 w-4" />
                   )}
                   {isPaused ? t('records.resume') : t('records.pause')}
                 </button>
@@ -1962,7 +1962,7 @@ export default function RecordDetail({
                   disabled={busyAction !== null || !snapshot}
                   className="inline-flex h-9 items-center gap-1.5 rounded-[var(--radius-md)] bg-[var(--media-stop-bg)] px-3 text-sm font-semibold text-[var(--media-stop-text)] transition-opacity hover:opacity-90 disabled:opacity-40"
                 >
-                  <Square className="h-3.5 w-3.5 fill-current" />
+                  <StopIcon className="h-3.5 w-3.5 fill-current" />
                   {t('records.stop')}
                 </button>
               </div>
@@ -1982,9 +1982,9 @@ export default function RecordDetail({
                 }
               >
                 {playing ? (
-                  <Pause className="h-4 w-4" />
+                  <PauseIcon className="h-4 w-4" />
                 ) : (
-                  <Play className="ml-0.5 h-4 w-4" />
+                  <PlayIcon className="ml-0.5 h-4 w-4" />
                 )}
               </button>
               <div
@@ -2058,9 +2058,9 @@ export default function RecordDetail({
                     }
                   >
                     {playbackVolume > 0 ? (
-                      <Volume2 className="h-4 w-4" />
+                      <VolumeIcon className="h-4 w-4" />
                     ) : (
-                      <VolumeX className="h-4 w-4" />
+                      <VolumeXIcon className="h-4 w-4" />
                     )}
                   </button>
                   <div className="relative h-5 min-w-0 flex-1 rounded focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--media-control-text)]">

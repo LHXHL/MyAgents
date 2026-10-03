@@ -18,7 +18,12 @@
 // Historical Cron rows reuse their inferred execution category with a
 // parenthetical "legacy" marker.
 
-import { Clock, Flag, Play, Repeat } from 'lucide-react';
+import {
+  ClockIcon,
+  FlagIcon,
+  PlayIcon,
+  RepeatIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import type { TaskExecutionMode } from '@/../shared/types/task';
@@ -26,29 +31,29 @@ import type { TaskExecutionMode } from '@/../shared/types/task';
 type Category = TaskExecutionMode;
 
 interface CategoryStyle {
-  icon: typeof Clock;
+  icon: typeof ClockIcon;
   bg: string;
   fg: string;
 }
 
 const CATEGORY_STYLE: Record<Category, CategoryStyle> = {
   loop: {
-    icon: Flag,
+    icon: FlagIcon,
     bg: 'bg-[var(--heartbeat-bg)]',
     fg: 'text-[var(--heartbeat)]',
   },
   once: {
-    icon: Play,
+    icon: PlayIcon,
     bg: 'bg-[var(--accent-warm-subtle)]',
     fg: 'text-[var(--accent-warm)]',
   },
   scheduled: {
-    icon: Clock,
+    icon: ClockIcon,
     bg: 'bg-[var(--success-bg)]',
     fg: 'text-[var(--success)]',
   },
   recurring: {
-    icon: Repeat,
+    icon: RepeatIcon,
     bg: 'bg-[var(--info-bg)]',
     fg: 'text-[var(--info)]',
   },

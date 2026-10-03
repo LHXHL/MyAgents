@@ -1,4 +1,4 @@
-import { Check, Loader2 } from 'lucide-react';
+import { CheckIcon, LoaderIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 export interface ChecklistItem {
@@ -7,6 +7,7 @@ export interface ChecklistItem {
   /** Stable identity (task id) — keys by it when present so reorder/delete don't
    *  reuse the wrong row; falls back to index for the legacy TodoWrite snapshot. */
   key?: string;
+  detail?: string;
 }
 
 interface TodoChecklistProps {
@@ -54,9 +55,9 @@ export default function TodoChecklist({ items }: TodoChecklistProps) {
                     : 'border-[var(--line)]'
                 }`}>
                 {isCompleted ? (
-                  <Check className="size-3.5" strokeWidth={3} />
+                  <CheckIcon className="size-3.5" strokeWidth={3} />
                 ) : isInProgress ? (
-                  <Loader2 className="size-3 animate-spin text-[var(--accent)]" />
+                  <LoaderIcon className="size-3 animate-spin text-[var(--accent)]" />
                 ) : null}
               </div>
 
@@ -70,6 +71,7 @@ export default function TodoChecklist({ items }: TodoChecklistProps) {
                   }`}
               >
                 {todo.content}
+                {todo.detail && <span className="block text-xs font-normal text-[var(--ink-muted)] no-underline">{todo.detail}</span>}
               </span>
             </div>
           );

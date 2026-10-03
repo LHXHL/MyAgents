@@ -259,7 +259,7 @@ export type EventName =
  * 打 `triggered_by`。详见 `specs/tech_docs/analytics_design.md`。
  */
 export interface SessionNewParams {
-  /** SDK Session ID（与 ~/.myagents/sessions/*.jsonl 文件名一致） */
+  /** Product Session ID；用于关联 UI 与服务端 turn，不等同于原生 Runtime ID。 */
   session_id: string;
   /** Tab ID（前端会话归因 / 多 Tab debug 用） */
   tab_id?: string;
@@ -343,7 +343,7 @@ export interface MessageSendParams {
   runtime: AnalyticsRuntime;
   runtime_source: AnalyticsRuntimeSource;
   mode: string; // 权限模式: auto | confirm | deny
-  model: string; // 当前模型
+  model: string | null; // 当前模型；尚未取得执行快照时为 null
   skill?: string | null; // 技能/指令名称
   has_image: boolean; // 是否含图片
   has_file: boolean; // 是否含文件
@@ -352,7 +352,7 @@ export interface MessageSendParams {
 }
 
 /**
- * message_complete 事件参数
+ * message_complete 事件参数。未提供的测量值省略，不能用零代替未知。
  */
 export interface MessageCompleteParams {
   /** Effective runtime of THIS session (frozen sessionRuntime ?? agent-config) —
@@ -360,12 +360,12 @@ export interface MessageCompleteParams {
   runtime: AnalyticsRuntime;
   runtime_source: AnalyticsRuntimeSource;
   model?: string; // 主模型名称
-  input_tokens: number; // 输入 tokens
-  output_tokens: number; // 输出 tokens
-  cache_read_tokens: number; // 缓存读取 tokens
-  cache_creation_tokens: number; // 缓存创建 tokens
-  tool_count: number; // 工具调用次数
-  duration_ms: number; // 响应耗时（毫秒）
+  input_tokens?: number; // 输入 tokens
+  output_tokens?: number; // 输出 tokens
+  cache_read_tokens?: number; // 缓存读取 tokens
+  cache_creation_tokens?: number; // 缓存创建 tokens
+  tool_count?: number; // 工具调用次数
+  duration_ms?: number; // 响应耗时（毫秒）
 }
 
 /**
@@ -375,8 +375,8 @@ export interface AppLaunchParams {
   /** 启动类型（目前固定 'cold'） */
   launch_type: string;
   /**
-   * 逗号分隔的 distinct 有效外部 runtime 列表（如 `"codex"` / `"claude-code,codex"`）。
-   * gate-aware：`multiAgentRuntime` 关闭时为 `''`（所有 agent 实际跑 builtin）。
+   * 逗号分隔的 distinct 非 builtin runtime 列表（如 `"dsh"` / `"claude-code,codex"`）。
+   * 依据 Agent 明确选择或全局默认，并遵循发行版与 Provider 约束。
    * 用于"已配置但可能从未使用"的 runtime 采用率分析——turn 级事件看不到这部分。
    * config 尚未加载时该字段缺省（区分 `''`=无外部 与 缺省=未知）。
    */

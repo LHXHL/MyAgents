@@ -1,7 +1,7 @@
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Loader2 } from 'lucide-react';
+import { LoaderIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import { useCloseLayer } from '@/hooks/useCloseLayer';
@@ -104,7 +104,7 @@ export default function ConfirmDialog({
                             : 'bg-[var(--button-primary-bg)] text-[var(--button-primary-text)] hover:bg-[var(--button-primary-bg-hover)]'
                             }`}
                     >
-                        {loading && <Loader2 className="h-3 w-3 animate-spin" />}
+                        {loading && <LoaderIcon className="h-3 w-3 animate-spin" />}
                         {finalConfirmText}
                     </button>
                 </div>

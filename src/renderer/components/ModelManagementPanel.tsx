@@ -5,7 +5,16 @@
  * Lower section: Discover more — single-click "添加" per row, no multi-select
  */
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
-import { X, Search, Loader2, RefreshCw, AlertCircle, Plus, Trash2, Settings2 } from 'lucide-react';
+import {
+  CloseIcon,
+  SearchIcon,
+  LoaderIcon,
+  RefreshIcon,
+  AlertIcon,
+  PlusIcon,
+  TrashIcon,
+  SlidersIcon,
+} from '@/components/icons';
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -539,7 +548,7 @@ export default function ModelManagementPanel({
             aria-label={t('common:actions.close')}
             className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
           >
-            <X className="h-4 w-4" />
+            <CloseIcon className="h-4 w-4" />
           </button>
         </div>
 
@@ -605,7 +614,7 @@ export default function ModelManagementPanel({
                   aria-label={t('providers.models.add')}
                   className="rounded-lg bg-[var(--paper-inset)] px-2.5 py-1.5 text-[var(--ink-muted)] transition-colors hover:text-[var(--ink)] disabled:opacity-40"
                 >
-                  <Plus className="h-4 w-4" />
+                  <PlusIcon className="h-4 w-4" />
                 </button>
               </div>
               {pendingCustomModel && pendingCustomModel.source !== 'discovered' && (
@@ -634,7 +643,7 @@ export default function ModelManagementPanel({
                   disabled={discoveryLoading}
                   className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:opacity-50"
                 >
-                  <RefreshCw className={`h-3 w-3 ${discoveryLoading ? 'animate-spin' : ''}`} />
+                  <RefreshIcon className={`h-3 w-3 ${discoveryLoading ? 'animate-spin' : ''}`} />
                   {t('providers.models.refresh')}
                 </button>
               )}
@@ -643,7 +652,7 @@ export default function ModelManagementPanel({
             {/* Search — always visible once models have been loaded (avoids layout jump on refresh) */}
             {canDiscover && !discoveryError && discoveredModels.length > 0 && (
               <div className="relative mb-3">
-                <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ink-subtle)]" />
+                <SearchIcon className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ink-subtle)]" />
                 <input
                   type="text"
                   value={search}
@@ -667,14 +676,14 @@ export default function ModelManagementPanel({
 
             {canDiscover && discoveryLoading && discoveredModels.length === 0 && (
               <div className="flex flex-col items-center justify-center py-8 text-[var(--ink-muted)]">
-                <Loader2 className="h-5 w-5 animate-spin" />
+                <LoaderIcon className="h-5 w-5 animate-spin" />
                 <p className="mt-2 text-sm">{t('providers.models.loading')}</p>
               </div>
             )}
 
             {canDiscover && discoveryError && (
               <div className="flex flex-col items-center justify-center py-8 text-center">
-                <AlertCircle className="h-5 w-5 text-[var(--error)]" />
+                <AlertIcon className="h-5 w-5 text-[var(--error)]" />
                 <p className="mt-2 text-sm text-[var(--ink)]">{t('providers.models.loadFailed')}</p>
                 <p className="mt-1 max-w-md text-xs text-[var(--ink-muted)]">{discoveryError}</p>
                 <button
@@ -682,7 +691,7 @@ export default function ModelManagementPanel({
                   onClick={doFetch}
                   className="mt-3 flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-[var(--accent)] transition-colors hover:bg-[var(--accent-warm-subtle)]"
                 >
-                  <RefreshCw className="h-3.5 w-3.5" />
+                  <RefreshIcon className="h-3.5 w-3.5" />
                   {t('providers.models.retry')}
                 </button>
               </div>
@@ -800,7 +809,7 @@ const ActiveModelRow = React.memo(function ActiveModelRow({
               : 'text-[var(--ink-subtle)] opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
           }`}
         >
-          <Settings2 className="h-3 w-3" />
+          <SlidersIcon className="h-3 w-3" />
         </button>
       )}
 
@@ -826,7 +835,7 @@ const ActiveModelRow = React.memo(function ActiveModelRow({
         aria-label={t('providers.models.removeModel', { model: model.modelName ?? model.model })}
         className="flex-shrink-0 rounded p-1 text-[var(--ink-subtle)] opacity-0 transition-all hover:text-[var(--error)] group-hover:opacity-100 group-focus-within:opacity-100"
       >
-        <Trash2 className="h-3 w-3" />
+        <TrashIcon className="h-3 w-3" />
       </button>
     </div>
   );

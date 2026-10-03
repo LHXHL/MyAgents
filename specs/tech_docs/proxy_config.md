@@ -77,6 +77,14 @@ Provider 选中时从 overlay 构造 env，未选中时从 immutable inherited s
 
 Node generic HTTP 必须走 `fetchWithGeneralProxy()`；需要 cancellation/deadline 时走 `cancellableFetch()`。这些 helper 使用 package-pinned dispatcher，并在 baseline 改变后退休旧连接池。普通 `fetch` 不保证消费 `HTTP_PROXY`。
 
+Integrated DSH canonical Web 是另一条显式路径：`WebFetch` 使用 general 代理决策，Provider utility/WebSearch 使用 Provider scope 决策。直连时 Host 校验并 pin 全部 public DNS answer，首个地址连接失败后继续尝试其余地址；用户显式选择代理时仍执行 URL/hostname/literal-IP policy，但远端 DNS 交给该代理。这与 Claude Code/普通 CLI 的显式代理语义一致，也允许在本地 DNS 被代理软件接管或不可直达时工作。
+
+模型可见的原生 `web_fetch` 由 DSH Runtime 内的 `ProductSafeHttpClient` 执行；其代理入口是 DSH composition 安装的 general network transport，来源为 Host 创建子进程时冻结的 general 代理快照。Host 的 canonical `WebFetch` 选路不覆盖该原生工具。两条路径均保留 URL 与公网字面量 IP 检查；仅明确选中代理的域名请求由代理解析 DNS。
+
+Integrated DSH 的已接纳协议通过既有 `host/credential/resolve` 返回有界 `providerNetwork`，由 Runtime 的模型请求 scope 消费；代理认证 URL 仅在请求生命周期中存在，不写入 profile、Session 或日志。该策略与 `getProviderProxyEnvironment` 共用 immutable inherited baseline / app overlay 决策；不是从 general process.env 反推。后续请求可使用新设置，并发请求不互相切换全局 dispatcher。精确协议版本和交付身份以本次构建的 effective lock 与生成契约为准，构建选择见 [Integrated DSH 构建来源](build_resource_preparation.md#integrated-dsh-构建来源)。
+
+Integrated DSH Shell 也属于 general owner。创建 Runtime 进程时，Host 将 `getGeneralProxyEnvironment()` 的显式快照交给 `buildDshChildEnvironment()`，只准入标准大小写 HTTP/HTTPS/ALL_PROXY 与 NO_PROXY 键，并把键名纳入 Runtime 的 sealed environment。主 Agent 和子 Agent Shell 使用同一份快照；SOCKS5 使用既有 HTTP bridge，关闭或未选中 general scope 时恢复 inherited baseline。不能直接放开 `process.env` 继承，也不能使用当前模型的 Provider proxy env 代替 Shell policy。命令自身仍须支持标准代理环境变量（例如 curl）；这不会为任意程序安装透明网络代理。
+
 Plugin Bridge 是受控例外：社区插件无法被强制改用 helper，所以 Bridge 在加载插件前安装同一 general dispatcher 为 process-global fetch/dispatcher，并在 Channel lifecycle replacement 时重建。
 
 ## Provider 路径
@@ -105,7 +113,7 @@ CLIProxy 的 Google 请求由 Rust `apply_to_subprocess_for_provider(..., "antig
 
 ## External Runtime envPolicy
 
-Claude Code / Codex / Gemini 等 external Runtime 还可在 Agent 配置选择：
+Claude Code / Codex 等 external Runtime 还可在 Agent 配置选择：
 
 | 值 | 语义 |
 | --- | --- |
@@ -116,10 +124,13 @@ Claude Code / Codex / Gemini 等 external Runtime 还可在 Agent 配置选择�
 
 已打开的 PTY 拥有自己的出生 env，配置变化不会重写它；新 Terminal 使用新策略。
 
+Integrated DSH 不使用 external CLI 的 `envPolicy`；Agent 从外部 Runtime 切换到 DSH 后，即使磁盘仍保存 `terminal`，Shell 也按 general scope 创建和更新。
+
 ## 配置变化生命周期
 
 - Settings 在 Rust 配置写锁内更新 `config.json`；
-- 活跃 Sidecar 接收 hot proxy state propagation，后续 generic 请求和新 Provider subprocess 使用新 policy；
+- 活跃 Sidecar 接收 hot proxy state propagation，`/api/proxy/set` 在 `sidecar-composition.ts` 中属于 common，Global 和 Session 都必须能接收；后续 generic 请求和新 Provider subprocess 使用新 policy；
+- DSH Shell 的代理快照属于进程 generation；general baseline 变化复用 external Session lifecycle 的 config invalidation，在 idle 边界释放旧进程，下次启动读取新快照。当前轮不被中断，轮内 A → B → A 撤销不必要的重启；
 - Plugin Bridge 与 IM Channel 通过各自 keyed lifecycle lock 在安全空闲边界 replacement，不能并发启动第二实例；
 - 连续设置变化由 generation / reconciliation 收敛到最新磁盘配置；
 - 代理变化不能打断已建立的用户 Terminal 或把正在执行的 Provider turn 临时改成另一套 env。

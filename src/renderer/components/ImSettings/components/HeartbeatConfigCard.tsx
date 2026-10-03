@@ -2,7 +2,7 @@ import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { lazy, Suspense, useCallback, useMemo, useState } from 'react';
 import type { ChangeEvent, KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDownIcon } from '@/components/icons';
 import type { HeartbeatConfig, ActiveHoursConfig } from '../../../../shared/types/im';
 import { DEFAULT_HEARTBEAT_ACTIVE_HOURS, DEFAULT_HEARTBEAT_CONFIG } from '../../../../shared/types/im';
 import { retainFocusOnMouseDown } from '@/utils/focusRetention';
@@ -246,7 +246,7 @@ export default function HeartbeatConfigCard({
                         onClick={() => setMoreSettingsOpen(open => !open)}
                         className="flex items-center gap-2 text-sm font-medium text-[var(--ink)] transition-colors hover:text-[var(--accent)]"
                     >
-                        <ChevronDown className={`h-4 w-4 transition-transform ${moreSettingsOpen ? '' : '-rotate-90'}`} />
+                        <ChevronDownIcon className={`h-4 w-4 transition-transform ${moreSettingsOpen ? '' : '-rotate-90'}`} />
                         {t('agentSettings.common.moreSettings')}
                     </button>
 
@@ -355,7 +355,7 @@ export default function HeartbeatConfigCard({
                                                 className="flex items-center gap-1 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-2 py-1.5 text-xs text-[var(--ink)] hover:border-[var(--line-strong)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]"
                                             >
                                                 <span>{selectedTz?.label || config.activeHours.timezone}</span>
-                                                <ChevronDown className="h-3 w-3 text-[var(--ink-subtle)]" />
+                                                <ChevronDownIcon className="h-3 w-3 text-[var(--ink-subtle)]" />
                                             </button>
                                             {tzOpen && (
                                                 <>

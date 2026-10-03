@@ -3,7 +3,8 @@ import { isRetiredBundledMcpServer } from '../../../../shared/mcpConfig';
 import { resolveMcpTemplateValue } from '../../../session-core/mcp-template-resolution';
 import { NpxMcpResolutionError, buildMcpStdioLaunchConfig } from '../../../utils/mcp-command';
 
-const CODEX_MCP_NO_PROXY_VAL = 'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1';
+const CODEX_MCP_NO_PROXY_VAL =
+  'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1';
 /** Native attempt bound, deliberately independent from MyAgents' 10s dispatch grace. */
 export const MANAGED_CODEX_MCP_STARTUP_TIMEOUT_SEC = 60;
 const CODEX_MCP_PROXY_ENV_KEYS = [
@@ -18,9 +19,12 @@ const CODEX_MCP_PROXY_ENV_KEYS = [
 ] as const;
 const CODEX_MCP_TEMPLATE_RE = /\{\{[A-Za-z_][A-Za-z0-9_]*\}\}/;
 const CODEX_MCP_ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const CODEX_MCP_SECRET_VALUE_RE = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})\b/i;
-const CODEX_MCP_INLINE_SECRET_RE = /(?:api[-_]?key|token|secret|password|authorization|access[-_]?token|refresh[-_]?token)\s*[:=]\s*[^,\s]+/i;
-const CODEX_MCP_SENSITIVE_FLAG_RE = /^-{1,2}(?:api[-_]?key|key|token|access[-_]?token|refresh[-_]?token|secret|password|passwd|pwd|authorization|auth-token)(?:$|[=:])/i;
+const CODEX_MCP_SECRET_VALUE_RE =
+  /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})\b/i;
+const CODEX_MCP_INLINE_SECRET_RE =
+  /(?:api[-_]?key|token|secret|password|authorization|access[-_]?token|refresh[-_]?token)\s*[:=]\s*[^,\s]+/i;
+const CODEX_MCP_SENSITIVE_FLAG_RE =
+  /^-{1,2}(?:api[-_]?key|key|token|access[-_]?token|refresh[-_]?token|secret|password|passwd|pwd|authorization|auth-token)(?:$|[=:])/i;
 const CODEX_MCP_PARENT_ENV_DENY = new Set([
   'PATH',
   'HOME',
@@ -58,6 +62,11 @@ export interface ManagedCodexMcpLaunchProjection {
   failures: ManagedCodexMcpProjectionFailure[];
 }
 
+export interface ResolvedStdioMcpLaunch {
+  command: string;
+  args: string[];
+}
+
 class ManagedCodexMcpProjectionError extends Error {
   constructor(
     readonly state: ManagedCodexMcpProjectionFailure['state'],
@@ -69,11 +78,19 @@ class ManagedCodexMcpProjectionError extends Error {
 }
 
 function reject(reason: string): never {
-  throw new ManagedCodexMcpProjectionError('failed', 'mcp_projection_rejected', reason);
+  throw new ManagedCodexMcpProjectionError(
+    'failed',
+    'mcp_projection_rejected',
+    reason,
+  );
 }
 
 function unsupported(reason: string): never {
-  throw new ManagedCodexMcpProjectionError('unsupported', 'mcp_transport_unsupported', reason);
+  throw new ManagedCodexMcpProjectionError(
+    'unsupported',
+    'mcp_transport_unsupported',
+    reason,
+  );
 }
 
 function tomlString(value: string): string {
@@ -89,10 +106,16 @@ function tomlKey(value: string): string {
 }
 
 function tomlInlineStringMap(values: Record<string, string>): string {
-  return `{${Object.entries(values).map(([key, value]) => `${tomlKey(key)}=${tomlString(value)}`).join(',')}}`;
+  return `{${Object.entries(values)
+    .map(([key, value]) => `${tomlKey(key)}=${tomlString(value)}`)
+    .join(',')}}`;
 }
 
-function pushCodexConfigArg(target: string[], key: string, valueToml: string): void {
+function pushCodexConfigArg(
+  target: string[],
+  key: string,
+  valueToml: string,
+): void {
   target.push('-c', `${key}=${valueToml}`);
 }
 
@@ -130,9 +153,11 @@ function hasCodexMcpTemplate(value: string): boolean {
 
 function unsafeCodexMcpStdioValueReason(value: string): string | null {
   if (hasCodexMcpTemplate(value)) return 'contains MyAgents env placeholder';
-  if (CODEX_MCP_SECRET_VALUE_RE.test(value)) return 'contains inline secret-looking value';
+  if (CODEX_MCP_SECRET_VALUE_RE.test(value))
+    return 'contains inline secret-looking value';
   if (/bearer\s+\S+/i.test(value)) return 'contains inline bearer token';
-  if (CODEX_MCP_INLINE_SECRET_RE.test(value)) return 'contains inline credential assignment';
+  if (CODEX_MCP_INLINE_SECRET_RE.test(value))
+    return 'contains inline credential assignment';
   return null;
 }
 
@@ -150,6 +175,22 @@ function unsafeCodexMcpStdioArgsReason(args: readonly string[]): string | null {
     }
   }
   return null;
+}
+
+export function resolveStdioMcpLaunch(
+  server: McpServerDefinition,
+): ResolvedStdioMcpLaunch {
+  if (server.type !== 'stdio') reject('server is not stdio');
+  if (server.command === '__builtin__') reject('in-process MCP has no subprocess launch');
+  if (server.command === '__browser_host__') reject('Browser Host marker has no subprocess launch');
+  if (isRetiredBundledMcpServer(server)) reject('retired bundled MCP server');
+  if (!server.command) reject('missing stdio command');
+  const { command, args } = buildMcpStdioLaunchConfig(server);
+  const commandReason = unsafeCodexMcpStdioValueReason(command);
+  if (commandReason) reject(`stdio command ${commandReason}`);
+  const argsReason = unsafeCodexMcpStdioArgsReason(args);
+  if (argsReason) reject(`stdio args unsafe for argv (${argsReason})`);
+  return { command, args };
 }
 
 function unsafeCodexMcpUrlReason(rawUrl: string): string | null {
@@ -175,7 +216,11 @@ function canExposeMcpEnvKeyToCodexParent(key: string): boolean {
   const upper = key.toUpperCase();
   if (upper.startsWith('CODEX_') || upper.startsWith('OPENAI_')) return false;
   if (CODEX_MCP_PARENT_ENV_DENY.has(upper)) return false;
-  if ((CODEX_MCP_PROXY_ENV_KEYS as readonly string[]).some(proxyKey => proxyKey.toUpperCase() === upper)) {
+  if (
+    (CODEX_MCP_PROXY_ENV_KEYS as readonly string[]).some(
+      (proxyKey) => proxyKey.toUpperCase() === upper,
+    )
+  ) {
     return false;
   }
   return true;
@@ -191,7 +236,13 @@ export function projectManagedCodexMcpLaunchConfig(
   parentEnv: Readonly<Record<string, string | undefined>>,
 ): ManagedCodexMcpLaunchProjection {
   if (!servers || servers.length === 0) {
-    return { args: [], serverNames: [], acceptedServerIds: [], envPatch: {}, failures: [] };
+    return {
+      args: [],
+      serverNames: [],
+      acceptedServerIds: [],
+      envPatch: {},
+      failures: [],
+    };
   }
 
   const args: string[] = [];
@@ -200,11 +251,14 @@ export function projectManagedCodexMcpLaunchConfig(
   const envPatch: Record<string, string | undefined> = {};
   const failures: ManagedCodexMcpProjectionFailure[] = [];
   const usedNames = new Set<string>();
-  const assignedParentEnv = new Map<string, {
-    value: string;
-    serverId: string;
-    source: 'stdio' | 'http-header';
-  }>();
+  const assignedParentEnv = new Map<
+    string,
+    {
+      value: string;
+      serverId: string;
+      source: 'stdio' | 'http-header';
+    }
+  >();
 
   for (const server of servers) {
     if (isRetiredBundledMcpServer(server)) continue;
@@ -219,12 +273,11 @@ export function projectManagedCodexMcpLaunchConfig(
       }
 
       if (server.type === 'stdio') {
-        const command = server.command;
-        if (command === '__builtin__') {
+        if (server.command === '__builtin__') {
           acceptedServerIds.push(server.id);
           continue;
         }
-        if (!command) reject('missing stdio command');
+        if (!server.command) reject('missing stdio command');
         const launch = buildMcpStdioLaunchConfig(server, { parentEnv });
         const { command: projectedCommand, args: stdioArgs } = launch;
         const commandReason = unsafeCodexMcpStdioValueReason(projectedCommand);
@@ -235,16 +288,25 @@ export function projectManagedCodexMcpLaunchConfig(
         const serverEnv = Object.entries(server.env ?? {});
         const unsafeEnvKeys = serverEnv
           .map(([key]) => key)
-          .filter(key => !canExposeMcpEnvKeyToCodexParent(key));
+          .filter((key) => !canExposeMcpEnvKeyToCodexParent(key));
         if (unsafeEnvKeys.length > 0) {
-          reject(`env keys cannot be exposed to Codex parent process (${unsafeEnvKeys.join(', ')})`);
+          reject(
+            `env keys cannot be exposed to Codex parent process (${unsafeEnvKeys.join(', ')})`,
+          );
         }
         for (const [key, value] of serverEnv) {
           const assigned = nextAssignedParentEnv.get(key);
-          if (assigned && (assigned.source !== 'stdio' || assigned.value !== value)) {
+          if (
+            assigned &&
+            (assigned.source !== 'stdio' || assigned.value !== value)
+          ) {
             reject(`env key ${key} conflicts with server ${assigned.serverId}`);
           }
-          nextAssignedParentEnv.set(key, { value, serverId: server.id, source: 'stdio' });
+          nextAssignedParentEnv.set(key, {
+            value,
+            serverId: server.id,
+            source: 'stdio',
+          });
           serverEnvPatch[key] = value;
         }
 
@@ -266,7 +328,11 @@ export function projectManagedCodexMcpLaunchConfig(
           if (!key || value === undefined) continue;
           envVars.add(key);
         }
-        pushCodexConfigArg(serverArgs, `mcp_servers.${serverName}.env_vars`, tomlArray([...envVars].sort()));
+        pushCodexConfigArg(
+          serverArgs,
+          `mcp_servers.${serverName}.env_vars`,
+          tomlArray([...envVars].sort()),
+        );
         pushCodexConfigArg(
           serverArgs,
           `mcp_servers.${serverName}.startup_timeout_sec`,
@@ -276,12 +342,16 @@ export function projectManagedCodexMcpLaunchConfig(
         if (!server.url) reject('missing HTTP MCP URL');
         const url = server.url;
         const urlReason = unsafeCodexMcpUrlReason(url);
-        if (urlReason) reject(`HTTP MCP URL unsafe for Codex argv (${urlReason})`);
+        if (urlReason)
+          reject(`HTTP MCP URL unsafe for Codex argv (${urlReason})`);
 
         const envHeaderMap: Record<string, string> = {};
         for (const [header, value] of Object.entries(server.headers ?? {})) {
           if (!header || value === undefined) continue;
-          const resolvedHeaderValue = resolveMcpTemplateValue(value, server.env);
+          const resolvedHeaderValue = resolveMcpTemplateValue(
+            value,
+            server.env,
+          );
           if (resolvedHeaderValue === null) {
             reject(`HTTP header ${header} references missing env placeholder`);
           }
@@ -299,7 +369,11 @@ export function projectManagedCodexMcpLaunchConfig(
           envHeaderMap[header] = envName;
         }
 
-        pushCodexConfigArg(serverArgs, `mcp_servers.${serverName}.url`, tomlString(url));
+        pushCodexConfigArg(
+          serverArgs,
+          `mcp_servers.${serverName}.url`,
+          tomlString(url),
+        );
         if (Object.keys(envHeaderMap).length > 0) {
           pushCodexConfigArg(
             serverArgs,
@@ -313,30 +387,34 @@ export function projectManagedCodexMcpLaunchConfig(
           String(MANAGED_CODEX_MCP_STARTUP_TIMEOUT_SEC),
         );
       } else {
-        unsupported(`Codex app-server does not support MyAgents MCP type ${server.type}`);
+        unsupported(
+          `Codex app-server does not support MyAgents MCP type ${server.type}`,
+        );
       }
 
       usedNames.add(serverName);
       assignedParentEnv.clear();
-      for (const [key, value] of nextAssignedParentEnv) assignedParentEnv.set(key, value);
+      for (const [key, value] of nextAssignedParentEnv)
+        assignedParentEnv.set(key, value);
       args.push(...serverArgs);
       Object.assign(envPatch, serverEnvPatch);
       serverNames.push(serverName);
       acceptedServerIds.push(server.id);
     } catch (error) {
-      const projectionError = error instanceof ManagedCodexMcpProjectionError
-        ? error
-        : error instanceof NpxMcpResolutionError
-          ? new ManagedCodexMcpProjectionError(
-              'failed',
-              'mcp_projection_rejected',
-              error.message,
-            )
-          : new ManagedCodexMcpProjectionError(
-              'failed',
-              'mcp_projection_rejected',
-              'unexpected launch projection failure',
-            );
+      const projectionError =
+        error instanceof ManagedCodexMcpProjectionError
+          ? error
+          : error instanceof NpxMcpResolutionError
+            ? new ManagedCodexMcpProjectionError(
+                'failed',
+                'mcp_projection_rejected',
+                error.message,
+              )
+            : new ManagedCodexMcpProjectionError(
+                'failed',
+                'mcp_projection_rejected',
+                'unexpected launch projection failure',
+              );
       failures.push({
         serverId: server.id,
         state: projectionError.state,

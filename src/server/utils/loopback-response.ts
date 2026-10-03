@@ -56,6 +56,13 @@ export async function readLoopbackJson(
   // 4xx text/plain; we want to surface the actual server text so the
   // reader sees "missing field 'taskId'" instead of "Unexpected token 'F'".
   const trimmed = bodyText.trim().slice(0, TEXT_TRUNCATE);
+  if (resp.status === 400 || resp.status === 422) {
+    return {
+      ok: false,
+      code: 'INPUT_VALIDATION_ERROR',
+      error: trimmed.replace(/^Failed to deserialize the JSON body into the target type: /, 'Invalid input: ') || 'Invalid request input.',
+    };
+  }
   const statusPart = `${resp.status}${resp.statusText ? ' ' + resp.statusText : ''}`;
   return {
     ok: false,

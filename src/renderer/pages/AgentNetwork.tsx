@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Info, Laptop, Monitor, Server } from "lucide-react";
+import { InfoIcon, MonitorIcon, DatabaseIcon } from '@/components/icons';
 import { metadataSchemas } from "@myagents/agent-network-protocol";
 import {
   spaceGetSession,
@@ -49,10 +49,10 @@ function DeviceCard({
 }) {
   const { t } = useTranslation("app");
   const OsIcon = /darwin|macos/i.test(device.platform)
-    ? Laptop
+    ? MonitorIcon
     : /win/i.test(device.platform)
-      ? Monitor
-      : Server;
+      ? MonitorIcon
+      : DatabaseIcon;
   return (
     <article className="relative rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-5 transition-shadow hover:shadow-sm">
       <button
@@ -333,7 +333,7 @@ function AgentNetworkContent({
               onClick={() => setInfoOpen((value) => !value)}
               className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
             >
-              <Info className="h-4 w-4" />
+              <InfoIcon className="h-4 w-4" />
             </button>
             <Popover
               open={infoOpen}

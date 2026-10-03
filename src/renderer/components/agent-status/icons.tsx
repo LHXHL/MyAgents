@@ -5,7 +5,7 @@
 //   - in_progress  ■ 实心方块（accent-warm 橙色）
 //   - completed    ☑ 勾选（success 绿）+ 删除线由调用方加在文本上
 
-import { Check } from 'lucide-react';
+import { CheckIcon } from '@/components/icons';
 
 interface IconProps {
   className?: string;
@@ -35,7 +35,7 @@ export function TodoCompletedIcon({ className = '' }: IconProps) {
       aria-hidden
       className={`inline-flex size-3.5 shrink-0 items-center justify-center rounded-[3px] bg-[var(--success)] text-[var(--on-success)] ${className}`}
     >
-      <Check className="size-2.5" strokeWidth={3} />
+      <CheckIcon className="size-2.5" strokeWidth={3} />
     </span>
   );
 }

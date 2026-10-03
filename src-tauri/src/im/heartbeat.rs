@@ -11,7 +11,7 @@ use tauri::{AppHandle, Runtime};
 use tokio::sync::{mpsc, watch, Mutex, RwLock};
 
 use crate::sidecar::ManagedSidecarManager;
-use crate::{ulog_debug, ulog_error, ulog_info, ulog_warn};
+use crate::{ulog_debug, ulog_info, ulog_warn};
 
 use super::adapter::push_text_preferring_stream;
 use super::health::{self, HealthManager};
@@ -79,8 +79,6 @@ struct HeartbeatRequest {
     source_id: String,
     ack_max_chars: u32,
     is_high_priority: bool,
-    runtime: String,
-    runtime_config: Option<serde_json::Value>,
     host_interaction: HostInteractionCapability,
     /// SessionRouter-owned authority for materializing a Rust-minted peer
     /// session that has not reached SessionStore yet.
@@ -104,11 +102,6 @@ pub struct HeartbeatRunner {
     http_client: reqwest::Client,
     executing: Arc<Mutex<bool>>,
     // Hot-reloadable config refs — needed to sync AI config when waking up an idle-collected sidecar
-    current_model: Arc<RwLock<Option<String>>>,
-    current_provider_env: Arc<RwLock<Option<serde_json::Value>>>,
-    mcp_servers_json: Arc<RwLock<Option<String>>>,
-    runtime: Arc<RwLock<String>>,
-    runtime_config: Arc<RwLock<Option<serde_json::Value>>>,
     host_interaction: HostInteractionCapability,
     /// Pending cron events shared with `ImBotInstance` (v0.2.4). Snapshot in
     /// run_once → ship to sidecar via HeartbeatRequest body → clear delivered
@@ -133,11 +126,6 @@ impl HeartbeatRunner {
     pub(crate) fn new(
         config: HeartbeatConfig,
         bot_label: String,
-        current_model: Arc<RwLock<Option<String>>>,
-        current_provider_env: Arc<RwLock<Option<serde_json::Value>>>,
-        mcp_servers_json: Arc<RwLock<Option<String>>>,
-        runtime: Arc<RwLock<String>>,
-        runtime_config: Arc<RwLock<Option<serde_json::Value>>>,
         host_interaction: HostInteractionCapability,
         pending_cron_events: Arc<Mutex<Vec<PendingCronEvent>>>,
         model_work_gate: Arc<ChannelModelWorkGate>,
@@ -151,11 +139,6 @@ impl HeartbeatRunner {
             last_error_text: Arc::new(Mutex::new(None)),
             http_client: crate::local_http::json_client(Duration::from_secs(330)), // 5.5 min (heartbeat timeout is 5 min)
             executing: Arc::new(Mutex::new(false)),
-            current_model,
-            current_provider_env,
-            mcp_servers_json,
-            runtime,
-            runtime_config,
             host_interaction,
             pending_cron_events,
             model_work_gate,
@@ -467,49 +450,16 @@ impl HeartbeatRunner {
 
         ulog_debug!("[heartbeat] Acquired peer lock for {}", session_key);
 
-        let current_runtime = self.runtime.read().await.clone();
-        let current_runtime_config = self.runtime_config.read().await.clone();
-        let current_runtime_source = current_runtime_config
-            .as_ref()
-            .and_then(|v| v.get("source"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
+        if let Err(error) = super::model_commands::ensure_peer_snapshot(
+            router,
+            health,
+            sidecar_manager,
+            &session_key,
+        )
+        .await
         {
-            let drift_result = match SessionRouter::check_and_reset_on_runtime_identity_drift(
-                router,
-                &session_key,
-                &current_runtime,
-                current_runtime_source.as_deref(),
-                sidecar_manager,
-            )
-            .await
-            {
-                Ok(result) => result,
-                Err(error) => {
-                    ulog_error!(
-                        "[heartbeat] Could not reconcile Session identity for {}: {}",
-                        session_key,
-                        error
-                    );
-                    return false;
-                }
-            };
-            if let Some((old_id, new_id)) = drift_result {
-                ulog_info!(
-                    "[heartbeat] Runtime drift reset peer {} before heartbeat: {} -> {} ({})",
-                    session_key,
-                    &old_id[..8.min(old_id.len())],
-                    &new_id[..8.min(new_id.len())],
-                    current_runtime,
-                );
-                let _ = health::persist_router_active_sessions(
-                    health,
-                    router,
-                    "heartbeat-runtime-drift",
-                )
-                .await;
-            }
+            ulog_warn!("[heartbeat] Session snapshot unavailable: {}", error);
+            return false;
         }
 
         // Ensure sidecar is running — split into 3 phases to avoid holding router lock
@@ -522,13 +472,9 @@ impl HeartbeatRunner {
                 .await
         };
 
-        let (port, is_new_sidecar) = match prep {
+        let (port, _is_new_sidecar) = match prep {
             EnsureSidecarPrep::Healthy(p) => (p, false),
             EnsureSidecarPrep::NeedCreate(info) => {
-                let info = info.with_runtime_identity(
-                    Some(&current_runtime),
-                    current_runtime_source.as_deref(),
-                );
                 // Phase 2: Create sidecar (NO lock held — blocking up to 5 min)
                 match super::router::SessionRouter::create_sidecar_blocking(
                     info.clone(),
@@ -566,34 +512,6 @@ impl HeartbeatRunner {
                 }
             }
         };
-
-        // Sync AI config for newly created sidecar (same as user message flow).
-        // Use brief lock to get http_client, then release — HTTP calls happen outside the lock.
-        if is_new_sidecar {
-            let model = self.current_model.read().await.clone();
-            let penv = self.current_provider_env.read().await.clone();
-            let mcp = self.mcp_servers_json.read().await.clone();
-            let runtime_config = self.runtime_config.read().await.clone();
-            let http_client = {
-                let rg = router.lock().await;
-                rg.http_client().clone()
-            };
-            super::router::SessionRouter::sync_ai_config_with_client(
-                &http_client,
-                port,
-                &current_runtime,
-                runtime_config.as_ref(),
-                model.as_deref(),
-                mcp.as_deref(),
-                penv.as_ref(),
-            )
-            .await;
-            ulog_info!(
-                "[heartbeat] Woke up sidecar for {} on port {}",
-                self.bot_label,
-                port
-            );
-        }
 
         // Touch session activity BEFORE the HTTP call.
         // ensure_sidecar sets last_active when creating a new sidecar, but NOT when
@@ -688,8 +606,6 @@ impl HeartbeatRunner {
             source_id: source_id.clone(),
             ack_max_chars,
             is_high_priority,
-            runtime: current_runtime.clone(),
-            runtime_config: self.runtime_config.read().await.clone(),
             host_interaction: self.host_interaction.clone(),
             metadata_birth_pending,
             pending_cron_events: pending_snapshot.clone(),
@@ -1055,8 +971,6 @@ mod tests {
             source_id: "peer-1".to_string(),
             ack_max_chars: 300,
             is_high_priority: true,
-            runtime: "codex".to_string(),
-            runtime_config: None,
             host_interaction: HostInteractionCapability::none(),
             metadata_birth_pending: true,
             pending_cron_events: Vec::new(),

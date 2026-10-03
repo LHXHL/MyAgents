@@ -213,6 +213,18 @@ describe('external turn lifecycle owner', () => {
     expect(getExternalTurnTerminalGeneration()).toBe(before + 2);
   });
 
+  it('classifies a force-transfer interruption as stopped even with a generic failure status', () => {
+    markExternalTurnStarted(100);
+    expect(markExternalTurnComplete(
+      { kind: 'turn_complete', status: 'failed', error: 'interrupted by Host transfer' },
+      { intentionalStopInProgress: false, forceTransferInProgress: true },
+    )).toEqual({
+      kind: 'failure',
+      cleanup: 'stopped',
+      message: 'interrupted by Host transfer',
+    });
+  });
+
   it('notifies the current queue turn once without retaining an outcome cache', async () => {
     const onTerminal = vi.fn();
     bindExternalTurn('queue-1', { kind: 'goal', id: 'goal-1' }, onTerminal);

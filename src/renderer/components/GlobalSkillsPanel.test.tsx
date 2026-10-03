@@ -171,4 +171,25 @@ describe('GlobalSkillsPanel required skill controls', () => {
       window.removeEventListener('project-capabilities-changed', changed);
     }
   });
+
+  it('shows the exact sync candidates before importing them disabled', async () => {
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path === '/api/skills?scope=user') return { success: true, skills: [] };
+      if (path === '/api/command-items?scope=user') return { success: true, commands: [] };
+      if (path === '/api/skill/sync-check') return { canSync: true, count: 2, folders: ['alpha', 'beta'] };
+      return { success: false };
+    });
+    apiMocks.post.mockResolvedValue({ success: true, synced: 2, failed: 0 });
+    render(<GlobalSkillsPanel />);
+    const newButtons = await screen.findAllByRole('button', { name: /New|新建/ });
+    fireEvent.click(newButtons[0]!);
+    fireEvent.click(await screen.findByRole('button', { name: /从 Claude Code 同步|Sync from Claude Code/ }));
+    expect(screen.getByText('alpha')).toBeInTheDocument();
+    expect(screen.getByText('beta')).toBeInTheDocument();
+    expect(apiMocks.post).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /导入列出的技能|Import listed skills/ }));
+    await waitFor(() => expect(apiMocks.post).toHaveBeenCalledWith('/api/skill/sync-from-claude', {
+      expectedFolders: ['alpha', 'beta'], folders: ['alpha', 'beta'],
+    }));
+  });
 });

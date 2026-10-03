@@ -14,7 +14,7 @@
 // guarding each entry (e.g. "only show 归档 if status === done").
 
 import { useRef, useState, type ReactNode } from 'react';
-import { MoreHorizontal } from 'lucide-react';
+import { MoreIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import { Popover } from './Popover';
@@ -105,7 +105,7 @@ export function DropdownMenu({
         title={triggerTitle}
         className={`flex items-center justify-center text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:opacity-50 ${triggerCls}`}
       >
-        <MoreHorizontal className={iconCls} />
+        <MoreIcon className={iconCls} />
       </button>
       <Popover
         open={open}

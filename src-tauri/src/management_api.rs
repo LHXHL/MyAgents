@@ -236,6 +236,7 @@ pub async fn start_management_api() -> Result<u16, String> {
         )
         .route("/api/task/turn/admitted", post(task_turn_admitted_handler))
         .route("/api/task/comments", get(task_comments_handler))
+        .route("/api/task/runs", get(task_runs_handler))
         .route("/api/task/comment", post(task_comment_handler))
         .route(
             "/api/task/append-session",
@@ -261,6 +262,8 @@ pub async fn start_management_api() -> Result<u16, String> {
         .route("/api/thought/list", get(thought_list_handler))
         .route("/api/thought/create", post(thought_create_handler))
         .route("/api/record/list", get(record_list_handler))
+        .route("/api/record/get", get(record_get_handler))
+        .route("/api/record/delete", post(record_delete_handler))
         .route("/api/record/create", post(record_create_handler))
         .route("/api/space/list", post(space_list_handler))
         .route("/api/space/whoami", post(space_whoami_handler))
@@ -3978,6 +3981,21 @@ struct TaskCommentsQuery {
     limit: Option<usize>,
 }
 
+async fn task_runs_handler(Query(query): Query<RunsQuery>) -> Json<serde_json::Value> {
+    let Some(store) = crate::task::get_task_store() else {
+        return Json(serde_json::json!({ "ok": false, "error": "Task store is not initialized" }));
+    };
+    if let Err(error) = store.get_ordinary(&query.task_id).await {
+        return Json(task_error_response_value(
+            crate::task_application::TaskApplicationErrorCode::MutationFailed,
+            error,
+        ));
+    }
+    // Read authority is TaskStore, including retained deleted Task metadata.
+    let runs = cron_task::read_cron_runs(&query.task_id, query.limit.unwrap_or(20));
+    Json(serde_json::json!({ "ok": true, "runs": runs }))
+}
+
 async fn task_comments_handler(Query(query): Query<TaskCommentsQuery>) -> Json<serde_json::Value> {
     let Some(store) = crate::task::get_task_store() else {
         return Json(serde_json::json!({ "ok": false, "error": "task store not initialized" }));
@@ -3991,7 +4009,10 @@ async fn task_comments_handler(Query(query): Query<TaskCommentsQuery>) -> Json<s
         .await
     {
         Ok(page) => Json(serde_json::json!({ "ok": true, "page": page })),
-        Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
+        Err(error) => Json(task_error_response_value(
+            crate::task_application::TaskApplicationErrorCode::MutationFailed,
+            error,
+        )),
     }
 }
 
@@ -4296,6 +4317,55 @@ async fn record_list_handler(Query(query): Query<RecordListQuery>) -> Json<serde
         })
         .await;
     Json(serde_json::json!({ "ok": true, "records": records }))
+}
+
+#[derive(Deserialize)]
+struct RecordIdInput {
+    id: String,
+}
+
+async fn record_get_handler(Query(input): Query<RecordIdInput>) -> Json<serde_json::Value> {
+    let Some(store) = crate::record::get_record_store() else {
+        return Json(
+            serde_json::json!({ "ok": false, "error": "Record store is not initialized" }),
+        );
+    };
+    match store.get(&input.id).await {
+        Some(record) => Json(serde_json::json!({ "ok": true, "record": record })),
+        None => Json(
+            serde_json::json!({ "ok": false, "code": "not_found", "error": format!("Record not found: {}", input.id) }),
+        ),
+    }
+}
+
+async fn record_delete_handler(Json(input): Json<RecordIdInput>) -> Json<serde_json::Value> {
+    let Some(store) = crate::record::get_record_store() else {
+        return Json(
+            serde_json::json!({ "ok": false, "error": "Record store is not initialized" }),
+        );
+    };
+    let Some(record) = store.get(&input.id).await else {
+        return Json(
+            serde_json::json!({ "ok": false, "code": "not_found", "error": format!("Record not found: {}", input.id) }),
+        );
+    };
+    if let Some(speech) = crate::speech_recognition::global() {
+        if let Err(error) = speech.cancel_record_processing(&input.id).await {
+            return Json(serde_json::json!({ "ok": false, "error": error }));
+        }
+    }
+    match store.delete(&input.id).await {
+        Ok(()) => {
+            crate::record_analytics::emit_record_use(
+                &record,
+                crate::record_analytics::RecordUseOperation::Delete,
+                crate::record_analytics::AnalyticsSource::CliAgent,
+                crate::record_analytics::AnalyticsSurface::Unknown,
+            );
+            Json(serde_json::json!({ "ok": true, "id": input.id }))
+        }
+        Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
+    }
 }
 
 async fn record_create_handler(

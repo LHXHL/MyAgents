@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Check, Copy, MessageSquare } from 'lucide-react';
+import { CheckIcon, CopyIcon, MessageIcon } from '@/components/icons';
 import { copyPlainText } from '@/utils/clipboard';
 
 export default function BindCodePanel({
@@ -35,7 +35,7 @@ export default function BindCodePanel({
     return (
         <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
             <div className="flex items-center gap-2 mb-3">
-                <MessageSquare className="h-4 w-4 text-[var(--ink-muted)]" />
+                <MessageIcon className="h-4 w-4 text-[var(--ink-muted)]" />
                 <h3 className="text-sm font-semibold text-[var(--ink)]">
                     {t('agentSettings.imComponents.bindCodeTitle')}
                 </h3>
@@ -60,7 +60,7 @@ export default function BindCodePanel({
                     className="flex-shrink-0 rounded-lg border border-[var(--line)] p-2.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                     title={t('agentSettings.imComponents.copyCode')}
                 >
-                    {copied ? <Check className="h-4 w-4 text-[var(--success)]" /> : <Copy className="h-4 w-4" />}
+                    {copied ? <CheckIcon className="h-4 w-4 text-[var(--success)]" /> : <CopyIcon className="h-4 w-4" />}
                 </button>
             </div>
 

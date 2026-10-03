@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { Camera, Loader2, Save, X } from "lucide-react";
+import {
+  CameraIcon,
+  LoaderIcon,
+  SaveIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { useTranslation } from "react-i18next";
 
 import { spaceErrorMessage, type SpaceSession } from "@/api/spaceCloud";
@@ -119,7 +124,7 @@ export default function SpaceProfileSettingsDialog({
             className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-wait disabled:opacity-60"
             aria-label={t("space.detail.close")}
           >
-            <X className="h-4 w-4" />
+            <CloseIcon className="h-4 w-4" />
           </button>
         </header>
 
@@ -140,7 +145,7 @@ export default function SpaceProfileSettingsDialog({
                 size={64}
               />
               <span className="absolute inset-0 grid place-items-center rounded-full bg-[var(--ink)]/45 text-[var(--paper)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
-                <Camera className="h-4 w-4" />
+                <CameraIcon className="h-4 w-4" />
               </span>
             </button>
             <div className="min-w-0">
@@ -150,7 +155,7 @@ export default function SpaceProfileSettingsDialog({
                 onClick={openAvatarPicker}
                 className="inline-flex h-9 items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] px-3 text-sm font-semibold text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)] disabled:cursor-wait disabled:opacity-70"
               >
-                <Camera className="h-4 w-4" />
+                <CameraIcon className="h-4 w-4" />
                 {t("space.profile.changeAvatar")}
               </button>
               <p className="mt-2 truncate text-xs text-[var(--ink-muted)]">
@@ -214,9 +219,9 @@ export default function SpaceProfileSettingsDialog({
             className="inline-flex h-9 items-center gap-2 rounded-xl bg-[var(--button-primary-bg)] px-3 text-sm font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-60"
           >
             {saving ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
+              <LoaderIcon className="h-4 w-4 animate-spin" />
             ) : (
-              <Save className="h-4 w-4" />
+              <SaveIcon className="h-4 w-4" />
             )}
             {saving ? t("space.profile.saving") : t("space.profile.save")}
           </button>

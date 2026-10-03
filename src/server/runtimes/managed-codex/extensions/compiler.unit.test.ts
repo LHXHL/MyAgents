@@ -61,6 +61,18 @@ afterEach(() => {
 });
 
 describe('Managed Codex extension compiler', () => {
+  it('preserves complete Skill declarations for DSH admission while retaining Managed Codex policy', () => {
+    const workspace = tempRoot();
+    for (const [name, fields] of [['guidance', 'allowed-tools: Bash(example:*)'], ['forked', 'context: fork\nagent: Explore']]) {
+      write(join(workspace, '.claude', 'skills', name!, 'SKILL.md'), `---\nname: ${name}\ndescription: Fixture\n${fields}\n---\nInstructions.`);
+    }
+    const input = { workspacePath: workspace, scenario: { type: 'desktop' as const, surface: 'chat' as const }, mcpServers: [], userConfigRoot: null };
+    const dsh = compileManagedCodexExtensionSnapshot({ ...input, agentRoleTarget: 'dsh' });
+    expect(dsh.skills.map(skill => skill.name)).toEqual(['forked', 'guidance']);
+    expect(dsh.skills.find(skill => skill.name === 'guidance')?.frontmatter?.['allowed-tools']).toBe('Bash(example:*)');
+    expect(compileManagedCodexExtensionSnapshot(input).skills).toEqual([]);
+  });
+
   it('expands a Unicode filename-derived Command even when its display name contains spaces', () => {
     const workspace = tempRoot();
     const userRoot = tempRoot();
@@ -162,8 +174,10 @@ describe('Managed Codex extension compiler', () => {
     write(join(workspace, '.claude', 'agents', 'limited.md'), [
       '---',
       'name: limited',
-      'description: Unsupported tool-limited role',
-      'tools: Read',
+      'description: Tool-limited role',
+      'tools: Read, Bash',
+      'disallowedTools: Bash',
+      'maxTurns: 12',
       '---',
       'Read only.',
     ].join('\n'));
@@ -213,6 +227,27 @@ describe('Managed Codex extension compiler', () => {
       state: 'unsupported',
       code: 'agent_unsupported_fields',
     }));
+
+    const dshSnapshot = compileManagedCodexExtensionSnapshot({
+      workspacePath: workspace,
+      userConfigRoot: userRoot,
+      enabledPluginIds: [],
+      mcpServers: [],
+      scenario: { type: 'desktop', surface: 'chat' },
+      agentRoleTarget: 'dsh',
+    });
+    expect(dshSnapshot.agents).toContainEqual(expect.objectContaining({
+      name: 'limited',
+      tools: ['Read', 'Bash'],
+      disallowedTools: ['Bash'],
+      maxTurns: 12,
+    }));
+    expect(dshSnapshot.components).toContainEqual(expect.objectContaining({
+      component: 'agents',
+      id: 'workspace:limited',
+      state: 'applied',
+      code: 'agent_compiled',
+    }));
     expect(snapshot.components).toContainEqual(expect.objectContaining({
       component: 'agents',
       id: 'workspace:claude-model',
@@ -240,6 +275,60 @@ describe('Managed Codex extension compiler', () => {
     });
     expect(compileManagedCodexCommand('/missing input', snapshot)).toBeNull();
     expect(compileManagedCodexCommand('/compact', snapshot)).toBeNull();
+  });
+
+  it('loads both project Skill roots with configurable Claude-first precedence', () => {
+    const workspace = tempRoot();
+    write(
+      join(workspace, '.claude', 'skills', 'shared', 'SKILL.md'),
+      '---\nname: claude-shared\ndescription: Claude-compatible Skill\n---\nClaude.',
+    );
+    write(
+      join(workspace, '.agents', 'skills', 'shared', 'SKILL.md'),
+      '---\nname: agents-shared\ndescription: Agents-compatible Skill\n---\nAgents.',
+    );
+    write(
+      join(workspace, '.agents', 'skills', 'portable', 'SKILL.md'),
+      '---\nname: portable\ndescription: Portable Skill\n---\nPortable.',
+    );
+
+    const defaults = compileManagedCodexExtensionSnapshot({
+      workspacePath: workspace,
+      userConfigRoot: null,
+      enabledPluginIds: [],
+      mcpServers: [],
+      scenario: { type: 'desktop', surface: 'chat' },
+    });
+    expect(defaults.skills.map(skill => skill.name)).toEqual(['claude-shared', 'portable']);
+
+    const agentsOnly = compileManagedCodexExtensionSnapshot({
+      workspacePath: workspace,
+      userConfigRoot: null,
+      enabledPluginIds: [],
+      mcpServers: [],
+      scenario: { type: 'desktop', surface: 'chat' },
+      projectSkillDirectories: ['.agents/skills'],
+    });
+    expect(agentsOnly.skills.map(skill => skill.name)).toEqual(['agents-shared', 'portable']);
+  });
+
+  it('does not let an invalid earlier-root folder hide a valid portable Skill', () => {
+    const workspace = tempRoot();
+    mkdirSync(join(workspace, '.claude', 'skills', 'shared'), { recursive: true });
+    write(
+      join(workspace, '.agents', 'skills', 'shared', 'SKILL.md'),
+      '---\nname: agents-shared\ndescription: Agents-compatible Skill\n---\nAgents.',
+    );
+
+    const snapshot = compileManagedCodexExtensionSnapshot({
+      workspacePath: workspace,
+      userConfigRoot: null,
+      enabledPluginIds: [],
+      mcpServers: [],
+      scenario: { type: 'desktop', surface: 'chat' },
+    });
+
+    expect(snapshot.skills.map(skill => skill.name)).toContain('agents-shared');
   });
 
   it('appends arguments when a Command omits $ARGUMENTS and keeps secrets out of revisions', () => {

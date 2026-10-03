@@ -126,7 +126,7 @@ export function buildTurnMeta(msg: PendingInboxMessage): InboxTurnMeta | undefin
 
 /// Function signature for the message injector. Different runtimes provide
 /// different implementations — agent-session for builtin SDK, external-session
-/// for CC CLI / Codex / Gemini. The wrapper passes inboxMeta along for turn-end
+/// for CC CLI / Codex. The wrapper passes inboxMeta along for turn-end
 /// reply binding.
 export type InboxInjector = (
   text: string,

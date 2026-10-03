@@ -2,21 +2,22 @@ import { agentMentionToken, activeAgentSnapshots, type AgentMentionSnapshot, typ
 import { isRuntimeBackedProvider } from '../../../shared/providerExecution';
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
-  AlertCircle,
-  AtSign,
-  ChevronRight,
-  ChevronUp,
-  Gauge,
-  Loader,
-  Paperclip,
-  Plus,
-  Send,
-  Settings2,
-  Square,
-  Timer,
-  Wrench,
-  X,
-} from 'lucide-react';
+  AlertIcon,
+  AtIcon,
+  SlashCommandIcon,
+  ChevronRightIcon,
+  ChevronUpIcon,
+  GaugeIcon,
+  LoaderIcon,
+  AttachIcon,
+  PlusIcon,
+  SendIcon,
+  SlidersIcon,
+  StopIcon,
+  TimerIcon,
+  WrenchIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, forwardRef, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -55,7 +56,6 @@ import { retainFocusOnMouseDown } from '@/utils/focusRetention';
 import { detectExcessiveRepetition } from '@/utils/excessiveRepetition';
 import { isProviderAvailable } from '@/config/configService';
 import { modelSupportsModality } from '@/config/services/providerService';
-import RuntimeSelector from '@/components/RuntimeSelector';
 import { Popover } from '@/components/ui/Popover';
 import type {
   ImageAttachment,
@@ -202,8 +202,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   // listeners (Shift+Tab permission-mode cycle below) so background tabs don't also fire.
   active = true,
   runtime = 'builtin',
-  runtimeDetections,
-  onRuntimeChange,
+  usesExternalRuntimeControls = runtime !== 'builtin' && runtime !== 'dsh',
   runtimeModels,
   managedReasoningModel,
   runtimePermissionModes,
@@ -222,23 +221,25 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   // derived constant so a later tweak (e.g. bump to 4) propagates everywhere
   // without the three-site scan the prior duplicated ternary required.
   const effectiveMinLines = isLauncherMode ? LAUNCHER_MIN_LINES : 2;
-  const isExternalRuntime = runtime !== 'builtin';
+  const isExternalRuntime = usesExternalRuntimeControls;
   const overlayRootRef = useRef<HTMLDivElement>(null);
   const attachmentSessionId = sessionId;
 
   // Compute display modes and model name based on runtime
-  const displayPermissionModes = isExternalRuntime && runtimePermissionModes
+  const displayPermissionModes = runtimePermissionModes
     ? runtimePermissionModes.map(m => ({
       value: m.value as PermissionMode,
       label: t(`input.permissionModes.${m.value}.label`, { defaultValue: m.label }),
       icon: m.icon,
       description: t(`input.permissionModes.${m.value}.description`, { defaultValue: m.description }),
       sdkValue: m.value,
+      hidden: m.hidden,
     }))
     : PERMISSION_MODES.map(m => ({
       ...m,
       label: t(`input.permissionModes.${m.value}.label`, { defaultValue: m.label }),
       description: t(`input.permissionModes.${m.value === 'auto' && isRuntimeBackedProvider(provider) ? 'full-auto' : m.value}.description`, { defaultValue: m.description }),
+      hidden: false,
     }));
   const currentModeDisplay = displayPermissionModes.find(m => m.value === permissionMode)
     // Historical Codex read-only sessions remain read-only, but are no longer
@@ -440,7 +441,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   const [effortFlipLeft, setEffortFlipLeft] = useState(false);
   const effortRowWrapRef = useRef<HTMLDivElement | null>(null);
   const effortCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // null = this surface has no reasoning-effort knob (Gemini / unknown) → row hidden.
+  // null = this surface has no reasoning-effort knob (unknown) → row hidden.
   const managedEffort = isRuntimeBackedProvider(provider);
   const effortModel = managedReasoningModel !== undefined
     ? managedReasoningModel
@@ -452,10 +453,11 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     ? managedEffort
       ? (effortModel?.supportedReasoningEfforts?.map(option => option.reasoningEffort) ?? [])
       : reasoningEffortChoices(
-        isExternalRuntime ? (runtime ?? 'builtin') : 'builtin',
+        runtime === 'dsh' ? 'dsh' : isExternalRuntime ? (runtime ?? 'builtin') : 'builtin',
         provider?.apiProtocol,
         provider?.id,
         selectedModel ?? provider?.primaryModel,
+        provider?.config.baseUrl,
       )
     : null;
   const openEffortSubmenu = useCallback(() => {
@@ -946,7 +948,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   const cyclePermissionMode = useCallback(() => {
     if (showConfigLockedReason()) return;
     const modeOrder: string[] = runtimePermissionModes?.length
-      ? runtimePermissionModes.map(m => m.value)
+      ? runtimePermissionModes.filter(m => !m.hidden).map(m => m.value)
       : ['auto', 'plan', 'fullAgency'];
     const currentIndex = modeOrder.indexOf(permissionMode);
     // If current mode not in list (e.g., mode from a different runtime), start from first
@@ -954,12 +956,12 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     const nextMode = modeOrder[nextIndex] as PermissionMode;
 
     // Show warning toast for dangerous modes (runtime-agnostic string check)
-    const dangerousModes = new Set(['fullAgency', 'bypassPermissions', 'no-restrictions']);
+    const dangerousModes = new Set(['fullAgency', 'bypassPermissions', 'no-restrictions', 'full-autonomous']);
     if (dangerousModes.has(nextMode)) {
-      toastRef.current.warning(t('input.autonomyWarning'), 5000);
+      toastRef.current.warning(t(runtime === 'dsh' ? 'input.dshAutonomyWarning' : 'input.autonomyWarning'), 5000);
     }
     onPermissionModeChange?.(nextMode);
-  }, [permissionMode, onPermissionModeChange, runtimePermissionModes, showConfigLockedReason, t]);
+  }, [permissionMode, onPermissionModeChange, runtime, runtimePermissionModes, showConfigLockedReason, t]);
 
   // Global Shift+Tab handler with capture phase to prevent default Tab behavior.
   // Gated by `active` so pressing Shift+Tab doesn't cycle permission-mode on every
@@ -1398,7 +1400,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                     className="absolute -top-1.5 -right-1.5 h-5 w-5 rounded-full bg-[var(--error)] text-[var(--on-error)] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                     title={t('input.deleteImage')}
                   >
-                    <X className="h-3 w-3" />
+                    <CloseIcon className="h-3 w-3" />
                   </button>
                 </div>
               ))}
@@ -1511,7 +1513,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 className="rounded-lg p-2 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                 title={t('input.addContext')}
               >
-                <Plus className="h-4 w-4" />
+                <PlusIcon className="h-4 w-4" />
               </button>
               <Popover
                 open={showPlusMenu}
@@ -1549,7 +1551,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   }}
                   className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                 >
-                  <AtSign className="h-4 w-4" />
+                  <AtIcon className="h-4 w-4" />
                   {t('input.referenceFile')}
                 </button>
                 <button
@@ -1575,7 +1577,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   }}
                   className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                 >
-                  <span className="inline-flex h-4 w-4 items-center justify-center font-medium text-[var(--ink-muted)]">/</span>
+                  <SlashCommandIcon className="h-4 w-4" />
                   {t('input.useSkill')}
                 </button>
                 <button
@@ -1586,7 +1588,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   }}
                   className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                 >
-                  <Paperclip className="h-4 w-4" />
+                  <AttachIcon className="h-4 w-4" />
                   {t('input.uploadFile')}
                 </button>
                 {onCronButtonClick && (
@@ -1608,7 +1610,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                     }`}
                     title={configControlLockTitle ?? (cronModeEnabled ? t('input.cronEnabled') : t('input.cron'))}
                   >
-                    <Timer className="h-4 w-4" />
+                    <TimerIcon className="h-4 w-4" />
                     {t('input.cron')}
                   </button>
                 )}
@@ -1622,20 +1624,6 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 className="hidden"
                 onChange={handleFileChange}
               />
-
-              {/* Runtime Selector (v0.1.59) */}
-              {runtimeDetections && onRuntimeChange && !isLauncherMode && (
-                <RuntimeSelector
-                  value={runtime}
-                  detections={runtimeDetections}
-                  onChange={onRuntimeChange}
-                  variant="toolbar"
-                  onOpenSettings={onOpenAgentSettings}
-                  disabled={configControlsLocked}
-                  disabledReason={configControlLockTitle}
-                  onDisabledClick={showConfigLockedReason}
-                />
-              )}
 
               {/* Mode Dropdown */}
               <button
@@ -1661,7 +1649,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   className="h-3.5 w-3.5 shrink-0"
                 />
                 <span className="toolbar-label">{currentModeDisplay?.label}</span>
-                <ChevronUp className="h-3 w-3" />
+                <ChevronUpIcon className="h-3 w-3" />
               </button>
               <Popover
                 open={modeMenuOpen}
@@ -1671,7 +1659,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 className="composer-toolbar-menu-enter w-72 py-1"
               >
                 <PermissionModeMenuContent
-                  items={displayPermissionModes}
+                  items={displayPermissionModes.filter(m => !m.hidden)}
                   selectedValue={permissionMode}
                   header={t('input.permissionModeHeader')}
                   headerAction={onOpenAgentSettings ? {
@@ -1682,8 +1670,8 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                     },
                   } : undefined}
                   onSelect={(value) => {
-                    if (value === 'fullAgency' || value === 'bypassPermissions') {
-                      toastRef.current.warning(t('input.autonomyWarning'), 5000);
+                    if (value === 'fullAgency' || value === 'bypassPermissions' || value === 'full-autonomous') {
+                      toastRef.current.warning(t(runtime === 'dsh' ? 'input.dshAutonomyWarning' : 'input.autonomyWarning'), 5000);
                     }
                     onPermissionModeChange?.(value as PermissionMode);
                     setShowModeMenu(false);
@@ -1710,7 +1698,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 }`}
                 title={configControlLockTitle ?? t('input.toolsTitle')}
               >
-                <Wrench className="h-3.5 w-3.5" />
+                <WrenchIcon className="h-3.5 w-3.5" />
                 <span className="toolbar-label">{t('input.toolsLabel')}</span>
                 {enabledToolEntryCount > 0 && (
                   <span className="text-xs text-[var(--ink-muted)]">
@@ -1764,7 +1752,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                               }}
                               className="ml-2 shrink-0 rounded p-0.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                             >
-                              <Settings2 className="h-3.5 w-3.5" />
+                              <SlidersIcon className="h-3.5 w-3.5" />
                             </button>
                             <button
                               type="button"
@@ -1839,7 +1827,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                                   }}
                                   className="ml-2 shrink-0 rounded p-0.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                                 >
-                                  <Settings2 className="h-3.5 w-3.5" />
+                                  <SlidersIcon className="h-3.5 w-3.5" />
                                 </button>
                               )}
                               <button
@@ -1934,7 +1922,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                               }}
                               className="ml-2 shrink-0 rounded p-0.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                             >
-                              <Settings2 className="h-3.5 w-3.5" />
+                              <SlidersIcon className="h-3.5 w-3.5" />
                             </button>
                             <button
                               type="button"
@@ -2005,7 +1993,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 title={configControlLockTitle ?? t('input.switchModel')}
               >
                 <span className="max-w-[140px] truncate">{currentModelName}</span>
-                <ChevronUp className="h-3 w-3 shrink-0" />
+                <ChevronUpIcon className="h-3 w-3 shrink-0" />
               </button>
               {/* #324 — unstyled + hand-rolled chrome (= Popover DEFAULT_CHROME minus
                   `overflow-hidden`): the 推理强度 flyout is positioned OUTSIDE the
@@ -2029,7 +2017,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   <>
                     <div className="px-3 pb-0.5 pt-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]/60">
                       {t('input.runtimeModelHeader', {
-                        runtime: runtime === 'claude-code' ? 'CLAUDE CODE' : runtime === 'gemini' ? 'GEMINI CLI' : runtime?.toUpperCase(),
+                        runtime: runtime === 'claude-code' ? 'CLAUDE CODE' : runtime?.toUpperCase(),
                       })}
                     </div>
                     {runtimeModels.map(model => {
@@ -2084,7 +2072,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                         {p.name}
                         {isProviderWarning(p, apiKeys, providerVerifyStatus) && (
                           <Tip label={t('input.providerWarning')} position="bottom">
-                            <AlertCircle className="h-3 w-3 shrink-0 text-[var(--warning)]" />
+                            <AlertIcon className="h-3 w-3 shrink-0 text-[var(--warning)]" />
                           </Tip>
                         )}
                       </div>
@@ -2132,7 +2120,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 />
 
                 {/* #324 — fixed bottom row: 推理强度. Hidden when the surface has
-                    no effort knob (Gemini / unknown runtime). Hover or click
+                    no effort knob (unknown runtime). Hover or click
                     opens the flyout; selection closes the whole menu. */}
                 {effortChoices && (
                   <div
@@ -2155,7 +2143,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                         showEffortSubmenu ? 'bg-[var(--hover-bg)]' : 'hover:bg-[var(--hover-bg)]'
                       }`}
                     >
-                      <Gauge className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />
+                      <GaugeIcon className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />
                       <span className="flex-1">{t('input.reasoningEffort')}</span>
                       <span className={`text-xs ${
                         reasoningEffort !== REASONING_EFFORT_DEFAULT
@@ -2164,7 +2152,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                       }`}>
                         {reasoningEffort === REASONING_EFFORT_DEFAULT ? defaultEffortLabel : reasoningEffort}
                       </span>
-                      <ChevronRight className="h-3 w-3 shrink-0 text-[var(--ink-muted)]" />
+                      <ChevronRightIcon className="h-3 w-3 shrink-0 text-[var(--ink-muted)]" />
                     </button>
 
                     {showEffortSubmenu && (
@@ -2226,9 +2214,9 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                       }}
                       className="flex w-full items-center gap-1.5 rounded-md px-3 py-1.5 text-left text-sm text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)]"
                     >
-                      <Settings2 className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />
+                      <SlidersIcon className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />
                       <span className="flex-1">{t('input.customModelService')}</span>
-                      <ChevronRight className="h-3 w-3 shrink-0 text-[var(--ink-muted)]" />
+                      <ChevronRightIcon className="h-3 w-3 shrink-0 text-[var(--ink-muted)]" />
                     </button>
                   </div>
                 )}
@@ -2253,7 +2241,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   className="rounded-lg bg-[var(--ink-muted)]/15 p-2 text-[var(--ink-muted)]/60"
                   title={t('input.systemBusy')}
                 >
-                  <Send className="h-4 w-4" />
+                  <SendIcon className="h-4 w-4" />
                 </button>
               ) : isLoading && sessionState === 'stopping' ? (
                 // Stop in progress - waiting for confirmation
@@ -2263,7 +2251,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   className="rounded-lg bg-[var(--ink-muted)]/15 p-2 text-[var(--ink-muted)]"
                   title={t('input.stopping')}
                 >
-                  <Loader className="h-4 w-4 animate-spin" />
+                  <LoaderIcon className="h-4 w-4 animate-spin" />
                 </button>
               ) : isLoading || systemStatus?.startsWith('api_retry:') ? (
                 // AI responding OR api_retry backoff - both can be stopped.
@@ -2278,7 +2266,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   className="rounded-lg bg-[var(--error)] p-2 text-[var(--on-error)] transition-colors hover:brightness-110"
                   title={systemStatus?.startsWith('api_retry:') ? t('input.stopRetry') : t('input.stop')}
                 >
-                  <Square className="h-4 w-4" />
+                  <StopIcon className="h-4 w-4" />
                 </button>
               ) : (
                 <button
@@ -2290,7 +2278,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                     ? (providerUnavailableMessage ?? t('input.providerUnavailableDefault'))
                     : `${t('input.send')} (${sendKeyHint(sendShortcut, isMac).shortcut})`}
                 >
-                  <Send className="h-4 w-4" />
+                  <SendIcon className="h-4 w-4" />
                 </button>
               )}
             </div>

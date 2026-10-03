@@ -1,3 +1,4 @@
+import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 import type { AsyncQuestionReply } from '../../shared/asyncUserQuestions';
 /**
  * TabContext - React Context for per-Tab state isolation
@@ -97,6 +98,8 @@ export interface TabState {
     sessionState: SessionState;
     sessionRuntime: string | null;  // Runtime that created this session (null = builtin)
     sessionRuntimeSource: RuntimeSource | null;
+    /** Session identity that supplied the live Runtime snapshot. */
+    sessionRuntimeSessionId: string | null;
     /**
      * Full session metadata — includes v0.1.69 snapshot fields (model / permissionMode /
      * mcpEnabledServers / providerId / configSnapshotAt). Derivation source for Chat.tsx
@@ -120,12 +123,13 @@ export interface TabState {
     /**
      * Issue #194 — external-runtime self-report (auth / features / MCP / apps /
      * effective env). Populated when an external runtime emits the
-     * `runtime_diagnostics` UnifiedEvent (Codex today; Claude Code / Gemini later).
+     * `runtime_diagnostics` UnifiedEvent (Codex today; Claude Code later).
      * Null for builtin runtime, and null until the first diagnostic snapshot
      * arrives after session start.
      */
     runtimeDiagnostics: RuntimeDiagnostics | null;
     agentError: string | null;
+    agentErrorUserMessageId: string | null;
     systemStatus: string | null;  // SDK system status (e.g., 'compacting')
     systemNotice: SystemNotice | null;
     /**
@@ -246,7 +250,7 @@ export interface TabContextValue extends TabState {
     respondPermission: (decision: 'deny' | 'allow_once' | 'always_allow', requestId?: string) => Promise<void>;
 
     // AskUserQuestion handling
-    respondAskUserQuestion: (requestId: string, answers: Record<string, string> | null) => Promise<void>;
+    respondAskUserQuestion: (requestId: string, answers: AskUserQuestionAnswers | null) => Promise<void>;
 
     // PlanMode handling.
     // `feedback` (issue #182): user's optional 「修改意见」 forwarded only on
@@ -282,6 +286,7 @@ const defaultContextValue: TabContextValue = {
     sessionState: 'idle',
     sessionRuntime: null,
     sessionRuntimeSource: null,
+    sessionRuntimeSessionId: null,
     sessionMeta: null,
     logs: [],
     unifiedLogs: [],
@@ -290,6 +295,7 @@ const defaultContextValue: TabContextValue = {
     sdkSlashCommands: [],
     runtimeDiagnostics: null,
     agentError: null,
+    agentErrorUserMessageId: null,
     systemStatus: null,
     systemNotice: null,
     contextUsage: null,

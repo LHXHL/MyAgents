@@ -15,7 +15,7 @@
  * Bun.spawn semantic parity (intentional):
  *   - `exited` resolves on Node `'close'` (not `'exit'`) — matches Bun's
  *     "stdio drained" contract, so callers reading stdout/stderr don't race
- *     with the exit handler (see runtimes/codex.ts / gemini.ts which
+ *     with the exit handler (see runtimes/codex.ts which
  *     previously relied on Bun's behavior).
  *   - Spawn errors (ENOENT / ENOEXEC / bad CPU type) are preserved in
  *     `.error` and surfaced via `exited` — callers that log `code === 0 ?
@@ -76,7 +76,7 @@ const IS_WINDOWS = process.platform === 'win32';
 /**
  * Windows-only: `child_process.spawn` cannot execute `.cmd` / `.bat` shims
  * directly without going through cmd.exe (Node ≥20.12 hard-rejects this since
- * CVE-2024-27980). npm-installed CLI binaries — `codex.cmd`, `gemini.cmd`,
+ * CVE-2024-27980). npm-installed CLI binaries — `codex.cmd`,
  * `claude.cmd`, `npx.cmd`, plugin-bridge launchers — are exactly these shims,
  * so they silently fail to spawn unless we route them through cmd.exe.
  */

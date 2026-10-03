@@ -14,7 +14,10 @@ interface AgentBasicsSectionProps {
   onAgentChanged: () => void;
 }
 
-function permissionLabel(mode: string | undefined, t: TFunction<'settings'>): string {
+function permissionLabel(mode: string | undefined, t: TFunction<'settings'>, tChat: TFunction<'chat'>): string {
+  if (mode === 'approval-required' || mode === 'workspace-autonomous' || mode === 'full-autonomous') {
+    return tChat(`input.permissionModes.${mode}.label`);
+  }
   if (mode === 'fullAgency') return `🚀 ${t('agentSettings.permission.fullAgency')}`;
   if (mode === 'auto') return `⚡ ${t('agentSettings.permission.auto')}`;
   return `📋 ${t('agentSettings.permission.plan')}`;
@@ -22,6 +25,7 @@ function permissionLabel(mode: string | undefined, t: TFunction<'settings'>): st
 
 export default function AgentBasicsSection({ agent, onAgentChanged }: AgentBasicsSectionProps) {
   const { t } = useTranslation('settings');
+  const { t: tChat } = useTranslation('chat');
   const { providers, apiKeys, providerVerifyStatus } = useConfig();
   const [name, setName] = useState(agent.name);
   const [saving, setSaving] = useState(false);
@@ -111,7 +115,7 @@ export default function AgentBasicsSection({ agent, onAgentChanged }: AgentBasic
       <div className="flex items-center gap-3">
         <label className="w-20 shrink-0 text-xs text-[var(--ink-muted)]">{t('agentSettings.basics.permission')}</label>
         <span className="text-sm text-[var(--ink)]">
-          {permissionLabel(agent.permissionMode, t)}
+          {permissionLabel(agent.permissionMode, t, tChat)}
         </span>
       </div>
 

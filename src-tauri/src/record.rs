@@ -5270,8 +5270,12 @@ pub fn parse_tags(content: &str) -> Vec<String> {
         while end < chars.len() && is_tag_char(chars[end]) {
             end += 1;
         }
-        if end > index + 1 {
-            let tag: String = chars[index + 1..end].iter().collect();
+        let mut tag_end = end;
+        while tag_end > index + 1 && chars[tag_end - 1] == '-' {
+            tag_end -= 1;
+        }
+        if tag_end > index + 1 && chars[index + 1].is_alphanumeric() {
+            let tag: String = chars[index + 1..tag_end].iter().collect();
             if !tags.iter().any(|existing| existing == &tag) {
                 tags.push(tag);
             }
@@ -5284,6 +5288,7 @@ pub fn parse_tags(content: &str) -> Vec<String> {
 fn is_tag_char(character: char) -> bool {
     character.is_alphanumeric()
         || character == '_'
+        || character == '-'
         || ('\u{4e00}'..='\u{9fff}').contains(&character)
 }
 
@@ -6022,6 +6027,14 @@ mod tests {
         );
         assert_eq!(derive_text_title("   \n"), "");
         assert_eq!(derive_text_title(&"你".repeat(100)).chars().count(), 80);
+    }
+
+    #[test]
+    fn inline_tags_preserve_internal_hyphens_without_trailing_punctuation() {
+        assert_eq!(
+            parse_tags("#probe-round9 hyphen tag test #team_alpha #trailing-"),
+            vec!["probe-round9", "team_alpha", "trailing"]
+        );
     }
 
     #[tokio::test]

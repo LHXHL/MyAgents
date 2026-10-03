@@ -2,15 +2,15 @@ import { invoke } from '@tauri-apps/api/core';
 import { listenWithCleanup } from '../../utils/tauriListen';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Check,
-  Copy,
-  ExternalLink,
-  Link2,
-  Loader2,
-  Plus,
-  RefreshCw,
-  Settings2,
-} from 'lucide-react';
+  CheckIcon,
+  CopyIcon,
+  ExternalIcon,
+  LinkIcon,
+  LoaderIcon,
+  PlusIcon,
+  RefreshIcon,
+  SlidersIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import type { Provider } from '../../../shared/config-types';
 import {
@@ -330,7 +330,7 @@ export default function TokenDanceProvider({
               onClick={() => setDialog('detail')}
               aria-label={t('details')}
             >
-              <Settings2 className="h-4 w-4" />
+              <SlidersIcon className="h-4 w-4" />
             </button>
           </div>
         </div>
@@ -381,7 +381,7 @@ export default function TokenDanceProvider({
                   aria-label={t('balance.refresh')}
                   onClick={() => void balance.refresh()}
                 >
-                  <RefreshCw
+                  <RefreshIcon
                     className={`h-4 w-4 ${balance.loading ? 'animate-spin motion-reduce:animate-none' : ''}`}
                   />
                 </button>
@@ -390,7 +390,7 @@ export default function TokenDanceProvider({
                   className={primaryButton}
                   onClick={() => openPayment(false)}
                 >
-                  <Plus className="h-4 w-4" />
+                  <PlusIcon className="h-4 w-4" />
                   {t('payment.action')}
                 </button>
               </>
@@ -400,7 +400,7 @@ export default function TokenDanceProvider({
                 className={primaryButton}
                 onClick={() => void openAuth()}
               >
-                <Link2 className="h-4 w-4" />
+                <LinkIcon className="h-4 w-4" />
                 {t(
                   activeAuth
                     ? 'auth.progress'
@@ -457,7 +457,7 @@ export default function TokenDanceProvider({
                   }
                 }}
               >
-                <Copy className="mr-1 inline h-3.5 w-3.5" />
+                <CopyIcon className="mr-1 inline h-3.5 w-3.5" />
                 <span className="text-xs">
                   {t(copied ? 'auth.copied' : 'auth.copy')}
                 </span>
@@ -471,7 +471,7 @@ export default function TokenDanceProvider({
                   void showWebsite(authView!.authUrl);
                 }}
               >
-                <ExternalLink className="mr-1 inline h-3.5 w-3.5" />
+                <ExternalIcon className="mr-1 inline h-3.5 w-3.5" />
                 <span className="text-xs">{t('auth.open')}</span>
               </button>
             </div>
@@ -487,7 +487,7 @@ export default function TokenDanceProvider({
           >
             <p className="flex items-center gap-2 text-sm font-medium">
               {activeAuth && (
-                <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--accent-warm)] motion-reduce:animate-none" />
+                <LoaderIcon className="h-3.5 w-3.5 animate-spin text-[var(--accent-warm)] motion-reduce:animate-none" />
               )}
               {t(`auth.result.${phase}`)}
             </p>
@@ -581,7 +581,7 @@ export default function TokenDanceProvider({
                     void showWebsite('https://tokendance.space/keys')
                   }
                 >
-                  <ExternalLink className="h-3.5 w-3.5" />
+                  <ExternalIcon className="h-3.5 w-3.5" />
                   {t('manageOnWebsite')}
                 </button>
               </div>
@@ -597,7 +597,7 @@ export default function TokenDanceProvider({
                   disabled={balance.loading}
                   onClick={() => void balance.refresh()}
                 >
-                  <RefreshCw className="h-3.5 w-3.5" />
+                  <RefreshIcon className="h-3.5 w-3.5" />
                   {t('balance.refresh')}
                 </button>
                 {loggedIn && (
@@ -606,7 +606,7 @@ export default function TokenDanceProvider({
                     className={primaryButton}
                     onClick={() => openPayment(true)}
                   >
-                    <Plus className="h-4 w-4" />
+                    <PlusIcon className="h-4 w-4" />
                     {t('payment.action')}
                   </button>
                 )}
@@ -652,7 +652,7 @@ export default function TokenDanceProvider({
                   title={model.id}
                 >
                   {enabledIds.has(model.id) && (
-                    <Check className="h-3 w-3 shrink-0 text-[var(--success)]" />
+                    <CheckIcon className="h-3 w-3 shrink-0 text-[var(--success)]" />
                   )}
                   <span className="truncate">
                     {model.displayName ?? model.id}
@@ -673,7 +673,7 @@ export default function TokenDanceProvider({
               onClick={() => void showWebsite('https://tokendance.space')}
             >
               {t('website')}
-              <ExternalLink className="h-3.5 w-3.5" />
+              <ExternalIcon className="h-3.5 w-3.5" />
             </button>
             {linkFailure && (
               <p role="alert" className="mt-2 text-xs text-[var(--error)]">

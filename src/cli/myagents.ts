@@ -24,12 +24,15 @@ import {
 } from '../shared/externalCliCapabilities';
 import { networkAddress } from '../shared/agentNetworkRouting';
 import { REMOTE_DEADLINES } from '@myagents/agent-network-protocol';
+import { INTERNAL_CLI_FLAGS } from './internalCliFlags';
 
 // ---------------------------------------------------------------------------
 // Port discovery
 // ---------------------------------------------------------------------------
 
 // Port is resolved after arg parsing (--port flag can override env)
+import { CLI_SESSION_HEADER, isCliProductSessionId } from '../shared/cli-session-scope';
+
 let PORT = process.env.MYAGENTS_PORT ?? '';
 let BASE = '';
 
@@ -37,6 +40,14 @@ export function resolveCliPort(portFlag: unknown, inheritedPort: string): string
   return typeof portFlag === 'string' && portFlag.length > 0
     ? portFlag
     : inheritedPort;
+}
+
+export function validateCliRouting(port: string, sessionId: string | undefined): string | undefined {
+  if (sessionId !== undefined && !isCliProductSessionId(sessionId)) return 'CLI_SESSION_SCOPE_INVALID';
+  if (!/^\d{1,5}$/u.test(port) || Number(port) < 1 || Number(port) > 65_535) {
+    return sessionId === undefined ? 'MYAGENTS_PORT_REQUIRED' : 'CLI_SESSION_ROUTE_REQUIRED';
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -72,6 +83,7 @@ export function parseArgs(args: string[]): { positional: string[]; flags: Record
   let i = 0;
   while (i < args.length) {
     const arg = args[i];
+    if (arg === '-h') { flags.help = true; i++; continue; }
     if (arg.startsWith('--')) {
       // Support both `--key value` and `--key=value` forms. The equals form
       // is ubiquitous in GNU-style CLIs; without it, callers (especially AI
@@ -108,10 +120,12 @@ export function parseArgs(args: string[]): { positional: string[]; flags: Record
       // Add any new presence-only flag here.
       if (
         key === 'help' ||
+        key === 'version' ||
         key === 'json' ||
         key === 'dry-run' ||
         key === 'disable-nonessential' ||
         key === 'full' ||
+        key === 'verbose' ||
         key === 'no-reply' ||
         key === 'clear-provider-override' ||
         key === 'clear-runtime-override' ||
@@ -126,7 +140,8 @@ export function parseArgs(args: string[]): { positional: string[]; flags: Record
         key === 'clear-goal' ||
         key === 'create-attached' ||
         key === 'wait' ||
-        key === 'rollback'
+        key === 'rollback' ||
+        key === 'apply'
       ) {
         if (key === 'wait' && inlineValue !== undefined) {
           flags.waitInvalidValue = inlineValue;
@@ -412,7 +427,7 @@ Commands:
   diagnose  Diagnose external runtime state (auth, features, MCP, apps, env)
 
 Global flags:
-  --help      Show help for any command
+  -h, --help  Show help for any command
   --json      Output as JSON
   --dry-run   Preview only commands whose exact leaf help documents support;
               unsupported mutations fail without applying changes
@@ -595,6 +610,9 @@ async function callApi(
           : externalToken
             ? { Authorization: `Bearer ${externalToken}` }
             : {}),
+        ...(process.env.MYAGENTS_SESSION_ID === undefined ? {} : {
+          [CLI_SESSION_HEADER]: process.env.MYAGENTS_SESSION_ID,
+        }),
       },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(cliRequestTimeoutMs(route, body)),
@@ -712,6 +730,8 @@ export function cliRequestTimeoutMs(route: string, body: Record<string, unknown>
   if (route === 'session/send') return 40_000;
   if (route === 'session/get') return 20_000;
   if (route === 'session/watch') return 40_000;
+  if (route === 'mcp/test') return 20_000;
+  if (route === 'task/trigger/test') return 315_000;
   return 10_000;
 }
 
@@ -737,7 +757,7 @@ export function adminHttpErrorResult(
 
 export function commandResultExitCode(result: Record<string, unknown>): 0 | 1 | 2 | 3 {
   if (result.success) return 0;
-  if (result.code === 'admission_unconfirmed') return 2;
+  if (result.code === 'admission_unconfirmed' || result.code === 'INPUT_VALIDATION_ERROR') return 2;
   if (result.code === 'MYAGENTS_UNAVAILABLE') return 3;
   return 1;
 }
@@ -1025,12 +1045,82 @@ export function printResult(
     printRecordList(result.data as Array<Record<string, unknown>>);
     return;
   }
+  if (group === 'record' && action === 'get') {
+    const record = (result.data as { record: Record<string, unknown> }).record;
+    console.log(`${String(record.title ?? '')} [${String(record.id ?? '')}]`);
+    console.log(String(record.content ?? record.text ?? ''));
+    return;
+  }
+  if (group === 'record' && action === 'delete') {
+    console.log('✓ Record deleted');
+    return;
+  }
+  if (group === 'record' && action === 'create') {
+    const record = ((result.data as Record<string, unknown> | undefined)?.record ?? {}) as Record<string, unknown>;
+    console.log(`✓ Record created ${String(record.id ?? '(unknown)')}`);
+    if (record.title) console.log(`  title: ${String(record.title)}`);
+    if (record.kind) console.log(`  kind:  ${String(record.kind)}`);
+    return;
+  }
+  if (group === 'space' && action === 'list') {
+    const items = (result.data as { items?: Array<Record<string, unknown>> } | undefined)?.items ?? [];
+    if (items.length === 0) {
+      console.log('(no spaces)');
+      return;
+    }
+    console.log(`Spaces (${items.length}):`);
+    for (const item of items) {
+      console.log(`  ${String(item.slug ?? '')}  ${String(item.name ?? '')}  ${String(item.role ?? '')}`.trimEnd());
+    }
+    return;
+  }
+  if (group === 'space' && action === 'whoami') {
+    const data = (result.data as Record<string, unknown> | undefined) ?? {};
+    const space = objectValue(data.space) ?? {};
+    const actor = objectValue(data.actor) ?? {};
+    console.log(`Space: ${String(space.name ?? space.slug ?? '(unknown)')} (${String(space.slug ?? 'unknown')})`);
+    console.log(`Actor: ${String(actor.name ?? actor.id ?? '(unknown)')} (${String(actor.type ?? 'unknown')}:${String(actor.id ?? 'unknown')})`);
+    if (actor.role) console.log(`Role: ${String(actor.role)}`);
+    if (actor.source) console.log(`Binding: ${String(actor.source)}`);
+    const owner = objectValue(actor.owner);
+    if (owner?.name) console.log(`Owner: ${String(owner.name)} (${String(owner.role ?? 'unknown')})`);
+    return;
+  }
+  if (group === 'space' && action === 'assignee' && (rest[0] ?? 'list') === 'list') {
+    const items = (result.data as { items?: Array<Record<string, unknown>> } | undefined)?.items ?? [];
+    console.log(`Assignees (${items.length}):`);
+    for (const item of items) {
+      console.log(`  ${String(item.assigneeId ?? '(unknown)')}  ${String(item.name ?? '')}${item.isSelf === true ? '  (self)' : ''}`.trimEnd());
+    }
+    return;
+  }
   if (group === 'skill' && action === 'list') {
-    printSkillList(result.data as Array<Record<string, unknown>>);
+    printSkillList(result.data as Array<Record<string, unknown>>, { verbose: flags.verbose === true });
+    return;
+  }
+  if (group === 'config' && action === 'list') {
+    const data = result.data as { keys: Array<{ key: string; type: string; description: string; settable?: boolean }>; note: string };
+    for (const key of data.keys) console.log(`${key.key.padEnd(36)} ${key.type.padEnd(10)} ${key.settable ? '[settable] ' : ''}${key.description}`);
+    console.log(data.note);
     return;
   }
   if (group === 'skill' && action === 'info') {
     printSkillInfo(result.data as Record<string, unknown>);
+    return;
+  }
+  if (group === 'skill' && (action === 'enable' || action === 'disable')) {
+    const data = (result.data as Record<string, unknown> | undefined) ?? {};
+    console.log(`✓ Skill ${String(data.name ?? '(unknown)')} ${data.enabled === true ? 'enabled' : 'disabled'}`);
+    if (data.scope) console.log(`  scope: ${String(data.scope)}`);
+    return;
+  }
+  if (group === 'skill' && action === 'sync') {
+    const data = result.data as { folders?: string[]; synced?: string[]; failed?: string[]; applied?: boolean } | undefined;
+    const folders = data?.applied ? (data.synced ?? []) : (data?.folders ?? []);
+    console.log(data?.applied ? `Imported ${folders.length} skill(s), disabled:` : `Preview: ${folders.length} skill(s) available to import into user scope (disabled by default):`);
+    for (const folder of folders) console.log(`  - ${folder}`);
+    for (const failure of data?.failed ?? []) console.error(`  Failed: ${failure}`);
+    if (!data?.applied && folders.length > 0) console.log('Run with --apply to import these skills.');
     return;
   }
   if (group === 'skill' && action === 'add') {
@@ -1042,7 +1132,13 @@ export function printResult(
     return;
   }
   if (group === 'version') {
-    console.log((result.data as { version: string })?.version ?? 'Unknown');
+    const data = result.data as { version: string; app?: { version: string | null; mode: string | null }; sidecar?: { mode: string; commit: string | null; dirty: boolean | null; capturedAt: string; startedAt: string; nodeVersion: string } };
+    console.log(data.version ?? 'Unknown');
+    if (data.app) console.log(`App: ${data.app.version ?? 'not reported by launcher'} (${data.app.mode ?? 'unknown'})`);
+    if (data.sidecar) {
+      console.log(`Sidecar: ${data.sidecar.mode}; commit=${data.sidecar.commit ?? 'unavailable'}; dirty=${data.sidecar.dirty ?? 'unknown'}`);
+      console.log(`Identity captured: ${data.sidecar.capturedAt}; started: ${data.sidecar.startedAt}; Node: ${data.sidecar.nodeVersion}`);
+    }
     return;
   }
   if (group === 'agent' && action === 'runtime-status') {
@@ -1070,7 +1166,7 @@ export function printResult(
       console.log(`${key}:`);
       console.log(formatObject(value as Record<string, unknown>));
     } else {
-      console.log(`${key}: ${value === undefined ? '(unset)' : String(value)}`);
+      console.log(`${key}: ${value === undefined ? '(unset)' : String(value)}${data.scope ? `  [${String(data.scope)}]` : ''}`);
     }
     return;
   }
@@ -1205,6 +1301,20 @@ export function printResult(
     printTaskCreateResult(result.data as Record<string, unknown>);
     return;
   }
+  if (group === 'task' && action === 'update') {
+    const data = (result.data as Record<string, unknown> | undefined) ?? {};
+    const task = (data.task as Record<string, unknown> | undefined) ?? data;
+    console.log(`✓ Task updated ${String(task.id ?? task.taskId ?? '').trim()}`.trim());
+    if (task.name) console.log(`  name: ${String(task.name)}`);
+    if (task.description) console.log(`  description: ${String(task.description)}`);
+    if (task.status) console.log(`  status: ${String(task.status)}`);
+    if (task.executionMode) console.log(`  execution: ${String(task.executionMode)}`);
+    const docs = (task.docs as Record<string, unknown> | undefined) ?? {};
+    if (docs.taskMd) console.log(`  task.md: ${String(docs.taskMd)}`);
+    printTaskNextExecution(task.nextExecutionAt ?? data.nextExecutionAt);
+    console.log(`  inspect: myagents task get ${String(task.id ?? task.taskId ?? '<taskId>')}`);
+    return;
+  }
   if (group === 'space' && action === 'issue' && shouldCreateAttachedTaskForClaim(flags)) {
     printSpaceClaimAttachedResult(result.data as Record<string, unknown>);
     return;
@@ -1268,12 +1378,28 @@ export function printResult(
     console.log('\u2713 Detector checkpoint reset');
     return;
   }
+  if (group === 'task' && result.data && typeof result.data === 'object') {
+    const data = result.data as Record<string, unknown>;
+    const task = (data.task as Record<string, unknown> | undefined) ?? data;
+    const taskId = task.id ?? task.taskId ?? data.taskId;
+    if (typeof taskId === 'string' && taskId) {
+      console.log(`✓ Task ${action} ${taskId}`);
+      if (task.status ?? data.status) console.log(`  status: ${String(task.status ?? data.status)}`);
+      return;
+    }
+  }
 
-  // Generic success output
+  // Every successful command with structured data needs a useful text result.
+  // Specific printers above keep their concise format; this fallback also
+  // covers newly added leaf commands until they gain one.
   const symbol = '\u2713'; // ✓
   const hint = result.hint ? ` ${result.hint}` : '';
-  const id = (result.data as Record<string, unknown>)?.id ?? '';
-  console.log(`${symbol} ${action} ${id}${hint}`);
+  const data = result.data;
+  const id = data !== null && typeof data === 'object' && !Array.isArray(data)
+    ? (data as Record<string, unknown>).id
+    : undefined;
+  console.log(`${symbol} ${action}${typeof id === 'string' && id ? ` ${id}` : ''}${hint}`);
+  if (data !== undefined && data !== null) console.log(JSON.stringify(data, null, 2));
 }
 
 function formatDetectorOccurredAt(value: unknown): string {
@@ -1417,6 +1543,10 @@ function printSpaceIssueCompleteResult(data: Record<string, unknown>): void {
   if (taskStatus) console.log(`  task:      ${taskStatus}`);
 }
 
+function singleLine(value: unknown): string {
+  return String(value ?? '').replace(/[\r\n\t]+/g, ' ').trim();
+}
+
 function printSpaceGoalList(data: Record<string, unknown>, flags: Record<string, unknown>): void {
   const items = Array.isArray(data?.items) ? data.items as Array<Record<string, unknown>> : [];
   const slug = typeof flags.space === 'string' ? flags.space : '';
@@ -1433,12 +1563,12 @@ function printSpaceGoalList(data: Record<string, unknown>, flags: Record<string,
   for (const goal of items) {
     const id = String(goal.id ?? '');
     const depth = typeof goal.depth === 'number' ? Math.max(0, goal.depth) : 0;
-    const path = `${'  '.repeat(depth)}${String(goal.goalPathLabel ?? goal.title ?? '')}`;
+    const path = `${'  '.repeat(depth)}${singleLine(goal.goalPathLabel ?? goal.title)}`;
     if (includeArchived) {
       const status = goal.archivedAt ? 'archived' : 'active';
-      console.log(`${id.padEnd(24)}${status.padEnd(12)}${path}`);
+      console.log(`${id}  ${status.padEnd(12)}${path}`);
     } else {
-      console.log(`${id.padEnd(24)}${path}`);
+      console.log(`${id}  ${path}`);
     }
   }
   console.log('');
@@ -1480,12 +1610,13 @@ function printRuntimeList(rows: Array<Record<string, unknown>>): void {
     return;
   }
   const pad = (s: string, n: number) => s.padEnd(n);
-  console.log(pad('RUNTIME', 14) + pad('INSTALLED', 11) + pad('VERSION', 18) + 'NAME');
+  const versionWidth = Math.max(18, ...rows.map(row => singleLine(row.version).length + 2));
+  console.log(pad('RUNTIME', 14) + pad('INSTALLED', 11) + pad('VERSION', versionWidth) + 'NAME');
   for (const row of rows) {
     const rt = String(row.runtime ?? '');
     const installed = row.installed ? 'yes' : 'no';
-    const version = String(row.version ?? '').split('\n')[0].slice(0, 16) || '-';
-    console.log(pad(rt, 14) + pad(installed, 11) + pad(version, 18) + String(row.displayName ?? ''));
+    const version = singleLine(row.version) || '-';
+    console.log(pad(rt, 14) + pad(installed, 11) + pad(version, versionWidth) + singleLine(row.displayName));
     const hint = row.notInstalledHint;
     if (hint) console.log(`    \u2192 ${String(hint)}`);
   }
@@ -1510,13 +1641,18 @@ function printRuntimeDescribe(data: Record<string, unknown>): void {
   console.log(`${name}  [${runtime}]`);
   console.log(`  installed: ${installed}${version}`);
   const defaultMode = String(data.defaultPermissionMode ?? '');
-  if (defaultMode) console.log(`  default permissionMode: ${defaultMode}`);
+  if (defaultMode) console.log(`  runtime fallback permissionMode: ${defaultMode} (new Sessions without an override)`);
 
   const models = (data.models as Array<Record<string, unknown>>) ?? [];
   console.log('');
   console.log('Models:');
-  if (models.length === 0) {
-    console.log('  (none reported — runtime may not be installed, or has no static model list)');
+  const discovery = data.modelDiscovery as { state?: unknown; message?: unknown } | undefined;
+  if (discovery?.state === 'unavailable') {
+    console.log(`  ${String(discovery.message ?? 'Model list is temporarily unavailable.')}`);
+  } else if (models.length === 0) {
+    console.log(runtime === 'dsh'
+      ? '  Models come from the selected Provider. Run: myagents model list'
+      : '  (none reported — runtime may not be installed, or has no static model list)');
   } else {
     for (const m of models) {
       const value = String(m.value ?? '');
@@ -1528,7 +1664,7 @@ function printRuntimeDescribe(data: Record<string, unknown>): void {
 
   const modes = (data.permissionModes as Array<Record<string, unknown>>) ?? [];
   console.log('');
-  console.log('Permission modes:');
+  console.log('Permission modes supported by this runtime:');
   if (modes.length === 0) {
     console.log('  (runtime uses the built-in PermissionMode enum; set via --permissionMode)');
   } else {
@@ -1563,6 +1699,13 @@ function printRuntimeDiagnose(data: Record<string, unknown>): void {
   const runtime = String(data.runtime ?? '');
   const version = String(data.version ?? '');
   console.log(`Runtime: ${runtime}${version ? `  (${version})` : ''}`);
+
+  if (data.resources) {
+    for (const key of ['resources', 'process', 'model', 'permissions', 'proxy', 'environment', 'extensions', 'sessionMcp', 'observedAt']) {
+      console.log(`${key}: ${data[key] == null ? 'not active / unavailable' : JSON.stringify(data[key], null, 2)}`);
+    }
+    return;
+  }
 
   const diag = (data.diagnostics ?? {}) as Record<string, unknown>;
   const status = (diag.status ?? {}) as Record<string, unknown>;
@@ -1705,7 +1848,7 @@ function printAgentShow(data: Record<string, unknown>): void {
   const channelCount = data.channelCount;
   if (typeof channelCount === 'number') console.log(`  channels:  ${channelCount}`);
   console.log('');
-  console.log('Effective defaults:');
+  console.log('Agent defaults for future Sessions (current Session may differ):');
   const defaults = (data.effectiveDefaults as Record<string, unknown>) ?? {};
   const fmt = (v: unknown): string => {
     if (v === null || v === undefined || v === '') return '(inherits default)';
@@ -1716,6 +1859,7 @@ function printAgentShow(data: Record<string, unknown>): void {
   if (defaults.runtimeSource) console.log(`  runtimeSource:  ${fmt(defaults.runtimeSource)}`);
   console.log(`  model:          ${fmt(defaults.model)}`);
   console.log(`  permissionMode: ${fmt(defaults.permissionMode)}`);
+  if (defaults.permissionModeSource) console.log(`  permission source: ${fmt(defaults.permissionModeSource)}`);
   console.log(`  providerId:     ${fmt(defaults.providerId)}`);
   if (defaults.runtimeConfig) {
     console.log(`  runtimeConfig:  ${JSON.stringify(defaults.runtimeConfig)}`);
@@ -1898,7 +2042,7 @@ export function printModelList(providers: Array<Record<string, unknown>>): void 
   }
 }
 
-function printAgentList(agents: Array<Record<string, unknown>>): void {
+export function printAgentList(agents: Array<Record<string, unknown>>): void {
   if (!agents || agents.length === 0) {
     console.log('No agents configured.');
     return;
@@ -1918,7 +2062,11 @@ function printAgentList(agents: Array<Record<string, unknown>>): void {
       + String(a.name),
     );
   }
-  console.log('\n* current Agent for this CLI caller');
+  if (agents.some(agent => agent.isCurrent === true)) {
+    console.log('\n* current Agent for this CLI caller');
+  } else {
+    console.log('\nNo current Agent for this CLI caller; run from a linked Agent workspace to resolve one.');
+  }
 }
 
 function printSessionList(
@@ -1936,10 +2084,10 @@ function printSessionList(
       pad(String(session.sessionId ?? '').slice(0, 36), 38)
       + pad(String(session.lastActiveAt ?? ''), 26)
       + pad(String(session.runtime ?? 'builtin'), 14)
-      + String(session.title ?? 'New Chat'),
+      + singleLine(session.title ?? 'New Chat'),
     );
-    if (session.lastMessagePreview) {
-      console.log(`  ${String(session.lastMessagePreview)}`);
+    if (session.lastMessagePreview && String(session.lastMessagePreview).trim() !== String(session.title ?? '').trim()) {
+      console.log(`  ${singleLine(session.lastMessagePreview)}`);
     }
   }
 }
@@ -1947,9 +2095,28 @@ function printSessionList(
 function printStatus(data: Record<string, unknown>): void {
   const mcp = data.mcpServers as Record<string, number>;
   console.log(`MCP Servers: ${mcp?.total ?? 0} total, ${mcp?.enabled ?? 0} enabled`);
-  console.log(`Active MCP in session: ${data.activeMcpInSession}`);
-  console.log(`Default provider: ${data.defaultProvider}`);
+  const workspace = data.workspaceMcp as { selection?: string[] | null; enabled?: string[] | null } | undefined;
+  const session = data.sessionMcp as { observation?: string; snapshot?: { servers?: Array<{ id: string; state: string }> } } | undefined;
+  console.log(`Workspace MCP: ${workspace?.selection ? `${workspace.selection.length} selected, ${workspace.enabled?.length ?? 0} enabled in this selection` : 'no workspace selection available'}`);
+  console.log(`Active MCP in current Session: ${data.activeMcpInSession ?? 'not observed'} (${session?.observation ?? 'unavailable'})`);
+  for (const server of session?.snapshot?.servers ?? []) console.log(`  ${server.id}: ${server.state}`);
+  console.log(`Global default provider: ${data.defaultProvider}`);
   console.log(`Agents: ${data.agents}`);
+}
+
+export function resolveTaskExecutionMode(flags: Record<string, unknown>, creating: boolean): string | undefined {
+  const recurring = flags.cronExpression !== undefined || flags.intervalMinutes !== undefined;
+  const scheduled = flags.dispatchAt !== undefined;
+  const explicit = flags.executionMode;
+  if ((recurring && scheduled) || (explicit !== undefined && (
+    recurring && explicit !== 'recurring' || scheduled && explicit !== 'scheduled' && explicit !== 'once'
+  ))) {
+    return exitAgentCliError(flags, {
+      code: 'TASK_SCHEDULE_INVALID',
+      error: 'cronExpression/intervalMinutes require recurring mode; dispatchAt requires scheduled mode. Use one schedule type.',
+    });
+  }
+  return typeof explicit === 'string' ? explicit : recurring ? 'recurring' : scheduled ? 'scheduled' : creating ? 'once' : undefined;
 }
 
 export function resolveLocalTimezone(): string {
@@ -2301,7 +2468,7 @@ function printPluginList(plugins: Array<Record<string, unknown>>): void {
   console.log(`\n${plugins.length} plugin(s) installed`);
 }
 
-function printSkillList(skills: Array<Record<string, unknown>>): void {
+export function printSkillList(skills: Array<Record<string, unknown>>, options: { verbose?: boolean } = {}): void {
   if (!skills || skills.length === 0) {
     console.log('No skills installed.');
     return;
@@ -2317,8 +2484,19 @@ function printSkillList(skills: Array<Record<string, unknown>>): void {
       pad(enabled, 10) +
       desc,
     );
+    const availability = s.runtimeAvailability as Record<string, unknown> | undefined;
+    if (availability?.runtime === 'dsh') {
+      const component = availability.component as Record<string, unknown> | undefined;
+      const changed = availability.effectiveRevision !== availability.desiredRevision;
+      const hasReason = Boolean(component?.code) && component?.code !== 'dsh_extension_component_ready';
+      const abnormal = availability.state !== 'ready' || component?.modelInvocable !== true || hasReason;
+      if (options.verbose || abnormal || changed) console.log(`  Runtime admission: ${availability.state ?? 'unknown'}; model invocation: ${component?.modelInvocable === true ? 'available (permission still required)' : component?.modelInvocable === false ? 'unavailable' : 'unknown'}`);
+      if (options.verbose || changed) console.log(`  Effective generation: ${availability.effectiveRevision ?? 'not active'}; desired: ${availability.desiredRevision ?? 'unknown'}`);
+      if (component?.code && (options.verbose || abnormal)) console.log(`  Reason: ${component.code}`);
+    }
   }
   console.log(`\n${skills.length} skill(s)`);
+  console.log('Enabled reflects installation settings. Session availability also depends on the active Runtime admission and extension generation.');
 }
 
 function printSkillInfo(data: Record<string, unknown>): void {
@@ -2906,10 +3084,14 @@ async function main(): Promise<void> {
   const { positional, flags } = parseArgs(rawArgs);
   const jsonMode = !!flags.json;
 
-  if (!process.env.MYAGENTS_INTERNAL_CLI_TOKEN?.trim()) {
-    const publicCommandError = validateExternalCliInvocation(positional, flags);
-    if (publicCommandError) return exitAgentCliError(flags, publicCommandError);
+  if (positional.length === 0 && flags.version) {
+    positional.push('version');
+    delete flags.version;
   }
+  const invocationError = process.env.MYAGENTS_INTERNAL_CLI_TOKEN?.trim()
+    ? validateInternalCliInvocation(positional, flags)
+    : validateExternalCliInvocation(positional, flags);
+  if (invocationError) return exitAgentCliError(flags, invocationError);
 
   // Top-level help (no args, or bare --help)
   if (positional.length === 0) {
@@ -2930,7 +3112,7 @@ async function main(): Promise<void> {
     if (dryRunError) return exitAgentCliError(flags, dryRunError);
   }
 
-  if (flags.help) {
+  if (flags.help && !process.env.MYAGENTS_INTERNAL_CLI_TOKEN?.trim()) {
     const help = publicCliHelp(positional);
     if (help) {
       console.log(help);
@@ -2940,20 +3122,16 @@ async function main(): Promise<void> {
 
   // Resolve port: --port flag overrides env
   PORT = resolveCliPort(flags.port, PORT);
-  if (!PORT) {
+  const routeError = validateCliRouting(PORT, process.env.MYAGENTS_SESSION_ID);
+  if (routeError) {
     if (jsonMode) {
-      return exitAgentCliError(
-        flags,
-        {
-          code: 'MYAGENTS_PORT_REQUIRED',
-          error: 'The MyAgents local API port is unavailable.',
-          suggestion:
-            'Start MyAgents and retry. Installed launchers discover the current Host automatically.',
-        },
-        3,
-      );
+      return exitAgentCliError(flags, {
+        code: routeError,
+        error: 'The MyAgents CLI Session route is missing or invalid.',
+        suggestion: 'Run this command from an active MyAgents Session or start the app and retry.',
+      }, 3);
     }
-    console.error('Error: MYAGENTS_PORT not set. This CLI runs within the MyAgents app.');
+    console.error(`Error: ${routeError}. Retry from the active MyAgents Session or start the app.`);
     process.exit(3);
   }
   BASE = `http://127.0.0.1:${PORT}/api/admin`;
@@ -2962,6 +3140,7 @@ async function main(): Promise<void> {
   if (flags.help) {
     const result = await callApi('help', { path: positional });
     printResult('help', 'help', result, jsonMode);
+    process.exitCode = commandResultExitCode(result);
     return;
   }
 
@@ -3188,149 +3367,34 @@ export function buildRoute(group: string, action: string, rest: string[]): strin
 }
 
 const PUBLISHED_ADMIN_ROUTES = new Set([
-  'anydoc/convert',
-  'anydoc/status',
-  'anydoc/cancel',
-  'anydoc/list',
-  'speech/transcribe',
-  'speech/status',
-  'speech/cancel',
-  'speech/list',
-  'mcp/list',
-  'mcp/show',
-  'mcp/add',
-  'mcp/remove',
-  'mcp/enable',
-  'mcp/disable',
-  'mcp/env',
-  'mcp/test',
-  'mcp/oauth/discover',
-  'mcp/oauth/start',
-  'mcp/oauth/status',
-  'mcp/oauth/revoke',
-  'tool/list',
-  'tool/info',
-  'tool/add',
-  'tool/remove',
-  'tool/enable',
-  'tool/disable',
-  'tool/readme',
-  'tool/env',
-  'vision/readme',
-  'vision/models',
-  'vision/analyze',
-  'model/list',
-  'model/add',
-  'model/remove',
-  'model/set-key',
-  'model/set-default',
-  'model/verify',
-  'agent/create',
-  'agent/list',
-  'agent/current',
-  'agent/show',
-  'agent/enable',
-  'agent/disable',
-  'agent/archive',
-  'agent/unarchive',
-  'agent/set',
-  'agent/channel/list',
-  'agent/channel/add',
-  'agent/channel/remove',
-  'agent/runtime-status',
-  'runtime/list',
-  'runtime/describe',
-  'runtime/diagnose',
-  'diagnose/runtime',
-  'cron/list',
-  'cron/add',
-  'cron/start',
-  'cron/run-now',
-  'cron/stop',
-  'cron/remove',
-  'cron/update',
-  'cron/runs',
-  'cron/status',
-  'cron/exit',
-  'goal/get',
-  'goal/create',
-  'goal/update',
-  'im/send-media',
-  'im/wake',
-  'im/channels',
-  'readme/task',
-  'readme/cron',
-  'readme/im',
-  'readme/widget',
-  'readme/thought',
-  'plugin/list',
-  'plugin/install',
-  'plugin/remove',
-  'cc-plugin/list',
-  'cc-plugin/show',
-  'cc-plugin/install',
-  'cc-plugin/uninstall',
-  'cc-plugin/enable',
-  'cc-plugin/disable',
-  'skill/list',
-  'skill/info',
-  'skill/add',
-  'skill/remove',
-  'skill/enable',
-  'skill/disable',
-  'skill/sync',
-  'config/get',
-  'config/set',
-  'task/list',
-  'task/get',
-  'task/comments',
-  'task/comment',
-  'task/create-direct',
-  'task/create-attached',
-  'task/run',
-  'task/run-now',
-  'task/rerun',
-  'task/start',
-  'task/stop',
-  'task/runs',
-  'task/trigger/validate',
-  'task/trigger/test',
-  'task/check-now',
-  'task/reset-checkpoint',
-  'task/update',
-  'task/update-status',
-  'task/append-session',
-  'task/archive',
-  'task/delete',
-  'thought/list',
-  'thought/create',
-  'record/list',
-  'record/create',
-  'space/list',
-  'space/whoami',
-  'space/assignee-list',
-  'space/goal-list',
-  'space/issue-create',
-  'space/issue-update',
-  'space/issue-list',
-  'space/issue-get',
-  'space/issue-comment',
-  'space/issue-comments',
-  'space/issue-comment-get',
-  'space/issue-status',
-  'space/issue-claim',
-  'space/issue-close',
-  'space/issue-complete',
-  'space/issue-cancel-claim',
-  'space/claim-local-task',
-  'space/attachment-download',
-  'space/attachment-add',
-  'space/attachment-inspect',
-  'session/list',
-  'session/start',
-  'session/send',
-  'session/get',
-  'session/watch',
+  'anydoc/convert', 'anydoc/status', 'anydoc/cancel', 'anydoc/list',
+  'speech/transcribe', 'speech/status', 'speech/cancel', 'speech/list',
+  'mcp/list', 'mcp/show', 'mcp/add', 'mcp/remove', 'mcp/enable', 'mcp/disable', 'mcp/env', 'mcp/test',
+  'mcp/oauth/discover', 'mcp/oauth/start', 'mcp/oauth/status', 'mcp/oauth/revoke',
+  'tool/list', 'tool/info', 'tool/add', 'tool/remove', 'tool/enable', 'tool/disable', 'tool/readme', 'tool/env',
+  'vision/readme', 'vision/models', 'vision/analyze',
+  'model/list', 'model/add', 'model/remove', 'model/set-key', 'model/set-default', 'model/verify',
+  'agent/list', 'agent/create', 'agent/current', 'agent/show', 'agent/enable', 'agent/disable', 'agent/archive', 'agent/unarchive',
+  'agent/set', 'agent/channel/list', 'agent/channel/add', 'agent/channel/remove', 'agent/runtime-status',
+  'runtime/list', 'runtime/describe', 'runtime/diagnose', 'diagnose/runtime',
+  'cron/list', 'cron/add', 'cron/start', 'cron/run-now', 'cron/stop', 'cron/remove', 'cron/update', 'cron/runs',
+  'cron/status', 'cron/exit',
+  'goal/get', 'goal/create', 'goal/update',
+  'im/send-media', 'im/wake', 'im/channels',
+  'readme/task', 'readme/cron', 'readme/im', 'readme/widget', 'readme/thought',
+  'plugin/list', 'plugin/install', 'plugin/remove',
+  'cc-plugin/list', 'cc-plugin/show', 'cc-plugin/install', 'cc-plugin/uninstall', 'cc-plugin/enable', 'cc-plugin/disable',
+  'skill/list', 'skill/info', 'skill/add', 'skill/remove', 'skill/enable', 'skill/disable', 'skill/sync',
+  'config/list', 'config/get', 'config/set', 'config/unset',
+  'task/list', 'task/get', 'task/comments', 'task/comment', 'task/create-direct', 'task/create-attached', 'task/run',
+  'task/run-now', 'task/rerun', 'task/trigger/validate', 'task/trigger/test', 'task/check-now',
+  'task/reset-checkpoint', 'task/update', 'task/update-status', 'task/start', 'task/stop', 'task/runs', 'task/append-session', 'task/archive', 'task/delete',
+  'thought/list', 'thought/create', 'record/list', 'record/create', 'record/get', 'record/delete',
+  'space/list', 'space/whoami', 'space/assignee-list', 'space/goal-list', 'space/issue-create', 'space/issue-update',
+  'space/issue-list', 'space/issue-get', 'space/issue-comment', 'space/issue-comments', 'space/issue-comment-get',
+  'space/issue-status', 'space/issue-claim', 'space/issue-close', 'space/issue-complete', 'space/issue-cancel-claim',
+  'space/claim-local-task', 'space/attachment-download', 'space/attachment-add', 'space/attachment-inspect',
+  'session/list', 'session/get', 'session/start', 'session/send', 'session/watch',
 ]);
 
 const PUBLISHED_COMMAND_GROUPS = new Set([
@@ -3400,6 +3464,35 @@ export function validateDryRunSupport(
     error: `myagents ${command} does not support --dry-run. No changes were applied.`,
     suggestion: `Read myagents ${command} --help; remove --dry-run only when ready to run the command.`,
   };
+}
+
+
+/** Internal routing has more commands, but invalid options must never be silently dropped. */
+export function validateInternalCliInvocation(positional: string[], flags: Record<string, unknown>): AgentCliError | undefined {
+  const globals = new Set(positional.length > 0 ? ['help', 'json', 'port', 'dryRun'] : ['help', 'json', 'port']);
+  const group = positional[0];
+  const groupHelp = flags.help === true && positional.length === 1;
+  const action = positional[1] ?? 'list';
+  const route = group ? buildRoute(group, action, positional.slice(2)) : '';
+  const publicLeaf = findExternalCliPublicCapability(group && positional.length === 1 ? [group, action] : positional);
+  const allowed = new Set(groupHelp ? [] : [...(INTERNAL_CLI_FLAGS[route] ?? []), ...(publicLeaf?.capability.flags ?? [])]);
+  const unknown = Object.keys(flags).find(flag => !globals.has(flag) && !allowed.has(flag));
+  if (unknown) return {
+    code: 'UNKNOWN_FLAG',
+    error: `Unknown flag for '${positional.join(' ') || 'myagents'}': --${unknown}.`,
+    suggestion: `Run myagents ${positional.slice(0, 2).join(' ')} --help for supported options.`,
+  };
+  if (!groupHelp && ((action === 'readme' && group !== 'widget' && positional.length > 2)
+    || (['status', 'version', 'reload'].includes(group ?? '') && positional.length > 1))) {
+    return { code: 'ARGUMENT_INVALID', error: 'Unexpected positional arguments.', suggestion: `Run myagents ${group} --help.` };
+  }
+  if (!groupHelp && publicLeaf && publicLeaf.capability.maxPositionals !== undefined) {
+    const maximum = route === 'task/create-direct' ? 1 : publicLeaf.capability.maxPositionals;
+    if (positional.length - publicLeaf.commandLength > maximum) {
+      return { code: 'ARGUMENT_INVALID', error: `Unexpected positional arguments for '${publicLeaf.capability.command}'.`, suggestion: publicLeaf.capability.usage };
+    }
+  }
+  return undefined;
 }
 
 const EXTERNAL_CLI_GLOBAL_FLAGS = new Set(['help', 'json']);
@@ -5444,9 +5537,9 @@ export function buildRequestBody(
     if (action === 'set') return { id: rest[0], key: rest[1], value: tryParseJson(rest[2]) };
     if (action === 'channel') {
       const channelAction = rest[0] || 'list'; // list | add | remove
-      if (channelAction === 'list') return { agentId: rest[1] || flags.agentId };
+      if (channelAction === 'list') return { agentId: requirePositional(rest[1] ?? flags.agentId as string | undefined, 'agent-id', 'agent channel list', 'agent') };
       if (channelAction === 'add') return { agentId: rest[1] || flags.agentId, channel: stripGlobalFlags(flags) };
-      if (channelAction === 'remove') return { agentId: rest[1], channelId: rest[2] };
+      if (channelAction === 'remove') return { agentId: requirePositional(rest[1], 'agent-id', 'agent channel remove', 'agent'), channelId: requirePositional(rest[2], 'channel-id', 'agent channel remove', 'channel') };
       return { agentId: rest[1] };
     }
     return {};
@@ -5615,18 +5708,23 @@ export function buildRequestBody(
       };
     }
     if (action === 'remove' || action === 'info' || action === 'enable' || action === 'disable') {
-      return { name: rest[0] || flags.name, scope: (flags.scope as string) || 'user' };
+      return { name: rest[0] || flags.name, scope: flags.scope as string | undefined, workspacePath: flags.workspace, ...(action === 'remove' ? { dryRun: flags.dryRun === true } : {}) };
     }
-    if (action === 'list' || action === 'sync') {
-      return {};
+    if (action === 'sync') {
+      return { apply: flags.apply === true, names: rest };
+    }
+    if (action === 'list') {
+      return { workspacePath: flags.workspace };
     }
     return {};
   }
 
   // Config commands
   if (group === 'config') {
+    if (action === 'list') return { prefix: rest[0] || flags.prefix };
     if (action === 'get') return { key: rest[0] || flags.key };
     if (action === 'set') return { key: rest[0] || flags.key, value: tryParseJson(rest[1] ?? String(flags.value ?? '')), dryRun: flags.dryRun };
+    if (action === 'unset') return { key: rest[0] || flags.key, dryRun: flags.dryRun };
     return {};
   }
 
@@ -5834,10 +5932,10 @@ export function buildRequestBody(
       // set. Mirrors the `cron add --prompt-file` pattern above.
       const taskMdContent = resolveTaskMdContent(flags);
       const taskMdFile = flags.taskMdFile ?? flags.taskMdContentFile;
-      const executionMode = (flags.executionMode as string | undefined) ?? 'once';
+      const executionMode = resolveTaskExecutionMode(flags, true);
       const preselectedSessionId = resolvePreselectedSessionId(flags.preselectedSessionId, flags);
       validateTaskSessionBinding(flags.runMode, preselectedSessionId, flags);
-      maybeWarnRecurringWithoutInterval(executionMode, flags);
+      maybeWarnRecurringWithoutInterval(executionMode ?? "once", flags);
       const cronExpression = typeof flags.cronExpression === 'string' ? flags.cronExpression : undefined;
       const cronTimezone = typeof flags.cronTimezone === 'string'
         ? flags.cronTimezone
@@ -5957,8 +6055,8 @@ export function buildRequestBody(
           || flags.taskMdContent !== undefined
           ? resolveTaskMdContent(flags)
           : undefined;
-      const executionMode = flags.executionMode as string | undefined;
-      if (executionMode) maybeWarnRecurringWithoutInterval(executionMode, flags);
+      const executionMode = resolveTaskExecutionMode(flags, false);
+      if (executionMode) maybeWarnRecurringWithoutInterval(executionMode ?? "once", flags);
       const body: Record<string, unknown> = { id };
       const preselectedSessionId = resolvePreselectedSessionId(flags.preselectedSessionId, flags);
       if (flags.runMode !== undefined || preselectedSessionId !== undefined) {
@@ -6012,6 +6110,9 @@ export function buildRequestBody(
   }
 
   // Canonical Record CLI plus the published Thought compatibility alias.
+  if (group === 'record' && (action === 'get' || action === 'delete')) {
+    return { id: requirePositional(rest[0] ?? flags.id as string | undefined, 'record-id', `record ${action}`, 'id') };
+  }
   if (group === 'record' || group === 'thought') {
     if (action === 'list') {
       if (group === 'thought' && flags.kind !== undefined) {
@@ -6459,6 +6560,14 @@ function readTaskTriggerJsonFile(
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       throw new Error(allowNull ? 'JSON must be an object or null' : 'JSON must be an object');
     }
+    const checkpointKeys = Object.keys(value);
+    if (flag === '--checkpoint-file'
+      && Number.isSafeInteger((value as Record<string, unknown>).revision)
+      && checkpointKeys.includes('value')
+      && checkpointKeys.every(key => key === 'revision' || key === 'value' || key === 'updatedAt')
+    ) {
+      throw new Error('expected the checkpoint value object, not a {revision, value} wrapper');
+    }
     return value as Record<string, unknown>;
   } catch (error) {
     return exitAgentCliError(
@@ -6501,8 +6610,8 @@ function resolvePreselectedSessionId(
     return exitAgentCliError(flags, {
       code: 'TASK_SESSION_REQUIRED',
       error: '--preselectedSessionId requires current or a Session id.',
-      suggestion: 'Pass `--preselectedSessionId current` inside a MyAgents Session, or use an id from `myagents session list --json`.',
-      suggestedCommand: 'myagents session list --json',
+      suggestion: 'Pass `--preselectedSessionId current` inside a MyAgents Session, or use an id from `myagents session list --agent <agentId> --json`.',
+      suggestedCommand: 'myagents session list --agent <agentId> --json',
     });
   }
   const value = raw.trim();
@@ -6512,8 +6621,8 @@ function resolvePreselectedSessionId(
   return exitAgentCliError(flags, {
     code: 'CURRENT_SESSION_UNAVAILABLE',
     error: '--preselectedSessionId current requires MYAGENTS_SESSION_ID.',
-    suggestion: 'Run this command inside a MyAgents Session, or pass an explicit id from `myagents session list --json`.',
-    suggestedCommand: 'myagents session list --json',
+    suggestion: 'Run this command inside a MyAgents Session, or pass an explicit id from `myagents session list --agent <agentId> --json`.',
+    suggestedCommand: 'myagents session list --agent <agentId> --json',
   });
 }
 
@@ -6534,8 +6643,8 @@ function validateTaskSessionBinding(
     exitAgentCliError(flags, {
       code: 'TASK_SESSION_REQUIRED',
       error: '--runMode single-session requires --preselectedSessionId current|<session-id>.',
-      suggestion: 'Use `current` inside MyAgents, or choose a materialized id from `myagents session list --json`.',
-      suggestedCommand: 'myagents session list --json',
+      suggestion: 'Use `current` inside MyAgents, or choose a materialized id from `myagents session list --agent <agentId> --json`.',
+      suggestedCommand: 'myagents session list --agent <agentId> --json',
     });
   }
 }

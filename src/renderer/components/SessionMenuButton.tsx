@@ -21,19 +21,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-    BarChart2,
-    Check,
-    ChevronRight,
-    Copy,
-    Download,
-    Gauge,
-    Loader2,
-    MessageSquare,
-    MoreHorizontal,
-    Pencil,
-    Star,
-    Trash2,
-} from 'lucide-react';
+  ChartIcon,
+  CheckIcon,
+  ChevronRightIcon,
+  CopyIcon,
+  DownloadIcon,
+  GaugeIcon,
+  LoaderIcon,
+  MessageIcon,
+  MoreIcon,
+  EditIcon,
+  StarIcon,
+  TrashIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import { updateSession, type SessionMetadata } from '@/api/sessionClient';
@@ -42,8 +42,11 @@ import { useSessionDeletion } from '@/context/SessionDeletionContext';
 import { exportSessionAsMarkdown } from '@/utils/sessionExport';
 import { copyPlainText } from '@/utils/clipboard';
 import type { ChannelSurface } from '@/hooks/useSessionSurfaces';
+import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
 
 import ConfirmDialog from './ConfirmDialog';
+import { sessionRuntimePresentation } from './runtimePresentation';
+import RuntimeIcon from './RuntimeIcon';
 import SessionStatsModal from './SessionStatsModal';
 import Tip from './Tip';
 import { useToast } from './Toast';
@@ -70,6 +73,9 @@ export interface BotChannelCandidate {
 
 export interface SessionMenuButtonProps {
     sessionId: string;
+    /** Frozen identity of this Session; null while its metadata is loading. */
+    runtime: RuntimeType | null;
+    runtimeSource?: RuntimeSource | null;
     sessionTitle: string;
     workspacePath: string;
     /** Current binding (null = pure desktop session) */
@@ -91,7 +97,7 @@ export interface SessionMenuButtonProps {
      * Send the SDK `/context` slash command on behalf of the user so the
      * `/context` output (real token-window distribution) lands in the chat
      * stream. Only wired by the caller when the active runtime is `builtin`
-     * — external runtimes (Claude Code CLI / Codex / Gemini) don't share
+     * — external runtimes (Claude Code CLI / Codex) don't share
      * this command surface, so the menu item should hide entirely there.
      * The menu omits the row when this prop is undefined.
      */
@@ -105,6 +111,8 @@ export interface SessionMenuButtonProps {
 
 export default function SessionMenuButton({
     sessionId,
+    runtime,
+    runtimeSource,
     sessionTitle,
     workspacePath,
     boundChannel,
@@ -138,6 +146,7 @@ export default function SessionMenuButton({
     const [favoriteInFlight, setFavoriteInFlight] = useState(false);
     const [handoverPendingTargetKey, setHandoverPendingTargetKey] = useState<string | null>(null);
     const [sessionIdCopied, setSessionIdCopied] = useState(false);
+    const runtimePresentation = runtime ? sessionRuntimePresentation(runtime, runtimeSource) : null;
     const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     useEffect(() => {
@@ -318,7 +327,7 @@ export default function SessionMenuButton({
                             : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
                     }`}
                 >
-                    <MoreHorizontal className="h-4 w-4" />
+                    <MoreIcon className="h-4 w-4" />
                 </button>
             </Tip>
 
@@ -328,10 +337,16 @@ export default function SessionMenuButton({
                 anchorRef={triggerRef}
                 placement="bottom-start"
                 offset={6}
-                className="w-56 py-1"
+                className="w-72 py-1"
                 closeOnOutsideClick={!submenuOpen && !tagLayerOpen}
                 closeOnEscape={!submenuOpen && !tagLayerOpen}
             >
+                <div className="flex min-w-0 items-center gap-2 border-b border-[var(--line-subtle)] px-3 py-2.5">
+                    {runtime && <RuntimeIcon type={runtime} size={20} />}
+                    <span className="min-w-0 truncate text-sm font-medium text-[var(--ink)]" title={runtimePresentation?.name}>
+                        {runtimePresentation?.name ?? t('shell.sessionMenu.runtimeLoading')}
+                    </span>
+                </div>
                 <div className="border-b border-[var(--line-subtle)] px-3 py-2">
                     <div className="flex min-w-0 items-center gap-2 text-xs">
                         <span className="shrink-0 text-[var(--ink-muted)]">SessionID:</span>
@@ -347,20 +362,20 @@ export default function SessionMenuButton({
                             className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-xs text-[var(--accent)] transition-colors hover:bg-[var(--accent-warm-subtle)]"
                             aria-label={t('shell.sessionMenu.copySessionIdAria')}
                         >
-                            {sessionIdCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                            {sessionIdCopied ? <CheckIcon className="h-3 w-3" /> : <CopyIcon className="h-3 w-3" />}
                             <span>{sessionIdCopied ? t('shell.sessionMenu.copied') : t('shell.sessionMenu.copy')}</span>
                         </button>
                     </div>
                 </div>
                 <MenuItem
-                    icon={<Pencil className="h-3.5 w-3.5" />}
+                    icon={<EditIcon className="h-3.5 w-3.5" />}
                     label={t('shell.sessionMenu.rename')}
                     onClick={canRename ? handleRename : undefined}
                     disabled={!canRename}
                     title={canRename ? undefined : t('shell.sessionMenu.renameDisabledTitle')}
                 />
                 <MenuItem
-                    icon={<Star className="h-3.5 w-3.5" fill={favorite ? 'currentColor' : 'none'} />}
+                    icon={<StarIcon className="h-3.5 w-3.5" fill={favorite ? 'currentColor' : 'none'} />}
                     label={favorite ? t('shell.sessionMenu.unfavorite') : t('shell.sessionMenu.favorite')}
                     onClick={() => { void handleToggleFavorite(); }}
                     disabled={favoriteInFlight}
@@ -376,20 +391,20 @@ export default function SessionMenuButton({
                 />
                 <MenuItem
                     icon={exporting
-                        ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        : <Download className="h-3.5 w-3.5" />}
+                        ? <LoaderIcon className="h-3.5 w-3.5 animate-spin" />
+                        : <DownloadIcon className="h-3.5 w-3.5" />}
                     label={t('shell.sessionMenu.exportMarkdown')}
                     onClick={() => { void handleExport(); }}
                     disabled={exporting}
                 />
                 <MenuItem
-                    icon={<BarChart2 className="h-3.5 w-3.5" />}
+                    icon={<ChartIcon className="h-3.5 w-3.5" />}
                     label={t('shell.sessionMenu.tokenStats')}
                     onClick={handleShowStats}
                 />
                 {onShowContext && (
                     <MenuItem
-                        icon={<Gauge className="h-3.5 w-3.5" />}
+                        icon={<GaugeIcon className="h-3.5 w-3.5" />}
                         label={t('shell.sessionMenu.contextUsage')}
                         onClick={handleShowContext}
                     />
@@ -397,10 +412,10 @@ export default function SessionMenuButton({
                 {showBotItem && (
                     <MenuItem
                         ref={botMenuItemRef}
-                        icon={<MessageSquare className="h-3.5 w-3.5" />}
+                        icon={<MessageIcon className="h-3.5 w-3.5" />}
                         label={t('shell.sessionMenu.continueInBot')}
                         trailing={(
-                            <ChevronRight
+                            <ChevronRightIcon
                                 className="h-4 w-4 shrink-0 text-[var(--ink-muted)]"
                                 data-session-menu-submenu-chevron
                             />
@@ -414,7 +429,7 @@ export default function SessionMenuButton({
                  * The click still reaches the lock-held Rust authority after
                  * confirmation, so a stale projection cannot block deletion. */}
                 <MenuItem
-                    icon={<Trash2 className="h-3.5 w-3.5" />}
+                    icon={<TrashIcon className="h-3.5 w-3.5" />}
                     label={t('shell.sessionMenu.delete')}
                     onClick={handleDeleteClick}
                     title={deleteProtected ? t('shell.sessionMenu.deleteBlockedByOwner') : undefined}
@@ -577,7 +592,7 @@ function ChannelMenuItem({
                     {sourceLabel}
                 </span>
             </span>
-            {pending && <Loader2 className="h-3 w-3 shrink-0 animate-spin text-[var(--ink-muted)]" />}
+            {pending && <LoaderIcon className="h-3 w-3 shrink-0 animate-spin text-[var(--ink-muted)]" />}
         </button>
     );
 }

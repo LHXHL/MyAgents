@@ -1,6 +1,12 @@
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowDown, ArrowUp, MoreHorizontal, Search, X } from 'lucide-react';
+import {
+  ArrowDownIcon,
+  ArrowUpIcon,
+  MoreIcon,
+  SearchIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { EditorView, runScopeHandlers, type Panel } from '@codemirror/view';
 import { closeSearchPanel, findNext, findPrevious, getSearchQuery, replaceAll, replaceNext, SearchQuery, selectMatches, setSearchQuery } from '@codemirror/search';
 import { Popover } from '@/components/ui/Popover';
@@ -50,15 +56,15 @@ export default function EditorSearchPanel({ view, query, readOnly, active = true
     }
   }}>
     <div className="md-search-row">
-      <Search size={15} className="md-search-icon" aria-hidden="true" />
+      <SearchIcon size={15} className="md-search-icon" aria-hidden="true" />
       <input ref={input} {...{ 'main-field': 'true' }} name="search" value={query.search} aria-label={t('markdownEditor.find')}
         placeholder={t('markdownEditor.find')} aria-invalid={!!query.search && !query.valid} autoComplete="off" spellCheck={false}
         onChange={event => setQuery({ search: event.target.value })} />
-      <Tip label={t('markdownEditor.searchPrevious')}><button type="button" aria-label={t('markdownEditor.searchPrevious')} disabled={!query.valid} onClick={() => findPrevious(view)}><ArrowUp size={16} /></button></Tip>
-      <Tip label={t('markdownEditor.searchNext')}><button type="button" aria-label={t('markdownEditor.searchNext')} disabled={!query.valid} onClick={() => findNext(view)}><ArrowDown size={16} /></button></Tip>
+      <Tip label={t('markdownEditor.searchPrevious')}><button type="button" aria-label={t('markdownEditor.searchPrevious')} disabled={!query.valid} onClick={() => findPrevious(view)}><ArrowUpIcon size={16} /></button></Tip>
+      <Tip label={t('markdownEditor.searchNext')}><button type="button" aria-label={t('markdownEditor.searchNext')} disabled={!query.valid} onClick={() => findNext(view)}><ArrowDownIcon size={16} /></button></Tip>
       <Tip label={t('markdownEditor.searchOptions')} disabled={optionsOpen}><button ref={more} type="button" aria-label={t('markdownEditor.searchOptions')} aria-haspopup="dialog" aria-expanded={optionsOpen}
-        onClick={() => setOptionsOpen(value => !value)}><MoreHorizontal size={16} /></button></Tip>
-      <Tip label={t('markdownEditor.close')}><button type="button" aria-label={t('markdownEditor.close')} onClick={close}><X size={16} /></button></Tip>
+        onClick={() => setOptionsOpen(value => !value)}><MoreIcon size={16} /></button></Tip>
+      <Tip label={t('markdownEditor.close')}><button type="button" aria-label={t('markdownEditor.close')} onClick={close}><CloseIcon size={16} /></button></Tip>
     </div>
     {query.search && !query.valid && <div className="md-search-error" role="status">{t('markdownEditor.searchInvalid')}</div>}
     <Popover open={optionsOpen && active} onClose={() => setOptionsOpen(false)} anchorRef={more} placement="bottom-end" closeOnEscape={false} className="md-search-options">

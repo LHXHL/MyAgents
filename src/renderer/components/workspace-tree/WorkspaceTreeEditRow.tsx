@@ -1,5 +1,5 @@
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
-import { FilePlus, FolderPlus } from "lucide-react";
+import { FilePlusIcon, FolderPlusIcon } from '@/components/icons';
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
@@ -90,14 +90,14 @@ export const WorkspaceTreeEditRow = memo(function WorkspaceTreeEditRow({
 
   const icon = isDir ? (
     editing.mode === "create-folder" ? (
-      <FolderPlus className="h-3.5 w-3.5 flex-shrink-0 text-[var(--accent-warm)]/70" />
+      <FolderPlusIcon className="h-3.5 w-3.5 flex-shrink-0 text-[var(--accent-warm)]/70" />
     ) : (
       <FileIcon name={name || initialName} nodeKind="directory" />
     )
   ) : name ? (
     <FileIcon name={name} />
   ) : (
-    <FilePlus className="h-3.5 w-3.5 flex-shrink-0 text-[var(--accent-warm)]" />
+    <FilePlusIcon className="h-3.5 w-3.5 flex-shrink-0 text-[var(--accent-warm)]" />
   );
 
   return (

@@ -1,7 +1,16 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { delimiter, join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { ensureShellPath } from '../utils/shell';
+
+vi.mock('../utils/shell', () => ({
+  ensureShellPath: vi.fn(async () => process.env.Path ?? process.env.PATH ?? ''),
+  getShellPath: () => process.env.Path ?? process.env.PATH ?? '',
+  getShellEnv: () => ({ ...process.env }),
+  getDetectedTerminalProxyEnv: () => ({}),
+}));
 
 import { MANAGED_CODEX_REQUIRED_RUNTIME } from '../../shared/config-types';
 import {
@@ -39,8 +48,34 @@ describe('codex command context', () => {
     tempHome = null;
   });
 
-  it('keeps system-cli on PATH resolution semantics', () => {
-    const context = resolveCodexCommandContext({ source: 'system-cli' });
+  it('keeps system-cli on PATH resolution semantics', async () => {
+    tempHome = mkdtempSync(join(tmpdir(), 'myagents-cli-selection-'));
+    const selected = join(tempHome, 'selected');
+    const fallback = join(tempHome, 'fallback');
+    mkdirSync(selected);
+    mkdirSync(fallback);
+    const name = process.platform === 'win32' ? 'codex.cmd' : 'codex';
+    for (const dir of [selected, fallback]) {
+      writeFileSync(join(dir, name), '');
+      chmodSync(join(dir, name), 0o755);
+    }
+    vi.stubEnv(process.platform === 'win32' ? 'Path' : 'PATH', [selected, fallback].join(delimiter));
+    // A first model request must wait for shell discovery before picking a CLI.
+    let finishDiscovery!: () => void;
+    vi.mocked(ensureShellPath).mockImplementationOnce(() => new Promise<string>(resolve => {
+      finishDiscovery = () => resolve(process.env.Path ?? process.env.PATH ?? '');
+    }));
+    let settled = false;
+    const resolving = resolveCodexCommandContext({ source: 'system-cli' }).then(value => {
+      settled = true;
+      return value;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    finishDiscovery();
+    const context = await resolving;
+    expect(context.commandPath).toBe(join(selected, name));
+    expect(context.env.Path ?? context.env.PATH).toBe([selected, fallback].join(delimiter));
     expect(context.source).toBe('system-cli');
     expect(context.codexHome).toBeUndefined();
     expect(context.commandPath).toBeTruthy();
@@ -53,11 +88,11 @@ describe('codex command context', () => {
     expect(adapterSource).not.toContain('assertManagedCodexRuntimeConformanceVersion');
   });
 
-  it('uses managed runtime path and isolated CODEX_HOME for managed-provider', () => {
+  it('uses managed runtime path and isolated CODEX_HOME for managed-provider', async () => {
     const platform = platformKey();
     if (!platform) {
-      expect(() => resolveCodexCommandContext({ source: 'managed-provider' }))
-        .toThrow(/not supported/i);
+      await expect(resolveCodexCommandContext({ source: 'managed-provider' }))
+        .rejects.toThrow(/not supported/i);
       return;
     }
 
@@ -89,7 +124,7 @@ describe('codex command context', () => {
       executableRelativePath: process.platform === 'win32' ? 'codex.exe' : 'codex',
     }));
 
-    const context = resolveCodexCommandContext({ source: 'managed-provider' });
+    const context = await resolveCodexCommandContext({ source: 'managed-provider' });
 
     expect(context.source).toBe('managed-provider');
     expect(context.commandPath).toBe(binary);
@@ -106,7 +141,7 @@ describe('codex command context', () => {
     expect(rules).toContain(JSON.stringify(join(tempHome, '.myagents', 'bin', process.platform === 'win32' ? 'myagents.cmd' : 'myagents')));
   });
 
-  it('prefers executableRelativePath from managed installed metadata', () => {
+  it('prefers executableRelativePath from managed installed metadata', async () => {
     const platform = platformKey();
     if (!platform) return;
 
@@ -125,12 +160,12 @@ describe('codex command context', () => {
       executableRelativePath: process.platform === 'win32' ? 'package/bin/codex.exe' : 'package/bin/codex',
     }));
 
-    const context = resolveCodexCommandContext({ source: 'managed-provider' });
+    const context = await resolveCodexCommandContext({ source: 'managed-provider' });
 
     expect(context.commandPath).toBe(binary);
   });
 
-  it('keeps a verified stale runtime available until a new Sidecar starts after update', () => {
+  it('keeps a verified stale runtime available until a new Sidecar starts after update', async () => {
     const platform = platformKey();
     if (!platform) return;
 
@@ -149,14 +184,14 @@ describe('codex command context', () => {
       executableRelativePath: process.platform === 'win32' ? 'codex.exe' : 'codex',
     }));
 
-    const context = resolveCodexCommandContext({ source: 'managed-provider' });
+    const context = await resolveCodexCommandContext({ source: 'managed-provider' });
 
     expect(staleVersion).not.toBe(MANAGED_CODEX_REQUIRED_RUNTIME.version);
     expect(context.commandPath).toBe(binary);
     expect(context.version).toBe(staleVersion);
   });
 
-  it('does not launch an unverified stale runtime', () => {
+  it('does not launch an unverified stale runtime', async () => {
     const platform = platformKey();
     if (!platform) return;
 
@@ -175,11 +210,11 @@ describe('codex command context', () => {
       executableRelativePath: process.platform === 'win32' ? 'codex.exe' : 'codex',
     }));
 
-    expect(() => resolveCodexCommandContext({ source: 'managed-provider' }))
-      .toThrow(/not installed/i);
+    await expect(resolveCodexCommandContext({ source: 'managed-provider' }))
+      .rejects.toThrow(/not installed/i);
   });
 
-  it.runIf(process.platform === 'win32')('accepts legacy Windows separators in managed installed metadata', () => {
+  it.runIf(process.platform === 'win32')('accepts legacy Windows separators in managed installed metadata', async () => {
     const platform = platformKey();
     if (!platform) return;
 
@@ -198,12 +233,12 @@ describe('codex command context', () => {
       executableRelativePath: 'vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe',
     }));
 
-    const context = resolveCodexCommandContext({ source: 'managed-provider' });
+    const context = await resolveCodexCommandContext({ source: 'managed-provider' });
 
     expect(context.commandPath).toBe(binary);
   });
 
-  it.runIf(process.platform === 'win32')('rejects traversal in legacy Windows metadata paths', () => {
+  it.runIf(process.platform === 'win32')('rejects traversal in legacy Windows metadata paths', async () => {
     const platform = platformKey();
     if (!platform) return;
 
@@ -219,11 +254,11 @@ describe('codex command context', () => {
       executableRelativePath: '..\\codex.exe',
     }));
 
-    expect(() => resolveCodexCommandContext({ source: 'managed-provider' }))
-      .toThrow(/not installed/i);
+    await expect(resolveCodexCommandContext({ source: 'managed-provider' }))
+      .rejects.toThrow(/not installed/i);
   });
 
-  it('rejects traversal in the installed runtime version', () => {
+  it('rejects traversal in the installed runtime version', async () => {
     const platform = platformKey();
     if (!platform) return;
 
@@ -241,7 +276,7 @@ describe('codex command context', () => {
       executableRelativePath: process.platform === 'win32' ? 'codex.exe' : 'codex',
     }));
 
-    expect(() => resolveCodexCommandContext({ source: 'managed-provider' }))
-      .toThrow(/not installed/i);
+    await expect(resolveCodexCommandContext({ source: 'managed-provider' }))
+      .rejects.toThrow(/not installed/i);
   });
 });

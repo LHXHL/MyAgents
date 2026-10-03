@@ -22,8 +22,12 @@ import type { AgentConfigMutation } from '../../shared/agentConfigMutation';
 //    out keeps this function pure across both Chat (with a session) and
 //    Launcher (without).
 
-import { type PermissionMode, type Project, type McpServerDefinition } from '@/config/types';
+import { CODEX_SUBSCRIPTION_PROVIDER_ID, type PermissionMode, type Project, type McpServerDefinition } from '@/config/types';
 import { type RuntimeConfig } from '@/../shared/types/runtime';
+import {
+  runtimeTypeForAgentRuntimePreference,
+  type AgentRuntimePreference,
+} from '@/../shared/integrated-runtimes/identity';
 import { createConcreteProviderRoute, type ProviderRoute } from '@/../shared/providerRoute';
 import {
   runtimeBackedProviderPermissionMode,
@@ -53,7 +57,7 @@ export interface InputOptionFields {
   /** Selected model when on the builtin runtime. Legacy loose field; Chat's
    *  provider/model picker must use builtinSelection instead. */
   builtinModel?: string | null;
-  /** Selected model when on an external runtime (Codex/CC/Gemini). */
+  /** Selected model when on an external runtime (Codex/CC). */
   runtimeModel?: string | null;
   /** Provider-shaped selection whose execution is owned by an external runtime
    *  (currently Codex 订阅). This is intentionally separate from
@@ -84,12 +88,18 @@ export interface PersistInputOptionParams {
   /** Agent id; null when the workspace has no Basic Agent yet. */
   agentId?: string | null;
 
-  /** Whether the active runtime is non-builtin (Codex/CC/Gemini). Used to
-   *  branch where permission mode and runtime model live on disk. */
+  /** Whether the active runtime uses the shared non-builtin process adapter.
+   *  `usesProductConfiguration` separates Integrated DSH from External CLIs. */
   isExternalRuntime: boolean;
+  /** Integrated runtimes such as DSH use the shared process adapter while
+   * Product Agent/Project fields continue to own Provider/model/permission. */
+  usesProductConfiguration?: boolean;
   /** Existing runtimeConfig to merge into when writing
    *  `runtimeConfig.permissionMode` / `.model`. Avoids stomping unrelated keys. */
   currentRuntimeConfig?: RuntimeConfig;
+  /** Base Integrated Runtime preference to restore after leaving a managed
+   * Provider Runtime. Managed Codex must not silently reset DSH to Claude. */
+  currentRuntimePreference?: AgentRuntimePreference;
   /** Current Agent/Project provider. Used only to clean old managed-provider runtime projection. */
   currentProviderId?: string | null;
 
@@ -286,6 +296,10 @@ export async function persistInputOptionChange(
     params.pushRuntimeConfigToSidecar &&
     (
       params.fields.runtimeModel !== undefined
+      || (params.usesProductConfiguration && (
+        params.fields.builtinSelection !== undefined
+        || params.fields.builtinModel !== undefined
+      ))
       || params.fields.permissionMode !== undefined
       || params.fields.runtimeBackedProviderSelection !== undefined
     )
@@ -294,6 +308,12 @@ export async function persistInputOptionChange(
       const runtimeConfig: Pick<RuntimeConfig, 'model' | 'permissionMode' | 'reasoningEffort'> = {};
       if (params.fields.runtimeBackedProviderSelection) {
         runtimeConfig.model = params.fields.runtimeBackedProviderSelection.model;
+      } else if (params.usesProductConfiguration) {
+        if (params.fields.builtinSelection !== undefined) {
+          runtimeConfig.model = params.fields.builtinSelection.model;
+        } else if (params.fields.builtinModel !== undefined) {
+          runtimeConfig.model = params.fields.builtinModel ?? undefined;
+        }
       } else if (params.fields.runtimeModel !== undefined) {
         runtimeConfig.model = params.fields.runtimeModel ?? undefined;
       }
@@ -325,12 +345,14 @@ function buildProjectPatch(
   params: PersistInputOptionParams,
 ): Partial<Omit<Project, 'id'>> {
   const patch: Partial<Omit<Project, 'id'>> = {};
-  const { fields, isExternalRuntime } = params;
+  const { fields } = params;
+  const runtimeOwnsConfiguration = params.isExternalRuntime
+    && !params.usesProductConfiguration;
 
   if (fields.runtimeBackedProviderSelection !== undefined) {
     patch.providerId = fields.runtimeBackedProviderSelection.providerId;
     patch.model = fields.runtimeBackedProviderSelection.model;
-  } else if (!isExternalRuntime && fields.builtinSelection !== undefined) {
+  } else if (!runtimeOwnsConfiguration && fields.builtinSelection !== undefined) {
     patch.providerId = fields.builtinSelection.providerId;
     patch.model = fields.builtinSelection.model;
   } else if (fields.providerId !== undefined) {
@@ -340,10 +362,10 @@ function buildProjectPatch(
   // model" used by future sessions. runtimeModel does NOT go to the project
   // because the project doesn't track a per-runtime model; that field lives
   // on the agent.runtimeConfig.
-  if (!isExternalRuntime && fields.builtinSelection === undefined && fields.builtinModel !== undefined) {
+  if (!runtimeOwnsConfiguration && fields.builtinSelection === undefined && fields.builtinModel !== undefined) {
     patch.model = fields.builtinModel ?? null;
   }
-  if (fields.permissionMode !== undefined && !isExternalRuntime) {
+  if (fields.permissionMode !== undefined && !runtimeOwnsConfiguration) {
     patch.permissionMode = fields.permissionMode as PermissionMode;
   }
   if (fields.mcpEnabledServers !== undefined) {
@@ -360,7 +382,9 @@ function buildProjectPatch(
 
 function buildSnapshotPatch(params: PersistInputOptionParams): SessionSnapshotPatch {
   const patch: SessionSnapshotPatch = {};
-  const { fields, isExternalRuntime } = params;
+  const { fields } = params;
+  const runtimeOwnsConfiguration = params.isExternalRuntime
+    && !params.usesProductConfiguration;
 
   if (fields.runtimeBackedProviderSelection !== undefined) {
     patch.providerId = fields.runtimeBackedProviderSelection.providerId;
@@ -368,7 +392,7 @@ function buildSnapshotPatch(params: PersistInputOptionParams): SessionSnapshotPa
     patch.providerExecutionIdentity = fields.runtimeBackedProviderSelection;
     patch.model = fields.runtimeBackedProviderSelection.model;
     patch.providerEnvJson = null;
-  } else if (!isExternalRuntime && fields.builtinSelection !== undefined) {
+  } else if (!runtimeOwnsConfiguration && fields.builtinSelection !== undefined) {
     patch.providerId = fields.builtinSelection.providerId;
     patch.providerRoute = routeFromBuiltinSelection(fields.builtinSelection);
     patch.providerExecutionIdentity = null;
@@ -396,7 +420,7 @@ function buildSnapshotPatch(params: PersistInputOptionParams): SessionSnapshotPa
   // builtin values.
   if (fields.runtimeBackedProviderSelection !== undefined) {
     patch.model = fields.runtimeBackedProviderSelection.model;
-  } else if (isExternalRuntime) {
+  } else if (runtimeOwnsConfiguration) {
     if (fields.runtimeModel !== undefined) patch.model = fields.runtimeModel;
   } else if (fields.builtinSelection !== undefined) {
     patch.model = fields.builtinSelection.model;
@@ -427,11 +451,10 @@ function buildSnapshotPatch(params: PersistInputOptionParams): SessionSnapshotPa
   return patch;
 }
 
-function buildAgentPatch(
-  params: PersistInputOptionParams,
-): AgentConfigMutation {
+function buildAgentPatch(params: PersistInputOptionParams): AgentConfigMutation {
   const patch: AgentConfigMutation = {};
-  const { fields, isExternalRuntime } = params;
+  const { fields } = params;
+  const runtimeOwnsConfiguration = params.isExternalRuntime && !params.usesProductConfiguration;
   if (fields.runtimeBackedProviderSelection) {
     patch.runtimeBackedProviderSelection = fields.runtimeBackedProviderSelection;
     if (fields.permissionMode !== undefined) patch.permissionMode = fields.permissionMode as PermissionMode;
@@ -441,59 +464,38 @@ function buildAgentPatch(
   } else if (fields.providerId !== undefined) {
     patch.providerId = fields.providerId ?? undefined;
   }
-  const writesOrdinaryProviderDefault = fields.builtinSelection !== undefined || fields.providerId !== undefined || fields.builtinModel !== undefined;
-  if (fields.mcpEnabledServers !== undefined) {
-    patch.mcpEnabledServers = fields.mcpEnabledServers;
+  const writesOrdinaryProviderDefault = fields.runtimeBackedProviderSelection === undefined
+    && (fields.builtinSelection !== undefined || fields.providerId !== undefined || fields.builtinModel !== undefined);
+  const leavingManagedProvider = writesOrdinaryProviderDefault
+    && (params.currentProviderId === CODEX_SUBSCRIPTION_PROVIDER_ID || params.currentRuntimeConfig?.source === 'managed-provider');
+  if (leavingManagedProvider && params.currentRuntimePreference?.family === 'integrated'
+    && runtimeTypeForAgentRuntimePreference(params.currentRuntimePreference) === 'dsh') {
+    // The writer resolves this intent against its locked current record, preserving
+    // the base Integrated Runtime rather than silently rebirthing Claude.
+    patch.runtime = 'dsh';
+    patch.runtimePreference = params.currentRuntimePreference;
   }
-  if (fields.enabledPluginIds !== undefined) {
-    patch.enabledPluginIds = fields.enabledPluginIds;
-  }
-  if (fields.enabledOfficialToolIds !== undefined) {
-    patch.enabledOfficialToolIds = fields.enabledOfficialToolIds;
-  }
+  if (fields.mcpEnabledServers !== undefined) patch.mcpEnabledServers = fields.mcpEnabledServers;
+  if (fields.enabledPluginIds !== undefined) patch.enabledPluginIds = fields.enabledPluginIds;
+  if (fields.enabledOfficialToolIds !== undefined) patch.enabledOfficialToolIds = fields.enabledOfficialToolIds;
 
-  // Permission mode + model split by runtime. The historical Chat.tsx bug
-  // was writing every permission mode change to `agent.permissionMode` even
-  // when the runtime was external (Codex/CC/Gemini), where the canonical
-  // location is `agent.runtimeConfig.permissionMode`. Launcher already had
-  // the correct branch — this helper is the unified version.
   if (fields.runtimeBackedProviderSelection !== undefined) {
-    // Runtime-backed providers already wrote their runtime-owned fields above.
+    // The locked config writer resolves selection and strips stale managed fields.
   } else if (fields.runtimeBackedProviderContext) {
     if (fields.permissionMode !== undefined) patch.permissionMode = fields.permissionMode as PermissionMode;
     if (fields.reasoningEffort !== undefined) patch.runtimeConfigPatch = { reasoningEffort: fields.reasoningEffort };
-  } else if (isExternalRuntime && !writesOrdinaryProviderDefault) {
+  } else if (runtimeOwnsConfiguration && !writesOrdinaryProviderDefault) {
     const next: Partial<RuntimeConfig> = {};
-    let runtimeConfigDirty = false;
-    if (fields.permissionMode !== undefined) {
-      next.permissionMode = fields.permissionMode;
-      runtimeConfigDirty = true;
-    }
-    if (fields.runtimeModel !== undefined) {
-      next.model = fields.runtimeModel ?? undefined;
-      runtimeConfigDirty = true;
-    }
-    if (fields.reasoningEffort !== undefined) {
-      next.reasoningEffort = fields.reasoningEffort;
-      runtimeConfigDirty = true;
-    }
-    if (runtimeConfigDirty) {
-      patch.runtimeConfigPatch = next;
-    }
+    if (fields.permissionMode !== undefined) next.permissionMode = fields.permissionMode;
+    if (fields.runtimeModel !== undefined) next.model = fields.runtimeModel ?? undefined;
+    if (fields.reasoningEffort !== undefined) next.reasoningEffort = fields.reasoningEffort;
+    if (Object.keys(next).length > 0) patch.runtimeConfigPatch = next;
   } else {
-    if (fields.permissionMode !== undefined) {
-      patch.permissionMode = fields.permissionMode as PermissionMode;
-    }
-    if (fields.builtinSelection !== undefined) {
-      patch.model = fields.builtinSelection.model;
-    } else if (fields.builtinModel !== undefined) {
-      patch.model = fields.builtinModel ?? undefined;
-    }
-    if (fields.reasoningEffort !== undefined) {
-      patch.reasoningEffort = fields.reasoningEffort;
-    }
+    if (fields.permissionMode !== undefined) patch.permissionMode = fields.permissionMode as PermissionMode;
+    if (fields.builtinSelection !== undefined) patch.model = fields.builtinSelection.model;
+    else if (fields.builtinModel !== undefined) patch.model = fields.builtinModel ?? undefined;
+    if (fields.reasoningEffort !== undefined) patch.reasoningEffort = fields.reasoningEffort;
   }
-
   return patch;
 }
 

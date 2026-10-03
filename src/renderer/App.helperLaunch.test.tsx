@@ -49,7 +49,6 @@ const mocks = vi.hoisted(() => {
     project,
     agent,
     provider,
-    multiAgentRuntime: false,
     resolveBuiltinSelection: vi.fn((): { provider: typeof provider; model: string } | undefined => ({
       provider,
       model: 'mimo-v2.5-pro',
@@ -426,7 +425,6 @@ vi.mock('@/hooks/useConfig', () => ({
     config: {
       projects: [mocks.project],
       agents: [mocks.agent],
-      multiAgentRuntime: mocks.multiAgentRuntime,
       managedCodexProviderDevGate: true,
       managedCodexRuntimeInstall: { status: 'installed', usable: true },
       managedCodexAuth: { status: 'valid', authMethod: 'chatgpt' },
@@ -464,7 +462,7 @@ vi.mock('@/hooks/useConfig', () => ({
 }));
 
 vi.mock('@/config/useConfigData', () => ({
-  useConfigData: () => ({ config: { multiAgentRuntime: false } }),
+  useConfigData: () => ({ config: {  } }),
 }));
 
 vi.mock('@/config/services/appConfigService', () => ({
@@ -557,7 +555,6 @@ describe('App helper launch', () => {
     mocks.agent.permissionMode = 'auto';
     mocks.agent.reasoningEffort = undefined;
     mocks.agent.runtimeConfig = undefined;
-    mocks.multiAgentRuntime = false;
     mocks.hasSessionSidecar.mockResolvedValue(true);
     mocks.getSessionGeneration.mockResolvedValue(1);
     mocks.ensureSessionSidecar.mockResolvedValue({ port: 31417, isNew: true });
@@ -1713,7 +1710,7 @@ describe('App helper launch', () => {
       new Set([firstSessionId, secondSessionId]),
     );
     expect(screen.getAllByTestId('tab-provider')).toHaveLength(2);
-    expect(screen.getAllByTestId('chat-page')).toHaveLength(1);
+    expect(await screen.findAllByTestId('chat-page')).toHaveLength(1);
     expect(screen.getByTestId('tabbar-active')).toHaveTextContent('Second restored history');
     expect(mocks.setAppActiveCorrelation).toHaveBeenCalledWith({
       tabId: 'restored-second',
@@ -2303,7 +2300,6 @@ describe('App helper launch', () => {
   });
 
   it('keeps external-runtime empty launches on the pending-session path', async () => {
-    mocks.multiAgentRuntime = true;
     mocks.agent.runtime = 'codex';
     mocks.resolveBuiltinSelection.mockReturnValue({
       provider: managedCodexProvider(),
@@ -2328,7 +2324,6 @@ describe('App helper launch', () => {
 
   it('starts Task discussion with the workspace external Runtime without requiring a builtin provider', async () => {
     mocks.tauriEnvironment = true;
-    mocks.multiAgentRuntime = true;
     mocks.agent.runtime = 'codex';
     mocks.resolveBuiltinSelection.mockReturnValue(undefined);
     tauriCoreMocks.invoke.mockImplementation(async (command) => {
@@ -2378,7 +2373,6 @@ describe('App helper launch', () => {
 
   it('ensures the canonical audio document before opening a Record discussion', async () => {
     mocks.tauriEnvironment = true;
-    mocks.multiAgentRuntime = true;
     mocks.agent.runtime = 'codex';
     mocks.resolveBuiltinSelection.mockReturnValue(undefined);
     tauriCoreMocks.invoke.mockImplementation(async (command) => {

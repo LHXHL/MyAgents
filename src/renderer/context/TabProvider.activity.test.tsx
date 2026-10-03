@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { StrictMode, useEffect, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { track } from '@/analytics';
 import * as largeValueRefs from '@/api/largeValueRef';
 import type { SseEventMetadata } from '@/api/SseConnection';
 import {
@@ -10,6 +11,8 @@ import {
 } from '@/utils/sessionDeletionCoordinator';
 import { useTabState } from './TabContext';
 import type { Message } from '@/types/chat';
+import { ToastProvider } from '@/components/Toast';
+import { NATIVE_RESUME_BOUNDARY_MESSAGE } from '../../shared/nativeResumeBoundary';
 import TabProvider, {
   applySubagentLifecycleUpdate,
   finalizeMessageSubagentProjection,
@@ -64,7 +67,7 @@ vi.mock('@/api/SseConnection', () => ({
 }));
 
 vi.mock('@/config/useConfigData', () => ({
-  useConfigData: () => ({ config: { multiAgentRuntime: false } }),
+  useConfigData: () => ({ config: {  } }),
 }));
 
 vi.mock('@/config/services/agentConfigService', () => ({
@@ -134,9 +137,12 @@ function Probe() {
     historyMessages,
     streamingMessage,
     systemInitInfo,
+    sessionMeta,
+    sessionRuntimeSessionId,
     mcpEffectiveSnapshot,
     queuedMessages,
     agentError,
+    agentErrorUserMessageId,
     isConnected,
     adoptMigratedSession,
     resetSession,
@@ -145,6 +151,8 @@ function Probe() {
     sendMessage,
     cancelQueuedMessage,
     forceExecuteQueuedMessage,
+    pendingAskUserQuestion,
+    respondAskUserQuestion,
   } = useTabState();
   const [answerReceipt, setAnswerReceipt] = useState<boolean | null>(null);
   const [retryRestoreTargetPresent, setRetryRestoreTargetPresent] = useState<boolean | null>(null);
@@ -161,6 +169,11 @@ function Probe() {
       </output>
       <output data-testid="connected">{String(isConnected)}</output>
       <output data-testid="init-tools">{JSON.stringify(systemInitInfo?.tools ?? [])}</output>
+      <output data-testid="session-meta">{JSON.stringify(sessionMeta ? {
+        id: sessionMeta.id,
+        runtime: sessionMeta.runtime,
+      } : null)}</output>
+      <output data-testid="live-runtime-session-id">{sessionRuntimeSessionId ?? ''}</output>
       <output data-testid="mcp-runtime-generation">{mcpEffectiveSnapshot?.runtimeGeneration ?? ''}</output>
       <output data-testid="streaming-content">{JSON.stringify(streamingMessage?.content ?? null)}</output>
       <output data-testid="session-loading">{String(isSessionLoading)}</output>
@@ -176,6 +189,8 @@ function Probe() {
       <button type="button" onClick={() => { void sendMessage('看海', undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, { questionId: 'q', questionIndex: 0 }).then(setAnswerReceipt); }}>send async answer</button>
       <output data-testid="queue-ids">{JSON.stringify(queuedMessages.map(item => item.queueId))}</output>
       <output data-testid="agent-error">{agentError ?? ''}</output>
+      <output data-testid="agent-error-user-message-id">{agentErrorUserMessageId ?? ''}</output>
+      <output data-testid="pending-ask-id">{pendingAskUserQuestion?.requestId ?? ''}</output>
       <output data-testid="retry-restore-target-present">{JSON.stringify(retryRestoreTargetPresent)}</output>
       <button type="button" onClick={() => void sendMessage('hello')}>send message</button>
       <button type="button" onClick={() => void resetSession()}>reset session</button>
@@ -188,6 +203,7 @@ function Probe() {
       <button type="button" onClick={() => void adoptMigratedSession('session-migrated-b', { sidecarAlreadyMigrated: true })}>adopt migrated session</button>
       <button type="button" onClick={() => void cancelQueuedMessage('queue-stale-cancel')}>cancel stale</button>
       <button type="button" onClick={() => void forceExecuteQueuedMessage('queue-stale-force')}>force stale</button>
+      <button type="button" onClick={() => void respondAskUserQuestion(pendingAskUserQuestion?.requestId ?? '', { 0: 'One' }).catch(() => undefined)}>answer question</button>
     </>
   );
 }
@@ -235,6 +251,69 @@ const allowSessionOpening = () => () => undefined;
 
 describe('Tab-owned query clock integration', () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it('attributes immediate DSH tool and terminal analytics to this Tab rather than the active context', async () => {
+    sseHarness.state.eventHandler = null;
+    render(<TabProvider tabId="dsh-analytics-tab" agentDir="/tmp/workspace" sessionId="pending-dsh-analytics" claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    vi.mocked(track).mockClear();
+    act(() => {
+      sseHarness.state.eventHandler?.('chat:system-init', {
+        sessionId: 'pending-dsh-analytics', runtime: 'dsh', runtimeSource: 'integrated', info: { model: 'deepseek-test', tools: [] },
+      }, { connectionGeneration: sseHarness.state.generation });
+      sseHarness.state.eventHandler?.('chat:tool-use-start', { id: 'runtime-tool', name: 'read', input: {} }, { connectionGeneration: sseHarness.state.generation });
+      sseHarness.state.eventHandler?.('chat:server-tool-use-start', { id: 'provider-tool', name: 'web_search', input: {} }, { connectionGeneration: sseHarness.state.generation });
+      sseHarness.state.eventHandler?.('chat:message-complete', { model: 'deepseek-test', output_tokens: 0 }, { connectionGeneration: sseHarness.state.generation });
+      sseHarness.state.eventHandler?.('chat:message-error', { message: 'private error' }, { connectionGeneration: sseHarness.state.generation });
+      sseHarness.state.eventHandler?.('chat:message-stopped', {}, { connectionGeneration: sseHarness.state.generation });
+    });
+    for (const name of ['tool_use', 'message_complete', 'message_error', 'message_stop']) {
+      expect(track).toHaveBeenCalledWith(name, expect.objectContaining({
+        source: 'desktop', session_id: 'pending-dsh-analytics', tab_id: 'dsh-analytics-tab', runtime: 'dsh', runtime_source: 'integrated',
+      }));
+    }
+    const completion = vi.mocked(track).mock.calls.find(([event]) => event === 'message_complete')?.[1];
+    expect(completion).toMatchObject({ output_tokens: 0 });
+    expect(completion).not.toHaveProperty('input_tokens');
+    expect(track).toHaveBeenCalledWith('tool_use', expect.objectContaining({ tool: 'read', tool_origin: 'runtime' }));
+    expect(track).toHaveBeenCalledWith('tool_use', expect.objectContaining({ tool: 'web_search', tool_origin: 'provider' }));
+    expect(JSON.stringify(vi.mocked(track).mock.calls)).not.toContain('private error');
+  });
+
+  it('records permission decisions only after backend acceptance', async () => {
+    let tab: ReturnType<typeof useTabState>;
+    function PermissionProbe() {
+      const value = useTabState();
+      useEffect(() => { tab = value; }, [value]);
+      return null;
+    }
+    sseHarness.state.eventHandler = null;
+    render(<TabProvider tabId="permission-analytics" agentDir="/tmp/workspace" sessionId="pending-permission-analytics" claimSessionOpeningTransition={allowSessionOpening}><PermissionProbe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('permission:request', { sessionId: 'pending-permission-analytics', requestId: 'p1', toolName: 'read', input: '{}' });
+    vi.mocked(track).mockClear();
+    tauriHarness.proxyFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: false, error: 'not accepted' })));
+    await act(async () => {
+      await expect(tab.respondPermission('allow_once')).rejects.toThrow('not accepted');
+    });
+    expect(track).not.toHaveBeenCalledWith('permission_grant', expect.anything());
+    expect(tab!.pendingPermission?.requestId).toBe('p1');
+    tauriHarness.proxyFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: true })));
+    await act(async () => { await tab.respondPermission('allow_once'); });
+    expect(track).toHaveBeenCalledWith('permission_grant', expect.objectContaining({
+      session_id: 'pending-permission-analytics', tab_id: 'permission-analytics', tool: 'read', type: 'allow_once',
+    }));
+    expect(tab!.pendingPermission).toBeNull();
+  });
+
+  it('shows a native resume refusal while keeping the recoverable error visible', async () => {
+    sseHarness.state.eventHandler = null;
+    render(<ToastProvider><TabProvider tabId="resume-refusal" agentDir="/tmp/workspace" sessionId="pending-resume-refusal" claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider></ToastProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:message-error', { message: NATIVE_RESUME_BOUNDARY_MESSAGE });
+    expect(screen.getByTestId('agent-error')).toHaveTextContent(NATIVE_RESUME_BOUNDARY_MESSAGE);
+    expect(screen.getAllByRole('status').some(element => element.textContent?.includes(NATIVE_RESUME_BOUNDARY_MESSAGE))).toBe(true);
+  });
 
   it('keeps query time through tool updates and pauses only for unresolved human requests', async () => {
     let now = 0;
@@ -555,6 +634,35 @@ describe('TabProvider session activity ownership', () => {
     },
   );
 
+  it('discards a legacy thinking preview when a new Session adopts V2 assistant messages', async () => {
+    const sessionId = 'pending-v2-thinking-adoption';
+    render(<TabProvider tabId="v2-thinking-adoption" agentDir="/tmp/workspace" sessionId={sessionId} claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+
+    // The first DSH reasoning event can arrive before this Tab knows the new
+    // Session uses V2. It creates a temporary legacy assistant row.
+    emit('chat:thinking-start', { index: 0 });
+    emit('chat:thinking-chunk', { index: 0, delta: 'preview' });
+    expect(readStreamingContent()).toEqual([expect.objectContaining({ type: 'thinking', thinking: 'preview' })]);
+
+    const operation = (value: unknown) => emit('chat:transcript-operation', { sessionId, operation: value });
+    const assistant = (id: string, turnId?: string) => ({ id, role: 'assistant', content: [], timestamp: new Date(0).toISOString(), ...(turnId ? { turnId } : {}), transcriptState: 'streaming' });
+    operation({ kind: 'message-create', message: assistant('canonical-first') });
+    expect(readActivity().historyCount).toBe(0);
+    expect(JSON.parse(screen.getByTestId('history-identities').textContent!)).toEqual([]);
+
+    // A later canonical segment still moves the prior canonical row to history.
+    operation({ kind: 'message-create', message: assistant('canonical-second', 'turn') });
+    expect(JSON.parse(screen.getByTestId('history-identities').textContent!)).toEqual([
+      { id: 'canonical-first', runtimeTurnAnchor: null },
+    ]);
+    emit('chat:message-complete', {});
+    expect(JSON.parse(screen.getByTestId('history-identities').textContent!)).toEqual([
+      { id: 'canonical-first', runtimeTurnAnchor: null },
+      { id: 'canonical-second', runtimeTurnAnchor: null },
+    ]);
+  });
+
   it.each(['no-echo', 'echo-only', 'created-without-text'] as const)(
     'recovers a missed V2 user admission on SSE-native reconnect (%s)', async received => {
       const sessionId = 'pending-v2-reconnect';
@@ -869,6 +977,50 @@ describe('TabProvider session activity ownership', () => {
     expect(tauriHarness.ensureSessionSidecar).not.toHaveBeenCalled();
   });
 
+  it('retains an AskUserQuestion card until the backend acknowledges its response', async () => {
+    render(
+      <TabProvider
+        tabId="tab-ask-ack"
+        agentDir="/tmp/workspace"
+        sessionId="pending-ask-ack"
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('ask-user-question:request', {
+      requestId: 'ask-ack-1',
+      sessionId: 'pending-ask-ack',
+      questions: [{
+        question: 'Choose one',
+        header: 'Choice',
+        options: [
+          { label: 'One', description: 'First' },
+          { label: 'Two', description: 'Second' },
+        ],
+        multiSelect: false,
+      }],
+    });
+    expect(screen.getByTestId('pending-ask-id')).toHaveTextContent('ask-ack-1');
+
+    tauriHarness.proxyFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: false, error: 'not applied' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    fireEvent.click(screen.getByRole('button', { name: 'answer question' }));
+    await waitFor(() => expect(tauriHarness.proxyFetch).toHaveBeenCalled());
+    expect(screen.getByTestId('pending-ask-id')).toHaveTextContent('ask-ack-1');
+
+    tauriHarness.proxyFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    fireEvent.click(screen.getByRole('button', { name: 'answer question' }));
+    await waitFor(() => expect(screen.getByTestId('pending-ask-id')).toBeEmptyDOMElement());
+  });
+
   it('does not submit a turn while App is deleting the Session', () => {
     const claimSessionOpeningTransition = vi.fn(() => null);
     render(
@@ -909,11 +1061,18 @@ describe('TabProvider session activity ownership', () => {
     await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
     emit('chat:agent-error', { message: 'Not logged in' });
     expect(screen.getByTestId('agent-error')).toHaveTextContent('Not logged in');
+    expect(screen.getByTestId('agent-error-user-message-id')).toBeEmptyDOMElement();
+
+    emit('chat:status', { sessionState: 'starting' });
+    expect(readActivity().isLoading).toBe(true);
+    emit('chat:agent-error', { message: 'Startup failed' });
+    expect(readActivity()).toMatchObject({ isLoading: false, sessionState: 'idle' });
 
     fireEvent.click(screen.getByRole('button', { name: 'send message' }));
     expect(screen.getByTestId('agent-error')).toBeEmptyDOMElement();
 
-    emit('chat:agent-error', { message: 'New turn auth failure' });
+    emit('chat:agent-error', { message: 'New turn auth failure', userMessageId: 'failed-user-turn' });
+    expect(screen.getByTestId('agent-error-user-message-id')).toHaveTextContent('failed-user-turn');
     emit('chat:message-complete', {
       assistant_message_id: 'failed-turn-completion',
     });
@@ -931,6 +1090,97 @@ describe('TabProvider session activity ownership', () => {
       },
     });
     expect(screen.getByTestId('agent-error')).toBeEmptyDOMElement();
+    expect(screen.getByTestId('agent-error-user-message-id')).toBeEmptyDOMElement();
+  });
+
+  it('keeps root activity authoritative when a desktop send becomes queued work', async () => {
+    tauriHarness.proxyFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/chat/send') && init?.method === 'POST') {
+        return new Response(JSON.stringify({
+          success: true,
+          queued: true,
+          queueId: 'queue-recovery-follow-up',
+          isInFlight: false,
+          deliveryMode: 'turn',
+          canCancel: true,
+          canForceExecute: true,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      throw new Error(`Unexpected proxyFetch call: ${init?.method ?? 'GET'} ${url}`);
+    });
+    render(
+      <TabProvider
+        tabId="tab-queued-loading"
+        agentDir="/tmp/workspace"
+        sessionId="pending-queued-loading"
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:status', { sessionState: 'starting' });
+    expect(readActivity().isLoading).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'send message' }));
+
+    await waitFor(() => expect(readQueueIds()).toContain('queue-recovery-follow-up'));
+    expect(readActivity()).toMatchObject({
+      isLoading: true,
+      sessionState: 'starting',
+    });
+  });
+
+  it('renders Provider activity without acquiring root Composer loading', async () => {
+    render(
+      <TabProvider
+        tabId="tab-provider-tool"
+        agentDir="/tmp/workspace"
+        sessionId="pending-provider-tool"
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    expect(readActivity().isLoading).toBe(false);
+
+    emit('chat:server-tool-use-start', {
+      id: 'provider-call-1',
+      name: 'web_search',
+      input: { query: 'public reference' },
+      providerRouteId: 'fixture-provider',
+      providerBlockType: 'server_tool_use',
+    });
+
+    expect(readActivity().isLoading).toBe(false);
+    expect(readStreamingContent()).toEqual([expect.objectContaining({
+      type: 'server_tool_use',
+      providerRouteId: 'fixture-provider',
+      providerBlockType: 'server_tool_use',
+      tool: expect.objectContaining({ id: 'provider-call-1', isLoading: true }),
+    })]);
+
+    emit('chat:tool-result-complete', {
+      toolUseId: 'provider-call-1',
+      content: '[{"title":"Reference"}]',
+      isError: false,
+      providerRouteId: 'fixture-provider',
+      providerBlockType: 'web_search_tool_result',
+    });
+
+    expect(readActivity().isLoading).toBe(false);
+    expect(readStreamingContent()).toEqual([expect.objectContaining({
+      type: 'server_tool_use',
+      resultProviderBlockType: 'web_search_tool_result',
+      tool: expect.objectContaining({
+        id: 'provider-call-1',
+        isLoading: false,
+        result: '[{"title":"Reference"}]',
+      }),
+    })]);
   });
 
   it('keeps the prior terminal agent error when desktop turn admission is refused', async () => {
@@ -1104,6 +1354,9 @@ describe('TabProvider session activity ownership', () => {
 
     await waitFor(() => expect(onSessionIdChange).toHaveBeenCalledWith('real-refused-upgrade'));
     expect(readActivity().sessionId).toBe('pending-refused-upgrade');
+    expect(tauriHarness.proxyFetch.mock.calls.some(([url]) =>
+      url.includes('/sessions/real-refused-upgrade'),
+    )).toBe(false);
   });
 
   it('commits system-init identity only after App accepts adoption', async () => {
@@ -1137,6 +1390,88 @@ describe('TabProvider session activity ownership', () => {
       resolveAdoption(true);
     });
     await waitFor(() => expect(readActivity().sessionId).toBe('real-delayed-upgrade'));
+  });
+
+  it('loads the frozen metadata for an SSE-native birth after App adopts its id', async () => {
+    const onSessionIdChange = vi.fn(async () => true);
+    tauriHarness.proxyFetch.mockImplementation(async (url: string) => {
+      if (url.endsWith('/sessions/real-birth?limit=1')) {
+        return new Response(JSON.stringify({
+          success: true,
+          session: { id: 'real-birth', agentDir: '/tmp/workspace', runtime: 'dsh', runtimeSource: 'integrated' },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    render(
+      <TabProvider
+        tabId="tab-birth-metadata"
+        agentDir="/tmp/workspace"
+        sessionId="pending-birth-metadata"
+        onSessionIdChange={onSessionIdChange}
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:system-init', {
+      info: { timestamp: '2026-07-15T00:00:00.000Z', model: 'model-a' },
+      sessionId: 'real-birth',
+      runtime: 'dsh',
+      runtimeSource: 'integrated',
+    });
+
+    await waitFor(() => expect(screen.getByTestId('session-meta')).toHaveTextContent(
+      JSON.stringify({ id: 'real-birth', runtime: 'dsh' }),
+    ));
+    expect(screen.getByTestId('live-runtime-session-id')).toHaveTextContent('real-birth');
+    expect(onSessionIdChange).toHaveBeenCalledWith('real-birth');
+    expect(tauriHarness.proxyFetch.mock.calls.some(([url]) =>
+      url === 'http://127.0.0.1:1234/sessions/real-birth?limit=1',
+    )).toBe(true);
+  });
+
+  it('retries birth metadata after the first turn when Runtime init precedes persistence', async () => {
+    let reads = 0;
+    tauriHarness.proxyFetch.mockImplementation(async (url: string) => {
+      if (!url.endsWith('/sessions/real-delayed-metadata?limit=1')) {
+        throw new Error(`Unexpected request: ${url}`);
+      }
+      reads += 1;
+      return new Response(JSON.stringify({
+        success: true,
+        session: reads === 1
+          ? { id: 'real-delayed-metadata', runtime: 'dsh' }
+          : { id: 'real-delayed-metadata', agentDir: '/tmp/workspace', runtime: 'dsh' },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    render(
+      <TabProvider
+        tabId="tab-delayed-metadata"
+        agentDir="/tmp/workspace"
+        sessionId="pending-delayed-metadata"
+        onSessionIdChange={vi.fn(async () => true)}
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:system-init', {
+      info: { timestamp: '2026-07-15T00:00:00.000Z', model: 'model-a' },
+      sessionId: 'real-delayed-metadata', runtime: 'dsh', runtimeSource: 'integrated',
+    });
+    await waitFor(() => expect(reads).toBe(1));
+    expect(screen.getByTestId('session-meta')).toHaveTextContent('null');
+
+    emit('chat:message-complete', {});
+    await waitFor(() => expect(reads).toBe(2));
+    await waitFor(() => expect(screen.getByTestId('session-meta')).toHaveTextContent(
+      JSON.stringify({ id: 'real-delayed-metadata', runtime: 'dsh' }),
+    ));
   });
 
   it('keeps the live SSE owner when an active pending session receives its real id', async () => {

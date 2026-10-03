@@ -5,6 +5,7 @@
  * standing up React.
  */
 import type { PermissionMode } from '@/config/types';
+import { projectPermissionModeForRuntime } from '../../shared/types/runtime';
 import {
   canResumeAcrossProviderBoundary,
   type ProviderHistoryEnv,
@@ -14,7 +15,11 @@ import {
   canReuseSessionAcrossProviderExecutionBoundary,
   type ProviderExecutionIntent,
 } from '../../shared/providerExecution';
-import type { ProviderVerifyStatus } from '../../shared/config-types';
+import {
+  ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
+  type Provider,
+  type ProviderVerifyStatus,
+} from '../../shared/config-types';
 import {
   isConcreteProviderRoute,
   resolveLegacyModelOnlyProviderRoute,
@@ -57,12 +62,17 @@ export function resolveBuiltinPermissionMode(args: {
   projectPermissionMode?: string | null;
   defaultPermissionMode?: string | null;
 }): PermissionMode {
-  if (args.projectSynced) return args.statePermissionMode;
+  const project = (value: string | null | undefined) =>
+    projectPermissionModeForRuntime(value, 'builtin') as PermissionMode | undefined;
+  // Existing configs may retain a DSH permission after an earlier runtime
+  // switch. Keep precedence within the active vocabulary, as the server does.
+  if (args.projectSynced) return project(args.statePermissionMode) ?? 'auto';
   return (
-    (args.agentPermissionMode as PermissionMode | undefined) ??
-    (args.projectPermissionMode as PermissionMode | undefined) ??
-    (args.defaultPermissionMode as PermissionMode | undefined) ??
-    args.statePermissionMode
+    project(args.agentPermissionMode) ??
+    project(args.projectPermissionMode) ??
+    project(args.defaultPermissionMode) ??
+    project(args.statePermissionMode) ??
+    'auto'
   );
 }
 
@@ -188,6 +198,37 @@ export function resolveLegacyBuiltinSnapshotProviderId(args: {
   return isConcreteProviderRoute(route) ? route.providerId : undefined;
 }
 
+/** Project the non-secret execution endpoint, not the subscription billing type. */
+export function toProviderHistoryEnv(
+  provider: Pick<Provider, 'id' | 'type' | 'config' | 'apiProtocol' | 'subscriptionAuth'> | undefined,
+  model?: string,
+): ProviderHistoryEnv | undefined {
+  if (!provider) return model ? { model } : undefined;
+  if (provider.type === 'subscription') {
+    const auth = provider.subscriptionAuth;
+    if (auth?.kind === 'proxy-managed' && auth.proxy === 'cliproxy'
+      && provider.id === ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID) {
+      return {
+        providerId: provider.id,
+        apiProtocol: 'anthropic',
+        endpointSource: { kind: 'cliproxy', providerId: provider.id },
+        model,
+      };
+    }
+    // SDK-native (including legacy unmarked Claude) has no third-party endpoint.
+    // Host-managed OAuth uses the declared API endpoint, just like API Providers.
+    if (auth?.kind !== 'host-managed-oauth') {
+      return { providerId: provider.id, model };
+    }
+  }
+  return {
+    providerId: provider.id,
+    baseUrl: provider.config.baseUrl,
+    apiProtocol: provider.apiProtocol,
+    model,
+  };
+}
+
 /**
  * Legacy snapshots with no recoverable provider are historical data with
  * incomplete identity, not proof that the transcript belongs to Anthropic's
@@ -275,7 +316,7 @@ export function shouldDegradedLoad(args: {
  *     `resolveProvider`'s first-available fallback (a sane default when the
  *     agent's configured provider was deleted). The bug is specific to a session
  *     that *froze* its own provider choice.
- *   - builtin runtime only — external runtimes (Codex/CC/Gemini) carry no
+ *   - builtin runtime only — external runtimes (Codex/CC) carry no
  *     providerId, so there is nothing to pin or fall back from.
  *   - `providersLoaded` gate — during useConfig()'s async load `providers` is
  *     empty and `resolvedProviderId` is transiently undefined; without this gate
@@ -292,22 +333,6 @@ export function isPinnedProviderUnavailable(args: {
   if (!args.providersLoaded) return false;
   if (!args.selectedProviderId) return false;
   return args.resolvedProviderId !== args.selectedProviderId;
-}
-
-/**
- * Labs `multiAgentRuntime` only gates user-managed CLI runtimes. Managed Codex
- * Provider sessions are provider-owned and carry `runtimeSource=managed-provider`;
- * they must remain sendable when Labs is off.
- */
-export function shouldBlockSendForLabsDisabledExternalRuntime(args: {
-  sessionRuntime: string | null;
-  sessionRuntimeSource: string | undefined;
-  multiAgentRuntimeEnabled: boolean;
-}): boolean {
-  return args.sessionRuntime !== null
-    && args.sessionRuntime !== 'builtin'
-    && args.sessionRuntimeSource !== 'managed-provider'
-    && !args.multiAgentRuntimeEnabled;
 }
 
 /**

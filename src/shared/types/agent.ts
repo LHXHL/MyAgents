@@ -10,19 +10,22 @@ import type {
   GroupActivation,
 } from './im';
 import {
-  getDefaultRuntimePermissionMode,
   getMaxPermissionForRuntime,
-  normalizeRuntime,
-  projectPermissionModeForRuntime,
   type RuntimeType,
   type RuntimeConfig,
 } from './runtime';
 import {
-  agentUsesManagedCodexProvider,
-  managedCodexRuntimePermissionToProviderPermission,
-} from '../providerExecution';
+  resolveAgentRuntimePreference,
+  runtimeTypeForAgentRuntimePreference,
+} from '../integrated-runtimes/identity';
+import {
+  CODEX_SUBSCRIPTION_PROVIDER_ID,
+  SUBSCRIPTION_PROVIDER_ID,
+  XAI_SUBSCRIPTION_PROVIDER_ID,
+} from '../config-types';
 import type { OfficialToolId } from '../official-tools';
 import type { ProjectCapabilitySelectionV1 } from '../projectCapabilities';
+import type { AgentRuntimePreference } from '../integrated-runtimes/identity';
 
 /**
  * Channel type — reuses ImPlatform, not redefined
@@ -49,7 +52,7 @@ export interface LastActivePrivateTarget {
 }
 
 /**
- * Channel-level config overrides (empty = inherit from Agent)
+ * Channel tool restrictions. Execution fields remain read-only legacy migration data.
  */
 export interface ChannelOverrides {
   providerId?: string;
@@ -57,8 +60,27 @@ export interface ChannelOverrides {
   model?: string;
   runtime?: RuntimeType;
   runtimeConfig?: RuntimeConfig;
+  /** Authoritative Runtime family preference. Legacy runtime fields remain a compatibility projection. */
+  runtimePreference?: AgentRuntimePreference;
   permissionMode?: string;
   toolsDeny?: string[];
+}
+
+/** Writers preserve existing legacy bytes, but cannot create or edit execution overrides. */
+export function channelExecutionConfigChangeError(current: unknown, next: unknown): string | undefined {
+  const keys = ['providerId', 'providerEnvJson', 'model', 'runtime', 'runtimeConfig', 'runtimePreference', 'permissionMode', 'mcpEnabledServers', 'mcpServersJson', 'reasoningEffort', 'enabledPluginIds', 'enabledOfficialToolIds'];
+  const before = current as Record<string, unknown> | undefined;
+  const after = next as Record<string, unknown>;
+  for (const location of [undefined, 'overrides']) {
+    const oldFields = location ? before?.[location] as Record<string, unknown> | undefined : before;
+    const newFields = location ? after[location] as Record<string, unknown> | undefined : after;
+    for (const key of keys) {
+      if (JSON.stringify(oldFields?.[key]) !== JSON.stringify(newFields?.[key])) {
+        return `Channel execution override '${key}' is no longer supported. Update the Agent or Session instead.`;
+      }
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -98,7 +120,7 @@ export interface ChannelConfig {
   groupPermissions?: GroupPermission[];
   groupActivation?: GroupActivation;
 
-  // Optional overrides (empty/undefined = inherit from Agent)
+  // Channel tool restrictions; legacy execution fields are read-only migration data.
   overrides?: ChannelOverrides;
 
   // Runtime
@@ -156,37 +178,53 @@ export interface AgentConfig {
   // Agent Runtime (v0.1.59)
   runtime?: RuntimeType;           // 'builtin' | 'claude-code' | 'codex', defaults to 'builtin'
   runtimeConfig?: RuntimeConfig;   // Runtime-specific model/permission/args
+  /** Authoritative Runtime family preference for new Sessions. */
+  runtimePreference?: AgentRuntimePreference;
 
   // Runtime
   setupCompleted?: boolean;
 }
 
-function resolveAgentChannelProviderId(agent: AgentConfig, channel: ChannelConfig): string | undefined {
-  return channel.overrides?.providerId ?? agent.providerId;
+function resolveAgentChannelProviderId(agent: AgentConfig, _channel: ChannelConfig): string | undefined {
+  return agent.providerId;
+}
+
+function resolveAgentChannelPreference(agent: AgentConfig, channel: ChannelConfig) {
+  return resolveAgentRuntimePreference({
+    runtimePreference: agent.runtimePreference,
+    runtime: agent.runtime,
+    runtimeSource: agent.runtimeConfig?.source,
+    providerId: resolveAgentChannelProviderId(agent, channel),
+  });
 }
 
 export function agentChannelUsesManagedCodexProvider(
   agent: AgentConfig,
   channel: ChannelConfig,
 ): boolean {
-  return agentUsesManagedCodexProvider({
-    providerId: resolveAgentChannelProviderId(agent, channel),
-    runtime: channel.overrides?.runtime ?? agent.runtime,
-    runtimeConfig: channel.overrides?.runtimeConfig ?? agent.runtimeConfig,
-  });
+  if (resolveAgentChannelProviderId(agent, channel) !== CODEX_SUBSCRIPTION_PROVIDER_ID) {
+    return false;
+  }
+  return resolveAgentChannelPreference(agent, channel)?.family === 'integrated';
 }
 
 /**
- * Resolve the runtime that an Agent Channel will execute on. Channel overrides
- * mirror the Rust start path and win over Agent defaults. Runtime-backed
+ * Resolve the future Channel-session Runtime from Agent preference and Provider
+ * constraints. Legacy Channel execution overrides are read-only data. Runtime-backed
  * providers are projected here so the renderer/shared view matches Rust
  * `ChannelConfigRust::to_im_config`.
  */
 export function resolveAgentChannelRuntime(agent: AgentConfig, channel: ChannelConfig): RuntimeType {
-  const runtime = normalizeRuntime(channel.overrides?.runtime ?? agent.runtime ?? 'builtin');
-  return agentChannelUsesManagedCodexProvider(agent, channel)
-    ? 'codex'
-    : runtime;
+  const preference = resolveAgentChannelPreference(agent, channel);
+  if (!preference) return 'builtin';
+  const preferredRuntime = runtimeTypeForAgentRuntimePreference(preference);
+  if (preference.family === 'external') return preferredRuntime;
+  const providerId = resolveAgentChannelProviderId(agent, channel);
+  if (providerId === CODEX_SUBSCRIPTION_PROVIDER_ID) return 'codex';
+  if (providerId === SUBSCRIPTION_PROVIDER_ID || providerId === XAI_SUBSCRIPTION_PROVIDER_ID) {
+    return 'builtin';
+  }
+  return preferredRuntime;
 }
 
 export function resolveAgentChannelDefaultPermissionMode(agent: AgentConfig, channel: ChannelConfig): string {
@@ -197,38 +235,28 @@ export function resolveAgentChannelDefaultPermissionMode(agent: AgentConfig, cha
 }
 
 /**
- * IM / Agent Channel is an unattended entry point: when the channel itself has
- * no explicit permission override, default to the selected runtime's maximum
- * agency rather than inheriting the desktop Agent permission mode.
+ * IM births use the selected Runtime's maximum unattended permission.
+ * Existing Session permissions remain owned by their snapshot.
  */
 export function resolveAgentChannelPermissionMode(agent: AgentConfig, channel: ChannelConfig): string {
-  const override = channel.overrides?.permissionMode?.trim();
-  if (override) {
-    if (agentChannelUsesManagedCodexProvider(agent, channel)) {
-      return managedCodexRuntimePermissionToProviderPermission(override) ?? 'auto';
-    }
-    const runtime = resolveAgentChannelRuntime(agent, channel);
-    return projectPermissionModeForRuntime(override, runtime)
-      ?? getDefaultRuntimePermissionMode(runtime);
-  }
   return resolveAgentChannelDefaultPermissionMode(agent, channel);
 }
 
 /**
- * Resolve effective config for a channel by merging Agent defaults with Channel overrides
+ * Resolve future-session Agent defaults plus live Channel tool restrictions.
  */
 export function resolveEffectiveConfig(agent: AgentConfig, channel: ChannelConfig) {
   const runtime = resolveAgentChannelRuntime(agent, channel);
   return {
-    providerId: channel.overrides?.providerId ?? agent.providerId,
-    providerEnvJson: channel.overrides?.providerEnvJson ?? agent.providerEnvJson,
-    model: channel.overrides?.model ?? agent.model,
+    providerId: agent.providerId,
+    providerEnvJson: agent.providerEnvJson,
+    model: agent.model,
     permissionMode: resolveAgentChannelPermissionMode(agent, channel),
     mcpEnabledServers: agent.mcpEnabledServers,      // Channel cannot override
     enabledPluginIds: agent.enabledPluginIds,        // Channel cannot override (mirrors MCP)
     toolsDeny: channel.overrides?.toolsDeny ?? [],
     heartbeat: agent.heartbeat,                       // Always Agent's
     runtime,
-    runtimeConfig: channel.overrides?.runtimeConfig ?? agent.runtimeConfig,
+    runtimeConfig: agent.runtimeConfig,
   };
 }

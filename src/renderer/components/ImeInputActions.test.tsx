@@ -19,7 +19,7 @@ const inputCases: Array<{ name: string; view: (commit: ReturnType<typeof vi.fn>)
   { name: 'workspace path', view: commit => <PathInputDialog isOpen folderName="Docs" defaultPath="/tmp" onConfirm={commit} onCancel={vi.fn()} />, expected: ['ceshi'] },
   { name: 'whitelist addition', view: commit => <WhitelistManager users={[]} onChange={commit} />, expected: [['ceshi']] },
   { name: 'token field', view: commit => <BotTokenInput value="" onChange={commit} verifyStatus="idle" />, expected: ['ceshi'] },
-  { name: 'custom question answer', view: commit => <AskUserQuestionPrompt request={{ requestId: 'q', questions: [{ id: 'answer', question: 'Text?', header: 'Text', options: [], multiSelect: false }] }} onSubmit={commit} onCancel={vi.fn()} />, expected: ['q', { answer: 'ceshi' }] },
+  { name: 'custom question answer', view: commit => <AskUserQuestionPrompt request={{ requestId: 'q', questions: [{ id: 'answer', question: 'Text?', header: 'Text', options: [], multiSelect: false }] }} onSubmit={commit} onCancel={vi.fn()} />, expected: ['q', { answer: { selected: [], custom: 'ceshi' } }] },
 ];
 
 describe.each(imeEvents)('text-input actions respect IME %j', ime => {

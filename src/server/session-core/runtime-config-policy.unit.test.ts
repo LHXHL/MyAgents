@@ -81,11 +81,6 @@ describe('runtime-config-policy external config', () => {
       permissionMode: 'next_turn_state',
       reasoningEffort: 'next_turn_state',
     });
-    expect(getDefaultExternalConfigCapabilities('gemini')).toEqual({
-      model: 'live_session_rpc',
-      permissionMode: 'live_session_rpc',
-      reasoningEffort: 'unsupported',
-    });
   });
 
   it('merges patches and exposes touched keys', () => {

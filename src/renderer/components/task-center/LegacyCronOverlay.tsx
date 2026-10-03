@@ -1,6 +1,6 @@
 // Read-only detail for historical Cron rows that could not become Tasks.
 
-import { X } from 'lucide-react';
+import { CloseIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
@@ -55,7 +55,7 @@ export function LegacyCronOverlay({ legacy, onClose }: Props) {
             className="rounded-[var(--radius-md)] p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
             title={t('cron.legacy.closeTitle')}
           >
-            <X className="h-4 w-4" />
+            <CloseIcon className="h-4 w-4" />
           </button>
         </div>
 

@@ -13,6 +13,9 @@ const ALLOWED_SUFFIXES = [
   '.credentialed.test.ts',
 ];
 const CHILD_PROCESS_ALLOWLIST = new Set([
+  // On Windows, runs process.execPath only to enumerate the sealed child's env
+  // names. This catches OS-level case folding without secrets or network I/O.
+  'src/server/integrated-runtimes/dsh/child-environment.unit.test.ts',
   // Kills an IPC-only synthetic transcript writer at real file publication
   // boundaries. The child receives only a temporary directory and stage name.
   'src/server/session-transcript/process.integration.test.ts',
@@ -36,6 +39,10 @@ const CHILD_PROCESS_ALLOWLIST = new Set([
   // OpenClaw fixture and a loopback-only fake Rust ingress. It uses no secrets
   // and cannot reach an external service.
   'src/server/plugin-bridge/reply-transport.integration.test.ts',
+  // Explicit opt-in packed DSH smoke uses local OpenSSL solely to create a
+  // temporary test CA. HTTPS targets/proxies are loopback fixtures; no real
+  // credential or external model is used, and the default test run skips it.
+  'src/server/integrated-runtimes/dsh/process-host.native.integration.test.ts',
 ]);
 const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g');
 

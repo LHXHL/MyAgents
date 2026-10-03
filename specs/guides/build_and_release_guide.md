@@ -22,6 +22,8 @@ MyAgents 提供以下平台构建入口；Ubuntu 的交付范围与验收要求�
 
 本文档主要描述 **macOS** 版本的构建流程。macOS 支持 Apple Silicon (ARM64) 和 Intel (x86_64) 两种架构。
 
+DSH 集成版 Dev 构建默认拉取 `src/shared/integrated-runtimes/dsh-release.json` 指定的版本；需要集成本地 DSH 改动时，显式使用官方 handoff：`./build_dev.sh --dsh-source local --dsh-handoff /absolute/path/to/handoff`。正式版 `./build_macos.sh` 按同一版本和目标平台直接获取固定 GitHub Release 资产，并核对发布清单与归档摘要；若对应 Release 不可用则在打包前失败。详见 [构建资源准备](../tech_docs/build_resource_preparation.md)。
+
 ### 分发渠道
 
 | 渠道 | 用途 | 所需文件 | 清单文件 |

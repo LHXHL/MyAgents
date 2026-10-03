@@ -1,5 +1,5 @@
 
-import { MoreHorizontal } from 'lucide-react';
+import { MoreIcon } from '@/components/icons';
 import { memo, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ContentBlock } from '@/types/chat';
@@ -101,7 +101,7 @@ const BlockGroup = memo(function BlockGroup({
               >
                 <div className="size-1.5 shrink-0" />
                 <div className="flex size-4 shrink-0 items-center justify-center text-[var(--ink-muted)]">
-                  <MoreHorizontal className="size-4" />
+                  <MoreIcon className="size-4" />
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-[var(--ink-muted)] group-hover/fold:text-[var(--ink-secondary)] transition-colors">

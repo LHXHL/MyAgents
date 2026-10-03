@@ -22,6 +22,25 @@ describe('normalizeSessionMessageContent', () => {
         expect(normalizeSessionMessageContent(JSON.stringify(blocks))).toEqual(blocks);
     });
 
+    it('preserves Provider ownership metadata during cold history restore', () => {
+        const blocks = [{
+            type: 'server_tool_use' as const,
+            providerRouteId: 'fixture-provider',
+            providerBlockType: 'server_tool_use',
+            resultProviderBlockType: 'web_search_tool_result',
+            tool: {
+                id: 'provider-call-1',
+                name: 'web_search',
+                input: { query: 'public reference' },
+                result: '[{"title":"Reference"}]',
+                isLoading: false,
+                streamIndex: 0,
+            },
+        }];
+
+        expect(normalizeSessionMessageContent(JSON.stringify(blocks))).toEqual(blocks);
+    });
+
     it('leaves plain and malformed JSON-looking strings as text', () => {
         expect(normalizeSessionMessageContent('**plain markdown**')).toBe('**plain markdown**');
         expect(normalizeSessionMessageContent('[{"type":')).toBe('[{"type":');

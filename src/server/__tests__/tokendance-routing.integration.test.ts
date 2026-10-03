@@ -2,7 +2,6 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, rmSync } from 'node:fs';
 import {
   materializeProviderRouteEnv,
-  resolveImProviderRouting,
   type AdminAppConfig,
 } from '../utils/admin-config';
 import { providerEnvEqual } from '../builtin-session/config';
@@ -55,37 +54,4 @@ describe('Token Dance execution projections', () => {
     expect(resolve('added-later').upstreamFormat).toBe('responses');
   });
 
-  it('materializes IM channel model overrides through the same priority policy', () => {
-    const withAgent = {
-      ...config,
-      agents: [
-        {
-          id: 'td-test',
-          name: 'Token Dance test',
-          enabled: true,
-          workspacePath: '/tmp/myagents-tokendance-routing',
-          providerId: 'tokendance',
-          model: 'deepseek-v4-pro-0813',
-          channels: [
-            {
-              id: 'test-channel',
-              type: 'telegram',
-              enabled: true,
-              overrides: { model: 'added-later' },
-            },
-          ],
-        },
-      ],
-    } as AdminAppConfig;
-    const result = resolveImProviderRouting(
-      '/tmp/myagents-tokendance-routing',
-      'test-channel',
-      { config: withAgent },
-    );
-    expect(result.kind).toBe('provider-route');
-    if (result.kind === 'provider-route') {
-      expect(result.providerEnv?.upstreamFormat).toBe('responses');
-      expect(result.providerRoute.model).toBe('added-later');
-    }
-  });
 });

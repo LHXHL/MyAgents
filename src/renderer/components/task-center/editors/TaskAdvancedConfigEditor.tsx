@@ -16,7 +16,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, Settings2 } from 'lucide-react';
+import { ChevronDownIcon, SlidersIcon } from '@/components/icons';
 import CustomSelect from '@/components/CustomSelect';
 import { useConfig } from '@/hooks/useConfig';
 import { useAvailableProviders } from '@/hooks/useAvailableProviders';
@@ -29,12 +29,17 @@ import {
   VALID_RUNTIMES,
   getRuntimePermissionModes,
   buildRuntimeChangePatch,
+  isAgentRuntimeSelectorAvailable,
   RUNTIME_CONFIG_PER_RUNTIME_FIELDS,
   type RuntimeModelInfo,
   type RuntimeSource,
   type RuntimeType,
 } from '@/../shared/types/runtime';
 import { isPermissionModeForRuntimeIdentity, managedCodexProviderPermissionToRuntimePermission } from '@/../shared/providerExecution';
+import {
+  AGENT_RUNTIME_DISTRIBUTION_POLICY,
+  isRuntimeAllowedByDistribution,
+} from '@/../shared/integrated-runtimes/distribution-policy';
 import type { McpServerDefinition } from '@/config/types';
 import type { RuntimeConfig } from '@/../shared/types/runtime';
 import { getAllMcpServersFromConfig } from '@/config/services/mcpService';
@@ -50,6 +55,7 @@ import {
   resolveRuntimeModelCatalogIdentity,
   runtimeModelCatalogPath,
 } from '@/utils/runtimeModelCatalog';
+import { projectProvidersForRuntime } from '@/utils/runtimeProviderProjection';
 
 // "跟随" sentinel: an empty-string value selected from <CustomSelect>
 // translates back to `undefined` on the wrapper level. Using `''` rather
@@ -73,8 +79,8 @@ interface Props {
   setProviderId: (v: string | undefined) => void;
   model?: string;
   setModel: (v: string | undefined) => void;
-  /** PRD 0.2.9 — External-runtime model override (claude-code / codex /
-   *  gemini). Stored on `runtimeConfig.model` rather than `model` because
+  /** PRD 0.2.9 — External-runtime model override (claude-code / codex).
+   *  Stored on `runtimeConfig.model` rather than `model` because
    *  external-runtime ids never collide with builtin provider model ids
    *  and the cron exec path reads them from runtimeConfig. */
   runtimeConfig?: RuntimeConfig;
@@ -131,14 +137,12 @@ export function TaskAdvancedConfigEditor(props: Props) {
   // PRD 0.2.9 — All credentialed providers (cross-provider list, mirrors
   // Chat's WorkspaceBasicsSection). Pre-#130 the picker showed only the
   // workspace's single bound provider; that's the bug this PRD fixes.
-  const availableProviders = useAvailableProviders();
+  const credentialedProviders = useAvailableProviders();
 
   // Resolve the workspace's Agent — source of truth for the runtime / model
   // / permission / MCP defaults that the task inherits when the user picks
-  // "跟随 Agent". Mirrors WorkspaceBasicsSection: when the Agent uses an
-  // external runtime (Claude Code CLI / Codex / Gemini), the entire below
-  // panel is hidden because external runtimes manage their own model /
-  // permission / MCP via their own CLI flags.
+  // "跟随 Agent". DSH shares MyAgents Product provider/model/MCP
+  // configuration; only user-managed CLIs own those fields themselves.
   const workspaceAgent = useMemo(() => {
     if (!workspacePath) return null;
     const project = projects.find(candidate => workspacePathsEqual(candidate.path, workspacePath));
@@ -147,18 +151,17 @@ export function TaskAdvancedConfigEditor(props: Props) {
       : null;
   }, [workspacePath, config, projects]);
 
-  // Multi-Agent Runtime feature gate (Settings → 实验室) gates user-managed
-  // external runtimes only. Managed Codex Provider tasks carry
-  // runtimeConfig.source='managed-provider' and must keep rendering as Codex
-  // even when Labs is off; otherwise editing a valid managed-provider task
-  // would collapse it into a builtin/provider shape.
-  const multiAgentRuntimeEnabled = !!config?.multiAgentRuntime;
+  // Runtime selection follows the build distribution; Task overrides retain their identity.
+  const runtimeSelectorAvailable = isAgentRuntimeSelectorAvailable();
 
   // Effective runtime that this task will run under (in this UI's view):
-  //   user override `runtime` (if set) > Agent's runtime > 'builtin' default
+  //   Task override (if set) > explicit Agent choice > root Integrated default
   // External runtimes self-manage model/permission/MCP, so all three
   // sub-fields are gated on `effectiveRuntime === 'builtin'`.
-  const agentRuntimeCatalogIdentity = resolveAgentRuntimeModelCatalogIdentity(workspaceAgent);
+  const agentRuntimeCatalogIdentity = resolveAgentRuntimeModelCatalogIdentity(
+    workspaceAgent,
+    config?.defaultIntegratedRuntime,
+  );
   const agentRuntime = agentRuntimeCatalogIdentity.runtime;
   const runtimeCatalogIdentity = resolveRuntimeModelCatalogIdentity(
     runtime,
@@ -167,11 +170,12 @@ export function TaskAdvancedConfigEditor(props: Props) {
   );
   const rawEffectiveRuntime = runtimeCatalogIdentity.runtime;
   const effectiveRuntimeSource = runtimeCatalogIdentity.source;
-  const managedProviderRuntimeActive =
-    rawEffectiveRuntime === 'codex' && effectiveRuntimeSource === 'managed-provider';
-  const runtimeUiEnabled = multiAgentRuntimeEnabled || managedProviderRuntimeActive;
-  const effectiveRuntime: RuntimeType = runtimeUiEnabled ? rawEffectiveRuntime : 'builtin';
-  const isBuiltin = effectiveRuntime === 'builtin';
+  const effectiveRuntime: RuntimeType = rawEffectiveRuntime;
+  const usesProductConfiguration = effectiveRuntime === 'builtin' || effectiveRuntime === 'dsh';
+  const availableProviders = useMemo(
+    () => projectProvidersForRuntime(credentialedProviders, effectiveRuntime),
+    [credentialedProviders, effectiveRuntime],
+  );
   const agentRuntimeLabel = RUNTIME_DISPLAY_NAMES[agentRuntime] ?? agentRuntime;
   const effectiveRuntimeLabel = RUNTIME_DISPLAY_NAMES[effectiveRuntime] ?? effectiveRuntime;
 
@@ -188,8 +192,8 @@ export function TaskAdvancedConfigEditor(props: Props) {
   //      .additionalArgs) — same bug class as agent-level Bug B (issue #194
   //      follow-up). Earlier version of this handler only cleared
   //      `runtimeConfig.model` when switching back to builtin, leaving the
-  //      external→external case (codex → gemini) leaking `gpt-5.5` into a
-  //      Gemini task. Codex CLI then rejects with "model is not supported".
+  //      external→external case (claude-code → codex) leaking a Claude model into a
+  //      Codex task. Codex CLI then rejects with "model is not supported".
   //
   // The runtimeConfig scrub now reuses `buildRuntimeChangePatch` so it's in
   // lockstep with the agent-level confirmRuntimeChange / Settings /
@@ -229,9 +233,8 @@ export function TaskAdvancedConfigEditor(props: Props) {
         setRuntimeConfig(scrubbed);
       }
 
-      // Task-level builtin-only fields — only relevant when switching TO an
-      // external runtime (Rust validator rejects them otherwise).
-      if (nextEffective !== 'builtin') {
+      // Product provider/model/MCP fields remain valid for Builtin and DSH.
+      if (nextEffective !== 'builtin' && nextEffective !== 'dsh') {
         if (providerId !== undefined) setProviderId(undefined);
         if (model !== undefined) setModel(undefined);
         if (mcpEnabledServers !== undefined) setMcpEnabledServers(undefined);
@@ -321,17 +324,16 @@ export function TaskAdvancedConfigEditor(props: Props) {
     return hit?.modelName || model;
   }, [providerId, model, pickedProvider]);
 
-  // PRD 0.2.9 R5 — External runtime model list (claude-code/codex/gemini).
-  // Static for CC; dynamic for Codex/Gemini (queried from the CLI). Mirrors
+  // PRD 0.2.9 R5 — External runtime model list (claude-code/codex).
+  // Static for CC; dynamic for Codex (queried from the CLI). Mirrors
   // Chat.tsx:721-738. Empty list while the fetch is in flight is fine —
   // the picker just shows "跟随 Agent 当前模型" alone.
   const [codexCatalog, setCodexCatalog] = useState<{
     source: RuntimeSource;
     models: RuntimeModelInfo[];
   } | null>(null);
-  const [geminiModels, setGeminiModels] = useState<RuntimeModelInfo[]>([]);
   useEffect(() => {
-    if ((!multiAgentRuntimeEnabled && !managedProviderRuntimeActive) || effectiveRuntime !== 'codex') return;
+    if (effectiveRuntime !== 'codex') return;
     let cancelled = false;
     const source = effectiveRuntimeSource ?? 'system-cli';
     apiGetJson<{ models?: RuntimeModelInfo[] }>(
@@ -344,15 +346,7 @@ export function TaskAdvancedConfigEditor(props: Props) {
         if (!cancelled) setCodexCatalog({ source, models: [] });
       });
     return () => { cancelled = true; };
-  }, [multiAgentRuntimeEnabled, managedProviderRuntimeActive, effectiveRuntime, effectiveRuntimeSource]);
-  useEffect(() => {
-    if (!multiAgentRuntimeEnabled || effectiveRuntime !== 'gemini') return;
-    let cancelled = false;
-    apiGetJson<{ models?: RuntimeModelInfo[] }>(runtimeModelCatalogPath('gemini'))
-      .then((res) => { if (!cancelled && res?.models?.length) setGeminiModels(res.models); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [multiAgentRuntimeEnabled, effectiveRuntime]);
+  }, [effectiveRuntime, effectiveRuntimeSource]);
   const externalRuntimeModels: RuntimeModelInfo[] = useMemo(() => {
     if (effectiveRuntime === 'claude-code') return CC_MODELS;
     if (effectiveRuntime === 'codex') {
@@ -360,9 +354,8 @@ export function TaskAdvancedConfigEditor(props: Props) {
         ? codexCatalog.models
         : [];
     }
-    if (effectiveRuntime === 'gemini') return geminiModels;
     return [];
-  }, [effectiveRuntime, effectiveRuntimeSource, codexCatalog, geminiModels]);
+  }, [effectiveRuntime, effectiveRuntimeSource, codexCatalog]);
 
   // PRD 0.2.9 — Pair-write helpers. Selecting a provider's model writes
   // BOTH `providerId` and `model` atomically; selecting "跟随 Agent" uses
@@ -416,7 +409,9 @@ export function TaskAdvancedConfigEditor(props: Props) {
         // possible RuntimeType.
         label: t('advanced.followAgentWorkspaceCurrent', { value: agentRuntimeLabel }),
       },
-      ...VALID_RUNTIMES.map((r) => ({
+      ...VALID_RUNTIMES.filter(runtime =>
+        isRuntimeAllowedByDistribution(AGENT_RUNTIME_DISTRIBUTION_POLICY, runtime),
+      ).map((r) => ({
         value: r,
         label: RUNTIME_DISPLAY_NAMES[r],
       })),
@@ -427,8 +422,8 @@ export function TaskAdvancedConfigEditor(props: Props) {
   // Permission-mode options — runtime-specific. Each runtime defines its
   // own set of permission strings (builtin: auto/plan/fullAgency/custom;
   // CC: default/acceptEdits/bypassPermissions/plan/dontAsk/auto;
-  // Codex: auto-edit/full-auto/no-restrictions (managed uses product projection); Gemini:
-  // default/autoEdit/yolo/plan). Sourcing from the canonical
+  // Codex: auto-edit/full-auto/no-restrictions (managed uses product projection).
+  // Sourcing from the canonical
   // `getRuntimePermissionModes` registry means adding a new runtime's
   // perm modes only requires updating that one switch — the picker here
   // surfaces them automatically.
@@ -447,17 +442,22 @@ export function TaskAdvancedConfigEditor(props: Props) {
           }] : [];
         })
         : getRuntimePermissionModes(effectiveRuntime))
-        .filter((m) => isPermissionModeForRuntimeIdentity(
+        .filter((m) => !m.hidden && isPermissionModeForRuntimeIdentity(
           m.value,
           effectiveRuntime,
           effectiveRuntimeSource,
         ))
-        .map((m) => ({
-        value: m.value,
-        label: m.description
-          ? `${m.label} · ${effectiveRuntimeSource === 'managed-provider' ? m.description : t(`advanced.permissionModes.${effectiveRuntime}.${m.value}`, { defaultValue: m.description })}`
-          : m.label,
-        })),
+        .map((m) => {
+          const label = effectiveRuntimeSource === 'managed-provider'
+            ? m.label
+            : t(`chat:input.permissionModes.${m.value}.label`, { defaultValue: m.label });
+          return {
+            value: m.value,
+            label: m.description
+              ? `${label} · ${effectiveRuntimeSource === 'managed-provider' ? m.description : t(`advanced.permissionModes.${effectiveRuntime}.${m.value}`, { defaultValue: m.description })}`
+              : label,
+          };
+        }),
     ],
     [effectiveRuntime, effectiveRuntimeSource, t],
   );
@@ -494,14 +494,14 @@ export function TaskAdvancedConfigEditor(props: Props) {
         className="flex w-full items-center gap-2 rounded-[var(--radius-md)] px-4 py-2.5 text-left transition-colors hover:bg-[var(--hover-bg)]"
         aria-expanded={open}
       >
-        <Settings2 className="h-4 w-4 text-[var(--ink-muted)]" strokeWidth={1.5} />
+        <SlidersIcon className="h-4 w-4 text-[var(--ink-muted)]" strokeWidth={1.5} />
         <span className="flex-1 text-sm font-medium text-[var(--ink)]">
           {t('advanced.title')}
           <span className="ml-1.5 text-xs font-normal text-[var(--ink-muted)]">
             {t('advanced.subtitle')}
           </span>
         </span>
-        <ChevronDown
+        <ChevronDownIcon
           className={`h-4 w-4 text-[var(--ink-muted)] transition-transform ${open ? 'rotate-180' : ''}`}
         />
       </button>
@@ -513,7 +513,7 @@ export function TaskAdvancedConfigEditor(props: Props) {
               runtime is forced to 'builtin' upstream so model/permission/MCP
               fields show their builtin variant. Mirrors WorkspaceBasicsSection's
               gate treatment so the two surfaces feel consistent. */}
-          {multiAgentRuntimeEnabled && (
+          {runtimeSelectorAvailable && (
             <FieldRow
               label="Runtime"
               hint={
@@ -532,11 +532,11 @@ export function TaskAdvancedConfigEditor(props: Props) {
             </FieldRow>
           )}
 
-          {/* External runtime notice — Model / MCP fields are managed by the
-              runtime itself (Claude Code / Codex / Gemini); only model and
+          {/* External CLI notice — Model / MCP fields are managed by the
+              runtime itself (Claude Code / Codex); only model and
               permission can be overridden per-task. Mirrors
               WorkspaceBasicsSection's treatment of the same situation. */}
-          {!isBuiltin && (
+          {!usesProductConfiguration && (
             <p className="rounded-[var(--radius-md)] bg-[var(--accent-warm-subtle)] px-3.5 py-2.5 text-xs leading-relaxed text-[var(--ink-muted)]">
               {t('advanced.externalNotice', { runtime: effectiveRuntimeLabel })}
             </p>
@@ -545,7 +545,7 @@ export function TaskAdvancedConfigEditor(props: Props) {
           {/* Permission mode — visible for EVERY runtime. The option list
               pivots on the effective runtime via getRuntimePermissionModes
               (builtin: auto/plan/fullAgency/custom; CC: default/acceptEdits/…;
-              Codex: suggest/auto-edit/…; Gemini: default/autoEdit/yolo/plan).
+              Codex: suggest/auto-edit/…).
               "跟随默认（最大权限）" sentinel means: at execution time, fall
               back to the runtime's max permission (cron is unattended). */}
           <FieldRow
@@ -568,18 +568,18 @@ export function TaskAdvancedConfigEditor(props: Props) {
               Both render as a popup-grouped list to match Chat / Agent
               settings UX. The builtin variant uses `useAvailableProviders`
               (cross-provider) — issue #130 fix. The external variant
-              reads `runtimeModels` (CC_MODELS / codexModels / geminiModels)
+              reads `runtimeModels` (CC_MODELS / codexModels)
               and writes `runtimeConfig.model`. */}
           <FieldRow
             label={t('advanced.modelLabel')}
             hint={
-              isBuiltin
+              usesProductConfiguration
                 ? t('advanced.modelHintBuiltin')
                 : t('advanced.modelHintExternal', { runtime: effectiveRuntimeLabel })
             }
           >
             <ModelPicker
-              isBuiltin={isBuiltin}
+              isBuiltin={usesProductConfiguration}
               open={modelPickerOpen}
               setOpen={setModelPickerOpen}
               modelPickerRef={modelPickerRef}
@@ -605,13 +605,13 @@ export function TaskAdvancedConfigEditor(props: Props) {
           </FieldRow>
 
 
-          {/* MCP enable list — builtin only. Hint + reset action share a
+          {/* MCP enable list — Product-configured runtimes only. Hint + reset action share a
               single bottom row: status text on the left, "恢复跟随 Agent"
               on the right (only when there's actually an override to revert
               — pristine state hides the button rather than disabling it,
               since a disabled button reads as "I should be able to click
               this but can't" while no button reads as "nothing to do here"). */}
-          {isBuiltin && (
+          {usesProductConfiguration && (
             <FieldRow label={t('advanced.mcpTools')}>
               {mcpCatalogue.length === 0 ? (
                 <div className="rounded-[var(--radius-md)] border border-dashed border-[var(--line)] px-3 py-3 text-xs text-[var(--ink-muted)]">
@@ -822,7 +822,7 @@ function ModelPicker(props: {
         onClick={() => setOpen(isOpen ? null : variant)}
       >
         <span className="min-w-0 flex-1 truncate">{closedLabel}</span>
-        <ChevronDown
+        <ChevronDownIcon
           className={`h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)] transition-transform ${
             isOpen ? 'rotate-180' : ''
           }`}
@@ -927,7 +927,7 @@ function ModelPicker(props: {
                 </button>
                 {externalRuntimeModels.length === 0 ? (
                   <div className="px-3 py-3 text-xs leading-relaxed text-[var(--ink-muted)]">
-                    {effectiveRuntime === 'codex' || effectiveRuntime === 'gemini'
+                    {effectiveRuntime === 'codex'
                       ? t('advanced.queryingModels')
                       : t('advanced.noRuntimeModels')}
                   </div>

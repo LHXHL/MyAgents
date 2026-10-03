@@ -7,6 +7,7 @@ import type { ProxySettings } from '../shared/config-types';
 import {
   effectiveProxyScopeKey,
   normalizeProxyScope,
+  PROXY_ENV_KEYS,
   shouldUseMyAgentsProxyForGeneralRequests,
   shouldUseMyAgentsProxyForProvider,
 } from '../shared/proxyScope';
@@ -17,17 +18,6 @@ import {
 } from './utils/socks-bridge';
 
 export const PROXY_NO_PROXY_VAL = 'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1';
-
-const PROXY_VARS_LIST = [
-  'HTTP_PROXY',
-  'HTTPS_PROXY',
-  'http_proxy',
-  'https_proxy',
-  'ALL_PROXY',
-  'all_proxy',
-  'NO_PROXY',
-  'no_proxy',
-] as const;
 
 const proxyWasInjectedByRust = process.env.MYAGENTS_PROXY_INJECTED === '1';
 const proxyInheritedEnvJson = process.env.MYAGENTS_PROXY_INHERITED_ENV_JSON;
@@ -115,7 +105,7 @@ function readInheritedProxySnapshot(): Record<string, string | undefined> {
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         const snapshot: Record<string, string | undefined> = {};
         const source = parsed as Record<string, unknown>;
-        for (const key of PROXY_VARS_LIST) {
+        for (const key of PROXY_ENV_KEYS) {
           const value = source[key];
           if (typeof value === 'string') snapshot[key] = value;
         }
@@ -128,7 +118,7 @@ function readInheritedProxySnapshot(): Record<string, string | undefined> {
 
   const snapshot: Record<string, string | undefined> = {};
   if (!proxyWasInjectedByRust) {
-    for (const key of PROXY_VARS_LIST) {
+    for (const key of PROXY_ENV_KEYS) {
       snapshot[key] = process.env[key];
     }
   }
@@ -181,7 +171,7 @@ function copyProxyEnvVars(
   target: Record<string, string | undefined>,
   source: Record<string, string | undefined>,
 ): void {
-  for (const key of PROXY_VARS_LIST) {
+  for (const key of PROXY_ENV_KEYS) {
     const value = source[key];
     if (value !== undefined) target[key] = value;
     else delete target[key];
@@ -293,7 +283,7 @@ export function getProviderProxyScopeKey(providerId: string): string {
 }
 
 export function getProcessProxyEnvKey(): string {
-  return PROXY_VARS_LIST
+  return PROXY_ENV_KEYS
     .map((key) => `${key}=${process.env[key] ?? ''}`)
     .join('\n');
 }
@@ -387,6 +377,13 @@ function generalRequestEnvSnapshot(): Record<string, string | undefined> {
     : inheritedProxySnapshot;
 }
 
+/** Sealed subprocess projection of the general owner, including the localhost bypass. */
+export function getGeneralProxyEnvironment(): Readonly<NodeJS.ProcessEnv> {
+  const env: NodeJS.ProcessEnv = {};
+  copyProxyEnvVars(env, generalRequestEnvSnapshot());
+  return Object.freeze(env);
+}
+
 function envHttpProxyOptions(env: Record<string, string | undefined>): {
   httpProxy?: string;
   httpsProxy?: string;
@@ -444,6 +441,18 @@ export function applyProviderProxyPolicyToEnv(
   console.log(`[proxy-state] owner=provider provider=${providerId} path=${useAppProxy ? 'myagents-proxy' : 'inherited'}`);
 }
 
+/** Ephemeral Provider request policy for the DSH credential reverse response. */
+export function getProviderRequestProxyPolicy(providerId: string): Readonly<{
+  httpProxy?: string;
+  httpsProxy?: string;
+  noProxy: string;
+}> {
+  const source = shouldUseMyAgentsProxyForProvider(currentProxySettings, providerId)
+    ? (appProxyEnvSnapshot ?? {})
+    : inheritedProxySnapshot;
+  return Object.freeze(envHttpProxyOptions(source));
+}
+
 export function getProxyForProviderUrl(providerId: string, url: string): string | undefined {
   const source = shouldUseMyAgentsProxyForProvider(currentProxySettings, providerId)
     ? (appProxyEnvSnapshot ?? {})
@@ -451,8 +460,9 @@ export function getProxyForProviderUrl(providerId: string, url: string): string 
   return proxyForUrlFromEnv(url, source);
 }
 
+/** General-owner proxy decision for DSH WebFetch, using the same sealed baseline as generic HTTP. */
 export function getProxyForUrl(url: string): string | undefined {
-  return proxyForUrlFromEnv(url, process.env);
+  return proxyForUrlFromEnv(url, generalRequestEnvSnapshot());
 }
 
 /**

@@ -30,8 +30,11 @@ export interface PersistToolResultMeta {
 
 export interface PersistContentBlock {
   asyncQuestions?: AsyncQuestionSet;
-  type: 'text' | 'tool_use' | 'thinking';
+  type: 'text' | 'tool_use' | 'thinking' | 'server_tool_use';
   text?: string;
+  providerRouteId?: string;
+  providerBlockType?: string;
+  resultProviderBlockType?: string;
   tool?: {
     id: string;
     name: string;
@@ -87,6 +90,15 @@ export type ExternalPendingInteractiveRequest =
       questions: AskUserQuestionInput['questions'];
       previewFormat: 'html' | 'markdown';
     };
+  }
+  | {
+    type: 'exit-plan-mode:request';
+    data: {
+      requestId: string;
+      sessionId?: string | null;
+      plan?: string;
+      allowedPrompts?: [];
+    };
   };
 
 export type ExternalConfigSource =
@@ -139,6 +151,10 @@ export interface ExternalMessageOperation {
   context: ExternalSendContext;
   runtimeConfig: ExternalRuntimeConfigSnapshot;
   userProjection: ExternalUserMessageProjectionState;
+  /** In-memory callback retained when startup recovery requeues this exact operation. */
+  deferredDispatchAccepted?: () => void;
+  /** Stable Product-minted identity reused by DSH admission and crash recovery. */
+  dshClientOperationId?: string;
   /** Dispatch settlement belongs to every operation, including direct error retries. */
   dispatchAcceptance: Promise<ExternalSendResult>;
   settleDispatchAcceptance: (result: ExternalSendResult) => void;

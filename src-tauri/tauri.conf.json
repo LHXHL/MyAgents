@@ -49,6 +49,7 @@
       "../src-tauri/resources/sharp-runtime": "sharp-runtime",
       "../src-tauri/resources/tsx-runtime": "tsx-runtime",
       "../src-tauri/resources/nodejs": "nodejs",
+      "../src-tauri/resources/integrated-runtimes/dsh": "integrated-runtimes/dsh",
       "../src-tauri/resources/playwright-control/@playwright/mcp": "node_modules/@playwright/mcp",
       "../src-tauri/resources/playwright-control/playwright": "node_modules/playwright",
       "../src-tauri/resources/playwright-control/playwright-core": "node_modules/playwright-core",

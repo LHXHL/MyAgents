@@ -47,6 +47,8 @@ Composer 从上到下为：
 
 工具栏新增动作不得撑高外框；文字动作与图标动作在视觉上共享同一基线和命中高度。
 
+新对话的 Runtime 在 Launcher 的工作区 / Runtime 行选择；Agent 设置仍可管理后续会话的默认 Runtime。进入 Chat Session 后，Composer 不提供 Runtime 切换入口；当前 Runtime 在顶部 Session 菜单以只读身份展示。
+
 ## 5. 添加菜单和选择器
 
 - `+` 菜单收纳引用文件、Skill、上传和定时任务等低频创建动作。
@@ -61,7 +63,7 @@ Composer 从上到下为：
 
 - builtin Claude Agent SDK 可展示自身系统指令；
 - Managed Codex 只额外展示已原生支持的 `/compact`；
-- 用户自管 Claude Code/Codex/Gemini 不展示未适配的 SDK 系统指令。
+- 用户自管 Claude Code/Codex 不展示未适配的 SDK 系统指令。
 
 权限图标使用统一语义：只读规划、逐项确认、自动编辑、受约束自主执行、跳过审批分别使用对应的 Eye、ShieldQuestion、FilePenLine、ShieldCheck、LockOpen 词汇。未知自定义模式保留 Runtime 自己声明的图标和文案。
 

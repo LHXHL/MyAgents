@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { FloatingFocusManager, useFloating } from "@floating-ui/react";
 import { useTranslation } from "react-i18next";
-import { X } from "lucide-react";
+import { CloseIcon } from '@/components/icons';
 import OverlayBackdrop from "@/components/OverlayBackdrop";
 import { useCloseLayer } from "@/hooks/useCloseLayer";
 import { isImeComposingEvent } from "@/utils/imeKeyboard";
@@ -137,7 +137,7 @@ export function DeviceDetails({
               aria-label={t("agentNetwork.close")}
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
             >
-              <X className="h-4 w-4" />
+              <CloseIcon className="h-4 w-4" />
             </button>
           </header>
           <div className="min-h-0 overflow-y-auto px-6 py-5">

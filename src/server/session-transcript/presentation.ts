@@ -368,6 +368,10 @@ export class TranscriptPresentation {
           typeof data.parentToolUseId === 'string' ? data.parentToolUseId : undefined,
           event === 'chat:server-tool-use-start' ? 'server_tool_use' : 'tool_use');
         const input = object(tool.input);
+        if (target && event === 'chat:server-tool-use-start') this.content.updateBlock(target, {
+          ...(typeof data.providerRouteId === 'string' ? { providerRouteId: data.providerRouteId } : {}),
+          ...(typeof data.providerBlockType === 'string' ? { providerBlockType: data.providerBlockType } : {}),
+        });
         if (target && input && (Object.keys(input).length > 0 || data.finalInput === true)) this.content.confirmInput(target, input);
         return;
       }

@@ -22,7 +22,8 @@
       "proxy": "网络代理",
       "externalCli": "外部调用",
       "shortcuts": "快捷键",
-      "about": "关于"
+      "about": "关于",
+      "developer": "开发者"
     }
   },
   "externalCli": {
@@ -76,10 +77,7 @@
     "forceWakeEnabled": "已开启常开阻睡",
     "forceWakeDisabled": "已关闭常开阻睡",
     "defaultWorkspaceTitle": "启动时打开的工作区",
-    "defaultWorkspaceDescription": "启动页默认使用的工作区路径",
-    "defaultWorkspaceNone": "无",
-    "defaultWorkspaceBrowse": "选择文件夹...",
-    "defaultWorkspacePickTitle": "选择默认工作区",
+    "defaultWorkspaceDescription": "启动页默认选中的 Agent 工作区，与启动页的「设为默认」保持一致",
     "defaultWorkspaceSaved": "已设置默认工作区",
     "appearanceModeTitle": "外观模式",
     "appearanceModeDescription": "设置应用的明暗外观模式",
@@ -97,7 +95,9 @@
       "light": "日间模式",
       "dark": "夜间模式"
     },
-    "queueTitle": "连续发送消息",
+    "agentFeaturesTitle": "Agent 功能设置",
+    "defaultRuntimeTitle": "默认 Agent 运行环境",
+    "defaultRuntimeDescription": "修改后默认以此运行环境运行，可在 Agent 设置中单独修改",
     "queueModeTitle": "队列响应模式",
     "queueTurnDescription": "仅在 AI 完成一个执行轮次后，自动发送下一条消息",
     "queueRealtimeDescription": "AI 执行过程中会阅读消息，自主判断响应时机",
@@ -898,7 +898,7 @@
       "installedMultiple_one": "已安装 {{count}} 个技能",
       "installedMultiple_other": "已安装 {{count}} 个技能",
       "syncPartial": "成功 {{synced}} 个，失败 {{failed}} 个",
-      "syncSuccess": "成功同步 {{count}} 个技能",
+      "syncSuccess": "已导入 {{count}} 个技能，默认禁用",
       "noSyncableSkills": "没有可同步的技能",
       "syncFailed": "同步失败",
       "newCommandTitle": "新建指令",
@@ -929,6 +929,8 @@
       "syncableCount_one": "{{count}} 个可同步",
       "syncableCount_other": "{{count}} 个可同步",
       "syncFromClaudeDescription": "导入 ~/.claude/skills 中的技能",
+      "syncPreviewNote": "将复制以下技能到用户级目录，导入后默认禁用：",
+      "syncApply": "导入列出的技能",
       "phaseParsing": "正在解析链接...",
       "phaseDownloading": "正在下载仓库...",
       "phaseUnpacking": "正在解包...",
@@ -1007,12 +1009,12 @@
       "runningChannelsHint": "有运行中的 Channel，请先停止"
     },
     "permission": {
-      "auto": "行动",
+      "auto": "请求批准",
       "plan": "规划",
-      "fullAgency": "自主行动",
-      "autoDescription": "Agent 在工作区内行动，使用工具需确认",
+      "fullAgency": "完全自主",
+      "autoDescription": "工作区内行动，使用工具需审批",
       "planDescription": "Agent 仅研究信息并与你讨论规划",
-      "fullAgencyDescription": "Agent 拥有完全自主权限，无需人工确认"
+      "fullAgencyDescription": "无限制使用电脑与互联网，无需审批"
     },
     "reasoning": {
       "descriptions": {
@@ -2217,8 +2219,6 @@
     "teamSpaceLoading": "正在读取团队空间构建状态...",
     "teamSpaceUnavailable": "当前构建未包含团队空间服务。",
     "teamSpaceUnavailableWithReason": "当前构建未包含团队空间服务。({{reason}})",
-    "runtimeTitle": "更多 Agent Runtime",
-    "runtimeDescription": "启用后可在输入框和 Agent 设置中选择外部 Runtime，例如 Claude Code CLI、Codex CLI。若关闭，则恢复使用内置 Runtime。",
     "cliRegistryTitle": "CLI 工具注册表",
     "cliRegistryDescription": "允许 AI 创建并注册命令行小工具，并在工具箱中管理；开启后新会话可自动发现已启用工具。MCP 与 myagents 内置 CLI 能力不受影响。",
     "desktopPetTitle": "桌面宠物",
@@ -2273,5 +2273,25 @@
       "cronTaskDescription": "查看和管理运行中的循环任务（开发调试用）",
       "openPanel": "打开面板"
     }
+  },
+  "collaboration": {
+    "title": "DSH 子 Agent 协作",
+    "description": "为 DSH 会话设置子 Agent 的模型与协作范围。配置在安全边界生效；已有子 Agent 保留创建时的模型。",
+    "depth": "最大嵌套深度",
+    "active": "同时执行上限",
+    "retained": "保留 Agent 上限",
+    "depthHint": "根 Agent 深度为 0。默认 2：允许根创建子 Agent，子 Agent 还可再创建一层后代。所有层共享执行额度。",
+    "strategy": "默认子模型策略",
+    "inherit": "继承直接父 Agent",
+    "fixed": "指定模型",
+    "agent": "允许 Agent 自主选择",
+    "roles": "角色指定模型",
+    "roleName": "扩展 Agent 的角色名",
+    "addRole": "添加角色",
+    "authorized": "额外授权模型",
+    "authorizedHint": "根模型与角色指定模型自动进入授权集合。开启自主选择后，Agent 可从这些模型中选择；取消授权会阻止旧子 Agent 的后续请求。",
+    "timing": "协作消息生效时机",
+    "timingHint": "仅控制 Agent 间消息与完成报告。默认实时：最近一次模型思考或工具步骤结束后注入。上方对话队列设置继续控制用户输入。",
+    "unavailable": "模型当前不可用"
   }
 }

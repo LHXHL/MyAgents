@@ -216,3 +216,10 @@ Tauri 提供 `cmd_speech_model_pack_status/install/remove`。状态为 `not_inst
 3. 音频已保存但没有转录时查看 Record 的 transcription status 与模型 pack status。资源未 ready 时安装/修复资源；历史 Record 仍需用户手动点击“开始转录”。
 4. Agent 看不到 job 时必须在原发起 Session 运行 `myagents speech list`；不要通过增加 `--sessionId` 或全局 list 绕过隔离。
 5. 资源准备或安装失败时依次核对 target native manifest、共享 ORT identity、第一方 manifest/signature、pack 文件 hash 与最小真实加载。不得回退系统 ORT、在线 ASR、用户 cache 或临时下载。
+
+
+## Record CLI 读取与删除
+
+`myagents record get <id>` 经 Management API 与 RecordStore 读取完整 Record；`myagents record delete <id>` 先取消对应 speech job，再由 RecordStore 删除，发布既有变更事件并记录 CliAgent 埋点。list/create/get/delete 与桌面共用 Store，CLI 不直接读写 Record 目录。
+
+Speech 取消结算所有匹配 job，但只更新 Audio Record 的转录/人物投影。Text Record 没有音频处理状态，桌面与 CLI 的共享删除 preflight 不修改它。

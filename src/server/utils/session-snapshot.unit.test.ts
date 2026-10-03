@@ -20,6 +20,36 @@ function makeAgent(overrides: Partial<AgentConfig>): AgentConfig {
 }
 
 describe('snapshotForOwnedSession — reasoning effort capture (#324)', () => {
+  it('DSH freezes an authoritative integrated binding and ordinary Provider route', () => {
+    const snap = snapshotForOwnedSession(makeAgent({
+      runtime: 'dsh',
+      providerId: 'anthropic-api',
+      model: 'claude-sonnet-4-6',
+      reasoningEffort: 'default',
+      permissionMode: 'plan',
+      runtimeConfig: {
+        model: 'stale-external-model',
+        permissionMode: 'full-auto',
+      },
+    }));
+
+    expect(snap).toMatchObject({
+      runtime: 'dsh',
+      runtimeSource: 'integrated',
+      runtimeBinding: { family: 'integrated', id: 'dsh' },
+      providerId: 'anthropic-api',
+      providerRoute: {
+        kind: 'provider',
+        providerId: 'anthropic-api',
+        model: 'claude-sonnet-4-6',
+      },
+      model: 'claude-sonnet-4-6',
+      reasoningEffort: 'default',
+      permissionMode: 'plan',
+    });
+    expect(snap.providerEnvJson).toBeUndefined();
+  });
+
   it('builtin: captures agent.reasoningEffort', () => {
     const snap = snapshotForOwnedSession(makeAgent({ reasoningEffort: 'max', model: 'claude-fable-5' }));
     expect(snap.reasoningEffort).toBe('max');
@@ -52,7 +82,7 @@ describe('snapshotForOwnedSession — reasoning effort capture (#324)', () => {
       model: 'claude-opus-4-7',
       reasoningEffort: 'max',
       permissionMode: 'fullAgency',
-      runtimeConfig: { model: 'gemini-3.1-pro-preview', reasoningEffort: 'xhigh', permissionMode: 'yolo' },
+      runtimeConfig: { model: 'claude-sonnet-4-5', reasoningEffort: 'xhigh', permissionMode: 'bypassPermissions' },
     }), { runtimeOverride: 'codex' });
 
     expect(snap.runtime).toBe('codex');
@@ -83,9 +113,29 @@ describe('snapshotForOwnedSession — reasoning effort capture (#324)', () => {
     expect(snapshotForOwnedSession(makeAgent({})).reasoningEffort).toBeUndefined();
   });
 
-  it('IM live-follow snapshot stays effort-free (D4: re-resolves per turn)', () => {
+  it('IM freezes effort with unattended permission', () => {
     const snap = snapshotForImSession(makeAgent({ reasoningEffort: 'max' }));
-    expect('reasoningEffort' in snap).toBe(false);
+    expect(snap.reasoningEffort).toBe('max');
+    expect(snap.permissionMode).toBe('fullAgency');
+  });
+  it('uses desktop distribution and subscription constraints for IM template births', () => {
+    const options = { runtimePolicy: { defaultIntegratedRuntime: 'dsh' } };
+    expect(snapshotForImSession(makeAgent({ runtime: 'dsh', runtimePreference: { family: 'integrated', id: 'dsh' },
+      providerId: 'anthropic-sub', model: 'claude-sonnet-4-6' }), options))
+      .toMatchObject({ runtime: 'builtin', providerId: 'anthropic-sub', model: 'claude-sonnet-4-6', permissionMode: 'fullAgency' });
+    expect(snapshotForImSession(makeAgent({ runtime: undefined, providerId: 'deepseek' }),
+      { runtimePolicy: { defaultIntegratedRuntime: 'dsh' } }))
+      .toMatchObject({ runtime: 'dsh', runtimeSource: 'integrated', permissionMode: 'full-autonomous' });
+  });
+  it('keeps an explicit SDK choice when the global default is DSH', () => {
+    expect(snapshotForImSession(makeAgent({ runtime: 'builtin', providerId: 'deepseek' }),
+      { runtimePolicy: { defaultIntegratedRuntime: 'dsh' } }))
+      .toMatchObject({ runtime: 'builtin', permissionMode: 'fullAgency' });
+  });
+  it('rejects an unavailable Managed Codex template instead of publishing a partial identity', () => {
+    expect(() => snapshotForImSession(makeAgent({ providerId: 'codex-sub', model: 'codex-live' }),
+      { runtimePolicy: {}, managedCodexProviderReady: false }))
+      .toThrow('not ready');
   });
 
   it('Managed Codex provider snapshots runtime-backed identity instead of builtin provider env', () => {
@@ -220,14 +270,16 @@ describe('snapshotForOwnedSession — reasoning effort capture (#324)', () => {
     expect(snap.providerEnvJson).toBeUndefined();
   });
 
-  it('Managed Codex IM snapshot freezes only the runtime identity', () => {
+  it('Managed Codex IM snapshot freezes full provider identity', () => {
     expect(snapshotForImSession(makeAgent({
       providerId: 'codex-sub',
       model: 'gpt-5.4-codex',
       permissionMode: 'fullAgency',
-    }), { managedCodexProviderReady: true })).toEqual({
+    }), { managedCodexProviderReady: true })).toMatchObject({
       runtime: 'codex',
       runtimeSource: 'managed-provider',
+      providerExecutionIdentity: { providerId: 'codex-sub', model: 'gpt-5.4-codex' },
+      permissionMode: 'no-restrictions',
     });
   });
 
@@ -236,7 +288,7 @@ describe('snapshotForOwnedSession — reasoning effort capture (#324)', () => {
       providerId: 'codex-sub',
       model: 'gpt-5.4-codex',
       runtimeConfig: { source: 'system-cli' },
-    }), { runtimeOverride: 'codex' })).toEqual({
+    }), { runtimeOverride: 'codex' })).toMatchObject({
       runtime: 'codex',
       runtimeSource: 'system-cli',
     });
@@ -251,14 +303,45 @@ describe('snapshotForOwnedSession — reasoning effort capture (#324)', () => {
       runtimeOverride: 'codex',
       runtimeSourceOverride: 'managed-provider',
       managedCodexProviderReady: true,
-    })).toEqual({
+    })).toMatchObject({
       runtime: 'codex',
       runtimeSource: 'managed-provider',
+      providerExecutionIdentity: { providerId: 'codex-sub', model: 'gpt-5.4-codex' },
+      permissionMode: 'no-restrictions',
     });
   });
 });
 
 describe('snapshotForForkedSession', () => {
+  it('copies one authoritative Runtime identity without mixing fallback state', () => {
+    const source = {
+      runtime: 'builtin',
+      runtimeBindingCompatibility: {
+        state: 'incompatible',
+        code: 'invalid-runtime-binding',
+        message: 'invalid',
+      },
+    } as const satisfies Partial<SessionMetadata>;
+    const fallback = {
+      runtime: 'builtin',
+      runtimeBinding: {
+        family: 'integrated',
+        id: 'claude-agent-sdk',
+        implementationVersion: '0.3.233',
+      },
+      configSnapshotAt: '2026-08-30T00:00:00.000Z',
+    } as const;
+
+    const snapshot = snapshotForForkedSession(
+      source as SessionMetadata,
+      fallback,
+    );
+    expect(snapshot.runtimeBindingCompatibility).toEqual(
+      source.runtimeBindingCompatibility,
+    );
+    expect(snapshot.runtimeBinding).toBeUndefined();
+  });
+
   it('does not propagate legacy Managed Codex protocol or Host catalog gates', () => {
     const source = {
       runtime: 'codex',

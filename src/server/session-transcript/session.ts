@@ -14,7 +14,9 @@ export interface SessionTranscriptOptions {
   recoverIncompleteTail?: boolean;
   incompleteSource?: boolean;
   withLock: <T>(run: () => Promise<T>) => Promise<T>;
-  publishMetadata: (metadata: SessionMetadata, patch: Partial<SessionMetadata>, birth: boolean) => Promise<SessionMetadata>;
+  publishMetadata: (metadata: SessionMetadata, patch: Partial<SessionMetadata>, birth: boolean, committed: TranscriptCommitTarget) => Promise<SessionMetadata>;
+  prepareReplacement?: (source: TranscriptCommitTarget, target: TranscriptCommitTarget) => Promise<void>;
+  contentBoundMetadataKeys?: readonly (keyof SessionMetadata)[];
   deriveMetadata: (projection: TranscriptProjection) => Pick<SessionMetadata, 'stats' | 'lastMessagePreview'>;
   onStatus: (status: TranscriptSaveStatus) => void;
   publishMutationIntent: (sourceMetadata: SessionMetadata, intent: PendingConversationMutation) => Promise<void>;
@@ -39,6 +41,7 @@ export class SessionTranscript {
       allowCreate: options.birth, recoverIncompleteTail: options.recoverIncompleteTail,
       withLock: options.withLock, publishBirth: target => this.publishMetadata(target),
       prepareReplacement: async (source, target) => {
+        await options.prepareReplacement?.(source, target);
         if (!this.mutation) return;
         this.mutation.target = target;
         await options.publishMutationIntent(this.mutation.source, {
@@ -81,6 +84,15 @@ export class SessionTranscript {
   adoptPublishedMetadata(updated: SessionMetadata): void {
     this.currentMetadata = { ...updated, ...this.pendingMetadata };
   }
+  /** Execution journals are committed by SessionStore independently of body IO.
+   * Superseded pending patches must not resurrect an already-settled identity. */
+  adoptExecutionMetadata(updated: SessionMetadata, keys: readonly (keyof SessionMetadata)[]): void {
+    for (const key of keys) delete this.pendingMetadata[key];
+    this.adoptPublishedMetadata(updated);
+  }
+
+  get isUnpublishedBirth(): boolean { return !this.birthPublished; }
+
   get hasPendingMutation(): boolean { return this.mutation !== null; }
   get isRevoked(): boolean { return this.revoked; }
 
@@ -116,16 +128,28 @@ export class SessionTranscript {
 
   private async publishMetadata(committed: TranscriptCommitTarget): Promise<void> {
     this.refreshDerivedMetadata();
-    const patch = this.pendingMetadata;
+    const patch = { ...this.pendingMetadata };
+    if (committed.revision < this.writer.status.liveRevision) {
+      for (const key of this.options.contentBoundMetadataKeys ?? []) delete patch[key];
+    }
     if (this.birthPublished && Object.keys(patch).length === 0) return;
-    const updated = await this.options.publishMetadata(this.metadata, patch, !this.birthPublished);
+    const metadataAtPublication = this.currentMetadata;
+    const updated = await this.options.publishMetadata(this.metadata, patch, !this.birthPublished, committed);
     this.birthPublished = true;
+    // A body commit acknowledges its snapshot, not newer execution state.
+    // SessionStore may have settled/admitted native work while publication awaited IO.
+    const executionKeys = this.options.contentBoundMetadataKeys ?? [];
+    const supersededCommit = committed.revision < this.writer.status.liveRevision;
+    const execution = Object.fromEntries(executionKeys
+      .filter(key => supersededCommit || this.currentMetadata[key] !== metadataAtPublication[key])
+      .map(key => [key, this.currentMetadata[key]]));
     const remaining = { ...this.pendingMetadata };
     for (const key of Object.keys(patch) as (keyof SessionMetadata)[]) {
+      if (executionKeys.includes(key) && supersededCommit) continue;
       if (remaining[key] === patch[key]) delete remaining[key];
     }
     this.pendingMetadata = remaining;
-    this.currentMetadata = { ...updated, ...remaining };
+    this.currentMetadata = { ...updated, ...execution, ...remaining };
     if (this.mutation?.target?.generation === committed.generation
       && committed.revision >= this.mutation.target.revision) this.mutation = null;
   }

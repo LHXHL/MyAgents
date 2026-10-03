@@ -5,7 +5,23 @@
 
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowUpToLine, BarChart2, Bell, Check, Clock, FileText, Flag, FolderOpen, History, MessageSquare, Pencil, Play, Square, Trash2, X } from 'lucide-react';
+import {
+  ArrowUpLineIcon,
+  ChartIcon,
+  BellIcon,
+  CheckIcon,
+  ClockIcon,
+  DocumentIcon,
+  FlagIcon,
+  FolderOpenIcon,
+  HistoryIcon,
+  MessageIcon,
+  EditIcon,
+  PlayIcon,
+  StopIcon,
+  TrashIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import type { CronTask, CronSchedule, CronEndConditions } from '@/types/cronTask';
@@ -52,7 +68,7 @@ interface CronTaskDetailPanelProps {
 
 const INPUT_CLS = 'w-full rounded-lg border border-[var(--line)] bg-transparent px-3 py-2.5 text-sm text-[var(--ink)] placeholder:text-[var(--ink-muted)] focus:border-[var(--accent)] focus:outline-none transition-colors';
 
-function SectionHeader({ icon: Icon, children }: { icon?: typeof Clock; children: React.ReactNode }) {
+function SectionHeader({ icon: Icon, children }: { icon?: typeof ClockIcon; children: React.ReactNode }) {
     return (
         <div className="flex items-center gap-2">
             {Icon && <Icon className="h-4 w-4 text-[var(--ink-muted)]" />}
@@ -78,7 +94,7 @@ function Checkbox({ checked, onChange, label }: { checked: boolean; onChange: (v
     return (
         <button type="button" onClick={() => onChange(!checked)} className="flex items-center gap-2.5 text-sm text-[var(--ink)]">
             <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${checked ? 'border-[var(--accent)] bg-[var(--accent)] text-[var(--on-accent)]' : 'border-[var(--line-strong)] bg-transparent'}`}>
-                {checked && <Check className="h-2.5 w-2.5" />}
+                {checked && <CheckIcon className="h-2.5 w-2.5" />}
             </span>
             {label}
         </button>
@@ -252,14 +268,14 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
                     {/* Header */}
                     <div className="flex shrink-0 items-center justify-between px-6 py-4">
                         <div className="flex min-w-0 items-center gap-2.5">
-                            <Clock className="h-4 w-4 shrink-0 text-[var(--accent)]" />
+                            <ClockIcon className="h-4 w-4 shrink-0 text-[var(--accent)]" />
                             <h3 className="min-w-0 truncate text-lg font-semibold text-[var(--ink)]">
                                 {isEditing ? t('cron.detail.editTitle') : displayName}
                             </h3>
                             {!isEditing && <span className={`shrink-0 text-xs font-medium ${getCronStatusColor(task.status)}`}>{formatCronStatusText(task.status, t)}</span>}
                         </div>
                         <button onClick={() => isEditing ? setIsEditing(false) : onClose()} className="ml-2 shrink-0 rounded-lg p-1.5 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] transition-colors">
-                            <X className="h-4 w-4" />
+                            <CloseIcon className="h-4 w-4" />
                         </button>
                     </div>
 
@@ -269,7 +285,7 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
                             /* ====== EDIT MODE ====== */
                             <>
                                 <div>
-                                    <SectionHeader icon={FileText}>{t('cron.detail.sectionBasic')}</SectionHeader>
+                                    <SectionHeader icon={DocumentIcon}>{t('cron.detail.sectionBasic')}</SectionHeader>
                                     <div className="mt-3 space-y-4">
                                         <div>
                                             <label className="mb-1.5 block text-sm font-medium text-[var(--ink-secondary)]">{t('cron.detail.taskName')}<span className="ml-1 font-normal text-[var(--ink-muted)]">{t('cron.detail.optional')}</span></label>
@@ -285,7 +301,7 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
                                 <div className="border-t border-[var(--line)]" />
 
                                 <div>
-                                    <SectionHeader icon={Clock}>{t('cron.detail.sectionSchedule')}</SectionHeader>
+                                    <SectionHeader icon={ClockIcon}>{t('cron.detail.sectionSchedule')}</SectionHeader>
                                     <div className="mt-3"><ScheduleTypeTabs value={editSchedule} intervalMinutes={editInterval} onChange={(s, m) => { setEditSchedule(s); setEditInterval(m); }} /></div>
                                 </div>
 
@@ -293,7 +309,7 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
 
                                 {!isAtSchedule && (
                                     <div>
-                                        <SectionHeader icon={Flag}>{t('cron.detail.sectionEndConditions')}</SectionHeader>
+                                        <SectionHeader icon={FlagIcon}>{t('cron.detail.sectionEndConditions')}</SectionHeader>
                                         <div className="mt-3 space-y-3">
                                             <div className="flex gap-1.5 rounded-[var(--radius-md)] bg-[var(--paper-inset)] p-1">
                                                 <button type="button" onClick={() => setEditEndMode('forever')} className={`flex flex-1 items-center justify-center rounded-[var(--radius-sm)] px-3 py-1.5 text-sm font-medium transition-colors ${editEndMode === 'forever' ? 'bg-[var(--paper-elevated)] text-[var(--ink)] shadow-xs' : 'text-[var(--ink-muted)] hover:text-[var(--ink)]'}`}>{t('cron.settingsModal.forever')}</button>
@@ -327,7 +343,7 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
 
                                 {/* 任务通知 */}
                                 <div>
-                                    <SectionHeader icon={Bell}>{t('cron.detail.sectionNotifications')}</SectionHeader>
+                                    <SectionHeader icon={BellIcon}>{t('cron.detail.sectionNotifications')}</SectionHeader>
                                     <div className="mt-2 space-y-3">
                                         <div className="flex items-center justify-between rounded-lg border border-[var(--line)] bg-[var(--paper)] px-4 py-3">
                                             <span className="text-sm text-[var(--ink)]">{t('cron.settingsModal.notifyOnCompletion')}</span>
@@ -347,7 +363,7 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
                             <>
                                 {/* 基本信息 — compact left-right rows */}
                                 <div>
-                                    <SectionHeader icon={FolderOpen}>{t('cron.detail.sectionBasic')}</SectionHeader>
+                                    <SectionHeader icon={FolderOpenIcon}>{t('cron.detail.sectionBasic')}</SectionHeader>
                                     <div className="mt-2 space-y-1.5">
                                         <div className="flex items-center justify-between py-1">
                                             <span className="text-sm text-[var(--ink-muted)]">{t('cron.detail.taskName')}</span>
@@ -375,7 +391,7 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
                                 {task.prompt && (
                                     <>
                                         <div>
-                                            <SectionHeader icon={FileText}>{t('cron.detail.sectionAiPrompt')}</SectionHeader>
+                                            <SectionHeader icon={DocumentIcon}>{t('cron.detail.sectionAiPrompt')}</SectionHeader>
                                             <div className="mt-2 rounded-lg border border-[var(--line)] px-3.5 py-3 text-sm leading-relaxed text-[var(--ink-secondary)] whitespace-pre-wrap break-words">{task.prompt}</div>
                                         </div>
                                         <div className="border-t border-[var(--line)]" />
@@ -384,7 +400,7 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
 
                                 {/* 执行模式 */}
                                 <div>
-                                    <SectionHeader icon={MessageSquare}>{t('cron.detail.sectionRunMode')}</SectionHeader>
+                                    <SectionHeader icon={MessageIcon}>{t('cron.detail.sectionRunMode')}</SectionHeader>
                                     <p className="mt-2 text-sm text-[var(--ink)]">{runModeLabel}</p>
                                 </div>
 
@@ -392,7 +408,7 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
 
                                 {/* 执行计划 */}
                                 <div>
-                                    <SectionHeader icon={Clock}>{t('cron.detail.sectionSchedule')}</SectionHeader>
+                                    <SectionHeader icon={ClockIcon}>{t('cron.detail.sectionSchedule')}</SectionHeader>
                                     <div className="mt-2 flex items-center justify-between rounded-lg border border-[var(--line)] px-3.5 py-3">
                                         <span className="text-sm font-medium text-[var(--ink)]">{scheduleDesc}</span>
                                         <span className={`text-xs ${task.status === 'running' ? 'text-[var(--ink-secondary)]' : 'text-[var(--ink-muted)]/50'}`}>
@@ -405,7 +421,7 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
 
                                 {/* 结束条件 */}
                                 <div>
-                                    <SectionHeader icon={Flag}>{t('cron.detail.sectionEndConditions')}</SectionHeader>
+                                    <SectionHeader icon={FlagIcon}>{t('cron.detail.sectionEndConditions')}</SectionHeader>
                                     <div className="mt-2 flex flex-wrap gap-2">
                                         <DetailTag label={task.endConditions.deadline ? t('cron.detail.deadline', { time: new Date(task.endConditions.deadline).toLocaleString(locale, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) }) : t('cron.detail.noDeadline')} />
                                         <DetailTag label={task.endConditions.maxExecutions ? t('cron.detail.maxExecutions', { count: task.endConditions.maxExecutions }) : t('cron.detail.unlimited')} />
@@ -417,7 +433,7 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
 
                                 {/* 任务通知 */}
                                 <div>
-                                    <SectionHeader icon={Bell}>{t('cron.detail.sectionNotifications')}</SectionHeader>
+                                    <SectionHeader icon={BellIcon}>{t('cron.detail.sectionNotifications')}</SectionHeader>
                                     <div className="mt-2 flex flex-wrap gap-2">
                                         <DetailTag label={task.notifyEnabled ? t('cron.detail.notificationOn') : t('cron.detail.notificationOff')} />
                                         {(() => {
@@ -433,7 +449,7 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
 
                                 {/* 运行统计 */}
                                 <div>
-                                    <SectionHeader icon={BarChart2}>{t('cron.detail.sectionStats')}</SectionHeader>
+                                    <SectionHeader icon={ChartIcon}>{t('cron.detail.sectionStats')}</SectionHeader>
                                     <div className="mt-2 grid grid-cols-3 gap-3">
                                         <div>
                                             <span className="text-xs text-[var(--ink-muted)]">{t('cron.detail.executionCount')}</span>
@@ -457,7 +473,7 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
 
                                 {!isManagedTask && (
                                     <div>
-                                        <SectionHeader icon={History}>{t('cron.detail.sectionHistory')}</SectionHeader>
+                                        <SectionHeader icon={HistoryIcon}>{t('cron.detail.sectionHistory')}</SectionHeader>
                                         <div className="mt-2"><TaskRunHistory taskId={task.id} sessionId={task.internalSessionId || task.sessionId} onOpenSession={onOpenSession ? (sid) => { onOpenSession(sid); onClose(); } : undefined} /></div>
                                     </div>
                                 )}
@@ -482,7 +498,7 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
                             <>
                                 {isManagedTask ? <div /> : (
                                     <button onClick={() => setShowDeleteConfirm(true)} className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium text-[var(--error)] hover:bg-[var(--error-bg)] transition-colors">
-                                        <Trash2 className="h-3.5 w-3.5" />{t('cron.detail.delete')}
+                                        <TrashIcon className="h-3.5 w-3.5" />{t('cron.detail.delete')}
                                     </button>
                                 )}
                                 <div className="flex items-center gap-2.5">
@@ -492,24 +508,24 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
                                             title={t('cron.detail.syncTooltip')}
                                             className="flex items-center gap-1.5 rounded-lg border border-[var(--line)] px-4 py-2 text-sm font-medium text-[var(--ink-muted)] hover:border-[var(--line-strong)] hover:text-[var(--ink)] transition-colors"
                                         >
-                                            <ArrowUpToLine className="h-3.5 w-3.5" />{t('cron.detail.syncToAgent')}
+                                            <ArrowUpLineIcon className="h-3.5 w-3.5" />{t('cron.detail.syncToAgent')}
                                         </button>
                                     )}
                                     {!isManagedTask && (
                                         <button onClick={startEditing} className="flex items-center gap-1.5 rounded-lg border border-[var(--line)] px-4 py-2 text-sm font-medium text-[var(--ink-muted)] hover:border-[var(--line-strong)] hover:text-[var(--ink)] transition-colors">
-                                            <Pencil className="h-3.5 w-3.5" />{t('cron.detail.edit')}
+                                            <EditIcon className="h-3.5 w-3.5" />{t('cron.detail.edit')}
                                         </button>
                                     )}
                                     {!isManagedTask && task.status === 'running' && onStop && (
                                         <button onClick={() => setShowStopConfirm(true)} disabled={isStopping}
                                             className="flex items-center gap-1.5 rounded-lg border border-[var(--error)]/30 px-4 py-2 text-sm font-medium text-[var(--error)] hover:bg-[var(--error-bg)] disabled:opacity-50 transition-colors">
-                                            <Square className="h-3.5 w-3.5" />{isStopping ? t('cron.detail.stopping') : t('cron.detail.stop')}
+                                            <StopIcon className="h-3.5 w-3.5" />{isStopping ? t('cron.detail.stopping') : t('cron.detail.stop')}
                                         </button>
                                     )}
                                     {!isManagedTask && task.status === 'stopped' && (!resumeBlockReason ? (
                                         <button onClick={handleResume} disabled={isResuming}
                                             className="flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-5 py-2 text-sm font-medium text-[var(--on-accent)] hover:bg-[var(--accent-warm-hover)] disabled:opacity-50 transition-colors">
-                                            <Play className="h-3.5 w-3.5" />{isResuming ? t('cron.detail.resuming') : t('cron.detail.resume')}
+                                            <PlayIcon className="h-3.5 w-3.5" />{isResuming ? t('cron.detail.resuming') : t('cron.detail.resume')}
                                         </button>
                                     ) : <span className="text-xs text-[var(--ink-muted)]/50">{resumeBlockReason}</span>)}
                                 </div>

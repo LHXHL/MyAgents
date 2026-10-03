@@ -5,7 +5,7 @@
  * Three outcomes, in priority order:
  *  - `ignore-idle`        — the persistent process died BETWEEN turns (a turn already
  *                           completed and produced no pending assistant text). Common on
- *                           Codex/Gemini after long idle (SIGKILL exit 137). The next
+ *                           Codex after long idle (SIGKILL exit 137). The next
  *                           send transparently respawns; the user never needed an error.
  *  - `suppress-user-stop` — #307: WE asked the process to stop (user pressed Stop, a
  *                           config-change restart, or a session takeover called

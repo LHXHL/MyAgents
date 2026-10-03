@@ -1,0 +1,16 @@
+{
+  "asyncQuestionReply": null,
+  "desktopQuery": null,
+  "sdkUuid": null,
+  "runtimeTurnAnchor": null,
+  "runtimeOperationAnchor": null,
+  "completionState": null,
+  "terminalStatus": null,
+  "attachments": null,
+  "usage": null,
+  "toolCount": null,
+  "durationMs": null,
+  "metadata": null,
+  "turnId": null,
+  "transcriptState": null
+}

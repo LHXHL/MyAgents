@@ -1,6 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Check, Copy, Loader2, QrCode } from 'lucide-react';
+import {
+  CheckIcon,
+  CopyIcon,
+  LoaderIcon,
+  QrIcon,
+} from '@/components/icons';
 import QRCode from 'qrcode';
 import { copyPlainText } from '@/utils/clipboard';
 
@@ -48,7 +53,7 @@ export default function BindQrPanel({
     return (
         <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
             <div className="flex items-center gap-2 mb-3">
-                <QrCode className="h-4 w-4 text-[var(--ink-muted)]" />
+                <QrIcon className="h-4 w-4 text-[var(--ink-muted)]" />
                 <h3 className="text-sm font-semibold text-[var(--ink)]">
                     {t('agentSettings.imComponents.quickBindTitle')}
                 </h3>
@@ -70,7 +75,7 @@ export default function BindQrPanel({
                         <img src={qrDataUrl} alt="Telegram bind QR" className="h-[160px] w-[160px]" />
                     ) : (
                         <div className="flex h-[160px] w-[160px] items-center justify-center">
-                            <Loader2 className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />
+                            <LoaderIcon className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />
                         </div>
                     )}
                 </div>
@@ -106,7 +111,7 @@ export default function BindQrPanel({
                                 className="flex-shrink-0 rounded p-1 text-[var(--ink-muted)] transition-colors hover:text-[var(--ink)]"
                                 title={t('agentSettings.imComponents.copyLink')}
                             >
-                                {copied ? <Check className="h-3.5 w-3.5 text-[var(--success)]" /> : <Copy className="h-3.5 w-3.5" />}
+                                {copied ? <CheckIcon className="h-3.5 w-3.5 text-[var(--success)]" /> : <CopyIcon className="h-3.5 w-3.5" />}
                             </button>
                         </div>
                     </div>

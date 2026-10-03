@@ -3,7 +3,15 @@
  * Extracted from SkillsCommandsList and GlobalSkillsPanel to avoid duplication
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { Loader2, FolderOpen, Link2 } from 'lucide-react';
+import {
+  LoaderIcon,
+  FolderOpenIcon,
+  LinkIcon,
+  CloseIcon,
+  ComposeIcon,
+  UploadIcon,
+  RefreshIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
@@ -74,7 +82,7 @@ export function CreateDialog({
                         disabled={!name.trim() || loading}
                         className="flex items-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-4 py-2 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
                     >
-                        {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+                        {loading && <LoaderIcon className="h-4 w-4 animate-spin" />}
                         {t('agentSettings.common.create')}
                     </button>
                 </div>
@@ -96,6 +104,7 @@ interface NewSkillChooserProps {
         onSync: () => Promise<void>;
         canSync: boolean;
         syncableCount: number;
+        syncableFolders: string[];
     };
 }
 
@@ -112,6 +121,7 @@ export function NewSkillChooser({
 
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [syncing, setSyncing] = useState(false);
+    const [syncPreview, setSyncPreview] = useState(false);
 
     const handleUploadClick = () => {
         fileInputRef.current?.click();
@@ -169,12 +179,10 @@ export function NewSkillChooser({
                         onClick={onCancel}
                         className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)]"
                     >
-                        <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M18 6L6 18M6 6l12 12" />
-                        </svg>
+                        <CloseIcon className="h-5 w-5" />
                     </button>
                 </div>
-                <div className="mt-6 space-y-3">
+                <div className="mt-6 max-h-[70vh] space-y-3 overflow-y-auto">
                     {/* Write Skill Option */}
                     <button
                         type="button"
@@ -182,10 +190,7 @@ export function NewSkillChooser({
                         className="group flex w-full items-center gap-4 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-4 text-left transition-all hover:border-[var(--line-strong)] hover:shadow-sm"
                     >
                         <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--paper-inset)] transition-colors group-hover:bg-[var(--accent-warm-subtle)]">
-                            <svg className="h-6 w-6 text-[var(--ink-muted)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                            </svg>
+                            <ComposeIcon className="h-6 w-6 text-[var(--ink-muted)]" />
                         </div>
                         <div>
                             <div className="font-medium text-[var(--ink)]">{t('agentSettings.skillDialogs.writeSkillTitle')}</div>
@@ -200,11 +205,7 @@ export function NewSkillChooser({
                         className="group flex w-full items-center gap-4 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-4 text-left transition-all hover:border-[var(--line-strong)] hover:shadow-sm"
                     >
                         <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--paper-inset)] transition-colors group-hover:bg-[var(--accent-warm-subtle)]">
-                            <svg className="h-6 w-6 text-[var(--ink-muted)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                                <polyline points="17 8 12 3 7 8" />
-                                <line x1="12" y1="3" x2="12" y2="15" />
-                            </svg>
+                            <UploadIcon className="h-6 w-6 text-[var(--ink-muted)]" />
                         </div>
                         <div>
                             <div className="font-medium text-[var(--ink)]">{t('agentSettings.skillDialogs.uploadSkillTitle')}</div>
@@ -220,7 +221,7 @@ export function NewSkillChooser({
                             className="group flex w-full items-center gap-4 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-4 text-left transition-all hover:border-[var(--line-strong)] hover:shadow-sm"
                         >
                             <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--paper-inset)] transition-colors group-hover:bg-[var(--accent-warm-subtle)]">
-                                <Link2 className="h-6 w-6 text-[var(--ink-muted)]" />
+                                <LinkIcon className="h-6 w-6 text-[var(--ink-muted)]" />
                             </div>
                             <div>
                                 <div className="font-medium text-[var(--ink)]">{t('agentSettings.skillDialogs.importFromUrlTitle')}</div>
@@ -237,7 +238,7 @@ export function NewSkillChooser({
                             className="group flex w-full items-center gap-4 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-4 text-left transition-all hover:border-[var(--line-strong)] hover:shadow-sm"
                         >
                             <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--paper-inset)] transition-colors group-hover:bg-[var(--accent-warm-subtle)]">
-                                <FolderOpen className="h-6 w-6 text-[var(--ink-muted)]" />
+                                <FolderOpenIcon className="h-6 w-6 text-[var(--ink-muted)]" />
                             </div>
                             <div>
                                 <div className="font-medium text-[var(--ink)]">{t('agentSettings.skillDialogs.importFolderTitle')}</div>
@@ -250,17 +251,15 @@ export function NewSkillChooser({
                     {syncConfig?.canSync && (
                         <button
                             type="button"
-                            onClick={handleSyncClick}
+                            onClick={() => setSyncPreview(true)}
                             disabled={syncing}
                             className="group flex w-full items-center gap-4 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-4 text-left transition-all hover:border-[var(--line-strong)] hover:shadow-sm disabled:opacity-50"
                         >
                             <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--paper-inset)] transition-colors group-hover:bg-[var(--accent-warm-subtle)]">
                                 {syncing ? (
-                                    <Loader2 className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />
+                                    <LoaderIcon className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />
                                 ) : (
-                                    <svg className="h-6 w-6 text-[var(--ink-muted)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                        <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                                    </svg>
+                                    <RefreshIcon className="h-6 w-6 text-[var(--ink-muted)]" />
                                 )}
                             </div>
                             <div>
@@ -273,6 +272,18 @@ export function NewSkillChooser({
                                 <p className="mt-0.5 text-sm text-[var(--ink-muted)]">{t('agentSettings.skillDialogs.syncFromClaudeDescription')}</p>
                             </div>
                         </button>
+                    )}
+                    {syncConfig?.canSync && syncPreview && (
+                        <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-inset)] p-4">
+                            <p className="text-sm text-[var(--ink)]">{t('agentSettings.skillDialogs.syncPreviewNote')}</p>
+                            <ul className="mt-2 max-h-40 overflow-y-auto text-sm text-[var(--ink-muted)]">
+                                {syncConfig.syncableFolders.map(folder => <li key={folder}>{folder}</li>)}
+                            </ul>
+                            <button type="button" onClick={handleSyncClick} disabled={syncing}
+                                className="mt-3 rounded-lg bg-[var(--button-primary-bg)] px-3 py-2 text-sm text-[var(--button-primary-text)] disabled:opacity-50">
+                                {t('agentSettings.skillDialogs.syncApply')}
+                            </button>
+                        </div>
                     )}
 
                     {/* Hidden file input */}
@@ -550,7 +561,7 @@ export function InstallFromUrlDialog({ onInstall, onCancel, onInstalled }: Insta
 
                 {loading && (
                     <div className="mt-4 flex items-center gap-3 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-4 py-3 text-sm text-[var(--ink-muted)]">
-                        <Loader2 className="h-4 w-4 animate-spin" />
+                        <LoaderIcon className="h-4 w-4 animate-spin" />
                         {phase || t('agentSettings.skillDialogs.processing')}
                     </div>
                 )}
@@ -716,7 +727,7 @@ export function InstallFromUrlDialog({ onInstall, onCancel, onInstalled }: Insta
                             disabled={!url.trim() || loading}
                             className="flex items-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-4 py-2 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
                         >
-                            {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+                            {loading && <LoaderIcon className="h-4 w-4 animate-spin" />}
                             {t('agentSettings.skillDialogs.probe')}
                         </button>
                     ) : (
@@ -726,7 +737,7 @@ export function InstallFromUrlDialog({ onInstall, onCancel, onInstalled }: Insta
                             disabled={loading}
                             className="flex items-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-4 py-2 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
                         >
-                            {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+                            {loading && <LoaderIcon className="h-4 w-4 animate-spin" />}
                             {t('agentSettings.skillDialogs.install')}
                         </button>
                     )}

@@ -71,6 +71,9 @@ export interface SessionMessage {
     sdkUuid?: string;  // SDK 分配的 UUID，用于 resumeSessionAt / rewindFiles
     /** Exact runtime-native root Turn represented by this terminal assistant row. */
     runtimeTurnAnchor?: RuntimeTurnAnchor;
+    runtimeOperationAnchor?: RuntimeOperationAnchor;
+    completionState?: 'partial';
+    terminalStatus?: 'stopped' | 'error';
     attachments?: MessageAttachment[];
     /** Usage info (only for assistant messages) */
     usage?: MessageUsage;
@@ -82,7 +85,22 @@ export interface SessionMessage {
     metadata?: MessageSourceMetadata;
 }
 
-export interface RuntimeTurnAnchor {
-    turnId: string;
-    rootUserMessageId: string;
+export type RuntimeTurnAnchor =
+  | {
+      turnId: string;
+      rootUserMessageId: string;
+      origin?: 'user';
+      clientOperationId?: string;
+    }
+  | {
+      turnId: string;
+      origin: 'collaboration';
+      clientOperationId: string;
+      rootUserMessageId?: never;
+    };
+
+export interface RuntimeOperationAnchor {
+  runtime: 'dsh';
+  clientOperationId: string;
+  runtimeSessionId: string;
 }

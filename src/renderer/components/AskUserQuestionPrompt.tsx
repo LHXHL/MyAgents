@@ -1,6 +1,14 @@
+import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import { MessageCircleQuestion, ChevronLeft, ChevronRight, X, Check, Eye } from 'lucide-react';
+import {
+  HelpBubbleIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  CloseIcon,
+  CheckIcon,
+  EyeIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 // Import shared types
@@ -38,8 +46,8 @@ function sanitizePreviewHtml(html: string): string {
 
 interface AskUserQuestionPromptProps {
     request: AskUserQuestionRequest;
-    onSubmit: (requestId: string, answers: Record<string, string>) => Promise<void>;
-    onCancel: (requestId: string) => Promise<void>;
+    onSubmit: (requestId: string, answers: AskUserQuestionAnswers) => void | Promise<void>;
+    onCancel: (requestId: string) => void | Promise<void>;
 }
 
 /**
@@ -56,14 +64,17 @@ function AskUserQuestionForm({ request, onSubmit, onCancel }: AskUserQuestionPro
     const [answers, setAnswers] = useState<Record<number, string[]>>({});
     const [customInputs, setCustomInputs] = useState<Record<number, string>>({});
     const [isSubmitting, setIsSubmitting] = useState(false);
-    const [submitFailed, setSubmitFailed] = useState(false);
+    const [responseError, setResponseError] = useState('');
     const customInputRef = useRef<HTMLInputElement>(null);
     const autoAdvanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const mountedRef = useRef(true);
 
     // Cleanup timers on unmount
     useEffect(() => {
+        mountedRef.current = true;
         return () => {
+            mountedRef.current = false;
             if (autoAdvanceTimerRef.current) clearTimeout(autoAdvanceTimerRef.current);
             if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
         };
@@ -175,41 +186,39 @@ function AskUserQuestionForm({ request, onSubmit, onCancel }: AskUserQuestionPro
     const handleSubmit = useCallback(async () => {
         if (!allAnswered || isSubmitting) return;
         setIsSubmitting(true);
-        setSubmitFailed(false);
+        setResponseError('');
 
         // Convert answers to the runtime format. Builtin/CC questions omit
         // `id` and keep the historical numeric keys; Codex app-server requires
         // native question ids in ToolRequestUserInputResponse.answers.
-        const formattedAnswers: Record<string, string> = {};
+        const formattedAnswers: AskUserQuestionAnswers = {};
         request.questions.forEach((question, idx) => {
             const selectedOptions = answers[idx] || [];
-            // Replace custom input marker with actual input value
-            const finalOptions = selectedOptions.map(opt =>
-                opt === CUSTOM_INPUT_MARKER ? (customInputs[idx] || '').trim() : opt
-            ).filter(Boolean);
-            if (finalOptions.length === 0 && question.required === false) return;
-            formattedAnswers[question.id ?? String(idx)] = finalOptions.join(',');
+            const selected = selectedOptions.filter(option => option !== CUSTOM_INPUT_MARKER);
+            const custom = selectedOptions.includes(CUSTOM_INPUT_MARKER) ? customInputs[idx]?.trim() : undefined;
+            if (selected.length === 0 && !custom && question.required === false) return;
+            formattedAnswers[question.id ?? String(idx)] = { selected, ...(custom ? { custom } : {}) };
         });
 
         try {
             await onSubmit(request.requestId, formattedAnswers);
-        } catch {
-            setSubmitFailed(true);
-            setIsSubmitting(false);
+        } catch (error) {
+            console.error('[AskUserQuestionPrompt] Question response failed:', error);
+            if (mountedRef.current) { setIsSubmitting(false); setResponseError(t('shell.askQuestion.submitFailed')); }
         }
-    }, [allAnswered, isSubmitting, answers, customInputs, request, onSubmit]);
+    }, [allAnswered, isSubmitting, answers, customInputs, request, onSubmit, t]);
 
     const handleCancel = useCallback(async () => {
         if (isSubmitting) return;
         setIsSubmitting(true);
-        setSubmitFailed(false);
+        setResponseError('');
         try {
             await onCancel(request.requestId);
-        } catch {
-            setSubmitFailed(true);
-            setIsSubmitting(false);
+        } catch (error) {
+            console.error('[AskUserQuestionPrompt] Question cancellation failed:', error);
+            if (mountedRef.current) { setIsSubmitting(false); setResponseError(t('shell.askQuestion.cancelFailed')); }
         }
-    }, [isSubmitting, request.requestId, onCancel]);
+    }, [isSubmitting, request.requestId, onCancel, t]);
 
     // Navigate to specific question by clicking indicator
     const handleIndicatorClick = useCallback((idx: number) => {
@@ -256,7 +265,7 @@ function AskUserQuestionForm({ request, onSubmit, onCancel }: AskUserQuestionPro
                 {/* Header row */}
                 <div className="flex items-center gap-2.5">
                     <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[var(--accent)]/10">
-                        <MessageCircleQuestion className="size-4 text-[var(--accent)]" />
+                        <HelpBubbleIcon className="size-4 text-[var(--accent)]" />
                     </div>
                     <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
@@ -274,6 +283,8 @@ function AskUserQuestionForm({ request, onSubmit, onCancel }: AskUserQuestionPro
                         </div>
                     </div>
                 </div>
+
+                {responseError && <p role="alert" className="mt-3 text-sm text-[var(--error)]">{responseError}</p>}
 
                 {/* Options */}
                 <div className="mt-3 space-y-2">
@@ -302,7 +313,7 @@ function AskUserQuestionForm({ request, onSubmit, onCancel }: AskUserQuestionPro
                                                 : 'border-[var(--line)]'
                                             }`}
                                         >
-                                            {isSelected && <Check className="size-3 text-[var(--on-accent)]" />}
+                                            {isSelected && <CheckIcon className="size-3 text-[var(--on-accent)]" />}
                                         </div>
                                         <div className="flex-1 min-w-0">
                                             <div className="flex items-center gap-2">
@@ -332,7 +343,7 @@ function AskUserQuestionForm({ request, onSubmit, onCancel }: AskUserQuestionPro
                                                             }`}
                                                         title={t('shell.askQuestion.preview')}
                                                     >
-                                                        <Eye className="size-3" />
+                                                        <EyeIcon className="size-3" />
                                                     </span>
                                                 )}
                                             </div>
@@ -385,7 +396,7 @@ function AskUserQuestionForm({ request, onSubmit, onCancel }: AskUserQuestionPro
                                         : 'border-[var(--line)]'
                                     }`}
                                 >
-                                    {isCustomSelected && <Check className="size-3 text-[var(--on-accent)]" />}
+                                    {isCustomSelected && <CheckIcon className="size-3 text-[var(--on-accent)]" />}
                                 </div>
                             </button>
                             <input
@@ -434,12 +445,6 @@ function AskUserQuestionForm({ request, onSubmit, onCancel }: AskUserQuestionPro
                     </div>
                 )}
 
-                {submitFailed && (
-                    <p role="alert" className="mt-3 text-xs text-[var(--error)]">
-                        {t('shell.toasts.submitFailedRetry')}
-                    </p>
-                )}
-
                 {/* Action buttons */}
                 <div className="mt-3 flex items-center justify-between gap-2">
                     <button
@@ -450,7 +455,7 @@ function AskUserQuestionForm({ request, onSubmit, onCancel }: AskUserQuestionPro
                             border border-[var(--line-subtle)] hover:border-[var(--line)] hover:bg-[var(--paper-inset)]
                             transition-colors disabled:opacity-50"
                     >
-                        <X className="size-3.5" />
+                        <CloseIcon className="size-3.5" />
                         <span>{t('shell.common.cancel')}</span>
                     </button>
 
@@ -465,7 +470,7 @@ function AskUserQuestionForm({ request, onSubmit, onCancel }: AskUserQuestionPro
                                     border border-[var(--line-subtle)] hover:border-[var(--line)] hover:bg-[var(--paper-inset)]
                                     transition-colors disabled:opacity-50"
                             >
-                                <ChevronLeft className="size-3.5" />
+                                <ChevronLeftIcon className="size-3.5" />
                                 <span>{t('shell.askQuestion.previous')}</span>
                             </button>
                         )}
@@ -479,7 +484,7 @@ function AskUserQuestionForm({ request, onSubmit, onCancel }: AskUserQuestionPro
                                     text-[var(--on-accent)] bg-[var(--accent)] hover:bg-[var(--accent-warm-hover)]
                                     transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                             >
-                                <Check className="size-3.5" />
+                                <CheckIcon className="size-3.5" />
                                 <span>{t('shell.askQuestion.submit')}</span>
                             </button>
                         ) : (
@@ -492,7 +497,7 @@ function AskUserQuestionForm({ request, onSubmit, onCancel }: AskUserQuestionPro
                                     transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                                 <span>{t('shell.askQuestion.next')}</span>
-                                <ChevronRight className="size-3.5" />
+                                <ChevronRightIcon className="size-3.5" />
                             </button>
                         )}
                     </div>

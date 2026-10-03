@@ -16,7 +16,7 @@
  */
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Minus, Plus } from 'lucide-react';
+import { MinusIcon, PlusIcon } from '@/components/icons';
 
 import { bindZoomGestureListeners } from '@/utils/zoomGesture';
 
@@ -77,7 +77,7 @@ export function ZoomControls({
   return (
     <div className="absolute bottom-4 right-4 z-10 flex items-center gap-0.5 rounded-full border border-[var(--line)] bg-[var(--paper-elevated)] px-1 py-1 shadow-md">
       <button type="button" onClick={onZoomOut} disabled={zoom <= MIN_ZOOM} className={btn} title={t('imagePreview.zoomOut')}>
-        <Minus className="h-3.5 w-3.5" />
+        <MinusIcon className="h-3.5 w-3.5" />
       </button>
       <button
         type="button"
@@ -88,7 +88,7 @@ export function ZoomControls({
         {Math.round(zoom * 100)}%
       </button>
       <button type="button" onClick={onZoomIn} disabled={zoom >= MAX_ZOOM} className={btn} title={t('imagePreview.zoomIn')}>
-        <Plus className="h-3.5 w-3.5" />
+        <PlusIcon className="h-3.5 w-3.5" />
       </button>
     </div>
   );

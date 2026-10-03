@@ -139,12 +139,12 @@ import {
   setAppActiveTabId,
 } from '@/utils/frontendLogger';
 import {
-  normalizeRuntime,
   resolveEffectiveRuntime,
   planSessionOpen,
   sessionRuntimeIdentityFromMetadataForOpen,
 } from '@/utils/sessionOpenPlan';
 import { resolveNotificationClickRoute } from '@/utils/notificationClickRoute';
+import { projectProvidersForRuntime } from '@/utils/runtimeProviderProjection';
 import {
   acknowledgeNotificationBadgeTarget,
   buildSessionNotificationBadgeCounts,
@@ -199,7 +199,11 @@ import {
   getAgentById,
 } from '@/config/services/agentConfigService';
 import type { SessionMetadata } from '@/api/sessionClient';
-import type { RuntimeSource, RuntimeType } from '../shared/types/runtime';
+import {
+  runtimeSourceForRuntimeType,
+  type RuntimeSource,
+  type RuntimeType,
+} from '../shared/types/runtime';
 import type {
   RecordingChange,
   RecordingSnapshot,
@@ -253,6 +257,7 @@ function normalizeInitialPermissionMode(
   value: unknown,
 ): InitialMessage['permissionMode'] | undefined {
   return value === 'auto' || value === 'plan' || value === 'fullAgency'
+    || value === 'approval-required' || value === 'workspace-autonomous' || value === 'full-autonomous'
     ? value
     : undefined;
 }
@@ -290,33 +295,41 @@ interface SessionRuntimeOpenIdentity {
 
 function fallbackRuntimeForOpen(
   fallbackRuntime: RuntimeType,
-  multiAgentRuntime: boolean | undefined,
+  defaultIntegratedRuntime?: unknown,
 ): RuntimeType {
-  return multiAgentRuntime ? fallbackRuntime : 'builtin';
+  return resolveEffectiveRuntime(
+    fallbackRuntime,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    defaultIntegratedRuntime,
+  );
 }
 
 function normalizeRuntimeSourceForOpen(
   runtime: RuntimeType,
   runtimeSource: RuntimeSource | undefined,
 ): RuntimeSource | undefined {
-  if (runtime === 'builtin') return undefined;
-  return runtimeSource ?? 'system-cli';
+  return runtimeSourceForRuntimeType(runtime, runtimeSource);
 }
 
 function analyticsRuntimeSource(
   runtime: RuntimeType,
   runtimeSource: RuntimeSource | undefined,
 ): RuntimeSource | null {
-  if (runtime === 'builtin') return null;
-  return runtimeSource ?? 'system-cli';
+  return runtimeSourceForRuntimeType(runtime, runtimeSource) ?? null;
 }
 
 async function resolveSessionRuntimeIdentityForOpen(
   sessionId: string | null | undefined,
   fallbackRuntime: RuntimeType,
-  multiAgentRuntime: boolean | undefined,
+  defaultIntegratedRuntime?: unknown,
 ): Promise<SessionRuntimeOpenIdentity> {
-  const fallback = fallbackRuntimeForOpen(fallbackRuntime, multiAgentRuntime);
+  const fallback = fallbackRuntimeForOpen(
+    fallbackRuntime,
+    defaultIntegratedRuntime,
+  );
   if (!sessionId || isPendingSessionId(sessionId)) {
     return {
       runtime: fallback,
@@ -464,12 +477,15 @@ export default function App() {
     NotificationBadgeItem[]
   >([]);
   const historyTagIntentSequenceRef = useRef(0);
-  const [historyTagIntent, setHistoryTagIntent] = useState<{ id: number; tag: string } | null>(null);
+  const [historyTagIntent, setHistoryTagIntent] = useState<{
+    id: number;
+    tag: string;
+  } | null>(null);
   const handleOpenHistoryTag = useCallback((tag: string) => {
     setHistoryTagIntent({ id: ++historyTagIntentSequenceRef.current, tag });
   }, []);
   const handleHistoryTagIntentConsumed = useCallback((id: number) => {
-    setHistoryTagIntent((current) => current?.id === id ? null : current);
+    setHistoryTagIntent((current) => (current?.id === id ? null : current));
   }, []);
   const pendingSpaceRouteRef = useRef<PendingAppRoute | null>(null);
   const appRouteGenerationRef = useRef(0);
@@ -783,8 +799,9 @@ export default function App() {
         const agent = getProjectAgent(cfg, configProjects, agentDir);
         const runtimeIdentity = await resolveSessionRuntimeIdentityForOpen(
           sessionId,
-          normalizeRuntime(agent?.runtime),
-          cfg?.multiAgentRuntime,
+          resolveEffectiveRuntime(agent?.runtime, agent?.runtimePreference, agent?.runtimeConfig?.source,
+            agent?.providerId, undefined, cfg?.defaultIntegratedRuntime),
+          cfg?.defaultIntegratedRuntime,
         );
         const originFields = await resolveSessionOriginFieldsForAnalytics(
           sessionId,
@@ -935,7 +952,11 @@ export default function App() {
       log: (message, error) => console.error(message, error),
     });
   const tabLifecycle = useMemo(
-    () => composeBuiltinTabLifecycle({ chat: chatTabLifecycle, record: recordTabLifecycle }),
+    () =>
+      composeBuiltinTabLifecycle({
+        chat: chatTabLifecycle,
+        record: recordTabLifecycle,
+      }),
     [chatTabLifecycle, recordTabLifecycle],
   );
   const requestCloseTab = useTabCloseController({
@@ -1028,14 +1049,21 @@ export default function App() {
     void initAnalytics().then(() => {
       const cfg = configRef.current;
       // distinct effective external runtimes the user has configured agents for.
-      // gate-aware → '' when multiAgentRuntime is off; '' (not omitted) for a
+      // '' (not omitted) for a
       // loaded-but-no-agents user. Captures "configured but maybe never used"
       // runtimes that turn-level events (ai_turn_complete) can't see.
       const runtimesActive = Array.from(
         new Set(
           (cfg.agents ?? [])
             .map((a) =>
-              resolveEffectiveRuntime(a.runtime, !!cfg.multiAgentRuntime),
+              resolveEffectiveRuntime(
+                a.runtime,
+                a.runtimePreference,
+                a.runtimeConfig?.source,
+                a.providerId,
+                undefined,
+                cfg.defaultIntegratedRuntime,
+              ),
             )
             .filter((r) => r !== 'builtin'),
         ),
@@ -1869,7 +1897,11 @@ export default function App() {
           agent_hash: hashAgentNameSync(agent?.name ?? null),
           runtime: resolveEffectiveRuntime(
             agent?.runtime,
-            !!cfg.multiAgentRuntime,
+            agent?.runtimePreference,
+            agent?.runtimeConfig?.source,
+            agent?.providerId,
+            undefined,
+            cfg.defaultIntegratedRuntime,
           ),
           entry_intent: pendingSurfaceForLaunch.entryIntent,
           has_initial_message: !!initialMessage,
@@ -2329,25 +2361,35 @@ export default function App() {
   // sidebar rename cannot leave an already-open tab showing an older title.
   const renamePersistedSession = useCallback(
     async (sessionId: string, newTitle: string) => {
-      const mutationSequence = taskCenterActions.beginSessionMetadataMutation(sessionId);
+      const mutationSequence =
+        taskCenterActions.beginSessionMetadataMutation(sessionId);
       const updated = await updateSession(sessionId, {
         title: newTitle,
         titleSource: 'user',
       });
       if (!updated) return null;
 
-      const applied = taskCenterActions.applySessionMetadata(updated, mutationSequence);
+      const applied = taskCenterActions.applySessionMetadata(
+        updated,
+        mutationSequence,
+      );
       if (!applied) return updated;
 
       for (const tab of tabWorkspaceController.getSnapshot().tabs) {
-        if (tab.view === 'chat' && tab.sessionId === sessionId && tab.title !== updated.title) {
+        if (
+          tab.view === 'chat' &&
+          tab.sessionId === sessionId &&
+          tab.title !== updated.title
+        ) {
           tabWorkspaceController.update(tab.id, 'chat', (current) => ({
             ...current,
             title: updated.title,
           }));
         }
       }
-      window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.SESSION_TITLE_CHANGED));
+      window.dispatchEvent(
+        new CustomEvent(CUSTOM_EVENTS.SESSION_TITLE_CHANGED),
+      );
       return updated;
     },
     [tabWorkspaceController],
@@ -2358,7 +2400,11 @@ export default function App() {
       const tab = tabWorkspaceController
         .getSnapshot()
         .tabs.find((candidate) => candidate.id === tabId);
-      if (tab?.view !== 'chat' || !tab.sessionId || tab.sessionId.startsWith('pending-')) {
+      if (
+        tab?.view !== 'chat' ||
+        !tab.sessionId ||
+        tab.sessionId.startsWith('pending-')
+      ) {
         updateTabTitle(tabId, newTitle);
         return;
       }
@@ -3320,13 +3366,14 @@ export default function App() {
         : undefined;
       const mustReuseStopSurface =
         Boolean(options.activeRecording) && currentTabs.length >= MAX_TABS;
-      const reusable = options.openInNewTab && !mustReuseStopSurface
-        ? undefined
-        : (sourceTab ??
-          (options.activeRecording &&
-          (activeTab?.view === 'launcher' || activeTab?.view === 'taskcenter')
-            ? activeTab
-            : functionalTab));
+      const reusable =
+        options.openInNewTab && !mustReuseStopSurface
+          ? undefined
+          : (sourceTab ??
+            (options.activeRecording &&
+            (activeTab?.view === 'launcher' || activeTab?.view === 'taskcenter')
+              ? activeTab
+              : functionalTab));
       const title = options.title ?? t('tabs.record');
       const intent = {
         recordId,
@@ -3898,19 +3945,28 @@ export default function App() {
             : undefined;
         const workspaceRuntime = resolveEffectiveRuntime(
           workspaceAgent?.runtime,
-          Boolean(configRef.current?.multiAgentRuntime),
+          workspaceAgent?.runtimePreference,
+          workspaceAgent?.runtimeConfig?.source,
+          workspaceAgent?.providerId,
+          undefined,
+          configRef.current?.defaultIntegratedRuntime,
         );
-        const sel =
-          workspaceRuntime === 'builtin'
-            ? resolveBuiltinSelection(
-                { agent: workspaceAgent, workspace },
-                configRef.current!,
-                appProvidersRef.current,
-                appApiKeysRef.current,
-                appProviderVerifyStatusRef.current,
-              )
-            : undefined;
-        if (workspaceRuntime === 'builtin' && !sel) {
+        const workspaceUsesProductProvider =
+          workspaceRuntime === 'builtin' || workspaceRuntime === 'dsh';
+        const workspaceProviders = projectProvidersForRuntime(
+          appProvidersRef.current,
+          workspaceRuntime,
+        );
+        const sel = workspaceUsesProductProvider
+          ? resolveBuiltinSelection(
+              { agent: workspaceAgent, workspace },
+              configRef.current!,
+              workspaceProviders,
+              appApiKeysRef.current,
+              appProviderVerifyStatusRef.current,
+            )
+          : undefined;
+        if (workspaceUsesProductProvider && !sel) {
           toastRef.current?.error(t('appChrome.noModelProviderForDiscussion'));
           return false;
         }
@@ -4241,14 +4297,26 @@ export default function App() {
           project.agentId && configRef.current
             ? getAgentById(configRef.current, project.agentId)
             : undefined;
+        const helperRuntime = resolveEffectiveRuntime(
+          helperAgent?.runtime,
+          helperAgent?.runtimePreference,
+          helperAgent?.runtimeConfig?.source,
+          helperAgent?.providerId,
+          undefined,
+          configRef.current?.defaultIntegratedRuntime,
+        );
+        const helperUsesProductProvider =
+          helperRuntime === 'builtin' || helperRuntime === 'dsh';
+        const helperProviders = projectProvidersForRuntime(
+          appProvidersRef.current,
+          helperRuntime,
+        );
         let builtinSelection: { providerId: string; model: string } | undefined;
         let providerExecutionIdentity:
           | RuntimeBackedProviderIdentity
           | undefined;
-        if (providerId) {
-          const provider = appProvidersRef.current.find(
-            (p) => p.id === providerId,
-          );
+        if (providerId && helperUsesProductProvider) {
+          const provider = helperProviders.find((p) => p.id === providerId);
           if (
             provider &&
             isProviderAvailable(
@@ -4268,11 +4336,15 @@ export default function App() {
             }
           }
         }
-        if (!builtinSelection && !providerExecutionIdentity) {
+        if (
+          helperUsesProductProvider &&
+          !builtinSelection &&
+          !providerExecutionIdentity
+        ) {
           const sel = resolveBuiltinSelection(
             { agent: helperAgent, workspace: project },
             configRef.current!,
-            appProvidersRef.current,
+            helperProviders,
             appApiKeysRef.current,
             appProviderVerifyStatusRef.current,
           );

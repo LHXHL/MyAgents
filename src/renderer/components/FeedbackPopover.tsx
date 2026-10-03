@@ -7,7 +7,12 @@
 
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bot, Loader2, Users, X } from 'lucide-react';
+import {
+  HelperIcon,
+  LoaderIcon,
+  TeamIcon,
+  CloseIcon,
+} from '@/components/icons';
 
 import { apiGetJson } from '@/api/apiFetch';
 import { APP_SHELL_POPOVER_CHROME } from '@/components/global-sidebar/appShellPopoverChrome';
@@ -70,7 +75,7 @@ export default function FeedbackPopover({ open, onClose, onOpenBugReport, trigge
                     title={t('titlebar.close')}
                     aria-label={t('titlebar.close')}
                 >
-                    <X className="h-3.5 w-3.5" />
+                    <CloseIcon className="h-3.5 w-3.5" />
                 </button>
             </div>
 
@@ -86,7 +91,7 @@ export default function FeedbackPopover({ open, onClose, onOpenBugReport, trigge
                 >
                     <div className="flex items-center gap-2.5">
                         <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-[var(--accent-warm-subtle)] transition-colors group-hover:bg-[var(--accent-warm-muted)]">
-                            <Bot className="h-4 w-4 text-[var(--accent-warm)]" />
+                            <HelperIcon className="h-4 w-4 text-[var(--accent-warm)]" />
                         </div>
                         <div className="min-w-0">
                             <p className="text-sm font-medium text-[var(--ink)]">{t('titlebar.helper')}</p>
@@ -104,7 +109,7 @@ export default function FeedbackPopover({ open, onClose, onOpenBugReport, trigge
                     <div className="rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-3.5">
                         <div className="flex items-center gap-2.5">
                             <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-[var(--accent-warm-subtle)]">
-                                <Users className="h-4 w-4 text-[var(--accent-warm)]" />
+                                <TeamIcon className="h-4 w-4 text-[var(--accent-warm)]" />
                             </div>
                             <div className="min-w-0">
                                 <p className="text-sm font-medium text-[var(--ink)]">{t('titlebar.communityTitle')}</p>
@@ -116,7 +121,7 @@ export default function FeedbackPopover({ open, onClose, onOpenBugReport, trigge
                         <div className="mt-3 flex justify-center">
                             {qrLoading ? (
                                 <div className="flex h-32 w-32 items-center justify-center">
-                                    <Loader2 className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />
+                                    <LoaderIcon className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />
                                 </div>
                             ) : (
                                 <img

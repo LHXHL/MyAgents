@@ -1602,7 +1602,7 @@ mod system_skills_tests {
     }
 
     #[test]
-    fn v57_keeps_cuse_and_product_skills_aligned() {
+    fn system_skill_version_keeps_cuse_and_product_skills_aligned() {
         assert_eq!(SYSTEM_SKILLS_VERSION, "58");
         assert!(SYSTEM_SKILLS.contains(&"cuse"));
         assert!(!REQUIRED_SYSTEM_SKILLS.contains(&"cuse"));
@@ -3191,6 +3191,10 @@ pub struct RuntimeDetectionResult {
     pub installed: bool,
     pub version: Option<String>,
     pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readiness: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Clone)]
@@ -3285,7 +3289,7 @@ fn wait_for_runtime_detection_result(
         .cache
         .as_ref()
         .map(clone_runtime_detection_cache_results)
-        .unwrap_or_else(run_runtime_detection)
+        .unwrap_or_default()
 }
 
 fn finish_runtime_detection(
@@ -3305,29 +3309,69 @@ fn finish_runtime_detection(
     gate.done.notify_all();
 }
 
-fn run_runtime_detection() -> HashMap<String, RuntimeDetectionResult> {
+fn run_runtime_detection(resource_dir: Option<&Path>) -> HashMap<String, RuntimeDetectionResult> {
+    let distribution = crate::runtime_distribution_policy::policy();
+    run_runtime_detection_with_policy(resource_dir, distribution)
+}
+
+fn run_runtime_detection_with_policy(
+    resource_dir: Option<&Path>,
+    distribution: &crate::runtime_distribution_policy::RuntimeDistributionPolicy,
+) -> HashMap<String, RuntimeDetectionResult> {
     let mut results = HashMap::new();
 
-    // Builtin is always available
+    // Detection is a distribution projection, not only a filesystem probe.
+    // A binary present on the machine cannot re-enable a Runtime excluded by
+    // the build-owned policy.
     results.insert(
         "builtin".to_string(),
-        RuntimeDetectionResult {
-            installed: true,
-            version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            path: None,
+        if distribution.allows_integrated("claude-agent-sdk") {
+            RuntimeDetectionResult {
+                installed: true,
+                version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                path: None,
+                readiness: Some("ready".to_string()),
+                reason: None,
+            }
+        } else {
+            runtime_not_distributed()
         },
     );
 
-    // Claude Code CLI
-    results.insert("claude-code".to_string(), detect_cli("claude"));
+    results.insert(
+        "dsh".to_string(),
+        if distribution.allows_integrated("dsh") {
+            detect_dsh_runtime(resource_dir)
+        } else {
+            runtime_not_distributed()
+        },
+    );
 
-    // Codex CLI
-    results.insert("codex".to_string(), detect_cli("codex"));
-
-    // Gemini CLI (v0.1.66)
-    results.insert("gemini".to_string(), detect_cli("gemini"));
+    for (runtime, binary) in [
+        ("claude-code", "claude"),
+        ("codex", "codex"),
+    ] {
+        results.insert(
+            runtime.to_string(),
+            if distribution.allows_external(runtime) {
+                detect_cli(binary)
+            } else {
+                runtime_not_distributed()
+            },
+        );
+    }
 
     results
+}
+
+fn runtime_not_distributed() -> RuntimeDetectionResult {
+    RuntimeDetectionResult {
+        installed: false,
+        version: None,
+        path: None,
+        readiness: Some("unavailable".to_string()),
+        reason: Some("not-distributed".to_string()),
+    }
 }
 
 /// Detect whether external Agent Runtime CLIs are installed.
@@ -3341,15 +3385,20 @@ fn run_runtime_detection() -> HashMap<String, RuntimeDetectionResult> {
 /// CLAUDE.md red-line "同步 Tauri 命令阻塞 → 冻结 WKWebView". The cache /
 /// in-flight-join gate is preserved inside the blocking helper.
 #[tauri::command]
-pub async fn cmd_detect_runtimes() -> HashMap<String, RuntimeDetectionResult> {
-    tauri::async_runtime::spawn_blocking(detect_runtimes_blocking)
+pub async fn cmd_detect_runtimes<R: Runtime>(
+    app_handle: AppHandle<R>,
+) -> HashMap<String, RuntimeDetectionResult> {
+    let resource_dir = app_handle.path().resource_dir().ok();
+    tauri::async_runtime::spawn_blocking(move || detect_runtimes_blocking(resource_dir))
         .await
         // spawn_blocking only errors if the task panics — fall back to empty
         // detections (renderer's default is all-not-installed) rather than crash.
         .unwrap_or_else(|_| HashMap::new())
 }
 
-fn detect_runtimes_blocking() -> HashMap<String, RuntimeDetectionResult> {
+fn detect_runtimes_blocking(
+    resource_dir: Option<PathBuf>,
+) -> HashMap<String, RuntimeDetectionResult> {
     let now = Instant::now();
     let gate = runtime_detection_gate();
     match runtime_detection_gate_decision(gate, now, RUNTIME_DETECTION_CACHE_TTL) {
@@ -3379,7 +3428,7 @@ fn detect_runtimes_blocking() -> HashMap<String, RuntimeDetectionResult> {
     let start = trace_start();
     emit_perf_trace(PerfTrace::new(PerfTraceName::Runtime, "detect_start"));
 
-    let results = run_runtime_detection();
+    let results = run_runtime_detection(resource_dir.as_deref());
 
     emit_perf_trace(
         PerfTrace::new(PerfTraceName::Runtime, "detect_done")
@@ -3401,12 +3450,130 @@ fn detect_cli(binary_name: &str) -> RuntimeDetectionResult {
                 installed: true,
                 version,
                 path: Some(path.to_string_lossy().to_string()),
+                readiness: Some("ready".to_string()),
+                reason: None,
             }
         }
         None => RuntimeDetectionResult {
             installed: false,
             version: None,
             path: None,
+            readiness: Some("unavailable".to_string()),
+            reason: Some("artifact-missing".to_string()),
+        },
+    }
+}
+
+fn dsh_platform_target_for(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
+        ("macos", "aarch64") => Some("darwin-arm64"),
+        ("macos", "x86_64") => Some("darwin-x64"),
+        ("windows", "x86_64") => Some("win32-x64"),
+        ("linux", "x86_64") => Some("linux-x64"),
+        _ => None,
+    }
+}
+
+fn dsh_platform_target() -> Option<&'static str> {
+    dsh_platform_target_for(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+fn json_string_at<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a str> {
+    path.iter()
+        .try_fold(value, |current, key| current.get(*key))?
+        .as_str()
+}
+
+fn detect_dsh_runtime(resource_dir: Option<&Path>) -> RuntimeDetectionResult {
+    let lock = serde_json::from_str::<serde_json::Value>(env!("MYAGENTS_DSH_EFFECTIVE_LOCK_JSON"));
+    let Ok(lock) = lock else {
+        return RuntimeDetectionResult {
+            installed: false,
+            version: None,
+            path: None,
+            readiness: Some("unavailable".to_string()),
+            reason: Some("artifact-invalid".to_string()),
+        };
+    };
+    detect_dsh_runtime_with_lock(resource_dir, &lock)
+}
+
+fn detect_dsh_runtime_with_lock(
+    resource_dir: Option<&Path>,
+    lock: &serde_json::Value,
+) -> RuntimeDetectionResult {
+    let version = json_string_at(lock, &["runtime", "version"]).map(str::to_string);
+    let Some(target) = dsh_platform_target() else {
+        return RuntimeDetectionResult {
+            installed: false,
+            version,
+            path: None,
+            readiness: Some("unavailable".to_string()),
+            reason: Some("platform-unverified".to_string()),
+        };
+    };
+    let platform_claim = lock
+        .get("platforms")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|platforms| {
+            platforms.iter().find(|platform| {
+                platform.get("target").and_then(serde_json::Value::as_str) == Some(target)
+            })
+        })
+        .and_then(|platform| platform.get("claim"))
+        .and_then(serde_json::Value::as_str);
+    if !matches!(
+        platform_claim,
+        Some("implementation-complete_pending-native-validation" | "verified")
+    ) {
+        return RuntimeDetectionResult {
+            installed: false,
+            version,
+            path: None,
+            readiness: Some("unavailable".to_string()),
+            reason: Some("platform-unverified".to_string()),
+        };
+    }
+
+    let mut candidates = Vec::new();
+    if let Some(resource_dir) = resource_dir {
+        candidates.push(resource_dir.join("integrated-runtimes").join("dsh"));
+    }
+    if cfg!(debug_assertions) {
+        candidates.push(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("resources")
+                .join("integrated-runtimes")
+                .join("dsh"),
+        );
+    }
+    let root = candidates.into_iter().find(|root| {
+        root.join("runtime-artifact")
+            .join("package.json")
+            .is_file()
+            && root
+                .join("runtime-artifact")
+                .join("runtime-server-process.artifact.mjs")
+                .is_file()
+    });
+    match root {
+        Some(root) => {
+            let release_ready =
+                lock.get("release").is_some() && platform_claim == Some("verified");
+            RuntimeDetectionResult {
+                installed: true,
+                version,
+                path: Some(root.to_string_lossy().to_string()),
+                readiness: Some(if release_ready { "ready" } else { "unverified-dev-runtime" }.to_string()),
+                reason: None,
+            }
+        }
+        None => RuntimeDetectionResult {
+            installed: false,
+            version,
+            path: None,
+            readiness: Some("unavailable".to_string()),
+            reason: Some("artifact-missing".to_string()),
         },
     }
 }
@@ -3415,6 +3582,9 @@ fn detect_cli_version(path: &Path) -> Option<String> {
     // MUST use process_cmd::new() to prevent Windows console flash.
     let mut cmd = crate::process_cmd::new(path);
     cmd.arg("--version")
+        // npm shims use /usr/bin/env node; resolve Node in the same environment
+        // that selected the CLI, rather than the GUI application's minimal PATH.
+        .env("PATH", crate::system_binary::augmented_path())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .stdin(Stdio::null());
@@ -3450,6 +3620,26 @@ fn detect_cli_version(path: &Path) -> Option<String> {
 mod runtime_detection_cache_tests {
     use super::*;
 
+    fn dsh_fixture_lock(claim: &str, release: bool) -> serde_json::Value {
+        let mut lock = serde_json::json!({
+            "runtime": { "version": "fixture-runtime" },
+            "platforms": [{ "target": dsh_platform_target().unwrap(), "claim": claim }]
+        });
+        if release {
+            lock["release"] = serde_json::json!({ "tag": "fixture-release" });
+        }
+        lock
+    }
+
+    fn dsh_fixture_files(resource_dir: &Path) -> std::path::PathBuf {
+        let dsh = resource_dir.join("integrated-runtimes").join("dsh");
+        let artifact = dsh.join("runtime-artifact");
+        fs::create_dir_all(&artifact).unwrap();
+        fs::write(artifact.join("package.json"), "{}").unwrap();
+        fs::write(artifact.join("runtime-server-process.artifact.mjs"), "").unwrap();
+        dsh
+    }
+
     #[test]
     fn runtime_detection_cache_hit_within_ttl() {
         let cached_at = Instant::now();
@@ -3473,6 +3663,74 @@ mod runtime_detection_cache_tests {
     }
 
     #[test]
+    fn dsh_only_detection_cannot_be_reenabled_by_installed_runtimes() {
+        let policy = crate::runtime_distribution_policy::RuntimeDistributionPolicy::parse(
+            r#"{
+                "schemaVersion": 1,
+                "allowedIntegratedRuntimes": ["dsh"],
+                "allowedExternalRuntimes": [],
+                "defaultIntegratedRuntime": "dsh",
+                "selectorAvailability": "hidden"
+            }"#,
+        )
+        .expect("valid DSH-only policy");
+        let results = run_runtime_detection_with_policy(None, &policy);
+
+        for runtime in ["builtin", "claude-code", "codex"] {
+            let detection = results.get(runtime).expect("detection row");
+            assert!(!detection.installed);
+            assert_eq!(detection.readiness.as_deref(), Some("unavailable"));
+            assert_eq!(detection.reason.as_deref(), Some("not-distributed"));
+        }
+        assert_ne!(
+            results
+                .get("dsh")
+                .and_then(|detection| detection.reason.as_deref()),
+            Some("not-distributed"),
+        );
+    }
+
+    #[test]
+    fn bundled_dsh_detection_uses_admitted_build_identity_on_supported_targets() {
+        if dsh_platform_target().is_none() {
+            return;
+        }
+        let temporary = tempfile::tempdir().unwrap();
+        dsh_fixture_files(temporary.path());
+        for (claim, release, readiness) in [
+            ("verified", true, "ready"),
+            ("verified", false, "unverified-dev-runtime"),
+        ] {
+            let lock = dsh_fixture_lock(claim, release);
+            let result = detect_dsh_runtime_with_lock(Some(temporary.path()), &lock);
+            assert!(result.installed, "unexpected DSH detection: {:?}", result.reason);
+            assert_eq!(result.readiness.as_deref(), Some(readiness));
+            assert_eq!(result.version.as_deref(), Some("fixture-runtime"));
+        }
+    }
+
+    #[test]
+    fn dsh_detection_does_not_reverify_build_manifests() {
+        if dsh_platform_target().is_none() {
+            return;
+        }
+        let temporary = tempfile::tempdir().unwrap();
+        let dsh = dsh_fixture_files(temporary.path());
+
+        let result = detect_dsh_runtime_with_lock(Some(temporary.path()), &dsh_fixture_lock("verified", true));
+        assert!(result.installed);
+        assert_eq!(result.path.as_deref(), dsh.to_str());
+    }
+
+    #[test]
+    fn dsh_platform_target_includes_intel_macos() {
+        assert_eq!(dsh_platform_target_for("macos", "aarch64"), Some("darwin-arm64"));
+        assert_eq!(dsh_platform_target_for("macos", "x86_64"), Some("darwin-x64"));
+        assert_eq!(dsh_platform_target_for("windows", "x86_64"), Some("win32-x64"));
+        assert_eq!(dsh_platform_target_for("linux", "x86_64"), Some("linux-x64"));
+    }
+
+    #[test]
     fn runtime_detection_cache_returns_clone_not_shared_map() {
         let mut results = HashMap::new();
         results.insert(
@@ -3481,6 +3739,8 @@ mod runtime_detection_cache_tests {
                 installed: true,
                 version: Some("1".to_string()),
                 path: Some("/bin/codex".to_string()),
+                readiness: Some("ready".to_string()),
+                reason: None,
             },
         );
         let cache = RuntimeDetectionCache {
@@ -3490,16 +3750,18 @@ mod runtime_detection_cache_tests {
 
         let mut cloned = clone_runtime_detection_cache_results(&cache);
         cloned.insert(
-            "gemini".to_string(),
+            "claude-code".to_string(),
             RuntimeDetectionResult {
                 installed: false,
                 version: None,
                 path: None,
+                readiness: Some("unavailable".to_string()),
+                reason: Some("artifact-missing".to_string()),
             },
         );
 
         assert!(cache.results.contains_key("codex"));
-        assert!(!cache.results.contains_key("gemini"));
+        assert!(!cache.results.contains_key("claude-code"));
     }
 
     fn test_gate() -> RuntimeDetectionGate {
@@ -3517,6 +3779,8 @@ mod runtime_detection_cache_tests {
             installed: true,
             version: Some("1.0.0".to_string()),
             path: Some("/bin/codex".to_string()),
+            readiness: Some("ready".to_string()),
+            reason: None,
         }
     }
 

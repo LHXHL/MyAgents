@@ -18,7 +18,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronRight, Clock } from 'lucide-react';
+import { ChevronRightIcon, ClockIcon } from '@/components/icons';
 
 import { getSessions, type SessionMetadata } from '@/api/sessionClient';
 import { CUSTOM_EVENTS } from '@/../shared/constants';
@@ -146,7 +146,7 @@ export function TaskSessionsList({ task, onBeforeOpen }: Props) {
               className="group flex w-full cursor-pointer items-center gap-2 rounded-md px-1.5 py-1.5 text-left transition-colors hover:bg-[var(--hover-bg)]"
             >
               <div className="flex w-[94px] shrink-0 items-center gap-1 text-xs text-[var(--ink-muted)]/60">
-                <Clock className="h-2.5 w-2.5" />
+                <ClockIcon className="h-2.5 w-2.5" />
                 <span className="whitespace-nowrap tabular-nums">{formatTimestamp(session.lastActiveAt)}</span>
               </div>
               <span className="min-w-0 flex-1 truncate text-xs leading-5 text-[var(--ink-secondary)] transition-colors group-hover:text-[var(--ink)]">
@@ -161,7 +161,7 @@ export function TaskSessionsList({ task, onBeforeOpen }: Props) {
               className="mt-1 flex w-full items-center justify-between rounded-md px-1.5 py-1.5 text-xs text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
             >
               <span>{t('sessions.expandMore')}</span>
-              <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+              <ChevronRightIcon className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
           )}
         </div>

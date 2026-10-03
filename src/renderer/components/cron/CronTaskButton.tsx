@@ -1,5 +1,5 @@
 // Composer schedule/goal button.
-import { Timer } from 'lucide-react';
+import { TimerIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 interface CronTaskButtonProps {
@@ -23,7 +23,7 @@ export default function CronTaskButton({ onClick, isActive = false, disabled = f
       } disabled:cursor-not-allowed disabled:opacity-50`}
       title={isActive ? t('composer.cronEnabled') : t('composer.cron')}
     >
-      <Timer className="h-4 w-4" />
+      <TimerIcon className="h-4 w-4" />
     </button>
   );
 }

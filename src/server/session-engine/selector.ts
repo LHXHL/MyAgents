@@ -3,8 +3,10 @@ import {
   getActiveRuntimeSource,
   getActiveRuntimeType,
   hasPendingExternalAskUserQuestion,
+  hasPendingExternalPlanApproval,
   isExternalSessionActive,
   popLastUserMessageForRetry,
+  retryLastExternalUserMessage,
   prewarmExternalSession,
   restoreExternalSessionState,
   shouldUseExternalRuntime,
@@ -13,6 +15,8 @@ import {
 import { prepareDesktopQuery } from './query-reminder';
 import { createBuiltinSessionEngine } from './builtin-adapter';
 import { createExternalSessionEngine } from './external-adapter';
+import { createDshSessionEngine } from '../integrated-runtimes/dsh/adapter';
+import { getCurrentRuntimeType, isDshRuntime } from '../runtimes/factory';
 import type { ExternalRuntimeConfigPatch } from '../runtimes/types';
 import type {
   ExternalConfigSource,
@@ -33,7 +37,12 @@ function queryFacade(engine:SessionEngine):SessionEngine {
     }};
 }
 const builtinEngine = queryFacade(createBuiltinSessionEngine());
+const dshEngine = queryFacade(createDshSessionEngine());
 const externalEngine = queryFacade(createExternalSessionEngine());
+
+function selectedNonBuiltinEngine(): SessionEngine {
+  return isDshRuntime(getCurrentRuntimeType()) ? dshEngine : externalEngine;
+}
 
 const EXTERNAL_CONFIG_SOURCES = new Set<ExternalConfigSource>([
   'runtime-config',
@@ -158,15 +167,17 @@ export function retryLastExternalUserMessageAtSelector(
       error: 'external-retry is only for external runtimes; builtin uses /chat/rewind',
     });
   }
-  return popLastUserMessageForRetry(userMessageId);
+  return getCurrentRuntimeType() === 'dsh'
+    ? retryLastExternalUserMessage(userMessageId)
+    : popLastUserMessageForRetry(userMessageId);
 }
 
 export function getSessionEngine(): SessionEngine {
-  return shouldUseExternalRuntime() ? externalEngine : builtinEngine;
+  return shouldUseExternalRuntime() ? selectedNonBuiltinEngine() : builtinEngine;
 }
 
 export function getSessionEngineKind(): SessionEngineKind {
-  return shouldUseExternalRuntime() ? 'external' : 'builtin';
+  return shouldUseExternalRuntime() ? selectedNonBuiltinEngine().kind : 'builtin';
 }
 
 export function getSessionRuntimeType(): ReturnType<typeof getActiveRuntimeType> {
@@ -174,10 +185,9 @@ export function getSessionRuntimeType(): ReturnType<typeof getActiveRuntimeType>
 }
 
 /**
- * Historical stop behavior: when the external-runtime flag is on but no
- * external session is active yet, /chat/stop falls back to the builtin
- * interrupt path. Keep that compatibility outside either adapter so the
- * external adapter does not become a mixed owner.
+ * Historical stop behavior: when a legacy external runtime is selected but
+ * no external session is active yet, /chat/stop falls back to the builtin
+ * interrupt path. DSH Sessions never cross that ownership boundary.
  */
 export async function stopActiveTurn(): Promise<{ success: boolean; alreadyStopped?: boolean; error?: string }> {
   const engine = getSessionEngine();
@@ -215,8 +225,9 @@ export async function stopActiveTurn(): Promise<{ success: boolean; alreadyStopp
       : { success: false, error: String(settled.error ?? 'Failed to settle paused Goal turn') };
   }
   if (shouldUseExternalRuntime()) {
-    const externalResult = await externalEngine.stopTurn();
-    if (!externalResult.success || !externalResult.alreadyStopped) return externalResult;
+    const dshSelected = isDshRuntime(getCurrentRuntimeType());
+    const externalResult = await selectedNonBuiltinEngine().stopTurn();
+    if (dshSelected || !externalResult.success || !externalResult.alreadyStopped) return externalResult;
     const stopped = await interruptCurrentResponse();
     return stopped ? { success: true } : { success: true, alreadyStopped: true };
   }
@@ -225,8 +236,9 @@ export async function stopActiveTurn(): Promise<{ success: boolean; alreadyStopp
 
 export async function stopOwnedTurn(owner: TurnOwner): Promise<{ success: boolean; alreadyStopped?: boolean; error?: string }> {
   if (shouldUseExternalRuntime()) {
-    const externalResult = await externalEngine.stopOwnedTurn(owner);
-    if (!externalResult.success || !externalResult.alreadyStopped) return externalResult;
+    const dshSelected = isDshRuntime(getCurrentRuntimeType());
+    const externalResult = await selectedNonBuiltinEngine().stopOwnedTurn(owner);
+    if (dshSelected || !externalResult.success || !externalResult.alreadyStopped) return externalResult;
   }
   return builtinEngine.stopOwnedTurn(owner);
 }
@@ -279,14 +291,14 @@ export async function stopOwnedTurnByQueueId(
 }
 
 /**
- * Permission prompts historically route to the external runtime only while an
- * external session is active; otherwise they fall back to builtin pending
- * requests. Keep that compatibility at the selector seam.
+ * Legacy External permission prompts route by process liveness. A DSH-bound
+ * Session keeps DSH ownership even after process loss so a stale response
+ * cannot settle an unrelated Builtin request.
  */
 export function getPermissionResponseEngine(): SessionEngine {
-  return shouldUseExternalRuntime() && isExternalSessionActive()
-    ? externalEngine
-    : builtinEngine;
+  if (!shouldUseExternalRuntime()) return builtinEngine;
+  if (isDshRuntime(getCurrentRuntimeType())) return dshEngine;
+  return isExternalSessionActive() ? externalEngine : builtinEngine;
 }
 
 /**
@@ -296,7 +308,14 @@ export function getPermissionResponseEngine(): SessionEngine {
  * the UI can surface retry/failure instead of silently losing the answer.
  */
 export function getAskUserQuestionResponseEngine(requestId: string): SessionEngine {
-  return shouldUseExternalRuntime() && hasPendingExternalAskUserQuestion(requestId)
-    ? externalEngine
-    : builtinEngine;
+  if (!shouldUseExternalRuntime()) return builtinEngine;
+  if (isDshRuntime(getCurrentRuntimeType())) return dshEngine;
+  return hasPendingExternalAskUserQuestion(requestId) ? externalEngine : builtinEngine;
+}
+
+/** Plan review responses follow the pending request owner, like AskUserQuestion. */
+export function getPlanApprovalResponseEngine(requestId: string): SessionEngine {
+  if (!shouldUseExternalRuntime()) return builtinEngine;
+  if (isDshRuntime(getCurrentRuntimeType())) return dshEngine;
+  return hasPendingExternalPlanApproval(requestId) ? externalEngine : builtinEngine;
 }

@@ -10,7 +10,7 @@
 import { memo, type CSSProperties } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { X } from 'lucide-react';
+import { CloseIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import { TAB_ITEM_MAX_WIDTH_PX, TAB_ITEM_MIN_WIDTH_PX } from '@/components/tabBarLayout';
@@ -111,7 +111,7 @@ export default memo(function SortableTabItem({ tab, chrome, isActive, onSelectTa
         }}
         title={`${t('tabs.closeTab')} (${navigator.platform.toLowerCase().includes('mac') ? '⌘W' : 'Ctrl+W'})`}
       >
-        <X className="h-3 w-3" />
+        <CloseIcon className="h-3 w-3" />
       </button>
 
       {/* Active indicator */}

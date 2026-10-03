@@ -258,31 +258,18 @@ pub(super) fn persist_bot_config_patch(bot_id: &str, patch: &BotConfigPatch) -> 
             }
         }
 
-        // AI-related fields: for AgentChannel → write to `overrides` sub-object
-        // (ChannelConfigRust::to_im_config reads from overrides, not channel root)
-        // For Legacy → write to root (backward compat)
-        if is_channel {
-            // Ensure overrides object exists
-            if bot["overrides"].is_null() {
-                bot["overrides"] = serde_json::json!({});
-            }
-            // Clean up stale root-level AI fields left by pre-fix code
-            if let Some(obj) = bot.as_object_mut() {
-                obj.remove("model");
-                obj.remove("providerId");
-                obj.remove("providerEnvJson");
-                obj.remove("permissionMode");
-            }
-            let ov = &mut bot["overrides"];
-            apply_opt(ov, "model", &patch.model);
-            apply_opt(ov, "providerId", &patch.provider_id);
-            apply_opt(ov, "providerEnvJson", &patch.provider_env_json);
-            apply_opt(ov, "permissionMode", &patch.permission_mode);
-        } else {
-            apply_opt(bot, "model", &patch.model);
-            apply_opt(bot, "providerId", &patch.provider_id);
-            apply_opt(bot, "providerEnvJson", &patch.provider_env_json);
-            apply_opt(bot, "permissionMode", &patch.permission_mode);
+        // Transport edits preserve legacy execution data without granting write authority.
+        if patch.model.is_some()
+            || patch.provider_id.is_some()
+            || patch.provider_env_json.is_some()
+            || patch.permission_mode.is_some()
+            || patch.mcp_servers_json.is_some()
+            || patch.mcp_enabled_servers.is_some()
+        {
+            return Err(
+                "Channel execution overrides are no longer supported; update the Agent or Session"
+                    .into(),
+            );
         }
 
         // Platform-specific fields → always at channel/bot root
@@ -396,7 +383,7 @@ pub(super) fn persist_bot_config_patch(bot_id: &str, patch: &BotConfigPatch) -> 
     Ok(())
 }
 
-/// Core 4-step config update: disk → Arc → emit → Sidecar push.
+/// Transport configuration update: disk → hot projection → emit.
 async fn update_bot_config_internal<R: Runtime>(
     app: &AppHandle<R>,
     im_state: &ManagedImBots,
@@ -517,115 +504,13 @@ async fn update_bot_config_internal<R: Runtime>(
                 *inst.group_tools_deny.write().await = tools.clone();
             }
 
-            // 4. Sidecar push (model / MCP / workspace / permissionMode)
-            {
-                let mut router = inst.router.lock().await;
-                let runtime = inst.runtime.read().await.clone();
-                let runtime_config = inst.runtime_config.read().await.clone();
-                // Workspace (mut, sync)
-                if let Some(ref wp) = patch_workspace {
-                    if !wp.is_empty() {
-                        router.set_default_workspace(PathBuf::from(wp));
-                    }
-                }
-                let ports = router.active_sidecar_ports();
-                // Provider env sync (parsed from patch string)
-                // MUST POST even when clearing (empty → null) so Bun's setSessionProviderEnv()
-                // detects the change and restarts the session with correct environment.
-                let parsed_provider_env: Option<serde_json::Value> =
-                    patch_provider_env.as_ref().and_then(|s| {
-                        if s.is_empty() {
-                            None
-                        } else {
-                            serde_json::from_str(s).ok()
-                        }
-                    });
-                if patch_provider_env.is_some() {
-                    for port in &ports {
-                        if let Some(ref penv) = parsed_provider_env {
-                            router
-                                .sync_ai_config(
-                                    *port,
-                                    &runtime,
-                                    runtime_config.as_ref(),
-                                    None,
-                                    None,
-                                    Some(penv),
-                                )
-                                .await;
-                        } else {
-                            if is_external_runtime_type(&runtime) {
-                                router
-                                    .sync_ai_config(
-                                        *port,
-                                        &runtime,
-                                        runtime_config.as_ref(),
-                                        None,
-                                        None,
-                                        None,
-                                    )
-                                    .await;
-                            } else {
-                                // Clearing provider (switch to subscription) — POST null explicitly.
-                                // sync_ai_config skips None provider_env, so POST directly.
-                                let url = format!("http://127.0.0.1:{}/api/provider/set", *port);
-                                match router
-                                    .http_client()
-                                    .post(&url)
-                                    .json(&json!({ "providerEnv": null }))
-                                    .send()
-                                    .await
-                                {
-                                    Ok(_) => {
-                                        ulog_info!("[im] Cleared provider env on port {}", port)
-                                    }
-                                    Err(e) => ulog_warn!(
-                                        "[im] Failed to clear provider env on port {}: {}",
-                                        port,
-                                        e
-                                    ),
-                                }
-                            }
-                        }
-                    }
-                }
-                // Model sync
-                if patch_model.is_some() {
-                    for port in &ports {
-                        router
-                            .sync_ai_config(
-                                *port,
-                                &runtime,
-                                runtime_config.as_ref(),
-                                patch_model.as_deref(),
-                                None,
-                                None,
-                            )
-                            .await;
-                    }
-                }
-                // MCP sync (runtime JSON, not enabled-list)
-                if patch_mcp_json.is_some() {
-                    for port in &ports {
-                        router
-                            .sync_ai_config(
-                                *port,
-                                &runtime,
-                                runtime_config.as_ref(),
-                                None,
-                                patch_mcp_json.as_deref(),
-                                None,
-                            )
-                            .await;
-                    }
-                }
-                // Permission mode sync to Sidecar
-                if let Some(ref pm) = patch_perm {
-                    if !is_external_runtime_type(&runtime) {
-                        for port in &ports {
-                            router.sync_permission_mode(*port, pm).await;
-                        }
-                    }
+            // Workspace is a future-session template, never an existing Session mutation.
+            if let Some(ref wp) = patch_workspace {
+                if !wp.is_empty() {
+                    inst.router
+                        .lock()
+                        .await
+                        .set_default_workspace(PathBuf::from(wp));
                 }
             }
         }
@@ -686,16 +571,6 @@ fn remove_bot_config_from_disk(bot_id: &str) -> Result<(), String> {
 }
 
 /// Read `availableProvidersJson` from the top-level field of `~/.myagents/config.json`.
-pub(super) fn read_available_providers_from_disk() -> Option<String> {
-    let home = dirs::home_dir()?;
-    let config_path = home.join(".myagents").join("config.json");
-    let content = std::fs::read_to_string(&config_path).ok()?;
-    let config: serde_json::Value = serde_json::from_str(strip_bom(&content)).ok()?;
-    config
-        .get("availableProvidersJson")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-}
 
 /// Unified config update command: replaces all 6 old hot-update commands.
 #[deprecated(note = "Use cmd_update_agent_config instead")]
@@ -1314,7 +1189,6 @@ async fn start_agent_channel_with_lock_held(
         agent_id: agentId.clone(),
         last_active_channel: Arc::clone(&agent_instance.last_active_channel),
         last_active_private_target: Arc::clone(&agent_instance.last_active_private_target),
-        runtime_config: Arc::clone(&agent_instance.runtime_config),
     };
     *bot_instance.agent_link.write().await = Some(link);
 
@@ -1845,6 +1719,7 @@ pub(crate) async fn reload_agent_config_from_disk<R: Runtime>(
     patch: AgentConfigPatch,
 ) -> Result<(), String> {
     let updates_channel_runtime = patch.runtime.is_some()
+        || patch.runtime_preference.is_some()
         || patch.runtime_config.is_some()
         || patch.provider_id.is_some()
         || patch.model.is_some()
@@ -1884,6 +1759,82 @@ pub(crate) async fn reload_agent_config_from_disk<R: Runtime>(
         _lifecycle_guards.push(lock.lock().await);
     }
 
+    // Freeze only live legacy peers using their Session owner before replacing templates.
+    // Capture references under ManagedAgents, then do HTTP/per-peer work outside it.
+    let live_channels = {
+        let agents = agent_state.lock().await;
+        agents
+            .get(&agent_id)
+            .map(|agent| {
+                agent
+                    .channels
+                    .values()
+                    .map(|channel| {
+                        (
+                            channel.bot_instance.router.clone(),
+                            channel.bot_instance.peer_locks.clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    // This read is only an optimization: a failed projection read still lets the
+    // actual Session owner decide whether a live legacy snapshot needs freezing.
+    let owned_sessions = if live_channels.is_empty() {
+        std::collections::HashSet::new()
+    } else {
+        crate::session_metadata::cmd_list_session_metadata(None)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|session| session["configSnapshotAt"].is_string())
+            .filter_map(|session| session["id"].as_str().map(str::to_string))
+            .collect::<std::collections::HashSet<_>>()
+    };
+    let compatibility_client = crate::local_http::json_client(Duration::from_secs(5));
+    for (router, locks) in live_channels {
+        let peers = router
+            .lock()
+            .await
+            .peer_sessions_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        for peer in peers {
+            if !peer.metadata_indexed || owned_sessions.contains(&peer.session_id) {
+                continue;
+            }
+            let lock = {
+                let mut locks = locks.lock().await;
+                locks
+                    .entry(peer.session_key.clone())
+                    .or_insert_with(|| Arc::new(Mutex::new(())))
+                    .clone()
+            };
+            let _guard = lock.lock().await;
+            let port = sidecar_manager
+                .lock()
+                .map_err(|error| error.to_string())?
+                .get_session_port(&peer.session_id);
+            if let Some(port) = port {
+                match compatibility_client
+                    .post(format!(
+                        "http://127.0.0.1:{port}/api/session/freeze-current"
+                    ))
+                    .json(&json!({ "metadataIndexed":true, "metadataBirthPending":false }))
+                    .send()
+                    .await
+                {
+                    Ok(response) if response.status().is_success() => {}
+                    _ => ulog_warn!(
+                        "[im] Legacy peer snapshot could not be confirmed during template refresh"
+                    ),
+                }
+            }
+        }
+    }
+    let mut notifications = Vec::new();
+
     // Hot-reload running instance if present (runtime only — disk persistence
     // is handled by the TypeScript patchAgentConfig service)
     let mut agents_guard = agent_state.lock().await;
@@ -1898,6 +1849,7 @@ pub(crate) async fn reload_agent_config_from_disk<R: Runtime>(
             .find(|candidate| candidate.id == agent_id)
             .ok_or_else(|| format!("Agent {} not found in persisted config", agent_id))?;
         let runtime_identity_patch_present = patch.runtime.is_some()
+            || patch.runtime_preference.is_some()
             || patch.runtime_config.is_some()
             || patch.provider_id.is_some()
             || patch.model.is_some()
@@ -1906,6 +1858,7 @@ pub(crate) async fn reload_agent_config_from_disk<R: Runtime>(
             || patch.provider_id.is_some()
             || patch.model.is_some()
             || patch.runtime.is_some()
+            || patch.runtime_preference.is_some()
             || patch.runtime_config.is_some()
             || patch.channels.is_some();
         let should_refresh_effective_channel = runtime_identity_patch_present
@@ -1955,51 +1908,60 @@ pub(crate) async fn reload_agent_config_from_disk<R: Runtime>(
                                 channel_instance.bot_instance.config.provider_id.clone()
                             })
                         });
-                let snapshot = if old_identity != new_identity {
-                    Some(
-                        runtime_change::build_snapshot_from_channel_state(
-                            &channel_instance.bot_instance.runtime,
-                            &channel_instance.bot_instance.current_model,
-                            &channel_instance.bot_instance.permission_mode,
-                            &channel_instance.bot_instance.mcp_servers_json,
-                            &channel_instance.bot_instance.runtime_config,
-                            old_provider_id,
-                            &channel_instance.bot_instance.current_provider_env,
-                        )
-                        .await,
-                    )
+                let old_model = channel_instance
+                    .bot_instance
+                    .current_model
+                    .read()
+                    .await
+                    .clone();
+                // Native CLI selection ignores dormant Product Provider/model fields.
+                let old_product = old_identity.runtime == "builtin"
+                    || old_identity.runtime == "dsh"
+                    || old_identity.runtime_source.as_deref() == Some("managed-provider");
+                let next_product = new_identity.runtime == "builtin"
+                    || new_identity.runtime == "dsh"
+                    || new_identity.runtime_source.as_deref() == Some("managed-provider");
+                let old_model = if is_external_runtime_type(&old_identity.runtime) {
+                    old_runtime_config
+                        .as_ref()
+                        .and_then(|value| value.get("model"))
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string)
                 } else {
-                    None
+                    old_model
                 };
-                channel_updates.push((
-                    channel_id.clone(),
-                    next_config,
-                    old_identity,
-                    new_identity,
-                    snapshot,
-                ));
+                let next_model = if is_external_runtime_type(&new_identity.runtime) {
+                    next_config
+                        .runtime_config
+                        .as_ref()
+                        .and_then(|value| value.get("model"))
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string)
+                } else {
+                    next_config.model.clone()
+                };
+                let old_choice = (
+                    old_identity.clone(),
+                    if old_product { old_provider_id } else { None },
+                    old_model,
+                );
+                let next_choice = (
+                    new_identity.clone(),
+                    if next_product {
+                        next_config.provider_id.clone()
+                    } else {
+                        None
+                    },
+                    next_model,
+                );
+                if old_choice != next_choice {
+                    notifications.push((
+                        channel_instance.bot_instance.adapter.clone(),
+                        channel_instance.bot_instance.router.clone(),
+                    ));
+                }
+                channel_updates.push((channel_id.clone(), next_config, old_identity, new_identity));
             }
-        }
-
-        // Rotate only the Channels whose effective execution identity changed,
-        // and freeze their old live config before replacing any hot state.
-        for (channel_id, _, old_identity, new_identity, snapshot) in &mut channel_updates {
-            let Some(snapshot) = snapshot.take() else {
-                continue;
-            };
-            let Some(channel_instance) = agent.channels.get(channel_id) else {
-                continue;
-            };
-            runtime_change::freeze_and_rotate_for_runtime_change(
-                &agent_id,
-                channel_id,
-                &channel_instance.bot_instance,
-                &old_identity.label(),
-                &new_identity.label(),
-                sidecar_manager,
-                snapshot,
-            )
-            .await;
         }
 
         if patch.provider_id.is_some() {
@@ -2052,7 +2014,7 @@ pub(crate) async fn reload_agent_config_from_disk<R: Runtime>(
             agent.config.runtime_config = updated_agent.runtime_config.clone();
             *agent.runtime_config.write().await = updated_agent.runtime_config.clone();
         }
-        for (channel_id, next_config, old_identity, new_identity, _) in channel_updates {
+        for (channel_id, next_config, _old_identity, new_identity) in channel_updates {
             let Some(channel_instance) = agent.channels.get(&channel_id) else {
                 continue;
             };
@@ -2071,16 +2033,6 @@ pub(crate) async fn reload_agent_config_from_disk<R: Runtime>(
             *channel_instance.bot_instance.runtime.write().await = new_identity.runtime.clone();
             *channel_instance.bot_instance.runtime_config.write().await =
                 next_config.runtime_config.clone();
-            if old_identity != new_identity {
-                // Runtime identity swap requires a different subprocess owner.
-                channel_instance
-                    .bot_instance
-                    .router
-                    .lock()
-                    .await
-                    .release_all_sidecars_preserve_bindings(sidecar_manager)
-                    .await;
-            }
         }
         if patch.enabled.is_some() {
             agent.config.enabled = updated_agent.enabled;
@@ -2136,163 +2088,43 @@ pub(crate) async fn reload_agent_config_from_disk<R: Runtime>(
                     // so empty Vec means "no permissions", not "field absent")
                     *ch_inst.bot_instance.group_permissions.write().await =
                         ch_config.group_permissions.clone();
-                }
-            }
-        }
-
-        // Push config changes to all active Sidecar ports (same as legacy update_bot_config_internal)
-        for (_ch_id, ch_inst) in &agent.channels {
-            let router = ch_inst.bot_instance.router.lock().await;
-            let runtime = ch_inst.bot_instance.runtime.read().await.clone();
-            let runtime_config = ch_inst.bot_instance.runtime_config.read().await.clone();
-            let current_model = ch_inst.bot_instance.current_model.read().await.clone();
-            let current_provider_env = ch_inst
-                .bot_instance
-                .current_provider_env
-                .read()
-                .await
-                .clone();
-            let ports = router.active_sidecar_ports();
-            if !ports.is_empty() {
-                if patch.provider_env_json.is_some()
-                    || patch.provider_id.is_some()
-                    || patch.channels.is_some()
-                {
-                    for port in &ports {
-                        if let Some(ref provider_env) = current_provider_env {
-                            router
-                                .sync_ai_config(
-                                    *port,
-                                    &runtime,
-                                    runtime_config.as_ref(),
-                                    None,
-                                    None,
-                                    Some(provider_env),
-                                )
-                                .await;
-                        } else {
-                            if is_external_runtime_type(&runtime) {
-                                router
-                                    .sync_ai_config(
-                                        *port,
-                                        &runtime,
-                                        runtime_config.as_ref(),
-                                        None,
-                                        None,
-                                        None,
-                                    )
-                                    .await;
-                            } else {
-                                // Clearing provider — POST null so Bun detects the change
-                                let url = format!("http://127.0.0.1:{}/api/provider/set", *port);
-                                match router
-                                    .http_client()
-                                    .post(&url)
-                                    .json(&json!({ "providerEnv": null }))
-                                    .send()
-                                    .await
-                                {
-                                    Ok(_) => {
-                                        ulog_info!("[im] Cleared provider env on port {}", port)
-                                    }
-                                    Err(e) => ulog_warn!(
-                                        "[im] Failed to clear provider env on port {}: {}",
-                                        port,
-                                        e
-                                    ),
-                                }
-                            }
-                        }
-                    }
-                }
-                if patch.model.is_some() || patch.provider_id.is_some() || patch.channels.is_some()
-                {
-                    for port in &ports {
-                        router
-                            .sync_ai_config(
-                                *port,
-                                &runtime,
-                                runtime_config.as_ref(),
-                                current_model.as_deref(),
-                                None,
-                                None,
-                            )
-                            .await;
-                    }
-                }
-                if patch.mcp_servers_json.is_some() {
-                    for port in &ports {
-                        router
-                            .sync_ai_config(
-                                *port,
-                                &runtime,
-                                runtime_config.as_ref(),
-                                None,
-                                patch.mcp_servers_json.as_deref(),
-                                None,
-                            )
-                            .await;
-                    }
-                }
-                if should_refresh_channel_permission {
-                    if !is_external_runtime_type(&runtime) {
-                        let pm = ch_inst.bot_instance.permission_mode.read().await.clone();
-                        for port in &ports {
-                            router.sync_permission_mode(*port, &pm).await;
-                        }
-                    }
-                }
-                let should_sync_external_runtime_config = is_external_runtime_type(&runtime)
-                    && (patch.runtime_config.is_some()
-                        || patch.provider_id.is_some()
-                        || patch.runtime.is_some()
-                        || patch.channels.is_some()
-                        || (patch.model.is_some()
-                            && runtime_config_string(runtime_config.as_ref(), "source")
-                                .as_deref()
-                                == Some("managed-provider")));
-                if should_sync_external_runtime_config {
-                    for port in &ports {
-                        let url = format!("http://127.0.0.1:{}/api/runtime/config", *port);
-                        match router
-                            .http_client()
-                            .post(&url)
-                            .json(&json!({
-                                "runtime": runtime,
-                                "runtimeConfig": runtime_config.clone().unwrap_or(serde_json::Value::Null),
-                                "source": "im-sync",
-                            }))
-                            .send()
-                            .await
-                        {
-                            Ok(resp) if resp.status().is_success() => {
-                                ulog_info!(
-                                    "[im] Synced runtime config for {} to port {}",
-                                    runtime,
-                                    port
-                                );
-                            }
-                            Ok(resp) => {
-                                ulog_warn!(
-                                    "[im] Failed to sync runtime config to port {}: HTTP {}",
-                                    port,
-                                    resp.status()
-                                );
-                            }
-                            Err(e) => {
-                                ulog_warn!(
-                                    "[im] Failed to sync runtime config to port {}: {}",
-                                    port,
-                                    e
-                                );
-                            }
-                        }
-                    }
+                    *ch_inst.bot_instance.group_tools_deny.write().await = ch_config
+                        .overrides
+                        .as_ref()
+                        .and_then(|overrides| overrides.tools_deny.clone())
+                        .unwrap_or_default();
                 }
             }
         }
     }
     drop(agents_guard);
+    drop(_lifecycle_guards);
+    // Platform delivery owns no lifecycle, peer, Router or ManagedAgents lock.
+    for (adapter, router) in notifications {
+        let peers = super::model_commands::private_notice_peers(
+            router.lock().await.peer_sessions_iter().cloned(),
+        );
+        let manager = sidecar_manager.clone();
+        let notice_agent_id = agent_id.clone();
+        // One best-effort delivery task per changed Channel. Platform latency
+        // must not delay an already committed /model or desktop config update.
+        tauri::async_runtime::spawn(async move {
+            let client = crate::local_http::json_client(Duration::from_secs(5));
+            for peer in peers {
+                if let Err(error) = super::model_commands::notify_default_change(
+                    &client,
+                    &manager,
+                    &notice_agent_id,
+                    &peer,
+                    adapter.as_ref(),
+                )
+                .await
+                {
+                    ulog_warn!("[im] Default-change notice delivery failed: {}", error);
+                }
+            }
+        });
+    }
 
     if patch.enabled.is_some()
         || patch.memory_auto_update_config_json.is_some()

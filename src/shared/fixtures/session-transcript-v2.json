@@ -751,6 +751,99 @@
         "validBytes": 3292,
         "tail": "clean"
       }
+    },
+    {
+      "name": "collaboration-without-invented-user",
+      "wire": "{\"kind\":\"session-transcript\",\"version\":2,\"sessionId\":\"fixture-session\",\"generation\":\"g1\",\"baseRevision\":0,\"baseline\":false}\n{\"batch\":{\"id\":\"collaboration-batch\",\"mode\":\"delta\",\"fromRevision\":1,\"revision\":2,\"operations\":[{\"kind\":\"turn-update\",\"turn\":{\"id\":\"collaboration-1\",\"origin\":\"collaboration\",\"startedAt\":\"2026-09-17T00:00:00Z\",\"status\":\"complete\"}},{\"kind\":\"message-create\",\"message\":{\"id\":\"collaboration-answer\",\"role\":\"assistant\",\"content\":\"child result\",\"timestamp\":\"2026-09-17T00:00:00Z\",\"turnId\":\"collaboration-1\",\"transcriptState\":\"complete\"}}]},\"checksum\":\"5c61ef07c52a87a2512dbcfa9b3afe790dde41e0e9b3f85245640fa83ded4fbb\"}\n",
+      "expected": {
+        "messages": [
+          {
+            "id": "collaboration-answer",
+            "role": "assistant",
+            "content": "child result",
+            "timestamp": "2026-09-17T00:00:00Z",
+            "turnId": "collaboration-1",
+            "transcriptState": "complete"
+          }
+        ],
+        "turns": [
+          {
+            "id": "collaboration-1",
+            "origin": "collaboration",
+            "startedAt": "2026-09-17T00:00:00Z",
+            "status": "complete"
+          }
+        ],
+        "revision": 2,
+        "lastBatchId": "collaboration-batch",
+        "validBytes": 637,
+        "tail": "clean"
+      }
+    },
+    {
+      "name": "partial-terminal-message-details",
+      "wire": "{\"kind\":\"session-transcript\",\"version\":2,\"sessionId\":\"fixture-session\",\"generation\":\"g1\",\"baseRevision\":0,\"baseline\":false}\n{\"batch\":{\"id\":\"partial-terminal\",\"mode\":\"delta\",\"fromRevision\":1,\"revision\":4,\"operations\":[{\"kind\":\"message-create\",\"message\":{\"id\":\"u1\",\"role\":\"user\",\"timestamp\":\"2026-09-25T00:00:00.000Z\",\"content\":\"Stop this turn\",\"turnId\":\"t1\"}},{\"kind\":\"message-create\",\"message\":{\"id\":\"a1\",\"role\":\"assistant\",\"timestamp\":\"2026-09-25T00:00:00.000Z\",\"content\":\"Partial answer\",\"turnId\":\"t1\"}},{\"kind\":\"message-update\",\"messageId\":\"a1\",\"details\":{\"runtimeTurnAnchor\":{\"turnId\":\"t1\",\"rootUserMessageId\":\"u1\"},\"runtimeOperationAnchor\":{\"runtime\":\"dsh\",\"clientOperationId\":\"op1\",\"runtimeSessionId\":\"native1\"},\"completionState\":\"partial\",\"terminalStatus\":\"stopped\",\"transcriptState\":\"complete\"}},{\"kind\":\"turn-update\",\"turn\":{\"id\":\"t1\",\"rootUserMessageId\":\"u1\",\"startedAt\":\"2026-09-25T00:00:00.000Z\",\"status\":\"stopped\"}}]},\"checksum\":\"ab60614f1ccb34971bbff0a34a6431954c951e25a26fbfcf309301b3d371f3d5\"}\n",
+      "expected": {
+        "messages": [
+          {
+            "id": "u1",
+            "role": "user",
+            "timestamp": "2026-09-25T00:00:00.000Z",
+            "content": "Stop this turn",
+            "turnId": "t1"
+          },
+          {
+            "id": "a1",
+            "role": "assistant",
+            "timestamp": "2026-09-25T00:00:00.000Z",
+            "content": "Partial answer",
+            "turnId": "t1",
+            "runtimeTurnAnchor": {
+              "turnId": "t1",
+              "rootUserMessageId": "u1"
+            },
+            "runtimeOperationAnchor": {
+              "runtime": "dsh",
+              "clientOperationId": "op1",
+              "runtimeSessionId": "native1"
+            },
+            "completionState": "partial",
+            "terminalStatus": "stopped",
+            "transcriptState": "complete"
+          }
+        ],
+        "turns": [
+          {
+            "id": "t1",
+            "rootUserMessageId": "u1",
+            "startedAt": "2026-09-25T00:00:00.000Z",
+            "status": "stopped"
+          }
+        ],
+        "revision": 4,
+        "lastBatchId": "partial-terminal",
+        "validBytes": 1010,
+        "tail": "clean"
+      }
+    },
+    {
+      "name": "coalesced-append-revision-span",
+      "wire": "{\"kind\":\"session-transcript\",\"version\":2,\"sessionId\":\"fixture-session\",\"generation\":\"g1\",\"baseRevision\":0,\"baseline\":false}\n{\"batch\":{\"id\":\"birth\",\"mode\":\"delta\",\"fromRevision\":1,\"revision\":1,\"operations\":[{\"kind\":\"message-create\",\"message\":{\"id\":\"a1\",\"role\":\"assistant\",\"timestamp\":\"t\",\"content\":\"\"}}]},\"checksum\":\"dd378e121a408c6f01fd2eceed0a6213ca808c253da7c3a0fdc813b2c8ea64e8\"}\n{\"batch\":{\"id\":\"merged-text\",\"mode\":\"delta\",\"fromRevision\":2,\"revision\":51,\"operations\":[{\"kind\":\"text-append\",\"messageId\":\"a1\",\"field\":\"text\",\"offset\":0,\"text\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}]},\"checksum\":\"57cf4c6d3362d750a08b981e09c486f0acaba195d7158100d4f2f8b6826a3e7c\"}\n{\"batch\":{\"id\":\"after-merge\",\"mode\":\"delta\",\"fromRevision\":52,\"revision\":52,\"operations\":[{\"kind\":\"text-append\",\"messageId\":\"a1\",\"field\":\"text\",\"offset\":50,\"text\":\"!\"}]},\"checksum\":\"fd7c272404c1899c963f8363457509ab702c24d5f91af9d6f00c0f7d2b8d79a1\"}\n",
+      "expected": {
+        "messages": [
+          {
+            "id": "a1",
+            "role": "assistant",
+            "timestamp": "t",
+            "content": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx!"
+          }
+        ],
+        "turns": [],
+        "revision": 52,
+        "lastBatchId": "after-merge",
+        "validBytes": 928,
+        "tail": "clean"
+      }
     }
   ],
   "formats": [

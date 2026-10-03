@@ -10,7 +10,7 @@
 // changing the parent's vertical layout.
 
 import { useEffect, useState } from 'react';
-import { ArrowRight, Mic } from 'lucide-react';
+import { ArrowRightIcon, MicIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import { recordList } from '@/api/taskCenter';
 import { relativeTime } from '@/utils/taskCenterUtils';
@@ -86,7 +86,7 @@ export function RecentThoughtsRow({
         title={t('recentThoughts.openTaskCenterTitle')}
       >
         <span>{t('recentThoughts.more')}</span>
-        <ArrowRight className="h-3 w-3" />
+        <ArrowRightIcon className="h-3 w-3" />
       </button>
     </div>
   );
@@ -110,7 +110,7 @@ function RecordChip({ record, onClick }: ChipProps) {
     >
       <span className="min-w-0 flex-1 truncate text-xs text-[var(--ink-secondary)] group-hover:text-[var(--ink)]">
         {record.kind === 'audio' && (
-          <Mic className="mr-1 inline h-3 w-3 text-[var(--accent-warm)]" />
+          <MicIcon className="mr-1 inline h-3 w-3 text-[var(--accent-warm)]" />
         )}
         {record.title || t('recentThoughts.emptyThought')}
       </span>

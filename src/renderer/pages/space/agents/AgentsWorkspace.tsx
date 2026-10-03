@@ -1,23 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Activity,
-  Bot,
-  Camera,
-  Check,
-  Clock,
-  Computer,
-  Eye,
-  FolderOpen,
-  Loader2,
-  Plus,
-  Power,
-  PowerOff,
-  Settings,
-  Target,
-  Trash2,
-  X,
-} from "lucide-react";
+  ActivityIcon,
+  HelperIcon,
+  CameraIcon,
+  CheckIcon,
+  ClockIcon,
+  MonitorIcon,
+  EyeIcon,
+  FolderOpenIcon,
+  LoaderIcon,
+  PlusIcon,
+  PowerIcon,
+  PowerOffIcon,
+  SettingsIcon,
+  TargetIcon,
+  TrashIcon,
+  CloseIcon,
+} from '@/components/icons';
 
 import type {
   LocalRegisteredAgent,
@@ -382,7 +382,7 @@ export function AgentsWorkspace({
       <div className={`${SPACE_COLLECTION_FRAME_CLASS} space-y-3`}>
         <section className="flex min-h-10 items-center gap-3">
           <div className="flex min-w-0 flex-1 items-center gap-2 text-base font-semibold text-[var(--ink-secondary)]">
-            <Bot className="h-4 w-4 shrink-0" />
+            <HelperIcon className="h-4 w-4 shrink-0" />
             <h2 className="truncate">Agents</h2>
             <span className="rounded-md bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-semibold text-[var(--ink-muted)]">
               {agents.length}
@@ -396,7 +396,7 @@ export function AgentsWorkspace({
               title={registerDisabledHint}
               className={SPACE_PRIMARY_TOOL_BUTTON_CLASS}
             >
-              <Plus className="h-4 w-4" />
+              <PlusIcon className="h-4 w-4" />
               {t("space.agents.register")}
             </button>
           )}
@@ -409,7 +409,7 @@ export function AgentsWorkspace({
         {agents.length === 0 ? (
           <div className="grid h-40 place-items-center rounded-[20px] border border-dashed border-[var(--line)] bg-[var(--paper-elevated)]/40 text-sm text-[var(--ink-muted)]">
             <div className="text-center">
-              <Bot className="mx-auto mb-3 h-8 w-8 text-[var(--ink-muted)]" />
+              <HelperIcon className="mx-auto mb-3 h-8 w-8 text-[var(--ink-muted)]" />
               <p>{t("space.agents.empty")}</p>
               {admin && (
                 <button
@@ -419,7 +419,7 @@ export function AgentsWorkspace({
                   title={registerDisabledHint}
                   className="mt-3 inline-flex h-9 items-center gap-2 rounded-xl bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  <Plus className="h-4 w-4" />
+                  <PlusIcon className="h-4 w-4" />
                   {t("space.agents.registerAgent")}
                 </button>
               )}
@@ -685,7 +685,7 @@ function EditAgentDialog({
             onClick={onClose}
             className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
           >
-            <X className="h-4 w-4" />
+            <CloseIcon className="h-4 w-4" />
           </button>
         </div>
         <div className="min-h-0 space-y-4 overflow-y-auto overscroll-contain p-5">
@@ -795,7 +795,7 @@ function EditAgentDialog({
             onClick={() => void submit()}
             className="flex h-10 items-center gap-2 rounded-xl bg-[var(--button-primary-bg)] px-4 text-sm font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-70"
           >
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            {busy ? <LoaderIcon className="h-4 w-4 animate-spin" /> : null}
             {t("space.common.save")}
           </button>
         </div>
@@ -882,25 +882,25 @@ function AgentCard({
 
       <div className="pointer-events-none relative z-10 mt-2.5 grid gap-1.5">
         <AgentCardField
-          icon={Computer}
+          icon={MonitorIcon}
           label={t("space.agents.localComputer")}
           value={localComputerLabel(agent, t)}
         />
         <AgentCardField
-          icon={FolderOpen}
+          icon={FolderOpenIcon}
           label={t("space.agents.workspacePath")}
           value={agentWorkspacePathLabel(agent, t)}
           title={agent.workspacePath || undefined}
           mono
         />
         <AgentCardField
-          icon={Target}
+          icon={TargetIcon}
           label={t("space.agents.instructionLabel")}
           value={agentInstructionSummary(agent, t)}
           muted={!agent.instruction}
         />
         <AgentCardField
-          icon={Activity}
+          icon={ActivityIcon}
           label={t("space.agents.subscriptions")}
           value={agentSubscriptionLabels(agent, t)}
           muted={agent.subscriptions.length === 0}
@@ -938,7 +938,7 @@ function AgentCardMenu({
     {
       items: [
         {
-          icon: <Eye className="h-3.5 w-3.5" />,
+          icon: <EyeIcon className="h-3.5 w-3.5" />,
           label: t("space.agents.details"),
           onClick: onOpen,
         },
@@ -947,25 +947,25 @@ function AgentCardMenu({
     {
       items: [
         {
-          icon: <Settings className="h-3.5 w-3.5" />,
+          icon: <SettingsIcon className="h-3.5 w-3.5" />,
           label: t("space.agents.edit"),
           onClick: onEdit,
           disabled: actionDisabled,
         },
         {
           icon: busy ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <LoaderIcon className="h-3.5 w-3.5 animate-spin" />
           ) : agent.status === "disabled" ? (
-            <Power className="h-3.5 w-3.5" />
+            <PowerIcon className="h-3.5 w-3.5" />
           ) : (
-            <PowerOff className="h-3.5 w-3.5" />
+            <PowerOffIcon className="h-3.5 w-3.5" />
           ),
           label: toggleLabel,
           onClick: onToggle,
           disabled: actionDisabled,
         },
         {
-          icon: <Trash2 className="h-3.5 w-3.5" />,
+          icon: <TrashIcon className="h-3.5 w-3.5" />,
           label: t("space.agents.revoke"),
           onClick: onRevoke,
           disabled: actionDisabled,
@@ -1020,7 +1020,7 @@ function AgentActionButtons({
         aria-label={t("space.agents.editAgent", { name: agent.displayName })}
         title={t("space.agents.edit")}
       >
-        <Settings className="h-4 w-4" />
+        <SettingsIcon className="h-4 w-4" />
       </button>
       <button
         type="button"
@@ -1039,11 +1039,11 @@ function AgentActionButtons({
         }
       >
         {busy ? (
-          <Loader2 className="h-4 w-4 animate-spin" />
+          <LoaderIcon className="h-4 w-4 animate-spin" />
         ) : agent.status === "disabled" ? (
-          <Power className="h-4 w-4" />
+          <PowerIcon className="h-4 w-4" />
         ) : (
-          <PowerOff className="h-4 w-4" />
+          <PowerOffIcon className="h-4 w-4" />
         )}
       </button>
       <button
@@ -1054,7 +1054,7 @@ function AgentActionButtons({
         aria-label={t("space.agents.revokeAgent", { name: agent.displayName })}
         title={t("space.agents.revoke")}
       >
-        <Trash2 className="h-4 w-4" />
+        <TrashIcon className="h-4 w-4" />
       </button>
     </span>
   );
@@ -1068,7 +1068,7 @@ function AgentCardField({
   mono = false,
   muted = false,
 }: {
-  icon: typeof Computer;
+  icon: typeof MonitorIcon;
   label: string;
   value: string;
   title?: string;
@@ -1169,9 +1169,9 @@ function AgentDetailOverlay({
               {admin && agent.status !== "revoked" && (
                 <span className="absolute inset-0 grid place-items-center rounded-full bg-[var(--ink)]/45 text-[var(--paper)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
                   {avatarBusy ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <LoaderIcon className="h-4 w-4 animate-spin" />
                   ) : (
-                    <Camera className="h-4 w-4" />
+                    <CameraIcon className="h-4 w-4" />
                   )}
                 </span>
               )}
@@ -1209,7 +1209,7 @@ function AgentDetailOverlay({
                 className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                 aria-label={t("space.detail.close")}
               >
-                <X className="h-4 w-4" />
+                <CloseIcon className="h-4 w-4" />
               </button>
             </div>
           </div>
@@ -1218,18 +1218,18 @@ function AgentDetailOverlay({
         <div className="px-7 py-6">
           <section className="grid grid-cols-2 gap-3 max-md:grid-cols-1">
             <AgentSummaryBlock
-              icon={Computer}
+              icon={MonitorIcon}
               label={t("space.agents.localComputer")}
               value={localComputerLabel(agent, t)}
             />
             <AgentSummaryBlock
-              icon={Target}
+              icon={TargetIcon}
               label={t("space.agents.subscriptions")}
               value={agentSubscriptionLabels(agent, t)}
               muted={agent.subscriptions.length === 0}
             />
             <AgentSummaryBlock
-              icon={FolderOpen}
+              icon={FolderOpenIcon}
               label={t("space.agents.workspacePath")}
               value={agentWorkspacePathLabel(agent, t)}
               title={agent.workspacePath || undefined}
@@ -1237,7 +1237,7 @@ function AgentDetailOverlay({
               wide
             />
             <AgentSummaryBlock
-              icon={Clock}
+              icon={ClockIcon}
               label={t("space.agents.lastOnline")}
               value={agentCardTimeLabel(agent, t)}
             />
@@ -1245,7 +1245,7 @@ function AgentDetailOverlay({
 
           <section className="mt-4 rounded-xl border border-[var(--line-subtle)] bg-[var(--paper)]/45 px-4 py-4">
             <h3 className="flex items-center gap-2 text-base font-semibold text-[var(--ink)]">
-              <Target className="h-4 w-4 text-[var(--ink-muted)]" />
+              <TargetIcon className="h-4 w-4 text-[var(--ink-muted)]" />
               {t("space.agents.instructionLabel")}
             </h3>
             <p
@@ -1257,7 +1257,7 @@ function AgentDetailOverlay({
 
           <section className="mt-6 rounded-xl border border-[var(--line-subtle)] bg-[var(--paper)]/45 px-4 py-4">
             <h3 className="flex items-center gap-2 text-base font-semibold text-[var(--ink)]">
-              <Computer className="h-4 w-4 text-[var(--ink-muted)]" />
+              <MonitorIcon className="h-4 w-4 text-[var(--ink-muted)]" />
               {t("space.agents.deviceInfo")}
             </h3>
             <div className="mt-3 divide-y divide-[var(--line-subtle)]">
@@ -1310,7 +1310,7 @@ function AgentDetailOverlay({
 
           <section className="mt-4 rounded-xl border border-[var(--line-subtle)] bg-[var(--paper)]/45 px-4 py-4">
             <h3 className="flex items-center gap-2 text-base font-semibold text-[var(--ink)]">
-              <FolderOpen className="h-4 w-4 text-[var(--ink-muted)]" />
+              <FolderOpenIcon className="h-4 w-4 text-[var(--ink-muted)]" />
               {t("space.agents.workspaceInfo")}
             </h3>
             <div className="mt-3 divide-y divide-[var(--line-subtle)]">
@@ -1342,7 +1342,7 @@ function AgentDetailOverlay({
 
           <section className="mt-4 rounded-xl border border-[var(--line-subtle)] bg-[var(--paper)]/45 px-4 py-4">
             <h3 className="flex items-center gap-2 text-base font-semibold text-[var(--ink)]">
-              <Activity className="h-4 w-4 text-[var(--ink-muted)]" />
+              <ActivityIcon className="h-4 w-4 text-[var(--ink-muted)]" />
               {t("space.agents.dispatchSettings")}
             </h3>
             <div className="mt-3 divide-y divide-[var(--line-subtle)]">
@@ -1421,7 +1421,7 @@ function AgentSummaryBlock({
   muted = false,
   wide = false,
 }: {
-  icon: typeof Computer;
+  icon: typeof MonitorIcon;
   label: string;
   value: string;
   title?: string;
@@ -1570,7 +1570,7 @@ function IssueSubscriptionScopeControl({
               }`}
               aria-pressed={selected}
             >
-              {selected ? <Check className="h-3.5 w-3.5" /> : null}
+              {selected ? <CheckIcon className="h-3.5 w-3.5" /> : null}
               {issueStatusLabel(state, t)}
             </button>
           );
@@ -1702,7 +1702,7 @@ export function RegisterAgentDialog({
             onClick={onClose}
             className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
           >
-            <X className="h-4 w-4" />
+            <CloseIcon className="h-4 w-4" />
           </button>
         </div>
         <div className="min-h-0 space-y-4 overflow-y-auto overscroll-contain p-5">
@@ -1784,9 +1784,9 @@ export function RegisterAgentDialog({
             className="flex h-10 items-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-4 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
           >
             {busy ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
+              <LoaderIcon className="h-4 w-4 animate-spin" />
             ) : (
-              <Bot className="h-4 w-4" />
+              <HelperIcon className="h-4 w-4" />
             )}
             {t("space.agents.register")}
           </button>

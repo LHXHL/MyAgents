@@ -14,7 +14,7 @@ const agentSessionMocks = vi.hoisted(() => ({
 }));
 
 const managementApiMocks = vi.hoisted(() => ({
-  managementApi: vi.fn(async (): Promise<Record<string, unknown>> => ({ ok: true, taskUpdated: 0, cronUpdated: 0 })),
+  managementApi: vi.fn(async (_path?: string): Promise<Record<string, unknown>> => ({ ok: true, taskUpdated: 0, cronUpdated: 0 })),
 }));
 
 const analyticsMocks = vi.hoisted(() => ({
@@ -75,7 +75,10 @@ const sessionEngineMocks = vi.hoisted(() => {
   };
   return {
     state,
-    getCurrentSessionContext: vi.fn(() => state.context),
+    getStreamReplaySnapshot: vi.fn((): { sessionId: string; mcpEffectiveSnapshot: unknown } => ({ sessionId: '', mcpEffectiveSnapshot: null })),
+    getCurrentSessionContext: vi.fn(() => ({ ...state.context, workspacePath: state.context.workspacePath ?? agentSessionMocks.agentDir ?? null })),
+    updateMcpServers: vi.fn(async () => ({ success: true as boolean, error: undefined as string | undefined })),
+    updateAgents: vi.fn(async () => ({ success: true as boolean, error: undefined as string | undefined })),
     getCurrentTurnIdentity: vi.fn(() => state.turnIdentity),
     getSessionOrigin: vi.fn((sessionId: string) => state.origins.get(sessionId)),
   };
@@ -120,10 +123,14 @@ vi.mock('./provider-verify', () => ({
 }));
 
 vi.mock('./session-engine', () => ({
+  inspectRuntime: vi.fn(async () => null),
   getSessionEngine: () => ({
     getCurrentSessionContext: sessionEngineMocks.getCurrentSessionContext,
+    getStreamReplaySnapshot: sessionEngineMocks.getStreamReplaySnapshot,
     getCurrentTurnIdentity: sessionEngineMocks.getCurrentTurnIdentity,
     getSessionOrigin: sessionEngineMocks.getSessionOrigin,
+    updateMcpServers: sessionEngineMocks.updateMcpServers,
+    updateAgents: sessionEngineMocks.updateAgents,
   }),
 }));
 
@@ -157,6 +164,10 @@ beforeEach(() => {
   agentSessionMocks.agentDir = undefined;
   agentSessionMocks.getSidecarPort.mockReturnValue(0);
   agentSessionMocks.setMcpServers.mockClear();
+  agentSessionMocks.setAgents.mockClear();
+  agentSessionMocks.forceReloadActiveSession.mockClear();
+  sessionEngineMocks.updateMcpServers.mockReset().mockResolvedValue({ success: true, error: undefined });
+  sessionEngineMocks.updateAgents.mockReset().mockResolvedValue({ success: true, error: undefined });
   // Clear queued `mockResolvedValueOnce` entries as well as call history.
   // Some handlers make platform-dependent auxiliary calls; leaving an unused
   // one-shot response here can otherwise leak into the next test in the file.
@@ -178,6 +189,7 @@ beforeEach(() => {
   sessionEngineMocks.state.context = { sessionId: null, workspacePath: null };
   sessionEngineMocks.state.turnIdentity = null;
   sessionEngineMocks.state.origins.clear();
+  sessionEngineMocks.getStreamReplaySnapshot.mockReset().mockReturnValue({ sessionId: '', mcpEffectiveSnapshot: null });
   sessionEngineMocks.getCurrentSessionContext.mockClear();
   sessionEngineMocks.getCurrentTurnIdentity.mockClear();
   sessionEngineMocks.getSessionOrigin.mockClear();
@@ -193,7 +205,66 @@ afterEach(() => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
+describe('Record Admin routing', () => {
+  it.each(['global', 'session'] as const)('forwards %s Record list results and errors through the production gate', async role => {
+    const { composeSidecarRequestHandler, resolveSidecarComposition } = await import('./sidecar-composition');
+    const { handleRecordList } = await import('./admin-api');
+    const handler = composeSidecarRequestHandler(resolveSidecarComposition(role, false), async request =>
+      Response.json(await handleRecordList(await request.json())),
+    );
+    for (const records of [[], [{ id: 'record-fixture', kind: 'text', content: 'Synthetic record' }]]) {
+      managementApiMocks.managementApi.mockResolvedValueOnce({ ok: true, records });
+      const response = await handler(new Request('http://localhost/api/admin/record/list', {
+        method: 'POST', body: JSON.stringify({ kind: 'text', limit: 5 }),
+      }));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ success: true, data: records });
+      expect(managementApiMocks.managementApi).toHaveBeenLastCalledWith('/api/record/list?kind=text&limit=5');
+    }
+    const recoveryHint = { recoveryCommand: 'myagents status', message: 'Retry when storage is available' };
+    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: false, error: 'Record store unavailable', recoveryHint });
+    const response = await handler(new Request('http://localhost/api/admin/record/list', { method: 'POST', body: '{}' }));
+    expect(await response.json()).toMatchObject({ success: false, error: 'Record store unavailable', recoveryHint });
+  });
+});
+
+describe('current Runtime configuration ownership', () => {
+  it('routes reload through the SessionEngine and uses its workspace instead of dormant SDK state', async () => {
+    const workspace = join(scratch, 'runtime-workspace');
+    mkdirSync(workspace, { recursive: true });
+    sessionEngineMocks.state.context = { sessionId: 'dsh-session', workspacePath: workspace };
+    agentSessionMocks.agentDir = join(scratch, 'stale-sdk-workspace');
+    const server = { id: 'runtime-mcp', name: 'Runtime MCP', type: 'http', url: 'https://synthetic.invalid/mcp' };
+    writeJson(join(scratch, '.myagents', 'config.json'), { mcpServers: [server], mcpEnabledServers: [server.id] });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{ id: 'runtime-project', path: workspace, mcpEnabledServers: [server.id] }]);
+    const { handleReload } = await import('./admin-api');
+    expect(await handleReload()).toMatchObject({ success: true });
+    expect(sessionEngineMocks.updateMcpServers).toHaveBeenCalledWith([expect.objectContaining({ id: server.id })]);
+    expect(sessionEngineMocks.updateAgents).toHaveBeenCalledWith(expect.any(Object), { forceReload: true });
+    expect(agentSessionMocks.setMcpServers).not.toHaveBeenCalled();
+    expect(agentSessionMocks.setAgents).not.toHaveBeenCalled();
+    expect(agentSessionMocks.forceReloadActiveSession).not.toHaveBeenCalled();
+  });
+
+  it.each(['mcp', 'agents'])('reports %s reload failure from the selected adapter', async component => {
+    const update = component === 'mcp' ? sessionEngineMocks.updateMcpServers : sessionEngineMocks.updateAgents;
+    update.mockResolvedValueOnce({ success: false, error: 'Runtime configuration rejected' });
+    const { handleReload } = await import('./admin-api');
+    expect(await handleReload()).toEqual({ success: false, error: 'Runtime configuration rejected' });
+    if (component === 'mcp') expect(sessionEngineMocks.updateAgents).not.toHaveBeenCalled();
+    expect(agentSessionMocks.forceReloadActiveSession).not.toHaveBeenCalled();
+  });
+});
+
 describe('admin-api help registry', () => {
+  it('lists config unset and all MCP env actions in group help', async () => {
+    const { handleHelp } = await import('./admin-api');
+    const config = String((handleHelp({ path: ['config'] }).data as { text?: string })?.text ?? '');
+    const mcp = String((handleHelp({ path: ['mcp'] }).data as { text?: string })?.text ?? '');
+    expect(config).toContain('unset <key>');
+    expect(mcp).toContain('env <id> set|get|delete');
+  });
+
   it('presents Record as canonical and Thought only as a compatibility alias', async () => {
     const { handleHelp } = await import('./admin-api');
     const record = String((handleHelp({ path: ['record'] }).data as { text?: string })?.text ?? '');
@@ -420,6 +491,8 @@ describe('admin-api help registry', () => {
     expect(taskText).toContain('always');
     expect(taskText).toContain('command Detector');
     expect(taskText).toContain('myagents task exit');
+    expect(taskText).toContain('deduplicated');
+    expect(taskText).toContain('event.id was already handled');
     expect(cron.success).toBe(true);
     expect(cronText).toContain('myagents task readme');
     expect(cronText).toContain('Compatibility');
@@ -441,15 +514,22 @@ describe('admin-api help registry', () => {
     expect(taskText).toContain('must be paired with --model');
   });
 
+  it.each(['status', 'version', 'reload'])('serves help for the %s leaf without executing it', async command => {
+    const { handleHelp } = await import('./admin-api');
+    const result = handleHelp({ path: [command] });
+    expect(result.success).toBe(true);
+    expect((result.data as { text: string }).text).toContain(`myagents ${command}`);
+    expect((result.data as { text: string }).text).toContain('--json');
+  });
+
   it('includes vision in the derived command group list', async () => {
     const { handleHelp } = await import('./admin-api');
 
     const result = handleHelp({ path: ['definitely-not-a-command'] });
-    const text = (result.data as { text?: string } | undefined)?.text ?? '';
 
-    expect(result.success).toBe(true);
-    expect(text).toContain('Unknown command group "definitely-not-a-command"');
-    expect(text).toContain('vision');
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Unknown command group "definitely-not-a-command"');
+    expect(result.suggestion).toContain('vision');
   });
 
   it('does not expose the legacy issue alias as a help command group', async () => {
@@ -458,9 +538,9 @@ describe('admin-api help registry', () => {
     const result = handleHelp({ path: ['issue'] });
     const text = (result.data as { text?: string } | undefined)?.text ?? '';
 
-    expect(result.success).toBe(true);
-    expect(text).toContain('Unknown command group "issue"');
-    expect(text).toContain('space');
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Unknown command group "issue"');
+    expect(result.suggestion).toContain('space');
     expect(text).not.toContain('Legacy read-only alias');
   });
 
@@ -649,6 +729,87 @@ describe('admin-api Skill add preview contract', () => {
       });
       expect(requests[1]).not.toHaveProperty('previewOnly');
       expect(result.success).toBe(true);
+    } finally {
+      cancellation._setGeneralFetchTransportForTests();
+    }
+  });
+});
+
+describe('admin-api Skill scope and sync', () => {
+  it('previews by default and submits only selected candidates with --apply', async () => {
+    const cancellation = await import('./utils/cancellation');
+    const calls: Array<{ path: string; body?: Record<string, unknown> }> = [];
+    agentSessionMocks.getSidecarPort.mockReturnValue(32123);
+    cancellation._setGeneralFetchTransportForTests(async (url, init) => {
+      const path = new URL(String(url)).pathname;
+      calls.push({ path, ...(init?.body ? { body: JSON.parse(String(init.body)) as Record<string, unknown> } : {}) });
+      const response = path.endsWith('sync-check')
+        ? { canSync: true, folders: ['alpha', 'beta'] }
+        : { success: true, synced: 1, failed: 0, syncedFolders: ['beta'] };
+      return new Response(JSON.stringify(response), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    try {
+      const { handleSkillSync } = await import('./admin-api');
+      expect(await handleSkillSync()).toMatchObject({ success: true, data: { applied: false, folders: ['alpha', 'beta'] } });
+      expect(calls).toHaveLength(1);
+      expect(await handleSkillSync({ apply: true, names: ['beta'] })).toMatchObject({ success: true, data: { applied: true, synced: ['beta'] } });
+      expect(calls[2]).toMatchObject({ path: '/api/skill/sync-from-claude', body: { expectedFolders: ['alpha', 'beta'], folders: ['beta'] } });
+    } finally {
+      cancellation._setGeneralFetchTransportForTests();
+    }
+  });
+
+  it('routes project info and enable to the workspace owner', async () => {
+    const cancellation = await import('./utils/cancellation');
+    const calls: Array<{ path: string; body?: Record<string, unknown> }> = [];
+    agentSessionMocks.getSidecarPort.mockReturnValue(32123);
+    cancellation._setGeneralFetchTransportForTests(async (url, init) => {
+      const parsed = new URL(String(url));
+      calls.push({ path: `${parsed.pathname}${parsed.search}`, ...(init?.body ? { body: JSON.parse(String(init.body)) as Record<string, unknown> } : {}) });
+      const response = parsed.pathname === '/api/skills'
+        ? { success: true, skills: [{ name: 'Alpha Display', folderName: 'alpha', scope: 'project' }] }
+        : parsed.pathname === '/api/project-capabilities'
+        ? { success: true, skills: [{ scope: 'project', folderName: 'alpha', capabilityId: 'project:skill:alpha', enabled: true }] }
+        : parsed.pathname === '/api/project-capability/toggle'
+          ? { success: true, skills: [{ capabilityId: 'project:skill:alpha', enabled: false }] }
+        : parsed.pathname === '/api/skill/alpha'
+          ? { success: true, skill: { name: 'alpha' } }
+          : { success: true };
+      return new Response(JSON.stringify(response), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    try {
+      const { handleSkillInfo, handleSkillToggle } = await import('./admin-api');
+      expect(await handleSkillInfo({ name: 'alpha', scope: 'project', workspacePath: '/workspace/one' })).toMatchObject({ success: true });
+      expect(await handleSkillToggle({ name: 'alpha', scope: 'project', workspacePath: '/workspace/one', enabled: false })).toMatchObject({ success: true });
+      expect(calls[0].path).toContain('agentDir=%2Fworkspace%2Fone');
+      expect(calls[4]).toMatchObject({ path: '/api/project-capability/toggle', body: { agentDir: '/workspace/one', capabilityId: 'project:skill:alpha', enabled: false } });
+      expect(calls.some(call => call.path === '/api/skill/toggle-enable')).toBe(false);
+    } finally {
+      cancellation._setGeneralFetchTransportForTests();
+    }
+  });
+
+  it('resolves a listed project skill and previews removal without deleting it', async () => {
+    const cancellation = await import('./utils/cancellation');
+    const calls: string[] = [];
+    agentSessionMocks.getSidecarPort.mockReturnValue(32123);
+    cancellation._setGeneralFetchTransportForTests(async (url, init) => {
+      const parsed = new URL(String(url));
+      calls.push(`${init?.method ?? 'GET'} ${parsed.pathname}${parsed.search}`);
+      const response = parsed.pathname === '/api/skills'
+        ? { success: true, skills: [{ name: 'Alpha Display', folderName: 'alpha', scope: 'project' }] }
+        : { success: true, skill: { name: 'alpha', scope: 'project' } };
+      return new Response(JSON.stringify(response), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    try {
+      const { handleSkillInfo, handleSkillRemove } = await import('./admin-api');
+      expect(await handleSkillInfo({ name: 'Alpha Display', workspacePath: '/workspace/one' })).toMatchObject({ success: true });
+      expect(await handleSkillRemove({ name: 'Alpha Display', workspacePath: '/workspace/one', dryRun: true })).toMatchObject({ success: true, data: { dryRun: true, scope: 'project', folderName: 'alpha' } });
+      expect(calls.filter(call => call.includes('/api/skill/alpha'))).toEqual([
+        expect.stringContaining('scope=project'),
+        expect.stringContaining('scope=project'),
+      ]);
+      expect(calls.some(call => call.startsWith('DELETE'))).toBe(false);
     } finally {
       cancellation._setGeneralFetchTransportForTests();
     }
@@ -1499,7 +1660,7 @@ describe('admin-api Task Agent experience', () => {
     expect(managementApiMocks.managementApi.mock.calls).toEqual([
       ['/api/cron/run', 'POST', { taskId: 'task-remote' }],
       ['/api/cron/stop', 'POST', { taskId: 'task-remote' }],
-      ['/api/cron/runs?taskId=task-remote&limit=5'],
+      ['/api/task/runs?taskId=task-remote&limit=5'],
     ]);
   });
 
@@ -1805,9 +1966,9 @@ describe('admin-api task runtime model identity', () => {
     const { handleTaskCreateDirect } = await import('./admin-api');
 
     const result = await handleTaskCreateDirect({
-      name: 'invalid-managed-gemini-pair',
-      runtime: 'gemini',
-      runtimeConfig: { source: 'managed-provider', model: 'gemini-2.5-pro' },
+      name: 'invalid-managed-claude-code-pair',
+      runtime: 'claude-code',
+      runtimeConfig: { source: 'managed-provider', model: 'sonnet' },
     });
 
     expect(result.success).toBe(false);
@@ -1826,6 +1987,26 @@ describe('admin-api task runtime model identity', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('Invalid runtimeConfig.source');
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('rejects Task subscription Providers because DSH admits ordinary API routes only', async () => {
+    const { getExternalRuntime } = await import('./runtimes/factory');
+    vi.spyOn(getExternalRuntime('dsh'), 'detect').mockResolvedValueOnce({
+      installed: true, version: '0.0.0',
+    });
+    const { handleTaskCreateDirect } = await import('./admin-api');
+
+    const result = await handleTaskCreateDirect({
+      name: 'invalid-dsh-provider-owner',
+      runtime: 'dsh',
+      runtimeConfig: { source: 'integrated' },
+      providerId: 'anthropic-sub',
+      model: 'claude-sonnet-4-6',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('enabled ordinary API route configured for DSH');
     expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
   });
 
@@ -1900,17 +2081,17 @@ describe('admin-api task runtime model identity', () => {
   });
 
   it('rejects inherited managed source when the workspace runtime is not Codex', async () => {
-    const workspacePath = '/tmp/myagents-gemini-task-source';
+    const workspacePath = '/tmp/myagents-claude-code-task-source';
     writeJson(join(scratch, '.myagents', 'config.json'), {
       agents: [{
-        id: 'agent-gemini-task-source',
-        name: 'Gemini Task Source',
+        id: 'agent-claude-code-task-source',
+        name: 'Claude Code Task Source',
         workspacePath,
-        runtime: 'gemini',
+        runtime: 'claude-code',
       }],
     });
     writeJson(join(scratch, '.myagents', 'projects.json'), [{
-      id: 'project-gemini-task-source', path: workspacePath, agentId: 'agent-gemini-task-source',
+      id: 'project-claude-code-task-source', path: workspacePath, agentId: 'agent-claude-code-task-source',
     }]);
     const { handleTaskCreateDirect } = await import('./admin-api');
 
@@ -2069,6 +2250,29 @@ describe('admin-api task runtime model identity', () => {
 });
 
 describe('admin-api agent set configuration intent', () => {
+  it('commits an IM model default without projecting Runtime changes before the caller releases its peer fence', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      providerVerifyStatus: { 'anthropic-sub': { status: 'valid' } },
+      agents: [{ id: 'im-agent', name: 'IM Agent', runtime: 'builtin', enabled: true,
+        providerId: 'anthropic-sub', model: 'old', permissionMode: 'plan', mcpEnabledServers: ['owned-mcp'] }],
+    });
+    const { commitAgentModelSelection } = await import('./admin-api');
+    expect(await commitAgentModelSelection('im-agent', { kind: 'product-provider', providerId: 'anthropic-sub', model: 'claude-sonnet-4-6' }))
+      .toMatchObject({ success: true, data: { reloadPatch: { model: 'claude-sonnet-4-6' } } });
+    expect(readConfig()).toMatchObject({ agents: [{ model: 'claude-sonnet-4-6', permissionMode: 'plan', mcpEnabledServers: ['owned-mcp'] }] });
+    expect(managementApiMocks.managementApi.mock.calls.every(([path]) => path === '/api/app/config-changed')).toBe(true);
+  });
+
+  it('rejects unavailable default selections and new Channel execution overrides before writing', async () => {
+    const config = { agents: [{ id: 'im-agent', name: 'IM Agent', permissionMode: 'auto', channels: [] }] };
+    writeJson(join(scratch, '.myagents', 'config.json'), config);
+    const { commitAgentModelSelection, handleAgentChannelAdd } = await import('./admin-api');
+    expect(await commitAgentModelSelection('im-agent', { kind: 'product-provider', providerId: 'anthropic-sub', model: 'claude-sonnet-4-6' }))
+      .toMatchObject({ success: false });
+    expect(await handleAgentChannelAdd({ agentId: 'im-agent', channel: { type: 'telegram', overrides: { model: 'override' } } }))
+      .toMatchObject({ success: false, error: expect.stringContaining('no longer supported') });
+    expect(readConfig()).toEqual(config);
+  });
   it.each([
     ['provider', 'providerId'],
     ['permission', 'permissionMode'],
@@ -2146,6 +2350,45 @@ describe('admin-api agent set configuration intent', () => {
       '/api/agent/reload-config',
       'POST',
       { agentId: 'agent-managed-codex', patch: { permissionMode: 'fullAgency' } },
+    );
+  });
+
+  it('writes DSH runtimePreference atomically with the legacy Runtime projection', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-runtime-dsh',
+        name: 'DSH Intent',
+        workspacePath: '/tmp/myagents-agent-runtime-dsh',
+        runtime: 'codex',
+        runtimePreference: { family: 'external', id: 'codex' },
+        runtimeConfig: { model: 'gpt-5.6-sol', permissionMode: 'full-auto' },
+      }],
+    });
+    const { handleAgentSet } = await import('./admin-api');
+
+    const result = await handleAgentSet({
+      id: 'agent-runtime-dsh',
+      key: 'runtime',
+      value: 'dsh',
+    });
+
+    expect(result.success).toBe(true);
+    expect((readConfig().agents as Record<string, unknown>[])[0]).toMatchObject({
+      runtime: 'dsh',
+      runtimePreference: { family: 'integrated', id: 'dsh' },
+    });
+    expect((readConfig().agents as Record<string, unknown>[])[0]).not.toHaveProperty('runtimeConfig');
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/agent/reload-config',
+      'POST',
+      {
+        agentId: 'agent-runtime-dsh',
+        patch: {
+          runtime: 'dsh',
+          runtimeConfig: null,
+          runtimePreference: { family: 'integrated', id: 'dsh' },
+        },
+      },
     );
   });
 
@@ -2849,14 +3092,31 @@ describe('admin-api model verify credential authority', () => {
 
 describe('admin-api config dry-run contract', () => {
   it('previews config set without writing config.json', async () => {
-    writeJson(join(scratch, '.myagents', 'config.json'), { locale: 'zh-CN' });
+    writeJson(join(scratch, '.myagents', 'config.json'), { uiLanguage: 'zh-CN' });
     const before = readFileSync(join(scratch, '.myagents', 'config.json'), 'utf-8');
     const { handleConfigSet } = await import('./admin-api');
 
-    const result = await handleConfigSet({ key: 'locale', value: 'en-US', dryRun: true });
+    const result = await handleConfigSet({ key: 'uiLanguage', value: 'en-US', dryRun: true });
 
-    expect(result).toMatchObject({ success: true, dryRun: true, preview: { key: 'locale', value: 'en-US' } });
+    expect(result).toMatchObject({ success: true, dryRun: true, preview: { key: 'uiLanguage', value: 'en-US' } });
     expect(readFileSync(join(scratch, '.myagents', 'config.json'), 'utf-8')).toBe(before);
+  });
+
+  it('rejects unknown keys in both dry-run and write, and removes an old stray key', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), { appearanceMode: 'system', notARealKey: 'x' });
+    const { handleConfigSet, handleConfigUnset } = await import('./admin-api');
+    for (const dryRun of [true, false]) {
+      await expect(handleConfigSet({ key: 'appearanceMod', value: 'dark', dryRun })).resolves.toMatchObject({
+        success: false, error: expect.stringContaining("Did you mean 'appearanceMode'?"),
+      });
+    }
+    expect(readConfig().appearanceMode).toBe('system');
+    await expect(handleConfigSet({ key: 'notARealKey', value: 'y' })).resolves.toMatchObject({ success: false });
+    await expect(handleConfigUnset({ key: 'notARealKey', dryRun: true })).resolves.toMatchObject({ success: true, dryRun: true });
+    expect(readConfig().notARealKey).toBe('x');
+    await expect(handleConfigUnset({ key: 'notARealKey' })).resolves.toMatchObject({ success: true });
+    expect(readConfig().notARealKey).toBeUndefined();
+    await expect(handleConfigUnset({ key: 'providerApiKeys.deepseek' })).resolves.toMatchObject({ success: false });
   });
 });
 
@@ -2941,7 +3201,7 @@ describe('admin-api MCP add contract', () => {
       mcpServers: [original],
       mcpEnabledServers: ['existing-server'],
     });
-    expect(agentSessionMocks.setMcpServers).not.toHaveBeenCalled();
+    expect(sessionEngineMocks.updateMcpServers).not.toHaveBeenCalled();
     expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
   });
 
@@ -2966,7 +3226,23 @@ describe('admin-api MCP add contract', () => {
 });
 
 describe('admin-api MCP connectivity test', () => {
+  it('explains global disablement without attempting a connection', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpServers: [{ id: 'ddg-search', type: 'stdio', command: 'uvx', isBuiltin: false }],
+      mcpEnabledServers: [],
+    });
+    const { handleMcpTest } = await import('./admin-api');
+    expect(await handleMcpTest({ id: 'ddg-search' })).toMatchObject({
+      success: false,
+      error: expect.stringContaining('disabled globally'),
+      recoveryHint: { recoveryCommand: 'myagents mcp enable ddg-search --scope global' },
+    });
+  });
+
   it('diagnoses the managed Browser through its Session capability instead of spawning the sentinel', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpEnabledServers: ['myagents-browser'],
+    });
     managementApiMocks.managementApi.mockResolvedValueOnce({
       ok: true,
       url: 'http://127.0.0.1:31415/mcp/playwright',
@@ -2998,6 +3274,7 @@ describe('admin-api MCP connectivity test', () => {
 
   it('rejects a configured stdio command that exists but exits before MCP initialize', async () => {
     writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpEnabledServers: ['broken-stdio'],
       mcpServers: [{
         id: 'broken-stdio',
         name: 'Broken stdio fixture',
@@ -3033,6 +3310,7 @@ describe('admin-api MCP connectivity test', () => {
       'await server.connect(new StdioServerTransport());',
     ].join('\n');
     writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpEnabledServers: ['merged-stdio'],
       mcpServers: [{
         id: 'merged-stdio',
         name: 'Merged stdio fixture',
@@ -3062,6 +3340,7 @@ describe('admin-api MCP connectivity test', () => {
   it('redacts even short configured MCP environment values from stdio handshake diagnostics', async () => {
     const secret = 'z9';
     writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpEnabledServers: ['redacted-stdio'],
       mcpServers: [{
         id: 'redacted-stdio',
         name: 'Redacted stdio fixture',
@@ -3085,6 +3364,7 @@ describe('admin-api MCP connectivity test', () => {
     'rejects a 200 response that does not complete an MCP initialize handshake for %s',
     async (type) => {
       writeJson(join(scratch, '.myagents', 'config.json'), {
+        mcpEnabledServers: [`invalid-${type}`],
         mcpServers: [{
           id: `invalid-${type}`,
           name: `Invalid ${type} fixture`,
@@ -3112,6 +3392,7 @@ describe('admin-api MCP connectivity test', () => {
 
   it('handshakes with resolved HTTP URL placeholders and configured headers', async () => {
     writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpEnabledServers: ['resolved-http'],
       mcpServers: [{
         id: 'resolved-http',
         name: 'Resolved HTTP fixture',
@@ -3170,6 +3451,7 @@ describe('admin-api MCP connectivity test', () => {
 
   it('completes the endpoint and initialize exchange for an SSE server', async () => {
     writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpEnabledServers: ['valid-sse'],
       mcpServers: [{
         id: 'valid-sse',
         name: 'Valid SSE fixture',
@@ -3240,6 +3522,7 @@ describe('admin-api MCP connectivity test', () => {
 
   it('matches Session OAuth precedence when a canonical configured header is empty', async () => {
     writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpEnabledServers: ['oauth-http'],
       mcpServers: [{
         id: 'oauth-http',
         name: 'OAuth HTTP fixture',
@@ -3292,6 +3575,7 @@ describe('admin-api MCP connectivity test', () => {
 
   it('bounds stored OAuth resolution within the overall 15 second test deadline', async () => {
     writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpEnabledServers: ['stalled-oauth-http'],
       mcpServers: [{
         id: 'stalled-oauth-http',
         name: 'Stalled OAuth fixture',
@@ -3329,6 +3613,7 @@ describe('admin-api MCP connectivity test', () => {
 
   it('rejects an unknown persisted transport type instead of falling through to valid', async () => {
     writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpEnabledServers: ['unknown-transport'],
       mcpServers: [{
         id: 'unknown-transport',
         name: 'Unknown transport fixture',
@@ -3365,7 +3650,7 @@ describe('admin-api MCP project scope', () => {
 
     expect(result.success).toBe(false);
     expect(readConfig().mcpEnabledServers).toEqual([]);
-    expect(agentSessionMocks.setMcpServers).not.toHaveBeenCalled();
+    expect(sessionEngineMocks.updateMcpServers).not.toHaveBeenCalled();
   });
 
   it('keeps global enable effective when project scope is skipped for an unregistered workspace', async () => {
@@ -3387,7 +3672,7 @@ describe('admin-api MCP project scope', () => {
     expect(result.success).toBe(true);
     expect(result.data).toMatchObject({ id: 'win-custom', projectScope: 'project-not-found' });
     expect(readConfig().mcpEnabledServers).toEqual(['win-custom']);
-    expect(agentSessionMocks.setMcpServers).toHaveBeenCalledWith([
+    expect(sessionEngineMocks.updateMcpServers).toHaveBeenCalledWith([
       expect.objectContaining({ id: 'win-custom' }),
     ]);
   });
@@ -3964,6 +4249,22 @@ describe('admin-api Agent / Session discovery', () => {
     expect(shown.data).not.toHaveProperty('id');
   });
 
+  it('counts exactly the visible active Agent list, including disabled and legacy orphan Agents', async () => {
+    const agents = ['active', 'disabled', 'archived', 'internal', 'orphan'].map(id => ({
+      id, name: id, enabled: id !== 'disabled', workspacePath: `/tmp/${id}`, channels: [],
+    }));
+    writeJson(join(scratch, '.myagents', 'config.json'), { agents });
+    writeJson(join(scratch, '.myagents', 'projects.json'), agents.filter(agent => agent.id !== 'orphan').map(agent => ({
+      id: `project-${agent.id}`, name: agent.name, path: agent.workspacePath, agentId: agent.id,
+      ...(agent.id === 'archived' ? { archivedAt: '2026-09-01T00:00:00.000Z' } : {}),
+      ...(agent.id === 'internal' ? { internal: true } : {}),
+    })));
+    const { handleAgentList, handleStatus } = await import('./admin-api');
+    const list = await handleAgentList();
+    expect((list.data as Array<{ agentId: string }>).map(agent => agent.agentId)).toEqual(['active', 'disabled', 'orphan']);
+    expect(await handleStatus()).toMatchObject({ success: true, data: { agents: 3 } });
+  });
+
   it('lists persisted history only, newest first, without exposing prepared Sessions', async () => {
     writeJson(join(scratch, '.myagents', 'config.json'), {
       agents: [{ id: 'agent-1', name: 'Workspace', enabled: true, workspacePath: '/tmp/workspace', channels: [] }],
@@ -4010,6 +4311,62 @@ describe('admin-api Agent / Session discovery', () => {
         lastMessagePreview: 'existing preview',
       }),
     ]);
+  });
+
+  it('reports DSH Agent defaults and Session history as Integrated Product identity', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-dsh',
+        name: 'DSH Workspace',
+        enabled: true,
+        workspacePath: '/tmp/dsh-workspace',
+        runtime: 'dsh',
+        runtimePreference: { family: 'integrated', id: 'dsh' },
+        providerId: 'deepseek',
+        model: 'deepseek-v4-flash',
+        permissionMode: 'fullAgency',
+        channels: [],
+      }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-dsh',
+      name: 'DSH Workspace',
+      path: '/tmp/dsh-workspace',
+      agentId: 'agent-dsh',
+    }]);
+    writeJson(join(scratch, '.myagents', 'sessions.json'), [{
+      id: 'session-dsh',
+      agentDir: '/tmp/dsh-workspace',
+      title: 'DSH Session',
+      createdAt: '2026-08-01T00:00:00.000Z',
+      lastActiveAt: '2026-08-01T00:00:00.000Z',
+      runtime: 'dsh',
+      model: 'deepseek-v4-flash',
+    }]);
+    const { handleAgentShow, handleSessionList } = await import('./admin-api');
+
+    expect(await handleAgentShow({ id: 'agent-dsh' })).toMatchObject({
+      success: true,
+      data: {
+        effectiveDefaults: {
+          scope: 'agent-default-for-future-sessions',
+          permissionModeSource: 'agent-config',
+          runtime: 'dsh',
+          runtimeSource: 'integrated',
+          providerId: 'deepseek',
+          model: 'deepseek-v4-flash',
+          permissionMode: 'fullAgency',
+        },
+      },
+    });
+    expect(await handleSessionList({ agentId: 'agent-dsh' })).toMatchObject({
+      success: true,
+      data: [{
+        sessionId: 'session-dsh',
+        runtime: 'dsh',
+        runtimeSource: 'integrated',
+      }],
+    });
   });
 });
 
@@ -4189,7 +4546,9 @@ describe('admin-api Agent workspace archive', () => {
       archivedAt: '2026-07-03T00:00:00.000Z',
       archivedAgentEnabledBeforeArchive: false,
     }]);
-    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: false, error: 'task store unavailable' });
+    managementApiMocks.managementApi.mockImplementation(async (path) => path === '/api/agent/reload-config'
+      ? { ok: false, error: 'task store unavailable' }
+      : { ok: true });
 
     const result = await handleAgentUnarchive({ id: 'agent-1' });
 
@@ -4197,5 +4556,98 @@ describe('admin-api Agent workspace archive', () => {
     expect(result.error).toContain('was unarchived');
     const projects = readJson(join(scratch, '.myagents', 'projects.json'));
     expect(projects[0]).not.toHaveProperty('archivedAt');
+  });
+});
+
+
+describe('admin config discovery and MCP observations', () => {
+  it('redacts serialized Agent credentials and secret maps through both parent and leaf reads', async () => {
+    const secret = 'synthetic-provider-credential-123456789';
+    const snapshot = JSON.stringify({ apiKey: secret, baseUrl: 'https://fixture.invalid' });
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{ id: 'agent-fixture', name: 'Fixture', providerEnvJson: snapshot,
+        channels: [{ overrides: { providerEnvJson: snapshot, mcpServersJson: snapshot } }] }],
+      providerApiKeys: { fixture: secret },
+      mcpServerEnv: { fixture: { CUSTOM_AUTH: secret } },
+    });
+    const { handleConfigGet } = await import('./admin-api');
+    for (const key of ['agents', 'agents.0.providerEnvJson', 'agents.0.channels.0.overrides',
+      'providerApiKeys', 'mcpServerEnv', 'mcpServerEnv.fixture.CUSTOM_AUTH']) {
+      const result = handleConfigGet({ key });
+      expect(result.success).toBe(true);
+      expect(JSON.stringify(result)).not.toContain(secret);
+    }
+    expect(handleConfigGet({ key: 'agents' })).toMatchObject({
+      data: { value: [expect.objectContaining({ name: 'Fixture', providerEnvJson: '****' })] },
+    });
+    expect(handleConfigGet({ key: 'agents.0.providerEnvJson' })).toMatchObject({ data: { value: '****' } });
+  });
+
+  it('lists stored keys and types without exposing secrets, including nested credentials', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      theme: 'dark', providerApiKeys: { deepseek: 'synthetic-private-value' },
+      custom: { count: 3, nested: { password: 'synthetic-password' } },
+    });
+    const { handleConfigList } = await import('./admin-api');
+    const top = handleConfigList();
+    expect(top).toMatchObject({ success: true, data: { keys: expect.arrayContaining([
+      expect.objectContaining({ key: 'appearanceMode', type: 'string', sensitive: false, settable: true, description: expect.any(String) }),
+      expect.objectContaining({ key: 'providerApiKeys', type: 'object', sensitive: true, settable: false, description: expect.any(String) }),
+    ]) } });
+    expect(JSON.stringify(top)).not.toContain('synthetic-private-value');
+    expect(handleConfigList({ prefix: 'custom' })).toMatchObject({ success: true, data: { keys: expect.arrayContaining([
+      expect.objectContaining({ key: 'custom.count', type: 'number' }),
+    ]) } });
+    expect(handleConfigList({ prefix: 'providerApiKeys' }).success).toBe(false);
+    expect(handleConfigList({ prefix: '__proto__' }).success).toBe(false);
+    expect(handleConfigList({ prefix: 'appearanceMode' }).success).toBe(false);
+    expect(JSON.stringify(handleConfigList({ prefix: 'custom.nested' }))).not.toContain('synthetic-password');
+  });
+
+  it('reads workspace MCP selection from the Session facade independently of global configuration', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), { agents: [], mcpEnabledServers: ['one'] });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{ id: 'project', name: 'Fixture', path: '/fixture/current', mcpEnabledServers: ['one', 'two'] }]);
+    sessionEngineMocks.state.context = { sessionId: 'current', workspacePath: '/fixture/current' };
+    agentSessionMocks.agentDir = '/fixture/old-builtin';
+    const { handleStatus } = await import('./admin-api');
+    expect(await handleStatus()).toMatchObject({ data: { workspaceMcp: { selection: ['one', 'two'], enabled: ['one'] } } });
+  });
+
+  it('counts only current ready MCP servers and keeps unknown observations distinct from zero', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), { agents: [] });
+    writeJson(join(scratch, '.myagents', 'projects.json'), []);
+    const { handleStatus } = await import('./admin-api');
+    expect(await handleStatus()).toMatchObject({ data: {
+      activeMcpInSession: null,
+      defaultProviderScope: 'global-fallback',
+      sessionMcp: { scope: 'current-session', observation: 'unavailable' },
+    } });
+    const snapshot = { sessionId: 'session-1', servers: [{ id: 'ready', state: 'ready' }, { id: 'failed', state: 'failed' }] };
+    sessionEngineMocks.getStreamReplaySnapshot.mockReturnValue({ sessionId: 'session-1', mcpEffectiveSnapshot: snapshot });
+    expect(await handleStatus()).toMatchObject({ data: { activeMcpInSession: 1, sessionMcp: { observation: 'current' } } });
+    sessionEngineMocks.getStreamReplaySnapshot.mockReturnValue({ sessionId: 'session-2', mcpEffectiveSnapshot: snapshot });
+    expect(await handleStatus()).toMatchObject({ data: { activeMcpInSession: null, sessionMcp: { observation: 'stale' } } });
+    sessionEngineMocks.getStreamReplaySnapshot.mockReturnValue({ sessionId: 'session-1', mcpEffectiveSnapshot: { ...snapshot, observationStale: true } });
+    expect(await handleStatus()).toMatchObject({ data: { activeMcpInSession: null } });
+  });
+});
+
+
+describe('Record details and deletion owner routing', () => {
+  it('reads full content and delegates deletion to the Rust Record owner', async () => {
+    const { handleRecordGet, handleRecordDelete } = await import('./admin-api');
+    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: true, record: { id: 'record-fixture', content: '完整正文' } });
+    await expect(handleRecordGet({ id: 'record-fixture' })).resolves.toMatchObject({ success: true, data: { record: { content: '完整正文' } } });
+    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: true, id: 'record-fixture' });
+    await expect(handleRecordDelete({ id: 'record-fixture' })).resolves.toMatchObject({ success: true });
+    expect(managementApiMocks.managementApi.mock.calls).toEqual([
+      ['/api/record/get?id=record-fixture'],
+      ['/api/record/delete', 'POST', { id: 'record-fixture' }],
+    ]);
+  });
+  it('unwraps an existing structured Task error without dropping its code', async () => {
+    const { handleTaskGet } = await import('./admin-api');
+    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: false, error: JSON.stringify({ code: 'not_found', message: 'Task not found: missing' }) });
+    await expect(handleTaskGet({ id: 'missing' })).resolves.toMatchObject({ success: false, code: 'not_found', error: 'Task not found: missing' });
   });
 });

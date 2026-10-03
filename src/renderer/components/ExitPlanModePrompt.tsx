@@ -1,4 +1,11 @@
-import { FileCheck, Check, Terminal, CheckCircle, XCircle, ArrowUp } from 'lucide-react';
+import {
+  FileCheckIcon,
+  CheckIcon,
+  TerminalIcon,
+  SuccessIcon,
+  XCircleIcon,
+  ArrowUpIcon,
+} from '@/components/icons';
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import Markdown from '@/components/Markdown';
@@ -104,7 +111,7 @@ export function ExitPlanModePrompt({ request, onApprove, onReject }: ExitPlanMod
                             ? 'bg-[var(--paper-inset)]'
                             : 'bg-[var(--success-bg)]'
                     }`}>
-                        <FileCheck className={`h-4.5 w-4.5 ${
+                        <FileCheckIcon className={`h-4.5 w-4.5 ${
                             isResolved && !isApproved
                                 ? 'text-[var(--ink-subtle)]'
                                 : 'text-[var(--success)]'
@@ -130,8 +137,8 @@ export function ExitPlanModePrompt({ request, onApprove, onReject }: ExitPlanMod
                                 : 'bg-[var(--paper-inset)] text-[var(--ink-muted)]'
                         }`}>
                             {isApproved
-                                ? <><CheckCircle className="h-3.5 w-3.5" />{t('shell.planPrompt.approved')}</>
-                                : <><XCircle className="h-3.5 w-3.5" />{t('shell.planPrompt.rejected')}</>
+                                ? <><SuccessIcon className="h-3.5 w-3.5" />{t('shell.planPrompt.approved')}</>
+                                : <><XCircleIcon className="h-3.5 w-3.5" />{t('shell.planPrompt.rejected')}</>
                             }
                         </div>
                     )}
@@ -162,7 +169,7 @@ export function ExitPlanModePrompt({ request, onApprove, onReject }: ExitPlanMod
                                     ? 'bg-[var(--paper-inset)]/60 text-[var(--ink-muted)]'
                                     : 'bg-[var(--success-bg)]/60 text-[var(--success)]'
                             }`}>
-                                <Terminal className="h-3.5 w-3.5 shrink-0" />
+                                <TerminalIcon className="h-3.5 w-3.5 shrink-0" />
                                 <span>{ap.prompt}</span>
                             </div>
                         ))}
@@ -181,7 +188,7 @@ export function ExitPlanModePrompt({ request, onApprove, onReject }: ExitPlanMod
                             onClick={onApprove}
                             className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-[var(--success)] px-3 py-2 text-sm font-medium text-[var(--on-success)] transition-colors hover:brightness-110"
                         >
-                            <Check className="h-4 w-4" />
+                            <CheckIcon className="h-4 w-4" />
                             {t('shell.planPrompt.approve')}
                         </button>
                         <div className="flex items-end gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-2.5 py-1.5 transition-colors focus-within:border-[var(--success)]/50">
@@ -207,7 +214,7 @@ export function ExitPlanModePrompt({ request, onApprove, onReject }: ExitPlanMod
                                         : 'bg-[var(--paper-inset)] text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]'
                                 }`}
                             >
-                                <ArrowUp className="h-3.5 w-3.5" />
+                                <ArrowUpIcon className="h-3.5 w-3.5" />
                             </button>
                         </div>
                     </div>

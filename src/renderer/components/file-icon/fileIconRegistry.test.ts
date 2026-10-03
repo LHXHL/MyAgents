@@ -1,10 +1,9 @@
-import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { FILE_ICON_ASSETS, SYMBOLS_UPSTREAM } from "./fileIconAssets";
+import { FILE_ICON_GLYPHS, FILE_ICON_TONES } from "./fileIconGlyphs";
 import {
   CATEGORY_EXTENSION_RULES,
   COMPOUND_EXTENSION_RULES,
@@ -61,7 +60,7 @@ describe("resolveFileIconDescriptor", () => {
 
     for (const name of inputs) {
       const descriptor = resolveFileIconDescriptor({ name });
-      expect(FILE_ICON_ASSETS[descriptor.iconId].src).toBeTruthy();
+      expect(FILE_ICON_GLYPHS[descriptor.iconId].tone).toBeTruthy();
     }
   });
 });
@@ -70,25 +69,7 @@ function flattenExtensions(rules: readonly ExtensionRule[]): string[] {
   return rules.flatMap((rule) => [...rule.extensions]);
 }
 
-function collectSvgPaths(directory: string): string[] {
-  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) return collectSvgPaths(path);
-    return entry.isFile() && entry.name.endsWith(".svg") ? [path] : [];
-  });
-}
-
 describe("file icon registry contract", () => {
-  it("pins the reviewed Symbols upstream revision", () => {
-    expect(SYMBOLS_UPSTREAM).toEqual({
-      name: "Symbols",
-      version: "0.0.25",
-      commit: "296ef1b62287fb2315cb5651e552e09e8c8e1de8",
-      repository: "https://github.com/miguelsolorio/symbols",
-      license: "MIT",
-    });
-  });
-
   it.each([
     ["compound", COMPOUND_EXTENSION_RULES],
     ["dedicated", DEDICATED_EXTENSION_RULES],
@@ -131,7 +112,7 @@ describe("file icon registry contract", () => {
     ];
 
     for (const iconId of iconIds) {
-      expect(FILE_ICON_ASSETS).toHaveProperty(iconId);
+      expect(FILE_ICON_GLYPHS).toHaveProperty(iconId);
     }
   });
 
@@ -147,42 +128,27 @@ describe("file icon registry contract", () => {
     ]);
 
     expect(
-      Object.keys(FILE_ICON_ASSETS).filter((id) => !referenced.has(id)),
+      Object.keys(FILE_ICON_GLYPHS).filter((id) => !referenced.has(id)),
     ).toEqual([]);
   });
 
-  it("matches every vendored SVG to the reviewed upstream checksum snapshot", () => {
-    const symbolsRoot = resolve(import.meta.dirname, "assets/symbols");
-    const expected = new Map(
-      readFileSync(join(symbolsRoot, "CHECKSUMS.sha256"), "utf8")
-        .trim()
-        .split("\n")
-        .map((line) => {
-          const [hash, path] = line.split(/\s+/, 2);
-          return [path, hash] as const;
-        }),
-    );
-    const actualPaths = collectSvgPaths(symbolsRoot)
-      .map((path) => relative(symbolsRoot, path).replaceAll("\\", "/"))
-      .sort();
-
-    expect([...expected.keys()].sort()).toEqual(actualPaths);
-    for (const path of actualPaths) {
-      const hash = createHash("sha256")
-        .update(readFileSync(join(symbolsRoot, path)))
-        .digest("hex");
-      expect(hash, path).toBe(expected.get(path));
+  it("defines every glyph tone for both color schemes", () => {
+    // Glyphs are inline SVG coloured by CSS tokens; a missing token renders the
+    // icon in the inherited text colour and silently drops the type signal.
+    const css = readFileSync(resolve(import.meta.dirname, "../../index.css"), "utf8");
+    const block = (selector: string) => {
+      const start = css.indexOf(`${selector} {\n  /* file-icon tones */`);
+      expect(start, selector).toBeGreaterThanOrEqual(0);
+      return css.slice(start, css.indexOf("}", start));
+    };
+    for (const scheme of [":root", "html[data-color-scheme='dark']"]) {
+      const tokens = block(scheme);
+      for (const tone of FILE_ICON_TONES) {
+        expect(tokens, `${scheme} --file-icon-${tone}`).toContain(`--file-icon-${tone}:`);
+      }
     }
-  });
-
-  it("keeps the presentation derivative geometry identical to Symbols image", () => {
-    const symbolsRoot = resolve(import.meta.dirname, "assets/symbols");
-    const image = readFileSync(join(symbolsRoot, "files/image.svg"), "utf8");
-    const presentation = readFileSync(
-      join(symbolsRoot, "files/presentation.svg"),
-      "utf8",
-    );
-
-    expect(presentation).toBe(image.replaceAll("#C084FC", "#F59E0B"));
+    for (const glyph of Object.values(FILE_ICON_GLYPHS)) {
+      expect(FILE_ICON_TONES).toContain(glyph.tone);
+    }
   });
 });

@@ -28,7 +28,7 @@ export interface LogContext {
     ownerId?: string;
     requestId?: string;
     turnId?: string;
-    /** Runtime label e.g. 'claude-code' | 'codex' | 'gemini' | 'builtin'. */
+    /** Runtime label e.g. 'claude-code' | 'codex' | 'dsh' | 'builtin'. */
     runtime?: string;
     /** Runtime source e.g. 'system-cli' | 'managed-provider'. */
     runtimeSource?: string;

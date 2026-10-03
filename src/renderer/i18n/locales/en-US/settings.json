@@ -22,7 +22,8 @@
       "proxy": "Network Proxy",
       "externalCli": "External Calls",
       "shortcuts": "Shortcuts",
-      "about": "About"
+      "about": "About",
+      "developer": "Developer"
     }
   },
   "externalCli": {
@@ -76,10 +77,7 @@
     "forceWakeEnabled": "Always-on wake lock enabled",
     "forceWakeDisabled": "Always-on wake lock disabled",
     "defaultWorkspaceTitle": "Workspace opened at startup",
-    "defaultWorkspaceDescription": "Default workspace path used on the launcher",
-    "defaultWorkspaceNone": "None",
-    "defaultWorkspaceBrowse": "Choose folder...",
-    "defaultWorkspacePickTitle": "Choose default workspace",
+    "defaultWorkspaceDescription": "Default Agent workspace selected on the start page; the same as “Set as default” there",
     "defaultWorkspaceSaved": "Default workspace saved",
     "appearanceModeTitle": "Appearance mode",
     "appearanceModeDescription": "Set the app light and dark appearance mode",
@@ -97,7 +95,9 @@
       "light": "Light",
       "dark": "Dark"
     },
-    "queueTitle": "Queued messages",
+    "agentFeaturesTitle": "Agent Features",
+    "defaultRuntimeTitle": "Default Agent Environment",
+    "defaultRuntimeDescription": "Agents use this environment by default. You can change it for individual Agents in Agent settings.",
     "queueModeTitle": "Queue response mode",
     "queueTurnDescription": "Send the next queued message only after AI finishes the current turn",
     "queueRealtimeDescription": "AI reads messages while running and decides when to respond",
@@ -898,7 +898,7 @@
       "installedMultiple_one": "Installed {{count}} skill",
       "installedMultiple_other": "Installed {{count}} skills",
       "syncPartial": "{{synced}} synced, {{failed}} failed",
-      "syncSuccess": "Synced {{count}} skills",
+      "syncSuccess": "Imported {{count}} skills, disabled by default",
       "noSyncableSkills": "No skills to sync",
       "syncFailed": "Sync failed",
       "newCommandTitle": "New Command",
@@ -929,6 +929,8 @@
       "syncableCount_one": "{{count}} available",
       "syncableCount_other": "{{count}} available",
       "syncFromClaudeDescription": "Import skills from ~/.claude/skills.",
+      "syncPreviewNote": "These skills will be copied to your user directory and remain disabled:",
+      "syncApply": "Import listed skills",
       "phaseParsing": "Parsing link...",
       "phaseDownloading": "Downloading repository...",
       "phaseUnpacking": "Unpacking...",
@@ -1007,12 +1009,12 @@
       "runningChannelsHint": "Stop running Channels first"
     },
     "permission": {
-      "auto": "Action",
+      "auto": "Ask for approval",
       "plan": "Plan",
-      "fullAgency": "Full agency",
-      "autoDescription": "Agent acts in the workspace and asks before using tools",
+      "fullAgency": "Full autonomy",
+      "autoDescription": "Work in the workspace; ask before using tools",
       "planDescription": "Agent only researches information and discusses plans with you",
-      "fullAgencyDescription": "Agent has full autonomous permission without human confirmation"
+      "fullAgencyDescription": "Unrestricted computer and internet access; no approval needed"
     },
     "reasoning": {
       "descriptions": {
@@ -2217,8 +2219,6 @@
     "teamSpaceLoading": "Reading Team Space build status...",
     "teamSpaceUnavailable": "This build does not include the Team Space service.",
     "teamSpaceUnavailableWithReason": "This build does not include the Team Space service. ({{reason}})",
-    "runtimeTitle": "More Agent Runtimes",
-    "runtimeDescription": "Enable external runtimes such as Claude Code CLI and Codex CLI in the input box and Agent settings. Disable this to use the built-in runtime only.",
     "cliRegistryTitle": "CLI Tool Registry",
     "cliRegistryDescription": "Allow AI to create and register command-line tools, then manage them in Tools. New sessions can discover enabled tools automatically. MCP and built-in myagents CLI capabilities are not affected.",
     "desktopPetTitle": "Desktop Pet",
@@ -2273,5 +2273,25 @@
       "cronTaskDescription": "View and manage running recurring tasks for development debugging.",
       "openPanel": "Open Panel"
     }
+  },
+  "collaboration": {
+    "title": "DSH agent collaboration",
+    "description": "Configure models and collaboration limits for DSH sessions. Changes apply at a safe boundary; existing agents retain their original model.",
+    "depth": "Maximum nesting depth",
+    "active": "Concurrent agents",
+    "retained": "Retained agents",
+    "depthHint": "Root depth is 0. Default 2 lets the root create children, and those children can delegate one further level. All levels share execution capacity.",
+    "strategy": "Default child model",
+    "inherit": "Inherit direct parent",
+    "fixed": "Use a specific model",
+    "agent": "Allow agent selection",
+    "roles": "Models by role",
+    "roleName": "Extension agent role",
+    "addRole": "Add role",
+    "authorized": "Additional authorized models",
+    "authorizedHint": "The root and fixed role models are included automatically. Agent selection uses this authorized catalog. Removing a model blocks further requests by agents using it.",
+    "timing": "Collaboration message timing",
+    "timingHint": "Controls messages between agents and completion reports. Realtime delivers after the current model or tool step. The chat queue setting above controls user input.",
+    "unavailable": "Model unavailable"
   }
 }

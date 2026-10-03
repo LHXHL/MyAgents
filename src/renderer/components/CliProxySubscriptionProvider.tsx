@@ -1,7 +1,13 @@
 import { useRef, useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { Link, Loader2, RefreshCw, Unlink, X } from 'lucide-react';
+import {
+  LinkIcon,
+  LoaderIcon,
+  RefreshIcon,
+  UnlinkIcon,
+  CloseIcon,
+} from '@/components/icons';
 import type { CliProxyStatus } from '../../shared/cliproxy';
 import type { Provider } from '@/config/types';
 import { cancelCliProxy, connectCliProxy, disconnectCliProxy, discoverCliProxyModels, retryCliProxyCleanup } from '@/config/services/cliproxyService';
@@ -78,19 +84,19 @@ export default function CliProxySubscriptionProvider({ status, refresh }: {
       </>}
       actions={<>
         {status.candidate ? <button type="button" className={primaryClass} onClick={() => { if (status.candidate?.phase === 'authorizing' || committing) showAccount(); else beginLogin(); }}>
-          {authorizing || committing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Link className="h-3.5 w-3.5" />}
+          {authorizing || committing ? <LoaderIcon className="h-3.5 w-3.5 animate-spin" /> : <LinkIcon className="h-3.5 w-3.5" />}
           {t('providers.cliproxy.continueConnection')}
         </button> : !status.active && <button type="button" className={primaryClass} disabled={busy || !status.policy.usable || !!status.cleanup} onClick={beginLogin}>
-          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Link className="h-3.5 w-3.5" />}{t('providers.login')}
+          {busy ? <LoaderIcon className="h-3.5 w-3.5 animate-spin" /> : <LinkIcon className="h-3.5 w-3.5" />}{t('providers.login')}
         </button>}
         {status.active && !status.candidate && <button type="button" disabled={busy} onClick={() => { void run(() => discoverCliProxyModels(status.active!.generation)); }}
           title={t('providers.cliproxy.refreshModels')} className="rounded-lg p-1.5 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] disabled:opacity-50">
-          <RefreshCw className={`h-4 w-4 ${busy ? 'animate-spin' : ''}`} />
+          <RefreshIcon className={`h-4 w-4 ${busy ? 'animate-spin' : ''}`} />
         </button>}
         <DropdownMenu title={t('providers.cliproxy.moreActions')} sections={[
           { items: status.active ? [
-            { label: t('providers.cliproxy.reconnect'), icon: <Link className="h-4 w-4" />, onClick: beginLogin, disabled: busy || !!status.candidate || !!status.cleanup || !status.policy.usable },
-            { label: t('providers.cliproxy.disconnect'), icon: <Unlink className="h-4 w-4" />, onClick: () => { void run(disconnectCliProxy); }, disabled: busy },
+            { label: t('providers.cliproxy.reconnect'), icon: <LinkIcon className="h-4 w-4" />, onClick: beginLogin, disabled: busy || !!status.candidate || !!status.cleanup || !status.policy.usable },
+            { label: t('providers.cliproxy.disconnect'), icon: <UnlinkIcon className="h-4 w-4" />, onClick: () => { void run(disconnectCliProxy); }, disabled: busy },
           ] : [] },
           { items: [
             ...(status.cleanup ? [{ label: t('providers.cliproxy.retryCleanup'), onClick: () => { void run(retryCliProxyCleanup); }, disabled: busy }] : []),
@@ -105,13 +111,13 @@ export default function CliProxySubscriptionProvider({ status, refresh }: {
           className="w-full max-w-lg rounded-2xl bg-[var(--paper-elevated)] p-6 shadow-2xl">
           <div className="flex items-start justify-between gap-4">
             <h2 className="text-lg font-semibold text-[var(--ink)]">{t('providers.cliproxy.loginTitle')}</h2>
-            <button type="button" aria-label={t('providers.cliproxy.close')} onClick={closeDialog} className="rounded-lg p-1.5 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]"><X className="h-4 w-4" /></button>
+            <button type="button" aria-label={t('providers.cliproxy.close')} onClick={closeDialog} className="rounded-lg p-1.5 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]"><CloseIcon className="h-4 w-4" /></button>
           </div>
           <div className="mt-5 space-y-4">
             <div className="space-y-2 rounded-xl border border-[var(--line)] bg-[var(--paper-inset)] p-4 text-sm">
               {account?.email && <p className="truncate text-[var(--ink)]">{account.email}</p>}
               <p className="flex items-center gap-2 text-[var(--ink-muted)]">
-                {(busy || authorizing || committing) && <Loader2 className="h-4 w-4 animate-spin" />}
+                {(busy || authorizing || committing) && <LoaderIcon className="h-4 w-4 animate-spin" />}
                 {status.candidate ? t(`providers.cliproxy.phase.${status.candidate.phase}`)
                   : busy ? t('providers.cliproxy.preparingLogin')
                     : t(status.active?.status === 'connected' ? 'providers.cliproxy.connected' : 'providers.cliproxy.disconnected')}

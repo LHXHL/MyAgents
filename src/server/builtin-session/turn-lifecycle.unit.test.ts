@@ -481,10 +481,13 @@ describe('turn-lifecycle owner', () => {
     const lifecycle = createBuiltinTurnLifecycle(deps);
     await lifecycle.handleSdkResult(makeResult({
       subtype: 'error_during_execution', is_error: true,
-      result: 'No message found with message.uuid of: rejected-anchor',
+      result: 'Execution failed',
       errors: ['No message found with message.uuid of: rejected-anchor'], terminal_reason: 'error',
     }));
     expect(broadcasts.map(item => item.event)).toContain('chat:agent-error');
+    expect(broadcasts.find(item => item.event === 'chat:agent-error')?.data).toMatchObject({
+      message: expect.stringContaining('会话恢复点已失效'),
+    });
     expect(deps.handleTerminalRecovery).toHaveBeenCalledWith(undefined);
   });
 

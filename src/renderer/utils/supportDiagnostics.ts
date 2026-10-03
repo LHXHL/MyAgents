@@ -131,6 +131,14 @@ export function sanitizeRuntimeDiagnosticsForSupport(diagnostics: RuntimeDiagnos
       defaultEnabled: feature.defaultEnabled,
       stage: sanitizeFreeText(feature.stage, 80),
     })).slice(0, 40),
+    permissions: diagnostics.permissions ? {
+      desiredProductMode: sanitizeFreeText(diagnostics.permissions.desiredProductMode, 80),
+      desiredRuntimeMode: sanitizeFreeText(diagnostics.permissions.desiredRuntimeMode, 80),
+      effectiveRuntimeMode: sanitizeFreeText(diagnostics.permissions.effectiveRuntimeMode, 80),
+      policyRevision: sanitizeFreeText(diagnostics.permissions.policyRevision, 256),
+      ruleCount: diagnostics.permissions.ruleCount,
+      state: diagnostics.permissions.state,
+    } : undefined,
     effectiveEnv: {
       cwd: sanitizePath(env.cwd, 500),
       proxyPolicy: env.proxyPolicy,

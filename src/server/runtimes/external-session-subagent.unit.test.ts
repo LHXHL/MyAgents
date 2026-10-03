@@ -1,12 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
+import type { PersistContentBlock, PersistSubagentCall } from './external-session/types';
 import {
   buildExternalAssistantSnapshotContent,
-  type PersistContentBlock,
-  type PersistSubagentCall,
-} from './external-session';
-import {
   applyExternalSubagentLifecycle,
+  applyExternalToolResultToContent,
   finalizeExternalSubagentLifecyclesForTurn,
   finalizeExternalSubagentToolInput,
   finalizeExternalToolUseInput,
@@ -252,5 +250,41 @@ describe('external-session sub-agent lifecycle owner', () => {
     applyExternalSubagentLifecycle({ parentToolUseId: 'spawn-1', status: 'interrupted', observedAt: 220 });
     expect(finalizeExternalSubagentLifecyclesForTurn({ status: 'failed', observedAt: 500 })).toEqual([]);
     expect(getExternalContentBlocksRef()[0].tool?.subagentLifecycle?.status).toBe('interrupted');
+  });
+
+  it('projects ProductWork identity, result, and usage onto an Agent card', () => {
+    startExternalToolUseInput({
+      toolUseId: 'agent-work-1',
+      toolName: 'Agent',
+      toolInput: { subagent_type: 'Explore', description: 'Inspect files' },
+    });
+    finalizeExternalToolUseInput('agent-work-1');
+    const handle = JSON.stringify({ taskId: 'work-1', agentId: 'child-1', state: 'background', outputPath: '/fixture/output' });
+    applyExternalToolResultToContent({ toolUseId: 'agent-work-1', content: handle, isError: false });
+
+    const lifecycle = applyExternalSubagentLifecycle({
+      parentToolUseId: 'agent-work-1',
+      status: 'completed',
+      observedAt: 500,
+      agentType: 'Explore',
+      description: 'Inspect files',
+      mode: 'continuable',
+      model: 'deepseek-chat',
+      result: 'Inspection complete',
+      usage: { inputTokens: 12, outputTokens: 3, cacheReadTokens: 2 },
+    });
+
+    expect(lifecycle).toMatchObject({
+      status: 'completed',
+      agentType: 'Explore',
+      mode: 'continuable',
+      result: 'Inspection complete',
+    });
+    expect(getExternalContentBlocksRef()[0].tool).toMatchObject({
+      isError: false,
+      result: handle,
+      subagentLifecycle: lifecycle,
+    });
+    expect(getExternalContentBlocksRef()[0].tool?.isLoading).not.toBe(true);
   });
 });

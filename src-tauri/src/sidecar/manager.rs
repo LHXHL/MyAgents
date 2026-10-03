@@ -165,11 +165,6 @@ impl SessionOwnerRelease {
     }
 }
 
-pub(crate) struct RuntimeDriftTransition {
-    pub(super) result: RuntimeDriftResult,
-    pub(super) drain: Option<SessionGenerationDrain>,
-}
-
 /// Process-local standing demand for the canonical Global Sidecar.
 ///
 /// This is deliberately independent from `instances`: a failed process
@@ -1113,17 +1108,34 @@ impl SidecarManager {
 
     /// App-owned resources address the exact process holding their execution
     /// lease, including one-shots hosted by the Global Sidecar.
-    pub(crate) fn acquire_process_dispatch(&mut self, management_id: &str, generation: u64) -> Result<SidecarHttpDispatch, String> {
+    pub(crate) fn acquire_process_dispatch(
+        &mut self,
+        management_id: &str,
+        generation: u64,
+    ) -> Result<SidecarHttpDispatch, String> {
         if management_id == GLOBAL_SIDECAR_ID {
-            if !self.is_live_process(management_id, generation) { return Err("Sidecar generation is no longer current".to_owned()); }
+            if !self.is_live_process(management_id, generation) {
+                return Err("Sidecar generation is no longer current".to_owned());
+            }
             return self.acquire_global_dispatch();
         }
         let generations = &self.sidecar_generations;
-        let sidecar = self.sidecars.iter_mut().find(|(id, sidecar)| sidecar.management_id == management_id
-            && generations.get(*id).copied() == Some(generation)).map(|(_, sidecar)| sidecar)
+        let sidecar = self
+            .sidecars
+            .iter_mut()
+            .find(|(id, sidecar)| {
+                sidecar.management_id == management_id
+                    && generations.get(*id).copied() == Some(generation)
+            })
+            .map(|(_, sidecar)| sidecar)
             .ok_or_else(|| "Sidecar generation is no longer current".to_owned())?;
-        let lease = DispatchGate::try_acquire(&sidecar.dispatch_gate).ok_or_else(|| "Sidecar generation is draining".to_owned())?;
-        Ok(SidecarHttpDispatch { base_url: format!("http://127.0.0.1:{}", sidecar.port), generation, _lease: lease })
+        let lease = DispatchGate::try_acquire(&sidecar.dispatch_gate)
+            .ok_or_else(|| "Sidecar generation is draining".to_owned())?;
+        Ok(SidecarHttpDispatch {
+            base_url: format!("http://127.0.0.1:{}", sidecar.port),
+            generation,
+            _lease: lease,
+        })
     }
 
     fn claim_session_completion_if_current(
@@ -1503,91 +1515,6 @@ impl SidecarManager {
             failed_attempts: recovery.failed_attempts,
             retry_after,
         })
-    }
-
-    /// Runtime drift helper for the IM router (v0.1.66).
-    ///
-    /// Looks up the Sidecar for `session_id` and checks whether its spawn-time
-    /// MYAGENTS_RUNTIME differs from `desired_runtime`. On drift, the kill
-    /// decision depends on which owners are currently attached:
-    ///
-    ///   - Only `Agent(_)` owners → safe to kill: the IM router is the sole
-    ///     stakeholder and it will regenerate the peer session_id anyway.
-    ///     Kill + remove + clear generation counter.
-    ///
-    ///   - Any non-Agent owner (`Tab`, `Task`, `Goal`, `BackgroundCompletion`) →
-    ///     the Sidecar is shared with a desktop-style caller whose session
-    ///     would be orphaned by a kill (SSE stream dies, frontend can't
-    ///     recover without reload). Skip the kill, leave the Sidecar alone,
-    ///     but still return DriftDetected so the caller (IM router) can
-    ///     regenerate the peer session_id and fork cleanly. The old Sidecar
-    ///     keeps running under the old session_id for the desktop owner;
-    ///     the IM peer gets a fresh Sidecar under the new session_id.
-    ///
-    /// `desired_runtime` follows the same normalization as everywhere else:
-    /// `"builtin"` | `"claude-code"` | `"codex"` | `"gemini"`. Internally
-    /// Sidecars spawned as builtin have `runtime = None` (no env var
-    /// injected); this method treats that as equivalent to `"builtin"` for
-    /// comparison.
-    pub(crate) fn kill_sidecar_if_runtime_identity_differs(
-        &mut self,
-        session_id: &str,
-        desired_runtime: &str,
-        desired_runtime_source: Option<&str>,
-    ) -> RuntimeDriftTransition {
-        let decision = match self.sidecars.get(session_id) {
-            Some(sidecar) => decide_runtime_identity_drift_result(
-                sidecar.runtime.as_deref(),
-                sidecar.runtime_source.as_deref(),
-                desired_runtime,
-                desired_runtime_source,
-                &sidecar.owners,
-            ),
-            None => RuntimeDriftResult::NoDrift,
-        };
-        if decision == RuntimeDriftResult::NoDrift {
-            return RuntimeDriftTransition {
-                result: decision,
-                drain: None,
-            };
-        }
-        if decision == RuntimeDriftResult::DetectedKeptAlive {
-            ulog_info!(
-                "[sidecar] Runtime drift on session {} detected but kept alive \
-                 — non-Agent owner (Tab/Cron/BackgroundCompletion) still attached. \
-                 Caller should fork via a fresh session_id.",
-                session_id
-            );
-            return RuntimeDriftTransition {
-                result: decision,
-                drain: None,
-            };
-        }
-        RuntimeDriftTransition {
-            result: decision,
-            drain: self.prepare_session_sidecar_replacement(session_id),
-        }
-    }
-
-    pub(super) fn finish_runtime_drift_retirement(
-        &mut self,
-        drain: &SessionGenerationDrain,
-    ) -> Option<SessionSidecar> {
-        let expected = drain.active.as_ref()?;
-        let is_current = self
-            .sidecars
-            .get(&drain.session_id)
-            .is_some_and(|sidecar| expected.matches(&sidecar.dispatch_gate));
-        if !is_current {
-            return None;
-        }
-        // Go through remove_sidecar() so stop_events is broadcast — runtime
-        // drift is exactly the kind of stop that orphan IM consumers must see.
-        let retired = self.remove_sidecar(&drain.session_id);
-        if !self.recovering_sidecars.contains_key(&drain.session_id) {
-            self.sidecar_generations.remove(&drain.session_id);
-        }
-        retired
     }
 
     /// Clear the generation counter for a session.
@@ -2145,10 +2072,7 @@ impl SidecarManager {
             || self.recovering_sidecars.contains_key(new_session_id);
         !old_exists
             && new_exists
-            && self.active_session_has_exact_owners(
-                new_session_id,
-                &[owner.clone()],
-            )
+            && self.active_session_has_exact_owners(new_session_id, &[owner.clone()])
     }
 
     /// `/new` rotates only the peer binding. If a logical Sidecar exists, the

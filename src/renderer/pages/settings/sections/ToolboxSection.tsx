@@ -1,14 +1,14 @@
 import {
-  AudioLines,
-  Download,
-  Globe,
+  AudioLinesIcon,
+  DownloadIcon,
+  GlobeIcon,
   ImageIcon,
-  Loader2,
-  Plus,
-  RefreshCw,
-  Settings2,
-  Wrench,
-} from 'lucide-react';
+  LoaderIcon,
+  PlusIcon,
+  RefreshIcon,
+  SlidersIcon,
+  WrenchIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import { CliToolsSection } from '@/components/CliToolsSection';
@@ -88,7 +88,7 @@ export function ToolboxSection({
     <div className="mx-auto max-w-4xl px-8 py-8">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Wrench className="h-5 w-5 text-[var(--ink-muted)]" />
+          <WrenchIcon className="h-5 w-5 text-[var(--ink-muted)]" />
           <h3 className="text-base font-semibold text-[var(--ink)]">
             {t('toolbox.tools.title')}
           </h3>
@@ -100,7 +100,7 @@ export function ToolboxSection({
           onClick={onAddMcp}
           className="flex items-center gap-1 rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)]"
         >
-          <Plus className="h-4 w-4" />
+          <PlusIcon className="h-4 w-4" />
           {t('toolbox.tools.add')}
         </button>
       </div>
@@ -124,7 +124,7 @@ export function ToolboxSection({
               <div className="flex items-start justify-between gap-2">
                 <div className="flex min-w-0 flex-1 items-center gap-2">
                   {isSpeechRecognition ? (
-                    <AudioLines className="h-4 w-4 shrink-0 text-[var(--accent-warm)]/70" />
+                    <AudioLinesIcon className="h-4 w-4 shrink-0 text-[var(--accent-warm)]/70" />
                   ) : (
                     <ImageIcon className="h-4 w-4 shrink-0 text-[var(--accent-warm)]/70" />
                   )}
@@ -135,7 +135,7 @@ export function ToolboxSection({
                     {tool.name}
                   </h3>
                   {isEnabling && (
-                    <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--info)]" />
+                    <LoaderIcon className="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--info)]" />
                   )}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
@@ -145,7 +145,7 @@ export function ToolboxSection({
                       className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                       title={t('toolbox.tools.settings')}
                     >
-                      <Settings2 className="h-4 w-4" />
+                      <SlidersIcon className="h-4 w-4" />
                     </button>
                   )}
                   <button
@@ -241,7 +241,7 @@ export function ToolboxSection({
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="flex min-w-0 flex-1 items-center gap-2">
-                  <Globe className="h-4 w-4 shrink-0 text-[var(--accent-warm)]/70" />
+                  <GlobeIcon className="h-4 w-4 shrink-0 text-[var(--accent-warm)]/70" />
                   <h3
                     className="min-w-0 truncate font-semibold text-[var(--ink)]"
                     title={server.name}
@@ -254,7 +254,7 @@ export function ToolboxSection({
                     </span>
                   )}
                   {isEnabling && (
-                    <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--info)]" />
+                    <LoaderIcon className="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--info)]" />
                   )}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
@@ -268,7 +268,7 @@ export function ToolboxSection({
                       className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                       title={t('toolbox.tools.settings')}
                     >
-                      <Settings2 className="h-4 w-4" />
+                      <SlidersIcon className="h-4 w-4" />
                     </button>
                   )}
                   <button
@@ -373,9 +373,9 @@ export function ToolboxSection({
                         className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--line)] px-2.5 py-1.5 text-xs font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-inset)]"
                       >
                         {browserResourceStatus?.installAuthorized ? (
-                          <RefreshCw className="h-3.5 w-3.5" />
+                          <RefreshIcon className="h-3.5 w-3.5" />
                         ) : (
-                          <Download className="h-3.5 w-3.5" />
+                          <DownloadIcon className="h-3.5 w-3.5" />
                         )}
                         {browserResourceStatus?.installAuthorized
                           ? t('toolbox.browserResource.retryUpdate')

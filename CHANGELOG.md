@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.23] - 2026-10-03
+
+> MyAgents 0.4.23 新增 DeepSeek Harness 运行环境，开放 Agent 运行环境选择，并统一设置入口与应用图标。
+
+### Added
+
+- **DeepSeek Harness 运行环境**：可在 Agent 设置中选择 MyAgents (DeepSeek Harness)，使用已配置的模型服务进行对话，支持文件操作、工具调用、权限审批、会话恢复、回退与分叉。
+- **默认 Agent 运行环境**：在通用设置中选择 Claude Agent SDK 或 DeepSeek Harness，作为未单独选择运行环境的 Agent 的默认值；已有对话和明确保存的选择保持不变。
+
+### Changed
+
+- **运行环境选择直接开放**：无需再开启实验室选项，即可为 Agent 选择可用的运行环境。
+- **通用设置更集中**：默认运行环境与队列响应模式统一放入「Agent 功能设置」；启动工作区使用与首页一致的 Agent 工作区选择器。
+- **Markdown 默认采用标准字号**：未手动设置的用户默认使用标准字号，已有字号选择保持不变。
+- **应用图标更统一**：统一导航、工具与文件类型图标，为 Agent 提供各自的身份图标，普通项目使用中性的工作区图标。
+
+---
+
 ## [0.4.22] - 2026-09-30
 
 > MyAgents 0.4.22 新增 OpenCode Go 接入与 Markdown 阅读字号设置，升级内置 AI 运行时，并改善会话保存、聊天机器人和本地转写的可靠性。

@@ -512,7 +512,7 @@ describe('Markdown local file links', () => {
     expect(links).toHaveLength(2);
     for (const link of links) {
       expect(link.querySelector('code')!.className).toBe('markdown-inline-code font-mono');
-      expect(link.querySelector('img')).toHaveStyle({ width: '1.2em', height: '1.2em' });
+      expect(link.querySelector('svg[data-file-icon-id]')).toHaveStyle({ width: '1.2em', height: '1.2em' });
     }
   });
 

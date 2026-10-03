@@ -10,7 +10,7 @@
  * ----------
  * - `buildCliToolsAppend(scenario)` — MyAgents-CLI capability hints
  *   (Task automation, Task self-exit, Goal Mode, IM media send, Record capture). Universal
- *   across runtimes (builtin Claude Agent SDK + Codex / Gemini / Claude Code
+ *   across runtimes (builtin Claude Agent SDK + Codex / Claude Code
  *   CLI) since v0.2.11 dropped the corresponding in-process MCP servers
  *   (`cron-tools`, `im-cron`, `im-media`) and unified on the CLI. Gated by
  *   `cliToolsEnabled` in `buildSystemPromptAppend` (set true on all current
@@ -199,7 +199,7 @@ Before your first widget in a session, run \`myagents widget readme <module> [<m
 // ===== Agent / Session collaboration (PRD 0.4.3) =====
 //
 // Pre-injected capability hint for Agent discovery and Session collaboration — universal
-// across runtimes (builtin SDK / Claude Code / Codex / Gemini all reach this
+// across runtimes (builtin SDK / Claude Code / Codex all reach this
 // CLI via their shell tool). Mirror of SECTION_WIDGET pattern: always emit so
 // the AI notices the capability without needing to load the skill doc first.
 //

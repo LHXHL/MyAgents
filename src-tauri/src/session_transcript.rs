@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -145,18 +145,12 @@ fn content(value: &Value) -> bool {
                 .all(|b| b.is_object() && string(b, "id").is_ok() && string(b, "type").is_ok())
         })
 }
-const MESSAGE_DETAILS: &[&str] = &[
-    "asyncQuestionReply",
-    "sdkUuid",
-    "runtimeTurnAnchor",
-    "attachments",
-    "usage",
-    "toolCount",
-    "durationMs",
-    "metadata",
-    "turnId",
-    "transcriptState",
-];
+static MESSAGE_DETAILS: LazyLock<HashMap<String, ()>> = LazyLock::new(|| {
+    serde_json::from_str(include_str!(
+        "../../src/shared/session-transcript-message-details.json"
+    ))
+    .expect("shared transcript message detail fields")
+});
 
 fn validate_operation(op: &Value) -> Result<()> {
     match string(op, "kind")? {
@@ -174,14 +168,14 @@ fn validate_operation(op: &Value) -> Result<()> {
             string(op, "messageId")?;
             if !object(op, "details")?
                 .keys()
-                .all(|k| MESSAGE_DETAILS.contains(&k.as_str()))
+                .all(|k| MESSAGE_DETAILS.contains_key(k))
             {
                 return Err("Invalid message details".into());
             }
             if op.get("clear").is_some()
                 && !strings(op, "clear")?
                     .iter()
-                    .all(|k| MESSAGE_DETAILS.contains(&k.as_str()))
+                    .all(|k| MESSAGE_DETAILS.contains_key(k))
             {
                 return Err("Invalid cleared fields".into());
             }
@@ -252,7 +246,11 @@ fn validate_operation(op: &Value) -> Result<()> {
         "turn-update" => {
             let turn = op.get("turn").ok_or("Missing turn")?;
             string(turn, "id")?;
-            string(turn, "rootUserMessageId")?;
+            if !(turn.get("rootUserMessageId").is_none()
+                && turn.get("origin").and_then(Value::as_str) == Some("collaboration"))
+            {
+                string(turn, "rootUserMessageId")?;
+            }
             string(turn, "startedAt")?;
             if !matches!(
                 string(turn, "status")?,

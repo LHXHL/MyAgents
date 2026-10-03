@@ -17,7 +17,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Calendar, Clock, Play, Timer } from 'lucide-react';
+import {
+  CalendarIcon,
+  ClockIcon,
+  PlayIcon,
+  TimerIcon,
+} from '@/components/icons';
 
 import type { TaskExecutionMode, TaskRunMode } from '@/../shared/types/task';
 import CronExpressionInput from '@/components/scheduled-tasks/CronExpressionInput';
@@ -48,25 +53,25 @@ export interface ExecutionModeEditorProps extends ExecutionModeState {
 const EXECUTION_TABS: Array<{
   value: TaskExecutionMode;
   labelKey: string;
-  icon: typeof Clock;
+  icon: typeof ClockIcon;
   descriptionKey: string;
 }> = [
   {
     value: 'once',
     labelKey: 'execution.modes.once.label',
-    icon: Play,
+    icon: PlayIcon,
     descriptionKey: 'execution.modes.once.description',
   },
   {
     value: 'scheduled',
     labelKey: 'execution.modes.scheduled.label',
-    icon: Calendar,
+    icon: CalendarIcon,
     descriptionKey: 'execution.modes.scheduled.description',
   },
   {
     value: 'recurring',
     labelKey: 'execution.modes.recurring.label',
-    icon: Timer,
+    icon: TimerIcon,
     descriptionKey: 'execution.modes.recurring.description',
   },
 ];

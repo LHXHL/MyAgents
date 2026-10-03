@@ -3,7 +3,13 @@
 // Top-level 容器：组合 useAgentStatusState 派生 + 收起态长条 + 展开态 sections。
 // 可见性由真实活动 / 当前 live turn 驱动；完成后只淡出一次。
 
-import { CheckCircle2, ChevronDown, ChevronUp, OctagonX, StopCircle } from 'lucide-react';
+import {
+  SuccessIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
+  XCircleIcon,
+  StopCircleIcon,
+} from '@/components/icons';
 import { memo, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -187,17 +193,17 @@ const AgentStatusBar = memo(function AgentStatusBar({ summary, expanded, onToggl
           {summary.subagentRunning > 0 ? (
             <SubagentRunningIcon />
           ) : summary.subagentTerminalStatus === 'failed' ? (
-            <OctagonX className="size-3.5 text-[var(--error)]" />
+            <XCircleIcon className="size-3.5 text-[var(--error)]" />
           ) : summary.subagentTerminalStatus === 'interrupted' ? (
-            <StopCircle className="size-3.5 text-[var(--warning)]" />
+            <StopCircleIcon className="size-3.5 text-[var(--warning)]" />
           ) : (
-            <CheckCircle2 className="size-3.5 text-[var(--success)]" />
+            <SuccessIcon className="size-3.5 text-[var(--success)]" />
           )}
         </span>
       )}
 
       <span className="ml-auto text-[var(--ink-muted)]">
-        {expanded ? <ChevronDown className="size-4" /> : <ChevronUp className="size-4" />}
+        {expanded ? <ChevronDownIcon className="size-4" /> : <ChevronUpIcon className="size-4" />}
       </span>
     </button>
   );

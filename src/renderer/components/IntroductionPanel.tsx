@@ -5,7 +5,13 @@
  * Uses Rust IPC (cmd_read/write/delete_workspace_file) — no Sidecar dependency.
  * Pattern follows SystemPromptsPanel (preview/edit toggle, isEditing guard, MonacoEditor).
  */
-import { Save, Edit2, X, Loader2, Trash2 } from 'lucide-react';
+import {
+  SaveIcon,
+  EditIcon,
+  CloseIcon,
+  LoaderIcon,
+  TrashIcon,
+} from '@/components/icons';
 import { useCallback, useEffect, useMemo, useState, useImperativeHandle, forwardRef, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
@@ -155,7 +161,7 @@ const IntroductionPanel = forwardRef<IntroductionPanelRef, IntroductionPanelProp
                     onClick={() => setDeleteConfirm(true)}
                     className="flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--error)]/10 hover:text-[var(--error)]"
                   >
-                    <Trash2 className="h-3.5 w-3.5" />
+                    <TrashIcon className="h-3.5 w-3.5" />
                     {t('agentSettings.common.delete')}
                   </button>
                   <button
@@ -163,7 +169,7 @@ const IntroductionPanel = forwardRef<IntroductionPanelRef, IntroductionPanelProp
                     onClick={handleCancel}
                     className="flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]"
                   >
-                    <X className="h-3.5 w-3.5" />
+                    <CloseIcon className="h-3.5 w-3.5" />
                     {t('agentSettings.common.cancel')}
                   </button>
                   <button
@@ -172,7 +178,7 @@ const IntroductionPanel = forwardRef<IntroductionPanelRef, IntroductionPanelProp
                     disabled={saving}
                     className="flex items-center gap-1 rounded-lg bg-[var(--button-primary-bg)] px-2.5 py-1 text-xs font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
                   >
-                    {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                    {saving ? <LoaderIcon className="h-3.5 w-3.5 animate-spin" /> : <SaveIcon className="h-3.5 w-3.5" />}
                     {t('agentSettings.common.save')}
                   </button>
                 </>
@@ -183,7 +189,7 @@ const IntroductionPanel = forwardRef<IntroductionPanelRef, IntroductionPanelProp
                     onClick={() => setDeleteConfirm(true)}
                     className="flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--error)]/10 hover:text-[var(--error)]"
                   >
-                    <Trash2 className="h-3.5 w-3.5" />
+                    <TrashIcon className="h-3.5 w-3.5" />
                     {t('agentSettings.common.delete')}
                   </button>
                   <button
@@ -191,7 +197,7 @@ const IntroductionPanel = forwardRef<IntroductionPanelRef, IntroductionPanelProp
                     onClick={handleEdit}
                     className="flex items-center gap-1 rounded-lg bg-[var(--button-dark-bg)] px-2.5 py-1 text-xs font-medium text-[var(--button-dark-text)] transition-colors hover:bg-[var(--button-dark-bg-hover)]"
                   >
-                    <Edit2 className="h-3.5 w-3.5" />
+                    <EditIcon className="h-3.5 w-3.5" />
                     {t('agentSettings.common.edit')}
                   </button>
                 </>
@@ -204,7 +210,7 @@ const IntroductionPanel = forwardRef<IntroductionPanelRef, IntroductionPanelProp
         <div className="flex-1 overflow-hidden">
           {loading ? (
             <div className="flex h-full items-center justify-center">
-              <Loader2 className="h-8 w-8 animate-spin text-[var(--ink-muted)]" />
+              <LoaderIcon className="h-8 w-8 animate-spin text-[var(--ink-muted)]" />
             </div>
           ) : !exists && !isEditing ? (
             // Mirrors the SystemPromptsPanel CLAUDE.md empty state — single "手动创建"
@@ -225,7 +231,7 @@ const IntroductionPanel = forwardRef<IntroductionPanelRef, IntroductionPanelProp
                   className="group flex cursor-pointer flex-col gap-1.5 rounded-xl bg-[var(--paper-elevated)] px-4 py-3.5 text-left transition-shadow hover:shadow-sm"
                 >
                   <div className="flex items-center gap-2">
-                    <Edit2 className="h-4 w-4 shrink-0 text-amber-500" />
+                    <EditIcon className="h-4 w-4 shrink-0 text-amber-500" />
                     <h4 className="text-base font-semibold text-[var(--ink)]">{t('agentSettings.introduction.manualTitle')}</h4>
                   </div>
                   <p className="text-sm leading-relaxed text-[var(--ink-muted)]">

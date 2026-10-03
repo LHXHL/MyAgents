@@ -85,7 +85,7 @@ pub(crate) use runtime_identity::resolve_agent_runtime_identity_by_id_from_confi
 use runtime_identity::resolve_session_runtime_identity_from_json;
 #[allow(unused_imports)]
 use runtime_identity::{
-    resolve_agent_runtime_from_config, resolve_agent_runtime_identity_from_config,
+    distribution_default_runtime_identity, resolve_agent_runtime_identity_from_config,
     resolve_session_runtime_identity_full_from_json, validate_sidecar_runtime_invariant,
     RuntimeIdentity,
 };
@@ -98,9 +98,8 @@ pub(crate) use session_lifecycle::{
     ensure_session_sidecar_with_runtime_identity_override,
     ensure_session_sidecar_with_runtime_identity_override_lifecycle,
     ensure_session_sidecar_with_runtime_identity_override_lifecycle_held,
-    finish_runtime_drift_transition, finish_session_owner_release, has_persisted_session_owner,
-    release_session_owner_everywhere, release_session_sidecar_from_blocking_thread,
-    SessionLifecycleGuard,
+    finish_session_owner_release, has_persisted_session_owner, release_session_owner_everywhere,
+    release_session_sidecar_from_blocking_thread, SessionLifecycleGuard,
 };
 #[allow(unused_imports)]
 pub use session_lifecycle::{
@@ -125,8 +124,7 @@ pub(crate) use stdio::{classify_sidecar_stderr, SidecarStderrLevel};
 #[allow(unused_imports)]
 pub use types::SidecarInfo;
 use types::{
-    decide_runtime_identity_drift_result, normalize_runtime_name, normalize_runtime_source_name,
-    owner_prefers_live_agent_runtime, resolve_runtime_for_owner, sidecar_removal_event_policy,
+    normalize_runtime_name, normalize_runtime_source_name, sidecar_removal_event_policy,
     ExistingSidecarReuse,
 };
 
@@ -172,7 +170,7 @@ pub(crate) use types::{
     DispatchDrain, DispatchGate, DispatchLease, DispatchReplacement, GlobalShutdownTarget,
     SessionCompletionClaim, SessionGenerationDrain, SidecarRetirement, SidecarShutdownPreparation,
 };
-pub use types::{RuntimeDriftResult, SessionSidecar, SidecarInstance, SidecarOwner, SidecarState};
+pub use types::{SessionSidecar, SidecarInstance, SidecarOwner, SidecarState};
 
 // Ensure file descriptor limit is increased only once (unix only)
 #[cfg(unix)]
@@ -301,6 +299,15 @@ fn append_sidecar_entrypoint_args(
     port: u16,
     role: SidecarProcessRole,
 ) {
+    cmd.env("MYAGENTS_APP_VERSION", env!("CARGO_PKG_VERSION"));
+    cmd.env(
+        "MYAGENTS_APP_BUILD_MODE",
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+    );
     if script_path.extension().and_then(|s| s.to_str()) == Some("ts") {
         cmd.arg("--import").arg("tsx/esm");
     }
@@ -390,6 +397,14 @@ mod sidecar_process_role_tests {
             31416,
             SidecarProcessRole::Session,
         );
+        for command in [&global, &session] {
+            let environment: std::collections::HashMap<_, _> = command.get_envs().collect();
+            assert_eq!(
+                environment.get(std::ffi::OsStr::new("MYAGENTS_APP_VERSION")),
+                Some(&Some(std::ffi::OsStr::new(env!("CARGO_PKG_VERSION")))),
+            );
+            assert!(environment.contains_key(std::ffi::OsStr::new("MYAGENTS_APP_BUILD_MODE")));
+        }
         let session_args: Vec<_> = session
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())

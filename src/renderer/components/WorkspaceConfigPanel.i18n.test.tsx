@@ -143,7 +143,6 @@ vi.mock('@/hooks/useConfig', () => ({
       }],
       defaultPermissionMode: 'plan',
       enabledPlugins: {},
-      multiAgentRuntime: true,
       plugins: [],
     },
     patchProject: mocks.patchProject,
@@ -174,7 +173,6 @@ describe('WorkspaceConfigPanel i18n', () => {
       builtin: { installed: true },
       'claude-code': { installed: true },
       codex: { installed: true },
-      gemini: { installed: false },
     });
     mocks.useAgentStatuses.mockReturnValue({
       refresh: vi.fn(),
@@ -215,9 +213,9 @@ describe('WorkspaceConfigPanel i18n', () => {
 
     expect(screen.getByText('Session mode')).toBeInTheDocument();
     expect(document.querySelector('.composer-toolbar-menu-enter')).toBeInTheDocument();
-    expect(document.querySelector('.lucide-shield-check')).toBeInTheDocument();
-    expect(document.querySelector('.lucide-eye')).toBeInTheDocument();
-    expect(document.querySelector('.lucide-lock-open')).toBeInTheDocument();
+    expect(document.querySelector('.app-icon-shield-check')).toBeInTheDocument();
+    expect(document.querySelector('.app-icon-eye')).toBeInTheDocument();
+    expect(document.querySelector('.app-icon-lock-open')).toBeInTheDocument();
     expect(screen.queryByText(/⚡|📋|🚀/u)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /PlanAgent only researches information/ })).toHaveAttribute('aria-current', 'true');
   });

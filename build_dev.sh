@@ -7,10 +7,22 @@ set -e
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLIPROXY_BUILD_ONLY=false
-if [ "${1:-}" = "--build-only" ]; then
-    CLIPROXY_BUILD_ONLY=true
-elif [ "$#" -gt 0 ]; then
-    echo "Usage: ./build_dev.sh [--build-only]"
+DSH_SOURCE="release"
+DSH_HANDOFF=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --build-only) CLIPROXY_BUILD_ONLY=true; shift ;;
+        --dsh-source) DSH_SOURCE="${2:-}"; shift 2 ;;
+        --dsh-handoff) DSH_HANDOFF="${2:-}"; shift 2 ;;
+        *) echo "Usage: ./build_dev.sh [--build-only] [--dsh-source release|local] [--dsh-handoff /absolute/path]"; exit 1 ;;
+    esac
+done
+if [ "$DSH_SOURCE" != "release" ] && [ "$DSH_SOURCE" != "local" ]; then
+    echo "Invalid DSH source: $DSH_SOURCE" >&2
+    exit 1
+fi
+if [ "$DSH_SOURCE" = "local" ] && [ -z "$DSH_HANDOFF" ]; then
+    echo "--dsh-source local requires --dsh-handoff /absolute/path" >&2
     exit 1
 fi
 
@@ -131,6 +143,13 @@ echo "dev mode: tsx loads from top-level node_modules/tsx via find_tsx_runtime_l
 NODEJS_DIR="${PROJECT_DIR}/src-tauri/resources/nodejs"
 echo -e "${BLUE}[准备] 确保 Node.js 运行时匹配当前主机架构...${NC}"
 "${PROJECT_DIR}/scripts/download_nodejs.sh"
+if [ "$DSH_SOURCE" = "local" ]; then
+    node "${PROJECT_DIR}/scripts/integrated-runtimes/prepare-dsh-runtime.mjs" \
+        --source local --handoff "$DSH_HANDOFF" --target "darwin-$(uname -m | sed 's/^aarch64$/arm64/; s/^x86_64$/x64/')"
+else
+    node "${PROJECT_DIR}/scripts/integrated-runtimes/prepare-dsh-runtime.mjs" \
+        --source release --target "darwin-$(uname -m | sed 's/^aarch64$/arm64/; s/^x86_64$/x64/')"
+fi
 
 # Rebuild native addons against bundled Node ABI (fixes ERR_DLOPEN_FAILED
 # when system npm used a different Node.js version for initial install).
@@ -246,7 +265,7 @@ echo -e "${YELLOW}这可能需要几分钟...${NC}"
 # 用 Tauri 的 config merge 覆盖 release 默认值，保留普通 macOS App 签名，
 # 同时让真正的编译/打包失败保持非零退出，禁止 `|| true` 制造假成功。
 DEV_TAURI_CONFIG='{"build":{"beforeBuildCommand":null},"bundle":{"createUpdaterArtifacts":false}}'
-npm run tauri:build -- --debug --bundles app --config "${DEV_TAURI_CONFIG}"
+npm run tauri:build:prepared -- --debug --bundles app --config "${DEV_TAURI_CONFIG}"
 
 # 查找输出
 BUNDLE_DIR="${PROJECT_DIR}/src-tauri/target/debug/bundle"

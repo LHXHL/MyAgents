@@ -29,7 +29,7 @@ Task config
 TaskStore 可以保存：
 
 - `runtime` / `runtimeConfig`
-- builtin 的 `providerId + model`
+- Integrated Runtime 的 `providerId + model`
 - `permissionMode`
 - `mcpEnabledServers` 三态 override
 
@@ -39,7 +39,7 @@ TaskStore 不保存：
 - Session 当前 provider/runtime/MCP 的副本
 - Goal 配置
 
-`providerId` 是 durable intent。真正 credential 在创建新 builtin Session 时由 Sidecar 从最新 `config.json` live resolve，因此 key rotation 不要求重存 Task。
+`providerId` 是 durable intent。真正 credential 在创建新 Integrated Session 时由 Sidecar 从最新 `config.json` live resolve，因此 key rotation 不要求重存 Task。
 
 ### Provider/runtime 不变式
 
@@ -51,6 +51,7 @@ Rust `validate_task_execution_routing()` 在所有 create/update/migration 入�
 | external runtime 与 builtin `providerId` 同时存在 | 拒绝 |
 | `providerId` 存在、runtime 缺失 | pin 为 `builtin` |
 | `runtimeConfig.source=managed-provider` 且 runtime 不是 `codex` | 拒绝 |
+| DSH 显式 source 不是 `integrated`，或其他 runtime 声明 `integrated` | 拒绝 |
 | legacy credential env | 不复制；迁移 Task 标为 Blocked 并要求重选 |
 
 External runtime 自己拥有 provider，Task 只可保存该 runtime 支持的 model/config。Cron compatibility 更新在同一 Task control lock 内读取最新 Task，先对 routing patch 做无写入的 merged-state 校验，再开始 Running Task 的 stop→update→restart；因此无效或与并发最新状态冲突的 routing patch 不会先把 Task 停掉。
@@ -76,7 +77,7 @@ TaskScheduler reads current Task
 -> Rust POST /cron/execute-sync (compatibility transport name)
 -> routes/scheduled-turns.ts validates the request and maps the response
 -> task-turn-orchestrator.ts owns Task preparation and execution lifecycle
--> SessionEngine selector chooses builtin/external adapter
+-> SessionEngine selector chooses builtin/integrated/external adapter
 -> adapter.prepareScheduledTurn binds the Session and applies runtime-native initial config
 -> runInjectedTurn enqueues the complete canonical task.md with per-turn permission
 -> adapter acceptance invokes onDispatched(queueId, sessionId) exactly once
@@ -88,7 +89,7 @@ TaskScheduler reads current Task
 
 `/cron/execute-sync` 是为兼容历史保留的接口名，不代表业务仍归 CronTask。Payload 不再传 `providerEnv`、`providerIntent` 或 Task-Cron 反向引用。
 
-`routes/scheduled-turns.ts` 只处理 JSON 解析、字段校验、HTTP 状态和响应结构。Task 的 Session 准备、dispatch guard、reminder/exit 处理与终态判定属于 `task-turn-orchestrator.ts`；Builtin/External 的 Session binding、配置和 MCP 准备属于各自 adapter 的 `prepareScheduledTurn()`。Route 不直接实现 Runtime 分支。
+`routes/scheduled-turns.ts` 只处理 JSON 解析、字段校验、HTTP 状态和响应结构。Task 的 Session 准备、dispatch guard、reminder/exit 处理与终态判定属于 `task-turn-orchestrator.ts`；Builtin/Integrated/External 的 Session binding、配置和 MCP 准备属于各自 adapter 的 `prepareScheduledTurn()`。Route 不直接实现 Runtime 分支。
 
 对已有 Session，Node 如果无法切换到 payload 指定的 Session，必须 fail closed；禁止退回“当前碰巧打开的 Session”继续执行。
 
@@ -153,7 +154,7 @@ Session queue 和现有 CLI 完成。Task Store、Task Scheduler 与 Goal Store 
 - `src-tauri/src/sidecar/cron_execute.rs`：Rust -> Node sync transport
 - `src/server/routes/scheduled-turns.ts`：`/cron/execute-sync` 的请求校验与响应映射
 - `src/server/session-engine/task-turn-orchestrator.ts`：Task scheduled turn 生命周期
-- `src/server/session-engine/builtin-adapter.ts`、`external-adapter.ts`：Runtime 原生 `prepareScheduledTurn()`
-- `src/server/session-engine/selector.ts`：builtin/external adapter 选择
+- `src/server/session-engine/builtin-adapter.ts`、`integrated-adapter.ts`、`external-adapter.ts`：Runtime 原生 `prepareScheduledTurn()`
+- `src/server/session-engine/selector.ts`：builtin/integrated/external adapter 选择
 - `src/server/utils/admin-config.ts`：provider config resolver
 - `src/renderer/components/task-center/editors/TaskAdvancedConfigEditor.tsx`：UI 配对编辑

@@ -239,7 +239,7 @@ describe("Settings image-understanding enable flow", () => {
     expect(settingsMocks.atomicModifyConfig).not.toHaveBeenCalled();
 
     await user.click(imageToolSwitch);
-    const closeButton = document.querySelector(".lucide-x")?.closest("button");
+    const closeButton = document.querySelector(".app-icon-close")?.closest("button");
     expect(closeButton).not.toBeNull();
     await user.click(closeButton!);
     expect(

@@ -95,7 +95,7 @@ Detector protocol v1 只允许 `quiet | activate`。进程退出、timeout、输
 
 ## 3. Session 与配置边界
 
-Task 执行统一经过 `task_execution.rs` -> Rust Sidecar bridge -> Node `SessionEngine` facade，builtin/external runtime 均走 adapter selector。
+Task 执行统一经过 `task_execution.rs` -> Rust Sidecar bridge -> Node `SessionEngine` facade，builtin/integrated/external Runtime 均走 adapter selector。
 
 - 已存在的 Session：runtime/model/provider/reasoning/MCP 全部继承该 Session；Task 不做 turn-scoped 覆盖或回滚。
 - 新建执行 Session，或首次 materialize 专属 single-session Session：Task 配置只用于初始化一次。
@@ -107,6 +107,7 @@ Task 执行统一经过 `task_execution.rs` -> Rust Sidecar bridge -> Node `Sess
 - 执行期间使用 `SidecarOwner::Task(taskId)`；terminal/stop/delete 对称释放。
 - Task turn 的 completion descriptor 保留 `{ kind: 'task', id: taskId }` owner；Rust 通用 Session completion policy 据此抑制 generic toast，Task outcome/notification 仍由 Task domain lifecycle 唯一负责，attached/headless 都不因 Tab 是否存在而改变归属。
 - Rust 每次 ensure attempt 只解析一次 owner-aware `RuntimeIdentity(runtime + runtimeSource)`，复用校验与 spawn 必须消费同一快照；Node 创建 Task metadata 时再从 live `SessionEngine.getRuntimeIdentity()` 取一次实际进程身份，并与同一 live config snapshot 绑定，禁止用 payload 中可能漂移的 runtime 反写。
+- DSH Task 的 canonical identity 是 `runtime='dsh' + RuntimeSource:'integrated'`；显式 `runtimeConfig.source` 只能是 `integrated`，省略时也必须由 `runtime='dsh'` 确定性推导为同一 identity。TaskStore 校验、Cron payload、Rust Sidecar ensure 和 Node scheduled-turn preparation 都不得把它改写成 `system-cli`。
 
 Task ↔ Session relation 只在 Runtime adapter 已接纳首轮 query 后，由 `onDispatched(queueId, sessionId)` 回调经 `/api/task/turn/admitted` 幂等提交。metadata 存在、Sidecar 已启动或 HTTP 请求已发出都不是 admission 证据。pending Comment 必须在该 relation 持久化后才按创建顺序进入同一 Session 的既有队列。
 
@@ -219,3 +220,11 @@ Goal 是 Session 状态，不是 Task execution mode：
 - 任务中心的 Record 区只订阅 RecordStore change event，不轮询或复制 Recording/Speech 状态；详情从对应 authority 读取 snapshot。Record 与 Task 删除是独立事务。
 - Task 分桶只是 durable status 的只读 Renderer projection，不拥有状态转换。详情 route 使用递增 generation；页面已经激活也不能吞掉新的 Task/Comment deep link。
 - Command Task 的 test、check-now、run-now、reset 分别调用对应应用入口。新建 `single-session` Task 必须先 materialize 并持久化真实 `preselectedSessionId`。
+
+
+### Retained Task audit reads
+
+A deleted ordinary Task remains readable through get, comments, comment pagination/context
+and runs. TaskStore decides this read identity; the Cron scheduling projection is not a
+read authority. Comment insertion still rejects deleted Tasks. CLI schedule flags select
+recurring/scheduled mode when omitted, rather than leaving accepted schedule fields unused.

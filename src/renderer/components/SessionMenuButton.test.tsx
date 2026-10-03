@@ -38,6 +38,7 @@ function renderMenu(overrides: Partial<ComponentProps<typeof SessionMenuButton>>
     <ToastProvider>
       <SessionMenuButton
         sessionId={SESSION_ID}
+        runtime="dsh"
         sessionTitle="Test session"
         workspacePath="/Users/zhihu/Documents/project/MyAgents"
         boundChannel={null}
@@ -63,14 +64,53 @@ describe('SessionMenuButton', () => {
     });
   });
 
-  it('shows a single-line SessionID row at the top of the menu', () => {
+  it('shows the frozen Runtime above the copyable SessionID without a switch action', () => {
     renderMenu();
 
     fireEvent.click(screen.getByRole('button', { name: '对话操作' }));
 
+    const runtimeName = screen.getByText('MyAgents (DeepSeek Harness)');
+    const sessionIdLabel = screen.getByText('SessionID:');
+    expect(runtimeName.compareDocumentPosition(sessionIdLabel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'MyAgents (DeepSeek Harness)' })).not.toBeInTheDocument();
     expect(screen.getByText('SessionID:')).toBeInTheDocument();
     expect(screen.getByText(SESSION_ID)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '复制 SessionID' })).toBeInTheDocument();
+  });
+
+  it('distinguishes a managed Codex Session from the external Codex CLI', () => {
+    const view = renderMenu({ runtime: 'codex', runtimeSource: 'managed-provider' });
+    fireEvent.click(screen.getByRole('button', { name: '对话操作' }));
+    expect(screen.getByText('Managed Codex')).toBeInTheDocument();
+
+    view.rerender(
+      <ToastProvider>
+        <SessionMenuButton
+          sessionId={SESSION_ID}
+          runtime="codex"
+          runtimeSource="system-cli"
+          sessionTitle="Test session"
+          workspacePath="/Users/zhihu/Documents/project/MyAgents"
+          boundChannel={null}
+          availableChannels={[]}
+          deleteProtected={false}
+          favorite={false}
+          canRename
+          onOpenRename={vi.fn()}
+          onSessionMetadataMutationStart={vi.fn().mockReturnValue(1)}
+        />
+      </ToastProvider>,
+    );
+    expect(screen.getByText('Codex CLI')).toBeInTheDocument();
+    expect(screen.queryByText('Managed Codex')).not.toBeInTheDocument();
+  });
+
+  it('waits for the Session identity before naming its Runtime', () => {
+    renderMenu({ runtime: null });
+    fireEvent.click(screen.getByRole('button', { name: '对话操作' }));
+
+    expect(screen.getByText('运行环境加载中…')).toBeInTheDocument();
+    expect(screen.queryByText('MyAgents (DeepSeek Harness)')).not.toBeInTheDocument();
   });
 
   it('hides the trigger tooltip while the session menu is open', () => {

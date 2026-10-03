@@ -10,6 +10,14 @@ import { Trans, useTranslation } from 'react-i18next';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import type { LogEntry, LogLevel, LogSource } from '@/types/log';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
+import {
+  ChevronDownIcon,
+  ChevronUpIcon,
+  CloseIcon,
+  DownloadIcon,
+  SearchIcon,
+  TrashIcon,
+} from '@/components/icons';
 
 interface UnifiedLogsPanelProps {
     /** Logs received from SSE via TabProvider */
@@ -290,9 +298,7 @@ export function UnifiedLogsPanel({ sseLogs, isVisible, onClose, onClearAll }: Un
                     <div className="flex items-center gap-2">
                         {/* Search bar */}
                         <div className="flex items-center gap-1 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-2 py-1">
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-[var(--ink-muted)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-                            </svg>
+                            <SearchIcon className="h-3.5 w-3.5 text-[var(--ink-muted)]" />
                             <input
                                 ref={searchInputRef}
                                 type="text"
@@ -314,13 +320,13 @@ export function UnifiedLogsPanel({ sseLogs, isVisible, onClose, onClearAll }: Un
                                         {matchIndices.length > 0 ? `${activeMatchIndex + 1}/${matchIndices.length}` : '0/0'}
                                     </span>
                                     <button onClick={() => navigateMatch('prev')} className="rounded p-0.5 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]" title={t('logsPanel.previous')}>
-                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="18 15 12 9 6 15" /></svg>
+                                        <ChevronUpIcon className="h-3 w-3" />
                                     </button>
                                     <button onClick={() => navigateMatch('next')} className="rounded p-0.5 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]" title={t('logsPanel.next')}>
-                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="6 9 12 15 18 9" /></svg>
+                                        <ChevronDownIcon className="h-3 w-3" />
                                     </button>
                                     <button onClick={() => { setSearchQuery(''); searchInputRef.current?.focus(); }} className="rounded p-0.5 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]" title={t('logsPanel.clearSearch')}>
-                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                                        <CloseIcon className="h-3 w-3" />
                                     </button>
                                 </>
                             )}
@@ -334,9 +340,7 @@ export function UnifiedLogsPanel({ sseLogs, isVisible, onClose, onClearAll }: Un
                             className="rounded p-1.5 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                             title={t('logsPanel.export')}
                         >
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
-                            </svg>
+                            <DownloadIcon className="h-4 w-4" />
                         </button>
                         {/* Clear button */}
                         <button
@@ -344,9 +348,7 @@ export function UnifiedLogsPanel({ sseLogs, isVisible, onClose, onClearAll }: Un
                             className="rounded p-1.5 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                             title={t('logsPanel.clear')}
                         >
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                            </svg>
+                            <TrashIcon className="h-4 w-4" />
                         </button>
                         {/* Close button */}
                         <button
@@ -354,9 +356,7 @@ export function UnifiedLogsPanel({ sseLogs, isVisible, onClose, onClearAll }: Un
                             className="rounded-lg p-1.5 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                             aria-label={t('logsPanel.close')}
                         >
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-                            </svg>
+                            <CloseIcon className="h-5 w-5" />
                         </button>
                     </div>
                 </div>

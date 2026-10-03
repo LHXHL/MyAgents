@@ -62,13 +62,27 @@ export class ProductTranscriptContent {
         id: this.turnId, rootUserMessageId: message.id, startedAt: message.timestamp, status: 'running',
       } });
     }
-    if (this.assistantId) this.writer.observe({ kind: 'message-update', messageId: this.assistantId, details: { transcriptState: 'complete' } });
+    if (this.assistantId && this.writer.projection.messages.get(this.assistantId)?.transcriptState === 'streaming') this.writer.observe({ kind: 'message-update', messageId: this.assistantId, details: { transcriptState: 'complete' } });
     this.assistantId = null;
     this.blocks.clear();
     for (const operation of transcriptMessageOperations({
       ...fromStoredTranscriptMessage(message), turnId: this.turnId!, transcriptState: 'complete',
     })) this.writer.observe(operation);
     this.writer.requestCommit();
+  }
+
+  /** Native recovery and collaboration enter through the same presentation owner.
+   * A collaboration turn has no invented Product user message. */
+  adoptRuntimeTurn(runtimeTurnId: string, rootUserMessageId?: string): void {
+    const user = rootUserMessageId ? this.writer.projection.messages.get(rootUserMessageId) : undefined;
+    if (this.currentTurn?.status === 'running' && this.currentTurn.rootUserMessageId === rootUserMessageId) return;
+    this.turnId = user?.turnId ?? rootUserMessageId ?? runtimeTurnId;
+    this.assistantId = null;
+    this.blocks.clear();
+    this.writer.observe({ kind: 'turn-update', turn: {
+      id: this.turnId, ...(rootUserMessageId ? { rootUserMessageId } : { origin: 'collaboration' as const }),
+      startedAt: new Date().toISOString(), status: 'running',
+    } });
   }
 
   assistant(preferredId?: string): TranscriptMessage {

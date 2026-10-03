@@ -3,6 +3,7 @@ import { decodeTranscript, encodeTranscriptBatch, type TranscriptBatch, type Tra
 import { transcriptMessages } from '../../shared/sessionTranscript';
 import fixtures from '../../shared/fixtures/session-transcript-v2.json';
 import { resolveTranscriptFormat } from '../../shared/transcriptFormat';
+import { coalesceTranscriptBatchOperations } from './operations';
 
 const header: TranscriptHeader = { kind: 'session-transcript', version: 2, sessionId: 'session-test', generation: 'g1', baseRevision: 0, baseline: false };
 const batch: TranscriptBatch = {
@@ -12,6 +13,46 @@ const batch: TranscriptBatch = {
 const prefix = JSON.stringify(header) + '\n' + encodeTranscriptBatch(batch);
 
 describe('V2 transcript valid prefix', () => {
+  it('round-trips and clears a desktop query annotation in message details', () => {
+    const desktopQuery = { visibleText: 'query', primaryContext: { kind: 'floating-context' as const, input: { appName: 'Editor' } } };
+    const annotate = encodeTranscriptBatch({ id: 'annotate', mode: 'delta', fromRevision: 2, revision: 2,
+      operations: [{ kind: 'message-update', messageId: 'a1', details: { desktopQuery } }] });
+    const annotated = decodeTranscript(prefix + annotate, header.sessionId);
+    expect(annotated).toMatchObject({ revision: 2, tail: 'clean' });
+    expect(transcriptMessages(annotated.projection)[0].desktopQuery).toEqual(desktopQuery);
+    const clear = encodeTranscriptBatch({ id: 'clear', mode: 'delta', fromRevision: 3, revision: 3,
+      operations: [{ kind: 'message-update', messageId: 'a1', details: {}, clear: ['desktopQuery'] }] });
+    const restored = decodeTranscript(prefix + annotate + clear, header.sessionId);
+    expect(restored).toMatchObject({ revision: 3, tail: 'clean' });
+    expect(transcriptMessages(restored.projection)[0].desktopQuery).toBeUndefined();
+  });
+
+  it('reads an unchanged older batch of tiny appends with exact text and revision', () => {
+    const oldOperations: TranscriptBatch['operations'] = Array.from({ length: 1000 }, (_, offset) => ({
+      kind: 'text-append', messageId: 'a1', field: 'text', offset: 6 + offset, text: 'x',
+    }));
+    const original = structuredClone(oldOperations);
+    const oldLine = encodeTranscriptBatch({ id: 'old', mode: 'delta', fromRevision: 2, revision: 1001, operations: oldOperations });
+    const restored = decodeTranscript(prefix + oldLine, header.sessionId);
+    expect(restored).toMatchObject({ revision: 1001, tail: 'clean' });
+    expect(transcriptMessages(restored.projection)[0].content).toBe('尚未结束🙂' + 'x'.repeat(1000));
+    expect(oldOperations).toEqual(original);
+    expect(coalesceTranscriptBatchOperations(oldOperations)).toEqual([
+      { kind: 'text-append', messageId: 'a1', field: 'text', offset: 6, text: 'x'.repeat(1000) },
+    ]);
+  });
+
+  it('only merges matching targets and caps each merged append at 32 Ki UTF-16 units', () => {
+    const base = { kind: 'text-append' as const, messageId: 'a1', field: 'thinking' as const, blockId: 'b1' };
+    const input: TranscriptBatch['operations'] = [
+      { ...base, offset: 0, text: 'a'.repeat(32 * 1024) },
+      { ...base, offset: 32 * 1024, text: 'b' },
+      { ...base, blockId: 'b2', offset: 0, text: 'c' },
+      { ...base, subagentToolId: 's1', offset: 0, text: 'd' },
+    ];
+    expect(coalesceTranscriptBatchOperations(input)).toEqual(input);
+  });
+
   it.each(fixtures.cases)('shares Node/Rust semantics: $name', fixture => {
     if (fixture.error) {
       expect(() => decodeTranscript(fixture.wire, 'fixture-session')).toThrow();
@@ -47,6 +88,20 @@ describe('V2 transcript valid prefix', () => {
       ],
     });
     const restored = decodeTranscript(prefix + invalid + encodeTranscriptBatch({ ...batch, id: 'b3', fromRevision: 4, revision: 4 }), header.sessionId);
+    expect(restored).toMatchObject({ revision: 1, validBytes: Buffer.byteLength(prefix), tail: 'invalid' });
+    expect(transcriptMessages(restored.projection)[0].content).toBe('尚未结束🙂');
+  });
+
+  it('rolls back a corrupt batch even after its valid prefix was coalesced', () => {
+    const invalid = encodeTranscriptBatch({
+      id: 'bad-offset', mode: 'delta', fromRevision: 2, revision: 4,
+      operations: [
+        { kind: 'text-append', messageId: 'a1', field: 'text', offset: 6, text: 'a' },
+        { kind: 'text-append', messageId: 'a1', field: 'text', offset: 7, text: 'b' },
+        { kind: 'text-append', messageId: 'a1', field: 'text', offset: 99, text: 'bad' },
+      ],
+    });
+    const restored = decodeTranscript(prefix + invalid, header.sessionId);
     expect(restored).toMatchObject({ revision: 1, validBytes: Buffer.byteLength(prefix), tail: 'invalid' });
     expect(transcriptMessages(restored.projection)[0].content).toBe('尚未结束🙂');
   });

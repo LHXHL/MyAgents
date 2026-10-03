@@ -219,7 +219,11 @@ describe('SessionStore V2 ownership and compatibility', () => {
     const { metadata, active } = await create();
     expect(await active.writer.flush()).toBe(true);
     let finish!: () => void;
-    const append = vi.spyOn(active.file, 'append').mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
+    const realAppend = active.file.append.bind(active.file);
+    const append = vi.spyOn(active.file, 'append').mockImplementationOnce(async (...args) => {
+      await new Promise<void>(resolve => { finish = resolve; });
+      await realAppend(...args);
+    });
     active.writer.observe({ kind: 'message-create', message: { id: 'a', role: 'assistant', timestamp: 't', content: 'first' } });
     const flushing = active.writer.flush(10);
     await vi.waitFor(() => expect(append).toHaveBeenCalledOnce());
@@ -232,6 +236,7 @@ describe('SessionStore V2 ownership and compatibility', () => {
     await store.releaseSessionTranscriptForBinding(metadata.id);
     expect(store.getActiveSessionTranscript(metadata.id)).toBeUndefined();
     expect(active.isRevoked).toBe(true);
+    expect((await store.getSessionData(metadata.id))?.messages[0].content).toBe('first continues');
     const calls = append.mock.calls.length;
     active.writer.observe({ kind: 'text-append', messageId: 'a', field: 'text', offset: 15, text: ' stale' });
     await new Promise(resolve => setTimeout(resolve, 120));
@@ -357,8 +362,8 @@ describe('SessionStore V2 ownership and compatibility', () => {
     const claim = await store.claimPreparedSessionForTurnAdmission(metadata.id, 'pending-test', { messageText: 'first' });
     expect(claim.status).toBe('claimed');
     active.writer.observe({ kind: 'message-create', message: { id: 'u', role: 'user', content: 'first', timestamp: 't' } });
+    await vi.waitFor(() => expect(active.writer.status.state).not.toBe('healthy'));
     expect(await active.writer.flush(40)).toBe(false);
-    expect(active.writer.status.state).not.toBe('healthy');
     expect((await store.getSessionData(metadata.id))?.messages[0].content).toBe('first');
     expect(await store.deleteSession(metadata.id, { kind: 'prepared-materialization-rollback', sourceSessionId: 'pending-test' })).toEqual({ deleted: false, reason: 'precondition-failed' });
     testState.failMetadata = false;

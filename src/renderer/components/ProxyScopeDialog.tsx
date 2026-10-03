@@ -1,4 +1,4 @@
-import { Check, Square, X } from 'lucide-react';
+import { CheckIcon, StopIcon, CloseIcon } from '@/components/icons';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -68,7 +68,7 @@ export default function ProxyScopeDialog({
             className="rounded-md p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
             aria-label={t('proxy.scopeDialogCancel')}
           >
-            <X size={18} />
+            <CloseIcon size={18} />
           </button>
         </div>
 
@@ -102,7 +102,7 @@ export default function ProxyScopeDialog({
               className="flex h-5 w-5 shrink-0 items-center justify-center text-[var(--accent)]"
               aria-hidden="true"
             >
-              {generalRequests ? <Check size={18} /> : <Square size={18} />}
+              {generalRequests ? <CheckIcon size={18} /> : <StopIcon size={18} />}
             </span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm font-medium text-[var(--ink)]">
@@ -140,7 +140,7 @@ export default function ProxyScopeDialog({
                   className="flex h-5 w-5 shrink-0 items-center justify-center text-[var(--accent)]"
                   aria-hidden="true"
                 >
-                  {selected ? <Check size={18} /> : <Square size={18} />}
+                  {selected ? <CheckIcon size={18} /> : <StopIcon size={18} />}
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium text-[var(--ink)]">{provider.name}</span>
@@ -167,7 +167,7 @@ export default function ProxyScopeDialog({
             onClick={() => onSave({ generalRequests, providerIds: selectedIds })}
             className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] transition-transform active:scale-[0.98]"
           >
-            <Check size={16} />
+            <CheckIcon size={16} />
             {t('proxy.scopeDialogSave')}
           </button>
         </div>

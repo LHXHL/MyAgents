@@ -6,7 +6,15 @@
  *
  * Only provided inside Chat; Settings / other pages get null from useFileAction().
  */
-import { AtSign, Copy, ExternalLink, Eye, FolderOpen, LocateFixed, PanelRightOpen } from 'lucide-react';
+import {
+  AtIcon,
+  CopyIcon,
+  ExternalIcon,
+  EyeIcon,
+  FolderOpenIcon,
+  LocateIcon,
+  PanelRightIcon,
+} from '@/components/icons';
 import {
   lazy,
   Suspense,
@@ -985,22 +993,22 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
       return [
         {
           label: t('fileActions.copy'),
-          icon: <Copy className="h-4 w-4" />,
+          icon: <CopyIcon className="h-4 w-4" />,
           onClick: () => handleCopyPath(displayPath),
         },
         {
           label: t('fileActions.reference'),
-          icon: <AtSign className="h-4 w-4" />,
+          icon: <AtIcon className="h-4 w-4" />,
           onClick: () => handleReference(path),
         },
         {
           label: t('fileActions.openContainingFolder'),
-          icon: <FolderOpen className="h-4 w-4" />,
+          icon: <FolderOpenIcon className="h-4 w-4" />,
           onClick: () => handleOpenInFinder(path, scope),
         },
         {
           label: t('fileActions.openMyAgentsPreview'),
-          icon: <PanelRightOpen className="h-4 w-4" />,
+          icon: <PanelRightIcon className="h-4 w-4" />,
           disabled: !canOpenMyAgentsPreview,
           onClick: () => handleOpenMyAgentsPreview(path, displayPath, initialLineNumber),
         },
@@ -1011,7 +1019,7 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
       const canPreview = isPreviewable(fileName) || isImageFile(fileName) || !!getRichDocKind(fileName);
       items.push({
         label: t('fileActions.preview'),
-        icon: <Eye className="h-4 w-4" />,
+        icon: <EyeIcon className="h-4 w-4" />,
         disabled: !canPreview,
         onClick: () => openFileTarget(
           initialLineNumber ? { scope, path, initialLineNumber } : { scope, path },
@@ -1022,25 +1030,25 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
 
     items.push({
       label: t('fileActions.copy'),
-      icon: <Copy className="h-4 w-4" />,
+      icon: <CopyIcon className="h-4 w-4" />,
       onClick: () => handleCopyPath(displayPath),
     });
 
     items.push({
       label: t('fileActions.reference'),
-      icon: <AtSign className="h-4 w-4" />,
+      icon: <AtIcon className="h-4 w-4" />,
       onClick: () => handleReference(path),
     });
 
     items.push({
       label: t('fileActions.open'),
-      icon: <ExternalLink className="h-4 w-4" />,
+      icon: <ExternalIcon className="h-4 w-4" />,
       onClick: () => handleOpenWithDefault(path, scope),
     });
 
     items.push({
       label: t('fileActions.openContainingFolder'),
-      icon: <FolderOpen className="h-4 w-4" />,
+      icon: <FolderOpenIcon className="h-4 w-4" />,
       onClick: () => handleOpenInFinder(path, scope),
     });
 
@@ -1049,7 +1057,7 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
     if (scope === 'workspace' && onRevealInTreeRef.current) {
       items.push({
         label: t('fileActions.revealInTree'),
-        icon: <LocateFixed className="h-4 w-4" />,
+        icon: <LocateIcon className="h-4 w-4" />,
         onClick: () => handleRevealInTree(path),
       });
     }

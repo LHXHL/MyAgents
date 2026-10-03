@@ -1,3 +1,5 @@
+import { OFFICIAL_DEEPSEEK_ANTHROPIC_BASE_URL } from './integrated-runtimes/provider-constraints';
+
 // Reasoning effort (推理强度) — shared vocabulary between renderer and sidecar.
 //
 // Issue #324: expose per-session control over the provider's reasoning-depth
@@ -93,7 +95,7 @@ export function isSdkEffortLevel(value: string | undefined): value is SdkEffortL
  * The selectable effort levels for a given surface, or `null` when the
  * surface has no reasoning-effort knob (the UI hides the row entirely).
  *
- * @param runtime     'builtin' | 'claude-code' | 'codex' | 'gemini' | ...
+ * @param runtime     'builtin' | 'dsh' | 'claude-code' | 'codex' | ...
  * @param apiProtocol builtin only — the active provider's protocol
  *                    (undefined = Anthropic official / subscription)
  */
@@ -102,6 +104,7 @@ export function reasoningEffortChoices(
   apiProtocol?: 'anthropic' | 'openai',
   providerId?: string,
   model?: string,
+  providerBaseUrl?: string,
 ): readonly string[] | null {
   switch (runtime) {
     case 'builtin': {
@@ -113,8 +116,16 @@ export function reasoningEffortChoices(
       return SDK_EFFORT_LEVELS;
     case 'codex':
       return CODEX_EFFORT_LEVELS;
+    case 'dsh': {
+      if (!providerId || !model) return null;
+      return providerId === 'deepseek'
+        && (apiProtocol ?? 'anthropic') === 'anthropic'
+        && providerBaseUrl === OFFICIAL_DEEPSEEK_ANTHROPIC_BASE_URL
+        ? ['high', 'max']
+        : null;
+    }
     default:
-      // Gemini (no ACP effort surface) and unknown runtimes → hidden.
+      // Unknown runtimes → hidden.
       return null;
   }
 }

@@ -1,13 +1,13 @@
 import { useRef, useState } from 'react';
 import {
-  Archive,
-  ArchiveRestore,
-  CheckSquare,
-  MessageSquare,
-  Mic,
-  MoreHorizontal,
-  Trash2,
-} from 'lucide-react';
+  ArchiveIcon,
+  ArchiveRestoreIcon,
+  TasksIcon,
+  MessageIcon,
+  MicIcon,
+  MoreIcon,
+  TrashIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 
 import type {
@@ -111,7 +111,7 @@ export function AudioRecordCard({
   const summary = (
     <>
       <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]">
-        <Mic className="h-3.5 w-3.5" strokeWidth={1.5} />
+        <MicIcon className="h-3.5 w-3.5" strokeWidth={1.5} />
       </span>
       <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--ink)]">
         {record.title || t('records.untitled')}
@@ -150,7 +150,7 @@ export function AudioRecordCard({
                 onClick={() => setShowWorkspacePicker((value) => !value)}
                 className="flex items-center gap-1 rounded-[var(--radius-md)] px-2 py-0.5 text-sm text-[var(--ink-muted)] opacity-0 transition-opacity hover:bg-[var(--paper-inset)] hover:text-[var(--accent-cool)] group-hover:opacity-100 group-focus-within:opacity-100"
               >
-                <MessageSquare className="h-3.5 w-3.5" strokeWidth={1.5} />
+                <MessageIcon className="h-3.5 w-3.5" strokeWidth={1.5} />
                 {t('thoughts.aiDiscuss')}
               </button>
             )}
@@ -162,7 +162,7 @@ export function AudioRecordCard({
               title={t('thoughts.moreActions')}
               className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--radius-md)] text-[var(--ink-muted)]/70 transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:opacity-40"
             >
-              <MoreHorizontal className="h-3.5 w-3.5" strokeWidth={1.5} />
+              <MoreIcon className="h-3.5 w-3.5" strokeWidth={1.5} />
             </button>
             <Popover
               open={showMenu}
@@ -180,7 +180,7 @@ export function AudioRecordCard({
                   }}
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--ink-secondary)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                 >
-                  <CheckSquare className="h-3.5 w-3.5" strokeWidth={1.5} />
+                  <TasksIcon className="h-3.5 w-3.5" strokeWidth={1.5} />
                   {t('thoughts.multiSelect')}
                 </button>
               )}
@@ -193,9 +193,9 @@ export function AudioRecordCard({
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--ink-secondary)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
               >
                 {record.archived ? (
-                  <ArchiveRestore className="h-3.5 w-3.5" strokeWidth={1.5} />
+                  <ArchiveRestoreIcon className="h-3.5 w-3.5" strokeWidth={1.5} />
                 ) : (
-                  <Archive className="h-3.5 w-3.5" strokeWidth={1.5} />
+                  <ArchiveIcon className="h-3.5 w-3.5" strokeWidth={1.5} />
                 )}
                 {record.archived
                   ? t('thoughts.unarchive')
@@ -209,7 +209,7 @@ export function AudioRecordCard({
                 }}
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--error)] hover:bg-[var(--error-bg)]"
               >
-                <Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} />
+                <TrashIcon className="h-3.5 w-3.5" strokeWidth={1.5} />
                 {t('common.delete')}
               </button>
             </Popover>

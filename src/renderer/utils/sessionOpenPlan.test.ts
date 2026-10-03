@@ -35,7 +35,7 @@ describe('normalizeRuntime', () => {
   test('falls back to builtin for missing or unknown runtime values', () => {
     expect(normalizeRuntime(undefined)).toBe('builtin');
     expect(normalizeRuntime('unknown')).toBe('builtin');
-    expect(normalizeRuntime('gemini')).toBe('gemini');
+    expect(normalizeRuntime('gemini')).toBe('builtin');
   });
 });
 

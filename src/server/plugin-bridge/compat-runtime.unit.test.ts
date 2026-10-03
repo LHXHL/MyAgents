@@ -185,6 +185,52 @@ describe('plugin bridge compat runtime dispatch ownership', () => {
     expect(body.requestId).toBeUndefined();
   });
 
+  it('waits for the Yuanbao reply terminal and delivers through the plugin callback', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const runtime = createCompatRuntime(31_426, 'bot-1', 'openclaw-plugin-yuanbao');
+    const deliver = vi.fn(async () => undefined);
+    const onPartialReply = vi.fn(async () => undefined);
+    const dispatch = runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+      ctx: { To: 'chat:peer-1', SenderId: 'sender-1', Body: 'hello' },
+      dispatcherOptions: { deliver },
+      replyOptions: { onPartialReply },
+    });
+    let settled = false;
+    void dispatch.then(() => { settled = true; });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? '{}')) as Record<string, unknown>;
+    expect(body.deliveryProtocol).toBe('openclaw-reply');
+    expect(typeof body.requestId).toBe('string');
+    expect(settled).toBe(false);
+
+    const requestId = String(body.requestId);
+    enqueueRunStart(requestId);
+    bindPendingStream(requestId, 'yuanbao-stream');
+    enqueuePartial('yuanbao-stream', { text: 'answer' }, 'answer');
+    completePendingDispatch(requestId, [{ text: 'answer' }]);
+
+    await expect(dispatch).resolves.toMatchObject({ queuedFinal: 1 });
+    expect(onPartialReply).toHaveBeenCalledWith({ text: 'answer' });
+    expect(deliver).toHaveBeenCalledWith({ text: 'answer' }, { kind: 'final' });
+  });
+
+  it('leaves the Yuanbao fallback decision to an actually empty terminal', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const runtime = createCompatRuntime(31_426, 'bot-1', 'openclaw-plugin-yuanbao');
+    const deliver = vi.fn(async () => undefined);
+    const dispatch = runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+      ctx: { To: 'chat:peer-1', SenderId: 'sender-1', Body: 'hello' },
+      dispatcherOptions: { deliver },
+    });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? '{}')) as Record<string, unknown>;
+    completePendingDispatch(String(body.requestId), []);
+    await expect(dispatch).resolves.toMatchObject({ queuedFinal: 0 });
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
   it('preserves top-level account identity when standard callbacks fall back to legacy dispatch', async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('{}', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);

@@ -6,7 +6,16 @@
  * falls back to global API when not in Tab context (GlobalAgentsPanel).
  */
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
-import { Loader2, ChevronDown, ChevronUp, Trash2, Edit2, X, Check, Plus } from 'lucide-react';
+import {
+  LoaderIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
+  TrashIcon,
+  EditIcon,
+  CloseIcon,
+  CheckIcon,
+  PlusIcon,
+} from '@/components/icons';
 import { useCallback, useEffect, useState, useImperativeHandle, forwardRef, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -126,7 +135,7 @@ function TagInput({
                                 onClick={() => removeTag(tag)}
                                 className="ml-0.5 rounded p-0.5 text-[var(--ink-muted)] hover:bg-[var(--line)] hover:text-[var(--ink)]"
                             >
-                                <X className="h-3 w-3" />
+                                <CloseIcon className="h-3 w-3" />
                             </button>
                         </span>
                     ))}
@@ -160,7 +169,7 @@ function TagInput({
                     disabled={!inputValue.trim()}
                     className="shrink-0 rounded-lg border border-[var(--line)] p-1.5 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:opacity-30"
                 >
-                    <Plus className="h-3.5 w-3.5" />
+                    <PlusIcon className="h-3.5 w-3.5" />
                 </button>
 
                 {/* Dropdown suggestions — anchored to the input; kept open
@@ -524,7 +533,7 @@ const AgentDetailPanel = forwardRef<AgentDetailPanelRef, AgentDetailPanelProps>(
         if (loading) {
             return (
                 <div className="flex h-64 items-center justify-center">
-                    <Loader2 className="h-8 w-8 animate-spin text-[var(--ink-muted)]" />
+                    <LoaderIcon className="h-8 w-8 animate-spin text-[var(--ink-muted)]" />
                 </div>
             );
         }
@@ -555,14 +564,14 @@ const AgentDetailPanel = forwardRef<AgentDetailPanelRef, AgentDetailPanelProps>(
                                     onClick={() => handleEdit()}
                                     className="flex items-center gap-1 rounded-lg border border-[var(--line)] px-3 py-1.5 text-sm text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                                 >
-                                    <Edit2 className="h-3.5 w-3.5" />
+                                    <EditIcon className="h-3.5 w-3.5" />
                                     {t('agentSettings.common.edit')}
                                 </button>
                                 <button
                                     onClick={() => setShowDeleteConfirm(true)}
                                     className="flex items-center gap-1 rounded-lg border border-[var(--line)] px-3 py-1.5 text-sm text-[var(--error)] hover:bg-[var(--error-bg)] hover:text-[var(--error)]"
                                 >
-                                    <Trash2 className="h-3.5 w-3.5" />
+                                    <TrashIcon className="h-3.5 w-3.5" />
                                 </button>
                             </div>
                         </div>
@@ -631,7 +640,7 @@ const AgentDetailPanel = forwardRef<AgentDetailPanelRef, AgentDetailPanelProps>(
                                 onClick={handleCancel}
                                 className="flex items-center gap-1 rounded-lg border border-[var(--line)] px-3 py-1.5 text-sm text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]"
                             >
-                                <X className="h-3.5 w-3.5" />
+                                <CloseIcon className="h-3.5 w-3.5" />
                                 {t('agentSettings.common.cancel')}
                             </button>
                             <button
@@ -639,7 +648,7 @@ const AgentDetailPanel = forwardRef<AgentDetailPanelRef, AgentDetailPanelProps>(
                                 disabled={saving}
                                 className="flex items-center gap-1 rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-primary-text)] hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
                             >
-                                {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                                {saving ? <LoaderIcon className="h-3.5 w-3.5 animate-spin" /> : <CheckIcon className="h-3.5 w-3.5" />}
                                 {t('agentSettings.common.save')}
                             </button>
                         </div>
@@ -720,7 +729,7 @@ const AgentDetailPanel = forwardRef<AgentDetailPanelRef, AgentDetailPanelProps>(
                             className="flex w-full items-center justify-between text-sm font-medium text-[var(--ink-muted)] hover:text-[var(--ink)]"
                         >
                             <span>{t('agentSettings.agentDetail.advancedSettings')}</span>
-                            {showAdvanced ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                            {showAdvanced ? <ChevronUpIcon className="h-4 w-4" /> : <ChevronDownIcon className="h-4 w-4" />}
                         </button>
 
                         {showAdvanced && (

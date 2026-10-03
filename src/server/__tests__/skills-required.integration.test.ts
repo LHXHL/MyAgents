@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -96,7 +97,7 @@ describe('required system skill API contract', () => {
   it('projects ownership/required state, rejects required disables, and normalizes legacy config', async () => {
     const scratch = mkdtempSync(join(tmpdir(), 'myagents-required-skills-'));
     const home = join(scratch, 'home');
-    const workspace = join(scratch, 'workspace');
+    const workspace = join(realpathSync(scratch), 'workspace');
     const userSkills = join(home, '.myagents', 'skills');
     const projectSkills = join(workspace, '.claude', 'skills');
     const configPath = join(home, '.myagents', 'skills-config.json');
@@ -104,9 +105,12 @@ describe('required system skill API contract', () => {
     mkdirSync(projectSkills, { recursive: true });
     mkdirSync(join(scratch, 'tmp'), { recursive: true });
 
-    for (const name of [...REQUIRED_SYSTEM_SKILLS, OPTIONAL_SYSTEM_SKILL, 'cuse', 'user-skill']) {
+    for (const name of [...REQUIRED_SYSTEM_SKILLS, OPTIONAL_SYSTEM_SKILL, 'cuse', 'tool-creator', 'user-skill']) {
       writeSkill(userSkills, name);
     }
+    writeSkill(projectSkills, 'local-skill');
+    writeFileSync(join(home, '.myagents', 'config.json'), JSON.stringify({ agents: [{ id: 'agent-1', path: workspace }] }));
+    writeFileSync(join(home, '.myagents', 'projects.json'), JSON.stringify([{ id: 'project-1', path: workspace, agentId: 'agent-1' }]));
     writeSkill(userSkills, OPTIONAL_SYSTEM_SKILL, 'author: Legacy Author');
     writeSkill(userSkills, 'user-skill', 'metadata:\n  author: Standard Author\n  version: "1.0"');
     mkdirSync(join(userSkills, 'damaged-skill'), { recursive: true });
@@ -117,6 +121,10 @@ describe('required system skill API contract', () => {
       process.platform === 'win32' ? 'junction' : 'dir',
     );
     writeSkill(userSkills, 'warning-skill');
+    const claudeSkills = join(home, '.claude', 'skills');
+    writeSkill(claudeSkills, 'fresh-one');
+    writeSkill(claudeSkills, 'fresh-two');
+    writeSkill(claudeSkills, 'user-skill');
     writeFileSync(join(userSkills, 'warning-skill', 'SKILL (2).md'), 'preserved sibling');
     // Same folder name at project scope is user-owned and must not inherit the
     // global system lifecycle flags.
@@ -186,6 +194,46 @@ describe('required system skill API contract', () => {
       expect(userResponse.ok).toBe(true);
       const userBody = await userResponse.json() as SkillsListResponse;
       expect(userBody.success).toBe(true);
+      const preview = await (await fetch(`${baseUrl}/api/skill/sync-check`)).json() as { folders: string[] };
+      expect(preview.folders).toEqual(['fresh-one', 'fresh-two']);
+      expect((await fetch(`${baseUrl}/api/skill/sync-from-claude`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      })).status).toBe(400);
+      expect((await fetch(`${baseUrl}/api/skill/sync-check`).then(response => response.json()) as { folders: string[] }).folders).toEqual(preview.folders);
+      writeSkill(claudeSkills, 'new-after-preview');
+      const staleCommit = await fetch(`${baseUrl}/api/skill/sync-from-claude`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expectedFolders: preview.folders, folders: ['fresh-one'] }),
+      });
+      expect(staleCommit.status).toBe(409);
+      const freshPreview = await (await fetch(`${baseUrl}/api/skill/sync-check`)).json() as { folders: string[] };
+      const committed = await (await fetch(`${baseUrl}/api/skill/sync-from-claude`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expectedFolders: freshPreview.folders, folders: ['fresh-one'] }),
+      })).json() as { success: boolean; syncedFolders: string[] };
+      expect(committed).toMatchObject({ success: true, syncedFolders: ['fresh-one'] });
+      const imported = await (await fetch(`${baseUrl}/api/skills?scope=user`)).json() as SkillsListResponse;
+      expect(byFolder(imported.skills, 'fresh-one')).toMatchObject({ enabled: false });
+      expect(imported.skills.some(skill => skill.folderName === 'fresh-two')).toBe(false);
+      expect((JSON.parse(readFileSync(configPath, 'utf8')) as { disabled: string[] }).disabled).toContain('fresh-one');
+      const missingToggle = await fetch(`${baseUrl}/api/skill/toggle-enable`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folderName: 'does-not-exist', enabled: true }),
+      });
+      expect(missingToggle.status).toBe(404);
+      const toolCreatorEnable = await fetch(`${baseUrl}/api/skill/toggle-enable`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folderName: 'tool-creator', enabled: true }),
+      });
+      expect(toolCreatorEnable.status).toBe(409);
+      expect(byFolder((await (await fetch(`${baseUrl}/api/skills?scope=user`)).json() as SkillsListResponse).skills, 'tool-creator').enabled).toBe(false);
+      const projectToggle = await fetch(`${baseUrl}/api/project-capability/toggle`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentDir: workspace, capabilityId: 'project:skill:local-skill', enabled: false }),
+      });
+      expect(projectToggle.ok, await projectToggle.text()).toBe(true);
+      const projectList = await (await fetch(`${baseUrl}/api/skills?scope=project&agentDir=${encodeURIComponent(workspace)}`)).json() as SkillsListResponse;
+      expect(byFolder(projectList.skills, 'local-skill').enabled).toBe(false);
       for (const name of REQUIRED_SYSTEM_SKILLS) {
         expect(byFolder(userBody.skills, name)).toMatchObject({
           scope: 'user',

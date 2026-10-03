@@ -84,6 +84,22 @@ afterEach(() => {
 });
 
 describe('#327 — snapshot authority for IM config sync (setSessionModel)', () => {
+  it('defers a desktop projection of an IM model edit until the admitted turn ends', async () => {
+    markSnapshotted(true);
+    const setModel = vi.fn();
+    const heldModel = getSessionModel();
+    setQuerySession({ setModel } as never);
+    setSessionProcessing(true);
+    try {
+      await setSessionModel('desktop-authoritative-model');
+      expect(setModel).not.toHaveBeenCalled();
+      expect(getSessionModel()).toBe(heldModel);
+      expect(hasDeferredRestart()).toBe(false);
+    } finally {
+      setQuerySession(null);
+      setSessionProcessing(false);
+    }
+  });
   it('ignores an IM-config-sync model override on a snapshotted session', async () => {
     markSnapshotted(true);
     const before = getSessionModel();

@@ -19,6 +19,8 @@ import {
   normalizeSkillSourceForRequest,
   parseArgs,
   parseDispatchAtValue,
+  printAgentList,
+  printSkillList,
   printModelList,
   printGoalResult,
   printResult,
@@ -26,9 +28,11 @@ import {
   readWorkspaceTextFile,
   rejectUnsupportedSpaceDryRun,
   resolveCliPort,
+  validateCliRouting,
   validateCliCommand,
   validateDryRunSupport,
   validateExternalCliInvocation,
+  validateInternalCliInvocation,
   validateSessionMutationAcknowledgement,
 } from './myagents';
 import {
@@ -118,6 +122,8 @@ describe('public external CLI declaration', () => {
     expect(cliRequestTimeoutMs('session/start')).toBeGreaterThan(180_000);
     expect(cliRequestTimeoutMs('session/send')).toBeGreaterThan(35_000);
     expect(cliRequestTimeoutMs('session/get')).toBeGreaterThan(18_000);
+    expect(cliRequestTimeoutMs('mcp/test')).toBeGreaterThan(15_000);
+    expect(cliRequestTimeoutMs('task/trigger/test')).toBeGreaterThan(310_000);
     expect(cliRequestTimeoutMs('status')).toBe(10_000);
     expect(cliRequestTimeoutMs('session/watch')).toBeGreaterThan(30_000);
   });
@@ -157,6 +163,47 @@ describe('public external CLI declaration', () => {
   });
 });
 
+describe('myagents CLI port authority', () => {
+  it('rejects a missing or invalid Session route while preserving explicit terminal routing', () => {
+    expect(validateCliRouting('31417', 'product-a')).toBeUndefined();
+    expect(validateCliRouting('31417', undefined)).toBeUndefined();
+    expect(validateCliRouting('', 'product-a')).toBe('CLI_SESSION_ROUTE_REQUIRED');
+    expect(validateCliRouting('31417', '')).toBe('CLI_SESSION_SCOPE_INVALID');
+    for (const port of ['0', '65536', '-1', '1/path', '31417@evil', 'Infinity', ' 31417']) {
+      expect(validateCliRouting(port, 'product-a')).toBe('CLI_SESSION_ROUTE_REQUIRED');
+    }
+    expect(parseArgs(['--version', '--json'])).toEqual({ positional: [], flags: { version: true, json: true } });
+  });
+  it('keeps --port above inherited Session or Rust-injected Global ports', () => {
+    expect(resolveCliPort('32003', '32002')).toBe('32003');
+    expect(resolveCliPort(undefined, '32002')).toBe('32002');
+    expect(resolveCliPort(undefined, '')).toBe('');
+  });
+});
+
+describe('CLI help and Session list output', () => {
+  it.each(['status', 'version', 'reload'])('accepts -h and --help for %s', command => {
+    for (const flag of ['-h', '--help']) {
+      const parsed = parseArgs([command, flag]);
+      expect(parsed).toEqual({ positional: [command], flags: { help: true } });
+      expect(validateCliCommand(parsed.positional, true)).toBeUndefined();
+    }
+    expect(parseArgs(['-h', command]).positional).toEqual([command]);
+  });
+
+  it('prints a duplicate title/preview once and keeps distinct previews', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    printResult('session', 'list', { success: true, data: [
+      { sessionId: 'one', title: 'Same title', lastMessagePreview: 'Same title' },
+      { sessionId: 'two', title: 'Another title', lastMessagePreview: 'Recent reply' },
+    ] }, false);
+    const output = log.mock.calls.flat().join('\n');
+    expect(output.match(/Same title/g)).toHaveLength(1);
+    expect(output).toContain('Recent reply');
+    log.mockRestore();
+  });
+});
+
 describe('skill source normalization', () => {
   it('resolves only explicit relative local paths against the CLI caller cwd', () => {
     const cwd = join(tmpdir(), 'skill-caller');
@@ -182,6 +229,15 @@ describe('skill source normalization', () => {
         scope: 'user',
         dryRun: true,
       });
+  });
+
+  it('keeps skill sync preview-only and forwards removal previews without choosing the wrong scope', () => {
+    expect(buildRequestBody('skill', 'sync', [], {})).toEqual({ apply: false, names: [] });
+    expect(buildRequestBody('skill', 'sync', ['one'], { apply: true })).toEqual({ apply: true, names: ['one'] });
+    expect(buildRequestBody('skill', 'remove', ['one'], { dryRun: true, workspace: '/workspace' }))
+      .toMatchObject({ name: 'one', scope: undefined, workspacePath: '/workspace', dryRun: true });
+    expect(buildRequestBody('skill', 'list', [], { workspace: '/workspace' }))
+      .toEqual({ workspacePath: '/workspace' });
   });
 
   it('normalizes an explicit relative source inside a pasted npx command', () => {
@@ -684,6 +740,19 @@ describe('myagents CLI Task Detector contracts', () => {
         checkpoint: { cursor: '消息 42' },
         expect: 'quiet',
       });
+      writeFileSync(checkpoint, JSON.stringify({ revision: 1, value: { cursor: 1 } }));
+      const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+        throw new Error(`process.exit(${code})`);
+      }) as typeof process.exit);
+      const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        expect(() => buildRequestBody('task', 'trigger', ['test', 'task-1'], { checkpointFile: checkpoint }))
+          .toThrow('process.exit(2)');
+        expect(error.mock.calls.map(([line]) => String(line)).join('\n')).toContain('not a {revision, value} wrapper');
+      } finally {
+        exit.mockRestore();
+        error.mockRestore();
+      }
       expect(buildRequestBody('task', 'trigger', ['test'], {
         specFile: spec,
         workspacePath: '/tmp/work space',
@@ -1186,6 +1255,103 @@ describe('myagents CLI Space issue contracts', () => {
       limit: undefined,
       archived: 'archived',
     });
+  });
+
+  it('shows Record creation identity and Space entries in human output', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      printResult('record', 'create', { success: true, data: { record: {
+        id: 'record-123', title: 'Meeting note', kind: 'text',
+      } } }, false);
+      expect(log.mock.calls.map(([line]) => String(line)).join('\n')).toContain('record-123');
+      log.mockClear();
+      printResult('space', 'list', { success: true, data: { items: [
+        { slug: 'research-hub', name: 'Research Hub', role: 'owner' },
+      ] } }, false);
+      expect(log.mock.calls.map(([line]) => String(line)).join('\n')).toContain('research-hub');
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('renders Space identity, assignee ids, and effective project Skill state', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      printResult('space', 'whoami', { success: true, data: {
+        space: { slug: 'myagents', name: 'MyAgents' },
+        actor: { type: 'registered_agent', id: 'agent-1', name: 'Mino', source: 'registered_agent_session',
+          owner: { name: 'Ethan', role: 'owner' } },
+      } }, false);
+      printResult('space', 'assignee', { success: true, data: { items: [
+        { assigneeId: 'agent:agent-1', name: 'Mino', isSelf: true },
+      ] } }, false, {}, ['list']);
+      printResult('skill', 'disable', { success: true, data: {
+        name: 'nano-pdf', scope: 'project', enabled: false,
+      } }, false);
+      const output = log.mock.calls.map(([line]) => String(line)).join('\n');
+      expect(output).toContain('registered_agent:agent-1');
+      expect(output).toContain('Binding: registered_agent_session');
+      expect(output).toContain('agent:agent-1');
+      expect(output).toContain('Skill nano-pdf disabled');
+      expect(output).toContain('scope: project');
+    } finally { log.mockRestore(); }
+  });
+
+  it('shows structured results for commands without a dedicated text printer', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      printResult('space', 'issue', { success: true, data: { items: [
+        { id: 'issue-1', state: 'todo' },
+      ] } }, false, {}, ['list']);
+      const output = log.mock.calls.map(([line]) => String(line)).join('\n');
+      expect(output).toContain('issue-1');
+      expect(output).toContain('todo');
+    } finally { log.mockRestore(); }
+  });
+
+  it('labels permission modes as capabilities of the selected runtime', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      printResult('runtime', 'describe', { success: true, data: {
+        runtime: 'dsh', displayName: 'DSH', installed: true,
+        permissionModes: [{ value: 'auto', label: 'Auto' }],
+      } }, false);
+      expect(log.mock.calls.map(([line]) => String(line)).join('\n'))
+        .toContain('Permission modes supported by this runtime:');
+    } finally { log.mockRestore(); }
+  });
+
+  it('shows the updated Task identity and authoritative state in human output', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      printResult('task', 'update', { success: true, data: { task: {
+        id: 'task-123', name: 'Daily check', description: 'Check the inbox', status: 'stopped', executionMode: 'recurring',
+        docs: { taskMd: '/tmp/task.md' },
+      } } }, false);
+      const output = log.mock.calls.map(([line]) => String(line)).join('\n');
+      expect(output).toContain('Task updated task-123');
+      expect(output).toContain('status: stopped');
+      expect(output).toContain('description: Check the inbox');
+      expect(output).toContain('task.md: /tmp/task.md');
+      expect(output).toContain('myagents task get task-123');
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('prints Task mutation receipts with their task id and resulting status', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      printResult('task', 'update-status', { success: true, data: { task: { id: 'task-123', status: 'done' } } }, false);
+      printResult('task', 'delete', { success: true, data: { taskId: 'task-123', status: 'deleted' } }, false);
+      const output = log.mock.calls.map(([line]) => String(line)).join('\n');
+      expect(output).toContain('Task update-status task-123');
+      expect(output).toContain('status: done');
+      expect(output).toContain('Task delete task-123');
+      expect(output).toContain('status: deleted');
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it('rejects canonical-only Record kind filters on the legacy Thought alias', () => {
@@ -1760,6 +1926,33 @@ describe('myagents CLI Agent / Session collaboration contracts', () => {
       limit: 50,
       before: 'message-9',
     });
+  });
+
+  it('does not advertise a current Agent marker when the caller has none', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      printAgentList([
+        {
+          agentId: 'agent-user',
+          archived: false,
+          enabled: true,
+          channelCount: 0,
+          name: 'mino',
+        },
+        {
+          agentId: 'agent-system',
+          archived: false,
+          enabled: true,
+          channelCount: 0,
+          name: 'Mino',
+        },
+      ]);
+      const output = log.mock.calls.flat().join('\n');
+      expect(output).toContain('No current Agent for this CLI caller');
+      expect(output).not.toContain('* current Agent for this CLI caller');
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it('builds fresh Session start with the same prompt contract as send', () => {
@@ -2446,5 +2639,68 @@ describe('myagents CLI cron time handling', () => {
   it('formats instants with timezone name and offset for human output', () => {
     expect(formatCronInstantForDisplay('2026-07-09T01:00:00Z', 'Asia/Shanghai', 'long'))
       .toBe('2026-07-09 09:00 Asia/Shanghai (UTC+08:00)');
+  });
+});
+
+
+describe('CLI skill availability', () => {
+  it('prints Session admission and invocation separately from enabled inventory', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      printSkillList([{ name: 'manual-only', scope: 'project', enabled: true,
+        runtimeAvailability: { runtime: 'dsh', state: 'ready', effectiveRevision: 'effective-v1', desiredRevision: 'next-v2', component: { modelInvocable: false } } }]);
+      const text = log.mock.calls.map(args => args.join(' ')).join('\n');
+      expect(text).toContain('Runtime admission: ready; model invocation: unavailable');
+      expect(text).toContain('Effective generation: effective-v1; desired: next-v2');
+      expect(text).toContain('Enabled reflects installation settings');
+    } finally { log.mockRestore(); }
+  });
+});
+
+
+describe('concise skill inventory', () => {
+  it('parses verbose without consuming the command and routes config discovery', () => {
+    expect(parseArgs(['skill', '--verbose', 'list']).positional).toEqual(['skill', 'list']);
+    expect(buildRoute('config', 'list', ['proxySettings'])).toBe('config/list');
+    expect(buildRequestBody('config', 'list', ['proxySettings'], {})).toEqual({ prefix: 'proxySettings' });
+    expect(buildRoute('config', 'unset', ['notARealKey'])).toBe('config/unset');
+    expect(buildRequestBody('config', 'unset', ['notARealKey'], { dryRun: true })).toEqual({ key: 'notARealKey', dryRun: true });
+  });
+  it('hides normal admission details by default while verbose retains them', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const skills = [{ name: 'normal', runtimeAvailability: { runtime: 'dsh', state: 'ready', effectiveRevision: 'v1', desiredRevision: 'v1', component: { modelInvocable: true, state: 'applied', code: 'dsh_extension_component_ready' } } }];
+    try {
+      printSkillList(skills);
+      expect(log.mock.calls.flat().join('\n')).not.toContain('Runtime admission:');
+      expect(log.mock.calls.flat().join('\n')).not.toContain('Reason:');
+      log.mockClear();
+      printSkillList(skills, { verbose: true });
+      expect(log.mock.calls.flat().join('\n')).toContain('Runtime admission: ready');
+    } finally { log.mockRestore(); }
+  });
+});
+
+
+describe('internal CLI command admission', () => {
+  it.each([
+    [[], { frobnicate: true }],
+    [['session', 'get', 'session-id'], { bogusflag: true }],
+    [['task', 'create-direct'], { totallyBogusFlag: 'yes' }],
+    [['session', 'start'], { model: 'ignored-model' }],
+    [['agent', 'channel'], { frobnicate: true }],
+  ])('rejects silently ignored options before dispatch', (positional, flags) => {
+    expect(validateInternalCliInvocation(positional as string[], flags)).toMatchObject({ code: 'UNKNOWN_FLAG' });
+  });
+  it('rejects a positional argument on readme and preserves real Record filters', () => {
+    expect(validateInternalCliInvocation(['vision', 'readme', 'extra-arg'], {})).toMatchObject({ code: 'ARGUMENT_INVALID' });
+    expect(validateInternalCliInvocation(['record', 'list'], { limit: '1', json: true })).toBeUndefined();
+    expect(buildRequestBody('record', 'get', ['record-id'], {})).toEqual({ id: 'record-id' });
+    expect(buildRequestBody('record', 'delete', ['record-id'], {})).toEqual({ id: 'record-id' });
+  });
+  it('infers recurring schedules on create and update while retaining an omitted update mode', () => {
+    const schedule = { name: 'test', workspacePath: '/test', taskMdContent: 'test', cronExpression: '0 9 * * *' };
+    expect(buildRequestBody('task', 'create-direct', [], schedule)).toMatchObject({ executionMode: 'recurring' });
+    expect(buildRequestBody('task', 'update', ['task-id'], { cronExpression: '0 9 * * *' })).toMatchObject({ executionMode: 'recurring' });
+    expect(buildRequestBody('task', 'update', ['task-id'], { name: 'renamed' })).not.toHaveProperty('executionMode');
   });
 });

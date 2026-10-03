@@ -1,3 +1,5 @@
+import { applySessionModelSelection } from '../agent-session';
+import { questionAnswersAsText } from '../../shared/types/askUserQuestion';
 import { retryDesktopRequest } from './retry';
 import { randomUUID } from 'node:crypto';
 import {
@@ -35,6 +37,7 @@ import {
   getStreamingAssistantId,
   getSystemInitInfo,
   handleAskUserQuestionResponse,
+  handleExitPlanModeResponse,
   handlePermissionResponse,
   interruptCurrentResponse,
   isSessionBusy,
@@ -47,6 +50,7 @@ import {
   rewindSession,
   retryBuiltinUserMessage,
   setAgents,
+  forceReloadActiveSession,
   setBackgroundAgentPermissionMode,
   setInteractionScenario,
   setMcpServers,
@@ -869,6 +873,8 @@ export function createBuiltinSessionEngine(): SessionEngine {
       return waitForSessionIdle(timeoutMs, pollMs);
     },
 
+    applyModelSelection: applySessionModelSelection,
+
     async updateModel(model, opts) {
       await setSessionModel(model, opts);
       return { success: true };
@@ -915,7 +921,11 @@ export function createBuiltinSessionEngine(): SessionEngine {
     },
 
     async respondAskUserQuestion(requestId, answers) {
-      return handleAskUserQuestionResponse(requestId, answers);
+      return handleAskUserQuestionResponse(requestId, answers === null ? null : questionAnswersAsText(answers));
+    },
+
+    async respondPlanApproval(requestId, approved, feedback) {
+      return handleExitPlanModeResponse(requestId, approved, feedback);
     },
 
     rewindToUserMessage(userMessageId) {
@@ -934,8 +944,8 @@ export function createBuiltinSessionEngine(): SessionEngine {
       });
     },
 
-    forkAtAssistantMessage(messageId, targetSessionId) {
-      return forkSession(messageId, targetSessionId);
+    forkAtAssistantMessage(messageId, options) {
+      return forkSession(messageId, options?.targetSessionId);
     },
 
     async updateProviderEnv(providerEnv) {
@@ -952,8 +962,9 @@ export function createBuiltinSessionEngine(): SessionEngine {
       return retryBuiltinMcpServer(serverId);
     },
 
-    async updateAgents(agents) {
+    async updateAgents(agents, options) {
       setAgents(agents as Record<string, AgentDefinition>);
+      if (options?.forceReload) forceReloadActiveSession('agents');
       return { success: true };
     },
 

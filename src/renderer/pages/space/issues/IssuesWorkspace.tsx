@@ -2,16 +2,16 @@ import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Check,
-  ChevronDown,
-  CircleAlert,
-  Loader2,
-  Plus,
-  RefreshCw,
-  Search,
-  UserRoundCheck,
-  X,
-} from "lucide-react";
+  CheckIcon,
+  ChevronDownIcon,
+  AlertIcon,
+  LoaderIcon,
+  PlusIcon,
+  RefreshIcon,
+  SearchIcon,
+  UserCheckIcon,
+  CloseIcon,
+} from '@/components/icons';
 
 import type { SpaceIssue } from "@/api/spaceCloud";
 import CustomSelect, { type SelectOption } from "@/components/CustomSelect";
@@ -200,7 +200,7 @@ export function IssuesWorkspace({
         >
           {searchActive ? (
             <label className="relative min-w-0 flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--ink-muted)]" />
+              <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--ink-muted)]" />
               <input
                 ref={searchInputRef}
                 value={issueQ}
@@ -226,7 +226,7 @@ export function IssuesWorkspace({
                 className="absolute right-1.5 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                 aria-label={t("space.issues.closeSearch")}
               >
-                <X className="h-3.5 w-3.5" />
+                <CloseIcon className="h-3.5 w-3.5" />
               </button>
             </label>
           ) : (
@@ -237,7 +237,7 @@ export function IssuesWorkspace({
               aria-label={t("space.issues.searchIssue")}
               title={t("space.issues.searchIssue")}
             >
-              <Search className="h-4 w-4" />
+              <SearchIcon className="h-4 w-4" />
             </button>
           )}
         </div>
@@ -298,7 +298,7 @@ export function IssuesWorkspace({
                     : "hover:bg-[var(--paper-elevated)]/55 hover:text-[var(--ink)]"
                 }`}
               >
-                <ChevronDown
+                <ChevronDownIcon
                   className={`h-3.5 w-3.5 transition-transform ${statusMenuOpen ? "rotate-180" : ""}`}
                 />
               </button>
@@ -379,7 +379,7 @@ export function IssuesWorkspace({
                       {option.label}
                     </span>
                     {option.value === selectedStatusPreset ? (
-                      <Check className="h-3.5 w-3.5 shrink-0" />
+                      <CheckIcon className="h-3.5 w-3.5 shrink-0" />
                     ) : null}
                   </button>
                 </div>
@@ -403,7 +403,7 @@ export function IssuesWorkspace({
                 : "border-[var(--line)] bg-[var(--paper-elevated)]/70 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
             }`}
           >
-            <UserRoundCheck className="h-4 w-4" />
+            <UserCheckIcon className="h-4 w-4" />
             <span className="max-xl:sr-only">
               {t("space.filters.relatedToMe")}
             </span>
@@ -419,7 +419,7 @@ export function IssuesWorkspace({
             onClick={onCreate}
             className={`${SPACE_PRIMARY_TOOL_BUTTON_CLASS} max-xl:px-3`}
           >
-            <Plus className="h-4 w-4" />
+            <PlusIcon className="h-4 w-4" />
             <span className="max-xl:sr-only">{t("space.common.create")}</span>
           </button>
           <button
@@ -430,9 +430,9 @@ export function IssuesWorkspace({
             title={t("space.common.refresh")}
           >
             {issuesLoading ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
+              <LoaderIcon className="h-4 w-4 animate-spin" />
             ) : (
-              <RefreshCw className="h-4 w-4" />
+              <RefreshIcon className="h-4 w-4" />
             )}
           </button>
         </div>
@@ -448,7 +448,7 @@ export function IssuesWorkspace({
               role="alert"
               className="mb-2 flex min-h-10 items-center gap-2 rounded-xl border border-[var(--warning)]/20 bg-[var(--warning-bg)] px-3 text-sm text-[var(--warning)]"
             >
-              <CircleAlert className="h-4 w-4 shrink-0" />
+              <AlertIcon className="h-4 w-4 shrink-0" />
               <span className="min-w-0 flex-1 font-medium">
                 {t("space.common.listRefreshFailed")}
               </span>
@@ -466,7 +466,7 @@ export function IssuesWorkspace({
             </div>
           ) : showingPreviousIssues && issuesLoading ? (
             <div className="mb-2 flex min-h-9 items-center justify-center gap-2 rounded-xl bg-[var(--paper-elevated)]/55 px-3 text-xs font-semibold text-[var(--ink-muted)]">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <LoaderIcon className="h-3.5 w-3.5 animate-spin" />
               {t("space.common.updatingResults")}
             </div>
           ) : null}
@@ -477,7 +477,7 @@ export function IssuesWorkspace({
                 className="grid min-h-44 place-items-center border-x border-dashed border-[var(--line-subtle)] text-sm text-[var(--ink-muted)]"
               >
                 <div className="text-center">
-                  <CircleAlert className="mx-auto mb-2 h-6 w-6 text-[var(--warning)]" />
+                  <AlertIcon className="mx-auto mb-2 h-6 w-6 text-[var(--warning)]" />
                   <p>{t("space.common.listRefreshFailed")}</p>
                   <button
                     type="button"
@@ -514,7 +514,7 @@ export function IssuesWorkspace({
                       onClick={onCreate}
                       className="mt-3 inline-flex h-9 items-center gap-2 rounded-xl bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)]"
                     >
-                      <Plus className="h-4 w-4" />
+                      <PlusIcon className="h-4 w-4" />
                       {t("space.issues.createIssue")}
                     </button>
                   )}
@@ -541,7 +541,7 @@ export function IssuesWorkspace({
                 className="inline-flex h-9 items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)]/70 px-4 text-sm font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-wait disabled:opacity-60"
               >
                 {loadingMore ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <LoaderIcon className="h-4 w-4 animate-spin" />
                 ) : null}
                 {t("space.common.loadMore")}
               </button>

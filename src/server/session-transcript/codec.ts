@@ -4,8 +4,11 @@ import {
   applyTranscriptBatch,
   createTranscriptProjection,
   type TranscriptOperation,
+  type TranscriptMessageDetails,
   type TranscriptProjection,
 } from '../../shared/sessionTranscript';
+import messageDetailFields from '../../shared/session-transcript-message-details.json';
+import { coalesceTranscriptBatchOperations } from './operations';
 
 export const TRANSCRIPT_MAX_LINE_BYTES = 8 * 1024 * 1024;
 
@@ -49,10 +52,10 @@ function isContent(value: unknown): boolean {
     isRecord(block) && typeof block.id === 'string' && typeof block.type === 'string'));
 }
 
-const MESSAGE_DETAILS = new Set([
-  'asyncQuestionReply', 'sdkUuid', 'runtimeTurnAnchor', 'attachments', 'usage',
-  'toolCount', 'durationMs', 'metadata', 'turnId', 'transcriptState',
-]);
+// The TS contract catches missing or extra fields; Rust reads this same JSON.
+const typedMessageDetailFields: Record<keyof TranscriptMessageDetails, null>
+  & Record<Exclude<keyof typeof messageDetailFields, keyof TranscriptMessageDetails>, never> = messageDetailFields;
+const MESSAGE_DETAILS = new Set(Object.keys(typedMessageDetailFields));
 
 function isOperation(value: unknown): value is TranscriptOperation {
   if (!isRecord(value)) return false;
@@ -96,7 +99,7 @@ function isOperation(value: unknown): value is TranscriptOperation {
       return Array.isArray(value.messageIds) && value.messageIds.every(id => typeof id === 'string');
     case 'turn-update': {
       const turn = value.turn;
-      return isRecord(turn) && typeof turn.id === 'string' && typeof turn.rootUserMessageId === 'string'
+      return isRecord(turn) && typeof turn.id === 'string' && (typeof turn.rootUserMessageId === 'string' || (turn.origin === 'collaboration' && turn.rootUserMessageId === undefined))
         && typeof turn.startedAt === 'string'
         && ['running', 'complete', 'stopped', 'error', 'interrupted'].includes(turn.status as string);
     }
@@ -173,7 +176,7 @@ export class TranscriptDecoder {
       } else if (!this.baselineComplete || batch.fromRevision !== result.revision + 1 || batch.revision < batch.fromRevision) {
         throw new Error('Non-contiguous transcript revision');
       }
-      applyTranscriptBatch(result.projection, batch.operations);
+      applyTranscriptBatch(result.projection, coalesceTranscriptBatchOperations(batch.operations));
       if (batch.mode === 'baseline' && batch.baselineEnd) this.baselineComplete = true;
       result.revision = batch.revision;
       result.lastBatchId = batch.id;

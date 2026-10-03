@@ -1,17 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  ChevronRight,
-  Edit3,
-  GitBranch,
-  Loader2,
-  Plus,
-  RefreshCw,
-  Save,
-  Target,
-  Trash2,
-  X,
-} from 'lucide-react';
+  ChevronRightIcon,
+  EditIcon,
+  GitBranchIcon,
+  LoaderIcon,
+  PlusIcon,
+  RefreshIcon,
+  SaveIcon,
+  TargetIcon,
+  TrashIcon,
+  CloseIcon,
+} from '@/components/icons';
 
 import type { SpaceGoal, SpaceSession } from '@/api/spaceCloud';
 import { spaceErrorMessage } from '@/api/spaceCloud';
@@ -251,7 +251,7 @@ export function GoalsWorkspace({
         <section className="flex min-h-12 items-center gap-2.5 border-b border-[var(--line)] bg-[var(--paper-elevated)]/60 px-5 py-1.5 backdrop-blur-md">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <span className="grid h-8 w-8 place-items-center rounded-xl border border-[var(--accent-warm-muted)] bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]">
-              <GitBranch className="h-4 w-4" />
+              <GitBranchIcon className="h-4 w-4" />
             </span>
             <div className="min-w-0">
               <h2 className="truncate text-sm font-semibold text-[var(--ink)]">{t('space.goals.title')}</h2>
@@ -265,7 +265,7 @@ export function GoalsWorkspace({
             aria-label={t('space.common.refresh')}
             title={t('space.common.refresh')}
           >
-            {busy === 'refresh' ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+            {busy === 'refresh' ? <LoaderIcon className="h-4 w-4 animate-spin" /> : <RefreshIcon className="h-4 w-4" />}
           </button>
         </section>
 
@@ -363,7 +363,7 @@ function GoalEmptyState({ title, hint }: { title: string; hint: string }) {
     <div className="grid min-h-[420px] place-items-center">
       <div className="grid max-w-sm justify-items-center gap-3 text-center">
         <span className="grid h-14 w-14 place-items-center rounded-2xl border border-[var(--line)] bg-[var(--paper-elevated)]/70 text-[var(--ink-subtle)]">
-          <Target className="h-6 w-6" />
+          <TargetIcon className="h-6 w-6" />
         </span>
         <div className="grid gap-1">
           <h3 className="text-lg font-semibold text-[var(--ink)]">{title}</h3>
@@ -407,7 +407,7 @@ function GoalView({
               className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)]/70 px-2.5 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
             >
               {t('space.goals.viewIssues')}
-              <ChevronRight className="h-3.5 w-3.5" />
+              <ChevronRightIcon className="h-3.5 w-3.5" />
             </button>
             {admin && (
               <button
@@ -415,7 +415,7 @@ function GoalView({
                 onClick={onEdit}
                 className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[var(--button-secondary-bg)] px-2.5 text-sm font-medium text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)]"
               >
-                <Edit3 className="h-3.5 w-3.5" />
+                <EditIcon className="h-3.5 w-3.5" />
                 {t('space.goals.edit')}
               </button>
             )}
@@ -464,7 +464,7 @@ function GoalView({
                     <span className="block truncate text-sm font-semibold text-[var(--ink)]">{child.title}</span>
                     <span className="mt-1 block truncate text-xs text-[var(--ink-muted)]">{child.context}</span>
                   </span>
-                  <ChevronRight className="h-4 w-4 text-[var(--ink-subtle)]" />
+                  <ChevronRightIcon className="h-4 w-4 text-[var(--ink-subtle)]" />
                 </button>
               ))}
             </div>
@@ -475,7 +475,7 @@ function GoalView({
               onClick={() => onCreateChild(goal)}
               className="flex min-h-11 w-full items-center justify-center gap-2 border-t border-[var(--line-subtle)] bg-[var(--paper-elevated)]/70 px-4 text-sm font-semibold text-[var(--accent-warm)] transition-colors hover:bg-[var(--accent-warm-subtle)]"
             >
-              <Plus className="h-4 w-4" />
+              <PlusIcon className="h-4 w-4" />
               {t('space.goals.newChild')}
             </button>
           )}
@@ -534,7 +534,7 @@ function GoalEdit({
         )}
         <div className="flex items-center gap-2">
           <span className="grid h-8 w-8 place-items-center rounded-xl border border-[var(--accent-warm-muted)] bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]">
-            {mode === 'create' ? <Plus className="h-4 w-4" /> : <Edit3 className="h-4 w-4" />}
+            {mode === 'create' ? <PlusIcon className="h-4 w-4" /> : <EditIcon className="h-4 w-4" />}
           </span>
           <div className="min-w-0">
             <h3 className="text-xl font-semibold text-[var(--ink)]">
@@ -583,7 +583,7 @@ function GoalEdit({
               onClick={onDelete}
               className="inline-flex h-9 items-center gap-2 rounded-xl border border-[var(--error)]/25 bg-[var(--error)]/10 px-3 text-sm font-semibold text-[var(--error)] transition-colors hover:bg-[var(--error)]/15 disabled:cursor-wait disabled:opacity-60"
             >
-              <Trash2 className="h-4 w-4" />
+              <TrashIcon className="h-4 w-4" />
               {t('space.goals.delete')}
             </button>
           )}
@@ -595,7 +595,7 @@ function GoalEdit({
             onClick={onCancel}
             className="inline-flex h-9 items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)]/70 px-3 text-sm font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-wait disabled:opacity-60"
           >
-            <X className="h-4 w-4" />
+            <CloseIcon className="h-4 w-4" />
             {t('space.common.cancel')}
           </button>
           <button
@@ -604,7 +604,7 @@ function GoalEdit({
             onClick={onSave}
             className="inline-flex h-9 items-center gap-2 rounded-xl bg-[var(--button-primary-bg)] px-3 text-sm font-semibold text-[var(--button-primary-text)] shadow-sm transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {busy === 'save' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            {busy === 'save' ? <LoaderIcon className="h-4 w-4 animate-spin" /> : <SaveIcon className="h-4 w-4" />}
             {mode === 'create' ? t('space.goals.createChild') : t('space.common.save')}
           </button>
         </div>
@@ -674,7 +674,7 @@ function GoalTreeRow({
         }`}
         style={{ paddingLeft: `${8 + Math.min(node.depth, 6) * 18}px` }}
       >
-        <GitBranch className="h-3.5 w-3.5 shrink-0" />
+        <GitBranchIcon className="h-3.5 w-3.5 shrink-0" />
         <span className="truncate">{node.title}</span>
       </button>
       {node.children.length > 0 && (

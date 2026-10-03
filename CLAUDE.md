@@ -1,6 +1,6 @@
 # MyAgents — Desktop AI Agent
 
-基于 Claude Agent SDK 的桌面端通用 Agent 产品。开源（AGPL-3.0-only）并提供单独商业授权；使用 Conventional Commits；不得提交密钥、令牌或用户隐私数据。
+内置 Claude Agent SDK 与 DSH，并支持外部 Runtime 的桌面端通用 Agent 产品。开源（AGPL-3.0-only）并提供单独商业授权；使用 Conventional Commits；不得提交密钥、令牌或用户隐私数据。
 
 ## 这份自动加载文档的职责
 
@@ -28,7 +28,7 @@
 | 区域 | 技术与职责 |
 |------|------------|
 | `src/renderer/` | React 19 + TypeScript + Vite + TailwindCSS；桌面 WebView UI |
-| `src/server/` | Node.js v24 Sidecar；Claude Agent SDK；每 Session 独立实例 |
+| `src/server/` | Node.js v24 Sidecar；SessionEngine 与各 Runtime adapter；每 Session 独立实例 |
 | `src/server/plugin-bridge/` | 独立 Node 进程；OpenClaw Plugin Bridge |
 | `src/cli/` | `myagents` CLI 源码；业务 bundle 随 app 发布，`~/.myagents/bin/` 仅投影薄启动器 |
 | `src/shared/` | renderer / server 共用的纯类型与逻辑 |
@@ -66,7 +66,7 @@ Owner 和 source of truth 必须针对具体事实、scope 与 lifecycle phase �
 
 ### Runtime 分流只有一个入口
 
-Builtin SDK 与 Claude Code / Codex / Gemini 等外部 Runtime 的 session 操作统一经过 `src/server/session-engine/` facade，由 selector 选择 adapter。Route handler 不得自行写 builtin / external 分支；“等待 idle”也不等于 turn 成功，terminal 必须读取对应 adapter 的真实成功状态。
+Builtin SDK、Integrated DSH 与 Claude Code / Codex 等外部 Runtime 的 session 操作统一经过 `src/server/session-engine/` facade，由 selector 选择 adapter。Route handler 不得自行写 builtin / external 分支；“等待 idle”也不等于 turn 成功，terminal 必须读取对应 adapter 的真实成功状态。
 
 ### 持久化 authority
 
@@ -90,7 +90,7 @@ Builtin SDK 与 Claude Code / Codex / Gemini 等外部 Runtime 的 session 操�
 | Sidecar 冷启动 / pre-warm 性能 | `specs/tech_docs/sidecar_cold_start.md` |
 | Session ID、状态同步、恢复、配置归置 | `specs/tech_docs/session_architecture.md` |
 | 系统提示词组装、场景 Prompt、Workspace 指令注入 | `specs/tech_docs/system_prompt_architecture.md`；逐轮隐藏消息再读 `specs/tech_docs/system_reminder_protocol.md` |
-| Claude Code / Codex / Gemini Runtime | `specs/tech_docs/multi_agent_runtime.md` |
+| Agent Runtime | `specs/tech_docs/multi_agent_runtime.md`；Integrated DSH 再读 `specs/tech_docs/myagents_dsh_integrated_runtime.md` |
 | Task / Thought / Goal / Cron provider routing | `specs/tech_docs/task_center.md`、`specs/tech_docs/task_provider_routing.md` |
 | Cloud Space / Space Issue / registered agent | `specs/tech_docs/space_cloud.md`；改云 API、鉴权、数据或 quota 时再读 `../MyAgents_space/specs/ARCHITECTURE.md` |
 | Space IssueDelivery / registered-agent prompt 协议 | `specs/tech_docs/space_issue_delivery_protocol.md`、`specs/tech_docs/space_cloud.md`、`specs/tech_docs/system_reminder_protocol.md` |
@@ -110,6 +110,7 @@ Builtin SDK 与 Claude Code / Codex / Gemini 等外部 Runtime 的 session 操�
 | 内置 Node / 三方 Provider / 代理 | `specs/tech_docs/bundled_node.md`、`specs/tech_docs/third_party_providers.md`、`specs/tech_docs/proxy_config.md` 中命中的文档 |
 | 搜索 / i18n / 埋点 / 日志 | 对应 `specs/tech_docs/search_architecture.md`、`specs/tech_docs/i18n_architecture.md`、`specs/tech_docs/analytics_design.md`、`specs/tech_docs/unified_logging.md` |
 | setup / build / 资源准备脚本（新增或修改） | `specs/tech_docs/build_resource_preparation.md`；按资源追加所属模块文档 |
+| 更新 MyAgents-dsh、打包本地 handoff 并集成到客户端 | 先切换到 MyAgents-dsh 仓库，按该仓库的 Agent 指引和开发集成指南完成 setup、提交、原生 handoff 构建；再读本仓库 `specs/tech_docs/build_resource_preparation.md` 的 Integrated DSH 构建来源。本地 Dev 构建传入验证后的 handoff 绝对路径，正式构建只改 `dsh-release.json` 的版本选择 |
 | 自动更新、发布 | `specs/tech_docs/auto_update.md` 与 `specs/guides/` 下对应平台文档 |
 
 ## 验证与维护

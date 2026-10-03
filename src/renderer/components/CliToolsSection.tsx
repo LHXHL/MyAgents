@@ -7,7 +7,14 @@
  * 空状态的用户引导。视觉以 specs/playgrounds/toolbox_settings_tab.html
  * 定稿版为准。
  */
-import { Copy, Loader2, Settings2, SquareTerminal, Trash2, X } from 'lucide-react';
+import {
+  CopyIcon,
+  LoaderIcon,
+  SlidersIcon,
+  TerminalIcon,
+  TrashIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { CliToolRegistryEntry } from '../../shared/types/cliTools';
@@ -171,7 +178,7 @@ export function CliToolsSection() {
     return (
         <div className="mt-9 border-t border-[var(--line)] pt-7">
             <div className="flex items-center gap-2">
-                <SquareTerminal className="h-5 w-5 text-[var(--ink-muted)]" />
+                <TerminalIcon className="h-5 w-5 text-[var(--ink-muted)]" />
                 <h3 className="text-base font-semibold text-[var(--ink)]">
                     {t('toolbox.cliTools.title')}
                 </h3>
@@ -183,12 +190,12 @@ export function CliToolsSection() {
 
             {!loaded ? (
                 <div className="flex items-center justify-center rounded-xl border border-dashed border-[var(--line-strong)] py-10">
-                    <Loader2 className="h-5 w-5 animate-spin text-[var(--ink-muted)]" />
+                    <LoaderIcon className="h-5 w-5 animate-spin text-[var(--ink-muted)]" />
                 </div>
             ) : tools.length === 0 ? (
                 /* 空状态：与列表 + 注册指令条互斥，承担"怎么创建"的引导 */
                 <div className="rounded-xl border border-dashed border-[var(--line-strong)] px-8 py-12 text-center">
-                    <SquareTerminal className="mx-auto mb-3 h-8 w-8 text-[var(--ink-muted)] opacity-50" />
+                    <TerminalIcon className="mx-auto mb-3 h-8 w-8 text-[var(--ink-muted)] opacity-50" />
                     <p className="mb-2 text-lg font-semibold text-[var(--ink)]">{t('toolbox.cliTools.emptyTitle')}</p>
                     <p className="mx-auto max-w-xl text-sm leading-relaxed text-[var(--ink-muted)]">
                         {t('toolbox.cliTools.emptyDescription')}
@@ -203,7 +210,7 @@ export function CliToolsSection() {
                                     onClick={() => void copyText(prompt)}
                                     className="flex shrink-0 items-center gap-1 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-1.5 text-xs text-[var(--ink-muted)] transition-colors hover:border-[var(--ink-muted)] hover:text-[var(--ink)]"
                                 >
-                                    <Copy className="h-3 w-3" />
+                                    <CopyIcon className="h-3 w-3" />
                                     {t('toolbox.cliTools.copy')}
                                 </button>
                             </div>
@@ -215,7 +222,7 @@ export function CliToolsSection() {
                             onClick={() => void copyText(registerPrompt)}
                             className="flex shrink-0 items-center gap-1 rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-2 py-1 text-xs text-[var(--ink-muted)] transition-colors hover:border-[var(--ink-muted)] hover:text-[var(--ink)]"
                         >
-                            <Copy className="h-3 w-3" />
+                            <CopyIcon className="h-3 w-3" />
                             {t('toolbox.cliTools.copy')}
                         </button>
                     </p>
@@ -227,7 +234,7 @@ export function CliToolsSection() {
                             <div key={tool.name} className="min-w-0 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
                                 <div className="flex items-start justify-between gap-2">
                                     <div className="flex min-w-0 flex-1 items-center gap-2">
-                                        <SquareTerminal className="h-4 w-4 shrink-0 text-[var(--accent)]/80" />
+                                        <TerminalIcon className="h-4 w-4 shrink-0 text-[var(--accent)]/80" />
                                         <h3 className="min-w-0 truncate font-mono font-semibold text-[var(--ink)]" title={tool.name}>{tool.name}</h3>
                                         {tool.version && (
                                             <span className="shrink-0 rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-medium text-[var(--ink-muted)]">
@@ -247,7 +254,7 @@ export function CliToolsSection() {
                                             className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                                             title={t('toolbox.cliTools.detailTitle')}
                                         >
-                                            <Settings2 className="h-4 w-4" />
+                                            <SlidersIcon className="h-4 w-4" />
                                         </button>
                                         <button
                                             type="button"
@@ -284,7 +291,7 @@ export function CliToolsSection() {
                             onClick={() => void copyText(registerPrompt)}
                             className="flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-1.5 text-xs text-[var(--ink-muted)] transition-colors hover:border-[var(--ink-muted)] hover:text-[var(--ink)]"
                         >
-                            <Copy className="h-3.5 w-3.5" />
+                            <CopyIcon className="h-3.5 w-3.5" />
                             {t('toolbox.cliTools.copy')}
                         </button>
                     </div>
@@ -360,7 +367,7 @@ function CliToolDetailModal({
                         </p>
                     </div>
                     <button onClick={onClose} className="shrink-0 rounded-lg p-1 text-[var(--ink-muted)] transition-colors hover:text-[var(--ink)]">
-                        <X className="h-5 w-5" />
+                        <CloseIcon className="h-5 w-5" />
                     </button>
                 </div>
 
@@ -408,7 +415,7 @@ function CliToolDetailModal({
                         </label>
                         {readme.loading ? (
                             <div className="flex items-center justify-center rounded-lg border border-[var(--line)] py-8">
-                                <Loader2 className="h-4 w-4 animate-spin text-[var(--ink-muted)]" />
+                                <LoaderIcon className="h-4 w-4 animate-spin text-[var(--ink-muted)]" />
                             </div>
                         ) : readme.failed ? (
                             <div className="rounded-lg border border-[var(--line)] px-3 py-2.5 text-xs text-[var(--warning)]">
@@ -430,7 +437,7 @@ function CliToolDetailModal({
                         disabled={busy}
                         className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm text-[var(--error)] transition-colors hover:bg-[var(--error-subtle)] disabled:opacity-50"
                     >
-                        <Trash2 className="h-4 w-4" />
+                        <TrashIcon className="h-4 w-4" />
                         {t('toolbox.cliTools.detail.deleteTool')}
                     </button>
                     <div className="flex items-center gap-2">

@@ -5,7 +5,7 @@
 
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { NotebookPen, X } from 'lucide-react';
+import { NotebookIcon, CloseIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import { Virtuoso } from 'react-virtuoso';
 import {
@@ -696,7 +696,7 @@ export function ThoughtPanel({
                     their viewBox but Chinese glyphs sit slightly below
                     the em box center, making items-center alone read as
                     icon-too-high. Same tweak on TaskListPanel's CheckSquare. */}
-                <NotebookPen
+                <NotebookIcon
                   className="relative top-[1px] h-4 w-4 shrink-0 text-[var(--ink-muted)]"
                   strokeWidth={1.5}
                 />
@@ -828,7 +828,7 @@ export function ThoughtPanel({
               title={t('thoughts.clearFilter')}
             >
               #{activeTag}
-              <X className="h-3 w-3" />
+              <CloseIcon className="h-3 w-3" />
             </button>
           </div>
         ) : (

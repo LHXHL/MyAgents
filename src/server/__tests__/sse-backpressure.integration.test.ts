@@ -98,6 +98,57 @@ describe('SSE backpressure — coalescible events', () => {
     expect(revision).toBe(1);
   });
 
+  it('coalesces same-index thinking chunks before the structural stop boundary', async () => {
+    const { client, response } = createSseClient(() => { /* noop */ });
+    const reader = response.body!.getReader();
+    let revision = 0;
+    const scope = {
+      sessionId: 'session-thinking',
+      nextRevision: () => ++revision,
+    };
+
+    broadcastLive('chat:thinking-start', { index: 0 }, scope);
+    broadcastLive('chat:thinking-chunk', { index: 0, delta: 'inspect ' }, scope);
+    broadcastLive('chat:thinking-chunk', { index: 0, delta: 'evidence' }, scope);
+    broadcastLive('chat:content-block-stop', { index: 0, type: 'thinking' }, scope);
+    client.close();
+
+    const raw = await drain(reader);
+    expect(countEvent(raw, 'chat:thinking-start')).toBe(1);
+    expect(countEvent(raw, 'chat:thinking-chunk')).toBe(1);
+    expect(countEvent(raw, 'chat:content-block-stop')).toBe(1);
+    expect(raw).toContain(JSON.stringify({
+      sessionId: 'session-thinking',
+      liveRevision: 2,
+      payload: { index: 0, delta: 'inspect evidence' },
+    }));
+    expect(raw.indexOf('event: chat:thinking-start'))
+      .toBeLessThan(raw.indexOf('event: chat:thinking-chunk'));
+    expect(raw.indexOf('event: chat:thinking-chunk'))
+      .toBeLessThan(raw.indexOf('event: chat:content-block-stop'));
+    expect(revision).toBe(3);
+  });
+
+  it('flushes reasoning before a following text delta even without a structural boundary', async () => {
+    const { client, response } = createSseClient(() => { /* noop */ });
+    const reader = response.body!.getReader();
+    let revision = 0;
+    const scope = {
+      sessionId: 'session-delta-transition',
+      nextRevision: () => ++revision,
+    };
+
+    broadcastLive('chat:thinking-chunk', { index: 0, delta: 'reasoning' }, scope);
+    broadcastLive('chat:message-chunk', 'answer', scope);
+    flushPendingLiveEvents();
+    client.close();
+
+    const raw = await drain(reader);
+    expect(raw.indexOf('event: chat:thinking-chunk'))
+      .toBeLessThan(raw.indexOf('event: chat:message-chunk'));
+    expect(revision).toBe(2);
+  });
+
   it('coalescible delta events do not pile up unboundedly under pressure', async () => {
     // The exact "replace tail" behavior only kicks in once the queue reaches
     // the COALESCE_HIGH_WATER (256). We send 2000 coalescible chunks without
@@ -265,6 +316,7 @@ describe('SSE event priority registration', () => {
   it('classifies error / completion / init events as critical', () => {
     expect(SSE_EVENT_PRIORITIES['chat:message-error']).toBe('critical');
     expect(SSE_EVENT_PRIORITIES['chat:message-complete']).toBe('critical');
+    expect(SSE_EVENT_PRIORITIES['chat:messages-retracted']).toBe('critical');
     expect(SSE_EVENT_PRIORITIES['chat:system-init']).toBe('critical');
     expect(SSE_EVENT_PRIORITIES['chat:session-title-changed']).toBe('critical');
     expect(SSE_EVENT_PRIORITIES['chat:subagent-status']).toBe('critical');

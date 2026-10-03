@@ -2,7 +2,14 @@
  * WorkspaceAgentsList - Project-level agent list with enable/disable toggle
  * Used in WorkspaceConfigPanel's Agents tab
  */
-import { Plus, Bot, Loader2, Trash2, X as XIcon, Link2 } from 'lucide-react';
+import {
+  PlusIcon,
+  HelperIcon,
+  LoaderIcon,
+  TrashIcon,
+  CloseIcon as XIcon,
+  LinkIcon,
+} from '@/components/icons';
 import { useCallback, useEffect, useState, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -208,7 +215,7 @@ export default function WorkspaceAgentsList({
     if (loading) {
         return (
             <div className="flex h-48 items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />
+                <LoaderIcon className="h-6 w-6 animate-spin text-[var(--ink-muted)]" />
             </div>
         );
     }
@@ -220,21 +227,21 @@ export default function WorkspaceAgentsList({
             {/* Header */}
             <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                    <Bot className="h-5 w-5 text-[var(--ink-muted)]" />
+                    <HelperIcon className="h-5 w-5 text-[var(--ink-muted)]" />
                     <h3 className="text-base font-semibold text-[var(--ink)]">{t('agentSettings.workspaceAgents.title')}</h3>
                 </div>
                 <button
                     onClick={handleCreateAgent}
                     className="flex items-center gap-1 rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-primary-text)] hover:bg-[var(--button-primary-bg-hover)]"
                 >
-                    <Plus className="h-4 w-4" />
+                    <PlusIcon className="h-4 w-4" />
                     {t('agentSettings.common.new')}
                 </button>
             </div>
 
             {!hasAny && availableForImport.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-[var(--line)] bg-[var(--paper-inset)]/30 py-8 text-center">
-                    <Bot className="mx-auto h-10 w-10 text-[var(--ink-muted)]/30" />
+                    <HelperIcon className="mx-auto h-10 w-10 text-[var(--ink-muted)]/30" />
                     <p className="mt-2 text-sm text-[var(--ink-muted)]">{t('agentSettings.workspaceAgents.emptyTitle')}</p>
                     <p className="mt-1 text-xs text-[var(--ink-muted)]">
                         {t('agentSettings.workspaceAgents.emptyDescription')}
@@ -294,7 +301,7 @@ export default function WorkspaceAgentsList({
                                     onClick={() => setShowImportPicker(!showImportPicker)}
                                     className="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2.5 py-1 text-xs text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                                 >
-                                    <Link2 className="h-3 w-3" />
+                                    <LinkIcon className="h-3 w-3" />
                                     {showImportPicker ? t('agentSettings.workspaceAgents.collapse') : t('agentSettings.workspaceAgents.import')}
                                 </button>
                             </div>
@@ -383,7 +390,7 @@ function AgentRow({
             onClick={onClick}
         >
             <div className="flex items-center gap-2">
-                <Bot data-capability-type-icon="agent" className="h-3.5 w-3.5 shrink-0 text-violet-500" />
+                <HelperIcon data-capability-type-icon="agent" className="h-3.5 w-3.5 shrink-0 text-violet-500" />
                 <h4 className="min-w-0 flex-1 truncate text-sm font-semibold text-[var(--ink)]">
                     {agent.name}
                 </h4>
@@ -409,7 +416,7 @@ function AgentRow({
                         className="shrink-0 rounded-md p-1 text-[var(--ink-muted)] opacity-0 transition-opacity hover:bg-[var(--error-bg)] hover:text-[var(--error)] group-hover:opacity-100"
                         title={t('agentSettings.common.delete')}
                     >
-                        <Trash2 className="h-3.5 w-3.5" />
+                        <TrashIcon className="h-3.5 w-3.5" />
                     </button>
                 )}
                 <button

@@ -1,5 +1,11 @@
 import React, { useCallback, useMemo } from 'react';
-import { ArrowDown, ArrowUp, GripVertical, Pin, X } from 'lucide-react';
+import {
+  ArrowDownIcon,
+  ArrowUpIcon,
+  GripIcon,
+  PinIcon,
+  CloseIcon,
+} from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import {
     closestCenter,
@@ -68,7 +74,7 @@ function ProviderOrderRow({ provider, index, isLast, enabled, fixed = false, onM
         >
             {fixed ? (
                 <div className="flex w-[106px] shrink-0 items-center gap-2 px-1.5 text-xs text-[var(--ink-muted)]">
-                    <Pin className="h-4 w-4" />
+                    <PinIcon className="h-4 w-4" />
                     <span>{t('providers.order.fixedFirst')}</span>
                 </div>
             ) : (
@@ -81,7 +87,7 @@ function ProviderOrderRow({ provider, index, isLast, enabled, fixed = false, onM
                         title={t('providers.order.drag')}
                         aria-label={t('providers.order.dragProvider', { name: provider.name })}
                     >
-                        <GripVertical className="h-4 w-4" />
+                        <GripIcon className="h-4 w-4" />
                     </button>
                     <div className="flex w-16 shrink-0 items-center gap-1">
                         <button
@@ -91,7 +97,7 @@ function ProviderOrderRow({ provider, index, isLast, enabled, fixed = false, onM
                             className="rounded-md p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:opacity-35"
                             title={t('providers.order.moveUp')}
                         >
-                            <ArrowUp className="h-3.5 w-3.5" />
+                            <ArrowUpIcon className="h-3.5 w-3.5" />
                         </button>
                         <button
                             type="button"
@@ -100,7 +106,7 @@ function ProviderOrderRow({ provider, index, isLast, enabled, fixed = false, onM
                             className="rounded-md p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:opacity-35"
                             title={t('providers.order.moveDown')}
                         >
-                            <ArrowDown className="h-3.5 w-3.5" />
+                            <ArrowDownIcon className="h-3.5 w-3.5" />
                         </button>
                     </div>
                 </>
@@ -228,7 +234,7 @@ export default function ProviderEnableOrderDialog({
                             className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)]"
                             aria-label={t('providers.order.close')}
                         >
-                            <X className="h-5 w-5" />
+                            <CloseIcon className="h-5 w-5" />
                         </button>
                     </div>
                 </div>

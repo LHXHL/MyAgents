@@ -44,6 +44,7 @@
     "permissionModeHeader": "会话模式",
     "agentSettings": "Agent 设置",
     "autonomyWarning": "自主行动已启用：Agent 可能做出不可挽回的操作，请谨慎使用",
+    "dshAutonomyWarning": "完全自主将跳过工具审批，允许在当前用户权限范围内使用电脑与互联网。",
     "toolsTitle": "使用工具",
     "toolsLabel": "工具",
     "toolsHeader": "工具 (在此对话中启用)",
@@ -128,17 +129,29 @@
       "partial": "仅展示部分结果，请缩小搜索范围"
     },
     "permissionModes": {
+      "approval-required": {
+        "label": "请求批准",
+        "description": "工作区内行动，使用工具需审批"
+      },
+      "workspace-autonomous": {
+        "label": "工作区自主",
+        "description": "工作区内无限制，无需审批"
+      },
+      "full-autonomous": {
+        "label": "完全自主",
+        "description": "无限制使用电脑与互联网，无需审批"
+      },
       "auto": {
-        "label": "行动",
-        "description": "Agent 在工作区内行动，使用工具需确认"
+        "label": "请求批准",
+        "description": "工作区内行动，使用工具需审批"
       },
       "plan": {
         "label": "规划",
         "description": "规划模式，只读不执行"
       },
       "fullAgency": {
-        "label": "自主行动",
-        "description": "Agent 拥有完全自主权限，无需人工确认"
+        "label": "完全自主",
+        "description": "无限制使用电脑与互联网，无需审批"
       },
       "custom": {
         "label": "自定义",
@@ -156,28 +169,20 @@
         "label": "Bypass Permissions",
         "description": "跳过所有权限确认"
       },
-      "autoEdit": {
-        "label": "Auto Edit",
-        "description": "自动接受文件编辑，其他需确认"
-      },
-      "yolo": {
-        "label": "YOLO",
-        "description": "跳过所有工具确认"
-      },
       "suggest": {
         "label": "Suggest",
         "description": "只读模式；仅信任的命令自动执行，其他需确认"
       },
       "auto-edit": {
-        "label": "Ask for approval",
+        "label": "请求批准",
         "description": "工作区内自动执行；联网或修改外部文件时请求批准"
       },
       "full-auto": {
-        "label": "Approve for me",
+        "label": "帮我批准",
         "description": "由 Codex 自动审查审批请求，仅潜在不安全操作需确认"
       },
       "no-restrictions": {
-        "label": "Full Access",
+        "label": "完全访问权限",
         "description": "无需审批即可访问文件和网络"
       }
     },
@@ -435,7 +440,11 @@
     "header": "运行环境",
     "settings": "设置",
     "notInstalled": "未安装",
-    "comingSoon": "即将支持"
+    "comingSoon": "即将支持",
+    "integrated": "内置 Agent 运行环境",
+    "integratedHelp": "内置Agent 运行环境，在 MyAgents 可完成全部设置",
+    "externalCli": "外部 CLI",
+    "externalCliHelp": "本机安装的其他 Agent 环境，设置与升级均需要前往对应软件进行"
   },
   "shell": {
     "common": {
@@ -444,6 +453,7 @@
     },
     "sessionMenu": {
       "trigger": "对话操作",
+      "runtimeLoading": "运行环境加载中…",
       "copySessionIdAria": "复制 SessionID",
       "copied": "已复制",
       "copy": "复制",
@@ -553,13 +563,48 @@
       "cancelQueued": "取消排队"
     },
     "permissionPrompt": {
+      "sandboxTitle": "工作区外写入请求",
+      "sandboxSubtitle": "仅允许当前这次操作突破工作区写入限制",
+      "sandboxScope": "本次批准只用于当前操作，不改变会话权限模式。",
+      "commandTitle": "{{shell}} 执行请求",
+      "awaitingApproval": "等待确认",
+      "command": "命令",
+      "expandCommand": "展开完整命令",
+      "collapseCommand": "收起命令",
+      "allowOnce": "允许一次",
+      "cwd": "执行目录",
+      "sessionWorkspaceScope": "“始终允许”会在当前会话内，同时允许此工作区中的其他 Bash 命令。",
+      "sessionRuleScope": "“始终允许”：在当前会话及其子 Agent 中，允许 {{tool}} 对相同目标 {{target}} 的操作。",
       "progress": "权限审批 {{index}} / {{total}}",
       "title": "权限请求",
       "subtitle": "AI 请求执行以下操作",
       "badge": "需授权",
       "deny": "拒绝",
       "alwaysAllow": "始终允许",
-      "allow": "允许"
+      "allow": "允许",
+      "query": "搜索内容",
+      "provider": "搜索服务",
+      "allowedDomains": "仅搜索这些域名",
+      "blockedDomains": "排除这些域名",
+      "purpose": "用途",
+      "file": "文件",
+      "create": "创建文件",
+      "write": "覆盖文件",
+      "edit": "修改文件",
+      "replacements": "替换次数",
+      "fullChange": "完整变更",
+      "before": "修改前",
+      "after": "修改后",
+      "action": "操作",
+      "target": "目标",
+      "arguments": "参数",
+      "rootAgent": "主 Agent",
+      "childAgent": "子 Agent",
+      "loadingDetails": "正在读取完整操作详情…",
+      "detailsFailed": "无法读取完整详情",
+      "retry": "重试",
+      "responseFailed": "审批响应未完成，可重试同一请求",
+      "ruleScope": "“始终允许”：在当前会话及其子 Agent 中，批准后 {{hours}} 小时内允许 {{tool}} 对相同目标 {{target}} 的操作。"
     },
     "askQuestion": {
       "preview": "预览",
@@ -568,7 +613,9 @@
       "questionAria": "问题 {{index}}: {{header}}",
       "previous": "上一题",
       "submit": "提交",
-      "next": "下一题"
+      "next": "下一题",
+      "submitFailed": "回答提交失败，已保留你的选择，请重试或取消。",
+      "cancelFailed": "取消失败，请重试；也可以用输入框的停止按钮结束本轮。"
     },
     "planPrompt": {
       "submitFeedback": "提交修改意见",
@@ -614,7 +661,15 @@
     },
     "toolChrome": {
       "common": {
+        "completedContinuable": "已完成，可继续",
         "background": "后台",
+        "providerOwned": "Provider 执行",
+        "providerOutcome": {
+          "running": "执行中",
+          "succeeded": "已返回结果",
+          "failed": "失败",
+          "unknown": "结果未确认"
+        },
         "copy": "复制",
         "copied": "已复制",
         "exportMarkdown": "导出 markdown",
@@ -773,6 +828,8 @@
         "imBridgeTools": "插件工具"
       },
       "taskOp": {
+        "rootOwner": "负责人：主 Agent（root）",
+        "agentOwner": "负责人：Agent（{{owner}}）",
         "loadingList": "加载任务列表...",
         "emptyList": "暂无任务",
         "create": "创建任务",
@@ -814,6 +871,9 @@
         "partialFiles": "显示第 {{start}}–{{end}} 个文件，共 {{total}} 个文件"
       },
       "webSearch": {
+        "unverifiedText": "部分来源链接尚未确认，以下保留搜索服务返回的原文。",
+        "unverifiedDomainText": "部分来源链接及域名筛选尚未确认，以下保留搜索服务返回的原文。",
+        "noMatches": "未找到匹配的网页。",
         "initializing": "正在初始化搜索...",
         "expandRemaining": "展开剩余 {{count}} 条结果",
         "toolOutput": "工具输出",
@@ -935,6 +995,7 @@
       "noActiveSessions": "暂无聊天记录"
     },
     "providerSwitch": {
+      "channelTransferNotice": "确认后将创建新会话，并把当前 IM 对话转移到新会话。原会话历史仍保留。",
       "codexSubscription": "Codex（订阅）",
       "currentProviderFallback": "当前 Provider",
       "targetProviderFallback": "目标 Provider",
@@ -965,11 +1026,6 @@
         "title": "需要新开会话发送",
         "message": "这个历史会话由「{{sessionRuntime}}」创建，但当前外部 Runtime 功能已关闭，不能继续在原会话中发送。将保留当前会话，并用「{{currentRuntime}}」新开会话发送这条消息。",
         "confirm": "新开会话并发送"
-      },
-      "runtimeSwitch": {
-        "title": "需要新开 Runtime 会话",
-        "message": "当前会话已绑定到「{{currentRuntime}}」，不能在同一条历史中切到「{{targetRuntime}}」。将保留当前会话，在新 Tab 打开「{{targetRuntime}}」会话，并把工作区默认 Runtime 更新为「{{targetRuntime}}」。",
-        "confirm": "确认切换"
       },
       "rewind": {
         "title": "时间回溯",
@@ -1009,11 +1065,6 @@
       "cronTaskCreated": "定时任务已创建",
       "createFailedWithError": "创建失败: {{error}}",
       "channelNotificationFailed": "新会话已接管 Channel，但 IM 通知发送失败",
-      "runtimeSwitchCreateFailed": "切换 Runtime 失败：无法创建新会话",
-      "runtimeSwitchDefaultUpdateFailed": "切换 Runtime 失败：工作区默认 Runtime 未能更新",
-      "runtimeSwitchDefaultUpdateWarning": "新会话将继续打开，但工作区默认 Runtime 未能更新",
-      "runtimeSwitchTabOpenFailed": "新会话已创建，但未能打开。可从历史记录重新打开。",
-      "runtimeSwitchChannelTransferFailed": "新会话已打开，但 Channel 绑定未迁移；已保存的工作区设置保留。",
       "providerSwitchTargetUnavailable": "创建新会话失败：目标 Provider 不可用",
       "providerSwitchDefaultSaveFailed": "新会话已创建，但 Agent 默认模型未能保存",
       "providerSwitchChannelTransferFailed": "新会话已打开，但 Channel 绑定未迁移",
@@ -1022,6 +1073,7 @@
       "channelRebindFailedNewCancelled": "Channel 重绑失败，已取消新对话",
       "channelRebindFailedDeleteCancelled": "Channel 重绑失败，已取消删除",
       "reselectModelFirst": "请先在模型选择器里重新选择一次模型",
+      "runtimeUnavailable": "此 Runtime 产物不可用或未通过完整性校验，请修复或重新安装 MyAgents 后再发送。",
       "submitFailedRetry": "提交失败，请重试",
       "unknownError": "未知错误",
       "rewindFailedWithError": "时间回溯失败：{{error}}",
@@ -1044,9 +1096,8 @@
       "rewindFilesNotAttempted": "对话已回溯，但没有可用的文件检查点，工作区文件保持当前状态。",
       "retryFailedWithError": "重试失败：{{error}}",
       "retryFailed": "重试失败",
-      "forkOpenFailed": "分支已创建，可从历史列表打开。",
-      "rewindFilesAlreadyRestored": "文件已恢复，但会话回溯未完成；请检查工作区文件。",
-      "conversationResultUnknown": "操作结果尚未确认，已尝试同步当前记录；请先检查会话，避免重复操作。",
+      "forkOpenFailed": "创建分支失败：无法打开新会话",
+      "forkReconciled": "连接曾中断，但已找回并打开新分支",
       "forkFailedWithError": "创建分支失败：{{error}}",
       "forkFailed": "创建分支失败",
       "taskDeleted": "任务已删除",
@@ -1151,6 +1202,7 @@
       },
       "starting": "AI 启动中…（首次启动可能较慢）",
       "loadingHistory": "加载对话记录…",
+      "waitingForInteraction": "等待你的选择",
       "streaming": {
         "0": "苦思冥想中…",
         "1": "深思熟虑中…",
@@ -1173,6 +1225,54 @@
         "18": "别急，好饭不怕晚…",
         "19": "正在认真对待你的问题…"
       }
+    }
+  },
+  "agentTree": {
+    "personalTasks": "个人任务",
+    "sharedTasks": "共享任务",
+    "taskOwner": "负责人",
+    "taskOffered": "开放给",
+    "taskBlockedBy": "依赖",
+    "interruptTurn": "中断当前轮次",
+    "nativeModes": { "one-shot": "一次性委派", "continuable": "可延续 Agent" },
+    "nativeStates": { "running": "执行中", "inactive": "未运行" },
+    "taskStates": { "pending": "待办", "in_progress": "进行中", "completed": "已完成", "cancelled": "已取消" },
+    "title": "Agent 任务树",
+    "close": "关闭",
+    "unknown": "未知",
+    "loading": "读取中…",
+    "empty": "本会话尚未创建子 Agent。",
+    "descendants": "本次已完成，后台后代仍在活动",
+    "tokens": "已报告 tokens",
+    "context": "预计下次输入 / 容量",
+    "details": "查看详情",
+    "parent": "直接父 Agent",
+    "message": "追问",
+    "resume": "恢复此节点",
+    "stop": "停止子树",
+    "send": "发送",
+    "states": {
+      "queued": "排队中",
+      "running": "执行中",
+      "waiting_child": "等待后代",
+      "waiting_delivery": "等待消息投递",
+      "waiting_interaction": "等待用户",
+      "completed": "已完成",
+      "failed": "失败",
+      "aborted": "已中断",
+      "interrupted": "已中断",
+      "stopping": "停止中",
+      "closed": "已关闭"
+    },
+    "messageAccepted": "消息已接收，将在目标允许的执行边界生效。",
+    "latestResult": "最近结果",
+    "provider": "供应商",
+    "model": "模型",
+    "activation": "执行次数",
+    "roles": {
+      "general": "通用",
+      "Explore": "探索",
+      "Plan": "规划"
     }
   }
 }

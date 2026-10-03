@@ -6,13 +6,14 @@ import { i18n } from '@/i18n';
 import type { SettingsSection } from '../settingsSections';
 import { SettingsSidebar } from './SettingsSidebar';
 
-function SidebarProbe() {
+function SidebarProbe({ developerUnlocked = false }: { developerUnlocked?: boolean }) {
   const [section, setSection] = useState<SettingsSection>('general');
   return (
     <SettingsSidebar
       activeSection={section}
       setActiveSection={setSection}
       showDevTools
+      developerUnlocked={developerUnlocked}
       onShowLogs={() => {}}
     />
   );
@@ -36,6 +37,7 @@ describe('SettingsSidebar i18n', () => {
     expect(screen.queryByRole('button', { name: 'Plugins' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Tools' })).not.toBeInTheDocument();
     expect(screen.getByTitle('View Rust logs')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Developer' })).not.toBeInTheDocument();
   });
 
   it('keeps the product-defined settings order', () => {
@@ -55,5 +57,14 @@ describe('SettingsSidebar i18n', () => {
       'Shortcuts',
       'About',
     ]);
+  });
+
+  it('adds Developer directly below About only after the About gesture unlocks it', () => {
+    render(<SidebarProbe developerUnlocked />);
+
+    const labels = within(screen.getByRole('navigation'))
+      .getAllByRole('button')
+      .map(button => button.textContent);
+    expect(labels.slice(-2)).toEqual(['About', 'Developer']);
   });
 });

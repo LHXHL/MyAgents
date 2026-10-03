@@ -271,12 +271,47 @@ afterEach(async () => {
   state.failProductIo = false;
   releaseWrite?.();
   vi.restoreAllMocks();
+  const lifecycle = await import('../builtin-session/lifecycle');
+  lifecycle.setPreWarmDisabled(true);
+  lifecycle.clearPreWarmTimer();
   await agent.resetSession();
   await store.drainSessionTranscripts();
   await rm(state.home, { recursive: true, force: true });
 });
 
 describe('builtin V2 execution independent of product storage', () => {
+  it.each(['dsh', 'claude-code', 'codex'] as const)('does not start SDK prewarm or publish a %s transcript after a stray builtin reload', async runtime => {
+    const workspace = join(state.home, 'workspace');
+    await mkdir(workspace, { recursive: true });
+    vi.stubEnv('MYAGENTS_RUNTIME', runtime);
+    try {
+      await agent.initializeAgent(workspace);
+      const metadata = await store.createSession(workspace, { id: agent.getSessionId(), runtime });
+      const active = store.getActiveSessionTranscript(metadata.id)!;
+      const { TranscriptPresentation } = await import('./presentation');
+      const { ProductTranscriptContent } = await import('./content');
+      const publish = vi.fn();
+      const presentation = new TranscriptPresentation(new ProductTranscriptContent(active.writer), publish);
+
+      // SDK config helpers used to attach a second publisher to the shared
+      // Product writer even though another Runtime owns execution/presentation.
+      agent.publishBuiltinTranscriptSaveStatus(active.writer.status);
+      state.events.length = 0;
+      presentation.record('chat:message-chunk', 'A single delta');
+      expect(publish.mock.calls.filter(([op]) => op.kind === 'text-append')).toHaveLength(1);
+      expect(state.events.filter(([event]) => event === 'chat:transcript-operation')).toHaveLength(0);
+
+      agent.setMcpServers([]);
+      agent.setAgents({});
+      agent.forceReloadActiveSession('agents');
+      const lifecycle = await import('../builtin-session/lifecycle');
+      expect(lifecycle.getPreWarmTimer()).toBeNull();
+      expect(state.query).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it.each(['normal', 'delayed', 'failed'] as const)('desktop reset waits for %s disk publication before exposing success', async mode => {
     const workspace = join(state.home, 'workspace');
     await mkdir(workspace, { recursive: true });
@@ -822,6 +857,7 @@ it('retains an exact rewind boundary across rejection and cold reopen', async ()
     undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
   await vi.waitFor(() => expect(state.query.mock.calls.at(-1)?.[0].options.resumeSessionAt).toBe('tail-frame-1'));
   await vi.waitFor(() => expect(state.events.some(([name]) => name === 'chat:message-error')).toBe(true));
+  expect(agent.getMessages().some(message => message.role === 'user' && message.content === 'after reopen')).toBe(true);
   expect(store.getSessionMetadata(meta.id)?.sdkResumeSessionAt).toBe('tail-frame-1');
   expect(state.query.mock.calls.at(-1)?.[0].options.resume).toBe(meta.id);
 });

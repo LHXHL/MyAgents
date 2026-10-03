@@ -1,7 +1,9 @@
+import { updateExternalRuntimeConfig } from '../runtimes/external-session';
 import { retryDesktopRequest } from './retry';
 import { randomUUID } from 'node:crypto';
 import { broadcast } from '../sse';
 import {
+  addExternalPermissionRule,
   publishExternalTranscriptSaveStatus,
   cancelExternalQueueItem,
   cancelExternalQueuedTurnsByOwner,
@@ -32,7 +34,7 @@ import {
   getExternalSystemInitPayload,
   getExternalMcpEffectiveSnapshot,
   getExternalCurrentTurnIdentity,
-  getManagedCodexExtensionConfigSnapshot,
+  getProductExtensionConfigSnapshot,
   getLastExternalAssistantText,
   handleExternalOfficialToolIdsChange,
   handleExternalProxyConfigChange,
@@ -47,10 +49,17 @@ import {
   tryAcquireExternalSessionMutationLease,
   isExternalSessionStateRestoredFor,
   isExternalTurnCurrent,
+  listExternalPermissionRules,
+  listExternalAgentWork,
+  inspectExternalRuntime,
+  controlExternalAgentWork,
   respondExternalAskUserQuestion,
   respondExternalPermission,
+  respondExternalPlanApproval,
+  revokeExternalPermissionRule,
   restoreExternalSessionState,
   rewindExternalConversation,
+  retryDshConversation,
   forkExternalConversation,
   sendExternalMessage,
   setExternalModel,
@@ -141,6 +150,7 @@ function waitForDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T |
 function observeExternalDispatch(
   dispatch: Promise<{ queued: boolean; error?: string; terminationUnconfirmed?: boolean }>,
   queueId?: string,
+  userMessageId?: string,
 ): Promise<{ accepted: boolean; error?: string }> {
   return dispatch
     .then((result) => {
@@ -150,7 +160,7 @@ function observeExternalDispatch(
         }
         if (result.error) {
           console.error(`[chat] external send failed: ${result.error}`);
-          broadcast('chat:agent-error', { message: result.error });
+          broadcast('chat:agent-error', { message: result.error, userMessageId });
         }
         return result.terminationUnconfirmed
           ? { accepted: true }
@@ -162,7 +172,7 @@ function observeExternalDispatch(
       if (queueId) clearExternalTurnBinding(queueId);
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[chat] external send threw: ${message}`);
-      broadcast('chat:agent-error', { message });
+      broadcast('chat:agent-error', { message, userMessageId });
       return { accepted: false, error: message };
     });
 }
@@ -218,7 +228,7 @@ function buildExternalFreezeSnapshotPatch(): ExternalFreezeSnapshotPatch {
   if (model) patch.model = model;
   if (permissionMode) patch.permissionMode = permissionMode;
   if (reasoningEffort) patch.reasoningEffort = reasoningEffort;
-  const extensions = getManagedCodexExtensionConfigSnapshot();
+  const extensions = getProductExtensionConfigSnapshot();
   if (extensions.enabledPluginIds) patch.enabledPluginIds = extensions.enabledPluginIds;
   if (extensions.mcpServerIds) patch.mcpEnabledServers = extensions.mcpServerIds;
   if (runtime === 'codex' && runtimeSource === 'managed-provider' && model) {
@@ -323,11 +333,13 @@ export function createExternalSessionEngine(): SessionEngine {
       };
     },
 
+    inspectRuntime: inspectExternalRuntime,
+
     getSessionConfigSnapshot() {
       const runtimeSessionId = getRuntimeSessionId();
       const session = runtimeSessionId ? getSessionMetadata(runtimeSessionId) : null;
       const workspacePath = getRuntimeWorkspacePath();
-      const extensions = getManagedCodexExtensionConfigSnapshot();
+      const extensions = getProductExtensionConfigSnapshot();
       return {
         success: true,
         runtime: getActiveRuntimeType(),
@@ -337,6 +349,7 @@ export function createExternalSessionEngine(): SessionEngine {
         agentNames: extensions.agentNames,
         enabledPluginIds: extensions.enabledPluginIds,
         ...(extensions.extensionStatus ? { extensionStatus: extensions.extensionStatus } : {}),
+        ...(extensions.permissionStatus ? { permissionStatus: extensions.permissionStatus } : {}),
         enabledOfficialToolIds: workspacePath
           ? getEffectiveOfficialToolIdsForSession(workspacePath, session)
           : [],
@@ -444,7 +457,11 @@ export function createExternalSessionEngine(): SessionEngine {
           channelDelivery: DESKTOP_CHANNEL_DELIVERY,
         },
       );
-      const dispatchAcceptance = observeExternalDispatch(sent.dispatch, request.queueId);
+      const dispatchAcceptance = observeExternalDispatch(
+        sent.dispatch,
+        request.queueId,
+        sent.userMessageId,
+      );
       return {
         success: true,
         queued: sent.queued,
@@ -485,6 +502,7 @@ export function createExternalSessionEngine(): SessionEngine {
       const dispatchAcceptance = observeExternalDispatch(
         sent.dispatch,
         sent.queueId ?? request.queueId,
+        sent.userMessageId,
       );
 
       // A queueId means the existing external turn-boundary queue has taken
@@ -851,7 +869,7 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     async cancelQueuedMessage(queueId) {
-      const cancellation = cancelExternalQueueItem(queueId);
+      const cancellation = await cancelExternalQueueItem(queueId);
       if (!cancellation) return { status: 'not_found' as const };
       const settlement = await cancellation.promotion?.settled;
       if (
@@ -874,12 +892,32 @@ export function createExternalSessionEngine(): SessionEngine {
       return waitForExternalSessionIdle(timeoutMs, pollMs);
     },
 
+    async applyModelSelection(input) {
+      const result = await updateExternalRuntimeConfig({ model: input.model, reasoningEffort: input.reasoningEffort }, { source: 'message-snapshot' });
+      return { success: result.success, status: result.status === 'queued' ? 'pending-next-turn' : result.status, error: result.error };
+    },
+
     updateModel(model, opts) {
       return setExternalModel(model, opts);
     },
 
     updatePermissionMode(mode) {
       return setExternalPermissionMode(mode);
+    },
+
+    listAgentWork(tasksFor) { return listExternalAgentWork(tasksFor); },
+    controlAgentWork(input) { return controlExternalAgentWork(input); },
+
+    listPermissionRules() {
+      return listExternalPermissionRules();
+    },
+
+    addPermissionRule(input) {
+      return addExternalPermissionRule(input);
+    },
+
+    revokePermissionRule(input) {
+      return revokeExternalPermissionRule(input);
     },
 
     updateReasoningEffort(effort) {
@@ -938,7 +976,14 @@ export function createExternalSessionEngine(): SessionEngine {
       }
 
       await awaitExternalSessionStarting();
-      const nativeSessionId = getExternalNativeSessionId() || undefined;
+      // DSH persistence is scoped by Product Session identity. A native Session
+      // created under a provisional Product id cannot be resumed after the id
+      // changes, so pending materialization never carries that native id across.
+      // Codex native stores are independent of the Product id and retain
+      // their existing handoff behavior.
+      const nativeSessionId = getActiveRuntimeType() === 'dsh'
+        ? undefined
+        : getExternalNativeSessionId() || undefined;
       return commitPendingProductSession({
         preparedSessionId: request.preparedSessionId,
         async beforeBind() {
@@ -973,28 +1018,36 @@ export function createExternalSessionEngine(): SessionEngine {
       return respondExternalAskUserQuestion(requestId, answers);
     },
 
+    respondPlanApproval(requestId, approved, feedback) {
+      return respondExternalPlanApproval(requestId, approved, feedback);
+    },
+
     rewindToUserMessage(userMessageId) {
       return rewindExternalConversation(userMessageId);
     },
 
     async retryUserMessage(userMessageId, options) {
       const context = this.getCurrentSessionContext();
-      return rewindExternalConversation(userMessageId, async rewound => {
-        if (rewound.errorCode === 'restore_failed') return { ...rewound, success: false, conversationCommitted: true, retryQueued: false };
+      const replay = async (rewound: Awaited<ReturnType<typeof rewindExternalConversation>>) => {
+        if (rewound.errorCode === 'restore_failed') {
+          return { ...rewound, success: false, conversationCommitted: true, retryQueued: false };
+        }
         try {
           const sent = await this.sendDesktopMessage(retryDesktopRequest(context, rewound, options));
-          // The lease still blocks dispatch. Its replay precedes arrivals queued
-          // while native history was being rewound.
           if (sent.success && sent.queueId) await forceExecuteExternalQueueItem(sent.queueId);
           return { ...rewound, success: sent.success, conversationCommitted: true, retryQueued: sent.success, error: sent.error };
         } catch (error) {
           return { ...rewound, success: false, conversationCommitted: true, retryQueued: false, error: String(error) };
         }
-      });
+      };
+      if (getActiveRuntimeType() === 'dsh') {
+        return retryDshConversation(userMessageId, replay);
+      }
+      return rewindExternalConversation(userMessageId, replay);
     },
 
-    forkAtAssistantMessage(messageId, targetSessionId) {
-      return forkExternalConversation(messageId, targetSessionId);
+    forkAtAssistantMessage(messageId, options) {
+      return forkExternalConversation(messageId, options?.targetSessionId);
     },
 
     async updateProviderEnv() {

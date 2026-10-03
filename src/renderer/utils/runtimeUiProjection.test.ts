@@ -5,9 +5,18 @@ import {
   projectRuntimeExtensionUpdateNotice,
   shouldShowBuiltinSdkSlashCommands,
   shouldUseExternalRuntimeInputControls,
+  supportsRuntimeConversationBranches,
 } from './runtimeUiProjection';
 
 describe('runtime UI projection', () => {
+  it('exposes bundled DSH mutations without borrowing the Codex CLI version gate', () => {
+    expect(supportsRuntimeConversationBranches('dsh', 'integrated', undefined)).toBe(true);
+    expect(supportsRuntimeConversationBranches('builtin', undefined, undefined)).toBe(true);
+    expect(supportsRuntimeConversationBranches('claude-code', 'system-cli', '0.146.0')).toBe(false);
+    expect(supportsRuntimeConversationBranches('codex', 'system-cli', '0.142.9')).toBe(false);
+    expect(supportsRuntimeConversationBranches('codex', 'system-cli', '0.143.0')).toBe(true);
+    expect(supportsRuntimeConversationBranches('codex', 'managed-provider', undefined)).toBe(true);
+  });
   it('keeps managed Codex execution hidden behind builtin provider chrome', () => {
     expect(projectInputChromeRuntime({
       currentRuntime: 'codex',
@@ -30,11 +39,22 @@ describe('runtime UI projection', () => {
     })).toBe(true);
   });
 
+  it('keeps Integrated DSH on Product provider and extension controls', () => {
+    expect(projectInputChromeRuntime({
+      currentRuntime: 'dsh',
+      managedProviderRuntimeActive: false,
+    })).toBe('dsh');
+    expect(shouldUseExternalRuntimeInputControls({
+      currentRuntime: 'dsh',
+      managedProviderRuntimeActive: false,
+    })).toBe(false);
+  });
+
   it('only exposes Claude Agent SDK system slash commands to builtin Sessions', () => {
     expect(shouldShowBuiltinSdkSlashCommands('builtin')).toBe(true);
+    expect(shouldShowBuiltinSdkSlashCommands('dsh')).toBe(false);
     expect(shouldShowBuiltinSdkSlashCommands('codex')).toBe(false);
     expect(shouldShowBuiltinSdkSlashCommands('claude-code')).toBe(false);
-    expect(shouldShowBuiltinSdkSlashCommands('gemini')).toBe(false);
   });
 
   it('only requests extension feedback when the user must wait or act', () => {
