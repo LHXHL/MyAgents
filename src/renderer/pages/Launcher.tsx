@@ -1311,80 +1311,78 @@ export default function Launcher({
         />
       )}
 
-      <main className="relative flex flex-1 items-center justify-center overflow-hidden">
-        <section className="launcher-brand relative flex h-full w-full items-center justify-center overflow-hidden">
-          <BrandSection
-            projects={visibleProjects}
-            selectedProject={selectedWorkspace}
-            defaultWorkspacePath={config.defaultWorkspacePath}
-            onSelectWorkspace={(project) =>
-              onWorkspaceSelectionChange?.(project.path)
-            }
-            onAddFolder={handleAddProject}
-            onSetDefaultWorkspace={handleSetDefault}
-            onSend={handleBrandSend}
-            onStartRecording={handleRequestRecording}
-            onOpenRecord={onOpenRecord}
-            recordingBusy={recordingBusy || recordingRequestBusy}
-            attachmentSessionId={attachmentSessionId}
-            isStarting={
-              launchingProjectId === selectedWorkspace?.id && isStarting
-            }
-            provider={launcherProvider}
-            providers={launcherProviders}
-            selectedModel={launcherSelectedModel}
-            onProviderChange={handleLauncherProviderChange}
-            onModelChange={handleLauncherModelChange}
-            reasoningEffort={launcherReasoningEffort}
-            onReasoningEffortChange={handleLauncherReasoningEffortChange}
-            permissionMode={effectiveLauncherPermissionMode}
-            onPermissionModeChange={handleLauncherPermissionModeChange}
-            apiKeys={apiKeys}
-            providerVerifyStatus={providerVerifyStatus}
-            workspaceMcpEnabled={launcherWorkspaceMcpEnabled}
-            globalMcpEnabled={launcherGlobalMcpEnabled}
-            mcpServers={launcherMcpServers}
-            onWorkspaceMcpToggle={handleWorkspaceMcpToggle}
-            officialTools={OFFICIAL_TOOLS}
-            workspaceOfficialToolEnabled={launcherOfficialToolEnabled}
-            globalOfficialToolEnabled={launcherGlobalOfficialToolEnabled}
-            officialToolNeedsConfig={launcherOfficialToolNeedsConfig}
-            onWorkspaceOfficialToolToggle={handleLauncherOfficialToolToggle}
-            // PRD 0.2.17 — same plugin props as Chat. Source from
-            // AppConfig (Layer 1 visibility gate); Layer 2 is
-            // Launcher's transient selection (handed off to new
-            // Tab via InitialMessage.enabledPluginIds).
-            globallyVisiblePlugins={(config.plugins ?? [])
-              .filter((p) => config.enabledPlugins?.[p.id] === true)
-              .map((p) => ({
-                id: p.id,
-                name: p.name,
-                description: p.description,
-              }))}
-            workspaceEnabledPlugins={launcherEnabledPlugins}
-            onWorkspacePluginToggle={handleLauncherPluginToggle}
-            onRefreshProviders={refreshProviderData}
-            onGoToSettings={handleGoToSettings}
-            runtime={
-              launcherRuntime !== 'builtin' ? launcherRuntime : undefined
-            }
-            usesExternalRuntimeControls={isExternalRuntime}
-            runtimeModels={
-              isExternalRuntime ? launcherRuntimeModels : undefined
-            }
-            runtimePermissionModes={
-              launcherRuntime !== 'builtin'
-                ? launcherRuntimePermissionModes
-                : undefined
-            }
-            /* Runtime selector lives below the input (LauncherInputContextRow). */
-            runtimeSelectorAvailable={runtimeSelectorAvailable}
-            runtimeDetections={runtimeDetections}
-            onRuntimeChange={handleLauncherRuntimeChange}
-            activeRuntime={launcherRuntime}
-            isActive={isActive}
-          />
-        </section>
+      <main className="flex min-h-0 flex-1 overflow-hidden">
+        <BrandSection
+          projects={visibleProjects}
+          selectedProject={selectedWorkspace}
+          defaultWorkspacePath={config.defaultWorkspacePath}
+          onSelectWorkspace={(project) =>
+            onWorkspaceSelectionChange?.(project.path)
+          }
+          onAddFolder={handleAddProject}
+          onSetDefaultWorkspace={handleSetDefault}
+          onSend={handleBrandSend}
+          onStartRecording={handleRequestRecording}
+          onOpenRecord={onOpenRecord}
+          recordingBusy={recordingBusy || recordingRequestBusy}
+          attachmentSessionId={attachmentSessionId}
+          isStarting={
+            launchingProjectId === selectedWorkspace?.id && isStarting
+          }
+          provider={launcherProvider}
+          providers={launcherProviders}
+          selectedModel={launcherSelectedModel}
+          onProviderChange={handleLauncherProviderChange}
+          onModelChange={handleLauncherModelChange}
+          reasoningEffort={launcherReasoningEffort}
+          onReasoningEffortChange={handleLauncherReasoningEffortChange}
+          permissionMode={effectiveLauncherPermissionMode}
+          onPermissionModeChange={handleLauncherPermissionModeChange}
+          apiKeys={apiKeys}
+          providerVerifyStatus={providerVerifyStatus}
+          workspaceMcpEnabled={launcherWorkspaceMcpEnabled}
+          globalMcpEnabled={launcherGlobalMcpEnabled}
+          mcpServers={launcherMcpServers}
+          onWorkspaceMcpToggle={handleWorkspaceMcpToggle}
+          officialTools={OFFICIAL_TOOLS}
+          workspaceOfficialToolEnabled={launcherOfficialToolEnabled}
+          globalOfficialToolEnabled={launcherGlobalOfficialToolEnabled}
+          officialToolNeedsConfig={launcherOfficialToolNeedsConfig}
+          onWorkspaceOfficialToolToggle={handleLauncherOfficialToolToggle}
+          // PRD 0.2.17 — same plugin props as Chat. Source from
+          // AppConfig (Layer 1 visibility gate); Layer 2 is
+          // Launcher's transient selection (handed off to new
+          // Tab via InitialMessage.enabledPluginIds).
+          globallyVisiblePlugins={(config.plugins ?? [])
+            .filter((p) => config.enabledPlugins?.[p.id] === true)
+            .map((p) => ({
+              id: p.id,
+              name: p.name,
+              description: p.description,
+            }))}
+          workspaceEnabledPlugins={launcherEnabledPlugins}
+          onWorkspacePluginToggle={handleLauncherPluginToggle}
+          onRefreshProviders={refreshProviderData}
+          onGoToSettings={handleGoToSettings}
+          runtime={
+            launcherRuntime !== 'builtin' ? launcherRuntime : undefined
+          }
+          usesExternalRuntimeControls={isExternalRuntime}
+          runtimeModels={
+            isExternalRuntime ? launcherRuntimeModels : undefined
+          }
+          runtimePermissionModes={
+            launcherRuntime !== 'builtin'
+              ? launcherRuntimePermissionModes
+              : undefined
+          }
+          /* Runtime selector lives below the input (LauncherInputContextRow). */
+          runtimeSelectorAvailable={runtimeSelectorAvailable}
+          runtimeDetections={runtimeDetections}
+          onRuntimeChange={handleLauncherRuntimeChange}
+          activeRuntime={launcherRuntime}
+          isActive={isActive}
+        />
       </main>
     </div>
   );

@@ -39,6 +39,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { track } from '@/analytics';
 import myAgentsLogo from '@/assets/runtime-icons/myagents.png';
 import { updateSession, type SessionMetadata } from '@/api/sessionClient';
+import { MyAgentsLogotype } from '@/components/brand/MyAgentsLogotype';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import FeedbackPopover from '@/components/FeedbackPopover';
 import { APP_SHELL_POPOVER_CHROME } from '@/components/global-sidebar/appShellPopoverChrome';
@@ -1206,7 +1207,7 @@ export default memo(function GlobalSidebar({
               aria-hidden={!expanded}
               data-global-sidebar-brand-name
             >
-              MyAgents
+              <MyAgentsLogotype variant="compact" className="global-sidebar-brand-logotype" title="MyAgents" />
             </span>
           </button>
         </div>

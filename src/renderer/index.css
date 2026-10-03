@@ -230,6 +230,16 @@
   --space-12: 48px;
 }
 
+/* Brand spark: the amber point in the MYAGENTS logotype. Deeper on paper for
+   contrast, brighter on dark surfaces. */
+:root {
+  --brand-spark: #c98a2e;
+}
+
+html[data-color-scheme='dark'] {
+  --brand-spark: #e2a548;
+}
+
 /* Agent identity hues for WorkspaceIcon. Each glyph owns one hue, so the hue is
    part of the identity; `brand` follows the Theme accent for the neutral default; the dark set lifts lightness for the same recognition
    on dark surfaces (enforced by workspaceIcons.test.ts). */
@@ -349,6 +359,23 @@ html[data-color-scheme='dark'] {
   width: var(--global-sidebar-brand-icon-size);
   height: var(--global-sidebar-brand-icon-size);
   border-radius: 22%;
+}
+
+/* MYAGENTS logotype is outline art: size it by cap height (em-relative so each
+   surface keeps its own type scale) and let the width follow the viewBox. */
+.global-sidebar-brand-logotype {
+  display: block;
+  height: 0.8em;
+  width: auto;
+}
+
+.launcher-hero-logotype {
+  display: block;
+  height: 0.64em;
+  width: auto;
+  /* Outline art has no line-box leading below the baseline, so restore the
+     breathing room a text title would have had above the slogan. */
+  margin-bottom: 0.3em;
 }
 
 /* Sidebar layout reaches its final 256px/64px slot in one commit so Chat,
@@ -942,15 +969,6 @@ pre code {
   margin-left: 0 !important;
   border-left: none !important;
   padding-left: 0 !important;
-}
-
-/* ============================================
-   Launcher Page Styles
-   ============================================ */
-
-
-.launcher-brand {
-  min-width: 0; /* Allow shrinking */
 }
 
 /* Settings sidebar floating divider */
