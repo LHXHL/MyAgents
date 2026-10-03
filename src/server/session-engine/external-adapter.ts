@@ -438,6 +438,7 @@ export function createExternalSessionEngine(): SessionEngine {
         request.model,
         {
           sessionId: request.sessionId,
+          clientRequestId: request.clientRequestId,
           asyncQuestionReply: request.asyncQuestionReply,
           workspacePath: request.workspacePath,
           scenario: request.scenario,

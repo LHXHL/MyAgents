@@ -1,6 +1,27 @@
 import type { Message } from '@/types/chat';
 import { parseBackgroundTaskNotificationMessage } from '@/utils/backgroundTaskStatus';
 
+/** Pending sends are a presentation overlay, never a V2 content baseline. */
+export function projectOptimisticUserMessages(
+  history: readonly Message[],
+  pending: readonly Message[],
+): Message[] {
+  if (pending.length === 0) return history as Message[];
+  const adopted = new Set<string>();
+  const rows = history.map(message => {
+    const requestId = message.role === 'user' ? message.metadata?.clientRequestId : undefined;
+    const preview = requestId ? pending.find(row => row.metadata?.clientRequestId === requestId) : undefined;
+    if (!preview || !requestId) return message;
+    adopted.add(requestId);
+    // Canonical create may precede its text operation. Keep the user's text
+    // visible in that interval without modifying transcript offsets/content.
+    return message.content === '' && preview.content !== ''
+      ? { ...message, content: preview.content }
+      : message;
+  });
+  return [...rows, ...pending.filter(message => !adopted.has(message.metadata?.clientRequestId ?? ''))];
+}
+
 /**
  * Persisted background-task notifications are session state, not visual chat rows.
  * Keep the parser as the authority so malformed or merely similarly-named user

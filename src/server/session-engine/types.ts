@@ -41,6 +41,7 @@ export type SessionEngineKind = 'builtin' | 'integrated' | 'external';
 export type { PermissionMode } from '../agent-session';
 
 export type DesktopMessageRequest = {
+  clientRequestId?: string;
   asyncQuestionReply?: AsyncQuestionReply;
   text: string;
   images?: ImagePayload[];
