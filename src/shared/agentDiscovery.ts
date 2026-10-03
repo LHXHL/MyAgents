@@ -9,6 +9,7 @@ export const mentionAgentSchema = z.strictObject({
   selector: z.string().min(1).max(256),
   name: z.string().min(1).max(4096),
   isLocal: z.boolean(),
+  icon: z.string().max(256).nullable().optional(),
   deviceId: z.string().max(256).nullable(),
   deviceName: z.string().max(4096).nullable(),
   platform: z.string().max(256).nullable(),

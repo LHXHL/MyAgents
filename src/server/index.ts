@@ -1623,7 +1623,7 @@ async function routeAdminApi(
   if (route === 'agent/resolve-conflict')
     return api.handleAgentResolveConflict(payload as Parameters<typeof api.handleAgentResolveConflict>[0]);
   if (route === 'agent/current') return await api.handleAgentCurrent();
-  if (route === 'agent/discovery') return await api.handleAgentDiscovery();
+  if (route === 'agent/discovery') return await api.handleAgentDiscovery(payload);
   if (route === 'agent/network-catalog') return await api.handleAgentNetworkCatalog();
   if (route === 'agent/network-precheck' || route === 'agent/network-read' || route === 'agent/network-watch-result') {
     const target = await import('./agent-network/target');

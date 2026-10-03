@@ -35,6 +35,12 @@ describe("mention discovery policy", () => {
     expect(filterMentionAgents([remote, local], "pr REVIEW")).toEqual([remote]);
     expect(filterMentionAgents([remote, local], "我的电脑")).toHaveLength(2);
   });
+  it("accepts legacy discovery without icons and bounds optional display metadata", () => {
+    expect(validateMentionAgent(remote)).toEqual(remote);
+    expect(validateMentionAgent({ ...remote, icon: "lightning" })).toMatchObject({ icon: "lightning" });
+    expect(validateMentionAgent({ ...remote, icon: null })).toMatchObject({ icon: null });
+    expect(() => validateMentionAgent({ ...remote, icon: "x".repeat(257) })).toThrow();
+  });
   it("rejects a network selector attributed to another network or local scope", () => {
     expect(() => validateMentionAgent({ ...remote, isLocal: true })).toThrow();
     expect(() =>

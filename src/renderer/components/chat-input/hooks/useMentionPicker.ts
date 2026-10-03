@@ -49,7 +49,10 @@ const empty = (kind: MentionKind): MentionGroup => ({
 });
 function options(group: MentionGroup): MentionOption[] {
   const result: MentionOption[] = group.items.slice(0, group.visibleCount);
-  if (group.error && !group.loading)
+  if (
+    (group.error || (group.kind === "agent" && group.partial)) &&
+    !group.loading
+  )
     result.push({
       kind: "retry",
       key: `${group.kind}:retry`,
@@ -98,9 +101,11 @@ export function useMentionPicker(
   scopeRef.current = scope;
   const generation = useRef(0);
   const pendingLoads = useRef(new Set<string>());
-  const [state, setState] = useState<{ scope: string; groups: MentionGroup[] }>(
-    { scope: "", groups: kinds.map(empty) },
-  );
+  const [state, setState] = useState<{
+    scope: string;
+    groups: MentionGroup[];
+    ready: boolean;
+  }>({ scope: "", groups: kinds.map(empty), ready: false });
   const [selection, setSelection] = useState<{
     scope: string;
     key: string;
@@ -121,16 +126,17 @@ export function useMentionPicker(
         generation.current !== requestGeneration
       )
         return;
-      setState((previous) =>
-        previous.scope !== requestScope
-          ? previous
-          : {
-              ...previous,
-              groups: previous.groups.map((group) =>
-                group.kind === kind ? transform(group) : group,
-              ),
-            },
-      );
+      setState((previous) => {
+        if (previous.scope !== requestScope) return previous;
+        const groups = previous.groups.map((group) =>
+          group.kind === kind ? transform(group) : group,
+        );
+        return {
+          ...previous,
+          groups,
+          ready: previous.ready || groups.every((group) => !group.loading),
+        };
+      });
     },
     [],
   );
@@ -169,17 +175,36 @@ export function useMentionPicker(
           next: string | null = null,
           partial = false;
         if (kind === "agent") {
-          const result = agentDiscoverySchema.parse(
-            await invoke("cmd_agent_discovery"),
-          );
-          // The owner result must agree with the observed account boundary. A late
-          // prior-account response is never a new account's candidate list.
-          if (
-            result.authGeneration !== network.authGeneration ||
-            result.principalId !== network.principalId ||
-            result.networkId !== network.networkId
-          )
-            throw new Error("PICKER_ACCOUNT_CHANGED");
+          const readAgents = async (localOnly: boolean) => {
+            const result = agentDiscoverySchema.parse(
+              await invoke("cmd_agent_discovery", { localOnly }),
+            );
+            if (
+              result.authGeneration !== network.authGeneration ||
+              result.principalId !== network.principalId ||
+              result.networkId !== network.networkId
+            )
+              throw new Error("PICKER_ACCOUNT_CHANGED");
+            return result;
+          };
+          // Stage local identities immediately, independently of the cloud read.
+          // They stay behind the initial presentation barrier until it settles.
+          const local = await readAgents(true);
+          update(requestScope, requestGeneration, kind, (group) => ({
+            ...group,
+            items: filterMentionAgents(local.items, query).map((agent) => ({
+              kind: "agent",
+              key: `agent:${agent.selector}`,
+              value: {
+                agent,
+                authGeneration: local.authGeneration,
+                principalId: local.principalId,
+                networkId: local.networkId,
+              },
+            })),
+            partial: !local.complete,
+          }));
+          const result = local.complete ? local : await readAgents(false);
           partial = !result.complete;
           items = filterMentionAgents(result.items, query).map((agent) => ({
             kind: "agent",
@@ -259,43 +284,57 @@ export function useMentionPicker(
     const current = ++generation.current;
     if (!open) {
       setSelection(null);
-      setState({ scope: "", groups: kinds.map(empty) });
+      setState({ scope: "", groups: kinds.map(empty), ready: false });
       return;
     }
-    setState((previous) =>
-      previous.scope === scope
-        ? {
-            ...previous,
-            groups: previous.groups.map((group) => ({
-              ...group,
-              loading: true,
-              error: false,
-            })),
-          }
-        : { scope, groups: kinds.map(empty) },
-    );
+    setState({ scope, groups: kinds.map(empty), ready: false });
+    let deadline: ReturnType<typeof setTimeout> | undefined;
     const timer = setTimeout(
-      () =>
-        kinds.forEach((kind) => {
-          void load(kind, null, scope, current);
-        }),
+      () => {
+        deadline = setTimeout(() => {
+          if (generation.current !== current || scopeRef.current !== scope)
+            return;
+          // Freeze this first page: late completions cannot insert above the rows
+          // the user is now navigating. A retry gets the new request generation.
+          invalidate();
+          setState((previous) =>
+            previous.scope !== scope
+              ? previous
+              : {
+                  ...previous,
+                  ready: true,
+                  groups: previous.groups.map((group) =>
+                    !group.loading
+                      ? group
+                      : {
+                          ...group,
+                          loading: false,
+                          partial:
+                            group.kind === "agent" && group.items.length > 0,
+                          error:
+                            group.kind !== "agent" || group.items.length === 0,
+                        },
+                  ),
+                },
+          );
+        }, 2000);
+        void Promise.all(
+          kinds.map((kind) => load(kind, null, scope, current)),
+        ).then(() => clearTimeout(deadline));
+      },
       query ? 150 : 0,
     );
     return () => {
       clearTimeout(timer);
+      clearTimeout(deadline);
       invalidate();
     };
-  }, [
-    open,
-    scope,
-    load,
-    query,
-    kinds,
-    network.state,
-    network.revision,
-    invalidate,
-  ]);
-  const allOptions = useMemo(() => groups.flatMap(options), [groups]);
+  }, [open, scope, load, query, kinds, invalidate]);
+  const loading = state.scope !== scope || !state.ready;
+  const allOptions = useMemo(
+    () => (loading ? [] : groups.flatMap(options)),
+    [groups, loading],
+  );
   const selectedKey =
     selection?.scope === scope &&
     allOptions.some((item) => item.key === selection.key)
@@ -347,6 +386,7 @@ export function useMentionPicker(
   };
   return {
     groups,
+    loading,
     allOptions,
     selectedKey,
     select,

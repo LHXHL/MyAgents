@@ -228,6 +228,8 @@ pub struct CatalogItem {
     pub path: String,
     pub lifecycle: CatalogLifecycle,
     pub exposure_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -496,6 +498,22 @@ impl ReceiveSequence {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn catalog_icon_names_and_legacy_catalogs_are_supported() {
+        let mut value = json!({"version":1,"connectionEpoch":"11111111-1111-4111-8111-111111111111","catalogSeq":1,
+            "items":[{"localAgentId":"agent","localWorkspaceId":"workspace","name":"Agent","path":"/workspace","lifecycle":"active","exposureRevision":0}]});
+        validate_catalog(&value).unwrap();
+        let old: CatalogSnapshot = serde_json::from_value(value.clone()).unwrap();
+        assert!(old.items[0].icon.is_none());
+        value["items"][0]["icon"] = json!("lightning");
+        validate_catalog(&value).unwrap();
+        let current: CatalogSnapshot = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(current.items[0].icon.as_deref(), Some("lightning"));
+        assert_eq!(serde_json::to_value(current).unwrap(), value);
+        value["items"][0]["icon"] = json!("x".repeat(257));
+        assert!(validate_catalog(&value).is_err());
+    }
+
     #[test]
     fn reference_roundtrip_and_path_rejection() {
         let agent = AgentReference::parse("ma-agent:1:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222:33333333-3333-4333-8333-333333333333").unwrap();

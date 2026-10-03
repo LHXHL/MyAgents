@@ -9,6 +9,7 @@ const id = (n: number) =>
 const remote = (deviceId: string, localAgentId: string, mount = 3) => ({
   localAgentId,
   name: "Remote",
+  icon: "lightning",
   description: "Introduction",
   deviceId,
   deviceName: "Other device",
@@ -67,9 +68,19 @@ describe("Agent discovery merge", () => {
       selector: remote(id(6), "local", 7).selector,
       isLocal: false,
       deviceId: id(6),
+      icon: "lightning",
     });
     expect(JSON.stringify(result)).not.toContain("signedBinding");
     expect(result).toMatchObject({ complete: true, authGeneration: 2 });
+  });
+  it("reads local-only identities with current account context without requiring cloud completion", async () => {
+    mocks.management.mockResolvedValue({ ok: true, data: { items: [], complete: false, networkStatus: "ready", context: {
+      authGeneration: 2, deviceId: id(4), deviceName: "This computer", platform: "macos", networkId: id(2), principalId: "account",
+    } } });
+    const result = await discoverAgents([{ agentId: "local", name: "Local", icon: "lightning" }], true);
+    expect(mocks.management).toHaveBeenCalledWith("/api/agent-network/discovery", "POST", { sidecarId: "global", localOnly: true }, { timeoutMs: 8000 });
+    expect(result).toMatchObject({ authGeneration: 2, principalId: "account", networkId: id(2), complete: false,
+      items: [{ selector: "local", icon: "lightning", isLocal: true }] });
   });
   it("does not claim a malformed or partial page is a complete empty network", async () => {
     mocks.management.mockResolvedValue({

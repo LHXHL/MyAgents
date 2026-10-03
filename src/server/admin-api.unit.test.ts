@@ -4167,7 +4167,7 @@ describe('admin-api Agent / Session discovery', () => {
       { id: 'conflicted', name: 'Conflicted', channels: [] },
     ] });
     writeJson(join(scratch, '.myagents', 'projects.json'), [
-      { id: 'active-workspace', name: 'Active', path: '/active', agentId: 'active' },
+      { id: 'active-workspace', name: 'Active', path: '/active', agentId: 'active', icon: 'lightning' },
       { id: 'archived-workspace', name: 'Archived', path: '/archived', agentId: 'archived', archivedAt: '2026-10-01T00:00:00Z' },
       { id: 'hidden-workspace', name: 'Hidden', path: '/hidden', hidden: true },
       { id: 'conflict-one', name: 'Conflict One', path: '/one', agentId: 'conflicted' },
@@ -4177,8 +4177,8 @@ describe('admin-api Agent / Session discovery', () => {
     const result = await handleAgentNetworkCatalog();
     expect(result).toMatchObject({ success: true, data: {
       items: [
-        { localAgentId: 'active', localWorkspaceId: 'active-workspace', name: 'Active', path: '/active', lifecycle: 'active', exposureRevision: 0 },
-        { localAgentId: 'archived', localWorkspaceId: 'archived-workspace', name: 'Archived', path: '/archived', lifecycle: 'archived', exposureRevision: 0 },
+        { localAgentId: 'active', localWorkspaceId: 'active-workspace', name: 'Active', path: '/active', lifecycle: 'active', exposureRevision: 0, icon: 'lightning' },
+        { localAgentId: 'archived', localWorkspaceId: 'archived-workspace', name: 'Archived', path: '/archived', lifecycle: 'archived', exposureRevision: 0, icon: null },
       ], diagnostics: [{ code: 'AGENT_ASSIGNED_TO_MULTIPLE_PROJECTS', projectIds: ['conflict-one', 'conflict-two'], agentIds: ['conflicted'] }],
     } });
     expect(JSON.stringify(result)).not.toContain('do-not-expose');

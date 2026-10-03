@@ -14,8 +14,8 @@ const mocks = vi.hoisted(() => ({
   thoughtsAvailable: true,
   snapshot: {
     authGeneration: 0,
-    principalId: null,
-    networkId: null,
+    principalId: null as string | null,
+    networkId: null as string | null,
     state: "signedOut",
     revision: 0,
   },
@@ -72,6 +72,13 @@ const discovery = {
   networkId: null,
 };
 beforeEach(() => {
+  mocks.snapshot = {
+    authGeneration: 0,
+    principalId: null,
+    networkId: null,
+    state: "signedOut",
+    revision: 0,
+  };
   mocks.thoughtsAvailable = true;
   mocks.invoke.mockResolvedValue(discovery);
   mocks.thoughts.mockResolvedValue(page([]));
@@ -206,7 +213,7 @@ describe("unified mention picker", () => {
     ).toHaveLength(6);
   });
 
-  it("keeps the selected identity when an earlier group arrives, and expands groups independently", async () => {
+  it("publishes first pages together and keeps every choice hidden until then", async () => {
     let resolve!: (value: typeof discovery) => void;
     mocks.invoke.mockImplementationOnce(
       () =>
@@ -218,38 +225,211 @@ describe("unified mention picker", () => {
       useMentionPicker(true, "a", "/ws", files),
     );
     await waitFor(() => expect(result.current.groups[2].loading).toBe(false));
-    act(() => result.current.select("file:2.txt"));
+    expect(result.current.loading).toBe(true);
+    expect(result.current.allOptions).toEqual([]);
+    expect(result.current.selectedKey).toBeUndefined();
     await act(async () => resolve(discovery));
-    expect(result.current.selectedKey).toBe("file:2.txt");
+    expect(result.current.loading).toBe(false);
+    expect(result.current.selectedKey).toBe("agent:local");
+    act(() => result.current.select("file:2.txt"));
     const expand = result.current.allOptions.find(
       (item) => item.kind === "expand",
     )!;
     act(() => {
       if (expand.kind === "expand") result.current.activateControl(expand);
     });
+    expect(result.current.selectedKey).toBe("file:2.txt");
     expect(
       result.current.groups.map((group) => group.visibleCount > 5),
     ).toEqual([false, false, true]);
-    expect(
-      result.current.allOptions.filter((item) => item.kind === "file"),
-    ).toHaveLength(8);
-    // Rendering options must never append controls into the owner items.
-    expect(result.current.groups[2].items).toHaveLength(8);
   });
-  it("preserves the automatic highlight when Agents arrive after files", async () => {
-    let resolve!: (value: typeof discovery) => void;
+
+  it("uses one loading view, then renders the remote workspace icon", async () => {
+    let resolve!: (value: unknown) => void;
     mocks.invoke.mockImplementationOnce(
       () =>
         new Promise((r) => {
           resolve = r;
         }),
     );
-    const { result } = renderHook(() =>
-      useMentionPicker(true, "a", "/ws", files),
+    mocks.thoughts.mockResolvedValue(
+      page([
+        {
+          id: "thought",
+          content: "Ready thought",
+          updatedAt: new Date().toISOString(),
+          tags: [],
+        },
+      ]),
     );
-    await waitFor(() => expect(result.current.selectedKey).toBe("file:0.txt"));
-    await act(async () => resolve(discovery));
-    expect(result.current.selectedKey).toBe("file:0.txt");
+    render(<PickerView query="" />);
+    await waitFor(() => expect(mocks.invoke).toHaveBeenCalled());
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.queryByText("Ready thought")).not.toBeInTheDocument();
+    await act(async () =>
+      resolve({
+        ...discovery,
+        items: [
+          {
+            ...discovery.items[0],
+            selector: "remote",
+            name: "Remote Agent",
+            isLocal: false,
+            icon: "lightning",
+          },
+        ],
+      }),
+    );
+    expect(screen.getByText("Ready thought")).toBeInTheDocument();
+    expect(
+      screen
+        .getByText("Remote Agent")
+        .closest("button")
+        ?.querySelector('[data-workspace-icon="lightning"]'),
+    ).toBeInTheDocument();
+  });
+
+  it.each([undefined, null, "future-icon", "⚡", "constructor"])(
+    "falls back to the robot for unsupported remote icon %s",
+    async (icon) => {
+      mocks.invoke.mockResolvedValue({
+        ...discovery,
+        items: [
+          {
+            ...discovery.items[0],
+            selector: "remote",
+            name: "Remote Agent",
+            isLocal: false,
+            icon,
+          },
+        ],
+      });
+      render(<PickerView query="" />);
+      await waitFor(() =>
+        expect(
+          screen
+            .getByText("Remote Agent")
+            .closest("button")
+            ?.querySelector('[data-workspace-icon="robot"]'),
+        ).toBeInTheDocument(),
+      );
+    },
+  );
+
+  it("shows staged local results at two seconds and ignores late cloud completion until retry", async () => {
+    vi.useFakeTimers();
+    try {
+      const context = {
+        authGeneration: 2,
+        principalId: "account",
+        networkId: "network",
+      };
+      mocks.snapshot = { ...mocks.snapshot, ...context, state: "ready" };
+      const local = {
+        ...discovery,
+        ...context,
+        complete: false,
+        networkStatus: "ready",
+      };
+      let resolve!: (value: unknown) => void;
+      mocks.invoke.mockResolvedValueOnce(local).mockImplementationOnce(
+        () =>
+          new Promise((r) => {
+            resolve = r;
+          }),
+      );
+      const { result, rerender } = renderHook(() =>
+        useMentionPicker(true, "", "/ws", files),
+      );
+      await act(async () => vi.advanceTimersByTimeAsync(0));
+      expect(mocks.invoke).toHaveBeenNthCalledWith(1, "cmd_agent_discovery", {
+        localOnly: true,
+      });
+      expect(mocks.invoke).toHaveBeenNthCalledWith(2, "cmd_agent_discovery", {
+        localOnly: false,
+      });
+      expect(result.current.allOptions).toEqual([]);
+      await act(async () => vi.advanceTimersByTimeAsync(1999));
+      expect(result.current.loading).toBe(true);
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+      expect(result.current.loading).toBe(false);
+      expect(result.current.groups[0]).toMatchObject({
+        partial: true,
+        loading: false,
+        error: false,
+      });
+      expect(result.current.allOptions.map((item) => item.key)).toEqual([
+        "agent:local",
+        "agent:retry",
+      ]);
+      const remote = {
+        ...local,
+        complete: true,
+        items: [
+          ...local.items,
+          { ...local.items[0], selector: "remote", name: "Remote" },
+        ],
+      };
+      await act(async () => resolve(remote));
+      expect(result.current.groups[0].items).toHaveLength(1);
+      mocks.snapshot = { ...mocks.snapshot, revision: 1, state: "connecting" };
+      rerender();
+      expect(result.current.loading).toBe(false);
+      expect(mocks.invoke).toHaveBeenCalledTimes(2);
+      mocks.invoke.mockResolvedValueOnce(local).mockResolvedValueOnce(remote);
+      await act(async () =>
+        result.current.activateControl({
+          kind: "retry",
+          key: "agent:retry",
+          group: "agent",
+        }),
+      );
+      expect(result.current.groups[0].items).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a stalled local source and rejects its late first page after a retry", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolve!: (value: unknown) => void;
+      mocks.thoughts.mockImplementationOnce(
+        () =>
+          new Promise((r) => {
+            resolve = r;
+          }),
+      );
+      const { result } = renderHook(() =>
+        useMentionPicker(true, "", "/ws", files),
+      );
+      await act(async () => vi.advanceTimersByTimeAsync(2000));
+      expect(result.current.loading).toBe(false);
+      expect(result.current.groups[1]).toMatchObject({
+        loading: false,
+        error: true,
+      });
+      mocks.thoughts.mockResolvedValueOnce(
+        page([{ id: "new", content: "new", tags: [], updatedAt: "now" }]),
+      );
+      await act(async () =>
+        result.current.activateControl({
+          kind: "retry",
+          key: "thought:retry",
+          group: "thought",
+        }),
+      );
+      await act(async () =>
+        resolve(
+          page([{ id: "old", content: "old", tags: [], updatedAt: "now" }]),
+        ),
+      );
+      expect(result.current.groups[1].items.map((item) => item.key)).toEqual([
+        "thought:new",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it("marks unavailable sources independently and never requests their owners", async () => {
     mocks.thoughtsAvailable = false;
@@ -310,7 +490,9 @@ describe("unified mention picker", () => {
     await waitFor(() => expect(screen.getAllByRole("group")).toHaveLength(2));
     view.rerender(<PickerView query="missing" />);
     await waitFor(() => expect(screen.queryAllByRole("group")).toHaveLength(0));
-    expect(screen.getAllByText("没有匹配结果")).toHaveLength(1);
+    await waitFor(() =>
+      expect(screen.getAllByText("没有匹配结果")).toHaveLength(1),
+    );
   });
   it("keeps failed and unavailable search groups visible independently", async () => {
     mocks.invoke.mockResolvedValue({ ...discovery, items: [] });

@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use tokio::time::{timeout_at, Duration, Instant};
 
-pub(crate) async fn remote(owner: &ManagedAgentNetwork) -> Result<Value, NetworkError> {
+pub(crate) async fn remote(owner: &ManagedAgentNetwork, local_only: bool) -> Result<Value, NetworkError> {
     let snapshot = owner.snapshot();
     let generation = owner.generation();
     let device = crate::device_identity::current_device_identity()
@@ -14,7 +14,7 @@ pub(crate) async fn remote(owner: &ManagedAgentNetwork) -> Result<Value, Network
     let context = json!({"authGeneration":snapshot.auth_generation,"deviceId":device.device_id,
         "deviceName":device.device_name,"platform":device.platform,
         "networkId":snapshot.network_id,"principalId":snapshot.principal_id});
-    if snapshot.state != "ready" {
+    if local_only || snapshot.state != "ready" {
         return Ok(
             json!({"items":[],"complete":snapshot.state=="signedOut","networkStatus":snapshot.state,"context":context}),
         );
@@ -67,7 +67,7 @@ pub(crate) async fn remote(owner: &ManagedAgentNetwork) -> Result<Value, Network
             // Peer certificates and live transport credentials belong to the
             // connector. They are not needed by CLI listing or the composer.
             let item = json!({"localAgentId":entry["localAgentId"],"selector":entry["selector"],
-                "name":entry["name"],"isLocal":false,"deviceId":entry["deviceId"],
+                "name":entry["name"],"icon":entry["icon"],"isLocal":false,"deviceId":entry["deviceId"],
                 "deviceName":entry["deviceName"],"platform":entry["platform"],
                 "description":entry["description"],"source":entry["source"]});
             bytes += serde_json::to_vec(&item)

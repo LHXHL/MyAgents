@@ -67,7 +67,7 @@ export async function loadProjects(): Promise<Project[]> {
  * must not cause network traffic. IDs and lifecycle come from persisted Projects. */
 export function projectCatalogChanged(before: Project[], after: Project[]): boolean {
     const projection = (projects: Project[]) => projects.map(project => ({
-        id: project.id, agentId: project.agentId, name: project.name, path: project.path,
+        id: project.id, agentId: project.agentId, name: project.name, path: project.path, icon: project.icon ?? null,
         hidden: project.hidden === true, internal: project.internal === true,
         archived: isProjectArchived(project), exposureRevision: project.agentNetworkExposureRevision ?? 0,
     })).sort((a, b) => a.id.localeCompare(b.id));

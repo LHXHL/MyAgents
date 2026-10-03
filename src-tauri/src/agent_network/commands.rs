@@ -173,7 +173,8 @@ pub(crate) async fn cmd_agent_network_request(
 
 #[tauri::command]
 pub(crate) async fn cmd_agent_discovery(
+    local_only: Option<bool>,
     manager: tauri::State<'_, crate::sidecar::ManagedSidecarManager>,
 ) -> Result<Value, NetworkError> {
-    super::local_owner::discovery(&manager).await
+    super::local_owner::discovery(&manager, local_only.unwrap_or(false)).await
 }

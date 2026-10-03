@@ -1701,10 +1701,10 @@ export async function handleAgentList(
   }
 }
 
-export async function handleAgentDiscovery(): Promise<AdminResponse> {
+export async function handleAgentDiscovery(payload: { localOnly?: boolean } = {}): Promise<AdminResponse> {
   try {
     const { getAgentDiscovery } = await import('./agent-network/discovery');
-    return { success: true, data: await getAgentDiscovery() };
+    return { success: true, data: await getAgentDiscovery(payload.localOnly === true) };
   } catch (error) { return agentWorkspaceIdentityFailure(error); }
 }
 
@@ -1719,6 +1719,7 @@ export async function handleAgentNetworkCatalog(): Promise<AdminResponse> {
         localAgentId: agent.id, localWorkspaceId: project.id, name: agent.name,
         path: workspacePath, lifecycle: isProjectArchived(project) ? 'archived' : 'active',
         exposureRevision: project.agentNetworkExposureRevision ?? 0,
+        icon: project.icon ?? null,
       }));
     return { success: true, data: { items, diagnostics: registry.diagnostics.map(({ code, projectIds, agentIds }) => ({ code, projectIds, agentIds })) } };
   } catch (error) {

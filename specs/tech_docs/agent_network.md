@@ -32,7 +32,7 @@ CLI 使用原 `agent list/show`、`session list/get/state/start/send/watch` 命�
 
 空闲 watch 优先原 live 结果，缺失再读目标原 SessionStore 的最近 assistant；回执包含 latest-session-result 范围与 live/history/none/unavailable 来源，历史保留自己的时间与已知 terminalStatus/turnId，不能沿用另一轮的终态或声称是某请求的回答。保留 partial/stopped/error 文本。V2 历史终态取原 transcriptTurns 的对应 turn.status；消息封口不能证明执行成功，transcriptRecovery unavailable 不能解释成没有回答。
 
-Session label 继续表示会话标题/原摘要。来源回执和异步事件另含 Agent/设备 identity，显示为 `Agent @ device · Session label`，不拿 UUID 充当标题。`session list` 文本保留完整可复制的 Session selector。`agent network-diagnose --json` 按需列出协议能力、分页设备 appVersion 与原目录 connectionState（ready / syncing / offline），不从版本号或可发现性推断在线状态。错误记录阶段、代码、requestId，schema 日志只记录字段路径，不打印正文或配置；只有已发送的 start/send 可能接纳未知，读失败按查询错误重试。严格旧客户端会拒绝这些协议扩展，本次 dev 验收双方须升级同一固定包。
+Session label 继续表示会话标题/原摘要。来源回执和异步事件另含 Agent/设备 identity，显示为 `Agent @ device · Session label`，不拿 UUID 充当标题。`session list` 文本保留完整可复制的 Session selector。`agent network-diagnose --json` 按需列出协议能力、分页设备 appVersion 与原目录 connectionState（ready / syncing / offline），不从版本号或可发现性推断在线状态。错误记录阶段、代码、requestId，schema 日志只记录字段路径，不打印正文或配置；只有已发送的 start/send 可能接纳未知，读失败按查询错误重试。严格旧客户端会拒绝这些协议扩展（包括目录 icon），本次 dev 验收双方须升级同一固定包。
 
 ## 身份、加密与资源
 
@@ -48,7 +48,9 @@ Session label 继续表示会话标题/原摘要。来源回执和异步事件�
 
 `discoverAgents/getAgentDiscovery` 复用本地身份 owner，合并 Rust 当前网络目录。CLI 保留原本地完整 registry；紧凑 @ projection 有明确预算/完整性状态。只有同设备、同 localAgentId 的网络 alias 才能与本地项折叠。目录与引用不授予执行许可。
 
-@ 空关键词只查询/展示 Agent、想法，有关键词后按 Agent→想法→文件拼接，一个滚动/键盘导航区域；每组默认五项，展开更多每次最多增加五项，visibleCount 与 owner 页缓存分离。面板固定目标高度，加载/搜索/展开不随结果条数缩放，shared Popover size 只按 anchor 可用空间约束；composer 保留顶部栏空间。本机图标沿 ConfigData 的现有工作区身份投影，远端统一图标；想法日期/标签/摘要只占一行。想法沿原 ManagedRecordStore text Record projection；文件沿原 WorkspaceFileService/Rust walk。stateless cursor 绑定 scope/query/snapshot；hasMore 与 scanLimitReached 区分，超预算或目录不可用不得假报全部/空。
+@ 空关键词只查询/展示 Agent、想法，有关键词后按 Agent→想法→文件拼接，一个滚动/键盘导航区域；每组默认五项，展开更多每次最多增加五项，visibleCount 与 owner 页缓存分离。面板固定目标高度，加载/搜索/展开不随结果条数缩放，shared Popover size 只按 anchor 可用空间约束；composer 保留顶部栏空间。本机图标沿 ConfigData 的现有工作区身份投影；远端目录只同步拥有设备 Project 的 `icon` 字符串，复用 `WorkspaceIcon` 渲染，缺失或本机不支持的图标名称使用机器人图标，兼容旧目录和旧 @ 快照。图标只属于展示，不改变 exposure revision 或执行权限；想法日期/标签/摘要只占一行。想法沿原 ManagedRecordStore text Record projection；文件沿原 WorkspaceFileService/Rust walk。stateless cursor 绑定 scope/query/snapshot；hasMore 与 scanLimitReached 区分，超预算或目录不可用不得假报全部/空。
+
+首屏 Agent、想法、文件并行查询，共用一个 loading；全部完成后一次展示，最多等待 2 秒（非空搜索另有 150ms debounce）。Agent 先读取带当前账号 context 的 local-only projection，再查询云端，保证云端慢时仍能展示本机项。到期保留已取得的数据，未完成来源明确标记不完整/失败并允许主动重试；迟到首屏结果失效，不再插入当前列表。网络 presence/catalog revision 不自动刷新打开中的面板，重新打开或主动重试获取新目录；账号、工作区或关键词改变仍使旧请求失效。展开分页和主动重试仅在所属组加载。
 
 正文保留完整 `@Agent-id:selector`。快照只含 discovery 数据与账号 generation，提交时由 SessionEngine facade 重新查同一业务目录。未知/旧账号引用保留普通正文并给重新选择提示；不猜同名对象。`composeQueryReminder` 把 AgentInfo 与固定 instruction 放入一个 leading envelope，保留 Goal/任务讨论/悬浮球 primary context；名称/description 只能作为 escaped untrusted data。
 
@@ -91,4 +93,4 @@ Metadata reads and connection snapshots do not assert a user save. After metadat
 
 工作区目录的 authority 是 `projects.json` 与 `config.json` 的既有身份 registry；Renderer 快照不作为上传内容。Renderer 的 `notifyConfigChanged` 除无配置载荷的 DOM 通知外，向既有 native `app:config-changed` fanout；Sidecar 的 `broadcastAppConfigChanged` 同时广播 SSE 并调用既有 Management API。SSE bridge 只刷新窗口，不反向重复发布 native 通知。网络 actor 复用既有 `Notify` 后重新读取 registry，离线时由下次连接重建目录，无新增轮询。
 
-Project 保存仅在目录字段（身份、名称、路径、可见性、归档状态、exposure revision）变化时通知；打开工作区/排序/模型偏好不会产生目录上传。Agent/Project 复合写入复用 `notification: 'deferred'`，最终两份磁盘状态提交后统一发布。已持久化写入不能因通知失败被报告为回滚；通知错误保留明确日志，已有重连继续从磁盘恢复。
+Project 保存仅在目录字段（身份、名称、图标、路径、可见性、归档状态、exposure revision）变化时通知；打开工作区/排序/模型偏好不会产生目录上传。Agent/Project 复合写入复用 `notification: 'deferred'`，最终两份磁盘状态提交后统一发布。已持久化写入不能因通知失败被报告为回滚；通知错误保留明确日志，已有重连继续从磁盘恢复。

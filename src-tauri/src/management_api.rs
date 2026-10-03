@@ -847,7 +847,7 @@ async fn agent_network_invoke_handler(
 
 #[derive(Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
-struct NetworkDiscoveryRequest {sidecar_id:String}
+struct NetworkDiscoveryRequest {sidecar_id:String, #[serde(default)] local_only:bool}
 async fn agent_network_discovery_handler(headers:HeaderMap,Json(request):Json<NetworkDiscoveryRequest>) ->(HeaderMap,Json<serde_json::Value>) {
     use tauri::Manager;
     let generation=match request_sidecar_generation(&headers){Ok(generation)=>generation,Err(Json(value))=>return no_store_json(value)};
@@ -855,7 +855,7 @@ async fn agent_network_discovery_handler(headers:HeaderMap,Json(request):Json<Ne
     if !sidecar_is_live(&request.sidecar_id,generation){return failure("SOURCE_GENERATION_CHANGED");}
     let Some(app)=crate::logger::get_app_handle()else{return failure("CONNECTOR_UNAVAILABLE");};
     let Some(owner)=app.try_state::<crate::agent_network::actor::ManagedAgentNetwork>()else{return failure("CONNECTOR_UNAVAILABLE");};
-    let result=crate::agent_network::discovery::remote(&owner).await;
+    let result=crate::agent_network::discovery::remote(&owner, request.local_only).await;
     if !sidecar_is_live(&request.sidecar_id,generation){return failure("SOURCE_GENERATION_CHANGED");}
     match result {Ok(data)=>no_store_json(serde_json::json!({"ok":true,"data":data})),Err(error)=>no_store_json(serde_json::json!({"ok":false,"error":error}))}
 }

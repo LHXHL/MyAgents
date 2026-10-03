@@ -41,16 +41,18 @@ interface LocalAgent {
   agentId: string;
   name: string;
   archived?: boolean;
+  icon?: string;
 }
 export async function discoverAgents(
   local: LocalAgent[],
+  localOnly = false,
 ): Promise<AgentDiscovery> {
   const sidecarId = process.env.MYAGENTS_SIDECAR_ID?.trim();
   const result = sidecarId
     ? await managementApi(
         "/api/agent-network/discovery",
         "POST",
-        { sidecarId },
+        { sidecarId, localOnly },
         { timeoutMs: 8_000 },
       )
     : null;
@@ -64,6 +66,7 @@ export async function discoverAgents(
       mentionAgentSchema.parse({
         selector: item.agentId,
         name: item.name,
+        icon: item.icon ?? null,
         isLocal: true,
         deviceId: context?.deviceId ?? null,
         deviceName: context?.deviceName ?? null,
@@ -85,6 +88,7 @@ export async function discoverAgents(
         mentionAgentSchema.parse({
           selector: candidate.selector,
           name: candidate.name,
+          icon: candidate.icon ?? null,
           isLocal: false,
           deviceId: candidate.deviceId,
           deviceName: candidate.deviceName,
@@ -107,7 +111,9 @@ export async function discoverAgents(
 
 /** Shared business projection. Admin HTTP and query preparation use the same
  * Workspace identity owner, without importing an API handler into SessionEngine. */
-export async function getAgentDiscovery(): Promise<AgentDiscovery> {
+export async function getAgentDiscovery(
+  localOnly = false,
+): Promise<AgentDiscovery> {
   const registry = await resolvePersistedAgentWorkspaceRegistry();
   return discoverAgents(
     registry.agentProjections
@@ -120,6 +126,8 @@ export async function getAgentDiscovery(): Promise<AgentDiscovery> {
       .map((identity) => ({
         agentId: identity.agent.id,
         name: identity.agent.name,
+        icon: identity.project?.icon,
       })),
+    localOnly,
   );
 }

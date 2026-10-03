@@ -457,6 +457,6 @@ pub(crate) async fn watch<G: Fn() -> Result<(), String> + Send + 'static>(
     }
 }
 
-pub(crate) async fn discovery(manager: &ManagedSidecarManager) -> Result<Value, NetworkError> {
-    request(manager, Route::Discovery, json!({})).await
+pub(crate) async fn discovery(manager: &ManagedSidecarManager, local_only: bool) -> Result<Value, NetworkError> {
+    request(manager, Route::Discovery, json!({"localOnly":local_only})).await
 }
