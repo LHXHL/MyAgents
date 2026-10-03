@@ -1,4 +1,5 @@
-import { delimiter, dirname } from "node:path";
+import { spawnSync } from "node:child_process";
+import { delimiter, dirname, normalize } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -26,7 +27,7 @@ describe("DSH child environment", () => {
       },
     });
     expect(environment.env).toEqual({
-      PATH: [dirname(node), "/verified/tools"].join(delimiter),
+      PATH: [dirname(normalize(node)), normalize("/verified/tools")].join(delimiter),
       HOME: "/Users/example",
       USER: "example",
       SHELL: "/bin/zsh",
@@ -98,8 +99,11 @@ describe("DSH child environment", () => {
         MYAGENTS_PROXY_INJECTED: '1',
       },
     });
-    expect(environment.env).toEqual({ PATH: '/verified', ...proxyEnvironment });
-    expect(environment.allowedKeys).toEqual(['PATH', ...Object.keys(proxyEnvironment)]);
+    const selectedProxyEnvironment = process.platform === 'win32'
+      ? Object.fromEntries(Object.entries(proxyEnvironment).filter(([key]) => key === key.toUpperCase()))
+      : proxyEnvironment;
+    expect(environment.env).toEqual({ PATH: normalize('/verified'), ...selectedProxyEnvironment });
+    expect(environment.allowedKeys).toEqual(['PATH', ...Object.keys(selectedProxyEnvironment)]);
     expect(environment.inheritedKeys).toEqual([]);
     expect(JSON.stringify(environment)).not.toContain('credential-canary');
     expect(Object.isFrozen(environment.env)).toBe(true);
@@ -112,7 +116,40 @@ describe("DSH child environment", () => {
       inheritedEnvironment: { HTTPS_PROXY: 'http://stale.proxy:8080' },
       proxyEnvironment: { HTTP_PROXY: '', HTTPS_PROXY: 'http://proxy\0invalid', ALL_PROXY: 'x'.repeat(32_769) },
     });
-    expect(environment.env).toEqual({ PATH: '/verified' });
+    expect(environment.env).toEqual({ PATH: normalize('/verified') });
+  });
+
+  it('declares only environment names that survive Windows process creation', () => {
+    const systemRoot = process.env.SystemRoot ?? 'C:\\Windows';
+    const environment = buildDshChildEnvironment({
+      nodeExecutablePath: process.execPath,
+      platform: 'win32',
+      sessionCli: null,
+      inheritedEnvironment: { SYSTEMROOT: systemRoot, SystemRoot: systemRoot },
+      proxyEnvironment: {
+        HTTP_PROXY: 'http://selected.proxy',
+        http_proxy: 'http://duplicate.proxy',
+        NO_PROXY: 'localhost',
+        no_proxy: 'localhost',
+      },
+    });
+    expect(environment.allowedKeys).toContain('SYSTEMROOT');
+    expect(environment.allowedKeys).toContain('HTTP_PROXY');
+    expect(environment.allowedKeys).toContain('NO_PROXY');
+    expect(environment.allowedKeys).not.toContain('SystemRoot');
+    expect(environment.allowedKeys).not.toContain('http_proxy');
+    expect(environment.allowedKeys).not.toContain('no_proxy');
+    expect(environment.inheritedKeys).toEqual(['SYSTEMROOT']);
+    expect(environment.env.HTTP_PROXY).toBe('http://selected.proxy');
+
+    if (process.platform === 'win32') {
+      const child = spawnSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(Object.keys(process.env)))'], {
+        env: environment.env,
+        encoding: 'utf8',
+      });
+      expect(child.status).toBe(0);
+      expect(JSON.parse(child.stdout)).toEqual(expect.arrayContaining([...environment.allowedKeys]));
+    }
   });
 
   it("rejects relative executable authorities", () => {

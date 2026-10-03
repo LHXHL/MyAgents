@@ -50,6 +50,7 @@ export function buildDshChildEnvironment(options: {
   commandDirectories?: readonly string[];
   inheritedEnvironment?: Readonly<NodeJS.ProcessEnv>;
   proxyEnvironment?: Readonly<NodeJS.ProcessEnv>;
+  platform?: string;
   sessionCli: Readonly<{ productSessionId: string; sidecarPort: number; internalCliToken: string }> | null;
 }): DshChildEnvironment {
   if (!isAbsolute(options.nodeExecutablePath)) {
@@ -95,9 +96,21 @@ export function buildDshChildEnvironment(options: {
     const value = safeEnvironmentValue(options.proxyEnvironment?.[key]);
     if (value !== undefined) env[key] = value;
   }
+  // Windows process creation treats environment names case-insensitively. Node
+  // keeps one spelling when spawning, while DSH checks the declared keys with
+  // exact casing. Seal the same key set that the child can actually receive.
+  const sealedEnv: NodeJS.ProcessEnv = {};
+  const windows = (options.platform ?? process.platform) === 'win32';
+  const seenWindowsKeys = new Set<string>();
+  for (const [key, value] of Object.entries(env)) {
+    const foldedKey = key.toUpperCase();
+    if (windows && seenWindowsKeys.has(foldedKey)) continue;
+    seenWindowsKeys.add(foldedKey);
+    sealedEnv[key] = value;
+  }
   return Object.freeze({
-    env: Object.freeze(env),
-    inheritedKeys: Object.freeze(inheritedKeys),
-    allowedKeys: Object.freeze(Object.keys(env)),
+    env: Object.freeze(sealedEnv),
+    inheritedKeys: Object.freeze(inheritedKeys.filter(key => Object.hasOwn(sealedEnv, key))),
+    allowedKeys: Object.freeze(Object.keys(sealedEnv)),
   });
 }
