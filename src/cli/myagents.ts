@@ -2096,10 +2096,11 @@ function printSessionList(
     return;
   }
   const pad = (value: string, width: number) => value.padEnd(width);
-  console.log(pad('Session ID', 38) + pad('Last active', 26) + pad('Runtime', 14) + 'Title');
+  const sessionIdWidth = sessions.reduce((width, session) => Math.max(width, String(session.sessionId ?? '').length + 2), 38);
+  console.log(pad('Session ID', sessionIdWidth) + pad('Last active', 26) + pad('Runtime', 14) + 'Title');
   for (const session of sessions) {
     console.log(
-      pad(String(session.sessionId ?? '').slice(0, 36), 38)
+      pad(String(session.sessionId ?? ''), sessionIdWidth)
       + pad(String(session.lastActiveAt ?? ''), 26)
       + pad(String(session.runtime ?? 'builtin'), 14)
       + singleLine(session.title ?? 'New Chat'),

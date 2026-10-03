@@ -202,6 +202,32 @@ describe('myagents CLI port authority', () => {
 });
 
 describe('CLI help and Session list output', () => {
+  it('prints complete usable remote selectors with separate metadata columns', () => {
+    const ref = {
+      serviceId: '00000000-0000-4000-8000-000000000010',
+      networkId: '00000000-0000-4000-8000-000000000011',
+      mountId: '00000000-0000-4000-8000-000000000012',
+    };
+    const selectors = ['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002']
+      .map(localSessionId => sessionReference({ ...ref, localSessionId }));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      printResult('session', 'list', { success: true, data: [
+        ...selectors.map(sessionId => ({ sessionId, lastActiveAt: '2026-10-04T01:36:00Z', runtime: 'codex', title: 'Remote' })),
+        { sessionId: 'local-session', lastActiveAt: '2026-10-04T01:36:00Z', runtime: 'builtin', title: 'Local' },
+      ] }, false);
+      const lines = log.mock.calls.map(call => String(call[0]));
+      for (const selector of selectors) {
+        expect(lines.some(line => line.startsWith(`${selector}  `))).toBe(true);
+        expect(buildRequestBody('session', 'state', [selector], {})).toEqual({ sessionId: selector });
+      }
+      const rows = lines.slice(1);
+      expect(new Set(rows.map(row => row.indexOf('2026-10-04T01:36:00Z'))).size).toBe(1);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it.each(['status', 'version', 'reload'])('accepts -h and --help for %s', command => {
     for (const flag of ['-h', '--help']) {
       const parsed = parseArgs([command, flag]);

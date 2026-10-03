@@ -86,6 +86,8 @@ const SESSION_EXACT_PATHS = new Set([
   '/api/reasoning-effort/set',
   '/api/session-latest-result',
   '/api/session-state',
+  '/api/session-watch/manage',
+  '/api/session-watch/network-remove',
   '/api/session-watch/register',
   '/api/task/poll-background',
   '/cron/execute-sync',

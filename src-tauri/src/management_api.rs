@@ -863,6 +863,16 @@ async fn agent_network_discovery_handler(headers:HeaderMap,Json(request):Json<Ne
 #[derive(Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
 struct NetworkDiagnoseRequest { sidecar_id:String, cursor:Option<String>, limit:usize }
+fn network_diagnostic_device(device: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "deviceId": device["deviceId"],
+        "deviceName": device["name"],
+        "platform": device["platform"],
+        "appVersion": device["appVersion"],
+        "connectionState": device["connectionState"],
+    })
+}
+
 async fn agent_network_diagnose_handler(headers:HeaderMap,Json(request):Json<NetworkDiagnoseRequest>) -> (HeaderMap,Json<serde_json::Value>) {
     use tauri::Manager;
     use crate::agent_network::commands::MetadataRequest;
@@ -876,9 +886,7 @@ async fn agent_network_diagnose_handler(headers:HeaderMap,Json(request):Json<Net
     if !sidecar_is_live(&request.sidecar_id,generation) {return failure("SOURCE_GENERATION_CHANGED");}
     match (network,devices) {
         (Ok(network),Ok(devices))=>{
-            let items:Vec<_>=devices["items"].as_array().into_iter().flatten().map(|device|serde_json::json!({
-                "deviceId":device["deviceId"],"deviceName":device["name"],"platform":device["platform"],"appVersion":device["appVersion"],
-            })).collect();
+            let items:Vec<_>=devices["items"].as_array().into_iter().flatten().map(network_diagnostic_device).collect();
             no_store_json(serde_json::json!({"ok":true,"data":{"protocol":network["protocol"],"capabilities":network["capabilities"],
                 "devices":items,"nextCursor":devices["nextCursor"],"complete":devices["complete"]}}))
         },_=>failure("NETWORK_DIAGNOSTIC_UNAVAILABLE"),
@@ -5470,6 +5478,21 @@ fn document_manager_unavailable() -> Json<serde_json::Value> {
 mod tests {
     use super::*;
     use serde_json::Value;
+
+    #[test]
+    fn network_diagnose_preserves_device_connection_state_without_private_metadata() {
+        for state in ["ready", "syncing", "offline"] {
+            let device = serde_json::json!({
+                "deviceId": "device-1", "name": "Windows", "platform": "windows",
+                "appVersion": "0.4.25", "connectionState": state,
+                "privateMetadata": { "credential": "not-for-diagnostics" },
+            });
+            assert_eq!(network_diagnostic_device(&device), serde_json::json!({
+                "deviceId": "device-1", "deviceName": "Windows", "platform": "windows",
+                "appVersion": "0.4.25", "connectionState": state,
+            }));
+        }
+    }
 
     #[test]
     fn grok_bearer_addresses_the_calling_sidecar_process() {
