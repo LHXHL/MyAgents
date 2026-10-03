@@ -1,7 +1,7 @@
 /**
  * TemplateApplyDialog — pick a template and merge it into the CURRENT workspace.
  *
- * Counterpart to `launcher/TemplateLibraryDialog.tsx` (which creates a NEW workspace).
+ * Counterpart to `launcher/NewAgentPanel.tsx` (which creates a NEW workspace).
  * The two have separate UIs because the two flows have meaningfully different inputs:
  * create-workspace asks for a target dir + project name + icon; apply-to-current uses
  * the existing agentDir as-is and just needs template selection + overwrite confirmation.

@@ -31,6 +31,8 @@ export interface LauncherRenderBinding {
   ) => Promise<boolean>;
   onStartRecording: (tabId: string, selection: RecordingSourceSelection) => Promise<void>;
   onOpenRecord: (recordId: string) => void;
+  /** Opens the app-wide New Agent panel (the launcher's "add folder" entry). */
+  onOpenNewAgentPanel: () => void;
 }
 
 const LauncherTabRenderer = memo(function LauncherTabRenderer({
@@ -59,6 +61,7 @@ const LauncherTabRenderer = memo(function LauncherTabRenderer({
         onWorkspaceSelectionChange={(workspacePath) => binding.onWorkspaceSelectionChange(tab.id, workspacePath)}
         onStartRecording={(selection) => binding.onStartRecording(tab.id, selection)}
         onOpenRecord={binding.onOpenRecord}
+        onOpenNewAgentPanel={binding.onOpenNewAgentPanel}
         recordingBusy={binding.isStarting(tab.id)}
       />
     </Suspense>

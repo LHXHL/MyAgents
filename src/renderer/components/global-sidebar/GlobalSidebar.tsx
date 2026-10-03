@@ -34,7 +34,6 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { open } from '@tauri-apps/plugin-dialog';
 
 import { track } from '@/analytics';
 import myAgentsLogo from '@/assets/runtime-icons/myagents.png';
@@ -44,7 +43,6 @@ import ConfirmDialog from '@/components/ConfirmDialog';
 import FeedbackPopover from '@/components/FeedbackPopover';
 import { APP_SHELL_POPOVER_CHROME } from '@/components/global-sidebar/appShellPopoverChrome';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
-import PathInputDialog from '@/components/PathInputDialog';
 import SessionStatsModal from '@/components/SessionStatsModal';
 import SessionContextMenu from '@/components/SessionContextMenu';
 import SessionTagBadge from '@/components/SessionTagBadge';
@@ -68,7 +66,7 @@ import {
 } from '@/components/icons';
 import UnreadNotificationIndicator from '@/components/UnreadNotificationIndicator';
 import { useToast } from '@/components/Toast';
-import { AddWorkspaceMenu, TemplateLibraryDialog } from '@/components/launcher';
+import { NewAgentPanel } from '@/components/launcher';
 import WorkspaceIcon from '@/components/launcher/WorkspaceIcon';
 import { sortLauncherProjects } from '@/components/launcher/workspaceSort';
 import { MenuItem } from '@/components/ui/MenuItem';
@@ -79,7 +77,6 @@ import {
   isProjectVisibleToUser,
   isSystemPresetProject,
   type Project,
-  type WorkspaceTemplate,
 } from '@/config/types';
 import {
   getAgentById,
@@ -109,7 +106,7 @@ import {
   seedDefaultWorkspaceExpansion,
   type GlobalSidebarPreferenceV1,
 } from '@/utils/globalSidebarPreference';
-import { isBrowserDevMode, isTauriEnvironment, pickFolderForDialog } from '@/utils/browserMock';
+import { isTauriEnvironment } from '@/utils/browserMock';
 import { formatTime, getSessionDisplayText } from '@/utils/taskCenterUtils';
 import { getFullSessionDisplayText } from '@/utils/sessionDisplay';
 import { copyPlainText } from '@/utils/clipboard';
@@ -196,6 +193,10 @@ interface GlobalSidebarProps {
   onRenameSession: (sessionId: string, title: string) => Promise<SessionMetadata | null>;
   historyTagIntent?: { id: number; tag: string } | null;
   onHistoryTagIntentConsumed?: (id: number) => void;
+  /** The single New Agent panel is owned here but opened from App-level entry
+   *  points too (launcher workspace selector), so its open state is lifted. */
+  newAgentPanelOpen: boolean;
+  onNewAgentPanelOpenChange: (open: boolean) => void;
 }
 
 function useForcedRail(): boolean {
@@ -481,6 +482,8 @@ export default memo(function GlobalSidebar({
   onRenameSession,
   historyTagIntent,
   onHistoryTagIntentConsumed,
+  newAgentPanelOpen,
+  onNewAgentPanelOpenChange,
 }: GlobalSidebarProps) {
   const { t } = useTranslation('app');
   const { t: tLauncher } = useTranslation('launcher');
@@ -495,7 +498,6 @@ export default memo(function GlobalSidebar({
     projects,
     isLoading: projectsLoading,
     error: projectsError,
-    addProject,
     removeProject,
     patchProject,
     touchProject,
@@ -531,18 +533,14 @@ export default memo(function GlobalSidebar({
   const notificationTriggerRef = useRef<HTMLButtonElement | null>(null);
   const notificationPanelRef = useRef<HTMLDivElement | null>(null);
 
-  const [pathDialogOpen, setPathDialogOpen] = useState(false);
-  const [pendingFolderName, setPendingFolderName] = useState('');
-  const [pendingDefaultPath, setPendingDefaultPath] = useState('');
-  const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
+  const [recentlyCreatedWorkspaceKey, setRecentlyCreatedWorkspaceKey] = useState<string | null>(null);
   const [projectToRemove, setProjectToRemove] = useState<Project | null>(null);
   const [agentWorkspacePath, setAgentWorkspacePath] = useState<string | null>(null);
   const [pendingDeleteSession, setPendingDeleteSession] = useState<SessionMetadata | null>(null);
   const [statsSession, setStatsSession] = useState<SessionMetadata | null>(null);
   const pinInFlightRef = useRef(new Set<string>());
   const archiveInFlightRef = useRef(new Set<string>());
-  const childLayerOpen = pathDialogOpen
-    || templateDialogOpen
+  const childLayerOpen = newAgentPanelOpen
     || projectToRemove !== null
     || agentWorkspacePath !== null
     || pendingDeleteSession !== null
@@ -829,58 +827,23 @@ export default memo(function GlobalSidebar({
     }));
   }, []);
 
-  const handleAddFolder = useCallback(async () => {
-    try {
-      if (isBrowserDevMode()) {
-        const folderInfo = await pickFolderForDialog();
-        if (!folderInfo) return;
-        setPendingFolderName(folderInfo.folderName);
-        setPendingDefaultPath(folderInfo.defaultPath);
-        rememberChildLayerOrigin();
-        setPathDialogOpen(true);
-        return;
-      }
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        title: tLauncher('dialogs.pickProjectFolder'),
-      });
-      if (typeof selected === 'string') await addProject(selected);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      toastRef.current.error(tLauncher('toasts.addProjectFailed', { message }));
-    }
-  }, [addProject, rememberChildLayerOrigin, tLauncher]);
+  const handleOpenNewAgentPanel = useCallback((origin?: HTMLElement | null) => {
+    // Same child-layer contract as the other sidebar dialogs: return focus to
+    // the entry inside the flyout so it stays open and the new row is visible.
+    rememberChildLayerOrigin(origin);
+    onNewAgentPanelOpenChange(true);
+  }, [onNewAgentPanelOpenChange, rememberChildLayerOrigin]);
 
-  const handlePathConfirm = useCallback(async (path: string) => {
-    setPathDialogOpen(false);
-    try {
-      await addProject(path);
-      const normalizedPath = path.replace(/\\/g, '/');
-      const parentDir = normalizedPath.split('/').slice(0, -1).join('/');
-      if (parentDir) window.localStorage.setItem('myagents:lastProjectDir', parentDir);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      toastRef.current.error(tLauncher('toasts.addProjectFailed', { message }));
-    } finally {
-      restoreChildLayerFocus();
-    }
-  }, [addProject, restoreChildLayerFocus, tLauncher]);
+  const handleNewAgentCreated = useCallback((project: Project) => {
+    setRecentlyCreatedWorkspaceKey(normalizeWorkspacePathIdentity(project.path));
+  }, []);
 
-  const handleCreateFromTemplate = useCallback(async (
-    path: string,
-    template: WorkspaceTemplate,
-    displayName?: string,
-  ) => {
-    await addProject(path, {
-      icon: template.icon,
-      displayName,
-      templateId: template.id,
-      templateSource: template.isBuiltin ? 'builtin' : 'user',
-      agentDefaults: template.isBuiltin ? template.agentDefaults : undefined,
-    });
-    track('workspace_create', { source: 'template' });
-  }, [addProject]);
+  // The created-row flash is a one-shot cue; clear it after the CSS animation.
+  useEffect(() => {
+    if (!recentlyCreatedWorkspaceKey) return;
+    const timer = setTimeout(() => setRecentlyCreatedWorkspaceKey(null), 1600);
+    return () => clearTimeout(timer);
+  }, [recentlyCreatedWorkspaceKey]);
 
   const handleOpenTaskCenter = useCallback(() => {
     track('task_center_open', {});
@@ -1111,11 +1074,8 @@ export default memo(function GlobalSidebar({
         ...current,
         showAutomationSessions: !current.showAutomationSessions,
       }))}
-      onAddFolder={handleAddFolder}
-      onCreateFromTemplate={() => {
-        rememberChildLayerOrigin();
-        setTemplateDialogOpen(true);
-      }}
+      onCreateAgent={handleOpenNewAgentPanel}
+      recentlyCreatedWorkspaceKey={recentlyCreatedWorkspaceKey}
       onOpenWorkspace={handleOpenWorkspace}
       onOpenSession={handleOpenSession}
       onTogglePin={handleTogglePin}
@@ -1464,24 +1424,14 @@ export default memo(function GlobalSidebar({
         document.body,
       )}
 
-      <PathInputDialog
-        isOpen={pathDialogOpen}
-        folderName={pendingFolderName}
-        defaultPath={pendingDefaultPath}
-        onConfirm={handlePathConfirm}
-        onCancel={() => {
-          setPathDialogOpen(false);
-          restoreChildLayerFocus();
-        }}
-      />
-
-      {templateDialogOpen && (
-        <TemplateLibraryDialog
-          onCreateWorkspace={handleCreateFromTemplate}
+      {newAgentPanelOpen && (
+        <NewAgentPanel
           onClose={() => {
-            setTemplateDialogOpen(false);
-            restoreChildLayerFocus();
+            onNewAgentPanelOpenChange(false);
+            // Launcher-opened panels never registered an origin; only restore ours.
+            if (childLayerReturnFocusRef.current) restoreChildLayerFocus();
           }}
+          onCreated={handleNewAgentCreated}
         />
       )}
 
@@ -1588,8 +1538,8 @@ interface WorkspaceTreeProps {
   onToggleArchived: () => void;
   onSetSessionView: (view: 'all' | 'favorites') => void;
   onToggleAutomation: () => void;
-  onAddFolder: () => void;
-  onCreateFromTemplate: () => void;
+  onCreateAgent: (origin?: HTMLElement | null) => void;
+  recentlyCreatedWorkspaceKey: string | null;
   onOpenWorkspace: (project: Project) => void;
   onOpenSession: (session: SessionMetadata, project: Project) => void;
   onTogglePin: (project: Project) => void;
@@ -1697,8 +1647,8 @@ function WorkspaceTree({
   onToggleArchived,
   onSetSessionView,
   onToggleAutomation,
-  onAddFolder,
-  onCreateFromTemplate,
+  onCreateAgent,
+  recentlyCreatedWorkspaceKey,
   onOpenWorkspace,
   onOpenSession,
   onTogglePin,
@@ -1764,6 +1714,14 @@ function WorkspaceTree({
     }
   }, [activeWorkspaceKey]);
 
+  useEffect(() => {
+    if (!recentlyCreatedWorkspaceKey) return;
+    const workspaceNode = workspaceRefs.current.get(recentlyCreatedWorkspaceKey);
+    if (typeof workspaceNode?.scrollIntoView === 'function') {
+      workspaceNode.scrollIntoView({ block: 'nearest' });
+    }
+  }, [recentlyCreatedWorkspaceKey]);
+
   const setViewMenu = useCallback((open: boolean) => {
     setViewMenuOpen(open);
     onNestedInteractionChange('view-options', open);
@@ -1814,12 +1772,16 @@ function WorkspaceTree({
             onClick={() => { onToggleAutomation(); setViewMenu(false); }}
           />
         </Popover>
-        <AddWorkspaceMenu
-          variant="icon"
-          onAddFolder={onAddFolder}
-          onCreateFromTemplate={onCreateFromTemplate}
-          onOpenChange={(open) => onNestedInteractionChange('add-workspace', open)}
-        />
+        <Tip label={tLauncher('newAgentPanel.title')} position="bottom" align="end">
+          <button
+            type="button"
+            onClick={(event) => onCreateAgent(event.currentTarget)}
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+            aria-label={tLauncher('newAgentPanel.title')}
+          >
+            <PlusIcon className="h-3.5 w-3.5" />
+          </button>
+        </Tip>
       </div>
 
       <div
@@ -1863,7 +1825,7 @@ function WorkspaceTree({
             <p className="mt-1 text-xs text-[var(--ink-muted)]">{tLauncher('rightRail.emptyWorkspaceDescription')}</p>
             <button
               type="button"
-              onClick={onAddFolder}
+              onClick={(event) => onCreateAgent(event.currentTarget)}
               className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-3 py-2 text-sm font-medium text-[var(--button-primary-text)] hover:bg-[var(--button-primary-bg-hover)]"
             >
               <PlusIcon className="h-3.5 w-3.5" />
@@ -1890,6 +1852,7 @@ function WorkspaceTree({
                     project={project}
                     expanded={expandedSet.has(key)}
                     active={isActiveWorkspaceContext && !activeSessionId}
+                    recentlyCreated={recentlyCreatedWorkspaceKey === key}
                     actionTipPosition={index === 0 ? 'bottom' : 'top'}
                     onToggle={() => onToggleWorkspace(project)}
                     onOpenWorkspace={() => onOpenWorkspace(project)}
@@ -2014,6 +1977,7 @@ interface WorkspaceRowProps {
   project: Project;
   expanded: boolean;
   active: boolean;
+  recentlyCreated: boolean;
   actionTipPosition: 'top' | 'bottom';
   onToggle: () => void;
   onOpenWorkspace: () => void;
@@ -2029,6 +1993,7 @@ function WorkspaceRow({
   project,
   expanded,
   active,
+  recentlyCreated,
   actionTipPosition,
   onToggle,
   onOpenWorkspace,
@@ -2058,6 +2023,7 @@ function WorkspaceRow({
       aria-current={active ? 'page' : undefined}
       className="global-sidebar-row global-sidebar-resource-row group/workspace relative flex h-8 select-none items-center transition-colors"
       data-menu-open={menuOpen || undefined}
+      data-recently-created={recentlyCreated || undefined}
       data-global-sidebar-workspace-row
       onMouseDown={(event) => {
         if (event.button === 2) {

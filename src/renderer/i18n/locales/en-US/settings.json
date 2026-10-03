@@ -1141,11 +1141,6 @@
       "benefitRouting": "Smart proactive message routing",
       "action": "Upgrade to Agent"
     },
-    "createMenu": {
-      "create": "Create Agent",
-      "upgradeWorkspace": "Upgrade existing workspace",
-      "fromTemplate": "Create from template"
-    },
     "workspaceSelect": {
       "title": "Select workspace",
       "description": "Select a workspace that has not been upgraded and convert it to an Agent.",

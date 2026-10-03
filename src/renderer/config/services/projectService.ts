@@ -37,6 +37,38 @@ function isValidProjectsArray(data: unknown): data is Project[] {
     );
 }
 
+// ============= Existing-path policy =============
+
+/**
+ * How `addProject` treats a path that is already registered.
+ * - `reuse` (default): return the existing Project and refresh `lastOpened`.
+ * - `reject`: create-only. A visible (non-hidden) match throws
+ *   `ProjectAlreadyExistsError` and nothing is written. Hidden (soft-deleted)
+ *   Projects still count as absent and are revived by the caller.
+ */
+export type AddProjectExistingPolicy = 'reuse' | 'reject';
+
+export class ProjectAlreadyExistsError extends Error {
+    readonly project: Project;
+    readonly archived: boolean;
+
+    constructor(project: Project) {
+        super(`Workspace already exists: ${project.path}`);
+        this.name = 'ProjectAlreadyExistsError';
+        this.project = project;
+        this.archived = isProjectArchived(project);
+    }
+}
+
+/**
+ * The registered Project that blocks a create-only add of `path`, if any.
+ * Single decision table for both the in-lock check in `addProject` and UI
+ * pre-checks, so a pre-check can never disagree with the final verdict.
+ */
+export function findBlockingProject(projects: readonly Project[], path: string): Project | undefined {
+    return projects.find((p) => p.hidden !== true && workspacePathsEqual(p.path, path));
+}
+
 // ============= CRUD =============
 
 export async function loadProjects(): Promise<Project[]> {
@@ -95,12 +127,17 @@ export async function saveProjects(projects: Project[], options: { notification:
     }
 }
 
-export async function addProject(path: string, options: { notification: ConfigChangeNotification } = { notification: 'immediate' }): Promise<Project> {
+export async function addProject(
+    path: string,
+    options: { notification: ConfigChangeNotification; onExisting?: AddProjectExistingPolicy } = { notification: 'immediate' },
+): Promise<Project> {
     console.log('[configService] addProject called with path:', path);
 
     if (isBrowserDevMode()) {
         console.log('[configService] Browser mode: using mock addProject');
         const before = mockLoadProjects();
+        const blocking = options.onExisting === 'reject' ? findBlockingProject(before, path) : undefined;
+        if (blocking) throw new ProjectAlreadyExistsError(blocking);
         const result = mockAddProject(path);
         if (options.notification === 'immediate' && projectCatalogChanged(before, mockLoadProjects())) notifyConfigChanged('addProject');
         return result;
@@ -108,6 +145,8 @@ export async function addProject(path: string, options: { notification: ConfigCh
 
     return withProjectsLock(async () => {
         const projects = await loadProjects();
+        const blocking = options.onExisting === 'reject' ? findBlockingProject(projects, path) : undefined;
+        if (blocking) throw new ProjectAlreadyExistsError(blocking);
 
         // #320: dedup by canonical workspace identity, not raw `===`, so a path
         // arriving in a different separator/case form doesn't create a duplicate

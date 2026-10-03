@@ -139,6 +139,21 @@ vi.mock('@/api/sessionClient', async (importOriginal) => {
   return { ...actual, updateSession: mocks.updateSession };
 });
 
+vi.mock('@/components/launcher', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/components/launcher')>()),
+  // The panel has its own suite; here only its contract with the sidebar matters.
+  NewAgentPanel: ({ onCreated, onClose }: { onCreated: (project: { id: string; name: string; path: string }) => void; onClose: () => void }) => (
+    <button
+      type="button"
+      data-testid="fake-new-agent-panel"
+      onClick={() => {
+        onCreated({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+        onClose();
+      }}
+    />
+  ),
+}));
+
 import { i18n } from '@/i18n';
 import type { Tab } from '@/types/tab';
 import { GLOBAL_SIDEBAR_PREFERENCE_KEY } from '@/utils/globalSidebarPreference';
@@ -169,6 +184,8 @@ function sidebar(overrides: Partial<SidebarProps> = {}) {
       onOpenWorkspace={vi.fn(async () => true)}
       onOpenSession={vi.fn(async () => true)}
       onRenameSession={vi.fn(async () => null)}
+      newAgentPanelOpen={false}
+      onNewAgentPanelOpenChange={vi.fn()}
       {...overrides}
     />
   );
@@ -520,12 +537,56 @@ describe('GlobalSidebar rail flyout', () => {
     }
   });
 
+  it('opens the single New Agent panel from the + button and the empty state', () => {
+    const onNewAgentPanelOpenChange = vi.fn();
+    renderSidebar({ onNewAgentPanelOpenChange });
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+
+    fireEvent.click(screen.getByRole('button', { name: String(i18n.t('launcher:newAgentPanel.title')) }));
+    fireEvent.click(screen.getByRole('button', { name: String(i18n.t('launcher:rightRail.addFolder')) }));
+
+    expect(onNewAgentPanelOpenChange.mock.calls).toEqual([[true], [true]]);
+  });
+
+  it('returns focus to the + entry after the panel it opened closes', () => {
+    const onNewAgentPanelOpenChange = vi.fn();
+    const view = renderSidebar({ onNewAgentPanelOpenChange });
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+    const addButton = screen.getByRole('button', { name: String(i18n.t('launcher:newAgentPanel.title')) });
+
+    fireEvent.click(addButton);
+    view.rerender(sidebar({ onNewAgentPanelOpenChange, newAgentPanelOpen: true }));
+    (document.activeElement as HTMLElement | null)?.blur();
+    // The fake panel closes through its onClose prop, like every real close path.
+    fireEvent.click(screen.getByTestId('fake-new-agent-panel'));
+
+    expect(onNewAgentPanelOpenChange).toHaveBeenLastCalledWith(false);
+    expect(addButton).toHaveFocus();
+  });
+
+  it('flashes the workspace created from the New Agent panel', () => {
+    mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+    const onNewAgentPanelOpenChange = vi.fn();
+    renderSidebar({ newAgentPanelOpen: true, onNewAgentPanelOpenChange });
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+
+    fireEvent.click(screen.getByTestId('fake-new-agent-panel'));
+
+    const row = screen.getByText('Project one').closest<HTMLElement>('[data-global-sidebar-workspace-row]')!;
+    expect(row).toHaveAttribute('data-recently-created');
+    expect(onNewAgentPanelOpenChange).toHaveBeenCalledWith(false);
+    act(() => {
+      vi.advanceTimersByTime(1600);
+    });
+    expect(row).not.toHaveAttribute('data-recently-created');
+  });
+
   it('uses instant portaled tooltips for workspace header and row actions', () => {
     mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
     renderSidebar();
     fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
 
-    const addButton = screen.getByRole('button', { name: String(i18n.t('launcher:addWorkspaceMenu.add')) });
+    const addButton = screen.getByRole('button', { name: String(i18n.t('launcher:newAgentPanel.title')) });
     const viewOptionsButton = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.workspaceViewOptions')) });
     const workspaceRow = screen.getByText('Project one').closest<HTMLElement>('[data-global-sidebar-workspace-row]')!;
     const newChatButton = within(workspaceRow).getByRole('button', { name: String(i18n.t('app:globalSidebar.newChatHere')) });
@@ -535,7 +596,7 @@ describe('GlobalSidebar rail flyout', () => {
     expect(Boolean(moreButton.compareDocumentPosition(newChatButton) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
 
     for (const [button, label] of [
-      [addButton, String(i18n.t('launcher:addWorkspaceMenu.add'))],
+      [addButton, String(i18n.t('launcher:newAgentPanel.title'))],
       [viewOptionsButton, '更多'],
       [newChatButton, '新对话'],
       [moreButton, '更多'],

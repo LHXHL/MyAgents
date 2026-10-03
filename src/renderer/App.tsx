@@ -426,6 +426,9 @@ export default function App() {
 
   // Bug report overlay state (triggered from titlebar feedback button)
   const [showBugReport, setShowBugReport] = useState(false);
+  // Owned by GlobalSidebar (which renders the single New Agent panel); lifted
+  // here so launcher entry points open that same instance.
+  const [newAgentPanelOpen, setNewAgentPanelOpen] = useState(false);
   const [appVersion, setAppVersion] = useState('');
   useEffect(() => {
     if (isTauriEnvironment()) {
@@ -4723,6 +4726,7 @@ export default function App() {
       onStartRecording: handleStartRecording,
       onOpenRecord: (recordId) =>
         handleOpenRecord(recordId, undefined, 'launcher_input'),
+      onOpenNewAgentPanel: () => setNewAgentPanelOpen(true),
     }),
     [
       handleLaunchProject,
@@ -4873,6 +4877,8 @@ export default function App() {
       <LinkContextMenuProvider>
         <div className="flex h-screen bg-[var(--paper)]">
           <GlobalSidebar
+            newAgentPanelOpen={newAgentPanelOpen}
+            onNewAgentPanelOpenChange={setNewAgentPanelOpen}
             tabs={tabs}
             activeTab={activeTab}
             activeWorkspacePath={activeWorkspacePath}

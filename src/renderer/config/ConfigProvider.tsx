@@ -59,6 +59,7 @@ import {
     patchProject as patchProjectService,
     removeOrHideProject as removeOrHideProjectService,
     touchProject as touchProjectService,
+    type AddProjectExistingPolicy,
 } from './services/projectService';
 import {
     configureMemoryAutoUpdateTaskForAgent,
@@ -275,6 +276,10 @@ export interface AddProjectOptions {
     templateId?: string;
     templateSource?: WorkspaceTemplateSource;
     agentDefaults?: WorkspaceTemplateAgentDefaults;
+    /** `reject` = create-only: an already-registered (non-hidden) path throws
+     *  `ProjectAlreadyExistsError` inside the projects lock and nothing is
+     *  written. Default `reuse` keeps the historical refresh-and-patch path. */
+    onExisting?: AddProjectExistingPolicy;
 }
 
 // ============= Contexts =============
@@ -934,7 +939,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         let catalogChanged = false;
         await withAgentConfigIntentLock(async () => {
             const before = await loadProjects();
-            project = await addProjectService(path, { notification: 'deferred' });
+            project = await addProjectService(path, { notification: 'deferred', onExisting: options.onExisting });
 
             const metadataPatch: Partial<Omit<Project, 'id'>> = {};
             if (options.icon) metadataPatch.icon = options.icon;

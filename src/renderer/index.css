@@ -450,6 +450,41 @@ html[data-color-scheme='dark'] {
   --global-sidebar-row-bg: var(--paper-inset);
 }
 
+/* A workspace just created from the New Agent panel flashes once, then
+   settles back to its normal row surface. */
+.global-sidebar-resource-row[data-recently-created] {
+  animation: global-sidebar-recently-created 1.6s ease-out;
+}
+
+@keyframes global-sidebar-recently-created {
+  0%, 35% { background-color: var(--accent-warm-muted); }
+  100% { background-color: var(--global-sidebar-row-bg); }
+}
+
+/* New Agent panel: list ↔ detail slide within one dialog. */
+.new-agent-panel-page[data-enter='forward'] {
+  animation: new-agent-panel-enter-forward var(--duration-normal, 200ms) ease-out;
+}
+
+.new-agent-panel-page[data-enter='back'] {
+  animation: new-agent-panel-enter-back var(--duration-normal, 200ms) ease-out;
+}
+
+@keyframes new-agent-panel-enter-forward {
+  from { opacity: 0; transform: translateX(16px); }
+}
+
+@keyframes new-agent-panel-enter-back {
+  from { opacity: 0; transform: translateX(-16px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .global-sidebar-resource-row[data-recently-created],
+  .new-agent-panel-page[data-enter] {
+    animation: none;
+  }
+}
+
 /* Selected/open sidebar entries fill their AppIcon tint layer instead of
    adding a second accent marker; the row surface alone carries selection. */
 .global-sidebar-row:is([aria-current='page'], [aria-expanded='true'][data-notification-center-trigger]) {

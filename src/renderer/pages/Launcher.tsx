@@ -11,7 +11,6 @@ import { useTranslation } from 'react-i18next';
 
 import { perfMark } from '@/utils/perfMark';
 import { RENDERER_PERF_PHASE } from '../../shared/perfTrace';
-import { open } from '@tauri-apps/plugin-dialog';
 
 import { track } from '@/analytics';
 import type { EntryIntent, Surface } from '@/analytics';
@@ -19,7 +18,6 @@ import { type ImageAttachment } from '@/components/SimpleChatInput';
 import { projectTaskExecutionOverrides } from '@/utils/taskProviderProjection';
 import { coerceRuntimeBirthPermissionMode } from '../../shared/runtimeBirthFields';
 import { useToast } from '@/components/Toast';
-import PathInputDialog from '@/components/PathInputDialog';
 import { BrandSection } from '@/components/launcher';
 import RecordingSourceDialog from '@/components/task-center/RecordingSourceDialog';
 import { useConfig } from '@/hooks/useConfig';
@@ -80,7 +78,6 @@ import {
 } from '../../shared/official-tools';
 import { apiGetJson } from '@/api/apiFetch';
 import { runtimeModelCatalogPath } from '@/utils/runtimeModelCatalog';
-import { isBrowserDevMode, pickFolderForDialog } from '@/utils/browserMock';
 import { resolveBuiltinPermissionMode, resolveLauncherProvider } from '@/utils/optionResolve';
 import {
   isProviderModelCompatibleWithRuntime,
@@ -105,6 +102,8 @@ interface LauncherProps {
   onWorkspaceSelectionChange?: (workspacePath: string | null) => void;
   onStartRecording: (selection: RecordingSourceSelection) => Promise<void>;
   onOpenRecord: (recordId: string) => void;
+  /** Opens the app-wide New Agent panel; the launcher never registers folders itself. */
+  onOpenNewAgentPanel: () => void;
   recordingBusy?: boolean;
 }
 
@@ -118,6 +117,7 @@ export default function Launcher({
   onWorkspaceSelectionChange,
   onStartRecording,
   onOpenRecord,
+  onOpenNewAgentPanel,
   recordingBusy = false,
 }: LauncherProps) {
   const { t } = useTranslation('launcher');
@@ -131,7 +131,6 @@ export default function Launcher({
     providers,
     isLoading,
     error: _error,
-    addProject,
     patchProject,
     touchProject,
     apiKeys,
@@ -150,7 +149,6 @@ export default function Launcher({
     [projects],
   );
 
-  const [_addError, setAddError] = useState<string | null>(null);
   const [launchingProjectId, setLaunchingProjectId] = useState<string | null>(
     null,
   );
@@ -1219,85 +1217,8 @@ export default function Launcher({
     ],
   );
 
-  // Path input dialog state (for browser dev mode)
-  const [pathDialogOpen, setPathDialogOpen] = useState(false);
-  const [pendingFolderName, setPendingFolderName] = useState('');
-  const [pendingDefaultPath, setPendingDefaultPath] = useState('');
-
-  const handleAddProject = async () => {
-    setAddError(null);
-    console.log('[Launcher] handleAddProject called');
-
-    try {
-      if (isBrowserDevMode()) {
-        const folderInfo = await pickFolderForDialog();
-        if (folderInfo) {
-          setPendingFolderName(folderInfo.folderName);
-          setPendingDefaultPath(folderInfo.defaultPath);
-          setPathDialogOpen(true);
-        } else {
-          console.log('[Launcher] Folder picker cancelled');
-        }
-      } else {
-        const selected = await open({
-          directory: true,
-          multiple: false,
-          title: t('dialogs.pickProjectFolder'),
-        });
-        console.log('[Launcher] Dialog result:', selected);
-
-        if (selected && typeof selected === 'string') {
-          console.log('[Launcher] Adding project:', selected);
-          const project = await addProject(selected);
-          console.log('[Launcher] Project added:', project);
-        } else {
-          console.log('[Launcher] No folder selected or dialog cancelled');
-        }
-      }
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      console.error('[Launcher] Failed to add project:', errorMsg);
-      setAddError(errorMsg);
-      toast.error(t('toasts.addProjectFailed', { message: errorMsg }));
-    }
-  };
-
-  const handlePathConfirm = async (path: string) => {
-    setPathDialogOpen(false);
-    console.log('[Launcher] Path confirmed:', path);
-
-    try {
-      const project = await addProject(path);
-      console.log('[Launcher] Project added:', project);
-      // Normalize path separators for cross-platform support
-      const normalizedPath = path.replace(/\\/g, '/');
-      const parentDir = normalizedPath.split('/').slice(0, -1).join('/');
-      if (parentDir) {
-        localStorage.setItem('myagents:lastProjectDir', parentDir);
-      }
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      console.error('[Launcher] Failed to add project:', errorMsg);
-      setAddError(errorMsg);
-      toast.error(t('toasts.addProjectFailed', { message: errorMsg }));
-    }
-  };
-
-  const handlePathCancel = () => {
-    setPathDialogOpen(false);
-    console.log('[Launcher] Path dialog cancelled');
-  };
-
   return (
     <div className="flex h-full flex-col overflow-hidden bg-[var(--paper)] text-[var(--ink)]">
-      {/* Path Input Dialog (browser dev mode) */}
-      <PathInputDialog
-        isOpen={pathDialogOpen}
-        folderName={pendingFolderName}
-        defaultPath={pendingDefaultPath}
-        onConfirm={handlePathConfirm}
-        onCancel={handlePathCancel}
-      />
       {recordingSourceDialog && (
         <RecordingSourceDialog
           mode={recordingSourceDialog.mode}
@@ -1319,7 +1240,7 @@ export default function Launcher({
           onSelectWorkspace={(project) =>
             onWorkspaceSelectionChange?.(project.path)
           }
-          onAddFolder={handleAddProject}
+          onAddFolder={onOpenNewAgentPanel}
           onSetDefaultWorkspace={handleSetDefault}
           onSend={handleBrandSend}
           onStartRecording={handleRequestRecording}

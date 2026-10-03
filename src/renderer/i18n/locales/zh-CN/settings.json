@@ -1141,11 +1141,6 @@
       "benefitRouting": "智能主动消息路由",
       "action": "升级为 Agent"
     },
-    "createMenu": {
-      "create": "创建 Agent",
-      "upgradeWorkspace": "从现有工作区升级",
-      "fromTemplate": "从模板创建"
-    },
     "workspaceSelect": {
       "title": "选择工作区",
       "description": "选择一个尚未升级的工作区，将其转化为 Agent。",
