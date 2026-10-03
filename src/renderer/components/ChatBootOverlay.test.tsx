@@ -4,6 +4,13 @@ import { describe, expect, it, vi } from 'vitest';
 import ChatBootOverlay from './ChatBootOverlay';
 
 describe('ChatBootOverlay', () => {
+  it('shows the submitted query and image before the Chat chunk or Sidecar is ready', () => {
+    render(<ChatBootOverlay initialMessage={{ text: 'sent before startup', images: [{ id: 'preview', file: new File(['test'], 'test.png'), preview: 'data:image/png;base64,dGVzdA==' }] }} />);
+    expect(screen.getByText('sent before startup').closest('article')).toBeVisible();
+    expect(screen.getByRole('img', { name: 'test.png' })).toBeVisible();
+    expect(screen.getByText('AI 启动中')).toBeVisible();
+  });
+
   it('uses the same elevated paper background as the loaded chat page', () => {
     render(<ChatBootOverlay />);
 

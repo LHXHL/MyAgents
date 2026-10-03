@@ -464,10 +464,13 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
                 </div>
               )}
             </article>
+            {message.deliveryStatus === 'failed' && (
+              <p className="mr-2 mt-1 text-xs text-[var(--error)]">{t('app:tabProvider.sendFailed')}</p>
+            )}
             {/* 操作栏：时间 + 图标按钮，随气泡/操作栏局部 hover 或键盘 focus 淡入 */}
             <div className="mr-2 mt-1 flex items-center gap-2 opacity-0 transition-opacity duration-150 group-hover/user-actions:opacity-100 group-focus-within/user-actions:opacity-100">
               <span className="mr-1 text-xs text-[var(--ink-muted)]">{formatTimestamp(message.timestamp)}</span>
-              {onRewind && (
+              {onRewind && !message.deliveryStatus && (
                 <span data-rewind-btn>
                   <Tip label={t('message.actions.rewind')}>
                     <button type="button"

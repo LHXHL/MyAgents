@@ -805,6 +805,7 @@ function getCommandDownloadInfo(command: string): {
 type SendMessagePayload = {
   primaryContext?: import("../shared/agentMentions").DesktopPrimaryContext;
   agentMentions?: import("../shared/agentMentions").AgentMentionSnapshot[];
+  clientRequestId?: string;
   asyncQuestionReply?: AsyncQuestionReply;
   text?: string;
   images?: ImagePayload[];
@@ -3018,6 +3019,12 @@ async function main() {
         if (payload.asyncQuestionReply !== undefined && !isAsyncQuestionReply(payload.asyncQuestionReply)) {
           return jsonResponse({ success: false, error: 'Invalid async question reply.' }, 400);
         }
+        if (payload.clientRequestId !== undefined && (
+          typeof payload.clientRequestId !== 'string' ||
+          !/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(payload.clientRequestId)
+        )) {
+          return jsonResponse({ success: false, error: 'Invalid client request id.' }, 400);
+        }
         const text = payload?.text?.trim() ?? '';
         let images = payload?.images ?? [];
         const clientSessionId =
@@ -3140,6 +3147,7 @@ async function main() {
             `[chat] send via ${runtimeLabel}: text="${text.slice(0, 200)}" images=${images.length} mode=${permissionMode}${permissionMode !== requestedPermissionMode ? ` (session authority; caller=${requestedPermissionMode})` : ''} model=${model ?? 'default'} baseUrl=${providerLabel}`,
           );
           const result = await goalOrchestrator.sendDesktopMessage(engine, {
+            clientRequestId: payload.clientRequestId,
             text,
             agentMentions: payload.agentMentions,
             queryPrimaryContext: payload.primaryContext,

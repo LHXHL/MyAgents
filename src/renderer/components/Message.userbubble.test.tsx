@@ -22,6 +22,13 @@ function userMsg(
 }
 
 describe('Message — user bubble spacing', () => {
+  it.each(['sending', 'failed'] as const)('keeps a %s user bubble visible without native rewind', status => {
+    const { container } = render(<Message message={userMsg('hello', { deliveryStatus: status })} onRewind={vi.fn()} />);
+    expect(container.querySelector('article')).toHaveTextContent('hello');
+    expect(container.querySelector('[data-rewind-btn]')).toBeNull();
+    if (status === 'failed') expect(screen.getByText('发送失败')).toBeInTheDocument();
+  });
+
   it('keeps background task notifications hidden from the chat flow', () => {
     const { container } = render(
       <Message

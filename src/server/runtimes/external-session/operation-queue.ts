@@ -135,7 +135,14 @@ export function createExternalMessageOperation(input: {
     context: { ...input.context, queueId },
     runtimeConfig: input.runtimeConfig,
     userProjection: {
-      message: { ...input.userMessage, desktopQuery: input.context.desktopQuery, ...(input.context.asyncQuestionReply ? { asyncQuestionReply: input.context.asyncQuestionReply } : {}) },
+      message: {
+        ...input.userMessage,
+        desktopQuery: input.context.desktopQuery,
+        ...(input.context.clientRequestId ? {
+          metadata: { ...input.userMessage.metadata, source: 'desktop' as const, clientRequestId: input.context.clientRequestId },
+        } : {}),
+        ...(input.context.asyncQuestionReply ? { asyncQuestionReply: input.context.asyncQuestionReply } : {}),
+      },
       surfaceMode: input.surfaceMode ?? 'chat-replay',
       surfaced: false,
       inTranscript: false,

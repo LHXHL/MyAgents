@@ -13,6 +13,19 @@ function imageAttachmentSize(img: ImageAttachment): number {
   return img.sizeBytes ?? img.file.size;
 }
 
+export function restoreMessageImages(attachments: MessageAttachment[] | undefined): ImageAttachment[] {
+  return attachments?.filter(a => a.isImage || a.mimeType?.startsWith('image/')).map(a => ({
+    id: a.id,
+    file: new File([], a.name, { type: a.mimeType }),
+    preview: a.previewUrl || '',
+    source: a.relativePath || a.savedPath ? 'attachment_ref' as const : undefined,
+    name: a.name,
+    mimeType: a.mimeType,
+    sizeBytes: a.size,
+    relativePath: a.relativePath || a.savedPath,
+  })) ?? [];
+}
+
 export function imagePayloadForSend(img: ImageAttachment) {
   const name = imageAttachmentName(img);
   const mimeType = imageAttachmentMimeType(img);

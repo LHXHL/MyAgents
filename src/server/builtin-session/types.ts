@@ -94,6 +94,7 @@ export type MessageWire = {
   sdkUuid?: string;
   attachments?: MessageWireAttachment[];
   metadata?: {
+    clientRequestId?: string;
     source: SessionSource;
     sourceId?: string;
     senderName?: string;
@@ -132,6 +133,7 @@ export type BuiltinRestartReason =
 export type { TurnProviderAnalytics } from '../session-core/turn-analytics';
 
 export type MessageQueueItem = {
+  metadata?: MessageWire['metadata'];
   id: string;
   message: SDKUserMessage['message'];
   messageText: string;
@@ -202,6 +204,7 @@ export type TurnAdmissionTicket = {
 };
 
 export type InFlightMetadata = {
+  metadata?: MessageWire['metadata'];
   messageText: string;
   desktopQuery?: import("../../shared/agentMentions").DesktopQueryDraft;
   attachments?: MessageWire['attachments'];

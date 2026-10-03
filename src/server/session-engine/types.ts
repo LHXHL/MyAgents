@@ -45,6 +45,7 @@ export type DesktopMessageRequest = {
   agentMentions?: import("../../shared/agentMentions").AgentMentionSnapshot[]; primaryContext?: import("../../shared/agentMentions").DesktopPrimaryContext;
   /** Product-only primary context supplied by the Goal owner, never raw XML. */
   queryPrimaryContext?: import("../../shared/agentMentions").QueryPrimaryContext;
+  clientRequestId?: string;
   asyncQuestionReply?: AsyncQuestionReply;
   text: string;
   images?: ImagePayload[];

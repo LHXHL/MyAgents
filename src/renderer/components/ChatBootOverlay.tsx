@@ -1,5 +1,6 @@
 import { AlertIcon, LoaderIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
+import type { ImageAttachment } from '@/components/chat-input/types';
 
 /**
  * Unified "AI 启动中" boot overlay — the frosted-glass loading state shown from the
@@ -19,10 +20,12 @@ export default function ChatBootOverlay({
     show = true,
     error = null,
     onRetry,
+    initialMessage,
 }: {
     show?: boolean;
     error?: string | null;
     onRetry?: () => void;
+    initialMessage?: { text: string; images?: ImageAttachment[] };
 }) {
     const { t } = useTranslation('chat');
     const hasError = show && Boolean(error);
@@ -31,9 +34,21 @@ export default function ChatBootOverlay({
         <div
             aria-hidden={!show}
             aria-live={show ? 'polite' : undefined}
-            className={`absolute inset-0 z-30 flex items-center justify-center bg-[var(--paper-elevated)]/80 backdrop-blur-sm ${show ? 'opacity-100' : 'pointer-events-none opacity-0 transition-opacity duration-300 ease-out'}`}
+            className={`absolute inset-0 z-30 flex ${initialMessage ? 'flex-col justify-start gap-6 overflow-y-auto px-6 py-8' : 'items-center justify-center'} bg-[var(--paper-elevated)]/80 backdrop-blur-sm ${show ? 'opacity-100' : 'pointer-events-none opacity-0 transition-opacity duration-300 ease-out'}`}
         >
-            <div className="flex max-w-md flex-col items-center gap-3 px-6 text-center">
+            {initialMessage && (
+                <div className="mx-auto flex w-full max-w-3xl flex-col items-end gap-3" data-startup-query>
+                    {initialMessage.images?.map(image => (
+                        <img key={image.id} src={image.preview} alt={image.name ?? image.file?.name ?? ''} className="h-24 max-w-full rounded-lg object-contain" />
+                    ))}
+                    {initialMessage.text && (
+                        <article className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl bg-[var(--message-user-bg)] p-4 text-[var(--ink)]">
+                            {initialMessage.text}
+                        </article>
+                    )}
+                </div>
+            )}
+            <div className={`flex max-w-md flex-col items-center gap-3 px-6 text-center ${initialMessage ? 'self-center' : ''}`}>
                 {hasError
                     ? <AlertIcon className="h-6 w-6 text-[var(--error)]" />
                     : <LoaderIcon className={`h-6 w-6 text-[var(--ink-muted)] ${show ? 'animate-spin' : ''}`} />}

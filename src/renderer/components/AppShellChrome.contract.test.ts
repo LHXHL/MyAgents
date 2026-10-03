@@ -9,6 +9,16 @@ function source(relativePath: string): string {
 }
 
 describe('App Shell chrome contract', () => {
+  it('keeps Runtime switching in model selection and never gates send on input chrome', () => {
+    const chat = source('src/renderer/pages/Chat.tsx');
+    const send = chat.slice(chat.indexOf('const handleSendMessage = useCallback'), chat.indexOf('// Ref-stabilize handleSendMessage'));
+    expect(send).toContain('sendMessage(');
+    const admissionChecks = send.slice(0, send.indexOf('scrollToBottom()'));
+    expect(admissionChecks).not.toContain('inputUsesExternalRuntimeControls');
+    expect(send).not.toContain('codexSubscriptionNeedsSession');
+    expect(send).not.toContain('onLaunchNewSession');
+  });
+
   it('saves an active Record note before tab close, app exit, or update restart', () => {
     const app = source('src/renderer/App.tsx');
     const recordLifecycle = source(
@@ -58,10 +68,13 @@ describe('App Shell chrome contract', () => {
     const tabProvider = source('src/renderer/context/TabProvider.tsx');
 
     expect(chatTabModule).toContain(
-      '<Suspense fallback={<ChatBootOverlay />}>',
+      '<Suspense fallback={<ChatBootOverlay initialMessage={tab.initialMessage} />}>',
     );
     expect(app).not.toContain(') : isLoading ? (\n        <ChatBootOverlay />');
     expect(chat).toContain('show={showStartupOverlay || isSessionLoading}');
+    // Prepared Codex births have real IDs and restore before the first turn.
+    // That phase must not hide the launch query already submitted by the user.
+    expect(chat).toContain('initialMessage={showStartupOverlay ? startupMessageRef.current : undefined}');
     expect(chat).toContain('error={sessionRestoreError}');
     expect(chat).not.toContain(
       "isSessionLoading && sessionRestoreMode === 'live-recovery'",
