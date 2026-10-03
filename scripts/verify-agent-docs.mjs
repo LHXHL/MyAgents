@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { checkLocalDocLinks } from './doc-links.mjs';
@@ -51,6 +52,29 @@ if (claude.includes('Pit-of-Success 红线总表') || claude.includes('| 禁止 
     'CLAUDE.md contains an exhaustive redline table. Keep the full catalog in ' +
       'specs/tech_docs/pit_of_success.md and enforce mechanical rules in lint/tests.',
   );
+}
+
+// Lint diagnostics and code comments must cite the owner doc that holds the
+// full invariant. CLAUDE.md has no red-line catalog, so "CLAUDE.md red-line"
+// sends the reader who just hit a lint error to a section that does not exist.
+const staleRedlineCitations = spawnSync(
+  'git',
+  [
+    'grep', '-nE',
+    'CLAUDE\\.md.{0,12}(red[- ]?line|红线|禁止事项|规则 [0-9]|constraint)|(red[- ]?line|红线).{0,12}CLAUDE\\.md',
+    '--', 'src', 'src-tauri/src', 'scripts', 'eslint.config.js', '.dependency-cruiser.cjs',
+    'src-tauri/clippy.toml', ':!scripts/verify-agent-docs.mjs',
+  ],
+  { cwd: root, encoding: 'utf8' },
+);
+if (staleRedlineCitations.status === 0) {
+  failures.push(
+    'Code cites a CLAUDE.md red-line that no longer exists. Point to the owner doc ' +
+      '(usually specs/tech_docs/pit_of_success.md#<anchor>) instead:\n' +
+      staleRedlineCitations.stdout.trimEnd(),
+  );
+} else if (staleRedlineCitations.status !== 1) {
+  failures.push(`git grep for stale CLAUDE.md red-line citations failed: ${staleRedlineCitations.stderr}`);
 }
 
 const routedDocs = new Set(claude.match(/specs\/[A-Za-z0-9_./-]+\.md/g) ?? []);

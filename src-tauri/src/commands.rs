@@ -450,8 +450,8 @@ pub fn cmd_initialize_bundled_workspace<R: Runtime>(
     // through to copy_dir_recursive — which fails on EEXIST and surfaces
     // a workspace-init error to the user every launch until they clear
     // the link by hand. Same family as the cpSync crash fixed in
-    // seedBundledSkills / cmd_sync_system_skills (CLAUDE.md red-line:
-    // "用 existsSync / Path::exists() 当存在性探针"). Single fixed path
+    // seedBundledSkills / cmd_sync_system_skills (pit_of_success.md#fs-utils:
+    // existsSync / Path::exists() as an existence probe). Single fixed path
     // and graceful error → not crashing in production, so left as TODO
     // to avoid scope creep on the v0.2.6 hotfix.
     if mino_dest.exists() {
@@ -3382,7 +3382,7 @@ fn runtime_not_distributed() -> RuntimeDetectionResult {
 /// running detection. A sync command runs all of that on the MAIN thread = the
 /// WKWebView UI thread on macOS, freezing the UI ~0.5–1.5s on Launcher/Chat/Settings
 /// mount for multi-runtime users. Same class as cmd_ensure_session_sidecar — see the
-/// CLAUDE.md red-line "同步 Tauri 命令阻塞 → 冻结 WKWebView". The cache /
+/// pit_of_success.md#sync-tauri-command (sync Tauri command blocks → frozen WKWebView). The cache /
 /// in-flight-join gate is preserved inside the blocking helper.
 #[tauri::command]
 pub async fn cmd_detect_runtimes<R: Runtime>(

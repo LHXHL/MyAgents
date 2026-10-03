@@ -1,6 +1,6 @@
 // OS notification with reliable click-to-foreground + navigation deep-link.
 //
-// Architectural rationale (see CLAUDE.md "结构保证优于流程约束"):
+// Architectural rationale (structural guarantees over process conventions):
 //
 // `tauri-plugin-notification` on desktop is fire-and-forget — its JS shim
 // replaces `window.Notification` with a pure invoke proxy that returns no

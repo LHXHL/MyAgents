@@ -96,7 +96,7 @@ pub async fn cmd_workspace_copy_paths(
                 // Per-file failures continue the batch so the user keeps the
                 // files that did go through — but they must reach the caller,
                 // not just the log (cross-review 0.2.33, Codex W3).
-                // ulog_* (not log::*) per CLAUDE.md red-line — log::warn!
+                // ulog_* (not log::*) per unified_logging.md — log::warn!
                 // doesn't reach `~/.myagents/logs/unified-{date}.log`.
                 crate::ulog_warn!("[workspace_files::copy] skipping {}: {}", source, err);
                 errors.push(format!("{}: {}", source, err));
@@ -166,7 +166,7 @@ fn copy_internal_one(
     workspace_root: &Path,
     target_root: &Path,
 ) -> Result<CopiedFile, String> {
-    // READ side: canonicalize (CLAUDE.md red-line). A lexical resolve would
+    // READ side: canonicalize (pit_of_success.md#workspace-files). A lexical resolve would
     // let an intermediate symlink component (`evil → /etc`) pass the prefix
     // check while `fs::copy` follows the link — exfiltrating bytes from
     // outside the workspace INTO an AI-readable workspace file.
@@ -263,7 +263,7 @@ fn copy_one_path(
 }
 
 /// Symlink-aware "is this slot occupied" — `Path::exists()` follows symlinks,
-/// returning false for a broken symlink. CLAUDE.md v0.2.5 red-line: relying on
+/// returning false for a broken symlink. v0.2.5 incident (pit_of_success.md#fs-utils): relying on
 /// follow-symlink existence checks before destructive ops causes confusing
 /// `fs::copy` / `fs::rename` failures (and on some kernels writes through the
 /// symlink to its target). Mirrors `crud.rs::slot_occupied`.
@@ -558,8 +558,8 @@ mod tests {
     // Cross-review regression guard: pre-fix `unique_target_name` used
     // `Path::exists()` which follows symlinks. A broken symlink at the target
     // slot returned false → caller proceeded into `fs::copy` / `fs::rename`
-    // and got a confusing error or wrote through the symlink. CLAUDE.md
-    // v0.2.5 red-line. `slot_occupied` (mirroring `crud.rs`) uses
+    // and got a confusing error or wrote through the symlink. v0.2.5
+    // incident (pit_of_success.md#fs-utils). `slot_occupied` (mirroring `crud.rs`) uses
     // `fs::symlink_metadata` so the slot is correctly seen as occupied.
     #[cfg(unix)]
     #[tokio::test]

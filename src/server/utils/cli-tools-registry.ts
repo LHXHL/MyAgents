@@ -8,7 +8,7 @@
  *   ~/.myagents/bin/<name>.cmd         Windows 启动器（+ <name>.launcher.cjs）
  *
  * 关键设计：
- * - registry.json 是单写者文件 → 所有写入走 withFileLock（CLAUDE.md 红线）。
+ * - registry.json 是单写者文件 → 所有写入走 withFileLock（pit_of_success.md#withfilelock）。
  * - shim 是运行时读 config.json 注入 per-tool env 的薄启动器：env 变更不需要
  *   重写 shim、密钥不烤进脚本文件（config.json 本就是本地明文，不扩大暴露面）。
  * - prompt 注入走 mtime 缓存的同步读（buildSystemPromptAppend 是同步函数，
@@ -285,7 +285,7 @@ export function removeCliToolShim(name: string): void {
   for (const file of [name, `${name}.cmd`, `${name}.launcher.cjs`]) {
     const p = join(binDir, file);
     try {
-      // lstat 探针（不跟随 symlink）：断链 symlink 用 existsSync 会误判为不存在（CLAUDE.md 红线）
+      // lstat 探针（不跟随 symlink）：断链 symlink 用 existsSync 会误判为不存在（pit_of_success.md#fs-utils）
       lstatSync(p);
       unlinkSync(p);
     } catch {

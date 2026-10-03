@@ -385,7 +385,7 @@ fn default_shell() -> String {
         // Prefer PowerShell 7 → PowerShell 5.1 → cmd.exe
         // PowerShell supports Unix-like aliases (ls, pwd, clear, cat, etc.),
         // giving users a familiar experience. cmd.exe lacks these entirely.
-        // Use system_binary::find() instead of bare which::which() (CLAUDE.md constraint)
+        // Use system_binary::find() instead of bare which::which() (pit_of_success.md#system_binary)
         if crate::system_binary::find("pwsh").is_some() {
             "pwsh".into()
         } else if crate::system_binary::find("powershell").is_some() {

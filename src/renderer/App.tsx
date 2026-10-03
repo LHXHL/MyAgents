@@ -434,7 +434,7 @@ export default function App() {
     }
   }, []);
 
-  // Toast (ref-stabilized per CLAUDE.md rules)
+  // Toast (ref-stabilized per react_stability_rules.md)
   const toast = useToast();
   const toastRef = useRef(toast);
   toastRef.current = toast;

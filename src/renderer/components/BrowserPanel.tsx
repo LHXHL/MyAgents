@@ -94,7 +94,7 @@ export default function BrowserPanel({
   const creatingTokenRef = useRef<string | null>(null);
 
   // Toast accessed via ref so the create effect doesn't list it as a dep
-  // (project convention — see CLAUDE.md react_stability_rules). Ref is
+  // (project convention — see react_stability_rules.md). Ref is
   // updated in a post-commit effect rather than during render to satisfy
   // react-hooks/refs.
   const toast = useToast();

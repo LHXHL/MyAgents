@@ -932,7 +932,7 @@ function cloneProviderEnvForImContext(
  * #264 — Self-resolve the background-agent permission policy from disk for the
  * IM / scheduled-Task lanes. Desktop sends carry it in the chat payload
  * (frontend is the authority), but background turns have no such payload, so
- * per CLAUDE.md's "Tab 由前端配, IM/Task self-resolve 从磁盘读" split they read `config.json`
+ * per the "Tab config comes from the frontend, IM/Task self-resolve from disk" split they read `config.json`
  * directly. Idempotent; defaults to the conservative 'inherit' on any read
  * error so a missing/corrupt config never widens the background lane.
  */
@@ -8569,8 +8569,8 @@ async function main() {
 
       // ============= CLAUDE PLUGINS API (PRD 0.2.17) =============
       //
-      // Plugin endpoints follow the "fixed names before wildcards" red-line
-      // (CLAUDE.md): /list, /install, /uninstall, /toggle, /detail all
+      // Plugin endpoints follow the "fixed names before wildcards" rule:
+      // /list, /install, /uninstall, /toggle, /detail all
       // collapse to a single keyword segment so there's no `/:id` wildcard
       // collision. Detail-by-id intentionally uses a query parameter for the
       // same reason — keeps route matching unambiguous.
@@ -9752,7 +9752,7 @@ async function main() {
       // Rust IM router caller, hence no imConfigSync flag). `effort` is the
       // setting string ('default' | level); 'default' restores pre-#324
       // behavior. Branches to the external-runtime handler per the
-      // config-sync routing red line (CLAUDE.md Multi-Agent Runtime).
+      // config-sync routing rule (multi_agent_runtime.md).
       if (
         pathname === '/api/reasoning-effort/set' &&
         request.method === 'POST'

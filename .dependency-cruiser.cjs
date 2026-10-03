@@ -2,7 +2,8 @@
 //
 // This file holds the "module-graph" rules that ESLint can't express:
 // "module A is not allowed to import from module B." Each rule below
-// codifies a structural invariant from CLAUDE.md so violations fail at
+// codifies a structural invariant from specs/ARCHITECTURE.md or
+// specs/tech_docs/pit_of_success.md so violations fail at
 // `npm run lint:deps` instead of being caught (or missed) during review.
 //
 // LLM reader convention: each rule's `comment` field MUST explain BOTH
@@ -82,7 +83,7 @@ module.exports = {
       to: {}
     },
     {
-      // CLAUDE.md red-line: builtin MCP files (`src/server/tools/*.ts`)
+      // Red-line (specs/tech_docs/pit_of_success.md#builtin-mcp): builtin MCP files (`src/server/tools/*.ts`)
       // run inside Sidecar but MUST stay isolated from the agent-session
       // module — they're loaded lazily at MCP-server-creation time, and
       // pulling in agent-session's transitive deps (SDK, zod, session

@@ -65,7 +65,7 @@ export function pluginInstallPathExists(installPath: string): boolean {
  * lstat but the target is gone. We MUST unlink before any write/cp operation
  * because Node v24's cpSync calls std::filesystem::equivalent which throws
  * an uncaught C++ exception on dangling symlinks and aborts the sidecar
- * (see CLAUDE.md "断链 symlink" red-line for the v0.2.5 repro).
+ * (see pit_of_success.md#fs-utils for the v0.2.5 repro).
  */
 export function isBrokenSymlink(p: string): boolean {
   let lst;

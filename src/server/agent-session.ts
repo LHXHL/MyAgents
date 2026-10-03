@@ -4105,7 +4105,7 @@ function buildSettingSources(): ('user' | 'project')[] {
  *      (a) add `registerBuiltinMcpMeta({ id, load })` block in builtin-mcp-meta.ts, and
  *      (b) write the tool file with `createXxxServer()` async factory whose SDK + zod imports
  *          live INSIDE the factory via `await import()` — never at the tool module's top level,
- *          or the lazy-load win is defeated (see CLAUDE.md 禁止事项 and builtin-mcp-registry.ts).
+ *          or the lazy-load win is defeated (see pit_of_success.md#builtin-mcp and builtin-mcp-registry.ts).
  * 3. External (stdio/sse/http) — subprocess or remote servers, user-configured.
  *
  * Execution strategy for external stdio:

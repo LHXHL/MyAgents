@@ -20,7 +20,12 @@ const gitignorePath = fileURLToPath(new URL('./.gitignore', import.meta.url));
 //   "use X instead" leaves the LLM no way to judge — it just does what it's
 //   told without understanding when the rule doesn't apply. Format:
 //
-//     "<symptom / what breaks>. Use <correct helper>. CLAUDE.md red-line."
+//     "<symptom / what breaks>. Use <correct helper>. See <owner doc>#<anchor>."
+//
+//   Point the trailing reference at the owner doc that holds the full
+//   invariant (usually specs/tech_docs/pit_of_success.md), or omit it when
+//   the message is self-contained. Never cite CLAUDE.md: it only routes
+//   tasks to docs and deliberately holds no red-line catalog.
 //
 //   When relevant, name the historical incident or class of bug (502 from
 //   system proxy, console-window flash, OS-listener leak, …) so the LLM
@@ -28,7 +33,7 @@ const gitignorePath = fileURLToPath(new URL('./.gitignore', import.meta.url));
 //   following a recipe.
 // ────────────────────────────────────────────────────────────────────────
 
-// CLAUDE.md red-line selectors that apply EVERYWHERE (renderer + sidecar +
+// Red-line selectors that apply EVERYWHERE (renderer + sidecar +
 // shared). Spread into every block that defines `no-restricted-syntax`,
 // because Flat Config's later-block-wins semantics would otherwise wipe
 // these rules for files matched by a more specific block (the existing
@@ -37,15 +42,15 @@ const gitignorePath = fileURLToPath(new URL('./.gitignore', import.meta.url));
 // it keeps the single-source-of-truth without re-introducing the bug.
 const GLOBAL_RESTRICTED_SYNTAX = [
   {
-    // CLAUDE.md red-line: synchronous busy-wait blocks the event loop.
+    // Red-line: synchronous busy-wait blocks the event loop.
     // Sidecar busy-wait kills the SDK pump (no messages flow until the
     // wait returns); renderer busy-wait freezes the UI thread.
     selector: "MemberExpression[object.name='Atomics'][property.name='wait']",
     message:
-      'Atomics.wait blocks the event loop synchronously — Sidecar stops draining SDK messages, renderer freezes the UI. Use async polling: setTimeout / setInterval / withFileLock helpers. CLAUDE.md red-line.'
+      'Atomics.wait blocks the event loop synchronously — Sidecar stops draining SDK messages, renderer freezes the UI. Use async polling: setTimeout / setInterval / withFileLock helpers. See specs/tech_docs/pit_of_success.md#withfilelock.'
   },
   {
-    // CLAUDE.md red-line: `<expr>.toISOString().split('T')[0]` returns the
+    // Red-line: `<expr>.toISOString().split('T')[0]` returns the
     // UTC date. The unified log filename is built from the *local* date
     // (`~/.myagents/logs/unified-{YYYY-MM-DD}.log`), so using the UTC date
     // here means writes land in the wrong file for ~1/3 of every day in
@@ -54,20 +59,20 @@ const GLOBAL_RESTRICTED_SYNTAX = [
     selector:
       "CallExpression[callee.property.name='split'][callee.object.type='CallExpression'][callee.object.callee.property.name='toISOString'][arguments.0.value='T']",
     message:
-      "toISOString().split('T')[0] returns UTC date — in UTC+8 it differs from the local date for ~1/3 of every day, so the log line lands in yesterday's/tomorrow's file. Use localDate() from '@/shared/logTime'. CLAUDE.md red-line."
+      "toISOString().split('T')[0] returns UTC date — in UTC+8 it differs from the local date for ~1/3 of every day, so the log line lands in yesterday's/tomorrow's file. Use localDate() from '@/shared/logTime'."
   },
   {
-    // CLAUDE.md red-line: native HTML `<select>` renders the OS-default
+    // Red-line: native HTML `<select>` renders the OS-default
     // dropdown which looks/behaves differently on macOS, Windows, and
     // Linux. Worse, it can't be styled to match the app theme — it always
     // pops out as a system-chrome menu. `<CustomSelect>` is the styled
     // primitive used everywhere else in the app and matches DESIGN.md.
     selector: "JSXOpeningElement[name.name='select']",
     message:
-      'Native <select> renders the OS dropdown — looks alien on every platform, cannot be themed, breaks DESIGN.md visual consistency. Use <CustomSelect> from @/components/CustomSelect. CLAUDE.md red-line.'
+      'Native <select> renders the OS dropdown — looks alien on every platform, cannot be themed, breaks DESIGN.md visual consistency. Use <CustomSelect> from @/components/CustomSelect. See specs/DESIGN.md.'
   },
   {
-    // CLAUDE.md red-line: `shouldAbortSession = true` is the persistent-
+    // Red-line: `shouldAbortSession = true` is the persistent-
     // session abort flag. Setting it directly skips the surrounding cleanup
     // (rescue pending items, notify IM bus subscribers, wake blocked
     // generator) and leaves the SDK in an inconsistent state — pending
@@ -79,7 +84,7 @@ const GLOBAL_RESTRICTED_SYNTAX = [
     selector:
       "AssignmentExpression[operator='='][left.name='shouldAbortSession'][right.type='Literal'][right.value=true]",
     message:
-      'Direct `shouldAbortSession = true` skips the abort cleanup chain (pending request rescue, IM bus notification, generator wake) — pending IM replies hang forever. Call abortPersistentSession() instead. CLAUDE.md red-line.'
+      'Direct `shouldAbortSession = true` skips the abort cleanup chain (pending request rescue, IM bus notification, generator wake) — pending IM replies hang forever. Call abortPersistentSession() instead. See specs/tech_docs/session_architecture.md.'
   },
   // PRD 0.2.34 Part 3: tiers `text-2xs`(10) / `text-2sm`(12) / `text-md`(14)
   // were DELETED (merged into text-xs=12 / text-sm=14). No @theme token →
@@ -111,14 +116,14 @@ const SIDECAR_RESTRICTED_SYNTAX = [
       'Server imports from Renderer reverse the Node/WebView owner boundary and can pull browser-owned contracts into the Sidecar. Move shared wire/domain types to src/shared and import that owner directly.'
   },
   {
-    // CLAUDE.md red-line: esbuild bundles src/server into a single
+    // Red-line: esbuild bundles src/server into a single
     // server-dist.js, hardcoding __dirname to the SOURCE file's directory.
     // At runtime the bundle lives in dist/, so any path.join(__dirname,
     // ...) reads a path that doesn't exist (or, worse, exists from an old
     // build and serves stale content).
     selector: "Identifier[name='__dirname']",
     message:
-      'esbuild hardcodes __dirname to the source file path at bundle time → at runtime the path points into a non-existent (or stale) source tree. Use fileURLToPath(import.meta.url) or getScriptDir() from @/server/utils/runtime. CLAUDE.md red-line.'
+      'esbuild hardcodes __dirname to the source file path at bundle time → at runtime the path points into a non-existent (or stale) source tree. Use fileURLToPath(import.meta.url) or getScriptDir() from @/server/utils/runtime.'
   }
 ];
 
@@ -128,7 +133,7 @@ const SIDECAR_RESTRICTED_SYNTAX = [
 const TOOLS_BRIDGE_RESTRICTED_SYNTAX = [
   ...SIDECAR_RESTRICTED_SYNTAX,
   {
-    // CLAUDE.md red-line: bare fetch() inside tool / bridge code has no
+    // Red-line: bare fetch() inside tool / bridge code has no
     // AbortSignal, so when the upstream hangs (Feishu API timeout, network
     // pause, server slow-loris) the tool turn / IM message processing
     // hangs forever. The whole user-visible session appears frozen until
@@ -137,7 +142,7 @@ const TOOLS_BRIDGE_RESTRICTED_SYNTAX = [
     // (turn abort, session cancel, …) actually tears down the request.
     selector: "CallExpression[callee.type='Identifier'][callee.name='fetch']",
     message:
-      'Bare fetch() in tools/bridge has no AbortSignal — upstream hang freezes the SDK turn / IM message until OS TCP timeout (minutes). Use cancellableFetch from @/server/utils/cancellation, which wires a default 30s timeout and propagates parent abort signals. CLAUDE.md red-line.'
+      'Bare fetch() in tools/bridge has no AbortSignal — upstream hang freezes the SDK turn / IM message until OS TCP timeout (minutes). Use cancellableFetch from @/server/utils/cancellation, which wires a default 30s timeout and propagates parent abort signals. See specs/tech_docs/pit_of_success.md#cancellation.'
   },
   {
     // Same hazard via the namespaced form: `globalThis.fetch(...)` /
@@ -149,7 +154,7 @@ const TOOLS_BRIDGE_RESTRICTED_SYNTAX = [
     selector:
       "CallExpression[callee.type='MemberExpression'][callee.property.name='fetch'][callee.object.name=/^(globalThis|window|self)$/]",
     message:
-      'Namespaced fetch (globalThis.fetch / window.fetch / self.fetch) has the same hang risk as bare fetch() — Use cancellableFetch from @/server/utils/cancellation. CLAUDE.md red-line.'
+      'Namespaced fetch (globalThis.fetch / window.fetch / self.fetch) has the same hang risk as bare fetch() — Use cancellableFetch from @/server/utils/cancellation. See specs/tech_docs/pit_of_success.md#cancellation.'
   }
 ];
 
@@ -250,7 +255,7 @@ export default defineConfig(
       // banned endpoint is matched via a `Literal[value=...]` selector
       // (esquery's regex literals are flaky in flat-config mode, so we
       // enumerate). Comments aren't `Literal` nodes, so red-line history
-      // can still reference these strings in CLAUDE.md / PRD docs.
+      // can still reference these strings in specs / PRD docs.
       'no-restricted-syntax': [
         'error',
         ...GLOBAL_RESTRICTED_SYNTAX,
@@ -359,7 +364,7 @@ export default defineConfig(
           '/agent/save-file'
         ].map((endpoint) => ({
           selector: `Literal[value=${JSON.stringify(endpoint)}]`,
-          message: `Phase E (PRD 0.2.7): sidecar HTTP endpoint '${endpoint}' was deleted. Workspace file IO must go through Rust cmd_workspace_* invokes via useWorkspaceFileService. See CLAUDE.md red-line.`
+          message: `Phase E (PRD 0.2.7): sidecar HTTP endpoint '${endpoint}' was deleted. Workspace file IO must go through Rust cmd_workspace_* invokes via useWorkspaceFileService. See specs/tech_docs/pit_of_success.md#workspace-files.`
         }))
       ]
     }
@@ -424,7 +429,7 @@ export default defineConfig(
   // must be loaded inside `createXxxServer()` via `await import(...)` so
   // the Sidecar cold-start singleton-creation tax (~500-1000ms) stays
   // deferred. Enforces the "Pit of success" convention codified in
-  // CLAUDE.md 补充禁止事项 and builtin-mcp-meta.ts header.
+  // specs/tech_docs/pit_of_success.md#builtin-mcp and the builtin-mcp-meta.ts header.
   //
   // Uses @typescript-eslint/no-restricted-imports (not the base rule) so
   // that `allowTypeImports: true` lets us keep type-only imports zero-cost.
@@ -440,19 +445,19 @@ export default defineConfig(
             {
               name: '@anthropic-ai/claude-agent-sdk',
               message:
-                "Top-level value-import of @anthropic-ai/claude-agent-sdk in src/server/tools/* defeats the lazy-load architecture: the SDK's createSdkMcpServer() singleton-init runs at module-eval time, paid by every Sidecar cold start (~500–1000ms each, 6 tools = ~3–6s). Move the import inside the `createXxxServer()` factory body via `await import('@anthropic-ai/claude-agent-sdk')` so the cost is paid only when the tool is actually used. `import type { ... }` at module top is fine — types erase at compile. CLAUDE.md red-line.",
+                "Top-level value-import of @anthropic-ai/claude-agent-sdk in src/server/tools/* defeats the lazy-load architecture: the SDK's createSdkMcpServer() singleton-init runs at module-eval time, paid by every Sidecar cold start (~500–1000ms each, 6 tools = ~3–6s). Move the import inside the `createXxxServer()` factory body via `await import('@anthropic-ai/claude-agent-sdk')` so the cost is paid only when the tool is actually used. `import type { ... }` at module top is fine — types erase at compile. See specs/tech_docs/pit_of_success.md#builtin-mcp.",
               allowTypeImports: true
             },
             {
               name: 'zod',
               message:
-                "Top-level value-import of zod in src/server/tools/* eager-creates the schema-validation runtime — same Sidecar cold-start tax as the SDK ban above (~500ms per tool). Move inside `createXxxServer()` via `await import('zod/v4')`. `import type { ... }` at module top is fine. CLAUDE.md red-line.",
+                "Top-level value-import of zod in src/server/tools/* eager-creates the schema-validation runtime — same Sidecar cold-start tax as the SDK ban above (~500ms per tool). Move inside `createXxxServer()` via `await import('zod/v4')`. `import type { ... }` at module top is fine. See specs/tech_docs/pit_of_success.md#builtin-mcp.",
               allowTypeImports: true
             },
             {
               name: 'zod/v4',
               message:
-                "Same as the `zod` rule above: top-level value-import eager-creates the schema runtime at Sidecar cold start. Move inside `createXxxServer()` via `await import('zod/v4')`. `import type { ... }` at module top is fine. CLAUDE.md red-line.",
+                "Same as the `zod` rule above: top-level value-import eager-creates the schema runtime at Sidecar cold start. Move inside `createXxxServer()` via `await import('zod/v4')`. `import type { ... }` at module top is fine. See specs/tech_docs/pit_of_success.md#builtin-mcp.",
               allowTypeImports: true
             }
           ]

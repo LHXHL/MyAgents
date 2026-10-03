@@ -9420,7 +9420,7 @@ export async function handleToolAdd(payload: {
 
   if (needsCopy) {
     // lstat probe (not existsSync): a broken symlink at dest reads as "absent"
-    // to existsSync and then crashes recursive copy (CLAUDE.md v0.2.5 red line).
+    // to existsSync and then crashes recursive copy (v0.2.5 incident; pit_of_success.md#fs-utils).
     let destOccupied = false;
     try {
       lstatSync(destDir);
