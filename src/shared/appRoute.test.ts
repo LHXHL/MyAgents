@@ -1,13 +1,26 @@
+import routeFixtures from './appRoute.fixtures.json';
 import { describe, expect, it } from 'vitest';
 
 import {
   createSpaceIssueAppRoute,
+  createSpaceToolsAppRoute,
   createTaskCommentAppRoute,
   parseAppRouteUrl,
   serializeAppRoute,
 } from './appRoute';
 
 describe('AppRoute', () => {
+  it('matches the shared native route corpus', () => {
+    for (const { url, route } of routeFixtures.accepted) {
+      expect(parseAppRouteUrl(url), url).toEqual(route);
+    }
+    for (const url of routeFixtures.rejected) expect(parseAppRouteUrl(url), url).toBeNull();
+    const market = createSpaceToolsAppRoute('official');
+    expect(serializeAppRoute(market)).toBe('myagents://open/v1/spaces/official/tools');
+    expect(() => createSpaceToolsAppRoute('')).toThrow();
+    expect(() => createSpaceToolsAppRoute('x'.repeat(201))).toThrow();
+  });
+
   it('round-trips supported v1 routes', () => {
     const route = createSpaceIssueAppRoute('space_1', 'issue-2');
     expect(serializeAppRoute(route)).toBe(

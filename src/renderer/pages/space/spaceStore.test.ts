@@ -1038,6 +1038,16 @@ describe("spaceStore boot", () => {
     expect(events.filter((event) => event === "space_switch")).toHaveLength(1);
   });
 
+  it("rejects an explicit switch when bootstrap falls back to a different Space", async () => {
+    __setSpaceStoreStateForTest({ boot: "ready", session: fakeSession, spaceId: "official" });
+    apiMocks.spaceGetSession.mockResolvedValueOnce({ state: "authenticated", session: { ...fakeSession, lastActiveSpaceId: "missing" } });
+    apiMocks.spaceGetOfficial
+      .mockRejectedValueOnce({ code: "SPACE_NOT_FOUND", message: "Missing" })
+      .mockResolvedValueOnce({ space: fakeSession.space, membership: fakeSession.membership, goals: [] });
+    await expect(actions.switchSpace("missing")).rejects.toMatchObject({ code: "SPACE_NOT_FOUND" });
+    expect(getSnapshot().session?.space.slug).toBe("official");
+  });
+
   it("projects a listed Space immediately without waiting for Cloud bootstrap", async () => {
     const teamSpace = {
       ...fakeSession.space,

@@ -10,6 +10,12 @@ const MAX_ID_BYTES: usize = 200;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "name", rename_all = "snake_case")]
 pub enum AppRoute {
+    #[serde(rename = "space.tools")]
+    SpaceTools {
+        version: u8,
+        #[serde(rename = "params")]
+        params: SpaceToolsRouteParams,
+    },
     #[serde(rename = "space.issue")]
     SpaceIssue {
         version: u8,
@@ -22,6 +28,12 @@ pub enum AppRoute {
         #[serde(rename = "params")]
         params: TaskCommentRouteParams,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceToolsRouteParams {
+    pub space_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -114,6 +126,17 @@ pub fn cmd_take_pending_app_route(
 }
 
 impl AppRoute {
+    pub fn space_tools(space_id: impl Into<String>) -> Option<Self> {
+        let space_id = space_id.into();
+        if !is_route_id(&space_id) {
+            return None;
+        }
+        Some(Self::SpaceTools {
+            version: 1,
+            params: SpaceToolsRouteParams { space_id },
+        })
+    }
+
     pub fn space_issue(space_id: impl Into<String>, issue_id: impl Into<String>) -> Option<Self> {
         let space_id = space_id.into();
         let issue_id = issue_id.into();
@@ -143,6 +166,9 @@ impl AppRoute {
 
     pub fn to_deep_link(&self) -> String {
         match self {
+            Self::SpaceTools { params, .. } => {
+                format!("myagents://open/v1/spaces/{}/tools", params.space_id)
+            }
             Self::SpaceIssue { params, .. } => format!(
                 "myagents://open/v1/spaces/{}/issues/{}",
                 params.space_id, params.issue_id
@@ -187,10 +213,16 @@ pub fn parse_deep_link(raw: &str) -> Option<AppRoute> {
         return None;
     }
     let segments = path.split('/').collect::<Vec<_>>();
-    if segments.len() != 5 || segments[0] != "v1" {
+    if !matches!(segments.len(), 4 | 5) || segments[0] != "v1" {
         return None;
     }
     let parent_id = decode_segment(segments[2])?;
+    if segments.len() == 4 {
+        return match (segments[1], segments[3]) {
+            ("spaces", "tools") => AppRoute::space_tools(parent_id),
+            _ => None,
+        };
+    }
     let child_id = decode_segment(segments[4])?;
     match (segments[1], segments[3]) {
         ("spaces", "issues") => AppRoute::space_issue(parent_id, child_id),
@@ -202,6 +234,31 @@ pub fn parse_deep_link(raw: &str) -> Option<AppRoute> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn matches_shared_tools_route_corpus() {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../../src/shared/appRoute.fixtures.json"))
+                .expect("route fixtures");
+        for item in fixtures["accepted"].as_array().expect("accepted routes") {
+            let expected: AppRoute = serde_json::from_value(item["route"].clone()).expect("route");
+            assert_eq!(
+                parse_deep_link(item["url"].as_str().expect("url")),
+                Some(expected)
+            );
+        }
+        for url in fixtures["rejected"].as_array().expect("rejected routes") {
+            assert_eq!(parse_deep_link(url.as_str().expect("url")), None);
+        }
+        assert_eq!(
+            AppRoute::space_tools("official")
+                .expect("route")
+                .to_deep_link(),
+            "myagents://open/v1/spaces/official/tools"
+        );
+        assert_eq!(AppRoute::space_tools(""), None);
+        assert_eq!(AppRoute::space_tools("x".repeat(201)), None);
+    }
 
     #[test]
     fn parses_and_serializes_supported_routes() {

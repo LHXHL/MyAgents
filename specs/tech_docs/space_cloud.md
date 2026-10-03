@@ -48,6 +48,14 @@ debug/test 可以通过 `MYAGENTS_SPACE_MOCK_DATA=true` 使用 Rust owner 的 de
 
 领域模块共同复用 root auth/client 和已有文件安全 helper。需要同时修改多个领域状态的 command由 root facade协调；子模块不能相互借用 token 或建立平行 HTTP client。
 
+### 3.1 官方工具市集入口
+
+技能与工具页的本地横幅通过 App 的 `CapabilitiesRenderBinding.onOpenToolMarket` 发出 `space.tools` AppRoute，固定目标为 `DEFAULT_SPACE_ID`（`official`）。对应外部深链为 `myagents://open/v1/spaces/official/tools`；TS 与 Rust parser 共用测试样例，外部入口继续使用现有 Rust AppRouteQueue。
+
+App 复用协作空间单实例 Tab，并持有导航 generation；Space 等待 boot/auth ready 后通过 `spaceStore.switchSpace` 切换，再显示 Tools 列表、清除资源详情并消费当前 generation。未登录或需重新认证时保留目标，瞬时切换错误沿已有 routeFailure 重试；过时 intent 不消费新目标。本地横幅同时遵循 config readiness、build capability 与开发者门控。工具列表、详情和安装继续由现有 ToolsWorkspace 与 Rust tools 模块处理。
+
+导航 effect 以 intent、认证 binding、origin 与 readiness 为生命周期边界，使用 effect event 读取当前 session；本地 Space 投影不重启在途导航。所有路由（含当前 Space）都交给 `switchSpace`，由已有请求 sequence 取消过时 switch/bootstrap，并沿既有队列持久化最新目标。未知空间的显式切换要求 bootstrap 传播原始失败，且不能把默认空间回退当成目标到达；普通后台刷新仍保留最近成功快照与错误投影。
+
 ## 4. 身份模型
 
 ### 4.1 Device

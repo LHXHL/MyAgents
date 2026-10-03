@@ -248,6 +248,8 @@ interface RefreshOptions {
   silent?: boolean;
   maxAgeMs?: number;
   trackOpen?: boolean;
+  /** Explicit navigation needs the original failure; background refresh keeps its snapshot. */
+  propagateError?: boolean;
 }
 
 export interface SpaceActions {
@@ -1554,7 +1556,10 @@ export const actions: SpaceActions = {
         });
       } catch (error) {
         if (!isLatest("boot", requestSeq)) return;
-        if (applyReauthRequired(error)) return;
+        if (applyReauthRequired(error)) {
+          if (options.propagateError) throw error;
+          return;
+        }
         if (
           options.silent &&
           (state.boot === "ready" ||
@@ -1567,6 +1572,7 @@ export const actions: SpaceActions = {
             ok: false,
             error: errMessage(error),
           });
+          if (options.propagateError) throw error;
           return;
         }
         setState({
@@ -1578,6 +1584,7 @@ export const actions: SpaceActions = {
           ok: false,
           error: errMessage(error),
         });
+        if (options.propagateError) throw error;
       } finally {
         if (isLatest("boot", requestSeq)) bootPromise = null;
       }
@@ -1587,10 +1594,16 @@ export const actions: SpaceActions = {
 
   switchSpace: async (spaceId: string, explicitTarget?: SpaceListItem) => {
     const trimmed = spaceId.trim();
-    if (!trimmed || trimmed === activeSpaceId()) return;
+    if (!trimmed) return;
+    const currentMatches = Boolean(state.session && spaceMatchesRoute(state.session.space, trimmed));
     const target = resolveSpaceSwitchTarget(trimmed, explicitTarget);
     const sessionBindingId = state.session?.sessionBindingId?.trim();
-    if (target) {
+    if (currentMatches) {
+      // Reselecting the current Space is still a newer navigation intent.
+      // Cancel older switch/bootstrap completions without discarding current data.
+      latestSeqByKey.delete("boot");
+      bootPromise = null;
+    } else if (target) {
       projectActiveSpace(trimmed, target);
     } else {
       invalidatePendingRequests();
@@ -1606,15 +1619,19 @@ export const actions: SpaceActions = {
       throw error;
     }
     if (!isLatest("space-switch", switchSeq)) return;
-    if (!target) {
+    if (!target && !currentMatches) {
       await actions.ensureBootstrapped({
         force: true,
         silent: true,
         trackOpen: false,
+        propagateError: true,
       });
       if (!isLatest("space-switch", switchSeq)) return;
+      if (state.session && !spaceMatchesRoute(state.session.space, trimmed)) {
+        throw { code: "SPACE_NOT_FOUND", message: "Requested Space is unavailable", retryable: false };
+      }
     }
-    trackSpaceSwitch();
+    if (!currentMatches) trackSpaceSwitch();
   },
 
   refreshIssues: async (

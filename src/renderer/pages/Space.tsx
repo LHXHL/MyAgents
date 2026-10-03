@@ -4,6 +4,7 @@ import {
   type KeyboardEvent,
   useCallback,
   useEffect,
+  useEffectEvent,
   useMemo,
   useRef,
   useState,
@@ -1057,68 +1058,51 @@ export default function Space({
     [enterSpace, toast],
   );
 
-  useEffect(() => {
-    if (
-      !isActive
-      || !pendingRoute
-      || pendingRoute.route.name !== "space.issue"
-      || spaceData.boot !== "ready"
-      || !session
-    ) {
-      return;
-    }
-    let cancelled = false;
-    const { spaceId, issueId } = pendingRoute.route.params;
-    const currentMatches = session.space.id === spaceId || session.space.slug === spaceId;
+  const openPendingRoute = useEffectEvent(async (intent: PendingAppRoute, isCancelled: () => boolean) => {
+    if (!session || (intent.route.name !== "space.issue" && intent.route.name !== "space.tools")) return;
+    const route = intent.route;
+    const { spaceId } = route.params;
     const target = session.spaces?.find(
       (space) => space.id === spaceId || space.slug === spaceId,
     );
-
-    void (async () => {
-      try {
-        setRouteFailure(null);
-        if (!currentMatches) {
-          await actions.switchSpace(spaceId, target);
-        }
-        if (cancelled) return;
-        setMode("issues");
-        setSelectedSkillId(null);
-        setSelectedToolId(null);
-        setIssueDetailId(issueId);
-        setRouteFailure(null);
-        onRouteConsumed?.(pendingRoute.generation);
-      } catch (error) {
-        if (cancelled) return;
-        setMode("issues");
-        setIssueDetailId(null);
-        toast.error(t("space.route.openFailed", { message: spaceErrorMessage(error) }));
-        const retainForRetry = isSpaceErrorRetryable(error)
-          || isSpaceErrorCode(error, "SPACE_REAUTH_REQUIRED");
-        setRouteFailure({
-          generation: pendingRoute.generation,
-          message: isSpaceErrorCode(error, "SPACE_NOT_FOUND")
-            || isSpaceErrorCode(error, "SPACE_MEMBERSHIP_REQUIRED")
-            ? t("space.route.spaceUnavailable")
-            : t("space.route.openFailed", { message: spaceErrorMessage(error) }),
-          retryable: retainForRetry,
-        });
-        if (!retainForRetry) onRouteConsumed?.(pendingRoute.generation);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    actions,
-    isActive,
-    onRouteConsumed,
-    pendingRoute,
-    routeAttempt,
-    session,
-    spaceData.boot,
-    t,
-    toast,
-  ]);
+    try {
+      setRouteFailure(null);
+      // Even a route to the current Space must supersede an older store switch.
+      await actions.switchSpace(spaceId, target);
+      if (isCancelled()) return;
+      setMode(route.name === "space.tools" ? "tools" : "issues");
+      setSelectedSkillId(null);
+      setSelectedToolId(null);
+      setSelectedGoalId("");
+      setIssueDetailId(route.name === "space.issue" ? route.params.issueId : null);
+      setRouteFailure(null);
+      onRouteConsumed?.(intent.generation);
+    } catch (error) {
+      if (isCancelled()) return;
+      setMode(route.name === "space.tools" ? "tools" : "issues");
+      setIssueDetailId(null);
+      toast.error(t("space.route.openFailed", { message: spaceErrorMessage(error) }));
+      const retainForRetry = isSpaceErrorRetryable(error)
+        || isSpaceErrorCode(error, "SPACE_REAUTH_REQUIRED");
+      setRouteFailure({
+        generation: intent.generation,
+        message: isSpaceErrorCode(error, "SPACE_NOT_FOUND")
+          || isSpaceErrorCode(error, "SPACE_MEMBERSHIP_REQUIRED")
+          ? t("space.route.spaceUnavailable")
+          : t("space.route.openFailed", { message: spaceErrorMessage(error) }),
+        retryable: retainForRetry,
+      });
+      if (!retainForRetry) onRouteConsumed?.(intent.generation);
+    }
+  });
+  const routeReady = spaceData.boot === "ready" && Boolean(session);
+  useEffect(() => {
+    if (!isActive || !pendingRoute || !routeReady) return;
+    let cancelled = false;
+    void openPendingRoute(pendingRoute, () => cancelled);
+    return () => { cancelled = true; };
+    // Space projection is not a new intent: keep awaiting the owner operation.
+  }, [isActive, pendingRoute, routeAttempt, routeReady, session?.sessionBindingId, spaceData.serviceBaseUrl]);
 
   const joinSpace = useCallback(() => {
     setSpaceDialogError(null);

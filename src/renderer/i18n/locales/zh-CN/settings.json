@@ -1,5 +1,7 @@
 {
   "capabilities": {
+    "toolMarketOpen": "打开 MyAgents 工具市集",
+    "toolMarketBanner": "MyAgents 工具市集：常用工具 · 一键安装 · 能力拓展",
     "title": "技能与工具",
     "description": "管理 Agent 可调用的技能、插件和工具连接。",
     "navigation": "能力分类",

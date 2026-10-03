@@ -211,6 +211,7 @@ import { SettingsSidebar } from './components/SettingsSidebar';
 import { SkillsAgentsSection } from './sections/SkillsAgentsSection';
 import { ToolboxSection } from './sections/ToolboxSection';
 import { ExternalCliSettingsSection } from './sections/ExternalCliSettingsSection';
+import { ToolMarketEntry } from './components/ToolMarketEntry';
 import codexModelSelectorOnboarding from '@/assets/onboarding/codex-model-selector.png';
 
 type ManagedCodexLoginStatus =
@@ -331,6 +332,7 @@ function isSubscriptionLoginActiveStatus(
 
 export default function Settings({
   mode = 'settings',
+  onOpenToolMarket,
   initialSection,
   navigationNonce,
   initialMcpId,
@@ -356,6 +358,7 @@ export default function Settings({
     providerVerifyStatus,
     saveProviderVerifyStatus,
     config,
+    isLoading: configLoading,
     updateConfig,
     patchProxySettings,
     providers,
@@ -4961,15 +4964,20 @@ export default function Settings({
         {mode === 'capabilities' && (
           <>
             <header
-              className="mx-auto max-w-4xl px-8 pt-7"
+              className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-5 px-8 pt-7"
               data-capabilities-page-header
             >
-              <h1 className="text-xl font-semibold text-[var(--ink)]">
-                {tSettings('capabilities.title')}
-              </h1>
-              <p className="mt-1 text-sm text-[var(--ink-muted)]">
-                {tSettings('capabilities.description')}
-              </p>
+              <div className="min-w-0 flex-1 basis-72">
+                <h1 className="text-xl font-semibold text-[var(--ink)]">
+                  {tSettings('capabilities.title')}
+                </h1>
+                <p className="mt-1 text-sm text-[var(--ink-muted)]">
+                  {tSettings('capabilities.description')}
+                </p>
+              </div>
+              {onOpenToolMarket && !configLoading && spaceBuildCapability.available && config.teamSpaceDevGate !== false && (
+                <ToolMarketEntry onOpen={onOpenToolMarket} />
+              )}
             </header>
             <div
               className="sticky top-0 z-20 mt-5 border-b border-[var(--line)] bg-[var(--paper)]/95 px-8 backdrop-blur-sm"

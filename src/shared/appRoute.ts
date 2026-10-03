@@ -1,3 +1,9 @@
+export interface SpaceToolsAppRoute {
+  version: 1;
+  name: 'space.tools';
+  params: { spaceId: string };
+}
+
 export interface SpaceIssueAppRoute {
   version: 1;
   name: 'space.issue';
@@ -16,7 +22,7 @@ export interface TaskCommentAppRoute {
   };
 }
 
-export type AppRoute = SpaceIssueAppRoute | TaskCommentAppRoute;
+export type AppRoute = SpaceToolsAppRoute | SpaceIssueAppRoute | TaskCommentAppRoute;
 
 export interface PendingAppRoute {
   generation: number;
@@ -27,6 +33,11 @@ const APP_ROUTE_ID = /^[A-Za-z0-9_-]{1,200}$/;
 
 export function isAppRouteId(value: string): boolean {
   return APP_ROUTE_ID.test(value);
+}
+
+export function createSpaceToolsAppRoute(spaceId: string): SpaceToolsAppRoute {
+  if (!isAppRouteId(spaceId)) throw new Error('App route contains an invalid identifier');
+  return { version: 1, name: 'space.tools', params: { spaceId } };
 }
 
 export function createSpaceIssueAppRoute(spaceId: string, issueId: string): SpaceIssueAppRoute {
@@ -54,6 +65,10 @@ export function createTaskCommentAppRoute(taskId: string, commentId: string): Ta
 export function serializeAppRoute(route: AppRoute): string {
   if (route.version !== 1) {
     throw new Error('Unsupported app route');
+  }
+  if (route.name === 'space.tools') {
+    if (!isAppRouteId(route.params.spaceId)) throw new Error('Unsupported app route');
+    return `myagents://open/v1/spaces/${encodeURIComponent(route.params.spaceId)}/tools`;
   }
   if (route.name === 'space.issue') {
     if (!isAppRouteId(route.params.spaceId) || !isAppRouteId(route.params.issueId)) {
@@ -86,11 +101,15 @@ export function parseAppRouteUrl(raw: string): AppRoute | null {
     return null;
   }
   const segments = url.pathname.split('/').slice(1);
-  if (segments.length !== 5 || segments[0] !== 'v1') {
+  if ((segments.length !== 4 && segments.length !== 5) || segments[0] !== 'v1') {
     return null;
   }
   try {
     const parentId = decodeURIComponent(segments[2]);
+    if (segments.length === 4) {
+      return segments[1] === 'spaces' && segments[3] === 'tools' && isAppRouteId(parentId)
+        ? createSpaceToolsAppRoute(parentId) : null;
+    }
     const childId = decodeURIComponent(segments[4]);
     if (!isAppRouteId(parentId) || !isAppRouteId(childId)) return null;
     if (segments[1] === 'spaces' && segments[3] === 'issues') {

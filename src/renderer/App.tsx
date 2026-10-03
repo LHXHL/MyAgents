@@ -1,3 +1,4 @@
+import { DEFAULT_SPACE_ID } from '@/api/spaceCloud';
 import { startAgentNetworkStore } from '@/features/agent-network/store';
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { flushSync } from 'react-dom';
@@ -232,6 +233,7 @@ import {
   trackSpaceToolMutation,
 } from '@/pages/space/spaceMetrics';
 import {
+  createSpaceToolsAppRoute,
   serializeAppRoute,
   type AppRoute,
   type PendingAppRoute,
@@ -3887,6 +3889,14 @@ export default function App() {
     t,
   ]);
 
+  const handleOpenToolMarket = useCallback(() => {
+    if (!teamSpaceAvailable) {
+      handleOpenSpace();
+      return;
+    }
+    handleOpenAppRoute(createSpaceToolsAppRoute(DEFAULT_SPACE_ID));
+  }, [handleOpenAppRoute, handleOpenSpace, teamSpaceAvailable]);
+
   useEffect(() => {
     window.addEventListener(CUSTOM_EVENTS.OPEN_SPACE, handleOpenSpace);
     return () =>
@@ -4797,8 +4807,9 @@ export default function App() {
     () => ({
       ...settingsUpdaterBinding,
       onNavigationConsumed: handleCapabilitySectionChange,
+      onOpenToolMarket: handleOpenToolMarket,
     }),
-    [handleCapabilitySectionChange, settingsUpdaterBinding],
+    [handleCapabilitySectionChange, handleOpenToolMarket, settingsUpdaterBinding],
   );
   const taskCenterBinding = useMemo<BuiltinTabBindings['taskcenter']>(
     () => ({

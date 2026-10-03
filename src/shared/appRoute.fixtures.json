@@ -1,0 +1,50 @@
+{
+  "accepted": [
+    {
+      "url": "myagents://open/v1/spaces/official/tools",
+      "route": {
+        "version": 1,
+        "name": "space.tools",
+        "params": {
+          "spaceId": "official"
+        }
+      }
+    },
+    {
+      "url": "myagents://open/v1/spaces/team-1/tools",
+      "route": {
+        "version": 1,
+        "name": "space.tools",
+        "params": {
+          "spaceId": "team-1"
+        }
+      }
+    },
+    {
+      "url": "myagents://open/v1/spaces/%6Ffficial/tools",
+      "route": {
+        "version": 1,
+        "name": "space.tools",
+        "params": {
+          "spaceId": "official"
+        }
+      }
+    }
+  ],
+  "rejected": [
+    "myagents://open/v2/spaces/official/tools",
+    "myagents://open/v1/spaces/official/tools/",
+    "myagents://open/v1/spaces/official/tools/extra",
+    "myagents://open/v1/tasks/official/tools",
+    "myagents://open/v1/spaces/official/skills",
+    "myagents://open/v1/spaces//tools",
+    "myagents://open//v1/spaces/official/tools",
+    "myagents://open/v1/spaces/a%2Fb/tools",
+    "myagents://open/v1/spaces/%ZZ/tools",
+    "myagents://open/v1/spaces/official/tools?prompt=run",
+    "myagents://open/v1/spaces/official/tools#x",
+    "myagents://user@open/v1/spaces/official/tools",
+    "myagents://open:42/v1/spaces/official/tools",
+    "https://open/v1/spaces/official/tools"
+  ]
+}

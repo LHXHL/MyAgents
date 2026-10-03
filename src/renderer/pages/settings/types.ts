@@ -28,6 +28,7 @@ export interface ProviderVerifyError {
 
 export interface SettingsProps {
   mode?: 'settings' | 'capabilities';
+  onOpenToolMarket?: () => void;
   initialSection?: string;
   navigationNonce?: number;
   initialMcpId?: string;

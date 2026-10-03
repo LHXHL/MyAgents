@@ -163,6 +163,7 @@ const mocks = vi.hoisted(() => {
     sidebarProps: [] as Array<Record<string, unknown>>,
     tabbarProps: [] as Array<Record<string, unknown>>,
     settingsProps: [] as Array<Record<string, unknown>>,
+    spaceProps: [] as Array<Record<string, unknown>>,
     taskCenterProps: [] as Array<Record<string, unknown>>,
     toast: {
       error: vi.fn(),
@@ -374,7 +375,16 @@ vi.mock('@/pages/Launcher', () => ({
 vi.mock('@/pages/Settings', () => ({
   default: (props: Record<string, unknown>) => {
     mocks.settingsProps.push(props);
-    return <div data-testid="settings-page" />;
+    return <div data-testid="settings-page">
+      {props.mode === 'capabilities' && <button type="button" onClick={props.onOpenToolMarket as () => void}>open tool market</button>}
+    </div>;
+  },
+}));
+
+vi.mock('@/pages/Space', () => ({
+  default: (props: Record<string, unknown>) => {
+    mocks.spaceProps.push(props);
+    return <div data-testid="space-page" />;
   },
 }));
 
@@ -545,6 +555,7 @@ describe('App helper launch', () => {
     mocks.sidebarProps.length = 0;
     mocks.tabbarProps.length = 0;
     mocks.settingsProps.length = 0;
+    mocks.spaceProps.length = 0;
     mocks.taskCenterProps.length = 0;
     mocks.selfAwarenessProject = mocks.project;
     mocks.deleteTargetSessionId = null;
@@ -2210,6 +2221,30 @@ describe('App helper launch', () => {
     await act(async () => latestSidebarProps().onOpenSettings());
 
     expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(3);
+  });
+
+  it('opens the official tool market from Capabilities and reuses its Space tab with a fresh intent', async () => {
+    render(<App />);
+    act(() => latestSidebarProps().onOpenCapabilities());
+    const button = await screen.findByRole('button', { name: 'open tool market' });
+    await act(async () => fireEvent.click(button));
+    await screen.findByTestId('space-page');
+    const first = mocks.spaceProps.at(-1)?.pendingRoute;
+    expect(first).toEqual({ generation: 1, route: { version: 1, name: 'space.tools', params: { spaceId: 'official' } } });
+    const firstTab = latestTabbarProps().tabs.find((tab) => tab.view === 'space');
+    act(() => latestSidebarProps().onOpenCapabilities());
+    await act(async () => fireEvent.click(await screen.findByRole('button', { name: 'open tool market' })));
+    expect(latestTabbarProps().tabs.filter((tab) => tab.view === 'space')).toEqual([expect.objectContaining({ id: firstTab?.id })]);
+    expect(mocks.spaceProps.at(-1)?.pendingRoute).toEqual({ generation: 2, route: { version: 1, name: 'space.tools', params: { spaceId: 'official' } } });
+  });
+
+  it('keeps the capability banner callback behind the developer Space gate', async () => {
+    mocks.spaceDevGate = false;
+    render(<App />);
+    act(() => latestSidebarProps().onOpenCapabilities());
+    const button = await screen.findByRole('button', { name: 'open tool market' });
+    await act(async () => fireEvent.click(button));
+    expect(latestTabbarProps().tabs.some((tab) => tab.view === 'space')).toBe(false);
   });
 
   it('keeps Task Center and default-enabled Collaboration Space as one tab each', async () => {

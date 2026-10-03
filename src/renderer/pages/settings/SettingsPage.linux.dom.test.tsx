@@ -273,4 +273,23 @@ describe('Ubuntu settings availability', () => {
     }
   });
 
+  it.each(['zh-CN', 'en-US'])('shows the bundled B2 market banner in Capabilities for %s', async (locale) => {
+    await i18n.changeLanguage(locale);
+    const open = vi.fn();
+    render(<ToastProvider><Settings mode="capabilities" initialSection="plugins" onOpenToolMarket={open} isActive /></ToastProvider>);
+    const label = String(i18n.t('capabilities.toolMarketOpen', { ns: 'settings' }));
+    const button = screen.getByRole('button', { name: label });
+    const image = within(button).getByRole('img');
+    expect(image).toHaveAttribute('src', expect.stringContaining(`tool-market-${locale}.png`));
+    fireEvent.click(button);
+    expect(open).toHaveBeenCalledOnce();
+  });
+
+  it.each(['build', 'developer'])('hides the market banner when unavailable via %s', (gate) => {
+    settingsMocks.spaceAvailable = gate !== 'build';
+    settingsMocks.config.teamSpaceDevGate = gate !== 'developer';
+    render(<ToastProvider><Settings mode="capabilities" initialSection="plugins" onOpenToolMarket={vi.fn()} isActive /></ToastProvider>);
+    expect(document.querySelector('[data-tool-market-entry]')).not.toBeInTheDocument();
+  });
+
 });
