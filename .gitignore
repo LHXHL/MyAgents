@@ -129,5 +129,11 @@ myagents_files/
 /bundled-skills/cuse/
 /bundled-skills/.cuse-prepare-*/
 
+# Brand identity drafts (brand book + logo sources), local review only
+/specs/assets/brand/
+
+# Local generated output (reports, renders), not source
+/output/
+
 # Local design playgrounds (HTML prototypes, previews), review only
 /playground/
