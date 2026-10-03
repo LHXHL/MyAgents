@@ -55,9 +55,17 @@ struct RpcCommand {
     request: SourceRequest,
     caller: VerifiedCaller,
     queued_at: Instant,
-    reply: Option<oneshot::Sender<Result<Outcome, NetworkError>>>,
+    reply: Option<oneshot::Sender<Result<super::calls::CallResult, NetworkError>>>,
+}
+struct WatchesCommand {
+    generation: u64,
+    source_session: String,
+    cancel: Option<String>,
+    all: bool,
+    reply: oneshot::Sender<Result<Value, NetworkError>>,
 }
 enum Command {
+    Watches(WatchesCommand),
     Metadata(MetadataCommand),
     Rpc(RpcCommand),
     Return { generation: u64, callback: Callback },
@@ -65,6 +73,7 @@ enum Command {
 impl Command {
     fn reject(self, error: NetworkError) {
         match self {
+            Self::Watches(command) => { let _ = command.reply.send(Err(error)); }
             Self::Return { callback, .. } => {
                 let _ = callback.reply.send(Err(error));
             }
@@ -260,6 +269,17 @@ impl AgentNetwork {
                 myagents_agent_network_protocol::ReturnSettlement::Unconfirmed,
             ))
     }
+    pub(crate) async fn watches(&self, source_session: String, cancel: Option<String>, all: bool, generation: u64) -> Result<Value, NetworkError> {
+        if self.generation() != generation { return Err(NetworkError::new("ACCOUNT_BINDING_CHANGED")); }
+        // Registrations live only in the current ready connection. No replay.
+        if self.snapshot().state != "ready" { return Ok(serde_json::json!({"watches":[]})); }
+        let (reply, response) = oneshot::channel();
+        self.commands.try_send(Command::Watches(WatchesCommand {generation,source_session,cancel,all,reply}))
+            .map_err(|_|NetworkError::new("NETWORK_REQUEST_CAPACITY"))?;
+        tokio::time::timeout(Duration::from_secs(10), response).await
+            .map_err(|_|NetworkError::new("NETWORK_QUERY_FAILED"))?
+            .map_err(|_|NetworkError::new("NETWORK_QUERY_FAILED"))?
+    }
     pub(crate) fn generation(&self) -> u64 {
         self.boundary.borrow().generation
     }
@@ -284,7 +304,7 @@ impl AgentNetwork {
         queued_at: Instant,
         generation: u64,
         allocation: Allocation,
-    ) -> Result<Outcome, NetworkError> {
+    ) -> Result<super::calls::CallResult, NetworkError> {
         let request = SourceRequest::parse(
             serde_json::to_value(request).map_err(|_| NetworkError::new("PROTOCOL_INVALID"))?,
         )
@@ -301,6 +321,7 @@ impl AgentNetwork {
         let deadline =
             myagents_agent_network_protocol::remote_deadline(request.method(), "connector")
                 .expect("closed operation");
+        let admission = matches!(request.method(), "session.start" | "session.send");
         let details =
             serde_json::json!({"requestId":request.request_id,"selector":request.selector});
         let (reply, response) = oneshot::channel();
@@ -322,7 +343,7 @@ impl AgentNetwork {
             .ok()
             .and_then(Result::ok)
             .unwrap_or_else(|| {
-                let mut error = NetworkError::new("ADMISSION_UNCONFIRMED");
+                let mut error = NetworkError::new(if admission {"ADMISSION_UNCONFIRMED"} else {"NETWORK_QUERY_FAILED"});
                 error.details = Some(details);
                 Err(error)
             })
@@ -600,7 +621,7 @@ enum Work {
         return_route_id: String,
         event_id: String,
         settlement: myagents_agent_network_protocol::ReturnSettlement,
-        allocation: Allocation,
+        allocation: Option<Allocation>,
     },
     Metadata {
         allocation: Option<Allocation>,
@@ -798,6 +819,7 @@ async fn connect(
                                     send(&mut socket,ClientMessage::CloseRoute {scope:scope.clone(),return_route_id:return_route_id.expect("permit route"),reason:"RETURN_CAPACITY".into()}).await?;
                                     continue;
                                 }
+                                let watch_alive=target_returns.watch_lifetime(&op_id);
                                 let memory=owner.memory.clone();let app=app.clone();let account=identity.account.clone();let connection_alive=connection_lifetime.0.clone();let deadline=incoming_calls.admitted_until(&op_id).ok_or_else(||NetworkError::new("PERMIT_INVALID"))?;
                                 work.push(async move {
                                     let mut allocation = None;
@@ -826,6 +848,7 @@ async fn connect(
                                         let (outcome,reserved)=local_owner::watch(&app,&manager,&invocation,memory,move || {
                                             account.ensure_current().map_err(|error|error.code)?;
                                             if !connection_alive.load(Ordering::Acquire)||guard_app.state::<ManagedAgentNetwork>().generation()!=generation {return Err("ACCOUNT_BINDING_CHANGED".into());}
+                                            if watch_alive.as_ref().is_some_and(|alive| !alive.load(Ordering::Acquire)) {return Err("WATCH_CANCELLED".into());}
                                             if Instant::now()>=deadline {return Err("PERMIT_EXPIRED".into());}Ok(())
                                         }).await;
                                         allocation=reserved;outcome
@@ -835,7 +858,7 @@ async fn connect(
                                     let expects_return=match &outcome {
                                         Outcome::Start {result}=>result["replyBack"]==true&&result["accepted"]!=false,
                                         Outcome::Send {result}=>result["replyBack"]==true&&(result["delivered"]==true||result["unconfirmed"]==true),
-                                        Outcome::Watch {result}=>result["watched"]==true&&result["delivery"]=="registered",_=>false,
+                                        Outcome::Watch {result}=>result["watched"]==true&&result["delivery"]=="registered"&&result["coalesced"]!=true,_=>false,
                                     };
                                     Work::Executed {op_id,return_route_id:if expects_return {None} else {return_route_id},outcome,allocation}
                                 }.boxed());
@@ -914,7 +937,13 @@ async fn connect(
                                                     };
                                                     let app=app.clone();let manager=manager.clone();let channel_id=channel_id.clone();
                                                     work.push(async move {let settlement=local_owner::deliver_return(&app,&manager,intent,event.event).await;
-                                                        Work::Returned {channel_id,op_id:event.op_id,return_route_id:event.return_route_id,event_id,settlement,allocation}}.boxed());
+                                                        Work::Returned {channel_id,op_id:event.op_id,return_route_id:event.return_route_id,event_id,settlement,allocation:Some(allocation)}}.boxed());
+                                                },
+                                                ReturnAdmission::Joined(settlement)=> {
+                                                    let event_id=event.event["eventId"].as_str().expect("validated event").to_owned();
+                                                    let channel_id=channel_id.clone();
+                                                    work.push(async move { Work::Returned { channel_id, op_id:event.op_id,
+                                                        return_route_id:event.return_route_id,event_id,settlement:settlement.await,allocation:None } }.boxed());
                                                 },
                                                 ReturnAdmission::Pending=>{},
                                                 ReturnAdmission::Cached(settlement)=>{let _=pairs.send(&channel_id,BusinessObject::Ack(myagents_agent_network_protocol::ReturnAck {
@@ -955,7 +984,7 @@ async fn connect(
                     },
                     Work::Metadata { allocation: _allocation, reply, result } => { identity.account.ensure_current()?; let _ = reply.send(result); }
                     Work::Resolve { op_id, result } => {
-                        if let Err(error) = result.and_then(|target| calls.resolved(&op_id, target, &local)) { calls.fail(&op_id, error); }
+                        if let Err(error) = result.and_then(|target| { source_returns.resolved(&op_id,&target); calls.resolved(&op_id, target, &local) }) { calls.fail(&op_id, error); }
                     }
                     Work::Catalog(result) => {
                         catalog_busy = false; let accepted = result?;
@@ -1022,6 +1051,12 @@ async fn connect(
                 }
             }
             Some(command) = commands.recv() => {
+                if let Command::Watches(command)=command {
+                    if command.generation!=generation { let _=command.reply.send(Err(NetworkError::new("ACCOUNT_BINDING_CHANGED"))); continue; }
+                    let (result,routes)=source_returns.watches(&command.source_session,command.cancel.as_deref(),command.all);
+                    for return_route_id in routes {send(&mut socket,ClientMessage::CloseRoute {scope:scope.clone(),return_route_id,reason:"WATCH_CANCELLED".into()}).await?;}
+                    let _=command.reply.send(Ok(result)); continue;
+                }
                 if let Command::Return {generation:command_generation,callback}=command {
                     if command_generation!=generation {let _=callback.reply.send(Err(NetworkError::new("ACCOUNT_BINDING_CHANGED")));continue;}
                     if let Err((callback,error))=target_returns.enqueue(callback,pairs.buffered_bytes()+calls.bytes()+incoming_calls.bytes()+source_returns.bytes()) {let _=callback.reply.send(Err(error));}

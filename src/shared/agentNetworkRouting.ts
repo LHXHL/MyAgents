@@ -10,6 +10,7 @@ export const AGENT_NETWORK_TARGET_FIELDS = {
   "session/list": "agentId",
   "session/start": "agentId",
   "session/get": "sessionId",
+  "session/state": "sessionId",
   "session/send": "toSessionId",
   "session/watch": "targetSessionId",
 } as const;

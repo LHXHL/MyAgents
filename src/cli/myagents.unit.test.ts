@@ -52,6 +52,26 @@ afterEach(() => {
   else process.env.MYAGENTS_SESSION_ID = inheritedMyAgentsSessionId;
 });
 
+
+describe('Session observation CLI', () => {
+  it('keeps state read-only and binds watch management to the current real Session', () => {
+    for (const command of [['session','state','sid'], ['session','watches'], ['session','unwatch','watch']]) {
+      expect(validateCliCommand(command)).toBeUndefined();
+      expect(validateInternalCliInvocation(command, {})).toBeUndefined();
+    }
+    expect(buildRequestBody('session','state',['sid'],{})).toEqual({ sessionId: 'sid' });
+    expect(buildRequestBody('agent','network-diagnose',[],{limit:'3',cursor:'next'})).toEqual({limit:3,cursor:'next'});
+    expect(buildRequestBody('agent','network-diagnose',[],{})).toEqual({limit:100,cursor:undefined});
+    expect(buildRequestBody('session','watches',[],{})).toEqual({});
+    expect(buildRequestBody('session','unwatch',[],{all:true})).toEqual({all:true});
+    expect(buildRequestBody('session','unwatch',['watch'],{})).toEqual({watchId:'watch'});
+    expect(validateExternalCliInvocation(['session','state','sid'],{})).toBeUndefined();
+    expect(validateExternalCliInvocation(['session','watches'],{})).toBeDefined();
+    expect(validateExternalCliInvocation(['session','unwatch','watch'],{})).toBeDefined();
+    expect(cliRequestTimeoutMs('session/watches')).toBeGreaterThan(22_000);
+  });
+});
+
 describe('myagents CLI port authority', () => {
   it('keeps --port above inherited Session or Rust-injected Global ports', () => {
     expect(resolveCliPort('32003', '32002')).toBe('32003');

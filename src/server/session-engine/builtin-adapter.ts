@@ -22,6 +22,7 @@ import {
   getMcpServers,
   getMessages,
   getPendingInteractiveRequests,
+  isBuiltinWaitingForUser,
   getQueueStatus,
   getCurrentTurnIdentity as getBuiltinCurrentTurnIdentity,
   getCurrentImBridgeTurnContext,
@@ -275,6 +276,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
       return {
         sessionState: getAgentState().sessionState,
         isBusy: isSessionBusy(),
+        waitingForUser: isBuiltinWaitingForUser(),
       };
     },
 
@@ -378,6 +380,8 @@ export function createBuiltinSessionEngine(): SessionEngine {
     getCurrentTurnIdentity() {
       return getBuiltinCurrentTurnIdentity();
     },
+
+    getExecutionTurnId() { return getBuiltinDispatchedTurnIdentity()?.queueId ?? null; },
 
     getActiveImBridgeTurnContext() {
       return getCurrentImBridgeTurnContext();

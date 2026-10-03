@@ -1351,6 +1351,7 @@ describe('external SessionEngine with fake runtime', () => {
         allowLazySessionMaterialization: true,
       });
       expect(inbox).toMatchObject({ queued: true });
+      await expect(inbox.dispatchAcceptance).resolves.toMatchObject({ accepted: true });
       await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
       expect(
         await runInjectedTurn(harness, {
@@ -1426,6 +1427,7 @@ describe('external SessionEngine with fake runtime', () => {
         allowLazySessionMaterialization: true,
       });
       expect(inbox).toMatchObject({ queued: true });
+      await expect(inbox.dispatchAcceptance).resolves.toMatchObject({ accepted: true });
       await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
       for (const prompt of prompts.slice(2)) {
         const result = await runInjectedTurn(harness, {
@@ -8477,6 +8479,43 @@ describe('external SessionEngine with fake runtime', () => {
     expect((await harness.sessionStore.getSessionData(sessionId))?.messages.find(message => message.id === userMessage.id)?.desktopQuery).toEqual(desktopQuery);
   });
 
+
+  it.each(['dsh', 'codex', 'claude-code'] as const)('admits a busy %s Inbox immediately, then dispatches through the same boundary queue', async runtimeType => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'warm' },
+      { kind: 'success', text: 'slow answer', completeDelayMs: 250 },
+      { kind: 'success', text: 'Inbox answer' },
+    ], { runtimeType });
+    const sessionId = `session-inbox-${runtimeType}`;
+    const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+    await runInjectedTurn(harness, { prompt: 'warm', sessionId, workspacePath, scenario: { type: 'desktop' }, timeoutMs: 2_000, pollMs: 10 });
+    await harness.engine.waitIdle(2_000, 10);
+    const active = runInjectedTurn(harness, { prompt: 'slow', sessionId, workspacePath, scenario: { type: 'desktop' }, timeoutMs: 2_000, pollMs: 10 });
+    await waitFor(() => harness.runtime.sentMessages.includes('slow'), 'busy native turn');
+    const guard = vi.fn(async () => ({ accepted: true as const }));
+    const result = await harness.engine.enqueueInboxMessage({ text: 'Inbox', sessionId, workspacePath, beforeDispatch: guard,
+      inboxMeta: { fromSessionId: 'caller', fromLabel: 'Caller', replyBack: false, originalMessageId: 'message', originalSnippet: 'Inbox' } });
+    expect(result.queued).toBe(true);
+    expect(guard).not.toHaveBeenCalled();
+    expect(harness.runtime.sentMessages).not.toContain('Inbox');
+    await active;
+    await expect(result.dispatchAcceptance).resolves.toMatchObject({ accepted: true });
+    await waitFor(() => harness.runtime.sentMessages.includes('Inbox'), 'Inbox dispatch after native terminal');
+    await harness.engine.waitIdle(2_000, 10);
+  });
+  it('starts consumption of an idle external Inbox without awaiting dispatch or introducing another queue', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'warm' }, { kind: 'success', text: 'Inbox answer' }]);
+    const sessionId = 'idle-inbox'; const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+    await runInjectedTurn(harness, { prompt: 'warm', sessionId, workspacePath, scenario: { type: 'desktop' }, timeoutMs: 2_000, pollMs: 10 });
+    await harness.engine.waitIdle(2_000, 10);
+    const result = await harness.engine.enqueueInboxMessage({ text: 'idle Inbox', sessionId, workspacePath });
+    expect(result.queued).toBe(true);
+    await expect(result.dispatchAcceptance).resolves.toMatchObject({ accepted: true });
+    expect(harness.runtime.sentMessages).toContain('idle Inbox');
+    await harness.engine.waitIdle(2_000, 10);
+  });
   it('persists DSH Runtime identity before admitting a fresh Product root turn', async () => {
     const harness = await createHarness(
       [{ kind: 'success', text: 'fresh DSH turn finished' }],
@@ -9139,7 +9178,7 @@ describe('external SessionEngine with fake runtime', () => {
       requestId: 'permission-display',
       toolName: 'WebSearch',
       toolUseId: 'search-call',
-      rootToolUseId: 'search-root-call',
+      rootToolUseId: 'search-call',
       input: {
         tool: 'Bash',
         permissionClass: 'process.execute',
@@ -9158,8 +9197,9 @@ describe('external SessionEngine with fake runtime', () => {
       data: expect.objectContaining({
         review,
         toolUseId: 'search-call',
-        rootToolUseId: 'search-root-call',
+        rootToolUseId: 'search-call',
         input: '',
+        blocksRoot: false,
       }),
     });
     expect(
@@ -9169,8 +9209,9 @@ describe('external SessionEngine with fake runtime', () => {
       data: expect.objectContaining({
         review,
         toolUseId: 'search-call',
-        rootToolUseId: 'search-root-call',
+        rootToolUseId: 'search-call',
         input: '',
+        blocksRoot: false,
       }),
     });
   });
@@ -9274,6 +9315,7 @@ describe('external SessionEngine with fake runtime', () => {
         sessionId,
         plan: '# Exact plan',
         allowedPrompts: [],
+        blocksRoot: true,
       },
     });
     expect(broadcastEvents.map(({ event }) => event)).not.toContain(

@@ -2211,6 +2211,7 @@ function maybeSurfaceInFlightAtAssistantTurnStart(reason: string): void {
 let managedQueryController: AbortController | undefined;
 
 function abortPersistentSession(options: { notifyPendingRequests?: boolean } = {}): void {
+  const abortedTurnId = getBuiltinCurrentTurnQueueId() ?? undefined;
   const notifyPendingRequests = options.notifyPendingRequests ?? true;
   clearTransientProviderRetryTimer('abort');
   // This is the only abort-request write path. The lifecycle owner flips the
@@ -2269,29 +2270,17 @@ function abortPersistentSession(options: { notifyPendingRequests?: boolean } = {
   // wait forever. Fire-and-forget. Read + clear immediately to avoid the
   // recovery session inheriting this binding.
   const { inboxMeta: replyMeta, replyText: abortedReplyText } = terminalCleanup();
-  if (notifyPendingRequests && replyMeta) {
-    const abortedSessionId = sessionId;
-    void import('./inbox/reply-deliver').then(({ deliverInboxReply }) =>
-      deliverInboxReply(abortedSessionId, replyMeta, {
-        text: abortedReplyText,
-        error: {
-          code: 'session_aborted',
-          message: 'target session was aborted before the turn completed',
-        },
-      }),
-    ).catch((err) =>
-      console.error('[inbox] abort-path reply pushback failed:', err),
-    );
-  }
   if (notifyPendingRequests) {
     void import('./inbox/watch-deliver').then(({ deliverSessionWatchEvents }) =>
       deliverSessionWatchEvents(sessionId, {
+        turnId: abortedTurnId, terminalStatus: 'stopped',
+        requestEventIds: replyMeta ? [replyMeta.originalMessageId] : undefined,
         text: abortedReplyText,
         error: {
           code: 'session_aborted',
           message: 'target session was aborted before the turn completed',
         },
-      }),
+      }, replyMeta),
     ).catch((err) =>
       console.error('[session-watch] abort-path watch push failed:', err),
     );
@@ -4651,6 +4640,7 @@ const pendingPermissions = new Map<string, {
   input: unknown;
   grantKey: string;
   hints: ToolPermissionHints;
+  blocksRoot?: boolean;
 }>();
 
 // AskUserQuestion types - import from shared
@@ -4667,6 +4657,7 @@ export type { ExitPlanModeRequest, EnterPlanModeRequest, ExitPlanModeAllowedProm
 const pendingAskUserQuestions = new Map<string, {
   resolve: (answers: Record<string, string> | null) => void;
   input: AskUserQuestionInput;
+  blocksRoot?: boolean;
 }>();
 
 // Pending ExitPlanMode requests waiting for user approval.
@@ -4679,12 +4670,14 @@ const pendingExitPlanMode = new Map<string, {
   resolve: (result: ExitPlanModeResolution) => void;
   plan?: string;
   allowedPrompts?: ExitPlanModeAllowedPrompt[];
+  blocksRoot?: boolean;
 }>();
 
 // Pending EnterPlanMode requests waiting for user approval.
 // See pendingPermissions comment — no wall-clock timeout (v0.2.14).
 const pendingEnterPlanMode = new Map<string, {
   resolve: (approved: boolean) => void;
+  blocksRoot?: boolean;
 }>();
 
 async function prepareSessionPlansForUserTurn(options: { clearStale: boolean }): Promise<void> {
@@ -4715,6 +4708,12 @@ function hasPendingInteractiveRequest(): boolean {
     || pendingAskUserQuestions.size > 0
     || pendingExitPlanMode.size > 0
     || pendingEnterPlanMode.size > 0;
+}
+
+/** Only root canUseTool resolvers establish a whole-Session human wait. */
+export function isBuiltinWaitingForUser(): boolean {
+  return [pendingPermissions, pendingAskUserQuestions, pendingExitPlanMode, pendingEnterPlanMode]
+    .some(requests => [...requests.values()].some(request => request.blocksRoot !== false));
 }
 
 function interactiveEventScope(): { sessionId: string } {
@@ -4751,7 +4750,8 @@ function isValidAskUserQuestionInput(input: unknown): input is AskUserQuestionIn
  */
 async function handleAskUserQuestion(
   input: unknown,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  blocksRoot = true
 ): Promise<Record<string, string> | null> {
   console.log('[AskUserQuestion] Requesting user input');
 
@@ -4812,7 +4812,7 @@ async function handleAskUserQuestion(
     // Listen for SDK abort signal
     signal?.addEventListener('abort', onAbort);
 
-    pendingAskUserQuestions.set(requestId, { resolve, input: questionInput });
+    pendingAskUserQuestions.set(requestId, { resolve, input: questionInput, blocksRoot });
   });
   broadcast('ask-user-question:request', requestPayload);
   if (supportsAskUserQuestionNativeCard(currentScenario)) {
@@ -4857,7 +4857,8 @@ export function handleAskUserQuestionResponse(
  */
 async function handleExitPlanMode(
   input: unknown,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  blocksRoot = true
 ): Promise<ExitPlanModeResolution> {
   console.log('[ExitPlanMode] Requesting user approval');
 
@@ -4915,7 +4916,7 @@ async function handleExitPlanMode(
     };
 
     signal?.addEventListener('abort', onAbort);
-    pendingExitPlanMode.set(requestId, { resolve, plan, allowedPrompts });
+    pendingExitPlanMode.set(requestId, { resolve, plan, allowedPrompts, blocksRoot });
   });
   broadcast('exit-plan-mode:request', { ...interactiveEventScope(), requestId, plan, allowedPrompts });
   return response;
@@ -4962,7 +4963,8 @@ export function handleExitPlanModeResponse(
  */
 async function handleEnterPlanMode(
   _input: unknown,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  blocksRoot = true
 ): Promise<boolean> {
   console.log('[EnterPlanMode] Requesting user approval');
 
@@ -4992,7 +4994,7 @@ async function handleEnterPlanMode(
     };
 
     signal?.addEventListener('abort', onAbort);
-    pendingEnterPlanMode.set(requestId, { resolve });
+    pendingEnterPlanMode.set(requestId, { resolve, blocksRoot });
   });
   broadcast('enter-plan-mode:request', { ...interactiveEventScope(), requestId });
   return response;
@@ -5056,6 +5058,7 @@ async function checkToolPermission(
   signal?: AbortSignal,
   hints: ToolPermissionHints = {},
   server?: McpServerProvenance,
+  blocksRoot = true,
 ): Promise<'allow' | 'deny'> {
   const rules = getPermissionRules(mode);
   const grantKey = toolPermissionGrantKey(toolName, server);
@@ -5121,7 +5124,7 @@ async function checkToolPermission(
     // Listen for SDK abort signal
     signal?.addEventListener('abort', onAbort);
 
-    pendingPermissions.set(requestId, { resolve, toolName, input, grantKey, hints });
+    pendingPermissions.set(requestId, { resolve, toolName, input, grantKey, hints, blocksRoot });
   });
   broadcast('permission:request', {
     ...interactiveEventScope(),
@@ -11670,7 +11673,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             };
           }
           console.log('[canUseTool] AskUserQuestion detected, prompting user');
-          const answers = await handleAskUserQuestion(input, options.signal);
+          const answers = await handleAskUserQuestion(input, options.signal, !options.agentID);
           if (answers === null) {
             return {
               behavior: 'deny' as const,
@@ -11708,7 +11711,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         // tool calls (review-by-codex fabrication concern).
         if (toolName === 'ExitPlanMode') {
           console.log('[canUseTool] ExitPlanMode detected, requesting user approval');
-          const result = await handleExitPlanMode(input, options.signal);
+          const result = await handleExitPlanMode(input, options.signal, !options.agentID);
           if (!result.approved) {
             const hasFeedback = !!result.feedback;
             // Cap feedback length before splicing into the wrapper.
@@ -11749,7 +11752,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         // PRD #131 — same control-transfer semantic; interrupt on rejection.
         if (toolName === 'EnterPlanMode') {
           console.log('[canUseTool] EnterPlanMode detected, requesting user approval');
-          const approved = await handleEnterPlanMode(input, options.signal);
+          const approved = await handleEnterPlanMode(input, options.signal, !options.agentID);
           if (!approved) {
             return {
               behavior: 'deny' as const,
@@ -11770,6 +11773,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           options.signal,
           { defaultToNo: options.defaultToNo, suppressAlwaysAllowRule: options.suppressAlwaysAllowRule },
           options.mcpServer,
+          !options.agentID,
         );
         console.debug(`[permission] canUseTool result for ${toolName}: ${decision}`);
         if (decision === 'allow') {

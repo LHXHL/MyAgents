@@ -360,6 +360,8 @@ export type UnifiedEvent = (
     review?: PermissionReview;
     reviewRef?: LargeValueRef;
     rootToolUseId?: string;
+    /** Whether this interaction belongs to root execution, from producer authority. */
+    affectsRootActivity?: boolean;
     /** CC's suggested permission rules for "always allow" (echoed back as updatedPermissions) */
     suggestions?: unknown[];
     /** Preserve the Runtime interaction presentation instead of inferring it from a tool name. */

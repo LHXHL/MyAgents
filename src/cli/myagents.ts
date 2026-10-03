@@ -729,6 +729,9 @@ export function cliRequestTimeoutMs(route: string, body: Record<string, unknown>
   if (route === 'session/start') return 195_000;
   if (route === 'session/send') return 40_000;
   if (route === 'session/get') return 20_000;
+  if (route === 'session/state') return 22_000;
+  if (route === 'session/watches' || route === 'session/unwatch') return 24_000;
+  if (route === 'agent/network-diagnose') return 40_000;
   if (route === 'session/watch') return 40_000;
   if (route === 'mcp/test') return 20_000;
   if (route === 'task/trigger/test') return 315_000;
@@ -828,7 +831,7 @@ export function printResult(
     if (group === 'session' && action === 'start' && result.sessionId && result.messageId) {
       console.error(`  agent:   ${String(result.agentId ?? '(unknown)')}`);
       console.error(`  session: ${String(result.sessionId)}`);
-      console.error(`  request: ${String(result.messageId)}`);
+      console.error(`  message: ${String(result.messageId)}`);
       if (result.accepted === null || result.unconfirmed === true) {
         console.error('  state:   admission unconfirmed; do not automatically resend.');
       }
@@ -1215,7 +1218,7 @@ export function printResult(
     console.log('✓ fresh Session request accepted');
     console.log(`  agent:   ${String(result.agentId ?? '(unknown)')}`);
     console.log(`  session: ${String(result.sessionId ?? '(unknown)')}`);
-    console.log(`  request: ${String(result.messageId ?? '(unknown)')}`);
+    console.log(`  message: ${String(result.messageId ?? '(unknown)')}`);
     console.log('  state:   accepted; target is running asynchronously');
     if (result.replyBack === false) {
       console.log('  result:  one-way; MyAgents will not push the target turn result back here.');
@@ -1223,7 +1226,7 @@ export function printResult(
       console.log('  result:  MyAgents will push the target turn result back as a <myagents-session-event type="send.result"> block.');
     }
     console.log(`  follow-up: myagents session send ${String(result.sessionId ?? '<sessionId>')} -p "<prompt>"`);
-    console.log(`             myagents session watch ${String(result.sessionId ?? '<sessionId>')}`);
+    console.log('  observation: start/send already return the result automatically; use watch for separately observed work.');
     return;
   }
   if (group === 'runtime' && action === 'list') {
@@ -1267,12 +1270,27 @@ export function printResult(
     }
     return;
   }
+  if (result.identity && typeof result.identity === 'object') {
+    const identity = result.identity as { agentName?: string; deviceName?: string };
+    console.log(`  target: ${identity.agentName ?? 'Agent'} @ ${identity.deviceName ?? 'device'}`);
+  }
+  if (group === 'session' && action === 'state') {
+    const session = result.session as { sessionId: string; state: string };
+    console.log(`${session.sessionId}: ${session.state}`);
+    return;
+  }
+  if (group === 'session' && (action === 'watches' || action === 'unwatch')) {
+    const watches = (result.watches ?? []) as Array<{ watchId: string; targetSessionId: string; turnId?: string; cancelled?: boolean; deliveryPending?: boolean; registrationPending?: boolean }>;
+    for (const watch of watches) console.log(`${watch.watchId}  ${watch.targetSessionId}  ${watch.cancelled ? 'cancelled' : watch.deliveryPending ? 'delivery pending' : watch.registrationPending ? 'registration pending' : 'active'}${watch.turnId ? `  turn:${watch.turnId}` : ''}`);
+    if (!watches.length) console.log('No active observations.');
+    return;
+  }
   if (group === 'session' && action === 'watch') {
     if (typeof result.eventPrompt === 'string' && result.eventPrompt.trim()) {
       console.log(result.eventPrompt);
       return;
     }
-    console.log(`\u2713 session watch registered ${result.watchId ?? ''}`.trim());
+    console.log(`\u2713 session watch ${result.coalesced ? 'already registered' : 'registered'} ${result.watchId ?? ''}`.trim());
     console.log(`  target: ${result.targetSessionId ?? '(unknown)'}`);
     console.log(`  state:  ${result.targetStateAtRegistration ?? 'unknown'}`);
     console.log('  result: MyAgents will push a <myagents-session-event type="watch.completed"> block when the target finishes.');
@@ -3394,7 +3412,7 @@ const PUBLISHED_ADMIN_ROUTES = new Set([
   'space/issue-list', 'space/issue-get', 'space/issue-comment', 'space/issue-comments', 'space/issue-comment-get',
   'space/issue-status', 'space/issue-claim', 'space/issue-close', 'space/issue-complete', 'space/issue-cancel-claim',
   'space/claim-local-task', 'space/attachment-download', 'space/attachment-add', 'space/attachment-inspect',
-  'session/list', 'session/get', 'session/start', 'session/send', 'session/watch',
+  'session/list', 'session/get', 'session/start', 'session/send', 'session/watch', 'session/state', 'session/watches', 'session/unwatch', 'agent/network-diagnose',
 ]);
 
 const PUBLISHED_COMMAND_GROUPS = new Set([
@@ -5501,6 +5519,10 @@ export function buildRequestBody(
 
   // Agent commands
   if (group === 'agent') {
+    if (action === 'network-diagnose') {
+      if (rest.length) return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'network-diagnose accepts no positional arguments.' }, 3);
+      return { cursor: flags.cursor, limit: flags.limit === undefined ? 100 : Number(flags.limit) };
+    }
     if (action === 'create') {
       const workspacePath =
         typeof flags.workspacePath === 'string'
@@ -6345,6 +6367,19 @@ export function buildRequestBody(
           ? { before: flags.before.trim() }
           : {}),
       };
+    }
+    if (action === 'state') {
+      const sessionId = rest[0] ?? (flags.sessionId as string | undefined);
+      if (!sessionId || rest.length > 1) return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'session state requires exactly one Session reference.' }, 3);
+      return { sessionId };
+    }
+    if (action === 'watches') {
+      if (rest.length) return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'session watches lists the current Session only.' }, 3);
+      return {};
+    }
+    if (action === 'unwatch') {
+      if (rest.length > 1 || (flags.all === true) === (rest.length === 1)) return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'Use session unwatch <watchId> or session unwatch --all.' }, 3);
+      return flags.all === true ? { all: true } : { watchId: rest[0] };
     }
     if (action === 'watch') {
       const targetSessionId = requirePositional(

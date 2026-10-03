@@ -264,6 +264,11 @@ export function getExternalCurrentTurnIdentity(): TurnIdentity | null {
     : null;
 }
 
+/** All execution turns have a queue identity; Task/Goal owner is optional. */
+export function getExternalExecutionTurnId(): string | null {
+  return currentTurnBinding?.queueId ?? activeTurnPromotion?.queueId ?? null;
+}
+
 export function clearExternalTurnBinding(queueId: string): void {
   if (currentTurnBinding?.queueId === queueId) currentTurnBinding = null;
 }

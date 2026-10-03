@@ -6,12 +6,14 @@ const mocks = vi.hoisted(() => ({
   show: vi.fn(),
   list: vi.fn(),
   get: vi.fn(),
+  history: vi.fn(),
 }));
 vi.mock("../utils/agent-workspace-identity", () => ({
   resolvePersistedAgentWorkspaceRegistry: mocks.registry,
 }));
 vi.mock("../SessionStore", () => ({
   getSessionMetadata: mocks.metadata,
+  getSessionData: mocks.history,
   isHistoryVisibleSession: mocks.visible,
 }));
 vi.mock("../admin-api", () => ({
@@ -72,6 +74,8 @@ describe("network reads use original identity/history owners and closed projecti
         isCurrent: true,
         channelCount: 0,
         effectiveDefaults: {
+          scope: 'agent-default-for-future-sessions',
+          permissionModeSource: 'agent-config',
           runtime: "builtin",
           model: null,
           permissionMode: null,
@@ -96,6 +100,7 @@ describe("network reads use original identity/history owners and closed projecti
     });
     expect(JSON.stringify(result)).not.toContain("/owned");
     expect(JSON.stringify(result)).not.toContain("isolated-fixture-secret");
+    expect(JSON.stringify(result)).not.toContain('permissionModeSource');
   });
   it("precheck exposes no transcript and get preserves the original text-page shape", async () => {
     expect(
@@ -200,4 +205,16 @@ describe("network reads use original identity/history owners and closed projecti
       }),
     ).toMatchObject({ success: false, code: "SESSION_NOT_FOUND" });
   });
+  it('projects real DSH integrated defaults and list rows without their local configuration', async () => {
+    mocks.show.mockResolvedValue({ success: true, data: { agentId: 'agent', name: 'Agent', enabled: true, projectId: 'project', archived: false, archivedAt: null, association: 'project-linked', channelCount: 0,
+      workspacePath: '/owned', effectiveDefaults: { scope: 'agent-default-for-future-sessions', permissionModeSource: 'agent-config', runtime: 'dsh', runtimeSource: 'integrated', runtimeConfig: { token: 'private' }, model: null, permissionMode: 'standard', providerId: null, mcpEnabledServers: [], enabledPluginIds: [], enabledOfficialToolIds: [] } } });
+    expect(await handleNetworkTargetRead({ method: 'agent.show', params: { localAgentId: 'agent' } }))
+      .toMatchObject({ success: true, data: { result: { effectiveDefaults: { runtime: 'dsh', runtimeSource: 'integrated' } } } });
+    mocks.list.mockResolvedValue({ success: true, data: [{ sessionId: 'session', title: 'Session', runtime: 'dsh', runtimeSource: 'integrated', lastActiveAt: 'now', lastMessagePreview: null, model: null, origin: null }] });
+    const result = await handleNetworkTargetRead({ method: 'session.list', params: { localAgentId: 'agent', limit: 5 } });
+    expect(result.success).toBe(true);
+    expect(JSON.stringify(result)).not.toContain('private');
+    expect(JSON.stringify(result)).not.toContain('/owned');
+  });
+
 });

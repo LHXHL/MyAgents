@@ -20,6 +20,8 @@ pub enum SourceOperation {
     List(SourceListParams),
     #[serde(rename = "session.get")]
     Get(SourceGetParams),
+    #[serde(rename = "session.state")]
+    State(EmptyParams),
     #[serde(rename = "session.start")]
     Start(MessageParams),
     #[serde(rename = "session.send")]
@@ -66,6 +68,7 @@ impl SourceRequest {
     pub fn method(&self) -> &'static str {
         match self.operation {
             SourceOperation::Show(_) => "agent.show", SourceOperation::List(_) => "session.list",
+            SourceOperation::State(_) => "session.state",
             SourceOperation::Get(_) => "session.get", SourceOperation::Start(_) => "session.start",
             SourceOperation::Send(_) => "session.send", SourceOperation::Watch(_) => "session.watch",
         }

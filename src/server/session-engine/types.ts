@@ -264,6 +264,8 @@ export type SessionEngineRuntimeIdentity = {
 export type SessionEngineLiveState = {
   sessionState: string;
   isBusy: boolean;
+  /** Actual root-blocking human interaction, not an async child question. */
+  waitingForUser?: boolean;
 };
 
 export type SessionEngineLatestResult = {
@@ -424,6 +426,7 @@ export interface SessionEngine {
     expected: RegisteredAgentSessionOrigin,
   ): Promise<{ success: boolean; metadataExists?: boolean; adoptedLegacyOrigin?: boolean; error?: string }>;
   getCurrentTurnIdentity(): TurnIdentity | null;
+  getExecutionTurnId(): string | null;
   getActiveImBridgeTurnContext(): ImBridgeTurnContext | null;
   getSessionCompletionTerminal(): SessionCompletionTerminal | null;
   hasQueuedTurnOwnedBy(owner: TurnOwner): boolean;

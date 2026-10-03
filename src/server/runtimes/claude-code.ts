@@ -845,6 +845,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
             requestId: (msg.request_id as string) || '',
             toolName: (request.tool_name as string) || '',
             toolUseId: (request.tool_use_id as string) || '',
+            affectsRootActivity: !request.agent_id,
             input: (request.input as Record<string, unknown>) || {},
             // Capture permission_suggestions — echoed back as updatedPermissions for "always_allow"
             suggestions: Array.isArray(request.permission_suggestions) ? request.permission_suggestions : undefined,

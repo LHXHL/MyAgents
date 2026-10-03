@@ -202,6 +202,8 @@ export interface SessionData extends SessionMetadata {
   messages: SessionMessage[];
   transcriptSaveStatus?: import('../../shared/sessionTranscript').TranscriptSaveStatus;
   transcriptRecovery?: 'incomplete' | 'unavailable';
+  /** Execution facts owned by V2 turns, independent of message sealing. */
+  transcriptTurns?: import('../../shared/sessionTranscript').TranscriptTurn[];
 }
 
 export interface DshProjectionCursor {

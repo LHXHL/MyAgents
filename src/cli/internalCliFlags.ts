@@ -90,6 +90,10 @@ export const INTERNAL_CLI_FLAGS: Readonly<Record<string, readonly string[]>> = {
   "space/attachment-download": ["agentId","attachment","attachmentId","attachmentValueMissing","file","fileValueMissing","issueId","output","space","workspace","workspaceId","workspacePath"],
   "space/attachment-add": ["agentId","attachment","attachmentId","attachmentValueMissing","file","fileValueMissing","issueId","output","space","workspace","workspaceId","workspacePath"],
   "space/attachment-inspect": ["agentId","attachment","attachmentId","attachmentValueMissing","file","fileValueMissing","issueId","output","space","workspace","workspaceId","workspacePath"],
+  "session/state": ["sessionId"],
+  "session/watches": [],
+  "session/unwatch": ["all"],
+  "agent/network-diagnose": ["cursor","limit"],
   "session/watch": ["to","targetSessionId"],
   "reload": ["workspacePath"]
 };

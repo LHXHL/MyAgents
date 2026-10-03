@@ -129,6 +129,8 @@ pub async fn start_management_api() -> Result<u16, String> {
         .route("/api/agent-network/return", post(agent_network_return_handler)
             .layer(DefaultBodyLimit::max(myagents_agent_network_protocol::budget("objectBytes")))
             .layer(middleware::from_fn(agent_network_body_budget)))
+        .route("/api/agent-network/diagnose", post(agent_network_diagnose_handler))
+        .route("/api/agent-network/watches", post(agent_network_watches_handler))
         .route("/api/agent-network/invoke", post(agent_network_invoke_handler)
             .layer(DefaultBodyLimit::max(myagents_agent_network_protocol::budget("objectBytes")))
             .layer(middleware::from_fn(agent_network_body_budget)))
@@ -402,6 +404,16 @@ struct SessionTextPageRequest {
     limit: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     before: Option<String>,
+    #[serde(default)]
+    projection: SessionReadProjection,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum SessionReadProjection {
+    #[default]
+    Text,
+    Activity,
 }
 
 const SESSION_OWNER_READ_ATTEMPTS: u8 = 2;
@@ -416,6 +428,12 @@ async fn session_text_page_handler(
             "error": "Sidecar manager is not initialized",
         }));
     };
+    if matches!(request.projection,SessionReadProjection::Activity) {
+        let state=manager.lock().unwrap();
+        if state.get_session_sidecar(&request.session_id).is_some_and(|sidecar|sidecar.state==crate::sidecar::SidecarState::Starting) {
+            return no_store_json(serde_json::json!({"ok":false,"code":"session_owner_starting"}));
+        }
+    }
     for attempt in 1..=SESSION_OWNER_READ_ATTEMPTS {
         // Re-resolve the owner for each attempt. A failed request may have
         // raced a generation replacement; retrying the captured URL would
@@ -803,6 +821,8 @@ async fn agent_network_invoke_handler(
 ) -> (HeaderMap, Json<serde_json::Value>) {
     use tauri::Manager;
     let queued_at = std::time::Instant::now();
+    let request_id = request.request.request_id.clone();
+    let method = request.request.method();
     let generation = match request_sidecar_generation(&headers) {
         Ok(value) => value, Err(Json(value)) => return no_store_json(value),
     };
@@ -817,8 +837,11 @@ async fn agent_network_invoke_handler(
         return failure(crate::agent_network::NetworkError::new("CONNECTOR_UNAVAILABLE"));
     };
     match crate::agent_network::source::invoke(&owner, manager, generation, request, queued_at).await {
-        Ok(outcome) => no_store_json(serde_json::json!({"ok":true,"outcome":outcome})),
-        Err(error) => failure(error),
+        Ok(result) => no_store_json(serde_json::json!({"ok":true,"outcome":result.outcome,"identity":result.identity})),
+        Err(error) => {
+            ulog_warn!("[agent-network] stage=source-invoke requestId={} method={} code={}", request_id, method, error.code);
+            failure(error)
+        },
     }
 }
 
@@ -835,6 +858,43 @@ async fn agent_network_discovery_handler(headers:HeaderMap,Json(request):Json<Ne
     let result=crate::agent_network::discovery::remote(&owner).await;
     if !sidecar_is_live(&request.sidecar_id,generation){return failure("SOURCE_GENERATION_CHANGED");}
     match result {Ok(data)=>no_store_json(serde_json::json!({"ok":true,"data":data})),Err(error)=>no_store_json(serde_json::json!({"ok":false,"error":error}))}
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+struct NetworkDiagnoseRequest { sidecar_id:String, cursor:Option<String>, limit:usize }
+async fn agent_network_diagnose_handler(headers:HeaderMap,Json(request):Json<NetworkDiagnoseRequest>) -> (HeaderMap,Json<serde_json::Value>) {
+    use tauri::Manager;
+    use crate::agent_network::commands::MetadataRequest;
+    let generation=match request_sidecar_generation(&headers){Ok(value)=>value,Err(Json(value))=>return no_store_json(value)};
+    let failure=|code|no_store_json(serde_json::json!({"ok":false,"error":{"code":code}}));
+    if !sidecar_is_live(&request.sidecar_id,generation) {return failure("SOURCE_GENERATION_CHANGED");}
+    if request.limit==0 || request.limit>100 {return failure("NETWORK_ARGUMENT_INVALID");}
+    let Some(app)=crate::logger::get_app_handle()else{return failure("CONNECTOR_UNAVAILABLE");};
+    let Some(owner)=app.try_state::<crate::agent_network::actor::ManagedAgentNetwork>()else{return failure("CONNECTOR_UNAVAILABLE");};
+    let (network,devices)=tokio::join!(owner.request(MetadataRequest::Network),owner.request(MetadataRequest::Devices{cursor:request.cursor,limit:request.limit}));
+    if !sidecar_is_live(&request.sidecar_id,generation) {return failure("SOURCE_GENERATION_CHANGED");}
+    match (network,devices) {
+        (Ok(network),Ok(devices))=>{
+            let items:Vec<_>=devices["items"].as_array().into_iter().flatten().map(|device|serde_json::json!({
+                "deviceId":device["deviceId"],"deviceName":device["name"],"platform":device["platform"],"appVersion":device["appVersion"],
+            })).collect();
+            no_store_json(serde_json::json!({"ok":true,"data":{"protocol":network["protocol"],"capabilities":network["capabilities"],
+                "devices":items,"nextCursor":devices["nextCursor"],"complete":devices["complete"]}}))
+        },_=>failure("NETWORK_DIAGNOSTIC_UNAVAILABLE"),
+    }
+}
+
+async fn agent_network_watches_handler(headers:HeaderMap,Json(request):Json<crate::agent_network::source::WatchesRequest>) -> (HeaderMap,Json<serde_json::Value>) {
+    use tauri::Manager;
+    let generation=match request_sidecar_generation(&headers){Ok(value)=>value,Err(Json(value))=>return no_store_json(value)};
+    let failure=|error:crate::agent_network::NetworkError|no_store_json(serde_json::json!({"ok":false,"error":error}));
+    let Some(manager)=get_sidecar_state()else{return failure(crate::agent_network::NetworkError::new("SOURCE_OWNER_UNAVAILABLE"));};
+    let Some(app)=crate::logger::get_app_handle()else{return failure(crate::agent_network::NetworkError::new("CONNECTOR_UNAVAILABLE"));};
+    let Some(owner)=app.try_state::<crate::agent_network::actor::ManagedAgentNetwork>()else{return failure(crate::agent_network::NetworkError::new("CONNECTOR_UNAVAILABLE"));};
+    match crate::agent_network::source::watches(&owner,manager,generation,request).await {
+        Ok(result)=>no_store_json(serde_json::json!({"ok":true,"result":result})),Err(error)=>failure(error),
+    }
 }
 
 async fn agent_network_return_handler(

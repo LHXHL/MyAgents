@@ -418,6 +418,7 @@ import {
   isExternalTurnPromotionCurrent,
   isExternalTurnPromotionInFlight,
   markExternalSessionComplete,
+  getExternalExecutionTurnId,
   markExternalTurnComplete,
   markExternalTurnStarted,
   notifyExternalTurnOutcome,
@@ -442,6 +443,7 @@ import {
 export {
   clearExternalTurnBinding,
   getExternalCurrentTurnIdentity,
+  getExternalExecutionTurnId,
   getExternalSessionCompletionTerminal,
   getExternalTurnTerminalGeneration,
   isExternalTurnCurrent,
@@ -983,6 +985,9 @@ function notifyExternalMessageDispatchAccepted(
   onDispatchAccepted: (() => void) | undefined,
 ): void {
   surfaceExternalUserMessageAsReplay(operation, sessionId);
+  // Native dispatch is irreversible. Later runtime/persistence failures are
+  // terminal outcomes, and cannot revoke this operation's admission receipt.
+  operation.settleDispatchAcceptance({ queued: true });
   if (
     operation.userProjection.surfaceMode === 'queue-started' &&
     onDispatchAccepted
@@ -6493,7 +6498,7 @@ function deferRealtimeOperationToTurnBoundary(input: {
  *      surface failures via chat:agent-error since the HTTP response is
  *      already on its way back to the renderer.
  */
-function enqueueExternalTurnBoundaryOperation(
+export function enqueueExternalTurnBoundaryOperation(
   text: string,
   images: ImagePayload[] | undefined,
   permissionMode: string | undefined,
@@ -6572,6 +6577,7 @@ function enqueueExternalTurnBoundaryOperation(
     canForceExecute: true,
   });
   void ensureQueuedDshRootRecovery().catch(() => undefined);
+  scheduleExternalQueueDrainAfterDirectAdmission();
   return {
     queued: true,
     queueId: queued.queueId,
@@ -7702,6 +7708,7 @@ export async function stopExternalSession(options?: {
   /** Config restart may stop an idle process while the next admitted turn owns this token. */
   preservePromotion?: ExternalTurnPromotionToken | null;
 }): Promise<boolean> {
+  const stoppedExecutionTurnId = getExternalExecutionTurnId() ?? undefined;
   clearWatchdog();
   const preserveQueue = options?.preserveQueue === true;
   const preserveCurrentPromotion = Boolean(
@@ -7731,6 +7738,7 @@ export async function stopExternalSession(options?: {
     setExternalTurnCompleted(true);
     resetTurnAccumulators();
     clearExternalInboxMetaOnRejection({
+      turnId: stoppedExecutionTurnId,
       sessionId: getExternalLifecycleSessionId(),
       errorCode: 'session_aborted',
       errorMessage:
@@ -7897,6 +7905,7 @@ export async function stopExternalSession(options?: {
     fireExternalImCallback('cancelled', buildImCancelledPayload());
     finalizeExternalActiveRequest('failed');
     deliverExternalWatchError({
+      turnId: stoppedExecutionTurnId,
       sessionId: getExternalLifecycleSessionId(),
       text: currentExternalTurnTextSnapshot(),
       errorCode: 'session_aborted',
@@ -7904,6 +7913,7 @@ export async function stopExternalSession(options?: {
         'external runtime session was stopped before turn completed',
     });
     clearExternalInboxMetaOnRejection({
+      turnId: stoppedExecutionTurnId,
       sessionId: getExternalLifecycleSessionId(),
       errorCode: 'session_aborted',
       errorMessage:
@@ -9385,6 +9395,7 @@ async function persistTurnResult(
   terminalGeneration: number,
   clientOperationId?: string,
 ): Promise<void> {
+  const resultTurnId = getExternalExecutionTurnId() ?? undefined;
   // Defense-in-depth: the `session_complete` handler reads `persistInFlight`
   // to decide whether to fire `setExternalSessionState('idle')` synchronously.
   // When persistInFlight=true, idle is deferred to this function. If we throw
@@ -9737,33 +9748,6 @@ async function persistTurnResult(
     // Use the meta/hints snapshotted at entry (NOT module-level slots, which
     // may have been overwritten by a concurrent sendExternalMessage during
     // the await chain above).
-    if (turnInboxMeta) {
-      // Use captured-before-reset text (PRD 0.2.18 cross-review fix). If reset
-      // didn't actually fire (early throw path), fall back to currentAssistantText.
-      const replyText = capturedReplyText || getExternalAssistantText().trim();
-      const replyError = finalizedTurnSucceeded
-        ? undefined
-        : {
-            code: 'turn_failed',
-            message: 'external runtime turn did not complete successfully',
-          };
-      const sid = getExternalLifecycleSessionId();
-      void import('../inbox/reply-deliver')
-        .then(({ deliverInboxReply }) =>
-          deliverInboxReply(sid, turnInboxMeta, {
-            text: replyText,
-            error: replyError,
-            attachmentHints:
-              turnAttachmentHints.length > 0 ? turnAttachmentHints : undefined,
-          }),
-        )
-        .catch((err) =>
-          console.error(
-            '[inbox] external turn-end reply pushback failed:',
-            err,
-          ),
-        );
-    }
     const lifecycleSessionId = getExternalLifecycleSessionId();
     if (lifecycleSessionId) {
       const watchText = capturedReplyText || getExternalAssistantText().trim();
@@ -9779,10 +9763,12 @@ async function persistTurnResult(
         .then(({ deliverSessionWatchEvents }) =>
           deliverSessionWatchEvents(lifecycleSessionId, {
             text: watchText,
+            turnId: resultTurnId, terminalStatus: finalizedTurnSucceeded ? 'complete' : 'error',
+            requestEventIds: turnInboxMeta ? [turnInboxMeta.originalMessageId] : undefined,
             error: watchError,
             attachmentHints:
               turnAttachmentHints.length > 0 ? turnAttachmentHints : undefined,
-          }),
+          }, turnInboxMeta ?? undefined),
         )
         .catch((err) =>
           console.error(
@@ -10221,6 +10207,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
 }
 
 function applyUnifiedEvent(event: UnifiedEvent): void {
+  const eventExecutionTurnId = getExternalExecutionTurnId() ?? undefined;
   const presentation = getTranscriptPresentation();
   const source =
     event.nativeSource ??
@@ -10829,6 +10816,9 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
     case 'permission_request': {
       if (autoDenyNonInteractiveRequest(event)) break;
       if (autoAllowFullAgencyNativeCardRequest(event)) break;
+      const blocksRoot = event.affectsRootActivity ?? (event.review?.actor
+        ? event.review.actor.origin === 'root'
+        : !event.rootToolUseId || event.rootToolUseId === event.toolUseId);
       if (event.interactionKind === 'plan_approval') {
         const questions = Array.isArray(event.input.questions)
           ? event.input.questions
@@ -10842,6 +10832,7 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
         const requestPayload = {
           requestId: event.requestId,
           sessionId: getCurrentBoundSessionId() || undefined,
+          blocksRoot,
           ...(typeof question.detail === 'string'
             ? { plan: question.detail }
             : {}),
@@ -10870,6 +10861,7 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
         const requestPayload = {
           requestId: event.requestId,
           sessionId: getCurrentBoundSessionId() || undefined,
+          blocksRoot,
           questions,
           previewFormat,
         };
@@ -10892,6 +10884,7 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
       const requestPayload = {
         requestId: event.requestId,
         sessionId: getCurrentBoundSessionId() || undefined,
+        blocksRoot,
         toolName: event.toolName,
         toolUseId: event.toolUseId,
         input:
@@ -11263,12 +11256,14 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
         fireExternalImCallback('error', buildImErrorPayload(message));
         finalizeExternalActiveRequest('failed');
         deliverExternalWatchError({
+            turnId: eventExecutionTurnId,
           sessionId: getExternalLifecycleSessionId(),
           text: currentExternalTurnTextSnapshot(),
           errorCode: cleanup === 'stopped' ? 'session_aborted' : 'turn_failed',
           errorMessage: message,
         });
         clearExternalInboxMetaOnRejection({
+          turnId: eventExecutionTurnId,
           sessionId: getExternalLifecycleSessionId(),
           errorCode: 'turn_failed',
           errorMessage: message,
@@ -11435,6 +11430,7 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
             `[external-session] Suppressing error banner for intentional interruption (was: ${summarizeExternalRuntimeMessageForLog(errorMessage)})`,
           );
           deliverExternalWatchError({
+            turnId: eventExecutionTurnId,
             sessionId: getExternalLifecycleSessionId(),
             text: currentExternalTurnTextSnapshot(),
             errorCode: 'session_aborted',
@@ -11495,6 +11491,7 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
           );
           fireExternalImCallback('error', buildImErrorPayload(errorMessage));
           deliverExternalWatchError({
+            turnId: eventExecutionTurnId,
             sessionId: getExternalLifecycleSessionId(),
             text: currentExternalTurnTextSnapshot(),
             errorCode: 'turn_failed',

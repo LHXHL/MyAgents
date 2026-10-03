@@ -23,6 +23,7 @@ import {
   validateExternalAsyncQuestionReply,
   getExternalNativeSessionId,
   getExternalSessionCompletionTerminal,
+  getExternalExecutionTurnId,
   getExternalPendingInteractiveRequests,
   getExternalQueueStatus,
   getExternalSessionId,
@@ -62,6 +63,7 @@ import {
   retryDshConversation,
   forkExternalConversation,
   sendExternalMessage,
+  enqueueExternalTurnBoundaryOperation,
   setExternalModel,
   setExternalPermissionMode,
   setExternalReasoningEffort,
@@ -296,6 +298,10 @@ export function createExternalSessionEngine(): SessionEngine {
       return {
         sessionState: getExternalSessionState(),
         isBusy: isExternalSessionBusy(),
+        waitingForUser: getExternalPendingInteractiveRequests().some(request => {
+          const data = request.data as { blocksRoot?: boolean } | null;
+          return data?.blocksRoot === true;
+        }),
       };
     },
 
@@ -402,6 +408,8 @@ export function createExternalSessionEngine(): SessionEngine {
     getCurrentTurnIdentity() {
       return getExternalCurrentTurnIdentity();
     },
+
+    getExecutionTurnId() { return getExternalExecutionTurnId(); },
 
     getActiveImBridgeTurnContext() {
       return getActiveExternalImBridgeTurnContext();
@@ -571,16 +579,9 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     async enqueueInboxMessage(request) {
-      let resolveDispatch!: (value: { accepted: boolean; error?: string }) => void;
-      let dispatchSettled = false;
-      const dispatchAcceptance = new Promise<{ accepted: boolean; error?: string }>((resolve) => {
-        resolveDispatch = value => {
-          if (dispatchSettled) return;
-          dispatchSettled = true;
-          resolve(value);
-        };
-      });
-      const result = await sendExternalMessage(
+      // The operation queue owns admission. Runtime dispatch can wait for the
+      // preceding turn and must not hold the caller's Inbox HTTP/lifecycle lease.
+      const result = enqueueExternalTurnBoundaryOperation(
         request.text,
         undefined,
         undefined,
@@ -597,13 +598,16 @@ export function createExternalSessionEngine(): SessionEngine {
           beforeDispatch: request.beforeDispatch,
           channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY,
         },
-        undefined,
-        () => resolveDispatch({ accepted: true }),
       );
-      if (result.error || !result.queued) {
-        resolveDispatch({ accepted: false, error: result.error ?? 'external runtime rejected inbox message' });
-      }
-      return { ...result, dispatchAcceptance };
+      const dispatchAcceptance = result.dispatch.then(
+        dispatched => ({ accepted: dispatched.queued && !dispatched.error, error: dispatched.error }),
+        () => ({ accepted: false, error: 'external runtime dispatch failed' }),
+      );
+      return {
+        queued: result.queued,
+        ...(!result.queued ? { error: 'external operation queue rejected inbox message' } : {}),
+        dispatchAcceptance,
+      };
     },
 
     async prepareScheduledTurn(request): Promise<ScheduledTurnPreparationResult> {

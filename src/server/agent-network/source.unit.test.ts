@@ -132,4 +132,20 @@ describe("unified source routing", () => {
       { timeoutMs: REMOTE_DEADLINES["session.send"].admin },
     ]);
   });
+  it('read failures remain retryable query errors, never ambiguous execution admission', async () => {
+    management.mockResolvedValue({ ok: false, code: 'ADMISSION_UNCONFIRMED' });
+    expect(await routeNetworkRequest('session/state', { sessionId: session }, 'internal-session'))
+      .toMatchObject({ success: false, code: 'NETWORK_QUERY_FAILED' });
+    management.mockRejectedValue(new Error('connection lost'));
+    const failed = await routeNetworkRequest('session/get', { sessionId: session }, 'internal-session');
+    expect(failed).toMatchObject({ success: false, code: 'NETWORK_QUERY_FAILED' });
+    expect(failed).not.toHaveProperty('unconfirmed');
+    management.mockResolvedValue({ ok: true, outcome: { method: 'session.state', result: { sessionId: 'legacy-session', state: 'waiting_user' } } });
+    expect(await routeNetworkRequest('session/state', { sessionId: session }, 'internal-session'))
+      .toMatchObject({ success: true, session: { sessionId: session, state: 'waiting_user' } });
+    management.mockResolvedValue({ ok: true, outcome: { method: 'session.get', result: {} } });
+    expect(await routeNetworkRequest('session/get', { sessionId: session }, 'internal-session'))
+      .toMatchObject({ success: false, code: 'NETWORK_RECEIPT_INVALID' });
+  });
+
 });

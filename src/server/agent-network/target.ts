@@ -20,6 +20,8 @@ import {
   handleSessionList,
 } from "../admin-api";
 import { resolvePersistedAgentWorkspaceRegistry } from "../utils/agent-workspace-identity";
+import { readSessionActivity, readLatestSessionResult } from '../session-observation';
+import { deriveSessionLabel } from '../inbox/derive-label';
 
 const precheckSchema = z.strictObject({
   localAgentId: z.string().min(1).max(256),
@@ -71,7 +73,17 @@ function failure(error: unknown) {
     "SESSION_NOT_FOUND",
   ].includes(raw)
     ? raw
-    : "TARGET_OWNER_UNAVAILABLE";
+    : error instanceof z.ZodError
+      ? "TARGET_PROJECTION_INVALID"
+      : "TARGET_OWNER_UNAVAILABLE";
+  // Never log exception messages/input: validation errors may embed business
+  // text, paths or runtime configuration. Codes and paths are sufficient.
+  console.warn('[agent-network] target failure', {
+    stage: 'target-projection', code,
+    ...(error instanceof z.ZodError
+      ? { issues: error.issues.map(issue => ({ code: issue.code, path: issue.path.join('.') })) }
+      : {}),
+  });
   return { success: false, code, error: code };
 }
 export async function handleNetworkTargetPrecheck(
@@ -107,6 +119,7 @@ export async function handleNetworkTargetRead(
       operation.method !== "agent.show" &&
       operation.method !== "session.list" &&
       operation.method !== "session.get"
+      && operation.method !== 'session.state'
     ) {
       return {
         success: false,
@@ -116,7 +129,7 @@ export async function handleNetworkTargetRead(
     }
     await resolveTarget({
       localAgentId: operation.params.localAgentId,
-      ...(operation.method === "session.get"
+      ...(operation.method === "session.get" || operation.method === 'session.state'
         ? { localSessionId: operation.params.localSessionId }
         : {}),
     });
@@ -134,10 +147,20 @@ export async function handleNetworkTargetRead(
       const data = response.data as Record<string, unknown>;
       // Existing show intentionally exposes local paths and arbitrary runtime
       // configuration. Only these documented non-secret fields cross devices.
-      const { workspacePath: _path, ...safe } = data;
-      const { runtimeConfig: _config, ...defaults } =
-        data.effectiveDefaults as Record<string, unknown>;
-      result = { ...safe, effectiveDefaults: defaults, isCurrent: false };
+      const defaults = data.effectiveDefaults as Record<string, unknown>;
+      result = {
+        agentId: data.agentId, name: data.name, enabled: data.enabled,
+        projectId: data.projectId, archived: data.archived, archivedAt: data.archivedAt,
+        association: data.association, channelCount: data.channelCount, isCurrent: false,
+        effectiveDefaults: {
+          runtime: defaults.runtime,
+          ...(defaults.runtimeSource ? { runtimeSource: defaults.runtimeSource } : {}),
+          model: defaults.model, permissionMode: defaults.permissionMode,
+          providerId: defaults.providerId, mcpEnabledServers: defaults.mcpEnabledServers,
+          enabledPluginIds: defaults.enabledPluginIds,
+          enabledOfficialToolIds: defaults.enabledOfficialToolIds,
+        },
+      };
     } else if (operation.method === "session.list") {
       const response = await handleSessionList({
         agentId: operation.params.localAgentId,
@@ -150,6 +173,8 @@ export async function handleNetworkTargetRead(
           error: "AGENT_NOT_AVAILABLE",
         };
       result = response.data;
+    } else if (operation.method === 'session.state') {
+      result = await readSessionActivity(operation.params.localSessionId);
     } else {
       const response = await handleSessionGet({
         sessionId: operation.params.localSessionId,
@@ -186,6 +211,9 @@ const watchProjectionSchema = z.strictObject({
     finalState: z.string().optional(),
     terminalReason: z.string().optional(),
     latestResult: z.string().optional(),
+    turnId: z.string().optional(),
+    terminalStatus: z.enum(['complete', 'stopped', 'error']).optional(),
+    coalesced: z.boolean().optional(),
   }),
 });
 
@@ -196,11 +224,14 @@ export async function handleNetworkWatchProjection(
 ): Promise<Record<string, unknown>> {
   try {
     const input = watchProjectionSchema.parse(payload);
-    const identity = await resolveTarget(input);
+    await resolveTarget(input);
     if (input.localSessionId !== input.result.targetSessionId)
       throw new Error("SESSION_NOT_FOUND");
     const targetAgent = parseAgentReference(input.targetReference);
     const observed = input.result;
+    const targetLabel = deriveSessionLabel(getSessionMetadata(input.localSessionId) ?? null);
+    const latestResult = observed.delivery === 'already_idle' || observed.delivery === 'error'
+      ? await readLatestSessionResult(input.localSessionId, observed) : undefined;
     const event =
       observed.delivery === "already_idle" || observed.delivery === "error"
         ? buildWatchEvent({
@@ -213,12 +244,17 @@ export async function handleNetworkWatchProjection(
               ...targetAgent,
               localSessionId: input.localSessionId,
             }),
-            targetLabel: identity.agent.name,
+            targetLabel,
             watcherSessionId: input.sourceSessionId,
             targetStateAtRegistration: observed.targetStateAtRegistration,
             finalState: observed.finalState,
             terminalReason: observed.terminalReason,
-            latestResult: observed.latestResult ?? "(no text response)",
+            latestResult: latestResult?.text ?? (latestResult?.source === 'unavailable'
+              ? '(latest result unavailable)' : '(no text response)'),
+            turnId: latestResult?.turnId,
+            terminalStatus: latestResult?.terminalStatus,
+            resultSource: latestResult?.source,
+            resultScope: 'latest-session-result',
           })
         : undefined;
     const result = {
@@ -228,6 +264,9 @@ export async function handleNetworkWatchProjection(
       watchId: observed.watchId,
       targetSessionId: input.localSessionId,
       targetStateAtRegistration: observed.targetStateAtRegistration,
+      ...(observed.turnId ? { turnId: observed.turnId } : {}),
+      ...(observed.coalesced !== undefined ? { coalesced: observed.coalesced } : {}),
+      ...(latestResult ? { latestResult } : {}),
       ...(observed.delivery === "not_found"
         ? {
             error: {

@@ -5,7 +5,7 @@ import type { SessionMetadata } from '../types/session';
 import { cancellableFetch } from '../utils/cancellation';
 import { managementRequestHeaders } from '../utils/management-api-client';
 import { deriveSessionLabel } from './derive-label';
-import { getLatestAssistantResultFromMessages } from './latest-result';
+import { readLatestSessionResult, type LatestSessionResult } from '../session-observation';
 import { renderSessionEventPrompt } from './session-event';
 import { sanitizeInboxLabel } from './sanitize-label';
 import type { SessionEvent } from './session-event';
@@ -21,6 +21,9 @@ export interface AdminSessionWatchResponse {
   targetStateAtRegistration?: string;
   delivery?: 'registered' | 'already_idle' | 'error';
   eventPrompt?: string;
+  coalesced?: boolean;
+  turnId?: string;
+  latestResult?: LatestSessionResult;
   error?: { code: string; message: string };
 }
 
@@ -32,6 +35,9 @@ interface ManagementWatchResult {
   finalState?: string;
   terminalReason?: string;
   latestResult?: string;
+  turnId?: string;
+  terminalStatus?: 'complete' | 'stopped' | 'error';
+  coalesced?: boolean;
 }
 
 interface ManagementWatchApiResponse {
@@ -61,11 +67,6 @@ async function deriveLabel(sessionId: string, meta: SessionMetadata | null): Pro
   return sanitizeInboxLabel(raw);
 }
 
-async function latestResultForSession(sessionId: string): Promise<string> {
-  const data = (await getSessionData(sessionId));
-  return data ? getLatestAssistantResultFromMessages(data.messages) : '(no text response)';
-}
-
 export function buildWatchEvent(params: {
   type: 'watch.already_idle' | 'watch.error';
   watchId: string;
@@ -76,6 +77,10 @@ export function buildWatchEvent(params: {
   finalState?: string;
   terminalReason?: string;
   latestResult: string;
+  turnId?: string;
+  terminalStatus?: 'complete' | 'stopped' | 'error';
+  resultSource?: 'live' | 'history' | 'none' | 'unavailable';
+  resultScope?: 'latest-session-result';
 }): SessionEvent {
   const event: SessionEvent = {
     version: 1,
@@ -90,6 +95,10 @@ export function buildWatchEvent(params: {
     terminalReason: params.terminalReason,
     createdAt: new Date().toISOString(),
     latestResult: params.latestResult,
+    turnId: params.turnId,
+    terminalStatus: params.terminalStatus,
+    resultSource: params.resultSource,
+    resultScope: params.resultScope,
   };
   return event;
 }
@@ -198,7 +207,7 @@ export async function handleAdminSessionWatch(
       error: { code: 'session_not_found', message: `target session ${targetSessionId} not found` } } };
   }
   if (result.delivery === 'already_idle' || result.delivery === 'error') {
-    const latestResult = result.latestResult?.trim() || await latestResultForSession(targetSessionId);
+    const latestResult = await readLatestSessionResult(targetSessionId, result);
     const eventPrompt = renderSessionEventPrompt(buildWatchEvent({
       type: result.delivery === 'already_idle' ? 'watch.already_idle' : 'watch.error',
       watchId: result.watchId,
@@ -208,7 +217,9 @@ export async function handleAdminSessionWatch(
       targetStateAtRegistration: result.targetStateAtRegistration,
       finalState: result.finalState,
       terminalReason: result.terminalReason,
-      latestResult,
+      latestResult: latestResult.text ?? (latestResult.source === 'unavailable' ? '(latest result unavailable)' : '(no text response)'),
+      turnId: latestResult.turnId, terminalStatus: latestResult.terminalStatus,
+      resultSource: latestResult.source, resultScope: latestResult.scope,
     }));
     return {
       status: 200,
@@ -218,6 +229,7 @@ export async function handleAdminSessionWatch(
         targetSessionId,
         targetStateAtRegistration: result.targetStateAtRegistration,
         delivery: result.delivery,
+        latestResult,
         eventPrompt,
       },
     };
@@ -231,6 +243,7 @@ export async function handleAdminSessionWatch(
       targetSessionId,
       targetStateAtRegistration: result.targetStateAtRegistration,
       delivery: 'registered',
+      turnId: result.turnId, coalesced: result.coalesced,
     },
   };
 }

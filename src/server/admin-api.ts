@@ -4664,7 +4664,11 @@ Run exact leaf help for flags, output, exit codes, and recovery:
   myagents session list --help
   myagents session start --help
   myagents session send --help
-  myagents session watch --help`,
+  myagents session watch --help
+  myagents session state --help
+  myagents session get --help
+  myagents session watches --help
+  myagents session unwatch --help`,
 
   'session/list': `myagents session list --agent <agentId> — Recent reusable contexts
 
@@ -4766,6 +4770,29 @@ RECOVERY
   Exit 1: Session not found/business error. Exit 2: delivery failure/rejection.
   Exit 3: argument error. Inline newline or >4 KB input must use a file.`,
 
+  'session/state': `myagents session state <sessionId> — Read current activity
+
+Returns exactly idle, running or waiting_user. waiting_user means the target
+needs its own user's tool/plan approval or required structured answer before
+root work can continue. Ordinary text questions and nonblocking child work do
+not establish that state. This read never wakes the target or approves anything.
+Unreadable state is a retryable query error. idle is not proof of success; use
+session get for results. --json preserves the machine-readable state.`,
+  'session/watches': `myagents session watches — List this Session's active observations
+
+Lists local and network watchId, target Session and executing turn. Registrations
+end on completion, cancellation or the original network connection ending.
+start/send automatic results are separate and do not appear as observations.`,
+  'session/unwatch': `myagents session unwatch <watchId> | --all — Cancel observations
+
+Choose one watchId from session watches, or explicitly --all. Does not stop the
+target, cancel start/send automatic results or retract an admitted Inbox message.
+A return already being delivered remains pending until its settlement.`,
+  'agent/network-diagnose': `myagents agent network-diagnose [--cursor <cursor>] [--limit 1..100] --json
+
+Read network protocol/capabilities and paginated device appVersion and identity
+metadata on demand. Correlate deviceId with agent list; errors contain stage,
+code and requestId without task contents. Both devices need this dev protocol.`,
   'session/watch': `myagents session watch <sessionId> — Observe without assigning work
 
 WHEN TO CALL
@@ -4773,8 +4800,14 @@ WHEN TO CALL
   new instruction should be injected.
 
 EFFECT
-  Registers observation only. A running target later pushes watch.completed;
+  Registers the actual executing turn. Equivalent caller/target/turn watches
+  reuse one watchId. start/send already return results automatically; an
+  additional watch of that same turn produces one notification.
+  A running target later pushes watch.completed;
   an already-idle target returns watch.already_idle with its recent result.
+  This is latest-session-result, not an unproven answer to a particular request.
+  Result source live/history/none/unavailable and known terminal status distinguish
+  an empty answer, a failed read, failure and partial stopped output.
 
 OPTIONS
   <sessionId>    Required target Session ID

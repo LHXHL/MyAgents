@@ -18,11 +18,21 @@
 
 ## 调用与回程
 
-CLI 使用原 `agent list/show`、`session list/get/start/send/watch` 命令。`src/shared/agentNetworkRouting.ts` 只区分本地 ID 与 `ma-agent:1:service:network:mount` / `ma-session:1:service:network:mount:localSession`。本地沿原 owner 路径；远端经来源 Node → Rust Management → App connector → relay → 目标原 owner。不能把 arbitrary Admin path、配置覆盖或远端文件路径送入 transport。
+CLI 使用原 `agent list/show`、`session list/get/state/start/send/watch` 命令。`src/shared/agentNetworkRouting.ts` 只区分本地 ID 与 `ma-agent:1:service:network:mount` / `ma-session:1:service:network:mount:localSession`。本地沿原 owner 路径；远端经来源 Node → Rust Management → App connector → relay → 目标原 owner。不能把 arbitrary Admin path、配置覆盖或远端文件路径送入 transport。
 
 目标先由原 owner 冷准备，在网络等待期间释放 Session 生命周期锁；拿到当前授权 permit 后，在本机检查账号/连接/代次/有效期，再交给原 Inbox。最后交接以后是 in-flight，不能承诺 Rust 与 Node 跨进程原子撤销。`start/send` 返回真实接纳结果，不等待 AI terminal；明确失败、已接纳与 unconfirmed 必须区分，不自动重发。
 
-来源/目标 return registry 只持有当前连接的关联。terminal 回调来自实际 Session Sidecar generation；目标重新获得当前授权的 route rebind ACK 后才发送私密 event。来源验证完整 peer/epoch/Session/message/watch 后投递原 Inbox，记录紧凑 settlement 再 ACK。ACK 不明不重复注入，不保存 outbox。真实断线、登出或身份改变丢弃关联；目标原执行继续。watch 仍是原一次完成通知登记；删除时只删除该 Session/watch/reference，不能清空其它 watch。
+来源/目标 return registry 只持有当前连接的关联。terminal 回调来自实际 Session Sidecar generation；目标重新获得当前授权的 route rebind ACK 后才发送私密 event。来源验证完整 peer/epoch/Session/message/watch 后投递原 Inbox，记录紧凑 settlement 再 ACK。ACK 不明不重复注入，不保存 outbox。真实断线、登出或身份改变丢弃关联；目标原执行继续。watch 绑定目标 adapter 的真实执行 queue ID，Task/Goal owner 可为空；同一 caller/设备 scope、目标和实际轮次合并成一个 canonical watchId。当前轮次完成只结算该轮观察，后续排队请求不会冒充它的结果。
+
+本地 turn 完成入口先协调自动回传与同 caller/target/turn 观察，共享一次原 Inbox 投递 promise；失败不另行发送第二条通知。网络同一实际轮次的自动回传与观察在来源 `SourceReturns` 内按验证后的 peer/epoch、双方 Session、turnId、原 Inbox requestEventId 共享一次 Inbox 接纳结算；各 operation 仍保留自己的 event digest、receipt 与 ACK。关联不含结果正文，不按文字去重，不跨连接保存。不同请求/轮次/调用方独立。目标观察回传并行结算，单项超时不阻塞下一项。external/DSH Inbox 复用原 operation queue，入队即接纳，native dispatch 的独立 promise 在不可逆接纳时结算；启动空闲队列仍由原 queue owner 负责。
+
+`session watches` 读取当前 caller 的全部活跃本地/网络观察；`session unwatch <watchId>` / 显式 `--all` 只取消观察，不停止执行、不取消默认自动回传、不撤回已进入 Inbox 的消息。网络观察由连接内 SourceReturns 管理，关闭原 route 触发目标精确清理；本地观察仍在目标原 registry，由 Rust 查当前 owner，不复制一套来源注册表。删除时只删除该 caller/Session/watch/reference，不能清空其它 watch。注册回执仍在途时也可取消已有 route；来源保留取消 context 到原 receipt TTL，仅用于验证并丢弃已在途事件。目标 route Context 释放时同时失效注册 job 的原 pre/post handoff guard，清理迟到注册。
+
+`session state` 是按需只读投影：idle、running、waiting_user。SessionEngine 根据真实执行状态及阻塞 root 的工具/计划审批、必须回答的问题投影；非阻塞异步问题、普通文本问句及子 Agent 单独交互不证明整个 Session 等待。Rust 无 live owner 且原历史可见才读 idle，尚未就绪/不可观测则查询错误，不启动 Sidecar或模型。不提供远端批准、配置修改、中间状态推送或轮询。idle 不表示任务成功。
+
+空闲 watch 优先原 live 结果，缺失再读目标原 SessionStore 的最近 assistant；回执包含 latest-session-result 范围与 live/history/none/unavailable 来源，历史保留自己的时间与已知 terminalStatus/turnId，不能沿用另一轮的终态或声称是某请求的回答。保留 partial/stopped/error 文本。V2 历史终态取原 transcriptTurns 的对应 turn.status；消息封口不能证明执行成功，transcriptRecovery unavailable 不能解释成没有回答。
+
+Session label 继续表示会话标题/原摘要。来源回执和异步事件另含 Agent/设备 identity，显示为 `Agent @ device · Session label`，不拿 UUID 充当标题。`agent network-diagnose --json` 按需列出协议能力和分页设备 appVersion。错误记录阶段、代码、requestId，schema 日志只记录字段路径，不打印正文或配置；只有已发送的 start/send 可能接纳未知，读失败按查询错误重试。严格旧客户端会拒绝这些协议扩展，本次 dev 验收双方须升级同一固定包。
 
 ## 身份、加密与资源
 

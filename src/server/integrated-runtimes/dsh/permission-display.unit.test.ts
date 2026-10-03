@@ -18,7 +18,7 @@ describe('DSH permission review projection', () => {
       operation: { kind: 'web_search', query: 'example '.repeat(300), provider: 'fixture-search', allowedDomains: ['example.com'] },
       actor: { agentId: 'child-review', origin: 'foreground_child' }, scope,
     };
-    expect(await dshPermissionReview({ review }, new DshAttachmentRegistry('/unused'), 'session-review')).toEqual({ review });
+    expect(await dshPermissionReview({ review }, new DshAttachmentRegistry('/unused'), 'session-review')).toEqual({ review, affectsRootActivity: false });
     expect(await dshPermissionReview({}, new DshAttachmentRegistry('/unused'), 'session-review')).toEqual({});
   });
 
@@ -34,6 +34,7 @@ describe('DSH permission review projection', () => {
     await attachments.put({ stagingPath, mimeType: 'application/json', sizeBytes: bytes.length, sha256 });
     const reviewRef = { attachmentId: `sha256:${sha256}`, mimeType: 'application/json' as const, sizeBytes: bytes.length, sha256 };
     const projected = await dshPermissionReview({ reviewRef }, attachments, 'session-review');
+    expect(projected.affectsRootActivity).toBe(false);
     expect(projected.review).toBeUndefined(); expect(projected.reviewRef).toBeDefined();
     const stored = await fetchRef(projected.reviewRef!.id);
     expect(JSON.parse(Buffer.from(stored!.data).toString())).toEqual({ ...review, operation });

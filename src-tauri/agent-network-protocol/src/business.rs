@@ -36,6 +36,9 @@ pub struct GetParams {
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionParams { pub local_agent_id: String, pub local_session_id: String }
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StartParams {
     pub local_agent_id: String,
     pub prompt: String,
@@ -67,6 +70,8 @@ pub enum Operation {
     List(ListParams),
     #[serde(rename = "session.get")]
     Get(GetParams),
+    #[serde(rename = "session.state")]
+    State(SessionParams),
     #[serde(rename = "session.start")]
     Start(StartParams),
     #[serde(rename = "session.send")]
@@ -80,6 +85,7 @@ impl Operation {
             Self::Show(_) => "agent.show",
             Self::List(_) => "session.list",
             Self::Get(_) => "session.get",
+            Self::State(_) => "session.state",
             Self::Start(_) => "session.start",
             Self::Send(_) => "session.send",
             Self::Watch(_) => "session.watch",
@@ -90,6 +96,7 @@ impl Operation {
             Self::Show(params) => &params.local_agent_id,
             Self::List(params) => &params.local_agent_id,
             Self::Get(params) => &params.local_agent_id,
+            Self::State(params) => &params.local_agent_id,
             Self::Start(params) => &params.local_agent_id,
             Self::Send(params) => &params.local_agent_id,
             Self::Watch(params) => &params.local_agent_id,
@@ -123,6 +130,8 @@ pub enum Outcome {
     List { result: Value },
     #[serde(rename = "session.get")]
     Get { result: Value },
+    #[serde(rename = "session.state")]
+    State { result: Value },
     #[serde(rename = "session.start")]
     Start { result: Value },
     #[serde(rename = "session.send")]

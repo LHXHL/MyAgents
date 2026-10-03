@@ -226,6 +226,9 @@ CHOOSE THE RIGHT ACTION
     myagents session start --agent <agentId> -p "<prompt>"
 - Ask an existing Session to do new work:
     myagents session send <sessionId> -p "<prompt>"
+- Read current idle/running/waiting_user state or recent text without waking it:
+    myagents session state <sessionId>
+    myagents session get <sessionId>
 - Observe an existing Session without assigning new work:
     myagents session watch <sessionId>
 
@@ -234,6 +237,12 @@ as selectors. \`start\` always creates fresh context, \`send\` preserves the tar
 Session's context, and \`watch\` does not inject work. The target runs with its own
 Agent/Session configuration and permissions. \`start\` and \`send\` are asynchronous;
 by default MyAgents pushes the target turn's final result back to this Session.
+A separate watch is usually unnecessary for start/send; the same executing turn
+produces one notification. Manage observations with session watches and session
+unwatch <watchId> (or explicit --all). waiting_user requires the target's own
+user to handle approval or a required answer; never approve remotely. idle
+does not imply success. Run agent network-diagnose --json for version/protocol
+diagnostics when network operations fail.
 
 For the complete current contract, options, output, and recovery guidance, run:
   myagents agent --help

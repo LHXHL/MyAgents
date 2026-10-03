@@ -126,6 +126,10 @@ export function networkOutcome(
         id: qualifySession(agent, outcome.result.id),
       },
     };
+  if (outcome.method === 'session.state') return {
+    success: true,
+    session: { ...outcome.result, sessionId: qualifySession(agent, outcome.result.sessionId) },
+  };
   const result = outcome.result;
   const error = result.error;
   const unconfirmed = "unconfirmed" in result && result.unconfirmed === true;
@@ -205,15 +209,19 @@ export async function routeNetworkRequest(
           : null;
       const raw = networkError?.code ?? result.code;
       const code =
-        raw === "ADMISSION_UNCONFIRMED" || raw === "transport_outcome_unknown"
+        (raw === "ADMISSION_UNCONFIRMED" || raw === "transport_outcome_unknown") &&
+        (request.operation.method === "session.start" || request.operation.method === "session.send")
           ? "admission_unconfirmed"
-          : typeof raw === "string"
+          : raw === "ADMISSION_UNCONFIRMED" || raw === "transport_outcome_unknown"
+            ? "NETWORK_QUERY_FAILED"
+            : typeof raw === "string"
             ? raw
             : "NETWORK_UNAVAILABLE";
       return {
         success: false,
         code,
         error: code,
+        ...(code === "NETWORK_QUERY_FAILED" ? { retryable: true } : {}),
         requestId: request.requestId,
         selector: request.selector,
         ...(code === "admission_unconfirmed"
@@ -227,18 +235,30 @@ export async function routeNetworkRequest(
           : {}),
       };
     }
-    return networkOutcome(request, result.outcome);
+    const projected = networkOutcome(request, result.outcome);
+    if (result.identity) {
+      const identity = z.strictObject({ agentId: z.string(), agentName: z.string(), deviceId: z.string(), deviceName: z.string() }).parse(result.identity);
+      return { ...projected, identity };
+    }
+    return projected;
   } catch (error) {
-    const uncertain = request !== null;
+    const uncertain = request !== null &&
+      (request.operation.method === 'session.start' || request.operation.method === 'session.send');
     const code = uncertain
       ? "admission_unconfirmed"
       : error instanceof NetworkProtocolError
         ? error.code
-        : "NETWORK_ARGUMENT_INVALID";
+        : request ? error instanceof z.ZodError ? 'NETWORK_RECEIPT_INVALID' : 'NETWORK_QUERY_FAILED'
+          : "NETWORK_ARGUMENT_INVALID";
+    console.warn('[agent-network] source failure', {
+      stage: request ? 'source-response' : 'source-arguments', code,
+      ...(request ? { requestId: request.requestId, method: request.operation.method } : {}),
+    });
     return {
       success: false,
       code,
       error: code,
+      ...(code === "NETWORK_QUERY_FAILED" ? { retryable: true } : {}),
       ...(request
         ? {
             requestId: request.requestId,

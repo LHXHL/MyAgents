@@ -30,7 +30,7 @@ impl NetworkError {
     pub(crate) fn new(code: &'static str) -> Self {
         Self {
             code: code.into(),
-            retryable: false,
+            retryable: code == "NETWORK_QUERY_FAILED",
             details: None,
         }
     }

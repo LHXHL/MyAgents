@@ -221,6 +221,7 @@ pub(crate) async fn precheck(
 ) -> Result<TargetIdentity, NetworkError> {
     let session = match operation {
         Operation::Get(params) => Some(&params.local_session_id),
+        Operation::State(params) => Some(&params.local_session_id),
         Operation::Send(params) => Some(&params.local_session_id),
         Operation::Watch(params) => Some(&params.local_session_id),
         _ => None,
@@ -246,7 +247,7 @@ pub(crate) async fn read(
 ) -> Result<(Outcome, super::memory::Allocation), NetworkError> {
     if !matches!(
         operation,
-        Operation::Show(_) | Operation::List(_) | Operation::Get(_)
+        Operation::Show(_) | Operation::List(_) | Operation::Get(_) | Operation::State(_)
     ) {
         return Err(NetworkError::new("READ_OPERATION_REQUIRED"));
     }
@@ -271,6 +272,7 @@ pub(crate) async fn read(
         Outcome::Show { .. } => "agent.show",
         Outcome::List { .. } => "session.list",
         Outcome::Get { .. } => "session.get",
+        Outcome::State { .. } => "session.state",
         _ => return Err(NetworkError::new("TARGET_RECEIPT_INVALID")),
     };
     if method != operation.method() {
@@ -315,10 +317,10 @@ pub(crate) async fn deliver_return(
         };
         event["sourceSessionId"] = json!(selector);
     }
-    let Some(event_id) = event["eventId"].as_str() else {
+    let Some(event_id) = event["eventId"].as_str().map(str::to_owned) else {
         return ReturnSettlement::Dropped;
     };
-    let Some(from) = event["sourceSessionId"].as_str() else {
+    let Some(from) = event["sourceSessionId"].as_str().map(str::to_owned) else {
         return ReturnSettlement::Dropped;
     };
     let text = event["payload"]
@@ -326,11 +328,16 @@ pub(crate) async fn deliver_return(
         .or_else(|| event["latestResult"].as_str())
         .unwrap_or("")
         .into();
+    let from_label = if let Some((agent, device)) = &intent.peer_label {
+        event["sourceAgentName"] = json!(agent);
+        event["sourceDeviceName"] = json!(device);
+        format!("{} @ {} · {}", agent, device, event["sourceLabel"].as_str().unwrap_or("Session"))
+    } else { event["sourceLabel"].as_str().unwrap_or("Agent").into() };
     let message = PendingInboxMessage {
         message_id: event_id.into(),
         from_session_id: Some(from.into()),
         source_kind: crate::inbox::InboxSourceKind::InternalSession,
-        from_label: event["sourceLabel"].as_str().unwrap_or("Agent").into(),
+        from_label,
         to_session_id: intent.source_session,
         text,
         reply_back: false,
@@ -344,13 +351,14 @@ pub(crate) async fn deliver_return(
         session_event: Some(event),
         network_return: None,
     };
-    match crate::inbox::deliver::deliver_existing_session_with_resume(
-        app,
-        manager,
-        message,
-        Some(target.workspace_path.into()),
-    )
-    .await
+    let prepared = crate::inbox::deliver::prepare_existing_delivery(
+        app, manager, message, target.workspace_path.into(),
+    ).await;
+    let outcome = match prepared {
+        Ok(prepared) => prepared.admit_network(app, None, || Ok(())).await,
+        Err(outcome) => outcome,
+    };
+    match outcome
     {
         DeliverOutcome::Delivered { .. } => ReturnSettlement::Delivered,
         DeliverOutcome::Unconfirmed { .. } => ReturnSettlement::Unconfirmed,
@@ -403,6 +411,8 @@ pub(crate) async fn watch<G: Fn() -> Result<(), String> + Send + 'static>(
     let watch_id = params.watch_id.clone();
     let watcher = source_session_id.clone();
     let label = params.local_agent_id.clone();
+    let observer_scope = format!("{}:{}:{}:{}", invocation.source.service_id,
+        invocation.source.network_id, invocation.source.device_id, invocation.source.key_generation);
     // The original watcher must settle registration even if the connector
     // disappears after the final handoff, then precisely undo its own watch.
     let result = tauri::async_runtime::spawn(async move {
@@ -416,6 +426,7 @@ pub(crate) async fn watch<G: Fn() -> Result<(), String> + Send + 'static>(
                 target_session_id: target.clone(),
                 target_label: label,
                 network_return: Some(reference.clone()),
+                observer_scope: Some(observer_scope),
             },
         )
         .await;

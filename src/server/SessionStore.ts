@@ -1782,6 +1782,7 @@ export async function getSessionDataFromMetadata(metadata: SessionMetadata): Pro
     const active = activeTranscripts.get(sessionId);
     if (active) return {
         ...active.metadata, messages: transcriptMessages(active.writer.projection),
+        transcriptTurns: [...active.writer.projection.turns.values()],
         transcriptSaveStatus: active.writer.status,
         ...(active.writer.status.reason === 'invalid-history' ? { transcriptRecovery: 'unavailable' as const } : {}),
     };
@@ -1800,7 +1801,7 @@ export async function getSessionDataFromMetadata(metadata: SessionMetadata): Pro
             const decoded = await readTranscriptFile(getV2SessionFilePath(sessionId), sessionId);
             // A file reader cannot infer whether another Sidecar still owns execution.
             const messages = transcriptMessages(decoded.projection);
-            return { ...metadata, messages,
+            return { ...metadata, messages, transcriptTurns: [...decoded.projection.turns.values()],
                 ...(decoded.tail === 'invalid' ? { transcriptRecovery: 'incomplete' as const } : {}),
             };
         } catch (error) {

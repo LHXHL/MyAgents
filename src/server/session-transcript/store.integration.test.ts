@@ -149,6 +149,21 @@ describe('SessionStore V2 ownership and compatibility', () => {
     } finally { release(); await commit.catch(() => undefined); paused.mockRestore(); }
   });
 
+  it.each(['complete', 'stopped', 'error'] as const)('returns the assistant own %s terminal from cold V2 history', async status => {
+    const { metadata, active } = await create();
+    const { ProductTranscriptContent } = await import('./content');
+    const content = new ProductTranscriptContent(active.writer);
+    content.admitUser({ id: 'u', role: 'user', content: 'query', timestamp: 't' });
+    content.append(content.block('text', 'text', { text: '' }), 'text', 'partial');
+    content.finishTurn(status);
+    expect(await active.writer.flush()).toBe(true);
+    await store.releaseSessionTranscriptForBinding(metadata.id);
+    const { readLatestSessionResult } = await import('../session-observation');
+    expect(await readLatestSessionResult(metadata.id)).toMatchObject({
+      text: 'partial', source: 'history', turnId: 'u', terminalStatus: status,
+    });
+  });
+
   it('derives user counts, preview and usage once across steered segments, live and on disk', async () => {
     const { metadata, active } = await create();
     const { ProductTranscriptContent } = await import('./content');

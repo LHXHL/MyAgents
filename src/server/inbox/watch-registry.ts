@@ -8,13 +8,23 @@ export interface PendingSessionWatch {
   targetLabel: string;
   targetStateAtRegistration: string;
   registeredAt: string;
+  turnId?: string;
+  /** Host-verified remote device scope, or the local caller identity. */
+  observerScope?: string;
   networkReturn?: NetworkReturnReference;
 }
 
 const pendingWatches = new Map<string, PendingSessionWatch>();
 
-export function registerPendingSessionWatch(watch: PendingSessionWatch): void {
+export function registerPendingSessionWatch(watch: PendingSessionWatch): PendingSessionWatch {
+  if (watch.turnId) {
+    const existing = [...pendingWatches.values()].find(item =>
+      item.turnId === watch.turnId && item.targetSessionId === watch.targetSessionId &&
+      item.watcherSessionId === watch.watcherSessionId && item.observerScope === watch.observerScope);
+    if (existing) return existing;
+  }
   pendingWatches.set(watch.watchId, watch);
+  return watch;
 }
 
 export function listPendingSessionWatches(): PendingSessionWatch[] {
@@ -40,4 +50,13 @@ export function clearPendingSessionWatchesForTest(): void {
 
 export function pendingSessionWatchCount(): number {
   return pendingWatches.size;
+}
+
+export function manageLocalSessionWatches(watcherSessionId: string, cancel?: string, all = false) {
+  return listPendingSessionWatches().filter(watch => !watch.networkReturn && watch.watcherSessionId === watcherSessionId)
+    .map(watch => {
+      const cancelled = all || cancel === watch.watchId;
+      if (cancelled) ackPendingSessionWatch(watch.watchId);
+      return { watchId: watch.watchId, targetSessionId: watch.targetSessionId, turnId: watch.turnId, source: 'local', cancelled };
+    });
 }

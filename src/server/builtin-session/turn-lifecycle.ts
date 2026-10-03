@@ -525,6 +525,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     resultMessage: BuiltinSdkResultMessage,
     recoverRejectedReloadAnchor?: (rawError: string) => boolean,
   ): Promise<'retrying' | 'terminal'> => {
+    const resultTurnId = getCurrentTurnSourceItem()?.id;
     deps.resetInFlightToolCount();
     deps.resetWatchdogFired();
 
@@ -746,29 +747,18 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       );
       const replyText = getCurrentTurnText();
       const replyMeta = getCurrentTurnInboxMeta();
-      if (replyMeta) {
-        setCurrentTurnInboxMeta(undefined);
-        void import('../inbox/reply-deliver').then(({ deliverInboxReply }) =>
-          deliverInboxReply(deps.getSessionId(), replyMeta, {
-            text: replyText,
-            error: {
-              code: 'turn_failed',
-              message: emptyResultError,
-            },
-          }),
-        ).catch((err) =>
-          console.error('[inbox] empty-result reply pushback failed:', err),
-        );
-      }
+      setCurrentTurnInboxMeta(undefined);
       clearCurrentTurnTextBlocks();
       void import('../inbox/watch-deliver').then(({ deliverSessionWatchEvents }) =>
         deliverSessionWatchEvents(deps.getSessionId(), {
           text: replyText,
+          turnId: resultTurnId, terminalStatus: 'error',
+          requestEventIds: replyMeta ? [replyMeta.originalMessageId] : undefined,
           error: {
             code: 'turn_failed',
             message: emptyResultError,
           },
-        }),
+        }, replyMeta),
       ).catch((err) =>
         console.error('[session-watch] empty-result watch push failed:', err),
       );
@@ -879,23 +869,15 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
           }
         : undefined;
       const replyMeta = getCurrentTurnInboxMeta();
-      if (replyMeta) {
-        setCurrentTurnInboxMeta(undefined);
-        void import('../inbox/reply-deliver').then(({ deliverInboxReply }) =>
-          deliverInboxReply(deps.getSessionId(), replyMeta, {
-            text: sessionEventText,
-            error: sessionEventError,
-          }),
-        ).catch((err) =>
-          console.error('[inbox] result-handler reply pushback failed:', err),
-        );
-      }
+      setCurrentTurnInboxMeta(undefined);
       clearCurrentTurnTextBlocks();
       void import('../inbox/watch-deliver').then(({ deliverSessionWatchEvents }) =>
         deliverSessionWatchEvents(deps.getSessionId(), {
           text: sessionEventText,
+          turnId: resultTurnId, terminalStatus: isAbortResult ? 'stopped' : sessionEventError ? 'error' : 'complete',
+          requestEventIds: replyMeta ? [replyMeta.originalMessageId] : undefined,
           error: sessionEventError,
-        }),
+        }, replyMeta),
       ).catch((err) =>
         console.error('[session-watch] result-handler watch push failed:', err),
       );

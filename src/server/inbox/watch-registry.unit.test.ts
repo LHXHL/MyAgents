@@ -7,6 +7,7 @@ import {
   pendingSessionWatchCount,
   registerPendingSessionWatch,
   removeNetworkSessionWatch,
+  manageLocalSessionWatches,
 } from './watch-registry';
 
 describe('session watch registry', () => {
@@ -41,4 +42,28 @@ describe('session watch registry', () => {
     ackPendingSessionWatch('watch-1');
     expect(pendingSessionWatchCount()).toBe(0);
   });
+  it('coalesces only the same actual turn, caller and verified device scope', () => {
+    clearPendingSessionWatchesForTest();
+    const watch = { watchId: 'one', watcherSessionId: 'caller', targetSessionId: 'target', targetLabel: 'Target', targetStateAtRegistration: 'running', registeredAt: 'now', turnId: 'turn', observerScope: 'device-1' };
+    expect(registerPendingSessionWatch(watch).watchId).toBe('one');
+    expect(registerPendingSessionWatch({ ...watch, watchId: 'duplicate' }).watchId).toBe('one');
+    registerPendingSessionWatch({ ...watch, watchId: 'another-device', observerScope: 'device-2' });
+    registerPendingSessionWatch({ ...watch, watchId: 'another-caller', watcherSessionId: 'caller-2' });
+    registerPendingSessionWatch({ ...watch, watchId: 'later-turn', turnId: 'turn-2' });
+    expect(pendingSessionWatchCount()).toBe(4);
+    expect(removeNetworkSessionWatch('duplicate', { opId: 'op', returnRouteId: 'route' })).toBe(false);
+    clearPendingSessionWatchesForTest();
+  });
+  it('local cancel-all is scoped to caller and excludes network-owned observations', () => {
+    clearPendingSessionWatchesForTest();
+    const watch = { watchId: 'local', watcherSessionId: 'caller', targetSessionId: 'target', targetLabel: 'Target', targetStateAtRegistration: 'running', registeredAt: 'now' };
+    registerPendingSessionWatch(watch);
+    registerPendingSessionWatch({ ...watch, watchId: 'other', watcherSessionId: 'other' });
+    registerPendingSessionWatch({ ...watch, watchId: 'remote', networkReturn: { opId: 'op', returnRouteId: 'route' } });
+    expect(manageLocalSessionWatches('caller')).toHaveLength(1);
+    expect(manageLocalSessionWatches('caller', undefined, true)).toMatchObject([{ watchId: 'local', cancelled: true }]);
+    expect(listPendingSessionWatches().map(w => w.watchId)).toEqual(['other', 'remote']);
+    clearPendingSessionWatchesForTest();
+  });
+
 });

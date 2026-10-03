@@ -63,6 +63,10 @@ enum Phase {
         channel_id: String,
     },
 }
+pub(crate) struct CallResult {
+    pub outcome: Outcome,
+    pub identity: Option<serde_json::Value>,
+}
 struct Call {
     _allocation: Option<super::memory::Allocation>,
     request: Option<SourceRequest>,
@@ -76,7 +80,7 @@ struct Call {
     phase: Phase,
     deadline: Instant,
     bytes: usize,
-    reply: Option<oneshot::Sender<Result<Outcome, NetworkError>>>,
+    reply: Option<oneshot::Sender<Result<CallResult, NetworkError>>>,
     return_route: Option<String>,
 }
 struct Retired {
@@ -104,7 +108,7 @@ impl Calls {
         &mut self,
         request: SourceRequest,
         caller: VerifiedCaller,
-        reply: &mut Option<oneshot::Sender<Result<Outcome, NetworkError>>>,
+        reply: &mut Option<oneshot::Sender<Result<CallResult, NetworkError>>>,
         queued_at: Instant,
         local: &DeviceScope,
         allocation: Option<super::memory::Allocation>,
@@ -477,6 +481,12 @@ impl Calls {
                 );
             }
             if let Some(reply) = call.reply.take() {
+                let result = result.map(|outcome| CallResult {
+                    outcome,
+                    identity: call.target.as_ref().map(|target| serde_json::json!({
+                        "agentId":target.selector,"agentName":target.name,"deviceId":target.device_id,"deviceName":target.device_name,
+                    })),
+                });
                 let _ = reply.send(result);
             }
         }
@@ -506,8 +516,10 @@ impl Calls {
     }
     fn fail_uncertain(&mut self, op: &str) {
         if let Some(call) = self.calls.get(op) {
-            let mut error = NetworkError::new(if matches!(call.phase, Phase::Sent { .. }) {
+            let mut error = NetworkError::new(if matches!(call.phase, Phase::Sent { .. }) && matches!(call.method, "session.start" | "session.send") {
                 "ADMISSION_UNCONFIRMED"
+            } else if matches!(call.phase, Phase::Sent { .. }) {
+                "NETWORK_QUERY_FAILED"
             } else {
                 "NETWORK_REQUEST_NOT_SENT"
             });
@@ -548,6 +560,7 @@ fn outcome_method(outcome: &Outcome) -> Option<&'static str> {
         Outcome::Show { .. } => "agent.show",
         Outcome::List { .. } => "session.list",
         Outcome::Get { .. } => "session.get",
+        Outcome::State { .. } => "session.state",
         Outcome::Start { .. } => "session.start",
         Outcome::Send { .. } => "session.send",
         Outcome::Watch { .. } => "session.watch",
@@ -604,7 +617,7 @@ mod tests {
             signed_binding: Some("test-binding".into()),
         }
     }
-    fn pending(calls: &mut Calls) -> (String, oneshot::Receiver<Result<Outcome, NetworkError>>) {
+    fn pending(calls: &mut Calls) -> (String, oneshot::Receiver<Result<CallResult, NetworkError>>) {
         let (reply, response) = oneshot::channel();
         let mut reply = Some(reply);
         let op = calls
@@ -742,7 +755,7 @@ mod tests {
             Some(op)
         );
         assert!(matches!(
-            reply.await.unwrap().unwrap(),
+            reply.await.unwrap().unwrap().outcome,
             Outcome::Error { .. }
         ));
         assert_eq!(calls.response("channel", response).unwrap(), None);
@@ -772,7 +785,7 @@ mod tests {
             .unwrap();
         drop(calls);
         let failure = reply2.await.unwrap().err().unwrap();
-        assert_eq!(failure.code, "ADMISSION_UNCONFIRMED");
+        assert_eq!(failure.code, "NETWORK_QUERY_FAILED");
         assert_eq!(failure.details.unwrap()["requestId"], request().request_id);
         assert_ne!(op, op2);
     }

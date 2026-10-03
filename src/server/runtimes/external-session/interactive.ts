@@ -1,3 +1,4 @@
+import { getExternalExecutionTurnId } from './turn-lifecycle';
 import type { InboxTurnMeta } from '../../inbox/types';
 import { imEventBus, type ImEventType } from '../../utils/im-event-bus';
 import { imRequestRegistry } from '../../utils/im-request-registry';
@@ -101,11 +102,16 @@ export function snapshotExternalTurnReplyState(): {
 
 export function deliverExternalWatchError(input: {
   sessionId: string | null | undefined;
+  turnId?: string;
   text: string;
   errorCode: string;
   errorMessage: string;
 }): void {
   if (!input.sessionId) return;
+  const turnId = input.turnId ?? getExternalExecutionTurnId() ?? undefined;
+  const inboxMeta = currentTurnInboxMeta;
+  currentTurnInboxMeta = null;
+  const requestEventIds = inboxMeta ? [inboxMeta.originalMessageId] : undefined;
   const attachmentHintSnapshot = getExternalTurnAttachmentHintsSnapshot();
   const attachmentHints = attachmentHintSnapshot.length > 0
     ? attachmentHintSnapshot
@@ -113,9 +119,11 @@ export function deliverExternalWatchError(input: {
   void import('../../inbox/watch-deliver').then(({ deliverSessionWatchEvents }) =>
     deliverSessionWatchEvents(input.sessionId!, {
       text: input.text,
+      turnId, requestEventIds,
+      terminalStatus: input.errorCode === 'session_aborted' ? 'stopped' : 'error',
       error: { code: input.errorCode, message: input.errorMessage },
       attachmentHints,
-    }),
+    }, inboxMeta ?? undefined),
   ).catch((err) =>
     console.error('[session-watch] external failure watch push failed:', err),
   );
@@ -129,6 +137,7 @@ export function deliverExternalWatchError(input: {
  */
 export function clearExternalInboxMetaOnRejection(input: {
   sessionId: string | null | undefined;
+  turnId?: string;
   errorCode: string;
   errorMessage: string;
 }): void {
@@ -141,6 +150,8 @@ export function clearExternalInboxMetaOnRejection(input: {
   void import('../../inbox/reply-deliver').then(({ deliverInboxReply }) =>
     deliverInboxReply(sid, meta, {
       text: '',
+      turnId: input.turnId,
+      terminalStatus: input.errorCode === 'session_aborted' ? 'stopped' : 'error',
       error: { code: input.errorCode, message: input.errorMessage },
     }),
   ).catch((err) =>

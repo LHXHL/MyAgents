@@ -3,7 +3,7 @@
 //! Sidecar generation, never from query parameters or a remote device.
 use super::{actor::ManagedAgentNetwork, catalog::read_local_catalog, NetworkError};
 use crate::sidecar::ManagedSidecarManager;
-use myagents_agent_network_protocol::{Outcome, SourceRequest, VerifiedCaller};
+use myagents_agent_network_protocol::{SourceRequest, VerifiedCaller};
 use serde::Deserialize;
 use std::time::Instant;
 
@@ -27,7 +27,7 @@ pub(crate) async fn invoke(
     generation: u64,
     input: InvokeRequest,
     queued_at: Instant,
-) -> Result<Outcome, NetworkError> {
+) -> Result<super::calls::CallResult, NetworkError> {
     // Account for the query during original source identity/catalog preparation,
     // not only after it reaches the connector command queue.
     let allocation = owner.reserve_payload(&input.request)?;
@@ -116,4 +116,26 @@ pub(crate) async fn return_event(
     owner
         .return_event(source.product_session_id, input.reference, input.event)
         .await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+pub(crate) struct WatchesRequest {
+    pub sidecar_id: String,
+    pub cancel: Option<String>,
+    #[serde(default)] pub all: bool,
+}
+pub(crate) async fn watches(owner:&ManagedAgentNetwork, manager:&ManagedSidecarManager, generation:u64, input:WatchesRequest) -> Result<serde_json::Value,NetworkError> {
+    if input.all && input.cancel.is_some() { return Err(NetworkError::new("NETWORK_ARGUMENT_INVALID")); }
+    let network_generation=owner.generation();
+    let source=manager.lock().map_err(|_|NetworkError::new("SOURCE_OWNER_UNAVAILABLE"))?
+        .resolve_session_process_source(&input.sidecar_id,generation)
+        .ok_or_else(||NetworkError::new("SOURCE_SESSION_REQUIRED"))?;
+    let mut result=owner.watches(source.product_session_id.clone(),input.cancel.clone(),input.all,network_generation).await?;
+    let local=crate::inbox::watch::manage_local_watches(manager,&source.product_session_id,input.cancel.as_deref(),input.all).await?;
+    result["watches"].as_array_mut().expect("owner projection").extend(local);
+    if !manager.lock().map_err(|_|NetworkError::new("SOURCE_OWNER_UNAVAILABLE"))?.is_live_process(&input.sidecar_id,generation) {
+        return Err(NetworkError::new("SOURCE_GENERATION_CHANGED"));
+    }
+    Ok(result)
 }

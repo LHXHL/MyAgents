@@ -1455,7 +1455,7 @@ async function routeAdminApi(
 ): Promise<Record<string, unknown>> {
   // Strip the prefix for matching
   const route = pathname.replace('/api/admin/', '');
-  if (['agent/show', 'session/list', 'session/get', 'session/start', 'session/send', 'session/watch'].includes(route)) {
+  if (['agent/show', 'session/list', 'session/get', 'session/start', 'session/send', 'session/watch', 'session/state'].includes(route)) {
     const { routeNetworkRequest } = await import('./agent-network/source');
     const networkResult = await routeNetworkRequest(route, payload,
       caller.kind === 'external-cli' ? 'external-cli' : 'internal-session', signal);
@@ -2070,6 +2070,35 @@ async function routeAdminApi(
           error: result.response.error?.message ?? 'delivery failed',
           code: result.response.error?.code,
         };
+  }
+  if (route === 'session/state') {
+    try {
+      const { readSessionActivity } = await import('./session-observation');
+      if (typeof payload.sessionId !== 'string' || !payload.sessionId) return { success: false, code: 'ARGUMENT_INVALID', error: 'sessionId required' };
+      return { success: true, session: await readSessionActivity(payload.sessionId) };
+    } catch { return { success: false, code: 'SESSION_STATE_UNAVAILABLE', error: 'Session state could not be read; retry the query.' }; }
+  }
+  if (route === 'session/watches' || route === 'session/unwatch') {
+    if (caller.kind === 'external-cli') return { success: false, code: 'EXTERNAL_CLI_CAPABILITY_NOT_OPEN', error: 'A real caller Session is required.' };
+    const cancel = route === 'session/unwatch' && typeof payload.watchId === 'string' ? payload.watchId : undefined;
+    const all = route === 'session/unwatch' && payload.all === true;
+    if (Object.keys(payload).some(key => !['watchId', 'all'].includes(key)) || route === 'session/unwatch' && (all === !!cancel)) {
+      return { success: false, code: 'ARGUMENT_INVALID', error: 'Choose one watchId or explicit --all.' };
+    }
+    const { managementApi } = await import('./utils/management-api-client');
+    const result = await managementApi('/api/agent-network/watches', 'POST', {
+      sidecarId: process.env.MYAGENTS_SIDECAR_ID, ...(cancel ? { cancel } : {}), all,
+    }, { timeoutMs: 22_000 });
+    return result.ok === true ? { success: true, ...(result.result as Record<string, unknown>) }
+      : { success: false, code: (result.error as { code?: string })?.code ?? 'WATCH_OWNER_UNAVAILABLE', error: 'Observation owner unavailable; retry the query.' };
+  }
+  if (route === 'agent/network-diagnose') {
+    const { managementApi } = await import('./utils/management-api-client');
+    const result = await managementApi('/api/agent-network/diagnose', 'POST', {
+      sidecarId: process.env.MYAGENTS_SIDECAR_ID, cursor: payload.cursor ?? null, limit: payload.limit ?? 100,
+    }, { timeoutMs: 38_000 });
+    return result.ok === true ? { success: true, data: result.data }
+      : { success: false, code: 'NETWORK_DIAGNOSTIC_UNAVAILABLE', error: 'Network diagnostics unavailable.' };
   }
   if (route === 'session/watch') {
     const { handleAdminSessionWatch } = await import('./inbox/watch-handler');
@@ -11666,7 +11695,12 @@ description: >
             sessionId: string;
             limit?: number;
             before?: string;
+            projection?: 'text' | 'activity';
           };
+          if (input.projection === 'activity') {
+            const { readLocalSessionActivity } = await import('./session-observation');
+            return jsonResponse(readLocalSessionActivity(input.sessionId));
+          }
           const { readLocalSessionTextPage } = await import(
             './session-text-projection'
           );
