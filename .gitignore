@@ -128,3 +128,6 @@ myagents_files/
 # Complete Cuse Skill+CLI fetched for the current build target
 /bundled-skills/cuse/
 /bundled-skills/.cuse-prepare-*/
+
+# Local design playgrounds (HTML prototypes, previews), review only
+/playground/
