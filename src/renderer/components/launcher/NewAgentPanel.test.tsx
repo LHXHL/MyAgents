@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   toastError: vi.fn(),
   track: vi.fn(),
   existingPaths: new Set<string>(),
+  updateUserTemplate: vi.fn(),
 }));
 
 vi.mock('@/hooks/useConfig', () => ({
@@ -33,7 +34,7 @@ vi.mock('@/config/services/templateService', () => ({
   loadUserTemplates: async () => mocks.userTemplates,
   addUserTemplate: vi.fn(),
   removeUserTemplate: vi.fn(),
-  updateUserTemplate: vi.fn(),
+  updateUserTemplate: mocks.updateUserTemplate,
 }));
 vi.mock('@/hooks/useWorkspaceFileService', () => ({
   useWorkspaceFileService: () => ({ checkPaths: mocks.checkPaths, openPathExternal: mocks.openPathExternal }),
@@ -74,6 +75,7 @@ beforeEach(() => {
   mocks.openPathExternal.mockReset();
   mocks.toastError.mockReset();
   mocks.track.mockReset();
+  mocks.updateUserTemplate.mockReset().mockResolvedValue(undefined);
 });
 
 describe('NewAgentPanel list', () => {
@@ -328,5 +330,50 @@ describe('NewAgentPanel user template', () => {
       templateSource: 'user',
       agentDefaults: undefined,
     });
+  });
+});
+
+describe('NewAgentPanel template editing page', () => {
+  async function openTemplate() {
+    mocks.userTemplates = [{ id: 'tftpboot', name: 'tftpboot', description: '', isBuiltin: false, path: '/t/tftpboot', icon: '' }];
+    const handlers = renderPanel();
+    fireEvent.click(await screen.findByRole('button', { name: /tftpboot/ }));
+    await screen.findByRole('textbox', { name: tl('newAgentPanel.nameLabel') });
+    return handlers;
+  }
+
+  it('opens as its own page from "add description" and saves back to the detail page', async () => {
+    await openTemplate();
+    fireEvent.click(screen.getByRole('button', { name: tl('newAgentPanel.template.addDescription') }));
+
+    expect(await screen.findByText(tl('newAgentPanel.template.editTitle'))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: tl('newAgentPanel.create') })).not.toBeInTheDocument();
+    const description = screen.getByPlaceholderText(tl('newAgentPanel.template.descriptionPlaceholder'));
+    expect(screen.getByPlaceholderText(tl('newAgentPanel.template.namePlaceholder'))).toHaveValue('tftpboot');
+
+    fireEvent.change(description, { target: { value: '  TFTP 启动服务  ' } });
+    fireEvent.click(screen.getByRole('button', { name: tl('newAgentPanel.template.save') }));
+
+    await waitFor(() => expect(mocks.updateUserTemplate).toHaveBeenCalledWith('tftpboot', {
+      name: 'tftpboot',
+      description: 'TFTP 启动服务',
+      icon: '',
+    }));
+    expect(await screen.findByText('TFTP 启动服务')).toBeInTheDocument();
+    expect(createButton()).toBeInTheDocument();
+  });
+
+  it('opens from the more menu, blocks an empty name, and returns on Escape', async () => {
+    await openTemplate();
+    fireEvent.click(screen.getByRole('button', { name: tl('newAgentPanel.template.more') }));
+    fireEvent.click(await screen.findByRole('button', { name: tl('newAgentPanel.template.edit') }));
+
+    const name = await screen.findByPlaceholderText(tl('newAgentPanel.template.namePlaceholder'));
+    fireEvent.change(name, { target: { value: '  ' } });
+    expect(screen.getByRole('button', { name: tl('newAgentPanel.template.save') })).toBeDisabled();
+
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(await screen.findByRole('button', { name: tl('newAgentPanel.create') })).toBeInTheDocument();
+    expect(mocks.updateUserTemplate).not.toHaveBeenCalled();
   });
 });

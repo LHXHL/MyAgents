@@ -75,7 +75,7 @@ type Draft =
 
 type Page = { view: 'list' } | { view: 'detail'; draft: Draft };
 
-type Busy = 'picking' | 'creating' | 'adding-template' | null;
+type Busy = 'picking' | 'creating' | 'adding-template' | 'saving-template' | null;
 
 interface TemplateEdit {
   name: string;
@@ -437,23 +437,29 @@ export default memo(function NewAgentPanel({ onClose, onCreated }: NewAgentPanel
     }
   }, [busy, t]);
 
+  const endTemplateEdit = useCallback(() => {
+    setPageEnter('back');
+    setTemplateEdit(null);
+    setTemplateIconPickerOpen(false);
+  }, []);
+
   const handleSaveTemplateEdit = useCallback(async () => {
-    if (!template || template.isBuiltin || !templateEdit) return;
-    const updates = {
-      name: templateEdit.name.trim() || template.name,
-      description: templateEdit.description,
-      icon: templateEdit.icon,
-    };
+    if (!template || template.isBuiltin || !templateEdit || busy) return;
+    const name = templateEdit.name.trim();
+    if (!name) return;
+    const updates = { name, description: templateEdit.description.trim(), icon: templateEdit.icon };
+    setBusy('saving-template');
     try {
       await updateUserTemplate(template.id, updates);
       if (!mountedRef.current) return;
       setUserTemplates((current) => current.map((item) => (item.id === template.id ? { ...item, ...updates } : item)));
-      setTemplateEdit(null);
-      setTemplateIconPickerOpen(false);
+      endTemplateEdit();
     } catch (err) {
       toastRef.current.error(t('newAgentPanel.errors.updateTemplateFailed', { message: errorMessage(err) }));
+    } finally {
+      if (mountedRef.current) setBusy(null);
     }
-  }, [t, template, templateEdit]);
+  }, [busy, endTemplateEdit, t, template, templateEdit]);
 
   const handleConfirmDeleteTemplate = useCallback(async () => {
     const target = templateToDelete;
@@ -482,6 +488,7 @@ export default memo(function NewAgentPanel({ onClose, onCreated }: NewAgentPanel
   const startTemplateEdit = useCallback(() => {
     if (!template || template.isBuiltin) return;
     setMoreMenuOpen(false);
+    setPageEnter('forward');
     setTemplateEdit({ name: template.name, description: template.description ?? '', icon: template.icon ?? '' });
   }, [template]);
 
@@ -495,14 +502,14 @@ export default memo(function NewAgentPanel({ onClose, onCreated }: NewAgentPanel
     // Child layers (popovers, path / confirm dialogs) own their own Escape.
     if (pathDialog || templateToDelete || iconPickerOpen || moreMenuOpen || templateIconPickerOpen) return;
     event.preventDefault();
-    if (busy === 'creating') return;
+    if (busy === 'creating' || busy === 'saving-template') return;
     if (templateEdit) {
-      setTemplateEdit(null);
+      endTemplateEdit();
       return;
     }
     if (page.view === 'detail') goBack();
     else onClose();
-  }, [busy, goBack, iconPickerOpen, moreMenuOpen, onClose, page.view, pathDialog, templateEdit, templateIconPickerOpen, templateToDelete]);
+  }, [busy, endTemplateEdit, goBack, iconPickerOpen, moreMenuOpen, onClose, page.view, pathDialog, templateEdit, templateIconPickerOpen, templateToDelete]);
 
   // Child layers close themselves on the same keydown; the latest committed
   // handler still sees them open and yields, so one Escape closes one layer.
@@ -519,7 +526,10 @@ export default memo(function NewAgentPanel({ onClose, onCreated }: NewAgentPanel
   // ---------- render ----------
 
   const creating = busy === 'creating';
-  const pageKey = page.view === 'detail' ? `detail:${page.draft.kind}:${page.draft.kind === 'local' ? 'local' : page.draft.templateId}` : 'list';
+  const editingTemplate = templateEdit && template && !template.isBuiltin ? template : null;
+  const pageKey = page.view === 'detail'
+    ? `detail:${page.draft.kind}:${page.draft.kind === 'local' ? 'local' : page.draft.templateId}${editingTemplate ? ':edit' : ''}`
+    : 'list';
 
   return (
     <OverlayBackdrop onClose={creating ? undefined : onClose} className="z-[250] px-4" portal>
@@ -539,6 +549,18 @@ export default memo(function NewAgentPanel({ onClose, onCreated }: NewAgentPanel
               onOpenLocal={handleOpenLocal}
               onOpenTemplate={handleOpenTemplate}
               onAddTemplate={handleAddTemplate}
+            />
+          ) : editingTemplate && templateEdit ? (
+            <TemplateEditPage
+              edit={templateEdit}
+              saving={busy === 'saving-template'}
+              iconRef={templateIconRef}
+              iconPickerOpen={templateIconPickerOpen}
+              onIconPickerOpenChange={setTemplateIconPickerOpen}
+              onChange={setTemplateEdit}
+              onSave={() => void handleSaveTemplateEdit()}
+              onBack={endTemplateEdit}
+              onClose={onClose}
             />
           ) : (
             <>
@@ -675,27 +697,12 @@ export default memo(function NewAgentPanel({ onClose, onCreated }: NewAgentPanel
                   </div>
                 </div>
 
-                {templateEdit && template && !template.isBuiltin ? (
-                  <TemplateEditCard
-                    edit={templateEdit}
-                    iconRef={templateIconRef}
-                    iconPickerOpen={templateIconPickerOpen}
-                    onIconPickerOpenChange={setTemplateIconPickerOpen}
-                    onChange={setTemplateEdit}
-                    onSave={handleSaveTemplateEdit}
-                    onCancel={() => {
-                      setTemplateEdit(null);
-                      setTemplateIconPickerOpen(false);
-                    }}
-                  />
-                ) : (
-                  <DetailIntro
-                    draft={page.draft}
-                    template={template}
-                    detected={detected}
-                    onAddDescription={startTemplateEdit}
-                  />
-                )}
+                <DetailIntro
+                  draft={page.draft}
+                  template={template}
+                  detected={detected}
+                  onAddDescription={startTemplateEdit}
+                />
               </div>
 
               {/* Footer */}
@@ -1072,88 +1079,132 @@ function DetailIntro({
   );
 }
 
-function TemplateEditCard({
+/** Third page of the dialog: edits the user template itself, not the Agent being created. */
+function TemplateEditPage({
   edit,
+  saving,
   iconRef,
   iconPickerOpen,
   onIconPickerOpenChange,
   onChange,
   onSave,
-  onCancel,
+  onBack,
+  onClose,
 }: {
   edit: TemplateEdit;
+  saving: boolean;
   iconRef: React.RefObject<HTMLButtonElement | null>;
   iconPickerOpen: boolean;
   onIconPickerOpenChange: (open: boolean) => void;
   onChange: (edit: TemplateEdit) => void;
   onSave: () => void;
-  onCancel: () => void;
+  onBack: () => void;
+  onClose: () => void;
 }) {
   const { t } = useTranslation('launcher');
-  const inputClass = 'w-full rounded-lg border border-[var(--line-strong)] bg-[var(--paper-elevated)] px-3 py-2 text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-subtle)] focus:border-[var(--accent)]';
+  const canSave = edit.name.trim().length > 0 && !saving;
+  const headerButtonClass = 'flex h-8 w-8 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:opacity-50';
   return (
-    <div className="mt-5 rounded-xl border border-[var(--line)] bg-[var(--paper)] p-4" data-new-agent-panel-template-edit>
-      <div className="flex items-start gap-3">
-        <button
-          ref={iconRef}
-          type="button"
-          onClick={() => onIconPickerOpenChange(!iconPickerOpen)}
-          aria-label={t('newAgentPanel.template.changeIcon')}
-          title={t('newAgentPanel.template.changeIcon')}
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] hover:border-[var(--line-strong)]"
-        >
-          <WorkspaceIcon icon={edit.icon || undefined} size={24} />
+    <>
+      <div className="flex shrink-0 items-center gap-1 py-3 pl-3 pr-3">
+        <button type="button" onClick={onBack} disabled={saving} aria-label={t('newAgentPanel.back')} className={headerButtonClass}>
+          <ChevronLeftIcon className="h-4 w-4" />
         </button>
-        <Popover
-          open={iconPickerOpen}
-          onClose={() => onIconPickerOpenChange(false)}
-          anchorRef={iconRef}
-          placement="bottom-start"
-          offset={6}
-          unstyled
-          className={`rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] shadow-lg ${WORKSPACE_ICON_GRID_PANEL_CLASS}`}
-        >
-          <WorkspaceIconGrid
-            value={edit.icon || undefined}
-            onSelect={(icon) => {
-              onChange({ ...edit, icon });
-              onIconPickerOpenChange(false);
-            }}
-          />
-        </Popover>
-        <div className="min-w-0 flex-1 space-y-2">
-          <input
-            className={inputClass}
-            value={edit.name}
-            onChange={(event) => onChange({ ...edit, name: event.target.value })}
-            aria-label={t('newAgentPanel.template.nameLabel')}
-            placeholder={t('newAgentPanel.template.nameLabel')}
-          />
-          <textarea
-            className={`${inputClass} min-h-[64px] resize-none`}
-            value={edit.description}
-            onChange={(event) => onChange({ ...edit, description: event.target.value })}
-            aria-label={t('newAgentPanel.template.descriptionLabel')}
-            placeholder={t('newAgentPanel.template.descriptionPlaceholder')}
-          />
-        </div>
+        <h2 className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--ink-muted)]">{t('newAgentPanel.template.editTitle')}</h2>
+        <button type="button" onClick={onClose} disabled={saving} aria-label={t('newAgentPanel.close')} className={headerButtonClass}>
+          <CloseIcon className="h-4 w-4" />
+        </button>
       </div>
-      <div className="mt-3 flex justify-end gap-2">
+
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 pb-5 pt-1" data-new-agent-panel-template-edit>
+        <div className="flex items-center gap-4">
+          <button
+            ref={iconRef}
+            type="button"
+            onClick={() => onIconPickerOpenChange(!iconPickerOpen)}
+            disabled={saving}
+            aria-label={t('newAgentPanel.template.changeIcon')}
+            title={t('newAgentPanel.template.changeIcon')}
+            className="relative flex h-[76px] w-[76px] shrink-0 items-center justify-center rounded-2xl border border-[var(--line)] bg-[var(--paper)] transition-colors hover:border-[var(--line-strong)]"
+          >
+            <WorkspaceIcon icon={edit.icon || undefined} size={44} />
+            <span className="absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full border border-[var(--line-strong)] bg-[var(--paper-elevated)] text-[var(--ink-muted)] shadow-sm">
+              <EditIcon className="h-3 w-3" />
+            </span>
+          </button>
+          <Popover
+            open={iconPickerOpen}
+            onClose={() => onIconPickerOpenChange(false)}
+            anchorRef={iconRef}
+            placement="bottom-start"
+            offset={6}
+            unstyled
+            className={`rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] shadow-lg ${WORKSPACE_ICON_GRID_PANEL_CLASS}`}
+          >
+            <WorkspaceIconGrid
+              value={edit.icon || undefined}
+              onSelect={(icon) => {
+                onChange({ ...edit, icon });
+                onIconPickerOpenChange(false);
+              }}
+            />
+          </Popover>
+          <label className="min-w-0 flex-1">
+            <span className="mb-1.5 block text-xs font-medium text-[var(--ink-muted)]">{t('newAgentPanel.template.nameLabel')}</span>
+            <input
+              type="text"
+              autoFocus
+              value={edit.name}
+              disabled={saving}
+              onChange={(event) => onChange({ ...edit, name: event.target.value })}
+              onKeyDown={(event) => {
+                if (isImeComposingEvent(event)) return;
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  if (canSave) onSave();
+                }
+              }}
+              placeholder={t('newAgentPanel.template.namePlaceholder')}
+              spellCheck={false}
+              className="h-[42px] w-full rounded-[10px] border border-[var(--line-strong)] bg-[var(--paper)] px-3 text-base font-semibold text-[var(--ink)] outline-none transition-colors placeholder:font-normal placeholder:text-[var(--ink-subtle)] hover:border-[var(--ink-subtle)] focus:border-[var(--accent)] focus:bg-[var(--paper-elevated)] focus:ring-[3px] focus:ring-[var(--accent-warm-subtle)]"
+            />
+          </label>
+        </div>
+
+        <label className="mt-6 block">
+          <span className="mb-1.5 block text-xs font-medium text-[var(--ink-muted)]">{t('newAgentPanel.template.descriptionLabel')}</span>
+          <textarea
+            value={edit.description}
+            disabled={saving}
+            onChange={(event) => onChange({ ...edit, description: event.target.value })}
+            placeholder={t('newAgentPanel.template.descriptionPlaceholder')}
+            rows={4}
+            className="w-full resize-none rounded-[10px] border border-[var(--line-strong)] bg-[var(--paper)] px-3 py-2.5 text-sm leading-relaxed text-[var(--ink)] outline-none transition-colors placeholder:text-[var(--ink-subtle)] hover:border-[var(--ink-subtle)] focus:border-[var(--accent)] focus:bg-[var(--paper-elevated)] focus:ring-[3px] focus:ring-[var(--accent-warm-subtle)]"
+          />
+          <span className="mt-1.5 block text-xs text-[var(--ink-subtle)]">{t('newAgentPanel.template.descriptionHint')}</span>
+        </label>
+      </div>
+
+      <div className="flex shrink-0 items-center gap-3 border-t border-[var(--line)] px-6 py-4">
+        <span className="min-w-0 flex-1 text-xs text-[var(--ink-subtle)]">{t('newAgentPanel.template.editHint')}</span>
         <button
           type="button"
-          onClick={onCancel}
-          className="rounded-lg px-3 py-1.5 text-sm text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+          onClick={onBack}
+          disabled={saving}
+          className="shrink-0 rounded-full px-4 py-2.5 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:opacity-50"
         >
           {t('newAgentPanel.template.cancel')}
         </button>
         <button
           type="button"
           onClick={onSave}
-          className="rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-primary-text)] hover:bg-[var(--button-primary-bg-hover)]"
+          disabled={!canSave}
+          className="flex shrink-0 items-center gap-1.5 rounded-full bg-[var(--button-primary-bg)] px-5 py-2.5 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
         >
+          {saving && <LoaderIcon className="h-3.5 w-3.5 animate-spin" />}
           {t('newAgentPanel.template.save')}
         </button>
       </div>
-    </div>
+    </>
   );
 }
