@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildHeightEstimateSeed,
+  buildMessageLayoutFingerprint,
   estimateMessageRowHeight,
   type RowLayoutContract,
 } from './chatRowLayout';
@@ -90,5 +91,25 @@ describe('chatRowLayout', () => {
     );
 
     expect(buildHeightEstimateSeed(messages, layout)).toHaveLength(messages.length);
+  });
+
+  it('scans an unchanged message row once across streaming commits (#634)', () => {
+    let contentReads = 0;
+    const history = message({ id: 'a1', role: 'assistant', content: [] });
+    const blocks = [{ type: 'text' as const, text: 'x\n'.repeat(50_000) }];
+    Object.defineProperty(history, 'content', {
+      get: () => { contentReads += 1; return blocks; },
+    });
+
+    const first = buildMessageLayoutFingerprint(history, 900);
+    const estimate = estimateMessageRowHeight(history, 900);
+    const readsAfterFirstCommit = contentReads;
+    expect(buildMessageLayoutFingerprint(history, 900)).toBe(first);
+    expect(estimateMessageRowHeight(history, 900)).toBe(estimate);
+    expect(contentReads).toBe(readsAfterFirstCommit);
+
+    // Viewport changes are real layout inputs and recompute.
+    buildMessageLayoutFingerprint(history, 400);
+    expect(contentReads).toBeGreaterThan(readsAfterFirstCommit);
   });
 });

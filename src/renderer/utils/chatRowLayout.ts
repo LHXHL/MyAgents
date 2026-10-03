@@ -158,7 +158,7 @@ function userCollapseThreshold(viewportHeight: number): number {
   return Math.max(320, viewportHeight * USER_COLLAPSE_VIEWPORT_RATIO);
 }
 
-export function estimateMessageRowHeight(message: MessageType, viewportHeight: number): RowLayoutContract {
+function computeMessageRowHeight(message: MessageType, viewportHeight: number): RowLayoutContract {
   const safeViewportHeight = Number.isFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : 800;
   const attachmentHeight = estimateAttachmentHeight(message);
 
@@ -238,13 +238,42 @@ function blockFingerprint(block: ContentBlock): string {
   ].join(':');
 }
 
-export function buildMessageLayoutFingerprint(message: MessageType, viewportHeight: number): string {
+function computeMessageLayoutFingerprint(message: MessageType, viewportHeight: number): string {
   const viewportBucket = bucket(userCollapseThreshold(viewportHeight), 80);
   const attachmentPart = `${message.attachments?.length ?? 0}:${message.attachments?.filter(a => a.isImage || a.mimeType.startsWith('image/')).length ?? 0}`;
   if (typeof message.content === 'string') {
     return `${message.id}|${message.role}|${viewportBucket}|${attachmentPart}|${textFingerprint(message.content)}|${message.streamingTextActive ? 1 : 0}`;
   }
   return `${message.id}|${message.role}|${viewportBucket}|${attachmentPart}|${message.content.map(blockFingerprint).join('|')}`;
+}
+
+// Messages are immutable row values: an update replaces the object. The scroll
+// model recomputes every row on each streaming commit, so without per-identity
+// caching each commit rescanned the text of the whole session (#634); now only
+// the replaced (streaming) row is scanned.
+interface ViewportScopedValue<T> { viewportHeight: number; value: T }
+const fingerprintCache = new WeakMap<MessageType, ViewportScopedValue<string>>();
+const rowHeightCache = new WeakMap<MessageType, ViewportScopedValue<RowLayoutContract>>();
+
+function cachedPerMessage<T>(
+  cache: WeakMap<MessageType, ViewportScopedValue<T>>,
+  message: MessageType,
+  viewportHeight: number,
+  compute: (message: MessageType, viewportHeight: number) => T,
+): T {
+  const cached = cache.get(message);
+  if (cached && Object.is(cached.viewportHeight, viewportHeight)) return cached.value;
+  const value = compute(message, viewportHeight);
+  cache.set(message, { viewportHeight, value });
+  return value;
+}
+
+export function buildMessageLayoutFingerprint(message: MessageType, viewportHeight: number): string {
+  return cachedPerMessage(fingerprintCache, message, viewportHeight, computeMessageLayoutFingerprint);
+}
+
+export function estimateMessageRowHeight(message: MessageType, viewportHeight: number): RowLayoutContract {
+  return cachedPerMessage(rowHeightCache, message, viewportHeight, computeMessageRowHeight);
 }
 
 export function buildHeightEstimateSeed(messages: readonly MessageType[], layoutByMessageId: ReadonlyMap<string, RowLayoutContract>): number[] {
