@@ -42,6 +42,8 @@ Session label 继续表示会话标题/原摘要。来源回执和异步事件�
 
 闭合 schema、限定 selector 和预算由中立协议包定义；当前源码位置、跨仓库分发与已约定的后续调整见下文“公共协议与仓库分发”。
 
+Resolve 响应先经固定包的 `metadata-callableAgent` schema 校验，再由 Rust `CallableAgent` 严格解析；两层都接受可选、可空的图标名称，缺省兼容旧响应。图标不参与 peer identity 或调用授权。调用测试使用真实 JSON 依次经过这两层再交给 `Calls::resolved`，避免只构造 Rust struct 而漏掉协议字段与接收类型的漂移；未知字段和非法图标类型/长度仍被拒绝。
+
 `memory.rs::MemoryBudget` 是 App 级非阻塞字节分配，覆盖准备/排队的请求与回调、并行 owner 读取、未消费 Work 结果、TLS 编码、组装和解码。分配随实际字节增长，RAII 随取消、失败和 owner 交接释放；不能给每个小读取预占最大历史页。流控 credit 与业务接纳是不同事实。紧凑去重不保留读取正文，容量拒绝属于当前请求，不应断开其它 Agent 的正常连接。协议逻辑预算不能代替真实进程 RSS/平台缓冲容量测试。
 
 ## 目录、@ 与 query 生命周期

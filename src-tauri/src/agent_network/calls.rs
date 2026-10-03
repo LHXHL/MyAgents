@@ -18,6 +18,9 @@ pub(crate) struct CallableAgent {
     pub mount_id: String,
     pub local_agent_id: String,
     pub name: String,
+    // Presentation metadata remains accepted by the strict resolve DTO, not peer identity.
+    #[serde(default)]
+    pub icon: Option<String>,
     pub description: Option<String>,
     pub device_id: String,
     pub device_name: String,
@@ -595,34 +598,53 @@ mod tests {
         "requestId":"00000000-0000-0000-0000-000000000005","operation":{"method":"agent.show","params":{}}
     })).unwrap()
     }
-    fn metadata() -> CallableAgent {
-        CallableAgent {
-            mount_id: "00000000-0000-0000-0000-000000000004".into(),
-            local_agent_id: "target-agent".into(),
-            name: "Agent".into(),
-            description: None,
-            device_id: "00000000-0000-0000-0000-000000000006".into(),
-            device_name: "Other device".into(),
-            platform: "windows".into(),
-            membership_revision: 1,
-            enable_revision: 1,
-            selector: request().selector,
-            is_local: false,
-            source: AgentReferenceScope {
-                service_id: local().service_id,
-                network_id: local().network_id,
+    fn metadata_json() -> serde_json::Value {
+        json!({
+            "mountId": "00000000-0000-0000-0000-000000000004",
+            "localAgentId": "target-agent",
+            "name": "Agent",
+            "icon": "lightning",
+            "description": null,
+            "deviceId": "00000000-0000-0000-0000-000000000006",
+            "deviceName": "Other device",
+            "platform": "windows",
+            "membershipRevision": 1,
+            "enableRevision": 1,
+            "selector": request().selector,
+            "isLocal": false,
+            "source": {
+                "serviceId": local().service_id,
+                "networkId": local().network_id,
             },
-            connection_epoch: "00000000-0000-0000-0000-000000000007".into(),
-            key_generation: 1,
-            signed_binding: Some("test-binding".into()),
-        }
+            "connectionEpoch": "00000000-0000-0000-0000-000000000007",
+            "keyGeneration": 1,
+            "signedBinding": "test-binding",
+        })
+    }
+    fn decode_metadata(value: serde_json::Value) -> CallableAgent {
+        // Exercise both transport schema validation and the actor's actual decode.
+        myagents_agent_network_protocol::validate_metadata(
+            myagents_agent_network_protocol::MetadataKind::CallableAgent,
+            &value,
+        )
+        .unwrap();
+        serde_json::from_value(value).expect("schema-valid callable metadata must decode")
+    }
+    fn metadata() -> CallableAgent {
+        decode_metadata(metadata_json())
     }
     fn pending(calls: &mut Calls) -> (String, oneshot::Receiver<Result<CallResult, NetworkError>>) {
+        pending_request(calls, request())
+    }
+    fn pending_request(
+        calls: &mut Calls,
+        request: SourceRequest,
+    ) -> (String, oneshot::Receiver<Result<CallResult, NetworkError>>) {
         let (reply, response) = oneshot::channel();
         let mut reply = Some(reply);
         let op = calls
             .insert(
-                request(),
+                request,
                 VerifiedCaller::External {
                     label: "External CLI".into(),
                 },
@@ -641,6 +663,72 @@ mod tests {
             channel_id: "channel".into(),
             control_id: "control".into(),
         };
+    }
+    #[test]
+    fn callable_metadata_icon_shapes_preserve_rpc_resolution() {
+        for icon in [
+            None,
+            Some(json!(null)),
+            Some(json!("lightning")),
+            Some(json!("future-icon")),
+        ] {
+            let mut value = metadata_json();
+            if let Some(icon) = &icon {
+                value["icon"] = icon.clone();
+            } else {
+                value.as_object_mut().unwrap().remove("icon");
+            }
+            let target = decode_metadata(value);
+            assert_eq!(
+                target.icon,
+                icon.and_then(|value| value.as_str().map(str::to_owned))
+            );
+            let peer = target.peer(&local());
+            for (method, params) in [
+                ("agent.show", json!({})),
+                ("session.list", json!({"limit": 5})),
+            ] {
+                let request = SourceRequest::parse(json!({
+                    "selector": request().selector,
+                    "requestId": request().request_id,
+                    "operation": {"method": method, "params": params},
+                }))
+                .unwrap();
+                let mut calls = Calls::default();
+                let (op, _reply) = pending_request(&mut calls, request);
+                calls.resolved(&op, target.clone(), &local()).unwrap();
+                assert!(peer == metadata().peer(&local()));
+                assert_eq!(
+                    calls.calls[&op].target.as_ref().unwrap().local_agent_id,
+                    "target-agent"
+                );
+            }
+        }
+    }
+    #[test]
+    fn callable_metadata_keeps_protocol_and_decode_strict() {
+        let mut unknown_field = metadata_json();
+        unknown_field["unexpected"] = json!(true);
+        assert!(myagents_agent_network_protocol::validate_metadata(
+            myagents_agent_network_protocol::MetadataKind::CallableAgent,
+            &unknown_field,
+        )
+        .is_err());
+        assert!(serde_json::from_value::<CallableAgent>(unknown_field).is_err());
+
+        for invalid_icon in [
+            json!("x".repeat(257)),
+            json!(42),
+            json!({"name": "lightning"}),
+        ] {
+            let mut value = metadata_json();
+            value["icon"] = invalid_icon;
+            assert!(myagents_agent_network_protocol::validate_metadata(
+                myagents_agent_network_protocol::MetadataKind::CallableAgent,
+                &value,
+            )
+            .is_err());
+        }
     }
     #[test]
     fn prepared_receipt_binds_all_identities_and_never_sends_twice() {
