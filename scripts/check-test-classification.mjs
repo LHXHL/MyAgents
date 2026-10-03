@@ -13,6 +13,9 @@ const ALLOWED_SUFFIXES = [
   '.credentialed.test.ts',
 ];
 const CHILD_PROCESS_ALLOWLIST = new Set([
+  // On Windows, runs process.execPath only to enumerate the sealed child's env
+  // names. This catches OS-level case folding without secrets or network I/O.
+  'src/server/integrated-runtimes/dsh/child-environment.unit.test.ts',
   // Kills an IPC-only synthetic transcript writer at real file publication
   // boundaries. The child receives only a temporary directory and stage name.
   'src/server/session-transcript/process.integration.test.ts',
