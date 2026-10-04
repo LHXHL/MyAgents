@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CheckIcon, InfoIcon, LockIcon } from "@/components/icons";
+import { InfoIcon, LockIcon } from "@/components/icons";
 import { metadataSchemas } from "@myagents/agent-network-protocol";
 import {
   spaceGetSession,
@@ -22,6 +22,8 @@ import ConfirmDialog from "@/components/ConfirmDialog";
 import { getDeviceId, preloadDeviceId } from "@/identity/deviceIdentity";
 import { useToastOptional } from "@/components/Toast";
 import { copyPlainText } from "@/utils/clipboard";
+import { openExternal } from "@/utils/openExternal";
+import agentNetworkBanner from "@/assets/onboarding/agent-network-banner.jpg";
 import { DeviceCard } from "@/features/agent-network/DeviceCard";
 import { DeviceDetails } from "@/features/agent-network/DeviceDetails";
 import type { DeviceCatalog } from "@/features/agent-network/deviceDisplay";
@@ -283,15 +285,12 @@ function AgentNetworkContent({
         : 0),
     0,
   );
-  // The guide only states facts already read: it stays hidden while unknown.
-  const setupStep =
-    loading || loadError || snapshot.state !== "ready"
-      ? null
-      : !joinedDevices.some((device) => device.deviceId === localId)
-        ? 1
-        : catalogsKnown && openAgents === 0
-          ? 2
-          : null;
+  // First-use onboarding follows this device's membership, never remote catalogs.
+  const showSetup =
+    !loading &&
+    !loadError &&
+    snapshot.state === "ready" &&
+    devices.find((device) => device.deviceId === localId)?.joined === false;
   const selectedDevice = devices.find((device) => device.deviceId === selected);
   const card = (device: NetworkDevice) => (
     <DeviceCard
@@ -394,7 +393,29 @@ function AgentNetworkContent({
             )}
           </p>
         )}
-        {setupStep !== null && <SetupGuide step={setupStep} />}
+        {showSetup && (
+          <>
+            <button
+              type="button"
+              aria-label={t("agentNetwork.learnMore")}
+              onClick={() => {
+                void openExternal(
+                  "https://myagents.io/blog/private-agent-network",
+                );
+              }}
+              className="mb-4 block w-full overflow-hidden rounded-xl transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--paper)]"
+            >
+              <img
+                src={agentNetworkBanner}
+                width={1980}
+                height={396}
+                alt=""
+                className="block h-auto w-full"
+              />
+            </button>
+            <SetupGuide />
+          </>
+        )}
         {loading && devices.length === 0 && snapshot.state === "ready" ? (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             {[0, 1].map((index) => (
@@ -488,13 +509,12 @@ function AgentNetworkContent({
 }
 
 /** First-use path from the product story: join, open workspaces, then just talk. */
-function SetupGuide({ step }: { step: 1 | 2 }) {
+function SetupGuide() {
   const { t } = useTranslation("app");
   return (
     <ol className="mb-7 grid grid-cols-1 overflow-hidden rounded-xl border border-[var(--line-subtle)] bg-[var(--paper-elevated)] md:grid-cols-3">
       {([1, 2, 3] as const).map((index) => {
-        const done = index < step;
-        const current = index === step;
+        const current = index === 1;
         return (
           <li
             key={index}
@@ -503,19 +523,15 @@ function SetupGuide({ step }: { step: 1 | 2 }) {
           >
             <span
               className={`flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full border text-xs ${
-                done
-                  ? "border-[var(--success)] bg-[var(--success)] text-[var(--on-success)]"
-                  : current
-                    ? "border-[var(--accent)] text-[var(--accent)]"
-                    : "border-[var(--line-strong)] text-[var(--ink-muted)]"
+                current
+                  ? "border-[var(--accent)] text-[var(--accent)]"
+                  : "border-[var(--line-strong)] text-[var(--ink-muted)]"
               }`}
             >
-              {done ? <CheckIcon className="h-3 w-3" /> : index}
+              {index}
             </span>
             <div className="min-w-0">
-              <p
-                className={`text-sm font-semibold ${done ? "text-[var(--ink-muted)]" : "text-[var(--ink)]"}`}
-              >
+              <p className="text-sm font-semibold text-[var(--ink)]">
                 {t(`agentNetwork.guide.step${index}Title`)}
               </p>
               <p className="mt-0.5 text-xs text-[var(--ink-muted)]">

@@ -1306,6 +1306,7 @@
     "statAgents": "个 Agent 可协作",
     "joinedDevices": "网络中的设备",
     "pendingDevices": "同账号下未加入的设备",
+    "learnMore": "了解 Agent 组网（在浏览器中打开）",
     "guide": {
       "step1Title": "让设备加入网络",
       "step1Body": "在每台电脑登录同一账号，再把要参与协作的设备加入网络。",

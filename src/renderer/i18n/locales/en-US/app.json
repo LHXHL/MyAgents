@@ -1307,6 +1307,7 @@
     "statAgents": "Agents available",
     "joinedDevices": "Devices in this network",
     "pendingDevices": "Other devices on this account",
+    "learnMore": "Learn about Agent networking (opens in your browser)",
     "guide": {
       "step1Title": "Add your devices",
       "step1Body": "Sign in with the same account on each computer, then add the devices that should collaborate.",
