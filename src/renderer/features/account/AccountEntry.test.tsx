@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SpaceSession, SpaceSessionView } from '@/api/spaceCloud';
@@ -108,6 +108,23 @@ describe('global account entry', () => {
     fireEvent.click(screen.getByRole('button', { name: /Alice/ })); fireEvent.click(screen.getByRole('button', { name: 'Edit account profile' }));
     mocks.snapshot.generation++; mocks.snapshot.view = null; rerender(<AccountEntry {...callbacks} />);
     expect(screen.queryByRole('heading', { name: 'Account settings' })).not.toBeInTheDocument();
+  });
+  it('keeps avatar initials visible immediately on menu reopen and sidebar re-expansion', () => {
+    signIn({ ...session, user: { ...session.user, avatarUrl: 'https://avatars.example.test/unavailable.png' } });
+    const callbacks = props(); const { rerender } = render(<AccountEntry {...callbacks} />);
+    const trigger = screen.getByRole('button', { name: /Alice/ });
+    expect(within(trigger).getByText('A')).toBeVisible();
+    fireEvent.error(trigger.querySelector('img')!);
+    fireEvent.click(trigger);
+    const profile = screen.getByRole('button', { name: 'Edit account profile' });
+    expect(within(profile).getByText('A')).toBeVisible();
+    fireEvent.error(profile.querySelector('img')!);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.click(trigger);
+    expect(within(screen.getByRole('button', { name: 'Edit account profile' })).getByText('A')).toBeVisible();
+    rerender(<AccountEntry {...callbacks} expanded={false} />);
+    rerender(<AccountEntry {...callbacks} />);
+    expect(within(screen.getByRole('button', { name: /Alice/ })).getByText('A')).toBeVisible();
   });
   it('uses account Pro entitlement and refreshes stale projections on open', async () => {
     signIn({ ...session, accountPlan: { effectiveTier: 'pro', evaluatedAt: '2026-01-01T00:00:00Z', membership: {

@@ -165,6 +165,8 @@ Cloud拥有Skill package、Tool revision/icon和profile数据；Desktop只做安
 
 用户与Registered Agent头像通过Cloud/R2对象模型暴露。Desktop上传走Rust multipart并校验本地文件；Renderer不直接持token或上传到公开object URL。公开头像URL不是credentialed attachment route，缺少服务端public asset配置时Cloud应拒绝发布对象而不是让Desktop猜fallback。
 
+`SpaceAvatar` 的图片地址只标识待加载资源，不代表像素已就绪：首次挂载和 URL 变化时立即显示当前用户首字母或 Agent/System 图标，图片 `load` 后才替换占位，失败保持占位。图片就绪状态以 URL 为组件生命周期边界，菜单重开、侧栏收起/展开及旧图片迟到事件不能产生空白头像或覆盖新图片；不新增跨组件失败缓存或网络重试。
+
 ## 9. 文件与网络安全
 
 所有Space网络请求由Rust `reqwest` 发起并统一添加client context：public client id、版本、device、platform、OS、locale与User-Agent。credential transition只依据结构化 credential kind和HTTP status；不得匹配自由文本错误或token过期时间猜测。日志只记录redacted binding/request id。

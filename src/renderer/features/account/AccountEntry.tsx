@@ -150,7 +150,7 @@ function AccountControls({ account, expanded, onOpenSpace }: {
               <button
                 autoFocus type="button" aria-label={t('account.editProfile')}
                 onClick={() => { setMenuOpen(false); setProfileOpen(true); }}
-                className="grid w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2.5 rounded-lg px-2 py-2.5 text-left transition-colors hover:bg-[var(--hover-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+                className="grid w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2.5 rounded-lg px-2 py-2.5 text-left outline-none transition-colors hover:bg-[var(--hover-bg)]"
               >
                 <SpaceAvatar name={displayName} email={session.user.email} avatarUrl={session.user.avatarUrl} size={40} />
                 <span className="min-w-0">

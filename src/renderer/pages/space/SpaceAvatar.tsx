@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { HelperIcon, UserIcon } from '@/components/icons';
 import { useTranslation } from 'react-i18next';
 import { Popover } from '../../components/ui/Popover';
@@ -21,6 +21,26 @@ function initialFor(name: string): string {
   return name.trim().slice(0, 1).toUpperCase() || 'U';
 }
 
+/** A URL identifies the request; only load proves there are image pixels. */
+function AvatarContent({ avatarUrl, fallback }: {
+  avatarUrl?: string | null;
+  fallback: ReactNode;
+}) {
+  const [imageState, setImageState] = useState<'loading' | 'loaded' | 'failed'>('loading');
+  if (!avatarUrl || imageState === 'failed') return fallback;
+  return (
+    <>
+      {imageState !== 'loaded' && fallback}
+      <img
+        src={avatarUrl} alt="" draggable={false}
+        className={`absolute inset-0 h-full w-full object-cover ${imageState === 'loaded' ? '' : 'invisible'}`}
+        onLoad={() => setImageState('loaded')}
+        onError={() => setImageState('failed')}
+      />
+    </>
+  );
+}
+
 export function SpaceAvatar({
   name,
   email,
@@ -39,34 +59,18 @@ export function SpaceAvatar({
   className?: string;
 }) {
   const displayName = spaceDisplayName({ name, email });
-  const [failedUrl, setFailedUrl] = useState<string | null>(null);
 
   const style = { width: size, height: size };
   const radiusClass = shape === 'app-icon' ? 'rounded-[22%]' : 'rounded-full';
   const fallbackTextClass = size >= 48 ? 'text-base' : size >= 32 ? 'text-sm' : 'text-xs';
-  if (avatarUrl && failedUrl !== avatarUrl) {
-    return (
-      <span className={`inline-grid shrink-0 place-items-center overflow-hidden ${radiusClass} bg-[var(--paper-inset)] ${className}`} style={style}>
-        <img
-          src={avatarUrl}
-          alt=""
-          className="h-full w-full object-cover"
-          draggable={false}
-          onError={() => setFailedUrl(avatarUrl)}
-        />
-      </span>
-    );
-  }
-
   return (
-    <span className={`inline-grid shrink-0 place-items-center ${radiusClass} border border-[var(--line-subtle)] bg-[var(--paper-inset)] ${fallbackTextClass} font-semibold leading-none text-[var(--ink-muted)] ${className}`} style={style}>
-      {type === 'registered_agent' ? (
-        <HelperIcon className="h-3.5 w-3.5" />
-      ) : type === 'system' ? (
-        <UserIcon className="h-3.5 w-3.5" />
-      ) : (
-        <span>{initialFor(displayName)}</span>
-      )}
+    <span className={`relative inline-grid shrink-0 place-items-center overflow-hidden ${radiusClass} border border-[var(--line-subtle)] bg-[var(--paper-inset)] ${fallbackTextClass} font-semibold leading-none text-[var(--ink-muted)] ${className}`} style={style}>
+      {/* Replacing the URL retires the old image events and readiness state. */}
+      <AvatarContent key={avatarUrl ?? ''} avatarUrl={avatarUrl} fallback={
+        type === 'registered_agent' ? <HelperIcon className="h-3.5 w-3.5" />
+          : type === 'system' ? <UserIcon className="h-3.5 w-3.5" />
+            : <span>{initialFor(displayName)}</span>
+      } />
     </span>
   );
 }
