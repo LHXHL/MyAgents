@@ -2,17 +2,13 @@
 
 # MyAgents
 
-**活在你的电脑里，真正能干活的个人 Agent**
+**免费开源、本地优先的 Agent 工作台与任务系统**
 
-[中文](#chinese) · [English](#english) · [官网](https://myagents.io) · [下载](https://myagents.io) · [架构文档](specs/ARCHITECTURE.md) · [贡献指南](CONTRIBUTING.md)
+[中文](README.md) · [English](README.en.md) · [官网与下载](https://myagents.io) · [Releases](https://github.com/hAcKlyc/MyAgents/releases) · [贡献指南](CONTRIBUTING.md)
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![macOS](https://img.shields.io/badge/macOS-13.0+-black.svg)](https://www.apple.com/macos/)
-[![Windows](https://img.shields.io/badge/Windows-10+-blue.svg)](https://www.microsoft.com/windows/)
-[![Tauri](https://img.shields.io/badge/Tauri-v2-orange.svg)](https://tauri.app/)
-[![React](https://img.shields.io/badge/React-19-61dafb.svg)](https://react.dev/)
-
-![MyAgents Launcher](specs/assets/readme/01-launcher.png)
+[![macOS](https://img.shields.io/badge/macOS-13.0+-black.svg)](https://myagents.io)
+[![Windows](https://img.shields.io/badge/Windows-10+-blue.svg)](https://myagents.io)
 
 </div>
 
@@ -20,263 +16,142 @@
 
 ## MyAgents 是什么
 
-MyAgents 是一款开源桌面端个人 Agent 工作台。它不是另一个聊天窗口，而是把对话、工作区、文件、工具、模型、任务和长期记忆放进同一个桌面系统里，让 AI 真正进入你的日常工作流。
+MyAgents 是一个免费开源、本地优先的 **Agent 工作台与任务系统**，致力于帮助每个人成为超级个体，百倍放大你的意志。
 
-你可以把它理解成三件事的组合：
+它既是你与 Agent 直接协作的工作台，也让你的电脑成为可被 Agent 调用的执行节点。将自己的多台电脑接入 **AgentNet**，选择开放的 Agent，就能组成属于你的 Agent 任务网络。
 
-- **一个本地优先的 Agent 桌面客户端**：多标签页、工作区文件树、内嵌终端、内嵌浏览器、历史会话和本地全文搜索都在同一个窗口里。
-- **一个可持续工作的任务系统**：想法可以沉淀成任务，任务可以被周期调度，执行状态可以被追踪和复盘。
-- **一个开放的 AI 运行环境**：支持多模型供应商、MCP、Skills、自定义 Agent、IM Bot、插件和外部 Runtime。
+你可以在日常使用的电脑上与 Agent 对话工作：**你持续提出方向，Agent 并行推进，你作出关键决策。** 需要其他设备上的资料或环境时，让 Agent 跨设备派发任务、传递信息；需要长期运行的事务，则交给常开设备上的 Agent 持续推进。
 
-最终目标很简单：让人把注意力放在判断、品味和验收上，把上下文整理、工具调用、长程执行和重复工作交给 Agent。
+MyAgents 同时为人和 Agent 提供操作入口：你通过GUI使用， Agent 通过 CLI 建立任务、调用其他 Agent，把你的要求落实为持续运转的工作安排。你安装的其他 Agent 也可以通过 CLI 使用 MyAgents 的各项能力。
 
-## 核心体验
+- **多种 Agent Runtime**：集成 Claude Agent SDK、DeepSeek Harness 和 Codex，支持多种 AI 订阅登录，也可以配置模型 API。每个 Agent 都可以使用自己的工作区、模型、Skill 和工具。
+- **Task 任务系统**：支持定时任务，以及定时运行脚本、满足条件后唤醒 Agent 的自动化。把日常事务交给任务系统，让有效的方法持续运行。
+- **Channel IM 通道**：内置飞书、钉钉、Telegram 接入，并通过插件扩展更多平台，让你从常用的消息软件与 Agent 协作。
+- **AgentNet 网络**：同一账号下已开放的 Agent 可以跨设备交接工作，使用各自的资料、上下文与执行环境。设备之间的任务与结果通过端到端加密传递。
+- **Space 协作空间**：通过 Issue 和共同目标组织人和 Agent 的协作，共享 Skill 与工具。既可以安排自己的多个 Agent，也可以邀请合作方，围绕目标推进、交接结果。
 
-### 从工作区开始，而不是从空聊天开始
+不需要服务器，只用你的几台电脑就能组网，数据、环境、Agent 运行在本地，一切尽藏掌握之中。
 
-每个 Agent 都绑定真实工作区。对话不再漂浮在一个孤立输入框里，AI 可以围绕文件、命令、技能、工具和历史上下文持续工作。
+**安装 MyAgents，赋予你的电脑以智能。**
 
-![Workspace Agent](specs/assets/readme/02-workspace-agent.png)
+## 快速开始
 
-在一个会话里，MyAgents 同时提供：
+本文面向 **0.5.0**。可下载版本与发布说明请以[官网](https://myagents.io)和 [Releases](https://github.com/hAcKlyc/MyAgents/releases) 为准。
 
-- Chrome 风格多标签页，每个 Tab 独立运行一个 Agent。
-- 工作区文件树、文件预览、Git 分支、Skills 和命令入口。
-- 右侧分屏的内嵌终端和内嵌浏览器，方便边执行边验证。
-- `@` 引用文件、`/` 调用技能、MCP 工具调用、定时任务入口和模型选择。
+1. **安装客户端**：支持 macOS 13+（Apple Silicon / Intel）和 Windows 10+。下载对应安装包即可开始，无需自行安装 Node.js 或搭建服务器。
+2. **接入模型**：在「设置 → 模型供应商」中登录支持的订阅，或填写模型 API 配置，再选择匹配的 Runtime 与模型。具体接入方式见[模型与 Runtime 指南](bundled-skills/myagents-docs/references/models-providers-runtimes.md)。
+3. **选择工作区、创建 Agent**：可以使用自己的项目目录，也可以从内置 Mino 模板开始，为 Agent 配好需要的 Skill 与工具。
+4. **开始工作**：带上资料说明目标，在对话中不断调整方向；需要持续处理的事务，让 Agent 帮你建立 Task。
 
-### 把想法收束成任务
+一台电脑就能完成这些工作。需要其他设备的资料或环境时，再从侧栏「更多 → Agent 网络」接入 AgentNet；需要共享目标和交接结果时，再打开「协作空间」。
 
-MyAgents 内置「想法 + 任务中心」。你可以先把零散念头记下来，再和 AI 讨论、对齐目标、沉淀成可执行任务。长期任务不需要留在聊天记录里翻找，而是进入可追踪的状态机。
+## 怎样与你的 Agent 一起工作
 
-![Thoughts and Tasks](specs/assets/readme/03-thought-task.png)
+### 在工作台里对齐方向，推进多项工作
 
-任务中心支持：
+每个 Agent 都有自己的工作区、模型、Runtime、Skill 和工具配置，可以开启多个会话。你可以同时推进研究、开发、内容整理等不同工作，并在过程中给出反馈、作出关键决策。
 
-- 想法速记、标签归类和归档。
-- 一次性任务、周期任务和 Cron 表达式。
-- 可选的本地命令感知器：低成本检查，只有命中条件才唤醒 AI。
-- 任务状态、运行次数、执行日志和异常恢复。
-- Chat、AI 工具、IM Bot、后台任务共享同一套调度能力。
+- 把文件和项目资料作为上下文，通过 `@` 引用文件、`/` 使用 Skill。
+- 在同一个窗口中查看文件、预览结果、使用终端和浏览器验证工作。
+- 保留会话历史、工作区文件和记忆，让后续工作接着已有积累展开。
+- 把反复使用的方法整理为 Skill，让其他会话也能复用。
 
-### 模型、工具和能力由你选择
+### 把日常事务交给 Task 持续运行
 
-MyAgents 不把用户锁死在单一模型或单一供应商里。你可以使用 Anthropic 订阅或 API，也可以配置 DeepSeek、Moonshot、智谱、MiniMax、Google Gemini、火山方舟、硅基流动、ZenMux、OpenRouter、小米 MiMo、阿里云百炼等供应商。实际模型列表以应用内「模型供应商」页为准。
+你可以直接让 Agent 把一项工作建立为任务，也可以在任务中心创建和编辑。Task 保存目标、状态和运行记录，支持指定时间执行一次、固定间隔与 Cron 定时执行。
 
-![Model Providers](specs/assets/readme/04-model-providers.png)
+对于“经常检查，但只有变化时才需要 AI”的事务，可以先定时运行本地脚本，**满足条件后再唤醒 Agent**。例如检查构建是否完成、有无新文件，或某个服务状态是否变化。
 
-除了模型，MyAgents 还支持：
+一个适合交给 Agent 配置的任务：
 
-- **MCP**：STDIO / HTTP / SSE 三种接入方式，连接外部工具和数据源。
-- **Skills**：把稳定流程沉淀成可复用能力，支持内置技能和用户自定义技能。
-- **自定义 Agent**：为不同工作区配置不同 Prompt、模型、工具和权限。
-- **外部 Runtime（实验室）**：除内置 Claude Agent SDK 外，可选择 Claude Code CLI、OpenAI Codex CLI 驱动会话。
-- **插件与 Channel**：内置 Telegram / 钉钉，更多 IM 平台可通过 OpenClaw 插件接入。
+> 每天上午检查这个工作区的新资料；有更新时整理摘要和需要我决定的事项，没有更新就保持安静。先和我确认检查方式与结果保存位置，再建立任务。
 
-### AI 不只活在主窗口里
+Task 安排工作何时触发；如果当前会话需要围绕一个目标持续研究、执行和验证，可以使用 **Goal Mode**。两者的用法见[任务与自动化指南](bundled-skills/myagents-docs/references/automation.md)。
 
-桌面 AI 不应该只在你打开主应用时才存在。MyAgents 提供小助理、桌面宠物/浮窗、IM Bot 和定时任务，让 Agent 能在不同入口里承接同一个工作上下文。
+### 用 AgentNet 调用合适的设备
 
-![Floating Agent](specs/assets/readme/05-floating-agent.png)
+你的日常电脑可以是主要交互入口，其他电脑提供各自的资料与执行环境。比如开发在一台 MacBook 上推进，需要 Windows 验证时，交给 Windows 电脑上的 Agent；需要定时持续运行的工作，安排在常开设备上。
 
-你可以在主窗口里做长对话，也可以在桌面浮窗里快速发问；可以让 Agent 在 IM 里处理消息，也可以让它按计划自动执行任务。MyAgents 关注的不是「多一个聊天入口」，而是让 AI 能进入真实的工作节奏。
+下面是同一账号下的设备分工示意，连线表示任务与结果的交接：
 
-## 产品理念与思考
-
-### Agent 不应该只是聊天记录
-
-过去很多 AI 产品把「对话」当成唯一形态。对话很自然，但它不适合承载长期工作：上下文会散、任务会丢、结果难复盘，最后用户又回到手工整理。
-
-我更希望 MyAgents 把 Agent 看成一个持续工作的系统。聊天只是入口，真正重要的是工作区、文件、工具、任务、状态和记忆。一个 Agent 应该能知道自己在哪个项目里、正在做什么、上次做到哪里、下一步该验证什么。
-
-### 人的注意力应该收束到判断和验收
-
-AI 最有价值的地方不是替人多生成几段文字，而是把混乱信息整理成可判断、可执行、可沉淀的东西。
-
-所以 MyAgents 里有想法和任务中心。想法用于收集不成熟的判断，任务用于承载已经确认的目标。中间的讨论、计划、执行、验证都可以交给 Agent，但最后的方向感和验收标准仍然留给人。
-
-### 好的桌面 Agent 应该贴近电脑本身
-
-一个桌面 Agent 不应该只复制网页聊天体验。它应该能接触本地文件、终端、浏览器、通知、定时任务、IM 和系统环境，同时保持边界清晰、权限可控、数据本地优先。
-
-MyAgents 的很多设计都来自这个判断：本地工作区是一等公民，Sidecar 按 Session 隔离，所有文件能力走 Tauri/Rust，AI Runtime 可以切换，模型供应商可以替换，工具和 Skills 可以扩展。
-
-### 开放比封闭更适合 Agent 时代
-
-Agent 产品不可能预设所有人的工作流。开发者、创作者、研究者、产品经理、教育工作者和行业专家需要的能力都不一样。与其做一个「什么都内置但什么都固定」的应用，不如提供一个稳定的底座，让用户把自己的工具、模型、技能和自动化流程接进来。
-
-这也是 MyAgents 坚持开源、支持 MCP、Skills、插件和多供应商的原因。
-
-## 功能概览
-
-| 能力             | 说明                                                                 |
-| ---------------- | -------------------------------------------------------------------- |
-| 多标签 Agent     | 每个 Tab 独立会话和 Sidecar，适合并行工作                            |
-| 工作区系统       | 文件树、预览、搜索、Git 分支、Skills 和命令统一入口                  |
-| 多模型供应商     | Anthropic 订阅/API、多家国内外 API、OpenRouter/ZenMux 等聚合服务     |
-| 多 Agent Runtime | 内置 Claude Agent SDK，可选 Claude Code CLI / Codex CLI |
-| MCP 工具         | 支持 STDIO / HTTP / SSE，内置和外部 MCP 可并存                       |
-| Skills           | 内置技能、用户技能、工作区技能，适合沉淀固定流程                     |
-| 任务中心         | 想法、任务、周期调度、状态追踪和执行审计                             |
-| IM Bot / Channel | Telegram、钉钉、OpenClaw 插件 Channel                                |
-| 内嵌终端         | xterm.js + portable-pty，绑定当前工作区                              |
-| 内嵌浏览器       | Tauri 多 Webview 子视图，方便预览链接和本地 HTML                     |
-| 本地全文搜索     | Tantivy + jieba，检索会话历史和工作区文件                            |
-| 本地优先         | 会话、任务、配置和生成产物默认保存在本机                             |
-
-## 研发指引
-
-MyAgents 是一个桌面端 AI Agent 产品，不是单纯的前端项目。改动前建议先判断你碰到的是 UI、Rust 桌面层、Node Sidecar、Agent Runtime、MCP、任务中心还是插件桥接。
-
-### 技术栈
-
-| 层级         | 技术                                                                       |
-| ------------ | -------------------------------------------------------------------------- |
-| 桌面框架     | Tauri v2 + Rust                                                            |
-| 前端         | React 19 + TypeScript + Vite + TailwindCSS                                 |
-| 后端 Sidecar | Node.js v24 + Claude Agent SDK                                             |
-| 通信         | Rust HTTP/SSE Proxy，前端通过 Tauri invoke 代理到 Sidecar                  |
-| Runtime      | 内置 Claude Agent SDK，实验室支持 Claude Code CLI / Codex CLI |
-| 工具生态     | MCP、Skills、OpenClaw Plugin Bridge、`myagents` CLI                        |
-| 搜索         | Tantivy + tantivy-jieba                                                    |
-| 终端         | portable-pty + xterm.js                                                    |
-
-### 环境要求
-
-最终用户：
-
-- macOS 13.0 Ventura 或更高版本，支持 Apple Silicon 和 Intel。
-- Windows 10 或更高版本。
-
-开发者：
-
-- Node.js `>=24.14.0`（`.nvmrc` 提供推荐版本，不限制使用更新版本构建）。
-- npm `>=11.15.0`。
-- Rust 通过 [rustup](https://rustup.rs) 安装，实际 toolchain 由 [rust-toolchain.toml](rust-toolchain.toml) 固定。
-- 原生推理资源冷构建需要 CMake 3.28+ 和平台 C/C++ 工具链；macOS 还需要 Git、Python 3.10+ 与 Apple Clang。
-- macOS 13+ / Windows 10+ / Linux Ubuntu 22.04+ 或 Debian 12+。
-
-开发工具链与应用内置运行时独立；打包的 Node/npm 精确版本由 [`scripts/node-runtime.json`](scripts/node-runtime.json) 固定。
-
-### 本地开发
-
-macOS / Linux：
-
-```bash
-git clone https://github.com/hAcKlyc/MyAgents.git
-cd MyAgents
-./setup.sh
-./start_dev.sh
+```mermaid
+flowchart TB
+    person["你 · 方向与关键决策"] <--> daily["日常笔记本上的 Agent<br/>对话、派发、汇总"]
+    daily <-->|AgentNet| dev["开发 MacBook 上的 Agent<br/>项目资料与开发环境"]
+    daily <-->|AgentNet| win["Windows 电脑上的 Agent<br/>Windows 环境验证"]
 ```
 
-Windows：
+你选择哪些 Agent 对网络开放，远端 Agent 使用它所在设备的工作区、模型与工具执行。任务放在哪台设备上，就由那台设备上的 MyAgents 负责运行；常开设备可以承担长期任务，随身电脑按需接入。
 
-```powershell
-git clone https://github.com/hAcKlyc/MyAgents.git
-cd MyAgents
-.\setup_windows.ps1
-.\build_windows.ps1
-```
+接入方式与运行条件见 [AgentNet 指南](bundled-skills/myagents-docs/references/agent-network.md)。
 
-setup 脚本会先按当前 target 和已验证缓存检查原生推理构建工具，再开始下载 Node runtime、安装项目依赖或拉取 Rust crates；缺失的原生构建工具会得到安装与验证提示，不会被脚本自动安装。随后它会缓存离线文档与语音推理资源；重复运行会复用已验证的资源缓存。默认 Mino 工作区模板已经提交在 `bundled-workspaces/mino/`，构建和初始化不需要额外的 GitHub SSH 或模板下载。
+### 人通过 GUI 操作，Agent 通过 CLI 安排工作
 
-### 常用命令
+你可以在界面中管理 Agent、Task 和工作记录，MyAgents 内运行的 Agent 也可以通过 `myagents` CLI 建立任务、调用其他 Agent、读取状态、回写结果。对话里的要求由此可以成为真正的任务安排。
 
-```bash
-# 启动开发环境
-./start_dev.sh
+你安装的其他 Agent 同样可以接入：在「设置 → 外部调用」中启用功能并完成令牌授权后，通过公开 CLI 能力使用 MyAgents。支持范围与接入步骤见[外部 Agent 接入指南](bundled-guides/external-myagents-cli/SKILL.md)。
 
-# 类型检查
-npm run typecheck
+### 用 Space 围绕目标交接结果
 
-# Lint，包含 ESLint 和 dependency-cruiser 架构边界检查
-npm run lint
+Space 提供 Issue、共同目标（Space Goal）、共享 Skill 和工具。你可以组织自己的多个 Agent，也可以邀请合作方，明确谁处理哪些 Issue，把进展与结果留在同一个空间。
 
-# 测试分层
-npm run test:classification  # server 测试命名/分层 guard
-npm run test:unit            # 纯逻辑快池
-npm run test:dom             # React/jsdom 组件与 hook
-npm run test:integration     # CI-safe 后端集成池，无真实网络/密钥
-npm test                     # classification + unit + dom + integration
-npm run test:credentialed    # 真实 Provider/SDK smoke，显式本地运行
+参与的 Agent 在 Space 中登记身份、认领工作，再回到自己的本地环境执行。你与自己的 Agent 持续互动，合作方也与他们的 Agent 推进工作，彼此围绕目标与交付协作。
 
-# Debug 构建，含 DevTools
-./build_dev.sh
+已有的 GitHub、在线文档和办公系统也可以通过相应工具接入工作流程。Space 的使用方式见[协作空间指南](bundled-skills/myagents-docs/references/cloud-space.md)。
 
-# macOS 生产构建
-./build_macos.sh
+## 更多工作能力
 
-# Linux AppImage + deb 构建
-./build_linux.sh
-```
+| 能力 | 怎么使用 |
+| --- | --- |
+| 多模型与 Runtime | 集成 Claude Agent SDK、DeepSeek Harness 与托管 Codex；也支持已安装的系统 Claude Code CLI / Codex CLI。订阅登录与 API 配置按所选供应商和 Runtime 使用。 |
+| Skill 与 MCP 工具 | 使用内置或自定义 Skill 沉淀方法，通过 MCP 连接工具与数据源；支持 STDIO、HTTP、SSE 接入。 |
+| Channel IM 通道 | 内置飞书、钉钉、Telegram；通过插件扩展其他平台，在常用消息软件中与 Agent 协作。 |
+| Record 记录 | 收集文字、想法与会议录音，支持本地语音转写，再与 Agent 讨论并整理成任务；语音转写需安装对应模型。 |
+| 文件与会话 | 工作区文件树、预览、历史会话与本地全文搜索，方便找到已有资料和工作结果。 |
+| 桌面入口 | 主工作台、小助理和桌面浮窗，适合完整工作与临时提问。 |
+| 本机桌面操作 | macOS / Windows 提供可选的 Cuse 全局 Skill 与 CLI，让 Agent 使用本机桌面操作能力。 |
 
-Linux 构建机需要 Tauri/WebKit 相关系统依赖，Ubuntu/Debian 可参考：
+进一步了解：[模型与 Runtime](bundled-skills/myagents-docs/references/models-providers-runtimes.md) · [Skill、工具与插件](bundled-skills/myagents-docs/references/tools-skills-plugins.md) · [Agent 与 Channel](bundled-skills/myagents-docs/references/agents-channels.md) · [Record 与 Task](bundled-skills/myagents-docs/references/automation.md)
 
-```bash
-sudo apt-get install -y \
-  build-essential libssl-dev libgtk-3-dev libayatana-appindicator3-dev \
-  librsvg2-dev libwebkit2gtk-4.1-dev patchelf
-```
+## 运行说明与常见问题
 
-### 项目结构
+### 需要一直开着电脑吗？
 
-```text
-src/renderer/                 React 前端
-src/server/                   Node.js Sidecar
-src/server/plugin-bridge/     OpenClaw Plugin Bridge
-src/cli/                      myagents CLI
-src/shared/                   前后端共享类型
-src-tauri/                    Tauri Rust 层
-bundled-agents/               内置 Agent
-bundled-skills/               内置 Skills
-specs/                        架构、设计、技术文档
-```
+交互式工作按需打开即可。定时任务和条件检测要求**执行它们的设备开机、保持唤醒，MyAgents 继续运行**；窗口最小化或后台驻留可以继续工作，完全退出应用或系统休眠期间不会执行。长期任务适合交给常开设备。
 
-### 关键架构原则
+AgentNet 调用时，目标设备需要在线、登录同一账号并加入网络，目标 Agent 需要已开放。当前不提供面向离线设备的消息排队与恢复后补投。
 
-- **Session : Sidecar = 1 : 1**：每个会话最多一个 Sidecar，Tab、CronTask、BackgroundCompletion、Agent 通过 Owner 模型共享生命周期。
-- **Tab-Scoped 隔离**：Chat Tab 内使用 tab-scoped API；Settings 和 Launcher 使用 Global Sidecar。
-- **控制面 HTTP/SSE 走 Rust 代理**：普通 API 不由 WebView 直连 Sidecar；仅 `/refs/:id`、`/api/attachment/tool/*` 大载荷数据面在 CORS/CSP/路径安全约束下原生 fetch。
-- **工作区文件 IO 走 Tauri/Rust**：文件树、读写、搜索、打开、watcher 不走 Sidecar HTTP。
-- **配置写盘 disk-first**：多进程共享配置必须读磁盘最新值再合并写入。
-- **Runtime 分流明确**：Session 操作统一走 `src/server/session-engine/` facade，由 selector 选择 builtin 或 external adapter；不能让 builtin SDK resume 外部会话。
+### Local-first 下，数据在哪里？
 
-完整架构请读 [specs/ARCHITECTURE.md](specs/ARCHITECTURE.md)。具体模块请按需阅读：
+| 内容 | 处理位置 |
+| --- | --- |
+| Agent 执行环境、工作区、会话与本地任务 | 在自己的设备上运行或保存。 |
+| 模型请求与外部工具调用 | 按你的配置发送到相应模型或工具服务，可能包含你选择使用的上下文。 |
+| AgentNet 任务与结果 | 通过中继连接设备，业务内容端到端加密；设备发现、在线状态等路由元数据由服务处理。 |
+| Space 协作内容 | 你共享的 Issue、目标、评论、附件、Skill 与工具等内容由 Space 云服务保存。 |
 
-- [Sidecar 冷启动](specs/tech_docs/sidecar_cold_start.md)
-- [Session 架构](specs/tech_docs/session_architecture.md)
-- [Multi-Agent Runtime](specs/tech_docs/multi_agent_runtime.md)
-- [任务中心](specs/tech_docs/task_center.md)
-- [Plugin Bridge](specs/tech_docs/plugin_bridge_architecture.md)
-- [MCP / Pit-of-Success](specs/tech_docs/pit_of_success.md)
-- [CLI 架构](specs/tech_docs/cli_architecture.md)
-- [设计系统](specs/DESIGN.md)
+个人组网无需自行部署服务器；AgentNet 的连接和 Space 的共享由相应服务提供。客户端源码可在本仓库查看，云服务的源码与自部署可用性以各自发布信息为准。
 
-### 贡献前检查
+### AgentNet 和 Space 怎样配合？
 
-提交前至少运行：
+AgentNet 用于**同一账号下自己的设备**之间调用 Agent。Space 用于共享目标、Issue 和可复用能力，成员可以是你自己，也可以是合作方。加入同一个 Space 不会自动获得对方设备上的 AgentNet 调用权限。
 
-```bash
-npm run typecheck
-npm run lint
-npm run test:classification
-npm run test:unit
-```
+### 免费开源包含什么？
 
-后端 Session、Runtime、IO 或安全边界改动还应跑 `npm run test:integration`；真实 Provider / SDK 链路只在本机显式跑 `npm run test:credentialed`，不属于默认 CI。
+MyAgents 客户端免费开源。你选择的模型订阅、API 或外部工具按对应服务的规则计费；AgentNet 与 Space 的服务范围、额度以产品内说明为准。客户端许可见下文。
 
-如果改动涉及 Rust、Tauri 命令、Sidecar 生命周期、Runtime、MCP、任务中心或插件桥接，请先阅读对应 `specs/tech_docs/` 文档，避免绕开已有架构。
+### 外部 Agent 可以操作全部功能吗？
 
-提交信息遵循 Conventional Commits：
+外部调用默认关闭。启用并授权后，外部 Agent 可以使用公开命令提供的 Agent、会话、Task、Record 等能力；具体范围见[接入指南](bundled-guides/external-myagents-cli/SKILL.md)，与应用内 Agent 的完整操作范围有所区别。
 
-```text
-feat: add ...
-fix: handle ...
-docs: update ...
-refactor: simplify ...
-test: cover ...
-chore: bump ...
-```
+## 开发与贡献
+
+欢迎提交问题、改进文档或贡献代码。
+
+- [开发指引](DEVELOPMENT.md)：环境准备、本地开发、构建与检查。
+- [贡献指南](CONTRIBUTING.md)：Issue、Pull Request 与贡献约定。
+- [架构文档](specs/ARCHITECTURE.md)：模块职责与设计约束。
+- [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/hAcKlyc/MyAgents/issues)。
 
 ## 许可证
 
@@ -294,282 +169,4 @@ MyAgents 采用 [GNU Affero General Public License v3.0](LICENSE)
 
 <a id="english"></a>
 
-## English
-
-## What Is MyAgents
-
-MyAgents is an open-source desktop workspace for personal AI Agents. It is not another chat window. It puts conversations, workspaces, files, tools, models, tasks, and long-term memory into one desktop system, so AI can become part of your real daily workflow.
-
-You can think of it as three things in one:
-
-- **A local-first desktop Agent client**: multi-tab conversations, workspace file trees, embedded terminal, embedded browser, chat history, and local full-text search in one window.
-- **A task system for continuous work**: ideas can become tasks, tasks can be scheduled, and execution state can be tracked and reviewed.
-- **An open AI runtime environment**: multi-provider models, MCP, Skills, custom Agents, IM bots, plugins, and external runtimes.
-
-The goal is simple: keep human attention on judgment, taste, and acceptance. Let the Agent handle context gathering, tool use, long-running execution, and repetitive work.
-
-## Core Experience
-
-### Start From A Workspace, Not An Empty Chat
-
-Every Agent is tied to a real workspace. The conversation does not float inside an isolated input box. The AI can keep working around files, commands, skills, tools, and historical context.
-
-![Workspace Agent](specs/assets/readme/02-workspace-agent.png)
-
-Inside one session, MyAgents gives you:
-
-- Chrome-style tabs, with each Tab running an independent Agent.
-- Workspace file tree, file preview, Git branch, Skills, and command entry points.
-- Embedded terminal and embedded browser in the right split panel, so you can execute and verify in place.
-- `@` file references, `/` skill invocation, MCP tool calls, scheduled tasks, and model selection.
-
-### Turn Ideas Into Tasks
-
-MyAgents includes an Ideas + Task Center workflow. You can first capture rough thoughts, then discuss them with AI, align on the goal, and turn them into executable tasks. Long-term work no longer has to be buried in chat history. It becomes part of a trackable state machine.
-
-![Thoughts and Tasks](specs/assets/readme/03-thought-task.png)
-
-Task Center supports:
-
-- Idea capture, tagging, and archiving.
-- One-shot tasks, recurring tasks, and Cron expressions.
-- Optional local-command sensors that wake the AI only when a condition matches.
-- Task status, run count, execution logs, and failure recovery.
-- One shared scheduler across Chat, AI tools, IM bots, and background tasks.
-
-### Choose Your Models, Tools, And Capabilities
-
-MyAgents does not lock users into one model or one provider. You can use Anthropic subscription or API, and you can also configure DeepSeek, Moonshot, Zhipu, MiniMax, Google Gemini, Volcengine, SiliconFlow, ZenMux, OpenRouter, Xiaomi MiMo, Alibaba Cloud Bailian, and more. The actual model list is shown inside the in-app Model Providers page.
-
-![Model Providers](specs/assets/readme/04-model-providers.png)
-
-Beyond models, MyAgents supports:
-
-- **MCP**: STDIO / HTTP / SSE integrations for external tools and data sources.
-- **Skills**: reusable workflows as built-in, user-level, or workspace-level capabilities.
-- **Custom Agents**: different prompts, models, tools, and permission settings per workspace.
-- **External runtimes (Lab)**: in addition to the built-in Claude Agent SDK, sessions can be driven by Claude Code CLI or OpenAI Codex CLI.
-- **Plugins and Channels**: built-in Telegram / DingTalk, with more IM platforms available through OpenClaw plugins.
-
-### AI Does Not Only Live In The Main Window
-
-Desktop AI should not exist only when the main app is open. MyAgents provides the helper agent, desktop pet/floating panel, IM bots, and scheduled tasks, so the Agent can carry the same work context across different entry points.
-
-![Floating Agent](specs/assets/readme/05-floating-agent.png)
-
-You can have long conversations in the main window, ask quick questions from a floating desktop panel, let an Agent handle messages in IM, or have it execute tasks on a schedule. MyAgents is not trying to add one more chat surface. It is trying to put AI into the real rhythm of work.
-
-## Product Philosophy
-
-### Agents Should Not Just Be Chat Logs
-
-Many AI products treat conversation as the only shape of interaction. Conversation is natural, but it is a poor container for long-running work: context scatters, tasks disappear, results are hard to review, and users eventually return to manual organization.
-
-I want MyAgents to treat an Agent as a continuous working system. Chat is only the entry point. What matters more is the workspace, files, tools, tasks, state, and memory. An Agent should know which project it is in, what it is doing, where it stopped last time, and what should be verified next.
-
-### Human Attention Should Converge On Judgment And Acceptance
-
-The most valuable part of AI is not generating a few more paragraphs. It is turning messy information into something that can be judged, executed, and preserved.
-
-That is why MyAgents has Ideas and Task Center. Ideas capture immature thoughts. Tasks carry confirmed goals. The discussion, planning, execution, and verification can be delegated to the Agent, while direction and acceptance criteria remain with the human.
-
-### A Good Desktop Agent Should Stay Close To The Computer
-
-A desktop Agent should not merely copy the web chat experience. It should be able to work with local files, terminal, browser, notifications, scheduled tasks, IM, and the system environment, while keeping clear boundaries, controllable permissions, and local-first data.
-
-Many MyAgents design choices come from this belief: local workspaces are first-class, Sidecars are isolated by Session, file operations go through Tauri/Rust, AI runtimes can be switched, model providers can be replaced, and tools and Skills can be extended.
-
-### Openness Fits The Agent Era Better Than Lock-In
-
-No Agent product can predefine every workflow. Developers, creators, researchers, product managers, educators, and domain experts all need different capabilities. Instead of building an app where everything is built in and fixed, MyAgents provides a stable base that lets users plug in their own tools, models, skills, and automations.
-
-This is why MyAgents is open source and supports MCP, Skills, plugins, and multiple model providers.
-
-## Feature Overview
-
-| Capability          | Description                                                                         |
-| ------------------- | ----------------------------------------------------------------------------------- |
-| Multi-tab Agents    | Each Tab has its own session and Sidecar, suitable for parallel work                |
-| Workspace system    | File tree, preview, search, Git branch, Skills, and commands in one place           |
-| Model providers     | Anthropic subscription/API, many API providers, OpenRouter/ZenMux aggregators       |
-| Multi-Agent Runtime | Built-in Claude Agent SDK, optional Claude Code CLI / Codex CLI        |
-| MCP tools           | STDIO / HTTP / SSE support, built-in and external MCP servers can coexist           |
-| Skills              | Built-in, user-level, and workspace-level Skills for reusable workflows             |
-| Task Center         | Ideas, tasks, recurring schedules, state tracking, and execution audit              |
-| IM Bot / Channel    | Telegram, DingTalk, and OpenClaw plugin channels                                    |
-| Embedded terminal   | xterm.js + portable-pty, bound to the current workspace                             |
-| Embedded browser    | Tauri multi-Webview child view for previewing links and local HTML                  |
-| Local search        | Tantivy + jieba for searching session history and workspace files                   |
-| Local-first data    | Conversations, tasks, config, and generated artifacts are stored locally by default |
-
-## Development Guide
-
-MyAgents is a desktop AI Agent product, not a plain frontend project. Before making changes, identify whether you are touching the UI, Rust desktop layer, Node Sidecar, Agent Runtime, MCP, Task Center, or Plugin Bridge.
-
-### Tech Stack
-
-| Layer           | Technology                                                                          |
-| --------------- | ----------------------------------------------------------------------------------- |
-| Desktop         | Tauri v2 + Rust                                                                     |
-| Frontend        | React 19 + TypeScript + Vite + TailwindCSS                                          |
-| Backend Sidecar | Node.js v24 + Claude Agent SDK                                                      |
-| Communication   | Rust HTTP/SSE Proxy, with the frontend reaching Sidecar through Tauri invoke        |
-| Runtime         | Built-in Claude Agent SDK, Lab support for Claude Code CLI / Codex CLI |
-| Tool ecosystem  | MCP, Skills, OpenClaw Plugin Bridge, `myagents` CLI                                 |
-| Search          | Tantivy + tantivy-jieba                                                             |
-| Terminal        | portable-pty + xterm.js                                                             |
-
-### Requirements
-
-End users:
-
-- macOS 13.0 Ventura or later, Apple Silicon and Intel supported.
-- Windows 10 or later.
-
-Developers:
-
-- Node.js `>=24.14.0` (`.nvmrc` provides a recommended version; newer build versions are allowed).
-- npm `>=11.15.0`.
-- Rust installed through [rustup](https://rustup.rs). The actual toolchain is pinned by [rust-toolchain.toml](rust-toolchain.toml).
-- Cold native-inference resource builds require CMake 3.28+ and the platform C/C++ toolchain. macOS additionally requires Git, Python 3.10+, and Apple Clang.
-- macOS 13+ / Windows 10+ / Linux Ubuntu 22.04+ or Debian 12+.
-
-The development toolchain is independent of the bundled runtime. Exact bundled Node/npm versions are pinned in [`scripts/node-runtime.json`](scripts/node-runtime.json).
-
-### Local Development
-
-macOS / Linux:
-
-```bash
-git clone https://github.com/hAcKlyc/MyAgents.git
-cd MyAgents
-./setup.sh
-./start_dev.sh
-```
-
-Windows:
-
-```powershell
-git clone https://github.com/hAcKlyc/MyAgents.git
-cd MyAgents
-.\setup_windows.ps1
-.\build_windows.ps1
-```
-
-The setup scripts first check native-inference build tools for the current target and verified cache before downloading the Node runtime, installing project dependencies, or fetching Rust crates. Missing native build tools produce install and verification guidance and are not installed automatically. Setup then caches offline document and speech-inference resources, and repeated runs reuse verified resource caches. The default Mino workspace template is committed under `bundled-workspaces/mino/`, so builds and initialization require no extra GitHub SSH access or template download.
-
-### Common Commands
-
-```bash
-# Start development environment
-./start_dev.sh
-
-# Type check
-npm run typecheck
-
-# Lint, including ESLint and dependency-cruiser architecture boundary checks
-npm run lint
-
-# Test layers
-npm run test:classification  # server test naming / classification guard
-npm run test:unit            # pure logic fast pool
-npm run test:dom             # React/jsdom components and hooks
-npm run test:integration     # CI-safe backend integration, no real network/secrets
-npm test                     # classification + unit + dom + integration
-npm run test:credentialed    # real provider / SDK smoke, explicit local run
-
-# Debug build with DevTools
-./build_dev.sh
-
-# macOS production build
-./build_macos.sh
-
-# Linux AppImage + deb build
-./build_linux.sh
-```
-
-Linux build machines need Tauri/WebKit system dependencies. On Ubuntu/Debian:
-
-```bash
-sudo apt-get install -y \
-  build-essential libssl-dev libgtk-3-dev libayatana-appindicator3-dev \
-  librsvg2-dev libwebkit2gtk-4.1-dev patchelf
-```
-
-### Project Structure
-
-```text
-src/renderer/                 React frontend
-src/server/                   Node.js Sidecar
-src/server/plugin-bridge/     OpenClaw Plugin Bridge
-src/cli/                      myagents CLI
-src/shared/                   Shared frontend/backend types
-src-tauri/                    Tauri Rust layer
-bundled-agents/               Built-in Agents
-bundled-skills/               Built-in Skills
-specs/                        Architecture, design, and technical docs
-```
-
-### Key Architecture Principles
-
-- **Session : Sidecar = 1 : 1**: each session has at most one Sidecar. Tabs, CronTasks, BackgroundCompletion, and Agents share lifecycle through the Owner model.
-- **Tab-scoped isolation**: Chat Tabs use tab-scoped APIs. Settings and Launcher use the Global Sidecar.
-- **Control-plane HTTP/SSE goes through the Rust proxy**: ordinary APIs never connect from the WebView to a Sidecar; only the `/refs/:id` and `/api/attachment/tool/*` large-payload data plane uses native fetch under CORS, CSP, and path-safety constraints.
-- **Workspace file IO goes through Tauri/Rust**: file tree, reads/writes, search, open, and watcher do not use Sidecar HTTP.
-- **Config writes are disk-first**: shared multi-process config must load the latest disk state before merging and writing.
-- **Runtime routing must be explicit**: session operations go through the `src/server/session-engine/` facade, whose selector chooses the builtin or external adapter; the builtin SDK must not resume external-runtime sessions.
-
-Read [specs/ARCHITECTURE.md](specs/ARCHITECTURE.md) for the full architecture. Module-specific docs:
-
-- [Sidecar cold start](specs/tech_docs/sidecar_cold_start.md)
-- [Session architecture](specs/tech_docs/session_architecture.md)
-- [Multi-Agent Runtime](specs/tech_docs/multi_agent_runtime.md)
-- [Task Center](specs/tech_docs/task_center.md)
-- [Plugin Bridge](specs/tech_docs/plugin_bridge_architecture.md)
-- [MCP / Pit-of-Success](specs/tech_docs/pit_of_success.md)
-- [CLI architecture](specs/tech_docs/cli_architecture.md)
-- [Design system](specs/DESIGN.md)
-
-### Before Contributing
-
-Run at least:
-
-```bash
-npm run typecheck
-npm run lint
-npm run test:classification
-npm run test:unit
-```
-
-For backend Session, Runtime, IO, or security-boundary changes, also run `npm run test:integration`. Real provider / SDK smoke tests live under `npm run test:credentialed` and are explicit local checks, not default CI.
-
-If your change touches Rust, Tauri commands, Sidecar lifecycle, Runtime, MCP, Task Center, or Plugin Bridge, read the matching `specs/tech_docs/` document first so the change grows from the existing architecture.
-
-Commit messages follow Conventional Commits:
-
-```text
-feat: add ...
-fix: handle ...
-docs: update ...
-refactor: simplify ...
-test: cover ...
-chore: bump ...
-```
-
-## License
-
-MyAgents is available under the
-[GNU Affero General Public License v3.0](LICENSE) (`AGPL-3.0-only`).
-Individuals and companies may use it for free, including commercially, when
-they comply with the AGPL. A separate commercial license is required for
-closed-source modification, embedding, OEM distribution, proprietary
-distribution, or hosted offerings that do not comply with the AGPL. Contact
-[myagents.io@gmail.com](mailto:myagents.io@gmail.com).
-
-See [LICENSING.md](LICENSING.md) for details,
-[COMMERCIAL-LICENSING.md](COMMERCIAL-LICENSING.md) for a commercial licensing
-overview, and
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for independently licensed
-components.
-
-Cuse native desktop control ships as a complete, optional global Skill + CLI on macOS and Windows. App updates maintain its contents while preserving your global Skills disable setting. See the [integration and build contract](specs/tech_docs/cuse_bundle.md).
+[Read this document in English →](README.en.md)
