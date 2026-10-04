@@ -158,7 +158,7 @@ export function MentionPicker({
                         </span>
                       </span>
                     ) : (
-                      <span className="flex items-center gap-1">
+                      <span className={`flex items-center gap-1 ${option.kind !== "retry" ? "justify-center" : ""}`}>
                         {option.kind === "collapse" ? (
                           <ChevronUpIcon size={12} />
                         ) : (
@@ -178,6 +178,7 @@ export function MentionPicker({
               {!group.loading &&
                 !group.error &&
                 !group.unavailable &&
+                !group.partial &&
                 !group.items.length && (
                   <p className="px-3 py-2 text-xs text-[var(--ink-muted)]">
                     {t(
@@ -193,16 +194,12 @@ export function MentionPicker({
                   {t("input.mention.failed")}
                 </p>
               )}
-              {group.partial && (
+              {group.partial && group.kind === "agent" && (
                 <p
                   role="status"
                   className="px-3 py-1 text-xs text-[var(--ink-muted)]"
                 >
-                  {t(
-                    group.kind === "agent"
-                      ? "input.mention.networkPartial"
-                      : "input.mention.partial",
-                  )}
+                  {t("input.mention.networkPartial")}
                 </p>
               )}
             </div>

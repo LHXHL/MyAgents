@@ -52,7 +52,7 @@ Resolve 响应先经固定包的 `metadata-callableAgent` schema 校验，再由
 
 `discoverAgents/getAgentDiscovery` 复用本地身份 owner，合并 Rust 当前网络目录。CLI 保留原本地完整 registry；紧凑 @ projection 有明确预算/完整性状态。只有同设备、同 localAgentId 的网络 alias 才能与本地项折叠。目录与引用不授予执行许可。
 
-@ 空关键词只查询/展示 Agent、想法，有关键词后按 Agent→想法→文件拼接，一个滚动/键盘导航区域；每组默认五项，展开更多每次最多增加五项，visibleCount 与 owner 页缓存分离。面板固定目标高度，加载/搜索/展开不随结果条数缩放，shared Popover size 只按 anchor 可用空间约束；composer 保留顶部栏空间。本机图标沿 ConfigData 的现有工作区身份投影；远端目录只同步拥有设备 Project 的 `icon` 字符串，复用 `WorkspaceIcon` 渲染，缺失或本机不支持的图标名称使用机器人图标，兼容旧目录和旧 @ 快照。图标只属于展示，不改变 exposure revision 或执行权限；想法日期/标签/摘要只占一行。想法沿原 ManagedRecordStore text Record projection；文件沿原 WorkspaceFileService/Rust walk。stateless cursor 绑定 scope/query/snapshot；hasMore 与 scanLimitReached 区分，超预算或目录不可用不得假报全部/空。
+@ 空关键词只查询/展示 Agent、想法，有关键词后按 Agent→想法→文件拼接，一个滚动/键盘导航区域；每组默认五项，展开更多每次最多增加五项，visibleCount 与 owner 页缓存分离。面板宽度 25.5rem，并限制在 viewport 留白内；展开/收起控制行居中。面板固定目标高度，加载/搜索/展开不随结果条数缩放，shared Popover size 只按 anchor 可用空间约束；composer 保留顶部栏空间。本机图标沿 ConfigData 的现有工作区身份投影；远端目录只同步拥有设备 Project 的 `icon` 字符串，复用 `WorkspaceIcon` 渲染，缺失或本机不支持的图标名称使用机器人图标，兼容旧目录和旧 @ 快照。图标只属于展示，不改变 exposure revision 或执行权限；想法日期/标签/摘要只占一行。想法沿原 ManagedRecordStore text Record projection；文件沿原 WorkspaceFileService/Rust walk。stateless cursor 绑定 scope/query/snapshot；hasMore 与 scanLimitReached 区分，通用扫描截断提示不在面板展示，但保留 partial 事实；超预算或目录不可用不得假报全部/空，网络不完整与失败提示仍保留。
 
 首屏 Agent、想法、文件并行查询，共用一个 loading；全部完成后一次展示，最多等待 2 秒（非空搜索另有 150ms debounce）。Agent 先读取带当前账号 context 的 local-only projection，再查询云端，保证云端慢时仍能展示本机项。到期保留已取得的数据，未完成来源明确标记不完整/失败并允许主动重试；迟到首屏结果失效，不再插入当前列表。网络 presence/catalog revision 不自动刷新打开中的面板，重新打开或主动重试获取新目录；账号、工作区或关键词改变仍使旧请求失效。展开分页和主动重试仅在所属组加载。
 

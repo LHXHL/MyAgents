@@ -1451,7 +1451,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
               placement="top-start" offset={8} closeOnEscape={false}
               style={{ height: 'min(32rem, 65vh)', boxShadow: 'var(--shadow-md)' }}
               maxHeight="min(32rem, 65vh)" viewportPadding={{ top: 52, bottom: 8, left: 8, right: 8 }}
-              className="flex w-[34rem] max-w-[calc(100vw-2rem)] flex-col">
+              className="flex w-[25.5rem] max-w-[calc(100vw-2rem)] flex-col">
               <MentionPicker localWorkspaceIcons={localWorkspaceIcons} picker={mentionPicker} query={fileSearchQuery} onChoose={chooseMention} onKeyDown={handleKeyDown} />
             </Popover>
 
