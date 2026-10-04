@@ -2000,3 +2000,23 @@ fn space_header_facts_strip_control_and_non_ascii_bytes() {
     );
     assert_eq!(normalize_space_header_fact("\n雪", "unknown"), "unknown");
 }
+
+#[tokio::test]
+async fn malformed_http_failures_keep_retryability_without_login_mutation() {
+    let diagnostic = RequestDiagnostic::new("space", &reqwest::Method::GET, "/api/issues/private?token=secret");
+    for status in [401, 403, 429, 500, 502, 503] {
+        for bytes in ["", "<html>edge failure</html>"] {
+            let response = reqwest::Response::from(tauri::http::Response::builder().status(status).body(bytes).unwrap());
+            let error = parse_authorized_cloud_data(response, None, &diagnostic).await.unwrap_err();
+            assert_eq!(error.code, "SPACE_REQUEST_FAILED");
+            assert_eq!(error.http_status, Some(status));
+            assert_eq!(error.retryable, status == 429 || status >= 500);
+            assert!(error.session_binding_id.is_none());
+            assert!(!error.message.contains("edge failure"));
+        }
+    }
+    let response = reqwest::Response::from(tauri::http::Response::builder().status(200).body("<html>invalid</html>").unwrap());
+    let error = parse_authorized_cloud_data(response, None, &diagnostic).await.unwrap_err();
+    assert_eq!(error.code, "SPACE_RESPONSE_INVALID");
+    assert!(!error.retryable);
+}

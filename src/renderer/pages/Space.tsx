@@ -1,3 +1,4 @@
+import { useBackgroundRequestFeedback, type BackgroundRequestResult } from '@/hooks/useBackgroundRequestFeedback';
 import { useMyAgentsLogin } from '@/hooks/useMyAgentsLogin';
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
@@ -525,6 +526,11 @@ export default function Space({
     session?.space?.slug ||
     DEFAULT_SPACE_ID;
   const activeDataScopeKey = `${spaceData.serviceBaseUrl?.trim() || session?.baseUrl?.trim() || ""}\n${activeCacheSpaceId}`;
+  const runBackground = useBackgroundRequestFeedback(
+    `${activeDataScopeKey}\n${session?.sessionBindingId ?? ""}`,
+    isActive && spaceData.boot === "ready",
+    (error) => toast.error(spaceErrorMessage(error)),
+  );
   const relatedToMe = relatedToMeBySpace[activeCacheSpaceId] ?? false;
   const setRelatedToMe = useCallback(
     (next: boolean) => {
@@ -768,71 +774,47 @@ export default function Space({
     if (reentered && activeMode === "tools") trackSpaceOpen("tools");
     if (activeMode === "issues") {
       const handle = window.setTimeout(() => {
-        const refreshes: Promise<void>[] = [
+        void runBackground(`issues:${JSON.stringify(issueQuery)}`, () =>
           actions.refreshIssues(issueQuery, {
             force: reentered,
             maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
-          }),
-          actions.refreshGoals({
+          }));
+        void runBackground("goals", () => actions.refreshGoals({
+          maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
+        }));
+        if (admin) void runBackground("registered-agents", () =>
+          actions.refreshRegisteredAgents({
+            force: reentered,
             maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
-          }),
-        ];
-        if (admin) {
-          refreshes.push(
-            actions.refreshRegisteredAgents({
-              force: reentered,
-              maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
-            }),
-          );
-        }
-        Promise.all(refreshes).catch((error) =>
-          toast.error(spaceErrorMessage(error)),
-        );
+          }));
       }, 220);
       return () => window.clearTimeout(handle);
     }
     if (activeMode === "goals") {
-      void actions
-        .refreshGoals({ maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS })
-        .catch((error) => toast.error(spaceErrorMessage(error)));
+      void runBackground("goals", () => actions.refreshGoals({
+        maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
+      }));
     }
     if (activeMode === "skills") {
-      void actions
-        .refreshSkills({
-          force: reentered,
-          maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
-        })
-        .then(() => {
-          if (reentered) setSkillRemoteUpdateAvailable(false);
-        })
-        .catch((error) => toast.error(spaceErrorMessage(error)));
+      void runBackground("skills", () => actions.refreshSkills({
+        force: reentered,
+        maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
+      })).then((result) => {
+        if (result.success && reentered) setSkillRemoteUpdateAvailable(false);
+      });
     }
     if (activeMode === "tools") {
-      void actions
-        .refreshTools({
-          force: reentered,
-          maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
-        })
-        .catch((error) => toast.error(spaceErrorMessage(error)));
+      void runBackground("tools", () => actions.refreshTools({
+        force: reentered,
+        maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
+      }));
     }
     if (activeMode === "settings") {
-      void Promise.all([
-        actions.refreshGoals({ maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS }),
-        actions.refreshLocalAgents({ maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS }),
-        actions.refreshRegisteredAgents({
-          maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
-        }),
-      ]).catch((error) => toast.error(spaceErrorMessage(error)));
+      void runBackground("goals", () => actions.refreshGoals({ maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS }));
+      void runBackground("local-agents", () => actions.refreshLocalAgents({ maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS }));
+      void runBackground("registered-agents", () => actions.refreshRegisteredAgents({ maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS }));
     }
-  }, [
-    actions,
-    activeDataScopeKey,
-    admin,
-    issueQuery,
-    activeMode,
-    spaceData.boot,
-    toast,
-  ]);
+  }, [actions, activeDataScopeKey, admin, issueQuery, activeMode, spaceData.boot, runBackground]);
 
   useEffect(() => {
     if (!isActive || spaceData.boot !== "ready") return;
@@ -901,101 +883,74 @@ export default function Space({
 
       if (skillRemoteUpdate) setSkillRemoteUpdateAvailable(true);
 
-      const jobs: Array<Promise<void>> = [];
-      if (refreshBoot)
-        jobs.push(actions.ensureBootstrapped({ force: true, silent: true }));
+      const jobs: Array<Promise<BackgroundRequestResult<void>>> = [];
+      if (refreshBoot) jobs.push(runBackground("bootstrap", () =>
+        actions.ensureBootstrapped({ force: true, silent: true, propagateError: true })));
       if (issueRemoteUpdate) {
-        jobs.push(
-          actions.refreshIssues(issueQueryRef.current, {
-            force: true,
-            silent: true,
-          }),
-        );
+        const query = issueQueryRef.current;
+        jobs.push(runBackground(`issues:${JSON.stringify(query)}`, () =>
+          actions.refreshIssues(query, { force: true, silent: true })));
       }
-      if (issueDetailId && issueRemoteUpdate) {
-        jobs.push(
-          actions.refreshIssueDetail(issueDetailId, {
-            force: true,
-            silent: true,
-          }),
-        );
-      }
-      if (skillRemoteUpdate) {
-        if (selectedSkillId) {
-          jobs.push(
-            actions.refreshSkillDetail(selectedSkillId, {
-              force: true,
-              silent: true,
-            }),
-          );
-        }
-      }
+      if (issueDetailId && issueRemoteUpdate) jobs.push(runBackground(`issue:${issueDetailId}`, () =>
+        actions.refreshIssueDetail(issueDetailId, { force: true, silent: true })));
+      if (skillRemoteUpdate && selectedSkillId) jobs.push(runBackground(`skill:${selectedSkillId}`, () =>
+        actions.refreshSkillDetail(selectedSkillId, { force: true, silent: true })));
       if (toolRemoteUpdate) {
-        jobs.push(actions.refreshTools({ force: true, silent: true }));
+        jobs.push(runBackground("tools", () => actions.refreshTools({ force: true, silent: true })));
         if (selectedToolId) {
-          jobs.push(
-            actions.refreshToolDetail(selectedToolId, {
-              force: true,
-              silent: true,
-            }),
-          );
-          jobs.push(
-            actions.refreshToolRevisions(selectedToolId, {
-              force: true,
-              silent: true,
-            }),
-          );
+          jobs.push(runBackground(`tool:${selectedToolId}`, () =>
+            actions.refreshToolDetail(selectedToolId, { force: true, silent: true })));
+          jobs.push(runBackground(`tool-revisions:${selectedToolId}`, () =>
+            actions.refreshToolRevisions(selectedToolId, { force: true, silent: true })));
         }
       }
       if (refreshAgents) {
-        jobs.push(actions.refreshLocalAgents({ force: true, silent: true }));
-        jobs.push(
-          actions.refreshRegisteredAgents({ force: true, silent: true }),
-        );
+        jobs.push(runBackground("local-agents", () => actions.refreshLocalAgents({ force: true, silent: true })));
+        jobs.push(runBackground("registered-agents", () => actions.refreshRegisteredAgents({ force: true, silent: true })));
       }
-      try {
-        await Promise.all(jobs);
-        recordSpaceMetric("space_tab_visible_revalidate_end", {
-          count: events.length,
-          durationMs: Math.round(nowForSpaceMetric() - startedAt),
-          ok: true,
-        });
-      } catch (error) {
-        recordSpaceMetric("space_tab_visible_revalidate_end", {
-          count: events.length,
-          durationMs: Math.round(nowForSpaceMetric() - startedAt),
-          ok: false,
-          error: spaceErrorMessage(error),
-        });
-        throw error;
-      }
+      const results = await Promise.all(jobs);
+      const failure = results.find((result) => !result.success);
+      recordSpaceMetric("space_tab_visible_revalidate_end", {
+        count: events.length,
+        durationMs: Math.round(nowForSpaceMetric() - startedAt),
+        ok: !failure,
+        ...(failure && !failure.success && failure.error !== undefined
+          ? { error: spaceErrorMessage(failure.error) } : {}),
+      });
     },
-    [actions, issueDetailId, selectedSkillId, selectedToolId],
+    [actions, issueDetailId, selectedSkillId, selectedToolId, runBackground],
   );
 
   useEffect(() => {
     if (!isActive || spaceData.boot !== "ready") return;
     let cancelled = false;
+    let failures = 0;
+    let handle = 0;
     const sync = async () => {
+      if (cancelled) return;
       try {
-        const events = await actions.syncEvents({
+        const result = await runBackground("events", () => actions.syncEvents({
           maxAgeMs: 5_000,
           silent: true,
-        });
-        if (!cancelled) await revalidateForEvents(events);
-      } catch (error) {
-        if (!cancelled) toast.error(spaceErrorMessage(error));
+        }));
+        failures = result.success ? 0 : Math.min(failures + 1, 4);
+        if (!cancelled && result.success) await revalidateForEvents(result.value);
+      } finally {
+        if (!cancelled) {
+          // Schedule after completion: slow requests cannot overlap. Keep the
+          // first recovery prompt, then reduce automatic traffic during outages.
+          const delay = SPACE_EVENTS_SYNC_INTERVAL_MS * 2 ** Math.max(0, failures - 1);
+          handle = window.setTimeout(() => { void sync(); }, delay);
+        }
       }
     };
     void sync();
-    const handle = window.setInterval(() => {
-      void sync();
-    }, SPACE_EVENTS_SYNC_INTERVAL_MS);
+
     return () => {
       cancelled = true;
-      window.clearInterval(handle);
+      window.clearTimeout(handle);
     };
-  }, [actions, isActive, revalidateForEvents, spaceData.boot, toast]);
+  }, [actions, isActive, revalidateForEvents, spaceData.boot, runBackground]);
 
 
   const selectSpaceTab = useCallback((next: ViewMode) => {

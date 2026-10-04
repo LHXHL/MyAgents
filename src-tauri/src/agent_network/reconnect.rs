@@ -1,5 +1,5 @@
 //! Backoff belongs to the connector, never to a business request or mutation.
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Debug)]
 pub(super) enum RetryWake {
@@ -41,10 +41,22 @@ fn parse_retry_after(value: &str, now: i64) -> Option<Duration> {
 #[derive(Default)]
 pub(super) struct ReconnectBackoff {
     failures: u32,
+    first_failure: Option<Instant>,
 }
 impl ReconnectBackoff {
     pub(super) fn reset(&mut self) {
         self.failures = 0;
+        self.first_failure = None;
+    }
+    pub(super) fn recovered(&mut self) {
+        if let Some(started) = self.first_failure {
+            crate::ulog_info!(
+                "[agent-network] reconnect recovered failures={} streakMs={}",
+                self.failures,
+                started.elapsed().as_millis()
+            );
+        }
+        self.reset();
     }
     pub(super) fn next(&mut self, jitter: u16, retry_after: Option<Duration>) -> Duration {
         let base = (5_u64 * 2_u64.pow(self.failures.min(4))).min(60);
@@ -56,7 +68,15 @@ impl ReconnectBackoff {
             )
         };
         self.failures = self.failures.saturating_add(1);
-        delay.max(retry_after.unwrap_or_default())
+        let delay = delay.max(retry_after.unwrap_or_default());
+        let started = self.first_failure.get_or_insert_with(Instant::now);
+        crate::ulog_warn!(
+            "[agent-network] reconnect aggregate failures={} streakMs={} nextDelayMs={}",
+            self.failures,
+            started.elapsed().as_millis(),
+            delay.as_millis()
+        );
+        delay
     }
 }
 

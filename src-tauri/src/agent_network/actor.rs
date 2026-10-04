@@ -464,6 +464,7 @@ pub(crate) fn start(
                             prior,
                             &mut previous,
                             renewed.take(),
+                            &mut reconnect,
                         );
                         tokio::pin!(attempt);
                         tokio::select! { biased;
@@ -683,6 +684,7 @@ async fn connect(
     previous: Option<PreviousConnection>,
     previous_out: &mut Option<(String, PreviousConnection)>,
     renewed: Option<NetworkIdentity>,
+    reconnect: &mut super::reconnect::ReconnectBackoff,
 ) -> Result<NetworkIdentity, NetworkError> {
     let mut identity = match renewed {
         Some(identity) if identity.account.binding_id() == account.binding_id() => {
@@ -758,6 +760,7 @@ async fn connect(
                         match envelope.message {
                             ServerMessage::Ready { catalog_seq: accepted, .. } if ready_requested && accepted == catalog_seq && local_policy.is_some() => {
                                 hydrated = true;
+                                reconnect.recovered();
                                 owner.publish(app, generation, NetworkSnapshot { state: "ready", principal_id: Some(local.principal_id.clone()),
                                     network_id: Some(local.network_id.clone()), error: None, revision: 0, auth_generation: 0 });
                             }

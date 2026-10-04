@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use reqwest::header::AUTHORIZATION;
@@ -19,11 +19,12 @@ use tokio::sync::{Mutex as AsyncMutex, Notify};
 
 use super::{
     api_url, capability_base_url, ensure_space_available, http_client, parse_authorized_cloud_data,
-    parse_cloud_data, read_current_session, session_path, session_user_id, space_build_capability,
-    url_component, with_space_client_context_headers, write_private_json_unlocked,
-    AuthenticatedSpaceSession, SpaceCommandError,
+    read_current_session, session_path, session_user_id, space_build_capability, url_component,
+    with_space_client_context_headers, write_private_json_unlocked, AuthenticatedSpaceSession,
+    SpaceCommandError,
 };
 use crate::app_route::AppRoute;
+use crate::network_diagnostics::{error_category, RequestDiagnostic};
 use crate::{ulog_debug, ulog_info, ulog_warn};
 
 const STATE_FILE: &str = "notification-state.json";
@@ -717,21 +718,22 @@ async fn fetch_page(
     if let Some(session) = context.session.as_ref() {
         request = request.header(AUTHORIZATION, format!("Bearer {}", session.session_token()));
     }
-    let response = request.send().await.map_err(|error| {
-        SpaceCommandError::transport(format!("Notification feed request failed: {error}"))
+    let diagnostic = RequestDiagnostic::new("space-notifications", &reqwest::Method::GET, &path);
+    let response = diagnostic.send(request).await.map_err(|error| {
+        SpaceCommandError::transport(format!(
+            "Notification feed request failed ({})",
+            error_category(&error)
+        ))
     })?;
-    if let Some(session) = context.session.as_ref() {
-        let value = parse_authorized_cloud_data(response, Some(session)).await?;
+    {
+        let value =
+            parse_authorized_cloud_data(response, context.session.as_ref(), &diagnostic).await?;
         serde_json::from_value(value).map_err(|error| {
             SpaceCommandError::local(
                 "SPACE_RESPONSE_INVALID",
                 format!("Invalid notification feed response: {error}"),
             )
         })
-    } else {
-        parse_cloud_data::<FeedPage>(response)
-            .await
-            .map_err(SpaceCommandError::from)
     }
 }
 
@@ -743,20 +745,24 @@ async fn post_authenticated(
     let session = context.session.as_ref().ok_or_else(|| {
         SpaceCommandError::local("SPACE_REAUTH_REQUIRED", "Space login is required")
     })?;
-    let response = with_space_client_context_headers(
-        http_client()
-            .map_err(SpaceCommandError::from)?
-            .post(api_url(&context.base_url, path).map_err(SpaceCommandError::from)?)
-            .header(AUTHORIZATION, format!("Bearer {}", session.session_token()))
-            .json(&body),
-        &space_build_capability(),
-    )
-    .send()
-    .await
-    .map_err(|error| {
-        SpaceCommandError::transport(format!("Notification mutation failed: {error}"))
-    })?;
-    parse_authorized_cloud_data(response, Some(session)).await
+    let diagnostic = RequestDiagnostic::new("space-notifications", &reqwest::Method::POST, path);
+    let response = diagnostic
+        .send(with_space_client_context_headers(
+            http_client()
+                .map_err(SpaceCommandError::from)?
+                .post(api_url(&context.base_url, path).map_err(SpaceCommandError::from)?)
+                .header(AUTHORIZATION, format!("Bearer {}", session.session_token()))
+                .json(&body),
+            &space_build_capability(),
+        ))
+        .await
+        .map_err(|error| {
+            SpaceCommandError::transport(format!(
+                "Notification mutation failed ({})",
+                error_category(&error)
+            ))
+        })?;
+    parse_authorized_cloud_data(response, Some(session), &diagnostic).await
 }
 
 fn touch_account<'a>(
@@ -1281,9 +1287,17 @@ fn poll_interval(app: &AppHandle) -> Duration {
 pub fn start(app: AppHandle, center: ManagedNotificationCenter) {
     tauri::async_runtime::spawn(async move {
         let mut failures = 0u32;
+        let mut first_failure: Option<Instant> = None;
         loop {
             let succeeded = run_refresh(&app, &center).await;
             failures = if succeeded {
+                if let Some(started) = first_failure.take() {
+                    ulog_info!(
+                        "[NotificationCenter] sync recovered failures={} streakMs={}",
+                        failures,
+                        started.elapsed().as_millis()
+                    );
+                }
                 0
             } else {
                 failures.saturating_add(1)
@@ -1295,6 +1309,15 @@ pub fn start(app: AppHandle, center: ManagedNotificationCenter) {
                 let multiplier = 1u32 << failures.min(5);
                 base.saturating_mul(multiplier).min(MAX_BACKOFF)
             };
+            if failures > 0 {
+                let started = first_failure.get_or_insert_with(Instant::now);
+                ulog_warn!(
+                    "[NotificationCenter] sync aggregate failures={} streakMs={} nextDelayMs={}",
+                    failures,
+                    started.elapsed().as_millis(),
+                    wait.as_millis()
+                );
+            }
             tokio::select! {
                 _ = tokio::time::sleep(wait) => {},
                 _ = center.wake.notified() => {},

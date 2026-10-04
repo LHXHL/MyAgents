@@ -159,6 +159,12 @@ assignee是持久责任，claim是执行层租约，Issue state是工作状态�
 
 分页追加按id去重；请求失败保留最近成功数据并展示inline error。账号、origin或credential transition必须先隔离旧cache，不能让上一个环境/账号的数据短暂成为当前事实。
 
+Space 页面的自动进入/刷新、事件轮询及事件触发的资源刷新通过 `useBackgroundRequestFeedback` 处理提示：同一资源连续失败至少 3 次且首个失败后至少 30 秒才弹 Toast，持续失败每 5 分钟最多提示一次，成功后重置该资源。页面内数据/error 与 API 日志照常保留；手动刷新、保存、登录、显式导航等操作仍立即反馈错误。
+
+自动事件轮询在前一次请求及资源刷新完成后再安排下一次，正常间隔 15 秒；连续事件请求失败时按 15/30/60/120 秒退避，上限 120 秒，成功后回到 15 秒。隐藏或 scope 切换会取消旧计时器，不重放业务写入。事件触发的 silent bootstrap 使用既有 `propagateError` 让调用方能观察真实失败，store 仍保留最近成功数据和 inline error。
+
+提示策略由自动请求调用方的组件生命周期持有，按服务 origin、Space 和登录 session binding 隔离；暂时隐藏页面保留原 scope 的冷却，账号/空间切换重新计数。只采纳同资源最新调用的完成，隐藏、卸载、旧 generation 的完成不计数或提示。原 `spaceStore` 继续裁决 force/请求合并和数据提交，Toast 组件不猜测请求来源或解析错误文案。
+
 ### 8.3 Skills、Tools 与 profile
 
 Cloud拥有Skill package、Tool revision/icon和profile数据；Desktop只做安装、上传、下载与本地展示。Skill安装目标只能是global或current project，zip必须限制总大小、单项大小和entry数并防Zip-Slip；覆盖采用完整staging后原子目录交换，不做文件级合并。
@@ -169,7 +175,7 @@ Cloud拥有Skill package、Tool revision/icon和profile数据；Desktop只做安
 
 ## 9. 文件与网络安全
 
-所有Space网络请求由Rust `reqwest` 发起并统一添加client context：public client id、版本、device、platform、OS、locale与User-Agent。credential transition只依据结构化 credential kind和HTTP status；不得匹配自由文本错误或token过期时间猜测。日志只记录redacted binding/request id。
+所有Space网络请求由Rust `reqwest` 发起并统一添加client context：public client id、版本、device、platform、OS、locale与User-Agent。credential transition只依据结构化 credential kind和HTTP status；不得匹配自由文本错误或token过期时间猜测。外部 HTTP 日志通过 `network_diagnostics::RequestDiagnostic` 只记录脱敏路由、阶段、错误分类、状态、耗时及安全 request id，不记录凭据、正文或 reqwest 原始错误；通知同步 loop 在现有退避计数内记录连续失败与恢复摘要。
 
 用户可控workspace路径先通过`validate_workspace_root`。附件IO满足：
 

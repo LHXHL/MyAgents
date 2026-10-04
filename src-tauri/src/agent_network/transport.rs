@@ -2,6 +2,9 @@
 //! No user account credential ever enters this client.
 use super::crypto::{external_tls_config, DevicePrivateKey};
 use super::NetworkError;
+use crate::network_diagnostics::{
+    error_category, response_request_id, safe_request_id, RequestDiagnostic,
+};
 use myagents_agent_network_protocol::{budget, validate_metadata, MetadataKind};
 use reqwest::header::{HeaderValue, AUTHORIZATION};
 use serde::Deserialize;
@@ -60,6 +63,7 @@ impl NetworkTransport {
         method: &reqwest::Method,
         url: &url::Url,
         token: &str,
+        diagnostic: &RequestDiagnostic,
     ) -> Result<reqwest::Response, NetworkError> {
         for attempt in 0..2 {
             let nonce = self
@@ -75,12 +79,14 @@ impl NetworkTransport {
             )?)
             .map_err(|_| NetworkError::new("NETWORK_PROOF_INVALID"))?;
             proof.set_sensitive(true);
-            let response = request
-                .try_clone()
-                .ok_or_else(|| NetworkError::new("NETWORK_REQUEST_INVALID"))?
-                .header(AUTHORIZATION, bearer(token)?)
-                .header("DPoP", proof)
-                .send()
+            let response = diagnostic
+                .send(
+                    request
+                        .try_clone()
+                        .ok_or_else(|| NetworkError::new("NETWORK_REQUEST_INVALID"))?
+                        .header(AUTHORIZATION, bearer(token)?)
+                        .header("DPoP", proof),
+                )
                 .await
                 .map_err(|_| NetworkError::new("NETWORK_TRANSPORT_FAILED"))?;
             if response.status() == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
@@ -136,55 +142,37 @@ impl NetworkTransport {
                 .header("Content-Type", "application/json")
                 .body(bytes);
         }
-        let mut response = self.authenticated(request, &method, &url, token).await?;
+        let diagnostic = RequestDiagnostic::new("agent-network", &method, &path);
+        let mut response = self
+            .authenticated(request, &method, &url, token, &diagnostic)
+            .await?;
         allocation.resize(0)?;
         let status = response.status();
         let retry_after = super::reconnect::retry_after(&response);
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| NetworkError::new("NETWORK_TRANSPORT_FAILED"))?
-        {
-            if bytes.len() + chunk.len() > budget("catalogBytes") {
-                return Err(NetworkError::new("MESSAGE_TOO_LARGE"));
-            }
-            allocation.resize((bytes.len() + chunk.len()) * 2)?;
-            bytes
-                .try_reserve_exact(chunk.len())
-                .map_err(|_| NetworkError::new("CONNECTOR_CAPACITY"))?;
-            bytes.extend_from_slice(&chunk);
-        }
-        #[derive(Deserialize)]
-        struct Envelope {
-            ok: bool,
-            data: Option<Value>,
-            error: Option<Failure>,
-        }
-        #[derive(Deserialize)]
-        struct Failure {
-            code: String,
-            retryable: bool,
-            details: Option<Value>,
-        }
-        let result: Envelope = serde_json::from_slice(&bytes)
-            .map_err(|_| { let mut error = NetworkError::new("NETWORK_RESPONSE_INVALID"); error.retry_after = retry_after; error })?;
-        if !status.is_success() || !result.ok {
-            let failure = result
-                .error
-                .ok_or_else(|| NetworkError::new("NETWORK_RESPONSE_INVALID"))?;
-            let mut error = NetworkError::cloud(&failure.code, status.as_u16());
-            error.retryable =
-                failure.retryable && (status.as_u16() == 429 || status.is_server_error());
-            error.details = failure.details;
-            error.retry_after = retry_after;
-            return Err(error);
-        }
-        let value = result
-            .data
-            .ok_or_else(|| NetworkError::new("NETWORK_RESPONSE_INVALID"))?;
-        validate_metadata(route.response_kind(), &value)
-            .map_err(|_| NetworkError::new("NETWORK_RESPONSE_INVALID"))?;
+        let mut request_id = response_request_id(&response);
+        let bytes = read_response_body(&mut response, &mut allocation, &diagnostic).await?;
+        let value =
+            decode_response(status, &bytes, retry_after, &mut request_id).inspect_err(|error| {
+                diagnostic.failure(
+                    "decode",
+                    if error.code == "NETWORK_RESPONSE_INVALID" {
+                        "decode"
+                    } else {
+                        "http"
+                    },
+                    Some(status.as_u16()),
+                    request_id.as_deref(),
+                );
+            })?;
+        validate_metadata(route.response_kind(), &value).map_err(|_| {
+            diagnostic.failure(
+                "schema",
+                "decode",
+                Some(status.as_u16()),
+                request_id.as_deref(),
+            );
+            NetworkError::new("NETWORK_RESPONSE_INVALID")
+        })?;
         Ok((value, allocation))
     }
     pub(crate) async fn websocket(&self, token: &str) -> Result<NetworkSocket, NetworkError> {
@@ -201,8 +189,9 @@ impl NetworkTransport {
             .header("Sec-WebSocket-Key", &key)
             .header("Sec-WebSocket-Version", "13")
             .header("Sec-WebSocket-Protocol", "myagents-agent-network.v1");
+        let diagnostic = RequestDiagnostic::new("agent-network", &reqwest::Method::GET, "/v1/ws");
         let response = self
-            .authenticated(request, &reqwest::Method::GET, &url, token)
+            .authenticated(request, &reqwest::Method::GET, &url, token, &diagnostic)
             .await?;
         let headers = response.headers();
         let retry_after = super::reconnect::retry_after(&response);
@@ -219,14 +208,16 @@ impl NetworkTransport {
             || get("Sec-WebSocket-Protocol") != Some("myagents-agent-network.v1")
             || headers.contains_key("Sec-WebSocket-Extensions")
         {
-            let mut error = NetworkError::new("NETWORK_UPGRADE_REJECTED");
+            diagnostic.failure("upgrade", "http", Some(response.status().as_u16()), None);
+            let mut error =
+                NetworkError::cloud("NETWORK_UPGRADE_REJECTED", response.status().as_u16());
             error.retry_after = retry_after;
             return Err(error);
         }
-        let stream = response
-            .upgrade()
-            .await
-            .map_err(|_| NetworkError::new("NETWORK_UPGRADE_REJECTED"))?;
+        let stream = response.upgrade().await.map_err(|error| {
+            diagnostic.failure("upgrade", error_category(&error), None, None);
+            NetworkError::new("NETWORK_UPGRADE_REJECTED")
+        })?;
         let config = WebSocketConfig {
             write_buffer_size: 0,
             max_write_buffer_size: budget("socketQueueBytes"),
@@ -238,6 +229,118 @@ impl NetworkTransport {
         Ok(WebSocketStream::from_raw_socket(stream, Role::Client, Some(config)).await)
     }
 }
+fn body_failure(
+    status: reqwest::StatusCode,
+    retry_after: Option<Duration>,
+    successful_response_error: NetworkError,
+) -> NetworkError {
+    let mut error = if status.is_success() {
+        successful_response_error
+    } else {
+        NetworkError::cloud("NETWORK_HTTP_FAILED", status.as_u16())
+    };
+    error.retry_after = retry_after;
+    error
+}
+async fn read_response_body(
+    response: &mut reqwest::Response,
+    allocation: &mut super::memory::Allocation,
+    diagnostic: &RequestDiagnostic,
+) -> Result<Vec<u8>, NetworkError> {
+    let status = response.status();
+    let retry_after = super::reconnect::retry_after(response);
+    let request_id = response_request_id(response);
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        diagnostic.failure(
+            "body",
+            error_category(&error),
+            Some(status.as_u16()),
+            request_id.as_deref(),
+        );
+        body_failure(
+            status,
+            retry_after,
+            NetworkError::new("NETWORK_TRANSPORT_FAILED"),
+        )
+    })? {
+        if bytes.len() + chunk.len() > budget("catalogBytes") {
+            diagnostic.failure("body", "size", Some(status.as_u16()), request_id.as_deref());
+            return Err(body_failure(
+                status,
+                retry_after,
+                NetworkError::new("MESSAGE_TOO_LARGE"),
+            ));
+        }
+        allocation
+            .resize((bytes.len() + chunk.len()) * 2)
+            .map_err(|error| {
+                diagnostic.failure(
+                    "body",
+                    "capacity",
+                    Some(status.as_u16()),
+                    request_id.as_deref(),
+                );
+                body_failure(status, retry_after, error)
+            })?;
+        bytes.try_reserve_exact(chunk.len()).map_err(|_| {
+            diagnostic.failure(
+                "body",
+                "capacity",
+                Some(status.as_u16()),
+                request_id.as_deref(),
+            );
+            body_failure(status, retry_after, NetworkError::new("CONNECTOR_CAPACITY"))
+        })?;
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+fn decode_response(
+    status: reqwest::StatusCode,
+    bytes: &[u8],
+    retry_after: Option<Duration>,
+    request_id: &mut Option<String>,
+) -> Result<Value, NetworkError> {
+    #[derive(Deserialize)]
+    struct Envelope {
+        ok: bool,
+        data: Option<Value>,
+        error: Option<Failure>,
+        #[serde(rename = "requestId")]
+        request_id: Option<Value>,
+    }
+    #[derive(Deserialize)]
+    struct Failure {
+        code: String,
+        retryable: bool,
+        details: Option<Value>,
+    }
+    let fallback = || {
+        let mut error = if status.is_success() {
+            NetworkError::new("NETWORK_RESPONSE_INVALID")
+        } else {
+            NetworkError::cloud("NETWORK_HTTP_FAILED", status.as_u16())
+        };
+        error.retry_after = retry_after;
+        error
+    };
+    let envelope: Envelope = serde_json::from_slice(bytes).map_err(|_| fallback())?;
+    if let Some(id) = safe_request_id(envelope.request_id.as_ref().and_then(Value::as_str)) {
+        *request_id = Some(id.to_owned());
+    }
+    if !status.is_success() || !envelope.ok {
+        let failure = envelope.error.ok_or_else(fallback)?;
+        let mut error = NetworkError::cloud(&failure.code, status.as_u16());
+        error.retryable = failure.retryable && (status.as_u16() == 429 || status.is_server_error());
+        error.details = failure.details;
+        error.retry_after = retry_after;
+        return Err(error);
+    }
+    envelope.data.ok_or_else(fallback)
+}
+
 fn bearer(token: &str) -> Result<HeaderValue, NetworkError> {
     if token.len() > 32_768 {
         return Err(NetworkError::new("NETWORK_TOKEN_INVALID"));
@@ -386,5 +489,168 @@ impl NetworkRoute<'_> {
                 format!("/v1/mutations/{}", uuid(mutation_id)?),
             ),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn decode_response(
+        status: reqwest::StatusCode,
+        bytes: &[u8],
+        retry_after: Option<Duration>,
+    ) -> Result<Value, NetworkError> {
+        super::decode_response(status, bytes, retry_after, &mut None)
+    }
+    #[test]
+    fn envelope_request_id_is_projected_once_and_rejects_unsafe_metadata() {
+        for (value, expected) in [
+            (serde_json::json!("req-123_abc"), Some("req-123_abc")),
+            (serde_json::json!("https://secret/path?token=private"), None),
+            (serde_json::json!("line\nnext"), None),
+            (serde_json::json!("x".repeat(129)), None),
+            (serde_json::json!({"secret":"body"}), None),
+        ] {
+            let bytes = serde_json::to_vec(&serde_json::json!({"ok":false,"requestId":value,"error":{"code":"RATE_LIMITED","retryable":true}})).unwrap();
+            let mut request_id = None;
+            let error = super::decode_response(
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                &bytes,
+                None,
+                &mut request_id,
+            )
+            .unwrap_err();
+            assert_eq!(error.code, "RATE_LIMITED");
+            assert_eq!(request_id.as_deref(), expected);
+        }
+    }
+    #[tokio::test]
+    async fn bounded_body_reader_preserves_edge_status_and_delay() {
+        let diagnostic =
+            RequestDiagnostic::new("agent-network", &reqwest::Method::GET, "/v1/me/network");
+        for status in [429, 503, 200] {
+            for oversized in [false, true] {
+                let bytes = if oversized {
+                    vec![b'x'; budget("catalogBytes") + 1]
+                } else {
+                    b"truncated".to_vec()
+                };
+                let (mut response, server) =
+                    crate::network_diagnostics::test_response(status, bytes, !oversized).await;
+                let memory = super::super::memory::MemoryBudget::default();
+                let mut allocation = memory.reserve(0).unwrap();
+                let error = read_response_body(&mut response, &mut allocation, &diagnostic)
+                    .await
+                    .unwrap_err();
+                drop(response);
+                server.join().unwrap();
+                // Even the rejected over-limit chunk cannot charge beyond the
+                // response cap; releasing the reader restores the whole budget.
+                let remainder = memory
+                    .reserve(budget("connectorBytes") - 2 * budget("catalogBytes"))
+                    .unwrap();
+                drop(remainder);
+                drop(allocation);
+                assert!(memory.reserve(budget("connectorBytes")).is_ok());
+                if status == 200 {
+                    assert_eq!(
+                        error.code,
+                        if oversized {
+                            "MESSAGE_TOO_LARGE"
+                        } else {
+                            "NETWORK_TRANSPORT_FAILED"
+                        }
+                    );
+                    assert!(!error.retryable);
+                    assert_eq!(error.retry_after, None);
+                } else {
+                    assert_eq!(error.code, "NETWORK_HTTP_FAILED");
+                    assert!(error.retryable);
+                    assert_eq!(error.retry_after, Some(Duration::from_secs(45)));
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn body_reader_accepts_exact_limit_and_preserves_status_on_memory_limit() {
+        let diagnostic =
+            RequestDiagnostic::new("agent-network", &reqwest::Method::GET, "/v1/me/network");
+        let (mut response, server) = crate::network_diagnostics::test_response(
+            200,
+            vec![b'x'; budget("catalogBytes")],
+            false,
+        )
+        .await;
+        let memory = super::super::memory::MemoryBudget::default();
+        let mut allocation = memory.reserve(0).unwrap();
+        assert_eq!(
+            read_response_body(&mut response, &mut allocation, &diagnostic)
+                .await
+                .unwrap()
+                .len(),
+            budget("catalogBytes")
+        );
+        server.join().unwrap();
+        drop(allocation);
+        for status in [429, 503] {
+            let held = memory.reserve(budget("connectorBytes")).unwrap();
+            let mut allocation = memory.reserve(0).unwrap();
+            let (mut response, server) =
+                crate::network_diagnostics::test_response(status, b"error".to_vec(), false).await;
+            let error = read_response_body(&mut response, &mut allocation, &diagnostic)
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, "NETWORK_HTTP_FAILED");
+            assert!(error.retryable);
+            assert_eq!(error.retry_after, Some(Duration::from_secs(45)));
+            drop(response);
+            server.join().unwrap();
+            drop(held);
+        }
+    }
+    #[test]
+    fn edge_http_failures_keep_status_retryability_and_retry_after() {
+        for status in [429, 500, 502, 503, 504] {
+            for bytes in [
+                b"".as_slice(),
+                b"<html>edge error</html>".as_slice(),
+                br#"{"ok":false}"#.as_slice(),
+            ] {
+                let error = decode_response(
+                    reqwest::StatusCode::from_u16(status).unwrap(),
+                    bytes,
+                    Some(Duration::from_secs(45)),
+                )
+                .unwrap_err();
+                assert_eq!(error.code, "NETWORK_HTTP_FAILED");
+                assert!(error.retryable);
+                assert_eq!(error.retry_after, Some(Duration::from_secs(45)));
+            }
+        }
+        assert!(
+            !decode_response(reqwest::StatusCode::UNAUTHORIZED, b"", None)
+                .unwrap_err()
+                .retryable
+        );
+        for bytes in [
+            b"".as_slice(),
+            b"<html>bad</html>".as_slice(),
+            br#"{"ok":true}"#.as_slice(),
+        ] {
+            assert_eq!(
+                decode_response(reqwest::StatusCode::OK, bytes, None)
+                    .unwrap_err()
+                    .code,
+                "NETWORK_RESPONSE_INVALID"
+            );
+        }
+    }
+    #[test]
+    fn structured_cloud_failure_preserves_protocol_fields() {
+        let error = decode_response(reqwest::StatusCode::TOO_MANY_REQUESTS, br#"{"ok":false,"error":{"code":"RATE_LIMITED","retryable":true,"details":{"limit":2}}}"#, Some(Duration::from_secs(5))).unwrap_err();
+        assert_eq!(error.code, "RATE_LIMITED");
+        assert!(error.retryable);
+        assert_eq!(error.details, Some(serde_json::json!({"limit":2})));
     }
 }

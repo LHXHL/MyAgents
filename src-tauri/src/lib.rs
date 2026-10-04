@@ -48,6 +48,7 @@ pub mod tokendance;
 pub use myagents_media_worker_protocol as media_worker_protocol;
 pub mod memory_auto_update;
 pub mod memory_evolution;
+mod network_diagnostics;
 pub mod notification;
 pub mod notification_badge;
 pub mod perf_trace;

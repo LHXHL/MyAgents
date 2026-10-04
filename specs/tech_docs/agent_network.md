@@ -97,6 +97,12 @@ Rust 原 connector 拥有连续连接失败退避：首次恢复仍为 5 秒，�
 Metadata reads and connection snapshots do not assert a user save. After metadata queue handoff, timeout or a dropped connection future yields uncertain outcome only for membership/enable/description writes; receipt inspection remains read-only and no write is replayed. Actual auth-generation changes fence discarded account scope; transport or power-generation changes alone are not evidence of account change. The existing actor reconnect loop owns recovery; Renderer describes that state and keeps its read retry separate from write receipt recovery.
 
 
+### 公钥缓存与网络诊断
+
+`AccountVerifier` 的克隆共享当前 identity 生命周期内的公钥及刷新时间；同一轮成功刷新合并并发等待，失败或取消不替换旧公钥。服务环境/账号实例不跨 scope 复用；验证在等待前后均检查 account binding，缓存不代替实时账号 authority。
+
+Rust 外部 HTTP owner 通过 `network_diagnostics::RequestDiagnostic` 记录阶段、粗粒度错误分类、HTTP status、耗时及安全 requestId；路由动态段和查询参数脱敏，不记录凭据、正文或 reqwest 原始错误。AgentNet connector 和通知同步 loop 在原退避 owner 内汇总连续失败、持续时间、下一次等待与恢复。空白或非 JSON 的 HTTP 429/5xx 保留真实状态和可重试语义，成功响应的格式/schema 错误仍按响应无效处理；`Retry-After` 只影响后台重连，不自动重放业务请求。
+
 ### 持久目录失效通知
 
 工作区目录的 authority 是 `projects.json` 与 `config.json` 的既有身份 registry；Renderer 快照不作为上传内容。Renderer 的 `notifyConfigChanged` 除无配置载荷的 DOM 通知外，向既有 native `app:config-changed` fanout；Sidecar 的 `broadcastAppConfigChanged` 同时广播 SSE 并调用既有 Management API。SSE bridge 只刷新窗口，不反向重复发布 native 通知。网络 actor 复用既有 `Notify` 后重新读取 registry，离线时由下次连接重建目录，无新增轮询。

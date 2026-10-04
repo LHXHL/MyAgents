@@ -8,6 +8,7 @@ use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use myagents_agent_network_protocol::{budget, PeerBinding};
 use serde::Deserialize;
 use serde_json::Value;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Deserialize)]
@@ -57,16 +58,56 @@ impl VerifiedPeer {
 #[derive(Clone)]
 pub(crate) struct AccountVerifier {
     account: NetworkAccountSession,
+    keys: VerificationKeyCache,
+}
+
+struct CachedVerificationKeys {
     keys: JwkSet,
     last_refresh: Instant,
 }
+
+/// Public signing keys belong to this verifier lifecycle. Channel jobs clone
+/// the verifier, so their refresh must update the same cache and deadline.
+#[derive(Clone)]
+struct VerificationKeyCache {
+    shared: Arc<tokio::sync::Mutex<CachedVerificationKeys>>,
+}
+impl VerificationKeyCache {
+    fn new(keys: JwkSet) -> Self {
+        Self {
+            shared: Arc::new(tokio::sync::Mutex::new(CachedVerificationKeys {
+                keys,
+                last_refresh: Instant::now(),
+            })),
+        }
+    }
+
+    async fn keys_for(
+        &self,
+        kid: &str,
+        load: impl std::future::Future<Output = Result<Value, NetworkError>>,
+    ) -> Result<JwkSet, NetworkError> {
+        let mut cached = self.shared.lock().await;
+        // Recheck after acquiring the lock. Concurrent channel checks share one
+        // refresh; a failed/cancelled load leaves the prior state unchanged.
+        if cached.last_refresh.elapsed() >= Duration::from_secs(60)
+            || (cached.keys.find(kid).is_none()
+                && cached.last_refresh.elapsed() >= Duration::from_secs(1))
+        {
+            let keys = checked_jwks(load.await?)?;
+            cached.keys = keys;
+            cached.last_refresh = Instant::now();
+        }
+        Ok(cached.keys.clone())
+    }
+}
+
 impl AccountVerifier {
     pub(crate) async fn new(account: NetworkAccountSession) -> Result<Self, NetworkError> {
         let keys = checked_jwks(account.request(AccountOperation::Jwks, None).await?)?;
         Ok(Self {
             account,
-            keys,
-            last_refresh: Instant::now(),
+            keys: VerificationKeyCache::new(keys),
         })
     }
     async fn verify(
@@ -80,20 +121,20 @@ impl AccountVerifier {
         let header = checked_header(token, typ)?;
         let kid = header.kid.as_deref().ok_or_else(invalid_token)?;
         // One bounded unknown-kid refresh; token contents can never select a URL.
-        if self.last_refresh.elapsed() >= Duration::from_secs(60)
-            || (self.keys.find(kid).is_none()
-                && self.last_refresh.elapsed() >= Duration::from_secs(1))
-        {
-            self.keys = checked_jwks(self.account.request(AccountOperation::Jwks, None).await?)?;
-            self.last_refresh = Instant::now();
-        }
+        let keys = self
+            .keys
+            .keys_for(kid, self.account.request(AccountOperation::Jwks, None))
+            .await?;
+        // A shared refresh can wait behind another channel job. That wait does
+        // not grant authority to an account binding that changed meanwhile.
+        self.account.ensure_current()?;
         verify_with_keys(
             self.account.issuer(),
             audience,
             typ,
             max_lifetime,
             token,
-            &self.keys,
+            &keys,
         )
     }
     pub(crate) async fn access(&mut self, token: &str) -> Result<AccessClaims, NetworkError> {
@@ -302,6 +343,144 @@ mod tests {
           "alg":"ES256","use":"sig","kid":"isolated-key"}]}),
         )
     }
+
+    async fn age_cache(cache: &VerificationKeyCache, seconds: u64) {
+        cache.shared.lock().await.last_refresh = Instant::now() - Duration::from_secs(seconds);
+    }
+
+    #[tokio::test]
+    async fn cloned_channel_verifiers_share_one_expired_key_refresh() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let (_, public) = fixture();
+        let cache = VerificationKeyCache::new(checked_jwks(public.clone()).unwrap());
+        age_cache(&cache, 61).await;
+        let first = cache.clone();
+        let second = cache.clone();
+        let loads = AtomicUsize::new(0);
+        let load = || async {
+            loads.fetch_add(1, Ordering::SeqCst);
+            tokio::task::yield_now().await;
+            Ok(public.clone())
+        };
+        let (first_keys, second_keys) = tokio::join!(
+            first.keys_for("isolated-key", load()),
+            second.keys_for("isolated-key", load()),
+        );
+        assert!(first_keys.unwrap().find("isolated-key").is_some());
+        assert!(second_keys.unwrap().find("isolated-key").is_some());
+        cache.keys_for("isolated-key", load()).await.unwrap();
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_clone_shares_rotated_keys_and_unknown_key_refresh_cooldown() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let (_, original) = fixture();
+        let (_, mut rotated) = fixture();
+        rotated["keys"][0]["kid"] = json!("rotated-key");
+        let cache = VerificationKeyCache::new(checked_jwks(original).unwrap());
+        age_cache(&cache, 2).await;
+        let channel = cache.clone();
+        let loads = AtomicUsize::new(0);
+        let load = || async {
+            loads.fetch_add(1, Ordering::SeqCst);
+            Ok(rotated.clone())
+        };
+        let refreshed = channel.keys_for("rotated-key", load()).await.unwrap();
+        assert!(refreshed.find("rotated-key").is_some());
+        assert!(refreshed.find("isolated-key").is_none());
+        assert!(cache
+            .keys_for("rotated-key", load())
+            .await
+            .unwrap()
+            .find("rotated-key")
+            .is_some());
+        // Repeated unrecognized keys cannot cause a refresh per verification.
+        assert!(cache
+            .keys_for("unknown-key", load())
+            .await
+            .unwrap()
+            .find("unknown-key")
+            .is_none());
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_and_invalid_refreshes_preserve_state_and_allow_recovery() {
+        let (_, public) = fixture();
+        let cache = VerificationKeyCache::new(checked_jwks(public.clone()).unwrap());
+        age_cache(&cache, 61).await;
+        let original_refresh = cache.shared.lock().await.last_refresh;
+        let channel = cache.clone();
+        let failed = channel
+            .keys_for("isolated-key", async {
+                Err(NetworkError::cloud("ACCOUNT_SERVICE_UNAVAILABLE", 503))
+            })
+            .await;
+        assert_eq!(failed.unwrap_err().code, "ACCOUNT_SERVICE_UNAVAILABLE");
+        let invalid = channel
+            .keys_for("isolated-key", async { Ok(json!({ "keys": [] })) })
+            .await;
+        assert_eq!(invalid.unwrap_err().code, "NETWORK_SIGNED_IDENTITY_INVALID");
+        {
+            let prior = cache.shared.lock().await;
+            assert_eq!(prior.last_refresh, original_refresh);
+            assert!(prior.keys.find("isolated-key").is_some());
+        }
+        assert!(cache
+            .keys_for("isolated-key", async { Ok(public) })
+            .await
+            .unwrap()
+            .find("isolated-key")
+            .is_some());
+        assert!(cache.shared.lock().await.last_refresh > original_refresh);
+    }
+
+    #[tokio::test]
+    async fn cancelled_channel_refresh_releases_the_shared_cache() {
+        let (_, public) = fixture();
+        let cache = VerificationKeyCache::new(checked_jwks(public.clone()).unwrap());
+        age_cache(&cache, 61).await;
+        let original_refresh = cache.shared.lock().await.last_refresh;
+        let channel = cache.clone();
+        let mut loading = Box::pin(channel.keys_for("isolated-key", std::future::pending()));
+        assert!(futures_util::poll!(loading.as_mut()).is_pending());
+        drop(loading);
+        assert_eq!(cache.shared.lock().await.last_refresh, original_refresh);
+        let recovered = tokio::time::timeout(
+            Duration::from_secs(1),
+            cache.keys_for("isolated-key", async { Ok(public) }),
+        )
+        .await
+        .expect("a cancelled job must release the refresh lock")
+        .unwrap();
+        assert!(recovered.find("isolated-key").is_some());
+    }
+
+    #[tokio::test]
+    async fn separately_created_verifier_scopes_do_not_share_keys_or_deadlines() {
+        let (_, public) = fixture();
+        let (_, mut rotated) = fixture();
+        rotated["keys"][0]["kid"] = json!("another-scope-key");
+        let first = VerificationKeyCache::new(checked_jwks(public.clone()).unwrap());
+        let other = VerificationKeyCache::new(checked_jwks(public).unwrap());
+        age_cache(&first, 61).await;
+        first
+            .keys_for("another-scope-key", async { Ok(rotated) })
+            .await
+            .unwrap();
+        let untouched = other
+            .keys_for("isolated-key", async {
+                panic!("a fresh independent scope must not load keys")
+            })
+            .await
+            .unwrap();
+        assert!(untouched.find("isolated-key").is_some());
+        assert!(untouched.find("another-scope-key").is_none());
+    }
+
     #[test]
     fn network_jws_uses_fixed_trust_source_type_and_claim_budgets() {
         let (key, public) = fixture();
