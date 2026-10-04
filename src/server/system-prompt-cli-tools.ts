@@ -113,37 +113,20 @@ Full docs and supported formats: run \`myagents im readme\`.
 </myagents-cli-im-media>`;
 
 const SECTION_RECORD = `<myagents-cli-record>
-The user can ask you to save a passing idea or note into their MyAgents
-Records. Capture it ONLY when the user explicitly asks you to
-save / remember / note specific content for later:
+The user can ask you to save a passing idea or note into MyAgents Records.
+Create a text Record only when the user explicitly asks to save specific
+content for later, e.g. "记一下", "帮我记", "记下来", "note this down",
+or "save this for later".
 
-  "记一下" / "帮我记" / "帮我记一下" / "记个想法" / "记下来"
-  "note this down" / "remember this" / "save this for later"
+Background context, FYI remarks, user preferences, brainstorming, and
+unsolicited ideas do not imply a request to save. The trigger is the
+user's explicit request, not merely the presence of recordable content.
 
-Do NOT infer filing intent from background context, FYI remarks, user
-preferences, brainstorming, or unsolicited ideas — those go into the
-discussion, not the inbox. The trigger is the user's explicit ask to
-record, not the presence of recordable content.
+Write the content to a UTF-8 text file, then run:
+  myagents record create --content-file <absolute-path>
 
-  myagents record list [--kind text|audio] [--tag X] [--limit N] [--json]
-  myagents record create '<content>'                     # capture a text Record
-  myagents record create --content-file <abs-path>       # if content has CJK
-                                                           # / multi-line / shell
-                                                           # metachars / on Windows
-
-This CLI capture creates a text Record; it does not start microphone recording.
-Legacy 'myagents thought' remains compatible for published scripts, but never
-emit it in a new workflow.
-
-For \`create\`, ALWAYS wrap the content in single quotes ('...'), not
-double quotes. The user's content is shell data and may contain
-\`$(...)\`, backticks, or \`\\\`; double quotes let bash interpolate
-those, single quotes don't. If single-quoting still misbehaves (some
-Windows / PowerShell shells drop quoted args silently), write the
-content to a tempfile with your file-writing tool and use
-\`--content-file <abs-path>\` — that path is shell-quote-free and
-works identically across platforms. Tag inline with \`#xxx\` inside
-the content itself — there's no separate --tag flag on create.
+For listing Records, tags, and other options:
+  myagents record --help
 </myagents-cli-record>`;
 
 const SECTION_VISION = `<myagents-cli-vision>
