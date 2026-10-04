@@ -10,6 +10,8 @@ import {
   applyPortableMcpInstall,
   buildPortableMcpManifest,
   canonicalPortableMcpManifest,
+  classifyLocalSpaceMcp,
+  diffPortableMcpManifests,
   validatePortableMcpManifest,
 } from "./spaceToolManifest";
 
@@ -326,5 +328,97 @@ describe("Space portable MCP policy", () => {
     expect(JSON.stringify(replaced.config.mcpServers)).not.toContain(
       "local-secret",
     );
+  });
+
+  it("classifies the local definition with the same rule the install path uses", () => {
+    const cloud = buildPortableMcpManifest(stdio(), config());
+    expect(classifyLocalSpaceMcp(config(), cloud)).toEqual({ status: "none" });
+
+    const same = config({
+      mcpServers: [stdio()],
+      mcpEnabledServers: ["team-mcp"],
+    });
+    expect(classifyLocalSpaceMcp(same, cloud)).toMatchObject({
+      status: "identical",
+      enabled: true,
+    });
+    expect(applyPortableMcpInstall(same, cloud, { name: "x" }, false).outcome)
+      .toBe("identical");
+
+    const different = config({
+      mcpServers: [stdio({ args: ["-y", "@example/old-mcp"] })],
+    });
+    const state = classifyLocalSpaceMcp(different, cloud);
+    expect(state).toMatchObject({ status: "different", enabled: false });
+    expect(
+      applyPortableMcpInstall(different, cloud, { name: "x" }, false).outcome,
+    ).toBe("conflict");
+  });
+
+  it("treats a local definition that cannot be made portable as different", () => {
+    const cloud = buildPortableMcpManifest(stdio(), config());
+    const local = config({
+      mcpServers: [stdio({ command: "/Users/example/bin/mcp" })],
+    });
+    const state = classifyLocalSpaceMcp(local, cloud);
+    expect(state).toEqual({ status: "different", enabled: false });
+    expect(diffPortableMcpManifests(undefined, cloud)).toContainEqual({
+      field: { kind: "command" },
+      local: null,
+      space: "npx -y @example/team-mcp",
+    });
+  });
+
+  it("lists field-level differences between local and Space manifests", () => {
+    const space = validatePortableMcpManifest({
+      schemaVersion: 1,
+      serverId: "remote-team",
+      transport: "sse",
+      remote: {
+        urlTemplate: "http://127.0.0.1:3845/sse",
+        headerTemplates: { Authorization: "{{AUTHORIZATION}}" },
+      },
+      requiredConfigKeys: ["AUTHORIZATION"],
+    });
+    const local = validatePortableMcpManifest({
+      schemaVersion: 1,
+      serverId: "remote-team",
+      transport: "sse",
+      remote: { urlTemplate: "http://127.0.0.1:3846/sse", headerTemplates: {} },
+      requiredConfigKeys: [],
+    });
+    expect(diffPortableMcpManifests(local, space)).toEqual([
+      {
+        field: { kind: "url" },
+        local: "http://127.0.0.1:3846/sse",
+        space: "http://127.0.0.1:3845/sse",
+      },
+      {
+        field: { kind: "header", name: "Authorization" },
+        local: null,
+        space: "{{AUTHORIZATION}}",
+      },
+    ]);
+    expect(diffPortableMcpManifests(space, space)).toEqual([]);
+  });
+
+  it("keeps argument boundaries when listing command differences", () => {
+    const local = validatePortableMcpManifest({
+      schemaVersion: 1,
+      serverId: "team",
+      transport: "stdio",
+      stdio: { command: "tool", args: ["a b"], envTemplates: {} },
+      requiredConfigKeys: [],
+    });
+    const space = validatePortableMcpManifest({
+      schemaVersion: 1,
+      serverId: "team",
+      transport: "stdio",
+      stdio: { command: "tool", args: ["a", "b"], envTemplates: {} },
+      requiredConfigKeys: [],
+    });
+    expect(diffPortableMcpManifests(local, space)).toEqual([
+      { field: { kind: "command" }, local: 'tool "a b"', space: "tool a b" },
+    ]);
   });
 });

@@ -59,6 +59,13 @@ export interface DropdownMenuProps {
   minWidth?: number;
   /** Trigger button tooltip. */
   title?: string;
+  /**
+   * Optional controlled open state. A host that owns a layered dismissal
+   * order (Escape / Cmd+W closing the innermost layer first) needs to know
+   * whether the menu is open; omit both to keep the menu self-managed.
+   */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
 export function DropdownMenu({
@@ -68,9 +75,16 @@ export function DropdownMenu({
   zIndex,
   minWidth = 140,
   title,
+  open: controlledOpen,
+  onOpenChange,
 }: DropdownMenuProps) {
   const { t } = useTranslation('app');
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
+  const setOpen = (next: boolean) => {
+    if (controlledOpen === undefined) setUncontrolledOpen(next);
+    onOpenChange?.(next);
+  };
   const btnRef = useRef<HTMLButtonElement>(null);
   const triggerTitle = title ?? t('dropdown.moreActions');
 
@@ -100,7 +114,7 @@ export function DropdownMenu({
         disabled={disabled}
         onClick={(e) => {
           e.stopPropagation();
-          setOpen((v) => !v);
+          setOpen(!open);
         }}
         title={triggerTitle}
         className={`flex items-center justify-center text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:opacity-50 ${triggerCls}`}

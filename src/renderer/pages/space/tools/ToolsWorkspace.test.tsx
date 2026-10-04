@@ -8,7 +8,7 @@ import {
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { SpaceTool } from "@/api/spaceCloud";
+import type { SpaceTool, SpaceToolRevision } from "@/api/spaceCloud";
 import { ToastProvider } from "@/components/Toast";
 import type { AppConfig } from "@/config/types";
 import { i18n } from "@/i18n";
@@ -18,10 +18,12 @@ import type {
   SpaceToolsState,
 } from "@/pages/space/spaceStore";
 import { CUSTOM_EVENTS } from "../../../../shared/constants";
+import { dismissTopmost } from "@/utils/closeLayer";
 import { ToolsWorkspace } from "./ToolsWorkspace";
 
 const CUSTOM_INSTALL_PLACEHOLDER =
   "填写面向 Agent 阅读的安装工具提示词，例如：使用命令完整安装 ffmpeg `git clone https://git.ffmpeg.org/ffmpeg.git ffmpeg`，并在完成后验证安装结果。";
+
 
 const configMocks = vi.hoisted(() => ({
   diskConfig: {} as AppConfig,
@@ -76,6 +78,12 @@ const config = {
   ],
 } as AppConfig;
 
+/** Config without the published `team-mcp`, so its detail starts as "not installed". */
+const configWithoutTeam = {
+  ...config,
+  mcpServers: config.mcpServers!.filter((server) => server.id !== "team-mcp"),
+} as AppConfig;
+
 const toolsState: SpaceToolsState = {
   items: [mcpTool, customTool],
   hasMore: false,
@@ -96,6 +104,8 @@ function renderTools(
     refreshFailure?: boolean;
     updateCustomFailure?: unknown;
     onSelectTool?: (toolId: string | null) => void;
+    config?: AppConfig;
+    tools?: SpaceTool[];
   } = {},
 ) {
   const actions = {
@@ -157,8 +167,8 @@ function renderTools(
         admin={input.admin ?? true}
         spaceId="official"
         spaceName="MyAgents Community"
-        config={config}
-        toolsState={toolsState}
+        config={input.config ?? config}
+        toolsState={input.tools ? { ...toolsState, items: input.tools } : toolsState}
         selectedToolId={input.selectedToolId ?? null}
         detailState={
           input.detailMissing
@@ -226,6 +236,34 @@ function renderTools(
   return actions;
 }
 
+const historyRevisions = (items: Array<Partial<SpaceToolRevision> & { revision: number }>) =>
+  ({
+    history: {
+      tool: { id: mcpTool.id, latestRevision: items[0]!.revision, currentRevision: items[0]!.revision },
+      items: items.map((item) => ({
+        id: `revision-${item.revision}`,
+        toolId: mcpTool.id,
+        name: mcpTool.name,
+        description: mcpTool.description,
+        createdAt: "2026-08-16T00:00:00.000Z",
+        ...item,
+      })),
+      hasMore: false,
+      nextCursor: null,
+    },
+    lastFetchedAt: Date.now(),
+    isLoading: false,
+    isLoadingMore: false,
+    error: null,
+  }) satisfies SpaceToolRevisionState;
+
+const dialog = () => within(screen.getByRole("dialog"));
+
+function openMenuItem(name: string) {
+  fireEvent.click(screen.getByRole("button", { name: "更多操作" }));
+  fireEvent.click(screen.getByText(name));
+}
+
 describe("Space Tools workspace", () => {
   beforeEach(async () => {
     await i18n.changeLanguage("zh-CN");
@@ -239,72 +277,58 @@ describe("Space Tools workspace", () => {
     );
   });
 
-  it("renders matching Tool cards with MCP and custom tags", () => {
-    renderTools();
-    expect(screen.getByRole("button", { name: /Team MCP/ })).toHaveTextContent(
-      "MCP",
-    );
-    expect(screen.getByRole("button", { name: /FFmpeg/ })).toHaveTextContent(
-      "自定义",
-    );
+  it("lists MCP and general tools together in API order without kind groups", () => {
+    renderTools({
+      tools: [customTool, { ...mcpTool, description: "" }],
+    });
+    const list = screen.getByRole("region", { name: "工具列表" });
+    const rows = within(list).getAllByRole("button");
+    expect(rows.map((row) => row.textContent)).toEqual([
+      expect.stringContaining("FFmpeg"),
+      expect.stringContaining("Team MCP"),
+    ]);
+    expect(within(list).queryByText("MCP")).toBeNull();
+    expect(within(list).queryByText("通用工具")).toBeNull();
+    expect(rows[1]).toHaveTextContent("暂无简介");
   });
 
-  it("shows exactly the two confirmed publish entries to admins", () => {
+  it("marks MCP tools installed on this device by server id only", () => {
     renderTools();
-    fireEvent.click(screen.getByRole("button", { name: /发布工具/ }));
-    const menuItems = screen
-      .getAllByRole("button")
-      .filter((button) =>
-        ["发布本地已安装 MCP 工具", "发布自定义安装工具提示词"].includes(
-          button.textContent?.trim() ?? "",
-        ),
-      );
-    expect(menuItems).toHaveLength(2);
+    expect(screen.getByRole("button", { name: /Team MCP/ })).toHaveTextContent(
+      "已安装",
+    );
+    expect(
+      screen.getByRole("button", { name: /FFmpeg/ }),
+    ).not.toHaveTextContent("已安装");
   });
 
   it("hides publishing from members", () => {
     renderTools({ admin: false });
     expect(
-      screen.queryByRole("button", { name: /发布工具/ }),
+      screen.queryByRole("button", { name: "发布" }),
     ).not.toBeInTheDocument();
   });
 
-  it("uses the confirmed example placeholder in the custom form", () => {
-    renderTools();
-    fireEvent.click(screen.getByRole("button", { name: /发布工具/ }));
-    fireEvent.click(
-      screen.getByRole("button", { name: "发布自定义安装工具提示词" }),
-    );
-    expect(
-      screen.getByPlaceholderText(CUSTOM_INSTALL_PLACEHOLDER),
-    ).toBeVisible();
-    fireEvent.blur(screen.getByRole("textbox", { name: "工具名称" }));
-    fireEvent.blur(screen.getByRole("textbox", { name: "工具简介" }));
-    fireEvent.blur(screen.getByRole("textbox", { name: "自定义安装指令" }));
-    expect(screen.getByText("请填写工具名称")).toBeVisible();
-    expect(screen.getByText("请填写工具简介")).toBeVisible();
-    expect(screen.getByText("请填写自定义安装指令")).toBeVisible();
-  });
-
-  it("publishes a Unicode-ID MCP through the shared metadata and JSON form", async () => {
+  it("opens the unified publish dialog and goes straight from a candidate to the form", async () => {
     const actions = renderTools();
-    fireEvent.click(screen.getByRole("button", { name: /发布工具/ }));
-    fireEvent.click(
-      screen.getByRole("button", { name: "发布本地已安装 MCP 工具" }),
+    fireEvent.click(screen.getByRole("button", { name: "发布" }));
+    expect(screen.getByRole("tab", { name: "本机 MCP" })).toHaveAttribute(
+      "aria-selected",
+      "true",
     );
-    fireEvent.click(
-      screen.getByRole("button", { name: /Figma 版 Framelink MCP/ }),
+    expect(dialog().getByRole("button", { name: /Team MCP/ })).toHaveTextContent(
+      "更新为 v2",
     );
-    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    expect(dialog().queryByRole("button", { name: "下一步" })).toBeNull();
+    fireEvent.click(
+      dialog().getByRole("button", { name: /Figma 版 Framelink MCP/ }),
+    );
 
-    const manifest = screen.getByRole("textbox", { name: "MCP 配置 JSON" });
-    expect((manifest as HTMLTextAreaElement).value).toContain(
-      "figma版framelink-mcp",
-    );
-    fireEvent.change(screen.getByRole("textbox", { name: "工具名称" }), {
+    expect(dialog().getByText("figma-developer-mcp")).toBeVisible();
+    fireEvent.change(dialog().getByRole("textbox", { name: "工具名称" }), {
       target: { value: "设计协作 MCP" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "发布" }));
+    fireEvent.click(dialog().getByRole("button", { name: "发布" }));
 
     await waitFor(() =>
       expect(actions.publishMcpTool).toHaveBeenCalledWith(
@@ -320,26 +344,54 @@ describe("Space Tools workspace", () => {
     );
   });
 
+  it("requires a description before publishing an MCP", () => {
+    renderTools();
+    fireEvent.click(screen.getByRole("button", { name: "发布" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /Figma 版 Framelink MCP/ }),
+    );
+    const description = dialog().getByRole("textbox", { name: "工具简介" });
+    fireEvent.change(description, { target: { value: "" } });
+    fireEvent.blur(description);
+    expect(dialog().getByText("请填写工具简介")).toBeVisible();
+    expect(dialog().getByRole("button", { name: "发布" })).toBeDisabled();
+  });
+
+  it("validates the general tool form on blur with the existing placeholder", () => {
+    renderTools();
+    fireEvent.click(screen.getByRole("button", { name: "发布" }));
+    fireEvent.click(screen.getByRole("tab", { name: "通用工具" }));
+    expect(
+      screen.getByPlaceholderText(CUSTOM_INSTALL_PLACEHOLDER),
+    ).toBeVisible();
+    fireEvent.blur(screen.getByRole("textbox", { name: "工具名称" }));
+    fireEvent.blur(screen.getByRole("textbox", { name: "工具简介" }));
+    fireEvent.blur(screen.getByRole("textbox", { name: "安装说明" }));
+    expect(screen.getByText("请填写工具名称")).toBeVisible();
+    expect(screen.getByText("请填写工具简介")).toBeVisible();
+    expect(screen.getByText("请填写安装说明")).toBeVisible();
+    expect(dialog().getByRole("button", { name: "发布" })).toBeDisabled();
+  });
+
   it("edits MCP metadata and JSON while keeping its stable server identity", async () => {
     const actions = renderTools({ selectedToolId: mcpTool.id });
-    fireEvent.click(screen.getByRole("button", { name: "更多操作" }));
-    fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+    openMenuItem("编辑并发布新版本");
 
     expect(screen.getByRole("textbox", { name: "工具名称" })).toHaveValue(
       "Team MCP",
     );
-    const manifest = screen.getByRole("textbox", { name: "MCP 配置 JSON" });
+    fireEvent.click(dialog().getByRole("button", { name: "完整配置" }));
+    const manifest = screen.getByRole("textbox", { name: "完整配置 JSON" });
     const parsed = JSON.parse(String((manifest as HTMLTextAreaElement).value));
     fireEvent.change(manifest, {
       target: {
         value: JSON.stringify({ ...parsed, serverId: "renamed-mcp" }, null, 2),
       },
     });
-    fireEvent.blur(manifest);
     expect(
-      screen.getByText(/已有 MCP Tool 的 serverId 不能修改/),
+      screen.getByText(/已有 MCP 工具的 serverId 不能修改/),
     ).toBeVisible();
-    expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "发布 v2" })).toBeDisabled();
 
     fireEvent.change(manifest, {
       target: {
@@ -356,7 +408,7 @@ describe("Space Tools workspace", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "工具简介" }), {
       target: { value: "Updated shared context" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    fireEvent.click(screen.getByRole("button", { name: "发布 v2" }));
     await waitFor(() =>
       expect(actions.updateMcpTool).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -370,24 +422,44 @@ describe("Space Tools workspace", () => {
     );
   });
 
-  it("renders Tool details as an App-level vertical card", () => {
-    renderTools({ selectedToolId: mcpTool.id });
-    const heading = screen.getByText("MCP 配置 JSON");
+  it("renders Tool details in the shared right-side drawer with a summarized MCP body", () => {
+    renderTools({ selectedToolId: mcpTool.id, config: configWithoutTeam });
+    const heading = screen.getByRole("heading", { name: "Team MCP" });
     const backdrop = heading.closest(".fixed");
     expect(backdrop?.parentElement).toBe(document.body);
-    expect(backdrop?.firstElementChild).toHaveClass("max-w-[720px]");
-    expect(backdrop?.firstElementChild).toHaveClass(
-      "h-[min(680px,calc(100dvh-48px))]",
-    );
+    expect(backdrop?.firstElementChild?.tagName).toBe("ASIDE");
+    expect(backdrop?.firstElementChild).toHaveClass("w-[min(88vw,760px)]");
+    expect(screen.getByText("@example/team-mcp")).toBeVisible();
+    expect(screen.getByText("通过 npx 在本机运行")).toBeVisible();
+    expect(screen.queryByText(/"serverId"/)).toBeNull();
+    expect(screen.getByText("Team MCP 发布".replace("Team MCP", "未知发布者"))).toBeVisible();
   });
 
-  it("renders custom instructions as an unlabeled code block", () => {
-    renderTools({ selectedToolId: customTool.id });
-    const instruction = screen.getByText("brew install ffmpeg");
-    expect(instruction.tagName).toBe("CODE");
-    expect(
-      within(instruction.parentElement!).queryByText(/bash|shell/i),
-    ).toBeNull();
+  it("renders general tool instructions as Markdown and installs through the helper", () => {
+    const openHelper = vi.fn();
+    window.addEventListener(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, openHelper);
+    try {
+      renderTools({ selectedToolId: customTool.id });
+      expect(screen.getByText("通用工具")).toBeVisible();
+      expect(screen.getByText("brew install ffmpeg")).toBeVisible();
+      expect(
+        screen.getByText("将在新对话中由小助理按说明安装并验证"),
+      ).toBeVisible();
+      fireEvent.click(screen.getByRole("button", { name: "让小助理安装" }));
+
+      expect(openHelper).toHaveBeenCalledWith(
+        expect.objectContaining({
+          detail: expect.objectContaining({
+            scenario: "space_tool_install",
+            description: expect.stringContaining(
+              "请使用 /tool-install skill，在当前设备上安装这个工具",
+            ),
+          }),
+        }),
+      );
+    } finally {
+      window.removeEventListener(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, openHelper);
+    }
   });
 
   it("keeps detail failures recoverable with an inline retry", () => {
@@ -403,55 +475,71 @@ describe("Space Tools workspace", () => {
   });
 
   it("keeps cached detail visible when refresh fails and can load older history", () => {
+    const history = historyRevisions([{ revision: 101 }]);
     const actions = renderTools({
       selectedToolId: mcpTool.id,
       detailError: "offline",
       revisionState: {
-        history: {
-          tool: { id: mcpTool.id, latestRevision: 101, currentRevision: 101 },
-          items: [
-            {
-              id: "revision-101",
-              toolId: mcpTool.id,
-              revision: 101,
-              name: "Team MCP v101",
-              description: "Shared context",
-              createdAt: "2026-08-16T00:00:00.000Z",
-            },
-          ],
-          hasMore: true,
-          nextCursor: "older",
-        },
-        lastFetchedAt: Date.now(),
-        isLoading: false,
-        isLoadingMore: false,
-        error: null,
+        ...history,
+        history: { ...history.history, hasMore: true, nextCursor: "older" },
       },
     });
     expect(screen.getAllByText("Shared team context")).not.toHaveLength(0);
     expect(screen.getByRole("button", { name: "重试" })).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "更多操作" }));
-    fireEvent.click(screen.getByRole("button", { name: "历史版本" }));
+    openMenuItem("版本记录");
+    expect(actions.refreshToolRevisions).toHaveBeenCalledWith(mcpTool.id, {
+      force: true,
+    });
     fireEvent.click(screen.getByRole("button", { name: "加载更多" }));
     expect(actions.loadMoreToolRevisions).toHaveBeenCalledWith(mcpTool.id);
   });
 
+  it("describes each version and confirms before making an older version current", async () => {
+    const actions = renderTools({
+      selectedToolId: mcpTool.id,
+      revisionState: historyRevisions([
+        { revision: 3, customInstallInstruction: null, name: "Team MCP" },
+        { revision: 2, name: "Team MCP", description: "Old" },
+        { revision: 1, name: "team" },
+      ]),
+    });
+    openMenuItem("版本记录");
+    expect(screen.getByText("修改了简介")).toBeVisible();
+    expect(screen.getByText("修改了名称、简介")).toBeVisible();
+    expect(screen.getByText("首次发布")).toBeVisible();
+
+    // The detail says v1 is current, so v3 and v2 offer the switch.
+    expect(screen.getAllByRole("button", { name: /设为当前版本/ })).toHaveLength(2);
+    fireEvent.click(screen.getAllByRole("button", { name: /设为当前版本/ })[0]!);
+    expect(
+      screen.getByText("成员之后安装将拿到 v3（当前是 v1）。"),
+    ).toBeVisible();
+    expect(actions.rollbackTool).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "切换" }));
+    await waitFor(() =>
+      expect(actions.rollbackTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          revision: 3,
+          expectedCurrentRevision: mcpTool.currentRevision,
+        }),
+      ),
+    );
+  });
+
   it("does not couple a successful publish to read refreshes", async () => {
     const actions = renderTools({ refreshFailure: true });
-    fireEvent.click(screen.getByRole("button", { name: /发布工具/ }));
-    fireEvent.click(
-      screen.getByRole("button", { name: "发布自定义安装工具提示词" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "发布" }));
+    fireEvent.click(screen.getByRole("tab", { name: "通用工具" }));
     fireEvent.change(screen.getByRole("textbox", { name: "工具名称" }), {
       target: { value: "FFmpeg" },
     });
     fireEvent.change(screen.getByRole("textbox", { name: "工具简介" }), {
       target: { value: "Install FFmpeg" },
     });
-    fireEvent.change(screen.getByRole("textbox", { name: "自定义安装指令" }), {
+    fireEvent.change(screen.getByRole("textbox", { name: "安装说明" }), {
       target: { value: "brew install ffmpeg" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "发布" }));
+    fireEvent.click(dialog().getByRole("button", { name: "发布" }));
 
     await waitFor(() =>
       expect(actions.publishCustomTool).toHaveBeenCalledTimes(1),
@@ -465,15 +553,16 @@ describe("Space Tools workspace", () => {
     expect(await screen.findByText("工具已发布")).toBeVisible();
   });
 
-  it("does not couple a successful delete to read refreshes", async () => {
+  it("confirms deletion in a dialog and does not couple it to read refreshes", async () => {
     const onSelectTool = vi.fn();
     const actions = renderTools({
       selectedToolId: customTool.id,
       refreshFailure: true,
       onSelectTool,
     });
-    fireEvent.click(screen.getByRole("button", { name: "更多操作" }));
-    fireEvent.click(screen.getByRole("button", { name: "删除" }));
+    openMenuItem("删除工具");
+    expect(screen.getByText("删除「FFmpeg」？")).toBeVisible();
+    expect(actions.deleteTool).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "删除" }));
 
     await waitFor(() => expect(actions.deleteTool).toHaveBeenCalledTimes(1));
@@ -492,9 +581,8 @@ describe("Space Tools workspace", () => {
       refreshFailure: true,
       updateCustomFailure: conflict,
     });
-    fireEvent.click(screen.getByRole("button", { name: "更多操作" }));
-    fireEvent.click(screen.getByRole("button", { name: "编辑" }));
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    openMenuItem("编辑并发布新版本");
+    fireEvent.click(screen.getByRole("button", { name: "发布 v2" }));
 
     await waitFor(() =>
       expect(actions.updateCustomTool).toHaveBeenCalledTimes(1),
@@ -567,10 +655,9 @@ describe("Space Tools workspace", () => {
     }
 
     render(<Harness />);
-    fireEvent.click(screen.getByRole("button", { name: "更多操作" }));
-    fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+    openMenuItem("编辑并发布新版本");
     fireEvent.click(screen.getByRole("button", { name: "remote refresh" }));
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    fireEvent.click(screen.getByRole("button", { name: /发布 v/ }));
 
     await waitFor(() =>
       expect(actions.updateCustomTool).toHaveBeenCalledWith(
@@ -579,12 +666,12 @@ describe("Space Tools workspace", () => {
     );
   });
 
-  it("installs MCP globally as disabled and opens the matching capability", async () => {
+  it("installs an absent MCP globally as disabled and opens the matching capability", async () => {
     const openSettings = vi.fn();
     window.addEventListener(CUSTOM_EVENTS.OPEN_SETTINGS, openSettings);
     try {
-      renderTools({ selectedToolId: mcpTool.id });
-      fireEvent.click(screen.getByRole("button", { name: "安装" }));
+      renderTools({ selectedToolId: mcpTool.id, config: configWithoutTeam });
+      fireEvent.click(screen.getByRole("button", { name: "安装到本机" }));
 
       await waitFor(() =>
         expect(configMocks.atomicModifyConfig).toHaveBeenCalledTimes(1),
@@ -599,7 +686,7 @@ describe("Space Tools workspace", () => {
       expect(configMocks.diskConfig.mcpEnabledServers ?? []).not.toContain(
         "team-mcp",
       );
-      expect(screen.getByText("MCP 工具已添加到本地")).toBeVisible();
+      expect(await screen.findByText("已添加「Team MCP」")).toBeVisible();
       await waitFor(() =>
         expect(openSettings).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -612,48 +699,51 @@ describe("Space Tools workspace", () => {
     }
   });
 
-  it("treats an identical MCP as already added without rewriting its definition", async () => {
-    const existingConfig = { ...config, mcpEnabledServers: ["team-mcp"] };
-    configMocks.diskConfig = existingConfig;
+  it("offers settings management without rewriting an identical installed MCP", () => {
     const openSettings = vi.fn();
     window.addEventListener(CUSTOM_EVENTS.OPEN_SETTINGS, openSettings);
     try {
       renderTools({ selectedToolId: mcpTool.id });
-      fireEvent.click(screen.getByRole("button", { name: "安装" }));
-
-      await waitFor(() => expect(openSettings).toHaveBeenCalledTimes(1));
-      expect(configMocks.diskConfig).toBe(existingConfig);
-      expect(configMocks.diskConfig.mcpEnabledServers).toEqual(["team-mcp"]);
-      expect(screen.getByText("MCP 工具已添加到本地")).toBeVisible();
+      expect(screen.getByText("已安装到本机")).toBeVisible();
+      expect(screen.getByText("· 未启用")).toBeVisible();
+      expect(screen.queryByRole("button", { name: "安装到本机" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "在设置中管理" }));
+      expect(configMocks.atomicModifyConfig).not.toHaveBeenCalled();
+      expect(openSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          detail: { section: "mcp", mcpServerId: "team-mcp" },
+        }),
+      );
     } finally {
       window.removeEventListener(CUSTOM_EVENTS.OPEN_SETTINGS, openSettings);
     }
   });
 
-  it("requires confirmation before replacing a different MCP in place", async () => {
-    configMocks.diskConfig = {
+  it("shows differences and requires confirmation before replacing a different MCP", async () => {
+    const differentConfig = {
       ...config,
       mcpServers: [
-        {
-          ...config.mcpServers![0],
-          args: ["-y", "@example/old-team-mcp"],
-        },
+        { ...config.mcpServers![0]!, args: ["-y", "@example/old-team-mcp"] },
       ],
       mcpEnabledServers: ["team-mcp"],
-    };
+    } as AppConfig;
+    configMocks.diskConfig = differentConfig;
     const openSettings = vi.fn();
     window.addEventListener(CUSTOM_EVENTS.OPEN_SETTINGS, openSettings);
     try {
-      renderTools({ selectedToolId: mcpTool.id });
-      fireEvent.click(screen.getByRole("button", { name: "安装" }));
-
+      renderTools({ selectedToolId: mcpTool.id, config: differentConfig });
       expect(
-        await screen.findByText("本地已存在同 ID 的不同 MCP 配置"),
+        screen.getByText("本机已有同 ID 的 MCP，配置与此版本不同"),
       ).toBeVisible();
-      expect(openSettings).not.toHaveBeenCalled();
-      expect(configMocks.diskConfig.mcpEnabledServers).toContain("team-mcp");
+      expect(screen.getByText("npx -y @example/old-team-mcp")).toBeVisible();
 
-      fireEvent.click(screen.getByRole("button", { name: "替换本地配置" }));
+      fireEvent.click(screen.getByRole("button", { name: "替换本机配置" }));
+      expect(configMocks.atomicModifyConfig).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "取消" }));
+      expect(configMocks.atomicModifyConfig).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "替换本机配置" }));
+      fireEvent.click(screen.getByRole("button", { name: "替换" }));
       await waitFor(() => expect(openSettings).toHaveBeenCalledTimes(1));
       expect(configMocks.diskConfig.mcpServers?.[0]?.args).toEqual([
         "-y",
@@ -667,25 +757,105 @@ describe("Space Tools workspace", () => {
     }
   });
 
-  it("dispatches custom installation through the dedicated helper scenario", () => {
-    const openHelper = vi.fn();
-    window.addEventListener(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, openHelper);
+  it("switches to the replace confirmation when the disk config differs from the rendered one", async () => {
+    configMocks.diskConfig = {
+      ...config,
+      mcpServers: [
+        { ...config.mcpServers![0]!, args: ["-y", "@example/old-team-mcp"] },
+      ],
+    } as AppConfig;
+    const openSettings = vi.fn();
+    window.addEventListener(CUSTOM_EVENTS.OPEN_SETTINGS, openSettings);
     try {
-      renderTools({ selectedToolId: customTool.id });
-      fireEvent.click(screen.getByRole("button", { name: "安装" }));
-
-      expect(openHelper).toHaveBeenCalledWith(
-        expect.objectContaining({
-          detail: expect.objectContaining({
-            scenario: "space_tool_install",
-            description: expect.stringContaining(
-              "请使用 /tool-install skill，在当前设备上安装这个工具",
-            ),
-          }),
-        }),
-      );
+      renderTools({ selectedToolId: mcpTool.id, config: configWithoutTeam });
+      fireEvent.click(screen.getByRole("button", { name: "安装到本机" }));
+      expect(
+        await screen.findByText("替换后先保持未启用，已填写的同名凭据会保留。"),
+      ).toBeVisible();
+      expect(openSettings).not.toHaveBeenCalled();
+      expect(configMocks.diskConfig.mcpServers?.[0]?.args).toEqual([
+        "-y",
+        "@example/old-team-mcp",
+      ]);
     } finally {
-      window.removeEventListener(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, openHelper);
+      window.removeEventListener(CUSTOM_EVENTS.OPEN_SETTINGS, openSettings);
     }
+  });
+
+  it("closes the open admin menu before the drawer on Escape", () => {
+    const onSelectTool = vi.fn();
+    renderTools({ selectedToolId: customTool.id, onSelectTool });
+    const trigger = screen.getByRole("button", { name: "更多操作" });
+    fireEvent.click(trigger);
+    expect(screen.getByText("删除工具")).toBeVisible();
+
+    fireEvent.keyDown(trigger, { key: "Escape" });
+    expect(screen.queryByText("删除工具")).toBeNull();
+    expect(onSelectTool).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(trigger, { key: "Escape" });
+    expect(onSelectTool).toHaveBeenCalledWith(null);
+  });
+
+  it("keeps the delete confirmation open while deletion is pending", async () => {
+    let resolveDelete!: () => void;
+    const actions = renderTools({ selectedToolId: customTool.id });
+    (actions.deleteTool as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<void>((resolve) => (resolveDelete = resolve)),
+    );
+    openMenuItem("删除工具");
+    fireEvent.click(screen.getByRole("button", { name: "删除" }));
+    await waitFor(() => expect(actions.deleteTool).toHaveBeenCalledTimes(1));
+
+    dismissTopmost();
+    expect(screen.getByText("删除「FFmpeg」？")).toBeVisible();
+    resolveDelete();
+    expect(await screen.findByText("工具已删除")).toBeVisible();
+  });
+
+  it("shows why a local MCP cannot be published and keeps it unclickable", () => {
+    renderTools({
+      config: {
+        ...config,
+        mcpServers: [
+          ...config.mcpServers!,
+          {
+            id: "local-files",
+            name: "Local Files",
+            type: "stdio",
+            command: "npx",
+            args: ["-y", "files-mcp", "/Users/example/Documents"],
+            isBuiltin: false,
+          },
+        ],
+      } as AppConfig,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发布" }));
+    const blocked = dialog().getByRole("button", { name: /Local Files/ });
+    expect(blocked).toBeDisabled();
+    expect(blocked).toHaveTextContent("配置包含本机绝对路径");
+    expect(blocked).toHaveTextContent("无法发布");
+  });
+
+  it("keeps the cached list visible with the tool-specific stale banner", () => {
+    render(
+      <ToastProvider>
+        <ToolsWorkspace
+          admin
+          spaceId="official"
+          spaceName="MyAgents Community"
+          config={config}
+          toolsState={{ ...toolsState, error: "offline" }}
+          selectedToolId={null}
+          actions={{} as SpaceActions}
+          onSelectTool={vi.fn()}
+          onRefresh={vi.fn().mockResolvedValue(undefined)}
+        />
+      </ToastProvider>,
+    );
+    expect(
+      screen.getByText("刷新失败，当前显示的是上次加载的结果"),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: /Team MCP/ })).toBeVisible();
   });
 });
