@@ -10,6 +10,14 @@ MyAgents 账号入口位于展开的全局侧栏最底部左侧，右侧是通�
 
 同账号设备间即时调用走 Agent 网络；Space Issue 负责团队责任与持久跟踪。共享登录不代表两者拥有同一套任务/消息队列。
 
+## 官方社区反馈与对话入口
+
+从 0.5.0 起，官方 MyAgents 社区可以接收 Bug 和功能建议。小助理先检测本机 `gh`，有则优先推荐 GitHub `hAcKlyc/MyAgents`；没有则检查 Space 登录，已登录推荐官方社区，未登录引导登录。用户可以明确选择渠道，最终脱敏报告与目标经确认后再提交，详细流程由小助理 `/support` 负责。
+
+对话中的 `[打开 Space 协作空间](myagents://open/v1/spaces)` 等同左侧入口，打开/聚焦同一个 Tab，保留当前页面。`[官方社区反馈](myagents://open/v1/spaces/official/issues)` 进入社区 Issue 列表；具体反馈使用 `myagents://open/v1/spaces/<slug或id>/issues/<真实issueId>`，其中 Issue ID 来自服务端，不能用 `#12` 等编号代替。未登录时先显示登录入口，登录后继续目标导航。
+
+`official` 是导航别名；社区当前实际 slug 为 `myagents`。CLI 用 `space list --json` 的 `spaceKind=official` 发现实际 slug，不从社区名称或上次打开的空间猜测。
+
 ## 核心概念
 
 | 概念 | 含义 |

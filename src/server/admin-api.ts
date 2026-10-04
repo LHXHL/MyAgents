@@ -3544,17 +3544,18 @@ Run an exact leaf with --help before acting. Goal discovery is:
 WHEN TO CALL
   Before any Space operation when the target slug is unknown or stale.
 EFFECT
-  Refreshes memberships from Cloud and returns only slug, name, and role.
+  Refreshes memberships from Cloud and returns id, slug, name, spaceKind, and role.
 REQUIRED CONTEXT
   A signed-in MyAgents Space session. This discovery command needs no --space.
 OPTIONS
-  --json  Return {items:[{slug,name,role}]} for reliable selection.
+  --json  Return {items:[{id,slug,name,spaceKind,role}]} for reliable selection.
 ACTOR AND PERMISSIONS
   Runs as the signed-in User and exposes only that User's memberships.
 FILE SAFETY
   Does not read or upload files.
 OUTPUT
-  Canonical slugs accepted by every other Space command.
+  Canonical slugs accepted by every other Space command. spaceKind=official identifies
+  the official community; use its returned slug for CLI calls, not the navigation alias.
 EXAMPLES
   myagents space list --json
 RECOVERY

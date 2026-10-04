@@ -535,6 +535,67 @@ describe("Space switching", () => {
     expect(harness.actions.switchSpace).toHaveBeenCalledWith('id-ma', undefined);
   });
 
+  it('opens the routed issue list and clears an old issue detail', async () => {
+    const consumed = vi.fn();
+    const view = render(<Space isActive />);
+    fireEvent.click(screen.getByRole('button', { name: 'open issue detail' }));
+    expect(screen.getByRole('dialog', { name: 'issue detail' })).toBeInTheDocument();
+    view.rerender(<Space isActive pendingRoute={{ generation: 50, route: { version: 1, name: 'space.issues', params: { spaceId: 'official' } } }} onRouteConsumed={consumed} />);
+    await act(async () => undefined);
+    expect(harness.actions.switchSpace).toHaveBeenCalledWith('official', undefined);
+    expect(screen.queryByRole('dialog', { name: 'issue detail' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'open issue detail' })).toBeInTheDocument();
+    expect(consumed).toHaveBeenCalledWith(50);
+  });
+
+  it('consumes a home link without switching Space or closing the current detail', async () => {
+    const consumed = vi.fn();
+    const currentSpaceId = harness.data.spaceId;
+    const view = render(<Space isActive />);
+    fireEvent.click(screen.getByRole('button', { name: 'open issue detail' }));
+    view.rerender(<Space isActive pendingRoute={{ generation: 51, route: { version: 1, name: 'space.home', params: {} } }} onRouteConsumed={consumed} />);
+    await act(async () => undefined);
+    expect(harness.actions.switchSpace).toHaveBeenCalledWith(currentSpaceId, undefined);
+    expect(screen.getByRole('dialog', { name: 'issue detail' })).toHaveAttribute('data-issue-id', 'issue-1');
+    expect(consumed).toHaveBeenCalledWith(51);
+  });
+
+  it.each(['signedOut', 'reauthRequired'])('keeps the issue list target through %s and authentication', async boot => {
+    harness.data = { ...snapshot('team'), boot, session: null };
+    const consumed = vi.fn();
+    const props = { isActive: true, pendingRoute: { generation: 52, route: { version: 1 as const, name: 'space.issues' as const, params: { spaceId: 'official' } } }, onRouteConsumed: consumed };
+    const view = render(<Space {...props} />);
+    expect(screen.getByText('login')).toBeInTheDocument();
+    expect(consumed).not.toHaveBeenCalled();
+    harness.data = snapshot('official');
+    view.rerender(<Space {...props} />);
+    await act(async () => undefined);
+    expect(harness.actions.switchSpace).toHaveBeenCalledWith('official', undefined);
+    expect(consumed).toHaveBeenCalledWith(52);
+    expect(screen.queryByRole('dialog', { name: 'issue detail' })).not.toBeInTheDocument();
+  });
+
+  it.each(['persistence', 'bootstrap'])('home supersedes an old store switch during %s and preserves the current page', async stage => {
+    const official = useRealTeamStore();
+    const persistence = deferred<void>();
+    const bootstrap = deferred<typeof official>();
+    if (stage === 'persistence') harness.api.spaceSetActiveSpace.mockReturnValueOnce(persistence.promise);
+    else harness.api.spaceGetOfficial.mockReturnValueOnce(bootstrap.promise);
+    const consumed = vi.fn();
+    const view = render(<Space isActive />);
+    fireEvent.click(screen.getByRole('button', { name: 'show skills' }));
+    view.rerender(<Space isActive pendingRoute={{ generation: 53, route: { version: 1, name: 'space.issues', params: { spaceId: 'official' } } }} onRouteConsumed={consumed} />);
+    await act(async () => undefined);
+    view.rerender(<Space isActive pendingRoute={{ generation: 54, route: { version: 1, name: 'space.home', params: {} } }} onRouteConsumed={consumed} />);
+    await act(async () => undefined);
+    await act(async () => { persistence.resolve(); bootstrap.resolve(official); });
+    expect(getSnapshot().spaceId).toBe('team');
+    expect(screen.getByRole('main')).toHaveTextContent('skills');
+    expect(consumed).toHaveBeenCalledWith(54);
+    expect(consumed).not.toHaveBeenCalledWith(53);
+    expect(harness.api.spaceSetActiveSpace.mock.calls.map(call => call[0])).toEqual(['official', 'team']);
+  });
+
   it("switches to the routed Space before opening its exact issue", async () => {
     const target = sessionFor("space-team", "team");
     const current = (harness.data.session as SpaceSession);

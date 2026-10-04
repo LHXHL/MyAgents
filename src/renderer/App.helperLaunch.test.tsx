@@ -2238,6 +2238,33 @@ describe('App helper launch', () => {
     expect(mocks.spaceProps.at(-1)?.pendingRoute).toEqual({ generation: 2, route: { version: 1, name: 'space.tools', params: { spaceId: 'official' } } });
   });
 
+  it('routes chat link intents into one Space tab for home, list and detail', async () => {
+    render(<App />);
+    const routes = [
+      { version: 1, name: 'space.home', params: {} },
+      { version: 1, name: 'space.issues', params: { spaceId: 'official' } },
+      { version: 1, name: 'space.issue', params: { spaceId: 'myagents', issueId: 'iss_123' } },
+    ];
+    let spaceTabId: string | undefined;
+    for (const [index, route] of routes.entries()) {
+      act(() => window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_APP_ROUTE, { detail: route })));
+      await screen.findByTestId('space-page');
+      const tabs = latestTabbarProps().tabs.filter(tab => tab.view === 'space');
+      expect(tabs).toHaveLength(1);
+      if (!spaceTabId) spaceTabId = tabs[0].id;
+      expect(tabs[0].id).toBe(spaceTabId);
+      expect(mocks.spaceProps.at(-1)?.pendingRoute).toEqual({ generation: index + 1, route });
+    }
+  });
+
+  it('keeps chat Space links behind the explicit developer gate', async () => {
+    mocks.spaceDevGate = false;
+    render(<App />);
+    act(() => window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_APP_ROUTE, { detail: { version: 1, name: 'space.home', params: {} } })));
+    expect(latestTabbarProps().tabs.some(tab => tab.view === 'space')).toBe(false);
+    expect(mocks.toast.info).toHaveBeenCalledWith('协作空间已被开发者关闭');
+  });
+
   it('keeps the capability banner callback behind the developer Space gate', async () => {
     mocks.spaceDevGate = false;
     render(<App />);
@@ -2262,7 +2289,7 @@ describe('App helper launch', () => {
     expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(3);
     expect(latestSidebarProps().teamSpaceAvailable).toBe(true);
     expect(latestTabbarProps().tabs).toContainEqual(
-      expect.objectContaining({ view: 'space', title: '协作空间' }),
+      expect.objectContaining({ view: 'space', title: 'Space 协作空间' }),
     );
   });
 

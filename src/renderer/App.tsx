@@ -3754,6 +3754,10 @@ export default function App() {
         if (!opened) return false;
         return true;
       }
+      if (!configLoading && config.teamSpaceDevGate === false) {
+        toastRef.current.info(t('titlebar.teamUnavailable'));
+        return false;
+      }
       if (!spaceBuildCapability.isLoading && !spaceBuildCapability.available) {
         toastRef.current.info(
           spaceBuildCapability.reason ?? t('titlebar.teamBuildUnavailable'),
@@ -3779,10 +3783,12 @@ export default function App() {
         route,
       } satisfies PendingAppRoute;
       pendingSpaceRouteRef.current = pending;
-      return spaceBuildCapability.isLoading ? true : openSpaceRoute(pending);
+      return configLoading || spaceBuildCapability.isLoading ? true : openSpaceRoute(pending);
     },
     [
       handleOpenTaskCenter,
+      configLoading,
+      config.teamSpaceDevGate,
       openSpaceRoute,
       spaceBuildCapability.available,
       spaceBuildCapability.isLoading,
@@ -3794,12 +3800,12 @@ export default function App() {
 
   useEffect(() => {
     const pending = pendingSpaceRouteRef.current;
-    if (!pending || spaceBuildCapability.isLoading) return;
-    if (!spaceBuildCapability.available) {
+    if (!pending || configLoading || spaceBuildCapability.isLoading) return;
+    if (!spaceBuildCapability.available || config.teamSpaceDevGate === false) {
       if (openedSpaceRouteGenerationRef.current < pending.generation) {
         openedSpaceRouteGenerationRef.current = pending.generation;
         toastRef.current.info(
-          spaceBuildCapability.reason ?? t('titlebar.teamBuildUnavailable'),
+          config.teamSpaceDevGate === false ? t('titlebar.teamUnavailable') : spaceBuildCapability.reason ?? t('titlebar.teamBuildUnavailable'),
         );
       }
       if (pendingSpaceRouteRef.current?.generation === pending.generation) {
@@ -3810,6 +3816,8 @@ export default function App() {
     openSpaceRoute(pending);
   }, [
     openSpaceRoute,
+    configLoading,
+    config.teamSpaceDevGate,
     spaceBuildCapability.available,
     spaceBuildCapability.isLoading,
     spaceBuildCapability.reason,
@@ -3826,6 +3834,14 @@ export default function App() {
     },
     [tabWorkspaceController],
   );
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      handleOpenAppRoute((event as CustomEvent<AppRoute>).detail);
+    };
+    window.addEventListener(CUSTOM_EVENTS.OPEN_APP_ROUTE, handler);
+    return () => window.removeEventListener(CUSTOM_EVENTS.OPEN_APP_ROUTE, handler);
+  }, [handleOpenAppRoute]);
 
   const handleTaskRouteConsumed = useCallback(
     (tabId: string, generation: number) => {

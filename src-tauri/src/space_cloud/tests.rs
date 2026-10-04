@@ -463,6 +463,16 @@ pub(super) fn test_registered_agent(
 #[tokio::test]
 async fn cli_context_requires_exact_registered_agent_identity() {
     let _mock = crate::space_cloud_mock::enable_for_test();
+    let discovered = space_cli_space_list().await.expect("signed-in memberships");
+    let community = discovered["items"]
+        .as_array()
+        .expect("spaces")
+        .iter()
+        .find(|item| item["spaceKind"] == "official")
+        .expect("official community");
+    assert_eq!(community["id"], "space_mock_official");
+    assert_eq!(community["slug"], "official");
+    assert!(discovered.to_string().find("sessionToken").is_none());
     let workspace = std::env::current_dir().expect("current workspace");
     let unregistered_workspace =
         tempfile::tempdir_in(&workspace).expect("unregistered workspace inside project");

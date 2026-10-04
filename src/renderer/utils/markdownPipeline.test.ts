@@ -25,6 +25,31 @@ function renderMarkdown(markdown: string): string {
 
 describe('markdownPipeline sanitization', () => {
   it.each([
+    'myagents://open/v1/spaces',
+    'myagents://open/v1/spaces/official/issues',
+    'myagents://open/v1/spaces/myagents/issues/iss_123',
+  ])('preserves validated app links only as anchors: %s', href => {
+    for (const source of [`[Space](${href})\n\n![bad image](${href})`, `<a href="${href}">Space</a><img src="${href}">`]) {
+      const html = renderMarkdown(source);
+      expect(html).toContain(`href="${href}"`);
+      expect(html).not.toContain(`src="${href}"`);
+    }
+  });
+
+  it.each([
+    'myagents://open/v1/spaces?prompt=run',
+    'myagents://open/v1/spaces/a/issues/123#x',
+    'myagents://attachment/session/file.png',
+    'myagents://open/v1/spaces/a%2Fb/issues',
+    'myagents://open/v2/spaces',
+    'myagents://open/v1/spaces/a/../official/issues',
+    'myagents://open/v1/spaces/%2e%2e/spaces',
+  ])('removes unsupported app URLs: %s', href => {
+    const html = renderMarkdown(`<a href="${href}">Space</a>`);
+    expect(html).not.toMatch(/href="[^"]+/);
+  });
+
+  it.each([
     ['file:///Users/demo/a%20b.png', 'file:///Users/demo/a%20b.png'],
     ['FiLe:///Users/demo/a.png', 'file:///Users/demo/a.png'],
     ['C:/Users/demo/a.png', 'file:///C:/Users/demo/a.png'],

@@ -1012,9 +1012,12 @@ export default function Space({
   );
 
   const openPendingRoute = useEffectEvent(async (intent: PendingAppRoute, isCancelled: () => boolean) => {
-    if (!session || (intent.route.name !== "space.issue" && intent.route.name !== "space.tools")) return;
+    if (!session || intent.route.name === "task.comment") return;
     const route = intent.route;
-    const { spaceId } = route.params;
+    // Reselecting the current Space cancels older store navigation while
+    // preserving the home link's current page and resource detail.
+    const spaceId = route.name === "space.home" ? spaceData.spaceId : route.params.spaceId;
+    if (!spaceId) return;
     const target = session.spaces?.find(
       (space) => space.id === spaceId || space.slug === spaceId,
     );
@@ -1023,17 +1026,22 @@ export default function Space({
       // Even a route to the current Space must supersede an older store switch.
       await actions.switchSpace(spaceId, target);
       if (isCancelled()) return;
-      setMode(route.name === "space.tools" ? "tools" : "issues");
-      setSelectedSkillId(null);
-      setSelectedToolId(null);
-      setSelectedGoalId("");
-      setIssueDetailId(route.name === "space.issue" ? route.params.issueId : null);
+      if (route.name !== "space.home") {
+        setMode(route.name === "space.tools" ? "tools" : "issues");
+        setSelectedSkillId(null);
+        setSelectedToolId(null);
+        setSelectedGoalId("");
+        setIssueQ("");
+        setIssueDetailId(route.name === "space.issue" ? route.params.issueId : null);
+      }
       setRouteFailure(null);
       onRouteConsumed?.(intent.generation);
     } catch (error) {
       if (isCancelled()) return;
-      setMode(route.name === "space.tools" ? "tools" : "issues");
-      setIssueDetailId(null);
+      if (route.name !== "space.home") {
+        setMode(route.name === "space.tools" ? "tools" : "issues");
+        setIssueDetailId(null);
+      }
       toast.error(t("space.route.openFailed", { message: spaceErrorMessage(error) }));
       const retainForRetry = isSpaceErrorRetryable(error)
         || isSpaceErrorCode(error, "SPACE_REAUTH_REQUIRED");

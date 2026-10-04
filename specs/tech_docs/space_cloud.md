@@ -61,6 +61,23 @@ App 复用协作空间单实例 Tab，并持有导航 generation；Space 等待 
 
 导航 effect 以 intent、认证 binding、origin 与 readiness 为生命周期边界，使用 effect event 读取当前 session；本地 Space 投影不重启在途导航。所有路由（含当前 Space）都交给 `switchSpace`，由已有请求 sequence 取消过时 switch/bootstrap，并沿既有队列持久化最新目标。未知空间的显式切换要求 bootstrap 传播原始失败，且不能把默认空间回退当成目标到达；普通后台刷新仍保留最近成功快照与错误投影。
 
+### 3.2 对话链接与 v1 导航协议
+
+导航统一使用既有 AppRoute，TS 定义在 `src/shared/appRoute.ts`，OS 入口由 `src-tauri/src/app_route.rs` 校验。支持以下 URL（只导航，不携带任何执行指令）：
+
+| URL | 路由与行为 |
+|---|---|
+| `myagents://open/v1/spaces` | `space.home`：等同左侧「Space 协作空间」入口，打开/聚焦单实例 Tab，保留当前 Space、页面和详情；新 Tab 走正常恢复/登录。 |
+| `myagents://open/v1/spaces/<spaceId或slug>/issues` | `space.issues`：切换目标 Space，清除旧资源详情、Goal 与搜索，显示 Issue 列表。 |
+| `myagents://open/v1/spaces/<spaceId或slug>/issues/<issueId>` | `space.issue`：切换目标 Space 并打开 exact Issue Drawer；Issue ID 来自服务端，不使用展示编号。 |
+| `myagents://open/v1/spaces/<spaceId或slug>/tools` | `space.tools`：切换目标 Space 并显示工具列表。 |
+
+官方社区导航推荐 `.../spaces/official/issues`；`official` 由 `spaceStore` 映射至 Cloud 的 `spaceKind: official`，不假定实际 slug。CLI 提交使用 `space list` 返回的 canonical slug（当前社区为 `myagents`）。
+
+聊天 Markdown/HTML anchor 经过 sanitize 与 `parseAppRouteUrl` 的严格校验才保留 href；`ContentLink` 点击提交 `CUSTOM_EVENTS.OPEN_APP_ROUTE` typed intent，App 再次验证并交给同一单实例 Tab/navigation generation owner。App 链接始终走产品导航，不送入网页 BrowserPanel 或系统浏览器；图片 src 不允许导航 scheme。OS 外部链接继续使用 Rust AppRouteQueue 与已有 Tauri deep-link/single-instance 生命周期，不新增队列。配置 readiness、build capability、显式开发者关闭、Tab 上限仍生效。
+
+列表/详情目标在未登录或需重新认证时保留，认证恢复后继续；导航失败沿现有 routeFailure 重试或消费不可恢复目标，新 generation 优先于旧异步结果。首页通过 `switchSpace` 重选当前空间，取消旧在途 switch/bootstrap 并收口 last-active 持久化，保留当前页面与详情。双方 parser 只接受 v1 与登记的原始 path，identifier 为 1–200 个 ASCII 字母/数字/下划线/连字符（允许等价 percent encoding），拒绝 userinfo、port、query、fragment、尾斜杠、dot segment 归一及额外 path segment。共用 `src/shared/appRoute.fixtures.json` 锁定 TS/Rust parity。
+
 ## 4. 身份模型
 
 ### 4.1 Device

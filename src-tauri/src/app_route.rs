@@ -10,11 +10,23 @@ const MAX_ID_BYTES: usize = 200;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "name", rename_all = "snake_case")]
 pub enum AppRoute {
+    #[serde(rename = "space.home")]
+    SpaceHome {
+        version: u8,
+        #[serde(rename = "params")]
+        params: SpaceHomeRouteParams,
+    },
+    #[serde(rename = "space.issues")]
+    SpaceIssues {
+        version: u8,
+        #[serde(rename = "params")]
+        params: SpaceRouteParams,
+    },
     #[serde(rename = "space.tools")]
     SpaceTools {
         version: u8,
         #[serde(rename = "params")]
-        params: SpaceToolsRouteParams,
+        params: SpaceRouteParams,
     },
     #[serde(rename = "space.issue")]
     SpaceIssue {
@@ -32,7 +44,11 @@ pub enum AppRoute {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct SpaceToolsRouteParams {
+pub struct SpaceHomeRouteParams {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceRouteParams {
     pub space_id: String,
 }
 
@@ -126,6 +142,24 @@ pub fn cmd_take_pending_app_route(
 }
 
 impl AppRoute {
+    pub fn space_home() -> Self {
+        Self::SpaceHome {
+            version: 1,
+            params: SpaceHomeRouteParams {},
+        }
+    }
+
+    pub fn space_issues(space_id: impl Into<String>) -> Option<Self> {
+        let space_id = space_id.into();
+        if !is_route_id(&space_id) {
+            return None;
+        }
+        Some(Self::SpaceIssues {
+            version: 1,
+            params: SpaceRouteParams { space_id },
+        })
+    }
+
     pub fn space_tools(space_id: impl Into<String>) -> Option<Self> {
         let space_id = space_id.into();
         if !is_route_id(&space_id) {
@@ -133,7 +167,7 @@ impl AppRoute {
         }
         Some(Self::SpaceTools {
             version: 1,
-            params: SpaceToolsRouteParams { space_id },
+            params: SpaceRouteParams { space_id },
         })
     }
 
@@ -166,6 +200,10 @@ impl AppRoute {
 
     pub fn to_deep_link(&self) -> String {
         match self {
+            Self::SpaceHome { .. } => "myagents://open/v1/spaces".to_string(),
+            Self::SpaceIssues { params, .. } => {
+                format!("myagents://open/v1/spaces/{}/issues", params.space_id)
+            }
             Self::SpaceTools { params, .. } => {
                 format!("myagents://open/v1/spaces/{}/tools", params.space_id)
             }
@@ -208,11 +246,20 @@ pub fn parse_deep_link(raw: &str) -> Option<AppRoute> {
     {
         return None;
     }
+    // Check the source path before accepting URL-normalized dot segments.
+    let authority_and_path = value.split_once("://")?.1;
+    let source_path = &authority_and_path[authority_and_path.find('/')?..];
+    if source_path != url.path() {
+        return None;
+    }
     let path = url.path().strip_prefix('/')?;
     if path.starts_with('/') {
         return None;
     }
     let segments = path.split('/').collect::<Vec<_>>();
+    if segments == ["v1", "spaces"] {
+        return Some(AppRoute::space_home());
+    }
     if !matches!(segments.len(), 4 | 5) || segments[0] != "v1" {
         return None;
     }
@@ -220,6 +267,7 @@ pub fn parse_deep_link(raw: &str) -> Option<AppRoute> {
     if segments.len() == 4 {
         return match (segments[1], segments[3]) {
             ("spaces", "tools") => AppRoute::space_tools(parent_id),
+            ("spaces", "issues") => AppRoute::space_issues(parent_id),
             _ => None,
         };
     }
@@ -236,7 +284,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn matches_shared_tools_route_corpus() {
+    fn matches_shared_route_corpus() {
         let fixtures: serde_json::Value =
             serde_json::from_str(include_str!("../../src/shared/appRoute.fixtures.json"))
                 .expect("route fixtures");
@@ -244,8 +292,9 @@ mod tests {
             let expected: AppRoute = serde_json::from_value(item["route"].clone()).expect("route");
             assert_eq!(
                 parse_deep_link(item["url"].as_str().expect("url")),
-                Some(expected)
+                Some(expected.clone())
             );
+            assert_eq!(parse_deep_link(&expected.to_deep_link()), Some(expected));
         }
         for url in fixtures["rejected"].as_array().expect("rejected routes") {
             assert_eq!(parse_deep_link(url.as_str().expect("url")), None);

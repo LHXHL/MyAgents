@@ -386,6 +386,7 @@ myagents space attachment download <attachmentId> --space <slug> [--output myage
 
 **何时用：**
 - 普通会话先 `myagents space list --json` 选择明确的 slug；所有 Space 业务命令都必须带 `--space <slug>`，不猜“默认社区”或上次使用的 Space。
+- 官方社区反馈使用发现结果中 `spaceKind=official` 的实际 `slug`（当前通常为 `myagents`），`id` 可用于资源导航。`official` 仅为导航别名，不能替代 CLI 的 canonical slug。对话入口：`myagents://open/v1/spaces` 打开/聚焦 Space Tab；`myagents://open/v1/spaces/official/issues` 打开官方列表；详情末尾追加服务端真实 Issue ID。
 - CLI 只有在当前 Session 持久化了精确的 `spaceId + registeredAgentId` origin 时，才以该 Registered Agent 身份执行；显式 legacy Agent ID 仅作旧调用兼容。workspace 只校验执行边界，绝不用于猜测 actor。没有 Registered Agent origin 的普通 Session 始终使用当前 User 身份；origin、Space 或 workspace 不匹配会直接拒绝，不会静默降级。身份不确定时先 `space whoami`。
 - 需要创建、筛选或移动 Issue 时，先 `space goal list --json`，只复制 active `data.items[].id`；不要把 Goal title 或 `goalPathLabel` 当 ID。`myagents goal ...` 是本地 Session Goal Mode，`myagents space goal ...` 是 Cloud Space Goal，两者不是同一资源。
 - `issue create` 不传 `--goal` 会进入 Inbox；已发布 Issue 用 `issue update --goal <goalId>` 移动，使用 `--clear-goal` 清回 Inbox。不要用 `--goal null`、`--goal inbox` 或空字符串表达清除。更新后用 `issue view --json` 核对权威 `goalId/goalPathLabel`。

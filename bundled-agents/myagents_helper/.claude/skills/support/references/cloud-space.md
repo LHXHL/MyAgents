@@ -38,6 +38,7 @@ rg -n "\\[space\\]|space_cloud|registered-agent|delivery|claim|assignee|notifica
 - `complete` 云端成功但本地 Task 未 done：先读两侧权威状态；不要重复 Cloud complete 或再无条件 `task update-status done`。
 - 附件失败：区分 Cloud upload/download、Workspace 路径安全、大小/数量/quota 与本地预览；UI 富媒体显示再转 `attachments.md`。
 - 官方市场跳转：先核对登录、配置 readiness 与路由是否保留；`official` 是别名，实际 slug 可不同，不要求用户新建同名 Space。过期导航不应覆盖新目标。
+- 社区反馈与聊天链接：按 support Step 7 选择 gh/GitHub 或已登录的官方 Space。`space list --json` 的 `spaceKind=official` 标识社区，CLI 使用返回的 slug。`myagents://open/v1/spaces` 只打开/聚焦 Tab；`.../spaces/official/issues` 打开官方反馈列表；`.../spaces/<slug或id>/issues/<真实issueId>` 打开详情。认证/成员/权限继续由应用校验，链接不会创建或上传 Issue。
 - Tool 安装：MCP 导入默认禁用，同 ID 配置不同需确认替换；自定义工具转小助理 `/tool-install`，不等于自动安装成功或注册 CLI Tool。目录、详情、下载、写入与启用分别验证。
 
 ## Active 操作与验证
