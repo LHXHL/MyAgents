@@ -84,10 +84,23 @@ test('App and SDK bumps reuse the signed bundle while online selection remains i
   assert.equal(selectBundledRelease(releases, '0.4.99', source).version, source.version);
   assert.equal(selectRelease(releases, '0.4.99').version, '7.3.0');
   const manifest = JSON.parse(readFileSync(new URL('../.github/cliproxy/manifest-v1.json', import.meta.url)));
-  for (const app of ['0.4.17', '0.4.18', '0.4.99']) {
+  const bundled = selectBundledRelease(manifest.releases, pkg.version, source);
+  for (const app of [bundled.compatibility.minAppVersion, pkg.version, '99.0.0']) {
     const future = { ...pkg, version: app, dependencies: { '@anthropic-ai/claude-agent-sdk': '99.0.0' } };
     for (const platform of Object.keys(source.platforms)) assert.equal(bundledArtifact(manifest, source, future, platform).sourceSha256, source.platforms[platform].sha256);
   }
+});
+test('component upgrade keeps the published minimum App version without a new client dependency', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../.github/cliproxy/manifest-v1.json', import.meta.url)));
+  const current = selectRelease(manifest.releases, '0.4.17');
+  assert.equal(current.version, source.version);
+  assert.equal(current.compatibility.minAppVersion, '0.4.17');
+  for (const app of ['0.4.18', '0.4.99', '0.5.0', '99.0.0']) {
+    assert.equal(selectRelease(manifest.releases, app).version, source.version);
+    assert.equal(selectBundledRelease(manifest.releases, app, source).version, source.version);
+  }
+  assert.equal(selectRelease(manifest.releases, '0.4.16'), undefined);
+  assert.ok(current.compatibility.credentialCompatibleVersions.includes('7.2.158'));
 });
 test('publication retains existing thresholds and immutable version bytes', () => {
   const old = validateApproval(approval(), [record('darwin-arm64')]);
