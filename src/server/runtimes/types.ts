@@ -419,13 +419,6 @@ export type UnifiedEvent = (
     contextOccupiedTokens: number;
     runtimeContextWindow: number;
   }
-  | {
-    kind: 'plan_state_update';
-    mode: 'normal' | 'plan';
-    revision: string;
-    /** Product permission mode to display for this effective Plan state. */
-    permissionMode: string;
-  }
   | { kind: 'model_update'; model: string }
   | { kind: 'log'; level: 'info' | 'warn' | 'error'; message: string }
 

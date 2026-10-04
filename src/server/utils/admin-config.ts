@@ -2024,7 +2024,8 @@ export function resolveWorkspaceConfig(
   } else if (resolvedRuntime === 'dsh') {
     const rawPermissionMode = snapshotOwnsConfig
       ? sessionMeta?.permissionMode
-      : (sessionMeta?.permissionMode ?? agentProductPermissionMode);
+      : (sessionMeta?.permissionMode ??
+        (typeof agent?.permissionMode === 'string' ? agent.permissionMode : undefined));
     const coercedPermissionMode = projectPermissionModeForRuntime(
       rawPermissionMode,
       resolvedRuntime,

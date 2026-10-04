@@ -1153,14 +1153,9 @@ export class DshRuntime implements AgentRuntime {
             processValue.planMode = snapshot.mode;
             processValue.planRevision = snapshot.revision;
           }
-          const productPermissionMode = processValue?.configuration.productPermissionMode
-            ?? configuration.productPermissionMode;
-          emitProductEvent({
-            kind: 'plan_state_update',
-            mode: snapshot.mode,
-            revision: snapshot.revision,
-            permissionMode: productPermissionMode,
-          });
+          // Plan is native Session state, independent of Product permission.
+          // Reporting the current turn's permission here would write its older
+          // admission policy back over a newer Session desired configuration.
         },
         resolveToolImage: async (image, context) => {
           const lease = await attachments.acquire({

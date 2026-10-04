@@ -87,6 +87,7 @@ import {
   findProjectAgentByWorkspacePath,
   getEffectiveOfficialToolIdsForSession,
   loadConfig as loadAdminConfig,
+  resolveWorkspaceConfig,
 } from '../utils/admin-config';
 import {
   ensureRegisteredAgentSessionOrigin,
@@ -580,6 +581,14 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     async enqueueInboxMessage(request) {
+      // Fresh Inbox metadata is born after Sidecar bootstrap. Capture its owned
+      // config at admission instead of the still-empty bootstrap desired state.
+      // Existing snapshots remain authoritative; legacy/live-follow Sessions
+      // retain their already-hydrated config and the queue's realtime semantics.
+      const metadata = getSessionMetadata(request.sessionId);
+      const config = metadata?.configSnapshotAt
+        ? resolveWorkspaceConfig(request.workspacePath, metadata, { includeMcp: false })
+        : undefined;
       // The operation queue owns admission. Runtime dispatch can wait for the
       // preceding turn and must not hold the caller's Inbox HTTP/lifecycle lease.
       const result = enqueueExternalSendForInbox(
@@ -588,6 +597,11 @@ export function createExternalSessionEngine(): SessionEngine {
           sessionId: request.sessionId,
           workspacePath: request.workspacePath,
           scenario: request.scenario ?? { type: 'desktop' },
+          ...(config ? {
+            model: config.model,
+            permissionMode: config.permissionMode,
+            reasoningEffort: config.reasoningEffort ?? 'default',
+          } : {}),
           inboxMeta: request.inboxMeta,
           metadataBirthPending: request.allowLazySessionMaterialization === true,
           analyticsOrigin: request.analyticsOrigin,

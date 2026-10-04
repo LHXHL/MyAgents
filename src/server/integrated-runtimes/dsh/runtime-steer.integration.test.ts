@@ -3,11 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PRESET_PROVIDERS } from '../../../shared/config-types';
-import { RuntimeSteerUnavailableError } from '../../runtimes/types';
+import { RuntimeSteerUnavailableError, type UnifiedEvent } from '../../runtimes/types';
 import { DshRuntime } from './runtime';
 import type { DshRpcObject } from './protocol-types';
 
-const fixture = vi.hoisted(() => ({ home: '', extensionRevision: '', request: vi.fn() }));
+const fixture = vi.hoisted(() => ({ home: '', extensionRevision: '', request: vi.fn(), notify: (_params: DshRpcObject): unknown => undefined }));
 vi.mock('../../utils/platform', async original => ({ ...await original<typeof import('../../utils/platform')>(), getHomeDir: () => fixture.home }));
 vi.mock('../../utils/runtime', () => ({ getBundledNodePath: () => join(fixture.home, 'node') }));
 vi.mock('../../utils/shell', () => ({ ensureShellPath: async () => '' }));
@@ -23,6 +23,9 @@ vi.mock('./installation', () => ({ resolveDshRuntimeInstallation: async (options
 vi.mock('./process-host', async original => ({
   ...await original<typeof import('./process-host')>(),
   DshRuntimeProcessHost: class {
+    constructor(options: { notificationHandlers: Record<string, (params: DshRpcObject) => unknown> }) {
+      fixture.notify = options.notificationHandlers['runtime/event'];
+    }
     identity = { runtimeGeneration: 'generation-1' };
     state = 'running';
     pid = 1;
@@ -38,8 +41,8 @@ afterEach(async () => {
   if (fixture.home) await rm(fixture.home, { recursive: true, force: true });
 });
 
-describe('DSH native realtime rejection classification', () => {
-  it('reports definite turn_not_active after pre-dispatch persistence through the actual adapter', async () => {
+describe('DSH native collaboration boundaries', () => {
+  it('keeps Plan independent of permission and reports definite realtime rejection through the actual adapter', async () => {
     fixture.home = await mkdtemp(join(tmpdir(), 'myagents-dsh-steer-'));
     await writeFile(join(fixture.home, 'node'), 'synthetic fixture');
     await mkdir(join(fixture.home, 'integrated-runtimes/dsh/runtime-artifact'), { recursive: true });
@@ -62,9 +65,19 @@ describe('DSH native realtime rejection classification', () => {
       }
     });
     const runtime = new DshRuntime();
+    const events: UnifiedEvent[] = [];
     const process = await runtime.startSession({ sessionId: 'session-steer-reject', workspacePath,
-      permissionMode: 'full-autonomous', scenario: { type: 'desktop' } }, () => {});
+      permissionMode: 'full-autonomous', scenario: { type: 'desktop' } }, event => events.push(event));
     try {
+      events.length = 0;
+      await fixture.notify({
+        runtimeGeneration: 'generation-1', productSessionId: 'session-steer-reject',
+        runtimeSessionId: 'runtime-1', sequence: 1, emittedAt: '2026-10-04T00:00:00.000Z',
+        event: { kind: 'plan', mode: 'plan', revision: 'plan-revision-1' },
+      });
+      // Native Plan state has its own owner; it cannot publish a permission
+      // projection that overwrites the Product Session's desired mode.
+      expect(events).toEqual([]);
       await runtime.sendMessage(process, 'A', [], { clientUserMessageId: 'user-A', clientOperationId: 'root-A', allowRealtimeSteer: true });
       const beforeDispatch = vi.fn(async () => {});
       await expect(runtime.steerMessage(process, 'C', [], { clientUserMessageId: 'user-C', clientOperationId: 'root-A', beforeDispatch }))

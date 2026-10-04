@@ -11694,27 +11694,6 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
       break;
     }
 
-    case 'plan_state_update': {
-      applyDesiredExternalRuntimeConfigPatch({
-        permissionMode: event.permissionMode,
-      });
-      broadcast('chat:permission-mode-changed', {
-        permissionMode: event.permissionMode,
-      });
-      const sessionId = getExternalLifecycleSessionId();
-      if (sessionId) {
-        void updateSessionMetadata(sessionId, {
-          permissionMode: event.permissionMode,
-        }).catch((error) => {
-          console.warn(
-            '[external-session] Failed to persist projected DSH Plan mode:',
-            error,
-          );
-        });
-      }
-      break;
-    }
-
     case 'log':
       if (event.level === 'error') {
         console.error(`[external-runtime] ${event.message}`);

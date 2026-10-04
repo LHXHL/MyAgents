@@ -8646,6 +8646,87 @@ describe('external SessionEngine with fake runtime', () => {
     expect(harness.runtime.sentMessages).toContain('idle Inbox');
     await harness.engine.waitIdle(2_000, 10);
   });
+
+  it.each([
+    { runtimeType: 'dsh' as const, permissionMode: 'workspace-autonomous', source: 'local' },
+    { runtimeType: 'dsh' as const, permissionMode: 'full-autonomous', source: 'network' },
+    { runtimeType: 'dsh' as const, permissionMode: 'approval-required', source: 'external-cli' },
+    { runtimeType: 'codex' as const, permissionMode: 'no-restrictions', source: 'local' },
+    { runtimeType: 'claude-code' as const, permissionMode: 'bypassPermissions', source: 'local' },
+  ])('starts a fresh $runtimeType/$source Inbox with the Agent birth snapshot after Sidecar bootstrap', async ({ runtimeType, permissionMode, source }) => {
+    const harness = await createHarness([{ kind: 'success', text: 'Inbox finished' }], { runtimeType });
+    const sessionId = `fresh-inbox-permission-${runtimeType}`;
+    const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+    // Rust starts and restores the target Sidecar before /api/inbox/start has
+    // materialized any Product metadata. No renderer config push follows.
+    await harness.externalSession.restoreExternalSessionState(sessionId, workspacePath, { type: 'desktop' });
+    const { handleFreshSessionStart } = await import('../inbox/start-handler');
+    const agent = {
+      id: 'target-agent', name: 'Target', enabled: true, channels: [],
+      runtime: runtimeType,
+      permissionMode: runtimeType === 'dsh' ? permissionMode : 'auto',
+      model: runtimeType === 'dsh' ? 'deepseek-flash' : undefined,
+      runtimeConfig: runtimeType === 'dsh' ? undefined : { permissionMode, model: runtimeType === 'codex' ? 'gpt-5.5' : 'opus' },
+    };
+    const result = await handleFreshSessionStart({
+      messageId: 'inbox-birth', fromLabel: 'Caller',
+      ...(source === 'external-cli' ? { sourceKind: 'external-cli' as const } : { fromSessionId: 'caller' }),
+      ...(source === 'network' ? { networkReturn: {
+        opId: '10000000-0000-4000-8000-000000000001',
+        returnRouteId: '10000000-0000-4000-8000-000000000002',
+      } } : {}),
+      toSessionId: sessionId, text: 'Run the query', kind: 'request', replyBack: false,
+    }, {
+      sessionId, workspacePath, agent, runtime: runtimeType,
+      runtimeSource: runtimeType === 'dsh' ? 'integrated' : 'system-cli',
+    }, (text, options) => harness.engine.enqueueInboxMessage({
+      text, sessionId, workspacePath, scenario: { type: 'desktop' },
+      ...options,
+    }));
+
+    expect(result).toEqual({ accepted: true });
+    await waitFor(() => harness.runtime.startSessionInitialMessages.length === 1, 'Inbox Runtime startup');
+    expect(harness.runtime.effectivePermissionMode).toBe(permissionMode);
+    expect(harness.engine.getSessionConfigSnapshot().permissionMode).toBe(permissionMode);
+    expect(harness.sessionStore.getSessionMetadata(sessionId)?.permissionMode).toBe(permissionMode);
+    await harness.engine.waitIdle(2_000, 10);
+  });
+
+  it.each(['cold', 'warm', 'partial-snapshot'] as const)('keeps the existing DSH Session permission on $0 Inbox sends after Agent defaults change', async state => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'first' }, { kind: 'success', text: 'second' },
+    ], { runtimeType: 'dsh' });
+    const sessionId = `owned-dsh-inbox-${state}`;
+    const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+    const permissionMode = state === 'partial-snapshot' ? undefined : 'workspace-autonomous';
+    const metadata = createSessionMetadata(workspacePath, {
+      runtime: 'dsh', runtimeSource: 'integrated', runtimeBinding: createDshBinding('darwin-arm64'),
+      permissionMode, configSnapshotAt: '2026-10-04T00:00:00.000Z',
+    });
+    metadata.id = sessionId;
+    await harness.sessionStore.saveSessionMetadata(metadata);
+    // A complete owned snapshot with a missing permission means the Runtime's
+    // product default; it must not start following the Agent again.
+    writeFileSync(join(harness.home, '.myagents', 'config.json'), JSON.stringify({ agents: [{
+      id: 'changed-agent', name: 'Changed Agent', enabled: true, workspacePath,
+      runtime: 'dsh', permissionMode: 'full-autonomous',
+    }] }));
+    await harness.externalSession.restoreExternalSessionState(sessionId, workspacePath, { type: 'desktop' });
+    const expected = permissionMode ?? 'approval-required';
+    const first = await harness.engine.enqueueInboxMessage({ text: 'first', sessionId, workspacePath });
+    await expect(first.dispatchAcceptance).resolves.toMatchObject({ accepted: true });
+    expect(harness.runtime.effectivePermissionMode).toBe(expected);
+    await harness.engine.waitIdle(2_000, 10);
+    if (state === 'warm') {
+      const second = await harness.engine.enqueueInboxMessage({ text: 'second', sessionId, workspacePath });
+      await expect(second.dispatchAcceptance).resolves.toMatchObject({ accepted: true });
+      expect(harness.runtime.effectivePermissionMode).toBe(expected);
+      await harness.engine.waitIdle(2_000, 10);
+    }
+    expect(harness.sessionStore.getSessionMetadata(sessionId)?.permissionMode).toBe(permissionMode);
+  });
   it('persists DSH Runtime identity before admitting a fresh Product root turn', async () => {
     const harness = await createHarness(
       [{ kind: 'success', text: 'fresh DSH turn finished' }],
@@ -9380,12 +9461,6 @@ describe('external SessionEngine with fake runtime', () => {
       ],
     });
     harness.runtime.emitForTest({
-      kind: 'plan_state_update',
-      mode: 'plan',
-      revision: 'plan-revision-1',
-      permissionMode: 'plan',
-    });
-    harness.runtime.emitForTest({
       kind: 'permission_request',
       requestId: 'plan-review-1',
       toolName: 'ExitPlanMode',
@@ -9434,10 +9509,7 @@ describe('external SessionEngine with fake runtime', () => {
         ],
       },
     });
-    expect(broadcastEvents).toContainEqual({
-      event: 'chat:permission-mode-changed',
-      data: { permissionMode: 'plan' },
-    });
+    expect(broadcastEvents.map(({ event }) => event)).not.toContain('chat:permission-mode-changed');
     expect(broadcastEvents).toContainEqual({
       event: 'exit-plan-mode:request',
       data: {

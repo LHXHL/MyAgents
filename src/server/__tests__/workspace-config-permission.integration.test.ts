@@ -65,6 +65,27 @@ afterEach(() => {
 });
 
 describe('resolveWorkspaceConfig permissionMode (#295)', () => {
+  it.each(['workspace-autonomous', 'full-autonomous'])(
+    'preserves DSH Agent permission %s for legacy resolution without overriding an owned snapshot', async permissionMode => {
+      const workspacePath = join(scratch, 'workspace');
+      writeConfig({ agents: [{
+        id: 'dsh-agent', name: 'DSH', enabled: true, workspacePath,
+        runtime: 'dsh', permissionMode,
+      }] });
+      writeProjects([]);
+      const { resolveWorkspaceConfig } = await import('../utils/admin-config');
+      const resolve = (metadata?: Partial<SessionMetadata>) => resolveWorkspaceConfig(
+        workspacePath, metadata as SessionMetadata | undefined, { includeMcp: false },
+      ).permissionMode;
+
+      expect(resolve()).toBe(permissionMode);
+      expect(resolve({ runtime: 'dsh' })).toBe(permissionMode);
+      expect(resolve({ runtime: 'dsh', permissionMode: 'approval-required' })).toBe('approval-required');
+      expect(resolve({ runtime: 'dsh', configSnapshotAt: '2026-10-04T00:00:00.000Z' })).toBe('approval-required');
+      expect(resolve({ runtime: 'dsh', permissionMode: 'workspace-autonomous', configSnapshotAt: '2026-10-04T00:00:00.000Z' })).toBe('workspace-autonomous');
+    },
+  );
+
   it('returns agent permissionMode so pre-warm starts under the configured mode', async () => {
     const workspacePath = join(scratch, 'workspace');
     writeConfig({
