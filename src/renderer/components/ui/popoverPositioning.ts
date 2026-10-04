@@ -1,4 +1,4 @@
-import { flip, offset, shift, size, type Padding } from "@floating-ui/react";
+import { flip, offset, shift, size, type FlipOptions, type Padding } from "@floating-ui/react";
 
 /** Placement and size share one boundary: flipping alone cannot fit an
  * oversized menu on either side of its anchor. autoUpdate reuses this policy. */
@@ -7,10 +7,11 @@ export function popoverPositioning(
   padding: Padding,
   matchAnchorWidth: boolean,
   maxHeight: string,
+  fallbackAxisSideDirection: FlipOptions['fallbackAxisSideDirection'] = "none",
 ) {
   return [
     offset(gap),
-    flip({ padding }),
+    flip({ padding, fallbackAxisSideDirection }),
     shift({ padding }),
     size({
       padding,

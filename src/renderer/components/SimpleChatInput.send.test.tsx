@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createRef } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -188,6 +188,70 @@ describe('SimpleChatInput send paths', () => {
     expect(screen.queryByText('max')).not.toBeInTheDocument();
     fireEvent.click(screen.getByText('future-tier'));
     expect(onReasoningEffortChange).toHaveBeenCalledWith('future-tier');
+  });
+
+  it.each(['launcher', 'chat'] as const)('keeps the %s reasoning flyout open on hover followed by click and selects through its portal', async (mode) => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    const onReasoningEffortChange = vi.fn();
+    const provider = { id: 'codex-sub', name: 'Codex', primaryModel: 'sol', models: [{ model: 'sol', modelName: 'Sol', supportedReasoningEfforts: [{ reasoningEffort: 'high', description: 'Deep thinking' }] }] } as Provider;
+    renderInput({ mode, runtime: 'builtin', provider, providers: [provider], selectedModel: 'sol', onReasoningEffortChange });
+    await user.click(screen.getByTitle('切换模型'));
+    const row = screen.getByRole('button', { name: /推理强度.*默认/ });
+    fireEvent.mouseEnter(row);
+    await user.click(row);
+    const option = screen.getByRole('button', { name: /high.*Deep thinking/ });
+    expect(row).toHaveAttribute('aria-expanded', 'true');
+    const modelPopup = document.querySelector('[data-model-list]')!.closest('[style*="z-index"]')!;
+    expect(modelPopup.contains(option)).toBe(false);
+    await user.click(option);
+    expect(onReasoningEffortChange).toHaveBeenCalledOnce();
+    expect(onReasoningEffortChange).toHaveBeenCalledWith('high');
+    expect(screen.queryByRole('button', { name: /推理强度.*默认/ })).not.toBeInTheDocument();
+  });
+
+  it('keeps the reasoning flyout while crossing the gap and retires it on Escape or outside click', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    const provider = { id: 'codex-sub', name: 'Codex', primaryModel: 'sol', models: [{ model: 'sol', modelName: 'Sol', supportedReasoningEfforts: [{ reasoningEffort: 'high' }] }] } as Provider;
+    renderInput({ runtime: 'builtin', provider, providers: [provider], selectedModel: 'sol', onReasoningEffortChange: vi.fn() });
+    await user.click(screen.getByTitle('切换模型'));
+    const row = screen.getByRole('button', { name: /推理强度.*默认/ });
+    fireEvent.mouseEnter(row);
+    const choices = screen.getByRole('group', { name: '推理强度' });
+    fireEvent.mouseLeave(row.parentElement!);
+    fireEvent.mouseEnter(choices);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 150)); });
+    expect(within(choices).getByText('high')).toBeVisible();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('group', { name: '推理强度' })).not.toBeInTheDocument();
+    await user.click(screen.getByTitle('切换模型'));
+    const nextRow = screen.getByRole('button', { name: /推理强度.*默认/ });
+    nextRow.focus();
+    await user.keyboard('{Enter}');
+    expect(screen.getByRole('group', { name: '推理强度' })).toBeVisible();
+    await user.click(document.body);
+    expect(screen.queryByRole('group', { name: '推理强度' })).not.toBeInTheDocument();
+    await user.click(screen.getByTitle('切换模型'));
+    expect(screen.queryByRole('group', { name: '推理强度' })).not.toBeInTheDocument();
+  });
+
+  it('retains the long flyout while the pointer enters its outer scroll container', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const provider = { id: 'codex-sub', name: 'Codex', primaryModel: 'sol', models: [{ model: 'sol', modelName: 'Sol', supportedReasoningEfforts: Array.from({ length: 30 }, (_, index) => ({ reasoningEffort: `tier-${index}` })) }] } as Provider;
+    renderInput({ runtime: 'builtin', provider, providers: [provider], selectedModel: 'sol', onReasoningEffortChange: vi.fn() });
+    fireEvent.click(screen.getByTitle('切换模型'));
+    const row = screen.getByRole('button', { name: /推理强度.*默认/ });
+    fireEvent.mouseEnter(row);
+    const choices = screen.getByRole('group', { name: '推理强度' });
+    fireEvent.mouseLeave(row.parentElement!);
+    // The popup border/scrollbar belongs to the outer scroller, outside the group.
+    fireEvent.mouseEnter(choices.parentElement!);
+    fireEvent.mouseEnter(choices);
+    fireEvent.mouseLeave(choices, { relatedTarget: choices.parentElement! });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 150)); });
+    expect(screen.getByRole('group', { name: '推理强度' })).toBeInTheDocument();
+    expect(within(choices).getByText('tier-29')).toBeInTheDocument();
   });
 
   it('does not borrow Global capabilities when a Session catalog is unknown', async () => {

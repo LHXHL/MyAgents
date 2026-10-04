@@ -433,12 +433,9 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   }, [externalMcpServers.length, globalMcpEnabled, isExternalRuntime, mcpServers, visibleOfficialTools, workspaceMcpEnabled, workspaceOfficialToolEnabled]);
 
   // #324 — 推理强度 submenu (fixed bottom row of the model menu). Opens on
-  // hover/click of the row; 120ms close delay + an invisible hover bridge
-  // prevent flicker when the pointer crosses the 6px gap to the flyout.
+  // hover/click of the row; share the 120ms close delay with the portaled
+  // flyout so the pointer can cross its 6px gap without closing it.
   const [showEffortSubmenu, setShowEffortSubmenu] = useState(false);
-  // Flyout direction — flips to the left when the popover sits too close to
-  // the window's right edge for the 224px submenu to fit.
-  const [effortFlipLeft, setEffortFlipLeft] = useState(false);
   const effortRowWrapRef = useRef<HTMLDivElement | null>(null);
   const effortCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // null = this surface has no reasoning-effort knob (unknown) → row hidden.
@@ -465,9 +462,6 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
       clearTimeout(effortCloseTimerRef.current);
       effortCloseTimerRef.current = null;
     }
-    const rect = effortRowWrapRef.current?.getBoundingClientRect();
-    // 224px submenu + 6px gap + 8px margin of comfort
-    setEffortFlipLeft(!!rect && rect.right + 238 > window.innerWidth);
     setShowEffortSubmenu(true);
   }, []);
   const scheduleCloseEffortSubmenu = useCallback(() => {
@@ -476,7 +470,13 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   }, []);
   // Reset submenu state whenever the model menu closes (incl. outside-click).
   useEffect(() => {
-    if (!modelMenuOpen) setShowEffortSubmenu(false);
+    if (!modelMenuOpen) {
+      setShowEffortSubmenu(false);
+      if (effortCloseTimerRef.current) {
+        clearTimeout(effortCloseTimerRef.current);
+        effortCloseTimerRef.current = null;
+      }
+    }
   }, [modelMenuOpen]);
   useEffect(() => () => {
     if (effortCloseTimerRef.current) clearTimeout(effortCloseTimerRef.current);
@@ -1995,18 +1995,14 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 <span className="max-w-[140px] truncate">{currentModelName}</span>
                 <ChevronUpIcon className="h-3 w-3 shrink-0" />
               </button>
-              {/* #324 — unstyled + hand-rolled chrome (= Popover DEFAULT_CHROME minus
-                  `overflow-hidden`): the 推理强度 flyout is positioned OUTSIDE the
-                  popover bounds and would be clipped by overflow-hidden. The model
-                  list keeps its own scroll container below; the effort row stays
-                  fixed at the bottom, outside the scroll area. */}
+              {/* The model list scrolls independently; the effort flyout uses
+                  its own Popover to escape this menu's overflow boundary. */}
               <Popover
                 open={modelMenuOpen}
                 onClose={() => setShowModelMenu(false)}
                 anchorRef={modelBtnRef}
                 placement="top-end"
-                unstyled
-                className="w-64 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl"
+                className="w-64"
               >
                 <div
                   ref={modelListRef}
@@ -2131,13 +2127,11 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   >
                     <button
                       type="button"
+                      aria-expanded={showEffortSubmenu}
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (showEffortSubmenu) {
-                          setShowEffortSubmenu(false);
-                        } else {
-                          openEffortSubmenu();
-                        }
+                        // Pointer entry may already have opened the flyout.
+                        openEffortSubmenu();
                       }}
                       className={`flex w-full items-center gap-1.5 rounded-md px-3 py-1.5 text-left text-sm text-[var(--ink)] transition-colors ${
                         showEffortSubmenu ? 'bg-[var(--hover-bg)]' : 'hover:bg-[var(--hover-bg)]'
@@ -2155,49 +2149,57 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                       <ChevronRightIcon className="h-3 w-3 shrink-0 text-[var(--ink-muted)]" />
                     </button>
 
-                    {showEffortSubmenu && (
-                      <>
-                        {/* invisible hover bridge across the 6px gap */}
-                        <div className={`absolute top-0 h-full w-2 ${effortFlipLeft ? 'right-full' : 'left-full'}`} />
-                        <div
-                          className={`absolute bottom-0 z-10 w-56 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-1 shadow-xl ${
-                            effortFlipLeft ? 'right-[calc(100%+6px)]' : 'left-[calc(100%+6px)]'
-                          }`}
-                        >
-                          {[REASONING_EFFORT_DEFAULT, ...effortChoices].map(level => {
-                            const isSelected = reasoningEffort === level;
-                            const description = managedEffort
-                              ? effortModel?.supportedReasoningEfforts?.find(option => option.reasoningEffort === level)?.description ?? ''
-                              : REASONING_EFFORT_DESCRIPTIONS[level] ?? '';
-                            return (
-                              <button
-                                key={level}
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  onReasoningEffortChange?.(level);
-                                  setShowEffortSubmenu(false);
-                                  setShowModelMenu(false);
-                                }}
-                                className={`flex w-full items-center justify-between rounded-md px-3 py-1.5 text-left text-sm transition-colors ${
-                                  isSelected
-                                    ? 'bg-[var(--accent)]/10 font-medium text-[var(--accent)]'
-                                    : 'text-[var(--ink)] hover:bg-[var(--hover-bg)]'
-                                }`}
-                              >
-                                <span className="shrink-0">{level === REASONING_EFFORT_DEFAULT ? defaultEffortLabel : level}</span>
-                                <span title={description} className={`ml-3 min-w-0 truncate text-xs font-normal ${isSelected ? 'text-[var(--accent)]/70' : 'text-[var(--ink-muted)]'}`}>
-                                  {description}
-                                </span>
-                              </button>
-                            );
-                          })}
-                          <div hidden={managedEffort} className="mt-1 whitespace-nowrap border-t border-[var(--line)] px-3 pb-1 pt-1.5 text-xs text-[var(--ink-muted)]/60">
-                            {t('input.reasoningRequirement')}
-                          </div>
+                    <Popover
+                      open={modelMenuOpen && showEffortSubmenu}
+                      onClose={() => setShowEffortSubmenu(false)}
+                      anchorRef={effortRowWrapRef}
+                      placement="right-end"
+                      fallbackAxisSideDirection="start"
+                      offset={6}
+                      // Parent Popover must not dismiss on option mousedown.
+                      zIndex={261}
+                      className="w-56 max-w-[calc(100vw-16px)]"
+                      onMouseEnter={openEffortSubmenu}
+                      onMouseLeave={scheduleCloseEffortSubmenu}
+                    >
+                      <div
+                        role="group"
+                        aria-label={t('input.reasoningEffort')}
+                        className="p-1"
+                      >
+                        {[REASONING_EFFORT_DEFAULT, ...effortChoices].map(level => {
+                          const isSelected = reasoningEffort === level;
+                          const description = managedEffort
+                            ? effortModel?.supportedReasoningEfforts?.find(option => option.reasoningEffort === level)?.description ?? ''
+                            : REASONING_EFFORT_DESCRIPTIONS[level] ?? '';
+                          return (
+                            <button
+                              key={level}
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onReasoningEffortChange?.(level);
+                                setShowEffortSubmenu(false);
+                                setShowModelMenu(false);
+                              }}
+                              className={`flex w-full items-center justify-between rounded-md px-3 py-1.5 text-left text-sm transition-colors ${
+                                isSelected
+                                  ? 'bg-[var(--accent)]/10 font-medium text-[var(--accent)]'
+                                  : 'text-[var(--ink)] hover:bg-[var(--hover-bg)]'
+                              }`}
+                            >
+                              <span className="shrink-0">{level === REASONING_EFFORT_DEFAULT ? defaultEffortLabel : level}</span>
+                              <span title={description} className={`ml-3 min-w-0 truncate text-xs font-normal ${isSelected ? 'text-[var(--accent)]/70' : 'text-[var(--ink-muted)]'}`}>
+                                {description}
+                              </span>
+                            </button>
+                          );
+                        })}
+                        <div hidden={managedEffort} className="mt-1 border-t border-[var(--line)] px-3 pb-1 pt-1.5 text-xs text-[var(--ink-muted)]/60">
+                          {t('input.reasoningRequirement')}
                         </div>
-                      </>
-                    )}
+                      </div>
+                    </Popover>
                   </div>
                 )}
 

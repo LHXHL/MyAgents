@@ -24,6 +24,7 @@ import {
   useFloating,
   type Placement,
   type Padding,
+  type FlipOptions,
 } from "@floating-ui/react";
 import { useEffect, useRef } from "react";
 import { popoverPositioning } from "./popoverPositioning";
@@ -39,6 +40,8 @@ export interface PopoverProps {
   anchorRef: React.RefObject<HTMLElement | null>;
   /** Preferred side/alignment. Floating-UI auto-flips if there isn't room. */
   placement?: PopoverPlacement;
+  /** Allow perpendicular fallback when neither preferred nor opposite side fits. */
+  fallbackAxisSideDirection?: FlipOptions['fallbackAxisSideDirection'];
   /** Gap (in px) between anchor edge and popover edge. Default 4. */
   offset?: number;
   /** Match the anchor's width — used for select-style dropdowns. */
@@ -75,6 +78,9 @@ export interface PopoverProps {
    *  Use when the caller wants a fully custom container (e.g. compound boxes
    *  that visually attach to their anchor). */
   unstyled?: boolean;
+  /** Hover ownership includes the popup's border and native scrollbars. */
+  onMouseEnter?: React.MouseEventHandler<HTMLDivElement>;
+  onMouseLeave?: React.MouseEventHandler<HTMLDivElement>;
   children: React.ReactNode;
 }
 
@@ -86,6 +92,7 @@ export function Popover({
   onClose,
   anchorRef,
   placement = "bottom-start",
+  fallbackAxisSideDirection = "none",
   offset: offsetValue = 4,
   matchAnchorWidth = false,
   maxHeight = "100vh",
@@ -97,6 +104,8 @@ export function Popover({
   className = "",
   style,
   unstyled = false,
+  onMouseEnter,
+  onMouseLeave,
   children,
 }: PopoverProps) {
   const { refs, floatingStyles } = useFloating({
@@ -109,6 +118,7 @@ export function Popover({
       typeof style?.maxHeight === "number"
         ? `${style.maxHeight}px`
         : (style?.maxHeight ?? maxHeight),
+      fallbackAxisSideDirection,
     ),
     whileElementsMounted: autoUpdate,
   });
@@ -172,6 +182,8 @@ export function Popover({
   return (
     <FloatingPortal preserveTabOrder={preserveTabOrder}>
       <div
+        onMouseEnter={onMouseEnter}
+        onMouseLeave={onMouseLeave}
         ref={(node) => {
           refs.setFloating(node);
           floatingRef.current = node;
