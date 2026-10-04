@@ -1,6 +1,10 @@
 import { useSyncExternalStore } from "react";
 import { listenWithCleanup } from "@/utils/tauriListen";
-import { networkSnapshot, type NetworkSnapshot } from "@/api/agentNetwork";
+import {
+  networkSnapshot,
+  setNetworkReadScope,
+  type NetworkSnapshot,
+} from "@/api/agentNetwork";
 
 const initial: NetworkSnapshot = {
   state: "connecting",
@@ -22,6 +26,7 @@ function accept(next: NetworkSnapshot) {
   )
     drafts.clear();
   snapshot = next;
+  setNetworkReadScope(next);
   listeners.forEach((listener) => listener());
 }
 export function startAgentNetworkStore(): () => void {
@@ -49,6 +54,7 @@ export function startAgentNetworkStore(): () => void {
     abort.abort();
     drafts.clear();
     snapshot = initial;
+    setNetworkReadScope(null);
   };
 }
 export function useAgentNetworkSnapshot(): NetworkSnapshot {

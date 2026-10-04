@@ -139,6 +139,7 @@ impl NetworkTransport {
         let mut response = self.authenticated(request, &method, &url, token).await?;
         allocation.resize(0)?;
         let status = response.status();
+        let retry_after = super::reconnect::retry_after(&response);
         let mut bytes = Vec::new();
         while let Some(chunk) = response
             .chunk()
@@ -167,7 +168,7 @@ impl NetworkTransport {
             details: Option<Value>,
         }
         let result: Envelope = serde_json::from_slice(&bytes)
-            .map_err(|_| NetworkError::new("NETWORK_RESPONSE_INVALID"))?;
+            .map_err(|_| { let mut error = NetworkError::new("NETWORK_RESPONSE_INVALID"); error.retry_after = retry_after; error })?;
         if !status.is_success() || !result.ok {
             let failure = result
                 .error
@@ -176,6 +177,7 @@ impl NetworkTransport {
             error.retryable =
                 failure.retryable && (status.as_u16() == 429 || status.is_server_error());
             error.details = failure.details;
+            error.retry_after = retry_after;
             return Err(error);
         }
         let value = result
@@ -203,6 +205,7 @@ impl NetworkTransport {
             .authenticated(request, &reqwest::Method::GET, &url, token)
             .await?;
         let headers = response.headers();
+        let retry_after = super::reconnect::retry_after(&response);
         let get = |key: &str| headers.get(key).and_then(|value| value.to_str().ok());
         if response.status() != reqwest::StatusCode::SWITCHING_PROTOCOLS
             || response.version() != reqwest::Version::HTTP_11
@@ -216,7 +219,9 @@ impl NetworkTransport {
             || get("Sec-WebSocket-Protocol") != Some("myagents-agent-network.v1")
             || headers.contains_key("Sec-WebSocket-Extensions")
         {
-            return Err(NetworkError::new("NETWORK_UPGRADE_REJECTED"));
+            let mut error = NetworkError::new("NETWORK_UPGRADE_REJECTED");
+            error.retry_after = retry_after;
+            return Err(error);
         }
         let stream = response
             .upgrade()

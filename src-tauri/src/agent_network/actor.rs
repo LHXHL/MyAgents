@@ -419,6 +419,7 @@ pub(crate) fn start(
         let mut boundary = owner.boundary.subscribe();
         let mut previous: Option<(String, PreviousConnection)> = None;
         let mut renewed: Option<NetworkIdentity> = None;
+        let mut reconnect = super::reconnect::ReconnectBackoff::default();
         loop {
             let phase = *boundary.borrow_and_update();
             if phase.shutdown {
@@ -431,6 +432,7 @@ pub(crate) fn start(
                 }
                 continue;
             }
+            let retry_after;
             match NetworkAccountSession::capture() {
                 Ok(account) => {
                     let principal = account.principal_id().ok().map(str::to_owned);
@@ -471,16 +473,24 @@ pub(crate) fn start(
                         }
                     };
                     let Some(result) = result else {
+                        reconnect.reset();
                         previous = None;
                         renewed = None;
                         continue;
                     };
                     let error = match result {
                         Ok(identity) => {
+                            reconnect.reset();
                             renewed = Some(identity);
                             continue;
                         }
-                        Err(error) => Some(error),
+                        Err(error) => {
+                            // A ready connection is a successful recovery, even
+                            // if its eventual disconnect returned an error.
+                            if owner.snapshot().state == "ready" { reconnect.reset(); }
+                            retry_after = error.retry_after;
+                            Some(error)
+                        },
                     };
                     owner.publish(
                         &app,
@@ -496,6 +506,7 @@ pub(crate) fn start(
                     );
                 }
                 Err(error) => {
+                    retry_after = error.retry_after;
                     owner.publish(
                         &app,
                         phase.generation,
@@ -519,9 +530,14 @@ pub(crate) fn start(
             while let Ok(command) = receiver.try_recv() {
                 command.reject(NetworkError::new("CONNECTOR_NOT_READY"));
             }
-            tokio::select! { biased; _ = boundary.changed() => { previous = None; renewed = None; }
-            signal = super::power::next(&mut power_monitor) => { apply_power(&app, &owner, signal); previous = None; renewed = None; }
-            _ = tokio::time::sleep(Duration::from_secs(5)) => {} }
+            let random = uuid::Uuid::new_v4();
+            let jitter = u16::from_le_bytes([random.as_bytes()[0], random.as_bytes()[1]]);
+            let delay = reconnect.next(jitter, retry_after);
+            match super::reconnect::wait(delay, boundary.changed(), super::power::next(&mut power_monitor)).await {
+                super::reconnect::RetryWake::Elapsed => {},
+                super::reconnect::RetryWake::Boundary => { previous = None; renewed = None; reconnect.reset(); },
+                super::reconnect::RetryWake::Power(signal) => { apply_power(&app, &owner, signal); previous = None; renewed = None; reconnect.reset(); },
+            }
         }
     });
 }

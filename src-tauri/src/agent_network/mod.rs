@@ -14,6 +14,7 @@ mod memory;
 mod pairs;
 mod policy;
 mod power;
+pub(crate) mod reconnect;
 pub(crate) mod returns;
 pub(crate) mod source;
 mod transport;
@@ -25,6 +26,8 @@ pub(crate) struct NetworkError {
     pub retryable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
+    #[serde(skip)]
+    pub retry_after: Option<std::time::Duration>,
 }
 impl NetworkError {
     pub(crate) fn new(code: &'static str) -> Self {
@@ -32,6 +35,7 @@ impl NetworkError {
             code: code.into(),
             retryable: code == "NETWORK_QUERY_FAILED",
             details: None,
+            retry_after: None,
         }
     }
     pub(crate) fn cloud(code: &str, status: u16) -> Self {
@@ -48,6 +52,7 @@ impl NetworkError {
             },
             retryable: status == 429 || status >= 500,
             details: None,
+            retry_after: None,
         }
     }
 }
@@ -63,6 +68,7 @@ impl From<crypto::CryptoError> for NetworkError {
             code: error.to_string(),
             retryable: false,
             details: None,
+            retry_after: None,
         }
     }
 }

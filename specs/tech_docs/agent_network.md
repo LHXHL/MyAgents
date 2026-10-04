@@ -50,6 +50,8 @@ Resolve 响应先经固定包的 `metadata-callableAgent` schema 校验，再由
 
 ## 目录、@ 与 query 生命周期
 
+Renderer 只合并同一账号/连接投影 revision 下完全相同的在途目录 read；完成或失败立即释放，不缓存结果。新的 snapshot revision、账号 generation、连接状态和 mutation 会隔离旧请求；各调用者保留独立的数据投影，原分页、刷新和错误展示行为不变。
+
 `discoverAgents/getAgentDiscovery` 复用本地身份 owner，合并 Rust 当前网络目录。CLI 保留原本地完整 registry；紧凑 @ projection 有明确预算/完整性状态。只有同设备、同 localAgentId 的网络 alias 才能与本地项折叠。目录与引用不授予执行许可。
 
 @ 空关键词只查询/展示 Agent、想法，有关键词后按 Agent→想法→文件拼接，一个滚动/键盘导航区域；每组默认五项，展开更多每次最多增加五项，visibleCount 与 owner 页缓存分离。面板宽度 25.5rem，并限制在 viewport 留白内；展开/收起控制行居中。面板固定目标高度，加载/搜索/展开不随结果条数缩放，shared Popover size 只按 anchor 可用空间约束；composer 保留顶部栏空间。本机图标沿 ConfigData 的现有工作区身份投影；远端目录只同步拥有设备 Project 的 `icon` 字符串，复用 `WorkspaceIcon` 渲染，缺失或本机不支持的图标名称使用机器人图标，兼容旧目录和旧 @ 快照。图标只属于展示，不改变 exposure revision 或执行权限；想法日期/标签/摘要只占一行。想法沿原 ManagedRecordStore text Record projection；文件沿原 WorkspaceFileService/Rust walk。stateless cursor 绑定 scope/query/snapshot；hasMore 与 scanLimitReached 区分，通用扫描截断提示不在面板展示，但保留 partial 事实；超预算或目录不可用不得假报全部/空，网络不完整与失败提示仍保留。
@@ -89,6 +91,8 @@ Resolve 响应先经固定包的 `metadata-callableAgent` schema 校验，再由
 同 pair 连续完整对象在原 rustls writer 中有序写入，受 `receiveBytes` 和 App `MemoryBudget` 限制；信用窗口只控制 TLS 帧发出，不能把正常第二对象视为连接故障。终止性 pair 写入/加密错误只关闭该 pair，清理它的 pending 调用，保留其他 pair/有效逻辑回程；没有另建执行队列或断线重发。
 
 ### Metadata failure outcomes
+
+Rust 原 connector 拥有连续连接失败退避：首次恢复仍为 5 秒，连续失败按 10/20/40/60 秒基线与最多 20% jitter 限速；成功 ready、账号/电源 boundary 重置。有效 429/503 `Retry-After`（秒或 HTTP date，最多一小时）仅作为后台重连等待下限，不改变业务读写的错误投影、不保存/重放请求。boundary 继续立即打断等待；Space IssueDelivery 的 60/180/300 秒轮询不变。
 
 Metadata reads and connection snapshots do not assert a user save. After metadata queue handoff, timeout or a dropped connection future yields uncertain outcome only for membership/enable/description writes; receipt inspection remains read-only and no write is replayed. Actual auth-generation changes fence discarded account scope; transport or power-generation changes alone are not evidence of account change. The existing actor reconnect loop owns recovery; Renderer describes that state and keeps its read retry separate from write receipt recovery.
 

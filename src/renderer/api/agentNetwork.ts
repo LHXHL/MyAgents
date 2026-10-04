@@ -67,11 +67,50 @@ export type NetworkRequest =
 export function networkSnapshot(): Promise<NetworkSnapshot> {
   return invoke("cmd_agent_network_snapshot");
 }
+const directoryReads = new Map<string, Promise<unknown>>();
+let readScope = "";
+/** In-flight reuse only; no response or permission cache. A newly observed
+ * revision/account/connection and every write fence the previous requests. */
+export function setNetworkReadScope(snapshot: NetworkSnapshot | null): void {
+  const next =
+    snapshot === null
+      ? ""
+      : JSON.stringify([
+          snapshot.authGeneration,
+          snapshot.revision,
+          snapshot.principalId,
+          snapshot.networkId,
+          snapshot.state,
+        ]);
+  if (next !== readScope || snapshot === null) {
+    readScope = next;
+    directoryReads.clear();
+  }
+}
+function requestOnce(request: NetworkRequest): Promise<unknown> {
+  if (!["network", "devices", "agents", "callable"].includes(request.kind)) {
+    if (request.kind !== "receipt") directoryReads.clear();
+    return invoke("cmd_agent_network_request", { request });
+  }
+  const key = JSON.stringify([readScope, request]);
+  let pending = directoryReads.get(key);
+  if (!pending) {
+    pending = invoke("cmd_agent_network_request", { request });
+    directoryReads.set(key, pending);
+    const current = pending;
+    const release = () => {
+      if (directoryReads.get(key) === current) directoryReads.delete(key);
+    };
+    void pending.then(release, release);
+  }
+  // Each reader keeps its own mutable projection, as with independent invokes.
+  return pending.then((value) => structuredClone(value));
+}
 export async function networkRequest(
   request: NetworkRequest,
 ): Promise<unknown> {
   try {
-    return await invoke("cmd_agent_network_request", { request });
+    return await requestOnce(request);
   } catch (error) {
     // Rechecking a mutation receipt is a read, never a second mutation.
     if (
@@ -93,6 +132,11 @@ export async function networkRequest(
       } // A failed receipt read cannot turn an uncertain write into a definite failure.
     }
     throw error;
+  } finally {
+    // A read started during a write can still contain the pre-write snapshot.
+    // Fence completion too, including receipt recovery and uncertain failures.
+    if ("mutationId" in request && request.kind !== "receipt")
+      directoryReads.clear();
   }
 }
 export async function allNetworkDevices(): Promise<{

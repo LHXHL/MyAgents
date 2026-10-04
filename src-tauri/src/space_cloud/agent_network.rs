@@ -163,6 +163,7 @@ impl NetworkAccountSession {
             .await
             .map_err(|_| NetworkError::cloud("NETWORK_ACCOUNT_UNAVAILABLE", 503))?;
         let status = response.status();
+        let retry_after = crate::agent_network::reconnect::retry_after(&response);
         let mut bytes = Vec::new();
         while let Some(chunk) = response
             .chunk()
@@ -176,7 +177,7 @@ impl NetworkAccountSession {
         }
         self.ensure_current()?;
         let envelope: CloudEnvelope<Value> = serde_json::from_slice(&bytes)
-            .map_err(|_| NetworkError::new("NETWORK_ACCOUNT_RESPONSE_INVALID"))?;
+            .map_err(|_| { let mut error = NetworkError::new("NETWORK_ACCOUNT_RESPONSE_INVALID"); error.retry_after = retry_after; error })?;
         if !status.is_success() || !envelope.success {
             let code = envelope
                 .code
@@ -193,7 +194,9 @@ impl NetworkAccountSession {
                     account_user_session_invalidated();
                 }
             }
-            return Err(NetworkError::cloud(code, status.as_u16()));
+            let mut error = NetworkError::cloud(code, status.as_u16());
+            error.retry_after = retry_after;
+            return Err(error);
         }
         envelope
             .data

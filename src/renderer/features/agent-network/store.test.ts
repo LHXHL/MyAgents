@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NetworkSnapshot } from "@/api/agentNetwork";
 const mocks = vi.hoisted(() => ({ snapshot: vi.fn(), listen: vi.fn() }));
-vi.mock("@/api/agentNetwork", () => ({ networkSnapshot: mocks.snapshot }));
+vi.mock("@/api/agentNetwork", () => ({
+  networkSnapshot: mocks.snapshot,
+  setNetworkReadScope: vi.fn(),
+}));
 vi.mock("@/utils/tauriListen", () => ({ listenWithCleanup: mocks.listen }));
 import {
   startAgentNetworkStore,

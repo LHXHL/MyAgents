@@ -4,10 +4,162 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 import {
   networkErrorKey,
   networkRequest,
+  setNetworkReadScope,
   type NetworkRequest,
 } from "./agentNetwork";
-beforeEach(() => invoke.mockReset());
+beforeEach(() => {
+  invoke.mockReset();
+  setNetworkReadScope(null);
+});
 describe("network read and settings outcome", () => {
+  it("post-save refresh does not join a read started while the save was pending", async () => {
+    let finishWrite!: (value: unknown) => void,
+      finishRead!: (value: unknown) => void;
+    invoke
+      .mockImplementationOnce(
+        () =>
+          new Promise((r) => {
+            finishWrite = r;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((r) => {
+            finishRead = r;
+          }),
+      )
+      .mockResolvedValueOnce({ revision: 2 });
+    const saving = networkRequest({
+      kind: "description",
+      networkId: "net",
+      mountId: "mount",
+      description: "new",
+      mutationId: "mutation",
+      expectedMembershipRevision: 1,
+      expectedDescriptionRevision: 0,
+    });
+    const during = networkRequest({ kind: "network" });
+    finishWrite({ saved: true });
+    await saving;
+    await expect(networkRequest({ kind: "network" })).resolves.toEqual({
+      revision: 2,
+    });
+    finishRead({ revision: 1 });
+    await expect(during).resolves.toEqual({ revision: 1 });
+    expect(invoke).toHaveBeenCalledTimes(3);
+  });
+  it("coalesces only identical in-flight directory reads, with independent projections", async () => {
+    let resolve!: (value: unknown) => void;
+    invoke.mockImplementationOnce(
+      () =>
+        new Promise((r) => {
+          resolve = r;
+        }),
+    );
+    const first = networkRequest({ kind: "network" }),
+      second = networkRequest({ kind: "network" });
+    expect(invoke).toHaveBeenCalledOnce();
+    resolve({ revision: 1 });
+    const [a, b] = await Promise.all([first, second]);
+    expect(a).toEqual(b);
+    expect(a).not.toBe(b);
+    invoke.mockResolvedValueOnce({ revision: 2 });
+    await expect(networkRequest({ kind: "network" })).resolves.toEqual({
+      revision: 2,
+    });
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+  it("does not reuse reads across newer revision/auth scopes or a mutation", async () => {
+    let resolve!: (value: unknown) => void;
+    invoke
+      .mockImplementationOnce(
+        () =>
+          new Promise((r) => {
+            resolve = r;
+          }),
+      )
+      .mockResolvedValue({ revision: 2 });
+    const old = networkRequest({ kind: "network" });
+    setNetworkReadScope({
+      state: "ready",
+      principalId: "user",
+      networkId: "net",
+      authGeneration: 1,
+      revision: 1,
+      error: null,
+    });
+    await expect(networkRequest({ kind: "network" })).resolves.toEqual({
+      revision: 2,
+    });
+    setNetworkReadScope({
+      state: "ready",
+      principalId: "user2",
+      networkId: "net",
+      authGeneration: 2,
+      revision: 2,
+      error: null,
+    });
+    await networkRequest({ kind: "network" });
+    resolve({ revision: 0 });
+    await old;
+    expect(invoke).toHaveBeenCalledTimes(3);
+  });
+  it("releases failed reads and never coalesces mutations", async () => {
+    invoke
+      .mockRejectedValueOnce({ code: "NETWORK_TRANSPORT_FAILED" })
+      .mockResolvedValue({ revision: 2 });
+    await expect(networkRequest({ kind: "network" })).rejects.toMatchObject({
+      code: "NETWORK_TRANSPORT_FAILED",
+    });
+    await networkRequest({ kind: "network" });
+    expect(invoke).toHaveBeenCalledTimes(2);
+    const request: NetworkRequest = {
+      kind: "enabled",
+      networkId: "net",
+      mountId: "mount",
+      enabled: true,
+      mutationId: "mutation",
+      expectedMembershipRevision: 1,
+      expectedEnableRevision: 1,
+    };
+    await Promise.all([networkRequest(request), networkRequest(request)]);
+    expect(invoke).toHaveBeenCalledTimes(4);
+  });
+  it("a write and late old read cannot remove or reuse the fresh in-flight read", async () => {
+    let resolveOld!: (value: unknown) => void,
+      resolveNew!: (value: unknown) => void;
+    invoke
+      .mockImplementationOnce(
+        () =>
+          new Promise((r) => {
+            resolveOld = r;
+          }),
+      )
+      .mockResolvedValueOnce({ saved: true })
+      .mockImplementationOnce(
+        () =>
+          new Promise((r) => {
+            resolveNew = r;
+          }),
+      );
+    const old = networkRequest({ kind: "network" });
+    await networkRequest({
+      kind: "description",
+      networkId: "net",
+      mountId: "mount",
+      description: "new",
+      mutationId: "mutation",
+      expectedMembershipRevision: 1,
+      expectedDescriptionRevision: 0,
+    });
+    const fresh = networkRequest({ kind: "network" });
+    resolveOld({ revision: 0 });
+    await old;
+    const duplicate = networkRequest({ kind: "network" });
+    expect(invoke).toHaveBeenCalledTimes(3);
+    resolveNew({ revision: 1 });
+    expect(await fresh).toEqual(await duplicate);
+  });
   it.each([
     "NETWORK_TRANSPORT_FAILED",
     "NETWORK_REQUEST_UNCONFIRMED",
