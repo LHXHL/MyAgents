@@ -8,14 +8,14 @@
     "taskCenter": "Task Center",
     "record": "Record",
     "recordingTime": "Recording {{time}}",
-    "team": "Team Space",
+    "team": "Space Collaboration",
     "launcher": "Launcher",
     "newTab": "New tab",
     "closeTab": "Close tab",
     "generating": "AI is responding",
     "unread": "Unread messages",
     "switchTo": "Switch to {{title}}",
-    "agentNetwork": "Agent Network"
+    "agentNetwork": "AgentNet Private Network"
   },
   "globalSidebar": {
     "navigation": "Global navigation",
@@ -26,7 +26,7 @@
     "search": "Search",
     "tasks": "Automations",
     "createTask": "Create task",
-    "team": "Team Space",
+    "team": "Space Collaboration",
     "capabilities": "Skills & Tools",
     "helper": "AI Helper",
     "settings": "Settings",
@@ -41,7 +41,7 @@
     "newChatHere": "Start a new chat here",
     "emptyWorkspaceSessions": "No sessions yet",
     "loadMore": "Show more",
-    "agentNetwork": "Agent Network",
+    "agentNetwork": "AgentNet Private Network",
     "more": "More"
   },
   "titlebar": {
@@ -51,7 +51,7 @@
     "communityTitle": "Join the user community",
     "communityDescription": "Scan to join and discuss usage with other users.",
     "communityQrAlt": "User community QR code",
-    "team": "Team Space",
+    "team": "Space Collaboration",
     "task": "Tasks",
     "taskCenterTitle": "Task Center ({{shortcut}})",
     "settings": "Settings",
@@ -1292,8 +1292,9 @@
     "referenceDefinition": "Reference link"
   },
   "agentNetwork": {
-    "networkName": "My Agent Network",
+    "networkName": "My AgentNet Private Network",
     "networkInfo": "About this network",
+    "infoIntro": "AgentNet is a private network of Agents across multiple devices, provided by MyAgents and scoped to your signed-in account.",
     "infoTitle": "End-to-end encrypted",
     "infoRelay": "Tasks, responses, and results are encrypted on each device. The MyAgents server only relays ciphertext.",
     "infoLocal": "Each task runs on the device of the target Agent and follows that Agent's own permissions.",

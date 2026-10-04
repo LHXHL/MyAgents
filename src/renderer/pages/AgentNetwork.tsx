@@ -13,7 +13,6 @@ import {
   networkErrorKey,
   networkRequest,
   type NetworkDevice,
-  type NetworkInfo,
   type NetworkSnapshot,
 } from "@/api/agentNetwork";
 import { useMyAgentsLogin } from "@/hooks/useMyAgentsLogin";
@@ -58,7 +57,6 @@ function AgentNetworkContent({
   const [session, setSession] = useState<SpaceSessionView | null>(null),
     [authLoading, setAuthLoading] = useState(true);
   const [accountError, setAccountError] = useState<string | null>(null);
-  const [network, setNetwork] = useState<NetworkInfo | null>(null);
   const [devices, setDevices] = useState<NetworkDevice[]>([]),
     [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null),
@@ -125,7 +123,7 @@ function AgentNetworkContent({
     void Promise.all([networkRequest({ kind: "network" }), allNetworkDevices()])
       .then(async ([info, page]) => {
         if (!current()) return;
-        setNetwork(metadataSchemas.network.parse(info));
+        metadataSchemas.network.parse(info);
         const localId = getDeviceId();
         setDevices(
           page.items.sort(
@@ -319,7 +317,7 @@ function AgentNetworkContent({
         <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
           <div className="flex items-center gap-1.5">
             <h1 className="text-2xl font-semibold">
-              {network?.name || t("agentNetwork.networkName")}
+              {t("agentNetwork.networkName")}
             </h1>
             <button
               type="button"
@@ -339,7 +337,8 @@ function AgentNetworkContent({
               className="max-w-xs space-y-1.5 px-4 py-3 text-xs leading-relaxed text-[var(--ink-secondary)]"
             >
               <div id="agent-network-explanation">
-                <p className="flex items-center gap-1.5 font-medium text-[var(--ink)]">
+                <p>{t("agentNetwork.infoIntro")}</p>
+                <p className="mt-1.5 flex items-center gap-1.5 font-medium text-[var(--ink)]">
                   <LockIcon className="h-3.5 w-3.5" />
                   {t("agentNetwork.infoTitle")}
                 </p>
