@@ -267,10 +267,7 @@ export function buildSessionInboxSection(_scenario: InteractionScenario): string
  *   - Task self-exit   only when scenario.type === 'cron' && aiCanExit
  *   - Goal Mode         only in private user-facing scenarios (desktop / IM / agent-channel)
  *   - IM media          only in 'im' / 'agent-channel' scenarios
- *   - Record capture    in 'desktop' / 'im' / 'agent-channel' scenarios.
- *                       Excluded from cron because cron runs headless against
- *                       a fixed prompt — there's no live user there to file
- *                       an idea on behalf of.
+ *   - Record capture    only in desktop and private IM / agent-channel conversations.
  *
  * Note: generative-UI widget guidance is NOT included here — it is universal
  * across runtimes and emitted separately by `buildWidgetSection()` from
@@ -307,10 +304,8 @@ export function buildCliToolsAppend(
     parts.push(SECTION_IM_MEDIA);
   }
 
-  // Record capture — interactive scenarios where there's a live user
-  // surfacing ideas. Cron runs are headless against a fixed prompt; no
-  // human user to capture for, so the section is suppressed there.
-  if (scenario.type === 'desktop' || scenario.type === 'im' || scenario.type === 'agent-channel') {
+  // Personal Record capture guidance belongs in desktop and private conversations.
+  if (scenario.type === 'desktop' || isPrivateUserChannel) {
     parts.push(SECTION_RECORD);
   }
 

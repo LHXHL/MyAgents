@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { InteractionScenario } from './system-prompt';
 
 vi.mock('./utils/cli-tools-registry', () => ({
   getUserToolsPromptSection: () => '<myagents-user-tools>registered</myagents-user-tools>',
@@ -95,6 +96,37 @@ describe('buildCliToolsAppend', () => {
     expect(imGroupText).not.toContain('myagents goal create');
     expect(agentChannelGroupText).not.toContain('<myagents-cli-goal>');
     expect(agentChannelGroupText).not.toContain('myagents goal create');
+  });
+
+  it('exposes Record capture in desktop conversations and private channels', () => {
+    const scenarios: InteractionScenario[] = [
+      { type: 'desktop' },
+      { type: 'desktop', surface: 'floating-ball' },
+      { type: 'im', platform: 'telegram', sourceType: 'private' },
+      { type: 'im', platform: 'feishu', sourceType: 'private' },
+      { type: 'agent-channel', platform: 'dingtalk', sourceType: 'private' },
+    ];
+    for (const scenario of scenarios) {
+      expect(buildCliToolsAppend(scenario)).toContain('<myagents-cli-record>');
+    }
+  });
+
+  it('omits Record capture from group channels and background scenarios', () => {
+    const scenarios: InteractionScenario[] = [
+      { type: 'im', platform: 'telegram', sourceType: 'group' },
+      { type: 'im', platform: 'feishu', sourceType: 'group' },
+      { type: 'agent-channel', platform: 'dingtalk', sourceType: 'group' },
+      { type: 'cron', taskId: 'task-1', intervalMinutes: 5, aiCanExit: true },
+      { type: 'registeredAgent', platform: 'space', spaceId: 'space-1', registeredAgentId: 'agent-1' },
+    ];
+    for (const scenario of scenarios) {
+      const text = buildCliToolsAppend(scenario);
+      expect(text).not.toContain('<myagents-cli-record>');
+      expect(text).not.toContain('myagents record create');
+      if (scenario.type === 'im' || scenario.type === 'agent-channel') {
+        expect(text).toContain('<myagents-cli-im-media>');
+      }
+    }
   });
 
   it('includes user-registered CLI tools only when explicitly enabled', () => {

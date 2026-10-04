@@ -124,7 +124,7 @@ Workspace 指令可能由 Runtime 原生加载，Codex 的 MyAgents append 则�
 | `myagents-cli-goal`                      | Goal Mode 只在用户明确要求时创建                        | `desktop`，以及私聊 `im` / `agent-channel`         |
 | `myagents-cli-task-exit`                 | 目标完成时用 CLI 提前结束 Task                          | `cron && aiCanExit`                                |
 | `myagents-cli-im-media`                  | 向当前聊天发送文件、图片、PDF 等                        | `im`、`agent-channel`                              |
-| `myagents-cli-record`                    | 仅在用户明确要求“记一下”时创建文字 Record               | `desktop`、`im`、`agent-channel`                   |
+| `myagents-cli-record`                    | 仅在用户明确要求“记一下”时创建文字 Record               | `desktop`，以及私聊 `im` / `agent-channel`         |
 | `myagents-cli-vision`                    | 当前模型不能读图时调用图片理解 helper                   | Session 启用 image-understanding 官方工具          |
 | `myagents-user-tools`                    | 用户注册 CLI 工具的名称、description 与发现方法         | 实验开关开启且注册表存在 enabled 工具              |
 
