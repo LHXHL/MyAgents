@@ -262,7 +262,7 @@ describe("Agent network account and device management", () => {
     render(<AgentNetwork />);
     const button = await screen.findByRole("button", { name: "网络说明" });
     const hint =
-      "设备之间的任务、响应和结果都在设备端加密，MyAgents 服务器只转发密文。";
+      "设备之间的 Agent 通信内容都在设备端加密，MyAgents 服务器只转发密文。";
     expect(screen.queryByText(hint)).not.toBeInTheDocument();
     fireEvent.click(button);
     expect(await screen.findByText(hint)).toBeInTheDocument();

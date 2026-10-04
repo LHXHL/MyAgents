@@ -1298,9 +1298,9 @@
   "agentNetwork": {
     "networkName": "我的 AgentNet 私有网络",
     "networkInfo": "网络说明",
-    "infoIntro": "AgentNet 是 MyAgents 提供的基于登录账号的多设备 Agent 私有网络",
-    "infoTitle": "端到端加密",
-    "infoRelay": "设备之间的任务、响应和结果都在设备端加密，MyAgents 服务器只转发密文。",
+    "infoIntro": "AgentNet 是 MyAgents 提供的基于登录账号的多设备 Agent 私有中转网络。",
+    "infoTitle": "端到端加密的私有网络",
+    "infoRelay": "设备之间的 Agent 通信内容都在设备端加密，MyAgents 服务器只转发密文。",
     "infoLocal": "任务由目标 Agent 在它所在的设备上执行，并遵守它自己的权限设置。",
     "statDevices": "台设备在网络中",
     "statAgents": "个 Agent 可协作",

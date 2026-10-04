@@ -1299,9 +1299,9 @@
   "agentNetwork": {
     "networkName": "My AgentNet Private Network",
     "networkInfo": "About this network",
-    "infoIntro": "AgentNet is a private network of Agents across multiple devices, provided by MyAgents and scoped to your signed-in account.",
-    "infoTitle": "End-to-end encrypted",
-    "infoRelay": "Tasks, responses, and results are encrypted on each device. The MyAgents server only relays ciphertext.",
+    "infoIntro": "AgentNet is a private relay network for Agents across multiple devices, provided by MyAgents and scoped to your signed-in account.",
+    "infoTitle": "End-to-end encrypted private network",
+    "infoRelay": "Agent communications between devices are encrypted on each device. The MyAgents server only relays ciphertext.",
     "infoLocal": "Each task runs on the device of the target Agent and follows that Agent's own permissions.",
     "statDevices": "devices in network",
     "statAgents": "Agents available",

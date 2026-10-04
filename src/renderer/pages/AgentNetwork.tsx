@@ -336,13 +336,15 @@ function AgentNetworkContent({
               className="max-w-xs space-y-1.5 px-4 py-3 text-xs leading-relaxed text-[var(--ink-secondary)]"
             >
               <div id="agent-network-explanation">
-                <p>{t("agentNetwork.infoIntro")}</p>
-                <p className="mt-1.5 flex items-center gap-1.5 font-medium text-[var(--ink)]">
-                  <LockIcon className="h-3.5 w-3.5" />
+                <h2 className="flex items-center gap-1.5 font-medium text-[var(--ink)]">
+                  <LockIcon className="h-3.5 w-3.5 shrink-0" />
                   {t("agentNetwork.infoTitle")}
-                </p>
-                <p className="mt-1.5">{t("agentNetwork.infoRelay")}</p>
-                <p className="mt-1.5">{t("agentNetwork.infoLocal")}</p>
+                </h2>
+                <ul className="mt-2 list-disc space-y-1.5 pl-4">
+                  <li>{t("agentNetwork.infoIntro")}</li>
+                  <li>{t("agentNetwork.infoRelay")}</li>
+                  <li>{t("agentNetwork.infoLocal")}</li>
+                </ul>
               </div>
             </Popover>
           </div>
