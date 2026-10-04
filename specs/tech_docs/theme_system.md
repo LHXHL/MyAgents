@@ -126,7 +126,7 @@ Token 组：
 - Code、Animation；
 - body background/texture/blend；
 - Floating Ball 全部 `--fb-*`；
-- 产品字标基类与 Launcher Hero title/slogan selector；字标基类拥有跨 Launcher、About、全局侧栏共享的字体、字距和渐变，Hero selector 只拥有展示字号、字重与响应式布局。
+- 产品字标基类与 Launcher Hero title/slogan selector；Launcher、About、全局侧栏复用 `MyAgentsLogotype` 的固定 SVG 轮廓，字母使用 Theme 的 `currentColor`，点睛使用 `--brand-spark`。Hero selector 拥有展示字号、字重与响应式布局，`launcher-hero-logotype` 在 Launcher 和 About 共用展示尺寸；字体、字距和文本渐变不改写 SVG 轮廓。
 
 `index.css` 只保留 Type Scale、布局/交互结构、使用语义 Token 的通用 selector，以及一个不携带视觉值的 Tailwind v4 `@theme inline` 编译桥。该桥把 `font-sans/mono`、`rounded*`、`shadow*`和 `duration-*` utility 映射到当前 Theme 的 runtime Token；Theme package **禁止**声明 raw `@theme`，因为 runtime 注入的 CSS 不再经 Tailwind 编译，会让 utility 静默退回 framework default。新增会随完整 Theme 改变的颜色、字体、材质、阴影或圆角，必须先进入 Theme contract/default package，再按需要扩展无值桥接，不能落回组件常量。
 
@@ -223,7 +223,7 @@ Markdown 阅读字号默认标准字号，设置菜单左侧为标准、右侧�
 
 | Surface | 正确消费方式 | 切换约束 |
 |---|---|---|
-| Launcher / About / GlobalSidebar 品牌 | `ResolvedTheme.hero` + Theme 产品字标/Hero CSS selector | 产品字标字体、字距和渐变同源；Hero 与紧凑侧栏只分离尺寸/字重角色，不复制品牌配色；背景不改变布局 |
+| Launcher / About / GlobalSidebar 品牌 | `MyAgentsLogotype` + Theme 产品字标/Hero CSS selector；Launcher 文案来自 `ResolvedTheme.hero` | Launcher/About 共用 display 轮廓与展示尺寸，侧栏使用 compact 光学尺寸；字母继承 Theme 前景，点睛共用 `--brand-spark`，不复制 SVG 或品牌配色；背景不改变布局 |
 | CSS host / Space / Floating Ball | root semantic Token | `.dark` 不是状态源；Space 不建立局部 Theme scope |
 | xterm | `adapters.xterm` | 原位改 options；字体 family/size/lineHeight 变化后复用唯一 fit-and-resize owner 重算 cols/rows 并同步现有 PTY；split 首次展示/变宽以 ResizeObserver 的 geometry quiet window 判稳后再创建或 resize PTY，不复制 Theme-owned transition duration；不重建 Terminal/PTY/buffer |
 | Markdown CM6 | `adapters.prism` 派生语法高亮 + host semantic Token | Compartment 原位重配；不换文档、选区、history 或活跃输入 view |

@@ -34,6 +34,7 @@ import React, {
   useState,
 } from 'react';
 import { useTranslation } from 'react-i18next';
+import { MyAgentsLogotype } from '@/components/brand/MyAgentsLogotype';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
@@ -6124,7 +6125,10 @@ export default function Settings({
                     className="theme-product-wordmark theme-launcher-hero-title cursor-default select-none"
                     onClick={handleLogoTap}
                   >
-                    MyAgents
+                    <MyAgentsLogotype
+                      className="launcher-hero-logotype"
+                      title="MyAgents"
+                    />
                   </h1>
                   <div className="mt-1 flex items-center gap-2">
                     <p className="text-sm font-medium text-[var(--ink-muted)]">
