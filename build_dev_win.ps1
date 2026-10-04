@@ -13,6 +13,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $PROJECT_DIR = $PSScriptRoot
+Set-Location $PROJECT_DIR
 . (Join-Path $PROJECT_DIR 'scripts\windows-build-environment.ps1')
 $BUILD_MODE_LABEL = if ($BundleNsis) { "Debug NSIS 安装包" } else { "快速 Debug exe（不打安装包）" }
 
@@ -234,7 +235,6 @@ Write-Host ""
 
 # TypeScript 检查
 Write-ColorOutput "[1/3] TypeScript 类型检查..." "Blue"
-Set-Location $PROJECT_DIR
 $typecheckResult = & npm run typecheck
 if ($LASTEXITCODE -ne 0) {
     Write-ColorOutput "✗ TypeScript 检查失败，请修复后重试" "Red"

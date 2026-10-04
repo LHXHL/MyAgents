@@ -7,6 +7,16 @@ import { dirname, join, resolve } from 'node:path';
 
 const repoRoot = resolve(import.meta.dirname, '..');
 const buildDev = readFileSync(resolve(repoRoot, 'build_dev.sh'), 'utf8');
+
+test('Cargo build inputs use the invocation checkout rather than cached compilation paths', () => {
+  // A cached build-script executable may have been compiled in a removed or
+  // still-existing checkout. Neither may supply inputs for the current build.
+  for (const file of ['src-tauri/build.rs', 'src-tauri/build_cliproxy.rs']) {
+    const source = withoutComments(readFileSync(resolve(repoRoot, file), 'utf8'));
+    assert.doesNotMatch(source, /(?:env|option_env)!\s*\(\s*"CARGO_MANIFEST_DIR"/, file);
+  }
+});
+
 const buildDevWindows = readFileSync(
   resolve(repoRoot, 'build_dev_win.ps1'),
   'utf8',
@@ -84,6 +94,32 @@ const recordingPrivacyKeys = [
   'NSAudioCaptureUsageDescription',
   'NSScreenCaptureUsageDescription',
 ];
+
+test('macOS dev checkout initialization precedes dependency work even from another directory', { skip: process.platform === 'win32' }, t => {
+  const root = mkdtempSync(join(tmpdir(), 'myagents dev checkout '));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const checkout = join(root, 'checkout');
+  const caller = join(root, 'caller');
+  mkdirSync(checkout);
+  mkdirSync(caller);
+  writeFileSync(join(checkout, 'package.json'), 'checkout dependencies');
+  writeFileSync(join(caller, 'package.json'), 'caller dependencies');
+  // Execute the actual entrypoint initialization, stopping before tools/env or
+  // resource preparation so this regression never mutates a real checkout.
+  const initialization = buildDev.slice(0, buildDev.indexOf('CLIPROXY_BUILD_ONLY='));
+  const script = join(checkout, 'build_dev.sh');
+  writeFileSync(script, `${initialization}\ncat package.json\n`);
+  const result = spawnSync('bash', [script], { cwd: caller, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'checkout dependencies');
+});
+
+test('Windows dev sets the checkout before its dependency installation', () => {
+  const checkoutAt = buildDevWindows.indexOf('Set-Location $PROJECT_DIR');
+  const installAt = buildDevWindows.indexOf('& npm install');
+  assert.ok(checkoutAt >= 0 && checkoutAt < installAt,
+    'absolute-path invocation must install checkout dependencies, not caller dependencies');
+});
 
 function withoutComments(source) {
   return source

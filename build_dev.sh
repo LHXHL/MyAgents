@@ -6,6 +6,7 @@
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${PROJECT_DIR}"
 CLIPROXY_BUILD_ONLY=false
 DSH_SOURCE="release"
 DSH_HANDOFF=""
@@ -184,7 +185,6 @@ echo ""
 
 # TypeScript 检查
 echo -e "${BLUE}[1/3] TypeScript 类型检查...${NC}"
-cd "${PROJECT_DIR}"
 if ! npm run typecheck; then
     echo -e "${RED}✗ TypeScript 检查失败，请修复后重试${NC}"
     exit 1

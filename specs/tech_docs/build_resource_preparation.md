@@ -71,6 +71,10 @@ Linux 的 setup 通过 `build_linux.sh --install-deps` 和 `--prepare` 复用资
 
 Rust 源码变化由 Cargo dep-info 跟踪，资源/config 由现有 build.rs 与 tauri-build 的 `rerun-if-changed` 跟踪。开发入口不得通过 touch 源文件、修改 LastWriteTime 或删除可执行文件强制重编译；若发现漏跟踪，应修正对应输入声明。打包前清理 bundle/staging 的职责保持独立。
 
+构建脚本读取 checkout 内的输入时，使用执行期 `std::env::var_os("CARGO_MANIFEST_DIR")`；禁止用 `env!` / `option_env!` 将编译脚本时的目录固化进可执行文件。缓存脚本可能来自已删除或仍存在的旧 checkout，后者会静默混用 package、组件 source pin 和 DSH selection。`build-resource-staging.test.mjs` 对主构建脚本及 CLIProxy 校验模块约束这一边界。临时工作树的验证使用独立 Cargo target，不复用主工作区 target；应用和依赖的其它编译期路径也属于各自 checkout，不能据此承诺整个缓存可跨 checkout 共享。
+
+平台入口在执行依赖检查、`npm install` / `npm rebuild` 等依赖操作前，必须先以脚本所在目录确定项目并切换 cwd；不能等到 TypeScript 或 Tauri 构建阶段才切换。用绝对路径从另一目录调用开发脚本，也应只检查和更新该脚本所属 checkout 的依赖。上述测试同时覆盖 macOS 开发入口的跨目录初始化和 Windows 开发入口的安装顺序。
+
 缓存不等于下载资源：`target/debug/{deps,incremental}` 保存编译对象，`resources/*-cache` 保存可复用构建输入。前者包含不同依赖、feature、编译参数与历史构建的产物；保留增量编译并不提供磁盘硬上限，也不意味着每次构建完整追加一份。
 
 仓库根目录提供三个显式命令（均不在 build 中自动执行）：

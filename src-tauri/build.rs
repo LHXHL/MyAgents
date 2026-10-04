@@ -24,7 +24,12 @@ const DSH_RELEASE_LOCK_PATH: &str = "../src/shared/integrated-runtimes/dsh-lock.
 const DSH_BUILD_SELECTION_PATH: &str = "resources/integrated-runtimes/dsh-build-selection-v1.json";
 
 fn main() {
-    let package_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../package.json");
+    // Build-script executables can outlive their compilation checkout. Cargo's
+    // invocation environment owns the inputs for the build running now.
+    let manifest_dir = env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .expect("CARGO_MANIFEST_DIR is required");
+    let package_path = manifest_dir.join("../package.json");
     println!("cargo:rerun-if-changed={}", package_path.display());
     let package: serde_json::Value = serde_json::from_str(&fs::read_to_string(package_path).expect("package.json")).expect("package.json JSON");
     let sdk = package["dependencies"]["@anthropic-ai/claude-agent-sdk"].as_str().expect("pinned Claude SDK version");
@@ -39,7 +44,9 @@ fn main() {
 }
 
 fn expose_dsh_build_lock() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .expect("CARGO_MANIFEST_DIR is required");
     let release_path = root.join(DSH_RELEASE_LOCK_PATH);
     let selection_path = root.join(DSH_BUILD_SELECTION_PATH);
     println!("cargo:rerun-if-changed={}", release_path.display());
