@@ -202,6 +202,13 @@ describe('myagents CLI port authority', () => {
 });
 
 describe('CLI help and Session list output', () => {
+  it('routes capability discovery by intent for both local and network collaboration', () => {
+    expect(TOP_HELP).toContain('Choose by intent');
+    expect(TOP_HELP).toContain('Durable work, scheduling and run tracking: task readme');
+    expect(TOP_HELP).toContain('session start (fresh) or send (reuse)');
+    expect(TOP_HELP).toContain('agent network-diagnose --json');
+    expect(TOP_HELP).toContain('other devices');
+  });
   it('prints complete usable remote selectors with separate metadata columns', () => {
     const ref = {
       serviceId: '00000000-0000-4000-8000-000000000010',
@@ -1939,7 +1946,7 @@ describe('myagents CLI Space issue contracts', () => {
 
 describe('myagents CLI Agent / Session collaboration contracts', () => {
   it('advertises Agent discovery and fresh Session collaboration at top level', () => {
-    expect(TOP_HELP).toContain('agent     Discover stable Workspace Agents');
+    expect(TOP_HELP).toContain('agent     Discover local/network Agents');
     expect(TOP_HELP).toContain('session   Discover, start, message, and observe');
     expect(TOP_HELP).toContain('myagents session start --agent <agentId>');
   });
@@ -2728,6 +2735,15 @@ describe('concise skill inventory', () => {
 
 
 describe('internal CLI command admission', () => {
+  it('admits the documented Skill inventory detail', () => {
+    expect(validateInternalCliInvocation(['skill', 'list'], { verbose: true, workspace: '/test' })).toBeUndefined();
+  });
+  it('admits the existing Skill removal preview before building the request', () => {
+    expect(validateInternalCliInvocation(['skill', 'remove', 'skill-name'], { dryRun: true, scope: 'user' })).toBeUndefined();
+    expect(validateDryRunSupport(['skill', 'remove', 'skill-name'], { dryRun: true })).toBeUndefined();
+    expect(buildRequestBody('skill', 'remove', ['skill-name'], { dryRun: true, scope: 'user' }))
+      .toMatchObject({ name: 'skill-name', dryRun: true, scope: 'user' });
+  });
   it.each([
     [[], { frobnicate: true }],
     [['session', 'get', 'session-id'], { bogusflag: true }],

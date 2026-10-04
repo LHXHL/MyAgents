@@ -2869,7 +2869,8 @@ RECOVERY
 const LEAF_HELP: Record<string, string> = {
   status: `myagents status — Show current configuration and active Session status
 
-Read-only. Reports MCP, provider, permission, and current Session state.
+Read-only. Reports MCP selection/readiness, provider fallback, visible Agent
+count and the current Session MCP snapshot when observable.
 OPTIONS
   --json    Return the structured response
   -h, --help    Show this help without running the command`,
@@ -2882,7 +2883,8 @@ OPTIONS
   reload: `myagents reload — Reload configuration for the current Session
 
 Requires a Session Sidecar. Re-reads MCP and sub-agent configuration and
-restarts the Session runtime to apply it. This does not rebuild the App.
+applies it at the current Runtime's configuration boundary. This does not
+rebuild the App or change another Session's configuration.
 OPTIONS
   --workspacePath PATH    Workspace to resolve configuration from
   --json    Return the structured response
@@ -4275,6 +4277,26 @@ Related:
       'Read task get and choose a legal next state; do not forge actor/source flags.',
   }),
 
+  'task/comments': taskLeafHelp({
+    usage: 'myagents task comments <taskId> — Read Task discussion history',
+    when: 'Inspect user/Agent comments before replying or resuming work.',
+    effect: 'Read-only paginated Task timeline; does not start AI.',
+    options: '  --before <commentId>  Exclusive earlier-page anchor\n  --limit <1..100>      Page size\n  --json               Machine-readable response',
+    mutation: 'None; no Session injection or execution.',
+    output: 'Comment page in data, with IDs for pagination and replies.',
+    example: 'myagents task comments <taskId> --limit 20 --json',
+    recovery: 'Copy taskId from task list; reread the latest page if the anchor disappeared.',
+  }),
+  'task/comment': taskLeafHelp({
+    usage: 'myagents task comment [taskId] — Reply on a Task timeline',
+    when: 'Report progress/results or answer a comment from the associated Task Session.',
+    effect: 'Appends a durable Agent comment using the exact Session association.',
+    options: '  --body TEXT          Comment text; exclusive with --body-file\n  --body-file PATH     Multiline/shell-sensitive UTF-8 input\n  --reply-to <id>      Comment being answered\n  --json               Machine-readable response',
+    mutation: 'Writes a comment; does not create a Task or start another execution. Requires the injected MYAGENTS_SESSION_ID.',
+    output: 'Created comment in data. Acceptance is not Task completion.',
+    example: 'myagents task comment <taskId> --body-file result.md --reply-to <commentId>',
+    recovery: 'Use the explicit taskId from the reminder outside an active Task turn; omitted ID resolves only from an eligible associated context. Inspect task comments before retrying a lost response.',
+  }),
   'task/append-session': taskLeafHelp({
     usage:
       'myagents task append-session <taskId> <sessionId> — Link an existing Session',
@@ -4448,6 +4470,31 @@ Commands:
 New workflows use this command. Creating audio Records and starting microphone
 recording remain desktop product actions.`,
 
+  'record/list': `myagents record list — Find saved text and audio Records
+
+Read-only. Use --kind text|audio, --tag <tag>, --query <text>, and --limit N
+to filter. Default is active Records; --archived selects archived Records,
+--all includes both. --json returns success and data containing Record summaries.
+Use record get <recordId> for full content. This never starts AI.`,
+  'record/get': `myagents record get <recordId> — Read a complete Record
+
+Read-only. Copy the exact ID from record list. --json returns the stored Record
+in data, including content and available processing results. Audio creation and
+microphone recording are desktop actions. Missing IDs fail without starting AI.`,
+  'record/create': `myagents record create <content> — Capture a text Record
+
+Choose one input: positional text, --content TEXT, or --content-file PATH (UTF-8,
+at most 1 MB). If combined, file takes precedence over --content and positional text.
+Prefer --content-file for multiline or shell-sensitive text; paths resolve from
+the CLI working directory. --json returns the created Record in data.
+Writes a durable Record without starting AI or recording audio. If a response
+is interrupted, inspect record list before retrying to avoid duplicate Records.`,
+  'record/delete': `myagents record delete <recordId> — Delete one Record
+
+Copy the exact ID from record list. Cancels processing and deletes the Record
+through its original owner. --json returns the deletion receipt in data.
+This is a mutation; there is no --dry-run. Read record get first when needed.`,
+
   thought: `myagents thought — Legacy compatibility alias for text Records
 
 Published scripts may continue to use list/create. New Agent workflows use
@@ -4475,6 +4522,48 @@ Commands:
   sync [name ...]            Preview available Claude Code skills without writing
                              [--apply] imports all previewed or selected names into
                              ~/.myagents/skills/; new imports are disabled until enabled.`,
+
+  'skill/list': `myagents skill list — Discover installed skills
+
+Read-only. --workspace PATH selects the workspace to inspect; otherwise uses
+the current Session workspace. --verbose includes admission and runtime details;
+--json returns the complete records in data. Use skill info <name> to inspect
+one skill before enabling or removing it.`,
+  'skill/info': `myagents skill info <name> — Inspect an installed skill
+
+Read-only. --scope user|project selects a scope; --workspace PATH selects the
+project workspace. --json returns frontmatter and body with identity/scope
+metadata in data. Use skill list for enabled state; inspecting does not enable it.`,
+  'skill/add': `myagents skill add <source> — Install a skill
+
+Sources: GitHub owner/repo or URL, HTTPS .zip, local directory, .zip or .skill.
+Use an absolute path, file://, ./ or ../ for local input. --scope user|project
+defaults to user. --plugin <id> or --skill <id> selects an item from a repository.
+--dry-run previews without installation; --force permits replacement.
+--json returns installation results in data. Inspect skill list after a lost
+response before retrying; use skill enable explicitly as needed.`,
+  'skill/remove': `myagents skill remove <name> — Uninstall an installed skill
+
+--scope user|project and --workspace PATH select the original skill owner.
+--dry-run previews removal; --json returns the result in data.
+Use skill list/info to select the exact name and scope before removing.`,
+  'skill/enable': `myagents skill enable <name> — Enable an installed skill
+
+--scope user|project and --workspace PATH select the skill owner. --json returns
+the updated enabled state in data. This changes skill selection, not an Agent's
+network exposure. Effective availability follows the current Runtime's extension
+update boundary; use skill list --verbose to inspect it.`,
+  'skill/disable': `myagents skill disable <name> — Disable without uninstalling
+
+--scope user|project and --workspace PATH select the skill owner. --json returns
+the updated enabled state in data. Files remain installed. Effective availability
+follows the Runtime extension update boundary; inspect skill list --verbose.`,
+  'skill/sync': `myagents skill sync [name ...] — Discover or import Claude Code skills
+
+Without --apply, previews available names and does not write. --apply imports
+all previewed candidates or the specified names into the user skill directory.
+New imports are disabled until skill enable. --json returns applied, synced or
+preview folders and failures in data. Preview again if a candidate disappeared.`,
 
   tool: `myagents tool — CLI tool registry (user tools live under ~/.myagents/tools/)
 
@@ -4527,6 +4616,9 @@ Runtime child agentIds; they are not Workspace Agent IDs for these CLI commands.
 Discovery:
   list [--active|--archived]      Find Agent IDs; marks this CLI caller's Agent
   show <agentId>                  Inspect identity and effective birth defaults
+  current                        Inspect this caller's Agent/workspace/Session
+  network-diagnose [--cursor C] [--limit 1..100]
+                                 Inspect network protocol, devices and connection state
 
 Management:
   enable <id>                     Enable an agent
@@ -4558,7 +4650,51 @@ Collaboration flow:
   myagents session list --agent <agentId>
   myagents session start --agent <agentId> -p "<prompt>"
 
-See also: myagents session --help`,
+agent list includes local Agents and callable Agents on other devices in the
+same account. Select using name, description, deviceName and isLocal; copy the
+full agentId. Remote references begin ma-agent:1 and execute on the target device.
+Only discovery and Session collaboration accept network references; local
+enable/disable/set/archive/channel commands do not manage remote Agents.
+For reusable execution context use session; for durable work, scheduling and
+run tracking use task. See myagents session --help and myagents task readme.`,
+
+  'agent/create': `myagents agent create --workspacePath <absolute-path> — Register a local workspace
+
+Creates or resolves the stable Workspace Agent identity through the original
+Project/Agent owner. --workspacePath is required; --json returns identity in data.
+This does not start AI or open network access. Inspect agent list before retrying.`,
+  'agent/enable': `myagents agent enable <agentId> — Enable local proactive capabilities
+
+Use a local ID from agent list (or --id). Enables Heartbeat, Memory Update and
+Memory Evo; channels keep their own enabled state. Explicit Session addressing
+does not require this flag. This is not the Agent Network exposure switch.
+--json returns the mutation result; inspect agent show to verify configuration.`,
+  'agent/disable': `myagents agent disable <agentId> — Pause local proactive capabilities
+
+Use a local ID from agent list (or --id). Pauses Heartbeat, Memory Update and
+Memory Evo; channels keep their own enabled state. Does not disable explicit
+Session collaboration or close network exposure. --json returns the result.`,
+  'agent/archive': `myagents agent archive <agentId> — Archive a local Agent workspace
+
+Use an exact local Project-backed ID from agent list (or --id). Archives its
+workspace and pauses proactive channels through the original lifecycle owner.
+History remains readable. --json returns the result. Use agent list --archived
+to inspect archived identities; agent unarchive restores the workspace.`,
+  'agent/unarchive': `myagents agent unarchive <agentId> — Restore a local Agent workspace
+
+Use an exact local Project-backed ID from agent list --archived (or --id).
+Restores its workspace visibility through the lifecycle owner. --json returns
+the result. Inspect agent show for the resulting configuration.`,
+  'agent/set': `myagents agent set <agentId> <key> <value> — Change local Agent configuration
+
+Keys: enabled, runtime, runtimeConfig, providerId, model, permissionMode.
+Values are parsed as JSON when valid; quote strings/JSON for your shell.
+Use runtime list/describe before selecting runtime-specific values.
+Configuration intent is validated by the Agent owner; providerId/model/permissionMode
+also update the Project mirror and live channels. Existing Session configuration
+has its own lifecycle; Agent defaults do not prove its effective permissions.
+--json returns the result. Read agent show first; network references and unknown
+keys are not supported. There is no --dry-run.`,
 
   'agent/list': `myagents agent list — Discover addressable Workspace Agents
 
@@ -4581,6 +4717,8 @@ OUTPUT
   Agents; remote agentId is a qualified ma-agent:1 reference. Remote rows omit
   local paths. networkStatus/complete report incomplete discovery; local results
   remain available when the network fails. --archived is local only.
+  Use description, deviceName and isLocal to choose where work should execute;
+  copy the full returned agentId, including all qualified reference components.
 
 IDENTITY / PERMISSIONS
   Use agentId from this command; never guess IDs or use workspace paths as
@@ -4632,7 +4770,9 @@ OUTPUT
 
 IDENTITY / PERMISSIONS
   Defaults belong to the target Agent. A later session start uses them and does
-  not accept caller overrides.
+  not accept caller overrides. These are future-session defaults; local output
+  marks effectiveDefaults.scope as agent-default-for-future-sessions. They do
+  not describe an existing Session's effective gate.
 
 EXAMPLE
   myagents agent show <agentId>
@@ -4660,6 +4800,9 @@ start and send are asynchronous admission requests: success means the target
 accepted the request, not that work completed. By default the final target turn
 is pushed back as a <myagents-session-event type="send.result"> block. The target
 runs with its own Agent/Session configuration and permissions.
+For scheduled or durable work with run tracking, use task readme instead.
+get reads visible transcript text; state reads the current three-state activity.
+watch observes completion without assigning work or approving it remotely.
 
 Run exact leaf help for flags, output, exit codes, and recovery:
   myagents session list --help
@@ -4701,6 +4844,37 @@ RECOVERY
   Run myagents agent list (or agent list --archived) for a valid Agent ID.
   Archived Agent history remains readable; hidden targets are rejected and
   identity conflicts fail closed with diagnostics.`,
+
+  'session/get': `myagents session get <sessionId> — Read visible transcript text
+
+WHEN TO CALL
+  Inspect what was asked and answered in an existing local or remote Session.
+EFFECT
+  Read-only. Reads the target's live owner when available, otherwise its durable
+  history. Never wakes a Session, starts AI or changes its configuration.
+OPTIONS
+  <sessionId>          Exact ID or full ma-session:1 reference from session list
+  --limit <1..500>     Maximum readable messages (default 5)
+  --before <messageId> Exclusive earlier-page anchor from a previous response
+  --json              Machine-readable response
+OUTPUT
+  success and session: id, messages, hasMoreBefore, isLive, liveSessionState,
+  snapshotRevision. Messages contain id, role, timestamp, content and available
+  turnId/transcriptState. Only visible user/request and assistant text is included;
+  hidden reminder instructions, automatic result/watch events, thinking and tool
+  blocks are omitted. Pagination counts readable messages in chronological order.
+  Active liveSessionState uses idle/running/waiting_user, as session state does.
+  With no live owner, isLive=false and liveSessionState=null; this is absence of
+  live observation. An early turn may have no assistant text yet. This is a text
+  transcript, not a tool-progress feed or proof that a particular request succeeded.
+IDENTITY / PERMISSIONS
+  Read the original target Session; the caller does not adopt or override it.
+EXAMPLE
+  myagents session get <sessionId> --limit 20 --json
+RECOVERY
+  Copy the full selector from session list. If an anchor disappeared, read the
+  latest page again. Exit 0 means the read succeeded; CLI argument errors exit 2,
+  owner/query errors exit nonzero. Use session state for current activity.`,
 
   'session/start': `myagents session start --agent <agentId> — Start clean work
 
@@ -4849,7 +5023,10 @@ export function handleHelp(payload: { path?: string[] }): AdminResponse {
     if (group === 'tool' && !isCliToolRegistryEnabled()) {
       return { success: true, data: { text: CLI_TOOL_REGISTRY_DISABLED_HELP } };
     }
-    return { success: true, data: { text: HELP_TEXTS[matchedKey] } };
+    const sharedReference = matchedKey === group && lookupPath.length > 1 && !Object.hasOwn(LEAF_HELP, matchedKey)
+      ? `Help for "myagents ${path.join(' ')}" uses the shared "myagents ${matchedKey.replaceAll('/', ' ')}" reference below. This is not a separate help page for the full invocation; use the options documented for the selected action.\n\n`
+      : '';
+    return { success: true, data: { text: sharedReference + HELP_TEXTS[matchedKey] } };
   }
 
   const groups = [...new Set(Object.keys(HELP_TEXTS).map(key => key.split('/')[0]))]

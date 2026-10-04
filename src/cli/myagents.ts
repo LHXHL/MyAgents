@@ -395,7 +395,7 @@ function requirePositional(
 // Help text
 // ---------------------------------------------------------------------------
 
-export const TOP_HELP = `myagents — MyAgents Self-Configuration CLI
+export const TOP_HELP = `myagents — MyAgents product capabilities CLI
 
 Usage: myagents <command> [options]
 
@@ -406,7 +406,7 @@ Commands:
   vision    Official image-understanding CLI tool
   tool      Manage registered CLI tools (Lab-gated; enable in Settings first)
   model     Manage model providers
-  agent     Discover stable Workspace Agents and manage proactive channels
+  agent     Discover local/network Agents; manage local settings and channels
   runtime   Inspect Agent Runtimes (list installed + describe models/modes)
   skill     Manage skills (install from URL/local source, list, enable/disable, sync)
   cron      Legacy-compatible scheduled Task aliases
@@ -432,6 +432,15 @@ Global flags:
   --dry-run   Preview only commands whose exact leaf help documents support;
               unsupported mutations fail without applying changes
   --port NUM  Override Sidecar port (default: $MYAGENTS_PORT)
+
+Choose by intent:
+  Manage this app's capabilities: mcp / model / skill / config and their --help
+  Save an idea or result: record (durable capture without starting AI)
+  Durable work, scheduling and run tracking: task readme
+  Work together now: agent list → session start (fresh) or send (reuse)
+  Read or observe without assigning work: session get / state / watch
+  agent list includes callable Agents on other devices in the same account;
+  copy the complete qualified ID and use the same Session commands.
 
 Examples:
   myagents mcp list
@@ -464,6 +473,7 @@ Examples:
   myagents agent create --workspacePath /absolute/path --json
   myagents agent current --json               # compact current context diagnostic
   myagents agent show <agentId>                # identity + effective defaults
+  myagents agent network-diagnose --json      # protocol/devices/connection state
   myagents session list --agent <agentId>      # recent reusable contexts
   myagents session start --agent <agentId> -p "review this" # fresh context
   myagents session get <sessionId> --limit 5 --json
@@ -3467,6 +3477,7 @@ const DRY_RUN_PREVIEW_COMMANDS = new Set([
   'config set',
   'cron add',
   'skill add',
+  'skill remove',
   'tool add',
 ]);
 

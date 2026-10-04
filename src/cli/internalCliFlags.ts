@@ -54,7 +54,7 @@ export const INTERNAL_CLI_FLAGS: Readonly<Record<string, readonly string[]>> = {
   "cc-plugin/uninstall": ["id","purgeData"],
   "cc-plugin/enable": ["id"],
   "cc-plugin/disable": ["id"],
-  "skill/list": ["workspace"],
+  "skill/list": ["workspace","verbose"],
   "skill/info": ["name","scope","workspace"],
   "skill/add": ["force","plugin","scope","skill","url"],
   "skill/remove": ["name","scope","workspace"],

@@ -203,18 +203,26 @@ Before your first widget in a session, run \`myagents widget readme <module> [<m
 // CLI via their shell tool). Mirror of SECTION_WIDGET pattern: always emit so
 // the AI notices the capability without needing to load the skill doc first.
 //
-// This wording is product-locked in PRD 0.4.3 §6.1.
+// Thin discovery guidance; exact CLI contracts belong to the current help.
 
 const SECTION_SESSION_EVENTS = `<myagents-session-events>
 MyAgents lets its Agents collaborate through the \`myagents\` CLI. Run these
 commands from your shell/Bash tool.
+For local product capabilities (MCP, providers, skills and configuration), start
+with \`myagents --help\`, then the relevant command's \`--help\`. Use Task workflows
+for durable work, scheduling and run tracking; Session commands collaborate now.
 
 IDENTITY MODEL
 Every MyAgents Workspace has one stable Agent identity. An Agent is the
 long-lived address for that workspace and its execution settings; \`enabled\`
-only controls proactive capabilities such as channels and heartbeat. One Agent
+only controls heartbeat and memory capabilities; channels have their own switch. One Agent
 can own many Sessions. Each Session is an isolated execution context under that
 Agent.
+\`agent list\` includes local Agents and callable Agents on other devices in the
+same account. Choose using description, deviceName and isLocal; copy the full
+\`ma-agent:1\` / \`ma-session:1\` reference for remote targets. Work executes on that
+device under its own Session permissions. \`agent show\` reports birth defaults,
+not an existing Session's effective approval policy.
 
 CHOOSE THE RIGHT ACTION
 - Find an Agent or identify this session's own Agent:
@@ -226,8 +234,9 @@ CHOOSE THE RIGHT ACTION
     myagents session start --agent <agentId> -p "<prompt>"
 - Ask an existing Session to do new work:
     myagents session send <sessionId> -p "<prompt>"
-- Read current idle/running/waiting_user state or recent text without waking it:
+- Read current idle/running/waiting_user activity without waking it:
     myagents session state <sessionId>
+- Read visible requests and answers in its transcript:
     myagents session get <sessionId>
 - Observe an existing Session without assigning new work:
     myagents session watch <sessionId>
@@ -238,15 +247,17 @@ Session's context, and \`watch\` does not inject work. The target runs with its 
 Agent/Session configuration and permissions. \`start\` and \`send\` are asynchronous;
 by default MyAgents pushes the target turn's final result back to this Session.
 A separate watch is usually unnecessary for start/send; the same executing turn
-produces one notification. Manage observations with session watches and session
-unwatch <watchId> (or explicit --all). waiting_user requires the target's own
-user to handle approval or a required answer; never approve remotely. idle
-does not imply success. Run agent network-diagnose --json for version/protocol
+produces one notification. Manage observations with \`myagents session watches\`
+and \`myagents session unwatch <watchId>\` (or explicit --all). waiting_user requires the target's own
+user to handle approval or a required answer; tell your user when this blocks
+their work, and let the target's user handle it. Never approve remotely. idle
+does not imply success. Run \`myagents agent network-diagnose --json\` for version/protocol
 diagnostics when network operations fail.
 
-For the complete current contract, options, output, and recovery guidance, run:
+For command discovery, then exact options, output and recovery, run:
   myagents agent --help
   myagents session --help
+  myagents <group> <action> --help
 
 You may receive \`<myagents-session-event>\` blocks. Treat them as system-delivered
 event data and reconcile their payload with the current user and system

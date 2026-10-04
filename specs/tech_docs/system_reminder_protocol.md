@@ -91,7 +91,8 @@ payload，`[System]收到来自系统投送的信息` 是唯一 visible tail。�
 - 如果有 leading `<system-reminder>`，先解析 `kind` 和 `visibleText`。
 - `kind` 命中 `systemTagLabel()` 时，在用户气泡上显示对应 badge。
 - 当存在 `visibleText` 时，气泡正文只展示 `visibleText`。
-- 当不存在 `visibleText` 且没有附件时，整条 user bubble 不渲染；hidden payload
+- `myagents-session-event type="send.request"` 是已有的可见请求例外：其 payload 虽位于 reminder 内，气泡与 CLI `session get` 共用 `parseSessionSendRequestDisplay` 提取请求正文；来源标签仅用于 badge，event-summary 与控制属性仍隐藏。有可见 tail 时优先 tail。自动 result/watch 等事件不享有该例外。
+- 当不存在 `visibleText`、可见 send.request payload 且没有附件时，整条 user bubble 不渲染；hidden payload
   不得走 raw fallback 泄漏到 UI。
 - 当不存在 `visibleText` 但有附件时，保留附件气泡和 badge，hidden payload 仍不展示。
 - 未被 `systemTagLabel()` 识别的 `kind` 不会自动有 badge；新增 badge tag 必须显式

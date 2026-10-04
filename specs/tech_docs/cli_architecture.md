@@ -123,6 +123,8 @@ myagents <group> <action> [args] [flags]
 
 所有 mutation 对未知 flag fail closed。`--dry-run` 只有在 leaf help 明确声明支持时才有效；不能把拒绝执行描述成成功预览。
 
+提示与顶层 help 按意图区分本地能力管理、Record 捕获、持久 Task 与即时 Session 协作。Agent/Session discovery 覆盖同设备与同账号其它设备；远端使用完整 qualified reference，管理命令不因此获得远端配置权限。Agent `effectiveDefaults` 是未来 Session 出生默认值，不代表已有 Session 的实际审批门槛。命令有独立 help 时返回该契约；复用父级帮助时，`handleHelp` 明确标注所用共享参考与调用范围，不能静默冒充独立叶子文档。普通外部 CLI 继续只看到原公开能力清单。
+
 Agent-facing system prompt、Required Skills 与 help 只推荐 canonical `myagents record` / `sourceRecordId`。`myagents thought`、`/api/admin/thought/*` 与持久层 `sourceThoughtId` 仅在已发布脚本、旧 JSON shape 和升级读取边界保留；兼容面薄映射到 Record owner，不能重新成为产品主入口或第二份 Store。
 
 `mcp add` 是 create-only 操作：自定义 MCP ID 已存在时明确失败并保持原定义不变；需要替换时先检查并显式 `mcp remove`，避免省略的 `args/env/description` 被一次不完整 add 静默清空。

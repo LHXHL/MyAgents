@@ -358,6 +358,7 @@ describe('admin-api help registry', () => {
       ['session', 'start'],
       ['session', 'send'],
       ['session', 'watch'],
+      ['session', 'get'],
     ];
     for (const path of leaves) {
       const result = handleHelp({ path });
@@ -375,6 +376,48 @@ describe('admin-api help registry', () => {
     expect(sessionGroup).toContain('Fresh context');
     expect(sessionGroup).toContain('Reuse known context');
     expect(sessionGroup).toContain('Observe only');
+  });
+
+  it('provides specific local management help and labels remaining shared references', async () => {
+    const { handleHelp } = await import('./admin-api');
+    const leaves = [
+      ['agent', 'create'], ['agent', 'enable'], ['agent', 'disable'],
+      ['agent', 'archive'], ['agent', 'unarchive'], ['agent', 'set'],
+      ['record', 'list'], ['record', 'get'], ['record', 'create'], ['record', 'delete'],
+      ['skill', 'list'], ['skill', 'info'], ['skill', 'add'], ['skill', 'remove'],
+      ['skill', 'enable'], ['skill', 'disable'], ['skill', 'sync'],
+      ['task', 'comments'], ['task', 'comment'],
+    ];
+    for (const path of leaves) {
+      const text = String((handleHelp({ path }).data as { text: string }).text);
+      const parent = String((handleHelp({ path: path.slice(0, 1) }).data as { text: string }).text);
+      expect(text).not.toBe(parent);
+      expect(text).toContain(`myagents ${path.join(' ')}`);
+      expect(text).toContain('--');
+    }
+    const shared = String((handleHelp({ path: ['model', 'list'] }).data as { text: string }).text);
+    expect(shared).toContain('shared "myagents model" reference');
+    expect(shared).toContain('not a separate help page');
+    const agentHelp = String((handleHelp({ path: ['agent'] }).data as { text: string }).text);
+    expect(agentHelp).toContain('network-diagnose');
+    expect(agentHelp).toContain('other devices');
+    expect(agentHelp).toContain('do not manage remote Agents');
+    const get = String((handleHelp({ path: ['session', 'get'] }).data as { text: string }).text);
+    expect(get).toContain('--limit <1..500>');
+    expect(get).toContain('--before <messageId>');
+    expect(get).toContain('liveSessionState=null');
+    expect(get).toContain('hidden reminder instructions');
+    for (const path of [
+      ['session', 'get', 'session-id'], ['skill', 'info', 'skill-name'],
+      ['record', 'get', 'record-id'], ['task', 'comments', 'task-id'],
+      ['agent', 'show', 'agent-id'], ['space', 'issue', 'view', 'issue-id'],
+    ]) {
+      const text = String((handleHelp({ path }).data as { text: string }).text);
+      expect(text).not.toContain('shared "myagents');
+    }
+    const info = String((handleHelp({ path: ['skill', 'info'] }).data as { text: string }).text);
+    expect(info).toContain('skill list for enabled');
+    expect(info).not.toContain('enabled metadata');
   });
 
   it('provides compact exact Task leaf help for Agent automation flows', async () => {
