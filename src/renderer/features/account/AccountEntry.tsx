@@ -68,14 +68,14 @@ function AccountControls({ account, expanded, onOpenSpace }: {
     year: 'numeric', month: 'long', day: 'numeric',
   }) : '';
   const planDescription = accountPlan?.membership?.status === 'revoked'
-    ? t('space.accountPlan.free')
+    ? null
     : activePro
       ? daysRemaining !== null && daysRemaining <= 7
         ? t('space.accountPlan.proDaysRemaining', { count: daysRemaining })
         : t('space.accountPlan.proUntil', { date: expiryLabel })
       : expiryValid && (accountPlan?.membership?.status === 'expired' || expiryMs <= viewedAt)
         ? t('space.accountPlan.expiredAt', { date: expiryLabel })
-        : t('space.accountPlan.free');
+        : null;
 
   useEffect(() => {
     if (!menuOpen || !expiryValid || expiryMs <= Date.now()) return;
@@ -161,10 +161,12 @@ function AccountControls({ account, expanded, onOpenSpace }: {
                   {activePro ? 'PRO' : 'FREE'}
                 </span>
               </button>
-              <div className={`mt-2 flex items-center gap-1.5 px-2 text-xs font-semibold ${activePro && daysRemaining !== null && daysRemaining <= 7 ? 'text-[var(--warning)]' : 'text-[var(--ink-muted)]'}`}>
-                <span className="min-w-0 flex-1">{planDescription}</span>
-                {account.loadState === 'loading' && <LoaderIcon className="h-3.5 w-3.5 shrink-0 animate-spin" />}
-              </div>
+              {planDescription && (
+                <div className={`mt-2 flex items-center gap-1.5 px-2 text-xs font-semibold ${activePro && daysRemaining !== null && daysRemaining <= 7 ? 'text-[var(--warning)]' : 'text-[var(--ink-muted)]'}`}>
+                  <span className="min-w-0 flex-1">{planDescription}</span>
+                  {account.loadState === 'loading' && <LoaderIcon className="h-3.5 w-3.5 shrink-0 animate-spin" />}
+                </div>
+              )}
             </div>
             <button type="button" disabled={loggingOut} onClick={() => void logout()}
               className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-sm font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-wait">

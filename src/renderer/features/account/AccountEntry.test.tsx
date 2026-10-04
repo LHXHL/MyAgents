@@ -55,6 +55,8 @@ describe('global account entry', () => {
     expect(screen.getByRole('dialog', { name: 'MyAgents account' })).toBeInTheDocument();
     expect(screen.getByText('alice@example.test')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Edit account profile' })).toBeInTheDocument();
+    expect(screen.getByText('FREE')).toBeInTheDocument();
+    expect(screen.queryByText('Free account')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument();
     expect(callbacks.onOpenSpace).not.toHaveBeenCalled();
     fireEvent.mouseDown(document.body);
@@ -134,6 +136,8 @@ describe('global account entry', () => {
     expect(screen.getByRole('button', { name: '登录 MyAgents' })).toBeInTheDocument();
     signIn(); rerender(<AccountEntry {...callbacks} />); fireEvent.click(screen.getByRole('button', { name: /Alice/ }));
     expect(screen.getByRole('button', { name: '编辑账号资料' })).toBeInTheDocument();
+    expect(screen.getByText('FREE')).toBeInTheDocument();
+    expect(screen.queryByText('免费账户')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '退出登录' })).toBeInTheDocument();
   });
 });
