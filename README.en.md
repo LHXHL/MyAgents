@@ -1,6 +1,6 @@
 <div align="center">
 
-# MyAgents
+<img src="specs/assets/readme/myagents-slogan-zh.png" alt="MyAgents — brand wordmark and slogan in Chinese" width="960" />
 
 **A free, open-source, local-first Agent workbench and task system**
 

@@ -1,6 +1,6 @@
 <div align="center">
 
-# MyAgents
+<img src="specs/assets/readme/myagents-slogan-zh.png" alt="MyAgents — 每个人都应享受智能的推背感，欢迎来到言出法随的世界" width="960" />
 
 **免费开源、本地优先的 Agent 工作台与任务系统**
 
