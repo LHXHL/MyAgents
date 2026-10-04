@@ -34,6 +34,10 @@ MyAgents 同时为人和 Agent 提供操作入口：你通过GUI使用， Agent 
 
 **安装 MyAgents，赋予你的电脑以智能。**
 
+![MyAgents 0.5.0 首页与 Agent 工作区侧栏](specs/assets/readme/v050-launcher-zh.png)
+
+*从自己的 Agent 工作区开始对话，随时进入记录、自动化任务、技能与工具。*
+
 ## 快速开始
 
 本文面向 **0.5.0**。可下载版本与发布说明请以[官网](https://myagents.io)和 [Releases](https://github.com/hAcKlyc/MyAgents/releases) 为准。
@@ -44,6 +48,10 @@ MyAgents 同时为人和 Agent 提供操作入口：你通过GUI使用， Agent 
 4. **开始工作**：带上资料说明目标，在对话中不断调整方向；需要持续处理的事务，让 Agent 帮你建立 Task。
 
 一台电脑就能完成这些工作。需要其他设备的资料或环境时，再从侧栏「更多 → Agent 网络」接入 AgentNet；需要共享目标和交接结果时，再打开「协作空间」。
+
+![MyAgents 模型供应商设置：订阅登录与 API 配置](specs/assets/readme/v050-model-providers-zh.png)
+
+*按自己的订阅或 API 配置接入模型，具体选项以应用内供应商列表为准。*
 
 ## 怎样与你的 Agent 一起工作
 
@@ -83,6 +91,10 @@ flowchart TB
 
 你选择哪些 Agent 对网络开放，远端 Agent 使用它所在设备的工作区、模型与工具执行。任务放在哪台设备上，就由那台设备上的 MyAgents 负责运行；常开设备可以承担长期任务，随身电脑按需接入。
 
+![AgentNet 私有网络中的设备、在线状态与已开放 Agent](specs/assets/readme/v050-agentnet-zh.png)
+
+*查看同一账号下的设备及已开放的 Agent。图中同时展示在线、离线和未加入网络的设备；跨设备调用需要目标设备在线。*
+
 接入方式与运行条件见 [AgentNet 指南](bundled-skills/myagents-docs/references/agent-network.md)。
 
 ### 人通过 GUI 操作，Agent 通过 CLI 安排工作
@@ -90,6 +102,14 @@ flowchart TB
 你可以在界面中管理 Agent、Task 和工作记录，MyAgents 内运行的 Agent 也可以通过 `myagents` CLI 建立任务、调用其他 Agent、读取状态、回写结果。对话里的要求由此可以成为真正的任务安排。
 
 你安装的其他 Agent 同样可以接入：在「设置 → 外部调用」中启用功能并完成令牌授权后，通过公开 CLI 能力使用 MyAgents。支持范围与接入步骤见[外部 Agent 接入指南](bundled-guides/external-myagents-cli/SKILL.md)。
+
+### 从常用的消息软件与 Agent 协作
+
+通过 Channel 将消息平台接入 Agent 工作区。飞书、钉钉、Telegram 提供内置接入，更多平台可以安装插件扩展；接入后，在常用的消息软件中继续与 Agent 工作。
+
+![Channel 设置中的飞书、钉钉、Telegram 与可扩展 IM 平台](specs/assets/readme/v050-im-channels-zh.png)
+
+*将通道添加到工作区，或安装所需的平台插件；具体配置见 [Agent 与 Channel 指南](bundled-skills/myagents-docs/references/agents-channels.md)。*
 
 ### 用 Space 围绕目标交接结果
 

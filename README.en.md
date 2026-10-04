@@ -32,6 +32,10 @@ No server of your own is needed. Connect the computers you already have, with yo
 
 **Install MyAgents. Give your computer intelligence.**
 
+![MyAgents 0.5.0 home screen and Agent workspace sidebar, shown in Chinese](specs/assets/readme/v050-launcher-zh.png)
+
+*Start a conversation in an Agent workspace, with access to Records, automated Tasks, Skills, and tools. Screenshots below show the Chinese interface.*
+
 ## Quick start
 
 This document covers **0.5.0**. Check the [website](https://myagents.io) and [Releases](https://github.com/hAcKlyc/MyAgents/releases) for available downloads and release notes.
@@ -42,6 +46,10 @@ This document covers **0.5.0**. Check the [website](https://myagents.io) and [Re
 4. **Start working**: bring your materials, explain the goal, and keep refining the direction in conversation. Ask your Agent to create a Task for work that should continue on a schedule.
 
 One computer is enough to start. When you need another device's context or environment, open Agent Network from the sidebar's More menu. Open Space when you want to share goals and hand over results.
+
+![Model provider settings with subscription sign-in and API configuration](specs/assets/readme/v050-model-providers-zh.png)
+
+*Connect through a supported subscription or model API. Check the provider list in the app for available options.*
 
 ## Working with your Agents
 
@@ -81,6 +89,10 @@ flowchart TB
 
 You choose which Agents are available to the network. A remote Agent executes with the workspace, model, and tools on its own device. Tasks run through MyAgents on the device where they are created: computers you keep running can handle ongoing work, while portable devices join as needed.
 
+![AgentNet device overview showing online status and Agents available to the network](specs/assets/readme/v050-agentnet-zh.png)
+
+*View devices and available Agents under the same account. This screenshot includes an online device, an offline device, and a device that has not joined the network. Cross-device calls require the target to be online.*
+
 See the [AgentNet guide](bundled-skills/myagents-docs/references/agent-network.md) for setup and operating requirements.
 
 ### People use the GUI; Agents arrange work through the CLI
@@ -88,6 +100,14 @@ See the [AgentNet guide](bundled-skills/myagents-docs/references/agent-network.m
 Manage Agents, Tasks, and records in the interface. Agents running inside MyAgents can use the `myagents` CLI to create tasks, call other Agents, read status, and write back results. Requests in conversation can become actual work arrangements.
 
 Other Agents you install can connect too. Enable External Access in Settings and authorize access with a token to use the public CLI capabilities. See the [external Agent integration guide](bundled-guides/external-myagents-cli/SKILL.md).
+
+### Work with Agents through your messaging apps
+
+Connect a messaging platform to an Agent workspace through Channels. Feishu, DingTalk, and Telegram have built-in connections; install plugins for additional platforms, then continue working with your Agent from your usual messaging app.
+
+![Channel settings for Feishu, DingTalk, Telegram, and additional messaging platforms](specs/assets/readme/v050-im-channels-zh.png)
+
+*Add a Channel to a workspace or install the platform plugin you need. See the [Agent and Channel guide](bundled-skills/myagents-docs/references/agents-channels.md) for configuration.*
 
 ### Hand over work through Space
 
