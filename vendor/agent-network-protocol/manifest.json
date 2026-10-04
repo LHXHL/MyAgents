@@ -1,10 +1,10 @@
 {
   "package": "@myagents/agent-network-protocol",
   "version": "1.0.0",
-  "file": "myagents-agent-network-protocol-1.0.0-9c51ff65a0d2523e.tgz",
-  "sha256": "9c51ff65a0d2523ecad02bd55b97810eea63e598bca67d167124f7bcd02c6e6e",
+  "file": "myagents-agent-network-protocol-1.0.0-681a2cdc7323ff60.tgz",
+  "sha256": "681a2cdc7323ff60a72f727511c342325872c5b8b30799d6b217bd66a4957bdd",
   "authority": "hAcKlyc/MyAgents_AgentNet/packages/agent-network-protocol",
-  "state": "unpublished development artifact; replace with a new digest when authority changes",
+  "sourceCommit": "883492bb7ec4cd76ad165276a25262565e88c88a",
   "license": "AGPL-3.0-only",
-  "sourceCommit": "0f4281669c4be333f5190673da20ffaf9806c5cd"
+  "state": "unpublished development artifact; replace with a new digest when authority changes"
 }

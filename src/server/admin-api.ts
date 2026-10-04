@@ -4863,7 +4863,8 @@ OUTPUT
   turnId/transcriptState. Only visible user/request and assistant text is included;
   hidden reminder instructions, automatic result/watch events, thinking and tool
   blocks are omitted. Pagination counts readable messages in chronological order.
-  Active liveSessionState uses idle/running/waiting_user, as session state does.
+  Active liveSessionState uses idle/running/waiting_user_action, as session state does.
+  waiting_user_action requires the target user to approve, confirm or answer.
   With no live owner, isLive=false and liveSessionState=null; this is absence of
   live observation. An early turn may have no assistant text yet. This is a text
   transcript, not a tool-progress feed or proof that a particular request succeeded.
@@ -4947,7 +4948,7 @@ RECOVERY
 
   'session/state': `myagents session state <sessionId> — Read current activity
 
-Returns exactly idle, running or waiting_user. waiting_user means the target
+Returns exactly idle, running or waiting_user_action. waiting_user_action means the target
 needs its own user's tool/plan approval or required structured answer before
 root work can continue. Ordinary text questions and nonblocking child work do
 not establish that state. This read never wakes the target or approves anything.

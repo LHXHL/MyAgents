@@ -96,7 +96,7 @@ describe('session text projection', () => {
   it.each(['builtin', 'dsh', 'codex'])('uses the authoritative three-state projection for an active %s owner', async runtime => {
     mocks.overlay.mockReturnValue({ isActive: true, runtime, liveSessionState: 'running', inMemoryMessages: [] });
     for (const [state, expected] of [
-      [{ sessionState: 'running', isBusy: true, waitingForUser: true }, 'waiting_user'],
+      [{ sessionState: 'running', isBusy: true, waitingForUser: true }, 'waiting_user_action'],
       [{ sessionState: 'starting', isBusy: false }, 'running'],
       [{ sessionState: 'running', isBusy: true }, 'running'],
       [{ sessionState: 'idle', isBusy: false }, 'idle'],

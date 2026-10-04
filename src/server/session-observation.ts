@@ -5,7 +5,7 @@ import { getSessionMetadata, getSessionData, isHistoryVisibleSession } from './S
 import { managementApi } from './utils/management-api-client';
 import { strictAssistantText } from './session-text-projection';
 
-const activitySchema = z.strictObject({ sessionId: z.string(), state: z.enum(['idle', 'running', 'waiting_user']) });
+const activitySchema = z.strictObject({ sessionId: z.string(), state: z.enum(['idle', 'running', 'waiting_user_action']) });
 
 export function readLocalSessionActivity(sessionId: string) {
   const engine = getSessionEngine();

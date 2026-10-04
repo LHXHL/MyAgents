@@ -140,9 +140,9 @@ describe("unified source routing", () => {
     const failed = await routeNetworkRequest('session/get', { sessionId: session }, 'internal-session');
     expect(failed).toMatchObject({ success: false, code: 'NETWORK_QUERY_FAILED' });
     expect(failed).not.toHaveProperty('unconfirmed');
-    management.mockResolvedValue({ ok: true, outcome: { method: 'session.state', result: { sessionId: 'legacy-session', state: 'waiting_user' } } });
+    management.mockResolvedValue({ ok: true, outcome: { method: 'session.state', result: { sessionId: 'legacy-session', state: 'waiting_user_action' } } });
     expect(await routeNetworkRequest('session/state', { sessionId: session }, 'internal-session'))
-      .toMatchObject({ success: true, session: { sessionId: session, state: 'waiting_user' } });
+      .toMatchObject({ success: true, session: { sessionId: session, state: 'waiting_user_action' } });
     management.mockResolvedValue({ ok: true, outcome: { method: 'session.get', result: {} } });
     expect(await routeNetworkRequest('session/get', { sessionId: session }, 'internal-session'))
       .toMatchObject({ success: false, code: 'NETWORK_RECEIPT_INVALID' });

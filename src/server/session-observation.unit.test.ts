@@ -13,7 +13,7 @@ describe('Session observation truth', () => {
     expect(projectSessionActivity({ sessionState: 'error', isBusy: false })).toBe('idle');
     expect(projectSessionActivity({ sessionState: 'starting', isBusy: false })).toBe('running');
     expect(projectSessionActivity({ sessionState: 'running', isBusy: true })).toBe('running');
-    expect(projectSessionActivity({ sessionState: 'running', isBusy: true, waitingForUser: true })).toBe('waiting_user');
+    expect(projectSessionActivity({ sessionState: 'running', isBusy: true, waitingForUser: true })).toBe('waiting_user_action');
     expect(projectSessionActivity({ sessionState: 'idle', isBusy: false, waitingForUser: true })).toBe('idle');
   });
   it('uses real live partial output without replacing it with an older successful answer', async () => {
@@ -49,8 +49,8 @@ describe('Session observation truth', () => {
   });
 
   it('queries the actual owner without waking it and refuses unreadable/mismatched state', async () => {
-    mocks.management.mockResolvedValue({ ok: true, active: true, result: { success: true, session: { sessionId: 's', state: 'waiting_user' } } });
-    expect(await readSessionActivity('s')).toEqual({ sessionId: 's', state: 'waiting_user' });
+    mocks.management.mockResolvedValue({ ok: true, active: true, result: { success: true, session: { sessionId: 's', state: 'waiting_user_action' } } });
+    expect(await readSessionActivity('s')).toEqual({ sessionId: 's', state: 'waiting_user_action' });
     expect(mocks.management.mock.calls[0][2]).toEqual({ sessionId: 's', projection: 'activity' });
     mocks.management.mockResolvedValue({ ok: false });
     await expect(readSessionActivity('s')).rejects.toThrow('SESSION_STATE_UNAVAILABLE');

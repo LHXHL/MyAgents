@@ -28,7 +28,7 @@ CLI 使用原 `agent list/show`、`session list/get/state/start/send/watch` 命�
 
 `session watches` 读取当前 caller 的全部活跃本地/网络观察；`session unwatch <watchId>` / 显式 `--all` 只取消观察，不停止执行、不取消默认自动回传、不撤回已进入 Inbox 的消息。网络观察由连接内 SourceReturns 管理，关闭原 route 触发目标精确清理；本地观察仍在目标原 registry，由 Rust 查当前 owner，不复制一套来源注册表。删除时只删除该 caller/Session/watch/reference，不能清空其它 watch。注册回执仍在途时也可取消已有 route；来源保留取消 context 到原 receipt TTL，仅用于验证并丢弃已在途事件。目标 route Context 释放时同时失效注册 job 的原 pre/post handoff guard，清理迟到注册。目标管理与精确清理入口 `/api/session-watch/manage`、`/api/session-watch/network-remove` 由 Session composition 登记并校验内部凭据；Global 不持有 watch registry。精确清理完成后，同轮重新观察可以创建新关联；取消回执不代表跨进程目标清理已原子完成。
 
-`session state` 是按需只读投影：idle、running、waiting_user。SessionEngine 根据真实执行状态及阻塞 root 的工具/计划审批、必须回答的问题投影；非阻塞异步问题、普通文本问句及子 Agent 单独交互不证明整个 Session 等待。Rust 无 live owner 且原历史可见才读 idle，尚未就绪/不可观测则查询错误，不启动 Sidecar或模型。不提供远端批准、配置修改、中间状态推送或轮询。idle 不表示任务成功。
+`session state` 是按需只读投影：idle、running、waiting_user_action。SessionEngine 根据真实执行状态及阻塞 root 的工具/计划审批、必须回答的问题投影；非阻塞异步问题、普通文本问句及子 Agent 单独交互不证明整个 Session 等待。Rust 无 live owner 且原历史可见才读 idle，尚未就绪/不可观测则查询错误，不启动 Sidecar或模型。不提供远端批准、配置修改、中间状态推送或轮询。idle 不表示任务成功。
 
 空闲 watch 优先原 live 结果，缺失再读目标原 SessionStore 的最近 assistant；回执包含 latest-session-result 范围与 live/history/none/unavailable 来源，历史保留自己的时间与已知 terminalStatus/turnId，不能沿用另一轮的终态或声称是某请求的回答。保留 partial/stopped/error 文本。V2 历史终态取原 transcriptTurns 的对应 turn.status；消息封口不能证明执行成功，transcriptRecovery unavailable 不能解释成没有回答。
 

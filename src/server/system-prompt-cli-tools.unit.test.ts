@@ -25,7 +25,7 @@ describe('buildCliToolsAppend', () => {
     expect(text).toContain('ma-agent:1');
     expect(text).toContain('ma-session:1');
     expect(text).toContain('visible requests and answers');
-    expect(text).toContain('idle/running/waiting_user');
+    expect(text).toContain('idle/running/waiting_user_action');
     expect(text).toContain('not an existing Session');
     expect(text).toContain('Never approve remotely');
     expect(text).toContain('tell your user');

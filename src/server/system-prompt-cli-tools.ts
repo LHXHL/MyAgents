@@ -234,7 +234,7 @@ CHOOSE THE RIGHT ACTION
     myagents session start --agent <agentId> -p "<prompt>"
 - Ask an existing Session to do new work:
     myagents session send <sessionId> -p "<prompt>"
-- Read current idle/running/waiting_user activity without waking it:
+- Read current idle/running/waiting_user_action activity without waking it:
     myagents session state <sessionId>
 - Read visible requests and answers in its transcript:
     myagents session get <sessionId>
@@ -248,7 +248,7 @@ Agent/Session configuration and permissions. \`start\` and \`send\` are asynchro
 by default MyAgents pushes the target turn's final result back to this Session.
 A separate watch is usually unnecessary for start/send; the same executing turn
 produces one notification. Manage observations with \`myagents session watches\`
-and \`myagents session unwatch <watchId>\` (or explicit --all). waiting_user requires the target's own
+and \`myagents session unwatch <watchId>\` (or explicit --all). waiting_user_action requires the target's own
 user to handle approval or a required answer; tell your user when this blocks
 their work, and let the target's user handle it. Never approve remotely. idle
 does not imply success. Run \`myagents agent network-diagnose --json\` for version/protocol
