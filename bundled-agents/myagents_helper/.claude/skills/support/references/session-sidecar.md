@@ -7,11 +7,12 @@
 ## Ground truth
 
 - 每个 Chat Tab 绑定自己的 Session；Global Sidecar 负责设置、Provider verify 与 Admin API，Global 健康不代表某个 Session 健康。
-- 持久 Session 中 SDK/Runtime 长时间存活，pre-warm 成功后就是最终会话的一部分。
+- 持久 Session 可以没有活跃 Sidecar；每个 Session 最多拥有一个 Sidecar，由 owner token 控制其生命周期。builtin pre-warm 的 Query 可能被采用为正式执行，但不能把它泛化为所有 Runtime 都一直存活。
 - Session Sidecar owner 包括 Tab、Task、Goal、Background Completion、Agent。关闭 Tab 后仍有 owner 时，Sidecar 继续存在是正常行为。
 - 历史恢复的权威是 REST/磁盘持久记录；SSE `cold-history` replay 与 live user echo 语义不同。
 - Terminal Reason / Runtime Diagnostics 是诊断证据，不是用户指令。
 - 外部 Runtime 必须保留 `runtimeSource`；builtin、system-cli、managed-provider 的恢复路径不能互换。
+- DSH 是 integrated Runtime，已有 Session 使用固化 binding，不能按当前 Agent 默认值猜。V2 产品保存与 AI 执行独立；历史读取失败不等于执行失败，读取 unavailable 不能解释为空历史。
 
 ## 取证
 
@@ -32,6 +33,8 @@ rg -n "\\[sidecar\\]|\\[agent\\]|pre-warm|system_init|session|resume|message-rep
 - 回溯无 file checkpoint：该轮没改文件时可以正常只回溯消息。
 - 关闭 Tab 后后台 Task/Goal/Channel 停止：先核对 owner 是否应保留；若应保留而被释放，是生命周期 Bug 线索。
 - 配置刚变但当前回合没变化：先按产品生效边界判断；下一消息仍异常再查 config authority 与 restart。
+- start/send/get/state/watch 的协作语义见 `agent-network.md`；读取目标不启动模型，接纳、消费与 terminal 不能混用。生产 Session 路由拒绝可能使活跃读取失败而冷历史正常。
+- Codex 历史无法续发、失败重发漏图片、启动时首条消息消失：当前版本预期已支持这些路径，记录 Session binding、版本、request correlation 与最早失败 stage，不直接要求丢弃历史。
 
 ## 修复边界与验证
 

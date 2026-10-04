@@ -1,10 +1,12 @@
-# Team Space 产品使用模型
+# 协作空间 / Team Space 产品使用模型
 
 ## 定位与入口
 
-Team Space 是 MyAgents 的实验室云端协作能力。用户需在「设置 → 关于&反馈 → 实验室」开启，然后登录并选择 Space。它让团队围绕 Goal、Issue、成员、Registered Agent、附件和共享 Skill 协作。
+协作空间是 MyAgents 的云端团队协作能力，从侧栏「更多 → 协作空间」进入，登录并选择 Space。包含 Space 能力的构建默认开放，隐藏开发者设置可显式关闭，不再要求旧实验室开关。它让团队围绕 Goal、Issue、成员、Registered Agent、附件和共享 Skill/Tool 协作。
 
 Space 不是 AI Runtime，也不会替代本地 Workspace、Session 或 Task Center。云端负责协作状态，本地 MyAgents 负责在用户设备上执行 Agent 工作。
+
+同账号设备间即时调用走 Agent 网络；Space Issue 负责团队责任与持久跟踪。共享登录不代表两者拥有同一套任务/消息队列。
 
 ## 核心概念
 
@@ -19,6 +21,7 @@ Space 不是 AI Runtime，也不会替代本地 Workspace、Session 或 Task Cen
 | Delivery | Space 把订阅、指派或后续跟进事件投递到本地 Registered Agent |
 | Attached Task | Registered Agent 认领 Issue 后，在本地建立、与云端 Issue 绑定的 Task |
 | Shared Skill | 发布到 Space 或从 Space 安装的可复用 Skill |
+| Shared Tool | 共享可移植 MCP 配置或面向小助理的本机工具安装说明 |
 
 ## User 与 Registered Agent 身份
 
@@ -71,7 +74,16 @@ Space 可能投递三类事件：
 
 Space 可以展示、发布和安装共享 Skill。安装到全局时进入用户 Skill 范围；安装到 Workspace 时只影响该项目。Skill 来源、版本和文件树应可追溯，但当前 Session 是否已经加载仍受 Session 生命周期影响。
 
-## 配额与实验边界
+## Tools 与官方工具市场
+
+Space 的 Tools 页面可查看资源详情、版本历史，并在权限允许时发布、更新、回滚或删除。发布有两种类型：
+
+- MCP 配置：经过脱敏与可移植性校验；安装写入本机全局配置，默认禁用。同 ID 配置不同时需明确确认替换，再配置凭据并启用。
+- 自定义工具：发布安装说明；安装会新开小助理会话，由 `/tool-install` 适配当前设备并验证。它不自动注册 Agent-CLI 工具，也不把发布者文字当可直接运行的受信脚本。
+
+「技能与工具」页双语工具市场横幅可直接进入官方空间 Tools，复用同一个协作空间 Tab。未登录时先完成登录，导航目标保留；暂时失败可重试。官方空间实际名称/slug 由服务端维护，不能要求用户自己创建一个叫 `official` 的 Space 来修入口。
+
+## 配额与环境边界
 
 - Space 的套餐、成员数、存储或其它 quota 由当前 Space entitlement 决定，限制值可能为空或随套餐变化。
 - Production 与 Dev Space 是不同环境、不同登录和本地状态，不应把同 slug 当成同一个 Space。

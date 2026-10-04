@@ -9,9 +9,11 @@
 - MyAgents 有自己的代理设置，Rust 启动子进程时会注入 proxy env，并保护 localhost/127.0.0.1 不走代理。
 - `runtimeSource=system-cli` 的外部 Runtime 有 `envPolicy.proxy`：`myagents` 使用 MyAgents 设置的代理，`terminal` 尝试复现用户交互式 shell 的 proxy env。
 - builtin Provider 路径和 external Runtime envPolicy 不是同一套机制。
+- DSH 进程的一般出站代理与模型请求的 Provider 代理分别判断；模型设置按对应配置边界应用，进程代理不能仅凭当前全局设置推断。使用 `myagents diagnose runtime dsh` 查看实际配置。
 - `runtimeSource=managed-provider` 的 `codex-sub` 走 Provider 管理的 runtime 链路，要同时看 Provider 状态和 `[managed-codex]` 日志，不要只按用户系统 Codex CLI 的环境判断。
 - 插件 npm 安装、远程 MCP、Provider verify、Codex app-server 诊断是不同链路，要按现象分开查。
 - Cloud Space 也有独立 Rust HTTP 链路；只有 Space 异常时转 `cloud-space.md`，不要用外部 Runtime 的 envPolicy 解释。
+- Agent 网络的身份、连接与 TLS 由 App 管理；只有跨设备发现/传输异常时转 `agent-network.md`，不要拿 Provider 验证成功当网络连接已恢复。
 
 ## 取证
 

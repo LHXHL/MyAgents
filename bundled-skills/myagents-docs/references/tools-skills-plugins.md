@@ -28,7 +28,15 @@ MyAgents 支持 STDIO、HTTP、SSE 类型的 MCP，也带有若干预置或内�
 
 `enabled` 不等于 OAuth token 仍有效；远程 MCP 登录问题要单独检查授权状态。MCP test 会实际启动或连接服务，属于 active probe。
 
+Claude Agent SDK 与托管 Codex 的会话内工具状态可显示失败原因，并在空闲时重连失败 MCP；重连不等于修改全局配置，也不需要先删除整个 Session。
+
 外部 Runtime 不一定消费 MyAgents MCP，具体见 `models-providers-runtimes.md`。
+
+### 应用托管浏览器与 Playwright
+
+「浏览器」是应用管理 Chromium、登录 Cookie 与 Session 隔离的工具，独立于普通 Playwright MCP 和右侧浏览器预览面板。全局可以同时启用两种工具，具体对话按需互斥选择，避免重复暴露浏览器能力。
+
+托管浏览器在成功工具调用及关闭边界自动保存 Cookie，不需要 Agent 调用存储工具；localStorage、IndexedDB 不保证跨 Session 恢复。普通 Playwright preset 遵循自身配置，不能用托管浏览器的登录承诺解释它。
 
 ## Skills
 
@@ -54,6 +62,14 @@ Skill 可从 GitHub 仓库、支持的压缩包或本地来源安装。安装成
 
 当主模型不能直接看图、但用户在「设置 → 工具箱」配置并启用了图片理解时，Agent 可以把当前 Workspace 内图片交给读图模型分析。只接受本地工作区图片，不把 URL 或凭据路径当输入。
 
+### 本地文档与音视频附件
+
+AnyDoc 可离线转换本地文档/OCR，使用 `/myagents-anydoc`。`/myagents-speech-recognition` 可异步转写当前 Workspace 中的单个音频或视频附件，查询/等待/取消并取得带时间戳结果；它不录制会议，也不等于音频 Record 的播放器或说话人编辑。
+
+### 桌面操作
+
+macOS/Windows 随应用提供 Cuse Skill 与桌面操作 CLI，可在全局 Skills 启停。是否启用、系统权限和当前平台支持需现场确认；普通用户不应为此寻找已移除的内置 Cuse MCP。
+
 ### 用户 CLI Tool（实验室）
 
 用户可以把符合 Agent-CLI 契约的非交互工具注册到 MyAgents。启用后，新 Session 能看到工具描述并从 PATH 调用。该能力受「CLI 工具注册表」实验开关控制；关闭时不会自动发现或管理用户工具，但官方 `myagents` CLI 不受影响。
@@ -64,7 +80,7 @@ Skill 可从 GitHub 仓库、支持的压缩包或本地来源安装。安装成
 
 ### Claude Plugin
 
-遵循 Anthropic Claude Plugin 目录协议，可以包含 Skills、Agents、MCP 和 Hooks。MyAgents 在 builtin Runtime 中提供这套集成；启停后通常在下一次 Session 重启或发消息时生效。外部 Claude Code/Codex Runtime 各自管理自己的插件体系，不自动读取 MyAgents Claude Plugin。
+遵循 Anthropic Claude Plugin 目录协议，可以包含 Skills、Agents、MCP 和 Hooks。MyAgents 在 Claude Agent SDK 中提供这套集成；DSH 与托管 Codex 可接入其中支持的产品扩展组件，具体 admission 以现场列表为准，不能保证整包 Hooks/Agents 等都有同等能力。启停后按 Runtime 的扩展更新边界生效。系统 Claude Code/Codex 自己管理其插件，不自动读取这里的 Claude Plugin。
 
 ### OpenClaw Plugin
 

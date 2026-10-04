@@ -21,6 +21,8 @@ MyAgents 中的 Agent 围绕一个 Workspace 工作。它不仅是一段 Prompt�
 
 修改 Agent 默认配置主要影响后续 Session 或后续消息的 live-follow 配置，不应把已有 Session 的历史身份静默改写。
 
+`enabled` 管理 heartbeat 和记忆维护等主动能力；Channel 有自己的开关，显式 Session 协作与 Agent 网络开放也不由这个字段控制。Agent 网络与 `@` Agent 的即时协作见 `agent-network.md`。
+
 ## Channel
 
 Channel 把 Agent 接入外部消息平台。
@@ -28,6 +30,8 @@ Channel 把 Agent 接入外部消息平台。
 ### 内置 Channel
 
 Telegram、钉钉、飞书由 MyAgents 桌面应用直接提供配置向导并管理连接。通常优先使用设置页中直接出现的内置 Channel。
+
+飞书向导支持扫码授权，也保留手动配置方式；无需为了使用内置飞书先寻找社区插件。
 
 ### 社区 Channel
 
@@ -78,7 +82,7 @@ Task、Goal 和 heartbeat 的结果需要回到触发它们的正确 Channel/pee
 
 配置存在不等于运行在线。检查时要区分：
 
-- Agent 是否 enabled、是否归档
+- Agent 是否归档；涉及 heartbeat/记忆维护时再核对 Agent enabled
 - Channel 是否 enabled、凭据或登录是否有效
 - 社区 Plugin 是否安装并健康
 - runtime status 是否在线

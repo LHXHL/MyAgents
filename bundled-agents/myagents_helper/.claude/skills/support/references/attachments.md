@@ -20,7 +20,7 @@
 ```bash
 find <HOME>/.myagents/generated/tool-attachments/<session-id> -maxdepth 3 -type f 2>/dev/null | tail -40
 find <absolute-workspace-path>/myagents_files -maxdepth 4 -type f 2>/dev/null | tail -40
-rg -n "tool-attachment|ToolAttachment|chat:tool-attachment-update|pendingId|imageGeneration|image_generation|savedPath|sourcePath|ToolAttachmentGallery|myagents://|error://|rejected_path|too_large|unsupported_url" ./logs/unified-*.log | node .claude/skills/support/scripts/redact-log-output.mjs | tail -200
+rg -n "tool-attachment|ToolAttachment|chat:tool-attachment-update|pendingId|imageGeneration|image_generation|savedPath|sourcePath|ToolAttachmentGallery|myagents-resource://|myagents://|error://|rejected_path|too_large|unsupported_url" ./logs/unified-*.log | node .claude/skills/support/scripts/redact-log-output.mjs | tail -200
 rg -n "\\[AppErrorBoundary\\]|\\[REACT\\] \\[ERROR\\]" ./logs/unified-*.log | node .claude/skills/support/scripts/redact-log-output.mjs | tail -80
 ```
 
@@ -33,6 +33,7 @@ rg -n "\\[AppErrorBoundary\\]|\\[REACT\\] \\[ERROR\\]" ./logs/unified-*.log | no
 - 有 update、磁盘无文件：下载/复制/路径安全/大小限制失败。
 - 文件存在、registry/endpoint 读不到：Session owner、ref 注册、CORS/CSP 或 Sidecar 生命周期问题。
 - endpoint 可读、前端不显示：gallery、MIME、组件 render 或历史恢复问题。
+- 新本地资源 URL 使用 `myagents-resource://`；`myagents://open/v1/...` 用于导航。旧附件 URL 仅保留 WebView 兼容，不作为 OS 深链导航；白屏或错误页先区分这两条路径，不替换协议绕过安全边界。
 - Codex 生成图：保留 `runtimeSource`、`savedPath` 与 fallback 日志；不要只查某个 MCP 产图分支。
 - 对话里已显示但 IM 没发出：转 Channel media forward，确认文件是否在允许目录且 MIME/平台支持。
 

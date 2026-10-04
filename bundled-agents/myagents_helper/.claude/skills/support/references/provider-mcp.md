@@ -7,17 +7,19 @@
 ## Provider Ground truth
 
 - Provider 的 authType、baseUrl、模型列表和上下文能力可能变化，现场 discovery 优先于静态印象。
-- API Key Provider、Anthropic 订阅、Codex 订阅和 Grok 订阅不是同一种认证路径。
+- API Key Provider、Anthropic 订阅、Codex 订阅、Grok OAuth 与 Antigravity CLIProxy 不是同一种认证路径。
 - `anthropic-sub` 是 builtin Runtime 的 Anthropic 订阅 Provider。
 - `codex-sub` 创建 `runtime=codex` + `runtimeSource=managed-provider` 的会话，不是用户系统 Codex CLI。
-- `xai-sub` 是 Grok 订阅 Provider：使用 builtin Runtime，经 OpenAI Responses bridge 调用；OAuth 凭据由 Rust `GrokAuthManager` 持有。它既不是 API Key Provider，也不是外部 Runtime。
+- `xai-sub` 是 Grok 订阅 Provider：OAuth 凭据由 Rust `GrokAuthManager` 持有，SDK Bridge / DSH 分别消费。SDK 的一次 401 恢复不能直接当作 DSH 同轮重放能力。
+- `antigravity-sub` 通过原版 CLIProxy 管理账号、OAuth/refresh 与协议转换，Rust 管理组件/准入。登录后读取原版模型列表，不要求额外 API Key 或模型验证才能完成登录。
+- Token Dance 与 OpenCode Go 按模型声明路由；OpenCode Go 自定义模型没有唯一可信协议时需选择 Protocol，不反复用不同接口做隐式 fallback。
 - Provider verify 会真实请求服务，属于 active probe。UI timeout 后日志仍可能出现更具体的服务端结果。
 
 ## Provider 取证
 
 ```bash
 myagents model list --json
-rg -n "provider/verify|subscription/verify|auth error|401|403|429|verification|model_error|terminal_reason|anthropic-sub|codex-sub|xai-sub|managed-codex|grok-auth|entitlement|quota|usage credits" ./logs/unified-*.log | node .claude/skills/support/scripts/redact-log-output.mjs | tail -200
+rg -n "provider/verify|subscription/verify|auth error|401|403|429|verification|model_error|terminal_reason|anthropic-sub|codex-sub|xai-sub|antigravity-sub|cliproxy|opencode|managed-codex|grok-auth|entitlement|quota|usage credits" ./logs/unified-*.log | node .claude/skills/support/scripts/redact-log-output.mjs | tail -200
 ```
 
 API Key Provider 需要现场复测时：
@@ -38,6 +40,7 @@ myagents model verify <provider-id> --model <model-id> --json
 - Anthropic 1M context 报错：优先查 entitlement / extra usage，不先改模型 ID 猜测。
 - `codex-sub`：同时看 Provider readiness 与 `[managed-codex]`，保留 `runtimeSource`。
 - `xai-sub`：查 `[grok-auth]` 的 login/refresh/entitlement/rate-limit 分类。不要读取 Grok credential store，也不要让用户提供 OAuth token。
+- `antigravity-sub`：分别查 CLIProxy 组件 readiness、浏览器授权 stage、原版账号摘要、模型目录和 Session binding；保留拒绝/超时/暂时查询失败的区别，不用 Grok 或 system-cli Codex 登录诊断代替。
 - “以前能用”：对比最近登录刷新、Provider/代理变化、供应商状态与实际失败时间。
 
 ## MCP Ground truth

@@ -2,7 +2,7 @@
 name: support
 description: >-
   MyAgents 本地问题诊断、恢复与反馈升级流程。用户描述报错、崩溃、无响应、配置后仍不可用、状态或结果不符合预期、
-  Task/Goal/Channel/Provider/Runtime/MCP/Plugin/附件/Space 等功能异常，或者前端“小助理诊断/问题反馈”注入诊断上下文时使用。
+  Task/Goal/Channel/Provider/Runtime/MCP/Plugin/附件/Agent 网络/协作空间等功能异常，或者前端“小助理诊断/问题反馈”注入诊断上下文时使用。
   先用 `/myagents-docs` 确认正确产品预期，再以本地状态、CLI、日志和必要 probe 分类、修复、验证；确认产品缺陷或功能建议后，
   在用户确认下形成并提交脱敏 Issue。普通“是什么/怎么用/入口在哪”不使用本 skill，直接使用 `/myagents-docs`。
 ---
@@ -38,7 +38,7 @@ Support 的职责是解释“为什么实际行为没有符合正确预期”，
 只收集与问题有关的最小现场：
 
 - MyAgents 版本、OS、问题发生时间窗口
-- 触发入口：Chat、Launcher、悬浮窗、Task、Goal、IM、Space 等
+- 触发入口：Chat、Launcher、悬浮窗、Task、Goal、IM、Agent 网络、协作空间等；跨设备时记录双方版本与设备
 - Workspace、Session ID、Task/Goal/Issue ID（如适用）
 - Provider、Model、Runtime、`runtimeSource`（如适用）
 - 是否稳定复现、影响一个对象还是所有对象
@@ -59,11 +59,13 @@ rg '\[boot\]' ./logs/unified-*.log | node .claude/skills/support/scripts/redact-
 
 | 主诉 | 读取 |
 |---|---|
-| Codex/Gemini/Claude Code 不工作、终端能用但 MyAgents 不行、runtime/model/permission 异常 | `references/runtime.md` |
+| DSH/Codex/Claude Code 不工作、终端能用但 MyAgents 不行、runtime/model/permission 异常 | `references/runtime.md` |
+| 跨设备 Agent 发现/调用/回传失败、@ Agent 不完整、Session state/watch/取消观察异常 | `references/agent-network.md` |
 | Provider 登录/验证/模型失败，MCP 启动、OAuth、握手或工具列表异常 | `references/provider-mcp.md` |
 | Telegram/钉钉/飞书/微信/QQ Agent 不在线、不收发消息，OpenClaw Plugin 异常 | `references/agent-channel-plugin.md` |
 | Task/定时/Cron 未执行或状态异常，Goal 不续跑/无法暂停/错误终态，Record/Session Inbox 异常 | `references/automation.md` |
-| Team Space 登录、Goal/Issue、Registered Agent、Delivery、claim、附件或 quota 异常 | `references/cloud-space.md` |
+| 录音、离线转写、说话人、播放、语音模型或附件 speech job 异常 | `references/recording-speech.md` |
+| 协作空间登录、Goal/Issue、Registered Agent、Delivery、claim、共享工具/官方市场、附件或 quota 异常 | `references/cloud-space.md` |
 | 图片/音频/PDF 等工具产物生成但不显示，IM 媒体未发出 | `references/attachments.md` |
 | 工作区文件树、搜索、预览、@ 文件、拖拽、CRUD、watcher 异常 | `references/workspace-files.md` |
 | AI 不回复、Sidecar 重启、pre-warm、历史恢复、回溯/分叉、Session 状态异常 | `references/session-sidecar.md` |
@@ -178,7 +180,7 @@ rg -n "ERROR|WARN|auth error|401|403|429|terminal_reason|AppErrorBoundary|extern
 
 ## 安全边界
 
-- 不读取 `~/.myagents/credentials/`、Space token、Claude/Codex/Gemini credential home 或系统 Keychain。
+- 不读取 `~/.myagents/credentials/`、Space token、Claude/Codex 等供应商 credential home、Agent 网络私钥或系统 Keychain；停用集成留下的凭据同样受保护。
 - 不要求用户把 API Key/Token 发进持久对话；引导使用产品受保护输入入口。
 - 不直接编辑 Session、Project、Task、Goal、Space 内部 store。
 - 不把完整日志、用户文件内容、大 base64 或可识别个人路径放进 Issue。
