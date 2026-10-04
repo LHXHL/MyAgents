@@ -45,8 +45,11 @@ debug/test 可以通过 `MYAGENTS_SPACE_MOCK_DATA=true` 使用 Rust owner 的 de
 | Notifications | `src-tauri/src/space_cloud/notifications.rs` | App 级 Cloud feed 同步 |
 | Renderer API | `src/renderer/api/spaceCloud.ts` | typed invoke 与错误投影 |
 | Renderer state | `src/renderer/pages/space/spaceStore.ts` | UI cache、cursor invalidation 与导航投影 |
+| Shell account projection | `src/renderer/features/account/` | 轻量只读账号投影、全局账号菜单与资料编辑；不启动 Space 业务 boot |
 
 领域模块共同复用 root auth/client 和已有文件安全 helper。需要同时修改多个领域状态的 command由 root facade协调；子模块不能相互借用 token 或建立平行 HTTP client。
+
+全局侧栏账号入口复用 `App.handleOpenSpace` 与既有登录流程；已登录菜单和资料弹窗由 Shell 呈现，Space 内旧账号入口已移除。`accountStore` 只通过现有 typed invoke 读取 session、更新资料、加载头像预设和退出；不订阅 `useSpaceData`。Rust 在登录/退出/失效提交后发出 `space-account:changed` 的 `auth` 失效通知，在资料提交后发出 `profile` 通知；通知无 token 或正文。普通 session refresh 不广播这类通知，避免读取与失效循环。Shell 重新读取 Rust authority，按环境及 generation 丢弃旧请求，并由 `useSpaceData` 的存活订阅将有效资料更新合并到已加载的业务缓存，保留当前 Space。账号失效在全局入口按未登录显示，不改变内部 `ReauthRequired` 语义。
 
 ### 3.1 官方工具市集入口
 

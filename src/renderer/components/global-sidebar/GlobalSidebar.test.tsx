@@ -55,6 +55,14 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 
+vi.mock('@/features/account/useMyAgentsAccount', () => ({
+  useMyAgentsAccount: () => ({
+    scope: 'production', enabled: false, generation: 0, loadState: 'ready',
+    view: null, error: null,
+    avatarPresets: { people: [], agents: [], lastFetchedAt: 0, isLoading: false, error: null },
+  }),
+}));
+
 vi.mock('@/hooks/useConfig', () => ({
   useConfig: () => ({
     config: mocks.config,
@@ -237,6 +245,35 @@ describe('GlobalSidebar rail flyout', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it('keeps helper and settings above independent account and notification controls', () => {
+    mocks.forcedRail = false;
+    const onOpenSpace = vi.fn();
+    renderSidebar({ onOpenSpace });
+    const footer = document.querySelector('[data-global-sidebar-footer-actions]')!;
+    const row = document.querySelector('[data-global-sidebar-account-row]')!;
+    const account = screen.getByRole('button', { name: '登录 MyAgents' });
+    const notification = screen.getByRole('button', { name: String(i18n.t('app:notificationCenter.bell')) });
+    expect(footer.lastElementChild).toBe(row);
+    expect(row.contains(account)).toBe(true);
+    expect(row.contains(notification)).toBe(true);
+    expect(row.contains(screen.getByRole('button', { name: '设置' }))).toBe(false);
+    expect(row.contains(screen.getByRole('button', { name: '小助理' }))).toBe(false);
+    fireEvent.click(account);
+    expect(onOpenSpace).toHaveBeenCalledOnce();
+    expect(mocks.notificationRefresh).not.toHaveBeenCalled();
+    fireEvent.click(notification);
+    expect(onOpenSpace).toHaveBeenCalledOnce();
+    expect(mocks.notificationRefresh).toHaveBeenCalledOnce();
+  });
+
+  it('keeps only notification in the last rail row with no hidden account focus target', () => {
+    renderSidebar();
+    const row = document.querySelector('[data-global-sidebar-account-row]')!;
+    expect(within(row as HTMLElement).getAllByRole('button')).toHaveLength(1);
+    expect(within(row as HTMLElement).getByRole('button', { name: String(i18n.t('app:notificationCenter.bell')) })).toBeInTheDocument();
+    expect(document.querySelector('[data-global-account-trigger]')).toBeNull();
   });
 
   it('renders healthy workspaces alongside invalid persisted Project rows without modifying them', () => {
@@ -1288,7 +1325,7 @@ describe('GlobalSidebar rail flyout', () => {
     const helperButton = screen.getByRole('button', {
       name: String(i18n.t('app:globalSidebar.helper')),
     });
-    expect(notificationButton.querySelector('.global-sidebar-nav-label')).toBeInTheDocument();
+    expect(notificationButton.querySelector('.global-sidebar-nav-label')).not.toBeInTheDocument();
     expect(helperButton.querySelector('.global-sidebar-nav-label')).toBeInTheDocument();
     const workspaceFade = document.querySelector<HTMLElement>('[data-global-sidebar-workspace-fade]');
     expect(workspaceFade).toHaveClass('pointer-events-none', 'absolute', 'inset-x-0', 'bottom-0', 'h-6');

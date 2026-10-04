@@ -1,11 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ChevronDownIcon,
   GitBranchIcon,
   LoaderIcon,
   LogInIcon,
-  LogOutIcon,
   MessageIcon,
   PackageIcon,
   PlusIcon,
@@ -16,9 +15,7 @@ import {
 
 import type { SpaceInfo, SpaceListItem, SpaceSession } from "@/api/spaceCloud";
 import myagentsWebLogo from "@/assets/brand/myagents-web-logo.png";
-import { useCloseLayer } from "@/hooks/useCloseLayer";
-import { currentSupportedLocale } from "@/i18n/format";
-import { SpaceAvatar, SpaceIcon, spaceDisplayName } from "./SpaceAvatar";
+import { SpaceIcon } from "./SpaceAvatar";
 import { PAPER_GRID_STYLE } from "./spaceUi";
 
 export type SpaceViewMode =
@@ -138,9 +135,6 @@ export function SpaceSidebar({
   onSpaceSwitch,
   onJoinSpace,
   onCreateSpace,
-  onLogout,
-  onOpenProfileSettings,
-  onRefreshAccountPlan,
 }: {
   session: SpaceSession;
   mode: SpaceViewMode;
@@ -148,18 +142,8 @@ export function SpaceSidebar({
   onSpaceSwitch: (spaceId: string, mode: SpaceViewMode) => void;
   onJoinSpace: () => void;
   onCreateSpace: () => void;
-  onLogout: () => void;
-  onOpenProfileSettings: () => void;
-  onRefreshAccountPlan?: () => Promise<void>;
 }) {
   const { t } = useTranslation("app");
-  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
-  const [accountRefreshing, setAccountRefreshing] = useState(false);
-  const [accountPlanViewedAt, setAccountPlanViewedAt] = useState(() =>
-    Date.now(),
-  );
-  const accountMenuRef = useRef<HTMLDivElement | null>(null);
-  const displayName = spaceDisplayName(session.user);
   const canManageSpace =
     session.membership.role === "owner" || session.membership.role === "admin";
   const activeSpaceId = session.space.id || session.space.slug;
@@ -180,101 +164,9 @@ export function SpaceSidebar({
   const spaces = activeSpaceListed
     ? listedSpaces
     : [activeSpaceFallback, ...listedSpaces];
-  const accountPlan = session.accountPlan;
-  const membershipExpiry = accountPlan?.membership?.expiresAt ?? null;
-  const expiryDate = membershipExpiry ? new Date(membershipExpiry) : null;
-  const expiryValid = Boolean(
-    expiryDate && !Number.isNaN(expiryDate.getTime()),
-  );
-  const expiryMs = expiryValid ? expiryDate!.getTime() : null;
-  const activePro = Boolean(
-    accountPlan?.effectiveTier === "pro" &&
-      accountPlan.membership?.status === "active" &&
-      expiryValid &&
-      expiryMs! > accountPlanViewedAt,
-  );
-  const daysRemaining =
-    activePro && expiryValid
-      ? Math.max(
-          1,
-          Math.ceil((expiryDate!.getTime() - accountPlanViewedAt) / 86_400_000),
-        )
-      : null;
-  const membershipRevoked = accountPlan?.membership?.status === "revoked";
-  const planDescription = membershipRevoked
-    ? t("space.accountPlan.free")
-    : activePro && expiryValid
-      ? daysRemaining !== null && daysRemaining <= 7
-        ? t("space.accountPlan.proDaysRemaining", { count: daysRemaining })
-        : t("space.accountPlan.proUntil", {
-            date: expiryDate!.toLocaleDateString(currentSupportedLocale(), {
-              year: "numeric",
-              month: "long",
-              day: "numeric",
-            }),
-          })
-      : expiryValid &&
-          (accountPlan?.membership?.status === "expired" ||
-            expiryMs! <= accountPlanViewedAt)
-        ? t("space.accountPlan.expiredAt", {
-            date: expiryDate!.toLocaleDateString(currentSupportedLocale(), {
-              year: "numeric",
-              month: "long",
-              day: "numeric",
-            }),
-          })
-        : t("space.accountPlan.free");
-  useCloseLayer(() => {
-    if (!accountMenuOpen) return false;
-    setAccountMenuOpen(false);
-    return true;
-  }, 20);
-
   useEffect(() => {
     setExpandedSpaceId(activeSpaceId);
   }, [activeSpaceId]);
-
-  useEffect(() => {
-    if (!accountMenuOpen) return;
-    const handleMouseDown = (event: MouseEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (accountMenuRef.current?.contains(target)) return;
-      setAccountMenuOpen(false);
-    };
-    document.addEventListener("mousedown", handleMouseDown);
-    return () => document.removeEventListener("mousedown", handleMouseDown);
-  }, [accountMenuOpen]);
-
-  useEffect(() => {
-    if (!accountMenuOpen || expiryMs === null) return;
-    const remainingMs = expiryMs - Date.now();
-    if (remainingMs <= 0) return;
-    const timer = window.setTimeout(
-      () => setAccountPlanViewedAt(Date.now()),
-      Math.min(remainingMs + 50, 2_147_000_000),
-    );
-    return () => window.clearTimeout(timer);
-  }, [accountMenuOpen, expiryMs]);
-
-  const toggleAccountMenu = () => {
-    const nextOpen = !accountMenuOpen;
-    setAccountMenuOpen(nextOpen);
-    if (nextOpen) setAccountPlanViewedAt(Date.now());
-    if (!nextOpen || !onRefreshAccountPlan || accountRefreshing) return;
-    const lastValidatedAt = Date.parse(accountPlan?.evaluatedAt ?? "");
-    const projectionAgeMs = Date.now() - lastValidatedAt;
-    if (
-      Number.isFinite(lastValidatedAt) &&
-      projectionAgeMs >= 0 &&
-      projectionAgeMs <= 60_000
-    )
-      return;
-    setAccountRefreshing(true);
-    void onRefreshAccountPlan()
-      .catch(() => undefined)
-      .finally(() => setAccountRefreshing(false));
-  };
 
   const communityItemsFor = (space: SpaceListItem) => {
     const canManage =
@@ -415,86 +307,6 @@ export function SpaceSidebar({
         </ul>
       </div>
 
-      <div
-        ref={accountMenuRef}
-        className="relative border-t border-[var(--line-subtle)] pt-3"
-      >
-        <button
-          type="button"
-          onClick={toggleAccountMenu}
-          aria-expanded={accountMenuOpen}
-          className="flex h-9 w-full items-center gap-2 rounded-xl border border-[var(--line-subtle)] bg-[var(--paper-elevated)]/60 px-2.5 text-left text-sm font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-elevated)] hover:text-[var(--ink)]"
-        >
-          <SpaceAvatar
-            name={displayName}
-            email={session.user.email}
-            avatarUrl={session.user.avatarUrl}
-            size={22}
-          />
-          <span className="min-w-0 flex-1 truncate">{displayName}</span>
-          <ChevronDownIcon className="h-3.5 w-3.5 shrink-0" />
-        </button>
-        {accountMenuOpen ? (
-          <div
-            className="absolute bottom-full left-0 z-20 mb-2 w-[280px] max-w-[calc(100vw-28px)] rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)]/95 p-2 shadow-md backdrop-blur-md"
-            style={{ animation: "overlayPanelIn 160ms ease-out" }}
-          >
-            <div className="mb-1 border-b border-dashed border-[var(--line-subtle)] px-2 py-2.5">
-              <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2.5">
-                <SpaceAvatar
-                  name={displayName}
-                  email={session.user.email}
-                  avatarUrl={session.user.avatarUrl}
-                  size={40}
-                />
-                <span className="min-w-0 flex-1">
-                  <strong className="block truncate text-sm font-semibold leading-tight text-[var(--ink)]">
-                    {displayName}
-                  </strong>
-                  <span className="mt-0.5 block truncate text-xs font-medium leading-tight text-[var(--ink-muted)]">
-                    {session.user.email}
-                  </span>
-                </span>
-                <span
-                  className={`rounded-md px-2 py-1 text-xs font-semibold tracking-wide ${activePro ? "bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]" : "bg-[var(--paper-inset)] text-[var(--ink-muted)]"}`}
-                >
-                  {activePro ? "PRO" : "FREE"}
-                </span>
-              </div>
-              <div
-                className={`mt-2.5 flex items-center gap-1.5 text-xs font-semibold ${activePro && daysRemaining !== null && daysRemaining <= 7 ? "text-[var(--warning)]" : "text-[var(--ink-muted)]"}`}
-              >
-                <span className="min-w-0 flex-1">{planDescription}</span>
-                {accountRefreshing ? (
-                  <LoaderIcon className="h-3.5 w-3.5 shrink-0 animate-spin" />
-                ) : null}
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setAccountMenuOpen(false);
-                onOpenProfileSettings();
-              }}
-              className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-sm font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-            >
-              <SettingsIcon className="h-3.5 w-3.5" />
-              {t("space.sidebar.settings")}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setAccountMenuOpen(false);
-                onLogout();
-              }}
-              className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-sm font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-            >
-              <LogOutIcon className="h-3.5 w-3.5" />
-              {t("space.sidebar.logout")}
-            </button>
-          </div>
-        ) : null}
-      </div>
     </aside>
   );
 }

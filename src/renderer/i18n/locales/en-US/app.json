@@ -17,6 +17,11 @@
     "switchTo": "Switch to {{title}}",
     "agentNetwork": "AgentNet Private Network"
   },
+  "account": {
+    "signIn": "Sign in to MyAgents",
+    "menu": "MyAgents account",
+    "editProfile": "Edit account profile"
+  },
   "globalSidebar": {
     "navigation": "Global navigation",
     "openWebsite": "Open the MyAgents website",

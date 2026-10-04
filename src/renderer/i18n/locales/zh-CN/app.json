@@ -17,6 +17,11 @@
     "switchTo": "切换到 {{title}}",
     "agentNetwork": "AgentNet 私有网络"
   },
+  "account": {
+    "signIn": "登录 MyAgents",
+    "menu": "MyAgents 账号",
+    "editProfile": "编辑账号资料"
+  },
   "globalSidebar": {
     "navigation": "全局导航",
     "openWebsite": "打开 MyAgents 官网",

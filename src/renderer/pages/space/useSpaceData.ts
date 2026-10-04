@@ -5,8 +5,10 @@ import {
   getSnapshot,
   subscribe,
   SPACE_VISIBLE_REFRESH_TTL_MS,
+  syncSpaceAccountProjection,
   type SpaceDataSnapshot,
 } from "./spaceStore";
+import { subscribeAccount } from '@/features/account/accountStore';
 
 export interface UseSpaceDataOptions {
   isActive?: boolean;
@@ -16,6 +18,10 @@ export function useSpaceData({
   isActive,
 }: UseSpaceDataOptions): SpaceDataSnapshot {
   const data = useSyncExternalStore(subscribe, getSnapshot);
+  useEffect(() => {
+    syncSpaceAccountProjection();
+    return subscribeAccount(syncSpaceAccountProjection);
+  }, []);
   const prevActiveRef = useRef(isActive);
   const accountPlanTier = data.session?.accountPlan?.effectiveTier;
   const accountPlanEvaluatedAt = data.session?.accountPlan?.evaluatedAt;

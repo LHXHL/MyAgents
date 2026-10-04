@@ -78,6 +78,7 @@ import {
   type SpaceUserSummary,
 } from "@/api/spaceCloud";
 import type { PortableMcpManifestV1 } from "../../../shared/spaceToolManifest";
+import { getAccountSnapshot } from '@/features/account/accountStore';
 import type { IssueQueryParams } from "./spaceHelpers";
 import {
   buildIssueQueryKey,
@@ -1459,6 +1460,7 @@ export const actions: SpaceActions = {
     if (bootPromise && !options.force) return bootPromise;
     if (!options.silent) setState({ boot: "loading", bootError: null });
     const requestSeq = startRequest("boot");
+    const accountAtBootStart = getAccountSnapshot();
     bootPromise = (async () => {
       const startedAt = nowForSpaceMetric();
       recordSpaceMetric("space_boot_start");
@@ -1540,6 +1542,12 @@ export const actions: SpaceActions = {
           bootError: null,
           bootLastFetchedAt: Date.now(),
         });
+        // Global editing can finish while this business request is pending.
+        // Reconcile those account updates after boot establishes the Space
+        // session, without cancelling business loading or replacing its Space.
+        if (getAccountSnapshot() !== accountAtBootStart) {
+          syncSpaceAccountProjection();
+        }
         setSpaceAnalyticsContext({
           spaceKind:
             official.space?.spaceKind ?? session.space?.spaceKind ?? null,
@@ -3159,6 +3167,62 @@ export function getSnapshot(): SpaceDataSnapshot {
   return snapshot;
 }
 
+/** Consume Shell's account projection without starting any Space subscription. */
+let spaceAccountGeneration: number | null = null;
+export function syncSpaceAccountProjection(): void {
+  const account = getAccountSnapshot();
+  if (account.loadState === 'idle') return;
+  const boundaryChanged = spaceAccountGeneration !== account.generation;
+  spaceAccountGeneration = account.generation;
+  const view = account.view;
+  if (!view) {
+    if (account.loadState === 'loading' && boundaryChanged) {
+      // Auth invalidation clears the old identity synchronously. A normal
+      // profile/plan refresh retains its view and does not enter this branch.
+      invalidatePendingRequests();
+      setSpaceAnalyticsContext(null);
+      setState({ ...initialState(), boot: 'loading' });
+    } else if (account.loadState === 'ready') {
+      invalidatePendingRequests();
+      setSpaceAnalyticsContext(null);
+      setState({ ...initialState(), boot: 'signedOut' });
+    } else if (account.loadState === 'error' && !state.session) {
+      setState({ boot: 'error', bootError: account.error });
+    }
+    return;
+  }
+  if (view.state === 'reauth_required') {
+    invalidatePendingRequests();
+    setSpaceAnalyticsContext(null);
+    setState({
+      ...initialState(), boot: 'reauthRequired', reauthAccount: view.account,
+      serviceBaseUrl: view.account.baseUrl, bootLastFetchedAt: Date.now(),
+    });
+    return;
+  }
+  const next = view.session;
+  if (!state.session) {
+    // A mounted Space owns its boot. Profile/menu updates must not cancel an
+    // in-flight boot or repeatedly retry a failed Space business request.
+    if (bootPromise || state.boot === 'error') return;
+    void actions.ensureBootstrapped({ force: true });
+    return;
+  }
+  if (state.session.sessionBindingId !== next.sessionBindingId
+    || state.session.baseUrl !== next.baseUrl) {
+    invalidatePendingRequests();
+    setState({ ...initialState(), boot: 'loading' });
+    void actions.ensureBootstrapped();
+    return;
+  }
+  if (state.session.user !== next.user || state.session.accountPlan !== next.accountPlan) {
+    patchProfileInCaches({
+      ...state.session, user: next.user, accountPlan: next.accountPlan,
+      expiresAt: next.expiresAt, updatedAt: next.updatedAt,
+    });
+  }
+}
+
 export function getSkillFileState(
   skillId: string,
   path: string,
@@ -3173,6 +3237,7 @@ export function getSkillRevisionState(
 }
 
 export function __resetSpaceStoreForTest(): void {
+  spaceAccountGeneration = null;
   state = initialState();
   listeners.clear();
   bootPromise = null;

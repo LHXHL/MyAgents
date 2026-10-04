@@ -69,7 +69,6 @@ import {
   type SpaceViewMode as ViewMode,
 } from "@/pages/space/SpaceChrome";
 import { SpaceIcon } from "@/pages/space/SpaceAvatar";
-import SpaceProfileSettingsDialog from "@/pages/space/SpaceProfileSettingsDialog";
 import {
   nowForSpaceMetric,
   recordSpaceMetric,
@@ -507,7 +506,6 @@ export default function Space({
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
-  const [profileSettingsOpen, setProfileSettingsOpen] = useState(false);
   const [spaceDialogMode, setSpaceDialogMode] = useState<
     "join" | "create" | null
   >(null);
@@ -1326,11 +1324,6 @@ export default function Space({
           onSpaceSwitch={switchSpace}
           onJoinSpace={joinSpace}
           onCreateSpace={createSpace}
-          onLogout={logout}
-          onOpenProfileSettings={() => setProfileSettingsOpen(true)}
-          onRefreshAccountPlan={() =>
-            actions.ensureBootstrapped({ force: true, silent: true })
-          }
         />
         <section className="flex min-w-0 flex-1 flex-col">
           {activeMode === "issues" && (
@@ -1494,15 +1487,6 @@ export default function Space({
               actions.refreshRegisteredAgents({ force: true, silent: true }),
             ]);
           }}
-        />
-      )}
-
-      {profileSettingsOpen && (
-        <SpaceProfileSettingsDialog
-          session={session}
-          actions={actions}
-          avatarPresets={spaceData.avatarPresets}
-          onClose={() => setProfileSettingsOpen(false)}
         />
       )}
 

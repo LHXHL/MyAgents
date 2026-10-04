@@ -10,7 +10,7 @@ use reqwest::header::{ACCEPT_LANGUAGE, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use crate::device_identity::{current_device_identity, DeviceIdentity};
 use crate::workspace_files::path_safety::open_regular_file_no_follow;
@@ -829,14 +829,19 @@ pub async fn cmd_space_update_profile(
     input: SpaceUpdateProfileInput,
 ) -> SpaceCommandResult<SpaceSessionPublic> {
     if crate::space_cloud_mock::is_enabled() {
-        return crate::space_cloud_mock::update_profile(input).map_err(Into::into);
+        let session =
+            crate::space_cloud_mock::update_profile(input).map_err(SpaceCommandError::from)?;
+        account_profile_changed();
+        return Ok(session);
     }
     ensure_space_available()?;
     let session = require_session()?;
     let form = profile_form(input)?;
     let data = authorized_multipart_data_request(&session, "/api/me/profile", form).await?;
     let refreshed = session_from_me_data(&session, &data);
-    Ok(commit_refreshed_session(refreshed).await?.into())
+    let session = commit_refreshed_session(refreshed).await?;
+    account_profile_changed();
+    Ok(session.into())
 }
 
 #[tauri::command]
@@ -2507,9 +2512,15 @@ mod tests;
 /// Fan out an already committed account transition from the authentication
 /// owner. Every account projection clears synchronously before remote refresh.
 pub(crate) fn account_auth_boundary_changed<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let _ = app.emit("space-account:changed", "auth");
     crate::agent_network::actor::auth_boundary_changed(app);
     if let Some(center) = app.try_state::<notifications::ManagedNotificationCenter>() {
         notifications::auth_boundary_changed(app, center.inner());
+    }
+}
+fn account_profile_changed() {
+    if let Some(app) = crate::logger::get_app_handle() {
+        let _ = app.emit("space-account:changed", "profile");
     }
 }
 pub(crate) fn account_user_session_invalidated() {
