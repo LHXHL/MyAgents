@@ -196,7 +196,7 @@ function Probe() {
       <button type="button" onClick={() => void sendMessage('hello')}>send message</button>
       <button type="button" onClick={() => {
         const failed = historyMessages.find(message => message.deliveryStatus === 'failed');
-        if (failed) void sendMessage('hello', undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, failed.id);
+        if (failed) void sendMessage('hello', undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, failed.id);
       }}>resend failed message</button>
       <button type="button" onClick={() => void resetSession()}>reset session</button>
       <button type="button" onClick={() => void stopResponse()}>stop response</button>

@@ -18,6 +18,15 @@ describe('Claude Code NDJSON log ownership', () => {
     ]);
   });
 
+  it('preserves can_use_tool child authority independently of tool IDs', () => {
+    const runtime = new ClaudeCodeRuntime() as unknown as { parseLine(line: string): UnifiedEvent | null };
+    for (const agent_id of [undefined, 'background-child']) {
+      expect(runtime.parseLine(JSON.stringify({ type: 'control_request', request_id: 'permission',
+        request: { subtype: 'can_use_tool', tool_name: 'Bash', tool_use_id: 'call', input: {}, agent_id },
+      }))).toMatchObject({ kind: 'permission_request', affectsRootActivity: !agent_id });
+    }
+  });
+
   it('retains model-message/block provenance and isolates child stream indexes', () => {
     const runtime = new ClaudeCodeRuntime() as unknown as { parseLine(line: string): UnifiedEvent | null };
     const parse = (frame: unknown) => runtime.parseLine(JSON.stringify(frame));

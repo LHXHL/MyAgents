@@ -751,6 +751,7 @@ import {
   CLI_SESSION_HEADER,
   cliSessionScopeError,
 } from '../shared/cli-session-scope';
+import { LOG_SESSION_HEADER } from '../shared/types/log';
 import { isSystemMaintenanceSession } from '../shared/managedScheduledJob';
 import type { InteractionScenario } from './system-prompt';
 import {
@@ -803,6 +804,8 @@ function getCommandDownloadInfo(command: string): {
 }
 
 type SendMessagePayload = {
+  primaryContext?: import("../shared/agentMentions").DesktopPrimaryContext;
+  agentMentions?: import("../shared/agentMentions").AgentMentionSnapshot[];
   clientRequestId?: string;
   asyncQuestionReply?: AsyncQuestionReply;
   text?: string;
@@ -931,7 +934,7 @@ function cloneProviderEnvForImContext(
  * #264 — Self-resolve the background-agent permission policy from disk for the
  * IM / scheduled-Task lanes. Desktop sends carry it in the chat payload
  * (frontend is the authority), but background turns have no such payload, so
- * per CLAUDE.md's "Tab 由前端配, IM/Task self-resolve 从磁盘读" split they read `config.json`
+ * per the "Tab config comes from the frontend, IM/Task self-resolve from disk" split they read `config.json`
  * directly. Idempotent; defaults to the conservative 'inherit' on any read
  * error so a missing/corrupt config never widens the background lane.
  */
@@ -1454,6 +1457,12 @@ async function routeAdminApi(
 ): Promise<Record<string, unknown>> {
   // Strip the prefix for matching
   const route = pathname.replace('/api/admin/', '');
+  if (['agent/show', 'session/list', 'session/get', 'session/start', 'session/send', 'session/watch', 'session/state'].includes(route)) {
+    const { routeNetworkRequest } = await import('./agent-network/source');
+    const networkResult = await routeNetworkRequest(route, payload,
+      caller.kind === 'external-cli' ? 'external-cli' : 'internal-session', signal);
+    if (networkResult) return networkResult;
+  }
   if (
     caller.kind === 'external-cli' &&
     (route.startsWith('task/') || route.startsWith('cron/'))
@@ -1615,42 +1624,24 @@ async function routeAdminApi(
   if (route === 'agent/resolve-conflict')
     return api.handleAgentResolveConflict(payload as Parameters<typeof api.handleAgentResolveConflict>[0]);
   if (route === 'agent/current') return await api.handleAgentCurrent();
-  if (route === 'agent/show')
-    return await api.handleAgentShow(
-      payload as Parameters<typeof api.handleAgentShow>[0],
-    );
-  if (route === 'agent/enable')
-    return api.handleAgentEnable(
-      payload as Parameters<typeof api.handleAgentEnable>[0],
-    );
-  if (route === 'agent/disable')
-    return api.handleAgentDisable(
-      payload as Parameters<typeof api.handleAgentDisable>[0],
-    );
-  if (route === 'agent/archive')
-    return api.handleAgentArchive(
-      payload as Parameters<typeof api.handleAgentArchive>[0],
-    );
-  if (route === 'agent/unarchive')
-    return api.handleAgentUnarchive(
-      payload as Parameters<typeof api.handleAgentUnarchive>[0],
-    );
-  if (route === 'agent/set')
-    return api.handleAgentSet(
-      payload as Parameters<typeof api.handleAgentSet>[0],
-    );
-  if (route === 'agent/channel/list')
-    return api.handleAgentChannelList(
-      payload as Parameters<typeof api.handleAgentChannelList>[0],
-    );
-  if (route === 'agent/channel/add')
-    return api.handleAgentChannelAdd(
-      payload as Parameters<typeof api.handleAgentChannelAdd>[0],
-    );
-  if (route === 'agent/channel/remove')
-    return api.handleAgentChannelRemove(
-      payload as Parameters<typeof api.handleAgentChannelRemove>[0],
-    );
+  if (route === 'agent/discovery') return await api.handleAgentDiscovery(payload);
+  if (route === 'agent/network-catalog') return await api.handleAgentNetworkCatalog();
+  if (route === 'agent/network-precheck' || route === 'agent/network-read' || route === 'agent/network-watch-result') {
+    const target = await import('./agent-network/target');
+    if (route === 'agent/network-watch-result') return target.handleNetworkWatchProjection(payload);
+    return route === 'agent/network-precheck'
+      ? target.handleNetworkTargetPrecheck(payload)
+      : target.handleNetworkTargetRead(payload);
+  }
+  if (route === 'agent/show') return await api.handleAgentShow(payload as Parameters<typeof api.handleAgentShow>[0]);
+  if (route === 'agent/enable') return api.handleAgentEnable(payload as Parameters<typeof api.handleAgentEnable>[0]);
+  if (route === 'agent/disable') return api.handleAgentDisable(payload as Parameters<typeof api.handleAgentDisable>[0]);
+  if (route === 'agent/archive') return api.handleAgentArchive(payload as Parameters<typeof api.handleAgentArchive>[0]);
+  if (route === 'agent/unarchive') return api.handleAgentUnarchive(payload as Parameters<typeof api.handleAgentUnarchive>[0]);
+  if (route === 'agent/set') return api.handleAgentSet(payload as Parameters<typeof api.handleAgentSet>[0]);
+  if (route === 'agent/channel/list') return api.handleAgentChannelList(payload as Parameters<typeof api.handleAgentChannelList>[0]);
+  if (route === 'agent/channel/add') return api.handleAgentChannelAdd(payload as Parameters<typeof api.handleAgentChannelAdd>[0]);
+  if (route === 'agent/channel/remove') return api.handleAgentChannelRemove(payload as Parameters<typeof api.handleAgentChannelRemove>[0]);
   if (route === 'runtime/list') return await api.handleRuntimeList();
   if (route === 'runtime/describe')
     return await api.handleRuntimeDescribe(
@@ -2082,6 +2073,36 @@ async function routeAdminApi(
           code: result.response.error?.code,
         };
   }
+  if (route === 'session/state') {
+    try {
+      const { readSessionActivity } = await import('./session-observation');
+      if (typeof payload.sessionId !== 'string' || !payload.sessionId) return { success: false, code: 'ARGUMENT_INVALID', error: 'sessionId required' };
+      return { success: true, session: await readSessionActivity(payload.sessionId) };
+    } catch { return { success: false, code: 'SESSION_STATE_UNAVAILABLE', error: 'Session state could not be read; retry the query.' }; }
+  }
+  if (route === 'session/watches' || route === 'session/unwatch') {
+    if (caller.kind === 'external-cli') return { success: false, code: 'EXTERNAL_CLI_CAPABILITY_NOT_OPEN', error: 'A real caller Session is required.' };
+    const cancel = route === 'session/unwatch' && typeof payload.watchId === 'string' ? payload.watchId : undefined;
+    const all = route === 'session/unwatch' && payload.all === true;
+    if (Object.keys(payload).some(key => !['watchId', 'all'].includes(key)) || route === 'session/unwatch' && (all === !!cancel)) {
+      return { success: false, code: 'ARGUMENT_INVALID', error: 'Choose one watchId or explicit --all.' };
+    }
+    const { managementApi } = await import('./utils/management-api-client');
+    const result = await managementApi('/api/agent-network/watches', 'POST', {
+      sidecarId: process.env.MYAGENTS_SIDECAR_ID, ...(cancel ? { cancel } : {}), all,
+    }, { timeoutMs: 22_000 });
+    const { projectSessionWatchManagement } = await import('./inbox/watch-handler');
+    return result.ok === true ? projectSessionWatchManagement(result.result, cancel, all)
+      : { success: false, code: (result.error as { code?: string })?.code ?? 'WATCH_OWNER_UNAVAILABLE', error: 'Observation owner unavailable; retry the query.' };
+  }
+  if (route === 'agent/network-diagnose') {
+    const { managementApi } = await import('./utils/management-api-client');
+    const result = await managementApi('/api/agent-network/diagnose', 'POST', {
+      sidecarId: process.env.MYAGENTS_SIDECAR_ID, cursor: payload.cursor ?? null, limit: payload.limit ?? 100,
+    }, { timeoutMs: 38_000 });
+    return result.ok === true ? { success: true, data: result.data }
+      : { success: false, code: 'NETWORK_DIAGNOSTIC_UNAVAILABLE', error: 'Network diagnostics unavailable.' };
+  }
   if (route === 'session/watch') {
     const { handleAdminSessionWatch } = await import('./inbox/watch-handler');
     const result = await handleAdminSessionWatch(
@@ -2506,14 +2527,16 @@ async function main() {
       // Pattern 6 (HTTP request boundary): each request runs inside an ALS
       // frame so any nested console.* call automatically gets correlation
       // fields injected. Renderer-side code (`tauriClient.ts`) attaches
-      // X-MyAgents-Session-Id / X-MyAgents-Tab-Id; the server generates a
+      // x-myagents-log-session-id / X-MyAgents-Tab-Id; the server generates a
       // fresh requestId (or honours an inbound `X-MyAgents-Request-Id` from
       // the Rust proxy if it pre-populated one).
       const incomingRequestId =
         request.headers.get('x-myagents-request-id') ?? undefined;
       const requestId = incomingRequestId ?? randomUUIDv4Short();
       const sessionId =
-        request.headers.get('x-myagents-session-id') ?? undefined;
+        request.headers.get(LOG_SESSION_HEADER)
+        ?? request.headers.get(CLI_SESSION_HEADER)
+        ?? undefined;
       const tabId = request.headers.get('x-myagents-tab-id') ?? undefined;
       return withLogContext({ requestId, sessionId, tabId }, () =>
         dispatchRequest(request),
@@ -2985,6 +3008,18 @@ async function main() {
             400,
           );
         }
+        if (payload.primaryContext !== undefined) {
+          const { desktopPrimaryContextSchema } = await import('../shared/agentMentions');
+          const primary = desktopPrimaryContextSchema.safeParse(payload.primaryContext);
+          if (!primary.success) return jsonResponse({ success: false, error: 'Invalid query context' }, 400);
+          payload.primaryContext = primary.data;
+        }
+        if (payload.agentMentions !== undefined) {
+          const { agentMentionSnapshotSchema } = await import('../shared/agentMentions');
+          const mentions = agentMentionSnapshotSchema.array().max(5000).safeParse(payload.agentMentions);
+          if (!mentions.success) return jsonResponse({ success: false, error: 'Invalid Agent mention context.' }, 400);
+          payload.agentMentions = mentions.data;
+        }
         if (payload.asyncQuestionReply !== undefined && !isAsyncQuestionReply(payload.asyncQuestionReply)) {
           return jsonResponse({ success: false, error: 'Invalid async question reply.' }, 400);
         }
@@ -3118,6 +3153,8 @@ async function main() {
           const result = await goalOrchestrator.sendDesktopMessage(engine, {
             clientRequestId: payload.clientRequestId,
             text,
+            agentMentions: payload.agentMentions,
+            queryPrimaryContext: payload.primaryContext,
             asyncQuestionReply: payload.asyncQuestionReply,
             images,
             permissionMode,
@@ -3145,18 +3182,11 @@ async function main() {
             success: true,
             queued: result.queued,
             ...(result.queueId ? { queueId: result.queueId } : {}),
-            ...(result.isInFlight !== undefined
-              ? { isInFlight: result.isInFlight }
-              : {}),
-            ...(result.deliveryMode
-              ? { deliveryMode: result.deliveryMode }
-              : {}),
-            ...(result.canCancel !== undefined
-              ? { canCancel: result.canCancel }
-              : {}),
-            ...(result.canForceExecute !== undefined
-              ? { canForceExecute: result.canForceExecute }
-              : {}),
+            ...(result.isInFlight !== undefined ? { isInFlight: result.isInFlight } : {}),
+            ...(result.deliveryMode ? { deliveryMode: result.deliveryMode } : {}),
+            ...(result.canCancel !== undefined ? { canCancel: result.canCancel } : {}),
+            ...(result.canForceExecute !== undefined ? { canForceExecute: result.canForceExecute } : {}),
+            ...(result.agentMentionsNeedReselect ? { agentMentionsNeedReselect: true } : {}),
           });
         } catch (error) {
           return jsonResponse(
@@ -8580,8 +8610,8 @@ async function main() {
 
       // ============= CLAUDE PLUGINS API (PRD 0.2.17) =============
       //
-      // Plugin endpoints follow the "fixed names before wildcards" red-line
-      // (CLAUDE.md): /list, /install, /uninstall, /toggle, /detail all
+      // Plugin endpoints follow the "fixed names before wildcards" rule:
+      // /list, /install, /uninstall, /toggle, /detail all
       // collapse to a single keyword segment so there's no `/:id` wildcard
       // collision. Detail-by-id intentionally uses a query parameter for the
       // same reason — keeps route matching unambiguous.
@@ -9763,7 +9793,7 @@ async function main() {
       // Rust IM router caller, hence no imConfigSync flag). `effort` is the
       // setting string ('default' | level); 'default' restores pre-#324
       // behavior. Branches to the external-runtime handler per the
-      // config-sync routing red line (CLAUDE.md Multi-Agent Runtime).
+      // config-sync routing rule (multi_agent_runtime.md).
       if (
         pathname === '/api/reasoning-effort/set' &&
         request.method === 'POST'
@@ -11677,7 +11707,12 @@ description: >
             sessionId: string;
             limit?: number;
             before?: string;
+            projection?: 'text' | 'activity';
           };
+          if (input.projection === 'activity') {
+            const { readLocalSessionActivity } = await import('./session-observation');
+            return jsonResponse(readLocalSessionActivity(input.sessionId));
+          }
           const { readLocalSessionTextPage } = await import(
             './session-text-projection'
           );

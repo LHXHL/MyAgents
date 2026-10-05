@@ -329,7 +329,7 @@ fn scan_skills_dir(
         // Read-only scan — follow symlinks / Windows junctions to detect
         // dir-likeness so user-installed skills mounted via junction surface.
         // For a broken symlink, `metadata()` returns Err and we just skip;
-        // the v0.2.5 cpSync crash mode (CLAUDE.md red-line) doesn't apply
+        // the v0.2.5 cpSync crash mode (pit_of_success.md#fs-utils) doesn't apply
         // here because we never write through this path. Issue #104 was
         // about the sidecar's parallel `isDirEntry` helper supporting the
         // same junction-mounted case.

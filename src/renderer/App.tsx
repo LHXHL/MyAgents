@@ -1,3 +1,5 @@
+import { DEFAULT_SPACE_ID } from '@/api/spaceCloud';
+import { startAgentNetworkStore } from '@/features/agent-network/store';
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -170,7 +172,6 @@ import {
   createPendingSessionId,
   isPendingSessionId,
 } from '../shared/constants';
-import { buildTaskDiscussionReminder } from '../shared/systemReminder';
 import { TASK_ALIGNMENT_SKILL_REQUIREMENT } from '../shared/systemSkills';
 import type {
   PreparedTaskDiscussion,
@@ -232,6 +233,7 @@ import {
   trackSpaceToolMutation,
 } from '@/pages/space/spaceMetrics';
 import {
+  createSpaceToolsAppRoute,
   serializeAppRoute,
   type AppRoute,
   type PendingAppRoute,
@@ -398,7 +400,9 @@ export default function App() {
   } = useConfig();
   const spaceBuildCapability = useSpaceBuildCapability(config.spaceEnvironment);
   const teamSpaceAvailable =
-    spaceBuildCapability.available && config.teamSpaceEnabled === true;
+    !configLoading &&
+    spaceBuildCapability.available &&
+    config.teamSpaceDevGate !== false;
   const [windowPresentation, setWindowPresentation] = useState(() =>
     createInitialMainWindowPresentation(
       typeof document === 'undefined' || document.visibilityState === 'visible',
@@ -422,6 +426,9 @@ export default function App() {
 
   // Bug report overlay state (triggered from titlebar feedback button)
   const [showBugReport, setShowBugReport] = useState(false);
+  // Owned by GlobalSidebar (which renders the single New Agent panel); lifted
+  // here so launcher entry points open that same instance.
+  const [newAgentPanelOpen, setNewAgentPanelOpen] = useState(false);
   const [appVersion, setAppVersion] = useState('');
   useEffect(() => {
     if (isTauriEnvironment()) {
@@ -434,7 +441,7 @@ export default function App() {
     }
   }, []);
 
-  // Toast (ref-stabilized per CLAUDE.md rules)
+  // Toast (ref-stabilized per react_stability_rules.md)
   const toast = useToast();
   const toastRef = useRef(toast);
   toastRef.current = toast;
@@ -2426,6 +2433,7 @@ export default function App() {
       forkAgentDir: string,
       title: string,
       initialMessage?: string,
+      context?: import("../shared/agentMentions").QueryMentionContext,
     ) => {
       // Check tab limit
       if (tabWorkspaceController.getSnapshot().tabs.length >= MAX_TABS) {
@@ -2449,7 +2457,7 @@ export default function App() {
         // already visible to history, so the opening claim above still excludes
         // user deletion until this Tab owner is attached.
         sidecarConfigDisposition: 'push',
-        ...(initialMessage ? { initialMessage: { text: initialMessage } } : {}),
+        ...(initialMessage ? { initialMessage: { text: initialMessage, agentMentions: context?.agentMentions, primaryContext: context?.primaryContext } } : {}),
       };
 
       tabWorkspaceController.append(newTab, {
@@ -3746,6 +3754,10 @@ export default function App() {
         if (!opened) return false;
         return true;
       }
+      if (!configLoading && config.teamSpaceDevGate === false) {
+        toastRef.current.info(t('titlebar.teamUnavailable'));
+        return false;
+      }
       if (!spaceBuildCapability.isLoading && !spaceBuildCapability.available) {
         toastRef.current.info(
           spaceBuildCapability.reason ?? t('titlebar.teamBuildUnavailable'),
@@ -3771,10 +3783,12 @@ export default function App() {
         route,
       } satisfies PendingAppRoute;
       pendingSpaceRouteRef.current = pending;
-      return spaceBuildCapability.isLoading ? true : openSpaceRoute(pending);
+      return configLoading || spaceBuildCapability.isLoading ? true : openSpaceRoute(pending);
     },
     [
       handleOpenTaskCenter,
+      configLoading,
+      config.teamSpaceDevGate,
       openSpaceRoute,
       spaceBuildCapability.available,
       spaceBuildCapability.isLoading,
@@ -3786,12 +3800,12 @@ export default function App() {
 
   useEffect(() => {
     const pending = pendingSpaceRouteRef.current;
-    if (!pending || spaceBuildCapability.isLoading) return;
-    if (!spaceBuildCapability.available) {
+    if (!pending || configLoading || spaceBuildCapability.isLoading) return;
+    if (!spaceBuildCapability.available || config.teamSpaceDevGate === false) {
       if (openedSpaceRouteGenerationRef.current < pending.generation) {
         openedSpaceRouteGenerationRef.current = pending.generation;
         toastRef.current.info(
-          spaceBuildCapability.reason ?? t('titlebar.teamBuildUnavailable'),
+          config.teamSpaceDevGate === false ? t('titlebar.teamUnavailable') : spaceBuildCapability.reason ?? t('titlebar.teamBuildUnavailable'),
         );
       }
       if (pendingSpaceRouteRef.current?.generation === pending.generation) {
@@ -3802,6 +3816,8 @@ export default function App() {
     openSpaceRoute(pending);
   }, [
     openSpaceRoute,
+    configLoading,
+    config.teamSpaceDevGate,
     spaceBuildCapability.available,
     spaceBuildCapability.isLoading,
     spaceBuildCapability.reason,
@@ -3818,6 +3834,14 @@ export default function App() {
     },
     [tabWorkspaceController],
   );
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      handleOpenAppRoute((event as CustomEvent<AppRoute>).detail);
+    };
+    window.addEventListener(CUSTOM_EVENTS.OPEN_APP_ROUTE, handler);
+    return () => window.removeEventListener(CUSTOM_EVENTS.OPEN_APP_ROUTE, handler);
+  }, [handleOpenAppRoute]);
 
   const handleTaskRouteConsumed = useCallback(
     (tabId: string, generation: number) => {
@@ -3857,7 +3881,7 @@ export default function App() {
   }, [handleOpenAppRoute]);
 
   const handleOpenSpace = useCallback(() => {
-    if (spaceBuildCapability.isLoading) {
+    if (configLoading || spaceBuildCapability.isLoading) {
       toastRef.current.info(t('titlebar.teamLoading'));
       return;
     }
@@ -3875,6 +3899,7 @@ export default function App() {
       title: t('tabs.team'),
     });
   }, [
+    configLoading,
     spaceBuildCapability.isLoading,
     spaceBuildCapability.available,
     spaceBuildCapability.reason,
@@ -3882,6 +3907,14 @@ export default function App() {
     tabWorkspaceController,
     t,
   ]);
+
+  const handleOpenToolMarket = useCallback(() => {
+    if (!teamSpaceAvailable) {
+      handleOpenSpace();
+      return;
+    }
+    handleOpenAppRoute(createSpaceToolsAppRoute(DEFAULT_SPACE_ID));
+  }, [handleOpenAppRoute, handleOpenSpace, teamSpaceAvailable]);
 
   useEffect(() => {
     window.addEventListener(CUSTOM_EVENTS.OPEN_SPACE, handleOpenSpace);
@@ -3993,7 +4026,7 @@ export default function App() {
             sourceRecordId: sourceRecordId || undefined,
           },
         );
-        const discussionPrompt = buildTaskDiscussionReminder({
+        const discussionContext = {
           candidatesDir: prepared.candidatesDir,
           workspaceId: workspace.id,
           workspacePath: workspace.path,
@@ -4004,7 +4037,7 @@ export default function App() {
             sourceRecordKind === 'audio'
               ? '请完整读取 sourceRecordDocumentPath 指向的录音文稿。文稿包含转写内容、说话人信息、现场笔记和重点标记。请以文件中的当前内容为准，理解记录并与我进一步讨论；如需核对原始声音，可读取 sourceRecordAudioPaths 中列出的音频文件。'
               : (content ?? ''),
-        });
+        };
 
         const alignmentProviderIntent =
           sel && isRuntimeBackedProvider(sel.provider)
@@ -4020,7 +4053,8 @@ export default function App() {
           defaultPermissionMode: configRef.current?.defaultPermissionMode,
         });
         const initialMessage: InitialMessage = {
-          text: discussionPrompt,
+          text: discussionContext.visibleUserMessage,
+          primaryContext: { kind: 'task-discussion', input: discussionContext },
           requiredSystemSkill: TASK_ALIGNMENT_SKILL_REQUIREMENT,
           ...(alignmentPermissionMode
             ? { permissionMode: alignmentPermissionMode }
@@ -4697,6 +4731,7 @@ export default function App() {
     updateTabUnread,
   ]);
 
+  useEffect(() => startAgentNetworkStore(), []);
   const activeWorkspacePath = resolveGlobalSidebarWorkspace(activeTab);
   const launcherBinding = useMemo<BuiltinTabBindings['launcher']>(
     () => ({
@@ -4707,6 +4742,7 @@ export default function App() {
       onStartRecording: handleStartRecording,
       onOpenRecord: (recordId) =>
         handleOpenRecord(recordId, undefined, 'launcher_input'),
+      onOpenNewAgentPanel: () => setNewAgentPanelOpen(true),
     }),
     [
       handleLaunchProject,
@@ -4791,8 +4827,9 @@ export default function App() {
     () => ({
       ...settingsUpdaterBinding,
       onNavigationConsumed: handleCapabilitySectionChange,
+      onOpenToolMarket: handleOpenToolMarket,
     }),
-    [handleCapabilitySectionChange, settingsUpdaterBinding],
+    [handleCapabilitySectionChange, handleOpenToolMarket, settingsUpdaterBinding],
   );
   const taskCenterBinding = useMemo<BuiltinTabBindings['taskcenter']>(
     () => ({
@@ -4830,16 +4867,16 @@ export default function App() {
     ],
   );
   const tabBindings = useMemo<BuiltinTabBindings>(
-    () =>
-      composeBuiltinTabBindings({
-        launcher: launcherBinding,
-        chat: chatBinding,
-        settings: settingsBinding,
-        capabilities: capabilitiesBinding,
-        taskcenter: taskCenterBinding,
-        space: spaceBinding,
-        record: recordBinding,
-      }),
+    () => composeBuiltinTabBindings({
+      launcher: launcherBinding,
+      chat: chatBinding,
+      settings: settingsBinding,
+      capabilities: capabilitiesBinding,
+      taskcenter: taskCenterBinding,
+      space: spaceBinding,
+      agentnetwork: null,
+      record: recordBinding,
+    }),
     [
       capabilitiesBinding,
       chatBinding,
@@ -4856,6 +4893,8 @@ export default function App() {
       <LinkContextMenuProvider>
         <div className="flex h-screen bg-[var(--paper)]">
           <GlobalSidebar
+            newAgentPanelOpen={newAgentPanelOpen}
+            onNewAgentPanelOpenChange={setNewAgentPanelOpen}
             tabs={tabs}
             activeTab={activeTab}
             activeWorkspacePath={activeWorkspacePath}
@@ -4865,6 +4904,7 @@ export default function App() {
             onOpenTaskCenter={handleOpenTaskCenter}
             onCreateTask={handleSidebarCreateTask}
             onOpenSpace={handleOpenSpace}
+            onOpenAgentNetwork={() => tabWorkspaceController.open('agentnetwork', { title: t('tabs.agentNetwork') })}
             onOpenAppRoute={handleOpenAppRoute}
             onOpenCapabilities={handleOpenCapabilities}
             onOpenSettings={handleOpenGeneralSettings}

@@ -1,7 +1,8 @@
 import { isHistoryVisibleSession, getSessionData } from './SessionStore';
 import { getSessionEngine } from './session-engine';
 import { managementApi } from './utils/management-api-client';
-import { resolveVisibleUserTurnText } from './utils/session-message-preview';
+import { parseLeadingSystemReminder, parseSessionSendRequestDisplay } from '../shared/systemReminder';
+import { projectSessionActivity } from './session-engine/observation';
 import type { SessionMessage } from './types/session';
 
 export class SessionTextProjectionError extends Error {
@@ -66,9 +67,11 @@ export function strictAssistantText(content: string): string {
 function strictUserText(content: string): string {
   // A user can intentionally send JSON that resembles an assistant block
   // array. Without a typed persisted discriminator, parsing that text would
-  // corrupt the user's own words and pagination anchors. Only remove the
-  // product-owned leading reminder envelope here.
-  return resolveVisibleUserTurnText(content) ?? '';
+  // corrupt the user's own words and pagination anchors. Match the chat bubble:
+  // visible tail first, then the displayable send.request payload; other pure
+  // reminders remain hidden, including result/watch control events.
+  const reminder = parseLeadingSystemReminder(content);
+  return reminder.visibleText || parseSessionSendRequestDisplay(reminder)?.payload || '';
 }
 
 export function projectSessionTextMessage(
@@ -194,7 +197,7 @@ export async function readLocalSessionTextPage(input: {
       messages,
       hasMoreBefore,
       isLive: overlay.isActive,
-      liveSessionState: overlay.liveSessionState ?? null,
+      liveSessionState: overlay.isActive ? projectSessionActivity(engine.getLiveSessionState()) : null,
       snapshotRevision: overlay.snapshotRevision ?? 0,
     },
   };

@@ -361,6 +361,7 @@ impl<'a> TaskApplication<'a> {
             kind: crate::inbox::InboxMessageKind::Event,
             in_reply_to: comment.reply_to_comment_id.clone(),
             session_event: Some(event),
+            network_return: None,
         };
         let outcome = crate::inbox::deliver::deliver_existing_session_with_resume(
             app_handle,

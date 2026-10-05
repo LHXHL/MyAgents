@@ -15,6 +15,8 @@ const SPACE_BUILD_ENV_KEYS: &[&str] = &[
     "MYAGENTS_SPACE_DEV_BASE_URL",
     "MYAGENTS_SPACE_PUBLIC_CLIENT_ID",
     "MYAGENTS_SPACE_CLIENT_ID",
+    "MYAGENTS_AGENT_NETWORK_SERVICE_ID",
+    "MYAGENTS_AGENT_NETWORK_DEV_SERVICE_ID",
 ];
 const MANAGED_CODEX_RUNTIME_LOCK_PATH: &str = "../src/shared/managed-codex-runtime.json";
 const MANAGED_BROWSER_RUNTIME_LOCK_PATH: &str = "../src/shared/managed-browser-runtime.json";
@@ -22,7 +24,12 @@ const DSH_RELEASE_LOCK_PATH: &str = "../src/shared/integrated-runtimes/dsh-lock.
 const DSH_BUILD_SELECTION_PATH: &str = "resources/integrated-runtimes/dsh-build-selection-v1.json";
 
 fn main() {
-    let package_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../package.json");
+    // Build-script executables can outlive their compilation checkout. Cargo's
+    // invocation environment owns the inputs for the build running now.
+    let manifest_dir = env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .expect("CARGO_MANIFEST_DIR is required");
+    let package_path = manifest_dir.join("../package.json");
     println!("cargo:rerun-if-changed={}", package_path.display());
     let package: serde_json::Value = serde_json::from_str(&fs::read_to_string(package_path).expect("package.json")).expect("package.json JSON");
     let sdk = package["dependencies"]["@anthropic-ai/claude-agent-sdk"].as_str().expect("pinned Claude SDK version");
@@ -37,7 +44,9 @@ fn main() {
 }
 
 fn expose_dsh_build_lock() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .expect("CARGO_MANIFEST_DIR is required");
     let release_path = root.join(DSH_RELEASE_LOCK_PATH);
     let selection_path = root.join(DSH_BUILD_SELECTION_PATH);
     println!("cargo:rerun-if-changed={}", release_path.display());
@@ -457,11 +466,19 @@ fn expose_space_build_env() {
         })
         .collect::<HashMap<_, _>>();
 
+    // Public deployment identities, never credentials. Keep official builds
+    // usable without requiring a new local .env entry on every developer/CI.
+    resolved_env.entry("MYAGENTS_AGENT_NETWORK_SERVICE_ID".to_string())
+        .or_insert_with(|| "98b5376a-4750-49e6-ae82-c5de39b7afef".to_string());
+    resolved_env.entry("MYAGENTS_AGENT_NETWORK_DEV_SERVICE_ID".to_string())
+        .or_insert_with(|| "c25f1f29-8ac8-4da8-9f7b-c16c9d6c5ac5".to_string());
+
     if env::var("PROFILE").as_deref() == Ok("release") {
         // An inherited process env is visible to `option_env!` even when it is
         // absent from our resolved map. Emit an explicit empty value so a
         // release rustc invocation cannot accidentally bake in the Dev origin.
         resolved_env.insert("MYAGENTS_SPACE_DEV_BASE_URL".to_string(), String::new());
+        resolved_env.insert("MYAGENTS_AGENT_NETWORK_DEV_SERVICE_ID".to_string(), String::new());
     } else if resolved_env
         .get("MYAGENTS_SPACE_DEV_BASE_URL")
         .map(|value| value.trim().is_empty())

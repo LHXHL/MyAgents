@@ -41,10 +41,11 @@ let currentTurnCompactResult: 'success' | 'failed' | null = null;
 let currentTurnSawCompactBoundary = false;
 let currentTurnAssistantMessagePresent = false;
 let turnHadSubstantiveActivity = false;
-let currentTurnInboxMeta: import('../inbox/types').InboxTurnMeta | undefined = undefined;
+const currentTurnInboxMetas: import('../inbox/types').InboxTurnMeta[] = [];
 const currentTurnTextBlocks: string[] = [];
 export type PendingOutputOwner = {
   queueId: string;
+  sourceItem?: MessageQueueItem;
   requestId: string | null;
   assistantChannelDelivery: AssistantChannelDelivery;
   channelSessionId: string;
@@ -180,12 +181,6 @@ export const turnState = {
   set turnHadSubstantiveActivity(value: boolean) {
     turnHadSubstantiveActivity = value;
   },
-  get currentTurnInboxMeta(): import('../inbox/types').InboxTurnMeta | undefined {
-    return currentTurnInboxMeta;
-  },
-  set currentTurnInboxMeta(meta: import('../inbox/types').InboxTurnMeta | undefined) {
-    currentTurnInboxMeta = meta;
-  },
   currentTurnTextBlocks,
   pendingOutputOwners,
   get currentTurnImTerminalEmitted(): boolean {
@@ -204,7 +199,7 @@ export const turnState = {
 
 export function beginTurn(context: BuiltinTurnStartContext): void {
   currentTurnStartTime = context.startedAt;
-  currentTurnInboxMeta = context.inboxMeta;
+  setCurrentTurnInboxMeta(context.inboxMeta);
   currentTurnProviderAnalytics = context.providerAnalytics ?? null;
 }
 
@@ -393,22 +388,33 @@ export function setSubstantiveActivity(value: boolean): void {
   turnHadSubstantiveActivity = value;
 }
 
-export function getCurrentTurnInboxMeta(): import('../inbox/types').InboxTurnMeta | undefined {
-  return currentTurnInboxMeta;
-}
-
 export function setCurrentTurnInboxMeta(meta: import('../inbox/types').InboxTurnMeta | undefined): void {
-  currentTurnInboxMeta = meta;
+  currentTurnInboxMetas.length = 0;
+  appendCurrentTurnInboxMeta(meta);
 }
 
-export function clearCurrentTurnInboxMeta(): void {
-  currentTurnInboxMeta = undefined;
+export function appendCurrentTurnInboxMeta(meta: import('../inbox/types').InboxTurnMeta | undefined): void {
+  if (meta && !currentTurnInboxMetas.some(item => item.originalMessageId === meta.originalMessageId
+    && item.fromSessionId === meta.fromSessionId)) currentTurnInboxMetas.push(meta);
 }
 
-export function takeCurrentTurnInboxMeta(): import('../inbox/types').InboxTurnMeta | undefined {
-  const meta = currentTurnInboxMeta;
-  currentTurnInboxMeta = undefined;
-  return meta;
+export function takeCurrentTurnInboxMetas(): import('../inbox/types').InboxTurnMeta[] {
+  return currentTurnInboxMetas.splice(0);
+}
+
+/** Only a native consumption receipt can associate a queued Inbox with a turn. */
+export function consumePendingInboxInput(queueId: string, joinsCurrentTurn: boolean): void {
+  const index = pendingOutputOwners.findIndex(owner => owner.queueId === queueId);
+  const item = pendingOutputOwners[index]?.sourceItem;
+  if (item?.inputSource !== 'inbox') return;
+  if (joinsCurrentTurn && index > 0) {
+    // The SDK folded this input into the current turn, so it has no separate result owner.
+    pendingOutputOwners.splice(index, 1);
+    appendCurrentTurnInboxMeta(item.inboxMeta);
+  } else {
+    setCurrentTurnSourceItem(item);
+    setCurrentTurnInboxMeta(item.inboxMeta);
+  }
 }
 
 export function appendCurrentTurnTextBlock(chunk: string): void {
@@ -425,6 +431,7 @@ export function clearCurrentTurnTextBlocks(): void {
 
 export function pushPendingOutputOwner(input: {
   queueId: string;
+  sourceItem?: MessageQueueItem;
   requestId: string | null | undefined;
   assistantChannelDelivery: AssistantChannelDelivery;
   channelSessionId: string;
@@ -450,6 +457,10 @@ export function popPendingOutputOwner(): PendingOutputOwner | null {
 
 export function peekPendingOutputOwner(): PendingOutputOwner | null {
   return pendingOutputOwners[0] ?? null;
+}
+
+export function getPendingOutputOwnerByQueueId(queueId: string): PendingOutputOwner | undefined {
+  return pendingOutputOwners.find(owner => owner.queueId === queueId);
 }
 
 export function hasPendingOutputOwnerByQueueId(queueId: string | null | undefined): boolean {
@@ -605,14 +616,14 @@ export function getLastSessionCompletionTerminal(): SessionCompletionTerminal | 
 }
 
 export function terminalCleanup(): {
-  inboxMeta?: import('../inbox/types').InboxTurnMeta;
+  inboxMetas: import('../inbox/types').InboxTurnMeta[];
   replyText: string;
 } {
-  const inboxMeta = takeCurrentTurnInboxMeta();
+  const inboxMetas = takeCurrentTurnInboxMetas();
   const replyText = getCurrentTurnText();
   clearCurrentTurnTextBlocks();
   currentTurnImTerminalEmitted = false;
-  return { inboxMeta, replyText };
+  return { inboxMetas, replyText };
 }
 
 export function snapshotTurn() {
@@ -632,7 +643,7 @@ export function snapshotTurn() {
     currentTurnSawCompactBoundary,
     currentTurnAssistantMessagePresent,
     turnHadSubstantiveActivity,
-    currentTurnInboxMeta,
+    currentTurnInboxMetas: [...currentTurnInboxMetas],
     currentTurnTextBlocks: [...currentTurnTextBlocks],
     pendingOutputOwners: pendingOutputOwners.map(owner => ({
       ...owner,
@@ -660,7 +671,7 @@ export function resetTurnForTest(): void {
   currentTurnSawCompactBoundary = false;
   currentTurnAssistantMessagePresent = false;
   turnHadSubstantiveActivity = false;
-  currentTurnInboxMeta = undefined;
+  currentTurnInboxMetas.length = 0;
   currentTurnTextBlocks.length = 0;
   pendingOutputOwners.length = 0;
   currentTurnImTerminalEmitted = false;

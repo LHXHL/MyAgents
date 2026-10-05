@@ -145,6 +145,9 @@ export interface ExternalMessageOperation {
   kind: 'message';
   /** Monotonic order assigned when this user intent first enters the queue owner. */
   admissionOrder: number;
+  /** Consumption phase chosen at admission; Inbox can join the active turn. */
+  deliveryMode: 'realtime' | 'turn';
+  inputSource?: 'desktop' | 'inbox';
   queueId: string;
   text: string;
   images?: ImagePayload[];
@@ -198,6 +201,7 @@ export interface ExternalAssistantSnapshotState {
 }
 
 export interface ExternalSendContext {
+  desktopQuery?: import("../../../shared/agentMentions").DesktopQueryDraft;
   clientRequestId?: string;
   asyncQuestionReply?: AsyncQuestionReply;
   sessionId: string;

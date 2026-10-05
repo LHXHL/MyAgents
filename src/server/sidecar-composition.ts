@@ -73,6 +73,7 @@ const SESSION_EXACT_PATHS = new Set([
   '/api/generate-session-title',
   '/api/goal/objective',
   '/api/image',
+  // Rust delegates live transcript reads to the selected Session owner.
   '/api/internal/session/text-page',
   '/api/audio',
   '/api/interaction-scenario/set',
@@ -85,6 +86,8 @@ const SESSION_EXACT_PATHS = new Set([
   '/api/reasoning-effort/set',
   '/api/session-latest-result',
   '/api/session-state',
+  '/api/session-watch/manage',
+  '/api/session-watch/network-remove',
   '/api/session-watch/register',
   '/api/task/poll-background',
   '/cron/execute-sync',
@@ -203,6 +206,7 @@ const COMMON_ADMIN_ROUTES = new Set([
   'session/start',
   'session/send',
   'session/get',
+  'session/state',
 ]);
 
 function startsWithAny(pathname: string, prefixes: readonly string[]): boolean {

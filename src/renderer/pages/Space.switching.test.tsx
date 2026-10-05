@@ -3,8 +3,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SpaceSession } from "@/api/spaceCloud";
 import Space from "@/pages/Space";
+import { __resetSpaceStoreForTest, __setSpaceStoreStateForTest, getSnapshot } from './space/spaceStore';
 
 const harness = vi.hoisted(() => ({
+  realStore: false,
+  api: {
+    spaceGetCapability: vi.fn(),
+    spaceGetSession: vi.fn(),
+    spaceGetOfficial: vi.fn(),
+    spaceSetActiveSpace: vi.fn(),
+    spaceListGoals: vi.fn().mockResolvedValue({ items: [] }),
+    spaceListIssues: vi.fn().mockResolvedValue({ items: [], hasMore: false, nextCursor: null }),
+    spaceListTools: vi.fn().mockResolvedValue({ items: [], hasMore: false, nextCursor: null }),
+    spaceListEvents: vi.fn().mockResolvedValue({ items: [], nextCursor: null, hasMore: false }),
+  },
   data: null as unknown as Record<string, unknown>,
   actions: {
     switchSpace: vi.fn().mockResolvedValue(undefined),
@@ -39,16 +51,22 @@ vi.mock("@/hooks/useWorkspaceFileService", () => ({
 
 vi.mock("@/identity/deviceIdentity", () => ({
   getDeviceId: () => "device-test",
+  getPlatform: () => "macos",
+  getAppVersionSync: () => "0.4.25",
   preloadDeviceId: () => Promise.resolve(),
 }));
 
-vi.mock("@/pages/space/useSpaceData", () => ({
-  useSpaceData: () => harness.data,
-}));
+vi.mock("@/pages/space/useSpaceData", async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./space/useSpaceData')>();
+  return { useSpaceData: (options: Parameters<typeof actual.useSpaceData>[0]) => harness.realStore ? actual.useSpaceData(options) : harness.data };
+});
 
-vi.mock("@/pages/space/spaceStore", () => ({
+vi.mock("@/pages/space/spaceStore", async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./space/spaceStore')>();
+  return {
+  ...actual,
   SPACE_VISIBLE_REFRESH_TTL_MS: 30_000,
-  getIssueListState: () => ({
+  getIssueListState: (...args: Parameters<typeof actual.getIssueListState>) => harness.realStore ? actual.getIssueListState(...args) : ({
     items: [],
     hasMore: false,
     nextCursor: null,
@@ -56,18 +74,19 @@ vi.mock("@/pages/space/spaceStore", () => ({
     isLoading: false,
     error: null,
   }),
-}));
+  };
+});
 
 vi.mock("@/pages/space/SpaceChrome", () => ({
-  SpaceLogin: () => <div>login</div>,
+  SpaceLogin: ({ onForgetAccount }: { onForgetAccount?: () => void }) => (
+    <div>login{onForgetAccount && <button type="button" onClick={onForgetAccount}>forget account</button>}</div>
+  ),
   SpaceSidebar: ({
     onSpaceTabChange,
     onSpaceSwitch,
-    onLogout,
   }: {
     onSpaceTabChange: (mode: string) => void;
     onSpaceSwitch: (spaceId: string, mode: string) => void;
-    onLogout: () => void;
   }) => (
     <aside>
       <button type="button" onClick={() => onSpaceTabChange("skills")}>
@@ -87,9 +106,6 @@ vi.mock("@/pages/space/SpaceChrome", () => ({
       </button>
       <button type="button" onClick={() => onSpaceSwitch("team", "issues")}>
         show team issues
-      </button>
-      <button type="button" onClick={onLogout}>
-        logout
       </button>
     </aside>
   ),
@@ -170,6 +186,15 @@ vi.mock("@/pages/space/skills/SkillsWorkspace", () => ({
   SkillsWorkspace: () => <main>skills</main>,
 }));
 
+vi.mock("@/pages/space/tools/ToolsWorkspace", () => ({
+  ToolsWorkspace: ({ spaceId, selectedToolId, onSelectTool }: {
+    spaceId: string; selectedToolId: string | null; onSelectTool: (id: string) => void;
+  }) => <main aria-label="tool market" data-space-id={spaceId} data-selected-tool={selectedToolId ?? ''}>
+    tools
+    <button type="button" onClick={() => onSelectTool('tool-detail')}>open tool</button>
+  </main>,
+}));
+
 vi.mock("@/pages/space/settings/SpaceSettingsWorkspace", () => ({
   SpaceSettingsWorkspace: ({ onExit }: { onExit: () => void }) => (
     <main>
@@ -185,6 +210,7 @@ vi.mock("@/api/spaceCloud", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/spaceCloud")>();
   return {
     ...actual,
+    ...harness.api,
     spaceWakeConnector: vi.fn().mockResolvedValue(undefined),
   };
 });
@@ -248,6 +274,9 @@ function snapshot(
 
 describe("Space switching", () => {
   beforeEach(() => {
+    harness.realStore = false;
+    __resetSpaceStoreForTest();
+    Object.values(harness.api).forEach((mock) => mock.mockClear());
     vi.useFakeTimers();
     harness.actions.switchSpace.mockReset().mockResolvedValue(undefined);
     harness.actions.logout.mockReset().mockResolvedValue(undefined);
@@ -256,13 +285,233 @@ describe("Space switching", () => {
     harness.actions.refreshSkills.mockClear();
     harness.actions.refreshLocalAgents.mockClear();
     harness.actions.refreshRegisteredAgents.mockClear();
-    harness.actions.syncEvents.mockClear();
+    harness.actions.syncEvents.mockReset().mockResolvedValue([]);
     Object.values(harness.toast).forEach((mock) => mock.mockClear());
     harness.data = snapshot("ma");
   });
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("backs off sustained event errors, limits notices and restores cadence on success", async () => {
+    harness.actions.syncEvents.mockRejectedValue(new Error("network unavailable"));
+    render(<Space isActive />);
+    await act(async () => undefined);
+    expect(harness.toast.error).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(harness.actions.syncEvents).toHaveBeenCalledTimes(2);
+    expect(harness.toast.error).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(29_999); });
+    expect(harness.actions.syncEvents).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(harness.toast.error).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(300_000); });
+    expect(harness.toast.error).toHaveBeenCalledTimes(2);
+    expect(harness.actions.syncEvents).toHaveBeenCalledTimes(6);
+    harness.actions.syncEvents.mockResolvedValue([]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+    const recovered = harness.actions.syncEvents.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(harness.actions.syncEvents).toHaveBeenCalledTimes(recovered + 1);
+  });
+
+  it("does not overlap slow polls or schedule an old hidden-page completion", async () => {
+    let resolve!: (events: []) => void;
+    const pending = new Promise<[]>((done) => { resolve = done; });
+    harness.actions.syncEvents.mockReturnValueOnce(pending);
+    const view = render(<Space isActive />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+    expect(harness.actions.syncEvents).toHaveBeenCalledTimes(1);
+    view.rerender(<Space isActive={false} />);
+    await act(async () => { resolve([]); await pending; });
+    await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+    expect(harness.actions.syncEvents).toHaveBeenCalledTimes(1);
+    view.rerender(<Space isActive />);
+    await act(async () => undefined);
+    expect(harness.actions.syncEvents).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(harness.actions.syncEvents).toHaveBeenCalledTimes(3);
+    expect(harness.toast.error).not.toHaveBeenCalled();
+  });
+
+  function useRealTeamStore(officialSlug = 'official') {
+    harness.realStore = true;
+    const team = { ...sessionFor('id-team', 'team'), sessionBindingId: 'binding-route' };
+    const official = sessionFor('id-official', officialSlug);
+    official.space.spaceKind = 'official';
+    const result = { space: official.space, membership: official.membership, goals: [] };
+    __setSpaceStoreStateForTest({ boot: 'ready', session: team, spaceId: 'team', serviceBaseUrl: team.baseUrl });
+    harness.api.spaceGetCapability.mockReset().mockResolvedValue({ available: true, baseUrl: team.baseUrl });
+    harness.api.spaceGetSession.mockReset().mockResolvedValue({ state: 'authenticated', session: { ...team, lastActiveSpaceId: 'official' } });
+    harness.api.spaceGetOfficial.mockReset().mockResolvedValue(result);
+    harness.api.spaceSetActiveSpace.mockReset().mockResolvedValue(undefined);
+    return result;
+  }
+
+  it("counts real silent bootstrap failures triggered by events instead of treating them as success", async () => {
+    useRealTeamStore();
+    __setSpaceStoreStateForTest({
+      bootLastFetchedAt: Date.now(),
+      events: { items: [], cursor: null, initialized: true, lastFetchedAt: 0, isLoading: false, error: null },
+    });
+    let index = 0;
+    harness.api.spaceListEvents.mockReset().mockImplementation(async () => ({
+      items: [{ id: `goal-event-${++index}`, type: 'goal.updated', resourceType: 'goal', resourceId: 'goal-test', createdAt: new Date().toISOString() }],
+      nextCursor: `cursor-${index}`, hasMore: false,
+    }));
+    harness.api.spaceGetOfficial.mockRejectedValue(new Error('Offline'));
+    render(<Space isActive />);
+    await act(async () => undefined);
+    expect(harness.toast.error).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(harness.toast.error).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(harness.api.spaceGetOfficial).toHaveBeenCalledTimes(3);
+    expect(getSnapshot().boot).toBe('ready');
+    expect(getSnapshot().bootError).toBe('Offline');
+    expect(harness.toast.error).toHaveBeenCalledTimes(1);
+    harness.api.spaceListEvents.mockReset().mockResolvedValue({ items: [], nextCursor: null, hasMore: false });
+  });
+
+  it('opens official Tools when bootstrap returns the real community slug', async () => {
+    useRealTeamStore('myagents');
+    const consumed = vi.fn();
+    render(<Space isActive pendingRoute={{ generation: 40, route: { version: 1, name: 'space.tools', params: { spaceId: 'official' } } }} onRouteConsumed={consumed} />);
+    await act(async () => undefined);
+    expect(screen.getByRole('main', { name: 'tool market' })).toHaveAttribute('data-space-id', 'myagents');
+    expect(consumed).toHaveBeenCalledWith(40);
+    expect(harness.toast.error).not.toHaveBeenCalled();
+  });
+
+  it.each(['space.tools', 'space.issue'] as const)('accepts the official alias for %s when the community is already current', async (name) => {
+    const community = useRealTeamStore('myagents');
+    const team = getSnapshot().session!;
+    __setSpaceStoreStateForTest({ session: { ...team, ...community, lastActiveSpaceId: 'official' }, spaceId: 'myagents' });
+    const consumed = vi.fn();
+    const route = name === 'space.tools'
+      ? { version: 1 as const, name, params: { spaceId: 'official' } }
+      : { version: 1 as const, name, params: { spaceId: 'official', issueId: 'community-issue' } };
+    render(<Space isActive pendingRoute={{ generation: 41, route }} onRouteConsumed={consumed} />);
+    await act(async () => undefined);
+    if (name === 'space.tools') expect(screen.getByRole('main', { name: 'tool market' })).toHaveAttribute('data-space-id', 'myagents');
+    else expect(screen.getByRole('dialog', { name: 'issue detail' })).toHaveAttribute('data-issue-id', 'community-issue');
+    expect(harness.api.spaceGetOfficial).not.toHaveBeenCalled();
+    expect(consumed).toHaveBeenCalledWith(41);
+    expect(harness.toast.error).not.toHaveBeenCalled();
+  });
+
+  it('retains the official Tools intent when real store bootstrap fails and recovers on retry', async () => {
+    useRealTeamStore();
+    harness.api.spaceGetOfficial.mockRejectedValueOnce({ code: 'SPACE_TRANSPORT_FAILED', message: 'Offline', retryable: true });
+    const consumed = vi.fn();
+    render(<Space isActive pendingRoute={{ generation: 30, route: { version: 1, name: 'space.tools', params: { spaceId: 'official' } } }} onRouteConsumed={consumed} />);
+    await act(async () => undefined);
+    expect(getSnapshot().spaceId).toBe('team');
+    expect(consumed).not.toHaveBeenCalled();
+    expect(screen.queryByRole('main', { name: 'tool market' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    await act(async () => undefined);
+    expect(screen.getByRole('main', { name: 'tool market' })).toHaveAttribute('data-space-id', 'official');
+    expect(consumed).toHaveBeenCalledWith(30);
+  });
+
+  it('awaits the real listed official switch without restarting on its local projection', async () => {
+    const official = useRealTeamStore();
+    const team = getSnapshot().session!;
+    __setSpaceStoreStateForTest({ session: { ...team, spaces: [{ ...official.space, membership: official.membership }] } });
+    const persistence = deferred<void>();
+    harness.api.spaceSetActiveSpace.mockReturnValueOnce(persistence.promise);
+    const consumed = vi.fn();
+    render(<Space isActive pendingRoute={{ generation: 33, route: { version: 1, name: 'space.tools', params: { spaceId: 'official' } } }} onRouteConsumed={consumed} />);
+    await act(async () => undefined);
+    expect(consumed).not.toHaveBeenCalled();
+    expect(harness.api.spaceSetActiveSpace).toHaveBeenCalledOnce();
+    await act(async () => persistence.resolve());
+    expect(screen.getByRole('main', { name: 'tool market' })).toHaveAttribute('data-space-id', 'official');
+    expect(consumed).toHaveBeenCalledWith(33);
+    expect(harness.api.spaceGetOfficial).not.toHaveBeenCalled();
+  });
+
+  it.each(['persistence', 'bootstrap'])('supersedes a real old Tools switch during %s with a route to the current team', async (stage) => {
+    const official = useRealTeamStore();
+    const persistence = deferred<void>();
+    const bootstrap = deferred<typeof official>();
+    if (stage === 'persistence') harness.api.spaceSetActiveSpace.mockReturnValueOnce(persistence.promise);
+    else harness.api.spaceGetOfficial.mockReturnValueOnce(bootstrap.promise);
+    const consumed = vi.fn();
+    const view = render(<Space isActive pendingRoute={{ generation: 31, route: { version: 1, name: 'space.tools', params: { spaceId: 'official' } } }} onRouteConsumed={consumed} />);
+    await act(async () => undefined);
+    view.rerender(<Space isActive pendingRoute={{ generation: 32, route: { version: 1, name: 'space.issue', params: { spaceId: 'team', issueId: 'new-team-issue' } } }} onRouteConsumed={consumed} />);
+    await act(async () => undefined);
+    await act(async () => { persistence.resolve(); bootstrap.resolve(official); });
+    expect(getSnapshot().spaceId).toBe('team');
+    expect(screen.getByRole('dialog', { name: 'issue detail' })).toHaveAttribute('data-issue-id', 'new-team-issue');
+    expect(consumed).toHaveBeenCalledWith(32);
+    expect(consumed).not.toHaveBeenCalledWith(31);
+    expect(harness.api.spaceSetActiveSpace.mock.calls.map(call => call[0])).toEqual(['official', 'team']);
+  });
+
+  it('switches from a team to official Tools and resets detail when reopening', async () => {
+    harness.data = snapshot('team');
+    harness.actions.switchSpace.mockImplementationOnce(async () => { harness.data = snapshot('official'); });
+    const consumed = vi.fn();
+    const route = { generation: 20, route: { version: 1 as const, name: 'space.tools' as const, params: { spaceId: 'official' } } };
+    const view = render(<Space isActive pendingRoute={route} onRouteConsumed={consumed} />);
+    await act(async () => undefined);
+    expect(harness.actions.switchSpace).toHaveBeenCalledWith('official', undefined);
+    expect(screen.getByRole('main', { name: 'tool market' })).toHaveAttribute('data-space-id', 'official');
+    expect(screen.queryByRole('dialog', { name: 'issue detail' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'open tool' }));
+    expect(screen.getByRole('main', { name: 'tool market' })).toHaveAttribute('data-selected-tool', 'tool-detail');
+    view.rerender(<Space isActive pendingRoute={{ ...route, generation: 21 }} onRouteConsumed={consumed} />);
+    await act(async () => undefined);
+    expect(screen.getByRole('main', { name: 'tool market' })).toHaveAttribute('data-selected-tool', '');
+    expect(consumed).toHaveBeenLastCalledWith(21);
+  });
+
+  it.each(['signedOut', 'reauthRequired'])('retains Tools navigation while %s and continues after authentication', async (boot) => {
+    harness.data = { ...snapshot('official'), boot, session: null };
+    const consumed = vi.fn();
+    const props = { isActive: true, pendingRoute: { generation: 22, route: { version: 1 as const, name: 'space.tools' as const, params: { spaceId: 'official' } } }, onRouteConsumed: consumed };
+    const view = render(<Space {...props} />);
+    expect(screen.getByText('login')).toBeInTheDocument();
+    expect(consumed).not.toHaveBeenCalled();
+    harness.data = snapshot('official');
+    view.rerender(<Space {...props} />);
+    await act(async () => undefined);
+    expect(screen.getByRole('main', { name: 'tool market' })).toHaveAttribute('data-space-id', 'official');
+    expect(consumed).toHaveBeenCalledWith(22);
+  });
+
+  it('retries a transient official Tools switch failure', async () => {
+    harness.actions.switchSpace.mockRejectedValueOnce({ code: 'SPACE_TRANSPORT_FAILED', message: 'Offline', retryable: true });
+    harness.actions.switchSpace.mockImplementationOnce(async () => { harness.data = snapshot('official'); });
+    const consumed = vi.fn();
+    const props = { isActive: true, pendingRoute: { generation: 23, route: { version: 1 as const, name: 'space.tools' as const, params: { spaceId: 'official' } } }, onRouteConsumed: consumed };
+    const view = render(<Space {...props} />);
+    await act(async () => undefined);
+    expect(consumed).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    await act(async () => undefined);
+    // The real store publishes the new snapshot to useSpaceData subscribers.
+    view.rerender(<Space {...props} />);
+    expect(screen.getByRole('main', { name: 'tool market' })).toHaveAttribute('data-space-id', 'official');
+    expect(consumed).toHaveBeenCalledWith(23);
+  });
+
+  it('does not let a delayed Tools intent override a newer Issue intent', async () => {
+    const switching = deferred<void>();
+    harness.actions.switchSpace.mockReturnValueOnce(switching.promise);
+    const consumed = vi.fn();
+    const view = render(<Space isActive pendingRoute={{ generation: 24, route: { version: 1, name: 'space.tools', params: { spaceId: 'official' } } }} onRouteConsumed={consumed} />);
+    view.rerender(<Space isActive pendingRoute={{ generation: 25, route: { version: 1, name: 'space.issue', params: { spaceId: 'id-ma', issueId: 'issue-new' } } }} onRouteConsumed={consumed} />);
+    await act(async () => undefined);
+    await act(async () => switching.resolve());
+    expect(screen.getByRole('dialog', { name: 'issue detail' })).toHaveAttribute('data-issue-id', 'issue-new');
+    expect(consumed).toHaveBeenCalledWith(25);
+    expect(consumed).not.toHaveBeenCalledWith(24);
+    expect(screen.queryByRole('main', { name: 'tool market' })).not.toBeInTheDocument();
   });
 
   it("opens the exact issue from an application route and consumes it once", async () => {
@@ -283,7 +532,68 @@ describe("Space switching", () => {
       .toHaveAttribute("data-issue-id", "issue-11");
     expect(onRouteConsumed).toHaveBeenCalledOnce();
     expect(onRouteConsumed).toHaveBeenCalledWith(11);
-    expect(harness.actions.switchSpace).not.toHaveBeenCalled();
+    expect(harness.actions.switchSpace).toHaveBeenCalledWith('id-ma', undefined);
+  });
+
+  it('opens the routed issue list and clears an old issue detail', async () => {
+    const consumed = vi.fn();
+    const view = render(<Space isActive />);
+    fireEvent.click(screen.getByRole('button', { name: 'open issue detail' }));
+    expect(screen.getByRole('dialog', { name: 'issue detail' })).toBeInTheDocument();
+    view.rerender(<Space isActive pendingRoute={{ generation: 50, route: { version: 1, name: 'space.issues', params: { spaceId: 'official' } } }} onRouteConsumed={consumed} />);
+    await act(async () => undefined);
+    expect(harness.actions.switchSpace).toHaveBeenCalledWith('official', undefined);
+    expect(screen.queryByRole('dialog', { name: 'issue detail' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'open issue detail' })).toBeInTheDocument();
+    expect(consumed).toHaveBeenCalledWith(50);
+  });
+
+  it('consumes a home link without switching Space or closing the current detail', async () => {
+    const consumed = vi.fn();
+    const currentSpaceId = harness.data.spaceId;
+    const view = render(<Space isActive />);
+    fireEvent.click(screen.getByRole('button', { name: 'open issue detail' }));
+    view.rerender(<Space isActive pendingRoute={{ generation: 51, route: { version: 1, name: 'space.home', params: {} } }} onRouteConsumed={consumed} />);
+    await act(async () => undefined);
+    expect(harness.actions.switchSpace).toHaveBeenCalledWith(currentSpaceId, undefined);
+    expect(screen.getByRole('dialog', { name: 'issue detail' })).toHaveAttribute('data-issue-id', 'issue-1');
+    expect(consumed).toHaveBeenCalledWith(51);
+  });
+
+  it.each(['signedOut', 'reauthRequired'])('keeps the issue list target through %s and authentication', async boot => {
+    harness.data = { ...snapshot('team'), boot, session: null };
+    const consumed = vi.fn();
+    const props = { isActive: true, pendingRoute: { generation: 52, route: { version: 1 as const, name: 'space.issues' as const, params: { spaceId: 'official' } } }, onRouteConsumed: consumed };
+    const view = render(<Space {...props} />);
+    expect(screen.getByText('login')).toBeInTheDocument();
+    expect(consumed).not.toHaveBeenCalled();
+    harness.data = snapshot('official');
+    view.rerender(<Space {...props} />);
+    await act(async () => undefined);
+    expect(harness.actions.switchSpace).toHaveBeenCalledWith('official', undefined);
+    expect(consumed).toHaveBeenCalledWith(52);
+    expect(screen.queryByRole('dialog', { name: 'issue detail' })).not.toBeInTheDocument();
+  });
+
+  it.each(['persistence', 'bootstrap'])('home supersedes an old store switch during %s and preserves the current page', async stage => {
+    const official = useRealTeamStore();
+    const persistence = deferred<void>();
+    const bootstrap = deferred<typeof official>();
+    if (stage === 'persistence') harness.api.spaceSetActiveSpace.mockReturnValueOnce(persistence.promise);
+    else harness.api.spaceGetOfficial.mockReturnValueOnce(bootstrap.promise);
+    const consumed = vi.fn();
+    const view = render(<Space isActive />);
+    fireEvent.click(screen.getByRole('button', { name: 'show skills' }));
+    view.rerender(<Space isActive pendingRoute={{ generation: 53, route: { version: 1, name: 'space.issues', params: { spaceId: 'official' } } }} onRouteConsumed={consumed} />);
+    await act(async () => undefined);
+    view.rerender(<Space isActive pendingRoute={{ generation: 54, route: { version: 1, name: 'space.home', params: {} } }} onRouteConsumed={consumed} />);
+    await act(async () => undefined);
+    await act(async () => { persistence.resolve(); bootstrap.resolve(official); });
+    expect(getSnapshot().spaceId).toBe('team');
+    expect(screen.getByRole('main')).toHaveTextContent('skills');
+    expect(consumed).toHaveBeenCalledWith(54);
+    expect(consumed).not.toHaveBeenCalledWith(53);
+    expect(harness.api.spaceSetActiveSpace.mock.calls.map(call => call[0])).toEqual(['official', 'team']);
   });
 
   it("switches to the routed Space before opening its exact issue", async () => {
@@ -335,8 +645,8 @@ describe("Space switching", () => {
 
     await act(async () => undefined);
     expect(screen.queryByRole("dialog", { name: "issue detail" })).not.toBeInTheDocument();
-    expect(screen.getByText(/已无法访问.*Space/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "返回 Space" })).toBeInTheDocument();
+    expect(screen.getByText(/已无法访问.*协作空间/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "返回协作空间" })).toBeInTheDocument();
     expect(harness.toast.error).toHaveBeenCalled();
     expect(onRouteConsumed).toHaveBeenCalledWith(13);
   });
@@ -515,56 +825,27 @@ describe("Space switching", () => {
     ).toHaveTextContent("open,todo,doing");
   });
 
-  it("resets the Issue status at the local logout boundary", async () => {
+  it("completes an explicit forget-account operation without a background delay", async () => {
     const remoteLogout = deferred<void>();
     harness.actions.logout.mockReturnValueOnce(remoteLogout.promise);
+    harness.data = { ...snapshot("ma"), boot: "reauthRequired", session: null,
+      reauthAccount: sessionFor("id-ma", "ma") };
     render(<Space isActive />);
-
-    fireEvent.click(screen.getByRole("button", { name: "set all" }));
-    expect(
-      screen.getByRole("status", { name: "selected issue status" }),
-    ).toHaveTextContent("all");
-
-    fireEvent.click(screen.getByRole("button", { name: "logout" }));
-
+    fireEvent.click(screen.getByRole("button", { name: "forget account" }));
     expect(harness.actions.logout).toHaveBeenCalledTimes(1);
-    expect(
-      screen.getByRole("status", { name: "selected issue status" }),
-    ).toHaveTextContent("open,todo,doing");
-
-    fireEvent.click(screen.getByRole("button", { name: "set all" }));
-    expect(
-      screen.getByRole("status", { name: "selected issue status" }),
-    ).toHaveTextContent("all");
-
-    await act(async () => {
-      remoteLogout.resolve();
-      await remoteLogout.promise;
-    });
-    expect(
-      screen.getByRole("status", { name: "selected issue status" }),
-    ).toHaveTextContent("all");
+    await act(async () => { remoteLogout.resolve(); await remoteLogout.promise; });
     expect(harness.toast.success).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the incomplete default when remote logout fails after local sign-out", async () => {
-    harness.actions.logout.mockRejectedValueOnce(
-      new Error("remote unavailable"),
-    );
+  it("reports an explicit forget-account failure immediately", async () => {
+    harness.actions.logout.mockRejectedValueOnce(new Error("remote unavailable"));
+    harness.data = { ...snapshot("ma"), boot: "reauthRequired", session: null,
+      reauthAccount: sessionFor("id-ma", "ma") };
     render(<Space isActive />);
-
-    fireEvent.click(screen.getByRole("button", { name: "set all" }));
-    expect(
-      screen.getByRole("status", { name: "selected issue status" }),
-    ).toHaveTextContent("all");
-
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "logout" }));
+      fireEvent.click(screen.getByRole("button", { name: "forget account" }));
     });
-
-    expect(
-      screen.getByRole("status", { name: "selected issue status" }),
-    ).toHaveTextContent("open,todo,doing");
+    expect(harness.actions.logout).toHaveBeenCalledTimes(1);
     expect(harness.toast.error).toHaveBeenCalledTimes(1);
   });
 

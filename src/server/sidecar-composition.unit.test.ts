@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { EXTERNAL_CLI_PUBLIC_CAPABILITIES } from '../shared/externalCliCapabilities';
 import {
   classifySidecarRequest,
   composeSidecarRequestHandler,
@@ -20,6 +21,23 @@ describe('Sidecar production composition', () => {
     );
   });
 
+  it.each(EXTERNAL_CLI_PUBLIC_CAPABILITIES)(
+    'Global dispatches the public $command route before external caller admission', async ({ route }) => {
+      const cliRequest = request(`/api/admin/${route}`, 'POST');
+      const admission = vi.fn(async () => Response.json({
+        success: false, code: 'EXTERNAL_CLI_TOKEN_REQUIRED',
+      }, { status: 401 }));
+
+      const response = await composeSidecarRequestHandler(
+        resolveSidecarComposition('global', false), admission,
+      )(cliRequest);
+
+      expect(classifySidecarRequest(cliRequest)).toBe('common');
+      expect(response.status).toBe(401);
+      expect(admission).toHaveBeenCalledExactlyOnceWith(cliRequest);
+    },
+  );
+
   it.each([
     ['GET', '/health', 'common'],
     ['GET', '/refs/12345678', 'common'],
@@ -36,6 +54,9 @@ describe('Sidecar production composition', () => {
     ['POST', '/sessions', 'global'],
     ['POST', '/api/session/birth', 'session'],
     ['POST', '/api/internal/session/text-page', 'session'],
+    ['POST', '/api/session-watch/register', 'session'],
+    ['POST', '/api/session-watch/manage', 'session'],
+    ['POST', '/api/session-watch/network-remove', 'session'],
     ['GET', '/api/session-tags', 'global'],
     ['POST', '/api/session-tags/assign', 'global'],
     ['POST', '/api/session-tags/manage', 'global'],
@@ -52,6 +73,7 @@ describe('Sidecar production composition', () => {
     ['POST', '/api/runtime/config', 'session'],
     ['POST', '/api/admin/session/send', 'common'],
     ['POST', '/api/admin/session/get', 'common'],
+    ['POST', '/api/admin/session/state', 'common'],
     ['POST', '/api/admin/goal/update', 'session'],
     ['POST', '/api/admin/task/create-attached', 'session'],
     ['POST', '/api/admin/status', 'common'],
@@ -66,6 +88,33 @@ describe('Sidecar production composition', () => {
     ['POST', '/api/project-capability/toggle', 'common'],
   ] as const)('%s %s is owned by %s', (method, path, capability) => {
     expect(classifySidecarRequest(request(path, method))).toBe(capability);
+  });
+
+  it.each(['session', 'development-union'] as const)(
+    '%s dispatches the Rust-delegated live transcript read to its Session owner', async role => {
+      const composition = role === 'development-union'
+        ? resolveSidecarComposition(null, true)
+        : resolveSidecarComposition(role, false);
+      const ownerRead = request('/api/internal/session/text-page', 'POST');
+      const realHandler = vi.fn(async () => Response.json({ success: true, session: { id: 'target' } }));
+
+      const response = await composeSidecarRequestHandler(composition, realHandler)(ownerRead);
+
+      expect(classifySidecarRequest(ownerRead)).toBe('session');
+      expect(response.status).toBe(200);
+      expect(realHandler).toHaveBeenCalledExactlyOnceWith(ownerRead);
+    },
+  );
+
+  it('keeps delegated transcript reads out of Global and unknown internal endpoints unowned', async () => {
+    const realHandler = vi.fn(async () => Response.json({ success: true }));
+    const response = await composeSidecarRequestHandler(
+      resolveSidecarComposition('global', false), realHandler,
+    )(request('/api/internal/session/text-page', 'POST'));
+
+    expect(response.status).toBe(404);
+    expect(realHandler).not.toHaveBeenCalled();
+    expect(classifySidecarRequest(request('/api/internal/session/future-owner', 'POST'))).toBeNull();
   });
 
   it('does not grant unknown control routes a default capability', () => {
@@ -143,6 +192,10 @@ describe('Sidecar production composition', () => {
     ['global', 'POST', '/goal/execute-sync'],
     ['global', 'POST', '/api/im/enqueue'],
     ['global', 'POST', '/api/inbox/drain'],
+    ['global', 'GET', '/api/session-state'],
+    ['global', 'POST', '/api/admin/session/watch'],
+    ['global', 'POST', '/api/admin/session/watches'],
+    ['global', 'POST', '/api/admin/session/unwatch'],
     ['session', 'POST', '/api/provider/verify'],
     ['session', 'POST', '/api/cliproxy/verify'],
     ['session', 'POST', '/api/mcp/oauth/start'],

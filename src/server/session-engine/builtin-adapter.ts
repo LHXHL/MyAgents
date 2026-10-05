@@ -22,6 +22,7 @@ import {
   getMcpServers,
   getMessages,
   getPendingInteractiveRequests,
+  isBuiltinWaitingForUser,
   getQueueStatus,
   getCurrentTurnIdentity as getBuiltinCurrentTurnIdentity,
   getCurrentImBridgeTurnContext,
@@ -275,6 +276,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
       return {
         sessionState: getAgentState().sessionState,
         isBusy: isSessionBusy(),
+        waitingForUser: isBuiltinWaitingForUser(),
       };
     },
 
@@ -379,6 +381,8 @@ export function createBuiltinSessionEngine(): SessionEngine {
       return getBuiltinCurrentTurnIdentity();
     },
 
+    getExecutionTurnId() { return getBuiltinDispatchedTurnIdentity()?.queueId ?? null; },
+
     getActiveImBridgeTurnContext() {
       return getCurrentImBridgeTurnContext();
     },
@@ -426,6 +430,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         request.analyticsOrigin,
         {
           fromDesktopChatSend: true,
+          desktopQuery: request.desktopQuery,
           sessionBirthOrigin: request.birthOrigin,
           queueId: request.queueId,
           turnOwner: request.turnOwner,
@@ -546,6 +551,8 @@ export function createBuiltinSessionEngine(): SessionEngine {
           allowLazySessionMaterialization: request.allowLazySessionMaterialization === true,
           sessionBirthOrigin: request.birthOrigin,
           queueId: request.queueId,
+          queueResponseModeOverride: 'realtime',
+          inputSource: 'inbox',
           beforeDispatch: request.beforeDispatch,
           channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY,
         },

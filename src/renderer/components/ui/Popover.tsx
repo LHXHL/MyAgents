@@ -17,18 +17,17 @@
 // autocomplete already has its own ↑↓/Enter/Tab handling and shouldn't
 // have focus stolen from the textarea); transitions (kept lean for now).
 
-import { isImeComposingEvent } from '@/utils/imeKeyboard';
+import { isImeComposingEvent } from "@/utils/imeKeyboard";
 import {
   autoUpdate,
-  flip,
   FloatingPortal,
-  offset as offsetMiddleware,
-  shift,
-  size,
   useFloating,
   type Placement,
-} from '@floating-ui/react';
-import { useEffect, useRef } from 'react';
+  type Padding,
+  type FlipOptions,
+} from "@floating-ui/react";
+import { useEffect, useRef } from "react";
+import { popoverPositioning } from "./popoverPositioning";
 
 export type PopoverPlacement = Placement;
 
@@ -41,10 +40,16 @@ export interface PopoverProps {
   anchorRef: React.RefObject<HTMLElement | null>;
   /** Preferred side/alignment. Floating-UI auto-flips if there isn't room. */
   placement?: PopoverPlacement;
+  /** Allow perpendicular fallback when neither preferred nor opposite side fits. */
+  fallbackAxisSideDirection?: FlipOptions['fallbackAxisSideDirection'];
   /** Gap (in px) between anchor edge and popover edge. Default 4. */
   offset?: number;
   /** Match the anchor's width — used for select-style dropdowns. */
   matchAnchorWidth?: boolean;
+  /** Additional content height cap, combined with the available anchor-side room. */
+  maxHeight?: string;
+  /** Reserve UI chrome outside the popup boundary. Default 8px on every edge. */
+  viewportPadding?: Padding;
   /** Dismiss on click outside the popover and outside the anchor. Default true. */
   closeOnOutsideClick?: boolean;
   /** Dismiss on Escape. Default true. */
@@ -73,45 +78,48 @@ export interface PopoverProps {
    *  Use when the caller wants a fully custom container (e.g. compound boxes
    *  that visually attach to their anchor). */
   unstyled?: boolean;
+  /** Hover ownership includes the popup's border and native scrollbars. */
+  onMouseEnter?: React.MouseEventHandler<HTMLDivElement>;
+  onMouseLeave?: React.MouseEventHandler<HTMLDivElement>;
   children: React.ReactNode;
 }
 
 const DEFAULT_CHROME =
-  'overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl';
+  "overflow-auto rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl";
 
 export function Popover({
   open,
   onClose,
   anchorRef,
-  placement = 'bottom-start',
+  placement = "bottom-start",
+  fallbackAxisSideDirection = "none",
   offset: offsetValue = 4,
   matchAnchorWidth = false,
+  maxHeight = "100vh",
+  viewportPadding = 8,
   closeOnOutsideClick = true,
   closeOnEscape = true,
   preserveTabOrder = true,
   zIndex = 260,
-  className = '',
+  className = "",
   style,
   unstyled = false,
+  onMouseEnter,
+  onMouseLeave,
   children,
 }: PopoverProps) {
   const { refs, floatingStyles } = useFloating({
     placement,
     open,
-    middleware: [
-      offsetMiddleware(offsetValue),
-      flip({ padding: 8 }),
-      shift({ padding: 8 }),
-      ...(matchAnchorWidth
-        ? [
-            size({
-              apply({ rects, elements }) {
-                elements.floating.style.width = `${rects.reference.width}px`;
-              },
-            }),
-          ]
-        : []),
-    ],
+    middleware: popoverPositioning(
+      offsetValue,
+      viewportPadding,
+      matchAnchorWidth,
+      typeof style?.maxHeight === "number"
+        ? `${style.maxHeight}px`
+        : (style?.maxHeight ?? maxHeight),
+      fallbackAxisSideDirection,
+    ),
     whileElementsMounted: autoUpdate,
   });
 
@@ -127,10 +135,10 @@ export function Popover({
     if (!open || !closeOnEscape) return;
     const handler = (e: KeyboardEvent) => {
       if (isImeComposingEvent(e)) return;
-      if (e.key === 'Escape') onClose();
+      if (e.key === "Escape") onClose();
     };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
   }, [open, closeOnEscape, onClose]);
 
   // Outside-click dismissal. Uses `mousedown` (not `click`) so dragging a
@@ -151,10 +159,11 @@ export function Popover({
       // #178: confirm button visibly closes the dialog but the action never
       // ran. Walk ancestors and bail if any positioned ancestor's z-index
       // exceeds ours.
-      let el: Element | null = t.nodeType === 1 ? (t as Element) : t.parentElement;
+      let el: Element | null =
+        t.nodeType === 1 ? (t as Element) : t.parentElement;
       while (el && el !== document.body) {
         const style = window.getComputedStyle(el);
-        if (style.position !== 'static') {
+        if (style.position !== "static") {
           const z = parseInt(style.zIndex, 10);
           if (!Number.isNaN(z) && z > zIndex) return;
         }
@@ -162,21 +171,32 @@ export function Popover({
       }
       onClose();
     };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
   }, [open, closeOnOutsideClick, onClose, anchorRef, zIndex]);
 
   if (!open) return null;
+  const { maxHeight: _heightCap, ...contentStyle } = style ?? {};
+  void _heightCap;
 
   return (
     <FloatingPortal preserveTabOrder={preserveTabOrder}>
       <div
+        onMouseEnter={onMouseEnter}
+        onMouseLeave={onMouseLeave}
         ref={(node) => {
           refs.setFloating(node);
           floatingRef.current = node;
         }}
-        style={{ ...floatingStyles, zIndex, ...style }}
-        className={unstyled ? className : `${DEFAULT_CHROME} ${className}`.trim()}
+        style={{
+          ...floatingStyles,
+          zIndex,
+          overflowY: "auto",
+          ...contentStyle,
+        }}
+        className={
+          unstyled ? className : `${DEFAULT_CHROME} ${className}`.trim()
+        }
       >
         {children}
       </div>

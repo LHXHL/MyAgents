@@ -2184,6 +2184,12 @@ impl SidecarManager {
         self.session_owners(session_id).next().is_some()
     }
 
+    /// A prepared Inbox lease keeps a process alive, but cannot by itself
+    /// authorize an unpublished Session after every original owner is gone.
+    pub(crate) fn session_has_owners_other_than(&self, session_id: &str, excluded: Option<&SidecarOwner>) -> bool {
+        self.session_owners(session_id).any(|owner| Some(owner) != excluded)
+    }
+
     /// Whether deletion is blocked by any owner other than the exact mounted
     /// Tabs that App has authorized this transaction to release.
     pub fn session_has_unreleasable_owners(

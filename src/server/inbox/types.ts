@@ -5,6 +5,7 @@
 // `src-tauri/src/inbox/types.rs`).
 
 import type { SessionEvent } from './session-event';
+import type { NetworkReturnReference } from '../../shared/agentNetworkReturn';
 
 /// Inbox message kind — request (initial dispatch), reply (turn-end pushback),
 /// or event (system-delivered watch/status event).
@@ -27,6 +28,7 @@ export interface PendingInboxMessage {
   inReplyTo?: string | null;
   /** Structured Session Event Protocol v1 prompt payload. */
   sessionEvent?: SessionEvent | null;
+  networkReturn?: NetworkReturnReference;
 }
 
 /// Per-turn inbox metadata carried alongside a session message. Bound at the
@@ -46,6 +48,7 @@ export interface InboxTurnMeta {
   originalMessageId: string;
   /** Original request snippet (前 40 字) for `in_reply_to` attribute */
   originalSnippet: string;
+  networkReturn?: NetworkReturnReference;
 }
 
 /// `POST /api/inbox/drain` response shape — informs Rust whether the sidecar

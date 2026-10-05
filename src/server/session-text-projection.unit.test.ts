@@ -1,6 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ managementApi: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  managementApi: vi.fn(),
+  history: vi.fn(),
+  overlay: vi.fn(),
+  liveState: vi.fn(),
+}));
+
+vi.mock('./SessionStore', () => ({
+  getSessionData: mocks.history,
+  isHistoryVisibleSession: () => true,
+}));
+vi.mock('./session-engine', () => ({
+  getSessionEngine: () => ({
+    getLiveSessionOverlay: mocks.overlay,
+    getLiveSessionState: mocks.liveState,
+  }),
+}));
 
 vi.mock('./utils/management-api-client', () => ({
   managementApi: mocks.managementApi,
@@ -11,11 +27,14 @@ import {
   mergeSessionMessagesByIdentity,
   paginateSessionTextMessages,
   projectSessionTextMessage,
+  readLocalSessionTextPage,
   readSessionTextPage,
   SessionTextProjectionError,
   strictAssistantText,
   type SessionTextMessage,
 } from './session-text-projection';
+import { buildSessionEventPrompt } from './inbox/drain-handler';
+import { renderSessionEventPrompt } from './inbox/session-event';
 
 function message(
   id: string,
@@ -32,7 +51,94 @@ function message(
 
 describe('session text projection', () => {
   beforeEach(() => {
-    mocks.managementApi.mockReset();
+    vi.resetAllMocks();
+    mocks.history.mockResolvedValue({ id: 'target-session', messages: [] });
+    mocks.overlay.mockReturnValue({ isActive: false });
+    mocks.liveState.mockReturnValue({ sessionState: 'idle', isBusy: false });
+  });
+
+  it.each([true, false])('reads the visible Inbox request for replyBack=%s without its control envelope', replyBack => {
+    const prompt = buildSessionEventPrompt({
+      messageId: 'request-1', kind: 'request', fromSessionId: 'source',
+      fromLabel: 'Agent@Example-Win', toSessionId: 'target',
+      text: 'Please inspect\nthe workspace.', replyBack, timestampMs: 1,
+    });
+    const projected = projectSessionTextMessage(message('1', 'user', prompt));
+    expect(projected?.content).toBe('Please inspect\nthe workspace.');
+    expect(projected?.content).not.toContain('event-summary');
+    expect(projected?.content).not.toContain('source_session_id');
+  });
+
+  it('prefers the visible tail and keeps result/watch/internal reminders hidden', () => {
+    const prompt = buildSessionEventPrompt({
+      messageId: 'request-1', kind: 'request', fromSessionId: 'source',
+      fromLabel: 'Agent', toSessionId: 'target', text: 'inside payload',
+      replyBack: false, timestampMs: 1,
+    });
+    expect(projectSessionTextMessage(message('1', 'user', `${prompt}\nVisible tail`)))
+      .toMatchObject({ content: 'Visible tail' });
+    const result = renderSessionEventPrompt({
+      version: 1, type: 'send.result', eventId: 'result', requestEventId: 'request',
+      sourceSessionId: 'source', sourceLabel: 'Agent', targetSessionId: 'target',
+      createdAt: 'now', status: 'ok', terminalReason: 'completed', payload: 'hidden result',
+    });
+    const watch = renderSessionEventPrompt({
+      version: 1, type: 'watch.completed', eventId: 'watch-event', watchId: 'watch',
+      sourceSessionId: 'source', sourceLabel: 'Agent', targetSessionId: 'target',
+      createdAt: 'now', targetStateAtRegistration: 'running', finalState: 'idle',
+      terminalReason: 'completed', latestResult: 'hidden watch result',
+    });
+    for (const content of [result, watch, '<system-reminder><MEMORY_UPDATE>private</MEMORY_UPDATE></system-reminder>']) {
+      expect(projectSessionTextMessage(message('1', 'user', content))).toBeNull();
+    }
+  });
+
+  it.each(['builtin', 'dsh', 'codex'])('uses the authoritative three-state projection for an active %s owner', async runtime => {
+    mocks.overlay.mockReturnValue({ isActive: true, runtime, liveSessionState: 'running', inMemoryMessages: [] });
+    for (const [state, expected] of [
+      [{ sessionState: 'running', isBusy: true, waitingForUser: true }, 'waiting_user_action'],
+      [{ sessionState: 'starting', isBusy: false }, 'running'],
+      [{ sessionState: 'running', isBusy: true }, 'running'],
+      [{ sessionState: 'idle', isBusy: false }, 'idle'],
+      [{ sessionState: 'error', isBusy: false }, 'idle'],
+    ]) {
+      mocks.liveState.mockReturnValue(state);
+      expect(await readLocalSessionTextPage({ sessionId: 'target-session' }))
+        .toMatchObject({ session: { isLive: true, liveSessionState: expected } });
+    }
+  });
+
+  it('reads an authenticated external request and live V2 request text through the same display projection', async () => {
+    const prompt = buildSessionEventPrompt({
+      messageId: 'external-request', kind: 'request', sourceKind: 'external-cli',
+      fromLabel: 'External CLI', toSessionId: 'target-session', text: 'one-way work',
+      replyBack: false, timestampMs: 1,
+    });
+    mocks.history.mockResolvedValue({ id: 'target-session', transcriptFormat: 2, messages: [message('old', 'assistant', 'stale disk')] });
+    mocks.overlay.mockReturnValue({
+      isActive: true, liveSessionState: 'running',
+      inMemoryMessages: [message('1', 'user', prompt)],
+      liveStreamingMessage: message('2', 'assistant', 'live answer'),
+    });
+    expect(await readLocalSessionTextPage({ sessionId: 'target-session' }))
+      .toMatchObject({ session: { messages: [
+        { id: '1', role: 'user', content: 'one-way work' },
+        { id: '2', role: 'assistant', content: 'live answer' },
+      ] } });
+  });
+
+  it('reads persisted request/answer pairs and keeps cold live-state absence without sampling the caller', async () => {
+    const prompt = buildSessionEventPrompt({
+      messageId: 'request-1', kind: 'request', fromSessionId: 'source',
+      fromLabel: 'Agent', toSessionId: 'target', text: 'stored request',
+      replyBack: true, timestampMs: 1,
+    });
+    mocks.history.mockResolvedValue({ id: 'target-session', messages: [
+      message('1', 'user', prompt), message('2', 'assistant', 'stored answer'),
+    ] });
+    expect(await readLocalSessionTextPage({ sessionId: 'target-session', limit: 1, before: '2' }))
+      .toMatchObject({ session: { isLive: false, liveSessionState: null, messages: [{ id: '1', content: 'stored request' }] } });
+    expect(mocks.liveState).not.toHaveBeenCalled();
   });
 
   it('joins only top-level assistant text blocks and never falls back to tool JSON', () => {

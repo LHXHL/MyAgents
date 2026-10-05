@@ -184,9 +184,8 @@ export async function safeWriteJson(filePath: string, data: unknown): Promise<vo
     // 2. Backup current file → .bak (best-effort, copy preserves main)
     try {
         if (await exists(filePath)) {
-            if (await exists(bakPath)) {
-                await remove(bakPath);
-            }
+            // Tauri fs copyFile uses std::fs::copy, which overwrites an existing
+            // destination. Removing first adds an ENOENT race and a backup gap.
             await copyFile(filePath, bakPath);
         }
     } catch (bakErr) {

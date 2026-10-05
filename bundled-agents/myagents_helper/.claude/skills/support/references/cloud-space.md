@@ -1,12 +1,14 @@
-# Team Space 诊断
+# 协作空间 / Team Space 诊断
 
-使用场景：Space 入口、登录、成员/Goal/Issue/Skill/Registered Agent、Delivery、claim、附件、quota 或本地执行衔接异常。
+使用场景：Space 入口、登录、成员/Goal/Issue/Skill/Tool/Registered Agent、官方工具市场跳转、Delivery、claim、附件、quota 或本地执行衔接异常。
+
+账号入口已移到全局侧栏底部左侧，右侧为通知；收起侧栏只保留通知。未登录点击账号复用 Space Tab，已登录菜单顶部信息行打开资料编辑，Space 内不再重复提供账号入口。若全局身份与 Space/AgentNet 不一致，检查 Rust credential 状态、`space-account:changed` 的账号投影失效通知、当前环境/generation，以及全局资料更新是否合并到已加载的 Space 缓存；不要通过打开 Space 来掩盖独立账号读取或编辑的问题。
 
 正常产品概念先读 `/myagents-docs/references/cloud-space.md`。Team Space 是云端协作层；本地 Session Goal 与 Space Goal、本地 Agent 与 Registered Agent、本地 Task 与 Cloud Issue 都不是同一资源。
 
 ## Ground truth
 
-- Space 有构建 capability 与 `teamSpaceEnabled` 实验开关两层入口门控；入口问题先转 `feature-gates.md`。
+- Space 有构建 capability 与默认开启的 `teamSpaceDevGate` 开发者门控；旧 `teamSpaceEnabled` 不再控制，入口问题先转 `feature-gates.md`。
 - 登录、Cloud API、Registered Agent token、Delivery connector、附件上传下载由 Rust Tauri 层拥有，不经过 Session Sidecar。
 - CLI 业务命令必须显式 `--space <slug>`。当前 Workspace 有 active registration 时可用 Registered Agent 身份，否则用当前 User；delivery-bound Session 身份/Workspace 不匹配时应拒绝，不能静默降级。
 - Space delivery 是通知/投送事实，不等于 assignee 或 operational claim。claim 建立云端责任与本地 Task/Session 连接。
@@ -35,6 +37,9 @@ rg -n "\\[space\\]|space_cloud|registered-agent|delivery|claim|assignee|notifica
 - claim 成功、本地 Task 创建失败：这是跨云端/本地补偿边界；保留 claim origin、deliveryId、Task/Session ID，不盲目重复 claim。
 - `complete` 云端成功但本地 Task 未 done：先读两侧权威状态；不要重复 Cloud complete 或再无条件 `task update-status done`。
 - 附件失败：区分 Cloud upload/download、Workspace 路径安全、大小/数量/quota 与本地预览；UI 富媒体显示再转 `attachments.md`。
+- 官方市场跳转：先核对登录、配置 readiness 与路由是否保留；`official` 是别名，实际 slug 可不同，不要求用户新建同名 Space。过期导航不应覆盖新目标。
+- 社区反馈与聊天链接：按 support Step 7 选择 gh/GitHub 或已登录的官方 Space。`space list --json` 的 `spaceKind=official` 标识社区，CLI 使用返回的 slug。`myagents://open/v1/spaces` 只打开/聚焦 Tab；`.../spaces/official/issues` 打开官方反馈列表；`.../spaces/<slug或id>/issues/<真实issueId>` 打开详情。认证/成员/权限继续由应用校验，链接不会创建或上传 Issue。
+- Tool 安装：MCP 导入默认禁用，同 ID 配置不同需确认替换；自定义工具转小助理 `/tool-install`，不等于自动安装成功或注册 CLI Tool。目录、详情、下载、写入与启用分别验证。
 
 ## Active 操作与验证
 

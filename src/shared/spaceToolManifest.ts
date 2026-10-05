@@ -768,6 +768,121 @@ function definitionFromManifest(
   };
 }
 
+export type LocalSpaceMcpState =
+  | { status: "none" }
+  | {
+      status: "identical" | "different";
+      /** Portable form of the local definition; absent when it cannot be made portable. */
+      localManifest?: PortableMcpManifestV1;
+      enabled: boolean;
+    };
+
+/**
+ * Single decision table for "how does this device's MCP relate to a Space
+ * manifest". Both the install write path and the Tools UI read it, so the
+ * state a member sees is exactly what installing would decide.
+ */
+export function classifyLocalSpaceMcp(
+  config: Pick<
+    AppConfig,
+    "mcpServers" | "mcpServerArgs" | "mcpServerEnv" | "mcpEnabledServers"
+  >,
+  manifest: PortableMcpManifestV1,
+): LocalSpaceMcpState {
+  const servers = Array.isArray(config.mcpServers) ? config.mcpServers : [];
+  const existing = servers.find((server) => server.id === manifest.serverId);
+  if (!existing) return { status: "none" };
+  const enabled = Array.isArray(config.mcpEnabledServers)
+    ? config.mcpEnabledServers.includes(existing.id)
+    : false;
+  const local = analyzeSpaceMcpCandidate(existing, config);
+  const identical =
+    local.manifest !== undefined &&
+    canonicalPortableMcpManifest(local.manifest) ===
+      canonicalPortableMcpManifest(manifest);
+  return {
+    status: identical ? "identical" : "different",
+    ...(local.manifest ? { localManifest: local.manifest } : {}),
+    enabled,
+  };
+}
+
+export type PortableMcpDifference = {
+  field:
+    | { kind: "transport" }
+    | { kind: "command" }
+    | { kind: "url" }
+    | { kind: "env"; name: string }
+    | { kind: "header"; name: string };
+  local: string | null;
+  space: string | null;
+};
+
+/**
+ * Display form of a stdio command that keeps argument boundaries: arguments
+ * that are empty or contain whitespace, quotes or backslashes are JSON-quoted,
+ * so distinct argument lists never render (or compare) the same.
+ */
+export function formatPortableCommand(command: string, args: string[]): string {
+  return [command, ...args]
+    .map((part) => (part === "" || /[\s"'\\]/.test(part) ? JSON.stringify(part) : part))
+    .join(" ");
+}
+
+function flattenPortableMcp(
+  manifest: PortableMcpManifestV1 | undefined,
+): Map<string, { field: PortableMcpDifference["field"]; value: string }> {
+  const out = new Map<
+    string,
+    { field: PortableMcpDifference["field"]; value: string }
+  >();
+  if (!manifest) return out;
+  out.set("transport", {
+    field: { kind: "transport" },
+    value: manifest.transport,
+  });
+  if (manifest.stdio) {
+    out.set("command", {
+      field: { kind: "command" },
+      value: formatPortableCommand(manifest.stdio.command, manifest.stdio.args),
+    });
+    for (const [name, value] of Object.entries(manifest.stdio.envTemplates)) {
+      out.set(`env:${name}`, { field: { kind: "env", name }, value });
+    }
+  }
+  if (manifest.remote) {
+    out.set("url", { field: { kind: "url" }, value: manifest.remote.urlTemplate });
+    for (const [name, value] of Object.entries(
+      manifest.remote.headerTemplates,
+    )) {
+      out.set(`header:${name}`, { field: { kind: "header", name }, value });
+    }
+  }
+  return out;
+}
+
+/** Field-level differences between a local portable form and a Space manifest. */
+export function diffPortableMcpManifests(
+  local: PortableMcpManifestV1 | undefined,
+  space: PortableMcpManifestV1,
+): PortableMcpDifference[] {
+  const a = flattenPortableMcp(local);
+  const b = flattenPortableMcp(space);
+  const keys = [...new Set([...a.keys(), ...b.keys()])];
+  return keys.flatMap((key) => {
+    const left = a.get(key);
+    const right = b.get(key);
+    if (left?.value === right?.value) return [];
+    return [
+      {
+        field: (right ?? left)!.field,
+        local: left?.value ?? null,
+        space: right?.value ?? null,
+      },
+    ];
+  });
+}
+
 export function applyPortableMcpInstall(
   config: AppConfig,
   rawManifest: unknown,
@@ -780,16 +895,10 @@ export function applyPortableMcpInstall(
     (server) => server.id === manifest.serverId,
   );
   const existing = existingIndex >= 0 ? servers[existingIndex] : undefined;
-  if (existing) {
-    const local = analyzeSpaceMcpCandidate(existing, config);
-    if (
-      local.manifest &&
-      canonicalPortableMcpManifest(local.manifest) ===
-        canonicalPortableMcpManifest(manifest)
-    ) {
-      return { config, outcome: "identical" };
-    }
-    if (!allowReplace) return { config, outcome: "conflict" };
+  const local = classifyLocalSpaceMcp(config, manifest);
+  if (local.status === "identical") return { config, outcome: "identical" };
+  if (local.status === "different" && !allowReplace) {
+    return { config, outcome: "conflict" };
   }
 
   const existingConfigEnv = config.mcpServerEnv?.[manifest.serverId] ?? {};

@@ -844,6 +844,38 @@
         "validBytes": 928,
         "tail": "clean"
       }
+    },
+    {
+      "name": "independent-product-diagnostic",
+      "wire": "{\"kind\":\"session-transcript\",\"version\":2,\"sessionId\":\"fixture-session\",\"generation\":\"g1\",\"baseRevision\":0,\"baseline\":false}\n{\"batch\":{\"id\":\"diagnostic\",\"mode\":\"delta\",\"fromRevision\":1,\"revision\":3,\"operations\":[{\"kind\":\"message-create\",\"message\":{\"id\":\"a\",\"role\":\"assistant\",\"timestamp\":\"2026-10-05T00:00:00Z\",\"content\":\"native output\",\"sdkUuid\":\"native-a\",\"usage\":{\"inputTokens\":2,\"outputTokens\":3}}},{\"kind\":\"message-create\",\"message\":{\"id\":\"d\",\"role\":\"assistant\",\"timestamp\":\"2026-10-05T00:00:00Z\",\"content\":\"Error: runtime exited\",\"messageKind\":\"diagnostic\",\"transcriptState\":\"complete\"}},{\"kind\":\"message-update\",\"messageId\":\"d\",\"details\":{\"messageKind\":\"diagnostic\"}}]},\"checksum\":\"63bf15e4d0017fa1ecf6bb5af6cc502050f81d6e225154b4b9b138be81f3b0c5\"}\n",
+      "expected": {
+        "messages": [
+          {
+            "id": "a",
+            "role": "assistant",
+            "timestamp": "2026-10-05T00:00:00Z",
+            "content": "native output",
+            "sdkUuid": "native-a",
+            "usage": {
+              "inputTokens": 2,
+              "outputTokens": 3
+            }
+          },
+          {
+            "id": "d",
+            "role": "assistant",
+            "timestamp": "2026-10-05T00:00:00Z",
+            "content": "Error: runtime exited",
+            "messageKind": "diagnostic",
+            "transcriptState": "complete"
+          }
+        ],
+        "turns": [],
+        "revision": 3,
+        "lastBatchId": "diagnostic",
+        "validBytes": 755,
+        "tail": "clean"
+      }
     }
   ],
   "formats": [

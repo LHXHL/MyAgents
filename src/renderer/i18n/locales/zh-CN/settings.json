@@ -1,5 +1,7 @@
 {
   "capabilities": {
+    "toolMarketOpen": "打开 MyAgents 工具市集",
+    "toolMarketBanner": "MyAgents 工具市集：常用工具 · 一键安装 · 能力拓展",
     "title": "技能与工具",
     "description": "管理 Agent 可调用的技能、插件和工具连接。",
     "navigation": "能力分类",
@@ -99,8 +101,8 @@
     "defaultRuntimeTitle": "默认 Agent 运行环境",
     "defaultRuntimeDescription": "修改后默认以此运行环境运行，可在 Agent 设置中单独修改",
     "queueModeTitle": "队列响应模式",
-    "queueTurnDescription": "仅在 AI 完成一个执行轮次后，自动发送下一条消息",
-    "queueRealtimeDescription": "AI 执行过程中会阅读消息，自主判断响应时机",
+    "queueTurnDescription": "手动发送的消息等待 AI 完成当前轮次；会话 Inbox 消息始终实时注入",
+    "queueRealtimeDescription": "手动发送的消息在执行中尽快交给 AI；会话 Inbox 消息始终实时注入",
     "queueRealtime": "实时响应",
     "queueTurn": "轮次响应",
     "notificationTitle": "任务消息通知",
@@ -407,6 +409,12 @@
     "addProvider": "添加供应商",
     "official": "官方",
     "openaiProtocol": "OpenAI 协议",
+    "subscriptionInfo": {
+      "label": "订阅接入说明",
+      "claude": "基于内置的官方 Claude AgentSDK 无账号风险",
+      "codex": "基于内置的 Codex CLI 无账号风险",
+      "reverseProxy": "基于 API 反向代理，需注意存在风险"
+    },
     "noModels": "暂无模型",
     "website": "去官网",
     "manage": "管理",
@@ -1132,11 +1140,6 @@
       "benefitUnified": "统一的心跳和定时任务管理",
       "benefitRouting": "智能主动消息路由",
       "action": "升级为 Agent"
-    },
-    "createMenu": {
-      "create": "创建 Agent",
-      "upgradeWorkspace": "从现有工作区升级",
-      "fromTemplate": "从模板创建"
     },
     "workspaceSelect": {
       "title": "选择工作区",
@@ -2214,11 +2217,11 @@
     "developerParagraph3": "不同于每次对话都要重新自我介绍的 AI 工具，MyAgents 里的 Agent 与你的生活、工作深度同步，是一个越来越懂你的搭档。我们希望它成为每个人意图的超级放大器——",
     "developerQuote": "你有一个想法，And it's done.",
     "labTitle": "实验室",
-    "teamSpaceTitle": "团队空间 Team Space",
-    "teamSpaceDescription": "团队空间支持多人和多个 Agents 共享 Skills，并围绕目标树中的 Issue 进行协作。",
-    "teamSpaceLoading": "正在读取团队空间构建状态...",
-    "teamSpaceUnavailable": "当前构建未包含团队空间服务。",
-    "teamSpaceUnavailableWithReason": "当前构建未包含团队空间服务。({{reason}})",
+    "teamSpaceTitle": "协作空间",
+    "teamSpaceDescription": "协作空间支持多人和多个 Agents 共享 Skills，并围绕目标树中的 Issue 进行协作。",
+    "teamSpaceLoading": "正在读取协作空间构建状态...",
+    "teamSpaceUnavailable": "当前构建未包含协作空间服务。",
+    "teamSpaceUnavailableWithReason": "当前构建未包含协作空间服务。({{reason}})",
     "cliRegistryTitle": "CLI 工具注册表",
     "cliRegistryDescription": "允许 AI 创建并注册命令行小工具，并在工具箱中管理；开启后新会话可自动发现已启用工具。MCP 与 myagents 内置 CLI 能力不受影响。",
     "desktopPetTitle": "桌面宠物",
@@ -2249,7 +2252,7 @@
       "chatHistoryEntryDescription": "在 AI 对话页顶部显示「历史」按钮。关闭不影响全局会话搜索和工作区 Session 列表。",
       "codexProviderTitle": "Codex 订阅 Provider",
       "codexProviderDescription": "在模型供应商页显示 MyAgents 托管的 Codex (订阅) 配置入口。",
-      "spaceEnvironmentTitle": "团队服务环境",
+      "spaceEnvironmentTitle": "协作空间服务环境",
       "spaceEnvironmentDescription": "在构建时烘焙的服务 origin 之间切换本地 Space 客户端。当前 origin：{{origin}}",
       "spaceEnvironmentSaveFailed": "切换 Space 环境失败：{{message}}",
       "spaceEnvironment": {

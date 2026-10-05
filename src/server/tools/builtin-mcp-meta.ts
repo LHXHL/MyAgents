@@ -22,7 +22,7 @@
 //
 // Guard against regression: never add `import { createSdkMcpServer, tool }
 // from '@anthropic-ai/claude-agent-sdk'` or `import { z } from 'zod/v4'`
-// at a tool file's top level — CLAUDE.md codifies this as a forbidden
+// at a tool file's top level — eslint and pit_of_success.md#builtin-mcp forbid this
 // pattern, and any violation silently defeats the refactor.
 
 import { registerBuiltinMcpMeta } from './builtin-mcp-registry';

@@ -1,5 +1,7 @@
 {
   "capabilities": {
+    "toolMarketOpen": "Open MyAgents Tool Market",
+    "toolMarketBanner": "MyAgents Tool Market: Everyday tools · Easy install · More capabilities",
     "title": "Skills & Tools",
     "description": "Manage the skills, plugins, and tool connections available to Agents.",
     "navigation": "Capability categories",
@@ -99,8 +101,8 @@
     "defaultRuntimeTitle": "Default Agent Environment",
     "defaultRuntimeDescription": "Agents use this environment by default. You can change it for individual Agents in Agent settings.",
     "queueModeTitle": "Queue response mode",
-    "queueTurnDescription": "Send the next queued message only after AI finishes the current turn",
-    "queueRealtimeDescription": "AI reads messages while running and decides when to respond",
+    "queueTurnDescription": "Manual messages wait until AI finishes the current turn; session Inbox messages always use realtime delivery",
+    "queueRealtimeDescription": "Manual messages reach AI while it is running; session Inbox messages always use realtime delivery",
     "queueRealtime": "Realtime",
     "queueTurn": "Per turn",
     "notificationTitle": "Task notifications",
@@ -407,6 +409,12 @@
     "addProvider": "Add Provider",
     "official": "Official",
     "openaiProtocol": "OpenAI protocol",
+    "subscriptionInfo": {
+      "label": "Subscription connection details",
+      "claude": "Uses the built-in official Claude AgentSDK with no account risk",
+      "codex": "Uses the built-in Codex CLI with no account risk",
+      "reverseProxy": "Uses an API reverse proxy. Please be aware of the risks"
+    },
     "noModels": "No models",
     "website": "Website",
     "manage": "Manage",
@@ -1132,11 +1140,6 @@
       "benefitUnified": "Unified heartbeat and scheduled task management",
       "benefitRouting": "Smart proactive message routing",
       "action": "Upgrade to Agent"
-    },
-    "createMenu": {
-      "create": "Create Agent",
-      "upgradeWorkspace": "Upgrade existing workspace",
-      "fromTemplate": "Create from template"
     },
     "workspaceSelect": {
       "title": "Select workspace",

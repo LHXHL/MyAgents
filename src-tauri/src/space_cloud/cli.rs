@@ -405,8 +405,10 @@ pub async fn space_cli_space_list() -> Result<Value, String> {
         .iter()
         .filter_map(|space| {
             Some(serde_json::json!({
+                "id": space.get("id").and_then(Value::as_str),
                 "slug": space.get("slug")?.as_str()?,
                 "name": space.get("name").and_then(Value::as_str),
+                "spaceKind": space.get("spaceKind").and_then(Value::as_str),
                 "role": cli_space_role(space),
             }))
         })

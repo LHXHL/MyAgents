@@ -247,7 +247,11 @@ describe('Goal system-reminder user bubble', () => {
 });
 
 describe('Cross-session request system-reminder user bubble', () => {
-    it('renders the request payload without leaking protocol metadata', () => {
+    it.each([
+        ['Planning &amp; Review', 'Planning & Review'],
+        ['Mino@Example-Mac.local', 'Mino@Example-Mac.local'],
+        ['Mino &amp; Review@Win &quot;Desk&quot;', 'Mino & Review@Win "Desk"'],
+    ])('renders request source %s without leaking protocol metadata', (sourceAttribute, sourceLabel) => {
         const content = [
             '<system-reminder>',
             '<myagents-session-event',
@@ -255,7 +259,7 @@ describe('Cross-session request system-reminder user bubble', () => {
             '  type="send.request"',
             '  event_id="evt-visible-request"',
             '  source_session_id="session-source"',
-            '  source_label="Planning &amp; Review"',
+            `  source_label="${sourceAttribute}"`,
             '  target_session_id="session-target"',
             '  source_notification="auto">',
             '<event-summary>',
@@ -272,7 +276,7 @@ describe('Cross-session request system-reminder user bubble', () => {
 
         expect(container.querySelector('[data-role="user"]')).not.toBeNull();
         expect(container).toHaveTextContent('Please review the release checklist.');
-        expect(container).toHaveTextContent('Planning & Review');
+        expect(container).toHaveTextContent(sourceLabel);
         expect(container).not.toHaveTextContent('hidden delivery instructions');
         expect(container).not.toHaveTextContent('source_session_id');
     });

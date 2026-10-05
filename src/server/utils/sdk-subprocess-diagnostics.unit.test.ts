@@ -58,18 +58,18 @@ describe('diagnoseSdkSubprocessFailure', () => {
     expect(diagnostic?.userMessage).toContain('exited with code 1');
   });
 
-  it('cross-review 0.2.32: bare exit code 1 (no bash evidence) is AMBIGUOUS — Git is a hint, not a verdict', () => {
-    // exit 1 on Windows also covers CLI fatals, AV interference, broken config…
-    // A user who HAS Git installed must not be steered into a dead end.
+  it.each(['', ' stderr: [claude-code:unrecognized_model] {"model":"kimi-k3","query_source":"sdk"}'])(
+    'does not infer the cause or startup phase of a Windows exit 1: %s', stderr => {
     const diagnostic = diagnoseSdkSubprocessFailure({
       platform: 'win32',
-      errorMessage: 'Claude Code process exited with code 1',
+      errorMessage: `Claude Code process exited with code 1${stderr}`,
     });
 
     expect(diagnostic?.kind).toBe('windows-subprocess-exit-1');
-    expect(diagnostic?.userMessage).toContain('Git'); // still the most common cause — keep the hint
-    expect(diagnostic?.userMessage).toMatch(/常见原因|可能/); // …but hedged
-    expect(diagnostic?.userMessage).toContain('exited with code 1'); // original error preserved
+    expect(diagnostic?.userMessage).toContain('异常退出');
+    expect(diagnostic?.userMessage).not.toMatch(/Git|杀毒|启动失败|模型不支持/);
+    expect(diagnostic?.imMessage).not.toMatch(/Git|杀毒|启动失败|模型不支持/);
+    expect(diagnostic?.userMessage).toContain(`exited with code 1${stderr}`);
   });
 
   it('cross-review 0.2.32: native-crash evidence beats the exit-1 branch (Bun crash exiting 1 is not a Git problem)', () => {
@@ -90,7 +90,7 @@ describe('diagnoseSdkSubprocessFailure', () => {
 
     expect(diagnostic?.kind).toBe('windows-native-bun-crash');
     expect(diagnostic?.exitCodeHex).toBe('0xC0000409');
-    expect(diagnostic?.userMessage).toBe('Claude Agent SDK 启动失败（exit code 3221226505 / 0xC0000409），请检查运行环境。');
+    expect(diagnostic?.userMessage).toBe('Claude Agent SDK 异常退出（exit code 3221226505 / 0xC0000409），请检查运行环境。');
     expect(diagnostic?.imMessage).toBe(diagnostic?.userMessage);
   });
 

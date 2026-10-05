@@ -1826,48 +1826,10 @@ fn harden_managed_auth_file_permissions() {
     }
     #[cfg(target_os = "windows")]
     {
-        let Some(auth_path) = auth_file.to_str() else {
-            ulog_warn!("[managed-codex] failed to harden auth file permissions: non-UTF8 path");
-            return;
-        };
-        let encoded_path = general_purpose::STANDARD.encode(auth_path.as_bytes());
-        let script = format!(
-            r#"
-$ErrorActionPreference = 'Stop'
-$path = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded_path}'))
-$acl = Get-Acl -LiteralPath $path
-$acl.SetAccessRuleProtection($true, $false)
-$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-$rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'Allow')
-$acl.SetAccessRule($rule)
-Set-Acl -LiteralPath $path -AclObject $acl
-"#
-        );
-        let encoded = encode_powershell(&script);
-        let output = crate::process_cmd::new(powershell_path().as_os_str())
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-EncodedCommand",
-                &encoded,
-            ])
-            .output();
-        match output {
-            Ok(out) if out.status.success() => {}
-            Ok(out) => {
-                ulog_warn!(
-                    "[managed-codex] failed to harden auth file ACL: {}",
-                    String::from_utf8_lossy(&out.stderr).trim()
-                );
-            }
-            Err(err) => {
-                ulog_warn!(
-                    "[managed-codex] failed to spawn ACL hardening command: {}",
-                    err
-                );
-            }
+        if let Err(error) =
+            crate::credential_permissions::harden_windows_acl(&auth_file, &powershell_path())
+        {
+            ulog_warn!("[managed-codex] failed to harden auth file ACL: {}", error);
         }
     }
 }

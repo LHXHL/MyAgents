@@ -2,7 +2,7 @@
 name: myagents-cli
 description: >-
   你正在 MyAgents 这款 AI 产品里运行——MyAgents 自带一套"产品能力"（定时任务、任务中心、记录收集、MCP 工具接入、
-  模型 Provider、IM Bot 渠道、社区插件、Skills 安装、MyAgents Cloud Space、Generative UI Widget、Goal 目标模式等），全部通过内置 `myagents` CLI 暴露给你。
+  模型 Provider、IM Bot 渠道、社区插件、Skills 安装、协作空间、Agent 网络与 Session 协作、Generative UI Widget、Goal 目标模式等），通过内置 `myagents` CLI 操作。
   当用户的需求**落在 MyAgents 产品能力的射程内**，就加载并使用这个 skill，用 CLI 主动帮用户把事情做掉，
   而不是让用户去 GUI 点击。
   典型触发场景：用户说"每天 X 点帮我 Y / 等 X 发生后继续 / 持续盯着，命中才处理"（→ myagents-task-automation）、"记一下这个想法"（→ record）、"派发成任务"（→ task）、
@@ -19,13 +19,13 @@ metadata:
 
 # myagents-cli — MyAgents 产品能力的 CLI 入口
 
-你正运行在 MyAgents 产品内。MyAgents 不只是一个 chat UI，它是一套带状态的 Agent 平台：Goal 目标模式、定时任务、任务中心、IM Bot、MCP、Provider、插件、Skill、Cloud Space、Widget——这些都是产品能力，由内置 `myagents` CLI 一站暴露给你。
+MyAgents 是带状态的 Agent 平台：Goal、Task、Record、IM Bot、MCP、Provider、插件、Skill、协作空间、Agent 网络与 Session 协作、Widget。CLI 负责产品操作；使用知识与功能边界查 `/myagents-docs`，登录、入网和开放 Agent 等没有 CLI 写入口的操作使用产品 UI。
 
 **这个 skill 不只是"管理工具"，它是 MyAgents 产品能力的执行入口**。用户表达的需求只要能映射到产品能力，就该用 CLI 主动帮用户做掉，而不是给用户一堆操作步骤让他自己去 Settings 点。这份文档列出全部能力以及"什么时候应该用哪条命令"。
 
 ## 前置：CLI 是否可用
 
-CLI 通过 `~/.myagents/bin/myagents` 暴露，你的 SDK 子进程 PATH 已注入这个目录，直接 `myagents <command>` 就能跑。它通过 HTTP 走 Sidecar Admin API（端口由环境变量 `MYAGENTS_PORT` 注入）。
+CLI 通过 `~/.myagents/bin/myagents` 暴露，App 内 Agent 的 PATH 和调用上下文由产品注入，直接运行命令。它通过 Sidecar Admin API 操作（端口由 `MYAGENTS_PORT` 注入）。外部终端或 AI 需用户在「设置 → 外部调用」主动开启并取得受保护的 `MYAGENTS_API_TOKEN`，只允许公开命令；不要读取内部凭据来绕过授权，也不要输出 token。
 
 - 遇到 `command not found`：让用户重启一次应用触发 CLI 同步
 - 遇到 `ECONNREFUSED`：Sidecar 没起来，让用户检查应用是否在运行
@@ -35,18 +35,19 @@ CLI 通过 `~/.myagents/bin/myagents` 暴露，你的 SDK 子进程 PATH 已注�
 1. **探索先行**：不熟的命令组用 `myagents <group> --help`；不知道某个 runtime 支持什么 model/permissionMode 用 `myagents runtime describe <runtime>`，**不要靠猜**
 2. **按 leaf 契约预览**：只有精确 leaf help 明确声明支持的命令才使用 `--dry-run`；不支持的 mutation 会 fail closed，不能声称已预览
 3. **机器可读**：加 `--json` 解析结构化输出
-4. **失败即恢复**：CLI 失败响应会带 `→ Run: <cmd>` 恢复提示，照着跑就行
+4. **按失败阶段恢复**：读取错误 code 与恢复提示；只读查询可重试。写入、发送工作或接纳未知时，先查询真实状态，不能盲目重复执行。
 
 ## 安全规范
 
 - **改配置前先读精确 leaf help**——该 leaf 明确支持 `--dry-run` 时先预览；未声明支持时不要假装存在 preview
 - **API Key**：用户在对话里明确给了你才写入；没给就引导他去 **设置 → 对应页面** 填，不要追问
-- **删除前确认**：用户说"删了吧"也要回读"我要删的是 X，确认吗"
+- **明确对象与影响**：删除/覆盖等操作应有具体对象与授权；用户已经明确授权时不重复确认。对象含混、超出授权或会中断未说明的活跃工作时，先澄清。
 
 ## 生效时机
 
-- **MCP 工具变更**（增删改 / 启禁用 / 环境变量 / OAuth）：磁盘立即写入，但工具在**下一轮对话**才能调用——MCP server 在 session 创建时绑定。当前轮配完后告诉用户："发条新消息我就能用了"
-- **其他配置**（Provider / Agent / cron / skill / plugin / config）：写入即时生效
+- 配置写入与当前 Session 实际生效是不同事实。Agent 默认值不改写已有 Session identity；Provider、权限、MCP、Skill 与 Plugin 由对应 Runtime 在自己的边界应用。
+- builtin MCP/扩展通常在后续对话边界更新；DSH 与 Managed Codex 按支持的 extension admission 更新，不能承诺全部 Plugin 组件通用。查看 `status`、`skill list --verbose` 与实际工具状态，再说明下轮、新 Session 或重启要求。
+- `reload` 请求产品重新读取配置，不能保证当前执行轮立即更换工具，也不能把另一 Session 的状态当验证。
 
 ---
 
@@ -160,24 +161,24 @@ myagents model verify <id> [--model <某个具体模型>]      # 实际发一条
 ### Agent + Channel（agent）
 
 ```bash
-myagents agent list                                     # 列出所有 Agent
+myagents agent list                                     # 发现本机和同账号在线设备的可调用 Agent
 myagents agent create --workspacePath /absolute/path    # 把既有目录幂等注册成 Project-backed Agent
 myagents agent current --json                          # 只看当前 Agent/workspace/Session
 myagents agent list --active                            # 只列出未归档 Agent 工作区
 myagents agent list --archived                          # 只列出已归档 Agent 工作区
 myagents agent show <id>                                # 看某 Agent 的 effective 默认（runtime/model/permissionMode）
-myagents agent enable <id>                              # 启用
-myagents agent disable <id>                             # 禁用
+myagents agent enable <id>                              # 启用本机 Agent 主动能力，非网络开放或 Channel 开关
+myagents agent disable <id>                             # 暂停主动能力，不关闭显式 Session 协作
 myagents agent archive <id>                             # 归档 Agent 工作区，并暂停 proactive Channel
 myagents agent unarchive <id>                           # 取消归档；若归档前是 proactive，会恢复启用
-myagents agent set <id> <key> <jsonValue>               # 改单个字段（key/value 形式，value 必须是合法 JSON）
+myagents agent set <id> <key> <value>                   # 改本机单个字段；合法 JSON 会解析，否则保留字符串
                                                         # key 仅限 enabled/runtime/runtimeConfig/providerId/model/permissionMode
                                                         # id / channels 用专用命令；未知 key 会在写盘前拒绝
 myagents agent channel list <agentId>                   # 列出某 Agent 的所有 Channel
 myagents agent channel add <agentId> --type <平台> --<凭证flag> ...
-                                                        # 添加 Channel（平台 = telegram / dingtalk / openclaw:xxx）
+                                                        # 添加 Channel（telegram / feishu / dingtalk / openclaw:xxx；先查 help）
 myagents agent channel remove <agentId> <channelId>     # 删除 Channel
-myagents agent runtime-status                           # 看所有 Agent 的实时连接状态（在线/离线/uptime/最近消息）
+myagents agent runtime-status                           # 看本机 Channel 运行状态，非 Agent 网络在线状态
 ```
 
 **何时用：**
@@ -186,10 +187,10 @@ myagents agent runtime-status                           # 看所有 Agent 的实
 - "把 Agent X 的 model 改成 Y" → `agent set X model '"Y"'`（注意 JSON 字符串要双层引号）
 - "把 permissionMode 改成 plan" → `agent set X permissionMode '"plan"'`
 - "项目结束了，先收起来" → `agent archive <id>`；需要恢复时用 `agent unarchive <id>`
-- "飞书 Bot 在线吗" → `agent runtime-status`（这个看运行时；`agent list` 看的是配置）
+- "飞书 Bot 在线吗" → `agent runtime-status`；`agent list` 的网络发现不证明 Channel 在线
 - 配 Channel 详见下方 §配置 Agent Channel 流程
 
-`agent set` 和 `agent show` 互补：show 读 effective 值（含 runtime 分层解析），set 写**单个**字段。只使用上面列出的 canonical key；`provider` / `permission` 不是 alias，分别改用 `providerId` / `permissionMode`。providerId/model/permissionMode 会先按当前 Provider 的 credential/readiness 与 model 目录校验，再同步 Agent 权威记录、Project 兼容镜像和运行中的 Channel；Managed Codex 的 permissionMode 可传 `suggest/auto-edit/no-restrictions` 或产品值 `plan/auto/fullAgency`，落盘统一规范化为产品值。`full-auto` 无法无损映射（它保留 workspace-write sandbox，而 `fullAgency` 会投影成 `no-restrictions`），因此 setter 会拒绝。复杂 Channel 改动走 `agent channel`，别用 `agent set channels`——会被拒。
+`agent show` 读 Agent 的执行默认，`agent set` 写本机单个字段。只使用 canonical key；`provider` / `permission` 不是 alias，分别用 `providerId` / `permissionMode`。Provider/model/permission 会校验后同步 Project 镜像和运行中的 Channel；已有 Session 仍由自己的生命周期管理。权限值先查 `runtime describe` 和 leaf help，不复用旧 Codex 模式映射。复杂 Channel 改动走 `agent channel`；这些写命令不管理远端 Agent。
 
 ### Agent Runtime 发现（runtime）
 
@@ -208,18 +209,7 @@ myagents diagnose runtime dsh                           # 资源校验、当前�
 - 用户问"codex 支持什么 model" → `runtime describe codex`
 - 「@oai/artifact-tool 我从终端能调用、MyAgents 里就不行」/「Codex MCP 在 MyAgents 里看不到」/「Codex 是不是用错代理了」→ `runtime diagnose codex`。它 spawn 一个临时 codex app-server，跑 `getAuthStatus` / `experimentalFeature/list` / `mcpServerStatus/list` / `app/list` 四个 RPC，把 Codex 自己看到的状态原样吐出来，省得猜。effectiveEnv 节里能看到 MyAgents 注入的代理是不是真到了子进程，feature flag 是不是真生效。
 
-每个外部 runtime 有自己的 model 清单和 permissionMode 枚举；Codex 的 model 清单通过 CLI 查询。不要把 Codex 的 `suggest` / `auto-edit` / `full-auto` 与内置 Runtime 的 `auto` / `plan` / `fullAgency` 混用。
-
-### Session 协作与只读历史
-
-```bash
-myagents session list --agent <agentId>
-myagents session start --agent <agentId> --prompt-file <file>
-myagents session send <sessionId> --prompt-file <file>
-myagents session get <sessionId> [--limit 5] [--before <messageId>] [--json]
-```
-
-`session get` 只读可见 user/assistant 正文，默认最近 5 条并按旧到新返回；工具调用、思考和隐藏协议不会作为 JSON 文本泄漏。`before` 排除锚点，用当前页第一条 message id 向前翻页。外部普通终端调用 start/send 时没有来源 Session，因此是 one-way；App 内 Agent 调用仍按 leaf help 的 reply 语义执行。
+每个 Runtime 有自己的 model 清单、权限模式和计划状态。DSH 模型目录查 `model list`；Codex 模型通过当前 Runtime 查询。不要把旧 CLI 名称、产品权限与 Runtime 原生策略混用；Codex system-cli probe 不能代替 `codex-sub` 的 Managed Codex 诊断。
 
 ### Skills（skill）
 
@@ -230,7 +220,8 @@ myagents skill add <source> [--scope user|project] [--plugin X] [--skill Y] [--f
 myagents skill remove <name>                            # 删除
 myagents skill enable <name>                            # 启用
 myagents skill disable <name>                           # 禁用非 Required Skill；Required System Skill 会拒绝
-myagents skill sync                                     # 把 ~/.claude/skills 里用户自己装的同步过来
+myagents skill sync [name ...]                           # 预览 ~/.claude/skills 的导入候选，不写入
+myagents skill sync [name ...] --apply                   # 导入选定候选；新导入默认禁用，需 skill enable
 ```
 
 **`skill add` 输入形态**（同一 resolver 全吃）：
@@ -257,7 +248,7 @@ myagents skill sync                                     # 把 ~/.claude/skills �
 - "装 React 最佳实践" → `skill add vercel-labs/skills --skill react-best-practices`
 - 报错 `该仓库是 Claude Plugins 市场` → 按提示加 `--plugin <name>`，比如 `skill add anthropics/skills --plugin document-skills` 一次装 docx/pdf/pptx/xlsx
 - 报错 `技能 X 已存在` → 跟用户确认要不要 `--force` 覆盖
-- 用户在 `~/.claude/skills/` 自己塞了东西 MyAgents 看不见 → `skill sync`
+- 用户在 `~/.claude/skills/` 自己塞了东西 MyAgents 看不见 → `skill sync` 预览，再按授权 `--apply` 导入并启用
 
 ### 定时与未来自动化 Task
 
@@ -342,7 +333,7 @@ myagents task delete <taskId>                           # 不可恢复地移出�
 | Flag | 语义 |
 |------|------|
 | `--runtime` | `builtin` / `dsh` / `claude-code` / `codex`，不传则继承 |
-| `--providerId` | builtin Provider id；必须与 `--model` 成对设置，不传则继承 |
+| `--providerId` | 目标 Runtime 支持的 Provider id；必须与 `--model` 成对设置，不传则继承 |
 | `--model` | 值取决于 runtime，**先 `runtime describe <runtime>` 查** |
 | `--permissionMode` | 值取决于 runtime，**同样先 `runtime describe`** |
 | `--runtimeConfig` | JSON 对象字符串，runtime 专属配置（罕用） |
@@ -355,7 +346,7 @@ myagents task delete <taskId>                           # 不可恢复地移出�
 **何时用：**
 - "看我还有啥没做完的" → `task list --status running` / `task list`
 - "把这条记录派发出去" → 先将完整任务上下文写入 `task.md`，再用 `task create-direct --taskMdFile ... --sourceRecordId <id>` 创建；是否立即 `task run` 取决于用户已确认的动作
-- "创个 review PR 的任务用 codex" → `task create-direct ... --runtime codex --model gpt-5.2 --permissionMode full-auto`
+- "创个 review PR 的任务用 codex" → 先 `runtime describe codex`，再 `task create-direct ... --runtime codex --model <现场模型> --permissionMode <现场权限模式>`
 - "任务过程中我开了个新对话登记一下" → `task append-session <taskId> <sessionId>`
 - "把重要结果回复到本地任务" → 将正文写入文件，再用 `task comment <taskId> --body-file ...`；普通 assistant 输出不会自动复制到 Task
 - 正在执行 Task turn 时可以省略 `<taskId>`，Sidecar 会从当前 Session 的精确 Task 上下文解析；收到用户 Task 评论后的后续 turn 应使用隐藏提醒里给出的显式 `<taskId>`，不得猜测
@@ -365,7 +356,7 @@ myagents task delete <taskId>                           # 不可恢复地移出�
 
 **验证与恢复**：CLI 在转发给 Rust 前会前置校验 `--runtime` / `--model` / `--permissionMode`，不合法直接拒绝并带 `→ Run: myagents runtime describe <rt>` 指引；输出会打印 `overridesRequested` vs `overridden`，传了 override 但没落到持久化态会明确提示 drift。
 
-**归档与删除**：`task archive` 是仅用户可执行、长期可恢复的归档状态，Agent 调用会被 Task authority 拒绝；`task delete` 经确认后不可恢复，没有 30 天恢复或 undelete 承诺。删除会停止调度并清平台 Trigger state/pending activation，但内部 tombstone/审计仍用于 authority 与迁移安全，工作区脚本和脚本自持状态不归 TaskStore 删除。
+**归档与删除**：`task archive` 是仅用户可执行、长期可恢复的归档状态，Agent 调用会被 Task authority 拒绝。执行 `task delete/remove` 前在对话中向用户说明具体对象并取得确认；已有明确删除授权时直接执行，CLI 不弹界面确认框。删除不可恢复，没有 30 天恢复或 undelete 承诺；它会停止调度并清平台 Trigger state/pending activation，但内部 tombstone/审计仍用于 authority 与迁移安全，工作区脚本和脚本自持状态不归 TaskStore 删除。
 
 ### MyAgents Cloud Space（space）
 
@@ -395,6 +386,7 @@ myagents space attachment download <attachmentId> --space <slug> [--output myage
 
 **何时用：**
 - 普通会话先 `myagents space list --json` 选择明确的 slug；所有 Space 业务命令都必须带 `--space <slug>`，不猜“默认社区”或上次使用的 Space。
+- 官方社区反馈使用发现结果中 `spaceKind=official` 的实际 `slug`（当前通常为 `myagents`），`id` 可用于资源导航。`official` 仅为导航别名，不能替代 CLI 的 canonical slug。对话入口：`myagents://open/v1/spaces` 打开/聚焦 Space Tab；`myagents://open/v1/spaces/official/issues` 打开官方列表；详情末尾追加服务端真实 Issue ID。
 - CLI 只有在当前 Session 持久化了精确的 `spaceId + registeredAgentId` origin 时，才以该 Registered Agent 身份执行；显式 legacy Agent ID 仅作旧调用兼容。workspace 只校验执行边界，绝不用于猜测 actor。没有 Registered Agent origin 的普通 Session 始终使用当前 User 身份；origin、Space 或 workspace 不匹配会直接拒绝，不会静默降级。身份不确定时先 `space whoami`。
 - 需要创建、筛选或移动 Issue 时，先 `space goal list --json`，只复制 active `data.items[].id`；不要把 Goal title 或 `goalPathLabel` 当 ID。`myagents goal ...` 是本地 Session Goal Mode，`myagents space goal ...` 是 Cloud Space Goal，两者不是同一资源。
 - `issue create` 不传 `--goal` 会进入 Inbox；已发布 Issue 用 `issue update --goal <goalId>` 移动，使用 `--clear-goal` 清回 Inbox。不要用 `--goal null`、`--goal inbox` 或空字符串表达清除。更新后用 `issue view --json` 核对权威 `goalId/goalPathLabel`。
@@ -424,7 +416,7 @@ myagents plugin remove <pluginId>                       # 卸载
 
 **何时用：**
 - "装个微信插件" → `plugin install <npm 包名>`
-- "我哪里能找到飞书插件" → 让用户去 OpenClaw 仓库找 npm 包名，再 install
+- 飞书可走内置 Channel 和扫码配置；只有明确需要社区实现时再查 OpenClaw 插件来源并安装，见 `/myagents-docs`
 
 安装走内置 Node.js 的 npm，可能需要 10-30 秒。卸载前会检查是否有 Channel 还在用这个插件——有的话先把 Channel 移掉。
 
@@ -434,12 +426,12 @@ myagents plugin remove <pluginId>                       # 卸载
 myagents cc-plugin list                                 # 已装 Claude 插件 + 启停状态
 myagents cc-plugin install <source>                     # 来源：owner/repo / GitHub URL / 直链 zip / file:///abs
 myagents cc-plugin uninstall <name> [--purgeData]       # 卸载（数据目录默认保留）
-myagents cc-plugin enable <name>                        # 启用（下次 session 生效）
+myagents cc-plugin enable <name>                        # 启用；按 Runtime 支持的扩展边界应用
 myagents cc-plugin disable <name>                       # 禁用
 myagents cc-plugin show <id|name>                       # 详情（含 manifest + 组件清单）
 ```
 
-**与上面 `plugin` 的区别：** `cc-plugin` 是 Anthropic 官方的 Claude Plugin 协议（自带 skills/agents/MCP/hooks 的目录），落在 `~/.myagents/plugins/<name>/`；启用后由 SDK 自动装载组件。`plugin`（无前缀）则是 OpenClaw 的 IM 渠道插件，两套体系不冲突。
+**与上面 `plugin` 的区别：** `cc-plugin` 是 Claude Plugin 协议（skills/agents/MCP/hooks），落在 `~/.myagents/plugins/<name>/`；SDK 加载支持的组件，DSH/Managed Codex 按各自 admission 支持部分扩展，不保证 SDK hooks 等价。`plugin`（无前缀）是 OpenClaw IM 渠道插件。
 
 **何时用：**
 - "粘个 GitHub URL 装个插件" → `cc-plugin install owner/repo`
@@ -456,7 +448,7 @@ myagents config get <key>                               # 读，支持点号路�
 myagents config set <key> <value> [--dry-run]           # 写，value 是 JSON 字面量（字符串要带引号）
 myagents status                                         # 应用整体运行状态
 myagents version                                        # App 与 Sidecar 版本、构建/启动时固定的代码身份
-myagents reload [--workspacePath <abs>]                 # 热加载配置（不重启进程）
+myagents reload [--workspacePath <abs>]                 # 请求重读配置，实际应用按当前 Runtime 边界
 ```
 
 **何时用：**
@@ -466,6 +458,8 @@ myagents reload [--workspacePath <abs>]                 # 热加载配置（不�
 - "改完手动让它生效" → `reload`（多数命令已经自动 broadcast，这个是兜底）
 
 `status` 分别显示全局 MCP 配置、工作区选择和当前 Session 实际观测；unknown 表示没有可信的当前观测，不表示 0 个服务器。`skill list` 默认收起正常 admission 详情，异常和不可用原因仍显示；`--verbose` 展开，`--json` 保留完整结构。DSH 的模型目录由所选 Provider 提供，使用 `model list` 查询。
+
+DSH 会话的 MCP 排查先用 `myagents diagnose runtime dsh --json` 查看 `extensions` 的 admission / prepare 状态，再用 `myagents mcp show <id>` 核对配置。全局 `enabled` 只是开关，不证明当前会话已连接；`prepare_failed` 表示扩展准备失败。当前 DSH 尚未发布统一 `sessionMcp` effective snapshot，因此 `status` 的 unavailable / not observed 不能当作无服务器，也不能用配置或扁平工具名猜工具数量。诊断若只给泛化 reason，需保留该会话与对应时间的日志继续定位，不能宣称原始根因已经确定。
 
 ### IM 媒体下发（im）
 
@@ -480,7 +474,7 @@ myagents im readme                                      # 拉 IM 工具完整文
 - `--file` 必须是绝对路径，且路径白名单：必须落在 workspace / `/tmp` / MyAgents scratch 目录之一——这是为了防 prompt injection 把 `~/.ssh/id_rsa` 之类发给聊天对方
 - 不在 IM session 内调用会返回 "No IM context"，正常——这命令本来就是 session-scoped
 
-### Agent 身份与 Session 协作（agent / session, PRD 0.4.3）
+### Agent 网络与 Session 协作（agent / session）
 
 每个 user-visible Workspace 都有一个稳定 Agent identity。Agent 是工作区
 及其执行默认的长期地址；`enabled=false` 只关闭 Heartbeat、Memory Update、
@@ -491,6 +485,7 @@ Memory Evo 三项主动能力，不会关闭由 `channel.enabled` 独立控制�
 # 先发现 Agent，并确认哪个是当前 CLI 调用方
 myagents agent list
 myagents agent show <agentId>
+myagents agent network-diagnose --json                 # 本机连接、协议与设备目录；只读，不能开放远端 Agent
 
 # 查看某 Agent 最近可复用的历史上下文（只读，不唤醒）
 myagents session list --agent <agentId> [--limit 10]
@@ -509,6 +504,10 @@ myagents session start --agent <agentId> -p "<prompt>" --no-reply
 
 # 只观察另一个 Session；不注入新工作
 myagents session watch <sessionId>
+myagents session state <sessionId> --json                # idle / running / waiting_user_action；不启动 AI
+myagents session get <sessionId> --limit 5 --json         # 分页读取可见正文
+myagents session watches --json                         # 仅当前调用方的观察
+myagents session unwatch <watchId>                       # 或 --all；不停止目标工作
 myagents agent --help                                        # Agent identity 完整契约
 myagents session --help                                      # 完整用法 / EXIT CODES / 示例
 ```
@@ -522,18 +521,23 @@ myagents session --help                                      # 完整用法 / EX
 - `start` 创建 fresh context；`send` 保留现有 context；`watch` 不注入工作
 - **不要用**于答复当前用户(直接回复就行);不要用于给 IM peer 发消息(用 `im send-media`)
 - AI 身份(from label)系统会自动从你所在 session 元数据推导——你不需要也不应该手动指定
-- 只使用 discovery 命令返回的 ID，不猜 ID，也不用 workspace path 充当 selector
+- 只使用 discovery 返回的完整 ID，不猜 ID，不用名称或 workspace path 充当 selector。远端使用完整 `ma-agent:1:...` / `ma-session:1:...`，不截短
+- 同账号远端设备必须入网、在线且开放目标 Agent；`enabled`、IM Channel 与网络开放互相独立。发现结果 `complete=false` 时不要把缺项当作不存在
+- `session get` 默认最近 5 条按旧到新返回；`before` 排除锚点，用当前页第一条 message id 向前翻页。只读可见正文，不含工具、思考与隐藏控制事件
 
 **异步语义(关键):**
 - `start` / `send` CLI 成功只表示首条请求已接纳，**不表示工作完成**
-- `start` 必须从真实 MyAgents Session 发起；目标按自己的 runtime/model/permission/MCP/plugin/tool 配置执行，不接受调用方覆盖
+- App 内真实 Session 发起 `start/send` 默认回传；授权的外部终端为单向投递，不支持 watch/观察管理。目标按自己的 runtime/model/permission/MCP/plugin/tool 配置执行，不接受调用方覆盖
 - `start` receipt 返回新的 `sessionId`、`messageId`；`messageId` 对应稍后 `send.result.requestEventId`
-- 默认期待结果推回：对方处理完后，你将在新 turn 收到 `<myagents-session-event type="send.result">`
+- 默认期待结果推回：对方处理完后，系统向来源 Session 投递 `<myagents-session-event type="send.result">`，不需要主动轮询或再发工作
 - `--no-reply`:仅通知,reply 不回流(对方按自己呈现路径输出)
 - `send` 的 target session idle/dead 不影响投递——系统会自动唤起
-- `watch` 只观察目标 session 当前工作；目标已经 idle 时,CLI 会直接返回 `<myagents-session-event type="watch.already_idle">` 和最近结果
+- `watch` 一次性观察目标真实轮次；idle 时直接返回 `watch.already_idle` 与最近结果，按 live/history/none/unavailable 和 terminalStatus 判断，不能当作某次请求的成功证明
 - `watch` 不会向目标 session 注入新 prompt；需要新工作时用 `send`
-- 若 `start` 返回 admission unconfirmed，保留 receipt IDs，用 `session list --agent` 辅助观察，**不要自动重试**
+- 接纳不等于 Runtime 消费，消费也不等于成功；结果关联实际消费轮次。协作 Inbox 与手动输入的队列设置独立，在支持的安全点实时进入
+- 默认回传通常无需另加 watch；同轮重复观察可合并。unwatch 只取消观察，不取消默认回传、撤回已接纳消息或停止目标
+- `waiting_user_action` 需要目标用户审批/确认/回答；来源不能代批。`idle` 不是成功状态
+- start/send 接纳未知或回执丢失时保留 receipt/request IDs，先用 get/state/list 观察，**不要自动重试**。真实断线无离线补投，目标已接纳工作仍可能继续
 
 **Windows 安全:**
 - `-p` 内容含 `\n` 或 > 4KB → CLI 立即 fail-fast(exit 3),提示切到 `--prompt-file`
@@ -561,20 +565,20 @@ myagents widget readme <module1> [<module2> ...]        # 拉具体模块的完�
 
 1. 从用户给的文档提取：server ID、类型（stdio/sse/http）、command 或 URL、所需环境变量
 2. `myagents mcp add --dry-run ...` 预览
-3. 给用户看预览，确认
+3. 核对预览是否符合已授权目标；仍有关键缺项或超出授权时再澄清
 4. 执行：`mcp add` → `mcp enable --scope both` → 配 env（如需）→ 如果是 OAuth 类的再 `mcp oauth start`
 5. `myagents mcp test <id>` 实际握手测试
 6. `myagents reload`
-7. 告诉用户："发条新消息我就能用了"
+7. 读取实际工具/admission 状态，说明当前 Runtime 的生效边界
 
 ### 配置模型服务（最常见、最有价值）
 
-#### 协议优先级：Anthropic 协议永远先于 OpenAI 兼容
+#### 按 Runtime 与模型声明选择协议
 
-MyAgents 基于 Claude Agent SDK，原生协议是 Anthropic Messages API。接入第三方 API 时：
+Claude Agent SDK 的原生协议是 Anthropic Messages API；DSH 可使用 Provider 声明的原生协议。先确认目标 Runtime 与模型元数据。对 SDK 路径接入第三方 API 时：
 
-1. **Anthropic 协议（最优先）**：原生协议，零转换开销，所有 SDK 能力（工具调用 / 流式 / Extended Thinking）都正常
-2. **OpenAI 兼容（兜底）**：服务商只给 `/v1/chat/completions` 时用 `--protocol openai`，过协议桥接层转换，部分高级功能受限
+1. **Anthropic 协议**：SDK 原生路径，优先使用服务商明确支持的接口；工具、流式和 Thinking 仍受具体模型能力限制。
+2. **OpenAI 兼容**：按服务商声明选择 Chat Completions 或 Responses，SDK 路径经过兼容桥；不以模型名称猜协议。
 
 #### 从文档提取配置
 
@@ -610,7 +614,7 @@ MyAgents 基于 Claude Agent SDK，原生协议是 Anthropic Messages API。接�
 **`--auth-type` 选择**：
 - 文档说设 `ANTHROPIC_AUTH_TOKEN` → `auth_token`
 - 文档说设 `ANTHROPIC_API_KEY` → `api_key`
-- 两个都设 / 没说清 → `both`（默认，最安全）
+- 文档要求两个都设 → `both`；没说清先核对文档或已有 Provider，不能把默认值称为普适最安全
 - OpenRouter 等特殊服务商 → `auth_token_clear_api_key`
 
 #### model add 完整 flag
@@ -644,7 +648,7 @@ myagents model add \
 1. `model list` 看是不是已有内置 Provider
 2. 是内置 → 直接 `model set-key`
 3. 要新增 → `model add --dry-run ...` 预览
-4. 给用户看预览，确认
+4. 核对预览是否符合已授权目标；有协议/覆盖等未确定事项时再澄清
 5. `model add ...` 正式加
 6. `model set-key <id> <key>`
 7. `model verify <id>`
@@ -652,17 +656,16 @@ myagents model add \
    - 认证失败 → 检查 Key 和 `--auth-type`
    - 模型不存在 → 检查模型名称
    - 余额不足 → 切到免费模型验证
-   - 协议不对 → `--protocol` 在 anthropic / openai 之间切
+   - 协议不对 → 核对模型元数据、服务商文档与已保存协议，修正真实不一致，不盲目轮换接口
 9. 视情况 `model set-default <id>`
 
 ### 配置 Agent Channel
 
 ```bash
 myagents agent channel list <agentId>                                       # 看现有
-myagents agent channel add <agentId> --type telegram --bot-token <token>
-myagents agent channel add <agentId> --type feishu --feishu-app-id <id> --feishu-app-secret <secret>
-myagents agent channel add <agentId> --type dingtalk --dingtalk-client-id <id> --dingtalk-client-secret <secret>
+myagents agent channel add --help                       # 查当前版本支持的字段/凭据 flag
+myagents agent channel add <agentId> --type <平台> ...   # 使用 help 声明的字段，不猜平台专用 flag
 myagents agent channel remove <agentId> <channelId>
 ```
 
-不同平台需要不同凭证（flag 名必须与配置字段一致）。OpenClaw 社区插件（如飞书 `openclaw-lark`、微信）的 `--type` 是 `openclaw:<pluginId>`，并需要先 `plugin install` 装好对应插件。
+不同平台需要不同凭证；飞书也提供 UI 扫码创建。OpenClaw 社区实现使用 `openclaw:<pluginId>`，先安装对应插件；不要把内置飞书与社区飞书当同一条登录链路。

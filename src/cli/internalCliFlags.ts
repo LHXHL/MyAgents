@@ -54,7 +54,7 @@ export const INTERNAL_CLI_FLAGS: Readonly<Record<string, readonly string[]>> = {
   "cc-plugin/uninstall": ["id","purgeData"],
   "cc-plugin/enable": ["id"],
   "cc-plugin/disable": ["id"],
-  "skill/list": ["workspace"],
+  "skill/list": ["workspace","verbose"],
   "skill/info": ["name","scope","workspace"],
   "skill/add": ["force","plugin","scope","skill","url"],
   "skill/remove": ["name","scope","workspace"],
@@ -90,6 +90,10 @@ export const INTERNAL_CLI_FLAGS: Readonly<Record<string, readonly string[]>> = {
   "space/attachment-download": ["agentId","attachment","attachmentId","attachmentValueMissing","file","fileValueMissing","issueId","output","space","workspace","workspaceId","workspacePath"],
   "space/attachment-add": ["agentId","attachment","attachmentId","attachmentValueMissing","file","fileValueMissing","issueId","output","space","workspace","workspaceId","workspacePath"],
   "space/attachment-inspect": ["agentId","attachment","attachmentId","attachmentValueMissing","file","fileValueMissing","issueId","output","space","workspace","workspaceId","workspacePath"],
+  "session/state": ["sessionId"],
+  "session/watches": [],
+  "session/unwatch": ["all"],
+  "agent/network-diagnose": ["cursor","limit"],
   "session/watch": ["to","targetSessionId"],
   "reload": ["workspacePath"]
 };

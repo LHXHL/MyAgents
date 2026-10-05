@@ -350,6 +350,9 @@ export function useUpdater(): UseUpdaterResult {
                 // Track update_check event only after successful check
                 track('update_check');
             } catch (err) {
+                // Packaged debug builds are deliberately disabled by Rust
+                // even when renderer debug logging is off.
+                if (err === 'UPDATER_DISABLED_IN_DEVELOPMENT') return;
                 // Silent failure - don't bother user
                 console.error('[useUpdater] Periodic check failed:', err);
             }

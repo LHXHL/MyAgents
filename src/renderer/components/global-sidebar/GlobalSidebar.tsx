@@ -2,6 +2,7 @@ import { selectUsableAgentWorkspaceRecords } from '../../../shared/agentWorkspac
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
   AlertIcon,
+  RadioIcon,
   CheckIcon,
   ChevronDownIcon,
   EyeIcon,
@@ -33,16 +34,16 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { open } from '@tauri-apps/plugin-dialog';
 
 import { track } from '@/analytics';
 import myAgentsLogo from '@/assets/runtime-icons/myagents.png';
 import { updateSession, type SessionMetadata } from '@/api/sessionClient';
+import { MyAgentsLogotype } from '@/components/brand/MyAgentsLogotype';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import FeedbackPopover from '@/components/FeedbackPopover';
+import AccountEntry from '@/features/account/AccountEntry';
 import { APP_SHELL_POPOVER_CHROME } from '@/components/global-sidebar/appShellPopoverChrome';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
-import PathInputDialog from '@/components/PathInputDialog';
 import SessionStatsModal from '@/components/SessionStatsModal';
 import SessionContextMenu from '@/components/SessionContextMenu';
 import SessionTagBadge from '@/components/SessionTagBadge';
@@ -66,7 +67,7 @@ import {
 } from '@/components/icons';
 import UnreadNotificationIndicator from '@/components/UnreadNotificationIndicator';
 import { useToast } from '@/components/Toast';
-import { AddWorkspaceMenu, TemplateLibraryDialog } from '@/components/launcher';
+import { NewAgentPanel } from '@/components/launcher';
 import WorkspaceIcon from '@/components/launcher/WorkspaceIcon';
 import { sortLauncherProjects } from '@/components/launcher/workspaceSort';
 import { MenuItem } from '@/components/ui/MenuItem';
@@ -77,7 +78,6 @@ import {
   isProjectVisibleToUser,
   isSystemPresetProject,
   type Project,
-  type WorkspaceTemplate,
 } from '@/config/types';
 import {
   getAgentById,
@@ -107,7 +107,7 @@ import {
   seedDefaultWorkspaceExpansion,
   type GlobalSidebarPreferenceV1,
 } from '@/utils/globalSidebarPreference';
-import { isBrowserDevMode, isTauriEnvironment, pickFolderForDialog } from '@/utils/browserMock';
+import { isTauriEnvironment } from '@/utils/browserMock';
 import { formatTime, getSessionDisplayText } from '@/utils/taskCenterUtils';
 import { getFullSessionDisplayText } from '@/utils/sessionDisplay';
 import { copyPlainText } from '@/utils/clipboard';
@@ -180,6 +180,7 @@ interface GlobalSidebarProps {
   onOpenTaskCenter: () => void;
   onCreateTask: () => void;
   onOpenSpace: () => void;
+  onOpenAgentNetwork?: () => void;
   onOpenAppRoute?: (route: AppRoute) => Promise<boolean> | boolean;
   onOpenCapabilities: (section?: CapabilitySection) => void;
   onOpenSettings: () => void;
@@ -193,6 +194,10 @@ interface GlobalSidebarProps {
   onRenameSession: (sessionId: string, title: string) => Promise<SessionMetadata | null>;
   historyTagIntent?: { id: number; tag: string } | null;
   onHistoryTagIntentConsumed?: (id: number) => void;
+  /** The single New Agent panel is owned here but opened from App-level entry
+   *  points too (launcher workspace selector), so its open state is lifted. */
+  newAgentPanelOpen: boolean;
+  onNewAgentPanelOpenChange: (open: boolean) => void;
 }
 
 function useForcedRail(): boolean {
@@ -228,7 +233,8 @@ interface SidebarNavButtonProps {
   active?: boolean;
   disabled?: boolean;
   tooltipDisabled?: boolean;
-  onIntent?: () => void;
+  hasPopup?: 'menu';
+  ariaExpanded?: boolean;
   onClick: () => void;
 }
 
@@ -276,16 +282,17 @@ function SidebarNavButton({
   active,
   disabled,
   tooltipDisabled,
-  onIntent,
+  hasPopup,
+  ariaExpanded,
   onClick,
 }: SidebarNavButtonProps) {
   const button = (
     <button
       type="button"
       onClick={onClick}
-      onPointerEnter={onIntent}
-      onFocus={onIntent}
       disabled={disabled}
+      aria-haspopup={hasPopup}
+      aria-expanded={ariaExpanded}
       aria-current={active ? 'page' : undefined}
       aria-label={label}
       className={`global-sidebar-row relative flex h-8 items-center text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
@@ -298,7 +305,7 @@ function SidebarNavButton({
       data-global-sidebar-nav-button
     >
       <span className="absolute left-3 flex h-4 w-4 shrink-0 items-center justify-center">{icon}</span>
-      <span className="global-sidebar-copy global-sidebar-nav-label min-w-0 truncate text-left" aria-hidden={!expanded}>
+      <span className="global-sidebar-copy global-sidebar-nav-label global-sidebar-label min-w-0 truncate text-left" aria-hidden={!expanded}>
         {label}
       </span>
     </button>
@@ -313,6 +320,54 @@ function SidebarNavButton({
       {button}
     </Tip>
   );
+}
+
+function SidebarMore({ expanded, activeView, onTeam }: {
+  expanded: boolean; activeView: string | undefined; onTeam: () => void;
+}) {
+  const { t } = useTranslation('app');
+  const [open, setOpen] = useState(false);
+  const anchor = useRef<HTMLDivElement>(null), menu = useRef<HTMLDivElement>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const keyboard = useRef(false);
+  const cancel = () => { if (timer.current) clearTimeout(timer.current); timer.current = null; };
+  const show = () => { cancel(); setOpen(true); };
+  const hide = () => { cancel(); timer.current = setTimeout(() => setOpen(false), 150); };
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  const setMenuRef = useCallback((node: HTMLDivElement | null) => {
+    menu.current = node;
+    if (node && keyboard.current) { node.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus(); keyboard.current = false; }
+  }, []);
+  const enter = () => {
+    keyboard.current = true; show();
+    if (menu.current) { menu.current.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus(); keyboard.current = false; }
+  };
+  const close = () => { cancel(); setOpen(false); };
+  return <div ref={anchor} className="relative" onPointerEnter={show} onPointerLeave={hide}
+    onKeyDown={event => { if (event.key === 'ArrowRight') { event.preventDefault(); enter(); } }}>
+    <SidebarNavButton expanded={expanded} active={activeView === 'space'}
+      icon={<MoreIcon className="h-4 w-4" />} label={t('globalSidebar.more')} tooltipDisabled={open} hasPopup="menu" ariaExpanded={open}
+      onClick={enter} />
+    <Popover open={open} onClose={close} anchorRef={anchor} placement="right-start" className="min-w-40 p-1">
+      <div ref={setMenuRef} role="menu" aria-label={t('globalSidebar.more')} onPointerEnter={cancel} onPointerLeave={hide}
+        onKeyDown={event => {
+          if (isImeComposingEvent(event)) return;
+          const buttons = [...(menu.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])];
+          const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault(); buttons[(index + (event.key === 'ArrowDown' ? 1 : buttons.length - 1)) % buttons.length]?.focus();
+          }
+          if (event.key === 'ArrowLeft' || event.key === 'Escape') {
+            event.preventDefault(); event.stopPropagation(); close(); anchor.current?.querySelector<HTMLButtonElement>('button')?.focus();
+          }
+        }}>
+        <button type="button" role="menuitem" onClick={() => { close(); onTeam(); }}
+          className="flex h-9 w-full items-center gap-2 rounded-md px-3 text-sm text-[var(--ink)] hover:bg-[var(--hover-bg)] focus:bg-[var(--hover-bg)]">
+          <TeamIcon className="h-4 w-4 text-[var(--ink-muted)]" /><span className="global-sidebar-label">{t('globalSidebar.team')}</span>
+        </button>
+      </div>
+    </Popover>
+  </div>;
 }
 
 /**
@@ -410,6 +465,7 @@ export default memo(function GlobalSidebar({
   onOpenTaskCenter,
   onCreateTask,
   onOpenSpace,
+  onOpenAgentNetwork,
   onOpenAppRoute,
   onOpenCapabilities,
   onOpenSettings,
@@ -419,6 +475,8 @@ export default memo(function GlobalSidebar({
   onRenameSession,
   historyTagIntent,
   onHistoryTagIntentConsumed,
+  newAgentPanelOpen,
+  onNewAgentPanelOpenChange,
 }: GlobalSidebarProps) {
   const { t } = useTranslation('app');
   const { t: tLauncher } = useTranslation('launcher');
@@ -433,7 +491,6 @@ export default memo(function GlobalSidebar({
     projects,
     isLoading: projectsLoading,
     error: projectsError,
-    addProject,
     removeProject,
     patchProject,
     touchProject,
@@ -469,18 +526,14 @@ export default memo(function GlobalSidebar({
   const notificationTriggerRef = useRef<HTMLButtonElement | null>(null);
   const notificationPanelRef = useRef<HTMLDivElement | null>(null);
 
-  const [pathDialogOpen, setPathDialogOpen] = useState(false);
-  const [pendingFolderName, setPendingFolderName] = useState('');
-  const [pendingDefaultPath, setPendingDefaultPath] = useState('');
-  const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
+  const [recentlyCreatedWorkspaceKey, setRecentlyCreatedWorkspaceKey] = useState<string | null>(null);
   const [projectToRemove, setProjectToRemove] = useState<Project | null>(null);
   const [agentWorkspacePath, setAgentWorkspacePath] = useState<string | null>(null);
   const [pendingDeleteSession, setPendingDeleteSession] = useState<SessionMetadata | null>(null);
   const [statsSession, setStatsSession] = useState<SessionMetadata | null>(null);
   const pinInFlightRef = useRef(new Set<string>());
   const archiveInFlightRef = useRef(new Set<string>());
-  const childLayerOpen = pathDialogOpen
-    || templateDialogOpen
+  const childLayerOpen = newAgentPanelOpen
     || projectToRemove !== null
     || agentWorkspacePath !== null
     || pendingDeleteSession !== null
@@ -767,58 +820,23 @@ export default memo(function GlobalSidebar({
     }));
   }, []);
 
-  const handleAddFolder = useCallback(async () => {
-    try {
-      if (isBrowserDevMode()) {
-        const folderInfo = await pickFolderForDialog();
-        if (!folderInfo) return;
-        setPendingFolderName(folderInfo.folderName);
-        setPendingDefaultPath(folderInfo.defaultPath);
-        rememberChildLayerOrigin();
-        setPathDialogOpen(true);
-        return;
-      }
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        title: tLauncher('dialogs.pickProjectFolder'),
-      });
-      if (typeof selected === 'string') await addProject(selected);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      toastRef.current.error(tLauncher('toasts.addProjectFailed', { message }));
-    }
-  }, [addProject, rememberChildLayerOrigin, tLauncher]);
+  const handleOpenNewAgentPanel = useCallback((origin?: HTMLElement | null) => {
+    // Same child-layer contract as the other sidebar dialogs: return focus to
+    // the entry inside the flyout so it stays open and the new row is visible.
+    rememberChildLayerOrigin(origin);
+    onNewAgentPanelOpenChange(true);
+  }, [onNewAgentPanelOpenChange, rememberChildLayerOrigin]);
 
-  const handlePathConfirm = useCallback(async (path: string) => {
-    setPathDialogOpen(false);
-    try {
-      await addProject(path);
-      const normalizedPath = path.replace(/\\/g, '/');
-      const parentDir = normalizedPath.split('/').slice(0, -1).join('/');
-      if (parentDir) window.localStorage.setItem('myagents:lastProjectDir', parentDir);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      toastRef.current.error(tLauncher('toasts.addProjectFailed', { message }));
-    } finally {
-      restoreChildLayerFocus();
-    }
-  }, [addProject, restoreChildLayerFocus, tLauncher]);
+  const handleNewAgentCreated = useCallback((project: Project) => {
+    setRecentlyCreatedWorkspaceKey(normalizeWorkspacePathIdentity(project.path));
+  }, []);
 
-  const handleCreateFromTemplate = useCallback(async (
-    path: string,
-    template: WorkspaceTemplate,
-    displayName?: string,
-  ) => {
-    await addProject(path, {
-      icon: template.icon,
-      displayName,
-      templateId: template.id,
-      templateSource: template.isBuiltin ? 'builtin' : 'user',
-      agentDefaults: template.isBuiltin ? template.agentDefaults : undefined,
-    });
-    track('workspace_create', { source: 'template' });
-  }, [addProject]);
+  // The created-row flash is a one-shot cue; clear it after the CSS animation.
+  useEffect(() => {
+    if (!recentlyCreatedWorkspaceKey) return;
+    const timer = setTimeout(() => setRecentlyCreatedWorkspaceKey(null), 1600);
+    return () => clearTimeout(timer);
+  }, [recentlyCreatedWorkspaceKey]);
 
   const handleOpenTaskCenter = useCallback(() => {
     track('task_center_open', {});
@@ -1021,6 +1039,7 @@ export default memo(function GlobalSidebar({
   }, [closeFlyout, closeNotificationCenter, historyTagIntent]);
 
   const activeView = activeTab?.view;
+  const searchAvailable = isTauriEnvironment();
   const isWindows = typeof navigator !== 'undefined'
     && navigator.platform.toLowerCase().includes('win');
   const tree = (
@@ -1049,11 +1068,8 @@ export default memo(function GlobalSidebar({
         ...current,
         showAutomationSessions: !current.showAutomationSessions,
       }))}
-      onAddFolder={handleAddFolder}
-      onCreateFromTemplate={() => {
-        rememberChildLayerOrigin();
-        setTemplateDialogOpen(true);
-      }}
+      onCreateAgent={handleOpenNewAgentPanel}
+      recentlyCreatedWorkspaceKey={recentlyCreatedWorkspaceKey}
       onOpenWorkspace={handleOpenWorkspace}
       onOpenSession={handleOpenSession}
       onTogglePin={handleTogglePin}
@@ -1128,8 +1144,10 @@ export default memo(function GlobalSidebar({
             type="button"
             onClick={() => { void openExternal(MYAGENTS_WEBSITE_URL); }}
             aria-label={t('globalSidebar.openWebsite')}
+            aria-hidden={!expanded && searchAvailable}
+            inert={!expanded && searchAvailable}
             className={`global-sidebar-brand-link flex h-8 items-center pr-1 text-left cursor-pointer rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
-              expanded ? 'min-w-0 max-w-[calc(var(--global-sidebar-expanded-width)-var(--global-sidebar-rail-button-left)-var(--space-2))]' : 'w-10 overflow-hidden'
+              expanded ? 'min-w-0' : 'w-10 overflow-hidden'
             }`}
             data-global-sidebar-brand-link
           >
@@ -1145,9 +1163,30 @@ export default memo(function GlobalSidebar({
               aria-hidden={!expanded}
               data-global-sidebar-brand-name
             >
-              MyAgents
+              <MyAgentsLogotype variant="compact" className="global-sidebar-brand-logotype" title="MyAgents" />
             </span>
           </button>
+          {searchAvailable && (
+            <Tip label={t('globalSidebar.search')} position="right" disabled={searchOpen} className="global-sidebar-search-slot">
+              <button
+                type="button"
+                onPointerEnter={() => { void loadHistorySearchOverlayContent(); }}
+                onFocus={() => { void loadHistorySearchOverlayContent(); }}
+                onClick={handleSearchOpen}
+                aria-label={t('globalSidebar.search')}
+                aria-haspopup="dialog"
+                aria-expanded={searchOpen}
+                className={`global-sidebar-row global-sidebar-action-button flex items-center justify-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+                  searchOpen
+                    ? 'bg-[var(--paper-inset)] text-[var(--ink)]'
+                    : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
+                }`}
+                data-global-sidebar-search-trigger
+              >
+                <SearchIcon className="h-4 w-4" />
+              </button>
+            </Tip>
+          )}
         </div>
 
         <nav
@@ -1160,15 +1199,6 @@ export default memo(function GlobalSidebar({
             label={t('globalSidebar.newChat')}
             onClick={onNewTab}
           />
-          {isTauriEnvironment() && (
-            <SidebarNavButton
-              expanded={expanded}
-              icon={<SearchIcon className="h-4 w-4" />}
-              label={t('globalSidebar.search')}
-              onIntent={() => { void loadHistorySearchOverlayContent(); }}
-              onClick={handleSearchOpen}
-            />
-          )}
           <div className="group/task-create relative">
             <SidebarNavButton
               expanded={expanded}
@@ -1198,15 +1228,7 @@ export default memo(function GlobalSidebar({
               </span>
             )}
           </div>
-          {teamSpaceAvailable && (
-            <SidebarNavButton
-              expanded={expanded}
-              active={activeView === 'space'}
-              icon={<TeamIcon className="h-4 w-4" />}
-              label={t('globalSidebar.team')}
-              onClick={onOpenSpace}
-            />
-          )}
+
           <SidebarNavButton
             expanded={expanded}
             active={activeView === 'capabilities'}
@@ -1214,6 +1236,17 @@ export default memo(function GlobalSidebar({
             label={t('globalSidebar.capabilities')}
             onClick={() => onOpenCapabilities()}
           />
+          <SidebarNavButton
+            expanded={expanded}
+            active={activeView === 'agentnetwork'}
+            disabled={!onOpenAgentNetwork}
+            icon={<RadioIcon className="h-4 w-4" />}
+            label={t('globalSidebar.agentNetwork')}
+            onClick={() => onOpenAgentNetwork?.()}
+          />
+          {teamSpaceAvailable && (
+            <SidebarMore key={activeView ?? 'launcher'} expanded={expanded} activeView={activeView} onTeam={onOpenSpace} />
+          )}
         </nav>
 
         <div className="relative min-h-0 flex-1" data-global-sidebar-workspace-shell>
@@ -1283,44 +1316,9 @@ export default memo(function GlobalSidebar({
         </div>
 
         <div
-          className={`shrink-0 pb-2 ${expanded ? 'px-3 pt-0' : 'global-sidebar-rail-stack pt-3'}`}
+          className={`shrink-0 pb-2 ${expanded ? 'pl-3 pr-[var(--global-sidebar-action-inset)] pt-0' : 'global-sidebar-rail-stack pt-3'}`}
           data-global-sidebar-footer-actions
         >
-          <button
-            ref={notificationTriggerRef}
-            type="button"
-            onClick={toggleNotificationCenter}
-            aria-label={notificationCenter.snapshot.hasUnread
-              ? t('notificationCenter.bellUnread')
-              : t('notificationCenter.bell')}
-            aria-haspopup="dialog"
-            aria-expanded={notificationOpen}
-            aria-controls="global-notification-center"
-            className={`global-sidebar-row relative flex h-8 items-center text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
-              expanded ? 'w-full' : 'w-10'
-            } ${
-              notificationOpen
-                ? 'bg-[var(--paper-inset)] text-[var(--ink)]'
-                : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
-            }`}
-            data-notification-center-trigger
-          >
-            <span className="absolute left-3 flex h-4 w-4 items-center justify-center">
-              <BellIcon className="h-4 w-4" />
-              {notificationCenter.snapshot.hasUnread && (
-                <span
-                  className="absolute -right-1 -top-1 h-1.5 w-1.5 rounded-full bg-[var(--accent-warm)] ring-2 ring-[var(--global-sidebar-bg)]"
-                  aria-hidden="true"
-                />
-              )}
-            </span>
-            <span
-              className="global-sidebar-copy global-sidebar-nav-label min-w-0 truncate text-left"
-              aria-hidden={!expanded}
-            >
-              {t('notificationCenter.bell')}
-            </span>
-          </button>
           <div
             ref={feedbackTriggerRef}
             className={`-mr-3 pr-3 ${expanded ? '' : 'flex justify-center'}`}
@@ -1347,6 +1345,39 @@ export default memo(function GlobalSidebar({
             label={t('globalSidebar.settings')}
             onClick={onOpenSettings}
           />
+          <div className="global-sidebar-account-row grid grid-cols-[minmax(0,1fr)_var(--global-sidebar-action-size)]" data-global-sidebar-account-row>
+            <AccountEntry expanded={expanded} available={teamSpaceAvailable}
+              environment={config.spaceEnvironment ?? 'production'} onOpenSpace={onOpenSpace} />
+            <span className="global-sidebar-notification-slot">
+              <button
+                ref={notificationTriggerRef}
+                type="button"
+                onClick={toggleNotificationCenter}
+                aria-label={notificationCenter.snapshot.hasUnread
+                  ? t('notificationCenter.bellUnread')
+                  : t('notificationCenter.bell')}
+                aria-haspopup="dialog"
+                aria-expanded={notificationOpen}
+                aria-controls="global-notification-center"
+                className={`global-sidebar-row global-sidebar-action-button relative flex items-center justify-center text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+                  notificationOpen
+                    ? 'bg-[var(--paper-inset)] text-[var(--ink)]'
+                    : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
+                }`}
+                data-notification-center-trigger
+              >
+                <span className="relative flex h-4 w-4 items-center justify-center">
+                  <BellIcon className="h-4 w-4" />
+                  {notificationCenter.snapshot.hasUnread && (
+                    <span
+                      className="absolute -right-1 -top-1 h-1.5 w-1.5 rounded-full bg-[var(--accent-warm)] ring-2 ring-[var(--global-sidebar-bg)]"
+                      aria-hidden="true"
+                    />
+                  )}
+                </span>
+              </button>
+            </span>
+          </div>
         </div>
       </aside>
 
@@ -1408,24 +1439,14 @@ export default memo(function GlobalSidebar({
         document.body,
       )}
 
-      <PathInputDialog
-        isOpen={pathDialogOpen}
-        folderName={pendingFolderName}
-        defaultPath={pendingDefaultPath}
-        onConfirm={handlePathConfirm}
-        onCancel={() => {
-          setPathDialogOpen(false);
-          restoreChildLayerFocus();
-        }}
-      />
-
-      {templateDialogOpen && (
-        <TemplateLibraryDialog
-          onCreateWorkspace={handleCreateFromTemplate}
+      {newAgentPanelOpen && (
+        <NewAgentPanel
           onClose={() => {
-            setTemplateDialogOpen(false);
-            restoreChildLayerFocus();
+            onNewAgentPanelOpenChange(false);
+            // Launcher-opened panels never registered an origin; only restore ours.
+            if (childLayerReturnFocusRef.current) restoreChildLayerFocus();
           }}
+          onCreated={handleNewAgentCreated}
         />
       )}
 
@@ -1532,8 +1553,8 @@ interface WorkspaceTreeProps {
   onToggleArchived: () => void;
   onSetSessionView: (view: 'all' | 'favorites') => void;
   onToggleAutomation: () => void;
-  onAddFolder: () => void;
-  onCreateFromTemplate: () => void;
+  onCreateAgent: (origin?: HTMLElement | null) => void;
+  recentlyCreatedWorkspaceKey: string | null;
   onOpenWorkspace: (project: Project) => void;
   onOpenSession: (session: SessionMetadata, project: Project) => void;
   onTogglePin: (project: Project) => void;
@@ -1641,8 +1662,8 @@ function WorkspaceTree({
   onToggleArchived,
   onSetSessionView,
   onToggleAutomation,
-  onAddFolder,
-  onCreateFromTemplate,
+  onCreateAgent,
+  recentlyCreatedWorkspaceKey,
   onOpenWorkspace,
   onOpenSession,
   onTogglePin,
@@ -1708,6 +1729,14 @@ function WorkspaceTree({
     }
   }, [activeWorkspaceKey]);
 
+  useEffect(() => {
+    if (!recentlyCreatedWorkspaceKey) return;
+    const workspaceNode = workspaceRefs.current.get(recentlyCreatedWorkspaceKey);
+    if (typeof workspaceNode?.scrollIntoView === 'function') {
+      workspaceNode.scrollIntoView({ block: 'nearest' });
+    }
+  }, [recentlyCreatedWorkspaceKey]);
+
   const setViewMenu = useCallback((open: boolean) => {
     setViewMenuOpen(open);
     onNestedInteractionChange('view-options', open);
@@ -1716,7 +1745,7 @@ function WorkspaceTree({
 
   return (
     <section className="relative flex h-full min-h-0 flex-col" aria-label={t('globalSidebar.workspaces')}>
-      <div className="flex h-8 shrink-0 items-center gap-1 pl-6 pr-3">
+      <div className="flex h-8 shrink-0 items-center gap-1 pl-6 pr-[var(--global-sidebar-action-inset)]">
         <h2 className="min-w-0 flex-1 truncate text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]">
           {t('globalSidebar.workspaceSection')}
         </h2>
@@ -1725,7 +1754,7 @@ function WorkspaceTree({
             ref={viewMenuRef}
             type="button"
             onClick={() => setViewMenu(!viewMenuOpen)}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+            className="global-sidebar-action-button flex items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
             aria-label={t('globalSidebar.workspaceViewOptions')}
           >
             <MoreIcon className="h-4 w-4" />
@@ -1758,12 +1787,16 @@ function WorkspaceTree({
             onClick={() => { onToggleAutomation(); setViewMenu(false); }}
           />
         </Popover>
-        <AddWorkspaceMenu
-          variant="icon"
-          onAddFolder={onAddFolder}
-          onCreateFromTemplate={onCreateFromTemplate}
-          onOpenChange={(open) => onNestedInteractionChange('add-workspace', open)}
-        />
+        <Tip label={tLauncher('newAgentPanel.title')} position="bottom" align="end">
+          <button
+            type="button"
+            onClick={(event) => onCreateAgent(event.currentTarget)}
+            className="global-sidebar-action-button flex items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+            aria-label={tLauncher('newAgentPanel.title')}
+          >
+            <PlusIcon className="h-3.5 w-3.5" />
+          </button>
+        </Tip>
       </div>
 
       <div
@@ -1807,11 +1840,11 @@ function WorkspaceTree({
             <p className="mt-1 text-xs text-[var(--ink-muted)]">{tLauncher('rightRail.emptyWorkspaceDescription')}</p>
             <button
               type="button"
-              onClick={onAddFolder}
+              onClick={(event) => onCreateAgent(event.currentTarget)}
               className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-3 py-2 text-sm font-medium text-[var(--button-primary-text)] hover:bg-[var(--button-primary-bg-hover)]"
             >
               <PlusIcon className="h-3.5 w-3.5" />
-              {tLauncher('rightRail.addFolder')}
+              <span className="global-sidebar-label">{tLauncher('rightRail.addFolder')}</span>
             </button>
           </div>
         ) : (
@@ -1834,6 +1867,7 @@ function WorkspaceTree({
                     project={project}
                     expanded={expandedSet.has(key)}
                     active={isActiveWorkspaceContext && !activeSessionId}
+                    recentlyCreated={recentlyCreatedWorkspaceKey === key}
                     actionTipPosition={index === 0 ? 'bottom' : 'top'}
                     onToggle={() => onToggleWorkspace(project)}
                     onOpenWorkspace={() => onOpenWorkspace(project)}
@@ -1927,7 +1961,7 @@ function WorkspaceTree({
                   <SidebarDisclosureSlot expanded={archivedExpanded} group="archived">
                     <ArchiveIcon className="h-4 w-4" />
                   </SidebarDisclosureSlot>
-                  <span className="min-w-0 flex-1 truncate text-left">{t('globalSidebar.archived')}</span>
+                  <span className="global-sidebar-label min-w-0 flex-1 truncate text-left">{t('globalSidebar.archived')}</span>
                   <span className="text-xs tabular-nums text-[var(--ink-subtle)]">{archivedProjects.length}</span>
                 </button>
                 {archivedExpanded && (
@@ -1958,6 +1992,7 @@ interface WorkspaceRowProps {
   project: Project;
   expanded: boolean;
   active: boolean;
+  recentlyCreated: boolean;
   actionTipPosition: 'top' | 'bottom';
   onToggle: () => void;
   onOpenWorkspace: () => void;
@@ -1973,6 +2008,7 @@ function WorkspaceRow({
   project,
   expanded,
   active,
+  recentlyCreated,
   actionTipPosition,
   onToggle,
   onOpenWorkspace,
@@ -2002,6 +2038,7 @@ function WorkspaceRow({
       aria-current={active ? 'page' : undefined}
       className="global-sidebar-row global-sidebar-resource-row group/workspace relative flex h-8 select-none items-center transition-colors"
       data-menu-open={menuOpen || undefined}
+      data-recently-created={recentlyCreated || undefined}
       data-global-sidebar-workspace-row
       onMouseDown={(event) => {
         if (event.button === 2) {
@@ -2023,7 +2060,7 @@ function WorkspaceRow({
           <WorkspaceIcon icon={project.icon} size={16} />
         </SidebarDisclosureSlot>
         <span
-          className="min-w-0 flex-1 truncate font-medium"
+          className="global-sidebar-label min-w-0 flex-1 truncate font-medium"
           data-global-sidebar-workspace-title
         >
           {displayName}
@@ -2035,7 +2072,7 @@ function WorkspaceRow({
           supplies 8px, and the local right padding keeps controls outside
           Fluent's 16px overlay hit region. */}
       <div
-        className={`global-sidebar-workspace-actions pointer-events-none absolute inset-y-0 right-0 flex items-center pl-6 pr-2 transition-opacity ${menuOpen ? 'opacity-100' : 'opacity-0 group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100'}`}
+        className={`global-sidebar-workspace-actions pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-6 transition-opacity ${menuOpen ? 'opacity-100' : 'opacity-0 group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100'}`}
         data-global-sidebar-workspace-actions
       >
         <Tip label={tLauncher('workspaceCard.more')} position={actionTipPosition} align="end" disabled={menuOpen}>
@@ -2043,7 +2080,7 @@ function WorkspaceRow({
             ref={menuRef}
             type="button"
             onClick={() => setMenu(!menuOpen)}
-            className={`flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] ${menuOpen ? 'pointer-events-auto' : 'pointer-events-none group-hover/workspace:pointer-events-auto group-focus-within/workspace:pointer-events-auto'}`}
+            className={`global-sidebar-action-button flex items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] ${menuOpen ? 'pointer-events-auto' : 'pointer-events-none group-hover/workspace:pointer-events-auto group-focus-within/workspace:pointer-events-auto'}`}
             aria-label={tLauncher('workspaceCard.more')}
           >
             <MoreIcon className="h-3.5 w-3.5" />
@@ -2053,7 +2090,7 @@ function WorkspaceRow({
           <button
             type="button"
             onClick={onOpenWorkspace}
-            className={`flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] ${menuOpen ? 'pointer-events-auto' : 'pointer-events-none group-hover/workspace:pointer-events-auto group-focus-within/workspace:pointer-events-auto'}`}
+            className={`global-sidebar-action-button flex items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] ${menuOpen ? 'pointer-events-auto' : 'pointer-events-none group-hover/workspace:pointer-events-auto group-focus-within/workspace:pointer-events-auto'}`}
             aria-label={t('globalSidebar.newChatHere')}
           >
             <ComposeIcon className="h-3.5 w-3.5" />
@@ -2170,7 +2207,7 @@ function SessionRow({
           tooltipLabel={fullTitle}
           contentIsTruncated={displayTitle !== fullTitle}
           delayMs={1_000}
-          className="min-w-0 flex-1 truncate text-sm"
+          className="global-sidebar-label min-w-0 flex-1 truncate text-sm"
           data-global-sidebar-session-title
         />
         {session.favorite && <StarIcon className="h-3 w-3 shrink-0 text-[var(--accent)]" fill="currentColor" />}
@@ -2197,7 +2234,7 @@ function SessionRow({
         </span>
       </button>
       <div
-        className={`absolute inset-y-0 right-2 flex w-9 items-center justify-end transition-opacity ${
+        className={`absolute inset-y-0 flex w-9 items-center justify-end transition-opacity ${
           menuOpen
             ? 'pointer-events-auto opacity-100'
             : 'pointer-events-none opacity-0 group-hover/session:pointer-events-auto group-hover/session:opacity-100 group-focus-within/session:pointer-events-auto group-focus-within/session:opacity-100'
@@ -2209,7 +2246,7 @@ function SessionRow({
             ref={menuRef}
             type="button"
             onClick={() => setMenu(!menuOpen)}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+            className="global-sidebar-action-button flex items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
             aria-label={tLauncher('rightRail.more')}
           >
             <MoreIcon className="h-3.5 w-3.5" />
@@ -2260,7 +2297,7 @@ function ArchivedWorkspaceRow({ project, onUnarchive, onAgentSettings, onOpenFol
   return (
     <div className="group/archive flex h-8 items-center gap-2 rounded-lg px-3 text-sm text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]">
       <WorkspaceIcon icon={project.icon} size={16} />
-      <span className="min-w-0 flex-1 truncate">{project.displayName || project.name}</span>
+      <span className="global-sidebar-label min-w-0 flex-1 truncate">{project.displayName || project.name}</span>
       <Tip label={tLauncher('workspaceCard.more')} align="end" disabled={menuOpen}>
         <button
           ref={menuRef}

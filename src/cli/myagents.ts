@@ -22,6 +22,8 @@ import {
   EXTERNAL_CLI_PUBLIC_COMMANDS,
   findExternalCliPublicCapability,
 } from '../shared/externalCliCapabilities';
+import { networkAddress } from '../shared/agentNetworkRouting';
+import { REMOTE_DEADLINES } from '@myagents/agent-network-protocol';
 import { INTERNAL_CLI_FLAGS } from './internalCliFlags';
 
 // ---------------------------------------------------------------------------
@@ -53,6 +55,12 @@ export function validateCliRouting(port: string, sessionId: string | undefined):
 // ---------------------------------------------------------------------------
 
 const rawArgs = process.argv.slice(2);
+// Parser provenance follows the parsed flags object, outside its wire fields.
+const flagSpellings = new WeakMap<Record<string, unknown>, Map<string, string>>();
+
+function flagSpelling(flags: Record<string, unknown>, key: string): string {
+  return flagSpellings.get(flags)?.get(key) ?? `--${key}`;
+}
 
 function isJsonInvocation(): boolean {
   return rawArgs.some((arg) => arg === '--json' || arg.startsWith('--json='));
@@ -66,6 +74,8 @@ function isSpaceInvocation(): boolean {
 export function parseArgs(args: string[]): { positional: string[]; flags: Record<string, unknown> } {
   const positional: string[] = [];
   const flags: Record<string, unknown> = {};
+  const spellings = new Map<string, string>();
+  flagSpellings.set(flags, spellings);
   const repeatable = new Set(['args', 'env', 'headers', 'models', 'model-names', 'image', 'file', 'attachment']);
 
   // PRD 0.2.18 cross-review fix (Codex): added short-flag → long-flag mapping
@@ -90,6 +100,7 @@ export function parseArgs(args: string[]): { positional: string[]; flags: Record
       const raw = arg.slice(2);
       const eq = raw.indexOf('=');
       const key = eq >= 0 ? raw.slice(0, eq) : raw;
+      spellings.set(camelCase(key), `--${key}`);
       const inlineValue = eq >= 0 ? raw.slice(eq + 1) : undefined;
       if (key === 'human-only') {
         const nextValue = args[i + 1];
@@ -393,7 +404,7 @@ function requirePositional(
 // Help text
 // ---------------------------------------------------------------------------
 
-export const TOP_HELP = `myagents — MyAgents Self-Configuration CLI
+export const TOP_HELP = `myagents — MyAgents product capabilities CLI
 
 Usage: myagents <command> [options]
 
@@ -404,7 +415,7 @@ Commands:
   vision    Official image-understanding CLI tool
   tool      Manage registered CLI tools (Lab-gated; enable in Settings first)
   model     Manage model providers
-  agent     Discover stable Workspace Agents and manage proactive channels
+  agent     Discover local/network Agents; manage local settings and channels
   runtime   Inspect Agent Runtimes (list installed + describe models/modes)
   skill     Manage skills (install from URL/local source, list, enable/disable, sync)
   cron      Legacy-compatible scheduled Task aliases
@@ -430,6 +441,15 @@ Global flags:
   --dry-run   Preview only commands whose exact leaf help documents support;
               unsupported mutations fail without applying changes
   --port NUM  Override Sidecar port (default: $MYAGENTS_PORT)
+
+Choose by intent:
+  Manage this app's capabilities: mcp / model / skill / config and their --help
+  Save an idea or result: record (durable capture without starting AI)
+  Durable work, scheduling and run tracking: task readme
+  Work together now: agent list → session start (fresh) or send (reuse)
+  Read or observe without assigning work: session get / state / watch
+  agent list includes callable Agents on other devices in the same account;
+  copy the complete qualified ID and use the same Session commands.
 
 Examples:
   myagents mcp list
@@ -462,6 +482,7 @@ Examples:
   myagents agent create --workspacePath /absolute/path --json
   myagents agent current --json               # compact current context diagnostic
   myagents agent show <agentId>                # identity + effective defaults
+  myagents agent network-diagnose --json      # protocol/devices/connection state
   myagents session list --agent <agentId>      # recent reusable contexts
   myagents session start --agent <agentId> -p "review this" # fresh context
   myagents session get <sessionId> --limit 5 --json
@@ -613,7 +634,7 @@ async function callApi(
         }),
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(cliRequestTimeoutMs(route)),
+      signal: AbortSignal.timeout(cliRequestTimeoutMs(route, body)),
     });
     // Non-JSON error bodies (e.g. axum 4xx returns plain text like
     // "Failed to deserialize query string: missing field `doc`") would
@@ -715,16 +736,22 @@ export function validateSessionMutationAcknowledgement(
 
 function sessionMutationReceipt(result: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
-    ['agentId', 'sessionId', 'messageId']
+    ['agentId', 'sessionId', 'messageId', 'requestId', 'selector']
       .filter(key => typeof result[key] === 'string')
       .map(key => [key, result[key]]),
   );
 }
 
-export function cliRequestTimeoutMs(route: string): number {
+export function cliRequestTimeoutMs(route: string, body: Record<string, unknown> = {}): number {
+  const address = networkAddress(route, body);
+  if (address) return REMOTE_DEADLINES[address.method].cli;
   if (route === 'session/start') return 195_000;
   if (route === 'session/send') return 40_000;
   if (route === 'session/get') return 20_000;
+  if (route === 'session/state') return 22_000;
+  if (route === 'session/watches' || route === 'session/unwatch') return 24_000;
+  if (route === 'agent/network-diagnose') return 40_000;
+  if (route === 'session/watch') return 40_000;
   if (route === 'mcp/test') return 20_000;
   if (route === 'task/trigger/test') return 315_000;
   return 10_000;
@@ -823,7 +850,7 @@ export function printResult(
     if (group === 'session' && action === 'start' && result.sessionId && result.messageId) {
       console.error(`  agent:   ${String(result.agentId ?? '(unknown)')}`);
       console.error(`  session: ${String(result.sessionId)}`);
-      console.error(`  request: ${String(result.messageId)}`);
+      console.error(`  message: ${String(result.messageId)}`);
       if (result.accepted === null || result.unconfirmed === true) {
         console.error('  state:   admission unconfirmed; do not automatically resend.');
       }
@@ -1210,7 +1237,7 @@ export function printResult(
     console.log('✓ fresh Session request accepted');
     console.log(`  agent:   ${String(result.agentId ?? '(unknown)')}`);
     console.log(`  session: ${String(result.sessionId ?? '(unknown)')}`);
-    console.log(`  request: ${String(result.messageId ?? '(unknown)')}`);
+    console.log(`  message: ${String(result.messageId ?? '(unknown)')}`);
     console.log('  state:   accepted; target is running asynchronously');
     if (result.replyBack === false) {
       console.log('  result:  one-way; MyAgents will not push the target turn result back here.');
@@ -1218,7 +1245,7 @@ export function printResult(
       console.log('  result:  MyAgents will push the target turn result back as a <myagents-session-event type="send.result"> block.');
     }
     console.log(`  follow-up: myagents session send ${String(result.sessionId ?? '<sessionId>')} -p "<prompt>"`);
-    console.log(`             myagents session watch ${String(result.sessionId ?? '<sessionId>')}`);
+    console.log('  observation: start/send already return the result automatically; use watch for separately observed work.');
     return;
   }
   if (group === 'runtime' && action === 'list') {
@@ -1262,12 +1289,27 @@ export function printResult(
     }
     return;
   }
+  if (result.identity && typeof result.identity === 'object') {
+    const identity = result.identity as { agentName?: string; deviceName?: string };
+    console.log(`  target: ${identity.agentName ?? 'Agent'} @ ${identity.deviceName ?? 'device'}`);
+  }
+  if (group === 'session' && action === 'state') {
+    const session = result.session as { sessionId: string; state: string };
+    console.log(`${session.sessionId}: ${session.state}`);
+    return;
+  }
+  if (group === 'session' && (action === 'watches' || action === 'unwatch')) {
+    const watches = ((result.data as { watches?: unknown } | undefined)?.watches ?? []) as Array<{ watchId: string; targetSessionId: string; turnId?: string; cancelled?: boolean; deliveryPending?: boolean; registrationPending?: boolean }>;
+    for (const watch of watches) console.log(`${watch.watchId}  ${watch.targetSessionId}  ${watch.cancelled ? 'cancelled' : watch.deliveryPending ? 'delivery pending' : watch.registrationPending ? 'registration pending' : 'active'}${watch.turnId ? `  turn:${watch.turnId}` : ''}`);
+    if (!watches.length) console.log('No active observations.');
+    return;
+  }
   if (group === 'session' && action === 'watch') {
     if (typeof result.eventPrompt === 'string' && result.eventPrompt.trim()) {
       console.log(result.eventPrompt);
       return;
     }
-    console.log(`\u2713 session watch registered ${result.watchId ?? ''}`.trim());
+    console.log(`\u2713 session watch ${result.coalesced ? 'already registered' : 'registered'} ${result.watchId ?? ''}`.trim());
     console.log(`  target: ${result.targetSessionId ?? '(unknown)'}`);
     console.log(`  state:  ${result.targetStateAtRegistration ?? 'unknown'}`);
     console.log('  result: MyAgents will push a <myagents-session-event type="watch.completed"> block when the target finishes.');
@@ -2073,10 +2115,11 @@ function printSessionList(
     return;
   }
   const pad = (value: string, width: number) => value.padEnd(width);
-  console.log(pad('Session ID', 38) + pad('Last active', 26) + pad('Runtime', 14) + 'Title');
+  const sessionIdWidth = sessions.reduce((width, session) => Math.max(width, String(session.sessionId ?? '').length + 2), 38);
+  console.log(pad('Session ID', sessionIdWidth) + pad('Last active', 26) + pad('Runtime', 14) + 'Title');
   for (const session of sessions) {
     console.log(
-      pad(String(session.sessionId ?? '').slice(0, 36), 38)
+      pad(String(session.sessionId ?? ''), sessionIdWidth)
       + pad(String(session.lastActiveAt ?? ''), 26)
       + pad(String(session.runtime ?? 'builtin'), 14)
       + singleLine(session.title ?? 'New Chat'),
@@ -3389,7 +3432,7 @@ const PUBLISHED_ADMIN_ROUTES = new Set([
   'space/issue-list', 'space/issue-get', 'space/issue-comment', 'space/issue-comments', 'space/issue-comment-get',
   'space/issue-status', 'space/issue-claim', 'space/issue-close', 'space/issue-complete', 'space/issue-cancel-claim',
   'space/claim-local-task', 'space/attachment-download', 'space/attachment-add', 'space/attachment-inspect',
-  'session/list', 'session/get', 'session/start', 'session/send', 'session/watch',
+  'session/list', 'session/get', 'session/start', 'session/send', 'session/watch', 'session/state', 'session/watches', 'session/unwatch', 'agent/network-diagnose',
 ]);
 
 const PUBLISHED_COMMAND_GROUPS = new Set([
@@ -3425,6 +3468,16 @@ export function validateCliCommand(
     const action = positional[1] || 'list';
     const route = buildRoute(group, action, positional.slice(2));
     if (PUBLISHED_ADMIN_ROUTES.has(route)) return undefined;
+    if (positional.length === 1 || (positional.length === 2 && [...PUBLISHED_ADMIN_ROUTES].some(
+      published => published.startsWith(`${route}/`) || published.startsWith(`${route}-`),
+    ))) {
+      if (helpMode) return undefined;
+      return {
+        code: 'SUBCOMMAND_REQUIRED',
+        error: `Missing subcommand for: ${positional.join(' ')}`,
+        suggestedCommand: `myagents ${group} --help`,
+      };
+    }
   }
 
   const command = positional.join(' ');
@@ -3443,6 +3496,7 @@ const DRY_RUN_PREVIEW_COMMANDS = new Set([
   'config set',
   'cron add',
   'skill add',
+  'skill remove',
   'tool add',
 ]);
 
@@ -3474,7 +3528,7 @@ export function validateInternalCliInvocation(positional: string[], flags: Recor
   const unknown = Object.keys(flags).find(flag => !globals.has(flag) && !allowed.has(flag));
   if (unknown) return {
     code: 'UNKNOWN_FLAG',
-    error: `Unknown flag for '${positional.join(' ') || 'myagents'}': --${unknown}.`,
+    error: `Unknown flag for '${positional.join(' ') || 'myagents'}': ${flagSpelling(flags, unknown)}.`,
     suggestion: `Run myagents ${positional.slice(0, 2).join(' ')} --help for supported options.`,
   };
   if (!groupHelp && ((action === 'readme' && group !== 'widget' && positional.length > 2)
@@ -3502,7 +3556,7 @@ export function validateExternalCliInvocation(
     return unsupported
       ? {
         code: 'UNKNOWN_FLAG',
-        error: `Unknown public CLI flag: --${unsupported}.`,
+        error: `Unknown public CLI flag: ${flagSpelling(flags, unsupported)}.`,
         suggestion: 'Run myagents --help for the supported public commands.',
       }
       : undefined;
@@ -3516,7 +3570,7 @@ export function validateExternalCliInvocation(
       return unsupported
         ? {
           code: 'UNKNOWN_FLAG',
-          error: `Unknown public CLI flag: --${unsupported}.`,
+          error: `Unknown public CLI flag: ${flagSpelling(flags, unsupported)}.`,
           suggestion: `Run myagents ${group} --help for the supported public commands.`,
         }
         : undefined;
@@ -3525,6 +3579,13 @@ export function validateExternalCliInvocation(
 
   const matched = findExternalCliPublicCapability(positional);
   if (!matched) {
+    if (EXTERNAL_CLI_PUBLIC_COMMANDS.some(command => command.startsWith(`${positional.join(' ')} `))) {
+      return {
+        code: 'SUBCOMMAND_REQUIRED',
+        error: `Missing subcommand for: ${positional.join(' ')}`,
+        suggestedCommand: `myagents ${group} --help`,
+      };
+    }
     return {
       code: 'UNKNOWN_COMMAND',
       error: `Unknown public command: ${positional.join(' ')}`,
@@ -3537,7 +3598,7 @@ export function validateExternalCliInvocation(
   if (unsupported) {
     return {
       code: 'UNKNOWN_FLAG',
-      error: `Unknown flag for '${matched.capability.command}': --${unsupported}.`,
+      error: `Unknown flag for '${matched.capability.command}': ${flagSpelling(flags, unsupported)}.`,
       suggestion: `Run myagents ${matched.capability.command} --help for the supported flags.`,
     };
   }
@@ -5496,6 +5557,15 @@ export function buildRequestBody(
 
   // Agent commands
   if (group === 'agent') {
+    if (action === 'network-diagnose') {
+      if (rest.length) return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'network-diagnose accepts no positional arguments.' });
+      const limit = flags.limit === undefined ? 100 : Number(flags.limit);
+      if (typeof flags.limit === 'boolean' || !Number.isInteger(limit) || limit < 1 || limit > 100
+        || (flags.cursor !== undefined && (typeof flags.cursor !== 'string' || !flags.cursor.trim()))) {
+        return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'network-diagnose requires --limit 1..100 and an optional non-empty --cursor value.' });
+      }
+      return { cursor: flags.cursor, limit };
+    }
     if (action === 'create') {
       const workspacePath =
         typeof flags.workspacePath === 'string'
@@ -6341,24 +6411,30 @@ export function buildRequestBody(
           : {}),
       };
     }
+    if (action === 'state') {
+      const sessionId = rest[0] ?? flags.sessionId;
+      if (typeof sessionId !== 'string' || !sessionId.trim() || rest.length > 1) return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'session state requires exactly one Session reference.' });
+      return { sessionId: sessionId.trim() };
+    }
+    if (action === 'watches') {
+      if (rest.length) return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'session watches lists the current Session only.' });
+      return {};
+    }
+    if (action === 'unwatch') {
+      if (rest.length > 1 || (rest.length === 1 && !rest[0].trim()) || (flags.all === true) === (rest.length === 1)) return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'Use session unwatch <watchId> or session unwatch --all.' });
+      return flags.all === true ? { all: true } : { watchId: rest[0] };
+    }
     if (action === 'watch') {
-      const targetSessionId = requirePositional(
-        rest[0] ?? (flags.targetSessionId as string | undefined) ?? (flags.to as string | undefined),
-        'sessionId',
-        'session watch',
-        'targetSessionId',
-      );
+      const targetSessionId = rest[0] ?? flags.targetSessionId ?? flags.to;
+      if (typeof targetSessionId !== 'string' || !targetSessionId.trim() || rest.length > 1) {
+        return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'session watch requires exactly one Session reference.', suggestedCommand: 'myagents session watch --help' });
+      }
       const unsupportedFlag = ['prompt', 'promptFile', 'then', 'thenFile', 'thenPrompt', 'thenPromptFile']
         .find((key) => flags[key] !== undefined);
       if (unsupportedFlag) {
-        console.error('Error: session watch does not accept prompt/then flags. Use `myagents session send` to ask the target session to do new work.');
-        process.exit(3);
+        return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'session watch does not accept prompt/then flags. Use `myagents session send` to ask the target session to do new work.' });
       }
-      if (rest.length > 1) {
-        console.error('Error: session watch accepts exactly one <sessionId> argument.');
-        process.exit(3);
-      }
-      return { targetSessionId };
+      return { targetSessionId: targetSessionId.trim() };
     }
     return {};
   }

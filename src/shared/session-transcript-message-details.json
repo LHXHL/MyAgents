@@ -1,5 +1,6 @@
 {
   "asyncQuestionReply": null,
+  "desktopQuery": null,
   "sdkUuid": null,
   "runtimeTurnAnchor": null,
   "runtimeOperationAnchor": null,
@@ -11,5 +12,6 @@
   "durationMs": null,
   "metadata": null,
   "turnId": null,
-  "transcriptState": null
+  "transcriptState": null,
+  "messageKind": null
 }

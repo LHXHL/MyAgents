@@ -1,17 +1,17 @@
 [package]
 name = "myagents"
-version = "0.4.24"
+version = "0.5.0"
 description = "MyAgents - Desktop Claude Code for everyone"
 authors = ["MyAgents Team <myagents.io@gmail.com>"]
 license = "AGPL-3.0-only"
 repository = "https://github.com/hAcKlyc/MyAgents"
 homepage = "https://myagents.io"
 edition = "2021"
-# MSRV note: Tauri 2.9 already requires ≥ 1.78. Keep 1.81 explicit so every
-# build uses the same modern std surface; Windows paths that must replace an
+# Protocol validation and the audited JWT dependency require Rust 1.88; the
+# pinned root toolchain remains the build authority. Windows paths that replace an
 # existing file use an explicit MoveFileExW(REPLACE_EXISTING) helper because
 # `std::fs::rename` does not provide portable replace semantics.
-rust-version = "1.81"
+rust-version = "1.88"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -34,6 +34,13 @@ url = "2"
 percent-encoding = "2"
 log = "0.4"
 myagents-media-worker-protocol = { path = "media-worker-protocol" }
+myagents-agent-network-protocol = { path = "agent-network-protocol" }
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std"] }
+rustls-pemfile = "2.2"
+rustls-platform-verifier = "=0.6.2"
+rcgen = { version = "=0.14.10", default-features = false, features = ["ring", "pem"] }
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+jsonwebtoken = { version = "=11.1.0", default-features = false, features = ["rust_crypto"] }
 # `macos-private-api` is required for transparent webview windows on macOS —
 # the floating ball / companion panels (PRD 0.2.35) are transparent NSPanels.
 # Main window is unaffected (it never sets transparent(true)).
@@ -116,6 +123,7 @@ nix = { version = "0.29", default-features = false, features = ["signal"] }
 # U+F74F from the DOM value when the leak happens.
 # See tauri-apps/tauri#5685, tauri-apps/wry#769, tauri-apps/tauri#10194.
 [target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["apple-native"] }
 # Floating ball (PRD 0.2.35): NSPanel windows that never activate the app.
 # Git branch dependency (not on crates.io) — pinned to a commit per PRD §10.
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e894383aa068ec5365a42994e3ac94ba1b6" }
@@ -141,7 +149,7 @@ objc2-web-kit = { version = "0.3.2", features = ["WKWebView", "block2"] }
 # stacked notification clicks stay correlated to the exact route.
 objc2-user-notifications = "0.3.2"
 # Native window chrome and Edit-menu focus routing use AppKit view/responder APIs.
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWindow", "NSView", "NSResponder", "NSButton", "NSControl", "NSApplication", "std"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWorkspace", "NSWindow", "NSView", "NSResponder", "NSButton", "NSControl", "NSApplication", "std"] }
 # System-audio capture on macOS 13+; microphone capture uses CPAL/CoreAudio.
 screencapturekit = { version = "=8.0.1", features = ["macos_13_0"] }
 
@@ -153,6 +161,7 @@ screencapturekit = { version = "=8.0.1", features = ["macos_13_0"] }
 # - handle-relative workspace IO via NtCreateFile(ObjectAttributes.RootDirectory)
 # Minimal feature set — version 0.59 is already pulled transitively, so no new lock entry.
 [target.'cfg(windows)'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["windows-native"] }
 windows-sys = { version = "0.59", features = [
     "Wdk_Foundation",
     "Wdk_Storage_FileSystem",
@@ -160,6 +169,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
+    "Win32_System_Console",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_IO",
     "Win32_System_JobObjects",
@@ -192,6 +202,8 @@ tauri-winrt-notification = "0.7"
 # was clicked. Keep this Linux-only: macOS uses UserNotifications above and
 # Windows uses WinRT.
 [target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "=5.14.0", default-features = false, features = ["tokio"] }
+keyring = { version = "=3.6.3", default-features = false, features = ["async-secret-service", "tokio", "crypto-rust"] }
 notify-rust = "4.14"
 # The explicit PipeWire host exposes real sink nodes as input-capable capture
 # devices. Capability is granted only when that runtime node probe succeeds.

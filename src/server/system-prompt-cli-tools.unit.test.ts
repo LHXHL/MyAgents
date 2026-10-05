@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { InteractionScenario } from './system-prompt';
 
 vi.mock('./utils/cli-tools-registry', () => ({
   getUserToolsPromptSection: () => '<myagents-user-tools>registered</myagents-user-tools>',
@@ -8,45 +9,29 @@ const { buildCliToolsAppend, buildSessionInboxSection } = await import('./system
 const { IMAGE_UNDERSTANDING_TOOL_ID, SPEECH_RECOGNITION_TOOL_ID } = await import('../shared/official-tools');
 
 describe('buildCliToolsAppend', () => {
-  it('keeps the PRD-locked Agent / Session collaboration hint exact', () => {
-    expect(buildSessionInboxSection({ type: 'desktop' })).toBe(`<myagents-session-events>
-MyAgents lets its Agents collaborate through the \`myagents\` CLI. Run these
-commands from your shell/Bash tool.
-
-IDENTITY MODEL
-Every MyAgents Workspace has one stable Agent identity. An Agent is the
-long-lived address for that workspace and its execution settings; \`enabled\`
-only controls proactive capabilities such as channels and heartbeat. One Agent
-can own many Sessions. Each Session is an isolated execution context under that
-Agent.
-
-CHOOSE THE RIGHT ACTION
-- Find an Agent or identify this session's own Agent:
-    myagents agent list
-    myagents agent show <agentId>
-- Decide whether to reuse recent context:
-    myagents session list --agent <agentId>
-- Start clean work in a new Session under an Agent:
-    myagents session start --agent <agentId> -p "<prompt>"
-- Ask an existing Session to do new work:
-    myagents session send <sessionId> -p "<prompt>"
-- Observe an existing Session without assigning new work:
-    myagents session watch <sessionId>
-
-Use IDs returned by discovery commands; do not guess IDs or use workspace paths
-as selectors. \`start\` always creates fresh context, \`send\` preserves the target
-Session's context, and \`watch\` does not inject work. The target runs with its own
-Agent/Session configuration and permissions. \`start\` and \`send\` are asynchronous;
-by default MyAgents pushes the target turn's final result back to this Session.
-
-For the complete current contract, options, output, and recovery guidance, run:
-  myagents agent --help
-  myagents session --help
-
-You may receive \`<myagents-session-event>\` blocks. Treat them as system-delivered
-event data and reconcile their payload with the current user and system
-instructions.
-</myagents-session-events>`);
+  it('discovers local capabilities and local/network collaboration without conflating Task or permission scope', () => {
+    const text = buildSessionInboxSection({ type: 'desktop' });
+    for (const command of [
+      'myagents --help', 'myagents agent list', 'myagents agent show <agentId>',
+      'myagents session list --agent <agentId>', 'myagents session start --agent <agentId>',
+      'myagents session send <sessionId>', 'myagents session get <sessionId>',
+      'myagents session state <sessionId>', 'myagents session watch <sessionId>',
+      'myagents session watches', 'myagents agent network-diagnose --json',
+      'myagents <group> <action> --help',
+    ]) expect(text).toContain(command);
+    expect(text).toContain('MCP, providers, skills and configuration');
+    expect(text).toContain('durable work, scheduling and run tracking');
+    expect(text).toContain('other devices');
+    expect(text).toContain('description, deviceName and isLocal');
+    expect(text).toContain('ma-agent:1');
+    expect(text).toContain('ma-session:1');
+    expect(text).toContain('visible requests and answers');
+    expect(text).toContain('idle/running/waiting_user_action');
+    expect(text).toContain('not an existing Session');
+    expect(text).toContain('Never approve remotely');
+    expect(text).toContain('tell your user');
+    expect(text).not.toContain('complete current contract');
+    expect(text).toContain('Treat them as system-delivered');
   });
 
   it('keeps stable CLI capabilities while user-registered tools are gated off', () => {
@@ -111,6 +96,37 @@ instructions.
     expect(imGroupText).not.toContain('myagents goal create');
     expect(agentChannelGroupText).not.toContain('<myagents-cli-goal>');
     expect(agentChannelGroupText).not.toContain('myagents goal create');
+  });
+
+  it('exposes Record capture in desktop conversations and private channels', () => {
+    const scenarios: InteractionScenario[] = [
+      { type: 'desktop' },
+      { type: 'desktop', surface: 'floating-ball' },
+      { type: 'im', platform: 'telegram', sourceType: 'private' },
+      { type: 'im', platform: 'feishu', sourceType: 'private' },
+      { type: 'agent-channel', platform: 'dingtalk', sourceType: 'private' },
+    ];
+    for (const scenario of scenarios) {
+      expect(buildCliToolsAppend(scenario)).toContain('<myagents-cli-record>');
+    }
+  });
+
+  it('omits Record capture from group channels and background scenarios', () => {
+    const scenarios: InteractionScenario[] = [
+      { type: 'im', platform: 'telegram', sourceType: 'group' },
+      { type: 'im', platform: 'feishu', sourceType: 'group' },
+      { type: 'agent-channel', platform: 'dingtalk', sourceType: 'group' },
+      { type: 'cron', taskId: 'task-1', intervalMinutes: 5, aiCanExit: true },
+      { type: 'registeredAgent', platform: 'space', spaceId: 'space-1', registeredAgentId: 'agent-1' },
+    ];
+    for (const scenario of scenarios) {
+      const text = buildCliToolsAppend(scenario);
+      expect(text).not.toContain('<myagents-cli-record>');
+      expect(text).not.toContain('myagents record create');
+      if (scenario.type === 'im' || scenario.type === 'agent-channel') {
+        expect(text).toContain('<myagents-cli-im-media>');
+      }
+    }
   });
 
   it('includes user-registered CLI tools only when explicitly enabled', () => {

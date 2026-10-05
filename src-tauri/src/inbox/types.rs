@@ -11,6 +11,15 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Opaque reference into the App connector's connection-scoped registry. The
+/// Sidecar carries it per turn; it never owns peer identity or routing policy.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NetworkReturnReference {
+    pub op_id: uuid::Uuid,
+    pub return_route_id: uuid::Uuid,
+}
+
 /// Inbox 消息类型——request(初始投递)或 reply(target turn-end 推回)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -92,6 +101,8 @@ pub struct PendingInboxMessage {
     /// request/reply payloads.
     #[serde(default)]
     pub session_event: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_return: Option<NetworkReturnReference>,
 }
 
 impl PendingInboxMessage {
@@ -115,6 +126,7 @@ impl PendingInboxMessage {
             kind: InboxMessageKind::Request,
             in_reply_to: None,
             session_event: None,
+            network_return: None,
         }
     }
 
@@ -140,6 +152,7 @@ impl PendingInboxMessage {
             kind: InboxMessageKind::Reply,
             in_reply_to: Some(in_reply_to),
             session_event: None,
+            network_return: None,
         }
     }
 
@@ -156,6 +169,7 @@ impl PendingInboxMessage {
             kind: InboxMessageKind::Request,
             in_reply_to: None,
             session_event: None,
+            network_return: None,
         }
     }
 }

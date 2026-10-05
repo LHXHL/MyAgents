@@ -14,7 +14,7 @@ const agentSessionMocks = vi.hoisted(() => ({
 }));
 
 const managementApiMocks = vi.hoisted(() => ({
-  managementApi: vi.fn(async (): Promise<Record<string, unknown>> => ({ ok: true, taskUpdated: 0, cronUpdated: 0 })),
+  managementApi: vi.fn(async (_path?: string): Promise<Record<string, unknown>> => ({ ok: true, taskUpdated: 0, cronUpdated: 0 })),
 }));
 
 const analyticsMocks = vi.hoisted(() => ({
@@ -229,6 +229,17 @@ describe('Record Admin routing', () => {
 });
 
 describe('current Runtime configuration ownership', () => {
+  it('reports the bundled SDK implementation version in both runtime discovery receipts', async () => {
+    const { CLAUDE_AGENT_SDK_IMPLEMENTATION_VERSION } = await import('../shared/integrated-runtimes/identity');
+    const { getExternalRuntime } = await import('./runtimes/factory');
+    const spies = (['dsh', 'claude-code', 'codex'] as const).map(runtime => vi.spyOn(getExternalRuntime(runtime), 'detect').mockResolvedValue({ installed: false }));
+    try {
+      const { handleRuntimeList, handleRuntimeDescribe } = await import('./admin-api');
+      expect(await handleRuntimeList()).toMatchObject({ success: true, data: expect.arrayContaining([{ runtime: 'builtin', displayName: expect.any(String), installed: true, version: CLAUDE_AGENT_SDK_IMPLEMENTATION_VERSION }]) });
+      expect(await handleRuntimeDescribe({ runtime: 'builtin' })).toMatchObject({ success: true, data: { runtime: 'builtin', version: CLAUDE_AGENT_SDK_IMPLEMENTATION_VERSION } });
+    } finally { for (const spy of spies) spy.mockRestore(); }
+  });
+
   it('routes reload through the SessionEngine and uses its workspace instead of dormant SDK state', async () => {
     const workspace = join(scratch, 'runtime-workspace');
     mkdirSync(workspace, { recursive: true });
@@ -358,6 +369,7 @@ describe('admin-api help registry', () => {
       ['session', 'start'],
       ['session', 'send'],
       ['session', 'watch'],
+      ['session', 'get'],
     ];
     for (const path of leaves) {
       const result = handleHelp({ path });
@@ -375,6 +387,48 @@ describe('admin-api help registry', () => {
     expect(sessionGroup).toContain('Fresh context');
     expect(sessionGroup).toContain('Reuse known context');
     expect(sessionGroup).toContain('Observe only');
+  });
+
+  it('provides specific local management help and labels remaining shared references', async () => {
+    const { handleHelp } = await import('./admin-api');
+    const leaves = [
+      ['agent', 'create'], ['agent', 'enable'], ['agent', 'disable'],
+      ['agent', 'archive'], ['agent', 'unarchive'], ['agent', 'set'],
+      ['record', 'list'], ['record', 'get'], ['record', 'create'], ['record', 'delete'],
+      ['skill', 'list'], ['skill', 'info'], ['skill', 'add'], ['skill', 'remove'],
+      ['skill', 'enable'], ['skill', 'disable'], ['skill', 'sync'],
+      ['task', 'comments'], ['task', 'comment'],
+    ];
+    for (const path of leaves) {
+      const text = String((handleHelp({ path }).data as { text: string }).text);
+      const parent = String((handleHelp({ path: path.slice(0, 1) }).data as { text: string }).text);
+      expect(text).not.toBe(parent);
+      expect(text).toContain(`myagents ${path.join(' ')}`);
+      expect(text).toContain('--');
+    }
+    const shared = String((handleHelp({ path: ['model', 'list'] }).data as { text: string }).text);
+    expect(shared).toContain('shared "myagents model" reference');
+    expect(shared).toContain('not a separate help page');
+    const agentHelp = String((handleHelp({ path: ['agent'] }).data as { text: string }).text);
+    expect(agentHelp).toContain('network-diagnose');
+    expect(agentHelp).toContain('other devices');
+    expect(agentHelp).toContain('do not manage remote Agents');
+    const get = String((handleHelp({ path: ['session', 'get'] }).data as { text: string }).text);
+    expect(get).toContain('--limit <1..500>');
+    expect(get).toContain('--before <messageId>');
+    expect(get).toContain('liveSessionState=null');
+    expect(get).toContain('hidden reminder instructions');
+    for (const path of [
+      ['session', 'get', 'session-id'], ['skill', 'info', 'skill-name'],
+      ['record', 'get', 'record-id'], ['task', 'comments', 'task-id'],
+      ['agent', 'show', 'agent-id'], ['space', 'issue', 'view', 'issue-id'],
+    ]) {
+      const text = String((handleHelp({ path }).data as { text: string }).text);
+      expect(text).not.toContain('shared "myagents');
+    }
+    const info = String((handleHelp({ path: ['skill', 'info'] }).data as { text: string }).text);
+    expect(info).toContain('skill list for enabled');
+    expect(info).not.toContain('enabled metadata');
   });
 
   it('provides compact exact Task leaf help for Agent automation flows', async () => {
@@ -2260,7 +2314,7 @@ describe('admin-api agent set configuration intent', () => {
     expect(await commitAgentModelSelection('im-agent', { kind: 'product-provider', providerId: 'anthropic-sub', model: 'claude-sonnet-4-6' }))
       .toMatchObject({ success: true, data: { reloadPatch: { model: 'claude-sonnet-4-6' } } });
     expect(readConfig()).toMatchObject({ agents: [{ model: 'claude-sonnet-4-6', permissionMode: 'plan', mcpEnabledServers: ['owned-mcp'] }] });
-    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+    expect(managementApiMocks.managementApi.mock.calls.every(([path]) => path === '/api/app/config-changed')).toBe(true);
   });
 
   it('rejects unavailable default selections and new Channel execution overrides before writing', async () => {
@@ -4159,6 +4213,31 @@ describe('admin-api Agent runtime lifecycle convergence', () => {
 });
 
 describe('admin-api Agent / Session discovery', () => {
+  it('projects only valid visible Workspace identities into the network catalog without leaking execution credentials', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), { agents: [
+      { id: 'active', name: 'Active', enabled: false, channels: [{ id: 'secret-channel', botToken: 'do-not-expose' }] },
+      { id: 'archived', name: 'Archived', enabled: true, channels: [] },
+      { id: 'orphan', name: 'Orphan', enabled: true, workspacePath: '/orphan', channels: [] },
+      { id: 'conflicted', name: 'Conflicted', channels: [] },
+    ] });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [
+      { id: 'active-workspace', name: 'Active', path: '/active', agentId: 'active', icon: 'lightning' },
+      { id: 'archived-workspace', name: 'Archived', path: '/archived', agentId: 'archived', archivedAt: '2026-10-01T00:00:00Z' },
+      { id: 'hidden-workspace', name: 'Hidden', path: '/hidden', hidden: true },
+      { id: 'conflict-one', name: 'Conflict One', path: '/one', agentId: 'conflicted' },
+      { id: 'conflict-two', name: 'Conflict Two', path: '/two', agentId: 'conflicted' },
+    ]);
+    const { handleAgentNetworkCatalog } = await import('./admin-api');
+    const result = await handleAgentNetworkCatalog();
+    expect(result).toMatchObject({ success: true, data: {
+      items: [
+        { localAgentId: 'active', localWorkspaceId: 'active-workspace', name: 'Active', path: '/active', lifecycle: 'active', exposureRevision: 0, icon: 'lightning' },
+        { localAgentId: 'archived', localWorkspaceId: 'archived-workspace', name: 'Archived', path: '/archived', lifecycle: 'archived', exposureRevision: 0, icon: null },
+      ], diagnostics: [{ code: 'AGENT_ASSIGNED_TO_MULTIPLE_PROJECTS', projectIds: ['conflict-one', 'conflict-two'], agentIds: ['conflicted'] }],
+    } });
+    expect(JSON.stringify(result)).not.toContain('do-not-expose');
+    expect(JSON.stringify(result)).not.toContain('enabled');
+  });
   it('lists healthy Agents and exposes conflicted targets with paths but no credentials', async () => {
     writeJson(join(scratch, '.myagents', 'config.json'), { agents: [
       { id: 'shared', name: 'Shared', channels: [{ id: 'secret-channel', botToken: 'do-not-expose' }] },
@@ -4521,7 +4600,9 @@ describe('admin-api Agent workspace archive', () => {
       archivedAt: '2026-07-03T00:00:00.000Z',
       archivedAgentEnabledBeforeArchive: false,
     }]);
-    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: false, error: 'task store unavailable' });
+    managementApiMocks.managementApi.mockImplementation(async (path) => path === '/api/agent/reload-config'
+      ? { ok: false, error: 'task store unavailable' }
+      : { ok: true });
 
     const result = await handleAgentUnarchive({ id: 'agent-1' });
 

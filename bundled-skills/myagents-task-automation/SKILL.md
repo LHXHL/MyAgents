@@ -154,7 +154,7 @@ myagents task start <taskId>            # 按原 anchor 恢复；查看回执 ne
 myagents task reset-checkpoint <taskId> # 只清平台 checkpoint
 myagents task update <taskId> --clear-trigger # 改回 always
 myagents task archive <taskId>           # 用户专属的长期可恢复归档
-myagents task delete <taskId>            # 确认后不可恢复地删除；不删除工作区脚本
+myagents task delete <taskId>            # 在对话中先取得用户确认，再执行；CLI 不弹窗
 ```
 
 `check-now` 会提交真实 MyAgents 状态；部署前不提交 MyAgents 状态的验证使用 `trigger test`（脚本自身副作用仍真实发生）。`run-now` 不改变 schedule anchor 或 Detector checkpoint。

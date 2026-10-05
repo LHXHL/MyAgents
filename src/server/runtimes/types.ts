@@ -360,6 +360,8 @@ export type UnifiedEvent = (
     review?: PermissionReview;
     reviewRef?: LargeValueRef;
     rootToolUseId?: string;
+    /** Whether this interaction belongs to root execution, from producer authority. */
+    affectsRootActivity?: boolean;
     /** CC's suggested permission rules for "always allow" (echoed back as updatedPermissions) */
     suggestions?: unknown[];
     /** Preserve the Runtime interaction presentation instead of inferring it from a tool name. */
@@ -416,13 +418,6 @@ export type UnifiedEvent = (
     kind: 'context_update';
     contextOccupiedTokens: number;
     runtimeContextWindow: number;
-  }
-  | {
-    kind: 'plan_state_update';
-    mode: 'normal' | 'plan';
-    revision: string;
-    /** Product permission mode to display for this effective Plan state. */
-    permissionMode: string;
   }
   | { kind: 'model_update'; model: string }
   | { kind: 'log'; level: 'info' | 'warn' | 'error'; message: string }

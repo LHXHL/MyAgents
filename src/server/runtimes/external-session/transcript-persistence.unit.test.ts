@@ -67,7 +67,8 @@ describe('external transcript persistence owner', () => {
   });
 
   it('truncates only the proven unadmitted DSH retry target', async () => {
-    setExternalSessionMessages('session-a', [message('prior'), message('target')], cursor(2));
+    const desktopQuery = { visibleText: 'target', primaryContext: { kind: 'floating-context' as const, input: { appName: 'Editor', selectedText: 'context' } } };
+    setExternalSessionMessages('session-a', [message('prior'), { ...message('target'), desktopQuery }], cursor(2));
     vi.mocked(mutateSessionTranscript).mockResolvedValueOnce({
       ok: true,
       action: 'replaced',
@@ -77,6 +78,7 @@ describe('external transcript persistence owner', () => {
     await expect(retryUnadmittedDshTranscript('session-a', 'target')).resolves.toMatchObject({
       success: true,
       content: 'target',
+      desktopQuery,
     });
     expect(mutateSessionTranscript).toHaveBeenCalledWith(
       'session-a',

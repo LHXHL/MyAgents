@@ -45,6 +45,7 @@ import type { Project } from "@/config/types";
 import { useCloseLayer } from "@/hooks/useCloseLayer";
 import { useTauriFileDrop } from "@/hooks/useTauriFileDrop";
 import { SpaceIdentityLine } from "@/pages/space/SpaceAvatar";
+import { SpaceDetailDrawer } from "@/pages/space/SpaceDetailDrawer";
 import {
   getSkillFileState,
   getSkillRevisionState,
@@ -1734,22 +1735,11 @@ function SkillDetailWorkspace({
 
   return (
     <>
-      <OverlayBackdrop
-        portal
+      <SpaceDetailDrawer
         onClose={onBack}
-        className="z-[230] items-stretch justify-end bg-black/20 backdrop-blur-sm"
+        closeLabel={t("space.detail.close")}
+        widthClassName="w-[min(78vw,1180px)]"
       >
-        <aside className="relative h-full w-[min(78vw,1180px)] border-l border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl">
-          <header className="absolute right-4 top-4 z-10 flex justify-end">
-            <button
-              type="button"
-              onClick={onBack}
-              className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-              aria-label={t("space.detail.close")}
-            >
-              <CloseIcon className="h-4 w-4" />
-            </button>
-          </header>
 
           <section className="h-full min-h-0 overflow-y-auto px-12 py-11 max-lg:px-8 max-sm:px-5">
             <div className="mx-auto max-w-[900px] pb-8">
@@ -1992,8 +1982,7 @@ function SkillDetailWorkspace({
               )}
             </div>
           </section>
-        </aside>
-      </OverlayBackdrop>
+      </SpaceDetailDrawer>
       {deleteConfirmOpen && (
         <ConfirmDialog
           title={t("space.skills.deleteTitle")}

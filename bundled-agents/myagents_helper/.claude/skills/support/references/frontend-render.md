@@ -9,6 +9,7 @@
 - `AppErrorBoundary` 位于 React 根附近，任意组件 render 抛错都可能切成整页错误。
 - 发布包组件栈通常压缩；`at t` / `at Dn` 只能作关联证据，不能当根因定位。
 - 白屏/稳定 render crash 通常是产品 Bug，不要用重置 Provider/MCP 掩盖。
+- 长文本流式卡顿与 render exception 分开：当前 Markdown 稳定前缀按块缓存，布局估算只重算变化行；巨大单个代码块/首次挂载仍有成本。记录消息形态、长度、是否 streaming、是否能滚动及首个错误，不把所有卡顿都归给网络或历史保存。
 
 ```bash
 myagents status --json

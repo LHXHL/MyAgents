@@ -106,6 +106,7 @@ DSH 的 `buildDshChildEnvironment()` 要求调用方显式选择 `sessionCli`：
 
 Session-scoped CLI 对每个 Admin 请求附加 `x-myagents-session-id`；通用 Sidecar 入口通过
 `SessionEngine.currentSessionContext()` 和共享 `cli-session-scope.ts` 校验，不按 Runtime 分支。
+Renderer 的日志关联使用独立的 `x-myagents-log-session-id`，不提供 CLI 执行身份；Global / Session 落点由 Rust owner 路由确定，不受当前活跃 Chat 的日志关联影响。
 错误 Session/Global 落点在业务 handler 前拒绝，缺失/非法端口在 CLI 发 HTTP 前返回结构化
 scope 错误。普通无 Session 身份的外部 CLI 保留全局管理行为。顶层 `--version` 与 `version`
 进入同一路由，`--help` 仍可本地运行。构建后的 CLI fixture 覆盖两 Session 的 current/task/goal、
@@ -122,6 +123,8 @@ myagents <group> <action> [args] [flags]
 命令按 owner 分组：配置与能力（MCP/model/skill/tool/plugin/config）、Agent 与 Runtime、Session/Goal、Task/Record/Speech、Space/IM，以及 status/version/reload 等应用控制。status/version/reload 与分组命令都提供 `-h` / `--help`；帮助请求不执行对应业务，失败响应使用非零退出码，普通文本错误输出到 stderr。canonical group、action、flag 和输出字段以当前 bundle 的顶层/leaf `--help` 为准；本文只记录跨命令的路由、身份和 mutation 规则，不维护静态全集。
 
 所有 mutation 对未知 flag fail closed。`--dry-run` 只有在 leaf help 明确声明支持时才有效；不能把拒绝执行描述成成功预览。
+
+提示与顶层 help 按意图区分本地能力管理、Record 捕获、持久 Task 与即时 Session 协作。Agent/Session discovery 覆盖同设备与同账号其它设备；远端使用完整 qualified reference，管理命令不因此获得远端配置权限。Agent `effectiveDefaults` 是未来 Session 出生默认值，不代表已有 Session 的实际审批门槛。命令有独立 help 时返回该契约；复用父级帮助时，`handleHelp` 明确标注所用共享参考与调用范围，不能静默冒充独立叶子文档。普通外部 CLI 继续只看到原公开能力清单。
 
 Agent-facing system prompt、Required Skills 与 help 只推荐 canonical `myagents record` / `sourceRecordId`。`myagents thought`、`/api/admin/thought/*` 与持久层 `sourceThoughtId` 仅在已发布脚本、旧 JSON shape 和升级读取边界保留；兼容面薄映射到 Record owner，不能重新成为产品主入口或第二份 Store。
 
@@ -342,6 +345,8 @@ canonical HOME launcher 总是传私有 marker，Rust 在调用 Node 前剥掉�
 }
 ```
 
+Rust CLI 入口启动内置 Node 时继续继承标准输入输出。Windows 专用进程创建路径通过 `STARTF_USESHOWWINDOW + SW_HIDE` 让新分配的 console 在创建时即隐藏；已有终端 console 不受影响。不能改用后台进程通用的 `CREATE_NO_WINDOW`：DSH 受限令牌下该标志可能导致子进程以 `STATUS_DLL_INIT_FAILED` 退出。
+
 ### Rust 端口回退
 
 ```rust
@@ -382,11 +387,12 @@ Admin API 注册在 Sidecar 的 `/api/admin/*` 路由下，提供与 GUI 对等�
 | `/api/admin/reload` | 热重载配置 |
 | `/api/admin/help` | 命令帮助文本（子命令 help 来自这里） |
 
-所有 `/api/admin/*` 请求必须先经过统一 caller admission，再进入上表 handler。内部请求使用 App 生命周期 capability，保留完整既有能力；外部请求必须同时满足“功能已开启 + Bearer token 正确 + canonical route 在 `EXTERNAL_CLI_PUBLIC_ROUTES` 固定清单”。Rust Management API 与目标 Sidecar 的 Inbox/internal 端点也要求同一进程生命周期 capability，只有受管 Sidecar、Plugin Bridge 与 Rust 内部转发会携带；因此直连旧 Management 端口不能绕过 Node admission。公开命令的 canonical route、显式 alias、flags、位置参数范围和离线 leaf usage 由 `externalCliCapabilities.ts` 同一份元数据声明；外部/未认证调用在 HTTP 前拒绝未知命令和未知 flag，内部 capability 仍使用完整 CLI registry。公开面当前只包括 status/version、Agent create/list/show、Runtime list/describe、Session list/start/send/get、列明的 Task alias/动作与 Record list/create；旧直连、换端口或伪造 Session 环境不能绕过。
+所有 `/api/admin/*` 请求必须先经过统一 caller admission，再进入上表 handler。内部请求使用 App 生命周期 capability，保留完整既有能力；外部请求必须同时满足“功能已开启 + Bearer token 正确 + canonical route 在 `EXTERNAL_CLI_PUBLIC_ROUTES` 固定清单”。Rust Management API 与目标 Sidecar 的 Inbox/internal 端点也要求同一进程生命周期 capability，只有受管 Sidecar、Plugin Bridge 与 Rust 内部转发会携带；因此直连旧 Management 端口不能绕过 Node admission。公开命令的 canonical route、显式 alias、flags、位置参数范围和离线 leaf usage 由 `externalCliCapabilities.ts` 同一份元数据声明；外部/未认证调用在 HTTP 前拒绝未知命令和未知 flag，内部 capability 仍使用完整 CLI registry。公开面当前只包括 status/version、Agent create/list/show、Runtime list/describe、Session list/start/send/get/state、列明的 Task alias/动作与 Record list/get/create/delete；旧直连、换端口或伪造 Session 环境不能绕过。
 
 ### Cloud Space CLI 身份与错误边界
 
 - `space list` 是唯一不要求 `--space` 的发现命令；其它 Space 业务命令必须显式 canonical slug，不维护隐式默认 Space。
+- `space list` 的脱敏 `data.items[]` 投影包含 `id/slug/name/spaceKind/role`；`spaceKind=official` 标识官方社区，反馈流程使用返回的 canonical slug。它也是登录/成员发现入口，认证错误与网络/权限错误必须区分。小助理 `/support` 的渠道策略为本机 gh 优先 GitHub，否则已登录 Space 官方社区，未登录提供 AppRoute 登录入口；不会读取 token 或自动对外提交。
 - CLI 只解析参数，不接受 `--actor` 或 token。Sidecar Admin API 以当前 workspace path 查 `projects.json` 并补 stable `workspaceId`；Rust `SpaceCliContext` 刷新 `/api/me` 后，只在当前 Session origin 明确携带 exact `spaceId + registeredAgentId`（或显式 legacy `localAgentId` 精确命中）时使用 Agent token。workspace id/path 只做 containment 与 registration 校验，不参与 actor 推断。
 - delivery Session 以持久 Session origin 为 actor authority，并用 `registered_agents.json` 中该精确实例的 Space/device/workspace/owner/token 状态校验绑定；`delivery_log.json` 只保存 transport receipt，不参与 actor 选择。Agent 丢失、失效、跨 Space/device/workspace 或 ID 不一致时 fail closed，绝不降级为 User。没有 exact Agent origin 的普通 Session 始终使用当前 User session token，即使同 workspace 恰好存在一个 Agent。
 - Rust Management API 统一返回 `{ok:false,code,error,suggestion,suggestedCommand?}`；Node Admin API 原样保留，CLI human mode 渲染 `Error:`/`Suggestion:`，`--json` stdout 只输出一个可解析对象且本地参数/文件错误也走同一契约。
@@ -438,6 +444,14 @@ receipt 的 `messageId` 对应后续 `requestEventId`。
 `<myagents-session-event ...>`，payload 内部会 neutralize 协议结构标签。新增
 session event 类型时必须同时更新该渲染层、目标 Sidecar 处理路径和 CLI help 文案。
 
+### Agent 网络 selector
+
+外部 CLI 的 addressed Session 读写（list/start/send/get/state）必须在生产 Sidecar composition 中登记为 common：Global Host 只委托目标 owner，不要求调用方拥有 Session。`sidecar-composition.unit.test.ts` 从公开 capability 表逐项验证 Global 能进入 caller admission，并验证 watch 管理与当前 Session 私有端点仍留在 Session role；不能只用 development-union 或下层 handler 测试证明入口可用。
+
+原本地命令与本地 ID 继续使用原路径。Agent list 合并在线网络对象，show/start/list 接受 qualified Agent selector，get/send/state/watch 接受 qualified Session selector；完整代号不能截短或按名称猜对象。Node 统一 router 只选择寻址/传输，Rust App 拥有设备身份与 E2EE，目标仍交给原 Inbox/SessionEngine。start/send 只确认异步接纳；内部 Session 保留原回投与 watch，外部 CLI 仍 one-way。离线明确失败，无云端留存或自动重发。实现/预算/回程 owner 见 [Agent 网络](./agent_network.md)。
+
+`session get` 经 Rust 解析当前 transcript owner：有 ready Session Sidecar 时，通过其仅属 Session 的 exact route `/api/internal/session/text-page` 读取真实内存/流式投影，并验证内部 caller credential；无活跃 owner 时读取持久历史。capability 表必须登记该委托端点，不能把 Global 或调用方 overlay 当作目标实时历史，也不能开放整个 `/api/internal/` prefix。
+
 ### 写入模式
 
 AppConfig-backed 写操作的通用路径到当前 Sidecar 的兼容事件为止：
@@ -448,12 +462,7 @@ CLI → Admin API → atomicModifyConfig() → 写 config.json（磁盘优先）
                 → broadcast() SSE 事件（当前 Sidecar 兼容面）
 ```
 
-`model set-key / set-default / verify / add / remove` 与 MCP mutation 在完成各自磁盘提交后额外调用
-app-wide config notifier：保留当前 Sidecar 的 `config:changed`，再经 Management API
-`/api/app/config-changed` 向所有 WebView 广播空 payload 的应用级失效信号；挂载 `ConfigProvider`
-的 renderer surface 收到后重读完整磁盘快照。浮球等轻量 WebView 不挂 `ConfigProvider`，不消费这条刷新链。
-普通 `config set` 等写操作不拥有这条 app-wide refresh 路径；新增全窗口同步需求时必须先明确
-其磁盘 authority 与完整 snapshot owner，不能把局部 Sidecar broadcast 泛化成应用级协议。
+`model set-key / set-default / verify / add / remove`、MCP mutation，以及普通 `config set`、Agent/Project mutation 和身份登记/修复，在完成各自磁盘提交后复用 app-wide config notifier：保留当前 Sidecar 的 `config:changed`，再经 Management API `/api/app/config-changed` 向所有 WebView 和 App-owned 消费者广播空 payload 的应用级失效信号。挂载 `ConfigProvider` 的 renderer surface 重新读取同一份磁盘 snapshot；Rust 网络 actor 重读持久身份 registry。SSE bridge 是窗口消费者，不向 native 反向发布重复通知。
 
 Agent 的破坏性生命周期 intent 还必须收敛 Rust live owner：`agent channel remove` 先从
 `config.json` 删除精确 Channel，再调用 Management API `/api/agent/stop-channel`；`agent disable`、
@@ -463,7 +472,7 @@ Agent 的破坏性生命周期 intent 还必须收敛 Rust live owner：`agent c
 从而等待尚未登记进 `ManagedAgents` 的启动流程。Management API 失败时 CLI 必须明确报告“配置已提交但
 live runtime 未收敛”，不能把当前 Sidecar 的 `config:changed` 当作生命周期完成信号。
 
-这确保了 CLI model / MCP mutation 和 GUI 配置产生相同的应用级效果。`model add/remove` 的 provider 文件必须持有 `${providerPath}.lock` 并原子替换；Provider 文件是定义权威，`availableProvidersJson` 只是 Rust IM 的派生投影。新增先提交可幂等重试的定义文件再重建投影；删除先提交 config 清理再删除定义文件，使 config 失败时定义天然保持不变，不引入跨文件伪事务。投影的 availability、primary 与 wire shape 只由 `src/shared/availableProvidersProjection.ts` 生成，renderer/Node 仅分别负责目录读取和持久化，禁止复制投影策略。GUI 不读取该投影作为 Provider authority，而是以一次 `config.json` 读取派生 credential/verify，并结合同代 projects/provider 文件形成完整 snapshot；所有磁盘 refresh 经 ConfigProvider 的同一个 snapshot commit owner，本地磁盘提交也推进同一 revision，拒绝旧读覆盖新写。应用级事件 payload 永远为空，不能把 API key/MCP env 放进 Tauri event；Management API 返回失败时 mutation 必须向 CLI 报告“已写盘但 app-wide refresh 失败”，不得返回局部 success。
+这确保了 CLI model / MCP mutation 和 GUI 配置产生相同的应用级效果。`model add/remove` 的 provider 文件必须持有 `${providerPath}.lock` 并原子替换；Provider 文件是定义权威，`availableProvidersJson` 只是 Rust IM 的派生投影。新增先提交可幂等重试的定义文件再重建投影；删除先提交 config 清理再删除定义文件，使 config 失败时定义天然保持不变，不引入跨文件伪事务。投影的 availability、primary 与 wire shape 只由 `src/shared/availableProvidersProjection.ts` 生成，renderer/Node 仅分别负责目录读取和持久化，禁止复制投影策略。GUI 不读取该投影作为 Provider authority，而是以一次 `config.json` 读取派生 credential/verify，并结合同代 projects/provider 文件形成完整 snapshot；所有磁盘 refresh 经 ConfigProvider 的同一个 snapshot commit owner，本地磁盘提交也推进同一 revision，拒绝旧读覆盖新写。应用级事件 payload 永远为空，不能把 API key/MCP env 放进 Tauri event；Management API 返回失败时，model/MCP mutation 保留向 CLI 报告“已写盘但 app-wide refresh 失败”的严格行为；Agent/Project/普通 config 的通用通知返回结果并记录失败，不将已提交写入报告为回滚。网络连接恢复时仍由既有 actor 从磁盘重建目录。
 
 `myagents model list` 的 JSON 与 human 输出都必须展示每个 Provider 的 `primaryModel` 和 `models`；human renderer 不能把 Admin 已返回的详情静默丢弃。
 

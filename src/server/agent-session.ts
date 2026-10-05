@@ -1,4 +1,6 @@
+import { desktopContextOf } from '../shared/agentMentions';
 import { buildTurnProviderAnalytics } from './session-core/turn-analytics';
+import { selectBuiltinRewindBoundary } from './session-core/builtin-rewind-boundary';
 import { createBuiltinInterruptController } from './builtin-session/interrupt';
 import { configureBuiltinTranscriptBinding } from './builtin-session/transcript';
 import { randomUUID } from 'crypto';
@@ -396,9 +398,10 @@ import {
   getCurrentTurnQueueId as getBuiltinCurrentTurnQueueId,
   getLastSessionCompletionTerminal,
   getCurrentTurnSourceItem,
-  getCurrentTurnInboxMeta,
+  consumePendingInboxInput,
   getPendingImRequestIds,
   hasPendingOutputOwnerByQueueId,
+  getPendingOutputOwnerByQueueId,
   peekPendingOutputOwner,
   incrementCurrentTurnToolCount,
   isAssistantMessagePresent,
@@ -1095,6 +1098,7 @@ async function rollbackFailedBuiltinUserSurface(messageId: string): Promise<void
 type SurfaceInFlightOptions = {
   sdkUuid?: string;
   midTurnBreak?: boolean;
+  joinsCurrentTurn?: boolean;
   reason: string;
   /** Replay can await durability before SSE; synchronous assistant-start cannot. */
   awaitPersist?: boolean;
@@ -1116,10 +1120,13 @@ async function surfaceInFlightQueueItem(
   if (product && (!isCurrentQueryAuthority(authority) || getBuiltinProductContent() !== product
     || getInFlightQueueId() !== queueId)) return;
 
+  consumePendingInboxInput(queueId, options.joinsCurrentTurn === true);
+
   const userMessage: MessageWire = {
     id: allocateMessageId(),
     role: 'user',
     content: meta?.messageText ?? '',
+    desktopQuery: meta?.desktopQuery,
     timestamp: new Date().toISOString(),
     attachments: meta?.attachments,
     sdkUuid: options.sdkUuid,
@@ -1176,6 +1183,8 @@ function dropInFlightQueueItem(
   const queueId = getInFlightQueueId();
   if (!queueId) return null;
   const requestId = getInFlightMetadata()?.requestId;
+  const inboxInput = getPendingOutputOwnerByQueueId(queueId)?.sourceItem;
+  if (inboxInput) pushInboxAbortReplyForQueuedItem(inboxInput, 'input_not_consumed', reason);
   removePendingOutputOwnerByQueueId(queueId);
   if (requestId) {
     if (imTerminal === 'failed') {
@@ -1415,6 +1424,7 @@ function emitImEvent(type: ImEventType, data?: unknown): void {
 function pushPendingOutputOwner(item: MessageQueueItem): void {
   turnAdmitPendingOutputOwnerForYield({
     queueId: item.id,
+    sourceItem: item,
     requestId: item.requestId,
     assistantChannelDelivery: item.channelDelivery.assistant,
     channelSessionId: sessionId,
@@ -2027,6 +2037,7 @@ function promoteNextFromPending(): void {
   setInFlightQueueItem(pending.queueId, {
     metadata: pending.sourceItem.metadata,
     messageText: promotedText,
+    desktopQuery: pending.sourceItem.desktopQuery,
     attachments: pending.userMessage.attachments,
     requestId: pending.sourceItem.requestId,
     analyticsSource: pending.sourceItem.analyticsSource,
@@ -2041,7 +2052,9 @@ function promoteNextFromPending(): void {
   // shifts in the cancel-after-start-sse_proxy race).
   broadcast('queue:added', {
     queueId: pending.queueId,
-    messageText: promotedText.slice(0, 100),
+    messageText: visibleDesktopMirrorText(promotedText).slice(0, 100),
+    agentMentions: pending.sourceItem.desktopQuery?.agentMentions,
+    primaryContext: desktopContextOf(pending.sourceItem.desktopQuery?.primaryContext),
     isInFlight: true,
     deliveryMode: pending.sourceItem.deliveryMode,
   });
@@ -2096,6 +2109,7 @@ function startNextTurnQueuedItem(
     id: allocateMessageId(),
     role: 'user',
     content: item.messageText,
+    desktopQuery: item.sourceItem?.desktopQuery,
     timestamp: new Date().toISOString(),
     attachments: item.attachments,
     metadata: sourceItem.metadata ?? (item.source ? { source: item.source } : undefined),
@@ -2182,6 +2196,7 @@ async function handleQueuedCommandReplay(
     sdkUuid: sdkMessage.uuid,
     midTurnBreak: true,
     reason: 'SDKUserMessageReplay consumed by AI',
+    joinsCurrentTurn: true,
     awaitPersist: true,
   });
 }
@@ -2206,6 +2221,7 @@ function maybeSurfaceInFlightAtAssistantTurnStart(reason: string): void {
 let managedQueryController: AbortController | undefined;
 
 function abortPersistentSession(options: { notifyPendingRequests?: boolean } = {}): void {
+  const abortedTurnId = getBuiltinCurrentTurnQueueId() ?? undefined;
   const notifyPendingRequests = options.notifyPendingRequests ?? true;
   clearTransientProviderRetryTimer('abort');
   // This is the only abort-request write path. The lifecycle owner flips the
@@ -2263,30 +2279,18 @@ function abortPersistentSession(options: { notifyPendingRequests?: boolean } = {
   // in flight, push a session_aborted reply back to the caller so it doesn't
   // wait forever. Fire-and-forget. Read + clear immediately to avoid the
   // recovery session inheriting this binding.
-  const { inboxMeta: replyMeta, replyText: abortedReplyText } = terminalCleanup();
-  if (notifyPendingRequests && replyMeta) {
-    const abortedSessionId = sessionId;
-    void import('./inbox/reply-deliver').then(({ deliverInboxReply }) =>
-      deliverInboxReply(abortedSessionId, replyMeta, {
-        text: abortedReplyText,
-        error: {
-          code: 'session_aborted',
-          message: 'target session was aborted before the turn completed',
-        },
-      }),
-    ).catch((err) =>
-      console.error('[inbox] abort-path reply pushback failed:', err),
-    );
-  }
+  const { inboxMetas: replyMetas, replyText: abortedReplyText } = terminalCleanup();
   if (notifyPendingRequests) {
     void import('./inbox/watch-deliver').then(({ deliverSessionWatchEvents }) =>
       deliverSessionWatchEvents(sessionId, {
+        turnId: abortedTurnId, terminalStatus: 'stopped',
+        requestEventIds: replyMetas.map(meta => meta.originalMessageId),
         text: abortedReplyText,
         error: {
           code: 'session_aborted',
           message: 'target session was aborted before the turn completed',
         },
-      }),
+      }, replyMetas),
     ).catch((err) =>
       console.error('[session-watch] abort-path watch push failed:', err),
     );
@@ -4100,7 +4104,7 @@ function buildSettingSources(): ('user' | 'project')[] {
  *      (a) add `registerBuiltinMcpMeta({ id, load })` block in builtin-mcp-meta.ts, and
  *      (b) write the tool file with `createXxxServer()` async factory whose SDK + zod imports
  *          live INSIDE the factory via `await import()` — never at the tool module's top level,
- *          or the lazy-load win is defeated (see CLAUDE.md 禁止事项 and builtin-mcp-registry.ts).
+ *          or the lazy-load win is defeated (see pit_of_success.md#builtin-mcp and builtin-mcp-registry.ts).
  * 3. External (stdio/sse/http) — subprocess or remote servers, user-configured.
  *
  * Execution strategy for external stdio:
@@ -4646,6 +4650,7 @@ const pendingPermissions = new Map<string, {
   input: unknown;
   grantKey: string;
   hints: ToolPermissionHints;
+  blocksRoot?: boolean;
 }>();
 
 // AskUserQuestion types - import from shared
@@ -4662,6 +4667,7 @@ export type { ExitPlanModeRequest, EnterPlanModeRequest, ExitPlanModeAllowedProm
 const pendingAskUserQuestions = new Map<string, {
   resolve: (answers: Record<string, string> | null) => void;
   input: AskUserQuestionInput;
+  blocksRoot?: boolean;
 }>();
 
 // Pending ExitPlanMode requests waiting for user approval.
@@ -4674,12 +4680,14 @@ const pendingExitPlanMode = new Map<string, {
   resolve: (result: ExitPlanModeResolution) => void;
   plan?: string;
   allowedPrompts?: ExitPlanModeAllowedPrompt[];
+  blocksRoot?: boolean;
 }>();
 
 // Pending EnterPlanMode requests waiting for user approval.
 // See pendingPermissions comment — no wall-clock timeout (v0.2.14).
 const pendingEnterPlanMode = new Map<string, {
   resolve: (approved: boolean) => void;
+  blocksRoot?: boolean;
 }>();
 
 async function prepareSessionPlansForUserTurn(options: { clearStale: boolean }): Promise<void> {
@@ -4710,6 +4718,12 @@ function hasPendingInteractiveRequest(): boolean {
     || pendingAskUserQuestions.size > 0
     || pendingExitPlanMode.size > 0
     || pendingEnterPlanMode.size > 0;
+}
+
+/** Only root canUseTool resolvers establish a whole-Session human wait. */
+export function isBuiltinWaitingForUser(): boolean {
+  return [pendingPermissions, pendingAskUserQuestions, pendingExitPlanMode, pendingEnterPlanMode]
+    .some(requests => [...requests.values()].some(request => request.blocksRoot !== false));
 }
 
 function interactiveEventScope(): { sessionId: string } {
@@ -4746,7 +4760,8 @@ function isValidAskUserQuestionInput(input: unknown): input is AskUserQuestionIn
  */
 async function handleAskUserQuestion(
   input: unknown,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  blocksRoot = true
 ): Promise<Record<string, string> | null> {
   console.log('[AskUserQuestion] Requesting user input');
 
@@ -4807,7 +4822,7 @@ async function handleAskUserQuestion(
     // Listen for SDK abort signal
     signal?.addEventListener('abort', onAbort);
 
-    pendingAskUserQuestions.set(requestId, { resolve, input: questionInput });
+    pendingAskUserQuestions.set(requestId, { resolve, input: questionInput, blocksRoot });
   });
   broadcast('ask-user-question:request', requestPayload);
   if (supportsAskUserQuestionNativeCard(currentScenario)) {
@@ -4852,7 +4867,8 @@ export function handleAskUserQuestionResponse(
  */
 async function handleExitPlanMode(
   input: unknown,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  blocksRoot = true
 ): Promise<ExitPlanModeResolution> {
   console.log('[ExitPlanMode] Requesting user approval');
 
@@ -4910,7 +4926,7 @@ async function handleExitPlanMode(
     };
 
     signal?.addEventListener('abort', onAbort);
-    pendingExitPlanMode.set(requestId, { resolve, plan, allowedPrompts });
+    pendingExitPlanMode.set(requestId, { resolve, plan, allowedPrompts, blocksRoot });
   });
   broadcast('exit-plan-mode:request', { ...interactiveEventScope(), requestId, plan, allowedPrompts });
   return response;
@@ -4957,7 +4973,8 @@ export function handleExitPlanModeResponse(
  */
 async function handleEnterPlanMode(
   _input: unknown,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  blocksRoot = true
 ): Promise<boolean> {
   console.log('[EnterPlanMode] Requesting user approval');
 
@@ -4987,7 +5004,7 @@ async function handleEnterPlanMode(
     };
 
     signal?.addEventListener('abort', onAbort);
-    pendingEnterPlanMode.set(requestId, { resolve });
+    pendingEnterPlanMode.set(requestId, { resolve, blocksRoot });
   });
   broadcast('enter-plan-mode:request', { ...interactiveEventScope(), requestId });
   return response;
@@ -5051,6 +5068,7 @@ async function checkToolPermission(
   signal?: AbortSignal,
   hints: ToolPermissionHints = {},
   server?: McpServerProvenance,
+  blocksRoot = true,
 ): Promise<'allow' | 'deny'> {
   const rules = getPermissionRules(mode);
   const grantKey = toolPermissionGrantKey(toolName, server);
@@ -5116,7 +5134,7 @@ async function checkToolPermission(
     // Listen for SDK abort signal
     signal?.addEventListener('abort', onAbort);
 
-    pendingPermissions.set(requestId, { resolve, toolName, input, grantKey, hints });
+    pendingPermissions.set(requestId, { resolve, toolName, input, grantKey, hints, blocksRoot });
   });
   broadcast('permission:request', {
     ...interactiveEventScope(),
@@ -7949,7 +7967,8 @@ function drainQueueWithCancellation(): void {
  *  or replyBack=false. */
 function pushInboxAbortReplyForQueuedItem(
   item: { inboxMeta?: import('./inbox/types').InboxTurnMeta },
-  code: 'message_dropped_on_reset' | 'message_dropped_on_clear',
+  code: 'message_dropped_on_reset' | 'message_dropped_on_clear' | 'input_not_consumed',
+  reason?: string,
 ): void {
   const meta = item.inboxMeta;
   if (!meta || !meta.replyBack) return;
@@ -7959,10 +7978,10 @@ function pushInboxAbortReplyForQueuedItem(
       text: '',
       error: {
         code,
-        message:
+        message: reason ?? (
           code === 'message_dropped_on_reset'
             ? 'target session was reset before the message ran'
-            : 'target session state was cleared before the message ran',
+            : 'target session state was cleared before the message ran'),
       },
     }),
   ).catch((err) =>
@@ -8931,12 +8950,14 @@ export async function enqueueUserMessage(
   analyticsOrigin?: SessionOrigin,
   options?: {
     fromDesktopChatSend?: boolean;
+    desktopQuery?: import("../shared/agentMentions").DesktopQueryDraft;
     queueId?: string;
     turnOwner?: TurnOwner;
     onTerminal?: TurnTerminalObserver;
     allowLazySessionMaterialization?: boolean;
     sessionBirthOrigin?: SessionOrigin;
     queueResponseModeOverride?: 'realtime' | 'turn';
+    inputSource?: 'inbox';
     /** Infrastructure-only gate after Query-changing config, before user/session persistence. */
     beforeUserPersistence?: import('./session-core/turn-queue').DispatchGuard;
     beforeDispatch?: import('./session-core/turn-queue').DispatchGuard;
@@ -9043,6 +9064,7 @@ export async function enqueueUserMessage(
       requestId,
       createdAt: Date.now(),
       messageText: trimmed,
+      desktopQuery: options?.desktopQuery,
       turnOwner: options?.turnOwner,
       onTerminal: options?.onTerminal,
       beforeUserPersistence: options?.beforeUserPersistence,
@@ -9057,6 +9079,7 @@ export async function enqueueUserMessage(
         ready: false,
         admissionTicket,
         messageText: trimmed,
+      desktopQuery: options?.desktopQuery,
         requestId,
       };
       pushTurnBoundary(reservedTurnBoundaryItem);
@@ -9471,12 +9494,13 @@ export async function enqueueUserMessage(
         queueId,
         ready: false,
         messageText: trimmed,
+      desktopQuery: options?.desktopQuery,
         requestId,
       };
       pushTurnBoundary(reservedTurnBoundaryItem);
       console.log(`[agent] Reserved turn-boundary queue slot: queueId=${queueId} requestId=${requestId ?? '-'} text="${trimmed.slice(0, 50)}"`);
       if (!deferVisibleAdmission) {
-        broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: false, deliveryMode: 'turn' });
+        broadcast('queue:added', { queueId, messageText: visibleDesktopMirrorText(trimmed).slice(0, 100), agentMentions: options?.desktopQuery?.agentMentions, primaryContext: desktopContextOf(options?.desktopQuery?.primaryContext), isInFlight: false, deliveryMode: 'turn' });
       }
     }
   }
@@ -9667,6 +9691,7 @@ export async function enqueueUserMessage(
       metadata,
       message: { role: 'user', content: contentBlocks },
       messageText: trimmed,
+      desktopQuery: options?.desktopQuery,
       wasQueued: holdForWatchdogRecovery ? true : admissionAction !== 'turn-boundary',
       deliveryMode: queueDeliveryMode,
       resolve: () => {},  // No-op: no one is awaiting
@@ -9676,6 +9701,7 @@ export async function enqueueUserMessage(
       analyticsOrigin,
       providerAnalytics: turnProviderAnalytics,
       inboxMeta,
+      inputSource: options?.inputSource,
       turnOwner: options?.turnOwner,
       onTerminal: admissionCallbacks.onTerminal,
       beforeDispatch: options?.beforeDispatch,
@@ -9693,7 +9719,7 @@ export async function enqueueUserMessage(
       pushMessage(queueItem);
       console.log(`[agent] Message queued behind watchdog recovery reminder: queueId=${queueId} requestId=${requestId ?? '-'} text="${trimmed.slice(0, 50)}"`);
       if (!deferVisibleAdmission) {
-        broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: false, deliveryMode: queueDeliveryMode });
+        broadcast('queue:added', { queueId, messageText: visibleDesktopMirrorText(trimmed).slice(0, 100), agentMentions: options?.desktopQuery?.agentMentions, primaryContext: desktopContextOf(options?.desktopQuery?.primaryContext), isInFlight: false, deliveryMode: queueDeliveryMode });
       }
     } else if (admissionAction === 'turn-boundary') {
       const turnItem = reservedTurnBoundaryItem;
@@ -9706,6 +9732,7 @@ export async function enqueueUserMessage(
         queueId,
         ready: false,
         messageText: trimmed,
+      desktopQuery: options?.desktopQuery,
         requestId,
       };
       readyTurnItem.ready = true;
@@ -9722,7 +9749,7 @@ export async function enqueueUserMessage(
       if (!turnItem) {
         pushTurnBoundary(readyTurnItem);
         if (!deferVisibleAdmission) {
-          broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: false, deliveryMode: 'turn' });
+          broadcast('queue:added', { queueId, messageText: visibleDesktopMirrorText(trimmed).slice(0, 100), agentMentions: options?.desktopQuery?.agentMentions, primaryContext: desktopContextOf(options?.desktopQuery?.primaryContext), isInFlight: false, deliveryMode: 'turn' });
         }
       }
       console.log(`[agent] Message queued for next turn boundary: queueId=${queueId} requestId=${requestId ?? '-'} text="${trimmed.slice(0, 50)}"`);
@@ -9739,6 +9766,7 @@ export async function enqueueUserMessage(
         setInFlightQueueItem(queueId, {
           metadata,
           messageText: trimmed,
+      desktopQuery: options?.desktopQuery,
           attachments: savedAttachments.length > 0 ? savedAttachments : undefined,
           requestId,
           source: metadata?.source,
@@ -9750,7 +9778,7 @@ export async function enqueueUserMessage(
         wakeGenerator(queueItem);
         console.log(`[agent] Message queued mid-turn (in-flight to CLI): queueId=${queueId} requestId=${requestId ?? '-'} text="${trimmed.slice(0, 50)}"`);
         if (!deferVisibleAdmission) {
-          broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: true, deliveryMode: 'realtime' });
+          broadcast('queue:added', { queueId, messageText: visibleDesktopMirrorText(trimmed).slice(0, 100), agentMentions: options?.desktopQuery?.agentMentions, primaryContext: desktopContextOf(options?.desktopQuery?.primaryContext), isInFlight: true, deliveryMode: 'realtime' });
         }
       } else {
         // The generator is still owned by a promoted/active turn. Labeling
@@ -9761,7 +9789,7 @@ export async function enqueueUserMessage(
         pushMessage(queueItem);
         console.log(`[agent] Message queued mid-turn (local until generator handoff): queueId=${queueId} requestId=${requestId ?? '-'} text="${trimmed.slice(0, 50)}"`);
         if (!deferVisibleAdmission) {
-          broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: false, deliveryMode: 'realtime' });
+          broadcast('queue:added', { queueId, messageText: visibleDesktopMirrorText(trimmed).slice(0, 100), agentMentions: options?.desktopQuery?.agentMentions, primaryContext: desktopContextOf(options?.desktopQuery?.primaryContext), isInFlight: false, deliveryMode: 'realtime' });
         }
       }
     } else {
@@ -9773,6 +9801,7 @@ export async function enqueueUserMessage(
         id: allocateMessageId(),
         role: 'user',
         content: trimmed,
+        desktopQuery: options?.desktopQuery,
         timestamp: new Date().toISOString(),
         attachments: savedAttachments.length > 0 ? savedAttachments : undefined,
       };
@@ -9789,7 +9818,7 @@ export async function enqueueUserMessage(
       });
       console.log(`[agent] Message queued mid-turn (pending — in-flight slot busy): queueId=${queueId} requestId=${requestId ?? '-'} (pending=${getPendingMidTurnQueue().length})`);
       if (!deferVisibleAdmission) {
-        broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: false, deliveryMode: 'realtime' });
+        broadcast('queue:added', { queueId, messageText: visibleDesktopMirrorText(trimmed).slice(0, 100), agentMentions: options?.desktopQuery?.agentMentions, primaryContext: desktopContextOf(options?.desktopQuery?.primaryContext), isInFlight: false, deliveryMode: 'realtime' });
       }
     }
 
@@ -9822,6 +9851,7 @@ export async function enqueueUserMessage(
     id: allocateMessageId(),
     role: 'user',
     content: trimmed,
+    desktopQuery: options?.desktopQuery,
     timestamp: new Date().toISOString(),
     attachments: savedAttachments.length > 0 ? savedAttachments : undefined,
     metadata,
@@ -9864,6 +9894,7 @@ export async function enqueueUserMessage(
     sessionBirthOrigin: options?.sessionBirthOrigin,
     providerAnalytics: turnProviderAnalytics,
     inboxMeta,
+    inputSource: options?.inputSource,
     turnOwner: options?.turnOwner,
     onTerminal: admissionCallbacks.onTerminal,
     beforeDispatch: options?.beforeDispatch,
@@ -10457,7 +10488,7 @@ export async function forceExecuteQueueItem(queueId: string): Promise<boolean> {
 /**
  * Get current queue status — list of queued items with their IDs and preview text.
  */
-export function getQueueStatus(): Array<{ id: string; messagePreview: string }> {
+export function getQueueStatus(): Array<{ id: string; messagePreview: string; agentMentions?: import("../shared/agentMentions").AgentMentionSnapshot[] }> {
   return queueGetQueueStatus();
 }
 
@@ -10478,6 +10509,7 @@ export async function rewindSession(userMessageId: string): Promise<{
   error?: string;
   content?: string;
   attachments?: MessageWire['attachments'];
+  desktopQuery?: import("../shared/agentMentions").DesktopQueryDraft;
   skippedLinks?: number;
   fileRewindStatus?: FileRewindStatus;
 }> {
@@ -10489,14 +10521,14 @@ export async function rewindSession(userMessageId: string): Promise<{
     const targetIndex = history.findIndex(m => m.id === userMessageId && m.role === 'user');
     if (targetIndex < 0) return { success: false as const, error: 'Message not found' };
     const targetMessage = history[targetIndex];
-    // SDK 0.3.276 accepts any native chain entry, including user messages.
-    // The retained tail owns the boundary; looking backward for an assistant
-    // would silently discard consecutive user messages from native context.
-    const retainedTail = history[targetIndex - 1];
-    const resumeSessionAt = retainedTail?.sdkUuid;
-    if (retainedTail && !resumeSessionAt) {
+    const product = getBuiltinProductContent();
+    const prefix = product ? [...product.writer.projection.messages.values()].slice(0, targetIndex)
+      : history.slice(0, targetIndex);
+    const boundary = selectBuiltinRewindBoundary(prefix);
+    if (boundary.kind === 'unavailable') {
       return { success: false as const, error: 'The retained history has no exact native rewind boundary' };
     }
+    const resumeSessionAt = boundary.kind === 'exact' ? boundary.sdkUuid : undefined;
 
     const sourceMeta = getSessionMetadata(productSessionId);
     const sourceSdkSessionId = sourceMeta ? resolveBuiltinSdkSessionId(sourceMeta) ?? null : null;
@@ -10578,6 +10610,7 @@ export async function rewindSession(userMessageId: string): Promise<{
     return {
       success: true as const,
       content: removedContent,
+      desktopQuery: targetMessage.desktopQuery,
       attachments: removedAttachments,
       fileRewindStatus,
       ...(skippedLinks > 0 ? { skippedLinks } : {}),
@@ -10686,7 +10719,7 @@ export async function forkSession(assistantMessageId: string, targetSessionId?: 
       const index = messages.findIndex(message => message.id === assistantMessageId && message.role === 'assistant');
       if (index < 0) throw new Error('Assistant message not found');
       const anchor = messages[index].sdkUuid;
-      if (!anchor) throw new Error('This message has no exact native fork boundary');
+      if (messages[index].messageKind === 'diagnostic' || !anchor) throw new Error('This message has no exact native fork boundary');
       const nativeSource = await resolveBuiltinForkSource(source);
       const forkedMessages = messages.slice(0, index + 1).map(messageWireToSessionMessage);
       const native = await materializeBuiltinFork({ sourceSdkSid: nativeSource, anchorUuid: anchor, dir: source.agentDir, forkedMessages });
@@ -11656,7 +11689,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             };
           }
           console.log('[canUseTool] AskUserQuestion detected, prompting user');
-          const answers = await handleAskUserQuestion(input, options.signal);
+          const answers = await handleAskUserQuestion(input, options.signal, !options.agentID);
           if (answers === null) {
             return {
               behavior: 'deny' as const,
@@ -11694,7 +11727,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         // tool calls (review-by-codex fabrication concern).
         if (toolName === 'ExitPlanMode') {
           console.log('[canUseTool] ExitPlanMode detected, requesting user approval');
-          const result = await handleExitPlanMode(input, options.signal);
+          const result = await handleExitPlanMode(input, options.signal, !options.agentID);
           if (!result.approved) {
             const hasFeedback = !!result.feedback;
             // Cap feedback length before splicing into the wrapper.
@@ -11735,7 +11768,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         // PRD #131 — same control-transfer semantic; interrupt on rejection.
         if (toolName === 'EnterPlanMode') {
           console.log('[canUseTool] EnterPlanMode detected, requesting user approval');
-          const approved = await handleEnterPlanMode(input, options.signal);
+          const approved = await handleEnterPlanMode(input, options.signal, !options.agentID);
           if (!approved) {
             return {
               behavior: 'deny' as const,
@@ -11756,6 +11789,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           options.signal,
           { defaultToNo: options.defaultToNo, suppressAlwaysAllowRule: options.suppressAlwaysAllowRule },
           options.mcpServer,
+          !options.agentID,
         );
         console.debug(`[permission] canUseTool result for ${toolName}: ${decision}`);
         if (decision === 'allow') {
@@ -14378,6 +14412,7 @@ async function* messageGenerator(
       setInFlightQueueItem(item.id, {
         metadata: item.metadata,
         messageText: item.messageText,
+        desktopQuery: item.desktopQuery,
         attachments: item.attachments,
         requestId: item.requestId,
         analyticsSource: item.analyticsSource,
@@ -14389,18 +14424,23 @@ async function* messageGenerator(
       // cancel_async_message while it remains pending in SDK commandQueue.
       broadcast('queue:added', {
         queueId: item.id,
-        messageText: item.messageText.slice(0, 100),
+        messageText: visibleDesktopMirrorText(item.messageText).slice(0, 100),
+        agentMentions: item.desktopQuery?.agentMentions,
+        primaryContext: desktopContextOf(item.desktopQuery?.primaryContext),
         isInFlight: true,
         deliveryMode: item.deliveryMode,
       });
       console.log(`[messageGenerator] Recovery path: wasQueued item ${item.id} adopted as in-flight (rescue or queueState.messageQueue push)`);
     }
-    beginBuiltinTurnTrace(traceSource, traceTurnId, item.requestId);
-    setCurrentTurnAnalyticsSource(item.analyticsSource ?? currentScenario.type);
-    setCurrentTurnAnalyticsOrigin(turnOrigin);
-    setCurrentTurnProviderAnalytics(item.providerAnalytics ?? buildTurnProviderAnalytics(configState.currentProviderEnv));
-    setAssistantMessagePresent(false);
-    setCurrentTurnSourceItem(item);
+    const pendingInboxConsumption = item.wasQueued && item.inputSource === 'inbox';
+    if (!pendingInboxConsumption) {
+      beginBuiltinTurnTrace(traceSource, traceTurnId, item.requestId);
+      setCurrentTurnAnalyticsSource(item.analyticsSource ?? currentScenario.type);
+      setCurrentTurnAnalyticsOrigin(turnOrigin);
+      setCurrentTurnProviderAnalytics(item.providerAnalytics ?? buildTurnProviderAnalytics(configState.currentProviderEnv));
+      setAssistantMessagePresent(false);
+      setCurrentTurnSourceItem(item);
+    }
 
     // Irreversible admission commit. The final lease/domain validation above
     // and this owner transfer are one synchronous event-loop transaction: no
@@ -14433,7 +14473,7 @@ async function* messageGenerator(
       lifecycleState.abortRequested
       || builtinInterrupt.isInterrupting()
       || !isStreamingMessage
-      || getCurrentTurnSourceItem() !== item
+      || (!pendingInboxConsumption && getCurrentTurnSourceItem() !== item)
     ) {
       item.resolve();
       return;
@@ -14464,7 +14504,7 @@ async function* messageGenerator(
           lifecycleState.abortRequested
           || builtinInterrupt.isInterrupting()
           || !isStreamingMessage
-          || getCurrentTurnSourceItem() !== item
+          || (!pendingInboxConsumption && getCurrentTurnSourceItem() !== item)
         ) {
           item.resolve();
           return;
@@ -14514,7 +14554,7 @@ async function* messageGenerator(
       lifecycleState.abortRequested
       || builtinInterrupt.isInterrupting()
       || !isStreamingMessage
-      || getCurrentTurnSourceItem() !== item
+      || (!pendingInboxConsumption && getCurrentTurnSourceItem() !== item)
     ) {
       item.resolve();
       return;
@@ -14525,19 +14565,9 @@ async function* messageGenerator(
     // therefore reuses the owner retained when the retry was selected.
     pushPendingOutputOwner(item);
 
-    // PRD 0.2.18 Session Inbox — per-turn binding (read at result handler /
-    // abort path). Bound here at generator yield (NOT at enqueue), so the
-    // mutable always reflects the turn that's actually about to execute.
-    // Cleared at result handler / abort path; if a subsequent yield happens
-    // before clear, the new binding overwrites — that's correct because SDK
-    // persistent session yields one turn at a time.
-    setCurrentTurnInboxMeta(item.inboxMeta);
-    const currentTurnInboxMeta = getCurrentTurnInboxMeta();
-    if (currentTurnInboxMeta) {
-      console.log(
-        `[inbox] Bound turn inboxMeta from=${currentTurnInboxMeta.fromSessionId} replyBack=${currentTurnInboxMeta.replyBack} msgId=${currentTurnInboxMeta.originalMessageId}`,
-      );
-    }
+    // Queued Inbox inputs may join the running SDK turn. Bind them at the
+    // native replay/assistant-start receipt, never merely at stdin yield.
+    if (!item.wasQueued && !item.transientProviderRetry) setCurrentTurnInboxMeta(item.inboxMeta);
 
     // Modality re-check at dequeue (see prior comment in pre-fix file).
     const yieldedMessage = stripUnsupportedModalityBlocks(item.message, configState.currentModel);

@@ -21,6 +21,8 @@ import { sanitizeInboxLabel } from './sanitize-label';
 import { deriveSessionLabel } from './derive-label';
 import { getSessionMetadata, getSessionData } from '../SessionStore';
 import type { InboxTurnMeta, PendingInboxMessage, DeliverOutcome } from './types';
+import { deliverNetworkReturn } from '../agent-network/return';
+import { listPendingSessionWatches } from './watch-registry';
 
 /// Optional payload pieces to combine into reply text. Caller (turn-end hook)
 /// passes what it has; this builder formats them into a single text blob.
@@ -31,6 +33,9 @@ export interface ReplyPayload {
   error?: { code: string; message: string };
   /** Optional attachment hints (file paths or names) to mention in text. */
   attachmentHints?: string[];
+  turnId?: string;
+  terminalStatus?: 'complete' | 'stopped' | 'error';
+  requestEventIds?: string[];
 }
 
 /// Build the textual body of a result, embedding error + attachment hints inline.
@@ -81,6 +86,9 @@ export async function deliverInboxReply(
   inboxMeta: InboxTurnMeta,
   payload: ReplyPayload,
 ): Promise<boolean> {
+  const watchIds = payload.turnId ? listPendingSessionWatches().filter(watch =>
+    watch.turnId === payload.turnId && watch.targetSessionId === currentSessionId &&
+    watch.watcherSessionId === inboxMeta.fromSessionId).map(watch => watch.watchId) : [];
   // Derive reply sender label (= this session, the target that produced the reply)
   const myMeta = getSessionMetadata(currentSessionId) ?? null;
   const rawLabel = deriveSessionLabel(
@@ -115,8 +123,17 @@ export async function deliverInboxReply(
       errorCode: payload.error?.code,
       createdAt,
       payload: text,
+      ...(payload.turnId ? { turnId: payload.turnId } : {}),
+      ...(payload.terminalStatus ? { terminalStatus: payload.terminalStatus } : {}),
+      resultSource: 'live',
+      requestEventIds: [inboxMeta.originalMessageId],
+      ...(watchIds.length ? { watchIds } : {}),
     },
   };
+
+  if (inboxMeta.networkReturn) {
+    return await deliverNetworkReturn(inboxMeta.networkReturn, message.sessionEvent!) === 'delivered';
+  }
 
   // Resolve caller workspace path for resume (caller may have gone idle)
   const callerMeta = getSessionMetadata(inboxMeta.fromSessionId);

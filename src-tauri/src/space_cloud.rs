@@ -10,12 +10,14 @@ use reqwest::header::{ACCEPT_LANGUAGE, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use crate::device_identity::{current_device_identity, DeviceIdentity};
+use crate::network_diagnostics::{error_category, response_request_id, RequestDiagnostic};
 use crate::workspace_files::path_safety::open_regular_file_no_follow;
 use crate::{ulog_info, ulog_warn};
 
+pub(crate) mod agent_network;
 pub(crate) mod attachments;
 pub(crate) mod cli;
 pub(crate) mod delivery;
@@ -746,11 +748,7 @@ pub async fn cmd_space_auth_poll(
                 AuthenticatedSpaceSession::from_account(session, session_path)?,
                 identity,
             );
-            notifications::auth_boundary_changed(
-                &app,
-                app.state::<notifications::ManagedNotificationCenter>()
-                    .inner(),
-            );
+            account_auth_boundary_changed(&app);
         }
         if let Some(map) = data.as_object_mut() {
             map.remove("sessionToken");
@@ -780,11 +778,7 @@ pub async fn cmd_space_auth_ack(input: SpaceAuthPollInput) -> Result<(), String>
 pub async fn cmd_space_logout(app: tauri::AppHandle) -> Result<(), String> {
     if crate::space_cloud_mock::is_enabled() {
         crate::space_cloud_mock::reset();
-        notifications::auth_boundary_changed(
-            &app,
-            app.state::<notifications::ManagedNotificationCenter>()
-                .inner(),
-        );
+        account_auth_boundary_changed(&app);
         return Ok(());
     }
     let capability = space_build_capability();
@@ -793,11 +787,7 @@ pub async fn cmd_space_logout(app: tauri::AppHandle) -> Result<(), String> {
         tauri::async_runtime::spawn_blocking(move || take_session_for_logout(&path))
             .await
             .map_err(|error| format!("remove Space session task failed: {error:?}"))??;
-    notifications::auth_boundary_changed(
-        &app,
-        app.state::<notifications::ManagedNotificationCenter>()
-            .inner(),
-    );
+    account_auth_boundary_changed(&app);
     let session_to_revoke = capability
         .available
         .then(|| capability_base_url(&capability).ok())
@@ -840,14 +830,19 @@ pub async fn cmd_space_update_profile(
     input: SpaceUpdateProfileInput,
 ) -> SpaceCommandResult<SpaceSessionPublic> {
     if crate::space_cloud_mock::is_enabled() {
-        return crate::space_cloud_mock::update_profile(input).map_err(Into::into);
+        let session =
+            crate::space_cloud_mock::update_profile(input).map_err(SpaceCommandError::from)?;
+        account_profile_changed();
+        return Ok(session);
     }
     ensure_space_available()?;
     let session = require_session()?;
     let form = profile_form(input)?;
     let data = authorized_multipart_data_request(&session, "/api/me/profile", form).await?;
     let refreshed = session_from_me_data(&session, &data);
-    Ok(commit_refreshed_session(refreshed).await?.into())
+    let session = commit_refreshed_session(refreshed).await?;
+    account_profile_changed();
+    Ok(session.into())
 }
 
 #[tauri::command]
@@ -904,6 +899,7 @@ pub async fn cmd_space_api_request(
     }
     ensure_space_available().map_err(SpaceCommandError::from)?;
     let session = require_session().map_err(SpaceCommandError::from)?;
+    let diagnostic = RequestDiagnostic::new("space", &method, &input.path);
     let client = http_client().map_err(SpaceCommandError::from)?;
     let mut req = with_space_client_context_headers(
         client
@@ -917,11 +913,10 @@ pub async fn cmd_space_api_request(
     if let Some(body) = input.body {
         req = req.json(&body);
     }
-    let response = req
-        .send()
-        .await
-        .map_err(|e| SpaceCommandError::transport(format!("Space API request failed: {e}")))?;
-    let data = parse_authorized_cloud_data(response, Some(&session)).await?;
+    let response = diagnostic.send(req).await.map_err(|e| {
+        SpaceCommandError::transport(format!("Space API request failed ({})", error_category(&e)))
+    })?;
+    let data = parse_authorized_cloud_data(response, Some(&session), &diagnostic).await?;
     Ok(serde_json::json!({ "success": true, "data": data }))
 }
 
@@ -1530,7 +1525,7 @@ async fn parse_cloud_data<T: for<'de> Deserialize<'de>>(
     let envelope = response
         .json::<CloudEnvelope<T>>()
         .await
-        .map_err(|e| format!("Invalid Space API response: {}", e))?;
+        .map_err(|e| format!("Invalid Space API response ({})", error_category(&e)))?;
     if !status.is_success() || !envelope.success {
         let mut message = envelope
             .error
@@ -1584,8 +1579,10 @@ async fn parse_cloud_data<T: for<'de> Deserialize<'de>>(
 async fn parse_authorized_cloud_data(
     response: reqwest::Response,
     user_session: Option<&AuthenticatedSpaceSession>,
+    diagnostic: &RequestDiagnostic,
 ) -> Result<Value, SpaceCommandError> {
     let status = response.status();
+    let request_id = response_request_id(&response);
     let credential_kind = if user_session.is_some() {
         SpaceCredentialKind::UserSession
     } else {
@@ -1599,7 +1596,7 @@ async fn parse_authorized_cloud_data(
                     "[space] user session moved to reauth_required: sessionBindingId={}",
                     session.session_binding_id()
                 );
-                notifications::user_session_invalidated();
+                account_user_session_invalidated();
             }
             Ok(false) => {
                 ulog_info!(
@@ -1628,6 +1625,12 @@ async fn parse_authorized_cloud_data(
     let envelope = match response.json::<CloudEnvelope<Value>>().await {
         Ok(envelope) => envelope,
         Err(error) if reauth_required => {
+            diagnostic.failure(
+                "decode",
+                error_category(&error),
+                Some(status.as_u16()),
+                request_id.as_deref(),
+            );
             return Err(SpaceCommandError {
                 code: "SPACE_REAUTH_REQUIRED".to_string(),
                 message: "MyAgents Space login is required.".to_string(),
@@ -1646,17 +1649,39 @@ async fn parse_authorized_cloud_data(
             });
         }
         Err(error) => {
+            diagnostic.failure(
+                "decode",
+                error_category(&error),
+                Some(status.as_u16()),
+                request_id.as_deref(),
+            );
             return Err(SpaceCommandError {
                 http_status: Some(status.as_u16()),
                 credential_kind: Some(credential_kind),
+                retryable: status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                    || status.is_server_error(),
                 ..SpaceCommandError::local(
-                    "SPACE_RESPONSE_INVALID",
-                    format!("Invalid Space response: {error}"),
+                    if status.is_success() {
+                        "SPACE_RESPONSE_INVALID"
+                    } else {
+                        "SPACE_REQUEST_FAILED"
+                    },
+                    if status.is_success() {
+                        "Invalid Space response.".to_string()
+                    } else {
+                        format!("Space request failed with HTTP {}.", status.as_u16())
+                    },
                 )
             });
         }
     };
     if !status.is_success() || !envelope.success {
+        diagnostic.failure(
+            "response",
+            "http",
+            Some(status.as_u16()),
+            envelope.request_id.as_deref().or(request_id.as_deref()),
+        );
         let cloud_code = envelope
             .code
             .as_deref()
@@ -1696,6 +1721,12 @@ async fn parse_authorized_cloud_data(
         });
     }
     envelope.data.ok_or_else(|| {
+        diagnostic.failure(
+            "schema",
+            "decode",
+            Some(status.as_u16()),
+            envelope.request_id.as_deref().or(request_id.as_deref()),
+        );
         SpaceCommandError::local(
             "SPACE_RESPONSE_INVALID",
             "Space response did not include data.",
@@ -1721,6 +1752,7 @@ async fn authorized_json_request(
     }
     let capability = ensure_space_available()?;
     let client = http_client()?;
+    let diagnostic = RequestDiagnostic::new("space", &method, path);
     let mut req = with_space_client_context_headers(
         client
             .request(method, api_url(base_url, path)?)
@@ -1730,14 +1762,18 @@ async fn authorized_json_request(
     if let Some(body) = body {
         req = req.json(&body);
     }
-    let response = req
-        .send()
+    let response = diagnostic
+        .send(req)
         .await
-        .map_err(|e| format!("Space API request failed: {}", e))?;
-    response
-        .json::<Value>()
-        .await
-        .map_err(|e| format!("Invalid Space API response: {}", e))
+        .map_err(|e| format!("Space API request failed ({})", error_category(&e)))?;
+    let status = response.status();
+    if !status.is_success() {
+        diagnostic.failure("response", "http", Some(status.as_u16()), None);
+    }
+    response.json::<Value>().await.map_err(|e| {
+        diagnostic.failure("decode", error_category(&e), Some(status.as_u16()), None);
+        format!("Invalid Space API response ({})", error_category(&e))
+    })
 }
 
 async fn upsert_space_user_device(
@@ -1840,6 +1876,7 @@ async fn authorized_json_data_request_with_credential(
         .map_err(Into::into);
     }
     let capability = ensure_space_available().map_err(SpaceCommandError::from)?;
+    let diagnostic = RequestDiagnostic::new("space", &method, path);
     let client = http_client().map_err(SpaceCommandError::from)?;
     let mut req = with_space_client_context_headers(
         client
@@ -1856,11 +1893,10 @@ async fn authorized_json_data_request_with_credential(
     if let Some(body) = body {
         req = req.json(&body);
     }
-    let response = req
-        .send()
-        .await
-        .map_err(|e| SpaceCommandError::transport(format!("Space API request failed: {e}")))?;
-    parse_authorized_cloud_data(response, user_session).await
+    let response = diagnostic.send(req).await.map_err(|e| {
+        SpaceCommandError::transport(format!("Space API request failed ({})", error_category(&e)))
+    })?;
+    parse_authorized_cloud_data(response, user_session, &diagnostic).await
 }
 
 async fn authorized_multipart_data_request(
@@ -1927,6 +1963,7 @@ async fn authorized_multipart_method_data_request_with_credential(
         ));
     }
     let capability = ensure_space_available().map_err(SpaceCommandError::from)?;
+    let diagnostic = RequestDiagnostic::new("space", &method, path);
     let mut request = with_space_client_context_headers(
         http_client()
             .map_err(SpaceCommandError::from)?
@@ -1941,11 +1978,10 @@ async fn authorized_multipart_method_data_request_with_credential(
     if let Some(space_id) = space_id {
         request = request.header(SPACE_CONTEXT_HEADER, space_id);
     }
-    let response = request
-        .send()
-        .await
-        .map_err(|e| SpaceCommandError::transport(format!("Space upload failed: {e}")))?;
-    parse_authorized_cloud_data(response, user_session).await
+    let response = diagnostic.send(request).await.map_err(|e| {
+        SpaceCommandError::transport(format!("Space upload failed ({})", error_category(&e)))
+    })?;
+    parse_authorized_cloud_data(response, user_session, &diagnostic).await
 }
 
 async fn authorized_raw_request(
@@ -1976,6 +2012,7 @@ async fn authorized_raw_request_with_credential(
         ));
     }
     let capability = ensure_space_available().map_err(SpaceCommandError::from)?;
+    let diagnostic = RequestDiagnostic::new("space", &reqwest::Method::GET, path);
     let mut request = with_space_client_context_headers(
         http_client()
             .map_err(SpaceCommandError::from)?
@@ -1986,12 +2023,11 @@ async fn authorized_raw_request_with_credential(
     if let Some(space_id) = space_id {
         request = request.header(SPACE_CONTEXT_HEADER, space_id);
     }
-    let response = request
-        .send()
-        .await
-        .map_err(|e| SpaceCommandError::transport(format!("Space API request failed: {e}")))?;
+    let response = diagnostic.send(request).await.map_err(|e| {
+        SpaceCommandError::transport(format!("Space API request failed ({})", error_category(&e)))
+    })?;
     if !response.status().is_success() {
-        return match parse_authorized_cloud_data(response, user_session).await {
+        return match parse_authorized_cloud_data(response, user_session, &diagnostic).await {
             Err(error) => Err(error),
             Ok(_) => Err(SpaceCommandError::local(
                 "SPACE_DOWNLOAD_FAILED",
@@ -2327,18 +2363,21 @@ fn space_base_urls_equal(a: &str, b: &str) -> bool {
 
 fn team_space_runtime_enabled() -> bool {
     let Some(dir) = crate::app_dirs::myagents_data_dir() else {
-        return false;
+        return true;
     };
     let Ok(content) = fs::read_to_string(dir.join("config.json")) else {
-        return false;
+        return true;
     };
     let Ok(config) = serde_json::from_str::<Value>(crate::utils::bom::strip_bom(&content)) else {
-        return false;
+        return true;
     };
-    config
-        .get("teamSpaceEnabled")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+    team_space_dev_gate_enabled(&config)
+}
+
+fn team_space_dev_gate_enabled(config: &Value) -> bool {
+    // The former opt-in Lab setting is deliberately ignored. Only an explicit
+    // Developer opt-out pauses the Connector, matching the Renderer policy.
+    config.get("teamSpaceDevGate") != Some(&Value::Bool(false))
 }
 
 fn required_value_string(value: &Value, key: &str) -> Result<String, String> {
@@ -2511,3 +2550,23 @@ fn url_component(value: &str) -> String {
 
 #[cfg(test)]
 mod tests;
+
+/// Fan out an already committed account transition from the authentication
+/// owner. Every account projection clears synchronously before remote refresh.
+pub(crate) fn account_auth_boundary_changed<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let _ = app.emit("space-account:changed", "auth");
+    crate::agent_network::actor::auth_boundary_changed(app);
+    if let Some(center) = app.try_state::<notifications::ManagedNotificationCenter>() {
+        notifications::auth_boundary_changed(app, center.inner());
+    }
+}
+fn account_profile_changed() {
+    if let Some(app) = crate::logger::get_app_handle() {
+        let _ = app.emit("space-account:changed", "profile");
+    }
+}
+pub(crate) fn account_user_session_invalidated() {
+    if let Some(app) = crate::logger::get_app_handle() {
+        account_auth_boundary_changed(app);
+    }
+}

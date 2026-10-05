@@ -12,7 +12,7 @@
 import 'katex/dist/katex.min.css';
 import './Markdown.css';
 
-import { lazy, Suspense, memo, useEffect, useMemo, useState, type ComponentProps } from 'react';
+import { Fragment, lazy, Suspense, memo, useEffect, useMemo, useState, type ComponentProps } from 'react';
 import type { Components } from 'react-markdown';
 import type { Element } from 'hast';
 import ReactMarkdown from 'react-markdown';
@@ -27,6 +27,7 @@ const MermaidDiagram = lazy(() => import('./markdown/MermaidDiagram'));
 import { useFileAction } from '@/context/fileActionState';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 import { preprocessMarkdownContent } from '@/utils/markdownPreprocess';
+import { splitMarkdownRenderChunks } from '@/utils/markdownChunks';
 import {
   MARKDOWN_REHYPE_PLUGINS,
   MARKDOWN_REMARK_PLUGINS_DEFAULT,
@@ -431,6 +432,26 @@ const MarkdownImage = memo(MarkdownImageInner, (prev, next) =>
   && prev.alt === next.alt,
 );
 
+/** One independently parsed chunk; ReactMarkdown emits no wrapper element, so
+ * sibling chunks produce the same DOM as one whole-document render. */
+const MarkdownChunk = memo(function MarkdownChunk({ source, remarkPlugins, rehypePlugins, components }: {
+  source: string;
+  remarkPlugins: ComponentProps<typeof ReactMarkdown>['remarkPlugins'];
+  rehypePlugins: ComponentProps<typeof ReactMarkdown>['rehypePlugins'];
+  components: Components;
+}) {
+  return (
+    <ReactMarkdown
+      urlTransform={MARKDOWN_URL_TRANSFORM}
+      remarkPlugins={remarkPlugins}
+      rehypePlugins={rehypePlugins}
+      components={components}
+    >
+      {source}
+    </ReactMarkdown>
+  );
+});
+
 const Markdown = memo(function Markdown({ children, compact = false, preserveNewlines = false, raw = false, basePath = '', workspacePath, streaming = false, footnoteNumbers }: MarkdownProps) {
   // Skip preprocessing for raw mode (file preview) - preprocessing is for streaming chat messages.
   // In raw mode, convert YAML frontmatter to a fenced code block for proper rendering.
@@ -444,6 +465,10 @@ const Markdown = memo(function Markdown({ children, compact = false, preserveNew
     () => raw ? convertFrontmatter(children) : preprocessMarkdownContent(children),
     [children, raw],
   );
+  // Parse cost must follow what changed, not the whole document: a streaming
+  // append re-parses only the tail chunk because earlier chunk strings stay
+  // identical and their memoized renderers bail out (#634).
+  const chunks = useMemo(() => splitMarkdownRenderChunks(processedContent), [processedContent]);
 
   // The document directory resolves relative references; it never becomes a
   // workspace grant. Rust separately validates the resulting local/workspace read.
@@ -469,14 +494,20 @@ const Markdown = memo(function Markdown({ children, compact = false, preserveNew
   return (
     <MarkdownDocumentDirectoryContext.Provider value={basePath}>
     <div className={`markdown-content min-w-0 max-w-full break-words${compact ? ' markdown-content--compact' : ''}`}>
-      <ReactMarkdown
-        urlTransform={MARKDOWN_URL_TRANSFORM}
-        remarkPlugins={preserveNewlines ? MARKDOWN_REMARK_PLUGINS_WITH_BREAKS : MARKDOWN_REMARK_PLUGINS_DEFAULT}
-        rehypePlugins={streaming && !raw ? REHYPE_PLUGINS_STREAMING : MARKDOWN_REHYPE_PLUGINS}
-        components={components}
-      >
-        {processedContent}
-      </ReactMarkdown>
+      {chunks.map((chunk, index) => (
+        <Fragment key={index}>
+        {/* ReactMarkdown separates top-level blocks with a "\n" text node;
+            keep it at chunk boundaries so the DOM (and plain-text copy) is
+            identical to a whole-document render. */}
+        {index > 0 && '\n'}
+        <MarkdownChunk
+          source={chunk}
+          remarkPlugins={preserveNewlines ? MARKDOWN_REMARK_PLUGINS_WITH_BREAKS : MARKDOWN_REMARK_PLUGINS_DEFAULT}
+          rehypePlugins={streaming && !raw && index === chunks.length - 1 ? REHYPE_PLUGINS_STREAMING : MARKDOWN_REHYPE_PLUGINS}
+          components={components}
+        />
+        </Fragment>
+      ))}
     </div>
     </MarkdownDocumentDirectoryContext.Provider>
   );

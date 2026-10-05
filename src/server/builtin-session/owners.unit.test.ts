@@ -55,6 +55,7 @@ import {
 } from './queue';
 import {
   beginTurn,
+  consumePendingInboxInput,
   admitPendingOutputOwnerForYield,
   clearPendingOutputOwners,
   clearCurrentOutputOwnerAssistantChannelBlocks,
@@ -631,8 +632,41 @@ describe('builtin-session owners', () => {
     expect(getCurrentTurnText()).toBe('late');
     const cleanup = terminalCleanup();
     expect(cleanup.replyText).toBe('late');
-    expect(cleanup.inboxMeta?.fromSessionId).toBe('s1');
+    expect(cleanup.inboxMetas[0]?.fromSessionId).toBe('s1');
     expect(snapshotTurn().currentTurnTextBlocks).toEqual([]);
+  });
+
+  it('binds queued Inbox requests only on consumption, sharing the real result owner', () => {
+    const root = queueItem('root');
+    setCurrentTurnSourceItem(root);
+    pushPendingOutputOwner({ queueId: root.id, sourceItem: root, requestId: null,
+      assistantChannelDelivery: 'none', channelSessionId: 'session' });
+    for (const id of ['one', 'two']) {
+      const input = { ...queueItem(id), inputSource: 'inbox' as const,
+        inboxMeta: { fromSessionId: id, fromLabel: id, originalMessageId: id, originalSnippet: id, replyBack: true } };
+      pushPendingOutputOwner({ queueId: id, sourceItem: input, requestId: null,
+        assistantChannelDelivery: 'none', channelSessionId: 'session' });
+    }
+    expect(snapshotTurn().currentTurnInboxMetas).toEqual([]);
+    consumePendingInboxInput('one', true);
+    consumePendingInboxInput('one', true); // duplicate receipt cannot double bind
+    consumePendingInboxInput('two', true);
+    expect(snapshotTurn().currentTurnSourceItem).toBe(root);
+    expect(popPendingOutputOwner()?.queueId).toBe('root');
+    expect(popPendingOutputOwner()).toBeNull();
+    expect(terminalCleanup().inboxMetas.map(meta => meta.originalMessageId)).toEqual(['one', 'two']);
+    expect(terminalCleanup().inboxMetas).toEqual([]);
+  });
+
+  it('keeps an unconsumed Inbox input out of the current turn and binds it to the next one', () => {
+    const input = { ...queueItem('next'), inputSource: 'inbox' as const,
+      inboxMeta: { fromSessionId: 'caller', fromLabel: 'caller', originalMessageId: 'next', originalSnippet: '', replyBack: true } };
+    pushPendingOutputOwner({ queueId: input.id, sourceItem: input, requestId: null,
+      assistantChannelDelivery: 'none', channelSessionId: 'session' });
+    expect(terminalCleanup().inboxMetas).toEqual([]);
+    consumePendingInboxInput('next', false);
+    expect(snapshotTurn().currentTurnSourceItem).toBe(input);
+    expect(terminalCleanup().inboxMetas).toEqual([input.inboxMeta]);
   });
 
   it('config owner drains deferred restarts and consumes provider boundary once', () => {

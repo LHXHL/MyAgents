@@ -1,7 +1,8 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { agentReference, sessionReference, REMOTE_DEADLINES } from '@myagents/agent-network-protocol';
 
 import {
   formatCronInstantForDisplay,
@@ -51,6 +52,68 @@ afterEach(() => {
   else process.env.MYAGENTS_SESSION_ID = inheritedMyAgentsSessionId;
 });
 
+
+describe('Session observation CLI', () => {
+  it('prints the wrapped observation receipt in JSON and human output', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const result = { success: true, data: { watches: [{ watchId: 'watch', targetSessionId: 'target', cancelled: true }] } };
+    try {
+      printResult('session', 'unwatch', result, true);
+      expect(JSON.parse(log.mock.calls[0][0])).toEqual(result);
+      log.mockClear();
+      printResult('session', 'unwatch', result, false);
+      expect(log).toHaveBeenCalledWith('watch  target  cancelled');
+    } finally { log.mockRestore(); }
+  });
+
+  it.each([
+    ['state', []], ['watches', ['extra']], ['unwatch', []],
+  ] as const)('uses the normal usage exit code for invalid %s arguments', (action, rest) => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation((code) => { throw new Error(`exit:${code}`); });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      expect(() => buildRequestBody('session', action, [...rest], {})).toThrow('exit:2');
+    } finally { exit.mockRestore(); error.mockRestore(); }
+  });
+
+  it.each([
+    ['session', 'watch', [], {}],
+    ['session', 'watch', ['target', 'extra'], {}],
+    ['session', 'watch', [], { to: true }],
+    ['session', 'watch', [], { targetSessionId: true }],
+    ['session', 'watch', ['target'], { prompt: 'new work' }],
+    ['session', 'state', [], { sessionId: true }],
+    ['session', 'state', [], { sessionId: ' ' }],
+    ['session', 'unwatch', [' '], {}],
+    ['agent', 'network-diagnose', [], { limit: true }],
+    ['agent', 'network-diagnose', [], { limit: 'not-a-number' }],
+    ['agent', 'network-diagnose', [], { cursor: true }],
+  ] as const)('rejects incomplete observation values for %s %s before any HTTP request', (group, action, rest, flags) => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation((code) => { throw new Error(`exit:${code}`); });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      expect(() => buildRequestBody(group, action, [...rest], flags)).toThrow('exit:2');
+    } finally { exit.mockRestore(); error.mockRestore(); }
+  });
+
+  it('keeps state read-only and binds watch management to the current real Session', () => {
+    for (const command of [['session','state','sid'], ['session','watches'], ['session','unwatch','watch']]) {
+      expect(validateCliCommand(command)).toBeUndefined();
+      expect(validateInternalCliInvocation(command, {})).toBeUndefined();
+    }
+    expect(buildRequestBody('session','state',['sid'],{})).toEqual({ sessionId: 'sid' });
+    expect(buildRequestBody('agent','network-diagnose',[],{limit:'3',cursor:'next'})).toEqual({limit:3,cursor:'next'});
+    expect(buildRequestBody('agent','network-diagnose',[],{})).toEqual({limit:100,cursor:undefined});
+    expect(buildRequestBody('session','watches',[],{})).toEqual({});
+    expect(buildRequestBody('session','unwatch',[],{all:true})).toEqual({all:true});
+    expect(buildRequestBody('session','unwatch',['watch'],{})).toEqual({watchId:'watch'});
+    expect(validateExternalCliInvocation(['session','state','sid'],{})).toBeUndefined();
+    expect(validateExternalCliInvocation(['session','watches'],{})).toBeDefined();
+    expect(validateExternalCliInvocation(['session','unwatch','watch'],{})).toBeDefined();
+    expect(cliRequestTimeoutMs('session/watches')).toBeGreaterThan(22_000);
+  });
+});
+
 describe('myagents CLI port authority', () => {
   it('keeps --port above inherited Session or Rust-injected Global ports', () => {
     expect(resolveCliPort('32003', '32002')).toBe('32003');
@@ -88,6 +151,18 @@ describe('CLI dry-run admission', () => {
 });
 
 describe('public external CLI declaration', () => {
+  it('accepts the bundled external guide examples through the public CLI grammar', () => {
+    const guide = readFileSync(join(process.cwd(), 'bundled-guides/external-myagents-cli/SKILL.md'), 'utf8');
+    const invocations = [...guide.matchAll(/^<CLI> ([^\n]+)$/gm)]
+      .map(([, invocation]) => invocation.trim())
+      .filter(invocation => invocation !== '--help' && !invocation.endsWith(' --help'));
+    expect(invocations.length).toBeGreaterThan(0);
+    for (const invocation of invocations) {
+      const { positional, flags } = parseArgs(invocation.split(/\s+/));
+      expect(validateExternalCliInvocation(positional, flags), invocation).toBeUndefined();
+    }
+  });
+
   it('maps every advertised command to an admitted canonical route', () => {
     expect(new Set(EXTERNAL_CLI_PUBLIC_COMMANDS).size).toBe(EXTERNAL_CLI_PUBLIC_COMMANDS.length);
     for (const { command, route: declaredRoute } of EXTERNAL_CLI_PUBLIC_CAPABILITIES) {
@@ -124,6 +199,24 @@ describe('public external CLI declaration', () => {
     expect(cliRequestTimeoutMs('mcp/test')).toBeGreaterThan(15_000);
     expect(cliRequestTimeoutMs('task/trigger/test')).toBeGreaterThan(310_000);
     expect(cliRequestTimeoutMs('status')).toBe(10_000);
+    expect(cliRequestTimeoutMs('session/watch')).toBeGreaterThan(30_000);
+  });
+  it('uses one shared remote budget without changing local start/send budgets', () => {
+    const ref = { serviceId: '00000000-0000-0000-0000-000000000001',
+      networkId: '00000000-0000-0000-0000-000000000002', mountId: '00000000-0000-0000-0000-000000000003' };
+    const agent = agentReference(ref);
+    const session = sessionReference({ ...ref, localSessionId: 'session-a' });
+    for (const [route, key, value] of [['agent/show', 'agentId', agent], ['session/list', 'agentId', agent],
+      ['session/start', 'agentId', agent], ['session/get', 'sessionId', session], ['session/send', 'toSessionId', session],
+      ['session/watch', 'targetSessionId', session]]) {
+      const method = route.replace('/', '.') as keyof typeof REMOTE_DEADLINES;
+      expect(cliRequestTimeoutMs(route, { [key]: value })).toBe(REMOTE_DEADLINES[method].cli);
+      expect(REMOTE_DEADLINES[method].cli).toBeGreaterThan(REMOTE_DEADLINES[method].admin);
+      expect(REMOTE_DEADLINES[method].admin).toBeGreaterThan(REMOTE_DEADLINES[method].connector);
+    }
+    expect(cliRequestTimeoutMs('session/start', { agentId: 'local' })).toBe(195_000);
+    expect(cliRequestTimeoutMs('session/send', { toSessionId: 'local' })).toBe(40_000);
+    expect(() => cliRequestTimeoutMs('session/get', { sessionId: agent })).toThrow();
   });
 
   it('provides exact offline help for every canonical command and alias', () => {
@@ -163,6 +256,39 @@ describe('myagents CLI port authority', () => {
 });
 
 describe('CLI help and Session list output', () => {
+  it('routes capability discovery by intent for both local and network collaboration', () => {
+    expect(TOP_HELP).toContain('Choose by intent');
+    expect(TOP_HELP).toContain('Durable work, scheduling and run tracking: task readme');
+    expect(TOP_HELP).toContain('session start (fresh) or send (reuse)');
+    expect(TOP_HELP).toContain('agent network-diagnose --json');
+    expect(TOP_HELP).toContain('other devices');
+  });
+  it('prints complete usable remote selectors with separate metadata columns', () => {
+    const ref = {
+      serviceId: '00000000-0000-4000-8000-000000000010',
+      networkId: '00000000-0000-4000-8000-000000000011',
+      mountId: '00000000-0000-4000-8000-000000000012',
+    };
+    const selectors = ['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002']
+      .map(localSessionId => sessionReference({ ...ref, localSessionId }));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      printResult('session', 'list', { success: true, data: [
+        ...selectors.map(sessionId => ({ sessionId, lastActiveAt: '2026-10-04T01:36:00Z', runtime: 'codex', title: 'Remote' })),
+        { sessionId: 'local-session', lastActiveAt: '2026-10-04T01:36:00Z', runtime: 'builtin', title: 'Local' },
+      ] }, false);
+      const lines = log.mock.calls.map(call => String(call[0]));
+      for (const selector of selectors) {
+        expect(lines.some(line => line.startsWith(`${selector}  `))).toBe(true);
+        expect(buildRequestBody('session', 'state', [selector], {})).toEqual({ sessionId: selector });
+      }
+      const rows = lines.slice(1);
+      expect(new Set(rows.map(row => row.indexOf('2026-10-04T01:36:00Z'))).size).toBe(1);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it.each(['status', 'version', 'reload'])('accepts -h and --help for %s', command => {
     for (const flag of ['-h', '--help']) {
       const parsed = parseArgs([command, flag]);
@@ -233,6 +359,24 @@ describe('skill source normalization', () => {
 });
 
 describe('myagents CLI command grammar', () => {
+  it.each(['diagnose', 'vision', 'im'])('identifies bare %s as missing a subcommand', group => {
+    expect(validateCliCommand([group])).toMatchObject({ code: 'SUBCOMMAND_REQUIRED' });
+    expect(validateCliCommand([group], true)).toBeUndefined();
+  });
+
+  it('distinguishes a published public command prefix from an unknown command', () => {
+    expect(validateExternalCliInvocation(['runtime'], {})).toMatchObject({ code: 'SUBCOMMAND_REQUIRED' });
+    expect(validateExternalCliInvocation(['runtime', 'unknown'], {})).toMatchObject({ code: 'UNKNOWN_COMMAND' });
+    expect(validateCliCommand(['space', 'claim'])).toMatchObject({ code: 'SUBCOMMAND_REQUIRED' });
+    expect(validateCliCommand(['space', 'claim'], true)).toBeUndefined();
+  });
+
+  it.each(['--bogus-flag', '--bogusFlag'])('preserves the actual unknown flag spelling %s', spelling => {
+    const parsed = parseArgs(['runtime', 'list', spelling]);
+    expect(validateInternalCliInvocation(parsed.positional, parsed.flags)?.error).toContain(spelling);
+    expect(validateExternalCliInvocation(parsed.positional, parsed.flags)?.error).toContain(spelling);
+  });
+
   it('rejects unknown groups and leaves before any HTTP request is possible', () => {
     expect(validateCliCommand(['definitely-unknown'])).toMatchObject({
       code: 'UNKNOWN_COMMAND_GROUP',
@@ -1874,7 +2018,7 @@ describe('myagents CLI Space issue contracts', () => {
 
 describe('myagents CLI Agent / Session collaboration contracts', () => {
   it('advertises Agent discovery and fresh Session collaboration at top level', () => {
-    expect(TOP_HELP).toContain('agent     Discover stable Workspace Agents');
+    expect(TOP_HELP).toContain('agent     Discover local/network Agents');
     expect(TOP_HELP).toContain('session   Discover, start, message, and observe');
     expect(TOP_HELP).toContain('myagents session start --agent <agentId>');
   });
@@ -2663,6 +2807,15 @@ describe('concise skill inventory', () => {
 
 
 describe('internal CLI command admission', () => {
+  it('admits the documented Skill inventory detail', () => {
+    expect(validateInternalCliInvocation(['skill', 'list'], { verbose: true, workspace: '/test' })).toBeUndefined();
+  });
+  it('admits the existing Skill removal preview before building the request', () => {
+    expect(validateInternalCliInvocation(['skill', 'remove', 'skill-name'], { dryRun: true, scope: 'user' })).toBeUndefined();
+    expect(validateDryRunSupport(['skill', 'remove', 'skill-name'], { dryRun: true })).toBeUndefined();
+    expect(buildRequestBody('skill', 'remove', ['skill-name'], { dryRun: true, scope: 'user' }))
+      .toMatchObject({ name: 'skill-name', dryRun: true, scope: 'user' });
+  });
   it.each([
     [[], { frobnicate: true }],
     [['session', 'get', 'session-id'], { bogusflag: true }],

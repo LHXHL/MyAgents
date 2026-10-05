@@ -297,6 +297,7 @@ export async function retryUnadmittedDshTranscript(
   success: boolean;
   error?: string;
   content?: string;
+  desktopQuery?: SessionMessage['desktopQuery'];
   attachments?: SessionMessage['attachments'];
 }> {
   const messages = getExternalSessionMessagesSnapshot();
@@ -338,7 +339,7 @@ export async function retryUnadmittedDshTranscript(
       error: err instanceof Error ? err.message : 'Failed to persist truncation',
     };
   }
-  return { success: true, content, attachments };
+  return { success: true, content, desktopQuery: target.desktopQuery, attachments };
 }
 
 export interface ExternalAssistantTurnPersistInput {

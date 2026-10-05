@@ -13,6 +13,20 @@ const batch: TranscriptBatch = {
 const prefix = JSON.stringify(header) + '\n' + encodeTranscriptBatch(batch);
 
 describe('V2 transcript valid prefix', () => {
+  it('round-trips and clears a desktop query annotation in message details', () => {
+    const desktopQuery = { visibleText: 'query', primaryContext: { kind: 'floating-context' as const, input: { appName: 'Editor' } } };
+    const annotate = encodeTranscriptBatch({ id: 'annotate', mode: 'delta', fromRevision: 2, revision: 2,
+      operations: [{ kind: 'message-update', messageId: 'a1', details: { desktopQuery } }] });
+    const annotated = decodeTranscript(prefix + annotate, header.sessionId);
+    expect(annotated).toMatchObject({ revision: 2, tail: 'clean' });
+    expect(transcriptMessages(annotated.projection)[0].desktopQuery).toEqual(desktopQuery);
+    const clear = encodeTranscriptBatch({ id: 'clear', mode: 'delta', fromRevision: 3, revision: 3,
+      operations: [{ kind: 'message-update', messageId: 'a1', details: {}, clear: ['desktopQuery'] }] });
+    const restored = decodeTranscript(prefix + annotate + clear, header.sessionId);
+    expect(restored).toMatchObject({ revision: 3, tail: 'clean' });
+    expect(transcriptMessages(restored.projection)[0].desktopQuery).toBeUndefined();
+  });
+
   it('reads an unchanged older batch of tiny appends with exact text and revision', () => {
     const oldOperations: TranscriptBatch['operations'] = Array.from({ length: 1000 }, (_, offset) => ({
       kind: 'text-append', messageId: 'a1', field: 'text', offset: 6 + offset, text: 'x',

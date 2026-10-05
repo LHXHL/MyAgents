@@ -7,6 +7,24 @@ use super::registered_agents::*;
 use super::*;
 
 #[test]
+fn space_dev_gate_defaults_open_and_ignores_legacy_lab_opt_out() {
+    for config in [
+        serde_json::json!({}),
+        serde_json::json!({ "teamSpaceEnabled": false }),
+        serde_json::json!({ "teamSpaceEnabled": true }),
+        serde_json::json!({ "teamSpaceDevGate": true }),
+        serde_json::json!({ "teamSpaceDevGate": null }),
+        serde_json::json!({ "teamSpaceDevGate": "false" }),
+    ] {
+        assert!(team_space_dev_gate_enabled(&config), "config: {config}");
+    }
+    assert!(!team_space_dev_gate_enabled(&serde_json::json!({
+        "teamSpaceDevGate": false,
+        "teamSpaceEnabled": true,
+    })));
+}
+
+#[test]
 fn space_environment_serializes_only_current_public_values() {
     assert_eq!(
         serde_json::to_value(SpaceEnvironment::Production).expect("serialize production"),
@@ -445,6 +463,16 @@ pub(super) fn test_registered_agent(
 #[tokio::test]
 async fn cli_context_requires_exact_registered_agent_identity() {
     let _mock = crate::space_cloud_mock::enable_for_test();
+    let discovered = space_cli_space_list().await.expect("signed-in memberships");
+    let community = discovered["items"]
+        .as_array()
+        .expect("spaces")
+        .iter()
+        .find(|item| item["spaceKind"] == "official")
+        .expect("official community");
+    assert_eq!(community["id"], "space_mock_official");
+    assert_eq!(community["slug"], "official");
+    assert!(discovered.to_string().find("sessionToken").is_none());
     let workspace = std::env::current_dir().expect("current workspace");
     let unregistered_workspace =
         tempfile::tempdir_in(&workspace).expect("unregistered workspace inside project");
@@ -1981,4 +2009,24 @@ fn space_header_facts_strip_control_and_non_ascii_bytes() {
         "macOS15"
     );
     assert_eq!(normalize_space_header_fact("\n雪", "unknown"), "unknown");
+}
+
+#[tokio::test]
+async fn malformed_http_failures_keep_retryability_without_login_mutation() {
+    let diagnostic = RequestDiagnostic::new("space", &reqwest::Method::GET, "/api/issues/private?token=secret");
+    for status in [401, 403, 429, 500, 502, 503] {
+        for bytes in ["", "<html>edge failure</html>"] {
+            let response = reqwest::Response::from(tauri::http::Response::builder().status(status).body(bytes).unwrap());
+            let error = parse_authorized_cloud_data(response, None, &diagnostic).await.unwrap_err();
+            assert_eq!(error.code, "SPACE_REQUEST_FAILED");
+            assert_eq!(error.http_status, Some(status));
+            assert_eq!(error.retryable, status == 429 || status >= 500);
+            assert!(error.session_binding_id.is_none());
+            assert!(!error.message.contains("edge failure"));
+        }
+    }
+    let response = reqwest::Response::from(tauri::http::Response::builder().status(200).body("<html>invalid</html>").unwrap());
+    let error = parse_authorized_cloud_data(response, None, &diagnostic).await.unwrap_err();
+    assert_eq!(error.code, "SPACE_RESPONSE_INVALID");
+    assert!(!error.retryable);
 }

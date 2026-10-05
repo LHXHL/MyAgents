@@ -26,6 +26,14 @@ interface SessionEventBase {
   sourceLabel?: string;
   targetSessionId?: string;
   targetLabel?: string;
+  turnId?: string;
+  terminalStatus?: 'complete' | 'stopped' | 'error';
+  requestEventIds?: string[];
+  watchIds?: string[];
+  resultSource?: 'live' | 'history' | 'none' | 'unavailable';
+  resultScope?: 'latest-session-result';
+  sourceAgentName?: string;
+  sourceDeviceName?: string;
 }
 
 export interface SendRequestEvent extends SessionEventBase {
@@ -166,6 +174,14 @@ function renderOpenTag(event: RenderableSessionEvent): string {
     attr('source_session_id', event.sourceSessionId),
     attr('source_kind', event.sourceKind),
     attr('source_label', event.sourceLabel),
+    attr('source_agent', event.sourceAgentName),
+    attr('source_device', event.sourceDeviceName),
+    attr('turn_id', event.turnId),
+    attr('terminal_status', event.terminalStatus),
+    attr('request_event_ids', event.requestEventIds?.join(',')),
+    attr('watch_ids', event.watchIds?.join(',')),
+    attr('result_source', event.resultSource),
+    attr('result_scope', event.resultScope),
     attr('target_session_id', event.targetSessionId),
     attr('target_label', event.targetLabel),
     event.type === 'send.request' ? attr('source_notification', event.sourceNotification) : null,

@@ -151,6 +151,7 @@ class FakeRuntime implements AgentRuntime {
   getTurnProviderAnalytics?: AgentRuntime['getTurnProviderAnalytics'];
   canSteerMessage?: AgentRuntime['canSteerMessage'];
   steerMessage?: AgentRuntime['steerMessage'];
+  cancelSteeredMessage?: AgentRuntime['cancelSteeredMessage'];
   interruptTurn?: AgentRuntime['interruptTurn'];
   branchConversation?: AgentRuntime['branchConversation'];
   private callback: UnifiedEventCallback | null = null;
@@ -1350,6 +1351,7 @@ describe('external SessionEngine with fake runtime', () => {
         allowLazySessionMaterialization: true,
       });
       expect(inbox).toMatchObject({ queued: true });
+      await expect(inbox.dispatchAcceptance).resolves.toMatchObject({ accepted: true });
       await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
       expect(
         await runInjectedTurn(harness, {
@@ -1425,6 +1427,7 @@ describe('external SessionEngine with fake runtime', () => {
         allowLazySessionMaterialization: true,
       });
       expect(inbox).toMatchObject({ queued: true });
+      await expect(inbox.dispatchAcceptance).resolves.toMatchObject({ accepted: true });
       await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
       for (const prompt of prompts.slice(2)) {
         const result = await runInjectedTurn(harness, {
@@ -6660,17 +6663,12 @@ describe('external SessionEngine with fake runtime', () => {
     const sessionId = 'session-realtime-steer-mirror-order';
     const workspacePath = join(harness.home, 'workspace');
 
-    await harness.engine.sendDesktopMessage(
-      desktopRequest(sessionId, workspacePath, 'first'),
-    );
-    await waitFor(
-      () => harness.runtime.sentMessages.includes('first'),
-      'first ordered-mirror dispatch',
-    );
-    await waitFor(
-      () => harness.mirrorCalls.length === 1,
-      'first ordered user mirror',
-    );
+    await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'first'));
+    await waitFor(() => harness.runtime.sentMessages.includes('first'), 'first ordered-mirror dispatch');
+    await waitFor(() => harness.mirrorCalls.length === 1, 'first ordered user mirror');
+    // Dispatch records before the fake runtime's scheduled text event. Wait for
+    // its actual text boundary before injecting a causally later steer answer.
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'pre-steer answer boundary');
     const second = await harness.engine.sendDesktopMessage(
       desktopRequest(sessionId, workspacePath, 'second with slow persist'),
     );
@@ -8432,6 +8430,303 @@ describe('external SessionEngine with fake runtime', () => {
   });
 
 
+  it('keeps the saved desktop query through admitted DSH rewind', async () => {
+    const harness = await createHarness([], { runtimeType: 'dsh' });
+    const sessionId = 'session-dsh-query-rewind';
+    const workspacePath = join(harness.home, 'workspace');
+    await restorePersistedDshSession(harness, sessionId, workspacePath);
+    await harness.externalSession.prewarmExternalSession({ sessionId, workspacePath, scenario: { type: 'desktop' } });
+    const desktopQuery = { visibleText: 'original query', primaryContext: { kind: 'floating-context' as const, input: { appName: 'Editor' } } };
+    const targetUserMessage = { id: 'query-user', role: 'user' as const, content: '<system-reminder><FLOATING_BALL_CONTEXT>context</FLOATING_BALL_CONTEXT></system-reminder>original query', timestamp: new Date().toISOString(), desktopQuery };
+    vi.spyOn(harness.sessionStore, 'beginDshRewindMutation').mockResolvedValue({ success: true, value: { targetUserMessage, intent: { targetRuntimeTurnId: null } } } as Awaited<ReturnType<typeof harness.sessionStore.beginDshRewindMutation>>);
+    vi.spyOn(harness.sessionStore, 'recordPreparedDshRewind').mockResolvedValue({ success: true } as Awaited<ReturnType<typeof harness.sessionStore.recordPreparedDshRewind>>);
+    vi.spyOn(harness.sessionStore, 'commitDshRewindProduct').mockResolvedValue({ success: true } as Awaited<ReturnType<typeof harness.sessionStore.commitDshRewindProduct>>);
+    const runtime = await import('../integrated-runtimes/dsh/runtime');
+    vi.spyOn(runtime, 'getDshConversationMutationContext').mockReturnValue({ runtimeSessionId: `runtime-${sessionId}`, controller: {
+      readHistory: async () => ({ genesisBoundary: { stableBoundaryId: 'genesis', transcriptPostcondition: 'before' }, transcriptPostcondition: 'after' }),
+      prepareRewind: async () => ({ token: 'rewind-token', state: 'committed' }),
+    } } as unknown as ReturnType<typeof runtime.getDshConversationMutationContext>);
+    const result = await harness.engine.rewindToUserMessage(targetUserMessage.id);
+    expect(result).toMatchObject({ success: true, content: targetUserMessage.content, desktopQuery });
+    const { retryDesktopRequest } = await import('../session-engine/retry');
+    expect(retryDesktopRequest({ sessionId, workspacePath, runtime: 'dsh' }, result, {})).toMatchObject({ text: 'original query', queryPrimaryContext: desktopQuery.primaryContext });
+  });
+
+  it.each(['consumed', 'cancelled'] as const)('restores DSH pending query previews and original context when %s', async (outcome) => {
+    const harness = await createHarness([{ kind: 'silent' }], { runtimeType: 'dsh', realtimeSteering: true,
+      recoveredActiveRoot: { clientOperationId: 'root-before-restart', clientUserMessageId: 'root-user' } });
+    harness.runtime.cancelSteeredMessage = async () => 'cancelled';
+    const sessionId = 'session-dsh-query-recovery';
+    const runtimeSessionId = `runtime-${sessionId}`;
+    const workspacePath = join(harness.home, 'workspace');
+    await restorePersistedDshSession(harness, sessionId, workspacePath);
+    const desktopQuery = { visibleText: 'visible follow-up', primaryContext: { kind: 'floating-context' as const, input: { appName: 'Editor', selectedText: 'hidden '.repeat(100) } }, agentMentions: [] };
+    const { composeQueryReminder } = await import('../../shared/agentMentions');
+    const userMessage = { id: 'pending-query-user', role: 'user' as const, content: composeQueryReminder(desktopQuery), timestamp: new Date().toISOString(), desktopQuery,
+      runtimeOperationAnchor: { runtime: 'dsh' as const, runtimeSessionId, clientOperationId: 'root-before-restart', clientUserMessageId: 'pending-query-user' } };
+    await expect(harness.sessionStore.beginDshInput({ sessionId, runtimeSessionId, clientOperationId: 'root-before-restart', queueId: 'pending-query', userMessage, productImageSha256: [], runtimeInputFingerprint: 'a'.repeat(64) })).resolves.toMatchObject({ success: true });
+    expect(harness.engine.getStreamReplaySnapshot().initState.queuedMessages).toContainEqual(expect.objectContaining({ id: 'pending-query', messagePreview: desktopQuery.visibleText, primaryContext: desktopQuery.primaryContext, agentMentions: [] }));
+    await harness.externalSession.prewarmExternalSession({ sessionId, workspacePath, scenario: { type: 'desktop' } });
+    await waitFor(() => harness.runtime.steeredMessages.length === 1, 'recovered DSH query dispatch');
+    expect(harness.engine.getStreamReplaySnapshot().initState.queuedMessages).toContainEqual(expect.objectContaining({ id: 'pending-query', messagePreview: desktopQuery.visibleText, primaryContext: desktopQuery.primaryContext }));
+    if (outcome === 'cancelled') {
+      await expect(harness.engine.cancelQueuedMessage('pending-query')).resolves.toMatchObject({ status: 'cancelled', cancelledText: desktopQuery.visibleText });
+      expect(harness.engine.getQueueStatus()).toEqual([]);
+      return;
+    }
+    harness.runtime.emitUserMessageAccepted(userMessage.id);
+    await waitFor(async () => (await harness.sessionStore.getSessionData(sessionId))?.messages.some(message => message.id === userMessage.id) ?? false, 'recovered DSH query persistence');
+    expect((await harness.sessionStore.getSessionData(sessionId))?.messages.find(message => message.id === userMessage.id)?.desktopQuery).toEqual(desktopQuery);
+  });
+
+
+  it.each(['dsh', 'codex', 'claude-code'] as const)('admits a busy %s Inbox immediately, then dispatches through the same boundary queue', async runtimeType => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'warm' },
+      { kind: 'success', text: 'slow answer', completeDelayMs: 250 },
+      { kind: 'success', text: 'Inbox answer' },
+    ], { runtimeType });
+    const sessionId = `session-inbox-${runtimeType}`;
+    const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+    await runInjectedTurn(harness, { prompt: 'warm', sessionId, workspacePath, scenario: { type: 'desktop' }, timeoutMs: 2_000, pollMs: 10 });
+    await harness.engine.waitIdle(2_000, 10);
+    const active = runInjectedTurn(harness, { prompt: 'slow', sessionId, workspacePath, scenario: { type: 'desktop' }, timeoutMs: 2_000, pollMs: 10 });
+    await waitFor(() => harness.runtime.sentMessages.includes('slow'), 'busy native turn');
+    const guard = vi.fn(async () => ({ accepted: true as const }));
+    const result = await harness.engine.enqueueInboxMessage({ text: 'Inbox', sessionId, workspacePath, beforeDispatch: guard,
+      inboxMeta: { fromSessionId: 'caller', fromLabel: 'Caller', replyBack: false, originalMessageId: 'message', originalSnippet: 'Inbox' } });
+    expect(result.queued).toBe(true);
+    expect(guard).not.toHaveBeenCalled();
+    expect(harness.runtime.sentMessages).not.toContain('Inbox');
+    await active;
+    await expect(result.dispatchAcceptance).resolves.toMatchObject({ accepted: true });
+    await waitFor(() => harness.runtime.sentMessages.includes('Inbox'), 'Inbox dispatch after native terminal');
+    await harness.engine.waitIdle(2_000, 10);
+  });
+  it.each(['dsh', 'codex'] as const)('injects %s Inbox ahead of a manual query waiting for the next turn, preserving all reply identities', async runtimeType => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'shared A result', completeDelayMs: 600 },
+      { kind: 'success', text: 'B result' },
+    ], { runtimeType, realtimeSteering: true, config: { chatQueueResponseMode: 'turn' } });
+    const delivery = vi.spyOn(await import('../inbox/watch-deliver'), 'deliverSessionWatchEvents').mockResolvedValue(undefined);
+    const sessionId = `mixed-inbox-${runtimeType}`;
+    const workspacePath = join(harness.home, 'workspace');
+    const a = await harness.engine.sendDesktopMessage({ ...desktopRequest(sessionId, workspacePath, 'A'), permissionMode: getMaxPermissionForRuntime(runtimeType) });
+    await a.dispatchAcceptance;
+    await waitFor(() => harness.runtime.sentMessages.includes('A'), 'A active');
+    const b = await harness.engine.sendDesktopMessage({ ...desktopRequest(sessionId, workspacePath, 'B'), permissionMode: getMaxPermissionForRuntime(runtimeType) });
+    expect(b.deliveryMode).toBe('turn');
+    const inputs = [];
+    for (const id of ['C', 'D']) inputs.push(await harness.engine.enqueueInboxMessage({ text: id, sessionId, workspacePath,
+      inboxMeta: { fromSessionId: `caller-${id}`, fromLabel: id, originalMessageId: id, originalSnippet: id, replyBack: true } }));
+    await Promise.all(inputs.map(input => input.dispatchAcceptance));
+    expect(harness.runtime.sentMessages).toEqual(['A']);
+    expect(harness.runtime.steeredMessages.map(input => input.message)).toEqual(['C', 'D']);
+    expect(broadcastEvents.filter(item => item.event === 'queue:started')).toEqual([]);
+    for (const input of harness.runtime.steeredMessages) harness.runtime.emitUserMessageAccepted(input.clientUserMessageId);
+    await waitFor(() => broadcastEvents.filter(item => item.event === 'queue:started').length === 2, 'Inbox consumption');
+    expect(harness.runtime.sentMessages).toEqual(['A']);
+    await b.dispatchAcceptance;
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.runtime.sentMessages).toEqual(['A', 'B']);
+    await vi.waitFor(() => expect(delivery).toHaveBeenCalledWith(sessionId,
+      expect.objectContaining({ text: expect.stringContaining('shared A result'), requestEventIds: ['C', 'D'] }),
+      expect.arrayContaining([expect.objectContaining({ originalMessageId: 'C' }), expect.objectContaining({ originalMessageId: 'D' })])));
+    expect(delivery.mock.calls.find(call => call[1].text.includes('B result'))?.[2]).toEqual([]);
+  });
+
+  it.each(['dsh', 'codex'] as const)('keeps %s Inbox realtime when manual query mode is realtime', async runtimeType => {
+    const harness = await createHarness([{ kind: 'success', text: 'A result', completeDelayMs: 350 }],
+      { runtimeType, realtimeSteering: true, config: { chatQueueResponseMode: 'realtime' } });
+    const sessionId = `realtime-inbox-${runtimeType}`;
+    const workspacePath = join(harness.home, 'workspace');
+    const a = await harness.engine.sendDesktopMessage({ ...desktopRequest(sessionId, workspacePath, 'A'), permissionMode: getMaxPermissionForRuntime(runtimeType) });
+    await a.dispatchAcceptance;
+    await waitFor(() => harness.runtime.sentMessages.includes('A'), 'A active');
+    const b = await harness.engine.sendDesktopMessage({ ...desktopRequest(sessionId, workspacePath, 'B'), permissionMode: getMaxPermissionForRuntime(runtimeType) });
+    await b.dispatchAcceptance;
+    const c = await harness.engine.enqueueInboxMessage({ text: 'C', sessionId, workspacePath });
+    await c.dispatchAcceptance;
+    expect(harness.runtime.steeredMessages.map(input => input.message)).toEqual(['B', 'C']);
+    for (const input of harness.runtime.steeredMessages) harness.runtime.emitUserMessageAccepted(input.clientUserMessageId);
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.runtime.sentMessages).toEqual(['A']);
+  });
+
+  it('demotes a definitely rejected Inbox steer without replacing or replaying its admission', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'A result', completeDelayMs: 250 },
+      { kind: 'success', text: 'C result' },
+    ], { realtimeSteering: true, rejectSteerUnavailable: true });
+    const sessionId = 'inbox-definite-reject'; const workspacePath = join(harness.home, 'workspace');
+    const a = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'A'));
+    await a.dispatchAcceptance;
+    const c = await harness.engine.enqueueInboxMessage({ text: 'C', queueId: 'inbox-C', sessionId, workspacePath });
+    await c.dispatchAcceptance;
+    await harness.engine.waitIdle(2_000, 10);
+    expect(harness.runtime.steeredMessages.map(input => input.message)).toEqual(['C']);
+    expect(harness.runtime.sentMessages).toEqual(['A', 'C']);
+    expect(broadcastEvents.filter(item => item.event === 'queue:started' && (item.data as { queueId: string }).queueId === 'inbox-C')).toHaveLength(1);
+  });
+
+  it('demotes a definitely rejected DSH Inbox after clearing its pre-dispatch journal', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'A result', completeDelayMs: 300 },
+      { kind: 'success', text: 'C result' },
+    ], { runtimeType: 'dsh', realtimeSteering: true });
+    const sessionId = 'inbox-dsh-definite-reject'; const workspacePath = join(harness.home, 'workspace');
+    const a = await harness.engine.sendDesktopMessage({ ...desktopRequest(sessionId, workspacePath, 'A'), permissionMode: getMaxPermissionForRuntime('dsh') });
+    await a.dispatchAcceptance;
+    const persisted = vi.spyOn(harness.sessionStore, 'beginDshInput');
+    harness.runtime.steerMessage = async (_process, _message, _images, options) => {
+      await options?.beforeDispatch?.({ clientOperationId: options.clientOperationId!, inputFingerprint: 'a'.repeat(64) });
+      expect(harness.sessionStore.getSessionMetadata(sessionId)?.pendingDshInputs).toHaveLength(1);
+      throw new RuntimeSteerUnavailableError('turn_not_active');
+    };
+    const c = await harness.engine.enqueueInboxMessage({ text: 'C', queueId: 'inbox-C', sessionId, workspacePath });
+    await c.dispatchAcceptance;
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(persisted).toHaveBeenCalledOnce();
+    expect(harness.sessionStore.getSessionMetadata(sessionId)?.pendingDshInputs ?? []).toEqual([]);
+    expect(harness.runtime.sentMessages).toEqual(['A', 'C']);
+    expect(broadcastEvents.filter(item => item.event === 'queue:started' && (item.data as { queueId: string }).queueId === 'inbox-C')).toHaveLength(1);
+  });
+
+  it.each(['stop', 'late-error'] as const)('retains native-consumed Inbox authority when RPC is pending: %s', async outcome => {
+    const harness = await createHarness([{ kind: 'success', text: 'A result', completeDelayMs: 500 }],
+      { realtimeSteering: true, deferSteerSuccess: true, rejectSteer: outcome === 'late-error' });
+    const reply = vi.spyOn(await import('../inbox/reply-deliver'), 'deliverInboxReply').mockResolvedValue(true);
+    const sessionId = `inbox-consume-before-rpc-${outcome}`; const workspacePath = join(harness.home, 'workspace');
+    const a = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'A'));
+    await a.dispatchAcceptance;
+    const c = await harness.engine.enqueueInboxMessage({ text: 'C', sessionId, workspacePath,
+      inboxMeta: { fromSessionId: 'caller', fromLabel: 'caller', originalMessageId: 'C', originalSnippet: 'C', replyBack: true } });
+    await waitFor(() => harness.runtime.steeredMessages.length === 1, 'steer pending');
+    harness.runtime.emitUserMessageAccepted(harness.runtime.steeredMessages[0].clientUserMessageId);
+    await c.dispatchAcceptance;
+    if (outcome === 'stop') await harness.engine.stopTurn();
+    harness.runtime.releaseSteerSuccess();
+    await harness.engine.waitIdle(2_000, 10);
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+    expect(reply.mock.calls[0][2].error?.code).not.toBe('input_not_consumed');
+    expect(broadcastEvents.filter(item => item.event === 'queue:started')).toHaveLength(1);
+    expect(broadcastEvents.filter(item => item.event === 'queue:cancelled')).toEqual([]);
+    const users = (await harness.sessionStore.getSessionData(sessionId))?.messages.filter(message => message.role === 'user');
+    expect(users?.map(message => message.content)).toContain('C');
+  });
+
+  it('never treats an ack-only Inbox steer as consumed and returns an independent failure', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'A result', completeDelayMs: 250 }], { realtimeSteering: true });
+    const reply = vi.spyOn(await import('../inbox/reply-deliver'), 'deliverInboxReply').mockResolvedValue(true);
+    const sessionId = 'inbox-ack-only'; const workspacePath = join(harness.home, 'workspace');
+    const a = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'A'));
+    await a.dispatchAcceptance;
+    const c = await harness.engine.enqueueInboxMessage({ text: 'C', sessionId, workspacePath,
+      inboxMeta: { fromSessionId: 'caller', fromLabel: 'caller', originalMessageId: 'C', originalSnippet: 'C', replyBack: true } });
+    await c.dispatchAcceptance;
+    await harness.engine.waitIdle(2_000, 10);
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledWith(sessionId, expect.objectContaining({ originalMessageId: 'C' }),
+      expect.objectContaining({ error: expect.objectContaining({ code: 'input_not_consumed' }) })));
+    expect(harness.runtime.sentMessages).toEqual(['A']);
+    expect(broadcastEvents.filter(item => item.event === 'queue:started')).toEqual([]);
+    harness.runtime.emitUserMessageAccepted(harness.runtime.steeredMessages[0].clientUserMessageId);
+    expect(broadcastEvents.filter(item => item.event === 'queue:started')).toEqual([]);
+  });
+
+  it('starts consumption of an idle external Inbox without awaiting dispatch or introducing another queue', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'warm' }, { kind: 'success', text: 'Inbox answer' }]);
+    const sessionId = 'idle-inbox'; const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+    await runInjectedTurn(harness, { prompt: 'warm', sessionId, workspacePath, scenario: { type: 'desktop' }, timeoutMs: 2_000, pollMs: 10 });
+    await harness.engine.waitIdle(2_000, 10);
+    const result = await harness.engine.enqueueInboxMessage({ text: 'idle Inbox', sessionId, workspacePath });
+    expect(result.queued).toBe(true);
+    await expect(result.dispatchAcceptance).resolves.toMatchObject({ accepted: true });
+    expect(harness.runtime.sentMessages).toContain('idle Inbox');
+    await harness.engine.waitIdle(2_000, 10);
+  });
+
+  it.each([
+    { runtimeType: 'dsh' as const, permissionMode: 'workspace-autonomous', source: 'local' },
+    { runtimeType: 'dsh' as const, permissionMode: 'full-autonomous', source: 'network' },
+    { runtimeType: 'dsh' as const, permissionMode: 'approval-required', source: 'external-cli' },
+    { runtimeType: 'codex' as const, permissionMode: 'no-restrictions', source: 'local' },
+    { runtimeType: 'claude-code' as const, permissionMode: 'bypassPermissions', source: 'local' },
+  ])('starts a fresh $runtimeType/$source Inbox with the Agent birth snapshot after Sidecar bootstrap', async ({ runtimeType, permissionMode, source }) => {
+    const harness = await createHarness([{ kind: 'success', text: 'Inbox finished' }], { runtimeType });
+    const sessionId = `fresh-inbox-permission-${runtimeType}`;
+    const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+    // Rust starts and restores the target Sidecar before /api/inbox/start has
+    // materialized any Product metadata. No renderer config push follows.
+    await harness.externalSession.restoreExternalSessionState(sessionId, workspacePath, { type: 'desktop' });
+    const { handleFreshSessionStart } = await import('../inbox/start-handler');
+    const agent = {
+      id: 'target-agent', name: 'Target', enabled: true, channels: [],
+      runtime: runtimeType,
+      permissionMode: runtimeType === 'dsh' ? permissionMode : 'auto',
+      model: runtimeType === 'dsh' ? 'deepseek-flash' : undefined,
+      runtimeConfig: runtimeType === 'dsh' ? undefined : { permissionMode, model: runtimeType === 'codex' ? 'gpt-5.5' : 'opus' },
+    };
+    const result = await handleFreshSessionStart({
+      messageId: 'inbox-birth', fromLabel: 'Caller',
+      ...(source === 'external-cli' ? { sourceKind: 'external-cli' as const } : { fromSessionId: 'caller' }),
+      ...(source === 'network' ? { networkReturn: {
+        opId: '10000000-0000-4000-8000-000000000001',
+        returnRouteId: '10000000-0000-4000-8000-000000000002',
+      } } : {}),
+      toSessionId: sessionId, text: 'Run the query', kind: 'request', replyBack: false,
+    }, {
+      sessionId, workspacePath, agent, runtime: runtimeType,
+      runtimeSource: runtimeType === 'dsh' ? 'integrated' : 'system-cli',
+    }, (text, options) => harness.engine.enqueueInboxMessage({
+      text, sessionId, workspacePath, scenario: { type: 'desktop' },
+      ...options,
+    }));
+
+    expect(result).toEqual({ accepted: true });
+    await waitFor(() => harness.runtime.startSessionInitialMessages.length === 1, 'Inbox Runtime startup');
+    expect(harness.runtime.effectivePermissionMode).toBe(permissionMode);
+    expect(harness.engine.getSessionConfigSnapshot().permissionMode).toBe(permissionMode);
+    expect(harness.sessionStore.getSessionMetadata(sessionId)?.permissionMode).toBe(permissionMode);
+    await harness.engine.waitIdle(2_000, 10);
+  });
+
+  it.each(['cold', 'warm', 'partial-snapshot'] as const)('keeps the existing DSH Session permission on $0 Inbox sends after Agent defaults change', async state => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'first' }, { kind: 'success', text: 'second' },
+    ], { runtimeType: 'dsh' });
+    const sessionId = `owned-dsh-inbox-${state}`;
+    const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+    const permissionMode = state === 'partial-snapshot' ? undefined : 'workspace-autonomous';
+    const metadata = createSessionMetadata(workspacePath, {
+      runtime: 'dsh', runtimeSource: 'integrated', runtimeBinding: createDshBinding('darwin-arm64'),
+      permissionMode, configSnapshotAt: '2026-10-04T00:00:00.000Z',
+    });
+    metadata.id = sessionId;
+    await harness.sessionStore.saveSessionMetadata(metadata);
+    // A complete owned snapshot with a missing permission means the Runtime's
+    // product default; it must not start following the Agent again.
+    writeFileSync(join(harness.home, '.myagents', 'config.json'), JSON.stringify({ agents: [{
+      id: 'changed-agent', name: 'Changed Agent', enabled: true, workspacePath,
+      runtime: 'dsh', permissionMode: 'full-autonomous',
+    }] }));
+    await harness.externalSession.restoreExternalSessionState(sessionId, workspacePath, { type: 'desktop' });
+    const expected = permissionMode ?? 'approval-required';
+    const first = await harness.engine.enqueueInboxMessage({ text: 'first', sessionId, workspacePath });
+    await expect(first.dispatchAcceptance).resolves.toMatchObject({ accepted: true });
+    expect(harness.runtime.effectivePermissionMode).toBe(expected);
+    await harness.engine.waitIdle(2_000, 10);
+    if (state === 'warm') {
+      const second = await harness.engine.enqueueInboxMessage({ text: 'second', sessionId, workspacePath });
+      await expect(second.dispatchAcceptance).resolves.toMatchObject({ accepted: true });
+      expect(harness.runtime.effectivePermissionMode).toBe(expected);
+      await harness.engine.waitIdle(2_000, 10);
+    }
+    expect(harness.sessionStore.getSessionMetadata(sessionId)?.permissionMode).toBe(permissionMode);
+  });
   it('persists DSH Runtime identity before admitting a fresh Product root turn', async () => {
     const harness = await createHarness(
       [{ kind: 'success', text: 'fresh DSH turn finished' }],
@@ -9094,7 +9389,7 @@ describe('external SessionEngine with fake runtime', () => {
       requestId: 'permission-display',
       toolName: 'WebSearch',
       toolUseId: 'search-call',
-      rootToolUseId: 'search-root-call',
+      rootToolUseId: 'search-call',
       input: {
         tool: 'Bash',
         permissionClass: 'process.execute',
@@ -9113,8 +9408,9 @@ describe('external SessionEngine with fake runtime', () => {
       data: expect.objectContaining({
         review,
         toolUseId: 'search-call',
-        rootToolUseId: 'search-root-call',
+        rootToolUseId: 'search-call',
         input: '',
+        blocksRoot: false,
       }),
     });
     expect(
@@ -9124,8 +9420,9 @@ describe('external SessionEngine with fake runtime', () => {
       data: expect.objectContaining({
         review,
         toolUseId: 'search-call',
-        rootToolUseId: 'search-root-call',
+        rootToolUseId: 'search-call',
         input: '',
+        blocksRoot: false,
       }),
     });
   });
@@ -9162,12 +9459,6 @@ describe('external SessionEngine with fake runtime', () => {
           status: 'in_progress',
         },
       ],
-    });
-    harness.runtime.emitForTest({
-      kind: 'plan_state_update',
-      mode: 'plan',
-      revision: 'plan-revision-1',
-      permissionMode: 'plan',
     });
     harness.runtime.emitForTest({
       kind: 'permission_request',
@@ -9218,10 +9509,7 @@ describe('external SessionEngine with fake runtime', () => {
         ],
       },
     });
-    expect(broadcastEvents).toContainEqual({
-      event: 'chat:permission-mode-changed',
-      data: { permissionMode: 'plan' },
-    });
+    expect(broadcastEvents.map(({ event }) => event)).not.toContain('chat:permission-mode-changed');
     expect(broadcastEvents).toContainEqual({
       event: 'exit-plan-mode:request',
       data: {
@@ -9229,6 +9517,7 @@ describe('external SessionEngine with fake runtime', () => {
         sessionId,
         plan: '# Exact plan',
         allowedPrompts: [],
+        blocksRoot: true,
       },
     });
     expect(broadcastEvents.map(({ event }) => event)).not.toContain(

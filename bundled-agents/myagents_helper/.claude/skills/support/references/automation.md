@@ -79,7 +79,7 @@ Record 统一保存文字笔记和会议录音，不会自行创建或执行 Tas
 myagents session send <session-id> -p "..."
 ```
 
-多行内容用 `--prompt-file`。仅回答当前用户时不要使用 `session send`；发送会改变另一个 Session，执行前确认目标 Session 和消息内容。
+多行内容用 `--prompt-file`。仅回答当前用户时不要使用 `session send`；发送会改变另一个 Session，应有明确目标与内容授权。只观察用 get/state/watch，接纳未知不自动重发；本机/跨设备与回传语义见 `agent-network.md`。
 
 ## 修复边界
 

@@ -2,7 +2,7 @@
 name: support
 description: >-
   MyAgents 本地问题诊断、恢复与反馈升级流程。用户描述报错、崩溃、无响应、配置后仍不可用、状态或结果不符合预期、
-  Task/Goal/Channel/Provider/Runtime/MCP/Plugin/附件/Space 等功能异常，或者前端“小助理诊断/问题反馈”注入诊断上下文时使用。
+  Task/Goal/Channel/Provider/Runtime/MCP/Plugin/附件/Agent 网络/协作空间等功能异常，或者前端“小助理诊断/问题反馈”注入诊断上下文时使用。
   先用 `/myagents-docs` 确认正确产品预期，再以本地状态、CLI、日志和必要 probe 分类、修复、验证；确认产品缺陷或功能建议后，
   在用户确认下形成并提交脱敏 Issue。普通“是什么/怎么用/入口在哪”不使用本 skill，直接使用 `/myagents-docs`。
 ---
@@ -38,7 +38,7 @@ Support 的职责是解释“为什么实际行为没有符合正确预期”，
 只收集与问题有关的最小现场：
 
 - MyAgents 版本、OS、问题发生时间窗口
-- 触发入口：Chat、Launcher、悬浮窗、Task、Goal、IM、Space 等
+- 触发入口：Chat、Launcher、悬浮窗、Task、Goal、IM、Agent 网络、协作空间等；跨设备时记录双方版本与设备
 - Workspace、Session ID、Task/Goal/Issue ID（如适用）
 - Provider、Model、Runtime、`runtimeSource`（如适用）
 - 是否稳定复现、影响一个对象还是所有对象
@@ -59,11 +59,13 @@ rg '\[boot\]' ./logs/unified-*.log | node .claude/skills/support/scripts/redact-
 
 | 主诉 | 读取 |
 |---|---|
-| Codex/Gemini/Claude Code 不工作、终端能用但 MyAgents 不行、runtime/model/permission 异常 | `references/runtime.md` |
+| DSH/Codex/Claude Code 不工作、终端能用但 MyAgents 不行、runtime/model/permission 异常 | `references/runtime.md` |
+| 跨设备 Agent 发现/调用/回传失败、@ Agent 不完整、Session state/watch/取消观察异常 | `references/agent-network.md` |
 | Provider 登录/验证/模型失败，MCP 启动、OAuth、握手或工具列表异常 | `references/provider-mcp.md` |
 | Telegram/钉钉/飞书/微信/QQ Agent 不在线、不收发消息，OpenClaw Plugin 异常 | `references/agent-channel-plugin.md` |
 | Task/定时/Cron 未执行或状态异常，Goal 不续跑/无法暂停/错误终态，Record/Session Inbox 异常 | `references/automation.md` |
-| Team Space 登录、Goal/Issue、Registered Agent、Delivery、claim、附件或 quota 异常 | `references/cloud-space.md` |
+| 录音、离线转写、说话人、播放、语音模型或附件 speech job 异常 | `references/recording-speech.md` |
+| 协作空间登录、Goal/Issue、Registered Agent、Delivery、claim、共享工具/官方市场、附件或 quota 异常 | `references/cloud-space.md` |
 | 图片/音频/PDF 等工具产物生成但不显示，IM 媒体未发出 | `references/attachments.md` |
 | 工作区文件树、搜索、预览、@ 文件、拖拽、CRUD、watcher 异常 | `references/workspace-files.md` |
 | AI 不回复、Sidecar 重启、pre-warm、历史恢复、回溯/分叉、Session 状态异常 | `references/session-sidecar.md` |
@@ -139,9 +141,28 @@ rg -n "ERROR|WARN|auth error|401|403|429|terminal_reason|AppErrorBoundary|extern
 
 1. 用 `/myagents-docs` 检查它是否已有能力、正常限制或已知使用路径。
 2. 生成下面的脱敏标题与报告，路径优先写相对路径或 `<HOME>`，先展示给用户。
-3. 取得用户允许向 GitHub 发送脱敏关键词的明确确认后，再搜索 `hAcKlyc/MyAgents` 的相似 open Issue；没有能力或用户不授权就明确未搜索。
-4. 根据搜索结果更新报告并再次展示。只有用户明确确认提交后，才使用可用的 GitHub connector、`gh issue create` 或 Issue 页面提交。
-5. 成功后返回链接；不能或不应提交时交付可直接粘贴的 Markdown。
+3. 按下面的渠道发现选择建议入口，向用户说明目标社区/仓库。取得向该渠道发送脱敏关键词的授权后，搜索相似 Issue；没有搜索能力或用户不授权就明确未搜索。
+4. 根据搜索结果更新报告并展示。用户确认最终报告与提交目标后执行提交；已有明确授权仍有效，不重复询问同一个决定。
+5. 成功后返回可点击链接；不能或不应提交时交付可直接粘贴的 Markdown。
+
+### 渠道发现与提交
+
+MyAgents Space 从 0.5.0 起正式提供官方社区 Issue 反馈。先运行 `gh --version` 检测本机工具；这是本地检测，不需要安装或登录。
+
+| 当前能力 | 推荐入口与下一步 |
+|---|---|
+| `gh` 可运行 | 优先建议 GitHub 仓库 `hAcKlyc/MyAgents`。用 `gh auth status` 检查可用性（不显示 token）；未认证时提示 GitHub 登录，也可按用户选择转 Space，不把“装了 gh”当成已登录。 |
+| 没有可用 `gh`，Space 已登录 | 用 `myagents space list --json` 读取当前成员空间，选择 `data.items[]` 中 `spaceKind=official` 的官方社区，使用返回的实际 slug（当前通常是 `myagents`）。推荐提交到这里。 |
+| Space 未登录或需要重新认证 | 提供 `[登录 MyAgents Space](myagents://open/v1/spaces)`，用户点击会打开/聚焦 Space Tab 的登录入口；登录后重新运行 `space list` 再继续。 |
+
+`space list` 是经应用提供的脱敏状态接口；不要读取 Space credential 文件。只有 `NOT_AUTHENTICATED` / `SPACE_REAUTH_REQUIRED` 等明确认证错误才能判断需登录。网络、门控或权限错误保留具体原因，不误报退出登录；官方社区未出现在列表中时引导用户在 Space 检查成员状态，不猜 slug 或新建同名社区。尊重用户明确指定的渠道；不要求用户为了反馈安装 `gh`。
+
+渠道确认与对外授权到位后，使用精确 help 核对参数：
+
+- GitHub：`gh issue list --repo hAcKlyc/MyAgents --state open --search '<脱敏关键词>'`；确认报告后 `gh issue create --repo hAcKlyc/MyAgents --title '<标题>' --body-file issue.md`。
+- Space：先 `myagents space whoami --space <返回的slug> --json` 核对身份，再 `myagents space issue list --space <slug> --q '<脱敏关键词>' --json` 查相似反馈。普通小助理 Session 应为 User；不通过注册 Agent、显式 token 或身份降级绕过拒绝。确认报告后 `myagents space issue create --space <slug> --title '<标题>' --body-file issue.md --json`。报告文件保存于当前工作区；不指定 assignee；如需归入 BUGFIX/功能建议 Goal，先用 `space goal list` 取得真实 active Goal ID，否则省略 `--goal` 进入 Inbox。
+
+成功必须根据命令返回结果判断，不把超时/失败说成已提交或盲目重复创建。GitHub 返回其实际 Issue URL；Space 用返回的真实 `id` 生成 `[查看反馈](myagents://open/v1/spaces/<slug>/issues/<issueId>)`，不能把界面的 `#12` 等展示编号替代 Issue ID。也可提供 `[官方社区反馈列表](myagents://open/v1/spaces/official/issues)`。这些链接只导航，不触发搜索、上传或创建。
 
 ```markdown
 ## 功能与用户目标
@@ -178,7 +199,7 @@ rg -n "ERROR|WARN|auth error|401|403|429|terminal_reason|AppErrorBoundary|extern
 
 ## 安全边界
 
-- 不读取 `~/.myagents/credentials/`、Space token、Claude/Codex/Gemini credential home 或系统 Keychain。
+- 不读取 `~/.myagents/credentials/`、Space token、Claude/Codex 等供应商 credential home、Agent 网络私钥或系统 Keychain；停用集成留下的凭据同样受保护。
 - 不要求用户把 API Key/Token 发进持久对话；引导使用产品受保护输入入口。
 - 不直接编辑 Session、Project、Task、Goal、Space 内部 store。
 - 不把完整日志、用户文件内容、大 base64 或可识别个人路径放进 Issue。

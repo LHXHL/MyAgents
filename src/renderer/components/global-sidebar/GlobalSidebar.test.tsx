@@ -55,6 +55,14 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 
+vi.mock('@/features/account/useMyAgentsAccount', () => ({
+  useMyAgentsAccount: () => ({
+    scope: 'production', enabled: false, generation: 0, loadState: 'ready',
+    view: null, error: null,
+    avatarPresets: { people: [], agents: [], lastFetchedAt: 0, isLoading: false, error: null },
+  }),
+}));
+
 vi.mock('@/hooks/useConfig', () => ({
   useConfig: () => ({
     config: mocks.config,
@@ -139,6 +147,21 @@ vi.mock('@/api/sessionClient', async (importOriginal) => {
   return { ...actual, updateSession: mocks.updateSession };
 });
 
+vi.mock('@/components/launcher', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/components/launcher')>()),
+  // The panel has its own suite; here only its contract with the sidebar matters.
+  NewAgentPanel: ({ onCreated, onClose }: { onCreated: (project: { id: string; name: string; path: string }) => void; onClose: () => void }) => (
+    <button
+      type="button"
+      data-testid="fake-new-agent-panel"
+      onClick={() => {
+        onCreated({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+        onClose();
+      }}
+    />
+  ),
+}));
+
 import { i18n } from '@/i18n';
 import type { Tab } from '@/types/tab';
 import { GLOBAL_SIDEBAR_PREFERENCE_KEY } from '@/utils/globalSidebarPreference';
@@ -169,6 +192,8 @@ function sidebar(overrides: Partial<SidebarProps> = {}) {
       onOpenWorkspace={vi.fn(async () => true)}
       onOpenSession={vi.fn(async () => true)}
       onRenameSession={vi.fn(async () => null)}
+      newAgentPanelOpen={false}
+      onNewAgentPanelOpenChange={vi.fn()}
       {...overrides}
     />
   );
@@ -220,6 +245,35 @@ describe('GlobalSidebar rail flyout', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it('keeps helper and settings above independent account and notification controls', () => {
+    mocks.forcedRail = false;
+    const onOpenSpace = vi.fn();
+    renderSidebar({ onOpenSpace });
+    const footer = document.querySelector('[data-global-sidebar-footer-actions]')!;
+    const row = document.querySelector('[data-global-sidebar-account-row]')!;
+    const account = screen.getByRole('button', { name: '登录 MyAgents' });
+    const notification = screen.getByRole('button', { name: String(i18n.t('app:notificationCenter.bell')) });
+    expect(footer.lastElementChild).toBe(row);
+    expect(row.contains(account)).toBe(true);
+    expect(row.contains(notification)).toBe(true);
+    expect(row.contains(screen.getByRole('button', { name: '设置' }))).toBe(false);
+    expect(row.contains(screen.getByRole('button', { name: '小助理' }))).toBe(false);
+    fireEvent.click(account);
+    expect(onOpenSpace).toHaveBeenCalledOnce();
+    expect(mocks.notificationRefresh).not.toHaveBeenCalled();
+    fireEvent.click(notification);
+    expect(onOpenSpace).toHaveBeenCalledOnce();
+    expect(mocks.notificationRefresh).toHaveBeenCalledOnce();
+  });
+
+  it('keeps only notification in the last rail row with no hidden account focus target', () => {
+    renderSidebar();
+    const row = document.querySelector('[data-global-sidebar-account-row]')!;
+    expect(within(row as HTMLElement).getAllByRole('button')).toHaveLength(1);
+    expect(within(row as HTMLElement).getByRole('button', { name: String(i18n.t('app:notificationCenter.bell')) })).toBeInTheDocument();
+    expect(document.querySelector('[data-global-account-trigger]')).toBeNull();
   });
 
   it('renders healthy workspaces alongside invalid persisted Project rows without modifying them', () => {
@@ -520,12 +574,56 @@ describe('GlobalSidebar rail flyout', () => {
     }
   });
 
+  it('opens the single New Agent panel from the + button and the empty state', () => {
+    const onNewAgentPanelOpenChange = vi.fn();
+    renderSidebar({ onNewAgentPanelOpenChange });
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+
+    fireEvent.click(screen.getByRole('button', { name: String(i18n.t('launcher:newAgentPanel.title')) }));
+    fireEvent.click(screen.getByRole('button', { name: String(i18n.t('launcher:rightRail.addFolder')) }));
+
+    expect(onNewAgentPanelOpenChange.mock.calls).toEqual([[true], [true]]);
+  });
+
+  it('returns focus to the + entry after the panel it opened closes', () => {
+    const onNewAgentPanelOpenChange = vi.fn();
+    const view = renderSidebar({ onNewAgentPanelOpenChange });
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+    const addButton = screen.getByRole('button', { name: String(i18n.t('launcher:newAgentPanel.title')) });
+
+    fireEvent.click(addButton);
+    view.rerender(sidebar({ onNewAgentPanelOpenChange, newAgentPanelOpen: true }));
+    (document.activeElement as HTMLElement | null)?.blur();
+    // The fake panel closes through its onClose prop, like every real close path.
+    fireEvent.click(screen.getByTestId('fake-new-agent-panel'));
+
+    expect(onNewAgentPanelOpenChange).toHaveBeenLastCalledWith(false);
+    expect(addButton).toHaveFocus();
+  });
+
+  it('flashes the workspace created from the New Agent panel', () => {
+    mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+    const onNewAgentPanelOpenChange = vi.fn();
+    renderSidebar({ newAgentPanelOpen: true, onNewAgentPanelOpenChange });
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+
+    fireEvent.click(screen.getByTestId('fake-new-agent-panel'));
+
+    const row = screen.getByText('Project one').closest<HTMLElement>('[data-global-sidebar-workspace-row]')!;
+    expect(row).toHaveAttribute('data-recently-created');
+    expect(onNewAgentPanelOpenChange).toHaveBeenCalledWith(false);
+    act(() => {
+      vi.advanceTimersByTime(1600);
+    });
+    expect(row).not.toHaveAttribute('data-recently-created');
+  });
+
   it('uses instant portaled tooltips for workspace header and row actions', () => {
     mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
     renderSidebar();
     fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
 
-    const addButton = screen.getByRole('button', { name: String(i18n.t('launcher:addWorkspaceMenu.add')) });
+    const addButton = screen.getByRole('button', { name: String(i18n.t('launcher:newAgentPanel.title')) });
     const viewOptionsButton = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.workspaceViewOptions')) });
     const workspaceRow = screen.getByText('Project one').closest<HTMLElement>('[data-global-sidebar-workspace-row]')!;
     const newChatButton = within(workspaceRow).getByRole('button', { name: String(i18n.t('app:globalSidebar.newChatHere')) });
@@ -535,7 +633,7 @@ describe('GlobalSidebar rail flyout', () => {
     expect(Boolean(moreButton.compareDocumentPosition(newChatButton) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
 
     for (const [button, label] of [
-      [addButton, String(i18n.t('launcher:addWorkspaceMenu.add'))],
+      [addButton, String(i18n.t('launcher:newAgentPanel.title'))],
       [viewOptionsButton, '更多'],
       [newChatButton, '新对话'],
       [moreButton, '更多'],
@@ -870,9 +968,9 @@ describe('GlobalSidebar rail flyout', () => {
     renderSidebar();
 
     expect(screen.queryByRole('tooltip', { name: 'Agent 工作区' })).not.toBeInTheDocument();
-    const taskButton = screen.getByRole('button', { name: '任务' });
+    const taskButton = screen.getByRole('button', { name: '自动化任务' });
     fireEvent.mouseEnter(taskButton.parentElement!);
-    const taskTip = screen.getByRole('tooltip', { name: '任务' });
+    const taskTip = screen.getByRole('tooltip', { name: '自动化任务' });
     expect(taskTip).toHaveClass('bg-[var(--button-dark-bg)]/90');
     expect(taskTip).not.toHaveClass('delay-500', 'transition-opacity');
 
@@ -1083,8 +1181,9 @@ describe('GlobalSidebar rail flyout', () => {
     expect(screen.getByRole('region', { name: 'Agent 工作区' })).toBeInTheDocument();
   });
 
-  it('keeps one fixed toggle across manual rail/expanded and leaves forced rail branded but stable', () => {
+  it('keeps toggle, search and notification mounted across manual modes and replaces the rail website entry', () => {
     mocks.forcedRail = false;
+    mocks.isTauri = true;
     window.localStorage.setItem(GLOBAL_SIDEBAR_PREFERENCE_KEY, JSON.stringify({
       version: 1,
       preferredMode: 'rail',
@@ -1106,11 +1205,18 @@ describe('GlobalSidebar rail flyout', () => {
     const brandLink = navigation.querySelector('[data-global-sidebar-brand-link]');
     const brandName = navigation.querySelector('[data-global-sidebar-brand-name]');
     const brandRow = navigation.querySelector('[data-global-sidebar-brand-row]');
+    const search = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) });
+    const notification = screen.getByRole('button', { name: String(i18n.t('app:notificationCenter.bell')) });
     const primaryNav = navigation.querySelector('[data-global-sidebar-primary-nav]');
     const workspaceRail = navigation.querySelector('[data-global-sidebar-workspace-rail]');
     const footerActions = navigation.querySelector('[data-global-sidebar-footer-actions]');
     expect(brandIcon).not.toBeNull();
     expect(brandLink).toHaveClass('w-10', 'overflow-hidden');
+    expect(brandLink).toHaveAttribute('inert');
+    expect(brandLink).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.queryByRole('button', { name: String(i18n.t('app:globalSidebar.openWebsite')) })).not.toBeInTheDocument();
+    expect(brandRow).toContainElement(search);
+    expect(primaryNav).not.toContainElement(search);
     expect(brandName).toHaveAttribute('aria-hidden', 'true');
     expect(brandRow).toHaveClass('global-sidebar-brand-row');
     expect(primaryNav).toHaveClass('global-sidebar-rail-stack');
@@ -1144,12 +1250,16 @@ describe('GlobalSidebar rail flyout', () => {
     expect(navigation.querySelector('[data-global-sidebar-brand-icon]')).toBe(brandIcon);
     expect(navigation.querySelector('[data-global-sidebar-brand-link]')).toBe(brandLink);
     expect(brandLink).not.toHaveClass('w-10', 'overflow-hidden');
+    expect(brandLink).not.toHaveAttribute('inert');
+    expect(brandLink).toHaveAttribute('aria-hidden', 'false');
+    expect(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) })).toBe(search);
+    expect(screen.getByRole('button', { name: String(i18n.t('app:notificationCenter.bell')) })).toBe(notification);
     expect(navigation.querySelector('[data-global-sidebar-brand-row]')).toBe(brandRow);
     expect(navigation.querySelector('[data-global-sidebar-primary-nav]')).not.toHaveClass('global-sidebar-rail-stack');
     expect(navigation.querySelector('[data-global-sidebar-workspace-rail]')).not.toBeInTheDocument();
     expect(navigation.querySelector('[data-global-sidebar-workspace-region]')).not.toHaveClass('border-t', 'border-[var(--line-subtle)]');
     expect(navigation.querySelector('[data-global-sidebar-footer-actions]')).not.toHaveClass('global-sidebar-rail-stack');
-    expect(brandName).toBe(screen.getByText('MyAgents'));
+    expect(brandName?.querySelector('[data-myagents-logotype]')).toHaveAccessibleName('MyAgents');
     expect(brandName).toHaveClass('theme-product-wordmark', 'text-sm', 'font-medium');
     expect(brandName).not.toHaveClass('font-semibold', 'tracking-wide', 'theme-launcher-hero-title');
     expect(brandName).toHaveAttribute('aria-hidden', 'false');
@@ -1157,6 +1267,9 @@ describe('GlobalSidebar rail flyout', () => {
     fireEvent.click(collapse);
     expect(navigation).toHaveAttribute('data-global-sidebar-mode', 'rail');
     expect(navigation).toHaveAttribute('data-global-sidebar-motion', 'collapse');
+    expect(brandLink).toHaveAttribute('inert');
+    expect(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) })).toBe(search);
+    expect(screen.getByRole('button', { name: String(i18n.t('app:notificationCenter.bell')) })).toBe(notification);
     expect(navigation.querySelector('[data-global-sidebar-workspace-region]'))
       .toHaveAttribute('aria-hidden', 'true');
     expect(navigation.querySelector('[data-global-sidebar-workspace-rail]')).toBeInTheDocument();
@@ -1175,8 +1288,8 @@ describe('GlobalSidebar rail flyout', () => {
     mocks.forcedRail = true;
     renderSidebar();
     expect(screen.queryByRole('button', { name: String(i18n.t('app:globalSidebar.expand')) })).not.toBeInTheDocument();
-    const websiteButton = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.openWebsite')) });
-    expect(websiteButton.querySelector('[data-global-sidebar-brand-icon]')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: String(i18n.t('app:globalSidebar.openWebsite')) })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) })).toBeInTheDocument();
     expect(screen.getByRole('complementary', { name: String(i18n.t('app:globalSidebar.navigation')) }))
       .toHaveAttribute('data-global-sidebar-toggle-visible', 'false');
   });
@@ -1200,12 +1313,12 @@ describe('GlobalSidebar rail flyout', () => {
     for (const label of [
       i18n.t('app:globalSidebar.newChat'),
       i18n.t('app:globalSidebar.tasks'),
-      i18n.t('app:globalSidebar.team'),
+      i18n.t('app:globalSidebar.more'),
       i18n.t('app:globalSidebar.capabilities'),
       i18n.t('app:globalSidebar.helper'),
       i18n.t('app:globalSidebar.settings'),
     ]) {
-      const action = screen.getByRole('button', { name: String(label) });
+      const action = screen.getAllByRole('button', { name: String(label) }).find(button => button.hasAttribute('data-global-sidebar-nav-button'))!;
       expect(action).toHaveClass('h-8');
       expect(action).not.toHaveClass('h-9', 'h-10');
     }
@@ -1227,7 +1340,7 @@ describe('GlobalSidebar rail flyout', () => {
     const helperButton = screen.getByRole('button', {
       name: String(i18n.t('app:globalSidebar.helper')),
     });
-    expect(notificationButton.querySelector('.global-sidebar-nav-label')).toBeInTheDocument();
+    expect(notificationButton.querySelector('.global-sidebar-nav-label')).not.toBeInTheDocument();
     expect(helperButton.querySelector('.global-sidebar-nav-label')).toBeInTheDocument();
     const workspaceFade = document.querySelector<HTMLElement>('[data-global-sidebar-workspace-fade]');
     expect(workspaceFade).toHaveClass('pointer-events-none', 'absolute', 'inset-x-0', 'bottom-0', 'h-6');
@@ -1245,7 +1358,7 @@ describe('GlobalSidebar rail flyout', () => {
     // occupy the exact pixels that used to be solid spacing below the
     // section title, instead of stacking a fade below an unchanged gap.
     const workspaceSectionHeader = screen.getByText(String(i18n.t('app:globalSidebar.workspaceSection'))).closest('div');
-    expect(workspaceSectionHeader).toHaveClass('h-8', 'pl-6', 'pr-3');
+    expect(workspaceSectionHeader).toHaveClass('h-8', 'pl-6', 'pr-[var(--global-sidebar-action-inset)]');
     // The fade must consume the spacing directly above the notification entry:
     // the expanded footer drops its top padding so the scroller edge (and the
     // fade) reach the notification button, instead of stacking an extra
@@ -1256,7 +1369,7 @@ describe('GlobalSidebar rail flyout', () => {
     const workspaceActions = inactiveRow.querySelector<HTMLElement>('[data-global-sidebar-workspace-actions]');
     expect(inactiveRow).toHaveClass('relative');
     expect(workspaceToggle).toHaveClass('flex-1');
-    expect(workspaceActions).toHaveClass('pointer-events-none', 'absolute', 'inset-y-0', 'right-0', 'pl-6', 'pr-2');
+    expect(workspaceActions).toHaveClass('pointer-events-none', 'absolute', 'inset-y-0', 'right-0', 'gap-1', 'pl-6');
     expect(workspaceActions).not.toHaveClass('shrink-0');
     expect(workspaceActions).toHaveClass('global-sidebar-workspace-actions');
 
@@ -1326,7 +1439,11 @@ describe('GlobalSidebar rail flyout', () => {
     mocks.isTauri = true;
     const { container } = renderSidebar();
 
-    fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) }));
+    const search = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) });
+    expect(container.querySelector('[data-global-sidebar-brand-row]')).toContainElement(search);
+    expect(container.querySelector('[data-global-sidebar-primary-nav]')).not.toContainElement(search);
+    fireEvent.click(search);
+    expect(search).toHaveAttribute('aria-expanded', 'true');
     const coldPanel = document.querySelector('[data-history-search-overlay-panel]');
     expect(coldPanel).toBeInTheDocument();
     const coldFilters = document.querySelector('[data-history-search-fallback-filters]');
@@ -1368,10 +1485,13 @@ describe('GlobalSidebar rail flyout', () => {
     expect(screen.queryByRole('button', { name: String(i18n.t('app:globalSidebar.team')) }))
       .not.toBeInTheDocument();
     expect(onOpenSpace).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: String(i18n.t('app:globalSidebar.more')) })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.agentNetwork')) })).toBeInTheDocument();
   });
 
   it('does not let an old Session completion close a newly reopened search overlay', async () => {
     mocks.isTauri = true;
+    mocks.forcedRail = false;
     mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
     mocks.taskData.sessions.push({
       id: 'slow-search-session',
@@ -1505,7 +1625,7 @@ describe('GlobalSidebar rail flyout', () => {
     const workspaceRow = screen.getByText('Project one').closest('[data-global-sidebar-workspace-row]');
     expect(workspaceRow).toHaveAttribute('aria-current', 'page');
     expect(workspaceRow).not.toHaveClass('bg-[var(--paper-elevated)]', 'shadow-sm');
-    expect(workspaceRow?.querySelector('[data-global-sidebar-workspace-actions]')).toHaveClass('pr-2');
+    expect(workspaceRow?.querySelector('[data-global-sidebar-workspace-actions]')).toHaveClass('global-sidebar-workspace-actions');
     const firstSession = screen.getByRole('button', { name: /Session 1/ });
     expect(firstSession.className).toContain('focus-visible:ring-2');
     expect(firstSession.firstElementChild?.textContent).toBe('Session 1');
@@ -1518,8 +1638,7 @@ describe('GlobalSidebar rail flyout', () => {
     expect(screen.getByText('Telegram')).toHaveClass('text-xs', 'font-medium');
     expect(firstSession).toHaveClass('w-full');
     expect(firstSessionRow?.querySelector('[data-global-sidebar-session-date]')).toHaveClass('ml-auto');
-    expect(firstSessionRow?.querySelector('[data-global-sidebar-session-action-overlay]')).toHaveClass('absolute');
-    expect(firstSessionRow?.querySelector('[data-global-sidebar-session-action-overlay]')).toHaveClass('right-2');
+    expect(firstSessionRow?.querySelector('[data-global-sidebar-session-action-overlay]')).toHaveClass('absolute', 'justify-end');
     expect(firstSessionRow?.querySelector('[data-global-sidebar-session-action-overlay]')).toHaveClass('pointer-events-none');
     const sessionDate = firstSessionRow?.querySelector('[data-global-sidebar-session-date]');
     expect(sessionDate).toHaveClass('text-xs');
@@ -1665,5 +1784,55 @@ describe('GlobalSidebar rail flyout', () => {
     expect(screen.getByText('config unavailable')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: String(i18n.t('launcher:rightRail.retry')) }));
     expect(mocks.refreshConfig).toHaveBeenCalled();
+  });
+});
+
+describe('Agent network and Space navigation', () => {
+  beforeEach(() => { vi.useRealTimers(); vi.clearAllMocks(); mocks.projects = []; window.localStorage.clear(); });
+  it('opens the right menu by keyboard and restores focus on Escape', async () => {
+    const onOpenSpace = vi.fn();
+    renderSidebar({ onOpenSpace });
+    const more = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.more')) });
+    more.focus(); fireEvent.keyDown(more, { key: 'ArrowRight' });
+    const space = await screen.findByRole('menuitem', { name: String(i18n.t('app:globalSidebar.team')) });
+    expect(more).toHaveAttribute('aria-expanded', 'true');
+    await vi.waitFor(() => expect(space).toHaveFocus());
+    fireEvent.keyDown(space, { key: 'ArrowDown' });
+    expect(space).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    expect(more).toHaveFocus();
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    fireEvent.click(more); fireEvent.click(await screen.findByRole('menuitem', { name: String(i18n.t('app:globalSidebar.team')) }));
+    expect(onOpenSpace).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+  });
+  it('exposes AgentNet in primary navigation and keeps only Space in the hover menu', async () => {
+    const onOpenAgentNetwork = vi.fn();
+    const networkTab: Tab = { id: 'network-tab', view: 'agentnetwork', title: 'AgentNet' };
+    const view = renderSidebar({ onOpenAgentNetwork, activeTab: networkTab });
+    const buttons = screen.getAllByRole('button').filter(button => button.hasAttribute('data-global-sidebar-nav-button'));
+    const labels = buttons.map(button => button.getAttribute('aria-label'));
+    expect(labels).toEqual(['新对话', '自动化任务', '技能与工具', 'AgentNet 局域网络', '更多', '小助理', '设置']);
+    const network = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.agentNetwork')) });
+    const more = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.more')) });
+    expect(network).toHaveAttribute('aria-current', 'page');
+    expect(more).not.toHaveAttribute('aria-current');
+    fireEvent.click(network);
+    expect(onOpenAgentNetwork).toHaveBeenCalledOnce();
+    fireEvent.pointerEnter(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.more')) }));
+    expect(await screen.findByRole('menuitem', { name: String(i18n.t('app:globalSidebar.team')) })).toBeVisible();
+    expect(screen.getAllByRole('menuitem')).toHaveLength(1);
+    expect(screen.queryByRole('menuitem', { name: String(i18n.t('app:globalSidebar.agentNetwork')) })).not.toBeInTheDocument();
+    fireEvent.click(more);
+    expect(more).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('menuitem', { name: String(i18n.t('app:globalSidebar.team')) })).toBeVisible();
+    fireEvent.click(more);
+    expect(screen.getByRole('menu')).toBeVisible();
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    const spaceTab: Tab = { id: 'space-tab', view: 'space', title: 'Space' };
+    view.rerender(sidebar({ onOpenAgentNetwork, activeTab: spaceTab }));
+    expect(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.more')) })).toHaveAttribute('aria-current', 'page');
+    expect(network).not.toHaveAttribute('aria-current');
   });
 });

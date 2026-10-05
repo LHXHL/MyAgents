@@ -16,6 +16,7 @@ mod crash_artifact_retention;
 pub mod cron_task;
 mod cuse_skill;
 pub mod device_identity;
+mod agent_network;
 pub mod document_processing;
 mod durable_fs;
 mod durable_journal;
@@ -45,8 +46,11 @@ pub mod management_api;
 pub mod mcp_startup_admission;
 pub mod tokendance;
 pub use myagents_media_worker_protocol as media_worker_protocol;
+#[cfg(any(windows, test))]
+mod credential_permissions;
 pub mod memory_auto_update;
 pub mod memory_evolution;
+mod network_diagnostics;
 pub mod notification;
 pub mod notification_badge;
 pub mod perf_trace;
@@ -82,6 +86,7 @@ pub mod task_execution;
 pub mod task_scheduler;
 pub mod task_trigger;
 pub mod terminal;
+mod picker_page;
 pub mod thought;
 mod tray;
 mod updater;
@@ -297,6 +302,7 @@ pub fn run() {
 
     // Create managed sidecar state (now supports multiple instances)
     let sidecar_state = create_sidecar_state();
+    let agent_network_state = agent_network::actor::AgentNetwork::new();
 
     // Create IM Bot managed state
     let im_bot_state = im::create_im_bot_state();
@@ -434,6 +440,7 @@ pub fn run() {
 
     let app = builder
         .manage(sidecar_state)
+        .manage(agent_network_state)
         .manage(sse_proxy_state)
         .manage(proxy_spill_state)
         .manage(im_bot_state)
@@ -720,6 +727,7 @@ pub fn run() {
             workspace_files::memory_rules::cmd_ensure_memory_rule_substrate,
             workspace_files::memory_rules::cmd_ensure_update_memory_file,
             workspace_files::search::cmd_workspace_search_files_fuzzy,
+            workspace_files::search::cmd_workspace_search_files_page,
             workspace_files::delete::cmd_workspace_delete,
             workspace_files::slash::cmd_list_slash_commands,
             workspace_files::tree::cmd_workspace_dir_tree,
@@ -791,6 +799,7 @@ pub fn run() {
             // Task Center — Thought commands (v0.1.69)
             thought::cmd_thought_create,
             thought::cmd_thought_list,
+            thought::cmd_thought_list_page,
             thought::cmd_thought_get,
             thought::cmd_thought_update,
             thought::cmd_thought_delete,
@@ -821,6 +830,9 @@ pub fn run() {
             task::cmd_task_write_doc,
             task::cmd_task_open_docs_dir,
             task::cmd_task_get_run_stats,
+            agent_network::commands::cmd_agent_network_snapshot,
+            agent_network::commands::cmd_agent_discovery,
+            agent_network::commands::cmd_agent_network_request,
             // MyAgents Cloud Space
             space_cloud::cmd_space_get_capability,
             space_cloud::cmd_space_get_session,
@@ -1034,6 +1046,11 @@ pub fn run() {
             crash_artifact_retention::start_crash_artifact_retention_owner();
             tauri::async_runtime::spawn(grok_auth::reconcile_provider_projection());
             let space_sidecar_state = app.state::<sidecar::ManagedSidecarManager>().inner().clone();
+            agent_network::actor::start(
+                app.handle().clone(),
+                app.state::<agent_network::actor::ManagedAgentNetwork>().inner().clone(),
+                space_sidecar_state.clone(),
+            );
             space_cloud::delivery::start_space_connector(
                 app.handle().clone(),
                 space_sidecar_state,
@@ -1840,6 +1857,7 @@ pub fn run() {
                 // Only cleanup once (Relaxed is sufficient for simple flag)
                 use std::sync::atomic::Ordering::Relaxed;
                 if !cleanup_done_for_exit.swap(true, Relaxed) {
+                    _app_handle.state::<agent_network::actor::ManagedAgentNetwork>().stop();
                     let shutdown_reason = if code == Some(tauri::RESTART_EXIT_CODE) {
                         "app-restart"
                     } else {

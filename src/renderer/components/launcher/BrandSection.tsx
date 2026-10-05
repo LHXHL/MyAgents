@@ -1,10 +1,12 @@
 /**
  * BrandSection - Left panel of the Launcher page
- * Layout: Logo+Slogan pinned to upper area, input box anchored to lower area
- * with workspace selector integrated into the input toolbar.
+ * Layout: owns the whole Launcher page. A 对话 / 记录 ModeSegment is pinned to
+ * the top edge as the page-level switch. Below it, a three-row grid anchors the
+ * composition to a fixed line at 42% of the page height: the brand sits on
+ * that line and the input hangs from it. Neither moves when the mode switches
+ * or the input grows — extra height only ever extends downward.
  *
- * Phase 2 (v0.1.69): a 对话 / 记录 ModeSegment sits between the slogan and the
- * input. Switching to 「记录」 repurposes the input as a freeform Record entry
+ * Switching to 「记录」 repurposes the input as a freeform Record entry
  * (persisted to ~/.myagents/thoughts/ via `thoughtCreate`), bypassing the full
  * Chat launch flow. Switching back to 「对话」 restores the default behavior.
  */
@@ -21,6 +23,7 @@ import {
 } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { MyAgentsLogotype } from '@/components/brand/MyAgentsLogotype';
 import DropZoneOverlay from '@/components/DropZoneOverlay';
 import SimpleChatInput, {
   type ImageAttachment,
@@ -86,6 +89,7 @@ interface BrandSectionProps {
     text: string,
     images?: ImageAttachment[],
     cron?: import('@/types/tab').InitialMessageCron,
+    context?: import('../../../shared/agentMentions').QueryMentionContext,
   ) => void;
   onStartRecording: () => void | Promise<void>;
   onOpenRecord: (recordId: string) => void;
@@ -433,7 +437,7 @@ export default memo(function BrandSection({
   // calls `thoughtCreate` itself and fires `handleThoughtCreated`, so
   // this handler never sees thought content anymore.
   const handleSend = useCallback(
-    (text: string, images?: ImageAttachment[]) => {
+    (text: string, images?: ImageAttachment[], _permissionMode?: PermissionMode, context?: import('../../../shared/agentMentions').QueryMentionContext) => {
       if (recordingBusy) return;
       // Repackage staged cron config into the InitialMessageCron shape so
       // Chat's autoSend can dispatch to startCronTask without poking back
@@ -461,7 +465,7 @@ export default memo(function BrandSection({
             executionTarget: stagedCron.executionTarget,
           }
         : undefined;
-      onSend(text, images, cron);
+      onSend(text, images, cron, context);
     },
     [onSend, recordingBusy, stagedCron],
   );
@@ -625,42 +629,14 @@ export default memo(function BrandSection({
   return (
     <section
       ref={sectionRef}
-      className="theme-launcher-hero flex flex-1 flex-col items-center px-12"
+      className="theme-launcher-hero relative grid h-full w-full grid-rows-[minmax(10rem,42%)_auto_minmax(0,1fr)] justify-items-center px-12"
       style={heroStyle}
       data-theme-hero={resolvedTheme.themeId}
     >
-      {/* Upper area: Brand Name + Slogans as ONE visual group.
-                `mb-2` tightens the title↔slogan gap so they read as a
-                paired brand block rather than two free-floating lines;
-                the larger breathing room below that group (on the
-                ModeSegment wrapper) separates "who we are" from "what
-                you're about to do". */}
-      <div className="flex flex-1 flex-col items-center justify-center">
-        <h1 className="theme-product-wordmark theme-launcher-hero-title">
-          {resolvedTheme.hero.productName}
-        </h1>
-        {/* 品牌 slogan 的 15px/17px 是 DESIGN.md §3.3 立档的展示型字号（display 用途），
-                    不属于正文 Type Scale；这是全仓唯一豁免点（PRD 0.2.34）。 */}
-        <p className="theme-launcher-hero-slogan">
-          {resolvedTheme.hero.slogans[sloganLocale]}
-        </p>
-      </div>
-
-      {/* Mode declaration: 对话 / 记录 (see DESIGN.md §5.6, PRD §4.1).
-                `mt-6 mb-6` opens breathing room above (separating from
-                the brand group) and below (separating from the input
-                affordance) — deliberately generous so the Launcher
-                doesn't feel compressed even with the newly 3-row input.
-                No `tabSwitchHint` — the hover tooltip was more noise than
-                signal; power users who need the shortcut will discover
-                it naturally, casual users shouldn't have a persistent
-                tooltip popping every time their cursor brushes past. */}
+      {/* Page-level mode switch: 对话 / 记录 (see DESIGN.md §5.6, PRD §4.1).
+          Out of flow so it never takes a grid row. */}
       {modeSegmentEnabled && (
-        // v0.1.69 polish: bottom gap tightened from mb-6 to mb-3 so
-        // the toggle reads as an affordance OF the input below, not
-        // a free-floating headline. Top gap kept at mt-6 to preserve
-        // breathing room from the brand slogan above.
-        <div className="mt-6 mb-3">
+        <div className="absolute inset-x-0 top-6 z-10 flex justify-center">
           <ModeSegment
             value={mode}
             onChange={setModeAndFocus}
@@ -669,12 +645,26 @@ export default memo(function BrandSection({
         </div>
       )}
 
-      {/* Lower area: Input box with workspace selector in toolbar.
-                When 「记录」 mode is active, a compact Recent Records strip is
-                absolute-positioned below the input so it hangs in the existing
-                `pb-[12vh]` bottom space without shifting the brand/input
-                vertically (PRD §4.2). */}
-      <div className="w-full max-w-[640px] pb-[12vh]">
+      {/* Row 1 — brand group, bottom-aligned on the anchor line; `pb-8`
+          separates "who we are" from the input below. */}
+      <div className="flex min-h-0 flex-col items-center justify-end pb-8">
+        <h1 className="theme-product-wordmark theme-launcher-hero-title">
+          <MyAgentsLogotype
+            className="launcher-hero-logotype"
+            title={resolvedTheme.hero.productName}
+          />
+        </h1>
+        {/* 品牌 slogan 的 15px/17px 是 DESIGN.md §3.3 立档的展示型字号（display 用途），
+                    不属于正文 Type Scale；这是全仓唯一豁免点（PRD 0.2.34）。 */}
+        <p className="theme-launcher-hero-slogan">
+          {resolvedTheme.hero.slogans[sloganLocale]}
+        </p>
+      </div>
+
+      {/* Row 2 — input, top edge on the anchor line. The context row (对话)
+          or Recent Records strip (记录) is absolute-positioned below it so it
+          hangs in row 3 without affecting the anchor (PRD §4.2). */}
+      <div className="w-full max-w-[640px]">
         <div className="relative w-full">
           {/* Both inputs stay mounted so each mode's draft (text +
            * caret + images for SimpleChatInput) survives the

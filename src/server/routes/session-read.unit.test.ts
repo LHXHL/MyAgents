@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   engine: {
+    getExecutionTurnId: vi.fn(() => 'turn-1'),
     getRuntimeIdentity: vi.fn(() => ({ kind: 'builtin', runtime: 'builtin', sessionId: 'sid' })),
     getLiveSessionState: vi.fn(() => ({ sessionState: 'idle', isBusy: false })),
     getSessionCompletionTerminal: vi.fn<() => Record<string, unknown> | null>(() => null),
@@ -11,7 +12,7 @@ const mocks = vi.hoisted(() => ({
   getSessionData: vi.fn(),
   isHistoryVisibleSession: vi.fn(() => true),
   pendingSessionWatchCount: vi.fn(() => 1),
-  registerPendingSessionWatch: vi.fn(),
+  registerPendingSessionWatch: vi.fn(watch => watch),
 }));
 
 vi.mock('../session-engine', () => ({
@@ -20,6 +21,7 @@ vi.mock('../session-engine', () => ({
 
 vi.mock('../SessionStore', () => ({
   getSessionData: mocks.getSessionData,
+  getSessionMetadata: vi.fn(() => ({ id: 'sid', title: 'Target' })),
   isHistoryVisibleSession: mocks.isHistoryVisibleSession,
 }));
 

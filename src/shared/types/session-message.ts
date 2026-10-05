@@ -61,6 +61,7 @@ export interface MessageSourceMetadata {
  * Simplified message format for storage
  */
 export interface SessionMessage {
+  desktopQuery?: import("../agentMentions").DesktopQueryDraft;
     asyncQuestionReply?: AsyncQuestionReply;
     id: string;
     role: 'user' | 'assistant';
@@ -69,6 +70,8 @@ export interface SessionMessage {
     /** V2 product execution and display segment state; absent on legacy rows. */
     turnId?: string;
     transcriptState?: 'streaming' | 'complete' | 'interrupted';
+    /** Independent product diagnostic; never represents native conversation content. */
+    messageKind?: 'diagnostic';
     sdkUuid?: string;  // SDK 分配的 UUID，用于 resumeSessionAt / rewindFiles
     /** Exact runtime-native root Turn represented by this terminal assistant row. */
     runtimeTurnAnchor?: RuntimeTurnAnchor;

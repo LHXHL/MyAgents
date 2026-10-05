@@ -1,5 +1,7 @@
+import { nextAgentNetworkExposureRevision } from "../shared/config-types";
 import { resolveAgentConfigMutation, mutationForAgentModelSelection, type AgentModelSelection } from '../shared/agentConfigMutation';
 import { APP_BUILD_IDENTITY, SIDECAR_BUILD_IDENTITY, SIDECAR_STARTED_AT } from './build-identity';
+import { CLAUDE_AGENT_SDK_IMPLEMENTATION_VERSION } from '../shared/integrated-runtimes/identity';
 /**
  * Admin API — Self-Configuration endpoints for the CLI tool.
  *
@@ -126,7 +128,7 @@ import {
 import { loadEnabledAgents } from './agents/agent-loader';
 import { getHomeDirOrNull } from './utils/platform';
 import { join } from 'path';
-import { broadcast } from './sse';
+import { broadcastAppConfigChanged } from './utils/app-config-events';
 import {
   getCronTaskContext,
   markCronTaskExitRequested,
@@ -1165,13 +1167,7 @@ async function notifyAppConfigChanged(
   // Preserve the current Sidecar-local event for tabs connected to this
   // process, then fan out an app-scoped invalidation through Rust so every
   // renderer reloads the disk authorities regardless of Sidecar ownership.
-  broadcast('config:changed', { section, action, id });
-  const result = await managementApi(
-    '/api/app/config-changed',
-    'POST',
-    {},
-    { timeoutMs: 2_000 },
-  );
+  const result = await broadcastAppConfigChanged({ section, action, id });
   if (result.ok !== true) {
     const label = section === 'model' ? 'Model' : 'MCP';
     throw new Error(
@@ -1651,36 +1647,47 @@ export async function handleAgentList(
     const registry = await resolvePersistedAgentWorkspaceRegistry();
     const lifecycle = normalizeAgentLifecycleFilter(payload.lifecycle);
     const currentWorkspacePath = getCurrentWorkspacePath();
-    const agents = filterAgentIdentities(
-      registry.agentProjections,
-      lifecycle,
-    ).map((identity) => {
-      const { agent, project, workspacePath } = identity;
-      return {
-        agentId: agent.id,
-        name: agent.name,
-        projectId: project?.id ?? null,
-        workspacePath,
-        enabled: agent.enabled === true,
-        archived: project ? isProjectArchived(project) : false,
-        archivedAt:
-          project && isProjectArchived(project)
-            ? (project.archivedAt ?? null)
-            : null,
-        association: identity.association,
-        isCurrent: isCurrentAgentIdentity(identity, currentWorkspacePath),
-        channelCount: (agent.channels ?? []).length,
-        channels: (agent.channels ?? []).map((channel) => ({
-          id: channel.id,
-          type: channel.type,
-          name: channel.name,
-          enabled: channel.enabled,
-        })),
-      };
-    });
+    const agents = filterAgentIdentities(registry.agentProjections, lifecycle)
+      .map((identity) => {
+        const { agent, project, workspacePath } = identity;
+        return {
+          agentId: agent.id,
+          name: agent.name,
+          projectId: project?.id ?? null,
+          workspacePath,
+          enabled: agent.enabled === true,
+          archived: project ? isProjectArchived(project) : false,
+          archivedAt:
+            project && isProjectArchived(project)
+              ? (project.archivedAt ?? null)
+              : null,
+          association: identity.association,
+          isCurrent: isCurrentAgentIdentity(identity, currentWorkspacePath),
+          channelCount: (agent.channels ?? []).length,
+          channels: (agent.channels ?? []).map((channel) => ({
+            id: channel.id,
+            type: channel.type,
+            name: channel.name,
+            enabled: channel.enabled,
+          })),
+        };
+      });
+    const { discoverAgents } = await import('./agent-network/discovery');
+    const discovery = lifecycle === 'archived' ? {items:[], networkStatus:'signedOut' as const, complete:true, authGeneration:0, principalId:null, networkId:null} : await discoverAgents(agents);
+    const localDiscovery = new Map(discovery.items.filter(item => item.isLocal).map(item => [item.selector, item]));
+    // The network candidate budget must not truncate the original local CLI
+    // registry. Only the compact composer projection applies that budget.
+    const combined: Array<Record<string, unknown>> = lifecycle === 'archived' ? agents : [
+      ...agents.filter(agent => !agent.archived).map(agent => ({ ...agent,
+        ...(localDiscovery.get(agent.agentId) ?? { selector: agent.agentId, isLocal: true,
+          deviceId: null, deviceName: null, platform: null, description: null, source: null }),
+      })),
+      ...discovery.items.filter(item => !item.isLocal).map(item => ({ ...item, agentId: item.selector })),
+    ];
+    if (lifecycle === 'all') for (const agent of agents.filter(agent => agent.archived)) combined.push(agent);
     return {
-      success: true,
-      data: agents,
+      success: true, data: combined, networkStatus: discovery.networkStatus, complete: discovery.complete,
+      authGeneration: discovery.authGeneration, principalId: discovery.principalId, networkId: discovery.networkId,
       ...(registry.diagnostics.length ? {
         diagnostics: registry.diagnostics.map(item => ({
           ...item,
@@ -1690,6 +1697,32 @@ export async function handleAgentList(
         hint: 'Some Agents have workspace identity conflicts. Open Settings → Chatbots to resolve them; healthy Agents remain available.',
       } : {}),
     };
+  } catch (error) {
+    return agentWorkspaceIdentityFailure(error);
+  }
+}
+
+export async function handleAgentDiscovery(payload: { localOnly?: boolean } = {}): Promise<AdminResponse> {
+  try {
+    const { getAgentDiscovery } = await import('./agent-network/discovery');
+    return { success: true, data: await getAgentDiscovery(payload.localOnly === true) };
+  } catch (error) { return agentWorkspaceIdentityFailure(error); }
+}
+
+/** App catalog projection only. The persisted Workspace identity owner decides
+ * valid associations; network settings are never written or inferred here. */
+export async function handleAgentNetworkCatalog(): Promise<AdminResponse> {
+  try {
+    const registry = await resolvePersistedAgentWorkspaceRegistry();
+    const items: import('@myagents/agent-network-protocol').CatalogItem[] = registry.identities
+      .filter(identity => isProjectVisibleToUser(identity.project))
+      .map(({ agent, project, workspacePath }) => ({
+        localAgentId: agent.id, localWorkspaceId: project.id, name: agent.name,
+        path: workspacePath, lifecycle: isProjectArchived(project) ? 'archived' : 'active',
+        exposureRevision: project.agentNetworkExposureRevision ?? 0,
+        icon: project.icon ?? null,
+      }));
+    return { success: true, data: { items, diagnostics: registry.diagnostics.map(({ code, projectIds, agentIds }) => ({ code, projectIds, agentIds })) } };
   } catch (error) {
     return agentWorkspaceIdentityFailure(error);
   }
@@ -1872,6 +1905,7 @@ export async function handleAgentArchive(payload: {
       ...entry.project,
       archivedAt,
       archivedAgentEnabledBeforeArchive: agentEnabledBeforeArchive,
+      agentNetworkExposureRevision: nextAgentNetworkExposureRevision(entry.project,alreadyArchived),
       pinnedAt: undefined,
     };
     return next;
@@ -1912,7 +1946,7 @@ export async function handleAgentArchive(payload: {
     { timeoutMs: AGENT_LIFECYCLE_LOOPBACK_TIMEOUT_MS },
   );
   if (!wasEnabled) {
-    broadcast('config:changed', { section: 'project', action: 'archive', id });
+    await broadcastAppConfigChanged({ section: 'project', action: 'archive', id });
   }
 
   if (reloadResult.ok !== true) {
@@ -2029,7 +2063,7 @@ export async function handleAgentUnarchive(payload: {
     throw err;
   }
 
-  broadcast('config:changed', { section: 'project', action: 'unarchive', id });
+  await broadcastAppConfigChanged({ section: 'project', action: 'unarchive', id });
 
   const reloadResult = await managementApi(
     '/api/agent/reload-config',
@@ -2644,7 +2678,7 @@ export async function handleConfigSet(payload: {
   }
 
   await atomicModifyConfig((c) => setNestedValue(c, key, value));
-  broadcast('config:changed', { section: 'config', action: 'set', key });
+  await broadcastAppConfigChanged({ section: 'config', action: 'set', key });
   return { success: true, data: { key }, hint: `Config '${key}' updated.` };
 }
 
@@ -2658,7 +2692,7 @@ export async function handleConfigUnset(payload: { key: string; dryRun?: boolean
     if (getNestedValue(config, key) === undefined) return config;
     return deleteNestedValue(config, key);
   });
-  broadcast('config:changed', { section: 'config', action: 'unset', key });
+  void broadcastAppConfigChanged({ section: 'config', action: 'unset', key });
   return { success: true, data: { key }, hint: `Config '${key}' removed.` };
 }
 
@@ -2781,7 +2815,7 @@ export async function handleReload(workspacePath?: string): Promise<AdminRespons
   if (!agentsResult.success) return { success: false, error: agentsResult.error ?? 'Failed to reload Agent configuration' };
   const agentCount = Object.keys(agents).length;
 
-  broadcast('config:changed', { section: 'all', action: 'reload' });
+  void broadcastAppConfigChanged({ section: 'all', action: 'reload' });
   return {
     success: true,
     hint: `Configuration reloaded (MCP: ${effectiveServers.length}, sub-agents: ${agentCount}). Changes are applied by the current Runtime at its configuration boundary.`,
@@ -2836,7 +2870,8 @@ RECOVERY
 const LEAF_HELP: Record<string, string> = {
   status: `myagents status — Show current configuration and active Session status
 
-Read-only. Reports MCP, provider, permission, and current Session state.
+Read-only. Reports MCP selection/readiness, provider fallback, visible Agent
+count and the current Session MCP snapshot when observable.
 OPTIONS
   --json    Return the structured response
   -h, --help    Show this help without running the command`,
@@ -2849,7 +2884,8 @@ OPTIONS
   reload: `myagents reload — Reload configuration for the current Session
 
 Requires a Session Sidecar. Re-reads MCP and sub-agent configuration and
-restarts the Session runtime to apply it. This does not rebuild the App.
+applies it at the current Runtime's configuration boundary. This does not
+rebuild the App or change another Session's configuration.
 OPTIONS
   --workspacePath PATH    Workspace to resolve configuration from
   --json    Return the structured response
@@ -3509,17 +3545,18 @@ Run an exact leaf with --help before acting. Goal discovery is:
 WHEN TO CALL
   Before any Space operation when the target slug is unknown or stale.
 EFFECT
-  Refreshes memberships from Cloud and returns only slug, name, and role.
+  Refreshes memberships from Cloud and returns id, slug, name, spaceKind, and role.
 REQUIRED CONTEXT
   A signed-in MyAgents Space session. This discovery command needs no --space.
 OPTIONS
-  --json  Return {items:[{slug,name,role}]} for reliable selection.
+  --json  Return {items:[{id,slug,name,spaceKind,role}]} for reliable selection.
 ACTOR AND PERMISSIONS
   Runs as the signed-in User and exposes only that User's memberships.
 FILE SAFETY
   Does not read or upload files.
 OUTPUT
-  Canonical slugs accepted by every other Space command.
+  Canonical slugs accepted by every other Space command. spaceKind=official identifies
+  the official community; use its returned slug for CLI calls, not the navigation alias.
 EXAMPLES
   myagents space list --json
 RECOVERY
@@ -4242,6 +4279,26 @@ Related:
       'Read task get and choose a legal next state; do not forge actor/source flags.',
   }),
 
+  'task/comments': taskLeafHelp({
+    usage: 'myagents task comments <taskId> — Read Task discussion history',
+    when: 'Inspect user/Agent comments before replying or resuming work.',
+    effect: 'Read-only paginated Task timeline; does not start AI.',
+    options: '  --before <commentId>  Exclusive earlier-page anchor\n  --limit <1..100>      Page size\n  --json               Machine-readable response',
+    mutation: 'None; no Session injection or execution.',
+    output: 'Comment page in data, with IDs for pagination and replies.',
+    example: 'myagents task comments <taskId> --limit 20 --json',
+    recovery: 'Copy taskId from task list; reread the latest page if the anchor disappeared.',
+  }),
+  'task/comment': taskLeafHelp({
+    usage: 'myagents task comment [taskId] — Reply on a Task timeline',
+    when: 'Report progress/results or answer a comment from the associated Task Session.',
+    effect: 'Appends a durable Agent comment using the exact Session association.',
+    options: '  --body TEXT          Comment text; exclusive with --body-file\n  --body-file PATH     Multiline/shell-sensitive UTF-8 input\n  --reply-to <id>      Comment being answered\n  --json               Machine-readable response',
+    mutation: 'Writes a comment; does not create a Task or start another execution. Requires the injected MYAGENTS_SESSION_ID.',
+    output: 'Created comment in data. Acceptance is not Task completion.',
+    example: 'myagents task comment <taskId> --body-file result.md --reply-to <commentId>',
+    recovery: 'Use the explicit taskId from the reminder outside an active Task turn; omitted ID resolves only from an eligible associated context. Inspect task comments before retrying a lost response.',
+  }),
   'task/append-session': taskLeafHelp({
     usage:
       'myagents task append-session <taskId> <sessionId> — Link an existing Session',
@@ -4415,6 +4472,31 @@ Commands:
 New workflows use this command. Creating audio Records and starting microphone
 recording remain desktop product actions.`,
 
+  'record/list': `myagents record list — Find saved text and audio Records
+
+Read-only. Use --kind text|audio, --tag <tag>, --query <text>, and --limit N
+to filter. Default is active Records; --archived selects archived Records,
+--all includes both. --json returns success and data containing Record summaries.
+Use record get <recordId> for full content. This never starts AI.`,
+  'record/get': `myagents record get <recordId> — Read a complete Record
+
+Read-only. Copy the exact ID from record list. --json returns the stored Record
+in data, including content and available processing results. Audio creation and
+microphone recording are desktop actions. Missing IDs fail without starting AI.`,
+  'record/create': `myagents record create <content> — Capture a text Record
+
+Choose one input: positional text, --content TEXT, or --content-file PATH (UTF-8,
+at most 1 MB). If combined, file takes precedence over --content and positional text.
+Prefer --content-file for multiline or shell-sensitive text; paths resolve from
+the CLI working directory. --json returns the created Record in data.
+Writes a durable Record without starting AI or recording audio. If a response
+is interrupted, inspect record list before retrying to avoid duplicate Records.`,
+  'record/delete': `myagents record delete <recordId> — Delete one Record
+
+Copy the exact ID from record list. Cancels processing and deletes the Record
+through its original owner. --json returns the deletion receipt in data.
+This is a mutation; there is no --dry-run. Read record get first when needed.`,
+
   thought: `myagents thought — Legacy compatibility alias for text Records
 
 Published scripts may continue to use list/create. New Agent workflows use
@@ -4442,6 +4524,48 @@ Commands:
   sync [name ...]            Preview available Claude Code skills without writing
                              [--apply] imports all previewed or selected names into
                              ~/.myagents/skills/; new imports are disabled until enabled.`,
+
+  'skill/list': `myagents skill list — Discover installed skills
+
+Read-only. --workspace PATH selects the workspace to inspect; otherwise uses
+the current Session workspace. --verbose includes admission and runtime details;
+--json returns the complete records in data. Use skill info <name> to inspect
+one skill before enabling or removing it.`,
+  'skill/info': `myagents skill info <name> — Inspect an installed skill
+
+Read-only. --scope user|project selects a scope; --workspace PATH selects the
+project workspace. --json returns frontmatter and body with identity/scope
+metadata in data. Use skill list for enabled state; inspecting does not enable it.`,
+  'skill/add': `myagents skill add <source> — Install a skill
+
+Sources: GitHub owner/repo or URL, HTTPS .zip, local directory, .zip or .skill.
+Use an absolute path, file://, ./ or ../ for local input. --scope user|project
+defaults to user. --plugin <id> or --skill <id> selects an item from a repository.
+--dry-run previews without installation; --force permits replacement.
+--json returns installation results in data. Inspect skill list after a lost
+response before retrying; use skill enable explicitly as needed.`,
+  'skill/remove': `myagents skill remove <name> — Uninstall an installed skill
+
+--scope user|project and --workspace PATH select the original skill owner.
+--dry-run previews removal; --json returns the result in data.
+Use skill list/info to select the exact name and scope before removing.`,
+  'skill/enable': `myagents skill enable <name> — Enable an installed skill
+
+--scope user|project and --workspace PATH select the skill owner. --json returns
+the updated enabled state in data. This changes skill selection, not an Agent's
+network exposure. Effective availability follows the current Runtime's extension
+update boundary; use skill list --verbose to inspect it.`,
+  'skill/disable': `myagents skill disable <name> — Disable without uninstalling
+
+--scope user|project and --workspace PATH select the skill owner. --json returns
+the updated enabled state in data. Files remain installed. Effective availability
+follows the Runtime extension update boundary; inspect skill list --verbose.`,
+  'skill/sync': `myagents skill sync [name ...] — Discover or import Claude Code skills
+
+Without --apply, previews available names and does not write. --apply imports
+all previewed candidates or the specified names into the user skill directory.
+New imports are disabled until skill enable. --json returns applied, synced or
+preview folders and failures in data. Preview again if a candidate disappeared.`,
 
   tool: `myagents tool — CLI tool registry (user tools live under ~/.myagents/tools/)
 
@@ -4494,6 +4618,9 @@ Runtime child agentIds; they are not Workspace Agent IDs for these CLI commands.
 Discovery:
   list [--active|--archived]      Find Agent IDs; marks this CLI caller's Agent
   show <agentId>                  Inspect identity and effective birth defaults
+  current                        Inspect this caller's Agent/workspace/Session
+  network-diagnose [--cursor C] [--limit 1..100]
+                                 Inspect network protocol, devices and connection state
 
 Management:
   enable <id>                     Enable an agent
@@ -4525,7 +4652,51 @@ Collaboration flow:
   myagents session list --agent <agentId>
   myagents session start --agent <agentId> -p "<prompt>"
 
-See also: myagents session --help`,
+agent list includes local Agents and callable Agents on other devices in the
+same account. Select using name, description, deviceName and isLocal; copy the
+full agentId. Remote references begin ma-agent:1 and execute on the target device.
+Only discovery and Session collaboration accept network references; local
+enable/disable/set/archive/channel commands do not manage remote Agents.
+For reusable execution context use session; for durable work, scheduling and
+run tracking use task. See myagents session --help and myagents task readme.`,
+
+  'agent/create': `myagents agent create --workspacePath <absolute-path> — Register a local workspace
+
+Creates or resolves the stable Workspace Agent identity through the original
+Project/Agent owner. --workspacePath is required; --json returns identity in data.
+This does not start AI or open network access. Inspect agent list before retrying.`,
+  'agent/enable': `myagents agent enable <agentId> — Enable local proactive capabilities
+
+Use a local ID from agent list (or --id). Enables Heartbeat, Memory Update and
+Memory Evo; channels keep their own enabled state. Explicit Session addressing
+does not require this flag. This is not the Agent Network exposure switch.
+--json returns the mutation result; inspect agent show to verify configuration.`,
+  'agent/disable': `myagents agent disable <agentId> — Pause local proactive capabilities
+
+Use a local ID from agent list (or --id). Pauses Heartbeat, Memory Update and
+Memory Evo; channels keep their own enabled state. Does not disable explicit
+Session collaboration or close network exposure. --json returns the result.`,
+  'agent/archive': `myagents agent archive <agentId> — Archive a local Agent workspace
+
+Use an exact local Project-backed ID from agent list (or --id). Archives its
+workspace and pauses proactive channels through the original lifecycle owner.
+History remains readable. --json returns the result. Use agent list --archived
+to inspect archived identities; agent unarchive restores the workspace.`,
+  'agent/unarchive': `myagents agent unarchive <agentId> — Restore a local Agent workspace
+
+Use an exact local Project-backed ID from agent list --archived (or --id).
+Restores its workspace visibility through the lifecycle owner. --json returns
+the result. Inspect agent show for the resulting configuration.`,
+  'agent/set': `myagents agent set <agentId> <key> <value> — Change local Agent configuration
+
+Keys: enabled, runtime, runtimeConfig, providerId, model, permissionMode.
+Values are parsed as JSON when valid; quote strings/JSON for your shell.
+Use runtime list/describe before selecting runtime-specific values.
+Configuration intent is validated by the Agent owner; providerId/model/permissionMode
+also update the Project mirror and live channels. Existing Session configuration
+has its own lifecycle; Agent defaults do not prove its effective permissions.
+--json returns the result. Read agent show first; network references and unknown
+keys are not supported. There is no --dry-run.`,
 
   'agent/list': `myagents agent list — Discover addressable Workspace Agents
 
@@ -4544,7 +4715,12 @@ OPTIONS
 OUTPUT
   agentId, name, projectId, workspacePath, association, enabled, archived,
   archivedAt, isCurrent, channelCount, channels. Human output marks the current
-  Project-selected Agent with *.
+  Project-selected Agent with *. Online network Agents are merged with local
+  Agents; remote agentId is a qualified ma-agent:1 reference. Remote rows omit
+  local paths. networkStatus/complete report incomplete discovery; local results
+  remain available when the network fails. --archived is local only.
+  Use description, deviceName and isLocal to choose where work should execute;
+  copy the full returned agentId, including all qualified reference components.
 
 IDENTITY / PERMISSIONS
   Use agentId from this command; never guess IDs or use workspace paths as
@@ -4591,10 +4767,14 @@ OUTPUT
   Identity, lifecycle, isCurrent, channel summary, and effectiveDefaults:
   runtime/source, model, permissionMode, provider, runtimeConfig, MCP, plugins,
   and official tools. Secret and environment values are never returned.
+  Network targets return safe metadata and effective defaults without paths
+  or runtimeConfig.
 
 IDENTITY / PERMISSIONS
   Defaults belong to the target Agent. A later session start uses them and does
-  not accept caller overrides.
+  not accept caller overrides. These are future-session defaults; local output
+  marks effectiveDefaults.scope as agent-default-for-future-sessions. They do
+  not describe an existing Session's effective gate.
 
 EXAMPLE
   myagents agent show <agentId>
@@ -4605,7 +4785,11 @@ RECOVERY
 
   session: `myagents session — Discover and collaborate across Agent Sessions
 
-An Agent owns many isolated Sessions. Choose by context intent:
+An Agent owns many isolated Sessions. The same commands accept discovered
+ma-agent:1 / ma-session:1 qualified network references. Remote execution uses
+the target device's original Session and configuration; no cloud execution.
+
+Choose by context intent:
   Fresh context:       session start --agent <agentId> -p "<prompt>"
   Reuse known context: session send <sessionId> -p "<prompt>"
   Observe only:        session watch <sessionId>
@@ -4618,12 +4802,19 @@ start and send are asynchronous admission requests: success means the target
 accepted the request, not that work completed. By default the final target turn
 is pushed back as a <myagents-session-event type="send.result"> block. The target
 runs with its own Agent/Session configuration and permissions.
+For scheduled or durable work with run tracking, use task readme instead.
+get reads visible transcript text; state reads the current three-state activity.
+watch observes completion without assigning work or approving it remotely.
 
 Run exact leaf help for flags, output, exit codes, and recovery:
   myagents session list --help
   myagents session start --help
   myagents session send --help
-  myagents session watch --help`,
+  myagents session watch --help
+  myagents session state --help
+  myagents session get --help
+  myagents session watches --help
+  myagents session unwatch --help`,
 
   'session/list': `myagents session list --agent <agentId> — Recent reusable contexts
 
@@ -4655,6 +4846,38 @@ RECOVERY
   Run myagents agent list (or agent list --archived) for a valid Agent ID.
   Archived Agent history remains readable; hidden targets are rejected and
   identity conflicts fail closed with diagnostics.`,
+
+  'session/get': `myagents session get <sessionId> — Read visible transcript text
+
+WHEN TO CALL
+  Inspect what was asked and answered in an existing local or remote Session.
+EFFECT
+  Read-only. Reads the target's live owner when available, otherwise its durable
+  history. Never wakes a Session, starts AI or changes its configuration.
+OPTIONS
+  <sessionId>          Exact ID or full ma-session:1 reference from session list
+  --limit <1..500>     Maximum readable messages (default 5)
+  --before <messageId> Exclusive earlier-page anchor from a previous response
+  --json              Machine-readable response
+OUTPUT
+  success and session: id, messages, hasMoreBefore, isLive, liveSessionState,
+  snapshotRevision. Messages contain id, role, timestamp, content and available
+  turnId/transcriptState. Only visible user/request and assistant text is included;
+  hidden reminder instructions, automatic result/watch events, thinking and tool
+  blocks are omitted. Pagination counts readable messages in chronological order.
+  Active liveSessionState uses idle/running/waiting_user_action, as session state does.
+  waiting_user_action requires the target user to approve, confirm or answer.
+  With no live owner, isLive=false and liveSessionState=null; this is absence of
+  live observation. An early turn may have no assistant text yet. This is a text
+  transcript, not a tool-progress feed or proof that a particular request succeeded.
+IDENTITY / PERMISSIONS
+  Read the original target Session; the caller does not adopt or override it.
+EXAMPLE
+  myagents session get <sessionId> --limit 20 --json
+RECOVERY
+  Copy the full selector from session list. If an anchor disappeared, read the
+  latest page again. Exit 0 means the read succeeded; CLI argument errors exit 2,
+  owner/query errors exit nonzero. Use session state for current activity.`,
 
   'session/start': `myagents session start --agent <agentId> — Start clean work
 
@@ -4725,6 +4948,29 @@ RECOVERY
   Exit 1: Session not found/business error. Exit 2: delivery failure/rejection.
   Exit 3: argument error. Inline newline or >4 KB input must use a file.`,
 
+  'session/state': `myagents session state <sessionId> — Read current activity
+
+Returns exactly idle, running or waiting_user_action. waiting_user_action means the target
+needs its own user's tool/plan approval or required structured answer before
+root work can continue. Ordinary text questions and nonblocking child work do
+not establish that state. This read never wakes the target or approves anything.
+Unreadable state is a retryable query error. idle is not proof of success; use
+session get for results. --json preserves the machine-readable state.`,
+  'session/watches': `myagents session watches — List this Session's active observations
+
+Lists local and network watchId, target Session and executing turn. Registrations
+end on completion, cancellation or the original network connection ending.
+start/send automatic results are separate and do not appear as observations.`,
+  'session/unwatch': `myagents session unwatch <watchId> | --all — Cancel observations
+
+Choose one watchId from session watches, or explicitly --all. Does not stop the
+target, cancel start/send automatic results or retract an admitted Inbox message.
+A return already being delivered remains pending until its settlement.`,
+  'agent/network-diagnose': `myagents agent network-diagnose [--cursor <cursor>] [--limit 1..100] --json
+
+Read network protocol/capabilities and paginated device appVersion and identity
+metadata on demand. Correlate deviceId with agent list; errors contain stage,
+code and requestId without task contents. Both devices need this dev protocol.`,
   'session/watch': `myagents session watch <sessionId> — Observe without assigning work
 
 WHEN TO CALL
@@ -4732,8 +4978,14 @@ WHEN TO CALL
   new instruction should be injected.
 
 EFFECT
-  Registers observation only. A running target later pushes watch.completed;
+  Registers the actual executing turn. Equivalent caller/target/turn watches
+  reuse one watchId. start/send already return results automatically; an
+  additional watch of that same turn produces one notification.
+  A running target later pushes watch.completed;
   an already-idle target returns watch.already_idle with its recent result.
+  This is latest-session-result, not an unproven answer to a particular request.
+  Result source live/history/none/unavailable and known terminal status distinguish
+  an empty answer, a failed read, failure and partial stopped output.
 
 OPTIONS
   <sessionId>    Required target Session ID
@@ -4774,7 +5026,10 @@ export function handleHelp(payload: { path?: string[] }): AdminResponse {
     if (group === 'tool' && !isCliToolRegistryEnabled()) {
       return { success: true, data: { text: CLI_TOOL_REGISTRY_DISABLED_HELP } };
     }
-    return { success: true, data: { text: HELP_TEXTS[matchedKey] } };
+    const sharedReference = matchedKey === group && lookupPath.length > 1 && !Object.hasOwn(LEAF_HELP, matchedKey)
+      ? `Help for "myagents ${path.join(' ')}" uses the shared "myagents ${matchedKey.replaceAll('/', ' ')}" reference below. This is not a separate help page for the full invocation; use the options documented for the selected action.\n\n`
+      : '';
+    return { success: true, data: { text: sharedReference + HELP_TEXTS[matchedKey] } };
   }
 
   const groups = [...new Set(Object.keys(HELP_TEXTS).map(key => key.split('/')[0]))]
@@ -6405,7 +6660,7 @@ CANONICAL COMMANDS
   reset-checkpoint <taskId>         Clear only platform-managed Detector checkpoint
   rerun <taskId>                    Re-dispatch a terminal Task
   exit --reason <text>              End the current eligible scheduled Task from inside it
-  delete <taskId>                   Delete after explicit user confirmation
+  delete <taskId>                   Ask the user in conversation before executing
 
 DETECTOR OUTCOMES
   quiet          No Activation Event was emitted; checkpoint may still advance.
@@ -6445,6 +6700,8 @@ SAFETY
   Never use system cron/crontab/at/launchctl/schtasks for a MyAgents Task.
   The App must remain online. Archive is recoverable; delete is not and has no
   undelete/retention promise. Delete does not remove user workspace scripts.
+  AI callers obtain confirmation in conversation before task delete/remove.
+  Existing explicit authorization suffices; the CLI does not open a UI dialog.
   trigger test runs the external command for real; only MyAgents state is not
   committed, so isolate fixtures and external side effects.`;
 
@@ -7679,6 +7936,7 @@ export async function handleRuntimeList(): Promise<AdminResponse> {
         runtime,
         displayName: RUNTIME_DISPLAY_NAMES[runtime],
         installed: true,
+        version: CLAUDE_AGENT_SDK_IMPLEMENTATION_VERSION,
       });
       continue;
     }
@@ -7753,6 +8011,7 @@ export async function handleRuntimeDescribe(
         runtime: runtimeArg,
         displayName: RUNTIME_DISPLAY_NAMES.builtin,
         installed: true,
+        version: CLAUDE_AGENT_SDK_IMPLEMENTATION_VERSION,
         models: [],
         permissionModes: getRuntimePermissionModes('builtin'),
         defaultPermissionMode: getDefaultRuntimePermissionMode('builtin'),
@@ -8905,7 +9164,7 @@ async function modifyAgent(
     return { ...c, agents: updated };
   });
 
-  broadcast('config:changed', { section: 'agent', action, id });
+  await broadcastAppConfigChanged({ section: 'agent', action, id });
   return { success: true, data: { id } };
 }
 
@@ -9019,7 +9278,7 @@ async function commitAgentConfigIntent(
 
   if (commitResult) return commitResult;
 
-  broadcast('config:changed', { section: 'agent', action, id });
+  void broadcastAppConfigChanged({ section: 'agent', action, id });
   return { success: true, data: { id, reloadPatch: committedLivePatch } };
 }
 
@@ -9055,7 +9314,7 @@ async function modifyAgentConfigIntent(
         patch: committedLivePatch,
       });
       if (response.ok === false) {
-        broadcast('config:changed', { section: 'agent', action, id });
+        await broadcastAppConfigChanged({ section: 'agent', action, id });
         return {
           success: false,
           error: `Agent configuration was saved, but runtime or managed-task reconciliation failed: ${response.error ?? 'unknown error'}`,
@@ -9063,7 +9322,7 @@ async function modifyAgentConfigIntent(
         };
       }
     } catch (error) {
-      broadcast('config:changed', { section: 'agent', action, id });
+      await broadcastAppConfigChanged({ section: 'agent', action, id });
       return {
         success: false,
         error: `Agent configuration was saved, but runtime or managed-task reconciliation failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -9072,7 +9331,7 @@ async function modifyAgentConfigIntent(
     }
   }
 
-  broadcast('config:changed', { section: 'agent', action, id });
+  await broadcastAppConfigChanged({ section: 'agent', action, id });
   return { success: true, data: { id } };
 }
 
@@ -9379,7 +9638,7 @@ export async function handleToolAdd(payload: {
 
   if (needsCopy) {
     // lstat probe (not existsSync): a broken symlink at dest reads as "absent"
-    // to existsSync and then crashes recursive copy (CLAUDE.md v0.2.5 red line).
+    // to existsSync and then crashes recursive copy (v0.2.5 incident; pit_of_success.md#fs-utils).
     let destOccupied = false;
     try {
       lstatSync(destDir);

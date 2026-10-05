@@ -7,9 +7,13 @@ import { DEFAULT_CONFIG, type AppConfig, type Project, type Provider } from './t
 import { useConfigData } from './useConfigData';
 import { useConfigActions } from './useConfigActions';
 import { rebuildAndPersistAvailableProviders } from './services/providerService';
+import { addProject as addProjectService, patchProject as patchProjectService } from './services/projectService';
+import { reconcilePersistedAgentWorkspaceIdentitiesLocked } from './services/agentConfigService';
 import { atomicModifyConfig } from './services/appConfigService';
 
 const mocks = vi.hoisted(() => ({
+  addProjectAction: null as null | ((path: string) => Promise<Project>),
+  notifyConfigChanged: vi.fn(),
   config: {} as AppConfig,
   projects: [] as Project[],
   providers: [] as Provider[],
@@ -40,6 +44,7 @@ vi.mock('./services/configStore', () => ({
 }));
 
 vi.mock('./services/appConfigService', () => ({
+  notifyConfigChanged: mocks.notifyConfigChanged,
   loadAppConfig: mocks.loadAppConfig,
   atomicModifyConfig: vi.fn<typeof atomicModifyConfig>(async modify => {
     mocks.config = await modify(mocks.config);
@@ -63,7 +68,8 @@ vi.mock('./services/providerService', () => ({
   rebuildAndPersistAvailableProviders: vi.fn(async () => {}),
 }));
 
-vi.mock('./services/projectService', () => ({
+vi.mock('./services/projectService', async importOriginal => ({
+  projectCatalogChanged: (await importOriginal<typeof import('./services/projectService')>()).projectCatalogChanged,
   loadProjects: mocks.loadProjects,
   saveProjects: vi.fn(async () => {}),
   addProject: vi.fn(),
@@ -105,7 +111,8 @@ function project(id: string, name: string, path: string): Project {
 
 function Probe() {
   const { config, projects, providers, apiKeys, providerVerifyStatus, error } = useConfigData();
-  const { updateConfig, updateCustomProvider } = useConfigActions();
+  const { updateConfig, updateCustomProvider, addProject } = useConfigActions();
+  React.useEffect(() => { mocks.addProjectAction = addProject; }, [addProject]);
   return (
     <>
       <output data-testid="snapshot">
@@ -429,5 +436,37 @@ describe('ConfigProvider external config invalidation', () => {
     await act(async () => { resolveStale?.(staleConfig); });
     expect(screen.getByTestId('snapshot')).toHaveTextContent('local-provider');
     expect(screen.getByTestId('snapshot')).not.toHaveTextContent('stale-external-provider');
+  });
+});
+
+
+describe('workspace composite catalog notification', () => {
+  beforeEach(() => {
+    vi.clearAllMocks(); mocks.listeners.clear();
+    mocks.config = { ...DEFAULT_CONFIG, agents: [] }; mocks.providers = [];
+    mocks.ensureBundledWorkspace.mockResolvedValue(false);
+  });
+  it.each([false, true])('notifies only catalog changes when reselecting an existing workspace (hidden=%s)', async hidden => {
+    mocks.projects = [{ ...project('old-project', 'Old', '/old'), hidden }];
+    mocks.loadProjects.mockImplementation(async () => mocks.projects);
+    mocks.loadAppConfig.mockImplementation(async () => mocks.config);
+    mocks.getAllProviders.mockImplementation(async () => mocks.providers);
+    mocks.withAgentConfigIntentLock.mockImplementation(async (run: () => Promise<unknown>) => run());
+    mocks.reconcileIdentities.mockImplementation(async () => ({ config: mocks.config, projects: mocks.projects, changed: false, createdAgents: [], agentProjections: [], diagnostics: [] }));
+    vi.mocked(addProjectService).mockImplementation(async () => {
+      mocks.projects = [{ ...mocks.projects[0], lastOpened: '2026-10-02T00:00:00Z' }];
+      return mocks.projects[0];
+    });
+    vi.mocked(patchProjectService).mockImplementation(async (_id, patch) => {
+      mocks.projects = [{ ...mocks.projects[0], ...patch }]; return mocks.projects[0];
+    });
+    vi.mocked(reconcilePersistedAgentWorkspaceIdentitiesLocked).mockImplementation(async () => ({
+      config: mocks.config, projects: mocks.projects, changed: false, createdAgents: [], agentProjections: [], diagnostics: [],
+    }));
+    render(<ConfigProvider><Probe /></ConfigProvider>);
+    await waitFor(() => expect(mocks.addProjectAction).not.toBeNull());
+    mocks.notifyConfigChanged.mockClear();
+    await act(async () => { await mocks.addProjectAction!('/old'); });
+    expect(mocks.notifyConfigChanged).toHaveBeenCalledTimes(hidden ? 1 : 0);
   });
 });

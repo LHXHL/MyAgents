@@ -22,6 +22,7 @@
 - [`withFileLock` / `with_file_lock`](#withfilelock) — 单写者文件原子性
 - [`DurableRecordJournal`](#durable-record-journal) — Record append-only 事实的 typed JSONL durability
 - [`copyPlainText`](#renderer-clipboard) — WebView 普通文本复制 fallback + 真实成功语义
+- [`ConfirmDialog`](#renderer-dialogs) — 应用内破坏性操作确认，避免 Tauri 浏览器弹窗语义错用
 - [`killWithEscalation`](#killwithescalation) — 子进程 stop 升级链
 - [`withAbortSignal` / `cancellableFetch`](#cancellation) — 统一 cancel 协议
 - [`maybeSpill` + `/refs/:id` + SSE 优先级](#maybespill) — 大 payload 分流
@@ -329,6 +330,15 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 
 ---
 
+<a id="renderer-dialogs"></a>
+## `ConfirmDialog`（Renderer 操作确认）
+
+**Problem.** Tauri dialog 插件会替换 `window.confirm/alert/prompt`，其语义与普通浏览器不同。同步判断 confirm 返回的 Promise 恒为真值，会直接执行删除；补权限不能修复这一返回语义。
+
+**Surface.** 用户从界面执行不可恢复删除时，复用 `src/renderer/components/ConfirmDialog.tsx`：先记录待确认对象，确认后调用既有 mutation；请求中禁用重复确认，成功后关闭，失败保留确认与错误反馈。Task 列表、卡片与详情遵循同一行为。普通通知走现有 toast。ESLint 禁止通过 `window` / `globalThis` 使用这些浏览器 dialog。
+
+**CLI boundary.** AI 调用 `myagents task delete` 等不可恢复操作前，先在对话中获得用户对明确对象的授权；已有明确授权无需再次询问。CLI 执行不依赖用户点击 UI 弹窗。
+
 <a id="killwithescalation"></a>
 ## `killWithEscalation`
 
@@ -416,7 +426,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 
 **Surface.**
 - `withLogContext({ sessionId, tabId, turnId, runtime, requestId, ownerId }, fn)` (`src/server/logger-context.ts`) —— 进入 ALS frame
-- HTTP 中间件从 `X-MyAgents-Tab-Id` / `X-MyAgents-Session-Id` 头自动起 frame；renderer `proxyFetch` 自动盖头
+- HTTP 中间件从 `X-MyAgents-Tab-Id` / `x-myagents-log-session-id` 头自动起 frame；Renderer 通用请求入口只补日志关联，不写 CLI 执行身份。CLI 日志沿用 `x-myagents-session-id` 回退，其 scope 准入独立校验
 - SDK turn 用 module-level 的 ambient TLS（`Map<sessionId|ownerId, LogContext>`，**不是** singleton）—— 因为 persistent `messageGenerator` 会 yield 出 ALS frame
 - Runtime adapter 在事件处理路径外层包 `withLogContext({ runtime })`
 - `LogEntry` schema 增 6 个可选 correlation 字段；`console.*` capture 自动注入

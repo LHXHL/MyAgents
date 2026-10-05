@@ -1,3 +1,5 @@
+import { desktopContextOf } from '../../../shared/agentMentions';
+import { stripLeadingSystemReminder } from "../../../shared/systemReminder";
 import type { AsyncQuestionReply } from '../../../shared/asyncUserQuestions';
 import type { ImagePayload } from '../types';
 import type { ExternalRuntimeConfigPatch, ExternalRuntimeConfigSnapshot } from '../types';
@@ -94,8 +96,9 @@ export function shouldQueueExternalOperation(
   }) || externalOperationDrainInFlight;
 }
 
-export function canDrainExternalOperations(state: ExternalSessionState): boolean {
-  return canDrainExternalQueue(state, externalOperationQueue.length)
+export function canDrainExternalOperations(state: ExternalSessionState, canSteerActiveTurn = false): boolean {
+  return (canDrainExternalQueue(state, externalOperationQueue.length)
+    || (state === 'running' && canSteerActiveTurn && externalOperationQueue.some(item => item.kind === 'message' && item.deliveryMode === 'realtime' && !item.forcePriority)))
     && !externalOperationDrainInFlight
     && externalSendTail === null;
 }
@@ -115,6 +118,8 @@ export function createExternalMessageOperation(input: {
   runtimeConfig: ExternalRuntimeConfigSnapshot;
   userMessage: SessionMessage;
   surfaceMode?: 'chat-replay' | 'queue-started';
+  deliveryMode?: 'realtime' | 'turn';
+  inputSource?: 'desktop' | 'inbox';
   queueId?: string;
 }): ExternalMessageOperation {
   const queueId = input.queueId ?? input.context.queueId ?? nextExternalQueueId();
@@ -124,6 +129,8 @@ export function createExternalMessageOperation(input: {
   });
   return {
     kind: 'message',
+    deliveryMode: input.deliveryMode ?? 'turn',
+    inputSource: input.inputSource,
     dispatchAcceptance,
     settleDispatchAcceptance,
     admissionOrder: externalAdmissionSeq++,
@@ -135,6 +142,7 @@ export function createExternalMessageOperation(input: {
     userProjection: {
       message: {
         ...input.userMessage,
+        desktopQuery: input.context.desktopQuery,
         ...(input.context.clientRequestId ? {
           metadata: { ...input.userMessage.metadata, source: 'desktop' as const, clientRequestId: input.context.clientRequestId },
         } : {}),
@@ -205,6 +213,8 @@ export function enqueueExternalMessageOperation(input: {
   runtimeConfig: ExternalRuntimeConfigSnapshot;
   userMessage: SessionMessage;
   surfaceMode?: 'chat-replay' | 'queue-started';
+  deliveryMode?: 'realtime' | 'turn';
+  inputSource?: 'desktop' | 'inbox';
   queueId?: string;
 }): {
   queued: true;
@@ -341,8 +351,11 @@ export function shiftExternalOperation(): ExternalTurnOperation | undefined {
   return externalOperationQueue.shift();
 }
 
-export function reserveExternalOperationForDrain(): ExternalTurnOperation | undefined {
-  externalReservedDrainOperation = externalOperationQueue.shift() ?? null;
+export function reserveExternalOperationForDrain(realtimeOnly = false): ExternalTurnOperation | undefined {
+  const index = realtimeOnly
+    ? externalOperationQueue.findIndex(item => item.kind === 'message' && item.deliveryMode === 'realtime' && !item.forcePriority)
+    : 0;
+  externalReservedDrainOperation = index < 0 ? null : externalOperationQueue.splice(index, 1)[0] ?? null;
   return externalReservedDrainOperation ?? undefined;
 }
 
@@ -412,10 +425,10 @@ export function settleExternalMessageOperation(
   item.settleDispatchAcceptance(result);
 }
 
-export function getExternalQueueStatusSnapshot(): Array<{ id: string; messagePreview: string; asyncQuestionReply?: AsyncQuestionReply; canCancel?: boolean; canForceExecute?: boolean }> {
+export function getExternalQueueStatusSnapshot(): Array<{ id: string; messagePreview: string; asyncQuestionReply?: AsyncQuestionReply; agentMentions?: import("../../../shared/agentMentions").AgentMentionSnapshot[]; primaryContext?: import("../../../shared/agentMentions").DesktopPrimaryContext; canCancel?: boolean; canForceExecute?: boolean }> {
   return externalOperationQueue
     .filter((q): q is ExternalQueuedMessageOperation => q.kind === 'message')
-    .map(q => ({ id: q.queueId, messagePreview: q.text.slice(0, 100), ...(q.context.asyncQuestionReply ? { asyncQuestionReply: q.context.asyncQuestionReply } : {}) }));
+    .map(q => ({ id: q.queueId, messagePreview: stripLeadingSystemReminder(q.text).slice(0, 100), agentMentions: q.context.desktopQuery?.agentMentions, primaryContext: desktopContextOf(q.context.desktopQuery?.primaryContext), ...(q.context.asyncQuestionReply ? { asyncQuestionReply: q.context.asyncQuestionReply } : {}) }));
 }
 
 export function chainExternalSend<T>(

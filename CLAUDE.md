@@ -35,6 +35,8 @@
 | `src-tauri/` | Tauri v2 Rust 壳、进程与持久化 owner、HTTP/SSE 代理 |
 | `src-tauri/document-worker/` | 独立 Rust 文档转换 Worker；单 job 计算，不拥有队列或持久化 |
 | `src-tauri/media-worker/`、`src-tauri/media-worker-protocol/` | 独立 Rust 音频推理 Worker 与共享 wire protocol；单 workload / generation 计算，不拥有队列或持久化 |
+| `src-tauri/src/agent_network/`、`src/server/agent-network/` | 跨设备 Agent 网络客户端：Rust App 持有设备身份、连接与 TLS，Node 侧只适配进既有 Inbox / SessionEngine；云端中转属于独立仓库 `MyAgents_AgentNet` |
+| `vendor/agent-network-protocol/`、`src-tauri/agent-network-protocol/` | 固定版本的 Agent 网络协议包及其 Rust 投影；协议源码不在本仓库，只能按 `agent_network.md` 更新 vendored 包 |
 | `bundled-agents/myagents_helper/` | 内置 MA 小助理 |
 | `bundled-workspaces/` | 随 App 发布的只读工作区模板源码；复制出的用户工作区不由此目录升级覆盖 |
 | `specs/` | 当前架构、设计规范、模块技术文档与构建指南 |
@@ -55,14 +57,13 @@ Owner 和 source of truth 必须针对具体事实、scope 与 lifecycle phase �
 
 - `Session : Session Sidecar = 1 : 0..1`。持久 Session 可以没有活跃进程；Tab / Companion / Task / Goal / BackgroundCompletion / Agent 通过 owner token 共享 Sidecar，全部释放后才停止进程。
 - 每个 Chat Tab 独立隔离。Tab 内请求使用 `useTabState()` 提供的 `apiGet` / `apiPost`，不能误发到 Global Sidecar。
-- Builtin pre-warm 创建的是后续直接复用的真实 SDK session，不能假设“非 pre-warm”分支总会执行；Query 中止与配置重建见 Session 文档的 builtin 章节。
-- 已有 Session 保持自己的运行时与 MCP authority。Chat mount 的 push / adopt 只能服从 `ensureSessionSidecar` 锁内返回的 `result.isNew`，不能用事前端口探测猜测。
+- 已有 Session 保持自己的运行时与 MCP authority。Sidecar 是否新建只由 Rust SidecarManager 锁内的 ensure 结果裁决，Renderer 不能用端口探测或缓存猜测；Tab 配置 push / adopt 与 builtin pre-warm 的细节见 Session 文档。
 
 ### 通信分为控制面和大载荷数据面
 
 - Renderer 与 Sidecar 的控制面 HTTP / SSE 必须经 Rust：`invoke → reqwest → Sidecar`；连接 localhost 的 Rust client 使用 `crate::local_http`。
-- 仅明确登记的大载荷数据面端点（当前为 `/refs/:id`、`/attachment/*`）允许 Renderer 原生 fetch；它们必须同时满足 CORS、CSP、大小限制和路径安全约束。不要把这个例外扩展到普通 API。
-- 新增 SSE JSON 事件必须同时进入 renderer 事件白名单，否则前端会静默丢弃。
+- 仅明确登记的大载荷数据面端点（当前为 `/refs/:id`、`/api/attachment/tool/*`）允许 Renderer 原生 fetch；它们必须同时满足 CORS、CSP、大小限制和路径安全约束。不要把这个例外扩展到普通 API。
+- 新增 SSE JSON 事件必须同时进入 `src/renderer/api/SseConnection.ts` 的事件白名单，否则前端会静默丢弃。
 
 ### Runtime 分流只有一个入口
 
@@ -70,13 +71,13 @@ Builtin SDK、Integrated DSH 与 Claude Code / Codex 等外部 Runtime 的 sessi
 
 ### 持久化 authority
 
-- 新定时自动化以 Rust `TaskStore` 为唯一权威；Cron surface 只是兼容入口，不写旧 `cron_tasks.json`。
+- 新定时自动化以 Rust `TaskStore` 为唯一权威；Cron 只是兼容入口，旧数据只作启动迁移的只读输入。
 - `config.json` 是配置写入权威。写盘前重新读取磁盘并在锁内合并，不能拿可能过期的 React state 覆盖；写盘后再刷新前端状态。
 - 工作区文件 IO 属于 OS / Tauri 层，统一走 `cmd_workspace_*` 与 `useWorkspaceFileService(workspacePath)`；不要为了读写工作区启动或依赖 Sidecar。
 
 ### 可执行护栏优先于重复提示
 
-`eslint.config.js`、`.dependency-cruiser.cjs`、`src-tauri/clippy.toml` 负责能静态判定的边界，其诊断信息应同时说明故障模式和正确路径。遇到违规应理解并修复原因，不能 suppress；完整的人类可读规范集中在 `specs/tech_docs/pit_of_success.md`，不在本文件镜像一份易漂移的表格。
+`eslint.config.js`、`.dependency-cruiser.cjs`、`src-tauri/clippy.toml` 负责能静态判定的边界，其诊断信息应同时说明故障模式和正确路径。遇到违规应理解并修复原因，不能 suppress；完整的人类可读规范集中在 `specs/tech_docs/pit_of_success.md`，不在本文件镜像一份易漂移的表格；诊断与代码注释也应引用该 owner 文档的锚点，而不是本文件。
 
 ## 按任务加载文档
 
@@ -88,12 +89,13 @@ Builtin SDK、Integrated DSH 与 Claude Code / Codex 等外部 Runtime 的 sessi
 |----------|----------|
 | Pit-of-Success helper、跨语言边界、测试分层 | `specs/tech_docs/pit_of_success.md` |
 | Sidecar 冷启动 / pre-warm 性能 | `specs/tech_docs/sidecar_cold_start.md` |
-| Session ID、状态同步、恢复、配置归置 | `specs/tech_docs/session_architecture.md` |
+| Session ID、状态同步、恢复、配置归置、builtin Query / pre-warm 生命周期、Inbox 与 `session start/send/watch` | `specs/tech_docs/session_architecture.md`；transcript 持久化与回放再读 `specs/tech_docs/session_transcript_v2.md` |
 | 系统提示词组装、场景 Prompt、Workspace 指令注入 | `specs/tech_docs/system_prompt_architecture.md`；逐轮隐藏消息再读 `specs/tech_docs/system_reminder_protocol.md` |
 | Agent Runtime | `specs/tech_docs/multi_agent_runtime.md`；Integrated DSH 再读 `specs/tech_docs/myagents_dsh_integrated_runtime.md` |
 | Task / Thought / Goal / Cron provider routing | `specs/tech_docs/task_center.md`、`specs/tech_docs/task_provider_routing.md` |
 | Cloud Space / Space Issue / registered agent | `specs/tech_docs/space_cloud.md`；改云 API、鉴权、数据或 quota 时再读 `../MyAgents_space/specs/ARCHITECTURE.md` |
 | Space IssueDelivery / registered-agent prompt 协议 | `specs/tech_docs/space_issue_delivery_protocol.md`、`specs/tech_docs/space_cloud.md`、`specs/tech_docs/system_reminder_protocol.md` |
+| 跨设备 Agent 网络、设备身份 / 连接、协议包更新 | `specs/tech_docs/agent_network.md`；同时涉及 Session 投递时再读 `specs/tech_docs/session_architecture.md` 的 Inbox 章节 |
 | IM Bot / Telegram / Dingtalk / 飞书 | `specs/tech_docs/im_integration_architecture.md` |
 | Plugin Bridge / OpenClaw / SDK shim | `specs/tech_docs/plugin_bridge_architecture.md` |
 | Claude Plugin 加载与安装 | `specs/tech_docs/plugin_loading.md` |

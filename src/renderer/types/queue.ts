@@ -12,6 +12,7 @@ export interface QueuedImageInfo {
 
 export interface QueuedMessageInfo {
   asyncQuestionReply?: AsyncQuestionReply;
+  agentMentions?: import("../../shared/agentMentions").AgentMentionSnapshot[]; primaryContext?: import("../../shared/agentMentions").DesktopPrimaryContext;
   queueId: string;
   text: string;                // Original text, for cancel → restore to input
   images?: QueuedImageInfo[];  // Lightweight image info for display and restore

@@ -70,6 +70,8 @@ Manager 构造结果包含成功或具体错误；构造失败不得退化成永
 | 有限账号视图 | GET `/v0/management/auth-files` |
 | 模型目录与元数据 | GET `/v0/management/auth-files/models?name=...`、`/v1/models`、`/v0/management/model-definitions/antigravity` |
 
+上游 V8 保留上述旧管理接口及旧配置读取；当前集成继续复用已验证的有限合同，不为新增 V8 API 扩大管理能力。组件升版仍须验证实际二进制的 OAuth、账号摘要、目录、消息和凭据兼容，不能以路由保留代替运行证据。
+
 原版管理 key 经 bcrypt 处理，输入不能超过 72 字节；目前生成 64 字节 base64url，随机强度为 366 bit。模型 key 独立生成。callback 固定 localhost:51121，先占用成功再打开浏览器；不使用原版 CLI/webui callback listener。URL 响应丢失不得重试创建，callback 响应丢失只按已知 state 查询，不重放 code。
 
 OAuth HTTP 与业务结果分开保留。callback 明确拒绝及时结束；响应丢失、无法解析、服务端故障及 409 冲突只按同一 state 查询。状态轮询仅对暂时传输失败、408/429/5xx 等待恢复，鉴权、协议错误与原生终态失败及时反馈；总截止时间与取消覆盖提交、读取响应和轮询等待。不能把 callback 请求直接改成“任意错误立即销毁候选”，因为原版可能已接受授权码。
@@ -80,7 +82,7 @@ OAuth HTTP 与业务结果分开保留。callback 明确拒绝及时结束；响
 
 目录探测不带 Anthropic-Version、claude-cli UA 或 client_version，读取普通 OpenAI 形状 data[].id。账号注册与路由模型合并去重，原版定义只补充元数据，不取审批交集。两个目录均读取失败时保留上次列表并标记过期；执行准入不依赖目录缓存，也不发路由预检。权限/额度失败不触发 MyAgents 刷新 token 或换模型。
 
-MyAgents 不传 `-local-model`，保留原版启动及每三小时更新线上 models.json 的能力。v7.2.158 的 Antigravity 注册来自 CLIProxy 上游维护目录，并非每次向 Google 查询订阅权益；目录不保证每次调用成功。统一日志只记录阶段、目录计数和有限错误码，不记录邮箱、回调 URL、响应内容或 key。
+MyAgents 不传 `-local-model`，保留原版启动及每三小时更新线上 models.json 的能力。Antigravity 注册来自 CLIProxy 上游维护目录，并非每次向 Google 查询订阅权益；目录不保证每次调用成功。统一日志只记录阶段、目录计数和有限错误码，不记录邮箱、回调 URL、响应内容或 key。
 
 ## 资源策略：最低客户端版本
 
@@ -136,8 +138,10 @@ setup、开发构建、macOS/Windows 正式构建、直接 `npm run tauri:dev` �
 
 ### 1. 决定发布范围并取得当前清单
 
-- 更新全部适用客户端：替换已有最低门槛的目标组件。
-- 只更新较新客户端：新增更高 `minAppVersion`，保留全部既有门槛。
+CLIProxy 升版默认沿用已核验线上清单中的最低 `minAppVersion`。只有新组件的正常运行确实依赖新版 MyAgents 才具备的必要兼容支持时，才提升门槛，且应设为首个包含该支持的 MyAgents 版本。提高门槛须说明具体客户端依赖及验证依据；CLIProxy 的版本跨度、当前 MyAgents 开发/发布版本或 SDK 升版本身，都不是提高门槛的理由。
+
+- 无新增客户端兼容依赖：保持当前线上最低门槛不变，替换该门槛的目标组件；例如从 `7.2.158` 升至 `8.0.13` 时仍使用 `0.4.17`。
+- 必须依赖新版客户端支持：新增对应的更高 `minAppVersion`，保留全部既有门槛及其适用组件，旧客户端继续使用原有目标。
 - 每个门槛的目标版本只能前进，不能通过删旧条目或写低版本实施隐式降级。线上需要紧急停止时使用既有 controls 撤销/停用机制。
 
 后续发布先把线上当前 `manifest-v1.json` 与 `.sig` 下载到一个单独的 `previous` 目录。`manifest --base` 会核验签名，再保留其它门槛。首次发布可不传 `--base`。不要把 previous 与输出目录混在一起，便于核对发布前后内容。

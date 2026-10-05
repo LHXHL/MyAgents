@@ -142,6 +142,11 @@ test('release uses the same resources and produces only the current amd64 deb', 
   assert.doesNotMatch(f.calls(), /appimage|codesign/);
 });
 
+test('Linux setup, dev, and release share version-checked Claude SDK staging', () => {
+  assert.match(source, /node "\$\{PROJECT_DIR\}\/scripts\/stage-claude-sdk-linux\.mjs"/);
+  assert.ok(source.indexOf('stage-claude-sdk-linux.mjs') < source.indexOf('tauri:build:prepared'));
+});
+
 test('Linux package disables updater signing and adds the native runtime dependencies', () => {
   const config = JSON.parse(readFileSync(join(repo, 'src-tauri/tauri.linux.conf.json'), 'utf8'));
   assert.equal(config.bundle.createUpdaterArtifacts, false);

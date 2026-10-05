@@ -427,6 +427,11 @@ describe('HistorySearchOverlayContent', () => {
 
         fireEvent.change(enterSearchMode(), { target: { value: 'needle' } });
         await waitFor(() => expect(mocks.searchSessions).toHaveBeenCalledWith(expect.objectContaining({ query: 'needle', tag: 'Alpha', workspaces: ['/workspace'] })));
+
+        fireEvent.click(screen.getByRole('button', { name: 'Alpha' }));
+        fireEvent.click(screen.getByRole('option', { name: i18n.t('common:sessionTags.allTags') }));
+        expect(screen.getByPlaceholderText(i18n.t('app:historyOverlay.searchPlaceholder'))).toHaveValue('needle');
+        await waitFor(() => expect(mocks.searchSessions).toHaveBeenLastCalledWith(expect.objectContaining({ query: 'needle', tag: null, workspaces: ['/workspace'] })));
     });
 
     it('applies a clicked Tag intent as a clean aggregation and acknowledges it once', () => {

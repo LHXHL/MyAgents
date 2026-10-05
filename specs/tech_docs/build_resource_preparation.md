@@ -34,6 +34,12 @@
 
 `setup.sh` / `setup_windows.ps1` 准备开发依赖与 host 资源；平台 build 脚本检查本次目标并准备安装包。不能把“以前运行过 setup”作为资源就绪依据。两类入口复用资源 helper，由 helper 校验版本、目标、完整性后决定复用或补齐。
 
+Windows Dev 与 Release 都通过 `ensure_claude_sdk_package.ps1 -Stage` 校验当前锁定的 SDK native 包，并把通过校验的 `claude.exe` 暂存到 Tauri 资源目录。暂存先复制、核对 SHA-256 与 PE 签名，再替换旧文件；不能让 Dev 入口沿用上一次构建留下的二进制。应用内置 SDK 包版本与用户 PATH 上独立安装的 `claude` CLI 版本应分别诊断。
+
+Linux 的 `--prepare`、Debug 和 Release 入口共用 `build_linux.sh`，由 `stage-claude-sdk-linux.mjs` 对照根 manifest、lock、已安装的 JS wrapper/native 包版本与 x64 ELF 身份后暂存。已安装包版本不符时立即失败并提示重新安装依赖，不把旧 `node_modules` 视为绑定版本。
+
+macOS Dev / Release 在构建业务 bundle 前检查已安装的 SDK JS wrapper；此检查同时核对根 manifest 和 lock 中的八个平台原生包版本。原生 Mach-O 的目标架构、文件完整性与签名仍由既有平台校验入口负责。
+
 Linux 的 setup 通过 `build_linux.sh --install-deps` 和 `--prepare` 复用资源路径，debug/release 也走该脚本。macOS/Windows 的开发版仍可使用项目 node_modules 提供 sharp/tsx；正式包必须携带自包含资源。
 
 ## 业务 bundle 与本次 Runtime 选择一致
@@ -71,6 +77,10 @@ Linux 的 setup 通过 `build_linux.sh --install-deps` 和 `--prepare` 复用资
 
 Rust 源码变化由 Cargo dep-info 跟踪，资源/config 由现有 build.rs 与 tauri-build 的 `rerun-if-changed` 跟踪。开发入口不得通过 touch 源文件、修改 LastWriteTime 或删除可执行文件强制重编译；若发现漏跟踪，应修正对应输入声明。打包前清理 bundle/staging 的职责保持独立。
 
+构建脚本读取 checkout 内的输入时，使用执行期 `std::env::var_os("CARGO_MANIFEST_DIR")`；禁止用 `env!` / `option_env!` 将编译脚本时的目录固化进可执行文件。缓存脚本可能来自已删除或仍存在的旧 checkout，后者会静默混用 package、组件 source pin 和 DSH selection。`build-resource-staging.test.mjs` 对主构建脚本及 CLIProxy 校验模块约束这一边界。临时工作树的验证使用独立 Cargo target，不复用主工作区 target；应用和依赖的其它编译期路径也属于各自 checkout，不能据此承诺整个缓存可跨 checkout 共享。
+
+平台入口在执行依赖检查、`npm install` / `npm rebuild` 等依赖操作前，必须先以脚本所在目录确定项目并切换 cwd；不能等到 TypeScript 或 Tauri 构建阶段才切换。用绝对路径从另一目录调用开发脚本，也应只检查和更新该脚本所属 checkout 的依赖。上述测试同时覆盖 macOS 开发入口的跨目录初始化和 Windows 开发入口的安装顺序。
+
 缓存不等于下载资源：`target/debug/{deps,incremental}` 保存编译对象，`resources/*-cache` 保存可复用构建输入。前者包含不同依赖、feature、编译参数与历史构建的产物；保留增量编译并不提供磁盘硬上限，也不意味着每次构建完整追加一份。
 
 仓库根目录提供三个显式命令（均不在 build 中自动执行）：
@@ -99,3 +109,11 @@ Cuse 的原始 ZIP 使用同一 `acquireLockedResource` helper，缓存到 `reso
 - **选择对应验证**：`package.json` 的 `test:build-scripts` 是脚本测试入口；按影响面选择其中的下载、缓存、资源准备和构建接线用例。Linux 入口另有 `test:linux-package`。不能只验证一个入口而遗漏同一 helper 的其他平台。
 - **验证真实边界**：涉及签名改变字节、跨目标原生产物或平台文件替换时，补最小相关真实验证；测试替身通过不等于 Windows/macOS/Linux 真机通过。无法执行的检查明确报告，不能记为 PASS。
 - **保持规范与实现一起变化**：通用原则与 helper 分工在本文维护，资源专属契约在所属技术文档维护，操作步骤在平台指南维护。改变默认参数时核对本文的现状描述；不把同一规则复制到多个文档或核心指令中。
+
+### AgentNet 部署身份
+
+`src-tauri/build.rs` 的 Space 构建配置同时读取公开的 `MYAGENTS_AGENT_NETWORK_SERVICE_ID` / `MYAGENTS_AGENT_NETWORK_DEV_SERVICE_ID`。官方值内置，开发者无需新增密钥。Dev service ID 与 Space dev origin 只在 debug 构建生效；release 清空 dev 配置。开发构建需设置 `MYAGENTS_SPACE_DEV_BASE_URL=https://space-dev.myagents.io`，客户端原开发者功能切换 Space 环境时，网络连接沿同一账号 owner 重建。CA / JWS 私钥仅配置在 Space Worker，禁止放进客户端构建环境。
+
+### AgentNet 固定协议产物
+
+协议源码归 AgentNet；客户端 `vendor/agent-network-protocol/manifest.json` 与固定 `.tgz` 是构建输入。npm 依赖/锁文件和 Rust build.rs 均校验此输入；安装后、typecheck、Web 和 Node bundle 构建复用 `verify-agent-network-protocol.mjs`，Rust 构建独立校验并只展开包内 Schema/fixtures 到 OUT_DIR。没有联网下载、sibling checkout、可编辑 Schema 副本或额外持久缓存。产物升级沿 [Agent 网络](agent_network.md#公共协议与仓库分发) 的单一源码更新流程，损坏则修复产物/引用；只删除自身旧 OUT_DIR 投影，避免已移除的 Schema 靠上一次构建继续通过。

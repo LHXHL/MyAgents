@@ -25,6 +25,7 @@ const simpleInputHandle = vi.hoisted(() => ({
     strippedReferences: 0,
     clearedImages: 0,
   })),
+  getQueryContext: vi.fn(() => ({})),
   getCurrentValue: vi.fn(() => ''),
   getImages: vi.fn(() => []),
 }));

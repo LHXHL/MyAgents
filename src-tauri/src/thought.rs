@@ -181,6 +181,17 @@ pub async fn cmd_thought_list(
         .collect()
 }
 
+/// Uses the same active text Record authority as the legacy thought list.
+#[tauri::command]
+pub async fn cmd_thought_list_page(state: tauri::State<'_, ManagedRecordStore>, query: String, cursor: Option<String>, limit: usize) -> Result<crate::picker_page::PickerPage<Thought>, String> {
+    const SNAPSHOT_LIMIT: usize = 1000;
+    let filter = ThoughtListFilter { query: (!query.is_empty()).then(|| query.clone()), limit: Some(SNAPSHOT_LIMIT + 1), archived: Some(ThoughtArchiveFilter::Active), tag: None };
+    let mut items: Vec<Thought> = state.list_full(filter.into()).await.into_iter().map(TryInto::try_into).collect::<Result<_, _>>()?;
+    let partial = items.len() > SNAPSHOT_LIMIT;
+    items.truncate(SNAPSHOT_LIMIT);
+    crate::picker_page::page(items, &format!("thought/active/{query}"), cursor.as_deref(), limit, partial)
+}
+
 #[tauri::command]
 pub async fn cmd_thought_get(
     state: tauri::State<'_, ManagedRecordStore>,

@@ -450,8 +450,8 @@ pub fn cmd_initialize_bundled_workspace<R: Runtime>(
     // through to copy_dir_recursive — which fails on EEXIST and surfaces
     // a workspace-init error to the user every launch until they clear
     // the link by hand. Same family as the cpSync crash fixed in
-    // seedBundledSkills / cmd_sync_system_skills (CLAUDE.md red-line:
-    // "用 existsSync / Path::exists() 当存在性探针"). Single fixed path
+    // seedBundledSkills / cmd_sync_system_skills (pit_of_success.md#fs-utils:
+    // existsSync / Path::exists() as an existence probe). Single fixed path
     // and graceful error → not crashing in production, so left as TODO
     // to avoid scope creep on the v0.2.6 hotfix.
     if mino_dest.exists() {
@@ -954,7 +954,7 @@ pub fn cmd_copy_folder_to_templates(
 
 // ============= Admin Agent Sync =============
 
-const ADMIN_AGENT_VERSION: &str = "27";
+const ADMIN_AGENT_VERSION: &str = "29";
 
 /// Helper-bundled paths (relative to `~/.myagents/`) that previous versions
 /// shipped but that have since been retired.
@@ -1071,7 +1071,7 @@ fn sync_admin_agent_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<boo
 // matching exclusion list in src/server/index.ts::seedBundledSkills
 // MUST be kept in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "58";
+const SYSTEM_SKILLS_VERSION: &str = "60";
 
 /// One process-wide transaction owner for the versioned system-skill
 /// snapshot. Startup automation and ConfigProvider may request convergence at
@@ -1603,7 +1603,7 @@ mod system_skills_tests {
 
     #[test]
     fn system_skill_version_keeps_cuse_and_product_skills_aligned() {
-        assert_eq!(SYSTEM_SKILLS_VERSION, "58");
+        assert_eq!(SYSTEM_SKILLS_VERSION, "60");
         assert!(SYSTEM_SKILLS.contains(&"cuse"));
         assert!(!REQUIRED_SYSTEM_SKILLS.contains(&"cuse"));
         assert!(SYSTEM_SKILLS.contains(&"myagents-task-alignment"));
@@ -1797,8 +1797,8 @@ mod system_skills_tests {
     }
 
     #[test]
-    fn v27_helper_routes_product_knowledge_diagnosis_and_tool_install() {
-        assert_eq!(ADMIN_AGENT_VERSION, "27");
+    fn helper_routes_product_knowledge_diagnosis_and_tool_install() {
+        assert_eq!(ADMIN_AGENT_VERSION, "29");
         let helper = include_str!("../../bundled-agents/myagents_helper/CLAUDE.md");
         let support =
             include_str!("../../bundled-agents/myagents_helper/.claude/skills/support/SKILL.md");
@@ -1806,8 +1806,6 @@ mod system_skills_tests {
             "../../bundled-agents/myagents_helper/.claude/skills/tool-install/SKILL.md"
         );
         assert!(helper.contains("`/myagents-docs`"));
-        assert!(helper.contains("Record、Task、定时调度和 Goal"));
-        assert!(!helper.contains("Thought、Task、定时调度和 Goal"));
         assert!(helper.contains("`/myagents-cli`"));
         assert!(helper.contains("`/support`"));
         assert!(helper.contains("`/tool-install`"));
@@ -3382,7 +3380,7 @@ fn runtime_not_distributed() -> RuntimeDetectionResult {
 /// running detection. A sync command runs all of that on the MAIN thread = the
 /// WKWebView UI thread on macOS, freezing the UI ~0.5–1.5s on Launcher/Chat/Settings
 /// mount for multi-runtime users. Same class as cmd_ensure_session_sidecar — see the
-/// CLAUDE.md red-line "同步 Tauri 命令阻塞 → 冻结 WKWebView". The cache /
+/// pit_of_success.md#sync-tauri-command (sync Tauri command blocks → frozen WKWebView). The cache /
 /// in-flight-join gate is preserved inside the blocking helper.
 #[tauri::command]
 pub async fn cmd_detect_runtimes<R: Runtime>(

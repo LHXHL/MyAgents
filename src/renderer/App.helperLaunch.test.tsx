@@ -1,3 +1,4 @@
+import { composeQueryReminder } from "../shared/agentMentions";
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useContext, useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -46,6 +47,9 @@ const mocks = vi.hoisted(() => {
 
   return {
     project,
+    spaceDevGate: undefined as boolean | undefined,
+    spaceBuildAvailable: true,
+    configLoading: false,
     agent,
     provider,
     resolveBuiltinSelection: vi.fn((): { provider: typeof provider; model: string } | undefined => ({
@@ -159,6 +163,7 @@ const mocks = vi.hoisted(() => {
     sidebarProps: [] as Array<Record<string, unknown>>,
     tabbarProps: [] as Array<Record<string, unknown>>,
     settingsProps: [] as Array<Record<string, unknown>>,
+    spaceProps: [] as Array<Record<string, unknown>>,
     taskCenterProps: [] as Array<Record<string, unknown>>,
     toast: {
       error: vi.fn(),
@@ -370,7 +375,16 @@ vi.mock('@/pages/Launcher', () => ({
 vi.mock('@/pages/Settings', () => ({
   default: (props: Record<string, unknown>) => {
     mocks.settingsProps.push(props);
-    return <div data-testid="settings-page" />;
+    return <div data-testid="settings-page">
+      {props.mode === 'capabilities' && <button type="button" onClick={props.onOpenToolMarket as () => void}>open tool market</button>}
+    </div>;
+  },
+}));
+
+vi.mock('@/pages/Space', () => ({
+  default: (props: Record<string, unknown>) => {
+    mocks.spaceProps.push(props);
+    return <div data-testid="space-page" />;
   },
 }));
 
@@ -428,9 +442,10 @@ vi.mock('@/hooks/useConfig', () => ({
       managedCodexRuntimeInstall: { status: 'installed', usable: true },
       managedCodexAuth: { status: 'valid', authMethod: 'chatgpt' },
       defaultPermissionMode: 'auto',
-      teamSpaceEnabled: true,
+      teamSpaceEnabled: false, // Legacy Lab opt-out must not hide the released entry.
+      teamSpaceDevGate: mocks.spaceDevGate,
     },
-    isLoading: false,
+    isLoading: mocks.configLoading,
     error: null,
     projects: [mocks.project],
     providers: [mocks.provider],
@@ -476,7 +491,7 @@ vi.mock('@/hooks/useTabSwipeGesture', () => ({
 }));
 
 vi.mock('@/hooks/useSpaceBuildCapability', () => ({
-  useSpaceBuildCapability: () => ({ isLoading: false, available: true, reason: null }),
+  useSpaceBuildCapability: () => ({ isLoading: false, available: mocks.spaceBuildAvailable, reason: null }),
 }));
 
 vi.mock('@/utils/browserMock', () => ({
@@ -528,6 +543,9 @@ import App from './App';
 
 describe('App helper launch', () => {
   afterEach(() => {
+  mocks.configLoading = false;
+  mocks.spaceDevGate = undefined;
+  mocks.spaceBuildAvailable = true;
     vi.unstubAllGlobals();
     vi.clearAllMocks();
     localStorage.clear();
@@ -537,6 +555,7 @@ describe('App helper launch', () => {
     mocks.sidebarProps.length = 0;
     mocks.tabbarProps.length = 0;
     mocks.settingsProps.length = 0;
+    mocks.spaceProps.length = 0;
     mocks.taskCenterProps.length = 0;
     mocks.selfAwarenessProject = mocks.project;
     mocks.deleteTargetSessionId = null;
@@ -656,6 +675,7 @@ describe('App helper launch', () => {
       onOpenSettings: () => void;
       onOpenTaskCenter: () => void;
       onOpenSpace: () => void;
+      teamSpaceAvailable: boolean;
       onOpenWorkspace: (
         project: typeof mocks.project,
         initialMessage?: unknown,
@@ -2203,7 +2223,58 @@ describe('App helper launch', () => {
     expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(3);
   });
 
-  it('keeps Task Center and Team as one tab each', async () => {
+  it('opens the official tool market from Capabilities and reuses its Space tab with a fresh intent', async () => {
+    render(<App />);
+    act(() => latestSidebarProps().onOpenCapabilities());
+    const button = await screen.findByRole('button', { name: 'open tool market' });
+    await act(async () => fireEvent.click(button));
+    await screen.findByTestId('space-page');
+    const first = mocks.spaceProps.at(-1)?.pendingRoute;
+    expect(first).toEqual({ generation: 1, route: { version: 1, name: 'space.tools', params: { spaceId: 'official' } } });
+    const firstTab = latestTabbarProps().tabs.find((tab) => tab.view === 'space');
+    act(() => latestSidebarProps().onOpenCapabilities());
+    await act(async () => fireEvent.click(await screen.findByRole('button', { name: 'open tool market' })));
+    expect(latestTabbarProps().tabs.filter((tab) => tab.view === 'space')).toEqual([expect.objectContaining({ id: firstTab?.id })]);
+    expect(mocks.spaceProps.at(-1)?.pendingRoute).toEqual({ generation: 2, route: { version: 1, name: 'space.tools', params: { spaceId: 'official' } } });
+  });
+
+  it('routes chat link intents into one Space tab for home, list and detail', async () => {
+    render(<App />);
+    const routes = [
+      { version: 1, name: 'space.home', params: {} },
+      { version: 1, name: 'space.issues', params: { spaceId: 'official' } },
+      { version: 1, name: 'space.issue', params: { spaceId: 'myagents', issueId: 'iss_123' } },
+    ];
+    let spaceTabId: string | undefined;
+    for (const [index, route] of routes.entries()) {
+      act(() => window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_APP_ROUTE, { detail: route })));
+      await screen.findByTestId('space-page');
+      const tabs = latestTabbarProps().tabs.filter(tab => tab.view === 'space');
+      expect(tabs).toHaveLength(1);
+      if (!spaceTabId) spaceTabId = tabs[0].id;
+      expect(tabs[0].id).toBe(spaceTabId);
+      expect(mocks.spaceProps.at(-1)?.pendingRoute).toEqual({ generation: index + 1, route });
+    }
+  });
+
+  it('keeps chat Space links behind the explicit developer gate', async () => {
+    mocks.spaceDevGate = false;
+    render(<App />);
+    act(() => window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_APP_ROUTE, { detail: { version: 1, name: 'space.home', params: {} } })));
+    expect(latestTabbarProps().tabs.some(tab => tab.view === 'space')).toBe(false);
+    expect(mocks.toast.info).toHaveBeenCalledWith('协作空间已被开发者关闭');
+  });
+
+  it('keeps the capability banner callback behind the developer Space gate', async () => {
+    mocks.spaceDevGate = false;
+    render(<App />);
+    act(() => latestSidebarProps().onOpenCapabilities());
+    const button = await screen.findByRole('button', { name: 'open tool market' });
+    await act(async () => fireEvent.click(button));
+    expect(latestTabbarProps().tabs.some((tab) => tab.view === 'space')).toBe(false);
+  });
+
+  it('keeps Task Center and default-enabled Collaboration Space as one tab each', async () => {
     render(<App />);
 
     act(() => latestSidebarProps().onOpenTaskCenter());
@@ -2216,6 +2287,35 @@ describe('App helper launch', () => {
     act(() => latestSidebarProps().onOpenSpace());
 
     expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(3);
+    expect(latestSidebarProps().teamSpaceAvailable).toBe(true);
+    expect(latestTabbarProps().tabs).toContainEqual(
+      expect.objectContaining({ view: 'space', title: 'Space 协作空间' }),
+    );
+  });
+
+  it.each([false, true])('waits for config before opening Space, then honors persisted gate %s', async (enabled) => {
+    mocks.configLoading = true;
+    const view = render(<App />);
+    expect(latestSidebarProps().teamSpaceAvailable).toBe(false);
+    act(() => latestSidebarProps().onOpenSpace());
+    expect(latestTabbarProps().tabs.some((tab) => tab.view === 'space')).toBe(false);
+    expect(mocks.toast.info).toHaveBeenCalledWith('正在读取协作空间状态');
+
+    mocks.spaceDevGate = enabled;
+    mocks.configLoading = false;
+    view.rerender(<App />);
+    expect(latestSidebarProps().teamSpaceAvailable).toBe(enabled);
+    act(() => latestSidebarProps().onOpenSpace());
+    expect(latestTabbarProps().tabs.some((tab) => tab.view === 'space')).toBe(enabled);
+  });
+
+  it.each(['developer', 'build'] as const)('hides Collaboration Space when disabled by %s', async (gate) => {
+    mocks.spaceDevGate = gate === 'developer' ? false : undefined;
+    mocks.spaceBuildAvailable = gate !== 'build';
+    render(<App />);
+    expect(latestSidebarProps().teamSpaceAvailable).toBe(false);
+    act(() => latestSidebarProps().onOpenSpace());
+    expect(latestTabbarProps().tabs.some((tab) => tab.view === 'space')).toBe(false);
   });
 
   it('reuses Task Center for the active recording stop surface when the tab strip is full', async () => {
@@ -2428,9 +2528,10 @@ describe('App helper launch', () => {
     const discussionChat = [...mocks.chatProps]
       .reverse()
       .find((props) => Boolean(props.initialMessage)) as
-      | { initialMessage?: { text?: string; requiredSystemSkill?: unknown } }
+      | { initialMessage?: import("./types/tab").InitialMessage }
       | undefined;
-    const prompt = discussionChat?.initialMessage?.text ?? '';
+    const initial = discussionChat?.initialMessage;
+    const prompt = composeQueryReminder({ visibleText: initial?.text ?? '', primaryContext: initial?.primaryContext });
     expect(prompt).toContain(
       'sourceRecordDocumentPath: /Users/me/.myagents/records/2026-08/record-audio/content.md',
     );

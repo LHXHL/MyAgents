@@ -28,6 +28,9 @@ rg -n "\\[AppErrorBoundary\\]|\\[REACT\\] \\[ERROR\\]" ./logs/unified-*.log | no
 - 文件树/搜索失败：优先看 `cmd_workspace_*`、workspace root、权限、路径安全错误，不要先查 Sidecar 端口。
 - 预览失败：看文件类型、大小限制、编码、symlink/path-safety、`FilePreviewModal` / `RichDocViewer` 前端错误。
 - `@` 文件或图片失败：看 `SimpleChatInput`、附件 staging、图片 MIME/大小和用户消息发送前的准备流程。
+- `@` Agent/首屏不完整：转 `agent-network.md`；统一列表的首屏超时与来源错误不证明工作区文件 IO 损坏。
+- 新建 Agent 目录冲突：已注册/归档路径的拒绝属于 create-only 契约，先引导打开或恢复原项目；原生目录选择、模板复制与实际保存失败分别取证。
+- Markdown 自动保存/改名/冲突：确认当前真实文件路径、保留草稿与外部修改；冲突应暂停覆盖。不要通过关闭编辑器或删除源文件来清错误。
 - 拖拽/粘贴失败：区分 UI 没收到文件、Tauri 读文件失败、还是后续消息 attachment 管线失败。
 - 文件树不刷新：重点查 watcher token/eventKey、`workspace:files-changed:<eventKey>`、是否 stop 了旧 watcher。
 - Launcher 文件能力失败但 Chat 正常：很可能是误走了需要 Sidecar 的老路径，这是产品 bug 线索。

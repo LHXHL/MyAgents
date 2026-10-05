@@ -13,6 +13,7 @@ import {
   retryExternalMcpServer,
   awaitExternalSessionStarting,
   enqueueExternalSendForDesktop,
+  enqueueExternalSendForInbox,
   enqueueExternalSendForIm,
   forceExecuteExternalQueueItem,
   getActiveRuntimeSource,
@@ -23,6 +24,7 @@ import {
   validateExternalAsyncQuestionReply,
   getExternalNativeSessionId,
   getExternalSessionCompletionTerminal,
+  getExternalExecutionTurnId,
   getExternalPendingInteractiveRequests,
   getExternalQueueStatus,
   getExternalSessionId,
@@ -85,6 +87,7 @@ import {
   findProjectAgentByWorkspacePath,
   getEffectiveOfficialToolIdsForSession,
   loadConfig as loadAdminConfig,
+  resolveWorkspaceConfig,
 } from '../utils/admin-config';
 import {
   ensureRegisteredAgentSessionOrigin,
@@ -296,6 +299,10 @@ export function createExternalSessionEngine(): SessionEngine {
       return {
         sessionState: getExternalSessionState(),
         isBusy: isExternalSessionBusy(),
+        waitingForUser: getExternalPendingInteractiveRequests().some(request => {
+          const data = request.data as { blocksRoot?: boolean } | null;
+          return data?.blocksRoot === true;
+        }),
       };
     },
 
@@ -403,6 +410,8 @@ export function createExternalSessionEngine(): SessionEngine {
       return getExternalCurrentTurnIdentity();
     },
 
+    getExecutionTurnId() { return getExternalExecutionTurnId(); },
+
     getActiveImBridgeTurnContext() {
       return getActiveExternalImBridgeTurnContext();
     },
@@ -440,6 +449,7 @@ export function createExternalSessionEngine(): SessionEngine {
           sessionId: request.sessionId,
           clientRequestId: request.clientRequestId,
           asyncQuestionReply: request.asyncQuestionReply,
+          desktopQuery: request.desktopQuery,
           workspacePath: request.workspacePath,
           scenario: request.scenario,
           analyticsSource: request.analyticsSource,
@@ -571,24 +581,27 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     async enqueueInboxMessage(request) {
-      let resolveDispatch!: (value: { accepted: boolean; error?: string }) => void;
-      let dispatchSettled = false;
-      const dispatchAcceptance = new Promise<{ accepted: boolean; error?: string }>((resolve) => {
-        resolveDispatch = value => {
-          if (dispatchSettled) return;
-          dispatchSettled = true;
-          resolve(value);
-        };
-      });
-      const result = await sendExternalMessage(
+      // Fresh Inbox metadata is born after Sidecar bootstrap. Capture its owned
+      // config at admission instead of the still-empty bootstrap desired state.
+      // Existing snapshots remain authoritative; legacy/live-follow Sessions
+      // retain their already-hydrated config and the queue's realtime semantics.
+      const metadata = getSessionMetadata(request.sessionId);
+      const config = metadata?.configSnapshotAt
+        ? resolveWorkspaceConfig(request.workspacePath, metadata, { includeMcp: false })
+        : undefined;
+      // The operation queue owns admission. Runtime dispatch can wait for the
+      // preceding turn and must not hold the caller's Inbox HTTP/lifecycle lease.
+      const result = enqueueExternalSendForInbox(
         request.text,
-        undefined,
-        undefined,
-        undefined,
         {
           sessionId: request.sessionId,
           workspacePath: request.workspacePath,
           scenario: request.scenario ?? { type: 'desktop' },
+          ...(config ? {
+            model: config.model,
+            permissionMode: config.permissionMode,
+            reasoningEffort: config.reasoningEffort ?? 'default',
+          } : {}),
           inboxMeta: request.inboxMeta,
           metadataBirthPending: request.allowLazySessionMaterialization === true,
           analyticsOrigin: request.analyticsOrigin,
@@ -597,13 +610,16 @@ export function createExternalSessionEngine(): SessionEngine {
           beforeDispatch: request.beforeDispatch,
           channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY,
         },
-        undefined,
-        () => resolveDispatch({ accepted: true }),
       );
-      if (result.error || !result.queued) {
-        resolveDispatch({ accepted: false, error: result.error ?? 'external runtime rejected inbox message' });
-      }
-      return { ...result, dispatchAcceptance };
+      const dispatchAcceptance = result.dispatch.then(
+        dispatched => ({ accepted: dispatched.queued && !dispatched.error, error: dispatched.error }),
+        () => ({ accepted: false, error: 'external runtime dispatch failed' }),
+      );
+      return {
+        queued: result.queued,
+        ...(!result.queued ? { error: 'external operation queue rejected inbox message' } : {}),
+        dispatchAcceptance,
+      };
     },
 
     async prepareScheduledTurn(request): Promise<ScheduledTurnPreparationResult> {

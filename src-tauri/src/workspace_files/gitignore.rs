@@ -5,8 +5,8 @@
 //! already matches a line, we no-op.
 //!
 //! Concurrency: the read-then-append flow goes through `with_file_lock_blocking`
-//! per CLAUDE.md red-line rule "单写者文件裸 append / read-modify-write —
-//! 应用内多 owner race". Concrete race we've already paid for elsewhere: drag-drop
+//! per the single-writer rule in `pit_of_success.md#withfilelock` (bare
+//! append / read-modify-write races across in-app owners). Concrete race we've already paid for elsewhere: drag-drop
 //! upload + cron tick + sidecar's `enqueueUserMessage` modality fallback all hit
 //! the same `.gitignore`. Lock makes the idempotency check atomic.
 

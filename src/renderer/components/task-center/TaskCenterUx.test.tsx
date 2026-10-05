@@ -21,6 +21,7 @@ const taskApiMocks = vi.hoisted(() => ({
   taskList: vi.fn(),
   taskRun: vi.fn(),
   taskRerun: vi.fn(),
+  taskDelete: vi.fn(),
   taskReadDoc: vi.fn(),
   taskOpenDocsDir: vi.fn(),
   taskUpdate: vi.fn(),
@@ -48,6 +49,7 @@ vi.mock('@/api/taskCenter', async (importOriginal) => {
     taskList: taskApiMocks.taskList,
     taskRun: taskApiMocks.taskRun,
     taskRerun: taskApiMocks.taskRerun,
+    taskDelete: taskApiMocks.taskDelete,
     taskReadDoc: taskApiMocks.taskReadDoc,
     taskOpenDocsDir: taskApiMocks.taskOpenDocsDir,
     taskUpdate: taskApiMocks.taskUpdate,
@@ -101,13 +103,16 @@ vi.mock('./views/TaskListRow', () => ({
     task,
     onRun,
     onRerun,
+    onDelete,
   }: {
     task?: Task;
     onRun?: () => void;
     onRerun?: () => void;
+    onDelete?: () => void;
   }) => (
     <div>
       <span>{task?.name}</span>
+      <button type="button" onClick={onDelete}>删除测试任务</button>
       <button type="button" title="更多操作">
         更多操作
       </button>
@@ -157,6 +162,28 @@ function expectedTaskSessionTimestamp(iso: string): string {
 }
 
 describe('Task Center UX refinements', () => {
+  it('requires UI confirmation before deleting, supports cancellation and keeps a failed delete retryable', async () => {
+    taskApiMocks.taskList.mockResolvedValue([task({ status: 'done' })]);
+    taskApiMocks.taskDelete.mockRejectedValueOnce(new Error('delete failed')).mockResolvedValueOnce(undefined);
+    // Tauri can expose confirm as async; its Promise must not authorize deletion.
+    const confirm = vi.spyOn(window, 'confirm').mockImplementation(() => Promise.resolve(false) as unknown as boolean);
+    try {
+      render(<TaskListPanel onCreateTask={vi.fn()} />);
+      fireEvent.click(await screen.findByRole('button', { name: '删除测试任务' }));
+      expect(taskApiMocks.taskDelete).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole('button', { name: '取消' }));
+      expect(taskApiMocks.taskDelete).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole('button', { name: '删除测试任务' }));
+      fireEvent.click(screen.getByRole('button', { name: '删除' }));
+      await waitFor(() => expect(taskApiMocks.taskDelete).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(screen.getByRole('button', { name: '删除' })).toBeEnabled());
+      fireEvent.click(screen.getByRole('button', { name: '删除' }));
+      await waitFor(() => expect(taskApiMocks.taskDelete).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(screen.queryByRole('button', { name: '删除测试任务' })).not.toBeInTheDocument());
+      expect(confirm).not.toHaveBeenCalled();
+    } finally { confirm.mockRestore(); }
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     window.localStorage.setItem('myagents:task-center:view', 'list');

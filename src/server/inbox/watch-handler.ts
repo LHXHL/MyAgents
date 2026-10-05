@@ -5,13 +5,33 @@ import type { SessionMetadata } from '../types/session';
 import { cancellableFetch } from '../utils/cancellation';
 import { managementRequestHeaders } from '../utils/management-api-client';
 import { deriveSessionLabel } from './derive-label';
-import { getLatestAssistantResultFromMessages } from './latest-result';
+import { readLatestSessionResult, type LatestSessionResult } from '../session-observation';
 import { renderSessionEventPrompt } from './session-event';
 import { sanitizeInboxLabel } from './sanitize-label';
 import type { SessionEvent } from './session-event';
 
 export interface AdminSessionWatchRequest {
   targetSessionId: string;
+}
+
+/** Project the caller-scoped owner receipt; transport success alone does not
+ * mean the requested observation was cancelled. */
+export function projectSessionWatchManagement(result: unknown, cancel?: string, all = false) {
+  const rows = (result as { watches?: unknown } | null)?.watches;
+  if (!Array.isArray(rows) || rows.some(row => !row || typeof row.watchId !== 'string' || typeof row.cancelled !== 'boolean')) {
+    return { success: false, code: 'WATCH_OWNER_INVALID_RESPONSE', error: 'Observation owner returned an invalid receipt.' };
+  }
+  // Rust/Sidecar already scoped the receipt to the real caller. Only the
+  // requested item decides single-ID cancellation; other active watches do not.
+  const watches = cancel ? rows.filter(row => row.watchId === cancel) : rows;
+  const data = { watches };
+  if (cancel && watches.length === 0) {
+    return { success: false, code: 'WATCH_NOT_FOUND', error: 'Observation not found for this caller Session.', data };
+  }
+  if ((cancel || all) && watches.some(row => !row.cancelled)) {
+    return { success: false, code: 'WATCH_NOT_CANCELLED', error: 'Observation owner did not confirm cancellation; inspect data.watches. An already admitted notification cannot be retracted.', data };
+  }
+  return { success: true, data };
 }
 
 export interface AdminSessionWatchResponse {
@@ -21,6 +41,9 @@ export interface AdminSessionWatchResponse {
   targetStateAtRegistration?: string;
   delivery?: 'registered' | 'already_idle' | 'error';
   eventPrompt?: string;
+  coalesced?: boolean;
+  turnId?: string;
+  latestResult?: LatestSessionResult;
   error?: { code: string; message: string };
 }
 
@@ -32,6 +55,9 @@ interface ManagementWatchResult {
   finalState?: string;
   terminalReason?: string;
   latestResult?: string;
+  turnId?: string;
+  terminalStatus?: 'complete' | 'stopped' | 'error';
+  coalesced?: boolean;
 }
 
 interface ManagementWatchApiResponse {
@@ -61,12 +87,7 @@ async function deriveLabel(sessionId: string, meta: SessionMetadata | null): Pro
   return sanitizeInboxLabel(raw);
 }
 
-async function latestResultForSession(sessionId: string): Promise<string> {
-  const data = (await getSessionData(sessionId));
-  return data ? getLatestAssistantResultFromMessages(data.messages) : '(no text response)';
-}
-
-function buildWatchEventPrompt(params: {
+export function buildWatchEvent(params: {
   type: 'watch.already_idle' | 'watch.error';
   watchId: string;
   targetSessionId: string;
@@ -76,7 +97,11 @@ function buildWatchEventPrompt(params: {
   finalState?: string;
   terminalReason?: string;
   latestResult: string;
-}): string {
+  turnId?: string;
+  terminalStatus?: 'complete' | 'stopped' | 'error';
+  resultSource?: 'live' | 'history' | 'none' | 'unavailable';
+  resultScope?: 'latest-session-result';
+}): SessionEvent {
   const event: SessionEvent = {
     version: 1,
     type: params.type,
@@ -90,8 +115,12 @@ function buildWatchEventPrompt(params: {
     terminalReason: params.terminalReason,
     createdAt: new Date().toISOString(),
     latestResult: params.latestResult,
+    turnId: params.turnId,
+    terminalStatus: params.terminalStatus,
+    resultSource: params.resultSource,
+    resultScope: params.resultScope,
   };
-  return renderSessionEventPrompt(event);
+  return event;
 }
 
 export async function handleAdminSessionWatch(
@@ -198,8 +227,8 @@ export async function handleAdminSessionWatch(
       error: { code: 'session_not_found', message: `target session ${targetSessionId} not found` } } };
   }
   if (result.delivery === 'already_idle' || result.delivery === 'error') {
-    const latestResult = result.latestResult?.trim() || await latestResultForSession(targetSessionId);
-    const eventPrompt = buildWatchEventPrompt({
+    const latestResult = await readLatestSessionResult(targetSessionId, result);
+    const eventPrompt = renderSessionEventPrompt(buildWatchEvent({
       type: result.delivery === 'already_idle' ? 'watch.already_idle' : 'watch.error',
       watchId: result.watchId,
       targetSessionId,
@@ -208,8 +237,10 @@ export async function handleAdminSessionWatch(
       targetStateAtRegistration: result.targetStateAtRegistration,
       finalState: result.finalState,
       terminalReason: result.terminalReason,
-      latestResult,
-    });
+      latestResult: latestResult.text ?? (latestResult.source === 'unavailable' ? '(latest result unavailable)' : '(no text response)'),
+      turnId: latestResult.turnId, terminalStatus: latestResult.terminalStatus,
+      resultSource: latestResult.source, resultScope: latestResult.scope,
+    }));
     return {
       status: 200,
       response: {
@@ -218,6 +249,7 @@ export async function handleAdminSessionWatch(
         targetSessionId,
         targetStateAtRegistration: result.targetStateAtRegistration,
         delivery: result.delivery,
+        latestResult,
         eventPrompt,
       },
     };
@@ -231,6 +263,7 @@ export async function handleAdminSessionWatch(
       targetSessionId,
       targetStateAtRegistration: result.targetStateAtRegistration,
       delivery: 'registered',
+      turnId: result.turnId, coalesced: result.coalesced,
     },
   };
 }

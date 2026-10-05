@@ -528,22 +528,12 @@ export default memo(function HistorySearchOverlayContent({
                     <div className="flex min-w-0 flex-1 flex-col">
                         {/* Browse controls stay visible until the compact search field is
                             activated. The animated surface uses transform/opacity only,
-                            so opening search does not force layout on the long list below. */}
-                        <div className="mb-3 flex h-8 items-center gap-2">
-                            <UserTagFilter
-                                tags={userTagSummaries}
-                                value={selectedUserTag}
-                                onChange={handleTagFilterChange}
-                            />
+                            while the toolbar keeps a fixed height above the long list. */}
+                        <div className="relative mb-3 flex h-8 items-center gap-2">
                             <div
-                                className="relative h-8 min-w-0 flex-1"
-                                data-history-search-bar
-                                data-state={isSearchMode ? 'expanded' : 'compact'}
-                            >
-                            <div
-                                className={`flex h-full items-center gap-2 transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none ${
+                                className={`flex h-full shrink-0 items-center gap-2 transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none ${
                                     isSearchMode
-                                        ? 'pointer-events-none -translate-x-2 opacity-0'
+                                        ? 'pointer-events-none absolute -translate-x-2 opacity-0'
                                         : 'translate-x-0 opacity-100'
                                 }`}
                                 data-history-browse-controls
@@ -576,7 +566,16 @@ export default memo(function HistorySearchOverlayContent({
                                     />
                                 )}
                             </div>
-
+                            <UserTagFilter
+                                tags={userTagSummaries}
+                                value={selectedUserTag}
+                                onChange={handleTagFilterChange}
+                            />
+                            <div
+                                className="relative h-8 min-w-0 flex-1"
+                                data-history-search-bar
+                                data-state={isSearchMode ? 'expanded' : 'compact'}
+                            >
                             <button
                                 ref={compactSearchRef}
                                 type="button"
@@ -584,7 +583,7 @@ export default memo(function HistorySearchOverlayContent({
                                 aria-label={t('historyOverlay.searchPlaceholder')}
                                 aria-hidden={isSearchMode}
                                 tabIndex={isSearchMode ? -1 : 0}
-                                className={`absolute inset-y-0 right-0 flex w-[30%] min-w-72 items-center justify-between gap-3 rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-2.5 text-sm text-[var(--ink-muted)] transition-[opacity,transform] duration-150 ease-out hover:border-[var(--line-strong)] hover:bg-[var(--paper-inset)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/20 motion-reduce:transition-none ${
+                                className={`absolute inset-y-0 right-0 flex w-[30%] min-w-72 items-center justify-between gap-3 rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-2.5 text-xs text-[var(--ink-muted)] transition-[opacity,transform] duration-150 ease-out hover:border-[var(--line-strong)] hover:bg-[var(--paper-inset)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/20 motion-reduce:transition-none ${
                                     isSearchMode
                                         ? 'pointer-events-none translate-x-2 opacity-0'
                                         : 'pointer-events-auto translate-x-0 opacity-100'
@@ -629,7 +628,7 @@ export default memo(function HistorySearchOverlayContent({
                                     onCompositionEnd={(e) => { setComposing(false); setSearchQuery(e.currentTarget.value); }}
                                     aria-label={t('historyOverlay.searchPlaceholder')}
                                     placeholder={t('historyOverlay.searchPlaceholder')}
-                                    className="h-full w-full bg-transparent py-1 pl-8 pr-10 text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)]/60 disabled:cursor-default"
+                                    className="h-full w-full bg-transparent py-1 pl-8 pr-10 text-sm text-[var(--ink)] outline-none placeholder:text-xs placeholder:text-[var(--ink-muted)]/60 disabled:cursor-default"
                                     onKeyDown={(e) => {
                                         if (isImeComposingEvent(e) || composing) return;
                                         if (e.key === 'Escape') {

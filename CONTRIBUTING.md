@@ -23,7 +23,7 @@ Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md).
    - Clear, descriptive title
    - Steps to reproduce
    - Expected vs actual behavior
-   - System information (macOS version, chip type)
+   - MyAgents version, operating system version, and CPU architecture
    - Screenshots if applicable
 
 #### Suggesting Features
@@ -63,6 +63,8 @@ distribution paths. See [LICENSING.md](LICENSING.md).
 
 ### Development Setup
 
+See the [development guide](DEVELOPMENT.md#english) for prerequisites, Windows and Linux setup, builds, and checks. The commands below are for macOS.
+
 ```bash
 # Clone your fork
 git clone https://github.com/YOUR_USERNAME/MyAgents.git
@@ -81,7 +83,7 @@ cd MyAgents
 MyAgents/
 ├── src/
 │   ├── renderer/     # React frontend
-│   ├── server/       # Bun backend (Sidecar)
+│   ├── server/       # Node.js backend (Sidecar)
 │   └── shared/       # Shared types
 ├── src-tauri/        # Tauri Rust code
 └── specs/            # Design documents
@@ -119,7 +121,7 @@ Feel free to open an issue or reach out at myagents.io@gmail.com
    - 清晰的标题
    - 复现步骤
    - 预期行为 vs 实际行为
-   - 系统信息（macOS 版本、芯片类型）
+   - MyAgents 版本、操作系统版本、CPU 架构
    - 相关截图
 
 #### 功能建议
@@ -157,6 +159,8 @@ MyAgents 的社区许可证和单独商业许可证下分发该贡献。如果�
 
 ### 开发环境设置
 
+环境要求、Windows / Linux 设置、构建与检查见[开发指引](DEVELOPMENT.md)。以下命令适用于 macOS。
+
 ```bash
 # 克隆你的 fork
 git clone https://github.com/YOUR_USERNAME/MyAgents.git
@@ -175,7 +179,7 @@ cd MyAgents
 MyAgents/
 ├── src/
 │   ├── renderer/     # React 前端
-│   ├── server/       # Bun 后端 (Sidecar)
+│   ├── server/       # Node.js 后端 (Sidecar)
 │   └── shared/       # 共享类型
 ├── src-tauri/        # Tauri Rust 代码
 └── specs/            # 设计文档

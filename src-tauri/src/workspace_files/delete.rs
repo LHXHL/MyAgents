@@ -9,7 +9,7 @@
 //! We use `symlink_metadata` (NOT `metadata`) so a broken symlink reports as
 //! a file and gets removed cleanly. v0.2.5 hit a sidecar crash where
 //! `metadata` followed a broken symlink and called into a sync `cpSync`-style
-//! path checking; lesson is enshrined in CLAUDE.md red-line table.
+//! path checking; lesson is recorded in pit_of_success.md#fs-utils.
 
 use std::fs;
 

@@ -15,7 +15,7 @@
 //!    the default; trying to call out to HTTP would require a separate, more
 //!    awkward path.
 //!
-//! Architectural rule (CLAUDE.md red-line table): the renderer MUST go through
+//! Architectural rule (pit_of_success.md#workspace-files): the renderer MUST go through
 //! these `cmd_workspace_*` invokes for any workspace file operation. The
 //! sidecar HTTP endpoints they replace (`/api/files/import-base64`,
 //! `/agent/search-files`, `/api/commands`, …) are scheduled for deletion in

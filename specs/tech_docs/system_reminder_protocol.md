@@ -91,7 +91,8 @@ payload，`[System]收到来自系统投送的信息` 是唯一 visible tail。�
 - 如果有 leading `<system-reminder>`，先解析 `kind` 和 `visibleText`。
 - `kind` 命中 `systemTagLabel()` 时，在用户气泡上显示对应 badge。
 - 当存在 `visibleText` 时，气泡正文只展示 `visibleText`。
-- 当不存在 `visibleText` 且没有附件时，整条 user bubble 不渲染；hidden payload
+- `myagents-session-event type="send.request"` 是已有的可见请求例外：其 payload 虽位于 reminder 内，气泡与 CLI `session get` 共用 `parseSessionSendRequestDisplay` 提取请求正文；来源标签仅用于 badge，event-summary 与控制属性仍隐藏。有可见 tail 时优先 tail。自动 result/watch 等事件不享有该例外。
+- 当不存在 `visibleText`、可见 send.request payload 且没有附件时，整条 user bubble 不渲染；hidden payload
   不得走 raw fallback 泄漏到 UI。
 - 当不存在 `visibleText` 但有附件时，保留附件气泡和 badge，hidden payload 仍不展示。
 - 未被 `systemTagLabel()` 识别的 `kind` 不会自动有 badge；新增 badge tag 必须显式
@@ -104,7 +105,8 @@ payload，`[System]收到来自系统投送的信息` 是唯一 visible tail。�
 | `HEARTBEAT` | Heartbeat / 心跳感知 | 普通 heartbeat、Cron 结果转述投送 |
 | `CRON_TASK` | Cron task / 定时任务 | Cron task 执行 prompt |
 | `FLOATING_BALL_CONTEXT` | Floating context / 浮球上下文 | 浮球消息上下文注入 |
-| `myagents-space-issue` | Space issue | Space IssueDelivery |
+| `myagents-space-issue` | Space issue | Agent 提及 | `src/shared/agentMentions.ts::composeQueryReminder`，调用方 SessionEngine facade | 单 leading envelope 内的 `<AGENT_MENTIONS>`；正文保留完整代号，不自动执行协作 |
+| Space IssueDelivery |
 | `GOAL_CONTINUATION` | 目标模式 | Goal 自动续跑 / Goal 第一轮启动 |
 | `GOAL_CONTEXT` | 目标模式 | Goal 运行中用户普通 query 的 hidden context |
 | `TASK_DISCUSSION` | 任务讨论 | 智能创建 / Record AI 讨论首轮 |
@@ -113,6 +115,12 @@ payload，`[System]收到来自系统投送的信息` 是唯一 visible tail。�
 `MEMORY_UPDATE` 当前是内部纯隐藏场景，不属于有 badge 的可复用展示协议。若要让它
 或新 tag 出现在用户气泡上，先补 `systemTagLabel()`、文案资源和渲染测试。
 
+## Desktop query 的组合与重试
+
+`src/shared/agentMentions.ts::composeQueryReminder` 是 Desktop query 组合入口；`SessionEngine` 的公共 facade 在选择具体 Runtime 后、进入 adapter 前处理结构化 context。Goal owner 提供 primary Goal context；任务讨论/悬浮球入口提供 typed context；Agent 提及提供当前 discovery 信息。各部分进入同一个 leading envelope，首个 primary tag 保留原 badge；仅 Agent 信息时使用 `AGENT_MENTIONS` badge。变量字段先 escape，Agent description 不成为产品 instruction；不能把用户输入的 XML 解析成可信 metadata。
+
+原 `SessionMessage.desktopQuery` 保存 visibleText 与非秘密 typed context，builtin/external 原 queue/codec/rewind 都保持它。retry 使用此 annotation 重新查目录和组合，不能重用旧 hidden 字符串再追加 envelope。展示与 Desktop→IM 镜像仍走既有 visible helpers。具体 identity/草稿/分页边界见 [Agent 网络](./agent_network.md)。
+
 ## 生产使用点
 
 严格符合"hidden payload + optional visible tail + badge tag"的生产入口：
@@ -120,12 +128,13 @@ payload，`[System]收到来自系统投送的信息` 是唯一 visible tail。�
 | 入口 | Builder / 位置 | 结构 |
 |------|----------------|------|
 | Scheduled Task 执行 | `src/server/utils/cron-reminder.ts::buildCronTaskReminder` | `<system-reminder><CRON_TASK>...</CRON_TASK></system-reminder>` + 原 task prompt；tag/wire name 为历史兼容 |
-| Task 讨论首轮 | `src/shared/systemReminder.ts::buildTaskDiscussionReminder`，调用方 App Shell | `<system-reminder><TASK_DISCUSSION>...</TASK_DISCUSSION></system-reminder>` + 用户原始目标；hidden 只携带 discussion/workspace/可选 Record identity，required Skill 另走 admission 字段 |
+| Task 讨论首轮 | `src/shared/systemReminder.ts::buildTaskDiscussionReminder`，调用方 App Shell 提供 typed context，SessionEngine facade 组合 | `<system-reminder><TASK_DISCUSSION>...</TASK_DISCUSSION></system-reminder>` + 用户原始目标；hidden 只携带 discussion/workspace/可选 Record identity，required Skill 另走 admission 字段 |
 | Task 本地评论 | `src/shared/systemReminder.ts::buildTaskCommentReminder`，调用方 Inbox `task.comment` event drain | `<system-reminder><TASK_COMMENT>...</TASK_COMMENT></system-reminder>` + 用户评论；包含 exact Task/Comment/Session、task.md 路径与显式 CLI 回复 instruction |
 | Goal 第一轮启动 | `src/shared/systemReminder.ts::buildGoalContinuationReminder`，调用方 `src/server/session-engine/goal-orchestrator.ts::goalContext` | `<system-reminder><GOAL_CONTINUATION>...</GOAL_CONTINUATION></system-reminder>` + 原始 Goal query visible tail；用户气泡显示原文与 Goal badge |
 | Goal 自动续跑 | 同一 builder，调用方 `/goal/execute-sync` | `<system-reminder><GOAL_CONTINUATION>...</GOAL_CONTINUATION></system-reminder>`，第二轮起纯隐藏 |
 | Goal 普通 query context | `src/shared/systemReminder.ts::buildGoalContextReminder`，调用方 Goal-aware chat enqueue 路径 | `<system-reminder><GOAL_CONTEXT>...</GOAL_CONTEXT></system-reminder>` + 用户 visible query |
-| 浮球消息 | `src/shared/systemReminder.ts::buildFloatingBallContextReminder`，调用方 `src/renderer/floating-ball/useFloatingSession.ts` | `<system-reminder><FLOATING_BALL_CONTEXT>...</FLOATING_BALL_CONTEXT></system-reminder>` + 用户文本 |
+| 浮球消息 | `src/shared/systemReminder.ts::buildFloatingBallContextReminder`，调用方 `src/renderer/floating-ball/useFloatingSession.ts` 提供 typed context，SessionEngine facade 组合 | `<system-reminder><FLOATING_BALL_CONTEXT>...</FLOATING_BALL_CONTEXT></system-reminder>` + 用户文本 |
+| Agent 提及 | `src/shared/agentMentions.ts::composeQueryReminder`，调用方 SessionEngine facade | 单 leading envelope 内的 `<AGENT_MENTIONS>`；正文保留完整代号，不自动执行协作 |
 | Space IssueDelivery | `src-tauri/src/space_cloud/delivery.rs::build_space_issue_delivery_message_for_locale` | `<system-reminder><myagents-space-issue>…</myagents-space-issue></system-reminder>` + 本地化可见提示 |
 | Cron 结果投送 IM session | `src/server/utils/cron-event-relay.ts::buildCronEventRelayMessage` | `<system-reminder><HEARTBEAT>...</HEARTBEAT></system-reminder>` + `[System]收到来自系统投送的信息` |
 

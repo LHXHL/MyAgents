@@ -1,8 +1,11 @@
+import { useBackgroundRequestFeedback, type BackgroundRequestResult } from '@/hooks/useBackgroundRequestFeedback';
+import { useMyAgentsLogin } from '@/hooks/useMyAgentsLogin';
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
   type KeyboardEvent,
   useCallback,
   useEffect,
+  useEffectEvent,
   useMemo,
   useRef,
   useState,
@@ -12,9 +15,6 @@ import { LoaderIcon, RefreshIcon, CloseIcon } from '@/components/icons';
 
 import {
   DEFAULT_SPACE_ID,
-  spaceAuthAck,
-  spaceAuthPoll,
-  spaceAuthStart,
   spaceCreateSpace,
   spaceErrorMessage,
   isSpaceErrorRetryable,
@@ -70,11 +70,9 @@ import {
   type SpaceViewMode as ViewMode,
 } from "@/pages/space/SpaceChrome";
 import { SpaceIcon } from "@/pages/space/SpaceAvatar";
-import SpaceProfileSettingsDialog from "@/pages/space/SpaceProfileSettingsDialog";
 import {
   nowForSpaceMetric,
   recordSpaceMetric,
-  trackSpaceAuth,
   trackSpaceOpen,
 } from "@/pages/space/spaceMetrics";
 import {
@@ -84,8 +82,6 @@ import {
 import { spaceSlugCandidate } from "@/pages/space/spaceSlug";
 import type { PendingAppRoute } from "../../shared/appRoute";
 
-const AUTH_POLL_DELAY_MS = 3000;
-const AUTH_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 const SPACE_EVENTS_SYNC_INTERVAL_MS = 15_000;
 const AGENT_CONNECTING_WINDOW_MS = 75_000;
 
@@ -320,9 +316,7 @@ export function SpaceQuickActionDialog({
   );
 }
 
-function errMessage(error: unknown): string {
-  return spaceErrorMessage(error);
-}
+
 
 function agentIssueSubscriptionRunMode(
   value?: SpaceIssueSubscriptionRunMode | null,
@@ -467,13 +461,8 @@ export default function Space({
   const { projects, config } = useConfig();
   const spaceData = useSpaceData({ isActive });
   const { actions } = spaceData;
-  const [authBusy, setAuthBusy] = useState(false);
-  const [authFlow, setAuthFlow] = useState<{
-    token: string;
-    expiresAt: number;
-  } | null>(null);
-  const authPollWarningShownRef = useRef(false);
-  const authPollWakeRef = useRef<(() => void) | null>(null);
+  const afterLogin = useCallback(async () => { await actions.ensureBootstrapped({ force: true }); }, [actions]);
+  const { authBusy, authFlow, startLogin } = useMyAgentsLogin(isActive, afterLogin);
   const previousModeRef = useRef<ViewMode>("issues");
   const [mode, setMode] = useState<ViewMode>("issues");
   const [issueQ, setIssueQ] = useState("");
@@ -518,7 +507,6 @@ export default function Space({
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
-  const [profileSettingsOpen, setProfileSettingsOpen] = useState(false);
   const [spaceDialogMode, setSpaceDialogMode] = useState<
     "join" | "create" | null
   >(null);
@@ -538,6 +526,11 @@ export default function Space({
     session?.space?.slug ||
     DEFAULT_SPACE_ID;
   const activeDataScopeKey = `${spaceData.serviceBaseUrl?.trim() || session?.baseUrl?.trim() || ""}\n${activeCacheSpaceId}`;
+  const runBackground = useBackgroundRequestFeedback(
+    `${activeDataScopeKey}\n${session?.sessionBindingId ?? ""}`,
+    isActive && spaceData.boot === "ready",
+    (error) => toast.error(spaceErrorMessage(error)),
+  );
   const relatedToMe = relatedToMeBySpace[activeCacheSpaceId] ?? false;
   const setRelatedToMe = useCallback(
     (next: boolean) => {
@@ -781,71 +774,47 @@ export default function Space({
     if (reentered && activeMode === "tools") trackSpaceOpen("tools");
     if (activeMode === "issues") {
       const handle = window.setTimeout(() => {
-        const refreshes: Promise<void>[] = [
+        void runBackground(`issues:${JSON.stringify(issueQuery)}`, () =>
           actions.refreshIssues(issueQuery, {
             force: reentered,
             maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
-          }),
-          actions.refreshGoals({
+          }));
+        void runBackground("goals", () => actions.refreshGoals({
+          maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
+        }));
+        if (admin) void runBackground("registered-agents", () =>
+          actions.refreshRegisteredAgents({
+            force: reentered,
             maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
-          }),
-        ];
-        if (admin) {
-          refreshes.push(
-            actions.refreshRegisteredAgents({
-              force: reentered,
-              maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
-            }),
-          );
-        }
-        Promise.all(refreshes).catch((error) =>
-          toast.error(spaceErrorMessage(error)),
-        );
+          }));
       }, 220);
       return () => window.clearTimeout(handle);
     }
     if (activeMode === "goals") {
-      void actions
-        .refreshGoals({ maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS })
-        .catch((error) => toast.error(spaceErrorMessage(error)));
+      void runBackground("goals", () => actions.refreshGoals({
+        maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
+      }));
     }
     if (activeMode === "skills") {
-      void actions
-        .refreshSkills({
-          force: reentered,
-          maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
-        })
-        .then(() => {
-          if (reentered) setSkillRemoteUpdateAvailable(false);
-        })
-        .catch((error) => toast.error(spaceErrorMessage(error)));
+      void runBackground("skills", () => actions.refreshSkills({
+        force: reentered,
+        maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
+      })).then((result) => {
+        if (result.success && reentered) setSkillRemoteUpdateAvailable(false);
+      });
     }
     if (activeMode === "tools") {
-      void actions
-        .refreshTools({
-          force: reentered,
-          maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
-        })
-        .catch((error) => toast.error(spaceErrorMessage(error)));
+      void runBackground("tools", () => actions.refreshTools({
+        force: reentered,
+        maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
+      }));
     }
     if (activeMode === "settings") {
-      void Promise.all([
-        actions.refreshGoals({ maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS }),
-        actions.refreshLocalAgents({ maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS }),
-        actions.refreshRegisteredAgents({
-          maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
-        }),
-      ]).catch((error) => toast.error(spaceErrorMessage(error)));
+      void runBackground("goals", () => actions.refreshGoals({ maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS }));
+      void runBackground("local-agents", () => actions.refreshLocalAgents({ maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS }));
+      void runBackground("registered-agents", () => actions.refreshRegisteredAgents({ maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS }));
     }
-  }, [
-    actions,
-    activeDataScopeKey,
-    admin,
-    issueQuery,
-    activeMode,
-    spaceData.boot,
-    toast,
-  ]);
+  }, [actions, activeDataScopeKey, admin, issueQuery, activeMode, spaceData.boot, runBackground]);
 
   useEffect(() => {
     if (!isActive || spaceData.boot !== "ready") return;
@@ -914,227 +883,75 @@ export default function Space({
 
       if (skillRemoteUpdate) setSkillRemoteUpdateAvailable(true);
 
-      const jobs: Array<Promise<void>> = [];
-      if (refreshBoot)
-        jobs.push(actions.ensureBootstrapped({ force: true, silent: true }));
+      const jobs: Array<Promise<BackgroundRequestResult<void>>> = [];
+      if (refreshBoot) jobs.push(runBackground("bootstrap", () =>
+        actions.ensureBootstrapped({ force: true, silent: true, propagateError: true })));
       if (issueRemoteUpdate) {
-        jobs.push(
-          actions.refreshIssues(issueQueryRef.current, {
-            force: true,
-            silent: true,
-          }),
-        );
+        const query = issueQueryRef.current;
+        jobs.push(runBackground(`issues:${JSON.stringify(query)}`, () =>
+          actions.refreshIssues(query, { force: true, silent: true })));
       }
-      if (issueDetailId && issueRemoteUpdate) {
-        jobs.push(
-          actions.refreshIssueDetail(issueDetailId, {
-            force: true,
-            silent: true,
-          }),
-        );
-      }
-      if (skillRemoteUpdate) {
-        if (selectedSkillId) {
-          jobs.push(
-            actions.refreshSkillDetail(selectedSkillId, {
-              force: true,
-              silent: true,
-            }),
-          );
-        }
-      }
+      if (issueDetailId && issueRemoteUpdate) jobs.push(runBackground(`issue:${issueDetailId}`, () =>
+        actions.refreshIssueDetail(issueDetailId, { force: true, silent: true })));
+      if (skillRemoteUpdate && selectedSkillId) jobs.push(runBackground(`skill:${selectedSkillId}`, () =>
+        actions.refreshSkillDetail(selectedSkillId, { force: true, silent: true })));
       if (toolRemoteUpdate) {
-        jobs.push(actions.refreshTools({ force: true, silent: true }));
+        jobs.push(runBackground("tools", () => actions.refreshTools({ force: true, silent: true })));
         if (selectedToolId) {
-          jobs.push(
-            actions.refreshToolDetail(selectedToolId, {
-              force: true,
-              silent: true,
-            }),
-          );
-          jobs.push(
-            actions.refreshToolRevisions(selectedToolId, {
-              force: true,
-              silent: true,
-            }),
-          );
+          jobs.push(runBackground(`tool:${selectedToolId}`, () =>
+            actions.refreshToolDetail(selectedToolId, { force: true, silent: true })));
+          jobs.push(runBackground(`tool-revisions:${selectedToolId}`, () =>
+            actions.refreshToolRevisions(selectedToolId, { force: true, silent: true })));
         }
       }
       if (refreshAgents) {
-        jobs.push(actions.refreshLocalAgents({ force: true, silent: true }));
-        jobs.push(
-          actions.refreshRegisteredAgents({ force: true, silent: true }),
-        );
+        jobs.push(runBackground("local-agents", () => actions.refreshLocalAgents({ force: true, silent: true })));
+        jobs.push(runBackground("registered-agents", () => actions.refreshRegisteredAgents({ force: true, silent: true })));
       }
-      try {
-        await Promise.all(jobs);
-        recordSpaceMetric("space_tab_visible_revalidate_end", {
-          count: events.length,
-          durationMs: Math.round(nowForSpaceMetric() - startedAt),
-          ok: true,
-        });
-      } catch (error) {
-        recordSpaceMetric("space_tab_visible_revalidate_end", {
-          count: events.length,
-          durationMs: Math.round(nowForSpaceMetric() - startedAt),
-          ok: false,
-          error: spaceErrorMessage(error),
-        });
-        throw error;
-      }
+      const results = await Promise.all(jobs);
+      const failure = results.find((result) => !result.success);
+      recordSpaceMetric("space_tab_visible_revalidate_end", {
+        count: events.length,
+        durationMs: Math.round(nowForSpaceMetric() - startedAt),
+        ok: !failure,
+        ...(failure && !failure.success && failure.error !== undefined
+          ? { error: spaceErrorMessage(failure.error) } : {}),
+      });
     },
-    [actions, issueDetailId, selectedSkillId, selectedToolId],
+    [actions, issueDetailId, selectedSkillId, selectedToolId, runBackground],
   );
 
   useEffect(() => {
     if (!isActive || spaceData.boot !== "ready") return;
     let cancelled = false;
+    let failures = 0;
+    let handle = 0;
     const sync = async () => {
+      if (cancelled) return;
       try {
-        const events = await actions.syncEvents({
+        const result = await runBackground("events", () => actions.syncEvents({
           maxAgeMs: 5_000,
           silent: true,
-        });
-        if (!cancelled) await revalidateForEvents(events);
-      } catch (error) {
-        if (!cancelled) toast.error(spaceErrorMessage(error));
+        }));
+        failures = result.success ? 0 : Math.min(failures + 1, 4);
+        if (!cancelled && result.success) await revalidateForEvents(result.value);
+      } finally {
+        if (!cancelled) {
+          // Schedule after completion: slow requests cannot overlap. Keep the
+          // first recovery prompt, then reduce automatic traffic during outages.
+          const delay = SPACE_EVENTS_SYNC_INTERVAL_MS * 2 ** Math.max(0, failures - 1);
+          handle = window.setTimeout(() => { void sync(); }, delay);
+        }
       }
     };
     void sync();
-    const handle = window.setInterval(() => {
-      void sync();
-    }, SPACE_EVENTS_SYNC_INTERVAL_MS);
+
     return () => {
       cancelled = true;
-      window.clearInterval(handle);
+      window.clearTimeout(handle);
     };
-  }, [actions, isActive, revalidateForEvents, spaceData.boot, toast]);
+  }, [actions, isActive, revalidateForEvents, spaceData.boot, runBackground]);
 
-  useEffect(() => {
-    if (!authFlow) return;
-    let cancelled = false;
-
-    const wakeAuthPoll = () => {
-      authPollWakeRef.current?.();
-    };
-
-    const wakeAuthPollWhenVisible = () => {
-      if (document.visibilityState === "visible") {
-        wakeAuthPoll();
-      }
-    };
-
-    const waitForNextPoll = (ms: number): Promise<void> => {
-      if (ms <= 0) return Promise.resolve();
-      return new Promise((resolve) => {
-        let timer: number | null = null;
-        const finish = () => {
-          if (timer !== null) {
-            window.clearTimeout(timer);
-            timer = null;
-          }
-          if (authPollWakeRef.current === finish) {
-            authPollWakeRef.current = null;
-          }
-          resolve();
-        };
-        timer = window.setTimeout(finish, ms);
-        authPollWakeRef.current = finish;
-      });
-    };
-
-    const stopAuth = () => {
-      authPollWarningShownRef.current = false;
-      authPollWakeRef.current = null;
-      setAuthFlow(null);
-      setAuthBusy(false);
-    };
-
-    const poll = async () => {
-      while (!cancelled && Date.now() < authFlow.expiresAt) {
-        const startedAt = Date.now();
-        try {
-          const result = await spaceAuthPoll(authFlow.token);
-          if (cancelled) return;
-          if (result.status === "done") {
-            stopAuth();
-            toast.success(t("space.toasts.loginSuccess"));
-            await actions.ensureBootstrapped({ force: true });
-            trackSpaceAuth("success", true);
-            void spaceAuthAck(authFlow.token).catch((error) => {
-              console.warn("[Space] auth ack failed:", errMessage(error));
-            });
-            return;
-          }
-          if (result.status === "failed") {
-            stopAuth();
-            toast.error(String(result.error ?? t("space.toasts.loginFailed")));
-            trackSpaceAuth("failure", false, result.error ?? "failed");
-            void spaceAuthAck(authFlow.token).catch((error) => {
-              console.warn("[Space] auth ack failed:", errMessage(error));
-            });
-            return;
-          }
-        } catch (_error) {
-          if (cancelled) return;
-          if (
-            !authPollWarningShownRef.current &&
-            Date.now() < authFlow.expiresAt
-          ) {
-            authPollWarningShownRef.current = true;
-            toast.warning(t("space.toasts.loginSlow"));
-          }
-        }
-        const elapsed = Date.now() - startedAt;
-        await waitForNextPoll(Math.max(0, AUTH_POLL_DELAY_MS - elapsed));
-      }
-
-      if (!cancelled) {
-        stopAuth();
-        toast.error(t("space.toasts.loginTimeout"));
-        trackSpaceAuth("failure", false, "timeout");
-      }
-    };
-
-    window.addEventListener("focus", wakeAuthPoll);
-    document.addEventListener("visibilitychange", wakeAuthPollWhenVisible);
-    void poll();
-    return () => {
-      cancelled = true;
-      wakeAuthPoll();
-      window.removeEventListener("focus", wakeAuthPoll);
-      document.removeEventListener("visibilitychange", wakeAuthPollWhenVisible);
-    };
-  }, [actions, authFlow, t, toast]);
-
-  useEffect(() => {
-    if (authFlow && isActive) {
-      authPollWakeRef.current?.();
-    }
-  }, [authFlow, isActive]);
-
-  const startLogin = useCallback(async () => {
-    setAuthBusy(true);
-    trackSpaceAuth("start", true);
-    try {
-      const result = await spaceAuthStart();
-      const serverExpiresInMs =
-        Number.isFinite(result.expiresInSeconds) && result.expiresInSeconds > 0
-          ? result.expiresInSeconds * 1000
-          : AUTH_POLL_TIMEOUT_MS;
-      authPollWarningShownRef.current = false;
-      setAuthFlow({
-        token: result.loginToken,
-        expiresAt:
-          Date.now() + Math.min(serverExpiresInMs, AUTH_POLL_TIMEOUT_MS),
-      });
-      toast.info(t("space.toasts.browserLoginOpened"));
-    } catch (error) {
-      setAuthBusy(false);
-      trackSpaceAuth("failure", false, error);
-      toast.error(spaceErrorMessage(error));
-    }
-  }, [t, toast]);
 
   const selectSpaceTab = useCallback((next: ViewMode) => {
     setMode(next);
@@ -1194,68 +1011,59 @@ export default function Space({
     [enterSpace, toast],
   );
 
-  useEffect(() => {
-    if (
-      !isActive
-      || !pendingRoute
-      || pendingRoute.route.name !== "space.issue"
-      || spaceData.boot !== "ready"
-      || !session
-    ) {
-      return;
-    }
-    let cancelled = false;
-    const { spaceId, issueId } = pendingRoute.route.params;
-    const currentMatches = session.space.id === spaceId || session.space.slug === spaceId;
+  const openPendingRoute = useEffectEvent(async (intent: PendingAppRoute, isCancelled: () => boolean) => {
+    if (!session || intent.route.name === "task.comment") return;
+    const route = intent.route;
+    // Reselecting the current Space cancels older store navigation while
+    // preserving the home link's current page and resource detail.
+    const spaceId = route.name === "space.home" ? spaceData.spaceId : route.params.spaceId;
+    if (!spaceId) return;
     const target = session.spaces?.find(
       (space) => space.id === spaceId || space.slug === spaceId,
     );
-
-    void (async () => {
-      try {
-        setRouteFailure(null);
-        if (!currentMatches) {
-          await actions.switchSpace(spaceId, target);
-        }
-        if (cancelled) return;
-        setMode("issues");
+    try {
+      setRouteFailure(null);
+      // Even a route to the current Space must supersede an older store switch.
+      await actions.switchSpace(spaceId, target);
+      if (isCancelled()) return;
+      if (route.name !== "space.home") {
+        setMode(route.name === "space.tools" ? "tools" : "issues");
         setSelectedSkillId(null);
         setSelectedToolId(null);
-        setIssueDetailId(issueId);
-        setRouteFailure(null);
-        onRouteConsumed?.(pendingRoute.generation);
-      } catch (error) {
-        if (cancelled) return;
-        setMode("issues");
-        setIssueDetailId(null);
-        toast.error(t("space.route.openFailed", { message: spaceErrorMessage(error) }));
-        const retainForRetry = isSpaceErrorRetryable(error)
-          || isSpaceErrorCode(error, "SPACE_REAUTH_REQUIRED");
-        setRouteFailure({
-          generation: pendingRoute.generation,
-          message: isSpaceErrorCode(error, "SPACE_NOT_FOUND")
-            || isSpaceErrorCode(error, "SPACE_MEMBERSHIP_REQUIRED")
-            ? t("space.route.spaceUnavailable")
-            : t("space.route.openFailed", { message: spaceErrorMessage(error) }),
-          retryable: retainForRetry,
-        });
-        if (!retainForRetry) onRouteConsumed?.(pendingRoute.generation);
+        setSelectedGoalId("");
+        setIssueQ("");
+        setIssueDetailId(route.name === "space.issue" ? route.params.issueId : null);
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    actions,
-    isActive,
-    onRouteConsumed,
-    pendingRoute,
-    routeAttempt,
-    session,
-    spaceData.boot,
-    t,
-    toast,
-  ]);
+      setRouteFailure(null);
+      onRouteConsumed?.(intent.generation);
+    } catch (error) {
+      if (isCancelled()) return;
+      if (route.name !== "space.home") {
+        setMode(route.name === "space.tools" ? "tools" : "issues");
+        setIssueDetailId(null);
+      }
+      toast.error(t("space.route.openFailed", { message: spaceErrorMessage(error) }));
+      const retainForRetry = isSpaceErrorRetryable(error)
+        || isSpaceErrorCode(error, "SPACE_REAUTH_REQUIRED");
+      setRouteFailure({
+        generation: intent.generation,
+        message: isSpaceErrorCode(error, "SPACE_NOT_FOUND")
+          || isSpaceErrorCode(error, "SPACE_MEMBERSHIP_REQUIRED")
+          ? t("space.route.spaceUnavailable")
+          : t("space.route.openFailed", { message: spaceErrorMessage(error) }),
+        retryable: retainForRetry,
+      });
+      if (!retainForRetry) onRouteConsumed?.(intent.generation);
+    }
+  });
+  const routeReady = spaceData.boot === "ready" && Boolean(session);
+  useEffect(() => {
+    if (!isActive || !pendingRoute || !routeReady) return;
+    let cancelled = false;
+    void openPendingRoute(pendingRoute, () => cancelled);
+    return () => { cancelled = true; };
+    // Space projection is not a new intent: keep awaiting the owner operation.
+  }, [isActive, pendingRoute, routeAttempt, routeReady, session?.sessionBindingId, spaceData.serviceBaseUrl]);
 
   const joinSpace = useCallback(() => {
     setSpaceDialogError(null);
@@ -1479,11 +1287,6 @@ export default function Space({
           onSpaceSwitch={switchSpace}
           onJoinSpace={joinSpace}
           onCreateSpace={createSpace}
-          onLogout={logout}
-          onOpenProfileSettings={() => setProfileSettingsOpen(true)}
-          onRefreshAccountPlan={() =>
-            actions.ensureBootstrapped({ force: true, silent: true })
-          }
         />
         <section className="flex min-w-0 flex-1 flex-col">
           {activeMode === "issues" && (
@@ -1647,15 +1450,6 @@ export default function Space({
               actions.refreshRegisteredAgents({ force: true, silent: true }),
             ]);
           }}
-        />
-      )}
-
-      {profileSettingsOpen && (
-        <SpaceProfileSettingsDialog
-          session={session}
-          actions={actions}
-          avatarPresets={spaceData.avatarPresets}
-          onClose={() => setProfileSettingsOpen(false)}
         />
       )}
 

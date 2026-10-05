@@ -22,7 +22,9 @@ export interface InitialMessageCron {
 
 /** Launcher-to-Chat first-turn handoff. Security: provider ids only, no keys. */
 export interface InitialMessage {
+  primaryContext?: import("../../../shared/agentMentions").DesktopPrimaryContext;
   text: string;
+  agentMentions?: import("../../../shared/agentMentions").AgentMentionSnapshot[];
   images?: ImageAttachment[];
   permissionMode?: PermissionMode;
   mcpEnabledServers?: string[];

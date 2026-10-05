@@ -6,7 +6,7 @@
 
 MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端。React Renderer 提供多 Tab 工作区；Rust/Tauri 拥有桌面生命周期、本地持久化与系统能力；Node.js Sidecar 通过 SessionEngine 接入 Claude Agent SDK、Integrated DSH 与外部 Agent Runtime。
 
-主要产品域包括对话与 Goal、Task 自动化、Agent Channel、Record/本地语音、文档转换、MCP/Skill/Plugin、内嵌终端与浏览器，以及实验室 Cloud Space。
+主要产品域包括对话与 Goal、Task 自动化、Agent Channel、Record/本地语音、文档转换、MCP/Skill/Plugin、内嵌终端与浏览器，以及 Cloud Space（协作空间）与 AgentNet（局域网络）。
 
 ## 技术与进程边界
 
@@ -118,7 +118,7 @@ Tab API / Global API
   → 当前 Sidecar
 ```
 
-WebView 只有已登记的大载荷端点可以原生读取数据面，当前为 `/refs/:id` 与 `/attachment/*`。这些端点必须同时满足 CORS、CSP、大小限制和路径安全约束；不得把例外扩展到普通 API。
+WebView 只有已登记的大载荷端点可以原生读取数据面，当前为 `/refs/:id` 与 `/api/attachment/tool/*`。这些端点必须同时满足 CORS、CSP、大小限制和路径安全约束；不得把例外扩展到普通 API。
 
 Rust SSE supervisor 绑定稳定的 `connectionKey + SidecarOwner`，每次连接前重新解析当前 process generation。已恢复历史 Tab 以 REST snapshot 为 baseline，SSE 按连续 revision 增量推进；尚未采用 REST baseline 的 SSE-native 新生会话可在重连时采用有序 cold-history snapshot，详见 [V2 transcript](./tech_docs/session_transcript_v2.md)。新 JSON 事件必须加入 Renderer 白名单，Session-scoped 事件必须携带并校验 `sessionId`。
 
@@ -182,6 +182,12 @@ Record 的物理音轨与媒体时钟由 RecordingManager 持有；Media Worker 
 
 详见 [Pit-of-Success](./tech_docs/pit_of_success.md)、[Tool Attachment](./tech_docs/tool_attachment_pipeline.md)、[文档转换](./tech_docs/document_processing.md) 和 [录音与语音识别](./tech_docs/recording_and_speech_recognition.md)。
 
+### Agent 网络与跨仓库协议
+
+MyAgents 只包含客户端实现；`src/server/agent-network/` 是本机 Node Sidecar 适配层。Cloudflare 中转和网络设置属于独立 `MyAgents_AgentNet` 仓库，官方账号与签发属于 `MyAgents_space`。共享协议只定义通信契约，不拥有连接、登录状态或任务执行。
+
+协议源码由 `MyAgents_AgentNet/packages/agent-network-protocol/` 维护，客户端只提交 `vendor/agent-network-protocol/` 中的固定版本包与来源清单。TypeScript 通过锁定 npm 依赖消费；Rust 在构建时校验同一包的 SHA-256，将 Schema/fixtures 投影到 Cargo `OUT_DIR`，不保留第二份可编辑协议。普通安装、测试和构建不访问私有服务端仓库或平级 checkout。源码归属与产物更新见 [Agent 网络：公共协议与仓库分发](./tech_docs/agent_network.md#公共协议与仓库分发)。
+
 ## 模块地图
 
 | 模块 | Owner 与边界 | 详细文档 |
@@ -213,6 +219,7 @@ Record 的物理音轨与媒体时钟由 RecordingManager 持有；Media Worker 
 | 托管浏览器工具 | Rust 持有 Chromium 资源、Session capability 与身份持久化；Global Sidecar Registry 持有浏览器/Context，MCP backend 借用 | [托管浏览器](./tech_docs/managed_browser.md) |
 | Floating Companion | Rust 独立窗口 + Renderer 轻量 WebView；以 `Companion` owner 复用 Product Session | [Session](./tech_docs/session_architecture.md) |
 | Cloud Space | Rust connector；登录、Cloud IO、Registered Agent 与 delivery | [Cloud Space](./tech_docs/space_cloud.md)、[Delivery protocol](./tech_docs/space_issue_delivery_protocol.md) |
+| Agent 网络 | Rust App identity/connector/TLS；Node 原 Inbox/SessionEngine；独立 AgentNet Worker/SQLite DO 中转 | [Agent 网络](./tech_docs/agent_network.md) |
 | Theme | Renderer app-global Theme owner；Appearance 只是明暗偏好 | [Theme](./tech_docs/theme_system.md) |
 | i18n | shared locale policy + Renderer resources + Rust native mirror | [i18n](./tech_docs/i18n_architecture.md) |
 | Logging / Analytics | 各业务 owner 产生有界事件；统一管道负责投影和持久化 | [日志](./tech_docs/unified_logging.md)、[埋点](./tech_docs/analytics_design.md) |

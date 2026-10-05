@@ -642,12 +642,7 @@ interface ChatProps {
   /** Called when user renames the session */
   onRenameSession?: (newTitle: string) => void;
   /** Called when user forks session at a specific assistant message — App creates new tab */
-  onForkSession?: (
-    newSessionId: string,
-    agentDir: string,
-    title: string,
-    initialMessage?: string,
-  ) => Promise<boolean>;
+  onForkSession?: (newSessionId: string, agentDir: string, title: string, initialMessage?: string, context?: import("../../shared/agentMentions").QueryMentionContext) => Promise<boolean>;
   /** App-owned fresh-session launch for a runtime-backed provider switch. */
   onLaunchRuntimeBackedProviderSession?: (
     project: Project,
@@ -2588,7 +2583,7 @@ export default function Chat({
           });
           const startedKind = await startScheduledTask(launchMessage.text);
           if (startedKind === 'goal') {
-            await sendMessage(
+            const admitted = await sendMessage(
               launchMessage.text,
               launchMessage.images,
               effectivePermission,
@@ -2597,15 +2592,14 @@ export default function Chat({
                 ? undefined
                 : providerEnv,
               undefined,
-              inputUsesExternalRuntimeControls
-                ? undefined
-                : (launchMessage.reasoningEffort ?? reasoningEffort),
-              inputUsesExternalRuntimeControls ? undefined : providerRoute,
+              inputUsesExternalRuntimeControls ? undefined : (launchMessage.reasoningEffort ?? reasoningEffort),
+              inputUsesExternalRuntimeControls ? undefined : providerRoute, undefined, undefined, launchMessage.agentMentions, launchMessage.primaryContext,
             );
+            if (admitted === false) throw new Error(t("tabProvider.sendFailed", { ns: "app" }));
           }
         } else {
           // 5b. Normal send path.
-          await sendMessage(
+          const admitted = await sendMessage(
             launchMessage.text,
             launchMessage.images,
             effectivePermission,
@@ -2617,12 +2611,11 @@ export default function Chat({
             // launch value directly — the setReasoningEffort above isn't
             // visible in this closure (same-render state), and the first
             // message must already carry the launcher's choice.
-            inputUsesExternalRuntimeControls
-              ? undefined
-              : (launchMessage.reasoningEffort ?? reasoningEffort),
+            inputUsesExternalRuntimeControls ? undefined : (launchMessage.reasoningEffort ?? reasoningEffort),
             inputUsesExternalRuntimeControls ? undefined : providerRoute,
-            launchMessage.requiredSystemSkill,
+            launchMessage.requiredSystemSkill, undefined, launchMessage.agentMentions, launchMessage.primaryContext,
           );
+          if (admitted === false) throw new Error(t("tabProvider.sendFailed", { ns: "app" }));
         }
 
         // 6. Retire the launch request. TabProvider's immediate send projection
@@ -2641,7 +2634,7 @@ export default function Chat({
         // without losing what they typed. Pre-PRD-0.2.7 the toast just said
         // "请重试" while the textarea was empty, silently dropping the draft.
         try {
-          chatInputRef.current?.setValue(launchMessage.text);
+          chatInputRef.current?.setValue(launchMessage.text,{agentMentions:launchMessage.agentMentions, primaryContext:launchMessage.primaryContext});
           if (launchMessage.images && launchMessage.images.length > 0) {
             chatInputRef.current?.setImages(launchMessage.images);
           }
@@ -4802,6 +4795,7 @@ export default function Chat({
       text: string,
       images?: ImageAttachment[],
       _permissionMode?: PermissionMode,
+      context?: import('../../shared/agentMentions').QueryMentionContext,
       explicitReply?: AsyncQuestionReply,
       retryFailedMessageId?: string,
     ): Promise<boolean | void> => {
@@ -4952,6 +4946,8 @@ export default function Chat({
           inputUsesExternalRuntimeControls ? undefined : providerRoute,
           undefined,
           reply,
+          context?.agentMentions,
+          context?.primaryContext,
           retryFailedMessageId,
         );
         if (admitted && reply)
@@ -5006,39 +5002,16 @@ export default function Chat({
   const handleSendMessageRef = useRef(handleSendMessage);
   handleSendMessageRef.current = handleSendMessage;
 
-  const questionActions = useMemo<AsyncQuestionActions>(
-    () => ({
-      answered: [...historyMessages, ...messages].flatMap((message) =>
-        message.role === 'user' && message.asyncQuestionReply
-          ? [message.asyncQuestionReply]
-          : [],
-      ),
-      queued: queuedMessages.flatMap((message) =>
-        message.asyncQuestionReply ? [message.asyncQuestionReply] : [],
-      ),
-      disabled: isSessionLoading || !isConnected || sessionState === 'stopping',
-      onReply: async (reply, text) =>
-        (await handleSendMessageRef.current(
-          text,
-          undefined,
-          undefined,
-          reply,
-        )) === true,
-      onCompose: (reply, title) => {
-        setQuestionDraft({ sessionId, reply, title });
-        inputRef.current?.focus();
-      },
-    }),
-    [
-      historyMessages,
-      messages,
-      queuedMessages,
-      isSessionLoading,
-      isConnected,
-      sessionState,
-      sessionId,
-    ],
-  );
+  const questionActions = useMemo<AsyncQuestionActions>(() => ({
+    answered: [...historyMessages, ...messages].flatMap(message => message.role === 'user' && message.asyncQuestionReply ? [message.asyncQuestionReply] : []),
+    queued: queuedMessages.flatMap(message => message.asyncQuestionReply ? [message.asyncQuestionReply] : []),
+    disabled: isSessionLoading || !isConnected || sessionState === 'stopping',
+    onReply: async (reply, text) => (await handleSendMessageRef.current(text, undefined, undefined, undefined, reply)) === true,
+    onCompose: (reply, title) => {
+      setQuestionDraft({ sessionId, reply, title });
+      inputRef.current?.focus();
+    },
+  }), [historyMessages, messages, queuedMessages, isSessionLoading, isConnected, sessionState, sessionId]);
 
   // Triggered from the SystemPromptsPanel empty state ("智能生成" card). Closes the
   // workspace settings overlay and dispatches `/init` to the current Tab so the user
@@ -5080,7 +5053,7 @@ export default function Chat({
               }
             : null,
         );
-        chatInputRef.current?.setValue(restored?.text ?? cancelledText);
+        chatInputRef.current?.setValue(restored?.text ?? cancelledText, { agentMentions: queuedMsg?.agentMentions, primaryContext: queuedMsg?.primaryContext });
         // Restore images if the queued message had them
         // Note: We only have preview data URLs (not File blobs) to avoid memory leaks,
         // so we reconstruct ImageAttachment with a minimal placeholder File.
@@ -5911,6 +5884,7 @@ export default function Chat({
     const snapshot = messagesRef.current.slice();
     const composerSnapshot = {
       value: chatInputRef.current?.getCurrentValue() ?? '',
+      context: chatInputRef.current?.getQueryContext(),
       images: chatInputRef.current?.getImages() ?? [],
     };
     const rewindSessionId = sessionIdRef.current;
@@ -5952,7 +5926,7 @@ export default function Chat({
         if (r && !r.success) {
           // 后端明确返回失败 → 回滚 UI
           setMessages(snapshot);
-          chatInputRef.current?.setValue(composerSnapshot.value);
+          chatInputRef.current?.setValue(composerSnapshot.value, composerSnapshot.context);
           chatInputRef.current?.setImages(composerSnapshot.images);
           const error = r.errorCode
             ? t(`shell.toasts.conversationError.${r.errorCode}`)
@@ -6014,7 +5988,7 @@ export default function Chat({
           setMessages(snapshot);
         }
         if (recovery.restoreComposerSnapshot) {
-          chatInputRef.current?.setValue(composerSnapshot.value);
+          chatInputRef.current?.setValue(composerSnapshot.value, composerSnapshot.context);
           chatInputRef.current?.setImages(composerSnapshot.images);
         }
         if (transportOutcome === 'committed') {
@@ -6149,6 +6123,7 @@ export default function Chat({
       void handleSendMessageRef.current(
         typeof userMsg.content === 'string' ? userMsg.content : '',
         restoreMessageImages(userMsg.attachments),
+        undefined,
         undefined,
         undefined,
         userMsg.id,

@@ -98,7 +98,8 @@ const mocks = vi.hoisted(() => {
     getAndClearLastAgentError: vi.fn<() => string | null>(() => null),
     getCurrentTurnIdentity: vi.fn(() => state.builtinTurnIdentity),
     getCurrentImBridgeTurnContext: vi.fn(() => state.builtinImContext),
-    getDispatchedTurnIdentity: vi.fn(() => (
+    isBuiltinWaitingForUser: () => false,
+  getDispatchedTurnIdentity: vi.fn(() => (
       state.builtinDispatchedQueueId
         ? { queueId: state.builtinDispatchedQueueId }
         : state.builtinTurnIdentity
@@ -190,7 +191,7 @@ const mocks = vi.hoisted(() => {
     getExternalLiveSessionSnapshot: vi.fn<(targetSessionId: string) => Record<string, unknown> | null>(() => null),
     getExternalCurrentTurnIdentity: vi.fn(() => state.externalTurnIdentity),
     getExternalQueueStatus: vi.fn(() => [{ id: 'xq1', messagePreview: 'hello' }]),
-    getExternalPendingInteractiveRequests: vi.fn(() => []),
+    getExternalPendingInteractiveRequests: vi.fn<() => Array<{ type: string; data: Record<string, unknown> }>>(() => []),
     getExternalSessionId: vi.fn(() => 'external-session'),
     getExternalNativeSessionId: vi.fn(() => 'runtime-thread-id'),
     getExternalSessionModel: vi.fn(() => 'gpt-5'),
@@ -219,6 +220,8 @@ const mocks = vi.hoisted(() => {
     respondExternalPlanApproval: vi.fn(async () => true),
     respondExternalPermission: vi.fn(async () => true),
     restoreExternalSessionState: vi.fn(async (): Promise<{ success: boolean; error?: string }> => ({ success: true })),
+    enqueueExternalTurnBoundaryOperation: vi.fn<(...args: unknown[]) => { queued: boolean; dispatch: Promise<{ queued: boolean; error?: string }> }>(() => ({ queued: true, dispatch: Promise.resolve({ queued: true }) })),
+    enqueueExternalSendForInbox: vi.fn<(...args: unknown[]) => { queued: boolean; dispatch: Promise<{ queued: boolean; error?: string }> }>(() => ({ queued: true, dispatch: Promise.resolve({ queued: true }) })),
     sendExternalMessage: vi.fn<(...args: unknown[]) => Promise<{
       queued: boolean;
       error?: string;
@@ -458,6 +461,9 @@ vi.mock('../runtimes/external-session', () => ({
   respondExternalPermission: mocks.respondExternalPermission,
   restoreExternalSessionState: mocks.restoreExternalSessionState,
   sendExternalMessage: mocks.sendExternalMessage,
+  enqueueExternalTurnBoundaryOperation: mocks.enqueueExternalTurnBoundaryOperation,
+  enqueueExternalSendForInbox: mocks.enqueueExternalSendForInbox,
+  getExternalExecutionTurnId: () => mocks.state.externalCurrentQueueId,
   setExternalModel: mocks.setExternalModel,
   setExternalPermissionMode: mocks.setExternalPermissionMode,
   setExternalReasoningEffort: mocks.setExternalReasoningEffort,
@@ -646,6 +652,22 @@ describe('session-engine selector and adapters', () => {
     );
   });
 
+
+  it('projects root-blocking interactions without treating child approvals as Session suspension', () => {
+    mocks.state.useExternal = true;
+    mocks.state.externalBusy = true;
+    mocks.getExternalPendingInteractiveRequests.mockReturnValue([{ type: 'permission:request', data: { blocksRoot: false, rootToolUseId: 'parent', toolUseId: 'child' } }]);
+    expect(getSessionEngine().getLiveSessionState().waitingForUser).toBe(false);
+    mocks.getExternalPendingInteractiveRequests.mockReturnValue([{ type: 'permission:request', data: { blocksRoot: true, rootToolUseId: 'parent', toolUseId: 'nested-root-call' } }]);
+    expect(getSessionEngine().getLiveSessionState().waitingForUser).toBe(true);
+    mocks.getExternalPendingInteractiveRequests.mockReturnValue([{ type: 'permission:request', data: { toolUseId: 'unknown' } }]);
+    expect(getSessionEngine().getLiveSessionState().waitingForUser).toBe(false);
+    for (const type of ['permission:request','plan:approval','ask-user:question']) {
+      mocks.getExternalPendingInteractiveRequests.mockReturnValue([{ type, data: { blocksRoot: true } }]);
+      expect(getSessionEngine().getLiveSessionState().waitingForUser).toBe(true);
+    }
+    mocks.getExternalPendingInteractiveRequests.mockReturnValue([]);
+  });
   it('preserves exact Registered Agent birth origin through builtin and external inbox adapters', async () => {
     const birthOrigin = {
       kind: 'registered-agent',
@@ -684,6 +706,8 @@ describe('session-engine selector and adapters', () => {
       {
         allowLazySessionMaterialization: true,
         sessionBirthOrigin: birthOrigin,
+        queueResponseModeOverride: 'realtime',
+        inputSource: 'inbox',
         channelDelivery: {
           user: 'none',
           assistant: 'session-binding',
@@ -693,11 +717,8 @@ describe('session-engine selector and adapters', () => {
 
     mocks.state.useExternal = true;
     await getSessionEngine().enqueueInboxMessage(request);
-    expect(mocks.sendExternalMessage).toHaveBeenLastCalledWith(
+    expect(mocks.enqueueExternalSendForInbox).toHaveBeenLastCalledWith(
       request.text,
-      undefined,
-      undefined,
-      undefined,
       expect.objectContaining({
         sessionId: 'delivery-session',
         workspacePath: '/workspace',
@@ -709,8 +730,6 @@ describe('session-engine selector and adapters', () => {
           assistant: 'session-binding',
         },
       }),
-      undefined,
-      expect.any(Function),
     );
   });
 
@@ -726,20 +745,14 @@ describe('session-engine selector and adapters', () => {
 
     expect(mocks.enqueueUserMessage.mock.calls.at(-1)?.[11]).toMatchObject({
       queueId: 'request-builtin',
+      queueResponseModeOverride: 'realtime',
+      inputSource: 'inbox',
       beforeDispatch: builtinGuard,
     });
     await expect(builtinResult.dispatchAcceptance).resolves.toEqual({ accepted: true });
 
     mocks.state.useExternal = true;
     const externalGuard = vi.fn(async () => ({ accepted: true as const }));
-    mocks.sendExternalMessage.mockImplementationOnce(async (...args: unknown[]) => {
-      const options = args[4] as { beforeDispatch?: () => Promise<{ accepted: boolean }> };
-      const onDispatchAccepted = args[6] as (() => void) | undefined;
-      const acceptance = await options.beforeDispatch?.();
-      if (acceptance?.accepted) onDispatchAccepted?.();
-      return { queued: true };
-    });
-
     const externalResult = await getSessionEngine().enqueueInboxMessage({
       text: 'fresh external work',
       sessionId: 'fresh-external',
@@ -748,28 +761,28 @@ describe('session-engine selector and adapters', () => {
       beforeDispatch: externalGuard,
     });
 
-    expect(mocks.sendExternalMessage.mock.calls.at(-1)?.[4]).toMatchObject({
+    expect(mocks.enqueueExternalSendForInbox.mock.calls.at(-1)?.[1]).toMatchObject({
       queueId: 'request-external',
       beforeDispatch: externalGuard,
     });
-    await expect(externalResult.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(externalResult.dispatchAcceptance).resolves.toMatchObject({ accepted: true });
 
-    mocks.sendExternalMessage.mockImplementationOnce(async (...args: unknown[]) => {
-      const options = args[4] as { beforeDispatch?: () => Promise<{ accepted: boolean }> };
-      const onDispatchAccepted = args[6] as (() => void) | undefined;
-      const acceptance = await options.beforeDispatch?.();
-      if (acceptance?.accepted) onDispatchAccepted?.();
-      return { queued: false, error: 'runtime failed after irreversible admission' };
+    let completeDispatch!: (value: { queued: boolean; error?: string }) => void;
+    mocks.enqueueExternalSendForInbox.mockReturnValueOnce({ queued: true,
+      dispatch: new Promise(resolve => { completeDispatch = resolve; }),
     });
-    const failedAfterAdmission = await getSessionEngine().enqueueInboxMessage({
-      text: 'fresh external work that later fails',
-      sessionId: 'fresh-external-failure',
-      workspacePath: '/workspace',
-      queueId: 'request-external-failure',
+    const busyResult = await getSessionEngine().enqueueInboxMessage({
+      text: 'busy target work', sessionId: 'fresh-external', workspacePath: '/workspace',
       beforeDispatch: externalGuard,
     });
-    expect(failedAfterAdmission.error).toBe('runtime failed after irreversible admission');
-    await expect(failedAfterAdmission.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    expect(busyResult.queued).toBe(true);
+    expect(externalGuard).not.toHaveBeenCalled();
+    let dispatchSettled = false;
+    void busyResult.dispatchAcceptance?.then(() => { dispatchSettled = true; });
+    await Promise.resolve();
+    expect(dispatchSettled).toBe(false);
+    completeDispatch({ queued: false, error: 'guard rejected before dispatch' });
+    await expect(busyResult.dispatchAcceptance).resolves.toMatchObject({ accepted: false, error: 'guard rejected before dispatch' });
   });
 
   it('materializes Grok subscription routes as managed builtin ProviderEnv', async () => {
@@ -963,6 +976,7 @@ describe('session-engine selector and adapters', () => {
     expect(engine.getLiveSessionState()).toEqual({
       sessionState: 'idle',
       isBusy: true,
+      waitingForUser: false,
     });
 
     expect(engine.getRuntimeIdentity()).toEqual({

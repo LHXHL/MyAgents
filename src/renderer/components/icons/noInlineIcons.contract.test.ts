@@ -13,6 +13,8 @@ const ALLOWED = new Set([
   'components/file-icon/fileIconGlyphs.tsx',
   'assets/workspace-icons/glyphs.tsx',
   'components/launcher/WorkspaceIcon.tsx',
+  // The shared brand wordmark has its own optical sizes; it is not a UI glyph.
+  'components/brand/MyAgentsLogotype.tsx',
   // Data visualisations, not icons.
   'components/UsageStatsPanel.tsx',
   'components/ContextUsageIndicator.tsx',

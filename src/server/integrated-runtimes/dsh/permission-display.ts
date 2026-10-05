@@ -9,7 +9,7 @@ export async function dshPermissionReview(
   details: Pick<MethodParams<'host/interaction/request'>, 'review' | 'reviewRef'>,
   attachments: DshAttachmentRegistry,
   sessionId: string,
-): Promise<{ review?: PermissionReview; reviewRef?: LargeValueRef }> {
+): Promise<{ review?: PermissionReview; reviewRef?: LargeValueRef; affectsRootActivity?: boolean }> {
   const complete = details.reviewRef === undefined ? details.review : await attachments.readJson(details.reviewRef) as PermissionReview;
   if (complete === undefined) return {};
   const payload = await maybeSpill(JSON.stringify(complete), {
@@ -17,5 +17,6 @@ export async function dshPermissionReview(
     // A pending human interaction owns this reference until settlement or Session cleanup.
     ttlMs: Number.MAX_SAFE_INTEGER - Date.now(),
   });
-  return 'inline' in payload ? { review: complete } : { reviewRef: payload };
+  const affectsRootActivity = complete.actor.origin === 'root';
+  return 'inline' in payload ? { review: complete, affectsRootActivity } : { reviewRef: payload, affectsRootActivity };
 }

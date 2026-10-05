@@ -9,6 +9,7 @@ import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import { fileUrlToPath } from './workspaceFileLinks';
+import { parseAppRouteUrl } from '../../shared/appRoute';
 
 /** Local references use the existing file scheme across the Markdown boundary.
  * Normalize drive spelling before sanitize, which otherwise sees C: as a scheme.
@@ -78,6 +79,7 @@ function rehypeLocalFileReferences() {
 /** Only the application-owned image/link consumers may retain valid file URLs.
  * Other schemes/attributes still follow ReactMarkdown's default URL policy. */
 export const MARKDOWN_URL_TRANSFORM: UrlTransform = (value, key, node) => {
+  if (key === 'href' && node.tagName === 'a' && parseAppRouteUrl(value)) return value;
   if (((key === 'src' && node.tagName === 'img') || (key === 'href' && node.tagName === 'a'))
     && fileUrlToPath(value)) return value;
   return defaultUrlTransform(value);
@@ -89,7 +91,7 @@ export const MARKDOWN_SANITIZE_SCHEMA = {
   ...defaultSchema,
   protocols: {
     ...defaultSchema.protocols,
-    href: [...(defaultSchema.protocols?.href ?? []), 'file'],
+    href: [...(defaultSchema.protocols?.href ?? []), 'file', 'myagents'],
     src: [...(defaultSchema.protocols?.src ?? []), 'file'],
   },
   tagNames: [

@@ -97,7 +97,7 @@ export type PathSafetyResult = PathSafetyOk | PathSafetyErr;
  * - folds .. / . components
  * - rejects system blacklist + credential paths + OS-specific sensitive subdirs
  *
- * Read-side hardening (CLAUDE.md red line "evil_link → /etc/passwd"):
+ * Read-side hardening (pit_of_success.md#workspace-files, "evil_link → /etc/passwd"):
  *   `canonicalizeSymlinks=true` (default) resolves symlinks via fs.realpath
  *   and runs the blacklist against the resolved path. Prevents a `~/.codex/
  *   sessions/evil.png → /etc/passwd` symlink from leaking secrets through

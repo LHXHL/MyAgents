@@ -26,7 +26,7 @@ rg -n "\\[telegram\\]|\\[dingtalk\\]|\\[feishu\\]|\\[im\\]|\\[bridge\\]|OpenClaw
 
 ## 判断
 
-- `agent list` 只看配置，`agent runtime-status` 看实时连接状态。不要混用。
+- `agent list` 合并本机与当前可调用网络 Agent；它不证明某个 IM Channel 在线。先按本地 ID/isLocal 选对象，再用 `agent runtime-status` 查看 Channel 实时连接状态。
 - 内置 Channel 凭证错误：通常在对应 `[telegram]` / `[dingtalk]` 日志里有认证或连接失败。
 - 社区插件安装失败：看 `[bridge] npm install` 的 stderr，通常是网络、proxy、registry、包名或平台 native 依赖。
 - Bridge 进程启动失败：查 health check、entry 解析、OpenClaw SDK shim compat、缺失 `plugin-sdk/*` 子路径。

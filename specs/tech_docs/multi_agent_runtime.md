@@ -224,7 +224,9 @@ desktop response mode 决定 busy 时尝试 same-turn steer 还是排到 turn bo
 
 native steer 明确返回“未接收”时，同一个 operation 可以按原 admission order降级到 turn-boundary queue；timeout、process exit 等不确定错误不能自动重放。same-turn steer 不应用新的 model/permission/reasoning snapshot。
 
-IM、Inbox、Task 与 scheduled turn 保持 turn-level admission，不借用 desktop steer。用户显式 force-start、取消与 Stop 都由 operation queue 按 exact queue id重排或结算，不能清除无关后续项。
+SessionEngine 的可信 Inbox ingress 固定 realtime，不读取手动 query 设置，也不根据正文的 `system-reminder` 标签判断来源。原 operation queue 在 running 时选择可实时消费的输入，可越过等待下一轮的手动消息与配置 operation；配置仍只在 boundary 生效。同消费时机的输入保持接纳顺序。builtin 使用 SDK async queue，DSH 使用 `turn/followUp`，Codex 使用 `turn/steer`；native 消费回执才上屏并关联到实际轮次，RPC ack 不能代替消费确认。多个同轮已消费的请求各自保留 Inbox 回复关联，共享 terminal 结果；reply/watch notification 不注册自动回复。
+
+IM、Task 的直接执行与 scheduled turn 保持 turn-level admission。Task Comment 等通过 Inbox 投递的事件遵循 Inbox 策略。用户显式 force-start、取消与 Stop 都由 operation queue 按 exact queue id重排或结算，不能清除无关后续项。
 
 ### 6.3 配置变更
 

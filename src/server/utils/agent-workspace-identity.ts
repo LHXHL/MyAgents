@@ -19,7 +19,7 @@ import { randomUUID } from 'node:crypto';
 import { lstatSync } from 'node:fs';
 import { basename, isAbsolute, parse, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { broadcast } from '../sse';
+import { broadcastAppConfigChanged } from './app-config-events';
 import {
   atomicModifyConfig,
   atomicModifyProjects,
@@ -388,7 +388,7 @@ export async function registerWorkspaceAgent(
         { projectId, agentId: finalAgentId },
       );
     }
-    broadcast('config:changed', {
+    await broadcastAppConfigChanged({
       section: 'agent-identity',
       action: priorIdentity ? 'register-idempotent' : 'register',
       projectId,
@@ -438,12 +438,12 @@ export async function resolvePersistedAgentWorkspaceConflict(
     } catch (error) {
       // Project-first birth is already durable; never claim success or roll back
       // a valid user choice. Ordinary identity reconciliation can finish materialization.
-      broadcast('config:changed', { section: 'agent-identity', action: 'repair-deferred' });
+      await broadcastAppConfigChanged({ section: 'agent-identity', action: 'repair-deferred' });
       throw new WorkspaceAgentRegistrationError('AGENT_MATERIALIZATION_DEFERRED',
         'Workspace ownership was saved, but independent configurations are not confirmed. Refresh or restart MyAgents to finish recovery.',
         { cause: error instanceof Error ? error.message : String(error) });
     }
-    broadcast('config:changed', { section: 'agent-identity', action: 'resolve-conflict' });
+    await broadcastAppConfigChanged({ section: 'agent-identity', action: 'resolve-conflict' });
   });
 }
 
@@ -534,7 +534,7 @@ export async function resolvePersistedAgentWorkspaceRegistry(): Promise<Persiste
       relinkedProjectIds: projectResult.relinkedProjectIds,
     };
     if (registry.repaired) {
-      broadcast('config:changed', {
+      await broadcastAppConfigChanged({
         section: 'agent-identity',
         action: 'repair',
         createdAgentIds: registry.createdAgentIds,

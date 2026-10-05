@@ -3,7 +3,8 @@ name: external-myagents-cli
 description: >-
   为不了解 MyAgents 的本机外部 AI 补充产品背景、能力模型和公开 CLI 使用方式。
   收到 MyAgents 设置页的交接 Prompt 后读取；使用其中给出的绝对 CLI 路径和
-  MYAGENTS_API_TOKEN 操作 Workspace Agent、Session、Task、Record 与 Runtime 发现。
+  MYAGENTS_API_TOKEN 发现本地与同账号跨设备 Agent、委托和读取 Session，
+  以及操作本机 Task、Record 与 Runtime 发现。
 metadata:
   author: MyAgents
 ---
@@ -32,6 +33,7 @@ MyAgents 产品内部还可以管理模型 Provider、MCP/工具、Skill/Plugin�
 | --- | --- | --- |
 | 让一个本地项目拥有可持续对话的 AI | 注册目录为 Workspace Agent → 新建 Session → 后续 send/get | 获得稳定 Agent ID 和可继续的独立上下文 |
 | 把一件工作交给另一个 Agent 完成 | 找到目标 Agent → start 新 Session → 保存 Session ID → get 结果 | 当前 AI 不需要自己进入目标工作区 |
+| 委托同账号另一台设备上的 Agent | agent list 发现在线目标 → 使用完整跨设备 ID → start/send/get | 由目标设备的 MyAgents 执行，并可主动读取结果 |
 | 创建待办、定时任务或条件自动化 | 明确 Workspace → 创建 Task → 配置/启动 → get/runs 查看状态 | 工作进入 MyAgents 的持久 Task 生命周期 |
 | 先记下来，稍后再处理 | 创建 Record → 后续查看并整理为 Task | 信息不会只停留在当前对话里 |
 | 在创建 Task 前选择执行环境 | runtime list/describe → 使用返回的合法值 | 避免猜测 Runtime、模型或权限模式 |
@@ -42,7 +44,7 @@ MyAgents 产品内部还可以管理模型 Provider、MCP/工具、Skill/Plugin�
 已有本地目录 → Workspace Agent → Session start → Session send → Session get
 ```
 
-Task 和 Record 可以在这条链路之外保存更长期的工作意图；Runtime discovery 用来了解当前机器真实支持的环境，并为支持 override 的 Task 选择合法值。Session 始终继承目标 Agent 已有的执行配置，外部调用不能临时覆盖。
+Task 和 Record 可以在这条链路之外保存更长期的工作意图；Runtime discovery 用来了解当前机器真实支持的环境，并为支持 override 的 Task 选择合法值。新 Session 继承目标 Agent 的配置，已有 Session 继续使用自己的执行配置；外部 Session 调用不能临时覆盖。
 
 ### 开始调用前
 
@@ -115,6 +117,27 @@ $env:MYAGENTS_API_TOKEN = "<token>"
 
 `agent create` 不会创建目录、初始化 Git、复制模板或自动启动 Session。同一未归档、正常可见的 workspace 重复注册会返回同一个 Agent。保存成功响应中的 `agentId`；不要用显示名称或路径猜 ID。
 
+### 同账号跨设备 Agent
+
+`agent list` 合并本地 Agent 与同账号其它设备上在线、已开放调用的 Agent；`--archived` 只列本地归档对象。JSON 中 `isLocal` 区分归属，`deviceName` 帮助选择目标，`agentId` / `selector` 才是调用地址。`networkStatus` 和 `complete` 表示网络发现状态与目录是否完整；网络异常时本地结果仍可返回，不能把不完整目录当作没有远端 Agent。
+
+- 本地 Agent 使用返回的普通 ID；跨设备 Agent 使用完整的 `ma-agent:1:...` ID，跨设备 Session 使用完整的 `ma-session:1:...` ID。原样保存和传递，不截短、解码或按名称拼接。
+- `agent show`、`session list/start` 接受 Agent ID；`session send/get/state` 接受 Session ID。本地和跨设备使用相同命令，无需额外网络参数。
+- 跨设备调用要求本机网络连接可用，目标设备在线且目标 Agent 已开放。目标离线时调用失败，没有离线补投或自动重发。
+- Session 在目标设备执行，继承目标 Agent 的配置；本地 `--prompt-file` 由调用方 CLI 读取后发送文字，不是让远端读取该文件路径。
+
+跨设备路径同样先从成功 discovery 响应选目标：
+
+```text
+<CLI> agent list --json
+<CLI> agent show <returned-agentId> --json
+<CLI> session list --agent <returned-agentId> --json
+<CLI> session start --agent <returned-agentId> --prompt-file <local-request-file> --json
+<CLI> session get <returned-sessionId> --json
+```
+
+Agent 的注册、Task、Record 与 Runtime discovery 仍操作本机 Host；跨设备寻址不开放远端配置或文件管理。
+
 ### Runtime 发现
 
 适合查看当前机器安装了哪些执行 Runtime，以及某个 Runtime 支持哪些模型和权限模式。它只做发现，不修改 Provider 或 Agent 配置。
@@ -125,7 +148,7 @@ $env:MYAGENTS_API_TOKEN = "<token>"
 <CLI> runtime describe <runtime> --json
 ```
 
-在为支持 override 的 Task 选择 runtime/model/permissionMode 前先 describe，不要凭经验硬编码值。Session start 不接受这些临时 override，而是继承目标 Agent 的配置。
+在为支持 override 的 Task 选择 runtime/model/permissionMode 前先 describe，不要凭经验硬编码值。`models` 可能为空，例如 builtin 的模型来自 Provider；这不表示 Runtime 不支持模型。外部调用可读取 `agent show` 的未来 Session 默认值，未公开的 Provider 目录或诊断需在 App 内查看，不因响应中的恢复建议而调用非公开命令。Session start 不接受临时 override，而是继承目标 Agent 的配置。
 
 ### Session：委托、续聊与读取结果
 
@@ -135,22 +158,29 @@ $env:MYAGENTS_API_TOKEN = "<token>"
 
 ```text
 <CLI> session --help
+<CLI> session list --help
 <CLI> session start --help
+<CLI> session send --help
 <CLI> session get --help
+<CLI> session state --help
 ```
 
 核心链路：
 
 ```text
+<CLI> session list --agent <agentId> --limit 5 --json
 <CLI> session start --agent <agentId> --prompt-file <request-file> --json
 <CLI> session send <sessionId> --prompt-file <follow-up-file> --json
+<CLI> session state <sessionId> --json
 <CLI> session get <sessionId> --limit 5 --json
 ```
 
 - 保存 `start` 返回的 Product Session ID；后续 `send/get` 都使用这个 ID，不要替换成 Runtime 自己的 session 标识或投递 messageId。
 - 多行、较长或来自外部输入的 prompt 优先写入普通文本文件，再使用 `--prompt-file`，避免 shell 转义和注入。
-- 外部 `start/send` 是 one-way。成功回执只表示请求已接受或投递，不代表 AI 已执行成功；需要结果时主动 `session get`。
-- `session get` 默认返回最近 5 条非空 user/assistant 文本，按旧到新排列；工具调用、thinking 和隐藏协议不会作为正文返回。结合响应中的 `liveSessionState` 判断目标是否仍在执行；暂时没有新 assistant 正文不等于失败或完成。更早内容按 leaf help 使用 `before` 分页。
+- 外部 `start/send` 是 one-way。成功回执只表示请求已接受或投递，不代表 AI 已执行成功；需要结果时主动 `session get`。外部调用不提供自动结果回调或 `session watch/watches/unwatch`。
+- `session state` 只读返回 `idle`、`running` 或 `waiting_user_action`；后者要求目标用户处理审批、确认或必须回答的问题。查询不唤醒模型、不代替用户批准，`idle` 也不表示任务成功。
+- 状态不可读时返回查询错误，可按错误提示重试读取；不要把查询失败解释成目标 idle。
+- `session get` 默认返回最近 5 条非空 user/assistant 文本，按旧到新排列；工具调用、thinking 和隐藏协议不会作为正文返回。`isLive=true` 时 `liveSessionState` 投影目标当前状态；`isLive=false` 时它为 `null`，不代表错误。暂时没有新 assistant 正文不等于失败或完成。更早内容按 leaf help 使用 `before` 分页。
 - transport failure 或 `admission_unconfirmed` 可能表示结果不确定。保留已取得的 ID 并先查询，**不要自动重发**。
 
 ### Task Center 与自动化
@@ -177,7 +207,7 @@ $env:MYAGENTS_API_TOKEN = "<token>"
 - `task readme` 解释 Task/自动化模型；`task --help` 列出当前公开动作；选定动作后再读该 leaf help。
 - 调度、trigger、checkpoint、运行控制、状态更新、归档和删除等细节都按需发现，不需要预先注入整张命令表。
 - 执行接纳不等于最终成功。使用 `task get` 查看权威状态，使用 `task runs` 查看执行历史。
-- 删除等不可逆动作前，必须让用户确认准确目标。
+- 删除等不可逆动作前，核对准确目标并取得用户授权；已有明确授权时不重复确认。
 
 ### Record：轻量记录
 
@@ -187,9 +217,17 @@ $env:MYAGENTS_API_TOKEN = "<token>"
 <CLI> record --help
 <CLI> record create --help
 <CLI> record list --json
+<CLI> record get <recordId> --json
 ```
 
-创建多行、CJK 或包含 shell 元字符的文字时，优先按 leaf help 使用 content-file 输入。外部公开面只提供文字 Record 的创建和读取，不包含录音、转录、修改或删除。
+创建多行、CJK 或包含 shell 元字符的文字时，优先按 leaf help 使用 content-file 输入。外部公开面提供文字 Record 创建、已有文字/音频 Record 的列表与详情读取，以及精确 ID 删除；不提供录音发起、转录任务控制或修改。
+
+确需删除时，先读取详情核对准确目标并取得用户授权，再查 leaf help：
+
+```text
+<CLI> record delete --help
+<CLI> record delete <recordId> --json
+```
 
 ## 4. 调用边界与失败恢复
 
@@ -200,4 +238,4 @@ $env:MYAGENTS_API_TOKEN = "<token>"
 - 开关关闭或 token 失效时，请用户在「设置 → 外部调用」重新开启或注入当前 token，不要尝试绕过。
 - 参数、路径或 lifecycle 冲突时，根据 JSON `code`、错误说明和 suggestion 修正输入。mutation 响应丢失时先用只读命令核实，不自动重放。
 
-当前外部 CLI 不提供远程访问、HTTP/OpenAPI/SDK/MCP 接口、自动结果回调、exactly-once、Provider/MCP/Plugin/Skill/Tool/Channel/Space/Goal/Speech 管理，也不自动创建目录、初始化 Workspace 模板或 Git。目标超出公开帮助时，明确告诉用户需要在 MyAgents App 或 MyAgents 内部 Agent 中完成。
+外部 token 只用于本机 CLI 访问本机 Host；CLI 可借助 MyAgents Agent 网络委托同账号其它设备上的已开放 Agent。这不提供远程直连 Host 的 HTTP/OpenAPI/SDK/MCP 接口。当前公开面不提供自动结果回调、exactly-once、Provider/MCP/Plugin/Skill/Tool/Channel/Space/Goal/Speech 管理，也不自动创建目录、初始化 Workspace 模板或 Git。目标超出公开帮助时，明确告诉用户需要在 MyAgents App 或 MyAgents 内部 Agent 中完成。

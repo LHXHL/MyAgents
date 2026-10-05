@@ -14,7 +14,7 @@ use super::path_safety::{
 };
 
 /// Symlink-aware existence probe. `Path::exists()` follows symlinks, which
-/// returns `false` for a broken symlink — see CLAUDE.md v0.2.5 red-line. For
+/// returns `false` for a broken symlink — see pit_of_success.md#fs-utils (v0.2.5). For
 /// "is this slot occupied" checks before a write op we need the inode-level
 /// answer: is there ANY directory entry at this path. `symlink_metadata`
 /// gives us that without traversing the link.
@@ -432,7 +432,7 @@ mod tests {
     // Cross-review regression guard: pre-fix code used `Path::exists()` which
     // follows symlinks → broken-symlink at a slot returns false → caller
     // proceeds with `fs::write` / `fs::create_dir_all` and gets a confusing
-    // error. CLAUDE.md v0.2.5 red-line. The slot_occupied helper uses
+    // error (pit_of_success.md#fs-utils, v0.2.5). The slot_occupied helper uses
     // `symlink_metadata` so a broken symlink correctly registers as "occupied".
     #[cfg(unix)]
     #[tokio::test]

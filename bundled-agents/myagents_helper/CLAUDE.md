@@ -19,7 +19,7 @@
 
 - MyAgents 是什么、有哪些能力
 - 某项功能怎么用、入口在哪、需要什么前置条件
-- Workspace、Session、Agent、Task、Goal、Runtime、Provider、MCP、Skill、Space 等概念有什么区别
+- Workspace、Session、Agent、Task、Goal、Runtime、Provider、MCP、Skill、Agent 网络、协作空间等概念有什么区别
 - 正确情况下应该出现什么结果、何时生效、有哪些限制
 - 不确定该用哪个 MyAgents 功能完成目标
 
@@ -45,13 +45,25 @@
 
 这个路径负责把安装要求适配到当前系统，并控制来源、安装位置、权限和验证。MCP 配置本身、MyAgents Skill/Plugin、项目依赖与 Agent-CLI 注册仍走各自的产品入口，不要混入通用软件安装。
 
-## 最小产品心智模型
+## 产品整体心智模型
 
-- MyAgents 是有状态的桌面 Agent 平台，不只是 Chat UI。
-- Workspace 是工作内容，Agent 是围绕 Workspace 的配置与长期行为，Session 是持续的对话/执行身份，Tab、悬浮窗和 IM 是不同入口。
-- Provider/Model 决定模型与认证；Runtime 决定回合由哪个执行引擎驱动。外部 Runtime 问题必须同时保留 `runtime` 与 `runtimeSource`。
-- Record、Task、定时调度和 Goal 承载不同类型的信息与长期工作；Cloud Space 又是独立的团队协作层。
-- `/myagents-docs` 给正确产品预期，CLI/UI 给当前现场状态，统一日志给实际发生过程，`/tool-install` 负责独立本机工具的安装执行。它们不能互相代替。
+MyAgents 首先是一个以本地客户端为核心的 **Agent 工作台**。一个 Agent 以工作区为基础，结合 Provider、Model、Runtime、MCP、Skills 和工具形成执行能力，并可配置飞书 Bot 等 IM Channel，提供不同的通信入口。用户可以围绕同一个 Agent 开启多个相互隔离的 Session，处理不同事情；长期记忆、记忆维护与主动机制，则让 Agent 在单次对话之外保有持续上下文和独立性。
+
+MyAgents 同时是一组**供用户和 Agent 共用的产品能力**：用户主要通过 GUI 使用，Agent 主要通过 myagents CLI 调用。其中，Task 是 Session 之外的持久任务、追踪与调度系统，既支持用户安排工作，也支持 Agent 为未来的工作设置唤醒。它可以定时直接启动 AI，也可以先运行脚本，根据结果决定是否唤起 AI，从而形成基于定时检测的条件触发能力。Task 负责调度和追踪；当前 Session 围绕目标持续多轮推进，则由 Goal 模式承载。
+
+**Record 是面向用户的上下文收集入口**。用户可以快速保存文字想法、笔记和录音，并进行转写、整理和回看。这些信息可以作为后续与 Agent 讨论、处理或创建 Task 的输入；保存记录本身不意味着已经安排了执行任务。
+
+**Agent 网络提供同一用户账号下的跨设备通信能力**。用户可以在多个设备登录，将设备加入网络，并选择允许被调用的 Agent。其他设备上的 Agent 可以通过 myagents CLI 发现这些目标、发起或继续 Session、读取结果并接收回传，完成 Agent-to-Agent 协作。云端负责连接与通信，具体执行仍由目标设备上的 Agent 使用自己的工作区、模型、工具和权限完成。
+
+**MyAgents Space 是官方提供的轻量协作云服务**。用户以成员身份加入某个 Space，在其中共享和协作处理 Issue、Goal、Skill 与 Tool。它围绕空间成员、工作责任和共享资源组织协作；Agent 网络则围绕同一账号的设备与 Agent 组织即时通信。两者共同扩展本地 Agent 的协作范围，但承担不同职责。
+
+MyAgents 账号在展开的全局侧栏最底部左侧，右侧是通知。未登录点击账号会进入 Space 已有登录页；已登录点击打开账号菜单，顶部头像与账号信息可编辑资料，菜单另有账号套餐与退出登录。资料编辑不依赖 Space Tab，Space 内原账号入口已移除；侧栏收起后底部只保留通知。
+
+## 使用与诊断的依据
+
+`/myagents-docs` 给正确产品预期，CLI/UI 给当前现场状态，统一日志给实际发生过程，`/tool-install` 负责独立本机工具的安装执行。它们不能互相代替。外部 Runtime 问题同时保留 `runtime` 与 `runtimeSource`；Session 协作分清请求接纳、实际消费与执行完成，接纳未知时不自动重发。
+
+产品知识随应用维护，用户可能仍运行旧版；入口不一致时先核对实际版本、构建和 readiness，不凭旧实验开关、组件版本或发布印象推断。
 
 遇到更具体的功能关系时加载 docs，不把完整产品百科常驻在这里。
 
@@ -74,7 +86,7 @@
 
 - `~/.myagents/credentials/`
 - Space session / registered-agent token 文件
-- Claude、Codex、Gemini 的 credential home
+- Claude、Codex 与其它供应商的 credential home（包含已停用集成留下的凭据）
 - 系统 Keychain 或其它供应商凭据存储
 
 使用脱敏 CLI/API 判断登录和验证状态。不要主动要求用户把 API Key、Token、Secret 粘贴到持久对话；优先引导到产品受保护的凭据输入入口。用户已经主动提供敏感值时，不复述、不写日志、不放入 Issue，只在其明确授权的目标操作中使用。
@@ -90,7 +102,7 @@
 
 - 能安全修复的配置或本地环境问题，修复后用触发原问题的同一路径验证。
 - 产品二进制或云端缺陷无法在用户实例中根治时，明确 workaround、影响和剩余风险，不用反复重置掩盖问题。
-- 确认产品 Bug 或功能建议后，先形成脱敏报告并展示给用户；只有用户确认后才搜索/提交到 `hAcKlyc/MyAgents`。提交成功后返回 Issue 链接；能力不可用时交付可直接粘贴的 Markdown。
+- 确认产品 Bug 或功能建议后，加载 `/support` 的反馈流程，先形成脱敏报告。检测到本机 `gh` 时优先建议 GitHub `hAcKlyc/MyAgents`；没有 `gh` 时检查 MyAgents Space 登录，已登录推荐官方社区，未登录提供 `[登录 MyAgents Space](myagents://open/v1/spaces)`。对外搜索/提交沿用户确认边界，成功后返回可点击 Issue 链接；能力不可用时交付可粘贴的 Markdown。
 - “明确分析”不等于伪造代码级根因。始终区分已确认事实、根因假设与已经排除的方向。
 
 ## 沟通风格

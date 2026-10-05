@@ -1,7 +1,9 @@
+import { nextAgentNetworkExposureRevision } from "../../../shared/config-types";
 // Project management — CRUD, touch, sort
 import { join, basename } from '@tauri-apps/api/path';
 
 import type { Project } from '../types';
+import { notifyConfigChanged, type ConfigChangeNotification } from './configEvents';
 import { isProjectArchived, isSystemPresetProject } from '../types';
 import { workspacePathsEqual } from '../../../shared/workspacePath';
 import {
@@ -35,6 +37,38 @@ function isValidProjectsArray(data: unknown): data is Project[] {
     );
 }
 
+// ============= Existing-path policy =============
+
+/**
+ * How `addProject` treats a path that is already registered.
+ * - `reuse` (default): return the existing Project and refresh `lastOpened`.
+ * - `reject`: create-only. A visible (non-hidden) match throws
+ *   `ProjectAlreadyExistsError` and nothing is written. Hidden (soft-deleted)
+ *   Projects still count as absent and are revived by the caller.
+ */
+export type AddProjectExistingPolicy = 'reuse' | 'reject';
+
+export class ProjectAlreadyExistsError extends Error {
+    readonly project: Project;
+    readonly archived: boolean;
+
+    constructor(project: Project) {
+        super(`Workspace already exists: ${project.path}`);
+        this.name = 'ProjectAlreadyExistsError';
+        this.project = project;
+        this.archived = isProjectArchived(project);
+    }
+}
+
+/**
+ * The registered Project that blocks a create-only add of `path`, if any.
+ * Single decision table for both the in-lock check in `addProject` and UI
+ * pre-checks, so a pre-check can never disagree with the final verdict.
+ */
+export function findBlockingProject(projects: readonly Project[], path: string): Project | undefined {
+    return projects.find((p) => p.hidden !== true && workspacePathsEqual(p.path, path));
+}
+
 // ============= CRUD =============
 
 export async function loadProjects(): Promise<Project[]> {
@@ -61,9 +95,22 @@ export async function loadProjects(): Promise<Project[]> {
     }
 }
 
-export async function saveProjects(projects: Project[]): Promise<void> {
+/** Only catalog facts invalidate the App projection; opening/reordering a workspace
+ * must not cause network traffic. IDs and lifecycle come from persisted Projects. */
+export function projectCatalogChanged(before: Project[], after: Project[]): boolean {
+    const projection = (projects: Project[]) => projects.map(project => ({
+        id: project.id, agentId: project.agentId, name: project.name, path: project.path, icon: project.icon ?? null,
+        hidden: project.hidden === true, internal: project.internal === true,
+        archived: isProjectArchived(project), exposureRevision: project.agentNetworkExposureRevision ?? 0,
+    })).sort((a, b) => a.id.localeCompare(b.id));
+    return JSON.stringify(projection(before)) !== JSON.stringify(projection(after));
+}
+
+export async function saveProjects(projects: Project[], options: { notification: ConfigChangeNotification } = { notification: 'immediate' }): Promise<void> {
+    const changed = options.notification === 'immediate' && projectCatalogChanged(await loadProjects(), projects);
     if (isBrowserDevMode()) {
         mockSaveProjects(projects);
+        if (changed) notifyConfigChanged('saveProjects');
         return;
     }
 
@@ -73,22 +120,33 @@ export async function saveProjects(projects: Project[]): Promise<void> {
         const projectsPath = await join(dir, PROJECTS_FILE);
         await safeWriteJson(projectsPath, projects);
         console.log('[configService] Projects saved successfully');
+        if (changed) notifyConfigChanged('saveProjects');
     } catch (error) {
         console.error('[configService] Failed to save projects:', error);
         throw error;
     }
 }
 
-export async function addProject(path: string): Promise<Project> {
+export async function addProject(
+    path: string,
+    options: { notification: ConfigChangeNotification; onExisting?: AddProjectExistingPolicy } = { notification: 'immediate' },
+): Promise<Project> {
     console.log('[configService] addProject called with path:', path);
 
     if (isBrowserDevMode()) {
         console.log('[configService] Browser mode: using mock addProject');
-        return mockAddProject(path);
+        const before = mockLoadProjects();
+        const blocking = options.onExisting === 'reject' ? findBlockingProject(before, path) : undefined;
+        if (blocking) throw new ProjectAlreadyExistsError(blocking);
+        const result = mockAddProject(path);
+        if (options.notification === 'immediate' && projectCatalogChanged(before, mockLoadProjects())) notifyConfigChanged('addProject');
+        return result;
     }
 
     return withProjectsLock(async () => {
         const projects = await loadProjects();
+        const blocking = options.onExisting === 'reject' ? findBlockingProject(projects, path) : undefined;
+        if (blocking) throw new ProjectAlreadyExistsError(blocking);
 
         // #320: dedup by canonical workspace identity, not raw `===`, so a path
         // arriving in a different separator/case form doesn't create a duplicate
@@ -102,7 +160,7 @@ export async function addProject(path: string): Promise<Project> {
                 existing.name = parts[parts.length - 1] || existing.name;
                 console.log('[configService] Fixed project name from path to:', existing.name);
             }
-            await saveProjects(projects);
+            await saveProjects(projects, options);
             return existing;
         }
 
@@ -129,7 +187,7 @@ export async function addProject(path: string): Promise<Project> {
 
         console.log('[configService] Creating new project:', newProject);
         projects.push(newProject);
-        await saveProjects(projects);
+        await saveProjects(projects, options);
         return newProject;
     });
 }
@@ -169,6 +227,7 @@ export function applyProjectArchiveIntent(
     const project = projects[index];
     const existingArchived = isProjectArchived(project);
     const archivedProject = applyProjectPatch(project, {
+        agentNetworkExposureRevision: nextAgentNetworkExposureRevision(project,existingArchived),
         archivedAt: existingArchived
             ? project.archivedAt
             : options.archivedAtIso ?? new Date().toISOString(),
@@ -198,13 +257,13 @@ export function applyProjectUnarchiveIntent(
     return { project, projects: nextProjects };
 }
 
-export async function patchProject(projectId: string, updates: Partial<Omit<Project, 'id'>>): Promise<Project | null> {
+export async function patchProject(projectId: string, updates: Partial<Omit<Project, 'id'>>, options: { notification: ConfigChangeNotification } = { notification: 'immediate' }): Promise<Project | null> {
     return withProjectsLock(async () => {
         const projects = await loadProjects();
         const index = projects.findIndex((p) => p.id === projectId);
         if (index >= 0) {
             projects[index] = applyProjectPatch(projects[index], updates);
-            await saveProjects(projects);
+            await saveProjects(projects, options);
             return projects[index];
         }
         return null;

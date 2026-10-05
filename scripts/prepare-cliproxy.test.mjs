@@ -15,10 +15,12 @@ function fixture(t) {
   mkdirSync(join(root, 'src/shared'), { recursive: true });
   mkdirSync(join(root, '.github/cliproxy'), { recursive: true });
   writeFileSync(join(root, 'src/shared/managed-cliproxy-source.json'), JSON.stringify(source));
-  writeFileSync(join(root, 'package.json'), JSON.stringify({ version: '0.4.17' }));
   const manifest = JSON.parse(readFileSync(new URL('../.github/cliproxy/manifest-v1.json', import.meta.url)));
+  const bundled = manifest.releases.find(release => release.version === source.version && release.commit === source.commit);
+  assert.ok(bundled, 'signed snapshot contains the bundled source');
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ version: bundled.compatibility.minAppVersion }));
   for (const platform of Object.keys(source.platforms)) {
-    const a = manifest.releases[0].artifacts[platform];
+    const a = bundled.artifacts[platform];
     Object.assign(a, { sha256, size: bytes.length, url: `https://download.myagents.io/runtimes/cliproxy/${source.version}-${platform}-${sha256}.zip` });
   }
   writeFileSync(join(root, '.github/cliproxy/manifest-v1.json'), JSON.stringify(manifest));

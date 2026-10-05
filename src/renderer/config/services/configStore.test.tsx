@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
+    copyFile: vi.fn(),
     exists: vi.fn(),
     mkdir: vi.fn(),
     readTextFile: vi.fn(),
@@ -11,7 +12,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@tauri-apps/plugin-fs', () => ({
-    copyFile: vi.fn(),
+    copyFile: mocks.copyFile,
     exists: mocks.exists,
     mkdir: mocks.mkdir,
     readTextFile: mocks.readTextFile,
@@ -30,11 +31,46 @@ vi.mock('@/utils/browserMock', () => ({ isBrowserDevMode: () => false }));
 
 import {
     ProjectsBusyError,
+    safeWriteJson,
     withAgentConfigIntentLock,
     withConfigLock,
     withFileLock,
     withProjectsLock,
 } from './configStore';
+
+describe('JSON backup replacement', () => {
+    beforeEach(() => {
+        vi.useRealTimers();
+        vi.clearAllMocks();
+        mocks.exists.mockResolvedValue(true);
+        mocks.writeTextFile.mockResolvedValue(undefined);
+        mocks.rename.mockResolvedValue(undefined);
+        mocks.copyFile.mockResolvedValue(undefined);
+        mocks.remove.mockRejectedValue(new Error('failed to get metadata of path: ENOENT'));
+    });
+
+    it('copies over the previous backup without a separate destructive remove', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        try {
+            await safeWriteJson('/synthetic/config.json', { enabled: true });
+            expect(mocks.copyFile).toHaveBeenCalledWith('/synthetic/config.json', '/synthetic/config.json.bak');
+            expect(mocks.remove).not.toHaveBeenCalled();
+            expect(warn).not.toHaveBeenCalled();
+            expect(mocks.rename).toHaveBeenCalledWith('/synthetic/config.json.tmp', '/synthetic/config.json');
+        } finally { warn.mockRestore(); }
+    });
+
+    it('still reports a genuine backup copy failure and publishes the main write', async () => {
+        const failure = new Error('permission denied');
+        mocks.copyFile.mockRejectedValueOnce(failure);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        try {
+            await safeWriteJson('/synthetic/config.json', {});
+            expect(warn).toHaveBeenCalledWith('[configStore] Failed to create .bak backup:', failure);
+            expect(mocks.rename).toHaveBeenCalled();
+        } finally { warn.mockRestore(); }
+    });
+});
 
 describe('renderer file lock errors', () => {
     beforeEach(() => {

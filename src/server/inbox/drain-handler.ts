@@ -23,6 +23,7 @@ import type { InteractionScenario } from '../system-prompt';
 import type { DispatchGuard } from '../session-core/turn-queue';
 import type { InboxAdmissionResult } from '../session-engine/types';
 import { buildTaskCommentReminder } from '../../shared/systemReminder';
+import { parseNetworkReturnReference } from '../../shared/agentNetworkReturn';
 
 function nowIsoFromMessage(msg: PendingInboxMessage): string {
   return new Date(msg.timestampMs || Date.now()).toISOString();
@@ -103,6 +104,10 @@ export function buildSessionEventPrompt(msg: PendingInboxMessage): string {
 /// Build per-turn InboxTurnMeta to bind on the dequeued message. Only present
 /// for Request kind with replyBack=true — Reply kind never triggers further reply.
 export function buildTurnMeta(msg: PendingInboxMessage): InboxTurnMeta | undefined {
+  const networkReturn = msg.networkReturn == null ? undefined : parseNetworkReturnReference(msg.networkReturn);
+  if (networkReturn === null || networkReturn && msg.sourceKind === 'external-cli') {
+    throw new Error('invalid network return context');
+  }
   if (msg.kind === 'reply') return undefined;
   if (msg.kind === 'event') return undefined;
   if (!msg.replyBack) return undefined;
@@ -115,6 +120,7 @@ export function buildTurnMeta(msg: PendingInboxMessage): InboxTurnMeta | undefin
     replyBack: true,
     originalMessageId: msg.messageId,
     originalSnippet: buildInReplyToSnippet(msg.text),
+    ...(networkReturn ? { networkReturn } : {}),
   };
 }
 

@@ -41,3 +41,18 @@ it.each(['darwin-aarch64', 'windows-x86_64'])('keeps background updates on %s', 
   unmount();
   expect(vi.getTimerCount()).toBe(0);
 });
+
+it('does not log the expected development updater rejection as an error', async () => {
+  mocks.platform = 'darwin-aarch64';
+  mocks.invoke.mockImplementation(async (command: string) => {
+    if (command === 'check_and_download_update') throw 'UPDATER_DISABLED_IN_DEVELOPMENT';
+    return null;
+  });
+  const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  vi.useFakeTimers();
+  const { unmount } = renderHook(() => useUpdater());
+  try {
+    await act(async () => { await vi.advanceTimersByTimeAsync(31 * 60 * 1000); });
+    expect(error).not.toHaveBeenCalled();
+  } finally { unmount(); error.mockRestore(); mocks.invoke.mockReset(); }
+});

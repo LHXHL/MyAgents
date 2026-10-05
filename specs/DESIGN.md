@@ -204,7 +204,9 @@ Tag 用于类型、来源或紧凑元信息，通常使用 12px。状态 Tag 只
 | 界面图标 | `components/icons/`（`AppIcons.tsx`） |
 | 文件身份 | `components/file-icon/` |
 
-菜单按高频到低频排列，危险动作尾置并用分隔表达。共享 `ContextMenu` 自身 portal 到 body，默认层级 320，避免工作树/能力面板的裁切与文档预览遮挡；Tab 内菜单遵循当前 Tab 的可见性与关闭顺序。Popover/Dropdown 必须逃逸滚动裁切、留在 viewport 内，并由统一 close-layer 处理外部点击与 Escape。
+菜单按高频到低频排列，危险动作尾置并用分隔表达。共享 `ContextMenu` 自身 portal 到 body，默认层级 320，避免工作树/能力面板的裁切与文档预览遮挡；Tab 内菜单遵循当前 Tab 的可见性与关闭顺序。Popover/Dropdown 必须逃逸滚动裁切、留在 viewport 内，并由统一 close-layer 处理外部点击与 Escape。共享 `Popover` 沿 Floating UI size 约束 anchor 侧可用高度；容器高度上限使用 `maxHeight` 参数（可用空间与产品上限取较小值），为顶部栏预留空间时使用 `viewportPadding`。内容不能因收缩丢失访问路径；固定高度的结果面板由调用方给出 height，搜索结果只在内部滚动。
+
+侧向子菜单（如模型菜单的推理强度）单独使用共享 `Popover`，由其 portal、flip/shift 和高度约束保证可见；窗口左右都放不下时，通过 `fallbackAxisSideDirection` 允许转到上方或下方，避免横向越界。`unstyled` 只控制外观，不能作为逃逸父菜单滚动裁切的方式。子菜单层级高于父菜单，使选项的按下不会提前关闭父菜单；悬停与点击都请求展开，点击不能反转悬停刚建立的展开状态。
 
 Tip 在悬停或聚焦时显示；触发动作后立即关闭，保留按钮焦点，直到新的悬停或聚焦事件再显示。关闭由共享 Tip 在点击捕获阶段处理，避免业务按钮停止冒泡、隐藏或移动面板后残留提示。
 
@@ -221,7 +223,7 @@ Tip 在悬停或聚焦时显示；触发动作后立即关闭，保留按钮焦�
 - 界面图标只来自 `components/icons/` 的 MyAgents 自绘图标集（ESLint 禁止 `lucide-react`）：20 网格、圆头圆角、容器圆角 3–3.5，经 16.5 单位裁切显示，默认线宽在 16px 下约 1.31px。缺图标时在 `AppIcons.tsx` 按同一规格补画，不从其它图标库混入。`strokeWidth` 沿用 lucide 等效单位（2 为默认），选中态通过 `--app-icon-tint` 浮出主体淡填充，而不是另换实心图标或加强调条。
 - 文字按钮和工具栏图标通常为 14px，导航与列表图标通常为 16px，独立空态图标通常为 24px；视觉尺寸不能代替至少 32px 的命中区域。
 - 图标默认使用 `--ink-muted`，hover 提升到 `--ink`；success/error 等颜色只表达真实业务状态。
-- Agent 工作区身份统一使用 `WorkspaceIcon`（字形在 `assets/workspace-icons/`）：“点睛”风格，即彩色线条（1.3）、主体 14% 淡填充，再加一处实心焦点，动物的眼睛统一尺寸。颜色跟图标绑定，配置只存图标 ID；未设置图标时（如添加本地文件夹）显示中性的“项目文件夹”，颜色跟随 Theme 主色；模板创建的 Agent 使用模板图标（Mino 为闪电），旧 Phosphor ID 在渲染时映射，不改写用户配置。选择器是一个不分组的网格。
+- Agent 工作区身份统一使用 `WorkspaceIcon`（字形在 `assets/workspace-icons/`）：“点睛”风格，即彩色线条（1.3）、主体 14% 淡填充，再加一处实心焦点，动物的眼睛统一尺寸。颜色跟图标绑定，配置只存图标 ID；未设置图标时（如添加本地文件夹）显示中性的“项目文件夹”，颜色跟随 Theme 主色；模板创建的 Agent 使用模板图标（Mino 为闪电），旧 Phosphor ID 在渲染时映射，不改写用户配置。选择器是一个不分组的网格，只有 `WorkspaceIconGrid` 一份实现（Agent 设置与新建 Agent 面板共用），选默认图标时不写入图标字段。
 - 具体文件和文件夹统一使用 `components/file-icon/`。调用方只提供文件身份和语义尺寸，不自行维护扩展名映射或颜色。文件图标是与界面图标同网格的内联字形，类型色来自 `--file-icon-<tone>` token（浅/深两套），颜色是 16px 文件树里的主要类型信号；不使用第三方品牌 logo，生态差异用共享字形或字母标记加颜色表达。
 - 稳定的按钮、菜单、Tip、Placeholder 与 accessible name 进入 i18n resource；用户内容、日志原文和上游原始错误不强行翻译。
 - 时间、数量和调度摘要使用 locale-aware formatter，不手拼只适合单一语言的单位与语序。多语言容器必须允许合理伸缩或截断，不能按中文短文案锁死宽度。

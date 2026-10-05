@@ -34,6 +34,12 @@ Runtime admission基于 `global-skill-inventory.ts` 的完整快照和可信链�
 
 ## UTF-8 boundary
 
+### Credential DACL
+
+Managed Codex 与 Grok 凭据文件通过 `credential_permissions::harden_windows_acl` 维护既有策略：关闭继承并移除继承 ACE，设置当前用户 FullControl，保留其他显式 ACE。调用方拥有文件生命周期与 PowerShell 定位；共享 leaf 只加载并写入 `Access` section，不修改 owner、group 或 SACL。不能用 `Set-Acl` 复制完整 descriptor，否则已保护的 DACL 仍可能触发不需要的 `SeSecurityPrivilege` 审计写入。
+
+Windows PowerShell 使用 .NET Framework `File.SetAccessControl`；PowerShell Core 使用 `FileSystemAclExtensions.SetAccessControl`。错误 producer 只输出 ASCII exception type / HRESULT；Rust 只接纳该单行 typed receipt，不把原始 CLIXML、路径或凭据内容灌入日志。CLIProxy 的私有目录使用 native `SetFileSecurityW` DACL-only helper，其 Owner Rights/继承规则与这两个凭据文件不同，不混用 policy。
+
 Claude SDK 的 Bash output最终以 UTF-8 string进入 Session JSONL/SSE，但 Windows child可能按 ANSI/OEM code page输出。`buildClaudeSessionEnv()` 为 SDK subprocess设置：
 
 - `LANG=C.UTF-8` / `LC_ALL=C.UTF-8`；
@@ -58,9 +64,11 @@ Windows `spawn_tree()` 先 suspended创建根进程、绑定 `JOB_OBJECT_LIMIT_K
 
 创建入口在 App shutdown关闭后必须拒绝新 spawn；owner等待已登记 children，不能边退出边产生新进程。
 
-需要继承用户 console 的 CLI mode 是明确例外，使用 raw `Command`；Terminal 的进程创建由 `portable-pty` / ConPTY owner 管理。不要把后台进程的 `CREATE_NO_WINDOW` 规则套到这两条交互路径。
+需要继承用户 console 的 CLI mode 是明确例外：Rust CLI 入口用 Windows `CreateProcessW` 启动内置 Node，继承标准输入输出，并以 `STARTF_USESHOWWINDOW + SW_HIDE` 隐藏仅在没有可继承 console 时新建的窗口。不能使用 `CREATE_NO_WINDOW`，因为 DSH 受限令牌下该标志可能导致子进程初始化失败。Terminal 的进程创建由 `portable-pty` / ConPTY owner 管理。
 
 ### Recovery
+
+Builtin SDK 的通用 exit 1 只证明异常退出；stderr 尾部可能是较早的 warning。`sdk-subprocess-diagnostics` 保留原始摘要，仅在明确 Bash 缺失、spawn denial 或 native crash 证据下分类，不把通用退出推断为缺 Git、杀毒拦截或模型不支持；只有明确 spawn failure 才称启动失败。
 
 `process_cleanup::kill_stale_processes()` 只用于 prior instance已死亡后的启动恢复和 updater verified-clean。Normal shutdown不扫描全机进程，也不按 `node.exe` / `chrome.exe` 名称清理。
 

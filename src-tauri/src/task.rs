@@ -5393,8 +5393,8 @@ pub async fn cmd_task_open_docs_dir(
     // OS openers via process_cmd::new — CREATE_NO_WINDOW is a no-op for
     // GUI-subsystem binaries (open / explorer.exe / xdg-open) so the wrapper
     // is functionally equivalent to raw Command::new here, but going through
-    // it preserves the single-mental-model rule from CLAUDE.md ("ALL child
-    // processes use process_cmd::new").
+    // it preserves the single-mental-model rule ("ALL child processes use
+    // process_cmd::new"; pit_of_success.md#process_cmd).
     #[cfg(target_os = "macos")]
     {
         crate::process_cmd::new("open")

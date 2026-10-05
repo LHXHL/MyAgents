@@ -23,6 +23,7 @@ import {
 } from '@/api/taskCenter';
 import { track } from '@/analytics';
 import CustomSelect, { type SelectOption } from '@/components/CustomSelect';
+import ConfirmDialog from '@/components/ConfirmDialog';
 import { useToast } from '@/components/Toast';
 import { useConfig } from '@/hooks/useConfig';
 import { listenWithCleanup } from '@/utils/tauriListen';
@@ -135,6 +136,7 @@ export function TaskListPanel({
   // Per-id busy flag so only the affected card/row greys out during an action,
   // instead of locking the whole panel.
   const [pendingIds, setPendingIds] = useState<Set<string>>(() => new Set());
+  const [deleteTarget, setDeleteTarget] = useState<Task | null>(null);
 
   useEffect(() => {
     if (!pendingRoute || pendingRoute.route.name !== 'task.comment') return;
@@ -318,15 +320,23 @@ export function TaskListPanel({
   );
   const handleDelete = useCallback(
     (task: Task) => {
-      if (!window.confirm(t('tasks.deleteConfirm', { name: task.name }))) return;
+      setDeleteTarget(task);
+    },
+    [],
+  );
+  const confirmDelete = useCallback(
+    () => {
+      const task = deleteTarget;
+      if (!task || pendingIds.has(task.id)) return;
       void runAction(task.id, t('tasks.actions.delete'), async () => {
         track('task_delete', { source: 'desktop', status: task.status });
         await taskDelete(task.id);
         // Optimistic removal — SSE will not fire a status-changed for delete.
         setTasks((prev) => prev.filter((x) => x.id !== task.id));
+        setDeleteTarget(null);
       });
     },
-    [runAction, t],
+    [deleteTarget, pendingIds, runAction, t],
   );
 
   const buckets = useMemo(() => {
@@ -681,6 +691,18 @@ export function TaskListPanel({
         )}
       </div>
 
+      {deleteTarget && (
+        <ConfirmDialog
+          title={t('detail.deleteTitle')}
+          message={t('detail.deleteMessage', { name: deleteTarget.name })}
+          confirmText={t('common.delete')}
+          cancelText={t('common.cancel')}
+          confirmVariant="danger"
+          loading={pendingIds.has(deleteTarget.id)}
+          onConfirm={confirmDelete}
+          onCancel={() => setDeleteTarget(null)}
+        />
+      )}
       {selectedTask && (
         <TaskDetailOverlay
           key={selectedTask.id}

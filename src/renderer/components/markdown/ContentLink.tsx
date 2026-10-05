@@ -15,6 +15,8 @@ import Tip from '@/components/Tip';
 import { isAudioPath } from '@/utils/audioPlayer';
 import { useAudioPlayer } from '@/hooks/useAudioPlayer';
 import { MarkdownDocumentDirectoryContext, MarkdownLinkLabelContext } from './linkContext';
+import { parseAppRouteUrl } from '../../../shared/appRoute';
+import { CUSTOM_EVENTS } from '../../../shared/constants';
 
 export const INLINE_CODE_CLASS = 'markdown-inline-code markdown-inline-code-chip rounded bg-[var(--paper-inset)]/40 px-1.5 py-0.5 font-mono text-[var(--ink)]';
 
@@ -32,13 +34,14 @@ export default function ContentLink({ reference, displayReference = reference, n
   const fileAction = useFileAction();
   const openWebLink = useOpenWebLink();
   const classification = classifyInlineCodeTarget(reference);
+  const appRoute = parseAppRouteUrl(reference);
   const web = classification.kind === 'web';
   const base = basePath ?? directory;
   const nativeRelative = !/^(?:[\\/]|~[\\/]|[A-Za-z]:[\\/]|[a-z][a-z\d+.-]*:\/\/)/i.test(reference);
   const rebased = native
     ? (base && nativeRelative ? `${base}/${reference}` : reference)
     : resolveDocumentFileLink(reference, base);
-  const target = !insideLink && !web && (!native || classification.kind === 'file')
+  const target = !insideLink && !web && !appRoute && (!native || classification.kind === 'file')
     ? resolveFileLinkTarget(rebased, fileAction?.workspacePath, native ? 'native' : 'url')
     : null;
   const info = useFileTargetInfo(target);
@@ -64,7 +67,8 @@ export default function ContentLink({ reference, displayReference = reference, n
           event.stopPropagation();
           const selection = window.getSelection();
           if (selection?.toString() && (event.currentTarget.contains(selection.anchorNode) || event.currentTarget.contains(selection.focusNode))) return;
-          if (target && fileAction) fileAction.openFileTarget(target, { displayPath: displayReference, forceExternal: event.metaKey || event.ctrlKey });
+          if (appRoute) window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_APP_ROUTE, { detail: appRoute }));
+          else if (target && fileAction) fileAction.openFileTarget(target, { displayPath: displayReference, forceExternal: event.metaKey || event.ctrlKey });
           else if (!target) openWebLink(reference, { forceExternal: event.metaKey || event.ctrlKey });
         }}
         onKeyDown={(event) => { if (event.key === 'Enter' && !event.currentTarget.hasAttribute('href')) event.currentTarget.click(); }}

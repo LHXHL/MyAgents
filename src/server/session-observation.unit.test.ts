@@ -1,0 +1,63 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+const mocks = vi.hoisted(() => ({ history: vi.fn(), metadata: vi.fn(), management: vi.fn() }));
+vi.mock('./SessionStore', () => ({ getSessionData: mocks.history, getSessionMetadata: mocks.metadata, isHistoryVisibleSession: () => true }));
+vi.mock('./session-engine', () => ({ getSessionEngine: () => ({}) }));
+vi.mock('./utils/management-api-client', () => ({ managementApi: mocks.management }));
+import { readLatestSessionResult, readSessionActivity } from './session-observation';
+import { projectSessionActivity } from './session-engine/observation';
+
+describe('Session observation truth', () => {
+  beforeEach(() => vi.resetAllMocks());
+  it('exposes only three activity states, including preparation and root interaction', () => {
+    expect(projectSessionActivity({ sessionState: 'idle', isBusy: false })).toBe('idle');
+    expect(projectSessionActivity({ sessionState: 'error', isBusy: false })).toBe('idle');
+    expect(projectSessionActivity({ sessionState: 'starting', isBusy: false })).toBe('running');
+    expect(projectSessionActivity({ sessionState: 'running', isBusy: true })).toBe('running');
+    expect(projectSessionActivity({ sessionState: 'running', isBusy: true, waitingForUser: true })).toBe('waiting_user_action');
+    expect(projectSessionActivity({ sessionState: 'idle', isBusy: false, waitingForUser: true })).toBe('idle');
+  });
+  it('uses real live partial output without replacing it with an older successful answer', async () => {
+    expect(await readLatestSessionResult('s', { latestResult: 'partial', terminalStatus: 'stopped', turnId: 't' }))
+      .toEqual({ text: 'partial', source: 'live', scope: 'latest-session-result', terminalStatus: 'stopped', turnId: 't' });
+    expect(mocks.history).not.toHaveBeenCalled();
+  });
+  it('supplements missing live text with durable history and preserves its own terminal identity', async () => {
+    mocks.history.mockResolvedValue({ messages: [{ role: 'assistant', content: 'older partial', timestamp: 'then', turnId: 'old', terminalStatus: 'error' }] });
+    expect(await readLatestSessionResult('s', { latestResult: '(no text response)', turnId: 'new', terminalStatus: 'complete' }))
+      .toEqual({ text: 'older partial', timestamp: 'then', turnId: 'old', terminalStatus: 'error', source: 'history', scope: 'latest-session-result' });
+  });
+  it('distinguishes no assistant from a failed/missing history read', async () => {
+    mocks.history.mockResolvedValue({ messages: [{ role: 'user', content: 'hi' }] });
+    expect(await readLatestSessionResult('s')).toMatchObject({ source: 'none', text: null });
+    mocks.history.mockRejectedValue(new Error('unreadable'));
+    expect(await readLatestSessionResult('s')).toMatchObject({ source: 'unavailable', text: null });
+    mocks.history.mockResolvedValue(null);
+    expect(await readLatestSessionResult('s')).toMatchObject({ source: 'unavailable', text: null });
+  });
+  it('honors owner recovery and turn terminal facts rather than message sealing', async () => {
+    mocks.history.mockResolvedValue({ messages: [], transcriptRecovery: 'unavailable' });
+    expect(await readLatestSessionResult('s')).toMatchObject({ source: 'unavailable' });
+    for (const status of ['complete', 'stopped', 'error', 'running', 'interrupted']) {
+      mocks.history.mockResolvedValue({ messages: [{ role: 'assistant', content: 'partial', turnId: 'old',
+        timestamp: 'then', transcriptState: 'complete' }], transcriptTurns: [{ id: 'old', status }, { id: 'new', status: 'complete' }] });
+      const result = await readLatestSessionResult('s');
+      expect(result).toMatchObject({ text: 'partial', source: 'history', turnId: 'old', timestamp: 'then' });
+      expect(result.terminalStatus).toBe(['complete', 'stopped', 'error'].includes(status) ? status : undefined);
+    }
+    mocks.history.mockResolvedValue({ messages: [{ role: 'assistant', content: 'sealed', transcriptState: 'complete' }] });
+    expect((await readLatestSessionResult('s')).terminalStatus).toBeUndefined();
+  });
+
+  it('queries the actual owner without waking it and refuses unreadable/mismatched state', async () => {
+    mocks.management.mockResolvedValue({ ok: true, active: true, result: { success: true, session: { sessionId: 's', state: 'waiting_user_action' } } });
+    expect(await readSessionActivity('s')).toEqual({ sessionId: 's', state: 'waiting_user_action' });
+    expect(mocks.management.mock.calls[0][2]).toEqual({ sessionId: 's', projection: 'activity' });
+    mocks.management.mockResolvedValue({ ok: false });
+    await expect(readSessionActivity('s')).rejects.toThrow('SESSION_STATE_UNAVAILABLE');
+    mocks.management.mockResolvedValue({ ok: true, active: true, result: { success: true, session: { sessionId: 'other', state: 'idle' } } });
+    await expect(readSessionActivity('s')).rejects.toThrow('SESSION_OWNER_SCOPE_MISMATCH');
+    mocks.management.mockResolvedValue({ ok: true, active: false });
+    mocks.metadata.mockReturnValue({ id: 's' });
+    expect(await readSessionActivity('s')).toEqual({ sessionId: 's', state: 'idle' });
+  });
+});

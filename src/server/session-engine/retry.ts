@@ -5,7 +5,9 @@ export function retryDesktopRequest(context: SessionEngineCurrentContext, rewind
   if (!context.sessionId || !context.workspacePath) throw new Error('Retry session is unavailable');
   return {
     sessionId: context.sessionId, workspacePath: context.workspacePath, scenario: { type: 'desktop' },
-    text: rewind.content ?? '',
+    text: rewind.desktopQuery?.visibleText ?? rewind.content ?? '',
+    agentMentions: rewind.desktopQuery?.agentMentions,
+    queryPrimaryContext: rewind.desktopQuery?.primaryContext,
     model: options.model,
     reasoningEffort: options.reasoningEffort,
     images: rewind.attachments?.filter(attachment => attachment.isImage || attachment.mimeType?.startsWith('image/'))

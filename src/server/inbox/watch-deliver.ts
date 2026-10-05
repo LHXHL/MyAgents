@@ -2,33 +2,52 @@ import { randomUUID } from 'crypto';
 
 import { cancellableFetch } from '../utils/cancellation';
 import { managementRequestHeaders } from '../utils/management-api-client';
-import { buildReplyBody, type ReplyPayload } from './reply-deliver';
+import { buildReplyBody, deliverInboxReply, type ReplyPayload } from './reply-deliver';
 import { ackPendingSessionWatch, listPendingSessionWatches } from './watch-registry';
-import type { PendingInboxMessage, DeliverOutcome } from './types';
+import type { PendingInboxMessage, DeliverOutcome, InboxTurnMeta } from './types';
+import { deliverNetworkReturn } from '../agent-network/return';
 
 export async function deliverSessionWatchEvents(
   currentSessionId: string,
   payload: ReplyPayload,
+  inboxMetas: readonly InboxTurnMeta[] = [],
 ): Promise<void> {
   const watches = listPendingSessionWatches();
-  if (watches.length === 0) return;
+  // The turn owner coordinates one local notification before either delivery
+  // can yield. Each network route keeps its own source-owned settlement.
+  const replies = inboxMetas.filter(meta => meta.replyBack).map(meta => ({
+    meta, delivery: deliverInboxReply(currentSessionId, meta, payload),
+  }));
+  const reply = Promise.all(replies.map(item => item.delivery));
+  if (watches.length === 0) { await reply; return; }
 
   const managementPort = process.env.MYAGENTS_MANAGEMENT_PORT;
-  if (!managementPort) {
+  if (!managementPort && watches.some(watch => !watch.networkReturn)) {
+    for (const watch of watches) if (watch.networkReturn) ackPendingSessionWatch(watch.watchId);
     console.error('[session-watch] MYAGENTS_MANAGEMENT_PORT not set — cannot push watch events');
+    await reply;
     return;
   }
 
   const latestResult = buildReplyBody(payload);
   const isError = !!payload.error;
 
-  for (const watch of watches) {
+  await Promise.all([reply, ...watches.map(async watch => {
+    // A later queued turn cannot settle an observation of an earlier turn.
+    if (watch.turnId && watch.turnId !== payload.turnId) return;
     if (watch.targetSessionId !== currentSessionId) {
       console.warn(
         `[session-watch] dropping watch ${watch.watchId}: target mismatch current=${currentSessionId} watch=${watch.targetSessionId}`,
       );
       ackPendingSessionWatch(watch.watchId);
-      continue;
+      return;
+    }
+
+    const matchingReplies = replies.filter(item => !item.meta.networkReturn && !watch.networkReturn
+      && payload.turnId && watch.turnId === payload.turnId && watch.watcherSessionId === item.meta.fromSessionId);
+    if (matchingReplies.length > 0) {
+      if ((await Promise.all(matchingReplies.map(item => item.delivery))).some(Boolean)) ackPendingSessionWatch(watch.watchId);
+      return;
     }
 
     const eventId = randomUUID();
@@ -55,8 +74,20 @@ export async function deliverSessionWatchEvents(
         terminalReason: payload.error?.code ?? 'completed',
         createdAt: new Date().toISOString(),
         latestResult,
+        ...(payload.turnId ? { turnId: payload.turnId } : {}),
+        ...(payload.terminalStatus ? { terminalStatus: payload.terminalStatus } : {}),
+        resultSource: 'live',
+        ...(payload.requestEventIds ? { requestEventIds: payload.requestEventIds } : {}),
       },
     };
+
+    if (watch.networkReturn) {
+      // Remote watches are one-shot even when the original source disappears.
+      // Keeping them pending would replay a result after a later reconnection.
+      try { await deliverNetworkReturn(watch.networkReturn, message.sessionEvent!); }
+      finally { ackPendingSessionWatch(watch.watchId); }
+      return;
+    }
 
     try {
       const resp = await cancellableFetch(
@@ -76,7 +107,7 @@ export async function deliverSessionWatchEvents(
         console.warn(
           `[session-watch] management API ${resp.status} when pushing watch ${watch.watchId}: ${text.slice(0, 200)}`,
         );
-        continue;
+        return;
       }
       const json = (await resp.json().catch(() => null)) as
         | { ok: boolean; outcome?: DeliverOutcome }
@@ -85,11 +116,11 @@ export async function deliverSessionWatchEvents(
         console.warn(
           `[session-watch] watch ${watch.watchId} not delivered: ${JSON.stringify(json?.outcome)}`,
         );
-        continue;
+        return;
       }
       ackPendingSessionWatch(watch.watchId);
     } catch (err) {
       console.error('[session-watch] HTTP failure pushing watch event:', err);
     }
-  }
+  })]);
 }

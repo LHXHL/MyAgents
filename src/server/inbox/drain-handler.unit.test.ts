@@ -2,8 +2,26 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { handleInboxDrain, type InboxInjector } from './drain-handler';
 import type { PendingInboxMessage } from './types';
+import { parseLeadingSystemReminder, parseSessionSendRequestDisplay } from '../../shared/systemReminder';
 
 describe('handleInboxDrain scenario routing', () => {
+  it.each([
+    ['Mino@Example-Mac.local', true],
+    ['Mino & Review@Win "Desk"', false],
+    ['Local Session', true],
+  ])('preserves request source label %s through admission and display', async (fromLabel, replyBack) => {
+    const injector = vi.fn<InboxInjector>(async () => ({ queued: false }));
+    expect(await handleInboxDrain([{
+      messageId: 'msg-network-request', fromSessionId: 'source-session', fromLabel,
+      toSessionId: 'target-session', text: 'Please review the change.', replyBack, kind: 'request',
+    }], injector)).toMatchObject({ accepted: true });
+    const prompt = injector.mock.calls[0][0];
+    expect(parseSessionSendRequestDisplay(parseLeadingSystemReminder(prompt))).toEqual({
+      payload: 'Please review the change.', sourceLabel: fromLabel,
+    });
+    expect(injector.mock.calls[0][1]?.fromLabel).toBe(replyBack ? fromLabel : undefined);
+  });
+
   it('routes Space issue delivery events as registeredAgent scenario', async () => {
     const seen: Parameters<InboxInjector>[] = [];
     const injector: InboxInjector = async (...args) => {

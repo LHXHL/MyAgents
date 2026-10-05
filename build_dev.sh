@@ -6,6 +6,7 @@
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${PROJECT_DIR}"
 CLIPROXY_BUILD_ONLY=false
 DSH_SOURCE="release"
 DSH_HANDOFF=""
@@ -25,6 +26,9 @@ if [ "$DSH_SOURCE" = "local" ] && [ -z "$DSH_HANDOFF" ]; then
     echo "--dsh-source local requires --dsh-handoff /absolute/path" >&2
     exit 1
 fi
+
+# Reject a stale wrapper before stopping the app or deleting build/staging output.
+node "${PROJECT_DIR}/scripts/verify-claude-sdk-wrapper.mjs"
 
 # 加载 .env 文件（如果存在）
 if [ -f "${PROJECT_DIR}/.env" ]; then
@@ -184,7 +188,6 @@ echo ""
 
 # TypeScript 检查
 echo -e "${BLUE}[1/3] TypeScript 类型检查...${NC}"
-cd "${PROJECT_DIR}"
 if ! npm run typecheck; then
     echo -e "${RED}✗ TypeScript 检查失败，请修复后重试${NC}"
     exit 1

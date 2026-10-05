@@ -15,6 +15,7 @@
 //   - No React state lives in here; stable reference identity comes from
 //     useCallback so consumers can put it in effect deps without churn.
 
+import type { PickerPage } from '@/api/pickerPage';
 import { useCallback, useMemo } from 'react';
 
 import { i18n } from '@/i18n';
@@ -150,7 +151,7 @@ interface PrepareUserImageAttachmentsResponse {
   errors: PrepareUserImageAttachmentError[];
 }
 
-interface FileSearchResult {
+export interface FileSearchResult {
   path: string;
   name: string;
   type: 'file' | 'dir';
@@ -257,6 +258,7 @@ export interface WorkspaceFileService {
   addGitignore(args: { pattern: string }): Promise<GitignoreResult>;
   /** [requires workspace] Fuzzy file-name search for the @ mention picker. */
   searchFiles(args: { query: string }): Promise<FileSearchResult[]>;
+  searchFilesPage(args: { query: string; cursor?: string | null; limit: number }): Promise<PickerPage<FileSearchResult>>;
   /** [requires workspace] Delete a workspace-relative path (file / dir /
    *  broken symlink). Default goes to the OS trash; `permanent: true` keeps
    *  unlink semantics for scratch-file cleanup (don't pollute the trash with
@@ -461,6 +463,11 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
         query,
       });
     },
+    [requireWorkspace, invokeIfTauri],
+  );
+
+  const searchFilesPage: WorkspaceFileService['searchFilesPage'] = useCallback(
+    async ({ query, cursor = null, limit }) => invokeIfTauri('cmd_workspace_search_files_page', { workspace: requireWorkspace(), query, cursor, limit }),
     [requireWorkspace, invokeIfTauri],
   );
 
@@ -796,6 +803,7 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
       prepareUserImageAttachments,
       addGitignore,
       searchFiles,
+      searchFilesPage,
       deleteFile,
       listSlashCommands,
       // Phase D
@@ -838,6 +846,7 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
       prepareUserImageAttachments,
       addGitignore,
       searchFiles,
+      searchFilesPage,
       deleteFile,
       listSlashCommands,
       dirTree,

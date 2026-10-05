@@ -725,8 +725,7 @@ const shimPkgPath = path.join(SHIM_DIR, "package.json");
 const shimPkg = JSON.parse(fs.readFileSync(shimPkgPath, "utf8"));
 
 // Update version to today's date.
-// Per CLAUDE.md red line "Plugin Bridge / 修改 SDK shim MUST 三处同步 bump 版本"
-// the same date must appear in three places:
+// Invariant: every SDK shim change bumps the version, and the same date must appear in three places:
 //   1. sdk-shim/package.json (with "-shim" suffix, used as the runtime
 //      freshness probe in src-tauri/src/im/bridge.rs::needs_repair)
 //   2. src/server/plugin-bridge/compat-runtime.ts::SHIM_COMPAT_VERSION

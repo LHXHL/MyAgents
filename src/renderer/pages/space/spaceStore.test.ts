@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { AccountSnapshot } from '@/features/account/accountStore';
+const accountMocks = vi.hoisted(() => ({ snapshot: vi.fn((): Partial<AccountSnapshot> => ({ loadState: 'idle' })) }));
+vi.mock('@/features/account/accountStore', () => ({ getAccountSnapshot: accountMocks.snapshot }));
+
 const apiMocks = vi.hoisted(() => ({
   findProjectForAgent: vi.fn(),
   spaceArchiveGoal: vi.fn(),
@@ -148,6 +152,7 @@ import {
   getIssueListState,
   getSkillFileState,
   getSnapshot,
+  syncSpaceAccountProjection,
 } from "./spaceStore";
 
 const fakeSession: SpaceSession = {
@@ -277,6 +282,7 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
+  accountMocks.snapshot.mockReturnValue({ loadState: 'idle' });
   __resetSpaceStoreForTest();
   vi.clearAllMocks();
   apiMocks.spaceGetCapability.mockResolvedValue({
@@ -1036,6 +1042,48 @@ describe("spaceStore boot", () => {
     );
     expect(events.filter((event) => event === "space_open")).toHaveLength(1);
     expect(events.filter((event) => event === "space_switch")).toHaveLength(1);
+  });
+
+  it("rejects an explicit switch when bootstrap falls back to a different Space", async () => {
+    __setSpaceStoreStateForTest({ boot: "ready", session: fakeSession, spaceId: "official" });
+    apiMocks.spaceGetSession.mockResolvedValueOnce({ state: "authenticated", session: { ...fakeSession, lastActiveSpaceId: "missing" } });
+    apiMocks.spaceGetOfficial
+      .mockRejectedValueOnce({ code: "SPACE_NOT_FOUND", message: "Missing" })
+      .mockResolvedValueOnce({ space: fakeSession.space, membership: fakeSession.membership, goals: [] });
+    await expect(actions.switchSpace("missing")).rejects.toMatchObject({ code: "SPACE_NOT_FOUND" });
+    expect(getSnapshot().session?.space.slug).toBe("official");
+  });
+
+  it("resolves the official alias from listed kind without assuming the community slug", async () => {
+    const community = { ...fakeSession.space, id: "space-community", slug: "public-community", spaceKind: "official" };
+    __setSpaceStoreStateForTest({
+      boot: "ready", spaceId: "team",
+      session: { ...fakeSession, space: { ...fakeSession.space, id: "space-team", slug: "team", spaceKind: "user" }, spaces: [{ ...community, membership: fakeSession.membership }] },
+    });
+    await actions.switchSpace("official");
+    expect(getSnapshot().spaceId).toBe("public-community");
+    expect(apiMocks.spaceGetOfficial).not.toHaveBeenCalled();
+    expect(apiMocks.spaceSetActiveSpace).toHaveBeenCalledWith("official", "binding-old");
+  });
+
+  it.each([undefined, "user"])("refreshes official authority instead of inferring it from a cached slug with kind %s", async (spaceKind) => {
+    const cached = { ...fakeSession, space: { ...fakeSession.space, id: "space-community", slug: "myagents", spaceKind }, lastActiveSpaceId: "official" };
+    const community = { ...cached.space, spaceKind: "official" };
+    __setSpaceStoreStateForTest({ boot: "ready", session: cached, spaceId: "myagents" });
+    apiMocks.spaceGetSession.mockResolvedValueOnce({ state: "authenticated", session: cached });
+    apiMocks.spaceGetOfficial.mockResolvedValueOnce({ space: community, membership: fakeSession.membership, goals: [] });
+    await actions.switchSpace("official");
+    expect(apiMocks.spaceGetOfficial).toHaveBeenCalledWith("official");
+    expect(getSnapshot().session?.space.spaceKind).toBe("official");
+    expect(getSnapshot().spaceId).toBe("myagents");
+  });
+
+  it("rejects a non-official response for the official alias even if its name resembles the community", async () => {
+    const wrong = { ...fakeSession.space, id: "space-team", slug: "myagents", name: "MyAgents社区", spaceKind: "user" };
+    __setSpaceStoreStateForTest({ boot: "ready", session: { ...fakeSession, space: wrong }, spaceId: "myagents" });
+    apiMocks.spaceGetSession.mockResolvedValueOnce({ state: "authenticated", session: { ...fakeSession, space: wrong, lastActiveSpaceId: "official" } });
+    apiMocks.spaceGetOfficial.mockResolvedValueOnce({ space: wrong, membership: fakeSession.membership, goals: [] });
+    await expect(actions.switchSpace("official")).rejects.toMatchObject({ code: "SPACE_NOT_FOUND" });
   });
 
   it("projects a listed Space immediately without waiting for Cloud bootstrap", async () => {
@@ -2374,6 +2422,66 @@ describe("spaceStore goal mutations", () => {
 });
 
 describe("spaceStore profile actions", () => {
+  it.each([false, true])('keeps a global profile save that finishes during Space boot (silent=%s)', async (silent) => {
+    const official = { space: fakeSession.space, membership: fakeSession.membership, goals: [] };
+    const pending = deferred<typeof official>();
+    if (silent) {
+      __setSpaceStoreStateForTest({
+        boot: 'ready', session: fakeSession,
+        issuesByKey: { current: { items: [fakeIssue], hasMore: false, lastFetchedAt: 1, isLoading: false, error: null } },
+      });
+    }
+    accountMocks.snapshot.mockReturnValue({ loadState: 'ready', generation: 1, view: { state: 'authenticated', session: fakeSession } });
+    apiMocks.spaceGetSession.mockResolvedValueOnce({ state: 'authenticated', session: fakeSession });
+    apiMocks.spaceGetOfficial.mockReturnValueOnce(pending.promise);
+    const boot = actions.ensureBootstrapped({ force: true, silent });
+    await vi.waitFor(() => expect(apiMocks.spaceGetOfficial).toHaveBeenCalledOnce());
+    const saved = { ...fakeSession, user: { ...fakeSession.user, name: 'Saved during boot' } };
+    accountMocks.snapshot.mockReturnValue({ loadState: 'ready', generation: 1, view: { state: 'authenticated', session: saved } });
+    syncSpaceAccountProjection();
+    pending.resolve(official);
+    await boot;
+    expect(getSnapshot().boot).toBe('ready');
+    expect(getSnapshot().session?.user.name).toBe('Saved during boot');
+    expect(getSnapshot().session?.space).toMatchObject(official.space);
+    expect(apiMocks.spaceGetOfficial).toHaveBeenCalledOnce();
+    if (silent) expect(getSnapshot().issuesByKey.current.items[0].author?.name).toBe('Saved during boot');
+  });
+
+  it('consumes a global profile update without replacing the selected Space or fetching business data', () => {
+    const user = { ...fakeSession.user, name: 'Global edited user' };
+    __setSpaceStoreStateForTest({
+      boot: 'ready', session: { ...fakeSession, space: { ...fakeSession.space, id: 'selected-space' } },
+      issuesByKey: { current: { items: [{ ...fakeIssue, author: { id: 'user-1', name: 'Old' } }], hasMore: false, lastFetchedAt: 1, isLoading: false, error: null } },
+    });
+    accountMocks.snapshot.mockReturnValue({ loadState: 'ready', generation: 1, view: { state: 'authenticated', session: { ...fakeSession, user } } });
+    syncSpaceAccountProjection();
+    expect(getSnapshot().session?.user.name).toBe('Global edited user');
+    expect(getSnapshot().session?.space.id).toBe('selected-space');
+    expect(getSnapshot().issuesByKey.current.items[0].author?.name).toBe('Global edited user');
+    expect(apiMocks.spaceGetOfficial).not.toHaveBeenCalled();
+  });
+
+  it('clears old Space identity and lists on global auth invalidation', () => {
+    __setSpaceStoreStateForTest({ boot: 'ready', session: fakeSession });
+    accountMocks.snapshot.mockReturnValue({ loadState: 'loading', generation: 2, view: null });
+    syncSpaceAccountProjection();
+    expect(getSnapshot().session).toBeNull();
+    expect(getSnapshot().boot).toBe('loading');
+    accountMocks.snapshot.mockReturnValue({ loadState: 'ready', generation: 2, view: null });
+    syncSpaceAccountProjection();
+    expect(getSnapshot().boot).toBe('signedOut');
+  });
+
+  it('does not retry failed Space boot just because a global profile/plan changes', () => {
+    __setSpaceStoreStateForTest({ boot: 'error', bootError: 'Space unavailable', session: null });
+    accountMocks.snapshot.mockReturnValue({ loadState: 'ready', generation: 3, view: { state: 'authenticated', session: fakeSession } });
+    syncSpaceAccountProjection();
+    expect(getSnapshot().bootError).toBe('Space unavailable');
+    expect(apiMocks.spaceGetOfficial).not.toHaveBeenCalled();
+    expect(apiMocks.spaceGetSession).not.toHaveBeenCalled();
+  });
+
   it("updates session and patches current user author summaries in cached Space data", async () => {
     const updatedSession: SpaceSession = {
       ...fakeSession,

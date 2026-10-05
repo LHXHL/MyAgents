@@ -32,7 +32,7 @@ export function useBackgroundTaskPolling({
   const [stats, setStats] = useState<BackgroundTaskStats | null>(null);
   const [isComplete, setIsComplete] = useState(false);
 
-  // Stable refs to avoid useEffect dependency issues (CLAUDE.md 规则 3)
+  // Stable refs to avoid useEffect dependency issues (react_stability_rules.md)
   const apiPostRef = useRef(apiPost);
   useEffect(() => {
     apiPostRef.current = apiPost;

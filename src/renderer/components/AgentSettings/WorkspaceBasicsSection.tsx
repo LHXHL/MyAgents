@@ -18,7 +18,8 @@ import { applyBuiltinBrowserExecutionToolToggle } from '@/../shared/browserTools
 import { PERMISSION_MODES, type Project, type McpServerDefinition } from '@/config/types';
 import type { AgentConfig } from '../../../shared/types/agent';
 import { reasoningEffortChoices, reasoningEffortAfterModelChange, REASONING_EFFORT_DESCRIPTIONS } from '@/../shared/reasoningEffort';
-import { ALL_WORKSPACE_ICON_IDS, DEFAULT_WORKSPACE_ICON, resolveWorkspaceIconId } from '@/assets/workspace-icons';
+import { DEFAULT_WORKSPACE_ICON } from '@/assets/workspace-icons';
+import WorkspaceIconGrid, { WORKSPACE_ICON_GRID_PANEL_CLASS } from '../launcher/WorkspaceIconGrid';
 import WorkspaceIcon from '../launcher/WorkspaceIcon';
 import RuntimeSelector from '../RuntimeSelector';
 import { PermissionModeIcon, PermissionModeMenuContent, type PermissionModeMenuItem } from '../PermissionModeMenu';
@@ -385,36 +386,8 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
         {openPopup === 'icon' && (
           <>
             <div className="fixed inset-0 z-40" onMouseDown={(e) => { if (e.target === e.currentTarget) setOpenPopup(null); }} />
-            <div className="absolute left-20 top-10 z-50 max-h-[260px] w-[320px] overflow-y-auto overscroll-contain rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-2 shadow-lg">
-              <div className="flex flex-wrap gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => handleIconSelect('')}
-                  className={`flex h-9 w-9 items-center justify-center rounded-lg transition-all ${
-                    resolveWorkspaceIconId(project.icon) === DEFAULT_WORKSPACE_ICON ? 'bg-[var(--accent-warm-muted)] ring-1 ring-[var(--accent-warm)]' : 'hover:bg-[var(--hover-bg)]'
-                  }`}
-                  title={t('agentSettings.basics.defaultIcon')}
-                >
-                  <WorkspaceIcon icon={DEFAULT_WORKSPACE_ICON} size={20} />
-                </button>
-                {ALL_WORKSPACE_ICON_IDS
-                  .filter(id => id !== DEFAULT_WORKSPACE_ICON)
-                  .map(iconId => (
-                    <button
-                      key={iconId}
-                      type="button"
-                      onClick={() => handleIconSelect(iconId)}
-                      className={`flex h-9 w-9 items-center justify-center rounded-lg transition-all ${
-                        resolveWorkspaceIconId(project.icon) === iconId
-                          ? 'bg-[var(--accent-warm-muted)] ring-1 ring-[var(--accent-warm)]'
-                          : 'hover:bg-[var(--hover-bg)]'
-                      }`}
-                      title={iconId}
-                    >
-                      <WorkspaceIcon icon={iconId} size={20} />
-                    </button>
-                  ))}
-              </div>
+            <div className={`absolute left-20 top-10 z-50 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] shadow-lg ${WORKSPACE_ICON_GRID_PANEL_CLASS}`}>
+              <WorkspaceIconGrid value={project.icon} onSelect={handleIconSelect} />
             </div>
           </>
         )}

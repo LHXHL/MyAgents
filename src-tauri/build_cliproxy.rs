@@ -2,7 +2,7 @@
 //! Build inputs have a stricter source pin than runtime updates. Reuse the
 //! resource signature trust root; verify the exact bundled target and bytes.
 use sha2::{Digest, Sha256};
-use std::{env, fs, path::Path};
+use std::{env, fs, path::PathBuf};
 
 pub fn verify_bundle(app_version: &str) {
     let platform = match (
@@ -16,9 +16,11 @@ pub fn verify_bundle(app_version: &str) {
         // has no approved component there and is unavailable at runtime.
         _ => return,
     };
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/cliproxy");
-    let source_path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/shared/managed-cliproxy-source.json");
+    let manifest_dir = env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .expect("CARGO_MANIFEST_DIR is required");
+    let root = manifest_dir.join("resources/cliproxy");
+    let source_path = manifest_dir.join("../src/shared/managed-cliproxy-source.json");
     for path in [root.clone(), source_path.clone()] {
         println!("cargo:rerun-if-changed={}", path.display());
     }

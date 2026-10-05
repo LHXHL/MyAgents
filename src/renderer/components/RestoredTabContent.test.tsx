@@ -93,6 +93,7 @@ function bindings(overrides: Partial<BuiltinTabBindings> = {}): BuiltinTabBindin
       onLaunchProject: vi.fn(async () => true),
       onStartRecording: startRecordingSpy,
       onOpenRecord: vi.fn(),
+      onOpenNewAgentPanel: vi.fn(),
     },
     chat: {
       windowPresentation: AVAILABLE_PRESENTATION,
@@ -111,7 +112,7 @@ function bindings(overrides: Partial<BuiltinTabBindings> = {}): BuiltinTabBindin
       onFilePreviewIntentConsumed: vi.fn(),
     },
     settings: { ...updater, onNavigationConsumed: vi.fn() },
-    capabilities: { ...updater, onNavigationConsumed: vi.fn() },
+    capabilities: { ...updater, onNavigationConsumed: vi.fn(), onOpenToolMarket: vi.fn() },
     taskcenter: {
       activeRecordingSnapshot: null,
       onStartRecording: startRecordingSpy,
@@ -120,6 +121,7 @@ function bindings(overrides: Partial<BuiltinTabBindings> = {}): BuiltinTabBindin
       onRouteConsumed: vi.fn(),
     },
     space: { onRouteConsumed: vi.fn() },
+    agentnetwork: null,
     record: {
       onRecordingSnapshotChange: vi.fn(),
       onTitleChange: vi.fn(),

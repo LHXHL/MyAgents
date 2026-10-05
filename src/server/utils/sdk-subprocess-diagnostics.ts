@@ -170,8 +170,8 @@ export function diagnoseSdkSubprocessFailure(input: {
       kind: 'windows-native-bun-crash',
       exitCode,
       exitCodeHex: exitCode === undefined ? undefined : formatHexCode(exitCode),
-      userMessage: `Claude Agent SDK 启动失败${codeSuffix}，请检查运行环境。`,
-      imMessage: `Claude Agent SDK 启动失败${codeSuffix}，请检查运行环境。`,
+      userMessage: `Claude Agent SDK 异常退出${codeSuffix}，请检查运行环境。`,
+      imMessage: `Claude Agent SDK 异常退出${codeSuffix}，请检查运行环境。`,
     };
   }
 
@@ -183,20 +183,18 @@ export function diagnoseSdkSubprocessFailure(input: {
         kind: 'windows-git-bash-missing',
         exitCode,
         exitCodeHex: formatHexCode(exitCode),
-        userMessage: `子进程启动失败 (exit code 1)：未找到 bash，通常表示未安装 Git for Windows。请安装 Git：https://git-scm.com/downloads/win ${suffix}`,
-        imMessage: 'AI 引擎启动失败：Windows 机器未找到 bash（通常是未安装 Git for Windows）。请在桌面端安装 Git 后重试。',
+        userMessage: `AI 引擎异常退出 (exit code 1)：未找到 bash，通常表示未安装 Git for Windows。请安装 Git：https://git-scm.com/downloads/win ${suffix}`,
+        imMessage: 'AI 引擎异常退出：Windows 机器未找到 bash（通常是未安装 Git for Windows）。请在桌面端安装 Git 后重试。',
       };
     }
-    // Ambiguous (cross-review 0.2.32): exit 1 also covers CLI fatals, AV
-    // interference, broken config… Lead with the hint for the most common
-    // cause, but hedge and keep the original error so a user who HAS Git
-    // installed isn't steered into a dead end.
+    // Exit 1 proves termination, not its cause or startup phase. The stderr
+    // tail may contain an earlier warning; preserve it without diagnosing it.
     return {
       kind: 'windows-subprocess-exit-1',
       exitCode,
       exitCodeHex: formatHexCode(exitCode),
-      userMessage: `子进程启动失败 (exit code 1)。常见原因：未安装 Git for Windows（https://git-scm.com/downloads/win）；也可能是杀毒软件拦截或运行环境异常。${suffix}`,
-      imMessage: `AI 引擎启动失败 (exit code 1)。常见原因：Windows 机器未安装 Git for Windows；也可能是杀毒软件拦截或运行环境异常。请在桌面端检查后重试。`,
+      userMessage: `AI 引擎异常退出（exit code 1）。${suffix}`,
+      imMessage: 'AI 引擎异常退出（exit code 1）。请在桌面端查看错误详情。',
     };
   }
 

@@ -34,6 +34,7 @@ import React, {
   useState,
 } from 'react';
 import { useTranslation } from 'react-i18next';
+import { MyAgentsLogotype } from '@/components/brand/MyAgentsLogotype';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
@@ -111,6 +112,7 @@ import {
 import { useConfig } from '@/hooks/useConfig';
 import { useSpaceBuildCapability } from '@/hooks/useSpaceBuildCapability';
 import { SpaceEnvironmentSwitch } from './components/SpaceEnvironmentSwitch';
+import { SubscriptionProviderInfo } from './components/SubscriptionProviderInfo';
 import { actions as spaceActions } from '@/pages/space/spaceStore';
 import { useHelperAgentModelDefaults } from '@/hooks/useHelperAgentModelDefaults';
 import { useAutostart } from '@/hooks/useAutostart';
@@ -210,6 +212,7 @@ import { SettingsSidebar } from './components/SettingsSidebar';
 import { SkillsAgentsSection } from './sections/SkillsAgentsSection';
 import { ToolboxSection } from './sections/ToolboxSection';
 import { ExternalCliSettingsSection } from './sections/ExternalCliSettingsSection';
+import { ToolMarketEntry } from './components/ToolMarketEntry';
 import codexModelSelectorOnboarding from '@/assets/onboarding/codex-model-selector.png';
 
 type ManagedCodexLoginStatus =
@@ -330,6 +333,7 @@ function isSubscriptionLoginActiveStatus(
 
 export default function Settings({
   mode = 'settings',
+  onOpenToolMarket,
   initialSection,
   navigationNonce,
   initialMcpId,
@@ -355,6 +359,7 @@ export default function Settings({
     providerVerifyStatus,
     saveProviderVerifyStatus,
     config,
+    isLoading: configLoading,
     updateConfig,
     patchProxySettings,
     providers,
@@ -4169,6 +4174,7 @@ export default function Settings({
               <h3 className="truncate text-lg font-semibold text-[var(--ink)]">
                 {tSettings('providers.cardTitles.chatgptSubscription')}
               </h3>
+              <SubscriptionProviderInfo providerId={provider.id} />
               <span className="shrink-0 rounded bg-[var(--paper-inset)] px-1.5 py-0.5 text-xs font-medium text-[var(--ink-muted)]">
                 {tSettings('providers.official')}
               </span>
@@ -4959,15 +4965,20 @@ export default function Settings({
         {mode === 'capabilities' && (
           <>
             <header
-              className="mx-auto max-w-4xl px-8 pt-7"
+              className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-5 px-8 pt-7"
               data-capabilities-page-header
             >
-              <h1 className="text-xl font-semibold text-[var(--ink)]">
-                {tSettings('capabilities.title')}
-              </h1>
-              <p className="mt-1 text-sm text-[var(--ink-muted)]">
-                {tSettings('capabilities.description')}
-              </p>
+              <div className="min-w-0 flex-1 basis-72">
+                <h1 className="text-xl font-semibold text-[var(--ink)]">
+                  {tSettings('capabilities.title')}
+                </h1>
+                <p className="mt-1 text-sm text-[var(--ink-muted)]">
+                  {tSettings('capabilities.description')}
+                </p>
+              </div>
+              {onOpenToolMarket && !configLoading && spaceBuildCapability.available && config.teamSpaceDevGate !== false && (
+                <ToolMarketEntry onOpen={onOpenToolMarket} />
+              )}
             </header>
             <div
               className="sticky top-0 z-20 mt-5 border-b border-[var(--line)] bg-[var(--paper)]/95 px-8 backdrop-blur-sm"
@@ -5121,6 +5132,9 @@ export default function Settings({
                                 ? tSettings('providers.cardTitles.claudeApi')
                                 : provider.name}
                           </h3>
+                          {provider.type === 'subscription' && (
+                            <SubscriptionProviderInfo providerId={provider.id} />
+                          )}
                           <span className="shrink-0 rounded bg-[var(--paper-inset)] px-1.5 py-0.5 text-xs font-medium text-[var(--ink-muted)]">
                             {provider.cloudProvider}
                           </span>
@@ -6105,13 +6119,16 @@ export default function Settings({
           {activeSection === 'about' && (
             <div className="space-y-6">
               {/* Brand Header */}
-              <div className="rounded-2xl border border-[var(--line)] bg-gradient-to-br from-[var(--paper-inset)] to-[var(--paper)] p-8">
+              <div className="rounded-2xl border border-[var(--line)] bg-gradient-to-br from-[var(--paper-inset)] to-[var(--paper)] px-8 pb-8 pt-10">
                 <div className="flex flex-col items-center text-center">
                   <h1
                     className="theme-product-wordmark theme-launcher-hero-title cursor-default select-none"
                     onClick={handleLogoTap}
                   >
-                    MyAgents
+                    <MyAgentsLogotype
+                      className="launcher-hero-logotype"
+                      title="MyAgents"
+                    />
                   </h1>
                   <div className="mt-1 flex items-center gap-2">
                     <p className="text-sm font-medium text-[var(--ink-muted)]">
@@ -6235,67 +6252,6 @@ export default function Settings({
                 </h3>
 
                 <div className="mt-4 flex items-center justify-between">
-                  <div className="flex-1 pr-4">
-                    <p className="text-sm font-medium text-[var(--ink)]">
-                      {tSettings('about.teamSpaceTitle')}
-                    </p>
-                    <p className="text-xs text-[var(--ink-muted)]">
-                      {tSettings('about.teamSpaceDescription')}
-                    </p>
-                    {(spaceBuildCapability.isLoading ||
-                      !spaceBuildCapability.available) && (
-                      <p className="mt-1 text-xs text-[var(--ink-subtle)]">
-                        {spaceBuildCapability.isLoading
-                          ? tSettings('about.teamSpaceLoading')
-                          : tSettings(
-                              spaceBuildCapability.reason
-                                ? 'about.teamSpaceUnavailableWithReason'
-                                : 'about.teamSpaceUnavailable',
-                              { reason: spaceBuildCapability.reason },
-                            )}
-                      </p>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (
-                        spaceBuildCapability.isLoading ||
-                        !spaceBuildCapability.available
-                      )
-                        return;
-                      updateConfig({
-                        teamSpaceEnabled: config.teamSpaceEnabled !== true,
-                      });
-                    }}
-                    disabled={
-                      spaceBuildCapability.isLoading ||
-                      !spaceBuildCapability.available
-                    }
-                    aria-pressed={
-                      config.teamSpaceEnabled === true &&
-                      spaceBuildCapability.available
-                    }
-                    className={`relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
-                      config.teamSpaceEnabled === true &&
-                      spaceBuildCapability.available
-                        ? 'bg-[var(--accent)]'
-                        : 'bg-[var(--line-strong)]'
-                    }`}
-                  >
-                    <span
-                      className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${
-                        config.teamSpaceEnabled === true &&
-                        spaceBuildCapability.available
-                          ? 'translate-x-5'
-                          : 'translate-x-0'
-                      }`}
-                    />
-                  </button>
-                </div>
-
-
-                <div className="mt-4 flex items-center justify-between border-t border-[var(--line)] pt-4">
                   <div className="flex-1 pr-4">
                     <p className="text-sm font-medium text-[var(--ink)]">
                       {tSettings('about.cliRegistryTitle')}
@@ -6621,6 +6577,68 @@ export default function Settings({
                         </button>
                       </div>
                     </div>)}
+
+                    {/* Collaboration Space developer gate */}
+                    <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5 flex items-center justify-between">
+                      <div className="flex-1 pr-4">
+                        <p className="text-sm font-medium text-[var(--ink)]">
+                          {tSettings('about.teamSpaceTitle')}
+                        </p>
+                        <p className="text-xs text-[var(--ink-muted)]">
+                          {tSettings('about.teamSpaceDescription')}
+                        </p>
+                        {(spaceBuildCapability.isLoading ||
+                          !spaceBuildCapability.available) && (
+                          <p className="mt-1 text-xs text-[var(--ink-subtle)]">
+                            {spaceBuildCapability.isLoading
+                              ? tSettings('about.teamSpaceLoading')
+                              : tSettings(
+                                  spaceBuildCapability.reason
+                                    ? 'about.teamSpaceUnavailableWithReason'
+                                    : 'about.teamSpaceUnavailable',
+                                  { reason: spaceBuildCapability.reason },
+                                )}
+                          </p>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (
+                            spaceBuildCapability.isLoading ||
+                            !spaceBuildCapability.available
+                          )
+                            return;
+                          updateConfig({
+                            teamSpaceDevGate: config.teamSpaceDevGate === false,
+                          });
+                        }}
+                        disabled={
+                          spaceBuildCapability.isLoading ||
+                          !spaceBuildCapability.available
+                        }
+                        aria-label={tSettings('about.teamSpaceTitle')}
+                        aria-pressed={
+                          config.teamSpaceDevGate !== false &&
+                          spaceBuildCapability.available
+                        }
+                        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                          config.teamSpaceDevGate !== false &&
+                          spaceBuildCapability.available
+                            ? 'bg-[var(--accent)]'
+                            : 'bg-[var(--line-strong)]'
+                        }`}
+                      >
+                        <span
+                          className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${
+                            config.teamSpaceDevGate !== false &&
+                            spaceBuildCapability.available
+                              ? 'translate-x-5'
+                              : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </div>
 
                     {spaceBuildCapability.available &&
                       availableSpaceEnvironments.has('dev') && (

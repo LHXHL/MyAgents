@@ -1,3 +1,4 @@
+import { AGENT_MENTIONS_TAG } from "../../shared/agentMentions";
 import AsyncQuestionCard from '@/components/AsyncQuestionCard';
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
@@ -239,6 +240,7 @@ function AssistantActions({ message, onRetry, onFork, className = '' }: {
 
 function systemTagLabel(kind: string, t: (key: string) => string): string | null {
   if (kind === 'HEARTBEAT') return t('message.systemTags.heartbeat');
+  if (kind === AGENT_MENTIONS_TAG) return t('message.systemTags.agentMentions');
   if (kind === 'CRON_TASK') return t('message.systemTags.cronTask');
   if (kind === FLOATING_BALL_CONTEXT_TAG) return t('message.systemTags.floatingContext');
   if (kind === SPACE_ISSUE_CONTEXT_TAG) return t('message.systemTags.spaceIssue');

@@ -271,12 +271,11 @@ const SystemNoticeRow = memo(function SystemNoticeRow({
 }) {
   const { t } = useTranslation('chat');
   const isError = notice.level === 'error';
-  const Icon = isError ? AlertIcon : SuccessIcon;
+  const isWarning = notice.level === 'warning';
+  const Icon = isError || isWarning ? AlertIcon : SuccessIcon;
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--ink-muted)]">
-      <Icon
-        className={`h-3 w-3 flex-shrink-0 ${isError ? 'text-[var(--error)]' : 'text-[var(--success)]'}`}
-      />
+      <Icon className={`h-3 w-3 flex-shrink-0 ${isError ? 'text-[var(--error)]' : isWarning ? 'text-[var(--ink-muted)]' : 'text-[var(--success)]'}`} />
       <span className="flex-1">{notice.message}</span>
       {onDismiss && (
         <button

@@ -1,12 +1,16 @@
+import { deriveSessionLabel } from '../inbox/derive-label';
 import { getSessionEngine } from '../session-engine';
-import { getSessionData, isHistoryVisibleSession } from '../SessionStore';
-import { pendingSessionWatchCount, registerPendingSessionWatch } from '../inbox/watch-registry';
+import { getSessionData, getSessionMetadata, isHistoryVisibleSession } from '../SessionStore';
+import { pendingSessionWatchCount, registerPendingSessionWatch, removeNetworkSessionWatch, manageLocalSessionWatches } from '../inbox/watch-registry';
+import { parseNetworkReturnReference } from '../../shared/agentNetworkReturn';
+import { hasValidInternalCliCredential } from '../external-cli-admission';
 import {
   shrinkSessionMessageForClient,
   shrinkSessionMessagesForClient,
 } from '../utils/session-message-preview';
 import { toClientSessionMetadata } from '../utils/session-metadata-wire';
 import type { SessionMessage, SessionMetadata } from '../types/session';
+import { projectSessionActivity } from '../session-engine/observation';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -77,9 +81,15 @@ async function handleSessionWatchRegister(request: Request): Promise<Response> {
     targetSessionId?: string;
     targetLabel?: string;
     observedSidecarState?: string;
+    networkReturn?: unknown;
+    observerScope?: string;
   } | null;
   if (!body?.watchId || !body.watcherSessionId || !body.targetSessionId) {
     return jsonResponse({ accepted: false, reason: 'invalid body' }, 400);
+  }
+  const networkReturn = body.networkReturn == null ? undefined : parseNetworkReturnReference(body.networkReturn);
+  if (networkReturn === null || networkReturn && (!body.observerScope || !hasValidInternalCliCredential(request))) {
+    return jsonResponse({ accepted: false, reason: 'invalid network return context' }, 401);
   }
 
   const engine = getSessionEngine();
@@ -88,20 +98,10 @@ async function handleSessionWatchRegister(request: Request): Promise<Response> {
     return jsonResponse({ accepted: false, reason: 'target session mismatch' }, 409);
   }
 
-  const targetSessionState = engine.getLiveSessionState().sessionState;
-  const latestResult = (await engine.getLatestAssistantResult()).latestResult;
-  if (targetSessionState === 'error') {
-    return jsonResponse({
-      accepted: false,
-      delivery: 'error',
-      reason: 'target_error',
-      targetStateAtRegistration: targetSessionState,
-      finalState: 'error',
-      terminalReason: 'target_error',
-      latestResult,
-    });
-  }
-  if (targetSessionState !== 'running' && targetSessionState !== 'starting') {
+  const targetSessionState = projectSessionActivity(engine.getLiveSessionState());
+  if (targetSessionState === 'idle') {
+    const terminal = engine.getSessionCompletionTerminal();
+    const latestResult = (await engine.getLatestAssistantResult()).latestResult;
     return jsonResponse({
       accepted: false,
       delivery: 'already_idle',
@@ -110,20 +110,30 @@ async function handleSessionWatchRegister(request: Request): Promise<Response> {
       finalState: 'idle',
       terminalReason: 'already_idle',
       latestResult,
+      ...(terminal ? { turnId: terminal.turnId, terminalStatus: terminal.status } : {}),
     });
   }
-
-  registerPendingSessionWatch({
+  const turnId = engine.getExecutionTurnId();
+  if (!turnId) return jsonResponse({ accepted: false, delivery: 'error',
+    reason: 'SESSION_TURN_UNAVAILABLE', targetStateAtRegistration: targetSessionState });
+  // No await between observing the execution owner and registering its turn.
+  const watch = registerPendingSessionWatch({
     watchId: body.watchId,
     watcherSessionId: body.watcherSessionId,
     watcherResumeWorkspacePath: body.watcherResumeWorkspacePath,
     targetSessionId: body.targetSessionId,
-    targetLabel: body.targetLabel || 'a session',
+    targetLabel: deriveSessionLabel(getSessionMetadata(body.targetSessionId) ?? null),
     targetStateAtRegistration: targetSessionState,
     registeredAt: new Date().toISOString(),
+    turnId,
+    observerScope: networkReturn ? body.observerScope : undefined,
+    ...(networkReturn ? { networkReturn } : {}),
   });
   return jsonResponse({
     accepted: true,
+    watchId: watch.watchId,
+    turnId,
+    coalesced: watch.watchId !== body.watchId,
     delivery: 'registered',
     targetStateAtRegistration: targetSessionState,
     pending: pendingSessionWatchCount(),
@@ -211,8 +221,22 @@ export async function handleSessionReadRoute(
     return jsonResponse(await getSessionEngine().getLatestAssistantResult());
   }
 
-  if (pathname === '/api/session-watch/register' && request.method === 'POST') {
+  if (pathname === '/api/session-watch/manage' && request.method === 'POST') {
+    if (!hasValidInternalCliCredential(request)) return jsonResponse({ success: false }, 401);
+    const body = await request.json() as { watcherSessionId?: string; cancel?: string; all?: boolean };
+    if (!body.watcherSessionId || body.all && body.cancel) return jsonResponse({ success: false }, 400);
+    return jsonResponse({ watches: manageLocalSessionWatches(body.watcherSessionId, body.cancel, body.all) });
+  }
+  if (pathname === '/api/session-watch/register'  && request.method === 'POST') {
     return handleSessionWatchRegister(request);
+  }
+  if (pathname === '/api/session-watch/network-remove' && request.method === 'POST') {
+    if (!hasValidInternalCliCredential(request)) return jsonResponse({ accepted: false }, 401);
+    const body = await request.json().catch(() => null) as { watchId?: unknown; targetSessionId?: unknown; networkReturn?: unknown } | null;
+    const reference = parseNetworkReturnReference(body?.networkReturn);
+    if (!reference || typeof body?.watchId !== 'string'
+      || body.targetSessionId !== getSessionEngine().getRuntimeIdentity().sessionId) return jsonResponse({ accepted: false }, 400);
+    return jsonResponse({ accepted: true, removed: removeNetworkSessionWatch(body.watchId, reference) });
   }
 
   const sessionPathMatch = pathname.match(/^\/sessions\/([^/]+)$/);

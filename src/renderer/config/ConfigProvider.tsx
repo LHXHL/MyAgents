@@ -29,6 +29,7 @@ import type { TokenDanceAuthView } from '../../shared/tokendance';
 import type { AgentConfig } from '../../shared/types/agent';
 import { apiGetJson } from '@/api/apiFetch';
 import {
+    notifyConfigChanged,
     loadAppConfig,
     atomicModifyConfig,
     ensureBundledWorkspace,
@@ -51,12 +52,14 @@ import {
 } from './services/modelDiscoveryService';
 import {
     loadProjects,
+    projectCatalogChanged,
     saveProjects,
     addProject as addProjectService,
     updateProject as updateProjectService,
     patchProject as patchProjectService,
     removeOrHideProject as removeOrHideProjectService,
     touchProject as touchProjectService,
+    type AddProjectExistingPolicy,
 } from './services/projectService';
 import {
     configureMemoryAutoUpdateTaskForAgent,
@@ -273,6 +276,10 @@ export interface AddProjectOptions {
     templateId?: string;
     templateSource?: WorkspaceTemplateSource;
     agentDefaults?: WorkspaceTemplateAgentDefaults;
+    /** `reject` = create-only: an already-registered (non-hidden) path throws
+     *  `ProjectAlreadyExistsError` inside the projects lock and nothing is
+     *  written. Default `reuse` keeps the historical refresh-and-patch path. */
+    onExisting?: AddProjectExistingPolicy;
 }
 
 // ============= Contexts =============
@@ -929,8 +936,10 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     const addProject = useCallback(async (path: string, options: AddProjectOptions = {}) => {
         let project!: Project;
         let identityResult!: Awaited<ReturnType<typeof reconcilePersistedAgentWorkspaceIdentitiesLocked>>;
+        let catalogChanged = false;
         await withAgentConfigIntentLock(async () => {
-            project = await addProjectService(path);
+            const before = await loadProjects();
+            project = await addProjectService(path, { notification: 'deferred', onExisting: options.onExisting });
 
             const metadataPatch: Partial<Omit<Project, 'id'>> = {};
             if (options.icon) metadataPatch.icon = options.icon;
@@ -942,7 +951,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
                 metadataPatch.hiddenAt = undefined;
             }
             if (Object.keys(metadataPatch).length > 0) {
-                project = await patchProjectService(project.id, metadataPatch) ?? project;
+                project = await patchProjectService(project.id, metadataPatch, { notification: 'deferred' }) ?? project;
             }
 
             identityResult = await reconcilePersistedAgentWorkspaceIdentitiesLocked({
@@ -951,7 +960,11 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
                     : undefined,
             });
             project = identityResult.projects.find(item => item.id === project.id) ?? project;
+            catalogChanged = projectCatalogChanged(before, identityResult.projects);
         });
+        // Identity reconciliation already publishes its final commit when changed.
+        // Otherwise only a real Project catalog change (e.g. unhiding) needs fanout.
+        if (catalogChanged && !identityResult.changed) notifyConfigChanged('addProject');
 
         for (const createdAgent of identityResult.createdAgents) {
             if (createdAgent.memoryAutoUpdate?.enabled) {

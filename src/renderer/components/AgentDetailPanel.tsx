@@ -182,7 +182,7 @@ function TagInput({
                     placement="bottom-start"
                     matchAnchorWidth
                     closeOnEscape={false}
-                    className="max-h-40 overflow-y-auto bg-[var(--paper)] shadow-lg"
+                    maxHeight="10rem" className="overflow-y-auto bg-[var(--paper)] shadow-lg"
                 >
                     <div ref={listRef} role="listbox">
                         {filteredSuggestions.map((s, i) => (

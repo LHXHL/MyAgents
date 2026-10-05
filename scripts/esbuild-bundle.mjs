@@ -25,6 +25,9 @@ import { fileURLToPath } from 'node:url';
 
 import { preparePlaywrightControlRuntime } from './prepare-playwright-control-runtime.mjs';
 import { dshBuildDefines } from './integrated-runtimes/dsh-build-selection.mjs';
+import { verifyAgentNetworkProtocol } from './verify-agent-network-protocol.mjs';
+
+await verifyAgentNetworkProtocol();
 
 // Read package.json version once and inject as a compile-time constant.
 // This is the ONLY way `myagents version` can show the real shipped

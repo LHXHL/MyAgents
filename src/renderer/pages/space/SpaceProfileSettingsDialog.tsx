@@ -26,7 +26,7 @@ export default function SpaceProfileSettingsDialog({
   onClose,
 }: {
   session: SpaceSession;
-  actions: SpaceActions;
+  actions: Pick<SpaceActions, 'updateProfile' | 'loadAvatarPresets'>;
   avatarPresets: SpaceAvatarPresetsState;
   onClose: () => void;
 }) {

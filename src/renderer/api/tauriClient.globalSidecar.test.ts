@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { CLI_SESSION_HEADER, cliSessionScopeError } from '../../shared/cli-session-scope';
+import { LOG_SESSION_HEADER } from '../../shared/types/log';
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
 
@@ -39,6 +41,36 @@ describe('tauriClient global sidecar readiness', () => {
 
 describe('tauriClient owner-addressed control dispatch', () => {
     beforeEach(() => mocks.invoke.mockReset());
+
+    it('keeps active-chat log correlation out of global Admin execution identity', async () => {
+        mocks.invoke.mockImplementation(async (_cmd, payload) => {
+            if (!payload?.request) return undefined;
+            const scopeError = cliSessionScopeError(new Headers(payload.request.headers).get(CLI_SESSION_HEADER), null);
+            return { status: scopeError ? 409 : 200, body: JSON.stringify(scopeError ?? { success: true, data: { models: [] } }), headers: {}, is_base64: false };
+        });
+        const { globalSidecarFetch, setAppActiveCorrelation } = await loadClient();
+        setAppActiveCorrelation({ tabId: 'chat', tabs: [{ id: 'chat', sessionId: 'active-chat' }] });
+        const result = await globalSidecarFetch('/api/admin/vision/models', { method: 'POST', body: '{}' });
+        expect(result.status).toBe(200);
+        const headers = new Headers(mocks.invoke.mock.calls.find(([cmd]) => cmd === 'global_sidecar_http_request')![1].request.headers);
+        expect(headers.get(CLI_SESSION_HEADER)).toBeNull();
+        expect(headers.get(LOG_SESSION_HEADER)).toBe('active-chat');
+    });
+
+    it('keeps explicit target log correlation without treating another active chat as caller identity', async () => {
+        mocks.invoke.mockImplementation(async (_cmd, payload) => {
+            if (!payload?.request) return undefined;
+            const scopeError = cliSessionScopeError(new Headers(payload.request.headers).get(CLI_SESSION_HEADER), 'target-session');
+            return { status: scopeError ? 409 : 200, body: '{}', headers: {}, is_base64: false };
+        });
+        const { sessionSidecarFetch, setAppActiveCorrelation } = await loadClient();
+        setAppActiveCorrelation({ tabId: 'other', tabs: [{ id: 'other', sessionId: 'other-session' }] });
+        const result = await sessionSidecarFetch('target-session', { type: 'tab', id: 'target-tab' }, '/api/admin/status', { method: 'POST', headers: { [LOG_SESSION_HEADER]: 'target-session' } });
+        expect(result.status).toBe(200);
+        const headers = new Headers(mocks.invoke.mock.calls.find(([cmd]) => cmd === 'session_sidecar_http_request')![1].request.headers);
+        expect(headers.get(LOG_SESSION_HEADER)).toBe('target-session');
+        expect(headers.get(CLI_SESSION_HEADER)).toBeNull();
+    });
 
     it('sends Session requests with logical owner and path, never a renderer-selected URL', async () => {
         mocks.invoke.mockResolvedValue({
@@ -81,7 +113,7 @@ describe('tauriClient owner-addressed control dispatch', () => {
         });
     });
 
-    it('keeps explicit correlation headers on global owner-addressed requests', async () => {
+    it('keeps explicit request headers on global owner-addressed requests', async () => {
         mocks.invoke.mockResolvedValue({
             status: 200,
             body: '{}',

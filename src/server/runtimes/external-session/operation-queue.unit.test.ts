@@ -63,17 +63,40 @@ describe('external operation queue owner', () => {
   it('carries desktop send correlation through direct and queued projections without replacing server identity', async () => {
     const queue = await loadFreshQueueOwner();
     const message = userMessage('hello');
+    const desktopQuery: NonNullable<ExternalSendContext['desktopQuery']> = {
+      visibleText: 'hello',
+      primaryContext: { kind: 'floating-context', input: { appName: 'Editor' } },
+    };
     const operation = queue.createExternalMessageOperation({
       text: 'hello', userMessage: message,
-      context: context({ clientRequestId: 'desktop-request-1' }),
+      context: context({ clientRequestId: 'desktop-request-1', desktopQuery }),
       runtimeConfig: snapshot(),
     });
     expect(operation.userProjection.message).toMatchObject({
       id: message.id, metadata: { source: 'desktop', clientRequestId: 'desktop-request-1' },
+      desktopQuery,
     });
     expect(message.metadata).toBeUndefined();
     queue.enqueueExistingExternalMessageOperation(operation);
     expect(queue.reserveExternalOperationForDrain()).toBe(operation);
+  });
+
+  it('drains realtime Inbox inputs during a running turn ahead of future-turn messages and config', async () => {
+    const queue = await loadFreshQueueOwner();
+    enqueueMessage(queue, { text: 'B', context: context(), runtimeConfig: snapshot(), deliveryMode: 'turn' });
+    queue.enqueueExternalConfigOperation({ model: 'model-b' }, 'desktop');
+    for (const text of ['C', 'D']) enqueueMessage(queue, { text, context: context(), runtimeConfig: snapshot(),
+      deliveryMode: 'realtime', inputSource: 'inbox' });
+    expect(queue.canDrainExternalOperations('running', false)).toBe(false);
+    expect(queue.canDrainExternalOperations('running', true)).toBe(true);
+    const first = queue.reserveExternalOperationForDrain(true)!;
+    expect(first).toMatchObject({ text: 'C', inputSource: 'inbox' });
+    queue.releaseExternalDrainReservation(first);
+    const second = queue.reserveExternalOperationForDrain(true)!;
+    expect(second).toMatchObject({ text: 'D' });
+    queue.releaseExternalDrainReservation(second);
+    expect(queue.canDrainExternalOperations('running', true)).toBe(false);
+    expect(queue.reserveExternalOperationForDrain()).toMatchObject({ text: 'B' });
   });
 
   it('tracks user-message projection state per in-flight operation', async () => {

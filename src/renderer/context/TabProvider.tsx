@@ -1,3 +1,5 @@
+import { queryAgentSelectors } from '../../shared/agentMentions';
+import { LOG_SESSION_HEADER } from '../../shared/types/log';
 import { messageCompletionParams } from '@/analytics/conversation';
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 import { NATIVE_RESUME_BOUNDARY_MESSAGE } from '../../shared/nativeResumeBoundary';
@@ -811,7 +813,7 @@ function tabCorrelationHeaders(
 ): Record<string, string> {
   return {
     'X-MyAgents-Tab-Id': tabId,
-    ...(sessionId ? { 'X-MyAgents-Session-Id': sessionId } : {}),
+    ...(sessionId ? { [LOG_SESSION_HEADER]: sessionId } : {}),
   };
 }
 
@@ -2653,6 +2655,8 @@ export default function TabProvider({
               id: string;
               messagePreview: string;
               asyncQuestionReply?: AsyncQuestionReply;
+              agentMentions?: import('../../shared/agentMentions').AgentMentionSnapshot[];
+              primaryContext?: import('../../shared/agentMentions').DesktopPrimaryContext;
               canCancel?: boolean;
               canForceExecute?: boolean;
             }>;
@@ -5050,6 +5054,8 @@ export default function TabProvider({
           const payload = data as {
             queueId: string;
             messageText: string;
+            agentMentions?: import('../../shared/agentMentions').AgentMentionSnapshot[];
+            primaryContext?: import('../../shared/agentMentions').DesktopPrimaryContext;
             asyncQuestionReply?: AsyncQuestionReply;
             isInFlight?: boolean;
             deliveryMode?: 'realtime' | 'turn';
@@ -5105,7 +5111,9 @@ export default function TabProvider({
                     sameAsyncQuestionReply(
                       prev[existingIdx].asyncQuestionReply,
                       reply,
-                    ))
+                    )) &&
+                  (!payload.agentMentions || payload.agentMentions === prev[existingIdx].agentMentions) &&
+                  (!payload.primaryContext || payload.primaryContext === prev[existingIdx].primaryContext)
                 )
                   return prev;
                 const next = [...prev];
@@ -5113,6 +5121,8 @@ export default function TabProvider({
                   ...prev[existingIdx],
                   text: visibleMessageText,
                   asyncQuestionReply: payload.asyncQuestionReply,
+                  agentMentions: payload.agentMentions ?? prev[existingIdx].agentMentions,
+                  primaryContext: payload.primaryContext ?? prev[existingIdx].primaryContext,
                   isInFlight: !!payload.isInFlight,
                   deliveryMode: nextDeliveryMode,
                   canCancel: nextCanCancel,
@@ -5128,6 +5138,8 @@ export default function TabProvider({
                   queueId: payload.queueId,
                   text: visibleMessageText,
                   asyncQuestionReply: payload.asyncQuestionReply,
+                  agentMentions: payload.agentMentions,
+                  primaryContext: payload.primaryContext,
                   timestamp: Date.now(),
                   isInFlight: !!payload.isInFlight,
                   deliveryMode: payload.deliveryMode,
@@ -5395,7 +5407,7 @@ export default function TabProvider({
           // level CustomEvent observable by any renderer listener must not
           // carry providerApiKeys / mcpServerEnv).
           console.log('[TabProvider] config:changed via Admin CLI', data);
-          notifyConfigChanged('sse:config:changed');
+          notifyConfigChanged('sse:config:changed', { native: false });
           break;
         }
 
@@ -5423,7 +5435,7 @@ export default function TabProvider({
           // plugins" even after the user just enabled 13 of them.
           // Routes through `notifyConfigChanged` for the same secret-
           // leakage reason as the `config:changed` case above.
-          notifyConfigChanged('sse:plugins:changed');
+          notifyConfigChanged('sse:plugins:changed', { native: false });
           break;
         }
 
@@ -5882,6 +5894,8 @@ export default function TabProvider({
       providerRoute?: ProviderRoute,
       requiredSystemSkill?: ProductSystemSkillRequirement,
       asyncQuestionReply?: AsyncQuestionReply,
+      agentMentions?: import('../../shared/agentMentions').AgentMentionSnapshot[],
+      primaryContext?: import('../../shared/agentMentions').DesktopPrimaryContext,
       retryFailedMessageId?: string,
     ): Promise<boolean> => {
       const trimmed = text.trim();
@@ -5955,6 +5969,8 @@ export default function TabProvider({
             queueId: localQueueId,
             text: visibleQueueText,
             asyncQuestionReply,
+            agentMentions,
+            primaryContext,
             images: images?.map(queuedImageInfo),
             timestamp: Date.now(),
             canCancel: false,
@@ -5993,6 +6009,8 @@ export default function TabProvider({
       const sendPayload = {
         clientRequestId,
         text: trimmed,
+        agentMentions,
+        primaryContext,
         images: imageData,
         sessionId: sessionIdForSend,
         permissionMode: permissionMode ?? 'auto',
@@ -6015,6 +6033,7 @@ export default function TabProvider({
 
       const admission = postJson<{
         success: boolean;
+        agentMentionsNeedReselect?: boolean;
         error?: string;
         queued?: boolean;
         queueId?: string;
@@ -6025,6 +6044,7 @@ export default function TabProvider({
       }>('/chat/send', sendPayload)
         .then((response) => {
           if (response.success) {
+            if (response.agentMentionsNeedReselect) setSystemNotice({ kind: 'agent-mention', level: 'warning', message: appText('tabProvider.agentMentionsNeedReselect') });
             trackTabEvent('message_send', {
               runtime: analyticsMetaRef.current.runtime,
               runtime_source: analyticsMetaRef.current.runtimeSource,
@@ -6070,6 +6090,8 @@ export default function TabProvider({
                           canCancel: response.canCancel,
                           canForceExecute: response.canForceExecute,
                           images: images?.map(queuedImageInfo),
+                          agentMentions,
+                          primaryContext,
                         }
                       : q,
                   ),
@@ -6091,6 +6113,8 @@ export default function TabProvider({
                             images: images?.length
                               ? images.map(queuedImageInfo)
                               : q.images,
+                            agentMentions,
+                            primaryContext,
                           }
                         : q,
                     );
@@ -6101,6 +6125,8 @@ export default function TabProvider({
                       queueId: realQueueId,
                       text: visibleQueueText,
                       images: images?.map(queuedImageInfo),
+                      agentMentions,
+                      primaryContext,
                       timestamp: Date.now(),
                       isInFlight: !!response.isInFlight,
                       deliveryMode: response.deliveryMode,
@@ -6165,7 +6191,7 @@ export default function TabProvider({
 
       // A question reply keeps the composer/card retryable if admission fails.
       // Only the accepted user-message replay, never this HTTP receipt, answers it.
-      return asyncQuestionReply ? admission : true;
+      return asyncQuestionReply || queryAgentSelectors(trimmed).length > 0 ? admission : true;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- postJson is stable
     [tabId, sessionId, claimSessionOpeningTransition, setPendingDesktopMessages],
@@ -6341,6 +6367,8 @@ export default function TabProvider({
               id: string;
               messagePreview: string;
               asyncQuestionReply?: AsyncQuestionReply;
+              agentMentions?: import('../../shared/agentMentions').AgentMentionSnapshot[];
+              primaryContext?: import('../../shared/agentMentions').DesktopPrimaryContext;
               canCancel?: boolean;
               canForceExecute?: boolean;
             }>;

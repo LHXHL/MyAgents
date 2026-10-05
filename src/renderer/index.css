@@ -209,6 +209,8 @@
   --global-sidebar-brand-icon-size: 20px;
   --global-sidebar-brand-icon-left: 22px;
   --global-sidebar-rail-button-left: 12px;
+  --global-sidebar-action-inset: 16px;
+  --global-sidebar-action-size: 32px;
   --sidebar-min-width: 320px;
   --chat-workspace-panel-width: max(25%, var(--sidebar-min-width));
   --chat-workspace-min-center-shift: 160px;
@@ -228,6 +230,16 @@
   --space-8: 32px;
   --space-10: 40px;
   --space-12: 48px;
+}
+
+/* Brand spark: the amber point in the MYAGENTS logotype. Deeper on paper for
+   contrast, brighter on dark surfaces. */
+:root {
+  --brand-spark: #c98a2e;
+}
+
+html[data-color-scheme='dark'] {
+  --brand-spark: #e2a548;
 }
 
 /* Agent identity hues for WorkspaceIcon. Each glyph owns one hue, so the hue is
@@ -343,12 +355,97 @@ html[data-color-scheme='dark'] {
   padding-left: calc(
     var(--global-sidebar-brand-icon-left) - var(--global-sidebar-rail-button-left)
   );
+  max-width: calc(
+    var(--global-sidebar-expanded-width) - var(--global-sidebar-rail-button-left)
+    - var(--global-sidebar-action-inset) - var(--global-sidebar-action-size) - var(--space-2)
+  );
+  opacity: 1;
+  transition: opacity var(--duration-normal) var(--ease-in-out);
+}
+
+.global-sidebar-brand-link[inert] {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* All trailing sidebar actions share one size and right inset. Resource rows
+   contribute their scroller's 8px padding; the 16px total keeps actions clear
+   of the native overlay scrollbar. */
+.global-sidebar-action-button {
+  width: var(--global-sidebar-action-size);
+  height: var(--global-sidebar-action-size);
+  flex-shrink: 0;
+}
+
+/* Search and notification keep their controls mounted and share the same
+   paint-only journey between the right action axis and the rail icon axis. */
+.global-sidebar-search-slot,
+.global-sidebar-notification-slot {
+  position: absolute;
+  width: var(--global-sidebar-action-size);
+  transform: translateX(calc(
+    var(--global-sidebar-expanded-width) - var(--global-sidebar-action-inset)
+    - (var(--global-sidebar-rail-width) + var(--global-sidebar-action-size)) / 2
+  ));
+  transition: transform var(--duration-normal) var(--ease-in-out);
+}
+
+.global-sidebar-search-slot {
+  top: var(--space-1);
+  left: calc((var(--global-sidebar-rail-width) - var(--global-sidebar-action-size)) / 2);
+}
+
+/* The fixed row prevents the footer's mode-dependent layout from jumping
+   the Bell. Empty space must never cover the workspace when in rail mode. */
+.global-sidebar-account-row {
+  position: relative;
+  width: calc(
+    var(--global-sidebar-expanded-width) - var(--global-sidebar-rail-button-left)
+    - var(--global-sidebar-action-inset)
+  );
+  height: var(--global-sidebar-action-size);
+  pointer-events: none;
+}
+
+.global-sidebar-account-row > [data-global-account-trigger] {
+  pointer-events: auto;
+}
+
+.global-sidebar-notification-slot {
+  top: 0;
+  left: calc(
+    (var(--global-sidebar-rail-width) - var(--global-sidebar-action-size)) / 2
+    - var(--global-sidebar-rail-button-left)
+  );
+  pointer-events: auto;
+}
+
+.global-sidebar[data-global-sidebar-mode='rail'] .global-sidebar-search-slot,
+.global-sidebar[data-global-sidebar-mode='rail'] .global-sidebar-notification-slot {
+  transform: translateX(0);
 }
 
 .global-sidebar-brand-icon {
   width: var(--global-sidebar-brand-icon-size);
   height: var(--global-sidebar-brand-icon-size);
   border-radius: 22%;
+}
+
+/* MYAGENTS logotype is outline art: size it by cap height (em-relative so each
+   surface keeps its own type scale) and let the width follow the viewBox. */
+.global-sidebar-brand-logotype {
+  display: block;
+  height: 0.8em;
+  width: auto;
+}
+
+.launcher-hero-logotype {
+  display: block;
+  height: 0.64em;
+  width: auto;
+  /* Outline art has no line-box leading below the baseline, so restore the
+     breathing room a text title would have had above the slogan. */
+  margin-bottom: 0.3em;
 }
 
 /* Sidebar layout reaches its final 256px/64px slot in one commit so Chat,
@@ -403,6 +500,13 @@ html[data-color-scheme='dark'] {
   display: flex;
 }
 
+/* items-center aligns line boxes, but 14px system-font ink sits slightly below
+   their center. Correct only row labels; keep glyph slots and 12px metadata
+   centered as-is. Individual translate preserves the copy's horizontal motion. */
+.global-sidebar-label {
+  translate: 0 -1px;
+}
+
 /* Keep row shape compact without changing Theme radii outside the sidebar. */
 .global-sidebar-row {
   border-radius: min(var(--radius-lg), var(--space-2));
@@ -423,6 +527,41 @@ html[data-color-scheme='dark'] {
   --global-sidebar-row-bg: var(--paper-inset);
 }
 
+/* A workspace just created from the New Agent panel flashes once, then
+   settles back to its normal row surface. */
+.global-sidebar-resource-row[data-recently-created] {
+  animation: global-sidebar-recently-created 1.6s ease-out;
+}
+
+@keyframes global-sidebar-recently-created {
+  0%, 35% { background-color: var(--accent-warm-muted); }
+  100% { background-color: var(--global-sidebar-row-bg); }
+}
+
+/* New Agent panel: list ↔ detail slide within one dialog. */
+.new-agent-panel-page[data-enter='forward'] {
+  animation: new-agent-panel-enter-forward var(--duration-normal, 200ms) ease-out;
+}
+
+.new-agent-panel-page[data-enter='back'] {
+  animation: new-agent-panel-enter-back var(--duration-normal, 200ms) ease-out;
+}
+
+@keyframes new-agent-panel-enter-forward {
+  from { opacity: 0; transform: translateX(16px); }
+}
+
+@keyframes new-agent-panel-enter-back {
+  from { opacity: 0; transform: translateX(-16px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .global-sidebar-resource-row[data-recently-created],
+  .new-agent-panel-page[data-enter] {
+    animation: none;
+  }
+}
+
 /* Selected/open sidebar entries fill their AppIcon tint layer instead of
    adding a second accent marker; the row surface alone carries selection. */
 .global-sidebar-row:is([aria-current='page'], [aria-expanded='true'][data-notification-center-trigger]) {
@@ -430,6 +569,7 @@ html[data-color-scheme='dark'] {
 }
 
 .global-sidebar-workspace-actions {
+  padding-right: calc(var(--global-sidebar-action-inset) - var(--space-2));
   border-top-right-radius: inherit;
   border-bottom-right-radius: inherit;
   /* Composite the same translucent hover over the actual host surface.
@@ -438,6 +578,10 @@ html[data-color-scheme='dark'] {
   background:
     linear-gradient(to right, transparent, var(--global-sidebar-row-bg) var(--space-6)),
     linear-gradient(to right, transparent, var(--global-sidebar-surface) var(--space-6));
+}
+
+[data-global-sidebar-session-action-overlay] {
+  right: calc(var(--global-sidebar-action-inset) - var(--space-2));
 }
 
 .global-sidebar[data-global-sidebar-mode='rail'] .global-sidebar-copy {
@@ -622,7 +766,10 @@ html[data-color-scheme='dark'] {
 
 @media (prefers-reduced-motion: reduce) {
   .global-sidebar::before,
-  .global-sidebar-copy {
+  .global-sidebar-copy,
+  .global-sidebar-brand-link,
+  .global-sidebar-search-slot,
+  .global-sidebar-notification-slot {
     transition: none;
   }
 
@@ -942,15 +1089,6 @@ pre code {
   margin-left: 0 !important;
   border-left: none !important;
   padding-left: 0 !important;
-}
-
-/* ============================================
-   Launcher Page Styles
-   ============================================ */
-
-
-.launcher-brand {
-  min-width: 0; /* Allow shrinking */
 }
 
 /* Settings sidebar floating divider */
