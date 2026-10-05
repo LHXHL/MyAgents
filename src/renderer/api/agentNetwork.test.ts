@@ -176,6 +176,14 @@ describe("network read and settings outcome", () => {
   });
   const mutations: NetworkRequest[] = [
     {
+      kind: "renameDevice",
+      networkId: "net",
+      deviceId: "device",
+      name: "新设备",
+      expectedName: "旧设备",
+      mutationId: "mutation",
+    },
+    {
       kind: "membership",
       networkId: "net",
       deviceId: "device",

@@ -12,6 +12,7 @@ pub(crate) struct MountPolicy {
     pub enable_revision: u64,
 }
 pub(crate) struct LocalPolicy {
+    pub device_name: String,
     pub joined: bool,
     pub membership_revision: u64,
     pub mounts: HashMap<String, MountPolicy>,
@@ -126,6 +127,7 @@ pub(crate) async fn hydrate(
         cursor = Some(next);
     }
     Ok(LocalPolicy {
+        device_name: text(&device, "name")?.into(),
         joined,
         membership_revision,
         mounts,

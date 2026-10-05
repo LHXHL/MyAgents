@@ -40,6 +40,7 @@ pub(crate) struct NetworkSnapshot {
     pub state: &'static str,
     pub principal_id: Option<String>,
     pub network_id: Option<String>,
+    pub device_name: Option<String>,
     pub error: Option<NetworkError>,
     pub revision: u64,
     pub auth_generation: u64,
@@ -119,6 +120,7 @@ impl AgentNetwork {
                 state: "signedOut",
                 principal_id: None,
                 network_id: None,
+                device_name: None,
                 error: None,
                 revision: 0,
                 auth_generation: 0,
@@ -169,6 +171,7 @@ impl AgentNetwork {
                 state: "signedOut",
                 principal_id: None,
                 network_id: None,
+                device_name: None,
                 error: None,
                 revision: current.revision.saturating_add(1),
                 auth_generation: self.boundary.borrow().auth_generation,
@@ -189,6 +192,7 @@ impl AgentNetwork {
                 value.suspended = suspended;
             });
             current.state = "disconnected";
+            current.device_name = None;
             current.error = Some(NetworkError::new("NETWORK_POWER_BOUNDARY"));
             current.revision = current.revision.saturating_add(1);
             current.clone()
@@ -382,6 +386,7 @@ pub(crate) fn start(
                     state: "unavailable",
                     principal_id: None,
                     network_id: None,
+                    device_name: None,
                     error: Some(error),
                     revision: 0,
                     auth_generation: 0,
@@ -408,6 +413,7 @@ pub(crate) fn start(
                         state: "unavailable",
                         principal_id: None,
                         network_id: None,
+                        device_name: None,
                         error: Some(error),
                         revision: 0,
                         auth_generation: 0,
@@ -444,6 +450,7 @@ pub(crate) fn start(
                             state: "connecting",
                             principal_id: principal.clone(),
                             network_id: None,
+                            device_name: None,
                             error: None,
                             revision: 0,
                             auth_generation: 0,
@@ -500,6 +507,7 @@ pub(crate) fn start(
                             state: "disconnected",
                             principal_id: principal,
                             network_id: None,
+                            device_name: None,
                             error,
                             revision: 0,
                             auth_generation: 0,
@@ -519,6 +527,7 @@ pub(crate) fn start(
                             },
                             principal_id: None,
                             network_id: None,
+                            device_name: None,
                             error: Some(error),
                             revision: 0,
                             auth_generation: 0,
@@ -762,7 +771,7 @@ async fn connect(
                                 hydrated = true;
                                 reconnect.recovered();
                                 owner.publish(app, generation, NetworkSnapshot { state: "ready", principal_id: Some(local.principal_id.clone()),
-                                    network_id: Some(local.network_id.clone()), error: None, revision: 0, auth_generation: 0 });
+                                    network_id: Some(local.network_id.clone()), device_name: local_policy.as_ref().map(|policy| policy.device_name.clone()), error: None, revision: 0, auth_generation: 0 });
                             }
                             ServerMessage::Changed { change, .. } => {
                                 if matches!(change, myagents_agent_network_protocol::ChangeScope::Settings | myagents_agent_network_protocol::ChangeScope::Catalog) {
@@ -1016,6 +1025,14 @@ async fn connect(
                         // projection even if its HTTP response arrives last.
                         if hydrated_seq == catalog_seq && !hydrate_dirty {
                             local_policy = Some(result?);
+                            if hydrated {
+                                let mut snapshot = owner.snapshot();
+                                let name = local_policy.as_ref().map(|policy| policy.device_name.clone());
+                                if snapshot.device_name != name {
+                                    snapshot.device_name = name;
+                                    owner.publish(app, generation, snapshot);
+                                }
+                            }
                             if !catalog_busy && !ready_requested {
                                 send(&mut socket, ClientMessage::Ready { scope: scope.clone(), catalog_seq }).await?;
                                 ready_requested = true;
@@ -1297,6 +1314,7 @@ fn apply_power(app: &tauri::AppHandle, owner: &AgentNetwork, signal: Result<bool
                     state: "unavailable",
                     principal_id: None,
                     network_id: None,
+                    device_name: None,
                     error: Some(error),
                     revision: 0,
                     auth_generation: 0,

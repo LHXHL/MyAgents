@@ -1,7 +1,7 @@
 //! Fixed Node Host → App entry. Host provenance is supplied only after the
 //! existing CLI capability gate; source Session identity comes from the live
 //! Sidecar generation, never from query parameters or a remote device.
-use super::{actor::ManagedAgentNetwork, catalog::read_local_catalog, NetworkError};
+use super::{actor::ManagedAgentNetwork, catalog::read_local_catalog, commands::MetadataRequest, NetworkError};
 use crate::sidecar::ManagedSidecarManager;
 use myagents_agent_network_protocol::{SourceRequest, VerifiedCaller};
 use serde::Deserialize;
@@ -21,7 +21,7 @@ pub(crate) enum SourceKind {
     ExternalCli,
 }
 
-/// Presentation only: the network directory registers this same device name.
+/// Presentation only: the network directory owns this same display name.
 /// Keep the existing caller label budget, including non-BMP names.
 fn network_caller_label(agent_name: &str, device_name: Option<&str>) -> String {
     let label = match device_name {
@@ -36,6 +36,22 @@ fn network_caller_label(agent_name: &str, device_name: Option<&str>) -> String {
             units <= 320
         })
         .collect()
+}
+
+fn registered_caller_label(
+    agent_name: &str,
+    device: &serde_json::Value,
+    device_id: &str,
+    network_id: &str,
+    principal_id: Option<&str>,
+) -> Result<String, NetworkError> {
+    if device["deviceId"] != device_id || device["networkId"] != network_id
+        || device["principalId"].as_str() != principal_id
+    {
+        return Err(NetworkError::new("NETWORK_METADATA_SCOPE_MISMATCH"));
+    }
+    let name = device["name"].as_str().ok_or_else(|| NetworkError::new("NETWORK_METADATA_INVALID"))?;
+    Ok(network_caller_label(agent_name, Some(name)))
 }
 
 pub(crate) async fn invoke(
@@ -90,13 +106,18 @@ pub(crate) async fn invoke(
         {
             return Err(NetworkError::new("SOURCE_GENERATION_CHANGED"));
         }
+        let snapshot = owner.snapshot();
+        let network_id = snapshot.network_id.ok_or_else(|| NetworkError::new("CONNECTOR_NOT_READY"))?;
+        let device_id = crate::device_identity::get_or_create_device_id()
+            .map_err(|_| NetworkError::new("DEVICE_ID_UNAVAILABLE"))?;
+        let device = owner.request(MetadataRequest::DeviceName {
+            network_id: network_id.clone(), device_id: device_id.clone(),
+        }).await?;
+        let label = registered_caller_label(&identity.name, &device, &device_id, &network_id, snapshot.principal_id.as_deref())?;
         VerifiedCaller::Internal {
             source_session_id: current.product_session_id,
             source_agent_id: identity.local_agent_id.clone(),
-            label: network_caller_label(
-                &identity.name,
-                crate::device_identity::local_device_name().as_deref(),
-            ),
+            label,
         }
     } else {
         VerifiedCaller::External {
@@ -175,6 +196,15 @@ mod tests {
             "Mino@EXAMPLE-WIN"
         );
         assert_eq!(network_caller_label("Mino", None), "Mino");
+    }
+
+    #[test]
+    fn caller_label_uses_the_network_nickname_and_requires_its_account_device_scope() {
+        let name = serde_json::json!({"deviceId":"device-b", "networkId":"network", "principalId":"account", "name":"家里 Windows"});
+        assert_eq!(registered_caller_label("Mino", &name, "device-b", "network", Some("account")).unwrap(), "Mino@家里 Windows");
+        for (device, network, account) in [("device-a", "network", "account"), ("device-b", "other", "account"), ("device-b", "network", "other")] {
+            assert_eq!(registered_caller_label("Mino", &name, device, network, Some(account)).unwrap_err().code, "NETWORK_METADATA_SCOPE_MISMATCH");
+        }
     }
 
     #[test]

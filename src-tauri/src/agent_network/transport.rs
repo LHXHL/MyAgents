@@ -402,6 +402,11 @@ pub(crate) enum NetworkRoute<'a> {
     Receipt {
         mutation_id: &'a str,
     },
+    DeviceName {
+        network_id: &'a str,
+        device_id: &'a str,
+        write: bool,
+    },
 }
 impl NetworkRoute<'_> {
     fn response_kind(&self) -> MetadataKind {
@@ -415,6 +420,7 @@ impl NetworkRoute<'_> {
             Self::Resolve { .. } => MetadataKind::CallableAgent,
             Self::Mount { .. } => MetadataKind::Mount,
             Self::Receipt { .. } => MetadataKind::Receipt,
+            Self::DeviceName { .. } => MetadataKind::DeviceName,
         }
     }
     fn path(&self) -> Result<(reqwest::Method, String), NetworkError> {
@@ -488,6 +494,10 @@ impl NetworkRoute<'_> {
                 reqwest::Method::GET,
                 format!("/v1/mutations/{}", uuid(mutation_id)?),
             ),
+            Self::DeviceName { network_id, device_id, write } => (
+                if *write { reqwest::Method::PATCH } else { reqwest::Method::GET },
+                format!("/v1/networks/{}/devices/{}/name", uuid(network_id)?, uuid(device_id)?),
+            ),
         })
     }
 }
@@ -495,6 +505,17 @@ impl NetworkRoute<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn device_names_use_scoped_id_routes_for_both_read_and_write() {
+        let network = "11111111-1111-4111-8111-111111111111";
+        let device = "22222222-2222-4222-8222-222222222222";
+        for (write, method) in [(false, reqwest::Method::GET), (true, reqwest::Method::PATCH)] {
+            let (actual_method, path) = NetworkRoute::DeviceName { network_id: network, device_id: device, write }.path().unwrap();
+            assert_eq!(actual_method, method);
+            assert_eq!(path, format!("/v1/networks/{network}/devices/{device}/name"));
+        }
+        assert!(NetworkRoute::DeviceName { network_id: network, device_id: "家里 Windows", write: true }.path().is_err());
+    }
     fn decode_response(
         status: reqwest::StatusCode,
         bytes: &[u8],

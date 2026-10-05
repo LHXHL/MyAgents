@@ -81,6 +81,18 @@ validator!(
     MOUNT_MUTATION,
     concat!(env!("OUT_DIR"), "/schemas/mountMutation.json")
 );
+validator!(DEVICE_NAME_MUTATION, concat!(env!("OUT_DIR"), "/schemas/deviceNameMutation.json"));
+pub fn validate_device_name_mutation(value: &Value) -> Result<(), ProtocolError> {
+    // JSON Schema maxLength counts code points; the shared TS contract counts
+    // UTF-16 units. Keep supplementary characters inside the same UI budget.
+    if DEVICE_NAME_MUTATION.is_valid(value)
+        && value["name"].as_str().is_some_and(|name| name.encode_utf16().count() <= 160)
+    {
+        Ok(())
+    } else {
+        Err(ProtocolError("MUTATION_INVALID"))
+    }
+}
 pub fn validate_mutation(membership: bool, value: &Value) -> Result<(), ProtocolError> {
     let validator = if membership {
         &*MEMBERSHIP_MUTATION
@@ -163,6 +175,7 @@ validator!(
     METADATA_RECEIPT,
     concat!(env!("OUT_DIR"), "/schemas/metadata-receipt.json")
 );
+validator!(METADATA_DEVICE_NAME, concat!(env!("OUT_DIR"), "/schemas/metadata-deviceName.json"));
 
 #[derive(Clone, Copy)]
 pub enum MetadataKind {
@@ -175,6 +188,7 @@ pub enum MetadataKind {
     Mount,
     Catalog,
     Receipt,
+    DeviceName,
 }
 pub fn validate_metadata(kind: MetadataKind, value: &Value) -> Result<(), ProtocolError> {
     let validator = match kind {
@@ -187,6 +201,7 @@ pub fn validate_metadata(kind: MetadataKind, value: &Value) -> Result<(), Protoc
         MetadataKind::Mount => &*METADATA_MOUNT,
         MetadataKind::Catalog => &*METADATA_CATALOG,
         MetadataKind::Receipt => &*METADATA_RECEIPT,
+        MetadataKind::DeviceName => &*METADATA_DEVICE_NAME,
     };
     if validator.is_valid(value) {
         Ok(())

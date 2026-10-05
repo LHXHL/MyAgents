@@ -1,6 +1,11 @@
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
-import { CopyIcon, LogOutIcon, MonitorIcon } from "@/components/icons";
+import {
+  CopyIcon,
+  EditIcon,
+  LogOutIcon,
+  MonitorIcon,
+} from "@/components/icons";
 import { DropdownMenu } from "@/components/ui/DropdownMenu";
 import {
   DEFAULT_WORKSPACE_ICON,
@@ -82,11 +87,13 @@ export function LocalTag() {
 export function DeviceMenu({
   busy,
   onCopyId,
+  onRename,
   onLeave,
 }: {
   busy: boolean;
   onCopyId: () => void;
-  onLeave: () => void;
+  onRename: () => void;
+  onLeave?: () => void;
 }) {
   const { t } = useTranslation("app");
   return (
@@ -98,22 +105,31 @@ export function DeviceMenu({
         {
           items: [
             {
+              icon: <EditIcon className="h-3.5 w-3.5" />,
+              label: t("agentNetwork.renameDevice"),
+              onClick: onRename,
+            },
+            {
               icon: <CopyIcon className="h-3.5 w-3.5" />,
               label: t("agentNetwork.copyDeviceId"),
               onClick: onCopyId,
             },
           ],
         },
-        {
-          items: [
-            {
-              icon: <LogOutIcon className="h-3.5 w-3.5" />,
-              label: t("agentNetwork.leave"),
-              onClick: onLeave,
-              danger: true,
-            },
-          ],
-        },
+        ...(onLeave
+          ? [
+              {
+                items: [
+                  {
+                    icon: <LogOutIcon className="h-3.5 w-3.5" />,
+                    label: t("agentNetwork.leave"),
+                    onClick: onLeave,
+                    danger: true,
+                  },
+                ],
+              },
+            ]
+          : []),
       ]}
     />
   );

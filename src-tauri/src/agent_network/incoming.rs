@@ -450,6 +450,7 @@ mod tests {
     }
     fn policy() -> LocalPolicy {
         LocalPolicy {
+            device_name: "Fixture device".into(),
             joined: true,
             membership_revision: 2,
             mounts: HashMap::from([(

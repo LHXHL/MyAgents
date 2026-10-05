@@ -114,6 +114,191 @@ beforeEach(() => {
   );
 });
 describe("Agent network account and device management", () => {
+  it.each([false, true])(
+    "renames an offline remote device from its card, joined=%s",
+    async (joined) => {
+      const remote = {
+        ...device,
+        deviceId: "44444444-4444-4444-8444-444444444444",
+        name: "Fixture PC",
+        joined,
+        connectionState: "offline" as const,
+      };
+      mocks.devices.mockResolvedValue({
+        items: [device, remote],
+        complete: true,
+      });
+      const baseRequest = mocks.request.getMockImplementation()!;
+      mocks.request.mockImplementation(async (request) => {
+        if (request.kind !== "renameDevice") return baseRequest(request);
+        mocks.devices.mockResolvedValue({
+          items: [device, { ...remote, name: request.name }],
+          complete: true,
+        });
+        return {
+          networkId: remote.networkId,
+          principalId: remote.principalId,
+          deviceId: remote.deviceId,
+          name: request.name,
+        };
+      });
+      render(<AgentNetwork />);
+      const open = await screen.findByRole("button", {
+        name: "查看 Fixture PC 的设备详情",
+      });
+      fireEvent.click(within(open.closest("article")!).getByTitle("更多操作"));
+      fireEvent.click(
+        await screen.findByRole("button", { name: "设备重命名" }),
+      );
+      const input = screen.getByRole("textbox", { name: "设备名称" });
+      expect(input).toHaveValue("Fixture PC");
+      fireEvent.change(input, { target: { value: "  家里 Windows  " } });
+      fireEvent.click(screen.getByRole("button", { name: "保存" }));
+      await screen.findByRole("button", {
+        name: "查看 家里 Windows 的设备详情",
+      });
+      expect(mocks.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "renameDevice",
+          deviceId: remote.deviceId,
+          expectedName: "Fixture PC",
+          name: "家里 Windows",
+        }),
+      );
+      expect(
+        screen.queryByRole("dialog", { name: "设备重命名" }),
+      ).not.toBeInTheDocument();
+    },
+  );
+  it("renames from device details and leaves details open with the updated title", async () => {
+    mocks.devices.mockResolvedValue({
+      items: [{ ...device, joined: true }],
+      complete: true,
+    });
+    const baseRequest = mocks.request.getMockImplementation()!;
+    mocks.request.mockImplementation(async (request) => {
+      if (request.kind !== "renameDevice") return baseRequest(request);
+      mocks.devices.mockResolvedValue({
+        items: [{ ...device, joined: true, name: request.name }],
+        complete: true,
+      });
+      return {
+        networkId: device.networkId,
+        principalId: device.principalId,
+        deviceId: device.deviceId,
+        name: request.name,
+      };
+    });
+    render(<AgentNetwork />);
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "查看 Fixture Mac 的设备详情",
+      }),
+    );
+    fireEvent.click(within(screen.getByRole("dialog")).getByTitle("更多操作"));
+    fireEvent.click(await screen.findByRole("button", { name: "设备重命名" }));
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "办公室 Mac" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await screen.findByRole("dialog", { name: "办公室 Mac" });
+  });
+  it("keeps the draft on CAS conflict and uses the returned current name for an explicit retry", async () => {
+    const baseRequest = mocks.request.getMockImplementation()!;
+    let conflict = true;
+    mocks.request.mockImplementation(async (request) => {
+      if (request.kind !== "renameDevice") return baseRequest(request);
+      if (conflict) {
+        conflict = false;
+        throw {
+          code: "REVISION_CONFLICT",
+          details: {
+            networkId: device.networkId,
+            principalId: device.principalId,
+            deviceId: device.deviceId,
+            name: "另一台设备修改的名字",
+          },
+        };
+      }
+      return {
+        networkId: device.networkId,
+        principalId: device.principalId,
+        deviceId: device.deviceId,
+        name: request.name,
+      };
+    });
+    render(<AgentNetwork />);
+    const open = await screen.findByRole("button", {
+      name: "查看 Fixture Mac 的设备详情",
+    });
+    fireEvent.click(within(open.closest("article")!).getByTitle("更多操作"));
+    fireEvent.click(await screen.findByRole("button", { name: "设备重命名" }));
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "我的设备名称" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "设置已在其他客户端改变",
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "当前名称：另一台设备修改的名字",
+    );
+    expect(input).toHaveValue("我的设备名称");
+    expect(
+      mocks.request.mock.calls.filter(
+        ([request]) => request.kind === "renameDevice",
+      ),
+    ).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() =>
+      expect(mocks.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "renameDevice",
+          expectedName: "另一台设备修改的名字",
+          name: "我的设备名称",
+        }),
+      ),
+    );
+  });
+  it("discards a pending rename when the account changes", async () => {
+    let finish!: (value: unknown) => void;
+    const baseRequest = mocks.request.getMockImplementation()!;
+    mocks.request.mockImplementation(async (request) =>
+      request.kind === "renameDevice"
+        ? new Promise((resolve) => {
+            finish = resolve;
+          })
+        : baseRequest(request),
+    );
+    const view = render(<AgentNetwork />);
+    fireEvent.click(await screen.findByTitle("更多操作"));
+    fireEvent.click(await screen.findByRole("button", { name: "设备重命名" }));
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "旧账号的昵称" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(finish).toBeTypeOf("function"));
+    mocks.snapshot = {
+      ...mocks.snapshot,
+      state: "signedOut",
+      authGeneration: 2,
+      revision: 2,
+      principalId: null,
+      networkId: null,
+    };
+    mocks.session.mockResolvedValue(null);
+    view.rerender(<AgentNetwork />);
+    await screen.findByRole("button", { name: "继续使用 Google" });
+    await act(async () => {
+      finish({
+        networkId: device.networkId,
+        principalId: device.principalId,
+        deviceId: device.deviceId,
+        name: "旧账号的昵称",
+      });
+    });
+    expect(screen.queryByText("旧账号的昵称")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
   it("opens the published blog from the unjoined-device banner", async () => {
     render(<AgentNetwork />);
     const banner = await screen.findByRole("button", {

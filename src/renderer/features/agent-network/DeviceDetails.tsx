@@ -32,6 +32,7 @@ export function DeviceDetails({
   onJoin,
   onLeave,
   onCopyId,
+  onRename,
   membershipBusy,
   membershipError,
 }: {
@@ -45,6 +46,7 @@ export function DeviceDetails({
   onJoin: () => void;
   onLeave: () => void;
   onCopyId: () => void;
+  onRename: () => void;
   membershipBusy: boolean;
   membershipError: string | null;
 }) {
@@ -136,13 +138,12 @@ export function DeviceDetails({
                 {osName(device.platform)} · {deviceStatusText(t, device)}
               </p>
             </div>
-            {device.joined && (
-              <DeviceMenu
-                busy={membershipBusy}
-                onCopyId={onCopyId}
-                onLeave={onLeave}
-              />
-            )}
+            <DeviceMenu
+              busy={membershipBusy}
+              onCopyId={onCopyId}
+              onRename={onRename}
+              onLeave={device.joined ? onLeave : undefined}
+            />
             <button
               ref={close}
               type="button"

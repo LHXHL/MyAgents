@@ -12,7 +12,7 @@ pub(crate) async fn remote(owner: &ManagedAgentNetwork, local_only: bool) -> Res
     let device = crate::device_identity::current_device_identity()
         .map_err(|_| NetworkError::new("DEVICE_ID_UNAVAILABLE"))?;
     let context = json!({"authGeneration":snapshot.auth_generation,"deviceId":device.device_id,
-        "deviceName":device.device_name,"platform":device.platform,
+        "deviceName":snapshot.device_name.or(device.device_name),"platform":device.platform,
         "networkId":snapshot.network_id,"principalId":snapshot.principal_id});
     if local_only || snapshot.state != "ready" {
         return Ok(

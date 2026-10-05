@@ -24,6 +24,7 @@ export function DeviceCard({
   onJoin,
   onLeave,
   onCopyId,
+  onRename,
 }: {
   device: NetworkDevice;
   /** `undefined` while the catalog is still loading. */
@@ -35,6 +36,7 @@ export function DeviceCard({
   onJoin: () => void;
   onLeave: () => void;
   onCopyId: () => void;
+  onRename: () => void;
 }) {
   const { t } = useTranslation("app");
   const heading = (
@@ -87,6 +89,9 @@ export function DeviceCard({
           >
             {t(busy ? "agentNetwork.saving" : "agentNetwork.join")}
           </button>
+          <div className="pointer-events-auto -mr-1 shrink-0">
+            <DeviceMenu busy={busy} onCopyId={onCopyId} onRename={onRename} />
+          </div>
         </div>
         {errorLine}
       </article>
@@ -144,7 +149,12 @@ export function DeviceCard({
         <DeviceIcon device={device} />
         {heading}
         <div className="pointer-events-auto -mr-1 -mt-1 shrink-0">
-          <DeviceMenu busy={busy} onCopyId={onCopyId} onLeave={onLeave} />
+          <DeviceMenu
+            busy={busy}
+            onCopyId={onCopyId}
+            onRename={onRename}
+            onLeave={onLeave}
+          />
         </div>
       </div>
       <div className="pointer-events-none relative flex min-h-[26px] flex-wrap items-center gap-1.5">

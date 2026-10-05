@@ -7,7 +7,8 @@
 | 事实                                                     | 权威入口                                                               |
 | -------------------------------------------------------- | ---------------------------------------------------------------------- |
 | 当前登录、sessionBindingId、设备身份代次                 | 原 Rust Space connector 与 Space 账号服务                              |
-| 稳定设备 ID、OS/设备名称                                 | 原 `device_identity`                                                   |
+| 稳定设备 ID、OS/默认主机名称                             | 原 `device_identity`                                                   |
+| 用户指定的网络设备显示名称                               | 既有网络 SQLite DO 的设备记录；Rust 当前连接只读投影                  |
 | 工作区与 Agent 的本地身份、路径、生命周期                | `resolvePersistedAgentWorkspaceRegistry`；不得用网络设置反向创建工作区 |
 | 私钥、设备 WSS、内层 TLS、连接 epoch、传输分配           | App 级 `AgentNetwork`，不归 Tab 或 Session                             |
 | 网络 membership、Agent enabled/description、CAS revision | 同网络 SQLite Durable Object                                           |
@@ -15,6 +16,10 @@
 | 页面与 @ 草稿                                            | Renderer 投影；不持有云凭据、私钥或可执行许可                          |
 
 设备入网与设备在线是两个事实。入网默认全部 Agent 关闭；退出清空启用设置，重入仍全部关闭。离线设备可以管理设置；目录仅提供当前可调用对象。没有入网的来源可以主动调用已开放目标并接收当前连接内关联回程。
+
+设备卡片与详情菜单共用「设备重命名」。同账号任意设备可修改任意在线、离线或未入网设备的网络名称；默认沿原账号 roster 的系统主机名，用户昵称在原设备记录 `customName` 持久化，roster 更新不覆盖它。列表、可调用目录和 resolve 共用同一显示名投影；昵称不影响设备/Agent/Session selector、membership/enable revision 或已有路由权限。名称为首尾空白裁剪后的单行文本，最长 160 UTF-16 单元；TS schema、Rust 校验与共享 fixture 保持一致。
+
+改名沿原 metadata request / Rust proxy / DO mutation receipt 事务执行，按用户观察到的 `expectedName` 比较并发状态；冲突保留输入，查看最新名称后显式重试。不确定写仅查询原 receipt，不自动重放。保存沿原 `settings` invalidation 唤醒连接端读取；本机 `policy::hydrate` 从原设备列表把名称放入当前连接 snapshot，供快速本地 discovery 使用，无新增本地持久化、轮询或名称 authority。登出/断线/电源 boundary 清除连接名称；下一次连接重新读取。历史消息和已存引用快照不重写。
 
 ## 调用与回程
 
@@ -32,7 +37,7 @@ CLI 使用原 `agent list/show`、`session list/get/state/start/send/watch` 命�
 
 空闲 watch 优先原 live 结果，缺失再读目标原 SessionStore 的最近 assistant；回执包含 latest-session-result 范围与 live/history/none/unavailable 来源，历史保留自己的时间与已知 terminalStatus/turnId，不能沿用另一轮的终态或声称是某请求的回答。保留 partial/stopped/error 文本。V2 历史终态取原 transcriptTurns 的对应 turn.status；消息封口不能证明执行成功，transcriptRecovery unavailable 不能解释成没有回答。
 
-跨设备内部 Agent 的初始请求沿原 `VerifiedCaller.label` 携带 `Agent名称@来源设备名称`，设备名称复用 `device_identity::local_device_name`，与网络注册名称同源；目标 `start/send` 原 Inbox 和请求气泡直接使用这个展示标签。本地跨会话标签保持原格式，已有历史不改写。
+跨设备内部 Agent 的初始请求沿原 `VerifiedCaller.label` 携带 `Agent名称@来源设备名称`；Rust 来源入口按当前账号/network/device scope 经原 metadata 控制面读取网络显示名称，包含用户昵称，并计入原调用 deadline / generation。目标 `start/send` 原 Inbox 和请求气泡直接使用这个展示标签。CLI 的参数与 transport 始终使用完整稳定 selector，名称仅参与展示。本地跨会话标签保持原格式，已有历史不改写。
 
 Session label 继续表示会话标题/原摘要。来源回执和异步事件另含 Agent/设备 identity，显示为 `Agent @ device · Session label`，不拿 UUID 充当标题。`session list` 文本保留完整可复制的 Session selector。`agent network-diagnose --json` 按需列出协议能力、分页设备 appVersion 与原目录 connectionState（ready / syncing / offline），不从版本号或可发现性推断在线状态。错误记录阶段、代码、requestId，schema 日志只记录字段路径，不打印正文或配置；只有已发送的 start/send 可能接纳未知，读失败按查询错误重试。严格旧客户端会拒绝这些协议扩展（包括目录 icon），本次 dev 验收双方须升级同一固定包。
 
@@ -112,7 +117,7 @@ Renderer 只合并同一账号/连接投影 revision 下完全相同的在途目
 
 Rust 原 connector 拥有连续连接失败退避：首次恢复仍为 5 秒，连续失败按 10/20/40/60 秒基线与最多 20% jitter 限速；成功 ready、账号/电源 boundary 重置。有效 429/503 `Retry-After`（秒或 HTTP date，最多一小时）仅作为后台重连等待下限，不改变业务读写的错误投影、不保存/重放请求。boundary 继续立即打断等待；Space IssueDelivery 的 60/180/300 秒轮询不变。
 
-Metadata reads and connection snapshots do not assert a user save. After metadata queue handoff, timeout or a dropped connection future yields uncertain outcome only for membership/enable/description writes; receipt inspection remains read-only and no write is replayed. Actual auth-generation changes fence discarded account scope; transport or power-generation changes alone are not evidence of account change. The existing actor reconnect loop owns recovery; Renderer describes that state and keeps its read retry separate from write receipt recovery.
+Metadata reads and connection snapshots do not assert a user save. After metadata queue handoff, timeout or a dropped connection future yields uncertain outcome only for metadata mutations; receipt inspection remains read-only and no write is replayed. Actual auth-generation changes fence discarded account scope; transport or power-generation changes alone are not evidence of account change. The existing actor reconnect loop owns recovery; Renderer describes that state and keeps its read retry separate from write receipt recovery.
 
 
 ### 公钥缓存与网络诊断

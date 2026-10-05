@@ -5,6 +5,17 @@ use myagents_agent_network_protocol::{
 use serde_json::Value;
 
 #[test]
+fn device_name_mutations_agree_with_typescript() {
+    let fixtures: Value = serde_json::from_str(include_str!(
+        concat!(env!("OUT_DIR"), "/fixtures/device-names.json")
+    )).unwrap();
+    for case in fixtures.as_array().unwrap() {
+        assert_eq!(myagents_agent_network_protocol::validate_device_name_mutation(&case["value"]).is_ok(),
+            case["valid"].as_bool().unwrap(), "{}", case["name"]);
+    }
+}
+
+#[test]
 fn shared_wire_fixtures_agree_with_typescript() {
     let fixtures: Value = serde_json::from_str(include_str!(
         concat!(env!("OUT_DIR"), "/fixtures/parity.json")

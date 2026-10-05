@@ -19,6 +19,17 @@ pub(crate) enum MetadataRequest {
         cursor: Option<String>,
         limit: usize,
     },
+    DeviceName {
+        network_id: String,
+        device_id: String,
+    },
+    RenameDevice {
+        network_id: String,
+        device_id: String,
+        name: String,
+        expected_name: String,
+        mutation_id: String,
+    },
     Agents {
         device_id: String,
         cursor: Option<String>,
@@ -63,6 +74,12 @@ impl MetadataRequest {
             Self::Devices { cursor, limit } => NetworkRoute::Devices {
                 cursor: cursor.as_deref(),
                 limit: *limit,
+            },
+            Self::DeviceName { network_id, device_id } => NetworkRoute::DeviceName {
+                network_id, device_id, write: false,
+            },
+            Self::RenameDevice { network_id, device_id, .. } => NetworkRoute::DeviceName {
+                network_id, device_id, write: true,
             },
             Self::Agents {
                 device_id,
@@ -110,6 +127,9 @@ impl MetadataRequest {
     }
     pub(crate) fn body(&self) -> Result<Option<Value>, NetworkError> {
         let value = match self {
+            Self::RenameDevice { name, expected_name, mutation_id, .. } => Some(json!({
+                "name": name, "expectedName": expected_name, "mutationId": mutation_id,
+            })),
             Self::Membership {
                 mutation_id,
                 expected_membership_revision,
@@ -144,14 +164,19 @@ impl MetadataRequest {
                 )
             }
             Self::Network
+            | Self::DeviceName { .. }
             | Self::Devices { .. }
             | Self::Agents { .. }
             | Self::Callable { .. }
             | Self::Receipt { .. } => None,
         };
         if let Some(value) = &value {
-            let membership = matches!(self, Self::Membership { .. });
-            myagents_agent_network_protocol::validate_mutation(membership, value)
+            let validation = if matches!(self, Self::RenameDevice { .. }) {
+                myagents_agent_network_protocol::validate_device_name_mutation(value)
+            } else {
+                myagents_agent_network_protocol::validate_mutation(matches!(self, Self::Membership { .. }), value)
+            };
+            validation
                 .map_err(|_| NetworkError::new("MUTATION_INVALID"))?;
         }
         Ok(value)
@@ -177,4 +202,24 @@ pub(crate) async fn cmd_agent_discovery(
     manager: tauri::State<'_, crate::sidecar::ManagedSidecarManager>,
 ) -> Result<Value, NetworkError> {
     super::local_owner::discovery(&manager, local_only.unwrap_or(false)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rename_device_is_a_closed_cas_intent_with_shared_name_validation() {
+        let input = json!({"kind":"renameDevice", "networkId":"11111111-1111-4111-8111-111111111111",
+            "deviceId":"22222222-2222-4222-8222-222222222222", "name":"家里 Windows", "expectedName":"DESKTOP-123",
+            "mutationId":"33333333-3333-4333-8333-333333333333"});
+        let request: MetadataRequest = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(request.body().unwrap().unwrap()["expectedName"], "DESKTOP-123");
+        for name in ["".to_string(), " Mac".to_string(), "a\nb".to_string(), "😀".repeat(81)] {
+            let mut invalid = input.clone(); invalid["name"] = json!(name);
+            assert_eq!(serde_json::from_value::<MetadataRequest>(invalid).unwrap().body().unwrap_err().code, "MUTATION_INVALID");
+        }
+        let mut invalid = input; invalid["origin"] = json!("https://untrusted.test");
+        assert!(serde_json::from_value::<MetadataRequest>(invalid).is_err());
+    }
 }

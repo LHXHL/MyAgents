@@ -26,6 +26,7 @@ import { openExternal } from "@/utils/openExternal";
 import agentNetworkBanner from "@/assets/onboarding/agent-network-banner.jpg";
 import { DeviceCard } from "@/features/agent-network/DeviceCard";
 import { DeviceDetails } from "@/features/agent-network/DeviceDetails";
+import { DeviceRenameDialog } from "@/features/agent-network/DeviceRenameDialog";
 import type { DeviceCatalog } from "@/features/agent-network/deviceDisplay";
 import {
   currentNetworkGeneration,
@@ -66,6 +67,7 @@ function AgentNetworkContent({
   const [refresh, setRefresh] = useState(0),
     [selected, setSelected] = useState<string | null>(null);
   const [leaving, setLeaving] = useState<NetworkDevice | null>(null);
+  const [renaming, setRenaming] = useState<NetworkDevice | null>(null);
   const [busy, setBusy] = useState<Record<string, boolean>>({}),
     [errors, setErrors] = useState<Record<string, string>>({});
   const [catalogs, setCatalogs] = useState<Record<string, DeviceCatalog>>({});
@@ -181,6 +183,63 @@ function AgentNetworkContent({
       toast?.success(t("agentNetwork.copied"));
     } catch {
       toast?.error(t("agentNetwork.copyFailed"));
+    }
+  }
+  async function renameDevice(device: NetworkDevice, name: string) {
+    const generation = currentNetworkGeneration();
+    try {
+      const result = metadataSchemas.deviceName.parse(
+        await networkRequest({
+          kind: "renameDevice",
+          networkId: device.networkId,
+          deviceId: device.deviceId,
+          name,
+          expectedName: device.name,
+          mutationId: crypto.randomUUID(),
+        }),
+      );
+      if (generation !== currentNetworkGeneration()) return;
+      if (
+        result.deviceId !== device.deviceId ||
+        result.networkId !== device.networkId ||
+        result.principalId !== device.principalId
+      )
+        throw { code: "NETWORK_SCOPE_MISMATCH" };
+      setDevices((current) =>
+        current.map((item) =>
+          item.deviceId === result.deviceId
+            ? { ...item, name: result.name }
+            : item,
+        ),
+      );
+      setRenaming(null);
+      setRefresh((value) => value + 1);
+    } catch (failure) {
+      if (generation !== currentNetworkGeneration()) return;
+      if (
+        typeof failure === "object" &&
+        failure !== null &&
+        "code" in failure &&
+        failure.code === "REVISION_CONFLICT" &&
+        "details" in failure
+      ) {
+        const latest = metadataSchemas.deviceName.safeParse(failure.details);
+        if (
+          latest.success &&
+          latest.data.deviceId === device.deviceId &&
+          latest.data.networkId === device.networkId &&
+          latest.data.principalId === device.principalId
+        )
+          setRenaming((current) =>
+            current?.deviceId === device.deviceId
+              ? { ...current, name: latest.data.name }
+              : current,
+          );
+      }
+      setRefresh((value) => value + 1);
+      throw new Error(
+        t(`agentNetwork.errors.${networkErrorKey(failure, "mutation")}`),
+      );
     }
   }
   async function membership(device: NetworkDevice, joined: boolean) {
@@ -305,6 +364,7 @@ function AgentNetworkContent({
         void membership(device, true);
       }}
       onLeave={() => setLeaving(device)}
+      onRename={() => setRenaming(device)}
       onCopyId={() => {
         void copyDeviceId(device);
       }}
@@ -483,6 +543,7 @@ function AgentNetworkContent({
             void membership(selectedDevice, true);
           }}
           onLeave={() => setLeaving(selectedDevice)}
+          onRename={() => setRenaming(selectedDevice)}
           onCopyId={() => {
             void copyDeviceId(selectedDevice);
           }}
@@ -491,6 +552,14 @@ function AgentNetworkContent({
           }}
           onClose={() => setSelected(null)}
           onChanged={() => setRefresh((value) => value + 1)}
+        />
+      )}
+      {renaming && (
+        <DeviceRenameDialog
+          key={renaming.deviceId}
+          currentName={renaming.name}
+          onConfirm={(name) => renameDevice(renaming, name)}
+          onCancel={() => setRenaming(null)}
         />
       )}
       {leaving && (

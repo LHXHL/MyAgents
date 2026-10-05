@@ -26,11 +26,21 @@ export interface NetworkSnapshot {
   error: NetworkFailure | null;
   revision: number;
   authGeneration: number;
+  /** Current connection's read-only network display name (older hosts omit it). */
+  deviceName?: string | null;
 }
 export type NetworkRequest =
   | { kind: "network" }
   | { kind: "devices"; cursor: string | null; limit: number }
   | { kind: "agents"; deviceId: string; cursor: string | null; limit: number }
+  | {
+      kind: "renameDevice";
+      networkId: string;
+      deviceId: string;
+      name: string;
+      expectedName: string;
+      mutationId: string;
+    }
   | {
       kind: "callable";
       networkId: string;
