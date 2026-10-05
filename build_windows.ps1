@@ -440,20 +440,7 @@ try {
     $sdkTriple = "win32-x64"
     node "$ProjectDir\scripts\prepare-cliproxy.mjs" win32-x64
     if ($LASTEXITCODE -ne 0) { throw "CLIProxy 内置资源准备失败" }
-    & "$ProjectDir\scripts\ensure_claude_sdk_package.ps1" -Arch x64
-    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) { throw "Claude SDK win32-x64 校验失败" }
-    $claudeSrc = Join-Path $ProjectDir "node_modules\@anthropic-ai\claude-agent-sdk-${sdkTriple}\claude.exe"
-    $sdkDest = Join-Path $ProjectDir "src-tauri\resources\claude-agent-sdk"
-
-    if (-not (Test-Path $claudeSrc)) {
-        throw "Claude native binary 不存在: $claudeSrc — 请运行 npm install 安装 @anthropic-ai/claude-agent-sdk-$sdkTriple"
-    }
-
-    if (Test-Path $sdkDest) {
-        Remove-Item -Recurse -Force $sdkDest
-    }
-    New-Item -ItemType Directory -Path $sdkDest -Force | Out-Null
-    Copy-Item $claudeSrc (Join-Path $sdkDest "claude.exe") -Force
+    & "$ProjectDir\scripts\ensure_claude_sdk_package.ps1" -Arch x64 -Stage
     Write-Host "    OK - Claude native binary 就绪 ($sdkTriple)" -ForegroundColor Green
 
     & npm run build:sharp-runtime -- win32 x64

@@ -1,6 +1,7 @@
 param(
     [ValidateSet("x64", "arm64")]
-    [string[]]$Arch = @()
+    [string[]]$Arch = @(),
+    [switch]$Stage
 )
 
 $ErrorActionPreference = "Stop"
@@ -229,7 +230,41 @@ function Repair-SdkPackage {
     }
 }
 
+function Stage-SdkPackage {
+    param([string]$PackageArch)
+
+    $source = Join-Path $ProjectDir "node_modules\@anthropic-ai\claude-agent-sdk-win32-$PackageArch\claude.exe"
+    $destinationDir = Join-Path $ProjectDir "src-tauri\resources\claude-agent-sdk"
+    $destination = Join-Path $destinationDir "claude.exe"
+    New-Item -ItemType Directory -Path $destinationDir -Force | Out-Null
+    $temporary = Join-Path $destinationDir "claude.staging-$PID-$(Get-Random).exe"
+    $backup = Join-Path $destinationDir "claude.backup-$PID-$(Get-Random).exe"
+
+    try {
+        Copy-Item -LiteralPath $source -Destination $temporary -ErrorAction Stop
+        if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne
+            (Get-FileHash -LiteralPath $temporary -Algorithm SHA256).Hash) {
+            throw "Claude SDK staging copy differs from $source"
+        }
+        if (-not (Test-PeBinary -Path $temporary -PackageArch $PackageArch -Label "staged Claude SDK")) {
+            throw "Claude SDK staged binary failed validation: $temporary"
+        }
+        if (Test-Path -LiteralPath $destination) {
+            [System.IO.File]::Replace($temporary, $destination, $backup)
+        } else {
+            [System.IO.File]::Move($temporary, $destination)
+        }
+        Write-Host "Claude SDK win32-$PackageArch staged from validated npm package" -ForegroundColor Green
+    }
+    finally {
+        Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+    }
+}
+
 $sdkVersion = Get-SdkVersion
+& node (Join-Path $ProjectDir 'scripts\verify-claude-sdk-wrapper.mjs')
+if ($LASTEXITCODE -ne 0) { throw "Claude Agent SDK wrapper/package lock validation failed" }
 
 if ($Arch.Count -eq 0) {
     switch ($env:PROCESSOR_ARCHITECTURE) {
@@ -246,5 +281,8 @@ foreach ($archName in $Arch) {
     else {
         Repair-SdkPackage -PackageArch $archName -SdkVersion $sdkVersion
         Write-Host "Claude SDK win32-$archName@$sdkVersion repaired" -ForegroundColor Green
+    }
+    if ($Stage) {
+        Stage-SdkPackage -PackageArch $archName
     }
 }

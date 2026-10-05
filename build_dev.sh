@@ -185,6 +185,7 @@ echo ""
 
 # TypeScript 检查
 echo -e "${BLUE}[1/3] TypeScript 类型检查...${NC}"
+node "${PROJECT_DIR}/scripts/verify-claude-sdk-wrapper.mjs"
 if ! npm run typecheck; then
     echo -e "${RED}✗ TypeScript 检查失败，请修复后重试${NC}"
     exit 1

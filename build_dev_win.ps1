@@ -215,6 +215,9 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 Write-ColorOutput "✓ Node.js 项目依赖已就绪" "Green"
+Write-ColorOutput "[准备] 校验并暂存 Claude Agent SDK native binary (win32-x64)..." "Blue"
+& "$PROJECT_DIR\scripts\ensure_claude_sdk_package.ps1" -Arch x64 -Stage
+Write-ColorOutput "✓ Claude Agent SDK native binary 已就绪" "Green"
 & node "$PROJECT_DIR\scripts\prepare-cliproxy.mjs" win32-x64
 if ($LASTEXITCODE -ne 0) { throw "Approved CLIProxy bundle staging failed" }
 Write-Host ""
