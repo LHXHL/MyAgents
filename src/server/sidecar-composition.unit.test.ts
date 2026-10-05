@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { EXTERNAL_CLI_PUBLIC_CAPABILITIES } from '../shared/externalCliCapabilities';
 import {
   classifySidecarRequest,
   composeSidecarRequestHandler,
@@ -19,6 +20,23 @@ describe('Sidecar production composition', () => {
       '--dev-union cannot be combined with --sidecar-role',
     );
   });
+
+  it.each(EXTERNAL_CLI_PUBLIC_CAPABILITIES)(
+    'Global dispatches the public $command route before external caller admission', async ({ route }) => {
+      const cliRequest = request(`/api/admin/${route}`, 'POST');
+      const admission = vi.fn(async () => Response.json({
+        success: false, code: 'EXTERNAL_CLI_TOKEN_REQUIRED',
+      }, { status: 401 }));
+
+      const response = await composeSidecarRequestHandler(
+        resolveSidecarComposition('global', false), admission,
+      )(cliRequest);
+
+      expect(classifySidecarRequest(cliRequest)).toBe('common');
+      expect(response.status).toBe(401);
+      expect(admission).toHaveBeenCalledExactlyOnceWith(cliRequest);
+    },
+  );
 
   it.each([
     ['GET', '/health', 'common'],
@@ -55,6 +73,7 @@ describe('Sidecar production composition', () => {
     ['POST', '/api/runtime/config', 'session'],
     ['POST', '/api/admin/session/send', 'common'],
     ['POST', '/api/admin/session/get', 'common'],
+    ['POST', '/api/admin/session/state', 'common'],
     ['POST', '/api/admin/goal/update', 'session'],
     ['POST', '/api/admin/task/create-attached', 'session'],
     ['POST', '/api/admin/status', 'common'],
@@ -173,6 +192,10 @@ describe('Sidecar production composition', () => {
     ['global', 'POST', '/goal/execute-sync'],
     ['global', 'POST', '/api/im/enqueue'],
     ['global', 'POST', '/api/inbox/drain'],
+    ['global', 'GET', '/api/session-state'],
+    ['global', 'POST', '/api/admin/session/watch'],
+    ['global', 'POST', '/api/admin/session/watches'],
+    ['global', 'POST', '/api/admin/session/unwatch'],
     ['session', 'POST', '/api/provider/verify'],
     ['session', 'POST', '/api/cliproxy/verify'],
     ['session', 'POST', '/api/mcp/oauth/start'],

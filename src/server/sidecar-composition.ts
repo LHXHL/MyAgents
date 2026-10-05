@@ -206,6 +206,7 @@ const COMMON_ADMIN_ROUTES = new Set([
   'session/start',
   'session/send',
   'session/get',
+  'session/state',
 ]);
 
 function startsWithAny(pathname: string, prefixes: readonly string[]): boolean {

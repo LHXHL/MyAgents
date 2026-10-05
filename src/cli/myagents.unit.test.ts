@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -151,6 +151,18 @@ describe('CLI dry-run admission', () => {
 });
 
 describe('public external CLI declaration', () => {
+  it('accepts the bundled external guide examples through the public CLI grammar', () => {
+    const guide = readFileSync(join(process.cwd(), 'bundled-guides/external-myagents-cli/SKILL.md'), 'utf8');
+    const invocations = [...guide.matchAll(/^<CLI> ([^\n]+)$/gm)]
+      .map(([, invocation]) => invocation.trim())
+      .filter(invocation => invocation !== '--help' && !invocation.endsWith(' --help'));
+    expect(invocations.length).toBeGreaterThan(0);
+    for (const invocation of invocations) {
+      const { positional, flags } = parseArgs(invocation.split(/\s+/));
+      expect(validateExternalCliInvocation(positional, flags), invocation).toBeUndefined();
+    }
+  });
+
   it('maps every advertised command to an admitted canonical route', () => {
     expect(new Set(EXTERNAL_CLI_PUBLIC_COMMANDS).size).toBe(EXTERNAL_CLI_PUBLIC_COMMANDS.length);
     for (const { command, route: declaredRoute } of EXTERNAL_CLI_PUBLIC_CAPABILITIES) {

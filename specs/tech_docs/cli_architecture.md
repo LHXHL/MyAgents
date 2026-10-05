@@ -387,7 +387,7 @@ Admin API 注册在 Sidecar 的 `/api/admin/*` 路由下，提供与 GUI 对等�
 | `/api/admin/reload` | 热重载配置 |
 | `/api/admin/help` | 命令帮助文本（子命令 help 来自这里） |
 
-所有 `/api/admin/*` 请求必须先经过统一 caller admission，再进入上表 handler。内部请求使用 App 生命周期 capability，保留完整既有能力；外部请求必须同时满足“功能已开启 + Bearer token 正确 + canonical route 在 `EXTERNAL_CLI_PUBLIC_ROUTES` 固定清单”。Rust Management API 与目标 Sidecar 的 Inbox/internal 端点也要求同一进程生命周期 capability，只有受管 Sidecar、Plugin Bridge 与 Rust 内部转发会携带；因此直连旧 Management 端口不能绕过 Node admission。公开命令的 canonical route、显式 alias、flags、位置参数范围和离线 leaf usage 由 `externalCliCapabilities.ts` 同一份元数据声明；外部/未认证调用在 HTTP 前拒绝未知命令和未知 flag，内部 capability 仍使用完整 CLI registry。公开面当前只包括 status/version、Agent create/list/show、Runtime list/describe、Session list/start/send/get、列明的 Task alias/动作与 Record list/create；旧直连、换端口或伪造 Session 环境不能绕过。
+所有 `/api/admin/*` 请求必须先经过统一 caller admission，再进入上表 handler。内部请求使用 App 生命周期 capability，保留完整既有能力；外部请求必须同时满足“功能已开启 + Bearer token 正确 + canonical route 在 `EXTERNAL_CLI_PUBLIC_ROUTES` 固定清单”。Rust Management API 与目标 Sidecar 的 Inbox/internal 端点也要求同一进程生命周期 capability，只有受管 Sidecar、Plugin Bridge 与 Rust 内部转发会携带；因此直连旧 Management 端口不能绕过 Node admission。公开命令的 canonical route、显式 alias、flags、位置参数范围和离线 leaf usage 由 `externalCliCapabilities.ts` 同一份元数据声明；外部/未认证调用在 HTTP 前拒绝未知命令和未知 flag，内部 capability 仍使用完整 CLI registry。公开面当前只包括 status/version、Agent create/list/show、Runtime list/describe、Session list/start/send/get/state、列明的 Task alias/动作与 Record list/get/create/delete；旧直连、换端口或伪造 Session 环境不能绕过。
 
 ### Cloud Space CLI 身份与错误边界
 
@@ -446,7 +446,9 @@ session event 类型时必须同时更新该渲染层、目标 Sidecar 处理路
 
 ### Agent 网络 selector
 
-原本地命令与本地 ID 继续使用原路径。Agent list 合并在线网络对象，show/start/list 接受 qualified Agent selector，get/send/watch 接受 qualified Session selector；完整代号不能截短或按名称猜对象。Node 统一 router 只选择寻址/传输，Rust App 拥有设备身份与 E2EE，目标仍交给原 Inbox/SessionEngine。start/send 只确认异步接纳；内部 Session 保留原回投与 watch，外部 CLI 仍 one-way。离线明确失败，无云端留存或自动重发。实现/预算/回程 owner 见 [Agent 网络](./agent_network.md)。
+外部 CLI 的 addressed Session 读写（list/start/send/get/state）必须在生产 Sidecar composition 中登记为 common：Global Host 只委托目标 owner，不要求调用方拥有 Session。`sidecar-composition.unit.test.ts` 从公开 capability 表逐项验证 Global 能进入 caller admission，并验证 watch 管理与当前 Session 私有端点仍留在 Session role；不能只用 development-union 或下层 handler 测试证明入口可用。
+
+原本地命令与本地 ID 继续使用原路径。Agent list 合并在线网络对象，show/start/list 接受 qualified Agent selector，get/send/state/watch 接受 qualified Session selector；完整代号不能截短或按名称猜对象。Node 统一 router 只选择寻址/传输，Rust App 拥有设备身份与 E2EE，目标仍交给原 Inbox/SessionEngine。start/send 只确认异步接纳；内部 Session 保留原回投与 watch，外部 CLI 仍 one-way。离线明确失败，无云端留存或自动重发。实现/预算/回程 owner 见 [Agent 网络](./agent_network.md)。
 
 `session get` 经 Rust 解析当前 transcript owner：有 ready Session Sidecar 时，通过其仅属 Session 的 exact route `/api/internal/session/text-page` 读取真实内存/流式投影，并验证内部 caller credential；无活跃 owner 时读取持久历史。capability 表必须登记该委托端点，不能把 Global 或调用方 overlay 当作目标实时历史，也不能开放整个 `/api/internal/` prefix。
 
