@@ -349,6 +349,10 @@ test('macOS dev and release verify the installed SDK wrapper before bundling it'
     const verifyAt = source.indexOf('verify-claude-sdk-wrapper.mjs');
     assert.notEqual(verifyAt, -1, `${name} must verify the installed JS wrapper`);
     assert.ok(verifyAt < source.indexOf('npm run build:assets'), `${name} must verify before bundling`);
+    const cleanupAt = source.indexOf(name === 'build_dev.sh'
+      ? 'rm -rf "${PROJECT_DIR}/src-tauri/resources/claude-agent-sdk"'
+      : 'rm -rf "${SDK_DEST}"');
+    assert.ok(cleanupAt >= 0 && verifyAt < cleanupAt, `${name} must reject a stale wrapper before removing SDK staging`);
   }
 });
 

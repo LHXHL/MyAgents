@@ -27,6 +27,9 @@ if [ "$DSH_SOURCE" = "local" ] && [ -z "$DSH_HANDOFF" ]; then
     exit 1
 fi
 
+# Reject a stale wrapper before stopping the app or deleting build/staging output.
+node "${PROJECT_DIR}/scripts/verify-claude-sdk-wrapper.mjs"
+
 # 加载 .env 文件（如果存在）
 if [ -f "${PROJECT_DIR}/.env" ]; then
     set -a  # 自动导出所有变量
@@ -185,7 +188,6 @@ echo ""
 
 # TypeScript 检查
 echo -e "${BLUE}[1/3] TypeScript 类型检查...${NC}"
-node "${PROJECT_DIR}/scripts/verify-claude-sdk-wrapper.mjs"
 if ! npm run typecheck; then
     echo -e "${RED}✗ TypeScript 检查失败，请修复后重试${NC}"
     exit 1

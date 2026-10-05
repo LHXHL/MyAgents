@@ -35,3 +35,14 @@ describe('Session Runtime configuration import boundary', () => {
     expect(await boundaryErrors(code, 'src/server/session-engine/builtin-adapter.ts')).toEqual([]);
   });
 });
+
+describe('desktop UI confirmation boundary', () => {
+  it.each(['window.confirm', 'window.alert', 'window.prompt', 'globalThis.confirm', "window['confirm']"])('rejects browser dialog %s whose Tauri semantics are asynchronous', async call => {
+    expect(await boundaryErrors(`${call}('delete?');`, 'src/renderer/components/task-center/TaskListPanel.tsx')).not.toHaveLength(0);
+  });
+
+  it('allows the shared application dialog and unrelated local functions', async () => {
+    const code = "import ConfirmDialog from '@/components/ConfirmDialog';\nconst confirm = () => true; confirm();";
+    expect(await boundaryErrors(code, 'src/renderer/components/task-center/TaskListPanel.tsx')).toEqual([]);
+  });
+});

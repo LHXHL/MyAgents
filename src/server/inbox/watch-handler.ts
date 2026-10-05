@@ -14,6 +14,26 @@ export interface AdminSessionWatchRequest {
   targetSessionId: string;
 }
 
+/** Project the caller-scoped owner receipt; transport success alone does not
+ * mean the requested observation was cancelled. */
+export function projectSessionWatchManagement(result: unknown, cancel?: string, all = false) {
+  const rows = (result as { watches?: unknown } | null)?.watches;
+  if (!Array.isArray(rows) || rows.some(row => !row || typeof row.watchId !== 'string' || typeof row.cancelled !== 'boolean')) {
+    return { success: false, code: 'WATCH_OWNER_INVALID_RESPONSE', error: 'Observation owner returned an invalid receipt.' };
+  }
+  // Rust/Sidecar already scoped the receipt to the real caller. Only the
+  // requested item decides single-ID cancellation; other active watches do not.
+  const watches = cancel ? rows.filter(row => row.watchId === cancel) : rows;
+  const data = { watches };
+  if (cancel && watches.length === 0) {
+    return { success: false, code: 'WATCH_NOT_FOUND', error: 'Observation not found for this caller Session.', data };
+  }
+  if ((cancel || all) && watches.some(row => !row.cancelled)) {
+    return { success: false, code: 'WATCH_NOT_CANCELLED', error: 'Observation owner did not confirm cancellation; inspect data.watches. An already admitted notification cannot be retracted.', data };
+  }
+  return { success: true, data };
+}
+
 export interface AdminSessionWatchResponse {
   watched: boolean;
   watchId?: string;

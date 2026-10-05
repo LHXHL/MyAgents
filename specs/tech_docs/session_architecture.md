@@ -193,6 +193,7 @@ Goal 的详细产品行为和 Task/Goal provider routing 见 [`task_center.md`](
 - `send.request` 投递工作；Renderer 只把它的可见 payload 投影为用户气泡；
 - `send.result` 在目标 turn terminal 后回传结果；
 - `watch` 根据注册时的真实 activity 返回 already-idle、completed 或 error；未确认投递成功前不能清理 pending watch；
+- `session watches/unwatch` 的 JSON receipt 使用 `data.watches`，仅管理真实调用方的观察。单 ID 未匹配返回 `WATCH_NOT_FOUND`；owner 未确认取消（如跨设备注册/投递尚在途）返回 `WATCH_NOT_CANCELLED` 并保留逐项 receipt。取消观察不停止目标 turn，也不能撤回已进入 Inbox 的通知；`--all` 没有观察时可成功。
 - Task Comment 复用同一 Inbox 与 Session queue，但通过 task-specific event 和显式回复命令回写 Task，不自动复制普通 assistant 输出。
 
 backend-created target 只有在 Runtime dispatch claim 成功后才发布 prepared Session；ACK 不明时保留 identity，不能自动重试导致重复执行。`session start/send` 的每一层外部 timeout 都大于内层 owner/ACK timeout；transport error、成功状态但不可解析的 ACK 和外层超时统一是 `admission_unconfirmed`，只有明确拒绝才是 definitive failure。

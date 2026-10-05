@@ -54,6 +54,48 @@ afterEach(() => {
 
 
 describe('Session observation CLI', () => {
+  it('prints the wrapped observation receipt in JSON and human output', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const result = { success: true, data: { watches: [{ watchId: 'watch', targetSessionId: 'target', cancelled: true }] } };
+    try {
+      printResult('session', 'unwatch', result, true);
+      expect(JSON.parse(log.mock.calls[0][0])).toEqual(result);
+      log.mockClear();
+      printResult('session', 'unwatch', result, false);
+      expect(log).toHaveBeenCalledWith('watch  target  cancelled');
+    } finally { log.mockRestore(); }
+  });
+
+  it.each([
+    ['state', []], ['watches', ['extra']], ['unwatch', []],
+  ] as const)('uses the normal usage exit code for invalid %s arguments', (action, rest) => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation((code) => { throw new Error(`exit:${code}`); });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      expect(() => buildRequestBody('session', action, [...rest], {})).toThrow('exit:2');
+    } finally { exit.mockRestore(); error.mockRestore(); }
+  });
+
+  it.each([
+    ['session', 'watch', [], {}],
+    ['session', 'watch', ['target', 'extra'], {}],
+    ['session', 'watch', [], { to: true }],
+    ['session', 'watch', [], { targetSessionId: true }],
+    ['session', 'watch', ['target'], { prompt: 'new work' }],
+    ['session', 'state', [], { sessionId: true }],
+    ['session', 'state', [], { sessionId: ' ' }],
+    ['session', 'unwatch', [' '], {}],
+    ['agent', 'network-diagnose', [], { limit: true }],
+    ['agent', 'network-diagnose', [], { limit: 'not-a-number' }],
+    ['agent', 'network-diagnose', [], { cursor: true }],
+  ] as const)('rejects incomplete observation values for %s %s before any HTTP request', (group, action, rest, flags) => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation((code) => { throw new Error(`exit:${code}`); });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      expect(() => buildRequestBody(group, action, [...rest], flags)).toThrow('exit:2');
+    } finally { exit.mockRestore(); error.mockRestore(); }
+  });
+
   it('keeps state read-only and binds watch management to the current real Session', () => {
     for (const command of [['session','state','sid'], ['session','watches'], ['session','unwatch','watch']]) {
       expect(validateCliCommand(command)).toBeUndefined();
@@ -305,6 +347,24 @@ describe('skill source normalization', () => {
 });
 
 describe('myagents CLI command grammar', () => {
+  it.each(['diagnose', 'vision', 'im'])('identifies bare %s as missing a subcommand', group => {
+    expect(validateCliCommand([group])).toMatchObject({ code: 'SUBCOMMAND_REQUIRED' });
+    expect(validateCliCommand([group], true)).toBeUndefined();
+  });
+
+  it('distinguishes a published public command prefix from an unknown command', () => {
+    expect(validateExternalCliInvocation(['runtime'], {})).toMatchObject({ code: 'SUBCOMMAND_REQUIRED' });
+    expect(validateExternalCliInvocation(['runtime', 'unknown'], {})).toMatchObject({ code: 'UNKNOWN_COMMAND' });
+    expect(validateCliCommand(['space', 'claim'])).toMatchObject({ code: 'SUBCOMMAND_REQUIRED' });
+    expect(validateCliCommand(['space', 'claim'], true)).toBeUndefined();
+  });
+
+  it.each(['--bogus-flag', '--bogusFlag'])('preserves the actual unknown flag spelling %s', spelling => {
+    const parsed = parseArgs(['runtime', 'list', spelling]);
+    expect(validateInternalCliInvocation(parsed.positional, parsed.flags)?.error).toContain(spelling);
+    expect(validateExternalCliInvocation(parsed.positional, parsed.flags)?.error).toContain(spelling);
+  });
+
   it('rejects unknown groups and leaves before any HTTP request is possible', () => {
     expect(validateCliCommand(['definitely-unknown'])).toMatchObject({
       code: 'UNKNOWN_COMMAND_GROUP',

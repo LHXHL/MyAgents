@@ -163,6 +163,8 @@ Cron 兼容 facade 发布 list/start/stop/update/delete/run-now，不发布 `cro
 
 ## 6. 数据完整性
 
+界面中的列表、卡片与详情删除均先显示应用内 `ConfirmDialog`，确认后才调用 `taskDelete`；失败保持确认与错误反馈。AI CLI 删除则在执行前取得对话中的用户授权，不通过界面弹窗确认。Archive 可恢复；delete 没有 undelete / retention 承诺，也不删除用户工作区脚本。
+
 Task mutation 的固定事务边界：
 
 ```text

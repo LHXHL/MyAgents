@@ -356,7 +356,7 @@ myagents task delete <taskId>                           # 不可恢复地移出�
 
 **验证与恢复**：CLI 在转发给 Rust 前会前置校验 `--runtime` / `--model` / `--permissionMode`，不合法直接拒绝并带 `→ Run: myagents runtime describe <rt>` 指引；输出会打印 `overridesRequested` vs `overridden`，传了 override 但没落到持久化态会明确提示 drift。
 
-**归档与删除**：`task archive` 是仅用户可执行、长期可恢复的归档状态，Agent 调用会被 Task authority 拒绝；`task delete` 经确认后不可恢复，没有 30 天恢复或 undelete 承诺。删除会停止调度并清平台 Trigger state/pending activation，但内部 tombstone/审计仍用于 authority 与迁移安全，工作区脚本和脚本自持状态不归 TaskStore 删除。
+**归档与删除**：`task archive` 是仅用户可执行、长期可恢复的归档状态，Agent 调用会被 Task authority 拒绝。执行 `task delete/remove` 前在对话中向用户说明具体对象并取得确认；已有明确删除授权时直接执行，CLI 不弹界面确认框。删除不可恢复，没有 30 天恢复或 undelete 承诺；它会停止调度并清平台 Trigger state/pending activation，但内部 tombstone/审计仍用于 authority 与迁移安全，工作区脚本和脚本自持状态不归 TaskStore 删除。
 
 ### MyAgents Cloud Space（space）
 
@@ -458,6 +458,8 @@ myagents reload [--workspacePath <abs>]                 # 请求重读配置，�
 - "改完手动让它生效" → `reload`（多数命令已经自动 broadcast，这个是兜底）
 
 `status` 分别显示全局 MCP 配置、工作区选择和当前 Session 实际观测；unknown 表示没有可信的当前观测，不表示 0 个服务器。`skill list` 默认收起正常 admission 详情，异常和不可用原因仍显示；`--verbose` 展开，`--json` 保留完整结构。DSH 的模型目录由所选 Provider 提供，使用 `model list` 查询。
+
+DSH 会话的 MCP 排查先用 `myagents diagnose runtime dsh --json` 查看 `extensions` 的 admission / prepare 状态，再用 `myagents mcp show <id>` 核对配置。全局 `enabled` 只是开关，不证明当前会话已连接；`prepare_failed` 表示扩展准备失败。当前 DSH 尚未发布统一 `sessionMcp` effective snapshot，因此 `status` 的 unavailable / not observed 不能当作无服务器，也不能用配置或扁平工具名猜工具数量。诊断若只给泛化 reason，需保留该会话与对应时间的日志继续定位，不能宣称原始根因已经确定。
 
 ### IM 媒体下发（im）
 

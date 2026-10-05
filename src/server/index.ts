@@ -2090,7 +2090,8 @@ async function routeAdminApi(
     const result = await managementApi('/api/agent-network/watches', 'POST', {
       sidecarId: process.env.MYAGENTS_SIDECAR_ID, ...(cancel ? { cancel } : {}), all,
     }, { timeoutMs: 22_000 });
-    return result.ok === true ? { success: true, ...(result.result as Record<string, unknown>) }
+    const { projectSessionWatchManagement } = await import('./inbox/watch-handler');
+    return result.ok === true ? projectSessionWatchManagement(result.result, cancel, all)
       : { success: false, code: (result.error as { code?: string })?.code ?? 'WATCH_OWNER_UNAVAILABLE', error: 'Observation owner unavailable; retry the query.' };
   }
   if (route === 'agent/network-diagnose') {

@@ -1,6 +1,7 @@
 import { nextAgentNetworkExposureRevision } from "../shared/config-types";
 import { resolveAgentConfigMutation, mutationForAgentModelSelection, type AgentModelSelection } from '../shared/agentConfigMutation';
 import { APP_BUILD_IDENTITY, SIDECAR_BUILD_IDENTITY, SIDECAR_STARTED_AT } from './build-identity';
+import { CLAUDE_AGENT_SDK_IMPLEMENTATION_VERSION } from '../shared/integrated-runtimes/identity';
 /**
  * Admin API — Self-Configuration endpoints for the CLI tool.
  *
@@ -6659,7 +6660,7 @@ CANONICAL COMMANDS
   reset-checkpoint <taskId>         Clear only platform-managed Detector checkpoint
   rerun <taskId>                    Re-dispatch a terminal Task
   exit --reason <text>              End the current eligible scheduled Task from inside it
-  delete <taskId>                   Delete after explicit user confirmation
+  delete <taskId>                   Ask the user in conversation before executing
 
 DETECTOR OUTCOMES
   quiet          No Activation Event was emitted; checkpoint may still advance.
@@ -6699,6 +6700,8 @@ SAFETY
   Never use system cron/crontab/at/launchctl/schtasks for a MyAgents Task.
   The App must remain online. Archive is recoverable; delete is not and has no
   undelete/retention promise. Delete does not remove user workspace scripts.
+  AI callers obtain confirmation in conversation before task delete/remove.
+  Existing explicit authorization suffices; the CLI does not open a UI dialog.
   trigger test runs the external command for real; only MyAgents state is not
   committed, so isolate fixtures and external side effects.`;
 
@@ -7933,6 +7936,7 @@ export async function handleRuntimeList(): Promise<AdminResponse> {
         runtime,
         displayName: RUNTIME_DISPLAY_NAMES[runtime],
         installed: true,
+        version: CLAUDE_AGENT_SDK_IMPLEMENTATION_VERSION,
       });
       continue;
     }
@@ -8007,6 +8011,7 @@ export async function handleRuntimeDescribe(
         runtime: runtimeArg,
         displayName: RUNTIME_DISPLAY_NAMES.builtin,
         installed: true,
+        version: CLAUDE_AGENT_SDK_IMPLEMENTATION_VERSION,
         models: [],
         permissionModes: getRuntimePermissionModes('builtin'),
         defaultPermissionMode: getDefaultRuntimePermissionMode('builtin'),

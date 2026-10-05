@@ -42,6 +42,10 @@ const gitignorePath = fileURLToPath(new URL('./.gitignore', import.meta.url));
 // it keeps the single-source-of-truth without re-introducing the bug.
 const GLOBAL_RESTRICTED_SYNTAX = [
   {
+    selector: "MemberExpression[object.name=/^(window|globalThis)$/][property.name=/^(alert|confirm|prompt)$/], MemberExpression[object.name=/^(window|globalThis)$/][computed=true][property.value=/^(alert|confirm|prompt)$/]",
+    message: 'Tauri browser dialogs have asynchronous plugin semantics; treating window.confirm as a boolean skips user confirmation. Use the shared ConfirmDialog for UI actions (toast for notices). AI CLI mutations require prior conversation approval, without a UI popup. See specs/tech_docs/pit_of_success.md#renderer-dialogs.'
+  },
+  {
     // Red-line: synchronous busy-wait blocks the event loop.
     // Sidecar busy-wait kills the SDK pump (no messages flow until the
     // wait returns); renderer busy-wait freezes the UI thread.

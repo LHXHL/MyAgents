@@ -55,6 +55,12 @@ export function validateCliRouting(port: string, sessionId: string | undefined):
 // ---------------------------------------------------------------------------
 
 const rawArgs = process.argv.slice(2);
+// Parser provenance follows the parsed flags object, outside its wire fields.
+const flagSpellings = new WeakMap<Record<string, unknown>, Map<string, string>>();
+
+function flagSpelling(flags: Record<string, unknown>, key: string): string {
+  return flagSpellings.get(flags)?.get(key) ?? `--${key}`;
+}
 
 function isJsonInvocation(): boolean {
   return rawArgs.some((arg) => arg === '--json' || arg.startsWith('--json='));
@@ -68,6 +74,8 @@ function isSpaceInvocation(): boolean {
 export function parseArgs(args: string[]): { positional: string[]; flags: Record<string, unknown> } {
   const positional: string[] = [];
   const flags: Record<string, unknown> = {};
+  const spellings = new Map<string, string>();
+  flagSpellings.set(flags, spellings);
   const repeatable = new Set(['args', 'env', 'headers', 'models', 'model-names', 'image', 'file', 'attachment']);
 
   // PRD 0.2.18 cross-review fix (Codex): added short-flag → long-flag mapping
@@ -92,6 +100,7 @@ export function parseArgs(args: string[]): { positional: string[]; flags: Record
       const raw = arg.slice(2);
       const eq = raw.indexOf('=');
       const key = eq >= 0 ? raw.slice(0, eq) : raw;
+      spellings.set(camelCase(key), `--${key}`);
       const inlineValue = eq >= 0 ? raw.slice(eq + 1) : undefined;
       if (key === 'human-only') {
         const nextValue = args[i + 1];
@@ -1290,7 +1299,7 @@ export function printResult(
     return;
   }
   if (group === 'session' && (action === 'watches' || action === 'unwatch')) {
-    const watches = (result.watches ?? []) as Array<{ watchId: string; targetSessionId: string; turnId?: string; cancelled?: boolean; deliveryPending?: boolean; registrationPending?: boolean }>;
+    const watches = ((result.data as { watches?: unknown } | undefined)?.watches ?? []) as Array<{ watchId: string; targetSessionId: string; turnId?: string; cancelled?: boolean; deliveryPending?: boolean; registrationPending?: boolean }>;
     for (const watch of watches) console.log(`${watch.watchId}  ${watch.targetSessionId}  ${watch.cancelled ? 'cancelled' : watch.deliveryPending ? 'delivery pending' : watch.registrationPending ? 'registration pending' : 'active'}${watch.turnId ? `  turn:${watch.turnId}` : ''}`);
     if (!watches.length) console.log('No active observations.');
     return;
@@ -3459,6 +3468,16 @@ export function validateCliCommand(
     const action = positional[1] || 'list';
     const route = buildRoute(group, action, positional.slice(2));
     if (PUBLISHED_ADMIN_ROUTES.has(route)) return undefined;
+    if (positional.length === 1 || (positional.length === 2 && [...PUBLISHED_ADMIN_ROUTES].some(
+      published => published.startsWith(`${route}/`) || published.startsWith(`${route}-`),
+    ))) {
+      if (helpMode) return undefined;
+      return {
+        code: 'SUBCOMMAND_REQUIRED',
+        error: `Missing subcommand for: ${positional.join(' ')}`,
+        suggestedCommand: `myagents ${group} --help`,
+      };
+    }
   }
 
   const command = positional.join(' ');
@@ -3509,7 +3528,7 @@ export function validateInternalCliInvocation(positional: string[], flags: Recor
   const unknown = Object.keys(flags).find(flag => !globals.has(flag) && !allowed.has(flag));
   if (unknown) return {
     code: 'UNKNOWN_FLAG',
-    error: `Unknown flag for '${positional.join(' ') || 'myagents'}': --${unknown}.`,
+    error: `Unknown flag for '${positional.join(' ') || 'myagents'}': ${flagSpelling(flags, unknown)}.`,
     suggestion: `Run myagents ${positional.slice(0, 2).join(' ')} --help for supported options.`,
   };
   if (!groupHelp && ((action === 'readme' && group !== 'widget' && positional.length > 2)
@@ -3537,7 +3556,7 @@ export function validateExternalCliInvocation(
     return unsupported
       ? {
         code: 'UNKNOWN_FLAG',
-        error: `Unknown public CLI flag: --${unsupported}.`,
+        error: `Unknown public CLI flag: ${flagSpelling(flags, unsupported)}.`,
         suggestion: 'Run myagents --help for the supported public commands.',
       }
       : undefined;
@@ -3551,7 +3570,7 @@ export function validateExternalCliInvocation(
       return unsupported
         ? {
           code: 'UNKNOWN_FLAG',
-          error: `Unknown public CLI flag: --${unsupported}.`,
+          error: `Unknown public CLI flag: ${flagSpelling(flags, unsupported)}.`,
           suggestion: `Run myagents ${group} --help for the supported public commands.`,
         }
         : undefined;
@@ -3560,6 +3579,13 @@ export function validateExternalCliInvocation(
 
   const matched = findExternalCliPublicCapability(positional);
   if (!matched) {
+    if (EXTERNAL_CLI_PUBLIC_COMMANDS.some(command => command.startsWith(`${positional.join(' ')} `))) {
+      return {
+        code: 'SUBCOMMAND_REQUIRED',
+        error: `Missing subcommand for: ${positional.join(' ')}`,
+        suggestedCommand: `myagents ${group} --help`,
+      };
+    }
     return {
       code: 'UNKNOWN_COMMAND',
       error: `Unknown public command: ${positional.join(' ')}`,
@@ -3572,7 +3598,7 @@ export function validateExternalCliInvocation(
   if (unsupported) {
     return {
       code: 'UNKNOWN_FLAG',
-      error: `Unknown flag for '${matched.capability.command}': --${unsupported}.`,
+      error: `Unknown flag for '${matched.capability.command}': ${flagSpelling(flags, unsupported)}.`,
       suggestion: `Run myagents ${matched.capability.command} --help for the supported flags.`,
     };
   }
@@ -5532,8 +5558,13 @@ export function buildRequestBody(
   // Agent commands
   if (group === 'agent') {
     if (action === 'network-diagnose') {
-      if (rest.length) return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'network-diagnose accepts no positional arguments.' }, 3);
-      return { cursor: flags.cursor, limit: flags.limit === undefined ? 100 : Number(flags.limit) };
+      if (rest.length) return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'network-diagnose accepts no positional arguments.' });
+      const limit = flags.limit === undefined ? 100 : Number(flags.limit);
+      if (typeof flags.limit === 'boolean' || !Number.isInteger(limit) || limit < 1 || limit > 100
+        || (flags.cursor !== undefined && (typeof flags.cursor !== 'string' || !flags.cursor.trim()))) {
+        return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'network-diagnose requires --limit 1..100 and an optional non-empty --cursor value.' });
+      }
+      return { cursor: flags.cursor, limit };
     }
     if (action === 'create') {
       const workspacePath =
@@ -6381,36 +6412,29 @@ export function buildRequestBody(
       };
     }
     if (action === 'state') {
-      const sessionId = rest[0] ?? (flags.sessionId as string | undefined);
-      if (!sessionId || rest.length > 1) return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'session state requires exactly one Session reference.' }, 3);
-      return { sessionId };
+      const sessionId = rest[0] ?? flags.sessionId;
+      if (typeof sessionId !== 'string' || !sessionId.trim() || rest.length > 1) return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'session state requires exactly one Session reference.' });
+      return { sessionId: sessionId.trim() };
     }
     if (action === 'watches') {
-      if (rest.length) return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'session watches lists the current Session only.' }, 3);
+      if (rest.length) return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'session watches lists the current Session only.' });
       return {};
     }
     if (action === 'unwatch') {
-      if (rest.length > 1 || (flags.all === true) === (rest.length === 1)) return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'Use session unwatch <watchId> or session unwatch --all.' }, 3);
+      if (rest.length > 1 || (rest.length === 1 && !rest[0].trim()) || (flags.all === true) === (rest.length === 1)) return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'Use session unwatch <watchId> or session unwatch --all.' });
       return flags.all === true ? { all: true } : { watchId: rest[0] };
     }
     if (action === 'watch') {
-      const targetSessionId = requirePositional(
-        rest[0] ?? (flags.targetSessionId as string | undefined) ?? (flags.to as string | undefined),
-        'sessionId',
-        'session watch',
-        'targetSessionId',
-      );
+      const targetSessionId = rest[0] ?? flags.targetSessionId ?? flags.to;
+      if (typeof targetSessionId !== 'string' || !targetSessionId.trim() || rest.length > 1) {
+        return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'session watch requires exactly one Session reference.', suggestedCommand: 'myagents session watch --help' });
+      }
       const unsupportedFlag = ['prompt', 'promptFile', 'then', 'thenFile', 'thenPrompt', 'thenPromptFile']
         .find((key) => flags[key] !== undefined);
       if (unsupportedFlag) {
-        console.error('Error: session watch does not accept prompt/then flags. Use `myagents session send` to ask the target session to do new work.');
-        process.exit(3);
+        return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'session watch does not accept prompt/then flags. Use `myagents session send` to ask the target session to do new work.' });
       }
-      if (rest.length > 1) {
-        console.error('Error: session watch accepts exactly one <sessionId> argument.');
-        process.exit(3);
-      }
-      return { targetSessionId };
+      return { targetSessionId: targetSessionId.trim() };
     }
     return {};
   }
