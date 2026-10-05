@@ -1355,7 +1355,7 @@ describe('GlobalSidebar rail flyout', () => {
     // occupy the exact pixels that used to be solid spacing below the
     // section title, instead of stacking a fade below an unchanged gap.
     const workspaceSectionHeader = screen.getByText(String(i18n.t('app:globalSidebar.workspaceSection'))).closest('div');
-    expect(workspaceSectionHeader).toHaveClass('h-8', 'pl-6', 'pr-3');
+    expect(workspaceSectionHeader).toHaveClass('h-8', 'pl-6', 'pr-[var(--global-sidebar-action-inset)]');
     // The fade must consume the spacing directly above the notification entry:
     // the expanded footer drops its top padding so the scroller edge (and the
     // fade) reach the notification button, instead of stacking an extra
@@ -1366,7 +1366,7 @@ describe('GlobalSidebar rail flyout', () => {
     const workspaceActions = inactiveRow.querySelector<HTMLElement>('[data-global-sidebar-workspace-actions]');
     expect(inactiveRow).toHaveClass('relative');
     expect(workspaceToggle).toHaveClass('flex-1');
-    expect(workspaceActions).toHaveClass('pointer-events-none', 'absolute', 'inset-y-0', 'right-0', 'pl-6', 'pr-2');
+    expect(workspaceActions).toHaveClass('pointer-events-none', 'absolute', 'inset-y-0', 'right-0', 'gap-1', 'pl-6');
     expect(workspaceActions).not.toHaveClass('shrink-0');
     expect(workspaceActions).toHaveClass('global-sidebar-workspace-actions');
 
@@ -1622,7 +1622,7 @@ describe('GlobalSidebar rail flyout', () => {
     const workspaceRow = screen.getByText('Project one').closest('[data-global-sidebar-workspace-row]');
     expect(workspaceRow).toHaveAttribute('aria-current', 'page');
     expect(workspaceRow).not.toHaveClass('bg-[var(--paper-elevated)]', 'shadow-sm');
-    expect(workspaceRow?.querySelector('[data-global-sidebar-workspace-actions]')).toHaveClass('pr-2');
+    expect(workspaceRow?.querySelector('[data-global-sidebar-workspace-actions]')).toHaveClass('global-sidebar-workspace-actions');
     const firstSession = screen.getByRole('button', { name: /Session 1/ });
     expect(firstSession.className).toContain('focus-visible:ring-2');
     expect(firstSession.firstElementChild?.textContent).toBe('Session 1');
@@ -1635,8 +1635,7 @@ describe('GlobalSidebar rail flyout', () => {
     expect(screen.getByText('Telegram')).toHaveClass('text-xs', 'font-medium');
     expect(firstSession).toHaveClass('w-full');
     expect(firstSessionRow?.querySelector('[data-global-sidebar-session-date]')).toHaveClass('ml-auto');
-    expect(firstSessionRow?.querySelector('[data-global-sidebar-session-action-overlay]')).toHaveClass('absolute');
-    expect(firstSessionRow?.querySelector('[data-global-sidebar-session-action-overlay]')).toHaveClass('right-2');
+    expect(firstSessionRow?.querySelector('[data-global-sidebar-session-action-overlay]')).toHaveClass('absolute', 'justify-end');
     expect(firstSessionRow?.querySelector('[data-global-sidebar-session-action-overlay]')).toHaveClass('pointer-events-none');
     const sessionDate = firstSessionRow?.querySelector('[data-global-sidebar-session-date]');
     expect(sessionDate).toHaveClass('text-xs');

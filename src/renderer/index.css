@@ -209,6 +209,8 @@
   --global-sidebar-brand-icon-size: 20px;
   --global-sidebar-brand-icon-left: 22px;
   --global-sidebar-rail-button-left: 12px;
+  --global-sidebar-action-inset: 16px;
+  --global-sidebar-action-size: 32px;
   --sidebar-min-width: 320px;
   --chat-workspace-panel-width: max(25%, var(--sidebar-min-width));
   --chat-workspace-min-center-shift: 160px;
@@ -354,7 +356,8 @@ html[data-color-scheme='dark'] {
     var(--global-sidebar-brand-icon-left) - var(--global-sidebar-rail-button-left)
   );
   max-width: calc(
-    (var(--global-sidebar-expanded-width) - 2 * var(--global-sidebar-rail-button-left)) * 2 / 3
+    var(--global-sidebar-expanded-width) - var(--global-sidebar-rail-button-left)
+    - var(--global-sidebar-action-inset) - var(--global-sidebar-action-size) - var(--space-2)
   );
   opacity: 1;
   transition: opacity var(--duration-normal) var(--ease-in-out);
@@ -365,16 +368,25 @@ html[data-color-scheme='dark'] {
   pointer-events: none;
 }
 
-/* Match the center of the footer's 2:1 account/notification row. Keep one
-   search control mounted and move only its paint into the rail's icon slot. */
+/* All trailing sidebar actions share one size and right inset. Resource rows
+   contribute their scroller's 8px padding; the 16px total keeps actions clear
+   of the native overlay scrollbar. */
+.global-sidebar-action-button {
+  width: var(--global-sidebar-action-size);
+  height: var(--global-sidebar-action-size);
+  flex-shrink: 0;
+}
+
+/* Keep one search control mounted and move only its paint from the shared
+   right action axis to the rail's leading icon axis. */
 .global-sidebar-search-slot {
   position: absolute;
   top: var(--space-1);
-  left: var(--global-sidebar-rail-button-left);
-  width: calc(var(--global-sidebar-rail-width) - 2 * var(--global-sidebar-rail-button-left));
+  left: calc((var(--global-sidebar-rail-width) - var(--global-sidebar-action-size)) / 2);
+  width: var(--global-sidebar-action-size);
   transform: translateX(calc(
-    (var(--global-sidebar-expanded-width) - 2 * var(--global-sidebar-rail-button-left)) * 5 / 6
-    - (var(--global-sidebar-rail-width) - 2 * var(--global-sidebar-rail-button-left)) / 2
+    var(--global-sidebar-expanded-width) - var(--global-sidebar-action-inset)
+    - (var(--global-sidebar-rail-width) + var(--global-sidebar-action-size)) / 2
   ));
   transition: transform var(--duration-normal) var(--ease-in-out);
 }
@@ -520,6 +532,7 @@ html[data-color-scheme='dark'] {
 }
 
 .global-sidebar-workspace-actions {
+  padding-right: calc(var(--global-sidebar-action-inset) - var(--space-2));
   border-top-right-radius: inherit;
   border-bottom-right-radius: inherit;
   /* Composite the same translucent hover over the actual host surface.
@@ -528,6 +541,10 @@ html[data-color-scheme='dark'] {
   background:
     linear-gradient(to right, transparent, var(--global-sidebar-row-bg) var(--space-6)),
     linear-gradient(to right, transparent, var(--global-sidebar-surface) var(--space-6));
+}
+
+[data-global-sidebar-session-action-overlay] {
+  right: calc(var(--global-sidebar-action-inset) - var(--space-2));
 }
 
 .global-sidebar[data-global-sidebar-mode='rail'] .global-sidebar-copy {

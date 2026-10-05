@@ -1176,7 +1176,7 @@ export default memo(function GlobalSidebar({
                 aria-label={t('globalSidebar.search')}
                 aria-haspopup="dialog"
                 aria-expanded={searchOpen}
-                className={`global-sidebar-row flex h-8 w-full items-center justify-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+                className={`global-sidebar-row global-sidebar-action-button flex items-center justify-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
                   searchOpen
                     ? 'bg-[var(--paper-inset)] text-[var(--ink)]'
                     : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
@@ -1316,7 +1316,7 @@ export default memo(function GlobalSidebar({
         </div>
 
         <div
-          className={`shrink-0 pb-2 ${expanded ? 'px-3 pt-0' : 'global-sidebar-rail-stack pt-3'}`}
+          className={`shrink-0 pb-2 ${expanded ? 'pl-3 pr-[var(--global-sidebar-action-inset)] pt-0' : 'global-sidebar-rail-stack pt-3'}`}
           data-global-sidebar-footer-actions
         >
           <div
@@ -1345,7 +1345,7 @@ export default memo(function GlobalSidebar({
             label={t('globalSidebar.settings')}
             onClick={onOpenSettings}
           />
-          <div className={expanded ? 'grid grid-cols-[2fr_1fr]' : 'flex justify-center'} data-global-sidebar-account-row>
+          <div className={expanded ? 'grid grid-cols-[minmax(0,1fr)_var(--global-sidebar-action-size)]' : 'flex w-10 justify-center'} data-global-sidebar-account-row>
             <AccountEntry expanded={expanded} available={teamSpaceAvailable}
               environment={config.spaceEnvironment ?? 'production'} onOpenSpace={onOpenSpace} />
             <button
@@ -1358,16 +1358,14 @@ export default memo(function GlobalSidebar({
               aria-haspopup="dialog"
               aria-expanded={notificationOpen}
               aria-controls="global-notification-center"
-              className={`global-sidebar-row relative flex h-8 items-center text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
-                expanded ? 'w-full justify-center' : 'w-10'
-              } ${
+              className={`global-sidebar-row global-sidebar-action-button relative flex items-center justify-center text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
                 notificationOpen
                   ? 'bg-[var(--paper-inset)] text-[var(--ink)]'
                   : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
               }`}
               data-notification-center-trigger
             >
-              <span className={`${expanded ? 'relative' : 'absolute left-3'} flex h-4 w-4 items-center justify-center`}>
+              <span className="relative flex h-4 w-4 items-center justify-center">
                 <BellIcon className="h-4 w-4" />
                 {notificationCenter.snapshot.hasUnread && (
                   <span
@@ -1745,7 +1743,7 @@ function WorkspaceTree({
 
   return (
     <section className="relative flex h-full min-h-0 flex-col" aria-label={t('globalSidebar.workspaces')}>
-      <div className="flex h-8 shrink-0 items-center gap-1 pl-6 pr-3">
+      <div className="flex h-8 shrink-0 items-center gap-1 pl-6 pr-[var(--global-sidebar-action-inset)]">
         <h2 className="min-w-0 flex-1 truncate text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]">
           {t('globalSidebar.workspaceSection')}
         </h2>
@@ -1754,7 +1752,7 @@ function WorkspaceTree({
             ref={viewMenuRef}
             type="button"
             onClick={() => setViewMenu(!viewMenuOpen)}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+            className="global-sidebar-action-button flex items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
             aria-label={t('globalSidebar.workspaceViewOptions')}
           >
             <MoreIcon className="h-4 w-4" />
@@ -1791,7 +1789,7 @@ function WorkspaceTree({
           <button
             type="button"
             onClick={(event) => onCreateAgent(event.currentTarget)}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+            className="global-sidebar-action-button flex items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
             aria-label={tLauncher('newAgentPanel.title')}
           >
             <PlusIcon className="h-3.5 w-3.5" />
@@ -2072,7 +2070,7 @@ function WorkspaceRow({
           supplies 8px, and the local right padding keeps controls outside
           Fluent's 16px overlay hit region. */}
       <div
-        className={`global-sidebar-workspace-actions pointer-events-none absolute inset-y-0 right-0 flex items-center pl-6 pr-2 transition-opacity ${menuOpen ? 'opacity-100' : 'opacity-0 group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100'}`}
+        className={`global-sidebar-workspace-actions pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-6 transition-opacity ${menuOpen ? 'opacity-100' : 'opacity-0 group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100'}`}
         data-global-sidebar-workspace-actions
       >
         <Tip label={tLauncher('workspaceCard.more')} position={actionTipPosition} align="end" disabled={menuOpen}>
@@ -2080,7 +2078,7 @@ function WorkspaceRow({
             ref={menuRef}
             type="button"
             onClick={() => setMenu(!menuOpen)}
-            className={`flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] ${menuOpen ? 'pointer-events-auto' : 'pointer-events-none group-hover/workspace:pointer-events-auto group-focus-within/workspace:pointer-events-auto'}`}
+            className={`global-sidebar-action-button flex items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] ${menuOpen ? 'pointer-events-auto' : 'pointer-events-none group-hover/workspace:pointer-events-auto group-focus-within/workspace:pointer-events-auto'}`}
             aria-label={tLauncher('workspaceCard.more')}
           >
             <MoreIcon className="h-3.5 w-3.5" />
@@ -2090,7 +2088,7 @@ function WorkspaceRow({
           <button
             type="button"
             onClick={onOpenWorkspace}
-            className={`flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] ${menuOpen ? 'pointer-events-auto' : 'pointer-events-none group-hover/workspace:pointer-events-auto group-focus-within/workspace:pointer-events-auto'}`}
+            className={`global-sidebar-action-button flex items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] ${menuOpen ? 'pointer-events-auto' : 'pointer-events-none group-hover/workspace:pointer-events-auto group-focus-within/workspace:pointer-events-auto'}`}
             aria-label={t('globalSidebar.newChatHere')}
           >
             <ComposeIcon className="h-3.5 w-3.5" />
@@ -2234,7 +2232,7 @@ function SessionRow({
         </span>
       </button>
       <div
-        className={`absolute inset-y-0 right-2 flex w-9 items-center justify-end transition-opacity ${
+        className={`absolute inset-y-0 flex w-9 items-center justify-end transition-opacity ${
           menuOpen
             ? 'pointer-events-auto opacity-100'
             : 'pointer-events-none opacity-0 group-hover/session:pointer-events-auto group-hover/session:opacity-100 group-focus-within/session:pointer-events-auto group-focus-within/session:opacity-100'
@@ -2246,7 +2244,7 @@ function SessionRow({
             ref={menuRef}
             type="button"
             onClick={() => setMenu(!menuOpen)}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+            className="global-sidebar-action-button flex items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
             aria-label={tLauncher('rightRail.more')}
           >
             <MoreIcon className="h-3.5 w-3.5" />
