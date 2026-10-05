@@ -41,7 +41,7 @@ debug/test 可以通过 `MYAGENTS_SPACE_MOCK_DATA=true` 使用 Rust owner 的 de
 | Delivery | `src-tauri/src/space_cloud/delivery.rs` | Connector、poll/presence、receipt/ACK 与 Session injection |
 | CLI | `src-tauri/src/space_cloud/cli.rs` | actor/context 解析与命令适配 |
 | Attachments | `src-tauri/src/space_cloud/attachments.rs` | bounded upload/download 与 workspace file safety |
-| Skills / Tools | `src-tauri/src/space_cloud/{skills,tools}.rs` | package/install 与 Tool transport |
+| Skills / Tools | `src-tauri/src/space_cloud/{skills,tools}.rs` | Skill package/install 与 Tool 云端资源 transport |
 | Notifications | `src-tauri/src/space_cloud/notifications.rs` | App 级 Cloud feed 同步 |
 | Renderer API | `src/renderer/api/spaceCloud.ts` | typed invoke 与错误投影 |
 | Renderer state | `src/renderer/pages/space/spaceStore.ts` | UI cache、cursor invalidation 与导航投影 |
@@ -185,6 +185,8 @@ Space 页面的自动进入/刷新、事件轮询及事件触发的资源刷新�
 ### 8.3 Skills、Tools 与 profile
 
 Cloud拥有Skill package、Tool revision/icon和profile数据；Desktop只做安装、上传、下载与本地展示。Skill安装目标只能是global或current project，zip必须限制总大小、单项大小和entry数并防Zip-Slip；覆盖采用完整staging后原子目录交换，不做文件级合并。
+
+MCP Tool 安装写入本机 `config.json`；UI 的本地定义比较与安装共用 `src/shared/spaceToolManifest.ts` 的 pure policy，安装由 `atomicModifyConfig` 在锁内重读磁盘后裁决，不能拿 Renderer 的 installed 投影替代写入判断。同 ID 定义相同保持配置，不同需用户确认替换；新装或替换默认禁用，配置值只保留新 manifest 仍需要的键。Tools 的运行方式与配置说明属于展示派生，不创建独立 Runtime 或安装 authority。
 
 用户与Registered Agent头像通过Cloud/R2对象模型暴露。Desktop上传走Rust multipart并校验本地文件；Renderer不直接持token或上传到公开object URL。公开头像URL不是credentialed attachment route，缺少服务端public asset配置时Cloud应拒绝发布对象而不是让Desktop猜fallback。
 
