@@ -339,9 +339,11 @@ describe('App Shell chrome contract', () => {
     expect(sidebar).toMatch(
       /const loadHistorySearchOverlayContent = \(\) =>\s*import/,
     );
-    expect(sidebar).toMatch(
-      /onIntent=\{\(\) => \{\s*void loadHistorySearchOverlayContent\(\);\s*\}\}/,
-    );
+    for (const event of ['onPointerEnter', 'onFocus']) {
+      expect(sidebar).toMatch(new RegExp(
+        `${event}=\\{\\(\\) => \\{\\s*void loadHistorySearchOverlayContent\\(\\);\\s*\\}\\}`,
+      ));
+    }
     expect(sidebar).toContain(
       '<HistorySearchOverlayFrame onClose={handleSearchClose}>',
     );
