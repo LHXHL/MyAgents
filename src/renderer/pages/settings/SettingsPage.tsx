@@ -6119,7 +6119,7 @@ export default function Settings({
           {activeSection === 'about' && (
             <div className="space-y-6">
               {/* Brand Header */}
-              <div className="rounded-2xl border border-[var(--line)] bg-gradient-to-br from-[var(--paper-inset)] to-[var(--paper)] p-8">
+              <div className="rounded-2xl border border-[var(--line)] bg-gradient-to-br from-[var(--paper-inset)] to-[var(--paper)] px-8 pb-8 pt-10">
                 <div className="flex flex-col items-center text-center">
                   <h1
                     className="theme-product-wordmark theme-launcher-hero-title cursor-default select-none"
