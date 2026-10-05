@@ -331,6 +331,27 @@ test('macOS dev build replaces every mutable native resource staging directory',
   }
 });
 
+test('Windows dev and release stage the validated Claude SDK package before Tauri builds', () => {
+  const prepare = readFileSync(resolve(repoRoot, 'scripts/ensure_claude_sdk_package.ps1'), 'utf8');
+  assert.match(prepare, /function Stage-SdkPackage\s*\{/);
+  assert.match(prepare, /Test-SdkPackage -PackageArch \$archName -SdkVersion \$sdkVersion/);
+  assert.match(prepare, /Stage-SdkPackage -PackageArch \$archName/);
+  for (const [name, source] of [['build_dev_win.ps1', buildDevWindows], ['build_windows.ps1', buildWindows]]) {
+    const stageAt = source.indexOf('ensure_claude_sdk_package.ps1" -Arch x64 -Stage');
+    assert.notEqual(stageAt, -1, `${name} must stage the validated SDK binary`);
+    assert.ok(stageAt > source.indexOf('npm install'), `${name} must install dependencies first`);
+    assert.ok(stageAt < source.indexOf('npm run tauri:build:prepared'), `${name} must stage before Tauri`);
+  }
+});
+
+test('macOS dev and release verify the installed SDK wrapper before bundling it', () => {
+  for (const [name, source] of [['build_dev.sh', buildDev], ['build_macos.sh', buildMacos]]) {
+    const verifyAt = source.indexOf('verify-claude-sdk-wrapper.mjs');
+    assert.notEqual(verifyAt, -1, `${name} must verify the installed JS wrapper`);
+    assert.ok(verifyAt < source.indexOf('npm run build:assets'), `${name} must verify before bundling`);
+  }
+});
+
 test('macOS release prepares and validates Sharp inside each target build', () => {
   const prepareCall = 'prepare_sharp_runtime "$NODE_TARGET_ARCH"';
   const prepareAt = buildMacos.indexOf(prepareCall);

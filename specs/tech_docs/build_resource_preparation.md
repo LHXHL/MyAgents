@@ -34,6 +34,12 @@
 
 `setup.sh` / `setup_windows.ps1` 准备开发依赖与 host 资源；平台 build 脚本检查本次目标并准备安装包。不能把“以前运行过 setup”作为资源就绪依据。两类入口复用资源 helper，由 helper 校验版本、目标、完整性后决定复用或补齐。
 
+Windows Dev 与 Release 都通过 `ensure_claude_sdk_package.ps1 -Stage` 校验当前锁定的 SDK native 包，并把通过校验的 `claude.exe` 暂存到 Tauri 资源目录。暂存先复制、核对 SHA-256 与 PE 签名，再替换旧文件；不能让 Dev 入口沿用上一次构建留下的二进制。应用内置 SDK 包版本与用户 PATH 上独立安装的 `claude` CLI 版本应分别诊断。
+
+Linux 的 `--prepare`、Debug 和 Release 入口共用 `build_linux.sh`，由 `stage-claude-sdk-linux.mjs` 对照根 manifest、lock、已安装的 JS wrapper/native 包版本与 x64 ELF 身份后暂存。已安装包版本不符时立即失败并提示重新安装依赖，不把旧 `node_modules` 视为绑定版本。
+
+macOS Dev / Release 在构建业务 bundle 前检查已安装的 SDK JS wrapper；此检查同时核对根 manifest 和 lock 中的八个平台原生包版本。原生 Mach-O 的目标架构、文件完整性与签名仍由既有平台校验入口负责。
+
 Linux 的 setup 通过 `build_linux.sh --install-deps` 和 `--prepare` 复用资源路径，debug/release 也走该脚本。macOS/Windows 的开发版仍可使用项目 node_modules 提供 sharp/tsx；正式包必须携带自包含资源。
 
 ## 业务 bundle 与本次 Runtime 选择一致

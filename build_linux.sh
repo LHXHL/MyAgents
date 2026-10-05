@@ -117,15 +117,7 @@ if [ "$MODE" != "prepare" ]; then
         node "${PROJECT_DIR}/scripts/integrated-runtimes/prepare-dsh-runtime.mjs" --source release --target linux-x64
     fi
 fi
-SDK_SOURCE="${PROJECT_DIR}/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude"
-if [ ! -x "$SDK_SOURCE" ]; then
-    echo "Missing Linux x64 Claude SDK executable; run npm ci on this host." >&2
-    exit 1
-fi
-rm -rf "${PROJECT_DIR}/src-tauri/resources/claude-agent-sdk"
-mkdir -p "${PROJECT_DIR}/src-tauri/resources/claude-agent-sdk"
-cp "$SDK_SOURCE" "${PROJECT_DIR}/src-tauri/resources/claude-agent-sdk/claude"
-chmod +x "${PROJECT_DIR}/src-tauri/resources/claude-agent-sdk/claude"
+node "${PROJECT_DIR}/scripts/stage-claude-sdk-linux.mjs"
 
 npm run build:sharp-runtime -- linux x64
 # Keep the installed application's bundled-Node load check as well.
