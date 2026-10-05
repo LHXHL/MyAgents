@@ -137,7 +137,7 @@ function AccountControls({ account, expanded, onOpenSpace }: {
           : initialLoading ? <LoaderIcon className="h-4 w-4 shrink-0 animate-spin" />
             : <UserIcon className="h-4 w-4 shrink-0" />}
         </span>
-        <span className="min-w-0 flex-1 truncate pl-10 pr-3">{initialLoading ? t('common.loading') : displayName}</span>
+        <span className="global-sidebar-label min-w-0 flex-1 truncate pl-10 pr-3">{initialLoading ? t('common.loading') : displayName}</span>
       </button>
       <Popover
         open={menuOpen && !!session} onClose={closeMenu} anchorRef={triggerRef}

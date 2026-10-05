@@ -305,7 +305,7 @@ function SidebarNavButton({
       data-global-sidebar-nav-button
     >
       <span className="absolute left-3 flex h-4 w-4 shrink-0 items-center justify-center">{icon}</span>
-      <span className="global-sidebar-copy global-sidebar-nav-label min-w-0 truncate text-left" aria-hidden={!expanded}>
+      <span className="global-sidebar-copy global-sidebar-nav-label global-sidebar-label min-w-0 truncate text-left" aria-hidden={!expanded}>
         {label}
       </span>
     </button>
@@ -363,7 +363,7 @@ function SidebarMore({ expanded, activeView, onTeam }: {
         }}>
         <button type="button" role="menuitem" onClick={() => { close(); onTeam(); }}
           className="flex h-9 w-full items-center gap-2 rounded-md px-3 text-sm text-[var(--ink)] hover:bg-[var(--hover-bg)] focus:bg-[var(--hover-bg)]">
-          <TeamIcon className="h-4 w-4 text-[var(--ink-muted)]" />{t('globalSidebar.team')}
+          <TeamIcon className="h-4 w-4 text-[var(--ink-muted)]" /><span className="global-sidebar-label">{t('globalSidebar.team')}</span>
         </button>
       </div>
     </Popover>
@@ -1844,7 +1844,7 @@ function WorkspaceTree({
               className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-3 py-2 text-sm font-medium text-[var(--button-primary-text)] hover:bg-[var(--button-primary-bg-hover)]"
             >
               <PlusIcon className="h-3.5 w-3.5" />
-              {tLauncher('rightRail.addFolder')}
+              <span className="global-sidebar-label">{tLauncher('rightRail.addFolder')}</span>
             </button>
           </div>
         ) : (
@@ -1961,7 +1961,7 @@ function WorkspaceTree({
                   <SidebarDisclosureSlot expanded={archivedExpanded} group="archived">
                     <ArchiveIcon className="h-4 w-4" />
                   </SidebarDisclosureSlot>
-                  <span className="min-w-0 flex-1 truncate text-left">{t('globalSidebar.archived')}</span>
+                  <span className="global-sidebar-label min-w-0 flex-1 truncate text-left">{t('globalSidebar.archived')}</span>
                   <span className="text-xs tabular-nums text-[var(--ink-subtle)]">{archivedProjects.length}</span>
                 </button>
                 {archivedExpanded && (
@@ -2060,7 +2060,7 @@ function WorkspaceRow({
           <WorkspaceIcon icon={project.icon} size={16} />
         </SidebarDisclosureSlot>
         <span
-          className="min-w-0 flex-1 truncate font-medium"
+          className="global-sidebar-label min-w-0 flex-1 truncate font-medium"
           data-global-sidebar-workspace-title
         >
           {displayName}
@@ -2207,7 +2207,7 @@ function SessionRow({
           tooltipLabel={fullTitle}
           contentIsTruncated={displayTitle !== fullTitle}
           delayMs={1_000}
-          className="min-w-0 flex-1 truncate text-sm"
+          className="global-sidebar-label min-w-0 flex-1 truncate text-sm"
           data-global-sidebar-session-title
         />
         {session.favorite && <StarIcon className="h-3 w-3 shrink-0 text-[var(--accent)]" fill="currentColor" />}
@@ -2297,7 +2297,7 @@ function ArchivedWorkspaceRow({ project, onUnarchive, onAgentSettings, onOpenFol
   return (
     <div className="group/archive flex h-8 items-center gap-2 rounded-lg px-3 text-sm text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]">
       <WorkspaceIcon icon={project.icon} size={16} />
-      <span className="min-w-0 flex-1 truncate">{project.displayName || project.name}</span>
+      <span className="global-sidebar-label min-w-0 flex-1 truncate">{project.displayName || project.name}</span>
       <Tip label={tLauncher('workspaceCard.more')} align="end" disabled={menuOpen}>
         <button
           ref={menuRef}

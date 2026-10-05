@@ -500,6 +500,13 @@ html[data-color-scheme='dark'] {
   display: flex;
 }
 
+/* items-center aligns line boxes, but 14px system-font ink sits slightly below
+   their center. Correct only row labels; keep glyph slots and 12px metadata
+   centered as-is. Individual translate preserves the copy's horizontal motion. */
+.global-sidebar-label {
+  translate: 0 -1px;
+}
+
 /* Keep row shape compact without changing Theme radii outside the sidebar. */
 .global-sidebar-row {
   border-radius: min(var(--radius-lg), var(--space-2));
