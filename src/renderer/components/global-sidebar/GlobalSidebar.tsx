@@ -235,7 +235,6 @@ interface SidebarNavButtonProps {
   tooltipDisabled?: boolean;
   hasPopup?: 'menu';
   ariaExpanded?: boolean;
-  onIntent?: () => void;
   onClick: () => void;
 }
 
@@ -285,15 +284,12 @@ function SidebarNavButton({
   tooltipDisabled,
   hasPopup,
   ariaExpanded,
-  onIntent,
   onClick,
 }: SidebarNavButtonProps) {
   const button = (
     <button
       type="button"
       onClick={onClick}
-      onPointerEnter={onIntent}
-      onFocus={onIntent}
       disabled={disabled}
       aria-haspopup={hasPopup}
       aria-expanded={ariaExpanded}
@@ -326,8 +322,8 @@ function SidebarNavButton({
   );
 }
 
-function SidebarMore({ expanded, activeView, teamAvailable, onNetwork, onTeam }: {
-  expanded: boolean; activeView: string | undefined; teamAvailable: boolean; onNetwork?: () => void; onTeam: () => void;
+function SidebarMore({ expanded, activeView, onTeam }: {
+  expanded: boolean; activeView: string | undefined; onTeam: () => void;
 }) {
   const { t } = useTranslation('app');
   const [open, setOpen] = useState(false);
@@ -349,7 +345,7 @@ function SidebarMore({ expanded, activeView, teamAvailable, onNetwork, onTeam }:
   const close = () => { cancel(); setOpen(false); };
   return <div ref={anchor} className="relative" onPointerEnter={show} onPointerLeave={hide}
     onKeyDown={event => { if (event.key === 'ArrowRight') { event.preventDefault(); enter(); } }}>
-    <SidebarNavButton expanded={expanded} active={activeView === 'agentnetwork' || activeView === 'space'}
+    <SidebarNavButton expanded={expanded} active={activeView === 'space'}
       icon={<MoreIcon className="h-4 w-4" />} label={t('globalSidebar.more')} tooltipDisabled={open} hasPopup="menu" ariaExpanded={open}
       onClick={enter} />
     <Popover open={open} onClose={close} anchorRef={anchor} placement="right-start" className="min-w-40 p-1">
@@ -365,14 +361,10 @@ function SidebarMore({ expanded, activeView, teamAvailable, onNetwork, onTeam }:
             event.preventDefault(); event.stopPropagation(); close(); anchor.current?.querySelector<HTMLButtonElement>('button')?.focus();
           }
         }}>
-        <button type="button" role="menuitem" disabled={!onNetwork} onClick={() => { close(); onNetwork?.(); }}
-          className="flex h-9 w-full items-center gap-2 rounded-md px-3 text-sm text-[var(--ink)] hover:bg-[var(--hover-bg)] focus:bg-[var(--hover-bg)]">
-          <RadioIcon className="h-4 w-4 text-[var(--ink-muted)]" />{t('globalSidebar.agentNetwork')}
-        </button>
-        {teamAvailable && <button type="button" role="menuitem" onClick={() => { close(); onTeam(); }}
+        <button type="button" role="menuitem" onClick={() => { close(); onTeam(); }}
           className="flex h-9 w-full items-center gap-2 rounded-md px-3 text-sm text-[var(--ink)] hover:bg-[var(--hover-bg)] focus:bg-[var(--hover-bg)]">
           <TeamIcon className="h-4 w-4 text-[var(--ink-muted)]" />{t('globalSidebar.team')}
-        </button>}
+        </button>
       </div>
     </Popover>
   </div>;
@@ -1047,6 +1039,7 @@ export default memo(function GlobalSidebar({
   }, [closeFlyout, closeNotificationCenter, historyTagIntent]);
 
   const activeView = activeTab?.view;
+  const searchAvailable = isTauriEnvironment();
   const isWindows = typeof navigator !== 'undefined'
     && navigator.platform.toLowerCase().includes('win');
   const tree = (
@@ -1151,8 +1144,10 @@ export default memo(function GlobalSidebar({
             type="button"
             onClick={() => { void openExternal(MYAGENTS_WEBSITE_URL); }}
             aria-label={t('globalSidebar.openWebsite')}
+            aria-hidden={!expanded && searchAvailable}
+            inert={!expanded && searchAvailable}
             className={`global-sidebar-brand-link flex h-8 items-center pr-1 text-left cursor-pointer rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
-              expanded ? 'min-w-0 max-w-[calc(var(--global-sidebar-expanded-width)-var(--global-sidebar-rail-button-left)-var(--space-2))]' : 'w-10 overflow-hidden'
+              expanded ? 'min-w-0' : 'w-10 overflow-hidden'
             }`}
             data-global-sidebar-brand-link
           >
@@ -1171,6 +1166,27 @@ export default memo(function GlobalSidebar({
               <MyAgentsLogotype variant="compact" className="global-sidebar-brand-logotype" title="MyAgents" />
             </span>
           </button>
+          {searchAvailable && (
+            <Tip label={t('globalSidebar.search')} position="right" disabled={searchOpen} className="global-sidebar-search-slot">
+              <button
+                type="button"
+                onPointerEnter={() => { void loadHistorySearchOverlayContent(); }}
+                onFocus={() => { void loadHistorySearchOverlayContent(); }}
+                onClick={handleSearchOpen}
+                aria-label={t('globalSidebar.search')}
+                aria-haspopup="dialog"
+                aria-expanded={searchOpen}
+                className={`global-sidebar-row flex h-8 w-full items-center justify-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+                  searchOpen
+                    ? 'bg-[var(--paper-inset)] text-[var(--ink)]'
+                    : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
+                }`}
+                data-global-sidebar-search-trigger
+              >
+                <SearchIcon className="h-4 w-4" />
+              </button>
+            </Tip>
+          )}
         </div>
 
         <nav
@@ -1183,15 +1199,6 @@ export default memo(function GlobalSidebar({
             label={t('globalSidebar.newChat')}
             onClick={onNewTab}
           />
-          {isTauriEnvironment() && (
-            <SidebarNavButton
-              expanded={expanded}
-              icon={<SearchIcon className="h-4 w-4" />}
-              label={t('globalSidebar.search')}
-              onIntent={() => { void loadHistorySearchOverlayContent(); }}
-              onClick={handleSearchOpen}
-            />
-          )}
           <div className="group/task-create relative">
             <SidebarNavButton
               expanded={expanded}
@@ -1229,8 +1236,17 @@ export default memo(function GlobalSidebar({
             label={t('globalSidebar.capabilities')}
             onClick={() => onOpenCapabilities()}
           />
-          <SidebarMore key={activeView ?? 'launcher'} expanded={expanded} activeView={activeView} teamAvailable={teamSpaceAvailable}
-            onNetwork={onOpenAgentNetwork} onTeam={onOpenSpace} />
+          <SidebarNavButton
+            expanded={expanded}
+            active={activeView === 'agentnetwork'}
+            disabled={!onOpenAgentNetwork}
+            icon={<RadioIcon className="h-4 w-4" />}
+            label={t('globalSidebar.agentNetwork')}
+            onClick={() => onOpenAgentNetwork?.()}
+          />
+          {teamSpaceAvailable && (
+            <SidebarMore key={activeView ?? 'launcher'} expanded={expanded} activeView={activeView} onTeam={onOpenSpace} />
+          )}
         </nav>
 
         <div className="relative min-h-0 flex-1" data-global-sidebar-workspace-shell>

@@ -1181,8 +1181,9 @@ describe('GlobalSidebar rail flyout', () => {
     expect(screen.getByRole('region', { name: 'Agent 工作区' })).toBeInTheDocument();
   });
 
-  it('keeps one fixed toggle across manual rail/expanded and leaves forced rail branded but stable', () => {
+  it('keeps the toggle and search mounted across manual modes and replaces the rail website entry', () => {
     mocks.forcedRail = false;
+    mocks.isTauri = true;
     window.localStorage.setItem(GLOBAL_SIDEBAR_PREFERENCE_KEY, JSON.stringify({
       version: 1,
       preferredMode: 'rail',
@@ -1204,11 +1205,17 @@ describe('GlobalSidebar rail flyout', () => {
     const brandLink = navigation.querySelector('[data-global-sidebar-brand-link]');
     const brandName = navigation.querySelector('[data-global-sidebar-brand-name]');
     const brandRow = navigation.querySelector('[data-global-sidebar-brand-row]');
+    const search = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) });
     const primaryNav = navigation.querySelector('[data-global-sidebar-primary-nav]');
     const workspaceRail = navigation.querySelector('[data-global-sidebar-workspace-rail]');
     const footerActions = navigation.querySelector('[data-global-sidebar-footer-actions]');
     expect(brandIcon).not.toBeNull();
     expect(brandLink).toHaveClass('w-10', 'overflow-hidden');
+    expect(brandLink).toHaveAttribute('inert');
+    expect(brandLink).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.queryByRole('button', { name: String(i18n.t('app:globalSidebar.openWebsite')) })).not.toBeInTheDocument();
+    expect(brandRow).toContainElement(search);
+    expect(primaryNav).not.toContainElement(search);
     expect(brandName).toHaveAttribute('aria-hidden', 'true');
     expect(brandRow).toHaveClass('global-sidebar-brand-row');
     expect(primaryNav).toHaveClass('global-sidebar-rail-stack');
@@ -1242,6 +1249,9 @@ describe('GlobalSidebar rail flyout', () => {
     expect(navigation.querySelector('[data-global-sidebar-brand-icon]')).toBe(brandIcon);
     expect(navigation.querySelector('[data-global-sidebar-brand-link]')).toBe(brandLink);
     expect(brandLink).not.toHaveClass('w-10', 'overflow-hidden');
+    expect(brandLink).not.toHaveAttribute('inert');
+    expect(brandLink).toHaveAttribute('aria-hidden', 'false');
+    expect(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) })).toBe(search);
     expect(navigation.querySelector('[data-global-sidebar-brand-row]')).toBe(brandRow);
     expect(navigation.querySelector('[data-global-sidebar-primary-nav]')).not.toHaveClass('global-sidebar-rail-stack');
     expect(navigation.querySelector('[data-global-sidebar-workspace-rail]')).not.toBeInTheDocument();
@@ -1255,6 +1265,8 @@ describe('GlobalSidebar rail flyout', () => {
     fireEvent.click(collapse);
     expect(navigation).toHaveAttribute('data-global-sidebar-mode', 'rail');
     expect(navigation).toHaveAttribute('data-global-sidebar-motion', 'collapse');
+    expect(brandLink).toHaveAttribute('inert');
+    expect(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) })).toBe(search);
     expect(navigation.querySelector('[data-global-sidebar-workspace-region]'))
       .toHaveAttribute('aria-hidden', 'true');
     expect(navigation.querySelector('[data-global-sidebar-workspace-rail]')).toBeInTheDocument();
@@ -1273,8 +1285,8 @@ describe('GlobalSidebar rail flyout', () => {
     mocks.forcedRail = true;
     renderSidebar();
     expect(screen.queryByRole('button', { name: String(i18n.t('app:globalSidebar.expand')) })).not.toBeInTheDocument();
-    const websiteButton = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.openWebsite')) });
-    expect(websiteButton.querySelector('[data-global-sidebar-brand-icon]')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: String(i18n.t('app:globalSidebar.openWebsite')) })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) })).toBeInTheDocument();
     expect(screen.getByRole('complementary', { name: String(i18n.t('app:globalSidebar.navigation')) }))
       .toHaveAttribute('data-global-sidebar-toggle-visible', 'false');
   });
@@ -1424,7 +1436,11 @@ describe('GlobalSidebar rail flyout', () => {
     mocks.isTauri = true;
     const { container } = renderSidebar();
 
-    fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) }));
+    const search = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) });
+    expect(container.querySelector('[data-global-sidebar-brand-row]')).toContainElement(search);
+    expect(container.querySelector('[data-global-sidebar-primary-nav]')).not.toContainElement(search);
+    fireEvent.click(search);
+    expect(search).toHaveAttribute('aria-expanded', 'true');
     const coldPanel = document.querySelector('[data-history-search-overlay-panel]');
     expect(coldPanel).toBeInTheDocument();
     const coldFilters = document.querySelector('[data-history-search-fallback-filters]');
@@ -1466,10 +1482,13 @@ describe('GlobalSidebar rail flyout', () => {
     expect(screen.queryByRole('button', { name: String(i18n.t('app:globalSidebar.team')) }))
       .not.toBeInTheDocument();
     expect(onOpenSpace).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: String(i18n.t('app:globalSidebar.more')) })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.agentNetwork')) })).toBeInTheDocument();
   });
 
   it('does not let an old Session completion close a newly reopened search overlay', async () => {
     mocks.isTauri = true;
+    mocks.forcedRail = false;
     mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
     mocks.taskData.sessions.push({
       id: 'slow-search-session',
@@ -1766,39 +1785,52 @@ describe('GlobalSidebar rail flyout', () => {
   });
 });
 
-describe('Agent network navigation', () => {
+describe('Agent network and Space navigation', () => {
   beforeEach(() => { vi.useRealTimers(); vi.clearAllMocks(); mocks.projects = []; window.localStorage.clear(); });
   it('opens the right menu by keyboard and restores focus on Escape', async () => {
-    const onOpenAgentNetwork = vi.fn();
-    renderSidebar({ onOpenAgentNetwork });
+    const onOpenSpace = vi.fn();
+    renderSidebar({ onOpenSpace });
     const more = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.more')) });
     more.focus(); fireEvent.keyDown(more, { key: 'ArrowRight' });
-    const network = await screen.findByRole('menuitem', { name: String(i18n.t('app:globalSidebar.agentNetwork')) });
+    const space = await screen.findByRole('menuitem', { name: String(i18n.t('app:globalSidebar.team')) });
     expect(more).toHaveAttribute('aria-expanded', 'true');
-    await vi.waitFor(() => expect(network).toHaveFocus());
-    fireEvent.keyDown(network, { key: 'ArrowDown' });
-    expect(screen.getByRole('menuitem', { name: String(i18n.t('app:globalSidebar.team')) })).toHaveFocus();
+    await vi.waitFor(() => expect(space).toHaveFocus());
+    fireEvent.keyDown(space, { key: 'ArrowDown' });
+    expect(space).toHaveFocus();
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
     expect(more).toHaveFocus();
     expect(screen.queryByRole('menu')).not.toBeInTheDocument();
-    fireEvent.click(more); fireEvent.click(await screen.findByRole('menuitem', { name: String(i18n.t('app:globalSidebar.agentNetwork')) }));
-    expect(onOpenAgentNetwork).toHaveBeenCalledTimes(1);
+    fireEvent.click(more); fireEvent.click(await screen.findByRole('menuitem', { name: String(i18n.t('app:globalSidebar.team')) }));
+    expect(onOpenSpace).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('menu')).not.toBeInTheDocument();
   });
-  it('keeps skills above More and opens the secondary menu on hover', async () => {
-    renderSidebar({ onOpenAgentNetwork: vi.fn() });
+  it('exposes AgentNet in primary navigation and keeps only Space in the hover menu', async () => {
+    const onOpenAgentNetwork = vi.fn();
+    const networkTab: Tab = { id: 'network-tab', view: 'agentnetwork', title: 'AgentNet' };
+    const view = renderSidebar({ onOpenAgentNetwork, activeTab: networkTab });
     const buttons = screen.getAllByRole('button').filter(button => button.hasAttribute('data-global-sidebar-nav-button'));
     const labels = buttons.map(button => button.getAttribute('aria-label'));
-    expect(labels.indexOf(String(i18n.t('app:globalSidebar.skills')))).toBeLessThan(labels.indexOf(String(i18n.t('app:globalSidebar.more'))));
-    fireEvent.pointerEnter(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.more')) }));
-    expect(await screen.findByRole('menuitem', { name: String(i18n.t('app:globalSidebar.agentNetwork')) })).toBeVisible();
+    expect(labels).toEqual(['新对话', '自动化任务', '技能与工具', 'AgentNet 私有网络', '更多', '小助理', '设置']);
+    const network = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.agentNetwork')) });
     const more = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.more')) });
+    expect(network).toHaveAttribute('aria-current', 'page');
+    expect(more).not.toHaveAttribute('aria-current');
+    fireEvent.click(network);
+    expect(onOpenAgentNetwork).toHaveBeenCalledOnce();
+    fireEvent.pointerEnter(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.more')) }));
+    expect(await screen.findByRole('menuitem', { name: String(i18n.t('app:globalSidebar.team')) })).toBeVisible();
+    expect(screen.getAllByRole('menuitem')).toHaveLength(1);
+    expect(screen.queryByRole('menuitem', { name: String(i18n.t('app:globalSidebar.agentNetwork')) })).not.toBeInTheDocument();
     fireEvent.click(more);
     expect(more).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByRole('menuitem', { name: String(i18n.t('app:globalSidebar.agentNetwork')) })).toBeVisible();
+    expect(screen.getByRole('menuitem', { name: String(i18n.t('app:globalSidebar.team')) })).toBeVisible();
     fireEvent.click(more);
     expect(screen.getByRole('menu')).toBeVisible();
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
     expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    const spaceTab: Tab = { id: 'space-tab', view: 'space', title: 'Space' };
+    view.rerender(sidebar({ onOpenAgentNetwork, activeTab: spaceTab }));
+    expect(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.more')) })).toHaveAttribute('aria-current', 'page');
+    expect(network).not.toHaveAttribute('aria-current');
   });
 });

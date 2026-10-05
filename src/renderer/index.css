@@ -353,6 +353,34 @@ html[data-color-scheme='dark'] {
   padding-left: calc(
     var(--global-sidebar-brand-icon-left) - var(--global-sidebar-rail-button-left)
   );
+  max-width: calc(
+    (var(--global-sidebar-expanded-width) - 2 * var(--global-sidebar-rail-button-left)) * 2 / 3
+  );
+  opacity: 1;
+  transition: opacity var(--duration-normal) var(--ease-in-out);
+}
+
+.global-sidebar-brand-link[inert] {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Match the center of the footer's 2:1 account/notification row. Keep one
+   search control mounted and move only its paint into the rail's icon slot. */
+.global-sidebar-search-slot {
+  position: absolute;
+  top: var(--space-1);
+  left: var(--global-sidebar-rail-button-left);
+  width: calc(var(--global-sidebar-rail-width) - 2 * var(--global-sidebar-rail-button-left));
+  transform: translateX(calc(
+    (var(--global-sidebar-expanded-width) - 2 * var(--global-sidebar-rail-button-left)) * 5 / 6
+    - (var(--global-sidebar-rail-width) - 2 * var(--global-sidebar-rail-button-left)) / 2
+  ));
+  transition: transform var(--duration-normal) var(--ease-in-out);
+}
+
+.global-sidebar[data-global-sidebar-mode='rail'] .global-sidebar-search-slot {
+  transform: translateX(0);
 }
 
 .global-sidebar-brand-icon {
@@ -684,7 +712,9 @@ html[data-color-scheme='dark'] {
 
 @media (prefers-reduced-motion: reduce) {
   .global-sidebar::before,
-  .global-sidebar-copy {
+  .global-sidebar-copy,
+  .global-sidebar-brand-link,
+  .global-sidebar-search-slot {
     transition: none;
   }
 
