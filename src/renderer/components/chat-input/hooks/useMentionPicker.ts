@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   agentDiscoverySchema,
   filterMentionAgents,
+  discoveryContext,
 } from "../../../../shared/agentDiscovery";
 import type { AgentMentionSnapshot } from "../../../../shared/agentMentions";
 import type { Thought } from "../../../../shared/types/thought";
@@ -12,7 +13,10 @@ import type {
   FileSearchResult,
   WorkspaceFileService,
 } from "@/hooks/useWorkspaceFileService";
-import { useAgentNetworkSnapshot } from "@/features/agent-network/store";
+import {
+  useAgentNetworkSnapshot,
+  useAgentNetworkDirectoryVersion,
+} from "@/features/agent-network/store";
 
 export type MentionKind = "agent" | "thought" | "file";
 export type MentionItem =
@@ -84,19 +88,13 @@ export function useMentionPicker(
   workspace: string | null | undefined,
   files: WorkspaceFileService,
 ) {
-  const network = useAgentNetworkSnapshot();
+  const network = useAgentNetworkSnapshot("official");
+  const directoryVersion = useAgentNetworkDirectoryVersion();
   const kinds = useMemo(
     () => (query.trim() ? ORDER : ORDER.slice(0, 2)),
     [query],
   );
-  const scope = JSON.stringify([
-    workspace,
-    query,
-    open,
-    network.authGeneration,
-    network.principalId,
-    network.networkId,
-  ]);
+  const scope = JSON.stringify([workspace, query, open, directoryVersion]);
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
   const generation = useRef(0);
@@ -211,9 +209,9 @@ export function useMentionPicker(
             key: `agent:${agent.selector}`,
             value: {
               agent,
-              authGeneration: result.authGeneration,
-              principalId: result.principalId,
-              networkId: result.networkId,
+              authGeneration: discoveryContext(result, agent)!.authGeneration,
+              principalId: discoveryContext(result, agent)!.principalId,
+              networkId: discoveryContext(result, agent)!.networkId,
             },
           }));
         } else {

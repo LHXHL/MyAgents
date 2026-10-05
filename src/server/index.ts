@@ -2098,7 +2098,7 @@ async function routeAdminApi(
   if (route === 'agent/network-diagnose') {
     const { managementApi } = await import('./utils/management-api-client');
     const result = await managementApi('/api/agent-network/diagnose', 'POST', {
-      sidecarId: process.env.MYAGENTS_SIDECAR_ID, cursor: payload.cursor ?? null, limit: payload.limit ?? 100,
+      sidecarId: process.env.MYAGENTS_SIDECAR_ID, cursor: payload.cursor ?? null, limit: payload.limit ?? 100, network:payload.network??null,
     }, { timeoutMs: 38_000 });
     return result.ok === true ? { success: true, data: result.data }
       : { success: false, code: 'NETWORK_DIAGNOSTIC_UNAVAILABLE', error: 'Network diagnostics unavailable.' };

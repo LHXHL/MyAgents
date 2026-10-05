@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NetworkReturnReference {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
     pub op_id: uuid::Uuid,
     pub return_route_id: uuid::Uuid,
 }

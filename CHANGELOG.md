@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.1] - 2026-10-06
+
+### Added
+
+- **自部署 AgentNet**：通过服务 URL 和专属设备 key 加入 Cloudflare 网络；官方和自部署网络同时在线，标题下拉切换查看，逐网络控制 Agent 开放。
+- **跨网络发现**：@ 与 CLI 展示所有活跃网络的可调用 Agent，带网络/设备标签与筛选；同一本地 Agent 保留原会话与历史。
+- **连接管理**：支持移除自部署网络与撤销未确认的显式重试；系统凭据按实例隔离，官方登出不影响独立网络。
+
+---
+
 ## [0.5.0] - 2026-10-06
 
 > MyAgents 0.5.0 新增跨设备 Agent 协作，并更新 Agent 创建、协作空间与账户入口。

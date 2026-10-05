@@ -1,17 +1,23 @@
 //! Original-call return authority. Only opaque correlation and local owner
 //! references survive the admission receipt; no query/result queue or replay.
 use super::NetworkError;
-use futures_util::{future::{BoxFuture, Shared}, FutureExt};
-use tokio::sync::oneshot;
+use futures_util::{
+    future::{BoxFuture, Shared},
+    FutureExt,
+};
 use myagents_agent_network_protocol::{
     budget, DeviceScope, Outcome, ReturnEvent, ReturnSettlement, ServerMessage, SourceOperation,
     SourceRequest, VerifiedCaller,
 };
 use std::{
     collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
-    sync::{Arc, atomic::{AtomicBool, Ordering}},
 };
+use tokio::sync::oneshot;
 
 #[derive(Clone)]
 pub(crate) enum Correlation {
@@ -141,7 +147,12 @@ impl SourceReturns {
     }
     /// Lists/cancels only this live caller's observations. A pending Inbox
     /// admission is already irreversible; it is reported and never retracted.
-    pub(crate) fn watches(&mut self, source: &str, cancel: Option<&str>, all: bool) -> (serde_json::Value, Vec<String>) {
+    pub(crate) fn watches(
+        &mut self,
+        source: &str,
+        cancel: Option<&str>,
+        all: bool,
+    ) -> (serde_json::Value, Vec<String>) {
         let mut items = Vec::new();
         let mut routes = Vec::new();
         self.contexts.retain(|_, context| {
@@ -204,7 +215,9 @@ impl SourceReturns {
         let Some(context) = self.contexts.get_mut(op) else {
             return Ok(());
         };
-        if context.watch_cancelled.is_some() { return Ok(()); }
+        if context.watch_cancelled.is_some() {
+            return Ok(());
+        }
         if let Outcome::Start { result } = outcome {
             if let Some(session) = result["sessionId"].as_str() {
                 if context
@@ -227,7 +240,9 @@ impl SourceReturns {
                 result["delivered"] == false && result["unconfirmed"] != true
             }
             Outcome::Watch { result } => {
-                result["watched"] == false || result["delivery"] != "registered" || result["coalesced"] == true
+                result["watched"] == false
+                    || result["delivery"] != "registered"
+                    || result["coalesced"] == true
             }
             Outcome::Error { .. } => true,
             _ => false,
@@ -331,23 +346,50 @@ impl SourceReturns {
         // identical text, a later turn or another request never joins.
         let request = match &context.intent.correlation {
             Correlation::Reply(id) => Some(id.as_str()),
-            Correlation::Watch(_) => event.event["requestEventIds"].as_array()
-                .filter(|ids| ids.len() == 1).and_then(|ids| ids[0].as_str()),
+            Correlation::Watch(_) => event.event["requestEventIds"]
+                .as_array()
+                .filter(|ids| ids.len() == 1)
+                .and_then(|ids| ids[0].as_str()),
         };
-        let key = event.event["turnId"].as_str().zip(request).map(|(turn, request)| {
-            serde_json::to_string(&(context.route.as_ref().expect("validated route").source.clone(),
-                peer, local_epoch, peer_epoch, &context.intent.source_session,
-                &event.target_local_session_id, &context.intent.target_agent, turn, request))
+        let key = event.event["turnId"]
+            .as_str()
+            .zip(request)
+            .map(|(turn, request)| {
+                serde_json::to_string(&(
+                    context
+                        .route
+                        .as_ref()
+                        .expect("validated route")
+                        .source
+                        .clone(),
+                    peer,
+                    local_epoch,
+                    peer_epoch,
+                    &context.intent.source_session,
+                    &event.target_local_session_id,
+                    &context.intent.target_agent,
+                    turn,
+                    request,
+                ))
                 .expect("serializable scope")
-        });
+            });
         if let Some(key) = key {
             context.notification = Some(key.clone());
             if let Some(existing) = self.notifications.get(&key) {
                 return Ok(ReturnAdmission::Joined(existing.settlement.clone()));
             }
             let (complete, response) = oneshot::channel();
-            let settlement = async move { response.await.unwrap_or(ReturnSettlement::Dropped) }.boxed().shared();
-            self.notifications.insert(key, Notification { settlement, complete: Some(complete), at: Instant::now() });
+            let settlement = async move { response.await.unwrap_or(ReturnSettlement::Dropped) }
+                .boxed()
+                .shared();
+            self.notifications.insert(
+                key,
+                Notification {
+                    settlement,
+                    complete: Some(complete),
+                    at: Instant::now(),
+                },
+            );
         }
         Ok(ReturnAdmission::Deliver(context.intent.clone()))
     }
@@ -372,7 +414,9 @@ impl SourceReturns {
         let (expected, digest) = context.pending.expect("validated pending event");
         if let Some(key) = &context.notification {
             if let Some(notification) = self.notifications.get_mut(key) {
-                if let Some(complete) = notification.complete.take() { let _ = complete.send(settlement.clone()); }
+                if let Some(complete) = notification.complete.take() {
+                    let _ = complete.send(settlement.clone());
+                }
             }
         }
         self.receipts.insert(
@@ -388,16 +432,23 @@ impl SourceReturns {
         Ok(())
     }
     pub(crate) fn close_route(&mut self, route: &str) {
-        self.contexts
-            .retain(|_, context| context.watch_cancelled.is_some() || context.pending.is_some() || context.route.as_ref().is_none_or(|r| r.id != route));
+        self.contexts.retain(|_, context| {
+            context.watch_cancelled.is_some()
+                || context.pending.is_some()
+                || context.route.as_ref().is_none_or(|r| r.id != route)
+        });
     }
     pub(crate) fn prune_unsent(&mut self, calls: &super::calls::Calls) {
         self.contexts
             .retain(|op, c| c.route.is_some() || calls.has_history(op));
     }
     pub(crate) fn expire(&mut self) {
-        self.contexts.retain(|_, c| c.watch_cancelled.is_none_or(|at| at.elapsed() < Duration::from_millis(budget("receiptMs") as u64)));
-        self.notifications.retain(|_, n| n.at.elapsed() < Duration::from_millis(budget("receiptMs") as u64));
+        self.contexts.retain(|_, c| {
+            c.watch_cancelled
+                .is_none_or(|at| at.elapsed() < Duration::from_millis(budget("receiptMs") as u64))
+        });
+        self.notifications
+            .retain(|_, n| n.at.elapsed() < Duration::from_millis(budget("receiptMs") as u64));
         self.receipts
             .retain(|_, r| r.at.elapsed() < Duration::from_millis(budget("receiptMs") as u64));
     }
@@ -447,14 +498,19 @@ struct Delivery {
 }
 #[derive(Default)]
 pub(crate) struct TargetReturns {
+    connection_id: Option<String>,
     contexts: HashMap<String, TargetContext>,
     pending: HashMap<String, Delivery>,
     manager: Option<crate::sidecar::ManagedSidecarManager>,
 }
 impl TargetReturns {
-    pub(crate) fn new(manager: crate::sidecar::ManagedSidecarManager) -> Self {
+    pub(crate) fn new(
+        manager: crate::sidecar::ManagedSidecarManager,
+        connection_id: String,
+    ) -> Self {
         Self {
             manager: Some(manager),
+            connection_id: Some(connection_id),
             contexts: HashMap::new(),
             pending: HashMap::new(),
         }
@@ -527,7 +583,7 @@ impl TargetReturns {
                     target_session: None,
                     target_agent: None,
                     correlation,
-            peer_label: None,
+                    peer_label: None,
                 },
                 target_session: target_session
                     .ok_or_else(|| NetworkError::new("TARGET_SESSION_REQUIRED"))?
@@ -538,7 +594,9 @@ impl TargetReturns {
     }
     /// The return-route owner fences the already-running registration job.
     pub(crate) fn watch_lifetime(&self, op: &str) -> Option<Arc<AtomicBool>> {
-        self.contexts.get(op).filter(|c| matches!(c.intent.correlation, Correlation::Watch(_)))
+        self.contexts
+            .get(op)
+            .filter(|c| matches!(c.intent.correlation, Correlation::Watch(_)))
             .map(|c| c.alive.clone())
     }
     pub(crate) fn enqueue(
@@ -761,6 +819,17 @@ impl TargetReturns {
         self.complete(&ack.op_id, Ok(ack.settlement));
         Ok(route)
     }
+    fn cleanup_reference(
+        &self,
+        op: &str,
+        route: &str,
+    ) -> Option<crate::inbox::types::NetworkReturnReference> {
+        Some(crate::inbox::types::NetworkReturnReference {
+            connection_id: self.connection_id.clone(),
+            op_id: uuid::Uuid::parse_str(op).ok()?,
+            return_route_id: uuid::Uuid::parse_str(route).ok()?,
+        })
+    }
     fn complete(&mut self, op: &str, result: Result<ReturnSettlement, NetworkError>) {
         if let Some(context) = self.contexts.remove(op) {
             context.alive.store(false, Ordering::Release);
@@ -769,14 +838,7 @@ impl TargetReturns {
             {
                 let manager = manager.clone();
                 let target = context.target_session;
-                if let (Ok(op_id), Ok(return_route_id)) = (
-                    uuid::Uuid::parse_str(op),
-                    uuid::Uuid::parse_str(&context.route.id),
-                ) {
-                    let reference = crate::inbox::types::NetworkReturnReference {
-                        op_id,
-                        return_route_id,
-                    };
+                if let Some(reference) = self.cleanup_reference(op, &context.route.id) {
                     tauri::async_runtime::spawn(async move {
                         crate::inbox::watch::remove_network_watch(
                             &manager, &target, &watch_id, &reference,
@@ -882,6 +944,19 @@ mod tests {
     use super::*;
     use myagents_agent_network_protocol::{ConnectionScope, Invocation, Operation, StartParams};
     use serde_json::json;
+    #[test]
+    fn exact_watch_cleanup_reference_stays_with_the_owning_connection() {
+        let mut a = TargetReturns::default();
+        a.connection_id = Some(id(41));
+        let mut b = TargetReturns::default();
+        b.connection_id = Some(id(42));
+        let first = a.cleanup_reference(&id(9), &id(10)).unwrap();
+        let other = b.cleanup_reference(&id(9), &id(10)).unwrap();
+        assert_eq!(first.op_id, other.op_id);
+        assert_eq!(first.return_route_id, other.return_route_id);
+        assert_ne!(first.connection_id, other.connection_id);
+        assert_eq!(serde_json::to_value(first).unwrap()["connectionId"], id(41));
+    }
     fn id(n: u32) -> String {
         format!("00000000-0000-0000-0000-{n:012}")
     }
@@ -961,73 +1036,149 @@ mod tests {
         watch_intent.correlation = Correlation::Watch(id(20));
         r.reserve(&id(21), watch_intent).unwrap();
         let mut watch_route = route();
-        if let ServerMessage::RouteOpened {op_id, return_route_id, ..} = &mut watch_route {
-            *op_id=id(21); *return_route_id=id(22);
+        if let ServerMessage::RouteOpened {
+            op_id,
+            return_route_id,
+            ..
+        } = &mut watch_route
+        {
+            *op_id = id(21);
+            *return_route_id = id(22);
         }
         r.route(&watch_route).unwrap();
-        r.response(&id(21), &Outcome::Watch { result:json!({"watched":true,"delivery":"registered","turnId":"actual-turn"}) }).unwrap();
-        let mut watch=event(); watch.op_id=id(21); watch.return_route_id=id(22);
-        watch.event=json!({"version":1,"type":"watch.completed","eventId":id(23),"watchId":id(20),
+        r.response(
+            &id(21),
+            &Outcome::Watch {
+                result: json!({"watched":true,"delivery":"registered","turnId":"actual-turn"}),
+            },
+        )
+        .unwrap();
+        let mut watch = event();
+        watch.op_id = id(21);
+        watch.return_route_id = id(22);
+        watch.event = json!({"version":1,"type":"watch.completed","eventId":id(23),"watchId":id(20),
             "sourceSessionId":"target-session","sourceLabel":"Target","targetSessionId":"caller-session",
             "createdAt":"2026-10-01T00:00:00Z","latestResult":"same result","turnId":"actual-turn","requestEventIds":[id(10)]});
         watch
     }
     #[tokio::test]
     async fn watch_and_auto_reply_join_one_admission_in_both_orders_and_keep_each_receipt() {
-        for watch_first in [false,true] {
-            let mut r=source(); let watch=add_watch(&mut r); let mut reply=event();
-            reply.event["turnId"]=json!("actual-turn");
-            let (leader,follower)=if watch_first {(&watch,&reply)} else {(&reply,&watch)};
-            assert!(matches!(admit(&mut r,leader).unwrap(),ReturnAdmission::Deliver(_)));
-            let ReturnAdmission::Joined(settlement)=admit(&mut r,follower).unwrap() else {panic!("one Inbox admission")};
-            let leader_id=leader.event["eventId"].as_str().unwrap();
-            r.finish(&leader.op_id,leader_id,ReturnSettlement::Unconfirmed).unwrap();
-            assert!(matches!(settlement.await,ReturnSettlement::Unconfirmed));
-            r.finish(&follower.op_id,follower.event["eventId"].as_str().unwrap(),ReturnSettlement::Unconfirmed).unwrap();
-            assert_eq!(r.receipts.len(),2);
-            assert!(matches!(admit(&mut r,follower).unwrap(),ReturnAdmission::Cached(ReturnSettlement::Unconfirmed)));
+        for watch_first in [false, true] {
+            let mut r = source();
+            let watch = add_watch(&mut r);
+            let mut reply = event();
+            reply.event["turnId"] = json!("actual-turn");
+            let (leader, follower) = if watch_first {
+                (&watch, &reply)
+            } else {
+                (&reply, &watch)
+            };
+            assert!(matches!(
+                admit(&mut r, leader).unwrap(),
+                ReturnAdmission::Deliver(_)
+            ));
+            let ReturnAdmission::Joined(settlement) = admit(&mut r, follower).unwrap() else {
+                panic!("one Inbox admission")
+            };
+            let leader_id = leader.event["eventId"].as_str().unwrap();
+            r.finish(&leader.op_id, leader_id, ReturnSettlement::Unconfirmed)
+                .unwrap();
+            assert!(matches!(settlement.await, ReturnSettlement::Unconfirmed));
+            r.finish(
+                &follower.op_id,
+                follower.event["eventId"].as_str().unwrap(),
+                ReturnSettlement::Unconfirmed,
+            )
+            .unwrap();
+            assert_eq!(r.receipts.len(), 2);
+            assert!(matches!(
+                admit(&mut r, follower).unwrap(),
+                ReturnAdmission::Cached(ReturnSettlement::Unconfirmed)
+            ));
         }
     }
     #[test]
     fn registration_pending_watch_cancels_and_drops_an_authenticated_late_return() {
-        let mut r=source(); let watch=add_watch(&mut r);
-        r.contexts.get_mut(&watch.op_id).unwrap().turn_id=None; // target registered, receipt still in flight
-        let (result,routes)=r.watches("caller-session",Some(&id(20)),false);
-        assert_eq!(routes,vec![id(22)]);
-        assert_eq!(result["watches"][0]["cancelled"],true);
-        assert_eq!(result["watches"][0]["registrationPending"],true);
-        assert!(r.watches("caller-session",None,false).0["watches"].as_array().unwrap().is_empty());
+        let mut r = source();
+        let watch = add_watch(&mut r);
+        r.contexts.get_mut(&watch.op_id).unwrap().turn_id = None; // target registered, receipt still in flight
+        let (result, routes) = r.watches("caller-session", Some(&id(20)), false);
+        assert_eq!(routes, vec![id(22)]);
+        assert_eq!(result["watches"][0]["cancelled"], true);
+        assert_eq!(result["watches"][0]["registrationPending"], true);
+        assert!(r.watches("caller-session", None, false).0["watches"]
+            .as_array()
+            .unwrap()
+            .is_empty());
         r.close_route(&id(22));
-        r.response(&watch.op_id,&Outcome::Watch {result:json!({"watched":true,"delivery":"registered","turnId":"actual-turn"})}).unwrap();
-        assert!(matches!(admit(&mut r,&watch).unwrap(),ReturnAdmission::Cached(ReturnSettlement::Dropped)));
-        assert!(matches!(admit(&mut r,&watch).unwrap(),ReturnAdmission::Cached(ReturnSettlement::Dropped)));
+        r.response(
+            &watch.op_id,
+            &Outcome::Watch {
+                result: json!({"watched":true,"delivery":"registered","turnId":"actual-turn"}),
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            admit(&mut r, &watch).unwrap(),
+            ReturnAdmission::Cached(ReturnSettlement::Dropped)
+        ));
+        assert!(matches!(
+            admit(&mut r, &watch).unwrap(),
+            ReturnAdmission::Cached(ReturnSettlement::Dropped)
+        ));
         assert!(r.contexts.contains_key(&id(9))); // automatic reply remains independent
     }
 
     #[test]
     fn identical_text_cannot_merge_another_request_or_turn_and_cancellation_is_scoped() {
-        let mut r=source(); let mut watch=add_watch(&mut r); let mut reply=event();
-        reply.event["turnId"]=json!("actual-turn");
-        assert!(matches!(admit(&mut r,&reply).unwrap(),ReturnAdmission::Deliver(_)));
-        watch.event["requestEventIds"]=json!([id(99)]);
-        assert!(matches!(admit(&mut r,&watch).unwrap(),ReturnAdmission::Deliver(_)));
-        let (_,routes)=r.watches("caller-session",None,true);
+        let mut r = source();
+        let mut watch = add_watch(&mut r);
+        let mut reply = event();
+        reply.event["turnId"] = json!("actual-turn");
+        assert!(matches!(
+            admit(&mut r, &reply).unwrap(),
+            ReturnAdmission::Deliver(_)
+        ));
+        watch.event["requestEventIds"] = json!([id(99)]);
+        assert!(matches!(
+            admit(&mut r, &watch).unwrap(),
+            ReturnAdmission::Deliver(_)
+        ));
+        let (_, routes) = r.watches("caller-session", None, true);
         assert!(routes.is_empty()); // pending admissions cannot be retracted
-        assert_eq!(r.contexts.len(),2);
-        let mut r=source(); let mut watch=add_watch(&mut r);
-        watch.event["turnId"]=json!("another-turn");
-        assert!(matches!(admit(&mut r,&reply).unwrap(),ReturnAdmission::Deliver(_)));
-        assert!(matches!(admit(&mut r,&watch).unwrap(),ReturnAdmission::Deliver(_)));
-        let mut r=source(); add_watch(&mut r);
-        assert!(r.watches("other-session",None,true).1.is_empty());
-        assert_eq!(r.watches("caller-session",Some(&id(20)),false).1,vec![id(22)]);
-        assert_eq!(r.contexts.values().filter(|c| c.watch_cancelled.is_none()).count(),1); // automatic reply survives cancel-all
+        assert_eq!(r.contexts.len(), 2);
+        let mut r = source();
+        let mut watch = add_watch(&mut r);
+        watch.event["turnId"] = json!("another-turn");
+        assert!(matches!(
+            admit(&mut r, &reply).unwrap(),
+            ReturnAdmission::Deliver(_)
+        ));
+        assert!(matches!(
+            admit(&mut r, &watch).unwrap(),
+            ReturnAdmission::Deliver(_)
+        ));
+        let mut r = source();
+        add_watch(&mut r);
+        assert!(r.watches("other-session", None, true).1.is_empty());
+        assert_eq!(
+            r.watches("caller-session", Some(&id(20)), false).1,
+            vec![id(22)]
+        );
+        assert_eq!(
+            r.contexts
+                .values()
+                .filter(|c| c.watch_cancelled.is_none())
+                .count(),
+            1
+        ); // automatic reply survives cancel-all
     }
     #[test]
     fn equivalent_watch_receipt_retires_only_the_duplicate_route() {
-        let mut r=source(); add_watch(&mut r);
+        let mut r = source();
+        add_watch(&mut r);
         r.response(&id(21),&Outcome::Watch {result:json!({"watched":true,"delivery":"registered","coalesced":true,"watchId":id(30)})}).unwrap();
-        assert_eq!(r.contexts.len(),1);
+        assert_eq!(r.contexts.len(), 1);
         assert!(r.contexts.contains_key(&id(9)));
     }
     #[test]
@@ -1182,6 +1333,7 @@ mod tests {
             Callback {
                 target_session: "target-session".into(),
                 reference: crate::inbox::types::NetworkReturnReference {
+                    connection_id: None,
                     op_id: uuid::Uuid::parse_str(&id(9)).unwrap(),
                     return_route_id: uuid::Uuid::parse_str(&id(8)).unwrap(),
                 },
@@ -1263,12 +1415,14 @@ mod tests {
     }
     #[test]
     fn watch_route_close_and_drop_fence_in_flight_registration() {
-        for close in [false,true] {
-            let mut r=target();
-            r.contexts.get_mut(&id(9)).unwrap().intent.correlation=Correlation::Watch(id(20));
-            let alive=r.watch_lifetime(&id(9)).unwrap();
+        for close in [false, true] {
+            let mut r = target();
+            r.contexts.get_mut(&id(9)).unwrap().intent.correlation = Correlation::Watch(id(20));
+            let alive = r.watch_lifetime(&id(9)).unwrap();
             assert!(alive.load(Ordering::Acquire));
-            if close { r.close_route(&id(8)); }
+            if close {
+                r.close_route(&id(8));
+            }
             drop(r);
             assert!(!alive.load(Ordering::Acquire));
         }

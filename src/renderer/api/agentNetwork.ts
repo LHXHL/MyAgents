@@ -26,6 +26,7 @@ export interface NetworkSnapshot {
   error: NetworkFailure | null;
   revision: number;
   authGeneration: number;
+  connectionId?: string;
   /** Current connection's read-only network display name (older hosts omit it). */
   deviceName?: string | null;
 }
@@ -74,14 +75,19 @@ export type NetworkRequest =
       expectedDescriptionRevision: number;
     }
   | { kind: "receipt"; mutationId: string };
-export function networkSnapshot(): Promise<NetworkSnapshot> {
-  return invoke("cmd_agent_network_snapshot");
+export function networkSnapshot(
+  connectionId = "official",
+): Promise<NetworkSnapshot> {
+  return invoke("cmd_agent_network_snapshot", { connectionId });
 }
 const directoryReads = new Map<string, Promise<unknown>>();
-let readScope = "";
+const readScopes = new Map<string, string>();
 /** In-flight reuse only; no response or permission cache. A newly observed
  * revision/account/connection and every write fence the previous requests. */
 export function setNetworkReadScope(snapshot: NetworkSnapshot | null): void {
+  if (snapshot === null) readScopes.clear();
+  const connectionId = snapshot?.connectionId ?? "official";
+  const readScope = readScopes.get(connectionId) ?? "";
   const next =
     snapshot === null
       ? ""
@@ -93,19 +99,26 @@ export function setNetworkReadScope(snapshot: NetworkSnapshot | null): void {
           snapshot.state,
         ]);
   if (next !== readScope || snapshot === null) {
-    readScope = next;
+    readScopes.set(connectionId, next);
     directoryReads.clear();
   }
 }
-function requestOnce(request: NetworkRequest): Promise<unknown> {
+function requestOnce(
+  request: NetworkRequest,
+  connectionId: string,
+): Promise<unknown> {
   if (!["network", "devices", "agents", "callable"].includes(request.kind)) {
     if (request.kind !== "receipt") directoryReads.clear();
-    return invoke("cmd_agent_network_request", { request });
+    return invoke("cmd_agent_network_request", { request, connectionId });
   }
-  const key = JSON.stringify([readScope, request]);
+  const key = JSON.stringify([
+    connectionId,
+    readScopes.get(connectionId),
+    request,
+  ]);
   let pending = directoryReads.get(key);
   if (!pending) {
-    pending = invoke("cmd_agent_network_request", { request });
+    pending = invoke("cmd_agent_network_request", { request, connectionId });
     directoryReads.set(key, pending);
     const current = pending;
     const release = () => {
@@ -118,9 +131,10 @@ function requestOnce(request: NetworkRequest): Promise<unknown> {
 }
 export async function networkRequest(
   request: NetworkRequest,
+  connectionId = "official",
 ): Promise<unknown> {
   try {
-    return await requestOnce(request);
+    return await requestOnce(request, connectionId);
   } catch (error) {
     // Rechecking a mutation receipt is a read, never a second mutation.
     if (
@@ -136,6 +150,7 @@ export async function networkRequest(
       try {
         return await invoke("cmd_agent_network_request", {
           request: { kind: "receipt", mutationId: request.mutationId },
+          connectionId,
         });
       } catch {
         throw error;
@@ -149,7 +164,7 @@ export async function networkRequest(
       directoryReads.clear();
   }
 }
-export async function allNetworkDevices(): Promise<{
+export async function allNetworkDevices(connectionId = "official"): Promise<{
   items: NetworkDevice[];
   complete: boolean;
 }> {
@@ -158,11 +173,14 @@ export async function allNetworkDevices(): Promise<{
   const seen = new Set<string>();
   for (;;) {
     const page = metadataSchemas.devices.parse(
-      await networkRequest({
-        kind: "devices",
-        cursor,
-        limit: NETWORK_BUDGETS.pageMax,
-      }),
+      await networkRequest(
+        {
+          kind: "devices",
+          cursor,
+          limit: NETWORK_BUDGETS.pageMax,
+        },
+        connectionId,
+      ),
     );
     for (const device of page.items) {
       if (seen.has(device.deviceId)) throw new Error("NETWORK_PAGE_INVALID");
@@ -179,18 +197,22 @@ export async function allNetworkDevices(): Promise<{
 }
 export async function allDeviceAgents(
   deviceId: string,
+  connectionId = "official",
 ): Promise<{ items: NetworkAgent[]; complete: boolean }> {
   const items: NetworkAgent[] = [];
   let cursor: string | null = null;
   const seen = new Set<string>();
   for (;;) {
     const page = metadataSchemas.agents.parse(
-      await networkRequest({
-        kind: "agents",
-        deviceId,
-        cursor,
-        limit: NETWORK_BUDGETS.pageMax,
-      }),
+      await networkRequest(
+        {
+          kind: "agents",
+          deviceId,
+          cursor,
+          limit: NETWORK_BUDGETS.pageMax,
+        },
+        connectionId,
+      ),
     );
     for (const agent of page.items) {
       if (seen.has(agent.mountId)) throw new Error("NETWORK_PAGE_INVALID");
@@ -221,6 +243,18 @@ export function networkErrorKey(
     ].includes(code)
   )
     return "conflict";
+  if (code === "NETWORK_URL_INVALID") return "urlInvalid";
+  if (/^ENROLLMENT_KEY_|^KEY_(EXPIRED|REVOKED|BOUND)/.test(code))
+    return "keyInvalid";
+  if (code === "NETWORK_TRUST_CHANGED") return "trustChanged";
+  if (code === "NETWORK_REMOVAL_UNCONFIRMED") return "removalPending";
+  if (code === "NETWORK_PRIVATE_KEY_MISSING" || code === "DEVICE_REVOKED")
+    return "privateKeyMissing";
+  if (
+    code === "NETWORK_PROTOCOL_UNSUPPORTED" ||
+    code === "NETWORK_DESCRIPTOR_INVALID"
+  )
+    return "protocolUnsupported";
   if (code === "DESCRIPTION_TOO_LARGE") return "descriptionTooLong";
   if (
     operation === "mutation" &&
@@ -234,3 +268,31 @@ export function networkErrorKey(
   if (code === "NETWORK_SERVICE_UNCONFIGURED") return "unconfigured";
   return "failed";
 }
+
+export interface NetworkConnection {
+  id: string;
+  name: string;
+  official: boolean;
+  url: string | null;
+  removing: boolean;
+  snapshot: NetworkSnapshot;
+}
+export interface NetworkRegistry {
+  revision?: number;
+  selected: string;
+  connections: NetworkConnection[];
+}
+export const networkConnections = (): Promise<NetworkRegistry> =>
+  invoke("cmd_agent_network_connections");
+export const selectNetworkConnection = (
+  connectionId: string,
+): Promise<NetworkRegistry> =>
+  invoke("cmd_agent_network_select", { connectionId });
+export const joinNetworkConnection = (
+  url: string,
+  key: string,
+): Promise<NetworkRegistry> => invoke("cmd_agent_network_join", { url, key });
+export const removeNetworkConnection = (
+  connectionId: string,
+): Promise<NetworkRegistry> =>
+  invoke("cmd_agent_network_remove", { connectionId });

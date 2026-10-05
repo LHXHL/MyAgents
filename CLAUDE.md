@@ -35,7 +35,7 @@
 | `src-tauri/` | Tauri v2 Rust 壳、进程与持久化 owner、HTTP/SSE 代理 |
 | `src-tauri/document-worker/` | 独立 Rust 文档转换 Worker；单 job 计算，不拥有队列或持久化 |
 | `src-tauri/media-worker/`、`src-tauri/media-worker-protocol/` | 独立 Rust 音频推理 Worker 与共享 wire protocol；单 workload / generation 计算，不拥有队列或持久化 |
-| `src-tauri/src/agent_network/`、`src/server/agent-network/` | 跨设备 Agent 网络客户端：Rust App 持有设备身份、连接与 TLS，Node 侧只适配进既有 Inbox / SessionEngine；云端中转属于独立仓库 `MyAgents_AgentNet` |
+| `src-tauri/src/agent_network/`、`src/server/agent-network/` | 跨设备 Agent 网络客户端：Rust App 持有设备身份、连接与 TLS，Node 侧只适配进既有 Inbox / SessionEngine；公共中转/自部署属于 `MyAgents-Agenthub`，官方组合属于私有 `MyAgents_AgentNet` |
 | `vendor/agent-network-protocol/`、`src-tauri/agent-network-protocol/` | 固定版本的 Agent 网络协议包及其 Rust 投影；协议源码不在本仓库，只能按 `agent_network.md` 更新 vendored 包 |
 | `bundled-agents/myagents_helper/` | 内置 MA 小助理 |
 | `bundled-workspaces/` | 随 App 发布的只读工作区模板源码；复制出的用户工作区不由此目录升级覆盖 |

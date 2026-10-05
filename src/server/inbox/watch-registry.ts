@@ -40,7 +40,8 @@ export function ackPendingSessionWatch(watchId: string): void {
 export function removeNetworkSessionWatch(watchId: string, reference: NetworkReturnReference): boolean {
   const watch = pendingWatches.get(watchId);
   if (watch?.networkReturn?.opId !== reference.opId
-    || watch.networkReturn.returnRouteId !== reference.returnRouteId) return false;
+    || watch.networkReturn.returnRouteId !== reference.returnRouteId
+    || watch.networkReturn.connectionId !== reference.connectionId) return false;
   return pendingWatches.delete(watchId);
 }
 

@@ -2,7 +2,7 @@
   "name": "myagents",
   "description": "MyAgents - Desktop Claude Code for everyone. AI-powered productivity, not just for developers.",
   "type": "module",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "license": "AGPL-3.0-only",
   "engines": {
     "node": ">=24.14.0",
@@ -124,7 +124,7 @@
     "@lezer/highlight": "^1.2.3",
     "@lezer/markdown": "^1.7.2",
     "@monaco-editor/react": "^4.7.0",
-    "@myagents/agent-network-protocol": "file:vendor/agent-network-protocol/myagents-agent-network-protocol-1.0.0-ca7126785fe2509f.tgz",
+    "@myagents/agent-network-protocol": "file:vendor/agent-network-protocol/myagents-agent-network-protocol-1.1.0-445fb9d0e1e1e9f8.tgz",
     "@playwright/mcp": "0.0.68",
     "@tauri-apps/api": "~2.11",
     "@tauri-apps/plugin-autostart": "^2.5.1",

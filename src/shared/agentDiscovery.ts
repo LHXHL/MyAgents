@@ -14,6 +14,8 @@ export const mentionAgentSchema = z.strictObject({
   deviceName: z.string().max(4096).nullable(),
   platform: z.string().max(256).nullable(),
   description: z.string().max(4096).nullable(),
+  networkName: z.string().max(512).nullable().optional(),
+  connectionId: z.string().max(256).optional(),
   source: z
     .strictObject({
       serviceId: z.string().regex(CANONICAL_UUID),
@@ -22,7 +24,30 @@ export const mentionAgentSchema = z.strictObject({
     .nullable(),
 });
 export type MentionAgentInfo = z.infer<typeof mentionAgentSchema>;
+export const discoveryContextSchema = z.strictObject({
+  authGeneration: z.number().int().nonnegative(),
+  principalId: z.string().max(256).nullable(),
+  networkId: z.string().max(256).nullable(),
+});
+export const discoveryNetworkSchema = z.strictObject({
+  connectionId: z.string().max(256),
+  networkName: z.string().max(512),
+  complete: z.boolean(),
+  networkStatus: z.string().max(64),
+  context: discoveryContextSchema
+    .extend({
+      deviceId: z.string(),
+      deviceName: z.string().nullable(),
+      platform: z.string(),
+    })
+    .nullable(),
+  error: z
+    .object({ code: z.string(), retryable: z.boolean() })
+    .passthrough()
+    .optional(),
+});
 export const agentDiscoverySchema = z.strictObject({
+  networks: z.array(discoveryNetworkSchema).optional(),
   items: z.array(mentionAgentSchema).max(NETWORK_BUDGETS.catalogItems),
   complete: z.boolean(),
   networkStatus: z.enum([
@@ -50,7 +75,7 @@ export function filterMentionAgents(
     .filter(
       (item) =>
         !query ||
-        [item.name, item.deviceName, item.description].some(
+        [item.name, item.deviceName, item.networkName, item.description].some(
           (text) => text && key(text).includes(query),
         ),
     )
@@ -82,4 +107,18 @@ export function validateMentionAgent(input: unknown): MentionAgentInfo {
       throw new Error("AGENT_SCOPE_INVALID");
   }
   return item;
+}
+
+/** A saved mention is bound to its issuing network, independent of page selection. */
+export function discoveryContext(
+  discovery: AgentDiscovery,
+  agent: MentionAgentInfo,
+) {
+  if (!agent.isLocal && agent.connectionId && discovery.networks) {
+    return (
+      discovery.networks.find((n) => n.connectionId === agent.connectionId)
+        ?.context ?? null
+    );
+  }
+  return discovery;
 }

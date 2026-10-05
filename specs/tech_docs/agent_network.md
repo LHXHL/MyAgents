@@ -1,6 +1,6 @@
 # Agent 网络
 
-客户端实现位于 `src-tauri/src/agent_network/`、`src/server/agent-network/` 和 `src/renderer/features/agent-network/`。云端代码属于独立的私有仓库 `hAcKlyc/MyAgents_AgentNet`；账号扩展属于 `MyAgents_space`。本文件说明当前代码边界，不代表云端已部署或跨设备验收已完成。
+客户端实现位于 `src-tauri/src/agent_network/`、`src/server/agent-network/` 和 `src/renderer/features/agent-network/`。通用云端核心、协议源码及自部署属于 `hAcKlyc/MyAgents-Agenthub`（Apache-2.0）；官方部署由私有 `hAcKlyc/MyAgents_AgentNet` 固定产物组合，官方账号扩展仍属于 `MyAgents_space`。本文件说明当前代码边界，不代表云端已部署或跨设备验收已完成。
 
 ## Owner 与状态
 
@@ -10,7 +10,7 @@
 | 稳定设备 ID、OS/默认主机名称                             | 原 `device_identity`                                                   |
 | 用户指定的网络设备显示名称                               | 既有网络 SQLite DO 的设备记录；Rust 当前连接只读投影                  |
 | 工作区与 Agent 的本地身份、路径、生命周期                | `resolvePersistedAgentWorkspaceRegistry`；不得用网络设置反向创建工作区 |
-| 私钥、设备 WSS、内层 TLS、连接 epoch、传输分配           | App 级 `AgentNetwork`，不归 Tab 或 Session                             |
+| 私钥、设备 WSS、内层 TLS、连接 epoch、传输分配           | Rust App `NetworkRegistry` / 各连接 `AgentNetwork`，不归 Tab 或 Session                             |
 | 网络 membership、Agent enabled/description、CAS revision | 同网络 SQLite Durable Object                                           |
 | Session 出生、接纳、queue、历史和 terminal               | 原 Inbox、SessionStore、SidecarManager 与 SessionEngine                |
 | 页面与 @ 草稿                                            | Renderer 投影；不持有云凭据、私钥或可执行许可                          |
@@ -20,6 +20,20 @@
 设备卡片与详情菜单共用「设备重命名」。同账号任意设备可修改任意在线、离线或未入网设备的网络名称；默认沿原账号 roster 的系统主机名，用户昵称在原设备记录 `customName` 持久化，roster 更新不覆盖它。列表、可调用目录和 resolve 共用同一显示名投影；昵称不影响设备/Agent/Session selector、membership/enable revision 或已有路由权限。名称为首尾空白裁剪后的单行文本，最长 160 UTF-16 单元；TS schema、Rust 校验与共享 fixture 保持一致。
 
 改名沿原 metadata request / Rust proxy / DO mutation receipt 事务执行，按用户观察到的 `expectedName` 比较并发状态；冲突保留输入，查看最新名称后显式重试。不确定写仅查询原 receipt，不自动重放。保存沿原 `settings` invalidation 唤醒连接端读取；本机 `policy::hydrate` 从原设备列表把名称放入当前连接 snapshot，供快速本地 discovery 使用，无新增本地持久化、轮询或名称 authority。登出/断线/电源 boundary 清除连接名称；下一次连接重新读取。历史消息和已存引用快照不重写。
+
+## 多网络连接与自部署身份
+
+`registry.rs` 是 App 连接 owner：官方入口恒在，自部署连接/查看选择写入原 `config.json` 的 `agentNetworkConnections` / `agentNetworkSelectedConnection`，锁内重新读盘合并。所有已加入网络同时维持连接；标题下拉只选择展示。`account.rs` 分流原官方登录 adapter 与自部署 pinned descriptor，不改变 Space 登录/成员关系。每个自部署实例是一共同信任域；同一本地 Agent 与 Session/history 跨网络保持原实体，只逐网络配置开放。
+
+加入时读取 HTTPS origin 的 descriptor，校验并固定 service/environment/principal/network/root/JWKS；身份兑换与 bootstrap 也必须匹配该信任。重定向不携带密钥，实例/信任变化明确拒绝。设备 key 只参与首次登记，不写 config、不保存在 Node/Renderer；私钥沿原 OS KeyScope 存储。已有活跃身份不能凭新 key 覆盖；被管理员撤销后可用新 key 递增设备代次重入。丢私钥须先撤销；官方凭据行为保留。
+
+移除先持久化 `removing` 并停止该 actor，通过原私钥证明撤销/受限结果查询。未知保留人工重试且重启不连接。确认撤销后先把非秘密 `revokedScope` 保存进同一连接状态，再删 OS 凭据与连接配置；本地清理失败可继续，删除凭据后不再依赖远端证明。没有后台撤销队列。移除恢复使用同一连接记录的 `revokedScope`（已确认撤销的 generation）和 `reenrolling` 阶段；重新登记前先持久化该阶段。新 generation 已提交而 ACK/配置写入失败时，重试加入仅凭新 generation 私钥证明恢复；重试移除必须重新核实并撤销当前 generation，不能把旧 generation 的 checkpoint 当成整体已撤销。未尝试重新登记的已确认移除仍可离线重试本地清理。已接纳的本地执行与其他连接独立。
+
+Registry 的递增 revision 隔离迟到拓扑/选择投影；每连接 snapshot 的 authGeneration/revision 隔离页面设置、目录读和草稿。替换同一连接 actor 从更高代次开始，旧交接 guard 不会命中新连接。连接共用 MemoryBudget 和一个 App 电源 monitor；官方登出只打断官方，睡眠唤醒通知所有连接。
+
+@ 与 `agent list` 并行发现所有活跃网络，返回 `networks[]` 的各自 context/完整性，以及带 `connectionId` / `networkName` 的候选。健康结果保留；本地 alias 只按真实本机/localAgentId 折叠，远端不同网络 selector 不合并。查询快照按其所属网络检查，不按当前页面选择。`agent list --network NAME_OR_CONNECTION_ID` 筛选；`agent network-diagnose` 逐网络报告，分页 cursor 须同时指定 `--network`。完整 selector 决定 source routing，失败无跨网 fallback。
+
+本地返回引用在原 opId/returnRouteId 上附带可选 `connectionId`；旧缺省仅指官方，新网络必须带自己的连接。Node watch registry 的关联比较含该字段，Rust 回程进入准确 actor；watch 取消使用读取时的 generation，避免迟到取消命中新权限。
 
 ## 调用与回程
 
@@ -51,7 +65,7 @@ Rust App 在本机生成 P-256 身份密钥，以 ECDSA/SHA-256 签名证明持�
 
 ### 端到端通道与消息路径
 
-端到端加密（E2EE）的端点是两台设备的 Rust App。内层由 `rustls` 的 `ring` provider 实现标准 TLS 1.3 双向证书认证，验证证书链、有效期及双方当前 Space signed binding、SAN 与 fingerprint；禁用 0-RTT 和会话恢复。
+端到端加密（E2EE）的端点是两台设备的 Rust App。内层由 `rustls` 的 `ring` provider 实现标准 TLS 1.3 双向证书认证，验证证书链、有效期及双方当前网络签发的 signed binding、SAN 与 fingerprint；禁用 0-RTT 和会话恢复。
 
 长期身份私钥用于签名认证；每条内层连接另以临时 ECDHE 协商共同秘密，经 HKDF（SHA-256/SHA-384）派生两个方向的通信密钥。当前默认密钥交换组优先 X25519，也支持 P-256/P-384；正文以协商出的 AES-256-GCM、AES-128-GCM 或 ChaCha20-Poly1305 加密并校验完整性。临时秘密和通信密钥安全销毁后，长期身份私钥的事后泄露不能解密此前记录的通信（前向保密）。
 
@@ -61,7 +75,7 @@ Rust App 在本机生成 P-256 身份密钥，以 ECDSA/SHA-256 签名证明持�
 
 设备目录、设置和有界路由元数据不要求 E2EE，云端可见设备/通道关系及流量大小、时间；完整 invocation、response、event/history 才属于内层加密范围。Worker 不组装或保存业务正文、密文和离线消息。该保护覆盖设备间传输，不代替端点本机存储或端点调用模型 Provider 时的安全边界。
 
-设备身份信任 Space 的证书与签名绑定体系。签发密钥不能直接解密既有通信，但签发体系若被控制，可通过伪造设备身份攻击后续连接；当前没有独立于 Space 的人工对端指纹确认。实现入口见 [identity.rs](../../src-tauri/src/agent_network/identity.rs)、[crypto.rs](../../src-tauri/src/agent_network/crypto.rs)、[channel.rs](../../src-tauri/src/agent_network/channel.rs)。
+官方设备身份信任 Space；自部署身份信任加入时固定的实例证书与签名体系。签发密钥不能直接解密既有通信，但签发体系若被控制，可通过伪造设备身份攻击后续连接；当前没有独立于 Space 的人工对端指纹确认。实现入口见 [identity.rs](../../src-tauri/src/agent_network/identity.rs)、[crypto.rs](../../src-tauri/src/agent_network/crypto.rs)、[channel.rs](../../src-tauri/src/agent_network/channel.rs)。
 
 ### 协议与资源
 
@@ -91,19 +105,19 @@ Renderer 只合并同一账号/连接投影 revision 下完全相同的在途目
 
 ### 源码与消费入口
 
-- 唯一可编辑源码 authority 是 `MyAgents_AgentNet/packages/agent-network-protocol/`。客户端没有该源码目录；协议更改必须回到 AgentNet，再更新固定产物，不能手工修改包内 Schema。
+- 唯一可编辑源码 authority 是 `MyAgents-Agenthub/packages/agent-network-protocol/`。客户端没有该源码目录；协议更改必须回到 Agenthub，再更新固定产物，不能手工修改包内 Schema。
 - 客户端提交 `vendor/agent-network-protocol/manifest.json` 和带摘要前缀的 `.tgz`；根依赖及锁文件固定引用此文件。清单记录包版本、SHA-256、源码 authority、许可及来源服务端提交。客户端产品版本不等于协议包版本。
 - `scripts/verify-agent-network-protocol.mjs` 在安装后、类型检查、Web/Node bundle 构建前检查摘要和依赖/锁文件指向。损坏或错配直接失败，修复所提交的产物或引用，不从服务端下载源码回退。
 - Rust 的 `src-tauri/agent-network-protocol/` 是本机类型/codec 适配层；其 `build.rs` 独立校验同一压缩包，将其中平面 JSON Schema 与 fixtures 写到 `OUT_DIR`，不需要 Node、私有仓库权限或已安装 npm 包。产物改变时 Cargo 重新生成，并清理旧投影避免缺失文件被旧缓存掩盖。Rust 类型与 TS 契约通过包内 fixtures 校验，不另写 JSON Schema。
-- AgentNet 自身也使用固定产物，并在 `protocol:source` 中生成临时 npm pack 核对源码与所提交的包完全一致。固定产物是单一源码的分发结果，不是另一份可独立维护的契约。
+- Agenthub 源码仓库在 `protocol:source` 中生成临时 npm pack 核对源码与所提交的包完全一致。固定产物是单一源码的分发结果，不是另一份可独立维护的契约。
 
 ### 更新流程
 
-1. 在 AgentNet 修改源码、生成 Schema、完成类型/fixture 检查，打包并更新该仓库的产物、来源清单和依赖/锁文件；完成检查、审查并提交。
-2. 从已提交的 AgentNet 来源导入同一包到客户端 `vendor/agent-network-protocol/`，记录对应服务端源码提交，更新根依赖与锁文件；不修改包内定义或提交构建投影目录。
+1. 在 Agenthub 修改源码、生成 Schema、完成类型/fixture 检查，打包并更新该仓库的产物、来源清单和依赖/锁文件；完成检查、审查并提交。
+2. 从已提交的 Agenthub 来源导入同一包到客户端 `vendor/agent-network-protocol/`，记录对应服务端源码提交，更新根依赖与锁文件；不修改包内定义或提交构建投影目录。
 3. 运行客户端产物校验、TS/Rust parity、受影响业务测试和构建，并运行服务端 source/artifact 校验。根据真实协议兼容责任决定部署顺序，不随客户端版本机械升级、不自动重发不确定调用。
 
-具体打包和导入命令由 AgentNet 的 `specs/PROTOCOL.md` 维护；普通构建不执行跨仓库打包或拉取源码。包随公开客户端提交，使新的贡献者无需私有 AgentNet 权限即可构建。源码迁移不代表自部署认证、多网络 UI 或完整产品验收已经完成。
+具体打包和导入命令由 Agenthub 的 `specs/PROTOCOL.md` 维护；普通构建不执行跨仓库打包或拉取源码。包随公开客户端提交，使新的贡献者无需私有 AgentNet 权限即可构建。源码迁移不代表自部署认证、多网络 UI 或完整产品验收已经完成。
 
 ## Dev 环境
 

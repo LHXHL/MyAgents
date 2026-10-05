@@ -135,3 +135,61 @@ describe("desktop query owner preparation", () => {
     expect(mocks.discovery).not.toHaveBeenCalled();
   });
 });
+
+it("binds saved and refreshed mention annotations to their own network while official scope changes", async () => {
+  const scoped = {
+    ...snapshot,
+    agent: { ...snapshot.agent, connectionId: "self-a", networkName: "Team A" },
+  };
+  const self = {
+    connectionId: "self-a",
+    networkName: "Team A",
+    complete: false,
+    networkStatus: "error",
+    context: {
+      authGeneration: 4,
+      principalId: "user",
+      networkId: id(2),
+      deviceId: id(9),
+      deviceName: "Mac",
+      platform: "macos",
+    },
+  };
+  mocks.discovery.mockResolvedValue({
+    ...discovery([]),
+    authGeneration: 20,
+    principalId: null,
+    networkId: null,
+    networks: [self],
+  });
+  const saved = await prepareDesktopQuery({
+    ...request,
+    agentMentions: [scoped],
+  });
+  expect(saved.needsReselect).toBe(false);
+  expect(saved.request.desktopQuery?.agentMentions?.[0]).toMatchObject({
+    authGeneration: 4,
+    principalId: "user",
+    networkId: id(2),
+  });
+  mocks.discovery.mockResolvedValue({
+    ...discovery([scoped.agent]),
+    authGeneration: 20,
+    principalId: null,
+    networkId: null,
+    networks: [{ ...self, complete: true, networkStatus: "ready" }],
+  });
+  const fresh = await prepareDesktopQuery({
+    ...request,
+    agentMentions: undefined,
+  });
+  expect(fresh.request.desktopQuery?.agentMentions?.[0].authGeneration).toBe(4);
+  mocks.discovery.mockResolvedValue({
+    ...discovery([]),
+    networks: [{ ...self, context: { ...self.context, authGeneration: 5 } }],
+  });
+  expect(
+    (await prepareDesktopQuery({ ...request, agentMentions: [scoped] }))
+      .needsReselect,
+  ).toBe(true);
+});

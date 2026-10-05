@@ -8,6 +8,7 @@ import {
 import {
   agentDiscoverySchema,
   validateMentionAgent,
+  discoveryContext,
 } from "../../shared/agentDiscovery";
 import type { DesktopMessageRequest } from "./types";
 
@@ -63,14 +64,16 @@ export async function prepareDesktopQuery(
       continue;
     }
     const snapshot = saved.get(selector);
+    const scope =
+      snapshot && current ? discoveryContext(current, snapshot.agent) : null;
     if (
       snapshot &&
       !snapshot.agent.isLocal &&
-      current &&
-      snapshot.authGeneration === current.authGeneration &&
-      snapshot.principalId === current.principalId &&
-      snapshot.networkId === current.networkId &&
-      snapshot.agent.source?.networkId === current.networkId
+      scope &&
+      snapshot.authGeneration === scope.authGeneration &&
+      snapshot.principalId === scope.principalId &&
+      snapshot.networkId === scope.networkId &&
+      snapshot.agent.source?.networkId === scope.networkId
     ) {
       mentions.push({
         agent: validateMentionAgent(snapshot.agent),
@@ -85,12 +88,15 @@ export async function prepareDesktopQuery(
       ...request,
       desktopQuery: {
         visibleText: request.text,
-        agentMentions: mentions.map(({ agent }) => ({
-          agent,
-          authGeneration: current!.authGeneration,
-          principalId: current!.principalId,
-          networkId: current!.networkId,
-        })),
+        agentMentions: mentions.map(({ agent }) => {
+          const scope = discoveryContext(current!, agent)!;
+          return {
+            agent,
+            authGeneration: scope.authGeneration,
+            principalId: scope.principalId,
+            networkId: scope.networkId,
+          };
+        }),
         primaryContext: request.queryPrimaryContext,
       },
       text: composeQueryReminder({

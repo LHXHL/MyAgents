@@ -75,11 +75,22 @@ impl MetadataRequest {
                 cursor: cursor.as_deref(),
                 limit: *limit,
             },
-            Self::DeviceName { network_id, device_id } => NetworkRoute::DeviceName {
-                network_id, device_id, write: false,
+            Self::DeviceName {
+                network_id,
+                device_id,
+            } => NetworkRoute::DeviceName {
+                network_id,
+                device_id,
+                write: false,
             },
-            Self::RenameDevice { network_id, device_id, .. } => NetworkRoute::DeviceName {
-                network_id, device_id, write: true,
+            Self::RenameDevice {
+                network_id,
+                device_id,
+                ..
+            } => NetworkRoute::DeviceName {
+                network_id,
+                device_id,
+                write: true,
             },
             Self::Agents {
                 device_id,
@@ -127,7 +138,12 @@ impl MetadataRequest {
     }
     pub(crate) fn body(&self) -> Result<Option<Value>, NetworkError> {
         let value = match self {
-            Self::RenameDevice { name, expected_name, mutation_id, .. } => Some(json!({
+            Self::RenameDevice {
+                name,
+                expected_name,
+                mutation_id,
+                ..
+            } => Some(json!({
                 "name": name, "expectedName": expected_name, "mutationId": mutation_id,
             })),
             Self::Membership {
@@ -174,10 +190,12 @@ impl MetadataRequest {
             let validation = if matches!(self, Self::RenameDevice { .. }) {
                 myagents_agent_network_protocol::validate_device_name_mutation(value)
             } else {
-                myagents_agent_network_protocol::validate_mutation(matches!(self, Self::Membership { .. }), value)
+                myagents_agent_network_protocol::validate_mutation(
+                    matches!(self, Self::Membership { .. }),
+                    value,
+                )
             };
-            validation
-                .map_err(|_| NetworkError::new("MUTATION_INVALID"))?;
+            validation.map_err(|_| NetworkError::new("MUTATION_INVALID"))?;
         }
         Ok(value)
     }
@@ -185,15 +203,22 @@ impl MetadataRequest {
 #[tauri::command]
 pub(crate) fn cmd_agent_network_snapshot(
     state: tauri::State<'_, super::actor::ManagedAgentNetwork>,
-) -> super::actor::NetworkSnapshot {
-    state.snapshot()
+    connection_id: Option<String>,
+) -> Result<super::actor::NetworkSnapshot, NetworkError> {
+    Ok(state
+        .connection(connection_id.as_deref().unwrap_or("official"))?
+        .snapshot())
 }
 #[tauri::command]
 pub(crate) async fn cmd_agent_network_request(
     state: tauri::State<'_, super::actor::ManagedAgentNetwork>,
     request: MetadataRequest,
+    connection_id: Option<String>,
 ) -> Result<Value, NetworkError> {
-    state.request(request).await
+    state
+        .connection(connection_id.as_deref().unwrap_or("official"))?
+        .request(request)
+        .await
 }
 
 #[tauri::command]
@@ -214,12 +239,70 @@ mod tests {
             "deviceId":"22222222-2222-4222-8222-222222222222", "name":"家里 Windows", "expectedName":"DESKTOP-123",
             "mutationId":"33333333-3333-4333-8333-333333333333"});
         let request: MetadataRequest = serde_json::from_value(input.clone()).unwrap();
-        assert_eq!(request.body().unwrap().unwrap()["expectedName"], "DESKTOP-123");
-        for name in ["".to_string(), " Mac".to_string(), "a\nb".to_string(), "😀".repeat(81)] {
-            let mut invalid = input.clone(); invalid["name"] = json!(name);
-            assert_eq!(serde_json::from_value::<MetadataRequest>(invalid).unwrap().body().unwrap_err().code, "MUTATION_INVALID");
+        assert_eq!(
+            request.body().unwrap().unwrap()["expectedName"],
+            "DESKTOP-123"
+        );
+        for name in [
+            "".to_string(),
+            " Mac".to_string(),
+            "a\nb".to_string(),
+            "😀".repeat(81),
+        ] {
+            let mut invalid = input.clone();
+            invalid["name"] = json!(name);
+            assert_eq!(
+                serde_json::from_value::<MetadataRequest>(invalid)
+                    .unwrap()
+                    .body()
+                    .unwrap_err()
+                    .code,
+                "MUTATION_INVALID"
+            );
         }
-        let mut invalid = input; invalid["origin"] = json!("https://untrusted.test");
+        let mut invalid = input;
+        invalid["origin"] = json!("https://untrusted.test");
         assert!(serde_json::from_value::<MetadataRequest>(invalid).is_err());
     }
+}
+
+#[tauri::command]
+pub(crate) fn cmd_agent_network_connections(
+    state: tauri::State<'_, super::actor::ManagedAgentNetwork>,
+) -> super::registry::RegistryView {
+    state.view()
+}
+#[tauri::command]
+pub(crate) async fn cmd_agent_network_select(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, super::actor::ManagedAgentNetwork>,
+    connection_id: String,
+) -> Result<super::registry::RegistryView, NetworkError> {
+    state.select(&app, connection_id).await
+}
+#[tauri::command]
+pub(crate) async fn cmd_agent_network_join(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, super::actor::ManagedAgentNetwork>,
+    manager: tauri::State<'_, crate::sidecar::ManagedSidecarManager>,
+    url: String,
+    key: String,
+) -> Result<super::registry::RegistryView, NetworkError> {
+    state
+        .inner()
+        .join(
+            app,
+            manager.inner().clone(),
+            url,
+            zeroize::Zeroizing::new(key),
+        )
+        .await
+}
+#[tauri::command]
+pub(crate) async fn cmd_agent_network_remove(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, super::actor::ManagedAgentNetwork>,
+    connection_id: String,
+) -> Result<super::registry::RegistryView, NetworkError> {
+    state.inner().remove(app, connection_id).await
 }

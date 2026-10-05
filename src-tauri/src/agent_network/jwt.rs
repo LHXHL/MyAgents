@@ -1,8 +1,9 @@
 //! Mature JOSE verification with a single fixed account key source. All token
 //! bodies additionally pass the shared closed application schemas.
+use super::account::NetworkAccountSession;
 use super::crypto::{certificate_chain, certificate_fingerprint};
 use super::NetworkError;
-use crate::space_cloud::agent_network::{AccountOperation, NetworkAccountSession};
+use crate::space_cloud::agent_network::AccountOperation;
 use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use myagents_agent_network_protocol::{budget, PeerBinding};
@@ -138,12 +139,12 @@ impl AccountVerifier {
         )
     }
     pub(crate) async fn access(&mut self, token: &str) -> Result<AccessClaims, NetworkError> {
-        let service = self.account.service_id()?;
+        let service = self.account.service_id()?.to_owned();
         let value = self
             .verify(
                 token,
                 "ma-network-access+jwt",
-                service,
+                &service,
                 budget("tokenSeconds"),
             )
             .await?;
@@ -162,12 +163,12 @@ impl AccountVerifier {
         Ok(())
     }
     pub(crate) async fn bootstrap(&mut self, token: &str) -> Result<Bootstrap, NetworkError> {
-        let service = self.account.service_id()?;
+        let service = self.account.service_id()?.to_owned();
         let mut value = self
             .verify(
                 token,
                 "ma-network-bootstrap+jwt",
-                service,
+                &service,
                 budget("tokenSeconds"),
             )
             .await?;
@@ -255,7 +256,7 @@ fn checked_header(token: &str, typ: &str) -> Result<jsonwebtoken::Header, Networ
     }
     Ok(header)
 }
-fn checked_jwks(value: Value) -> Result<JwkSet, NetworkError> {
+pub(crate) fn checked_jwks(value: Value) -> Result<JwkSet, NetworkError> {
     let object = value.as_object().ok_or_else(invalid_token)?;
     if object.len() != 1 {
         return Err(invalid_token());

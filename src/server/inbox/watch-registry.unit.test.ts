@@ -67,3 +67,15 @@ describe('session watch registry', () => {
   });
 
 });
+
+it('exact cancellation cleans only its network, then allows rewatch of the same live turn',()=>{
+ clearPendingSessionWatchesForTest();
+ const base={watchId:'one',watcherSessionId:'caller',targetSessionId:'target',targetLabel:'Target',targetStateAtRegistration:'running',registeredAt:'now',turnId:'turn'};
+ const a={connectionId:'network-a',opId:'op',returnRouteId:'route'},b={...a,connectionId:'network-b'};
+ registerPendingSessionWatch({...base,observerScope:'service-a:network-a:device:1',networkReturn:a});
+ registerPendingSessionWatch({...base,watchId:'other',observerScope:'service-b:network-b:device:1',networkReturn:b});
+ expect(removeNetworkSessionWatch('one',b)).toBe(false);expect(removeNetworkSessionWatch('one',{opId:'op',returnRouteId:'route'})).toBe(false);
+ expect(removeNetworkSessionWatch('one',a)).toBe(true);expect(listPendingSessionWatches().map(w=>w.watchId)).toEqual(['other']);
+ expect(registerPendingSessionWatch({...base,watchId:'rewatch',observerScope:'service-a:network-a:device:1',networkReturn:{...a,returnRouteId:'new-route'}}).watchId).toBe('rewatch');
+ clearPendingSessionWatchesForTest();
+});

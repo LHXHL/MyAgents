@@ -7,6 +7,7 @@ import { z } from "zod";
 import { NETWORK_BUDGETS } from "@myagents/agent-network-protocol";
 import {
   mentionAgentSchema,
+  discoveryNetworkSchema,
   type AgentDiscovery,
   type MentionAgentInfo,
 } from "../../shared/agentDiscovery";
@@ -28,14 +29,17 @@ const remoteSchema = z.strictObject({
     "incomplete",
     "error",
   ]),
-  context: z.strictObject({
-    authGeneration: z.number().int().nonnegative(),
-    deviceId: z.string(),
-    deviceName: z.string().nullable(),
-    platform: z.string(),
-    networkId: z.string().nullable(),
-    principalId: z.string().nullable(),
-  }),
+  networks: z.array(discoveryNetworkSchema).optional(),
+  context: z
+    .strictObject({
+      authGeneration: z.number().int().nonnegative(),
+      deviceId: z.string(),
+      deviceName: z.string().nullable(),
+      platform: z.string(),
+      networkId: z.string().nullable(),
+      principalId: z.string().nullable(),
+    })
+    .nullable(),
 });
 interface LocalAgent {
   agentId: string;
@@ -78,7 +82,12 @@ export async function discoverAgents(
   const locals = new Map(items.map((item) => [item.selector, item]));
   if (network)
     for (const candidate of network.items) {
-      if (candidate.deviceId === context!.deviceId) {
+      if (
+        candidate.deviceId ===
+        (network.networks?.find(
+          (n) => n.connectionId === candidate.connectionId,
+        )?.context?.deviceId ?? context?.deviceId)
+      ) {
         // Only the actual owning device/local identity may collapse this alias.
         const owned = locals.get(candidate.localAgentId);
         if (owned) owned.description = candidate.description;
@@ -95,11 +104,14 @@ export async function discoverAgents(
           platform: candidate.platform,
           description: candidate.description,
           source: candidate.source,
+          networkName: candidate.networkName,
+          connectionId: candidate.connectionId,
         }),
       );
     }
   const limited = items.length > NETWORK_BUDGETS.catalogItems;
   return {
+    networks: network?.networks,
     items: limited ? items.slice(0, NETWORK_BUDGETS.catalogItems) : items,
     complete: !limited && (network?.complete ?? false),
     networkStatus: limited ? "incomplete" : (network?.networkStatus ?? "error"),

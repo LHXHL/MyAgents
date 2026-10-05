@@ -448,7 +448,7 @@ Choose by intent:
   Durable work, scheduling and run tracking: task readme
   Work together now: agent list → session start (fresh) or send (reuse)
   Read or observe without assigning work: session get / state / watch
-  agent list includes callable Agents on other devices in the same account;
+  agent list includes callable Agents on other devices across all active networks; use --network NAME_OR_CONNECTION_ID to filter;
   copy the complete qualified ID and use the same Session commands.
 
 Examples:
@@ -931,6 +931,7 @@ export function printResult(
   }
   if (group === 'agent' && action === 'list') {
     printAgentList(result.data as Array<Record<string, unknown>>);
+    if(result.complete===false)console.error('Some network directories are incomplete. Healthy results are shown; inspect agent network-diagnose --json.');
     if (Array.isArray(result.diagnostics)) {
       for (const diagnostic of result.diagnostics as Array<Record<string, unknown>>) {
         console.error(`\n[${String(diagnostic.code)}] ${String(diagnostic.message)}`);
@@ -2085,18 +2086,19 @@ export function printAgentList(agents: Array<Record<string, unknown>>): void {
     return;
   }
   const pad = (s: string, n: number) => s.padEnd(n);
-  console.log(pad('', 3) + pad('Agent ID', 38) + pad('Lifecycle', 11) + pad('Proactive', 11) + pad('Channels', 10) + 'Name');
+  const idWidth=agents.reduce((width,a)=>Math.max(width,String(a.agentId??'').length+2),38);
+  console.log(pad('', 3) + pad('Agent ID', idWidth) + pad('Lifecycle', 11) + pad('Proactive', 11) + pad('Channels', 10) + 'Name');
   for (const a of agents) {
     const current = a.isCurrent ? '* ' : '  ';
     const lifecycle = a.archived ? 'archived' : 'active';
     const proactive = a.enabled ? 'enabled' : 'disabled';
     console.log(
       pad(current, 3)
-      + pad(String(a.agentId).slice(0, 36), 38)
+      + pad(String(a.agentId), idWidth)
       + pad(lifecycle, 11)
       + pad(proactive, 11)
       + pad(String(a.channelCount), 10)
-      + String(a.name),
+      + String(a.name) + (a.isLocal===false ? ` · ${String(a.networkName??'network')} / ${String(a.deviceName??'device')}` : ''),
     );
   }
   if (agents.some(agent => agent.isCurrent === true)) {
@@ -5564,7 +5566,7 @@ export function buildRequestBody(
         || (flags.cursor !== undefined && (typeof flags.cursor !== 'string' || !flags.cursor.trim()))) {
         return exitAgentCliError(flags, { code: 'ARGUMENT_INVALID', error: 'network-diagnose requires --limit 1..100 and an optional non-empty --cursor value.' });
       }
-      return { cursor: flags.cursor, limit };
+      return { cursor: flags.cursor, limit, network:typeof flags.network === 'string' ? flags.network : undefined };
     }
     if (action === 'create') {
       const workspacePath =
@@ -5587,6 +5589,7 @@ export function buildRequestBody(
       }
       return {
         lifecycle: flags.archived ? 'archived' : 'active',
+        network: typeof flags.network === 'string' ? flags.network : undefined,
       };
     }
     if (action === 'enable' || action === 'disable' || action === 'archive' || action === 'unarchive') return { id: rest[0] || flags.id };

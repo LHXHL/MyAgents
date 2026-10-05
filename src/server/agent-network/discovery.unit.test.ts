@@ -74,13 +74,39 @@ describe("Agent discovery merge", () => {
     expect(result).toMatchObject({ complete: true, authGeneration: 2 });
   });
   it("reads local-only identities with current account context without requiring cloud completion", async () => {
-    mocks.management.mockResolvedValue({ ok: true, data: { items: [], complete: false, networkStatus: "ready", context: {
-      authGeneration: 2, deviceId: id(4), deviceName: "This computer", platform: "macos", networkId: id(2), principalId: "account",
-    } } });
-    const result = await discoverAgents([{ agentId: "local", name: "Local", icon: "lightning" }], true);
-    expect(mocks.management).toHaveBeenCalledWith("/api/agent-network/discovery", "POST", { sidecarId: "global", localOnly: true }, { timeoutMs: 8000 });
-    expect(result).toMatchObject({ authGeneration: 2, principalId: "account", networkId: id(2), complete: false,
-      items: [{ selector: "local", icon: "lightning", isLocal: true }] });
+    mocks.management.mockResolvedValue({
+      ok: true,
+      data: {
+        items: [],
+        complete: false,
+        networkStatus: "ready",
+        context: {
+          authGeneration: 2,
+          deviceId: id(4),
+          deviceName: "This computer",
+          platform: "macos",
+          networkId: id(2),
+          principalId: "account",
+        },
+      },
+    });
+    const result = await discoverAgents(
+      [{ agentId: "local", name: "Local", icon: "lightning" }],
+      true,
+    );
+    expect(mocks.management).toHaveBeenCalledWith(
+      "/api/agent-network/discovery",
+      "POST",
+      { sidecarId: "global", localOnly: true },
+      { timeoutMs: 8000 },
+    );
+    expect(result).toMatchObject({
+      authGeneration: 2,
+      principalId: "account",
+      networkId: id(2),
+      complete: false,
+      items: [{ selector: "local", icon: "lightning", isLocal: true }],
+    });
   });
   it("does not claim a malformed or partial page is a complete empty network", async () => {
     mocks.management.mockResolvedValue({
@@ -91,4 +117,71 @@ describe("Agent discovery merge", () => {
       await discoverAgents([{ agentId: "local", name: "Local" }]),
     ).toMatchObject({ complete: false, networkStatus: "error" });
   });
+});
+
+it("keeps equal remote Agent names distinct across networks and retains healthy results when another read fails", async () => {
+  const context = {
+    authGeneration: 2,
+    deviceId: id(4),
+    deviceName: "This computer",
+    platform: "macos",
+    networkId: id(2),
+    principalId: "account",
+  };
+  const a = {
+    ...remote(id(6), "local", 7),
+    connectionId: "a",
+    networkName: "Team A",
+  };
+  const b = {
+    ...a,
+    connectionId: "b",
+    networkName: "Team B",
+    source: { serviceId: id(11), networkId: id(12) },
+    selector: `ma-agent:1:${id(11)}:${id(12)}:${id(7)}`,
+  };
+  mocks.management.mockResolvedValue({
+    ok: true,
+    data: {
+      items: [a, b],
+      complete: false,
+      networkStatus: "ready",
+      context,
+      networks: [
+        {
+          connectionId: "a",
+          networkName: "Team A",
+          complete: true,
+          networkStatus: "ready",
+          context,
+        },
+        {
+          connectionId: "b",
+          networkName: "Team B",
+          complete: true,
+          networkStatus: "ready",
+          context: { ...context, networkId: id(12), principalId: "team-b" },
+        },
+        {
+          connectionId: "official",
+          networkName: "MyAgents",
+          complete: false,
+          networkStatus: "error",
+          context: null,
+          error: { code: "NETWORK_ACCOUNT_UNAVAILABLE", retryable: true },
+        },
+      ],
+    },
+  });
+  const result = await discoverAgents([{ agentId: "local", name: "Local" }]);
+  expect(result.items.map((item) => item.selector)).toEqual([
+    "local",
+    a.selector,
+    b.selector,
+  ]);
+  expect(result.items.slice(1).map((item) => item.networkName)).toEqual([
+    "Team A",
+    "Team B",
+  ]);
+  expect(result.complete).toBe(false);
 });

@@ -1,18 +1,49 @@
 //! Identity activation is serialized by App scope. OS persistence precedes
 //! issuer activation; the issuer's public state plus new-key PoP recovers a
 //! lost activation ACK without replaying activation or storing a second pointer.
+use super::account::NetworkAccountSession;
 use super::crypto::{
     certificate_chain, certificate_fingerprint, CryptoError, DevicePrivateKey, KeyScope,
     OsIdentityStore, TlsIdentity,
 };
 use super::jwt::{AccessClaims, AccountVerifier, VerifiedPeer};
 use super::NetworkError;
-use crate::space_cloud::agent_network::{AccountOperation, NetworkAccountSession};
+use crate::space_cloud::agent_network::AccountOperation;
 use myagents_agent_network_protocol::{budget, IdentityState};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::{Arc, LazyLock};
 use zeroize::Zeroizing;
+
+/// Existing OS key is authoritative for committed-enrollment ACK recovery.
+/// A pending removal may be replaced only after the issuer proved revocation.
+fn key_generation_plan(
+    previous: Option<u64>,
+    key_present: bool,
+    replacement: bool,
+    selfhost: bool,
+    retired_generation: Option<u64>,
+) -> Result<(u64, bool), NetworkError> {
+    if retired_generation.is_some_and(|retired| {
+        !replacement && !(key_present && previous.is_some_and(|current| current > retired))
+    }) {
+        return Err(NetworkError::new("NETWORK_REMOVAL_UNCONFIRMED"));
+    }
+    let recovery = previous.is_some() && !key_present && !replacement;
+    if recovery && selfhost {
+        return Err(NetworkError::new("NETWORK_PRIVATE_KEY_MISSING"));
+    }
+    let generation = previous.unwrap_or(1);
+    let generation = if recovery || replacement {
+        generation
+            .checked_add(1)
+            .filter(|g| *g <= 9_007_199_254_740_991)
+            .ok_or_else(|| NetworkError::new("KEY_GENERATION_EXHAUSTED"))?
+    } else {
+        generation
+    };
+    Ok((generation, recovery))
+}
 
 static IDENTITY_GATES: LazyLock<crate::keyed_lifecycle::KeyedLifecycleRegistry> =
     LazyLock::new(crate::keyed_lifecycle::KeyedLifecycleRegistry::new);
@@ -85,10 +116,57 @@ pub(crate) struct NetworkIdentity {
     key: Arc<DevicePrivateKey>,
 }
 impl NetworkIdentity {
-    pub(crate) async fn initialize(account: NetworkAccountSession) -> Result<Self, NetworkError> {
+    /// Public issuer confirmation lets the registry checkpoint revocation even
+    /// when the retiring private key was lost. Persist this before enrollment.
+    pub(crate) async fn revoked_scope(
+        account: &NetworkAccountSession,
+    ) -> Result<KeyScope, NetworkError> {
+        account.validate_instance().await?;
         let device = crate::device_identity::current_device_identity()
             .map_err(|_| NetworkError::new("DEVICE_ID_UNAVAILABLE"))?;
-        let service_id = account.service_id()?;
+        let value = account
+            .request(
+                AccountOperation::IdentityState(device.device_id.clone()),
+                None,
+            )
+            .await?;
+        myagents_agent_network_protocol::validate_identity_state(&value)
+            .map_err(|_| NetworkError::new("IDENTITY_STATE_INVALID"))?;
+        let state: IdentityState = serde_json::from_value(value)
+            .map_err(|_| NetworkError::new("IDENTITY_STATE_INVALID"))?;
+        let scope = KeyScope {
+            issuer: account.issuer().into(),
+            environment: account.environment().into(),
+            service_id: account.service_id()?.into(),
+            principal_id: account.principal_id()?.into(),
+            device_id: device.device_id,
+            key_generation: state
+                .key_generation
+                .ok_or_else(|| NetworkError::new("IDENTITY_STATE_INVALID"))?,
+        };
+        if state.service_id != scope.service_id
+            || state.environment != scope.environment
+            || state.device_id != scope.device_id
+        {
+            return Err(NetworkError::new("IDENTITY_SCOPE_MISMATCH"));
+        }
+        match account.request(AccountOperation::Challenge, Some(json!({
+            "deviceId":scope.device_id, "operation":"recover-query",
+            "targetFingerprint":state.key_fingerprint, "expectedKeyGeneration":scope.key_generation
+        }))).await {
+            Err(error) if error.code == "DEVICE_REVOKED" => Ok(scope),
+            Err(error) => Err(error),
+            Ok(_) => Err(NetworkError::new("NETWORK_REMOVAL_UNCONFIRMED")),
+        }
+    }
+    pub(crate) async fn initialize(
+        account: NetworkAccountSession,
+        retired_generation: Option<u64>,
+    ) -> Result<Self, NetworkError> {
+        account.validate_instance().await?;
+        let device = crate::device_identity::current_device_identity()
+            .map_err(|_| NetworkError::new("DEVICE_ID_UNAVAILABLE"))?;
+        let service_id = account.service_id()?.to_owned();
         let gate_key = format!(
             "{}|{}|{}|{}",
             account.issuer(),
@@ -123,22 +201,34 @@ impl NetworkIdentity {
             device_id: device.device_id.clone(),
             key_generation: state.key_generation.unwrap_or(1),
         };
+        let replacement = if account.is_selfhost()
+            && account.has_enrollment_key()
+            && state.key_generation.is_some()
+        {
+            match account.request(AccountOperation::Challenge,Some(json!({"deviceId":scope.device_id,"operation":"recover-query","targetFingerprint":state.key_fingerprint,"expectedKeyGeneration":scope.key_generation}))).await {
+                Err(error) if error.code=="DEVICE_REVOKED"=>true,
+                Err(error)=>return Err(error),
+                Ok(_)=>false,
+            }
+        } else {
+            false
+        };
         let current_key = load_key(&scope).await?;
         if let (Some(key), Some(expected)) = (&current_key, &state.key_fingerprint) {
-            if key.public_fingerprint()? != *expected {
+            if !replacement && key.public_fingerprint()? != *expected {
                 return Err(NetworkError::new("NETWORK_CREDENTIAL_GENERATION_CONFLICT"));
             }
         }
         let has_identity = state.key_generation.is_some();
-        let recovery = has_identity && current_key.is_none();
-        if recovery {
-            scope.key_generation = scope
-                .key_generation
-                .checked_add(1)
-                .filter(|value| *value <= 9_007_199_254_740_991)
-                .ok_or_else(|| NetworkError::new("KEY_GENERATION_EXHAUSTED"))?;
-        }
-        let key = match if recovery {
+        let (generation, recovery) = key_generation_plan(
+            state.key_generation,
+            current_key.is_some(),
+            replacement,
+            account.is_selfhost(),
+            retired_generation,
+        )?;
+        scope.key_generation = generation;
+        let key = match if recovery || replacement {
             load_key(&scope).await?
         } else {
             current_key
@@ -156,7 +246,7 @@ impl NetworkIdentity {
             }
         };
         account.ensure_current()?;
-        let state_result = if has_identity && !recovery {
+        let state_result = if has_identity && !recovery && !replacement {
             let proof = proof(
                 &account,
                 &scope,
@@ -206,6 +296,11 @@ impl NetworkIdentity {
             || bootstrap.access.exp != access.exp
         {
             return Err(NetworkError::new("IDENTITY_SCOPE_MISMATCH"));
+        }
+        if let NetworkAccountSession::Selfhost(instance) = &account {
+            instance
+                .descriptor
+                .ensure_bootstrap(&bootstrap.root_certificate, &bootstrap.network_url)?;
         }
         let peer = validate_peer(
             &scope,
@@ -327,7 +422,9 @@ async fn validate_peer(
     }))
 }
 
-async fn load_key(scope: &KeyScope) -> Result<Option<Arc<DevicePrivateKey>>, NetworkError> {
+pub(crate) async fn load_key(
+    scope: &KeyScope,
+) -> Result<Option<Arc<DevicePrivateKey>>, NetworkError> {
     let scope = scope.clone();
     match tokio::task::spawn_blocking(move || OsIdentityStore::load(&scope))
         .await
@@ -338,7 +435,7 @@ async fn load_key(scope: &KeyScope) -> Result<Option<Arc<DevicePrivateKey>>, Net
         Err(error) => Err(error.into()),
     }
 }
-async fn proof(
+pub(crate) async fn proof(
     account: &NetworkAccountSession,
     scope: &KeyScope,
     key: &DevicePrivateKey,
@@ -393,6 +490,71 @@ fn certificate_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn lost_activation_ack_uses_persisted_private_key_and_same_generation() {
+        // Initial private key is persisted before activation. The committed
+        // public state after a lost response selects recover-query, not rotate.
+        assert_eq!(
+            key_generation_plan(None, true, false, true, None).unwrap(),
+            (1, false)
+        );
+        assert_eq!(
+            key_generation_plan(Some(1), true, false, true, None).unwrap(),
+            (1, false)
+        );
+        assert_eq!(
+            key_generation_plan(Some(1), false, false, true, None)
+                .unwrap_err()
+                .code,
+            "NETWORK_PRIVATE_KEY_MISSING"
+        );
+    }
+    #[test]
+    fn missing_key_pending_removal_requires_revocation_before_fresh_enrollment() {
+        assert_eq!(
+            key_generation_plan(Some(1), false, false, true, Some(1))
+                .unwrap_err()
+                .code,
+            "NETWORK_REMOVAL_UNCONFIRMED"
+        );
+        assert_eq!(
+            key_generation_plan(Some(1), true, false, true, Some(1))
+                .unwrap_err()
+                .code,
+            "NETWORK_REMOVAL_UNCONFIRMED"
+        );
+        assert_eq!(
+            key_generation_plan(Some(1), false, true, true, Some(1)).unwrap(),
+            (2, false)
+        );
+        assert_eq!(
+            key_generation_plan(Some(2), true, false, true, None).unwrap(),
+            (2, false)
+        );
+    }
+    #[test]
+    fn pending_replacement_ack_or_config_failure_recovers_only_newer_committed_key() {
+        for _fault in ["activation response lost", "registry config write failed"] {
+            // Durable revocation checkpoint survives both faults; issuer has
+            // committed generation 2 and its key was saved before enrollment.
+            assert_eq!(
+                key_generation_plan(Some(2), true, false, true, Some(1)).unwrap(),
+                (2, false)
+            );
+            assert_eq!(
+                key_generation_plan(Some(1), true, false, true, Some(1))
+                    .unwrap_err()
+                    .code,
+                "NETWORK_REMOVAL_UNCONFIRMED"
+            );
+            assert_eq!(
+                key_generation_plan(Some(2), false, false, true, Some(1))
+                    .unwrap_err()
+                    .code,
+                "NETWORK_REMOVAL_UNCONFIRMED"
+            );
+        }
+    }
     #[test]
     fn renewal_body_uses_the_account_certificate_contract_without_roster_fields() {
         let key = DevicePrivateKey::generate().unwrap();
