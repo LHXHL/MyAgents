@@ -1181,7 +1181,7 @@ describe('GlobalSidebar rail flyout', () => {
     expect(screen.getByRole('region', { name: 'Agent 工作区' })).toBeInTheDocument();
   });
 
-  it('keeps the toggle and search mounted across manual modes and replaces the rail website entry', () => {
+  it('keeps toggle, search and notification mounted across manual modes and replaces the rail website entry', () => {
     mocks.forcedRail = false;
     mocks.isTauri = true;
     window.localStorage.setItem(GLOBAL_SIDEBAR_PREFERENCE_KEY, JSON.stringify({
@@ -1206,6 +1206,7 @@ describe('GlobalSidebar rail flyout', () => {
     const brandName = navigation.querySelector('[data-global-sidebar-brand-name]');
     const brandRow = navigation.querySelector('[data-global-sidebar-brand-row]');
     const search = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) });
+    const notification = screen.getByRole('button', { name: String(i18n.t('app:notificationCenter.bell')) });
     const primaryNav = navigation.querySelector('[data-global-sidebar-primary-nav]');
     const workspaceRail = navigation.querySelector('[data-global-sidebar-workspace-rail]');
     const footerActions = navigation.querySelector('[data-global-sidebar-footer-actions]');
@@ -1252,6 +1253,7 @@ describe('GlobalSidebar rail flyout', () => {
     expect(brandLink).not.toHaveAttribute('inert');
     expect(brandLink).toHaveAttribute('aria-hidden', 'false');
     expect(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) })).toBe(search);
+    expect(screen.getByRole('button', { name: String(i18n.t('app:notificationCenter.bell')) })).toBe(notification);
     expect(navigation.querySelector('[data-global-sidebar-brand-row]')).toBe(brandRow);
     expect(navigation.querySelector('[data-global-sidebar-primary-nav]')).not.toHaveClass('global-sidebar-rail-stack');
     expect(navigation.querySelector('[data-global-sidebar-workspace-rail]')).not.toBeInTheDocument();
@@ -1267,6 +1269,7 @@ describe('GlobalSidebar rail flyout', () => {
     expect(navigation).toHaveAttribute('data-global-sidebar-motion', 'collapse');
     expect(brandLink).toHaveAttribute('inert');
     expect(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) })).toBe(search);
+    expect(screen.getByRole('button', { name: String(i18n.t('app:notificationCenter.bell')) })).toBe(notification);
     expect(navigation.querySelector('[data-global-sidebar-workspace-region]'))
       .toHaveAttribute('aria-hidden', 'true');
     expect(navigation.querySelector('[data-global-sidebar-workspace-rail]')).toBeInTheDocument();
@@ -1809,7 +1812,7 @@ describe('Agent network and Space navigation', () => {
     const view = renderSidebar({ onOpenAgentNetwork, activeTab: networkTab });
     const buttons = screen.getAllByRole('button').filter(button => button.hasAttribute('data-global-sidebar-nav-button'));
     const labels = buttons.map(button => button.getAttribute('aria-label'));
-    expect(labels).toEqual(['新对话', '自动化任务', '技能与工具', 'AgentNet 私有网络', '更多', '小助理', '设置']);
+    expect(labels).toEqual(['新对话', '自动化任务', '技能与工具', 'AgentNet 局域网络', '更多', '小助理', '设置']);
     const network = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.agentNetwork')) });
     const more = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.more')) });
     expect(network).toHaveAttribute('aria-current', 'page');

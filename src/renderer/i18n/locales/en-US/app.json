@@ -15,7 +15,7 @@
     "generating": "AI is responding",
     "unread": "Unread messages",
     "switchTo": "Switch to {{title}}",
-    "agentNetwork": "AgentNet Private Network"
+    "agentNetwork": "AgentNet Local Network"
   },
   "account": {
     "signIn": "Sign in to MyAgents",
@@ -46,7 +46,7 @@
     "newChatHere": "Start a new chat here",
     "emptyWorkspaceSessions": "No sessions yet",
     "loadMore": "Show more",
-    "agentNetwork": "AgentNet Private Network",
+    "agentNetwork": "AgentNet Local Network",
     "more": "More"
   },
   "titlebar": {
@@ -1297,7 +1297,7 @@
     "referenceDefinition": "Reference link"
   },
   "agentNetwork": {
-    "networkName": "My AgentNet Private Network",
+    "networkName": "AgentNet Local Network",
     "networkInfo": "About this network",
     "infoIntro": "AgentNet is a private relay network for Agents across multiple devices, provided by MyAgents and scoped to your signed-in account.",
     "infoTitle": "End-to-end encrypted private network",

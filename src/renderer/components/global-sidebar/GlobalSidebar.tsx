@@ -1345,36 +1345,38 @@ export default memo(function GlobalSidebar({
             label={t('globalSidebar.settings')}
             onClick={onOpenSettings}
           />
-          <div className={expanded ? 'grid grid-cols-[minmax(0,1fr)_var(--global-sidebar-action-size)]' : 'flex w-10 justify-center'} data-global-sidebar-account-row>
+          <div className="global-sidebar-account-row grid grid-cols-[minmax(0,1fr)_var(--global-sidebar-action-size)]" data-global-sidebar-account-row>
             <AccountEntry expanded={expanded} available={teamSpaceAvailable}
               environment={config.spaceEnvironment ?? 'production'} onOpenSpace={onOpenSpace} />
-            <button
-              ref={notificationTriggerRef}
-              type="button"
-              onClick={toggleNotificationCenter}
-              aria-label={notificationCenter.snapshot.hasUnread
-                ? t('notificationCenter.bellUnread')
-                : t('notificationCenter.bell')}
-              aria-haspopup="dialog"
-              aria-expanded={notificationOpen}
-              aria-controls="global-notification-center"
-              className={`global-sidebar-row global-sidebar-action-button relative flex items-center justify-center text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
-                notificationOpen
-                  ? 'bg-[var(--paper-inset)] text-[var(--ink)]'
-                  : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
-              }`}
-              data-notification-center-trigger
-            >
-              <span className="relative flex h-4 w-4 items-center justify-center">
-                <BellIcon className="h-4 w-4" />
-                {notificationCenter.snapshot.hasUnread && (
-                  <span
-                    className="absolute -right-1 -top-1 h-1.5 w-1.5 rounded-full bg-[var(--accent-warm)] ring-2 ring-[var(--global-sidebar-bg)]"
-                    aria-hidden="true"
-                  />
-                )}
-              </span>
-            </button>
+            <span className="global-sidebar-notification-slot">
+              <button
+                ref={notificationTriggerRef}
+                type="button"
+                onClick={toggleNotificationCenter}
+                aria-label={notificationCenter.snapshot.hasUnread
+                  ? t('notificationCenter.bellUnread')
+                  : t('notificationCenter.bell')}
+                aria-haspopup="dialog"
+                aria-expanded={notificationOpen}
+                aria-controls="global-notification-center"
+                className={`global-sidebar-row global-sidebar-action-button relative flex items-center justify-center text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+                  notificationOpen
+                    ? 'bg-[var(--paper-inset)] text-[var(--ink)]'
+                    : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
+                }`}
+                data-notification-center-trigger
+              >
+                <span className="relative flex h-4 w-4 items-center justify-center">
+                  <BellIcon className="h-4 w-4" />
+                  {notificationCenter.snapshot.hasUnread && (
+                    <span
+                      className="absolute -right-1 -top-1 h-1.5 w-1.5 rounded-full bg-[var(--accent-warm)] ring-2 ring-[var(--global-sidebar-bg)]"
+                      aria-hidden="true"
+                    />
+                  )}
+                </span>
+              </button>
+            </span>
           </div>
         </div>
       </aside>

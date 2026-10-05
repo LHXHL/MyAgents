@@ -377,12 +377,11 @@ html[data-color-scheme='dark'] {
   flex-shrink: 0;
 }
 
-/* Keep one search control mounted and move only its paint from the shared
-   right action axis to the rail's leading icon axis. */
-.global-sidebar-search-slot {
+/* Search and notification keep their controls mounted and share the same
+   paint-only journey between the right action axis and the rail icon axis. */
+.global-sidebar-search-slot,
+.global-sidebar-notification-slot {
   position: absolute;
-  top: var(--space-1);
-  left: calc((var(--global-sidebar-rail-width) - var(--global-sidebar-action-size)) / 2);
   width: var(--global-sidebar-action-size);
   transform: translateX(calc(
     var(--global-sidebar-expanded-width) - var(--global-sidebar-action-inset)
@@ -391,7 +390,38 @@ html[data-color-scheme='dark'] {
   transition: transform var(--duration-normal) var(--ease-in-out);
 }
 
-.global-sidebar[data-global-sidebar-mode='rail'] .global-sidebar-search-slot {
+.global-sidebar-search-slot {
+  top: var(--space-1);
+  left: calc((var(--global-sidebar-rail-width) - var(--global-sidebar-action-size)) / 2);
+}
+
+/* The fixed row prevents the footer's mode-dependent layout from jumping
+   the Bell. Empty space must never cover the workspace when in rail mode. */
+.global-sidebar-account-row {
+  position: relative;
+  width: calc(
+    var(--global-sidebar-expanded-width) - var(--global-sidebar-rail-button-left)
+    - var(--global-sidebar-action-inset)
+  );
+  height: var(--global-sidebar-action-size);
+  pointer-events: none;
+}
+
+.global-sidebar-account-row > [data-global-account-trigger] {
+  pointer-events: auto;
+}
+
+.global-sidebar-notification-slot {
+  top: 0;
+  left: calc(
+    (var(--global-sidebar-rail-width) - var(--global-sidebar-action-size)) / 2
+    - var(--global-sidebar-rail-button-left)
+  );
+  pointer-events: auto;
+}
+
+.global-sidebar[data-global-sidebar-mode='rail'] .global-sidebar-search-slot,
+.global-sidebar[data-global-sidebar-mode='rail'] .global-sidebar-notification-slot {
   transform: translateX(0);
 }
 
@@ -731,7 +761,8 @@ html[data-color-scheme='dark'] {
   .global-sidebar::before,
   .global-sidebar-copy,
   .global-sidebar-brand-link,
-  .global-sidebar-search-slot {
+  .global-sidebar-search-slot,
+  .global-sidebar-notification-slot {
     transition: none;
   }
 

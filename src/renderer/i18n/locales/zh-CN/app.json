@@ -15,7 +15,7 @@
     "generating": "AI 正在输出",
     "unread": "有未读消息",
     "switchTo": "切换到 {{title}}",
-    "agentNetwork": "AgentNet 私有网络"
+    "agentNetwork": "AgentNet 局域网络"
   },
   "account": {
     "signIn": "登录 MyAgents",
@@ -46,7 +46,7 @@
     "newChatHere": "在此工作区新建对话",
     "emptyWorkspaceSessions": "还没有会话",
     "loadMore": "展开更多",
-    "agentNetwork": "AgentNet 私有网络",
+    "agentNetwork": "AgentNet 局域网络",
     "more": "更多"
   },
   "titlebar": {
@@ -1296,7 +1296,7 @@
     "referenceDefinition": "引用链接"
   },
   "agentNetwork": {
-    "networkName": "我的 AgentNet 私有网络",
+    "networkName": "AgentNet 局域网络",
     "networkInfo": "网络说明",
     "infoIntro": "AgentNet 是 MyAgents 提供的基于登录账号的多设备 Agent 私有中转网络。",
     "infoTitle": "端到端加密的私有网络",
