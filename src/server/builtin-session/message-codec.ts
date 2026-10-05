@@ -30,6 +30,7 @@ export function messageWireToSessionMessage(msg: MessageWire): SessionMessage {
     timestamp: msg.timestamp,
     ...(msg.turnId ? { turnId: msg.turnId } : {}),
     ...(msg.transcriptState ? { transcriptState: msg.transcriptState } : {}),
+    ...(msg.messageKind ? { messageKind: msg.messageKind } : {}),
     sdkUuid: msg.sdkUuid,
     attachments: msg.attachments?.map((att) => ({
       id: att.id,
@@ -64,6 +65,7 @@ export function sessionMessageToMessageWire(storedMsg: SessionMessage): MessageW
     timestamp: storedMsg.timestamp,
     ...(storedMsg.turnId ? { turnId: storedMsg.turnId } : {}),
     ...(storedMsg.transcriptState ? { transcriptState: storedMsg.transcriptState } : {}),
+    ...(storedMsg.messageKind ? { messageKind: storedMsg.messageKind } : {}),
     sdkUuid: storedMsg.sdkUuid,
     attachments: storedMsg.attachments?.map((att) => ({
       id: att.id,

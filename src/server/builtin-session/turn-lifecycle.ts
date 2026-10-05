@@ -453,8 +453,10 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       error.includes('process terminated') ||
       error.includes('AbortError');
 
+    const product = getBuiltinProductContent();
     if (!isExpectedTermination) {
-      appendMessage({
+      if (product) product.appendDiagnostic(`Error: ${error}`);
+      else appendMessage({
         id: allocateMessageId(),
         role: 'assistant',
         content: `Error: ${error}`,
@@ -464,7 +466,6 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       console.log('[agent] Skipping error persistence for expected termination:', error);
     }
     stampTurnUsageOnPendingAssistant({ usage: getCurrentTurnUsage(), toolCount: getCurrentTurnToolCount() });
-    const product = getBuiltinProductContent();
     if (product) {
       product.finishTurn('error');
     }

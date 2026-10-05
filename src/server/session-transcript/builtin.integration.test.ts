@@ -739,8 +739,10 @@ describe('builtin V2 execution independent of product storage', () => {
     await expect(terminal).resolves.toMatchObject({ status: 'error', error: 'AI runtime ended before completing this turn' });
     expect([...active.writer.projection.turns.values()]).toMatchObject([{ status: 'error', usage: { inputTokens: 4, outputTokens: 5 } }]);
     expect(agent.getMessages()[1].content).toMatchObject([
-      { text: 'answer 1' }, { text: ' full-only tail' }, { text: 'Error: AI runtime ended before completing this turn' },
+      { text: 'answer 1' }, { text: ' full-only tail' },
     ]);
+    expect(agent.getMessages()[2]).toMatchObject({ messageKind: 'diagnostic',
+      content: 'Error: AI runtime ended before completing this turn' });
   });
 
   it.each(['hung', 'full'] as const)('completes current and subsequent native turns with %s history IO', async failure => {
@@ -1217,6 +1219,195 @@ it('settles the rewind boundary before a successful turn triggers a deferred res
   expect(state.query.mock.calls[2][0].options.resumeSessionAt).toBeUndefined();
   await vi.waitFor(() => expect(agent.getMessages().filter(message => message.role === 'user').map(message => message.content))
     .toEqual(['original', 'replacement']));
+});
+
+it.each([false, true])('retries past an independent product diagnostic with cold restore=%s', async coldRestore => {
+  const workspace = join(state.home, 'diagnostic-retry');
+  await mkdir(workspace);
+  const meta = await store.createSession(workspace, { runtime: 'builtin' });
+  const rows = [
+    { id: 'u1', role: 'user' as const, content: 'confirmed input', timestamp: 't', sdkUuid: 'native-u1' },
+    { id: 'd1', role: 'assistant' as const, content: 'Error: process exited', timestamp: 't', messageKind: 'diagnostic' as const },
+    { id: 'u2', role: 'user' as const, content: 'send again', timestamp: 't' },
+  ];
+  const snapshot = await store.loadSessionTranscript(meta.id);
+  expect(await store.appendSessionMessages(meta.id, snapshot.cursor, rows)).toMatchObject({ ok: true });
+  if (coldRestore) await store.releaseSessionTranscriptForBinding(meta.id);
+  await agent.initializeAgent(workspace, null, meta.id, { preWarmDisabled: true });
+  const replay = vi.fn(async () => {
+    expect(agent.getMessages().map(row => row.id)).toEqual(['u1', 'd1']);
+    const result = await agent.enqueueUserMessage('send again', [], undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
+    return { success: true as const, queued: result.queued };
+  });
+  expect(await agent.retryBuiltinUserMessage('u2', replay)).toMatchObject({ success: true });
+  await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
+  expect(replay).toHaveBeenCalledTimes(1);
+  expect(state.query.mock.calls.at(-1)?.[0].options.resumeSessionAt).toBe('native-u1');
+  expect(agent.getMessages()[1]).toMatchObject({ id: 'd1', messageKind: 'diagnostic' });
+});
+
+it.each(['unconfirmed-user', 'partial-assistant', 'legacy-error', 'conflicting-diagnostic', 'runtime-anchor'] as const)(
+  'refuses retry past %s without truncating history or replaying', async shape => {
+    const workspace = join(state.home, shape);
+    await mkdir(workspace);
+    const meta = await store.createSession(workspace, { runtime: 'builtin' });
+    const unknown = shape === 'unconfirmed-user'
+      ? { id: 'unknown', role: 'user' as const, content: 'not acknowledged', timestamp: 't' }
+      : { id: 'unknown', role: 'assistant' as const, content: shape === 'legacy-error' ? 'Error: old error' : 'partial', timestamp: 't',
+        ...(shape === 'conflicting-diagnostic' ? { messageKind: 'diagnostic' as const, sdkUuid: 'conflict' } : {}) };
+    if (shape === 'runtime-anchor') Object.assign(unknown, { messageKind: 'diagnostic',
+      runtimeTurnAnchor: { turnId: 'native-turn', rootUserMessageId: 'u1' } });
+    const rows = [
+      { id: 'u1', role: 'user' as const, content: 'confirmed', timestamp: 't', sdkUuid: 'native-u1' },
+      unknown,
+      { id: 'd1', role: 'assistant' as const, content: 'Error: failed', timestamp: 't', messageKind: 'diagnostic' as const },
+      { id: 'u2', role: 'user' as const, content: 'retry me', timestamp: 't' },
+    ];
+    const snapshot = await store.loadSessionTranscript(meta.id);
+    expect(await store.appendSessionMessages(meta.id, snapshot.cursor, rows)).toMatchObject({ ok: true });
+    await agent.initializeAgent(workspace, null, meta.id, { preWarmDisabled: true });
+    const replay = vi.fn(async () => ({ success: true as const }));
+    const before = agent.getMessages();
+    expect(await agent.retryBuiltinUserMessage('u2', replay)).toMatchObject({ success: false,
+      error: 'The retained history has no exact native rewind boundary' });
+    expect(agent.getMessages()).toEqual(before);
+    expect(replay).not.toHaveBeenCalled();
+    expect(state.rewindFiles).not.toHaveBeenCalled();
+    expect(state.query).not.toHaveBeenCalled();
+    expect(store.getSessionMetadata(meta.id)?.sdkResumeSessionAt).toBeUndefined();
+  });
+
+it('retains a diagnostic-only product prefix while starting a new native execution', async () => {
+  const workspace = join(state.home, 'diagnostic-only');
+  await mkdir(workspace);
+  const meta = await store.createSession(workspace, { runtime: 'builtin' });
+  const snapshot = await store.loadSessionTranscript(meta.id);
+  expect(await store.appendSessionMessages(meta.id, snapshot.cursor, [
+    { id: 'd', role: 'assistant', content: 'Error: local diagnostic', timestamp: 't', messageKind: 'diagnostic' },
+    { id: 'u', role: 'user', content: 'question', timestamp: 't' },
+  ])).toMatchObject({ ok: true });
+  await agent.initializeAgent(workspace, null, meta.id, { preWarmDisabled: true });
+  expect(await agent.rewindSession('u')).toMatchObject({ success: true });
+  expect(agent.getMessages()).toMatchObject([{ id: 'd', messageKind: 'diagnostic' }]);
+  expect(store.getSessionMetadata(meta.id)?.sdkSessionId).not.toBe(meta.id);
+  expect(store.getSessionMetadata(meta.id)?.sdkResumeSessionAt).toBeUndefined();
+});
+
+it('refuses a diagnostic fork point even if its source contract carries a conflicting native UUID', async () => {
+  const workspace = join(state.home, 'diagnostic-fork-conflict');
+  await mkdir(workspace);
+  const meta = await store.createSession(workspace, { runtime: 'builtin' });
+  const snapshot = await store.loadSessionTranscript(meta.id);
+  expect(await store.appendSessionMessages(meta.id, snapshot.cursor, [
+    { id: 'd', role: 'assistant', content: 'Error: failed', timestamp: 't', messageKind: 'diagnostic', sdkUuid: 'conflict' },
+  ])).toMatchObject({ ok: true });
+  await agent.initializeAgent(workspace, null, meta.id, { preWarmDisabled: true });
+  expect(await agent.forkSession('d')).toMatchObject({ success: false, error: 'This message has no exact native fork boundary' });
+  expect(state.sdkFork).not.toHaveBeenCalled();
+});
+
+it('preserves diagnostics through native fork and cold retry using remapped user UUIDs', async () => {
+  const workspace = join(state.home, 'diagnostic-fork');
+  await mkdir(workspace);
+  const meta = await store.createSession(workspace, { runtime: 'builtin' });
+  const snapshot = await store.loadSessionTranscript(meta.id);
+  expect(await store.appendSessionMessages(meta.id, snapshot.cursor, [
+    { id: 'u1', role: 'user', content: 'one', timestamp: 't', sdkUuid: 'native-u1' },
+    { id: 'd', role: 'assistant', content: 'Error: failed', timestamp: 't', messageKind: 'diagnostic' },
+    { id: 'u2', role: 'user', content: 'two', timestamp: 't', sdkUuid: 'native-u2' },
+    { id: 'a2', role: 'assistant', content: 'answer', timestamp: 't', sdkUuid: 'native-a2' },
+  ])).toMatchObject({ ok: true });
+  await agent.initializeAgent(workspace, null, meta.id, { preWarmDisabled: true });
+  expect(await agent.forkSession('d')).toMatchObject({ success: false });
+  expect(state.sdkFork).not.toHaveBeenCalled();
+  const nativeFork = randomUUID();
+  state.sdkRead.mockImplementation(async (id: string) => [
+    { type: 'user', uuid: `${id === nativeFork ? 'fork-' : ''}native-u1` },
+    { type: 'user', uuid: `${id === nativeFork ? 'fork-' : ''}native-u2` },
+    { type: 'assistant', uuid: `${id === nativeFork ? 'fork-' : ''}native-a2` },
+  ]);
+  state.sdkFork.mockResolvedValue({ sessionId: nativeFork });
+  const fork = await agent.forkSession('a2');
+  expect(fork).toMatchObject({ success: true });
+  const forkData = (await store.getSessionData(fork.newSessionId!))!;
+  expect(forkData.messages[1]).toMatchObject({ id: 'd', messageKind: 'diagnostic' });
+  expect(forkData.messages[1].sdkUuid).toBeUndefined();
+  await agent.resetSession();
+  await agent.initializeAgent(workspace, null, fork.newSessionId!, { preWarmDisabled: true });
+  expect(await agent.retryBuiltinUserMessage('u2', async () => ({ success: true }))).toMatchObject({ success: true });
+  expect(agent.getMessages().map(row => row.id)).toEqual(['u1', 'd']);
+  expect(store.getSessionMetadata(fork.newSessionId!)?.sdkResumeSessionAt).toBe('fork-native-u1');
+});
+
+it.each(['iterator-close', 'transport-error'] as const)(
+  'keeps an unexpected %s separate from output and can send the next query', async exit => {
+  state.exitWithoutResult = exit === 'iterator-close';
+  if (exit === 'transport-error') state.query.mockImplementationOnce((args: Parameters<typeof fakeQuery>[0]) => {
+    const query = fakeQuery(args);
+    return { ...query, async next() {
+      const frame = await query.next();
+      if ((frame.value as { type?: string } | undefined)?.type === 'result') {
+        throw new Error('Claude Code process exited with code 1. stderr: [claude-code:unrecognized_model] {"model":"kimi-k3","query_source":"sdk"}');
+      }
+      return frame;
+    } };
+  });
+  const workspace = join(state.home, 'diagnostic-output');
+  await mkdir(workspace);
+  const meta = await store.createSession(workspace, { runtime: 'builtin' });
+  await agent.initializeAgent(workspace, null, meta.id, { preWarmDisabled: true });
+  const send = async (text: string) => {
+    let finish!: (outcome: TurnTerminalOutcome) => void;
+    const terminal = new Promise<TurnTerminalOutcome>(resolve => { finish = resolve; });
+    await agent.enqueueUserMessage(text, [], undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY, onTerminal: finish });
+    return terminal;
+  };
+  expect(await send('first')).toMatchObject({ status: 'error' });
+  const rows = agent.getMessages();
+  expect(rows).toHaveLength(3);
+  expect(rows[1]).toMatchObject({ sdkUuid: 'tail-frame-1', usage: { inputTokens: 4, outputTokens: 5 } });
+  expect(JSON.stringify(rows[1].content)).not.toContain('Error:');
+  expect(rows[2]).toMatchObject({ role: 'assistant', messageKind: 'diagnostic', content: expect.stringContaining('Error:') });
+  expect(rows[2].sdkUuid).toBeUndefined();
+  expect(rows[2].usage).toBeUndefined();
+  expect(rows[2].turnId).toBe(rows[1].turnId);
+  state.exitWithoutResult = false;
+  await vi.waitFor(() => expect(agent.isSessionActive()).toBe(false));
+  expect(await send('second')).toMatchObject({ status: 'complete' });
+  expect(agent.getBuiltinSessionCompletionTerminal()?.status).toBe('complete');
+  expect(state.query).toHaveBeenCalledTimes(2);
+});
+
+it('keeps the native local command assistant UUID as an exact retry boundary', async () => {
+  state.query.mockImplementation((args: Parameters<typeof fakeQuery>[0]) => {
+    const query = fakeQuery(args);
+    return { ...query, async next() {
+      const frame = await query.next();
+      const value = frame.value as { type?: string } | undefined;
+      return value?.type === 'assistant'
+        ? { ...frame, value: { ...value, local_command_source: 'context' } } : frame;
+    } };
+  });
+  const workspace = join(state.home, 'native-local-command');
+  await mkdir(workspace);
+  const meta = await store.createSession(workspace, { runtime: 'builtin' });
+  await agent.initializeAgent(workspace, null, meta.id, { preWarmDisabled: true });
+  for (const text of ['/context', 'next question']) {
+    let finish!: (outcome: TurnTerminalOutcome) => void;
+    const terminal = new Promise<TurnTerminalOutcome>(resolve => { finish = resolve; });
+    await agent.enqueueUserMessage(text, [], undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined,
+      { channelDelivery: NO_CHANNEL_DELIVERY, onTerminal: finish });
+    await expect(terminal).resolves.toMatchObject({ status: 'complete' });
+  }
+  const rows = agent.getMessages();
+  expect(rows[1]).toMatchObject({ sdkUuid: 'tail-frame-1' });
+  expect(rows[1].messageKind).toBeUndefined();
+  expect(await agent.retryBuiltinUserMessage(rows[2].id, async () => ({ success: true })))
+    .toMatchObject({ success: true });
+  expect(store.getSessionMetadata(meta.id)?.sdkResumeSessionAt).toBe('tail-frame-1');
 });
 
 it.each([false, true])('keeps the immediate native user boundary with an earlier assistant=%s', async earlierAssistant => {

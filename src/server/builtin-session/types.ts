@@ -91,6 +91,7 @@ export type MessageWire = {
   timestamp: string;
   turnId?: string;
   transcriptState?: 'streaming' | 'complete' | 'interrupted';
+  messageKind?: 'diagnostic';
   sdkUuid?: string;
   attachments?: MessageWireAttachment[];
   metadata?: {

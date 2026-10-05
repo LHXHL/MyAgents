@@ -97,6 +97,15 @@ export class ProductTranscriptContent {
     return message;
   }
 
+  /** Product-only output must not reuse or replace the current native assistant. */
+  appendDiagnostic(text: string): void {
+    for (const operation of transcriptMessageOperations({
+      id: `diagnostic-${randomUUID()}`, role: 'assistant', content: text,
+      timestamp: new Date().toISOString(), messageKind: 'diagnostic', transcriptState: 'complete',
+      ...(this.turnId ? { turnId: this.turnId } : {}),
+    })) this.writer.observe(operation);
+  }
+
   block(key: string, type: string, details: TranscriptObject = {}): ProductBlockTarget {
     const prior = this.blocks.get(key);
     if (prior && this.readBlock(prior)) return prior;

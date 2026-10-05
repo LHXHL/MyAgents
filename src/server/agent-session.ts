@@ -1,5 +1,6 @@
 import { desktopContextOf } from '../shared/agentMentions';
 import { buildTurnProviderAnalytics } from './session-core/turn-analytics';
+import { selectBuiltinRewindBoundary } from './session-core/builtin-rewind-boundary';
 import { createBuiltinInterruptController } from './builtin-session/interrupt';
 import { configureBuiltinTranscriptBinding } from './builtin-session/transcript';
 import { randomUUID } from 'crypto';
@@ -10520,14 +10521,14 @@ export async function rewindSession(userMessageId: string): Promise<{
     const targetIndex = history.findIndex(m => m.id === userMessageId && m.role === 'user');
     if (targetIndex < 0) return { success: false as const, error: 'Message not found' };
     const targetMessage = history[targetIndex];
-    // SDK 0.3.276 accepts any native chain entry, including user messages.
-    // The retained tail owns the boundary; looking backward for an assistant
-    // would silently discard consecutive user messages from native context.
-    const retainedTail = history[targetIndex - 1];
-    const resumeSessionAt = retainedTail?.sdkUuid;
-    if (retainedTail && !resumeSessionAt) {
+    const product = getBuiltinProductContent();
+    const prefix = product ? [...product.writer.projection.messages.values()].slice(0, targetIndex)
+      : history.slice(0, targetIndex);
+    const boundary = selectBuiltinRewindBoundary(prefix);
+    if (boundary.kind === 'unavailable') {
       return { success: false as const, error: 'The retained history has no exact native rewind boundary' };
     }
+    const resumeSessionAt = boundary.kind === 'exact' ? boundary.sdkUuid : undefined;
 
     const sourceMeta = getSessionMetadata(productSessionId);
     const sourceSdkSessionId = sourceMeta ? resolveBuiltinSdkSessionId(sourceMeta) ?? null : null;
@@ -10718,7 +10719,7 @@ export async function forkSession(assistantMessageId: string, targetSessionId?: 
       const index = messages.findIndex(message => message.id === assistantMessageId && message.role === 'assistant');
       if (index < 0) throw new Error('Assistant message not found');
       const anchor = messages[index].sdkUuid;
-      if (!anchor) throw new Error('This message has no exact native fork boundary');
+      if (messages[index].messageKind === 'diagnostic' || !anchor) throw new Error('This message has no exact native fork boundary');
       const nativeSource = await resolveBuiltinForkSource(source);
       const forkedMessages = messages.slice(0, index + 1).map(messageWireToSessionMessage);
       const native = await materializeBuiltinFork({ sourceSdkSid: nativeSource, anchorUuid: anchor, dir: source.agentDir, forkedMessages });

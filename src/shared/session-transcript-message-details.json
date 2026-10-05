@@ -12,5 +12,6 @@
   "durationMs": null,
   "metadata": null,
   "turnId": null,
-  "transcriptState": null
+  "transcriptState": null,
+  "messageKind": null
 }

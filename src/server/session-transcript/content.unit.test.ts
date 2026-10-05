@@ -19,6 +19,50 @@ function setup() {
 }
 
 describe('adapter product content identities', () => {
+  it('keeps diagnostics independent while native text, attachments and usage settle on their original targets', async () => {
+    const { writer, content, user, durable } = setup();
+    user('u1');
+    const text = content.block('native:text', 'text', { text: '' });
+    content.append(text, 'text', 'partial');
+    const tool = content.startTool('native-tool', 'Read')!;
+    content.confirmAttachments(tool, [{ pendingId: 'attachment' }]);
+    const nativeId = content.currentAssistantId;
+    writer.observe({ kind: 'message-update', messageId: nativeId!, details: { sdkUuid: 'native-a' } });
+    content.appendDiagnostic('Error: failed');
+    expect(content.currentAssistantId).toBe(nativeId);
+    expect(content.currentTurn?.id).toBe('u1');
+    content.confirmText(text, 'text', 'complete native text');
+    expect(content.block('native:text', 'text')).toEqual(text);
+    content.finishTurn('error', { usage: { inputTokens: 2, outputTokens: 3 } });
+    expect(content.updateAttachment(tool, 'attachment', { id: 'saved', path: 'file' })).toBe(true);
+    await vi.advanceTimersByTimeAsync(100);
+    const rows = transcriptMessages(durable);
+    expect(rows).toHaveLength(3);
+    expect(rows[1]).toMatchObject({ id: nativeId, sdkUuid: 'native-a', usage: { inputTokens: 2, outputTokens: 3 } });
+    expect(JSON.parse(rows[1].content)[0].text).toBe('complete native text');
+    expect(content.readTool(tool)?.attachments).toEqual([{ id: 'saved', path: 'file' }]);
+    expect(rows[2]).toMatchObject({ messageKind: 'diagnostic', content: 'Error: failed', turnId: 'u1', transcriptState: 'complete' });
+    expect(rows[2].sdkUuid).toBeUndefined();
+    expect(rows[2].usage).toBeUndefined();
+    expect([...durable.turns.values()]).toMatchObject([{ status: 'error', usage: { inputTokens: 2, outputTokens: 3 } }]);
+    content.removeMessages([nativeId!]);
+    expect(content.updateAttachment(tool, 'attachment', { id: 'late' })).toBe(false);
+    expect(writer.projection.messages.has(nativeId!)).toBe(false);
+    await writer.close();
+  });
+
+  it('does not create a native assistant or duplicate usage for a diagnostic-only turn', async () => {
+    const { writer, content, user, durable } = setup();
+    user('u1');
+    content.appendDiagnostic('Error: before native output');
+    expect(content.currentAssistantId).toBeNull();
+    content.finishTurn('error', { usage: { inputTokens: 1, outputTokens: 0 } });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(transcriptMessages(durable)[1].usage).toBeUndefined();
+    expect([...durable.turns.values()]).toMatchObject([{ usage: { inputTokens: 1, outputTokens: 0 } }]);
+    await writer.close();
+  });
+
   it('retains interleaved segments and updates a preceding tool after a steer and terminal', async () => {
     const { writer, content, user, durable } = setup();
     const started: string[] = [];
@@ -75,8 +119,9 @@ describe('adapter product content identities', () => {
     await vi.advanceTimersByTimeAsync(100);
     user('u2');
     content.append(content.block('text', 'text', { text: '' }), 'text', 'continues');
+    content.appendDiagnostic('Error: optional product IO is still pending');
     content.finishTurn('complete');
-    expect(writer.projection.messages.size).toBe(4);
+    expect(writer.projection.messages.size).toBe(5);
     expect(content.currentTurn?.status).toBe('complete');
     expect(append).toHaveBeenCalledTimes(1);
     release();
