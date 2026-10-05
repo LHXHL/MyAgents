@@ -38,9 +38,27 @@ Session label 继续表示会话标题/原摘要。来源回执和异步事件�
 
 ## 身份、加密与资源
 
-外层是平台 HTTPS/WSS + 稳定设备公钥绑定 DPoP。接入凭据不超过原 Space 登录剩余有效期与 30 天；设备 leaf 有效 7 天，在 48 小时窗口按需续签。活跃回程使用一项带 jitter 的约 6 小时检查，空闲不轮询凭据或证书。暂时签发不可用且现有 leaf 尚有效时保留当前关联，真实撤销与过期不能忽略。
+### 设备身份与凭据
 
-内层为标准 TLS 1.3 双向证书认证，验证双方当前 Space signed binding、SAN 与 fingerprint。完整 invocation、response、event/history 在内层加密；设备目录、设置和有界路由元数据不要求 E2EE。Worker 只转发 opaque TLS chunks，不组装或保存业务正文、密文和离线消息。密钥只使用系统凭据库，没有明文降级。
+Rust App 在本机生成 P-256 身份密钥，以 ECDSA/SHA-256 签名证明持有私钥；私钥只持久化到系统凭据库（macOS Keychain、Windows Credential Manager、Linux Secret Service），使用时加载到 Rust 进程，不上传云端或交给 Renderer/Node，没有文件或明文降级。Space 验证包含公钥及签名的 CSR，签发设备 leaf 与 signed binding，将账号、设备、密钥代次绑定到证书指纹、SAN 和有效期。
+
+外层是设备到云端的 HTTPS/WSS，接入以稳定设备公钥绑定的 DPoP 证明持有凭据对应的私钥。接入凭据不超过原 Space 登录剩余有效期与 30 天；设备 leaf 有效 7 天，在到期前 48 小时窗口按需续签。活跃回程使用一项带 jitter 的约 6 小时检查，空闲不轮询凭据或证书。暂时签发不可用且现有 leaf 尚有效时保留当前关联，真实撤销与过期不能忽略。
+
+### 端到端通道与消息路径
+
+端到端加密（E2EE）的端点是两台设备的 Rust App。内层由 `rustls` 的 `ring` provider 实现标准 TLS 1.3 双向证书认证，验证证书链、有效期及双方当前 Space signed binding、SAN 与 fingerprint；禁用 0-RTT 和会话恢复。
+
+长期身份私钥用于签名认证；每条内层连接另以临时 ECDHE 协商共同秘密，经 HKDF（SHA-256/SHA-384）派生两个方向的通信密钥。当前默认密钥交换组优先 X25519，也支持 P-256/P-384；正文以协商出的 AES-256-GCM、AES-128-GCM 或 ChaCha20-Poly1305 加密并校验完整性。临时秘密和通信密钥安全销毁后，长期身份私钥的事后泄露不能解密此前记录的通信（前向保密）。
+
+1. 来源解析目标目录，云端安排设备间通道；双方验证签名身份并通过中转完成内层 TLS 握手。随后在加密通道内交换 `ChannelHello`，核对双方设备 scope、channel ID 与 connection epoch；业务对象还检查递增序号，通过后才接收业务消息。
+2. 来源 Node 将调用交给本机 Rust；Rust 将完整 invocation 编码后交给 TLS 加密，再把 TLS chunks 加上 channel ID，封装为外层 WSS 二进制帧。云端终止外层 WSS 后，业务载荷仍是内层密文；Worker 仅按通道和流控预算转发，不终止内层 TLS 或持有其通信密钥。
+3. 目标 Rust 校验、解密并解析业务对象，按上文“调用与回程”完成当前 permit/本机 owner 检查，再交给原执行或读取入口。解密成功不等于获得执行许可。response、event/history 按同一路径反向加密传递，Node/Runtime 在各自本机交接处处理明文。
+
+设备目录、设置和有界路由元数据不要求 E2EE，云端可见设备/通道关系及流量大小、时间；完整 invocation、response、event/history 才属于内层加密范围。Worker 不组装或保存业务正文、密文和离线消息。该保护覆盖设备间传输，不代替端点本机存储或端点调用模型 Provider 时的安全边界。
+
+设备身份信任 Space 的证书与签名绑定体系。签发密钥不能直接解密既有通信，但签发体系若被控制，可通过伪造设备身份攻击后续连接；当前没有独立于 Space 的人工对端指纹确认。实现入口见 [identity.rs](../../src-tauri/src/agent_network/identity.rs)、[crypto.rs](../../src-tauri/src/agent_network/crypto.rs)、[channel.rs](../../src-tauri/src/agent_network/channel.rs)。
+
+### 协议与资源
 
 闭合 schema、限定 selector 和预算由中立协议包定义；当前源码位置、跨仓库分发与已约定的后续调整见下文“公共协议与仓库分发”。
 
