@@ -213,54 +213,14 @@ fn harden_permissions(path: &Path) {
 
 #[cfg(target_os = "windows")]
 fn harden_windows_acl(path: &Path) {
-    use base64::{engine::general_purpose, Engine as _};
-
-    let Some(raw_path) = path.to_str() else {
-        crate::ulog_warn!("[grok-auth] cannot harden non-UTF8 credential path");
-        return;
-    };
-    let encoded_path = general_purpose::STANDARD.encode(raw_path.as_bytes());
-    let script = format!(
-        r#"$ErrorActionPreference = 'Stop'
-$path = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded_path}'))
-$acl = Get-Acl -LiteralPath $path
-$acl.SetAccessRuleProtection($true, $false)
-$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-$rule = New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'Allow')
-$acl.SetAccessRule($rule)
-Set-Acl -LiteralPath $path -AclObject $acl"#
-    );
-    let utf16: Vec<u8> = script
-        .encode_utf16()
-        .flat_map(|unit| unit.to_le_bytes())
-        .collect();
-    let encoded_script = general_purpose::STANDARD.encode(utf16);
     let powershell =
         crate::system_binary::find("powershell").or_else(|| crate::system_binary::find("pwsh"));
     let Some(powershell) = powershell else {
         crate::ulog_warn!("[grok-auth] PowerShell unavailable; cannot harden credential ACL");
         return;
     };
-    match crate::process_cmd::new(powershell)
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-EncodedCommand",
-            &encoded_script,
-        ])
-        .output()
-    {
-        Ok(output) if output.status.success() => {}
-        Ok(output) => crate::ulog_warn!(
-            "[grok-auth] failed to harden credential ACL exit={:?}",
-            output.status.code()
-        ),
-        Err(error) => crate::ulog_warn!(
-            "[grok-auth] failed to run ACL hardening helper error={}",
-            error
-        ),
+    if let Err(error) = crate::credential_permissions::harden_windows_acl(path, &powershell) {
+        crate::ulog_warn!("[grok-auth] failed to harden credential ACL: {}", error);
     }
 }
 

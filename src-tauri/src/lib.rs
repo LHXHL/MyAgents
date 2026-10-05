@@ -46,6 +46,8 @@ pub mod management_api;
 pub mod mcp_startup_admission;
 pub mod tokendance;
 pub use myagents_media_worker_protocol as media_worker_protocol;
+#[cfg(any(windows, test))]
+mod credential_permissions;
 pub mod memory_auto_update;
 pub mod memory_evolution;
 mod network_diagnostics;

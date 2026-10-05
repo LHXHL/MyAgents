@@ -34,6 +34,12 @@ Runtime admission基于 `global-skill-inventory.ts` 的完整快照和可信链�
 
 ## UTF-8 boundary
 
+### Credential DACL
+
+Managed Codex 与 Grok 凭据文件通过 `credential_permissions::harden_windows_acl` 维护既有策略：关闭继承并移除继承 ACE，设置当前用户 FullControl，保留其他显式 ACE。调用方拥有文件生命周期与 PowerShell 定位；共享 leaf 只加载并写入 `Access` section，不修改 owner、group 或 SACL。不能用 `Set-Acl` 复制完整 descriptor，否则已保护的 DACL 仍可能触发不需要的 `SeSecurityPrivilege` 审计写入。
+
+Windows PowerShell 使用 .NET Framework `File.SetAccessControl`；PowerShell Core 使用 `FileSystemAclExtensions.SetAccessControl`。错误 producer 只输出 ASCII exception type / HRESULT；Rust 只接纳该单行 typed receipt，不把原始 CLIXML、路径或凭据内容灌入日志。CLIProxy 的私有目录使用 native `SetFileSecurityW` DACL-only helper，其 Owner Rights/继承规则与这两个凭据文件不同，不混用 policy。
+
 Claude SDK 的 Bash output最终以 UTF-8 string进入 Session JSONL/SSE，但 Windows child可能按 ANSI/OEM code page输出。`buildClaudeSessionEnv()` 为 SDK subprocess设置：
 
 - `LANG=C.UTF-8` / `LC_ALL=C.UTF-8`；
