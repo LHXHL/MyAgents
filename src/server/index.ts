@@ -751,6 +751,7 @@ import {
   CLI_SESSION_HEADER,
   cliSessionScopeError,
 } from '../shared/cli-session-scope';
+import { LOG_SESSION_HEADER } from '../shared/types/log';
 import { isSystemMaintenanceSession } from '../shared/managedScheduledJob';
 import type { InteractionScenario } from './system-prompt';
 import {
@@ -2526,14 +2527,16 @@ async function main() {
       // Pattern 6 (HTTP request boundary): each request runs inside an ALS
       // frame so any nested console.* call automatically gets correlation
       // fields injected. Renderer-side code (`tauriClient.ts`) attaches
-      // X-MyAgents-Session-Id / X-MyAgents-Tab-Id; the server generates a
+      // x-myagents-log-session-id / X-MyAgents-Tab-Id; the server generates a
       // fresh requestId (or honours an inbound `X-MyAgents-Request-Id` from
       // the Rust proxy if it pre-populated one).
       const incomingRequestId =
         request.headers.get('x-myagents-request-id') ?? undefined;
       const requestId = incomingRequestId ?? randomUUIDv4Short();
       const sessionId =
-        request.headers.get('x-myagents-session-id') ?? undefined;
+        request.headers.get(LOG_SESSION_HEADER)
+        ?? request.headers.get(CLI_SESSION_HEADER)
+        ?? undefined;
       const tabId = request.headers.get('x-myagents-tab-id') ?? undefined;
       return withLogContext({ requestId, sessionId, tabId }, () =>
         dispatchRequest(request),

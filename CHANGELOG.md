@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CLI 回执与指引**：取消不存在的观察明确报错；观察 JSON 使用 `data.watches`，保留未能取消的逐项结果。完善缺少子命令、未知参数和退出码提示，内置 SDK 查询显示版本。
 - **配置与开发日志**：备份写入直接覆盖旧备份，避免多余删除导致的失败；开发构建不再将预期禁用的自动更新记为故障。
 - **Windows 凭据权限**：仅更新 Managed Codex 与 Grok 文件的访问权限，避免重复加固意外要求审计特权；失败日志保留单行类型与错误码。
+- **界面全局操作**：日志关联与 CLI 会话身份分开，修复聊天活跃时设置模型刷新、任务立即执行等操作被误判为跨会话请求。
 - **跨平台构建**：锁定并校验 Claude SDK wrapper 与原生程序版本，Windows/Linux 暂存失败保留已有目标，macOS 提前校验；Windows CLI 启动隐藏新控制台并保留输入输出。
 
 ---

@@ -1,4 +1,5 @@
 import { messageCompletionParams, type MessageCompletionTelemetry } from '@/analytics/conversation';
+import { LOG_SESSION_HEADER } from '../../shared/types/log';
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 import type { QueuedMessageInfo } from '@/types/queue';
 import type { ToolPermissionHints } from '../../shared/types/toolPermission';
@@ -417,7 +418,7 @@ function withFloatingCorrelation(sessionId: string, options: RequestInit = {}): 
         ...options,
         headers: {
             ...headerRecord(options.headers),
-            'X-MyAgents-Session-Id': sessionId,
+            [LOG_SESSION_HEADER]: sessionId,
             'X-MyAgents-Tab-Id': OWNER_ID,
         },
     };

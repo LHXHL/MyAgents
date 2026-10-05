@@ -1,4 +1,5 @@
 import { queryAgentSelectors } from '../../shared/agentMentions';
+import { LOG_SESSION_HEADER } from '../../shared/types/log';
 import { messageCompletionParams } from '@/analytics/conversation';
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 import { NATIVE_RESUME_BOUNDARY_MESSAGE } from '../../shared/nativeResumeBoundary';
@@ -812,7 +813,7 @@ function tabCorrelationHeaders(
 ): Record<string, string> {
   return {
     'X-MyAgents-Tab-Id': tabId,
-    ...(sessionId ? { 'X-MyAgents-Session-Id': sessionId } : {}),
+    ...(sessionId ? { [LOG_SESSION_HEADER]: sessionId } : {}),
   };
 }
 

@@ -106,6 +106,7 @@ DSH 的 `buildDshChildEnvironment()` 要求调用方显式选择 `sessionCli`：
 
 Session-scoped CLI 对每个 Admin 请求附加 `x-myagents-session-id`；通用 Sidecar 入口通过
 `SessionEngine.currentSessionContext()` 和共享 `cli-session-scope.ts` 校验，不按 Runtime 分支。
+Renderer 的日志关联使用独立的 `x-myagents-log-session-id`，不提供 CLI 执行身份；Global / Session 落点由 Rust owner 路由确定，不受当前活跃 Chat 的日志关联影响。
 错误 Session/Global 落点在业务 handler 前拒绝，缺失/非法端口在 CLI 发 HTTP 前返回结构化
 scope 错误。普通无 Session 身份的外部 CLI 保留全局管理行为。顶层 `--version` 与 `version`
 进入同一路由，`--help` 仍可本地运行。构建后的 CLI fixture 覆盖两 Session 的 current/task/goal、

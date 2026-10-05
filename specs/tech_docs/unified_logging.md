@@ -51,6 +51,8 @@ Rust unit-test binary 不写用户真实的 `~/.myagents/logs/unified-*.log`；�
 
 统一日志已有 correlation fields，可直接用于性能 trace 和排障过滤：`sessionId / tabId / ownerId / requestId / turnId / runtime`。
 
+Renderer HTTP 请求通过 `x-myagents-log-session-id` 传递日志关联 Session；Tab / Companion 提供各自关联值，通用请求入口仅在缺失时补当前界面关联。该字段不决定 Global / Session 路由，也不参与 CLI scope 准入。Node HTTP 日志入口优先读取它，CLI 请求则沿用 `x-myagents-session-id` 作为日志关联回退；后者仍由 CLI scope owner 独立校验执行身份，不能把界面关联写入该身份头。
+
 ## 日志类型
 
 ```typescript

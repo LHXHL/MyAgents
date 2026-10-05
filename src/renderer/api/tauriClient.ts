@@ -3,6 +3,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { isTauriEnvironment } from '@/utils/browserMock';
+import { LOG_SESSION_HEADER } from '../../shared/types/log';
 
 /** Sidecar status returned from Rust backend */
 export interface SidecarStatus {
@@ -424,8 +425,9 @@ async function invokeProxyFetch(
     if (correlation.tabId && !headers['X-MyAgents-Tab-Id'] && !headers['x-myagents-tab-id']) {
         headers['X-MyAgents-Tab-Id'] = correlation.tabId;
     }
-    if (correlation.sessionId && !headers['X-MyAgents-Session-Id'] && !headers['x-myagents-session-id']) {
-        headers['X-MyAgents-Session-Id'] = correlation.sessionId;
+    // Log attribution does not change the logical destination or CLI scope.
+    if (correlation.sessionId && !new Headers(headers).has(LOG_SESSION_HEADER)) {
+        headers[LOG_SESSION_HEADER] = correlation.sessionId;
     }
 
     try {

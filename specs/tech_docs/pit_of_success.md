@@ -426,7 +426,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 
 **Surface.**
 - `withLogContext({ sessionId, tabId, turnId, runtime, requestId, ownerId }, fn)` (`src/server/logger-context.ts`) —— 进入 ALS frame
-- HTTP 中间件从 `X-MyAgents-Tab-Id` / `X-MyAgents-Session-Id` 头自动起 frame；renderer `proxyFetch` 自动盖头
+- HTTP 中间件从 `X-MyAgents-Tab-Id` / `x-myagents-log-session-id` 头自动起 frame；Renderer 通用请求入口只补日志关联，不写 CLI 执行身份。CLI 日志沿用 `x-myagents-session-id` 回退，其 scope 准入独立校验
 - SDK turn 用 module-level 的 ambient TLS（`Map<sessionId|ownerId, LogContext>`，**不是** singleton）—— 因为 persistent `messageGenerator` 会 yield 出 ALS frame
 - Runtime adapter 在事件处理路径外层包 `withLogContext({ runtime })`
 - `LogEntry` schema 增 6 个可选 correlation 字段；`console.*` capture 自动注入
