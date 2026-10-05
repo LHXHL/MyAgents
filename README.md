@@ -93,7 +93,7 @@ flowchart TB
 
 ![AgentNet 私有网络中的设备、在线状态与已开放 Agent](specs/assets/readme/v050-agentnet-zh.png)
 
-*查看同一账号下的设备及已开放的 Agent。图中同时展示在线、离线和未加入网络的设备；跨设备调用需要目标设备在线。*
+*查看同一账号下的设备及已开放的 Agent。图中展示两台在线设备和一台尚未加入网络的设备；跨设备调用需要目标设备在线。*
 
 接入方式与运行条件见 [AgentNet 指南](bundled-skills/myagents-docs/references/agent-network.md)。
 

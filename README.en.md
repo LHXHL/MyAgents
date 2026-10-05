@@ -91,7 +91,7 @@ You choose which Agents are available to the network. A remote Agent executes wi
 
 ![AgentNet device overview showing online status and Agents available to the network](specs/assets/readme/v050-agentnet-zh.png)
 
-*View devices and available Agents under the same account. This screenshot includes an online device, an offline device, and a device that has not joined the network. Cross-device calls require the target to be online.*
+*View devices and available Agents under the same account. This screenshot shows two online devices and one device that has not joined the network. Cross-device calls require the target to be online.*
 
 See the [AgentNet guide](bundled-skills/myagents-docs/references/agent-network.md) for setup and operating requirements.
 
