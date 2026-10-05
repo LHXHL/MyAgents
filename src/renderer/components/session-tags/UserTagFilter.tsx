@@ -52,7 +52,7 @@ export default function UserTagFilter({ tags, value, onChange }: UserTagFilterPr
                     setOpen((current) => !current);
                     queueMicrotask(() => inputRef.current?.focus());
                 }}
-                className="flex h-8 w-40 shrink-0 items-center gap-1.5 rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-2.5 text-sm text-[var(--ink-secondary)] transition-colors hover:border-[var(--line-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/20"
+                className="flex h-8 w-40 shrink-0 items-center gap-1.5 rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-2.5 text-xs text-[var(--ink-secondary)] transition-colors hover:border-[var(--line-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/20"
             >
                 <TagIcon className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />
                 <span className="min-w-0 flex-1 truncate text-left">{value ?? t('sessionTags.allTags')}</span>
@@ -82,7 +82,7 @@ export default function UserTagFilter({ tags, value, onChange }: UserTagFilterPr
                             }}
                             placeholder={t('sessionTags.searchTags')}
                             aria-label={t('sessionTags.searchTags')}
-                            className="h-8 w-full rounded-md border border-[var(--line)] bg-[var(--paper)] pl-7 pr-2 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent)]"
+                            className="h-8 w-full rounded-md border border-[var(--line)] bg-[var(--paper)] pl-7 pr-2 text-xs text-[var(--ink)] outline-none focus:border-[var(--accent)]"
                         />
                     </div>
                 </div>
@@ -92,7 +92,7 @@ export default function UserTagFilter({ tags, value, onChange }: UserTagFilterPr
                         role="option"
                         aria-selected={value === null}
                         onClick={() => select(null)}
-                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-[var(--ink)] hover:bg-[var(--hover-bg)]"
+                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-[var(--ink)] hover:bg-[var(--hover-bg)]"
                     >
                         <span className="w-4">{value === null && <CheckIcon className="h-3.5 w-3.5 text-[var(--accent)]" />}</span>
                         <span className="flex-1">{t('sessionTags.allTags')}</span>
@@ -104,7 +104,7 @@ export default function UserTagFilter({ tags, value, onChange }: UserTagFilterPr
                             role="option"
                             aria-selected={value?.toLowerCase() === tag.name.toLowerCase()}
                             onClick={() => select(tag.name)}
-                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-[var(--ink)] hover:bg-[var(--hover-bg)]"
+                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-[var(--ink)] hover:bg-[var(--hover-bg)]"
                         >
                             <span className="w-4">{value?.toLowerCase() === tag.name.toLowerCase() && <CheckIcon className="h-3.5 w-3.5 text-[var(--accent)]" />}</span>
                             <span className="min-w-0 flex-1 truncate">{tag.name}</span>
