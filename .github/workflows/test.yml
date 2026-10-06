@@ -113,6 +113,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Verify bundled Node replacement with native NSIS
+        shell: pwsh
+        run: |
+          choco install nsis --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed' }
+          $env:MYAGENTS_TEST_MAKENSIS = Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'
+          node --test scripts/windows-node-runtime-install.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Prepare signed CLIProxy build inputs
         run: node scripts/prepare-cliproxy.mjs win32-x64
       - name: Verify selective Sherpa source extraction on Windows
