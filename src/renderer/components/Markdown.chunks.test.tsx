@@ -57,6 +57,26 @@ afterEach(() => {
 });
 
 describe('Markdown chunked rendering (#634)', () => {
+  it('keeps explicit-heading user prose equivalent across chunk boundaries', () => {
+    const doc = Array.from({ length: 12 }, (_, i) => [
+      `段落 ${i}：${'普通正文 # 保持原样。'.repeat(230)}`,
+      '---',
+      '下一段正文',
+      '',
+      '## 显式标题',
+      '',
+    ].join('\n')).join('\n');
+    probe.chunking = false;
+    const whole = render(<Theme><Markdown preserveNewlines allowSetextHeadings={false}>{doc}</Markdown></Theme>).container;
+    probe.chunking = true;
+    const chunked = render(<Theme><Markdown preserveNewlines allowSetextHeadings={false}>{doc}</Markdown></Theme>).container;
+
+    expect(chunked.innerHTML).toBe(whole.innerHTML);
+    expect(chunked.querySelectorAll('hr')).toHaveLength(12);
+    expect(chunked.querySelectorAll('h1, h2')).toHaveLength(12);
+    expect([...chunked.querySelectorAll('h2')].every(node => node.textContent === '显式标题')).toBe(true);
+  });
+
   it('produces the same DOM as one whole-document parse', () => {
     const doc = report(40);
     probe.chunking = false;

@@ -15,8 +15,21 @@ describe('preprocessMarkdownContent', () => {
     expect(preprocessMarkdownContent(input)).toBe(input);
   });
 
-  test('still separates headings when marker is not attached to a word token', () => {
-    expect(preprocessMarkdownContent('结果：# 标题')).toBe('结果：\n\n# 标题');
+  test.each([
+    '结果：# 标题',
+    '这句话中间有 # 一个符号，后面仍然是正文',
+    '正文 ##\t符号',
+    String.raw`正文 \# 一个符号`,
+    '[请看 # 这一条](https://example.com)',
+    'https://example.com/# fragment',
+    '正文\n\n    # code',
+    '正文\n\n\t## code',
+    '正文\n# 标题',
+    '   ## 标题',
+    '> ## 引用中的标题',
+    '- ## 列表中的标题',
+  ])('preserves hash source positions instead of manufacturing headings: %s', input => {
+    expect(preprocessMarkdownContent(input)).toBe(input);
   });
 
   // `#text` (no space) is NOT a heading per CommonMark — we used to auto-insert
