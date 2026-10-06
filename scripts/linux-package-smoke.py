@@ -10,14 +10,31 @@ from pathlib import Path
 import re
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
 
 
 def run(args, *, env=None, cwd=None, timeout=60):
-    return subprocess.run(args, env=env, cwd=cwd, timeout=timeout, check=True,
-                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True).stdout
+    try:
+        return subprocess.run(args, env=env, cwd=cwd, timeout=timeout, check=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True).stdout
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        # Failure/timeout exceptions retain output, but their tracebacks omit it.
+        # Keep the original exception and expose the underlying diagnostic.
+        if error.output:
+            output = error.output.decode('utf-8', errors='replace') if isinstance(error.output, bytes) else error.output
+            print(output, file=sys.stderr, end='' if output.endswith('\n') else '\n')
+        raise
+
+
+def check_document_worker(node, repo, resource_root, env, scratch):
+    # CSV is a supported, offline fast path; HTML is not a Worker input format.
+    sample = scratch / 'sample.csv'
+    sample.write_text('title,description\nUbuntu package smoke,Offline conversion.\n', encoding='utf-8')
+    run([str(node), str(repo / 'scripts' / 'document-worker-smoke.mjs'), str(sample),
+         str(resource_root)], env=env, cwd=scratch, timeout=90)
 
 
 def checked_file(root, entry):
@@ -183,11 +200,7 @@ def main():
         run([str(node), '--import', str(loader), '-e', 'console.log("tsx ready")'], env=env, cwd=scratch)
         # Real shared-library loading catches dlopen dependencies which ldd(app) misses.
         libraries = load_native_libraries(document_root, document, speech_root, speech)
-        # Exercise the existing Worker protocol with a tiny offline document.
-        sample = scratch / 'sample.html'
-        sample.write_text('<html><body><h1>Ubuntu package smoke</h1><p>Offline conversion.</p></body></html>')
-        run([str(node), str(repo / 'scripts' / 'document-worker-smoke.mjs'), str(sample),
-             str(document_root)], env=env, cwd=scratch, timeout=90)
+        check_document_worker(node, repo, document_root, env, scratch)
         if args.startup:
             check_startup(app, env, scratch)
         del libraries

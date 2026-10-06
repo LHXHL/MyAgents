@@ -6592,7 +6592,7 @@ describe('external SessionEngine with fake runtime', () => {
 
   it('mirrors post-steer assistant blocks when Desktop joins an automation-origin turn', async () => {
     const harness = await createHarness(
-      [{ kind: 'success', text: 'automation block', completeDelayMs: 300 }],
+      [{ kind: 'silent' }],
       { realtimeSteering: true },
     );
     const sessionId = 'session-realtime-steer-automation';
@@ -6615,6 +6615,10 @@ describe('external SessionEngine with fake runtime', () => {
       () => harness.runtime.sentMessages.includes('automation prompt'),
       'automation dispatch',
     );
+    // Dispatch precedes scheduled output. Drive both text boundaries and the
+    // terminal explicitly so Desktop joins after the initial block is complete.
+    harness.runtime.emitForTest({ kind: 'text_delta', text: 'automation block' });
+    harness.runtime.emitForTest({ kind: 'text_stop' });
 
     const desktop = await harness.engine.sendDesktopMessage(
       desktopRequest(sessionId, workspacePath, 'desktop joins automation'),
@@ -6637,6 +6641,7 @@ describe('external SessionEngine with fake runtime', () => {
       text: 'post-steer automation answer',
     });
     harness.runtime.emitForTest({ kind: 'text_stop' });
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'success' });
     await waitFor(
       () => harness.mirrorCalls.length === 2,
       'automation steer assistant mirror',
@@ -6654,7 +6659,7 @@ describe('external SessionEngine with fake runtime', () => {
 
   it('orders a post-steer assistant mirror behind slow accepted-user persistence', async () => {
     const harness = await createHarness(
-      [{ kind: 'success', text: 'answer before steer', completeDelayMs: 500 }],
+      [{ kind: 'silent' }],
       {
         realtimeSteering: true,
         deferMessagePersistOnCall: 2,
@@ -6666,9 +6671,8 @@ describe('external SessionEngine with fake runtime', () => {
     await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'first'));
     await waitFor(() => harness.runtime.sentMessages.includes('first'), 'first ordered-mirror dispatch');
     await waitFor(() => harness.mirrorCalls.length === 1, 'first ordered user mirror');
-    // Dispatch records before the fake runtime's scheduled text event. Wait for
-    // its actual text boundary before injecting a causally later steer answer.
-    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'pre-steer answer boundary');
+    harness.runtime.emitForTest({ kind: 'text_delta', text: 'answer before steer' });
+    harness.runtime.emitForTest({ kind: 'text_stop' });
     const second = await harness.engine.sendDesktopMessage(
       desktopRequest(sessionId, workspacePath, 'second with slow persist'),
     );
@@ -6689,7 +6693,8 @@ describe('external SessionEngine with fake runtime', () => {
       text: 'answer after slow steer',
     });
     harness.runtime.emitForTest({ kind: 'text_stop' });
-    await new Promise((resolve) => setTimeout(resolve, 550));
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'success' });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
     expect(
       harness.mirrorCalls.map(({ role, text }) => ({ role, text })),
     ).toEqual([{ role: 'user', text: 'first' }]);
@@ -6716,13 +6721,7 @@ describe('external SessionEngine with fake runtime', () => {
 
   it('keeps assistant delivery on ReplyRouter when Desktop steers an IM-origin turn', async () => {
     const harness = await createHarness(
-      [
-        {
-          kind: 'success',
-          text: 'IM answer before steer',
-          completeDelayMs: 300,
-        },
-      ],
+      [{ kind: 'silent' }],
       { realtimeSteering: true },
     );
     const sessionId = 'session-realtime-steer-im-origin';
@@ -6749,6 +6748,8 @@ describe('external SessionEngine with fake runtime', () => {
       () => harness.runtime.sentMessages.includes('IM starts the turn'),
       'IM-origin dispatch',
     );
+    harness.runtime.emitForTest({ kind: 'text_delta', text: 'IM answer before steer' });
+    harness.runtime.emitForTest({ kind: 'text_stop' });
 
     await harness.engine.sendDesktopMessage(
       desktopRequest(sessionId, workspacePath, 'desktop joins IM turn'),
@@ -6769,6 +6770,7 @@ describe('external SessionEngine with fake runtime', () => {
       text: 'post-steer IM answer',
     });
     harness.runtime.emitForTest({ kind: 'text_stop' });
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'success' });
 
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
     expect(
