@@ -88,6 +88,38 @@ describe('assistant 正文 prose 上下文接线（ai-message-content）', () =>
     });
 });
 
+describe('user bubble Markdown heading semantics', () => {
+    it.each(['\n', '\r\n'])('renders an adjacent --- as a separator with %j line endings', newline => {
+        const source = ['第一行正文', '第二行正文', '---', '下一段正文'].join(newline);
+        const { container } = render(<Message message={userMessage(source)} />);
+        const prose = container.querySelector('.user-message-content')!;
+
+        expect(prose.querySelector('h1, h2, h3, h4, h5, h6')).toBeNull();
+        expect(prose.querySelector('p')?.textContent).toBe('第一行正文\n第二行正文');
+        expect(prose.querySelector('p br')).not.toBeNull();
+        expect(prose.querySelector('hr')).not.toBeNull();
+        expect(prose.querySelector('hr + p')?.textContent).toBe('下一段正文');
+    });
+
+    it('renders explicit ATX headings but leaves inline and unspaced hashes as text', () => {
+        const source = '句中 # 只是符号\n\n结果：## 仍然是正文\n\n#标签\n\n# 真正的标题\n\n## 二级标题';
+        const { container } = render(<Message message={userMessage(source)} />);
+        const prose = container.querySelector('.user-message-content')!;
+
+        expect([...prose.querySelectorAll('h1, h2')].map(node => node.textContent))
+            .toEqual(['真正的标题', '二级标题']);
+        expect([...prose.querySelectorAll('p')].map(node => node.textContent))
+            .toEqual(['句中 # 只是符号', '结果：## 仍然是正文', '#标签']);
+    });
+
+    it('keeps default assistant Setext headings', () => {
+        const { container } = render(<Message message={assistantMessage('标题\n---')} />);
+
+        expect(container.querySelector('.ai-message-content h2')?.textContent).toBe('标题');
+        expect(container.querySelector('hr')).toBeNull();
+    });
+});
+
 describe('Task comment system-reminder user bubble', () => {
     it('shows only the visible human comment with the Task comment badge', () => {
         const content = [

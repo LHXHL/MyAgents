@@ -442,7 +442,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
                 )}
                 {hasText && (
                   <div className="user-message-content text-[var(--ink)]">
-                    <Markdown preserveNewlines>{userContent}</Markdown>
+                    <Markdown preserveNewlines allowSetextHeadings={false}>{userContent}</Markdown>
                   </div>
                 )}
               </div>

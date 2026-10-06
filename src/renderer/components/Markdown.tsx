@@ -34,6 +34,7 @@ import {
   MARKDOWN_REMARK_PLUGINS_WITH_BREAKS,
   MARKDOWN_URL_TRANSFORM,
   convertFrontmatter,
+  remarkDisableSetextHeadings,
 } from '@/utils/markdownPipeline';
 import { canonicalizeLegacyMyAgentsResourceUrl } from '@/utils/myagentsProtocol';
 import { fileUrlToPath, resolveAgainstWorkspace } from '@/utils/workspaceFileLinks';
@@ -302,6 +303,8 @@ interface MarkdownProps {
   compact?: boolean;
   /** Preserve single newlines as line breaks (useful for user messages in chat) */
   preserveNewlines?: boolean;
+  /** User prose requires explicit # headings; documents retain Setext headings. */
+  allowSetextHeadings?: boolean;
   /** Skip preprocessing (for rendering complete documents like file preview) */
   raw?: boolean;
   /** Active streaming tail: softly fade the bottom edge + show a breathing caret
@@ -452,7 +455,7 @@ const MarkdownChunk = memo(function MarkdownChunk({ source, remarkPlugins, rehyp
   );
 });
 
-const Markdown = memo(function Markdown({ children, compact = false, preserveNewlines = false, raw = false, basePath = '', workspacePath, streaming = false, footnoteNumbers }: MarkdownProps) {
+const Markdown = memo(function Markdown({ children, compact = false, preserveNewlines = false, allowSetextHeadings = true, raw = false, basePath = '', workspacePath, streaming = false, footnoteNumbers }: MarkdownProps) {
   // Skip preprocessing for raw mode (file preview) - preprocessing is for streaming chat messages.
   // In raw mode, convert YAML frontmatter to a fenced code block for proper rendering.
   //
@@ -469,6 +472,11 @@ const Markdown = memo(function Markdown({ children, compact = false, preserveNew
   // append re-parses only the tail chunk because earlier chunk strings stay
   // identical and their memoized renderers bail out (#634).
   const chunks = useMemo(() => splitMarkdownRenderChunks(processedContent), [processedContent]);
+
+  const remarkPlugins = useMemo(() => {
+    const plugins = preserveNewlines ? MARKDOWN_REMARK_PLUGINS_WITH_BREAKS : MARKDOWN_REMARK_PLUGINS_DEFAULT;
+    return allowSetextHeadings ? plugins : [...plugins, remarkDisableSetextHeadings];
+  }, [preserveNewlines, allowSetextHeadings]);
 
   // The document directory resolves relative references; it never becomes a
   // workspace grant. Rust separately validates the resulting local/workspace read.
@@ -502,7 +510,7 @@ const Markdown = memo(function Markdown({ children, compact = false, preserveNew
         {index > 0 && '\n'}
         <MarkdownChunk
           source={chunk}
-          remarkPlugins={preserveNewlines ? MARKDOWN_REMARK_PLUGINS_WITH_BREAKS : MARKDOWN_REMARK_PLUGINS_DEFAULT}
+          remarkPlugins={remarkPlugins}
           rehypePlugins={streaming && !raw && index === chunks.length - 1 ? REHYPE_PLUGINS_STREAMING : MARKDOWN_REHYPE_PLUGINS}
           components={components}
         />
