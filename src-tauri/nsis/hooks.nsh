@@ -1,6 +1,23 @@
 ; MyAgents NSIS Installer Hooks
 ; - PREINSTALL: Kill all MyAgents processes before file replacement
 ;   Prevents file-lock failures when updating node.exe / claude.exe / etc.
+;   Replace the complete app-owned Node distribution, not just its current files.
+
+; NSIS File instructions only overwrite the new package's inventory. Dependencies
+; removed by a newer npm otherwise survive and can shadow its correct modules
+; (#636). This immutable component belongs to the installer, never to user data.
+; Do not defer deletion until reboot: that would expose a mixed runtime now and
+; could delete files from the freshly installed runtime on the next reboot.
+!macro _MYAGENTS_REMOVE_NODE_RUNTIME
+  IfFileExists "$INSTDIR\nodejs" 0 myagents_node_runtime_removed
+  DetailPrint "Removing the previous bundled Node.js runtime..."
+  ClearErrors
+  RMDir /r "$INSTDIR\nodejs"
+  IfErrors 0 myagents_node_runtime_removed
+    SetErrorLevel 2
+    Abort "Unable to remove the bundled Node.js runtime. Close processes using this installation and run the installer again."
+  myagents_node_runtime_removed:
+!macroend
 
 ; Shared cleanup logic — kill all processes launched from our install directory,
 ; plus orphan SDK/MCP processes that reference .myagents in their command line.
@@ -26,6 +43,7 @@
 
 !macro NSIS_HOOK_PREINSTALL
   !insertmacro _MYAGENTS_KILL_PROCESSES
+  !insertmacro _MYAGENTS_REMOVE_NODE_RUNTIME
 
   ; Legacy cleanup: remove orphaned bun.exe from pre-0.2.0 installs (Bun→Node migration,
   ; v0.2.0). Recent builds bundle Node, not Bun; this just sweeps any ancient leftover.
@@ -35,6 +53,7 @@
 !macro NSIS_HOOK_PREUNINSTALL
   ; Kill all MyAgents processes before uninstall (same file-lock issue as update)
   !insertmacro _MYAGENTS_KILL_PROCESSES
+  !insertmacro _MYAGENTS_REMOVE_NODE_RUNTIME
 
   ; Legacy cleanup: remove orphaned bun.exe from pre-0.2.0 installs so it doesn't
   ; survive uninstall (the NSIS uninstaller only tracks files it installed).
