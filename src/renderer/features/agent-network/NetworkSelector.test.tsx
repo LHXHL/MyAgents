@@ -16,6 +16,7 @@ vi.mock("@/api/agentNetwork", async (original) => ({
 vi.mock("./store", () => ({ acceptNetworkRegistry: calls.accept }));
 import { NetworkSelector } from "./NetworkSelector";
 const registry: NetworkRegistry = {
+  selfhostEnabled: true,
   selected: "official",
   connections: ["official", "self-a", "self-b"].map((id) => ({
     id,
@@ -39,6 +40,22 @@ beforeEach(() => {
   vi.resetAllMocks();
   calls.select.mockResolvedValue({ ...registry, selected: "self-a" });
   calls.join.mockRejectedValue({ code: "ENROLLMENT_KEY_EXPIRED" });
+});
+it("defaults to the original official heading without network controls", () => {
+  render(<NetworkSelector registry={{ ...registry, selfhostEnabled: undefined }} />);
+  expect(screen.getByRole("heading", {name: "AgentNet 局域网络"})).toBeInTheDocument();
+  expect(screen.queryByRole("button", {name: "选择网络"})).not.toBeInTheDocument();
+});
+it("disabling the gate unmounts an open join dialog and reopening starts clean", async () => {
+  const view = render(<NetworkSelector registry={registry} />);
+  fireEvent.click(screen.getByRole("button", {name: "选择网络"}));
+  fireEvent.click(await screen.findByRole("menuitem", {name: "加入自部署网络"}));
+  expect(screen.getByLabelText("设备 key")).toBeInTheDocument();
+  view.rerender(<NetworkSelector registry={{...registry, selfhostEnabled: false}} />);
+  expect(screen.queryByLabelText("设备 key")).not.toBeInTheDocument();
+  view.rerender(<NetworkSelector registry={registry} />);
+  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("设备 key")).not.toBeInTheDocument();
 });
 it("switches only the selected view and never removes or reenrolls another connection", async () => {
   render(<NetworkSelector registry={registry} />);

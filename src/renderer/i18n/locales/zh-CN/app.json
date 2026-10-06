@@ -1378,7 +1378,8 @@
       "trustChanged": "该地址的实例身份或信任材料已改变，请先核实部署。",
       "removalPending": "暂未确认服务端撤销。连接已停止，可稍后重试移除。",
       "privateKeyMissing": "本机私钥不可用。请管理员先撤销该设备，再用新 key 加入。",
-      "protocolUnsupported": "此服务不支持当前 AgentNet 协议。"
+      "protocolUnsupported": "此服务不支持当前 AgentNet 协议。",
+      "featureDisabled": "请先在设置的开发者模式中开启 AgentNet 多网络。"
     },
     "chooseNetwork": "选择网络",
     "officialNetwork": "MyAgents 官方网络",

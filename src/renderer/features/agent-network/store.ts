@@ -16,6 +16,7 @@ const initialSnapshot: NetworkSnapshot = {
   connectionId: "official",
 };
 const initial: NetworkRegistry = {
+  selfhostEnabled: false,
   selected: "official",
   connections: [
     {

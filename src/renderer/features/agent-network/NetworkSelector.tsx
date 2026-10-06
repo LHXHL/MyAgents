@@ -16,6 +16,14 @@ import { acceptNetworkRegistry } from "./store";
 import { JoinNetworkDialog } from "./JoinNetworkDialog";
 export function NetworkSelector({ registry }: { registry: NetworkRegistry }) {
   const { t } = useTranslation("app");
+  return registry.selfhostEnabled === true ? (
+    <NetworkSwitcher registry={registry} />
+  ) : (
+    <h1 className="min-w-0 text-2xl font-semibold">{t("agentNetwork.networkName")}</h1>
+  );
+}
+function NetworkSwitcher({ registry }: { registry: NetworkRegistry }) {
+  const { t } = useTranslation("app");
   const toast = useToastOptional();
   const anchor = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false),

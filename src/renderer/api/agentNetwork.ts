@@ -235,6 +235,7 @@ export function networkErrorKey(
     typeof error === "object" && error !== null && "code" in error
       ? String(error.code)
       : "";
+  if (code === "NETWORK_FEATURE_DISABLED") return "featureDisabled";
   if (
     [
       "REVISION_CONFLICT",
@@ -279,6 +280,7 @@ export interface NetworkConnection {
 }
 export interface NetworkRegistry {
   revision?: number;
+  selfhostEnabled?: boolean;
   selected: string;
   connections: NetworkConnection[];
 }

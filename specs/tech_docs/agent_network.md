@@ -23,6 +23,8 @@
 
 ## 多网络连接与自部署身份
 
+设置 → 开发者模式的「AgentNet 多网络（实验性）」由原 `config.json` 的 `agentNetworkSelfhostDevGate` 控制，缺省/非 `true` 均关闭。`NetworkRegistry` 在既有 mutation 锁内读取最新配置，裁决有效连接并通过本地 `selfhostEnabled` 投影 UI；不是网络协议字段。关闭只保留官方 actor 与官方页面，停止自部署 actor、阻止自部署加入/选择/移除及直接调用，保留已加入配置、原查看选择与 OS 凭据，不执行远端撤销。开启重建非 removing 连接并恢复原选择；重建代次必须高于停用前的 actor（包括电源 boundary），使迟到交接失效。官方登录、连接与管理保持原行为。
+
 `registry.rs` 是 App 连接 owner：官方入口恒在，自部署连接/查看选择写入原 `config.json` 的 `agentNetworkConnections` / `agentNetworkSelectedConnection`，锁内重新读盘合并。所有已加入网络同时维持连接；标题下拉只选择展示。`account.rs` 分流原官方登录 adapter 与自部署 pinned descriptor，不改变 Space 登录/成员关系。每个自部署实例是一共同信任域；同一本地 Agent 与 Session/history 跨网络保持原实体，只逐网络配置开放。
 
 加入时读取 HTTPS origin 的 descriptor，校验并固定 service/environment/principal/network/root/JWKS；身份兑换与 bootstrap 也必须匹配该信任。重定向不携带密钥，实例/信任变化明确拒绝。设备 key 只参与首次登记，不写 config、不保存在 Node/Renderer；私钥沿原 OS KeyScope 存储。已有活跃身份不能凭新 key 覆盖；被管理员撤销后可用新 key 递增设备代次重入。丢私钥须先撤销；官方凭据行为保留。
@@ -117,7 +119,7 @@ Renderer 只合并同一账号/连接投影 revision 下完全相同的在途目
 2. 从已提交的 Agenthub 来源导入同一包到客户端 `vendor/agent-network-protocol/`，记录对应服务端源码提交，更新根依赖与锁文件；不修改包内定义或提交构建投影目录。
 3. 运行客户端产物校验、TS/Rust parity、受影响业务测试和构建，并运行服务端 source/artifact 校验。根据真实协议兼容责任决定部署顺序，不随客户端版本机械升级、不自动重发不确定调用。
 
-具体打包和导入命令由 Agenthub 的 `specs/PROTOCOL.md` 维护；普通构建不执行跨仓库打包或拉取源码。包随公开客户端提交，使新的贡献者无需私有 AgentNet 权限即可构建。源码迁移不代表自部署认证、多网络 UI 或完整产品验收已经完成。
+具体打包、tag 发布与显式导入命令由 Agenthub 的 `specs/RELEASE.md` 维护（`npm run release:import -- --target ../MyAgents --release v<version>`）；普通构建不执行跨仓库打包或拉取源码。包随公开客户端提交，使新的贡献者无需私有 AgentNet 权限即可构建。源码迁移不代表自部署认证、多网络 UI 或完整产品验收已经完成。
 
 ## Dev 环境
 

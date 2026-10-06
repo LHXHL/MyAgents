@@ -1379,7 +1379,8 @@
       "trustChanged": "The instance identity or trust at this address changed. Verify the deployment first.",
       "removalPending": "Server revocation is unconfirmed. The connection is stopped; retry removal later.",
       "privateKeyMissing": "The device private key is unavailable. Ask the administrator to revoke this device, then join with a new key.",
-      "protocolUnsupported": "This service does not support the current AgentNet protocol."
+      "protocolUnsupported": "This service does not support the current AgentNet protocol.",
+      "featureDisabled": "Enable AgentNet multiple networks in developer settings first."
     },
     "chooseNetwork": "Choose network",
     "officialNetwork": "MyAgents official network",

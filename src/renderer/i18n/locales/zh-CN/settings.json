@@ -2248,6 +2248,8 @@
     "developer": {
       "devModeTitle": "开发者模式",
       "devModeDescription": "显示页面上的日志入口按钮（如 Logs、System Info 等）。",
+      "agentNetworkMultiNetworkTitle": "AgentNet 多网络（实验性）",
+      "agentNetworkMultiNetworkDescription": "开启网络切换和自部署网络接入。关闭会暂停自部署连接，保留配置与设备凭据；官方网络不受影响。",
       "chatHistoryEntryTitle": "对话页历史入口",
       "chatHistoryEntryDescription": "在 AI 对话页顶部显示「历史」按钮。关闭不影响全局会话搜索和工作区 Session 列表。",
       "codexProviderTitle": "Codex 订阅 Provider",

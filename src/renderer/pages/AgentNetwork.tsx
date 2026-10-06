@@ -48,8 +48,9 @@ export default function AgentNetwork({
   isActive?: boolean;
 }) {
   const registry = useAgentNetworkRegistry();
+  const selected = registry.selfhostEnabled === true ? registry.selected : "official";
   const connection =
-    registry.connections.find((c) => c.id === registry.selected) ??
+    registry.connections.find((c) => c.id === selected) ??
     registry.connections[0];
   const snapshot = useAgentNetworkSnapshot(connection?.id);
   // An account boundary creates a fresh UI scope immediately, including dialogs

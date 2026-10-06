@@ -49,6 +49,7 @@ vi.mock("@/features/agent-network/store", async (original) => ({
   useAgentNetworkSnapshot: () => mocks.snapshot,
   useAgentNetworkRegistry: () => ({
     selected: mocks.selected,
+    selfhostEnabled: true,
     connections: [
       {
         id: mocks.selected,

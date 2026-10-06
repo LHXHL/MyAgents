@@ -43,6 +43,7 @@ pub(crate) struct ConnectionView {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RegistryView {
     pub revision: u64,
+    pub selfhost_enabled: bool,
     pub selected: String,
     pub connections: Vec<ConnectionView>,
 }
@@ -54,6 +55,7 @@ pub(crate) struct NetworkRegistry {
     selected: Mutex<String>,
     revision: AtomicU64,
     stopped: AtomicBool,
+    selfhost_enabled: AtomicBool,
     shutdown: Notify,
     mutation: tokio::sync::Mutex<()>,
 }
@@ -107,6 +109,7 @@ impl NetworkRegistry {
             selected: Mutex::new(OFFICIAL.into()),
             revision: AtomicU64::new(0),
             stopped: AtomicBool::new(false),
+            selfhost_enabled: AtomicBool::new(false),
             shutdown: Notify::new(),
             mutation: tokio::sync::Mutex::new(()),
         })
@@ -120,6 +123,9 @@ impl NetworkRegistry {
             .collect()
     }
     pub(crate) fn connection(&self, id: &str) -> Result<ManagedConnection, NetworkError> {
+        if id != OFFICIAL && !self.selfhost_enabled.load(Ordering::Acquire) {
+            return Err(NetworkError::new("NETWORK_FEATURE_DISABLED"));
+        }
         self.connections
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -185,6 +191,7 @@ impl NetworkRegistry {
         self.shutdown.notify_one();
     }
     pub(crate) fn view(&self) -> RegistryView {
+        let enabled = self.selfhost_enabled.load(Ordering::Acquire);
         let stored = self.stored.lock().unwrap_or_else(|e| e.into_inner());
         let mut views = vec![ConnectionView {
             id: OFFICIAL.into(),
@@ -194,7 +201,7 @@ impl NetworkRegistry {
             removing: false,
             snapshot: self.snapshot(),
         }];
-        for c in stored.iter() {
+        for c in stored.iter().filter(|_| enabled) {
             let snapshot = self
                 .connection(&c.id)
                 .map(|a| a.snapshot())
@@ -219,11 +226,15 @@ impl NetworkRegistry {
         }
         RegistryView {
             revision: self.revision.load(Ordering::Acquire),
-            selected: self
-                .selected
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone(),
+            selfhost_enabled: enabled,
+            selected: if enabled {
+                self.selected
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone()
+            } else {
+                OFFICIAL.into()
+            },
             connections: views,
         }
     }
@@ -233,6 +244,9 @@ impl NetworkRegistry {
         id: String,
     ) -> Result<RegistryView, NetworkError> {
         let _lock = self.mutation.lock().await;
+        if id != OFFICIAL && !self.selfhost_enabled.load(Ordering::Acquire) {
+            return Err(NetworkError::new("NETWORK_FEATURE_DISABLED"));
+        }
         if id != OFFICIAL
             && !self
                 .stored
@@ -265,6 +279,9 @@ impl NetworkRegistry {
         key: Zeroizing<String>,
     ) -> Result<RegistryView, NetworkError> {
         let _lock = self.mutation.lock().await;
+        if !self.selfhost_enabled.load(Ordering::Acquire) {
+            return Err(NetworkError::new("NETWORK_FEATURE_DISABLED"));
+        }
         let descriptor = super::account::descriptor(&url).await?;
         let existing = {
             self.stored
@@ -429,6 +446,9 @@ impl NetworkRegistry {
         if id == OFFICIAL {
             return Err(NetworkError::new("OFFICIAL_NETWORK_CANNOT_REMOVE"));
         }
+        if !self.selfhost_enabled.load(Ordering::Acquire) {
+            return Err(NetworkError::new("NETWORK_FEATURE_DISABLED"));
+        }
         let stored = self
             .stored
             .lock()
@@ -587,6 +607,80 @@ impl NetworkRegistry {
         let _ = app.emit("agent-network:connections-changed", self.view());
         Ok(self.view())
     }
+    /// Effective runtime state follows the existing config owner. Stopping a
+    /// connector preserves admission/credentials; a later activation gets a new
+    /// generation so retired completions cannot become current again.
+    fn set_selfhost_enabled(&self, enabled: bool) -> Option<Vec<ManagedConnection>> {
+        if self.stopped.load(Ordering::Acquire) {
+            return None;
+        }
+        let mut changed = self.selfhost_enabled.swap(enabled, Ordering::AcqRel) != enabled;
+        let stored = self
+            .stored
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let mut connections = self.connections.lock().unwrap_or_else(|e| e.into_inner());
+        let mut started = Vec::new();
+        if enabled {
+            let seed = self.revision.load(Ordering::Acquire).saturating_add(1);
+            for record in stored.iter().filter(|c| !c.removing) {
+                // A config event can enable the gate before startup loads stored
+                // connections. Reconcile missing actors even for the same value.
+                if connections.contains_key(&record.id) {
+                    continue;
+                }
+                let actor = AgentNetwork::with_generation(
+                    record.id.clone(),
+                    Some(self_account(record, None)),
+                    self.memory.clone(),
+                    seed,
+                );
+                connections.insert(record.id.clone(), actor.clone());
+                started.push(actor);
+                changed = true;
+            }
+        } else {
+            connections.retain(|id, actor| {
+                if id == OFFICIAL {
+                    return true;
+                }
+                self.revision
+                    .fetch_max(actor.generation().saturating_add(1), Ordering::AcqRel);
+                actor.deactivate();
+                changed = true;
+                false
+            });
+        }
+        if changed {
+            self.revision.fetch_add(1, Ordering::AcqRel);
+            Some(started)
+        } else {
+            None
+        }
+    }
+    async fn refresh_selfhost_gate(
+        &self,
+        app: &tauri::AppHandle,
+        manager: ManagedSidecarManager,
+    ) -> Result<(), NetworkError> {
+        let _lock = self.mutation.lock().await;
+        let path = config_path()?;
+        let config = tokio::task::spawn_blocking(move || crate::config_io::read_config_json(&path))
+            .await
+            .map_err(|_| NetworkError::new("NETWORK_CONFIG_UNAVAILABLE"))?
+            .map_err(|_| NetworkError::new("NETWORK_CONFIG_UNAVAILABLE"))?;
+        if let Some(started) = self.set_selfhost_enabled(selfhost_gate_enabled(&config)) {
+            for actor in started {
+                super::actor::start(app.clone(), actor, manager.clone());
+            }
+            let _ = app.emit("agent-network:connections-changed", self.view());
+        }
+        Ok(())
+    }
+}
+fn selfhost_gate_enabled(config: &Value) -> bool {
+    config["agentNetworkSelfhostDevGate"].as_bool() == Some(true)
 }
 /// One removal lifecycle: durable confirmation precedes credential deletion;
 /// forgetting config is last. Any failure leaves the previous recovery point.
@@ -648,6 +742,22 @@ pub(crate) fn start(
     owner: ManagedAgentNetwork,
     manager: ManagedSidecarManager,
 ) {
+    let gate_owner = owner.clone();
+    let gate_app = app.clone();
+    let gate_manager = manager.clone();
+    app.listen("app:config-changed", move |_| {
+        let owner = gate_owner.clone();
+        let app = gate_app.clone();
+        let manager = gate_manager.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = owner.refresh_selfhost_gate(&app, manager).await {
+                crate::ulog_warn!(
+                    "[agent-network] failed to refresh developer gate: {}",
+                    error.code
+                );
+            }
+        });
+    });
     for event in ["app:config-changed", "agent:config-changed"] {
         let owner = owner.clone();
         app.listen(event, move |_| {
@@ -686,22 +796,14 @@ pub(crate) fn start(
                             } else {
                                 OFFICIAL.into()
                             };
-                            for c in &stored {
-                                if !c.removing {
-                                    let connector = AgentNetwork::new(
-                                        c.id.clone(),
-                                        Some(self_account(c, None)),
-                                        owner.memory.clone(),
-                                    );
-                                    owner
-                                        .connections
-                                        .lock()
-                                        .unwrap_or_else(|e| e.into_inner())
-                                        .insert(c.id.clone(), connector.clone());
-                                    super::actor::start(app.clone(), connector, manager.clone());
+                            *owner.stored.lock().unwrap_or_else(|e| e.into_inner()) = stored;
+                            if let Some(started) =
+                                owner.set_selfhost_enabled(selfhost_gate_enabled(&config))
+                            {
+                                for actor in started {
+                                    super::actor::start(app.clone(), actor, manager.clone());
                                 }
                             }
-                            *owner.stored.lock().unwrap_or_else(|e| e.into_inner()) = stored;
                             owner.revision.fetch_add(1, Ordering::AcqRel);
                             let _ = app.emit("agent-network:connections-changed", owner.view());
                         }
@@ -751,6 +853,95 @@ pub(crate) fn start(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn selfhost_gate_requires_explicit_true() {
+        for config in [
+            json!({}),
+            json!({"agentNetworkSelfhostDevGate":false}),
+            json!({"agentNetworkSelfhostDevGate":"true"}),
+            json!({"agentNetworkSelfhostDevGate":1}),
+        ] {
+            assert!(!selfhost_gate_enabled(&config));
+        }
+        assert!(selfhost_gate_enabled(
+            &json!({"agentNetworkSelfhostDevGate":true})
+        ));
+    }
+    #[test]
+    fn developer_gate_pauses_only_selfhost_and_reactivation_rejects_retired_generations() {
+        let owner = NetworkRegistry::new();
+        let official = owner.official();
+        let stored: StoredConnection = serde_json::from_value(json!({
+            "id":"00000000-0000-0000-0000-000000000001",
+            "descriptor":{"serviceId":"00000000-0000-0000-0000-000000000002","environment":"development",
+                "principalId":"00000000-0000-0000-0000-000000000003","networkId":"00000000-0000-0000-0000-000000000004",
+                "name":"isolated","issuer":"https://isolated.example","protocol":1,"capabilities":[],"rootCertificate":"fixture","jwks":{}},
+            "removing":false
+        })).unwrap();
+        let id = stored.id.clone();
+        *owner.stored.lock().unwrap() = vec![stored];
+        *owner.selected.lock().unwrap() = id.clone();
+        let original = serde_json::to_value(owner.stored.lock().unwrap().clone()).unwrap();
+        assert!(!owner.view().selfhost_enabled);
+        assert_eq!(owner.view().selected, OFFICIAL);
+        assert_eq!(owner.view().connections.len(), 1);
+        assert_eq!(
+            owner.connection(&id).err().unwrap().code,
+            "NETWORK_FEATURE_DISABLED"
+        );
+        let started = owner.set_selfhost_enabled(true).unwrap();
+        assert_eq!(started.len(), 1);
+        assert_eq!(owner.view().selected, id);
+        assert!(owner.set_selfhost_enabled(true).is_none());
+        // A power boundary may advance beyond the registry's normal revision.
+        // The existing with_generation seed must still exceed that old actor.
+        started[0].deactivate();
+        let account = self_account(&owner.stored.lock().unwrap()[0], None);
+        let NetworkAccountSession::Selfhost(authority) = &account else {
+            panic!("fixture must be selfhost");
+        };
+        let authority = authority.clone();
+        let retired =
+            AgentNetwork::with_generation(id.clone(), Some(account), owner.memory.clone(), 100);
+        assert!(retired.generation() > owner.revision.load(Ordering::Acquire));
+        owner
+            .connections
+            .lock()
+            .unwrap()
+            .insert(id.clone(), retired.clone());
+        assert!(owner.set_selfhost_enabled(false).unwrap().is_empty());
+        assert!(!authority.active.load(Ordering::Acquire));
+        assert_eq!(owner.current_generation(&id), None);
+        assert_eq!(owner.view().selected, OFFICIAL);
+        assert_eq!(owner.view().connections.len(), 1);
+        let restored = owner.set_selfhost_enabled(true).unwrap();
+        assert!(restored[0].generation() > retired.generation());
+        assert_eq!(owner.view().selected, id);
+        assert_eq!(
+            serde_json::to_value(owner.stored.lock().unwrap().clone()).unwrap(),
+            original
+        );
+        assert!(Arc::ptr_eq(&owner.official(), &official));
+    }
+    #[test]
+    fn gate_event_before_startup_reconciles_loaded_connections_without_replacing_live_actors() {
+        let owner = NetworkRegistry::new();
+        assert!(owner.set_selfhost_enabled(true).unwrap().is_empty());
+        let stored: StoredConnection = serde_json::from_value(json!({
+            "id":"00000000-0000-0000-0000-000000000001",
+            "descriptor":{"serviceId":"00000000-0000-0000-0000-000000000002","environment":"development",
+                "principalId":"00000000-0000-0000-0000-000000000003","networkId":"00000000-0000-0000-0000-000000000004",
+                "name":"isolated","issuer":"https://isolated.example","protocol":1,"capabilities":[],"rootCertificate":"fixture","jwks":{}},
+            "removing":false
+        })).unwrap();
+        let id = stored.id.clone();
+        *owner.stored.lock().unwrap() = vec![stored];
+        let started = owner.set_selfhost_enabled(true).unwrap();
+        assert_eq!(started.len(), 1);
+        assert!(Arc::ptr_eq(&owner.connection(&id).unwrap(), &started[0]));
+        assert!(owner.set_selfhost_enabled(true).is_none());
+        assert!(Arc::ptr_eq(&owner.connection(&id).unwrap(), &started[0]));
+    }
     #[test]
     fn revocation_after_active_preflight_has_no_enrollment_capability() {
         // Active existing record has no revocation checkpoint. Even if issuer
