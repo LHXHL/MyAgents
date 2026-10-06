@@ -6,7 +6,6 @@ import {
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { InfoIcon, LockIcon } from "@/components/icons";
 import { metadataSchemas } from "@myagents/agent-network-protocol";
 import {
   spaceGetSession,
@@ -24,7 +23,6 @@ import {
 } from "@/api/agentNetwork";
 import { useMyAgentsLogin } from "@/hooks/useMyAgentsLogin";
 import { SpaceLogin } from "@/pages/space/SpaceChrome";
-import Popover from "@/components/ui/Popover";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { getDeviceId, preloadDeviceId } from "@/identity/deviceIdentity";
 import { useToastOptional } from "@/components/Toast";
@@ -41,6 +39,7 @@ import {
   useAgentNetworkSnapshot,
 } from "@/features/agent-network/store";
 
+import { NetworkHeader } from "@/features/agent-network/NetworkHeader";
 import { NetworkSelector } from "@/features/agent-network/NetworkSelector";
 
 export default function AgentNetwork({
@@ -317,22 +316,20 @@ function AgentNetworkContent({
       setBusy((current) => ({ ...current, [device.deviceId]: false }));
     }
   }
-  const infoButton = useRef<HTMLButtonElement>(null);
-  const [infoOpen, setInfoOpen] = useState(false);
   if (authLoading)
     return (
-      <NetworkGate selector={selector}>
+      <NetworkPage selector={selector} gated>
         <div
           className="flex h-full items-center justify-center bg-[var(--paper)] text-sm text-[var(--ink-muted)]"
           aria-busy="true"
         >
           {t("agentNetwork.loading")}
         </div>
-      </NetworkGate>
+      </NetworkPage>
     );
   if (accountError)
     return (
-      <NetworkGate selector={selector}>
+      <NetworkPage selector={selector} gated>
         <div className="flex h-full items-center justify-center bg-[var(--paper)] text-sm text-[var(--ink-muted)]">
           <p role="alert">
             {accountError}{" "}
@@ -347,7 +344,7 @@ function AgentNetworkContent({
             </button>
           </p>
         </div>
-      </NetworkGate>
+      </NetworkPage>
     );
   if (official && (!session || session.state === "reauth_required")) {
     const accountName =
@@ -355,7 +352,7 @@ function AgentNetworkContent({
         ? (session.account.user.name ?? session.account.user.email)
         : null;
     return (
-      <NetworkGate selector={selector}>
+      <NetworkPage selector={selector} gated>
         <SpaceLogin
           authBusy={authBusy}
           authFlow={authFlow}
@@ -368,7 +365,7 @@ function AgentNetworkContent({
             void spaceLogout().then(reloadAccount);
           }}
         />
-      </NetworkGate>
+      </NetworkPage>
     );
   }
   const localId = getDeviceId();
@@ -388,6 +385,7 @@ function AgentNetworkContent({
         : 0),
     0,
   );
+  const directoryKnown = !loading && !loadError && snapshot.state === "ready";
   // First-use onboarding follows this device's membership, never remote catalogs.
   const showSetup =
     !loading &&
@@ -415,62 +413,12 @@ function AgentNetworkContent({
     />
   );
   return (
-    <main className="h-full overflow-y-auto bg-[var(--paper)] text-[var(--ink)]">
-      <div className="mx-auto max-w-5xl px-8 pb-12 pt-8">
-        <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
-          <div className="flex items-center gap-1.5">
-            {selector}
-            <button
-              type="button"
-              ref={infoButton}
-              aria-label={t("agentNetwork.networkInfo")}
-              aria-expanded={infoOpen}
-              aria-controls="agent-network-explanation"
-              onClick={() => setInfoOpen((value) => !value)}
-              className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-            >
-              <InfoIcon className="h-4 w-4" />
-            </button>
-            <Popover
-              open={infoOpen}
-              onClose={() => setInfoOpen(false)}
-              anchorRef={infoButton}
-              className="max-w-xs space-y-1.5 px-4 py-3 text-xs leading-relaxed text-[var(--ink-secondary)]"
-            >
-              <div id="agent-network-explanation">
-                <h2 className="flex items-center gap-1.5 font-medium text-[var(--ink)]">
-                  <LockIcon className="h-3.5 w-3.5 shrink-0" />
-                  {t("agentNetwork.infoTitle")}
-                </h2>
-                <ul className="mt-2 list-disc space-y-1.5 pl-4">
-                  <li>{t("agentNetwork.infoIntro")}</li>
-                  <li>{t("agentNetwork.infoRelay")}</li>
-                  <li>{t("agentNetwork.infoLocal")}</li>
-                </ul>
-              </div>
-            </Popover>
-          </div>
-          {devices.length > 0 && (
-            <dl className="flex gap-6">
-              <div>
-                <dd className="text-xl font-semibold leading-tight">
-                  {joinedDevices.length}
-                </dd>
-                <dt className="text-xs text-[var(--ink-muted)]">
-                  {t("agentNetwork.statDevices")}
-                </dt>
-              </div>
-              <div>
-                <dd className="text-xl font-semibold leading-tight">
-                  {catalogsKnown ? openAgents : "—"}
-                </dd>
-                <dt className="text-xs text-[var(--ink-muted)]">
-                  {t("agentNetwork.statAgents")}
-                </dt>
-              </div>
-            </dl>
-          )}
-        </header>
+    <NetworkPage
+      selector={selector}
+      deviceCount={directoryKnown ? joinedDevices.length : null}
+      agentCount={directoryKnown && catalogsKnown ? openAgents : null}
+    >
+      <>
         {(loadError || accountError) && (
           <p role="alert" className="mb-4 text-sm text-[var(--error)]">
             {loadError || accountError}{" "}
@@ -575,7 +523,7 @@ function AgentNetworkContent({
             {t("agentNetwork.partial")}
           </p>
         )}
-      </div>
+      </>
       {selectedDevice && (
         <DeviceDetails
           connectionId={connectionId}
@@ -620,7 +568,7 @@ function AgentNetworkContent({
           }}
         />
       )}
-    </main>
+    </NetworkPage>
   );
 }
 
@@ -661,17 +609,32 @@ function SetupGuide() {
   );
 }
 
-function NetworkGate({
+/** Keep page chrome at one React/layout position across account and data gates. */
+function NetworkPage({
   selector,
   children,
+  gated = false,
+  deviceCount = null,
+  agentCount = null,
 }: {
   selector: ReactNode;
   children: ReactNode;
+  gated?: boolean;
+  deviceCount?: number | null;
+  agentCount?: number | null;
 }) {
   return (
-    <main className="flex h-full flex-col bg-[var(--paper)] text-[var(--ink)]">
-      <div className="mx-auto w-full max-w-5xl px-8 pt-8">{selector}</div>
-      <div className="min-h-0 flex-1">{children}</div>
+    <main className="h-full overflow-y-auto bg-[var(--paper)] text-[var(--ink)]">
+      <div
+        className={`mx-auto flex w-full max-w-5xl flex-col px-8 pb-12 pt-8 ${gated ? "h-full" : "min-h-full"}`}
+      >
+        <NetworkHeader
+          selector={selector}
+          deviceCount={deviceCount}
+          agentCount={agentCount}
+        />
+        <div className={gated ? "min-h-0 flex-1" : undefined}>{children}</div>
+      </div>
     </main>
   );
 }

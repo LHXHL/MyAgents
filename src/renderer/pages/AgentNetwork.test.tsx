@@ -696,3 +696,83 @@ it("pending removal explains stopped connection rather than automatic reconnect"
     screen.queryByText("网络连接失败，正在自动重连…"),
   ).not.toBeInTheDocument();
 });
+
+describe("Network header across asynchronous boundaries", () => {
+  function expectHeader(devices: string, agents: string) {
+    const header = screen
+      .getByRole("button", { name: "选择网络" })
+      .closest("header");
+    expect(header).not.toBeNull();
+    const region = within(header!);
+    expect(
+      region.getByRole("button", { name: "网络说明" }),
+    ).toBeInTheDocument();
+    expect(
+      region.getByText("台设备在网络中").previousElementSibling,
+    ).toHaveTextContent(devices);
+    expect(
+      region.getByText("个 Agent 可协作").previousElementSibling,
+    ).toHaveTextContent(agents);
+  }
+
+  it("retains header controls and unknown statistics while authenticating", async () => {
+    let finish!: (value: unknown) => void;
+    mocks.session.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    render(<AgentNetwork />);
+    expectHeader("—", "—");
+    const selector = screen.getByRole("button", { name: "选择网络" });
+    const info = screen.getByRole("button", { name: "网络说明" });
+    await act(async () => {
+      finish({ state: "authenticated", session: { user: { id: "account" } } });
+    });
+    await screen.findByRole("button", { name: "查看 Fixture Mac 的设备详情" });
+    expectHeader("0", "0");
+    expect(screen.getByRole("button", { name: "选择网络" })).toBe(selector);
+    expect(screen.getByRole("button", { name: "网络说明" })).toBe(info);
+  });
+
+  it("clears previous statistics immediately on network switch, then shows confirmed empty counts", async () => {
+    mocks.devices.mockResolvedValue({
+      items: [{ ...device, joined: true }],
+      complete: true,
+    });
+    const view = render(<AgentNetwork />);
+    await screen.findByRole("button", { name: "查看 Fixture Mac 的设备详情" });
+    await waitFor(() => expectHeader("1", "0"));
+    let finish!: (value: unknown) => void;
+    mocks.devices.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    mocks.selected = "self-a";
+    view.rerender(<AgentNetwork />);
+    expectHeader("—", "—");
+    expect(screen.queryByText("Fixture Mac")).not.toBeInTheDocument();
+    await waitFor(() => expect(mocks.devices).toHaveBeenCalledWith("self-a"));
+    expectHeader("—", "—");
+    await act(async () => {
+      finish({ items: [], complete: true });
+    });
+    await screen.findByText("登录的设备会自动显示在这里");
+    expectHeader("0", "0");
+  });
+
+  it("retains the same header in signed-out and account-error states", async () => {
+    mocks.session.mockResolvedValue(null);
+    const view = render(<AgentNetwork />);
+    await screen.findByRole("button", { name: "继续使用 Google" });
+    expectHeader("—", "—");
+    mocks.session.mockRejectedValue(new Error("account unavailable"));
+    mocks.snapshot = { ...mocks.snapshot, authGeneration: 2 };
+    view.rerender(<AgentNetwork />);
+    await screen.findByRole("alert");
+    expectHeader("—", "—");
+  });
+});
