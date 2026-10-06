@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.1] - 2026-10-06
 
+> AgentNet 多网络为实验性功能，默认关闭。可在设置 → 开发者模式中开启；关闭会暂停自部署连接并保留配置与凭据，官方网络继续可用。
+
 ### Added
 
 - **自部署 AgentNet**：通过服务 URL 和专属设备 key 加入 Cloudflare 网络；官方和自部署网络同时在线，标题下拉切换查看，逐网络控制 Agent 开放。
