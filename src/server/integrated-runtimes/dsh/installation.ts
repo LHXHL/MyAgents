@@ -1,5 +1,8 @@
-import { realpath, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, resolve, sep } from "node:path";
+
+import type { IntegratedRuntimeArtifactIdentity } from "../../../shared/types/runtime";
 
 import dshLock from "../../../shared/integrated-runtimes/effective-dsh-lock";
 
@@ -77,4 +80,46 @@ export async function resolveDshRuntimeInstallation(options: {
     runtimeEntrypointPath: entrypoint,
     nodeExecutablePath: node,
   });
+}
+
+/** Read existing identity manifests for diagnostics only; never gate execution. */
+export async function inspectDshRuntimeArtifactIdentity(
+  installation: DshRuntimeInstallation,
+): Promise<IntegratedRuntimeArtifactIdentity | null> {
+  try {
+    const [handoffPath, runtimePath] = await Promise.all([
+      realpath(join(installation.dshResourceRoot, "batch-3-integration-handoff-v1.json")),
+      realpath(join(installation.runtimeArtifactRoot, "runtime-artifact-v1.json")),
+    ]);
+    if (!isInside(installation.dshResourceRoot, handoffPath)
+      || !isInside(installation.runtimeArtifactRoot, runtimePath)) return null;
+    const [handoffBytes, runtimeBytes] = await Promise.all([readFile(handoffPath), readFile(runtimePath)]);
+    const manifest = JSON.parse(runtimeBytes.toString("utf8")) as {
+      runtimeVersion?: unknown;
+      dsh?: { artifactVersion?: unknown };
+      build?: { repositoryHead?: unknown; toolchain?: { node?: unknown } };
+    } | null;
+    const runtimeVersion = manifest?.runtimeVersion;
+    const dshVersion = manifest?.dsh?.artifactVersion;
+    const sourceCommit = manifest?.build?.repositoryHead;
+    const requiredNodeVersion = manifest?.build?.toolchain?.node;
+    if (typeof runtimeVersion !== "string" || !runtimeVersion
+      || typeof dshVersion !== "string" || !dshVersion
+      || typeof sourceCommit !== "string" || !/^[a-f0-9]{40}$/.test(sourceCommit)
+      || typeof requiredNodeVersion !== "string" || !/^\d+\.\d+\.\d+$/.test(requiredNodeVersion)) return null;
+    // The handoff is also a JSON manifest. Missing/damaged metadata stays unknown.
+    const handoff = JSON.parse(handoffBytes.toString("utf8")) as {
+      runtime?: { path?: unknown; manifestSha256?: unknown };
+    } | null;
+    if (handoff?.runtime?.path !== "runtime-artifact"
+      || typeof handoff.runtime.manifestSha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(handoff.runtime.manifestSha256)) return null;
+    return {
+      runtimeVersion, dshVersion, sourceCommit, requiredNodeVersion,
+      handoffSha256: createHash("sha256").update(handoffBytes).digest("hex"),
+      runtimeManifestSha256: createHash("sha256").update(runtimeBytes).digest("hex"),
+    };
+  } catch {
+    return null;
+  }
 }

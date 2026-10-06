@@ -73,7 +73,7 @@ import {
 } from './extension-compiler';
 import { executeDshProductHostTool, resolveDshMcpCredential } from './extension-host';
 import { createDshInitializeParams } from './initialize';
-import { resolveDshRuntimeInstallation } from './installation';
+import { inspectDshRuntimeArtifactIdentity, resolveDshRuntimeInstallation } from './installation';
 import { buildDshQuestionAnswer, reconcileExpiredDshInteractionResponse } from './interaction-response';
 import { dshPermissionReview } from './permission-display';
 import { resolveDshProviderApiKey } from './provider-credential';
@@ -843,9 +843,11 @@ export class DshRuntime implements AgentRuntime {
     };
     let installed = false;
     try {
-      await installedRuntime();
+      const installation = await installedRuntime();
       installed = true;
       resources.state = 'available';
+      resources.installedIdentity = await inspectDshRuntimeArtifactIdentity(installation);
+      if (!resources.installedIdentity) resources.code = 'dsh_identity_unavailable';
     } catch {
       resources.code = 'dsh_resources_unavailable';
     }
