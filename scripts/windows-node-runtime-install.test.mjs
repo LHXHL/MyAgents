@@ -7,8 +7,8 @@ import test from 'node:test';
 
 const repo = resolve(import.meta.dirname, '..');
 const hooksPath = join(repo, 'src-tauri/nsis/hooks.nsh');
-const hooks = readFileSync(hooksPath, 'utf8');
-const template = readFileSync(join(repo, 'src-tauri/nsis/installer.nsi'), 'utf8');
+const hooks = readFileSync(hooksPath, 'utf8').replaceAll('\r\n', '\n');
+const template = readFileSync(join(repo, 'src-tauri/nsis/installer.nsi'), 'utf8').replaceAll('\r\n', '\n');
 const cleanupMacro = '_MYAGENTS_REMOVE_NODE_RUNTIME';
 const compiler = process.env.MYAGENTS_TEST_MAKENSIS || 'makensis';
 const hasCompiler = spawnSync(compiler, [process.platform === 'win32' ? '/VERSION' : '-VERSION']).status === 0;
@@ -66,7 +66,7 @@ Section Install
   SetOutPath $INSTDIR
   !insertmacro ${cleanupMacro}
   SetOutPath "$INSTDIR\\nodejs"
-  File /r "${nsisQuote(payload)}/*"
+  File /r "${nsisQuote(join(payload, '*'))}"
   SetOutPath $INSTDIR
   FileOpen $0 "$INSTDIR\\installed.marker" w
   FileClose $0
