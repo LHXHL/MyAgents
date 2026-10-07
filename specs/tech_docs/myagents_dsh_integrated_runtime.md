@@ -34,6 +34,8 @@ Provider constraint 优先于通用默认：官方 Anthropic subscription/API �
 
 出生时将 effective identity 固化为 Session `runtimeBinding`。已有 Session 使用自己的 binding 与配置快照；默认值或 Agent 设置变化不替换它。未知 binding 保留历史读取，不能静默改成 SDK。DSH 的 integrated engine kind 也不能进入 SDK 专属配置或 enqueue 分支。
 
+桌面首轮的具体 `providerRoute` 经 SessionEngine 保留在原 message operation 的配置快照，并在原生启动时交给 DSH；此时 Product metadata 尚未准入，不能重新从 Agent 模板猜测已选 Provider。原生准入后的 Product 出生使用同一 operation 快照固化 Provider/model/权限/推理配置。已有 Session 的 Provider 读取与配置 adopt 复用 `resolveWorkspaceConfig` 的 owned snapshot / legacy 解析，缺失或无法唯一解析时明确失败，不借用 Agent 最新默认。外部 CLI Runtime 仍管理自己的 Provider，不消费这项 DSH 配置。
+
 ## 3. 构建与协议准入
 
 `src/shared/integrated-runtimes/dsh-release.json` 是正式 Runtime 的版本选择。构建准备读取该 Release 的四平台资产清单，校验归档、handoff、Runtime 与契约身份，再派生本次 effective lock。已提交的 `dsh-lock.json` 和静态生成契约是未准备 source-mode 的编译快照；不能拿其中旧摘要拒绝本次已验证选择。

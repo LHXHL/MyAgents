@@ -1157,6 +1157,33 @@ function desktopRequest(
 }
 
 describe('Runtime turn analytics', () => {
+  it('carries the DSH desktop Provider through native startup, birth and config adoption', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'selected Provider answer' }], {
+      runtimeType: 'dsh', runtimeSource: 'integrated',
+      config: { defaultProviderId: 'deepseek', providerApiKeys: { deepseek: 'synthetic-default', 'zhipu-ai': 'synthetic-selected' } },
+    });
+    const sessionId = 'dsh-carried-provider';
+    const route = { kind: 'provider', providerId: 'zhipu-ai', model: 'glm-5.3' } as const;
+    const start = harness.runtime.startSession.bind(harness.runtime);
+    const nativeStart = vi.spyOn(harness.runtime, 'startSession').mockImplementation(async (options, events) => {
+      expect(harness.sessionStore.getSessionMetadata(sessionId)).toBeNull();
+      expect(options.providerRoute).toEqual(route);
+      return start(options, events);
+    });
+    const request = desktopRequest(sessionId, join(harness.home, 'workspace'), 'selected Provider question');
+    Object.assign(request, { providerRoute: route, model: route.model, permissionMode: 'workspace-autonomous' });
+    const receipt = await harness.engine.sendDesktopMessage(request);
+    await expect(receipt.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(nativeStart).toHaveBeenCalledOnce();
+    expect(harness.sessionStore.getSessionMetadata(sessionId)).toMatchObject({
+      providerRoute: route, providerId: route.providerId, model: route.model, configSnapshotAt: expect.any(String),
+    });
+    expect(harness.engine.getSessionConfigSnapshot()).toMatchObject({ providerRoute: route, providerId: route.providerId });
+    const restored = await harness.sessionStore.getSessionData(sessionId);
+    expect(restored?.messages.find(message => message.role === 'assistant')?.content).toContain('selected Provider answer');
+  });
+
   it('uses DSH execution Provider attribution and preserves unknown usage', async () => {
     const harness = await createHarness([
       { kind: 'success', text: 'answer', usage: { inputTokens: 12, outputTokens: 0 } },

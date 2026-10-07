@@ -347,6 +347,9 @@ export function createExternalSessionEngine(): SessionEngine {
       const session = runtimeSessionId ? getSessionMetadata(runtimeSessionId) : null;
       const workspacePath = getRuntimeWorkspacePath();
       const extensions = getProductExtensionConfigSnapshot();
+      const providerRoute = getActiveRuntimeType() === 'dsh' && workspacePath
+        ? resolveWorkspaceConfig(workspacePath, session, { includeMcp: false }).providerRoute
+        : undefined;
       return {
         success: true,
         runtime: getActiveRuntimeType(),
@@ -361,8 +364,10 @@ export function createExternalSessionEngine(): SessionEngine {
           ? getEffectiveOfficialToolIdsForSession(workspacePath, session)
           : [],
         permissionMode: getExternalSessionPermissionMode(),
-        providerId: session?.providerExecutionIdentity?.providerId ?? null,
-        providerRoute: null,
+        providerId: providerRoute && providerRoute.kind !== 'unknown-legacy'
+          ? providerRoute.providerId
+          : session?.providerExecutionIdentity?.providerId ?? null,
+        providerRoute: providerRoute ?? null,
         providerExecutionIdentity: session?.providerExecutionIdentity ?? null,
         reasoningEffort: getExternalSessionReasoningEffort() ?? 'default',
       };
@@ -457,6 +462,7 @@ export function createExternalSessionEngine(): SessionEngine {
           birthOrigin: request.birthOrigin,
           permissionMode: request.permissionMode,
           model: request.model,
+          providerRoute: getActiveRuntimeType() === 'dsh' ? request.providerRoute : undefined,
           reasoningEffort: request.reasoningEffort,
           turnBoundaryOnly: request.turnBoundaryOnly,
           queueId: request.queueId,

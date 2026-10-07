@@ -32,9 +32,9 @@ import { getSessionMetadata } from '../../SessionStore';
 import { fingerprintDshNativeInput } from './input-identity';
 import {
   findEffectiveProvider,
-  findProjectAgentByWorkspacePath,
   loadConfig,
   resolveProviderEnv,
+  resolveWorkspaceConfig,
 } from '../../utils/admin-config';
 import { getHomeDir } from '../../utils/platform';
 import { getBundledNodePath } from '../../utils/runtime';
@@ -415,23 +415,21 @@ function providerForSession(options: SessionStartOptions, requestedOverride?: st
 } {
   const config = loadConfig();
   const metadata = getSessionMetadata(options.sessionId);
-  const agent = findProjectAgentByWorkspacePath(options.workspacePath) as
-    | { providerId?: string; model?: string }
-    | undefined;
-  const requestedModel = requestedOverride
-    || (isConcreteProviderRoute(metadata?.providerRoute) ? metadata.providerRoute.model : undefined)
-    || metadata?.model
-    || agent?.model
-    || options.model;
-  const providerId = isConcreteProviderRoute(metadata?.providerRoute)
-    ? metadata.providerRoute.providerId
-    : metadata?.providerId || agent?.providerId;
-  if (!providerId) {
+  // A fresh desktop turn carries its selection before native admission creates
+  // Product metadata. Existing Sessions resolve through their owned snapshot,
+  // including the shared legacy policy, rather than current Agent defaults.
+  const route = isConcreteProviderRoute(metadata?.providerRoute)
+    ? metadata.providerRoute
+    : !metadata && isConcreteProviderRoute(options.providerRoute)
+      ? options.providerRoute
+      : resolveWorkspaceConfig(options.workspacePath, metadata, { includeMcp: false }).providerRoute;
+  if (!isConcreteProviderRoute(route)) {
     throw new Error('DSH Session has no concrete Provider authority');
   }
+  const providerId = route.providerId;
   const provider = findEffectiveProvider(providerId, config) as Provider | null;
   if (!provider) throw new Error(`DSH Provider ${providerId} is unavailable`);
-  const modelId = requestedModel || provider.primaryModel;
+  const modelId = requestedOverride || route.model;
   return { provider: resolveProviderForModel(provider, modelId), modelId };
 }
 

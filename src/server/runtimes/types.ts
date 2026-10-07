@@ -2,6 +2,7 @@ import type { TurnProviderAnalytics } from '../session-core/turn-analytics';
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 import type { RuntimeAgentWorkControl, RuntimeAgentWorkTree } from '../../shared/types/subagent-lifecycle';
 import type { AsyncQuestionSet } from '../../shared/asyncUserQuestions';
+import type { ProviderRoute } from '../../shared/providerRoute';
 // AgentRuntime abstraction types (v0.1.59)
 // Defines the interface that all runtime implementations must satisfy
 
@@ -80,6 +81,8 @@ export interface SessionStartOptions {
   /** Declarative Host context used only by the Integrated DSH Runtime. */
   systemContext?: DshSystemContextSnapshot;
   model?: string;
+  /** Product-owned DSH birth selection; credentials remain Host-owned. */
+  providerRoute?: ProviderRoute;
   permissionMode?: string;
   /** #324 — NORMALIZED reasoning effort level (never 'default'); absent =
    *  runtime default. CC maps to `--effort`, Codex to `turn/start.effort`. */
@@ -191,6 +194,7 @@ export interface ExternalRuntimeConfigPatch {
 
 export interface ExternalRuntimeConfigSnapshot {
   model?: string;
+  providerRoute?: ProviderRoute;
   permissionMode?: string;
   reasoningEffort?: string;
 }
