@@ -660,6 +660,7 @@ Session snapshot 的完整 authority 与写入方向见 [`session_architecture.m
 - **managed Skill 投影是 mutation-only 只读边界**：读取、揭示路径和从 Skill 向工作区 copy-out 继续允许；保存、新建、重命名、移动、删除、copy/import destination 必须经过 `reject_managed_global_skill_mutation`。不要把它并入通用 read resolver，也不要给 Node 投影增加 bypass flag。
 - **bounded read 防 TOCTOU**：所有读取大文件命令用 `File::open + take(MAX+1).read_to_end` 模式——不是 `fs::read_to_string` / `fs::read`。上限以各模块的 `read_preview::MAX_PREVIEW_BYTES`、`download::MAX_DOWNLOAD_BYTES`、`files_b64::MAX_IMAGE_SIZE_BYTES` 为准。元数据 `len()` 与实际读取之间文件可能被攻击者扩张，必须在实际读取时执行上限。
 - **validate 与 open 必须是一体的**：workspace attachment 不得退回 `metadata/canonicalize → File::open(path)`；Windows 的 share flags 不约束 `FILE_WRITE_ATTRIBUTES`，攻击者仍可把空目录原地设为 junction。必须由 `read_workspace_file_no_follow` 从已验证 parent handle 做 handle-relative child open/create，leaf 与 temp/final rename 也不得重新解析可变路径。
+- **Windows 发布保持 native 相对路径契约**：`NtCreateFile` 创建的临时文件通过 `NtSetInformationFile(FileRenameInformation)` 发布，使用同一个已验证 parent handle 和按字节计长的 UTF-16 leaf。不能混用会执行 DOS 路径转换的 `SetFileInformationByHandle(FileRenameInfo)`，也不能为绕过错误 87 改成绝对路径重命名；原生 OS 调用回归由 Windows workspace IO 测试负责，宿主测试或 Windows compile-only 不足以验证。
 
 **Don't.**
 - 写侧 cmd 用 `Path::exists()` 探"占位"——断链 symlink 会让你以为路径空。MUST 用 `slot_occupied` helper（`fs::symlink_metadata(p).is_ok()`）。

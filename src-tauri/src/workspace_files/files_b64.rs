@@ -332,6 +332,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn imports_clipboard_names_across_windows_rename_buffer_lengths() {
+        let ws = make_tmp_workspace();
+        // On x64, the old Win32 rename buffer had no trailing zero padding
+        // for 150/154 UTF-16 units. Exercise either side of those boundaries
+        // as well as ordinary screenshot/document and non-ASCII names (#641).
+        let prefix = "_cgi-bin_mmwebwx-bin_webwxgetmsgimg__&MsgID=123&skey=@crypt_mock&mmweb_appid=wx_webfilehelper";
+        let mut names = vec![
+            "screenshot.png".to_string(),
+            "notes.txt".to_string(),
+            "截图📷.png".to_string(),
+        ];
+        for length in 149..=154 {
+            let name = format!("{}{}.jpg", prefix, "_".repeat(length - prefix.len() - 4));
+            assert_eq!(name.encode_utf16().count(), length);
+            names.push(name);
+        }
+        let payload = names
+            .iter()
+            .map(|name| Base64FileEntry {
+                name: name.clone(),
+                content: BASE64.encode(b"clipboard bytes"),
+            })
+            .collect();
+        let res = cmd_workspace_import_files_b64(
+            ws.to_string_lossy().to_string(),
+            payload,
+            Some("myagents_files".to_string()),
+        )
+        .await
+        .unwrap();
+        assert!(res.success);
+        assert_eq!(res.files.len(), names.len());
+        for (relative, name) in res.files.iter().zip(names) {
+            assert_eq!(relative, &format!("myagents_files/{}", name));
+            assert_eq!(fs::read(ws.join(relative)).unwrap(), b"clipboard bytes");
+        }
+        assert_eq!(
+            fs::read_dir(ws.join("myagents_files")).unwrap().count(),
+            res.files.len()
+        );
+        fs::remove_dir_all(ws).unwrap();
+    }
+
+    #[tokio::test]
     async fn collision_appends_counter() {
         let ws = make_tmp_workspace();
         for _ in 0..3 {

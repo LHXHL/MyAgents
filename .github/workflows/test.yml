@@ -103,10 +103,10 @@ jobs:
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D clippy::disallowed_methods -D clippy::disallowed_macros
 
   # `--all-targets` above covers Rust target kinds for Linux; it does not
-  # type-check `cfg(windows)`. Keep one native Windows compile gate so stable
-  # toolchain compatibility is verified before the release scripts run.
+  # type-check or execute `cfg(windows)`. Run workspace IO tests natively:
+  # compile-only checks cannot detect invalid OS rename parameters (#641).
   windows-rust:
-    name: Windows cargo check
+    name: Windows cargo check · workspace IO
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -161,6 +161,7 @@ jobs:
           Set-Content src-tauri/resources/vcruntime140.dll 'ci placeholder'
           Set-Content src-tauri/resources/vcruntime140_1.dll 'ci placeholder'
       - run: cargo check --manifest-path src-tauri/Cargo.toml --locked
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked --lib workspace_files::
 
   # CLIProxy native lifecycle fixtures require a supported Unix platform.
   # Keep Linux's broad Rust gate; apple-metal requires the Xcode 26 SDK.

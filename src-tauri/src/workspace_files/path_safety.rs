@@ -1553,9 +1553,10 @@ fn rename_windows_file_relative(
 ) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FileRenameInfo, SetFileInformationByHandle, FILE_RENAME_INFO,
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FileRenameInformation, NtSetInformationFile, FILE_RENAME_INFORMATION,
     };
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
     let target_wide = target_name.encode_wide().collect::<Vec<_>>();
     let target_bytes = target_wide
@@ -1567,18 +1568,14 @@ fn rename_windows_file_relative(
                 "Windows target filename is too long",
             )
         })?;
-    let header_bytes = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
-    let variable_buffer_bytes = header_bytes.checked_add(target_bytes).ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "Windows rename buffer is too large",
-        )
-    })?;
-    // FILE_RENAME_INFO's trailing FileName member is declared as WCHAR[1].
-    // A one-code-unit target therefore still needs the structure's trailing
-    // alignment padding, even though FileNameLength contains only the real
-    // filename bytes.
-    let buffer_bytes = variable_buffer_bytes.max(std::mem::size_of::<FILE_RENAME_INFO>());
+    let buffer_bytes = std::mem::size_of::<FILE_RENAME_INFORMATION>()
+        .checked_add(target_bytes)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Windows rename buffer is too large",
+            )
+        })?;
     if buffer_bytes > u32::MAX as usize {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -1586,11 +1583,12 @@ fn rename_windows_file_relative(
         ));
     }
 
-    // FILE_RENAME_INFO ends with a variable-length WCHAR array. Allocate in
+    // FILE_RENAME_INFORMATION ends with a counted WCHAR array. Allocate in
     // machine words so the header cast keeps its required HANDLE alignment.
+    // Include the full structure plus name bytes, including its tail padding.
     let word = std::mem::size_of::<usize>();
     let mut storage = vec![0usize; buffer_bytes.div_ceil(word)];
-    let info = storage.as_mut_ptr() as *mut FILE_RENAME_INFO;
+    let info = storage.as_mut_ptr() as *mut FILE_RENAME_INFORMATION;
     unsafe {
         (*info).Anonymous.ReplaceIfExists = u8::from(replace);
         (*info).RootDirectory = parent.as_raw_handle() as _;
@@ -1601,16 +1599,23 @@ fn rename_windows_file_relative(
             target_wide.len(),
         );
     }
-    if unsafe {
-        SetFileInformationByHandle(
+    // Keep publication relative to the verified directory object, just like
+    // NtCreateFile above. The Win32 FileRenameInfo wrapper applies DOS path
+    // conversion to the name; it cannot preserve this native counted-relative
+    // contract reliably (issue #641). Do not fall back to an absolute path:
+    // that would re-resolve a parent which may have become a junction.
+    let mut io_status: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
+    let status = unsafe {
+        NtSetInformationFile(
             file.as_raw_handle() as _,
-            FileRenameInfo,
+            &mut io_status,
             info as *const _,
             buffer_bytes as u32,
+            FileRenameInformation,
         )
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error());
+    };
+    if status < 0 {
+        return Err(windows_ntstatus_error(status));
     }
     Ok(())
 }
@@ -2259,6 +2264,66 @@ mod tests {
         write_workspace_file_no_follow(&ws, "a", b"second").unwrap();
         assert_eq!(fs::read(ws.join("a")).unwrap(), b"second");
         let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_publication_stays_anchored_and_preserves_collision_semantics() {
+        use windows_sys::Wdk::Storage::FileSystem::{
+            FILE_CREATE, FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT,
+            FILE_SYNCHRONOUS_IO_NONALERT,
+        };
+        use windows_sys::Win32::Storage::FileSystem::{
+            DELETE, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_WRITE_DATA, SYNCHRONIZE,
+        };
+
+        let ws = make_tmp_workspace();
+        let outside = make_test_workspace("windows_publish_outside");
+        let safe = ws.join("safe");
+        let moved = ws.join("safe-original");
+        fs::create_dir(&safe).unwrap();
+        let parent = resolve_windows_workspace_parent(
+            &fs::canonicalize(&ws).unwrap(),
+            Path::new("safe"),
+            false,
+        )
+        .unwrap();
+
+        // Swap the namespace while the verified directory handle is retained.
+        // Move it before opening a child: Windows cannot rename a directory
+        // containing open file handles. Temp creation and publication must
+        // still use the original object rather than the replacement junction.
+        fs::rename(&safe, &moved).unwrap();
+        junction::create(&outside, &safe).unwrap();
+        fs::write(moved.join("result.txt"), b"original").unwrap();
+        fs::write(outside.join("result.txt"), b"outside").unwrap();
+        let mut file = open_windows_relative_handle(
+            &parent,
+            std::ffi::OsStr::new("pending.tmp"),
+            FILE_WRITE_DATA | DELETE | SYNCHRONIZE,
+            FILE_SHARE_READ,
+            FILE_CREATE,
+            FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            FILE_ATTRIBUTE_NORMAL,
+        )
+        .unwrap();
+        file.write_all(b"new").unwrap();
+        file.sync_all().unwrap();
+
+        let target = std::ffi::OsStr::new("result.txt");
+        let err = rename_windows_file_relative(&file, &parent, target, false).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(moved.join("result.txt")).unwrap(), b"original");
+        rename_windows_file_relative(&file, &parent, target, true).unwrap();
+        assert_eq!(fs::read(moved.join("result.txt")).unwrap(), b"new");
+        assert_eq!(fs::read(outside.join("result.txt")).unwrap(), b"outside");
+        assert!(!moved.join("pending.tmp").exists());
+
+        drop(file);
+        drop(parent);
+        junction::delete(&safe).unwrap();
+        fs::remove_dir_all(ws).unwrap();
+        fs::remove_dir_all(outside).unwrap();
     }
 
     #[cfg(windows)]
