@@ -162,6 +162,19 @@ jobs:
           Set-Content src-tauri/resources/vcruntime140_1.dll 'ci placeholder'
       - run: cargo check --manifest-path src-tauri/Cargo.toml --locked
       - run: 'cargo test --manifest-path src-tauri/Cargo.toml --locked --lib workspace_files::'
+      - name: Inspect native test loader imports on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $dumpbin = & $vswhere -latest -products '*' -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
+          Get-ChildItem src-tauri/target/debug/deps/app_lib-*.exe | ForEach-Object { & $dumpbin /imports $_.FullName }
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: windows-workspace-test-loader
+          path: src-tauri/target/debug/deps/app_lib-*.exe
+          retention-days: 1
 
   # CLIProxy native lifecycle fixtures require a supported Unix platform.
   # Keep Linux's broad Rust gate; apple-metal requires the Xcode 26 SDK.
