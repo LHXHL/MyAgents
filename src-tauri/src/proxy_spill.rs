@@ -1022,6 +1022,20 @@ mod tests {
         });
         let _ = tokio::join!(first_ready, second_ready, third_ready);
 
+        // A 60 KB aggregate can precede the third consumer's reservation. Wait
+        // for its rejection and cleanup before releasing EOF: otherwise its
+        // partial body can legitimately compete with finalization metadata.
+        let (rejected, _, pending) = tokio::time::timeout(
+            Duration::from_secs(2),
+            futures_util::future::select_all([first_task, second_task, third_task]),
+        )
+        .await
+        .expect("one held stream must be rejected before EOF");
+        assert!(matches!(
+            rejected.expect("rejected stream task"),
+            StreamOutcome::Failed(error) if error.contains("spill budget exceeded")
+        ));
+
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if manager.budget_snapshot().await.0 == 60_000 {
@@ -1036,26 +1050,12 @@ mod tests {
         let _ = first_release.send(());
         let _ = second_release.send(());
         let _ = third_release.send(());
-        let outcomes = tokio::join!(first_task, second_task, third_task);
-        let outcomes = [
-            outcomes.0.expect("first stream task"),
-            outcomes.1.expect("second stream task"),
-            outcomes.2.expect("third stream task"),
-        ];
-        assert_eq!(
-            outcomes
-                .iter()
-                .filter(|outcome| matches!(outcome, StreamOutcome::Spilled(_)))
-                .count(),
-            2
-        );
-        assert_eq!(
-            outcomes
-                .iter()
-                .filter(|outcome| matches!(outcome, StreamOutcome::Failed(_)))
-                .count(),
-            1
-        );
+        let outcomes = futures_util::future::join_all(pending).await;
+        assert_eq!(outcomes.len(), 2);
+        assert!(outcomes.into_iter().all(|outcome| matches!(
+            outcome.expect("remaining stream task"),
+            StreamOutcome::Spilled(_)
+        )));
         assert_eq!(manager.budget_snapshot().await, (0, 0, 0));
     }
 
