@@ -161,7 +161,7 @@ jobs:
           Set-Content src-tauri/resources/vcruntime140.dll 'ci placeholder'
           Set-Content src-tauri/resources/vcruntime140_1.dll 'ci placeholder'
       - run: cargo check --manifest-path src-tauri/Cargo.toml --locked
-      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked --lib workspace_files::
+      - run: 'cargo test --manifest-path src-tauri/Cargo.toml --locked --lib workspace_files::'
 
   # CLIProxy native lifecycle fixtures require a supported Unix platform.
   # Keep Linux's broad Rust gate; apple-metal requires the Xcode 26 SDK.
