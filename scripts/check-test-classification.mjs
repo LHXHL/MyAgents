@@ -32,6 +32,10 @@ const CHILD_PROCESS_ALLOWLIST = new Set([
   // Boots the real Sidecar against temp HOME/workspace directories and a
   // loopback-only HTTP port to verify the required-system-skill API contract.
   'src/server/__tests__/skills-required.integration.test.ts',
+  // Builds and runs the shipped CLI plus Global/Session Sidecars against a
+  // loopback-only fake Rust admission owner. Children get OS-only env, temp
+  // HOME/workspaces, synthetic credentials and --no-pre-warm; no model runs.
+  'src/server/inbox/external-cli-routing.integration.test.ts',
   // This regression verifies the existing MCP OAuth refresh lock across real
   // Node processes. Children share only a temp config dir and loopback server.
   'src/server/__tests__/mcp-oauth.integration.test.ts',

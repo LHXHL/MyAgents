@@ -65,7 +65,7 @@ describe('handleAdminSessionStart', () => {
       agentId: 'agent-1',
       prompt: 'Review this',
       replyBack: true,
-    });
+    }, 'internal-session');
 
     expect(result).toEqual({
       status: 200,
@@ -105,7 +105,7 @@ describe('handleAdminSessionStart', () => {
     const result = await handleAdminSessionStart('source-session', {
       agentId: 'agent-1',
       prompt: 'Review this',
-    });
+    }, 'internal-session');
 
     expect(result.status).toBe(502);
     expect(result.response).toMatchObject({
@@ -127,7 +127,7 @@ describe('handleAdminSessionStart', () => {
     const result = await handleAdminSessionStart('source-session', {
       agentId: 'agent-1',
       prompt: 'Review this',
-    });
+    }, 'internal-session');
 
     expect(result).toMatchObject({
       status: 502,
@@ -148,7 +148,7 @@ describe('handleAdminSessionStart', () => {
     const result = await handleAdminSessionStart('source-session', {
       agentId: 'agent-1',
       prompt: 'Review this',
-    });
+    }, 'internal-session');
 
     expect(result).toMatchObject({
       status: 502,
@@ -194,7 +194,7 @@ describe('handleAdminSessionStart', () => {
       agentId: 'agent-1',
       prompt: 'Review this',
       runtime: 'builtin',
-    });
+    }, 'internal-session');
 
     expect(result).toMatchObject({
       status: 400,
@@ -207,7 +207,7 @@ describe('handleAdminSessionStart', () => {
     const missingSource = await handleAdminSessionStart('', {
       agentId: 'agent-1',
       prompt: 'Review this',
-    });
+    }, 'internal-session');
     expect(missingSource.response).toMatchObject({
       error: { code: 'caller_session_required' },
     });
@@ -216,7 +216,7 @@ describe('handleAdminSessionStart', () => {
     const archived = await handleAdminSessionStart('source-session', {
       agentId: 'agent-1',
       prompt: 'Review this',
-    });
+    }, 'internal-session');
     expect(archived.response).toMatchObject({ error: { code: 'agent_archived' } });
     expect(mocks.cancellableFetch).not.toHaveBeenCalled();
   });

@@ -440,6 +440,8 @@ ACK 丢失返回 unconfirmed receipt 并保留 ID、不自动重试。Rust 复�
 Admin API 对调用方同名 override fail closed。默认 terminal 结果复用既有 `send.result` 回投，
 receipt 的 `messageId` 对应后续 `requestEventId`。
 
+本地与远端的 Admin 路由都显式传递同一份准入结果派生的 `sourceKind`；本地 start/send handler 不提供默认来源类型，遗漏由类型检查拒绝。外部调用即使直连 Session Sidecar，也不能借用该进程的 Session identity 或建立回投。发布 bundle 回归从普通终端 CLI 与 Global/Session HTTP 入口验证实际下发 envelope，不能只靠直接传入 external 类型的 handler 单测。start/send 的失败诊断只记录 dispatch stage、route、caller kind、code 和 unconfirmed，不记录 token 或 prompt。
+
 事件 prompt 统一由 `src/server/inbox/session-event.ts` 渲染，标签形态为
 `<myagents-session-event ...>`，payload 内部会 neutralize 协议结构标签。新增
 session event 类型时必须同时更新该渲染层、目标 Sidecar 处理路径和 CLI help 文案。

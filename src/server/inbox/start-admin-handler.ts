@@ -62,7 +62,7 @@ const FORBIDDEN_OVERRIDE_FIELDS = [
 export async function handleAdminSessionStart(
   callerSessionId: string,
   body: AdminSessionStartRequest,
-  sourceKind: 'internal-session' | 'external-cli' = 'internal-session',
+  sourceKind: 'internal-session' | 'external-cli',
 ): Promise<{ status: number; response: AdminSessionStartResponse }> {
   const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
   const prompt = typeof body.prompt === 'string' ? body.prompt : '';
