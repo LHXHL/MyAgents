@@ -129,7 +129,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-      - name: Prepare Tauri bundle path placeholders for cargo check
+      - name: Prepare Tauri resources for Windows Rust validation
         shell: pwsh
         run: |
           $resourceDirs = @(
@@ -158,8 +158,10 @@ jobs:
           Set-Content src-tauri/resources/playwright-control/@playwright/mcp/.ci-placeholder 'ci placeholder'
           Set-Content src-tauri/resources/playwright-control/playwright/.ci-placeholder 'ci placeholder'
           Set-Content src-tauri/resources/playwright-control/playwright-core/.ci-placeholder 'ci placeholder'
-          Set-Content src-tauri/resources/vcruntime140.dll 'ci placeholder'
-          Set-Content src-tauri/resources/vcruntime140_1.dll 'ci placeholder'
+          # Tauri copies these beside the native binary: execution needs real
+          # VC runtimes, matching the existing Windows build preparation.
+          Copy-Item (Join-Path $env:WINDIR 'System32\vcruntime140.dll') src-tauri/resources/vcruntime140.dll
+          Copy-Item (Join-Path $env:WINDIR 'System32\vcruntime140_1.dll') src-tauri/resources/vcruntime140_1.dll
       - run: cargo check --manifest-path src-tauri/Cargo.toml --locked
       - run: 'cargo test --manifest-path src-tauri/Cargo.toml --locked --lib workspace_files::'
       - name: Inspect native test loader imports on failure
