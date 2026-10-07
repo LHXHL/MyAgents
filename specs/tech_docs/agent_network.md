@@ -6,7 +6,8 @@
 
 | 事实                                                     | 权威入口                                                               |
 | -------------------------------------------------------- | ---------------------------------------------------------------------- |
-| 当前登录、sessionBindingId、设备身份代次                 | 原 Rust Space connector 与 Space 账号服务                              |
+| 官方登录与 sessionBindingId；自部署账号 scope           | 官方沿原 Rust Space connector 与 Space 账号服务；自部署由固定 descriptor 与 Rust 连接生命周期裁决 |
+| 设备身份代次                                            | 当前网络的身份签发方；Rust 按连接验证与投影                              |
 | 稳定设备 ID、OS/默认主机名称                             | 原 `device_identity`                                                   |
 | 用户指定的网络设备显示名称                               | 既有网络 SQLite DO 的设备记录；Rust 当前连接只读投影                  |
 | 工作区与 Agent 的本地身份、路径、生命周期                | `resolvePersistedAgentWorkspaceRegistry`；不得用网络设置反向创建工作区 |
@@ -61,9 +62,9 @@ Session label 继续表示会话标题/原摘要。来源回执和异步事件�
 
 ### 设备身份与凭据
 
-Rust App 在本机生成 P-256 身份密钥，以 ECDSA/SHA-256 签名证明持有私钥；私钥只持久化到系统凭据库（macOS Keychain、Windows Credential Manager、Linux Secret Service），使用时加载到 Rust 进程，不上传云端或交给 Renderer/Node，没有文件或明文降级。Space 验证包含公钥及签名的 CSR，签发设备 leaf 与 signed binding，将账号、设备、密钥代次绑定到证书指纹、SAN 和有效期。
+Rust App 在本机生成 P-256 身份密钥，以 ECDSA/SHA-256 签名证明持有私钥；私钥只持久化到系统凭据库（macOS Keychain、Windows Credential Manager、Linux Secret Service），使用时加载到 Rust 进程，不上传云端或交给 Renderer/Node，没有文件或明文降级。当前网络的身份签发方（官方 Space / 自部署实例）验证包含公钥及签名的 CSR，签发设备 leaf 与 signed binding，将账号、设备、密钥代次绑定到证书指纹、SAN 和有效期。
 
-外层是设备到云端的 HTTPS/WSS，接入以稳定设备公钥绑定的 DPoP 证明持有凭据对应的私钥。接入凭据不超过原 Space 登录剩余有效期与 30 天；设备 leaf 有效 7 天，在到期前 48 小时窗口按需续签。活跃回程使用一项带 jitter 的约 6 小时检查，空闲不轮询凭据或证书。暂时签发不可用且现有 leaf 尚有效时保留当前关联，真实撤销与过期不能忽略。
+外层是设备到云端的 HTTPS/WSS，接入以稳定设备公钥绑定的 DPoP 证明持有凭据对应的私钥。官方接入凭据不超过原 Space 登录剩余有效期与 30 天；自部署凭据由固定实例签发，客户端按协议最大有效期验证，不依赖 Space 登录。设备 leaf 有效 7 天，在到期前 48 小时窗口按需续签。活跃回程使用一项带 jitter 的约 6 小时检查，空闲不轮询凭据或证书。暂时签发不可用且现有 leaf 尚有效时保留当前关联，真实撤销与过期不能忽略。
 
 ### 端到端通道与消息路径
 
@@ -77,7 +78,7 @@ Rust App 在本机生成 P-256 身份密钥，以 ECDSA/SHA-256 签名证明持�
 
 设备目录、设置和有界路由元数据不要求 E2EE，云端可见设备/通道关系及流量大小、时间；完整 invocation、response、event/history 才属于内层加密范围。Worker 不组装或保存业务正文、密文和离线消息。该保护覆盖设备间传输，不代替端点本机存储或端点调用模型 Provider 时的安全边界。
 
-官方设备身份信任 Space；自部署身份信任加入时固定的实例证书与签名体系。签发密钥不能直接解密既有通信，但签发体系若被控制，可通过伪造设备身份攻击后续连接；当前没有独立于 Space 的人工对端指纹确认。实现入口见 [identity.rs](../../src-tauri/src/agent_network/identity.rs)、[crypto.rs](../../src-tauri/src/agent_network/crypto.rs)、[channel.rs](../../src-tauri/src/agent_network/channel.rs)。
+官方设备身份信任 Space；自部署身份信任加入时固定的实例证书与签名体系。签发密钥不能直接解密既有通信，但签发体系若被控制，可通过伪造设备身份攻击后续连接；当前没有独立于网络签发方的人工对端指纹确认。实现入口见 [identity.rs](../../src-tauri/src/agent_network/identity.rs)、[crypto.rs](../../src-tauri/src/agent_network/crypto.rs)、[channel.rs](../../src-tauri/src/agent_network/channel.rs)。
 
 ### 协议与资源
 
