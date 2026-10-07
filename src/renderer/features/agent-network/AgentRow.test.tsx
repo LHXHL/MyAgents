@@ -104,6 +104,7 @@ describe("network Agent inline description and independent field CAS", () => {
         networkId,
         mountId,
       }),
+      "official",
     );
     expect(mocks.request.mock.calls[0][0]).not.toHaveProperty(
       "expectedEnableRevision",

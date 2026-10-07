@@ -125,7 +125,7 @@ export function MentionPicker({
                               {option.value.agent.isLocal
                                 ? t("input.mention.local")
                                 : highlight(
-                                    option.value.agent.deviceName ?? "—",
+                                    [option.value.agent.networkName,option.value.agent.deviceName].filter(Boolean).join(" · ") || "—",
                                   )}
                             </span>
                           </span>

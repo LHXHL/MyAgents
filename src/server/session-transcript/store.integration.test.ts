@@ -205,8 +205,8 @@ describe('SessionStore V2 ownership and compatibility', () => {
     content.admitUser({ id: 'first', role: 'user', content: 'still usable', timestamp: 't' });
     expect(store.getSessionMetadata(metadata.id)?.id).toBe(metadata.id);
     expect(active.writer.projection.messages.has('first')).toBe(true);
-    await active.writer.flush(50);
-    expect(active.writer.status.state).not.toBe('healthy');
+    // A flush deadline only ends the wait; the injected IO failure may settle later.
+    await vi.waitFor(() => expect(active.writer.status.state).not.toBe('healthy'));
   });
 
   it('rejects corrupt live fork sources before publishing a target, while content keeps advancing', async () => {

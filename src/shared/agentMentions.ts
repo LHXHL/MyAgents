@@ -166,6 +166,7 @@ export function composeQueryReminder(input: {
         name: agent.name,
         deviceId: agent.deviceId,
         deviceName: agent.deviceName,
+        networkName: agent.networkName,
         platform: agent.platform,
         source: agent.source,
         description: agent.description,

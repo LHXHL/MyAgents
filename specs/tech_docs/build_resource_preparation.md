@@ -116,4 +116,4 @@ Cuse 的原始 ZIP 使用同一 `acquireLockedResource` helper，缓存到 `reso
 
 ### AgentNet 固定协议产物
 
-协议源码归 AgentNet；客户端 `vendor/agent-network-protocol/manifest.json` 与固定 `.tgz` 是构建输入。npm 依赖/锁文件和 Rust build.rs 均校验此输入；安装后、typecheck、Web 和 Node bundle 构建复用 `verify-agent-network-protocol.mjs`，Rust 构建独立校验并只展开包内 Schema/fixtures 到 OUT_DIR。没有联网下载、sibling checkout、可编辑 Schema 副本或额外持久缓存。产物升级沿 [Agent 网络](agent_network.md#公共协议与仓库分发) 的单一源码更新流程，损坏则修复产物/引用；只删除自身旧 OUT_DIR 投影，避免已移除的 Schema 靠上一次构建继续通过。
+协议源码归 MyAgents-Agenthub；客户端 `vendor/agent-network-protocol/manifest.json` 与固定 `.tgz` 是构建输入。npm 依赖/锁文件和 Rust build.rs 均校验此输入；安装后、typecheck、Web 和 Node bundle 构建复用 `verify-agent-network-protocol.mjs`，Rust 构建独立校验并只展开包内 Schema/fixtures 到 OUT_DIR。没有联网下载、sibling checkout、可编辑 Schema 副本或额外持久缓存。产物升级沿 [Agent 网络](agent_network.md#公共协议与仓库分发) 的单一源码更新流程，损坏则修复产物/引用；只删除自身旧 OUT_DIR 投影，避免已移除的 Schema 靠上一次构建继续通过。

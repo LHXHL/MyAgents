@@ -136,11 +136,12 @@ function resolveResumeWorkspacePath(toSessionId: string): string | undefined {
 }
 
 /// Main entry: handle POST /api/session/inbox.
-/// `callerSessionId` is the current sidecar's session id (caller).
+/// Source kind comes from Host admission, never from payload or an empty ID.
+/// Only internal callers use the current sidecar's `callerSessionId`.
 export async function handleAdminInbox(
   callerSessionId: string,
   body: AdminInboxRequest,
-  sourceKind: InboxSourceKind = 'internal-session',
+  sourceKind: InboxSourceKind,
 ): Promise<{ status: number; response: AdminInboxResponse }> {
   // Validation
   if (!body.toSessionId || typeof body.toSessionId !== 'string') {

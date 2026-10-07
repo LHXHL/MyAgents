@@ -86,6 +86,8 @@ sudo apt install ./MyAgents_<version>_amd64.deb
 
 安装检查由 `scripts/linux-package-smoke.py` 执行：native manifest/hash、x64 ELF、动态库依赖、随包 Node/npm/SDK 启动、JS bundles 语法、sharp/tsx/浏览器控制包、ORT/PDFium/语音共享库加载、真实 Document Worker 协议和桌面进程 Sidecar readiness。运行目录不使用源码目录，不依赖系统 Node；检查用的版本锁和 smoke harness 从 checkout 读取。
 
+Document Worker 正向冒烟使用受支持的 CSV 离线样本；HTML 不属于输入格式。子命令失败时保留原退出错误并输出捕获的诊断，避免只有外层 `CalledProcessError` 而丢失 Worker 的具体原因。
+
 工作流可手动触发，相关 Linux 构建文件 push 时也会执行。它没有发布权限、不会创建 Release、不读取生产 secrets。首次推送/执行必须有维护者授权。新增工作流的静态检查不能代替它实际运行成功。
 
 ## 发布前的真实桌面验收

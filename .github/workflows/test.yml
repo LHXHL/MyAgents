@@ -103,16 +103,24 @@ jobs:
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D clippy::disallowed_methods -D clippy::disallowed_macros
 
   # `--all-targets` above covers Rust target kinds for Linux; it does not
-  # type-check `cfg(windows)`. Keep one native Windows compile gate so stable
-  # toolchain compatibility is verified before the release scripts run.
+  # type-check or execute `cfg(windows)`. Run workspace IO tests natively:
+  # compile-only checks cannot detect invalid OS rename parameters (#641).
   windows-rust:
-    name: Windows cargo check
+    name: Windows cargo check · workspace IO
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Verify bundled Node replacement with native NSIS
+        shell: pwsh
+        run: |
+          choco install nsis --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed' }
+          $env:MYAGENTS_TEST_MAKENSIS = Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'
+          node --test scripts/windows-node-runtime-install.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Prepare signed CLIProxy build inputs
         run: node scripts/prepare-cliproxy.mjs win32-x64
       - name: Verify selective Sherpa source extraction on Windows
@@ -121,7 +129,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-      - name: Prepare Tauri bundle path placeholders for cargo check
+      - name: Prepare Tauri resources for Windows Rust validation
         shell: pwsh
         run: |
           $resourceDirs = @(
@@ -150,9 +158,47 @@ jobs:
           Set-Content src-tauri/resources/playwright-control/@playwright/mcp/.ci-placeholder 'ci placeholder'
           Set-Content src-tauri/resources/playwright-control/playwright/.ci-placeholder 'ci placeholder'
           Set-Content src-tauri/resources/playwright-control/playwright-core/.ci-placeholder 'ci placeholder'
-          Set-Content src-tauri/resources/vcruntime140.dll 'ci placeholder'
-          Set-Content src-tauri/resources/vcruntime140_1.dll 'ci placeholder'
+          # Tauri copies these beside the native binary: execution needs real
+          # VC runtimes, matching the existing Windows build preparation.
+          Copy-Item (Join-Path $env:WINDIR 'System32\vcruntime140.dll') src-tauri/resources/vcruntime140.dll
+          Copy-Item (Join-Path $env:WINDIR 'System32\vcruntime140_1.dll') src-tauri/resources/vcruntime140_1.dll
       - run: cargo check --manifest-path src-tauri/Cargo.toml --locked
+      - name: Run native workspace IO tests with Tauri's application manifest
+        shell: pwsh
+        run: |
+          $messages = & cargo test --manifest-path src-tauri/Cargo.toml --locked --lib --no-run --message-format=json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $testExecutable = $messages | ForEach-Object { $_ | ConvertFrom-Json } |
+            Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'app_lib' -and $_.executable } |
+            Select-Object -ExpandProperty executable
+          if (@($testExecutable).Count -ne 1) { throw 'Expected one application library test executable' }
+          # Tauri's resource compiler links the common-controls v6 manifest to
+          # app binaries only; the library test imports the same dialog APIs.
+          $metadata = & cargo metadata --manifest-path src-tauri/Cargo.toml --locked --format-version=1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $tauriBuild = $metadata.packages | Where-Object { $_.name -eq 'tauri-build' }
+          if (@($tauriBuild).Count -ne 1) { throw 'Expected one resolved tauri-build package' }
+          $manifest = Join-Path (Split-Path $tauriBuild.manifest_path) 'src/windows-app-manifest.xml'
+          $mt = Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/mt.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $mt) { throw 'Windows SDK manifest tool not found' }
+          & $mt -nologo -manifest $manifest "-outputresource:$testExecutable;#1"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $testExecutable 'workspace_files::'
+          exit $LASTEXITCODE
+      - name: Inspect native test loader imports on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $dumpbin = & $vswhere -latest -products '*' -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
+          Get-ChildItem src-tauri/target/debug/deps/app_lib-*.exe | ForEach-Object { & $dumpbin /imports $_.FullName }
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: windows-workspace-test-loader
+          path: src-tauri/target/debug/deps/app_lib-*.exe
+          retention-days: 1
 
   # CLIProxy native lifecycle fixtures require a supported Unix platform.
   # Keep Linux's broad Rust gate; apple-metal requires the Xcode 26 SDK.

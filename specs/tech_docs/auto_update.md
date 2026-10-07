@@ -67,6 +67,8 @@ Windows 安装前必须证明当前安装目录不再被 MyAgents 进程树占�
 
 任何 owner 无法停止、残留进程、关键路径无法解析或文件仍被占用，都在 MyAgents UI 内 fail closed，并保留 pending package 供用户重试。不得把用户送进 NSIS 的 Abort/Retry/Ignore 分叉。
 
+verified-clean handoff 只证明进程与锁已释放，安装资源的完整替换仍由 NSIS 拥有。自动更新跳过旧版卸载，但 PREINSTALL 在复制资源前完整移除应用自有 `nodejs/`；PREUNINSTALL 同样清理该组件，避免新版本卸载清单遗漏旧依赖。删除失败停止安装，不混合新旧 npm，也不安排重启后删除新文件。手动覆盖升级与同版本重装复用这条路径，用户数据目录不受影响。
+
 上游 installer 可能在 `%TEMP%` 创建 `MyAgents-<version>-updater-*` 派生目录。它们不是 pending authority；启动 GC 只清理名称精确匹配、类型为普通目录且超过保留期的条目，不读取或改写应用数据目录中的 pending package。
 
 ## 事件与 UI

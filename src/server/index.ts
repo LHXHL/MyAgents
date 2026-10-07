@@ -1452,15 +1452,15 @@ async function normalizeSessionListPreview(meta: SessionMetadata): Promise<Sessi
 async function routeAdminApi(
   pathname: string,
   payload: Record<string, unknown>,
-  signal?: AbortSignal,
-  caller: AdminCaller = { kind: 'internal' },
+  signal: AbortSignal | undefined,
+  caller: AdminCaller,
 ): Promise<Record<string, unknown>> {
   // Strip the prefix for matching
   const route = pathname.replace('/api/admin/', '');
+  const sourceKind = caller.kind === 'external-cli' ? 'external-cli' : 'internal-session';
   if (['agent/show', 'session/list', 'session/get', 'session/start', 'session/send', 'session/watch', 'session/state'].includes(route)) {
     const { routeNetworkRequest } = await import('./agent-network/source');
-    const networkResult = await routeNetworkRequest(route, payload,
-      caller.kind === 'external-cli' ? 'external-cli' : 'internal-session', signal);
+    const networkResult = await routeNetworkRequest(route, payload, sourceKind, signal);
     if (networkResult) return networkResult;
   }
   if (
@@ -2030,6 +2030,7 @@ async function routeAdminApi(
     const result = await handleAdminSessionStart(
       getRuntimeSessionIdForRequest(),
       payload,
+      sourceKind,
     );
     return result.status >= 200 && result.status < 300
       ? { success: true, ...(result.response as Record<string, unknown>) }
@@ -2053,6 +2054,7 @@ async function routeAdminApi(
     const result = await handleAdminInbox(
       getRuntimeSessionIdForRequest(),
       sessionRequest,
+      sourceKind,
     );
     // PRD 0.2.18 cross-review CC HIGH #4 — the previous shape spread
     // `result.response` AFTER `error: string`, so the nested `error: { code,
@@ -2098,7 +2100,7 @@ async function routeAdminApi(
   if (route === 'agent/network-diagnose') {
     const { managementApi } = await import('./utils/management-api-client');
     const result = await managementApi('/api/agent-network/diagnose', 'POST', {
-      sidecarId: process.env.MYAGENTS_SIDECAR_ID, cursor: payload.cursor ?? null, limit: payload.limit ?? 100,
+      sidecarId: process.env.MYAGENTS_SIDECAR_ID, cursor: payload.cursor ?? null, limit: payload.limit ?? 100, network:payload.network??null,
     }, { timeoutMs: 38_000 });
     return result.ok === true ? { success: true, data: result.data }
       : { success: false, code: 'NETWORK_DIAGNOSTIC_UNAVAILABLE', error: 'Network diagnostics unavailable.' };
@@ -6243,6 +6245,13 @@ async function main() {
             request.signal,
             admission,
           );
+          if (!result.success && (route === 'session/start' || route === 'session/send')) {
+            console.warn('[admin/session] admission failed', {
+              stage: 'dispatch', route, callerKind: admission.kind,
+              code: result.code ?? 'session_admission_failed',
+              unconfirmed: result.unconfirmed === true,
+            });
+          }
           return jsonResponse(result, result.success ? 200 : 400);
         } catch (error) {
           console.error(`[admin] ${pathname} error:`, error);

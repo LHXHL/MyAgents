@@ -1373,7 +1373,26 @@
       "descriptionTooLong": "Descriptions cannot exceed 4096 bytes.",
       "unconfirmed": "Saving has not been confirmed. Refresh to check the result.",
       "unconfigured": "Agent Network is not configured in this client.",
-      "failed": "Unable to complete this action. Please retry."
-    }
+      "failed": "Unable to complete this action. Please retry.",
+      "urlInvalid": "Enter an HTTPS service origin without paths, parameters, or credentials.",
+      "keyInvalid": "The device key is invalid, expired, revoked, or bound to another device.",
+      "trustChanged": "The instance identity or trust at this address changed. Verify the deployment first.",
+      "removalPending": "Server revocation is unconfirmed. The connection is stopped; retry removal later.",
+      "privateKeyMissing": "The device private key is unavailable. Ask the administrator to revoke this device, then join with a new key.",
+      "protocolUnsupported": "This service does not support the current AgentNet protocol.",
+      "featureDisabled": "Enable AgentNet multiple networks in developer settings first."
+    },
+    "chooseNetwork": "Choose network",
+    "officialNetwork": "MyAgents official network",
+    "joinSelfhost": "Join a self-hosted network",
+    "serviceUrl": "Service URL",
+    "deviceKey": "Device key",
+    "selfhostHint": "This key binds one device. Devices in this network share trust. Joining does not automatically expose any Agent.",
+    "joiningSelfhost": "Joining…",
+    "removeConnection": "Remove network",
+    "removalPending": "Removal pending",
+    "retryRemove": "Retry removal",
+    "retryRemoveMessage": "Confirm server revocation and finish local cleanup.",
+    "removeConnectionMessage": "Removing “{{name}}” revokes this device from the network. Rejoining requires a new key. Local Agents and sessions remain."
   }
 }

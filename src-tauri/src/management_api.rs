@@ -3,12 +3,12 @@
 // Only accessible from 127.0.0.1 (Bun Sidecar processes)
 
 use axum::{
+    extract::Request,
     extract::{DefaultBodyLimit, Query},
     http::{header::CACHE_CONTROL, HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
-    extract::Request,
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -125,15 +125,34 @@ pub async fn start_management_api() -> Result<u16, String> {
         .route("/api/app/config-changed", post(app_config_changed_handler))
         .route("/api/external-cli/admit", post(external_cli_admit_handler))
         .route("/api/session/text-page", post(session_text_page_handler))
-        .route("/api/agent-network/discovery", post(agent_network_discovery_handler))
-        .route("/api/agent-network/return", post(agent_network_return_handler)
-            .layer(DefaultBodyLimit::max(myagents_agent_network_protocol::budget("objectBytes")))
-            .layer(middleware::from_fn(agent_network_body_budget)))
-        .route("/api/agent-network/diagnose", post(agent_network_diagnose_handler))
-        .route("/api/agent-network/watches", post(agent_network_watches_handler))
-        .route("/api/agent-network/invoke", post(agent_network_invoke_handler)
-            .layer(DefaultBodyLimit::max(myagents_agent_network_protocol::budget("objectBytes")))
-            .layer(middleware::from_fn(agent_network_body_budget)))
+        .route(
+            "/api/agent-network/discovery",
+            post(agent_network_discovery_handler),
+        )
+        .route(
+            "/api/agent-network/return",
+            post(agent_network_return_handler)
+                .layer(DefaultBodyLimit::max(
+                    myagents_agent_network_protocol::budget("objectBytes"),
+                ))
+                .layer(middleware::from_fn(agent_network_body_budget)),
+        )
+        .route(
+            "/api/agent-network/diagnose",
+            post(agent_network_diagnose_handler),
+        )
+        .route(
+            "/api/agent-network/watches",
+            post(agent_network_watches_handler),
+        )
+        .route(
+            "/api/agent-network/invoke",
+            post(agent_network_invoke_handler)
+                .layer(DefaultBodyLimit::max(
+                    myagents_agent_network_protocol::budget("objectBytes"),
+                ))
+                .layer(middleware::from_fn(agent_network_body_budget)),
+        )
         .route(
             "/api/runtime/sdk-child/admit",
             post(sdk_child_admit_handler),
@@ -328,9 +347,18 @@ pub async fn start_management_api() -> Result<u16, String> {
         // Secret-bearing internal route. Identity is validated against the
         // live Session:Sidecar generation; responses are never cacheable.
         .route("/api/grok/bearer", post(grok_bearer_handler))
-        .route("/api/cliproxy/binding/acquire", post(cliproxy_acquire_handler).layer(DefaultBodyLimit::max(4096)))
-        .route("/api/cliproxy/binding/check", post(cliproxy_check_handler).layer(DefaultBodyLimit::max(4096)))
-        .route("/api/cliproxy/binding/release", post(cliproxy_release_handler).layer(DefaultBodyLimit::max(4096)))
+        .route(
+            "/api/cliproxy/binding/acquire",
+            post(cliproxy_acquire_handler).layer(DefaultBodyLimit::max(4096)),
+        )
+        .route(
+            "/api/cliproxy/binding/check",
+            post(cliproxy_check_handler).layer(DefaultBodyLimit::max(4096)),
+        )
+        .route(
+            "/api/cliproxy/binding/release",
+            post(cliproxy_release_handler).layer(DefaultBodyLimit::max(4096)),
+        )
         // Bridge messages carry base64-encoded media attachments (images/files).
         // Default axum 2MB limit is too small — raise to 50MB for this API.
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024))
@@ -428,9 +456,12 @@ async fn session_text_page_handler(
             "error": "Sidecar manager is not initialized",
         }));
     };
-    if matches!(request.projection,SessionReadProjection::Activity) {
-        let state=manager.lock().unwrap();
-        if state.get_session_sidecar(&request.session_id).is_some_and(|sidecar|sidecar.state==crate::sidecar::SidecarState::Starting) {
+    if matches!(request.projection, SessionReadProjection::Activity) {
+        let state = manager.lock().unwrap();
+        if state
+            .get_session_sidecar(&request.session_id)
+            .is_some_and(|sidecar| sidecar.state == crate::sidecar::SidecarState::Starting)
+        {
             return no_store_json(serde_json::json!({"ok":false,"code":"session_owner_starting"}));
         }
     }
@@ -523,13 +554,10 @@ async fn session_text_page_handler(
                         "error": error,
                     }));
                 }
-                match body
-                    .map_err(|error| error.to_string())
-                    .and_then(|body| {
-                        serde_json::from_slice::<serde_json::Value>(&body)
-                            .map_err(|error| error.to_string())
-                    })
-                {
+                match body.map_err(|error| error.to_string()).and_then(|body| {
+                    serde_json::from_slice::<serde_json::Value>(&body)
+                        .map_err(|error| error.to_string())
+                }) {
                     Ok(result) => {
                         return no_store_json(serde_json::json!({
                             "ok": true,
@@ -787,31 +815,62 @@ fn sidecar_is_live(sidecar_id: &str, generation: u64) -> bool {
 async fn agent_network_body_budget(request: Request, next: Next) -> Response {
     use futures_util::StreamExt;
     use tauri::Manager;
-    let failure = |code: &str| no_store_json(serde_json::json!({"ok":false,"error":{"code":code}})).into_response();
-    let Some(app) = crate::logger::get_app_handle() else { return failure("CONNECTOR_UNAVAILABLE"); };
-    let Some(owner) = app.try_state::<crate::agent_network::actor::ManagedAgentNetwork>() else { return failure("CONNECTOR_UNAVAILABLE"); };
+    let failure = |code: &str| {
+        no_store_json(serde_json::json!({"ok":false,"error":{"code":code}})).into_response()
+    };
+    let Some(app) = crate::logger::get_app_handle() else {
+        return failure("CONNECTOR_UNAVAILABLE");
+    };
+    let Some(owner) = app.try_state::<crate::agent_network::actor::ManagedAgentNetwork>() else {
+        return failure("CONNECTOR_UNAVAILABLE");
+    };
     let memory = owner.memory_budget();
-    let Ok(mut allocation) = memory.reserve(0) else { return failure("CONNECTOR_CAPACITY"); };
+    let Ok(mut allocation) = memory.reserve(0) else {
+        return failure("CONNECTOR_CAPACITY");
+    };
     let (parts, body) = request.into_parts();
     let mut stream = body.into_data_stream();
     let mut bytes = Vec::new();
     while let Some(chunk) = stream.next().await {
-        let Ok(chunk) = chunk else { return failure("PROTOCOL_INVALID"); };
-        let Some(size) = bytes.len().checked_add(chunk.len()) else { return failure("MESSAGE_TOO_LARGE"); };
-        if size > myagents_agent_network_protocol::budget("objectBytes") { return failure("MESSAGE_TOO_LARGE"); }
-        if allocation.resize(size.saturating_mul(2)).is_err() || bytes.try_reserve_exact(chunk.len()).is_err() { return failure("CONNECTOR_CAPACITY"); }
+        let Ok(chunk) = chunk else {
+            return failure("PROTOCOL_INVALID");
+        };
+        let Some(size) = bytes.len().checked_add(chunk.len()) else {
+            return failure("MESSAGE_TOO_LARGE");
+        };
+        if size > myagents_agent_network_protocol::budget("objectBytes") {
+            return failure("MESSAGE_TOO_LARGE");
+        }
+        if allocation.resize(size.saturating_mul(2)).is_err()
+            || bytes.try_reserve_exact(chunk.len()).is_err()
+        {
+            return failure("CONNECTOR_CAPACITY");
+        }
         bytes.extend_from_slice(&chunk);
     }
-    let response = next.run(Request::from_parts(parts, axum::body::Body::from(bytes))).await;
+    let response = next
+        .run(Request::from_parts(parts, axum::body::Body::from(bytes)))
+        .await;
     let (parts, body) = response.into_parts();
     // Json has serialized the response at this point. Account its exact bound
     // while it is handed back to the authenticated local caller.
     if let Some(size) = axum::body::HttpBody::size_hint(&body).exact() {
-        if allocation.resize((size as usize).saturating_mul(2)).is_err() { return failure("CONNECTOR_CAPACITY"); }
+        if allocation
+            .resize((size as usize).saturating_mul(2))
+            .is_err()
+        {
+            return failure("CONNECTOR_CAPACITY");
+        }
     }
-    let stream = futures_util::stream::unfold((body.into_data_stream(), allocation), |(mut stream, allocation)| async move {
-        stream.next().await.map(|chunk| (chunk, (stream, allocation)))
-    });
+    let stream = futures_util::stream::unfold(
+        (body.into_data_stream(), allocation),
+        |(mut stream, allocation)| async move {
+            stream
+                .next()
+                .await
+                .map(|chunk| (chunk, (stream, allocation)))
+        },
+    );
     Response::from_parts(parts, axum::body::Body::from_stream(stream))
 }
 
@@ -824,45 +883,89 @@ async fn agent_network_invoke_handler(
     let request_id = request.request.request_id.clone();
     let method = request.request.method();
     let generation = match request_sidecar_generation(&headers) {
-        Ok(value) => value, Err(Json(value)) => return no_store_json(value),
+        Ok(value) => value,
+        Err(Json(value)) => return no_store_json(value),
     };
-    let failure = |error: crate::agent_network::NetworkError| no_store_json(serde_json::json!({"ok":false,"error":error}));
+    let failure = |error: crate::agent_network::NetworkError| {
+        no_store_json(serde_json::json!({"ok":false,"error":error}))
+    };
     let Some(manager) = get_sidecar_state() else {
-        return failure(crate::agent_network::NetworkError::new("SOURCE_OWNER_UNAVAILABLE"));
+        return failure(crate::agent_network::NetworkError::new(
+            "SOURCE_OWNER_UNAVAILABLE",
+        ));
     };
     let Some(app) = crate::logger::get_app_handle() else {
-        return failure(crate::agent_network::NetworkError::new("CONNECTOR_UNAVAILABLE"));
+        return failure(crate::agent_network::NetworkError::new(
+            "CONNECTOR_UNAVAILABLE",
+        ));
     };
     let Some(owner) = app.try_state::<crate::agent_network::actor::ManagedAgentNetwork>() else {
-        return failure(crate::agent_network::NetworkError::new("CONNECTOR_UNAVAILABLE"));
+        return failure(crate::agent_network::NetworkError::new(
+            "CONNECTOR_UNAVAILABLE",
+        ));
     };
-    match crate::agent_network::source::invoke(&owner, manager, generation, request, queued_at).await {
-        Ok(result) => no_store_json(serde_json::json!({"ok":true,"outcome":result.outcome,"identity":result.identity})),
+    match crate::agent_network::source::invoke(&owner, manager, generation, request, queued_at)
+        .await
+    {
+        Ok(result) => no_store_json(
+            serde_json::json!({"ok":true,"outcome":result.outcome,"identity":result.identity}),
+        ),
         Err(error) => {
-            ulog_warn!("[agent-network] stage=source-invoke requestId={} method={} code={}", request_id, method, error.code);
+            ulog_warn!(
+                "[agent-network] stage=source-invoke requestId={} method={} code={}",
+                request_id,
+                method,
+                error.code
+            );
             failure(error)
-        },
+        }
     }
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all="camelCase",deny_unknown_fields)]
-struct NetworkDiscoveryRequest {sidecar_id:String, #[serde(default)] local_only:bool}
-async fn agent_network_discovery_handler(headers:HeaderMap,Json(request):Json<NetworkDiscoveryRequest>) ->(HeaderMap,Json<serde_json::Value>) {
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NetworkDiscoveryRequest {
+    sidecar_id: String,
+    #[serde(default)]
+    local_only: bool,
+}
+async fn agent_network_discovery_handler(
+    headers: HeaderMap,
+    Json(request): Json<NetworkDiscoveryRequest>,
+) -> (HeaderMap, Json<serde_json::Value>) {
     use tauri::Manager;
-    let generation=match request_sidecar_generation(&headers){Ok(generation)=>generation,Err(Json(value))=>return no_store_json(value)};
-    let failure=|code|no_store_json(serde_json::json!({"ok":false,"error":{"code":code}}));
-    if !sidecar_is_live(&request.sidecar_id,generation){return failure("SOURCE_GENERATION_CHANGED");}
-    let Some(app)=crate::logger::get_app_handle()else{return failure("CONNECTOR_UNAVAILABLE");};
-    let Some(owner)=app.try_state::<crate::agent_network::actor::ManagedAgentNetwork>()else{return failure("CONNECTOR_UNAVAILABLE");};
-    let result=crate::agent_network::discovery::remote(&owner, request.local_only).await;
-    if !sidecar_is_live(&request.sidecar_id,generation){return failure("SOURCE_GENERATION_CHANGED");}
-    match result {Ok(data)=>no_store_json(serde_json::json!({"ok":true,"data":data})),Err(error)=>no_store_json(serde_json::json!({"ok":false,"error":error}))}
+    let generation = match request_sidecar_generation(&headers) {
+        Ok(generation) => generation,
+        Err(Json(value)) => return no_store_json(value),
+    };
+    let failure = |code| no_store_json(serde_json::json!({"ok":false,"error":{"code":code}}));
+    if !sidecar_is_live(&request.sidecar_id, generation) {
+        return failure("SOURCE_GENERATION_CHANGED");
+    }
+    let Some(app) = crate::logger::get_app_handle() else {
+        return failure("CONNECTOR_UNAVAILABLE");
+    };
+    let Some(owner) = app.try_state::<crate::agent_network::actor::ManagedAgentNetwork>() else {
+        return failure("CONNECTOR_UNAVAILABLE");
+    };
+    let result = crate::agent_network::discovery::remote(&owner, request.local_only).await;
+    if !sidecar_is_live(&request.sidecar_id, generation) {
+        return failure("SOURCE_GENERATION_CHANGED");
+    }
+    match result {
+        Ok(data) => no_store_json(serde_json::json!({"ok":true,"data":data})),
+        Err(error) => no_store_json(serde_json::json!({"ok":false,"error":error})),
+    }
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all="camelCase",deny_unknown_fields)]
-struct NetworkDiagnoseRequest { sidecar_id:String, cursor:Option<String>, limit:usize }
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NetworkDiagnoseRequest {
+    sidecar_id: String,
+    network: Option<String>,
+    cursor: Option<String>,
+    limit: usize,
+}
 fn network_diagnostic_device(device: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "deviceId": device["deviceId"],
@@ -873,49 +976,135 @@ fn network_diagnostic_device(device: &serde_json::Value) -> serde_json::Value {
     })
 }
 
-async fn agent_network_diagnose_handler(headers:HeaderMap,Json(request):Json<NetworkDiagnoseRequest>) -> (HeaderMap,Json<serde_json::Value>) {
-    use tauri::Manager;
+async fn agent_network_diagnose_handler(
+    headers: HeaderMap,
+    Json(request): Json<NetworkDiagnoseRequest>,
+) -> (HeaderMap, Json<serde_json::Value>) {
     use crate::agent_network::commands::MetadataRequest;
-    let generation=match request_sidecar_generation(&headers){Ok(value)=>value,Err(Json(value))=>return no_store_json(value)};
-    let failure=|code|no_store_json(serde_json::json!({"ok":false,"error":{"code":code}}));
-    if !sidecar_is_live(&request.sidecar_id,generation) {return failure("SOURCE_GENERATION_CHANGED");}
-    if request.limit==0 || request.limit>100 {return failure("NETWORK_ARGUMENT_INVALID");}
-    let Some(app)=crate::logger::get_app_handle()else{return failure("CONNECTOR_UNAVAILABLE");};
-    let Some(owner)=app.try_state::<crate::agent_network::actor::ManagedAgentNetwork>()else{return failure("CONNECTOR_UNAVAILABLE");};
-    let (network,devices)=tokio::join!(owner.request(MetadataRequest::Network),owner.request(MetadataRequest::Devices{cursor:request.cursor,limit:request.limit}));
-    if !sidecar_is_live(&request.sidecar_id,generation) {return failure("SOURCE_GENERATION_CHANGED");}
-    match (network,devices) {
-        (Ok(network),Ok(devices))=>{
-            let items:Vec<_>=devices["items"].as_array().into_iter().flatten().map(network_diagnostic_device).collect();
-            no_store_json(serde_json::json!({"ok":true,"data":{"protocol":network["protocol"],"capabilities":network["capabilities"],
-                "devices":items,"nextCursor":devices["nextCursor"],"complete":devices["complete"]}}))
-        },_=>failure("NETWORK_DIAGNOSTIC_UNAVAILABLE"),
+    use tauri::Manager;
+    let generation = match request_sidecar_generation(&headers) {
+        Ok(value) => value,
+        Err(Json(value)) => return no_store_json(value),
+    };
+    let failure = |code| no_store_json(serde_json::json!({"ok":false,"error":{"code":code}}));
+    if !sidecar_is_live(&request.sidecar_id, generation) {
+        return failure("SOURCE_GENERATION_CHANGED");
     }
+    if request.limit == 0 || request.limit > 100 {
+        return failure("NETWORK_ARGUMENT_INVALID");
+    }
+    let Some(app) = crate::logger::get_app_handle() else {
+        return failure("CONNECTOR_UNAVAILABLE");
+    };
+    let Some(owner) = app.try_state::<crate::agent_network::actor::ManagedAgentNetwork>() else {
+        return failure("CONNECTOR_UNAVAILABLE");
+    };
+    use futures_util::{stream::FuturesUnordered, StreamExt};
+    let mut views = owner.view().connections;
+    if let Some(filter) = &request.network {
+        views.retain(|v| {
+            v.id == *filter || v.name == *filter || v.snapshot.network_id.as_deref() == Some(filter)
+        });
+        if views.len() != 1 {
+            return failure("NETWORK_SCOPE_MISMATCH");
+        }
+    } else if request.cursor.is_some() {
+        return failure("NETWORK_ARGUMENT_INVALID");
+    }
+    let mut reads = FuturesUnordered::new();
+    for view in views {
+        let connection = owner.connection(&view.id);
+        let cursor = request.cursor.clone();
+        let limit = request.limit;
+        reads.push(async move{
+            let data=match connection{
+                Ok(connection)=>{
+                    let (network,devices)=tokio::join!(connection.request(MetadataRequest::Network),connection.request(MetadataRequest::Devices{cursor,limit}));
+                    match (network,devices){
+                        (Ok(network),Ok(devices))=>{let items:Vec<_>=devices["items"].as_array().into_iter().flatten().map(network_diagnostic_device).collect();
+                            serde_json::json!({"protocol":network["protocol"],"capabilities":network["capabilities"],"devices":items,"nextCursor":devices["nextCursor"],"complete":devices["complete"]})},
+                        _=>serde_json::json!({"complete":false,"error":{"code":"NETWORK_DIAGNOSTIC_UNAVAILABLE"}}),
+                    }
+                },Err(error)=>serde_json::json!({"complete":false,"error":error}),
+            };
+            serde_json::json!({"connectionId":view.id,"networkName":view.name,"state":view.snapshot.state,"data":data})
+        });
+    }
+    let mut networks = Vec::new();
+    while let Some(value) = reads.next().await {
+        networks.push(value);
+    }
+    if !sidecar_is_live(&request.sidecar_id, generation) {
+        return failure("SOURCE_GENERATION_CHANGED");
+    }
+    no_store_json(
+        serde_json::json!({"ok":true,"data":{"complete":networks.iter().all(|v|v["data"]["complete"]==true),"networks":networks}}),
+    )
 }
 
-async fn agent_network_watches_handler(headers:HeaderMap,Json(request):Json<crate::agent_network::source::WatchesRequest>) -> (HeaderMap,Json<serde_json::Value>) {
+async fn agent_network_watches_handler(
+    headers: HeaderMap,
+    Json(request): Json<crate::agent_network::source::WatchesRequest>,
+) -> (HeaderMap, Json<serde_json::Value>) {
     use tauri::Manager;
-    let generation=match request_sidecar_generation(&headers){Ok(value)=>value,Err(Json(value))=>return no_store_json(value)};
-    let failure=|error:crate::agent_network::NetworkError|no_store_json(serde_json::json!({"ok":false,"error":error}));
-    let Some(manager)=get_sidecar_state()else{return failure(crate::agent_network::NetworkError::new("SOURCE_OWNER_UNAVAILABLE"));};
-    let Some(app)=crate::logger::get_app_handle()else{return failure(crate::agent_network::NetworkError::new("CONNECTOR_UNAVAILABLE"));};
-    let Some(owner)=app.try_state::<crate::agent_network::actor::ManagedAgentNetwork>()else{return failure(crate::agent_network::NetworkError::new("CONNECTOR_UNAVAILABLE"));};
-    match crate::agent_network::source::watches(&owner,manager,generation,request).await {
-        Ok(result)=>no_store_json(serde_json::json!({"ok":true,"result":result})),Err(error)=>failure(error),
+    let generation = match request_sidecar_generation(&headers) {
+        Ok(value) => value,
+        Err(Json(value)) => return no_store_json(value),
+    };
+    let failure = |error: crate::agent_network::NetworkError| {
+        no_store_json(serde_json::json!({"ok":false,"error":error}))
+    };
+    let Some(manager) = get_sidecar_state() else {
+        return failure(crate::agent_network::NetworkError::new(
+            "SOURCE_OWNER_UNAVAILABLE",
+        ));
+    };
+    let Some(app) = crate::logger::get_app_handle() else {
+        return failure(crate::agent_network::NetworkError::new(
+            "CONNECTOR_UNAVAILABLE",
+        ));
+    };
+    let Some(owner) = app.try_state::<crate::agent_network::actor::ManagedAgentNetwork>() else {
+        return failure(crate::agent_network::NetworkError::new(
+            "CONNECTOR_UNAVAILABLE",
+        ));
+    };
+    match crate::agent_network::source::watches(&owner, manager, generation, request).await {
+        Ok(result) => no_store_json(serde_json::json!({"ok":true,"result":result})),
+        Err(error) => failure(error),
     }
 }
 
 async fn agent_network_return_handler(
-    headers:HeaderMap,Json(request):Json<crate::agent_network::returns::CallbackRequest>,
-)->(HeaderMap,Json<serde_json::Value>) {
+    headers: HeaderMap,
+    Json(request): Json<crate::agent_network::returns::CallbackRequest>,
+) -> (HeaderMap, Json<serde_json::Value>) {
     use tauri::Manager;
-    let generation=match request_sidecar_generation(&headers){Ok(value)=>value,Err(Json(value))=>return no_store_json(value)};
-    let failure=|error:crate::agent_network::NetworkError|no_store_json(serde_json::json!({"ok":false,"error":error}));
-    let Some(manager)=get_sidecar_state()else{return failure(crate::agent_network::NetworkError::new("SOURCE_OWNER_UNAVAILABLE"));};
-    let Some(app)=crate::logger::get_app_handle()else{return failure(crate::agent_network::NetworkError::new("CONNECTOR_UNAVAILABLE"));};
-    let Some(owner)=app.try_state::<crate::agent_network::actor::ManagedAgentNetwork>()else{return failure(crate::agent_network::NetworkError::new("CONNECTOR_UNAVAILABLE"));};
-    match crate::agent_network::source::return_event(&owner,manager,generation,request).await {
-        Ok(settlement)=>no_store_json(serde_json::json!({"ok":true,"settlement":settlement})),Err(error)=>failure(error),
+    let generation = match request_sidecar_generation(&headers) {
+        Ok(value) => value,
+        Err(Json(value)) => return no_store_json(value),
+    };
+    let failure = |error: crate::agent_network::NetworkError| {
+        no_store_json(serde_json::json!({"ok":false,"error":error}))
+    };
+    let Some(manager) = get_sidecar_state() else {
+        return failure(crate::agent_network::NetworkError::new(
+            "SOURCE_OWNER_UNAVAILABLE",
+        ));
+    };
+    let Some(app) = crate::logger::get_app_handle() else {
+        return failure(crate::agent_network::NetworkError::new(
+            "CONNECTOR_UNAVAILABLE",
+        ));
+    };
+    let Some(owner) = app.try_state::<crate::agent_network::actor::ManagedAgentNetwork>() else {
+        return failure(crate::agent_network::NetworkError::new(
+            "CONNECTOR_UNAVAILABLE",
+        ));
+    };
+    match crate::agent_network::source::return_event(&owner, manager, generation, request).await {
+        Ok(settlement) => no_store_json(serde_json::json!({"ok":true,"settlement":settlement})),
+        Err(error) => failure(error),
     }
 }
 
@@ -1427,8 +1616,14 @@ fn cliproxy_identity(headers: &HeaderMap, sidecar_id: &str) -> Result<u64, serde
     request_sidecar_generation(headers).map_err(|Json(value)| value)
 }
 
-async fn cliproxy_acquire_handler(headers: HeaderMap, Json(request): Json<crate::cliproxy::types::BindingRequest>) -> (HeaderMap, Json<serde_json::Value>) {
-    let generation = match cliproxy_identity(&headers, &request.sidecar_id) { Ok(generation) => generation, Err(error) => return no_store_json(error) };
+async fn cliproxy_acquire_handler(
+    headers: HeaderMap,
+    Json(request): Json<crate::cliproxy::types::BindingRequest>,
+) -> (HeaderMap, Json<serde_json::Value>) {
+    let generation = match cliproxy_identity(&headers, &request.sidecar_id) {
+        Ok(generation) => generation,
+        Err(error) => return no_store_json(error),
+    };
     let sidecar_id = request.sidecar_id.clone();
     let operation_id = request.operation_id.clone();
     match crate::cliproxy::acquire_binding(request, generation).await {
@@ -1436,26 +1631,53 @@ async fn cliproxy_acquire_handler(headers: HeaderMap, Json(request): Json<crate:
             // The process may die during component startup. Settle the exact
             // acquire before returning; a later same-ID Sidecar cannot adopt it.
             if let Err(error) = validate_current_sidecar_request(&headers, &sidecar_id) {
-                let _ = crate::cliproxy::release_binding(crate::cliproxy::types::LeaseRequest { sidecar_id, operation_id, lease_id: Some(binding.lease_id), terminal: None }, generation).await;
+                let _ = crate::cliproxy::release_binding(
+                    crate::cliproxy::types::LeaseRequest {
+                        sidecar_id,
+                        operation_id,
+                        lease_id: Some(binding.lease_id),
+                        terminal: None,
+                    },
+                    generation,
+                )
+                .await;
                 return no_store_json(error);
             }
             no_store_json(serde_json::json!({ "ok": true, "binding": binding }))
         }
-        Err(error) => no_store_json(serde_json::json!({ "ok": false, "code": error.code, "error": error.message })),
+        Err(error) => no_store_json(
+            serde_json::json!({ "ok": false, "code": error.code, "error": error.message }),
+        ),
     }
 }
-async fn cliproxy_check_handler(headers: HeaderMap, Json(request): Json<crate::cliproxy::types::LeaseRequest>) -> (HeaderMap, Json<serde_json::Value>) {
-    let generation = match cliproxy_identity(&headers, &request.sidecar_id) { Ok(generation) => generation, Err(error) => return no_store_json(error) };
+async fn cliproxy_check_handler(
+    headers: HeaderMap,
+    Json(request): Json<crate::cliproxy::types::LeaseRequest>,
+) -> (HeaderMap, Json<serde_json::Value>) {
+    let generation = match cliproxy_identity(&headers, &request.sidecar_id) {
+        Ok(generation) => generation,
+        Err(error) => return no_store_json(error),
+    };
     cliproxy_result(crate::cliproxy::check_binding(request, generation).await)
 }
-async fn cliproxy_release_handler(headers: HeaderMap, Json(request): Json<crate::cliproxy::types::LeaseRequest>) -> (HeaderMap, Json<serde_json::Value>) {
-    let generation = match cliproxy_identity(&headers, &request.sidecar_id) { Ok(generation) => generation, Err(error) => return no_store_json(error) };
+async fn cliproxy_release_handler(
+    headers: HeaderMap,
+    Json(request): Json<crate::cliproxy::types::LeaseRequest>,
+) -> (HeaderMap, Json<serde_json::Value>) {
+    let generation = match cliproxy_identity(&headers, &request.sidecar_id) {
+        Ok(generation) => generation,
+        Err(error) => return no_store_json(error),
+    };
     cliproxy_result(crate::cliproxy::release_binding(request, generation).await)
 }
-fn cliproxy_result(result: Result<(), crate::cliproxy::types::Error>) -> (HeaderMap, Json<serde_json::Value>) {
+fn cliproxy_result(
+    result: Result<(), crate::cliproxy::types::Error>,
+) -> (HeaderMap, Json<serde_json::Value>) {
     no_store_json(match result {
         Ok(()) => serde_json::json!({ "ok": true }),
-        Err(error) => serde_json::json!({ "ok": false, "code": error.code, "error": error.message }),
+        Err(error) => {
+            serde_json::json!({ "ok": false, "code": error.code, "error": error.message })
+        }
     })
 }
 
@@ -5487,10 +5709,13 @@ mod tests {
                 "appVersion": "0.4.25", "connectionState": state,
                 "privateMetadata": { "credential": "not-for-diagnostics" },
             });
-            assert_eq!(network_diagnostic_device(&device), serde_json::json!({
-                "deviceId": "device-1", "deviceName": "Windows", "platform": "windows",
-                "appVersion": "0.4.25", "connectionState": state,
-            }));
+            assert_eq!(
+                network_diagnostic_device(&device),
+                serde_json::json!({
+                    "deviceId": "device-1", "deviceName": "Windows", "platform": "windows",
+                    "appVersion": "0.4.25", "connectionState": state,
+                })
+            );
         }
     }
 

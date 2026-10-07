@@ -16,7 +16,7 @@ mod platform {
     static OBSERVER_KEY: u8 = 0;
     struct Ivars {
         app: tauri::AppHandle,
-        owner: Weak<super::super::actor::AgentNetwork>,
+        owner: Weak<super::super::registry::NetworkRegistry>,
     }
     define_class!(
         // SAFETY: NSObject has no subclassing requirements; the workspace
@@ -196,7 +196,7 @@ mod platform {
     }
 }
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-pub(crate) use platform::{install, Monitor};
+pub(crate) use platform::install;
 
 #[cfg(target_os = "linux")]
 pub(crate) async fn install_linux() -> Result<(Monitor, bool), super::NetworkError> {
@@ -244,8 +244,4 @@ pub(crate) async fn next(monitor: &mut Monitor) -> Result<bool, super::NetworkEr
         .and_then(|message| message.body().deserialize::<(bool,)>().ok())
         .map(|(sleeping,)| sleeping)
         .ok_or_else(|| super::NetworkError::new("NETWORK_POWER_MONITOR_UNAVAILABLE"))
-}
-#[cfg(not(target_os = "linux"))]
-pub(crate) async fn next(_monitor: &mut Monitor) -> Result<bool, super::NetworkError> {
-    std::future::pending().await
 }

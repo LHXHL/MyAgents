@@ -1996,9 +1996,8 @@ fn sanitize_npm_spec(raw: &str) -> String {
 }
 
 /// Install an OpenClaw plugin from npm.
-/// Priority: system npm → bundled npm → bun add.
-/// System npm is preferred (user-maintained, most reliable); bundled npm is fallback
-/// for users without Node.js; bun add is last resort.
+/// Installation and repair use the app-owned Node/npm pair. Initial failures
+/// preserve the real diagnostic; no system npm or alternate runtime is retried.
 pub async fn install_openclaw_plugin<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
     npm_spec: &str,

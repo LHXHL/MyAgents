@@ -220,6 +220,7 @@ describe("network read and settings outcome", () => {
       await expect(networkRequest(request)).resolves.toBe(receipt);
       expect(invoke).toHaveBeenCalledTimes(2);
       expect(invoke).toHaveBeenLastCalledWith("cmd_agent_network_request", {
+        connectionId: "official",
         request: { kind: "receipt", mutationId: "mutation" },
       });
     },
@@ -241,5 +242,32 @@ describe("network read and settings outcome", () => {
     await expect(networkRequest(mutations[0])).rejects.toBe(error);
     expect(invoke).toHaveBeenCalledOnce();
     expect(networkErrorKey(error, "mutation")).toBe("conflict");
+  });
+});
+
+it("keeps uncertain mutation receipt queries on their original network", async () => {
+  invoke
+    .mockRejectedValueOnce({ code: "NETWORK_REQUEST_UNCONFIRMED" })
+    .mockResolvedValueOnce({ revision: 3 });
+  await networkRequest(
+    {
+      kind: "membership",
+      networkId: "network-a",
+      deviceId: "device",
+      joined: true,
+      mutationId: "same-id",
+      expectedMembershipRevision: 0,
+    },
+    "self-a",
+  );
+  expect(
+    invoke.mock.calls.every(
+      ([, args]) =>
+        (args as { connectionId: string }).connectionId === "self-a",
+    ),
+  ).toBe(true);
+  expect(invoke).toHaveBeenLastCalledWith("cmd_agent_network_request", {
+    connectionId: "self-a",
+    request: { kind: "receipt", mutationId: "same-id" },
   });
 });

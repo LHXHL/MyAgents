@@ -184,9 +184,9 @@ Record 的物理音轨与媒体时钟由 RecordingManager 持有；Media Worker 
 
 ### Agent 网络与跨仓库协议
 
-MyAgents 只包含客户端实现；`src/server/agent-network/` 是本机 Node Sidecar 适配层。Cloudflare 中转和网络设置属于独立 `MyAgents_AgentNet` 仓库，官方账号与签发属于 `MyAgents_space`。共享协议只定义通信契约，不拥有连接、登录状态或任务执行。
+MyAgents 只包含客户端实现；`src/server/agent-network/` 是本机 Node Sidecar 适配层。Cloudflare 通用中转、网络设置和自部署身份属于 `MyAgents-Agenthub`；私有 `MyAgents_AgentNet` 固定版本组合官方服务，官方账号与签发仍属于 `MyAgents_space`。Rust App 的连接 registry 持有所有网络连接，页面选中项只决定展示；各连接复用原 actor，共享一个 App 字节预算。共享协议只定义通信契约，不拥有连接、登录状态或任务执行。
 
-协议源码由 `MyAgents_AgentNet/packages/agent-network-protocol/` 维护，客户端只提交 `vendor/agent-network-protocol/` 中的固定版本包与来源清单。TypeScript 通过锁定 npm 依赖消费；Rust 在构建时校验同一包的 SHA-256，将 Schema/fixtures 投影到 Cargo `OUT_DIR`，不保留第二份可编辑协议。普通安装、测试和构建不访问私有服务端仓库或平级 checkout。源码归属与产物更新见 [Agent 网络：公共协议与仓库分发](./tech_docs/agent_network.md#公共协议与仓库分发)。
+协议源码由 `MyAgents-Agenthub/packages/agent-network-protocol/` 维护，客户端只提交 `vendor/agent-network-protocol/` 中的固定版本包与来源清单。TypeScript 通过锁定 npm 依赖消费；Rust 在构建时校验同一包的 SHA-256，将 Schema/fixtures 投影到 Cargo `OUT_DIR`，不保留第二份可编辑协议。普通安装、测试和构建不访问私有服务端仓库或平级 checkout。源码归属与产物更新见 [Agent 网络：公共协议与仓库分发](./tech_docs/agent_network.md#公共协议与仓库分发)。
 
 ## 模块地图
 

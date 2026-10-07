@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PRESET_PROVIDERS, type Provider } from '../../../shared/config-types';
 import type { SessionStartOptions } from '../../runtimes/types';
 import { getSessionMetadata } from '../../SessionStore';
-import { findEffectiveProvider, loadConfig, resolveProviderEnv } from '../../utils/admin-config';
+import { findEffectiveProvider, findProjectAgentByWorkspacePath, loadConfig, resolveProviderEnv, resolveWorkspaceConfig } from '../../utils/admin-config';
 import { prepareProviderBinding } from '../../utils/managed-proxy-binding';
 import { compileConfiguration } from './runtime';
 
@@ -12,6 +12,7 @@ vi.mock('../../utils/admin-config', () => ({
   findProjectAgentByWorkspacePath: vi.fn(),
   loadConfig: vi.fn(),
   resolveProviderEnv: vi.fn(),
+  resolveWorkspaceConfig: vi.fn(),
 }));
 vi.mock('../../utils/managed-proxy-binding', () => ({
   prepareProviderBinding: vi.fn(),
@@ -34,6 +35,44 @@ describe('DSH Provider configuration', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(loadConfig).mockReturnValue({} as ReturnType<typeof loadConfig>);
+    vi.mocked(resolveWorkspaceConfig).mockReturnValue({} as ReturnType<typeof resolveWorkspaceConfig>);
+  });
+
+  it('uses the carried desktop Provider route before first metadata admission', async () => {
+    const provider = preset('zhipu-ai');
+    vi.mocked(getSessionMetadata).mockReturnValue(null);
+    vi.mocked(findEffectiveProvider).mockReturnValue(provider as unknown as NonNullable<ReturnType<typeof findEffectiveProvider>>);
+    vi.mocked(resolveProviderEnv).mockReturnValue({ providerId: provider.id, providerName: provider.name,
+      apiProtocol: 'anthropic', authType: 'api_key', apiKey: 'synthetic-key', baseUrl: provider.config.baseUrl });
+    const result = await compileConfiguration({ ...options,
+      providerRoute: { kind: 'provider', providerId: provider.id, model: 'glm-5.3' },
+    } as SessionStartOptions);
+    expect(result.profile.modelId).toBe('glm-5.3');
+    expect(resolveProviderEnv).toHaveBeenCalledWith(provider.id, expect.anything(), 'glm-5.3');
+  });
+
+  it('uses the common owned snapshot resolver for a historical model-only Session', async () => {
+    const provider = preset('zhipu-ai');
+    const metadata = { model: 'glm-5.3', configSnapshotAt: '2026-10-06T00:00:00Z' } as NonNullable<ReturnType<typeof getSessionMetadata>>;
+    vi.mocked(getSessionMetadata).mockReturnValue(metadata);
+    vi.mocked(resolveWorkspaceConfig).mockReturnValue({ providerRoute: {
+      kind: 'provider', providerId: provider.id, model: 'glm-5.3',
+    } } as ReturnType<typeof resolveWorkspaceConfig>);
+    vi.mocked(findEffectiveProvider).mockReturnValue(provider as unknown as NonNullable<ReturnType<typeof findEffectiveProvider>>);
+    vi.mocked(resolveProviderEnv).mockReturnValue({ providerId: provider.id, providerName: provider.name,
+      apiProtocol: 'anthropic', authType: 'api_key', apiKey: 'synthetic-key', baseUrl: provider.config.baseUrl });
+    await compileConfiguration(options);
+    expect(resolveWorkspaceConfig).toHaveBeenCalledWith('/workspace', metadata, { includeMcp: false });
+    expect(resolveProviderEnv).toHaveBeenCalledWith(provider.id, expect.anything(), 'glm-5.3');
+  });
+
+  it('does not borrow a changed Agent Provider or a birth option for an unresolved owned Session', async () => {
+    vi.mocked(getSessionMetadata).mockReturnValue({ model: 'removed-model', configSnapshotAt: '2026-10-06T00:00:00Z' } as NonNullable<ReturnType<typeof getSessionMetadata>>);
+    vi.mocked(findProjectAgentByWorkspacePath).mockReturnValue({ providerId: 'zhipu-ai', model: 'glm-5.3' } as NonNullable<ReturnType<typeof findProjectAgentByWorkspacePath>>);
+    await expect(compileConfiguration({ ...options,
+      providerRoute: { kind: 'provider', providerId: 'zhipu-ai', model: 'glm-5.3' },
+    })).rejects.toThrow('DSH Session has no concrete Provider authority');
+    expect(resolveProviderEnv).not.toHaveBeenCalled();
   });
 
   it.each(['high', 'future-effort'])(

@@ -12,9 +12,11 @@ pub(crate) enum AccountOperation {
     Challenge,
     Current,
     Jwks,
+    Revoke,
+    RevokeState,
 }
 impl AccountOperation {
-    fn request(&self) -> Result<(reqwest::Method, String, bool), NetworkError> {
+    pub(crate) fn request(&self) -> Result<(reqwest::Method, String, bool), NetworkError> {
         let (method, path, authenticated) = match self {
             Self::IdentityState(device_id) => {
                 let canonical = uuid::Uuid::parse_str(device_id)
@@ -53,6 +55,16 @@ impl AccountOperation {
                 "/api/agent-network/identity/current".into(),
                 true,
             ),
+            Self::Revoke => (
+                reqwest::Method::POST,
+                "/api/agent-network/revoke".into(),
+                true,
+            ),
+            Self::RevokeState => (
+                reqwest::Method::POST,
+                "/api/agent-network/revoke-state".into(),
+                true,
+            ),
             Self::Jwks => (
                 reqwest::Method::GET,
                 "/api/agent-network/jwks".into(),
@@ -64,10 +76,10 @@ impl AccountOperation {
 }
 
 #[derive(Clone)]
-pub(crate) struct NetworkAccountSession {
+pub(crate) struct OfficialAccountSession {
     session: AuthenticatedSpaceSession,
 }
-impl NetworkAccountSession {
+impl OfficialAccountSession {
     pub(crate) fn capture() -> Result<Self, NetworkError> {
         // Space demo fixtures must not mint an actual device/network identity.
         if crate::space_cloud_mock::is_enabled() {
@@ -225,7 +237,7 @@ fn account_body_failure(
     error.retry_after = retry_after;
     error
 }
-async fn read_account_response_body(
+pub(crate) async fn read_account_response_body(
     response: &mut reqwest::Response,
     diagnostic: &RequestDiagnostic,
 ) -> Result<Vec<u8>, NetworkError> {

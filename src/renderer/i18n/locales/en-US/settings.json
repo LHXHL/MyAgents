@@ -2248,6 +2248,8 @@
     "developer": {
       "devModeTitle": "Developer Mode",
       "devModeDescription": "Show log entry buttons on pages, such as Logs and System Info.",
+      "agentNetworkMultiNetworkTitle": "AgentNet multiple networks (experimental)",
+      "agentNetworkMultiNetworkDescription": "Enable network switching and self-hosted networks. Turning this off pauses self-hosted connections while keeping their settings and credentials; the official network remains available.",
       "chatHistoryEntryTitle": "Chat History Entry",
       "chatHistoryEntryDescription": "Show the History button in the AI chat header. Global session search and workspace session lists remain available when this is off.",
       "codexProviderTitle": "Codex Subscription Provider",

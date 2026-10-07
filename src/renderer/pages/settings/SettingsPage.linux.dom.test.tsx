@@ -292,4 +292,15 @@ describe('Ubuntu settings availability', () => {
     expect(document.querySelector('[data-tool-market-entry]')).not.toBeInTheDocument();
   });
 
+  it.each([undefined, false, true])('writes the AgentNet developer gate through config (stored: %s)', async (enabled) => {
+    const { unlockDeveloperSection } = await import('@/utils/developerMode');
+    unlockDeveloperSection();
+    settingsMocks.config.agentNetworkSelfhostDevGate = enabled;
+    render(<ToastProvider><Settings mode="settings" initialSection="developer" isActive /></ToastProvider>);
+    const toggle = await screen.findByRole('button', { name: 'AgentNet multiple networks (experimental)' });
+    expect(toggle).toHaveAttribute('aria-pressed', String(enabled === true));
+    fireEvent.click(toggle);
+    expect(settingsMocks.updateConfig).toHaveBeenCalledWith({ agentNetworkSelfhostDevGate: enabled !== true });
+  });
+
 });

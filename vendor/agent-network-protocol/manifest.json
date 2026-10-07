@@ -1,10 +1,10 @@
 {
+  "version": "1.1.0",
+  "file": "myagents-agent-network-protocol-1.1.0-445fb9d0e1e1e9f8.tgz",
+  "sha256": "445fb9d0e1e1e9f85cffcc1cf1a633914f7b018919d456be3a25d054db010ae3",
+  "license": "Apache-2.0",
   "package": "@myagents/agent-network-protocol",
-  "version": "1.0.0",
-  "file": "myagents-agent-network-protocol-1.0.0-ca7126785fe2509f.tgz",
-  "sha256": "ca7126785fe2509f238f4b481022b48dfc8ad5b8b80218b0fd2c2f7a0d6b3d9b",
-  "authority": "hAcKlyc/MyAgents_AgentNet/packages/agent-network-protocol",
-  "license": "AGPL-3.0-only",
-  "state": "unpublished development artifact; replace with a new digest when authority changes",
-  "sourceCommit": "60d38ec60f4fc616404115ff7fb1622dc1d52d20"
+  "authority": "hAcKlyc/MyAgents-Agenthub/packages/agent-network-protocol",
+  "sourceCommit": "f53197315f169c4506315b36891c225effeff092",
+  "state": "immutable Apache-2.0 archive; earlier AGPL archives retain original bytes"
 }

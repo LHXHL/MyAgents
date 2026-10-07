@@ -1,6 +1,7 @@
 // MyAgents Tauri Application
 // Main entry point with sidecar lifecycle management
 
+mod agent_network;
 pub mod app_dirs;
 pub mod app_route;
 pub mod attachment_protocol;
@@ -16,7 +17,6 @@ mod crash_artifact_retention;
 pub mod cron_task;
 mod cuse_skill;
 pub mod device_identity;
-mod agent_network;
 pub mod document_processing;
 mod durable_fs;
 mod durable_journal;
@@ -54,6 +54,7 @@ mod network_diagnostics;
 pub mod notification;
 pub mod notification_badge;
 pub mod perf_trace;
+mod picker_page;
 pub mod process_cleanup;
 pub mod process_cmd;
 mod proxy_config;
@@ -61,9 +62,9 @@ mod proxy_spill;
 pub mod record;
 mod record_analytics;
 pub mod recording;
+mod resource_download;
 mod resource_signature;
 mod runtime_distribution_policy;
-mod resource_download;
 pub mod runtime_launch_guard;
 pub mod search;
 pub mod session_goal;
@@ -86,7 +87,6 @@ pub mod task_execution;
 pub mod task_scheduler;
 pub mod task_trigger;
 pub mod terminal;
-mod picker_page;
 pub mod thought;
 mod tray;
 mod updater;
@@ -302,7 +302,7 @@ pub fn run() {
 
     // Create managed sidecar state (now supports multiple instances)
     let sidecar_state = create_sidecar_state();
-    let agent_network_state = agent_network::actor::AgentNetwork::new();
+    let agent_network_state = agent_network::registry::NetworkRegistry::new();
 
     // Create IM Bot managed state
     let im_bot_state = im::create_im_bot_state();
@@ -831,6 +831,10 @@ pub fn run() {
             task::cmd_task_open_docs_dir,
             task::cmd_task_get_run_stats,
             agent_network::commands::cmd_agent_network_snapshot,
+            agent_network::commands::cmd_agent_network_connections,
+            agent_network::commands::cmd_agent_network_select,
+            agent_network::commands::cmd_agent_network_join,
+            agent_network::commands::cmd_agent_network_remove,
             agent_network::commands::cmd_agent_discovery,
             agent_network::commands::cmd_agent_network_request,
             // MyAgents Cloud Space
@@ -1046,7 +1050,7 @@ pub fn run() {
             crash_artifact_retention::start_crash_artifact_retention_owner();
             tauri::async_runtime::spawn(grok_auth::reconcile_provider_projection());
             let space_sidecar_state = app.state::<sidecar::ManagedSidecarManager>().inner().clone();
-            agent_network::actor::start(
+            agent_network::registry::start(
                 app.handle().clone(),
                 app.state::<agent_network::actor::ManagedAgentNetwork>().inner().clone(),
                 space_sidecar_state.clone(),

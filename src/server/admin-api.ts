@@ -1641,7 +1641,7 @@ function filterAgentIdentities(
 }
 
 export async function handleAgentList(
-  payload: { lifecycle?: string } = {},
+  payload: { lifecycle?: string; network?: string } = {},
 ): Promise<AdminResponse> {
   try {
     const registry = await resolvePersistedAgentWorkspaceRegistry();
@@ -1686,8 +1686,9 @@ export async function handleAgentList(
     ];
     if (lifecycle === 'all') for (const agent of agents.filter(agent => agent.archived)) combined.push(agent);
     return {
-      success: true, data: combined, networkStatus: discovery.networkStatus, complete: discovery.complete,
+      success: true, data: payload.network ? combined.filter(item=>item.connectionId===payload.network || item.networkName===payload.network || (item.source as {networkId?:string}|undefined)?.networkId===payload.network) : combined, networkStatus: discovery.networkStatus, complete: discovery.complete,
       authGeneration: discovery.authGeneration, principalId: discovery.principalId, networkId: discovery.networkId,
+      networks: "networks" in discovery ? discovery.networks : [],
       ...(registry.diagnostics.length ? {
         diagnostics: registry.diagnostics.map(item => ({
           ...item,
@@ -4619,7 +4620,7 @@ Discovery:
   list [--active|--archived]      Find Agent IDs; marks this CLI caller's Agent
   show <agentId>                  Inspect identity and effective birth defaults
   current                        Inspect this caller's Agent/workspace/Session
-  network-diagnose [--cursor C] [--limit 1..100]
+  network-diagnose [--network N] [--cursor C] [--limit 1..100]
                                  Inspect network protocol, devices and connection state
 
 Management:
@@ -4653,7 +4654,7 @@ Collaboration flow:
   myagents session start --agent <agentId> -p "<prompt>"
 
 agent list includes local Agents and callable Agents on other devices in the
-same account. Select using name, description, deviceName and isLocal; copy the
+all active networks. Use --network NAME_OR_CONNECTION_ID to filter list or diagnostics. Select using name, description, networkName, deviceName and isLocal; copy the
 full agentId. Remote references begin ma-agent:1 and execute on the target device.
 Only discovery and Session collaboration accept network references; local
 enable/disable/set/archive/channel commands do not manage remote Agents.
@@ -4966,7 +4967,7 @@ start/send automatic results are separate and do not appear as observations.`,
 Choose one watchId from session watches, or explicitly --all. Does not stop the
 target, cancel start/send automatic results or retract an admitted Inbox message.
 A return already being delivered remains pending until its settlement.`,
-  'agent/network-diagnose': `myagents agent network-diagnose [--cursor <cursor>] [--limit 1..100] --json
+  'agent/network-diagnose': `myagents agent network-diagnose [--network <name-or-connection-id>] [--cursor <cursor>] [--limit 1..100] --json
 
 Read network protocol/capabilities and paginated device appVersion and identity
 metadata on demand. Correlate deviceId with agent list; errors contain stage,

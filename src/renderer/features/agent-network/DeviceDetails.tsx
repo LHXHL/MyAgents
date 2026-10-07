@@ -23,6 +23,7 @@ import {
 } from "./deviceDisplay";
 
 export function DeviceDetails({
+  connectionId = "official",
   device,
   catalog,
   isLocal,
@@ -36,6 +37,7 @@ export function DeviceDetails({
   membershipBusy,
   membershipError,
 }: {
+  connectionId?: string;
   device: NetworkDevice;
   /** `undefined` while the page is still reading this device's catalog. */
   catalog: DeviceCatalog | undefined;
@@ -220,6 +222,7 @@ export function DeviceDetails({
               <ul className="-mx-3">
                 {agents.map((agent) => (
                   <AgentRow
+                    connectionId={connectionId}
                     key={agent.mountId}
                     agent={agent}
                     device={device}

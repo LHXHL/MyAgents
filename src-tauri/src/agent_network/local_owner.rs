@@ -331,8 +331,15 @@ pub(crate) async fn deliver_return(
     let from_label = if let Some((agent, device)) = &intent.peer_label {
         event["sourceAgentName"] = json!(agent);
         event["sourceDeviceName"] = json!(device);
-        format!("{} @ {} · {}", agent, device, event["sourceLabel"].as_str().unwrap_or("Session"))
-    } else { event["sourceLabel"].as_str().unwrap_or("Agent").into() };
+        format!(
+            "{} @ {} · {}",
+            agent,
+            device,
+            event["sourceLabel"].as_str().unwrap_or("Session")
+        )
+    } else {
+        event["sourceLabel"].as_str().unwrap_or("Agent").into()
+    };
     let message = PendingInboxMessage {
         message_id: event_id.into(),
         from_session_id: Some(from.into()),
@@ -352,14 +359,17 @@ pub(crate) async fn deliver_return(
         network_return: None,
     };
     let prepared = crate::inbox::deliver::prepare_existing_delivery(
-        app, manager, message, target.workspace_path.into(),
-    ).await;
+        app,
+        manager,
+        message,
+        target.workspace_path.into(),
+    )
+    .await;
     let outcome = match prepared {
         Ok(prepared) => prepared.admit_network(app, None, || Ok(())).await,
         Err(outcome) => outcome,
     };
-    match outcome
-    {
+    match outcome {
         DeliverOutcome::Delivered { .. } => ReturnSettlement::Delivered,
         DeliverOutcome::Unconfirmed { .. } => ReturnSettlement::Unconfirmed,
         _ => ReturnSettlement::Dropped,
@@ -371,6 +381,7 @@ pub(crate) async fn watch<G: Fn() -> Result<(), String> + Send + 'static>(
     manager: &ManagedSidecarManager,
     invocation: &Invocation,
     memory: super::memory::MemoryBudget,
+    connection_id: String,
     guard: G,
 ) -> (Outcome, Option<super::memory::Allocation>) {
     let Operation::Watch(params) = &invocation.operation else {
@@ -399,6 +410,7 @@ pub(crate) async fn watch<G: Fn() -> Result<(), String> + Send + 'static>(
         );
     }
     let reference = crate::inbox::types::NetworkReturnReference {
+        connection_id: Some(connection_id),
         op_id: uuid::Uuid::parse_str(&invocation.op_id).expect("validated op"),
         return_route_id: uuid::Uuid::parse_str(
             invocation.return_route_id.as_deref().expect("permit route"),
@@ -411,8 +423,13 @@ pub(crate) async fn watch<G: Fn() -> Result<(), String> + Send + 'static>(
     let watch_id = params.watch_id.clone();
     let watcher = source_session_id.clone();
     let label = params.local_agent_id.clone();
-    let observer_scope = format!("{}:{}:{}:{}", invocation.source.service_id,
-        invocation.source.network_id, invocation.source.device_id, invocation.source.key_generation);
+    let observer_scope = format!(
+        "{}:{}:{}:{}",
+        invocation.source.service_id,
+        invocation.source.network_id,
+        invocation.source.device_id,
+        invocation.source.key_generation
+    );
     // The original watcher must settle registration even if the connector
     // disappears after the final handoff, then precisely undo its own watch.
     let result = tauri::async_runtime::spawn(async move {
@@ -457,6 +474,9 @@ pub(crate) async fn watch<G: Fn() -> Result<(), String> + Send + 'static>(
     }
 }
 
-pub(crate) async fn discovery(manager: &ManagedSidecarManager, local_only: bool) -> Result<Value, NetworkError> {
+pub(crate) async fn discovery(
+    manager: &ManagedSidecarManager,
+    local_only: bool,
+) -> Result<Value, NetworkError> {
     request(manager, Route::Discovery, json!({"localOnly":local_only})).await
 }

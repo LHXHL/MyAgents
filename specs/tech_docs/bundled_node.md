@@ -17,6 +17,8 @@ Windows setup、dev build 和 release build 共用 `scripts/download_nodejs.ps1`
 
 npm 随官方 Node 发行包整组获取，禁止通过 `npm/latest` 或独立升级覆盖它。缓存复用和 staging 校验必须读取 npm 自身的 `package.json` 并检查 npm/npx 入口，不能仅凭 Node 版本命中缓存。需要调整组合时修改 manifest，且所选官方发行包必须自带声明的 npm；不匹配即准备失败。
 
+Windows NSIS 在进程清理后、复制新资源前完整删除安装目录下的 `nodejs/`，卸载也清理同一组件；删除失败立即停止，不使用延迟到重启的删除。自动更新、手动覆盖升级和同版本重装共用此入口，已有残留随下一次安装清除。仅覆盖当前文件清单会保留旧 npm 已移除的嵌套依赖，Node 的就近解析可让它们遮蔽新依赖（#636）；npm/npx 的 `--version` 成功不能证明该模块树可用。插件安装不拥有此目录，也不通过换包管理器修复它；用户 `.myagents/` 数据不在清理范围。
+
 打包后的主路径为：
 
 | 平台 | Runtime |

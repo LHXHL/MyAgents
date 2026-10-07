@@ -1,6 +1,7 @@
 import type { ComponentProps } from 'react';
 import type { Root, Nodes } from 'mdast';
 import type { VFile } from 'vfile';
+import type { Processor } from 'unified';
 import { defaultUrlTransform, type UrlTransform, type default as ReactMarkdown } from 'react-markdown';
 import rehypeKatex from 'rehype-katex';
 import rehypeRaw from 'rehype-raw';
@@ -111,16 +112,24 @@ export const MARKDOWN_SANITIZE_SCHEMA = {
   },
 };
 
-export const MARKDOWN_REMARK_PLUGINS_DEFAULT: ComponentProps<typeof ReactMarkdown>['remarkPlugins'] = [
+/** User prose uses explicit ATX headings: a dash-only line must not promote
+ * the preceding paragraph into a heading. Disable the parser construct before
+ * parsing so thematic breaks, code, tables and containers keep their grammar.
+ * No source rewriting or post-parse heading demotion is needed. */
+export function remarkDisableSetextHeadings(this: Processor) {
+  const data = this.data();
+  const extensions = data.micromarkExtensions ?? (data.micromarkExtensions = []);
+  extensions.push({ disable: { null: ['setextUnderline'] } });
+}
+
+export const MARKDOWN_REMARK_PLUGINS_DEFAULT: NonNullable<ComponentProps<typeof ReactMarkdown>['remarkPlugins']> = [
   remarkGfm,
   remarkMath,
   remarkOriginalReferences,
 ];
 
-export const MARKDOWN_REMARK_PLUGINS_WITH_BREAKS: ComponentProps<typeof ReactMarkdown>['remarkPlugins'] = [
-  remarkGfm,
-  remarkMath,
-  remarkOriginalReferences,
+export const MARKDOWN_REMARK_PLUGINS_WITH_BREAKS: NonNullable<ComponentProps<typeof ReactMarkdown>['remarkPlugins']> = [
+  ...MARKDOWN_REMARK_PLUGINS_DEFAULT,
   remarkBreaks,
 ];
 

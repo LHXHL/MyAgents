@@ -201,6 +201,8 @@ export interface ExternalAssistantSnapshotState {
 }
 
 export interface ExternalSendContext {
+  /** DSH uses the Product Provider picker; external CLIs own their Provider. */
+  providerRoute?: import('../../../shared/providerRoute').ProviderRoute;
   desktopQuery?: import("../../../shared/agentMentions").DesktopQueryDraft;
   clientRequestId?: string;
   asyncQuestionReply?: AsyncQuestionReply;

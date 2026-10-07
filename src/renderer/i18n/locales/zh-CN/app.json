@@ -1372,7 +1372,26 @@
       "descriptionTooLong": "简介不能超过 4096 字节。",
       "unconfirmed": "尚未确认保存结果，请刷新后查看。",
       "unconfigured": "此客户端尚未配置 Agent 网络服务。",
-      "failed": "暂时无法完成，请稍后重试。"
-    }
+      "failed": "暂时无法完成，请稍后重试。",
+      "urlInvalid": "请输入有效的 HTTPS 服务地址，不包含路径、参数或口令。",
+      "keyInvalid": "设备 key 无效、已过期、被撤销或已绑定其他设备。",
+      "trustChanged": "该地址的实例身份或信任材料已改变，请先核实部署。",
+      "removalPending": "暂未确认服务端撤销。连接已停止，可稍后重试移除。",
+      "privateKeyMissing": "本机私钥不可用。请管理员先撤销该设备，再用新 key 加入。",
+      "protocolUnsupported": "此服务不支持当前 AgentNet 协议。",
+      "featureDisabled": "请先在设置的开发者模式中开启 AgentNet 多网络。"
+    },
+    "chooseNetwork": "选择网络",
+    "officialNetwork": "MyAgents 官方网络",
+    "joinSelfhost": "加入自部署网络",
+    "serviceUrl": "服务 URL",
+    "deviceKey": "设备 key",
+    "selfhostHint": "此 key 仅能绑定一台设备。同网络设备共同信任；加入后不会自动开放任何 Agent。",
+    "joiningSelfhost": "正在加入…",
+    "removeConnection": "移除网络",
+    "removalPending": "等待撤销确认",
+    "retryRemove": "重试移除",
+    "retryRemoveMessage": "将重新确认服务端撤销并清理本地连接。",
+    "removeConnectionMessage": "移除「{{name}}」会撤销本机在该网络的身份。重新加入需要新 key。本地 Agent 与会话保留。"
   }
 }

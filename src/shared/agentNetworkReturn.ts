@@ -4,6 +4,7 @@ import { CANONICAL_UUID } from "@myagents/agent-network-protocol";
  * It conveys no authority by itself: Rust verifies the live target process,
  * connection generation and original operation before emitting an event. */
 export interface NetworkReturnReference {
+  connectionId?: string;
   opId: string;
   returnRouteId: string;
 }
@@ -14,12 +15,13 @@ export function parseNetworkReturnReference(
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   if (
-    Object.keys(record).length !== 2 ||
+    Object.keys(record).some(key=>!['connectionId','opId','returnRouteId'].includes(key)) ||
+    (record.connectionId!==undefined && (typeof record.connectionId!=='string' || record.connectionId!=='official'&&!CANONICAL_UUID.test(record.connectionId))) ||
     typeof record.opId !== "string" ||
     !CANONICAL_UUID.test(record.opId) ||
     typeof record.returnRouteId !== "string" ||
     !CANONICAL_UUID.test(record.returnRouteId)
   )
     return null;
-  return { opId: record.opId, returnRouteId: record.returnRouteId };
+  return { opId: record.opId, returnRouteId: record.returnRouteId, ...(typeof record.connectionId==='string'?{connectionId:record.connectionId}:{}) };
 }

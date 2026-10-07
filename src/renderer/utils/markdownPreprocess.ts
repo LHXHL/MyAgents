@@ -31,7 +31,7 @@ export function preprocessMarkdownContent(content: string): string {
   });
 
   // Protect GFM table blocks (2+ consecutive lines starting with |)
-  // Without this, regexes below (e.g. heading fix) corrupt table cells containing #
+  // Keep table source protected while applying prose-format fixes.
   processed = processed.replace(/(?:^[ \t]*\|[^\n]*(?:\n|$)){2,}/gm, (match) => {
     protected_.push(match);
     return `\x00CODE${protected_.length - 1}\x00`;
@@ -61,18 +61,10 @@ export function preprocessMarkdownContent(content: string): string {
   // Pattern: $ followed by digit, not preceded by another $ (preserves $$...$$)
   processed = processed.replace(/(?<!\$)\$(?=\d)/g, '\\$');
 
-  // 2b. Ensure headers have a blank line before them when the marker is not
-  // attached to a word token. This prevents language names like "C# WPF" and
-  // "F# tutorial" from being rewritten into headings.
-  processed = processed.replace(/([^\n#\p{L}\p{N}])(#{1,6}\s+)(?=\S)/gu, '$1\n\n$2');
-
-  // 2c removed: We used to auto-insert a space after a leading `#` to fix
-  // AI-emitted `##Title` (missing space). But that rule can't distinguish a
-  // heading from a tag — `#210`, `#heihei`, `#标题` are all common as plain
-  // tags / issue refs, and rewriting them into `# 210` / `# heihei` / `# 标题`
-  // turned the whole line into an `<h1>` (CommonMark requires the space). Per
-  // spec, `#text` (no space) is NOT a heading; trust the spec rather than
-  // guess the model's intent.
+  // Preserve heading source boundaries. Inserting newlines before an inline
+  // `# ` manufactures a heading and can break escapes, links, indented code,
+  // blockquotes and lists. Adding spaces to `#tag` has the same ambiguity.
+  // Let CommonMark decide headings from the author's original line structure.
 
   // 2d. Fix unordered list items at LINE START ONLY
   // "-item" -> "- item". Exclude digits so negative-leading values like

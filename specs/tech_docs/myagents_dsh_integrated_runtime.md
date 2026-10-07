@@ -34,11 +34,13 @@ Provider constraint 优先于通用默认：官方 Anthropic subscription/API �
 
 出生时将 effective identity 固化为 Session `runtimeBinding`。已有 Session 使用自己的 binding 与配置快照；默认值或 Agent 设置变化不替换它。未知 binding 保留历史读取，不能静默改成 SDK。DSH 的 integrated engine kind 也不能进入 SDK 专属配置或 enqueue 分支。
 
+桌面首轮的具体 `providerRoute` 经 SessionEngine 保留在原 message operation 的配置快照，并在原生启动时交给 DSH；此时 Product metadata 尚未准入，不能重新从 Agent 模板猜测已选 Provider。原生准入后的 Product 出生使用同一 operation 快照固化 Provider/model/权限/推理配置。已有 Session 的 Provider 读取与配置 adopt 复用 `resolveWorkspaceConfig` 的 owned snapshot / legacy 解析，缺失或无法唯一解析时明确失败，不借用 Agent 最新默认。外部 CLI Runtime 仍管理自己的 Provider，不消费这项 DSH 配置。
+
 ## 3. 构建与协议准入
 
 `src/shared/integrated-runtimes/dsh-release.json` 是正式 Runtime 的版本选择。构建准备读取该 Release 的四平台资产清单，校验归档、handoff、Runtime 与契约身份，再派生本次 effective lock。已提交的 `dsh-lock.json` 和静态生成契约是未准备 source-mode 的编译快照；不能拿其中旧摘要拒绝本次已验证选择。
 
-打包 Dev 默认也使用 Release；显式 `local` 才从绝对 handoff 路径构建。Vite、Sidecar esbuild 和 Rust build.rs 必须消费同一次选择，不能混入另一 target 或 generation 的身份。Release 准入按整包 SHA-256 与少量身份清单验证，不重扫暂存后的全部文件；显式本地 handoff 仍用公共 verifier 全量校验。运行时只核对受信资源路径、必要文件和实际协议握手，不重新扫描整个交付清单。
+打包 Dev 默认也使用 Release；显式 `local` 才从绝对 handoff 路径构建。Vite、Sidecar esbuild 和 Rust build.rs 必须消费同一次选择，不能混入另一 target 或 generation 的身份。Release 准入按整包 SHA-256 与少量身份清单验证，不重扫暂存后的全部文件；显式本地 handoff 仍用公共 verifier 全量校验。运行时只核对受信资源路径、必要文件和实际协议握手，不重新扫描整个交付清单。安装诊断单独读取现有 handoff/Runtime 身份清单，报告实际版本、源码提交与清单摘要；清单不可读时返回 `dsh_identity_unavailable`，不改变资源可用性或执行准入。诊断摘要不是全量产物校验。
 
 DSH 使用应用内置的单一 Node，不回退系统 Node。Node/npm 组合由 `scripts/node-runtime.json` 决定，handoff 声明其所需 Node；构建入口只核对版本要求，结构校验使用构建机 Node，不执行目标 Node 或 Runtime self-check。源码 setup、本地 handoff 和平台构建入口见 [构建资源准备](build_resource_preparation.md#integrated-dsh-构建来源) 与 [内置 Node](bundled_node.md#integrated-dsh)。
 
@@ -91,7 +93,7 @@ Host 以结构化 `systemContext` 提供 global/root contributions；DSH 的 lit
 
 Skills、Commands、MCP 与 Host tools 等组件由同一次 Product capability inventory 编译。DSH 与 Managed Codex 共用 runtime-neutral `product-extensions` discovery/dispatcher；执行仍属于各自 Runtime。Host 也会生成 Agent descriptor，但当前 DSH 没有对应的角色编译器，这类组件返回 `unsupported/implementation_batch_pending`，不会据此创建子 Agent。子 Agent 由 DSH 原生工具创建并管理，Host 不运行第二套 Agent loop。
 
-组件损坏或不支持时，只淘汰该组件并产生结构化诊断；基础 Runtime 仍可用。明确依赖 required system Skill 的 turn 才必须核对该 exact capability。扩展 replacement 在原生事务边界执行，并由 catalog/read-back 确认实际结果；SSE 仅投影状态，不成为配置 authority。
+组件身份以 `(kind, id)` 为作用域；不同类型同名合法，Skill 引用只在 Skill 类型内解析。组件损坏或不支持时，只淘汰该组件并产生结构化诊断；基础 Runtime 仍可用。缺省命令描述由 DSH 注册适配处补为命令名，公开名称与模板正文不变。MCP prepare 失败通过现有 Runtime stderr 记录组件和失败阶段，不记录原始远端错误文本、凭据或子进程输出。明确依赖 required system Skill 的 turn 才必须核对该 exact capability。扩展 replacement 在原生事务边界执行，并由 catalog/read-back 确认实际结果；SSE 仅投影状态，不成为配置 authority。
 
 ## 7. 权限、计划与问答
 

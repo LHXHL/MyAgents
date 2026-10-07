@@ -124,7 +124,7 @@ myagents <group> <action> [args] [flags]
 
 所有 mutation 对未知 flag fail closed。`--dry-run` 只有在 leaf help 明确声明支持时才有效；不能把拒绝执行描述成成功预览。
 
-提示与顶层 help 按意图区分本地能力管理、Record 捕获、持久 Task 与即时 Session 协作。Agent/Session discovery 覆盖同设备与同账号其它设备；远端使用完整 qualified reference，管理命令不因此获得远端配置权限。Agent `effectiveDefaults` 是未来 Session 出生默认值，不代表已有 Session 的实际审批门槛。命令有独立 help 时返回该契约；复用父级帮助时，`handleHelp` 明确标注所用共享参考与调用范围，不能静默冒充独立叶子文档。普通外部 CLI 继续只看到原公开能力清单。
+提示与顶层 help 按意图区分本地能力管理、Record 捕获、持久 Task 与即时 Session 协作。Agent/Session discovery 覆盖本地和所有活跃官方/自部署网络；列表支持 `--network` 筛选与网络/设备标签；远端使用完整 qualified reference，管理命令不因此获得远端配置权限。Agent `effectiveDefaults` 是未来 Session 出生默认值，不代表已有 Session 的实际审批门槛。命令有独立 help 时返回该契约；复用父级帮助时，`handleHelp` 明确标注所用共享参考与调用范围，不能静默冒充独立叶子文档。普通外部 CLI 继续只看到原公开能力清单。
 
 Agent-facing system prompt、Required Skills 与 help 只推荐 canonical `myagents record` / `sourceRecordId`。`myagents thought`、`/api/admin/thought/*` 与持久层 `sourceThoughtId` 仅在已发布脚本、旧 JSON shape 和升级读取边界保留；兼容面薄映射到 Record owner，不能重新成为产品主入口或第二份 Store。
 
@@ -439,6 +439,8 @@ ACK 丢失返回 unconfirmed receipt 并保留 ID、不自动重试。Rust 复�
 不携带 sourceSessionId 且强制 one-way。目标 Agent 是 runtime/model/permission/provider/MCP/plugin/tool birth authority；
 Admin API 对调用方同名 override fail closed。默认 terminal 结果复用既有 `send.result` 回投，
 receipt 的 `messageId` 对应后续 `requestEventId`。
+
+本地与远端的 Admin 路由都显式传递同一份准入结果派生的 `sourceKind`；本地 start/send handler 不提供默认来源类型，遗漏由类型检查拒绝。外部调用即使直连 Session Sidecar，也不能借用该进程的 Session identity 或建立回投。发布 bundle 回归从普通终端 CLI 与 Global/Session HTTP 入口验证实际下发 envelope，不能只靠直接传入 external 类型的 handler 单测。start/send 的失败诊断只记录 dispatch stage、route、caller kind、code 和 unconfirmed，不记录 token 或 prompt。
 
 事件 prompt 统一由 `src/server/inbox/session-event.ts` 渲染，标签形态为
 `<myagents-session-event ...>`，payload 内部会 neutralize 协议结构标签。新增

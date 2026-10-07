@@ -1,6 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
-import { InfoIcon, LockIcon } from "@/components/icons";
 import { metadataSchemas } from "@myagents/agent-network-protocol";
 import {
   spaceGetSession,
@@ -11,13 +16,13 @@ import {
   allDeviceAgents,
   allNetworkDevices,
   networkErrorKey,
-  networkRequest,
+  networkRequest as requestNetwork,
+  type NetworkRequest,
   type NetworkDevice,
   type NetworkSnapshot,
 } from "@/api/agentNetwork";
 import { useMyAgentsLogin } from "@/hooks/useMyAgentsLogin";
 import { SpaceLogin } from "@/pages/space/SpaceChrome";
-import Popover from "@/components/ui/Popover";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { getDeviceId, preloadDeviceId } from "@/identity/deviceIdentity";
 import { useToastOptional } from "@/components/Toast";
@@ -29,21 +34,33 @@ import { DeviceDetails } from "@/features/agent-network/DeviceDetails";
 import { DeviceRenameDialog } from "@/features/agent-network/DeviceRenameDialog";
 import type { DeviceCatalog } from "@/features/agent-network/deviceDisplay";
 import {
-  currentNetworkGeneration,
+  currentNetworkGeneration as networkGeneration,
+  useAgentNetworkRegistry,
   useAgentNetworkSnapshot,
 } from "@/features/agent-network/store";
+
+import { NetworkHeader } from "@/features/agent-network/NetworkHeader";
+import { NetworkSelector } from "@/features/agent-network/NetworkSelector";
 
 export default function AgentNetwork({
   isActive = true,
 }: {
   isActive?: boolean;
 }) {
-  const snapshot = useAgentNetworkSnapshot();
+  const registry = useAgentNetworkRegistry();
+  const selected = registry.selfhostEnabled === true ? registry.selected : "official";
+  const connection =
+    registry.connections.find((c) => c.id === selected) ??
+    registry.connections[0];
+  const snapshot = useAgentNetworkSnapshot(connection?.id);
   // An account boundary creates a fresh UI scope immediately, including dialogs
   // and mutations; old completions only hold the discarded component instance.
   return (
     <AgentNetworkContent
-      key={snapshot.authGeneration}
+      key={`${connection?.id}:${snapshot.authGeneration}`}
+      connectionId={connection?.id ?? "official"}
+      official={connection?.official ?? true}
+      selector={<NetworkSelector registry={registry} />}
       isActive={isActive}
       snapshot={snapshot}
     />
@@ -52,11 +69,21 @@ export default function AgentNetwork({
 function AgentNetworkContent({
   isActive,
   snapshot,
+  connectionId,
+  official,
+  selector,
 }: {
   isActive: boolean;
   snapshot: NetworkSnapshot;
+  connectionId: string;
+  official: boolean;
+  selector: ReactNode;
 }) {
   const { t } = useTranslation("app");
+  const networkRequest = useCallback(
+    (request: NetworkRequest) => requestNetwork(request, connectionId),
+    [connectionId],
+  );
   const [session, setSession] = useState<SpaceSessionView | null>(null),
     [authLoading, setAuthLoading] = useState(true);
   const [accountError, setAccountError] = useState<string | null>(null);
@@ -77,7 +104,7 @@ function AgentNetworkContent({
   const readCatalog = useCallback(
     async (deviceId: string): Promise<DeviceCatalog> => {
       try {
-        const page = await allDeviceAgents(deviceId);
+        const page = await allDeviceAgents(deviceId, connectionId);
         return { status: "ready", items: page.items, complete: page.complete };
       } catch (failure) {
         return {
@@ -86,24 +113,29 @@ function AgentNetworkContent({
         };
       }
     },
-    [t],
+    [t, connectionId],
   );
   const reloadAccount = useCallback(async () => {
-    const generation = currentNetworkGeneration();
+    const generation = networkGeneration(connectionId);
+    if (!official) {
+      await preloadDeviceId();
+      setAuthLoading(false);
+      return;
+    }
     setAuthLoading(true);
     setAccountError(null);
     try {
       const result = await spaceGetSession();
-      if (generation !== currentNetworkGeneration()) return;
+      if (generation !== networkGeneration(connectionId)) return;
       setSession(result);
       await preloadDeviceId();
     } catch (failure) {
-      if (generation === currentNetworkGeneration())
+      if (generation === networkGeneration(connectionId))
         setAccountError(t(`agentNetwork.errors.${networkErrorKey(failure)}`));
     } finally {
-      if (generation === currentNetworkGeneration()) setAuthLoading(false);
+      if (generation === networkGeneration(connectionId)) setAuthLoading(false);
     }
-  }, [t]);
+  }, [t, connectionId, official]);
   const { authBusy, authFlow, startLogin } = useMyAgentsLogin(
     isActive,
     reloadAccount,
@@ -115,16 +147,19 @@ function AgentNetworkContent({
     if (
       !isActive ||
       snapshot.state !== "ready" ||
-      session?.state !== "authenticated"
+      (official && session?.state !== "authenticated")
     )
       return;
     let cancelled = false;
-    const generation = currentNetworkGeneration();
+    const generation = networkGeneration(connectionId);
     const current = () =>
-      !cancelled && generation === currentNetworkGeneration();
+      !cancelled && generation === networkGeneration(connectionId);
     setLoading(true);
     setLoadError(null);
-    void Promise.all([networkRequest({ kind: "network" }), allNetworkDevices()])
+    void Promise.all([
+      networkRequest({ kind: "network" }),
+      allNetworkDevices(connectionId),
+    ])
       .then(async ([info, page]) => {
         if (!current()) return;
         metadataSchemas.network.parse(info);
@@ -165,16 +200,19 @@ function AgentNetworkContent({
     refresh,
     readCatalog,
     t,
+    official,
+    connectionId,
+    networkRequest,
   ]);
   async function retryCatalog(deviceId: string) {
-    const generation = currentNetworkGeneration();
+    const generation = networkGeneration(connectionId);
     setCatalogs((current) => {
       const next = { ...current };
       delete next[deviceId];
       return next;
     });
     const catalog = await readCatalog(deviceId);
-    if (generation === currentNetworkGeneration())
+    if (generation === networkGeneration(connectionId))
       setCatalogs((current) => ({ ...current, [deviceId]: catalog }));
   }
   async function copyDeviceId(device: NetworkDevice) {
@@ -186,7 +224,7 @@ function AgentNetworkContent({
     }
   }
   async function renameDevice(device: NetworkDevice, name: string) {
-    const generation = currentNetworkGeneration();
+    const generation = networkGeneration(connectionId);
     try {
       const result = metadataSchemas.deviceName.parse(
         await networkRequest({
@@ -198,7 +236,7 @@ function AgentNetworkContent({
           mutationId: crypto.randomUUID(),
         }),
       );
-      if (generation !== currentNetworkGeneration()) return;
+      if (generation !== networkGeneration(connectionId)) return;
       if (
         result.deviceId !== device.deviceId ||
         result.networkId !== device.networkId ||
@@ -215,7 +253,7 @@ function AgentNetworkContent({
       setRenaming(null);
       setRefresh((value) => value + 1);
     } catch (failure) {
-      if (generation !== currentNetworkGeneration()) return;
+      if (generation !== networkGeneration(connectionId)) return;
       if (
         typeof failure === "object" &&
         failure !== null &&
@@ -247,7 +285,7 @@ function AgentNetworkContent({
     flight.current.add(device.deviceId);
     setBusy((current) => ({ ...current, [device.deviceId]: true }));
     setErrors((current) => ({ ...current, [device.deviceId]: "" }));
-    const generation = currentNetworkGeneration();
+    const generation = networkGeneration(connectionId);
     try {
       metadataSchemas.membership.parse(
         await networkRequest({
@@ -259,13 +297,13 @@ function AgentNetworkContent({
           mutationId: crypto.randomUUID(),
         }),
       );
-      if (generation !== currentNetworkGeneration()) return;
+      if (generation !== networkGeneration(connectionId)) return;
       setLeaving(null);
       setRefresh((value) => value + 1);
       // Joining leads straight to choosing which workspaces to open.
       if (joined) setSelected(device.deviceId);
     } catch (failure) {
-      if (generation !== currentNetworkGeneration()) return;
+      if (generation !== networkGeneration(connectionId)) return;
       setLeaving(null);
       setErrors((current) => ({
         ...current,
@@ -279,52 +317,56 @@ function AgentNetworkContent({
       setBusy((current) => ({ ...current, [device.deviceId]: false }));
     }
   }
-  const infoButton = useRef<HTMLButtonElement>(null);
-  const [infoOpen, setInfoOpen] = useState(false);
   if (authLoading)
     return (
-      <div
-        className="flex h-full items-center justify-center bg-[var(--paper)] text-sm text-[var(--ink-muted)]"
-        aria-busy="true"
-      >
-        {t("agentNetwork.loading")}
-      </div>
+      <NetworkPage selector={selector} gated>
+        <div
+          className="flex h-full items-center justify-center bg-[var(--paper)] text-sm text-[var(--ink-muted)]"
+          aria-busy="true"
+        >
+          {t("agentNetwork.loading")}
+        </div>
+      </NetworkPage>
     );
   if (accountError)
     return (
-      <div className="flex h-full items-center justify-center bg-[var(--paper)] text-sm text-[var(--ink-muted)]">
-        <p role="alert">
-          {accountError}{" "}
-          <button
-            type="button"
-            className="ml-2 underline"
-            onClick={() => {
-              void reloadAccount();
-            }}
-          >
-            {t("agentNetwork.retry")}
-          </button>
-        </p>
-      </div>
+      <NetworkPage selector={selector} gated>
+        <div className="flex h-full items-center justify-center bg-[var(--paper)] text-sm text-[var(--ink-muted)]">
+          <p role="alert">
+            {accountError}{" "}
+            <button
+              type="button"
+              className="ml-2 underline"
+              onClick={() => {
+                void reloadAccount();
+              }}
+            >
+              {t("agentNetwork.retry")}
+            </button>
+          </p>
+        </div>
+      </NetworkPage>
     );
-  if (!session || session.state === "reauth_required") {
+  if (official && (!session || session.state === "reauth_required")) {
     const accountName =
       session?.state === "reauth_required"
         ? (session.account.user.name ?? session.account.user.email)
         : null;
     return (
-      <SpaceLogin
-        authBusy={authBusy}
-        authFlow={authFlow}
-        onLogin={() => {
-          void startLogin();
-        }}
-        reauthRequired={session?.state === "reauth_required"}
-        accountName={accountName}
-        onForgetAccount={() => {
-          void spaceLogout().then(reloadAccount);
-        }}
-      />
+      <NetworkPage selector={selector} gated>
+        <SpaceLogin
+          authBusy={authBusy}
+          authFlow={authFlow}
+          onLogin={() => {
+            void startLogin();
+          }}
+          reauthRequired={session?.state === "reauth_required"}
+          accountName={accountName}
+          onForgetAccount={() => {
+            void spaceLogout().then(reloadAccount);
+          }}
+        />
+      </NetworkPage>
     );
   }
   const localId = getDeviceId();
@@ -344,6 +386,7 @@ function AgentNetworkContent({
         : 0),
     0,
   );
+  const directoryKnown = !loading && !loadError && snapshot.state === "ready";
   // First-use onboarding follows this device's membership, never remote catalogs.
   const showSetup =
     !loading &&
@@ -371,64 +414,12 @@ function AgentNetworkContent({
     />
   );
   return (
-    <main className="h-full overflow-y-auto bg-[var(--paper)] text-[var(--ink)]">
-      <div className="mx-auto max-w-5xl px-8 pb-12 pt-8">
-        <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
-          <div className="flex items-center gap-1.5">
-            <h1 className="text-2xl font-semibold">
-              {t("agentNetwork.networkName")}
-            </h1>
-            <button
-              type="button"
-              ref={infoButton}
-              aria-label={t("agentNetwork.networkInfo")}
-              aria-expanded={infoOpen}
-              aria-controls="agent-network-explanation"
-              onClick={() => setInfoOpen((value) => !value)}
-              className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-            >
-              <InfoIcon className="h-4 w-4" />
-            </button>
-            <Popover
-              open={infoOpen}
-              onClose={() => setInfoOpen(false)}
-              anchorRef={infoButton}
-              className="max-w-xs space-y-1.5 px-4 py-3 text-xs leading-relaxed text-[var(--ink-secondary)]"
-            >
-              <div id="agent-network-explanation">
-                <h2 className="flex items-center gap-1.5 font-medium text-[var(--ink)]">
-                  <LockIcon className="h-3.5 w-3.5 shrink-0" />
-                  {t("agentNetwork.infoTitle")}
-                </h2>
-                <ul className="mt-2 list-disc space-y-1.5 pl-4">
-                  <li>{t("agentNetwork.infoIntro")}</li>
-                  <li>{t("agentNetwork.infoRelay")}</li>
-                  <li>{t("agentNetwork.infoLocal")}</li>
-                </ul>
-              </div>
-            </Popover>
-          </div>
-          {devices.length > 0 && (
-            <dl className="flex gap-6">
-              <div>
-                <dd className="text-xl font-semibold leading-tight">
-                  {joinedDevices.length}
-                </dd>
-                <dt className="text-xs text-[var(--ink-muted)]">
-                  {t("agentNetwork.statDevices")}
-                </dt>
-              </div>
-              <div>
-                <dd className="text-xl font-semibold leading-tight">
-                  {catalogsKnown ? openAgents : "—"}
-                </dd>
-                <dt className="text-xs text-[var(--ink-muted)]">
-                  {t("agentNetwork.statAgents")}
-                </dt>
-              </div>
-            </dl>
-          )}
-        </header>
+    <NetworkPage
+      selector={selector}
+      deviceCount={directoryKnown ? joinedDevices.length : null}
+      agentCount={directoryKnown && catalogsKnown ? openAgents : null}
+    >
+      <>
         {(loadError || accountError) && (
           <p role="alert" className="mb-4 text-sm text-[var(--error)]">
             {loadError || accountError}{" "}
@@ -447,11 +438,13 @@ function AgentNetworkContent({
         {snapshot.state !== "ready" && (
           <p role="status" className="mb-4 text-sm text-[var(--ink-muted)]">
             {t(
-              snapshot.state === "connecting"
-                ? "agentNetwork.connecting"
-                : snapshot.state === "disconnected"
-                  ? "agentNetwork.reconnecting"
-                  : `agentNetwork.errors.${networkErrorKey(snapshot.error)}`,
+              snapshot.error?.code === "NETWORK_REMOVAL_UNCONFIRMED"
+                ? "agentNetwork.errors.removalPending"
+                : snapshot.state === "connecting"
+                  ? "agentNetwork.connecting"
+                  : snapshot.state === "disconnected"
+                    ? "agentNetwork.reconnecting"
+                    : `agentNetwork.errors.${networkErrorKey(snapshot.error)}`,
             )}
           </p>
         )}
@@ -531,9 +524,10 @@ function AgentNetworkContent({
             {t("agentNetwork.partial")}
           </p>
         )}
-      </div>
+      </>
       {selectedDevice && (
         <DeviceDetails
+          connectionId={connectionId}
           device={selectedDevice}
           catalog={catalogs[selectedDevice.deviceId]}
           isLocal={selectedDevice.deviceId === localId}
@@ -575,7 +569,7 @@ function AgentNetworkContent({
           }}
         />
       )}
-    </main>
+    </NetworkPage>
   );
 }
 
@@ -613,5 +607,35 @@ function SetupGuide() {
         );
       })}
     </ol>
+  );
+}
+
+/** Keep page chrome at one React/layout position across account and data gates. */
+function NetworkPage({
+  selector,
+  children,
+  gated = false,
+  deviceCount = null,
+  agentCount = null,
+}: {
+  selector: ReactNode;
+  children: ReactNode;
+  gated?: boolean;
+  deviceCount?: number | null;
+  agentCount?: number | null;
+}) {
+  return (
+    <main className="h-full overflow-y-auto bg-[var(--paper)] text-[var(--ink)]">
+      <div
+        className={`mx-auto flex w-full max-w-5xl flex-col px-8 pb-12 pt-8 ${gated ? "h-full" : "min-h-full"}`}
+      >
+        <NetworkHeader
+          selector={selector}
+          deviceCount={deviceCount}
+          agentCount={agentCount}
+        />
+        <div className={gated ? "min-h-0 flex-1" : undefined}>{children}</div>
+      </div>
+    </main>
   );
 }

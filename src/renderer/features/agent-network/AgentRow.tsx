@@ -9,14 +9,14 @@ import {
 } from "@myagents/agent-network-protocol";
 import {
   networkErrorKey,
-  networkRequest,
+  networkRequest as requestNetwork,
   type NetworkAgent,
   type NetworkDevice,
 } from "@/api/agentNetwork";
 import { isImeComposingEvent } from "@/utils/imeKeyboard";
 import {
   clearDescriptionDraft,
-  currentNetworkGeneration,
+  currentNetworkGeneration as networkGeneration,
   descriptionDraftKey,
   getDescriptionDraft,
   setDescriptionDraft,
@@ -24,15 +24,19 @@ import {
 import { agentIconId } from "./deviceDisplay";
 
 export function AgentRow({
+  connectionId = "official",
   agent,
   device,
   onChanged,
 }: {
+  connectionId?: string;
   agent: NetworkAgent;
   device: NetworkDevice;
   onChanged: () => void;
 }) {
   const { t } = useTranslation("app");
+  const networkRequest = (request: Parameters<typeof requestNetwork>[0]) =>
+    requestNetwork(request, connectionId);
   const key = descriptionDraftKey(
     agent.principalId,
     agent.networkId,
@@ -75,7 +79,7 @@ export function AgentRow({
       setError(t("agentNetwork.errors.descriptionTooLong"));
       return;
     }
-    const generation = currentNetworkGeneration();
+    const generation = networkGeneration(connectionId);
     inFlight.current = true;
     setSaving(true);
     setError(null);
@@ -91,12 +95,12 @@ export function AgentRow({
           mutationId: crypto.randomUUID(),
         }),
       );
-      if (generation !== currentNetworkGeneration()) return;
+      if (generation !== networkGeneration(connectionId)) return;
       clearDescriptionDraft(key);
       setEditing(false);
       onChanged();
     } catch (failure) {
-      if (generation !== currentNetworkGeneration()) return;
+      if (generation !== networkGeneration(connectionId)) return;
       setError(
         t(`agentNetwork.errors.${networkErrorKey(failure, "mutation")}`),
       );
@@ -108,7 +112,7 @@ export function AgentRow({
   }
   async function toggle() {
     if (switchFlight.current || !device.joined) return;
-    const generation = currentNetworkGeneration();
+    const generation = networkGeneration(connectionId);
     switchFlight.current = true;
     setSwitchBusy(true);
     setSwitchError(null);
@@ -124,9 +128,9 @@ export function AgentRow({
           mutationId: crypto.randomUUID(),
         }),
       );
-      if (generation === currentNetworkGeneration()) onChanged();
+      if (generation === networkGeneration(connectionId)) onChanged();
     } catch (failure) {
-      if (generation === currentNetworkGeneration()) {
+      if (generation === networkGeneration(connectionId)) {
         setSwitchError(
           t(`agentNetwork.errors.${networkErrorKey(failure, "mutation")}`),
         );

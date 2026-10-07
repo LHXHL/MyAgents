@@ -1,6 +1,7 @@
 //! One App-owned device connector. Every async job belongs to this connection
 //! future: dropping it at an auth/exit boundary cancels HTTP, keys, channels and
 //! private bodies together. Neither a Tab nor a Session owns its lifetime.
+use super::account::NetworkAccountSession;
 use super::calls::{CallableAgent, Calls};
 use super::catalog::read_local_catalog;
 use super::commands::MetadataRequest;
@@ -14,7 +15,6 @@ use super::returns::{Callback, ReturnAdmission, ReturnIntent, SourceReturns, Tar
 use super::transport::{NetworkRoute, NetworkSocket, NetworkTransport};
 use super::NetworkError;
 use crate::sidecar::ManagedSidecarManager;
-use crate::space_cloud::agent_network::NetworkAccountSession;
 use crate::ulog_warn;
 use futures_util::{future::BoxFuture, stream::FuturesUnordered, FutureExt, SinkExt, StreamExt};
 use myagents_agent_network_protocol::{
@@ -30,7 +30,7 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::time::{Duration, Instant};
-use tauri::{Emitter, Listener, Manager};
+use tauri::{Emitter, Manager};
 use tokio::sync::{mpsc, oneshot, watch, Notify};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -44,6 +44,7 @@ pub(crate) struct NetworkSnapshot {
     pub error: Option<NetworkError>,
     pub revision: u64,
     pub auth_generation: u64,
+    pub connection_id: String,
 }
 struct MetadataCommand {
     generation: u64,
@@ -74,7 +75,9 @@ enum Command {
 impl Command {
     fn reject(self, error: NetworkError) {
         match self {
-            Self::Watches(command) => { let _ = command.reply.send(Err(error)); }
+            Self::Watches(command) => {
+                let _ = command.reply.send(Err(error));
+            }
             Self::Return { callback, .. } => {
                 let _ = callback.reply.send(Err(error));
             }
@@ -97,6 +100,8 @@ struct Boundary {
     shutdown: bool,
 }
 pub(crate) struct AgentNetwork {
+    pub(crate) connection_id: String,
+    account: Option<NetworkAccountSession>,
     memory: MemoryBudget,
     snapshot: Mutex<NetworkSnapshot>,
     boundary: watch::Sender<Boundary>,
@@ -104,18 +109,33 @@ pub(crate) struct AgentNetwork {
     commands: mpsc::Sender<Command>,
     receiver: Mutex<Option<mpsc::Receiver<Command>>>,
 }
-pub(crate) type ManagedAgentNetwork = Arc<AgentNetwork>;
+pub(crate) type ManagedConnection = Arc<AgentNetwork>;
+pub(crate) use super::registry::ManagedAgentNetwork;
 impl AgentNetwork {
-    pub(crate) fn new() -> ManagedAgentNetwork {
+    pub(crate) fn new(
+        connection_id: String,
+        account: Option<NetworkAccountSession>,
+        memory: MemoryBudget,
+    ) -> ManagedConnection {
+        Self::with_generation(connection_id, account, memory, 0)
+    }
+    pub(crate) fn with_generation(
+        connection_id: String,
+        account: Option<NetworkAccountSession>,
+        memory: MemoryBudget,
+        seed: u64,
+    ) -> ManagedConnection {
         let (boundary, _) = watch::channel(Boundary {
-            generation: 0,
-            auth_generation: 0,
+            generation: seed,
+            auth_generation: seed,
             suspended: false,
             shutdown: false,
         });
         let (commands, receiver) = mpsc::channel(budget("pending"));
         Arc::new(Self {
-            memory: MemoryBudget::default(),
+            connection_id,
+            account,
+            memory,
             snapshot: Mutex::new(NetworkSnapshot {
                 state: "signedOut",
                 principal_id: None,
@@ -123,7 +143,8 @@ impl AgentNetwork {
                 device_name: None,
                 error: None,
                 revision: 0,
-                auth_generation: 0,
+                auth_generation: seed,
+                connection_id: String::new(),
             }),
             boundary,
             catalog_changed: Arc::new(Notify::new()),
@@ -132,10 +153,13 @@ impl AgentNetwork {
         })
     }
     pub(crate) fn snapshot(&self) -> NetworkSnapshot {
-        self.snapshot
+        let mut snapshot = self
+            .snapshot
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .clone()
+            .clone();
+        snapshot.connection_id = self.connection_id.clone();
+        snapshot
     }
     fn publish<R: tauri::Runtime>(
         &self,
@@ -151,6 +175,7 @@ impl AgentNetwork {
             if self.boundary.borrow().generation != generation {
                 return;
             }
+            snapshot.connection_id = self.connection_id.clone();
             snapshot.revision = current.revision.saturating_add(1);
             snapshot.auth_generation = self.boundary.borrow().auth_generation;
             *current = snapshot.clone();
@@ -175,6 +200,7 @@ impl AgentNetwork {
                 error: None,
                 revision: current.revision.saturating_add(1),
                 auth_generation: self.boundary.borrow().auth_generation,
+                connection_id: self.connection_id.clone(),
             };
             *current = snapshot.clone();
             snapshot
@@ -198,6 +224,12 @@ impl AgentNetwork {
             current.clone()
         };
         let _ = app.emit("agent-network:changed", snapshot);
+    }
+    pub(crate) fn deactivate(&self) {
+        if let Some(NetworkAccountSession::Selfhost(account)) = &self.account {
+            account.active.store(false, Ordering::Release);
+        }
+        self.stop();
     }
     pub(crate) fn stop(&self) {
         self.boundary.send_modify(|value| {
@@ -273,19 +305,40 @@ impl AgentNetwork {
                 myagents_agent_network_protocol::ReturnSettlement::Unconfirmed,
             ))
     }
-    pub(crate) async fn watches(&self, source_session: String, cancel: Option<String>, all: bool, generation: u64) -> Result<Value, NetworkError> {
-        if self.generation() != generation { return Err(NetworkError::new("ACCOUNT_BINDING_CHANGED")); }
+    pub(crate) async fn watches(
+        &self,
+        source_session: String,
+        cancel: Option<String>,
+        all: bool,
+        generation: u64,
+    ) -> Result<Value, NetworkError> {
+        if self.generation() != generation {
+            return Err(NetworkError::new("ACCOUNT_BINDING_CHANGED"));
+        }
         // Registrations live only in the current ready connection. No replay.
-        if self.snapshot().state != "ready" { return Ok(serde_json::json!({"watches":[]})); }
+        if self.snapshot().state != "ready" {
+            return Ok(serde_json::json!({"watches":[]}));
+        }
         let (reply, response) = oneshot::channel();
-        self.commands.try_send(Command::Watches(WatchesCommand {generation,source_session,cancel,all,reply}))
-            .map_err(|_|NetworkError::new("NETWORK_REQUEST_CAPACITY"))?;
-        tokio::time::timeout(Duration::from_secs(10), response).await
-            .map_err(|_|NetworkError::new("NETWORK_QUERY_FAILED"))?
-            .map_err(|_|NetworkError::new("NETWORK_QUERY_FAILED"))?
+        self.commands
+            .try_send(Command::Watches(WatchesCommand {
+                generation,
+                source_session,
+                cancel,
+                all,
+                reply,
+            }))
+            .map_err(|_| NetworkError::new("NETWORK_REQUEST_CAPACITY"))?;
+        tokio::time::timeout(Duration::from_secs(10), response)
+            .await
+            .map_err(|_| NetworkError::new("NETWORK_QUERY_FAILED"))?
+            .map_err(|_| NetworkError::new("NETWORK_QUERY_FAILED"))?
     }
     pub(crate) fn generation(&self) -> u64 {
         self.boundary.borrow().generation
+    }
+    pub(crate) fn catalog_changed(&self) {
+        self.catalog_changed.notify_one();
     }
     pub(crate) fn memory_budget(&self) -> MemoryBudget {
         self.memory.clone()
@@ -347,7 +400,11 @@ impl AgentNetwork {
             .ok()
             .and_then(Result::ok)
             .unwrap_or_else(|| {
-                let mut error = NetworkError::new(if admission {"ADMISSION_UNCONFIRMED"} else {"NETWORK_QUERY_FAILED"});
+                let mut error = NetworkError::new(if admission {
+                    "ADMISSION_UNCONFIRMED"
+                } else {
+                    "NETWORK_QUERY_FAILED"
+                });
                 error.details = Some(details);
                 Err(error)
             })
@@ -360,7 +417,7 @@ pub(crate) fn auth_boundary_changed<R: tauri::Runtime>(app: &tauri::AppHandle<R>
 }
 pub(crate) fn start(
     app: tauri::AppHandle,
-    owner: ManagedAgentNetwork,
+    owner: ManagedConnection,
     manager: ManagedSidecarManager,
 ) {
     let mut receiver = owner
@@ -369,59 +426,7 @@ pub(crate) fn start(
         .unwrap_or_else(|error| error.into_inner())
         .take()
         .expect("Agent Network owner starts once");
-    let wake = owner.catalog_changed.clone();
-    for event in ["app:config-changed", "agent:config-changed"] {
-        let wake = wake.clone();
-        app.listen(event, move |_| wake.notify_one());
-    }
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    let power_monitor = match super::power::install(app.clone(), owner.clone()) {
-        Ok(monitor) => monitor,
-        Err(error) => {
-            let generation = owner.boundary.borrow().generation;
-            owner.publish(
-                &app,
-                generation,
-                NetworkSnapshot {
-                    state: "unavailable",
-                    principal_id: None,
-                    network_id: None,
-                    device_name: None,
-                    error: Some(error),
-                    revision: 0,
-                    auth_generation: 0,
-                },
-            );
-            return;
-        }
-    };
     tauri::async_runtime::spawn(async move {
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        let mut power_monitor = power_monitor;
-        #[cfg(target_os = "linux")]
-        let mut power_monitor = match super::power::install_linux().await {
-            Ok((monitor, suspended)) => {
-                owner.power_boundary(&app, suspended);
-                monitor
-            }
-            Err(error) => {
-                let generation = owner.boundary.borrow().generation;
-                owner.publish(
-                    &app,
-                    generation,
-                    NetworkSnapshot {
-                        state: "unavailable",
-                        principal_id: None,
-                        network_id: None,
-                        device_name: None,
-                        error: Some(error),
-                        revision: 0,
-                        auth_generation: 0,
-                    },
-                );
-                return;
-            }
-        };
         let mut boundary = owner.boundary.subscribe();
         let mut previous: Option<(String, PreviousConnection)> = None;
         let mut renewed: Option<NetworkIdentity> = None;
@@ -434,12 +439,17 @@ pub(crate) fn start(
             if phase.suspended {
                 tokio::select! {
                     _ = boundary.changed() => {},
-                    signal = super::power::next(&mut power_monitor) => { apply_power(&app, &owner, signal); }
+
                 }
                 continue;
             }
             let retry_after;
-            match NetworkAccountSession::capture() {
+            match owner
+                .account
+                .clone()
+                .map(Ok)
+                .unwrap_or_else(NetworkAccountSession::capture)
+            {
                 Ok(account) => {
                     let principal = account.principal_id().ok().map(str::to_owned);
                     let binding = account.binding_id().to_owned();
@@ -454,6 +464,7 @@ pub(crate) fn start(
                             error: None,
                             revision: 0,
                             auth_generation: 0,
+                            connection_id: String::new(),
                         },
                     );
                     let prior = previous
@@ -476,7 +487,7 @@ pub(crate) fn start(
                         tokio::pin!(attempt);
                         tokio::select! { biased;
                             _ = boundary.changed() => None,
-                            signal = super::power::next(&mut power_monitor) => { apply_power(&app, &owner, signal); None },
+
                             result = &mut attempt => Some(result),
                         }
                     };
@@ -495,10 +506,12 @@ pub(crate) fn start(
                         Err(error) => {
                             // A ready connection is a successful recovery, even
                             // if its eventual disconnect returned an error.
-                            if owner.snapshot().state == "ready" { reconnect.reset(); }
+                            if owner.snapshot().state == "ready" {
+                                reconnect.reset();
+                            }
                             retry_after = error.retry_after;
                             Some(error)
-                        },
+                        }
                     };
                     owner.publish(
                         &app,
@@ -511,6 +524,7 @@ pub(crate) fn start(
                             error,
                             revision: 0,
                             auth_generation: 0,
+                            connection_id: String::new(),
                         },
                     );
                 }
@@ -531,6 +545,7 @@ pub(crate) fn start(
                             error: Some(error),
                             revision: 0,
                             auth_generation: 0,
+                            connection_id: String::new(),
                         },
                     );
                 }
@@ -543,10 +558,9 @@ pub(crate) fn start(
             let random = uuid::Uuid::new_v4();
             let jitter = u16::from_le_bytes([random.as_bytes()[0], random.as_bytes()[1]]);
             let delay = reconnect.next(jitter, retry_after);
-            match super::reconnect::wait(delay, boundary.changed(), super::power::next(&mut power_monitor)).await {
-                super::reconnect::RetryWake::Elapsed => {},
-                super::reconnect::RetryWake::Boundary => { previous = None; renewed = None; reconnect.reset(); },
-                super::reconnect::RetryWake::Power(signal) => { apply_power(&app, &owner, signal); previous = None; renewed = None; reconnect.reset(); },
+            tokio::select! {
+                _=tokio::time::sleep(delay)=>{},
+                _=boundary.changed()=>{previous=None;renewed=None;reconnect.reset();},
             }
         }
     });
@@ -700,7 +714,7 @@ async fn connect(
             account.ensure_current()?;
             identity
         }
-        _ => NetworkIdentity::initialize(account).await?,
+        _ => NetworkIdentity::initialize(account, None).await?,
     };
     let transport = Arc::new(NetworkTransport::new(
         &identity.network_url,
@@ -726,7 +740,7 @@ async fn connect(
     let mut pairs = Pairs::new(owner.memory.clone());
     let mut calls = Calls::default();
     let mut source_returns = SourceReturns::default();
-    let mut target_returns = TargetReturns::new(manager.clone());
+    let mut target_returns = TargetReturns::new(manager.clone(), owner.connection_id.clone());
     let mut incoming_calls = Incoming::new(owner.memory.clone());
     // Compact dedup/route/sequence registries and a bounded metadata snapshot.
     let _registry_allocation = owner
@@ -770,7 +784,7 @@ async fn connect(
                             ServerMessage::Ready { catalog_seq: accepted, .. } if ready_requested && accepted == catalog_seq && local_policy.is_some() => {
                                 hydrated = true;
                                 reconnect.recovered();
-                                owner.publish(app, generation, NetworkSnapshot { state: "ready", principal_id: Some(local.principal_id.clone()),
+                                owner.publish(app, generation, NetworkSnapshot { connection_id:owner.connection_id.clone(),state: "ready", principal_id: Some(local.principal_id.clone()),
                                     network_id: Some(local.network_id.clone()), device_name: local_policy.as_ref().map(|policy| policy.device_name.clone()), error: None, revision: 0, auth_generation: 0 });
                             }
                             ServerMessage::Changed { change, .. } => {
@@ -848,34 +862,34 @@ async fn connect(
                                     continue;
                                 }
                                 let watch_alive=target_returns.watch_lifetime(&op_id);
-                                let memory=owner.memory.clone();let app=app.clone();let account=identity.account.clone();let connection_alive=connection_lifetime.0.clone();let deadline=incoming_calls.admitted_until(&op_id).ok_or_else(||NetworkError::new("PERMIT_INVALID"))?;
+                                let connection_id=owner.connection_id.clone();let memory=owner.memory.clone();let app=app.clone();let account=identity.account.clone();let connection_alive=connection_lifetime.0.clone();let deadline=incoming_calls.admitted_until(&op_id).ok_or_else(||NetworkError::new("PERMIT_INVALID"))?;
                                 work.push(async move {
                                     let mut allocation = None;
                                     let outcome=if let Some(fresh)=prepared.fresh {
                                         let reference=if matches!(&invocation.operation,myagents_agent_network_protocol::Operation::Start(p) if p.reply_back) {
-                                            Some(crate::inbox::types::NetworkReturnReference {op_id:uuid::Uuid::parse_str(&op_id).expect("validated op"),
+                                            Some(crate::inbox::types::NetworkReturnReference {connection_id:Some(connection_id.clone()),op_id:uuid::Uuid::parse_str(&op_id).expect("validated op"),
                                                 return_route_id:uuid::Uuid::parse_str(return_route_id.as_deref().expect("validated permit")).expect("validated route")})
                                         } else {None};
                                         let guard_app=app.clone();
                                         local_owner::start_outcome(fresh.admit(&app,reference,move || {
                                             account.ensure_current().map_err(|error|error.code)?;
-                                            if !connection_alive.load(Ordering::Acquire)||guard_app.state::<ManagedAgentNetwork>().generation()!=generation {return Err("ACCOUNT_BINDING_CHANGED".into());}
+                                            if !connection_alive.load(Ordering::Acquire)||guard_app.state::<ManagedAgentNetwork>().current_generation(&connection_id)!=Some(generation) {return Err("ACCOUNT_BINDING_CHANGED".into());}
                                             if Instant::now()>=deadline {return Err("PERMIT_EXPIRED".into());}Ok(())
                                         }).await)
                                     } else if let Some(send)=prepared.send {
                                         let myagents_agent_network_protocol::Operation::Send(params)=&invocation.operation else {unreachable!("prepared send operation")};
-                                        let reference=if params.reply_back {Some(crate::inbox::types::NetworkReturnReference {op_id:uuid::Uuid::parse_str(&op_id).expect("validated op"),return_route_id:uuid::Uuid::parse_str(return_route_id.as_deref().expect("validated route")).expect("validated route")})}else{None};
+                                        let reference=if params.reply_back {Some(crate::inbox::types::NetworkReturnReference {connection_id:Some(connection_id.clone()),op_id:uuid::Uuid::parse_str(&op_id).expect("validated op"),return_route_id:uuid::Uuid::parse_str(return_route_id.as_deref().expect("validated route")).expect("validated route")})}else{None};
                                         let guard_app=app.clone();
                                         local_owner::send_outcome(params,send.admit_network(&app,reference,move || {
                                             account.ensure_current().map_err(|error|error.code)?;
-                                            if !connection_alive.load(Ordering::Acquire)||guard_app.state::<ManagedAgentNetwork>().generation()!=generation {return Err("ACCOUNT_BINDING_CHANGED".into());}
+                                            if !connection_alive.load(Ordering::Acquire)||guard_app.state::<ManagedAgentNetwork>().current_generation(&connection_id)!=Some(generation) {return Err("ACCOUNT_BINDING_CHANGED".into());}
                                             if Instant::now()>=deadline {return Err("PERMIT_EXPIRED".into());}Ok(())
                                         }).await)
                                     } else if matches!(&invocation.operation,myagents_agent_network_protocol::Operation::Watch(_)) {
                                         let guard_app=app.clone();
-                                        let (outcome,reserved)=local_owner::watch(&app,&manager,&invocation,memory,move || {
+                                        let (outcome,reserved)=local_owner::watch(&app,&manager,&invocation,memory,connection_id.clone(),move || {
                                             account.ensure_current().map_err(|error|error.code)?;
-                                            if !connection_alive.load(Ordering::Acquire)||guard_app.state::<ManagedAgentNetwork>().generation()!=generation {return Err("ACCOUNT_BINDING_CHANGED".into());}
+                                            if !connection_alive.load(Ordering::Acquire)||guard_app.state::<ManagedAgentNetwork>().current_generation(&connection_id)!=Some(generation) {return Err("ACCOUNT_BINDING_CHANGED".into());}
                                             if watch_alive.as_ref().is_some_and(|alive| !alive.load(Ordering::Acquire)) {return Err("WATCH_CANCELLED".into());}
                                             if Instant::now()>=deadline {return Err("PERMIT_EXPIRED".into());}Ok(())
                                         }).await;
@@ -1299,30 +1313,6 @@ fn catalog_work(
         Work::Catalog(result)
     }
     .boxed()
-}
-
-fn apply_power(app: &tauri::AppHandle, owner: &AgentNetwork, signal: Result<bool, NetworkError>) {
-    match signal {
-        Ok(suspended) => owner.power_boundary(app, suspended),
-        Err(error) => {
-            owner.power_boundary(app, true);
-            let generation = owner.boundary.borrow().generation;
-            owner.publish(
-                app,
-                generation,
-                NetworkSnapshot {
-                    state: "unavailable",
-                    principal_id: None,
-                    network_id: None,
-                    device_name: None,
-                    error: Some(error),
-                    revision: 0,
-                    auth_generation: 0,
-                },
-            );
-            owner.stop();
-        }
-    }
 }
 
 fn metadata_response_lost(mutation: bool, auth_changed: bool) -> NetworkError {

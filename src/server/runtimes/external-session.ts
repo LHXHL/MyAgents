@@ -17,6 +17,7 @@ import { getExternalPendingMessageOperations } from './external-session/operatio
 // We only need to: spawn process, relay events, and handle permission delegation.
 
 import { createHash } from 'node:crypto';
+import { isConcreteProviderRoute } from '../../shared/providerRoute';
 
 import {
   broadcast as broadcastSse,
@@ -1312,7 +1313,15 @@ function captureExternalRuntimeConfigSnapshot(
   context: ExternalSendContext,
 ): ExternalRuntimeConfigSnapshot {
   const runtime = getCurrentRuntimeType();
+  const providerRoute = runtime === 'dsh'
+    ? context.providerRoute ?? resolveWorkspaceConfig(
+        context.workspacePath, getExternalSessionMetadata(context.sessionId), { includeMcp: false },
+      ).providerRoute
+    : undefined;
   return {
+    ...(isConcreteProviderRoute(providerRoute)
+      ? { providerRoute: { ...providerRoute } }
+      : {}),
     model: coerceExternalRuntimeModel(
       model ?? context.model ?? getExternalRuntimeDesiredModel(),
       runtime,
@@ -1343,6 +1352,7 @@ function applySnapshotToExternalSendContext(
 ): ExternalSendContext {
   return {
     ...context,
+    providerRoute: snapshot.providerRoute,
     model: snapshot.model,
     permissionMode: snapshot.permissionMode,
     reasoningEffort:
@@ -2127,6 +2137,7 @@ async function persistExternalUserMessageAdmission(params: {
     turnPath: params.turnPath,
     metadataBirthPending: params.metadataBirthPending,
     birthOrigin: params.birthOrigin,
+    runtimeConfig: params.operation.runtimeConfig,
   });
   const { lastMessagePreview } = await persistExternalUserMessageAppend(
     params.sessionId,
@@ -2331,6 +2342,7 @@ async function ensureExternalSessionMetadataForRealUserTurn(params: {
   turnPath: ExternalMetadataTurnPath;
   metadataBirthPending?: boolean;
   birthOrigin?: SessionOrigin;
+  runtimeConfig: ExternalRuntimeConfigSnapshot;
 }): Promise<{ preparedExisting: boolean; runtimeSessionId?: string }> {
   const { sessionId, workspacePath, messageText, origin, scenario, turnPath } =
     params;
@@ -2417,6 +2429,16 @@ async function ensureExternalSessionMetadataForRealUserTurn(params: {
     title,
     origin: params.birthOrigin,
   });
+  const birthRoute = params.runtimeConfig.providerRoute;
+  if (getCurrentRuntimeType() === 'dsh' && isConcreteProviderRoute(birthRoute)) {
+    meta.providerRoute = { ...birthRoute };
+    meta.providerId = birthRoute.providerId;
+    meta.model = birthRoute.model;
+    meta.permissionMode = params.runtimeConfig.permissionMode;
+    meta.reasoningEffort = params.runtimeConfig.reasoningEffort || 'default';
+    meta.configSnapshotAt = new Date().toISOString();
+    delete meta.providerEnvJson;
+  }
   if (pendingBirth?.runtimeSessionId) {
     meta.runtimeSessionId = pendingBirth.runtimeSessionId;
   }
@@ -5008,6 +5030,9 @@ async function _doStartExternalSession(options: {
           ? {}
           : { systemContext: dshSystemContext }),
         model: startModel,
+        providerRoute: runtimeType === 'dsh'
+          ? options.messageOperation?.runtimeConfig.providerRoute
+          : undefined,
         permissionMode: runtimePermissionMode,
         reasoningEffort: startReasoningEffort,
         scenario: options.scenario,

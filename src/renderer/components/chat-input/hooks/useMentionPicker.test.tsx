@@ -27,6 +27,7 @@ vi.mock("@/api/taskCenter", () => ({
 }));
 vi.mock("@/features/agent-network/store", () => ({
   useAgentNetworkSnapshot: () => mocks.snapshot,
+  useAgentNetworkDirectoryVersion:()=>JSON.stringify([mocks.snapshot.authGeneration,mocks.snapshot.principalId,mocks.snapshot.networkId]),
 }));
 import { useMentionPicker } from "./useMentionPicker";
 import { MentionPicker } from "../components/MentionPicker";
