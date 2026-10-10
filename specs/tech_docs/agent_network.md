@@ -42,6 +42,8 @@ Registry 的递增 revision 隔离迟到拓扑/选择投影；每连接 snapshot
 
 CLI 使用原 `agent list/show`、`session list/get/state/start/send/watch` 命令。`src/shared/agentNetworkRouting.ts` 只区分本地 ID 与 `ma-agent:1:service:network:mount` / `ma-session:1:service:network:mount:localSession`。本地沿原 owner 路径；远端经来源 Node → Rust Management → App connector → relay → 目标原 owner。不能把 arbitrary Admin path、配置覆盖或远端文件路径送入 transport。
 
+Rust 来源入口通过协议 `SourceRequest::reference()` 按操作解析完整引用，再把其中的 Agent scope 交给连接 registry。`get/state/send/watch` 的 Session 引用不能直接交给 `AgentReference::parse`；原请求须保留精确 Session ID，待目标 mount 解析后由 `bind()` 组装业务操作。连接选择只消费 service/network scope，不重新定义引用类型。
+
 目标先由原 owner 冷准备，在网络等待期间释放 Session 生命周期锁；拿到当前授权 permit 后，在本机检查账号/连接/代次/有效期，再交给原 Inbox。最后交接以后是 in-flight，不能承诺 Rust 与 Node 跨进程原子撤销。`start/send` 返回真实接纳结果，不等待 AI terminal；明确失败、已接纳与 unconfirmed 必须区分，不自动重发。
 
 来源/目标 return registry 只持有当前连接的关联。terminal 回调来自实际 Session Sidecar generation；目标重新获得当前授权的 route rebind ACK 后才发送私密 event。来源验证完整 peer/epoch/Session/message/watch 后投递原 Inbox，记录紧凑 settlement 再 ACK。ACK 不明不重复注入，不保存 outbox。真实断线、登出或身份改变丢弃关联；目标原执行继续。watch 绑定目标 adapter 的真实执行 queue ID，Task/Goal owner 可为空；同一 caller/设备 scope、目标和实际轮次合并成一个 canonical watchId。当前轮次完成只结算该轮观察，后续排队请求不会冒充它的结果。
