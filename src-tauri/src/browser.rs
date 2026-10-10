@@ -192,10 +192,26 @@ fn is_degenerate_bounds(width: f64, height: f64) -> bool {
 /// Handles both Unix (`/Users/...`) and Windows (`C:\Users\...`) paths.
 fn parse_url_or_path(url: &str) -> Result<Url, String> {
     let path = Path::new(url);
-    if path.is_absolute() {
-        Url::from_file_path(path).map_err(|_| format!("Invalid file path: {}", url))
+    let parsed: Url = if path.is_absolute() {
+        Url::from_file_path(path).map_err(|_| format!("Invalid file path: {}", url))?
     } else {
-        url.parse().map_err(|e| format!("Invalid URL: {e}"))
+        url.parse().map_err(|e| format!("Invalid URL: {e}"))?
+    };
+    if parsed.scheme() == "file" {
+        let local = parsed
+            .to_file_path()
+            .map_err(|_| "Invalid local file URL")?;
+        let resolved = crate::workspace_files::read_preview::resolve_local_preview_path(
+            &local.to_string_lossy(),
+        )?;
+        let normalized = crate::sidecar::normalize_external_path(resolved);
+        let mut validated =
+            Url::from_file_path(normalized).map_err(|_| "Invalid local file path")?;
+        validated.set_fragment(parsed.fragment());
+        validated.set_query(parsed.query());
+        Ok(validated)
+    } else {
+        Ok(parsed)
     }
 }
 
@@ -1112,6 +1128,31 @@ pub async fn close_all_browsers(state: &Arc<BrowserManager>, app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn local_browser_urls_are_validated_without_loading_source() {
+        let ws = crate::workspace_files::test_support::make_test_workspace("browser_url");
+        let path = ws.join("报告 #1.html");
+        std::fs::write(&path, "x".repeat(4_037_468)).unwrap();
+        let parsed = super::parse_url_or_path(&path.to_string_lossy()).unwrap();
+        let mut anchored = parsed.clone();
+        anchored.set_fragment(Some("summary"));
+        assert_eq!(
+            super::parse_url_or_path(anchored.as_str())
+                .unwrap()
+                .fragment(),
+            Some("summary")
+        );
+        assert!(super::parse_url_or_path(&ws.to_string_lossy()).is_err());
+        assert!(super::parse_url_or_path(&ws.join("missing.html").to_string_lossy()).is_err());
+        assert_eq!(
+            super::parse_url_or_path("https://example.com/report")
+                .unwrap()
+                .scheme(),
+            "https"
+        );
+        std::fs::remove_dir_all(ws).unwrap();
+    }
+
     #[cfg(target_os = "windows")]
     use super::wide_null_terminated;
     use super::{

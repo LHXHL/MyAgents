@@ -47,7 +47,7 @@ interface BrowserPanelProps {
   /** Parent-owned reload intent; BrowserPanel applies it to its exact generation. */
   reloadSignal?: number;
   /** When previewing a local file, stores its metadata for editor toggle */
-  sourceFile?: { name: string; content: string; size: number; path: string } | null;
+  sourceFile?: { name: string; path: string } | null;
   /**
    * Active chat workspace path. Forwarded to `openExternal()` when the user
    * clicks "open in external browser" so Rust can accept workspace files

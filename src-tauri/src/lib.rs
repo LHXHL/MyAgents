@@ -734,6 +734,8 @@ pub fn run() {
             workspace_files::tree::cmd_workspace_dir_expand,
             workspace_files::read_preview::cmd_workspace_read_preview,
             workspace_files::read_preview::cmd_read_local_preview,
+            workspace_files::read_preview::cmd_workspace_resolve_preview_path,
+            workspace_files::read_preview::cmd_resolve_local_preview_path,
             workspace_files::download::cmd_workspace_download_file,
             workspace_files::download::cmd_workspace_download_bytes,
             workspace_files::download::cmd_download_local_file,

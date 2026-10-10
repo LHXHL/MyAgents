@@ -69,6 +69,7 @@ import {
   getRichDocKind,
 } from "../../../shared/fileTypes";
 import { copyPlainText } from "@/utils/clipboard";
+import { filePreviewErrorMessage } from "@/utils/filePreview";
 
 import { useImagePreview } from "@/context/ImagePreviewContext";
 import { useToast } from "@/components/Toast";
@@ -196,6 +197,7 @@ const DirectoryPanel = memo(
     // gate that closure-captured the pre-update value. `useRef` is the
     // sync-visible alternative the project's React-stability rules call for.
     const previewReqIdRef = useRef(0);
+    useEffect(() => () => { ++previewReqIdRef.current; }, [agentDir]);
     const treeContainerRef = useRef<HTMLDivElement>(null);
     const importInputRef = useRef<HTMLInputElement>(null);
     // Monotonic counter for "latest refresh wins". `rawRefresh` is async
@@ -910,29 +912,23 @@ const DirectoryPanel = memo(
       setIsPreviewLoading(true);
 
       try {
+        if (onFilePreviewExternal) {
+          await onFilePreviewExternal({ name: node.name, path: node.path }, {
+            isCurrent: () => myReq === previewReqIdRef.current,
+          });
+          return;
+        }
         const payload = await fileService.readPreview({ path: node.path });
         if (myReq !== previewReqIdRef.current) return; // superseded by newer click
-        if (!onFilePreviewExternal && previewHandleRef.current && !await previewHandleRef.current.prepareTransition(node.path)) return;
+        if (previewHandleRef.current && !await previewHandleRef.current.prepareTransition(node.path)) return;
         if (myReq !== previewReqIdRef.current) return;
         const fileData = { ...payload, path: node.path };
-        if (onFilePreviewExternal) {
-          onFilePreviewExternal(fileData);
-        } else {
-          setPreview(fileData);
-          setPreviewError(null);
-        }
+        setPreview(fileData);
+        setPreviewError(null);
       } catch (err) {
         if (myReq !== previewReqIdRef.current) return; // superseded; don't toast/commit stale error
-        if (onFilePreviewExternal) {
-          toast.error(tRef.current("workspaceFiles.directory.toasts.previewFailed"));
-        } else {
-          toast.error(tRef.current("workspaceFiles.directory.toasts.previewFailed"));
-          setPreviewError(
-            err instanceof Error
-              ? err.message
-              : tRef.current("workspaceFiles.directory.toasts.previewFailed"),
-          );
-        }
+        toast.error(`${tRef.current("workspaceFiles.directory.toasts.previewFailed")}: ${filePreviewErrorMessage(err)}`);
+        if (!onFilePreviewExternal) setPreviewError(filePreviewErrorMessage(err));
       } finally {
         // Only the latest request controls the loading indicator. Stale
         // finalizers (a slow earlier request finishing after a newer one) skip
@@ -966,7 +962,7 @@ const DirectoryPanel = memo(
         richDocKind,
       };
       if (onFilePreviewExternal) {
-        onFilePreviewExternal(fileData);
+        await onFilePreviewExternal(fileData);
       } else {
         setPreview(fileData);
         setPreviewError(null);
@@ -1014,9 +1010,17 @@ const DirectoryPanel = memo(
         const myReq = ++previewReqIdRef.current;
         setIsPreviewLoading(true);
         try {
+          if (onFilePreviewExternal) {
+            await onFilePreviewExternal({
+              name: path.split(/[/\\]/).pop() ?? path, path,
+              initialLineNumber: focusTarget?.lineNumber, focusTarget,
+              initialEditMode: !!focusTarget && isMarkdownFile(path),
+            }, { isCurrent: () => myReq === previewReqIdRef.current });
+            return;
+          }
           const payload = await fileService.readPreview({ path });
           if (myReq !== previewReqIdRef.current) return; // superseded
-          if (!onFilePreviewExternal && previewHandleRef.current && !await previewHandleRef.current.prepareTransition(path)) return;
+          if (previewHandleRef.current && !await previewHandleRef.current.prepareTransition(path)) return;
           if (myReq !== previewReqIdRef.current) return;
           const initialEditMode = !!focusTarget && isMarkdownFile(payload.name);
           const fileData = {
@@ -1026,27 +1030,12 @@ const DirectoryPanel = memo(
             focusTarget,
             initialEditMode,
           };
-          if (onFilePreviewExternal) {
-            onFilePreviewExternal(
-              fileData,
-              initialEditMode ? { initialEditMode: true } : undefined,
-            );
-          } else {
-            setPreview(fileData);
-            setPreviewError(null);
-          }
+          setPreview(fileData);
+          setPreviewError(null);
         } catch (err) {
           if (myReq !== previewReqIdRef.current) return; // superseded
-          if (onFilePreviewExternal) {
-            toast.error(tRef.current("workspaceFiles.directory.toasts.previewFailed"));
-          } else {
-            toast.error(tRef.current("workspaceFiles.directory.toasts.previewFailed"));
-            setPreviewError(
-              err instanceof Error
-                ? err.message
-                : tRef.current("workspaceFiles.directory.toasts.previewFailed"),
-            );
-          }
+          toast.error(`${tRef.current("workspaceFiles.directory.toasts.previewFailed")}: ${filePreviewErrorMessage(err)}`);
+          if (!onFilePreviewExternal) setPreviewError(filePreviewErrorMessage(err));
         } finally {
           if (myReq === previewReqIdRef.current) setIsPreviewLoading(false);
         }
@@ -1905,7 +1894,7 @@ const DirectoryPanel = memo(
           path: createdPath,
         };
         if (onFilePreviewExternal) {
-          onFilePreviewExternal(previewFile, { initialEditMode: true });
+          await onFilePreviewExternal(previewFile, { initialEditMode: true });
         } else {
           if (previewHandleRef.current && !await previewHandleRef.current.prepareTransition(createdPath)) return;
           setPreview({ ...previewFile, initialEditMode: true });

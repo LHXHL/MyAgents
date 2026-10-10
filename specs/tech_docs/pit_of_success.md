@@ -642,6 +642,7 @@ Session snapshot 的完整 authority 与写入方向见 [`session_architecture.m
 | `validate_workspace_root(path)` | 工作区根校验：必须是绝对路径 + 存在 + 通过 `commands::validate_file_path` 黑名单 | 所有 cmd 入口（读+写）|
 | `resolve_inside_workspace(root, rel)` | **写侧** 路径解析：lexical resolve `..`/`.` + `starts_with(root)` 校验。允许目标不存在（write/create cmd 必须） | `crud`、`gitignore`、`transfer`、`save_file` 等创建/重命名场景 |
 | `resolve_existing_inside_workspace(root, rel)` | **读侧** 路径解析：先调 lexical 版本，再 `fs::canonicalize` 把整条 symlink 链解开，最终路径必须 `starts_with(canonicalize(root))`。不存在 → 返回 `File not found` | `read_preview`、`download`、`save_file`（require existing）、`check_paths`、`claude_md` |
+| `read_preview::resolve_local_preview_path(abs)` | 原生浏览器本地目标：复用 local open policy，验证存在、普通文件和 OS 可读性，不读取正文、不应用源码容量上限 | local browser 路径解析、`browser::parse_url_or_path` |
 | `reject_managed_global_skill_mutation(root, target)` | **mutation-only**：逐组件检查 canonical target、junction/symlink payload 与最近存在祖先，拒绝写入 `.claude/skills/*` 中指向 `~/.myagents/skills` 的链接叶子或后代（含目标尚不存在、断链） | `save_file`、`crud`、`delete`、`transfer` destination、`files_b64` destination |
 | `read_workspace_file_no_follow(root, rel, max)` | workspace 附件的强 no-follow 有界读：Unix 用目录 fd + `openat(O_NOFOLLOW)`；Windows 用 `NtCreateFile(ObjectAttributes.RootDirectory=parentHandle, FILE_OPEN_REPARSE_POINT)` 逐级相对打开目录与 leaf | Space CLI workspace attachments |
 | `open_regular_file_no_follow(path, label)` | 显式用户选择本地文件的统一 leaf opener，拒绝 symlink / Windows reparse leaf | Space GUI attachments、avatar、Skill package |

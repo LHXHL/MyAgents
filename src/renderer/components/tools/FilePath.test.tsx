@@ -93,7 +93,6 @@ describe('FilePath tool chip — clickable file paths', () => {
     mocks.openInFinder.mockResolvedValue(undefined);
     mocks.readPreview.mockResolvedValue({
       name: 'utils.tsx',
-      content: 'export const value = true;',
       size: 26,
     });
   });
@@ -140,8 +139,7 @@ describe('FilePath tool chip — clickable file paths', () => {
 
     await waitFor(() => expect(mocks.onFilePreviewExternal).toHaveBeenCalledWith(expect.objectContaining({
       path: REL_FILE,
-      content: 'export const value = true;',
-    })));
+    }), expect.objectContaining({ isCurrent: expect.any(Function) })));
     expect(screen.queryByText('预览')).not.toBeInTheDocument();
 
     // Right-click still surfaces the shared file menu.

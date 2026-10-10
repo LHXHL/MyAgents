@@ -244,7 +244,9 @@ import type {
   LaunchSessionBirthHint,
   SidecarConfigDisposition,
 } from '@/types/tab';
-import type { FilePreviewFocusTarget } from '@/types/filePreview';
+import type { FilePreviewTarget } from '@/types/filePreview';
+import { filePreviewErrorMessage, type LoadedFilePreview, type ResolvedFilePreview } from '@/utils/filePreview';
+import { useChatFilePreviewNavigation } from './useChatFilePreviewNavigation';
 import { shouldAutoSendInitialMessage } from '@/utils/initialMessageAutoSend';
 import {
   canResumeProviderHistoryForSwitch,
@@ -291,7 +293,6 @@ import { coerceRuntimeBirthPermissionMode } from '../../shared/runtimeBirthField
 import {
   getRichDocKind,
   isPreviewable,
-  type RichDocKind,
 } from '../../shared/fileTypes';
 
 const DESKTOP_SESSION_FORK_ORIGIN: SessionOrigin = {
@@ -308,18 +309,7 @@ type ExtensionUpdateResponse = {
 
 type SessionConfigPushKind = 'mcp' | 'agents';
 
-type SplitPreviewFile = {
-  name: string;
-  content: string;
-  size: number;
-  path: string;
-  sourceScope?: 'workspace' | 'local';
-  localPath?: string;
-  richDocKind?: RichDocKind;
-  initialEditMode?: boolean;
-  initialLineNumber?: number;
-  focusTarget?: FilePreviewFocusTarget;
-};
+type SplitPreviewFile = LoadedFilePreview;
 
 type SwitchDialogCopy = {
   title: string;
@@ -1051,7 +1041,6 @@ export default function Chat({
   const splitFilePreviewRef = useRef<FilePreviewHandle>(null);
   const fullscreenFilePreviewRef = useRef<FilePreviewHandle>(null);
   const actionFilePreviewRef = useRef<FilePreviewHandle>(null);
-  const filePreviewRequestRef = useRef(0);
   // Clear split panel when feature is turned off (prevents stale split state)
   useEffect(() => {
     if (splitViewRequested || !splitFile) return;
@@ -1104,12 +1093,7 @@ export default function Chat({
   const [browserAlive, setBrowserAlive] = useState(false);
   const [browserReloadSignal, setBrowserReloadSignal] = useState(0);
   // When browser is previewing a local file, store its metadata for editor toggle
-  const [browserSourceFile, setBrowserSourceFile] = useState<{
-    name: string;
-    content: string;
-    size: number;
-    path: string;
-  } | null>(null);
+  const [browserSourceFile, setBrowserSourceFile] = useState<FilePreviewTarget | null>(null);
   // Live URL surfaced from BrowserPanel (Rust `browser:url-changed`). Drives
   // the split-view tab label; `browserUrl` is the seed URL only and never
   // updates after navigation.
@@ -1117,20 +1101,6 @@ export default function Chat({
   const handleBrowserUrlChange = useCallback((u: string) => {
     setBrowserCurrentUrl(u);
   }, []);
-
-  // Browser resource cleanup has one owner. Every close entry point delegates
-  // here so a surviving terminal/file view always takes over consistently.
-  const handleBrowserClose = useCallback(() => {
-    setBrowserUrl(null);
-    setBrowserAlive(false);
-    setBrowserSourceFile(null);
-    setBrowserCurrentUrl('');
-    const nextView = nextSplitViewAfterBrowserClose({
-      terminalVisible: terminalPinned && terminalAlive,
-      fileVisible: splitFile !== null,
-    });
-    if (nextView) setSplitActiveView(nextView);
-  }, [terminalPinned, terminalAlive, splitFile]);
 
   // Browser links stay inside MyAgents even when the split layout has no room.
   // In that case the same BrowserPanel owner fills the Chat surface instead of
@@ -1174,6 +1144,51 @@ export default function Chat({
     if (!splitPanelVisible) startSplitWidthTransitionSuspension();
   }, [splitPanelVisible, startSplitWidthTransitionSuspension]);
 
+  // Fullscreen and split previews share Chat's navigation admission.
+  const [fullscreenPreviewFile, setFullscreenPreviewFile] = useState<SplitPreviewFile | null>(null);
+  const preferFullscreenPreview = !!fullscreenPreviewFile || !isSplitViewEnabled || isNarrowLayout;
+  const prepareFilePreviewTransition = useCallback(async (path: string) => {
+    const editor = preferFullscreenPreview ? fullscreenFilePreviewRef.current : splitFilePreviewRef.current;
+    return editor ? editor.prepareTransition(path) : true;
+  }, [preferFullscreenPreview]);
+  const presentFilePreview = useCallback((resolved: ResolvedFilePreview) => {
+    if (resolved.kind === 'browser') {
+      setBrowserSourceFile(resolved.target.sourceScope === 'local' ? null : resolved.target);
+      startBrowserSplitTransitionIfNeeded();
+      setBrowserUrl(resolved.url);
+      setSplitActiveView('browser');
+    } else if (preferFullscreenPreview) {
+      setFullscreenPreviewFile(resolved.file);
+    } else {
+      setSplitFile(resolved.file);
+      setSplitActiveView('file');
+    }
+  }, [preferFullscreenPreview, startBrowserSplitTransitionIfNeeded]);
+  const { open: handleSplitFilePreview, cancel: cancelFilePreview } = useChatFilePreviewNavigation({
+    service: fileService, workspacePath: agentDir,
+    browserEnabled: !preferFullscreenPreview,
+    prepareTransition: prepareFilePreviewTransition, present: presentFilePreview,
+  });
+  const selectSplitView = useCallback((view: 'file' | 'terminal' | 'browser') => {
+    cancelFilePreview();
+    setSplitActiveView(view);
+  }, [cancelFilePreview]);
+
+  // Browser resource cleanup has one owner. Every close entry point delegates
+  // here so a surviving terminal/file view always takes over consistently.
+  const handleBrowserClose = useCallback(() => {
+    cancelFilePreview();
+    setBrowserUrl(null);
+    setBrowserAlive(false);
+    setBrowserSourceFile(null);
+    setBrowserCurrentUrl('');
+    const nextView = nextSplitViewAfterBrowserClose({
+      terminalVisible: terminalPinned && terminalAlive,
+      fileVisible: splitFile !== null,
+    });
+    if (nextView) setSplitActiveView(nextView);
+  }, [terminalPinned, terminalAlive, splitFile, cancelFilePreview]);
+
   const workspacePanelMode = resolveWorkspacePanelMode({
     viewportWidthPx: workspaceLayoutMetrics.viewportWidthPx,
     splitPanelVisible:
@@ -1189,6 +1204,7 @@ export default function Chat({
   // Split panel acts as a buffer — absorbs Cmd+W before it reaches the tab.
   useCloseLayer(() => {
     if (!splitPanelVisible) return false;
+    cancelFilePreview();
     if (splitActiveView === 'file' && splitFile) {
       splitFilePreviewRef.current?.close();
       return true;
@@ -1219,67 +1235,6 @@ export default function Chat({
     return true;
   }, 30);
 
-  // Fullscreen preview triggered from split panel's "全屏预览" button
-  const [fullscreenPreviewFile, setFullscreenPreviewFile] =
-    useState<SplitPreviewFile | null>(null);
-
-  const handleSplitFilePreview = useCallback(
-    async (file: SplitPreviewFile, options?: { initialEditMode?: boolean }) => {
-      const request = ++filePreviewRequestRef.current;
-      if (fullscreenPreviewFile) {
-        if (
-          fullscreenFilePreviewRef.current &&
-          !(await fullscreenFilePreviewRef.current.prepareTransition(file.path))
-        )
-          return;
-        if (request === filePreviewRequestRef.current)
-          setFullscreenPreviewFile({
-            ...file,
-            initialEditMode: options?.initialEditMode,
-          });
-        return;
-      }
-      if (
-        splitFilePreviewRef.current &&
-        !(await splitFilePreviewRef.current.prepareTransition(file.path))
-      )
-        return;
-      if (request !== filePreviewRequestRef.current) return;
-      const ext = file.name.toLowerCase().split('.').pop();
-      const isLocalFile = file.sourceScope === 'local';
-      if (
-        (ext === 'html' || ext === 'htm') &&
-        isSplitViewEnabled &&
-        !file.focusTarget
-      ) {
-        // HTML files → open in embedded browser for live preview
-        // Store file metadata so browser toolbar can offer "Edit Source" toggle
-        setBrowserSourceFile(isLocalFile ? null : file);
-        // Workspace files are relative to agentDir; local file links already carry
-        // an absolute path.
-        const sep = agentDir?.includes('\\') ? '\\' : '/';
-        const absPath = isLocalFile
-          ? (file.localPath ?? file.path)
-          : agentDir
-            ? `${agentDir}${sep}${file.path}`
-            : file.path;
-        startBrowserSplitTransitionIfNeeded();
-        setBrowserUrl(absPath);
-        setSplitActiveView('browser');
-      } else {
-        setSplitFile({ ...file, initialEditMode: options?.initialEditMode });
-        setSplitActiveView('file');
-      }
-      // Keep workspace open — user can dismiss it manually
-    },
-    [
-      isSplitViewEnabled,
-      agentDir,
-      startBrowserSplitTransitionIfNeeded,
-      fullscreenPreviewFile,
-    ],
-  );
-
   useEffect(() => {
     if (!pendingFilePreview) return;
     let cancelled = false;
@@ -1297,49 +1252,19 @@ export default function Chat({
         }
         const fileName = intent.path.split(/[/\\]/).pop() ?? intent.path;
         const richDocKind = getRichDocKind(fileName);
-        let file: SplitPreviewFile | null = null;
-
-        if (richDocKind) {
-          file = {
-            name: fileName,
-            content: '',
-            size: 0,
-            path: intent.path,
-            richDocKind,
-            initialLineNumber: intent.initialLineNumber,
-          };
-        } else if (isPreviewable(fileName)) {
-          const resp = await fileService.readPreview({ path: intent.path });
-          file = {
-            name: resp.name,
-            content: resp.content,
-            size: resp.size,
-            path: intent.path,
-            initialLineNumber: intent.initialLineNumber,
-          };
-        } else {
+        if (!richDocKind && !isPreviewable(fileName)) {
           toastRef.current.info(t('shell.toasts.previewUnsupportedType'));
           return;
         }
-
-        if (cancelled || !file) return;
-        if (isSplitViewEnabled && !isNarrowLayout) {
-          await handleSplitFilePreview(file);
-        } else {
-          if (
-            fullscreenFilePreviewRef.current &&
-            !(await fullscreenFilePreviewRef.current.prepareTransition(
-              file.path,
-            ))
-          )
-            return;
-          if (cancelled) return;
-          setFullscreenPreviewFile(file);
-        }
+        const target: FilePreviewTarget = {
+          name: fileName, path: intent.path, initialLineNumber: intent.initialLineNumber,
+        };
+        if (cancelled) return;
+        await handleSplitFilePreview(target, { isCurrent: () => !cancelled });
       } catch (err) {
         if (!cancelled) {
           console.error('[Chat] Failed to open pending file preview:', err);
-          toastRef.current.error(t('shell.toasts.previewOpenFailed'));
+          toastRef.current.error(`${t('shell.toasts.previewOpenFailed')}: ${filePreviewErrorMessage(err)}`);
         }
       } finally {
         if (!cancelled) consume();
@@ -1362,20 +1287,23 @@ export default function Chat({
 
   // Open terminal in split panel (called from DirectoryPanel header button)
   const handleOpenTerminal = useCallback(() => {
+    cancelFilePreview();
     setTerminalPinned(true);
     setSplitActiveView('terminal');
     // If terminal was already created, just switch view; otherwise TerminalPanel will create it
-  }, []);
+  }, [cancelFilePreview]);
 
   // Open a URL in the embedded browser panel
   const handleOpenInBrowserPanel = useCallback(
     (url: string) => {
+      cancelFilePreview();
+      setBrowserSourceFile(null);
       if (isSplitViewEnabled && !isNarrowLayout)
         startBrowserSplitTransitionIfNeeded();
       setBrowserUrl(url);
       setSplitActiveView('browser');
     },
-    [isNarrowLayout, isSplitViewEnabled, startBrowserSplitTransitionIfNeeded],
+    [isNarrowLayout, isSplitViewEnabled, startBrowserSplitTransitionIfNeeded, cancelFilePreview],
   );
 
   // Open empty browser from toolbar button.
@@ -1383,69 +1311,38 @@ export default function Chat({
   // about:blank — see browserConstants.ts for why). Subsequent clicks just
   // switch view (URL preserved).
   const handleOpenBrowser = useCallback(() => {
+    cancelFilePreview();
     startBrowserSplitTransitionIfNeeded();
     setBrowserUrl((prev) => prev ?? BROWSER_BLANK_URL);
     setSplitActiveView('browser');
-  }, [startBrowserSplitTransitionIfNeeded]);
+  }, [startBrowserSplitTransitionIfNeeded, cancelFilePreview]);
 
   const handleBrowserCreated = useCallback(() => setBrowserAlive(true), []);
   const handleBrowserCreateFailed = useCallback(() => {
     handleBrowserClose();
   }, [handleBrowserClose]);
 
-  // Switch from browser preview to editor for a local HTML file.
-  // Re-reads from disk to ensure editor shows the latest saved content
-  // (browserSourceFile holds the initial snapshot which may be stale).
+  // Load the current source only when requested. A failed/oversized read leaves
+  // the page visible; never substitute a stale or unloaded cached document.
   const handleBrowserSwitchToEditor = useCallback(async () => {
-    if (!browserSourceFile || !agentDir) return;
-    setSplitActiveView('file');
+    if (!browserSourceFile) return;
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const sep = agentDir.includes('\\') ? '\\' : '/';
-      const absPath = `${agentDir}${sep}${browserSourceFile.path}`;
-      const fresh = await invoke<string | null>('cmd_read_workspace_file', {
-        path: absPath,
-      });
-      if (
-        splitFilePreviewRef.current &&
-        !(await splitFilePreviewRef.current.prepareTransition(
-          browserSourceFile.path,
-        ))
-      )
-        return;
-      if (fresh !== null) {
-        const updated = {
-          ...browserSourceFile,
-          content: fresh,
-          size: new Blob([fresh]).size,
-        };
-        setBrowserSourceFile(updated);
-        setSplitFile(updated);
-      } else {
-        setSplitFile(browserSourceFile);
-      }
-    } catch {
-      if (
-        splitFilePreviewRef.current &&
-        !(await splitFilePreviewRef.current.prepareTransition(
-          browserSourceFile.path,
-        ))
-      )
-        return;
-      setSplitFile(browserSourceFile); // fallback: use cached version
+      await handleSplitFilePreview(browserSourceFile, { initialEditMode: true });
+    } catch (error) {
+      toastRef.current.error(`${t('fileActions.previewLoadFailed')}: ${filePreviewErrorMessage(error)}`);
     }
-  }, [browserSourceFile, agentDir]);
+  }, [browserSourceFile, handleSplitFilePreview, t]);
 
   // Switch from editor back to browser preview for an HTML file.
   // Reloads webview so it reflects any edits saved to disk.
   const handleEditorSwitchToBrowser = useCallback(() => {
     if (!browserUrl) return;
-    setSplitActiveView('browser');
+    selectSplitView('browser');
     // Give auto-save a moment to flush, then reload the webview
     setTimeout(() => {
       setBrowserReloadSignal((value) => value + 1);
     }, 300);
-  }, [browserUrl]);
+  }, [browserUrl, selectSplitView]);
 
   // Stable context value for the Chat-owned browser. Presentation (split vs.
   // fullscreen) is decided here, not by individual link renderers.
@@ -7098,7 +6995,7 @@ export default function Chat({
                 {splitFile && (
                   <button
                     type="button"
-                    onClick={() => setSplitActiveView('file')}
+                    onClick={() => selectSplitView('file')}
                     className={`group relative flex items-center gap-1 rounded-md px-2.5 py-1 text-sm font-medium transition-colors ${
                       splitActiveView === 'file'
                         ? 'text-[var(--ink)]'
@@ -7112,6 +7009,7 @@ export default function Chat({
                       role="button"
                       onClick={(e) => {
                         e.stopPropagation();
+                        cancelFilePreview();
                         splitFilePreviewRef.current?.close();
                       }}
                       className="ml-0.5 flex h-5 w-5 items-center justify-center rounded opacity-0 transition-opacity hover:bg-[var(--paper-inset)] group-hover:opacity-100"
@@ -7130,7 +7028,7 @@ export default function Chat({
                 {terminalPinned && terminalAlive && (
                   <button
                     type="button"
-                    onClick={() => setSplitActiveView('terminal')}
+                    onClick={() => selectSplitView('terminal')}
                     className={`group relative flex items-center gap-1 rounded-md px-2.5 py-1 text-sm font-medium transition-colors ${
                       splitActiveView === 'terminal'
                         ? 'text-[var(--ink)]'
@@ -7143,6 +7041,7 @@ export default function Chat({
                       role="button"
                       onClick={(e) => {
                         e.stopPropagation();
+                        cancelFilePreview();
                         setTerminalPinned(false);
                         if (browserUrl) setSplitActiveView('browser');
                         else if (splitFile) setSplitActiveView('file');
@@ -7163,7 +7062,7 @@ export default function Chat({
                 {browserUrl && (
                   <button
                     type="button"
-                    onClick={() => setSplitActiveView('browser')}
+                    onClick={() => selectSplitView('browser')}
                     className={`group relative flex items-center gap-1 rounded-md px-2.5 py-1 text-sm font-medium transition-colors ${
                       splitActiveView === 'browser'
                         ? 'text-[var(--ink)]'
@@ -7252,6 +7151,7 @@ export default function Chat({
                       );
                     }}
                     onClose={() => {
+                      cancelFilePreview();
                       setSplitFile(null);
                       if (browserUrl) setSplitActiveView('browser');
                       else if (terminalPinned && terminalAlive)
@@ -7275,6 +7175,7 @@ export default function Chat({
                     }}
                     embedded
                     onFullscreen={(currentContent) => {
+                      cancelFilePreview();
                       const file =
                         currentContent !== undefined
                           ? { ...splitFile!, content: currentContent }
@@ -7324,7 +7225,8 @@ export default function Chat({
                       <button
                         type="button"
                         onClick={() => {
-                          setTerminalPinned(false);
+                          cancelFilePreview();
+                        setTerminalPinned(false);
                           if (browserUrl) setSplitActiveView('browser');
                           else if (splitFile) setSplitActiveView('file');
                         }}
@@ -7445,7 +7347,7 @@ export default function Chat({
                   : prev,
               );
             }}
-            onClose={() => setFullscreenPreviewFile(null)}
+            onClose={() => { cancelFilePreview(); setFullscreenPreviewFile(null); }}
             onSaved={() => setWorkspaceRefreshTrigger((prev) => prev + 1)}
             onRenamed={(newPath, newName) => {
               setFullscreenPreviewFile((prev) =>
