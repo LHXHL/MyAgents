@@ -7,7 +7,7 @@ import { NO_CHANNEL_DELIVERY } from '../session-core/channel-delivery';
 import type { TurnTerminalOutcome } from '../session-core/turn-queue';
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
 
-const state = vi.hoisted(() => ({ home: '', failProductIo: false, publicationGate: null as Promise<void> | null, publicationBlocked: false, queryExitGate: null as Promise<void> | null, queryInputEnded: 0, backgroundTask: false, backgroundTaskGate: null as Promise<void> | null, independentInputPump: false, sdkInputs: [] as unknown[], resultMode: 'success' as 'success' | 'error', rejectedResumeAt: null as string | null, sdkCumulativeBase: null as { input: number; output: number } | null, compactAtTurn: null as number | null, resetAtTurn: null as number | null, sdkCommands: [] as unknown[], interruptCloses: false, throwAfterInputEnd: false, query: vi.fn(), sdkRead: vi.fn(), sdkFork: vi.fn(), sdkDelete: vi.fn(), rewindFiles: vi.fn(), beforeResult: vi.fn(), events: [] as [string, unknown][], queuedFollowup: false, exitWithoutResult: false, toolFrames: false, childFrames: false, media: vi.fn() }));
+const state = vi.hoisted(() => ({ home: '', failProductIo: false, publicationGate: null as Promise<void> | null, publicationBlocked: false, queryExitGate: null as Promise<void> | null, queryInputEnded: 0, backgroundTask: false, backgroundTaskGate: null as Promise<void> | null, independentInputPump: false, sdkInputs: [] as unknown[], resultMode: 'success' as 'success' | 'error', rejectedResumeAt: null as string | null, sdkCumulativeBase: null as { input: number; output: number } | null, compactAtTurn: null as number | null, resetAtTurn: null as number | null, sdkCommands: [] as unknown[], interruptCloses: false, throwAfterInputEnd: false, query: vi.fn(), sdkRead: vi.fn(), sdkFork: vi.fn(), sdkDelete: vi.fn(), rewindFiles: vi.fn(), beforeResult: vi.fn(), events: [] as [string, unknown][], queuedFollowup: false, exitWithoutResult: false, toolFrames: false, childFrames: false, protocolFrames: [] as Record<string, unknown>[], beforeFrame: vi.fn(), media: vi.fn() }));
 vi.mock('os', async original => ({ ...await original<typeof import('os')>(), homedir: () => state.home }));
 vi.mock('../utils/fs-utils', async original => {
   const actual = await original<typeof import('../utils/fs-utils')>();
@@ -80,6 +80,7 @@ function fakeQuery(args: { prompt: AsyncIterable<unknown>; options: { sessionId?
       }
       if (pending.length) {
         const value = pending.shift();
+        await state.beforeFrame(value);
         if ((value as { type?: string })?.type === 'result') {
           const consumeFollowup = await state.beforeResult(value);
           if (consumeFollowup === true && prefetchedInput) {
@@ -183,6 +184,7 @@ function fakeQuery(args: { prompt: AsyncIterable<unknown>; options: { sessionId?
           terminal_reason: 'error_during_execution',
         });
       }
+      pending.splice(1, 0, ...state.protocolFrames.map(frame => ({ ...envelope, uuid: randomUUID(), ...frame })));
       if (state.toolFrames) {
         pending.splice(1, 0,
           assistant([{ type: 'tool_use', id: `tool-${turn}`, name: 'Read', input: { file_path: '/synthetic' } }], `tool-frame-${turn}`),
@@ -262,6 +264,8 @@ beforeEach(async () => {
   state.exitWithoutResult = false;
   state.toolFrames = false;
   state.childFrames = false;
+  state.protocolFrames = [];
+  state.beforeFrame.mockReset();
   state.beforeResult.mockReset();
   state.media.mockReset().mockResolvedValue([]);
   state.query.mockReset().mockImplementation(fakeQuery);
@@ -703,6 +707,67 @@ describe('builtin V2 execution independent of product storage', () => {
     const active = store.getActiveSessionTranscript(metadata.id)!;
     expect(await active.writer.flush()).toBe(true);
     expect((await active.file.read()).projection.messages).toEqual(active.writer.projection.messages);
+  });
+
+  it('settles each background execution and rejects the previous run after resume', async () => {
+    const start = (run: string) => ({ type: 'system', subtype: 'task_started', task_id: 'agent', run_id: run, tool_use_id: `tool-${run}` });
+    const updated = (run: string) => ({ type: 'system', subtype: 'task_updated', task_id: 'agent', run_id: run, patch: { status: 'completed' } });
+    const notified = (run: string) => ({ type: 'system', subtype: 'task_notification', task_id: 'agent', run_id: run, status: 'completed', summary: `report ${run}` });
+    state.protocolFrames = [start('run-1'), updated('run-1'), notified('run-1'), start('run-2'), notified('run-1'), updated('run-2'), notified('run-2')];
+    state.beforeFrame.mockImplementation(frame => {
+      if (frame.run_id === 'run-2' && frame.subtype === 'task_updated') {
+        return import('../builtin-session/lifecycle').then(lifecycle => expect(lifecycle.hasQueryBackgroundTask(lifecycle.getQuerySession(), 'agent')).toBe(true));
+      }
+    });
+    const workspace = join(state.home, 'workspace');
+    await mkdir(workspace);
+    const metadata = await store.createSession(workspace, { runtime: 'builtin' });
+    await agent.initializeAgent(workspace, null, metadata.id, { preWarmDisabled: true });
+    let finish!: (outcome: TurnTerminalOutcome) => void;
+    const terminal = new Promise<TurnTerminalOutcome>(resolve => { finish = resolve; });
+    await agent.enqueueUserMessage('question', [], undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined,
+      { channelDelivery: NO_CHANNEL_DELIVERY, onTerminal: finish });
+    await expect(terminal).resolves.toMatchObject({ status: 'complete' });
+    const notifications = state.events.filter(([event]) => event === 'chat:task-notification').map(([, payload]) => payload);
+    expect(notifications).toEqual([
+      expect.objectContaining({ runId: 'run-1', toolUseId: 'tool-run-1', summary: '' }),
+      expect.objectContaining({ runId: 'run-1', toolUseId: 'tool-run-1', summary: 'report run-1' }),
+      expect.objectContaining({ runId: 'run-2', toolUseId: 'tool-run-2', summary: '' }),
+      expect.objectContaining({ runId: 'run-2', toolUseId: 'tool-run-2', summary: 'report run-2' }),
+    ]);
+    const lifecycle = await import('../builtin-session/lifecycle');
+    expect(lifecycle.hasQueryBackgroundTasks()).toBe(false);
+  });
+
+  it.each([
+    [null, { structuredContentOmitted: true }],
+    ['parent', { structuredContentOmitted: true }],
+    [null, { detachedToolCall: true, content: [{ type: 'text', text: 'Readable result' }], structuredContent: { success: true } }],
+    ['parent', { detachedToolCall: true, content: [{ type: 'text', text: 'Readable result' }], structuredContent: { success: true } }],
+  ] as const)('waits for the actual detached tool result and retains readable text (parent=%s, output=%j)', async (parent, output) => {
+    const completionEvent = parent ? 'chat:subagent-tool-result-complete' : 'chat:tool-result-complete';
+    state.protocolFrames = [
+      { type: 'assistant', parent_tool_use_id: parent, message: { id: 'fetch', role: 'assistant', model: 'test-model', content: [{ type: 'tool_use', id: 'fetch-tool', name: 'WebFetch', input: { url: 'https://example.invalid' } }] } },
+      { type: 'user', parent_tool_use_id: parent, tool_use_result: { detachedToolCall: true }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'fetch-tool', content: 'Continuing in background' }] } },
+      { type: 'user', parent_tool_use_id: parent, tool_use_result: output, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'fetch-tool', content: 'Readable result' }] } },
+    ];
+    state.beforeFrame.mockImplementation(frame => {
+      if (frame.tool_use_result === output) expect(state.events.filter(([event]) => event === completionEvent)).toEqual([]);
+    });
+    const workspace = join(state.home, 'workspace');
+    await mkdir(workspace);
+    const metadata = await store.createSession(workspace, { runtime: 'builtin' });
+    await agent.initializeAgent(workspace, null, metadata.id, { preWarmDisabled: true });
+    let finish!: (outcome: TurnTerminalOutcome) => void;
+    const terminal = new Promise<TurnTerminalOutcome>(resolve => { finish = resolve; });
+    await agent.enqueueUserMessage('question', [], undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined,
+      { channelDelivery: NO_CHANNEL_DELIVERY, onTerminal: finish });
+    await expect(terminal).resolves.toMatchObject({ status: 'complete' });
+    expect(state.events.filter(([event]) => event === completionEvent)).toEqual([
+      [completionEvent, expect.objectContaining({ toolUseId: 'fetch-tool', content: expect.stringContaining('Readable result') })],
+    ]);
   });
 
   it('publishes full-only tools and completes subsequent turns while attachment archiving is hung', async () => {

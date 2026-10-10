@@ -197,7 +197,6 @@ import {
 } from '@/services/notificationService';
 import {
   setBackgroundTaskStatus,
-  setBackgroundTaskDescription,
   getBackgroundTaskDescription,
   clearAllBackgroundTaskStatuses,
   registerBackgroundTask,
@@ -4939,6 +4938,7 @@ export default function TabProvider({
           console.log(`[TabProvider ${tabId}] ${eventName}:`, data);
           const startPayload = data as {
             taskId?: string;
+            runId?: string;
             toolUseId?: string;
             description?: string;
             taskType?: string;
@@ -4949,29 +4949,19 @@ export default function TabProvider({
             startPayload.sessionId ??
             attachedSseSessionIdRef.current ??
             currentSessionIdRef.current;
-          if (startPayload.taskId && startPayload.description) {
-            setBackgroundTaskDescription(
-              startPayload.taskId,
-              startPayload.description,
-              eventSessionId,
-            );
-          }
           // Register the toolUseId↔taskId mapping so TaskTool components
           // (which only know their tool.id = toolUseId) can look up status
           // from task-notification events (which only carry taskId).
-          if (startPayload.taskId && startPayload.toolUseId) {
+          if (startPayload.taskId) {
             registerBackgroundTask(
               startPayload.taskId,
               startPayload.toolUseId,
               {
                 description: startPayload.description,
                 taskType: startPayload.taskType,
+                runId: startPayload.runId,
               },
               eventSessionId,
-            );
-          } else if (startPayload.taskId && !startPayload.toolUseId) {
-            console.warn(
-              `[TabProvider ${tabId}] chat:task-started missing toolUseId for task ${startPayload.taskId} — background task status matching will degrade`,
             );
           }
           break;
@@ -4980,6 +4970,7 @@ export default function TabProvider({
           console.log(`[TabProvider ${tabId}] ${eventName}:`, data);
           const payload = data as {
             taskId?: string;
+            runId?: string;
             toolUseId?: string;
             status?: string;
             summary?: string;
@@ -4991,12 +4982,14 @@ export default function TabProvider({
             attachedSseSessionIdRef.current ??
             currentSessionIdRef.current;
           if (payload.taskId && payload.status) {
-            setBackgroundTaskStatus(
+            const accepted = setBackgroundTaskStatus(
               payload.taskId,
               payload.status,
               payload.toolUseId,
               eventSessionId,
+              payload.runId,
             );
+            if (!accepted) break;
             // Inject a visible notification message into the chat so the user
             // understands why AI continues responding (prevents "AI talking to itself" UX).
             // toolUseId 写进 JSON 是给 PRD 0.2.17 Agent Status Panel 用的「持久化完成证据」：
@@ -5009,13 +5002,14 @@ export default function TabProvider({
             );
             const notificationData = JSON.stringify({
               taskId: payload.taskId,
+              runId: payload.runId,
               toolUseId: payload.toolUseId,
               status: payload.status,
               summary: payload.summary ?? '',
               description: description ?? '',
             });
             const notificationMsg: Message = {
-              id: `task-notification-${payload.taskId}`,
+              id: `task-notification-${payload.taskId}${payload.runId ? `-run-${encodeURIComponent(payload.runId)}` : ''}`,
               role: 'user',
               content: `<task-notification>${notificationData}</task-notification>`,
               timestamp: new Date(),

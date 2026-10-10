@@ -6,9 +6,29 @@ import {
   extractToolResultRenderParts,
   extractSdkToolResultRenderParts,
   normalizeSdkToolUseResult,
+  isDetachedSdkToolResult,
 } from './tool-result-attachments';
 
 describe('SDK result ingress projection', () => {
+  it('preserves readable content and media when SDK omits structured side data', () => {
+    const result = extractSdkToolResultRenderParts([
+      { type: 'text', text: 'Readable MCP result' },
+      { type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' },
+    ], { structuredContentOmitted: true });
+    expect(result.text).toContain('Readable MCP result');
+    expect(result.text).toContain('Structured content omitted');
+    expect(result.text).not.toContain('aW1hZ2U=');
+    expect(result.attachments).toHaveLength(1);
+    expect(extractSdkToolResultRenderParts('Readable result', { content: [{ type: 'text', text: 'Envelope result' }] }).text).toBe('Envelope result');
+  });
+
+  it('distinguishes a detached tool receipt from an actual tool result', () => {
+    expect(isDetachedSdkToolResult({ detachedToolCall: true })).toBe(true);
+    expect(isDetachedSdkToolResult({ detachedToolCall: false })).toBe(false);
+    expect(isDetachedSdkToolResult({ stdout: 'detachedToolCall' })).toBe(false);
+    expect(isDetachedSdkToolResult({ detachedToolCall: true, content: [{ type: 'text', text: 'Actual result' }], structuredContent: { success: true } })).toBe(false);
+  });
+
   it.each(['image', 'pdf'] as const)('keeps %s side-data bytes out of text with existing media presentation', (kind) => {
     const mime = kind === 'pdf' ? 'application/pdf' : 'image/png';
     const data = 'c3ludGhldGljLWJ5dGVz';

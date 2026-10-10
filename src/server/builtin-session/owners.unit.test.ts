@@ -174,6 +174,34 @@ describe('builtin-session owners', () => {
     await expect(waitForQueryExit(query)).resolves.toBeUndefined();
   });
 
+  it('keeps resumed runs live across old and duplicate task terminal events', () => {
+    const query = {} as never;
+    setQuerySession(query);
+    recordQueryBackgroundTask(query, 'agent', { runId: 'run-1', toolUseId: 'tool-1' });
+    expect(completeQueryBackgroundTask(query, 'agent', { runId: 'run-1', rich: false })).toMatchObject({ removed: true, broadcast: true });
+    expect(completeQueryBackgroundTask(query, 'agent', { runId: 'run-1', rich: true })).toMatchObject({ removed: false, broadcast: true, enriching: true });
+    recordQueryBackgroundTask(query, 'agent', { runId: 'run-2', toolUseId: 'tool-2' });
+    expect(completeQueryBackgroundTask(query, 'agent', { runId: 'run-1', rich: true })).toMatchObject({ removed: false, broadcast: false });
+    expect(completeQueryBackgroundTask(query, 'agent')).toMatchObject({ removed: false, broadcast: false });
+    expect(hasQueryBackgroundTasks(query)).toBe(true);
+    expect(recordQueryBackgroundTask(query, 'agent', { runId: 'run-1' })).toBe(false);
+    expect(completeQueryBackgroundTask(query, 'agent', { runId: 'run-2', rich: true })).toMatchObject({ removed: true, broadcast: true, becameQuiescent: true });
+    expect(completeQueryBackgroundTask(query, 'agent', { runId: 'run-2', rich: true })).toMatchObject({ removed: false, broadcast: false });
+    expect(takeQueryBackgroundTasks(query)).toEqual([]);
+  });
+
+  it('reconciles terminal-before-start without reviving an ended run', () => {
+    const query = {} as never;
+    setQuerySession(query);
+    completeQueryBackgroundTask(query, 'agent', { runId: 'run-2', rich: false });
+    expect(recordQueryBackgroundTask(query, 'agent', { runId: 'run-1' })).toBe(false);
+    expect(recordQueryBackgroundTask(query, 'agent', { runId: 'run-2', toolUseId: 'tool-2' })).toBe(true);
+    expect(hasQueryBackgroundTasks(query)).toBe(false);
+    expect(completeQueryBackgroundTask(query, 'agent', { runId: 'run-2', rich: true }).info?.toolUseId).toBe('tool-2');
+    recordQueryBackgroundTask(query, 'agent', { runId: 'run-3', toolUseId: 'tool-3' });
+    expect(takeQueryBackgroundTasks(query)).toEqual([['agent', { runId: 'run-3', toolUseId: 'tool-3' }]]);
+  });
+
   it('owns background tasks by exact Query and releases quiescence only on the last terminal', () => {
     const firstQuery = { close: vi.fn() } as never;
     const replacementQuery = { close: vi.fn() } as never;

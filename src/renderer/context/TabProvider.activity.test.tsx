@@ -2894,6 +2894,23 @@ describe('TabProvider question receipts and Task history ownership', () => {
     const view = render(strict ? <StrictMode>{tree}</StrictMode> : tree);
     return { get: () => value!, ...view };
   }
+  it('keeps separate notification history rows for resumed task runs', async () => {
+    const { get } = capture();
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    const scope = { sessionId: 'pending-receipt', taskId: 'resume-test-agent', toolUseId: 'resume-test-tool' };
+    emit('chat:task-started', { ...scope, runId: 'run-1' });
+    emit('chat:task-notification', { ...scope, runId: 'run-1', status: 'completed', summary: 'first' });
+    emit('chat:task-started', { ...scope, runId: 'run-2' });
+    emit('chat:task-notification', { ...scope, runId: 'run-1', status: 'failed', summary: 'late' });
+    emit('chat:task-notification', { ...scope, runId: 'run-2', status: 'completed', summary: '' });
+    emit('chat:task-notification', { ...scope, runId: 'run-2', status: 'completed', summary: 'second' });
+    const records = get().historyMessages.filter(message => message.id.startsWith('task-notification-resume-test-agent'));
+    expect(records).toHaveLength(2);
+    expect(records[0].content).toContain('first');
+    expect(records[1].content).toContain('second');
+    expect(records.map(message => message.id)).toEqual(['task-notification-resume-test-agent-run-run-1', 'task-notification-resume-test-agent-run-run-2']);
+  });
+
   const question = (requestId: string) => ({
     sessionId: 'pending-receipt',
     requestId,

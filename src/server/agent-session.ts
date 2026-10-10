@@ -250,6 +250,7 @@ import {
   classifyToolAttachmentPresentation,
   extractToolResultRenderParts,
   extractSdkToolResultRenderParts,
+  isDetachedSdkToolResult,
   type ExtractedToolResultAttachment,
 } from './utils/tool-result-attachments';
 import type { ToolAttachment } from '../shared/types/tool-attachment';
@@ -289,7 +290,6 @@ export { stripPlaywrightResults } from './builtin-session/transcript-persistence
 import {
   clearQueryMcpPrewarmOwner,
   completeQueryBackgroundTask,
-  getQueryBackgroundTask,
   getQueryMcpPrewarmOwner,
   hasQueryBackgroundTask,
   hasQueryBackgroundTasks,
@@ -12176,33 +12176,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     let thinkingTokensFrameCount = 0;
     let thinkingTokensMaxEstimate = 0;
 
-    // #227 — track which background-task ids have already produced a terminal
-    // `chat:task-notification` broadcast in THIS SDK session, AND whether that
-    // broadcast already carried a RICH (non-empty summary / output_file) payload.
-    // Value = true once a rich terminal broadcast has gone out for the id.
-    //
-    // The SDK exposes two independent terminal channels for the same logical
-    // event (task_updated / task_notification — see the lifecycle handler block
-    // below, ~L8763). We forward whichever arrives FIRST so the user sees the
-    // completion promptly. But the first-to-arrive channel is usually
-    // task_updated, whose patch carries only an error string (empty on success)
-    // — NOT the rich summary / output_file the later task_notification delivers.
-    // So a plain first-wins suppression would drop the real summary on the
-    // common happy path. Instead we let a LATER terminal event ENRICH an
-    // already-broadcast card when it brings a non-empty summary/output_file the
-    // first broadcast lacked. The renderer upserts the
-    // `task-notification-<taskId>` history row by id, so the enrich re-broadcast
-    // updates the bubble in place rather than duplicating it. Once rich, further
-    // events for the id (and events that add nothing new) are suppressed.
-    //
-    // Lifetime = one for-await loop = one SDK session = one task registry.
-    // Tasks can't cross SDK-session boundaries (the registry is in-process to
-    // the CLI subprocess), so resetting per-session is correct. No bounded-cap
-    // logic needed: the renderer's backgroundTaskStatus.ts has its own LRU,
-    // and a single session is realistically bounded to << 1000 background
-    // sub-agents.
-    const terminalBroadcastedTaskIds = new Map<string, boolean>();
-
     const retireRewoundQueryWhenQuiescent = (): void => {
       if (!deferredRewindResult || !rewindInputGate) return;
       if (hasQueryBackgroundTasks(activeQuery)) return;
@@ -12573,122 +12546,58 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       //      matches what the CLI itself does when synthesizing
       //      task_notification (see CLI `f9=A8(Fq)?Fq==='killed'?'stopped':Fq`).
       //
-      // We forward whichever arrives first, deduped per task_id via
-      // `terminalBroadcastedTaskIds`. The renderer's TabProvider appends a
-      // `task-notification-<taskId>` history message on each event — without
-      // sidecar-side dedup, the happy path (both events fire) would create
-      // duplicate history rows with the same id. Dual investigation: Claude
-      // root-traced via session JSONL evidence + binary string surface;
-      // Codex independently confirmed the channel separation in the SDK
-      // type contract.
+      // The exact Query lifecycle owner admits each execution and deduplicates
+      // its two terminal channels. A resumed task keeps task_id, not run_id.
       if (sdkMessage.type === 'system') {
-        const taskMsg = sdkMessage as { subtype?: string; task_id?: string;
+        const taskMsg = sdkMessage as { subtype?: string; task_id?: string; run_id?: string;
           tool_use_id?: string; description?: string; task_type?: string;
           status?: string; summary?: string; output_file?: string;
           patch?: { status?: string; error?: string; description?: string } };
         if (taskMsg.subtype === 'task_started' && taskMsg.task_id) {
-          console.log(`[agent] Background task started: ${taskMsg.task_id} — ${taskMsg.description}`);
-          // Record against this exact Query so deferred maintenance cannot
-          // confuse foreground result with whole-Query quiescence.
           const recorded = recordQueryBackgroundTask(activeQuery, taskMsg.task_id, {
             toolUseId: taskMsg.tool_use_id,
             description: taskMsg.description,
+            runId: taskMsg.run_id,
           });
           if (recorded) {
             broadcast('chat:task-started', {
               sessionId,
               taskId: taskMsg.task_id,
+              runId: taskMsg.run_id,
               toolUseId: taskMsg.tool_use_id,
               description: taskMsg.description,
               taskType: taskMsg.task_type,
             });
-          } else {
-            console.warn(`[agent] Ignoring task_started from superseded Query: ${taskMsg.task_id}`);
           }
-        } else if (taskMsg.subtype === 'task_notification' && taskMsg.task_id) {
-          // Rich iff it carries a real summary or an output_file (the
-          // notification channel is the one that delivers these).
-          const isRich = Boolean((taskMsg.summary && taskMsg.summary.trim()) || taskMsg.output_file);
-          const priorRich = terminalBroadcastedTaskIds.get(taskMsg.task_id);
-          if (priorRich !== undefined && (priorRich || !isRich)) {
-            // Already broadcast for this task, and either that broadcast was
-            // already rich OR this one adds nothing new — suppress the
-            // duplicate. (Happy path that DOES enrich: task_updated{completed}
-            // fired first with an empty summary [priorRich=false], so a rich
-            // notification here [isRich=true] falls through to re-broadcast.)
-            console.log(`[agent] Background task notification ${taskMsg.status} suppressed (no new info; priorRich=${priorRich}): ${taskMsg.task_id}`);
-          } else {
-            const enriching = priorRich !== undefined;
-            terminalBroadcastedTaskIds.set(taskMsg.task_id, isRich);
-            console.log(`[agent] Background task ${taskMsg.status}${enriching ? ' (enriching prior broadcast)' : ''}: ${taskMsg.task_id} — ${taskMsg.summary}`);
-            broadcast('chat:task-notification', {
-              sessionId,
-              taskId: taskMsg.task_id,
+        } else if (taskMsg.task_id && (taskMsg.subtype === 'task_notification' || taskMsg.subtype === 'task_updated')) {
+          const status = taskMsg.subtype === 'task_updated' ? taskMsg.patch?.status : taskMsg.status;
+          if (status === 'completed' || status === 'failed' || status === 'killed' || status === 'stopped') {
+            const summary = taskMsg.subtype === 'task_updated' ? taskMsg.patch?.error ?? '' : taskMsg.summary ?? '';
+            const outputFile = taskMsg.subtype === 'task_notification' ? taskMsg.output_file ?? '' : '';
+            const completion = completeQueryBackgroundTask(activeQuery, taskMsg.task_id, {
+              runId: taskMsg.run_id,
+              rich: Boolean(summary.trim() || outputFile),
               toolUseId: taskMsg.tool_use_id,
-              status: taskMsg.status,
-              summary: taskMsg.summary,
-              outputFile: taskMsg.output_file,
             });
-            // Reached terminal — release the exact Query task owner. If the
-            // foreground result already latched a config restart, the last
-            // background task is the missing drain trigger.
-            const completion = completeQueryBackgroundTask(activeQuery, taskMsg.task_id);
+            if (completion.broadcast) {
+              broadcast('chat:task-notification', {
+                sessionId,
+                taskId: taskMsg.task_id,
+                runId: taskMsg.run_id,
+                toolUseId: completion.info?.toolUseId,
+                status: status === 'killed' ? 'stopped' : status,
+                summary,
+                outputFile,
+              });
+            }
+            // Liveness settlement belongs to the task run, not to whether this
+            // event added display information to an existing notification.
             if (completion.becameQuiescent && lifecycleState.query === activeQuery) {
               if (deferredRewindResult) retireRewoundQueryWhenQuiescent();
               else applyDeferredRestartIfNeeded();
             }
           }
-        } else if (taskMsg.subtype === 'task_updated' && taskMsg.task_id) {
-          const patchStatus = taskMsg.patch?.status;
-          // Only terminal patches are actionable for the renderer's "task
-          // done" signal. Non-terminal patches (pending/running) leave the
-          // UI in its current state.
-          if (patchStatus === 'completed' || patchStatus === 'failed' || patchStatus === 'killed') {
-            const errorSummary = taskMsg.patch?.error ?? '';
-            const backgroundTaskInfo = getQueryBackgroundTask(activeQuery, taskMsg.task_id);
-            // task_updated only carries an error string as its summary (empty on
-            // success) and never an output_file, so it is "rich" only when that
-            // error is non-empty.
-            const isRich = Boolean(errorSummary.trim());
-            const priorRich = terminalBroadcastedTaskIds.get(taskMsg.task_id);
-            if (priorRich !== undefined && (priorRich || !isRich)) {
-              console.log(`[agent] Background task patch ${patchStatus} suppressed (no new info; priorRich=${priorRich}): ${taskMsg.task_id}`);
-            } else {
-              const enriching = priorRich !== undefined;
-              terminalBroadcastedTaskIds.set(taskMsg.task_id, isRich);
-              // Map 'killed' → 'stopped': the renderer's
-              // `backgroundTaskStatus.ts::TERMINAL` set is
-              // {completed, error, failed, stopped} and knows nothing about
-              // 'killed'. Aligning with the SDK CLI's own normalization
-              // keeps the renderer vocab stable.
-              const normalized = patchStatus === 'killed' ? 'stopped' : patchStatus;
-              console.log(`[agent] Background task ${normalized} (via task_updated)${enriching ? ' (enriching prior broadcast)' : ''}: ${taskMsg.task_id} — patch.status=${patchStatus}${errorSummary ? ` error=${errorSummary}` : ''}`);
-              broadcast('chat:task-notification', {
-                sessionId,
-                taskId: taskMsg.task_id,
-                // task_updated.patch doesn't carry tool_use_id, so resolve it
-                // from the task_started record. The renderer can also bridge
-                // taskId→toolUseId at runtime (registerBackgroundTask), but the
-                // PERSISTED `task-notification-<taskId>` history message stores
-                // this field verbatim — sending undefined there breaks the
-                // panel's history fallback after a reload (it keys on toolUseId).
-                // Falls back to undefined (orphan-pool reconciliation) if the
-                // start was never observed in this session.
-                toolUseId: backgroundTaskInfo?.toolUseId,
-                status: normalized,
-                summary: errorSummary,
-                outputFile: '',
-              });
-              // Reached terminal — release the exact Query task owner.
-              const completion = completeQueryBackgroundTask(activeQuery, taskMsg.task_id);
-              if (completion.becameQuiescent && lifecycleState.query === activeQuery) {
-                if (deferredRewindResult) retireRewoundQueryWhenQuiescent();
-                else applyDeferredRestartIfNeeded();
-              }
-            }
-          }
         }
-
         // Handle API retry events (v0.2.77+) — show retry status to user
         // SDK emits these when the Anthropic API returns rate_limit or transient errors
         // and the SDK is automatically retrying. Without handling, user sees "stuck" behavior.
@@ -13266,6 +13175,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               // below; the remaining text has every base64-ish payload redacted to
               // `[N bytes omitted]`. Session JSONL / SSE only ever carry path refs —
               // the SDK's own transcript (what the model sees) is untouched.
+              // SDK priority-now receipts leave the original call running;
+              // only its later actual result may settle loading/in-flight state.
+              if (isDetachedSdkToolResult(toolUseResultData)) continue;
               const renderParts = extractSdkToolResultRenderParts(toolResultBlock.content, toolUseResultData);
               const contentStr = renderParts.text;
 
@@ -13868,20 +13780,21 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     drainPendingInteractiveRequests('session-end');
 
     // Flush a synthetic terminal `stopped` for every background sub-agent that
-    // started in this session but never reached terminal (still in the pending
-    // map — terminal branches delete on broadcast). The owning SDK subprocess is
+    // started in this session but never reached terminal. The lifecycle registry
+    // transfers only active runs and releases its completed records here. The SDK subprocess is
     // now gone (this finally runs on EVERY for-await exit: abort, deferred config
     // restart, watchdog kill, transport error), so the real terminal event can
     // never arrive — the process that would emit it just died. Without this, the
     // renderer's Agent Status Panel shows these sub-agents "后台运行中" forever
     // (all its clear-defenses require a terminal event). A late real terminal
-    // after this flush is deduped renderer-side by taskId. Empty for pre-warm
+    // after this flush is reconciled renderer-side by taskId and runId. Empty for pre-warm
     // sessions (no tasks started).
     for (const [taskId, info] of takeQueryBackgroundTasks(activeQuery)) {
       console.log(`[agent] Background task orphaned by session teardown → flushing stopped: ${taskId} — ${info.description ?? ''}`);
       broadcast('chat:task-notification', {
         sessionId,
         taskId,
+        runId: info.runId,
         toolUseId: info.toolUseId,
         status: 'stopped',
         summary: '',

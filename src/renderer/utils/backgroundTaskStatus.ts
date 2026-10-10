@@ -1,4 +1,5 @@
 import type { Message } from '@/types/chat';
+import { compareBackgroundTaskRuns } from '../../shared/backgroundTaskRun';
 
 /**
  * Module-level store for background task (SDK sub-agent) completion statuses.
@@ -69,6 +70,7 @@ function splitTaskKey(key: string): { scope: string; taskId: string } {
     return { scope: key.slice(0, idx), taskId: key.slice(idx + KEY_SEPARATOR.length) };
 }
 
+const runIds = new Map<string, string | undefined>();
 const statuses = new Map<string, string>();                     // scoped taskId → status
 const descriptions = new Map<string, string>();                 // scoped taskId → description
 const toolUseIdToTaskId = new Map<string, string>();            // scoped toolUseId → taskId
@@ -103,16 +105,31 @@ function linkTaskToolUse(taskId: string, toolUseId: string, sessionId?: string |
     taskIdToToolUseId.set(scopedTaskKey, toolUseId);
 }
 
+/** Keep the latest execution in the existing Session-scoped projection. */
+function admitBackgroundTaskRun(taskId: string, runId: string | undefined, sessionId?: string | null): boolean {
+    const key = taskKey(sessionId, taskId);
+    const order = runIds.has(key) ? compareBackgroundTaskRuns(runId, runIds.get(key)) : 1;
+    if (order < 0) return false;
+    if (order > 0) {
+        const previousTool = taskIdToToolUseId.get(key);
+        if (previousTool) toolUseIdToTaskId.delete(toolKey(sessionId, previousTool));
+        for (const map of [statuses, descriptions, taskIdToToolUseId, taskStartedAt, taskTypes, terminalOrder, orphanByTaskId]) map.delete(key);
+        runIds.set(key, runId);
+    }
+    return true;
+}
+
 /** Register the toolUseId↔taskId mapping (called when chat:task-started arrives).
  *  Also reconciles any orphan terminal status stored for this taskId. */
 export function registerBackgroundTask(
     taskId: string,
-    toolUseId: string,
-    meta?: { description?: string; taskType?: string },
+    toolUseId: string | undefined,
+    meta?: { description?: string; taskType?: string; runId?: string },
     sessionId?: string | null,
-): void {
+): boolean {
+    if (!admitBackgroundTaskRun(taskId, meta?.runId, sessionId)) return false;
     const scopedTaskKey = taskKey(sessionId, taskId);
-    linkTaskToolUse(taskId, toolUseId, sessionId);
+    if (toolUseId) linkTaskToolUse(taskId, toolUseId, sessionId);
     if (!taskStartedAt.has(scopedTaskKey)) {
         taskStartedAt.set(scopedTaskKey, Date.now());
     }
@@ -129,11 +146,13 @@ export function registerBackgroundTask(
     if (orphan) {
         orphanByTaskId.delete(scopedTaskKey);
         applyStatus(taskId, orphan.status, toolUseId, sessionId);
-        return;
+        return true;
     }
+    if (!statuses.has(scopedTaskKey)) statuses.set(scopedTaskKey, 'running');
     window.dispatchEvent(new CustomEvent(EVENT_NAME, {
-        detail: { taskId, toolUseId, status: 'started', sessionId: sessionId ?? null },
+        detail: { taskId, toolUseId, status: statuses.get(scopedTaskKey), sessionId: sessionId ?? null },
     }));
+    return true;
 }
 
 // ─── Status updates ───
@@ -162,7 +181,9 @@ export function setBackgroundTaskStatus(
     status: string,
     directToolUseId?: string,
     sessionId?: string | null,
-): void {
+    runId?: string,
+): boolean {
+    if (!admitBackgroundTaskRun(taskId, runId, sessionId)) return false;
     const scopedTaskKey = taskKey(sessionId, taskId);
     const toolUseId = directToolUseId ?? taskIdToToolUseId.get(scopedTaskKey);
     if (toolUseId) {
@@ -172,9 +193,9 @@ export function setBackgroundTaskStatus(
     if (!toolUseId && isTerminalStatus(status)) {
         // No association available — park in orphan pool so a late TaskTool can reconcile.
         // Evict oldest first if pool full.
-        if (orphanByTaskId.size >= MAX_ORPHAN_RETAINED) {
+        if (!orphanByTaskId.has(scopedTaskKey) && orphanByTaskId.size >= MAX_ORPHAN_RETAINED) {
             const oldest = orphanByTaskId.keys().next().value;
-            if (oldest !== undefined) orphanByTaskId.delete(oldest);
+            if (oldest !== undefined) { orphanByTaskId.delete(oldest); runIds.delete(oldest); }
         }
         orphanByTaskId.set(scopedTaskKey, { taskId, status });
         console.warn(
@@ -182,10 +203,11 @@ export function setBackgroundTaskStatus(
             'mapping — parked in orphan pool (%d/%d).',
             taskId, orphanByTaskId.size, MAX_ORPHAN_RETAINED,
         );
-        return;
+        return true;
     }
 
     applyStatus(taskId, status, toolUseId, sessionId);
+    return true;
 }
 
 /** Core status-apply path: writes status, updates LRU, dispatches event, enforces caps. */
@@ -229,6 +251,7 @@ function enforceTerminalCap(sessionId?: string | null): void {
         statuses.delete(oldestTaskKey);
         descriptions.delete(oldestTaskKey);
         taskStartedAt.delete(oldestTaskKey);
+        runIds.delete(oldestTaskKey);
         taskTypes.delete(oldestTaskKey);
         const tuid = taskIdToToolUseId.get(oldestTaskKey);
         taskIdToToolUseId.delete(oldestTaskKey);
@@ -250,6 +273,7 @@ export function getBackgroundTaskStatus(key: string, sessionId?: string | null):
 
 export interface BackgroundTaskNotificationRecord {
     taskId: string;
+    runId?: string;
     toolUseId?: string;
     status: string;
     summary?: string;
@@ -264,6 +288,7 @@ export function parseBackgroundTaskNotificationContent(content: string): Backgro
         if (typeof parsed.taskId !== 'string' || typeof parsed.status !== 'string') return null;
         return {
             taskId: parsed.taskId,
+            runId: typeof parsed.runId === 'string' ? parsed.runId : undefined,
             toolUseId: typeof parsed.toolUseId === 'string' ? parsed.toolUseId : undefined,
             status: parsed.status,
             summary: typeof parsed.summary === 'string' ? parsed.summary : undefined,
@@ -280,13 +305,19 @@ export function parseBackgroundTaskNotificationMessage(message: Message): Backgr
     return parseBackgroundTaskNotificationContent(message.content);
 }
 
-export function collectCompletedBackgroundToolIdsFromHistory(messages: Message[]): Set<string> {
-    const set = new Set<string>();
+export function collectCompletedBackgroundToolIdsFromHistory(messages: Message[], sessionId?: string | null): Set<string> {
+    const latest = new Map<string, BackgroundTaskNotificationRecord>();
     for (const message of messages) {
         const record = parseBackgroundTaskNotificationMessage(message);
-        if (record?.toolUseId && isTerminalStatus(record.status)) {
-            set.add(record.toolUseId);
-        }
+        if (!record) continue;
+        const previous = latest.get(record.taskId);
+        if (!previous || compareBackgroundTaskRuns(record.runId, previous.runId) >= 0) latest.set(record.taskId, record);
+    }
+    const set = new Set<string>();
+    for (const record of latest.values()) {
+        const key = taskKey(sessionId, record.taskId);
+        if (runIds.has(key) && compareBackgroundTaskRuns(record.runId, runIds.get(key)) < 0) continue;
+        if (record.toolUseId && isTerminalStatus(record.status)) set.add(record.toolUseId);
     }
     return set;
 }
@@ -300,15 +331,14 @@ export function hydrateBackgroundTaskStatusesFromHistory(messages: Message[], se
     for (const message of messages) {
         const record = parseBackgroundTaskNotificationMessage(message);
         if (!record) continue;
-        if (record.description) {
-            setBackgroundTaskDescription(record.taskId, record.description, sessionId);
-        }
         // Persisted rows without toolUseId cannot prove which Task tool they
         // complete after a renderer reload. Do not keep re-parking them as
         // live orphans on every messages change; the server-side history row
         // still preserves the audit text.
         if (!record.toolUseId) continue;
-        setBackgroundTaskStatus(record.taskId, record.status, record.toolUseId, sessionId);
+        if (setBackgroundTaskStatus(record.taskId, record.status, record.toolUseId, sessionId, record.runId) && record.description) {
+            setBackgroundTaskDescription(record.taskId, record.description, sessionId);
+        }
     }
 }
 
@@ -367,6 +397,7 @@ export function getActiveBackgroundTasks(sessionId?: string | null): ActiveBackg
 /** Clear entries. Pass sessionId on session reset; omit in tests/global teardown. */
 export function clearAllBackgroundTaskStatuses(sessionId?: string | null): void {
     if (sessionId === undefined) {
+        runIds.clear();
         statuses.clear();
         descriptions.clear();
         toolUseIdToTaskId.clear();
@@ -378,7 +409,7 @@ export function clearAllBackgroundTaskStatuses(sessionId?: string | null): void 
         return;
     }
     const prefix = keyPrefix(sessionId);
-    for (const map of [statuses, descriptions, taskIdToToolUseId, taskStartedAt, taskTypes, terminalOrder, orphanByTaskId]) {
+    for (const map of [runIds, statuses, descriptions, taskIdToToolUseId, taskStartedAt, taskTypes, terminalOrder, orphanByTaskId]) {
         for (const key of Array.from(map.keys())) {
             if (key.startsWith(prefix)) map.delete(key);
         }

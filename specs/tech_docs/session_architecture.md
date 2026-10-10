@@ -142,6 +142,8 @@ Builtin 中断请求由 `builtin-session/interrupt.ts` 在既有 Session 内按�
 
 SDK background Agent/Bash 与父 turn 共用同一个 Query 和 Sidecar。自动 deferred restart 必须等待该 Query 的 background-task registry 清空；显式 Stop、Reset、Session switch、应用退出和真实 Query crash 仍可终止。
 
+后台 task 的稳定 `task_id` 不等于一次执行。SDK `run_id` 在恢复同一 task 时变化，按字符串顺序比较运行先后；缺失值只兼容旧事件，不能覆盖已知新 run。`builtin-session/lifecycle.ts` 在 exact Query 的既有 registry 内同时裁决 start/terminal 的 run、活跃状态与双 terminal channel 的富信息补齐；已完成记录留到 Query finalization，不能让旧 run 的迟到 start/terminal 复活任务、释放新 run 或阻止新 run 完成。Renderer SSE 和通知记录携带可选 `runId`，新 run 重置旧 terminal 投影；历史 hydration 不覆盖已知更晚 run，同一 run 的摘要补齐 upsert 原通知，不同 run 使用不同通知 ID。旧历史缺字段时仍可读取，不改写磁盘历史。
+
 MCP pre-warm 是 soft readiness observation，不是 AI turn 的 admission authority。未 connected、读取失败或观察超时不能拒绝业务 turn；真正的 MCP surface replacement 则是 Query-generation correctness fence，必须在 turn boundary 串行应用。
 
 ### 4.3 external Runtime
