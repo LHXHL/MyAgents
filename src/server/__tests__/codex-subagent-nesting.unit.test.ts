@@ -306,7 +306,69 @@ describe('applyCodexSubAgentActivity (Codex 0.144.1 multi-agent v2)', () => {
     expect(correlation.agentMessageTextById.size).toBe(0);
   });
 
-  it('turns a started activity into the parent CollabAgent card and records its child thread', () => {
+  it('keeps Codex 0.162 partial answers and subsequent tools in the same native turn', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    const parse = (runtime as unknown as {
+      parseNotification: (proc: typeof correlation, method: string, params: unknown, emit: (event: UnifiedEvent) => void) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+    const emitted: UnifiedEvent[] = [];
+    const notify = (method: string, params: Record<string, unknown>) => {
+      const result = parse(correlation, method, { threadId: 'main', turnId: 'root-turn', ...params }, event => emitted.push(event));
+      if (Array.isArray(result)) emitted.push(...result);
+      else if (result) emitted.push(result);
+    };
+
+    notify('item/agentMessage/delta', { itemId: 'partial', delta: 'First result.' });
+    notify('item/completed', { item: { id: 'partial', type: 'agentMessage', phase: 'partial_answer', text: 'First result.' } });
+    expect(emitted).toContainEqual({ kind: 'text_stop', nativeText: 'First result.', traceId: 'main::partial' });
+    expect(runtime.canSteerMessage(correlation as never)).toBe(true);
+
+    notify('item/started', { item: { id: 'command', type: 'commandExecution', command: 'check', cwd: '/workspace' } });
+    notify('item/completed', { item: { id: 'command', type: 'commandExecution', command: 'check', aggregatedOutput: 'checked', exitCode: 0 } });
+    expect(emitted).toContainEqual(expect.objectContaining({ kind: 'tool_result', toolUseId: 'command', content: 'checked' }));
+
+    notify('item/agentMessage/delta', { itemId: 'final', delta: 'Final result.' });
+    notify('item/completed', { item: { id: 'final', type: 'agentMessage', phase: 'final_answer', text: 'Final result.' } });
+    expect(emitted).toContainEqual({ kind: 'text_stop', nativeText: 'Final result.', traceId: 'main::final' });
+    expect(emitted.filter(event => event.kind === 'turn_complete')).toEqual([]);
+    expect(runtime.canSteerMessage(correlation as never)).toBe(true);
+
+    notify('turn/completed', { turn: { id: 'root-turn', rootTurnId: 'root-turn', status: 'completed' } });
+    expect(emitted.filter(event => event.kind === 'turn_complete')).toEqual([{ kind: 'turn_complete', status: 'completed' }]);
+    expect(runtime.canSteerMessage(correlation as never)).toBe(false);
+    expect(correlation.agentMessageTextById.size).toBe(0);
+  });
+
+  it('does not treat the Codex 0.162 additional_tools catalog as a subagent invocation', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    const emit = vi.fn();
+    const parse = (runtime as unknown as {
+      parseNotification: (proc: typeof correlation, method: string, params: unknown, emit: (event: UnifiedEvent) => void) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    expect(parse(correlation, 'rawResponseItem/completed', {
+      threadId: 'main', turnId: 'root-turn',
+      item: { type: 'additional_tools', role: 'system', tools: [{ type: 'function', name: 'followup_task' }] },
+    }, emit)).toBeNull();
+    expect(emit).not.toHaveBeenCalled();
+    expect(correlation.codexV2SubAgentActivityObserved).toBe(false);
+    expect(correlation.codexV2InteractionDeliveryByCallId.size).toBe(0);
+    expect(runtime.canSteerMessage(correlation as never)).toBe(true);
+
+    expect(parse(correlation, 'rawResponseItem/completed', {
+      threadId: 'main', turnId: 'root-turn',
+      item: { type: 'function_call', call_id: 'followup-call', name: 'followup_task', arguments: '{}' },
+    }, emit)).toBeNull();
+    expect(correlation.codexV2SubAgentActivityObserved).toBe(true);
+    expect(correlation.codexV2InteractionDeliveryByCallId.get('followup-call')).toBe('trigger-turn');
+  });
+
+  it.each([
+    { version: 'legacy', metadata: {} },
+    { version: '0.162.1', metadata: { model: 'gpt-6.1-sol', reasoningEffort: 'ultra' } },
+  ])('correlates a $version started activity with its parent CollabAgent card', ({ metadata }) => {
     const correlation = state();
     const events = applyCodexSubAgentActivity(correlation, 'main', 'main', {
       type: 'subAgentActivity',
@@ -314,6 +376,7 @@ describe('applyCodexSubAgentActivity (Codex 0.144.1 multi-agent v2)', () => {
       kind: 'started',
       agentThreadId: 'child',
       agentPath: '/root/reviewer',
+      ...metadata,
     });
 
     expect(correlation.subThreadToCard.get('child')).toBe('spawn-call');

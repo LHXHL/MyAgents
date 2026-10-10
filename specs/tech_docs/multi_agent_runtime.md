@@ -155,6 +155,8 @@ system 菜单只提供上述三项；历史 suggest 仍按只读恢复，并保�
 
 一个 Session Sidecar 最终只绑定一个 root thread。RPC response 和 notification 可乱序到达，turn owner 必须按 thread、turn 与 caller message identity 关联，不能仅凭“收到 completed”提交错误 turn。
 
+`agentMessage.phase` 的 `commentary`、`partial_answer` 和 `final_answer` 只描述文本阶段；即使完成一段回答，后面仍可能有工具或其它文本。文本块在 `item/completed` 关闭，主轮次只由对应 `turn/completed` 与既有子 Agent 结算 gate 结束。原始 `additional_tools` item 是工具目录，不是工具调用，不进入产品工具 trace 或改变子 Agent 关联。
+
 Codex Rewind/Fork/Retry 由 external owner 在 mutation lease 内编排，依赖现有 native binding 与 Runtime branching 能力：
 
 - root `turn/start` 关联 Product user message id；成功 terminal 后持久化 native turn anchor；
