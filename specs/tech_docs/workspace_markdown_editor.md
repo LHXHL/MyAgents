@@ -36,6 +36,12 @@ Chat 的 `FileActionProvider` 覆盖消息、分屏和全屏预览；consumer �
 
 Rust `check_paths` 返回文件事实与可选 `resolvedPath` / `error`。工作区符号链接指向普通外部文件时返回 canonical local target；预览和菜单沿 local 只读入口，不能由此扩大 workspace mutation 权限。用户主动打开普通本地文件支持其它卷与相邻工作区，保留 canonical credential/system exclusions 和真实 OS 可读性检查。未知格式仍提供系统打开/定位入口；不把文件存在等同于所有格式均可预览。
 
+## Runtime 引用的阅读投影
+
+共享 Markdown pipeline 在 inline grammar 层识别 `U+E200 cite U+E202 source-id U+E201`，代码、链接目标与 HTML 属性仍是字面内容。阅读时只用显式 `ref_id/title/url` 解析来源，URL 限制为无凭据 HTTP(S)；缺映射或冲突显示本地化“来源链接不可用”，不展示控制标记、不编造 URL。部分流式 opener 暂不显示，完整 opener 尚未结束时显示不可用提示。
+
+桌面 Chat 的 MessageList 从已加载根消息的 WebSearch tool-result 派生来源表，按 Product `turnId` 隔离并通过 Virtuoso context 进入行失效边界；旧消息缺 turnId 时只使用自身消息来源。子 Agent 的 source ID 不借给根回答；未传入映射的 Markdown 表面仍可明确降级。不可变 tool 的解析与相同 turn 来源表复用，逐字 delta 不重复解析工具 JSON或使全部历史正文重渲染。消息复制/单条回复 Markdown 导出只替换 citation 源范围，其余 Markdown 和代码源码保持原字节；canonical transcript、原始 Session API 和 IM/latest-result 仍保留 execution text。已丢失来源数据的历史不扫描 native rollout、不写盘迁移。
+
 ## 源码与投影
 
 CM 内部位置统一为 LF 坐标，`decodeSource` / `encodeSource` 是 IO / 比较 / 引用边界。不要直接用 `state.doc.toString()` 保存原文件：它会归一化混合换行。未编辑语法、空白、末尾换行和 BOM 均不得被片段渲染或 AST 序列化改写。删除使独立 CR 与 LF 新相邻时，只把该 CR 显式化为 CRLF，以免两个逻辑换行落盘后合成一个；格式变更仍随同一历史撤销。

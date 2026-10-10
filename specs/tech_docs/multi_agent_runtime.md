@@ -134,6 +134,8 @@ IM/Agent Channel 需要 native-card `AskUserQuestion` 时，启动策略必须�
 
 Codex 使用 JSON-RPC 2.0 app-server，一个进程在 Product Session 生命周期内持久存在。adapter 拥有 initialize、thread start/resume/read/fork、turn start/steer/interrupt、权限请求与订阅关联。
 
+原生 `webSearch.results`（standalone 搜索的 opaque JSON）必须保留在既有 `WebSearch` tool-result 的 `{results, answer}` 中；`answer` 保留 query/action 摘要，不能用查询顺序或 `openPage.url` 猜测 `ref_id` 的来源。无 results 的 hosted/旧协议保留原摘要。assistant 的 delta / nativeText 与产品 transcript 保留原文；引用的可读投影属于展示层，不改写 native history 或流式 offset。
+
 Managed Codex 的推理档位以实际 app-server `model/list` 返回的 `supportedReasoningEfforts` / `defaultReasoningEffort` 为权威，完整读取分页并透传到 RuntimeModelInfo 与 Provider 模型目录。聊天使用 Tab API 读取本 Session 已有进程的能力，不能借用 Global Sidecar 对新安装版本的目录。启动器与 Agent 配置使用安装版本的目录；刷新失败不改写用户选择。
 
 推理强度存储保留原始字符串及 `default` sentinel，Codex transport 不使用固定枚举过滤未来档位。Managed adapter 在当前进程内解析每轮有效 effort：显式支持值原样传递，默认/已知不支持值解析为模型声明的默认并显式发送，避免 `turn/start` 省略字段而保留上轮覆盖。未知目录不删除显式选择；无法获知默认时报告错误而不伪装已恢复默认。用户主动切换模型时，UI 与模型选择一起持久化仍受支持的 effort 或 default；能力加载本身不写回 Agent/Session。系统 CLI 的菜单暂保留既有选项。

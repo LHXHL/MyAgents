@@ -200,6 +200,7 @@
     "configureModel": "请先配置模型 →"
   },
   "markdown": {
+    "citationUnavailable": "来源链接不可用",
     "tableActions": "表格操作",
     "copyTable": "复制表格",
     "downloadTable": "下载 Excel",

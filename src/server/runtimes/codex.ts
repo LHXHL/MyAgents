@@ -5409,6 +5409,7 @@ export class CodexRuntime implements AgentRuntime {
           arguments?: unknown; namespace?: string | null;
           result?: unknown; error?: { message: string };
           text?: string; summary?: string[];
+          results?: unknown;
           query?: string; action?: { type: string; url?: string; queries?: string[]; pattern?: string };
           path?: string; revisedPrompt?: string; savedPath?: string;
           contentItems?: Array<{ type: string; text?: string; imageUrl?: string; audioUrl?: string }>;
@@ -5572,7 +5573,14 @@ export class CodexRuntime implements AgentRuntime {
             }
             return [
               { kind: 'tool_use_stop', toolUseId: item.id },
-              { kind: 'tool_result', toolUseId: item.id, content: parts.join('\n') || 'Search completed' },
+              {
+                kind: 'tool_result', toolUseId: item.id,
+                // Preserve standalone ref_id/URL results in the existing product
+                // tool payload; query/action summaries cannot resolve citations.
+                content: Array.isArray(item.results)
+                  ? JSON.stringify({ results: item.results, answer: parts.join('\n') })
+                  : parts.join('\n') || 'Search completed',
+              },
             ];
           }
           case 'imageView':

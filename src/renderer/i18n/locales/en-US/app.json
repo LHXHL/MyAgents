@@ -200,6 +200,7 @@
     "configureModel": "Configure a model first →"
   },
   "markdown": {
+    "citationUnavailable": "Source link unavailable",
     "tableActions": "Table actions",
     "copyTable": "Copy table",
     "downloadTable": "Download Excel",
