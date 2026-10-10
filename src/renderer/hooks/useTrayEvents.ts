@@ -4,7 +4,7 @@
 import { useEffect, useCallback, useRef } from 'react';
 import { emit } from '@tauri-apps/api/event';
 import { isTauriEnvironment } from '@/utils/browserMock';
-import { dismissTopmost } from '@/utils/closeLayer';
+import { dismissTopmost, hasOverlayLayer } from '@/utils/closeLayer';
 import { setWindowVisible } from '@/services/notificationService';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import type { MainWindowPresentationReason } from '@/utils/mainWindowPresentation';
@@ -98,6 +98,42 @@ export function useTrayEvents(options: TrayEventsOptions) {
     let unlistenResized: (() => void) | null = null;
     const ac = new AbortController();
 
+    // Native activation and DOM focus are separate on WebView2. Remember the
+    // user's exact control across Alt+Tab; Tab activation does not change.
+    let focusedElement = document.activeElement instanceof HTMLElement
+      ? document.activeElement : null;
+    let restoreFrame: number | null = null;
+    const cancelRestore = () => {
+      if (restoreFrame !== null) cancelAnimationFrame(restoreFrame);
+      restoreFrame = null;
+    };
+    const rememberFocus = (event: FocusEvent) => {
+      cancelRestore();
+      focusedElement = event.target instanceof HTMLElement ? event.target : null;
+    };
+    const respectPointerTarget = (event: PointerEvent) => {
+      cancelRestore();
+      if (!(event.target instanceof Node) || !focusedElement?.contains(event.target)) focusedElement = null;
+    };
+    document.addEventListener('focusin', rememberFocus);
+    document.addEventListener('pointerdown', respectPointerTarget, true);
+    const restoreFocus = () => {
+      cancelRestore();
+      const target = focusedElement;
+      if (!target || target === document.body || target === document.documentElement) return;
+      restoreFrame = requestAnimationFrame(() => {
+        restoreFrame = null;
+        const active = document.activeElement;
+        // Another control/overlay, a closed Tab, or a hidden input owns focus
+        // now. A native activation must not override that newer decision.
+        if (ac.signal.aborted || focusedElement !== target || !target.isConnected
+          || hasOverlayLayer() || target.getClientRects().length === 0
+          || target.matches(':disabled') || target.closest('[inert], [aria-hidden="true"]')
+          || (active !== document.body && active !== document.documentElement && active !== target)) return;
+        target.focus({ preventScroll: true });
+      });
+    };
+
     const setupListeners = async () => {
       try {
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
@@ -147,7 +183,13 @@ export function useTrayEvents(options: TrayEventsOptions) {
           if (focused) {
             setWindowVisible(true);
             optionsRef.current.onWindowFocused?.();
+            restoreFocus();
           } else {
+            cancelRestore();
+            if (document.activeElement instanceof HTMLElement
+              && document.activeElement !== document.body && document.activeElement !== document.documentElement) {
+              focusedElement = document.activeElement;
+            }
             setWindowVisible(false);
           }
         });
@@ -280,6 +322,9 @@ export function useTrayEvents(options: TrayEventsOptions) {
 
     return () => {
       ac.abort();
+      cancelRestore();
+      document.removeEventListener('focusin', rememberFocus);
+      document.removeEventListener('pointerdown', respectPointerTarget, true);
       if (unlistenFocusChanged) unlistenFocusChanged();
       if (unlistenResized) unlistenResized();
     };

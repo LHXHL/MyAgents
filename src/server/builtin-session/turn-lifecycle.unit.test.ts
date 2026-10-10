@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { appendMessage, resetTranscriptForTest, transcriptState } from './transcript';
 import {
   accumulateCurrentTurnUsage,
+  getLastSessionCompletionTerminal,
   appendCurrentTurnTextBlock,
   markAssistantMessageError,
   markCurrentTurnHasOutput,
@@ -158,6 +159,31 @@ describe('turn-lifecycle owner', () => {
     resetTranscriptForTest();
     resetTurnForTest();
     resetQueueForTest();
+  });
+
+  it('publishes the legacy Stop terminal before persistence and never overwrites a successor from its callback', async () => {
+    const persist = deferred();
+    const { deps, broadcasts } = makeDeps({ persistTranscript: vi.fn(() => persist.promise) });
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+    const source = (id: string) => ({
+      id, message: { role: 'user' as const, content: id }, messageText: id,
+      wasQueued: false, resolve: vi.fn(), channelDelivery: NO_CHANNEL_DELIVERY,
+    });
+    setCurrentTurnSourceItem(source('A'));
+    appendMessage({ id: 'answer-A', role: 'assistant', content: 'partial', timestamp: 't' });
+    markCurrentTurnHasOutput();
+    await lifecycle.handleSdkResult(makeResult({ terminal_reason: 'aborted_streaming' }));
+    expect(getLastSessionCompletionTerminal()).toMatchObject({ turnId: 'A', status: 'stopped' });
+    expect(broadcasts.some(({ event }) => event === 'chat:message-stopped')).toBe(false);
+    setCurrentTurnSourceItem(source('B'));
+    lifecycle.failTurn('B failed');
+    persist.resolve();
+    await lifecycle.getLastTurnEndPersist();
+    await new Promise<void>(resolve => queueMicrotask(() => resolve()));
+    expect(getLastSessionCompletionTerminal()).toMatchObject({ turnId: 'B', status: 'error' });
+    expect(broadcasts.find(({ event }) => event === 'chat:message-stopped')?.data).toMatchObject({
+      completionTerminal: { turnId: 'A', status: 'stopped' },
+    });
   });
 
   it('broadcasts successful result, persists, then fires title hook after persist settles', async () => {

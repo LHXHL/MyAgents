@@ -14,6 +14,7 @@ import {
   buildSpaceCompleteOperationKey,
   commandResultExitCode,
   cliRequestTimeoutMs,
+  callApi,
   TOP_HELP,
   normalizeScheduleFlag,
   normalizeSkillSourceForRequest,
@@ -197,9 +198,52 @@ describe('public external CLI declaration', () => {
     expect(cliRequestTimeoutMs('session/send')).toBeGreaterThan(35_000);
     expect(cliRequestTimeoutMs('session/get')).toBeGreaterThan(18_000);
     expect(cliRequestTimeoutMs('mcp/test')).toBeGreaterThan(15_000);
+    expect(cliRequestTimeoutMs('model/verify')).toBeGreaterThan(45_000);
+    expect(cliRequestTimeoutMs('skill/add')).toBeGreaterThan(2 * 330_000);
+    for (const route of ['cc-plugin/install', 'cc-plugin/uninstall']) {
+      expect(cliRequestTimeoutMs(route)).toBeGreaterThan(330_000);
+    }
+    expect(cliRequestTimeoutMs('agent/archive')).toBeGreaterThan(2 * 300_000);
+    for (const route of ['agent/unarchive', 'agent/resolve-conflict', 'agent/channel/remove']) {
+      expect(cliRequestTimeoutMs(route)).toBeGreaterThan(300_000);
+    }
     expect(cliRequestTimeoutMs('task/trigger/test')).toBeGreaterThan(310_000);
     expect(cliRequestTimeoutMs('status')).toBe(10_000);
     expect(cliRequestTimeoutMs('session/watch')).toBeGreaterThan(30_000);
+  });
+  it('distinguishes a response timeout from a refused connection without retrying', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    try {
+      fetchMock.mockRejectedValueOnce(new DOMException('deadline', 'TimeoutError'));
+      expect(await callApi('model/verify')).toMatchObject({
+        code: 'MYAGENTS_REQUEST_TIMEOUT', error: expect.stringContaining('Provider verification'),
+      });
+      fetchMock.mockRejectedValueOnce(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }));
+      expect(await callApi('status')).toMatchObject({ code: 'MYAGENTS_UNAVAILABLE' });
+      fetchMock.mockRejectedValueOnce(new DOMException('deadline', 'TimeoutError'));
+      expect(await callApi('session/send')).toMatchObject({ code: 'admission_unconfirmed' });
+      fetchMock.mockRejectedValueOnce(new TypeError('fetch failed'));
+      expect(await callApi('status')).toMatchObject({ code: 'MYAGENTS_REQUEST_FAILED' });
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    } finally { fetchMock.mockRestore(); }
+  });
+  it('classifies an interrupted response body and preserves uncertain Session admission', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"success":'));
+          queueMicrotask(() => controller.error(Object.assign(new TypeError('terminated'), {
+            cause: { code: 'UND_ERR_SOCKET' },
+          })));
+        },
+      });
+      return new Response(body, { headers: { 'Content-Type': 'application/json' } });
+    });
+    try {
+      expect(await callApi('model/verify')).toMatchObject({ code: 'MYAGENTS_REQUEST_FAILED' });
+      expect(await callApi('session/send')).toMatchObject({ code: 'admission_unconfirmed' });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally { fetchMock.mockRestore(); }
   });
   it('uses one shared remote budget without changing local start/send budgets', () => {
     const ref = { serviceId: '00000000-0000-0000-0000-000000000001',

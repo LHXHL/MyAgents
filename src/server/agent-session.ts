@@ -10958,6 +10958,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   // Query identity without falling back to mutable lifecycleState.query.
   let activeQuery: Query | null = null;
   let activeQueryAuthority: BuiltinQueryAuthority | null = null;
+  const queryInitialCompletionTerminal = getLastSessionCompletionTerminal();
   const queryProductSessionId = sessionId;
   const bindingController = new AbortController();
   // A Query launched from an explicit rewind boundary creates a sibling
@@ -13629,6 +13630,21 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     console.error('[agent] session error:', errorMessage);
     console.error('[agent] session error stack:', errorStack);
 
+    // A turn Stop does not abort the persistent Query. Its control operation
+    // retires as soon as the turn settles, but the subprocess can exit later.
+    // Consult the turn owner's terminal produced during this Query; a record
+    // inherited at launch cannot silence replacement startup failures. New
+    // input admission clears it rather than extending interrupt authority.
+    const stoppedTerminal = getLastSessionCompletionTerminal();
+    if (isCurrentQueryAuthority(activeQueryAuthority)
+      && (builtinInterrupt.isInterrupting()
+        || (!isTurnInFlight() && stoppedTerminal !== queryInitialCompletionTerminal
+          && stoppedTerminal?.sessionId === queryProductSessionId
+          && stoppedTerminal.status === 'stopped'))) {
+      console.log(`[agent] Suppressing SDK error after turn Stop (expected): ${errorMessage}`);
+      return;
+    }
+
     // "Session ID already in use" recovery: SDK session dir exists on disk but our
     // in-memory metadata was lost (fresh Bun process after crash/restart).
     // Fix: switch to resume mode. Pre-warm retry (finally block) will use resume.
@@ -13698,7 +13714,12 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // issue to surface. Error is still logged above (line 6611–6612) for
     // debugging, just not broadcast.
     if (!lifecycleState.preWarming && !lifecycleState.abortRequested) {
-      const completionTerminal = handleMessageError(userFacingError, sdkSubprocessDiagnostic?.imMessage);
+      // Only irreversible input admission grants turn-settlement authority.
+      // Startup can still hold the previous terminal/source; report the Query
+      // failure at Session scope and leave unsent input to queue finalization.
+      const completionTerminal = isTurnInFlight()
+        ? handleMessageError(userFacingError, sdkSubprocessDiagnostic?.imMessage)
+        : null;
       setSessionState('error');
       broadcast(
         'chat:message-error',

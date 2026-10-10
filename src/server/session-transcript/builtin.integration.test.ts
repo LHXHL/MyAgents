@@ -106,7 +106,10 @@ function fakeQuery(args: { prompt: AsyncIterable<unknown>; options: { sessionId?
           status: 'completed', summary: 'done', output_file: '',
         } };
       }
-      if (state.exitWithoutResult && turn > 0) return { done: true, value: undefined };
+      if (state.exitWithoutResult && turn > 0) {
+        if (state.throwAfterInputEnd) throw new Error('Claude Code process exited with code 1. stderr: [claude-code:unrecognized_model]');
+        return { done: true, value: undefined };
+      }
       const followup = state.queuedFollowup && turn === 1;
       if (followup) {
         const queue = await import('../builtin-session/queue');
@@ -1442,6 +1445,96 @@ async function startSdkContractSession(): Promise<Options> {
   await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
   return state.query.mock.calls.findLast(([call]) => call.options.cwd === workspace)![0].options as Options;
 }
+
+it.each([
+  ['v1', 'late-exit'], ['v1', 'successor-error'],
+  ['v2', 'late-exit'], ['v2', 'successor-error'],
+  ['v1', 'replacement-startup-error'], ['v2', 'replacement-startup-error'],
+] as const)('attributes SDK failures to the current turn after Stop (%s, %s)', async (format, mode) => {
+  let releaseResult!: () => void;
+  const resultGate = new Promise<void>(resolve => { releaseResult = resolve; });
+  releaseWrite = releaseResult;
+  let resultWaiting = false;
+  state.beforeResult.mockImplementation(async (result: { terminal_reason?: string }) => {
+    resultWaiting = true;
+    await resultGate;
+    result.terminal_reason = 'aborted_streaming';
+  });
+  const workspace = join(state.home, 'stop-late-exit');
+  await mkdir(workspace);
+  const metadata = format === 'v2' ? await store.createSession(workspace, { runtime: 'builtin' })
+    : { id: randomUUID(), agentDir: workspace, title: 'legacy', createdAt: 't', lastActiveAt: 't', runtime: 'builtin' as const };
+  if (format === 'v1') await store.saveSessionMetadata(metadata);
+  await agent.initializeAgent(workspace, null, metadata.id, { preWarmDisabled: true });
+  const send = (text: string) => agent.enqueueUserMessage(text, [], undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
+  await send('A');
+  await vi.waitFor(() => expect(resultWaiting).toBe(true));
+  const aSource = (await import('../builtin-session/turn')).getCurrentTurnSourceItem()!;
+  const finishQueued = vi.fn();
+  if (mode === 'replacement-startup-error') {
+    // B is already admitted to the turn-boundary queue. Recovery launches its
+    // replacement Query without another enqueue/reset of A's stopped terminal.
+    await agent.enqueueUserMessage('B', [], undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined,
+      { channelDelivery: NO_CHANNEL_DELIVERY, fromDesktopChatSend: true, queueResponseModeOverride: 'turn', onTerminal: finishQueued });
+    state.query.mockImplementation(args => {
+      const replacement = fakeQuery(args);
+      replacement.next = async () => {
+        // One failing recovery launch is sufficient; don't start background
+        // pre-warm retries after the assertion's target has ended.
+        (await import('../builtin-session/lifecycle')).setPreWarmDisabled(true);
+        throw new Error('real replacement startup failure');
+      };
+      return replacement;
+    });
+    (await import('../builtin-session/lifecycle')).setPreWarmDisabled(false);
+  }
+  const stop = agent.interruptCurrentResponse();
+  if (mode !== 'successor-error') {
+    state.exitWithoutResult = true;
+    state.throwAfterInputEnd = true;
+  }
+  releaseResult();
+  await stop;
+  if (mode !== 'replacement-startup-error') await vi.waitFor(() => expect(agent.isSessionBusy()).toBe(false));
+  if (mode !== 'successor-error') {
+    const lifecycle = await import('../builtin-session/lifecycle');
+    await vi.waitFor(() => expect(lifecycle.getQuerySession()).toBeNull());
+    if (mode === 'replacement-startup-error') {
+      await vi.waitFor(() => expect(state.events.some(([event, data]) => event === 'chat:message-error'
+        && JSON.stringify(data).includes('real replacement startup failure'))).toBe(true));
+      const failure = state.events.find(([event, data]) => event === 'chat:message-error'
+        && JSON.stringify(data).includes('real replacement startup failure'))![1];
+      expect(failure).toBe('real replacement startup failure');
+      expect(agent.getBuiltinSessionCompletionTerminal()).toMatchObject({ status: 'stopped', turnId: aSource.id });
+      expect(finishQueued).toHaveBeenCalledTimes(1);
+      expect(finishQueued.mock.calls[0][0]).toMatchObject({ status: 'stopped' });
+    } else {
+      expect(state.events.filter(([event]) => event === 'chat:message-error')).toEqual([]);
+      expect(agent.getBuiltinSessionCompletionTerminal()?.status).toBe('stopped');
+    }
+  } else {
+    state.beforeResult.mockImplementation(() => { throw new Error('real successor transport failure'); });
+    await send('B');
+    await vi.waitFor(() => expect(agent.getBuiltinSessionCompletionTerminal()?.status).toBe('error'));
+    expect(state.events.some(([event, data]) => event === 'chat:message-error'
+      && JSON.stringify(data).includes('real successor transport failure'))).toBe(true);
+  }
+  const settledTurns = format === 'v2'
+    ? [...store.getActiveSessionTranscript(metadata.id)!.writer.projection.turns.values()]
+    : null;
+  await store.drainSessionTranscripts();
+  const restored = await store.loadSessionTranscript(metadata.id);
+  expect(JSON.stringify(restored)).not.toContain('unrecognized_model');
+  if (mode === 'replacement-startup-error') {
+    expect(JSON.stringify(restored)).not.toContain('real replacement startup failure');
+    if (format === 'v2') {
+      expect(settledTurns)
+        .toEqual([expect.objectContaining({ status: 'stopped' })]);
+    }
+  }
+});
 
 it('persists SDK cumulative usage as per-turn deltas across a Query restart', async () => {
   state.sdkCumulativeBase = { input: 0, output: 0 };
