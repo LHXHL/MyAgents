@@ -618,6 +618,37 @@ describe('TabProvider session activity ownership', () => {
     } finally { time.mockRestore(); }
   });
 
+  it('uses the launch correlation identity for both the send and accepted user row', async () => {
+    tauriHarness.proxyFetch.mockImplementation(async () => new Response(JSON.stringify({ success: true })));
+    sseHarness.state.eventHandler = null;
+    let tab: ReturnType<typeof useTabState>;
+    function LaunchProbe() {
+      const value = useTabState();
+      useEffect(() => { tab = value; }, [value]);
+      return null;
+    }
+    const sessionId = 'pending-correlated-launch';
+    render(<TabProvider tabId="correlated-launch" agentDir="/tmp/workspace" sessionId={sessionId}
+      claimSessionOpeningTransition={allowSessionOpening}><LaunchProbe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:init', { sessionId, transcriptFormat: 2, sessionState: 'idle' });
+    const requestId = 'launch-request';
+    await act(async () => {
+      await tab.sendMessage('hello', undefined, undefined, undefined, undefined,
+        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, requestId);
+    });
+    const sendCall = tauriHarness.proxyFetch.mock.calls.find(([url]) => String(url).endsWith('/chat/send'));
+    expect(JSON.parse(String(sendCall?.[1]?.body)).clientRequestId).toBe(requestId);
+    expect(tab!.historyMessages[0]).toMatchObject({ deliveryStatus: 'sending', metadata: { clientRequestId: requestId } });
+    emit('chat:transcript-operation', { sessionId, operation: { kind: 'message-create', message: {
+      id: 'accepted-launch-user', role: 'user', content: 'hello', timestamp: new Date(0).toISOString(),
+      metadata: { source: 'desktop', clientRequestId: requestId },
+    } } });
+    expect(tab!.historyMessages).toHaveLength(1);
+    expect(tab!.historyMessages[0]).toMatchObject({ id: 'accepted-launch-user', metadata: { clientRequestId: requestId } });
+    expect(tab!.historyMessages[0].deliveryStatus).toBeUndefined();
+  });
+
   it.each(['echo-first', 'canonical-first'] as const)(
     'shows a send before HTTP admission and adopts it once with %s V2 events', async order => {
       const sessionId = 'pending-immediate-send';

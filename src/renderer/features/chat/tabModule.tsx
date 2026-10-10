@@ -96,9 +96,9 @@ const ChatTabRenderer = memo(function ChatTabRenderer({
       claimSessionOpeningTransition={(sessionId) => binding.claimSessionOpeningTransition(sessionId, tab.id)}
     >
       {isDeferred ? (
-        <ChatBootOverlay initialMessage={tab.initialMessage} />
+        <ChatBootOverlay />
       ) : (
-        <Suspense fallback={<ChatBootOverlay initialMessage={tab.initialMessage} />}>
+        <Suspense fallback={<ChatBootOverlay />}>
           <Chat
             registerFileEditSubmitter={binding.registerFileEditSubmitter}
             windowPresentation={binding.windowPresentation}

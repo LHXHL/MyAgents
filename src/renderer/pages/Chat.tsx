@@ -59,6 +59,7 @@ import DirectoryPanel, {
 import DropZoneOverlay from '@/components/DropZoneOverlay';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
 import MessageList from '@/components/MessageList';
+import type { Message as MessageType } from '@/types/chat';
 import SessionHistoryDropdown from '@/components/SessionHistoryDropdown';
 import SessionSurfaceTags from '@/components/SessionSurfaceTags';
 import SessionMenuButton, {
@@ -75,6 +76,7 @@ import type { SlashCommand as InputSlashCommand } from '@/components/SlashComman
 import AgentStatusPanel from '@/components/agent-status/AgentStatusPanel';
 import ContextUsageIndicator from '@/components/ContextUsageIndicator';
 import ChatBootOverlay from '@/components/ChatBootOverlay';
+import { useChatStartupOverlay } from '@/hooks/useChatStartupOverlay';
 import { restoreMessageImages } from '@/context/userImageAttachmentProjection';
 import {
   sessionConfigPushFingerprint,
@@ -1620,17 +1622,22 @@ export default function Chat({
   // Track permission mode before AI-triggered plan mode (for restore on ExitPlanMode)
   const prePlanPermissionModeRef = useRef<PermissionMode | null>(null);
 
-  // Boot overlay — the "AI 启动中" loading state shown from the instant a chat is
-  // entered until the session connects. Initialised true on every fresh Chat mount
-  // because every fresh mount is a session that still has to connect (cold sidecar
-  // boot OR join): new session (pending id), workspace-card open, launcher send, AND
-  // a cold history open (real id, instant-flipped before the boot). Dismissed on
-  // connect (see the effect below) — for a session that's already up the connect is
-  // fast, so the overlay is just a brief "connecting" flash. App renders the same
-  // ChatBootOverlay as the lazy-Chat Suspense fallback, so the chunk-load → mount
-  // handoff is seamless: ONE continuous loading state from flip to ready.
-  const [showStartupOverlay, setShowStartupOverlay] = useState(true);
-  const startupMessageRef = useRef(initialMessage);
+  const hadInitialMessage = useRef(!!initialMessage);
+  const {
+    showStartupOverlay,
+    startupClientRequestId,
+    dismissStartupOverlay,
+    onStartupItemsRendered,
+  } = useChatStartupOverlay({
+    hasInitialMessage: hadInitialMessage.current,
+    isConnected,
+    isSessionLoading,
+    agentError,
+    hasPendingInteraction: Boolean(
+      pendingPermission || pendingAskUserQuestion ||
+      (pendingExitPlanMode && pendingExitPlanMode.resolved === undefined),
+    ),
+  });
 
   // Time rewind state
   const [rewindTarget, setRewindTarget] = useState<{
@@ -1653,7 +1660,6 @@ export default function Chat({
   sessionIdRef.current = sessionId;
 
   // Refs for one-time project settings sync (see effect after provider change effect)
-  const hadInitialMessage = useRef(!!initialMessage);
   // For a launcher-handoff tab (has initialMessage), autoSend owns the INITIAL
   // MCP push — it pushes the user's per-session launcher selection, which may
   // differ from the workspace default. The mount MCP effect skips its initial
@@ -2594,8 +2600,12 @@ export default function Chat({
               undefined,
               inputUsesExternalRuntimeControls ? undefined : (launchMessage.reasoningEffort ?? reasoningEffort),
               inputUsesExternalRuntimeControls ? undefined : providerRoute, undefined, undefined, launchMessage.agentMentions, launchMessage.primaryContext,
+              undefined, startupClientRequestId,
             );
             if (admitted === false) throw new Error(t("tabProvider.sendFailed", { ns: "app" }));
+          } else {
+            // Cron creation completes this handoff without a desktop query row.
+            dismissStartupOverlay();
           }
         } else {
           // 5b. Normal send path.
@@ -2614,13 +2624,13 @@ export default function Chat({
             inputUsesExternalRuntimeControls ? undefined : (launchMessage.reasoningEffort ?? reasoningEffort),
             inputUsesExternalRuntimeControls ? undefined : providerRoute,
             launchMessage.requiredSystemSkill, undefined, launchMessage.agentMentions, launchMessage.primaryContext,
+            undefined, startupClientRequestId,
           );
           if (admitted === false) throw new Error(t("tabProvider.sendFailed", { ns: "app" }));
         }
 
-        // 6. Retire the launch request. TabProvider's immediate send projection
-        //    lets the effect below reveal the user bubble and pending loading
-        //    before the Runtime begins executing.
+        // Retire the launch payload; the boot shell waits for MessageList to
+        // commit the corresponding server user row, independently of this prop.
         onInitialMessageConsumedRef.current?.();
       } catch (err) {
         console.error('[Chat] Auto-send failed:', err);
@@ -2628,7 +2638,7 @@ export default function Chat({
           launcherOwnsInitialMcpRef.current = false;
           setLauncherMcpFallbackRevision((revision) => revision + 1);
         }
-        setShowStartupOverlay(false);
+        dismissStartupOverlay();
         // PRD 0.2.7 §4.5 failure recovery: restore the launcher draft (text /
         // images / cron config) into the chat input so the user can retry
         // without losing what they typed. Pre-PRD-0.2.7 the toast just said
@@ -2685,53 +2695,6 @@ export default function Chat({
     isConnected,
     initialMessageRuntimeReady,
   ]);
-
-  // Close startup overlay as soon as the backend has acknowledged the request
-  // — either by transitioning to 'starting' (subprocess launched, system_init
-  // pending) or 'running' (turn actively processing). (issue #174) Including
-  // 'starting' is required because the overlay is z-30 and covers the input
-  // (z-20); leaving it up during 'starting' would hide both the new Stop
-  // button and the MessageList "AI 启动中…" hint, defeating the whole point
-  // of the new state. `streamingMessage` covers the case where status events
-  // were missed but content has arrived. `agentError` covers async send
-  // failures: sendMessage is fire-and-forget so autoSend's try/catch can't
-  // observe backend rejection / network errors — they land on agentError
-  // instead, and the user needs to see the error banner immediately rather
-  // than wait out the 30s safety timeout.
-  useEffect(() => {
-    if (!showStartupOverlay) return;
-    if (
-      sessionState === 'running' ||
-      sessionState === 'starting' ||
-      streamingMessage ||
-      agentError ||
-      (hadInitialMessage.current && historyMessages.length > 0) ||
-      // Workspace-card / no-auto-send entry: there is no turn to wait for, so the
-      // chat is "ready" the moment the session connects (SSE up). The
-      // Initial sends reveal the timeline once TabProvider has the user row;
-      // before that the overlay itself displays the shell's launch query.
-      (isConnected && !hadInitialMessage.current && !isSessionLoading)
-    ) {
-      setShowStartupOverlay(false);
-    }
-  }, [
-    showStartupOverlay,
-    sessionState,
-    streamingMessage,
-    agentError,
-    historyMessages.length,
-    isConnected,
-    isSessionLoading,
-  ]);
-
-  // Safety timeout (30s) — covers prewarm failures / unresponsive backend.
-  // Prevents the overlay from sticking forever if neither sessionState nor
-  // streamingMessage ever advances.
-  useEffect(() => {
-    if (!showStartupOverlay) return;
-    const t = setTimeout(() => setShowStartupOverlay(false), 30000);
-    return () => clearTimeout(t);
-  }, [showStartupOverlay]);
 
   const materializeScheduledOwner = useCallback(async () => {
     if (!sessionId) throw new Error('Goal requires a session identity.');
@@ -5772,6 +5735,11 @@ export default function Chat({
     [config.plugins, config.enabledPlugins],
   );
 
+  const handleStartupItemsRendered = useCallback((rows: readonly MessageType[]) => {
+    onItemsRendered();
+    onStartupItemsRendered(rows);
+  }, [onItemsRendered, onStartupItemsRendered]);
+
   // Stable callbacks for MessageList (extracted from inline arrows to enable memo)
   const handlePermissionDecision = useCallback(
     (requestId: string, decision: 'deny' | 'allow_once' | 'always_allow') => {
@@ -6591,7 +6559,6 @@ export default function Chat({
               projection commits, so cold SSE replay is never a visible phase. */}
             <ChatBootOverlay
               show={showStartupOverlay || isSessionLoading}
-              initialMessage={showStartupOverlay ? startupMessageRef.current : undefined}
               error={sessionRestoreError}
               onRetry={
                 sessionRestoreError && sessionId
@@ -6753,7 +6720,7 @@ export default function Chat({
                   isActive={isActive}
                   windowPresentation={windowPresentation}
                   onViewportAdmissionChanged={onViewportAdmissionChanged}
-                  onItemsRendered={onItemsRendered}
+                  onItemsRendered={handleStartupItemsRendered}
                   isViewportRecoveryFenced={isViewportRecoveryFenced}
                   virtuosoRef={virtuosoRef}
                   onScrollerRef={attachScroller}

@@ -68,13 +68,13 @@ describe('App Shell chrome contract', () => {
     const tabProvider = source('src/renderer/context/TabProvider.tsx');
 
     expect(chatTabModule).toContain(
-      '<Suspense fallback={<ChatBootOverlay initialMessage={tab.initialMessage} />}>',
+      '<Suspense fallback={<ChatBootOverlay />}>',
     );
     expect(app).not.toContain(') : isLoading ? (\n        <ChatBootOverlay />');
     expect(chat).toContain('show={showStartupOverlay || isSessionLoading}');
-    // Prepared Codex births have real IDs and restore before the first turn.
-    // That phase must not hide the launch query already submitted by the user.
-    expect(chat).toContain('initialMessage={showStartupOverlay ? startupMessageRef.current : undefined}');
+    // The launch query belongs only to MessageList, underneath the boot shell.
+    expect(chat).not.toContain('initialMessage={showStartupOverlay');
+    expect(chat).toContain('onItemsRendered={handleStartupItemsRendered}');
     expect(chat).toContain('error={sessionRestoreError}');
     expect(chat).not.toContain(
       "isSessionLoading && sessionRestoreMode === 'live-recovery'",

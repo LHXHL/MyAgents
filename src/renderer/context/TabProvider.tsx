@@ -5897,6 +5897,7 @@ export default function TabProvider({
       agentMentions?: import('../../shared/agentMentions').AgentMentionSnapshot[],
       primaryContext?: import('../../shared/agentMentions').DesktopPrimaryContext,
       retryFailedMessageId?: string,
+      suppliedClientRequestId?: string,
     ): Promise<boolean> => {
       const trimmed = text.trim();
       if (!trimmed && (!images || images.length === 0)) return false;
@@ -5978,7 +5979,7 @@ export default function TabProvider({
           },
         ]);
       }
-      const clientRequestId = crypto.randomUUID();
+      const clientRequestId = suppliedClientRequestId ?? crypto.randomUUID();
       // A local failure has no native history anchor. Its explicit resend is
       // an ordinary send; replace only that failed presentation after admission.
       if (retryFailedMessageId) {
