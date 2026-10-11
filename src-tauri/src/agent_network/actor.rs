@@ -1,6 +1,6 @@
 //! One App-owned device connector. Every async job belongs to this connection
-//! future: dropping it at an auth/exit boundary cancels HTTP, keys, channels and
-//! private bodies together. Neither a Tab nor a Session owns its lifetime.
+//! identity lifetime. Socket jobs end on disconnect; negotiated returns remain
+//! bounded in App memory until ACK, expiry, or an auth/exit boundary. Neither a Tab nor a Session owns its lifetime.
 use super::account::NetworkAccountSession;
 use super::calls::{CallableAgent, Calls};
 use super::catalog::read_local_catalog;
@@ -273,9 +273,8 @@ impl AgentNetwork {
         reference: crate::inbox::types::NetworkReturnReference,
         event: Value,
     ) -> Result<myagents_agent_network_protocol::ReturnSettlement, NetworkError> {
-        if self.snapshot().state != "ready" {
-            return Err(NetworkError::new("CONNECTOR_NOT_READY"));
-        }
+        // The App return owner accepts an existing terminal callback while the
+        // transport reconnects. It still validates the original opaque route.
         let bytes = measure(&event)?.0;
         if bytes > budget("objectBytes") {
             return Err(NetworkError::new("MESSAGE_TOO_LARGE"));
@@ -415,6 +414,39 @@ pub(crate) fn auth_boundary_changed<R: tauri::Runtime>(app: &tauri::AppHandle<R>
         owner.auth_boundary(app);
     }
 }
+/// Logical return state belongs to this App identity, across socket attempts.
+struct ReturnState {
+    source: SourceReturns,
+    target: TargetReturns,
+    work: FuturesUnordered<BoxFuture<'static, Work>>,
+    allocation: Option<Allocation>,
+}
+impl ReturnState {
+    fn offline_command(&mut self, command: Command, generation: u64) {
+        match command {
+            Command::Return {
+                generation: current,
+                callback,
+            } if current == generation => {
+                if let Err((callback, error)) = self.target.enqueue(callback, self.source.bytes()) {
+                    let _ = callback.reply.send(Err(error));
+                }
+            }
+            other => other.reject(NetworkError::new("CONNECTOR_NOT_READY")),
+        }
+    }
+    fn maintain(&mut self, app: &tauri::AppHandle, manager: &ManagedSidecarManager) {
+        self.source.expire();
+        self.target.expire();
+        deliver_unavailable(app, manager, &mut self.source);
+        self.release_unused();
+    }
+    fn release_unused(&mut self) {
+        if self.source.bytes() == 0 && self.target.bytes() == 0 && self.work.is_empty() {
+            self.allocation = None;
+        }
+    }
+}
 pub(crate) fn start(
     app: tauri::AppHandle,
     owner: ManagedConnection,
@@ -431,16 +463,40 @@ pub(crate) fn start(
         let mut previous: Option<(String, PreviousConnection)> = None;
         let mut renewed: Option<NetworkIdentity> = None;
         let mut reconnect = super::reconnect::ReconnectBackoff::default();
+        let mut returns = ReturnState {
+            source: SourceReturns::default(),
+            target: TargetReturns::new(manager.clone(), owner.connection_id.clone()),
+            work: FuturesUnordered::new(),
+            allocation: None,
+        };
+        let mut auth_generation = boundary.borrow().auth_generation;
         loop {
+            returns.release_unused();
             let phase = *boundary.borrow_and_update();
+            if phase.auth_generation != auth_generation || phase.shutdown {
+                returns.source.invalidate("ACCOUNT_BINDING_CHANGED");
+                returns.target.invalidate("ACCOUNT_BINDING_CHANGED");
+                returns.work.clear();
+                auth_generation = phase.auth_generation;
+                previous = None;
+                renewed = None;
+                reconnect.reset();
+                deliver_unavailable(&app, &manager, &mut returns.source);
+            }
             if phase.shutdown {
                 break;
             }
             if phase.suspended {
-                tokio::select! {
-                    _ = boundary.changed() => {},
-
-                }
+                offline_returns(
+                    &app,
+                    &owner,
+                    &manager,
+                    &mut receiver,
+                    &mut boundary,
+                    &mut returns,
+                    Duration::from_secs(1),
+                )
+                .await;
                 continue;
             }
             let retry_after;
@@ -483,6 +539,7 @@ pub(crate) fn start(
                             &mut previous,
                             renewed.take(),
                             &mut reconnect,
+                            &mut returns,
                         );
                         tokio::pin!(attempt);
                         tokio::select! { biased;
@@ -491,9 +548,11 @@ pub(crate) fn start(
                             result = &mut attempt => Some(result),
                         }
                     };
+                    returns.source.disconnected();
+                    returns.target.disconnected();
+                    deliver_unavailable(&app, &manager, &mut returns.source);
                     let Some(result) = result else {
                         reconnect.reset();
-                        previous = None;
                         renewed = None;
                         continue;
                     };
@@ -504,6 +563,20 @@ pub(crate) fn start(
                             continue;
                         }
                         Err(error) => {
+                            if matches!(
+                                error.code.as_str(),
+                                "ACCOUNT_BINDING_CHANGED"
+                                    | "ACCOUNT_AUTH_REVOKED"
+                                    | "DEVICE_REVOKED"
+                                    | "DEVICE_KEY_BINDING_MISMATCH"
+                                    | "NETWORK_TRUST_CHANGED"
+                                    | "SPACE_REAUTH_REQUIRED"
+                            ) {
+                                returns.source.invalidate(&error.code);
+                                returns.target.invalidate(&error.code);
+                                returns.work.clear();
+                                deliver_unavailable(&app, &manager, &mut returns.source);
+                            }
                             // A ready connection is a successful recovery, even
                             // if its eventual disconnect returned an error.
                             if owner.snapshot().state == "ready" {
@@ -550,20 +623,74 @@ pub(crate) fn start(
                     );
                 }
             }
-            // No business request is kept for reconnection. Reject metadata
-            // commands as well; mutations require receipt inspection by caller.
-            while let Ok(command) = receiver.try_recv() {
-                command.reject(NetworkError::new("CONNECTOR_NOT_READY"));
-            }
             let random = uuid::Uuid::new_v4();
             let jitter = u16::from_le_bytes([random.as_bytes()[0], random.as_bytes()[1]]);
             let delay = reconnect.next(jitter, retry_after);
-            tokio::select! {
-                _=tokio::time::sleep(delay)=>{},
-                _=boundary.changed()=>{previous=None;renewed=None;reconnect.reset();},
-            }
+            offline_returns(
+                &app,
+                &owner,
+                &manager,
+                &mut receiver,
+                &mut boundary,
+                &mut returns,
+                delay,
+            )
+            .await;
         }
     });
+}
+fn settle_owner_work(work: Work, source: &mut SourceReturns, target: &mut TargetReturns) {
+    if let Work::Executed {
+        op_id,
+        return_route_id: Some(_),
+        ..
+    } = &work
+    {
+        target.cancel(op_id);
+    }
+    if let Work::Returned {
+        op_id,
+        event_id,
+        settlement,
+        ..
+    } = work
+    {
+        let _ = source.finish(&op_id, &event_id, settlement);
+    }
+}
+fn deliver_unavailable(
+    app: &tauri::AppHandle,
+    manager: &ManagedSidecarManager,
+    source: &mut SourceReturns,
+) {
+    for (intent, reason) in source.take_unavailable() {
+        let app = app.clone();
+        let manager = manager.clone();
+        tauri::async_runtime::spawn(async move {
+            local_owner::deliver_return_unavailable(&app, &manager, intent, &reason).await;
+        });
+    }
+}
+async fn offline_returns(
+    app: &tauri::AppHandle,
+    owner: &ManagedConnection,
+    manager: &ManagedSidecarManager,
+    commands: &mut mpsc::Receiver<Command>,
+    boundary: &mut watch::Receiver<Boundary>,
+    returns: &mut ReturnState,
+    delay: Duration,
+) {
+    let until = tokio::time::Instant::now() + delay;
+    let mut tick = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        tokio::select! { biased;
+            _ = boundary.changed() => break,
+            _ = tokio::time::sleep_until(until) => break,
+            Some(completed) = returns.work.next(), if !returns.work.is_empty() => settle_owner_work(completed, &mut returns.source, &mut returns.target),
+            Some(command) = commands.recv() => returns.offline_command(command, owner.generation()),
+            _ = tick.tick() => returns.maintain(app, manager),
+        }
+    }
 }
 async fn send(socket: &mut NetworkSocket, message: ClientMessage) -> Result<String, NetworkError> {
     let control_id = uuid::Uuid::new_v4().to_string();
@@ -708,44 +835,81 @@ async fn connect(
     previous_out: &mut Option<(String, PreviousConnection)>,
     renewed: Option<NetworkIdentity>,
     reconnect: &mut super::reconnect::ReconnectBackoff,
+    returns: &mut ReturnState,
 ) -> Result<NetworkIdentity, NetworkError> {
-    let mut identity = match renewed {
-        Some(identity) if identity.account.binding_id() == account.binding_id() => {
-            account.ensure_current()?;
-            identity
+    // Auth/HTTP/Hello can be slow during an outage. Keep the original App
+    // owner servicing terminal callbacks, admission settlements and deadlines.
+    let prepared = async {
+        let identity = match renewed {
+            Some(identity) if identity.account.binding_id() == account.binding_id() => {
+                account.ensure_current()?;
+                identity
+            }
+            _ => NetworkIdentity::initialize(account, None).await?,
+        };
+        let transport = Arc::new(NetworkTransport::new(
+            &identity.network_url,
+            identity.device_key(),
+            owner.memory.clone(),
+        )?);
+        let metadata = transport
+            .json(NetworkRoute::Network, &identity.token, None)
+            .await?;
+        let recovery = metadata["capabilities"]
+            .as_array()
+            .is_some_and(|caps| caps.iter().any(|c| c == "return-resume-v1"));
+        let mut capabilities: Vec<String> = ["tls13-mtls", "typed-rpc", "permit-v1", "return-v1"]
+            .map(str::to_owned)
+            .to_vec();
+        if recovery {
+            capabilities.push("return-resume-v1".into());
         }
-        _ => NetworkIdentity::initialize(account, None).await?,
+        let mut socket = transport.websocket(&identity.token).await?;
+        send(
+            &mut socket,
+            ClientMessage::Hello {
+                client_version: env!("CARGO_PKG_VERSION").into(),
+                capabilities,
+                previous_connection: previous,
+            },
+        )
+        .await?;
+        let (scope, local, resume) = initial_hello(&mut socket, &identity).await?;
+        Ok::<_, NetworkError>((identity, transport, socket, scope, local, resume, recovery))
     };
-    let transport = Arc::new(NetworkTransport::new(
-        &identity.network_url,
-        identity.device_key(),
-        owner.memory.clone(),
-    )?);
-    let mut socket = transport.websocket(&identity.token).await?;
-    send(
-        &mut socket,
-        ClientMessage::Hello {
-            client_version: env!("CARGO_PKG_VERSION").into(),
-            capabilities: ["tls13-mtls", "typed-rpc", "permit-v1", "return-v1"]
-                .map(str::to_owned)
-                .to_vec(),
-            previous_connection: previous,
-        },
-    )
-    .await?;
-    let (scope, local, resume) = initial_hello(&mut socket, &identity).await?;
+    tokio::pin!(prepared);
+    let mut maintenance = tokio::time::interval(Duration::from_secs(1));
+    let (mut identity, transport, mut socket, scope, local, resume, recovery) = loop {
+        tokio::select! {
+            result = &mut prepared => break result?,
+            Some(completed) = returns.work.next(), if !returns.work.is_empty() => settle_owner_work(completed, &mut returns.source, &mut returns.target),
+            Some(command) = commands.recv() => returns.offline_command(command, generation),
+            _ = maintenance.tick() => returns.maintain(app, manager),
+        }
+    };
+    let ReturnState {
+        source: source_returns,
+        target: target_returns,
+        work: owner_work,
+        allocation: return_allocation,
+    } = returns;
+    if !recovery {
+        source_returns.invalidate("RETURN_RESUME_UNSUPPORTED");
+        target_returns.invalidate("RETURN_RESUME_UNSUPPORTED");
+    }
     *previous_out = Some((identity.account.binding_id().to_owned(), resume));
     let connection_lifetime = ConnectionLifetime(Arc::new(AtomicBool::new(true)));
     let mut work: FuturesUnordered<BoxFuture<'static, Work>> = FuturesUnordered::new();
     let mut pairs = Pairs::new(owner.memory.clone());
     let mut calls = Calls::default();
-    let mut source_returns = SourceReturns::default();
-    let mut target_returns = TargetReturns::new(manager.clone(), owner.connection_id.clone());
+    source_returns.verify_local(&local);
+    target_returns.verify_local(&local);
+    if return_allocation.is_none() {
+        *return_allocation = Some(owner.memory.reserve(budget("dedupBytes"))?);
+    }
     let mut incoming_calls = Incoming::new(owner.memory.clone());
     // Compact dedup/route/sequence registries and a bounded metadata snapshot.
-    let _registry_allocation = owner
-        .memory
-        .reserve(budget("dedupBytes") + budget("catalogBytes"))?;
+    let _registry_allocation = owner.memory.reserve(budget("catalogBytes"))?;
     let mut prepared_targets = HashMap::<String, local_owner::PreparedTarget>::new();
     let mut catalog_seq = 1;
     let mut catalog_busy = true;
@@ -798,7 +962,7 @@ async fn connect(
                                 if let Some(op)=incoming_calls.control_op(&envelope.control_id) {
                                     prepared_targets.remove(&op);
                                     if let Some((channel,response,_allocation))=incoming_calls.finish(&op,error_outcome(error)) {let _=pairs.send(&channel,BusinessObject::Response(response));}
-                                } else if !target_returns.control_failed(&envelope.control_id,error.clone())&&!calls.control_failed(&envelope.control_id,error.clone()) {return Err(error);}
+                                } else if !source_returns.control_failed(&envelope.control_id,&error.code)&&!target_returns.control_failed(&envelope.control_id,error.clone())&&!calls.control_failed(&envelope.control_id,error.clone()) {return Err(error);}
                             }
                             ServerMessage::ChannelOffer { channel_id, initiator, responder, initiator_connection_epoch,
                                 responder_connection_epoch, initiator_binding, responder_binding, .. } => {
@@ -856,14 +1020,16 @@ async fn connect(
                                 };
                                 let manager=manager.clone();let op_id=invocation.op_id.clone();let return_route_id=invocation.return_route_id.clone();
                                 let prepared=prepared_targets.remove(&op_id).ok_or_else(||NetworkError::new("TARGET_PREPARATION_MISSING"))?;
-                                if let Err(error)=target_returns.register(&invocation,&permit,prepared.identity.local_session_id.as_deref()) {
+                                let retained=match target_returns.register(&invocation,&permit,prepared.identity.local_session_id.as_deref()) {
+                                    Ok(retained)=>retained,
+                                    Err(error)=>{
                                     if let Some((channel,response,_allocation))=incoming_calls.finish(&op_id,error_outcome(error)) {let _=pairs.send(&channel,BusinessObject::Response(response));}
                                     send(&mut socket,ClientMessage::CloseRoute {scope:scope.clone(),return_route_id:return_route_id.expect("permit route"),reason:"RETURN_CAPACITY".into()}).await?;
                                     continue;
-                                }
+                                }};
                                 let watch_alive=target_returns.watch_lifetime(&op_id);
                                 let connection_id=owner.connection_id.clone();let memory=owner.memory.clone();let app=app.clone();let account=identity.account.clone();let connection_alive=connection_lifetime.0.clone();let deadline=incoming_calls.admitted_until(&op_id).ok_or_else(||NetworkError::new("PERMIT_INVALID"))?;
-                                work.push(async move {
+                                let execution=async move {
                                     let mut allocation = None;
                                     let outcome=if let Some(fresh)=prepared.fresh {
                                         let reference=if matches!(&invocation.operation,myagents_agent_network_protocol::Operation::Start(p) if p.reply_back) {
@@ -887,7 +1053,7 @@ async fn connect(
                                         }).await)
                                     } else if matches!(&invocation.operation,myagents_agent_network_protocol::Operation::Watch(_)) {
                                         let guard_app=app.clone();
-                                        let (outcome,reserved)=local_owner::watch(&app,&manager,&invocation,memory,connection_id.clone(),move || {
+                                        let (outcome,reserved)=local_owner::watch(&app,&manager,&invocation,memory,connection_id.clone(),watch_alive.clone().expect("registered watch lifetime"),move || {
                                             account.ensure_current().map_err(|error|error.code)?;
                                             if !connection_alive.load(Ordering::Acquire)||guard_app.state::<ManagedAgentNetwork>().current_generation(&connection_id)!=Some(generation) {return Err("ACCOUNT_BINDING_CHANGED".into());}
                                             if watch_alive.as_ref().is_some_and(|alive| !alive.load(Ordering::Acquire)) {return Err("WATCH_CANCELLED".into());}
@@ -903,7 +1069,8 @@ async fn connect(
                                         Outcome::Watch {result}=>result["watched"]==true&&result["delivery"]=="registered"&&result["coalesced"]!=true,_=>false,
                                     };
                                     Work::Executed {op_id,return_route_id:if expects_return {None} else {return_route_id},outcome,allocation}
-                                }.boxed());
+                                }.boxed();
+                                if retained {owner_work.push(execution);} else {work.push(execution);}
                             }
                             ref route @ ServerMessage::RouteOpened {ref source,..} if source==&local => {
                                 match calls.route_opened(route,&local,&scope) {
@@ -912,10 +1079,12 @@ async fn connect(
                                     Err(error)=>return Err(error),
                                 }
                             }
-                            ServerMessage::RouteClosed {return_route_id,..}=> {source_returns.close_route(&return_route_id);target_returns.close_route(&return_route_id);},
+                            ServerMessage::RouteSuspended {return_route_id,remaining_ms,..} => {source_returns.suspended(&return_route_id,remaining_ms);target_returns.suspended(&return_route_id,remaining_ms);},
+                            ServerMessage::RouteResumed {return_route_id,source_connection_epoch,target_connection_epoch,..} => {source_returns.resumed(&return_route_id,&source_connection_epoch,&target_connection_epoch);target_returns.resumed(&return_route_id,&source_connection_epoch,&target_connection_epoch);},
+                            ServerMessage::RouteClosed {return_route_id,reason,..}=> {source_returns.close_route(&return_route_id,&reason);target_returns.close_route(&return_route_id,&reason);},
                             ServerMessage::RouteRebound {return_route_id,channel_id,..}=> {
                                 match target_returns.rebound(&envelope.control_id,&return_route_id,&channel_id) {
-                                    Ok(object)=> {if let Err(error)=pairs.send(&channel_id,object) {target_returns.close_route(&return_route_id);send(&mut socket,ClientMessage::CloseRoute {scope:scope.clone(),return_route_id,reason:error.code}).await?;}},
+                                    Ok(object)=> {if let Err(error)=pairs.send(&channel_id,object) {target_returns.close_route(&return_route_id,&error.code);send(&mut socket,ClientMessage::CloseRoute {scope:scope.clone(),return_route_id,reason:error.code}).await?;}},
                                     Err(error) if error.code=="RETURN_NOT_PENDING"=>{},
                                     Err(error)=>return Err(error),
                                 }
@@ -978,13 +1147,13 @@ async fn connect(
                                                         }
                                                     };
                                                     let app=app.clone();let manager=manager.clone();let channel_id=channel_id.clone();
-                                                    work.push(async move {let settlement=local_owner::deliver_return(&app,&manager,intent,event.event).await;
+                                                    owner_work.push(async move {let settlement=local_owner::deliver_return(&app,&manager,intent,event.event).await;
                                                         Work::Returned {channel_id,op_id:event.op_id,return_route_id:event.return_route_id,event_id,settlement,allocation:Some(allocation)}}.boxed());
                                                 },
                                                 ReturnAdmission::Joined(settlement)=> {
                                                     let event_id=event.event["eventId"].as_str().expect("validated event").to_owned();
                                                     let channel_id=channel_id.clone();
-                                                    work.push(async move { Work::Returned { channel_id, op_id:event.op_id,
+                                                    owner_work.push(async move { Work::Returned { channel_id, op_id:event.op_id,
                                                         return_route_id:event.return_route_id,event_id,settlement:settlement.await,allocation:None } }.boxed());
                                                 },
                                                 ReturnAdmission::Pending=>{},
@@ -1014,7 +1183,10 @@ async fn connect(
                     Some(Ok(Message::Frame(_))) | Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return Err(NetworkError::new("NETWORK_CONNECTION_CLOSED")),
                 }
             }
-            Some(completed) = work.next(), if !work.is_empty() => {
+            Some(completed) = async { tokio::select! {
+                completed = work.next(), if !work.is_empty() => completed,
+                completed = owner_work.next(), if !owner_work.is_empty() => completed,
+            } }, if !work.is_empty() || !owner_work.is_empty() => {
                 match completed {
                     Work::Returned {channel_id,op_id,return_route_id,event_id,settlement,allocation:_allocation}=> {
                         if source_returns.finish(&op_id,&event_id,settlement.clone()).is_ok() {
@@ -1173,7 +1345,7 @@ async fn connect(
                         }
                     }
                 }
-                for return_route_id in target_returns.expire() {send(&mut socket,ClientMessage::CloseRoute {scope:scope.clone(),return_route_id,reason:"RETURN_DEADLINE".into()}).await?;}
+                target_returns.expire();
                 for op in incoming_calls.expired(Instant::now()) {
                     prepared_targets.remove(&op);
                     if let Some((channel,response,_allocation))=incoming_calls.finish(&op,error_outcome(NetworkError::new("ADMISSION_UNCONFIRMED"))) {let _=pairs.send(&channel,BusinessObject::Response(response));}
@@ -1198,7 +1370,17 @@ async fn connect(
             }
         }
         source_returns.prune_unsent(&calls);
-        for action in target_returns.advance(&pairs, &scope) {
+        deliver_unavailable(app, manager, source_returns);
+        if hydrated {
+            for action in source_returns.advance(&scope) {
+                send_control(&mut socket, action.id, action.message).await?;
+            }
+        }
+        for action in if hydrated {
+            target_returns.advance(&pairs, &scope)
+        } else {
+            Vec::new()
+        } {
             send_control(&mut socket, action.id, action.message).await?;
         }
         for action in calls.advance(&pairs, &local, &scope) {
