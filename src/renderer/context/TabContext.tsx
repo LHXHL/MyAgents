@@ -17,7 +17,6 @@ import type { Dispatch, SetStateAction } from 'react';
 
 import type { ImageAttachment } from '@/components/SimpleChatInput';
 import type { AgentStatusTodoSnapshot, Message } from '@/types/chat';
-import type { LogEntry } from '@/types/log';
 import type { QueuedMessageInfo } from '@/types/queue';
 import type { SystemInitInfo } from '../../shared/types/system';
 import type { RuntimeDiagnostics, RuntimeSource } from '../../shared/types/runtime';
@@ -111,8 +110,6 @@ export interface TabState {
     sessionMeta: SessionMetadata | null;
 
     // Agent info
-    logs: string[];
-    unifiedLogs: LogEntry[];
     systemInitInfo: SystemInitInfo | null;
     mcpEffectiveSnapshot: McpEffectiveSnapshot | null;
     /**
@@ -190,9 +187,6 @@ export interface TabContextValue extends TabState {
     setSessionState: Dispatch<SetStateAction<SessionState>>;
 
     // Logs
-    appendLog: (line: string) => void;
-    appendUnifiedLog: (entry: LogEntry) => void;
-    clearUnifiedLogs: () => void;
 
     // System info
     setSystemInitInfo: Dispatch<SetStateAction<SystemInitInfo | null>>;
@@ -290,8 +284,6 @@ const defaultContextValue: TabContextValue = {
     sessionRuntimeSource: null,
     sessionRuntimeSessionId: null,
     sessionMeta: null,
-    logs: [],
-    unifiedLogs: [],
     systemInitInfo: null,
     mcpEffectiveSnapshot: null,
     sdkSlashCommands: [],
@@ -313,9 +305,6 @@ const defaultContextValue: TabContextValue = {
     setMessages: () => { },
     setIsLoading: () => { },
     setSessionState: () => { },
-    appendLog: () => { },
-    appendUnifiedLog: () => { },
-    clearUnifiedLogs: () => { },
     setSystemInitInfo: () => { },
     setAgentError: () => { },
     setLastTerminalReason: () => { },

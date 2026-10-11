@@ -437,6 +437,117 @@ describe('ConfigProvider external config invalidation', () => {
     expect(screen.getByTestId('snapshot')).toHaveTextContent('local-provider');
     expect(screen.getByTestId('snapshot')).not.toHaveTextContent('stale-external-provider');
   });
+
+  it('keeps 12 consumers quiet on equivalent activation reads without running identity maintenance', async () => {
+    const counts = Array<number>(12).fill(0);
+    let actions!: ReturnType<typeof useConfigActions>;
+    const Consumer = React.memo(function Consumer({ index }: { index: number }) {
+      useConfigData();
+      const value = useConfigActions();
+      React.useLayoutEffect(() => { actions = value; counts[index] += 1; });
+      return null;
+    });
+    mocks.loadAppConfig.mockImplementation(async () => structuredClone(mocks.config));
+    mocks.loadProjects.mockImplementation(async () => structuredClone(mocks.projects));
+    mocks.getAllProviders.mockImplementation(async () => structuredClone(mocks.providers));
+    render(<ConfigProvider>{counts.map((_, index) => <Consumer key={index} index={index} />)}</ConfigProvider>);
+    await waitFor(() => expect(mocks.reconcileIdentities).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+    counts.fill(0);
+    mocks.reconcileIdentities.mockClear();
+
+    for (let index = 0; index < 5; index += 1) {
+      await act(async () => { await actions.refreshProviderData(); });
+    }
+
+    expect(counts).toEqual(Array(12).fill(0));
+    expect(mocks.reconcileIdentities).not.toHaveBeenCalled();
+  });
+
+  it('retains an existing Agent projection on activation after its Project repair was deferred', async () => {
+    const legacyAgent = {
+      id: 'legacy-agent', name: 'Legacy', enabled: true, channels: [],
+      permissionMode: 'auto', workspacePath: '/old', providerId: 'agent-provider',
+    };
+    mocks.config = { ...mocks.config, agents: [legacyAgent] };
+    const resolvedProjects = [{ ...mocks.projects[0], agentId: legacyAgent.id, isAgent: true }];
+    mocks.reconcileIdentities.mockResolvedValue({
+      config: mocks.config, projects: resolvedProjects, repairDeferred: true,
+      changed: true, createdAgents: [], agentProjections: [], diagnostics: [],
+    });
+    let current!: ReturnType<typeof useConfigData>;
+    let actions!: ReturnType<typeof useConfigActions>;
+    function Consumer() {
+      const data = useConfigData();
+      const value = useConfigActions();
+      React.useLayoutEffect(() => { current = data; actions = value; });
+      return null;
+    }
+    render(<ConfigProvider><Consumer /></ConfigProvider>);
+    await waitFor(() => expect(mocks.reconcileIdentities).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+    expect(current.projects).toEqual(resolvedProjects);
+    const before = current.projects;
+    mocks.reconcileIdentities.mockClear();
+    vi.mocked(atomicModifyConfig).mockClear();
+
+    await act(async () => { await actions.refreshProviderData(); });
+    await act(async () => { await actions.refreshProviders(); });
+
+    expect(current.projects).toBe(before);
+    expect(current.projects[0].agentId).toBe(legacyAgent.id);
+    expect(current.config.agents).toEqual([legacyAgent]);
+    expect(mocks.projects[0].agentId).toBeUndefined();
+    expect(mocks.reconcileIdentities).not.toHaveBeenCalled();
+    expect(atomicModifyConfig).not.toHaveBeenCalled();
+  });
+
+  it('publishes a real external change without invalidating unrelated MCP and Agent subtrees', async () => {
+    mocks.config.mcpEnabledServers = ['synthetic-mcp'];
+    let current!: ReturnType<typeof useConfigData>;
+    let actions!: ReturnType<typeof useConfigActions>;
+    function Consumer() {
+      const data = useConfigData();
+      const value = useConfigActions();
+      React.useLayoutEffect(() => { current = data; actions = value; });
+      return null;
+    }
+    render(<ConfigProvider><Consumer /></ConfigProvider>);
+    await waitFor(() => expect(mocks.reconcileIdentities).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+    const before = current;
+    mocks.config = { ...structuredClone(mocks.config), defaultProviderId: 'external-provider' };
+    mocks.projects = structuredClone(mocks.projects);
+    mocks.providers = structuredClone(mocks.providers);
+
+    await act(async () => { await actions.refreshProviderData(); });
+
+    expect(current.config.defaultProviderId).toBe('external-provider');
+    expect(current.config.mcpEnabledServers).toBe(before.config.mcpEnabledServers);
+    expect(current.config.agents).toBe(before.config.agents);
+    expect(current.projects).toBe(before.projects);
+    expect(current.providers).toBe(before.providers);
+  });
+
+  it('does not let a slow activation read overwrite a later local write', async () => {
+    let actions!: ReturnType<typeof useConfigActions>;
+    function Consumer() {
+      const value = useConfigActions();
+      React.useLayoutEffect(() => { actions = value; });
+      return <Probe />;
+    }
+    render(<ConfigProvider><Consumer /></ConfigProvider>);
+    await waitFor(() => expect(mocks.reconcileIdentities).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+    let resolveRead!: (config: AppConfig) => void;
+    const stale = structuredClone(mocks.config);
+    mocks.loadAppConfig.mockImplementationOnce(() => new Promise<AppConfig>(resolve => { resolveRead = resolve; }));
+    let refresh!: Promise<void>;
+    act(() => { refresh = actions.refreshProviderData(); });
+    await act(async () => { await actions.updateConfig({ defaultProviderId: 'local-provider' }); });
+    await act(async () => { resolveRead(stale); await refresh; });
+    expect(screen.getByTestId('snapshot')).toHaveTextContent('local-provider');
+  });
 });
 
 

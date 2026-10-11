@@ -168,7 +168,7 @@ import type {
   TranscriptOperation,
   TranscriptSaveStatus,
 } from '../../shared/sessionTranscript';
-import { subscribeFrontendLogs, setCurrentTabId } from '@/utils/frontendLogger';
+import { appendFrontendLog, setCurrentTabId } from '@/utils/frontendLogger';
 import {
   getTabServerUrl,
   sessionSidecarFetch,
@@ -1258,8 +1258,6 @@ export default function TabProvider({
       );
     });
   }, [apiGetJson, tabId]);
-  const [logs, setLogs] = useState<string[]>([]);
-  const [unifiedLogs, setUnifiedLogs] = useState<LogEntry[]>([]);
   const [systemInitInfo, setSystemInitInfo] = useState<SystemInitInfo | null>(
     null,
   );
@@ -1718,8 +1716,6 @@ export default function TabProvider({
       setSystemNotice(null);
       setAgentError(null);
       setLastTerminalReason(null);
-      setUnifiedLogs([]);
-      setLogs([]);
       setSessionMeta(null);
       firstUserTitleProjectionRef.current = null;
       setSessionRuntimeSource(null);
@@ -1884,46 +1880,15 @@ export default function TabProvider({
     [tabId],
   );
 
-  // Append log
-  const appendLog = useCallback((line: string) => {
-    setLogs((prev) => {
-      const next = [...prev, line];
-      if (next.length > 2000) {
-        return next.slice(-2000);
-      }
-      return next;
-    });
-  }, []);
-
-  // Append unified log entry (from SSE chat:log events) - keep max 3000
+  // Session SSE remains owned by this Tab, but diagnostic UI projection is
+  // window-global and never publishes the main Chat Context.
   const appendUnifiedLog = useCallback((entry: LogEntry) => {
-    setUnifiedLogs((prev) => {
-      const next = [...prev, entry];
-      if (next.length > 3000) {
-        return next.slice(-3000);
-      }
-      return next;
+    appendFrontendLog({
+      ...entry,
+      tabId: entry.tabId ?? tabId,
+      sessionId: entry.sessionId ?? currentSessionIdRef.current ?? undefined,
     });
-  }, []);
-
-  // Clear all unified logs
-  const clearUnifiedLogs = useCallback(() => {
-    setUnifiedLogs([]);
-    setLogs([]);
-  }, []);
-
-  // Pattern 6: subscribe to the global FrontendLogStore with a tab-id
-  // filter. Replaces the legacy "every TabProvider keeps its own copy of
-  // every React log" model — entries with no tabId pass through (global)
-  // and entries stamped for THIS tab are surfaced to its UI panel.
-  useEffect(() => {
-    const unsubscribe = subscribeFrontendLogs((entry) => {
-      appendUnifiedLog(entry);
-    }, tabId);
-    return () => {
-      unsubscribe();
-    };
-  }, [appendUnifiedLog, tabId]);
+  }, [tabId]);
 
   // Pattern 6 (FIXED): Chat tab registry for renderer correlation. App.tsx
   // owns the active tab across Launcher / Settings / TaskCenter / Chat; each
@@ -1974,24 +1939,6 @@ export default function TabProvider({
       setActiveCorrelation({ tabId, mounted: false });
     };
   }, [tabId]);
-
-  // Listen for Rust logs via Tauri events (unified with React/Node logs)
-  // Note: Rust logs are only displayed in UI, NOT persisted via frontend API
-  // This avoids a log loop: Rust log → API call → Rust proxy logs the call → new Rust log → ...
-  useEffect(() => {
-    if (!isTauri()) return;
-    const ac = new AbortController();
-    void listenWithCleanup<LogEntry>(
-      'log:rust',
-      (event) => {
-        // Add to unified logs for UI display only
-        // Do NOT call queueLogsForPersistence - that would cause infinite loop
-        appendUnifiedLog(event.payload);
-      },
-      ac.signal,
-    );
-    return () => ac.abort();
-  }, [appendUnifiedLog]);
 
   // ─── RAF batching for streaming chunks ───
   // Accumulates text chunks and flushes once per animation frame (~16ms),
@@ -4366,13 +4313,11 @@ export default function TabProvider({
           break;
         }
 
-        case 'chat:logs': {
-          const payload = data as { lines: string[] } | null;
-          if (payload?.lines) {
-            setLogs(payload.lines);
-          }
+        case 'chat:logs':
+          // Legacy string snapshots have no UI consumer. Structured chat:log
+          // entries are the diagnostic projection; do not copy snapshots into
+          // Chat state on every connection/reconnection.
           break;
-        }
 
         case 'chat:runtime-diagnostics': {
           // Issue #194 — external-runtime self-report (auth/features/MCP/apps/effective env).
@@ -4389,7 +4334,7 @@ export default function TabProvider({
           // Handle both legacy string format and new LogEntry format
           if (typeof data === 'string') {
             // Legacy format: plain string
-            appendLog(data);
+            appendUnifiedLog({ source: 'bun', level: 'info', message: data, timestamp: new Date().toISOString() });
           } else if (
             data &&
             typeof data === 'object' &&
@@ -5452,9 +5397,8 @@ export default function TabProvider({
     },
     [
       apiGetJson,
-      appendLog,
-      appendUnifiedLog,
       tabId,
+      appendUnifiedLog,
       settleTurnActivity,
       resetQueryElapsedClock,
       moveStreamingToHistory,
@@ -7272,8 +7216,6 @@ export default function TabProvider({
       sessionRuntimeSource,
       sessionRuntimeSessionId,
       sessionMeta,
-      logs,
-      unifiedLogs,
       systemInitInfo,
       mcpEffectiveSnapshot,
       sdkSlashCommands,
@@ -7295,9 +7237,6 @@ export default function TabProvider({
       setMessages,
       setIsLoading,
       setSessionState,
-      appendLog,
-      appendUnifiedLog,
-      clearUnifiedLogs,
       setSystemInitInfo,
       setAgentError,
       setLastTerminalReason,
@@ -7338,8 +7277,6 @@ export default function TabProvider({
       sessionRuntimeSource,
       sessionRuntimeSessionId,
       sessionMeta,
-      logs,
-      unifiedLogs,
       systemInitInfo,
       mcpEffectiveSnapshot,
       sdkSlashCommands,
@@ -7360,9 +7297,6 @@ export default function TabProvider({
       isConnected,
       getQueryElapsedSeconds,
       setMessages,
-      appendLog,
-      appendUnifiedLog,
-      clearUnifiedLogs,
       setAgentError,
       sendMessage,
       stopResponse,

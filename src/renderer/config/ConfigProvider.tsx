@@ -74,7 +74,8 @@ import { getPlatformHiddenProviderIds, isLinuxDesktop } from '@/utils/desktopPla
 import { preserveHiddenProviderSettings } from './platformProviderSettings';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import { workspacePathsEqual } from '../../shared/workspacePath';
-import { resolveAgentWorkspaceProjections } from '../../shared/agentWorkspaceIdentity';
+import { shareEqualJson } from '../../shared/shareEqualJson';
+import { reconcileAgentWorkspaceIdentities, resolveAgentWorkspaceProjections } from '../../shared/agentWorkspaceIdentity';
 import { normalizeUiLanguage, type SupportedLocale, type UiLanguage } from '../../shared/i18n';
 import {
     effectiveGeneralProxyScopeKey,
@@ -105,7 +106,9 @@ async function loadConfigDiskSnapshot(): Promise<ConfigDiskSnapshot> {
     ]);
     return {
         config,
-        projects,
+        // A deferred legacy relink remains usable without performing writes on
+        // Tab activation. The shared policy selects only already-existing Agents.
+        projects: reconcileAgentWorkspaceIdentities(projects, config.agents ?? [], {}).projects,
         providers,
         apiKeys: config.providerApiKeys ?? {},
         verifyStatus: config.providerVerifyStatus ?? {},
@@ -304,8 +307,14 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
     // Derived: merge preset custom models + apply user primary model overrides
     const providers = useMemo(() => {
+        const readinessConfig = {
+            managedCodexProviderDevGate: config.managedCodexProviderDevGate,
+            managedCodexRuntimeInstall: config.managedCodexRuntimeInstall,
+            managedCodexAuth: config.managedCodexAuth,
+            disabledProviderIds: config.disabledProviderIds,
+        };
         // Platform availability is a read-only projection, never a config migration.
-        const catalog = withManagedCodexProviderCatalog(rawProviders, config, managedCodexRuntimeModels)
+        const catalog = withManagedCodexProviderCatalog(rawProviders, readinessConfig, managedCodexRuntimeModels)
             .filter(provider => !getPlatformHiddenProviderIds().includes(provider.id));
         const merged = mergePresetCustomModels(catalog, config.presetCustomModels, config.presetRemovedModels);
         const providerOrderSettings = {
@@ -316,7 +325,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         if (!overrides || Object.keys(overrides).length === 0) {
             return applyManagedCodexProviderReadiness(
                 applyProviderEnablementAndOrder(merged, providerOrderSettings),
-                config,
+                readinessConfig,
             );
         }
         // Apply user's primaryModel override directly on the Provider object
@@ -328,10 +337,17 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         });
         return applyManagedCodexProviderReadiness(
             applyProviderEnablementAndOrder(withPrimaryOverrides, providerOrderSettings),
-            config,
+            readinessConfig,
         );
     }, [
-        config,
+        config.managedCodexProviderDevGate,
+        config.managedCodexRuntimeInstall,
+        config.managedCodexAuth,
+        config.disabledProviderIds,
+        config.providerOrder,
+        config.presetCustomModels,
+        config.presetRemovedModels,
+        config.providerPrimaryModels,
         rawProviders,
         managedCodexRuntimeModels,
     ]);
@@ -402,12 +418,12 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         normalizeAgents(snapshot.config);
         if (!isMountedRef.current || snapshotRevision !== diskSnapshotRevisionRef.current) return null;
         setError(null);
-        configRef.current = snapshot.config;
-        setConfig(snapshot.config);
-        setProjects(snapshot.projects);
-        setRawProviders(snapshot.providers);
-        setApiKeys(snapshot.apiKeys);
-        setProviderVerifyStatus(snapshot.verifyStatus);
+        configRef.current = shareEqualJson(configRef.current, snapshot.config);
+        setConfig(previous => shareEqualJson(previous, snapshot.config));
+        setProjects(previous => shareEqualJson(previous, snapshot.projects));
+        setRawProviders(previous => shareEqualJson(previous, snapshot.providers));
+        setApiKeys(previous => shareEqualJson(previous, snapshot.apiKeys));
+        setProviderVerifyStatus(previous => shareEqualJson(previous, snapshot.verifyStatus));
         return snapshot;
     }, []);
 
@@ -649,11 +665,15 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
     const refreshConfigFromDisk = useCallback(async (
         reason: string,
-        options: { syncNativeUiLanguage: boolean },
+        options: { syncNativeUiLanguage: boolean; readOnly?: boolean },
     ) => {
         try {
             const previousUiLanguage = normalizeUiLanguage(configRef.current.uiLanguage);
-            const snapshot = await commitConfigDiskSnapshot();
+            // Tab activation revalidates disk truth without becoming a writer.
+            // Startup and explicit config invalidation retain identity maintenance.
+            const snapshot = await (options.readOnly
+                ? commitReadableConfigDiskSnapshot()
+                : commitConfigDiskSnapshot());
             if (!snapshot) return;
             const nextUiLanguage = normalizeUiLanguage(snapshot.config.uiLanguage);
             if (options.syncNativeUiLanguage && previousUiLanguage !== nextUiLanguage) {
@@ -669,7 +689,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
                 setError(err instanceof Error ? err.message : 'Failed to refresh configuration');
             }
         }
-    }, [commitConfigDiskSnapshot, scheduleStartupMaintenanceRetry, syncNativeUiLanguageFromConfig]);
+    }, [commitConfigDiskSnapshot, commitReadableConfigDiskSnapshot, scheduleStartupMaintenanceRetry, syncNativeUiLanguageFromConfig]);
 
     // ============= Listen for im:bot-config-changed =============
 
@@ -924,11 +944,11 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     ]);
 
     const refreshProviderData = useCallback(async () => {
-        await refreshConfigFromDisk('provider data refresh', { syncNativeUiLanguage: false });
+        await refreshConfigFromDisk('provider data refresh', { syncNativeUiLanguage: false, readOnly: true });
     }, [refreshConfigFromDisk]);
 
     const refreshProviders = useCallback(async () => {
-        await refreshConfigFromDisk('provider catalogue refresh', { syncNativeUiLanguage: false });
+        await refreshConfigFromDisk('provider catalogue refresh', { syncNativeUiLanguage: false, readOnly: true });
     }, [refreshConfigFromDisk]);
 
     // --- Projects ---

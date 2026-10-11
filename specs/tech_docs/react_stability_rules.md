@@ -24,6 +24,12 @@ Context Provider 的 value 应按语义拆分并稳定化：
 
 `ConfigProvider` 的 data/actions separation 是当前参考实现。稳定引用是性能与 effect correctness 的契约，不只是 micro-optimization。
 
+ConfigProvider 在磁盘快照发布处用 `shareEqualJson` 保留相同 JSON 子树的 identity；纯 JSON DTO 的值比较集中在发布 owner，不要求每个消费者深比较。Provider catalogue 的派生只依赖其实际使用的配置字段。Tab 激活的 `refreshProviderData` / catalogue 补读走只读快照路径；启动和配置失效事件保留身份维护入口，所有读取继续受同一个 snapshot revision fence 约束，过期读取不能盖过本地写入。
+
+只读快照复用 `reconcileAgentWorkspaceIdentities` 的既有身份选择规则，不提供 builder，因此只关联已有 Agent、不创建或持久化身份。这样历史关联修复写盘失败（`repairDeferred`）后，再次激活不会丢失已解析的 Project → Agent 投影；显式 claim 与冲突隔离仍只有同一份决策规则。
+
+Chat 的 MCP 自动同步直接使用已发布配置与 `getAllMcpServersFromConfig`，不为同一配置投影重复读取磁盘；这不改变 Session push/adopt 和 generation 准入。高频诊断属于 `frontendLogger` 展示缓冲，普通 Chat Context 不携带日志数组，详见 [统一日志](./unified_logging.md)。
+
 ## Latest ref 模式
 
 当长期存活的 callback、listener、timer 或 async completion 需要读取最新 state，但其订阅 identity 不应随 state 重建时：

@@ -35,6 +35,14 @@ Task 的核心职责：
 
 ## 2. 状态与调度
 
+### Renderer 的 Agent 状态投影
+
+`cmd_all_agents_status` 的实时权威在 Rust。Renderer 复用 `taskCenterStore` 的 `agentStatuses` 切片；`useAgentStatuses` 是其窄订阅，不拥有独立轮询，也不启动 TaskCenter 的 Session/Task 全量抓取。多个 Chat 共用一个 5 秒周期与一个状态变化监听；TaskCenter 全量/按需装饰读取复用该请求入口，有 Chat 周期时不另发周期状态请求。
+
+状态变化事件和显式刷新可以取代在途旧读取，只有当前请求可发布；等值响应保留引用。Agent 状态独立发布，不随较慢的 TaskCenter 全量结果再次写回，避免后到的会话装饰覆盖已更新状态。最后一个相关需求退出后释放相应监听/定时器，保留可供重挂载立即展示的健康投影；读取失败不清空旧数据。
+
+最后一个持续需求退出时，释放监听与定时器并断开在途请求的复用指针；这不撤销应用级一次性状态读取的发布权，侧边栏/搜索仍可拿到结果。新的挂载会另起读取、推进 Agent 状态序号，旧响应不能覆盖新值。请求复用由指针决定，发布新鲜度由独立状态序号决定，不借 Session 读取状态推断 Agent 状态需求。
+
 ```text
 Todo -> Running -> Verifying -> Done
           |             |

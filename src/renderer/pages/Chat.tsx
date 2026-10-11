@@ -173,6 +173,7 @@ import {
   getEffectiveModelAliases,
 } from '@/config/types';
 import { resolveProviderForModel } from '../../shared/provider-model-routing';
+import { getAllMcpServersFromConfig } from '@/config/services/mcpService';
 import { syncMcpServerNames } from '@/components/tools/toolBadgeConfig';
 import {
   getAllMcpServers,
@@ -708,7 +709,6 @@ export default function Chat({
     sessionRuntimeSessionId,
     sessionMeta,
     setSessionMeta,
-    unifiedLogs,
     systemInitInfo,
     mcpEffectiveSnapshot,
     sdkSlashCommands,
@@ -734,7 +734,6 @@ export default function Chat({
     retryCurrentSessionRestore,
     resetSession,
     adoptMigratedSession,
-    clearUnifiedLogs,
     respondPermission,
     respondAskUserQuestion,
     apiPost,
@@ -2974,8 +2973,9 @@ export default function Chat({
         // When joining an existing sidecar (e.g. IM Bot session), skip pushing Tab's
         // MCP config to avoid overwriting the session's current config.
         // Still load local MCP state for sidebar display.
-        const servers = await getAllMcpServers();
-        const enabledIds = await getEnabledMcpServerIds();
+        const snapshot = configRef.current;
+        const servers = getAllMcpServersFromConfig(snapshot);
+        const enabledIds = Array.isArray(snapshot.mcpEnabledServers) ? snapshot.mcpEnabledServers : [];
         setMcpServers(servers);
         syncMcpServerNames(servers);
         setGlobalMcpEnabled(enabledIds);
@@ -6620,10 +6620,10 @@ export default function Chat({
               })()}
             {/* Unified Logs Panel - fullscreen modal displaying logs */}
             <UnifiedLogsPanel
-              sseLogs={unifiedLogs}
+              tabId={tabId}
+              sessionId={sessionId}
               isVisible={showLogs}
               onClose={() => setShowLogs(false)}
-              onClearAll={clearUnifiedLogs}
             />
 
             {/* Query Navigator — floating right-side panel for quick session navigation */}

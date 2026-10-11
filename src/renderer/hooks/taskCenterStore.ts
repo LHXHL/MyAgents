@@ -49,6 +49,7 @@ import { RENDERER_PERF_PHASE } from '../../shared/perfTrace';
 import { CUSTOM_EVENTS } from '../../shared/constants';
 import { isManagedScheduledJob } from '../../shared/managedScheduledJob';
 import { normalizeWorkspacePathIdentity } from '../../shared/workspacePath';
+import { shareEqualJson } from '../../shared/shareEqualJson';
 import type { CronTask } from '@/types/cronTask';
 
 function taskText(key: string, options?: Record<string, unknown>): string {
@@ -232,6 +233,12 @@ let state: StoreState = {
 
 const listeners = new Set<() => void>();
 const passiveListeners = new Set<() => void>();
+const agentStatusListeners = new Set<() => void>();
+let agentStatusLoading = true;
+let agentStatusSnapshot = { statuses: state.agentStatuses, loading: agentStatusLoading };
+let agentStatusRequest: Promise<void> | null = null;
+let agentStatusAbort: AbortController | null = null;
+let agentStatusInterval: ReturnType<typeof setInterval> | null = null;
 const deletedSessionIds = new Set<string>(); // cross-instance tombstones
 const loadedWorkspaceSessionKeys = new Set<string>();
 const workspaceSessionRequests = new Map<string, Promise<void>>();
@@ -273,7 +280,8 @@ function startRequest(scope: TaskCenterRefreshScope): number {
         latestSeqByScope.sessions = s;
         latestSeqByScope.cronTasks = s;
         latestSeqByScope.backgroundSessions = s;
-        latestSeqByScope.agentStatuses = s;
+        // Agent status has one independent request owner shared with Chat.
+        // A full Task Center read must not invalidate that owner's request.
     }
     return s;
 }
@@ -337,10 +345,103 @@ function buildSnapshot(): TaskCenterData {
 }
 
 function setState(patch: Partial<StoreState>): void {
+    if (patch.agentStatuses) {
+        patch = { ...patch, agentStatuses: shareEqualJson(state.agentStatuses, patch.agentStatuses) };
+    }
+    if (Object.entries(patch).every(([key, value]) => state[key as keyof StoreState] === value)) return;
     state = { ...state, ...patch };
     snapshot = buildSnapshot();
+    publishAgentStatusSnapshot();
     for (const l of listeners) l();
     for (const l of passiveListeners) l();
+}
+
+function publishAgentStatusSnapshot(): void {
+    if (agentStatusSnapshot.statuses === state.agentStatuses && agentStatusSnapshot.loading === agentStatusLoading) return;
+    agentStatusSnapshot = { statuses: state.agentStatuses, loading: agentStatusLoading };
+    for (const listener of agentStatusListeners) listener();
+}
+
+/** All Agent status reads publish here, never through a delayed full-fetch result. */
+function requestAgentStatuses(force = false): Promise<void> {
+    if (agentStatusRequest && !force) return agentStatusRequest;
+    if (!isTauriEnvironment()) {
+        agentStatusLoading = false;
+        publishAgentStatusSnapshot();
+        return Promise.resolve();
+    }
+    const requestSeq = startRequest('agentStatuses');
+    const request = import('@tauri-apps/api/core')
+        .then(({ invoke }) => invoke<AgentStatusMap>('cmd_all_agents_status'))
+        .then(data => {
+            if (isLatest('agentStatuses', requestSeq)) setState({ agentStatuses: data });
+        })
+        .catch(() => { /* Keep the last healthy display projection; the next event/poll retries. */ })
+        .finally(() => {
+            if (isLatest('agentStatuses', requestSeq)) {
+                agentStatusLoading = false;
+                publishAgentStatusSnapshot();
+            }
+            if (agentStatusRequest === request) agentStatusRequest = null;
+        });
+    agentStatusRequest = request;
+    return request;
+}
+
+/** A full/demand Task Center read reuses the fast Chat cadence when present. */
+function ensureAgentStatuses(): Promise<void> {
+    return agentStatusListeners.size > 0
+        ? agentStatusRequest ?? Promise.resolve()
+        : requestAgentStatuses();
+}
+
+export function refreshAgentStatuses(): void {
+    // Explicit invalidation may supersede a pending read that predates it.
+    void requestAgentStatuses(true);
+}
+
+function syncAgentStatusLifecycle(): void {
+    const hasDemand = started || agentStatusListeners.size > 0;
+    if (hasDemand && !agentStatusAbort && isTauriEnvironment()) {
+        agentStatusAbort = new AbortController();
+        void listenWithCleanup('agent:status-changed', () => {
+            refreshAgentStatuses();
+            if (started) {
+                debounced('sessions', refreshSessionsNow, 1000);
+                debounced('cron', refreshCronTasksNow, 100);
+            }
+        }, agentStatusAbort.signal);
+    }
+    if (agentStatusListeners.size > 0 && !agentStatusInterval && isTauriEnvironment()) {
+        agentStatusInterval = setInterval(() => { void requestAgentStatuses(); }, 5000);
+    } else if (agentStatusListeners.size === 0 && agentStatusInterval) {
+        clearInterval(agentStatusInterval);
+        agentStatusInterval = null;
+    }
+    if (!hasDemand) {
+        agentStatusAbort?.abort();
+        agentStatusAbort = null;
+        // Detach request reuse, not the app-level read's publication authority:
+        // an existing sidebar/search reader can still receive its completion.
+        // A new mount starts a new sequence, which fences this old response.
+        agentStatusRequest = null;
+    }
+}
+
+/** Narrow subscription: no Session/Task/config fan-out or Task Center timers. */
+export function subscribeAgentStatuses(listener: () => void): () => void {
+    const first = agentStatusListeners.size === 0;
+    agentStatusListeners.add(listener);
+    syncAgentStatusLifecycle();
+    if (first) void requestAgentStatuses();
+    return () => {
+        agentStatusListeners.delete(listener);
+        syncAgentStatusLifecycle();
+    };
+}
+
+export function getAgentStatusesSnapshot() {
+    return agentStatusSnapshot;
 }
 
 function patchSessionFavorite(sessionId: string, favorite: boolean): void {
@@ -485,7 +586,7 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
         // rejects the whole fetch → retry/error (an initial total failure must
         // not become a silent empty state). The other sources are best-effort:
         // a PARTIAL failure preserves the prior slice (`ok.*` false → skipped).
-        const ok = { cron: true, lifecycle: true, bg: true, agents: true, status: true };
+        const ok = { cron: true, lifecycle: true, bg: true, agents: true };
         const sessionsPromise = getSessions().then((sessionsData) => {
             if (gen !== lifecycleGen) return sessionsData;
             if (!isLatest('all', requestSeq) || !isLatest('sessions', requestSeq)) return sessionsData;
@@ -503,13 +604,7 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
             adoptFullSessionIndexForDemand();
             return sessionsData;
         });
-        const agentStatusPromise = isTauriEnvironment()
-            ? import('@tauri-apps/api/core')
-                .then(({ invoke }) => invoke<AgentStatusMap>('cmd_all_agents_status'))
-                .catch(() => { ok.status = false; return state.agentStatuses; })
-            : Promise.resolve({} as AgentStatusMap);
-
-        const [sessionsData, cronData, schedulerLifecycle, bgSessions, agentStatusResult, appConfig] = await Promise.all([
+        const [sessionsData, cronData, schedulerLifecycle, bgSessions, , appConfig] = await Promise.all([
             sessionsPromise,
             getAllCronTasks().then(filterManagedCronTasks).catch(() => { ok.cron = false; return state.cronTasks; }),
             getUserSchedulerLifecycleSnapshot().catch(() => {
@@ -517,7 +612,7 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
                 return { runningTaskCount: 0, deleteProtectedSessionIds: state.deleteProtectedSessionIds };
             }),
             getBackgroundSessions().catch(() => { ok.bg = false; return state.backgroundSessionIds; }),
-            agentStatusPromise,
+            ensureAgentStatuses(),
             loadAppConfig().catch(() => { ok.agents = false; return null; }),
         ]);
 
@@ -545,7 +640,6 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
             patch.deleteProtectedSessionIds = schedulerLifecycle.deleteProtectedSessionIds;
         }
         if (ok.bg && isLatest('backgroundSessions', requestSeq)) patch.backgroundSessionIds = bgSessions;
-        if (ok.status && isLatest('agentStatuses', requestSeq)) patch.agentStatuses = agentStatusResult;
         if (ok.agents) {
             patch.agents = appConfig?.agents ?? [];
             patch.floatingBallSessionId = resolveFloatingBallBoundSession(appConfig);
@@ -629,31 +723,21 @@ function refreshBackgroundNow(): void {
         .catch((err) => console.warn('[taskCenterStore] refresh background failed:', err));
 }
 function refreshAgentStatusNow(): void {
-    const s = startRequest('agentStatuses');
-    if (!isTauriEnvironment()) return;
-    import('@tauri-apps/api/core')
-        .then(({ invoke }) => invoke<AgentStatusMap>('cmd_all_agents_status')
-            .then((data) => { if (isLatest('agentStatuses', s)) setState({ agentStatuses: data }); })
-            .catch((err) => console.warn('[taskCenterStore] refresh agent status failed:', err)))
-        .catch((err) => console.warn('[taskCenterStore] load tauri api failed:', err));
+    refreshAgentStatuses();
 }
 
 async function refreshSessionDecorationsOnDemand(): Promise<void> {
     if (sessionDecorationRequest) return sessionDecorationRequest;
     const generation = onDemandGeneration;
     sessionDecorationRequest = (async () => {
-        const [cronData, schedulerLifecycle, bgSessions, agentStatuses, appConfig] = await Promise.all([
+        const [cronData, schedulerLifecycle, bgSessions, , appConfig] = await Promise.all([
             getAllCronTasks().then(filterManagedCronTasks).catch(() => state.cronTasks),
             getUserSchedulerLifecycleSnapshot().catch(() => ({
                 runningTaskCount: 0,
                 deleteProtectedSessionIds: state.deleteProtectedSessionIds,
             })),
             getBackgroundSessions().catch(() => state.backgroundSessionIds),
-            isTauriEnvironment()
-                ? import('@tauri-apps/api/core')
-                    .then(({ invoke }) => invoke<AgentStatusMap>('cmd_all_agents_status'))
-                    .catch(() => state.agentStatuses)
-                : Promise.resolve(state.agentStatuses),
+            ensureAgentStatuses(),
             loadAppConfig().catch(() => null),
         ]);
         if (generation !== onDemandGeneration) return;
@@ -661,7 +745,6 @@ async function refreshSessionDecorationsOnDemand(): Promise<void> {
             cronTasks: cronData,
             deleteProtectedSessionIds: schedulerLifecycle.deleteProtectedSessionIds,
             backgroundSessionIds: bgSessions,
-            agentStatuses,
             ...(appConfig ? {
                 agents: appConfig.agents ?? [],
                 floatingBallSessionId: resolveFloatingBallBoundSession(appConfig),
@@ -953,11 +1036,6 @@ function registerTauriListeners(): void {
     void listenWithCleanup('cron:task-deleted', () => debounced('cron', refreshCronTasksNow, 500), ac.signal);
     void listenWithCleanup('cron:task-updated', () => debounced('cron', refreshCronTasksNow, 500), ac.signal);
     void listenWithCleanup('goal:changed', () => debounced('cron', refreshCronTasksNow, 200), ac.signal);
-    void listenWithCleanup('agent:status-changed', () => {
-        debounced('agent', refreshAgentStatusNow, 1000);
-        debounced('sessions', refreshSessionsNow, 1000);
-        debounced('cron', refreshCronTasksNow, 100);
-    }, ac.signal);
     void listenWithCleanup('task:status-changed', () => {
         debounced('cron', refreshCronTasksNow, 100);
     }, ac.signal);
@@ -975,6 +1053,7 @@ function registerTauriListeners(): void {
 function ensureStarted(): void {
     if (started) return;
     started = true;
+    syncAgentStatusLifecycle();
     registerTauriListeners();
     void fetchData(0); // initial load (once; subsequent subscribers get warm data)
     intervalTimer = setInterval(() => { void fetchData(0, true); }, BACKGROUND_REFRESH_INTERVAL_MS);
@@ -985,6 +1064,7 @@ function maybeStop(): void {
     // No live subscribers → stop background work, but KEEP data warm so the next
     // mount is still instant.
     started = false;
+    syncAgentStatusLifecycle();
     lifecycleGen++; // invalidate any in-flight fetch so it won't apply state or schedule a retry after stop
     cleanupTauriListeners?.();
     cleanupTauriListeners = null;
@@ -1032,6 +1112,14 @@ export function __resetTaskCenterStoreForTest(): void {
     state = { sessions: [], cronTasks: [], deleteProtectedSessionIds: [], backgroundSessionIds: [], agentStatuses: {}, agents: [], floatingBallSessionId: null, isLoading: true, isSessionsLoading: true, error: null, sessionsError: null, workspaceSessionStates: new Map() };
     listeners.clear();
     passiveListeners.clear();
+    agentStatusListeners.clear();
+    agentStatusAbort?.abort();
+    agentStatusAbort = null;
+    if (agentStatusInterval) clearInterval(agentStatusInterval);
+    agentStatusInterval = null;
+    agentStatusRequest = null;
+    agentStatusLoading = true;
+    agentStatusSnapshot = { statuses: state.agentStatuses, loading: true };
     deletedSessionIds.clear();
     loadedWorkspaceSessionKeys.clear();
     workspaceSessionRequests.clear();
@@ -1049,7 +1137,8 @@ export function __resetTaskCenterStoreForTest(): void {
     snapshot = buildSnapshot();
     started = false;
     lastFullFetchAt = 0;
-    seq = 0;
+    // Keep request IDs monotonic: a late pre-reset promise must not match a
+    // newly issued request after this test reset clears the per-scope fences.
     cleanupTauriListeners?.();
     cleanupTauriListeners = null;
     sessionMetadataListenerAbort?.abort();

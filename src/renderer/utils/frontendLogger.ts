@@ -1,9 +1,8 @@
 /**
  * Frontend Logger — Pattern 6 (Renderer correlation + bounded global store).
  *
- * Single global `FrontendLogStore` (module-level ring buffer + listeners)
- * replaces the old "every TabProvider keeps its own 3000-entry copy" model.
- * Tabs subscribe to the global store with a tab-id filter — no duplication.
+ * Single window-level diagnostic buffer for React, Node SSE, and Rust logs.
+ * Only visible log panels subscribe; Chat state never carries log arrays.
  *
  * `console.*` interception is unchanged (statutory entry pattern from
  * `unified_logging.md` §最佳实践 #1). Each captured entry stamps
@@ -18,6 +17,8 @@
 
 import type { LogEntry, LogLevel } from '@/types/log';
 import { localTimestamp } from '../../shared/logTime';
+import { isTauriEnvironment } from './browserMock';
+import { listenWithCleanup } from './tauriListen';
 
 // Store original console methods
 const originalConsole = {
@@ -30,6 +31,7 @@ const originalConsole = {
 // Track initialization state
 let initialized = false;
 let rendererLogLabel: string | null = null;
+let rustLogAbort: AbortController | null = null;
 
 // Custom event name for React logs (kept for back-compat with code that still
 // listens via window event; the global store is the canonical source going
@@ -145,17 +147,20 @@ const STORE_CAPACITY = 5000;
 type LogStoreListener = (entry: LogEntry) => void;
 
 interface FrontendLogStore {
-    entries: LogEntry[];
+    entries: Array<{ sequence: number; entry: LogEntry }>;
+    sequence: number;
     listeners: Set<LogStoreListener>;
 }
 
 const store: FrontendLogStore = {
     entries: [],
+    sequence: 0,
     listeners: new Set(),
 };
 
-function pushToStore(entry: LogEntry): void {
-    store.entries.push(entry);
+/** UI projection only. Node and Rust already own their disk persistence. */
+export function appendFrontendLog(entry: LogEntry): void {
+    store.entries.push({ sequence: ++store.sequence, entry });
     if (store.entries.length > STORE_CAPACITY) {
         store.entries.splice(0, store.entries.length - STORE_CAPACITY);
     }
@@ -168,7 +173,7 @@ function pushToStore(entry: LogEntry): void {
  * Subscribe to ALL log entries pushed to the global store. Returns the
  * unsubscribe function. Pass `tabFilter` to only receive entries whose
  * `tabId` matches (or entries with no tabId, which are global) — that's
- * how TabProvider replaces its old per-tab 3000-entry copy.
+ * entry callbacks remain available for diagnostics; panels use the same store.
  */
 export function subscribeFrontendLogs(
     listener: LogStoreListener,
@@ -185,9 +190,26 @@ export function subscribeFrontendLogs(
  * Snapshot of the current store contents, optionally filtered by tab. Used
  * when a tab mounts and wants to backfill recent history.
  */
-export function snapshotFrontendLogs(tabFilter?: string): LogEntry[] {
-    if (!tabFilter) return store.entries.slice();
-    return store.entries.filter(e => !e.tabId || e.tabId === tabFilter);
+export interface FrontendLogScope {
+    tabId?: string;
+    sessionId?: string | null;
+}
+
+export function matchesFrontendLogScope(entry: LogEntry, scope: FrontendLogScope): boolean {
+    if (!scope.tabId && !scope.sessionId) return true;
+    if (entry.sessionId) return entry.sessionId === scope.sessionId;
+    if (entry.tabId) return entry.tabId === scope.tabId;
+    return true;
+}
+
+export function getFrontendLogSequence(): number {
+    return store.sequence;
+}
+
+export function snapshotFrontendLogs(scope: FrontendLogScope = {}, afterSequence = 0, throughSequence = store.sequence): LogEntry[] {
+    return store.entries
+        .filter(({ sequence, entry }) => sequence > afterSequence && sequence <= throughSequence && matchesFrontendLogScope(entry, scope))
+        .map(({ entry }) => entry);
 }
 
 export function clearFrontendLogs(tabFilter?: string): void {
@@ -195,7 +217,7 @@ export function clearFrontendLogs(tabFilter?: string): void {
         store.entries.length = 0;
         return;
     }
-    store.entries = store.entries.filter(e => e.tabId && e.tabId !== tabFilter);
+    store.entries = store.entries.filter(({ entry }) => entry.tabId && entry.tabId !== tabFilter);
 }
 
 // Log buffer for batching
@@ -358,7 +380,7 @@ function createAndDispatch(level: LogLevel, args: unknown[]): void {
 
   // Push to global store (bounded ring + listeners). Replaces the old
   // "each TabProvider keeps its own 3000-entry copy" model.
-  pushToStore(entry);
+  appendFrontendLog(entry);
 
   // Back-compat: also dispatch the legacy CustomEvent so any consumer
   // that hasn't migrated to subscribeFrontendLogs() still gets the entry.
@@ -406,6 +428,12 @@ export function initFrontendLogger(): void {
   };
 
   initialized = true;
+  if (isTauriEnvironment()) {
+    rustLogAbort = new AbortController();
+    // One listener per renderer window, independent of mounted Chat/Settings
+    // tabs. Never enqueue these entries for HTTP persistence (log loop).
+    void listenWithCleanup<LogEntry>('log:rust', event => appendFrontendLog(event.payload), rustLogAbort.signal);
+  }
   originalConsole.log('[FrontendLogger] React console logging initialized');
 }
 
@@ -418,6 +446,9 @@ export function setRendererLogLabel(label: string | null | undefined): void {
  */
 export function restoreFrontendLogger(): void {
   if (!initialized) return;
+
+  rustLogAbort?.abort();
+  rustLogAbort = null;
 
   console.log = originalConsole.log;
   console.error = originalConsole.error;
