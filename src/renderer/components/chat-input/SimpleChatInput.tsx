@@ -278,6 +278,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   // This prevents MessageList from re-rendering when typing in long conversations
   const [inputValue, setInputValue] = useState(externalValue ?? '');
   const [agentMentions,setAgentMentions]=useState<AgentMentionSnapshot[]>([]);
+  const [requiredSystemSkill, setRequiredSystemSkill] = useState<QueryMentionContext["requiredSystemSkill"]>();
   const [primaryContext, setPrimaryContext] = useState<QueryMentionContext["primaryContext"]>();
 
   // Sync with external value when it changes (e.g., after send clears input)
@@ -818,6 +819,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   const setValue = useCallback((value: string, context?: QueryMentionContext) => {
     setAgentMentions(context?.agentMentions ?? []);
     setPrimaryContext(context?.primaryContext);
+    setRequiredSystemSkill(context?.requiredSystemSkill);
     setInputValue(value);
     // Also focus the textarea
     textareaRef.current?.focus();
@@ -835,7 +837,8 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     setImages,
     focus: () => textareaRef.current?.focus(),
     getCurrentValue: () => inputValueRef.current,
-    getQueryContext: () => ({ agentMentions: activeAgentSnapshots(inputValueRef.current, agentMentions), primaryContext }),
+    clearQueryContext: () => { setAgentMentions([]); setPrimaryContext(undefined); setRequiredSystemSkill(undefined); },
+    getQueryContext: () => ({ agentMentions: activeAgentSnapshots(inputValueRef.current, agentMentions), primaryContext, requiredSystemSkill }),
     getImages: () => [...images],
     clearWorkspaceBoundDraft: () => {
       // Match `@<path>` tokens that target the workspace-managed `myagents_files/`
@@ -857,7 +860,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
       return { strippedReferences: strippedCount, clearedImages };
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- textareaRef is stable
-  }), [processDroppedFiles, processDroppedFilePaths, insertReferences, appendReferenceToken, insertSlashCommand, setValue, images.length, agentMentions, primaryContext]);
+  }), [processDroppedFiles, processDroppedFilePaths, insertReferences, appendReferenceToken, insertSlashCommand, setValue, images.length, agentMentions, primaryContext, requiredSystemSkill]);
 
   // Handle text input change (detect @ and / and backspace)
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -1044,8 +1047,8 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
       // boolean-return protocol (`return true` = saved, clear textarea)
       // lets the parent signal when to reset input state here.
       const mentions = activeAgentSnapshots(text, agentMentions);
-      const result = mentions.length || primaryContext
-        ? onSend(text, images.length > 0 ? images : undefined, undefined, { agentMentions: mentions, primaryContext })
+      const result = mentions.length || primaryContext || requiredSystemSkill
+        ? onSend(text, images.length > 0 ? images : undefined, undefined, { agentMentions: mentions, primaryContext, requiredSystemSkill })
         : onSend(text, images.length > 0 ? images : undefined);
       // If onSend returns a promise, await it; if sync, use directly
       const accepted = result instanceof Promise ? await result : result;
@@ -1057,6 +1060,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
           setInputValue('');
           setAgentMentions([]);
           setPrimaryContext(undefined);
+          setRequiredSystemSkill(undefined);
         }
         const submitted = new Set(images.map(image => image.id));
         setImages(current => current.filter(image => !submitted.has(image.id)));
@@ -1064,7 +1068,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     } finally {
       sendingRef.current = false;
     }
-  }, [onSend, images, inputValue, agentMentions, primaryContext, provider, currentModelId, isExternalRuntime, setImages, onSlashAction, enabledClientActionCommands, showConfigLockedReason, notifyUnsupportedImageFallback]);
+  }, [onSend, images, inputValue, agentMentions, primaryContext, requiredSystemSkill, provider, currentModelId, isExternalRuntime, setImages, onSlashAction, enabledClientActionCommands, showConfigLockedReason, notifyUnsupportedImageFallback]);
 
   // Handle keyboard navigation in file search and slash menu
   // Handler for selecting a slash command — shared by the click path

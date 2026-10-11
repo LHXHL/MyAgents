@@ -1,4 +1,3 @@
-import { queryAgentSelectors } from '../../shared/agentMentions';
 import { LOG_SESSION_HEADER } from '../../shared/types/log';
 import { messageCompletionParams } from '@/analytics/conversation';
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
@@ -302,6 +301,7 @@ type WireMessageAttachment = {
 type WireMessageUsage = NonNullable<Message['usage']>;
 
 type WireSessionMessage = {
+  desktopQuery?: Message['desktopQuery'];
   turnId?: string;
   transcriptState?: Message['transcriptState'];
   asyncQuestionReply?: AsyncQuestionReply;
@@ -501,6 +501,7 @@ function wireSessionMessageToMessage(message: WireSessionMessage): Message {
     transcriptState: message.transcriptState,
     attachments: normalizeWireAttachments(message.attachments),
     metadata: message.metadata,
+    desktopQuery: message.desktopQuery,
     asyncQuestionReply: message.asyncQuestionReply,
     ...getAssistantTurnMetrics(message),
   };
@@ -701,6 +702,7 @@ interface TabProviderProps {
   sessionId?: string | null;
   /** Current App-shell title projection, used to preserve newer manual/AI titles during rollback. */
   sessionTitle?: string;
+  sidecarConfigDisposition?: import("@/features/chat/tabContract").SidecarConfigDisposition;
   /** Whether this Tab is currently visible — fed into TabActiveContext for useTabActive() consumers */
   isActive?: boolean;
   /** Callback when generating state changes (for close confirmation) */
@@ -933,6 +935,7 @@ export default function TabProvider({
   agentDir,
   sessionId = null,
   sessionTitle,
+  sidecarConfigDisposition = 'push',
   isActive,
   onGeneratingChange,
   onSessionIdChange,
@@ -1350,7 +1353,7 @@ export default function TabProvider({
     liveContextUsageSessionIdRef.current = null;
     setContextUsage(null);
     if (!shouldPreservePendingBirthSnapshots) {
-      if (previousSessionId !== sessionId) setPendingDesktopMessages([]);
+      if (previousSessionId !== sessionId) { setPendingDesktopMessages([]); setQueuedMessages([]); }
       setAgentPlanTodos(null);
       setSdkSlashCommands([]);
       setSystemInitInfo(null);
@@ -1817,7 +1820,7 @@ export default function TabProvider({
       ) {
         return false;
       }
-      const adopted = await adoptMigratedSession(response.sessionId);
+      const adopted = await adoptMigratedSession(response.sessionId, { newConversation: true });
       if (adopted) {
         setPendingSessionBirth(tabId, birthContextForSurface('new_chat_button'));
       }
@@ -1832,7 +1835,7 @@ export default function TabProvider({
           state.sessionId !== sourceId &&
           currentSessionIdRef.current === sourceId
         ) {
-          await adoptMigratedSession(state.sessionId);
+          await adoptMigratedSession(state.sessionId, { newConversation: true });
         }
       } catch (reconcileError) {
         console.warn(`[TabProvider ${tabId}] resetSession reconciliation failed:`, reconcileError);
@@ -2951,6 +2954,7 @@ export default function TabProvider({
             runtimeTurnAnchor: msg.runtimeTurnAnchor,
             attachments,
             metadata: msg.metadata,
+            desktopQuery: msg.desktopQuery,
             asyncQuestionReply: msg.asyncQuestionReply,
             ...getAssistantTurnMetrics(msg),
           };
@@ -5722,7 +5726,9 @@ export default function TabProvider({
   // path opens a chat tab without setting sessionId, SSE will silently
   // never connect — keep that invariant intact.
   useEffect(() => {
-    if (!agentDir || !sessionId) return;
+    // Rust must finish Session birth/owner reconciliation before attachment.
+    // A managed-provider discussion may still await its real metadata row.
+    if (!agentDir || !sessionId || (isPendingSessionId(sessionId) && sidecarConfigDisposition === 'pending')) return;
 
     const connectedSessionId = attachedSseSessionIdRef.current;
     const hasActiveSubscription = sseRef.current?.isActive() ?? false;
@@ -5784,7 +5790,7 @@ export default function TabProvider({
     return () => {
       cancelled = true;
     };
-  }, [agentDir, sessionId, tabId, connectSse]);
+  }, [agentDir, sessionId, tabId, connectSse, sidecarConfigDisposition]);
 
   // Cleanup on unmount - disconnect SSE and clear pending timers
   // NOTE: Sidecar lifecycle is now managed by App.tsx performCloseTab(),
@@ -5894,6 +5900,7 @@ export default function TabProvider({
       suppliedClientRequestId?: string,
     ): Promise<boolean> => {
       const trimmed = text.trim();
+      if (sidecarConfigDisposition === 'pending' && (!currentSessionIdRef.current || isPendingSessionId(currentSessionIdRef.current))) return false;
       if (!trimmed && (!images || images.length === 0)) return false;
       if (isRestoreActionBlocked(persistedRestoreLifecycleRef.current.phase))
         return false;
@@ -5981,22 +5988,33 @@ export default function TabProvider({
           row.id !== retryFailedMessageId || row.deliveryStatus !== 'failed',
         ));
       }
+      const sendRestoreToken = liveRevisionFenceRef.current.restoreToken;
+      const stillTargetsConversation = () => currentSessionIdRef.current === sessionIdForSend ||
+        (!!sessionIdForSend && isPendingSessionId(sessionIdForSend) && liveRevisionFenceRef.current.restoreToken === sendRestoreToken);
+      const pendingMessage: Message = {
+        id: `pending-send-${clientRequestId}`, role: 'user', content: trimmed,
+        timestamp: new Date(), metadata: { source: 'desktop', clientRequestId },
+        desktopQuery: { visibleText: trimmed, primaryContext, agentMentions, requiredSystemSkill },
+        attachments: images?.map(img => ({ id: img.id, name: imageAttachmentName(img), size: imageAttachmentSize(img), mimeType: imageAttachmentMimeType(img), previewUrl: img.preview, relativePath: img.relativePath, isImage: true })),
+        deliveryStatus: 'sending',
+      };
+      const hasCanonicalRow = () => historyMessagesRef.current.some(row => row.role === 'user' && row.metadata?.clientRequestId === clientRequestId && row.content !== '');
+      const retainFailedSend = (deliveryUnconfirmed = false) => {
+        if (hasCanonicalRow()) return;
+        setPendingDesktopMessages(rows => {
+          const failed = { ...pendingMessage, deliveryStatus: 'failed' as const, deliveryUnconfirmed };
+          return rows.some(row => row.id === pendingMessage.id)
+            ? rows.map(row => row.id === pendingMessage.id ? failed : row)
+            : [...rows, failed];
+        });
+      };
       if (!localQueueId) {
         setIsLoading(true);
-        setPendingDesktopMessages(previous => [...previous, {
-          id: `pending-send-${clientRequestId}`,
-          role: 'user',
-          content: trimmed,
-          timestamp: new Date(),
-          metadata: { source: 'desktop', clientRequestId },
-          attachments: hasImages ? pendingAttachmentsRef.current ?? undefined : undefined,
-          deliveryStatus: 'sending',
-        }]);
+        setPendingDesktopMessages(previous => [...previous, pendingMessage]);
       }
 
-      // Fire-and-forget: send to backend without blocking the UI.
-      // The HTTP response may be delayed by provider changes or session startup,
-      // but the input should clear immediately for a responsive experience.
+      // Project immediately, but retain the composer until the HTTP admission
+      // receipt. Queue admission still does not prove dispatch or persistence.
       // Desktop is the ONLY caller that should trigger provider switches per-message.
       // When no providerEnv is given (subscription mode), send 'subscription' explicitly
       // so enqueueUserMessage knows this is an intentional switch, not "I don't know".
@@ -6038,6 +6056,7 @@ export default function TabProvider({
         canForceExecute?: boolean;
       }>('/chat/send', sendPayload)
         .then((response) => {
+          if (!isMountedRef.current || !stillTargetsConversation()) return false;
           if (response.success) {
             if (response.agentMentionsNeedReselect) setSystemNotice({ kind: 'agent-mention', level: 'warning', message: appText('tabProvider.agentMentionsNeedReselect') });
             trackTabEvent('message_send', {
@@ -6138,7 +6157,7 @@ export default function TabProvider({
               );
             }
           } else {
-            setPendingDesktopMessages(rows => rows.map(row => row.metadata?.clientRequestId === clientRequestId ? { ...row, deliveryStatus: 'failed' } : row));
+            retainFailedSend();
             // Backend rejected: queue full, validation error, etc.
             console.error(
               `[TabProvider ${tabId}] Send rejected:`,
@@ -6158,22 +6177,19 @@ export default function TabProvider({
           return response.success;
         })
         .catch((error) => {
-          setPendingDesktopMessages(rows => rows.map(row => row.metadata?.clientRequestId === clientRequestId ? { ...row, deliveryStatus: 'failed' } : row));
+          if (!isMountedRef.current) return false;
+          if (localQueueId) setQueuedMessages(rows => rows.filter(row => row.queueId !== localQueueId));
+          if (!stillTargetsConversation()) return false;
+          // A canonical replay can resolve a response loss. Otherwise even a
+          // busy send needs an identity-bearing failed row after its pill retires.
+          if (hasCanonicalRow()) return true;
+          retainFailedSend(true);
           console.error(`[TabProvider ${tabId}] Send message failed:`, error);
-          if (localQueueId) {
-            setQueuedMessages((prev) =>
-              prev.filter((q) => q.queueId !== localQueueId),
-            );
-          }
           const msg =
             error instanceof Error
               ? error.message
               : appText('tabProvider.networkError');
-          setAgentError(
-            msg === 'Failed to fetch'
-              ? appText('tabProvider.networkDisconnected')
-              : msg,
-          );
+          setAgentError(`${appText('tabProvider.sendUnconfirmed')} ${msg === 'Failed to fetch' ? appText('tabProvider.networkDisconnected') : msg}`);
           pendingAttachmentsRef.current = null;
           if (!isSessionActiveRef.current && !isStreamingRef.current) {
             setIsLoading(false);
@@ -6186,10 +6202,10 @@ export default function TabProvider({
 
       // A question reply keeps the composer/card retryable if admission fails.
       // Only the accepted user-message replay, never this HTTP receipt, answers it.
-      return asyncQuestionReply || queryAgentSelectors(trimmed).length > 0 ? admission : true;
+      return admission;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- postJson is stable
-    [tabId, sessionId, claimSessionOpeningTransition, setPendingDesktopMessages],
+    [tabId, sessionId, sidecarConfigDisposition, claimSessionOpeningTransition, setPendingDesktopMessages],
   );
 
     // Stop receipt/transport timing never decides the turn outcome.

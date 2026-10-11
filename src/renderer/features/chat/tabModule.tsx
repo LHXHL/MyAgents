@@ -34,6 +34,8 @@ export interface ChatOpenIntent {
 }
 
 export interface ChatRenderBinding {
+  startupError?: (tabId: string) => string | null;
+  onRetryStartup?: (tabId: string) => Promise<void>;
   registerFileEditSubmitter?: (tabId: string, submit: () => Promise<boolean>) => () => void;
   windowPresentation: MainWindowPresentation;
   onOpenHistorySession: (
@@ -88,6 +90,7 @@ const ChatTabRenderer = memo(function ChatTabRenderer({
       agentDir={tab.agentDir}
       sessionId={tab.sessionId}
       sessionTitle={tab.title}
+      sidecarConfigDisposition={tab.sidecarConfigDisposition}
       isActive={isActive}
       onGeneratingChange={(isGenerating) => binding.onUpdateGenerating(tab.id, isGenerating)}
       onTitleChange={(title) => binding.onUpdateTitle(tab.id, title)}
@@ -108,6 +111,9 @@ const ChatTabRenderer = memo(function ChatTabRenderer({
             }
             onNewSession={() => binding.onNewSession(tab.id)}
             onLaunchRuntimeBackedProviderSession={binding.onLaunchRuntimeBackedProviderSession}
+            startupError={binding.startupError?.(tab.id)}
+            onRetryStartup={async () => { await binding.onRetryStartup?.(tab.id); }}
+            discussionId={tab.discussionId}
             initialMessage={tab.initialMessage}
             onInitialMessageConsumed={() => binding.onClearInitialMessage(tab.id)}
             sidecarConfigDisposition={tab.sidecarConfigDisposition}

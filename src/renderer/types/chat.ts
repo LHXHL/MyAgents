@@ -208,6 +208,9 @@ export interface MessageUsage {
 export interface Message {
   /** Local send presentation only; never written into the product transcript. */
   deliveryStatus?: 'sending' | 'failed';
+  /** Transport loss cannot prove rejection; inspect history before resending. */
+  deliveryUnconfirmed?: boolean;
+  desktopQuery?: import('../../shared/agentMentions').DesktopQueryDraft;
   turnId?: string;
   transcriptState?: import('../../shared/types/session-message').SessionMessage['transcriptState'];
   asyncQuestionReply?: AsyncQuestionReply;

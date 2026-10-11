@@ -1,3 +1,7 @@
+import { useChatDraftScope } from "@/hooks/useChatDraftScope";
+import type { Message } from "@/types/chat";
+import TaskDiscussionRecovery from "@/components/TaskDiscussionRecovery";
+import { desktopContextOf } from "../../shared/agentMentions";
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 import {
   AsyncQuestionContext,
@@ -29,6 +33,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useImperativeHandle,
   useMemo,
   useReducer,
@@ -620,6 +625,9 @@ interface ChatProps {
   onOpenSessionInNewTab?: (sessionId: string, title: string) => void;
   /** Initial message from Launcher for auto-send on workspace open */
   initialMessage?: InitialMessage;
+  discussionId?: string;
+  startupError?: string | null;
+  onRetryStartup?: () => Promise<void | undefined>;
   /** Called after initialMessage has been consumed */
   onInitialMessageConsumed?: () => void;
   /** How this chat reconciles config with its sidecar: 'push' (push tab config),
@@ -664,6 +672,9 @@ export default function Chat({
   onOpenSession,
   onOpenSessionInNewTab,
   initialMessage,
+  discussionId,
+  startupError,
+  onRetryStartup,
   onInitialMessageConsumed,
   sidecarConfigDisposition,
   onSidecarConfigAdopted,
@@ -1527,6 +1538,8 @@ export default function Chat({
     onStartupItemsRendered,
   } = useChatStartupOverlay({
     hasInitialMessage: hadInitialMessage.current,
+    initialClientRequestId: initialMessage?.clientRequestId,
+    startupError,
     isConnected,
     isSessionLoading,
     agentError,
@@ -1574,6 +1587,7 @@ export default function Chat({
 
   // Ref for SimpleChatInput to call processDroppedFiles
   const chatInputRef = useRef<SimpleChatInputHandle>(null);
+  useChatDraftScope(sessionId, discussionId, chatInputRef);
 
   // Ref for DirectoryPanel to trigger refresh
   const directoryPanelRef = useRef<DirectoryPanelHandle>(null);
@@ -2251,6 +2265,8 @@ export default function Chat({
 
   // Auto-send initial message from Launcher
   const initialMessageConsumedRef = useRef(false);
+  const currentLaunchMessageRef = useRef(initialMessage);
+  useLayoutEffect(() => { currentLaunchMessageRef.current = initialMessage; }, [initialMessage]);
   const onInitialMessageConsumedRef = useRef(onInitialMessageConsumed);
   onInitialMessageConsumedRef.current = onInitialMessageConsumed;
   const initialMessageRuntimeReady = useMemo(() => {
@@ -2526,10 +2542,12 @@ export default function Chat({
           if (admitted === false) throw new Error(t("tabProvider.sendFailed", { ns: "app" }));
         }
 
+        if (currentLaunchMessageRef.current !== launchMessage) return;
         // Retire the launch payload; the boot shell waits for MessageList to
         // commit the corresponding server user row, independently of this prop.
         onInitialMessageConsumedRef.current?.();
       } catch (err) {
+        if (currentLaunchMessageRef.current !== launchMessage) return;
         console.error('[Chat] Auto-send failed:', err);
         if (launcherOwnsInitialMcpRef.current) {
           launcherOwnsInitialMcpRef.current = false;
@@ -2541,7 +2559,7 @@ export default function Chat({
         // without losing what they typed. Pre-PRD-0.2.7 the toast just said
         // "请重试" while the textarea was empty, silently dropping the draft.
         try {
-          chatInputRef.current?.setValue(launchMessage.text,{agentMentions:launchMessage.agentMentions, primaryContext:launchMessage.primaryContext});
+          chatInputRef.current?.setValue(launchMessage.text,{agentMentions:launchMessage.agentMentions, primaryContext:launchMessage.primaryContext, requiredSystemSkill:launchMessage.requiredSystemSkill});
           if (launchMessage.images && launchMessage.images.length > 0) {
             chatInputRef.current?.setImages(launchMessage.images);
           }
@@ -4659,6 +4677,10 @@ export default function Chat({
       explicitReply?: AsyncQuestionReply,
       retryFailedMessageId?: string,
     ): Promise<boolean | void> => {
+      if (!retryFailedMessageId) {
+        const uncertain = messagesRef.current.find(message => message.role === 'user' && message.deliveryUnconfirmed && typeof message.content === 'string' && message.content === text.trim());
+        if (uncertain) { setUnconfirmedRetry(uncertain); return false; }
+      }
       const draft = explicitReply ? null : questionTargetRef.current;
       const reply = explicitReply ?? draft?.reply;
       // Must have content and not be in stopping state
@@ -4791,8 +4813,7 @@ export default function Chat({
           // and all streaming blocks arrive live.
         }
 
-        // sendMessage is fire-and-forget (returns true immediately for optimistic UI).
-        // Error handling is done inside sendMessage's .then()/.catch() in TabProvider.
+        // Keep the submitted composer until the HTTP admission receipt.
         // Use effective model/permission (runtime-aware) — not the builtin values
         const admitted = await sendMessage(
           draft?.title ? `${draft.title}\n\n${text}` : text,
@@ -4804,7 +4825,7 @@ export default function Chat({
           // Product-configured runtimes carry provider effort through the Host path.
           inputUsesExternalRuntimeControls ? undefined : reasoningEffort,
           inputUsesExternalRuntimeControls ? undefined : providerRoute,
-          undefined,
+          context?.requiredSystemSkill,
           reply,
           context?.agentMentions,
           context?.primaryContext,
@@ -5964,6 +5985,18 @@ export default function Chat({
 
   // Banner-level retry: find the last real user message in the session and rewind+resend it.
   // Used by the agentError banner's 「重新发送」 button (issue #183).
+  const [unconfirmedRetry, setUnconfirmedRetry] = useState<Message | null>(null);
+  const resendFailedMessage = useCallback(async (userMsg: Message) => {
+    if (!messagesRef.current.some(message => message.id === userMsg.id)) return;
+    // A lost response can be repaired by replay while the confirmation is open.
+    // Recheck the current projection before issuing another request.
+    if (userMsg.metadata?.clientRequestId && messagesRef.current.some(message =>
+      message.role === 'user' && message.deliveryStatus === undefined &&
+      message.metadata?.clientRequestId === userMsg.metadata?.clientRequestId)) return;
+    const text = typeof userMsg.content === 'string' ? userMsg.content : '';
+    const admitted = await handleSendMessageRef.current(text, restoreMessageImages(userMsg.attachments), undefined, { agentMentions: userMsg.desktopQuery?.agentMentions, primaryContext: desktopContextOf(userMsg.desktopQuery?.primaryContext), requiredSystemSkill: userMsg.desktopQuery?.requiredSystemSkill }, undefined, userMsg.id);
+    if (admitted === true && chatInputRef.current?.getCurrentValue().trim() === text) chatInputRef.current.setValue('');
+  }, []);
   const handleRetryLastUserMessage = useCallback(() => {
     const msgs = messagesRef.current;
     let userMsg: (typeof msgs)[number] | null = agentErrorUserMessageId
@@ -5985,19 +6018,13 @@ export default function Chat({
     }
     if (!userMsg) return;
     if (userMsg.deliveryStatus === 'failed') {
-      void handleSendMessageRef.current(
-        typeof userMsg.content === 'string' ? userMsg.content : '',
-        restoreMessageImages(userMsg.attachments),
-        undefined,
-        undefined,
-        undefined,
-        userMsg.id,
-      );
+      if (userMsg.deliveryUnconfirmed) setUnconfirmedRetry(userMsg);
+      else resendFailedMessage(userMsg);
       return;
     }
     setAgentError(null);
     performRetryFromUserMessage(userMsg);
-  }, [agentErrorUserMessageId, performRetryFromUserMessage, setAgentError]);
+  }, [agentErrorUserMessageId, performRetryFromUserMessage, setAgentError, resendFailedMessage]);
 
   // Fork = create a new independent session branch at a specific assistant message
   const handleFork = useCallback((assistantMessageId: string) => {
@@ -6487,6 +6514,12 @@ export default function Chat({
               diagnostics={runtimeDiagnostics}
               onDiagnose={handleDiagnoseRuntimeDiagnostics}
             />
+
+            {discussionId && <TaskDiscussionRecovery discussionId={discussionId} messages={historyMessages} active={!showStartupOverlay || !!agentError || !!startupError} onRetryStartup={startupError ? onRetryStartup : undefined} onRestore={input => {
+              initialMessageConsumedRef.current = true;
+              onInitialMessageConsumedRef.current?.();
+              chatInputRef.current?.setValue(input.text, { primaryContext: input.primaryContext, requiredSystemSkill: input.requiredSystemSkill });
+            }} />}
 
             {agentError &&
               (() => {
@@ -7389,6 +7422,7 @@ export default function Chat({
       )}
 
       {/* Provider / Model History-Boundary Confirm Dialog */}
+      {unconfirmedRetry && <ConfirmDialog title={t('discussionRecovery.resend')} message={t('discussionRecovery.resendConfirm')} disableEnterShortcut onCancel={() => setUnconfirmedRetry(null)} onConfirm={() => { const message = unconfirmedRetry; setUnconfirmedRetry(null); resendFailedMessage(message); }} />}
       {pendingProviderSwitch && (
         <ConfirmDialog
           title={

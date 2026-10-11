@@ -1,3 +1,4 @@
+import { TASK_ALIGNMENT_SKILL_REQUIREMENT } from "../../shared/systemSkills";
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createRef } from 'react';
@@ -136,14 +137,27 @@ describe('SimpleChatInput send paths', () => {
   it('restores typed launcher context and retains it on failed admission', async () => {
     const ref = createRef<SimpleChatInputHandle>();
     const onSend = vi.fn().mockResolvedValue(false);
-    const primaryContext = { kind: 'floating-context' as const, input: { appName: 'Editor', selectedText: 'selected' } };
+    const primaryContext = { kind: 'task-discussion' as const, input: { candidatesDir: '/data/discussion/candidates', workspaceId: 'ws', workspacePath: '/ws', visibleUserMessage: 'query' } };
+    const requiredSystemSkill = TASK_ALIGNMENT_SKILL_REQUIREMENT;
     renderInput({ ref, onSend });
-    act(() => ref.current!.setValue('query', { primaryContext }));
+    act(() => ref.current!.setValue('query', { primaryContext, requiredSystemSkill }));
     const input = screen.getByRole('textbox') as HTMLTextAreaElement;
     fireEvent.keyDown(input, { key: 'Enter' });
-    await waitFor(() => expect(onSend).toHaveBeenCalledWith('query', undefined, undefined, { agentMentions: [], primaryContext }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('query', undefined, undefined, { agentMentions: [], primaryContext, requiredSystemSkill }));
     expect(input.value).toBe('query');
-    expect(ref.current!.getQueryContext()).toEqual({ agentMentions: [], primaryContext });
+    expect(ref.current!.getQueryContext()).toEqual({ agentMentions: [], primaryContext, requiredSystemSkill });
+  });
+
+  it('drops restored discussion annotations on conversation change while keeping visible draft text', async () => {
+    const ref = createRef<SimpleChatInputHandle>();
+    const onSend = vi.fn().mockResolvedValue(false);
+    renderInput({ ref, onSend });
+    act(() => ref.current!.setValue('query', { primaryContext: { kind: 'task-discussion', input: { candidatesDir: '/old/candidates', workspaceId: 'old', workspacePath: '/old', visibleUserMessage: 'query' } }, requiredSystemSkill: TASK_ALIGNMENT_SKILL_REQUIREMENT }));
+    act(() => ref.current!.clearQueryContext());
+    expect(ref.current!.getCurrentValue()).toBe('query');
+    expect(ref.current!.getQueryContext()).toMatchObject({ primaryContext: undefined, requiredSystemSkill: undefined });
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('query', undefined));
   });
 
   it('replaces the exact @ fragment, preserves the tail/caret and keeps typed mentions on rejected send', async () => {

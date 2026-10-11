@@ -165,6 +165,7 @@ export interface SimpleChatInputHandle {
   focus: () => void;
   clearWorkspaceBoundDraft: () => { strippedReferences: number; clearedImages: number };
   getCurrentValue: () => string;
+  clearQueryContext: () => void;
   getQueryContext: () => import("../../../shared/agentMentions").QueryMentionContext;
   getImages: () => ImageAttachment[];
 }

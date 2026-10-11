@@ -29,3 +29,11 @@ export interface PreparedTaskDiscussion {
   discussionDir: string;
   candidatesDir: string;
 }
+
+/** Immutable original input in the Rust-owned discussion artifact. */
+export interface TaskDiscussionInput {
+  text: string;
+  clientRequestId: string;
+  primaryContext: Extract<import('./agentMentions').DesktopPrimaryContext, { kind: 'task-discussion' }>;
+  requiredSystemSkill: import('./systemSkills').ProductSystemSkillRequirement;
+}

@@ -114,6 +114,7 @@
     "later": "稍后"
   },
   "tabProvider": {
+    "sendUnconfirmed": "发送状态未确认，请先检查历史和队列再重试。",
     "compactSuccess": "上下文已压缩",
     "compactFailed": "上下文压缩失败",
     "hiddenSystemMessage": "系统消息",

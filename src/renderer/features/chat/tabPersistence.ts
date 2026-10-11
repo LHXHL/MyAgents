@@ -8,17 +8,19 @@ export interface PersistedChatTab {
   agentDir: string;
   sessionId: string;
   title: string;
+  discussionId?: string;
 }
 
 export const chatTabPersistenceCodec: TabPersistenceCodec<ChatTab, PersistedChatTab> = {
   serialize: (tab) =>
-    tab.agentDir.length > 0 && !!tab.sessionId && !isPendingSessionId(tab.sessionId)
+    tab.agentDir.length > 0 && !!tab.sessionId && (!isPendingSessionId(tab.sessionId) || !!tab.discussionId)
       ? {
           view: 'chat',
           id: tab.id,
           agentDir: tab.agentDir,
           sessionId: tab.sessionId,
           title: tab.title,
+          ...(tab.discussionId ? { discussionId: tab.discussionId } : {}),
         }
       : null,
   parse: (value) => {
@@ -32,7 +34,7 @@ export const chatTabPersistenceCodec: TabPersistenceCodec<ChatTab, PersistedChat
       tab.agentDir.length > 0 &&
       typeof tab.sessionId === 'string' &&
       tab.sessionId.length > 0 &&
-      !isPendingSessionId(tab.sessionId) &&
+      (!isPendingSessionId(tab.sessionId) || (typeof tab.discussionId === 'string' && /^[A-Za-z0-9_-]+$/.test(tab.discussionId))) &&
       typeof tab.title === 'string'
     ) {
       return {
@@ -41,6 +43,7 @@ export const chatTabPersistenceCodec: TabPersistenceCodec<ChatTab, PersistedChat
         agentDir: tab.agentDir,
         sessionId: tab.sessionId,
         title: tab.title,
+        ...(typeof tab.discussionId === 'string' && /^[A-Za-z0-9_-]+$/.test(tab.discussionId) ? { discussionId: tab.discussionId } : {}),
       };
     }
     return null;

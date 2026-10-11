@@ -1,3 +1,4 @@
+import { TASK_ALIGNMENT_SKILL_REQUIREMENT } from "../../shared/systemSkills";
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => {
@@ -1517,6 +1518,15 @@ describe('session-engine selector and adapters', () => {
     });
     expect(mocks.cancelQueueItem).toHaveBeenCalledWith('q-timeout');
     expect(mocks.interruptCurrentResponse).not.toHaveBeenCalled();
+  });
+
+  it('reports a product skill rejection after HTTP queue admission without treating it as execution success', async () => {
+    mocks.requireCurrentBuiltinSkill.mockRejectedValueOnce(new Error('alignment inventory stale'));
+    const result = await getSessionEngine().sendDesktopMessage({ text: 'original requirement', sessionId: 'sid', workspacePath: '/workspace', scenario: desktopScenario, requiredSystemSkill: TASK_ALIGNMENT_SKILL_REQUIREMENT });
+    expect(result).toMatchObject({ success: true, queued: true });
+    await expect(result.dispatchAcceptance).resolves.toMatchObject({ accepted: false, error: 'alignment inventory stale' });
+    expect(mocks.requireCurrentBuiltinSkill).toHaveBeenCalledWith(TASK_ALIGNMENT_SKILL_REQUIREMENT);
+    expect(mocks.broadcast).toHaveBeenCalledWith('chat:agent-error', { message: 'alignment inventory stale' });
   });
 
   it('checks an injected turn Required Skill inside the builtin adapter', async () => {

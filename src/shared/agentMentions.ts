@@ -1,3 +1,4 @@
+import type { ProductSystemSkillRequirement } from "./systemSkills";
 import { z } from "zod";
 import {
   mentionAgentSchema,
@@ -24,6 +25,7 @@ export const agentMentionSnapshotSchema = z.strictObject({
 });
 export type AgentMentionSnapshot = z.infer<typeof agentMentionSnapshotSchema>;
 export interface QueryMentionContext {
+  requiredSystemSkill?: ProductSystemSkillRequirement;
   agentMentions?: AgentMentionSnapshot[];
   primaryContext?: DesktopPrimaryContext;
 }
@@ -103,6 +105,7 @@ export type QueryPrimaryContext =
 /** Immutable non-secret query annotation owned by the original Session message.
  * Retry uses visible text plus typed context, never reparses arbitrary XML. */
 export interface DesktopQueryDraft {
+  requiredSystemSkill?: ProductSystemSkillRequirement;
   visibleText: string;
   agentMentions?: AgentMentionSnapshot[];
   primaryContext?: QueryPrimaryContext;

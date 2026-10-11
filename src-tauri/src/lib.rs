@@ -826,6 +826,8 @@ pub fn run() {
             task::cmd_task_create_user_comment,
             task::cmd_task_retry_comment,
             task::cmd_task_prepare_discussion,
+            task::cmd_task_save_discussion_input,
+            task::cmd_task_read_discussion_input,
             task::cmd_task_archive,
             task::cmd_task_delete,
             task::cmd_task_read_doc,

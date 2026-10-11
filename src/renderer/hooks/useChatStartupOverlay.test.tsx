@@ -68,6 +68,13 @@ describe('Chat startup handoff', () => {
     expect(result.current.showStartupOverlay).toBe(false);
   });
 
+  it('reveals startup failure before a first query or SSE connection exists', () => {
+    const { result, rerender } = renderHook(useChatStartupOverlay, { initialProps: { ...base, startupError: null as string | null } });
+    expect(result.current.showStartupOverlay).toBe(true);
+    rerender({ ...base, startupError: 'Sidecar failed' });
+    expect(result.current.showStartupOverlay).toBe(false);
+  });
+
   it('can finish a cron handoff which creates no desktop query', () => {
     const { result } = renderHook(() => useChatStartupOverlay(base));
     act(() => result.current.dismissStartupOverlay());

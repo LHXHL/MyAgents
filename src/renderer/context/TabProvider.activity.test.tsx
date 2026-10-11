@@ -1,3 +1,4 @@
+import { TASK_ALIGNMENT_SKILL_REQUIREMENT } from "../../shared/systemSkills";
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { StrictMode, useEffect, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -154,6 +155,7 @@ function Probe() {
     pendingAskUserQuestion,
     respondAskUserQuestion,
   } = useTabState();
+  const [sendReceipt, setSendReceipt] = useState<boolean | null>(null);
   const [answerReceipt, setAnswerReceipt] = useState<boolean | null>(null);
   const [retryRestoreTargetPresent, setRetryRestoreTargetPresent] = useState<boolean | null>(null);
   return (
@@ -179,6 +181,8 @@ function Probe() {
       <output data-testid="session-loading">{String(isSessionLoading)}</output>
       <output data-testid="session-restore-error">{sessionRestoreError ?? ''}</output>
       <output data-testid="history-content">{JSON.stringify(historyMessages.map(message => message.content))}</output>
+      <output data-testid="history-unconfirmed">{JSON.stringify(historyMessages.map(message => !!message.deliveryUnconfirmed))}</output>
+      <output data-testid="history-contracts">{JSON.stringify(historyMessages.map(message => message.desktopQuery))}</output>
       <output data-testid="history-delivery">{JSON.stringify(historyMessages.map(message => message.deliveryStatus ?? null))}</output>
       <output data-testid="history-identities">{JSON.stringify(historyMessages.map(message => ({
         id: message.id,
@@ -193,7 +197,9 @@ function Probe() {
       <output data-testid="agent-error-user-message-id">{agentErrorUserMessageId ?? ''}</output>
       <output data-testid="pending-ask-id">{pendingAskUserQuestion?.requestId ?? ''}</output>
       <output data-testid="retry-restore-target-present">{JSON.stringify(retryRestoreTargetPresent)}</output>
-      <button type="button" onClick={() => void sendMessage('hello')}>send message</button>
+      <button type="button" onClick={() => void sendMessage('hello', undefined, undefined, undefined, undefined, undefined, undefined, undefined, TASK_ALIGNMENT_SKILL_REQUIREMENT, undefined, undefined, { kind: 'task-discussion', input: { candidatesDir: '/data/discussion/candidates', workspaceId: 'ws', workspacePath: '/workspace', visibleUserMessage: 'hello' } }).then(setSendReceipt)}>send discussion</button>
+      <output data-testid="send-receipt">{JSON.stringify(sendReceipt)}</output>
+      <button type="button" onClick={() => void sendMessage('hello').then(setSendReceipt)}>send message</button>
       <button type="button" onClick={() => {
         const failed = historyMessages.find(message => message.deliveryStatus === 'failed');
         if (failed) void sendMessage('hello', undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, failed.id);
@@ -689,6 +695,60 @@ describe('TabProvider session activity ownership', () => {
     },
   );
 
+  it('holds attachment and sends until pending Session birth has been reconciled', async () => {
+    const props = { tabId: 'pending-birth', agentDir: '/tmp/workspace', sessionId: 'pending-birth', claimSessionOpeningTransition: allowSessionOpening };
+    const view = render(<TabProvider {...props} sidecarConfigDisposition="pending"><Probe /></TabProvider>);
+    await act(async () => undefined);
+    expect(sseHarness.state.eventHandler).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'send message' }));
+    await waitFor(() => expect(screen.getByTestId('send-receipt')).toHaveTextContent('false'));
+    expect(tauriHarness.proxyFetch).not.toHaveBeenCalled();
+    view.rerender(<TabProvider {...props} sessionId="prepared-birth" sidecarConfigDisposition="push"><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+  });
+
+  it.each([false, true])('preserves queued-response uncertainty and complete discussion contract (canonical first: %s)', async canonicalFirst => {
+    const sessionId = 'pending-busy-loss';
+    let reject!: (error: Error) => void;
+    tauriHarness.proxyFetch.mockImplementation(() => new Promise<Response>((_resolve, fail) => { reject = fail; }));
+    render(<TabProvider tabId="busy-loss" agentDir="/tmp/workspace" sessionId={sessionId} claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:status', { sessionState: 'running' });
+    fireEvent.click(screen.getByRole('button', { name: 'send discussion' }));
+    await waitFor(() => expect(tauriHarness.proxyFetch).toHaveBeenCalled());
+    expect(readActivity().historyCount).toBe(0);
+    const payload = JSON.parse(String(tauriHarness.proxyFetch.mock.calls[0][1]?.body));
+    const accept = () => emit('chat:transcript-operation', { sessionId, operation: { kind: 'message-create', message: { id: 'canonical-busy-user', role: 'user', content: 'hello', timestamp: new Date(0).toISOString(), metadata: { source: 'desktop', clientRequestId: payload.clientRequestId } } } });
+    if (canonicalFirst) accept();
+    await act(async () => reject(new Error('response lost')));
+    expect(readQueueIds()).toEqual([]);
+    if (!canonicalFirst) {
+      expect(JSON.parse(screen.getByTestId('history-unconfirmed').textContent!)).toEqual([true]);
+      expect(JSON.parse(screen.getByTestId('history-contracts').textContent!)).toEqual([expect.objectContaining({ requiredSystemSkill: TASK_ALIGNMENT_SKILL_REQUIREMENT, primaryContext: payload.primaryContext })]);
+      expect(screen.getByTestId('send-receipt')).toHaveTextContent('false');
+      accept();
+    }
+    expect(JSON.parse(screen.getByTestId('history-identities').textContent!)).toEqual([{ id: 'canonical-busy-user', runtimeTurnAnchor: null }]);
+    expect(JSON.parse(screen.getByTestId('history-unconfirmed').textContent!)).toEqual([false]);
+    if (canonicalFirst) expect(screen.getByTestId('send-receipt')).toHaveTextContent('true');
+  });
+
+  it('does not inject a late queued failure into a sibling Session', async () => {
+    let reject!: (error: Error) => void;
+    tauriHarness.proxyFetch.mockImplementation(() => new Promise<Response>((_resolve, fail) => { reject = fail; }));
+    const props = { tabId: 'scope-send', agentDir: '/tmp/workspace', claimSessionOpeningTransition: allowSessionOpening };
+    const view = render(<TabProvider {...props} sessionId="pending-old"><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:status', { sessionState: 'running' });
+    fireEvent.click(screen.getByRole('button', { name: 'send discussion' }));
+    await waitFor(() => expect(reject).toBeDefined());
+    view.rerender(<TabProvider {...props} sessionId="pending-new"><Probe /></TabProvider>);
+    await act(async () => reject(new Error('old response lost')));
+    expect(readActivity()).toMatchObject({ sessionId: 'pending-new', historyCount: 0 });
+    expect(readQueueIds()).toEqual([]);
+    expect(screen.getByTestId('agent-error')).toHaveTextContent('');
+  });
+
   it.each(['rejected', 'network-error'] as const)('retains a failed query after %s and ends pending loading', async failure => {
     let respond!: (response: Response) => void;
     let reject!: (error: Error) => void;
@@ -699,6 +759,7 @@ describe('TabProvider session activity ownership', () => {
     fireEvent.click(screen.getByRole('button', { name: 'send message' }));
     expect(readActivity()).toMatchObject({ isLoading: true, historyCount: 1 });
     await waitFor(() => expect(tauriHarness.proxyFetch).toHaveBeenCalled());
+    expect(screen.getByTestId('send-receipt')).toHaveTextContent('null');
     await act(async () => {
       if (failure === 'rejected') respond(new Response(JSON.stringify({ success: false, error: 'send rejected' })));
       else reject(new Error('connection closed'));
@@ -706,6 +767,8 @@ describe('TabProvider session activity ownership', () => {
     expect(readActivity()).toMatchObject({ isLoading: false, historyCount: 1 });
     expect(JSON.parse(screen.getByTestId('history-content').textContent!)).toEqual(['hello']);
     expect(JSON.parse(screen.getByTestId('history-delivery').textContent!)).toEqual(['failed']);
+    expect(screen.getByTestId('send-receipt')).toHaveTextContent('false');
+    expect(JSON.parse(screen.getByTestId('history-unconfirmed').textContent!)).toEqual([failure === 'network-error']);
     expect(screen.getByTestId('agent-error')).toHaveTextContent(failure === 'rejected' ? 'send rejected' : 'connection closed');
   });
 
@@ -1715,7 +1778,7 @@ describe('TabProvider session activity ownership', () => {
     await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
     fireEvent.click(screen.getByRole('button', { name: 'reset session' }));
     await waitFor(() => expect(readActivity().sessionId).toBe('session-reset-committed'));
-    expect(onSessionIdChange).toHaveBeenCalledWith('session-reset-committed');
+    expect(onSessionIdChange).toHaveBeenCalledWith('session-reset-committed', { newConversation: true });
     expect(tauriHarness.proxyFetch.mock.calls.filter(([url]) => url.endsWith('/chat/reset'))).toHaveLength(1);
   });
 
@@ -1790,7 +1853,7 @@ describe('TabProvider session activity ownership', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'reset session' }));
 
-    await waitFor(() => expect(onSessionIdChange).toHaveBeenCalledWith('session-reset-b'));
+    await waitFor(() => expect(onSessionIdChange).toHaveBeenCalledWith('session-reset-b', { newConversation: true }));
     await waitFor(() => expect(readActivity().sessionId).toBe('session-reset-b'));
     expect(sseHarness.connection.disconnect).not.toHaveBeenCalled();
     expect(sseHarness.connection.connect).not.toHaveBeenCalled();
@@ -1949,7 +2012,7 @@ describe('TabProvider session activity ownership', () => {
     sseHarness.connection.connect.mockClear();
     fireEvent.click(screen.getByRole('button', { name: 'reset session' }));
 
-    await waitFor(() => expect(onSessionIdChange).toHaveBeenCalledWith('session-reset-race-b'));
+    await waitFor(() => expect(onSessionIdChange).toHaveBeenCalledWith('session-reset-race-b', { newConversation: true }));
     expect(readActivity().sessionId).toBe('session-reset-race-b');
 
     act(() => {

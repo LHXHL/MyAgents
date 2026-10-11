@@ -22,6 +22,8 @@ export interface InitialMessageCron {
 
 /** Launcher-to-Chat first-turn handoff. Security: provider ids only, no keys. */
 export interface InitialMessage {
+  clientRequestId?: string;
+  discussionId?: string;
   primaryContext?: import("../../../shared/agentMentions").DesktopPrimaryContext;
   text: string;
   agentMentions?: import("../../../shared/agentMentions").AgentMentionSnapshot[];
@@ -65,6 +67,8 @@ export interface ChatTab extends TabBase<'chat'> {
   isGenerating?: boolean;
   hasUnread?: boolean;
   initialMessage?: InitialMessage;
+  /** Locator only: original input belongs to the Rust discussion artifact. */
+  discussionId?: string;
   sidecarConfigDisposition: SidecarConfigDisposition;
   pendingFilePreview?: FilePreviewIntent;
 }
