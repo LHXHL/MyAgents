@@ -347,8 +347,8 @@ SDK user message 摘要通过 `contentKind`、`textLength`、`isEmptyContent` �
 ### 日志不显示
 
 1. 检查 `initFrontendLogger()` 是否在 `main.tsx` 中调用
-2. 检查 TabProvider 是否正确监听 `REACT_LOG_EVENT`
-3. 检查 UnifiedLogsPanel 的 `sseLogs` prop
+2. 检查 `frontendLogger` 是否向窗口级有界缓冲写入日志；Session Node 日志由 TabProvider 的 `chat:log` 入口接入同一缓冲。
+3. 检查 UnifiedLogsPanel 内部 `useFrontendLogs` 的可见性订阅和 Session / Tab scope，及面板自己的清空游标。
 
 ### 日志不持久化
 
@@ -360,7 +360,7 @@ SDK user message 摘要通过 `contentKind`、`textLength`、`isEmptyContent` �
 
 1. 确认在 Tauri 环境中运行（`isTauri()` 返回 true）
 2. 检查 Rust 侧是否 emit `log:rust` 事件
-3. 检查 TabProvider 中的 Tauri event listener
+3. 检查 `initFrontendLogger()` 建立的窗口级 Tauri event listener 及其生命周期。
 
 ### 录音或转录失败
 
@@ -395,8 +395,9 @@ grep -E '\[AppErrorBoundary\]|\[REACT\] \[ERROR\]' ~/.myagents/logs/unified-*.lo
 
 | 文件 | 说明 |
 |------|------|
-| `src/renderer/utils/frontendLogger.ts` | React console 拦截 |
-| `src/renderer/context/TabProvider.tsx` | 日志状态管理 |
+| `src/renderer/utils/frontendLogger.ts` | React console 拦截、窗口日志缓冲与 Rust 日志监听 |
+| `src/renderer/context/TabProvider.tsx` | Session SSE 实时日志接入 |
+| `src/renderer/hooks/useFrontendLogs.ts` | 可见面板订阅、日志 scope 与清空游标 |
 | `src/renderer/components/UnifiedLogsPanel.tsx` | 日志 UI 面板 |
 | `src/shared/types/log.ts` | Renderer/Server 共用的日志 wire 类型定义 |
 | `src/renderer/types/log.ts` | Renderer 本地的 type-only re-export |

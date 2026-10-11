@@ -1340,7 +1340,7 @@ export default function Chat({
     try {
       await handleSplitFilePreview(browserSourceFile, { initialEditMode: true });
     } catch (error) {
-      toastRef.current.error(`${t('fileActions.previewLoadFailed')}: ${filePreviewErrorMessage(error)}`);
+      toastRef.current.error(`${t('app:fileActions.previewLoadFailed')}: ${filePreviewErrorMessage(error)}`);
     }
   }, [browserSourceFile, handleSplitFilePreview, t]);
 
