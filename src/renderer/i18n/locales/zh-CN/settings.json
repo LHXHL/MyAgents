@@ -533,7 +533,7 @@
       "cloudProvider": "服务商标签",
       "cloudProviderPlaceholder": "例如: 云服务商",
       "apiProtocol": "API 协议",
-      "bridgeWarning": "通过内置桥接自动转换为 Anthropic 协议，存在稳定性风险",
+      "bridgeWarning": "通过内置桥接运行。验证仅检查基础调用；实际会话的工具、图像和推理支持取决于供应商与模型。",
       "anthropicProtocol": "Anthropic 协议",
       "openaiProtocol": "OpenAI 协议",
       "upstreamFormat": "接口格式",

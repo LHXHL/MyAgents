@@ -533,7 +533,7 @@
       "cloudProvider": "Provider label",
       "cloudProviderPlaceholder": "e.g. Cloud provider",
       "apiProtocol": "API protocol",
-      "bridgeWarning": "The built-in bridge converts this to the Anthropic protocol automatically. Stability may vary.",
+      "bridgeWarning": "Runs through the built-in bridge. Verification checks a basic call; tool, image, and reasoning support in conversations depends on the provider and model.",
       "anthropicProtocol": "Anthropic protocol",
       "openaiProtocol": "OpenAI protocol",
       "upstreamFormat": "Upstream format",

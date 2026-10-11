@@ -4,7 +4,7 @@ import type { AnthropicRequest, AnthropicMessage, AnthropicToolResultBlock, Anth
 import type { ResponsesRequest, ResponsesInputItem, ResponsesInputContentPart, ResponsesInputFunctionCall, ResponsesToolChoice } from '../types/openai-responses';
 import type { BridgeConfig } from '../types/bridge';
 import type { ToolImageSaver } from './multimodal';
-import { stripModelSuffix } from '../../../shared/contextUsage';
+import { resolveBridgeModel } from './model';
 import { projectPromptCacheBreakpoint } from './cache-semantics';
 
 
@@ -26,22 +26,7 @@ export function translateRequestToResponses(
   req: AnthropicRequest,
   options?: TranslateRequestResponsesOptions,
 ): ResponsesRequest {
-  // 1. Model mapping
-  let model = req.model;
-  if (options?.modelOverride) {
-    model = options.modelOverride;
-  } else if (options?.modelMapping) {
-    const mapping = options.modelMapping;
-    if (typeof mapping === 'function') {
-      model = mapping(req.model) ?? req.model;
-    } else {
-      model = mapping[req.model] ?? req.model;
-    }
-  }
-  // SDK-ingress-only: strip the `[1m]` / ` 1m` capability decoration before the
-  // wire (#338) — same rationale as the Chat Completions translator. Config-fed
-  // modelOverride / modelMapping can carry a stored suffix the upstream rejects.
-  model = stripModelSuffix(model) ?? model;
+  const model = resolveBridgeModel(req.model, options?.modelOverride, options?.modelMapping);
 
   const promptCacheBreakpoints = options?.promptCacheBreakpoints === true;
 
@@ -49,7 +34,8 @@ export function translateRequestToResponses(
   let instructions: string | undefined;
   let developerSystemMessage: ResponsesInputItem | undefined;
   if (req.system) {
-    if (Array.isArray(req.system) && promptCacheBreakpoints) {
+    if (Array.isArray(req.system) && promptCacheBreakpoints
+        && req.system.some(block => projectPromptCacheBreakpoint(true, block.cache_control))) {
       const systemText = req.system.map(block => block.text).join('\n\n');
       if (systemText) {
         developerSystemMessage = {
@@ -86,6 +72,8 @@ export function translateRequestToResponses(
   const responsesReq: ResponsesRequest = {
     model,
     input,
+    // Full SDK history is replayed; no upstream response-id continuation is used.
+    store: false,
   };
 
   if (instructions) responsesReq.instructions = instructions;
@@ -98,12 +86,17 @@ export function translateRequestToResponses(
       name: t.name,
       description: t.description,
       parameters: t.input_schema,
+      // Preserve SDK optional fields instead of Responses strict normalization.
+      strict: false,
     }));
   }
 
   // 6. Tool choice
   if (req.tool_choice) {
     responsesReq.tool_choice = translateToolChoiceToResponses(req.tool_choice);
+    if ('disable_parallel_tool_use' in req.tool_choice && req.tool_choice.disable_parallel_tool_use) {
+      responsesReq.parallel_tool_calls = false;
+    }
   }
 
   // 7. Stream

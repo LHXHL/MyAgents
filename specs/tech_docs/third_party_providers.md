@@ -135,13 +135,23 @@ SDK subprocess
 
 ### Cache affinity
 
-Active conversation 可按 Session 设置 `prompt_cache_key` / explicit cache breakpoints。One-shot probe、title 和 vision 不使用 conversation affinity。上游明确拒绝某 cache feature 时，只在该 bridge generation 内做一次兼容降级并重放等价 request；不能全局永久关闭，也不能对任意 HTTP error 猜测重试。
+Session affinity 只提供 conversation identity，不证明目标支持缓存扩展。`src/shared/provider-prompt-cache.ts` 根据实际 endpoint 和已翻译的模型判断 key / explicit breakpoint 能力；两者独立。当前只信任官方 OpenAI `/v1` endpoint，断点仅用于已核实支持的模型族；第三方、代理和未知 endpoint 保留基础请求形状。SDK 模型别名与 `[1m]` 修饰先经统一 model resolver 归一化，再用于能力决策和匿名 key。仅系统块确实含缓存标记时才为断点改用 developer content，不转译 Anthropic TTL，不承诺缓存语义等价或命中。
+
+One-shot probe、title 和 vision 不使用 conversation affinity。连接验证只证明该模型的基础调用，不测试长上下文、完整工具集或实际会话的缓存命中；未知 endpoint 的 active / one-shot 缓存字段和系统消息形状保持一致。可信目标的 active request 才添加缓存特征。
+
+上游 400/422 明确归因于缓存字段（包括结构化 param / detail.loc）或精确识别的新增 role/content shape 时，分别只允许一次 key / breakpoint 降级并从源请求重译；无关错误不重试。兼容观察属于 exact bridge generation，按 Provider、endpoint、实际模型和协议隔离；同 token 的模型/endpoint 切换不继承别的目标结论，新 subprocess 不继承旧 generation。并发首次请求各自有界，不串行探测或建立全局永久黑名单。
 
 ### Timeout 与终态
 
 Bridge 对“等待 response headers”有有界 timeout；成功 streaming body 由 SDK turn、AbortSignal 和 stream protocol owning，不应用一个短固定总时长截断长回答。HTTP status、stream error、model refusal、translator failure 和 SDK terminal 必须保持可区分。
 
 普通 401/403/429/5xx 不做通用重试。只有明确的 managed-auth 401 recovery 和精确识别的 cache compatibility downgrade 拥有各自单次重试预算。
+
+Responses streaming 与 non-streaming 共用 terminal policy：completed 才允许 end_turn / tool_use；incomplete 的 max_output_tokens（无工具调用）投射为 max_tokens 并保留终态 usage；content_filter、未知 incomplete reason 和截断的工具调用进入错误，不执行不完整工具。response.failed / error 保持错误语义；没有真实协议终态的 EOF（包括空流）不能补成成功。真实终态立即结束下游并释放 upstream，不等待 provider 关闭连接。streaming failure 在 error 之前投射可用的终态 usage，Anthropic error 本身不承诺 SDK 最终失败结果会保留计费统计。
+
+### Responses 转换契约
+
+SDK `disable_parallel_tool_use` 保持为 `parallel_tool_calls: false`。工具 schema 原样传入并显式设置 `strict: false`，避免 Responses 的 strict normalization 改写可选字段。请求显式 `store: false`，不使用 previous_response_id / conversation；SDK 每轮发送 Anthropic-shaped history。该桥接不回放原生 reasoning item 或 encrypted reasoning，因此不能声称完整推理连续性。工具返回图片仍经现有 image saver 转成本地路径提示，保存失败时省略；这是有损兼容，不保证模型可见图片。
 
 ### Proxy
 

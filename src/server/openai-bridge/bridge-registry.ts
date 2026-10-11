@@ -1,3 +1,5 @@
+import type { PromptCacheCompatibility } from './prompt-cache';
+
 /**
  * Per-subprocess bridge configuration registry (PRD #124, 2026-05).
  *
@@ -90,6 +92,7 @@ export interface UpstreamBridgeConfig {
    *  bridges intentionally leave it off so verify/title/vision do not pollute
    *  conversation cache routing. */
   cacheAffinity?: BridgeCacheAffinity;
+  cacheCompatibility?: PromptCacheCompatibility;
   /** Request identity for OpenCode Go; scoped to this bridge, never persisted. */
   opencodeSessionId?: string;
 }
@@ -101,10 +104,9 @@ interface Entry {
   registeredAt: number;
   /** Free-form description for diagnostics (e.g., 'verify:moonshot', 'session:abc-123'). */
   description: string;
-  /** Sticky per-token compatibility downgrade for prompt_cache_key. */
-  promptCacheKeyDisabled: boolean;
-  /** Sticky per-token compatibility downgrade for explicit cache breakpoints. */
-  promptCacheBreakpointsDisabled: boolean;
+  /** Rejections are scoped to concrete provider/endpoint/model/format targets. */
+  keyRejections: Set<string>;
+  breakpointRejections: Set<string>;
 }
 
 const registry = new Map<string, Entry>();
@@ -131,8 +133,8 @@ export function registerBridge(
     resolve,
     registeredAt: Date.now(),
     description,
-    promptCacheKeyDisabled: existing?.promptCacheKeyDisabled ?? false,
-    promptCacheBreakpointsDisabled: existing?.promptCacheBreakpointsDisabled ?? false,
+    keyRejections: existing?.keyRejections ?? new Set(),
+    breakpointRejections: existing?.breakpointRejections ?? new Set(),
   });
 }
 
@@ -161,30 +163,23 @@ export async function lookupBridge(
 ): Promise<UpstreamBridgeConfig | undefined> {
   const entry = registry.get(token);
   if (!entry) return undefined;
-  return await entry.resolve(request);
+  const cfg = await entry.resolve(request);
+  return {
+    ...cfg,
+    // Capture the entry before await: a retired request cannot modify a new
+    // registration that happens to reuse this token.
+    cacheCompatibility: {
+      isKeyDisabled: target => entry.keyRejections.has(target),
+      isBreakpointsDisabled: target => entry.breakpointRejections.has(target),
+      disableKey: target => { entry.keyRejections.add(target); },
+      disableBreakpoints: target => { entry.breakpointRejections.add(target); },
+    },
+  };
 }
 
 /** Existence-only check. Must never trigger managed credential resolution. */
 export function hasBridge(token: string): boolean {
   return registry.has(token);
-}
-
-export function disablePromptCacheKey(token: string): void {
-  const entry = registry.get(token);
-  if (entry) entry.promptCacheKeyDisabled = true;
-}
-
-export function isPromptCacheKeyDisabled(token: string): boolean {
-  return registry.get(token)?.promptCacheKeyDisabled ?? false;
-}
-
-export function disablePromptCacheBreakpoints(token: string): void {
-  const entry = registry.get(token);
-  if (entry) entry.promptCacheBreakpointsDisabled = true;
-}
-
-export function arePromptCacheBreakpointsDisabled(token: string): boolean {
-  return registry.get(token)?.promptCacheBreakpointsDisabled ?? false;
 }
 
 /**

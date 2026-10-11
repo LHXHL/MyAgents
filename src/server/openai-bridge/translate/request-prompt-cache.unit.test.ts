@@ -75,7 +75,7 @@ describe('Responses API prompt_cache_key injection', () => {
     );
 
     expect(out.prompt_cache_key).toBe('myagents:responses:abc123');
-    expect('store' in out).toBe(false);
+    expect(out.store).toBe(false);
     expect('previous_response_id' in out).toBe(false);
     expect('conversation' in out).toBe(false);
     expect('prompt_cache_retention' in out).toBe(false);
@@ -104,7 +104,7 @@ describe('Responses API prompt_cache_key injection', () => {
     expect(JSON.stringify(out.input.filter(item => 'type' in item && item.type === 'function_call_output')))
       .not.toContain('prompt_cache_breakpoint');
     expect('prompt_cache_options' in out).toBe(false);
-    expect('store' in out).toBe(false);
+    expect(out.store).toBe(false);
     expect('previous_response_id' in out).toBe(false);
     expect('conversation' in out).toBe(false);
     expect(out.model).toBe('claude-sonnet-4-6');
@@ -124,6 +124,7 @@ describe('Responses API prompt_cache_key injection', () => {
       name: 'lookup',
       description: 'Lookup a value',
       parameters: { type: 'object', properties: {} },
+      strict: false,
     }]);
   });
 

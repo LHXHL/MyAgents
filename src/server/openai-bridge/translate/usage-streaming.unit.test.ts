@@ -14,6 +14,7 @@
 // This test reproduces the SDK's usage accumulation to assert the end-to-end
 // modelUsage the SDK would compute from the bridge's SSE stream.
 
+import { Stream as AnthropicStream } from '@anthropic-ai/sdk/core/streaming';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { StreamTranslator } from './stream';
 import { ResponsesStreamTranslator } from './stream-responses';
@@ -588,7 +589,8 @@ describe('handleStreamResponse [DONE]-driven finalization (issue #277)', () => {
     );
 
     const { events, reachedDone } = await readAnthropicEvents(out.body!, 2_000);
-    expect(events.some((event) => event.type === 'message_stop')).toBe(true);
+    expect(events.some((event) => event.type === 'error')).toBe(true);
+    expect(events.some((event) => event.type === 'message_stop')).toBe(false);
     expect(JSON.stringify(events)).not.toContain('private prompt');
     expect(JSON.stringify(events)).not.toContain('"input"');
     expect(reachedDone).toBe(true);
@@ -621,5 +623,69 @@ describe('ResponsesStreamTranslator usage (issue #277)', () => {
     expect(usage.output_tokens).toBe(75);
     expect(usage.cache_read_input_tokens).toBe(2000);
     expect(usage.cache_creation_input_tokens).toBe(400);
+  });
+});
+
+
+describe('Responses terminal transport regressions (#654)', () => {
+  it.each(['max_output_tokens', 'content_filter', 'unknown'])('closes on incomplete %s without transport EOF and preserves usage', async reason => {
+    let sent = false;
+    const upstream = new ReadableStream<Uint8Array>({ pull(controller) {
+      if (sent) return;
+      sent = true;
+      controller.enqueue(new TextEncoder().encode(sseFrame({ type: 'response.incomplete', response: {
+        id: 'r', object: 'response', model: MODEL, status: 'incomplete', output: [],
+        incomplete_details: { reason }, usage: { input_tokens: 11, output_tokens: 3, total_tokens: 14 },
+      } })));
+    } });
+    const abort = new AbortController();
+    const logs: string[] = [];
+    const out = handleResponsesStreamResponse(new Response(upstream), MODEL, m => logs.push(m), abort, undefined, () => {});
+    const { events, reachedDone } = await readAnthropicEvents(out.body!, 2000);
+    expect(reachedDone).toBe(true);
+    expect(abort.signal.aborted).toBe(true);
+    expect(accumulateUsage(events)).toEqual({ input_tokens: 11, output_tokens: 3 });
+    expect(events.some(e => e.type === 'message_delta' && e.delta.stop_reason === 'end_turn')).toBe(false);
+    expect(events.some(e => e.type === 'error')).toBe(reason !== 'max_output_tokens');
+    expect(logs.join(' ')).toContain('terminal=response_incomplete');
+  });
+  it('uses an Anthropic error event on EOF with no protocol terminal', async () => {
+    const upstream = new Response(sseFrame({ type: 'response.output_text.delta', delta: 'partial' }));
+    const out = handleResponsesStreamResponse(upstream, MODEL, () => {}, new AbortController(), undefined, () => {});
+    const events = await readAllAnthropicEvents(out.body!);
+    expect(events.some(e => e.type === 'error')).toBe(true);
+    expect(events.some(e => e.type === 'message_stop')).toBe(false);
+  });
+  it('ends on a standalone Responses error and redacts echoed input', async () => {
+    const upstream = new ReadableStream<Uint8Array>({ start(controller) {
+      controller.enqueue(new TextEncoder().encode(sseFrame({ type: 'error', code: 'bad', message: 'failed echo {"input":[{"content":"private"}]}' })));
+    } });
+    const abort = new AbortController();
+    const out = handleResponsesStreamResponse(new Response(upstream), MODEL, () => {}, abort, undefined, () => {});
+    const { events, reachedDone } = await readAnthropicEvents(out.body!, 2000);
+    expect(reachedDone).toBe(true);
+    expect(events.some(e => e.type === 'error')).toBe(true);
+    expect(JSON.stringify(events)).not.toContain('private');
+    expect(abort.signal.aborted).toBe(true);
+  });
+});
+
+
+describe('Anthropic SDK error consumption (#654)', () => {
+  it.each(['failed', 'incomplete', 'eof'])('surfaces %s as an SDK stream error', async kind => {
+    const response = {
+      id: 'r', object: 'response', model: MODEL, status: kind,
+      output: [], usage: { input_tokens: 11, output_tokens: 3, total_tokens: 14 },
+      error: kind === 'failed' ? { code: 'api_error', message: 'failed upstream' } : undefined,
+      incomplete_details: kind === 'incomplete' ? { reason: 'content_filter' } : undefined,
+    };
+    const input = kind === 'eof' ? '' : sseFrame({ type: `response.${kind}`, response });
+    const out = handleResponsesStreamResponse(new Response(input), MODEL, () => {}, new AbortController(), undefined, () => {});
+    const consume = async () => {
+      for await (const event of AnthropicStream.fromSSEResponse<AnthropicStreamEvent>(out, new AbortController())) {
+        expect(event.type).not.toBe('message_stop');
+      }
+    };
+    await expect(consume()).rejects.toThrow(kind === 'incomplete' ? 'content_filter' : kind === 'eof' ? 'terminal event' : 'failed upstream');
   });
 });

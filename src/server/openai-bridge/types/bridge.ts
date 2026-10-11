@@ -1,3 +1,5 @@
+import type { PromptCacheCompatibility } from '../prompt-cache';
+
 // Bridge configuration types
 
 export interface BridgeConfig {
@@ -68,17 +70,13 @@ export interface UpstreamConfig {
    *  translators inject `reasoning_effort` (chat_completions) /
    *  `reasoning.effort` (responses); absent = omitted entirely. */
   reasoningEffort?: string;
-  /** OpenAI prompt-cache affinity. Active session bridges set this; one-shot
-   *  bridges leave it off. Compatibility downgrade hooks are generation-local
-   *  state owned by bridge-registry. */
+  /** Conversation identity does not declare upstream capabilities. */
   cacheAffinity?: {
     sessionId?: string;
     promptCacheKeyMode?: 'off' | 'session';
-    promptCacheKeyDisabled?: boolean;
-    disablePromptCacheKey?: () => void;
-    promptCacheBreakpointsDisabled?: boolean;
-    disablePromptCacheBreakpoints?: () => void;
   };
+  /** Compatibility state is captured from the exact registry generation. */
+  cacheCompatibility?: PromptCacheCompatibility;
   /** OpenCode Go request identity; provided by the bridge token owner. */
   opencodeSessionId?: string;
 }
