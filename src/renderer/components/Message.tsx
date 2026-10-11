@@ -14,6 +14,7 @@ import { useTranslation } from 'react-i18next';
 import { track } from '@/analytics';
 import AttachmentPreviewList from '@/components/AttachmentPreviewList';
 import BlockGroup from '@/components/BlockGroup';
+import { projectCitationMarkdown, type CitationSources } from '@/utils/runtimeCitations';
 import Markdown from '@/components/Markdown';
 import { useToastOptional } from '@/components/Toast';
 import WidgetRenderer from '@/components/tools/WidgetRenderer';
@@ -43,6 +44,7 @@ import {
 
 interface MessageProps {
   message: MessageType;
+  citationSources?: CitationSources;
   isLoading?: boolean;
   onRewind?: (messageId: string) => void;
   onRetry?: (assistantMessageId: string) => void;
@@ -82,7 +84,7 @@ function getTurnMetaLabel(message: MessageType, t: (key: string, options?: Recor
  */
 function areMessagesEqual(prev: MessageProps, next: MessageProps): boolean {
   // Different loading state -> must re-render
-  if (prev.isLoading !== next.isLoading) return false;
+  if (prev.isLoading !== next.isLoading || prev.citationSources !== next.citationSources) return false;
   // NOTE: isStreaming was removed from props — rewind button visibility is now
   // controlled via CSS ([data-streaming] selector on the scroll container).
   // This eliminates mass re-renders of ALL N history messages when streaming
@@ -144,8 +146,9 @@ function extractAssistantText(content: MessageType['content']): string {
  * Action bar for assistant messages: copy + retry.
  * Always visible (not hover), left-aligned icon buttons.
  */
-function AssistantActions({ message, onRetry, onFork, className = '' }: {
+function AssistantActions({ message, onRetry, onFork, citationSources, className = '' }: {
   message: MessageType;
+  citationSources?: CitationSources;
   onRetry?: (id: string) => void;
   onFork?: (id: string) => void;
   className?: string;
@@ -161,6 +164,7 @@ function AssistantActions({ message, onRetry, onFork, className = '' }: {
   }, []);
 
   const text = extractAssistantText(message.content);
+  const presentedText = () => projectCitationMarkdown(text, { sources: citationSources, unavailableLabel: t('markdown.citationUnavailable') });
   const turnMetaLabel = getTurnMetaLabel(message, t);
 
   const handleExport = async () => {
@@ -170,7 +174,7 @@ function AssistantActions({ message, onRetry, onFork, className = '' }: {
     try {
       track('message_export', {});
       const fileName = t('message.replyFileName', { date: localDateStr() });
-      toast?.success(await downloadMarkdown(fileName, buildReplyMarkdown(text)));
+      toast?.success(await downloadMarkdown(fileName, buildReplyMarkdown(presentedText())));
     } finally {
       exportingRef.current = false;
     }
@@ -183,7 +187,7 @@ function AssistantActions({ message, onRetry, onFork, className = '' }: {
           aria-label={t('message.actions.copy')}
           onClick={async () => {
             try {
-              await copyPlainText(text);
+              await copyPlainText(presentedText());
               track('message_copy', {});
               setCopied(true);
               if (timerRef.current) clearTimeout(timerRef.current);
@@ -249,14 +253,14 @@ function systemTagLabel(kind: string, t: (key: string) => string): string | null
   return null;
 }
 
-function renderWidgetSegments(text: string, isLoading: boolean, unclosedNotice: string): ReactNode {
+function renderWidgetSegments(text: string, isLoading: boolean, unclosedNotice: string, citationSources?: CitationSources): ReactNode {
   const segments = parseWidgetTags(text);
   return segments.map((seg, si) => {
     if (seg.type === 'text') {
       return (
         <div key={`t-${si}`} className="flex justify-start w-full px-1 py-1 select-none">
           <div className="ai-message-content w-full max-w-none text-[var(--ink)] select-text">
-            <Markdown>{seg.content}</Markdown>
+            <Markdown citationSources={citationSources}>{seg.content}</Markdown>
           </div>
         </div>
       );
@@ -288,7 +292,7 @@ function renderWidgetSegments(text: string, isLoading: boolean, unclosedNotice: 
  * Message component with memo optimization.
  * History messages won't re-render when streaming message updates.
  */
-const Message = memo(function Message({ message, isLoading = false, onRewind, onRetry, onFork, exitPlanModeSlot, initialUserCollapsed = false }: MessageProps) {
+const Message = memo(function Message({ message, citationSources, isLoading = false, onRewind, onRetry, onFork, exitPlanModeSlot, initialUserCollapsed = false }: MessageProps) {
   const { t } = useTranslation('app');
   const { openPreview } = useImagePreview();
   const toast = useToastOptional();
@@ -515,7 +519,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
         <div className="w-full max-w-none">
           {hasWidgets ? (
             <div className="w-full space-y-3">
-              {renderWidgetSegments(message.content, isLoading, t('message.widgetUnclosed'))}
+              {renderWidgetSegments(message.content, isLoading, t('message.widgetUnclosed'), citationSources)}
             </div>
           ) : (
             /* ai-message-content 标记 host prose 上下文；具体 16px/1.7、零字距和
@@ -525,10 +529,10 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
               {/* Tail-fade only while text is the actively-streaming edge — `streamingTextActive`
                   clears on the text block's content-block-stop, so it doesn't linger during a
                   slow gap before the next block (string-content path). */}
-              <Markdown streaming={isLoading && !!message.streamingTextActive}>{message.content}</Markdown>
+              <Markdown citationSources={citationSources} streaming={isLoading && !!message.streamingTextActive}>{message.content}</Markdown>
             </div>
           )}
-          {!isLoading && <AssistantActions message={message} onRetry={onRetry} onFork={onFork} />}
+          {!isLoading && <AssistantActions citationSources={citationSources} message={message} onRetry={onRetry} onFork={onFork} />}
         </div>
       </div>
     );
@@ -583,7 +587,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
               if (!Array.isArray(item)) {
                 if (item.type === 'text' && item.asyncQuestions) {
                   return <div key={index} className="w-full px-1">
-                    {item.text && <Markdown>{item.text}</Markdown>}
+                    {item.text && <Markdown citationSources={citationSources}>{item.text}</Markdown>}
                     <AsyncQuestionCard questions={item.asyncQuestions} />
                   </div>;
                 }
@@ -592,7 +596,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
                   if (hasWidgetTags(item.text)) {
                     return (
                       <div key={index} className="w-full space-y-3">
-                        {renderWidgetSegments(item.text, isLoading, t('message.widgetUnclosed'))}
+                        {renderWidgetSegments(item.text, isLoading, t('message.widgetUnclosed'), citationSources)}
                       </div>
                     );
                   }
@@ -608,7 +612,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
                       className="flex justify-start w-full px-1 py-1 select-none"
                     >
                       <div className="ai-message-content w-full max-w-none text-[var(--ink)] select-text">
-                        <Markdown streaming={isLoading && index === groupedBlocks.length - 1 && !!message.streamingTextActive}>{item.text}</Markdown>
+                        <Markdown citationSources={citationSources} streaming={isLoading && index === groupedBlocks.length - 1 && !!message.streamingTextActive}>{item.text}</Markdown>
                       </div>
                     </div>
                   );
@@ -654,7 +658,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
             })}
           </div>
         </article>
-        {!isLoading && <AssistantActions className="px-4" message={message} onRetry={onRetry} onFork={onFork} />}
+        {!isLoading && <AssistantActions citationSources={citationSources} className="px-4" message={message} onRetry={onRetry} onFork={onFork} />}
       </div>
     </div>
   );

@@ -1274,5 +1274,20 @@
       "Explore": "Explore",
       "Plan": "Plan"
     }
+  },
+  "discussionRecovery": {
+    "retryStartup": "Retry startup (without sending)",
+    "saved": "The original discussion input is saved.",
+    "unconfirmed": "A saved conversation message has not been confirmed. Check history and the queue before resending. Restoring does not send automatically.",
+    "view": "View original input",
+    "copy": "Copy original",
+    "copied": "Copied",
+    "restore": "Restore to composer",
+    "confirm": "The message may already have been admitted. Check history and the queue first. Restoring replaces the current composer and preserves the discussion context and required skill; you decide whether to send.",
+    "readFailed": "The saved discussion input could not be read.",
+    "reload": "Read again",
+    "unavailable": "No recoverable original was saved for this discussion. Check the original Record or saved conversation.",
+    "resend": "Confirm resend",
+    "resendConfirm": "The send response was lost and the message may already have been admitted. Check history and the queue first; resending may create a duplicate."
   }
 }

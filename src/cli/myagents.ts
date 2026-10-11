@@ -611,7 +611,7 @@ async function canShowInternalTopHelp(
 // HTTP client
 // ---------------------------------------------------------------------------
 
-async function callApi(
+export async function callApi(
   route: string,
   body: Record<string, unknown> = {},
 ): Promise<Record<string, unknown>> {
@@ -663,9 +663,12 @@ async function callApi(
     const causeCode = (err as { cause?: { code?: unknown } } | undefined)?.cause?.code;
     const preConnectFailure =
       msg.includes('ECONNREFUSED') || causeCode === 'ECONNREFUSED';
+    const timedOut = err instanceof Error && err.name === 'TimeoutError';
     const transportFailure =
-      (err instanceof DOMException && err.name === 'TimeoutError') ||
+      timedOut ||
       preConnectFailure ||
+      (typeof causeCode === 'string' &&
+        (causeCode.startsWith('UND_ERR_') || ['ECONNRESET', 'EPIPE', 'ETIMEDOUT'].includes(causeCode))) ||
       msg.includes('fetch failed');
     const responseDecodeFailure = err instanceof SyntaxError;
     if (!transportFailure && !responseDecodeFailure) throw err;
@@ -673,6 +676,18 @@ async function callApi(
       return sessionAdmissionUnconfirmedResult(
         'The request may have reached MyAgents, but its admission acknowledgement was not received.',
       );
+    }
+    if (!preConnectFailure) {
+      return {
+        success: false,
+        code: timedOut ? 'MYAGENTS_REQUEST_TIMEOUT' : 'MYAGENTS_REQUEST_FAILED',
+        error: timedOut
+          ? route === 'model/verify'
+            ? 'Provider verification did not return within the request deadline.'
+            : 'MyAgents did not return a response within the request deadline.'
+          : 'The MyAgents request failed before a readable response was received.',
+        suggestion: 'Check MyAgents status and the operation result before retrying; the request may still have completed.',
+      };
     }
     return {
       success: false,
@@ -753,6 +768,16 @@ export function cliRequestTimeoutMs(route: string, body: Record<string, unknown>
   if (route === 'agent/network-diagnose') return 40_000;
   if (route === 'session/watch') return 40_000;
   if (route === 'mcp/test') return 20_000;
+  // Verification may run a 15s OpenAI pre-probe followed by a 30s SDK
+  // probe, then persist its verdict. Let that owner report the real result.
+  if (route === 'model/verify') return 60_000;
+  // Existing download/lifecycle owners already permit these longer operations.
+  // skill/add and agent/archive each perform two sequential bounded requests.
+  if (route === 'skill/add') return 675_000;
+  if (route === 'cc-plugin/install' || route === 'cc-plugin/uninstall') return 345_000;
+  if (route === 'agent/archive') return 615_000;
+  if (route === 'agent/unarchive' || route === 'agent/resolve-conflict'
+    || route === 'agent/channel/remove') return 315_000;
   if (route === 'task/trigger/test') return 315_000;
   return 10_000;
 }

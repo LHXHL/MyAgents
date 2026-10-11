@@ -136,9 +136,17 @@ Builtin 的 `messageGenerator()` 是常驻 generator。配置需要重建 Query 
 
 desktop 连续发送支持 realtime 与 turn-boundary 两种策略，但两者仍共享同一个 Runtime queue owner。Stop 中止当前 turn，不凭空取消 SDK 已接纳但尚未消费的项；queue receipt、replay 或 assistant-start 才能确认后续项的真实状态。
 
+没有活跃 turn 时，常驻 Query 不代表消息正在执行。Stop 通过精确 queue owner 取消本地 message、pending、turn-boundary、admission 与尚未提交的 promoted input，等待取消结算后才返回结果；promoted token 留给 generator 确认清理。只有没有 turn、提交、输入或重试 owner 时才归置 idle，迟到取消不能覆盖新的输入。已提交给 SDK 的后续项不进入本地 Stop 的取消快照；启动中的 Stop 仍使用既有 canonical abort。
+
+强制发送在有活跃 turn 时沿既有中断与 terminal 晋级路径处理；没有活跃 turn 时，只向准备好的 generator/启动入口交接目标。找到了目标却无法交接，应保留消息并返回显式错误；只有目标不存在才返回 stale，不能调用 Stop 清掉目标后宣称发送成功。
+
 Builtin 中断请求由 `builtin-session/interrupt.ts` 在既有 Session 内按请求和 Query 归属管理。同一目标尚未 terminal 时复用其停止操作；目标 terminal 一旦被 turn owner 接管，就同步释放中断状态，不等待控制回执。迟到回执只可核对原请求、原 Query 的精确排队项，不能关闭后续 Query、清掉新请求或把后续 turn 当作取消。真实 SDK 错误仍按错误结算；只有尚未 terminal 的目标才适用 5 秒回执超时与 ACK 后 3 秒强制关闭。
 
+普通 turn Stop 不等于关闭整个 Query。V1 / V2 都在逻辑结算点记录 terminal，持久化完成回调只发布捕获的记录，不写回当前 turn。SDK iterator 在该停止期间或停止 terminal 后退出时，Query catch 使用本 Query 生命周期内产生的停止记录，不能再把已停止回合改写为错误；启动时继承的旧记录不能抑制替代 Query 的启动失败；未接纳输入时只发布 Session 错误，不调用 turn 结算，未发送输入由既有队列 finalization 恢复或取消。新输入 / turn 接纳通过 `resetTurnUsage` 清除旧 terminal，真实后续失败继续按错误处理。Windows 无确定根因的 exit 1 只展示退出事实，stderr 尾巴保留在日志中，不作为面向用户的故障原因。
+
 SDK background Agent/Bash 与父 turn 共用同一个 Query 和 Sidecar。自动 deferred restart 必须等待该 Query 的 background-task registry 清空；显式 Stop、Reset、Session switch、应用退出和真实 Query crash 仍可终止。
+
+后台 task 的稳定 `task_id` 不等于一次执行。SDK `run_id` 在恢复同一 task 时变化，按字符串顺序比较运行先后；缺失值只兼容旧事件，不能覆盖已知新 run。`builtin-session/lifecycle.ts` 在 exact Query 的既有 registry 内同时裁决 start/terminal 的 run、活跃状态与双 terminal channel 的富信息补齐；已完成记录留到 Query finalization，不能让旧 run 的迟到 start/terminal 复活任务、释放新 run 或阻止新 run 完成。Renderer SSE 和通知记录携带可选 `runId`，新 run 重置旧 terminal 投影；历史 hydration 不覆盖已知更晚 run，同一 run 的摘要补齐 upsert 原通知，不同 run 使用不同通知 ID。旧历史缺字段时仍可读取，不改写磁盘历史。
 
 MCP pre-warm 是 soft readiness observation，不是 AI turn 的 admission authority。未 connected、读取失败或观察超时不能拒绝业务 turn；真正的 MCP surface replacement 则是 Query-generation correctness fence，必须在 turn boundary 串行应用。
 
@@ -151,6 +159,8 @@ MCP pre-warm 是 soft readiness observation，不是 AI turn 的 admission autho
 外部 Runtime 的“进程 idle”不等于 turn 成功。Task、Goal、通知和 UI terminal 都必须读取 adapter 提供的真实 result classification。
 
 ### 4.4 Rewind、Fork、Retry 与 reload anchor
+
+SDK 输入的 queue UUID 只用于关联准入和消费。Replay、assistant-start 与 result handoff 不证明该 UUID 是持久 native chain entry，因此这些路径不能写入 `sdkUuid` 或 native UUID 集；恢复点只取原生 user/assistant 内容事件提供的 UUID。缺少精确边界时沿既有 mutation 校验明确拒绝，不猜测更早历史。旧数据中的同值 UUID 也可能是真实 native entry，不能按“等于 queueId”批量删除；已失效的显式边界仍通过用户选定的更早 Rewind/Retry 恢复。
 
 三种操作统一进入 SessionEngine，adapter 拥有 native history 操作与执行顺序，SessionStore 拥有产品 transcript、metadata 和提交裁决。Renderer 不自行选择 Runtime 路径或补做重发。
 

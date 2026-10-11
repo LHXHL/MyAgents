@@ -26,6 +26,7 @@ import MarkdownTable from './markdown/MarkdownTable';
 const MermaidDiagram = lazy(() => import('./markdown/MermaidDiagram'));
 import { useFileAction } from '@/context/fileActionState';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
+import { remarkRuntimeCitations, type CitationSources } from '@/utils/runtimeCitations';
 import { preprocessMarkdownContent } from '@/utils/markdownPreprocess';
 import { splitMarkdownRenderChunks } from '@/utils/markdownChunks';
 import {
@@ -296,6 +297,7 @@ const markdownComponents: Components = {
 };
 
 interface MarkdownProps {
+  citationSources?: CitationSources;
   children: string;
   /** Document-level numbering for an editor rendering isolated fragments. */
   footnoteNumbers?: ReadonlyMap<string, number>;
@@ -455,7 +457,9 @@ const MarkdownChunk = memo(function MarkdownChunk({ source, remarkPlugins, rehyp
   );
 });
 
-const Markdown = memo(function Markdown({ children, compact = false, preserveNewlines = false, allowSetextHeadings = true, raw = false, basePath = '', workspacePath, streaming = false, footnoteNumbers }: MarkdownProps) {
+const Markdown = memo(function Markdown({ children, compact = false, preserveNewlines = false, allowSetextHeadings = true, raw = false, basePath = '', workspacePath, streaming = false, footnoteNumbers, citationSources }: MarkdownProps) {
+  const { t } = useTranslation('app');
+  const citationUnavailable = t('markdown.citationUnavailable');
   // Skip preprocessing for raw mode (file preview) - preprocessing is for streaming chat messages.
   // In raw mode, convert YAML frontmatter to a fenced code block for proper rendering.
   //
@@ -474,9 +478,11 @@ const Markdown = memo(function Markdown({ children, compact = false, preserveNew
   const chunks = useMemo(() => splitMarkdownRenderChunks(processedContent), [processedContent]);
 
   const remarkPlugins = useMemo(() => {
-    const plugins = preserveNewlines ? MARKDOWN_REMARK_PLUGINS_WITH_BREAKS : MARKDOWN_REMARK_PLUGINS_DEFAULT;
+    const base = preserveNewlines ? MARKDOWN_REMARK_PLUGINS_WITH_BREAKS : MARKDOWN_REMARK_PLUGINS_DEFAULT;
+    const plugins: NonNullable<ComponentProps<typeof ReactMarkdown>['remarkPlugins']> = base.map(plugin =>
+      plugin === remarkRuntimeCitations ? [remarkRuntimeCitations, { sources: citationSources, unavailableLabel: citationUnavailable }] : plugin);
     return allowSetextHeadings ? plugins : [...plugins, remarkDisableSetextHeadings];
-  }, [preserveNewlines, allowSetextHeadings]);
+  }, [preserveNewlines, allowSetextHeadings, citationSources, citationUnavailable]);
 
   // The document directory resolves relative references; it never becomes a
   // workspace grant. Rust separately validates the resulting local/workspace read.

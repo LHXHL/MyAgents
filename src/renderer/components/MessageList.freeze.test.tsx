@@ -14,7 +14,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import React from 'react';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import type { SizeFunction, VirtuosoHandle } from 'react-virtuoso';
+import type { ListItem, SizeFunction, VirtuosoHandle } from 'react-virtuoso';
 
 import type { Message as MessageType } from '@/types/chat';
 
@@ -32,6 +32,7 @@ type Recorded = {
   startReached?: () => void;
   skipAnimationFrameInResizeObserver?: boolean;
   itemSize?: SizeFunction;
+  itemsRendered?: (items: ListItem<MessageType>[]) => void;
 };
 const recorded: Recorded[] = [];
 vi.mock('react-virtuoso', () => ({
@@ -48,6 +49,7 @@ vi.mock('react-virtuoso', () => ({
     startReached?: () => void;
     skipAnimationFrameInResizeObserver?: boolean;
     itemSize?: SizeFunction;
+    itemsRendered?: (items: ListItem<MessageType>[]) => void;
     itemContent?: (
       index: number,
       message: MessageType,
@@ -68,6 +70,7 @@ vi.mock('react-virtuoso', () => ({
       skipAnimationFrameInResizeObserver:
         props.skipAnimationFrameInResizeObserver,
       itemSize: props.itemSize,
+      itemsRendered: props.itemsRendered,
     });
     return (
       <div data-testid="virtuoso" data-count={props.data.length}>
@@ -194,6 +197,28 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it('publishes committed rows only when presentable, while still allowing recovery to settle', () => {
+    const user = msg('accepted-user', 'query', 'user');
+    const onItemsRendered = vi.fn();
+    const item = { index: 0, originalIndex: 0, offset: 0, size: 80, data: user };
+    const { rerender } = renderList({ messages: [user], onItemsRendered });
+    expect(onItemsRendered).not.toHaveBeenCalled();
+    act(() => lastData().itemsRendered?.([item]));
+    expect(onItemsRendered).toHaveBeenLastCalledWith([user]);
+    rerender(<MessageList messages={[user]} streamingMessage={null} isLoading={false}
+      virtuosoRef={{ current: null }} followEnabledRef={{ current: true }}
+      scrollToBottom={vi.fn()} handleAtBottomChange={vi.fn()}
+      onItemsRendered={onItemsRendered} isViewportRecoveryFenced />);
+    act(() => lastData().itemsRendered?.([item]));
+    expect(onItemsRendered).toHaveBeenLastCalledWith([]);
+    rerender(<MessageList messages={[user]} streamingMessage={null} isLoading={false}
+      virtuosoRef={{ current: null }} followEnabledRef={{ current: true }}
+      scrollToBottom={vi.fn()} handleAtBottomChange={vi.fn()}
+      onItemsRendered={onItemsRendered} isActive={false} />);
+    act(() => lastData().itemsRendered?.([item]));
+    expect(onItemsRendered).toHaveBeenLastCalledWith([]);
   });
 
   it('reveals restored history without resetting the visible list opacity on the next frame', () => {

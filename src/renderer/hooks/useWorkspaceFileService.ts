@@ -273,6 +273,9 @@ export interface WorkspaceFileService {
   dirExpand(args: { path: string }): Promise<ExpandDirectoryResult>;
   /** [requires workspace] Read a previewable text file for the preview modal (≤2MB). */
   readPreview(args: { path: string }): Promise<PreviewResult>;
+  /** Resolve a readable regular file for native browsing without reading its body. */
+  resolvePreviewPath(args: { path: string }): Promise<string>;
+  resolveLocalPreviewPath(args: { fullPath: string }): Promise<string>;
   /** [requires workspace] Read a binary file (image, etc.) as base64 for blob reconstruction. */
   downloadFile(args: { path: string }): Promise<DownloadResult>;
   /** [requires workspace] Read a binary file as RAW BYTES (ArrayBuffer) via
@@ -518,6 +521,17 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
       });
     },
     [requireWorkspace, invokeIfTauri],
+  );
+
+  const resolvePreviewPath: WorkspaceFileService['resolvePreviewPath'] = useCallback(
+    async ({ path }) => invokeIfTauri<string>('cmd_workspace_resolve_preview_path', {
+      workspace: requireWorkspace(), path,
+    }),
+    [requireWorkspace, invokeIfTauri],
+  );
+  const resolveLocalPreviewPath: WorkspaceFileService['resolveLocalPreviewPath'] = useCallback(
+    async ({ fullPath }) => invokeIfTauri<string>('cmd_resolve_local_preview_path', { fullPath }),
+    [invokeIfTauri],
   );
 
   const downloadFile: WorkspaceFileService['downloadFile'] = useCallback(
@@ -810,6 +824,8 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
       dirTree,
       dirExpand,
       readPreview,
+      resolvePreviewPath,
+      resolveLocalPreviewPath,
       downloadFile,
       downloadFileBytes,
       newFile,
@@ -852,6 +868,8 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
       dirTree,
       dirExpand,
       readPreview,
+      resolvePreviewPath,
+      resolveLocalPreviewPath,
       downloadFile,
       downloadFileBytes,
       newFile,

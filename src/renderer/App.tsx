@@ -1749,6 +1749,7 @@ export default function App() {
               tabWorkspaceController.update(tabId, 'chat', (tab) => ({
                 ...tab,
                 sessionId: newSessionId,
+                ...(options?.newConversation || (oldSessionId && !isPendingSessionId(oldSessionId) && identityChanges) ? { discussionId: undefined, initialMessage: undefined } : {}),
               }));
             });
             return true;
@@ -2226,12 +2227,9 @@ export default function App() {
           targetTabId !== activeTabId ? targetTabId : activeTabId;
         setTabErrors((prev) => ({ ...prev, [errorTabId]: errorMsg }));
 
-        // A5 (instant-nav): with the early flip the tab may already be on the chat
-        // view, where `tabErrors` isn't surfaced (it only feeds the Launcher's
-        // unused startError) and the startup overlay would otherwise just time out
-        // to a blank chat. A toast makes the boot failure visible regardless of
-        // which view the user is on. (Full in-chat "启动失败 + 重试" via
-        // useSessionReady('failed'): Phase A follow-up.)
+        // App startup errors reach both Launcher and Chat. Chat exposes the
+        // saved discussion independently of transport readiness; the toast also
+        // makes failure visible while the source form is still open.
         toastRef.current.error(
           t('appChrome.launchFailed', { message: errorMsg }),
         );
@@ -2457,7 +2455,7 @@ export default function App() {
         // already visible to history, so the opening claim above still excludes
         // user deletion until this Tab owner is attached.
         sidecarConfigDisposition: 'push',
-        ...(initialMessage ? { initialMessage: { text: initialMessage, agentMentions: context?.agentMentions, primaryContext: context?.primaryContext } } : {}),
+        ...(initialMessage ? { initialMessage: { text: initialMessage, agentMentions: context?.agentMentions, primaryContext: context?.primaryContext, requiredSystemSkill: context?.requiredSystemSkill } } : {}),
       };
 
       tabWorkspaceController.append(newTab, {
@@ -2592,6 +2590,7 @@ export default function App() {
       sessionId: string,
       agentDir: string,
     ): Promise<boolean> => {
+      setTabErrors(current => ({ ...current, [tabId]: null }));
       setLoadingTabs((current) => ({ ...current, [tabId]: true }));
       try {
         const result = await reconcileExistingSessionTabOwner(
@@ -2618,6 +2617,9 @@ export default function App() {
           `[App] Failed to materialize existing session ${sessionId} in tab ${tabId}:`,
           error,
         );
+        if (tabWorkspaceController.getSnapshot().tabs.some(tab => tab.id === tabId && tab.view === 'chat' && tab.sessionId === sessionId)) {
+          setTabErrors(current => ({ ...current, [tabId]: error instanceof Error ? error.message : String(error) }));
+        }
         return false;
       } finally {
         setLoadingTabs((current) => ({ ...current, [tabId]: false }));
@@ -2863,7 +2865,10 @@ export default function App() {
             );
             if (!releaseTransition) return null;
             try {
-              if (await canRestoreSession(target.sessionId, target.agentDir)) {
+              const savedDiscussion = target.discussionId
+                ? await tauriInvoke<import('../shared/taskDiscussion').TaskDiscussionInput | null>('cmd_task_read_discussion_input', { discussionId: target.discussionId }).catch(() => null)
+                : null;
+              if ((target.discussionId && isPendingSessionId(target.sessionId)) || (savedDiscussion && savedDiscussion.primaryContext.input.workspacePath === target.agentDir) || await canRestoreSession(target.sessionId, target.agentDir)) {
                 return { kind: 'chat', tab: target, releaseTransition };
               }
               console.warn(
@@ -2935,6 +2940,12 @@ export default function App() {
     const results = await Promise.allSettled(
       addedChatTargets.map(async ({ tab, releaseTransition }) => {
         try {
+          if (tab.discussionId && isPendingSessionId(tab.sessionId)) {
+            // Reload restores custody only. A pending managed birth must use
+            // the ordinary launch owner before a Sidecar can be attached.
+            setTabErrors(current => ({ ...current, [tab.id]: t('appChrome.taskDiscussionStartFailed') }));
+            return true;
+          }
           return await materializeExistingSessionTab(
             tab.id,
             tab.sessionId,
@@ -2947,7 +2958,7 @@ export default function App() {
     );
     const failedTabIds = new Set<string>();
     results.forEach((result, index) => {
-      if (result.status === 'rejected' || !result.value) {
+      if ((result.status === 'rejected' || !result.value) && !addedChatTargets[index].tab.discussionId) {
         failedTabIds.add(addedChatTargets[index].tab.id);
       }
     });
@@ -3061,6 +3072,8 @@ export default function App() {
         tabWorkspaceController.update(tabId, 'chat', (tab) => ({
           ...tab,
           sessionId: pendingSessionId,
+          discussionId: undefined,
+          initialMessage: undefined,
           sidecarConfigDisposition: 'push',
         }));
         const fbResult = await migrateFloatingBallSessionBinding(
@@ -4053,6 +4066,8 @@ export default function App() {
           defaultPermissionMode: configRef.current?.defaultPermissionMode,
         });
         const initialMessage: InitialMessage = {
+          discussionId,
+          clientRequestId: crypto.randomUUID(),
           text: discussionContext.visibleUserMessage,
           primaryContext: { kind: 'task-discussion', input: discussionContext },
           requiredSystemSkill: TASK_ALIGNMENT_SKILL_REQUIREMENT,
@@ -4074,6 +4089,14 @@ export default function App() {
               : {}),
         };
 
+        // Durable input precedes closing the source form or starting execution.
+        // A queue receipt or a later skill rejection cannot erase this artifact.
+        await tauriInvoke('cmd_task_save_discussion_input', {
+          discussionId,
+          input: { text: initialMessage.text, clientRequestId: initialMessage.clientRequestId,
+            primaryContext: initialMessage.primaryContext, requiredSystemSkill: initialMessage.requiredSystemSkill },
+        });
+
         // Pre-seed the tab as a Chat tab before awaiting sidecar startup.
         // Without this, the user sees the Launcher briefly while
         // handleLaunchProject waits on ensureSessionSidecar, then the tab
@@ -4082,21 +4105,13 @@ export default function App() {
         // resolves to the same id and its later controller update is a no-op for
         // view/agentDir/sessionId.
         const newTab = createNewTab();
-        if (initialMessage.providerExecutionIdentity) {
-          if (!openLaunchTabNow(newTab)) return false;
-        } else {
-          const seeded: ChatTab = {
-            id: newTab.id,
-            view: 'chat' as const,
-            agentDir: workspace.path,
-            sessionId: createPendingSessionId(newTab.id),
-            title: t('appChrome.discussionTabTitle'),
-            initialMessage,
-            sidecarConfigDisposition: 'pending',
-          };
-          const opened = tabWorkspaceController.append(seeded, { mount: 'immediate' });
-          if (opened.kind === 'rejected') return false;
-        }
+        const seeded: ChatTab = {
+          id: newTab.id, view: 'chat', agentDir: workspace.path,
+          sessionId: createPendingSessionId(newTab.id), title: t('appChrome.discussionTabTitle'),
+          discussionId, initialMessage, sidecarConfigDisposition: 'pending',
+        };
+        const opened = tabWorkspaceController.append(seeded, { mount: 'immediate' });
+        if (opened.kind === 'rejected') return false;
 
         const launched = await handleLaunchProject(workspace, initialMessage, {
           surface: 'task_center',
@@ -4124,7 +4139,7 @@ export default function App() {
         return false;
       }
     },
-    [handleLaunchProject, openLaunchTabNow, t, tabWorkspaceController],
+    [handleLaunchProject, t, tabWorkspaceController],
   );
 
   const handleCreateDialogDiscussion = useCallback(
@@ -4753,10 +4768,26 @@ export default function App() {
       tabErrors,
     ],
   );
+  const retryDiscussionStartup = useCallback(async (tabId: string) => {
+    const tab = tabWorkspaceController.getSnapshot().tabs.find(item => item.id === tabId);
+    if (tab?.view !== 'chat' || !tab.discussionId || !tab.sessionId) return;
+    const birthHint = tab.initialMessage;
+    clearInitialMessage(tabId);
+    if (!isPendingSessionId(tab.sessionId)) {
+      setTabErrors(current => ({ ...current, [tabId]: null }));
+      await materializeExistingSessionTab(tabId, tab.sessionId, tab.agentDir);
+      return;
+    }
+    const workspace = configProjectsRef.current.find(project => project.path === tab.agentDir && isProjectVisibleToUser(project));
+    if (!workspace || tabWorkspaceController.getSnapshot().activeTabId !== tabId) return;
+    await handleLaunchProject(workspace, undefined, { surface: 'task_center', entryIntent: 'thought_alignment' }, birthHint);
+  }, [clearInitialMessage, handleLaunchProject, materializeExistingSessionTab, tabWorkspaceController]);
   const chatBinding = useMemo<BuiltinTabBindings['chat']>(
     () => ({
       registerFileEditSubmitter,
       windowPresentation,
+      startupError: (tabId) => tabErrors[tabId] ?? null,
+      onRetryStartup: retryDiscussionStartup,
       onOpenHistorySession: handleOpenChatHistorySession,
       onOpenHistoryTag: handleOpenHistoryTag,
       onNewSession: handleNewSession,
@@ -4776,6 +4807,8 @@ export default function App() {
     }),
     [
       registerFileEditSubmitter,
+      retryDiscussionStartup,
+      tabErrors,
       claimSessionOpeningTransition,
       clearInitialMessage,
       handleFilePreviewIntentConsumed,

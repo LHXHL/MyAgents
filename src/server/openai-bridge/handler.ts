@@ -21,13 +21,15 @@ import { ResponsesStreamTranslator } from './translate/stream-responses';
 import { translateError } from './translate/errors';
 import { SSEParser } from './utils/sse-parser';
 import { formatSSE } from './utils/sse-writer';
-import { buildPromptCacheKey, hashForLog } from './prompt-cache';
+import { buildPromptCacheKey, hashForLog, promptCacheTarget } from './prompt-cache';
 import {
   getProxyForProviderUrl,
   getProxyForUrl as resolveGlobalProxyForUrl,
 } from '../proxy-state';
 import { isProviderReasoningEffortSupported } from '../../shared/reasoningEffort';
 import { TOKENDANCE_APP_URL, TOKENDANCE_PROVIDER_ID } from '../../shared/tokendance';
+import { resolveProviderPromptCacheCapabilities } from '../../shared/provider-prompt-cache';
+import { resolveBridgeModel } from './translate/model';
 import { opencodeGoHeaders } from '../opencode-go-request';
 
 const DEFAULT_TIMEOUT = 300_000; // 5 minutes
@@ -115,35 +117,10 @@ function getDispatcherForProxy(proxyUrl: string): Dispatcher {
   return agent;
 }
 
-function resolvePromptCacheKey(
-  upstream: UpstreamConfig,
-  fallbackModel: string,
-  upstreamFormat: 'chat_completions' | 'responses',
-): string | undefined {
-  const affinity = upstream.cacheAffinity;
-  if (!affinity || affinity.promptCacheKeyMode !== 'session') return undefined;
-  if (affinity.promptCacheKeyDisabled) return undefined;
-  return buildPromptCacheKey({
-    appNamespace: 'myagents',
-    providerId: upstream.providerId,
-    model: upstream.model ?? fallbackModel,
-    sessionId: affinity.sessionId,
-    upstreamFormat,
-  });
-}
-
 function isUnsupportedPromptCacheKeyError(status: number, body: string): boolean {
   if (status !== 400 && status !== 422) return false;
   const structured = extractUpstreamErrorFields(body);
-  const descriptor = [
-    structured?.message,
-    structured?.code,
-    structured?.type,
-  ].filter(Boolean).join(' ');
-
-  if (structured?.param === 'prompt_cache_key') {
-    return isUnsupportedSchemaFieldDescriptor(descriptor);
-  }
+  if (structured?.param) return structured.param === 'prompt_cache_key';
 
   return isUnsupportedPromptCacheKeyDescriptor(body)
     && /\bprompt_cache_key\b/i.test(body);
@@ -163,6 +140,7 @@ type PromptCacheBreakpointRejection =
 function classifyPromptCacheBreakpointRejection(
   status: number,
   body: string,
+  current: OpenAIRequest | ResponsesRequest,
 ): PromptCacheBreakpointRejection | undefined {
   if (status !== 400 && status !== 422) return undefined;
   const structured = extractUpstreamErrorFields(body);
@@ -174,11 +152,12 @@ function classifyPromptCacheBreakpointRejection(
   const param = structured?.param ?? '';
 
   if (/prompt_cache_breakpoint/i.test(param)) {
-    return isUnsupportedSchemaFieldDescriptor(descriptor) ? { kind: 'field' } : undefined;
+    return isProjectedBreakpointPath(current, param) ? { kind: 'field' } : undefined;
   }
 
-  if (/prompt_cache_breakpoint/i.test(body)
-      && isUnsupportedPromptCacheBreakpointDescriptor(body)) {
+  if (!param && /prompt_cache_breakpoint/i.test(body)
+      && isUnsupportedPromptCacheBreakpointDescriptor(body)
+      && isProjectedBreakpointPath(current, 'prompt_cache_breakpoint')) {
     return { kind: 'field' };
   }
 
@@ -186,7 +165,11 @@ function classifyPromptCacheBreakpointRejection(
   // projection is enabled. Keep the match narrow so unrelated 4xx responses
   // never become retries.
   const shapeDescriptor = descriptor || body;
-  const roleParam = /(?:^|[.\]])role$/i.test(param);
+  const developerRolePath = /^input(?:\[(\d+)\]|\.(\d+))\.role$/i.exec(param);
+  const roleParam = param === 'role' || Boolean(developerRolePath);
+  const hasInjectedDeveloper = 'input' in current && current.input.some((item, index) =>
+    'role' in item && item.role === 'developer'
+    && (!param || param === 'role' || index === Number(developerRolePath?.[1] ?? developerRolePath?.[2])));
   const rejectsDeveloperRole = (
     roleParam
       && /\bdeveloper\b/i.test(shapeDescriptor)
@@ -199,7 +182,7 @@ function classifyPromptCacheBreakpointRejection(
   const rejectsStructuredContent = Boolean(contentMatch)
     && (/\b(?:expected|must be|should be)\b.*\b(?:valid\s+)?string\b/i.test(shapeDescriptor)
       || /\bstring\b.*\b(?:expected|required)\b/i.test(shapeDescriptor));
-  if (rejectsDeveloperRole) return { kind: 'developer_role' };
+  if (rejectsDeveloperRole && hasInjectedDeveloper) return { kind: 'developer_role' };
   if (rejectsStructuredContent && contentMatch) {
     return {
       kind: 'content_shape',
@@ -207,6 +190,25 @@ function classifyPromptCacheBreakpointRejection(
     };
   }
   return undefined;
+}
+
+/** Attribute rejection only to a marker actually injected into message content.
+ * A tool schema may legitimately have a property with the same field name.
+ */
+function isProjectedBreakpointPath(current: OpenAIRequest | ResponsesRequest, param: string): boolean {
+  const items = 'input' in current ? current.input : current.messages;
+  const path = param.replace(/\[(\d+)\]/g, '.$1');
+  if (path === 'prompt_cache_breakpoint') {
+    return items.some(item => 'content' in item && Array.isArray(item.content)
+      && item.content.some(part => 'prompt_cache_breakpoint' in part && isRecord(part.prompt_cache_breakpoint)
+        && part.prompt_cache_breakpoint.mode === 'explicit'));
+  }
+  if (!/^(?:input|messages)\.\d+\.content\.\d+\.prompt_cache_breakpoint(?:\.mode)?$/.test(path)) return false;
+  let value: unknown = current;
+  for (const part of path.replace(/\.mode$/, '').split('.')) {
+    value = Array.isArray(value) ? value[Number(part)] : isRecord(value) ? value[part] : undefined;
+  }
+  return isRecord(value) && value.mode === 'explicit';
 }
 
 function legacyFallbackChangesRejectedContent(
@@ -248,15 +250,26 @@ function extractUpstreamErrorFields(body: string): { message?: string; param?: s
   } catch {
     return undefined;
   }
-  const root = isRecord(parsed) && isRecord(parsed.error) ? parsed.error : parsed;
+  // Explicit structured field attribution is stronger than localized wording.
+  // Only known envelopes are unwrapped; never infer compatibility from any 4xx.
+  let root = parsed;
+  for (let depth = 0; depth < 4 && isRecord(root); depth++) {
+    if (isRecord(root.error)) { root = root.error; continue; }
+    if (isRecord(root.data) && isRecord(root.data.error)) { root = root.data.error; continue; }
+    if (Array.isArray(root.detail)) {
+      root = root.detail.find(item => isRecord(item) && Array.isArray(item.loc)
+        && item.loc.some(part => part === 'prompt_cache_key' || part === 'prompt_cache_breakpoint'))
+        ?? root.detail[0];
+    }
+    break;
+  }
   if (!isRecord(root)) return undefined;
   return {
-    message: typeof root.message === 'string' ? root.message : undefined,
-    param: typeof root.param === 'string'
-      ? root.param
-      : typeof root.parameter === 'string'
-        ? root.parameter
-        : undefined,
+    message: typeof root.message === 'string' ? root.message : typeof root.msg === 'string' ? root.msg : undefined,
+    param: typeof root.param === 'string' ? root.param
+      : typeof root.parameter === 'string' ? root.parameter
+      : Array.isArray(root.loc) ? root.loc.filter(part => typeof part === 'string' || typeof part === 'number')
+          .filter((part, index) => index !== 0 || part !== 'body').join('.') : undefined,
     code: typeof root.code === 'string' ? root.code : undefined,
     type: typeof root.type === 'string' ? root.type : undefined,
   };
@@ -404,10 +417,20 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
     // coexist without cross-pollination.
     const effectiveModelMapping = upstream.modelMapping ?? config.modelMapping;
     const upstreamFormat = isResponses ? 'responses' : 'chat_completions';
-    let effectivePromptCacheKey = resolvePromptCacheKey(upstream, anthropicReq.model, upstreamFormat);
-    let promptCacheBreakpointsEnabled = upstream.cacheAffinity?.promptCacheKeyMode === 'session'
-      && Boolean(upstream.cacheAffinity.sessionId?.trim())
-      && !upstream.cacheAffinity.promptCacheBreakpointsDisabled;
+    const targetModel = resolveBridgeModel(anthropicReq.model, upstream.model, effectiveModelMapping);
+    const cacheTarget = promptCacheTarget(upstream.providerId, baseUrl, targetModel, upstreamFormat);
+    const capabilities = resolveProviderPromptCacheCapabilities(baseUrl, targetModel);
+    const affinity = upstream.cacheAffinity;
+    let effectivePromptCacheKey = capabilities.key
+      && affinity?.promptCacheKeyMode === 'session'
+      && !upstream.cacheCompatibility?.isKeyDisabled(cacheTarget)
+      ? buildPromptCacheKey({ appNamespace: 'myagents', providerId: upstream.providerId,
+          model: targetModel, sessionId: affinity.sessionId, upstreamFormat })
+      : undefined;
+    let promptCacheBreakpointsEnabled = capabilities.breakpoints
+      && affinity?.promptCacheKeyMode === 'session'
+      && Boolean(affinity.sessionId?.trim())
+      && !upstream.cacheCompatibility?.isBreakpointsDisabled(cacheTarget);
     const maxOutputTokensCap = upstream.maxOutputTokens ?? config.maxOutputTokens;
     const savedToolImages: Array<{
       base64: string;
@@ -428,7 +451,7 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
         : undefined;
       const translated = isResponses
         ? translateRequestToResponses(anthropicReq, {
-            modelOverride: upstream.model,
+            modelOverride: targetModel,
             modelMapping: effectiveModelMapping,
             imageSaver: attemptImageSaver,
             reasoningEffort: upstream.reasoningEffort,
@@ -437,7 +460,7 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
           })
         : translateRequest(anthropicReq, {
             modelMapping: effectiveModelMapping,
-            modelOverride: upstream.model,
+            modelOverride: targetModel,
             imageSaver: attemptImageSaver,
             reasoningEffort: upstream.reasoningEffort,
             promptCacheKey: effectivePromptCacheKey,
@@ -680,22 +703,22 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
         const canRetryWithoutPromptCacheKey =
           !promptCacheKeyRetryAttempted
           && Boolean((translatedReq as { prompt_cache_key?: string }).prompt_cache_key)
-          && Boolean(upstream.cacheAffinity?.disablePromptCacheKey)
+          && Boolean(upstream.cacheCompatibility?.disableKey)
           && isUnsupportedPromptCacheKeyError(status, errBody);
         if (canRetryWithoutPromptCacheKey) {
           promptCacheKeyRetryAttempted = true;
           effectivePromptCacheKey = undefined;
-          upstream.cacheAffinity?.disablePromptCacheKey?.();
+          upstream.cacheCompatibility?.disableKey?.(cacheTarget);
           translatedReq = translateForAttempt();
           requestBody = JSON.stringify(translatedReq);
-          log(`[bridge] ${upstreamFormat} prompt_cache_key unsupported for provider=${upstream.providerId} model=${logModel} endpoint=${hashForLog(upstreamUrl)}; disabled for this bridge`);
+          log(`[bridge] ${upstreamFormat} prompt_cache_key unsupported for provider=${upstream.providerId} model=${logModel} endpoint=${hashForLog(upstreamUrl)}; disabled for this bridge target`);
           continue;
         }
 
         const breakpointRejection = !promptCacheBreakpointsRetryAttempted
           && promptCacheBreakpointsEnabled
-          && Boolean(upstream.cacheAffinity?.disablePromptCacheBreakpoints)
-          ? classifyPromptCacheBreakpointRejection(status, errBody)
+          && Boolean(upstream.cacheCompatibility?.disableBreakpoints)
+          ? classifyPromptCacheBreakpointRejection(status, errBody, translatedReq)
           : undefined;
         let legacyBreakpointRequest: OpenAIRequest | ResponsesRequest | undefined;
         if (breakpointRejection?.kind === 'content_shape') {
@@ -717,10 +740,10 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
         if (canRetryWithoutPromptCacheBreakpoints) {
           promptCacheBreakpointsRetryAttempted = true;
           promptCacheBreakpointsEnabled = false;
-          upstream.cacheAffinity?.disablePromptCacheBreakpoints?.();
+          upstream.cacheCompatibility?.disableBreakpoints?.(cacheTarget);
           translatedReq = legacyBreakpointRequest ?? translateForAttempt();
           requestBody = JSON.stringify(translatedReq);
-          log(`[bridge] ${upstreamFormat} explicit prompt-cache breakpoints unsupported for provider=${upstream.providerId} model=${logModel} endpoint=${hashForLog(upstreamUrl)}; disabled for this bridge`);
+          log(`[bridge] ${upstreamFormat} explicit prompt-cache breakpoints unsupported for provider=${upstream.providerId} model=${logModel} endpoint=${hashForLog(upstreamUrl)}; disabled for this bridge target`);
           continue;
         }
 
@@ -1107,7 +1130,7 @@ export function handleResponsesStreamResponse(
       try { downstreamSignal.removeEventListener('abort', onDownstreamAbort); } catch { /* ignore */ }
     }
     logStreamEnd('empty_body');
-    return new Response('', { status: 200, headers: streamHeaders() });
+    return jsonError(502, 'api_error', 'Empty upstream Responses stream');
   }
 
   const detachDownstream = (): void => {
@@ -1123,7 +1146,7 @@ export function handleResponsesStreamResponse(
       const sseEvents = sseParser.feed(text);
       for (const sseEvent of sseEvents) {
         // Intentional asymmetry vs the Chat path: the Responses translator
-        // finalizes inline on `response.completed`/`response.failed` (its real
+        // finalizes inline on completed/failed/incomplete/error (its real
         // protocol terminators), so `[DONE]` — which isn't part of the OpenAI
         // Responses streaming spec — is simply dropped here. A provider that
         // sends only `[DONE]` has not supplied a valid Responses terminal; true
@@ -1141,30 +1164,37 @@ export function handleResponsesStreamResponse(
   const encoder = new TextEncoder();
   const translateTransform = new TransformStream<ResponsesStreamEvent, Uint8Array>({
     transform(event, controller) {
-      const safeEvent = event.type === 'response.failed' && event.response.error
-        ? {
-            ...event,
-            response: {
-              ...event.response,
-              error: {
-                code: sanitizeUpstreamErrorBody(event.response.error.code),
-                message: sanitizeUpstreamErrorBody(event.response.error.message),
-              },
-            },
-          }
-        : event;
+      let safeEvent = event;
+      if (event.type === 'error') {
+        safeEvent = { ...event, message: sanitizeUpstreamErrorBody(event.message) };
+      } else if ('response' in event) {
+        safeEvent = {
+          ...event,
+          response: {
+            ...event.response,
+            ...(event.response.error ? { error: {
+              code: sanitizeUpstreamErrorBody(event.response.error.code),
+              message: sanitizeUpstreamErrorBody(event.response.error.message),
+            } } : {}),
+            ...(event.response.incomplete_details ? { incomplete_details: {
+              reason: sanitizeUpstreamErrorBody(event.response.incomplete_details.reason),
+            } } : {}),
+          },
+        };
+      }
       const anthropicEvents = translator.feed(safeEvent);
       for (const ae of anthropicEvents) {
         controller.enqueue(encoder.encode(formatSSE(ae)));
       }
-      // The Responses translator finalizes inline on `response.completed` /
-      // `response.failed` (emits message_stop). That is the protocol terminator,
+      // Success, incomplete and error are protocol terminals. The translator
+      // emits message_stop or an Anthropic error event,
       // so end the downstream response NOW rather than waiting for transport EOF
       // — same liveness fix as the Chat path: the SDK reads until EOF, so a
       // provider that lingers after the terminal event would otherwise hang it.
       // See issue #277.
-      if (anthropicEvents.some((ae) => ae.type === 'message_stop')) {
-        logStreamEnd(event.type === 'response.failed' ? 'response_failed' : 'response_completed');
+      if (anthropicEvents.some((ae) => ae.type === 'message_stop' || ae.type === 'error')) {
+        logStreamEnd(event.type.replaceAll('.', '_'));
+        detachDownstream();
         controller.terminate();
         try { upstreamController.abort(new Error('Upstream response complete')); } catch { /* ignore */ }
       }

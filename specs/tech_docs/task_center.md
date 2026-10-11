@@ -35,6 +35,14 @@ Task 的核心职责：
 
 ## 2. 状态与调度
 
+### Renderer 的 Agent 状态投影
+
+`cmd_all_agents_status` 的实时权威在 Rust。Renderer 复用 `taskCenterStore` 的 `agentStatuses` 切片；`useAgentStatuses` 是其窄订阅，不拥有独立轮询，也不启动 TaskCenter 的 Session/Task 全量抓取。多个 Chat 共用一个 5 秒周期与一个状态变化监听；TaskCenter 全量/按需装饰读取复用该请求入口，有 Chat 周期时不另发周期状态请求。
+
+状态变化事件和显式刷新可以取代在途旧读取，只有当前请求可发布；等值响应保留引用。Agent 状态独立发布，不随较慢的 TaskCenter 全量结果再次写回，避免后到的会话装饰覆盖已更新状态。最后一个相关需求退出后释放相应监听/定时器，保留可供重挂载立即展示的健康投影；读取失败不清空旧数据。
+
+最后一个持续需求退出时，释放监听与定时器并断开在途请求的复用指针；这不撤销应用级一次性状态读取的发布权，侧边栏/搜索仍可拿到结果。新的挂载会另起读取、推进 Agent 状态序号，旧响应不能覆盖新值。请求复用由指针决定，发布新鲜度由独立状态序号决定，不借 Session 读取状态推断 Agent 状态需求。
+
 ```text
 Todo -> Running -> Verifying -> Done
           |             |
@@ -217,6 +225,9 @@ Goal 是 Session 状态，不是 Task execution mode：
 [`../design/records_and_recording.md`](../design/records_and_recording.md)。本技术文档只保留下列投影边界：
 
 - App Shell 只挂一个 `DispatchTaskDialog`。智能创建与 Record AI 讨论共用 discussion builder、runtime selection、required product Skill 和新 Chat launch；确认前不写 Task。
+- 讨论原始输入由 Rust 的 `task-discussions/<discussionId>/input.json` 保管：跳转前写入完整正文、typed `TASK_DISCUSSION` scope、必需 Skill 的精确契约和 clientRequestId。保存失败不交接；Tab 只持久化 discussion locator，允许尚未 materialize 的 discussion Tab 恢复，但不从磁盘自动发送。pending discussion 的 transport/send 要等待原 Session birth owner 裁决；重载先提供恢复与显式启动重试，托管模型必须先创建真实 metadata，再附着 Sidecar。
+- HTTP send receipt 只确认请求/队列接纳，不能证明 Skill dispatch 或 transcript 已持久保存。真实 user transcript（clientRequestId 或同一 typed discussion scope）到达后，历史接管恢复入口；原始 input 作为不可覆盖的讨论 artifact 留存，HTTP 成功和关闭 Tab 均不删除它。当前不设自动清理策略，讨论目录需整体保留，直到显式清理其 artifacts。
+- 恢复提供原文查看、复制和完整契约重试。响应丢失显示“发送状态未确认”，先核对历史/队列再由用户明确重试；clientRequestId 只作关联，不承诺服务端幂等。`DesktopQueryDraft` 随持久 user message 保存 required Skill，原生 retry 仍经普通 admission 校验；旧 typed discussion annotation 补当前 canonical requirement，用户文本中的 XML 不获得此权限。旧目录没有正文时不推测恢复。明确 reset 与普通 pending→real materialization 分开：前者清掉 discussion locator 和 composer annotations，后者保留首轮契约；旧发送回执不能更新另一个 conversation 的投影。
 - text Record 把当前完整正文作为用户可见 query；audio Record 只引用 `RecordStore` 在源 Record 根目录保证刷新的唯一 `content.md`。隐藏 reminder 只携带执行所需的 scope、Record identity/path 和文稿路径。
 - 手动创建与编辑只写完整 `task.md`。`workspaceId + workspacePath` 由 TaskStore 在同一写锁内成对更新；周期专属字段不能从隐藏表单值进入一次性 Task。
 - 任务中心的 Record 区只订阅 RecordStore change event，不轮询或复制 Recording/Speech 状态；详情从对应 authority 读取 snapshot。Record 与 Task 删除是独立事务。

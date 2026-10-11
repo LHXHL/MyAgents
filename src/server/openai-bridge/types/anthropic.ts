@@ -142,7 +142,8 @@ export type AnthropicStreamEvent =
   // the bridge must report them here to surface non-zero usage. See issue #277.
   | { type: 'message_delta'; delta: { stop_reason: AnthropicStopReason | null; stop_sequence: string | null }; usage: AnthropicUsage }
   | { type: 'message_stop' }
-  | { type: 'ping' };
+  | { type: 'ping' }
+  | AnthropicErrorResponse;
 
 export type AnthropicStreamDelta =
   | { type: 'text_delta'; text: string }

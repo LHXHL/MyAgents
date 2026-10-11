@@ -6,13 +6,24 @@ import { generateMessageId } from '../utils/id';
 import { fromResponsesUsage, toAnthropicUsage, type UsageWarningLogger } from './usage';
 import { safeParseJson } from './tools';
 
-/** Map Responses API status → Anthropic stop_reason */
-function translateResponsesStatus(status: string): AnthropicStopReason {
-  switch (status) {
-    case 'completed': return 'end_turn';
-    case 'incomplete': return 'max_tokens';
-    default: return 'end_turn';
+/** One terminal policy shared by streaming and non-streaming Responses. */
+export function resolveResponsesStopReason(
+  resp: Pick<ResponsesResponse, 'status' | 'error' | 'incomplete_details'>,
+  hasToolUse: boolean,
+): AnthropicStopReason {
+  if (resp.status === 'failed') {
+    throw new ResponsesApiError(resp.error?.code ?? 'api_error', resp.error?.message ?? 'Unknown upstream error');
   }
+  if (resp.status === 'incomplete') {
+    const reason = resp.incomplete_details?.reason ?? 'unknown';
+    if (reason === 'max_output_tokens' && !hasToolUse) return 'max_tokens';
+    // An incomplete tool call cannot be executed safely, even if its JSON parses.
+    throw new ResponsesApiError('api_error', `Upstream response incomplete: ${reason}${hasToolUse ? ' (tool call unfinished)' : ''}`);
+  }
+  if (resp.status !== 'completed') {
+    throw new ResponsesApiError('api_error', `Upstream response has no terminal status: ${resp.status}`);
+  }
+  return hasToolUse ? 'tool_use' : 'end_turn';
 }
 
 /** Translate OpenAI Responses API response → Anthropic response.
@@ -22,19 +33,13 @@ export function translateResponsesResponse(
   requestModel: string,
   usageWarning?: UsageWarningLogger,
 ): AnthropicResponse {
-  // Surface upstream failure as a thrown error so handler returns 502
-  if (resp.status === 'failed') {
-    const errMsg = resp.error?.message ?? 'Unknown upstream error';
-    const errCode = resp.error?.code ?? 'api_error';
-    throw new ResponsesApiError(errCode, errMsg);
-  }
+  const hasToolUse = resp.output?.some(item => item.type === 'function_call') ?? false;
+  const stopReason = resolveResponsesStopReason(resp, hasToolUse);
 
   const content: AnthropicResponseContentBlock[] = [];
-  let hasToolUse = false;
 
   for (const item of resp.output) {
     translateOutputItem(item, content);
-    if (item.type === 'function_call') hasToolUse = true;
   }
 
   // Ensure at least one content block
@@ -44,14 +49,6 @@ export function translateResponsesResponse(
 
   // Build usage
   const usage = fromResponsesUsage(resp.usage, usageWarning);
-
-  // Determine stop reason
-  let stopReason: AnthropicStopReason;
-  if (hasToolUse) {
-    stopReason = 'tool_use';
-  } else {
-    stopReason = translateResponsesStatus(resp.status);
-  }
 
   return {
     id: generateMessageId(),

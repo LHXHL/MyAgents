@@ -99,7 +99,10 @@ export function normalizeSdkToolUseResult(value: unknown): NormalizedSdkToolUseR
   if (
     isRecord(value)
     && Object.prototype.hasOwnProperty.call(value, 'content')
-    && Object.prototype.hasOwnProperty.call(value, '_meta')
+    && (Object.prototype.hasOwnProperty.call(value, '_meta') || (
+      Array.isArray(value.content)
+      && Object.keys(value).every(key => ['content', 'isError', 'structuredContent', 'structuredContentOmitted'].includes(key))
+    ))
   ) {
     return {
       content: value.content,
@@ -114,6 +117,11 @@ export function normalizeSdkToolUseResult(value: unknown): NormalizedSdkToolUseR
   };
 }
 
+/** A receipt for a backgrounded call is not its terminal tool result. */
+export function isDetachedSdkToolResult(value: unknown): boolean {
+  return isRecord(value) && value.detachedToolCall === true && Object.keys(value).length === 1;
+}
+
 /** Project the two SDK result representations once, before main/subagent delivery.
  * Side data preserves structured Read/WebSearch results, but is not safe display
  * text: Read image/PDF results can carry the same bytes as content blocks.
@@ -121,6 +129,9 @@ export function normalizeSdkToolUseResult(value: unknown): NormalizedSdkToolUseR
 export function extractSdkToolResultRenderParts(content: unknown, toolUseResult: unknown): ToolResultRenderParts {
   const normalized = normalizeSdkToolUseResult(toolUseResult);
   const parts = extractToolResultRenderParts(normalized.isMetadataEnvelope ? normalized.content : content);
+  if (isRecord(toolUseResult) && toolUseResult.structuredContentOmitted === true) {
+    return { ...parts, text: [parts.text, '[Structured content omitted by runtime]'].filter(Boolean).join('\n') };
+  }
   return {
     ...parts,
     text: !normalized.isMetadataEnvelope && toolUseResult && typeof toolUseResult === 'object'

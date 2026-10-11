@@ -1,7 +1,8 @@
 // ResponsesStreamTranslator: OpenAI Responses API SSE → Anthropic SSE events (state machine)
 
 import type { AnthropicStreamEvent, AnthropicResponse } from '../types/anthropic';
-import type { ResponsesStreamEvent, ResponsesUsage } from '../types/openai-responses';
+import type { ResponsesStreamEvent, ResponsesResponse } from '../types/openai-responses';
+import { resolveResponsesStopReason, ResponsesApiError } from './response-responses';
 import { generateMessageId, generateToolUseId } from '../utils/id';
 import {
   emptyUsage,
@@ -48,6 +49,7 @@ export class ResponsesStreamTranslator {
 
   /** Feed a Responses API SSE event, returns Anthropic SSE events to emit */
   feed(event: ResponsesStreamEvent): AnthropicStreamEvent[] {
+    if (this.hasFinished) return [];
     const events: AnthropicStreamEvent[] = [];
 
     // Emit message_start on first event
@@ -109,11 +111,13 @@ export class ResponsesStreamTranslator {
         break;
 
       case 'response.completed':
-        this.handleCompleted(event.response, events);
+      case 'response.failed':
+      case 'response.incomplete':
+        this.handleTerminal(event.response, events);
         break;
 
-      case 'response.failed':
-        this.handleFailed(event.response, events);
+      case 'error':
+        this.finishError(event.message, events);
         break;
 
       // Other events are no-ops for Anthropic translation
@@ -191,41 +195,6 @@ export class ResponsesStreamTranslator {
     });
   }
 
-  private handleFailed(
-    response: { usage?: ResponsesUsage; status: string; error?: { code: string; message: string } | null },
-    events: AnthropicStreamEvent[],
-  ): void {
-    this.closeActiveBlock(events);
-
-    // Emit error message as a text block so the SDK sees the failure reason
-    const errMsg = response.error?.message ?? 'Unknown upstream error';
-    events.push({
-      type: 'content_block_start',
-      index: this.contentIndex,
-      content_block: { type: 'text', text: '' },
-    });
-    events.push({
-      type: 'content_block_delta',
-      index: this.contentIndex,
-      delta: { type: 'text_delta', text: `[Error]: ${errMsg}` },
-    });
-    events.push({ type: 'content_block_stop', index: this.contentIndex });
-    this.contentIndex++;
-
-    this.hasFinished = true;
-
-    if (response.usage) {
-      this.usage = fromResponsesUsage(response.usage, this.usageWarning);
-    }
-
-    events.push({
-      type: 'message_delta',
-      delta: { stop_reason: 'end_turn', stop_sequence: null },
-      usage: toAnthropicUsage(this.usage),
-    });
-    events.push({ type: 'message_stop' });
-  }
-
   /** Close a function call block by output_index (not global activeBlockType) */
   private closeFunctionCallBlock(outputIndex: number, events: AnthropicStreamEvent[]): void {
     const buffer = this.functionCallBuffers.get(outputIndex);
@@ -244,43 +213,37 @@ export class ResponsesStreamTranslator {
     }
   }
 
-  private handleCompleted(response: { usage?: ResponsesUsage; status: string }, events: AnthropicStreamEvent[]): void {
+  private handleTerminal(response: ResponsesResponse, events: AnthropicStreamEvent[]): void {
     this.closeActiveBlock(events);
     this.hasFinished = true;
-
-    // Extract usage
-    if (response.usage) {
-      this.usage = fromResponsesUsage(response.usage, this.usageWarning);
+    if (response.usage) this.usage = fromResponsesUsage(response.usage, this.usageWarning);
+    try {
+      const stopReason = resolveResponsesStopReason(response, this.functionCallBuffers.size > 0);
+      events.push({
+        type: 'message_delta',
+        delta: { stop_reason: stopReason, stop_sequence: null },
+        usage: toAnthropicUsage(this.usage),
+      });
+      events.push({ type: 'message_stop' });
+    } catch (err) {
+      if (!(err instanceof ResponsesApiError)) throw err;
+      // Keep terminal usage available, but never issue a successful stop on error.
+      events.push({ type: 'message_delta', delta: { stop_reason: null, stop_sequence: null }, usage: toAnthropicUsage(this.usage) });
+      this.finishError(err.message, events);
     }
-
-    // Determine stop reason
-    const hasToolUse = this.functionCallBuffers.size > 0;
-    const stopReason = hasToolUse ? 'tool_use' as const
-      : response.status === 'incomplete' ? 'max_tokens' as const
-      : 'end_turn' as const;
-
-    events.push({
-      type: 'message_delta',
-      delta: { stop_reason: stopReason, stop_sequence: null },
-      usage: toAnthropicUsage(this.usage),
-    });
-    events.push({ type: 'message_stop' });
   }
 
-  /** Finalize — emit closing events for incomplete streams */
-  finalize(): AnthropicStreamEvent[] {
-    if (this.hasFinished || !this.hasEmittedStart) return [];
-
-    const events: AnthropicStreamEvent[] = [];
+  private finishError(message: string, events: AnthropicStreamEvent[]): void {
     this.closeActiveBlock(events);
     this.hasFinished = true;
+    events.push({ type: 'error', error: { type: 'api_error', message } });
+  }
 
-    events.push({
-      type: 'message_delta',
-      delta: { stop_reason: 'end_turn', stop_sequence: null },
-      usage: toAnthropicUsage(this.usage),
-    });
-    events.push({ type: 'message_stop' });
+  /** EOF is not a Responses protocol terminal, even for an empty stream. */
+  finalize(): AnthropicStreamEvent[] {
+    if (this.hasFinished) return [];
+    const events: AnthropicStreamEvent[] = [];
+    this.finishError('Upstream Responses stream ended without a terminal event', events);
     return events;
   }
 

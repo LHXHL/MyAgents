@@ -103,6 +103,8 @@ EXE、快捷方式与 NSIS 安装器继续使用完整的多尺寸 `icon.ico`，
 
 ## WebView2 与 CSP
 
+主窗口的 native activation 与 DOM focus 是独立事实。`useTrayEvents` 在原生重新聚焦时恢复切出前的 DOM 控件及选区，不依赖 Chat Tab 的 `isActive` 变化；隐藏或已关闭的控件、弹层、新的键盘/鼠标焦点决定和窗口再次失焦会取消恢复，且恢复不触发滚动。
+
 Windows production document origin、IPC和custom resource URL与macOS不同：
 
 - Tauri IPC通过 `http://ipc.localhost` 的 Fetch，需要同时被 `default-src` / `connect-src` 允许；

@@ -2402,13 +2402,7 @@ async function main() {
     bridgeHandlerPromise = (async () => {
       const [
         { createBridgeHandler },
-        {
-          lookupBridge,
-          arePromptCacheBreakpointsDisabled,
-          disablePromptCacheBreakpoints,
-          disablePromptCacheKey,
-          isPromptCacheKeyDisabled,
-        },
+        { lookupBridge },
       ] = await Promise.all([
         import('./openai-bridge'),
         import('./openai-bridge/bridge-registry'),
@@ -2472,17 +2466,8 @@ async function main() {
             // currentReasoningEffort on every request).
             reasoningEffort: cfg.reasoningEffort,
             opencodeSessionId: cfg.opencodeSessionId,
-            cacheAffinity: cfg.cacheAffinity
-              ? {
-                  ...cfg.cacheAffinity,
-                  promptCacheKeyDisabled: isPromptCacheKeyDisabled(token),
-                  disablePromptCacheKey: () => disablePromptCacheKey(token),
-                  promptCacheBreakpointsDisabled:
-                    arePromptCacheBreakpointsDisabled(token),
-                  disablePromptCacheBreakpoints: () =>
-                    disablePromptCacheBreakpoints(token),
-                }
-              : undefined,
+            cacheAffinity: cfg.cacheAffinity,
+            cacheCompatibility: cfg.cacheCompatibility,
           };
         },
         logger: (msg) => console.log(msg),

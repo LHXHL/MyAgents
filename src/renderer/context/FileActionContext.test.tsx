@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { FilePreviewOptions, FilePreviewTarget } from '@/types/filePreview';
 
 const mocks = vi.hoisted(() => ({
   checkPaths: vi.fn(),
@@ -9,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   downloadFile: vi.fn(),
   downloadLocalFile: vi.fn(),
 }));
+
+vi.mock('@/components/FilePreviewModal', () => ({ default: ({ error }: { error?: string }) => <div role="alert">{error}</div> }));
 
 vi.mock('@/components/Toast', () => ({
   useToastOptional: () => null,
@@ -592,8 +595,30 @@ describe('FileActionProvider verified target cache', () => {
 
     await waitFor(() => expect(onRevealInTree).toHaveBeenCalledWith('docs/note.md'));
     await waitFor(() => expect(onFilePreviewExternal).toHaveBeenCalledWith(
-      expect.objectContaining({ path: 'docs/note.md', content: 'content' }),
-    ));
+      expect.objectContaining({ path: 'docs/note.md' }), expect.objectContaining({ isCurrent: expect.any(Function) })));
+  });
+
+  it('delegates HTML browsing without reading its oversized source first', async () => {
+    mocks.checkPaths.mockResolvedValue({ results: { 'report.HTML': { exists: true, type: 'file' } } });
+    mocks.readPreview.mockRejectedValue('File too large to preview (max 2 MB)');
+    const preview = vi.fn();
+    render(<FileActionProvider workspacePath="/workspace" onFilePreviewExternal={preview}>
+      <OpenProbe target={{ scope: 'workspace', path: 'report.HTML' }} label="open report" />
+    </FileActionProvider>);
+    fireEvent.click(screen.getByRole('button', { name: 'open report' }));
+    await waitFor(() => expect(preview).toHaveBeenCalledWith(expect.objectContaining({ path: 'report.HTML' }), expect.objectContaining({ isCurrent: expect.any(Function) })));
+    expect(mocks.readPreview).not.toHaveBeenCalled();
+  });
+
+  it('delegates local HTM and preserves string rejections from the preview owner', async () => {
+    mocks.checkLocalPaths.mockResolvedValue({ results: { '/external/report.htm': { exists: true, type: 'file' } } });
+    const preview = vi.fn().mockRejectedValue('Source preview exceeds 2 MiB');
+    render(<FileActionProvider workspacePath="/workspace" onFilePreviewExternal={preview}>
+      <OpenProbe target={{ scope: 'local', path: '/external/report.htm' }} label="open local report" />
+    </FileActionProvider>);
+    fireEvent.click(screen.getByRole('button', { name: 'open local report' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Source preview exceeds 2 MiB');
+    expect(mocks.readLocalPreview).not.toHaveBeenCalled();
   });
 
   it('applies the same reveal composition to the Chat preview menu action', async () => {
@@ -652,8 +677,7 @@ describe('FileActionProvider verified target cache', () => {
     await waitFor(() => expect(screen.getByTestId('file-context-menu')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /Preview|预览/ }));
     await waitFor(() => expect(onFilePreviewExternal).toHaveBeenCalledWith(
-      expect.objectContaining({ path: 'b.md' }),
-    ));
+      expect.objectContaining({ path: 'b.md' }), expect.objectContaining({ isCurrent: expect.any(Function) })));
 
     await act(async () => {
       firstCheck.resolve({ results: { 'a.md': { exists: true, type: 'file' } } });
@@ -719,7 +743,11 @@ describe('FileActionProvider verified target cache', () => {
       args.path === 'a.md' ? first.promise : second.promise
     ));
     const onRevealInTree = vi.fn();
-    const onFilePreviewExternal = vi.fn();
+    const committed = vi.fn();
+    const onFilePreviewExternal = vi.fn(async (target: FilePreviewTarget, options?: FilePreviewOptions) => {
+      const source = await mocks.readPreview('/workspace', { path: target.path });
+      if (options?.isCurrent?.()) committed({ ...target, ...source });
+    });
     render(
       <FileActionProvider
         workspacePath="/workspace"
@@ -745,10 +773,9 @@ describe('FileActionProvider verified target cache', () => {
       await first.promise;
     });
 
-    expect(onFilePreviewExternal).toHaveBeenCalledTimes(1);
-    expect(onFilePreviewExternal).toHaveBeenCalledWith(
-      expect.objectContaining({ path: 'b.md', content: 'second' }),
-    );
+    expect(committed).toHaveBeenCalledTimes(1);
+    expect(committed).toHaveBeenCalledWith(
+      expect.objectContaining({ path: 'b.md', content: 'second' }));
     expect(onRevealInTree.mock.calls.map(([path]) => path)).toEqual(['a.md', 'b.md']);
   });
 
@@ -784,8 +811,7 @@ describe('FileActionProvider verified target cache', () => {
       await secondCheck.promise;
     });
     await waitFor(() => expect(onFilePreviewExternal).toHaveBeenCalledWith(
-      expect.objectContaining({ path: 'b.md' }),
-    ));
+      expect.objectContaining({ path: 'b.md' }), expect.objectContaining({ isCurrent: expect.any(Function) })));
 
     await act(async () => {
       firstCheck.resolve({ results: { 'a.md': { exists: true, type: 'file' } } });

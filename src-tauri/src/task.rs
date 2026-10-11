@@ -1209,6 +1209,49 @@ pub struct PreparedTaskDiscussion {
     pub candidates_dir: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskDiscussionInput {
+    text: String,
+    client_request_id: String,
+    primary_context: TaskDiscussionPrimaryContext,
+    required_system_skill: TaskDiscussionSkillRequirement,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TaskDiscussionPrimaryContext {
+    kind: String,
+    input: TaskDiscussionContext,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TaskDiscussionContext {
+    candidates_dir: String,
+    workspace_id: String,
+    workspace_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_record_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_record_document_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_record_audio_paths: Option<Vec<TaskDiscussionAudioSource>>,
+    visible_user_message: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TaskDiscussionAudioSource {
+    track: String,
+    path: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TaskDiscussionSkillRequirement {
+    name: String,
+    source_local_id: String,
+    system_skills_version: String,
+    content_sha256: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskUpdateInput {
@@ -5173,11 +5216,20 @@ pub async fn cmd_task_prepare_discussion(
     {
         return Err("Task discussion root may not be a symlink".to_string());
     }
-    let dir = root.join(&discussion_id);
+    let dir = discussion_artifact_dir(&root, &discussion_id)?;
     if !dir.starts_with(&root) {
         return Err("Task discussion path escaped artifact root".to_string());
     }
     let candidates = dir.join("candidates");
+    if fs::symlink_metadata(&candidates)
+        .ok()
+        .is_some_and(|meta| meta.file_type().is_symlink())
+    {
+        return Err("Task discussion candidates may not be a symlink".into());
+    }
+    if dir.join("metadata.json").exists() {
+        return Err("Task discussion already exists".into());
+    }
     fs::create_dir_all(&candidates)
         .map_err(|e| format!("mkdir Task discussion candidates: {e}"))?;
     let meta = TaskDiscussionMetadata {
@@ -5200,6 +5252,139 @@ pub async fn cmd_task_prepare_discussion(
         discussion_dir: dir.to_string_lossy().into_owned(),
         candidates_dir: candidates.to_string_lossy().into_owned(),
     })
+}
+
+const TASK_DISCUSSION_INPUT_MAX_BYTES: u64 = 4 * 1024 * 1024;
+
+fn discussion_artifact_dir(root: &Path, discussion_id: &str) -> Result<PathBuf, String> {
+    validate_safe_id(discussion_id, "discussionId")?;
+    let dir = root.join(discussion_id);
+    for path in [
+        root.to_path_buf(),
+        dir.clone(),
+        dir.join("metadata.json"),
+        dir.join("input.json"),
+    ] {
+        if fs::symlink_metadata(&path)
+            .ok()
+            .is_some_and(|meta| meta.file_type().is_symlink())
+        {
+            return Err("Task discussion artifact may not be a symlink".into());
+        }
+    }
+    Ok(dir)
+}
+
+fn validate_discussion_input(
+    dir: &Path,
+    discussion_id: &str,
+    input: &TaskDiscussionInput,
+) -> Result<(), String> {
+    let metadata: TaskDiscussionMetadata = serde_json::from_slice(
+        &fs::read(dir.join("metadata.json"))
+            .map_err(|e| format!("read discussion metadata: {e}"))?,
+    )
+    .map_err(|e| format!("parse discussion metadata: {e}"))?;
+    let context = &input.primary_context.input;
+    if metadata.discussion_id != discussion_id
+        || input.primary_context.kind != "task-discussion"
+        || context.workspace_id != metadata.workspace_id
+        || context.workspace_path != metadata.workspace_path
+        || context.source_record_id != metadata.source_record_id
+        || Path::new(&context.candidates_dir) != dir.join("candidates")
+        || input.text.trim().is_empty()
+        || input.text != context.visible_user_message
+        || Uuid::parse_str(&input.client_request_id).is_err()
+        || input.required_system_skill.name != "myagents-task-alignment"
+        || input.required_system_skill.source_local_id != "myagents-task-alignment"
+        || input.required_system_skill.system_skills_version.is_empty()
+        || input.required_system_skill.content_sha256.len() != 64
+        || !input
+            .required_system_skill
+            .content_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("Task discussion input does not match its owned contract".into());
+    }
+    // Keep the exact saved requirement even after an app upgrade. The runtime's
+    // ordinary admission validator, not recovery, decides whether it is current.
+    Ok(())
+}
+
+fn save_discussion_input_under(
+    root: &Path,
+    discussion_id: &str,
+    input: &TaskDiscussionInput,
+) -> Result<(), String> {
+    let dir = discussion_artifact_dir(root, discussion_id)?;
+    validate_discussion_input(&dir, discussion_id, input)?;
+    let json = serde_json::to_string_pretty(input).map_err(|e| e.to_string())?;
+    if json.len() as u64 > TASK_DISCUSSION_INPUT_MAX_BYTES {
+        return Err("Task discussion input exceeds size limit".into());
+    }
+    let path = dir.join("input.json");
+    if path.exists() {
+        return Err("Task discussion original input already exists".into());
+    }
+    // Publish once, atomically. Concurrent saves cannot replace the original;
+    // the source form is released only after the file and directory are synced.
+    let staging = dir.join(format!("input-{}.pending", Uuid::new_v4()));
+    write_atomic_text(&staging, &json)?;
+    let published =
+        fs::hard_link(&staging, &path).map_err(|e| format!("publish discussion input: {e}"));
+    let _ = fs::remove_file(&staging);
+    published?;
+    crate::durable_fs::sync_directory(&dir).map_err(|e| e.to_string())
+}
+
+fn read_discussion_input_under(
+    root: &Path,
+    discussion_id: &str,
+) -> Result<Option<TaskDiscussionInput>, String> {
+    let dir = discussion_artifact_dir(root, discussion_id)?;
+    let path = dir.join("input.json");
+    let metadata = match fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !metadata.is_file() || metadata.len() > TASK_DISCUSSION_INPUT_MAX_BYTES {
+        return Err("Task discussion input is invalid or exceeds size limit".into());
+    }
+    let input = serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("parse discussion input: {e}"))?;
+    validate_discussion_input(&dir, discussion_id, &input)?;
+    Ok(Some(input))
+}
+
+#[tauri::command]
+pub async fn cmd_task_save_discussion_input(
+    discussion_id: String,
+    input: TaskDiscussionInput,
+) -> Result<(), String> {
+    let root = crate::app_dirs::myagents_data_dir()
+        .ok_or("cannot resolve MyAgents data dir")?
+        .join("task-discussions");
+    tauri::async_runtime::spawn_blocking(move || {
+        save_discussion_input_under(&root, &discussion_id, &input)
+    })
+    .await
+    .map_err(|error| format!("save discussion input task failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn cmd_task_read_discussion_input(
+    discussion_id: String,
+) -> Result<Option<TaskDiscussionInput>, String> {
+    let root = crate::app_dirs::myagents_data_dir()
+        .ok_or("cannot resolve MyAgents data dir")?
+        .join("task-discussions");
+    tauri::async_runtime::spawn_blocking(move || {
+        read_discussion_input_under(&root, &discussion_id)
+    })
+    .await
+    .map_err(|error| format!("read discussion input task failed: {error}"))?
 }
 
 const TASK_DISCUSSION_CANDIDATE_MAX_BYTES: u64 = 1024 * 1024;
@@ -7527,6 +7712,96 @@ mod tests {
         assert!(task_docs_dir("").is_err());
         // Valid UUID-ish id works
         assert!(task_docs_dir("abc-123_ok").is_ok());
+    }
+
+    fn sample_discussion_input(root: &Path) -> TaskDiscussionInput {
+        let dir = root.join("discussion-input");
+        fs::create_dir_all(dir.join("candidates")).unwrap();
+        fs::write(
+            dir.join("metadata.json"),
+            serde_json::to_vec(&TaskDiscussionMetadata {
+                discussion_id: "discussion-input".into(),
+                workspace_id: "ws".into(),
+                workspace_path: "/ws".into(),
+                source_record_id: Some("record-audio".into()),
+                created_at: 1,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        serde_json::from_value(serde_json::json!({
+            "text": "  Original input\nkeep spaces  ", "clientRequestId": Uuid::new_v4().to_string(),
+            "primaryContext": { "kind": "task-discussion", "input": {
+                "candidatesDir": dir.join("candidates").to_string_lossy(), "workspaceId": "ws", "workspacePath": "/ws", "sourceRecordId": "record-audio",
+                "sourceRecordDocumentPath": "/record/content.md", "sourceRecordAudioPaths": [{ "track": "mixed", "path": "/record/audio.wav" }],
+                "visibleUserMessage": "  Original input\nkeep spaces  " } },
+            "requiredSystemSkill": { "name": "myagents-task-alignment", "sourceLocalId": "myagents-task-alignment", "systemSkillsVersion": "60", "contentSha256": "a".repeat(64) }
+        })).unwrap()
+    }
+
+    #[test]
+    fn discussion_input_survives_reload_without_creating_a_task_or_candidate() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("task-discussions");
+        let input = sample_discussion_input(&root);
+        save_discussion_input_under(&root, "discussion-input", &input).unwrap();
+        let restored = read_discussion_input_under(&root, "discussion-input")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(restored).unwrap(),
+            serde_json::to_value(&input).unwrap()
+        );
+        assert_eq!(
+            fs::read_dir(root.join("discussion-input/candidates"))
+                .unwrap()
+                .count(),
+            0
+        );
+        assert!(!dir.path().join("tasks").exists());
+        let mut replacement = input;
+        replacement.text = "replacement".into();
+        replacement.primary_context.input.visible_user_message = replacement.text.clone();
+        assert!(save_discussion_input_under(&root, "discussion-input", &replacement).is_err());
+        assert_eq!(
+            read_discussion_input_under(&root, "discussion-input")
+                .unwrap()
+                .unwrap()
+                .text,
+            "  Original input\nkeep spaces  "
+        );
+    }
+
+    #[test]
+    fn discussion_input_rejects_wrong_scope_and_oversize_and_does_not_invent_legacy_text() {
+        let dir = tempdir().unwrap();
+        let input = sample_discussion_input(dir.path());
+        assert!(read_discussion_input_under(dir.path(), "discussion-input")
+            .unwrap()
+            .is_none());
+        assert!(read_discussion_input_under(dir.path(), "../escape").is_err());
+        let mut wrong = input.clone();
+        wrong.primary_context.input.workspace_path = "/other".into();
+        assert!(save_discussion_input_under(dir.path(), "discussion-input", &wrong).is_err());
+        let mut oversized = input;
+        oversized.text = "a".repeat(TASK_DISCUSSION_INPUT_MAX_BYTES as usize);
+        oversized.primary_context.input.visible_user_message = oversized.text.clone();
+        assert!(save_discussion_input_under(dir.path(), "discussion-input", &oversized).is_err());
+        assert!(!dir.path().join("discussion-input/input.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discussion_input_rejects_symlinked_artifacts() {
+        let dir = tempdir().unwrap();
+        let input = sample_discussion_input(dir.path());
+        let external = dir.path().join("external");
+        fs::write(&external, "external").unwrap();
+        std::os::unix::fs::symlink(&external, dir.path().join("discussion-input/input.json"))
+            .unwrap();
+        assert!(save_discussion_input_under(dir.path(), "discussion-input", &input).is_err());
+        assert!(read_discussion_input_under(dir.path(), "discussion-input").is_err());
+        assert_eq!(fs::read_to_string(external).unwrap(), "external");
     }
 
     #[test]

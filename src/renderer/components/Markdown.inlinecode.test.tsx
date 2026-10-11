@@ -178,8 +178,7 @@ describe('Markdown inline-code file paths', () => {
     fireEvent.click(chip);
     await waitFor(() => expect(mocks.onFilePreviewExternal).toHaveBeenCalledWith(expect.objectContaining({
       path: REL,
-      content: '# memory',
-    })));
+    }), expect.objectContaining({ isCurrent: expect.any(Function) })));
     expect(screen.queryByText('预览')).not.toBeInTheDocument();
   });
 

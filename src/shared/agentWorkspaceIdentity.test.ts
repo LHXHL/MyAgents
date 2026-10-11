@@ -82,6 +82,34 @@ describe('explicit Agent claim conflict choice', () => {
 });
 
 describe('reconcileAgentWorkspaceIdentities', () => {
+  it('projects existing identities without births when no builder is supplied', () => {
+    const projects = [project('legacy', '/legacy', 'stale'), project('missing', '/missing', 'unborn')];
+    const agents = [agent('first', '/legacy', true), agent('extra', '/legacy')];
+    const result = reconcileAgentWorkspaceIdentities(projects, agents, {});
+    expect(result.projects[0]).toMatchObject({ agentId: 'first', isAgent: true });
+    expect(result.projects[1]).toEqual(projects[1]);
+    expect(result.createdAgentIds).toEqual([]);
+    expect(result.agents).toEqual(agents);
+    expect(result.identities.map(item => item.agentId)).toEqual(['first']);
+    expect(projects[0].agentId).toBe('stale');
+    expect(projects[0].isAgent).toBeUndefined();
+  });
+
+  it('shares explicit claim and conflict decisions with maintenance when projecting without births', () => {
+    const projects = [
+      project('legacy', '/legacy'), project('owner', '/moved', 'reserved'),
+      project('conflict-a', '/a', 'shared'), project('conflict-b', '/b', 'shared'),
+    ];
+    const agents = [agent('reserved', '/legacy'), agent('available', '/legacy'), agent('shared')];
+    const projection = reconcileAgentWorkspaceIdentities(projects, agents, {});
+    const maintenance = reconcile(projects, agents);
+    expect(projection.projects).toEqual(maintenance.projects);
+    expect(projection.diagnostics).toEqual(maintenance.diagnostics);
+    expect(projection.projects.map(item => item.agentId)).toEqual(['available', 'reserved', 'shared', 'shared']);
+    expect(projection.identities.map(item => item.projectId)).toEqual(['legacy', 'owner']);
+    expect(projection.createdAgentIds).toEqual([]);
+  });
+
   it('retains workspace conflict evidence from an unselectable Project', () => {
     const projects = [project('', '/same', 'bad'), project('ambiguous', '/same', 'affected'), project('healthy', '/healthy', 'good')];
     const agents = [agent('bad'), agent('affected'), agent('good')];

@@ -69,9 +69,13 @@ pub(crate) async fn invoke(
 ) -> Result<super::calls::CallResult, NetworkError> {
     // Account for the query during original source identity/catalog preparation,
     // not only after it reaches the connector command queue.
-    let reference = myagents_agent_network_protocol::AgentReference::parse(&input.request.selector)
+    // The operation owns the selector type; a Session reference carries the
+    // same Agent scope for connection routing and keeps its exact Session ID.
+    let reference = input
+        .request
+        .reference()
         .map_err(|_| NetworkError::new("PROTOCOL_INVALID"))?;
-    let owner = owner.for_reference(&reference)?;
+    let owner = owner.for_reference(&reference.agent)?;
     let allocation = owner.reserve_payload(&input.request)?;
     let request = input.request;
     let network_generation = owner.generation();

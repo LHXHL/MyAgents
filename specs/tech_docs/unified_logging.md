@@ -7,31 +7,39 @@ MyAgents 使用统一日志系统聚合来自三个来源的日志：
 - **NODE** - Node.js Sidecar 后端日志
 - **Rust** - Tauri 原生层日志
 
-TabProvider 聚合日志的 UI 投影，UnifiedLogsPanel 负责展示。Node 与 Rust 各自拥有日志持久化；React 日志经批量 API 交给 Node 写入。
+frontendLogger 聚合窗口级日志 UI 投影，TabProvider 接入 Session SSE，UnifiedLogsPanel 负责展示。Node 与 Rust 各自拥有日志持久化；React 日志经批量 API 交给 Node 写入。
 
 ## 架构
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      TabProvider                             │
+│                Renderer window diagnostic store             │
 │                                                              │
-│  React logs ──► CustomEvent ──► appendUnifiedLog ──► UI     │
-│                              └─► buffer ──► /api/unified-log│
+│  React console ──► frontendLogger ──► bounded UI buffer       │
+│                           └─► batch ──► /api/unified-log      │
 │                                                              │
-│  Node logs ───► SSE chat:log ──► appendUnifiedLog ──► UI    │
+│  Node logs ──► TabProvider SSE chat:log ──► same UI buffer    │
 │                (server-side persistence via UnifiedLogger)   │
 │                                                              │
-│  Rust logs ───► Tauri event ──► appendUnifiedLog ──► UI     │
+│  Rust logs ──► one Tauri listener/window ──► same UI buffer   │
 │                (Rust 侧直接写入文件，不经过前端 API)          │
+│                                                              │
+│  visible UnifiedLogsPanel ──► useFrontendLogs subscription   │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+UI 日志缓冲由 `frontendLogger.ts` 管理，单窗口最多保留 5,000 条；Chat/Settings 不再保存逐 Tab 日志数组。`initFrontendLogger()` 同时建立本窗口唯一的 Rust 日志监听，恢复 logger 时通过 AbortSignal 释放；Node 的 Session SSE 仍归 TabProvider 接收，只将日志写入 UI 缓冲，不发布聊天主 Context。
+
+`UnifiedLogsPanel` 通过 `useFrontendLogs` 仅在打开时订阅，关闭不消费日志更新，重新打开读取有界历史。Chat 视图优先按日志 Session ID 匹配当前 Session；没有 Session ID 时按 Tab ID 匹配；没有两种标识的日志为全局日志。Settings 为全局诊断视图。单个面板的清空只推进自己的展示游标，不删除其他面板的数据或磁盘日志；面板仍最多展示最新 3,000 条适用日志。
+
+历史 `chat:logs` 字符串快照没有 Renderer UI 消费者，不再写入 Chat 状态；实时结构化 `chat:log` 使用统一缓冲，实时旧字符串格式仍转换为 Node 条目显示。
 
 ### 持久化机制
 
 | 来源 | 持久化方式 | 说明 |
 |------|-----------|------|
 | React | 前端 buffer → `/api/unified-log` | 批量发送，500ms debounce |
-| NODE | 服务端 `UnifiedLogger.ts` queue + 100ms flusher | async/bounded writer，队列上限 1000，50MB rotation，overflow 计数告警 |
+| NODE | 服务端 `UnifiedLogger.ts` queue + 100ms flusher | 延后批量同步文件写入、有界队列 1000，50MB rotation，overflow 计数告警 |
 | Rust | `logger.rs` bounded mpsc + BufWriter | async/bounded writer，200ms flush，overflow 计数告警；Rust 侧仍直接写文件避免循环 |
 
 Rust 日志直接在 Rust 侧写入文件，而不是通过前端 API，这样可以避免日志循环：
@@ -193,6 +201,10 @@ console.log('connected');
 console.log('Chat - sent');
 ```
 
+Builtin 输入生命周期使用 `[builtin-input]` 前缀，记录 Query replacement、resolver park/wake/clear、consumer 请求下一项、terminal/provider/MCP/admission 等待、提交、SDK yield、输入退休以及 Stop/force 的快照。字段限于 generation、Product Session 关联、布尔状态与各输入队列数量，不记录消息正文、工作区路径、Provider 配置或回调对象。`inputGeneration` 属于该 generator，`currentGeneration` 属于当前 Query；Query factory 尚未登记 authority 时前者可为 null。resolver 的 installed/current generation 可识别旧消费者的迟到唤醒。
+
+排查“上一轮已完成，下一条输入不消费”时保留同一 Sidecar 的原始日志顺序，对照最后一次 `consumer-next`、`terminal-ready`、`resolver-parked/received` 与 `sdk-yield`；这些日志定位产品侧交接边界，不能单凭 HTTP 健康、Query 存在或没有后续日志证明 SDK 内部消费健康。
+
 ### 3. 避免日志循环
 
 ```typescript
@@ -335,8 +347,8 @@ SDK user message 摘要通过 `contentKind`、`textLength`、`isEmptyContent` �
 ### 日志不显示
 
 1. 检查 `initFrontendLogger()` 是否在 `main.tsx` 中调用
-2. 检查 TabProvider 是否正确监听 `REACT_LOG_EVENT`
-3. 检查 UnifiedLogsPanel 的 `sseLogs` prop
+2. 检查 `frontendLogger` 是否向窗口级有界缓冲写入日志；Session Node 日志由 TabProvider 的 `chat:log` 入口接入同一缓冲。
+3. 检查 UnifiedLogsPanel 内部 `useFrontendLogs` 的可见性订阅和 Session / Tab scope，及面板自己的清空游标。
 
 ### 日志不持久化
 
@@ -348,7 +360,7 @@ SDK user message 摘要通过 `contentKind`、`textLength`、`isEmptyContent` �
 
 1. 确认在 Tauri 环境中运行（`isTauri()` 返回 true）
 2. 检查 Rust 侧是否 emit `log:rust` 事件
-3. 检查 TabProvider 中的 Tauri event listener
+3. 检查 `initFrontendLogger()` 建立的窗口级 Tauri event listener 及其生命周期。
 
 ### 录音或转录失败
 
@@ -383,8 +395,9 @@ grep -E '\[AppErrorBoundary\]|\[REACT\] \[ERROR\]' ~/.myagents/logs/unified-*.lo
 
 | 文件 | 说明 |
 |------|------|
-| `src/renderer/utils/frontendLogger.ts` | React console 拦截 |
-| `src/renderer/context/TabProvider.tsx` | 日志状态管理 |
+| `src/renderer/utils/frontendLogger.ts` | React console 拦截、窗口日志缓冲与 Rust 日志监听 |
+| `src/renderer/context/TabProvider.tsx` | Session SSE 实时日志接入 |
+| `src/renderer/hooks/useFrontendLogs.ts` | 可见面板订阅、日志 scope 与清空游标 |
 | `src/renderer/components/UnifiedLogsPanel.tsx` | 日志 UI 面板 |
 | `src/shared/types/log.ts` | Renderer/Server 共用的日志 wire 类型定义 |
 | `src/renderer/types/log.ts` | Renderer 本地的 type-only re-export |

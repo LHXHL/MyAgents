@@ -103,7 +103,15 @@ MessageList 将 `followOutput` 固定为 `false`，因为 react-virtuoso 4.18.3 
 
 `scrollToIndex(LAST/end)` 使用缓存的行高，因此仅把命令提前到layout effect不能保证采用当前正文高度；WebKit可能将过渡位置绘制出来。行为验证必须包括真实虚拟列表与WebKit画面，不能把rAF中间读数直接等同于已绘制抖动。AssistantActions在回合结束的同次commit出现，避免loading移除后再延迟350ms插入操作栏。
 
-## 7. 代码入口与验证
+## 7. 新会话启动遮罩与 query 衔接
+
+`ChatBootOverlay` 只展示居中的启动状态；deferred / Suspense fallback 与 mounted Chat 使用相同外壳，保留原有 300 ms 退场动画，不在遮罩中复制用户气泡。
+
+带 `initialMessage` 的 Chat 用本次发送的 `clientRequestId` 关联后台接纳后的用户行，只有真实 MessageList 的 `itemsRendered` 提交该行时才正常退场。前端 optimistic 气泡、Fork 的旧历史、Runtime `starting/running` 与 assistant 输出都不能代替这一呈现边界。TabProvider 的即时发送投影、loading、后台初始化与 canonical 接替继续照常运行；不等待 AI 回答。
+
+MessageList 的呈现准入与 recovery fence 继续由现有 owner 裁决；不可呈现时不发布可供启动退场的行，但仍通知滚动 owner，让 recovery 可正常结算。无首条消息的入口在连接及恢复就绪后退场；普通 Cron 在任务创建完成后退场，因为它可能只安排未来执行、不产生当前 Tab 的 query。发送失败与待处理的人类交互允许立即展示相应操作，保留原有 30 秒无响应逃生超时。
+
+## 8. 代码入口与验证
 
 - native projection：`src/renderer/hooks/useTrayEvents.ts`、`src-tauri/src/tray.rs`
 - pure generation policy：`src/renderer/utils/mainWindowPresentation.ts`
@@ -113,6 +121,8 @@ MessageList 将 `followOutput` 固定为 `false`，因为 react-virtuoso 4.18.3 
 - continuity transaction：`src/renderer/hooks/useChatScrollController.ts`
 
 回归测试至少覆盖：visible blur 零恢复命令、latest-wins native sampling、generation reducer、inactive/最小化 frozen input、首次在恢复 generation mount、follow/anchor 两种恢复、unmounted anchor event-driven settlement、Session switch、旧 generation callback、显式用户导航抢占和 inactive Tab memo 隔离。Windows WebView2 与 macOS WKWebView 真机还要验证事件时线和无首句/顶部/底部闪跳；源码审计不能代替真机门禁。
+
+启动衔接回归：`node scripts/verify-chat-startup.mjs webkit`（或 `chrome`）使用真实 Message/Virtuoso 和启动遮罩，覆盖 optimistic 等待、文字、长 query、纯图片和 Fork 旧历史；逐帧记录退场时的 query 可见性，并输出截图、录像与几何证据。
 
 停止后稳定性回归：`node scripts/verify-agent-status-scroll.mjs webkit`（或 `chrome`）使用真实状态卡、输入浮层、消息与滚动控制器，覆盖完成历史、实时结束、跨三个旧淡出周期的零高度/位置变化，以及长尾滚轮可达性。
 

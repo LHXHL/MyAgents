@@ -1,3 +1,4 @@
+import { broadcast } from "../sse";
 import { applySessionModelSelection } from '../agent-session';
 import { questionAnswersAsText } from '../../shared/types/askUserQuestion';
 import { retryDesktopRequest } from './retry';
@@ -442,6 +443,16 @@ export function createBuiltinSessionEngine(): SessionEngine {
       );
       if (result.error) {
         return { success: false, error: result.error, status: 429 };
+      }
+      // Product Skill admission can reject after the HTTP queue receipt and
+      // before a user row exists. Surface that rejection through the existing
+      // desktop error channel; the discussion artifact still owns the input.
+      if (request.requiredSystemSkill && result.dispatchAcceptance) {
+        void result.dispatchAcceptance.then(acceptance => {
+          if (!acceptance.accepted) broadcast('chat:agent-error', {
+            message: acceptance.error ?? 'Required system skill dispatch was rejected',
+          });
+        }).catch(error => broadcast('chat:agent-error', { message: String(error) }));
       }
       return {
         success: true,

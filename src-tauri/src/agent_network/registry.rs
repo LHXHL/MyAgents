@@ -853,6 +853,169 @@ pub(crate) fn start(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use myagents_agent_network_protocol::{AgentReference, SessionReference};
+
+    fn source_routing_fixture() -> (ManagedAgentNetwork, AgentReference) {
+        let owner = NetworkRegistry::new();
+        let stored: StoredConnection = serde_json::from_value(json!({
+            "id":"00000000-0000-0000-0000-000000000001",
+            "descriptor":{"serviceId":"00000000-0000-0000-0000-000000000002","environment":"development",
+                "principalId":"00000000-0000-0000-0000-000000000003","networkId":"00000000-0000-0000-0000-000000000004",
+                "name":"isolated","issuer":"https://isolated.example","protocol":1,"capabilities":[],"rootCertificate":"fixture","jwks":{}},
+            "removing":false
+        })).unwrap();
+        let reference = AgentReference {
+            service_id: stored.descriptor.service_id.clone(),
+            network_id: stored.descriptor.network_id.clone(),
+            mount_id: "00000000-0000-0000-0000-000000000005".into(),
+        };
+        *owner.stored.lock().unwrap() = vec![stored];
+        owner.set_selfhost_enabled(true).unwrap();
+        // The UI is showing official, but the selector owns request routing.
+        assert_eq!(owner.view().selected, OFFICIAL);
+        (owner, reference)
+    }
+
+    async fn source_routing_error(
+        owner: &ManagedAgentNetwork,
+        selector: &str,
+        method: &str,
+        params: Value,
+        source_kind: &str,
+    ) -> String {
+        let input = serde_json::from_value(json!({
+            "sidecarId":"missing-source-process", "sourceKind":source_kind,
+            "request":{"selector":selector,"requestId":"00000000-0000-0000-0000-000000000006",
+                "operation":{"method":method,"params":params}}
+        }))
+        .unwrap();
+        let manager = Arc::new(Mutex::new(crate::sidecar::SidecarManager::new()));
+        // Exercise the real Management entry. An absent source process is the
+        // deterministic stop after routing, before any account IO or RPC.
+        super::super::source::invoke(owner, &manager, 1, input, std::time::Instant::now())
+            .await
+            .err()
+            .expect("an absent source generation must never dispatch")
+            .code
+    }
+
+    #[tokio::test]
+    async fn source_invoke_routes_agent_and_session_operations_before_source_generation_check() {
+        let (owner, agent) = source_routing_fixture();
+        let agent_selector = agent.encode().unwrap();
+        for local_session_id in ["legacy-session", "00000000-0000-0000-0000-000000000007"] {
+            let session_selector = SessionReference {
+                agent: agent.clone(),
+                local_session_id: local_session_id.into(),
+            }
+            .encode()
+            .unwrap();
+            for (selector, method, params) in [
+                (&agent_selector, "agent.show", json!({})),
+                (&agent_selector, "session.list", json!({"limit":5})),
+                (
+                    &agent_selector,
+                    "session.start",
+                    json!({"prompt":"work","messageId":"00000000-0000-0000-0000-000000000008","replyBack":false}),
+                ),
+                (&session_selector, "session.state", json!({})),
+                (
+                    &session_selector,
+                    "session.get",
+                    json!({"limit":5,"before":"message-anchor"}),
+                ),
+                (
+                    &session_selector,
+                    "session.send",
+                    json!({"prompt":"continue","messageId":"00000000-0000-0000-0000-000000000008","replyBack":false}),
+                ),
+                (
+                    &session_selector,
+                    "session.watch",
+                    json!({"watchId":"00000000-0000-0000-0000-000000000009"}),
+                ),
+            ] {
+                for kind in ["internal-session", "external-cli"] {
+                    if method == "session.watch" && kind == "external-cli" {
+                        continue;
+                    }
+                    assert_eq!(
+                        source_routing_error(&owner, selector, method, params.clone(), kind).await,
+                        "SOURCE_GENERATION_CHANGED",
+                        "{method} / {kind} / {local_session_id}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn source_invoke_preserves_reference_type_network_scope_and_feature_gate() {
+        let (owner, agent) = source_routing_fixture();
+        let session = SessionReference {
+            agent: agent.clone(),
+            local_session_id: "legacy-session".into(),
+        };
+        for (selector, method, params) in [
+            (agent.encode().unwrap(), "session.state", json!({})),
+            (
+                session.encode().unwrap(),
+                "session.list",
+                json!({"limit":5}),
+            ),
+            (
+                format!("{}:invalid", session.encode().unwrap()),
+                "session.state",
+                json!({}),
+            ),
+        ] {
+            assert_eq!(
+                source_routing_error(&owner, &selector, method, params, "internal-session").await,
+                "PROTOCOL_INVALID"
+            );
+        }
+        for foreign_agent in [
+            AgentReference {
+                network_id: "00000000-0000-0000-0000-000000000010".into(),
+                ..agent.clone()
+            },
+            AgentReference {
+                service_id: "00000000-0000-0000-0000-000000000010".into(),
+                ..agent.clone()
+            },
+        ] {
+            let foreign = SessionReference {
+                agent: foreign_agent,
+                ..session.clone()
+            }
+            .encode()
+            .unwrap();
+            assert_eq!(
+                source_routing_error(
+                    &owner,
+                    &foreign,
+                    "session.state",
+                    json!({}),
+                    "internal-session"
+                )
+                .await,
+                "NETWORK_SCOPE_MISMATCH"
+            );
+        }
+        owner.set_selfhost_enabled(false).unwrap();
+        assert_eq!(
+            source_routing_error(
+                &owner,
+                &session.encode().unwrap(),
+                "session.state",
+                json!({}),
+                "internal-session"
+            )
+            .await,
+            "NETWORK_FEATURE_DISABLED"
+        );
+    }
+
     #[test]
     fn selfhost_gate_requires_explicit_true() {
         for config in [

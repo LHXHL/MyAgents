@@ -34,7 +34,8 @@ import { useToastOptional } from '@/components/Toast';
 import { useImagePreview } from '@/context/ImagePreviewContext';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 import { getRichDocKind, isImageFile, isPreviewable, type RichDocKind } from '../../shared/fileTypes';
-import type { FilePreviewFocusTarget } from '@/types/filePreview';
+import type { FilePreviewFocusTarget, FilePreviewOptions, FilePreviewTarget } from '@/types/filePreview';
+import { filePreviewErrorMessage } from '@/utils/filePreview';
 import {
   resolveFileLinkTarget,
   type FileActionTarget,
@@ -90,17 +91,7 @@ interface FileActionProviderProps {
    *  Do not wire per-tool completion: that previously caused requery storms. */
   refreshTrigger?: number;
   /** When provided, "预览" routes to this callback (split-view) instead of fullscreen modal. */
-  onFilePreviewExternal?: (file: {
-    name: string;
-    content: string;
-    size: number;
-    path: string;
-    sourceScope?: FileActionScope;
-    localPath?: string;
-    richDocKind?: RichDocKind;
-    initialLineNumber?: number;
-    focusTarget?: FilePreviewFocusTarget;
-  }) => void;
+  onFilePreviewExternal?: (file: FilePreviewTarget, options?: FilePreviewOptions) => void | Promise<void>;
   /** Append `@<path> ` to chat input — wired to FilePreviewModal's「引用文件」button.
    *  Distinct from `onInsertReference` (cursor-insert, no trailing space) — the toolbar
    *  button always appends to end with trailing space, matching the「丢进对话框继续聊」 UX. */
@@ -618,6 +609,39 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
     }
     if (!onFilePreviewExternalRef.current && previewRef.current && !await previewRef.current.prepareTransition(path)) return;
     if (!isMountedRef.current || requestId !== previewRequestIdRef.current || requestWorkspace !== workspaceIdentityRef.current) return;
+    // Route to split-view if external handler provided
+    if (onFilePreviewExternalRef.current && !isImageFile(fileName)) {
+      try {
+        await onFilePreviewExternalRef.current?.({
+          name: fileName,
+          path,
+          sourceScope: scope,
+          localPath,
+          initialLineNumber: options?.initialLineNumber,
+          focusTarget,
+        }, { isCurrent: () => isMountedRef.current && requestId === previewRequestIdRef.current && requestWorkspace === workspaceIdentityRef.current });
+      } catch (err) {
+        if (!isMountedRef.current || requestId !== previewRequestIdRef.current || requestWorkspace !== workspaceIdentityRef.current) return;
+        invalidateTarget({ scope, path });
+        console.error('[FileAction] Failed to load preview:', err);
+        toastRef.current?.error(`${t('fileActions.previewLoadFailed')}: ${filePreviewErrorMessage(err)}`);
+        setPreviewFile({
+          name: fileName,
+          content: '',
+          size: 0,
+          path,
+          sourceScope: scope,
+          localPath,
+          initialLineNumber: options?.initialLineNumber,
+          focusTarget,
+          requestId,
+          isLoading: false,
+          error: filePreviewErrorMessage(err),
+        });
+      }
+      return true;
+    }
+
     if (richDocKind) {
       const fileData = {
         name: fileName,
@@ -630,11 +654,7 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
         initialLineNumber: options?.initialLineNumber,
         focusTarget,
       };
-      if (onFilePreviewExternalRef.current) {
-        onFilePreviewExternalRef.current(fileData);
-      } else {
-        setPreviewFile({ ...fileData, requestId, isLoading: false, error: null });
-      }
+      setPreviewFile({ ...fileData, requestId, isLoading: false, error: null });
       return true;
     }
 
@@ -660,47 +680,6 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
     }
 
     if (!isPreviewable(fileName)) return false;
-
-    // Route to split-view if external handler provided
-    if (onFilePreviewExternalRef.current) {
-      void (async () => {
-        try {
-          const resp = scope === 'local'
-            ? await svc.readLocalPreview({ fullPath: path, workspace: workspaceForLocal })
-            : await svc.readPreview({ path });
-          if (!isMountedRef.current || requestId !== previewRequestIdRef.current || requestWorkspace !== workspaceIdentityRef.current) return;
-          onFilePreviewExternalRef.current?.({
-            name: resp.name,
-            content: resp.content,
-            size: resp.size,
-            path,
-            sourceScope: scope,
-            localPath,
-            initialLineNumber: options?.initialLineNumber,
-            focusTarget,
-          });
-        } catch (err) {
-          if (!isMountedRef.current || requestId !== previewRequestIdRef.current || requestWorkspace !== workspaceIdentityRef.current) return;
-          invalidateTarget({ scope, path });
-          console.error('[FileAction] Failed to load preview:', err);
-          toastRef.current?.error(t('fileActions.previewLoadFailed'));
-          setPreviewFile({
-            name: fileName,
-            content: '',
-            size: 0,
-            path,
-            sourceScope: scope,
-            localPath,
-            initialLineNumber: options?.initialLineNumber,
-            focusTarget,
-            requestId,
-            isLoading: false,
-            error: err instanceof Error ? err.message : 'Failed to load file',
-          });
-        }
-      })();
-      return true;
-    }
 
     // Fallback: show fullscreen modal immediately in loading state
     setPreviewFile({
@@ -733,7 +712,7 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
         invalidateTarget({ scope, path });
         setPreviewFile(prev => (
           prev?.requestId === requestId
-            ? { ...prev, isLoading: false, error: err instanceof Error ? err.message : 'Failed to load file' }
+            ? { ...prev, isLoading: false, error: filePreviewErrorMessage(err) }
             : prev
         ));
       }

@@ -1,7 +1,7 @@
 import type React from 'react';
 
 import type { Provider } from '@/config/types';
-import type { FilePreviewFocusTarget } from '@/types/filePreview';
+import type { FilePreviewFocusTarget, FilePreviewOptions, FilePreviewTarget } from '@/types/filePreview';
 import type {
   DirectoryTree,
   DirectoryTreeNode,
@@ -68,18 +68,7 @@ export interface DirectoryPanelProps {
   onInsertSlashCommand?: (command: string) => void;
   onOpenSettings?: (initialSelect?: CapabilityInitialSelect) => void;
   onSyncSkillToGlobal?: (folderName: string) => void;
-  onFilePreviewExternal?: (
-    file: {
-      name: string;
-      content: string;
-      size: number;
-      path: string;
-      richDocKind?: RichDocKind;
-      initialLineNumber?: number;
-      focusTarget?: FilePreviewFocusTarget;
-    },
-    options?: { initialEditMode?: boolean },
-  ) => void;
+  onFilePreviewExternal?: (file: FilePreviewTarget, options?: FilePreviewOptions) => void | Promise<void>;
   onOpenTerminal?: () => void;
   terminalAlive?: boolean;
   onOpenBrowser?: () => void;

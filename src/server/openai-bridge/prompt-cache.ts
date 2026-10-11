@@ -36,3 +36,15 @@ export function buildPromptCacheKey(input: PromptCacheKeyInput): string | undefi
 export function hashForLog(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, LOG_HASH_LENGTH);
 }
+
+/** Generation-owned compatibility observations for one concrete target. */
+export interface PromptCacheCompatibility {
+  isKeyDisabled: (target: string) => boolean;
+  isBreakpointsDisabled: (target: string) => boolean;
+  disableKey: (target: string) => void;
+  disableBreakpoints: (target: string) => void;
+}
+
+export function promptCacheTarget(providerId: string, baseUrl: string, model: string, format: string): string {
+  return JSON.stringify([providerId, baseUrl.replace(/\/+$/, ''), model, format]);
+}

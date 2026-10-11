@@ -26,10 +26,6 @@ import {
   lookupBridge,
   hasBridge,
   listBridges,
-  arePromptCacheBreakpointsDisabled,
-  disablePromptCacheBreakpoints,
-  disablePromptCacheKey,
-  isPromptCacheKeyDisabled,
   _clearRegistryForTests,
 } from '../openai-bridge/bridge-registry';
 
@@ -197,26 +193,35 @@ describe('bridge-registry — diagnostics', () => {
 });
 
 describe('bridge-registry — prompt-cache capability state', () => {
-  it('keeps independent downgrades on same-token re-register and clears them on unregister', async () => {
+  it('keeps independent target downgrades across re-registration, isolated by generation', async () => {
     registerBridge('tok-cache', () => ({ ...baseConfig }), 'session:cache');
-    expect(isPromptCacheKeyDisabled('tok-cache')).toBe(false);
-    expect(arePromptCacheBreakpointsDisabled('tok-cache')).toBe(false);
-
-    disablePromptCacheKey('tok-cache');
-    expect(isPromptCacheKeyDisabled('tok-cache')).toBe(true);
-    expect(arePromptCacheBreakpointsDisabled('tok-cache')).toBe(false);
-
-    disablePromptCacheBreakpoints('tok-cache');
-    expect(arePromptCacheBreakpointsDisabled('tok-cache')).toBe(true);
-
-    registerBridge('tok-cache', () => ({ ...baseConfig, model: 'new-model' }), 'session:cache-restart');
-    expect((await lookupBridge('tok-cache'))!.model).toBe('new-model');
-    expect(isPromptCacheKeyDisabled('tok-cache')).toBe(true);
-    expect(arePromptCacheBreakpointsDisabled('tok-cache')).toBe(true);
-
+    const first = (await lookupBridge('tok-cache'))!.cacheCompatibility!;
+    first.disableKey('target-a');
+    expect(first.isKeyDisabled('target-a')).toBe(true);
+    expect(first.isBreakpointsDisabled('target-a')).toBe(false);
+    first.disableBreakpoints('target-a');
+    registerBridge('tok-cache', () => ({ ...baseConfig, model: 'new-model' }), 'session:cache');
+    const updated = (await lookupBridge('tok-cache'))!.cacheCompatibility!;
+    expect(updated.isKeyDisabled('target-a')).toBe(true);
+    expect(updated.isBreakpointsDisabled('target-a')).toBe(true);
+    expect(updated.isKeyDisabled('target-b')).toBe(false);
+    expect(updated.isBreakpointsDisabled('target-b')).toBe(false);
     unregisterBridge('tok-cache');
-    expect(isPromptCacheKeyDisabled('tok-cache')).toBe(false);
-    expect(arePromptCacheBreakpointsDisabled('tok-cache')).toBe(false);
+    registerBridge('tok-cache', () => ({ ...baseConfig }), 'session:replacement');
+    first.disableKey('target-b');
+    const replacement = (await lookupBridge('tok-cache'))!.cacheCompatibility!;
+    expect(replacement.isKeyDisabled('target-a')).toBe(false);
+    expect(replacement.isKeyDisabled('target-b')).toBe(false);
+  });
+  it('captures the generation before async configuration resolution', async () => {
+    let resolveConfig!: (cfg: typeof baseConfig) => void;
+    registerBridge('reuse', () => new Promise(resolve => { resolveConfig = resolve; }), 'old');
+    const pending = lookupBridge('reuse');
+    unregisterBridge('reuse');
+    registerBridge('reuse', () => ({ ...baseConfig }), 'new');
+    resolveConfig({ ...baseConfig });
+    (await pending)!.cacheCompatibility!.disableKey('target');
+    expect((await lookupBridge('reuse'))!.cacheCompatibility!.isKeyDisabled('target')).toBe(false);
   });
 });
 

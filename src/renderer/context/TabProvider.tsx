@@ -1,4 +1,3 @@
-import { queryAgentSelectors } from '../../shared/agentMentions';
 import { LOG_SESSION_HEADER } from '../../shared/types/log';
 import { messageCompletionParams } from '@/analytics/conversation';
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
@@ -169,7 +168,7 @@ import type {
   TranscriptOperation,
   TranscriptSaveStatus,
 } from '../../shared/sessionTranscript';
-import { subscribeFrontendLogs, setCurrentTabId } from '@/utils/frontendLogger';
+import { appendFrontendLog, setCurrentTabId } from '@/utils/frontendLogger';
 import {
   getTabServerUrl,
   sessionSidecarFetch,
@@ -197,7 +196,6 @@ import {
 } from '@/services/notificationService';
 import {
   setBackgroundTaskStatus,
-  setBackgroundTaskDescription,
   getBackgroundTaskDescription,
   clearAllBackgroundTaskStatuses,
   registerBackgroundTask,
@@ -303,6 +301,7 @@ type WireMessageAttachment = {
 type WireMessageUsage = NonNullable<Message['usage']>;
 
 type WireSessionMessage = {
+  desktopQuery?: Message['desktopQuery'];
   turnId?: string;
   transcriptState?: Message['transcriptState'];
   asyncQuestionReply?: AsyncQuestionReply;
@@ -502,6 +501,7 @@ function wireSessionMessageToMessage(message: WireSessionMessage): Message {
     transcriptState: message.transcriptState,
     attachments: normalizeWireAttachments(message.attachments),
     metadata: message.metadata,
+    desktopQuery: message.desktopQuery,
     asyncQuestionReply: message.asyncQuestionReply,
     ...getAssistantTurnMetrics(message),
   };
@@ -702,6 +702,7 @@ interface TabProviderProps {
   sessionId?: string | null;
   /** Current App-shell title projection, used to preserve newer manual/AI titles during rollback. */
   sessionTitle?: string;
+  sidecarConfigDisposition?: import("@/features/chat/tabContract").SidecarConfigDisposition;
   /** Whether this Tab is currently visible — fed into TabActiveContext for useTabActive() consumers */
   isActive?: boolean;
   /** Callback when generating state changes (for close confirmation) */
@@ -934,6 +935,7 @@ export default function TabProvider({
   agentDir,
   sessionId = null,
   sessionTitle,
+  sidecarConfigDisposition = 'push',
   isActive,
   onGeneratingChange,
   onSessionIdChange,
@@ -1256,8 +1258,6 @@ export default function TabProvider({
       );
     });
   }, [apiGetJson, tabId]);
-  const [logs, setLogs] = useState<string[]>([]);
-  const [unifiedLogs, setUnifiedLogs] = useState<LogEntry[]>([]);
   const [systemInitInfo, setSystemInitInfo] = useState<SystemInitInfo | null>(
     null,
   );
@@ -1351,7 +1351,7 @@ export default function TabProvider({
     liveContextUsageSessionIdRef.current = null;
     setContextUsage(null);
     if (!shouldPreservePendingBirthSnapshots) {
-      if (previousSessionId !== sessionId) setPendingDesktopMessages([]);
+      if (previousSessionId !== sessionId) { setPendingDesktopMessages([]); setQueuedMessages([]); }
       setAgentPlanTodos(null);
       setSdkSlashCommands([]);
       setSystemInitInfo(null);
@@ -1716,8 +1716,6 @@ export default function TabProvider({
       setSystemNotice(null);
       setAgentError(null);
       setLastTerminalReason(null);
-      setUnifiedLogs([]);
-      setLogs([]);
       setSessionMeta(null);
       firstUserTitleProjectionRef.current = null;
       setSessionRuntimeSource(null);
@@ -1818,7 +1816,7 @@ export default function TabProvider({
       ) {
         return false;
       }
-      const adopted = await adoptMigratedSession(response.sessionId);
+      const adopted = await adoptMigratedSession(response.sessionId, { newConversation: true });
       if (adopted) {
         setPendingSessionBirth(tabId, birthContextForSurface('new_chat_button'));
       }
@@ -1833,7 +1831,7 @@ export default function TabProvider({
           state.sessionId !== sourceId &&
           currentSessionIdRef.current === sourceId
         ) {
-          await adoptMigratedSession(state.sessionId);
+          await adoptMigratedSession(state.sessionId, { newConversation: true });
         }
       } catch (reconcileError) {
         console.warn(`[TabProvider ${tabId}] resetSession reconciliation failed:`, reconcileError);
@@ -1882,46 +1880,15 @@ export default function TabProvider({
     [tabId],
   );
 
-  // Append log
-  const appendLog = useCallback((line: string) => {
-    setLogs((prev) => {
-      const next = [...prev, line];
-      if (next.length > 2000) {
-        return next.slice(-2000);
-      }
-      return next;
-    });
-  }, []);
-
-  // Append unified log entry (from SSE chat:log events) - keep max 3000
+  // Session SSE remains owned by this Tab, but diagnostic UI projection is
+  // window-global and never publishes the main Chat Context.
   const appendUnifiedLog = useCallback((entry: LogEntry) => {
-    setUnifiedLogs((prev) => {
-      const next = [...prev, entry];
-      if (next.length > 3000) {
-        return next.slice(-3000);
-      }
-      return next;
+    appendFrontendLog({
+      ...entry,
+      tabId: entry.tabId ?? tabId,
+      sessionId: entry.sessionId ?? currentSessionIdRef.current ?? undefined,
     });
-  }, []);
-
-  // Clear all unified logs
-  const clearUnifiedLogs = useCallback(() => {
-    setUnifiedLogs([]);
-    setLogs([]);
-  }, []);
-
-  // Pattern 6: subscribe to the global FrontendLogStore with a tab-id
-  // filter. Replaces the legacy "every TabProvider keeps its own copy of
-  // every React log" model — entries with no tabId pass through (global)
-  // and entries stamped for THIS tab are surfaced to its UI panel.
-  useEffect(() => {
-    const unsubscribe = subscribeFrontendLogs((entry) => {
-      appendUnifiedLog(entry);
-    }, tabId);
-    return () => {
-      unsubscribe();
-    };
-  }, [appendUnifiedLog, tabId]);
+  }, [tabId]);
 
   // Pattern 6 (FIXED): Chat tab registry for renderer correlation. App.tsx
   // owns the active tab across Launcher / Settings / TaskCenter / Chat; each
@@ -1972,24 +1939,6 @@ export default function TabProvider({
       setActiveCorrelation({ tabId, mounted: false });
     };
   }, [tabId]);
-
-  // Listen for Rust logs via Tauri events (unified with React/Node logs)
-  // Note: Rust logs are only displayed in UI, NOT persisted via frontend API
-  // This avoids a log loop: Rust log → API call → Rust proxy logs the call → new Rust log → ...
-  useEffect(() => {
-    if (!isTauri()) return;
-    const ac = new AbortController();
-    void listenWithCleanup<LogEntry>(
-      'log:rust',
-      (event) => {
-        // Add to unified logs for UI display only
-        // Do NOT call queueLogsForPersistence - that would cause infinite loop
-        appendUnifiedLog(event.payload);
-      },
-      ac.signal,
-    );
-    return () => ac.abort();
-  }, [appendUnifiedLog]);
 
   // ─── RAF batching for streaming chunks ───
   // Accumulates text chunks and flushes once per animation frame (~16ms),
@@ -2952,6 +2901,7 @@ export default function TabProvider({
             runtimeTurnAnchor: msg.runtimeTurnAnchor,
             attachments,
             metadata: msg.metadata,
+            desktopQuery: msg.desktopQuery,
             asyncQuestionReply: msg.asyncQuestionReply,
             ...getAssistantTurnMetrics(msg),
           };
@@ -4363,13 +4313,11 @@ export default function TabProvider({
           break;
         }
 
-        case 'chat:logs': {
-          const payload = data as { lines: string[] } | null;
-          if (payload?.lines) {
-            setLogs(payload.lines);
-          }
+        case 'chat:logs':
+          // Legacy string snapshots have no UI consumer. Structured chat:log
+          // entries are the diagnostic projection; do not copy snapshots into
+          // Chat state on every connection/reconnection.
           break;
-        }
 
         case 'chat:runtime-diagnostics': {
           // Issue #194 — external-runtime self-report (auth/features/MCP/apps/effective env).
@@ -4386,7 +4334,7 @@ export default function TabProvider({
           // Handle both legacy string format and new LogEntry format
           if (typeof data === 'string') {
             // Legacy format: plain string
-            appendLog(data);
+            appendUnifiedLog({ source: 'bun', level: 'info', message: data, timestamp: new Date().toISOString() });
           } else if (
             data &&
             typeof data === 'object' &&
@@ -4939,6 +4887,7 @@ export default function TabProvider({
           console.log(`[TabProvider ${tabId}] ${eventName}:`, data);
           const startPayload = data as {
             taskId?: string;
+            runId?: string;
             toolUseId?: string;
             description?: string;
             taskType?: string;
@@ -4949,29 +4898,19 @@ export default function TabProvider({
             startPayload.sessionId ??
             attachedSseSessionIdRef.current ??
             currentSessionIdRef.current;
-          if (startPayload.taskId && startPayload.description) {
-            setBackgroundTaskDescription(
-              startPayload.taskId,
-              startPayload.description,
-              eventSessionId,
-            );
-          }
           // Register the toolUseId↔taskId mapping so TaskTool components
           // (which only know their tool.id = toolUseId) can look up status
           // from task-notification events (which only carry taskId).
-          if (startPayload.taskId && startPayload.toolUseId) {
+          if (startPayload.taskId) {
             registerBackgroundTask(
               startPayload.taskId,
               startPayload.toolUseId,
               {
                 description: startPayload.description,
                 taskType: startPayload.taskType,
+                runId: startPayload.runId,
               },
               eventSessionId,
-            );
-          } else if (startPayload.taskId && !startPayload.toolUseId) {
-            console.warn(
-              `[TabProvider ${tabId}] chat:task-started missing toolUseId for task ${startPayload.taskId} — background task status matching will degrade`,
             );
           }
           break;
@@ -4980,6 +4919,7 @@ export default function TabProvider({
           console.log(`[TabProvider ${tabId}] ${eventName}:`, data);
           const payload = data as {
             taskId?: string;
+            runId?: string;
             toolUseId?: string;
             status?: string;
             summary?: string;
@@ -4991,12 +4931,14 @@ export default function TabProvider({
             attachedSseSessionIdRef.current ??
             currentSessionIdRef.current;
           if (payload.taskId && payload.status) {
-            setBackgroundTaskStatus(
+            const accepted = setBackgroundTaskStatus(
               payload.taskId,
               payload.status,
               payload.toolUseId,
               eventSessionId,
+              payload.runId,
             );
+            if (!accepted) break;
             // Inject a visible notification message into the chat so the user
             // understands why AI continues responding (prevents "AI talking to itself" UX).
             // toolUseId 写进 JSON 是给 PRD 0.2.17 Agent Status Panel 用的「持久化完成证据」：
@@ -5009,13 +4951,14 @@ export default function TabProvider({
             );
             const notificationData = JSON.stringify({
               taskId: payload.taskId,
+              runId: payload.runId,
               toolUseId: payload.toolUseId,
               status: payload.status,
               summary: payload.summary ?? '',
               description: description ?? '',
             });
             const notificationMsg: Message = {
-              id: `task-notification-${payload.taskId}`,
+              id: `task-notification-${payload.taskId}${payload.runId ? `-run-${encodeURIComponent(payload.runId)}` : ''}`,
               role: 'user',
               content: `<task-notification>${notificationData}</task-notification>`,
               timestamp: new Date(),
@@ -5454,9 +5397,8 @@ export default function TabProvider({
     },
     [
       apiGetJson,
-      appendLog,
-      appendUnifiedLog,
       tabId,
+      appendUnifiedLog,
       settleTurnActivity,
       resetQueryElapsedClock,
       moveStreamingToHistory,
@@ -5728,7 +5670,9 @@ export default function TabProvider({
   // path opens a chat tab without setting sessionId, SSE will silently
   // never connect — keep that invariant intact.
   useEffect(() => {
-    if (!agentDir || !sessionId) return;
+    // Rust must finish Session birth/owner reconciliation before attachment.
+    // A managed-provider discussion may still await its real metadata row.
+    if (!agentDir || !sessionId || (isPendingSessionId(sessionId) && sidecarConfigDisposition === 'pending')) return;
 
     const connectedSessionId = attachedSseSessionIdRef.current;
     const hasActiveSubscription = sseRef.current?.isActive() ?? false;
@@ -5790,7 +5734,7 @@ export default function TabProvider({
     return () => {
       cancelled = true;
     };
-  }, [agentDir, sessionId, tabId, connectSse]);
+  }, [agentDir, sessionId, tabId, connectSse, sidecarConfigDisposition]);
 
   // Cleanup on unmount - disconnect SSE and clear pending timers
   // NOTE: Sidecar lifecycle is now managed by App.tsx performCloseTab(),
@@ -5897,8 +5841,10 @@ export default function TabProvider({
       agentMentions?: import('../../shared/agentMentions').AgentMentionSnapshot[],
       primaryContext?: import('../../shared/agentMentions').DesktopPrimaryContext,
       retryFailedMessageId?: string,
+      suppliedClientRequestId?: string,
     ): Promise<boolean> => {
       const trimmed = text.trim();
+      if (sidecarConfigDisposition === 'pending' && (!currentSessionIdRef.current || isPendingSessionId(currentSessionIdRef.current))) return false;
       if (!trimmed && (!images || images.length === 0)) return false;
       if (isRestoreActionBlocked(persistedRestoreLifecycleRef.current.phase))
         return false;
@@ -5978,7 +5924,7 @@ export default function TabProvider({
           },
         ]);
       }
-      const clientRequestId = crypto.randomUUID();
+      const clientRequestId = suppliedClientRequestId ?? crypto.randomUUID();
       // A local failure has no native history anchor. Its explicit resend is
       // an ordinary send; replace only that failed presentation after admission.
       if (retryFailedMessageId) {
@@ -5986,22 +5932,33 @@ export default function TabProvider({
           row.id !== retryFailedMessageId || row.deliveryStatus !== 'failed',
         ));
       }
+      const sendRestoreToken = liveRevisionFenceRef.current.restoreToken;
+      const stillTargetsConversation = () => currentSessionIdRef.current === sessionIdForSend ||
+        (!!sessionIdForSend && isPendingSessionId(sessionIdForSend) && liveRevisionFenceRef.current.restoreToken === sendRestoreToken);
+      const pendingMessage: Message = {
+        id: `pending-send-${clientRequestId}`, role: 'user', content: trimmed,
+        timestamp: new Date(), metadata: { source: 'desktop', clientRequestId },
+        desktopQuery: { visibleText: trimmed, primaryContext, agentMentions, requiredSystemSkill },
+        attachments: images?.map(img => ({ id: img.id, name: imageAttachmentName(img), size: imageAttachmentSize(img), mimeType: imageAttachmentMimeType(img), previewUrl: img.preview, relativePath: img.relativePath, isImage: true })),
+        deliveryStatus: 'sending',
+      };
+      const hasCanonicalRow = () => historyMessagesRef.current.some(row => row.role === 'user' && row.metadata?.clientRequestId === clientRequestId && row.content !== '');
+      const retainFailedSend = (deliveryUnconfirmed = false) => {
+        if (hasCanonicalRow()) return;
+        setPendingDesktopMessages(rows => {
+          const failed = { ...pendingMessage, deliveryStatus: 'failed' as const, deliveryUnconfirmed };
+          return rows.some(row => row.id === pendingMessage.id)
+            ? rows.map(row => row.id === pendingMessage.id ? failed : row)
+            : [...rows, failed];
+        });
+      };
       if (!localQueueId) {
         setIsLoading(true);
-        setPendingDesktopMessages(previous => [...previous, {
-          id: `pending-send-${clientRequestId}`,
-          role: 'user',
-          content: trimmed,
-          timestamp: new Date(),
-          metadata: { source: 'desktop', clientRequestId },
-          attachments: hasImages ? pendingAttachmentsRef.current ?? undefined : undefined,
-          deliveryStatus: 'sending',
-        }]);
+        setPendingDesktopMessages(previous => [...previous, pendingMessage]);
       }
 
-      // Fire-and-forget: send to backend without blocking the UI.
-      // The HTTP response may be delayed by provider changes or session startup,
-      // but the input should clear immediately for a responsive experience.
+      // Project immediately, but retain the composer until the HTTP admission
+      // receipt. Queue admission still does not prove dispatch or persistence.
       // Desktop is the ONLY caller that should trigger provider switches per-message.
       // When no providerEnv is given (subscription mode), send 'subscription' explicitly
       // so enqueueUserMessage knows this is an intentional switch, not "I don't know".
@@ -6043,6 +6000,7 @@ export default function TabProvider({
         canForceExecute?: boolean;
       }>('/chat/send', sendPayload)
         .then((response) => {
+          if (!isMountedRef.current || !stillTargetsConversation()) return false;
           if (response.success) {
             if (response.agentMentionsNeedReselect) setSystemNotice({ kind: 'agent-mention', level: 'warning', message: appText('tabProvider.agentMentionsNeedReselect') });
             trackTabEvent('message_send', {
@@ -6143,7 +6101,7 @@ export default function TabProvider({
               );
             }
           } else {
-            setPendingDesktopMessages(rows => rows.map(row => row.metadata?.clientRequestId === clientRequestId ? { ...row, deliveryStatus: 'failed' } : row));
+            retainFailedSend();
             // Backend rejected: queue full, validation error, etc.
             console.error(
               `[TabProvider ${tabId}] Send rejected:`,
@@ -6163,22 +6121,19 @@ export default function TabProvider({
           return response.success;
         })
         .catch((error) => {
-          setPendingDesktopMessages(rows => rows.map(row => row.metadata?.clientRequestId === clientRequestId ? { ...row, deliveryStatus: 'failed' } : row));
+          if (!isMountedRef.current) return false;
+          if (localQueueId) setQueuedMessages(rows => rows.filter(row => row.queueId !== localQueueId));
+          if (!stillTargetsConversation()) return false;
+          // A canonical replay can resolve a response loss. Otherwise even a
+          // busy send needs an identity-bearing failed row after its pill retires.
+          if (hasCanonicalRow()) return true;
+          retainFailedSend(true);
           console.error(`[TabProvider ${tabId}] Send message failed:`, error);
-          if (localQueueId) {
-            setQueuedMessages((prev) =>
-              prev.filter((q) => q.queueId !== localQueueId),
-            );
-          }
           const msg =
             error instanceof Error
               ? error.message
               : appText('tabProvider.networkError');
-          setAgentError(
-            msg === 'Failed to fetch'
-              ? appText('tabProvider.networkDisconnected')
-              : msg,
-          );
+          setAgentError(`${appText('tabProvider.sendUnconfirmed')} ${msg === 'Failed to fetch' ? appText('tabProvider.networkDisconnected') : msg}`);
           pendingAttachmentsRef.current = null;
           if (!isSessionActiveRef.current && !isStreamingRef.current) {
             setIsLoading(false);
@@ -6191,10 +6146,10 @@ export default function TabProvider({
 
       // A question reply keeps the composer/card retryable if admission fails.
       // Only the accepted user-message replay, never this HTTP receipt, answers it.
-      return asyncQuestionReply || queryAgentSelectors(trimmed).length > 0 ? admission : true;
+      return admission;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- postJson is stable
-    [tabId, sessionId, claimSessionOpeningTransition, setPendingDesktopMessages],
+    [tabId, sessionId, sidecarConfigDisposition, claimSessionOpeningTransition, setPendingDesktopMessages],
   );
 
     // Stop receipt/transport timing never decides the turn outcome.
@@ -7261,8 +7216,6 @@ export default function TabProvider({
       sessionRuntimeSource,
       sessionRuntimeSessionId,
       sessionMeta,
-      logs,
-      unifiedLogs,
       systemInitInfo,
       mcpEffectiveSnapshot,
       sdkSlashCommands,
@@ -7284,9 +7237,6 @@ export default function TabProvider({
       setMessages,
       setIsLoading,
       setSessionState,
-      appendLog,
-      appendUnifiedLog,
-      clearUnifiedLogs,
       setSystemInitInfo,
       setAgentError,
       setLastTerminalReason,
@@ -7327,8 +7277,6 @@ export default function TabProvider({
       sessionRuntimeSource,
       sessionRuntimeSessionId,
       sessionMeta,
-      logs,
-      unifiedLogs,
       systemInitInfo,
       mcpEffectiveSnapshot,
       sdkSlashCommands,
@@ -7349,9 +7297,6 @@ export default function TabProvider({
       isConnected,
       getQueryElapsedSeconds,
       setMessages,
-      appendLog,
-      appendUnifiedLog,
-      clearUnifiedLogs,
       setAgentError,
       sendMessage,
       stopResponse,

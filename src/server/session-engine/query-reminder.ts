@@ -1,4 +1,9 @@
 import {
+  assertKnownProductSystemSkillRequirement,
+  TASK_ALIGNMENT_SKILL_REQUIREMENT,
+} from "../../shared/systemSkills";
+import { desktopContextOf } from "../../shared/agentMentions";
+import {
   activeAgentSnapshots,
   queryAgentSelectors,
   agentMentionSnapshotSchema,
@@ -18,17 +23,29 @@ import type { DesktopMessageRequest } from "./types";
 export async function prepareDesktopQuery(
   request: DesktopMessageRequest,
 ): Promise<{ request: DesktopMessageRequest; needsReselect: boolean }> {
+  // Typed product context carries its admission contract, including older
+  // annotations created before requirements were persisted. Never infer from XML.
+  const requiredSystemSkill =
+    request.requiredSystemSkill ??
+    (desktopContextOf(request.queryPrimaryContext)?.kind === "task-discussion"
+      ? TASK_ALIGNMENT_SKILL_REQUIREMENT
+      : undefined);
+  if (requiredSystemSkill)
+    assertKnownProductSystemSkillRequirement(requiredSystemSkill);
+  request = { ...request, requiredSystemSkill };
   const selectors = queryAgentSelectors(request.text);
   if (!selectors.length)
     return {
       request: {
         ...request,
-        desktopQuery: request.queryPrimaryContext
-          ? {
-              visibleText: request.text,
-              primaryContext: request.queryPrimaryContext,
-            }
-          : undefined,
+        desktopQuery:
+          request.queryPrimaryContext || requiredSystemSkill
+            ? {
+                visibleText: request.text,
+                requiredSystemSkill,
+                primaryContext: request.queryPrimaryContext,
+              }
+            : undefined,
         text: composeQueryReminder({
           visibleText: request.text,
           primaryContext: request.queryPrimaryContext,
@@ -88,6 +105,7 @@ export async function prepareDesktopQuery(
       ...request,
       desktopQuery: {
         visibleText: request.text,
+        requiredSystemSkill,
         agentMentions: mentions.map(({ agent }) => {
           const scope = discoveryContext(current!, agent)!;
           return {

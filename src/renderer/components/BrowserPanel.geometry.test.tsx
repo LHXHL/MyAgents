@@ -87,7 +87,8 @@ function createCalls(): Array<{ x: number; y: number; width: number; height: num
 function panelProps(overrides: { isVisible?: boolean; isSplitTransitioning?: boolean; browserAlive?: boolean } = {}) {
   return {
     tabId: 'tab-1',
-    url: 'https://example.com',
+    navigationRequest: { url: 'https://example.com' },
+    onNavigate: vi.fn(),
     isVisible: overrides.isVisible ?? true,
     isDraggingSplit: false,
     isSplitTransitioning: overrides.isSplitTransitioning ?? false,

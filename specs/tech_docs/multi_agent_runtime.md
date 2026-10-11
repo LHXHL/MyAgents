@@ -134,6 +134,8 @@ IM/Agent Channel 需要 native-card `AskUserQuestion` 时，启动策略必须�
 
 Codex 使用 JSON-RPC 2.0 app-server，一个进程在 Product Session 生命周期内持久存在。adapter 拥有 initialize、thread start/resume/read/fork、turn start/steer/interrupt、权限请求与订阅关联。
 
+原生 `webSearch.results`（standalone 搜索的 opaque JSON）必须保留在既有 `WebSearch` tool-result 的 `{results, answer}` 中；`answer` 保留 query/action 摘要，不能用查询顺序或 `openPage.url` 猜测 `ref_id` 的来源。无 results 的 hosted/旧协议保留原摘要。assistant 的 delta / nativeText 与产品 transcript 保留原文；引用的可读投影属于展示层，不改写 native history 或流式 offset。
+
 Managed Codex 的推理档位以实际 app-server `model/list` 返回的 `supportedReasoningEfforts` / `defaultReasoningEffort` 为权威，完整读取分页并透传到 RuntimeModelInfo 与 Provider 模型目录。聊天使用 Tab API 读取本 Session 已有进程的能力，不能借用 Global Sidecar 对新安装版本的目录。启动器与 Agent 配置使用安装版本的目录；刷新失败不改写用户选择。
 
 推理强度存储保留原始字符串及 `default` sentinel，Codex transport 不使用固定枚举过滤未来档位。Managed adapter 在当前进程内解析每轮有效 effort：显式支持值原样传递，默认/已知不支持值解析为模型声明的默认并显式发送，避免 `turn/start` 省略字段而保留上轮覆盖。未知目录不删除显式选择；无法获知默认时报告错误而不伪装已恢复默认。用户主动切换模型时，UI 与模型选择一起持久化仍受支持的 effort 或 default；能力加载本身不写回 Agent/Session。系统 CLI 的菜单暂保留既有选项。
@@ -154,6 +156,8 @@ system 菜单只提供上述三项；历史 suggest 仍按只读恢复，并保�
 现有 Process 保存该 generation 的 workspace sandbox：从原生 config/read 读取 network/额外 writable roots/tmp exclusions，再以 thread/start/resume 返回的 workspaceWrite 有效策略校准；从 Full Access 切回时仍使用该配置。只读规划保持旧网络限制。不得用 thread/resume 配置尚无 rollout 的预热 thread，也不得逐轮硬编码 networkAccess=false 覆盖原生配置。未获批 command/exec 代理探针受网络限制只表示需要审批，不能据此显示整个 Codex 不可用。MyAgents Host Tool 自有审批仍属于客户端 dispatcher，不因原生 auto_review 绕过。
 
 一个 Session Sidecar 最终只绑定一个 root thread。RPC response 和 notification 可乱序到达，turn owner 必须按 thread、turn 与 caller message identity 关联，不能仅凭“收到 completed”提交错误 turn。
+
+`agentMessage.phase` 的 `commentary`、`partial_answer` 和 `final_answer` 只描述文本阶段；即使完成一段回答，后面仍可能有工具或其它文本。文本块在 `item/completed` 关闭，主轮次只由对应 `turn/completed` 与既有子 Agent 结算 gate 结束。原始 `additional_tools` item 是工具目录，不是工具调用，不进入产品工具 trace 或改变子 Agent 关联。
 
 Codex Rewind/Fork/Retry 由 external owner 在 mutation lease 内编排，依赖现有 native binding 与 Runtime branching 能力：
 

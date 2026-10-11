@@ -656,25 +656,23 @@ export default function TaskTool({ tool }: TaskToolProps) {
   // Map survives timing races — if notification arrived before mount, we read it on mount.
   const [bgTerminalStatus, setBgTerminalStatus] = useState<BackgroundTaskTerminalStatus | null>(null);
   useEffect(() => {
-    if (!isBackgroundTask || !bgToolUseId || bgTerminalStatus) return;
+    if (!isBackgroundTask || !bgToolUseId) return;
     const existing = getBackgroundTaskStatus(bgToolUseId, backgroundTaskSessionId);
-    if (isTerminalStatus(existing)) {
-      const rafId = requestAnimationFrame(() => setBgTerminalStatus(existing));
-      return () => cancelAnimationFrame(rafId);
-    }
+    const rafId = requestAnimationFrame(() => setBgTerminalStatus(isTerminalStatus(existing) ? existing : null));
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail;
       if ((detail.sessionId ?? null) !== backgroundTaskSessionId) return;
       // Match strictly by toolUseId — the mapping module and server both
       // resolve taskId→toolUseId, so detail.toolUseId is always populated
       // when the mapping was registered at task-started time.
-      if (detail.toolUseId === bgToolUseId && isTerminalStatus(detail.status)) {
-        setBgTerminalStatus(detail.status);
+      if (detail.toolUseId === bgToolUseId) {
+        cancelAnimationFrame(rafId);
+        setBgTerminalStatus(isTerminalStatus(detail.status) ? detail.status : null);
       }
     };
     window.addEventListener(BACKGROUND_TASK_STATUS_EVENT, handler);
-    return () => window.removeEventListener(BACKGROUND_TASK_STATUS_EVENT, handler);
-  }, [isBackgroundTask, bgToolUseId, bgTerminalStatus, backgroundTaskSessionId]);
+    return () => { cancelAnimationFrame(rafId); window.removeEventListener(BACKGROUND_TASK_STATUS_EVENT, handler); };
+  }, [isBackgroundTask, bgToolUseId, backgroundTaskSessionId]);
 
   const bgComplete = bgTerminalStatus !== null;
 

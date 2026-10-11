@@ -114,6 +114,7 @@
     "later": "稍后"
   },
   "tabProvider": {
+    "sendUnconfirmed": "发送状态未确认，请先检查历史和队列再重试。",
     "compactSuccess": "上下文已压缩",
     "compactFailed": "上下文压缩失败",
     "hiddenSystemMessage": "系统消息",
@@ -200,6 +201,7 @@
     "configureModel": "请先配置模型 →"
   },
   "markdown": {
+    "citationUnavailable": "来源链接不可用",
     "tableActions": "表格操作",
     "copyTable": "复制表格",
     "downloadTable": "下载 Excel",
@@ -229,7 +231,7 @@
     "selectWorkspaceFirst": "请先选择工作区"
   },
   "browserPanel": {
-    "urlPlaceholder": "输入网址或搜索…",
+    "urlPlaceholder": "输入网址或本地文件路径…",
     "openFailed": "无法打开内嵌浏览器：{{message}}",
     "back": "后退",
     "forward": "前进",
@@ -239,7 +241,9 @@
     "openExternal": "在浏览器中打开",
     "close": "关闭浏览器",
     "newTab": "新标签页",
-    "blankHint": "在上方地址栏输入网址或粘贴链接"
+    "blankHint": "用于阅读与预览；页面和登录状态与 AI 浏览器工具分开。",
+    "invalidAddress": "请输入有效网址或本地文件路径；此地址栏不支持搜索。",
+    "navigationFailed": "浏览操作失败：{{message}}"
   },
   "imagePreview": {
     "zoomOut": "缩小",

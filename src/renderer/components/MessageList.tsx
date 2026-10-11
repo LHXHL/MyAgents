@@ -22,6 +22,8 @@ import type { ListItem, SizeFunction, VirtuosoHandle } from 'react-virtuoso';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 
+import { citationScope, createWebSearchCitationIndex } from '@/utils/webSearchCitations';
+import type { CitationSources } from '@/utils/runtimeCitations';
 import Message from '@/components/Message';
 import {
   PermissionPrompt,
@@ -79,8 +81,8 @@ interface MessageListProps {
     admitted: boolean,
     presentationGeneration: number,
   ) => void;
-  /** Allows an event-driven pending anchor to settle once Virtuoso mounts its row. */
-  onItemsRendered?: () => void;
+  /** Publishes committed rows for startup handoff and pending scroll anchors. */
+  onItemsRendered?: (messages: readonly MessageType[]) => void;
   /** Hides only a known-wrong intermediate recovery position. */
   isViewportRecoveryFenced?: boolean;
   // Pagination: Virtuoso maintains the visible scroll position across
@@ -135,6 +137,7 @@ interface MessageListProps {
 }
 
 interface MessageActionContext {
+  citationSources: ReadonlyMap<string, CitationSources>;
   conversationOperations: 'builtin' | 'codex' | 'dsh';
   rewindableUserMessageIds: ReadonlySet<string>;
   onRewind?: (messageId: string) => void;
@@ -699,15 +702,19 @@ const MessageList = memo(function MessageList({
     [onScrollerRef],
   );
 
+  const indexCitations = useMemo(() => createWebSearchCitationIndex(), []);
+  const citationSources = useMemo(() => indexCitations(messages), [indexCitations, messages]);
+
   const messageActionContext = useMemo<MessageActionContext>(
     () => ({
       conversationOperations,
+      citationSources,
       rewindableUserMessageIds:
         rewindableUserMessageIds ?? EMPTY_MESSAGE_ID_SET,
       onRewind,
       onFork,
     }),
-    [conversationOperations, onFork, onRewind, rewindableUserMessageIds],
+    [conversationOperations, onFork, onRewind, rewindableUserMessageIds, citationSources],
   );
 
   // ── Stable itemContent — volatile row actions arrive through Virtuoso context ──
@@ -747,6 +754,7 @@ const MessageList = memo(function MessageList({
             >
               <Message
                 message={message}
+                citationSources={actionContext.citationSources.get(citationScope(message))}
                 isLoading={isStreamingMsg && isLoadingRef.current}
                 onRewind={canRewind ? actionContext.onRewind : undefined}
                 onRetry={handleRetry}
@@ -881,9 +889,13 @@ const MessageList = memo(function MessageList({
   const handleItemsRendered = useCallback(
     (items: ListItem<MessageType>[]) => {
       debugProbe?.handleItemsRendered(items);
-      onItemsRendered();
+      // Always notify the scroll owner: recovery itself settles from this event.
+      // Only publish rows eligible for the startup reveal when presentation is ready.
+      onItemsRendered(canLayoutVirtualList && !isViewportRecoveryFenced
+        ? items.flatMap(item => item.data ? [item.data] : [])
+        : EMPTY_MESSAGES);
     },
-    [debugProbe, onItemsRendered],
+    [debugProbe, onItemsRendered, canLayoutVirtualList, isViewportRecoveryFenced],
   );
 
   return (

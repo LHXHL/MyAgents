@@ -35,6 +35,45 @@ pub struct PreviewResult {
     pub size: u64,
 }
 
+/// Native browsing consumes a path, not the bounded source-text IPC payload.
+#[tauri::command]
+pub async fn cmd_workspace_resolve_preview_path(
+    workspace: String,
+    path: String,
+) -> Result<String, String> {
+    let root = validate_workspace_root(&workspace)?;
+    let resolved = resolve_existing_inside_workspace(&root, path.trim())?;
+    ensure_regular_readable_file(&resolved)?;
+    Ok(crate::sidecar::normalize_external_path(resolved)
+        .to_string_lossy()
+        .into_owned())
+}
+
+#[tauri::command]
+pub async fn cmd_resolve_local_preview_path(full_path: String) -> Result<String, String> {
+    let resolved = resolve_local_preview_path(&full_path)?;
+    Ok(crate::sidecar::normalize_external_path(resolved)
+        .to_string_lossy()
+        .into_owned())
+}
+
+/// Also used at native browser admission, so a renderer path is never authority.
+pub(crate) fn resolve_local_preview_path(full_path: &str) -> Result<std::path::PathBuf, String> {
+    let resolved = validate_external_open_path(full_path.trim(), None)?;
+    ensure_regular_readable_file(&resolved)?;
+    Ok(resolved)
+}
+
+fn ensure_regular_readable_file(path: &std::path::Path) -> Result<(), String> {
+    let metadata = fs::metadata(path).map_err(|e| e.to_string())?;
+    if !metadata.is_file() {
+        return Err("Not a regular file".into());
+    }
+    // Opening checks OS readability without materializing any source bytes.
+    fs::File::open(path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn cmd_workspace_read_preview(
     workspace: String,
@@ -89,7 +128,8 @@ fn read_preview_resolved(
     let size = metadata.len();
     if size > MAX_PREVIEW_BYTES {
         return Err(format!(
-            "File too large to preview (max {} MB)",
+            "File too large for source preview ({} bytes; max {} MiB)",
+            size,
             MAX_PREVIEW_BYTES / 1024 / 1024
         ));
     }
@@ -108,7 +148,8 @@ fn read_preview_resolved(
         .map_err(|e| format!("Failed to read {}: {}", display_path, e))?;
     if bytes.len() as u64 > MAX_PREVIEW_BYTES {
         return Err(format!(
-            "File too large to preview (max {} MB)",
+            "File too large for source preview ({} bytes; max {} MiB)",
+            bytes.len(),
             MAX_PREVIEW_BYTES / 1024 / 1024
         ));
     }
@@ -169,6 +210,98 @@ const BINARY_EXTENSIONS: &[&str] = &[
 mod tests {
     use super::*;
     use crate::workspace_files::test_support::make_test_workspace;
+
+    #[tokio::test]
+    async fn browser_path_accepts_large_html_but_source_remains_bounded() {
+        let ws = make_test_workspace("browser_large_html");
+        let path = ws.join("大报告.html");
+        let content = format!("<html><!--{}--></html>", "x".repeat(4_037_468));
+        fs::write(&path, &content).unwrap();
+        let workspace = ws.to_string_lossy().to_string();
+        let target = cmd_workspace_resolve_preview_path(workspace.clone(), "大报告.html".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            std::path::Path::new(&target),
+            crate::sidecar::normalize_external_path(path.canonicalize().unwrap())
+        );
+        assert!(cmd_resolve_local_preview_path(target.clone()).await.is_ok());
+        let error = cmd_workspace_read_preview(workspace, "大报告.html".into())
+            .await
+            .unwrap_err();
+        assert!(error.contains(&content.len().to_string()));
+        assert!(error.contains("max 2 MiB"));
+        assert!(cmd_read_local_preview(target, None).await.is_err());
+        fs::remove_dir_all(ws).unwrap();
+    }
+
+    #[tokio::test]
+    async fn browser_path_rejects_traversal_missing_and_directory() {
+        let ws = make_test_workspace("browser_path_guard");
+        for path in ["../outside.html", "missing.html", ".", ""] {
+            assert!(
+                cmd_workspace_resolve_preview_path(ws.to_string_lossy().into(), path.into())
+                    .await
+                    .is_err(),
+                "{path}"
+            );
+        }
+        assert!(cmd_resolve_local_preview_path(ws.to_string_lossy().into())
+            .await
+            .is_err());
+        fs::remove_dir_all(ws).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn browser_path_preserves_workspace_containment_and_local_exclusions() {
+        let ws = make_test_workspace("browser_symlink_guard");
+        let outside = make_test_workspace("browser_symlink_outside");
+        let html = outside.join("outside.html");
+        fs::write(&html, "<html/>").unwrap();
+        std::os::unix::fs::symlink(&html, ws.join("link.html")).unwrap();
+        assert!(cmd_workspace_resolve_preview_path(
+            ws.to_string_lossy().into(),
+            "link.html".into()
+        )
+        .await
+        .is_err());
+        // An explicitly selected ordinary local target is a read-only lane.
+        assert!(
+            cmd_resolve_local_preview_path(html.to_string_lossy().into())
+                .await
+                .is_ok()
+        );
+        if std::path::Path::new("/etc/hosts").exists() {
+            std::os::unix::fs::symlink("/etc/hosts", ws.join("secret.html")).unwrap();
+            assert!(cmd_resolve_local_preview_path(
+                ws.join("secret.html").to_string_lossy().into()
+            )
+            .await
+            .is_err());
+        }
+        fs::remove_dir_all(ws).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[tokio::test]
+    async fn source_preview_accepts_exact_byte_limit() {
+        let ws = make_test_workspace("preview_exact_limit");
+        fs::write(
+            ws.join("limit.html"),
+            "x".repeat(MAX_PREVIEW_BYTES as usize),
+        )
+        .unwrap();
+        assert_eq!(
+            cmd_workspace_read_preview(ws.to_string_lossy().into(), "limit.html".into())
+                .await
+                .unwrap()
+                .content
+                .len(),
+            MAX_PREVIEW_BYTES as usize
+        );
+        fs::remove_dir_all(ws).unwrap();
+    }
 
     #[tokio::test]
     async fn reads_text_file() {

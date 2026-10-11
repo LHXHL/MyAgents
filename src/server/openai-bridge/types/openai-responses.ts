@@ -8,6 +8,7 @@ export interface ResponsesRequest {
   instructions?: string;
   tools?: ResponsesTool[];
   tool_choice?: ResponsesToolChoice;
+  parallel_tool_calls?: boolean;
   max_output_tokens?: number;
   prompt_cache_key?: string;
   prompt_cache_retention?: '24h' | 'in_memory';
@@ -85,6 +86,7 @@ export interface ResponsesResponse {
   usage: ResponsesUsage;
   model: string;
   error?: { code: string; message: string } | null;
+  incomplete_details?: { reason: string } | null;
 }
 
 export type ResponsesOutputItem =
@@ -139,6 +141,8 @@ export type ResponsesStreamEvent =
   | { type: 'response.in_progress'; response: ResponsesResponse }
   | { type: 'response.completed'; response: ResponsesResponse }
   | { type: 'response.failed'; response: ResponsesResponse }
+  | { type: 'response.incomplete'; response: ResponsesResponse }
+  | { type: 'error'; code?: string; message: string }
   | { type: 'response.output_item.added'; output_index: number; item: ResponsesOutputItem }
   | { type: 'response.output_item.done'; output_index: number; item: ResponsesOutputItem }
   | { type: 'response.content_part.added'; output_index: number; content_index: number; part: ResponsesOutputContent }

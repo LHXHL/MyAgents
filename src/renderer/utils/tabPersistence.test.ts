@@ -457,3 +457,12 @@ describe('planRestoreTabs (Issue #309 — pill restore merge)', () => {
     ).toBeNull();
   });
 });
+
+it('restores the locator of an unadmitted discussion without replaying its input', () => {
+  const state = serializeTabs([chatTab({ id: 'draft-tab', sessionId: 'pending-draft-tab', discussionId: 'discussion-draft', initialMessage: { text: 'full original input' } })], 'draft-tab')!;
+  expect(state.tabs).toHaveLength(1);
+  const restored = hydratePersistedState(state).tabs[0];
+  expect(restored).toMatchObject({ discussionId: 'discussion-draft', sessionId: 'pending-draft-tab' });
+  expect(restored).not.toHaveProperty('initialMessage');
+  expect(deserializeTabs(JSON.stringify({ ...state, tabs: [{ ...state.tabs[0], discussionId: '../escape' }] }))).toBeNull();
+});

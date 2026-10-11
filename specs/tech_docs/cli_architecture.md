@@ -134,6 +134,8 @@ Agent-facing system prompt、Required Skills 与 help 只推荐 canonical `myage
 
 CLI 统一向 loopback `/api/admin/<canonical-route>` 发送 JSON POST；route 经 CLI 路由解析，不能假设用户输入的 group/action 可直接拼接。公共请求入口优先使用继承的 App 内部 capability，否则使用 `MYAGENTS_API_TOKEN` 的 Bearer header；无有效凭据的业务请求由 admission 拒绝。命令 handler 不单独构造另一套鉴权方式，具体实现以 `src/cli/myagents.ts` 的 `callApi()` 为准。
 
+CLI 的外层等待预算必须覆盖命令 owner 的完整顺序执行链；Provider verification 包括 OpenAI 前置探针、SDK 校验和结果持久化。请求超时返回 `MYAGENTS_REQUEST_TIMEOUT`，已连接但未取得可读响应返回 `MYAGENTS_REQUEST_FAILED`；只有连接被拒绝才提示 `MYAGENTS_UNAVAILABLE`。超时不证明业务未执行，CLI 不自动重发；Session admission 仍使用原有 `admission_unconfirmed` 协议。
+
 Admin API 的响应格式统一：
 ```jsonc
 // 成功

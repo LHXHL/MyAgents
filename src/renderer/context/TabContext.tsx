@@ -17,7 +17,6 @@ import type { Dispatch, SetStateAction } from 'react';
 
 import type { ImageAttachment } from '@/components/SimpleChatInput';
 import type { AgentStatusTodoSnapshot, Message } from '@/types/chat';
-import type { LogEntry } from '@/types/log';
 import type { QueuedMessageInfo } from '@/types/queue';
 import type { SystemInitInfo } from '../../shared/types/system';
 import type { RuntimeDiagnostics, RuntimeSource } from '../../shared/types/runtime';
@@ -36,6 +35,8 @@ import type { McpEffectiveSnapshot } from '../../shared/mcpEffectiveState';
 type ChatProviderEnv = { providerId?: string; providerName?: string; baseUrl?: string; apiKey?: string; authType?: 'auth_token' | 'api_key' | 'both' | 'auth_token_clear_api_key'; apiProtocol?: 'anthropic' | 'openai'; maxOutputTokens?: number; maxOutputTokensParamName?: 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens'; upstreamFormat?: 'chat_completions' | 'responses'; modelAliases?: { fable?: string; sonnet?: string; opus?: string; haiku?: string } };
 
 export interface AdoptMigratedSessionOptions {
+    /** Explicit reset creates a new conversation; ordinary Session birth does not. */
+    newConversation?: boolean;
     /**
      * True when the backend/Rust side has already moved the live sidecar owner
      * to `newSessionId` (for example IM binding migration). False/omitted means
@@ -109,8 +110,6 @@ export interface TabState {
     sessionMeta: SessionMetadata | null;
 
     // Agent info
-    logs: string[];
-    unifiedLogs: LogEntry[];
     systemInitInfo: SystemInitInfo | null;
     mcpEffectiveSnapshot: McpEffectiveSnapshot | null;
     /**
@@ -188,9 +187,6 @@ export interface TabContextValue extends TabState {
     setSessionState: Dispatch<SetStateAction<SessionState>>;
 
     // Logs
-    appendLog: (line: string) => void;
-    appendUnifiedLog: (entry: LogEntry) => void;
-    clearUnifiedLogs: () => void;
 
     // System info
     setSystemInitInfo: Dispatch<SetStateAction<SystemInitInfo | null>>;
@@ -214,7 +210,7 @@ export interface TabContextValue extends TabState {
     isConnected: boolean;
 
     // Chat actions
-    sendMessage: (text: string, images?: ImageAttachment[], permissionMode?: PermissionMode, model?: string, providerEnv?: ChatProviderEnv, isCron?: boolean, reasoningEffort?: string, providerRoute?: ProviderRoute, requiredSystemSkill?: ProductSystemSkillRequirement, asyncQuestionReply?: AsyncQuestionReply, agentMentions?: import("../../shared/agentMentions").AgentMentionSnapshot[], primaryContext?: import("../../shared/agentMentions").DesktopPrimaryContext, retryFailedMessageId?: string) => Promise<boolean>;
+    sendMessage: (text: string, images?: ImageAttachment[], permissionMode?: PermissionMode, model?: string, providerEnv?: ChatProviderEnv, isCron?: boolean, reasoningEffort?: string, providerRoute?: ProviderRoute, requiredSystemSkill?: ProductSystemSkillRequirement, asyncQuestionReply?: AsyncQuestionReply, agentMentions?: import("../../shared/agentMentions").AgentMentionSnapshot[], primaryContext?: import("../../shared/agentMentions").DesktopPrimaryContext, retryFailedMessageId?: string, clientRequestId?: string) => Promise<boolean>;
     stopResponse: () => Promise<{ success: boolean; alreadyStopped: boolean }>;
     retryCurrentSessionRestore: (targetMessageId?: string) => Promise<CurrentSessionRestoreResult>;
     /** Prepend the next page of older messages. Safe to call repeatedly — guarded internally. */
@@ -288,8 +284,6 @@ const defaultContextValue: TabContextValue = {
     sessionRuntimeSource: null,
     sessionRuntimeSessionId: null,
     sessionMeta: null,
-    logs: [],
-    unifiedLogs: [],
     systemInitInfo: null,
     mcpEffectiveSnapshot: null,
     sdkSlashCommands: [],
@@ -311,9 +305,6 @@ const defaultContextValue: TabContextValue = {
     setMessages: () => { },
     setIsLoading: () => { },
     setSessionState: () => { },
-    appendLog: () => { },
-    appendUnifiedLog: () => { },
-    clearUnifiedLogs: () => { },
     setSystemInitInfo: () => { },
     setAgentError: () => { },
     setLastTerminalReason: () => { },

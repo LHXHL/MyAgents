@@ -1,3 +1,4 @@
+import { TASK_ALIGNMENT_SKILL_REQUIREMENT } from "../shared/systemSkills";
 import { composeQueryReminder } from "../shared/agentMentions";
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useContext, useState } from 'react';
@@ -139,6 +140,7 @@ const mocks = vi.hoisted(() => {
             agentDir: string;
             sessionId: string;
             title: string;
+            discussionId?: string;
           }
         | {
             view: 'record';
@@ -524,6 +526,7 @@ vi.mock('@/utils/tauriListen', () => ({
     handler: (event: { payload: unknown }) => void | Promise<void>,
   ) => {
     mocks.listeners.set(eventName, handler);
+    return { isRegistered: () => true, unlisten: () => { if (mocks.listeners.get(eventName) === handler) mocks.listeners.delete(eventName); } };
   }),
 }));
 
@@ -2531,6 +2534,13 @@ describe('App helper launch', () => {
       | { initialMessage?: import("./types/tab").InitialMessage }
       | undefined;
     const initial = discussionChat?.initialMessage;
+    expect(tauriCoreMocks.invoke).toHaveBeenCalledWith('cmd_task_save_discussion_input', {
+      discussionId: expect.stringMatching(/^discussion-/),
+      input: { text: initial?.text, clientRequestId: initial?.clientRequestId,
+        primaryContext: initial?.primaryContext, requiredSystemSkill: TASK_ALIGNMENT_SKILL_REQUIREMENT },
+    });
+    expect(commands.indexOf('cmd_task_save_discussion_input')).toBeGreaterThan(commands.indexOf('cmd_task_prepare_discussion'));
+
     const prompt = composeQueryReminder({ visibleText: initial?.text ?? '', primaryContext: initial?.primaryContext });
     expect(prompt).toContain(
       'sourceRecordDocumentPath: /Users/me/.myagents/records/2026-08/record-audio/content.md',
@@ -3125,4 +3135,124 @@ describe('App helper launch', () => {
       errorSpy.mockRestore();
     }
   });
+it('keeps discussion input at its source when durable saving fails', async () => {
+  mocks.tauriEnvironment = true;
+  let rejectSave!: (error: Error) => void;
+  tauriCoreMocks.invoke.mockImplementation(async command => {
+    if (command === 'cmd_task_prepare_discussion') return { candidatesDir: '/data/discussion/candidates' };
+    if (command === 'cmd_task_save_discussion_input') return new Promise((_resolve, reject) => { rejectSave = reject; });
+    return undefined;
+  });
+  render(<App />);
+  const before = latestTabbarProps().tabs;
+  act(() => window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_AI_DISCUSSION, { detail: { content: 'original requirement', workspaceId: mocks.project.id } })));
+  await waitFor(() => expect(rejectSave).toBeDefined());
+  expect(latestTabbarProps().tabs).toEqual(before);
+  expect(mocks.ensureSessionSidecar).not.toHaveBeenCalled();
+  await act(async () => rejectSave(new Error('disk full')));
+  expect(latestTabbarProps().tabs).toEqual(before);
+  expect(mocks.toast.error).toHaveBeenCalledWith('disk full');
+});
+
+  it('restores an unadmitted discussion even if Session validation or Sidecar startup fails, without auto-replay', async () => {
+    mocks.tauriEnvironment = true;
+    mocks.lastExitWasClean = false;
+    mocks.canRestoreSession.mockResolvedValue(false);
+    mocks.durableTabs = { version: 1, activeTabId: 'discussion-recovery', tabs: [{ view: 'chat', id: 'discussion-recovery', agentDir: mocks.project.path, sessionId: 'pending-discussion-recovery', title: 'Discussion', discussionId: 'discussion-saved' }] };
+    tauriCoreMocks.invoke.mockImplementation(async command => command === 'cmd_task_read_discussion_input' ? { text: 'original', primaryContext: { kind: 'task-discussion', input: { workspacePath: mocks.project.path } } } : undefined);
+    render(<App />);
+    fireEvent.click(await screen.findByTestId('restore-session'));
+    await waitFor(() => expect(mocks.chatProps.some(props => !!props.startupError)).toBe(true));
+    expect(mocks.ensureSessionSidecar).not.toHaveBeenCalled();
+    await waitFor(() => expect(latestTabbarProps().tabs).toContainEqual(expect.objectContaining({ id: 'discussion-recovery', discussionId: 'discussion-saved' })));
+    const restored = latestTabbarProps().tabs.find(tab => tab.id === 'discussion-recovery');
+    expect(restored).not.toHaveProperty('initialMessage');
+    expect(tauriCoreMocks.invoke).not.toHaveBeenCalledWith('cmd_task_save_discussion_input', expect.anything());
+  });
+
+  it('retains the smart-create form and its text when durable discussion input saving is rejected', async () => {
+    mocks.tauriEnvironment = true;
+    tauriCoreMocks.invoke.mockImplementation(async command => {
+      if (command === 'cmd_task_prepare_discussion') return { candidatesDir: '/data/discussion/candidates' };
+      if (command === 'cmd_task_save_discussion_input') throw new Error('disk full');
+      return undefined;
+    });
+    render(<App />);
+    act(() => window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_TASK_CREATE, { detail: { initialMode: 'smart', source: 'sidebar', defaultWorkspacePath: mocks.project.path } })));
+    const input = await screen.findByPlaceholderText('请输入您希望创建或推进任务的大致目标与需求。接下来会与 AI 多轮讨论完成需求澄清；如需创建 Task，AI 会在你确认最终文档和参数后完成创建。');
+    fireEvent.change(input, { target: { value: 'Keep my complete requirement' } });
+    fireEvent.click(screen.getByRole('button', { name: '与 AI 讨论' }));
+    await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith('disk full'));
+    expect(input).toHaveValue('Keep my complete requirement');
+    expect(input).toBeInTheDocument();
+    expect(mocks.ensureSessionSidecar).not.toHaveBeenCalled();
+  });
+
+  it('keeps managed discussion recovery before birth failure and retries birth without sending the saved body', async () => {
+    mocks.tauriEnvironment = true;
+    mocks.resolveBuiltinSelection.mockReturnValue({ provider: managedCodexProvider(), model: 'gpt-5.5' });
+    mocks.createSession.mockRejectedValueOnce(new Error('birth failed'));
+    tauriCoreMocks.invoke.mockImplementation(async command => command === 'cmd_task_prepare_discussion' ? { candidatesDir: '/data/discussion/candidates' } : undefined);
+    render(<App />);
+    act(() => window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_AI_DISCUSSION, { detail: { content: 'original managed input', workspaceId: mocks.project.id } })));
+    await waitFor(() => expect(mocks.chatProps.some(props => !!props.startupError)).toBe(true));
+    const failed = mocks.chatProps.at(-1)!;
+    expect(failed.discussionId).toMatch(/^discussion-/);
+    expect(failed.initialMessage).toMatchObject({ text: 'original managed input', requiredSystemSkill: TASK_ALIGNMENT_SKILL_REQUIREMENT });
+    expect(mocks.ensureSessionSidecar).not.toHaveBeenCalled();
+    await act(async () => { await (failed.onRetryStartup as () => Promise<void>)(); });
+    expect(mocks.createSession).toHaveBeenCalledTimes(2);
+    expect(mocks.chatProps.at(-1)?.initialMessage).toBeUndefined();
+    expect(mocks.chatProps.at(-1)?.discussionId).toBe(failed.discussionId);
+    expect(mocks.ensureSessionSidecar).toHaveBeenCalledWith('prepared-managed-session', mocks.project.path, 'tab', expect.any(String));
+  });
+
+  it('exposes the saved recovery and startup failure even while the first input is unconsumed', async () => {
+    mocks.tauriEnvironment = true;
+    mocks.ensureSessionSidecar.mockRejectedValueOnce(new Error('startup failed'));
+    tauriCoreMocks.invoke.mockImplementation(async command => command === 'cmd_task_prepare_discussion' ? { candidatesDir: '/data/discussion/candidates' } : undefined);
+    render(<App />);
+    act(() => window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_AI_DISCUSSION, { detail: { content: 'original input', workspaceId: mocks.project.id } })));
+    await waitFor(() => expect(mocks.chatProps.some(props => !!props.startupError && !!props.discussionId && !!props.initialMessage)).toBe(true));
+  });
+
+  it('uses normal Session validation when the archived discussion input is temporarily unreadable', async () => {
+    mocks.tauriEnvironment = true;
+    mocks.lastExitWasClean = false;
+    mocks.durableTabs = { version: 1, activeTabId: 'read-failure', tabs: [{ view: 'chat', id: 'read-failure', agentDir: mocks.project.path, sessionId: 'saved-session', title: 'Discussion', discussionId: 'saved-discussion' }] };
+    tauriCoreMocks.invoke.mockImplementation(async command => { if (command === 'cmd_task_read_discussion_input') throw new Error('temporarily unreadable'); return undefined; });
+    render(<App />);
+    fireEvent.click(await screen.findByTestId('restore-session'));
+    await waitFor(() => expect(mocks.canRestoreSession).toHaveBeenCalledWith('saved-session', mocks.project.path));
+    await waitFor(() => expect(latestTabbarProps().tabs).toContainEqual(expect.objectContaining({ id: 'read-failure', discussionId: 'saved-discussion' })));
+  });
+
+  it.each([false, true])('distinguishes ordinary birth from explicit pending-discussion reset (reset: %s)', async newConversation => {
+    mocks.tauriEnvironment = true;
+    tauriCoreMocks.invoke.mockImplementation(async command => command === 'cmd_task_prepare_discussion' ? { candidatesDir: '/data/discussion/candidates' } : undefined);
+    render(<App />);
+    act(() => window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_AI_DISCUSSION, { detail: { content: 'original input', workspaceId: mocks.project.id } })));
+    await waitFor(() => expect(mocks.ensureSessionSidecar).toHaveBeenCalled());
+    const provider = mocks.tabProviderProps.at(-1)!;
+    const original = mocks.chatProps.at(-1)!;
+    await act(async () => { await (provider.onSessionIdChange as (id: string, options?: { newConversation: boolean }) => Promise<boolean>)('new-real-session', newConversation ? { newConversation } : undefined); });
+    expect(mocks.chatProps.at(-1)?.discussionId).toBe(newConversation ? undefined : original.discussionId);
+    expect(!!mocks.chatProps.at(-1)?.initialMessage).toBe(!newConversation);
+  });
+
+  it('keeps startup retry available when a prepared managed discussion fails again', async () => {
+    mocks.tauriEnvironment = true;
+    mocks.resolveBuiltinSelection.mockReturnValue({ provider: managedCodexProvider(), model: 'gpt-5.5' });
+    mocks.ensureSessionSidecar.mockRejectedValueOnce(new Error('startup failed')).mockRejectedValueOnce(new Error('startup failed again'));
+    tauriCoreMocks.invoke.mockImplementation(async command => command === 'cmd_task_prepare_discussion' ? { candidatesDir: '/data/discussion/candidates' } : undefined);
+    render(<App />);
+    act(() => window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_AI_DISCUSSION, { detail: { content: 'original input', workspaceId: mocks.project.id } })));
+    await waitFor(() => expect(mocks.chatProps.some(props => !!props.startupError)).toBe(true));
+    const failed = mocks.chatProps.at(-1)!;
+    await act(async () => { await (failed.onRetryStartup as () => Promise<void>)(); });
+    expect(mocks.chatProps.at(-1)?.startupError).toBeTruthy();
+    expect(mocks.chatProps.at(-1)?.discussionId).toBe(failed.discussionId);
+    expect(mocks.chatProps.at(-1)?.initialMessage).toBeUndefined();
+  });
+
 });

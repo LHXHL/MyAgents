@@ -144,7 +144,7 @@ describe('Markdown local file links', () => {
     mocks.checkPaths.mockResolvedValue({ results: { [path]: { exists: true, type: 'file' } } });
     const { onFilePreviewExternal } = renderMarkdown(`[Note](${href})`);
     fireEvent.click(screen.getByRole('link', { name: 'Note' }));
-    await waitFor(() => expect(onFilePreviewExternal).toHaveBeenCalledWith(expect.objectContaining({ path })));
+    await waitFor(() => expect(onFilePreviewExternal).toHaveBeenCalledWith(expect.objectContaining({ path }), expect.objectContaining({ isCurrent: expect.any(Function) })));
     fireEvent.contextMenu(screen.getByRole('link', { name: 'Note' }));
     await screen.findByText('预览');
     expect(mocks.openExternal).not.toHaveBeenCalled();
@@ -164,8 +164,7 @@ describe('Markdown local file links', () => {
       expect(onFilePreviewExternal).toHaveBeenCalledWith(expect.objectContaining({
         name: 'Message.tsx',
         path: 'src/renderer/components/Message.tsx',
-        content: 'export default function Message() {}',
-      }));
+      }), expect.objectContaining({ isCurrent: expect.any(Function) }));
     });
     expect(mocks.openExternal).not.toHaveBeenCalled();
   });
@@ -184,7 +183,7 @@ describe('Markdown local file links', () => {
       expect(onFilePreviewExternal).toHaveBeenCalledWith(expect.objectContaining({
         path: 'src/renderer/components/Message.tsx',
         initialLineNumber: 42,
-      }));
+      }), expect.objectContaining({ isCurrent: expect.any(Function) }));
     });
   });
 
@@ -200,7 +199,7 @@ describe('Markdown local file links', () => {
     fireEvent.click(screen.getByRole('link', { name: 'Guide' }));
     await waitFor(() => expect(onFilePreviewExternal).toHaveBeenCalledWith(expect.objectContaining({
       path, initialLineNumber: 42,
-    })));
+    }), expect.objectContaining({ isCurrent: expect.any(Function) })));
   });
 
   it('resolves external document links against their directory on click and right-click', async () => {
@@ -213,7 +212,7 @@ describe('Markdown local file links', () => {
     fireEvent.click(screen.getByRole('link', { name: 'Next' }));
     await waitFor(() => expect(onFilePreviewExternal).toHaveBeenCalledWith(expect.objectContaining({
       localPath, sourceScope: 'local',
-    })));
+    }), expect.objectContaining({ isCurrent: expect.any(Function) })));
     fireEvent.contextMenu(screen.getByRole('link', { name: 'Next' }));
     expect(await screen.findByText('预览')).toBeInTheDocument();
   });
@@ -264,8 +263,7 @@ describe('Markdown local file links', () => {
         path: localPath,
         localPath,
         sourceScope: 'local',
-        content: 'export const other = true;',
-      }));
+      }), expect.objectContaining({ isCurrent: expect.any(Function) }));
     });
     expect(mocks.openExternal).not.toHaveBeenCalled();
     expect(mocks.readPreview).not.toHaveBeenCalled();
@@ -435,27 +433,27 @@ describe('Markdown local file links', () => {
     expect(screen.queryByText('预览')).not.toBeInTheDocument();
   });  it('opens a file despite an unrelated existing text selection', async () => {
     mocks.checkPaths.mockResolvedValue({results:{'note.md':{exists:true,type:'file'}}});
-    renderMarkdown('[open note](note.md)');
+    const { onFilePreviewExternal } = renderMarkdown('[open note](note.md)');
     const unrelated = document.createElement('p'); unrelated.textContent='unrelated selected text';document.body.append(unrelated);
     const range=document.createRange();range.selectNodeContents(unrelated);window.getSelection()!.addRange(range);
     fireEvent.click(screen.getByRole('link',{name:'open note'}));
-    await waitFor(()=>expect(mocks.readPreview).toHaveBeenCalled());
+    await waitFor(()=>expect(onFilePreviewExternal).toHaveBeenCalled());
     window.getSelection()!.removeAllRanges();unrelated.remove();
     fireEvent.click(screen.getByRole('link',{name:'open note'}));
-    await waitFor(()=>expect(mocks.readPreview).toHaveBeenCalledTimes(1));
+    await waitFor(()=>expect(onFilePreviewExternal).toHaveBeenCalledTimes(1));
   });
   it('keeps an inline-code label subordinate to the explicit markdown destination', async () => {
     mocks.checkPaths.mockResolvedValue({results:{'README.md':{exists:true,type:'file'},'docs/README.md':{exists:true,type:'file'}}});
-    renderMarkdown('[`README.md`](docs/README.md)');
+    const { onFilePreviewExternal } = renderMarkdown('[`README.md`](docs/README.md)');
     expect(document.querySelector('code[role="link"]')).toBeNull();
     fireEvent.click(document.querySelector('a code')!);
-    await waitFor(()=>expect(mocks.readPreview).toHaveBeenCalledWith({path:'docs/README.md'}));
-    expect(mocks.readPreview).not.toHaveBeenCalledWith({path:'README.md'});
+    await waitFor(()=>expect(onFilePreviewExternal.mock.calls[0][0]).toMatchObject({path:'docs/README.md'}));
+    expect(mocks.readPreview).not.toHaveBeenCalled();
   });
 
   it('shows the real destination icon and full hover path, then dismisses on activation', async () => {
     mocks.checkPaths.mockResolvedValue({results:{'docs/Guide.md':{exists:true,type:'file'}}});
-    renderMarkdown('[查看说明](docs/Guide.md)');
+    const { onFilePreviewExternal } = renderMarkdown('[查看说明](docs/Guide.md)');
     const link = screen.getByRole('link', {name:'查看说明'});
     expect(link).toHaveClass('no-underline');
     expect(link.querySelector('[data-file-icon-category]')).not.toBeNull();
@@ -463,23 +461,25 @@ describe('Markdown local file links', () => {
     expect(await screen.findByRole('tooltip')).toHaveTextContent('docs/Guide.md');
     fireEvent.click(link);
     expect(screen.queryByRole('tooltip')).toBeNull();
-    await waitFor(()=>expect(mocks.readPreview).toHaveBeenCalledWith({path:'docs/Guide.md'}));
+    await waitFor(()=>expect(onFilePreviewExternal.mock.calls[0][0]).toMatchObject({path:'docs/Guide.md'}));
   });
   it('resolves inline native filenames relative to the current document', async () => {
     mocks.checkPaths.mockResolvedValue({results:{'docs/plan (final)%20.md':{exists:true,type:'file'}}});
-    render(<FileActionProvider workspacePath={WORKSPACE} onFilePreviewExternal={vi.fn()}>
+    const preview = vi.fn();
+    render(<FileActionProvider workspacePath={WORKSPACE} onFilePreviewExternal={preview}>
       <Markdown basePath="docs">{'`plan (final)%20.md`'}</Markdown>
     </FileActionProvider>);
     const link = await screen.findByRole('link', {name:'plan (final)%20.md'});
     fireEvent.click(link);
-    await waitFor(()=>expect(mocks.readPreview).toHaveBeenCalledWith({path:'docs/plan (final)%20.md'}));
+    await waitFor(()=>expect(preview.mock.calls[0][0]).toMatchObject({path:'docs/plan (final)%20.md'}));
+    expect(mocks.readPreview).not.toHaveBeenCalled();
   });
   it('routes a workspace symlink through its canonical local read capability', async () => {
     mocks.checkPaths.mockResolvedValue({results:{'linked.md':{exists:true,type:'file',resolvedPath:'/Volumes/Files/note.md'}}});
     mocks.readLocalPreview.mockResolvedValue({name:'note.md',content:'outside',size:7});
     const {onFilePreviewExternal} = renderMarkdown('[Note](linked.md)');
     fireEvent.click(screen.getByRole('link',{name:'Note'}));
-    await waitFor(()=>expect(onFilePreviewExternal).toHaveBeenCalledWith(expect.objectContaining({sourceScope:'local',localPath:'/Volumes/Files/note.md'})));
+    await waitFor(()=>expect(onFilePreviewExternal).toHaveBeenCalledWith(expect.objectContaining({sourceScope:'local',localPath:'/Volumes/Files/note.md'}), expect.objectContaining({ isCurrent: expect.any(Function) })));
     expect(mocks.readPreview).not.toHaveBeenCalled();
   });
 
@@ -488,15 +488,17 @@ describe('Markdown local file links', () => {
     const preview = vi.fn();
     render(<FileActionProvider workspacePath={WORKSPACE} onFilePreviewExternal={preview}><Markdown basePath="docs">{`[Read](${reference})`}</Markdown></FileActionProvider>);
     fireEvent.click(screen.getByRole('link', { name: 'Read' }));
-    await waitFor(() => expect(preview).toHaveBeenCalledWith(expect.objectContaining({ path: 'docs/README.md', initialLineNumber: 12 })));
+    await waitFor(() => expect(preview).toHaveBeenCalledWith(expect.objectContaining({ path: 'docs/README.md', initialLineNumber: 12 }), expect.objectContaining({ isCurrent: expect.any(Function) })));
   });
   it('opens a document-relative link outside the workspace', async () => {
     const destination = `${WORKSPACE}/docs/../../outside.md`;
     mocks.checkLocalPaths.mockResolvedValue({ results: { [destination]: { exists: true, type: 'file', resolvedPath: '/Users/zhihu/outside.md' } } });
     mocks.readLocalPreview.mockResolvedValue({ name: 'outside.md', content: 'outside', size: 7 });
-    render(<FileActionProvider workspacePath={WORKSPACE} onFilePreviewExternal={vi.fn()}><Markdown basePath="docs">{'[Outside](../../outside.md)'}</Markdown></FileActionProvider>);
+    const preview = vi.fn();
+    render(<FileActionProvider workspacePath={WORKSPACE} onFilePreviewExternal={preview}><Markdown basePath="docs">{'[Outside](../../outside.md)'}</Markdown></FileActionProvider>);
     fireEvent.click(screen.getByRole('link', { name: 'Outside' }));
-    await waitFor(() => expect(mocks.readLocalPreview).toHaveBeenCalledWith(expect.objectContaining({ fullPath: '/Users/zhihu/outside.md' })));
+    await waitFor(() => expect(preview.mock.calls[0][0]).toMatchObject({ localPath: '/Users/zhihu/outside.md', sourceScope: 'local' }));
+    expect(mocks.readLocalPreview).not.toHaveBeenCalled();
   });
 
   it('preserves the original reference in hover after source-location normalization', async () => {

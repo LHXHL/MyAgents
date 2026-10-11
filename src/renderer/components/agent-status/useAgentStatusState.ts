@@ -77,7 +77,7 @@ export function useAgentStatusState(
     const taskCalls: TaskToolCall[] = [];
 
     // B1 兜底：历史里所有 task-notification 消息里的 toolUseId 都视为已完成。
-    const completedBgFromHistory = collectCompletedBackgroundToolIdsFromHistory(messages);
+    const completedBgFromHistory = collectCompletedBackgroundToolIdsFromHistory(messages, sessionId);
 
     // 单次正序遍历：collect 所有候选 + 同步活跃 subagents + 后台 subagent 候选。
     // todos 取最后一个有效 TodoWrite。

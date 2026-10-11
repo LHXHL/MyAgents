@@ -123,11 +123,9 @@ import {
   unlockDeveloperSection,
   UNLOCK_CONFIG,
 } from '@/utils/developerMode';
-import { REACT_LOG_EVENT } from '@/utils/frontendLogger';
 import { dispatchHelperRequest } from '@/utils/dispatchHelperRequest';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import { getPlatform } from '@/analytics/device';
-import type { LogEntry } from '@/types/log';
 import BugReportOverlay from '@/components/BugReportOverlay';
 import SettingsHelperInbox from '@/components/SettingsHelperInbox';
 import ShortcutRecorder from '@/components/ShortcutRecorder';
@@ -849,7 +847,6 @@ export default function Settings({
 
   // Dev-only: Logs panel
   const [showLogs, setShowLogs] = useState(false);
-  const [sseLogs, setSseLogs] = useState<LogEntry[]>([]);
 
   // App version from Tauri
   const [appVersion, setAppVersion] = useState<string>('');
@@ -918,46 +915,6 @@ export default function Settings({
       setQrCodeLoading(false);
     };
   }, [activeSection]);
-
-  // Collect React and Rust logs for Settings page (since we don't have TabProvider)
-  // Limit to 3000 logs to prevent memory issues (matches UnifiedLogsPanel MAX_DISPLAY_LOGS)
-  const MAX_LOGS = 3000;
-  useEffect(() => {
-    if (mode !== 'settings') return;
-    const handleReactLog = (event: Event) => {
-      const customEvent = event as CustomEvent<LogEntry>;
-      setSseLogs((prev) => {
-        const next = [...prev, customEvent.detail];
-        return next.length > MAX_LOGS ? next.slice(-MAX_LOGS) : next;
-      });
-    };
-    window.addEventListener(REACT_LOG_EVENT, handleReactLog);
-    return () => {
-      window.removeEventListener(REACT_LOG_EVENT, handleReactLog);
-    };
-  }, [mode]);
-
-  // Listen for Rust logs (Tauri only)
-  useEffect(() => {
-    if (mode !== 'settings') return;
-    if (!isTauriEnvironment()) return;
-    const ac = new AbortController();
-    void listenWithCleanup<LogEntry>(
-      'log:rust',
-      (event) => {
-        setSseLogs((prev) => {
-          const next = [...prev, event.payload];
-          return next.length > MAX_LOGS ? next.slice(-MAX_LOGS) : next;
-        });
-      },
-      ac.signal,
-    );
-    return () => ac.abort();
-  }, [mode]);
-
-  const clearLogs = useCallback(() => {
-    setSseLogs([]);
-  }, []);
 
   // Developer section unlock state
   const [devSectionVisible, setDevSectionVisible] = useState(
@@ -4942,10 +4899,8 @@ export default function Settings({
       {/* Logs Panel */}
       {mode === 'settings' && (
         <UnifiedLogsPanel
-          sseLogs={sseLogs}
           isVisible={showLogs}
           onClose={() => setShowLogs(false)}
-          onClearAll={clearLogs}
         />
       )}
 

@@ -10,6 +10,7 @@ import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import { fileUrlToPath } from './workspaceFileLinks';
+import { remarkRuntimeCitations } from './runtimeCitations';
 import { parseAppRouteUrl } from '../../shared/appRoute';
 
 /** Local references use the existing file scheme across the Markdown boundary.
@@ -125,6 +126,7 @@ export function remarkDisableSetextHeadings(this: Processor) {
 export const MARKDOWN_REMARK_PLUGINS_DEFAULT: NonNullable<ComponentProps<typeof ReactMarkdown>['remarkPlugins']> = [
   remarkGfm,
   remarkMath,
+  remarkRuntimeCitations,
   remarkOriginalReferences,
 ];
 

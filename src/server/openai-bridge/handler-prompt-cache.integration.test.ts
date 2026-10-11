@@ -2,11 +2,19 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import * as cachePolicy from '../../shared/provider-prompt-cache';
 import { createBridgeHandler } from './handler';
 import type { UpstreamConfig } from './types/bridge';
 import type { AnthropicRequest } from './types/anthropic';
+
+// These tests exercise compatibility fallback against a confirmed-capability fixture.
+// Real endpoint/model decisions are verified separately, including unknown targets below.
+beforeEach(() => {
+  vi.spyOn(cachePolicy, 'resolveProviderPromptCacheCapabilities').mockReturnValue({ key: true, breakpoints: true });
+});
+afterEach(() => { vi.restoreAllMocks(); });
 
 type SeenRequest = {
   path: string;
@@ -268,8 +276,12 @@ describe('OpenAI bridge Responses prompt_cache_key', () => {
       cacheAffinity: {
         sessionId: 'raw-session-id',
         promptCacheKeyMode: 'session',
-        promptCacheKeyDisabled: disabled,
-        disablePromptCacheKey: () => { disabled = true; },
+      },
+      cacheCompatibility: {
+        isKeyDisabled: () => disabled,
+        isBreakpointsDisabled: () => false,
+        disableKey: () => { disabled = true; },
+        disableBreakpoints: () => {},
       },
     });
 
@@ -312,8 +324,12 @@ describe('OpenAI bridge Responses prompt_cache_key', () => {
       cacheAffinity: {
         sessionId: 'raw-session-id',
         promptCacheKeyMode: 'session',
-        disablePromptCacheKey: () => { keyDisabled = true; },
-        disablePromptCacheBreakpoints: () => { breakpointsDisabled = true; },
+      },
+      cacheCompatibility: {
+        isKeyDisabled: () => false,
+        isBreakpointsDisabled: () => false,
+        disableKey: () => { keyDisabled = true; },
+        disableBreakpoints: () => { breakpointsDisabled = true; },
       },
     };
 
@@ -334,7 +350,7 @@ describe('OpenAI bridge Responses prompt_cache_key', () => {
     }
   });
 
-  it.each([401, 429, 500])('does not retry HTTP %s even if the body names both cache field families', async (status) => {
+  it.each([401, 403, 429, 500])('does not retry HTTP %s even if the body names both cache field families', async (status) => {
     fake = await startFakeUpstream(() => ({
       status,
       body: { error: { message: 'Unknown prompt_cache_key and unsupported prompt_cache_breakpoint' } },
@@ -351,8 +367,12 @@ describe('OpenAI bridge Responses prompt_cache_key', () => {
       cacheAffinity: {
         sessionId: 'raw-session-id',
         promptCacheKeyMode: 'session',
-        disablePromptCacheKey: () => { keyDisabled = true; },
-        disablePromptCacheBreakpoints: () => { breakpointsDisabled = true; },
+      },
+      cacheCompatibility: {
+        isKeyDisabled: () => false,
+        isBreakpointsDisabled: () => false,
+        disableKey: () => { keyDisabled = true; },
+        disableBreakpoints: () => { breakpointsDisabled = true; },
       },
     };
 
@@ -397,10 +417,12 @@ describe('OpenAI bridge Responses prompt_cache_key', () => {
       cacheAffinity: {
         sessionId: 'raw-session-id',
         promptCacheKeyMode: 'session',
-        promptCacheKeyDisabled: keyDisabled,
-        disablePromptCacheKey: () => { keyDisabled = true; },
-        promptCacheBreakpointsDisabled: breakpointsDisabled,
-        disablePromptCacheBreakpoints: () => { breakpointsDisabled = true; },
+      },
+      cacheCompatibility: {
+        isKeyDisabled: () => keyDisabled,
+        isBreakpointsDisabled: () => breakpointsDisabled,
+        disableKey: () => { keyDisabled = true; },
+        disableBreakpoints: () => { breakpointsDisabled = true; },
       },
     });
 
@@ -445,8 +467,12 @@ describe('OpenAI bridge Responses prompt_cache_key', () => {
       cacheAffinity: {
         sessionId: 'raw-session-id',
         promptCacheKeyMode: 'session',
-        promptCacheKeyDisabled: true,
-        disablePromptCacheBreakpoints: () => { breakpointsDisabled = true; },
+      },
+      cacheCompatibility: {
+        isKeyDisabled: () => true,
+        isBreakpointsDisabled: () => false,
+        disableKey: () => {},
+        disableBreakpoints: () => { breakpointsDisabled = true; },
       },
     };
 
@@ -489,8 +515,12 @@ describe('OpenAI bridge Responses prompt_cache_key', () => {
       cacheAffinity: {
         sessionId: 'raw-session-id',
         promptCacheKeyMode: 'session',
-        disablePromptCacheKey: () => {},
-        disablePromptCacheBreakpoints: () => {},
+      },
+      cacheCompatibility: {
+        isKeyDisabled: () => false,
+        isBreakpointsDisabled: () => false,
+        disableKey: () => {},
+        disableBreakpoints: () => {},
       },
     };
 
@@ -538,8 +568,12 @@ describe('OpenAI bridge Responses prompt_cache_key', () => {
       cacheAffinity: {
         sessionId: 'raw-session-id',
         promptCacheKeyMode: 'session',
-        disablePromptCacheKey: () => { keyDisabled = true; },
-        disablePromptCacheBreakpoints: () => { breakpointsDisabled = true; },
+      },
+      cacheCompatibility: {
+        isKeyDisabled: () => false,
+        isBreakpointsDisabled: () => false,
+        disableKey: () => { keyDisabled = true; },
+        disableBreakpoints: () => { breakpointsDisabled = true; },
       },
     };
 
@@ -579,7 +613,12 @@ describe('OpenAI bridge Responses prompt_cache_key', () => {
       cacheAffinity: {
         sessionId: 'raw-session-id',
         promptCacheKeyMode: 'session',
-        promptCacheKeyDisabled: true,
+      },
+      cacheCompatibility: {
+        isKeyDisabled: () => true,
+        isBreakpointsDisabled: () => false,
+        disableKey: () => {},
+        disableBreakpoints: () => {},
       },
     };
 
@@ -679,8 +718,12 @@ describe('OpenAI bridge Chat Completions prompt_cache_key', () => {
       cacheAffinity: {
         sessionId: 'raw-session-id',
         promptCacheKeyMode: 'session',
-        promptCacheKeyDisabled: disabled,
-        disablePromptCacheKey: () => { disabled = true; },
+      },
+      cacheCompatibility: {
+        isKeyDisabled: () => disabled,
+        isBreakpointsDisabled: () => false,
+        disableKey: () => { disabled = true; },
+        disableBreakpoints: () => {},
       },
     });
 
@@ -723,9 +766,12 @@ describe('OpenAI bridge Chat Completions prompt_cache_key', () => {
       cacheAffinity: {
         sessionId: 'raw-session-id',
         promptCacheKeyMode: 'session',
-        promptCacheKeyDisabled: true,
-        promptCacheBreakpointsDisabled: disabled,
-        disablePromptCacheBreakpoints: () => { disabled = true; },
+      },
+      cacheCompatibility: {
+        isKeyDisabled: () => true,
+        isBreakpointsDisabled: () => disabled,
+        disableKey: () => {},
+        disableBreakpoints: () => { disabled = true; },
       },
     });
 
@@ -762,8 +808,12 @@ describe('OpenAI bridge Chat Completions prompt_cache_key', () => {
       cacheAffinity: {
         sessionId: 'raw-session-id',
         promptCacheKeyMode: 'session',
-        promptCacheKeyDisabled: true,
-        disablePromptCacheBreakpoints: () => { breakpointsDisabled = true; },
+      },
+      cacheCompatibility: {
+        isKeyDisabled: () => true,
+        isBreakpointsDisabled: () => false,
+        disableKey: () => {},
+        disableBreakpoints: () => { breakpointsDisabled = true; },
       },
     };
     const multimodalRequest: AnthropicRequest = {
@@ -887,6 +937,114 @@ describe('OpenAI bridge managed OAuth recovery', () => {
     expect(response.status).toBe(status);
     expect(recoverCalls).toBe(0);
     expect(reported).toEqual([[1, status]]);
+    expect(fake.seen).toHaveLength(1);
+  });
+});
+
+
+describe('cache capability and concrete target regressions (#654)', () => {
+  let fake: FakeUpstream | undefined;
+  afterEach(async () => { await fake?.close(); fake = undefined; });
+  it.each(['responses', 'chat_completions'] as const)('keeps unknown %s active and one-shot requests in the basic shape', async format => {
+    vi.mocked(cachePolicy.resolveProviderPromptCacheCapabilities).mockRestore();
+    fake = await startFakeUpstream(() => ({ status: 200, body: format === 'responses' ? okResponsesBody : okChatBody }));
+    for (const active of [false, true]) {
+      const res = await callBridge({ providerId: 'unknown', baseUrl: fake.baseUrl, apiKey: 'test', model: 'gpt-5.6', upstreamFormat: format,
+        ...(active ? { cacheAffinity: { sessionId: 's', promptCacheKeyMode: 'session' as const } } : {}),
+      }, null, markedAnthropicReq);
+      expect(res.status).toBe(200);
+    }
+    for (const request of fake.seen) {
+      expect(request.body.prompt_cache_key).toBeUndefined();
+      expect(JSON.stringify(request.body)).not.toContain('prompt_cache_breakpoint');
+      if (format === 'responses') expect(request.body.instructions).toBe('stable system');
+    }
+    expect(fake.seen[0].body).toEqual(fake.seen[1].body);
+  });
+  it('uses the concrete alias model for capability, key and downgrade scope', async () => {
+    fake = await startFakeUpstream(() => ({ status: 200, body: okResponsesBody }));
+    const common: UpstreamConfig = { providerId: 'p', baseUrl: fake.baseUrl, apiKey: 'test', upstreamFormat: 'responses',
+      cacheAffinity: { sessionId: 's', promptCacheKeyMode: 'session' },
+    };
+    await callBridge({ ...common, modelMapping: { [anthropicReq.model]: 'gpt-5.6[1m]' } });
+    await callBridge({ ...common, model: 'gpt-5.6' });
+    await callBridge({ ...common, modelMapping: { [anthropicReq.model]: 'gpt-5.5' } });
+    expect(cachePolicy.resolveProviderPromptCacheCapabilities).toHaveBeenCalledWith(fake.baseUrl, 'gpt-5.6');
+    expect(fake.seen[0].body.prompt_cache_key).toEqual(fake.seen[1].body.prompt_cache_key);
+    expect(fake.seen[2].body.prompt_cache_key).not.toEqual(fake.seen[0].body.prompt_cache_key);
+  });
+  it.each([
+    { error: { message: 'Invalid parameter type', param: 'tools.0.parameters.properties.prompt_cache_breakpoint.type' } },
+    { detail: [{ loc: ['body', 'tools', 0, 'parameters', 'properties', 'prompt_cache_breakpoint', 'type'], msg: 'Invalid parameter type' }] },
+    { error: { message: 'Unsupported parameter', param: 'input[0].content[0].prompt_cache_breakpoint_count' } },
+    { error: { message: 'Unsupported prompt_cache_key', param: 'tools.0.parameters.properties.prompt_cache_key' } },
+  ])('never downgrades a schema property or similarly named unrelated field %j', async rejection => {
+    fake = await startFakeUpstream(() => ({ status: 400, body: rejection }));
+    const disableKey = vi.fn();
+    const disableBreakpoints = vi.fn();
+    const res = await callBridge({ providerId: 'p', baseUrl: fake.baseUrl, apiKey: 'test', model: 'gpt-5.6', upstreamFormat: 'responses',
+      cacheAffinity: { sessionId: 's', promptCacheKeyMode: 'session' },
+      cacheCompatibility: { isKeyDisabled: () => false, isBreakpointsDisabled: () => false, disableKey, disableBreakpoints },
+    }, null, { ...markedAnthropicReq, tools: [{ name: 'tool', input_schema: { type: 'object', properties: { prompt_cache_breakpoint: { type: 'invalid' } } } }] });
+    expect(res.status).toBe(400);
+    expect(fake.seen).toHaveLength(1);
+    expect(disableKey).not.toHaveBeenCalled();
+    expect(disableBreakpoints).not.toHaveBeenCalled();
+  });
+  it.each([false, true])('does not downgrade a tool-schema developer-role value (system marker %s)', async marked => {
+    fake = await startFakeUpstream(() => ({ status: 400, body: { error: {
+      param: 'tools.0.parameters.properties.role.enum.0', message: "Invalid value: 'developer'",
+    } } }));
+    const disableBreakpoints = vi.fn();
+    const res = await callBridge({ providerId: 'p', baseUrl: fake.baseUrl, apiKey: 'test', model: 'gpt-5.6', upstreamFormat: 'responses',
+      cacheAffinity: { sessionId: 's', promptCacheKeyMode: 'session' },
+      cacheCompatibility: { isKeyDisabled: () => false, isBreakpointsDisabled: () => false, disableKey: () => {}, disableBreakpoints },
+    }, null, { ...markedAnthropicReq, ...(!marked ? { system: [{ type: 'text' as const, text: 'system' }] } : {}) });
+    expect(res.status).toBe(400);
+    expect(fake.seen).toHaveLength(1);
+    expect(disableBreakpoints).not.toHaveBeenCalled();
+  });
+  it.each([
+    { error: { message: 'Invalid parameter', param: 'input[0].content[0].prompt_cache_breakpoint' } },
+    { error: { error: { message: '参数无效', param: 'input.0.content.0.prompt_cache_breakpoint' } } },
+    { detail: [{ loc: ['body', 'input', 0, 'content', 0, 'prompt_cache_breakpoint'], msg: '不支持此字段', type: 'extra_forbidden' }] },
+  ])('downgrades precisely attributed structured cache rejection %j once', async rejection => {
+    fake = await startFakeUpstream((_, seen) => seen.length === 1 ? { status: 400, body: rejection } : { status: 200, body: okResponsesBody });
+    let disabled = false;
+    const res = await callBridge({ providerId: 'p', baseUrl: fake.baseUrl, apiKey: 'test', model: 'gpt-5.6', upstreamFormat: 'responses',
+      cacheAffinity: { sessionId: 's', promptCacheKeyMode: 'session' },
+      cacheCompatibility: { isKeyDisabled: () => false, isBreakpointsDisabled: () => disabled,
+        disableKey: () => {}, disableBreakpoints: () => { disabled = true; } },
+    }, null, markedAnthropicReq);
+    expect(res.status).toBe(200);
+    expect(disabled).toBe(true);
+    expect(fake.seen).toHaveLength(2);
+    expect(fake.seen[1].body.instructions).toBe('stable system');
+    expect(fake.seen[1].body.prompt_cache_key).toBe(fake.seen[0].body.prompt_cache_key);
+  });
+});
+
+
+describe('Responses non-stream terminal parity (#654)', () => {
+  let fake: FakeUpstream | undefined;
+  afterEach(async () => { await fake?.close(); fake = undefined; });
+  it.each([
+    ['completed', undefined, 200, 'end_turn'],
+    ['failed', undefined, 502, undefined],
+    ['incomplete', 'max_output_tokens', 200, 'max_tokens'],
+    ['incomplete', 'content_filter', 502, undefined],
+    ['in_progress', undefined, 502, undefined],
+  ])('preserves %s / %s over HTTP-200 upstream', async (status, reason, expectedStatus, stopReason) => {
+    fake = await startFakeUpstream(() => ({ status: 200, body: {
+      ...okResponsesBody, status, ...(reason ? { incomplete_details: { reason } } : {}),
+      ...(status === 'failed' ? { error: { code: 'api_error', message: 'failed' } } : {}),
+    } }));
+    const res = await callBridge({ providerId: 'p', baseUrl: fake.baseUrl, apiKey: 'test', model: 'm', upstreamFormat: 'responses' });
+    const body = await res.json() as Record<string, unknown>;
+    expect(res.status).toBe(expectedStatus);
+    expect(body.stop_reason).toBe(stopReason);
+    if (expectedStatus === 200) expect(body.usage).toEqual({ input_tokens: 3, output_tokens: 1, cache_read_input_tokens: 7, cache_creation_input_tokens: 2 });
+    else expect(body.type).toBe('error');
     expect(fake.seen).toHaveLength(1);
   });
 });

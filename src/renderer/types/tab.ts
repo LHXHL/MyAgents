@@ -93,6 +93,7 @@ export function buildChatFlipPatch(
     view: 'chat',
     title: fields.title,
     ...(initialMessage ? { initialMessage } : {}),
+    discussionId: initialMessage?.discussionId ?? (tab.view === 'chat' ? tab.discussionId : undefined),
     sidecarConfigDisposition: fields.sidecarConfigDisposition,
     ...(tab.view === 'chat'
       ? {

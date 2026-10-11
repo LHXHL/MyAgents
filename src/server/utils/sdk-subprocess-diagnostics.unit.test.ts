@@ -69,7 +69,8 @@ describe('diagnoseSdkSubprocessFailure', () => {
     expect(diagnostic?.userMessage).toContain('异常退出');
     expect(diagnostic?.userMessage).not.toMatch(/Git|杀毒|启动失败|模型不支持/);
     expect(diagnostic?.imMessage).not.toMatch(/Git|杀毒|启动失败|模型不支持/);
-    expect(diagnostic?.userMessage).toContain(`exited with code 1${stderr}`);
+    expect(diagnostic?.userMessage).toContain('exit code 1');
+    expect(diagnostic?.userMessage).not.toContain('unrecognized_model');
   });
 
   it('cross-review 0.2.32: native-crash evidence beats the exit-1 branch (Bun crash exiting 1 is not a Git problem)', () => {

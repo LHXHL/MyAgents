@@ -8,6 +8,7 @@ import {
   hydrateBackgroundTaskStatusesFromHistory,
   isBackgroundTaskRegistered,
   registerBackgroundTask,
+  setBackgroundTaskStatus,
 } from '@/utils/backgroundTaskStatus';
 
 import { useAgentStatusState } from './useAgentStatusState';
@@ -231,6 +232,19 @@ describe('useAgentStatusState — builtin background subagents', () => {
     await waitFor(() => {
       expect(getBackgroundTaskStatus('Task-m1')).toBe('completed');
     });
+  });
+
+  it('does not let prior completion history hide a resumed live Agent', async () => {
+    const messages: Message[] = [{ id: 'task-notification-agent-run-1', role: 'user', timestamp: new Date(),
+      content: '<task-notification>{"taskId":"agent","runId":"run-1","toolUseId":"Task-m1","status":"completed"}</task-notification>' },
+      toolMsg('m1', { name: 'Task', parsedInput: { prompt: 'Audit', run_in_background: true }, isLoading: false })];
+    registerBackgroundTask('agent', 'Task-m1', { runId: 'run-1' }, 'session');
+    setBackgroundTaskStatus('agent', 'completed', 'Task-m1', 'session', 'run-1');
+    const { result } = renderHook(() => useAgentStatusState(messages, null, 'session'));
+    expect(result.current.summary.subagentRunning).toBe(0);
+    act(() => { registerBackgroundTask('agent', 'Task-m1', { runId: 'run-2' }, 'session'); });
+    await waitFor(() => expect(result.current.summary.subagentRunning).toBe(1));
+    expect(getBackgroundTaskStatus('Task-m1', 'session')).toBe('running');
   });
 
   it('treats omitted run_in_background as background for SDK Task tools', () => {

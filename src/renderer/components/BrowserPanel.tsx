@@ -35,10 +35,12 @@ import {
 import { useBrowserOverlayGuard } from '@/hooks/useBrowserOverlayGuard';
 import { useToast } from '@/components/Toast';
 import Tip from '@/components/Tip';
+import { resolveBrowserAddress, type BrowserNavigationRequest } from './browserNavigation';
 
 interface BrowserPanelProps {
   tabId: string;
-  url: string | null;
+  navigationRequest: BrowserNavigationRequest;
+  onNavigate: (url: string) => void;
   /** Whether this panel should be visible (includes isActive + splitActiveView + splitPanelVisible) */
   isVisible: boolean;
   isDraggingSplit: boolean;
@@ -47,7 +49,7 @@ interface BrowserPanelProps {
   /** Parent-owned reload intent; BrowserPanel applies it to its exact generation. */
   reloadSignal?: number;
   /** When previewing a local file, stores its metadata for editor toggle */
-  sourceFile?: { name: string; content: string; size: number; path: string } | null;
+  sourceFile?: { name: string; path: string } | null;
   /**
    * Active chat workspace path. Forwarded to `openExternal()` when the user
    * clicks "open in external browser" so Rust can accept workspace files
@@ -71,7 +73,8 @@ interface BrowserPanelProps {
 
 export default function BrowserPanel({
   tabId,
-  url,
+  navigationRequest,
+  onNavigate,
   isVisible,
   isDraggingSplit,
   isSplitTransitioning = false,
@@ -85,6 +88,7 @@ export default function BrowserPanel({
   onSwitchToEditor,
   onUrlChange,
 }: BrowserPanelProps) {
+  const { url } = navigationRequest;
   const { t } = useTranslation('app');
   const urlPlaceholder = t('browserPanel.urlPlaceholder');
   const containerRef = useRef<HTMLDivElement>(null);
@@ -127,8 +131,8 @@ export default function BrowserPanel({
   // Overlay detection
   const overlayDetected = useBrowserOverlayGuard(browserAlive);
 
-  // Track the last URL we told the webview to load
-  const lastRequestedUrlRef = useRef<string | null>(null);
+  // Consume explicit intents, never compare the native URL with a stale seed.
+  const lastNavigationRequestRef = useRef<BrowserNavigationRequest | null>(null);
   const lastSyncedBoundsRef = useRef<BrowserBounds | null>(null);
   // Resize-invoke serialization marker. A ref (not effect-local state) so it
   // survives reconciler effect restarts: if visibility toggles while a resize
@@ -138,6 +142,7 @@ export default function BrowserPanel({
   // bounds that the ref-bookkeeping believes are current.
   const resizeInFlightTokenRef = useRef<string | null>(null);
   const createIssuedTokenRef = useRef<string | null>(null);
+  const lastReloadSignalRef = useRef(0);
 
   // One token per effect lifetime, not per tab. React's setup-cleanup-setup
   // probe and a real close→reopen may reuse the same tabId, but neither may
@@ -146,10 +151,11 @@ export default function BrowserPanel({
     const lifecycleToken = crypto.randomUUID();
     lifecycleTokenRef.current = lifecycleToken;
     isMountedRef.current = true;
-    lastRequestedUrlRef.current = null;
+    lastNavigationRequestRef.current = null;
     lastSyncedBoundsRef.current = null;
     resizeInFlightTokenRef.current = null;
     createIssuedTokenRef.current = null;
+    lastReloadSignalRef.current = 0;
 
     return () => {
       const createWasIssued = createIssuedTokenRef.current === lifecycleToken;
@@ -170,7 +176,19 @@ export default function BrowserPanel({
     return toUsableBrowserBounds(el.getBoundingClientRect());
   }, []);
 
-  // ── Create or navigate webview when url prop changes ──
+  const runNavigation = useCallback(async (command: string, args?: Record<string, unknown>) => {
+    const lifecycleToken = lifecycleTokenRef.current;
+    if (!lifecycleToken) return;
+    try {
+      await invoke(command, { tabId, lifecycleToken, ...args });
+    } catch (error) {
+      if (isMountedRef.current && lifecycleTokenRef.current === lifecycleToken) {
+        toastRef.current.error(t('browserPanel.navigationFailed', { message: String(error) }));
+      }
+    }
+  }, [tabId, t]);
+
+  // ── Apply explicit navigation requests to the current native generation ──
   useEffect(() => {
     const lifecycleToken = lifecycleTokenRef.current;
     if (!url || !lifecycleToken) return;
@@ -186,7 +204,7 @@ export default function BrowserPanel({
     const createWithBounds = (bounds: BrowserBounds) => {
       createIssuedTokenRef.current = lifecycleToken;
       creatingTokenRef.current = lifecycleToken;
-      lastRequestedUrlRef.current = url;
+      lastNavigationRequestRef.current = navigationRequest;
       lastSyncedBoundsRef.current = bounds;
 
       invoke('cmd_browser_create', {
@@ -218,11 +236,11 @@ export default function BrowserPanel({
             createIssuedTokenRef.current = null;
           }
           console.error('[browser] Create failed:', err);
-          if (!cancelled) {
-            const msg = typeof err === 'string' ? err : (err?.message ?? String(err));
-            toastRef.current.error(t('browserPanel.openFailed', { message: msg }));
-            onCreateFailed();
-          }
+          // Effect dependencies may change while this same birth is pending.
+          // A failed current generation must still settle and report its error.
+          const msg = typeof err === 'string' ? err : (err?.message ?? String(err));
+          toastRef.current.error(t('browserPanel.openFailed', { message: msg }));
+          onCreateFailed();
         })
         .finally(() => {
           if (creatingTokenRef.current === lifecycleToken) creatingTokenRef.current = null;
@@ -247,16 +265,16 @@ export default function BrowserPanel({
       // move again (#339), so create-time precision cannot be the only owner.
       // After creation, the reconciler below owns convergence.
       waitForUsableBounds();
-    } else if (browserAlive && url !== lastRequestedUrlRef.current) {
-      lastRequestedUrlRef.current = url;
-      invoke('cmd_browser_navigate', { tabId, lifecycleToken, url }).catch(() => {});
+    } else if (browserAlive && navigationRequest !== lastNavigationRequestRef.current) {
+      lastNavigationRequestRef.current = navigationRequest;
+      void runNavigation('cmd_browser_navigate', { url });
     }
 
     return () => {
       cancelled = true;
       if (rafId) cancelAnimationFrame(rafId);
     };
-  }, [url, browserAlive, isVisible, isSplitTransitioning, tabId, onBrowserCreated, onCreateFailed, readUsableBounds, t]);
+  }, [url, navigationRequest, browserAlive, isVisible, isSplitTransitioning, tabId, onBrowserCreated, onCreateFailed, readUsableBounds, runNavigation, t]);
 
   // ── Listen for URL/loading events from Rust ──
   useEffect(() => {
@@ -386,25 +404,23 @@ export default function BrowserPanel({
   // token and therefore cannot accidentally reload a reopened BrowserPanel.
   useEffect(() => {
     const lifecycleToken = lifecycleTokenRef.current;
-    if (!browserAlive || reloadSignal <= 0 || !lifecycleToken) return;
-    invoke('cmd_browser_reload', { tabId, lifecycleToken }).catch(() => {});
-  }, [browserAlive, reloadSignal, tabId]);
+    if (!browserAlive || reloadSignal <= 0 || !lifecycleToken || reloadSignal === lastReloadSignalRef.current) return;
+    lastReloadSignalRef.current = reloadSignal;
+    void runNavigation('cmd_browser_reload');
+  }, [browserAlive, reloadSignal, runNavigation]);
 
   // ── Navigation handlers ──
   const handleGoBack = useCallback(() => {
-    const lifecycleToken = lifecycleTokenRef.current;
-    if (lifecycleToken) invoke('cmd_browser_go_back', { tabId, lifecycleToken }).catch(() => {});
-  }, [tabId]);
+    void runNavigation('cmd_browser_go_back');
+  }, [runNavigation]);
 
   const handleGoForward = useCallback(() => {
-    const lifecycleToken = lifecycleTokenRef.current;
-    if (lifecycleToken) invoke('cmd_browser_go_forward', { tabId, lifecycleToken }).catch(() => {});
-  }, [tabId]);
+    void runNavigation('cmd_browser_go_forward');
+  }, [runNavigation]);
 
   const handleReload = useCallback(() => {
-    const lifecycleToken = lifecycleTokenRef.current;
-    if (lifecycleToken) invoke('cmd_browser_reload', { tabId, lifecycleToken }).catch(() => {});
-  }, [tabId]);
+    void runNavigation(isLoading ? 'cmd_browser_stop' : 'cmd_browser_reload');
+  }, [isLoading, runNavigation]);
 
   const handleOpenExternal = useCallback(() => {
     // openExternal auto-routes file:// URLs through Rust (see openExternal.ts);
@@ -423,23 +439,15 @@ export default function BrowserPanel({
   }, [currentUrl, isBlankPage]);
 
   const handleUrlSubmit = useCallback(() => {
+    if (!urlDraft.trim()) { setUrlEditing(false); return; }
+    const destination = resolveBrowserAddress(urlDraft);
+    if (!destination) {
+      toastRef.current.error(t('browserPanel.invalidAddress'));
+      return;
+    }
     setUrlEditing(false);
-    let trimmed = urlDraft.trim();
-    if (!trimmed) return;
-    // Add https:// only when the input has no scheme at all. Detecting any
-    // RFC-3986 scheme prefix (not just http/https) preserves `about:blank`,
-    // `file://`, `data:`, etc. unchanged. Tauri's on_navigation already blocks
-    // dangerous schemes (e.g. `javascript:`), so we don't sanitize here.
-    if (!/^[a-z][a-z0-9+\-.]*:/i.test(trimmed)) {
-      trimmed = 'https://' + trimmed;
-    }
-    if (trimmed !== currentUrl) {
-      const lifecycleToken = lifecycleTokenRef.current;
-      if (!lifecycleToken) return;
-      invoke('cmd_browser_navigate', { tabId, lifecycleToken, url: trimmed }).catch(() => {});
-      lastRequestedUrlRef.current = trimmed;
-    }
-  }, [urlDraft, currentUrl, tabId]);
+    onNavigate(destination);
+  }, [urlDraft, onNavigate, t]);
 
   const handleUrlKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (isImeComposingEvent(e)) return;

@@ -187,13 +187,13 @@ export function diagnoseSdkSubprocessFailure(input: {
         imMessage: 'AI 引擎异常退出：Windows 机器未找到 bash（通常是未安装 Git for Windows）。请在桌面端安装 Git 后重试。',
       };
     }
-    // Exit 1 proves termination, not its cause or startup phase. The stderr
-    // tail may contain an earlier warning; preserve it without diagnosing it.
+    // Exit 1 proves termination, not its cause or startup phase. The raw
+    // stderr tail remains in the diagnostic log; it may be an unrelated warning.
     return {
       kind: 'windows-subprocess-exit-1',
       exitCode,
       exitCodeHex: formatHexCode(exitCode),
-      userMessage: `AI 引擎异常退出（exit code 1）。${suffix}`,
+      userMessage: 'AI 引擎异常退出（exit code 1）。请查看日志中的详细诊断。',
       imMessage: 'AI 引擎异常退出（exit code 1）。请在桌面端查看错误详情。',
     };
   }

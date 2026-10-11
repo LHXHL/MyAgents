@@ -8,7 +8,8 @@ import { createPortal } from 'react-dom';
 import { Trans, useTranslation } from 'react-i18next';
 
 import { useCloseLayer } from '@/hooks/useCloseLayer';
-import type { LogEntry, LogLevel, LogSource } from '@/types/log';
+import { useFrontendLogs } from '@/hooks/useFrontendLogs';
+import type { LogLevel, LogSource } from '@/types/log';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
 import {
   ChevronDownIcon,
@@ -20,14 +21,12 @@ import {
 } from '@/components/icons';
 
 interface UnifiedLogsPanelProps {
-    /** Logs received from SSE via TabProvider */
-    sseLogs: LogEntry[];
+    tabId?: string;
+    sessionId?: string | null;
     /** Whether to show the panel */
     isVisible: boolean;
     /** Callback to close the panel */
     onClose: () => void;
-    /** Callback to clear all logs */
-    onClearAll?: () => void;
 }
 
 const LOG_LEVEL_COLORS: Record<LogLevel, string> = {
@@ -102,10 +101,11 @@ function highlightText(text: string, query: string): React.ReactNode {
     return parts.length > 0 ? parts : text;
 }
 
-export function UnifiedLogsPanel({ sseLogs, isVisible, onClose, onClearAll }: UnifiedLogsPanelProps) {
+export function UnifiedLogsPanel({ tabId, sessionId, isVisible, onClose }: UnifiedLogsPanelProps) {
     const { t } = useTranslation('app');
+    const { logs: sseLogs, clear: handleClearAll } = useFrontendLogs(isVisible, { tabId, sessionId });
     useCloseLayer(() => { if (!isVisible) return false; onClose(); return true; }, 50);
-    // All logs (React + Node + Rust) now come from sseLogs prop via TabProvider
+    // Only the visible panel subscribes to the window's diagnostic buffer.
     const [filter, setFilter] = useState<LogSource | 'all'>('all');
     const [levelFilter, setLevelFilter] = useState<LogLevel | 'all'>('all');
     const [hideFilters, setHideFilters] = useState<Set<HideFilter>>(new Set(DEFAULT_HIDE_FILTERS));
@@ -252,11 +252,6 @@ export function UnifiedLogsPanel({ sseLogs, isVisible, onClose, onClearAll }: Un
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [isVisible, onClose, searchQuery]);
-
-    // Clear all logs (now all logs are managed by TabProvider)
-    const handleClearAll = useCallback(() => {
-        onClearAll?.();
-    }, [onClearAll]);
 
     // Download filtered logs as .txt
     const handleDownload = useCallback(() => {

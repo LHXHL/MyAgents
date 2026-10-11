@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildPromptCacheKey } from './prompt-cache';
+import { buildPromptCacheKey, promptCacheTarget } from './prompt-cache';
 
 const baseInput = {
   appNamespace: 'myagents' as const,
@@ -41,5 +41,19 @@ describe('buildPromptCacheKey', () => {
   it('omits the key when there is no active session identity', () => {
     expect(buildPromptCacheKey({ ...baseInput, sessionId: undefined })).toBeUndefined();
     expect(buildPromptCacheKey({ ...baseInput, sessionId: '   ' })).toBeUndefined();
+  });
+});
+
+
+describe('prompt-cache observation target (#654)', () => {
+  it('isolates every transport dimension and normalizes endpoint trailing slashes', () => {
+    const target = promptCacheTarget('p', 'https://example/v1', 'model-a', 'responses');
+    expect(promptCacheTarget('p', 'https://example/v1/', 'model-a', 'responses')).toBe(target);
+    expect(new Set([target,
+      promptCacheTarget('other', 'https://example/v1', 'model-a', 'responses'),
+      promptCacheTarget('p', 'https://other/v1', 'model-a', 'responses'),
+      promptCacheTarget('p', 'https://example/v1', 'model-b', 'responses'),
+      promptCacheTarget('p', 'https://example/v1', 'model-a', 'chat_completions'),
+    ]).size).toBe(5);
   });
 });

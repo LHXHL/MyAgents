@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Query } from '@anthropic-ai/claude-agent-sdk';
 import type { SystemInitInfo } from '../../shared/types/system';
+import { compareBackgroundTaskRuns } from '../../shared/backgroundTaskRun';
 import {
   MCP_PREWARM_GRACE_MS,
   type McpPrewarmOutcome,
@@ -50,9 +51,17 @@ let queryMcpMutationOwner: {
 export type QueryBackgroundTaskInfo = {
   toolUseId?: string;
   description?: string;
+  runId?: string;
 };
 
-const queryBackgroundTasks = new Map<Query, Map<string, QueryBackgroundTaskInfo>>();
+type QueryBackgroundTask = {
+  info: QueryBackgroundTaskInfo;
+  active: boolean;
+  terminalRich?: boolean;
+};
+// Completed runs remain here for dual-channel enrichment and late-event rejection,
+// until the exact Query finalizer releases the registry.
+const queryBackgroundTasks = new Map<Query, Map<string, QueryBackgroundTask>>();
 let isProcessing = false;
 let abortRequested = false;
 let sessionTerminationPromise: Promise<void> | null = null;
@@ -84,6 +93,7 @@ function replaceQuerySession(session: Query | null): void {
   }
   querySession = session;
   queryGeneration += 1;
+  console.log(`[builtin-input] phase=query-replaced generation=${queryGeneration} previousQuery=${previousQuery !== null} query=${session !== null}`);
   queryMcpPrewarmOwner = null;
   if (previousQuery) {
     for (const waiter of queryExitWaiters) {
@@ -165,6 +175,10 @@ export const lifecycleState = {
 
 export function getQuerySession(): Query | null {
   return querySession;
+}
+
+export function getQueryGeneration(): number {
+  return queryGeneration;
 }
 
 export function hasQuerySession(): boolean {
@@ -256,37 +270,63 @@ export function recordQueryBackgroundTask(
     tasks = new Map();
     queryBackgroundTasks.set(query, tasks);
   }
-  tasks.set(taskId, info);
+  const previous = tasks.get(taskId);
+  const order = previous ? compareBackgroundTaskRuns(info.runId, previous.info.runId) : 1;
+  if (order < 0) return false;
+  if (previous && order === 0) {
+    if (info.toolUseId !== undefined) previous.info.toolUseId = info.toolUseId;
+    if (info.description !== undefined) previous.info.description = info.description;
+  } else {
+    tasks.set(taskId, { info, active: true });
+  }
   return true;
 }
 
 export function hasQueryBackgroundTask(query: Query | null, taskId: string): boolean {
-  return Boolean(query && queryBackgroundTasks.get(query)?.has(taskId));
+  return Boolean(query && queryBackgroundTasks.get(query)?.get(taskId)?.active);
 }
 
 export function getQueryBackgroundTask(
   query: Query | null,
   taskId: string,
 ): QueryBackgroundTaskInfo | undefined {
-  return query ? queryBackgroundTasks.get(query)?.get(taskId) : undefined;
+  return query ? queryBackgroundTasks.get(query)?.get(taskId)?.info : undefined;
 }
 
 export function hasQueryBackgroundTasks(query: Query | null = querySession): boolean {
-  return Boolean(query && (queryBackgroundTasks.get(query)?.size ?? 0) > 0);
+  return Boolean(query && [...(queryBackgroundTasks.get(query)?.values() ?? [])].some(task => task.active));
 }
 
 export function completeQueryBackgroundTask(
   query: Query | null,
   taskId: string,
-): { removed: boolean; becameQuiescent: boolean; info?: QueryBackgroundTaskInfo } {
-  if (!query) return { removed: false, becameQuiescent: false };
-  const tasks = queryBackgroundTasks.get(query);
-  const info = tasks?.get(taskId);
-  if (!tasks || !info) return { removed: false, becameQuiescent: false };
-  tasks.delete(taskId);
-  const becameQuiescent = tasks.size === 0;
-  if (becameQuiescent) queryBackgroundTasks.delete(query);
-  return { removed: true, becameQuiescent, info };
+  terminal: { runId?: string; rich?: boolean; toolUseId?: string } = {},
+): { removed: boolean; becameQuiescent: boolean; broadcast: boolean; enriching?: boolean; info?: QueryBackgroundTaskInfo } {
+  const ignored = { removed: false, becameQuiescent: false, broadcast: false };
+  if (!query) return ignored;
+  let tasks = queryBackgroundTasks.get(query);
+  if (!tasks) {
+    if (querySession !== query) return ignored;
+    tasks = new Map();
+    queryBackgroundTasks.set(query, tasks);
+  }
+  const previous = tasks.get(taskId);
+  const order = previous ? compareBackgroundTaskRuns(terminal.runId, previous.info.runId) : 1;
+  if (order < 0) return ignored;
+  const task = previous && order === 0 ? previous : {
+    info: { runId: terminal.runId, ...(terminal.toolUseId ? { toolUseId: terminal.toolUseId } : {}) },
+    active: false,
+    terminalRich: undefined,
+  };
+  const removed = Boolean(previous?.active);
+  const enriching = task.terminalRich !== undefined;
+  const rich = terminal.rich ?? false;
+  const broadcast = !enriching || (!task.terminalRich && rich);
+  task.active = false;
+  task.terminalRich = Boolean(task.terminalRich || rich);
+  if (terminal.toolUseId) task.info.toolUseId = terminal.toolUseId;
+  tasks.set(taskId, task);
+  return { removed, becameQuiescent: removed && !hasQueryBackgroundTasks(query), broadcast, enriching, info: task.info };
 }
 
 /** Transfer remaining task ownership to the exact Query finalizer. */
@@ -297,7 +337,7 @@ export function takeQueryBackgroundTasks(
   const tasks = queryBackgroundTasks.get(query);
   if (!tasks) return [];
   queryBackgroundTasks.delete(query);
-  return [...tasks.entries()];
+  return [...tasks.entries()].filter(([, task]) => task.active).map(([id, task]) => [id, task.info]);
 }
 
 export function setQueryMcpPrewarmOwner(params: {
@@ -588,6 +628,7 @@ export function hasMessageResolver(): boolean {
 }
 
 export function wakeGenerator(item: MessageQueueItem | null): void {
+  console.log(`[builtin-input] phase=resolver-wake generation=${queryGeneration} parked=${messageResolver !== null} input=${item !== null}`);
   if (!messageResolver) return;
   const resolve = messageResolver;
   messageResolver = null;
@@ -595,10 +636,23 @@ export function wakeGenerator(item: MessageQueueItem | null): void {
 }
 
 export function waitForMessage(dequeue: () => MessageQueueItem | undefined): Promise<MessageQueueItem | null> {
-  if (abortRequested) return Promise.resolve(null);
+  if (abortRequested) {
+    console.log(`[builtin-input] phase=message-wait-aborted generation=${queryGeneration}`);
+    return Promise.resolve(null);
+  }
   const queued = dequeue();
-  if (queued) return Promise.resolve(queued);
-  return new Promise(resolve => { messageResolver = resolve; });
+  if (queued) {
+    console.log(`[builtin-input] phase=message-dequeued generation=${queryGeneration}`);
+    return Promise.resolve(queued);
+  }
+  return new Promise(resolve => {
+    const resolverGeneration = queryGeneration;
+    console.log(`[builtin-input] phase=resolver-parked generation=${resolverGeneration}`);
+    messageResolver = item => {
+      console.log(`[builtin-input] phase=resolver-received installedGeneration=${resolverGeneration} currentGeneration=${queryGeneration} input=${item !== null}`);
+      resolve(item);
+    };
+  });
 }
 
 export function resetControlPlaneState(): void {
@@ -627,6 +681,7 @@ export function resetPreWarmState(): void {
 }
 
 export function clearGeneratorResolver(): void {
+  console.log(`[builtin-input] phase=resolver-cleared generation=${queryGeneration} parked=${messageResolver !== null}`);
   messageResolver = null;
 }
 

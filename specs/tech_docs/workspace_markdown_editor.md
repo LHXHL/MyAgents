@@ -28,6 +28,8 @@ macOS 编辑菜单的 Undo / Redo 由 `macos_edit_menu` 路由：先用真正的
 
 ## 文件链接与操作身份
 
+预览导航先传递 `FilePreviewTarget`（文件身份与源码/行号意图），由 Chat 经 `resolveFilePreview` 决定消费者。聊天、目录和 pending preview 不先读取全文：普通 HTML/HTM 在现有浏览器布局中通过 Rust `resolvePreviewPath` / `resolveLocalPreviewPath` 校验并按 canonical 路径加载，网页浏览不使用文本容量门限；明确行号/编辑意图及文本模态框仍走有界源码读取。Browser 只保留文件身份，切换源码时重新走 `useWorkspaceFileService` 的 2 MiB 读取；失败保留网页并显示原始可读原因，不回退到陈旧或未加载的源码。预览发起 surface 的 `isCurrent` 与 `useChatFilePreviewNavigation` 中的 Chat request generation 共同裁决提交；手动面板切换/关闭、路径/布局变化和卸载使旧请求失效，读取与 draft transition 完成后均重新检查。Native browser 的 create/navigate 对本地目标再次复用 local 文件校验；这不构成网页子资源的额外沙箱承诺。
+
 `markdown/ContentLink` 统一普通 Markdown 与反引号文件引用的目标、图标、完整原始地址提示、点击和右键；显式 anchor 的 href 拥有目标，标题内部的 inline code 只呈现格式。原生路径保留字面 `%` / `#` 等字符，URL 在引用边界解码；行/列后缀与文件名分别解析。聊天相对路径以工作区为基准，文档链接以当前文档目录为基准，不模糊搜索同名文件。href 的安全规范化与原始引用呈现分离；hover 与复制保留相对/绝对写法，绝对化/canonical target 仅用于校验和打开。
 
 Chat 的 `FileActionProvider` 覆盖消息、分屏和全屏预览；consumer 不另建文件缓存。缓存刷新只裁决结果是否可写入缓存，用户操作的取消由 workspace identity / 最新导航意图裁决。未找到与校验失败分开，已有负结果在新出现的引用或显式交互时重新检查，并复用有限缓存 lease；不引入后台扫描。
@@ -35,6 +37,12 @@ Chat 的 `FileActionProvider` 覆盖消息、分屏和全屏预览；consumer �
 同一 workspace / target 的刷新与 lease 到期只失效校验时效，保留最近一次结果供展示，直到新结果返回；不能把重新校验中的已确认链接降回普通代码，否则图标、底色与正文换行会反复跳变。点击与菜单仍实时校验，不把展示结果当操作授权。切换 workspace 或最后一个 consumer 卸载时释放旧结果。
 
 Rust `check_paths` 返回文件事实与可选 `resolvedPath` / `error`。工作区符号链接指向普通外部文件时返回 canonical local target；预览和菜单沿 local 只读入口，不能由此扩大 workspace mutation 权限。用户主动打开普通本地文件支持其它卷与相邻工作区，保留 canonical credential/system exclusions 和真实 OS 可读性检查。未知格式仍提供系统打开/定位入口；不把文件存在等同于所有格式均可预览。
+
+## Runtime 引用的阅读投影
+
+共享 Markdown pipeline 在 inline grammar 层识别 `U+E200 cite U+E202 source-id U+E201`，代码、链接目标与 HTML 属性仍是字面内容。阅读时只用显式 `ref_id/title/url` 解析来源，URL 限制为无凭据 HTTP(S)；缺映射或冲突显示本地化“来源链接不可用”，不展示控制标记、不编造 URL。部分流式 opener 暂不显示，完整 opener 尚未结束时显示不可用提示。
+
+桌面 Chat 的 MessageList 从已加载根消息的 WebSearch tool-result 派生来源表，按 Product `turnId` 隔离并通过 Virtuoso context 进入行失效边界；旧消息缺 turnId 时只使用自身消息来源。子 Agent 的 source ID 不借给根回答；未传入映射的 Markdown 表面仍可明确降级。不可变 tool 的解析与相同 turn 来源表复用，逐字 delta 不重复解析工具 JSON或使全部历史正文重渲染。消息复制/单条回复 Markdown 导出只替换 citation 源范围，其余 Markdown 和代码源码保持原字节；canonical transcript、原始 Session API 和 IM/latest-result 仍保留 execution text。已丢失来源数据的历史不扫描 native rollout、不写盘迁移。
 
 ## 源码与投影
 

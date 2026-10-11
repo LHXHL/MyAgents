@@ -284,7 +284,6 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
           deps.setStreamingMessage(true);
           surfaceNextInput = () => {
             void deps.surfaceInFlightQueueItem(stale, meta, {
-              sdkUuid: stale,
               midTurnBreak: true,
               reason: forced ? 'force-send #289' : 'confirmed result handoff',
               awaitPersist: false,
@@ -830,15 +829,18 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       // broadcasts message-stopped. The stopped terminal is still recorded in
       // both cases.
       let forceSurfaced = false;
-      const capturedCompletionTerminal = product
-        ? recordCompletionTerminal(isAbortResult ? 'stopped' : terminalError ? 'error' : 'complete')
-        : null;
+      // Logical settlement owns the terminal for V1 and V2 alike. Waiting for
+      // legacy persistence leaves a Stop→Query-exit race, and a late callback
+      // can otherwise overwrite a successor's terminal.
+      const capturedCompletionTerminal = recordCompletionTerminal(
+        isAbortResult ? 'stopped' : terminalError ? 'error' : 'complete',
+      );
       forceSurfaced = completeTurn(
         durationMs,
         terminalError,
         () => {
           if (isAbortResult) {
-            const completionTerminal = product ? capturedCompletionTerminal : recordCompletionTerminal('stopped');
+            const completionTerminal = capturedCompletionTerminal;
             if (!forceSurfaced) {
               deps.broadcast(
                 'chat:message-stopped',
@@ -848,7 +850,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
           } else {
             console.log('[agent][sdk] Broadcasting chat:message-complete');
             const completionStatus = terminalError ? 'error' : 'complete';
-            const completionTerminal = product ? capturedCompletionTerminal : recordCompletionTerminal(completionStatus);
+            const completionTerminal = capturedCompletionTerminal;
             if (composedAssistantText.trim()) {
               console.log(
                 `[assistant-output] runtime=builtin status=${completionTerminal?.status ?? completionStatus} `

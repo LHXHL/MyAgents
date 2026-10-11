@@ -9,6 +9,16 @@
 - Global Sidecar `BrowserContextRegistry` 拥有共享 Chromium 以及每 Product Session 的 Context；每 MCP backend 仅借用。传输断开后保留 15 秒重连窗口；真正关闭由 Registry 负责。Playwright 的 SIGINT/SIGTERM handler 关闭，信号退出先经过产品 drain/checkpoint。
 - 借用代理跟踪 listener/route，清理一个 backend 不得关闭实际 Context。Page close 后释放该页监听记录；once 被触发时立即移除其跟踪记录。选择/排序引用由真实 Context 的 Page-close 观察器释放，跨越 backend 断开后的重连窗口。
 
+## Runtime 接入与侧栏边界
+
+内置 Claude SDK、托管 Codex 和 Integrated DSH 在各自 adapter 中将 `myagents-browser` 的 `__browser_host__` 产品标记解析为 Rust 颁发的 HTTP capability。DSH 首启、恢复和 live extension replacement 共用 `projectDshManagedBrowser`：先以 canonical Product Session ID adoption，再 acquire；不能使用 DSH native Session ID。既有 Session 的产品 MCP 选择无需迁移。
+
+DSH 现有扩展 owner 将原始 source 与其 compiled plane 存入同一 generation 记录，按 desired/effective plane 读取配对来源；候选被拒绝并释放后自动回到 effective 的配对来源。下一次 Root turn admission 内沿同一个串行 replacement 边界重新取得 capability。该刷新只重新投影浏览器组件与凭据，其余组件、Skill 内容资源和授权根沿用已准入快照；不能因刷新浏览器而重新读取磁盘中的 Skill 或触发完整能力发现。Host generation、endpoint 或 token 变化使公开的 opaque credential revision 改变；真实 Authorization 仅留在 generation-scoped reverse credential binding，不进入公开 snapshot、argv 或配置文件。旧 effective plane 的凭据与 dispatcher 按既有 native background-work 生命周期保留到进程退出；同一 source 刷新不得 dispose 仍被有效 plane 引用的 dispatcher。Host 获取失败成为单组件诊断，基础 Runtime 可用；下一个边界可重新接入。这不承诺当前进行中的浏览器操作跨 Host 重启续跑。
+
+普通 Playwright preset 继续使用自己的启动参数和环境，外部 Runtime 的工具配置仍按各自接入规则管理。工具页说明两类工具与侧栏的登录边界；托管浏览器不读取侧栏的 WebView Cookie。
+
+侧栏 `Chat` 只持有显式导航请求，每次打开（包括同一个地址）生成新请求；`BrowserPanel` / native WebView 提供当前 URL。可见性、split/fullscreen 和语言变化不得重放已消费请求；创建过程中保留最新请求，native generation ready 后再导航。地址栏接受网址或本地路径，不提供搜索。localhost/IP 缺省 HTTP，普通域名缺省 HTTPS；本地文件权限仍由 Rust 原有路径校验裁决。停止使用独立的 `cmd_browser_stop`（`window.stop()`），刷新、后退、前进及导航错误反馈受同一 lifecycle token 约束。完整网站错误/崩溃状态机和 popup/download 不属于这条控制面的保证。
+
 ## MCP 取消与完成
 
 当前安装版 Playwright MCP 不把 Protocol 的 request signal 传给实际工具。直接转发 `notifications/cancelled` 会抑制最终协议回复，导致 JSON HTTP 响应永不完成，即使实际工具已经结束。

@@ -192,10 +192,26 @@ fn is_degenerate_bounds(width: f64, height: f64) -> bool {
 /// Handles both Unix (`/Users/...`) and Windows (`C:\Users\...`) paths.
 fn parse_url_or_path(url: &str) -> Result<Url, String> {
     let path = Path::new(url);
-    if path.is_absolute() {
-        Url::from_file_path(path).map_err(|_| format!("Invalid file path: {}", url))
+    let parsed: Url = if path.is_absolute() {
+        Url::from_file_path(path).map_err(|_| format!("Invalid file path: {}", url))?
     } else {
-        url.parse().map_err(|e| format!("Invalid URL: {e}"))
+        url.parse().map_err(|e| format!("Invalid URL: {e}"))?
+    };
+    if parsed.scheme() == "file" {
+        let local = parsed
+            .to_file_path()
+            .map_err(|_| "Invalid local file URL")?;
+        let resolved = crate::workspace_files::read_preview::resolve_local_preview_path(
+            &local.to_string_lossy(),
+        )?;
+        let normalized = crate::sidecar::normalize_external_path(resolved);
+        let mut validated =
+            Url::from_file_path(normalized).map_err(|_| "Invalid local file path")?;
+        validated.set_fragment(parsed.fragment());
+        validated.set_query(parsed.query());
+        Ok(validated)
+    } else {
+        Ok(parsed)
     }
 }
 
@@ -909,6 +925,33 @@ pub async fn cmd_browser_reload(
     webview.reload().map_err(|e| format!("Reload failed: {e}"))
 }
 
+/// Stop the current load without navigating or replacing this generation.
+#[tauri::command]
+pub async fn cmd_browser_stop(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<BrowserManager>>,
+    tab_id: String,
+    lifecycle_token: String,
+) -> Result<(), String> {
+    validate_lifecycle_token(&lifecycle_token)?;
+    let lifecycle = state.lifecycle.lock().await;
+    let session = lifecycle
+        .live_session(&tab_id, &lifecycle_token)
+        .ok_or_else(|| format!("No matching browser generation for tab {}", tab_id))?;
+    let webview = app
+        .get_webview(&session.webview_label)
+        .ok_or_else(|| "Webview not found".to_string())?;
+    webview
+        .eval("window.stop()")
+        .map_err(|e| format!("Stop loading failed: {e}"))?;
+    // A stopped navigation need not emit PageLoadEvent::Finished.
+    let _ = app.emit(
+        &browser_event_name("loading", &tab_id, &lifecycle_token),
+        false,
+    );
+    Ok(())
+}
+
 /// Update webview position and size.
 #[tauri::command]
 pub async fn cmd_browser_resize(
@@ -1112,6 +1155,31 @@ pub async fn close_all_browsers(state: &Arc<BrowserManager>, app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn local_browser_urls_are_validated_without_loading_source() {
+        let ws = crate::workspace_files::test_support::make_test_workspace("browser_url");
+        let path = ws.join("报告 #1.html");
+        std::fs::write(&path, "x".repeat(4_037_468)).unwrap();
+        let parsed = super::parse_url_or_path(&path.to_string_lossy()).unwrap();
+        let mut anchored = parsed.clone();
+        anchored.set_fragment(Some("summary"));
+        assert_eq!(
+            super::parse_url_or_path(anchored.as_str())
+                .unwrap()
+                .fragment(),
+            Some("summary")
+        );
+        assert!(super::parse_url_or_path(&ws.to_string_lossy()).is_err());
+        assert!(super::parse_url_or_path(&ws.join("missing.html").to_string_lossy()).is_err());
+        assert_eq!(
+            super::parse_url_or_path("https://example.com/report")
+                .unwrap()
+                .scheme(),
+            "https"
+        );
+        std::fs::remove_dir_all(ws).unwrap();
+    }
+
     #[cfg(target_os = "windows")]
     use super::wide_null_terminated;
     use super::{

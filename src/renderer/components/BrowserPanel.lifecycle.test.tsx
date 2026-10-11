@@ -64,7 +64,7 @@ describe('BrowserPanel exact-generation lifecycle', () => {
       <StrictMode>
         <BrowserPanel
           tabId="tab-1"
-          url="https://example.com"
+          navigationRequest={{ url: "https://example.com" }} onNavigate={vi.fn()}
           isVisible
           isDraggingSplit={false}
           isSplitTransitioning={false}
@@ -111,7 +111,7 @@ describe('BrowserPanel exact-generation lifecycle', () => {
     const view = render(
       <BrowserPanel
         tabId="tab-never-created"
-        url=""
+        navigationRequest={{ url: "" }} onNavigate={vi.fn()}
         isVisible
         isDraggingSplit={false}
         isSplitTransitioning={false}
@@ -139,7 +139,7 @@ describe('BrowserPanel exact-generation lifecycle', () => {
     const view = render(
       <BrowserPanel
         tabId="tab-failed-create"
-        url="https://example.com"
+        navigationRequest={{ url: "https://example.com" }} onNavigate={vi.fn()}
         isVisible
         isDraggingSplit={false}
         isSplitTransitioning={false}

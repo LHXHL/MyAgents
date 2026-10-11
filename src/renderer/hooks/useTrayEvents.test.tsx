@@ -20,7 +20,8 @@ const tauriEvents = vi.hoisted(() => ({
 }));
 
 vi.mock('@/utils/browserMock', () => ({ isTauriEnvironment: () => true }));
-vi.mock('@/utils/closeLayer', () => ({ dismissTopmost: () => false }));
+const overlays = vi.hoisted(() => ({ open: false }));
+vi.mock('@/utils/closeLayer', () => ({ dismissTopmost: () => false, hasOverlayLayer: () => overlays.open }));
 vi.mock('@/utils/tauriListen', () => ({ listenWithCleanup: tauriEvents.listenWithCleanup }));
 vi.mock('@/services/notificationService', () => notification);
 vi.mock('@tauri-apps/api/event', () => ({ emit: vi.fn() }));
@@ -39,6 +40,7 @@ import { useTrayEvents } from './useTrayEvents';
 
 describe('useTrayEvents window presentation authority', () => {
   beforeEach(() => {
+    overlays.open = false;
     tauriWindow.focusListener = undefined;
     tauriWindow.resizeListener = undefined;
     tauriWindow.onFocusChanged.mockReset();
@@ -64,6 +66,51 @@ describe('useTrayEvents window presentation authority', () => {
       return { unlisten: vi.fn(), isRegistered: () => true };
     });
   });
+
+  it('restores the previously focused input and caret on native activation', async () => {
+    const { unmount } = renderHook(() => useTrayEvents({ minimizeToTray: false }));
+    await waitFor(() => expect(tauriWindow.focusListener).toBeDefined());
+    const input = document.createElement('textarea');
+    input.value = 'continue typing';
+    document.body.append(input);
+    vi.spyOn(input, 'getClientRects').mockReturnValue([{}] as unknown as DOMRectList);
+    input.focus();
+    input.setSelectionRange(4, 8);
+    act(() => tauriWindow.focusListener?.({ payload: false }));
+    input.blur();
+    act(() => tauriWindow.focusListener?.({ payload: true }));
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    expect([input.selectionStart, input.selectionEnd]).toEqual([4, 8]);
+    unmount();
+    input.remove();
+  });
+
+  it.each(['new-control', 'overlay', 'hidden-tab', 'closed-tab', 'pointer', 'blur-again', 'unmount'] as const)(
+    'does not restore stale input focus after %s', async reason => {
+      const { unmount } = renderHook(() => useTrayEvents({ minimizeToTray: false }));
+      await waitFor(() => expect(tauriWindow.focusListener).toBeDefined());
+      const input = document.createElement('textarea');
+      const search = document.createElement('input');
+      document.body.append(input, search);
+      const rects = vi.spyOn(input, 'getClientRects').mockReturnValue([{}] as unknown as DOMRectList);
+      input.focus();
+      act(() => tauriWindow.focusListener?.({ payload: false }));
+      input.blur();
+      act(() => tauriWindow.focusListener?.({ payload: true }));
+      if (reason === 'new-control') search.focus();
+      if (reason === 'overlay') overlays.open = true;
+      if (reason === 'hidden-tab') rects.mockReturnValue([] as unknown as DOMRectList);
+      if (reason === 'closed-tab') input.remove();
+      if (reason === 'pointer') document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      if (reason === 'blur-again') act(() => tauriWindow.focusListener?.({ payload: false }));
+      if (reason === 'unmount') unmount();
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      expect(document.activeElement).not.toBe(input);
+      unmount();
+      input.remove();
+      search.remove();
+    },
+  );
 
   it('keeps native focus scoped to notifications and focused callbacks', async () => {
     const onWindowFocused = vi.fn();

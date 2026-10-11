@@ -275,7 +275,8 @@ export interface ReconcileAgentWorkspaceIdentityOptions<
   P extends AgentWorkspaceProjectRecord,
   A extends AgentWorkspaceAgentRecord,
 > {
-  buildAgent: (project: P, requestedAgentId?: string) => A;
+  /** Omit for a read-only projection of existing identities, with no births. */
+  buildAgent?: (project: P, requestedAgentId?: string) => A;
   /** Limit writes, not ownership evidence: every Project still reserves its Agent. */
   projectIds?: ReadonlySet<string>;
 }
@@ -299,7 +300,9 @@ export interface ReconcileAgentWorkspaceIdentityResult<
  *
  * It never guesses through ambiguity and never deletes orphan Agent records.
  * I/O owners run this while holding agent-config-intent.lock, then persist the
- * returned arrays through their existing per-file atomic writers.
+ * returned arrays through their existing per-file atomic writers. Read-only
+ * consumers omit buildAgent to reuse the same selection policy without births
+ * or persistence (including when a legacy relink could not be saved).
  */
 export function reconcileAgentWorkspaceIdentities<
   P extends AgentWorkspaceProjectRecord,
@@ -367,6 +370,7 @@ export function reconcileAgentWorkspaceIdentities<
     }
 
     if (!selectedAgent) {
+      if (!options.buildAgent) continue;
       const requestedAgentId = project.agentId || undefined;
       selectedAgent = options.buildAgent(project, requestedAgentId);
       if (!selectedAgent.id || nextAgents.some(agent => agent.id === selectedAgent!.id)) {

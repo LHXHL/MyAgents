@@ -8,7 +8,7 @@ import { DshAttachmentRegistry } from "./attachments";
 import { INTERNAL_CLI_TOKEN_HEADER } from '../../../shared/externalCliCapabilities';
 import type { PermissionReview } from "../../../shared/types/runtime";
 import { buildDshChildEnvironment } from "./child-environment";
-import type { MethodParams } from "./protocol-types";
+import type { MethodParams, DshRpcObject } from "./protocol-types";
 import { createHash, randomUUID } from "node:crypto";
 import {
   mkdir,
@@ -26,6 +26,7 @@ import { describe, expect, it } from "vitest";
 
 import { PRESET_PROVIDERS, type Provider } from "../../../shared/config-types";
 import { compileDshProductExtensionPlane } from "./extension-compiler";
+import { resolveDshMcpCredential } from './extension-host';
 import { createDshInitializeParams } from "./initialize";
 import { resolveDshRuntimeInstallation } from "./installation";
 import { compileDshModelExecutionProfile } from "./profile-compiler";
@@ -82,6 +83,7 @@ async function createNativeHostFixture(
   route?: { productSessionId: string; sidecarPort: number },
   proxyEnvironment?: Readonly<NodeJS.ProcessEnv>,
   testCertificateAuthority?: string,
+  network: DshExecutionEnvironment["network"] = { mode: "deny" },
 ) {
   const temporaryRoot = await realpath(
     await mkdtemp(join(tmpdir(), `myagents-dsh-process-host-${label}-`)),
@@ -128,7 +130,7 @@ async function createNativeHostFixture(
       inheritedKeys: [],
       secretValues: "reverse-port-only",
     },
-    network: { mode: "deny" },
+    network,
     process: {
       backgroundRetention: "deny",
       maxChildren: 8,
@@ -204,6 +206,243 @@ async function createNativeHostFixture(
 describe.runIf(nativeSmokeEnabled)(
   "DSH RuntimeProcessHost native smoke",
   () => {
+    it('applies a complete oversized Skill snapshot through an attachment before Session binding', async () => {
+      const fixture = await createNativeHostFixture('large-extensions');
+      const registry = new DshAttachmentRegistry(fixture.executionEnvironment.attachmentStagingRoot);
+      await registry.initialize();
+      const skills = [];
+      for (let index = 0; index < 8; index++) {
+        const content = `---\nname: large-${index}\ndescription: Synthetic large Skill\n---\n${'中文\\\n'.repeat(20_000)}`;
+        const path = join(fixture.workspace, `large-${index}.md`);
+        await writeFile(path, content);
+        skills.push({ name: `large-${index}`, description: 'Synthetic large Skill', path,
+          contentSha256: createHash('sha256').update(content).digest('hex'), scope: 'user' as const, sourceId: 'fixture' });
+      }
+      const plane = compileDshProductExtensionPlane({ revision: 'large-extensions', workspacePath: fixture.workspace,
+        skills, commands: [], agents: [], mcpServers: [], dynamicTools: [] });
+      const reference = await registry.publishJson(plane.snapshot);
+      expect(reference.sizeBytes).toBeGreaterThan(1_048_576);
+      let releases = 0;
+      const host = fixture.createHost({ ...fixture.hostHandlers,
+        'host/attachment/acquire': params => registry.acquire(params),
+        'host/attachment/release': params => { releases++; registry.release(params); return { ok: true }; },
+      });
+      try {
+        await host.start();
+        expect(await host.request('extension/replace', { snapshotAttachment: reference })).toMatchObject({
+          state: 'applied', effectiveRevision: plane.snapshot.revision,
+          components: skills.map(skill => ({ key: `skill:${skill.name}`, state: 'ready' })),
+        });
+        expect((await host.request('extension/catalog', {})).skills.map(skill => skill.name)).toEqual(skills.map(skill => skill.name));
+        expect(releases).toBe(1);
+      } finally {
+        await host.stop();
+        await rm(fixture.temporaryRoot, { recursive: true, force: true });
+      }
+    }, 60_000);
+
+    it('preflights credential-free stdio MCP through the real credential reverse port', async () => {
+      const fixture = await createNativeHostFixture('mcp-preflight');
+      const script = join(fixture.workspace, 'mcp.cjs');
+      await writeFile(script, `const readline = require('node:readline');
+readline.createInterface({ input: process.stdin }).on('line', line => {
+  const request = JSON.parse(line);
+  if (!Object.hasOwn(request, 'id')) return;
+  const result = request.method === 'initialize'
+    ? { protocolVersion: request.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } }
+    : request.method === 'tools/list' ? { tools: [{ name: 'ping', description: 'Synthetic ping', inputSchema: { type: 'object', properties: {} } }] } : {};
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n');
+});`);
+      const plane = compileDshProductExtensionPlane({
+        revision: 'mcp-regression', workspacePath: fixture.workspace,
+        skills: [], commands: [], agents: [], dynamicTools: [],
+        mcpServers: [{ id: 'fixture', name: 'Fixture', type: 'stdio', command: process.execPath, args: [script], isBuiltin: false }],
+      });
+      const requests: unknown[] = [];
+      const host = fixture.createHost({ ...fixture.hostHandlers,
+        'host/credential/resolve': params => {
+          requests.push(params);
+          return resolveDshMcpCredential({ plane, extensionDigest: plane.snapshot.digest, params });
+        },
+      });
+      try {
+        await host.start();
+        const result = await host.request('extension/replace', plane.snapshot);
+        expect({ result, requests, stderr: fixture.stderr }).toMatchObject({
+          result: { state: 'applied', components: [{ key: 'mcp:fixture', state: 'ready' }] },
+          requests: [expect.objectContaining({ subject: 'mcp', purpose: 'availability' }), expect.objectContaining({ subject: 'mcp', purpose: 'connection' })],
+        });
+        expect((await host.request('extension/catalog', {})).tools).toContain('mcp__fixture__ping');
+      } finally {
+        await host.stop();
+        await rm(fixture.temporaryRoot, { recursive: true, force: true });
+      }
+    }, 60_000);
+
+    it('connects authenticated HTTP Browser MCP and rotates its credential through the native reverse port', async () => {
+      const fixture = await createNativeHostFixture('browser-http', undefined, undefined, undefined, { mode: 'host-policy', policyRef: 'native-mcp' });
+      let token = 'synthetic-browser-token-1';
+      const authorizedMethods: string[] = [];
+      const server = createServer(async (request, response) => {
+        if (request.headers.authorization !== `Bearer ${token}`) { response.writeHead(401).end(); return; }
+        if (request.method !== 'POST') { response.writeHead(405).end(); return; }
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        const message = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        authorizedMethods.push(message.method);
+        if (!Object.hasOwn(message, 'id')) { response.writeHead(202).end(); return; }
+        const result = message.method === 'initialize'
+          ? { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'browser-fixture', version: '1' } }
+          : { tools: [{ name: 'browser_snapshot', description: 'Synthetic browser page', inputSchema: { type: 'object', properties: {} } }] };
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }));
+      });
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('No loopback address');
+      const compile = (revision: string) => compileDshProductExtensionPlane({
+        revision: 'browser-config', workspacePath: fixture.workspace, skills: [], commands: [], agents: [], dynamicTools: [],
+        mcpServers: [{ id: 'myagents-browser', name: 'Browser', type: 'http', isBuiltin: true,
+          url: `http://127.0.0.1:${address.port}/mcp/playwright`, headers: { Authorization: `Bearer ${token}` }, runtimeConfigRevision: revision }],
+      });
+      let plane = compile('browser-credential-1');
+      const credentialPurposes: string[] = [];
+      const host = fixture.createHost({ ...fixture.hostHandlers,
+        'host/credential/resolve': params => {
+          credentialPurposes.push(String(params.purpose));
+          return resolveDshMcpCredential({ plane, extensionDigest: plane.snapshot.digest, params });
+        },
+      });
+      try {
+        await host.start();
+        for (const revision of ['browser-credential-1', 'browser-credential-2']) {
+          if (revision.endsWith('2')) token = 'synthetic-browser-token-2';
+          plane = compile(revision);
+          expect(JSON.stringify(plane.snapshot)).not.toContain(token);
+          const result = await host.request('extension/replace', plane.snapshot);
+          expect(result, JSON.stringify({ stderr: fixture.stderr, authorizedMethods, credentialPurposes })).toMatchObject({
+            state: 'applied', components: [{ key: 'mcp:myagents-browser', state: 'ready' }],
+          });
+          expect((await host.request('extension/catalog', {})).tools).toContain('mcp__myagents-browser__browser_snapshot');
+        }
+        expect(authorizedMethods.filter(method => method === 'initialize')).toHaveLength(2);
+        expect(credentialPurposes.filter(purpose => purpose === 'connection')).toHaveLength(2);
+        expect(fixture.stderr.join('\n')).not.toContain('synthetic-browser-token');
+      } finally {
+        await host.stop();
+        server.closeAllConnections();
+        await new Promise<void>(resolve => server.close(() => resolve()));
+        await rm(fixture.temporaryRoot, { recursive: true, force: true });
+      }
+    }, 60_000);
+
+    it.runIf(Boolean(process.env.MYAGENTS_BROWSER_SMOKE_EXECUTABLE))('operates real Chromium through the production Browser Host from a native DSH turn', async () => {
+      const fixture = await createNativeHostFixture('real-browser', undefined, undefined, undefined, { mode: 'host-policy', policyRef: 'native-browser' });
+      const [{ chromium }, { BrowserContextRegistry }, { PlaywrightBrowserHost }] = await Promise.all([
+        import('playwright'), import('../../browser-host/context-registry'), import('../../browser-host/browser-host'),
+      ]);
+      const token = 'c'.repeat(32);
+      const modelInputs: string[] = [];
+      let pageLoads = 0;
+      let origin = '';
+      const server = createServer(async (request, response) => {
+        if (request.url === '/page') {
+          pageLoads++;
+          response.writeHead(200, { 'content-type': 'text/html' });
+          response.end('<html><title>DSH Browser smoke</title><h1>Native browser reached page</h1></html>');
+          return;
+        }
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        const bytes = Buffer.concat(chunks);
+        if (request.url?.startsWith('/mcp/')) {
+          const headers = new Headers();
+          for (const [key, value] of Object.entries(request.headers)) {
+            if (typeof value === 'string') headers.set(key, value);
+          }
+          const result = await browserHost.handleRequest(new Request(`${origin}${request.url}`, {
+            method: request.method, headers, ...(bytes.length ? { body: bytes } : {}),
+          }));
+          response.writeHead(result.status, Object.fromEntries(result.headers));
+          response.end(Buffer.from(await result.arrayBuffer()));
+          return;
+        }
+        if (!new URL(request.url ?? '/', origin).pathname.endsWith('/messages')) { response.writeHead(404).end(); return; }
+        modelInputs.push(bytes.toString());
+        const first = modelInputs.length === 1;
+        const emit = (event: string, data: unknown) => response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        emit('message_start', { type: 'message_start', message: { id: `browser-${modelInputs.length}`, type: 'message', role: 'assistant', model: 'claude-sonnet-4-6', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } } });
+        emit('content_block_start', { type: 'content_block_start', index: 0, content_block: first
+          ? { type: 'tool_use', id: 'navigate-browser', name: 'mcp__myagents-browser__browser_navigate', input: {} } : { type: 'text', text: '' } });
+        emit('content_block_delta', { type: 'content_block_delta', index: 0, delta: first
+          ? { type: 'input_json_delta', partial_json: JSON.stringify({ url: `${origin}/page` }) } : { type: 'text_delta', text: 'Browser verified.' } });
+        emit('content_block_stop', { type: 'content_block_stop', index: 0 });
+        emit('message_delta', { type: 'message_delta', delta: { stop_reason: first ? 'tool_use' : 'end_turn', stop_sequence: null }, usage: { output_tokens: 10 } });
+        emit('message_stop', { type: 'message_stop' }); response.end();
+      });
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Fixture port missing');
+      origin = `http://127.0.0.1:${address.port}`;
+      const registry = new BrowserContextRegistry({
+        readIdentity: async () => ({ revision: 0, state: { cookies: [], origins: [] } }),
+        checkpointIdentity: async (_id, base, _observed, state) => ({ revision: base.revision + 1, state, conflictCount: 0 }),
+        resolveResource: async () => ({ revision: 'chromium-1212', executablePath: process.env.MYAGENTS_BROWSER_SMOKE_EXECUTABLE! }),
+        loadBrowserType: async () => new Proxy(chromium, { get(target, property, receiver) {
+          if (property === 'launch') return (options: Parameters<typeof chromium.launch>[0]) => chromium.launch({ ...options, headless: true });
+          return Reflect.get(target, property, receiver);
+        } }),
+        onContextClosed: () => undefined,
+      });
+      const browserHost = new PlaywrightBrowserHost(address.port, { registry, verifyCapability: async candidate => {
+        if (candidate !== token) throw new Error('Synthetic capability mismatch');
+        return { productSessionId: 'native-real-browser-product-session', workspacePath: fixture.workspace, hostGeneration: 1 };
+      } });
+      const plane = compileDshProductExtensionPlane({ revision: 'native-real-browser', workspacePath: fixture.workspace,
+        skills: [], commands: [], agents: [], dynamicTools: [], mcpServers: [{ id: 'myagents-browser', name: 'Browser', type: 'http', isBuiltin: true,
+          url: `${origin}/mcp/playwright`, headers: { Authorization: `Bearer ${token}` }, runtimeConfigRevision: 'native-browser-credential' }] });
+      const host = fixture.createHost({ ...fixture.hostHandlers,
+        'host/credential/resolve': params => params.subject === 'mcp'
+          ? resolveDshMcpCredential({ plane, extensionDigest: plane.snapshot.digest, params })
+          : params.purpose === 'availability' ? { kind: 'availability', available: true, authoritativeCredentialRevision: params.profileRevision }
+          : { kind: 'material', authoritativeCredentialRevision: params.profileRevision, material: { apiKey: 'synthetic-model-key' } },
+        'host/hook/execute': () => ({ state: 'continue' }),
+      });
+      try {
+        await host.start();
+        expect(await host.request('extension/replace', plane.snapshot)).toMatchObject({ state: 'applied', components: [{ key: 'mcp:myagents-browser', state: 'ready' }] });
+        const catalog = await host.request('extension/catalog', {});
+        expect(catalog.tools).toContain('mcp__myagents-browser__browser_navigate');
+        const provider = structuredClone(PRESET_PROVIDERS.find(({ id }) => id === 'anthropic-api'))!;
+        provider.id = 'native-browser-model'; provider.config.baseUrl = origin;
+        const profile = compileDshModelExecutionProfile({ provider, modelId: 'claude-sonnet-4-6' });
+        await host.request('session/create', { clientOperationId: 'browser-bind', persistenceRef: 'browser-session', provider: profile,
+          configRevision: 'browser-config', extensionDigest: catalog.digest, systemPrompt: '', permissionMode: 'full-autonomous', interactionScenario: 'host-interaction-v1' });
+        const digest = createDshInitializeParams({ productSessionId: 'native-real-browser-product-session', productVersion: '0.5.1',
+          runtimeHome: fixture.runtimeHome, workspace: { path: fixture.workspace, identity: fixture.executionEnvironment.workspace.identity },
+          executionEnvironment: fixture.executionEnvironment, interaction: 'deterministic-headless' }).executionEnvironment.digest;
+        await host.request('turn/start', { clientOperationId: 'browser-turn', clientUserMessageId: 'browser-message', input: { parts: [{ kind: 'text', text: 'Open the local fixture page.' }] },
+          configRevision: 'browser-config', extensionDigest: catalog.digest, executionEnvironmentRevision: fixture.executionEnvironment.revision,
+          executionEnvironmentDigest: digest, limits: { maxTurns: 3 }, origin: { kind: 'headless', scenario: 'browser-smoke' } });
+        let completedTurn: DshRpcObject = {};
+        await expect.poll(async () => {
+          completedTurn = await host.request('turn/get', { clientOperationId: 'browser-turn' });
+          return Boolean(completedTurn.terminal);
+        }, { timeout: 30_000 }).toBe(true);
+        expect(completedTurn, JSON.stringify({ stderr: fixture.stderr, modelCalls: modelInputs.length, pageLoads, completedTurn })).toMatchObject({ terminal: { kind: 'succeeded' } });
+        expect(pageLoads).toBe(1);
+        expect(modelInputs).toHaveLength(2);
+        expect(modelInputs[1]).toContain('Native browser reached page');
+        expect(JSON.stringify(plane.snapshot)).not.toContain(token);
+        expect(fixture.stderr.join('\n')).not.toContain(token);
+      } finally {
+        await host.stop(); await browserHost.shutdown();
+        server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
+        await rm(fixture.temporaryRoot, { recursive: true, force: true });
+      }
+    }, 60_000);
+
     it('consumes realtime followUp at the next model boundary inside the native root turn', async () => {
       const fixture = await createNativeHostFixture('realtime-inbox');
       const events: Record<string, unknown>[] = [];

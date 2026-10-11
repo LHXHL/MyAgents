@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 
 import type { McpServerDefinition } from '../../../shared/config-types';
+import { MANAGED_BROWSER_MCP_ID } from '../../../shared/browserTools';
 import type { RuntimeExtensionComponentStatus } from '../../../shared/types/runtime';
 import type {
   ProductAgentRoleSpec,
@@ -31,7 +32,7 @@ const PROPERTY_NAME = /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/u;
 const SCHEMA_TYPES = new Set(['object', 'array', 'string', 'number', 'integer', 'boolean', 'null']);
 const MCP_ENV_REVISION_KEY = randomBytes(32);
 
-export type DshExtensionSnapshot = MethodParams<'extension/replace'>;
+export type DshExtensionSnapshot = Extract<MethodParams<'extension/replace'>, { formatVersion: 1 }>;
 type DshComponent = DshExtensionSnapshot['components'][number];
 type DshResource = DshExtensionSnapshot['resources'][number];
 type DshSkillRoot = DshExtensionSnapshot['skillSourcePolicy']['roots'][number];
@@ -315,7 +316,8 @@ function stdioMcpComponent(
     );
     const material = Object.freeze(buildMcpSubprocessEnv(process.env, server.env));
     const credentialRevision = opaqueMcpEnvironmentRevision(material, server.runtimeConfigRevision);
-    const credentialRef = safeReference('mcp-env', server.id);
+    // The native credential owner requires a POSIX environment-variable name.
+    const credentialRef = `mcp_env_${digest(server.id)}`;
     credentialBindings.push(Object.freeze({
       componentId: server.id,
       credentialRef,
@@ -418,7 +420,7 @@ function remoteMcpComponent(
       diagnostics.push(componentStatus('mcp', server.id, 'failed', 'dsh_mcp_headers_invalid'));
       return null;
     }
-    const credentialRef = safeReference('mcp-credential', server.id);
+    const credentialRef = `mcp_credential_${digest(server.id)}`;
     descriptor = { ...descriptor, credential: {
       credentialRef,
       credentialRevision: server.runtimeConfigRevision,
@@ -682,7 +684,9 @@ export function compileDshProductExtensionPlane(
   if (new Set(componentKeys).size !== componentKeys.length) {
     throw new Error('Product extension inventory has conflicting DSH component identities');
   }
-  const revision = `myagents-dsh-v3:${source.revision}`;
+  // A product-owned Browser capability can rotate without a config edit.
+  // Credential revision is opaque; secrets remain in the reverse plane only.
+  const revision = productExtensionRevision(source);
   const snapshot = compileDshExtensionSnapshot({
     revision,
     components,
@@ -696,6 +700,44 @@ export function compileDshProductExtensionPlane(
     hostToolBindings: Object.freeze([...hostToolBindings]),
     ...(source.hostToolDispatcher ? { hostToolDispatcher: source.hostToolDispatcher } : {}),
     expectedSkillNames: Object.freeze([...admittedSkillNames].sort()),
+    diagnostics: Object.freeze(diagnostics.map(entry => Object.freeze({ ...entry }))),
+  });
+}
+
+function productExtensionRevision(source: DshProductExtensionSource): string {
+  const browserRevision = source.mcpServers.find(server => server.id === MANAGED_BROWSER_MCP_ID)?.runtimeConfigRevision;
+  return `myagents-dsh-v3:${browserRevision ? digest(`${source.revision}:${browserRevision}`) : source.revision}`;
+}
+
+/** Refresh transport authority without rediscovering already-admitted product components. */
+export function refreshDshManagedBrowserPlane(
+  current: DshCompiledExtensionPlane,
+  projectedSource: DshProductExtensionSource,
+): DshCompiledExtensionPlane {
+  const isBrowserDiagnostic = (entry: RuntimeExtensionComponentStatus) => entry.component === 'mcp' && entry.id === MANAGED_BROWSER_MCP_ID;
+  const diagnostics = [
+    ...current.diagnostics.filter(entry => !isBrowserDiagnostic(entry)),
+    ...(projectedSource.components ?? []).filter(isBrowserDiagnostic),
+  ];
+  const credentialBindings = current.credentialBindings.filter(binding => binding.componentId !== MANAGED_BROWSER_MCP_ID);
+  const components = current.snapshot.components.filter(component => !(component.kind === 'mcp' && component.id === MANAGED_BROWSER_MCP_ID));
+  const server = projectedSource.mcpServers.find(candidate => candidate.id === MANAGED_BROWSER_MCP_ID);
+  const browser = server && remoteMcpComponent(server, diagnostics, credentialBindings);
+  if (browser) {
+    // Preserve the full compiler's MCP ordering, including recovery after removal.
+    const index = components.findIndex(component => component.kind === 'host_tool'
+      || (component.kind === 'mcp' && component.id.localeCompare(MANAGED_BROWSER_MCP_ID) > 0));
+    components.splice(index < 0 ? components.length : index, 0, browser);
+  }
+  return Object.freeze({
+    ...current,
+    snapshot: compileDshExtensionSnapshot({
+      revision: productExtensionRevision(projectedSource), components,
+      resources: current.snapshot.resources,
+      skillRoots: current.snapshot.skillSourcePolicy.roots,
+      mcpLaunchProfiles: current.snapshot.mcpLaunchPolicy?.profiles,
+    }),
+    credentialBindings: Object.freeze(credentialBindings),
     diagnostics: Object.freeze(diagnostics.map(entry => Object.freeze({ ...entry }))),
   });
 }
