@@ -231,7 +231,7 @@
     "selectWorkspaceFirst": "Select a workspace first"
   },
   "browserPanel": {
-    "urlPlaceholder": "Enter a URL or search...",
+    "urlPlaceholder": "Enter a URL or local file path…",
     "openFailed": "Failed to open embedded browser: {{message}}",
     "back": "Back",
     "forward": "Forward",
@@ -241,7 +241,9 @@
     "openExternal": "Open in browser",
     "close": "Close browser",
     "newTab": "New tab",
-    "blankHint": "Enter a URL or paste a link in the address bar above"
+    "blankHint": "For reading and previews. Pages and sign-ins are separate from AI browser tools.",
+    "invalidAddress": "Enter a valid URL or local file path. Search is not supported here.",
+    "navigationFailed": "Browser action failed: {{message}}"
   },
   "imagePreview": {
     "zoomOut": "Zoom out",

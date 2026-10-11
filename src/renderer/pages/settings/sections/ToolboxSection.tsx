@@ -21,6 +21,7 @@ import {
 import type { SpeechModelPackStatus } from '@/../shared/types/record';
 import {
   MANAGED_BROWSER_MCP_ID,
+  STANDARD_PLAYWRIGHT_MCP_ID,
   hasUserEditableMcpSettings,
   isBrowserResourceReady,
   type BrowserResourceStatus,
@@ -299,6 +300,11 @@ export function ToolboxSection({
                   title={server.description}
                 >
                   {server.description}
+                </p>
+              )}
+              {(isManagedBrowser || server.id === STANDARD_PLAYWRIGHT_MCP_ID) && (
+                <p className="mt-2 text-xs leading-relaxed text-[var(--ink-muted)]">
+                  {t(isManagedBrowser ? 'toolbox.browserCapabilities.managed' : 'toolbox.browserCapabilities.playwright')}
                 </p>
               )}
               {mcpNeedsConfig[server.id] && (

@@ -91,6 +91,10 @@ Provider credential 由 Host 的既有配置或认证 owner 管理，每个模�
 
 扩展完整快照经既有 `DshAttachmentRegistry` 发布为不可变 JSON；`extension/replace` 只传摘要引用。Runtime 在进入原有组件事务前通过 generation-scoped lease 校验大小、字节 SHA-256 与 canonical snapshot digest，并释放 lease。启动和 live replacement 共用这条路径，不能把全部技能正文重新塞进有界协议帧。协议精确版本仍由所选 handoff 决定；新的资源表示需要匹配的 Runtime。stdio 与带凭据的 remote MCP 使用 native credential owner 接受的环境变量名格式引用；启动环境与 secret 仍留在 Host reverse plane。
 
+产品托管浏览器在 adapter 编译前通过 Rust capability authority 投影为认证 HTTP MCP。首次启动、恢复、live replacement 与下一 Root turn 使用同一 extension owner；临时 endpoint/token 不写回产品配置，凭据轮换通过既有 generation/credential plane 生效。获取失败降级为该 MCP 的诊断，下一边界重新投影。详见 [托管浏览器的 Runtime 接入](managed_browser.md#runtime-接入与侧栏边界)。
+
+托管浏览器要求所选 DSH 产物支持 Host 声明的本地 HTTP MCP（localhost、IPv4/IPv6、内网地址与自定义端口）。旧产物的公网准入限制会返回组件失败，客户端投影不能绕过；开发集成使用已验证的本地 handoff，正式构建须选择包含上游修复的 Release，流程见 [构建资源准备](build_resource_preparation.md)。MCP 的同 origin 凭据、禁止重定向与资源释放约束仍保留；模型 WebFetch/WebSearch 的公网策略独立。
+
 Host 以结构化 `systemContext` 提供 global/root contributions；DSH 的 literal-context seam 保留文本语义，不将产品提示词改写成组件摘要。主项目指令由 DSH 原生 instruction plugin 加载，每层目录按 `CLAUDE.md`、`AGENTS.override.md`、`AGENTS.md` 的优先级选择。Host 只补充其拥有的 companion/rules 内容，不重复读取原生主指令。
 
 Skills、Commands、MCP 与 Host tools 等组件由同一次 Product capability inventory 编译。DSH 与 Managed Codex 共用 runtime-neutral `product-extensions` discovery/dispatcher；执行仍属于各自 Runtime。Host 也会生成 Agent descriptor，但当前 DSH 没有对应的角色编译器，这类组件返回 `unsupported/implementation_batch_pending`，不会据此创建子 Agent。子 Agent 由 DSH 原生工具创建并管理，Host 不运行第二套 Agent loop。

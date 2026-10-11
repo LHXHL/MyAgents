@@ -231,7 +231,7 @@
     "selectWorkspaceFirst": "请先选择工作区"
   },
   "browserPanel": {
-    "urlPlaceholder": "输入网址或搜索…",
+    "urlPlaceholder": "输入网址或本地文件路径…",
     "openFailed": "无法打开内嵌浏览器：{{message}}",
     "back": "后退",
     "forward": "前进",
@@ -241,7 +241,9 @@
     "openExternal": "在浏览器中打开",
     "close": "关闭浏览器",
     "newTab": "新标签页",
-    "blankHint": "在上方地址栏输入网址或粘贴链接"
+    "blankHint": "用于阅读与预览；页面和登录状态与 AI 浏览器工具分开。",
+    "invalidAddress": "请输入有效网址或本地文件路径；此地址栏不支持搜索。",
+    "navigationFailed": "浏览操作失败：{{message}}"
   },
   "imagePreview": {
     "zoomOut": "缩小",

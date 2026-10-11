@@ -925,6 +925,33 @@ pub async fn cmd_browser_reload(
     webview.reload().map_err(|e| format!("Reload failed: {e}"))
 }
 
+/// Stop the current load without navigating or replacing this generation.
+#[tauri::command]
+pub async fn cmd_browser_stop(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<BrowserManager>>,
+    tab_id: String,
+    lifecycle_token: String,
+) -> Result<(), String> {
+    validate_lifecycle_token(&lifecycle_token)?;
+    let lifecycle = state.lifecycle.lock().await;
+    let session = lifecycle
+        .live_session(&tab_id, &lifecycle_token)
+        .ok_or_else(|| format!("No matching browser generation for tab {}", tab_id))?;
+    let webview = app
+        .get_webview(&session.webview_label)
+        .ok_or_else(|| "Webview not found".to_string())?;
+    webview
+        .eval("window.stop()")
+        .map_err(|e| format!("Stop loading failed: {e}"))?;
+    // A stopped navigation need not emit PageLoadEvent::Finished.
+    let _ = app.emit(
+        &browser_event_name("loading", &tab_id, &lifecycle_token),
+        false,
+    );
+    Ok(())
+}
+
 /// Update webview position and size.
 #[tauri::command]
 pub async fn cmd_browser_resize(

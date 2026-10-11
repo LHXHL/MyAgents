@@ -2006,6 +2006,10 @@
         "close": "Close",
         "save": "Save"
       }
+    },
+    "browserCapabilities": {
+      "managed": "Lets AI operate web pages in built-in Claude, DSH, and managed Codex. Pages and sign-ins are separate from the chat sidebar. Saved cookies can be reused across sessions, but some sites still require signing in again.",
+      "playwright": "Configurable web automation in a separate browser environment. It does not automatically reuse sidebar or managed-browser sign-ins. External runtimes require setup in their own tool configuration."
     }
   },
   "plugins": {

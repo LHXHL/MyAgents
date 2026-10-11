@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,6 +9,7 @@ import type { DshProductExtensionSource } from './extension-compiler';
 import {
   compileDshExtensionSnapshot,
   compileDshProductExtensionPlane,
+  refreshDshManagedBrowserPlane,
   findDshHostToolBinding,
   findDshMcpCredentialBinding,
   normalizeDshHostToolInputSchema,
@@ -31,6 +32,34 @@ function source(overrides: Partial<DshProductExtensionSource> = {}): DshProductE
 }
 
 describe('DSH declarative extension compiler', () => {
+  it('refreshes only Browser authority while retaining frozen components after Skill deletion', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-browser-frozen-skill-'));
+    const path = join(root, 'SKILL.md');
+    const content = '---\nname: review\ndescription: Review\n---\nAdmitted instructions.';
+    writeFileSync(path, content);
+    const input = source({
+      workspacePath: root,
+      skills: [{ name: 'review', description: 'Review', path, scope: 'project', sourceId: 'workspace', contentSha256: sha256(content) }],
+      mcpServers: [
+        { id: 'zzz', name: 'Other MCP', type: 'http', url: 'https://example.com/mcp', isBuiltin: false },
+        { id: 'myagents-browser', name: 'Browser', type: 'http', url: 'http://localhost:1234/mcp', isBuiltin: true,
+          headers: { Authorization: 'Bearer synthetic' }, runtimeConfigRevision: 'browser-one' },
+      ],
+    });
+    const admitted = compileDshProductExtensionPlane(input);
+    unlinkSync(path);
+    expect(refreshDshManagedBrowserPlane(admitted, input).snapshot).toEqual(admitted.snapshot);
+    const rotated = refreshDshManagedBrowserPlane(admitted, { ...input, mcpServers: input.mcpServers.map(server => server.id === 'myagents-browser'
+      ? { ...server, runtimeConfigRevision: 'browser-two', headers: { Authorization: 'Bearer rotated' } } : server) });
+    expect(rotated.snapshot.revision).not.toBe(admitted.snapshot.revision);
+    expect(rotated.snapshot.resources).toEqual(admitted.snapshot.resources);
+    expect(rotated.snapshot.components.filter(component => component.kind !== 'mcp')).toEqual(admitted.snapshot.components.filter(component => component.kind !== 'mcp'));
+    expect(rotated.expectedSkillNames).toEqual(['review']);
+    const unavailable = refreshDshManagedBrowserPlane(admitted, { ...input, mcpServers: input.mcpServers.filter(server => server.id !== 'myagents-browser'),
+      components: [{ component: 'mcp', id: 'myagents-browser', state: 'failed', code: 'dsh_browser_host_unavailable' }] });
+    expect(refreshDshManagedBrowserPlane(unavailable, input).snapshot).toEqual(admitted.snapshot);
+  });
+
   it('keeps the empty snapshot deterministic and immutable', () => {
     const first = compileDshExtensionSnapshot();
     const second = compileDshExtensionSnapshot();

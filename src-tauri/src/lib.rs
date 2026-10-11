@@ -690,6 +690,7 @@ pub fn run() {
             browser::cmd_browser_go_back,
             browser::cmd_browser_go_forward,
             browser::cmd_browser_reload,
+            browser::cmd_browser_stop,
             browser::cmd_browser_resize,
             browser::cmd_browser_show,
             browser::cmd_browser_hide,

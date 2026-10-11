@@ -1099,14 +1099,15 @@ export default function Chat({
   >('file');
 
   // ── Embedded browser state ──
-  const [browserUrl, setBrowserUrl] = useState<string | null>(null);
+  const [browserNavigation, setBrowserNavigation] = useState<{ readonly url: string } | null>(null);
+  const browserUrl = browserNavigation?.url ?? null;
   const [browserAlive, setBrowserAlive] = useState(false);
   const [browserReloadSignal, setBrowserReloadSignal] = useState(0);
   // When browser is previewing a local file, store its metadata for editor toggle
   const [browserSourceFile, setBrowserSourceFile] = useState<FilePreviewTarget | null>(null);
   // Live URL surfaced from BrowserPanel (Rust `browser:url-changed`). Drives
-  // the split-view tab label; `browserUrl` is the seed URL only and never
-  // updates after navigation.
+  // the split-view tab label. The navigation request changes only on an
+  // explicit open/address action, including a second request for the same URL.
   const [browserCurrentUrl, setBrowserCurrentUrl] = useState<string>('');
   const handleBrowserUrlChange = useCallback((u: string) => {
     setBrowserCurrentUrl(u);
@@ -1165,7 +1166,7 @@ export default function Chat({
     if (resolved.kind === 'browser') {
       setBrowserSourceFile(resolved.target.sourceScope === 'local' ? null : resolved.target);
       startBrowserSplitTransitionIfNeeded();
-      setBrowserUrl(resolved.url);
+      setBrowserNavigation({ url: resolved.url });
       setSplitActiveView('browser');
     } else if (preferFullscreenPreview) {
       setFullscreenPreviewFile(resolved.file);
@@ -1188,7 +1189,7 @@ export default function Chat({
   // here so a surviving terminal/file view always takes over consistently.
   const handleBrowserClose = useCallback(() => {
     cancelFilePreview();
-    setBrowserUrl(null);
+    setBrowserNavigation(null);
     setBrowserAlive(false);
     setBrowserSourceFile(null);
     setBrowserCurrentUrl('');
@@ -1310,7 +1311,7 @@ export default function Chat({
       setBrowserSourceFile(null);
       if (isSplitViewEnabled && !isNarrowLayout)
         startBrowserSplitTransitionIfNeeded();
-      setBrowserUrl(url);
+      setBrowserNavigation({ url });
       setSplitActiveView('browser');
     },
     [isNarrowLayout, isSplitViewEnabled, startBrowserSplitTransitionIfNeeded, cancelFilePreview],
@@ -1323,7 +1324,7 @@ export default function Chat({
   const handleOpenBrowser = useCallback(() => {
     cancelFilePreview();
     startBrowserSplitTransitionIfNeeded();
-    setBrowserUrl((prev) => prev ?? BROWSER_BLANK_URL);
+    setBrowserNavigation((prev) => prev ?? { url: BROWSER_BLANK_URL });
     setSplitActiveView('browser');
   }, [startBrowserSplitTransitionIfNeeded, cancelFilePreview]);
 
@@ -7092,7 +7093,7 @@ export default function Chat({
                   </button>
                 )}
                 {/* Browser tab + its own × */}
-                {browserUrl && (
+                {browserNavigation && (
                   <button
                     type="button"
                     onClick={() => selectSplitView('browser')}
@@ -7108,10 +7109,8 @@ export default function Chat({
                         ? browserSourceFile.name
                         : (() => {
                             // Prefer the live URL surfaced from BrowserPanel — the
-                            // `browserUrl` prop is the seed only and stays at
-                            // BROWSER_BLANK_URL even after the user navigates.
-                                  const liveUrl =
-                                    browserCurrentUrl || browserUrl;
+                            // navigation request changes only on explicit opens.
+                            const liveUrl = browserCurrentUrl || browserNavigation.url;
                             try {
                               return (
                                 new URL(liveUrl).hostname ||
@@ -7309,7 +7308,7 @@ export default function Chat({
             )}
 
             {/* Browser — embedded Tauri child Webview */}
-            {browserUrl && (
+            {browserNavigation && (
               <div
                 className={`flex min-w-0 flex-1 flex-col overflow-hidden ${splitActiveView !== 'browser' ? 'hidden' : ''}`}
               >
@@ -7322,7 +7321,8 @@ export default function Chat({
                 >
                   <LazyBrowserPanel
                     tabId={tabId}
-                    url={browserUrl}
+                    navigationRequest={browserNavigation}
+                    onNavigate={handleOpenInBrowserPanel}
                     isVisible={
                       isActive &&
                       splitPanelVisible &&
