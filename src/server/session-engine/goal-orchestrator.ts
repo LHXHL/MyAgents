@@ -20,6 +20,7 @@ import type {
 } from './types';
 import type {
   DispatchGuard,
+  DispatchGuardResult,
   TurnTerminalOutcome,
 } from '../session-core/turn-queue';
 import { getSessionMetadata } from '../SessionStore';
@@ -66,6 +67,7 @@ type GoalTurnLifecycle = {
   beforeDispatch: DispatchGuard;
   onTerminal: (outcome: TurnTerminalOutcome) => Promise<void>;
   abort(): Promise<void>;
+  readonly deferred: boolean;
 };
 
 const GOAL_SETTLEMENT_RETRY_MS = 100;
@@ -237,10 +239,13 @@ function createGoalTurnLifecycle(
     queueId: string;
     kind: GoalTurnKind;
     channelDeliveryExpected?: boolean;
+    hasBackgroundWork?: () => boolean;
   },
 ): GoalTurnLifecycle {
   let canceled = false;
   let claimed = false;
+  let deferred = false;
+  let claimAttempted = false;
   let claimRequest: Promise<Record<string, unknown>> | null = null;
   let settlement: Promise<'aborted' | 'finalized'> | null = null;
 
@@ -268,6 +273,9 @@ function createGoalTurnLifecycle(
 
   const abort = async (): Promise<void> => {
     canceled = true;
+    // A deferred continuation never reserved durable authority. Its scheduler
+    // owns the next probe; abort acknowledgement would schedule an eager retry.
+    if (deferred && !claimAttempted) return;
     if (claimRequest) {
       await claimRequest.catch(() => undefined);
     }
@@ -284,6 +292,10 @@ function createGoalTurnLifecycle(
     if (canceled) {
       return { accepted: false, code: 'dispatch_canceled', error: 'Goal turn was canceled before dispatch' };
     }
+    if (input.hasBackgroundWork?.()) {
+      deferred = true;
+      return { accepted: false, code: 'goal_work_pending', error: 'Session background work is still running' };
+    }
     let response: Record<string, unknown> | null = null;
     while (!response) {
       if (canceled) {
@@ -294,6 +306,7 @@ function createGoalTurnLifecycle(
           error: 'Goal turn was canceled before dispatch',
         };
       }
+      claimAttempted = true;
       claimRequest = client('/api/goal/turn/claim', 'POST', {
           sessionId: input.sessionId,
           workspacePath: input.workspacePath,
@@ -346,7 +359,23 @@ function createGoalTurnLifecycle(
       await abort();
       return { accepted: false, code: 'dispatch_canceled', error: 'Goal turn was canceled before dispatch' };
     }
-    return { accepted: true };
+    if (input.hasBackgroundWork?.()) {
+      deferred = true;
+      await abort();
+      return { accepted: false, code: 'goal_work_pending', error: 'Session background work started during Goal admission' };
+    }
+    return {
+      accepted: true,
+      ...(input.hasBackgroundWork ? { validateAtCommit: (): DispatchGuardResult => {
+        if (canceled) return { accepted: false, code: 'dispatch_canceled', error: 'Goal turn was canceled before dispatch', rollbackBeforeReject: abort() };
+        if (!input.hasBackgroundWork?.()) return { accepted: true };
+        deferred = true;
+        return {
+          accepted: false, code: 'goal_work_pending', error: 'Session background work started before Goal dispatch',
+          rollbackBeforeReject: abort(),
+        };
+      } } : {}),
+    };
   };
   beforeDispatch.cancel = () => {
     canceled = true;
@@ -380,6 +409,7 @@ function createGoalTurnLifecycle(
     beforeDispatch,
     onTerminal: finalize,
     abort,
+    get deferred() { return deferred; },
   };
 }
 
@@ -493,7 +523,7 @@ export function createGoalOrchestrator(client: ManagementClient = managementApi)
     },
 
     async runScheduledTurn(
-      engine: Pick<SessionEngine, 'prepareScheduledTurn' | 'runInjectedTurn'>,
+      engine: Pick<SessionEngine, 'prepareScheduledTurn' | 'runInjectedTurn' | 'getLiveSessionState'>,
       request: {
         goal: SessionGoal;
         queueId: string;
@@ -501,8 +531,21 @@ export function createGoalOrchestrator(client: ManagementClient = managementApi)
         turnNumber: number;
         permissionMode?: string;
       },
-    ): Promise<InjectedTurnResult & { sessionId?: string; channelDeliveryExpected?: boolean }> {
+    ): Promise<Omit<InjectedTurnResult, 'code'> & {
+      sessionId?: string;
+      channelDeliveryExpected?: boolean;
+      code?: InjectedTurnResult['code'] | 'goal_work_pending';
+    }> {
       return withScheduledTurnDispatchLock(async () => {
+        const workPending = (): boolean => {
+          const state = engine.getLiveSessionState();
+          return state.isBusy || state.hasBackgroundWork === true;
+        };
+        const deferredResult = {
+          success: false, enqueued: false, code: 'goal_work_pending' as const,
+          status: 409, sessionId: request.goal.sessionId,
+        };
+        if (workPending()) return deferredResult;
         clearCronTaskContext();
         const scenario = goalContinuationScenario(request.goal.sessionId);
         const metadata = getSessionMetadata(request.goal.sessionId);
@@ -531,6 +574,11 @@ export function createGoalOrchestrator(client: ManagementClient = managementApi)
           };
         }
 
+        if (workPending()) {
+          await prepared.release?.();
+          return deferredResult;
+        }
+
         const lifecycle = createGoalTurnLifecycle(client, {
           goal: { ...request.goal, controlRevision: request.expectedControlRevision },
           sessionId: request.goal.sessionId,
@@ -538,6 +586,7 @@ export function createGoalOrchestrator(client: ManagementClient = managementApi)
           queueId: request.queueId,
           kind: 'continuation',
           channelDeliveryExpected,
+          hasBackgroundWork: () => engine.getLiveSessionState().hasBackgroundWork === true,
         });
         try {
           const result = await engine.runInjectedTurn({
@@ -565,6 +614,7 @@ export function createGoalOrchestrator(client: ManagementClient = managementApi)
             beforeDispatch: lifecycle.beforeDispatch,
           });
           if (!result.success && !result.terminationUnconfirmed) await lifecycle.abort();
+          if (lifecycle.deferred && !result.enqueued && !result.terminationUnconfirmed) return deferredResult;
           return {
             ...result,
             sessionId: request.goal.sessionId,

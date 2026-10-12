@@ -198,6 +198,11 @@ async fn run_once(goal_id: &str) -> Option<u64> {
     };
 
     let response = execution::execute(&app_handle, &request).await;
+    // No runtime turn was admitted. Waiting is neither an execution failure
+    // nor model progress; keep end conditions in this scheduler's next probe.
+    if response.as_ref().is_ok_and(continuation_work_pending) {
+        return Some(5);
+    }
     if response
         .as_ref()
         .is_ok_and(|response| response.termination_unconfirmed)
@@ -304,4 +309,36 @@ async fn run_once(goal_id: &str) -> Option<u64> {
 
 fn next_failure_delay(goal: super::SessionGoal) -> Option<u64> {
     (!goal.is_terminal()).then(|| failure_backoff(goal.consecutive_failures))
+}
+
+fn continuation_work_pending(response: &crate::sidecar::GoalExecuteResponse) -> bool {
+    !response.success
+        && !response.turn_dispatched
+        && !response.termination_unconfirmed
+        && response.code.as_deref() == Some("goal_work_pending")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_confirmed_undispatched_work_waits_bypass_failure_accounting() {
+        let mut response: crate::sidecar::GoalExecuteResponse = serde_json::from_value(
+            serde_json::json!({ "success": false, "code": "goal_work_pending", "sessionId": "session-1" }),
+        ).unwrap();
+        assert!(continuation_work_pending(&response));
+        response.turn_dispatched = true;
+        assert!(!continuation_work_pending(&response));
+        response.turn_dispatched = false;
+        response.termination_unconfirmed = true;
+        assert!(!continuation_work_pending(&response));
+        response.termination_unconfirmed = false;
+        response.code = Some("configuration_failed".to_string());
+        assert!(!continuation_work_pending(&response));
+        // Old Sidecars did not have a deferral result; their failures retain
+        // the existing bounded retry/blocked policy.
+        response.code = None;
+        assert!(!continuation_work_pending(&response));
+    }
 }

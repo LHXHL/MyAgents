@@ -267,6 +267,8 @@ export type SessionEngineLiveState = {
   isBusy: boolean;
   /** Actual root-blocking human interaction, not an async child question. */
   waitingForUser?: boolean;
+  /** Runtime-owned non-ambient work that can outlive the root turn. */
+  hasBackgroundWork?: boolean;
 };
 
 export type SessionEngineLatestResult = {
