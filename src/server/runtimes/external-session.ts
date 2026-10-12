@@ -387,6 +387,7 @@ import {
   buildImCancelledPayload,
   buildImCompletePayload,
   buildImErrorPayload,
+  formatImResumeFailure,
 } from '../utils/im-terminal-payload';
 import {
   beginExternalTurnPromotion,
@@ -5361,8 +5362,11 @@ async function _doStartExternalSession(options: {
       }
       return;
     }
-    const message =
-      failure instanceof Error ? failure.message : String(failure);
+    const resumeGuidance = runtimeType === 'dsh' && options.resumeSessionId
+      && (options.scenario.type === 'im' || options.scenario.type === 'agent-channel')
+      && options.scenario.sourceType === 'private' && !(failure instanceof ExternalTurnPromotionCanceledError);
+    const rawMessage = failure instanceof Error ? failure.message : String(failure);
+    const message = resumeGuidance ? formatImResumeFailure(rawMessage) : rawMessage;
     if (managedCodexExtensionSnapshot) {
       markManagedCodexExtensionFailed(message);
       broadcastManagedCodexExtensionDiagnostics(true);
@@ -5398,7 +5402,7 @@ async function _doStartExternalSession(options: {
       });
     }
     // Re-throw so the HTTP handler returns an error response
-    throw failure;
+    throw resumeGuidance ? new Error(message, { cause: failure }) : failure;
   }
 }
 
