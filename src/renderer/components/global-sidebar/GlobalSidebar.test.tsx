@@ -1485,7 +1485,7 @@ describe('GlobalSidebar rail flyout', () => {
     expect(screen.queryByRole('button', { name: String(i18n.t('app:globalSidebar.team')) }))
       .not.toBeInTheDocument();
     expect(onOpenSpace).not.toHaveBeenCalled();
-    expect(screen.queryByRole('button', { name: String(i18n.t('app:globalSidebar.more')) })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.more')) })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.agentNetwork')) })).toBeInTheDocument();
   });
 
@@ -1797,7 +1797,10 @@ describe('Agent network and Space navigation', () => {
     const space = await screen.findByRole('menuitem', { name: String(i18n.t('app:globalSidebar.team')) });
     expect(more).toHaveAttribute('aria-expanded', 'true');
     await vi.waitFor(() => expect(space).toHaveFocus());
+    const bot = screen.getByRole('menuitem', { name: '聊天机器人 Bot' });
     fireEvent.keyDown(space, { key: 'ArrowDown' });
+    expect(bot).toHaveFocus();
+    fireEvent.keyDown(bot, { key: 'ArrowUp' });
     expect(space).toHaveFocus();
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
     expect(more).toHaveFocus();
@@ -1806,7 +1809,7 @@ describe('Agent network and Space navigation', () => {
     expect(onOpenSpace).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('menu')).not.toBeInTheDocument();
   });
-  it('exposes AgentNet in primary navigation and keeps only Space in the hover menu', async () => {
+  it('exposes AgentNet in primary navigation and keeps Space and the Bot shortcut in the hover menu', async () => {
     const onOpenAgentNetwork = vi.fn();
     const networkTab: Tab = { id: 'network-tab', view: 'agentnetwork', title: 'AgentNet' };
     const view = renderSidebar({ onOpenAgentNetwork, activeTab: networkTab });
@@ -1821,7 +1824,7 @@ describe('Agent network and Space navigation', () => {
     expect(onOpenAgentNetwork).toHaveBeenCalledOnce();
     fireEvent.pointerEnter(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.more')) }));
     expect(await screen.findByRole('menuitem', { name: String(i18n.t('app:globalSidebar.team')) })).toBeVisible();
-    expect(screen.getAllByRole('menuitem')).toHaveLength(1);
+    expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual([String(i18n.t('app:globalSidebar.team')), '聊天机器人 Bot']);
     expect(screen.queryByRole('menuitem', { name: String(i18n.t('app:globalSidebar.agentNetwork')) })).not.toBeInTheDocument();
     fireEvent.click(more);
     expect(more).toHaveAttribute('aria-expanded', 'true');
@@ -1834,5 +1837,29 @@ describe('Agent network and Space navigation', () => {
     view.rerender(sidebar({ onOpenAgentNetwork, activeTab: spaceTab }));
     expect(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.more')) })).toHaveAttribute('aria-current', 'page');
     expect(network).not.toHaveAttribute('aria-current');
+  });
+});
+describe('Bot settings shortcut', () => {
+  beforeEach(() => { vi.useRealTimers(); vi.clearAllMocks(); mocks.projects = []; window.localStorage.clear(); });
+  it.each([true, false])('opens Bot with Space available=%s, closes the menu, and preserves Settings navigation', async available => {
+    const onOpenSettings = vi.fn();
+    const settingsTab: Tab = { id: 'settings-tab', view: 'settings', title: 'Settings' };
+    renderSidebar({ teamSpaceAvailable: available, onOpenSettings, activeTab: settingsTab });
+    const more = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.more')) });
+    const settings = screen.getByRole('button', { name: '设置' });
+    expect(settings).toHaveAttribute('aria-current', 'page');
+    expect(more).not.toHaveAttribute('aria-current');
+    fireEvent.pointerEnter(more);
+    const bot = await screen.findByRole('menuitem', { name: '聊天机器人 Bot' });
+    expect(screen.queryByRole('menuitem', { name: String(i18n.t('app:globalSidebar.team')) }) !== null).toBe(available);
+    fireEvent.click(bot);
+    expect(onOpenSettings).toHaveBeenCalledWith('agent');
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    fireEvent.click(settings);
+    expect(onOpenSettings).toHaveBeenLastCalledWith('general');
+    fireEvent.keyDown(more, { key: 'ArrowRight' });
+    expect(await screen.findByRole('menuitem', { name: '聊天机器人 Bot' })).toBeVisible();
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    expect(more).toHaveFocus();
   });
 });

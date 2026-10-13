@@ -387,6 +387,7 @@ import {
   buildImCancelledPayload,
   buildImCompletePayload,
   buildImErrorPayload,
+  formatImResumeFailure,
 } from '../utils/im-terminal-payload';
 import {
   beginExternalTurnPromotion,
@@ -2635,7 +2636,7 @@ function resetWatchdog(): void {
       'error',
       buildImErrorPayload('External runtime timed out'),
     );
-    void stopExternalSession();
+    void stopExternalSession({ reason: 'failure' });
   }, WATCHDOG_INTERVAL_MS);
   watchdogTimer.unref?.();
 }
@@ -5309,6 +5310,7 @@ async function _doStartExternalSession(options: {
       getExternalActiveProcess() === startedProcess
     ) {
       const stopped = await stopExternalSession({
+        reason: failure instanceof ExternalTurnPromotionCanceledError ? 'user' : 'failure',
         preserveQueue:
           failure instanceof ExternalTurnPromotionCanceledError
             ? options.dispatchPromotion?.preserveQueueOnCancel === true
@@ -5360,8 +5362,11 @@ async function _doStartExternalSession(options: {
       }
       return;
     }
-    const message =
-      failure instanceof Error ? failure.message : String(failure);
+    const resumeGuidance = runtimeType === 'dsh' && options.resumeSessionId
+      && (options.scenario.type === 'im' || options.scenario.type === 'agent-channel')
+      && options.scenario.sourceType === 'private' && !(failure instanceof ExternalTurnPromotionCanceledError);
+    const rawMessage = failure instanceof Error ? failure.message : String(failure);
+    const message = resumeGuidance ? formatImResumeFailure(rawMessage) : rawMessage;
     if (managedCodexExtensionSnapshot) {
       markManagedCodexExtensionFailed(message);
       broadcastManagedCodexExtensionDiagnostics(true);
@@ -5397,7 +5402,7 @@ async function _doStartExternalSession(options: {
       });
     }
     // Re-throw so the HTTP handler returns an error response
-    throw failure;
+    throw resumeGuidance ? new Error(message, { cause: failure }) : failure;
   }
 }
 
@@ -6287,7 +6292,7 @@ async function dispatchExternalMessageOperation(
     }
     const msg = err instanceof Error ? err.message : String(err);
     if (runtimeDispatchStarted) {
-      const stopped = await stopExternalSession({ preserveQueue: true });
+      const stopped = await stopExternalSession({ reason: 'failure', preserveQueue: true });
       if (!stopped && hasExternalRuntimeProcess()) {
         if (dispatchPromotion) {
           finishExternalTurnPromotion(dispatchPromotion, {
@@ -7810,7 +7815,7 @@ export async function cancelExternalImRequest(
   return { aborted: false, mode: 'unknown' };
 }
 
-type ExternalStopReason = 'user' | 'config-restart' | 'conversation-mutation';
+type ExternalStopReason = 'user' | 'config-restart' | 'conversation-mutation' | 'failure';
 
 /**
  * Stop the active external session.
@@ -7833,7 +7838,7 @@ export async function stopExternalSession(options?: {
     : cancelExternalTurnPromotion({ preserveQueue });
   const active = getExternalActivePair();
   const reason = options?.reason ?? 'user';
-  const isConfigRestart = reason !== 'user';
+  const isConfigRestart = reason === 'config-restart' || reason === 'conversation-mutation';
   if (!active) {
     if (!canceledPromotion) {
       clearPendingExternalProcessConfigRestarts();
@@ -7899,7 +7904,7 @@ export async function stopExternalSession(options?: {
   markExternalUserRequestedStop();
   let gracefulError: unknown;
   try {
-    await active.runtime.stopSession(active.process);
+    await active.runtime.stopSession(active.process, reason === 'failure' ? 'failure' : 'stop');
   } catch (err) {
     gracefulError = err;
     console.error(
@@ -8087,13 +8092,14 @@ export async function retryExternalMcpServer(
   ) {
     return { success: false, status: 409, errorCode: 'session_busy' };
   }
-  const failed = getExternalMcpEffectiveSnapshot()?.servers.find(
+  const previousSnapshot = getExternalMcpEffectiveSnapshot();
+  const failed = previousSnapshot?.servers.find(
     (server) => server.id === serverId,
   );
   const desired = getManagedCodexDesiredSnapshot();
   if (
     !failed?.desired ||
-    failed.state !== 'failed' ||
+    (failed.state !== 'failed' && failed.state !== 'stopped') ||
     !desired?.mcpServers.some((server) => server.id === serverId)
   ) {
     return { success: false, status: 409, errorCode: 'server_not_failed' };
@@ -8103,6 +8109,33 @@ export async function retryExternalMcpServer(
   const scenario = getExternalLifecycleScenario();
   const lease = tryAcquireExternalSessionMutationLease();
   if (!lease) return { success: false, status: 409, errorCode: 'session_busy' };
+  const retryFailed = (): McpRetryResult => {
+    const current = getExternalMcpEffectiveSnapshot();
+    // Process startup can fail before the adapter publishes any MCP state.
+    // The Session's recovery owner must still settle its unavailable surface.
+    if (!hasExternalRuntimeProcess() && !isExternalLifecycleStarting()
+      && !current?.servers.length && previousSnapshot
+      && getExternalLifecycleSessionId() === sessionId) {
+      const currentDesired = getManagedCodexDesiredSnapshot();
+      const now = Date.now();
+      const snapshot = setExternalMcpEffectiveSnapshot({
+        configGeneration: previousSnapshot.configGeneration,
+        configFingerprint: currentDesired?.revision ?? previousSnapshot.configFingerprint,
+        catalogGeneration: (current?.catalogGeneration ?? 0) + 1,
+        observedAt: now,
+        observationStale: false,
+        dispatch: { state: 'released', releaseReason: 'terminal_status' },
+        servers: (currentDesired?.mcpServers ?? []).map(server => ({
+          id: server.id, desired: true, state: 'failed', errorCode: 'MCP_STARTUP_FAILED', toolCount: 0,
+          attemptGeneration: (previousSnapshot.servers.find(previous => previous.id === server.id)?.attemptGeneration ?? 0) + 1,
+          updatedAt: now,
+        })),
+        tools: [],
+      }, 'codex', 'managed-provider');
+      broadcast('chat:mcp-effective-snapshot', snapshot);
+    }
+    return { success: false, status: 502, errorCode: 'retry_failed' };
+  };
   try {
     pendingExternalCapabilityRestart = true;
     await applyPendingExternalProcessConfigInvalidation();
@@ -8113,9 +8146,9 @@ export async function retryExternalMcpServer(
     });
     return result.prewarmed
       ? { success: true }
-      : { success: false, status: 502, errorCode: 'retry_failed' };
+      : retryFailed();
   } catch {
-    return { success: false, status: 502, errorCode: 'retry_failed' };
+    return retryFailed();
   } finally {
     lease.release();
     scheduleExternalQueueDrainAfterTurnBoundary();

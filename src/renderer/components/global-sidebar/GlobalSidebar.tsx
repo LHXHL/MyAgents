@@ -56,6 +56,7 @@ import {
   ChevronRightIcon,
   ComposeIcon,
   HelperIcon,
+  MessageIcon,
   MoreIcon,
   PlusIcon,
   SearchIcon,
@@ -183,7 +184,7 @@ interface GlobalSidebarProps {
   onOpenAgentNetwork?: () => void;
   onOpenAppRoute?: (route: AppRoute) => Promise<boolean> | boolean;
   onOpenCapabilities: (section?: CapabilitySection) => void;
-  onOpenSettings: () => void;
+  onOpenSettings: (section: 'general' | 'agent') => void;
   onOpenBugReport: () => void;
   onOpenWorkspace: (
     project: Project,
@@ -322,10 +323,10 @@ function SidebarNavButton({
   );
 }
 
-function SidebarMore({ expanded, activeView, onTeam }: {
-  expanded: boolean; activeView: string | undefined; onTeam: () => void;
+function SidebarMore({ expanded, activeView, teamSpaceAvailable, onTeam, onBot }: {
+  expanded: boolean; activeView: string | undefined; teamSpaceAvailable: boolean; onTeam: () => void; onBot: () => void;
 }) {
-  const { t } = useTranslation('app');
+  const { t } = useTranslation(['app', 'settings']);
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLDivElement>(null), menu = useRef<HTMLDivElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -361,9 +362,13 @@ function SidebarMore({ expanded, activeView, onTeam }: {
             event.preventDefault(); event.stopPropagation(); close(); anchor.current?.querySelector<HTMLButtonElement>('button')?.focus();
           }
         }}>
-        <button type="button" role="menuitem" onClick={() => { close(); onTeam(); }}
+        {teamSpaceAvailable && <button type="button" role="menuitem" onClick={() => { close(); onTeam(); }}
           className="flex h-9 w-full items-center gap-2 rounded-md px-3 text-sm text-[var(--ink)] hover:bg-[var(--hover-bg)] focus:bg-[var(--hover-bg)]">
           <TeamIcon className="h-4 w-4 text-[var(--ink-muted)]" /><span className="global-sidebar-label">{t('globalSidebar.team')}</span>
+        </button>}
+        <button type="button" role="menuitem" onClick={() => { close(); onBot(); }}
+          className="flex h-9 w-full items-center gap-2 rounded-md px-3 text-sm text-[var(--ink)] hover:bg-[var(--hover-bg)] focus:bg-[var(--hover-bg)]">
+          <MessageIcon className="h-4 w-4 text-[var(--ink-muted)]" /><span className="global-sidebar-label">{t('sidebar.nav.bots', { ns: 'settings' })}</span>
         </button>
       </div>
     </Popover>
@@ -1244,9 +1249,8 @@ export default memo(function GlobalSidebar({
             label={t('globalSidebar.agentNetwork')}
             onClick={() => onOpenAgentNetwork?.()}
           />
-          {teamSpaceAvailable && (
-            <SidebarMore key={activeView ?? 'launcher'} expanded={expanded} activeView={activeView} onTeam={onOpenSpace} />
-          )}
+          <SidebarMore key={activeView ?? 'launcher'} expanded={expanded} activeView={activeView}
+            teamSpaceAvailable={teamSpaceAvailable} onTeam={onOpenSpace} onBot={() => onOpenSettings('agent')} />
         </nav>
 
         <div className="relative min-h-0 flex-1" data-global-sidebar-workspace-shell>
@@ -1343,7 +1347,7 @@ export default memo(function GlobalSidebar({
             active={activeView === 'settings'}
             icon={<SettingsIcon className="h-4 w-4" />}
             label={t('globalSidebar.settings')}
-            onClick={onOpenSettings}
+            onClick={() => onOpenSettings('general')}
           />
           <div className="global-sidebar-account-row grid grid-cols-[minmax(0,1fr)_var(--global-sidebar-action-size)]" data-global-sidebar-account-row>
             <AccountEntry expanded={expanded} available={teamSpaceAvailable}

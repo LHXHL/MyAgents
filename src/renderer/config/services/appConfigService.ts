@@ -250,6 +250,7 @@ export async function loadAppConfig(): Promise<AppConfig> {
 
 export async function saveAppConfig(config: AppConfig): Promise<void> {
     if (isBrowserDevMode()) {
+        normalizeStringifiedJsonFields(config);
         mockSaveConfig(config);
         return;
     }
@@ -286,6 +287,7 @@ export async function atomicModifyConfig(
         const latest = await loadAppConfig();
         const before = JSON.stringify(latest);
         const modified = await modifier(latest);
+        normalizeStringifiedJsonFields(modified);
         mockSaveConfig(modified);
         if (JSON.stringify(modified) !== before && options.notification === 'immediate') {
             notifyConfigChanged('atomicModifyConfig');
@@ -296,6 +298,7 @@ export async function atomicModifyConfig(
         const latest = await loadAppConfig();
         const before = JSON.stringify(latest);
         const modified = await modifier(latest);
+        normalizeStringifiedJsonFields(modified);
         if (JSON.stringify(modified) === before) {
             return { config: modified, changed: false };
         }
