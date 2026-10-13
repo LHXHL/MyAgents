@@ -4542,10 +4542,6 @@ export default function App() {
     [tabWorkspaceController],
   );
 
-  const handleOpenGeneralSettings = useCallback(() => {
-    void handleOpenSettings('general');
-  }, [handleOpenSettings]);
-
   const handleOpenBugReport = useCallback(() => setShowBugReport(true), []);
 
   const handleOpenSidebarSession = useCallback(
@@ -4940,7 +4936,7 @@ export default function App() {
             onOpenAgentNetwork={() => tabWorkspaceController.open('agentnetwork', { title: t('tabs.agentNetwork') })}
             onOpenAppRoute={handleOpenAppRoute}
             onOpenCapabilities={handleOpenCapabilities}
-            onOpenSettings={handleOpenGeneralSettings}
+            onOpenSettings={handleOpenSettings}
             onOpenBugReport={handleOpenBugReport}
             onOpenWorkspace={handleOpenWorkspaceFromSidebar}
             onOpenSession={handleOpenSidebarSession}
