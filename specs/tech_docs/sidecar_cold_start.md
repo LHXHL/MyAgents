@@ -83,7 +83,7 @@ MCP 连接是非阻塞的：初始化返回或 metadata 中列出服务后，该
 
 observer 每次异步完成都核对原 Query/map revision。读取失败只标记 observation stale；明确清理连接时发布同 Session、递增 revision 的空能力快照。`classifyMcpFailure()` 在 Runtime 错误仍可见的位置映射有限错误码，UI 不接收原始命令、路径或凭据。
 
-`/api/mcp/retry` 经过 SessionEngine，只处理当前选择且失败的工具。Builtin 复用 resume/rebuild/pre-warm；Managed Codex 复用 mutation lease 与 idle replacement。回执表示重连尝试已接纳/执行，是否 ready 仍由新 generation 的状态决定，不写配置或 transcript。
+`/api/mcp/retry` 经过 SessionEngine，处理当前选择且失败的工具；Managed Codex 还支持显式启动当前选择且已停止的工具。Builtin 复用 resume/rebuild/pre-warm；Managed Codex 复用 mutation lease 与 idle replacement。回执表示重连尝试已接纳/执行，是否 ready 仍由新 generation 的状态决定，不写配置或 transcript。
 
 pre-warm 创建后续直接复用的真实 Query，builtin 的 Query-scoped 配置和资源始终服从既有 lifecycle owner；不能假设首条消息一定经过非 pre-warm 初始化分支。
 

@@ -340,7 +340,7 @@ OpenClaw [#162333](https://github.com/openclaw/openclaw/pull/162333) 移除了�
 | 临时目录 | `temp-path.resolvePreferredOpenClawTmpDir` | 复用 `infra-runtime` 的 `~/.myagents/tmp`；媒体、消息和日志消费者一致。其他同名 stub 子路径也复用它；根 SDK 与 `zalouser` 的既有目录不迁移 |
 | 下载临时文件 | `temp-path.createTempDownloadTarget` | 独立临时目录、限制文件名、显式 cleanup / asyncDispose；`withTempDownloadPath` 复用相同清理生命周期 |
 | 输入状态 | `channel-outbound.createTypingCallbacks` | 与 `channel-message` / `channel-runtime` 使用同一 Bridge 实现，不改变此前无操作 typing 行为 |
-| 配置 mutation | `config-mutation.mutateConfigFile` | 与旧 `config-runtime` 共用 normalized 内存 snapshot；支持 `{ mutate(draft, context), afterWrite }`，callback 返回业务 result，draft 才是配置；串行执行，异常不提交，外部/旧式写入使待提交 mutation 冲突失败 |
+| 配置 mutation | `config-mutation.mutateConfigFile` | 与旧 `config-runtime` 共用 normalized 内存 snapshot；支持 `mutate(draft, context)`，`afterWrite` 仅兼容接收，不执行其写后处理语义；callback 返回业务 result，draft 才是配置；串行执行，异常不提交，外部/旧式写入使待提交 mutation 冲突失败 |
 | 消息准入投影 | `channel-ingress-runtime.resolveChannelMessageIngress` | 复用旧 `command-auth` 的 Bridge 行为；提供插件消费的 senderAccess / commandAccess，Rust 的 BIND、allowedUsers、群规则仍是最终准入 owner |
 
 配置 helper 的 `File` 名字不授予 Bridge 写 MyAgents `config.json` 或创建 `openclaw.json` 的权限。当前支持运行时 mutation，返回 `nextConfig/result/attempts`；不实现 OpenClaw 的文件 hash、磁盘事务、host restart 和完整 access graph / ingress monitor。旧 `config-runtime.loadConfig/writeConfigFile` 与同步函数式 mutation 保持兼容。不得将 OpenClaw pairing store 变成 Rust 白名单之前的第二套准入 authority。
