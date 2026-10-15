@@ -161,25 +161,25 @@ export function parseArgs(args: string[]): { positional: string[]; flags: Record
         i++;
         continue;
       }
-      // Repeatable flags: ALWAYS consume the next token as a value, even if it
-      // starts with '--' (e.g. --args "--stdio"). The boolean-fallback check
-      // below must NOT run for repeatable flags — it would overwrite the
-      // accumulated array with `true`.
+      // Pass-through --args accepts option-shaped values (e.g. --stdio).
+      // Model names/IDs and attachment paths require ordinary values so a
+      // missing value cannot consume a later control flag such as --dry-run.
       if (repeatable.has(key)) {
         const cKey = camelCase(key);
         const arr = (flags[cKey] as string[]) || [];
         if (inlineValue !== undefined) {
           arr.push(inlineValue);
+          if ((key === 'models' || key === 'model-names') && !inlineValue.trim()) flags[`${cKey}ValueMissing`] = true;
           flags[cKey] = arr;
           i++;
           continue;
         }
         const value = args[i + 1];
-        const requiresOrdinaryPathValue = key === 'file' || key === 'attachment';
-        if (value === undefined || (requiresOrdinaryPathValue && value.startsWith('--'))) {
+        const requiresOrdinaryValue = key === 'file' || key === 'attachment' || key === 'models' || key === 'model-names';
+        if (value === undefined || (requiresOrdinaryValue && value.startsWith('--'))) {
           // No value — normalize to empty array (not boolean) to keep type consistent
           if (!flags[cKey]) flags[cKey] = [];
-          if (requiresOrdinaryPathValue) flags[`${cKey}ValueMissing`] = true;
+          if (requiresOrdinaryValue) flags[`${cKey}ValueMissing`] = true;
           i++;
           continue;
         }
@@ -3521,6 +3521,7 @@ const DRY_RUN_PREVIEW_COMMANDS = new Set([
   'mcp add',
   'model add',
   'config set',
+  'config unset',
   'cron add',
   'skill add',
   'skill remove',
@@ -3545,6 +3546,13 @@ export function validateDryRunSupport(
 
 /** Internal routing has more commands, but invalid options must never be silently dropped. */
 export function validateInternalCliInvocation(positional: string[], flags: Record<string, unknown>): AgentCliError | undefined {
+  if (positional[0] === 'model' && positional[1] === 'add') {
+    for (const [key, flag] of [['models', 'models'], ['modelNames', 'model-names']]) {
+      if (flags[`${key}ValueMissing`]) {
+        return { code: 'FLAG_VALUE_REQUIRED', error: `--${flag} requires a value` };
+      }
+    }
+  }
   const globals = new Set(positional.length > 0 ? ['help', 'json', 'port', 'dryRun'] : ['help', 'json', 'port']);
   const group = positional[0];
   const groupHelp = flags.help === true && positional.length === 1;

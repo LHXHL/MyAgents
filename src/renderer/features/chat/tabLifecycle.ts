@@ -23,29 +23,37 @@ export function createChatTabLifecycle({
   return {
     prepareClose: tab => flushFileEdits ? flushFileEdits(tab.id).then(saved => saved ? 'allow' : 'blocked') : 'allow',
     afterDetach: async (tab) => {
-      try {
-        if (tab.sessionId) {
-          // Preserve the pre-module UX contract: the captured visible state
-          // decides whether closing a generating Chat shows the continuation
-          // notice. The async handoff receipt only owns resource cleanup and
-          // must not race the user's feedback.
-          if (tab.isGenerating) notifyBackgroundContinuation(tab);
-          await startBackgroundCompletion(tab.sessionId);
-        }
-        await stopSseProxy(tab.id);
-        if (tab.sessionId) {
-          try {
-            await releaseTabSession(tab.sessionId, tab.id);
-          } catch (error) {
-            log(`[App] Error releasing session sidecar for tab ${tab.id}`, error);
-            void stopLegacyTabSidecar(tab.id);
-          }
-        } else if (tab.agentDir) {
-          void stopLegacyTabSidecar(tab.id);
-        }
-      } catch (error) {
-        log(`[App] Background cleanup error for tab ${tab.id}`, error);
-      }
+      if (tab.sessionId && tab.isGenerating) notifyBackgroundContinuation(tab);
+      await detachChatTabResources(tab, {
+        startBackgroundCompletion, stopSseProxy, releaseTabSession, stopLegacyTabSidecar, log,
+      });
     },
   };
+}
+
+/** Shared by user close and native Renderer replacement. Transfer generation
+ * custody before releasing the exact Tab token; transport is not an owner. */
+export async function detachChatTabResources(
+  tab: Pick<ChatTab, 'id' | 'sessionId'> & Partial<Pick<ChatTab, 'agentDir'>>,
+  { startBackgroundCompletion, stopSseProxy, releaseTabSession, stopLegacyTabSidecar, log }:
+    Omit<ChatLifecycleDependencies, 'flushFileEdits' | 'notifyBackgroundContinuation'>,
+): Promise<void> {
+  try {
+    if (tab.sessionId) {
+      await startBackgroundCompletion(tab.sessionId);
+    }
+    await stopSseProxy(tab.id);
+    if (tab.sessionId) {
+      try {
+        await releaseTabSession(tab.sessionId, tab.id);
+      } catch (error) {
+        log(`[App] Error releasing session sidecar for tab ${tab.id}`, error);
+        void stopLegacyTabSidecar(tab.id);
+      }
+    } else if (tab.agentDir) {
+      void stopLegacyTabSidecar(tab.id);
+    }
+  } catch (error) {
+    log(`[App] Background cleanup error for tab ${tab.id}`, error);
+  }
 }

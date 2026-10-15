@@ -1,4 +1,5 @@
 import { nextAgentNetworkExposureRevision } from "../shared/config-types";
+import { MODEL_ADD_OPTIONS_HELP } from '../shared/modelAddOptions';
 import { resolveAgentConfigMutation, mutationForAgentModelSelection, type AgentModelSelection } from '../shared/agentConfigMutation';
 import { APP_BUILD_IDENTITY, SIDECAR_BUILD_IDENTITY, SIDECAR_STARTED_AT } from './build-identity';
 import { CLAUDE_AGENT_SDK_IMPLEMENTATION_VERSION } from '../shared/integrated-runtimes/identity';
@@ -1366,6 +1367,38 @@ export async function handleModelAdd(payload: {
   const { dryRun } = payload;
   const p = payload.provider;
 
+  // Do not turn malformed CLI values into a different protocol or serialize
+  // NaN as null. This is the definition writer, shared by preview and commit.
+  const protocol = p.apiProtocol ?? p.protocol ?? 'anthropic';
+  if (!['anthropic', 'openai'].includes(String(protocol)) || typeof protocol !== 'string') {
+    return { success: false, error: 'apiProtocol must be anthropic or openai' };
+  }
+  if (p.apiProtocol !== undefined && p.protocol !== undefined && p.apiProtocol !== p.protocol) {
+    return { success: false, error: 'Conflicting apiProtocol and protocol' };
+  }
+  if (p.authType !== undefined && (typeof p.authType !== 'string' || !['auth_token', 'api_key', 'both', 'auth_token_clear_api_key'].includes(p.authType))) {
+    return { success: false, error: 'Invalid authType' };
+  }
+  if (protocol !== 'openai' && (p.upstreamFormat !== undefined || p.maxOutputTokens !== undefined || p.maxOutputTokensParamName !== undefined)) {
+    return { success: false, error: 'upstreamFormat and output-token options require apiProtocol=openai' };
+  }
+  if (p.upstreamFormat !== undefined && !['chat_completions', 'responses'].includes(String(p.upstreamFormat))) {
+    return { success: false, error: 'upstreamFormat must be chat_completions or responses' };
+  }
+  for (const key of ['maxOutputTokens', 'timeout'] as const) {
+    if (p[key] !== undefined && ((typeof p[key] !== 'string' && typeof p[key] !== 'number') || !Number.isSafeInteger(Number(p[key])) || Number(p[key]) <= 0)) {
+      return { success: false, error: `${key} must be a positive integer` };
+    }
+  }
+  for (const key of ['id', 'name', 'baseUrl', 'modelSeries', 'primaryModel', 'vendor', 'websiteUrl'] as const) {
+    if (p[key] !== undefined && (typeof p[key] !== 'string' || !p[key].trim())) {
+      return { success: false, error: `${key} must be a non-empty string` };
+    }
+  }
+  if (p.disableNonessential !== undefined && typeof p.disableNonessential !== 'boolean') {
+    return { success: false, error: 'disableNonessential must be a boolean' };
+  }
+
   // Validate required fields
   if (!p.id) return { success: false, error: 'Missing required field: id' };
   if (!isValidId(String(p.id)))
@@ -1421,6 +1454,9 @@ export async function handleModelAdd(payload: {
     },
   );
   const modelIds = models.map((model) => model.model);
+  if (p.primaryModel !== undefined && !modelIds.includes(String(p.primaryModel).trim())) {
+    return { success: false, error: 'primaryModel must be one of models' };
+  }
 
   // Build aliases
   let modelAliases: Record<string, string> | undefined;
@@ -1455,7 +1491,7 @@ export async function handleModelAdd(payload: {
       ...(p.disableNonessential ? { disableNonessential: true } : {}),
     },
     authType: String(p.authType ?? 'auth_token'),
-    ...(p.protocol === 'openai' || p.apiProtocol === 'openai'
+    ...(protocol === 'openai'
       ? {
           apiProtocol: 'openai' as const,
           ...(p.maxOutputTokens
@@ -3171,7 +3207,7 @@ ERROR RECOVERY
     effect:
       'Validates the provider and, unless --dry-run is set, persists its provider definition.',
     options:
-      '  --dry-run              Validate and preview without persisting provider files or config\n  See myagents model --help for protocol and model options.',
+      `${MODEL_ADD_OPTIONS_HELP}\n  --dry-run               Validate and preview without persisting provider files or config`,
     mutation:
       '--dry-run does not write or persist provider configuration. Without it, this mutates app configuration.',
     output: 'The normalized provider preview or the created provider ID.',
@@ -3301,19 +3337,7 @@ Commands:
   set-default <id>         Set default provider
 
 Options for 'add':
-  --id            Provider ID (required)
-  --name          Display name (required)
-  --base-url      API endpoint URL (required)
-  --models        Model IDs (repeatable, at least one)
-  --model-names   Display names for models (repeatable)
-  --primary-model Default model (default: first in --models)
-  --auth-type     auth_token | api_key | both (default: auth_token)
-  --protocol      anthropic | openai (default: anthropic)
-  --upstream-format  chat_completions | responses (openai only)
-  --max-output-tokens  Max output limit (openai only)
-  --aliases       SDK alias mapping: sonnet=model,opus=model,haiku=model
-  --vendor        Vendor name
-  --website-url   Provider website`,
+${MODEL_ADD_OPTIONS_HELP}`,
 
   config: `myagents config — Read/write application config
 

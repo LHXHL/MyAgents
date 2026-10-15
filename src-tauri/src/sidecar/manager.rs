@@ -2203,6 +2203,24 @@ impl SidecarManager {
         })
     }
 
+    /// Main-window replacement needs the exact old Tab tokens, including a
+    /// process currently being recovered. Other surface owners stay untouched.
+    pub(crate) fn tab_owner_bindings(&self) -> Vec<(String, String)> {
+        self.sidecars
+            .keys()
+            .chain(self.recovering_sidecars.keys())
+            .flat_map(|session_id| {
+                self.session_owners(session_id)
+                    .filter_map(move |owner| match owner {
+                        SidecarOwner::Tab(tab_id) => Some((session_id.clone(), tab_id.clone())),
+                        _ => None,
+                    })
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
     fn session_owners<'a>(&'a self, session_id: &'a str) -> impl Iterator<Item = &'a SidecarOwner> {
         self.sidecars
             .get(session_id)

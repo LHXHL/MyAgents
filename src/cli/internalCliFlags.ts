@@ -1,3 +1,5 @@
+import { MODEL_ADD_OPTIONS } from '../shared/modelAddOptions';
+
 /** Additional internal command options. Shared options come from externalCliCapabilities.
  * Keep each entry with its request-body handler; arbitrary options are not forwarded. */
 export const INTERNAL_CLI_FLAGS: Readonly<Record<string, readonly string[]>> = {
@@ -20,7 +22,7 @@ export const INTERNAL_CLI_FLAGS: Readonly<Record<string, readonly string[]>> = {
   "tool/remove": ["purge"],
   "tool/env": ["env"],
   "vision/analyze": ["image","prompt","promptFile"],
-  "model/add": ["id","name","type","apiKey","baseUrl","models","aliases","vendor","websiteUrl","timeout","disableNonessential"],
+  "model/add": Object.keys(MODEL_ADD_OPTIONS),
   "model/remove": ["id"],
   "model/set-key": ["apiKey","id"],
   "model/set-default": ["id"],

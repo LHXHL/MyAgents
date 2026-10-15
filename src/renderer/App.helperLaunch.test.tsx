@@ -152,6 +152,7 @@ const mocks = vi.hoisted(() => {
       activeTabId: string | null;
     },
     lastExitWasClean: true,
+    restoreSessionAction: undefined as (() => void) | undefined,
     setAppActiveCorrelation: vi.fn(),
     setAppActiveTabId: vi.fn(),
     useRealTabProvider: false,
@@ -295,14 +296,17 @@ vi.mock('@/components/CustomTitleBar', () => ({
     children: React.ReactNode;
     restoreCount?: number;
     onRestoreSession?: () => void;
-  }) => (
+  }) => {
+    mocks.restoreSessionAction = onRestoreSession;
+    return (
     <div data-testid="titlebar">
       {restoreCount > 0 && (
         <button data-testid="restore-session" onClick={onRestoreSession} />
       )}
       {children}
     </div>
-  ),
+    );
+  },
 }));
 
 vi.mock('@/components/global-sidebar/GlobalSidebar', () => ({
@@ -1517,6 +1521,158 @@ describe('App helper launch', () => {
 
     await waitFor(() => expect(latestTabbarProps().tabs.filter((tab) => tab.view === 'taskcenter')).toHaveLength(1));
     expect(latestTabbarProps().tabs.some((tab) => tab.id === 'missing-record')).toBe(false);
+  });
+
+  it('keeps an unaccepted restore candidate through another renderer mount', async () => {
+    localStorage.clear();
+    mocks.lastExitWasClean = false;
+    localStorage.setItem('myagents.openTabs.v1', JSON.stringify({ version: 1, tabs: [{
+      view: 'chat', id: 'retained-tab', agentDir: mocks.project.path,
+      sessionId: '11111111-2222-4333-8444-555555555555', title: 'Retained',
+    }], activeTabId: 'retained-tab' }));
+    const first = render(<App />);
+    await screen.findByTestId('restore-session');
+    first.unmount();
+    render(<App />);
+    fireEvent.click(await screen.findByTestId('restore-session'));
+    await waitFor(() => expect(mocks.ensureSessionSidecar).toHaveBeenCalledWith(
+      '11111111-2222-4333-8444-555555555555', mocks.project.path, 'tab', 'retained-tab',
+    ));
+  });
+
+  it('uses the update durable live layout before an older pending-only offer', async () => {
+    localStorage.clear();
+    mocks.lastExitWasClean = false;
+    localStorage.setItem('myagents.openTabs.v1', JSON.stringify({ version: 1, tabs: [], activeTabId: null,
+      pendingRestore: { version: 1, tabs: [{ view: 'record', id: 'old-offer', recordId: 'old', title: 'Old' }], activeTabId: 'old-offer' },
+    }));
+    mocks.durableTabs = { version: 1, tabs: [{ view: 'record', id: 'new-live', recordId: 'new', title: 'New' }], activeTabId: 'new-live' };
+    render(<App />);
+    fireEvent.click(await screen.findByTestId('restore-session'));
+    await waitFor(() => expect(latestTabbarProps().tabs).toEqual([expect.objectContaining({ id: 'new-live' })]));
+    expect(mocks.recordGet).not.toHaveBeenCalledWith('old');
+  });
+
+  it('retains native recovery overflow together with the unaccepted offer', async () => {
+    localStorage.clear();
+    let completeValidation!: () => void;
+    const gate = new Promise<void>(resolve => { completeValidation = resolve; });
+    mocks.recordGet.mockImplementation(async recordId => {
+      await gate;
+      return { id: recordId, kind: 'audio', title: recordId, tags: [], createdAt: 1, updatedAt: 1, archived: false, convertedTaskIds: [], revision: 1 };
+    });
+    localStorage.setItem('myagents.openTabs.v1', JSON.stringify({ version: 1,
+      tabs: Array.from({ length: 12 }, (_, i) => ({ view: 'record', id: `live-${i}`, recordId: `record-${i}`, title: `Record ${i}` })),
+      activeTabId: 'live-0', pendingRestore: { version: 1,
+        tabs: Array.from({ length: 12 }, (_, i) => ({ view: 'record', id: `offer-${i}`, recordId: `pending-${i}`, title: `Pending ${i}` })),
+        activeTabId: 'offer-0',
+      },
+    }));
+    render(<App rendererAttachment={{ replacement: true, previousTabOwners: [] }} />);
+    await waitFor(() => expect(mocks.recordGet).toHaveBeenCalledTimes(12));
+    await act(async () => latestSidebarProps().onOpenSettings());
+    await act(async () => completeValidation());
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem('myagents.openTabs.v1')!);
+      expect(stored.tabs).toHaveLength(10);
+      expect(stored.pendingRestore.tabs).toHaveLength(14);
+    });
+    const { loadPendingRestoredTabs } = await import('@/utils/tabPersistence');
+    expect(loadPendingRestoredTabs()?.tabs).toHaveLength(14);
+  });
+
+  it.each(['pending', 'failed-live'] as const)('defers %s restore until native old-token retirement finishes', async kind => {
+    localStorage.clear();
+    const sessionId = '11111111-2222-4333-8444-555555555555';
+    const persistedTab = { view: 'chat', id: 'same-tab', agentDir: mocks.project.path, sessionId, title: 'Same identity' };
+    if (kind === 'failed-live') mocks.ensureSessionSidecar.mockRejectedValueOnce(new Error('temporary attach failure'));
+    let finishBackground!: (value: { started: boolean; sessionId: string }) => void;
+    mocks.startBackgroundCompletion.mockReturnValueOnce(new Promise(resolve => { finishBackground = resolve; }));
+    localStorage.setItem('myagents.openTabs.v1', JSON.stringify({ version: 1,
+      tabs: kind === 'failed-live' ? [persistedTab] : [], activeTabId: kind === 'failed-live' ? 'same-tab' : null,
+      ...(kind === 'pending' ? { pendingRestore: { version: 1, tabs: [persistedTab], activeTabId: 'same-tab' } } : {}),
+    }));
+    render(<App rendererAttachment={{ replacement: true, previousTabOwners: [{ sessionId, tabId: 'same-tab' }] }} />);
+    await waitFor(() => expect(mocks.startBackgroundCompletion).toHaveBeenCalledWith(sessionId));
+    expect(screen.queryByTestId('restore-session')).not.toBeInTheDocument();
+    // Even a previously captured callback cannot reattach during retirement.
+    await act(async () => mocks.restoreSessionAction?.());
+    expect(mocks.ensureSessionSidecar).toHaveBeenCalledTimes(kind === 'failed-live' ? 1 : 0);
+    await act(async () => finishBackground({ started: false, sessionId }));
+    fireEvent.click(await screen.findByTestId('restore-session'));
+    await waitFor(() => expect(mocks.ensureSessionSidecar).toHaveBeenCalledTimes(kind === 'failed-live' ? 2 : 1));
+    expect(mocks.ensureSessionSidecar).toHaveBeenLastCalledWith(sessionId, mocks.project.path, 'tab', 'same-tab');
+    expect(mocks.releaseTabSession.mock.invocationCallOrder.at(-1)!).toBeLessThan(mocks.ensureSessionSidecar.mock.invocationCallOrder.at(-1)!);
+  });
+
+  it('keeps failed native Chat attachment as a retryable restore offer', async () => {
+    localStorage.clear();
+    mocks.ensureSessionSidecar.mockRejectedValueOnce(new Error('sidecar unavailable'));
+    localStorage.setItem('myagents.openTabs.v1', JSON.stringify({ version: 1, tabs: [{
+      view: 'chat', id: 'failed-tab', agentDir: mocks.project.path,
+      sessionId: '11111111-2222-4333-8444-555555555555', title: 'Failed',
+    }], activeTabId: 'failed-tab' }));
+    render(<App rendererAttachment={{ replacement: true, previousTabOwners: [] }} />);
+    await screen.findByTestId('restore-session');
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('myagents.openTabs.v1')!).pendingRestore.tabs[0].id).toBe('failed-tab'));
+    fireEvent.click(screen.getByTestId('restore-session'));
+    await waitFor(() => expect(latestTabbarProps().tabs).toEqual([expect.objectContaining({ id: 'failed-tab', view: 'chat' })]));
+  });
+
+  it('keeps a pending offer while automatically restoring the newer live Record layout', async () => {
+    localStorage.clear();
+    mocks.recordGet.mockResolvedValue({ id: 'live-record', kind: 'audio', title: 'Live', tags: [], createdAt: 1, updatedAt: 1, archived: false, convertedTaskIds: [], revision: 1 });
+    localStorage.setItem('myagents.openTabs.v1', JSON.stringify({ version: 1,
+      tabs: [{ view: 'record', id: 'live-tab', recordId: 'live-record', title: 'Live' }],
+      activeTabId: 'live-tab', pendingRestore: { version: 1, tabs: [{
+        view: 'chat', id: 'pending-tab', agentDir: mocks.project.path,
+        sessionId: '11111111-2222-4333-8444-555555555555', title: 'Pending',
+      }], activeTabId: 'pending-tab' },
+    }));
+    render(<App rendererAttachment={{ replacement: true, previousTabOwners: [] }} />);
+    await waitFor(() => expect(latestTabbarProps().tabs).toEqual([
+      expect.objectContaining({ id: 'live-tab', view: 'record' }),
+    ]));
+    expect(await screen.findByTestId('restore-session')).toBeInTheDocument();
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('myagents.openTabs.v1')!).pendingRestore.tabs[0].id).toBe('pending-tab'));
+    expect(mocks.ensureSessionSidecar).not.toHaveBeenCalled();
+  });
+
+  it('preserves the recovery snapshot if the renderer is replaced during validation', async () => {
+    localStorage.clear();
+    localStorage.setItem('myagents.openTabs.v1', JSON.stringify({ version: 1, tabs: [{
+      view: 'chat', id: 'recovering-tab', agentDir: mocks.project.path,
+      sessionId: '11111111-2222-4333-8444-555555555555', title: 'Recovering',
+    }], activeTabId: 'recovering-tab' }));
+    mocks.canRestoreSession.mockReturnValueOnce(new Promise(() => {}));
+    const first = render(<App rendererAttachment={{ replacement: true, previousTabOwners: [] }} />);
+    await waitFor(() => expect(mocks.canRestoreSession).toHaveBeenCalled());
+    first.unmount();
+    render(<App rendererAttachment={{ replacement: true, previousTabOwners: [] }} />);
+    await waitFor(() => expect(mocks.ensureSessionSidecar).toHaveBeenCalledWith(
+      '11111111-2222-4333-8444-555555555555', mocks.project.path, 'tab', 'recovering-tab',
+    ));
+  });
+
+  it('automatically reattaches the same Tab identity after native renderer replacement', async () => {
+    localStorage.clear();
+    localStorage.setItem('myagents.openTabs.v1', JSON.stringify({ version: 1, tabs: [{
+      view: 'chat', id: 'surviving-tab', agentDir: mocks.project.path,
+      sessionId: '11111111-2222-4333-8444-555555555555', title: 'Surviving',
+    }], activeTabId: 'surviving-tab' }));
+    render(<App rendererAttachment={{ replacement: true, previousTabOwners: [
+      { tabId: 'surviving-tab', sessionId: '11111111-2222-4333-8444-555555555555' },
+      { tabId: 'orphan-tab', sessionId: '11111111-2222-4333-8444-555555555556' },
+    ] }} />);
+    await waitFor(() => expect(mocks.ensureSessionSidecar).toHaveBeenCalledWith(
+      '11111111-2222-4333-8444-555555555555', mocks.project.path, 'tab', 'surviving-tab',
+    ));
+    await waitFor(() => expect(mocks.releaseTabSession).toHaveBeenCalledWith(
+      '11111111-2222-4333-8444-555555555556', 'orphan-tab',
+    ));
+    expect(mocks.startBackgroundCompletion).toHaveBeenCalledWith('11111111-2222-4333-8444-555555555556');
+    expect(mocks.releaseTabSession).not.toHaveBeenCalledWith('11111111-2222-4333-8444-555555555555', 'surviving-tab');
+    expect(screen.queryByTestId('restore-session')).not.toBeInTheDocument();
   });
 
   it('holds Session opening admission while a restore candidate is validated', async () => {

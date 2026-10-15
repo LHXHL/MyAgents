@@ -272,6 +272,14 @@ Builtin 手动强制发送在旧 turn result 中把 in-flight 项从队列交给
 
 Task、Goal、Agent Channel、Memory、Heartbeat 等领域使用自己的通知/投递语义。transport 断线期间的 turn 仍可恢复历史，但普通通知没有 durable outbox，不能承诺断线窗口补发。
 
+### 主窗口 WebContent replacement
+
+原生主窗口的 `MainRendererState` 识别本次进程内的新 Renderer 实例。主入口在挂载 App / TabProvider 前完成 attach：冷启动维持“主动退出后 Launcher、异常退出/更新后提供恢复入口”的策略；同一 App 内的 Renderer replacement 自动走既有 Tab 恢复、Session ensure/reconcile 流程，保留原 Tab 与 Session identity。
+
+`myagents.openTabs.v1` 中的 live Tabs 与可选 `pendingRestore` 分别表示当前布局和尚未接受的上次会话候选；后者同样使用 v1 白名单 codec，直到接受或主动忽略才消费。候选不占 live Tab 槽位；自动恢复因并发导航达到容量上限或 attach 失败的剩余项合入候选，不以 live 数量上限裁掉待恢复项。启动判定/自动恢复结算前不允许初始 Launcher 覆盖快照；手动恢复部分受容量限制或 attach 失败时保留剩余候选。冷启动优先采用本地 live 布局，其次采用更新重启的 durable live handoff，二者均为空时保留原候选。
+
+Renderer replacement 只停止主窗口 Tab 的旧 SSE transport，不动 Companion 或任何 Session owner。Rust 从 SidecarManager 当前及 recovering 的 owner 集合提供旧 Tab token 清单；恢复完成后，未接回的 exact token 复用正常关闭的 BackgroundCompletion → stop SSE → release Tab 顺序交接。旧 token 交接完成后才能公布/接受原候选及新增剩余候选，避免同 ID 重新接入与旧 release 竞争；复用 App 的恢复结算边界，不增加 native owner generation。SSE 重新订阅获取新的初始状态，不能因稳定 connection key 相同而沿用旧 JS listener 的流。这个窗口恢复机制不诊断或修复导致 WebContent 终止的内存根因。
+
 ## 7. 配置写入方向
 
 ### 7.1 `sidecarConfigDisposition`
