@@ -44,7 +44,7 @@ jsonwebtoken = { version = "=11.1.0", default-features = false, features = ["rus
 # `macos-private-api` is required for transparent webview windows on macOS —
 # the floating ball / companion panels (PRD 0.2.35) are transparent NSPanels.
 # Main window is unaffected (it never sets transparent(true)).
-tauri = { version = "2.11.2", features = ["tray-icon", "devtools", "image-png", "unstable", "webview-data-url", "macos-private-api", "protocol-asset"] }
+tauri = { version = "=2.11.2", features = ["tray-icon", "devtools", "image-png", "unstable", "webview-data-url", "macos-private-api", "protocol-asset"] }
 tauri-plugin-log = "2"
 tauri-plugin-fs = "2.4.5"
 tauri-plugin-dialog = "2.6.0"
@@ -210,7 +210,7 @@ notify-rust = "4.14"
 cpal = { version = "=0.18.2", features = ["pipewire"] }
 
 [dev-dependencies]
-tauri = { version = "2.11.2", features = ["test"] }
+tauri = { version = "=2.11.2", features = ["test"] }
 tempfile = "3.10"
 
 # Daily development needs actionable backtraces, not full variable/type DWARF.
@@ -219,3 +219,7 @@ tempfile = "3.10"
 [profile.dev]
 debug = "line-tables-only"
 incremental = true
+
+# Paired with the exact JS API repair; see vendor/tauri/MYAGENTS_PATCH.md.
+[patch.crates-io]
+tauri = { path = "../vendor/tauri" }
