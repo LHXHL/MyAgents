@@ -247,6 +247,54 @@ describe('GlobalSidebar rail flyout', () => {
     vi.unstubAllGlobals();
   });
 
+  it('persists keyboard width across remounts, preserves mode and resets on double click', () => {
+    mocks.forcedRail = false;
+    const view = renderSidebar();
+    fireEvent.keyDown(screen.getByRole('separator'), { key: 'End' });
+    const saved = JSON.parse(localStorage.getItem('myagents.globalSidebar.v1')!);
+    expect(saved.expandedWidth).toBe(360);
+    fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.collapse')) }));
+    expect(screen.queryByRole('separator')).toBeNull();
+    expect(JSON.parse(localStorage.getItem('myagents.globalSidebar.v1')!).expandedWidth).toBe(360);
+    fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.expand')) }));
+    expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '360');
+    view.unmount();
+    renderSidebar();
+    expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '360');
+    fireEvent.doubleClick(screen.getByRole('separator'));
+    expect(JSON.parse(localStorage.getItem('myagents.globalSidebar.v1')!).expandedWidth).toBe(256);
+  });
+
+  it('keeps the new width in memory and reports a failed save, then permits retry', () => {
+    mocks.forcedRail = false;
+    renderSidebar();
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('full'); });
+    fireEvent.keyDown(screen.getByRole('separator'), { key: 'End' });
+    expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '360');
+    expect(mocks.toast.warning).toHaveBeenCalledExactlyOnceWith(String(i18n.t('app:globalSidebar.resizeSaveFailed')));
+    setItem.mockRestore();
+    fireEvent.keyDown(screen.getByRole('separator'), { key: 'End' });
+    expect(JSON.parse(localStorage.getItem('myagents.globalSidebar.v1')!).expandedWidth).toBe(360);
+  });
+
+  it('positions the body notification portal from the committed width and closes it on a resize gesture', () => {
+    mocks.forcedRail = false;
+    renderSidebar();
+    fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:notificationCenter.bell')) }));
+    const panel = document.querySelector<HTMLElement>('[data-notification-center-shell]')!;
+    const handle = screen.getByRole('separator');
+    expect(panel.parentElement).toBe(document.body);
+    expect(panel.style.left).toBe('calc(256px + var(--space-2))');
+    fireEvent.keyDown(handle, { key: 'Home' });
+    expect(panel.style.left).toBe('calc(224px + var(--space-2))');
+    fireEvent.keyDown(handle, { key: 'End' });
+    expect(panel.style.left).toBe('calc(360px + var(--space-2))');
+    handle.setPointerCapture = vi.fn(); // jsdom has no native pointer capture.
+    fireEvent.pointerDown(handle);
+    expect(document.querySelector('[data-notification-center-shell]')).toBeNull();
+    fireEvent.pointerUp(window);
+  });
+
   it('keeps helper and settings above independent account and notification controls', () => {
     mocks.forcedRail = false;
     const onOpenSpace = vi.fn();

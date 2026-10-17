@@ -23,6 +23,9 @@
     "editProfile": "Edit account profile"
   },
   "globalSidebar": {
+    "resize": "Resize sidebar",
+    "resizeHint": "Drag to resize. Double-click or press Enter to reset.",
+    "resizeSaveFailed": "Sidebar resized, but the width could not be saved. It may reset after restarting.",
     "navigation": "Global navigation",
     "openWebsite": "Open the MyAgents website",
     "collapse": "Collapse sidebar",

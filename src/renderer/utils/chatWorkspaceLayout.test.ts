@@ -16,6 +16,21 @@ const baseInput = {
 };
 
 describe('workspace panel disclosure', () => {
+  it('retires old animation geometry on container resize without changing user intent', () => {
+    const open = reduceWorkspacePanelDisclosure(createWorkspacePanelDisclosureState(false), { type: 'open' });
+    const settled = reduceWorkspacePanelDisclosure(open, { type: 'settle-layout' });
+    expect(settled).toEqual({ visible: true, mounted: true, motion: null });
+    expect(reduceWorkspacePanelDisclosure(settled, { type: 'settle-layout' })).toBe(settled);
+    const closed = reduceWorkspacePanelDisclosure(open, { type: 'close' });
+    expect(reduceWorkspacePanelDisclosure(closed, { type: 'settle-layout' }))
+      .toEqual({ visible: false, mounted: false, motion: null });
+  });
+
+  it('initializes from measured space without playing an open animation', () => {
+    expect(reduceWorkspacePanelDisclosure(createWorkspacePanelDisclosureState(false), { type: 'initialize', visible: true }))
+      .toEqual({ visible: true, mounted: true, motion: null });
+  });
+
   it('keeps an already-visible panel stable when reveal only needs it to stay open', () => {
     const visible = createWorkspacePanelDisclosureState(true);
 
@@ -49,31 +64,36 @@ describe('workspace panel disclosure', () => {
 });
 
 describe('resolveWorkspacePanelMode', () => {
+  it('accounts for a proportional workspace wider than its minimum', () => {
+    expect(resolveWorkspacePanelMode({ ...baseInput, containerWidthPx: 1200, sidebarWidthRatio: 0.5 })).toBe('overlay');
+    expect(resolveWorkspacePanelMode({ ...baseInput, containerWidthPx: 1280, sidebarWidthRatio: 0.5 })).toBe('inline');
+  });
+
   it('keeps the workspace tree inline when the remaining chat width reaches the content threshold', () => {
     expect(resolveWorkspacePanelMode({
       ...baseInput,
-      viewportWidthPx: 960,
+      containerWidthPx: 960,
     })).toBe('inline');
   });
 
   it('uses the overlay drawer when inline workspace would squeeze chat below the content threshold', () => {
     expect(resolveWorkspacePanelMode({
       ...baseInput,
-      viewportWidthPx: 959,
+      containerWidthPx: 959,
     })).toBe('overlay');
   });
 
   it('includes the active split ratio when a split preview is open', () => {
     expect(resolveWorkspacePanelMode({
       ...baseInput,
-      viewportWidthPx: 1920,
+      containerWidthPx: 1920,
       splitPanelVisible: true,
       splitRatio: 0.5,
     })).toBe('inline');
 
     expect(resolveWorkspacePanelMode({
       ...baseInput,
-      viewportWidthPx: 1920,
+      containerWidthPx: 1920,
       splitPanelVisible: true,
       splitRatio: 0.49,
     })).toBe('overlay');
@@ -82,7 +102,7 @@ describe('resolveWorkspacePanelMode', () => {
   it('ignores split ratio when the split preview is closed', () => {
     expect(resolveWorkspacePanelMode({
       ...baseInput,
-      viewportWidthPx: 1200,
+      containerWidthPx: 1200,
       splitPanelVisible: false,
       splitRatio: 0.2,
     })).toBe('inline');

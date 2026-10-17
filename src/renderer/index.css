@@ -202,17 +202,14 @@
   --global-sidebar-rail-width: 64px;
   --global-sidebar-toggle-left: 84px;
   --global-sidebar-tabbar-toggle-inset: 60px;
-  --global-sidebar-tab-content-shift: 140px;
-  --global-sidebar-tab-content-shift-negative: -140px;
-  --global-sidebar-content-center-shift: 96px;
-  --global-sidebar-content-center-shift-negative: -96px;
   --global-sidebar-brand-icon-size: 20px;
   --global-sidebar-brand-icon-left: 22px;
   --global-sidebar-rail-button-left: 12px;
   --global-sidebar-action-inset: 16px;
   --global-sidebar-action-size: 32px;
   --sidebar-min-width: 320px;
-  --chat-workspace-panel-width: max(25%, var(--sidebar-min-width));
+  --chat-workspace-panel-ratio: 0.25;
+  --chat-workspace-panel-width: max(calc(var(--chat-workspace-panel-ratio) * 100%), var(--sidebar-min-width));
   --chat-workspace-min-center-shift: 160px;
   --chat-workspace-min-center-shift-negative: -160px;
   --header-height: 48px;
@@ -347,6 +344,55 @@ html[data-color-scheme='dark'] {
    box. Its 40px hit target shares x=12px with rail controls; a 10px inner
    inset centers the 20px App Icon on the functional glyph axis at x=32px.
    The 10px wordmark gap preserves the expanded label's established x=52px. */
+/* Derived at the shared Shell scope, where the sidebar publishes its width.
+   Root-derived variables would keep their root-computed default after override. */
+[data-app-shell] {
+  --global-sidebar-tab-content-shift: calc(var(--global-sidebar-expanded-width) - var(--global-sidebar-rail-width) - var(--global-sidebar-tabbar-toggle-inset) + 8px);
+  --global-sidebar-tab-content-shift-negative: calc(-1 * var(--global-sidebar-tab-content-shift));
+  --global-sidebar-content-center-shift: calc((var(--global-sidebar-expanded-width) - var(--global-sidebar-rail-width)) / 2);
+  --global-sidebar-content-center-shift-negative: calc(-1 * var(--global-sidebar-content-center-shift));
+}
+
+.global-sidebar-resize-handle {
+  position: absolute;
+  top: 44px;
+  bottom: 0;
+  /* Keep the entire hit region outside the sidebar's native scrollbar lane. */
+  right: -6px;
+  width: 6px;
+  z-index: 60;
+  cursor: col-resize;
+  touch-action: none;
+  -webkit-app-region: no-drag;
+}
+
+.global-sidebar-resize-handle::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  border-radius: 2px;
+  content: '';
+  background: transparent;
+}
+
+.global-sidebar-resize-handle:is(:hover, :focus-visible)::after,
+[data-sidebar-resizing] .global-sidebar-resize-handle::after {
+  background: var(--accent);
+}
+
+.global-sidebar-resize-handle:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+[data-sidebar-resizing] .global-sidebar-search-slot,
+[data-sidebar-resizing] .global-sidebar-notification-slot,
+[data-sidebar-resizing] [data-chat-workspace-motion] {
+  transition: none;
+}
+
 .global-sidebar-brand-link {
   position: absolute;
   top: var(--space-1);
@@ -448,7 +494,7 @@ html[data-color-scheme='dark'] {
   margin-bottom: 0.3em;
 }
 
-/* Sidebar layout reaches its final 256px/64px slot in one commit so Chat,
+/* Sidebar disclosure reaches its final expanded/rail slot in one commit so Chat,
    Browser, Terminal, and other resize-sensitive surfaces do not reflow on
    every animation frame. A fixed paint-only material layer then reveals or
    retracts the Theme surface at the same boundary the user perceives. */
@@ -643,13 +689,13 @@ html[data-color-scheme='dark'] {
 [data-global-sidebar-motion='expand'] ~ [data-tab-workspace]
   > .custom-titlebar {
   --app-shell-follow-offset: var(--global-sidebar-tab-content-shift-negative);
-  animation: app-shell-sidebar-follow var(--duration-normal) var(--ease-in-out) backwards;
+  animation: app-shell-sidebar-follow-expand var(--duration-normal) var(--ease-in-out) backwards;
 }
 
 /* Windows keeps the toggle inside the rail, so its Tab row travels the full
-   256px → 64px delta. macOS grows its rail titlebar reservation to 60px, which
+   expanded → rail delta. macOS grows its rail titlebar reservation to 60px, which
    keeps the first Tab at the established window x=124px and preserves the
-   smaller 140px compositor offset above. */
+   smaller compositor offset above (140px at the default expanded width). */
 [data-global-sidebar-titlebar-follow='full'][data-global-sidebar-motion='collapse']
   ~ [data-tab-workspace] > .custom-titlebar {
   --app-shell-follow-offset: calc(
@@ -673,7 +719,7 @@ html[data-color-scheme='dark'] {
 [data-global-sidebar-motion='expand'] ~ [data-tab-workspace]
   > [data-tab-content-workspace] {
   --app-shell-follow-offset: var(--global-sidebar-content-center-shift-negative);
-  animation: app-shell-sidebar-follow var(--duration-normal) var(--ease-in-out) backwards;
+  animation: app-shell-sidebar-follow-expand var(--duration-normal) var(--ease-in-out) backwards;
 }
 
 @keyframes global-sidebar-flyout-in {
@@ -723,6 +769,13 @@ html[data-color-scheme='dark'] {
 }
 
 @keyframes app-shell-sidebar-follow {
+  from { transform: translateX(var(--app-shell-follow-offset)); }
+  to { transform: translateX(0); }
+}
+
+/* Distinct names restart the choreography on each real disclosure edge.
+   Changing only the offset on a finished animation does not replay it. */
+@keyframes app-shell-sidebar-follow-expand {
   from { transform: translateX(var(--app-shell-follow-offset)); }
   to { transform: translateX(0); }
 }

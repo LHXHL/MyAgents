@@ -263,11 +263,14 @@ describe('App Shell chrome contract', () => {
       "[data-global-sidebar-titlebar-follow='full'][data-global-sidebar-motion='collapse']",
     );
     expect(styles).toContain('@keyframes app-shell-sidebar-follow');
+    expect(styles).toContain('animation: app-shell-sidebar-follow-expand var(--duration-normal)');
+    expect(styles).toContain('@keyframes app-shell-sidebar-follow-expand');
     expect(styles).toContain('@media (prefers-reduced-motion: reduce)');
     expect(styles).toContain('--global-sidebar-rail-width: 64px;');
     expect(styles).toContain('--global-sidebar-tabbar-toggle-inset: 60px;');
-    expect(styles).toContain('--global-sidebar-tab-content-shift: 140px;');
-    expect(styles).toContain('--global-sidebar-content-center-shift: 96px;');
+    expect(styles).toContain('--global-sidebar-tab-content-shift: calc(var(--global-sidebar-expanded-width) - var(--global-sidebar-rail-width) - var(--global-sidebar-tabbar-toggle-inset) + 8px);');
+    expect(styles).toContain('--global-sidebar-content-center-shift: calc((var(--global-sidebar-expanded-width) - var(--global-sidebar-rail-width)) / 2);');
+    expect(app).toContain('data-app-shell');
     expect(styles).toContain('--global-sidebar-brand-icon-left: 22px;');
   });
 
@@ -288,7 +291,8 @@ describe('App Shell chrome contract', () => {
 
     expect(chat).toMatch(/const \[workspacePanelDisclosure, dispatchWorkspacePanelDisclosure\]\s*=\s*useReducer\(/);
     expect(chat).toContain('reduceWorkspacePanelDisclosure,');
-    expect(chat).toMatch(/\(\) =>\s*createWorkspacePanelDisclosureState\(shouldShowWorkspaceByDefault\(\)\),/);
+    expect(chat).toMatch(/\(\) =>\s*createWorkspacePanelDisclosureState\(false\),/);
+    expect(chat).toContain("dispatchWorkspacePanelDisclosure({ type: 'initialize', visible: workspacePanelMode === 'inline' })");
     expect(chat).toContain("dispatchWorkspacePanelDisclosure({ type: 'open' });");
     expect(chat).toContain("dispatchWorkspacePanelDisclosure({ type: 'close' });");
     expect(chat).toContain("dispatchWorkspacePanelDisclosure({ type: 'settle-close' });");

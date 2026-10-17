@@ -4974,7 +4974,7 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
   return (
     <SessionDeletionContext.Provider value={handleDeleteSession}>
       <LinkContextMenuProvider>
-        <div className="flex h-screen bg-[var(--paper)]">
+        <div className="flex h-screen bg-[var(--paper)]" data-app-shell>
           <GlobalSidebar
             newAgentPanelOpen={newAgentPanelOpen}
             onNewAgentPanelOpenChange={setNewAgentPanelOpen}

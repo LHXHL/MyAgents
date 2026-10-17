@@ -23,6 +23,9 @@
     "editProfile": "编辑账号资料"
   },
   "globalSidebar": {
+    "resize": "调整侧边栏宽度",
+    "resizeHint": "拖动调整宽度，双击或按 Enter 恢复默认",
+    "resizeSaveFailed": "宽度已调整，但未能保存，下次启动可能恢复原设置",
     "navigation": "全局导航",
     "openWebsite": "打开 MyAgents 官网",
     "collapse": "收起侧边栏",

@@ -42,6 +42,7 @@ import { MyAgentsLogotype } from '@/components/brand/MyAgentsLogotype';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import FeedbackPopover from '@/components/FeedbackPopover';
 import AccountEntry from '@/features/account/AccountEntry';
+import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { APP_SHELL_POPOVER_CHROME } from '@/components/global-sidebar/appShellPopoverChrome';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
 import SessionStatsModal from '@/components/SessionStatsModal';
@@ -505,8 +506,9 @@ export default memo(function GlobalSidebar({
   const forceRail = useForcedRail();
   const [preference, setPreference] = useState<GlobalSidebarPreferenceV1>(() => {
     if (typeof window === 'undefined') return DEFAULT_GLOBAL_SIDEBAR_PREFERENCE;
-    return loadGlobalSidebarPreference(window.localStorage);
+    return loadGlobalSidebarPreference();
   });
+  const preferenceRef = useRef(preference);
   const [sessionLimits, setSessionLimits] = useState<Record<string, number>>({});
   const [archivedExpanded, setArchivedExpanded] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -548,12 +550,19 @@ export default memo(function GlobalSidebar({
   const previousChildLayerOpenRef = useRef(childLayerOpen);
 
   const updatePreference = useCallback((update: (current: GlobalSidebarPreferenceV1) => GlobalSidebarPreferenceV1) => {
-    setPreference((current) => {
-      const next = update(current);
-      if (next === current) return current;
-      if (typeof window !== 'undefined') saveGlobalSidebarPreference(window.localStorage, next);
-      return next;
-    });
+    // This event/effect commit path is the sole preference writer. Advance the
+    // transaction ref synchronously so batched actions merge the latest choice;
+    // storage IO must never run inside a replayable React state updater.
+    const next = update(preferenceRef.current);
+    if (next === preferenceRef.current) return true;
+    preferenceRef.current = next;
+    setPreference(next);
+    try {
+      return saveGlobalSidebarPreference(window.localStorage, next);
+    } catch (error) {
+      console.warn('[GlobalSidebar] Sidebar storage is unavailable:', error);
+      return false;
+    }
   }, []);
 
   const sortedProjects = useMemo(
@@ -594,6 +603,11 @@ export default memo(function GlobalSidebar({
   const expanded = effectiveMode === 'expanded';
   const [sidebarMotion, setSidebarMotion] = useState<'expand' | 'collapse' | null>(null);
   const [expandedWorkspaceMounted, setExpandedWorkspaceMounted] = useState(expanded);
+  const handleResizeStart = useCallback(() => setSidebarMotion(null), []);
+  const handleWidthCommit = useCallback((expandedWidth: number) => {
+    const saved = updatePreference((current) => ({ ...current, expandedWidth }));
+    if (!saved) toastRef.current.warning(t('globalSidebar.resizeSaveFailed'));
+  }, [t, updatePreference]);
 
   useEffect(() => {
     if (expanded) {
@@ -1118,6 +1132,8 @@ export default memo(function GlobalSidebar({
           expanded ? 'w-[var(--global-sidebar-expanded-width)]' : 'w-[var(--global-sidebar-rail-width)]'
         }`}
       >
+        <SidebarResizeHandle expanded={expanded} width={preference.expandedWidth}
+          onCommit={handleWidthCommit} onStart={handleResizeStart} />
         <div className="custom-titlebar relative h-11 shrink-0" data-tauri-drag-region>
           {!forceRail && (
             <div
@@ -1422,8 +1438,10 @@ export default memo(function GlobalSidebar({
           aria-modal="false"
           className={`fixed z-[245] ${APP_SHELL_POPOVER_CHROME}`}
           style={{
+            // The body portal cannot inherit Shell CSS. A drag closes this
+            // outside-click layer; while open, use the same committed preference.
             left: expanded
-              ? 'calc(var(--global-sidebar-expanded-width) + var(--space-2))'
+              ? `calc(${preference.expandedWidth}px + var(--space-2))`
               : 'calc(var(--global-sidebar-rail-width) + var(--space-2))',
             bottom: 'var(--space-5)',
             width: 'min(380px, calc(100vw - var(--global-sidebar-rail-width) - var(--space-5)))',

@@ -9,6 +9,8 @@ export interface WorkspacePanelDisclosureState {
 }
 
 export type WorkspacePanelDisclosureAction =
+  | { type: 'initialize'; visible: boolean }
+  | { type: 'settle-layout' }
   | { type: 'open' }
   | { type: 'close' }
   | { type: 'settle-close' };
@@ -33,6 +35,12 @@ export function reduceWorkspacePanelDisclosure(
   action: WorkspacePanelDisclosureAction,
 ): WorkspacePanelDisclosureState {
   switch (action.type) {
+    case 'initialize':
+      return createWorkspacePanelDisclosureState(action.visible);
+    case 'settle-layout':
+      // A resized container invalidates disclosure's old animation geometry,
+      // not the user's open/closed intent. Retire it before switching modes.
+      return state.motion === null ? state : createWorkspacePanelDisclosureState(state.visible);
     case 'open':
       if (state.visible) return state;
       return { visible: true, mounted: true, motion: 'expand' };
@@ -48,22 +56,26 @@ export function reduceWorkspacePanelDisclosure(
 export const DEFAULT_WORKSPACE_LAYOUT_METRICS = {
   contentMinWidthPx: 640,
   sidebarMinWidthPx: 320,
+  sidebarWidthRatio: 0.25,
 } as const;
 
 export interface WorkspacePanelModeInput {
-  viewportWidthPx: number;
+  /** Full Chat container, after the global sidebar and before Chat's split. */
+  containerWidthPx: number;
   splitPanelVisible: boolean;
   splitRatio: number;
   contentMinWidthPx: number;
   sidebarMinWidthPx: number;
+  sidebarWidthRatio: number;
 }
 
 export function resolveWorkspacePanelMode(input: WorkspacePanelModeInput): WorkspacePanelMode {
   const splitRatio = input.splitPanelVisible
     ? Math.min(Math.max(input.splitRatio, 0), 1)
     : 1;
-  const leftPaneWidthPx = input.viewportWidthPx * splitRatio;
-  const chatWidthWithInlineWorkspacePx = leftPaneWidthPx - input.sidebarMinWidthPx;
+  const leftPaneWidthPx = input.containerWidthPx * splitRatio;
+  const workspaceWidthPx = Math.max(input.sidebarMinWidthPx, leftPaneWidthPx * input.sidebarWidthRatio);
+  const chatWidthWithInlineWorkspacePx = leftPaneWidthPx - workspaceWidthPx;
   return chatWidthWithInlineWorkspacePx >= input.contentMinWidthPx ? 'inline' : 'overlay';
 }
 
