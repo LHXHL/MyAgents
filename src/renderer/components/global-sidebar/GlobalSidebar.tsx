@@ -391,7 +391,7 @@ function HistorySearchOverlayFrame({
   useCloseLayer(() => {
     onClose();
     return true;
-  }, 40);
+  }, 200);
 
   // This App-wide overlay is declared by GlobalSidebar, which precedes the
   // active Tab workspace in DOM order. WKWebView paints macOS overflow
@@ -402,7 +402,7 @@ function HistorySearchOverlayFrame({
   return createPortal(
     <OverlayBackdrop
       onClose={onClose}
-      className="z-40"
+      className="z-[200]"
       style={{ animation: 'overlayFadeIn 140ms ease-out' }}
     >
       <div
@@ -1128,7 +1128,9 @@ export default memo(function GlobalSidebar({
         data-global-sidebar-titlebar-follow={isWindows ? 'full' : 'toggle-slot'}
         data-global-sidebar-toggle-visible={forceRail ? 'false' : 'true'}
         data-global-sidebar-tabbar-toggle={!isWindows && !forceRail && !expanded ? 'true' : 'false'}
-        className={`global-sidebar relative z-40 flex h-screen shrink-0 flex-col [--global-sidebar-surface:var(--global-sidebar-bg)] text-[var(--ink)] ${
+        // The outer resize strip must beat page-local workspace layers (40/50),
+        // while App dialogs (200+) still block the entire shell.
+        className={`global-sidebar relative z-[60] flex h-screen shrink-0 flex-col [--global-sidebar-surface:var(--global-sidebar-bg)] text-[var(--ink)] ${
           expanded ? 'w-[var(--global-sidebar-expanded-width)]' : 'w-[var(--global-sidebar-rail-width)]'
         }`}
       >

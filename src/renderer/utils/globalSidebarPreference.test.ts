@@ -28,7 +28,7 @@ describe('globalSidebarPreference', () => {
     expect(normalizeGlobalSidebarWidth(value)).toBe(256);
   });
 
-  it.each([[200, 224], [400, 360], [301.6, 302], [256, 256]])('normalizes width %s to %s', (input, expected) => {
+  it.each([[200, 224], [360, 360], [420, 420], [600, 480], [301.6, 302], [256, 256]])('normalizes width %s to %s', (input, expected) => {
     expect(normalizeGlobalSidebarWidth(input)).toBe(expected);
   });
 

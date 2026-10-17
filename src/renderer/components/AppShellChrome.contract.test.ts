@@ -9,6 +9,24 @@ function source(relativePath: string): string {
 }
 
 describe('App Shell chrome contract', () => {
+  it('keeps the sidebar resize boundary above page-local workspace layers but below App modals', () => {
+    const sidebar = source('src/renderer/components/global-sidebar/GlobalSidebar.tsx');
+    const chat = source('src/renderer/pages/Chat.tsx');
+    const modal = source('src/renderer/components/ConfirmDialog.tsx');
+    const layer = (text: string) => {
+      const match = /\bz-(?:\[(\d+)\]|(\d+))/.exec(text);
+      return Number(match?.[1] ?? match?.[2]);
+    };
+    const sidebarLayer = layer(sidebar.slice(sidebar.indexOf('className={`global-sidebar ')));
+    const backdropLayer = layer(chat.slice(chat.indexOf('className="!absolute z-')));
+    const drawerLayer = layer(chat.slice(chat.indexOf("'absolute bottom-0 right-0 top-0 z-")));
+    expect(sidebarLayer).toBeGreaterThan(backdropLayer);
+    expect(sidebarLayer).toBeGreaterThan(drawerLayer);
+    expect(sidebarLayer).toBeLessThan(layer(modal.slice(modal.indexOf('<OverlayBackdrop'))));
+    const searchOverlay = sidebar.slice(sidebar.indexOf('function HistorySearchOverlayFrame'), sidebar.indexOf('function HistorySearchOverlayFallback'));
+    expect(sidebarLayer).toBeLessThan(layer(searchOverlay));
+  });
+
   it('keeps Runtime switching in model selection and never gates send on input chrome', () => {
     const chat = source('src/renderer/pages/Chat.tsx');
     const send = chat.slice(chat.indexOf('const handleSendMessage = useCallback'), chat.indexOf('// Ref-stabilize handleSendMessage'));

@@ -4,7 +4,7 @@ export const GLOBAL_SIDEBAR_PREFERENCE_KEY = 'myagents.globalSidebar.v1';
 export const LEGACY_AUTOMATION_HISTORY_KEY = 'myagents.launcher.showAutomationHistorySessions';
 export const GLOBAL_SIDEBAR_DEFAULT_WIDTH = 256;
 export const GLOBAL_SIDEBAR_MIN_WIDTH = 224;
-export const GLOBAL_SIDEBAR_MAX_WIDTH = 360;
+export const GLOBAL_SIDEBAR_MAX_WIDTH = 480;
 
 export function normalizeGlobalSidebarWidth(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value)

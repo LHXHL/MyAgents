@@ -252,15 +252,15 @@ describe('GlobalSidebar rail flyout', () => {
     const view = renderSidebar();
     fireEvent.keyDown(screen.getByRole('separator'), { key: 'End' });
     const saved = JSON.parse(localStorage.getItem('myagents.globalSidebar.v1')!);
-    expect(saved.expandedWidth).toBe(360);
+    expect(saved.expandedWidth).toBe(480);
     fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.collapse')) }));
     expect(screen.queryByRole('separator')).toBeNull();
-    expect(JSON.parse(localStorage.getItem('myagents.globalSidebar.v1')!).expandedWidth).toBe(360);
+    expect(JSON.parse(localStorage.getItem('myagents.globalSidebar.v1')!).expandedWidth).toBe(480);
     fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.expand')) }));
-    expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '360');
+    expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '480');
     view.unmount();
     renderSidebar();
-    expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '360');
+    expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '480');
     fireEvent.doubleClick(screen.getByRole('separator'));
     expect(JSON.parse(localStorage.getItem('myagents.globalSidebar.v1')!).expandedWidth).toBe(256);
   });
@@ -270,11 +270,11 @@ describe('GlobalSidebar rail flyout', () => {
     renderSidebar();
     const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('full'); });
     fireEvent.keyDown(screen.getByRole('separator'), { key: 'End' });
-    expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '360');
+    expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '480');
     expect(mocks.toast.warning).toHaveBeenCalledExactlyOnceWith(String(i18n.t('app:globalSidebar.resizeSaveFailed')));
     setItem.mockRestore();
     fireEvent.keyDown(screen.getByRole('separator'), { key: 'End' });
-    expect(JSON.parse(localStorage.getItem('myagents.globalSidebar.v1')!).expandedWidth).toBe(360);
+    expect(JSON.parse(localStorage.getItem('myagents.globalSidebar.v1')!).expandedWidth).toBe(480);
   });
 
   it('positions the body notification portal from the committed width and closes it on a resize gesture', () => {
@@ -288,7 +288,7 @@ describe('GlobalSidebar rail flyout', () => {
     fireEvent.keyDown(handle, { key: 'Home' });
     expect(panel.style.left).toBe('calc(224px + var(--space-2))');
     fireEvent.keyDown(handle, { key: 'End' });
-    expect(panel.style.left).toBe('calc(360px + var(--space-2))');
+    expect(panel.style.left).toBe('calc(480px + var(--space-2))');
     handle.setPointerCapture = vi.fn(); // jsdom has no native pointer capture.
     fireEvent.pointerDown(handle);
     expect(document.querySelector('[data-notification-center-shell]')).toBeNull();

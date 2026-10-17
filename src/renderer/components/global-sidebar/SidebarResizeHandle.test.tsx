@@ -45,7 +45,7 @@ describe('sidebar width transaction', () => {
     expect(commit).not.toHaveBeenCalled();
     expect(width()).toBe('256px');
     act(() => vi.advanceTimersByTime(16));
-    expect(width()).toBe('360px');
+    expect(width()).toBe('480px');
     fireEvent.pointerMove(window, pointer(200));
     act(() => vi.advanceTimersByTime(16));
     expect(width()).toBe('224px');
@@ -111,7 +111,7 @@ describe('sidebar width transaction', () => {
     expect(handle).toHaveAttribute('aria-valuenow', '224');
     fireEvent.keyDown(handle, { key: 'End' });
     fireEvent.keyDown(handle, { key: 'ArrowRight' });
-    expect(width()).toBe('360px');
+    expect(width()).toBe('480px');
     fireEvent.keyDown(handle, { key: 'Enter' });
     expect(width()).toBe('256px');
     fireEvent.keyDown(handle, { key: 'End' });
