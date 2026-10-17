@@ -2137,19 +2137,14 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             return;
                         }
 
-                        // 4. Ensure Sidecar is running (brief router lock)
-                        let (port, _is_new_sidecar) = match task_router
-                            .lock()
-                            .await
-                            .ensure_sidecar_with_runtime_identity(
-                                &session_key,
-                                &task_app,
-                                &task_manager,
-                                None,
-                                None,
-                            )
-                            .await
-                        {
+                        // The per-peer fence stays held; process readiness must
+                        // release the router for Session channel-context callbacks.
+                        let (port, _is_new_sidecar) = match SessionRouter::ensure_sidecar(
+                            &task_router,
+                            &session_key,
+                            &task_app,
+                            &task_manager,
+                        ).await {
                             Ok(result) => result,
                             Err(e) => {
                                 task_adapter.ack_clear(&chat_id, &message_id).await;

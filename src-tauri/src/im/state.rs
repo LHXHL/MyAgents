@@ -159,7 +159,7 @@ use dingtalk::DingtalkAdapter;
 use feishu::FeishuAdapter;
 use group_history::GroupHistoryBuffer;
 use health::HealthManager;
-use router::{EnsureSidecarPrep, SessionRouter};
+use router::SessionRouter;
 use telegram::TelegramAdapter;
 use types::{GroupActivation, GroupPermission, ImConfig, ImPlatform};
 
@@ -207,30 +207,9 @@ pub(super) async fn ensure_sidecar_port_for_command<R: Runtime>(
     manager: &ManagedSidecarManager,
     health: &Arc<HealthManager>,
 ) -> Result<u16, String> {
-    let prep = {
-        let mut router_guard = router.lock().await;
-        router_guard
-            .prepare_ensure_sidecar(session_key, manager)
-            .await
-    };
-
-    match prep {
-        EnsureSidecarPrep::Healthy(port) => Ok(port),
-        EnsureSidecarPrep::NeedCreate(info) => {
-            // Command path only needs the port; is_new is irrelevant here (no
-            // config sync). Destructure the tuple but ignore the flag.
-            let (port, _is_new) =
-                SessionRouter::create_sidecar_blocking(info.clone(), app_handle, manager).await?;
-            {
-                let mut router_guard = router.lock().await;
-                router_guard.commit_ensure_sidecar(session_key, &info, port);
-            }
-            let _ =
-                health::persist_router_active_sessions(health, router, "command-ensure-sidecar")
-                    .await;
-            Ok(port)
-        }
-    }
+    let (port, _) = SessionRouter::ensure_sidecar(router, session_key, app_handle, manager).await?;
+    let _ = health::persist_router_active_sessions(health, router, "command-ensure-sidecar").await;
+    Ok(port)
 }
 
 /// Platform-agnostic adapter enum — avoids dyn dispatch overhead.

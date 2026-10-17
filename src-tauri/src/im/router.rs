@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use crate::{ulog_info, ulog_warn};
 use reqwest::Client;
 use tauri::{AppHandle, Runtime};
+use tokio::sync::Mutex;
 
 use crate::sidecar::{
     ensure_session_sidecar_with_runtime_identity_override_lifecycle, release_session_sidecar,
@@ -115,18 +116,6 @@ impl PeerBindingTransition {
 
     pub fn target_session_id(&self) -> &str {
         &self.target_session_id
-    }
-}
-
-impl EnsureSidecarInfo {
-    pub fn with_runtime_identity(
-        mut self,
-        runtime_override: Option<&str>,
-        runtime_source_override: Option<&str>,
-    ) -> Self {
-        self.runtime_override = runtime_override.map(str::to_string);
-        self.runtime_source_override = runtime_source_override.map(str::to_string);
-        self
     }
 }
 
@@ -260,56 +249,47 @@ impl SessionRouter {
         }
     }
 
-    /// Ensure a Sidecar is running for the given session key.
-    /// Returns `(port, is_new_sidecar)` — `is_new_sidecar` is true when a new Sidecar was created
-    /// (caller should sync AI config like model/MCP after creation).
-    ///
-    /// IMPORTANT: This method holds the router lock for the ENTIRE duration including
-    /// the blocking `ensure_session_sidecar` call (up to 5 minutes). For callers that can
-    /// release the lock between phases, use the 3-phase split instead:
-    /// `prepare_ensure_sidecar` → `create_sidecar_blocking` → `commit_ensure_sidecar`.
-    /// This single-lock method is kept for the message processing loop where per-peer locks
-    /// already serialize same-peer access.
+    /// Ensure under the caller's per-peer fence, releasing the router mutex
+    /// during process startup. Recovery calls back into channel-context lookup,
+    /// which must be able to read this same router before readiness can complete.
     pub async fn ensure_sidecar<R: Runtime>(
-        &mut self,
+        router: &Arc<Mutex<Self>>,
         session_key: &str,
         app_handle: &AppHandle<R>,
         manager: &ManagedSidecarManager,
     ) -> Result<(u16, bool), String> {
-        self.ensure_sidecar_with_runtime_identity(session_key, app_handle, manager, None, None)
+        let prep = router
+            .lock()
             .await
+            .prepare_ensure_sidecar(session_key, manager)
+            .await;
+        Self::complete_ensure_sidecar(router, session_key, prep, |info| {
+            Self::create_sidecar_blocking(info, app_handle, manager)
+        })
+        .await
     }
 
-    pub async fn ensure_sidecar_with_runtime_identity<R: Runtime>(
-        &mut self,
+    async fn complete_ensure_sidecar<F, Fut>(
+        router: &Arc<Mutex<Self>>,
         session_key: &str,
-        app_handle: &AppHandle<R>,
-        manager: &ManagedSidecarManager,
-        runtime_override: Option<&str>,
-        runtime_source_override: Option<&str>,
-    ) -> Result<(u16, bool), String> {
-        // Phase 1: Check existing healthy sidecar (brief)
-        let prep = self.prepare_ensure_sidecar(session_key, manager).await;
-        if let EnsureSidecarPrep::Healthy(port) = prep {
-            return Ok((port, false));
-        }
-
-        // Phase 2: Create sidecar (blocking — holds lock the entire time)
-        let info = match prep {
+        prep: EnsureSidecarPrep,
+        create: F,
+    ) -> Result<(u16, bool), String>
+    where
+        F: FnOnce(EnsureSidecarInfo) -> Fut,
+        Fut: std::future::Future<Output = Result<(u16, bool), String>>,
+    {
+        match prep {
+            EnsureSidecarPrep::Healthy(port) => Ok((port, false)),
             EnsureSidecarPrep::NeedCreate(info) => {
-                info.with_runtime_identity(runtime_override, runtime_source_override)
+                let (port, is_new) = create(info.clone()).await?;
+                router
+                    .lock()
+                    .await
+                    .commit_ensure_sidecar(session_key, &info, port);
+                Ok((port, is_new))
             }
-            EnsureSidecarPrep::Healthy(_) => unreachable!(),
-        };
-        // The manager owns process-birth disposition; existing Session metadata
-        // supplies execution configuration for both new and reused processes.
-        let (port, is_new) =
-            Self::create_sidecar_blocking(info.clone(), app_handle, manager).await?;
-
-        // Phase 3: Write result back
-        self.commit_ensure_sidecar(session_key, &info, port);
-
-        Ok((port, is_new))
+        }
     }
 
     // ---- Split ensure_sidecar into 3 phases for lock-free blocking ----
@@ -1310,6 +1290,93 @@ mod tests {
             metadata_indexed: true,
             last_active: Instant::now(),
         }
+    }
+
+    #[tokio::test]
+    async fn cold_start_releases_router_for_context_callback_and_preserves_peer_isolation() {
+        let group = "agent:a:openclaw:wecom:group:g";
+        let private = "agent:a:openclaw:wecom:private:u";
+        let mut initial = SessionRouter::new(PathBuf::from("/tmp/workspace"));
+        initial.upsert_peer_session(peer(group, "group-session"));
+        initial.upsert_peer_session(peer(private, "private-session"));
+        let router = Arc::new(tokio::sync::Mutex::new(initial));
+        let info = EnsureSidecarInfo {
+            session_key: group.into(),
+            session_id: "group-session".into(),
+            workspace: PathBuf::from("/tmp/workspace"),
+            prev_count: 7,
+            metadata_birth_pending: false,
+            metadata_indexed: true,
+            runtime_override: None,
+            runtime_source_override: None,
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            SessionRouter::complete_ensure_sidecar(
+                &router,
+                group,
+                EnsureSidecarPrep::NeedCreate(info.clone()),
+                |_| async {
+                    // Equivalent to the Management API callback required before
+                    // Sidecar readiness: it needs the same channel routing mutex.
+                    let guard = router.lock().await;
+                    assert_eq!(
+                        guard.peer_session_snapshot(group).unwrap().session_id,
+                        "group-session"
+                    );
+                    assert_eq!(
+                        guard.peer_session_snapshot(private).unwrap().session_id,
+                        "private-session"
+                    );
+                    Ok((1234, true))
+                },
+            ),
+        )
+        .await
+        .expect("startup must not hold the callback's router lock")
+        .unwrap();
+        assert_eq!(result, (1234, true));
+        let restored = router.lock().await.peer_session_snapshot(group).unwrap();
+        assert_eq!(restored.session_id, "group-session");
+        assert_eq!(restored.message_count, 7);
+        assert_eq!(restored.sidecar_port, 1234);
+        assert_eq!(
+            router
+                .lock()
+                .await
+                .peer_session_snapshot(private)
+                .unwrap()
+                .sidecar_port,
+            0
+        );
+        let reused = SessionRouter::complete_ensure_sidecar(
+            &router,
+            group,
+            EnsureSidecarPrep::Healthy(1234),
+            |_| async {
+                panic!("healthy Sidecar must not be recreated");
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(reused, (1234, false));
+        let failed = SessionRouter::complete_ensure_sidecar(
+            &router,
+            group,
+            EnsureSidecarPrep::NeedCreate(info),
+            |_| async { Err("synthetic startup failure".into()) },
+        )
+        .await;
+        assert!(failed.is_err());
+        assert_eq!(
+            router
+                .lock()
+                .await
+                .peer_session_snapshot(group)
+                .unwrap()
+                .sidecar_port,
+            1234
+        );
     }
 
     #[test]

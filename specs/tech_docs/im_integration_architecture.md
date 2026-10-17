@@ -81,7 +81,7 @@ Rust adapter与Plugin Bridge都属于general request proxy consumer。effective 
 
 ### 4.1 并发与 backpressure
 
-每条消息先取得per-peer串行锁，再取得App级有界并发许可。router lock只覆盖短暂的binding/ensure/enqueue编排，不能跨AI执行或平台reply持有。
+每条消息先取得per-peer串行锁，再取得App级有界并发许可。router lock只覆盖短暂的binding读写，不能跨Sidecar启动就绪、AI执行或平台reply持有。普通入站、命令与Heartbeat统一走`SessionRouter::ensure_sidecar`的prepare → 锁外create → commit；per-peer fence始终保留。恢复中的Sidecar会通过Management API回查Channel上下文并读取同一个router，持锁等待ready会形成循环等待。
 
 ```text
 platform / Plugin Bridge inbound

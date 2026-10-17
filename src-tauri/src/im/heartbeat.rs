@@ -15,7 +15,7 @@ use crate::{ulog_debug, ulog_info, ulog_warn};
 
 use super::adapter::push_text_preferring_stream;
 use super::health::{self, HealthManager};
-use super::router::{EnsureSidecarPrep, SessionRouter};
+use super::router::SessionRouter;
 use super::types::{
     ActiveHours, HeartbeatConfig, HeartbeatWake, HostInteractionCapability, PendingCronEvent,
     WakeReason,
@@ -462,54 +462,19 @@ impl HeartbeatRunner {
             return false;
         }
 
-        // Ensure sidecar is running — split into 3 phases to avoid holding router lock
-        // during the blocking sidecar creation (up to 5 minutes).
-        // Phase 1: Check health / extract info (brief lock)
-        let prep = {
-            let mut router_guard = router.lock().await;
-            router_guard
-                .prepare_ensure_sidecar(&session_key, sidecar_manager)
-                .await
-        };
-
-        let (port, _is_new_sidecar) = match prep {
-            EnsureSidecarPrep::Healthy(p) => (p, false),
-            EnsureSidecarPrep::NeedCreate(info) => {
-                // Phase 2: Create sidecar (NO lock held — blocking up to 5 min)
-                match super::router::SessionRouter::create_sidecar_blocking(
-                    info.clone(),
-                    app_handle,
-                    sidecar_manager,
-                )
-                .await
-                {
-                    // #327: use the authoritative is_new — a reused sidecar (the
-                    // manager kept an existing healthy one for this session_id)
-                    // reports false so the config sync below is skipped.
-                    Ok((port, is_new)) => {
-                        // Phase 3: Write result back (brief lock)
-                        {
-                            let mut router_guard = router.lock().await;
-                            router_guard.commit_ensure_sidecar(&session_key, &info, port);
-                        }
-                        let _ = health::persist_router_active_sessions(
-                            health,
-                            router,
-                            "heartbeat-ensure-sidecar",
-                        )
-                        .await;
-                        (port, is_new)
-                    }
-                    Err(e) => {
-                        ulog_warn!(
-                            "[heartbeat] Failed to ensure sidecar for {}: {}",
-                            self.bot_label,
-                            e
-                        );
-                        *self.executing.lock().await = false;
-                        return false;
-                    }
-                }
+        let (port, _is_new_sidecar) = match SessionRouter::ensure_sidecar(
+            router, &session_key, app_handle, sidecar_manager,
+        ).await {
+            Ok(result) => {
+                let _ = health::persist_router_active_sessions(
+                    health, router, "heartbeat-ensure-sidecar",
+                ).await;
+                result
+            }
+            Err(e) => {
+                ulog_warn!("[heartbeat] Failed to ensure sidecar for {}: {}", self.bot_label, e);
+                *self.executing.lock().await = false;
+                return false;
             }
         };
 
