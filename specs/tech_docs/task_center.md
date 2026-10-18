@@ -135,7 +135,11 @@ Drawer 的正文／评论阅读区独占评论导航滚动：通知定位、回�
 
 ## 4. Managed Task
 
-记忆默认规则的初始化统一由 `workspace_files::memory_rules` 裁决：若工作区 `.claude/rules/` 的直接子文件中已有文件名包含 `memory` 的普通 Markdown 文件（文件名与 `.md` 扩展名均忽略大小写），视为已有记忆方案，整组跳过 `02-SOUL.md`、`03-USER.md`、`04-MEMORY.md` 的补齐。只检查文件名，不读取正文、不递归子目录、不跟随符号链接；没有匹配文件时保留既有的缺失补齐与内容保留行为。该判断覆盖开关、启动维护和 managed Task 的公共初始化入口；不改变 `UPDATE_MEMORY.md` 的独立准备、任务调度或 Skill 的执行约定。
+记忆默认规则的初始化统一由 `workspace_files::memory_rules` 裁决：若工作区 `.claude/rules/` 的直接子文件中已有文件名包含 `memory` 的普通 Markdown 文件（文件名与 `.md` 扩展名均忽略大小写），视为已有记忆方案，整组跳过 `02-SOUL.md`、`03-USER.md`、`04-MEMORY.md` 的补齐。只检查文件名，不读取正文、不递归子目录、不跟随符号链接；没有匹配文件时保留既有的缺失补齐与内容保留行为。该判断覆盖开关、启动维护和 managed Task 的公共初始化入口；不改变 `UPDATE_MEMORY.md` 的独立准备。
+
+默认模板初始化归 Rust；三个记忆 Skill 先理解工作区实际架构，沿用其职责、路径和引用，必要时可创建符合该架构的文件，不将命名差异当作补齐默认三件套的依据。Gardener / Molt 脚本盘点直接 Markdown 规则文件，以忽略大小写的文件名线索识别所有匹配层；未识别到可选层只是信息，不是默认文件缺失错误。默认日志目录检查是线索，由 Skill 结合工作区约定判断。
+
+Gardener / Molt 的系统任务文本由 `memory_evolution` 生成。Scheduler 在 Task control guard 内、启动 timer 前通过 TaskStore 的 managed prompt 写入口收敛已有 `task.md`（仅 prompt，不改 Task row），覆盖 App 恢复、后续启动与 run-now 准入，失败沿既有调度错误路径处理，不执行旧文本。普通 Task 不参与；Task ID、运行配置、计划与历史不变。已安装的 Skill 通过现有 `SYSTEM_SKILLS_VERSION` 升级，启动同步先于 scheduler 恢复。
 
 memory update、memory evolution、Agent heartbeat 等内部定时工作也写入带 `managedKind` 的隐藏 Task，由同一个 Task scheduler 执行。普通 Task Center 列表默认过滤 managed Task，但 Session/history/audit 保留。`memory_auto_update_batch` 是遍历多个候选存量 Session 的调度器，本身不拥有持久 Session binding：Task row 使用现有 schema 的非固定绑定形态 `runMode=new-session` 且不写 `preselectedSessionId`，但该 `managedKind` 明确绕过 Session Engine，不会为调度器新建 Session；实际运行时才在 queue authority 下逐个绑定存量 Session 并发送 Memory Update query。历史 single-session 行由配置 reconcile 原位归一。Memory Gardener / Molt 才是实际创建新 Session 执行 Skill 的独立 managed Task。
 

@@ -24,12 +24,6 @@ MOLT_OVERDUE_DAYS = 21
 VERIFIED_STALE_DAYS = 45
 STATE_FILE = "memory/gardener/state.json"
 
-RULE_CANDIDATES = {
-    "soul": ("02-SOUL.md", "SOUL.md"),
-    "user": ("03-USER.md", "USER.md"),
-    "memory": ("04-MEMORY.md", "MEMORY.md"),
-}
-
 
 class Report:
     def __init__(self) -> None:
@@ -72,13 +66,21 @@ def find_repo_from_cwd() -> Path:
     return current
 
 
-def find_rule(repo: Path, kind: str) -> Path | None:
+def rule_files(repo: Path) -> list[Path]:
+    """Inventory direct regular Markdown files; do not impose a template layout."""
     rules = repo / ".claude" / "rules"
-    for name in RULE_CANDIDATES[kind]:
-        path = rules / name
-        if path.is_file():
-            return path
-    return None
+    if not rules.is_dir():
+        return []
+    return sorted(
+        (path for path in rules.iterdir()
+         if not path.is_symlink() and path.is_file() and path.suffix.lower() == ".md"),
+        key=lambda path: path.name,
+    )
+
+
+def find_rules(repo: Path, kind: str) -> list[Path]:
+    # Filename hints only. The Skill interprets roles in the workspace's architecture.
+    return [path for path in rule_files(repo) if kind in path.name.lower()]
 
 
 def rel(repo: Path, path: Path) -> str:
@@ -98,44 +100,37 @@ def parse_iso_date(text: str) -> date | None:
         return None
 
 
-def check_rule_substrate(repo: Path, report: Report) -> dict[str, Path]:
-    found: dict[str, Path] = {}
-    rules = repo / ".claude" / "rules"
-    if not rules.is_dir():
-        report.red("substrate", ".claude/rules 不存在")
-        return found
-
-    for kind in ("soul", "user", "memory"):
-        path = find_rule(repo, kind)
-        if path is None:
-            names = " 或 ".join(RULE_CANDIDATES[kind])
-            report.red("substrate", f"缺少 {names}")
-            continue
-        found[kind] = path
-        report.info("substrate", f"{kind}: {rel(repo, path)}")
+def check_rule_substrate(repo: Path, report: Report) -> dict[str, list[Path]]:
+    files = rule_files(repo)
+    for path in files:
+        report.info("substrate", rel(repo, path))
+    if not files:
+        report.info("substrate", "未发现直接 Markdown 规则文件；先理解工作区记忆结构")
+    found = {kind: find_rules(repo, kind) for kind in ("soul", "user", "memory")}
+    for kind, paths in found.items():
+        if not paths:
+            report.info("substrate", f"未按文件名识别到 {kind} 层；不代表缺少必要文件")
     return found
 
 
-def check_budgets(repo: Path, report: Report, rules: dict[str, Path]) -> None:
+def check_budgets(repo: Path, report: Report, rules: dict[str, list[Path]]) -> None:
     for kind, budget in BUDGETS.items():
-        path = rules.get(kind)
-        if path is None:
-            continue
-        size = path.stat().st_size
-        pct = size / budget
-        desc = f"{rel(repo, path)}: {size / 1024:.1f}KB / {budget / 1024:.0f}KB ({pct:.0%})"
-        if pct > 1.0:
-            report.red("budget", f"超预算 - {desc}")
-        elif pct > BUDGET_WARN_RATIO:
-            report.warn("budget", f"接近预算 - {desc}")
-        else:
-            report.info("budget", f"OK - {desc}")
+        for path in rules.get(kind, []):
+            size = path.stat().st_size
+            pct = size / budget
+            desc = f"{rel(repo, path)}: {size / 1024:.1f}KB / {budget / 1024:.0f}KB ({pct:.0%})"
+            if pct > 1.0:
+                report.red("budget", f"超预算 - {desc}")
+            elif pct > BUDGET_WARN_RATIO:
+                report.warn("budget", f"接近预算 - {desc}")
+            else:
+                report.info("budget", f"OK - {desc}")
 
 
 def check_log_gaps(repo: Path, report: Report, today: date) -> None:
     memory_dir = repo / "memory"
     if not memory_dir.is_dir():
-        report.info("log-gap", "memory/ 不存在；首次运行可由园丁创建")
+        report.info("log-gap", "未发现 memory/；跳过默认布局的日志检查")
         return
     if not is_git_repo(repo):
         report.info("log-gap", "非 git 仓库，跳过 git 活动日志洞检查")
@@ -158,7 +153,7 @@ def check_log_gaps(repo: Path, report: Report, today: date) -> None:
         if iso in commit_dates and not (memory_dir / f"{iso}.md").exists():
             missing_active.append(iso)
     if missing_active:
-        report.red("log-gap", f"有 git 活动但缺日志: {', '.join(sorted(missing_active))}")
+        report.warn("log-gap", f"默认日志路径未发现记录；按工作区约定确认是否需要补记: {', '.join(sorted(missing_active))}")
     else:
         report.info("log-gap", f"近 {LOG_GAP_WINDOW_DAYS} 天无 git 活动日志洞")
 
@@ -273,8 +268,9 @@ def main() -> int:
     check_log_gaps(repo, report, today)
     check_gardener_deadman(repo, report)
     check_molt_overdue(repo, report, today)
-    check_stale_verified(repo, report, rules.get("memory"), today)
-    check_topic_pointers(repo, report, rules.get("memory"))
+    for memory_path in rules["memory"]:
+        check_stale_verified(repo, report, memory_path, today)
+        check_topic_pointers(repo, report, memory_path)
 
     if args.json:
         print(json.dumps(report.items, ensure_ascii=False, indent=2))

@@ -263,6 +263,25 @@ fn existing_rule_state(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn memory_filename_policy_matches_maintenance_scripts() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../src/shared/__fixtures__/memory-rule-discovery.json"
+        ))
+        .unwrap();
+        for case in cases.as_array().unwrap() {
+            let tmp = make_test_workspace("memory_filename_parity");
+            let rules = tmp.join(".claude/rules");
+            std::fs::create_dir_all(&rules).unwrap();
+            let name = case["name"].as_str().unwrap();
+            std::fs::write(rules.join(name), "custom").unwrap();
+            let skipped = super::ensure_memory_rule_substrate(&tmp).unwrap().is_none();
+            assert_eq!(skipped, case["matches"].as_bool().unwrap(), "{name}");
+            assert_eq!(std::fs::read_to_string(rules.join(name)).unwrap(), "custom");
+            fs::remove_dir_all(tmp).unwrap();
+        }
+    }
+
     use super::*;
     use crate::workspace_files::test_support::make_test_workspace;
 

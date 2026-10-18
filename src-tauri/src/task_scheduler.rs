@@ -416,7 +416,7 @@ impl TaskSchedulerController {
     pub(crate) async fn start_with_control_held(
         &self,
         task_id: &str,
-        _control: &TaskControlGuard,
+        control: &TaskControlGuard,
     ) -> Result<(), String> {
         if self.shutting_down.load(Ordering::SeqCst) {
             return Err("Task scheduler is shutting down".to_string());
@@ -459,6 +459,11 @@ impl TaskSchedulerController {
                 execution.state.as_str()
             ));
         }
+
+        // Refresh system-owned instructions before any recovered timer can run.
+        // Failure follows the existing start/recovery error path; never dispatch
+        // a stale memory prompt after a failed upgrade.
+        crate::memory_evolution::reconcile_prompt_before_start(store, &task, control).await?;
 
         let task_id_owned = task_id.to_string();
         let executions = Arc::clone(&self.executions);
@@ -681,6 +686,7 @@ impl TaskSchedulerController {
         if self.app_handle.read().await.is_none() {
             return Err("task scheduler app handle is unavailable".to_string());
         }
+        crate::memory_evolution::reconcile_prompt_before_start(store, &task, &control).await?;
         let queue_id =
             claim_execution_if_open(&self.executions, &self.shutting_down, task_id).await?;
         let reserved_session = match reserve_claimed_execution_session(
