@@ -201,7 +201,10 @@ export async function captureChannelTurn(
   const scope = await readChannelScope();
   if (!scope) return null;
   const parsed = scopeSchema.parse(scope);
-  if (!parsed.channels.length) return null;
+  // Agent-wide send capabilities do not establish this Session's conversation.
+  if (!parsed.defaultTarget) return null;
+  if (!parsed.channels.some((channel) => channel.channelId === parsed.defaultTarget!.channelId))
+    throw new Error("channel_context_invalid: binding has no matching connection");
   return {
     scope: parsed,
     startedAt: new Date().toISOString(),
@@ -297,13 +300,11 @@ export function channelContextForInput(
     delivery: {
       mode: channel?.mode ?? null,
       ordinaryOutput:
-        !channel ||
-        delivery.mode === "tool_only" ||
-        delivery.assistant === "none"
-          ? "not_forwarded"
-          : delivery.assistant === "caller-owned"
-            ? "caller_managed"
-            : "forwarded",
+        !channel ? "not_forwarded"
+          : delivery.assistant === "none" ? "suppressed"
+          : delivery.mode === "tool_only" ? "not_forwarded"
+          : delivery.assistant === "caller-owned" ? "caller_managed"
+          : "forwarded",
       defaultTarget: binding,
       cliCommand: "myagents im send-message",
       targetTypes: channel?.targetTypes ?? null,

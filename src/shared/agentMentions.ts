@@ -160,7 +160,8 @@ export function composeQueryReminder(input: {
     ? parseLeadingSystemReminder(primaryMessage).body
     : "";
   const mentions = input.agentMentions ?? [];
-  if (!mentions.length && !input.channelContext) return primaryMessage ?? input.visibleText;
+  const channel = input.channelContext ? buildChannelContext(input.channelContext) : "";
+  if (!mentions.length && !channel) return primaryMessage ?? input.visibleText;
   const parts = mentions
     .map(({ agent, availability }) => {
       validateMentionAgent(agent);
@@ -181,7 +182,7 @@ export function composeQueryReminder(input: {
     })
     .join("\n");
   const sections = [primaryBody];
-  if (input.channelContext) sections.push(buildChannelContext(input.channelContext));
+  if (channel) sections.push(channel);
   if (mentions.length) sections.push(`<${AGENT_MENTIONS_TAG}>\n${parts}\n<instruction>${INSTRUCTION}</instruction>\n</${AGENT_MENTIONS_TAG}>`);
   return `<system-reminder>\n${sections.filter(Boolean).join('\n')}\n</system-reminder>${input.visibleText ? `\n${input.visibleText}` : ''}`;
 }

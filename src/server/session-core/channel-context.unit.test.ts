@@ -45,6 +45,33 @@ const inbound = () =>
   });
 
 describe("channel execution snapshot", () => {
+  it.each(["auto", "tool_only"] as const)("does not admit Agent capabilities without a Session binding (%s)", async (mode) => {
+    readScope.mockResolvedValue({ ...scope(mode), defaultTarget: null, sourceType: null });
+    expect(await captureChannelTurn("none")).toBeNull();
+  });
+  it.each(["auto", "tool_only"] as const)("keeps silent turns silent regardless of channel mode (%s)", async (mode) => {
+    readScope.mockResolvedValue(scope(mode));
+    const snapshot = (await captureChannelTurn("none"))!;
+    const context = channelContextForInput(snapshot,
+      effectiveChannelDelivery(snapshot, { user: "none", assistant: "none" }), "other");
+    expect(context.facts.delivery.ordinaryOutput).toBe("suppressed");
+    const output = decorateChannelQuery("maintain memory", context, false);
+    expect(output).not.toContain("需要主动使用 CLI");
+    expect(output).toContain("无需发送渠道消息");
+  });
+  it("rejects a binding whose connection is missing", async () => {
+    readScope.mockResolvedValue({ ...scope("auto"), channels: [] });
+    await expect(captureChannelTurn("none")).rejects.toThrow("binding has no matching connection");
+  });
+  it.each(["task", "heartbeat", "goal", "session_event"] as const)("preserves caller-owned auto delivery for %s", async (source) => {
+    readScope.mockResolvedValue(scope("auto"));
+    const snapshot = (await captureChannelTurn("none"))!;
+    const context = channelContextForInput(snapshot,
+      effectiveChannelDelivery(snapshot, { user: "none", assistant: "caller-owned" }), source);
+    expect(context.facts.delivery.ordinaryOutput).toBe("caller_managed");
+    expect(decorateChannelQuery("work", context, false)).toContain("由任务发起方处理渠道投递");
+    expect(decorateChannelQuery("work", context, false)).not.toContain("需要主动使用 CLI");
+  });
   it("freezes configuration per admission and clears IM actors on non-IM triggers", async () => {
     const mutable = scope("auto");
     readScope.mockResolvedValue(mutable);

@@ -21,11 +21,10 @@ export async function readChannelScope(): Promise<Record<
   return response;
 }
 
-/** Prompt capabilities come from the Session owner, not its current desktop tab. */
-export async function readChannelPromptOptions(): Promise<{ channelMessagingEnabled: boolean; channelBound: boolean }> {
+/** Channel prompts require the exact Session binding, not Agent-wide capabilities. */
+export async function readChannelPromptOptions(): Promise<{ channelBound: boolean }> {
   const scope = await readChannelScope();
   return {
-    channelMessagingEnabled: !!(scope?.channels as unknown[] | undefined)?.length,
     channelBound: !!scope?.defaultTarget,
   };
 }

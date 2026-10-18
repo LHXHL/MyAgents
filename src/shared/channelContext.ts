@@ -104,6 +104,7 @@ export const channelFactsSchema = z
           "forwarded",
           "not_forwarded",
           "caller_managed",
+          "suppressed",
         ]),
         defaultTarget: channelTargetSchema.nullable(),
         cliCommand: z.literal("myagents im send-message"),
@@ -165,7 +166,8 @@ export const channelFactsSchema = z
       invalid("Unbound input cannot claim a default destination");
     if (
       facts.delivery.mode === "tool_only" &&
-      facts.delivery.ordinaryOutput !== "not_forwarded"
+      facts.delivery.ordinaryOutput !== "not_forwarded" &&
+      facts.delivery.ordinaryOutput !== "suppressed"
     )
       invalid("Tool-only output cannot be forwarded automatically");
     if (
@@ -304,9 +306,13 @@ function promptFacts(facts: ChannelFacts): unknown {
  * CHANNEL_PROMPT so a mode change cannot churn the system prefix. */
 export function channelInstruction(facts: ChannelFacts): string {
   const { delivery } = facts;
-  return delivery.mode === "auto" && delivery.ordinaryOutput === "forwarded"
+  if (!delivery.defaultTarget || delivery.mode === null) return "";
+  if (delivery.ordinaryOutput === "suppressed") return prompt.CHANNEL_DELIVERY_SUPPRESSED;
+  if (delivery.mode === "tool_only") return prompt.CHANNEL_DELIVERY_TOOL_ONLY;
+  if (delivery.ordinaryOutput === "caller_managed") return prompt.CHANNEL_DELIVERY_CALLER_MANAGED;
+  return delivery.ordinaryOutput === "forwarded"
     ? prompt.CHANNEL_DELIVERY_AUTO
-    : prompt.CHANNEL_DELIVERY_TOOL_ONLY;
+    : prompt.CHANNEL_DELIVERY_SUPPRESSED;
 }
 
 /** Caller passes typed product context, never raw user XML. Returns an inner
@@ -320,6 +326,8 @@ export function buildChannelContext(input: ChannelContext, options?: { factsOnly
   if (!parsed.success || (dataResult && !dataResult.success))
     throw new Error("channel_context_invalid");
   const facts = parsed.data;
+  // Capability-only scopes have no conversation context to project.
+  if (!facts.delivery.defaultTarget) return "";
   facts.projection = emptyChannelProjection();
   const data = dataResult?.success ? dataResult.data : undefined;
   // Zod parsed copies keep historical input immutable; dates in quoted/history
@@ -481,6 +489,7 @@ export function decorateChannelQuery(
   hasProductEnvelope: boolean,
 ): string {
   const channel = buildChannelContext(context);
+  if (!channel) return text;
   if (hasProductEnvelope && text.startsWith("<system-reminder>")) {
     const end = text.indexOf("</system-reminder>");
     if (end < 0) throw new Error("Invalid product reminder envelope");

@@ -174,7 +174,7 @@ builtin/external各自在真实turn owner中capture完整text block，成功term
 
 ### 5.3 渠道发送模式与显式发送
 
-`ChannelConfig.messageDeliveryMode` 为 `auto | tool_only`，旧配置缺省 auto；UI 通过原配置 patch owner 保存，下一轮执行生效。模式不属于 Session runtime identity，更新不重建 Session。Builtin queue item / External turn lifecycle 在实际 admission 读取 Rust capability projection 并冻结；实时输入复用当前执行轮，排队输入在自己的执行边界冻结。不可按模型 prompt 或可变全局最近请求判断模式。
+`ChannelConfig.messageDeliveryMode` 为 `auto | tool_only`，旧配置缺省 auto；UI 通过原配置 patch owner 保存，下一轮执行生效。模式不属于 Session runtime identity，更新不重建 Session。Builtin queue item / External turn lifecycle 在实际 admission 读取 Rust capability projection 并冻结；实时输入复用当前执行轮，排队输入在自己的执行边界冻结。不可按模型 prompt 或可变全局最近请求判断模式。固定渠道 prompt 与逐轮 CHANNEL_CONTEXT 仅属于当前精确绑定的 Session；Agent 的渠道能力非空不构成绑定。assistant owner 为 none 的轮次仍静默，auto 的 caller-owned 轮次由发起方投递，都不能被提示词改写成必须显式发送。
 
 发送决策：automatic 只允许 auto；explicit 和必要 control 在两种模式均可用，且仍需通过既有权限/目标校验。普通流式、final、typing/思考占位、失败 fallback、桌面镜像、Heartbeat 和 Goal 待投递都遵循本轮模式。管理命令、权限和必要提问走原控制流程。tool_only 仍结算 request/stream；成功 Heartbeat 以 suppressed 消费 pending snapshot，Goal outbox 固化该轮模式并按无需发送结束；执行失败不被改写为成功。
 

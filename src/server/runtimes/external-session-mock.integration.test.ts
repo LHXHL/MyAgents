@@ -7051,11 +7051,46 @@ describe('external SessionEngine with fake runtime', () => {
   });
 
 
+  it.each(['dsh', 'codex', 'claude-code'] as const)('keeps unbound desktop prompts free of Agent channel context through %s', async runtimeType => {
+    vi.doMock('../tools/channel-messaging', async original => ({
+      ...await original<typeof import('../tools/channel-messaging')>(),
+      readChannelPromptOptions: async () => ({ channelBound: false }),
+      readChannelScope: async () => ({
+        channels: [{ channelId: 'agent-bot', platform: 'wecom', name: 'Agent Bot', mode: 'tool_only', groupActivation: 'mention', targetTypes: [{ type: 'user', idTypes: ['userid'] }], mediaTypes: [] }],
+        defaultTarget: null, sourceType: null, bindingName: null,
+      }),
+    }));
+    const harness = await createHarness([{ kind: 'silent' }, { kind: 'success', text: 'answer' }], {
+      runtimeType, realtimeSteering: true, config: { chatQueueResponseMode: 'realtime' },
+    });
+    const nativeStart = vi.spyOn(harness.runtime, 'startSession');
+    const sessionId = `unbound-desktop-${runtimeType}`;
+    const workspacePath = join(harness.home, 'workspace');
+    const request = (text: string) => ({ ...desktopRequest(sessionId, workspacePath, text), permissionMode: getMaxPermissionForRuntime(runtimeType) });
+    const first = await harness.engine.sendDesktopMessage(request('咕咕嘎嘎是个啥'));
+    await expect(first.dispatchAcceptance).resolves.toMatchObject({ accepted: true });
+    await waitFor(() => harness.runtime.sentMessages.length === 1, 'first desktop admission');
+    expect(harness.runtime.sentMessages[0]).toBe('咕咕嘎嘎是个啥');
+    expect(JSON.stringify(nativeStart.mock.calls[0]?.[0])).not.toMatch(/myagents-channel>|CHANNEL_CONTEXT|myagents-managed-codex-interaction-limits/);
+    await harness.engine.sendDesktopMessage(request('补充问题'));
+    await waitFor(() => harness.runtime.steeredMessages.length === 1, 'desktop steer');
+    expect(harness.runtime.steeredMessages[0].message).toBe('补充问题');
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'success' });
+    await harness.engine.waitIdle(2000, 10);
+    const next = await harness.engine.sendDesktopMessage(request('后续问题'));
+    await expect(next.dispatchAcceptance).resolves.toMatchObject({ accepted: true });
+    await waitFor(() => harness.runtime.sentMessages.length === 2, 'next desktop admission');
+    await harness.engine.waitIdle(2000, 10);
+    expect(harness.runtime.sentMessages.at(-1)).toBe('后续问题');
+    const messages = (await harness.sessionStore.getSessionData(sessionId))?.messages ?? [];
+    expect(messages.filter(message => message.role === 'user').map(message => message.content).join('\n')).not.toContain('CHANNEL_CONTEXT');
+  });
+
   it('recaptures channel mode at actual admission after a rejected Desktop steer', async () => {
     let mode: 'auto' | 'tool_only' = 'auto';
     vi.doMock('../tools/channel-messaging', async original => ({
       ...await original<typeof import('../tools/channel-messaging')>(),
-      readChannelPromptOptions: async () => ({ channelMessagingEnabled: true, channelBound: true }),
+      readChannelPromptOptions: async () => ({ channelBound: true }),
       readChannelScope: async () => ({channels: [{channelId: 'c', platform: 'feishu', name: null, mode, groupActivation: null, targetTypes: [{type: 'chat', idTypes: ['chat_id']}], mediaTypes: []}], defaultTarget: {channelId: 'c', type: 'chat', id: 'chat', idType: 'chat_id'}, sourceType: 'private'}),
     }));
     const harness = await createHarness([{kind:'silent'}, {kind:'success', text:'second answer'}], {realtimeSteering:true, rejectSteerUnavailable:true, config:{chatQueueResponseMode:'realtime'}});
@@ -8828,7 +8863,7 @@ describe('external SessionEngine with fake runtime', () => {
   it.each(['dsh', 'codex', 'claude-code'] as const)('delivers Channel handoff context and owned images through %s with target mode', async runtimeType => {
     vi.doMock('../tools/channel-messaging', async original => ({
       ...await original<typeof import('../tools/channel-messaging')>(),
-      readChannelPromptOptions: async () => ({ channelMessagingEnabled: true, channelBound: true }),
+      readChannelPromptOptions: async () => ({ channelBound: true }),
       readChannelScope: async () => ({ channels: [{ channelId: 'bot', platform: 'wecom', name: 'Test Bot', mode: 'tool_only', groupActivation: 'mention', targetTypes: [{ type: 'user', idTypes: ['userid'] }], mediaTypes: ['image','file'] }], defaultTarget: { channelId: 'bot', type: 'user', id: 'user', idType: 'userid' }, sourceType: 'private', bindingName: '收件人' }),
     }));
     const harness = await createHarness([{ kind: 'success', text: 'warm' }, { kind: 'success', text: '内部分析' }], { runtimeType });

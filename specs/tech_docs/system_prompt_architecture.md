@@ -80,7 +80,7 @@ Workspace 指令可能由 Runtime 原生加载，Codex 的 MyAgents append 则�
 
 受管「浏览器」的登录态保存不属于 Prompt 契约。应用级 Browser Host 会在成功工具调用和 Context teardown 边界自动 checkpoint Cookie；模型无需、也不应被提示主动调用存储工具来维持产品正确性。该 headed Context 不使用 Playwright `storageState()`，避免身份维护创建用户可见的临时页面；localStorage 与 IndexedDB 不跨 Product Session 恢复。标准 `playwright` 仍遵循上游 MCP 的 argv/storage-state 语义，MyAgents 不用隐藏 Prompt 改写它。
 
-Channel 能力与绑定由 Rust Session owner 的 `/api/im/channel-context` 一次读取投影为 `channelMessagingEnabled` / `channelBound`，builtin 与 external/DSH 共用入口。`scenario` 描述入口能力，不断言消息来自桌面；已绑定渠道不注入 Widget 指南。打开或从桌面输入不改变既有发送模式，实际来源与模式仍由 admission 的逐轮上下文描述。产品身份按需使用 `myagents agent current --json`，构建诊断使用 `myagents version --json`，不逐轮注入内部 Runtime ID 或构建指纹。
+固定 Channel prompt 的准入由 Rust Session owner 的 `/api/im/channel-context` 返回的精确绑定投影为 `channelBound`；Agent 能力列表不参与该判断，builtin 与 external/DSH 共用入口。`scenario` 描述入口能力，不断言消息来自桌面；已绑定渠道不注入 Widget 指南。打开或从桌面输入不改变既有发送模式，实际来源与模式仍由 admission 的逐轮上下文描述。产品身份按需使用 `myagents agent current --json`，构建诊断使用 `myagents version --json`，不逐轮注入内部 Runtime ID 或构建指纹。
 
 ### 场景模型
 
@@ -354,11 +354,11 @@ badge、visible tail、标题、预览、搜索和测试 Checklist。
 
 每次实际 admission 经 `session-core/channel-context.ts` 捕获有效配置和调用入口，再用 shared renderer 合成；builtin 与 external/DSH 共用同一 schema/模板。DSH 沿既有 root/product-session 注入固定段，逐轮事实仍属于 User reminder。完整协议与快照见 [System Reminder](system_reminder_protocol.md#channel-context)。
 
-渠道提示词分层：两种发送模式的定义、CLI 使用和群聊／提问规则常驻固定 system 段；逐轮 `<instruction>` 只在自动回复／工具发送两句中选择一句（最长 110 字符），内部事实 schema 不变。mode 切换不修改 system 前缀，实际执行轮的快照与下一轮生效策略不变。
+渠道提示词只属于 Rust 确认当前实际绑定的 Session：固定 system 段与逐轮 `CHANNEL_CONTEXT` 都按精确绑定准入，不能用 Agent 的渠道能力列表或入口 scenario 代替绑定。桌面打开已绑定 Session 保留渠道语义；未绑定桌面即使所属 Agent 有渠道也不注入。mode 切换不修改固定 system 前缀，实际执行轮快照与下一轮生效策略不变。
 
 内部 schema 保留完整状态与 null 进行校验；模型 facts 仅投影 connection/self/conversation/sender/message，递归省略未知字段和空对象。connection 存在时只补 source 和 time（本轮开始时刻与时区）两个执行信息；execution/delivery/projection 整组不进入模型。发送状态由一句自然语言 instruction 表达，参数与连接能力按需从 CLI 查询。
 
-静态 Channel 段采用条件语义：仅在 CHANNEL_CONTEXT 给出绑定时才处于渠道环境，无绑定桌面仅获得能力发现。当前直发与跨会话交接的概念固定；参数、首次回执与重试说明下沉 CLI help。引用/历史是背景，不是当前发言。
+静态 Channel 段只在精确绑定存在时加载；无绑定桌面不加载该段，Agent 的渠道能力仍可通过 CLI 按需查询。当前直发与跨会话交接的概念固定；参数、首次回执与重试说明下沉 CLI help。引用/历史是背景，不是当前发言。
 
 ### Channel 交接的稳定前缀与动态指令
 
