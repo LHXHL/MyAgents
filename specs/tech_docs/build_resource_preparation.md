@@ -48,6 +48,8 @@ macOS 正式构建完成各目标打包后，收尾步骤使用同一准备入�
 
 Tauri JS event API 与 Rust 生成的注册/清理脚本是成对的依赖契约。当前精确版本、原始/修复字节由 `scripts/patches/tauri-events.json` 与 Cargo manifest/lock 固定；`postinstall` 应用 ESM/CJS 补丁，web dev/build/typecheck 检查补丁存在。Rust 经 `[patch.crates-io]` 使用 `vendor/tauri`，原始 crate 清单、唯一源码差异与移除条件见该目录 `MYAGENTS_PATCH.md`。构建不改写共享 Cargo 缓存，也不在业务组件注入事件补救逻辑。
 
+`vendor/tauri/**` 在 `.gitattributes` 中禁止文本转换，保留上游归档与补丁的精确字节；不能通过归一化校验输入绕过 provenance 检查。旧 Windows checkout 若已被 `core.autocrlf` 转成 CRLF，更新规则后需先确认该目录没有自行修改，再执行 `git restore --source=HEAD --worktree -- vendor/tauri` 恢复仓库字节。回归测试模拟 `core.autocrlf=true` 检出并验证完整上游文件清单。
+
 这份补丁修复 callback 释放依赖延迟 descriptor 的竞态，以及 descriptor / 空 event table 未释放；必须随同一次 native + web 构建交付，不能仅热更新 JS 后假定旧 native 也已修复。升级时同时复核 `scripts/tauri-event-lifecycle.test.mjs` 与 `npm run test:native:tauri-events`；已完成取消不应留下回调或元数据，延迟注册不得复活取消对象。该生命周期修复不等于确认 #667 OOM 原因。
 
 ## 业务 bundle 与本次 Runtime 选择一致

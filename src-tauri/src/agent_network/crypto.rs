@@ -30,6 +30,7 @@ pub(crate) fn external_tls_config() -> Result<ClientConfig, CryptoError> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CryptoError {
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     UnsupportedPlatform,
     CredentialUnavailable,
     CredentialMissing,
@@ -44,6 +45,7 @@ pub enum CryptoError {
 impl std::fmt::Display for CryptoError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
+            #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
             Self::UnsupportedPlatform => "NETWORK_CREDENTIAL_BACKEND_UNSUPPORTED",
             Self::CredentialUnavailable => "NETWORK_CREDENTIAL_STORE_UNAVAILABLE",
             Self::CredentialMissing => "NETWORK_CREDENTIAL_KEY_MISSING",

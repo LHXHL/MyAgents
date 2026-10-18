@@ -167,6 +167,25 @@ src-tauri/target/universal-apple-darwin/release/bundle/dmg/
 
 ## 常见问题
 
+### Q: 已编译并签名，但公证报 `HTTPClientError.connectTimeout`
+
+这是 `notarytool` 连接公证服务时失败；`dead_code` 编译警告和 `replacing existing signature` 不是这个错误的原因。仅凭该消息不能确定是 Apple API、上传端点还是代理链路超时，也不能认定 Apple 已拒绝产物。
+
+先检查当前构建终端的网络路径（以下请求不携带凭据）：
+
+```bash
+curl --connect-timeout 10 --max-time 20 -I https://appstoreconnect.apple.com/notary/v2/submissions
+curl --connect-timeout 10 --max-time 20 -I https://notary-submissions-prod.s3-accelerate.amazonaws.com
+```
+
+收到 401/403 等 HTTP 响应代表已建立连接，不代表认证或上传成功；连接/TLS 错误则应检查 VPN、代理、防火墙和网络。浏览器可访问 Apple 不代表构建终端或 `notarytool` 使用了相同网络路径。
+
+网络恢复后重新运行 `./build_macos.sh`，既有 Cargo 缓存可复用。若仅重试打包，必须确认源码、业务 bundle 和 staging 资源仍与失败的同一 target 对应；在加载原 `.env` 后，可用 `npm exec tauri bundle -- --target aarch64-apple-darwin`（Intel 改用 `x86_64-apple-darwin`）。资源或代码已经变化时应重新完整构建，避免打包混合产物。
+
+如已有 submission ID，先用 `notarytool info` / `log` 和原认证方式查询结果。Apple 支持在**手动提交**时用 `--no-s3-acceleration` 排查加速上传链路；当前 Tauri CLI 不提供透传此参数的配置，不能靠给构建脚本设置一个自造环境变量生效。`notarytool --timeout` 控制等待公证结果的时限，不能修复连接超时。不要用跳过签名、公证或 stapling 的方式让正式发布显示成功。
+
+参考：[Apple 公证工作流](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow)、[Tauri CLI 2.11.4 公证实现](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.11.4/crates/tauri-macos-sign/src/lib.rs)。
+
 ### Q: 编译成功，但打包报 `failed to remove extra attributes from app bundle: failed to run xattr`
 
 Tauri CLI 2.11.4 在签名前对 `.app` 执行 `xattr -crs`，简略错误会隐藏具体文件路径。可对失败的构建副本执行同一命令查看底层错误：

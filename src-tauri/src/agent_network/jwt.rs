@@ -20,13 +20,19 @@ pub struct KeyConfirmation {
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccessClaims {
-    pub iss: String,
+    // Verified before decoding by JOSE + the closed protocol schema; retained
+    // here for strict wire decoding, not as independent execution authority.
+    #[serde(rename = "iss")]
+    _iss: String,
     pub aud: String,
     pub sub: String,
-    pub iat: u64,
-    pub nbf: u64,
+    #[serde(rename = "iat")]
+    _iat: u64,
+    #[serde(rename = "nbf")]
+    _nbf: u64,
     pub exp: u64,
-    pub jti: String,
+    #[serde(rename = "jti")]
+    _jti: String,
     pub environment: String,
     pub device_id: String,
     pub key_generation: u64,
@@ -500,6 +506,18 @@ mod tests {
         let token = jsonwebtoken::encode(&header, &claims, &key).unwrap();
         let value = verify_with_keys(issuer, audience, typ, 300, &token, &keys).unwrap();
         myagents_agent_network_protocol::validate_access(&value).unwrap();
+        // Typed execution projection must still accept and require the verified
+        // wire claims, including those it does not read after verification.
+        let access: AccessClaims = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(access.exp, now + 300);
+        for field in ["iss", "iat", "nbf", "jti"] {
+            let mut missing = value.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<AccessClaims>(missing).is_err());
+            let mut invalid = value.clone();
+            invalid[field] = json!(false);
+            assert!(serde_json::from_value::<AccessClaims>(invalid).is_err());
+        }
         assert!(
             verify_with_keys("https://other.invalid", audience, typ, 300, &token, &keys).is_err()
         );

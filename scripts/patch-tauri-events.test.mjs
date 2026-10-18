@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { test } from 'node:test';
 import { patchTauriEvents } from './patch-tauri-events.mjs';
 
@@ -43,6 +44,29 @@ test('vendored Rust change is restricted to its documented event generator', () 
   for (const [file, sha] of Object.entries(upstream)) {
     assert.equal(digest(readFileSync(resolve(directory, file))), file === repair.nativeFile ? repair.nativeSha256 : sha, file);
   }
+});
+test('Windows Git checkout preserves every vendored upstream byte', () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'myagents-tauri-checkout-'));
+  try {
+    const repository = resolve(directory, 'repo');
+    const checkout = resolve(directory, 'checkout');
+    mkdirSync(repository);
+    mkdirSync(checkout);
+    const upstream = JSON.parse(readFileSync(resolve(root, 'vendor/tauri/UPSTREAM_FILES.json'), 'utf8'));
+    const files = ['.gitattributes', ...Object.keys(upstream).map(file => `vendor/tauri/${file}`)];
+    for (const file of files) {
+      const destination = resolve(repository, file);
+      mkdirSync(dirname(destination), { recursive: true });
+      copyFileSync(resolve(root, file), destination);
+    }
+    const git = (...args) => execFileSync('git', args, { cwd: repository, stdio: 'pipe' });
+    git('init', '--quiet');
+    git('-c', 'core.autocrlf=false', 'add', '--', ...files);
+    git('-c', 'core.autocrlf=true', 'checkout-index', '--all', `--prefix=${checkout.replaceAll('\\', '/')}/`);
+    for (const [file, sha] of Object.entries(upstream)) {
+      assert.equal(digest(readFileSync(resolve(checkout, 'vendor/tauri', file))), file === repair.nativeFile ? repair.nativeSha256 : sha, file);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 test('app builds select the paired dependency and verify the npm patch', () => {
   const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
