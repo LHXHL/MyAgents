@@ -1092,7 +1092,7 @@ export default function ChannelDetailView({
                             <div className="space-y-4 px-5 pb-5">
                                 {/* Group activation mode */}
                                 {(() => {
-                                    const isWecom = channel.type === 'openclaw:wecom';
+                                    const isWecom = promoted?.channelBrand === 'wecom';
                                     const effectiveMode: GroupActivation = isWecom ? 'mention' : (channel.groupActivation ?? 'mention');
                                     return (
                                         <div className="flex items-center justify-between">

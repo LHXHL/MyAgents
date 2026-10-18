@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CheckIcon, CloseIcon, TrashIcon } from '@/components/icons';
 import ConfirmDialog from '@/components/ConfirmDialog';
+import { getPlatformLabel } from '@/utils/platformLabel';
 import type { GroupPermission } from '../../../../shared/types/im';
 
 export default function GroupPermissionList({
@@ -58,7 +59,7 @@ export default function GroupPermissionList({
                             <div className="min-w-0 flex-1">
                                 <p className="truncate text-sm font-medium text-[var(--ink)]">{g.groupName}</p>
                                 <p className="text-xs text-[var(--ink-muted)]">
-	                                    {g.platform === 'telegram' ? 'Telegram' : g.platform === 'dingtalk' ? '钉钉' : '飞书'}
+                                    {getPlatformLabel(g.platform)}
                                     {g.addedBy && ` · ${t('agentSettings.imComponents.addedBy', { name: g.addedBy })}`}
                                 </p>
                             </div>
@@ -99,7 +100,7 @@ export default function GroupPermissionList({
                             <div className="min-w-0 flex-1">
                                 <p className="truncate text-sm text-[var(--ink)]">{g.groupName}</p>
                                 <p className="text-xs text-[var(--ink-muted)]">
-                                    {g.platform === 'telegram' ? 'Telegram' : g.platform === 'dingtalk' ? '钉钉' : '飞书'}
+                                    {getPlatformLabel(g.platform)}
                                 </p>
                             </div>
                             <button
