@@ -7,14 +7,37 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repair = JSON.parse(readFileSync(new URL('./patches/tauri-events.json', import.meta.url), 'utf8'));
+const upstream = JSON.parse(readFileSync(new URL('../vendor/tauri/UPSTREAM_FILES.json', import.meta.url), 'utf8'));
 const digest = source => createHash('sha256').update(source).digest('hex');
+
+export function repairVendoredTauri(directory, check = false) {
+  const pending = [];
+  for (const [name, original] of Object.entries(upstream)) {
+    const path = resolve(directory, name);
+    const source = readFileSync(path);
+    const expected = name === repair.nativeFile ? repair.nativeSha256 : original;
+    if (digest(source) === expected) continue;
+
+    // Older Windows checkouts may have converted the exact committed bytes to
+    // CRLF before vendor/tauri/** was marked -text. Restore only proven EOL drift.
+    const restored = Buffer.from(source.toString('utf8').replaceAll('\r\n', '\n'));
+    if (digest(restored) !== expected) {
+      throw new Error(`Unexpected vendored Tauri bytes: ${name}. Review vendor/tauri before building.`);
+    }
+    if (check) throw new Error('Vendored Tauri checkout has CRLF conversion. Run npm run postinstall to restore its verified bytes.');
+    pending.push({ path, restored });
+  }
+  for (const { path, restored } of pending) writeFileSync(path, restored);
+}
 
 export function patchTauriEvents(directory, check = false) {
   const metadata = JSON.parse(readFileSync(resolve(directory, 'package.json'), 'utf8'));
   if (metadata.name !== '@tauri-apps/api' || metadata.version !== repair.apiVersion) {
     throw new Error(`Tauri event lifetime repair requires @tauri-apps/api ${repair.apiVersion}. Review the native and JS regressions before upgrading.`);
   }
-  const native = resolve(import.meta.dirname, '../vendor/tauri', repair.nativeFile);
+  const vendor = resolve(import.meta.dirname, '../vendor/tauri');
+  repairVendoredTauri(vendor, check);
+  const native = resolve(vendor, repair.nativeFile);
   if (digest(readFileSync(native)) !== repair.nativeSha256) {
     throw new Error('Tauri native event lifetime patch does not match its JS counterpart. Review vendor/tauri before building.');
   }
