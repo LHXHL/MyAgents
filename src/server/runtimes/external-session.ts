@@ -2,8 +2,6 @@ import { CHANNEL_MANAGED_CODEX_LIMITS } from '../../shared/channelPrompt';
 import { readChannelPromptOptions } from '../tools/channel-messaging';
 import { captureChannelTurn, effectiveChannelDelivery, channelContextForInput, decorateChannelQuery, channelInputSource } from '../session-core/channel-context';
 import { getExternalChannelSnapshot, setExternalChannelSnapshot } from './external-session/turn-lifecycle';
-import { imRequestRegistry } from '../utils/im-request-registry';
-import { imEventBus } from '../utils/im-event-bus';
 import { desktopContextOf } from '../../shared/agentMentions';
 import { runtimeProviderAnalytics } from '../session-core/turn-analytics';
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
@@ -537,6 +535,7 @@ import {
   finalizeExternalQueuedImRequest,
   fireExternalImCallback,
   getExternalActiveRequestId,
+  getExternalChannelInbound,
   getExternalImBridgeTurnContext,
   getExternalAskUserQuestion,
   getExternalInteractiveRequest,
@@ -546,6 +545,7 @@ import {
   getExternalTurnInboxMeta,
   hasExternalAskUserQuestion,
   hasExternalInteractiveRequests,
+  publishExternalChannelDeliveryPolicy,
   resetExternalInteractiveState,
   resetExternalTurnAttachmentHints,
   setExternalActiveRequestId,
@@ -1983,18 +1983,14 @@ async function prepareExternalChannelInput(text: string, context: ExternalSendCo
 function decoratePreparedExternalChannelInput(text: string, context: ExternalSendContext): string {
   if (!context.channelSnapshot) return text;
   const source = channelInputSource(context.analyticsSource ?? context.scenario.type, context.requestId, context.analyticsOrigin, context.turnOwner);
-  const inbound = context.requestId ? imRequestRegistry.get(context.requestId)?.channelInbound : undefined;
+  const inbound = getExternalChannelInbound(context.requestId);
   return decorateChannelQuery(text, channelContextForInput(context.channelSnapshot, context.channelDelivery, source, inbound),
     !!(context.desktopQuery?.primaryContext || context.desktopQuery?.agentMentions?.length) || !!context.channelPrimaryReminder || context.analyticsOrigin?.kind === 'session-inbox');
 }
 
 function commitExternalChannelInput(context: ExternalSendContext): void {
   setExternalChannelSnapshot(context.channelSnapshot ?? null);
-  if (context.requestId) {
-    const request = imRequestRegistry.get(context.requestId);
-    if (request) request.channelDeliveryMode = context.channelDelivery.mode ?? 'auto';
-    imEventBus.emit(context.requestId, 'delivery-policy');
-  }
+  publishExternalChannelDeliveryPolicy(context.requestId, context.channelDelivery.mode);
 }
 
 type ExternalUserChannelProjection =

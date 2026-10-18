@@ -203,7 +203,7 @@ DSH 权限选择先存为 Session 的期望模式；当前 turn 使用 admission
 | `runtime-config.ts` | desired/effective config 与 source filtering |
 | `transcript-persistence.ts` | user append、assistant commit、cursor 与产品内容投影；联合历史 mutation 由 facade 调用 SessionStore |
 | `content-blocks.ts` | V1 内容块与共用展示 policy；V2 内容由 SessionStore projection 持有 |
-| `interactive.ts` | permissions、questions、IM/Inbox/watch association |
+| `interactive.ts` | permissions、questions、IM/Inbox/watch association；按 requestId 读取渠道入站事实与发布本轮发送策略 |
 | `extensions.ts` | Managed Codex extension projection |
 
 facade 负责组装 owner，不重新保存同一份 mutable state。Route 和 SessionEngine adapter 不直接 import这些内部模块。
