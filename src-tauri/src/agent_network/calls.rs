@@ -18,15 +18,19 @@ pub(crate) struct CallableAgent {
     pub mount_id: String,
     pub local_agent_id: String,
     pub name: String,
-    // Presentation metadata remains accepted by the strict resolve DTO, not peer identity.
-    #[serde(default)]
-    pub icon: Option<String>,
-    pub description: Option<String>,
+    // Retain typed wire validation even for metadata unused by RPC execution.
+    #[serde(default, rename = "icon")]
+    _icon: Option<String>,
+    #[serde(rename = "description")]
+    _description: Option<String>,
     pub device_id: String,
     pub device_name: String,
-    pub platform: String,
-    pub membership_revision: u64,
-    pub enable_revision: u64,
+    #[serde(rename = "platform")]
+    _platform: String,
+    #[serde(rename = "membershipRevision")]
+    _membership_revision: u64,
+    #[serde(rename = "enableRevision")]
+    _enable_revision: u64,
     pub selector: String,
     pub is_local: bool,
     pub source: AgentReferenceScope,
@@ -551,7 +555,8 @@ impl Calls {
     pub(crate) fn has_history(&self, op: &str) -> bool {
         self.calls.contains_key(op) || self.retired.contains_key(op)
     }
-    pub(crate) fn is_empty(&self) -> bool {
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
         self.calls.is_empty()
     }
     pub(crate) fn bytes(&self) -> usize {
@@ -680,7 +685,7 @@ mod tests {
             }
             let target = decode_metadata(value);
             assert_eq!(
-                target.icon,
+                target._icon,
                 icon.and_then(|value| value.as_str().map(str::to_owned))
             );
             let peer = target.peer(&local());
@@ -715,6 +720,23 @@ mod tests {
         )
         .is_err());
         assert!(serde_json::from_value::<CallableAgent>(unknown_field).is_err());
+
+        for field in ["platform", "membershipRevision", "enableRevision"] {
+            let mut missing = metadata_json();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<CallableAgent>(missing).is_err());
+        }
+        for field in [
+            "icon",
+            "description",
+            "platform",
+            "membershipRevision",
+            "enableRevision",
+        ] {
+            let mut invalid = metadata_json();
+            invalid[field] = json!(false);
+            assert!(serde_json::from_value::<CallableAgent>(invalid).is_err());
+        }
 
         for invalid_icon in [
             json!("x".repeat(257)),
