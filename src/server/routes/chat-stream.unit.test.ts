@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   engine: {
     getStreamReplaySnapshot: vi.fn(() => ({
       sessionId: 'session-live',
+      snapshotRevision: 42,
       initState: { sessionState: 'idle' },
       replayMessages: [
         { id: 'm1', role: 'user', content: 'hello', timestamp: '2026-01-01T00:00:00.000Z' },
@@ -33,7 +34,7 @@ describe('handleChatStreamRoute', () => {
     vi.clearAllMocks();
   });
 
-  it('sends the active engine replay snapshot over SSE in legacy event order', async () => {
+  it('sends live state and a revision boundary without replaying cold history', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const sent: Array<{ event: string; data: unknown }> = [];
     const response = new Response('stream');
@@ -56,6 +57,7 @@ describe('handleChatStreamRoute', () => {
     );
 
     expect(result).toBe(response);
+    expect(mocks.engine.getStreamReplaySnapshot).toHaveBeenCalledWith({ includeHistory: false });
     expect(mocks.engine.getStreamReplaySnapshot.mock.invocationCallOrder[0])
       .toBeLessThan(createSseClient.mock.invocationCallOrder[0]);
     expect(sent).toEqual([
@@ -64,6 +66,7 @@ describe('handleChatStreamRoute', () => {
         data: {
           sessionState: 'idle',
           sessionId: 'session-live',
+          snapshotRevision: 42,
           liveStreamingMessage: {
             id: 'live-1',
             role: 'assistant',
@@ -72,23 +75,26 @@ describe('handleChatStreamRoute', () => {
           },
         },
       },
-      {
-        event: 'chat:message-replay',
-        data: {
-          message: { id: 'm1', role: 'user', content: 'hello', timestamp: '2026-01-01T00:00:00.000Z' },
-          replayKind: 'cold-history',
-          sessionId: 'session-live',
-        },
-      },
       { event: 'chat:logs', data: { lines: ['log-1'] } },
-      { event: 'chat:system-init', data: { info: { model: 'claude' } } },
+      { event: 'chat:system-init', data: { info: { model: 'claude' }, sessionId: 'session-live', snapshotRevision: 42 } },
       { event: 'chat:permission-request', data: { requestId: 'perm-1' } },
     ]);
-    expect(log).toHaveBeenCalledWith(
-      '[sse] chat:message-replay -> messageId=m1 replayKind=cold-history role=user sessionScope=present',
-    );
+    expect(log).not.toHaveBeenCalled();
     expect(log.mock.calls.flat().join(' ')).not.toContain('session-live');
     expect(log.mock.calls.flat().join(' ')).not.toContain('hello');
+  });
+
+  it('does not enumerate cold transcript rows during stream attachment', async () => {
+    const snapshot = mocks.engine.getStreamReplaySnapshot();
+    Object.defineProperty(snapshot, 'replayMessages', { get() {
+      throw new Error('Cold history must be paginated, not sent through SSE');
+    } });
+    mocks.engine.getStreamReplaySnapshot.mockReturnValueOnce(snapshot);
+    const send = vi.fn();
+    await handleChatStreamRoute('/chat/stream', new Request('http://local/chat/stream'), {
+      createSseClient: () => ({ client: { send }, response: new Response() }), getLogLines: () => [],
+    });
+    expect(send.mock.calls.map(([event]) => event)).not.toContain('chat:message-replay');
   });
 
   it('ignores non-stream paths', async () => {

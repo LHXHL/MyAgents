@@ -300,6 +300,7 @@ export type SessionEngineReplayMessage = Omit<SessionMessage, 'content' | 'attac
 
 export type SessionEngineStreamReplaySnapshot = {
   sessionId: string;
+  snapshotRevision: number | null;
   initState: Record<string, unknown>;
   replayMessages: SessionEngineReplayMessage[];
   liveStreamingMessage?: SessionEngineReplayMessage | null;
@@ -419,7 +420,7 @@ export interface SessionEngine {
   getRuntimeIdentity(): SessionEngineRuntimeIdentity;
   getLiveSessionState(): SessionEngineLiveState;
   getLatestAssistantResult(): Promise<SessionEngineLatestResult>;
-  getStreamReplaySnapshot(): SessionEngineStreamReplaySnapshot;
+  getStreamReplaySnapshot(options?: { includeHistory?: boolean }): SessionEngineStreamReplaySnapshot;
   getSessionConfigSnapshot(): SessionEngineConfigSnapshot;
   inspectRuntime?(runtime: RuntimeType): Promise<import('../../shared/types/runtime').RuntimeInspection | null>;
   getCurrentSessionContext(): SessionEngineCurrentContext;

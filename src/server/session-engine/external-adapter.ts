@@ -313,23 +313,24 @@ export function createExternalSessionEngine(): SessionEngine {
       };
     },
 
-    getStreamReplaySnapshot() {
+    getStreamReplaySnapshot(options) {
       // The bound identity is promoted before the lifecycle id during startup.
       // Stream replay must follow the accepted Session, not the lagging runtime
       // lifecycle, or pending→real reconnects query an empty snapshot.
       const sessionId = getCurrentBoundSessionId() || getRuntimeSessionId();
-      const liveSnapshot = getExternalLiveSessionSnapshot(sessionId);
+      const liveSnapshot = getExternalLiveSessionSnapshot(sessionId, options);
       const systemInitPayload = getExternalSystemInitPayload();
       const productContext = getCurrentProductSessionContext();
       return {
         sessionId,
+        snapshotRevision: liveSnapshot?.snapshotRevision ?? null,
         initState: {
           agentDir: productContext.workspacePath,
           sessionState: getExternalSessionState(),
           hasInitialPrompt: productContext.hasInitialPrompt,
           queuedMessages: liveSnapshot?.queuedMessages ?? [],
         },
-        replayMessages: liveSnapshot?.inMemoryMessages.map(sessionMessageToReplayMessage) ?? [],
+        replayMessages: options?.includeHistory === false ? [] : liveSnapshot?.inMemoryMessages.map(sessionMessageToReplayMessage) ?? [],
         liveStreamingMessage: liveSnapshot?.liveStreamingMessage
           ? sessionMessageToReplayMessage(liveSnapshot.liveStreamingMessage)
           : null,

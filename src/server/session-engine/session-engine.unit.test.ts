@@ -849,6 +849,22 @@ describe('session-engine selector and adapters', () => {
     expect(result.dispatchAcceptance).toBe(dispatchAcceptance);
   });
 
+  it.each(['builtin', 'external'] as const)('captures %s SSE state without materializing cold replay', kind => {
+    mocks.state.useExternal = kind === 'external';
+    const live = {
+      snapshotRevision: 19, inMemoryMessages: [],
+      liveStreamingMessage: { id: 'live', role: 'assistant', content: 'partial', timestamp: new Date(0).toISOString() },
+      liveSessionState: 'running', pendingInteractiveRequests: [],
+    };
+    mocks.getBuiltinLiveSessionSnapshot.mockReturnValue(live);
+    mocks.getExternalLiveSessionSnapshot.mockReturnValue(live);
+    const snapshot = getSessionEngine().getStreamReplaySnapshot({ includeHistory: false });
+    expect(snapshot).toMatchObject({ snapshotRevision: 19, replayMessages: [], liveStreamingMessage: { id: 'live', content: 'partial' } });
+    expect(mocks.getMessages).not.toHaveBeenCalled();
+    expect(kind === 'builtin' ? mocks.getBuiltinLiveSessionSnapshot : mocks.getExternalLiveSessionSnapshot)
+      .toHaveBeenCalledWith(expect.any(String), { includeHistory: false });
+  });
+
   it('exposes builtin read and config surfaces without route-level helpers', async () => {
     mocks.getSessionId.mockReturnValueOnce('builtin-live');
     mocks.getLastBuiltinAssistantText.mockReturnValueOnce('builtin answer');

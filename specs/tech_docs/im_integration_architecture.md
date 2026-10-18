@@ -273,7 +273,7 @@ Channel credential、token、App Secret和provider env不得进入日志、analy
 
 ## 11. 安全不变量
 
-- 空白名单默认拒绝，不等于allow all；QR bind只绕过对应的一次绑定admission。
+- 私聊管理命令与普通聊天复用同一准入边界；不得对原生 adapter 已放行的消息再按 sender ID 建第二套命令白名单（Telegram 还支持用户名）。Bridge 的既有策略为空名单允许私聊、非空名单精确匹配，检查必须发生在命令与聊天分流之前；Telegram/飞书仍在 adapter 按原有空名单拒绝策略准入。QR bind 与公开 help/start 保持各自既有豁免，群管理命令仍不开放。
 - group默认Mention，未证明mention的事件不能触发AI。
 - 新 IM Session 由 snapshot compiler 固定最高 unattended 权限（DSH 为 `full-autonomous`）；`/mode` 与渠道权限覆盖已移除。已有 snapshot 权限保持原值，桌面主动修改仍按 Session 规则生效，不能在恢复或每轮隐式提权。
 - credentials、prompt正文、tool参数、群history和platform payload不写常规日志。

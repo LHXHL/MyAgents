@@ -6,6 +6,19 @@ static CHANNEL_LIFECYCLE_LOCKS: std::sync::LazyLock<
     std::sync::Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
+/// Native adapters have already admitted private messages (Telegram also accepts
+/// usernames). Bridge plugins delegate admission to Rust; preserve their existing
+/// empty-list policy for both chat and management commands.
+fn private_message_allowed_after_adapter(
+    platform: &ImPlatform,
+    sender_id: &str,
+    allowed_users: &[String],
+) -> bool {
+    !matches!(platform, ImPlatform::OpenClaw(_))
+        || allowed_users.is_empty()
+        || allowed_users.iter().any(|user| user == sender_id)
+}
+
 fn short_session_id(value: &str) -> String {
     value.chars().take(8).collect()
 }
@@ -1636,8 +1649,14 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         complete_immediate_without_reply(adapter_for_reply.as_ref(), &msg).await;
                         continue;
                     }
-                    if command.is_some() && !matches!(command, Some("/start" | "/help"))
-                        && !allowed_users_for_loop.read().await.contains(&msg.sender_id) {
+                    // Private commands and chat share the same admission boundary.
+                    // Public help/start and the bind flow retain their existing exemptions.
+                    if msg.source_type == ImSourceType::Private
+                        && !matches!(command, Some("/start" | "/help"))
+                        && !private_message_allowed_after_adapter(
+                            &msg.platform, &msg.sender_id, &allowed_users_for_loop.read().await,
+                        ) {
+                        ulog_info!("[im] Private message blocked by channel allowlist");
                         complete_immediate_without_reply(adapter_for_reply.as_ref(), &msg).await;
                         continue;
                     }
@@ -1897,25 +1916,9 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         }
                     }
 
-                    // ── Access control ──────────
-                    // All platforms (including Bridge/OpenClaw) go through the Rust
-                    // whitelist. Bridge plugins use dmPolicy=open at the plugin level;
-                    // actual access control is enforced here via BIND_xxx + allowedUsers.
+                    // Private admission happened before command dispatch. Group
+                    // permission and activation remain independent of private commands.
                     let is_bridge_platform = matches!(msg.platform, ImPlatform::OpenClaw(_));
-
-                    // Private message whitelist check for Bridge platforms
-                    // (Bridge plugins use dmPolicy=open, access control is at Rust layer)
-                    if msg.source_type == ImSourceType::Private && is_bridge_platform {
-                        let is_allowed = {
-                            let users = allowed_users_for_loop.read().await;
-                            users.is_empty() || users.contains(&msg.sender_id)
-                        };
-                        if !is_allowed {
-                            ulog_info!("[im] Bridge private message from {} blocked (not in allowedUsers)", msg.sender_id);
-                            complete_immediate_without_reply(adapter_for_reply.as_ref(), &msg).await;
-                            continue;
-                        }
-                    }
 
                     if msg.source_type == ImSourceType::Group {
                         // Bridge group auto-discovery: when a Bridge plugin delivers a group
@@ -3076,6 +3079,31 @@ pub async fn get_all_bots_status(im_state: &ManagedImBots) -> HashMap<String, Im
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn private_chat_and_commands_preserve_platform_admission() {
+        let bridge = ImPlatform::OpenClaw("openclaw-weixin".into());
+        assert!(private_message_allowed_after_adapter(&bridge, "peer", &[]));
+        assert!(private_message_allowed_after_adapter(
+            &bridge, "peer", &["peer".into()]
+        ));
+        assert!(!private_message_allowed_after_adapter(
+            &bridge, "other", &["peer".into()]
+        ));
+        // The adapter accepted Telegram's case-insensitive username. Its numeric
+        // sender ID must not be subjected to a second, incompatible comparison.
+        assert!(private_message_allowed_after_adapter(
+            &ImPlatform::Telegram, "123", &["Alice".into()]
+        ));
+        // Native adapters retain their own admission policy; this layer cannot
+        // reinterpret an empty list or add a command-only restriction.
+        assert!(private_message_allowed_after_adapter(
+            &ImPlatform::Feishu, "peer", &[]
+        ));
+        assert!(private_message_allowed_after_adapter(
+            &ImPlatform::Dingtalk, "peer", &[]
+        ));
+    }
+
     use super::*;
     use crate::im::types::{AskUserQuestionOption, PeerSession};
     use axum::{routing::post, Json, Router as AxumRouter};

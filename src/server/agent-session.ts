@@ -148,7 +148,7 @@ import {
 import type { OfficialToolId } from '../shared/official-tools';
 import { prepareSessionTranscriptMutation, activateSessionTranscript, claimPreparedSessionForTurnAdmission, commitPreparedSessionForFirstUserTurn, migratePendingSessionIdentity, resolvePendingConversationMutation, saveSessionMetadata, publishForkSession, assertCompleteSessionForkSource, updateSessionTitleFromMessage, updateSessionMetadata, updateSessionMetadataForBinding, getSessionMetadata, loadSessionTranscript } from './SessionStore';
 import { TranscriptPresentation } from './session-transcript/presentation';
-import { projectTranscriptToolInput, type TranscriptObject } from '../shared/sessionTranscript';
+import { projectTranscriptToolInput, toStoredTranscriptMessage, type TranscriptObject } from '../shared/sessionTranscript';
 import { firePostTurnTitleHook } from './turn-hooks';
 import { createSessionMetadata, type SessionMetadata, type SessionMessage, type MessageAttachment, type SessionSource, type TurnAnalyticsSource } from './types/session';
 import { originFromTurnAttribution } from '../shared/session-origin';
@@ -7807,7 +7807,10 @@ export function getMessages(): MessageWire[] {
   return getBuiltinMessages();
 }
 
-export function getBuiltinLiveSessionSnapshot(targetSessionId: string): {
+export function getBuiltinLiveSessionSnapshot(
+  targetSessionId: string,
+  options?: { includeHistory?: boolean },
+): {
   snapshotRevision: number;
   inMemoryMessages: SessionMessage[];
   liveStreamingMessage: SessionMessage | null;
@@ -7817,10 +7820,23 @@ export function getBuiltinLiveSessionSnapshot(targetSessionId: string): {
   if (targetSessionId !== sessionId) return null;
   flushPendingLiveEvents();
   const streamingAssistantId = getStreamingAssistantId();
-  const messages = getBuiltinMessages().map(messageWireToSessionMessage);
-  const liveStreamingMessage = streamingAssistantId
+  // getBuiltinMessages() projects every V2 row. A stream attachment must
+  // select the live row before that projection, not filter a full copy later.
+  const messages = options?.includeHistory === false
+    ? [] : getBuiltinMessages().map(messageWireToSessionMessage);
+  let liveStreamingMessage = streamingAssistantId
     ? messages.find(message => message.id === streamingAssistantId) ?? null
     : null;
+  if (options?.includeHistory === false && streamingAssistantId) {
+    const product = getBuiltinProductContent();
+    if (product) {
+      const message = product.writer.projection.messages.get(streamingAssistantId);
+      liveStreamingMessage = message ? toStoredTranscriptMessage(message) : null;
+    } else {
+      const message = getBuiltinMessages().find(message => message.id === streamingAssistantId);
+      liveStreamingMessage = message ? messageWireToSessionMessage(message) : null;
+    }
+  }
   return structuredClone({
     snapshotRevision: getBuiltinLiveRevision(),
     inMemoryMessages: messages.filter(message => message.id !== streamingAssistantId),

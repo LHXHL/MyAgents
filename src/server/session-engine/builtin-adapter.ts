@@ -290,16 +290,17 @@ export function createBuiltinSessionEngine(): SessionEngine {
       };
     },
 
-    getStreamReplaySnapshot() {
+    getStreamReplaySnapshot(options) {
       const sessionId = getSessionId();
-      const liveSnapshot = getBuiltinLiveSessionSnapshot(sessionId);
+      const liveSnapshot = getBuiltinLiveSessionSnapshot(sessionId, options);
       const streamingId = getStreamingAssistantId();
-      const replayMessages = getMessages()
+      const replayMessages = options?.includeHistory === false ? [] : getMessages()
         .filter(message => !(streamingId && message.id === streamingId))
         .map(messageWireToReplayMessage);
       const systemInitInfo = getSystemInitInfo();
       return {
         sessionId,
+        snapshotRevision: liveSnapshot?.snapshotRevision ?? null,
         initState: { ...getAgentState(), queuedMessages: getQueueStatus() },
         replayMessages,
         liveStreamingMessage: liveSnapshot?.liveStreamingMessage

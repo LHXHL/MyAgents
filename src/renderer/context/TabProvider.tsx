@@ -4065,6 +4065,7 @@ export default function TabProvider({
             info: SystemInitInfo;
             sessionId?: string;
             prewarm?: boolean;
+            snapshotRevision?: number | null;
             runtime?: string;
             runtimeSource?: RuntimeSource;
           } | null;
@@ -4159,6 +4160,17 @@ export default function TabProvider({
                   // as restored Sessions. Fence the response against a later
                   // tab switch and keep any newer local metadata mutation.
                   loadBornSessionMetadata(newSessionId);
+                  // A reconnect may find a materialized backend before this
+                  // pending Tab has accepted its identity. Only that captured
+                  // stream snapshot (not a normal live system-init) requests
+                  // paginated recovery after the parent's birth admission.
+                  if (!isPendingSessionId(newSessionId)
+                    && Number.isSafeInteger(payload.snapshotRevision)
+                    && payload.snapshotRevision! >= 0) {
+                    const fence = beginPersistedRestore(newSessionId,
+                      sseRef.current?.getConnectionGeneration() ?? 0, 'live-recovery');
+                    requestLiveRestoreRef.current(newSessionId, fence.restoreToken, 'live-recovery');
+                  }
                   if (isNewSessionRef.current || resetBirthPendingRef.current) {
                     resetBirthSessionIdRef.current = newSessionId;
                     resetBirthPendingRef.current = false;
@@ -5409,6 +5421,7 @@ export default function TabProvider({
       toast,
       postJson,
       loadBornSessionMetadata,
+      beginPersistedRestore,
       clearInteractiveState,
       flushPendingTextNow,
       startRevealLoop,
@@ -5472,6 +5485,30 @@ export default function TabProvider({
           return;
         }
       }
+      if (eventName === 'chat:init' && data && typeof data === 'object') {
+        const snapshot = data as { sessionId?: string; snapshotRevision?: number | null };
+        const target = currentSessionIdRef.current;
+        if (target && snapshot.sessionId === target && !isPendingSessionId(target)
+          && Number.isSafeInteger(snapshot.snapshotRevision) && snapshot.snapshotRevision! >= 0
+          // A locally minted identity can already have an IM/Task turn that
+          // completed while disconnected. Only an empty newborn skips restore.
+          && (!(isNewSessionRef.current || resetBirthPendingRef.current)
+            || snapshot.snapshotRevision! > 0)) {
+          const fence = liveRevisionFenceRef.current;
+          const restoringThisTransport = restore.phase === 'restoring'
+            && restore.sessionId === target
+            && restore.connectionGeneration === metadata.connectionGeneration;
+          // A transport can reconnect after the last turn finished: no later
+          // delta will expose that gap. Compare the captured revision now.
+          if (!restoringThisTransport && (fence.sessionId !== target
+            || fence.lastAppliedRevision !== snapshot.snapshotRevision)) {
+            const mode = historyMessagesRef.current.length > 0 || restore.phase === 'ready'
+              ? 'live-recovery' : 'initial';
+            const next = beginPersistedRestore(target, metadata.connectionGeneration, mode);
+            requestLiveRestoreRef.current(target, next.restoreToken, mode);
+          }
+        }
+      }
       if (!eventSessionId || liveRevision === undefined) {
         applySseEvent(eventName, data);
         return;
@@ -5522,7 +5559,7 @@ export default function TabProvider({
         );
       }
     },
-    [applySseEvent],
+    [applySseEvent, beginPersistedRestore],
   );
 
   // Connect serializer: each caller's task chains onto the *previous*
@@ -5581,7 +5618,11 @@ export default function TabProvider({
           setIsLoading(false);
         }
       }
+      if (status === 'reconnecting' || status === 'failed') {
+        setSystemNotice({ kind: 'connection', level: 'warning', message: appText('tabProvider.reconnecting') });
+      }
       if (status === 'connected') {
+        setSystemNotice(previous => previous?.kind === 'connection' ? null : previous);
         const targetSessionId = currentSessionIdRef.current;
         const restore = persistedRestoreLifecycleRef.current;
         const connectionGeneration = sse.getConnectionGeneration();

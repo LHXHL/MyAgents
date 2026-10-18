@@ -54,6 +54,19 @@ function emit(requestId: string) {
 }
 
 describe('Companion question receipts', () => {
+  it.each([1, 2])('restores completed history on reconnect without cold replay (V%s)', async format => {
+    harness.snapshot = { ...(format === 2 ? { transcriptFormat: 2 } : {}), snapshotRevision: 1 };
+    const { result } = renderHook(() => useFloatingSession({ current: 'pin' }));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    harness.snapshot = { ...harness.snapshot, snapshotRevision: 4, liveSessionState: 'idle', messages: [
+      { id: 'missed', role: 'assistant', content: 'completed while away', timestamp: new Date(0).toISOString() },
+    ] };
+    act(() => harness.handler!('chat:init', { sessionId: 'companion-test', snapshotRevision: 4, sessionState: 'idle' }, {
+      sessionId: 'companion-test', connectionGeneration: 2,
+    }));
+    await waitFor(() => expect(JSON.stringify(result.current.messages)).toContain('completed while away'));
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     harness.handler = null;

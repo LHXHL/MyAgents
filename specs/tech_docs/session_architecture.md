@@ -254,7 +254,7 @@ V2 的 live projection 与异步 writer 同属 SessionStore。约 100 ms 的持�
 
 Rust 按 `(sidecar key, generation)` 把控制请求和 SSE 代理到当前进程。每次实际 replacement 都产生新 generation；旧 generation 的 response、terminal、activity 和 notification claim 必须丢弃。
 
-已恢复历史 Tab 以 REST 读取历史和当前状态，再按 revision 接收 SSE 增量，并拒绝 cold-history replay 覆盖该 baseline。尚未采用 REST baseline 的 SSE-native 新生会话，可在重连时采用有序 cold-history snapshot 修复遗漏的正文与创建事件；详见 [V2 transcript](./session_transcript_v2.md)。不能把断线期间缺失的 SSE 当成历史不存在。
+历史 Tab 以 REST 读取历史和当前状态，再按 revision 接收 SSE 增量。SSE 建连只发送状态/live row 与 snapshot revision，不全量重放冷历史；新会话首次实时输出保持即时，后续连接发现基线缺口时同样使用既有分页 REST restore。与已有基线一致的重连无需重读，idle 时的版本缺口也不能等下一条增量才发现；详见 [V2 transcript](./session_transcript_v2.md)。不能把断线期间缺失的 SSE 当成历史不存在。
 
 SSE transport 断开不代表用户取消，也不拥有 abort 权限。turn 继续执行并持久化；只有显式 Stop、Session lifecycle 命令、Runtime terminal 或 Sidecar termination 能改变执行状态。
 
