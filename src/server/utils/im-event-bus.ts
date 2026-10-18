@@ -16,7 +16,9 @@
 // In Pattern C, /api/im/events long-poll consumes from this same bus with
 // `since=<lastSeq>` for crash-recovery semantics.
 
+import { imRequestRegistry } from './im-request-registry';
 export type ImEventType =
+  | 'delivery-policy'
   | 'delta'              // streaming text fragment
   | 'block-end'          // a complete text block boundary
   | 'complete'           // turn finished (success)
@@ -46,6 +48,7 @@ export interface ImEvent {
    *    - 'gap': { droppedSeqs: [from, to], requestIds?: string[] } */
   data?: unknown;
   ts: number;
+  channelDeliveryMode?: import('../../shared/channelContext').ChannelDeliveryMode;
 }
 
 export type ImEventSubscriber = (event: ImEvent) => void;
@@ -92,7 +95,8 @@ class ImEventBusImpl {
    *  Subscriber exceptions are logged but do not block other subscribers. */
   emit(requestId: string | null, type: ImEventType, data?: unknown): void {
     const seq = this.nextSeq++;
-    const event: ImEvent = { seq, requestId, type, data, ts: Date.now() };
+    const mode = requestId ? imRequestRegistry.get(requestId)?.channelDeliveryMode : undefined;
+    const event: ImEvent = { seq, requestId, type, data, ts: Date.now(), ...(mode ? { channelDeliveryMode: mode } : {}) };
 
     this.buffer.push(event);
     while (this.buffer.length > MAX_BUFFER) {

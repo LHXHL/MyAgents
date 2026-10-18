@@ -194,7 +194,7 @@ function visibleGoalMessage(text: string): string {
 }
 
 function goalContext(goal: SessionGoal, text: string, firstUserTurn: boolean): string {
-  const visibleUserMessage = visibleGoalMessage(text);
+  const visibleUserMessage = text;
   if (firstUserTurn) {
     return buildGoalContinuationReminder({
       objective: goal.objective,
@@ -401,6 +401,7 @@ function createGoalTurnLifecycle(
         durationMs: Math.max(0, Math.round(outcome.durationMs ?? 0)),
         consumedTokens: Math.max(0, Math.round(consumedTokens)),
         channelDeliveryExpected: input.channelDeliveryExpected === true,
+        channelDeliveryMode: outcome.channelDeliveryMode ?? 'auto',
       }, 'finalized');
     await settlement;
   };
@@ -506,6 +507,7 @@ export function createGoalOrchestrator(client: ManagementClient = managementApi)
       const result = await engine.enqueueImMessage({
         ...request,
         message: goalContext(lookup.goal, request.message, firstUserTurn),
+        channelPrimaryReminder: true,
         queueId,
         turnOwner: owner,
         onTerminal: lifecycle.onTerminal,

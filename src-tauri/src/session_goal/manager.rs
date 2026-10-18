@@ -860,6 +860,7 @@ impl SessionGoalManager {
                             .any(|item| item.id == delivery_id)
                         {
                             goal.delivery_outbox.push(GoalDeliveryOutboxItem {
+                                channel_delivery_mode: request.channel_delivery_mode,
                                 id: delivery_id,
                                 text: truncate_delivery_text(text),
                                 created_at: now,
@@ -1253,7 +1254,9 @@ impl SessionGoalManager {
         let Some(item) = goal.delivery_outbox.first().cloned() else {
             return Ok(true);
         };
-        let delivery = if let Some(handle) = self.app_handle.read().await.clone() {
+        let delivery = if !item.channel_delivery_mode.allows_automatic() {
+            Ok(true)
+        } else if let Some(handle) = self.app_handle.read().await.clone() {
             let agents = handle.try_state::<crate::im::ManagedAgents>();
             let im_bots = handle.try_state::<crate::im::ManagedImBots>();
             crate::im::session_delivery::push_assistant_text_for_session(
@@ -1626,6 +1629,7 @@ mod tests {
             duration_ms,
             consumed_tokens,
             channel_delivery_expected: false,
+            channel_delivery_mode: Default::default(),
         }
     }
 
@@ -2439,6 +2443,7 @@ mod tests {
                     duration_ms: 123,
                     consumed_tokens: 456,
                     channel_delivery_expected: false,
+                    channel_delivery_mode: Default::default(),
                 },
                 generation,
                 &sidecars,

@@ -21,7 +21,7 @@ use crate::sidecar::{
     resolve_session_runtime_identity_full, ManagedSidecarManager, SidecarOwner,
 };
 
-use super::types::{ImMessage, ImSourceType, PeerSession};
+use super::types::{ImMessage, ImPlatform, ImSourceType, PeerSession};
 
 /// Max concurrent AI requests across all peers
 pub const GLOBAL_CONCURRENCY: usize = 8;
@@ -200,18 +200,83 @@ impl SessionRouter {
     /// If agent_id is set, uses new format: agent:{agentId}:{channelType}:{type}:{id}
     /// Otherwise falls back to legacy: im:{platform}:{type}:{id}
     pub fn session_key(&self, msg: &ImMessage) -> String {
-        if let Some(ref agent_id) = self.agent_id {
-            let source = match msg.source_type {
-                ImSourceType::Private => "private",
-                ImSourceType::Group => "group",
-            };
-            format!(
-                "agent:{}:{}:{}:{}",
-                agent_id, msg.platform, source, msg.chat_id
-            )
-        } else {
-            msg.session_key()
+        self.session_key_for_peer(&msg.platform, &msg.source_type, &msg.chat_id)
+    }
+
+    /// The same identity function serves inbound messages and internal handoffs.
+    pub(crate) fn session_key_for_peer(
+        &self,
+        platform: &ImPlatform,
+        source_type: &ImSourceType,
+        id: &str,
+    ) -> String {
+        let source = match source_type {
+            ImSourceType::Private => "private",
+            ImSourceType::Group => "group",
+        };
+        match &self.agent_id {
+            Some(agent) => format!("agent:{agent}:{platform}:{source}:{id}"),
+            None => format!("im:{platform}:{source}:{id}"),
         }
+    }
+
+    /// Startup-only repair, before any peer fences or Sidecar owners exist.
+    /// Known install-ID aliases become the registered protocol key. A real
+    /// inbound binding wins over its historical handoff alias; Sessions and
+    /// transcripts are never deleted or merged. Validate the whole set first.
+    pub(crate) fn reconcile_protocol_bindings(
+        &mut self,
+        configured: &ImPlatform,
+        registered: &ImPlatform,
+    ) -> Result<usize, String> {
+        let mut moves = Vec::new();
+        for peer in self.peer_sessions.values() {
+            let source_id = super::channel_messaging::inbound_peer_id(registered, &peer.source_id);
+            let canonical = self.session_key_for_peer(registered, &peer.source_type, &source_id);
+            if peer.session_key == canonical {
+                continue;
+            }
+            let alias = self.session_key_for_peer(configured, &peer.source_type, &peer.source_id);
+            let prefixed =
+                self.session_key_for_peer(registered, &peer.source_type, &peer.source_id);
+            if (peer.session_key != alias && peer.session_key != prefixed) || peer.sidecar_port != 0
+            {
+                return Err(format!(
+                    "Cannot reconcile Channel binding {}; unexpected protocol or active owner",
+                    peer.session_key
+                ));
+            }
+            moves.push((peer.session_key.clone(), canonical, source_id));
+        }
+        // Without an inbound key, two different alias Sessions have no
+        // authoritative winner. Do not let HashMap iteration decide.
+        for (_, canonical, _) in &moves {
+            if !self.peer_sessions.contains_key(canonical)
+                && moves.iter().filter(|(_, key, _)| key == canonical).count() > 1
+            {
+                return Err(format!(
+                    "Ambiguous historical Channel bindings for {canonical}"
+                ));
+            }
+        }
+        let count = moves.len();
+        for (alias, canonical, source_id) in moves {
+            let mut peer = self
+                .peer_sessions
+                .remove(&alias)
+                .expect("validated binding");
+            peer.session_key = canonical.clone();
+            peer.source_id = source_id;
+            match self.peer_sessions.entry(canonical.clone()) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(peer);
+                }
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    ulog_info!("[im-router] Detached duplicate binding {} (Session {}); keeping {} (Session {}). History retained.", alias, peer.session_id, canonical, entry.get().session_id);
+                }
+            }
+        }
+        Ok(count)
     }
 
     fn display_name_from_message(msg: &ImMessage) -> Option<String> {
@@ -239,7 +304,17 @@ impl SessionRouter {
     /// private/group chat instead of the whole channel.
     pub fn update_peer_metadata_from_message(&mut self, session_key: &str, msg: &ImMessage) {
         if let Some(ps) = self.peer_sessions.get_mut(session_key) {
-            ps.source_display_name = Self::display_name_from_message(msg);
+            let candidate = Self::display_name_from_message(msg);
+            let peer_id = if msg.source_type == ImSourceType::Group {
+                &msg.chat_id
+            } else {
+                &msg.sender_id
+            };
+            if ps.source_display_name.is_none()
+                || candidate.as_ref().is_some_and(|name| name != peer_id)
+            {
+                ps.source_display_name = candidate;
+            }
             ps.last_sender_name = msg
                 .sender_name
                 .as_ref()
@@ -1291,6 +1366,182 @@ mod tests {
             metadata_indexed: true,
             last_active: Instant::now(),
         }
+    }
+
+    #[test]
+    fn protocol_binding_repair_preserves_canonical_sessions_and_alias_only_history() {
+        use crate::im::types::{ImPlatform, ImSourceType};
+        for (configured, registered, private, group) in [
+            (
+                ImPlatform::OpenClaw("wecom-openclaw-plugin".into()),
+                ImPlatform::OpenClaw("wecom".into()),
+                "u",
+                "g",
+            ),
+            (
+                ImPlatform::OpenClaw("openclaw-lark".into()),
+                ImPlatform::OpenClaw("feishu".into()),
+                "user:ou_u",
+                "chat:oc_g",
+            ),
+        ] {
+            let mut router = SessionRouter::new_for_agent(PathBuf::from("/synthetic"), "a".into());
+            for (source, id, sid) in [
+                (ImSourceType::Private, private, "private"),
+                (ImSourceType::Group, group, "group"),
+            ] {
+                let alias = router.session_key_for_peer(&configured, &source, id);
+                let canonical_id = crate::im::channel_messaging::inbound_peer_id(&registered, id);
+                let canonical = router.session_key_for_peer(&registered, &source, &canonical_id);
+                router.upsert_peer_session(peer(&alias, &format!("duplicate-{sid}")));
+                router.upsert_peer_session(peer(&canonical, sid));
+            }
+            assert_eq!(
+                router
+                    .reconcile_protocol_bindings(&configured, &registered)
+                    .unwrap(),
+                2
+            );
+            let active = router.active_sessions();
+            assert_eq!(active.len(), 2);
+            assert!(active
+                .iter()
+                .all(|p| p.session_id == "private" || p.session_id == "group"));
+            let mut restored =
+                SessionRouter::new_for_agent(PathBuf::from("/synthetic"), "a".into());
+            restored.restore_sessions_with_metadata_lookup(&active, |_| true);
+            assert_eq!(
+                restored
+                    .reconcile_protocol_bindings(&configured, &registered)
+                    .unwrap(),
+                0
+            );
+            assert_eq!(restored.active_sessions().len(), 2);
+            let mut lone = SessionRouter::new(PathBuf::from("/synthetic"));
+            let key = lone.session_key_for_peer(&configured, &ImSourceType::Private, private);
+            lone.upsert_peer_session(peer(&key, "history"));
+            lone.reconcile_protocol_bindings(&configured, &registered)
+                .unwrap();
+            let one = lone.active_sessions();
+            assert_eq!(one.len(), 1);
+            assert_eq!(one[0].session_id, "history");
+            assert_eq!(
+                one[0].source_id.as_deref(),
+                Some(crate::im::channel_messaging::inbound_peer_id(&registered, private).as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn protocol_binding_repair_rejects_ambiguity_and_foreign_keys_without_partial_mutation() {
+        use crate::im::types::ImPlatform;
+        let configured = ImPlatform::OpenClaw("openclaw-lark".into());
+        let registered = ImPlatform::OpenClaw("feishu".into());
+        for other in [
+            "agent:a:openclaw:feishu:private:user:ou_u",
+            "agent:other:openclaw:feishu:private:ou_u",
+        ] {
+            let mut router = SessionRouter::new_for_agent(PathBuf::from("/synthetic"), "a".into());
+            let alias = "agent:a:openclaw:openclaw-lark:private:user:ou_u";
+            router.upsert_peer_session(peer(alias, "one"));
+            router.upsert_peer_session(peer(other, "two"));
+            assert!(router
+                .reconcile_protocol_bindings(&configured, &registered)
+                .is_err());
+            assert_eq!(
+                router.peer_session_snapshot(alias).unwrap().session_id,
+                "one"
+            );
+            assert_eq!(
+                router.peer_session_snapshot(other).unwrap().session_id,
+                "two"
+            );
+        }
+    }
+
+    #[test]
+    fn native_and_same_id_plugin_bindings_remain_isolated_and_unchanged() {
+        use crate::im::types::{ImPlatform, ImSourceType};
+        for platform in [
+            ImPlatform::Telegram,
+            ImPlatform::Feishu,
+            ImPlatform::Dingtalk,
+            ImPlatform::OpenClaw("qqbot".into()),
+            ImPlatform::OpenClaw("openclaw-weixin".into()),
+        ] {
+            let mut router = SessionRouter::new_for_agent(PathBuf::from("/synthetic"), "a".into());
+            for (source, sid) in [
+                (ImSourceType::Private, "private"),
+                (ImSourceType::Group, "group"),
+            ] {
+                let key = router.session_key_for_peer(&platform, &source, "same-id");
+                router.upsert_peer_session(peer(&key, sid));
+            }
+            assert_eq!(
+                router
+                    .reconcile_protocol_bindings(&platform, &platform)
+                    .unwrap(),
+                0
+            );
+            assert_eq!(router.active_sessions().len(), 2);
+            let other = SessionRouter::new_for_agent(PathBuf::from("/synthetic"), "other".into());
+            assert_ne!(
+                router.session_key_for_peer(&platform, &ImSourceType::Private, "same-id"),
+                other.session_key_for_peer(&platform, &ImSourceType::Private, "same-id")
+            );
+        }
+    }
+
+    #[test]
+    fn missing_name_cannot_transfer_previous_group_senders_identity() {
+        use crate::im::types::{ImMessage, ImPlatform, ImSourceType};
+        let mut router = SessionRouter::new(PathBuf::from("/tmp/workspace"));
+        let key = "agent:a:telegram:group:g";
+        let mut known = peer(key, "session");
+        known.source_display_name = Some("Team".into());
+        known.last_sender_name = Some("Alice".into());
+        router.upsert_peer_session(known);
+        // The next event is from a different member whose name is unavailable.
+        let mut msg = ImMessage {
+            source_metadata: Default::default(),
+            chat_id: "g".into(),
+            message_id: "m".into(),
+            text: "hello".into(),
+            sender_id: "u".into(),
+            sender_name: None,
+            account_id: None,
+            source_type: ImSourceType::Group,
+            platform: ImPlatform::Telegram,
+            timestamp: chrono::Utc::now(),
+            attachments: vec![],
+            media_group_id: None,
+            is_mention: true,
+            reply_to_bot: false,
+            hint_group_name: None,
+            reply_to_body: None,
+            group_system_prompt: None,
+            request_id: String::new(),
+            delivery_protocol: None,
+        };
+        msg.sender_id = "alice-id".into();
+        msg.sender_name = Some("Alice".into());
+        router.update_peer_metadata_from_message(key, &msg);
+        msg.sender_id = "bob-id".into();
+        msg.sender_name = None;
+        router.update_peer_metadata_from_message(key, &msg);
+        let snapshot = router.peer_session_snapshot(key).unwrap();
+        assert_eq!(snapshot.source_display_name.as_deref(), Some("Team"));
+        assert_eq!(snapshot.last_sender_name, None);
+        msg.hint_group_name = Some("Renamed".into());
+        router.update_peer_metadata_from_message(key, &msg);
+        assert_eq!(
+            router
+                .peer_session_snapshot(key)
+                .unwrap()
+                .source_display_name
+                .as_deref(),
+            Some("Renamed")
+        );
     }
 
     #[tokio::test]

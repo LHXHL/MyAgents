@@ -1131,6 +1131,7 @@ afterEach(async () => {
   }
   restoreEnv();
   vi.restoreAllMocks();
+  vi.doUnmock('../tools/channel-messaging');
   vi.doUnmock('./factory');
   vi.doUnmock('../utils/im-mirror');
   vi.doUnmock('./utils/kill-with-escalation');
@@ -7012,6 +7013,35 @@ describe('external SessionEngine with fake runtime', () => {
   });
 
 
+  it('recaptures channel mode at actual admission after a rejected Desktop steer', async () => {
+    let mode: 'auto' | 'tool_only' = 'auto';
+    vi.doMock('../tools/channel-messaging', async original => ({
+      ...await original<typeof import('../tools/channel-messaging')>(),
+      readChannelPromptOptions: async () => ({ channelMessagingEnabled: true, channelBound: true }),
+      readChannelScope: async () => ({channels: [{channelId: 'c', platform: 'feishu', name: null, mode, groupActivation: null, targetTypes: [{type: 'chat', idTypes: ['chat_id']}], mediaTypes: []}], defaultTarget: {channelId: 'c', type: 'chat', id: 'chat', idType: 'chat_id'}, sourceType: 'private'}),
+    }));
+    const harness = await createHarness([{kind:'silent'}, {kind:'success', text:'second answer'}], {realtimeSteering:true, rejectSteerUnavailable:true, config:{chatQueueResponseMode:'realtime'}});
+    const nativeStart = vi.spyOn(harness.runtime, 'startSession');
+    const sessionId = 'session-im-steer-policy';
+    const workspacePath = join(harness.home, 'workspace');
+    await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'first'));
+    await waitFor(() => harness.runtime.sentMessages.length === 1, 'first admission');
+    const prompt = nativeStart.mock.calls[0]?.[0].systemPromptAppend;
+    expect(prompt).toContain('桌面查看或输入不改变渠道绑定与发送模式');
+    expect(prompt).not.toContain('用户正通过 MyAgents 桌面客户端与你对话');
+    expect(prompt).not.toContain('<myagents-generative-ui');
+    await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'second'));
+    await waitFor(() => harness.runtime.steeredMessages.length === 1 && broadcastEvents.some(item => item.event === 'queue:added' && (item.data as {deliveryMode?:string}).deliveryMode === 'turn'), 'rejected steer queued');
+    expect(harness.runtime.sentMessages).toHaveLength(1);
+    mode = 'tool_only';
+    harness.runtime.emitForTest({kind:'turn_complete', status:'success'});
+    await waitFor(() => harness.runtime.sentMessages.length === 2, 'next actual admission');
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.mirrorCalls.filter(item => item.role === 'user').map(item => item.text)).toEqual(['first']);
+    expect(harness.runtime.sentMessages[1].match(/<CHANNEL_CONTEXT /g)).toHaveLength(1);
+    expect(harness.runtime.sentMessages[1]).toContain('当前处于工具发送模式');
+  });
+
   it('keeps concurrent no-active steer fallbacks in Desktop FIFO order', async () => {
     const harness = await createHarness(
       [
@@ -8755,6 +8785,34 @@ describe('external SessionEngine with fake runtime', () => {
     expect(broadcastEvents.filter(item => item.event === 'queue:started')).toEqual([]);
     harness.runtime.emitUserMessageAccepted(harness.runtime.steeredMessages[0].clientUserMessageId);
     expect(broadcastEvents.filter(item => item.event === 'queue:started')).toEqual([]);
+  });
+
+  it.each(['dsh', 'codex', 'claude-code'] as const)('delivers Channel handoff context and owned images through %s with target mode', async runtimeType => {
+    vi.doMock('../tools/channel-messaging', async original => ({
+      ...await original<typeof import('../tools/channel-messaging')>(),
+      readChannelPromptOptions: async () => ({ channelMessagingEnabled: true, channelBound: true }),
+      readChannelScope: async () => ({ channels: [{ channelId: 'bot', platform: 'wecom', name: 'Test Bot', mode: 'tool_only', groupActivation: 'mention', targetTypes: [{ type: 'user', idTypes: ['userid'] }], mediaTypes: ['image','file'] }], defaultTarget: { channelId: 'bot', type: 'user', id: 'user', idType: 'userid' }, sourceType: 'private', bindingName: '收件人' }),
+    }));
+    const harness = await createHarness([{ kind: 'success', text: 'warm' }, { kind: 'success', text: '内部分析' }], { runtimeType });
+    const sessionId = `channel-handoff-${runtimeType}`, workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+    await runInjectedTurn(harness, { prompt: 'warm', sessionId, workspacePath, scenario: { type: 'desktop' }, timeoutMs: 2000, pollMs: 10 });
+    await harness.engine.waitIdle(2000, 10);
+    const { renderSessionEventPrompt } = await import('../inbox/session-event');
+    const text = renderSessionEventPrompt({ version: 1, type: 'send.request', eventId: 'event', sourceSessionId: 'group-session', sourceKind: 'internal-session', sourceLabel: '工作群', targetSessionId: sessionId, sourceNotification: 'none', createdAt: new Date().toISOString(), payload: '通知正文', channelHandoff: { context: '通知背景', target: { connection: { channelId: 'bot', platform: 'wecom' }, conversation: { id: 'user', idType: 'userid', kind: 'direct' } } } });
+    const images = [{ kind: 'inline_base64' as const, name: 'photo.png', mimeType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aP9sAAAAASUVORK5CYII=' }];
+    const request = await harness.engine.enqueueInboxMessage({ text, images, sessionId, workspacePath, analyticsOrigin: { kind: 'session-inbox', surface: 'session_send' }, beforeDispatch: async () => ({ accepted: true }) });
+    await expect(request.dispatchAcceptance).resolves.toMatchObject({ accepted: true });
+    await harness.engine.waitIdle(2000, 10);
+    const sent = harness.runtime.sentMessages.find(text => text.includes('<channel-handoff>'))!;
+    expect(sent).toBeDefined();
+    expect(sent.match(/<instruction>/g)).toHaveLength(1);
+    expect(sent).toContain('当前处于工具发送模式');
+    expect(sent).toContain('通知背景');
+    const messages = (await harness.sessionStore.getSessionData(sessionId))?.messages;
+    const user = messages?.find(message => message.role === 'user' && message.content.includes('<channel-handoff>'));
+    expect(user?.attachments?.[0]).toMatchObject({ name: 'photo.png', mimeType: 'image/png' });
+    expect(harness.mirrorCalls).toEqual([]);
   });
 
   it('starts consumption of an idle external Inbox without awaiting dispatch or introducing another queue', async () => {

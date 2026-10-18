@@ -2097,6 +2097,25 @@ describe('myagents CLI Agent / Session collaboration contracts', () => {
     });
   });
 
+  it('keeps remote selectors copyable without widening the table or inventing local state', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const remoteId = 'ma-agent:1:' + 'a'.repeat(120);
+    try {
+      printAgentList([
+        { agentId: 'local-agent', name: 'Local', enabled: true, archived: false, channelCount: 2 },
+        { agentId: remoteId, name: 'Remote', isLocal: false, networkName: 'Office', deviceName: 'Laptop' },
+      ]);
+      const lines = log.mock.calls.map(call => String(call[0]));
+      expect(lines[0].length).toBeLessThan(100);
+      expect(lines.find(line => line.includes('Remote'))).not.toContain('disabled');
+      expect(lines.find(line => line.includes('Remote'))).not.toMatch(/\bactive\b/);
+      expect(lines.join('\n')).not.toContain('undefined');
+      expect(lines).toContain('  Agent ID: ' + remoteId);
+      expect(lines.join('\n')).toContain('Office');
+      expect(lines.join('\n')).toContain('Laptop');
+    } finally { log.mockRestore(); }
+  });
+
   it('does not advertise a current Agent marker when the caller has none', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
@@ -2880,5 +2899,29 @@ describe('internal CLI command admission', () => {
     expect(buildRequestBody('task', 'create-direct', [], schedule)).toMatchObject({ executionMode: 'recurring' });
     expect(buildRequestBody('task', 'update', ['task-id'], { cronExpression: '0 9 * * *' })).toMatchObject({ executionMode: 'recurring' });
     expect(buildRequestBody('task', 'update', ['task-id'], { name: 'renamed' })).not.toHaveProperty('executionMode');
+  });
+});
+
+describe('channel message CLI contract', () => {
+  it.each([['--input-json', '{"text":"hello"}'], ['--input-file', '/tmp/request.json'], ['--input-file', '-']])('accepts the real %s invocation through the CLI flag gate', (flag, value) => {
+    const parsed = parseArgs(['im', 'send-message', flag, value]);
+    expect(validateCliCommand(parsed.positional)).toBeUndefined();
+    expect(validateInternalCliInvocation(parsed.positional, parsed.flags)).toBeUndefined();
+  });
+  it('preserves JSON content and rejects authority fields and ambiguous input sources', () => {
+    const request = {text:'line one\n"quoted" $literal',target:{type:'user',id:'person',idType:'open_id'}};
+    expect(buildRequestBody('im','send-message',[],{inputJson:JSON.stringify(request)})).toEqual(request);
+    expect(() => buildRequestBody('im','send-message',[],{inputJson:'{}',inputFile:'file'})).toThrow('exactly one');
+    expect(() => buildRequestBody('im','send-message',[],{inputJson:JSON.stringify({...request,sessionId:'forged'})})).toThrow();
+  });
+  it('prints partial receipts even without --json so accepted content is not retried', () => {
+    const log=vi.spyOn(console,'log').mockImplementation(()=>undefined);
+    const error=vi.spyOn(console,'error').mockImplementation(()=>undefined);
+    const data={status:'partial',items:[{status:'sent',messageIds:['m']},{status:'unknown'}]};
+    try {
+      printResult('im','send-message',{success:false,data},false);
+      expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual(data);
+      expect(error).not.toHaveBeenCalled();
+    } finally {log.mockRestore();error.mockRestore();}
   });
 });

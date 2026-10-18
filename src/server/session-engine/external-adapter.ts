@@ -514,6 +514,7 @@ export function createExternalSessionEngine(): SessionEngine {
           onTerminal: request.onTerminal,
           beforeDispatch: request.beforeDispatch,
           channelDelivery: IM_CHANNEL_DELIVERY,
+          channelPrimaryReminder: request.channelPrimaryReminder,
         },
       );
       const dispatchAcceptance = observeExternalDispatch(
@@ -617,6 +618,7 @@ export function createExternalSessionEngine(): SessionEngine {
           beforeDispatch: request.beforeDispatch,
           channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY,
         },
+        request.images,
       );
       const dispatchAcceptance = result.dispatch.then(
         dispatched => ({ accepted: dispatched.queued && !dispatched.error, error: dispatched.error }),
@@ -768,6 +770,7 @@ export function createExternalSessionEngine(): SessionEngine {
           beforeDispatch: request.beforeDispatch,
           requiredSystemSkill: request.requiredSystemSkill,
           channelDelivery: injectedTurnChannelDelivery(request.assistantChannelDelivery),
+          channelPrimaryReminder: true,
         },
       );
       const result = await waitForDeadline(sendPromise, deadline - Date.now());
@@ -823,7 +826,7 @@ export function createExternalSessionEngine(): SessionEngine {
             text: settledOutcome.status === 'complete' ? settledOutcome.text : undefined,
             error: settledOutcome.error,
           });
-          return { ...decision, enqueued: true };
+          return { ...decision, enqueued: true, channelDeliveryMode: settledOutcome.channelDeliveryMode };
         }
         const stopped = await stopExternalTarget();
         if (stopped) clearExternalTurnBinding(queueId);
@@ -842,7 +845,7 @@ export function createExternalSessionEngine(): SessionEngine {
         text: outcome.status === 'complete' ? outcome.text : undefined,
         error: outcome.error,
       });
-      return { ...decision, enqueued: true };
+      return { ...decision, enqueued: true, channelDeliveryMode: outcome.channelDeliveryMode };
     },
 
     async stopTurn(options) {

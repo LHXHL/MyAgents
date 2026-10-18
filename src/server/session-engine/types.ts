@@ -91,6 +91,7 @@ export type DesktopAdmissionResult = {
 };
 
 export type ImMessageRequest = {
+  channelPrimaryReminder?: boolean;
   message: string;
   images?: ImagePayload[];
   requestId: string;
@@ -128,6 +129,7 @@ export type ImCancelResult = {
 
 export type InboxMessageRequest = {
   text: string;
+  images?: ImagePayload[];
   sessionId: string;
   workspacePath: string;
   scenario?: InteractionScenario;
@@ -199,6 +201,7 @@ export type InjectedTurnRequest = {
 };
 
 export type InjectedTurnResult = {
+  channelDeliveryMode?: import('../../shared/channelContext').ChannelDeliveryMode;
   success: boolean;
   enqueued?: boolean;
   /** The turn may still be alive and must remain addressable by its exact queue identity. */

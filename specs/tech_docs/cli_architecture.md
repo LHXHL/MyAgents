@@ -80,6 +80,10 @@ bundled-guides/external-myagents-cli/      ├── npm-global/       (AI 自�
 DSH TaskGraph 的 `owner=root` 是当前对话主 Agent，其他 owner 为 Runtime child ID；
 CLI help 解释其与 Host Workspace Agent ID/可变显示名的区别，不重写持久化身份。
 
+CLI 渠道发现区分连接 ID、安装身份和注册协议：`agent list` / `agent channel list` 与 `im channels` 复用 Rust `/api/im/channels` 的只读身份投影。`platform` 来自 live adapter 的注册协议，`pluginId` 是安装标识；未注册/已停止插件的 `platform` 为 null，内置渠道仍可由配置类型确定。目录包含已配置但停止的连接，不为查询启动插件。Agent 渠道条目的既有 `type` 仅为配置兼容保留，不能当作协议或写回替换安装身份；按 `id` / `channelId`（旧 global alias `botId`）匹配连接。此投影仅服务 CLI，不修改 Session 的发送 scope 或隐藏上下文。
+
+`agent list` 的人读表格不由最长远程 selector 决定列宽：长 selector 在该条目的独立 `Agent ID` 行完整输出，JSON 保留原值；远程目录不提供的生命周期/主动开关/渠道数显示 unknown，不能推断为 active、disabled 或 0。`im --help/readme` 指向现有 `session get` 查看产品记录的可见对话，不能将它描述为平台全量历史接口。
+
 CLI 文本输出优先使用命令专属格式；其余成功且含 `data` 的命令回显结构化结果，避免只出现 `✓ <verb>` 而丢失 help 承诺的结果。`--json` 仍返回完整响应。Space `whoami`、assignee 列表和 Skill 开关显示身份、候选 ID 与生效状态；`runtime describe` 的权限模式标题明确限定于所查询的 Runtime。
 
 ### 执行方式
@@ -642,3 +646,9 @@ new comments and mutations still follow the lifecycle owner.
 Record get returns the complete stored Record, including text content. Record delete
 uses Rust RecordStore after cancelling speech processing, following the desktop
 operation's existing owners and change events. No CLI file store is introduced.
+
+## 渠道消息发送
+
+Session scope 的 `myagents im channels` 返回该 Agent 的连接能力与精确默认目标；App 管理列表维持原语义，不因看见某连接而获得发送权。`myagents im send-message` 接受且只接受一个 `--input-json` 或 `--input-file`（`-` 为 stdin），JSON 参数为 text、context、attachments、target、channelId。长文本/外部正文用文件输入以保持 shell 保真。`send-media --file ... --caption ...` 为旧入口，转发同一 handler。
+
+全部 Runtime 的 CLI 共用 `handleImSendMessage`/`sendChannelMessage` 和 Rust caller/target/file 校验；不经 shell 调另一个入口。当前实际会话仍直接发送；其他会话要求 target.id、text、context，由 Rust 解析原入站身份并交给目标绑定 Session。跨会话结果 action=handoff，accepted 仅为 Inbox 队列 ACK，不能当作模型消费或平台发送回执；不自动回传目标整轮回答。直接发送的 sent/failed/unknown/partial 保持平台接受语义，不是已读；未知或部分结果不自动重试整批。系统 prompt 使用统一发送描述，详细参数继续由 `im readme` / leaf help 提供。

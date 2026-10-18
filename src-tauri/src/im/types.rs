@@ -10,6 +10,21 @@ use super::{is_external_runtime_type, normalize_runtime_type, runtime_source_for
 const CODEX_SUBSCRIPTION_PROVIDER_ID: &str = "codex-sub";
 const ANTHROPIC_SUBSCRIPTION_PROVIDER_ID: &str = "anthropic-sub";
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelDeliveryMode {
+    #[default]
+    Auto,
+    ToolOnly,
+}
+
+impl ChannelDeliveryMode {
+    /// Delivery policy does not grant send permission or change the reply owner.
+    pub fn allows_automatic(self) -> bool {
+        self == Self::Auto
+    }
+}
+
 /// Partial update patch for IM Bot config.
 /// Each `None` field means "no change"; `Some("")` means "clear the field".
 #[derive(Default, Deserialize)]
@@ -303,8 +318,61 @@ pub struct ImAttachment {
 }
 
 /// Incoming IM message (from adapter)
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImSourceMetadata {
+    #[serde(default)]
+    pub parts: Vec<ImSourcePart>,
+    pub context_data: Option<serde_json::Value>,
+    pub configured_instructions: Option<String>,
+    pub platform_message_id: Option<String>,
+    pub sent_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub sender_id_type: Option<String>,
+    pub sender_username: Option<String>,
+    pub sender_is_bot: Option<bool>,
+    pub self_id: Option<String>,
+    pub self_id_type: Option<String>,
+    pub self_name: Option<String>,
+    pub self_username: Option<String>,
+    pub mentions_self: Option<bool>,
+    pub reply_to_self: Option<bool>,
+    pub thread_id: Option<String>,
+    pub parent_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImSourcePart {
+    pub event_id: String,
+    pub platform_message_id: Option<String>,
+    pub sender_id: String,
+    pub sender_name: Option<String>,
+    pub sender_username: Option<String>,
+    pub sender_is_bot: Option<bool>,
+    pub sent_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl ImSourcePart {
+    pub fn from_message(message: &ImMessage) -> Self {
+        Self {
+            event_id: if message.request_id.is_empty() {
+                uuid::Uuid::new_v4().to_string()
+            } else {
+                message.request_id.clone()
+            },
+            platform_message_id: message.source_metadata.platform_message_id.clone(),
+            sender_id: message.sender_id.clone(),
+            sender_name: message.sender_name.clone(),
+            sender_username: message.source_metadata.sender_username.clone(),
+            sender_is_bot: message.source_metadata.sender_is_bot,
+            sent_at: message.source_metadata.sent_at,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ImMessage {
+    pub source_metadata: ImSourceMetadata,
     pub chat_id: String,
     pub message_id: String,
     pub text: String,
@@ -352,12 +420,17 @@ impl ImMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImConfig {
+    #[serde(default)]
+    pub message_delivery_mode: ChannelDeliveryMode,
     #[serde(default = "default_platform")]
     pub platform: ImPlatform,
     #[serde(default)]
     pub name: Option<String>,
     pub bot_token: String,
     pub allowed_users: Vec<String>,
+    /// Display metadata only; never used for access control or routing.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub user_display_names: std::collections::HashMap<String, String>,
     pub permission_mode: String,
     pub default_workspace_path: Option<String>,
     pub enabled: bool,
@@ -452,10 +525,12 @@ fn default_platform() -> ImPlatform {
 impl Default for ImConfig {
     fn default() -> Self {
         Self {
+            message_delivery_mode: ChannelDeliveryMode::Auto,
             platform: ImPlatform::Telegram,
             name: None,
             bot_token: String::new(),
             allowed_users: Vec::new(),
+            user_display_names: Default::default(),
             permission_mode: "plan".to_string(),
             default_workspace_path: None,
             enabled: false,
@@ -582,6 +657,8 @@ pub struct PeerSession {
 /// Buffered message (when Sidecar is unavailable)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BufferedMessage {
+    #[serde(default)]
+    pub source_metadata: ImSourceMetadata,
     pub chat_id: String,
     pub message_id: String,
     pub text: String,
@@ -624,6 +701,7 @@ pub struct BufferedMessage {
 impl BufferedMessage {
     pub fn from_im_message(msg: &ImMessage) -> Self {
         Self {
+            source_metadata: msg.source_metadata.clone(),
             session_key: msg.session_key(),
             chat_id: msg.chat_id.clone(),
             message_id: msg.message_id.clone(),
@@ -655,6 +733,7 @@ impl BufferedMessage {
     /// request-scoped plugin protocols retain their original identity.
     pub fn to_im_message(&self) -> ImMessage {
         ImMessage {
+            source_metadata: self.source_metadata.clone(),
             chat_id: self.chat_id.clone(),
             message_id: self.message_id.clone(),
             text: self.text.clone(),
@@ -1067,6 +1146,8 @@ pub struct ChannelOverrides {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelConfigRust {
+    #[serde(default)]
+    pub message_delivery_mode: ChannelDeliveryMode,
     pub id: String,
     #[serde(rename = "type")]
     pub channel_type: ImPlatform,
@@ -1105,6 +1186,9 @@ pub struct ChannelConfigRust {
     // User management
     #[serde(default)]
     pub allowed_users: Vec<String>,
+    /// Display metadata only; never used for access control or routing.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub user_display_names: std::collections::HashMap<String, String>,
 
     // Group chat
     #[serde(default)]
@@ -1542,6 +1626,7 @@ impl ChannelConfigRust {
         let permission_mode = self.effective_permission_mode(agent);
 
         ImConfig {
+            message_delivery_mode: self.message_delivery_mode,
             platform: self.channel_type.clone(),
             // For OpenClaw channels, self.name is the npm package name (e.g., "larksuite/openclaw-lark")
             // which is meaningless as a bot display name. Prefer agent name in that case.
@@ -1552,6 +1637,7 @@ impl ChannelConfigRust {
             },
             bot_token: self.bot_token.clone().unwrap_or_default(),
             allowed_users: self.allowed_users.clone(),
+            user_display_names: self.user_display_names.clone(),
             permission_mode,
             default_workspace_path: Some(agent.resolved_workspace_path.clone()),
             // Channel availability is owned by ChannelConfig. Proactive Agent
@@ -1629,6 +1715,7 @@ mod tests {
     #[test]
     fn buffered_openclaw_reply_identity_is_process_scoped() {
         let message = ImMessage {
+            source_metadata: Default::default(),
             chat_id: "chat-1".to_string(),
             message_id: "message-1".to_string(),
             text: "hello".to_string(),
@@ -1698,6 +1785,7 @@ mod tests {
 
     fn base_channel() -> ChannelConfigRust {
         ChannelConfigRust {
+            message_delivery_mode: ChannelDeliveryMode::Auto,
             id: "channel-1".to_string(),
             channel_type: ImPlatform::Telegram,
             name: None,
@@ -1716,6 +1804,7 @@ mod tests {
             openclaw_manifest: None,
             openclaw_enabled_tool_groups: None,
             allowed_users: vec![],
+            user_display_names: Default::default(),
             group_permissions: vec![],
             group_activation: None,
             overrides: None,

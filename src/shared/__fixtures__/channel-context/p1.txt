@@ -1,0 +1,9 @@
+<system-reminder>
+<CHANNEL_CONTEXT version="1">
+<facts>{"connection":{"channelId":"channel_demo","platform":"feishu","accountId":"account_demo","name":"工作 Bot","source":"im","time":"2026-10-17T10:00:02+08:00 (Asia/Shanghai)"},"self":{"id":"bot_demo","idType":"open_id","name":"工作助手","kind":"bot"},"conversation":{"id":"chat_demo","idType":"chat_id","kind":"direct","visibility":"private"},"sender":{"id":"user_demo","idType":"open_id","name":"小林","kind":"human"},"message":{"eventId":"request_demo","platformMessageId":"message_demo","receivedAt":"2026-10-17T10:00:00+08:00","aggregation":"single","addressedToBot":true,"mentionsSelf":false}}</facts>
+<instruction>
+当前处于工具发送模式，你输出的文本不会自动推送到当前用户所在 Channel 会话之中，你需要主动使用 CLI 工具 myagents im send-message 发送信息
+</instruction>
+</CHANNEL_CONTEXT>
+</system-reminder>
+把报告发给我。

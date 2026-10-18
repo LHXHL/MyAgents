@@ -501,6 +501,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
           ...(request.turnBoundaryOnly ? { queueResponseModeOverride: 'turn' as const } : {}),
           beforeDispatch: request.beforeDispatch,
           channelDelivery: IM_CHANNEL_DELIVERY,
+          channelPrimaryReminder: request.channelPrimaryReminder,
         },
       );
       if (result.error) {
@@ -551,7 +552,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
       await setInteractionScenario(scenario);
       return enqueueUserMessage(
         request.text,
-        undefined,
+        request.images,
         undefined,
         undefined,
         undefined,
@@ -784,6 +785,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
           queueResponseModeOverride: 'turn',
           beforeDispatch,
           channelDelivery: injectedTurnChannelDelivery(request.assistantChannelDelivery),
+          channelPrimaryReminder: true,
         },
       );
       const enqueueResult = await waitForDeadline(

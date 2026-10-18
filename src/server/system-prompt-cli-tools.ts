@@ -12,7 +12,8 @@
  *   (Task automation, Task self-exit, Goal Mode, IM media send, Record capture). Universal
  *   across runtimes (builtin Claude Agent SDK + Codex / Claude Code
  *   CLI) since v0.2.11 dropped the corresponding in-process MCP servers
- *   (`cron-tools`, `im-cron`, `im-media`) and unified on the CLI. Gated by
+ *   (`cron-tools`, `im-cron`) and unified on the CLI. Channel messaging
+ *   uses its shared CLI capability block. Gated by
  *   `cliToolsEnabled` in `buildSystemPromptAppend` (set true on all current
  *   runtime paths; the flag is retained for theoretical future runtimes
  *   that might not need the appendix).
@@ -92,25 +93,6 @@ your normal file-writing tool and use --objective-file; workspace and system
 temp files are both accepted. Never interpolate an objective directly into a
 shell command.
 </myagents-cli-goal>`;
-
-const SECTION_IM_MEDIA = `<myagents-cli-im-media>
-You are running inside an IM Bot / Agent Channel session. To send a file
-(image, document, chart, etc.) to the current chat, use:
-
-  myagents im send-media --file <absolute-path> [--caption "..."]
-
-Workflow:
-  1. Generate or write the file to disk using your normal file-writing tools.
-  2. Call \`myagents im send-media --file /abs/path\`. The session's bot/chat
-     context is resolved automatically from the current Sidecar — you do not
-     need to know the botId or chatId.
-
-Use this when the user asks to receive a file, image, screenshot, chart, PDF,
-CSV, etc. Do NOT use it for intermediate work files — only the deliverables
-the user explicitly wants.
-
-Full docs and supported formats: run \`myagents im readme\`.
-</myagents-cli-im-media>`;
 
 const SECTION_RECORD = `<myagents-cli-record>
 The user can ask you to save a passing idea or note into MyAgents Records.
@@ -207,8 +189,13 @@ same account. Choose using description, deviceName and isLocal; copy the full
 device under its own Session permissions. \`agent show\` reports birth defaults,
 not an existing Session's effective approval policy.
 
+Product IDs are used by MyAgents GUI/CLI; internal Runtime IDs are not substitutes.
+For build/runtime diagnostics on demand, run \`myagents version --json\`.
+
 CHOOSE THE RIGHT ACTION
-- Find an Agent or identify this session's own Agent:
+- Read this session's Product Agent and Session IDs:
+    myagents agent current --json
+- Find another Agent:
     myagents agent list
     myagents agent show <agentId>
 - Decide whether to reuse recent context:
@@ -297,11 +284,6 @@ export function buildCliToolsAppend(
   // Task self-exit — only inside a scheduled Task run that allows it
   if (scenario.type === 'cron' && scenario.aiCanExit) {
     parts.push(SECTION_TASK_EXIT);
-  }
-
-  // IM media — IM / agent-channel scenarios only
-  if (scenario.type === 'im' || scenario.type === 'agent-channel') {
-    parts.push(SECTION_IM_MEDIA);
   }
 
   // Personal Record capture guidance belongs in desktop and private conversations.

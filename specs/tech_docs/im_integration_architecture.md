@@ -172,6 +172,18 @@ ReplySlot只服务产生它的Channel user request。一个request结束后，De
 
 builtin/external各自在真实turn owner中capture完整text block，成功terminal后交给`im-mirror.ts`transport。V1保留原有保存完成后的投递顺序；V2在SessionStore内存接纳、排队保存后即可投递，产品写盘失败不改变AI成功结果或阻止投递。失败、停止、被重试撤回、空文本、thinking/tool/subagent和`NO_REPLY`不投递。`SessionOrigin`与`InteractionScenario`只描述归因/prompt，不能推导delivery owner。
 
+### 5.3 渠道发送模式与显式发送
+
+`ChannelConfig.messageDeliveryMode` 为 `auto | tool_only`，旧配置缺省 auto；UI 通过原配置 patch owner 保存，下一轮执行生效。模式不属于 Session runtime identity，更新不重建 Session。Builtin queue item / External turn lifecycle 在实际 admission 读取 Rust capability projection 并冻结；实时输入复用当前执行轮，排队输入在自己的执行边界冻结。不可按模型 prompt 或可变全局最近请求判断模式。
+
+发送决策：automatic 只允许 auto；explicit 和必要 control 在两种模式均可用，且仍需通过既有权限/目标校验。普通流式、final、typing/思考占位、失败 fallback、桌面镜像、Heartbeat 和 Goal 待投递都遵循本轮模式。管理命令、权限和必要提问走原控制流程。tool_only 仍结算 request/stream；成功 Heartbeat 以 suppressed 消费 pending snapshot，Goal outbox 固化该轮模式并按无需发送结束；执行失败不被改写为成功。
+
+`myagents im send-message` 统一经过 Node handler → Rust management API；当前会话走既有 Adapter，其他会话走原 Channel Router → Inbox。Rust 用 sidecar generation 验证调用 Session，按精确 live binding（仅不在线时读取已有 health binding）解析默认目标；歧义拒绝。高级 target 不要求已有 Session，只允许该 Agent 的渠道连接；已绑定 Session 不能用 channelId 切换连接。原生飞书 user/chat 映射 open_id/chat_id。跨会话目标缺少 Session 时，经原 Router 建立正常绑定，保留授权与 Session 隔离。无绑定 Session 只通过 Project.agentId 解析所属 Agent，不能根据共享旧工作目录反查并认领其它 Agent 的 Bot。
+
+钉钉显式文字走真正的单次 send_text_message，而非只负责开启流的 send_message_returning_id；现有钉钉适配器无二进制上传能力，mediaTypes 为空，混合请求在任何外发前明确拒绝。
+
+所有附件先经 workspace/tmp canonical 路径、类型和大小校验；当前会话顺序发送，遇失败或不确定结果停止。跨会话先由工作区 owner 导入副本，再交给目标 Session；不在入口直接外发。sent/failed/unknown/partial 保留逐项回执；工具结果不进入普通镜像，显式发送不改变 auto 轮次后续回答的行为。旧 send-media CLI 仅转发该 handler。能力与 Runtime 的生命周期见 [工具指南](sdk_custom_tools_guide.md#统一渠道消息工具)。
+
 ## 6. 权限与结构化提问
 
 Node 消息、Heartbeat 与 Memory route 只能用 `engine.kind === 'builtin'` 区分 Claude Agent SDK 特有逻辑；其它 engine 一律走 SessionEngine 的非 builtin 配置路径。特别是 DSH 的 kind 是 `integrated`，不能再用历史判断 `engine.kind === 'external'`，否则会丢失模型、权限、reasoning 配置，甚至误入 builtin enqueue。
@@ -208,7 +220,7 @@ Node 消息、Heartbeat 与 Memory route 只能用 `engine.kind === 'builtin'` �
 
 ### 7.2 Prompt context
 
-Rust拥有group activation、pending history和group metadata；Sidecar在`/api/im/enqueue`边界组装最终prompt。上下文按当前字段提供group名称、平台、sender、引用、用户配置的group instruction和未触发history。动态文本进入结构化标签前必须escape/bound；Renderer或Bridge不拼另一份群聊system prompt。
+Rust 拥有 group activation、pending history 和 group metadata；原生 Adapter 的 `inbound_metadata` 与 Bridge 的 `channel-context` 提取各自可证明的来源事实，经 ImMessage/sourceMetadata 和 request registry 传递。Sidecar 在实际 turn admission 生成 `CHANNEL_CONTEXT version="1"`，私聊和群聊每条均注入，不再依赖首轮/周期提醒。sender/message 随该次输入，配置模式冻结在该执行轮；非 IM 唤起没有当前 sender/message。引用、历史、提及、附件和插件装饰进入有来源的数据字段，用户配置指令单独标记；未知时间不以接收时间冒充。模板、escape、预算、单 envelope 和可见正文规则见 [System Reminder](system_reminder_protocol.md#channel-context)。
 
 群名称按“用户配置 → platform/plugin hint → chat id”解析。`groupToolsDeny`只是额外可选禁用层，不替代权限模式、MCP选择或工具自己的安全检查。
 
@@ -267,6 +279,10 @@ detached/new-session Goal需要独立parent/return-target设计，不能混入cu
 
 `config.json` 是 Agent 出生模板和 Channel transport 配置的 authority。Channel 不再拥有独立执行配置；详情与 writer 移除 model/provider/runtime/permission 覆盖，旧字段只读保留以免损坏存量信息，正常解析不采用。连接凭据、白名单、群规则和 toolsDeny 仍由 Channel 实时拥有。所有写入在config lock内fresh read-modify-write；Renderer提交typed intent并在成功后refresh完整snapshot，不能用可能过期的React state覆盖其它Channel。
 
+群聊与绑定用户的展示名保存于同一 Channel 配置：`groupPermissions[].groupName` 与 `userDisplayNames[userId]`。名称只用于展示，授权、群发现去重与路由继续使用 ID；不再把群名当作历史 ID 迁移依据。设置页显示 `名称（ID）`，未知或等于 ID 时只显示 ID。Rust 在配置锁内按最新已有 ID 合并名字，不创建授权记录，不修改群状态，查询失败/空值不清除旧名字。绑定成功和后续入站更新此元数据，沿 `im:bot-config-changed` 刷新 UI。
+
+渠道启动时用既有 peer snapshot 补缺失名称；企微另经 Bridge `/peer-names` 查询当前账号的 `wecom-cli message aibot sessions list`，新平台证据更新名称。该接口仅返回最近 20 个会话，无分页，因此旧且不可见的会话保留已有名称或 ID；后续入站可补齐。Bridge 对 `single/group + chat_id` 做唯一精确匹配，不从 `extra_identity_context` 的授权人描述猜测昵称；账号级在途查询去重和超时只约束查询，不启动 Session、不发消息、不定时扫描。
+
 运行时文件只保存可重建projection，例如health、bounded buffer、dedup与peer binding；它们不能覆盖config或SessionStore。health的uptime snapshot不是实时计时authority，live status由当前instance generation/started-at计算。
 
 Channel credential、token、App Secret和provider env不得进入日志、analytics、Tauri event或错误正文。配置持久化方式的现实限制应由credential owner和安全设计统一解决，本文不维护“以后迁移”计划。
@@ -305,3 +321,27 @@ Channel credential、token、App Secret和provider env不得进入日志、analy
 | `src/renderer/components/AgentSettings/channels/` | Channel配置intent与status UI |
 
 Product Session owner、删除、恢复与配置snapshot详见 [`session_architecture.md`](session_architecture.md)。
+
+### 渠道名称与实际群接收能力
+
+`src/shared/imPlatformCapabilities.json` 是已接入 adapter/plugin 群消息能力的单一事实表，供设置页、Bridge mention 默认值与 Rust 启动/热更新共用。微信插件仅私聊；企微、QQ 当前插件与钉钉 Stream 仅收到 @ 群事件；Telegram/飞书支持全部消息但必须满足平台隐私/权限设置。未知插件维持现有设置并提示能力依赖平台。旧 `always` 配置不改写，受限渠道的 effective activation 始终为 mention；显式入站 `false` 不会被默认值覆盖。
+
+原生 Telegram 的昵称与 username 分开：昵称用于展示，username/数值 ID 才能参与既有用户白名单判断。Telegram chat.title、钉钉 conversationTitle、飞书 chat API 的实际名称进入 hint_group_name；空名称/接口失败不生成占位群名、不覆盖已知显示名。飞书昵称候选跳过空白后再取下一项。
+
+启动名称补查统一经过 adapter.peer_names，仅查询已配置用户/群：Telegram getChat、原生飞书已有 user/chat API，Bridge 企微会话列表或插件标准 directory.listPeersLive/listGroupsLive。Bridge 目录搜索返回必须按 kind+ID 唯一精确匹配，插件继续持有凭证、账号与分页实现；按账号/目标合并在途查询、限制等待及并发，超时不阻塞入站。原生启动补查总预算 4 秒，慢查询/权限不足保留已知信息，后续入站继续刷新；微信和 QQ 上游缺少的昵称不推测。此路径不创建 Session、不发送聊天消息、不改变授权。
+
+## 跨聊天会话发送的上下文交接
+
+Rust `im/channel_handoff.rs` 复用 Channel Router、peer fence、model-work gate 和 Inbox。Management API 先验证调用 Sidecar generation/Agent scope、参数及全部附件，再比较平台规范化后的会话。当前会话直发，其他会话携带正文和 context 交给目标 Session；后续用户回复继续走原入站 Router。
+
+平台 ID 不能按名字或字符串猜测：原生飞书 open_id 经只读平台接口转换为入站 p2p chat_id；无法读到映射明确失败，不先发探路消息。Telegram 读取 getChat；原生 adapter 尚不接收 channel_post，公开 channel 明确拒绝交接，避免伪造成 group。Bridge 飞书发送地址为 user:open_id / chat:chat_id，入站 Router key 使用已去除前缀的 open_id / chat_id；directory 查询使用原始平台 ID（不带 user:/chat: 传输前缀），新 chat 需精确 directory group 证据，无法判断 p2p 别名时提示改用 open_id。钉钉、企微、微信、QQ 沿既有 type/idType 与 transport_target 规范。名称只作展示，不参与路由或授权。
+
+Router 持久绑定拥有 Session 身份，SidecarManager 拥有进程 generation，目标 turn owner 拥有有效发送模式。直接发送不创建 Inbox；交接 `accepted` 不是平台发送成功。没有新增 raw bypass、发送工具、授权字段、Session 划分或重试机制。
+
+
+Channel 路由使用 Adapter 已验证的协议身份；OpenClaw 从注册后的 `/status` / `/capabilities` 取得 `pluginId`，安装目录 ID 不参与新 peer key。跨会话解析保留 Router 的实际 sessionKey，投递在与入站、`/new` 相同的 peer fence 内重读当前 Session，不缓存解析时的 Session ID。
+
+启动恢复在取得协议身份后、创建 peer owner / consumer 前，统一归正历史安装 ID key 与飞书发送前缀。已有真实入站 key 优先；仅有旧 alias 时保留原 Session ID 并改正 key。多个 alias 无真实入站 key 可裁决时明确失败，不按遍历顺序猜测。归正通过 Health projection 持久化后才开放准入；仅解除重复绑定，不删除或合并 Session metadata/transcript，不重放消息，不影响 Tab/Task/Goal owner。
+
+
+在线 Channel 的 capability/context projection 与 handoff world 同取 Adapter 的已注册协议身份；配置安装 ID 只负责安装与生命周期，离线 capability 保留现有配置投影。精确 live binding 查询同时返回同一快照中的 Adapter，避免另一次扫描拼接身份。Inbox 准入只核对 Product Session、连接 UUID、peer ID/ID 类型与私聊/群聊归属；platform 是环境描述，不是第二套绑定身份，旧消息中的平台别名不构成错投。无需模型填写 Session ID、平台或已有绑定的连接 ID。

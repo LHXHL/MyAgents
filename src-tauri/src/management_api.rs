@@ -31,6 +31,9 @@ use crate::task;
 use crate::thought;
 use crate::{ulog_debug, ulog_error, ulog_info, ulog_warn};
 
+mod channel_messaging;
+use channel_messaging::{channel_context_handler, send_channel_message_handler};
+
 /// Global management API port (set once at startup)
 static MANAGEMENT_PORT: OnceLock<u16> = OnceLock::new();
 
@@ -222,6 +225,8 @@ pub async fn start_management_api() -> Result<u16, String> {
         .route("/api/im/channels", get(list_im_channels_handler))
         .route("/api/im/wake", post(wake_bot_handler))
         .route("/api/im/send-media", post(send_media_handler))
+        .route("/api/im/send-message", post(send_channel_message_handler))
+        .route("/api/im/channel-context", post(channel_context_handler))
         .route("/api/im/mirror", post(mirror_to_channel_handler))
         .route("/api/im-bridge/message", post(handle_bridge_message))
         .route("/api/cron/stop", post(stop_cron_handler))
@@ -2399,6 +2404,8 @@ struct GoalTurnFinalizeRequest {
     consumed_tokens: u64,
     #[serde(default)]
     channel_delivery_expected: bool,
+    #[serde(default)]
+    channel_delivery_mode: crate::im::types::ChannelDeliveryMode,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2576,6 +2583,7 @@ async fn goal_turn_finalize_handler(
                 duration_ms: req.duration_ms,
                 consumed_tokens: req.consumed_tokens,
                 channel_delivery_expected: req.channel_delivery_expected,
+                channel_delivery_mode: req.channel_delivery_mode,
             },
             sidecar_generation,
             sidecars,
@@ -2934,10 +2942,27 @@ async fn find_bot_adapter(bot_id: &str) -> Option<std::sync::Arc<im::AnyAdapter>
 /// Snapshot of channel metadata extracted under lock, resolved after lock is dropped.
 struct ChannelSnapshot {
     bot_id: String,
-    platform_str: String,
+    platform: Option<String>,
+    plugin_id: Option<String>,
     name: String,
     agent_name: Option<String>,
-    health: std::sync::Arc<im::health::HealthManager>,
+    health: Option<std::sync::Arc<im::health::HealthManager>>,
+}
+
+/// Config identifies the installation; a running adapter identifies its protocol.
+/// Native channels need no plugin registration to know their platform.
+fn channel_discovery_identity(
+    configured: &im::types::ImPlatform,
+    installation_id: Option<&str>,
+    registered: Option<&im::types::ImPlatform>,
+) -> (Option<String>, Option<String>) {
+    match configured {
+        im::types::ImPlatform::OpenClaw(id) => (
+            registered.map(ToString::to_string),
+            Some(installation_id.unwrap_or(id).to_owned()),
+        ),
+        native => (Some(native.to_string()), None),
+    }
 }
 
 /// GET /api/im/channels — List all configured IM channels for cron delivery target discovery.
@@ -2951,9 +2976,16 @@ async fn list_im_channels_handler() -> Json<serde_json::Value> {
         let agents_guard = agents.lock().await;
         for agent in agents_guard.values() {
             for (ch_id, ch_inst) in &agent.channels {
-                let platform_str = serde_json::to_value(&ch_inst.bot_instance.platform)
-                    .and_then(|v| serde_json::from_value::<String>(v))
-                    .unwrap_or_else(|_| "unknown".to_string());
+                let (platform, plugin_id) = channel_discovery_identity(
+                    &ch_inst.bot_instance.config.platform,
+                    ch_inst.bot_instance.config.openclaw_plugin_id.as_deref(),
+                    ch_inst
+                        .bot_instance
+                        .adapter
+                        .routing_platform()
+                        .ok()
+                        .as_ref(),
+                );
                 let name = ch_inst
                     .bot_instance
                     .config
@@ -2962,10 +2994,11 @@ async fn list_im_channels_handler() -> Json<serde_json::Value> {
                     .unwrap_or_else(|| ch_id.clone());
                 snapshots.push(ChannelSnapshot {
                     bot_id: ch_id.clone(),
-                    platform_str,
+                    platform,
+                    plugin_id,
                     name,
                     agent_name: Some(agent.config.name.clone()),
-                    health: std::sync::Arc::clone(&ch_inst.bot_instance.health),
+                    health: Some(std::sync::Arc::clone(&ch_inst.bot_instance.health)),
                 });
             }
         }
@@ -2979,9 +3012,11 @@ async fn list_im_channels_handler() -> Json<serde_json::Value> {
             if snapshots.iter().any(|s| s.bot_id == *bot_id) {
                 continue;
             }
-            let platform_str = serde_json::to_value(&instance.platform)
-                .and_then(|v| serde_json::from_value::<String>(v))
-                .unwrap_or_else(|_| "unknown".to_string());
+            let (platform, plugin_id) = channel_discovery_identity(
+                &instance.config.platform,
+                instance.config.openclaw_plugin_id.as_deref(),
+                instance.adapter.routing_platform().ok().as_ref(),
+            );
             let name = instance
                 .config
                 .name
@@ -2989,27 +3024,59 @@ async fn list_im_channels_handler() -> Json<serde_json::Value> {
                 .unwrap_or_else(|| bot_id.clone());
             snapshots.push(ChannelSnapshot {
                 bot_id: bot_id.clone(),
-                platform_str,
+                platform,
+                plugin_id,
                 name,
                 agent_name: None,
-                health: std::sync::Arc::clone(&instance.health),
+                health: Some(std::sync::Arc::clone(&instance.health)),
             });
         }
     } // bots_guard dropped here
 
+    // Metadata reads must not run the startup reader's persistent migrations.
+    let configured = dirs::home_dir()
+        .and_then(|home| {
+            im::config_store::read_channel_discovery_configs(&home.join(".myagents/config.json"))
+                .ok()
+        })
+        .unwrap_or_default();
+    for channel in configured {
+        if snapshots
+            .iter()
+            .any(|snapshot| snapshot.bot_id == channel.id)
+        {
+            continue;
+        }
+        let (platform, plugin_id) = channel_discovery_identity(
+            &channel.platform,
+            channel.openclaw_plugin_id.as_deref(),
+            None,
+        );
+        snapshots.push(ChannelSnapshot {
+            name: channel.name.unwrap_or_else(|| channel.id.clone()),
+            bot_id: channel.id,
+            platform,
+            plugin_id,
+            agent_name: channel.agent_name,
+            health: None,
+        });
+    }
+
     // Now resolve health states without holding any lock
     let mut channels = Vec::with_capacity(snapshots.len());
     for snap in snapshots {
-        let health_state = snap.health.get_state().await;
-        let status_str = serde_json::to_value(&health_state.status)
-            .and_then(|v| serde_json::from_value::<String>(v))
-            .unwrap_or_else(|_| "unknown".to_string());
+        let status = match snap.health {
+            Some(health) => health.get_state().await.status,
+            None => im::types::ImStatus::Stopped,
+        };
         channels.push(serde_json::json!({
             "botId": snap.bot_id,
-            "platform": snap.platform_str,
+            "channelId": snap.bot_id,
+            "platform": snap.platform,
+            "pluginId": snap.plugin_id,
             "name": snap.name,
             "agentName": snap.agent_name,
-            "status": status_str,
+            "status": status,
         }));
     }
 
@@ -3571,6 +3638,8 @@ struct BridgeAttachment {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BridgeMessagePayload {
+    #[serde(default)]
+    source_metadata: im::types::ImSourceMetadata,
     bot_id: String,
     plugin_id: String,
     #[serde(default)]
@@ -3706,6 +3775,7 @@ async fn handle_bridge_message(
     }
 
     let msg = ImMessage {
+        source_metadata: payload.source_metadata,
         chat_id: payload.chat_id,
         message_id: payload
             .message_id
@@ -5110,6 +5180,8 @@ struct TaskIdApiRequest {
 #[serde(rename_all = "camelCase")]
 struct MirrorRequest {
     session_id: String,
+    #[serde(default)]
+    channel_delivery_mode: im::types::ChannelDeliveryMode,
     /// "user" | "assistant"
     role: String,
     text: Option<String>,
@@ -5129,6 +5201,9 @@ const DESKTOP_USER_PREFIX: &str = "[From: 桌面端用户消息]";
 const MIRROR_IMAGE_MAX_BYTES: usize = 5 * 1024 * 1024;
 
 async fn mirror_to_channel_handler(Json(req): Json<MirrorRequest>) -> Json<serde_json::Value> {
+    if !req.channel_delivery_mode.allows_automatic() {
+        return Json(serde_json::json!({ "mirrored": false, "reason": "tool_only" }));
+    }
     let resolved = match im::session_delivery::find_channel_for_session(
         get_agents(),
         get_im_bots(),
@@ -5328,6 +5403,11 @@ struct InboxDeliverRequest {
 ///
 /// Body: `{ message: PendingInboxMessage, resume_workspace_path?: string }`
 async fn inbox_deliver_handler(Json(req): Json<InboxDeliverRequest>) -> Json<serde_json::Value> {
+    // Channel identities are minted only by the Channel owner. The generic
+    // Session messaging API cannot assert a Channel handoff on a caller's behalf.
+    if req.message.session_event.as_ref().is_some_and(|event| event.get("channelHandoff").is_some()) {
+        return Json(serde_json::json!({"ok":false,"error":"Channel handoffs must use myagents im send-message"}));
+    }
     let Some(manager) = get_sidecar_state() else {
         return Json(serde_json::json!({
             "ok": false,
@@ -5694,6 +5774,54 @@ fn document_manager_unavailable() -> Json<serde_json::Value> {
             "message": "Restart MyAgents and retry."
         }
     }))
+}
+
+#[cfg(test)]
+mod channel_discovery_tests {
+    use super::channel_discovery_identity;
+    use crate::im::types::ImPlatform;
+
+    #[test]
+    fn plugin_installation_is_never_reported_as_its_registered_platform() {
+        for (install, protocol) in [
+            ("wecom-openclaw-plugin", "wecom"),
+            ("openclaw-lark", "feishu"),
+            ("openclaw-weixin", "weixin"),
+            ("custom-package", "custom-protocol"),
+        ] {
+            let configured = ImPlatform::OpenClaw(install.into());
+            let registered = ImPlatform::OpenClaw(protocol.into());
+            assert_eq!(
+                channel_discovery_identity(&configured, None, Some(&registered)),
+                (Some(format!("openclaw:{protocol}")), Some(install.into()))
+            );
+            assert_eq!(
+                channel_discovery_identity(&configured, None, None),
+                (None, Some(install.into()))
+            );
+        }
+        assert_eq!(
+            channel_discovery_identity(
+                &ImPlatform::OpenClaw("wecom".into()),
+                Some("wecom-openclaw-plugin"),
+                Some(&ImPlatform::OpenClaw("wecom".into())),
+            ),
+            (
+                Some("openclaw:wecom".into()),
+                Some("wecom-openclaw-plugin".into())
+            )
+        );
+        for native in [
+            ImPlatform::Telegram,
+            ImPlatform::Feishu,
+            ImPlatform::Dingtalk,
+        ] {
+            assert_eq!(
+                channel_discovery_identity(&native, None, None),
+                (Some(native.to_string()), None)
+            );
+        }
+    }
 }
 
 #[cfg(test)]

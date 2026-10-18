@@ -21,16 +21,23 @@ function showChannel(type: ChannelConfig['type'], groupActivation: 'mention' | '
     channels: [{ id: 'test-channel', type, enabled: false, allowedUsers: [], groupActivation }],
   };
   render(<ChannelDetailView agent={agent} channelId="test-channel" onBack={vi.fn()} onChanged={vi.fn()} />);
-  fireEvent.click(screen.getByRole('button', { name: '群聊管理' }));
+  const groups = screen.queryByRole('button', { name: '群聊管理' });
+  if (groups) fireEvent.click(groups);
 }
 
 beforeEach(() => mocks.patch.mockReset());
 
 describe('group activation settings', () => {
-  it.each(['openclaw:wecom-openclaw-plugin', 'openclaw:wecom'] as const)(
+  it.each(['openclaw:openclaw-weixin', 'openclaw:weixin'] as const)('%s has no group controls', type => {
+    showChannel(type);
+    expect(screen.queryByRole('button', { name: '群聊管理' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '全部消息' })).not.toBeInTheDocument();
+  });
+
+  it.each(['openclaw:wecom-openclaw-plugin', 'openclaw:wecom', 'openclaw:qqbot', 'dingtalk'] as const)(
     '%s cannot select all messages even with a previously saved always setting', type => {
       showChannel(type, 'always');
-      expect(screen.getByText('企微 AI Bot 平台仅在 @机器人 时下发群消息回调，无法接收未 @ 的消息')).toBeInTheDocument();
+      expect(screen.getByText('此渠道仅接收 @机器人 的群消息，不支持全部消息')).toBeInTheDocument();
       const all = screen.getByRole('button', { name: '全部消息' });
       expect(all).toBeDisabled();
       fireEvent.click(all);
@@ -39,7 +46,7 @@ describe('group activation settings', () => {
     },
   );
 
-  it.each(['telegram', 'feishu', 'dingtalk', 'openclaw:openclaw-lark', 'openclaw:custom-plugin'] as const)(
+  it.each(['telegram', 'feishu', 'openclaw:openclaw-lark', 'openclaw:custom-plugin'] as const)(
     '%s keeps the existing all-message setting', async type => {
       showChannel(type);
       const all = screen.getByRole('button', { name: '全部消息' });

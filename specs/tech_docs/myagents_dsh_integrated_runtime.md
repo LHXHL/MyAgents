@@ -101,6 +101,8 @@ Host 以结构化 `systemContext` 提供 global/root contributions；DSH 的 lit
 
 Skills、Commands、MCP 与 Host tools 等组件由同一次 Product capability inventory 编译。DSH 与 Managed Codex 共用 runtime-neutral `product-extensions` discovery/dispatcher；执行仍属于各自 Runtime。Host 也会生成 Agent descriptor，但当前 DSH 没有对应的角色编译器，这类组件返回 `unsupported/implementation_batch_pending`，不会据此创建子 Agent。子 Agent 由 DSH 原生工具创建并管理，Host 不运行第二套 Agent loop。
 
+DSH wire revision 在最终编译边界根据实际声明内容（含 Host tool 清单、资源、Skill roots、MCP launch profiles）计算；前置 Product discovery revision 不能独立标识后续发现的工具或凭据投影。完整编译和浏览器局部刷新复用同一计算入口。缓存的 in-process MCP server 只有一条 transport，新旧扩展 dispatcher 在 replacement 期间共同持有连接，最后一个 owner 释放时才关闭；失败候选不关闭未取得的旧 transport。
+
 组件身份以 `(kind, id)` 为作用域；不同类型同名合法，Skill 引用只在 Skill 类型内解析。组件损坏或不支持时，只淘汰该组件并产生结构化诊断；基础 Runtime 仍可用。缺省命令描述由 DSH 注册适配处补为命令名，公开名称与模板正文不变。MCP prepare 失败通过现有 Runtime stderr 记录组件和失败阶段，不记录原始远端错误文本、凭据或子进程输出。明确依赖 required system Skill 的 turn 才必须核对该 exact capability。扩展 replacement 在原生事务边界执行，并由 catalog/read-back 确认实际结果；SSE 仅投影状态，不成为配置 authority。
 
 ## 7. 权限、计划与问答

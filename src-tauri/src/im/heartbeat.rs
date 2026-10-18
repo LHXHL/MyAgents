@@ -673,6 +673,19 @@ impl HeartbeatRunner {
 
         // Handle response (still under peer_lock — IM message send is safe)
         let success = match result.status.as_str() {
+            "suppressed" => {
+                let mut pending = self.pending_cron_events.lock().await;
+                let before = pending.len();
+                pending.retain(|p| {
+                    !pending_snapshot.iter().any(|s| {
+                        s.task_id == p.task_id
+                            && s.timestamp == p.timestamp
+                            && s.target_session_key == p.target_session_key
+                    })
+                });
+                cron_event_acked_this_cycle = pending.len() < before;
+                true
+            }
             "silent" => {
                 ulog_debug!("[heartbeat] AI responded HEARTBEAT_OK (silent)");
                 true

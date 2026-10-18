@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   fetch: vi.fn(),
-  handlers: new Map<string, (params: { args: Record<string, unknown> }, extra?: unknown) => Promise<unknown>>(),
+  handlers: new Map<string, (params: Record<string, unknown>, extra?: unknown) => Promise<unknown>>(),
   createServer: vi.fn((config: unknown) => ({ type: 'sdk', name: 'im-bridge-tools', config })),
 }));
 
@@ -18,17 +18,14 @@ vi.mock('../utils/turn-abort', () => ({
   getCurrentTurnSignal: vi.fn(() => undefined),
 }));
 
-vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
-  createSdkMcpServer: mocks.createServer,
-  tool: vi.fn((
-    name: string,
-    _description: string,
-    _schema: unknown,
-    handler: (params: { args: Record<string, unknown> }, extra?: unknown) => Promise<unknown>,
-  ) => {
-    mocks.handlers.set(name, handler);
-    return { name };
-  }),
+vi.mock('../tools/im-bridge/mcp-server', () => ({
+  createImBridgeMcpServer: async (definitions: Array<{ name: string }>, call: (name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>) => {
+    for (const definition of definitions) {
+      mocks.handlers.set(definition.name, (args, extra) => call(definition.name, args,
+        (extra as { signal?: AbortSignal } | undefined)?.signal));
+    }
+    return mocks.createServer(definitions);
+  },
 }));
 
 import { MCP_PREWARM_GRACE_MS } from '../session-core/mcp-prewarm-policy';
@@ -71,6 +68,13 @@ describe('IM Bridge stable tool surface', () => {
 
   afterEach(() => {
     clearImBridgeToolsContext();
+  });
+
+
+  it('preserves plugin MCP error status through the Session proxy', async () => {
+    await ensureImBridgeToolSurface({ bridgePort: 4312, pluginId: 'wecom', enabledToolGroups: [] }, () => ({ senderId: 'synthetic' }));
+    mocks.fetch.mockResolvedValue(jsonResponse({ ok: true, result: { isError: true, content: [{ type: 'text', text: '{"error":"invalid args"}' }] } }));
+    await expect(mocks.handlers.get('search_docs')!({})).resolves.toMatchObject({ isError: true });
   });
 
   it('normalizes group order, duplicates, and the interaction group into one identity', () => {
@@ -167,7 +171,7 @@ describe('IM Bridge stable tool surface', () => {
     const handler = mocks.handlers.get('search_docs');
     expect(handler).toBeDefined();
 
-    await handler?.({ args: { query: 'first' } });
+    await handler?.({ query: 'first' });
     currentContext = {
       senderId: 'user-2',
       chatId: 'chat-2',
@@ -175,7 +179,7 @@ describe('IM Bridge stable tool surface', () => {
       sourceType: 'group',
       accountId: 'account-b',
     };
-    await handler?.({ args: { query: 'second' } });
+    await handler?.({ query: 'second' });
 
     const callBodies = mocks.fetch.mock.calls
       .filter(call => String(call[0]).includes('/mcp/call-tool'))
@@ -206,7 +210,7 @@ describe('IM Bridge stable tool surface', () => {
     }, () => ({ senderId: 'user-1' }));
     const controller = new AbortController();
 
-    await mocks.handlers.get('search_docs')?.({ args: { query: 'cancel' } }, {
+    await mocks.handlers.get('search_docs')?.({ query: 'cancel' }, {
       signal: controller.signal,
     });
 

@@ -334,3 +334,9 @@ Sidecar ready 而 External/DSH Product Session 尚未绑定 workspace owner 时�
 - Task / Goal：[`task_center.md`](task_center.md)、[`task_provider_routing.md`](task_provider_routing.md)
 - Prompt envelope：[`system_reminder_protocol.md`](system_reminder_protocol.md)
 - 可执行护栏：[`pit_of_success.md`](pit_of_success.md)
+
+### Channel 跨会话交接
+
+`myagents im send-message` 的其他实际会话目标由 Rust Channel owner 解析为原 Router peer key；同会话继续直接发送。缺少目标 Session 时，复用 `ensure_peer_snapshot` 与 `ensure_sidecar` 建立正常绑定及其配置快照，不能伪造 ImMessage，也不修改入站授权。持有原 peer fence 和 model-work gate 完成 `prepare_existing_delivery` / Inbox ACK，无新增队列或重放记录。
+
+Inbox 的可选 `send.request.channelHandoff` 是宿主数据，目标 admission 与 beforeDispatch 都检查实际 Product Session、连接 UUID、peer ID/ID 类型及私聊/群聊归属；不是从 XML 推导路由。目标 Runtime 沿原 realtime Inbox 队列消费，图片经 SessionEngine.images 进入原图片输入及 transcript，文件沿目标工作区引用持久保留。发送模式由目标本轮冻结；accepted 只表示队列 ACK。不为交接创建 replyBack 元数据，不自动返回整个私聊结果。

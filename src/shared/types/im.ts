@@ -59,6 +59,7 @@ export interface GroupPermission {
  * Designed for multi-bot architecture (currently single bot)
  */
 export interface ImBotConfig {
+  messageDeliveryMode?: import('../channelContext').ChannelDeliveryMode;
   // ===== Multi-bot identity =====
   id: string;                   // Bot unique ID (UUID)
   name: string;                 // User-defined name (e.g. "工作助手")
@@ -67,6 +68,8 @@ export interface ImBotConfig {
   // ===== Platform connection =====
   botToken: string;             // Telegram Bot Token
   allowedUsers: string[];       // user_id or username
+  /** Display metadata only; authorization continues to use allowedUsers IDs. */
+  userDisplayNames?: Record<string, string>;
 
   // ===== Feishu-specific credentials =====
   feishuAppId?: string;

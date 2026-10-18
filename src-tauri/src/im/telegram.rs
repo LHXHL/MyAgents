@@ -60,6 +60,8 @@ const MAX_MERGED_LENGTH: usize = 50000;
 
 /// Pending batch of messages being coalesced (only for fragment merging)
 struct PendingBatch {
+    source_metadata: super::types::ImSourceMetadata,
+    received_at: chrono::DateTime<chrono::Utc>,
     fragments: Vec<String>,
     total_length: usize,
     #[allow(dead_code)]
@@ -129,6 +131,12 @@ impl MessageCoalescer {
                 // Append to existing batch
                 batch.total_length += msg.text.len();
                 batch.fragments.push(msg.text.clone());
+                batch
+                    .source_metadata
+                    .parts
+                    .push(super::types::ImSourcePart::from_message(msg));
+                batch.source_metadata.sent_at = None;
+                batch.source_metadata.platform_message_id = None;
                 batch.last_msg_id = msg_id_i64;
                 batch.last_received = now;
                 // OR mention flags: if any fragment has mention, the merged msg does too
@@ -157,6 +165,12 @@ impl MessageCoalescer {
             self.pending.insert(
                 chat_id.to_string(),
                 PendingBatch {
+                    source_metadata: {
+                        let mut metadata = msg.source_metadata.clone();
+                        metadata.parts = vec![super::types::ImSourcePart::from_message(msg)];
+                        metadata
+                    },
+                    received_at: msg.timestamp,
                     fragments: vec![msg.text.clone()],
                     total_length: msg.text.len(),
                     first_msg_id: msg_id_i64,
@@ -208,6 +222,7 @@ impl MessageCoalescer {
     /// Flush a pending batch, reconstructing a full ImMessage with stored metadata.
     fn flush_batch_to_msg(&mut self, chat_id: &str) -> Option<ImMessage> {
         self.pending.remove(chat_id).map(|batch| ImMessage {
+            source_metadata: batch.source_metadata,
             chat_id: batch.chat_id,
             message_id: batch.last_msg_id.to_string(),
             text: batch.fragments.join("\n"),
@@ -216,7 +231,7 @@ impl MessageCoalescer {
             account_id: None,
             source_type: batch.source_type,
             platform: batch.platform,
-            timestamp: chrono::Utc::now(),
+            timestamp: batch.received_at,
             attachments: Vec::new(),
             media_group_id: None,
             is_mention: batch.is_mention,
@@ -303,6 +318,12 @@ impl TelegramAdapter {
 
     fn api_url(&self, method: &str) -> String {
         format!("https://api.telegram.org/bot{}/{}", self.bot_token, method)
+    }
+
+    /// Read-only target resolution; never send a probe to discover identity.
+    pub(crate) async fn resolve_channel_chat(&self, id: &str) -> Result<(String, super::types::ImSourceType, Option<String>), String> {
+        let chat = self.api_call("getChat", &serde_json::json!({"chat_id":id})).await.map_err(|e| e.to_string())?;
+        resolve_handoff_chat(&chat)
     }
 
     /// Generic API call with rate limit and error handling
@@ -1011,10 +1032,8 @@ impl TelegramAdapter {
                                 }
                             }
 
-                            // ACK received
-                            if let Ok(mid) = msg.message_id.parse::<i64>() {
-                                self.ack_received(&msg.chat_id, mid).await;
-                            }
+                            // Processing reactions are emitted after turn-policy admission
+                            // by ReplyRouter, so tool-only requests remain externally silent.
                         }
                     }
 
@@ -1134,10 +1153,7 @@ impl TelegramAdapter {
         let message_id = message["message_id"].as_i64()?.to_string();
         let sender_id = from["id"].as_i64()?;
         let sender_id_str = sender_id.to_string();
-        let sender_name = from["username"]
-            .as_str()
-            .or_else(|| from["first_name"].as_str())
-            .map(|s| s.to_string());
+        let sender_name = super::inbound_metadata::telegram_display_name(from);
 
         // Determine source type
         let chat_type = chat["type"].as_str().unwrap_or("private");
@@ -1347,7 +1363,7 @@ impl TelegramAdapter {
         // group access control is handled in mod.rs)
         if source_type == ImSourceType::Private
             && !is_bind_request
-            && !self.is_allowed(sender_id, sender_name.as_deref()).await
+            && !self.is_allowed(sender_id, from["username"].as_str()).await
         {
             ulog_debug!(
                 "[telegram] Rejected message from non-whitelisted user: {} ({:?})",
@@ -1390,6 +1406,13 @@ impl TelegramAdapter {
         }
 
         Some(ImMessage {
+            source_metadata: super::inbound_metadata::telegram(
+                message,
+                self.bot_user_id.lock().await.map(|id| id.to_string()),
+                self.bot_username.lock().await.clone(),
+                is_at_mention,
+                reply_to_bot,
+            ),
             chat_id,
             message_id,
             text: cleaned_text,
@@ -1403,7 +1426,7 @@ impl TelegramAdapter {
             media_group_id,
             is_mention,
             reply_to_bot,
-            hint_group_name: None,
+            hint_group_name: super::inbound_metadata::nonempty(&chat["title"]),
             reply_to_body: None,
             group_system_prompt: None,
             request_id: String::new(),
@@ -1424,7 +1447,8 @@ impl TelegramAdapter {
         let chat_id = chat["id"].as_i64()?.to_string();
         let chat_title = chat["title"]
             .as_str()
-            .unwrap_or("Unknown Group")
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or(&chat_id)
             .to_string();
         let new_status = member_update["new_chat_member"]["status"].as_str()?;
         let added_by_name = {
@@ -1562,6 +1586,52 @@ fn clean_message_text(text: &str, bot_username: &Option<String>) -> String {
 // ── ImAdapter trait implementation ─────────────────────────
 
 impl super::adapter::ImAdapter for TelegramAdapter {
+    async fn peer_names(
+        &self,
+        targets: &super::peer_names::PeerNameTargets,
+    ) -> Vec<super::peer_names::PeerDisplayName> {
+        use super::peer_names::{PeerDisplayName, PeerKind};
+        let mut names = Vec::new();
+        // Bound the entire startup pass, preserving successes before a slow lookup.
+        let _ = tokio::time::timeout(Duration::from_secs(4), async {
+            for (kind, ids) in [
+                (PeerKind::Group, &targets.groups),
+                (PeerKind::User, &targets.users),
+            ] {
+                for id in ids {
+                    let lookup = async {
+                        let response = self
+                            .api_call("getChat", &serde_json::json!({"chat_id": id}))
+                            .await
+                            .ok()?;
+                        // getChat must identify the exact requested peer; never use a returned neighbor.
+                        if response["id"].as_i64().map(|n| n.to_string()).as_deref()
+                            != Some(id.as_str())
+                        {
+                            return None;
+                        }
+                        if kind == PeerKind::Group {
+                            super::inbound_metadata::nonempty(&response["title"])
+                        } else {
+                            super::inbound_metadata::telegram_display_name(&response)
+                        }
+                    };
+                    if let Ok(Some(name)) =
+                        tokio::time::timeout(Duration::from_millis(2500), lookup).await
+                    {
+                        names.push(PeerDisplayName {
+                            id: id.clone(),
+                            kind,
+                            name,
+                        });
+                    }
+                }
+            }
+        })
+        .await;
+        names
+    }
+
     async fn verify_connection(&self) -> super::adapter::AdapterResult<String> {
         let result = self.get_me().await.map_err(|e| e.to_string())?;
         let username = result["username"].as_str().unwrap_or("unknown").to_string();
@@ -1773,9 +1843,71 @@ impl super::adapter::ImStreamAdapter for TelegramAdapter {
     }
 }
 
+fn resolve_handoff_chat(chat: &Value) -> Result<(String, super::types::ImSourceType, Option<String>), String> {
+        let kind = match chat["type"].as_str() {
+            Some("private") => super::types::ImSourceType::Private,
+            Some("group" | "supergroup") => super::types::ImSourceType::Group,
+            Some("channel") => return Err("Native Telegram channel_post is not supported by this inbound router; no handoff or message was sent".into()),
+            _ => return Err("Cannot resolve Telegram conversation kind".into()),
+        };
+        let id = chat["id"].as_i64().ok_or("Telegram returned no chat ID")?.to_string();
+        let name = chat["title"].as_str().or(chat["first_name"].as_str()).map(str::to_string);
+        Ok((id, kind, name))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn handoff_resolves_supported_inbound_kinds_and_rejects_channel_posts() {
+        for (kind, expected) in [("private", super::super::types::ImSourceType::Private), ("group", super::super::types::ImSourceType::Group), ("supergroup", super::super::types::ImSourceType::Group)] {
+            let result = super::resolve_handoff_chat(&serde_json::json!({"id":123,"type":kind,"title":"name"})).unwrap();
+            assert_eq!(result, ("123".into(), expected, Some("name".into())));
+        }
+        assert!(super::resolve_handoff_chat(&serde_json::json!({"id":123,"type":"channel"})).unwrap_err().contains("channel_post"));
+    }
+
     use super::*;
+    #[tokio::test]
+    async fn sender_display_name_never_authorizes_a_telegram_identity() {
+        let (tx, _) = mpsc::channel(2);
+        let (approval, _) = mpsc::channel(2);
+        let (groups, _) = mpsc::channel(2);
+        let adapter = TelegramAdapter::new(
+            &ImConfig::default(),
+            tx,
+            Arc::new(RwLock::new(vec!["trusted_handle".into(), "43".into()])),
+            approval,
+            groups,
+        );
+        let update = |id, username: &str, name: &str, chat_type: &str| {
+            serde_json::json!({"message": {
+                "message_id":1,"chat":{"id":id,"type":chat_type,"title":"Team"},
+                "from":{"id":id,"username":username,"first_name":name},"text":"hello"
+            }})
+        };
+        let accepted = adapter
+            .process_update(&update(42, "trusted_handle", "Alice", "private"))
+            .await
+            .unwrap();
+        assert_eq!(accepted.sender_name.as_deref(), Some("Alice"));
+        assert_eq!(
+            accepted.source_metadata.sender_username.as_deref(),
+            Some("trusted_handle")
+        );
+        assert!(adapter
+            .process_update(&update(44, "attacker", "trusted_handle", "private"))
+            .await
+            .is_none());
+        assert!(adapter
+            .process_update(&update(43, "other", "Bob", "private"))
+            .await
+            .is_some());
+        let group = adapter
+            .process_update(&update(-1, "other", "Bob", "supergroup"))
+            .await
+            .unwrap();
+        assert_eq!(group.hint_group_name.as_deref(), Some("Team"));
+    }
 
     #[test]
     fn transport_error_projection_never_includes_the_token_bearing_url() {
@@ -1834,6 +1966,7 @@ mod tests {
 
     fn make_test_msg(chat_id: &str, msg_id: i64, text: &str) -> ImMessage {
         ImMessage {
+            source_metadata: Default::default(),
             chat_id: chat_id.to_string(),
             message_id: msg_id.to_string(),
             text: text.to_string(),

@@ -23,6 +23,7 @@ import {
   bindPendingStream,
   clearAllPendingDispatches,
   completePendingDispatch,
+  setPendingDispatchDeliveryMode,
   enqueueBlockBoundary,
   enqueuePartial,
   enqueueRunStart,
@@ -38,7 +39,7 @@ import {
 import { redactPluginBridgeSecrets } from './secret-redaction';
 import { sanitizeOutboundMediaFilename } from './media-filename';
 import { installLarkAdmissionRuntimeGlobals } from './lark-admission';
-import { patchLarkChatQueueSource } from './plugin-compat-patches';
+import { patchLarkChatQueueSource, patchChannelLifecycleSource, patchWecomCliSource } from './plugin-compat-patches';
 import {
   getGeneralRequestDispatcher,
   initializeProxyStateFromCurrentSettings,
@@ -51,7 +52,7 @@ import { serve as honoServe } from '@hono/node-server';
 import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { registerHooks, createRequire } from 'node:module';
+import { registerHooks, createRequire, stripTypeScriptTypes } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join as pathJoin } from 'node:path';
 import { parseArgs } from 'util';
@@ -110,7 +111,7 @@ installLarkAdmissionRuntimeGlobals();
 
 registerHooks({
   load(url, context, next) {
-    if (!url.startsWith('file://') || !url.endsWith('.js') || !PLUGIN_PATH_RE.test(url)) {
+    if (!url.startsWith('file://') || !(/\.[cm]?[jt]s$/.test(url)) || !PLUGIN_PATH_RE.test(url)) {
       return next(url, context);
     }
     let src: string;
@@ -118,6 +119,23 @@ registerHooks({
       src = readFileSync(fileURLToPath(url), 'utf8');
     } catch {
       return next(url, context);
+    }
+    const channelPatchKind = url.endsWith('/@tencent-weixin/openclaw-weixin/src/messaging/process-message.ts') ? 'weixin'
+      : url.endsWith('/@wecom/wecom-openclaw-plugin/dist/src/monitor.js') ? 'wecom'
+      : url.endsWith('/@larksuite/openclaw-lark/src/messaging/inbound/dispatch-builders.js') ? 'lark'
+      : url.endsWith('/@larksuite/openclaw-lark/src/messaging/inbound/dispatch.js') ? 'larkDispatch' : null;
+    const channelPatched = channelPatchKind ? patchChannelLifecycleSource(src, channelPatchKind) : null;
+    if (channelPatchKind && !channelPatched) throw new Error(`Unsupported ${channelPatchKind} channel-context/delivery-policy source revision; update the compatible plugin before starting this channel.`);
+    if (channelPatched) {
+      const original = next(url, context);
+      return { ...original, source: url.endsWith('.ts') ? stripTypeScriptTypes(channelPatched, { mode: 'transform', sourceUrl: url }) : channelPatched, shortCircuit: true };
+    }
+    const wecomCliKind = url.endsWith('/@wecom/wecom-openclaw-plugin/dist/src/cli/argv.js') ? 'argv'
+      : url.endsWith('/@wecom/wecom-openclaw-plugin/dist/src/cli/tool.js') ? 'tool' : null;
+    if (wecomCliKind) {
+      const patched = patchWecomCliSource(src, wecomCliKind);
+      if (patched) return { ...next(url, context), source: patched, shortCircuit: true };
+      console.warn(`[plugin-bridge] Unknown WeCom CLI ${wecomCliKind} revision; retaining upstream behavior`);
     }
     const hasImportMeta = /\bimport\.meta\b/.test(src);
     // Detect CJS-style exports: top of file is `"use strict"` and file has any
@@ -337,7 +355,15 @@ async function loadPlugin() {
   setOpenClawConfigSnapshot(openclawConfig);
   const compatApi = createCompatApi(openclawConfig);
   // Runtime must be created early — plugins call setRuntime(api.runtime) during register()
-  const runtime = createCompatRuntime(rustPort, botId, 'unknown');
+  const runtime = createCompatRuntime(rustPort, botId, 'unknown', async (accountId) => {
+    if (!mcpHandler?.resolveTools().some(tool => tool.name === 'wecom-cli')) return null;
+    return mcpHandler.callTool('wecom-cli', { args: ['message', 'aibot', 'sessions', 'list'] }, undefined, false, { accountId });
+  }, async (kind, id, accountId) => {
+    const directory = capturedPlugin?.raw.directory as Record<string, unknown> | undefined;
+    const lookup = directory?.[kind === 'group' ? 'listGroupsLive' : 'listPeersLive'];
+    if (typeof lookup !== 'function') return [];
+    return lookup({ cfg: getOpenClawConfigSnapshot(), accountId, query: id, limit: 100 });
+  });
   compatApi.runtime = runtime;
   loadedRuntime = runtime;
 
@@ -692,6 +718,13 @@ const server = honoServe({
     // bot-identity.ts. Returns { displayName: null } when no resolver matches
     // the plugin (wecom / weixin) or when resolution failed — caller should
     // treat null as "no identity available" and fall back to platform label.
+    if (path === '/peer-names') {
+      const body = req.method === 'POST' ? await req.json() as Record<string, unknown> : {};
+      const ids = (value: unknown): string[] => Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string' && id.length > 0) : [];
+      return Response.json(await loadedRuntime?.peerNames(currentAccount?.accountId as string | undefined,
+        { users: ids(body.users), groups: ids(body.groups) }) ?? []);
+    }
+
     if (path === '/identity') {
       if (!capturedPlugin) {
         return Response.json({ displayName: null });
@@ -941,6 +974,15 @@ const server = honoServe({
       }
     }
 
+    if (path === '/delivery-policy' && req.method === 'POST') {
+      const body = await req.json() as { requestId: string; mode: string };
+      if (body.mode !== 'auto' && body.mode !== 'tool_only') return Response.json({ ok: false, error: 'Invalid delivery mode' }, { status: 400 });
+      try {
+        setPendingDispatchDeliveryMode(body.requestId, body.mode);
+        return Response.json({ ok: true });
+      } catch (error) { return protocolError(body.requestId, error); }
+    }
+
     if (path === '/complete-dispatch' && req.method === 'POST') {
       const body = await req.json() as {
         requestId: string;
@@ -1022,7 +1064,9 @@ const server = honoServe({
         // (handleInvokeErrorWithAutoAuth) can find the sender and chat to
         // send OAuth Device Flow cards. Without this, getTicket() returns
         // undefined and auto-auth silently falls back to error propagation.
-        const doCall = () => mcpHandler!.callTool(body.toolName, body.args || {}, body.userId, body.isOwner);
+        const doCall = () => mcpHandler!.callTool(body.toolName, body.args || {}, body.userId, body.isOwner, {
+          accountId: body.accountId,
+        });
 
         let result: unknown;
         if (pluginWithTicket && body.userId) {

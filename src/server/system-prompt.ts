@@ -10,6 +10,7 @@
  * bun build hardcodes __dirname at compile time, breaking production builds.
  */
 
+import { CHANNEL_PROMPT } from '../shared/channelPrompt';
 import type { RuntimeType } from '../shared/types/runtime';
 import type { OfficialToolId } from '../shared/official-tools';
 import type { HostInteractionCapability } from '../shared/types/hostInteraction';
@@ -57,14 +58,6 @@ MyAgents 负责会话管理、工具权限、定时任务、IM Bot 集成、工�
 用户全局配置目录: ~/.myagents
 当对话涉及日期、时间或星期时,先用 Bash 执行 \`date\` 获取准确的当前时间再作判断——系统信息中的日期可能已过期。
 </myagents-identity>`;
-
-const TMPL_CHANNEL_DESKTOP = `<myagents-interaction-channel>
-用户正通过 MyAgents 桌面客户端与你对话。
-</myagents-interaction-channel>`;
-
-const TMPL_CHANNEL_IM = `<myagents-interaction-channel>
-你正通过 {{platformLabel}} 作为 IM 聊天机器人与用户对话，{{sourceTypeLabel}}。{{#if botName}}你的昵称为「{{botName}}」。{{/if}}
-</myagents-interaction-channel>`;
 
 const TMPL_CRON_TASK = `<myagents-cron-task-instructions>
 你正处于心跳循环任务模式 (Task ID: {{taskId}})。每隔 {{intervalText}} 系统触发唤醒你一次。{{#if aiCanExit}}
@@ -116,6 +109,10 @@ export interface SystemPromptOptions {
    * identity line in L1. Defaults to 'builtin' (Claude Agent SDK) if omitted.
    */
   runtime?: RuntimeType;
+  /** Existing Session binding or Agent channel capability, resolved by the host. */
+  channelMessagingEnabled?: boolean;
+  /** Exact Session binding, independent of the surface that opens it. */
+  channelBound?: boolean;
   /**
    * Append the `myagents` CLI capability hints (cron / IM media) to the
    * prompt. Set by ALL runtime paths in v0.2.11+ — builtin and external —
@@ -168,19 +165,10 @@ const DSH_CAPABILITY_ROUTING = 'MyAgents capabilities are progressively disclose
 function buildProductSessionPrompt(scenario: InteractionScenario, options?: SystemPromptOptions): string {
   const parts: string[] = [];
 
-  // L2: Interaction channel (mutually exclusive)
-  if (scenario.type === 'im' || scenario.type === 'agent-channel') {
-    const platformMap: Record<string, string> = { feishu: '飞书', telegram: 'Telegram', dingtalk: '钉钉' };
-    const platformLabel = platformMap[scenario.platform] ?? scenario.platform;
-    const sourceTypeLabel = scenario.sourceType === 'private' ? '私聊模式' : '群聊模式';
-    parts.push(renderTemplate(TMPL_CHANNEL_IM, {
-      botName: scenario.botName ?? '',
-      platformLabel,
-      sourceTypeLabel,
-    }));
-  } else {
-    // desktop, cron, and registered-agent events all use desktop-style shell I/O.
-    parts.push(TMPL_CHANNEL_DESKTOP);
+  // Entry surfaces are not conversation identity. Rust's exact Session binding
+  // owns the environment; actual input source and delivery live in turn context.
+  if (options?.channelMessagingEnabled || scenario.type === 'im' || scenario.type === 'agent-channel') {
+    parts.push(CHANNEL_PROMPT);
   }
 
   // L3: Scenario instructions (stacked as needed)
@@ -213,7 +201,7 @@ function buildProductSessionPrompt(scenario: InteractionScenario, options?: Syst
   // L3: Generative UI widget guidance — universal across runtimes for desktop
   // scenarios. Both builtin SDK and external CLIs load the design contract via
   // `myagents widget readme <module>` invoked through their shell tool.
-  const widgetSection = buildWidgetSection(scenario);
+  const widgetSection = options?.channelBound ? '' : buildWidgetSection(scenario);
   if (widgetSection) parts.push(widgetSection);
 
   // L3: Session Inbox guidance (PRD 0.2.18 §4.1) — universal across runtimes

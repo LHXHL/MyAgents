@@ -11,6 +11,15 @@ use super::types::{AskUserQuestionPayload, ImSourceType};
 use serde_json::Value;
 
 pub trait ImAdapter: Send + Sync + 'static {
+    /// Optional, read-only display metadata for already configured peers.
+    /// Implementations bound IO and never authorize peers or send messages.
+    fn peer_names(
+        &self,
+        _targets: &super::peer_names::PeerNameTargets,
+    ) -> impl std::future::Future<Output = Vec<super::peer_names::PeerDisplayName>> + Send {
+        async { Vec::new() }
+    }
+
     /// Verify the bot connection and return a human-readable identifier
     /// (e.g. Telegram bot username, Discord bot tag).
     fn verify_connection(&self) -> impl std::future::Future<Output = AdapterResult<String>> + Send;
@@ -191,6 +200,14 @@ pub trait ImStreamAdapter: ImAdapter {
         _request_id: &str,
     ) -> impl std::future::Future<Output = AdapterResult<()>> + Send {
         async { Err("request-scoped reply dispatch is not supported".to_string()) }
+    }
+
+    fn set_reply_delivery_mode(
+        &self,
+        _request_id: &str,
+        _mode: super::types::ChannelDeliveryMode,
+    ) -> impl std::future::Future<Output = AdapterResult<()>> + Send {
+        async { Ok(()) }
     }
 
     fn start_reply_stream(

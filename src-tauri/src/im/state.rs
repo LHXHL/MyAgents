@@ -220,7 +220,31 @@ pub(crate) enum AnyAdapter {
     Bridge(Arc<BridgeAdapter>),
 }
 
+impl AnyAdapter {
+    /// Transport identity is supplied by the live adapter, not its installation config.
+    pub(crate) fn routing_platform(&self) -> Result<ImPlatform, String> {
+        match self {
+            Self::Telegram(_) => Ok(ImPlatform::Telegram),
+            Self::Feishu(_) => Ok(ImPlatform::Feishu),
+            Self::Dingtalk(_) => Ok(ImPlatform::Dingtalk),
+            Self::Bridge(adapter) => adapter.routing_platform(),
+        }
+    }
+}
+
 impl adapter::ImAdapter for AnyAdapter {
+    async fn peer_names(
+        &self,
+        targets: &super::peer_names::PeerNameTargets,
+    ) -> Vec<super::peer_names::PeerDisplayName> {
+        match self {
+            Self::Telegram(a) => a.peer_names(targets).await,
+            Self::Feishu(a) => a.peer_names(targets).await,
+            Self::Dingtalk(a) => a.peer_names(targets).await,
+            Self::Bridge(a) => a.peer_names(targets).await,
+        }
+    }
+
     async fn verify_connection(&self) -> adapter::AdapterResult<String> {
         match self {
             Self::Telegram(a) => a.verify_connection().await,
@@ -308,6 +332,16 @@ impl adapter::ImAdapter for AnyAdapter {
 }
 
 impl adapter::ImStreamAdapter for AnyAdapter {
+    async fn set_reply_delivery_mode(
+        &self,
+        request_id: &str,
+        mode: super::types::ChannelDeliveryMode,
+    ) -> adapter::AdapterResult<()> {
+        match self {
+            Self::Bridge(adapter) => adapter.set_reply_delivery_mode(request_id, mode).await,
+            _ => Ok(()),
+        }
+    }
     async fn send_message_returning_id(
         &self,
         chat_id: &str,

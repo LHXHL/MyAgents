@@ -304,6 +304,7 @@
       }
     },
     "systemTags": {
+      "channelMessage": "Channel message",
       "heartbeat": "Heartbeat",
       "cronTask": "Scheduled task",
       "floatingContext": "Floating context",

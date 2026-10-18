@@ -134,6 +134,10 @@ export type BuiltinRestartReason =
 export type { TurnProviderAnalytics } from '../session-core/turn-analytics';
 
 export type MessageQueueItem = {
+  channelSnapshot?: import('../session-core/channel-context').ChannelTurnSnapshot | null;
+  channelPrimaryReminder?: boolean;
+  surfacedUserMessageId?: string;
+  mirrorImages?: MirrorImage[];
   metadata?: MessageWire['metadata'];
   id: string;
   message: SDKUserMessage['message'];

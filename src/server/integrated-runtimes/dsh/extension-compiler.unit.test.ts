@@ -32,6 +32,16 @@ function source(overrides: Partial<DshProductExtensionSource> = {}): DshProductE
 }
 
 describe('DSH declarative extension compiler', () => {
+  it('versions effective host tools independently of unchanged product discovery', () => {
+    const empty = compileDshProductExtensionPlane(source());
+    const tool = { name: 'myagents__mcp__bridge__echo', description: 'Echo', inputSchema: { type: 'object', properties: {} } };
+    const added = compileDshProductExtensionPlane(source({ hostToolDispatcher: { descriptors: [], dispatch: vi.fn(), dispose: vi.fn() }, dynamicTools: [tool] }));
+    const changed = compileDshProductExtensionPlane(source({ hostToolDispatcher: { descriptors: [], dispatch: vi.fn(), dispose: vi.fn() }, dynamicTools: [{ ...tool, description: 'Changed' }] }));
+    expect(new Set([empty, added, changed].map(p => p.snapshot.revision)).size).toBe(3);
+    expect(refreshDshManagedBrowserPlane(added, source({ hostToolDispatcher: { descriptors: [], dispatch: vi.fn(), dispose: vi.fn() }, dynamicTools: [tool] })).snapshot).toEqual(added.snapshot);
+    expect(compileDshProductExtensionPlane(source({ hostToolDispatcher: { descriptors: [], dispatch: vi.fn(), dispose: vi.fn() }, dynamicTools: [{ ...tool }] })).snapshot).toEqual(added.snapshot);
+  });
+
   it('refreshes only Browser authority while retaining frozen components after Skill deletion', () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-browser-frozen-skill-'));
     const path = join(root, 'SKILL.md');
@@ -249,6 +259,17 @@ describe('DSH declarative extension compiler', () => {
     expect(second).toMatch(/^mcp-env-[a-f0-9]{64}$/u);
     expect(second).not.toBe(first);
     expect(first).not.toContain('first-secret');
+  });
+
+
+  it('versions projected remote MCP credentials and metadata even with unchanged discovery', () => {
+    const server = { id: 'remote', name: 'Remote', type: 'http' as const, url: 'https://example.com/mcp',
+      headers: { Authorization: 'Bearer synthetic-one' }, runtimeConfigRevision: 'one', isBuiltin: false };
+    const first = compileDshProductExtensionPlane(source({ mcpServers: [server] }));
+    const rotated = compileDshProductExtensionPlane(source({ mcpServers: [{ ...server,
+      headers: { Authorization: 'Bearer synthetic-two' }, runtimeConfigRevision: 'two' }] }));
+    expect(rotated.snapshot.revision).not.toBe(first.snapshot.revision);
+    expect(JSON.stringify(rotated.snapshot)).not.toContain('synthetic-two');
   });
 
   it('reports an outside-workspace project Skill as an explicit body-only result', () => {

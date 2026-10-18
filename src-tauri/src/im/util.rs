@@ -31,7 +31,7 @@ pub(super) fn mime_to_ext(mime: &str) -> &str {
 }
 
 /// Map file extension to MIME type (reverse of mime_to_ext).
-pub(super) fn ext_to_mime(filename: &str) -> &str {
+pub(crate) fn ext_to_mime(filename: &str) -> &str {
     let ext = filename
         .rsplit('.')
         .next()
@@ -50,6 +50,18 @@ pub(super) fn ext_to_mime(filename: &str) -> &str {
         "ogg" => "audio/ogg",
         "m4a" => "audio/m4a",
         "pdf" => "application/pdf",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "zip" => "application/zip",
+        "csv" => "text/csv",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "html" => "text/html",
+        "txt" => "text/plain",
         _ => "application/octet-stream",
     }
 }

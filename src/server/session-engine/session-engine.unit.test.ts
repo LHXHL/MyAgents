@@ -731,7 +731,21 @@ describe('session-engine selector and adapters', () => {
           assistant: 'session-binding',
         },
       }),
+      undefined,
     );
+  });
+
+  it('carries Channel handoff images and the binding guard through both Runtime adapters', async () => {
+    const images = [{ kind: 'inline_base64' as const, name: 'photo.png', mimeType: 'image/png', data: 'eA==' }];
+    const beforeDispatch = vi.fn(async () => ({ accepted: true }));
+    const request = { text: 'handoff', images, beforeDispatch, sessionId: 'target', workspacePath: '/workspace' };
+    await getSessionEngine().enqueueInboxMessage(request);
+    expect(mocks.enqueueUserMessage.mock.calls.at(-1)?.[1]).toEqual(images);
+    expect(mocks.enqueueUserMessage.mock.calls.at(-1)?.[11]).toMatchObject({ beforeDispatch, inputSource: 'inbox', channelDelivery: { user: 'none', assistant: 'session-binding' } });
+    mocks.state.useExternal = true;
+    await getSessionEngine().enqueueInboxMessage(request);
+    expect(mocks.enqueueExternalSendForInbox.mock.calls.at(-1)?.[2]).toEqual(images);
+    expect(mocks.enqueueExternalSendForInbox.mock.calls.at(-1)?.[1]).toMatchObject({ beforeDispatch, channelDelivery: { user: 'none', assistant: 'session-binding' } });
   });
 
   it('exposes fresh inbox dispatch acceptance through builtin and external adapters', async () => {

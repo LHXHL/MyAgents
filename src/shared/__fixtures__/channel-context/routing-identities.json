@@ -1,0 +1,74 @@
+[
+  {
+    "configured": "wecom-openclaw-plugin",
+    "registered": "wecom",
+    "kind": "private",
+    "id": "u",
+    "idType": "userid",
+    "to": "wecom:u",
+    "inbound": "u"
+  },
+  {
+    "configured": "wecom-openclaw-plugin",
+    "registered": "wecom",
+    "kind": "group",
+    "id": "g",
+    "idType": "chatid",
+    "to": "wecom:g",
+    "inbound": "g"
+  },
+  {
+    "configured": "openclaw-lark",
+    "registered": "feishu",
+    "kind": "private",
+    "id": "ou_u",
+    "idType": "open_id",
+    "to": "user:ou_u",
+    "inbound": "ou_u"
+  },
+  {
+    "configured": "openclaw-lark",
+    "registered": "feishu",
+    "kind": "group",
+    "id": "oc_g",
+    "idType": "chat_id",
+    "to": "chat:oc_g",
+    "inbound": "oc_g"
+  },
+  {
+    "configured": "qqbot",
+    "registered": "qqbot",
+    "kind": "private",
+    "id": "u",
+    "idType": "openid",
+    "to": "qqbot:c2c:u",
+    "inbound": "c2c:u"
+  },
+  {
+    "configured": "qqbot",
+    "registered": "qqbot",
+    "kind": "group",
+    "id": "g",
+    "idType": "group_openid",
+    "to": "qqbot:group:g",
+    "inbound": "group:g"
+  },
+  {
+    "configured": "qqbot",
+    "registered": "qqbot",
+    "kind": "group",
+    "id": "c",
+    "idType": "channel_id",
+    "to": "qqbot:channel:c",
+    "inbound": "channel:c"
+  },
+  {
+    "configured": "openclaw-weixin",
+    "registered": "openclaw-weixin",
+    "kind": "private",
+    "id": "u",
+    "idType": "user_id",
+    "to": "u",
+    "inbound": "u"
+  }
+]

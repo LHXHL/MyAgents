@@ -47,6 +47,7 @@ export const INTERNAL_CLI_FLAGS: Readonly<Record<string, readonly string[]>> = {
   "cron/exit": ["reason"],
   "goal/create": ["aiCanExit","deadline","maxExecutions","objective","objectiveFile"],
   "goal/update": ["reason","reasonFile","status"],
+  "im/send-message": ["inputFile","inputJson"],
   "im/send-media": ["caption","file","fileValueMissing"],
   "im/wake": ["text"],
   "plugin/install": ["npmSpec"],

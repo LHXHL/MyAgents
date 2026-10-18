@@ -26,7 +26,7 @@
  * conversation continues regardless.
  */
 
-import { stripLeadingSystemReminder } from '../../shared/systemReminder';
+import { parseLeadingSystemReminder, stripLeadingSystemReminder } from '../../shared/systemReminder';
 import type { ResolvedImagePayload } from '../runtimes/types';
 import { cancellableFetch } from './cancellation';
 import { managementRequestHeaders } from './management-api-client';
@@ -41,6 +41,8 @@ export interface MirrorImage {
 export interface MirrorPayload {
     sessionId: string;
     role: 'user' | 'assistant';
+    /** Frozen by the execution owner; never read mutable settings in transport. */
+    channelDeliveryMode?: 'auto' | 'tool_only';
     text?: string;
     images?: MirrorImage[];
 }
@@ -52,6 +54,8 @@ export interface MirrorPayload {
  * boundary. The depth cap keeps malformed input bounded.
  */
 export function visibleDesktopMirrorText(content: string): string {
+    const parsed = parseLeadingSystemReminder(content);
+    if (parsed.hasReminder && parsed.body.includes('<CHANNEL_CONTEXT version="1">')) return parsed.visibleText;
     let visibleContent = content;
     for (let i = 0; i < 8; i += 1) {
         const stripped = stripLeadingSystemReminder(visibleContent);
@@ -110,6 +114,7 @@ const LOG = '[mirror]';
  * misbehaving channel can't bring down the desktop turn.
  */
 export async function mirrorIfChannelBound(payload: MirrorPayload): Promise<void> {
+    if (payload.channelDeliveryMode === 'tool_only') return;
     const port = process.env.MYAGENTS_MANAGEMENT_PORT;
     if (!port) return;
 
@@ -125,7 +130,7 @@ export async function mirrorIfChannelBound(payload: MirrorPayload): Promise<void
             {
                 method: 'POST',
                 headers: managementRequestHeaders(),
-                body: JSON.stringify(payload),
+                body: JSON.stringify({ ...payload, channelDeliveryMode: payload.channelDeliveryMode ?? 'auto' }),
             },
             { timeoutMs: 10_000 },
         );

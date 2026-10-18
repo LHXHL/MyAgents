@@ -1,3 +1,5 @@
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod/v4';
 import { describe, expect, it, vi } from 'vitest';
@@ -51,6 +53,24 @@ function call(tool: string, args: unknown, generation = 'generation-one') {
 }
 
 describe('Managed Codex Host tool dispatcher', () => {
+  it('keeps overlapping replacement dispatchers connected until the last owner releases', async () => {
+    const server = new McpServer({ name: 'local-tools', version: '1.0.0' });
+    server.registerTool('echo', { inputSchema: {} }, async () => ({ content: [{ type: 'text', text: 'ok' }] }));
+    mocks.getBuiltinMcpInstance.mockReturnValue(Promise.resolve({ server: { type: 'sdk', name: 'local-tools', instance: server } }));
+    const attach = () => attachProductHostTools({ snapshot: snapshot(), sessionId: 'session-one', workspacePath: '/workspace' });
+    const [first, second] = await Promise.all([attach(), attach()]);
+    expect(first.dynamicTools).toHaveLength(1);
+    expect(second.dynamicTools).toEqual(first.dynamicTools);
+    await expect(first.hostToolDispatcher!.dispatch(call(first.dynamicTools[0]!.name, {}))).resolves.toMatchObject({ success: true });
+    first.hostToolDispatcher!.dispose('replacement accepted');
+    first.hostToolDispatcher!.dispose('duplicate disposal');
+    await expect(second.hostToolDispatcher!.dispatch(call(second.dynamicTools[0]!.name, {}, 'generation-two'))).resolves.toMatchObject({ success: true });
+    second.hostToolDispatcher!.dispose('end');
+    const third = await attach();
+    await expect(third.hostToolDispatcher!.dispatch(call(third.dynamicTools[0]!.name, {}, 'generation-three'))).resolves.toMatchObject({ success: true });
+    third.hostToolDispatcher!.dispose('end');
+  });
+
   it('discovers, validates, dispatches, and reconnects a cached in-process MCP server', async () => {
     const server = new McpServer({ name: 'local-tools', version: '1.0.0' });
     server.registerTool(
@@ -99,6 +119,20 @@ describe('Managed Codex Host tool dispatcher', () => {
       contentItems: [{ type: 'text', text: 'echo:again' }],
     });
     second.hostToolDispatcher!.dispose('test complete');
+  });
+
+
+  it('does not close an existing transport it failed to acquire', async () => {
+    const server = new McpServer({ name: 'owned-elsewhere', version: '1.0.0' });
+    server.registerTool('echo', { inputSchema: {} }, async () => ({ content: [{ type: 'text', text: 'ok' }] }));
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'other-owner', version: '1.0.0' });
+    await server.connect(a); await client.connect(b);
+    mocks.getBuiltinMcpInstance.mockReturnValue(Promise.resolve({ server: { type: 'sdk', name: 'owned-elsewhere', instance: server } }));
+    const rejected = await attachProductHostTools({ snapshot: snapshot(), sessionId: 'session-one', workspacePath: '/workspace' });
+    expect(rejected.dynamicTools).toEqual([]);
+    expect((await client.listTools()).tools).toHaveLength(1);
+    await client.close(); await server.close();
   });
 
   it('rejects stale process generations before invoking the handler', async () => {

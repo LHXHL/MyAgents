@@ -261,6 +261,7 @@ async fn run_once(goal_id: &str) -> Option<u64> {
                     duration_ms: 0,
                     consumed_tokens: 0,
                     channel_delivery_expected: false,
+                    channel_delivery_mode: Default::default(),
                 },
                 sidecar_generation,
                 sidecars.inner(),

@@ -1,0 +1,13 @@
+{
+  "telegram": { "groups": "all", "prerequisite": "telegram" },
+  "feishu": { "groups": "all", "prerequisite": "feishu" },
+  "dingtalk": { "groups": "mention" },
+  "openclaw:feishu": { "groups": "all", "prerequisite": "feishu" },
+  "openclaw:openclaw-lark": { "groups": "all", "prerequisite": "feishu" },
+  "openclaw:openclaw-plugin-feishu": { "groups": "all", "prerequisite": "feishu" },
+  "openclaw:wecom": { "groups": "mention" },
+  "openclaw:wecom-openclaw-plugin": { "groups": "mention" },
+  "openclaw:qqbot": { "groups": "mention" },
+  "openclaw:weixin": { "groups": "none" },
+  "openclaw:openclaw-weixin": { "groups": "none" }
+}

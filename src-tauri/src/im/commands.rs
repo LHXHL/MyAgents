@@ -53,10 +53,16 @@ pub async fn cmd_start_im_bot(
         .map(|(_, c)| c);
 
     let config = ImConfig {
+        message_delivery_mode: existing
+            .map(|c| c.message_delivery_mode)
+            .unwrap_or_default(),
         platform: im_platform,
         name: botName,
         bot_token: botToken,
         allowed_users: allowedUsers,
+        user_display_names: existing
+            .map(|c| c.user_display_names.clone())
+            .unwrap_or_default(),
         permission_mode: permissionMode,
         default_workspace_path: Some(workspacePath),
         enabled: true,
@@ -201,11 +207,13 @@ pub async fn cmd_im_conversations(
 
 // ===== Unified Config Commands (v0.1.26) =====
 
-/// Persist a partial patch to a single bot's entry in `~/.myagents/config.json`.
-/// Uses the shared config lock. `None` = no change, `Some("")` = clear.
-pub(super) fn persist_bot_config_patch(bot_id: &str, patch: &BotConfigPatch) -> Result<(), String> {
+pub(super) fn mutate_bot_config(
+    bot_id: &str,
+    mutate: impl FnOnce(&mut serde_json::Value, bool) -> Result<(), String>,
+) -> Result<bool, String> {
     let home = dirs::home_dir().ok_or("[im] Home dir not found")?;
     let config_path = home.join(".myagents").join("config.json");
+    let mut changed = false;
     with_config_lock(&config_path, true, |config| {
         // Find the bot/channel entry: search legacy imBotConfigs first, then agents[].channels[] (v0.1.42)
         // Use JSON Pointer path to locate the entry, then get a mutable reference.
@@ -245,6 +253,18 @@ pub(super) fn persist_bot_config_patch(bot_id: &str, patch: &BotConfigPatch) -> 
             BotLocation::AgentChannel(ai, ci) => &mut config["agents"][ai]["channels"][ci],
         };
 
+        let before = bot.clone();
+        mutate(bot, is_channel)?;
+        changed = *bot != before;
+        Ok(())
+    })?;
+    Ok(changed)
+}
+
+/// Persist a partial patch to a single bot's entry in `~/.myagents/config.json`.
+/// Uses the shared config lock. `None` = no change, `Some("")` = clear.
+pub(super) fn persist_bot_config_patch(bot_id: &str, patch: &BotConfigPatch) -> Result<(), String> {
+    mutate_bot_config(bot_id, |bot, is_channel| {
         // Helper: apply optional string field (None=skip, Some("")=remove, Some(val)=set)
         fn apply_opt(target: &mut serde_json::Value, key: &str, val: &Option<String>) {
             if let Some(ref v) = *val {
@@ -494,10 +514,10 @@ async fn update_bot_config_internal<R: Runtime>(
                 *inst.group_permissions.write().await = perms.clone();
             }
             if let Some(ref act) = patch_group_activation {
-                let activation = match act.as_str() {
-                    "always" => GroupActivation::Always,
-                    _ => GroupActivation::Mention,
-                };
+                let activation = super::platform_capabilities::effective_group_activation(
+                    &inst.config.platform,
+                    Some(act),
+                );
                 *inst.group_activation.write().await = activation;
             }
             if let Some(ref tools) = patch_group_tools_deny {
@@ -2077,13 +2097,11 @@ pub(crate) async fn reload_agent_config_from_disk<R: Runtime>(
             for ch_config in &updated_agent.channels {
                 if let Some(ch_inst) = agent.channels.get(&ch_config.id) {
                     // groupActivation
-                    if let Some(ref act) = ch_config.group_activation {
-                        let activation = match act.as_str() {
-                            "always" => GroupActivation::Always,
-                            _ => GroupActivation::Mention,
-                        };
-                        *ch_inst.bot_instance.group_activation.write().await = activation;
-                    }
+                    *ch_inst.bot_instance.group_activation.write().await =
+                        super::platform_capabilities::effective_group_activation(
+                            &ch_config.channel_type,
+                            ch_config.group_activation.as_deref(),
+                        );
                     // groupPermissions — always overwrite (the full channels array is sent,
                     // so empty Vec means "no permissions", not "field absent")
                     *ch_inst.bot_instance.group_permissions.write().await =

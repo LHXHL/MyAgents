@@ -4306,6 +4306,38 @@ describe('admin-api Agent / Session discovery', () => {
     expect(JSON.stringify(result)).not.toContain('do-not-expose');
     expect(JSON.stringify(result)).not.toContain('enabled');
   });
+  it('separates registered channel platforms from plugin installation types in discovery', async () => {
+    const channel = { id: 'wecom-connection', type: 'openclaw:wecom-openclaw-plugin', name: 'WeCom', enabled: true, botToken: 'never-disclose' };
+    writeJson(join(scratch, '.myagents', 'config.json'), { agents: [{ id: 'agent-one', name: 'One', channels: [channel] }] });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{ id: 'workspace-one', name: 'One', path: '/one', agentId: 'agent-one' }]);
+    managementApiMocks.managementApi.mockImplementation(async (path) => path === '/api/im/channel-context'
+      ? { ok: true, defaultTarget: null, channels: [{ channelId: channel.id, platform: 'openclaw:wecom' }] }
+      : { ok: true, channels: [{ botId: channel.id, platform: 'openclaw:wecom', pluginId: 'wecom-openclaw-plugin' }] });
+    const { handleAgentList, handleAgentChannelList, handleImChannels } = await import('./admin-api');
+    const list = await handleAgentList();
+    const channels = await handleAgentChannelList({ agentId: 'agent-one' });
+    const im = await handleImChannels();
+    const expected = { id: channel.id, type: channel.type, platform: 'openclaw:wecom', pluginId: 'wecom-openclaw-plugin' };
+    expect(list.data).toEqual([expect.objectContaining({ channels: [expect.objectContaining(expected)] })]);
+    expect(channels.data).toEqual([expect.objectContaining(expected)]);
+    expect(im.data).toMatchObject({ channels: [expect.objectContaining({ platform: 'openclaw:wecom', pluginId: 'wecom-openclaw-plugin' })] });
+    delete process.env.MYAGENTS_SIDECAR_ID;
+    const globalIm = await handleImChannels();
+    expect(globalIm.data).toMatchObject({ channels: [expect.objectContaining({ platform: 'openclaw:wecom', pluginId: 'wecom-openclaw-plugin' })] });
+    expect(JSON.stringify([list, channels])).not.toContain('never-disclose');
+    expect(JSON.parse(readFileSync(join(scratch, '.myagents', 'config.json'), 'utf8')).agents[0].channels[0]).toEqual(channel);
+  });
+
+  it('links IM help and readme to recorded Session history', async () => {
+    const { handleHelp } = await import('./admin-api');
+    for (const path of [['im'], ['im', 'readme']]) {
+      const text = String((handleHelp({ path }).data as { text?: string })?.text ?? '');
+      expect(text).toContain('myagents session get <sessionId>');
+      expect(text).toContain('recorded');
+      expect(text).toContain('platform');
+    }
+  });
+
   it('lists healthy Agents and exposes conflicted targets with paths but no credentials', async () => {
     writeJson(join(scratch, '.myagents', 'config.json'), { agents: [
       { id: 'shared', name: 'Shared', channels: [{ id: 'secret-channel', botToken: 'do-not-expose' }] },

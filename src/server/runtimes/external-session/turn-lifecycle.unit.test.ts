@@ -40,6 +40,33 @@ describe('external turn lifecycle owner', () => {
     resetExternalTurnLifecycleState();
   });
 
+  it('keeps a silent execution silent through realtime input and releases next auto turn', async () => {
+    const user = vi.fn(async () => undefined);
+    const assistant = vi.fn(async () => undefined);
+    const admission = {kind: 'deliver-session-bound-user' as const, waitForPersistence: Promise.resolve(true), deliverUser: user};
+    admitExternalTurnChannelDelivery({...DESKTOP_CHANNEL_DELIVERY, mode:'tool_only'}, admission);
+    admitExternalRealtimeChannelDelivery({...DESKTOP_CHANNEL_DELIVERY, mode:'auto'}, admission);
+    expect(stageExternalAssistantChannelDelivery(assistant)).toBe(false);
+    commitExternalAssistantChannelDelivery(captureExternalAssistantChannelDelivery());
+    await Promise.resolve();
+    expect(user).not.toHaveBeenCalled(); expect(assistant).not.toHaveBeenCalled();
+    admitExternalTurnChannelDelivery({...DESKTOP_CHANNEL_DELIVERY, mode:'auto'}, admission);
+    expect(stageExternalAssistantChannelDelivery(assistant)).toBe(true);
+    commitExternalAssistantChannelDelivery(captureExternalAssistantChannelDelivery());
+    await vi.waitFor(() => {expect(user).toHaveBeenCalledOnce();expect(assistant).toHaveBeenCalledOnce();});
+  });
+
+  it('preserves a delayed auto delivery after the next execution becomes tool-only', async () => {
+    const assistant = vi.fn(async () => undefined);
+    admitExternalTurnChannelDelivery({...DESKTOP_CHANNEL_DELIVERY, mode:'auto'}, {kind:'skip'});
+    stageExternalAssistantChannelDelivery(assistant);
+    const oldBatch = captureExternalAssistantChannelDelivery();
+    admitExternalTurnChannelDelivery({...DESKTOP_CHANNEL_DELIVERY, mode:'tool_only'}, {kind:'skip'});
+    expect(stageExternalAssistantChannelDelivery(assistant)).toBe(false);
+    commitExternalAssistantChannelDelivery(oldBatch);
+    await vi.waitFor(() => expect(assistant).toHaveBeenCalledOnce());
+  });
+
   it('keeps assistant Session delivery independent from a failed Desktop user mirror', async () => {
     const deliverAssistant = vi.fn(async () => undefined);
     admitExternalTurnChannelDelivery(DESKTOP_CHANNEL_DELIVERY, {

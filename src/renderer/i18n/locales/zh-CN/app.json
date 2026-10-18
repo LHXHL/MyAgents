@@ -304,6 +304,7 @@
       }
     },
     "systemTags": {
+      "channelMessage": "渠道消息",
       "heartbeat": "心跳感知",
       "cronTask": "定时任务",
       "floatingContext": "悬浮上下文",

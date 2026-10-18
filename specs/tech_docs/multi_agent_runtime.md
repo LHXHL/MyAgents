@@ -360,3 +360,9 @@ native compact 是 capability，不是所有 Runtime 的共同功能。builtin �
 | `src/renderer/components/RuntimeDiagnosticsBanner.tsx` | Runtime 诊断投影 |
 
 工具附件的 current wire、落盘与展示规则见 [`tool_attachment_pipeline.md`](tool_attachment_pipeline.md)。
+
+## Channel execution contract
+
+Runtime selector/SessionEngine 路由不变；Builtin queue item 和 External lifecycle 是本轮渠道配置快照 owner。固定 system 能力与逐输入 CHANNEL_CONTEXT 共用 shared 模板，实时输入复用该轮 mode，排队/拒绝 steer 后的下一轮重新捕获。成功 terminal 携带 frozen mode 给 Heartbeat/Goal owner；普通镜像使用同一策略，不读最新 Channel 配置覆盖旧结果。
+
+统一发送通过现有 MyAgents CLI，handler 与上下文规则见 [自定义工具指南](sdk_custom_tools_guide.md#统一渠道消息工具)。Builtin、Managed Codex 新旧 thread、DSH、Claude Code 和系统 Codex 均运行 `myagents im send-message`；不额外注册 MCP/host tool，不修改 Session runtime/MCP authority，也不要求 /new。

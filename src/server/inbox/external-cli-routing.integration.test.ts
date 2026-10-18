@@ -158,6 +158,16 @@ beforeAll(async () => {
       response.end(
         JSON.stringify({ ok: true, allowed: body.token === externalToken }),
       );
+    } else if (path === "/api/im/send-message") {
+      const input = body.request as Record<string, unknown>;
+      const partial = input.text === "partial fixture";
+      response.end(JSON.stringify({ ok: true, result: {
+        status: partial ? "partial" : "sent",
+        connection: { channelId: "fixture-channel", platform: "fixture" },
+        target: { type: "user", id: "fixture-user", idType: "user_id" },
+        items: [{ kind: "text", index: 0, status: "sent", messageIds: ["fixture-id"] },
+          ...(partial ? [{ kind: "attachment", index: 0, status: "unknown" }] : [])],
+      } }));
     } else if (path === "/api/inbox/deliver") {
       const message = body.message as Record<string, unknown>;
       response.end(
@@ -396,5 +406,85 @@ describe("production external CLI Session collaboration routing", () => {
     expect(
       calls.filter((call) => call.path.startsWith("/api/inbox/")).length,
     ).toBe(before);
+  });
+});
+
+
+describe("shipped channel CLI through the production Session router", () => {
+  it("discovers only the CLI channel entrypoint in the shipped readme", async () => {
+    const { stdout } = await run(process.execPath, [cliBundle, "im", "readme", "--json"], {
+      env: { ...fixtureEnv(hosts.session.home),
+        MYAGENTS_PORT: String(hosts.session.port), MYAGENTS_SESSION_ID: "source-session",
+        [INTERNAL_CLI_TOKEN_ENV]: internalToken },
+    });
+    const output = JSON.parse(stdout);
+    expect(output.success).toBe(true);
+    expect(output.data.text).toContain("myagents im send-message --input-file");
+    expect(output.data.text).not.toContain("native tool catalog");
+    expect(output.data.text).not.toContain("send_channel_message");
+  });
+
+  it("serves send-message leaf help without sending or requiring message input", async () => {
+    const before = calls.length;
+    const { stdout } = await run(process.execPath, [cliBundle, "im", "send-message", "--help", "--json"], {
+      env: { ...fixtureEnv(hosts.session.home),
+        MYAGENTS_PORT: String(hosts.session.port), MYAGENTS_SESSION_ID: "source-session",
+        [INTERNAL_CLI_TOKEN_ENV]: internalToken },
+    });
+    const output = JSON.parse(stdout);
+    expect(output.success).toBe(true);
+    for (const text of ["--input-file", "--input-json", "stdin", "attachments", "channelId", "target", "idType", "myagents im channels", "partial", "unknown", "Exit 0", "not a status query", "receipt.json"]) {
+      expect(output.data.text).toContain(text);
+    }
+    expect(calls).toHaveLength(before);
+  });
+
+  async function invoke(inputMode: "json" | "file" | "stdin", text: string) {
+    const input = JSON.stringify({ text });
+    const inputPath = join(scratch, "channel-input.json");
+    if (inputMode === "file") await writeFile(inputPath, input);
+    const args = [cliBundle, "im", "send-message", "--json",
+      ...(inputMode === "json" ? ["--input-json", input]
+        : ["--input-file", inputMode === "stdin" ? "-" : inputPath])];
+    return new Promise<{ code: number | null; output: Record<string, unknown> }>((resolveRun, reject) => {
+      const child = spawn(process.execPath, args, {
+        env: { ...fixtureEnv(hosts.session.home),
+          MYAGENTS_PORT: String(hosts.session.port),
+          MYAGENTS_SESSION_ID: "source-session",
+          [INTERNAL_CLI_TOKEN_ENV]: internalToken },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      processes.push(child);
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", chunk => { stdout += String(chunk); });
+      child.stderr.on("data", chunk => { stderr += String(chunk); });
+      child.on("error", reject);
+      child.on("close", code => {
+        try { resolveRun({ code, output: JSON.parse(stdout) }); }
+        catch { reject(new Error(`Invalid CLI receipt: ${stdout} ${stderr}`)); }
+      });
+      child.stdin.end(inputMode === "stdin" ? input : undefined);
+    });
+  }
+
+  it.each(["json", "file", "stdin"] as const)("preserves %s input and sends exactly once with the Session identity", async mode => {
+    const before = calls.filter(call => call.path === "/api/im/send-message").length;
+    const text = "Fixture 中文 \n literal `command` $(not-a-command) \\";
+    const result = await invoke(mode, text);
+    expect(result).toMatchObject({ code: 0, output: { success: true, data: { status: "sent" } } });
+    const sends = calls.filter(call => call.path === "/api/im/send-message");
+    expect(sends).toHaveLength(before + 1);
+    expect(sends.at(-1)?.body).toEqual({ sidecarId: "source-session", request: { text } });
+  });
+
+  it("prints accepted and uncertain items on partial failure without retrying", async () => {
+    const before = calls.filter(call => call.path === "/api/im/send-message").length;
+    const result = await invoke("stdin", "partial fixture");
+    expect(result.code).not.toBe(0);
+    expect(result.output).toMatchObject({ success: false, data: { status: "partial", items: [
+      { status: "sent", messageIds: ["fixture-id"] }, { status: "unknown" },
+    ] } });
+    expect(calls.filter(call => call.path === "/api/im/send-message")).toHaveLength(before + 1);
   });
 });

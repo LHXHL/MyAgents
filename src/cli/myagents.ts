@@ -1,3 +1,4 @@
+import { channelMessageSchema } from '../shared/channelMessage';
 /**
  * myagents — Self-Configuration CLI for MyAgents
  *
@@ -424,7 +425,7 @@ Commands:
   record    Manage unified text and audio Records (list/create)
   thought   Legacy compatibility alias for text Record list/create
   space     Discover Cloud Goals and manage Space Issues/attachments
-  im        IM runtime actions for current chat (send-media)
+  im        Channel messages and local attachments (send-message)
   session   Discover, start, message, and observe Agent execution contexts
   widget    Generative UI widget design guidelines (readme)
   plugin    Manage OpenClaw channel plugins (IM npm-packaged adapters)
@@ -832,6 +833,13 @@ export function printResult(
       output = { ...result, data };
     }
     console.log(JSON.stringify(output, null, 2));
+    return;
+  }
+
+  if (group === 'im' && (action === 'send-message' || action === 'send-media')) {
+    // Partial/unknown receipts must remain visible even with a nonzero exit.
+    // Printing only `result.error` would hide already accepted items.
+    console.log(JSON.stringify(result.data ?? result, null, 2));
     return;
   }
 
@@ -2111,20 +2119,25 @@ export function printAgentList(agents: Array<Record<string, unknown>>): void {
     return;
   }
   const pad = (s: string, n: number) => s.padEnd(n);
-  const idWidth=agents.reduce((width,a)=>Math.max(width,String(a.agentId??'').length+2),38);
+  const idWidth = 38;
   console.log(pad('', 3) + pad('Agent ID', idWidth) + pad('Lifecycle', 11) + pad('Proactive', 11) + pad('Channels', 10) + 'Name');
   for (const a of agents) {
     const current = a.isCurrent ? '* ' : '  ';
-    const lifecycle = a.archived ? 'archived' : 'active';
-    const proactive = a.enabled ? 'enabled' : 'disabled';
+    const id = String(a.agentId);
+    const separateId = id.length > idWidth - 2;
+    const remote = a.isLocal === false;
+    const lifecycle = !remote && typeof a.archived === 'boolean' ? (a.archived ? 'archived' : 'active') : 'unknown';
+    const proactive = !remote && typeof a.enabled === 'boolean' ? (a.enabled ? 'enabled' : 'disabled') : 'unknown';
     console.log(
       pad(current, 3)
-      + pad(String(a.agentId), idWidth)
+      + pad(separateId ? '(see Agent ID below)' : id, idWidth)
       + pad(lifecycle, 11)
       + pad(proactive, 11)
-      + pad(String(a.channelCount), 10)
-      + String(a.name) + (a.isLocal===false ? ` · ${String(a.networkName??'network')} / ${String(a.deviceName??'device')}` : ''),
+      + pad(!remote && typeof a.channelCount === 'number' ? String(a.channelCount) : 'unknown', 10)
+      + String(a.name),
     );
+    if (separateId) console.log(`  Agent ID: ${id}`);
+    if (remote) console.log(`  Remote: ${String(a.networkName ?? 'unknown network')} / ${String(a.deviceName ?? 'unknown device')}`);
   }
   if (agents.some(agent => agent.isCurrent === true)) {
     console.log('\n* current Agent for this CLI caller');
@@ -2476,13 +2489,14 @@ function printChannelList(channels: Array<Record<string, unknown>>): void {
     return;
   }
   const pad = (s: string, n: number) => s.padEnd(n);
-  console.log(pad('ID', 38) + pad('Type', 26) + pad('Enabled', 10) + 'Name');
+  console.log(pad('ID', 38) + pad('Platform', 26) + pad('Enabled', 10) + 'Name');
   for (const ch of channels) {
     const id = String(ch.id ?? '?').slice(0, 36);
-    const type = String(ch.type ?? '?').slice(0, 24);
+    const platform = String(ch.platform ?? 'unknown').slice(0, 24);
     const enabled = ch.enabled === false ? 'off' : 'on';
     const name = String(ch.name ?? '');
-    console.log(pad(id, 38) + pad(type, 26) + pad(enabled, 10) + name);
+    console.log(pad(id, 38) + pad(platform, 26) + pad(enabled, 10) + name);
+    if (ch.pluginId) console.log(`  Plugin: ${String(ch.pluginId)}`);
   }
   console.log(`\n${channels.length} channel(s)`);
 }
@@ -3445,7 +3459,7 @@ const PUBLISHED_ADMIN_ROUTES = new Set([
   'cron/list', 'cron/add', 'cron/start', 'cron/run-now', 'cron/stop', 'cron/remove', 'cron/update', 'cron/runs',
   'cron/status', 'cron/exit',
   'goal/get', 'goal/create', 'goal/update',
-  'im/send-media', 'im/wake', 'im/channels',
+  'im/send-media', 'im/send-message', 'im/wake', 'im/channels',
   'readme/task', 'readme/cron', 'readme/im', 'readme/widget', 'readme/thought',
   'plugin/list', 'plugin/install', 'plugin/remove',
   'cc-plugin/list', 'cc-plugin/show', 'cc-plugin/install', 'cc-plugin/uninstall', 'cc-plugin/enable', 'cc-plugin/disable',
@@ -5726,6 +5740,15 @@ export function buildRequestBody(
 
   // IM runtime commands — session-scoped, only work inside an IM Bot session
   if (group === 'im') {
+    if (action === 'send-message') {
+      const fs = require('node:fs') as typeof import('node:fs');
+      if ((flags.inputJson === undefined) === (flags.inputFile === undefined)) {
+        throw new Error('Provide exactly one of --input-json or --input-file (- for stdin).');
+      }
+      const content = flags.inputJson !== undefined ? String(flags.inputJson)
+        : fs.readFileSync(flags.inputFile === '-' ? 0 : String(flags.inputFile), 'utf8');
+      return channelMessageSchema.parse(JSON.parse(content));
+    }
     if (action === 'send-media') {
       return {
         filePath: resolveImMediaFilePath(flags, rest[0]),

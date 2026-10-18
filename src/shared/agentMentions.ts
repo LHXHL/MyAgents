@@ -1,5 +1,6 @@
 import type { ProductSystemSkillRequirement } from "./systemSkills";
 import { z } from "zod";
+import { buildChannelContext, type ChannelContext } from './channelContext';
 import {
   mentionAgentSchema,
   validateMentionAgent,
@@ -149,6 +150,7 @@ export function composeQueryReminder(input: {
   visibleText: string;
   primaryContext?: QueryPrimaryContext;
   agentMentions?: PreparedAgentMention[];
+  channelContext?: ChannelContext;
 }): string {
   const primary = input.primaryContext;
   const primaryMessage = primary
@@ -158,7 +160,7 @@ export function composeQueryReminder(input: {
     ? parseLeadingSystemReminder(primaryMessage).body
     : "";
   const mentions = input.agentMentions ?? [];
-  if (!mentions.length) return primaryMessage ?? input.visibleText;
+  if (!mentions.length && !input.channelContext) return primaryMessage ?? input.visibleText;
   const parts = mentions
     .map(({ agent, availability }) => {
       validateMentionAgent(agent);
@@ -178,5 +180,8 @@ export function composeQueryReminder(input: {
       return `<AgentInfo>${escapeSystemReminderText(JSON.stringify(data))}</AgentInfo>`;
     })
     .join("\n");
-  return `<system-reminder>\n${primaryBody ? `${primaryBody}\n` : ""}<${AGENT_MENTIONS_TAG}>\n${parts}\n<instruction>${INSTRUCTION}</instruction>\n</${AGENT_MENTIONS_TAG}>\n</system-reminder>\n${input.visibleText}`;
+  const sections = [primaryBody];
+  if (input.channelContext) sections.push(buildChannelContext(input.channelContext));
+  if (mentions.length) sections.push(`<${AGENT_MENTIONS_TAG}>\n${parts}\n<instruction>${INSTRUCTION}</instruction>\n</${AGENT_MENTIONS_TAG}>`);
+  return `<system-reminder>\n${sections.filter(Boolean).join('\n')}\n</system-reminder>${input.visibleText ? `\n${input.visibleText}` : ''}`;
 }

@@ -1187,6 +1187,12 @@
       "uninstallConfirm": "Uninstall"
     },
     "channelDetail": {
+      "deliveryTitle": "Message delivery",
+      "delivery_auto": "Automatic",
+      "delivery_tool_only": "Tool only",
+      "deliveryDescription_auto": "Ordinary replies are sent to the channel automatically. The agent can also send selected text, images, or files.",
+      "deliveryDescription_tool_only": "Ordinary replies stay in the desktop session. The agent must use the sending tool to reach channel users. Required approvals and management interactions remain available.",
+      "deliveryNextTurn": "Changes apply from the next turn. A running turn keeps its original delivery mode.",
       "pluginLabel": "Plugin: {{name}}",
       "noExtraConfig": "This plugin needs no extra configuration",
       "inputPlaceholder": "Enter {{key}}",
@@ -1282,7 +1288,11 @@
       "deleteChannel": "Delete Channel",
       "deleteConfirmTitle": "Delete Channel",
       "deleteConfirmMessage": "Delete this Channel? This cannot be undone.",
-      "deleteConfirm": "Delete"
+      "deleteConfirm": "Delete",
+      "platformMentionOnlyDescription": "This channel only receives group messages that @mention the bot. All messages is not supported.",
+      "groupPrerequisite_telegram": "To receive all messages, make the bot a group admin, or disable privacy mode in BotFather and re-add it to the group.",
+      "groupPrerequisite_feishu": "To receive all messages, enable im:message.group_msg in the Feishu developer console and publish the app.",
+      "groupPrerequisite_plugin": "Available messages depend on the plugin and platform permissions."
     },
     "channelWizard": {
       "toast": {

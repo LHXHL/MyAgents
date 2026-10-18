@@ -243,6 +243,7 @@ function AssistantActions({ message, onRetry, onFork, citationSources, className
 }
 
 function systemTagLabel(kind: string, t: (key: string) => string): string | null {
+  if (kind === 'CHANNEL_CONTEXT') return t('message.systemTags.channelMessage');
   if (kind === 'HEARTBEAT') return t('message.systemTags.heartbeat');
   if (kind === AGENT_MENTIONS_TAG) return t('message.systemTags.agentMentions');
   if (kind === 'CRON_TASK') return t('message.systemTags.cronTask');
@@ -355,7 +356,7 @@ const Message = memo(function Message({ message, citationSources, isLoading = fa
     const displaySource = reminder.hasReminder
       ? (reminder.visibleText || sessionSendRequest?.payload || '')
       : rawUserContent;
-    const userContent = displaySource
+    const userContent = reminder.body.includes('<CHANNEL_CONTEXT version="1">') ? displaySource : displaySource
       .replace(/<\/?system-reminder>/g, '')
       .replace(/<\/?HEARTBEAT>/g, '')
       .replace(/<\/?MEMORY_UPDATE>/g, '')

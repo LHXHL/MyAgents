@@ -1,18 +1,21 @@
 export type BuiltinInjectedTurnTerminal =
   | {
       status: 'complete';
+      channelDeliveryMode?: import('../../shared/channelContext').ChannelDeliveryMode;
       assistantMessagePresent: boolean;
       text: string;
       error?: string;
     }
   | {
       status: 'stopped' | 'error';
+      channelDeliveryMode?: import('../../shared/channelContext').ChannelDeliveryMode;
       assistantMessagePresent: boolean;
       text: string;
       error?: string;
     };
 
 export type InjectedTurnDecision = {
+  channelDeliveryMode?: import('../../shared/channelContext').ChannelDeliveryMode;
   success: boolean;
   assistantMessagePresent?: boolean;
   text?: string;
@@ -215,6 +218,7 @@ export function decideBuiltinInjectedTurnResult(params: {
     success: true,
     assistantMessagePresent: params.outcome.assistantMessagePresent,
     text: params.outcome.text,
+    ...(params.outcome.channelDeliveryMode ? { channelDeliveryMode: params.outcome.channelDeliveryMode } : {}),
   };
 }
 

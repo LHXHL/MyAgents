@@ -271,3 +271,18 @@ export function resetTranscriptForTest(): void {
   clearTranscriptState();
   persistChainBySession.clear();
 }
+
+/** Attach execution context to the exact admitted user row without replaying
+ * admission or changing Session/turn identity. */
+export function confirmBuiltinUserContent(messageId: string, content: string): void {
+  const product = getBuiltinProductContent();
+  if (product) {
+    if (product.writer.projection.messages.get(messageId)?.role !== 'user') throw new Error('User message missing at channel admission');
+    product.writer.observe({ kind: 'content-confirm', messageId, content });
+    product.writer.requestCommit();
+  } else {
+    const message = messages.find(message => message.id === messageId && message.role === 'user');
+    if (!message) throw new Error('User message missing at channel admission');
+    message.content = content;
+  }
+}

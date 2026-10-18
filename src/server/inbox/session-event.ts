@@ -3,6 +3,7 @@ import {
   SYSTEM_REMINDER_CLOSE,
   SYSTEM_REMINDER_OPEN,
 } from '../../shared/systemReminder';
+import { channelHandoffSchema, type ChannelHandoff } from '../../shared/channelHandoff';
 
 export type SessionEventType =
   | 'send.request'
@@ -43,6 +44,7 @@ export interface SendRequestEvent extends SessionEventBase {
   targetSessionId: string;
   sourceNotification: SourceNotification;
   payload: string;
+  channelHandoff?: ChannelHandoff;
 }
 
 export interface SendResultEvent extends SessionEventBase {
@@ -137,6 +139,11 @@ const STRUCTURAL_TAGS = [
   'inbox-message',
   'inbox-reply',
   'system-reminder',
+  'instruction',
+  'CHANNEL_CONTEXT',
+  'channel-handoff',
+  'source',
+  'context',
 ];
 
 export function sanitizeSessionEventAttribute(raw: string | undefined | null): string {
@@ -249,6 +256,35 @@ function payloadForEvent(event: RenderableSessionEvent): string {
 
 export function renderSessionEventPrompt(event: SessionEvent): string {
   assertRenderableSessionEvent(event);
+  if (event.type === 'send.request' && event.channelHandoff) {
+    const handoff = channelHandoffSchema.parse(event.channelHandoff);
+    if (!event.sourceSessionId || !event.targetSessionId || event.sourceKind !== 'internal-session'
+      || event.sourceNotification !== 'none' || !event.payload.trim()) {
+      throw new Error('Invalid Channel handoff event');
+    }
+    // The target's turn admission adds the effective delivery instruction and
+    // current CHANNEL_CONTEXT. Never freeze its mode in the sending Session.
+    return [
+      SYSTEM_REMINDER_OPEN,
+      `<myagents-session-event ${[
+        attr('version', event.version), attr('type', event.type),
+        attr('source_session_id', event.sourceSessionId), attr('source_label', event.sourceLabel),
+        attr('target_session_id', event.targetSessionId),
+      ].filter(Boolean).join(' ')}>`,
+      '<instruction>',
+      handoff.source ? '这是一条来自其他 Channel 会话所关联 Session 的消息。' : '这是一条来自其他 Session 的消息。',
+      '结合 context 向当前会话用户转达 payload；本次尚未外发。',
+      '</instruction>',
+      '<channel-handoff>',
+      ...(handoff.source ? ['<source>', neutralizeSessionEventStructuralTags(JSON.stringify(handoff.source)), '</source>'] : []),
+      '<payload>', neutralizeSessionEventStructuralTags(event.payload),
+      ...(handoff.attachments?.length ? [neutralizeSessionEventStructuralTags('附件（可读取或使用 CLI 转达）：\n' + handoff.attachments.map(a => `@${a.path}${a.caption ? ` — ${a.caption}` : ''}`).join('\n'))] : []),
+      '</payload>',
+      '<context>', neutralizeSessionEventStructuralTags(handoff.context), '</context>',
+      '</channel-handoff>',
+      '</myagents-session-event>', SYSTEM_REMINDER_CLOSE,
+    ].join('\n');
+  }
   return [
     SYSTEM_REMINDER_OPEN,
     renderOpenTag(event),

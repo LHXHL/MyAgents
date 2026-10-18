@@ -37,6 +37,8 @@ export interface ImRequestEntry {
   cancellationOwner: ImCancellationOwner;
   /** Exact caller identity for Bridge tools. Owned by this request, not the Session surface. */
   imBridgeTurnContext?: ImBridgeTurnContext;
+  channelInbound?: import('../session-core/channel-context').ChannelInbound;
+  channelDeliveryMode?: import('../../shared/channelContext').ChannelDeliveryMode;
   status: ImRequestStatus;
   createdAt: number;
   /** Updated on transitions; useful for staleness pruning. */

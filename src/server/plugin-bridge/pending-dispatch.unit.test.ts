@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   abortPendingDispatch,
+  setPendingDispatchDeliveryMode,
   bindPendingStream,
   clearAllPendingDispatches,
   completePendingDispatch,
@@ -190,5 +191,39 @@ describe('request-scoped pending dispatch transport', () => {
   it('fails fast for a missing or late stream instead of creating fallback state', () => {
     expect(() => enqueuePartial('missing-stream', { text: 'late' }, 'answer'))
       .toThrow(/protocol_dispatch_missing/);
+  });
+});
+
+
+describe('channel delivery policy', () => {
+  it.each(['complete', 'abort'] as const)('suppresses all visible callbacks but settles %s', async terminal => {
+    const visible = vi.fn();
+    const mode = vi.fn();
+    const done = registerPendingDispatch('silent', 'chat', {
+      onDeliveryMode: mode, onReplyStart: visible, onPartialReply: visible,
+      onReasoningStream: visible, sendFinalReply: visible,
+    });
+    setPendingDispatchDeliveryMode('silent', 'tool_only');
+    enqueueRunStart('silent');
+    bindPendingStream('silent', 'stream');
+    enqueuePartial('stream', {text: 'ordinary answer'}, 'answer');
+    enqueuePartial('stream', {text: 'thinking'}, 'reasoning');
+    enqueueBlockBoundary('stream');
+    if (terminal === 'complete') completePendingDispatch('silent', [{text: 'final'}]);
+    else abortPendingDispatch('silent', {text: 'fallback', isError: true});
+    await done;
+    expect(mode).toHaveBeenCalledWith('tool_only');
+    expect(visible).not.toHaveBeenCalled();
+    expect(getPendingDispatch('silent')).toBeUndefined();
+  });
+  it('does not share policy between concurrent requests', async () => {
+    const sent: string[] = [];
+    const make = (id: string) => registerPendingDispatch(id, 'same-chat', {sendFinalReply: payload => {sent.push(String(payload.text)); return true;}});
+    const a = make('a'); const b = make('b');
+    setPendingDispatchDeliveryMode('a', 'tool_only');
+    completePendingDispatch('b', [{text: 'visible'}]);
+    completePendingDispatch('a', [{text: 'hidden'}]);
+    await Promise.all([a,b]);
+    expect(sent).toEqual(['visible']);
   });
 });

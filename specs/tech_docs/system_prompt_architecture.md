@@ -80,6 +80,8 @@ Workspace 指令可能由 Runtime 原生加载，Codex 的 MyAgents append 则�
 
 受管「浏览器」的登录态保存不属于 Prompt 契约。应用级 Browser Host 会在成功工具调用和 Context teardown 边界自动 checkpoint Cookie；模型无需、也不应被提示主动调用存储工具来维持产品正确性。该 headed Context 不使用 Playwright `storageState()`，避免身份维护创建用户可见的临时页面；localStorage 与 IndexedDB 不跨 Product Session 恢复。标准 `playwright` 仍遵循上游 MCP 的 argv/storage-state 语义，MyAgents 不用隐藏 Prompt 改写它。
 
+Channel 能力与绑定由 Rust Session owner 的 `/api/im/channel-context` 一次读取投影为 `channelMessagingEnabled` / `channelBound`，builtin 与 external/DSH 共用入口。`scenario` 描述入口能力，不断言消息来自桌面；已绑定渠道不注入 Widget 指南。打开或从桌面输入不改变既有发送模式，实际来源与模式仍由 admission 的逐轮上下文描述。产品身份按需使用 `myagents agent current --json`，构建诊断使用 `myagents version --json`，不逐轮注入内部 Runtime ID 或构建指纹。
+
 ### 场景模型
 
 `InteractionScenario` 当前有五类：
@@ -102,7 +104,7 @@ Workspace 指令可能由 Runtime 原生加载，Codex 的 MyAgents append 则�
 | 层                | 职责                                                                           | 组合方式             |
 | ----------------- | ------------------------------------------------------------------------------ | -------------------- |
 | L1 基础身份       | MyAgents 身份、当前 Runtime、全局目录、时间判断约束                            | 始终包含             |
-| L2 交互渠道       | 桌面，或具体 IM/Agent Channel 与私聊/群聊信息                                  | 互斥选一             |
+| L2 交互渠道       | 静态渠道概念；逐轮 CHANNEL_CONTEXT 提供实际绑定与输入来源                     | 不以桌面 Tab 推断渠道 |
 | L3 场景与产品交互 | Task、Heartbeat、Registered Agent、浮球、Widget、Session 协作                  | 按条件叠加           |
 | L4 CLI 能力发现   | Task、Goal、Record、IM 媒体、Vision、用户注册工具                              | 按场景与能力开关叠加 |
 
@@ -113,7 +115,6 @@ Workspace 指令可能由 Runtime 原生加载，Codex 的 MyAgents append 则�
 | XML-like block                           | 主要内容                                                | 注入条件                                           |
 | ---------------------------------------- | ------------------------------------------------------- | -------------------------------------------------- |
 | `myagents-identity`                      | 产品身份、准确 Runtime 名称、`~/.myagents`、时间检查    | 全部场景                                           |
-| `myagents-interaction-channel`           | 桌面或 IM/Channel 入口、平台、私聊/群聊、Bot 昵称       | 全部场景；渠道互斥                                 |
 | `myagents-cron-task-instructions`        | Task ID、触发间隔、可选自结束说明                       | `cron`                                             |
 | `myagents-heartbeat-instructions`        | 如何处理周期 Heartbeat                                  | `im`、`agent-channel`                              |
 | `myagents-registered-agent-instructions` | Registered Agent 身份、Issue 行动边界与当前状态读取要求 | `registeredAgent`                                  |
@@ -123,7 +124,7 @@ Workspace 指令可能由 Runtime 原生加载，Codex 的 MyAgents append 则�
 | `myagents-cli-task-automation`           | “以后再做”统一使用 Task Skill/CLI，不用 OS cron         | 全部场景                                           |
 | `myagents-cli-goal`                      | Goal Mode 只在用户明确要求时创建                        | `desktop`，以及私聊 `im` / `agent-channel`         |
 | `myagents-cli-task-exit`                 | 目标完成时用 CLI 提前结束 Task                          | `cron && aiCanExit`                                |
-| `myagents-cli-im-media`                  | 向当前聊天发送文件、图片、PDF 等                        | `im`、`agent-channel`                              |
+| `myagents-channel` | `对话环境` / `消息发送` 两个子标题；渠道身份概念、auto/tool_only、当前直发与跨会话交接、CLI help 导航 | IM/Channel，或具有渠道发送能力的其他场景 |
 | `myagents-cli-record`                    | 仅在用户明确要求“记一下”时创建文字 Record               | `desktop`，以及私聊 `im` / `agent-channel`         |
 | `myagents-cli-vision`                    | 当前模型不能读图时调用图片理解 helper                   | Session 启用 image-understanding 官方工具          |
 | `myagents-user-tools`                    | 用户注册 CLI 工具的名称、description 与发现方法         | 实验开关开启且注册表存在 enabled 工具              |
@@ -346,3 +347,19 @@ badge、visible tail、标题、预览、搜索和测试 Checklist。
 | `src/server/system-prompt.unit.test.ts`            | 场景级产品 Prompt 回归                                                |
 | `src/server/system-prompt-cli-tools.unit.test.ts`  | CLI capability 条件矩阵回归                                           |
 | `src/server/utils/cli-tools-registry.unit.test.ts` | 用户工具 Prompt projection 与保险丝回归                               |
+
+## Channel 固定提示与逐轮事实
+
+`channelPrompt.ts` 保存固定 S1 渠道身份原则、S2 统一发送能力和 S3 Managed Codex 提问规则；`system-prompt.ts` 按场景/实际能力选入，禁止在稳定 system 段插入本轮 mode、sender、chat 或时间。原 `myagents-cli-im-media` 被统一发送能力取代；两种模式均有工具，区别由每轮 reminder 明示。Managed Codex 没有可用原生卡片时按本轮发送方式提出问题，不能无条件假定文本会回推。
+
+每次实际 admission 经 `session-core/channel-context.ts` 捕获有效配置和调用入口，再用 shared renderer 合成；builtin 与 external/DSH 共用同一 schema/模板。DSH 沿既有 root/product-session 注入固定段，逐轮事实仍属于 User reminder。完整协议与快照见 [System Reminder](system_reminder_protocol.md#channel-context)。
+
+渠道提示词分层：两种发送模式的定义、CLI 使用和群聊／提问规则常驻固定 system 段；逐轮 `<instruction>` 只在自动回复／工具发送两句中选择一句（最长 110 字符），内部事实 schema 不变。mode 切换不修改 system 前缀，实际执行轮的快照与下一轮生效策略不变。
+
+内部 schema 保留完整状态与 null 进行校验；模型 facts 仅投影 connection/self/conversation/sender/message，递归省略未知字段和空对象。connection 存在时只补 source 和 time（本轮开始时刻与时区）两个执行信息；execution/delivery/projection 整组不进入模型。发送状态由一句自然语言 instruction 表达，参数与连接能力按需从 CLI 查询。
+
+静态 Channel 段采用条件语义：仅在 CHANNEL_CONTEXT 给出绑定时才处于渠道环境，无绑定桌面仅获得能力发现。当前直发与跨会话交接的概念固定；参数、首次回执与重试说明下沉 CLI help。引用/历史是背景，不是当前发言。
+
+### Channel 交接的稳定前缀与动态指令
+
+`CHANNEL_PROMPT` 只声明两种发送模式与当前/其他会话的行为，不放实际模式、ID、名字或时间。跨会话内容通过 `send.request.channelHandoff` 进入原 Inbox，渲染器先生成唯一 `instruction`（来源性质、结合 context 转达 payload、尚未外发）；实际 turn owner 再用冻结的模式追加发送说明，并在其后插入仅含事实的 `CHANNEL_CONTEXT`。Runtime 都复用 `decorateChannelQuery`，不在发送端固化目标模式；不新增原生发送工具。

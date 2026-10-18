@@ -211,12 +211,37 @@ pub(super) async fn enqueue_to_sidecar(
             &source_owned
         }
     };
+    let mut source_metadata = msg.source_metadata.clone();
+    if !msg.attachments.is_empty()
+        && source_metadata
+            .context_data
+            .as_ref()
+            .and_then(|data| data["attachments"].as_array())
+            .is_none_or(Vec::is_empty)
+    {
+        let context = source_metadata.context_data.get_or_insert_with(|| json!({
+            "reply":null,"history":[],"mentions":null,"attachments":[],"parts":[],"platformContext":[]
+        }));
+        context["attachments"] = json!(msg
+            .attachments
+            .iter()
+            .map(|item| json!({
+                "kind":if item.mime_type.starts_with("image/") {"image"} else {"file"},
+                "name":item.file_name,"localPath":null,"caption":null
+            }))
+            .collect::<Vec<_>>());
+    }
     let mut body = json!({
         "message": msg.text,
         "source": source,
         "sourceId": msg.chat_id,
         "senderName": msg.sender_name,
         "requestId": msg.request_id,
+        "senderId": msg.sender_id,
+        "accountId": msg.account_id,
+        "receivedAt": msg.timestamp.to_rfc3339(),
+        "sourceMetadata": source_metadata,
+        "isMention": msg.is_mention,
         "metadataBirthPending": metadata_birth_pending,
         "hostInteraction": HostInteractionCapability::for_platform(&msg.platform),
     });
@@ -233,7 +258,11 @@ pub(super) async fn enqueue_to_sidecar(
     }
     if let Some(gc) = group_context {
         body["sourceType"] = json!("group");
-        body["groupName"] = json!(gc.group_name);
+        // Plugin routing may fall back to chat ID; only its explicit hint is a name.
+        body["groupName"] = match msg.platform {
+            ImPlatform::OpenClaw(_) => json!(msg.hint_group_name),
+            _ => json!(gc.group_name),
+        };
         body["groupPlatform"] = json!(match &gc.platform {
             ImPlatform::Telegram => "Telegram".to_string(),
             ImPlatform::Feishu => "飞书".to_string(),
@@ -324,6 +353,7 @@ mod tests {
 
     fn test_group_message() -> ImMessage {
         ImMessage {
+            source_metadata: Default::default(),
             chat_id: "group-1".to_string(),
             message_id: "message-1".to_string(),
             text: "hello".to_string(),

@@ -13,6 +13,7 @@ import { isBridgeAskUserQuestionTool } from '../host-interaction';
 import { cancellableFetch } from '../utils/cancellation';
 import { maybeSpill } from '../utils/large-value-store';
 import { getCurrentTurnSignal } from '../utils/turn-abort';
+import { createImBridgeMcpServer } from './im-bridge/mcp-server';
 
 type CallToolResult = {
   content: Array<{ type: 'text'; text: string }>;
@@ -206,14 +207,16 @@ async function callBridgeTool(params: {
       return triggerAutoAuth(params.surface, turnContext, params.signal);
     }
 
+    const errorStatus = typeof raw === 'object' && raw !== null && raw.isError === true ? { isError: true } : {};
     const spilled = await maybeSpill(resultText, {
       mimetype: 'text/plain; charset=utf-8',
       sessionId: params.surface.pluginId,
     });
     if ('inline' in spilled) {
-      return { content: [{ type: 'text', text: resultText }] };
+      return { ...errorStatus, content: [{ type: 'text', text: resultText }] };
     }
     return {
+      ...errorStatus,
       content: [{
         type: 'text',
         text: `${spilled.preview}\n\n…(truncated; ${spilled.sizeBytes} bytes total) `
@@ -248,8 +251,6 @@ async function initializeSurface(
   resolveTurnContext: ResolveTurnContext,
 ): Promise<void> {
   try {
-    const { createSdkMcpServer, tool } = await import('@anthropic-ai/claude-agent-sdk');
-    const { z } = await import('zod/v4');
     if (surfaceOwner !== owner) return;
 
     const remainingMs = owner.deadlineAt - Date.now();
@@ -304,27 +305,14 @@ async function initializeSurface(
       return;
     }
 
-    const dynamicTools = pluginTools.map(pluginTool => tool(
-      pluginTool.name,
-      pluginTool.description || '',
-      { args: z.record(z.string(), z.any()).describe('Tool arguments as key-value pairs') },
-      async (params: { args: Record<string, unknown> }, extra: unknown) => callBridgeTool({
+    const server = await createImBridgeMcpServer(pluginTools, async (name, args, signal) => callBridgeTool({
         surface: owner.surface,
         resolveTurnContext,
-        toolName: pluginTool.name,
-        args: params.args,
-        signal: extra && typeof extra === 'object' && 'signal' in extra
-          && (extra as { signal?: unknown }).signal instanceof AbortSignal
-          ? (extra as { signal: AbortSignal }).signal
-          : undefined,
-      }),
-    ));
+        toolName: name,
+        args,
+        signal,
+      }));
     if (surfaceOwner !== owner) return;
-    const server = createSdkMcpServer({
-      name: 'im-bridge-tools',
-      version: '1.0.0',
-      tools: dynamicTools,
-    });
     settleSurface(owner, 'ready', server, `tools=${pluginTools.length}`);
   } catch (error) {
     if (surfaceOwner !== owner) return;
