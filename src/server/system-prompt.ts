@@ -109,8 +109,6 @@ export interface SystemPromptOptions {
    * identity line in L1. Defaults to 'builtin' (Claude Agent SDK) if omitted.
    */
   runtime?: RuntimeType;
-  /** Existing Session binding or Agent channel capability, resolved by the host. */
-  channelMessagingEnabled?: boolean;
   /** Exact Session binding, independent of the surface that opens it. */
   channelBound?: boolean;
   /**
@@ -167,7 +165,7 @@ function buildProductSessionPrompt(scenario: InteractionScenario, options?: Syst
 
   // Entry surfaces are not conversation identity. Rust's exact Session binding
   // owns the environment; actual input source and delivery live in turn context.
-  if (options?.channelMessagingEnabled || scenario.type === 'im' || scenario.type === 'agent-channel') {
+  if (options?.channelBound) {
     parts.push(CHANNEL_PROMPT);
   }
 

@@ -126,7 +126,12 @@ describe("channel prompt contract", () => {
       targetTypes: null,
       mediaTypes: null,
     });
-    expect(wire(context)).toMatchSnapshot();
+    const tail = "  咕咕嘎嘎是个啥\n";
+    expect(buildChannelContext(context)).toBe("");
+    expect(wire(context, tail)).toBe(tail);
+    expect(decorateChannelQuery(tail, context, false)).toBe(tail);
+    const primary = "<system-reminder>\n<HEARTBEAT>check</HEARTBEAT>\n</system-reminder>\n" + tail;
+    expect(decorateChannelQuery(primary, context, true)).toBe(primary);
   });
   it.each(["caller_managed", "not_forwarded"] as const)(
     "snapshots auto with %s ownership",
@@ -148,30 +153,22 @@ describe("channel prompt contract", () => {
     expect(wire(context, "")).toMatchSnapshot();
   });
 
-  it("keeps every turn instruction to one short status line regardless of context", () => {
+  it.each([
+    ["auto", "forwarded", "CHANNEL_DELIVERY_AUTO"],
+    ["tool_only", "not_forwarded", "CHANNEL_DELIVERY_TOOL_ONLY"],
+    ["auto", "caller_managed", "CHANNEL_DELIVERY_CALLER_MANAGED"],
+    ["auto", "not_forwarded", "CHANNEL_DELIVERY_SUPPRESSED"],
+    ["auto", "suppressed", "CHANNEL_DELIVERY_SUPPRESSED"],
+    ["tool_only", "suppressed", "CHANNEL_DELIVERY_SUPPRESSED"],
+  ] as const)("describes actual delivery for %s/%s", (mode, ordinaryOutput, expected) => {
     const context = sample();
-    const variants = new Set<string>();
-    for (const mode of [null, "auto", "tool_only"] as const) {
-      for (const ordinaryOutput of [
-        "forwarded",
-        "caller_managed",
-        "not_forwarded",
-      ] as const) {
-        Object.assign(context.facts.delivery, { mode, ordinaryOutput });
-        const text = channelInstruction(context.facts);
-        variants.add(text);
-        expect(text).toBe(
-          mode === "auto" && ordinaryOutput === "forwarded"
-            ? prompt.CHANNEL_DELIVERY_AUTO
-            : prompt.CHANNEL_DELIVERY_TOOL_ONLY,
-        );
-        expect(text.length).toBeLessThanOrEqual(110);
-        expect(text).not.toContain("\n");
-        context.facts.execution.source = "heartbeat";
-        expect(channelInstruction(context.facts)).toBe(text);
-      }
-    }
-    expect(variants.size).toBe(2);
+    Object.assign(context.facts.delivery, { mode, ordinaryOutput });
+    const text = channelInstruction(context.facts);
+    expect(text).toBe(prompt[expected]);
+    expect(text.length).toBeLessThanOrEqual(110);
+    expect(text).not.toContain("\n");
+    context.facts.execution.source = "heartbeat";
+    expect(channelInstruction(context.facts)).toBe(text);
   });
   it("keeps only useful prompt facts without internal state or unknown placeholders", () => {
     const context = sample();

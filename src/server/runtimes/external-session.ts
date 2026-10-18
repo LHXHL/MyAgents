@@ -4652,12 +4652,14 @@ async function _doStartExternalSession(options: {
   let systemPromptAppend = workspaceInstructions
     ? baseSystemPrompt + '\n\n' + workspaceInstructions
     : baseSystemPrompt;
-  systemPromptAppend = appendManagedCodexInteractionLimitPrompt(
-    systemPromptAppend,
-    runtimeType,
-    runtimeSource,
-    options.scenario,
-  );
+  if (systemPromptOptions.channelBound) {
+    systemPromptAppend = appendManagedCodexInteractionLimitPrompt(
+      systemPromptAppend,
+      runtimeType,
+      runtimeSource,
+      options.scenario,
+    );
+  }
 
   // External runtimes don't go through the SDK's session creation flow, so the
   // "pending-{tabId}" placeholder that the frontend assigns never gets upgraded

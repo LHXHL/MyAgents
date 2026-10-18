@@ -22,13 +22,13 @@ const workspace = () => {
 
 describe("unified channel send capability", () => {
   it.each([
-    { channels: [], defaultTarget: null, enabled: false, bound: false },
-    { channels: [{}], defaultTarget: null, enabled: true, bound: false },
-    { channels: [{}], defaultTarget: { channelId: "c", id: "peer" }, enabled: true, bound: true },
-  ])("projects capabilities from the current Session binding: $bound", async ({ channels, defaultTarget, enabled, bound }) => {
+    { channels: [], defaultTarget: null, bound: false },
+    { channels: [{}], defaultTarget: null, bound: false },
+    { channels: [{}], defaultTarget: { channelId: "c", id: "peer" }, bound: true },
+  ])("projects capabilities from the current Session binding: $bound", async ({ channels, defaultTarget, bound }) => {
     vi.stubEnv("MYAGENTS_SIDECAR_ID", "sidecar");
     api.mockResolvedValueOnce({ ok: true, channels, defaultTarget });
-    expect(await readChannelPromptOptions()).toEqual({ channelMessagingEnabled: enabled, channelBound: bound });
+    expect(await readChannelPromptOptions()).toEqual({ channelBound: bound });
     expect(api).toHaveBeenCalledExactlyOnceWith("/api/im/channel-context", "POST", { sidecarId: "sidecar" });
   });
 
